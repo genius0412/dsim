@@ -24,6 +24,7 @@ export interface GameSettings {
   alliance: Alliance;
   assists: AssistConfig;
   spec: RobotSpec;
+  audio: { sounds: boolean; voice: boolean };
 }
 
 export interface Toast {
@@ -52,6 +53,8 @@ export interface HudSnapshot {
   rampCount: number;
   classifiedCount: number;
   overflowCount: number;
+  /** pre-match "3-2-1" countdown value, or null when not counting down */
+  countdown: number | null;
   toasts: Toast[];
 }
 
@@ -70,12 +73,19 @@ export class GameController {
   private disposed = false;
   private prevPhase: MatchPhase;
   private warningPlayed = false;
+  /** world.time when the pre-match countdown began (null = not started) */
+  private countdownStart: number | null = null;
+  private lastBeepAt = -1;
+  private lastTransitionBeep = -1;
+  private hudCountdown: number | null = null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private settings: GameSettings,
   ) {
     this.ctx = canvas.getContext('2d')!;
+    this.audio.soundsEnabled = settings.audio.sounds;
+    this.audio.voiceEnabled = settings.audio.voice;
     this.world = this.makeWorld();
     this.prevPhase = this.world.match.phase;
     this.input.attach();
@@ -117,6 +127,42 @@ export class GameController {
       this.warningPlayed = true;
       this.audio.play('warning');
     }
+    // announcer during the transition, like a real event:
+    // "Drivers, pick up your controllers" ... "3, 2, 1" -> firebell
+    if (phase === 'transition') {
+      const left = this.world.match.phaseTimeLeft;
+      if (left <= 6.5 && this.lastTransitionBeep === -1) {
+        this.lastTransitionBeep = 4;
+        this.audio.say('Drivers, pick up your controllers');
+      }
+      const n = Math.ceil(left);
+      if (n <= 3 && n >= 1 && n < this.lastTransitionBeep) {
+        this.lastTransitionBeep = n;
+        this.audio.say(String(n), true); // interrupt: land exactly on the beat
+      }
+    } else {
+      this.lastTransitionBeep = -1;
+    }
+  }
+
+  /** announcer: "Match begins in 3, 2, 1" — runs after start is pressed */
+  private updateCountdown(): number | null {
+    if (this.world.match.phase !== 'pre' || this.countdownStart === null) return null;
+    const remaining = C.PRE_COUNTDOWN - (this.world.time - this.countdownStart);
+    if (remaining <= 0) {
+      this.countdownStart = null;
+      startMatch(this.world);
+      return null;
+    }
+    const n = Math.ceil(remaining);
+    if (n !== this.lastBeepAt) {
+      this.lastBeepAt = n;
+      // numbers interrupt any in-flight speech so the spoken count always
+      // lands exactly on the visual digit
+      if (n === C.PRE_COUNTDOWN) this.audio.say('Match begins in');
+      else this.audio.say(String(n), true);
+    }
+    return n; // > 3 means the "Match begins in" lead-in
   }
 
   private loop = (t: number): void => {
@@ -126,8 +172,13 @@ export class GameController {
 
     const cmd = this.input.poll();
     this.lastCmd = cmd;
-    if (this.input.startPressed && this.world.match.phase === 'pre') {
-      startMatch(this.world);
+    if (
+      this.input.startPressed &&
+      this.world.match.phase === 'pre' &&
+      this.countdownStart === null
+    ) {
+      this.countdownStart = this.world.time;
+      this.lastBeepAt = -1;
     }
 
     this.acc += Math.min(dtMs / 1000, 0.25);
@@ -140,6 +191,7 @@ export class GameController {
     }
     if (steps === C.MAX_STEPS_PER_FRAME) this.acc = 0;
 
+    this.hudCountdown = this.updateCountdown();
     this.handlePhaseAudio();
 
     for (const e of this.world.events) {
@@ -154,12 +206,15 @@ export class GameController {
 
   /** restart with the same settings (new random seed / motif) */
   restart(): void {
+    this.audio.stopSpeech();
     if (this.world.match.phase === 'auto' || this.world.match.phase === 'teleop') {
       this.audio.play('abort');
     }
     this.world = this.makeWorld();
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
+    this.countdownStart = null;
+    this.hudCountdown = null;
     this.toasts = [];
   }
 
@@ -191,12 +246,14 @@ export class GameController {
       ).length,
       classifiedCount: goal.classifiedCount,
       overflowCount: goal.overflowCount,
+      countdown: this.hudCountdown,
       toasts: [...this.toasts],
     };
   }
 
   dispose(): void {
     this.disposed = true;
+    this.audio.stopSpeech();
     cancelAnimationFrame(this.raf);
     this.input.detach();
     window.removeEventListener('resize', this.onResize);

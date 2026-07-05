@@ -1,6 +1,5 @@
 import type { RobotState } from '../types';
 import * as C from '../config';
-import { goalCenter } from '../sim/field';
 import { turretWorldPos } from '../sim/robot';
 
 export function drawRobot(
@@ -11,20 +10,6 @@ export function drawRobot(
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
   const color = r.alliance === 'blue' ? C.COLORS.blue : C.COLORS.red;
-
-  // aim ray
-  if (r.aimAssist) {
-    const tp = turretWorldPos(r);
-    const g = goalCenter(r.alliance);
-    ctx.strokeStyle = 'rgba(229,231,235,0.12)';
-    ctx.lineWidth = 0.8;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.moveTo(tp.x, tp.y);
-    ctx.lineTo(g.x, g.y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
 
   ctx.save();
   ctx.translate(r.pos.x, r.pos.y);
@@ -51,11 +36,10 @@ export function drawRobot(
   ctx.fill();
   ctx.stroke();
 
-  // intake bar at the front
+  // intake bar at the front — drawn at its full physical reach (it collides)
   const preset = C.INTAKE_PRESETS[r.spec.intake];
-  const reach = r.spec.intake === 'extended' ? preset.reach - 1.5 : 1.2;
   ctx.fillStyle = intakeOn ? 'rgba(34,197,94,0.85)' : '#3a4150';
-  ctx.fillRect(hl - 0.6, -preset.halfWidth, reach + 1.2, preset.halfWidth * 2);
+  ctx.fillRect(hl - 0.6, -preset.halfWidth, preset.reach + 0.6, preset.halfWidth * 2);
 
   // heading chevron
   ctx.fillStyle = color;

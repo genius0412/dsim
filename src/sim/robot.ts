@@ -139,9 +139,10 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   const hl = r.spec.length / 2;
   for (const b of world.balls) {
     if (b.state.kind !== 'ground' || b.z > 6) continue;
-    // ball position in robot frame
+    // ball position in robot frame; capture extends slightly past the intake
+    // face so balls being pushed by it get swallowed
     const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
-    const inReach = local.x > hl - 2 && local.x < hl + preset.reach + C.BALL_RADIUS;
+    const inReach = local.x > hl - 2 && local.x < hl + preset.reach + C.BALL_RADIUS + 1;
     const inWidth = Math.abs(local.y) < preset.halfWidth + C.BALL_RADIUS * 0.5;
     if (inReach && inWidth) {
       r.hopper.push(b.color);

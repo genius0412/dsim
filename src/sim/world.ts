@@ -86,6 +86,10 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
     collideBallRect(b, classifierRect('blue'));
   }
 
+  // final authority: robot/structure pushes can never leave a ball outside
+  // the field — re-run the wall constraint after all other collisions
+  for (const b of active) collideBallStatic(b);
+
   // ---- goals: basin jumble, rail flow, gate ---------------------------------
   updateGates(world, dt);
   updateBasins(world, dt);

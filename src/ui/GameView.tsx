@@ -34,7 +34,19 @@ export function GameView({ settings, onExit }: Props) {
     <div className="game-root">
       <canvas ref={canvasRef} className="game-canvas" />
       {hud && <Hud hud={hud} />}
-      {hud?.phase === 'pre' && (
+      <div className="game-buttons">
+        <button className="game-btn" onClick={onExit} title="Back to menu (Esc)">
+          ◄ MENU
+        </button>
+        <button
+          className="game-btn"
+          onClick={() => controllerRef.current?.restart()}
+          title="Restart (R)"
+        >
+          ⟲ RESET
+        </button>
+      </div>
+      {hud?.phase === 'pre' && hud.countdown === null && (
         <div className="overlay">
           <div className="overlay-panel">
             <h2>{hud.alliance.toUpperCase()} ALLIANCE</h2>
@@ -49,6 +61,14 @@ export function GameView({ settings, onExit }: Props) {
           </div>
         </div>
       )}
+      {hud?.phase === 'pre' && hud.countdown !== null && (
+        <div
+          className={hud.countdown > 3 ? 'countdown-text' : 'countdown-num'}
+          key={hud.countdown}
+        >
+          {hud.countdown > 3 ? 'MATCH BEGINS IN' : hud.countdown}
+        </div>
+      )}
       {hud?.phase === 'post' && (
         <div className="overlay">
           <div className="overlay-panel results">
@@ -57,7 +77,7 @@ export function GameView({ settings, onExit }: Props) {
               <span>{hud.alliance.toUpperCase()}</span>
               <strong>{hud.score.total}</strong>
             </div>
-            <ScoreTable hud={hud} final />
+            <ScoreTable hud={hud} />
             <div className="overlay-buttons">
               <button onClick={() => controllerRef.current?.restart()}>REMATCH</button>
               <button onClick={onExit}>MENU</button>
@@ -130,13 +150,14 @@ function Hud({ hud }: { hud: HudSnapshot }) {
 
       {hud.mode === 'match' && (
         <div className="breakdown-row">
-          {/* artifact COUNTS, not points (points live in the score panels) */}
+          {/* artifact COUNTS, not points (points live in the score panels).
+              PATTERN shows only BANKED points — it is assessed solely at the
+              end of AUTO and the end of the match, never live. */}
           <span>CLASSIFIED {hud.classifiedCount}</span>
           <span>OVERFLOW {hud.overflowCount}</span>
           <span>
             PATTERN{' '}
-            {(hud.phase === 'post' ? hud.score.telePattern : hud.provisionalPattern) / 2}{' '}
-            MATCHED
+            {hud.score.autoPattern + (hud.phase === 'post' ? hud.score.telePattern : 0)} PTS
           </span>
           <span>RAMP {hud.rampCount}/9</span>
         </div>
@@ -173,7 +194,7 @@ function Hud({ hud }: { hud: HudSnapshot }) {
 }
 
 /** score review table, like the FTC scoring system's match details */
-function ScoreTable({ hud, final }: { hud: HudSnapshot; final?: boolean }) {
+function ScoreTable({ hud }: { hud: HudSnapshot }) {
   const s = hud.score;
   const sections: [string, [string, number][]][] = [
     [
@@ -190,7 +211,7 @@ function ScoreTable({ hud, final }: { hud: HudSnapshot; final?: boolean }) {
       [
         ['Classified artifacts', s.teleClassified],
         ['Overflow artifacts', s.teleOverflow],
-        ['Pattern', final ? s.telePattern : hud.provisionalPattern],
+        ['Pattern', s.telePattern],
       ],
     ],
     [

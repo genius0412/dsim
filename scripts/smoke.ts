@@ -68,6 +68,19 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('strafe slower than forward (~0.8x)', ratio > 0.7 && ratio < 0.95, `ratio=${ratio.toFixed(3)}`);
 }
 
+// ---- wall contact squares the robot up --------------------------------------
+{
+  const w = createWorld('free', 'blue', 3);
+  const r = w.robots[0];
+  r.pos = { x: 0, y: 50 };
+  r.heading = Math.PI / 2 + 0.3; // tilted ~17° while driving at the far wall
+  r.fieldCentric = false;
+  run(w, cmd({ driveY: 1 }), 2.5);
+  const misalign = Math.abs(((r.heading - Math.PI / 2 + Math.PI) % Math.PI) - Math.PI);
+  const err = Math.min(Math.abs(misalign), Math.abs(Math.abs(misalign) - Math.PI));
+  check('driving tilted into a wall straightens the robot', err < 0.08, `residual=${err.toFixed(3)} rad`);
+}
+
 // ---- driver-side view frames ------------------------------------------------
 {
   // blue driver stands at the RIGHT wall: stick-up must drive toward -x
@@ -221,7 +234,12 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 {
   const w = createWorld('match', 'blue', 9);
   startMatch(w);
-  run(w, cmd({ driveY: 0.5 }), 31);
+  run(w, cmd({ driveY: 0.5 }), 25);
+  // park clearly off every launch line before the end-of-auto assessment
+  w.robots[0].pos = { x: 0, y: -20 };
+  w.robots[0].vel = { x: 0, y: 0 };
+  w.robots[0].heading = 0;
+  run(w, cmd({}), 6);
   check('auto -> transition after 30s', w.match.phase === 'transition', w.match.phase);
   run(w, cmd({}), 8.1);
   check('transition -> teleop after 8s', w.match.phase === 'teleop', w.match.phase);

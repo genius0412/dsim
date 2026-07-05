@@ -7,14 +7,23 @@ const ALLIANCES: Alliance[] = ['red', 'blue'];
 
 // ------------------------------------------------------------------ OBB ----
 
+/** collision extents in the robot frame: the intake is a physical part of
+ * the robot, so the footprint extends forward by its reach */
+export function robotExtents(r: RobotState): { front: number; rear: number; half: number } {
+  return {
+    front: r.spec.length / 2 + C.INTAKE_PRESETS[r.spec.intake].reach,
+    rear: r.spec.length / 2,
+    half: r.spec.width / 2,
+  };
+}
+
 export function robotCorners(r: RobotState): Vec2[] {
-  const hl = r.spec.length / 2;
-  const hw = r.spec.width / 2;
+  const e = robotExtents(r);
   const local = [
-    { x: hl, y: hw },
-    { x: hl, y: -hw },
-    { x: -hl, y: -hw },
-    { x: -hl, y: hw },
+    { x: e.front, y: e.half },
+    { x: e.front, y: -e.half },
+    { x: -e.rear, y: -e.half },
+    { x: -e.rear, y: e.half },
   ];
   return local.map((p) => {
     const w = rot(p, r.heading);
@@ -22,11 +31,12 @@ export function robotCorners(r: RobotState): Vec2[] {
   });
 }
 
-/** closest point on the robot's OBB to a world point */
+/** closest point on the robot's OBB (incl. intake) to a world point */
 export function closestPointOnRobot(r: RobotState, p: Vec2): Vec2 {
+  const e = robotExtents(r);
   const local = rot({ x: p.x - r.pos.x, y: p.y - r.pos.y }, -r.heading);
-  const cx = clamp(local.x, -r.spec.length / 2, r.spec.length / 2);
-  const cy = clamp(local.y, -r.spec.width / 2, r.spec.width / 2);
+  const cx = clamp(local.x, -e.rear, e.front);
+  const cy = clamp(local.y, -e.half, e.half);
   const w = rot({ x: cx, y: cy }, r.heading);
   return { x: w.x + r.pos.x, y: w.y + r.pos.y };
 }
@@ -75,7 +85,23 @@ export function robotPointVelocity(r: RobotState, p: Vec2): Vec2 {
 
 // ------------------------------------------------- robot vs static field ----
 
-function pushRobot(r: RobotState, nx: number, ny: number, depth: number): void {
+/** per-tick angular correction cap from a single contact group (rad) */
+const CONTACT_ALIGN_RATE = 0.03;
+/** contact bias: keeps torque alive under light steady pressure so the wall
+ * finishes squaring the chassis instead of stalling at a small angle */
+const CONTACT_BIAS = 0.2;
+
+/** rigid-contact response: push the robot out along the normal AND apply the
+ * summed contact torque, so driving tilted into a wall squares the chassis
+ * up flush against it. Torque sums over all touching corners — a flush face
+ * has symmetric contacts that cancel, so it is stable. */
+function pushRobotAt(
+  r: RobotState,
+  nx: number,
+  ny: number,
+  depth: number,
+  contacts: { c: Vec2; d: number }[],
+): void {
   r.pos.x += nx * depth;
   r.pos.y += ny * depth;
   const vn = r.vel.x * nx + r.vel.y * ny;
@@ -83,40 +109,58 @@ function pushRobot(r: RobotState, nx: number, ny: number, depth: number): void {
     r.vel.x -= nx * vn;
     r.vel.y -= ny * vn;
   }
+  let torque = 0;
+  for (const { c, d } of contacts) {
+    const lx = c.x - r.pos.x;
+    const ly = c.y - r.pos.y;
+    const lever = Math.hypot(lx, ly);
+    if (lever < 1e-6) continue;
+    torque += ((lx * ny - ly * nx) / lever) * (Math.min(d, 2) + CONTACT_BIAS);
+  }
+  const align = clamp(torque * 0.1, -CONTACT_ALIGN_RATE, CONTACT_ALIGN_RATE);
+  if (align !== 0) {
+    r.heading += align;
+    // bleed angular velocity that fights the contact
+    if (r.angVel * align < 0) r.angVel *= 0.9;
+  }
 }
 
 /** push the robot out of walls, goal faces and classifier structures */
 export function constrainRobot(r: RobotState): void {
   const f = C.FIELD_HALF;
-  for (let pass = 0; pass < 2; pass++) {
+  for (let pass = 0; pass < 3; pass++) {
     let corners = robotCorners(r);
 
-    // perimeter walls
-    let dxPos = 0;
-    let dxNeg = 0;
-    let dyPos = 0;
-    let dyNeg = 0;
-    for (const c of corners) {
-      dxPos = Math.max(dxPos, c.x - f);
-      dxNeg = Math.max(dxNeg, -f - c.x);
-      dyPos = Math.max(dyPos, c.y - f);
-      dyNeg = Math.max(dyNeg, -f - c.y);
+    // perimeter walls: all touching corners contribute contact torque
+    const walls: [number, number, (c: Vec2) => number][] = [
+      [-1, 0, (c) => c.x - f],
+      [1, 0, (c) => -f - c.x],
+      [0, -1, (c) => c.y - f],
+      [0, 1, (c) => -f - c.y],
+    ];
+    for (const [nx, ny, depthOf] of walls) {
+      let depth = 0;
+      const contacts: { c: Vec2; d: number }[] = [];
+      for (const c of corners) {
+        const d = depthOf(c);
+        if (d > -0.05) contacts.push({ c, d: Math.max(d, 0) });
+        if (d > depth) depth = d;
+      }
+      if (depth > 0) pushRobotAt(r, nx, ny, depth, contacts);
     }
-    if (dxPos > 0) pushRobot(r, -1, 0, dxPos);
-    if (dxNeg > 0) pushRobot(r, 1, 0, dxNeg);
-    if (dyPos > 0) pushRobot(r, 0, -1, dyPos);
-    if (dyNeg > 0) pushRobot(r, 0, 1, dyNeg);
 
     // goal front faces (diagonal walls in the far corners)
     for (const a of ALLIANCES) {
       let worst = 0;
+      const contacts: { c: Vec2; d: number }[] = [];
       for (const c of robotCorners(r)) {
-        const gv = goalLineValue(c, a);
-        if (gv > worst) worst = gv;
+        const d = goalLineValue(c, a) / Math.SQRT2;
+        if (d > -0.05) contacts.push({ c, d: Math.max(d, 0) });
+        if (d > worst) worst = d;
       }
       if (worst > 0) {
         const n = goalFaceNormal(a);
-        pushRobot(r, n.x, n.y, worst / Math.SQRT2);
+        pushRobotAt(r, n.x, n.y, worst, contacts);
       }
     }
 
@@ -124,7 +168,7 @@ export function constrainRobot(r: RobotState): void {
     for (const a of ALLIANCES) {
       const rect = classifierRect(a);
       corners = robotCorners(r);
-      let best: { nx: number; ny: number; depth: number } | null = null;
+      let best: { nx: number; ny: number; depth: number; contact: Vec2 } | null = null;
       for (const c of corners) {
         if (c.x <= rect.x0 || c.x >= rect.x1 || c.y <= rect.y0 || c.y >= rect.y1) continue;
         // smallest push to evict this corner
@@ -135,9 +179,13 @@ export function constrainRobot(r: RobotState): void {
           [0, 1, rect.y1 - c.y],
         ];
         const m = cands.reduce((p, q) => (q[2] < p[2] ? q : p));
-        if (!best || m[2] > best.depth) best = { nx: m[0], ny: m[1], depth: m[2] };
+        if (!best || m[2] > best.depth) {
+          best = { nx: m[0], ny: m[1], depth: m[2], contact: c };
+        }
       }
-      if (best) pushRobot(r, best.nx, best.ny, best.depth);
+      if (best) {
+        pushRobotAt(r, best.nx, best.ny, best.depth, [{ c: best.contact, d: best.depth }]);
+      }
     }
   }
 }
@@ -274,12 +322,22 @@ export function collideBallRect(b: Artifact, rect: Rect, restitution = C.BALL_WA
   const inside =
     b.pos.x > rect.x0 && b.pos.x < rect.x1 && b.pos.y > rect.y0 && b.pos.y < rect.y1;
   if (inside) {
-    const exits: [number, number, number][] = [
-      [-1, 0, b.pos.x - rect.x0],
-      [1, 0, rect.x1 - b.pos.x],
-      [0, -1, b.pos.y - rect.y0],
-      [0, 1, rect.y1 - b.pos.y],
-    ];
+    // never evict through a field wall (e.g. the classifier channel's outer
+    // edge IS the wall — a squeezed ball must exit into the field)
+    const lim = C.FIELD_HALF - C.BALL_RADIUS;
+    const exits: [number, number, number][] = (
+      [
+        [-1, 0, b.pos.x - rect.x0],
+        [1, 0, rect.x1 - b.pos.x],
+        [0, -1, b.pos.y - rect.y0],
+        [0, 1, rect.y1 - b.pos.y],
+      ] as [number, number, number][]
+    ).filter(([nx, ny, d]) => {
+      const px = b.pos.x + nx * (d + C.BALL_RADIUS);
+      const py = b.pos.y + ny * (d + C.BALL_RADIUS);
+      return Math.abs(px) <= lim && Math.abs(py) <= lim;
+    });
+    if (exits.length === 0) return;
     const [nx, ny, d] = exits.reduce((p, q) => (q[2] < p[2] ? q : p));
     b.pos.x += nx * (d + C.BALL_RADIUS);
     b.pos.y += ny * (d + C.BALL_RADIUS);

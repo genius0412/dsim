@@ -17,6 +17,8 @@ export const TAPE_W = 1;
 export const AUTO_DURATION = 30;
 export const TRANSITION_DURATION = 8;
 export const TELEOP_DURATION = 120;
+/** announcer countdown after pressing start ("Match begins in" + 3,2,1) */
+export const PRE_COUNTDOWN = 4;
 
 // -------------------------------------------------------------- scoring ----
 export const PTS_LEAVE = 3;

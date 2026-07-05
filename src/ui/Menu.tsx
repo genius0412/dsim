@@ -159,6 +159,30 @@ export function Menu({ settings, onChange, onStart }: Props) {
           </p>
         </section>
 
+        <section>
+          <h2>Audio</h2>
+          <div className="card-row">
+            <button
+              className={`card ${settings.audio.sounds ? 'selected' : ''}`}
+              onClick={() =>
+                set({ audio: { ...settings.audio, sounds: !settings.audio.sounds } })
+              }
+            >
+              <strong>Sounds {settings.audio.sounds ? 'ON' : 'OFF'}</strong>
+              <span>Match sounds, countdowns, and voice — everything</span>
+            </button>
+            <button
+              className={`card ${settings.audio.voice ? 'selected' : ''}`}
+              onClick={() =>
+                set({ audio: { ...settings.audio, voice: !settings.audio.voice } })
+              }
+            >
+              <strong>Voice lines {settings.audio.voice ? 'ON' : 'OFF'}</strong>
+              <span>Announcer countdowns; beeps are used when off</span>
+            </button>
+          </div>
+        </section>
+
         <section className="controls-section">
           <h2>Controls</h2>
           <div className="controls-grid">

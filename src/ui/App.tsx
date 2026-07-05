@@ -10,6 +10,7 @@ export function App() {
     alliance: 'blue',
     assists: { fieldCentric: true, aimAssist: true, autoIntake: false, autoFire: false },
     spec: { ...DEFAULT_SPEC },
+    audio: { sounds: true, voice: true },
   });
   const [inGame, setInGame] = useState(false);
 
