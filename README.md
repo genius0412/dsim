@@ -39,7 +39,8 @@ npm run preview    # serve the production build
 | Intake (hold) | Shift or K | LT / B |
 | Shoot | Space | RT / A |
 | Start match | Enter | Start |
-| Restart / menu | R / Esc | — |
+| Restart | R | Back / Select |
+| Menu | Esc | — |
 
 Drive style, aim assist, auto intake, and auto fire are configured in the main menu.
 

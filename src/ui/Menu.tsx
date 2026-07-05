@@ -196,8 +196,10 @@ export function Menu({ settings, onChange, onStart }: Props) {
             <span>Space · RT / A</span>
             <span>Start match</span>
             <span>Enter · Start</span>
-            <span>Restart / menu</span>
-            <span>R / Esc</span>
+            <span>Restart</span>
+            <span>R · Back/Select</span>
+            <span>Menu</span>
+            <span>Esc</span>
           </div>
         </section>
 

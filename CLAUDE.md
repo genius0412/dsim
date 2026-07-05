@@ -60,17 +60,32 @@ the gateway), so a tap usually drains the whole column.
 2. **The shooter NEVER misses**: no dispersion; adaptive hood angle (55°→80°) so an
    exact solution exists at every distance incl. point-blank; turret is always exactly
    on the lead-compensated solution (no slew limit); opening accepts ascending entries.
+   No aim ray / no dashed goal-tracking line drawn.
 3. **Assists are menu-only**: field/robot-centric, aim assist, auto intake, auto fire
    are configured in the main menu — NO in-game toggle keybinds.
 4. Auto-fire/intake must respect match phases (no firing during `pre`/`transition`).
 5. **No popup toasts over the field** (they found them distracting) — events go to the
    muted left-edge log; zone status lives in the top-right chips.
 6. HUD mimics the FTC live scoring display: red|timer|blue bar at the BOTTOM.
+   Breakdown chips show artifact COUNTS, not points. PATTERN shows only BANKED
+   points (assessed end-of-AUTO and end-of-match — never a live matched count).
 7. Drivetrain feel: fast (75 in/s, 7 rad/s turn, snappy accel); mecanum wheel-saturation
-   model (`|f|+|s|+|ω|`) is correct physics — keep it.
-8. Real FIRST field audio (public/sounds, from Team254/cheesy-arena): Charge on auto
-   start, buzzer, three-bell teleop, 30 s warning, results sting.
-9. Stray balls must never enter goal wedges or classifier channels (solid to balls).
+   model (`|f|+|s|+|ω|`) is correct physics — keep it. Wall/structure contacts apply
+   TORQUE (summed over touching corners) so a tilted robot squares up flush.
+8. Audio: real FIRST field sounds (public/sounds, from Team254/cheesy-arena) + an
+   announcer VOICE via speechSynthesis ("Match begins in… 3, 2, 1", "Drivers, pick up
+   your controllers") — the user flip-flopped once and settled on KEEPING the voice.
+   Countdown digits must interrupt in-flight speech to stay on the visual beat. Menu
+   has Sounds ON/OFF (master) and Voice lines ON/OFF (falls back to beeps) toggles.
+   If the user ever supplies real FTC Live audio files, wire those in instead.
+9. Stray balls must never enter goal wedges or classifier channels (solid to balls),
+   and no collision may ever push a ball outside the field (final wall clamp pass).
+10. The intake is physical: the collision OBB extends forward by intake reach
+    (`robotExtents` in physics.ts) — it cannot clip walls/goals.
+11. Gate: a TAP drains the column — the flow physically holds the gate open until a
+    gap appears at the gateway.
+12. Visible MENU/RESET buttons on the game screen (don't rely on Esc/R knowledge);
+    "MATCH BEGINS IN" text lead-in before the 3-2-1 digits.
 
 ## Gotchas
 
@@ -90,6 +105,11 @@ the gateway), so a tap usually drains the whole column.
 
 Done: full solo match + free drive, scoring per manual (classified 3 / overflow 1 /
 pattern 2/slot / leave 3 / depot 1 / base 5/10+10), motif randomization, human-player
-restock, gamepad + keyboard, Electron packaging, robot size/intake presets in menu.
-Next candidates: 2v2 with real people (netcode over the command map), penalties,
-obelisk AprilTag visuals, sound toggle, mobile/touch.
+restock, gamepad + keyboard, physical basin/rail/gate classifier, contact-torque robot
+physics, driver assists (menu), audio (field sounds + announcer + menu toggles),
+pre-match countdown, favicon, on-screen MENU/RESET, Electron packaging, robot
+size/intake presets in menu. `scripts/smoke.ts` has 31 checks — keep adding one per
+behavior change.
+Next candidates: 2v2 with real people (netcode over the command map — the sim core is
+ready), penalties/fouls, obelisk AprilTag visuals, mobile/touch controls, replays
+(trivially possible: record the per-tick command map + seed).

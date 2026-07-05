@@ -180,6 +180,7 @@ export class GameController {
       this.countdownStart = this.world.time;
       this.lastBeepAt = -1;
     }
+    if (this.input.restartPressed) this.restart();
 
     this.acc += Math.min(dtMs / 1000, 0.25);
     let steps = 0;

@@ -10,6 +10,8 @@ export class InputManager {
   gamepadConnected = false;
   /** edge-triggered "start match / confirm" from either device */
   startPressed = false;
+  /** edge-triggered restart (gamepad Back/Select; keyboard R is handled in the UI) */
+  restartPressed = false;
 
   attach(): void {
     this.keyboard.attach();
@@ -32,6 +34,7 @@ export class InputManager {
       (k.held('arrowright') || k.held('e') ? 1 : 0);
 
     this.startPressed = k.justPressed('enter') || g.start;
+    this.restartPressed = g.restart;
 
     const cmd: RobotCommand = {
       driveX: clamp(kx + g.driveX, -1, 1),

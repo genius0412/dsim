@@ -41,7 +41,7 @@ export function GameView({ settings, onExit }: Props) {
         <button
           className="game-btn"
           onClick={() => controllerRef.current?.restart()}
-          title="Restart (R)"
+          title="Restart (R · gamepad Back/Select)"
         >
           ⟲ RESET
         </button>
@@ -57,7 +57,7 @@ export function GameView({ settings, onExit }: Props) {
               ))}
             </p>
             <p className="big">Press ENTER or START to begin the MATCH</p>
-            <p className="hint">Esc returns to the menu · R resets</p>
+            <p className="hint">Esc returns to the menu · R or Back/Select restarts</p>
           </div>
         </div>
       )}
