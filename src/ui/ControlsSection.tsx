@@ -1,0 +1,240 @@
+import { useEffect, useState } from 'react';
+import {
+  KEY_ACTIONS,
+  PAD_ACTIONS,
+  DEFAULT_BINDINGS,
+  cloneBindings,
+  keyLabel,
+  padButtonLabel,
+  type ControlBindings,
+  type KeyAction,
+  type PadAction,
+} from '../input/bindings';
+
+const KEY_LABELS: Record<KeyAction, string> = {
+  driveUp: 'Drive forward',
+  driveDown: 'Drive back',
+  driveLeft: 'Strafe left',
+  driveRight: 'Strafe right',
+  rotateCCW: 'Turn left',
+  rotateCW: 'Turn right',
+  intake: 'Intake (hold)',
+  fire: 'Shoot (hold)',
+  flipFront: 'Flip front',
+  start: 'Start match',
+  restart: 'Restart',
+};
+
+const PAD_LABELS: Record<PadAction, string> = {
+  fire: 'Shoot',
+  intake: 'Intake',
+  flipFront: 'Flip front',
+  start: 'Start match',
+  restart: 'Restart',
+};
+
+type Capture =
+  | { kind: 'key'; action: KeyAction; slot: number }
+  | { kind: 'pad'; action: PadAction; slot: number };
+
+/** a rebound key is removed from every other action it was assigned to */
+function assignKey(b: ControlBindings, action: KeyAction, slot: number, key: string): ControlBindings {
+  const next = cloneBindings(b);
+  for (const a of KEY_ACTIONS) next.keys[a] = next.keys[a].filter((k) => k !== key);
+  const list = next.keys[action];
+  if (slot < list.length) list[slot] = key;
+  else list.push(key);
+  return next;
+}
+
+function assignPadButton(b: ControlBindings, action: PadAction, slot: number, idx: number): ControlBindings {
+  const next = cloneBindings(b);
+  for (const a of PAD_ACTIONS) next.pad.buttons[a] = next.pad.buttons[a].filter((i) => i !== idx);
+  const list = next.pad.buttons[action];
+  if (slot < list.length) list[slot] = idx;
+  else list.push(idx);
+  return next;
+}
+
+interface Props {
+  bindings: ControlBindings;
+  onChange: (b: ControlBindings) => void;
+}
+
+export function ControlsSection({ bindings, onChange }: Props) {
+  const [capture, setCapture] = useState<Capture | null>(null);
+
+  // keyboard capture: next keydown becomes the binding; Escape cancels
+  useEffect(() => {
+    if (!capture) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === 'Escape') {
+        setCapture(null);
+        return;
+      }
+      if (capture.kind === 'key') {
+        onChange(assignKey(bindings, capture.action, capture.slot, e.key.toLowerCase()));
+        setCapture(null);
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [capture, bindings, onChange]);
+
+  // gamepad capture: poll for a button that goes down AFTER capture starts
+  useEffect(() => {
+    if (!capture || capture.kind !== 'pad') return;
+    const { action, slot } = capture;
+    const alreadyDown = new Set<number>();
+    let first = true;
+    let done = false;
+    let raf = 0;
+    const poll = () => {
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      const pad = Array.from(pads).find((p) => p && p.connected);
+      if (pad) {
+        for (let i = 0; i < pad.buttons.length; i++) {
+          const pressed = pad.buttons[i].pressed || pad.buttons[i].value > 0.5;
+          if (pressed && first) alreadyDown.add(i);
+          else if (pressed && !alreadyDown.has(i) && !done) {
+            done = true;
+            onChange(assignPadButton(bindings, action, slot, i));
+            setCapture(null);
+            return;
+          } else if (!pressed) alreadyDown.delete(i);
+        }
+        first = false;
+      }
+      raf = requestAnimationFrame(poll);
+    };
+    raf = requestAnimationFrame(poll);
+    return () => cancelAnimationFrame(raf);
+  }, [capture, bindings, onChange]);
+
+  const keycap = (
+    label: string,
+    active: boolean,
+    unbound: boolean,
+    onClick: () => void,
+    key?: number,
+  ) => (
+    <button
+      key={key}
+      className={`keycap ${active ? 'capturing' : ''} ${unbound ? 'unbound' : ''}`}
+      onClick={onClick}
+    >
+      {active ? 'PRESS…' : label}
+    </button>
+  );
+
+  return (
+    <section className="controls-section">
+      <h2>Controls</h2>
+      <div className="bind-cols">
+        <div className="bind-block">
+          <h3>Keyboard</h3>
+          <div className="bind-grid">
+            {KEY_ACTIONS.map((a) => (
+              <div className="bind-row" key={a}>
+                <span className="bind-label">{KEY_LABELS[a]}</span>
+                <span className="bind-keys">
+                  {bindings.keys[a].map((k, i) =>
+                    keycap(
+                      keyLabel(k),
+                      capture?.kind === 'key' && capture.action === a && capture.slot === i,
+                      false,
+                      () => setCapture({ kind: 'key', action: a, slot: i }),
+                      i,
+                    ),
+                  )}
+                  {bindings.keys[a].length === 0 &&
+                    keycap(
+                      'UNBOUND',
+                      capture?.kind === 'key' && capture.action === a,
+                      true,
+                      () => setCapture({ kind: 'key', action: a, slot: 0 }),
+                    )}
+                </span>
+              </div>
+            ))}
+            <div className="bind-row">
+              <span className="bind-label">Menu</span>
+              <span className="bind-keys">
+                <span className="keycap fixed">ESC</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bind-block">
+          <h3>Gamepad</h3>
+          <div className="bind-grid">
+            <div className="bind-row">
+              <span className="bind-label">Drive stick</span>
+              <span className="bind-keys">
+                <button
+                  className={`keycap ${bindings.pad.driveStick === 'left' ? 'selected' : ''}`}
+                  onClick={() =>
+                    onChange({ ...cloneBindings(bindings), pad: { ...bindings.pad, driveStick: 'left' } })
+                  }
+                >
+                  LEFT
+                </button>
+                <button
+                  className={`keycap ${bindings.pad.driveStick === 'right' ? 'selected' : ''}`}
+                  onClick={() =>
+                    onChange({ ...cloneBindings(bindings), pad: { ...bindings.pad, driveStick: 'right' } })
+                  }
+                >
+                  RIGHT
+                </button>
+              </span>
+            </div>
+            <div className="bind-row">
+              <span className="bind-label">Turn stick</span>
+              <span className="bind-keys">
+                <span className="keycap fixed">
+                  {bindings.pad.driveStick === 'left' ? 'RIGHT (X axis)' : 'LEFT (X axis)'}
+                </span>
+              </span>
+            </div>
+            {PAD_ACTIONS.map((a) => (
+              <div className="bind-row" key={a}>
+                <span className="bind-label">{PAD_LABELS[a]}</span>
+                <span className="bind-keys">
+                  {bindings.pad.buttons[a].map((idx, i) =>
+                    keycap(
+                      padButtonLabel(idx),
+                      capture?.kind === 'pad' && capture.action === a && capture.slot === i,
+                      false,
+                      () => setCapture({ kind: 'pad', action: a, slot: i }),
+                      i,
+                    ),
+                  )}
+                  {bindings.pad.buttons[a].length === 0 &&
+                    keycap(
+                      'UNBOUND',
+                      capture?.kind === 'pad' && capture.action === a,
+                      true,
+                      () => setCapture({ kind: 'pad', action: a, slot: 0 }),
+                    )}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="bind-footer">
+        <button className="bind-reset" onClick={() => onChange(cloneBindings(DEFAULT_BINDINGS))}>
+          RESET TO DEFAULTS
+        </button>
+        <p className="hint">
+          Click a binding, then press the new key or gamepad button (Esc cancels). A key already in
+          use moves to the new action.
+        </p>
+      </div>
+    </section>
+  );
+}

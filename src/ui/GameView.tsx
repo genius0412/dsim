@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { GameController, type GameSettings, type HudSnapshot } from '../game';
+import { keyLabel, padButtonLabel } from '../input/bindings';
+import { ENDGAME_START } from '../config';
 
 interface Props {
   settings: GameSettings;
@@ -17,8 +19,9 @@ export function GameView({ settings, onExit }: Props) {
     controllerRef.current = controller;
     const hudTimer = window.setInterval(() => setHud(controller.getHud()), 100);
     const onKey = (e: KeyboardEvent) => {
+      // Escape is reserved (never rebindable); restart is handled by the
+      // InputManager through the user's bindings
       if (e.key === 'Escape') onExit();
-      if (e.key.toLowerCase() === 'r') controller.restart();
     };
     window.addEventListener('keydown', onKey);
     return () => {
@@ -56,8 +59,14 @@ export function GameView({ settings, onExit }: Props) {
                 <span key={i} className={`motif-dot ${c}`} />
               ))}
             </p>
-            <p className="big">Press ENTER or START to begin the MATCH</p>
-            <p className="hint">Esc returns to the menu · R or Back/Select restarts</p>
+            <p className="big">
+              Press {keyLabel(settings.bindings.keys.start[0] ?? 'enter')} or{' '}
+              {padButtonLabel(settings.bindings.pad.buttons.start[0] ?? 9)} to begin the MATCH
+            </p>
+            <p className="hint">
+              Esc returns to the menu · {keyLabel(settings.bindings.keys.restart[0] ?? '?')} or{' '}
+              {padButtonLabel(settings.bindings.pad.buttons.restart[0] ?? 8)} restarts
+            </p>
           </div>
         </div>
       )}
@@ -107,7 +116,7 @@ const PHASE_LABEL: Record<string, string> = {
 /** styled after the FTC live scoring audience display: red panel | timer | blue panel */
 function Hud({ hud }: { hud: HudSnapshot }) {
   const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
-  const warning = hud.timeLeft <= 30 && hud.phase === 'teleop';
+  const endgame = hud.timeLeft <= ENDGAME_START && hud.phase === 'teleop';
   const redScore = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blueScore = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
 
@@ -119,8 +128,8 @@ function Hud({ hud }: { hud: HudSnapshot }) {
             {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
             <span className="panel-score">{redScore}</span>
           </div>
-          <div className={`timer-panel ${urgent ? 'urgent' : warning ? 'warning' : ''}`}>
-            <span className="timer-phase">{PHASE_LABEL[hud.phase]}</span>
+          <div className={`timer-panel ${urgent ? 'urgent' : endgame ? 'warning' : ''}`}>
+            <span className="timer-phase">{endgame ? 'END GAME' : PHASE_LABEL[hud.phase]}</span>
             <span className="timer-time">
               {hud.phase === 'post' ? '0:00' : fmtTime(hud.timeLeft)}
             </span>
@@ -175,6 +184,7 @@ function Hud({ hud }: { hud: HudSnapshot }) {
           </span>
           {hud.gateOpen && <span className="chip on">GATE OPEN</span>}
           <span className="chip">{hud.fieldCentric ? 'FIELD' : 'ROBOT'}</span>
+          {hud.frontFlipped && <span className="chip warn">REVERSED</span>}
           <span className={`chip ${hud.aimAssist ? 'on' : 'off'}`}>AIM</span>
           <span className={`chip ${hud.autoIntake ? 'on' : 'off'}`}>AUTO-IN</span>
           <span className={`chip ${hud.autoFire ? 'on' : 'off'}`}>AUTO-FIRE</span>

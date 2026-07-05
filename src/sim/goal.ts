@@ -141,9 +141,9 @@ export function updateBasins(world: World, dt: number): void {
     }
 
     // hand-off to the rail: one at a time, when near the entrance and the
-    // top of the rail is clear
-    const stack = railStack(world, a);
-    const stackFull = stack.length >= C.RAMP_SLOTS;
+    // top of the rail is clear. The ball boards UNDECIDED — classified vs
+    // overflow is settled in updateRails at the moment it first meets the
+    // stack (or the gate floor), so a drain in progress can still save it.
     const entryBlocked = world.balls.some(
       (b) =>
         b.state.kind === 'rail' &&
@@ -151,30 +151,19 @@ export function updateBasins(world: World, dt: number): void {
         !b.state.overflow &&
         b.state.s > C.RAIL_ENTRY_BLOCK_S,
     );
-    for (const b of balls) {
-      const d = Math.hypot(b.pos.x - entry.x, b.pos.y - entry.y);
-      if (d > C.BASIN_ENTRY_RADIUS || b.z > C.BASIN_FLOOR_Z + 2) continue;
-      // the diverting square: with room on the ramp the ball queues in the
-      // funnel until the entrance clears, then drops on CLASSIFIED; only a
-      // full ramp diverts it OVER the stack and the gate as OVERFLOW
-      // hand-off keeps the ball's position: it glides onto the rail while
-      // descending (x/z blend happens in updateRails) — no snapping
-      const s = b.pos.y - C.CLASSIFIER_Y0;
-      const v = Math.min(b.vel.y, -8);
-      if (stackFull) {
-        b.state = { kind: 'rail', goal: a, s, v: -C.OVERFLOW_FLOW_SPEED, overflow: true };
-        world.goals[a].overflowCount++;
-        addOverflow(world, a);
-      } else if (!entryBlocked) {
-        b.state = { kind: 'rail', goal: a, s, v, overflow: false };
-        world.goals[a].classifiedCount++;
-        addClassified(world, a);
-      } else {
-        continue; // wait in the funnel for the square to clear
+    if (!entryBlocked) {
+      for (const b of balls) {
+        const d = Math.hypot(b.pos.x - entry.x, b.pos.y - entry.y);
+        if (d > C.BASIN_ENTRY_RADIUS || b.z > C.BASIN_FLOOR_Z + 2) continue;
+        // hand-off keeps the ball's position: it glides onto the rail while
+        // descending (x/z blend happens in updateRails) — no snapping
+        const s = b.pos.y - C.CLASSIFIER_Y0;
+        const v = Math.min(b.vel.y, -8);
+        b.state = { kind: 'rail', goal: a, s, v, overflow: false, pending: true };
+        b.vel = { x: 0, y: 0 };
+        b.vz = 0;
+        break; // one hand-off per goal per tick keeps the flow orderly
       }
-      b.vel = { x: 0, y: 0 };
-      b.vz = 0;
-      break; // one hand-off per goal per tick keeps the flow orderly
     }
   }
 }
@@ -190,15 +179,33 @@ export function updateRails(world: World, dt: number): void {
     // stacked balls flow together
     const stack = railStack(world, a);
     let floor = goal.gateOpen ? -Infinity : C.GATE_STOP_S;
+    let below = 0; // column balls ahead of (below) the current one
     for (const b of stack) {
-      const st = b.state as { s: number; v: number };
+      const st = b.state as { s: number; v: number; overflow: boolean; pending?: boolean };
       st.v = Math.max(st.v - C.RAIL_ACCEL * dt, -C.RAIL_TERMINAL);
       st.s += st.v * dt;
       if (st.s < floor) {
+        // first contact with the gate stop or the ball ahead: a pending ball
+        // decides HERE — meeting a full column (9 below) diverts it over the
+        // top as OVERFLOW; otherwise it settles into the column CLASSIFIED
+        if (st.pending && below >= C.RAMP_SLOTS) {
+          st.pending = false;
+          st.overflow = true;
+          st.v = -C.OVERFLOW_FLOW_SPEED;
+          goal.overflowCount++;
+          addOverflow(world, a);
+          continue; // rides over from here on — handled by the overflow pass
+        }
         st.s = floor;
         st.v = 0;
+        if (st.pending) {
+          st.pending = false;
+          goal.classifiedCount++;
+          addClassified(world, a);
+        }
       }
       floor = st.s + C.RAIL_PITCH;
+      below++;
       // glide smoothly onto the rail line — no positional snapping
       b.pos.y = C.CLASSIFIER_Y0 + st.s;
       b.pos.x = approach(b.pos.x, railX, C.RAIL_BLEND_SPEED * dt);
@@ -218,6 +225,13 @@ export function updateRails(world: World, dt: number): void {
     for (const b of world.balls) {
       if (b.state.kind !== 'rail' || b.state.goal !== a) continue;
       if (b.state.s > C.RAIL_EXIT_S) continue;
+      if (b.state.pending) {
+        // flowed down the whole channel and out an open gate without ever
+        // meeting the column: it was sorted, then released — CLASSIFIED
+        b.state.pending = false;
+        goal.classifiedCount++;
+        addClassified(world, a);
+      }
       const vel = tunnelExitVel(a);
       let r1 = nextRandom(world.rngState);
       let r2 = nextRandom(r1.state);

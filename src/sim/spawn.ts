@@ -21,7 +21,7 @@ export const MOTIFS: Motif[] = [
   ['purple', 'purple', 'green'], // 23: PPG
 ];
 
-export const DEFAULT_SPEC: RobotSpec = { length: 18, width: 18, intake: 'compact' };
+export const DEFAULT_SPEC: RobotSpec = { length: 18, width: 18, intake: 'sloped' };
 
 function goalState(alliance: Alliance): GoalState {
   return {

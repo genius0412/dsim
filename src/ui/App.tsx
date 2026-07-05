@@ -1,25 +1,24 @@
 import { useState } from 'react';
 import type { GameSettings } from '../game';
-import { DEFAULT_SPEC } from '../sim/spawn';
+import { loadSettings, saveSettings } from '../settings';
 import { Menu } from './Menu';
 import { GameView } from './GameView';
 
 export function App() {
-  const [settings, setSettings] = useState<GameSettings>({
-    mode: 'match',
-    alliance: 'blue',
-    assists: { fieldCentric: true, aimAssist: true, autoIntake: false, autoFire: false },
-    spec: { ...DEFAULT_SPEC },
-    audio: { sounds: true, voice: true },
-  });
+  const [settings, setSettings] = useState<GameSettings>(loadSettings);
   const [inGame, setInGame] = useState(false);
+
+  const update = (s: GameSettings) => {
+    setSettings(s);
+    saveSettings(s);
+  };
 
   return inGame ? (
     <GameView settings={settings} onExit={() => setInGame(false)} />
   ) : (
     <Menu
       settings={settings}
-      onChange={setSettings}
+      onChange={update}
       onStart={() => setInGame(true)}
     />
   );

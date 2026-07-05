@@ -2,16 +2,33 @@ import type { RobotCommand } from '../types';
 import { clamp } from '../math';
 import { Keyboard } from './keyboard';
 import { GamepadInput } from './gamepad';
+import { KEY_ACTIONS, type ControlBindings } from './bindings';
 
-/** merges keyboard + gamepad into one driver command per frame */
+/** merges keyboard + gamepad into one driver command per frame, resolving
+ * physical keys/buttons through the user's ControlBindings */
 export class InputManager {
   readonly keyboard = new Keyboard();
   private gamepad = new GamepadInput();
   gamepadConnected = false;
   /** edge-triggered "start match / confirm" from either device */
   startPressed = false;
-  /** edge-triggered restart (gamepad Back/Select; keyboard R is handled in the UI) */
+  /** edge-triggered restart from either device */
   restartPressed = false;
+  /** edge-triggered "flip robot front" from either device */
+  flipPressed = false;
+
+  constructor(private bindings: ControlBindings) {
+    this.applyPreventKeys();
+  }
+
+  setBindings(bindings: ControlBindings): void {
+    this.bindings = bindings;
+    this.applyPreventKeys();
+  }
+
+  private applyPreventKeys(): void {
+    this.keyboard.setPreventKeys(KEY_ACTIONS.flatMap((a) => this.bindings.keys[a]));
+  }
 
   attach(): void {
     this.keyboard.attach();
@@ -24,24 +41,28 @@ export class InputManager {
   /** call once per animation frame; returns the merged command */
   poll(): RobotCommand {
     const k = this.keyboard;
-    const g = this.gamepad.sample();
+    const keys = this.bindings.keys;
+    const g = this.gamepad.sample(this.bindings.pad);
     this.gamepadConnected = g.connected;
 
-    const kx = (k.held('d') ? 1 : 0) - (k.held('a') ? 1 : 0);
-    const ky = (k.held('w') ? 1 : 0) - (k.held('s') ? 1 : 0);
-    const krot =
-      (k.held('arrowleft') || k.held('q') ? 1 : 0) -
-      (k.held('arrowright') || k.held('e') ? 1 : 0);
+    const heldAny = (list: string[]): boolean => list.some((key) => k.held(key));
+    const pressedAny = (list: string[]): boolean =>
+      list.reduce((hit, key) => k.justPressed(key) || hit, false);
 
-    this.startPressed = k.justPressed('enter') || g.start;
-    this.restartPressed = g.restart;
+    const kx = (heldAny(keys.driveRight) ? 1 : 0) - (heldAny(keys.driveLeft) ? 1 : 0);
+    const ky = (heldAny(keys.driveUp) ? 1 : 0) - (heldAny(keys.driveDown) ? 1 : 0);
+    const krot = (heldAny(keys.rotateCCW) ? 1 : 0) - (heldAny(keys.rotateCW) ? 1 : 0);
+
+    this.startPressed = pressedAny(keys.start) || g.start;
+    this.restartPressed = pressedAny(keys.restart) || g.restart;
+    this.flipPressed = pressedAny(keys.flipFront) || g.flipFront;
 
     const cmd: RobotCommand = {
       driveX: clamp(kx + g.driveX, -1, 1),
       driveY: clamp(ky + g.driveY, -1, 1),
       rotate: clamp(krot + g.rotate, -1, 1),
-      intake: k.held('shift') || k.held('k') || g.intake,
-      fire: k.held(' ') || g.fire,
+      intake: heldAny(keys.intake) || g.intake,
+      fire: heldAny(keys.fire) || g.fire,
     };
     k.endFrame();
     return cmd;

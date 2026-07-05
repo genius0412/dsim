@@ -1,7 +1,7 @@
 import type { Alliance, GoalState, ScoreBreakdown, World } from '../types';
 import * as C from '../config';
 import { baseZone, inDepot, inRect, launchSegments } from './field';
-import { robotCorners } from './physics';
+import { robotCorners, wheelContacts } from './physics';
 import { distToSegment } from '../math';
 
 export function emptyScore(): ScoreBreakdown {
@@ -51,7 +51,11 @@ export function addOverflow(world: World, alliance: Alliance): void {
 export function patternPoints(world: World, goal: GoalState): number {
   const stack = world.balls
     .filter(
-      (b) => b.state.kind === 'rail' && b.state.goal === goal.alliance && !b.state.overflow,
+      (b) =>
+        b.state.kind === 'rail' &&
+        b.state.goal === goal.alliance &&
+        !b.state.overflow &&
+        !b.state.pending, // still descending — not settled into a slot yet
     )
     .sort((p, q) => (p.state as { s: number }).s - (q.state as { s: number }).s);
   let pts = 0;
@@ -110,17 +114,19 @@ export function assessMatchEnd(world: World): void {
       if (b.state.kind === 'ground' && inDepot(b.pos, a)) depot += C.PTS_DEPOT;
     }
     s.depot = depot;
-    // base return per robot, + bonus when 2 robots fully returned
+    // base return per robot, + bonus when 2 robots fully returned. Only the
+    // WHEEL ground-contact points count — intake/turret overhang doesn't
+    // touch the floor, so it neither earns nor spoils parking credit.
     let fullCount = 0;
     for (const r of world.robots) {
       if (r.alliance !== a) continue;
       const zone = baseZone(a);
-      const corners = robotCorners(r);
-      const insideCount = corners.filter((c) => inRect(c, zone)).length;
-      if (insideCount === 4) {
+      const wheels = wheelContacts(r);
+      const insideCount = wheels.filter((c) => inRect(c, zone)).length;
+      if (insideCount === wheels.length) {
         s.base += C.PTS_BASE_FULL;
         fullCount++;
-      } else if (insideCount > 0 || inRect(r.pos, zone)) {
+      } else if (insideCount > 0) {
         s.base += C.PTS_BASE_PARTIAL;
       }
     }

@@ -17,6 +17,8 @@ export const TAPE_W = 1;
 export const AUTO_DURATION = 30;
 export const TRANSITION_DURATION = 8;
 export const TELEOP_DURATION = 120;
+/** END GAME: the final stretch of TELEOP (warning cue + HUD urgency) */
+export const ENDGAME_START = 20; // s left in teleop
 /** announcer countdown after pressing start ("Match begins in" + 3,2,1) */
 export const PRE_COUNTDOWN = 4;
 
@@ -38,10 +40,42 @@ export const BALL_BALL_RESTITUTION = 0.55;
 export const BALL_GROUND_RESTITUTION = 0.45; // vertical bounce
 export const BALL_BOUNCE_H_RETAIN = 0.8; // horizontal speed kept on ground bounce
 export const GRAVITY = 386; // in/s^2
+/** light foam ball off a heavy chassis: nearly inelastic — the ball inherits
+ * the chassis surface speed but gains almost no extra bounce */
+export const BALL_ROBOT_RESTITUTION = 0.05;
+/** a robot push refused by a wall beyond this distance means the ball is
+ * PINNED — the constraint transmits back and stalls the robot */
+export const BALL_PIN_SLOP = 0.05; // in
+/** the pin only pushes the robot back when the robot itself drives into it
+ * faster than this — balls arriving under their own momentum just stop */
+export const BALL_PIN_PUSH_MIN_SPEED = 0.5; // in/s
+/** ball-ball + ball-robot passes per tick, so robot -> ball -> pinned-ball
+ * chains converge instead of tunnelling */
+export const BALL_SOLVER_ITERATIONS = 2;
+
+// ------------------------------------------------- robot contact torque ----
+/** per-tick angular correction cap from a single contact group (rad), at rest */
+export const CONTACT_ALIGN_RATE = 0.03;
+/** contact bias: keeps torque alive under light steady pressure so the wall
+ * finishes squaring the chassis instead of stalling at a small angle */
+export const CONTACT_BIAS = 0.2;
+/** alignment speedup per in/s the robot pushes into the contact — holding
+ * forward against a wall turns briskly, a fast hit swings hard */
+export const CONTACT_PRESS_GAIN = 0.4;
+/** hard cap on per-tick alignment under pressure (rad) */
+export const CONTACT_ALIGN_RATE_MAX = 0.12;
+/** spin injected per (contact torque × in/s of impact speed) — a fast angled
+ * hit visibly converts momentum into rotation; dead-center hits add nothing */
+export const CONTACT_IMPACT_SPIN = 0.12;
 
 // ---------------------------------------------------------------- robot ----
 export const ROBOT_MAX_SIZE = 18; // FTC starting size cap (incl. intake reach)
 export const ROBOT_MIN_SIZE = 12;
+/** the chassis may be narrower than the intake (easier base parking) */
+export const ROBOT_MIN_WIDTH = 10;
+/** wheel centers sit this far INSIDE the chassis edge (typical FTC build);
+ * the four wheel ground-contact points are what counts for base parking */
+export const WHEEL_INSET = 2.6;
 /** mecanum drivetrain, modeled on real motor limits: wheel saturation is
  * |fwd| + |strafe| + |rot| (the worst wheel sees all three demands added),
  * rotation tops out at wheelSpeed / (half track diagonal) like a real chassis,
@@ -52,18 +86,48 @@ export const TURN_MAX_SPEED = 7.0; // rad/s (~400°/s, wheelSpeed / half-diagona
 export const DRIVE_ACCEL = 280; // in/s^2
 export const TURN_ACCEL = 40; // rad/s^2
 
+/** capture happens when a compliant wheel is DIRECTLY ABOVE the artifact:
+ * the wheel line sits at the tip of the intake's reach, and a ball within
+ * this band of it (ball radius + compliance squish) gets swallowed */
+export const INTAKE_CAPTURE_BAND = 1; // in beyond ball radius, each way
+/** fireInterval = transfer (outtake) cadence from hopper to shooter — the
+ * ONLY firing rate limit (no flywheel spin-up model, per product decision).
+ * overhang = the compliant wheels may stick out past a narrower chassis;
+ * without it the chassis ENCOMPASSES the intake (trapezoid mouth recessed
+ * between side prongs), which is what geometrically rules out side intake.
+ * clumpPerBall = swallow cadence while 2+ balls sit at the mouth — sloped
+ * and triangle devour clumps, vector feeds at its steady pace. */
 export const INTAKE_PRESETS = {
-  /** flush with the front edge: must face the ball, but swallows fast */
-  compact: { reach: 3, halfWidth: 6, perBall: 0.12 },
-  /** protrudes ahead of the chassis (still within the 18in cap): wide capture
-   * that grabs balls while strafing past, but slower per ball */
-  extended: { reach: 6.5, halfWidth: 8.5, perBall: 0.22 },
+  /** sloped ramp with a trapezoid mouth recessed in the frame (doesn't count
+   * against the 18in cap): must face the ball, but swallows fast */
+  sloped: {
+    reach: 3, halfWidth: 6, perBall: 0.12, clumpPerBall: 0.04, overhang: false,
+    minLength: 12, maxLength: 18, fireInterval: 0.1,
+  },
+  /** VECTOR WHEEL intake: wide compliant wheels ride over artifacts ahead of
+   * the chassis (within the 18in cap — chassis 11.5..14.5in). Grabs whatever
+   * is under a wheel — including balls strafed into, wherever the wheels
+   * overhang the chassis — but slower per ball */
+  vector: {
+    reach: 3.5, halfWidth: 8.5, perBall: 0.22, clumpPerBall: 0.22, overhang: true,
+    minLength: 11.5, maxLength: 14.5, fireInterval: 0.1,
+  },
+  /** TRIANGLE intake: named for the triangular ball storage inside the robot.
+   * Longest reach, trapezoid mouth in the frame, slower transfer out */
+  triangle: {
+    reach: 5, halfWidth: 7, perBall: 0.15, clumpPerBall: 0.05, overhang: false,
+    minLength: 12, maxLength: 13, fireInterval: 0.3,
+  },
 } as const;
+/** flank capture engages only when actually strafing toward the ball */
+export const INTAKE_SIDE_MIN_STRAFE = 8; // in/s
 
 export const HOPPER_CAPACITY = 3;
 
 // --------------------------------------------------------------- turret ----
-export const TURRET_OFFSET = -3; // in, behind the center of rotation (robot frame x)
+/** turret center as a fraction of chassis length behind the center of
+ * rotation — scales with the chassis so the turret never overhangs it */
+export const TURRET_OFFSET_FRAC = -1 / 6; // 18in chassis -> 3in behind center
 /** base hood angle; the solver steepens it up close so every distance has an
  * exact ballistic solution into the opening — the robot never misses */
 export const LAUNCH_ANGLE = (55 * Math.PI) / 180;
@@ -72,7 +136,7 @@ export const LAUNCH_ANGLE_MARGIN = (14 * Math.PI) / 180; // above line-of-sight
 export const LAUNCH_HEIGHT = 12; // in, muzzle height
 export const LAUNCH_MAX_SPEED = 320; // in/s
 /** no flywheel spin-up model — shots are limited only by this cadence */
-export const MIN_FIRE_INTERVAL = 0.1; // ~10 shots/s burst ceiling
+// firing cadence lives per intake preset: INTAKE_PRESETS[*].fireInterval
 /** fraction of chassis velocity inherited by the launched ball. The turret's
  * aim solver lead-compensates for it, so shooting on the move is accurate. */
 export const SHOT_ROBOT_VEL_INHERIT = 0.5;

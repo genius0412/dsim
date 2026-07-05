@@ -1,3 +1,5 @@
+import type { PadBindings } from './bindings';
+
 const DEADZONE = 0.12;
 
 const dz = (v: number): number =>
@@ -10,49 +12,63 @@ export interface GamepadSample {
   rotate: number;
   fire: boolean;
   intake: boolean;
+  flipFront: boolean;
   start: boolean;
   restart: boolean;
 }
 
-/** standard-mapping gamepad: left stick translate, right stick X rotate,
- * RT/A fire, LT/B intake, Start begins the match, Back/Select restarts */
+const EMPTY: GamepadSample = {
+  connected: false,
+  driveX: 0,
+  driveY: 0,
+  rotate: 0,
+  fire: false,
+  intake: false,
+  flipFront: false,
+  start: false,
+  restart: false,
+};
+
+/** standard-mapping gamepad. Stick roles and button assignments come from the
+ * user's PadBindings: the drive stick translates, the other stick's X turns. */
 export class GamepadInput {
   private prevStart = false;
   private prevRestart = false;
+  private prevFlip = false;
 
-  sample(): GamepadSample {
+  sample(bindings: PadBindings): GamepadSample {
     const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
     const pad = Array.from(pads).find((p) => p && p.connected) ?? null;
     if (!pad) {
       this.prevStart = false;
       this.prevRestart = false;
-      return {
-        connected: false,
-        driveX: 0,
-        driveY: 0,
-        rotate: 0,
-        fire: false,
-        intake: false,
-        start: false,
-        restart: false,
-      };
+      this.prevFlip = false;
+      return { ...EMPTY };
     }
     const btn = (i: number): boolean =>
       pad.buttons[i] ? pad.buttons[i].pressed || pad.buttons[i].value > 0.35 : false;
-    const startNow = btn(9);
-    const restartNow = btn(8); // Back / Select / View
+    const anyBtn = (idxs: number[]): boolean => idxs.some(btn);
+    const ax = (i: number): number => dz(pad.axes[i] ?? 0);
+    // left stick = axes 0/1, right stick = axes 2/3
+    const drive = bindings.driveStick === 'left' ? [0, 1] : [2, 3];
+    const rotAxis = bindings.driveStick === 'left' ? 2 : 0;
+    const startNow = anyBtn(bindings.buttons.start);
+    const restartNow = anyBtn(bindings.buttons.restart);
+    const flipNow = anyBtn(bindings.buttons.flipFront);
     const sampleOut: GamepadSample = {
       connected: true,
-      driveX: dz(pad.axes[0] ?? 0),
-      driveY: -dz(pad.axes[1] ?? 0),
-      rotate: -dz(pad.axes[2] ?? 0),
-      fire: btn(7) || btn(0), // RT or A
-      intake: btn(6) || btn(1), // LT or B
+      driveX: ax(drive[0]),
+      driveY: -ax(drive[1]),
+      rotate: -ax(rotAxis),
+      fire: anyBtn(bindings.buttons.fire),
+      intake: anyBtn(bindings.buttons.intake),
+      flipFront: flipNow && !this.prevFlip,
       start: startNow && !this.prevStart,
       restart: restartNow && !this.prevRestart,
     };
     this.prevStart = startNow;
     this.prevRestart = restartNow;
+    this.prevFlip = flipNow;
     return sampleOut;
   }
 }

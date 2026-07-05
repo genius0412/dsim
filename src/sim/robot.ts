@@ -12,7 +12,7 @@ export function robotInLaunchZone(r: RobotState): boolean {
 }
 
 export function turretWorldPos(r: RobotState): { x: number; y: number } {
-  const o = rot({ x: C.TURRET_OFFSET, y: 0 }, r.heading);
+  const o = rot({ x: r.spec.length * C.TURRET_OFFSET_FRAC, y: 0 }, r.heading);
   return { x: r.pos.x + o.x, y: r.pos.y + o.y };
 }
 
@@ -89,11 +89,12 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
     r.turretHeading = aimSolution(r).yaw;
   }
 
-  // ---- fire: no spin-up model — cadence-limited only ---------------------
+  // ---- fire: no spin-up model — limited only by the intake preset's
+  // hopper-to-shooter transfer cadence (triangle transfers slower) ----------
   if (
     robotsEnabled(world) && // no firing before AUTO starts / between periods
     r.hopper.length > 0 &&
-    world.time - r.lastFireAt >= C.MIN_FIRE_INTERVAL
+    world.time - r.lastFireAt >= C.INTAKE_PRESETS[r.spec.intake].fireInterval
   ) {
     // any part of the robot inside a launch zone is enough; refusals are
     // shown by the HUD launch-zone indicator, not popups
@@ -129,26 +130,53 @@ function fire(world: World, r: RobotState): void {
   world.balls.push(ball);
 }
 
-/** capture ground balls touching the intake region into the hopper */
+/** capture ground balls at the intake mouth into the hopper.
+ * Capture happens when a compliant wheel is DIRECTLY ABOVE the artifact: the
+ * wheel line sits at the tip of the intake's reach, and a ball within its
+ * band gets swallowed (a pushed ball rides at wheelLine + BALL_RADIUS —
+ * inside the band). Side intake is ruled out GEOMETRICALLY, not by a flag:
+ * unless the preset's wheels overhang the chassis (vector), the mouth is
+ * clamped inside the frame and the chassis flanks encompass the intake. */
 export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): void {
   if (!robotsEnabled(world)) return;
   const running = cmd.intake || r.autoIntake;
   if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
   const preset = C.INTAKE_PRESETS[r.spec.intake];
-  if (world.time - r.lastIntakeAt < preset.perBall) return;
   const hl = r.spec.length / 2;
+  const mouthHalf = preset.overhang
+    ? preset.halfWidth
+    : Math.min(preset.halfWidth, r.spec.width / 2 - 0.75);
+  const wheelLine = hl + preset.reach;
+  const velRobot = rot(r.vel, -r.heading);
+
+  // every ball currently at the mouth (or under an overhanging wheel)
+  const candidates: Artifact[] = [];
   for (const b of world.balls) {
     if (b.state.kind !== 'ground' || b.z > 6) continue;
-    // ball position in robot frame; capture extends slightly past the intake
-    // face so balls being pushed by it get swallowed
     const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
-    const inReach = local.x > hl - 2 && local.x < hl + preset.reach + C.BALL_RADIUS + 1;
-    const inWidth = Math.abs(local.y) < preset.halfWidth + C.BALL_RADIUS * 0.5;
-    if (inReach && inWidth) {
-      r.hopper.push(b.color);
-      r.lastIntakeAt = world.time;
-      world.balls.splice(world.balls.indexOf(b), 1);
-      break;
-    }
+    const inReach = Math.abs(local.x - wheelLine) < C.BALL_RADIUS + C.INTAKE_CAPTURE_BAND;
+    const inWidth = Math.abs(local.y) < mouthHalf + C.BALL_RADIUS * 0.5;
+    // flank capture: only where the wheel span actually OVERHANGS the chassis
+    // can a ball the robot strafes into end up under a wheel. Compare spans
+    // directly (not penetration depth — the robot moves before the ball's
+    // collision pass each tick, so a depth test sees a phantom overlap)
+    const sideTouch =
+      mouthHalf > r.spec.width / 2 + 0.5 &&
+      local.x > hl - 2 &&
+      local.x < wheelLine + C.BALL_RADIUS &&
+      Math.abs(local.y) > r.spec.width / 2 - 0.5 &&
+      Math.abs(local.y) < r.spec.width / 2 + C.BALL_RADIUS + 0.6 &&
+      velRobot.y * Math.sign(local.y) > C.INTAKE_SIDE_MIN_STRAFE;
+    if ((inReach && inWidth) || sideTouch) candidates.push(b);
   }
+  if (candidates.length === 0) return;
+
+  // a clump feeding the mouth swallows continuously — sloped and triangle
+  // are extremely efficient at eating clumps; vector keeps its steady pace
+  const interval = candidates.length >= 2 ? preset.clumpPerBall : preset.perBall;
+  if (world.time - r.lastIntakeAt < interval) return;
+  const b = candidates[0];
+  r.hopper.push(b.color);
+  r.lastIntakeAt = world.time;
+  world.balls.splice(world.balls.indexOf(b), 1);
 }

@@ -62,20 +62,23 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
     }
   }
 
-  // ball-ball collisions (grounded / low balls only)
+  // ball-ball then ball-robot, iterated so pushes propagate through chains
+  // (robot -> ball -> wall-pinned ball) instead of tunnelling in one pass
   const active = world.balls.filter(
     (b) => (b.state.kind === 'ground' || b.state.kind === 'flight') && b.z < C.BALL_RADIUS * 4,
   );
-  for (let i = 0; i < active.length; i++) {
-    for (let j = i + 1; j < active.length; j++) {
-      collideBallBall(active[i], active[j]);
+  for (let pass = 0; pass < C.BALL_SOLVER_ITERATIONS; pass++) {
+    // ball-ball collisions (grounded / low balls only)
+    for (let i = 0; i < active.length; i++) {
+      for (let j = i + 1; j < active.length; j++) {
+        collideBallBall(active[i], active[j]);
+      }
     }
-  }
-
-  // ball-robot collisions (skip airborne balls above the robot)
-  for (const b of active) {
-    if (b.z > 14) continue;
-    for (const r of world.robots) collideBallRobot(b, r);
+    // ball-robot collisions (skip airborne balls above the robot)
+    for (const b of active) {
+      if (b.z > 14) continue;
+      for (const r of world.robots) collideBallRobot(b, r);
+    }
   }
 
   // stray balls never enter the classifier structures (balls emerging from

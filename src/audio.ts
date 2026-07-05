@@ -6,7 +6,7 @@ const FILES: Record<Cue, string> = {
   start: 'sounds/start.wav', // "Charge" — AUTO start
   end: 'sounds/end.wav', // buzzer — end of AUTO / end of match
   resume: 'sounds/resume.wav', // three bells — TELEOP start
-  warning: 'sounds/warning.wav', // 30-second warning
+  warning: 'sounds/warning.wav', // endgame warning (ENDGAME_START s left)
   match_result: 'sounds/match_result.wav',
   abort: 'sounds/abort.wav', // foghorn — match reset
 };
@@ -44,24 +44,102 @@ export class MatchAudio {
 
   private ctx: AudioContext | null = null;
 
-  /** short countdown beep — fires instantly, always in sync with the visual */
-  beep(freq = 780, dur = 0.14, vol = 0.35): void {
-    if (this.muted) return;
+  private ensureCtx(): AudioContext | null {
+    if (this.muted) return null;
     try {
       this.ctx ??= new AudioContext();
-      const t = this.ctx.currentTime;
-      const osc = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(vol, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
-      osc.connect(gain).connect(this.ctx.destination);
-      osc.start(t);
-      osc.stop(t + dur);
+      return this.ctx;
     } catch {
-      /* no audio available */
+      return null;
     }
+  }
+
+  /** one tone with a pitch ramp and an exponential decay envelope. New nodes
+   * per call, so rapid overlapping effects mix cleanly. */
+  private tone(
+    freq0: number,
+    freq1: number,
+    dur: number,
+    type: OscillatorType,
+    vol: number,
+    delay = 0,
+  ): void {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const t = ctx.currentTime + delay;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq0, t);
+    if (freq1 !== freq0) osc.frequency.exponentialRampToValueAtTime(freq1, t + dur);
+    gain.gain.setValueAtTime(vol, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + dur + 0.01);
+  }
+
+  /** short countdown beep — fires instantly, always in sync with the visual */
+  beep(freq = 780, dur = 0.14, vol = 0.35): void {
+    this.tone(freq, freq, dur, 'square', vol);
+  }
+
+  private noise: AudioBuffer | null = null;
+
+  /** cached 0.25s white-noise buffer for percussive effects */
+  private noiseBuffer(ctx: AudioContext): AudioBuffer {
+    if (!this.noise) {
+      const len = Math.floor(ctx.sampleRate * 0.25);
+      this.noise = ctx.createBuffer(1, len, ctx.sampleRate);
+      const data = this.noise.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    }
+    return this.noise;
+  }
+
+  /** filtered noise burst: the percussive part of the mechanical effects */
+  private noiseBurst(
+    freq0: number,
+    freq1: number,
+    dur: number,
+    vol: number,
+    q = 1.2,
+    delay = 0,
+  ): void {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const t = ctx.currentTime + delay;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuffer(ctx);
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = q;
+    bp.frequency.setValueAtTime(freq0, t);
+    if (freq1 !== freq0) bp.frequency.exponentialRampToValueAtTime(freq1, t + dur);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(vol, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(bp).connect(gain).connect(ctx.destination);
+    src.start(t);
+    src.stop(t + dur + 0.01);
+  }
+
+  /** launcher "thwump": a falling noise whoosh with a low pitch-drop body */
+  sfxShoot(): void {
+    this.noiseBurst(1800, 400, 0.13, 0.35);
+    this.tone(240, 90, 0.11, 'sawtooth', 0.16);
+  }
+
+  /** intake "slurp": one quick rising blip per swallowed artifact */
+  sfxIntake(): void {
+    this.tone(150, 330, 0.08, 'sine', 0.22);
+  }
+
+  /** classifier gate "clack-clunk": latch click, then the flap swinging open */
+  sfxGate(): void {
+    this.noiseBurst(2600, 2600, 0.03, 0.25, 3);
+    this.tone(520, 520, 0.05, 'square', 0.14);
+    this.tone(340, 300, 0.08, 'square', 0.16, 0.07);
   }
 
   private voice: SpeechSynthesisVoice | null = null;

@@ -16,6 +16,7 @@ import { step } from './sim/world';
 import { startMatch } from './sim/match';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
+import type { ControlBindings } from './input/bindings';
 import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
 
@@ -25,6 +26,7 @@ export interface GameSettings {
   assists: AssistConfig;
   spec: RobotSpec;
   audio: { sounds: boolean; voice: boolean };
+  bindings: ControlBindings;
 }
 
 export interface Toast {
@@ -49,6 +51,8 @@ export interface HudSnapshot {
   hopper: ArtifactColor[];
   inLaunchZone: boolean;
   gamepadConnected: boolean;
+  /** drive controls reversed so the shooter side leads (robot-centric only) */
+  frontFlipped: boolean;
   gateOpen: boolean;
   rampCount: number;
   classifiedCount: number;
@@ -60,7 +64,7 @@ export interface HudSnapshot {
 
 export class GameController {
   private world: World;
-  private readonly input = new InputManager();
+  private readonly input: InputManager;
   private readonly renderer = new Renderer();
   private readonly ctx: CanvasRenderingContext2D;
   private readonly audio = new MatchAudio();
@@ -78,6 +82,12 @@ export class GameController {
   private lastBeepAt = -1;
   private lastTransitionBeep = -1;
   private hudCountdown: number | null = null;
+  /** drive controls reversed so the shooter side leads (robot-centric only) */
+  private frontFlipped = false;
+  // action-SFX edge trackers (seeded from the fresh world, see seedActionAudio)
+  private prevFireAt = 0;
+  private prevIntakeAt = 0;
+  private prevGateOpen: Record<Alliance, boolean> = { red: false, blue: false };
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -86,8 +96,10 @@ export class GameController {
     this.ctx = canvas.getContext('2d')!;
     this.audio.soundsEnabled = settings.audio.sounds;
     this.audio.voiceEnabled = settings.audio.voice;
+    this.input = new InputManager(settings.bindings);
     this.world = this.makeWorld();
     this.prevPhase = this.world.match.phase;
+    this.seedActionAudio();
     this.input.attach();
     window.addEventListener('resize', this.onResize);
     this.onResize();
@@ -123,7 +135,11 @@ export class GameController {
       }
       this.prevPhase = phase;
     }
-    if (phase === 'teleop' && !this.warningPlayed && this.world.match.phaseTimeLeft <= 30) {
+    if (
+      phase === 'teleop' &&
+      !this.warningPlayed &&
+      this.world.match.phaseTimeLeft <= C.ENDGAME_START
+    ) {
       this.warningPlayed = true;
       this.audio.play('warning');
     }
@@ -142,6 +158,37 @@ export class GameController {
       }
     } else {
       this.lastTransitionBeep = -1;
+    }
+  }
+
+  /** align the SFX edge trackers with a freshly created world so world
+   * creation/restart never plays a phantom shoot/intake/gate cue */
+  private seedActionAudio(): void {
+    const r = this.world.robots[0];
+    this.prevFireAt = r.lastFireAt;
+    this.prevIntakeAt = r.lastIntakeAt;
+    this.prevGateOpen = {
+      red: this.world.goals.red.gateOpen,
+      blue: this.world.goals.blue.gateOpen,
+    };
+  }
+
+  /** shoot / intake / gate effects, edge-detected from world state (the sim
+   * core stays event-free for these — same pattern as handlePhaseAudio) */
+  private handleActionAudio(): void {
+    const r = this.world.robots[0];
+    if (r.lastFireAt !== this.prevFireAt) {
+      this.prevFireAt = r.lastFireAt;
+      this.audio.sfxShoot();
+    }
+    if (r.lastIntakeAt !== this.prevIntakeAt) {
+      this.prevIntakeAt = r.lastIntakeAt;
+      this.audio.sfxIntake();
+    }
+    for (const a of ['red', 'blue'] as Alliance[]) {
+      const open = this.world.goals[a].gateOpen;
+      if (open && !this.prevGateOpen[a]) this.audio.sfxGate();
+      this.prevGateOpen[a] = open;
     }
   }
 
@@ -171,6 +218,15 @@ export class GameController {
     this.lastT = t;
 
     const cmd = this.input.poll();
+    // "flip front": reverse robot-centric drive so the shooter side leads.
+    // Meaningless in field-centric (translation is driver-frame there).
+    if (!this.world.robots[0].fieldCentric) {
+      if (this.input.flipPressed) this.frontFlipped = !this.frontFlipped;
+      if (this.frontFlipped) {
+        cmd.driveX = -cmd.driveX;
+        cmd.driveY = -cmd.driveY;
+      }
+    }
     this.lastCmd = cmd;
     if (
       this.input.startPressed &&
@@ -194,6 +250,7 @@ export class GameController {
 
     this.hudCountdown = this.updateCountdown();
     this.handlePhaseAudio();
+    this.handleActionAudio();
 
     for (const e of this.world.events) {
       this.toasts.push({ id: ++this.toastId, text: e, at: performance.now() });
@@ -216,6 +273,8 @@ export class GameController {
     this.warningPlayed = false;
     this.countdownStart = null;
     this.hudCountdown = null;
+    this.frontFlipped = false;
+    this.seedActionAudio();
     this.toasts = [];
   }
 
@@ -241,6 +300,7 @@ export class GameController {
       hopper: [...r.hopper],
       inLaunchZone: w.mode === 'free' || robotInLaunchZone(r),
       gamepadConnected: this.input.gamepadConnected,
+      frontFlipped: this.frontFlipped,
       gateOpen: goal.gateOpen,
       rampCount: w.balls.filter(
         (b) => b.state.kind === 'rail' && b.state.goal === a && !b.state.overflow,

@@ -1,6 +1,7 @@
 import type { GameSettings } from '../game';
 import type { IntakeStyle } from '../types';
-import { INTAKE_PRESETS, ROBOT_MAX_SIZE, ROBOT_MIN_SIZE } from '../config';
+import { INTAKE_PRESETS, ROBOT_MAX_SIZE, ROBOT_MIN_WIDTH } from '../config';
+import { ControlsSection } from './ControlsSection';
 
 interface Props {
   settings: GameSettings;
@@ -119,8 +120,8 @@ export function Menu({ settings, onChange, onStart }: Props) {
               Length {settings.spec.length}"
               <input
                 type="range"
-                min={ROBOT_MIN_SIZE}
-                max={maxLength(settings.spec.intake)}
+                min={INTAKE_PRESETS[settings.spec.intake].minLength}
+                max={INTAKE_PRESETS[settings.spec.intake].maxLength}
                 step={0.5}
                 value={settings.spec.length}
                 onChange={(e) => setSpec({ length: Number(e.target.value) })}
@@ -130,7 +131,7 @@ export function Menu({ settings, onChange, onStart }: Props) {
               Width {settings.spec.width}"
               <input
                 type="range"
-                min={ROBOT_MIN_SIZE}
+                min={ROBOT_MIN_WIDTH}
                 max={ROBOT_MAX_SIZE}
                 step={0.5}
                 value={settings.spec.width}
@@ -140,22 +141,39 @@ export function Menu({ settings, onChange, onStart }: Props) {
           </div>
           <div className="card-row">
             <button
-              className={`card ${settings.spec.intake === 'compact' ? 'selected' : ''}`}
-              onClick={() => selectIntake('compact')}
+              className={`card ${settings.spec.intake === 'sloped' ? 'selected' : ''}`}
+              onClick={() => selectIntake('sloped')}
             >
-              <strong>Compact intake</strong>
-              <span>Flush with the chassis — face the artifact, but swallows fast</span>
+              <strong>Sloped intake</strong>
+              <span>
+                Trapezoid mouth in the frame — face the artifact and it rolls up the ramp; devours
+                clumps
+              </span>
             </button>
             <button
-              className={`card ${settings.spec.intake === 'extended' ? 'selected' : ''}`}
-              onClick={() => selectIntake('extended')}
+              className={`card ${settings.spec.intake === 'vector' ? 'selected' : ''}`}
+              onClick={() => selectIntake('vector')}
             >
-              <strong>Extended intake</strong>
-              <span>Protrudes ahead (18" cap enforced) — sweep artifacts while strafing, slower per ball</span>
+              <strong>Vector wheel intake</strong>
+              <span>
+                Vertical compliant wheels ahead of the chassis (11.5–14.5") — where they overhang a
+                narrower chassis they also grab artifacts you strafe into; steady per-ball pace
+              </span>
+            </button>
+            <button
+              className={`card ${settings.spec.intake === 'triangle' ? 'selected' : ''}`}
+              onClick={() => selectIntake('triangle')}
+            >
+              <strong>Triangle intake</strong>
+              <span>
+                Stores artifacts in a triangle; long trapezoid mouth devours clumps — but transfer
+                to the shooter is slower (0.3s between shots)
+              </span>
             </button>
           </div>
           <p className="hint">
-            FTC sizing: chassis plus intake reach may not exceed {ROBOT_MAX_SIZE}".
+            FTC sizing: chassis plus intake reach may not exceed {ROBOT_MAX_SIZE}". A chassis
+            narrower than the intake parks easier — base credit counts only the wheels.
           </p>
         </section>
 
@@ -183,25 +201,10 @@ export function Menu({ settings, onChange, onStart }: Props) {
           </div>
         </section>
 
-        <section className="controls-section">
-          <h2>Controls</h2>
-          <div className="controls-grid">
-            <span>Drive / strafe</span>
-            <span>WASD · left stick</span>
-            <span>Turn</span>
-            <span>Q E / ◄ ► · right stick</span>
-            <span>Intake (hold)</span>
-            <span>Shift or K · LT / B</span>
-            <span>Shoot</span>
-            <span>Space · RT / A</span>
-            <span>Start match</span>
-            <span>Enter · Start</span>
-            <span>Restart</span>
-            <span>R · Back/Select</span>
-            <span>Menu</span>
-            <span>Esc</span>
-          </div>
-        </section>
+        <ControlsSection
+          bindings={settings.bindings}
+          onChange={(bindings) => set({ bindings })}
+        />
 
         <button className="start-btn" onClick={onStart}>
           ENTER FIELD
@@ -211,12 +214,8 @@ export function Menu({ settings, onChange, onStart }: Props) {
   );
 
   function selectIntake(intake: IntakeStyle) {
-    // keep chassis length legal: chassis + intake reach must fit the 18in cap
-    const maxLen = maxLength(intake);
-    setSpec({ intake, length: Math.min(settings.spec.length, maxLen) });
+    // keep chassis length inside the preset's legal range (18in cap etc.)
+    const p = INTAKE_PRESETS[intake];
+    setSpec({ intake, length: Math.min(Math.max(settings.spec.length, p.minLength), p.maxLength) });
   }
-}
-
-function maxLength(intake: IntakeStyle): number {
-  return ROBOT_MAX_SIZE - (intake === 'extended' ? INTAKE_PRESETS.extended.reach : 0);
 }

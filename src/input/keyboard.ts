@@ -2,12 +2,20 @@
 export class Keyboard {
   private down = new Set<string>();
   private pressed = new Set<string>();
+  /** keys whose browser default (scroll etc.) is suppressed — kept in sync
+   * with the active bindings so any bound key works cleanly */
+  private preventKeys = new Set<string>([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+
+  setPreventKeys(keys: Iterable<string>): void {
+    this.preventKeys = new Set([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+    for (const k of keys) this.preventKeys.add(k);
+  }
 
   private onKeyDown = (e: KeyboardEvent): void => {
     const k = e.key.toLowerCase();
     if (!e.repeat) this.pressed.add(k);
     this.down.add(k);
-    if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) {
+    if (this.preventKeys.has(k)) {
       e.preventDefault();
     }
   };

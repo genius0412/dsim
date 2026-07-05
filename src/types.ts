@@ -28,7 +28,7 @@ export interface AssistConfig {
   autoFire: boolean;
 }
 
-export type IntakeStyle = 'compact' | 'extended';
+export type IntakeStyle = 'sloped' | 'vector' | 'triangle';
 
 export interface RobotSpec {
   /** chassis length (front-back) and width, inches; chassis + intake reach must fit 18in */
@@ -45,8 +45,10 @@ export type BallState =
   | { kind: 'basin'; goal: Alliance }
   /** on the classifier rail: 1D coordinate s from the gate (s=0), flowing
    * down under gravity and stacking by contact. overflow balls ride over the
-   * stack and always continue out over the gate. */
-  | { kind: 'rail'; goal: Alliance; s: number; v: number; overflow: boolean }
+   * stack and always continue out over the gate. pending balls have boarded
+   * but not yet met the stack — classified vs overflow is decided at first
+   * contact (9 retained below at that moment ⇒ overflow). */
+  | { kind: 'rail'; goal: Alliance; s: number; v: number; overflow: boolean; pending?: boolean }
   | { kind: 'stock'; alliance: Alliance }; // held by the human player, off-field
 
 export interface Artifact {

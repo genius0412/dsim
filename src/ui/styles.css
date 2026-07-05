@@ -160,19 +160,129 @@ button {
   accent-color: var(--blue);
 }
 
-.controls-grid {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px 24px;
-  font-size: 13px;
+/* ---- rebindable controls ---- */
+.bind-cols {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.bind-block {
+  flex: 1;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 14px 18px;
+  padding: 12px 14px;
 }
 
-.controls-grid span:nth-child(odd) {
+.bind-block h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
   color: var(--muted);
+}
+
+.bind-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bind-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 26px;
+}
+
+.bind-label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.bind-keys {
+  display: flex;
+  gap: 6px;
+}
+
+.keycap {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--text);
+  min-width: 34px;
+  text-align: center;
+}
+
+button.keycap:hover {
+  border-color: var(--blue);
+}
+
+.keycap.capturing {
+  border-color: var(--amber);
+  color: var(--amber);
+  box-shadow: 0 0 0 1px var(--amber);
+  animation: keycap-pulse 1s infinite;
+}
+
+@keyframes keycap-pulse {
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.keycap.unbound {
+  color: var(--red);
+  border-color: var(--red);
+  border-style: dashed;
+}
+
+.keycap.selected {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 1px var(--blue);
+  color: var(--blue);
+}
+
+.keycap.fixed {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  cursor: default;
+}
+
+.bind-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.bind-footer .hint {
+  margin-top: 0;
+}
+
+.bind-reset {
+  flex-shrink: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text);
+}
+
+.bind-reset:hover {
+  border-color: var(--amber);
+  color: var(--amber);
 }
 
 .start-btn {
