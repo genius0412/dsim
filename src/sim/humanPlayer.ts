@@ -15,17 +15,28 @@ export function updateHumanPlayers(world: World): void {
   for (const a of ['red', 'blue'] as Alliance[]) {
     const hp = world.humanPlayers[a];
     const slots = loadSlots(a);
+    const zone = loadZone(a);
+    // a robot's intake mouth can reach several inches ahead of its center, so an
+    // approaching robot is already contesting balls near the zone before its own
+    // position crosses the boundary — pad the zone by a generous reach margin
+    const approachZone = { x0: zone.x0 - 20, x1: zone.x1 + 20, y0: zone.y0 - 20, y1: zone.y1 + 20 };
 
     // COLLECT: continuously pull a loose ground ball out of the loading zone into
     // the off-field box (the returned/overflow artifacts the HP recycles). Skip a
-    // ball staged at a grab slot and any a robot is currently on.
-    if (hp.box.length < 6) {
+    // ball staged at a grab slot. Also stand down entirely while a robot is
+    // working (or approaching) the zone — the per-ball "is a robot on it right
+    // now" check used to be the only guard, so the HP would race a robot for a
+    // ball it was still approaching (not yet within that ball's own tiny radius)
+    // and usually win, vacuuming it into the box before the robot's own intake
+    // ever got a shot — the balls a driver saw "sucked up" without landing in
+    // the hopper.
+    const robotInZone = world.robots.some((r) => inRect(r.pos, approachZone));
+    if (hp.box.length < 6 && !robotInZone) {
       for (let i = world.balls.length - 1; i >= 0; i--) {
         const b = world.balls[i];
-        if (b.state.kind !== 'ground' || !inRect(b.pos, loadZone(a))) continue;
+        if (b.state.kind !== 'ground' || !inRect(b.pos, zone)) continue;
         const atSlot = slots.some((s) => hyp(b.pos.x - s.x, b.pos.y - s.y) < C.BALL_RADIUS * 1.5);
-        const robotNear = world.robots.some((r) => hyp(r.pos.x - b.pos.x, r.pos.y - b.pos.y) < 14);
-        if (atSlot || robotNear) continue;
+        if (atSlot) continue;
         world.balls.splice(i, 1);
         hp.box.push(b.color);
         break; // one grab per tick — continuous but not instantaneous
