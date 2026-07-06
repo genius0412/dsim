@@ -1,7 +1,7 @@
 import type { Artifact, ArtifactColor, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
 import { approach, rot, wrapAngle, hyp } from '../math';
-import { goalCenter, inLaunchZone, viewAngleOf } from './field';
+import { classifierRect, goalCenter, inLaunchZone, viewAngleOf } from './field';
 import { driveParams } from './drivetrain';
 import { robotCorners } from './physics';
 import { robotsEnabled } from './match';
@@ -183,13 +183,30 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   const wheelLine = hl + preset.reach;
   const velRobot = rot(r.vel, -r.heading);
 
+  // the intake can't reach INTO the classifier: if the mouth is at/inside a
+  // classifier structure (e.g. the robot pressed parallel against it), no
+  // capture — you can't vacuum balls through the ramp wall
+  const mouthX = r.pos.x + Math.cos(r.heading) * wheelLine;
+  const mouthY = r.pos.y + Math.sin(r.heading) * wheelLine;
+  for (const a of ['red', 'blue'] as const) {
+    const rect = classifierRect(a);
+    if (
+      mouthX > rect.x0 - 0.5 &&
+      mouthX < rect.x1 + 0.5 &&
+      mouthY > rect.y0 &&
+      mouthY < rect.y1
+    ) {
+      return;
+    }
+  }
+
   // every ball currently at the mouth (or under an overhanging wheel)
   const candidates: Artifact[] = [];
   for (const b of world.balls) {
     if (b.state.kind !== 'ground' || b.z > 6) continue;
     const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
     const inReach = Math.abs(local.x - wheelLine) < C.BALL_RADIUS + C.INTAKE_CAPTURE_BAND;
-    const inWidth = Math.abs(local.y) < mouthHalf + C.BALL_RADIUS * 0.5;
+    const inWidth = Math.abs(local.y) < mouthHalf + C.BALL_RADIUS * 0.25;
     // flank capture: only where the wheel span actually OVERHANGS the chassis
     // can a ball the robot strafes into end up under a wheel. Compare spans
     // directly (not penetration depth — the robot moves before the ball's

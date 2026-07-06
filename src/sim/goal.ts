@@ -176,9 +176,13 @@ export function updateRails(world: World, dt: number): void {
 
     const railX = railPos(a, 0).x;
 
-    // stacked balls flow together
+    // stacked balls flow together as a packed column: a ball resting on the one
+    // below inherits ITS velocity (floorV) rather than stopping, so when the
+    // gate opens the whole column drains as a unit instead of each ball
+    // re-accelerating from rest and spreading apart.
     const stack = railStack(world, a);
     let floor = goal.gateOpen ? -Infinity : C.GATE_STOP_S;
+    let floorV = 0; // velocity of the constraint below (the gate is stationary)
     let below = 0; // column balls ahead of (below) the current one
     for (const b of stack) {
       const st = b.state as { s: number; v: number; overflow: boolean; pending?: boolean };
@@ -197,7 +201,9 @@ export function updateRails(world: World, dt: number): void {
           continue; // rides over from here on — handled by the overflow pass
         }
         st.s = floor;
-        st.v = 0;
+        // move WITH the ball below (0 against the closed gate) — the column
+        // stays packed and drains together instead of stopping/re-accelerating
+        st.v = Math.max(st.v, floorV);
         if (st.pending) {
           st.pending = false;
           goal.classifiedCount++;
@@ -205,6 +211,7 @@ export function updateRails(world: World, dt: number): void {
         }
       }
       floor = st.s + C.RAIL_PITCH;
+      floorV = st.v;
       below++;
       // glide smoothly onto the rail line — no positional snapping
       b.pos.y = C.CLASSIFIER_Y0 + st.s;
@@ -252,9 +259,14 @@ export function updateGates(world: World, dt: number): void {
   for (const a of ['red', 'blue'] as Alliance[]) {
     const goal = world.goals[a];
     const zone = gateZone(a);
-    // any robot can physically work a gate (an opponent doing so is a MAJOR
-    // foul — see penalties.ts, not prevented by construction)
-    const held = world.robots.some((r) => robotIntersectsRect(r, zone));
+    // The gate is a LEVER worked from the classifier's LONG (field) side: a
+    // robot at the gate opens it just by being there (no need to actively push
+    // toward it). Only a robot coming UP from deep in the gate MOUTH / audience
+    // side — well below the gate — is a short-end tap that doesn't leverage it.
+    // Any robot can work it (an opponent doing so is a MAJOR foul, penalties.ts).
+    const held = world.robots.some(
+      (r) => robotIntersectsRect(r, zone) && r.pos.y >= zone.y0 - C.GATE_LONG_SIDE_MARGIN,
+    );
     if (held) {
       goal.gateHoldTime += dt;
       if (goal.gateHoldTime >= C.GATE_OPEN_HOLD && !goal.gateOpen) {
@@ -264,7 +276,11 @@ export function updateGates(world: World, dt: number): void {
     } else {
       goal.gateHoldTime = 0;
       if (goal.gateOpen) {
-        // spring tries to close: blocked while any ball is in the gateway
+        // the flow holds the gate open while a ball occupies the gateway. Balls
+        // now descend as a packed column (velocity inheritance in updateRails),
+        // so this narrow window stays continuously occupied through the whole
+        // drain and only clears once the last ball has passed — draining the
+        // column without holding the gate open any longer than that.
         const ballInGateway = world.balls.some(
           (b) =>
             b.state.kind === 'rail' &&

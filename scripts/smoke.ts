@@ -609,7 +609,7 @@ function queueTenth(w: World): void {
   const zone = gateZone('blue');
   r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
   r.vel = { x: 0, y: 0 };
-  run(w, cmd({}), 0.3);
+  run(w, cmd({}), 0.3); // tap...
   r.pos = { x: 0, y: -30 };
   run(w, cmd({}), 0.7);
   // a late ball arrives while the drain is under way: by the time it reaches

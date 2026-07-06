@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { GameController, type GameSettings, type HudSnapshot } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
-import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
+import { ENDGAME_START } from '../config';
 import type { NetSession } from '../net/session';
 import type { Alliance, ScoreBreakdown } from '../types';
 
@@ -208,8 +208,9 @@ function Hud({ hud }: { hud: HudSnapshot }) {
 }
 
 /** final match results — RED | category | BLUE, like the FTC audience board.
- * Foul rows show the POINTS each alliance was AWARDED from the opponent's fouls
- * of that severity (minor 5 / major 15), split minor vs major. */
+ * Foul rows show the fouls each alliance COMMITTED (its own count) — the POINTS
+ * for those go to the OPPONENT's total (see the footnote), so a foul always
+ * benefits the fouled alliance. */
 function Results({
   hud,
   onRematch,
@@ -224,8 +225,7 @@ function Results({
   const winner: Alliance | 'tie' =
     red.total > blue.total ? 'red' : blue.total > red.total ? 'blue' : 'tie';
 
-  // an alliance is awarded points from the OPPONENT's committed fouls
-  const f = hud.fouls;
+  const f = hud.fouls; // fouls COMMITTED by each alliance
   const val = (get: (s: ScoreBreakdown) => number): [number, number] => [get(red), get(blue)];
   const sections: [string, [string, number, number][]][] = [
     [
@@ -253,10 +253,10 @@ function Results({
       ],
     ],
     [
-      'PENALTIES',
+      'FOULS COMMITTED',
       [
-        ['Minor fouls', f.blue.minor * PTS_FOUL_MINOR, f.red.minor * PTS_FOUL_MINOR],
-        ['Major fouls', f.blue.major * PTS_FOUL_MAJOR, f.red.major * PTS_FOUL_MAJOR],
+        ['Minor', f.red.minor, f.blue.minor],
+        ['Major', f.red.major, f.blue.major],
       ],
     ],
   ];
@@ -306,6 +306,9 @@ function Results({
             </tr>
           </tbody>
         </table>
+        <p className="hint">
+          Foul points (minor 5 · major 15) are awarded to the OPPONENT and are already in each TOTAL.
+        </p>
         <div className="overlay-buttons">
           <button onClick={onRematch}>REMATCH</button>
           <button onClick={onExit}>MENU</button>

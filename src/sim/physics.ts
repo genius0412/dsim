@@ -278,6 +278,59 @@ export function collideRobots(
 }
 
 /** push the robot out of walls, goal faces and classifier structures */
+/** minimum-translation-vector to separate the robot OBB (intake included) from
+ * an axis-aligned rect, oriented to push the robot AWAY from the rect. null if
+ * already separated. SAT over the rect's axes + the robot's two axes. */
+function classifierMTV(r: RobotState, rect: Rect): { nx: number; ny: number; depth: number } | null {
+  const corners = robotCorners(r);
+  const rc = [
+    { x: rect.x0, y: rect.y0 },
+    { x: rect.x1, y: rect.y0 },
+    { x: rect.x1, y: rect.y1 },
+    { x: rect.x0, y: rect.y1 },
+  ];
+  const axes = [
+    { x: 1, y: 0 },
+    { x: 0, y: 1 },
+    rot({ x: 1, y: 0 }, r.heading),
+    rot({ x: 0, y: 1 }, r.heading),
+  ];
+  let minOv = Infinity;
+  let ax = { x: 0, y: 0 };
+  for (const axis of axes) {
+    let aMin = Infinity;
+    let aMax = -Infinity;
+    for (const c of corners) {
+      const p = c.x * axis.x + c.y * axis.y;
+      if (p < aMin) aMin = p;
+      if (p > aMax) aMax = p;
+    }
+    let bMin = Infinity;
+    let bMax = -Infinity;
+    for (const c of rc) {
+      const p = c.x * axis.x + c.y * axis.y;
+      if (p < bMin) bMin = p;
+      if (p > bMax) bMax = p;
+    }
+    const ov = Math.min(aMax, bMax) - Math.max(aMin, bMin);
+    if (ov <= 0) return null; // a separating axis exists ⇒ no overlap
+    if (ov < minOv) {
+      minOv = ov;
+      ax = axis;
+    }
+  }
+  // orient the normal away from the rect (toward the robot center)
+  const cx = (rect.x0 + rect.x1) / 2;
+  const cy = (rect.y0 + rect.y1) / 2;
+  let nx = ax.x;
+  let ny = ax.y;
+  if ((r.pos.x - cx) * nx + (r.pos.y - cy) * ny < 0) {
+    nx = -nx;
+    ny = -ny;
+  }
+  return { nx, ny, depth: minOv };
+}
+
 export function constrainRobot(r: RobotState): void {
   const f = C.FIELD_HALF;
   for (let pass = 0; pass < 3; pass++) {
@@ -316,39 +369,23 @@ export function constrainRobot(r: RobotState): void {
       }
     }
 
-    // classifier ramp structures along the side walls
+    // classifier ramp structures along the side walls. Evict via the true
+    // minimum-translation-vector of the robot OBB (intake INCLUDED) vs the
+    // channel rect, so ramming a CORNER pushes out the right way and the intake
+    // never stays clipped — with contact torque so a ram squares the chassis up.
+    // The channel's outer edge IS the field wall, so a push whose normal points
+    // (predominantly) toward that wall is skipped — the wall constraint handles
+    // it — to avoid a wall-vs-structure fight.
     for (const a of ALLIANCES) {
       const rect = classifierRect(a);
-      corners = robotCorners(r);
-      let best: { nx: number; ny: number; depth: number; contact: Vec2 } | null = null;
-      for (const c of corners) {
-        if (c.x <= rect.x0 || c.x >= rect.x1 || c.y <= rect.y0 || c.y >= rect.y1) continue;
-        // smallest push to evict this corner — but never TOWARD a field wall
-        // (the channel's outer edge IS the wall): that push just wedges the
-        // wheel between wall and structure and the two constraints fight
-        // forever, leaving the robot stuck
-        const lim = C.FIELD_HALF - 0.05;
-        const cands = (
-          [
-            [-1, 0, c.x - rect.x0],
-            [1, 0, rect.x1 - c.x],
-            [0, -1, c.y - rect.y0],
-            [0, 1, rect.y1 - c.y],
-          ] as [number, number, number][]
-        ).filter(([nx, ny, d]) => {
-          const px = c.x + nx * d;
-          const py = c.y + ny * d;
-          return Math.abs(px) < lim && Math.abs(py) < lim;
-        });
-        if (cands.length === 0) continue;
-        const m = cands.reduce((p, q) => (q[2] < p[2] ? q : p));
-        if (!best || m[2] > best.depth) {
-          best = { nx: m[0], ny: m[1], depth: m[2], contact: c };
-        }
-      }
-      if (best) {
-        pushRobotAt(r, best.nx, best.ny, best.depth, [{ c: best.contact, d: best.depth }]);
-      }
+      const mtv = classifierMTV(r, rect);
+      if (!mtv) continue;
+      const wallDir = rect.x0 <= -C.FIELD_HALF + 0.01 ? -1 : 1; // toward the side wall
+      if (mtv.nx * wallDir > 0.5) continue; // predominantly wall-ward — let the wall win
+      const contacts = robotCorners(r)
+        .filter((c) => c.x > rect.x0 && c.x < rect.x1 && c.y > rect.y0 && c.y < rect.y1)
+        .map((c) => ({ c, d: mtv.depth }));
+      pushRobotAt(r, mtv.nx, mtv.ny, mtv.depth, contacts, contacts.length > 1);
     }
   }
 }

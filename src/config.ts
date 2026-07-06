@@ -87,7 +87,6 @@ export const CONTACT_ALIGN_RATE_MAX = 0.12;
 /** spin injected per (contact torque × in/s of impact speed) — a fast angled
  * hit visibly converts momentum into rotation; dead-center hits add nothing */
 export const CONTACT_IMPACT_SPIN = 0.12;
-
 // ---------------------------------------------------------------- robot ----
 export const ROBOT_MAX_SIZE = 18; // FTC starting size cap (incl. intake reach)
 export const ROBOT_MIN_SIZE = 12;
@@ -137,7 +136,7 @@ export const FLYWHEEL_RECOVERY_MAX = 0.6; // s extra between max-range shots at 
 /** capture happens when a compliant wheel is DIRECTLY ABOVE the artifact:
  * the wheel line sits at the tip of the intake's reach, and a ball within
  * this band of it (ball radius + compliance squish) gets swallowed */
-export const INTAKE_CAPTURE_BAND = 1; // in beyond ball radius, each way
+export const INTAKE_CAPTURE_BAND = 0.5; // in beyond ball radius, each way (tight mouth — no vacuuming from a distance)
 /** fireInterval = transfer (outtake) cadence from hopper to shooter — the
  * ONLY firing rate limit (no flywheel spin-up model, per product decision).
  * overhang = the compliant wheels may stick out past a narrower chassis;
@@ -218,11 +217,11 @@ export const OVERFLOW_Z = 13.5; // overflow rolls over the retained balls
 export const BASIN_FLOOR_Z = 14; // funnel floor height inside the goal
 export const BASIN_RESTITUTION = 0.4; // vertical bounce off the funnel floor
 export const BASIN_WALL_RESTITUTION = 0.55; // lively caroms off the goal walls
-export const BASIN_FUNNEL_ACCEL = 45; // in/s^2 pull toward the classifier entrance
+export const BASIN_FUNNEL_ACCEL = 85; // in/s^2 pull toward the classifier entrance (drains the basin briskly so balls don't clog)
 /** the funnel only really grips slow balls — fast ones carom around first */
-export const BASIN_FUNNEL_GRIP_SPEED = 25; // in/s
-export const BASIN_DAMPING = 0.8; // 1/s horizontal velocity damping
-export const BASIN_ENTRY_RADIUS = 5; // in, hand-off distance to the rail
+export const BASIN_FUNNEL_GRIP_SPEED = 38; // in/s
+export const BASIN_DAMPING = 1.1; // 1/s horizontal velocity damping (settles onto the funnel faster)
+export const BASIN_ENTRY_RADIUS = 7.5; // in, hand-off distance to the rail (wider catch = fewer balls milling at the mouth)
 export const BASIN_ENTRY_KEEP_V = 0.55; // entry velocity retained (splash energy)
 
 // classifier rail (1D flow, contact stacking)
@@ -233,7 +232,7 @@ export const RAIL_PITCH = 5.1; // ball contact spacing on the stack
 export const GATE_STOP_S = 2; // lowest rest position against the closed gate
 export const RAIL_ENTRY_BLOCK_S = 43.4; // entrance blocked while a ball is above this
 export const RAIL_EXIT_S = -4; // past the gate: ball drops out to the floor
-export const OVERFLOW_FLOW_SPEED = 40; // in/s, overflow rides over everything
+export const OVERFLOW_FLOW_SPEED = 58; // in/s, overflow rides over everything (clears a full goal quickly)
 /** lateral/vertical glide rate as a ball settles onto the rail line */
 export const RAIL_BLEND_SPEED = 30; // in/s
 
@@ -245,6 +244,10 @@ export const GATE_CLOSE_CLEAR_HI = 4.5;
 /** gate INTERACTION rect (a robot overlapping it works the gate). The tape
  * marking on the mat is drawn separately — see GATE_TAPE_* / gateTapeSegments */
 export const GATE_ZONE = { xNear: 62, xFar: 72, y0: -2, y1: 3 };
+/** how far BELOW the gate a robot's center may sit and still count as working
+ * the gate from the long (field) side. Only a robot deeper than this — coming
+ * up from the gate mouth / audience side — is a short-end tap that won't open it. */
+export const GATE_LONG_SIDE_MARGIN = 10; // in
 /** official GATE ZONE marking (manual Section 9): a 2.75in-wide x 10in-long
  * volume bounded by TWO parallel alliance-colored tape LINES, 10in long,
  * running perpendicular to the side wall (into the field), spaced 2.75in

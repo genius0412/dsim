@@ -77,10 +77,19 @@ export class SupabaseLobby {
     this.handlers[event] = cb;
   }
 
-  /** true if this client is the host (smallest peerId among present players) */
+  /** the room host = the EARLIEST joiner (joinedAt, peerId tiebreak). Stable:
+   * it only changes when the host actually leaves, and never flickers on a
+   * transient empty/partial presence sync (unlike a "smallest peerId" rule that
+   * returned true for everyone whenever the list was momentarily empty). */
+  hostId(): string | null {
+    if (!this.players.length) return null;
+    return this.players.reduce((a, b) =>
+      a.joinedAt < b.joinedAt || (a.joinedAt === b.joinedAt && a.peerId < b.peerId) ? a : b,
+    ).peerId;
+  }
+
   isHost(): boolean {
-    if (!this.players.length) return true;
-    return this.players.every((p) => this.peerId <= p.peerId);
+    return this.hostId() === this.peerId;
   }
 
   getPlayers(): LobbyPlayer[] {

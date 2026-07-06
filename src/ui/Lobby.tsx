@@ -81,16 +81,20 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
 
     lobby.on('players', (list) => {
       setPlayers(list);
-      // cap the room: the first ROOM_CAPACITY by join time keep their seats;
-      // a later joiner over the cap bounces itself (deterministic on every client)
+      // cap the room at the first ROOM_CAPACITY by join time.
       const order = [...list].sort(
         (a, b) => a.joinedAt - b.joinedAt || (a.peerId < b.peerId ? -1 : 1),
       );
-      if (order.findIndex((p) => p.peerId === lobby.peerId) >= ROOM_CAPACITY) {
+      const keep = order.slice(0, ROOM_CAPACITY);
+      const excess = order.slice(ROOM_CAPACITY);
+      // a later joiner over the cap bounces itself...
+      if (excess.some((p) => p.peerId === lobby.peerId)) {
         leaveWith(`Room is full (max ${ROOM_CAPACITY} drivers).`);
         return;
       }
-      mesh.connect(list.map((p) => p.peerId)); // open links to everyone present
+      // ...and the host kicks the excess as a backstop (deterministic order)
+      if (lobby.isHost()) excess.forEach((p) => lobby.kick(p.peerId));
+      mesh.connect(keep.map((p) => p.peerId)); // only link the in-room drivers
     });
     lobby.on('start', (msg) => handleStart(msg));
     lobby.on('kicked', () => leaveWith('You were removed from the room by the host.'));
