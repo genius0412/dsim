@@ -60,6 +60,16 @@ export class Lockstep {
     return { tick, cmd: this.setLocal(tick, cmd) };
   }
 
+  /** the local player's produced commands from the first post-seed tick — used
+   * to BACKFILL a peer whose DataChannel opened after we began producing (early
+   * broadcasts to a not-yet-open channel are dropped, so resend on connect) */
+  localHistory(): { start: number; cmds: RobotCommand[] } {
+    const m = this.buf.get(this.localRobotId);
+    if (!m) return { start: this.delay, cmds: [] };
+    const ticks = [...m.keys()].filter((t) => t >= this.delay).sort((a, b) => a - b);
+    return { start: ticks[0] ?? this.delay, cmds: ticks.map((t) => m.get(t) as RobotCommand) };
+  }
+
   /** the first still-connected robot missing a command for `tick` (what a stall
    * is waiting on), or null if `tick` is ready */
   missingAt(tick: number): number | null {

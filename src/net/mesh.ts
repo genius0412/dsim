@@ -90,8 +90,10 @@ export class RtcMesh {
     };
     pc.onconnectionstatechange = () => {
       const st = pc.connectionState;
+      console.info(`[mesh] ${peerId.slice(0, 6)} pc → ${st}`);
       if (st === 'failed' || st === 'disconnected' || st === 'closed') this.dropLink(peerId);
     };
+    console.info(`[mesh] opening link to ${peerId.slice(0, 6)} (initiator=${initiator})`);
 
     if (initiator) {
       const channel = pc.createDataChannel('lockstep', { ordered: true });
@@ -111,11 +113,13 @@ export class RtcMesh {
     link.channel = channel;
     channel.onopen = () => {
       link.open = true;
+      console.info(`[mesh] channel OPEN to ${peerId.slice(0, 6)}`);
       this.handlers.connect?.(peerId);
     };
     channel.onclose = () => {
       if (link.open) {
         link.open = false;
+        console.info(`[mesh] channel CLOSED to ${peerId.slice(0, 6)}`);
         this.handlers.disconnect?.(peerId);
       }
     };

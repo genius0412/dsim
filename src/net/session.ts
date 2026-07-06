@@ -61,6 +61,10 @@ export class NetSession {
     this.ls = new Lockstep(this.robotIds, this.localRobotId);
 
     mesh.on('data', (_from, data) => this.onData(data));
+    // a peer's channel just opened — resend the local inputs we already
+    // produced (early broadcasts to a not-yet-open channel were dropped, and
+    // lockstep is sequential, so the peer would otherwise stall on that gap)
+    mesh.on('connect', (peerId) => this.backfill(peerId));
     mesh.on('disconnect', (peerId) => {
       const rid = this.peerToRobot[peerId];
       if (rid !== undefined) this.ls.markDisconnected(rid);
@@ -93,6 +97,14 @@ export class NetSession {
   /** does this client hold restart/seed authority? */
   isHost(): boolean {
     return this.lobby.isHost();
+  }
+
+  /** resend all local inputs produced so far to a freshly-connected peer */
+  private backfill(peerId: string): void {
+    const hist = this.ls.localHistory();
+    if (!hist.cmds.length) return;
+    const q = hist.cmds.map(quantizeCommand);
+    this.mesh.sendTo(peerId, encodeCommandPacket(this.localRobotId, hist.start, q));
   }
 
   canStep(tick: number): boolean {
