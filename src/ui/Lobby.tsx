@@ -44,14 +44,28 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
       if (!startedRef.current) void lobbyRef.current?.leave();
     };
     window.addEventListener('pagehide', onHide);
+    // heartbeat: every client re-broadcasts its presence periodically, so anyone
+    // whose roster drifted out of sync reconverges within one interval (Supabase
+    // presence can silently miss an update; this keeps everyone honest)
+    const heartbeat = setInterval(() => void lobbyRef.current?.resync(), 3000);
     return () => {
       window.removeEventListener('pagehide', onHide);
+      clearInterval(heartbeat);
       if (!startedRef.current) {
         meshRef.current?.close();
         void lobbyRef.current?.leave();
       }
     };
   }, []);
+
+  // Esc leaves the lobby (⇒ unmount ⇒ leave() untracks + announces our exit)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onCancel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel]);
 
   const myPeerId = lobbyRef.current?.peerId;
   const me = players.find((p) => p.peerId === myPeerId) ?? null;
@@ -188,6 +202,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
   const toggleReady = (): void =>
     void lobbyRef.current?.updateSelf({ ready: !me?.ready });
   const kick = (peerId: string): void => lobbyRef.current?.kick(peerId);
+  const refresh = (): void => void lobbyRef.current?.resync();
 
   if (phase === 'entry' || phase === 'connecting' || phase === 'error') {
     return (
@@ -245,7 +260,12 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
         </header>
 
         <section>
-          <h2>Drivers</h2>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <h2>Drivers</h2>
+            <button className="game-btn" onClick={refresh} title="Re-sync the roster if it looks out of date">
+              ⟳ REFRESH
+            </button>
+          </div>
           <div className="lobby-players">
             {players.map((p) => {
               const isMe = p.peerId === lobbyRef.current?.peerId;

@@ -92,6 +92,9 @@ export class SupabaseLobby {
   private channel: RealtimeChannel | null = null;
   private self: LobbyPlayer;
   private players: LobbyPlayer[] = [];
+  /** peerId -> ms they announced leaving; filtered from the roster for a few
+   * seconds so a slow/stale presence sync can't re-add a departed player */
+  private readonly recentlyLeft = new Map<string, number>();
   private readonly handlers: Partial<Handlers> = {};
 
   constructor(self: Omit<LobbyPlayer, 'peerId' | 'ver' | 'joinedAt'>) {
@@ -131,18 +134,7 @@ export class SupabaseLobby {
     });
     this.channel = channel;
 
-    channel.on('presence', { event: 'sync' }, () => {
-      const state = channel.presenceState<LobbyPlayer>();
-      // one player PER presence key, resolved to the HIGHEST-ver entry (stacked
-      // presences from re-tracking are not chronologically ordered, so "last"
-      // is unreliable and can differ across clients — ver is authoritative)
-      this.players = Object.values(state)
-        .map((entries) => entries as unknown as LobbyPlayer[])
-        .filter((ps) => ps.length > 0) // an empty key would throw the reduce below
-        .map((ps) => ps.reduce((a, b) => (b.ver >= a.ver ? b : a)))
-        .sort((a, b) => (a.peerId < b.peerId ? -1 : 1));
-      this.handlers.players?.(this.players);
-    });
+    channel.on('presence', { event: 'sync' }, () => this.rebuildPlayers());
     channel.on('broadcast', { event: 'signal' }, ({ payload }) => {
       const msg = payload as SignalMsg;
       if (msg.to === this.peerId) this.handlers.signal?.(msg);
@@ -156,6 +148,10 @@ export class SupabaseLobby {
     channel.on('broadcast', { event: 'kick' }, ({ payload }) => {
       if ((payload as { peerId: string }).peerId === this.peerId) this.handlers.kicked?.();
     });
+    channel.on('broadcast', { event: 'left' }, ({ payload }) => {
+      this.recentlyLeft.set((payload as { peerId: string }).peerId, Date.now());
+      this.rebuildPlayers(); // drop them from the roster right away
+    });
 
     await new Promise<void>((resolve, reject) => {
       channel.subscribe((status) => {
@@ -168,6 +164,31 @@ export class SupabaseLobby {
         }
       });
     });
+  }
+
+  /** recompute the roster from the current presence replica (one player per key,
+   * highest-ver entry wins) and emit it */
+  private rebuildPlayers(): void {
+    const now = Date.now();
+    for (const [id, t] of this.recentlyLeft) if (now - t > 6000) this.recentlyLeft.delete(id);
+    const state = this.channel?.presenceState<LobbyPlayer>() ?? {};
+    this.players = Object.values(state)
+      .map((entries) => entries as unknown as LobbyPlayer[])
+      .filter((ps) => ps.length > 0) // an empty key would throw the reduce below
+      .map((ps) => ps.reduce((a, b) => (b.ver >= a.ver ? b : a)))
+      .filter((p) => !this.recentlyLeft.has(p.peerId)) // hide players who just left
+      .sort((a, b) => (a.peerId < b.peerId ? -1 : 1));
+    this.handlers.players?.(this.players);
+  }
+
+  /** re-read our presence replica AND re-broadcast ourselves (bumped ver forces a
+   * fresh presence sync on every client) — called on a heartbeat + the Refresh
+   * button so a client that missed an update reconverges within one interval */
+  async resync(): Promise<void> {
+    if (!this.channel) return;
+    this.rebuildPlayers();
+    this.self = { ...this.self, ver: this.self.ver + 1 };
+    await this.channel.track(this.self);
   }
 
   /** update and re-broadcast our own lobby presence (name/spec/alliance/ready) */
@@ -204,8 +225,15 @@ export class SupabaseLobby {
     if (this.channel) {
       const ch = this.channel;
       this.channel = null;
+      // announce our departure EXPLICITLY so every client drops us at once —
+      // presence untrack alone can propagate slowly / be missed, leaving a ghost
       try {
-        await ch.untrack(); // drop our presence immediately (no ghost entry)
+        ch.send({ type: 'broadcast', event: 'left', payload: { peerId: this.peerId } });
+      } catch {
+        /* ignore */
+      }
+      try {
+        await ch.untrack(); // also drop our presence entry
       } catch {
         /* ignore */
       }
