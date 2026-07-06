@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { GameController, type GameSettings, type HudSnapshot } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
-import { ENDGAME_START } from '../config';
+import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
 import type { NetSession } from '../net/session';
 import type { Alliance, ScoreBreakdown } from '../types';
 
@@ -253,10 +253,12 @@ function Results({
       ],
     ],
     [
-      'FOULS COMMITTED',
+      // penalty POINTS awarded to each alliance (from the OPPONENT's fouls) —
+      // shown as points, not counts, so the breakdown reconciles with each TOTAL
+      'PENALTIES',
       [
-        ['Minor', f.red.minor, f.blue.minor],
-        ['Major', f.red.major, f.blue.major],
+        ['Minor', f.blue.minor * PTS_FOUL_MINOR, f.red.minor * PTS_FOUL_MINOR],
+        ['Major', f.blue.major * PTS_FOUL_MAJOR, f.red.major * PTS_FOUL_MAJOR],
       ],
     ],
   ];
@@ -307,7 +309,8 @@ function Results({
           </tbody>
         </table>
         <p className="hint">
-          Foul points (minor 5 · major 15) are awarded to the OPPONENT and are already in each TOTAL.
+          PENALTIES are the points (minor {PTS_FOUL_MINOR} · major {PTS_FOUL_MAJOR}) awarded to each
+          alliance for the OPPONENT's fouls — already included in each TOTAL.
         </p>
         <div className="overlay-buttons">
           <button onClick={onRematch}>REMATCH</button>

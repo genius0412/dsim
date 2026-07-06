@@ -54,6 +54,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
   const myPeerId = lobbyRef.current?.peerId;
   const me = players.find((p) => p.peerId === myPeerId) ?? null;
   const isHost = lobbyRef.current?.isHost() ?? false;
+  const hostId = lobbyRef.current?.hostId() ?? null;
   const allReady = players.length > 0 && players.every((p) => p.ready);
   const linkOf = (id: string): 'open' | 'connecting' | 'failed' | 'none' =>
     id === myPeerId ? 'open' : (meshRef.current?.linkStatus(id) ?? 'none');
@@ -248,6 +249,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
                   <span className="lobby-team">
                     {p.spec.name} · {p.teamNumber || '—'}
                   </span>
+                  {p.peerId === hostId && <span className="chip on" title="Room host">★ HOST</span>}
                   <span className={`chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
                   <span className="chip">{START_POSES[p.startIndex]?.label ?? '—'}</span>
                   {!isMe && link !== 'open' && (
