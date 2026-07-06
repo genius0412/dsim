@@ -43,10 +43,13 @@ export const PIN_SECONDS = 3;
 export const PIN_ESCAPE_DIST = 24; // in — getting this far away ends the pin
 /** pinned robot counts as "prevented from moving" below this actual speed */
 export const PIN_STUCK_SPEED = 8; // in/s
-/** Foul rules are EDGE-triggered, not timed: a violation fires the instant its
- * condition becomes true and does NOT re-fire while it stays true, but re-fires
- * immediately the next time the condition goes false→true (no cooldown). So
- * leaving a zone and re-entering is a fresh foul right away. */
+/** A foul fires on the rising edge of its condition and does NOT re-fire while
+ * the condition holds — continuous contact in a foul zone is ONE foul, not a
+ * stream. It re-arms only after the condition has been CLEAR for this long, so
+ * a jittery SAT contact that flickers off for a tick or two never re-fouls, but
+ * genuinely leaving a zone and coming back does. Kept short so re-entry still
+ * feels immediate. */
+export const PENALTY_CLEAR = 1.0; // s
 
 // ------------------------------------------------------------ artifacts ----
 export const BALL_RADIUS = 2.5; // 5 in diameter

@@ -1008,20 +1008,22 @@ function inGate(w: World, robotIdx: number, gate: 'red' | 'blue'): void {
     w.match.scores.red.foulPoints === 15 && w.match.fouls.blue.major === 1,
     `redFoulPts=${w.match.scores.red.foulPoints} blueMajor=${w.match.fouls.blue.major}`,
   );
+  // holding in the gate is ONE foul, not a stream (episode-debounced)
+  runCmds(w, new Map(), 1.5);
   check(
-    'staying in the gate does not re-foul every tick (edge-triggered)',
+    'staying in the gate is a single foul, not one per tick',
     w.match.fouls.blue.major === 1,
     `blueMajor=${w.match.fouls.blue.major}`,
   );
 
-  // NO cooldown: leave the gate, come back, and it fouls again immediately
+  // leaving and coming back AFTER the clear window is a fresh foul
   w.robots[0].pos = { x: 0, y: -8 }; // out
-  runCmds(w, new Map(), 0.3);
+  runCmds(w, new Map(), 1.3); // stay clear past PENALTY_CLEAR (1.0 s)
   check('leaving the gate does not add a foul', w.match.fouls.blue.major === 1);
   inGate(w, 0, 'red'); // back in
   runCmds(w, new Map(), 0.3);
   check(
-    're-entering the opponent gate fouls again right away (no cooldown)',
+    're-entering the opponent gate after the clear window fouls again',
     w.match.fouls.blue.major === 2 && w.match.scores.red.foulPoints === 30,
     `blueMajor=${w.match.fouls.blue.major} redFoulPts=${w.match.scores.red.foulPoints}`,
   );
@@ -1173,13 +1175,23 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   );
 }
 
-// ---- G422 pinning: a repeat pin by the same pinner escalates to MAJOR --------
+// ---- G422 pinning: a continuous pin is ONE foul; a REPEAT escalates to MAJOR -
 {
   const w = pinWorld();
-  runCmds(w, PIN_CMDS, 6.3); // first pin at ~3 s (MINOR), re-pin fires ~6 s (MAJOR)
+  runCmds(w, PIN_CMDS, 6.3); // hold the pin continuously well past 6 s
   check(
-    'a continued pin escalates MINOR -> MAJOR on the repeat',
-    w.match.fouls.blue.minor === 1 && w.match.fouls.blue.major === 1,
+    'a sustained pin is a single MINOR foul, not one every 3 s',
+    w.match.fouls.blue.minor === 1 && w.match.fouls.blue.major === 0,
+    `blueMinor=${w.match.fouls.blue.minor} blueMajor=${w.match.fouls.blue.major}`,
+  );
+  // separate, then pin again — the repeat by the same pinner escalates to MAJOR
+  w.robots[0].pos = { x: 0, y: -20 };
+  runCmds(w, new Map(), 0.4); // break contact
+  w.robots[0].pos = { x: 0, y: 44 };
+  runCmds(w, PIN_CMDS, 3.3);
+  check(
+    'a repeat pin (after separating) escalates to MAJOR',
+    w.match.fouls.blue.major === 1,
     `blueMinor=${w.match.fouls.blue.minor} blueMajor=${w.match.fouls.blue.major}`,
   );
 }

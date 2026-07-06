@@ -158,6 +158,9 @@ export interface PinState {
   /** pinned robot pos last tick, to measure actual (post-solver) speed */
   px: number;
   py: number;
+  /** this pin already drew a foul — don't re-fire until the pair separates
+   * (a genuine repeat pin), so a sustained push isn't a foul every 3 s */
+  fired?: boolean;
 }
 
 /** deterministic penalty-engine state (all plain JSON — serializable) */

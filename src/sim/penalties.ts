@@ -61,12 +61,12 @@ export function updatePenalties(
   const pen = world.penalties;
   const byId = new Map(world.robots.map((r) => [r.id, r] as const));
 
-  /** EDGE-triggered foul: fires the instant `key`'s condition becomes true and
-   * stays quiet while it holds, but re-fires immediately the next time it goes
-   * false→true (no cooldown). `episodes[key]` records the last tick the
-   * condition was active. Firing is idempotent within a tick (a duplicated
-   * contact pair, or two rules mapping to one key, awards only once): a fresh
-   * edge is a last-active tick that is neither this tick nor the previous one. */
+  /** EPISODE-debounced foul: fires once when `key`'s condition first holds, then
+   * stays quiet for as long as it keeps holding (`episodes[key]` is refreshed to
+   * `world.time` every active tick). It re-arms only after the condition has been
+   * CLEAR for PENALTY_CLEAR — so continuous contact is ONE foul, a 1-tick SAT
+   * flicker never re-fouls, and a real re-entry after the gap does. Idempotent
+   * within a tick (duplicate contact pair / two rules on one key award once). */
   const fire = (
     key: string,
     offender: Alliance,
@@ -74,10 +74,10 @@ export function updatePenalties(
     rule: string,
   ): void => {
     const last = pen.episodes[key];
-    if (last !== world.tick && last !== world.tick - 1) {
+    if (last === undefined || world.time - last > C.PENALTY_CLEAR) {
       awardFoul(world, offender, severity, rule);
     }
-    pen.episodes[key] = world.tick;
+    pen.episodes[key] = world.time;
   };
 
   const endgame = phase === 'teleop' && world.match.phaseTimeLeft <= C.ENDGAME_START;
@@ -185,6 +185,8 @@ function updatePins(world: World, dt: number, commands: Map<number, RobotCommand
         st = { seconds: 0, ox: pinned.pos.x, oy: pinned.pos.y, px: pinned.pos.x, py: pinned.pos.y };
         pen.pins[key] = st;
       }
+      if (st.fired) continue; // already fouled this pin — hold until it breaks
+
       // actual (post-solver) speed from the position delta — robust whether or
       // not a blocked robot's velocity has been zeroed
       const speed = hyp(pinned.pos.x - st.px, pinned.pos.y - st.py) / dt;
@@ -200,7 +202,9 @@ function updatePins(world: World, dt: number, commands: Map<number, RobotCommand
           const prior = pen.pinFouls[pinner.id] ?? 0;
           awardFoul(world, pinner.alliance, prior > 0 ? 'major' : 'minor', 'G422 pinning');
           pen.pinFouls[pinner.id] = prior + 1;
-          delete pen.pins[key]; // re-arm from scratch (escalates on the next 3 s)
+          // don't re-fire on the SAME pin — require a separation first (that's a
+          // genuine "repeat pin", which then escalates to MAJOR)
+          st.fired = true;
         }
       } else {
         st.seconds = 0; // moving freely though not yet escaped — pause the clock
