@@ -1,6 +1,6 @@
 import type { Artifact, ArtifactColor, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
-import { approach, rot, wrapAngle, hyp } from '../math';
+import { approach, rot, wrapAngle, hyp, dsin, dcos, dtan, datan2 } from '../math';
 import { classifierRect, goalCenter, inLaunchZone, viewAngleOf } from './field';
 import { driveParams } from './drivetrain';
 import { robotCorners } from './physics';
@@ -21,13 +21,13 @@ export function turretWorldPos(r: RobotState): { x: number; y: number } {
  * steepens at close range so a solution exists at every distance. */
 function solveShot(d: number): { speed: number; angle: number } {
   const dh = C.GOAL_OPENING_Z - C.LAUNCH_HEIGHT;
-  const lineOfSight = Math.atan2(dh, Math.max(d, 0.5));
+  const lineOfSight = datan2(dh, Math.max(d, 0.5));
   const angle = Math.min(
     Math.max(C.LAUNCH_ANGLE, lineOfSight + C.LAUNCH_ANGLE_MARGIN),
     C.LAUNCH_ANGLE_MAX,
   );
-  const cos = Math.cos(angle);
-  const denom = 2 * cos * cos * (d * Math.tan(angle) - dh);
+  const cos = dcos(angle);
+  const denom = 2 * cos * cos * (d * dtan(angle) - dh);
   const speed =
     denom > 0
       ? Math.min(Math.sqrt((C.GRAVITY * d * d) / denom), C.LAUNCH_MAX_SPEED)
@@ -45,12 +45,12 @@ export function aimSolution(r: RobotState): { yaw: number; speed: number; angle:
   let dy = g.y - tp.y;
   let sol = solveShot(hyp(dx, dy));
   for (let i = 0; i < 3; i++) {
-    const t = hyp(dx, dy) / Math.max(sol.speed * Math.cos(sol.angle), 1);
+    const t = hyp(dx, dy) / Math.max(sol.speed * dcos(sol.angle), 1);
     dx = g.x - tp.x - wv.x * t;
     dy = g.y - tp.y - wv.y * t;
     sol = solveShot(hyp(dx, dy));
   }
-  return { yaw: Math.atan2(dy, dx), speed: sol.speed, angle: sol.angle };
+  return { yaw: datan2(dy, dx), speed: sol.speed, angle: sol.angle };
 }
 
 export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
@@ -137,7 +137,7 @@ function fire(world: World, r: RobotState): void {
   // lead-compensated solution).
   const { speed, angle } = aimSolution(r);
   const yaw = r.turretHeading;
-  const cos = Math.cos(angle);
+  const cos = dcos(angle);
 
   // flywheel recovery: an energetic shot drains the wheel; a LOW-inertia
   // flywheel needs extra time to spin back up before the next shot. Close
@@ -155,11 +155,11 @@ function fire(world: World, r: RobotState): void {
     state: { kind: 'flight', target: r.alliance },
     pos: { x: tp.x, y: tp.y },
     vel: {
-      x: Math.cos(yaw) * speed * cos + r.vel.x * C.SHOT_ROBOT_VEL_INHERIT,
-      y: Math.sin(yaw) * speed * cos + r.vel.y * C.SHOT_ROBOT_VEL_INHERIT,
+      x: dcos(yaw) * speed * cos + r.vel.x * C.SHOT_ROBOT_VEL_INHERIT,
+      y: dsin(yaw) * speed * cos + r.vel.y * C.SHOT_ROBOT_VEL_INHERIT,
     },
     z: C.LAUNCH_HEIGHT,
-    vz: speed * Math.sin(angle),
+    vz: speed * dsin(angle),
   };
   world.balls.push(ball);
 }
@@ -186,8 +186,8 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   // the intake can't reach INTO the classifier: if the mouth is at/inside a
   // classifier structure (e.g. the robot pressed parallel against it), no
   // capture — you can't vacuum balls through the ramp wall
-  const mouthX = r.pos.x + Math.cos(r.heading) * wheelLine;
-  const mouthY = r.pos.y + Math.sin(r.heading) * wheelLine;
+  const mouthX = r.pos.x + dcos(r.heading) * wheelLine;
+  const mouthY = r.pos.y + dsin(r.heading) * wheelLine;
   for (const a of ['red', 'blue'] as const) {
     const rect = classifierRect(a);
     if (

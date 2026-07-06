@@ -1,7 +1,7 @@
 import type { Alliance, Artifact, RobotState, Vec2 } from '../types';
 import * as C from '../config';
 import { classifierRect, goalFaceNormal, goalLineValue, type Rect } from './field';
-import { dot, rot, clamp, hyp } from '../math';
+import { dot, rot, clamp, hyp, datan2 } from '../math';
 import { driveParams } from './drivetrain';
 
 const ALLIANCES: Alliance[] = ['red', 'blue'];
@@ -157,7 +157,7 @@ function applyContactTorque(
   let flushErr = Infinity;
   if (squareTo) {
     const q = Math.PI / 2;
-    let rel = r.heading - Math.atan2(ny, nx);
+    let rel = r.heading - datan2(ny, nx);
     rel -= Math.round(rel / q) * q;
     flushErr = Math.abs(rel);
   }

@@ -48,6 +48,7 @@ import {
 } from '../src/net/protocol';
 import { Lockstep } from '../src/net/lockstep';
 import { worldHash } from '../src/net/checksum';
+import { dsin, dcos, dtan, datan2 } from '../src/math';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -1316,6 +1317,37 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   const wb = build();
   wb.robots[0].pos.x += 1; // a 1" divergence must change the hash
   check('worldHash detects a diverged position', worldHash(wa) !== worldHash(wb));
+}
+
+// ---- deterministic trig: cross-engine lockstep needs Math-free sin/cos/atan2 -
+// (Math.sin/cos/tan/atan2 are not correctly-rounded, so they differ across
+// browsers and fork a lockstep sim; dsin/dcos/dtan/datan2 are pure +,-,*,/ )
+{
+  let maxSin = 0;
+  let maxCos = 0;
+  let maxTan = 0;
+  let maxAtan2 = 0;
+  for (let i = 0; i < 4001; i++) {
+    const x = (i / 4000 - 0.5) * 40 * Math.PI; // ±20π, exercises range reduction
+    maxSin = Math.max(maxSin, Math.abs(dsin(x) - Math.sin(x)));
+    maxCos = Math.max(maxCos, Math.abs(dcos(x) - Math.cos(x)));
+    if (Math.abs(Math.cos(x)) > 0.2) maxTan = Math.max(maxTan, Math.abs(dtan(x) - Math.tan(x)));
+  }
+  for (let i = -40; i <= 40; i++) {
+    for (let j = -40; j <= 40; j++) {
+      if (i === 0 && j === 0) continue;
+      let d = datan2(i, j) - Math.atan2(i, j);
+      if (d > Math.PI) d -= 2 * Math.PI;
+      if (d < -Math.PI) d += 2 * Math.PI;
+      maxAtan2 = Math.max(maxAtan2, Math.abs(d));
+    }
+  }
+  check('dsin matches Math.sin (<1e-9) across ±20π', maxSin < 1e-9, maxSin.toExponential(2));
+  check('dcos matches Math.cos (<1e-9) across ±20π', maxCos < 1e-9, maxCos.toExponential(2));
+  check('dtan matches Math.tan (<1e-7) away from asymptotes', maxTan < 1e-7, maxTan.toExponential(2));
+  check('datan2 matches Math.atan2 (<1e-7) over all quadrants', maxAtan2 < 1e-7, maxAtan2.toExponential(2));
+  // determinism proper: pure arithmetic ⇒ identical on repeat (no engine state)
+  check('deterministic trig is referentially stable', dsin(1.2345) === dsin(1.2345) && datan2(3, -4) === datan2(3, -4));
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

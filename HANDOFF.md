@@ -1,9 +1,43 @@
-# HANDOFF — session ending 2026-07-05 (Phase C + Phase D landed; netcode needs live 2-tab test)
+# HANDOFF — session ending 2026-07-06 (multiplayer desync root-caused + fixed: deterministic trig)
 
 Read `CLAUDE.md` first (load-bearing rules), then this file. Master plan lives at
 `C:\Users\geniu\.claude\plans\if-artifacts-are-scored-vivid-sphinx.md`.
 
-## ✅ Current state: BUILD GREEN, `npm test` = 117 checks ALL PASS
+## ✅ Current state: BUILD GREEN, `npm test` = 122 checks ALL PASS
+
+## 2026-07-06 session — LIVE multiplayer desync fixed (cross-browser)
+
+Symptom reported: in live MP, "other people's robots are desynced, headings wrong,
+everyone has different final scores, but NOTHING shows top-right (no DESYNC chip)."
+Testers were **all web, different browsers**. Two bugs found + fixed:
+
+- **ROOT CAUSE — non-deterministic transcendentals.** `Math.sin/cos/tan/atan2` are NOT
+  spec-required to be correctly-rounded, so they differ by ~1 ULP **across browser
+  engines/versions**. The sim calls `rot()` (cos/sin) every tick per robot/ball, plus
+  atan2/tan in aim + `startPose` heading — so two different browsers fork within seconds,
+  and the basin's gate RNG (`goal.ts` `nextRandom`) amplifies it into totally different
+  games. FIX: added `dsin/dcos/dtan/datan2` to `src/math.ts` — built ONLY from `+ - * /`
+  and `Math.round/sqrt` (all IEEE-754 exact ⇒ bit-identical everywhere). Accuracy vs
+  `Math.*`: sin/cos 6e-12, atan2 2.7e-9. Routed ALL sim-path trig through them: `rot`
+  (math.ts), `robot.ts` (solveShot/aimSolution/fire/updateIntake), `physics.ts:160`,
+  `field.ts` `startPose`. **Rule: never use `Math.sin/cos/tan/atan2` in `src/sim/` or in
+  shared helpers the sim calls — use the `d*` versions.** (`Math.sqrt` IS exact — keep it;
+  that's why `hyp` already avoids `Math.hypot`.) Render/UI trig can stay on `Math.*`.
+- **DESYNC DETECTOR WAS MASKING FAILURES** (why nothing showed top-right). `NetSession`
+  had a single shared `peerHashes: Map<tick,hash>`; with >2 peers each peer's checksum
+  OVERWROTE the others, so a match with a diverging peer + a matching peer compared
+  against the matching one and missed it. FIX (`src/net/session.ts`): `peerHashes` is now
+  `Map<peerId, Map<tick,hash>>`; `compareAt(tick)` flags a mismatch vs ANY peer, is
+  sticky, `console.warn`s the exact first diverging tick, and prunes old hashes.
+
+**Still non-deterministic (known, next):** the disconnect path (`session.ts:71`
+`markDisconnected` → unilateral ZERO_CMD substitution at a per-peer wall-clock moment)
+can silently desync on a real WebRTC drop. The `{t:'bye'}` control msg is defined but
+never sent/handled. Proper fix = host broadcasts a deterministic "drop robot R at tick T"
+so all peers drop on the same tick. Not hit by the cross-browser bug above, but do this
+before shipping to flaky networks (STUN-only, no TURN).
+
+## ✅ Prior state: Phase C + Phase D landed
 
 All four phases (A markings, B robots/physics, C penalties, **D netcode**) are code-
 complete and green. `npm run build` passes (106 vite modules). Everything is still
@@ -52,12 +86,12 @@ y*y)`, engine-stable) across `src/sim/*` + `math.ts`. Smoke unchanged (values id
 at our magnitudes).
 
 ## ⚠️ NOT DONE / next steps
-1. **LIVE 2-tab verification of multiplayer** — the whole `src/net/` layer only build-
-   verifies here (no browser/WebRTC/Supabase in this env). Follow the checklist in
-   `docs/multiplayer.md`: needs a (free) Supabase project + keys in `.env`, then two
-   `localhost:5173` tabs. Expect to find + fix real bugs on first run (signaling timing,
-   ICE, presence races). Likely first suspects: mesh offer/answer glare (both peers
-   offering), presence `sync` firing before `track`, DataChannel open ordering.
+1. **RE-TEST live cross-browser MP** with the deterministic-trig fix — the reported
+   desync should be gone. If a DESYNC chip still appears, the `console.warn("[net] DESYNC
+   at tick …")` now names the first diverging tick — use it. Next suspect if so: the
+   disconnect ZERO_CMD hole (above), or any remaining non-determinism the smoke can't see
+   (the in-process determinism test can't catch cross-engine float drift — only a real
+   two-browser run can). Signaling/ICE/presence-race first-run bugs may still exist.
 2. `.env` is gitignored; `.env.example` documents the two vars. Vercel/Electron need the
    same vars set (baked at build time).
 3. Deferred: TURN relay (cross-NAT), replays, obelisk AprilTags, mobile/touch, G408.
@@ -75,8 +109,9 @@ at our magnitudes).
   manual's 10/30 or the old 2 s debounce.
 
 ## Verification & tooling
-- `npm test` after ANY `src/sim`/`config`/`src/net` change (117 checks; the netcode
-  foundation — protocol/lockstep/worldHash — is smoke-tested, the browser layer is not).
+- `npm test` after ANY `src/sim`/`config`/`src/net` change (122 checks; the netcode
+  foundation — protocol/lockstep/worldHash/deterministic-trig — is smoke-tested, the
+  browser layer is not).
 - `npm run build` before "done". Dev: `npm run dev`.
 - Manual PDFs: WebFetch `ftc-resources.firstinspires.org/ftc/game/manual-NN`.
 - PowerShell 5.1: no `&&`; Bash tool available for POSIX.

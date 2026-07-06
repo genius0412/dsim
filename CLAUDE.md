@@ -289,8 +289,18 @@ started immediately (no controller-local seed/countdown — the fixed determinis
 UI: `App.tsx` screens menu|lobby|game, `Lobby.tsx`, MULTIPLAYER menu button gated on
 `supabaseConfigured()`. Env-gated via `VITE_SUPABASE_URL/ANON_KEY` (`.env.example`);
 absent ⇒ multiplayer hidden, solo untouched. **Determinism hardening: `Math.hypot`→
-`hyp` (sqrt) across `src/sim` + `math.ts`** (engine-stable). Chromium-only v1.
+`hyp` (sqrt) across `src/sim` + `math.ts`** (engine-stable). **NEVER use
+`Math.sin/cos/tan/atan2` in `src/sim/` or in shared helpers the sim calls — they are
+NOT correctly-rounded and differ across browser engines/versions, forking a lockstep
+sim (this was the real cross-browser desync). Use `dsin/dcos/dtan/datan2` in `math.ts`
+(pure `+ - * /` and `Math.round/sqrt`, ~1e-9 vs `Math.*`); `rot` already routes through
+them. `Math.sqrt` IS exact — keep it. Render/UI trig may stay on `Math.*`.**
+Cross-browser multiplayer is supported (NOT Chromium-only), given the above.
 
-Still open: LIVE 2-tab verification of Phase D; obelisk AprilTag visuals, mobile/touch
+Still open: LIVE re-verification of Phase D after the deterministic-trig fix; a
+DETERMINISTIC disconnect handler (`markDisconnected` in session.ts unilaterally swaps a
+dropped robot to ZERO_CMD at a per-peer wall-clock moment — silent desync on a real WebRTC
+drop; the `{t:'bye'}` control msg exists but is unsent/unhandled — proper fix is a
+host-broadcast "drop robot R at tick T"); obelisk AprilTag visuals, mobile/touch
 controls, replays (record the per-tick command map + seed), TURN relay, and deferred
 fouls (G408 possession>3 / plowing, displacing pre-staged spike artifacts).

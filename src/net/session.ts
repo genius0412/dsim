@@ -1,6 +1,6 @@
 import type { RobotCommand, World } from '../types';
 import type { RobotSetup } from '../sim/spawn';
-import { Lockstep, INPUT_DELAY } from './lockstep';
+import { Lockstep, INPUT_DELAY, CHECKSUM_INTERVAL } from './lockstep';
 import { worldHash } from './checksum';
 import {
   quantizeCommand,
@@ -42,7 +42,11 @@ export class NetSession {
   private readonly robotIds: number[];
   private readonly peerToRobot: Record<string, number>;
   private readonly myHashes = new Map<number, number>();
-  private readonly peerHashes = new Map<number, number>();
+  /** peerId -> (tick -> hash). PER-PEER: a single shared tick->hash slot let a
+   * matching peer's checksum OVERWRITE (and mask) a diverging peer's whenever
+   * >2 clients shared the room, so real desyncs went undetected. Keyed by peer
+   * so a mismatch with ANY peer is caught. */
+  private readonly peerHashes = new Map<string, Map<number, number>>();
   private desync = false;
   private waiting: string | null = null;
   private restartCb: ((seed: number) => void) | null = null;
@@ -141,8 +145,11 @@ export class NetSession {
     const hash = worldHash(world);
     this.myHashes.set(world.tick, hash);
     this.mesh.broadcast(encodeControl({ t: 'checksum', tick: world.tick, hash }));
-    this.compare(world.tick);
+    this.compareAt(world.tick);
     this.ls.prune(world.tick - INPUT_DELAY * 4);
+    // hashes are only useful around the exchange window; drop stale ones so the
+    // maps don't grow unbounded over a long match
+    this.pruneHashes(world.tick - CHECKSUM_INTERVAL * 8);
   }
 
   status(): NetStatus {
@@ -166,8 +173,13 @@ export class NetSession {
     if (typeof data === 'string') {
       const msg = decodeControl(data);
       if (msg.t === 'checksum') {
-        this.peerHashes.set(msg.tick, msg.hash);
-        this.compare(msg.tick);
+        let hashes = this.peerHashes.get(from);
+        if (!hashes) {
+          hashes = new Map();
+          this.peerHashes.set(from, hashes);
+        }
+        hashes.set(msg.tick, msg.hash);
+        this.compareAt(msg.tick);
       } else if (msg.t === 'restart') {
         this.applyRestart(msg.seed);
       }
@@ -180,10 +192,29 @@ export class NetSession {
     }
   }
 
-  private compare(tick: number): void {
+  /** flag a desync if our hash for `tick` disagrees with ANY peer that has
+   * reported one. Sticky, and records + logs the FIRST diverging tick so a live
+   * test can pinpoint where the sims forked. */
+  private compareAt(tick: number): void {
     const mine = this.myHashes.get(tick);
-    const theirs = this.peerHashes.get(tick);
-    if (mine !== undefined && theirs !== undefined && mine !== theirs) this.desync = true;
+    if (mine === undefined) return;
+    for (const [peer, hashes] of this.peerHashes) {
+      const theirs = hashes.get(tick);
+      if (theirs !== undefined && theirs !== mine && !this.desync) {
+        this.desync = true;
+        console.warn(
+          `[net] DESYNC at tick ${tick}: local=${mine >>> 0} peer ${peer.slice(0, 6)}=${theirs >>> 0}`,
+        );
+      }
+    }
+  }
+
+  /** drop hashes older than `before` from both sides (bounded memory) */
+  private pruneHashes(before: number): void {
+    for (const t of this.myHashes.keys()) if (t < before) this.myHashes.delete(t);
+    for (const hashes of this.peerHashes.values()) {
+      for (const t of hashes.keys()) if (t < before) hashes.delete(t);
+    }
   }
 
   private applyRestart(seed: number): void {
