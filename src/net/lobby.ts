@@ -5,13 +5,20 @@ import { getSupabase } from './env';
 
 /**
  * Lobby + signaling over a single Supabase Realtime channel per room code.
- * Uses ONLY presence (who's here + their robot config) and broadcast (WebRTC
- * SDP/ICE relay + the host's match-start) — no database tables, so the free
- * tier is trivially sufficient. The HOST is deterministically the peer with the
- * lexicographically smallest peerId (no creator flag, no host migration in v1).
+ * Supabase is used as a DUMB MESSAGE RELAY only (broadcast) — NOT its presence
+ * feature, whose eventual-consistency caused endless roster desync. Membership
+ * is an explicit protocol we control: each client BROADCASTS a `hello` on join
+ * and on a heartbeat; every client tracks members from those hellos and drops
+ * anyone unheard-from past MEMBER_TIMEOUT_MS (or who sent an explicit `left`).
+ * The HOST = smallest peerId currently present, and publishes the authoritative
+ * roster so every screen shows the same list. No database tables.
  */
 
 export const ROOM_CAPACITY = 4;
+/** how often each client re-announces itself (hello heartbeat) */
+const HEARTBEAT_MS = 2000;
+/** drop a member we haven't heard a hello from within this (crashed / gone) */
+const MEMBER_TIMEOUT_MS = 6000;
 
 export interface LobbyPlayer {
   peerId: string;
@@ -95,13 +102,16 @@ export class SupabaseLobby {
   private channel: RealtimeChannel | null = null;
   private self: LobbyPlayer;
   private players: LobbyPlayer[] = [];
-  /** peerId -> ms they announced leaving; filtered from the roster for a few
-   * seconds so a slow/stale presence sync can't re-add a departed player */
+  /** peerId -> their latest announced state (from `hello` broadcasts) */
+  private readonly members = new Map<string, LobbyPlayer>();
+  /** peerId -> ms we last heard a hello; drives the timeout liveness prune */
+  private readonly lastSeen = new Map<string, number>();
+  /** peerId -> ms they announced leaving; filtered for a few seconds so a
+   * straggler hello can't re-add a departed player before it stops arriving */
   private readonly recentlyLeft = new Map<string, number>();
-  /** current host, held STICKY: only re-elected when it actually leaves. Keyed on
-   * peerId (NOT wall-clock joinedAt) so clock skew can't make a lagging-clock peer
-   * look like the earliest joiner and hijack it, and a new joiner can't steal it. */
+  /** host = smallest peerId present (recomputed each rebuild, clock-independent) */
   private hostPeerId: string | null = null;
+  private heartbeat: ReturnType<typeof setInterval> | null = null;
   private readonly handlers: Partial<Handlers> = {};
 
   constructor(self: Omit<LobbyPlayer, 'peerId' | 'ver' | 'joinedAt'>) {
@@ -113,17 +123,14 @@ export class SupabaseLobby {
     this.handlers[event] = cb;
   }
 
-  /** re-elect the host only if the current one is gone (STICKY). Base election is
-   * the smallest peerId present — deterministic + clock-independent, so every
-   * client agrees on the same host. */
+  /** host = the smallest peerId currently present. Deterministic + clock-
+   * independent, so every client agrees. NOT sticky: stickiness locked each
+   * client onto whoever it saw first — itself, before others' presence
+   * propagated — so everyone became their own host. Non-sticky reconverges to
+   * one agreed host the moment presence includes everyone. */
   private recomputeHost(): void {
     const ids = this.players.map((p) => p.peerId);
-    if (ids.length === 0) {
-      this.hostPeerId = null;
-      return;
-    }
-    if (this.hostPeerId && ids.includes(this.hostPeerId)) return; // keep it
-    this.hostPeerId = ids.reduce((a, b) => (a < b ? a : b));
+    this.hostPeerId = ids.length ? ids.reduce((a, b) => (a < b ? a : b)) : null;
   }
 
   hostId(): string | null {
@@ -153,11 +160,20 @@ export class SupabaseLobby {
     const supabase = getSupabase();
     if (!supabase) throw new Error('multiplayer not configured');
     const channel = supabase.channel(`decode:${code.toLowerCase()}`, {
-      config: { presence: { key: this.peerId }, broadcast: { self: false } },
+      config: { broadcast: { self: false } },
     });
     this.channel = channel;
 
-    channel.on('presence', { event: 'sync' }, () => this.rebuildPlayers());
+    channel.on('broadcast', { event: 'hello' }, ({ payload }) => {
+      const p = payload as LobbyPlayer;
+      if (p.peerId === this.peerId || this.recentlyLeft.has(p.peerId)) return;
+      const isNew = !this.members.has(p.peerId);
+      const cur = this.members.get(p.peerId);
+      if (!cur || p.ver >= cur.ver) this.members.set(p.peerId, p); // newest wins
+      this.lastSeen.set(p.peerId, Date.now());
+      if (isNew) this.sendHello(); // greet a newcomer so they learn US immediately
+      this.rebuildPlayers();
+    });
     channel.on('broadcast', { event: 'signal' }, ({ payload }) => {
       const msg = payload as SignalMsg;
       if (msg.to === this.peerId) this.handlers.signal?.(msg);
@@ -172,7 +188,10 @@ export class SupabaseLobby {
       if ((payload as { peerId: string }).peerId === this.peerId) this.handlers.kicked?.();
     });
     channel.on('broadcast', { event: 'left' }, ({ payload }) => {
-      this.recentlyLeft.set((payload as { peerId: string }).peerId, Date.now());
+      const id = (payload as { peerId: string }).peerId;
+      this.recentlyLeft.set(id, Date.now());
+      this.members.delete(id);
+      this.lastSeen.delete(id);
       this.rebuildPlayers(); // drop them from the roster right away
     });
     channel.on('broadcast', { event: 'roster' }, ({ payload }) => {
@@ -182,7 +201,13 @@ export class SupabaseLobby {
     await new Promise<void>((resolve, reject) => {
       channel.subscribe((status) => {
         if (status === 'SUBSCRIBED') {
-          channel.track(this.self).then(() => resolve());
+          this.sendHello(); // announce ourselves; existing members greet back
+          this.rebuildPlayers();
+          this.heartbeat = setInterval(() => {
+            this.sendHello();
+            this.rebuildPlayers(); // also prunes timed-out members
+          }, HEARTBEAT_MS);
+          resolve();
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
           reject(new Error(`lobby channel ${status}`));
         } else if (status === 'CLOSED') {
@@ -192,36 +217,43 @@ export class SupabaseLobby {
     });
   }
 
-  /** recompute the roster from the current presence replica (one player per key,
-   * highest-ver entry wins) and emit it */
+  /** broadcast our current state so every client (re)learns us */
+  private sendHello(): void {
+    this.lastSeen.set(this.peerId, Date.now());
+    this.channel?.send({ type: 'broadcast', event: 'hello', payload: this.self });
+  }
+
+  /** rebuild the roster from tracked members: prune the timed-out and the
+   * recently-left, always include ourselves, sort by peerId, re-elect the host */
   private rebuildPlayers(): void {
     const now = Date.now();
-    for (const [id, t] of this.recentlyLeft) if (now - t > 6000) this.recentlyLeft.delete(id);
-    const state = this.channel?.presenceState<LobbyPlayer>() ?? {};
-    this.players = Object.values(state)
-      .map((entries) => entries as unknown as LobbyPlayer[])
-      .filter((ps) => ps.length > 0) // an empty key would throw the reduce below
-      .map((ps) => ps.reduce((a, b) => (b.ver >= a.ver ? b : a)))
-      .filter((p) => !this.recentlyLeft.has(p.peerId)) // hide players who just left
+    for (const [id, t] of this.recentlyLeft) if (now - t > MEMBER_TIMEOUT_MS) this.recentlyLeft.delete(id);
+    for (const [id, seen] of this.lastSeen) {
+      if (id !== this.peerId && now - seen > MEMBER_TIMEOUT_MS) {
+        this.members.delete(id);
+        this.lastSeen.delete(id);
+      }
+    }
+    this.members.set(this.peerId, this.self); // we always know ourselves
+    this.players = [...this.members.values()]
+      .filter((p) => !this.recentlyLeft.has(p.peerId))
       .sort((a, b) => (a.peerId < b.peerId ? -1 : 1));
     this.recomputeHost();
     this.handlers.players?.(this.players);
   }
 
-  /** re-read our presence replica AND re-broadcast ourselves (bumped ver forces a
-   * fresh presence sync on every client) — called on a heartbeat + the Refresh
-   * button so a client that missed an update reconverges within one interval */
-  async resync(): Promise<void> {
-    if (!this.channel) return;
+  /** re-announce ourselves and rebuild — the manual Refresh button; also pokes
+   * everyone else's members list to reconverge */
+  resync(): void {
+    this.sendHello();
     this.rebuildPlayers();
-    this.self = { ...this.self, ver: this.self.ver + 1 };
-    await this.channel.track(this.self);
   }
 
-  /** update and re-broadcast our own lobby presence (name/spec/alliance/ready) */
-  async updateSelf(patch: Partial<Omit<LobbyPlayer, 'peerId' | 'ver' | 'joinedAt'>>): Promise<void> {
+  /** update and re-broadcast our own state (name/spec/alliance/ready/meshReady) */
+  updateSelf(patch: Partial<Omit<LobbyPlayer, 'peerId' | 'ver' | 'joinedAt'>>): void {
     this.self = { ...this.self, ...patch, ver: this.self.ver + 1 };
-    await this.channel?.track(this.self);
+    this.sendHello();
+    this.rebuildPlayers();
   }
 
   /** host-only: remove a player from the room */
@@ -249,18 +281,16 @@ export class SupabaseLobby {
   }
 
   async leave(): Promise<void> {
+    if (this.heartbeat) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = null;
+    }
     if (this.channel) {
       const ch = this.channel;
       this.channel = null;
-      // announce our departure EXPLICITLY so every client drops us at once —
-      // presence untrack alone can propagate slowly / be missed, leaving a ghost
+      // announce our departure so every client drops us at once
       try {
         ch.send({ type: 'broadcast', event: 'left', payload: { peerId: this.peerId } });
-      } catch {
-        /* ignore */
-      }
-      try {
-        await ch.untrack(); // also drop our presence entry
       } catch {
         /* ignore */
       }

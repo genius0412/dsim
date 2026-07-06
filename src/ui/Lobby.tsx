@@ -46,19 +46,10 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
       if (!startedRef.current) void lobbyRef.current?.leave();
     };
     window.addEventListener('pagehide', onHide);
-    // heartbeat: every client re-broadcasts its presence periodically, so anyone
-    // whose roster drifted out of sync reconverges within one interval (Supabase
-    // presence can silently miss an update; this keeps everyone honest)
-    const heartbeat = setInterval(() => {
-      const lobby = lobbyRef.current;
-      void lobby?.resync();
-      // host re-publishes the authoritative roster so a client that missed it
-      // (best-effort broadcast) reconverges within one interval
-      if (lobby?.isHost() && rosterRef.current.length) lobby.broadcastRoster(rosterRef.current);
-    }, 3000);
+    // (membership heartbeat now lives inside SupabaseLobby — the hello broadcast —
+    // and rebuilding there fires 'players', which re-publishes the host roster)
     return () => {
       window.removeEventListener('pagehide', onHide);
-      clearInterval(heartbeat);
       if (!startedRef.current) {
         meshRef.current?.close();
         void lobbyRef.current?.leave();
