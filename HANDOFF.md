@@ -10,15 +10,36 @@ Multiplayer is live: client (Vite dev / `.env` → `wss://dohun-sim-decode.fly.d
 authoritative Fly game server. User play-tested control feel, remote smoothness, AND
 robot-robot collisions over the real deploy — all good.
 
-## Phase 1 status: reconnection + delta snapshots DONE; **server DEPLOYED to Fly**;
+## Phase 1 status: reconnection + delta snapshots DONE; **server DEPLOYED to Fly (v3)**;
 WebTransport deferred (needs the TLS deploy to validate); full-reload reconnect + the
 Vercel client deploy still open.
 
+## INPUT HANDLING — final model (after a stuck-robot bug, live-fixed + redeployed)
+Users on real latency were **stuck at spawn**. Root cause: the server applies each input
+for its EXACT tagged tick and dropped ticks it had already simulated; since the client
+starts ~½ RTT after the server (matchStart travel) and reconciles its clock DOWN to the
+server's, a laggy client is always behind ⇒ every input lands in the server's past ⇒
+dropped ⇒ robot never gets a command. (Proven headlessly: at 80 ms, no-lead spins 0.00,
+leading spins 7.00.)
+- **WRONG first fix (reverted):** made the client run a big adaptive input-lead and
+  fast-forward the WHOLE predicted world ahead — which fast-forwarded the BALLS too, so
+  every snapshot correction flung them around (rubber-banding). Don't reintroduce a
+  whole-world lead.
+- **RIGHT fix (shipped):** the client predicts only a SMALL amount ahead (real-time drain,
+  no fast-forward — balls stay near authoritative). The **SERVER is now LENIENT**
+  (`server/room.ts` `frameCommands`/`onInput`): exact-tick input when present (on-time ⇒
+  matches prediction, smooth), else the client's **most recent command** while it's live
+  (`latest`/`latestTick`/`lastRecvTick`, within `HOLD_TICKS`), else ZERO once it goes
+  quiet. So late inputs move the robot instead of freezing it. Redeployed to Fly.
+- Lesson: input lead is a SEND-side concern; do NOT deep-predict the shared world (balls)
+  to achieve it.
+
 ## ⚠️ GIT: user commits, NOT me (they were explicit — **never commit yourself**)
 The earlier netcode overhaul is committed (in `c7e802e`). THIS session's later changes —
-remote-robot prediction (collision fix), server crash-hardening, delta snapshots, deploy
-files, new smoke tests — are in the working tree, **uncommitted**, for the user to commit.
-Only `fly.toml` differs at the git layer if you diff. Do not run `git commit`.
+remote-robot prediction (collision fix), lenient-server input handling (stuck-robot fix),
+server crash-hardening, delta snapshots, deploy files, new smoke tests — are in the working
+tree, **uncommitted**, for the user to commit. Do not run `git commit`. (The live Fly
+server is already running these — deployed straight from the working tree.)
 
 ## Phase 0 was LIVE-VERIFIED by the user
 
