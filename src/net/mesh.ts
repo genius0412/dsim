@@ -14,6 +14,9 @@ import { iceServers, loadIceServers } from './env';
 
 /** a link that hasn't opened its DataChannel within this is reported failed */
 const CONNECT_TIMEOUT_MS = 20000;
+/** stop waiting for more ICE candidates and send the SDP anyway (a slow/blocked
+ * TURN server can otherwise stall gathering forever) */
+const ICE_GATHER_TIMEOUT_MS = 3000;
 
 type MeshHandlers = {
   data: (from: string, data: ArrayBuffer | string) => void;
@@ -23,14 +26,17 @@ type MeshHandlers = {
   failed: (peerId: string) => void;
 };
 
+// NON-TRICKLE signaling: a single complete SDP (with all ICE candidates already
+// embedded) is the ONLY message per side. Trickling each candidate as its own
+// broadcast flooded the rate-limited, best-effort Supabase channel, so with
+// several peers connecting at once candidates were dropped and pairs got stuck
+// at "connecting" — randomly, differently per client. One bundled SDP each way
+// (offer + answer) is well under the rate limit and has nothing to lose mid-flight.
 type SdpSignal = { kind: 'sdp'; sdp: RTCSessionDescriptionInit };
-type IceSignal = { kind: 'ice'; candidate: RTCIceCandidateInit };
 
 interface PeerLink {
   pc: RTCPeerConnection;
   channel: RTCDataChannel | null;
-  /** ICE candidates that arrived before the remote description was set */
-  pending: RTCIceCandidateInit[];
   open: boolean;
   /** true once the link has failed/timed out (reported once) */
   failed: boolean;
@@ -119,7 +125,7 @@ export class RtcMesh {
 
   private makeLink(peerId: string, initiator: boolean): PeerLink {
     const pc = new RTCPeerConnection({ iceServers: this.ice ?? iceServers() });
-    const link: PeerLink = { pc, channel: null, pending: [], open: false, failed: false, timer: null };
+    const link: PeerLink = { pc, channel: null, open: false, failed: false, timer: null };
     this.links.set(peerId, link);
     // a link that never opens must FAIL LOUDLY (lobby shows it, host can kick)
     // instead of leaving every peer stalled at WAITING forever
@@ -127,11 +133,6 @@ export class RtcMesh {
       if (!link.open) this.failLink(peerId);
     }, CONNECT_TIMEOUT_MS);
 
-    pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        this.lobby.sendSignal(peerId, { kind: 'ice', candidate: e.candidate.toJSON() } satisfies IceSignal);
-      }
-    };
     pc.onconnectionstatechange = () => {
       const st = pc.connectionState;
       console.info(`[mesh] ${peerId.slice(0, 6)} pc → ${st}`);
@@ -145,14 +146,42 @@ export class RtcMesh {
     if (initiator) {
       const channel = pc.createDataChannel('lockstep', { ordered: true });
       this.wireChannel(peerId, link, channel);
+      // non-trickle: gather all candidates, then send ONE complete offer SDP
       pc.createOffer()
-        .then((offer) => pc.setLocalDescription(offer).then(() => offer))
-        .then((offer) => this.lobby.sendSignal(peerId, { kind: 'sdp', sdp: offer } satisfies SdpSignal))
+        .then((offer) => pc.setLocalDescription(offer))
+        .then(() => this.iceComplete(pc))
+        .then(() => this.sendLocalSdp(peerId, pc))
         .catch(() => this.failLink(peerId));
     } else {
       pc.ondatachannel = (e) => this.wireChannel(peerId, link, e.channel);
     }
     return link;
+  }
+
+  /** resolve once ICE gathering completes (or a safety timeout elapses) so the
+   * SDP we then send carries every candidate — no separate trickle messages */
+  private iceComplete(pc: RTCPeerConnection): Promise<void> {
+    if (pc.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (): void => {
+        if (done) return;
+        done = true;
+        pc.removeEventListener('icegatheringstatechange', check);
+        resolve();
+      };
+      const check = (): void => {
+        if (pc.iceGatheringState === 'complete') finish();
+      };
+      pc.addEventListener('icegatheringstatechange', check);
+      setTimeout(finish, ICE_GATHER_TIMEOUT_MS);
+    });
+  }
+
+  /** send our current (candidate-laden) local description to a peer */
+  private sendLocalSdp(peerId: string, pc: RTCPeerConnection): void {
+    const sdp = pc.localDescription;
+    if (sdp) this.lobby.sendSignal(peerId, { kind: 'sdp', sdp: sdp.toJSON() } satisfies SdpSignal);
   }
 
   private wireChannel(peerId: string, link: PeerLink, channel: RTCDataChannel): void {
@@ -180,29 +209,25 @@ export class RtcMesh {
   }
 
   private async onSignal(msg: SignalMsg): Promise<void> {
-    const data = msg.data as SdpSignal | IceSignal;
+    const data = msg.data as SdpSignal;
+    if (data.kind !== 'sdp') return; // non-trickle: full SDP is the only signal
     let link = this.links.get(msg.from);
     if (!link) {
       // an inbound offer from a peer we haven't set up (we are the answerer)
-      if (data.kind !== 'sdp' || data.sdp.type !== 'offer') return;
+      if (data.sdp.type !== 'offer') return; // a stray answer with no link
       link = this.makeLink(msg.from, false);
     }
     const { pc } = link;
     try {
-      if (data.kind === 'sdp') {
-        await pc.setRemoteDescription(data.sdp);
-        for (const c of link.pending.splice(0)) await pc.addIceCandidate(c);
-        if (data.sdp.type === 'offer') {
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          this.lobby.sendSignal(msg.from, { kind: 'sdp', sdp: answer } satisfies SdpSignal);
-        }
-      } else {
-        if (pc.remoteDescription) await pc.addIceCandidate(data.candidate);
-        else link.pending.push(data.candidate); // buffer until remote desc is set
+      await pc.setRemoteDescription(data.sdp);
+      if (data.sdp.type === 'offer') {
+        // gather our candidates, then reply with ONE complete answer SDP
+        await pc.setLocalDescription(await pc.createAnswer());
+        await this.iceComplete(pc);
+        this.sendLocalSdp(msg.from, pc);
       }
     } catch {
-      this.dropLink(msg.from);
+      this.failLink(msg.from);
     }
   }
 
