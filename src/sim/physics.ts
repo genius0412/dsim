@@ -1,7 +1,8 @@
 import type { Alliance, Artifact, RobotState, Vec2 } from '../types';
 import * as C from '../config';
 import { classifierRect, goalFaceNormal, goalLineValue, type Rect } from './field';
-import { dot, rot, clamp } from '../math';
+import { dot, rot, clamp, hyp } from '../math';
+import { driveParams } from './drivetrain';
 
 const ALLIANCES: Alliance[] = ['red', 'blue'];
 
@@ -126,17 +127,28 @@ function pushRobotAt(
     r.vel.x -= nx * vn;
     r.vel.y -= ny * vn;
   }
+  applyContactTorque(r, nx, ny, press, contacts, squareTo);
+}
+
+/** the contact-torque response shared by wall and robot-robot contacts:
+ * pushing harder squares up faster (pressure-scaled), the correction never
+ * steps past flush, and fast off-axis hits convert speed into visible spin */
+function applyContactTorque(
+  r: RobotState,
+  nx: number,
+  ny: number,
+  press: number,
+  contacts: { c: Vec2; d: number }[],
+  squareTo: boolean,
+): void {
   let torque = 0;
   for (const { c, d } of contacts) {
     const lx = c.x - r.pos.x;
     const ly = c.y - r.pos.y;
-    const lever = Math.hypot(lx, ly);
+    const lever = hyp(lx, ly);
     if (lever < 1e-6) continue;
     torque += ((lx * ny - ly * nx) / lever) * (Math.min(d, 2) + C.CONTACT_BIAS);
   }
-  // pushing harder squares up faster: alignment scales with contact pressure,
-  // so a full-speed hit swings the robot hard and a steady shove against the
-  // wall keeps it turning briskly instead of inching around
   const gain = 1 + press * C.CONTACT_PRESS_GAIN;
   const rate = Math.min(C.CONTACT_ALIGN_RATE * gain, C.CONTACT_ALIGN_RATE_MAX);
   // never step PAST flush: cap the correction at the remaining tilt (the
@@ -152,6 +164,7 @@ function pushRobotAt(
   const cap = Math.min(rate, flushErr);
   const align = clamp(torque * 0.1 * gain, -cap, cap);
   if (align !== 0) {
+    const maxTurn = driveParams(r.spec).maxTurn;
     r.heading += align;
     if (r.angVel * align < 0) {
       // bleed angular velocity that fights the contact
@@ -160,13 +173,108 @@ function pushRobotAt(
       // a fast off-axis impact converts speed into visible spin — scaled by
       // the actual torque so a dead-center (torque≈0) contact adds nothing,
       // and gated near flush so it can't re-excite a settled robot
-      r.angVel = clamp(
-        r.angVel + torque * press * C.CONTACT_IMPACT_SPIN,
-        -C.TURN_MAX_SPEED,
-        C.TURN_MAX_SPEED,
-      );
+      r.angVel = clamp(r.angVel + torque * press * C.CONTACT_IMPACT_SPIN, -maxTurn, maxTurn);
     }
   }
+}
+
+/** how deep a world point sits inside the robot's OBB (incl. intake);
+ * negative = outside */
+function pointDepthInRobot(r: RobotState, p: Vec2): number {
+  const e = robotExtents(r);
+  const local = rot({ x: p.x - r.pos.x, y: p.y - r.pos.y }, -r.heading);
+  const dx = Math.min(local.x + e.rear, e.front - local.x);
+  const dy = Math.min(local.y + e.half, e.half - local.y);
+  return Math.min(dx, dy);
+}
+
+/** OBB-vs-OBB robot collision (SAT over both robots' axes). Near-inelastic
+ * shoving with MASS-weighted resolution: the heavier robot yields less, both
+ * chassis get the contact-torque response (bumpers square up against each
+ * other). Registers the contact pair into `out` (for the penalty engine). */
+export function collideRobots(
+  a: RobotState,
+  b: RobotState,
+  out: { a: number; b: number }[] | null,
+): void {
+  const ca = robotCorners(a);
+  const cb = robotCorners(b);
+  const axes = [
+    rot({ x: 1, y: 0 }, a.heading),
+    rot({ x: 0, y: 1 }, a.heading),
+    rot({ x: 1, y: 0 }, b.heading),
+    rot({ x: 0, y: 1 }, b.heading),
+  ];
+  let minPen = Infinity;
+  let minAxis: Vec2 | null = null;
+  for (const ax of axes) {
+    let aMin = Infinity;
+    let aMax = -Infinity;
+    for (const c of ca) {
+      const p = c.x * ax.x + c.y * ax.y;
+      aMin = Math.min(aMin, p);
+      aMax = Math.max(aMax, p);
+    }
+    let bMin = Infinity;
+    let bMax = -Infinity;
+    for (const c of cb) {
+      const p = c.x * ax.x + c.y * ax.y;
+      bMin = Math.min(bMin, p);
+      bMax = Math.max(bMax, p);
+    }
+    const overlap = Math.min(aMax, bMax) - Math.max(aMin, bMin);
+    if (overlap <= 0) return; // separated
+    if (overlap < minPen) {
+      minPen = overlap;
+      minAxis = ax;
+    }
+  }
+  if (!minAxis) return;
+  // normal oriented a -> b
+  let nx = minAxis.x;
+  let ny = minAxis.y;
+  if ((b.pos.x - a.pos.x) * nx + (b.pos.y - a.pos.y) * ny < 0) {
+    nx = -nx;
+    ny = -ny;
+  }
+  if (out) out.push(a.id < b.id ? { a: a.id, b: b.id } : { a: b.id, b: a.id });
+
+  // mass-weighted positional split: the heavier robot yields less
+  const ma = a.spec.massLb;
+  const mb = b.spec.massLb;
+  const wa = mb / (ma + mb);
+  const wb = ma / (ma + mb);
+  a.pos.x -= nx * minPen * wa;
+  a.pos.y -= ny * minPen * wa;
+  b.pos.x += nx * minPen * wb;
+  b.pos.y += ny * minPen * wb;
+
+  // per-robot pressure into the contact (for the torque response), then a
+  // near-inelastic normal impulse: closing velocity dies, masses decide who
+  // gets moved
+  const pressA = Math.max(0, a.vel.x * nx + a.vel.y * ny);
+  const pressB = Math.max(0, -(b.vel.x * nx + b.vel.y * ny));
+  const rvn = (b.vel.x - a.vel.x) * nx + (b.vel.y - a.vel.y) * ny;
+  if (rvn < 0) {
+    // impulse for restitution 0 split by mass
+    a.vel.x += nx * rvn * wa;
+    a.vel.y += ny * rvn * wa;
+    b.vel.x -= nx * rvn * wb;
+    b.vel.y -= ny * rvn * wb;
+  }
+
+  // contact manifold: every corner of one chassis inside the other
+  const contacts: { c: Vec2; d: number }[] = [];
+  for (const c of cb) {
+    const d = pointDepthInRobot(a, c);
+    if (d > -0.05) contacts.push({ c, d: Math.max(d, 0) });
+  }
+  for (const c of ca) {
+    const d = pointDepthInRobot(b, c);
+    if (d > -0.05) contacts.push({ c, d: Math.max(d, 0) });
+  }
+  applyContactTorque(a, -nx, -ny, pressA, contacts, true);
+  applyContactTorque(b, nx, ny, pressB, contacts, true);
 }
 
 /** push the robot out of walls, goal faces and classifier structures */
@@ -198,7 +306,7 @@ export function constrainRobot(r: RobotState): void {
       let worst = 0;
       const contacts: { c: Vec2; d: number }[] = [];
       for (const c of robotCorners(r)) {
-        const d = goalLineValue(c, a) / Math.SQRT2;
+        const d = goalLineValue(c, a); // perpendicular distance behind the face
         if (d > -0.05) contacts.push({ c, d: Math.max(d, 0) });
         if (d > worst) worst = d;
       }
@@ -250,7 +358,7 @@ export function constrainRobot(r: RobotState): void {
 export function stepGroundBall(b: Artifact, dt: number): void {
   b.pos.x += b.vel.x * dt;
   b.pos.y += b.vel.y * dt;
-  const speed = Math.hypot(b.vel.x, b.vel.y);
+  const speed = hyp(b.vel.x, b.vel.y);
   if (speed > 0) {
     const ns = speed - C.BALL_ROLL_FRICTION * dt;
     if (ns <= 0 || ns < C.BALL_REST_SPEED) {
@@ -293,7 +401,7 @@ export function collideBallStatic(b: Artifact): void {
   if (b.z < C.GOAL_WALL_TOP) {
     for (const a of ALLIANCES) {
       const gv = goalLineValue(b.pos, a);
-      const dist = gv / Math.SQRT2;
+      const dist = gv; // perpendicular distance behind the face
       const pen = dist + rr;
       if (pen > 0 && dist < rr * 3) {
         const n = goalFaceNormal(a);
@@ -342,7 +450,7 @@ function clampBallPosToStatics(p: Vec2): Vec2 {
   const f = C.FIELD_HALF - C.BALL_RADIUS;
   const out = { x: clamp(p.x, -f, f), y: clamp(p.y, -f, f) };
   for (const a of ALLIANCES) {
-    const dist = goalLineValue(out, a) / Math.SQRT2;
+    const dist = goalLineValue(out, a); // perpendicular distance behind the face
     const pen = dist + C.BALL_RADIUS;
     if (pen > 0 && dist < C.BALL_RADIUS * 3) {
       const n = goalFaceNormal(a);
@@ -377,7 +485,7 @@ export function collideBallRobot(b: Artifact, r: RobotState): void {
     // ball center inside the OBB: push out along the vector from robot center
     const ox = b.pos.x - r.pos.x;
     const oy = b.pos.y - r.pos.y;
-    const ol = Math.hypot(ox, oy) || 1;
+    const ol = hyp(ox, oy) || 1;
     nx = ox / ol;
     ny = oy / ol;
     pen = C.BALL_RADIUS + 2;
@@ -389,7 +497,7 @@ export function collideBallRobot(b: Artifact, r: RobotState): void {
   b.pos.y = c.y;
   const bx = tx - c.x; // push refused by the field, pointing into the wall
   const by = ty - c.y;
-  const blocked = Math.hypot(bx, by);
+  const blocked = hyp(bx, by);
   if (blocked > C.BALL_PIN_SLOP) {
     const inx = bx / blocked; // direction of the refused push (into the wall)
     const iny = by / blocked;

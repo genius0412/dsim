@@ -4,6 +4,12 @@
 Vite + React + TypeScript, Canvas 2D, zero runtime deps beyond React. Deploys to
 Vercel zero-config; Electron wrapper for a desktop build.
 
+## Session protocol
+
+**At the end of every working session, write/refresh `HANDOFF.md`** (repo root): current
+state (is the build green?), what was finished, exact next steps, and gotchas. Read it
+at session start if it exists — it may describe uncommitted mid-refactor state.
+
 ## Commands
 
 - `npm run dev` — dev server (localhost:5173)
@@ -40,9 +46,40 @@ for the full map and sources. Key facts people get wrong:
   center) + small audience triangle. Any robot part inside ⇒ may launch.
 - Each goal's classifier channel runs down the adjacent side wall to a gate near
   mid-wall (y≈0); released/overflow balls roll out beneath it toward the audience.
-- Spike marks: horizontal 10" tape at x=±48.5, rows y = -35.5 / -12.8 / +11.1,
-  3 balls per row (GPP / PGP / PPG near→far). Bases 18×18 at (±36,-36). Loading zones =
-  audience corners, 23×23.
+- **GOAL FOOTPRINT is a right triangle in the corner, NOT a symmetric 45° face**
+  (corrected July 2026, `smoke.ts` asserts it): legs flush along the walls —
+  `GOAL_FACE_WIDTH` 26.5" along the far wall, `GOAL_DEPTH` 18.3" down the side wall,
+  right angle at the field corner. The FACE robots shoot at is the hypotenuse
+  (`GOAL_FACE_LEN` ~32.2", ~34.6° off the far wall). `goalTriangle`/`goalFacePoints`/
+  `goalFaceNormal` (unit normal into the field) / `goalCenter` (opening centroid).
+  **`goalLineValue` now returns TRUE perpendicular inches** from the face (>0 behind,
+  inside the footprint; <0 field side) — do NOT divide by SQRT2 anywhere (the old
+  45°-face scaling was removed at every call site).
+- Spike marks: horizontal 10" tape at x=±48.5 — that is ONE tile (~23.5") from the
+  side wall (re-verified July 2026; an old "two tiles" comment was wrong, the value
+  right), rows y = -35.5 / -12.8 / +11.1, 3 balls per row (GPP / PGP / PPG near→far).
+  BASE zone 18×18, corners at (d·24,−48) & (d·42,−30), `BASE_CENTER` (d·33,−39) where
+  d = driverSide (blue +x, red −x). Loading zones = audience corners, 23×23.
+- GATE ZONE: the real marking is TWO thin alliance-colored tape LINES, 10" long,
+  2.75" apart (`GATE_TAPE_W`), **starting at the classifier edge (x=±66) and running
+  into the field** (`gateTapeSegments` → `[[Vec2,Vec2],[Vec2,Vec2]]` line pairs,
+  drawn). The larger 10×5 `gateZone()` INTERACTION rect works the gate and is
+  intentionally undrawn (feel > strict tape).
+- DEPOT tape runs flush ALONG the goal face (the hypotenuse) from the far-wall corner
+  to the classifier edge (x=±66) — it does NOT run through the channel to the side
+  wall (`depotSegment` clips at the classifier). Band `DEPOT_DEPTH` 6" deep; band fill
+  is no longer drawn (white tape line drawn last so the goal outline can't overdraw it).
+- SECRET TUNNEL: `TUNNEL_W` 6.125" (its own constant, not CLASSIFIER_W), drawn with a
+  colored outline. `tunnelStrip(X)` is beneath X's goal but belongs to the OPPOSING
+  alliance (whose drive team is on that wall).
+- ALLIANCE (drive-team) AREAS are NO LONGER DRAWN (removed to enlarge the field); the
+  `allianceArea` helper stays (96×54 outside each wall, flush with the audience end)
+  for zone logic / the coming penalty engine. `VIEW_MARGIN` 14 (bigger field); the
+  camera reserves HUD bands (`HUD_TOP`/`HUD_BOTTOM` in camera.ts) so the score bar and
+  chips never cover the field.
+- The manual PDFs re-download from ftc-resources.firstinspires.org/ftc/game/manual-NN
+  via WebFetch (saves the binary); scratchpad extract.cjs (text) and
+  extract-imgs.cjs (figures) from this session extract them with Node stdlib.
 
 ## Ball lifecycle (no teleporting — user is emphatic)
 
@@ -62,9 +99,18 @@ the gateway), so a tap usually drains the whole column.
 
 ## Product decisions the user insisted on (do not regress)
 
-1. **No flywheel spin-up model.** Shots limited only by the intake preset's
-   hopper→shooter transfer cadence (`INTAKE_PRESETS[*].fireInterval`: 0.1 s,
-   except triangle 0.3 s — slower transfer is its stated tradeoff).
+1. **No flywheel spin-up before the FIRST shot** (the original product decision,
+   preserved): a robot's opening shot is always instant. BETWEEN shots the cadence
+   is the intake preset's hopper→shooter transfer interval
+   (`INTAKE_PRESETS[*].fireInterval`: 0.1 s, except triangle 0.3 s — slower transfer
+   is its stated tradeoff) PLUS a flywheel-recovery term (Phase B, in the approved
+   plan). Recovery scales with the previous shot's energy and the robot's
+   `flywheelInertia` (0–1 builder slider): `recovery = FLYWHEEL_RECOVERY_MAX ·
+   shotNorm² · (1−inertia)`, where `shotNorm` ramps in only past
+   `FLYWHEEL_CLOSE_SPEED`. So CLOSE-RANGE rapid fire is unchanged at any inertia
+   (shotNorm≈0 ⇒ recovery≈0); only FAR shots are slowed, and only for low-inertia
+   flywheels (high inertia ⇒ base cadence even at range). `r.fireReadyAt` gates the
+   next shot in `robot.ts`. The DEFAULT robot (inertia 0.5) keeps a snappy burst.
 2. **The shooter NEVER misses**: no dispersion; adaptive hood angle (55°→80°) so an
    exact solution exists at every distance incl. point-blank; turret is always exactly
    on the lead-compensated solution (no slew limit); opening accepts ascending entries.
@@ -77,8 +123,15 @@ the gateway), so a tap usually drains the whole column.
 6. HUD mimics the FTC live scoring display: red|timer|blue bar at the BOTTOM.
    Breakdown chips show artifact COUNTS, not points. PATTERN shows only BANKED
    points (assessed end-of-AUTO and end-of-match — never a live matched count).
-7. Drivetrain feel: fast (75 in/s, 7 rad/s turn, snappy accel); mecanum wheel-saturation
-   model (`|f|+|s|+|ω|`) is correct physics — keep it. Wall/structure contacts apply
+7. Drivetrain feel: fast (75 in/s, 7 rad/s turn, snappy accel). Per-robot drive
+   params now DERIVE from the spec via `driveParams(spec)` in `src/sim/drivetrain.ts`
+   (`DRIVETRAIN_PRESETS` × `driveRpm` × `massLb`, calibrated so the DEFAULT spec
+   reproduces the legacy 75/7/280 EXACTLY — smoke-checked, do not break). Four
+   drivetrains with distinct wheel-saturation models: mecanum `|f|+|s|+|ω|`
+   (0.85 strafe), x-drive same-but-full-strafe, tank `|f|+|ω|` (strafe input DEAD),
+   swerve `hypot(f,s)+|ω|` (direction-independent). `maxTurn = wheelSpeed /
+   halfDiagonal` (smaller/faster bots turn quicker, capped at `TURN_MAX_SPEED`).
+   The mecanum wheel-saturation model is correct physics — keep it. Wall/structure contacts apply
    TORQUE (summed over touching corners) so a tilted robot squares up flush.
    Contact torque is PRESSURE-SCALED (`CONTACT_PRESS_GAIN`): pushing into the wall
    turns faster, and a fast angled hit also injects spin (`CONTACT_IMPACT_SPIN`,
@@ -144,6 +197,25 @@ the gateway), so a tap usually drains the whole column.
     the HUD. All GameSettings persist to `localStorage['decodesim.settings.v1']`
     via `src/settings.ts` (validated field-by-field on load — corrupt/stale data
     falls back per field).
+14. **Robot is fully specced + the field is multi-robot** (Phase B, "Road to
+    Multiplayer"). `RobotSpec` v2 carries name/team/number, `massLb` (20–42),
+    `drivetrain`, `driveRpm` (200–600), `flywheelInertia` (0–1), `canSort`, plus
+    the existing length/width/intake. The menu offers 5 named `ROBOT_PRESETS`
+    (cards) AND a custom builder (sliders/selects); editing flips to Custom.
+    `createWorld(mode, seed, setups: RobotSetup[])` — a `RobotSetup` is
+    `{id, alliance, spec, assists, startIndex}`, and ONLY filled slots spawn a
+    robot (the multiplayer seam: the sim already steps N robots from the command
+    map keyed by id). `START_POSES` = 3 named mirrored poses (GOAL SIDE / CENTER /
+    WALL SIDE); a 2-robot alliance splits the 6 preload balls (slot A `PRELOAD`,
+    slot B `HP_INITIAL_STOCK`) and starts that alliance's HP stock empty.
+    Robot-robot collisions are `collideRobots` (SAT, MASS-WEIGHTED split
+    `wa=mb/(ma+mb)`, restitution 0, contact torque on both — bumpers square up);
+    the `step()` solver runs 2 passes of {all id-ascending pairs → `constrainRobot`
+    all} so walls always win a squeeze, and records `world.rrContacts` per tick for
+    the coming penalty engine. `canSort` robots fire the hopper color matching the
+    next unfilled motif slot (else FIFO). Free-Drive has a "practice dummies"
+    toggle (3 idle default robots as obstacles). `game.ts` uses `localRobotId`
+    (not `robots[0]`); non-local robots get name/team labels + per-robot SFX.
 
 ## Gotchas
 
@@ -173,7 +245,52 @@ END GAME at 20s left (`ENDGAME_START`: warning cue + HUD label/tint), vector-int
 side capture, wheel-contact base parking + narrow chassis, three named intake
 presets (sloped / vector wheel / triangle) with per-preset length + fire cadence,
 trapezoid mouths + geometric side-intake rules + clump feeding.
-`scripts/smoke.ts` has 57 checks — keep adding one per behavior change.
-Next candidates: 2v2 with real people (netcode over the command map — the sim core is
-ready), penalties/fouls, obelisk AprilTag visuals, mobile/touch controls, replays
-(trivially possible: record the per-tick command map + seed).
+**Phase A (field markings), Phase B (RobotSpec v2, four drivetrains, flywheel
+recovery, canSort, robot presets + custom builder, start positions, practice
+dummies, mass-weighted robot-robot collisions, multi-robot spawn/step), and
+Phase C (penalty engine) are DONE and green.** The "Road to Multiplayer" plan
+lives at `C:\Users\geniu\.claude\plans\if-artifacts-are-scored-vivid-sphinx.md`.
+Phase D (netcode) is CODE-COMPLETE + build-green but not yet verified live (see below).
+`scripts/smoke.ts` has 117 checks — keep adding one per behavior change.
+
+**Phase C — penalty engine** (`src/sim/penalties.ts`, `updatePenalties` called in
+`world.ts` after the robot-robot solver). **MINOR = 5 pts, MAJOR = 15 pts** (user-set,
+NOT the manual's 10/30), awarded to the OPPOSING (victim) alliance via `awardFoul` in
+scoring.ts → the victim's `ScoreBreakdown.foulPoints`; `match.fouls[offender]` tallies
+committed counts for the HUD. Rules: **opponent-gate** (MAJOR — a robot working the
+OTHER alliance's gate zone; the gate is now physically openable by ANYONE, `updateGates`
+dropped its own-alliance filter), **G425 tunnel** / **G426 loading** (MINOR, on
+cross-alliance contact in-zone), **G427 base** (MAJOR in endgame + sets `RobotState.
+baseAwarded` → full base at match end), **G402 auto interference** (MAJOR, fully on the
+opponent's −side + contact during AUTO), **G422 pinning** (MINOR, →MAJOR on a repeat by
+the same pinner: 3 s of contact while the pinned robot commands motion, stays < 8 in/s,
+and hasn't escaped 24"). **Fouls are EDGE-triggered — NO cooldown/timer** (user was
+emphatic): a violation fires on the false→true edge, once while held, and AGAIN
+immediately on re-entry (leave the opponent gate and re-enter ⇒ instant new foul).
+`fire()` is idempotent within a tick (a duplicated `rrContacts` pair, or two rules on
+one key, awards once). All penalty state (`world.penalties`: episodes/pins/pinFouls) is
+plain JSON so determinism/lockstep hold. HUD: FOULS chip (committed counts) + a
+PENALTIES score-table row (`foulPoints`).
+
+**Phase D — netcode** is CODE-COMPLETE and build-green (`src/net/`), with the
+deterministic core smoke-tested (117 checks). NOT yet verified live — needs the 2-tab
+manual pass in `docs/multiplayer.md` + your Supabase keys. Architecture: `protocol.ts`
+(commands quantized to 4 B AT THE PRODUCER, which steps that same dequantized value, so
+every peer's sim gets identical inputs; binary command packets + JSON control msgs),
+`checksum.ts` (`worldHash` FNV-1a over rounded state → DESYNC detection), `lockstep.ts`
+(input-delay buffer, `INPUT_DELAY` 8 ticks, `canStep` gate, disconnect ⇒ ZERO_CMD),
+`lobby.ts` (`SupabaseLobby`: one Realtime channel/room, presence + broadcast, host =
+smallest peerId), `mesh.ts` (`RtcMesh`: full mesh ≤4, lower id offers, one
+ordered+reliable DataChannel, STUN only — no TURN in v1), `session.ts` (`NetSession`
+ties it together + host seed/restart authority). `GameController` takes an optional
+session (**null ⇒ solo path bit-identical**); its loop drives `produce → canStep →
+step → checkpoint`. Match world built from the host's `matchStart{seed,setups}` and
+started immediately (no controller-local seed/countdown — the fixed determinism seam).
+UI: `App.tsx` screens menu|lobby|game, `Lobby.tsx`, MULTIPLAYER menu button gated on
+`supabaseConfigured()`. Env-gated via `VITE_SUPABASE_URL/ANON_KEY` (`.env.example`);
+absent ⇒ multiplayer hidden, solo untouched. **Determinism hardening: `Math.hypot`→
+`hyp` (sqrt) across `src/sim` + `math.ts`** (engine-stable). Chromium-only v1.
+
+Still open: LIVE 2-tab verification of Phase D; obelisk AprilTag visuals, mobile/touch
+controls, replays (record the per-tick command map + seed), TURN relay, and deferred
+fouls (G408 possession>3 / plowing, displacing pre-staged spike artifacts).

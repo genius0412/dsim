@@ -5,12 +5,19 @@ import { rot } from '../math';
 
 /** field-frame <-> screen transform, including the alliance 180° rotation so
  * each driver sees their own goal at the top */
+/** CSS-px bands reserved for the HUD chrome so the field never renders under
+ * it (top status chips; bottom score bar + breakdown row) */
+const HUD_TOP = 56;
+const HUD_BOTTOM = 96;
+
 export class Camera {
   w = 0; // CSS pixels
   h = 0;
   dpr = 1;
   scale = 1; // px per inch
   viewAngle = 0;
+  cx = 0; // screen center the field is drawn about (CSS px)
+  cy = 0;
 
   configure(canvas: HTMLCanvasElement, alliance: Alliance): void {
     this.dpr = window.devicePixelRatio || 1;
@@ -19,7 +26,12 @@ export class Camera {
     canvas.width = Math.round(this.w * this.dpr);
     canvas.height = Math.round(this.h * this.dpr);
     const span = 2 * (FIELD_HALF + VIEW_MARGIN);
-    this.scale = Math.min(this.w / span, this.h / span);
+    // fit within the viewport MINUS the HUD bands, and center in that band so
+    // the score bar / chips never cover the field
+    const usableH = Math.max(this.h - HUD_TOP - HUD_BOTTOM, 100);
+    this.scale = Math.min(this.w / span, usableH / span);
+    this.cx = this.w / 2;
+    this.cy = HUD_TOP + usableH / 2;
     // view from the driver's alliance wall (blue = right wall, red = left)
     this.viewAngle = viewAngleOf(alliance);
   }
@@ -27,14 +39,14 @@ export class Camera {
   /** set the canvas transform so draw calls use field inches */
   apply(ctx: CanvasRenderingContext2D): void {
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.translate(this.w / 2, this.h / 2);
+    ctx.translate(this.cx, this.cy);
     ctx.scale(this.scale, -this.scale);
     ctx.rotate(this.viewAngle);
   }
 
   worldToScreen(p: Vec2): Vec2 {
     const r = rot(p, this.viewAngle);
-    return { x: this.w / 2 + r.x * this.scale, y: this.h / 2 - r.y * this.scale };
+    return { x: this.cx + r.x * this.scale, y: this.cy - r.y * this.scale };
   }
 
   /** world-space direction that points "up" on the driver's screen */

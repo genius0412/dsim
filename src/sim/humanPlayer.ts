@@ -1,6 +1,7 @@
 import type { Alliance, World } from '../types';
 import * as C from '../config';
 import { loadSlots } from './field';
+import { hyp } from '../math';
 
 /** the human player restocks the loading zone from the alliance-area stock */
 export function updateHumanPlayers(world: World): void {
@@ -12,10 +13,10 @@ export function updateHumanPlayers(world: World): void {
       const occupied = world.balls.some(
         (b) =>
           (b.state.kind === 'ground' || b.state.kind === 'flight') &&
-          Math.hypot(b.pos.x - slot.x, b.pos.y - slot.y) < C.BALL_RADIUS * 2.2,
+          hyp(b.pos.x - slot.x, b.pos.y - slot.y) < C.BALL_RADIUS * 2.2,
       );
       const robotNear = world.robots.some(
-        (r) => Math.hypot(r.pos.x - slot.x, r.pos.y - slot.y) < 16,
+        (r) => hyp(r.pos.x - slot.x, r.pos.y - slot.y) < 16,
       );
       if (!occupied && !robotNear) {
         const color = hp.stock.shift()!;

@@ -1,3 +1,5 @@
+import type { RobotSpec } from './types';
+
 /**
  * Single source of truth for all field geometry, physics constants, and
  * scoring values. Units: inches, seconds, radians. Field frame: origin at
@@ -30,6 +32,21 @@ export const PTS_DEPOT = 1;
 export const PTS_PATTERN = 2; // per ramp slot matching the motif
 export const PTS_BASE_PARTIAL = 5;
 export const PTS_BASE_FULL = 10;
+
+// --------------------------------------------------------------- fouls -----
+/** Section 11 penalties, awarded TO the OPPOSING (victim) alliance */
+export const PTS_FOUL_MINOR = 5;
+export const PTS_FOUL_MAJOR = 15;
+/** G422 pinning: hold an opponent for this long (s) while it is trying to move
+ * and hasn't escaped PIN_ESCAPE_DIST from where the pin began -> foul */
+export const PIN_SECONDS = 3;
+export const PIN_ESCAPE_DIST = 24; // in — getting this far away ends the pin
+/** pinned robot counts as "prevented from moving" below this actual speed */
+export const PIN_STUCK_SPEED = 8; // in/s
+/** Foul rules are EDGE-triggered, not timed: a violation fires the instant its
+ * condition becomes true and does NOT re-fire while it stays true, but re-fires
+ * immediately the next time the condition goes false→true (no cooldown). So
+ * leaving a zone and re-entering is a fresh foul right away. */
 
 // ------------------------------------------------------------ artifacts ----
 export const BALL_RADIUS = 2.5; // 5 in diameter
@@ -76,15 +93,43 @@ export const ROBOT_MIN_WIDTH = 10;
 /** wheel centers sit this far INSIDE the chassis edge (typical FTC build);
  * the four wheel ground-contact points are what counts for base parking */
 export const WHEEL_INSET = 2.6;
-/** mecanum drivetrain, modeled on real motor limits: wheel saturation is
- * |fwd| + |strafe| + |rot| (the worst wheel sees all three demands added),
- * rotation tops out at wheelSpeed / (half track diagonal) like a real chassis,
- * and acceleration reflects an FTC bot hitting full speed in ~0.25s. */
-export const DRIVE_MAX_SPEED = 75; // in/s forward (~1.9 m/s, fast FTC drivetrain)
-export const STRAFE_MULT = 0.85; // roller slip: strafing slightly slower
-export const TURN_MAX_SPEED = 7.0; // rad/s (~400°/s, wheelSpeed / half-diagonal)
-export const DRIVE_ACCEL = 280; // in/s^2
-export const TURN_ACCEL = 40; // rad/s^2
+/** drivetrain modeling: per-robot params derive from spec (drivetrain type,
+ * driveRpm, massLb) in src/sim/drivetrain.ts. Reference values below are
+ * calibrated so the DEFAULT robot reproduces the original tuned feel exactly
+ * (75 in/s, 7 rad/s, 280 in/s²) — verified by a smoke check. */
+export const REF_DRIVE_RPM = 435;
+export const REF_MASS_LB = 30;
+export const SPEED_PER_RPM = 75 / 435; // in/s per wheel RPM
+export const BASE_DRIVE_ACCEL = 280; // in/s^2 at reference RPM/mass
+export const TURN_MAX_SPEED = 12.0; // rad/s absolute cap (small fast bots approach it; default is 7)
+export const TURN_ACCEL_PER_ACCEL = 40 / 280; // rad/s^2 per in/s^2 of drive accel
+/** robot mass range for the builder (lb) */
+export const ROBOT_MIN_MASS = 20;
+export const ROBOT_MAX_MASS = 42;
+export const ROBOT_MIN_RPM = 200;
+export const ROBOT_MAX_RPM = 600;
+
+/** per-drivetrain multipliers + wheel-saturation model. saturation:
+ * 'sum'   = |f|+|s|+|ω|  (mecanum/x-drive: the worst roller wheel sees all)
+ * 'tank'  = |f|+|ω|      (no strafe at all — strafe input is dead)
+ * 'vec'   = hypot(f,s)+|ω| (swerve modules are direction-independent) */
+export const DRIVETRAIN_PRESETS = {
+  /** the FTC standard: full strafe at roller-slip speed */
+  mecanum: { strafeMult: 0.85, speedMult: 1.0, accelMult: 1.0, saturation: 'sum' },
+  /** 45° omni pods: full-speed strafe, slight overall speed loss */
+  xdrive: { strafeMult: 1.0, speedMult: 0.9, accelMult: 0.95, saturation: 'sum' },
+  /** traction wheels: no strafe, best straight-line speed and push */
+  tank: { strafeMult: 0, speedMult: 1.05, accelMult: 1.1, saturation: 'tank' },
+  /** independent steered modules: full-speed any direction */
+  swerve: { strafeMult: 1.0, speedMult: 1.0, accelMult: 1.05, saturation: 'vec' },
+} as const;
+
+/** flywheel recovery: after an energetic (long-range) shot, a LOW-inertia
+ * flywheel needs time to spin back up before the next shot. Shots below
+ * FLYWHEEL_CLOSE_SPEED add nothing; recovery scales with (speed over that)²
+ * and with (1 - inertia). High inertia ⇒ rapid fire even in the far zone. */
+export const FLYWHEEL_CLOSE_SPEED = 140; // in/s launch speed considered "close"
+export const FLYWHEEL_RECOVERY_MAX = 0.6; // s extra between max-range shots at inertia 0
 
 /** capture happens when a compliant wheel is DIRECTLY ABOVE the artifact:
  * the wheel line sits at the tip of the intake's reach, and a ball within
@@ -142,16 +187,18 @@ export const LAUNCH_MAX_SPEED = 320; // in/s
 export const SHOT_ROBOT_VEL_INHERIT = 0.5;
 
 // ----------------------------------------------------------------- goal ----
-/** goal front face line constant: blue y - x = C, red y + x = C.
- * The goal is a wedge against the far wall, next to the classifier channel:
- * drawn footprint (g*45,72) (g*66,51) (g*66,72) — face on this line. */
-export const GOAL_LINE_C = 117;
-export const GOAL_FACE_FAR_X = 45; // face endpoint on the far wall
-export const GOAL_FACE_SIDE_Y = 51; // face endpoint on the channel edge
+/** GOAL footprint: a right triangle tucked into the far corner with its legs
+ * flush along the two walls. Measured from the manual's "Top View Goal Opening
+ * Inside Dimensions" (Section 9): GOAL_FACE_WIDTH runs along the far wall,
+ * GOAL_DEPTH down the side wall; the hypotenuse is the FACE the robots shoot
+ * at, and the DEPOT tape runs flush along it. The face is therefore NOT at 45°.
+ * See goalTriangle / goalFaceNormal / goalLineValue in field.ts. */
+export const GOAL_FACE_WIDTH = 26.5; // in, leg along the far wall
+export const GOAL_DEPTH = 18.3; // in, leg down the side wall
+export const GOAL_FACE_LEN = Math.sqrt(GOAL_FACE_WIDTH ** 2 + GOAL_DEPTH ** 2); // ~32.2 (hypotenuse/face)
 export const GOAL_OPENING_Z = 38.75; // in, height of the opening lip
 export const GOAL_WALL_TOP = 37; // flights below this bounce off the goal face
 export const GOAL_OPENING_RADIUS = 11; // in, effective entry radius at the plane
-export const GOAL_CENTER = { x: 58, y: 64 }; // opening center (goal side sign)
 
 // ----------------------------------------------------- classifier / gate ----
 export const RAMP_SLOTS = 9;
@@ -176,7 +223,7 @@ export const BASIN_ENTRY_RADIUS = 5; // in, hand-off distance to the rail
 export const BASIN_ENTRY_KEEP_V = 0.55; // entry velocity retained (splash energy)
 
 // classifier rail (1D flow, contact stacking)
-export const RAIL_S_MAX = 48; // rail length: SQUARE at the top (y = CLASSIFIER_Y0 + s)
+export const RAIL_S_MAX = 55; // rail length: SQUARE at the top (y = CLASSIFIER_Y0 + s), at the goal's inner exit
 export const RAIL_ACCEL = 80; // in/s^2 down-ramp
 export const RAIL_TERMINAL = 46; // in/s max flow speed
 export const RAIL_PITCH = 5.1; // ball contact spacing on the stack
@@ -192,7 +239,17 @@ export const GATE_OPEN_HOLD = 0.08; // s of push before the gate swings open
 export const GATE_CLOSE_CLEAR_LO = -4;
 export const GATE_CLOSE_CLEAR_HI = 4.5;
 /** gate zone tape in front of the gate: 10in from the wall at y ~ 0 */
+/** gate INTERACTION rect (a robot overlapping it works the gate). The tape
+ * marking on the mat is drawn separately — see GATE_TAPE_* / gateTapeSegments */
 export const GATE_ZONE = { xNear: 62, xFar: 72, y0: -2, y1: 3 };
+/** official GATE ZONE marking (manual Section 9): a 2.75in-wide x 10in-long
+ * volume bounded by TWO parallel alliance-colored tape LINES, 10in long,
+ * running perpendicular to the side wall (into the field), spaced 2.75in
+ * apart and centered on the gate. GATE_ZONE above is the (larger, undrawn)
+ * interaction rect that actually works the gate. */
+export const GATE_TAPE_W = 2.75; // spacing between the two lines (zone width)
+export const GATE_TAPE_LEN = 10; // line length, into the field from the wall
+export const GATE_TAPE_Y = (GATE_ZONE.y0 + GATE_ZONE.y1) / 2; // gate center y
 /** where released/overflow balls emerge onto the floor, on the goal's wall */
 export const TUNNEL_EXIT = { x: 68, y: -3 };
 export const TUNNEL_EXIT_VEL = { along: 42, inward: 7 }; // toward audience, off the wall
@@ -202,32 +259,84 @@ export const TUNNEL_EXIT_VEL = { along: 42, inward: 7 }; // toward audience, off
 export const AUD_ZONE_APEX_Y = 48;
 export const AUD_ZONE_HALF_W = 24;
 
-/** base zone: 18x18 centered on the tile at (driverSide*36, -36) */
-export const BASE_CENTER = { x: 36, y: -36 };
+/** BASE ZONE: 18x18 with its outer corner at the tile intersection
+ * (driverSide*24, -48), extending inward — center (driverSide*33, -39).
+ * Diagonally opposite corners (driverSide*24,-48) and (driverSide*42,-30),
+ * per the manual Figure 9-3 (measured on-field). */
+export const BASE_CENTER = { x: 33, y: -39 };
 
 /** loading zone: 23x23 audience corner on the drive-team side */
 export const LOAD_ZONE_SIZE = 23;
 
-/** depot band: floor in front of the goal face, out to the 30in depot line */
+/** depot band: floor in front of the goal face, out to the ~30in depot line
+ * (the line spans the goal face base — endpoints are the face corners pushed
+ * DEPOT_DEPTH out along the face normal, giving the manual's ~30in length) */
 export const DEPOT_DEPTH = 6; // perpendicular depth of the band
+/** SECRET TUNNEL ZONE (manual Section 9): ~46.5in long x ~6.125in wide floor
+ * band along the side wall from the gate toward the audience, bounded by
+ * alliance-colored tape. Belongs to the alliance whose DRIVE TEAM is on that
+ * wall — i.e. the OPPOSING alliance to the goal above it (its released
+ * artifacts roll out here, cross-court from that goal's own drivers). */
+export const TUNNEL_STRIP_LEN = 46.5;
+export const TUNNEL_W = 6.125; // strip width from the wall
 
 /** spike marks: 10in horizontal white tape, three per side in a column just
- * off the tile seam two tiles from each side wall; balls sit in a row on the
- * mark (positions measured from the manual's Figure 9-3) */
+ * ONE tile from each side wall (column center ~23.5in off the wall — value
+ * re-verified against the Section 9 markings figure July 2026; an older
+ * comment claiming "two tiles" was wrong, the VALUE was right); balls sit in
+ * a row on the mark */
 export const SPIKE_COL_X = 48.5;
 export const SPIKE_ROW_YS = [-35.5, -12.8, 11.1]; // near, middle, far
 export const SPIKE_BALL_SPACING = 5.6;
 export const SPIKE_MARK_LEN = 10;
 
-/** robot start pose: inside the big launch zone NEAR THE ALLIANCE'S GOAL
- * (blue goal is far-left, so blue starts on the left) */
-export const START = { x: 30, y: 45 };
+/** robot start poses, all inside the big launch zone near the alliance's
+ * goal (blue goal is far-left, so blue mirrors to the left). Values are for
+ * goalSide=+1 and ≥20in apart so two 18in robots never spawn overlapping.
+ * Index = the menu/lobby "start position" choice per robot slot. */
+export const START_POSES = [
+  { x: 30, y: 45, label: 'GOAL SIDE' }, // the original solo pose
+  { x: 8, y: 56, label: 'CENTER' },
+  { x: 48, y: 60, label: 'WALL SIDE' },
+] as const;
 
 // --------------------------------------------------------- human player ----
 export const HP_PLACE_DELAY = 3; // s between placements into the loading zone
 /** preloaded hopper (from the alliance area's 6: 4P+2G); rest becomes HP stock */
 export const PRELOAD: readonly ('purple' | 'green')[] = ['purple', 'green', 'purple'];
 export const HP_INITIAL_STOCK: readonly ('purple' | 'green')[] = ['purple', 'purple', 'green'];
+
+// -------------------------------------------------------- robot presets ----
+/** named example robots covering the archetype matrix; the menu also offers
+ * a fully custom builder. Keep DEFAULT ("Standard Issue") = the original
+ * tuned solo feel. */
+export const ROBOT_PRESETS: readonly RobotSpec[] = [
+  {
+    name: 'Standard Issue', teamName: 'Baseline Robotics', teamNumber: 1234,
+    length: 18, width: 18, intake: 'sloped', massLb: 30, drivetrain: 'mecanum',
+    driveRpm: 435, flywheelInertia: 0.5, canSort: false,
+  },
+  {
+    name: 'Bulldozer', teamName: 'Iron Plows', teamNumber: 9909,
+    length: 18, width: 18, intake: 'sloped', massLb: 42, drivetrain: 'tank',
+    driveRpm: 340, flywheelInertia: 0.9, canSort: false,
+  },
+  {
+    name: 'Hummingbird', teamName: 'Featherweights', teamNumber: 5511,
+    length: 12.5, width: 12, intake: 'vector', massLb: 21, drivetrain: 'swerve',
+    driveRpm: 560, flywheelInertia: 0.15, canSort: false,
+  },
+  {
+    name: 'Crossfire', teamName: 'Diagonal Society', teamNumber: 8080,
+    length: 13, width: 14, intake: 'triangle', massLb: 26, drivetrain: 'xdrive',
+    driveRpm: 480, flywheelInertia: 0.4, canSort: false,
+  },
+  {
+    name: 'The Librarian', teamName: 'Sorted Motors', teamNumber: 3141,
+    length: 12.5, width: 16, intake: 'triangle', massLb: 32, drivetrain: 'mecanum',
+    driveRpm: 400, flywheelInertia: 0.7, canSort: true,
+  },
+] as const;
 
 // ------------------------------------------------------------------ sim ----
 export const SIM_DT = 1 / 120;
@@ -247,4 +356,11 @@ export const COLORS = {
   green: '#22c55e',
   launchTint: 'rgba(229,231,235,0.05)',
 } as const;
-export const VIEW_MARGIN = 26; // in of world margin around the field when fitting
+export const VIEW_MARGIN = 14; // in of world margin around the field when fitting (just clears the obelisk)
+
+// ------------------------------------------------------------ off-field ----
+/** ALLIANCE AREA: taped drive-team rectangle OUTSIDE each alliance wall
+ * (red left, blue right). Runs from the audience wall toward the far wall —
+ * NOT wall-centered (verified from the Section 9 figures). */
+export const ALLIANCE_AREA_ALONG = 96; // in along the wall
+export const ALLIANCE_AREA_DEEP = 54; // in outward from the wall

@@ -5,8 +5,13 @@ export const add = (a: Vec2, b: Vec2): Vec2 => ({ x: a.x + b.x, y: a.y + b.y });
 export const sub = (a: Vec2, b: Vec2): Vec2 => ({ x: a.x - b.x, y: a.y - b.y });
 export const scale = (a: Vec2, s: number): Vec2 => ({ x: a.x * s, y: a.y * s });
 export const dot = (a: Vec2, b: Vec2): number => a.x * b.x + a.y * b.y;
-export const len = (a: Vec2): number => Math.hypot(a.x, a.y);
-export const dist = (a: Vec2, b: Vec2): number => Math.hypot(a.x - b.x, a.y - b.y);
+/** 2D magnitude via sqrt(x²+y²). Deliberately NOT Math.hypot: hypot's internal
+ * scaling varies across JS engines/versions, breaking lockstep determinism;
+ * sqrt is IEEE-754 correctly-rounded, so identical inputs give identical bits
+ * everywhere. Our magnitudes never overflow, so no scaling is needed. */
+export const hyp = (x: number, y: number): number => Math.sqrt(x * x + y * y);
+export const len = (a: Vec2): number => hyp(a.x, a.y);
+export const dist = (a: Vec2, b: Vec2): number => hyp(a.x - b.x, a.y - b.y);
 
 export function norm(a: Vec2): Vec2 {
   const l = len(a);
@@ -45,7 +50,7 @@ export function distToSegment(p: Vec2, a: Vec2, b: Vec2): number {
   const aby = b.y - a.y;
   const l2 = abx * abx + aby * aby;
   const t = l2 > 0 ? clamp(((p.x - a.x) * abx + (p.y - a.y) * aby) / l2, 0, 1) : 0;
-  return Math.hypot(p.x - (a.x + abx * t), p.y - (a.y + aby * t));
+  return hyp(p.x - (a.x + abx * t), p.y - (a.y + aby * t));
 }
 
 /** deterministic PRNG (mulberry32). Returns next float in [0,1) and new state. */

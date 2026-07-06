@@ -2,20 +2,29 @@
  * Headless smoke test of the sim core: drives, shoots (incl. on the move),
  * opens the gate, and checks scoring math. Run with: npx tsx scripts/smoke.ts
  */
-import { createWorld } from '../src/sim/spawn';
+import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC } from '../src/sim/spawn';
 import { step } from '../src/sim/world';
 import { startMatch } from '../src/sim/match';
 import {
   inLaunchZone,
   gateZone,
   goalCenter,
+  goalTriangle,
+  goalFaceNormal,
+  goalLineValue,
   basinFunnelTarget,
   railPos,
   classifierRect,
   baseZone,
+  gateTapeSegments,
+  depotSegment,
+  allianceArea,
+  tunnelStrip,
+  loadZone,
+  inRect,
 } from '../src/sim/field';
 import { assessMatchEnd } from '../src/sim/scoring';
-import type { RobotCommand, World } from '../src/types';
+import type { Alliance, GameMode, RobotCommand, RobotSpec, World } from '../src/types';
 import {
   SIM_DT,
   GATE_STOP_S,
@@ -24,9 +33,21 @@ import {
   RAMP_SURFACE_Z,
   FIELD_HALF,
   BALL_RADIUS,
+  HP_INITIAL_STOCK,
 } from '../src/config';
-import { robotCorners, robotExtents } from '../src/sim/physics';
+import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
+import { driveParams } from '../src/sim/drivetrain';
+import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, mergeBindings } from '../src/input/bindings';
+import {
+  quantizeCommand,
+  dequantizeCommand,
+  localizeCommand,
+  encodeCommandPacket,
+  decodeCommandPacket,
+} from '../src/net/protocol';
+import { Lockstep } from '../src/net/lockstep';
+import { worldHash } from '../src/net/checksum';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -49,13 +70,31 @@ function run(world: World, c: RobotCommand, seconds: number): void {
   for (let i = 0; i < n; i++) step(world, SIM_DT, commands);
 }
 
+/** legacy single-robot spawn used by most checks: robot id 0 on `alliance`,
+ * default spec/assists, optionally overridden by a partial spec */
+const mkWorld = (
+  mode: GameMode,
+  alliance: Alliance,
+  seed: number,
+  spec?: Partial<RobotSpec>,
+): World =>
+  createWorld(mode, seed, [
+    {
+      id: 0,
+      alliance,
+      spec: { ...DEFAULT_SPEC, ...spec },
+      assists: { ...DEFAULT_ASSISTS },
+      startIndex: 0,
+    },
+  ]);
+
 const slotCount = (w: World, a: 'red' | 'blue') =>
   w.balls.filter((b) => b.state.kind === 'rail' && b.state.goal === a && !b.state.overflow)
     .length;
 
 // ---- spawn sanity ----------------------------------------------------------
 {
-  const w = createWorld('match', 'blue', 42);
+  const w = mkWorld('match', 'blue', 42);
   const purple = w.balls.filter((b) => b.color === 'purple').length;
   const green = w.balls.filter((b) => b.color === 'green').length;
   check('24 on-field balls at spawn (9 spike + 3 loading per alliance)', w.balls.length === 24, `${w.balls.length}`);
@@ -66,9 +105,100 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('red goal is far-right', goalCenter('red').x > 0 && goalCenter('red').y > 0);
 }
 
+// ---- field markings geometry (manual Section 9) ----------------------------
+{
+  // gate-zone marking: two parallel 10in tape LINES, 2.75in apart, running
+  // perpendicular to the wall (constant y), centered on the gate
+  let tapeOk = true;
+  for (const a of ['red', 'blue'] as const) {
+    const [s0, s1] = gateTapeSegments(a);
+    for (const [p0, p1] of [s0, s1]) {
+      if (Math.abs(Math.abs(p1.x - p0.x) - 10) > 1e-9) tapeOk = false; // 10in into the field
+      if (Math.abs(p1.y - p0.y) > 1e-9) tapeOk = false; // runs ⟂ to the wall (constant y)
+      if (Math.abs(Math.abs(p0.x) - (FIELD_HALF - 6)) > 1e-9) tapeOk = false; // starts at classifier edge (66)
+    }
+    if (Math.abs(Math.abs(s0[0].y - s1[0].y) - 2.75) > 1e-9) tapeOk = false; // 2.75in apart
+  }
+  check('gate tape: two 10in lines 2.75in apart, starting at the classifier edge', tapeOk);
+
+  // depot tape runs flush ALONG the goal face from the far-wall corner to the
+  // classifier edge (it must NOT run through the classifier to the side wall)
+  const [d0, d1] = depotSegment('blue');
+  const tri = goalTriangle('blue');
+  check(
+    'depot tape starts flush at the goal face far-wall corner',
+    Math.hypot(d0.x - tri[0].x, d0.y - tri[0].y) < 1e-9,
+  );
+  check(
+    'depot tape lies flush on the goal face (both ends, perp dist ~0)',
+    Math.abs(goalLineValue(d0, 'blue')) < 1e-9 && Math.abs(goalLineValue(d1, 'blue')) < 1e-9,
+  );
+  check(
+    'depot tape ends at the classifier edge, not the side wall',
+    Math.abs(Math.abs(d1.x) - (FIELD_HALF - 6)) < 1e-9,
+    `end x=${d1.x.toFixed(1)}`,
+  );
+
+  // alliance areas: fully outside the field, 96 along wall from the audience end
+  let areaOk = true;
+  for (const a of ['red', 'blue'] as const) {
+    const r = allianceArea(a);
+    const outside = Math.min(Math.abs(r.x0), Math.abs(r.x1)) >= FIELD_HALF - 1e-9;
+    const span = r.y1 - r.y0;
+    if (!outside || Math.abs(span - 96) > 1e-9 || r.y0 !== -FIELD_HALF) areaOk = false;
+  }
+  check('alliance areas: 96x54 outside the walls, flush with the audience end', areaOk);
+
+  // secret tunnel tape length + width (manual: ~46.5 x ~6.125)
+  const ts = tunnelStrip('blue');
+  check('secret tunnel strip is TUNNEL_STRIP_LEN long', Math.abs(ts.y1 - ts.y0 - 46.5) < 1e-9, `${(ts.y1 - ts.y0).toFixed(1)} in`);
+  check('secret tunnel strip is ~6.125in wide', Math.abs(ts.x1 - ts.x0 - 6.125) < 1e-9, `${(ts.x1 - ts.x0).toFixed(3)} in`);
+
+  // GOAL footprint: right triangle in the corner, 26.5in along the far wall,
+  // 18.3in down the side wall (manual "Top View Goal Opening Inside Dimensions")
+  for (const a of ['red', 'blue'] as const) {
+    const [far, side, corner] = goalTriangle(a);
+    // corner is the right angle, on both walls
+    const cornerOk = Math.abs(Math.abs(corner.x) - FIELD_HALF) < 1e-9 && Math.abs(corner.y - FIELD_HALF) < 1e-9;
+    const farLeg = Math.hypot(far.x - corner.x, far.y - corner.y); // along the far wall
+    const sideLeg = Math.hypot(side.x - corner.x, side.y - corner.y); // down the side wall
+    check(
+      `${a} goal: 26.5in far-wall leg / 18.3in side-wall leg, right-angle in the corner`,
+      cornerOk && Math.abs(farLeg - 26.5) < 1e-9 && Math.abs(sideLeg - 18.3) < 1e-9,
+      `far=${farLeg.toFixed(1)} side=${sideLeg.toFixed(1)}`,
+    );
+  }
+  // goal face normal is a unit vector pointing into the field (not 45°)
+  const n = goalFaceNormal('blue');
+  check(
+    'goal face normal is unit and points into the field',
+    Math.abs(Math.hypot(n.x, n.y) - 1) < 1e-9 && n.x > 0 && n.y < 0 && Math.abs(n.x - Math.SQRT1_2) > 1e-3,
+    `(${n.x.toFixed(3)},${n.y.toFixed(3)})`,
+  );
+  // BASE ZONE: 18x18, diagonally opposite corners (d*24,-48) and (d*42,-30)
+  let baseOk = true;
+  for (const a of ['red', 'blue'] as const) {
+    const bz = baseZone(a);
+    const d = a === 'blue' ? 1 : -1; // driver side (blue +x, red -x)
+    const xs = [bz.x0, bz.x1].map((x) => x).sort((p, q) => p - q);
+    const want = [d * 24, d * 42].sort((p, q) => p - q);
+    if (Math.abs(xs[0] - want[0]) > 1e-9 || Math.abs(xs[1] - want[1]) > 1e-9) baseOk = false;
+    if (Math.abs(bz.y0 - -48) > 1e-9 || Math.abs(bz.y1 - -30) > 1e-9) baseOk = false;
+  }
+  check('base zone: 18x18 corners at (d*24,-48) & (d*42,-30)', baseOk);
+
+  // goalLineValue: >0 behind the face (in the corner), <0 in front (field side)
+  const [, , blueCorner] = goalTriangle('blue');
+  check(
+    'goalLineValue: corner is behind the face, field center is in front',
+    goalLineValue(blueCorner, 'blue') > 0 && goalLineValue({ x: 0, y: 0 }, 'blue') < 0,
+    `corner=${goalLineValue(blueCorner, 'blue').toFixed(1)} center=${goalLineValue({ x: 0, y: 0 }, 'blue').toFixed(1)}`,
+  );
+}
+
 // ---- driving: forward vs strafe ratio -------------------------------------
 {
-  const w = createWorld('free', 'blue', 7);
+  const w = mkWorld('free', 'blue', 7);
   const r = w.robots[0];
   r.pos = { x: 0, y: 0 };
   r.heading = Math.PI / 2;
@@ -76,7 +206,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   run(w, cmd({ driveY: 1 }), 0.8);
   const fwd = r.pos.y;
 
-  const w2 = createWorld('free', 'blue', 7);
+  const w2 = mkWorld('free', 'blue', 7);
   const r2 = w2.robots[0];
   r2.pos = { x: 0, y: 0 };
   r2.heading = Math.PI / 2;
@@ -89,7 +219,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- wall contact squares the robot up --------------------------------------
 {
-  const w = createWorld('free', 'blue', 3);
+  const w = mkWorld('free', 'blue', 3);
   const r = w.robots[0];
   r.pos = { x: 0, y: 50 };
   r.heading = Math.PI / 2 + 0.3; // tilted ~17° while driving at the far wall
@@ -102,7 +232,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- contact torque scales with speed: a fast hit squares up fast ---------------
 {
-  const w = createWorld('free', 'blue', 4);
+  const w = mkWorld('free', 'blue', 4);
   const r = w.robots[0];
   r.pos = { x: 0, y: 25 }; // long run-up: reaches full speed before the far wall
   r.heading = Math.PI / 2 + 0.35; // ~20° tilt
@@ -133,7 +263,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- a wheel wedged in the classifier is evicted (no wall fight) ----------------
 {
-  const w = createWorld('free', 'blue', 8);
+  const w = mkWorld('free', 'blue', 8);
   const r = w.robots[0];
   // left-front corner lands at (-71, 1): 1" off the wall, inside the blue
   // channel — the nearest eviction is THROUGH the wall, which must be refused
@@ -153,7 +283,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- pinned ball resists the robot ------------------------------------------
 {
-  const w = createWorld('free', 'blue', 21);
+  const w = mkWorld('free', 'blue', 21);
   const r = w.robots[0];
   r.pos = { x: 0, y: 45 };
   r.heading = Math.PI / 2; // facing the far wall
@@ -183,7 +313,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- off-center wall ball scatters out of the way -----------------------------
 {
-  const w = createWorld('free', 'blue', 22);
+  const w = mkWorld('free', 'blue', 22);
   const r = w.robots[0];
   r.pos = { x: 0, y: 45 };
   r.heading = Math.PI / 2;
@@ -207,7 +337,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- open-field push still moves balls easily ---------------------------------
 {
-  const w = createWorld('free', 'blue', 23);
+  const w = mkWorld('free', 'blue', 23);
   const r = w.robots[0];
   r.pos = { x: 0, y: -20 };
   r.heading = Math.PI / 2;
@@ -226,14 +356,14 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 // ---- driver-side view frames ------------------------------------------------
 {
   // blue driver stands at the RIGHT wall: stick-up must drive toward -x
-  const wb = createWorld('free', 'blue', 7);
+  const wb = mkWorld('free', 'blue', 7);
   wb.robots[0].pos = { x: 0, y: 0 };
   wb.robots[0].fieldCentric = true;
   run(wb, cmd({ driveY: 1 }), 1);
   check('blue field-centric stick-up drives toward -x (away from blue wall)', wb.robots[0].pos.x < -10, `x=${wb.robots[0].pos.x.toFixed(1)}`);
 
   // red driver stands at the LEFT wall: stick-up must drive toward +x
-  const wr = createWorld('free', 'red', 7);
+  const wr = mkWorld('free', 'red', 7);
   wr.robots[0].pos = { x: 0, y: 0 };
   wr.robots[0].fieldCentric = true;
   run(wr, cmd({ driveY: 1 }), 1);
@@ -242,7 +372,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- shooting & visible classification -------------------------------------
 {
-  const w = createWorld('match', 'blue', 42);
+  const w = mkWorld('match', 'blue', 42);
   startMatch(w);
   const r = w.robots[0];
   r.pos = { x: 10, y: 40 }; // launch zone, mid-range to the blue goal (-60,60)
@@ -259,7 +389,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- shooting on the move ----------------------------------------------------
 {
-  const w = createWorld('match', 'blue', 99);
+  const w = mkWorld('match', 'blue', 99);
   startMatch(w);
   const r = w.robots[0];
   r.pos = { x: 20, y: 50 };
@@ -271,7 +401,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- intake -----------------------------------------------------------------
 {
-  const w = createWorld('free', 'blue', 42);
+  const w = mkWorld('free', 'blue', 42);
   const r = w.robots[0];
   r.hopper = [];
   // blue spike column is on the blue (right) side at x=+46
@@ -286,7 +416,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 // ---- vector intake: strafing into a ball swallows it (wheels overhang) ----------
 {
   const spec = { length: 11.5, width: 14, intake: 'vector' as const };
-  const w = createWorld('free', 'blue', 6, spec);
+  const w = mkWorld('free', 'blue', 6, spec);
   const r = w.robots[0];
   r.hopper = [];
   r.pos = { x: 0, y: 0 };
@@ -305,7 +435,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- sloped intake: the same maneuver only shoves the ball ---------------------
 {
-  const w = createWorld('free', 'blue', 6);
+  const w = mkWorld('free', 'blue', 6);
   const r = w.robots[0];
   r.hopper = [];
   r.pos = { x: 0, y: 0 };
@@ -325,7 +455,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 // ---- side capture is geometric: a full-width chassis encompasses the wheels -----
 {
   const spec = { length: 11.5, width: 18, intake: 'vector' as const };
-  const w = createWorld('free', 'blue', 6, spec);
+  const w = mkWorld('free', 'blue', 6, spec);
   const r = w.robots[0];
   r.hopper = [];
   r.pos = { x: 0, y: 0 };
@@ -350,7 +480,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- sloped/triangle devour clumps at the mouth ----------------------------------
 {
-  const w = createWorld('free', 'blue', 6);
+  const w = mkWorld('free', 'blue', 6);
   const r = w.robots[0];
   r.hopper = [];
   r.pos = { x: 0, y: 0 };
@@ -380,7 +510,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 // ---- triangle intake transfers (outtakes) slower ---------------------------------
 {
   const spec = { length: 12, width: 14, intake: 'triangle' as const };
-  const w = createWorld('free', 'blue', 6, spec);
+  const w = mkWorld('free', 'blue', 6, spec);
   const r = w.robots[0];
   r.pos = { x: 10, y: 40 };
   run(w, cmd({ fire: true }), 0.5); // sloped/vector would empty 3 preloads in ~0.3s
@@ -393,7 +523,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- gate release --------------------------------------------------------------
 {
-  const w = createWorld('match', 'blue', 42);
+  const w = mkWorld('match', 'blue', 42);
   startMatch(w);
   const r = w.robots[0];
   r.pos = { x: 10, y: 40 };
@@ -412,7 +542,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- gate tap: flow holds the gate open ----------------------------------------
 {
-  const w = createWorld('match', 'blue', 42);
+  const w = mkWorld('match', 'blue', 42);
   startMatch(w);
   const r = w.robots[0];
   r.pos = { x: 10, y: 40 };
@@ -455,7 +585,7 @@ function queueTenth(w: World): void {
 
 // ---- overflow decided at contact: full column + closed gate ---------------------
 {
-  const w = createWorld('match', 'blue', 42);
+  const w = mkWorld('match', 'blue', 42);
   startMatch(w);
   fillBlueRail(w);
   queueTenth(w);
@@ -471,7 +601,7 @@ function queueTenth(w: World): void {
 
 // ---- overflow decided at contact: gate cleared in time -> classified -------------
 {
-  const w = createWorld('match', 'blue', 42);
+  const w = mkWorld('match', 'blue', 42);
   startMatch(w);
   fillBlueRail(w);
   // tap the gate, drive away — the column starts draining
@@ -496,7 +626,7 @@ function queueTenth(w: World): void {
 
 // ---- gate outflow stops against a parked robot instead of shoving it ------------
 {
-  const w = createWorld('match', 'blue', 42);
+  const w = mkWorld('match', 'blue', 42);
   startMatch(w);
   fillBlueRail(w);
   // robot parked square across the tunnel exit path (as when intaking the drain)
@@ -517,7 +647,7 @@ function queueTenth(w: World): void {
 
 // ---- point-blank shots never miss ------------------------------------------------
 {
-  const w = createWorld('match', 'blue', 11);
+  const w = mkWorld('match', 'blue', 11);
   startMatch(w);
   const r = w.robots[0];
   r.pos = { x: -44, y: 54 }; // right up against the blue goal face
@@ -527,7 +657,7 @@ function queueTenth(w: World): void {
   const g = w.goals.blue;
   check('point-blank shots all enter the goal', g.classifiedCount + g.overflowCount === 3, `entered=${g.classifiedCount + g.overflowCount}`);
 
-  const w2 = createWorld('match', 'blue', 12);
+  const w2 = mkWorld('match', 'blue', 12);
   startMatch(w2);
   const r2 = w2.robots[0];
   r2.pos = { x: 30, y: 35 }; // long cross-court shot
@@ -539,7 +669,7 @@ function queueTenth(w: World): void {
 
 // ---- auto intake & auto fire ----------------------------------------------------
 {
-  const w = createWorld('free', 'blue', 5);
+  const w = mkWorld('free', 'blue', 5);
   const r = w.robots[0];
   r.hopper = [];
   r.autoIntake = true;
@@ -557,7 +687,7 @@ function queueTenth(w: World): void {
 
 // ---- auto fire must NOT fire before the match starts ------------------------------
 {
-  const w = createWorld('match', 'blue', 13);
+  const w = mkWorld('match', 'blue', 13);
   w.robots[0].autoFire = true;
   run(w, cmd({}), 2); // still in 'pre'
   check('auto fire holds until AUTO begins', w.robots[0].hopper.length === 3, `hopper=${w.robots[0].hopper.length}`);
@@ -568,7 +698,7 @@ function queueTenth(w: World): void {
 
 // ---- match flow ---------------------------------------------------------------
 {
-  const w = createWorld('match', 'blue', 9);
+  const w = mkWorld('match', 'blue', 9);
   startMatch(w);
   run(w, cmd({ driveY: 0.5 }), 25);
   // park clearly off every launch line before the end-of-auto assessment
@@ -589,10 +719,11 @@ function queueTenth(w: World): void {
   const spec = { length: 11.5, width: 12, intake: 'vector' as const };
   const zone = baseZone('blue');
   const cx = (zone.x0 + zone.x1) / 2;
+  const cy = (zone.y0 + zone.y1) / 2;
 
   // all four wheels inside, wide/long intake hanging out over the edge -> FULL
-  const w1 = createWorld('free', 'blue', 14, spec);
-  w1.robots[0].pos = { x: cx, y: -31 };
+  const w1 = mkWorld('free', 'blue', 14, spec);
+  w1.robots[0].pos = { x: cx, y: cy };
   w1.robots[0].heading = Math.PI / 2; // intake pokes out the top of the base
   assessMatchEnd(w1);
   check(
@@ -602,8 +733,8 @@ function queueTenth(w: World): void {
   );
 
   // only the intake reaches into the base, wheels outside -> NO credit
-  const w2 = createWorld('free', 'blue', 14, spec);
-  w2.robots[0].pos = { x: cx, y: -20 };
+  const w2 = mkWorld('free', 'blue', 14, spec);
+  w2.robots[0].pos = { x: cx, y: zone.y1 + 11 };
   w2.robots[0].heading = -Math.PI / 2; // intake dips into the zone from above
   assessMatchEnd(w2);
   check(
@@ -612,15 +743,16 @@ function queueTenth(w: World): void {
     `base=${w2.match.scores.blue.base}`,
   );
 
-  // straddling the edge: two wheels in -> PARTIAL
-  const w3 = createWorld('free', 'blue', 14, spec);
-  w3.robots[0].pos = { x: cx, y: -26 };
+  // just ONE wheel in (parked over the inner corner) -> PARTIAL
+  const w3 = mkWorld('free', 'blue', 14, spec);
+  w3.robots[0].pos = { x: zone.x0, y: zone.y1 }; // one wheel dips over the corner
   w3.robots[0].heading = Math.PI / 2;
+  const wheelsIn = wheelContacts(w3.robots[0]).filter((c) => inRect(c, zone)).length;
   assessMatchEnd(w3);
   check(
-    'two wheels in the base earn partial credit',
-    w3.match.scores.blue.base === 5,
-    `base=${w3.match.scores.blue.base}`,
+    'a single wheel in the base earns partial credit',
+    wheelsIn === 1 && w3.match.scores.blue.base === 5,
+    `wheelsIn=${wheelsIn} base=${w3.match.scores.blue.base}`,
   );
 }
 
@@ -645,6 +777,533 @@ function queueTenth(w: World): void {
       merged.pad.buttons.intake[0] === 6,
     JSON.stringify({ fire: merged.keys.fire, up: merged.keys.driveUp, stick: merged.pad.driveStick }),
   );
+}
+
+// ============================================================================
+// Phase B: RobotSpec v2 — drivetrains, flywheel model, robot-robot physics,
+// multi-robot spawn / determinism
+// ============================================================================
+
+const setup = (
+  id: number,
+  alliance: 'red' | 'blue',
+  spec: Partial<RobotSpec>,
+  startIndex = 0,
+): RobotSetup => ({
+  id,
+  alliance,
+  spec: { ...DEFAULT_SPEC, ...spec },
+  assists: { ...DEFAULT_ASSISTS },
+  startIndex,
+});
+
+// ---- default spec reproduces the legacy tuned feel exactly ------------------
+{
+  const dp = driveParams(DEFAULT_SPEC);
+  check(
+    'default spec drives at the legacy 75 in/s, 7 rad/s, 280 in/s²',
+    Math.abs(dp.maxSpeed - 75) < 1e-6 &&
+      Math.abs(dp.maxTurn - 7) < 1e-6 &&
+      Math.abs(dp.accel - 280) < 1e-6,
+    `${dp.maxSpeed.toFixed(2)} / ${dp.maxTurn.toFixed(2)} / ${dp.accel.toFixed(1)}`,
+  );
+}
+
+// ---- top speed scales linearly with wheel RPM -------------------------------
+{
+  const slow = driveParams({ ...DEFAULT_SPEC, driveRpm: 300 });
+  const fast = driveParams({ ...DEFAULT_SPEC, driveRpm: 600 });
+  check(
+    'top speed scales linearly with RPM',
+    Math.abs(fast.maxSpeed / slow.maxSpeed - 2) < 1e-6,
+    `${slow.maxSpeed.toFixed(1)} -> ${fast.maxSpeed.toFixed(1)}`,
+  );
+}
+
+// ---- tank drivetrain has no strafe ------------------------------------------
+{
+  const w = mkWorld('free', 'blue', 7, { drivetrain: 'tank' });
+  const r = w.robots[0];
+  r.pos = { x: 0, y: 0 };
+  r.heading = Math.PI / 2;
+  r.fieldCentric = false;
+  run(w, cmd({ driveX: 1 }), 0.8); // pure strafe command
+  check('tank drivetrain cannot strafe', Math.hypot(r.pos.x, r.pos.y) < 0.5, `moved ${Math.hypot(r.pos.x, r.pos.y).toFixed(2)} in`);
+}
+
+// ---- mass-weighted shove: the heavier robot yields less ---------------------
+{
+  const w = createWorld('free', 7, [setup(0, 'blue', { massLb: 42 }, 0), setup(1, 'blue', { massLb: 21 }, 1)]);
+  const [a, b] = w.robots;
+  a.pos = { x: -5, y: 0 }; a.heading = 0; a.vel = { x: 0, y: 0 };
+  b.pos = { x: 5, y: 0 }; b.heading = 0; b.vel = { x: 0, y: 0 };
+  const a0 = { ...a.pos };
+  const b0 = { ...b.pos };
+  step(w, SIM_DT, new Map());
+  const da = Math.hypot(a.pos.x - a0.x, a.pos.y - a0.y);
+  const db = Math.hypot(b.pos.x - b0.x, b.pos.y - b0.y);
+  check('heavier robot yields less (42 vs 21 lb ≈ 1:2 push)', Math.abs(db / da - 2) < 0.15, `da=${da.toFixed(2)} db=${db.toFixed(2)}`);
+}
+
+// ---- equal masses separate symmetrically ------------------------------------
+{
+  const w = createWorld('free', 7, [setup(0, 'blue', { massLb: 30 }, 0), setup(1, 'blue', { massLb: 30 }, 1)]);
+  const [a, b] = w.robots;
+  a.pos = { x: -5, y: 0 }; a.heading = 0; a.vel = { x: 0, y: 0 };
+  b.pos = { x: 5, y: 0 }; b.heading = 0; b.vel = { x: 0, y: 0 };
+  const a0 = { ...a.pos };
+  const b0 = { ...b.pos };
+  step(w, SIM_DT, new Map());
+  const da = Math.hypot(a.pos.x - a0.x, a.pos.y - a0.y);
+  const db = Math.hypot(b.pos.x - b0.x, b.pos.y - b0.y);
+  check('equal-mass robots separate symmetrically', Math.abs(da - db) < 0.05, `da=${da.toFixed(2)} db=${db.toFixed(2)}`);
+}
+
+// ---- a robot squeezed by an opponent against a wall stays in-field ----------
+{
+  const w = createWorld('free', 3, [setup(0, 'blue', {}, 0), setup(1, 'blue', { massLb: 42 }, 1)]);
+  const [a, b] = w.robots;
+  a.pos = { x: 58, y: 0 }; a.heading = 0; a.vel = { x: 0, y: 0 }; a.fieldCentric = false; // pinned near +x wall
+  b.pos = { x: 30, y: 0 }; b.heading = 0; b.vel = { x: 0, y: 0 }; b.fieldCentric = false; // heavy pusher
+  const commands = new Map([[1, cmd({ driveY: 1 })]]); // drive B east into A
+  for (let i = 0; i < Math.round(2 / SIM_DT); i++) step(w, SIM_DT, commands);
+  const inField = (r: (typeof w.robots)[number]): boolean =>
+    robotCorners(r).every((c) => Math.abs(c.x) <= FIELD_HALF + 0.5 && Math.abs(c.y) <= FIELD_HALF + 0.5);
+  check('robot squeezed against a wall by an opponent stays in-field', inField(a) && inField(b), `a=(${a.pos.x.toFixed(1)},${a.pos.y.toFixed(1)})`);
+}
+
+// ---- 4-robot, 1200-tick determinism -----------------------------------------
+{
+  const build = (seed: number): World =>
+    createWorld('match', seed, [
+      setup(0, 'blue', {}, 0),
+      setup(1, 'blue', { massLb: 24, driveRpm: 500 }, 1),
+      setup(2, 'red', { drivetrain: 'tank' }, 0),
+      setup(3, 'red', { intake: 'triangle' }, 1),
+    ]);
+  const cmds = new Map([
+    [0, cmd({ driveY: 1, fire: true })],
+    [1, cmd({ driveX: 0.5, intake: true })],
+    [2, cmd({ rotate: 1 })],
+    [3, cmd({ driveY: -0.7, fire: true })],
+  ]);
+  const runTicks = (w: World): void => {
+    for (let i = 0; i < 1200; i++) step(w, SIM_DT, cmds);
+  };
+  const w1 = build(123); startMatch(w1); runTicks(w1);
+  const w2 = build(123); startMatch(w2); runTicks(w2);
+  check('4-robot 1200-tick sim is bit-for-bit deterministic', JSON.stringify(w1) === JSON.stringify(w2));
+}
+
+// ---- flywheel recovery: low inertia slows far shots, not close ones ---------
+{
+  // gap between the first two shots, fired continuously from `pos` (free mode
+  // ignores launch-zone gating so we can place the robot anywhere)
+  const firstGap = (spec: Partial<RobotSpec>, pos: { x: number; y: number }): number => {
+    const w = mkWorld('free', 'blue', 5, spec);
+    const r = w.robots[0];
+    r.pos = { ...pos };
+    r.vel = { x: 0, y: 0 };
+    r.hopper = ['purple', 'green', 'purple'];
+    const times: number[] = [];
+    let prev = r.lastFireAt;
+    const commands = new Map([[0, cmd({ fire: true })]]);
+    for (let i = 0; i < Math.round(3 / SIM_DT) && times.length < 2; i++) {
+      step(w, SIM_DT, commands);
+      if (r.lastFireAt !== prev) { times.push(r.lastFireAt); prev = r.lastFireAt; }
+    }
+    return times.length >= 2 ? times[1] - times[0] : Infinity;
+  };
+  const near = { x: -50, y: 60 }; // point-blank on the blue goal
+  const far = { x: 58, y: -30 };  // long cross-court shot
+  const closeGap = firstGap({ flywheelInertia: 0 }, near);
+  const farGap = firstGap({ flywheelInertia: 0 }, far);
+  check('low-inertia flywheel fires rapidly up close', closeGap < 0.15, `gap=${closeGap.toFixed(3)}s`);
+  check('low-inertia flywheel is slowed by a far shot (>3× the close gap)', farGap > 3 * closeGap, `far=${farGap.toFixed(3)}s close=${closeGap.toFixed(3)}s`);
+  const hiFar = firstGap({ flywheelInertia: 1 }, far);
+  check('high-inertia flywheel keeps rapid fire at range', Math.abs(hiFar - 0.1) < 0.03, `gap=${hiFar.toFixed(3)}s`);
+
+  // the very first shot is always immediate (no spin-up before shot one)
+  const w = mkWorld('free', 'blue', 5, { flywheelInertia: 0 });
+  const r = w.robots[0];
+  r.pos = { x: 58, y: -30 };
+  r.hopper = ['purple', 'green', 'purple'];
+  run(w, cmd({ fire: true }), SIM_DT * 2);
+  check('first shot fires immediately even for a far low-inertia shot', r.lastFireAt <= SIM_DT * 2 + 1e-9, `t=${r.lastFireAt.toFixed(4)}`);
+}
+
+// ---- canSort fires the color the motif wants next ---------------------------
+{
+  const w = mkWorld('free', 'blue', 42, { canSort: true });
+  const r = w.robots[0];
+  r.pos = { x: -50, y: 60 };
+  r.vel = { x: 0, y: 0 };
+  const want = w.motif[0];
+  const other: 'purple' | 'green' = want === 'purple' ? 'green' : 'purple';
+  r.hopper = [other, want, other]; // FIFO would fire `other` first; sorter must skip to `want`
+  run(w, cmd({ fire: true }), SIM_DT * 2); // exactly one shot
+  const shot = w.balls[w.balls.length - 1];
+  check('canSort robot fires the motif color first (skips FIFO)', shot.color === want, `shot=${shot.color} want=${want}`);
+}
+
+// ---- 4-robot spawn: distinct poses, preload split, HP stock drained ---------
+{
+  const w = createWorld('match', 77, [
+    setup(0, 'blue', {}, 0),
+    setup(1, 'blue', {}, 1),
+    setup(2, 'red', {}, 0),
+    setup(3, 'red', {}, 1),
+  ]);
+  const blue0 = w.robots.find((r) => r.id === 0)!;
+  const blue1 = w.robots.find((r) => r.id === 1)!;
+  check('4 robots spawn (2 per alliance)', w.robots.length === 4);
+  check('first robot per alliance gets the 3-ball preload', blue0.hopper.length === 3, `${blue0.hopper.length}`);
+  check(
+    'second robot per alliance takes the HP stock as its preload',
+    JSON.stringify(blue1.hopper) === JSON.stringify([...HP_INITIAL_STOCK]),
+    `${blue1.hopper.join(',')}`,
+  );
+  check(
+    'HP stock starts empty when two robots fill an alliance',
+    w.humanPlayers.blue.stock.length === 0 && w.humanPlayers.red.stock.length === 0,
+  );
+  const gap = Math.hypot(blue0.pos.x - blue1.pos.x, blue0.pos.y - blue1.pos.y);
+  check('two robots on an alliance spawn at distinct, non-overlapping poses', gap > 20, `${gap.toFixed(1)} in apart`);
+}
+
+// ============================================================================
+// Phase C: penalty engine (Section 11 fouls)
+// ============================================================================
+
+/** two cross-alliance robots (blue id0, red id1) forced into teleop */
+function foulWorld(timeLeft = 60): World {
+  const w = createWorld('match', 55, [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 0)]);
+  w.match.phase = 'teleop';
+  w.match.phaseTimeLeft = timeLeft;
+  // park both well away from every foul zone until each test places them
+  w.robots[0].pos = { x: 0, y: -8 };
+  w.robots[1].pos = { x: 0, y: 20 };
+  for (const r of w.robots) { r.vel = { x: 0, y: 0 }; r.fieldCentric = false; }
+  return w;
+}
+
+function runCmds(w: World, cmds: Map<number, RobotCommand>, seconds: number): void {
+  const n = Math.round(seconds / SIM_DT);
+  for (let i = 0; i < n; i++) step(w, SIM_DT, cmds);
+}
+
+/** drop a robot into an opposing gate zone and press it in for `secs` */
+function inGate(w: World, robotIdx: number, gate: 'red' | 'blue'): void {
+  const gz = gateZone(gate);
+  w.robots[robotIdx].pos = { x: (gz.x0 + gz.x1) / 2, y: (gz.y0 + gz.y1) / 2 };
+}
+
+// ---- opponent gate (MAJOR): working the other alliance's gate ---------------
+{
+  const w = foulWorld();
+  inGate(w, 0, 'red'); // blue robot intrudes into RED's gate
+  runCmds(w, new Map(), 0.5);
+  check(
+    'opponent in the gate zone draws a MAJOR foul (opening opponent gate)',
+    w.match.scores.red.foulPoints === 15 && w.match.fouls.blue.major === 1,
+    `redFoulPts=${w.match.scores.red.foulPoints} blueMajor=${w.match.fouls.blue.major}`,
+  );
+  check(
+    'staying in the gate does not re-foul every tick (edge-triggered)',
+    w.match.fouls.blue.major === 1,
+    `blueMajor=${w.match.fouls.blue.major}`,
+  );
+
+  // NO cooldown: leave the gate, come back, and it fouls again immediately
+  w.robots[0].pos = { x: 0, y: -8 }; // out
+  runCmds(w, new Map(), 0.3);
+  check('leaving the gate does not add a foul', w.match.fouls.blue.major === 1);
+  inGate(w, 0, 'red'); // back in
+  runCmds(w, new Map(), 0.3);
+  check(
+    're-entering the opponent gate fouls again right away (no cooldown)',
+    w.match.fouls.blue.major === 2 && w.match.scores.red.foulPoints === 30,
+    `blueMajor=${w.match.fouls.blue.major} redFoulPts=${w.match.scores.red.foulPoints}`,
+  );
+
+  // a robot working its OWN gate is never fouled
+  const w2 = foulWorld();
+  inGate(w2, 0, 'blue');
+  runCmds(w2, new Map(), 0.5);
+  check(
+    'working your OWN gate is never a foul',
+    w2.match.scores.red.foulPoints === 0 && w2.match.fouls.blue.major === 0,
+  );
+}
+
+// ---- G425 secret tunnel (MINOR) --------------------------------------------
+{
+  const w = foulWorld();
+  const ts = tunnelStrip('red'); // the strip under RED's goal, owned by BLUE
+  const cx = (ts.x0 + ts.x1) / 2;
+  w.robots[0].pos = { x: cx, y: -25 };
+  w.robots[1].pos = { x: cx, y: -24 }; // overlapping -> contact
+  runCmds(w, new Map(), 0.3);
+  check(
+    'contact in the secret tunnel draws a MINOR foul on the intruder',
+    w.match.scores.blue.foulPoints === 5 && w.match.fouls.red.minor === 1,
+    `blueFoulPts=${w.match.scores.blue.foulPoints} redMinor=${w.match.fouls.red.minor}`,
+  );
+}
+
+// ---- G426 loading zone (MINOR): opponent contacts you in your own zone ------
+{
+  const w = foulWorld();
+  // sit well inside the loading zone AND clear of the side-wall tunnel strip
+  // (a wide chassis near the +x wall would straddle both zones)
+  const cx = loadZone('blue').x0 + 5;
+  for (const r of w.robots) r.heading = Math.PI / 2; // forward = +y
+  w.robots[0].pos = { x: cx, y: -58 }; // victim (blue) in its own loading zone
+  w.robots[1].pos = { x: cx, y: -42 }; // opponent (red) overlapping slightly -> one contact
+  runCmds(w, new Map(), 0.3);
+  check(
+    'opponent contact in your loading zone fouls the opponent (MINOR)',
+    w.match.scores.blue.foulPoints === 5 && w.match.fouls.red.minor === 1,
+    `blueFoulPts=${w.match.scores.blue.foulPoints} redMinor=${w.match.fouls.red.minor}`,
+  );
+}
+
+// ---- G427 base zone (MAJOR + counts the victim fully returned) --------------
+{
+  const w = foulWorld(15); // endgame (<= ENDGAME_START)
+  const bz = baseZone('blue');
+  const cx = (bz.x0 + bz.x1) / 2;
+  const cy = (bz.y0 + bz.y1) / 2;
+  w.robots[0].pos = { x: cx, y: cy }; // blue in its base
+  w.robots[1].pos = { x: cx, y: cy + 1 }; // red contacts it
+  runCmds(w, new Map(), 0.3);
+  check(
+    'base contact in endgame draws a MAJOR foul + marks the victim base-awarded',
+    w.match.scores.blue.foulPoints === 15 &&
+      w.match.fouls.red.major === 1 &&
+      w.robots[0].baseAwarded === true,
+    `blueFoulPts=${w.match.scores.blue.foulPoints} redMajor=${w.match.fouls.red.major} awarded=${w.robots[0].baseAwarded}`,
+  );
+  // drive the victim clear out of its base, then assess: baseAwarded => full
+  w.robots[0].pos = { x: 0, y: 0 };
+  w.robots[1].pos = { x: 0, y: 40 };
+  assessMatchEnd(w);
+  check(
+    'a base-awarded robot is credited a FULL base return even outside the base',
+    w.match.scores.blue.base === 10,
+    `base=${w.match.scores.blue.base}`,
+  );
+
+  // outside endgame the same contact is NOT a base foul
+  const w2 = foulWorld(60);
+  w2.robots[0].pos = { x: cx, y: cy };
+  w2.robots[1].pos = { x: cx, y: cy + 1 };
+  runCmds(w2, new Map(), 0.3);
+  check(
+    'base contact BEFORE endgame is not a G427 foul',
+    w2.match.scores.blue.foulPoints === 0 && !w2.robots[0].baseAwarded,
+  );
+}
+
+// ---- G402 AUTO interference (MAJOR): fully on the opponent's side -----------
+{
+  const w = createWorld('match', 55, [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 0)]);
+  startMatch(w); // -> auto
+  for (const r of w.robots) { r.vel = { x: 0, y: 0 }; r.fieldCentric = false; }
+  w.robots[0].pos = { x: -30, y: 0 }; // blue entirely on red's (-x) side
+  w.robots[1].pos = { x: -30, y: 1 }; // contacting a red robot
+  runCmds(w, new Map(), 0.2);
+  check(
+    'crossing fully onto the opponent side and contacting in AUTO is a MAJOR foul',
+    w.match.scores.red.foulPoints === 15 && w.match.fouls.blue.major === 1,
+    `redFoulPts=${w.match.scores.red.foulPoints} blueMajor=${w.match.fouls.blue.major}`,
+  );
+}
+
+// ---- same-alliance contact never fouls -------------------------------------
+{
+  const w = createWorld('match', 55, [setup(0, 'blue', {}, 0), setup(1, 'blue', {}, 1)]);
+  w.match.phase = 'teleop';
+  w.match.phaseTimeLeft = 60;
+  const ts = tunnelStrip('red');
+  const cx = (ts.x0 + ts.x1) / 2;
+  for (const r of w.robots) { r.vel = { x: 0, y: 0 }; r.fieldCentric = false; }
+  w.robots[0].pos = { x: cx, y: -25 };
+  w.robots[1].pos = { x: cx, y: -24 };
+  runCmds(w, new Map(), 0.5);
+  check(
+    'same-alliance contact in a foul zone never fouls',
+    w.match.scores.red.foulPoints === 0 &&
+      w.match.scores.blue.foulPoints === 0 &&
+      w.match.fouls.blue.minor === 0 &&
+      w.match.fouls.blue.major === 0,
+  );
+}
+
+/** pin scenario: pinned robot flush against the far wall, pinner just below and
+ * driving up into it (heading π/2 so robot-forward = +y). */
+function pinWorld(): World {
+  const w = foulWorld();
+  for (const r of w.robots) r.heading = Math.PI / 2;
+  w.robots[1].pos = { x: 0, y: 63 }; // pinned red, flush at the far wall
+  w.robots[0].pos = { x: 0, y: 44 }; // pinner blue, 1" gap, drives up into it
+  return w;
+}
+const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
+
+// ---- G422 pinning: 3-count fires, then resets on separation -----------------
+{
+  const w = pinWorld();
+  runCmds(w, PIN_CMDS, 2.7);
+  check('no pin foul before the 3 s threshold', w.match.fouls.blue.minor === 0, `blueMinor=${w.match.fouls.blue.minor}`);
+  runCmds(w, PIN_CMDS, 0.5); // cross 3 s
+  check(
+    'a 3 s pin draws a MINOR foul on the pinner',
+    w.match.fouls.blue.minor === 1,
+    `blueMinor=${w.match.fouls.blue.minor}`,
+  );
+  // separate: the accumulator must reset and stop fouling
+  w.robots[0].pos = { x: 0, y: -20 };
+  const before = w.match.fouls.blue.minor + w.match.fouls.blue.major;
+  runCmds(w, new Map(), 2);
+  check(
+    'breaking the pin resets the count (no further foul while separated)',
+    w.match.fouls.blue.minor + w.match.fouls.blue.major === before,
+    `after=${w.match.fouls.blue.minor + w.match.fouls.blue.major}`,
+  );
+}
+
+// ---- G422 pinning: a repeat pin by the same pinner escalates to MAJOR --------
+{
+  const w = pinWorld();
+  runCmds(w, PIN_CMDS, 6.3); // first pin at ~3 s (MINOR), re-pin fires ~6 s (MAJOR)
+  check(
+    'a continued pin escalates MINOR -> MAJOR on the repeat',
+    w.match.fouls.blue.minor === 1 && w.match.fouls.blue.major === 1,
+    `blueMinor=${w.match.fouls.blue.minor} blueMajor=${w.match.fouls.blue.major}`,
+  );
+}
+
+// ---- penalty state stays deterministic -------------------------------------
+{
+  const w1 = pinWorld(); runCmds(w1, PIN_CMDS, 4);
+  const w2 = pinWorld(); runCmds(w2, PIN_CMDS, 4);
+  check('penalty engine is bit-for-bit deterministic', JSON.stringify(w1) === JSON.stringify(w2));
+}
+
+// ============================================================================
+// Phase D: netcode foundation (protocol / checksum / lockstep)
+// ============================================================================
+
+// ---- command quantization: clamp + idempotent round-trip -------------------
+{
+  const q = quantizeCommand(cmd({ driveX: 5, driveY: -5, rotate: 0.5, intake: true, fire: false }));
+  check(
+    'quantize clamps out-of-range axes to int8 and packs buttons',
+    q.dx === 127 && q.dy === -127 && q.rot === Math.round(0.5 * 127) && q.buttons === 1,
+    `dx=${q.dx} dy=${q.dy} rot=${q.rot} btn=${q.buttons}`,
+  );
+  // quantize∘dequantize is the identity on a QCommand, so localize is stable —
+  // the producer and every peer step the exact same float
+  const raw = cmd({ driveX: 0.37, driveY: -0.81, rotate: 0.12, fire: true });
+  const once = localizeCommand(raw);
+  const twice = localizeCommand(once);
+  check(
+    'localizeCommand is stable (producer value == what peers decode)',
+    JSON.stringify(once) === JSON.stringify(twice),
+    JSON.stringify(once),
+  );
+}
+
+// ---- command packet binary round-trip --------------------------------------
+{
+  const qs = [
+    quantizeCommand(cmd({ driveX: 1, fire: true })),
+    quantizeCommand(cmd({ driveY: -0.5, intake: true })),
+    quantizeCommand(cmd({ rotate: 0.25 })),
+    quantizeCommand(cmd({})),
+  ];
+  const buf = encodeCommandPacket(3, 1000, qs);
+  const dec = decodeCommandPacket(buf);
+  check(
+    'command packet encodes/decodes (robotId, startTick, 4-byte ticks)',
+    buf.byteLength === 7 + 4 * 4 &&
+      dec.robotId === 3 &&
+      dec.startTick === 1000 &&
+      JSON.stringify(dec.cmds) === JSON.stringify(qs),
+    `bytes=${buf.byteLength} id=${dec.robotId} start=${dec.startTick}`,
+  );
+}
+
+// ---- lockstep: input delay, gating, disconnect substitution ----------------
+{
+  const ls = new Lockstep([0, 1], 0, 8); // robots 0 (local) & 1, delay 8
+  check('pre-seeded pipeline lets the match start (canStep(0))', ls.canStep(0));
+
+  const sched = ls.submitLocal(0, cmd({ driveX: 1, fire: true }));
+  check('local command is scheduled INPUT_DELAY ticks ahead', sched.tick === 8, `tick=${sched.tick}`);
+  check('cannot step tick 8 until the remote command arrives', !ls.canStep(8));
+
+  ls.receiveRemote(1, 8, cmd({ driveX: -1 }));
+  check('step unblocks once every connected robot has tick 8', ls.canStep(8));
+
+  const at8 = ls.commandsForTick(8);
+  check(
+    'commandsForTick assembles both robots (local round-tripped, remote as sent)',
+    Math.abs((at8.get(0)?.driveX ?? 0) - 1) < 1e-9 && at8.get(1)?.driveX === -1,
+    `r0=${at8.get(0)?.driveX} r1=${at8.get(1)?.driveX}`,
+  );
+
+  // a disconnect: stop waiting on robot 1; it runs on ZERO from now
+  ls.submitLocal(1, cmd({ driveY: 1 })); // lands at tick 9
+  ls.markDisconnected(1);
+  check('a disconnected robot no longer blocks stepping', ls.canStep(9));
+  const at9 = ls.commandsForTick(9);
+  check(
+    'a disconnected robot is stepped on ZERO_CMD',
+    at9.get(1)?.driveX === 0 && at9.get(1)?.driveY === 0 && at9.get(1)?.fire === false,
+  );
+
+  check('checksum ticks land on the interval only', Lockstep.isChecksumTick(120) && !Lockstep.isChecksumTick(0) && !Lockstep.isChecksumTick(121));
+}
+
+// ---- worldHash: replay determinism + sensitivity ---------------------------
+{
+  const build = (): World =>
+    createWorld('match', 321, [
+      setup(0, 'blue', {}, 0),
+      setup(1, 'blue', { massLb: 24, driveRpm: 500 }, 1),
+      setup(2, 'red', { drivetrain: 'tank' }, 0),
+      setup(3, 'red', { intake: 'triangle' }, 1),
+    ]);
+  const cmds = new Map([
+    [0, cmd({ driveY: 1, fire: true })],
+    [1, cmd({ driveX: 0.5, intake: true })],
+    [2, cmd({ rotate: 1 })],
+    [3, cmd({ driveY: -0.7, fire: true })],
+  ]);
+  const hashesAt = (w: World): number[] => {
+    startMatch(w);
+    const out: number[] = [];
+    for (let i = 0; i < 600; i++) {
+      step(w, SIM_DT, cmds);
+      if (Lockstep.isChecksumTick(w.tick)) out.push(worldHash(w));
+    }
+    return out;
+  };
+  const h1 = hashesAt(build());
+  const h2 = hashesAt(build());
+  check(
+    'worldHash agrees across identical replays at every checksum tick',
+    h1.length === 5 && JSON.stringify(h1) === JSON.stringify(h2),
+    `n=${h1.length}`,
+  );
+  check('the checksum actually evolves (not constant)', new Set(h1).size > 1);
+
+  const wa = build();
+  const wb = build();
+  wb.robots[0].pos.x += 1; // a 1" divergence must change the hash
+  check('worldHash detects a diverged position', worldHash(wa) !== worldHash(wb));
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

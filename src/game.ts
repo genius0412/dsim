@@ -11,7 +11,7 @@ import type {
   World,
 } from './types';
 import * as C from './config';
-import { createWorld } from './sim/spawn';
+import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
 import { step } from './sim/world';
 import { startMatch } from './sim/match';
 import { robotInLaunchZone } from './sim/robot';
@@ -19,12 +19,17 @@ import { InputManager } from './input/input';
 import type { ControlBindings } from './input/bindings';
 import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
+import type { NetSession } from './net/session';
 
 export interface GameSettings {
   mode: GameMode;
   alliance: Alliance;
   assists: AssistConfig;
   spec: RobotSpec;
+  /** which START_POSES slot the player's robot uses */
+  startIndex: number;
+  /** Free Drive only: spawn three default robots (ZERO_CMD) as obstacles */
+  practiceDummies: boolean;
   audio: { sounds: boolean; voice: boolean };
   bindings: ControlBindings;
 }
@@ -44,6 +49,8 @@ export interface HudSnapshot {
   score: ScoreBreakdown;
   oppTotal: number;
   provisionalPattern: number;
+  /** fouls committed BY each alliance (counts, for the HUD chip) */
+  fouls: Record<Alliance, { minor: number; major: number }>;
   fieldCentric: boolean;
   aimAssist: boolean;
   autoIntake: boolean;
@@ -60,6 +67,8 @@ export interface HudSnapshot {
   /** pre-match "3-2-1" countdown value, or null when not counting down */
   countdown: number | null;
   toasts: Toast[];
+  /** multiplayer status (null in solo): stall target + desync flag */
+  net: { waitingFor: string | null; desync: boolean; peers: number } | null;
 }
 
 export class GameController {
@@ -84,37 +93,72 @@ export class GameController {
   private hudCountdown: number | null = null;
   /** drive controls reversed so the shooter side leads (robot-centric only) */
   private frontFlipped = false;
-  // action-SFX edge trackers (seeded from the fresh world, see seedActionAudio)
-  private prevFireAt = 0;
-  private prevIntakeAt = 0;
+  // action-SFX edge trackers per robot id (seeded in seedActionAudio)
+  private prevFireAt: Record<number, number> = {};
+  private prevIntakeAt: Record<number, number> = {};
   private prevGateOpen: Record<Alliance, boolean> = { red: false, blue: false };
+
+  /** the local player's robot id (slot 0 in solo; assigned by the lobby in
+   * multiplayer) */
+  readonly localRobotId: number;
+  /** null in solo; the lockstep session in multiplayer */
+  private readonly session: NetSession | null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private settings: GameSettings,
+    session: NetSession | null = null,
   ) {
     this.ctx = canvas.getContext('2d')!;
+    this.session = session;
+    this.localRobotId = session ? session.localRobotId : 0;
     this.audio.soundsEnabled = settings.audio.sounds;
     this.audio.voiceEnabled = settings.audio.voice;
     this.input = new InputManager(settings.bindings);
     this.world = this.makeWorld();
     this.prevPhase = this.world.match.phase;
     this.seedActionAudio();
+    session?.onRestart(() => this.rebuildFromNet());
     this.input.attach();
     window.addEventListener('resize', this.onResize);
     this.onResize();
     this.raf = requestAnimationFrame(this.loop);
   }
 
+  private localRobot() {
+    return this.world.robots.find((r) => r.id === this.localRobotId) ?? this.world.robots[0];
+  }
+
   private makeWorld(): World {
+    // multiplayer: everyone builds the identical world the host authored and
+    // starts immediately (deterministic — no controller-local countdown/seed)
+    if (this.session) {
+      const w = createWorld('match', this.session.seed, this.session.setups);
+      startMatch(w);
+      return w;
+    }
     const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
-    return createWorld(
-      this.settings.mode,
-      this.settings.alliance,
-      seed,
-      this.settings.spec,
-      this.settings.assists,
-    );
+    const s = this.settings;
+    const setups: RobotSetup[] = [
+      { id: 0, alliance: s.alliance, spec: s.spec, assists: s.assists, startIndex: s.startIndex },
+    ];
+    if (s.mode === 'free' && s.practiceDummies) {
+      // three idle default robots as physical obstacles / parking practice
+      const opp: Alliance = s.alliance === 'blue' ? 'red' : 'blue';
+      const dummy = (id: number, alliance: Alliance, startIndex: number): RobotSetup => ({
+        id,
+        alliance,
+        spec: { ...DEFAULT_SPEC, name: `Dummy ${id}`, teamName: 'Practice', teamNumber: 0 },
+        assists: { ...DEFAULT_ASSISTS, autoIntake: false, autoFire: false },
+        startIndex,
+      });
+      setups.push(
+        dummy(1, s.alliance, s.startIndex === 1 ? 2 : 1),
+        dummy(2, opp, 0),
+        dummy(3, opp, 1),
+      );
+    }
+    return createWorld(s.mode, seed, setups);
   }
 
   private onResize = (): void => {
@@ -164,9 +208,12 @@ export class GameController {
   /** align the SFX edge trackers with a freshly created world so world
    * creation/restart never plays a phantom shoot/intake/gate cue */
   private seedActionAudio(): void {
-    const r = this.world.robots[0];
-    this.prevFireAt = r.lastFireAt;
-    this.prevIntakeAt = r.lastIntakeAt;
+    this.prevFireAt = {};
+    this.prevIntakeAt = {};
+    for (const r of this.world.robots) {
+      this.prevFireAt[r.id] = r.lastFireAt;
+      this.prevIntakeAt[r.id] = r.lastIntakeAt;
+    }
     this.prevGateOpen = {
       red: this.world.goals.red.gateOpen,
       blue: this.world.goals.blue.gateOpen,
@@ -174,16 +221,18 @@ export class GameController {
   }
 
   /** shoot / intake / gate effects, edge-detected from world state (the sim
-   * core stays event-free for these — same pattern as handlePhaseAudio) */
+   * core stays event-free for these — same pattern as handlePhaseAudio).
+   * All robots share the small field, so everyone's actions are audible. */
   private handleActionAudio(): void {
-    const r = this.world.robots[0];
-    if (r.lastFireAt !== this.prevFireAt) {
-      this.prevFireAt = r.lastFireAt;
-      this.audio.sfxShoot();
-    }
-    if (r.lastIntakeAt !== this.prevIntakeAt) {
-      this.prevIntakeAt = r.lastIntakeAt;
-      this.audio.sfxIntake();
+    for (const r of this.world.robots) {
+      if (r.lastFireAt !== this.prevFireAt[r.id]) {
+        this.prevFireAt[r.id] = r.lastFireAt;
+        this.audio.sfxShoot();
+      }
+      if (r.lastIntakeAt !== this.prevIntakeAt[r.id]) {
+        this.prevIntakeAt[r.id] = r.lastIntakeAt;
+        this.audio.sfxIntake();
+      }
     }
     for (const a of ['red', 'blue'] as Alliance[]) {
       const open = this.world.goals[a].gateOpen;
@@ -220,7 +269,7 @@ export class GameController {
     const cmd = this.input.poll();
     // "flip front": reverse robot-centric drive so the shooter side leads.
     // Meaningless in field-centric (translation is driver-frame there).
-    if (!this.world.robots[0].fieldCentric) {
+    if (!this.localRobot().fieldCentric) {
       if (this.input.flipPressed) this.frontFlipped = !this.frontFlipped;
       if (this.frontFlipped) {
         cmd.driveX = -cmd.driveX;
@@ -228,25 +277,10 @@ export class GameController {
       }
     }
     this.lastCmd = cmd;
-    if (
-      this.input.startPressed &&
-      this.world.match.phase === 'pre' &&
-      this.countdownStart === null
-    ) {
-      this.countdownStart = this.world.time;
-      this.lastBeepAt = -1;
-    }
-    if (this.input.restartPressed) this.restart();
 
     this.acc += Math.min(dtMs / 1000, 0.25);
-    let steps = 0;
-    const commands = new Map<number, RobotCommand>([[0, cmd]]);
-    while (this.acc >= C.SIM_DT && steps < C.MAX_STEPS_PER_FRAME) {
-      step(this.world, C.SIM_DT, commands);
-      this.acc -= C.SIM_DT;
-      steps++;
-    }
-    if (steps === C.MAX_STEPS_PER_FRAME) this.acc = 0;
+    if (this.session) this.stepNetworked(cmd);
+    else this.stepSolo(cmd);
 
     this.hudCountdown = this.updateCountdown();
     this.handlePhaseAudio();
@@ -258,9 +292,68 @@ export class GameController {
     this.toasts = this.toasts.filter((x) => performance.now() - x.at < 2500).slice(-5);
     this.world.events.length = 0;
 
-    this.renderer.render(this.ctx, this.world, this.lastCmd);
+    this.renderer.render(this.ctx, this.world, this.lastCmd, this.localRobotId);
     this.raf = requestAnimationFrame(this.loop);
   };
+
+  /** solo stepping: local keypress start/restart, one local command per tick */
+  private stepSolo(cmd: RobotCommand): void {
+    if (
+      this.input.startPressed &&
+      this.world.match.phase === 'pre' &&
+      this.countdownStart === null
+    ) {
+      this.countdownStart = this.world.time;
+      this.lastBeepAt = -1;
+    }
+    if (this.input.restartPressed) this.restart();
+
+    let steps = 0;
+    const commands = new Map<number, RobotCommand>([[this.localRobotId, cmd]]);
+    while (this.acc >= C.SIM_DT && steps < C.MAX_STEPS_PER_FRAME) {
+      step(this.world, C.SIM_DT, commands);
+      this.acc -= C.SIM_DT;
+      steps++;
+    }
+    if (steps === C.MAX_STEPS_PER_FRAME) this.acc = 0;
+  }
+
+  /** lockstep stepping: author + send local inputs `INPUT_DELAY` ahead, then
+   * advance only ticks every connected peer has an input for. A stall simply
+   * stops draining (the HUD shows WAITING). Restart is host-authored. */
+  private stepNetworked(cmd: RobotCommand): void {
+    const s = this.session!;
+    if (this.input.restartPressed && s.isHost()) {
+      s.requestRestart((Date.now() ^ (Math.random() * 0xffffffff)) >>> 0);
+    }
+    s.produce(this.world.tick, cmd);
+    let steps = 0;
+    while (
+      this.acc >= C.SIM_DT &&
+      steps < C.MAX_STEPS_PER_FRAME &&
+      s.canStep(this.world.tick)
+    ) {
+      step(this.world, C.SIM_DT, s.commandsForTick(this.world.tick));
+      s.checkpoint(this.world);
+      this.acc -= C.SIM_DT;
+      steps++;
+    }
+    if (steps === C.MAX_STEPS_PER_FRAME) this.acc = 0;
+  }
+
+  /** host-authored restart arrived over the net: rebuild from the new seed */
+  private rebuildFromNet(): void {
+    this.audio.stopSpeech();
+    this.world = this.makeWorld();
+    this.prevPhase = this.world.match.phase;
+    this.warningPlayed = false;
+    this.countdownStart = null;
+    this.hudCountdown = null;
+    this.frontFlipped = false;
+    this.acc = 0;
+    this.seedActionAudio();
+    this.toasts = [];
+  }
 
   /** restart with the same settings (new random seed / motif) */
   restart(): void {
@@ -280,7 +373,7 @@ export class GameController {
 
   getHud(): HudSnapshot {
     const w = this.world;
-    const r = w.robots[0];
+    const r = this.localRobot();
     const a = this.settings.alliance;
     const opp: Alliance = a === 'blue' ? 'red' : 'blue';
     const goal = w.goals[a];
@@ -293,6 +386,7 @@ export class GameController {
       score: w.match.scores[a],
       oppTotal: w.match.scores[opp].total,
       provisionalPattern: w.match.provisionalPattern[a],
+      fouls: { red: { ...w.match.fouls.red }, blue: { ...w.match.fouls.blue } },
       fieldCentric: r.fieldCentric,
       aimAssist: r.aimAssist,
       autoIntake: r.autoIntake,
@@ -309,6 +403,7 @@ export class GameController {
       overflowCount: goal.overflowCount,
       countdown: this.hudCountdown,
       toasts: [...this.toasts],
+      net: this.session ? this.session.status() : null,
     };
   }
 

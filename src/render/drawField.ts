@@ -3,7 +3,7 @@ import * as C from '../config';
 import {
   baseZone,
   classifierRect,
-  gateZone,
+  gateTapeSegments,
   goalTriangle,
   launchSegments,
   loadZone,
@@ -11,6 +11,7 @@ import {
   tunnelStrip,
   type Rect,
 } from '../sim/field';
+// (gateZone itself is the invisible interaction rect — intentionally not drawn)
 
 const F = C.FIELD_HALF;
 
@@ -49,16 +50,6 @@ export function drawField(ctx: CanvasRenderingContext2D, world: World): void {
     ctx.stroke();
   }
 
-  // alliance station bands outside the side walls (red = left, blue = right)
-  ctx.fillStyle = C.COLORS.redDim;
-  ctx.fillRect(-F - 7, -F, 5, 2 * F);
-  ctx.fillStyle = 'rgba(239,68,68,0.55)';
-  ctx.fillRect(-F - 4.4, -F, 2.4, 2 * F);
-  ctx.fillStyle = C.COLORS.blueDim;
-  ctx.fillRect(F + 2, -F, 5, 2 * F);
-  ctx.fillStyle = 'rgba(59,130,246,0.55)';
-  ctx.fillRect(F + 2, -F, 2.4, 2 * F);
-
   // shared launch zones (large far triangle + audience triangle)
   ctx.fillStyle = C.COLORS.launchTint;
   ctx.beginPath();
@@ -74,16 +65,6 @@ export function drawField(ctx: CanvasRenderingContext2D, world: World): void {
   ctx.closePath();
   ctx.fill();
 
-  // white launch-line tape (incl. depot lines near the goals)
-  ctx.strokeStyle = C.COLORS.white;
-  ctx.lineWidth = C.TAPE_W;
-  for (const [a, b] of launchSegments()) {
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-  }
-
   for (const a of ['red', 'blue'] as Alliance[]) {
     // base zone (alliance tape, translucent fill)
     const bz = baseZone(a);
@@ -95,18 +76,29 @@ export function drawField(ctx: CanvasRenderingContext2D, world: World): void {
     fillRect(ctx, lz, 'rgba(229,231,235,0.05)');
     strokeRect(ctx, lz, C.COLORS.white);
 
-    // secret tunnel floor strip beneath the OTHER alliance's classifier
-    fillRect(ctx, tunnelStrip(other(a)), allianceColor(a, true));
+    // SECRET TUNNEL floor strip beneath the OTHER alliance's classifier —
+    // it belongs to THIS alliance (its drive team is on that wall), bounded
+    // by alliance-colored tape
+    const ts = tunnelStrip(other(a));
+    fillRect(ctx, ts, allianceColor(a, true));
+    strokeRect(ctx, ts, allianceColor(a));
 
     // classifier ramp structure (robot obstacle) next to this alliance's goal
+    // — a neutral gray STRUCTURE, not an alliance tape line
     const cr = classifierRect(a);
     fillRect(ctx, cr, '#191d24');
-    strokeRect(ctx, cr, allianceColor(a));
+    strokeRect(ctx, cr, C.COLORS.wall);
 
-    // gate zone tape
-    const gz = gateZone(a);
-    fillRect(ctx, gz, allianceColor(a, true));
-    strokeRect(ctx, gz, allianceColor(a));
+    // GATE ZONE marking: two parallel alliance-colored tape lines, 10in long,
+    // 2.75in apart (the larger invisible interaction rect works the gate)
+    ctx.strokeStyle = allianceColor(a);
+    ctx.lineWidth = C.TAPE_W;
+    for (const [p0, p1] of gateTapeSegments(a)) {
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(p1.x, p1.y);
+      ctx.stroke();
+    }
 
     // spike marks: 10in horizontal white tape rows on the drive-team side
     const d = driverSide(a);
@@ -120,7 +112,7 @@ export function drawField(ctx: CanvasRenderingContext2D, world: World): void {
       ctx.stroke();
     }
 
-    // goal structure in the far corner
+    // goal structure in the far corner (full 26.5x18.3 corner triangle)
     const tri = goalTriangle(a);
     ctx.fillStyle = a === 'blue' ? '#14235a' : '#4f1414';
     ctx.beginPath();
@@ -132,8 +124,20 @@ export function drawField(ctx: CanvasRenderingContext2D, world: World): void {
     ctx.strokeStyle = allianceColor(a);
     ctx.lineWidth = 1.4;
     ctx.stroke();
-
   }
+
+  // white launch-line tape (incl. the DEPOT lines flush on each goal face) —
+  // drawn LAST so the goal outline never covers the depot tape
+  ctx.strokeStyle = C.COLORS.white;
+  ctx.lineWidth = 1.4;
+  ctx.lineCap = 'round';
+  for (const [a, b] of launchSegments()) {
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.lineCap = 'butt';
 
   // field perimeter
   ctx.strokeStyle = C.COLORS.wall;

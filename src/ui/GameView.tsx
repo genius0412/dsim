@@ -2,20 +2,23 @@ import { useEffect, useRef, useState } from 'react';
 import { GameController, type GameSettings, type HudSnapshot } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
 import { ENDGAME_START } from '../config';
+import type { NetSession } from '../net/session';
 
 interface Props {
   settings: GameSettings;
   onExit: () => void;
+  /** null in solo; a live lockstep session in multiplayer */
+  session?: NetSession | null;
 }
 
-export function GameView({ settings, onExit }: Props) {
+export function GameView({ settings, onExit, session = null }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controllerRef = useRef<GameController | null>(null);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
-    const controller = new GameController(canvas, settings);
+    const controller = new GameController(canvas, settings, session);
     controllerRef.current = controller;
     const hudTimer = window.setInterval(() => setHud(controller.getHud()), 100);
     const onKey = (e: KeyboardEvent) => {
@@ -183,12 +186,27 @@ function Hud({ hud }: { hud: HudSnapshot }) {
             {hud.inLaunchZone ? 'LAUNCH ZONE' : 'NO LAUNCH'}
           </span>
           {hud.gateOpen && <span className="chip on">GATE OPEN</span>}
+          {hud.mode === 'match' &&
+            (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
+              <span className="chip warn">
+                FOULS {hud.fouls[hud.alliance].minor}m {hud.fouls[hud.alliance].major}M
+              </span>
+            )}
           <span className="chip">{hud.fieldCentric ? 'FIELD' : 'ROBOT'}</span>
           {hud.frontFlipped && <span className="chip warn">REVERSED</span>}
           <span className={`chip ${hud.aimAssist ? 'on' : 'off'}`}>AIM</span>
           <span className={`chip ${hud.autoIntake ? 'on' : 'off'}`}>AUTO-IN</span>
           <span className={`chip ${hud.autoFire ? 'on' : 'off'}`}>AUTO-FIRE</span>
           <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
+          {hud.net && (
+            <span className={`chip ${hud.net.peers > 0 ? 'on' : 'warn'}`}>
+              NET {hud.net.peers + 1}P
+            </span>
+          )}
+          {hud.net?.waitingFor && (
+            <span className="chip warn">WAITING · {hud.net.waitingFor}</span>
+          )}
+          {hud.net?.desync && <span className="chip off">⚠ DESYNC</span>}
         </div>
       </div>
 
@@ -230,6 +248,10 @@ function ScoreTable({ hud }: { hud: HudSnapshot }) {
         ['Depot artifacts', s.depot],
         ['Base return', s.base],
       ],
+    ],
+    [
+      'PENALTIES',
+      [['Opponent fouls', s.foulPoints]],
     ],
   ];
   return (

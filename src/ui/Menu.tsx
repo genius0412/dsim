@@ -1,15 +1,78 @@
 import type { GameSettings } from '../game';
-import type { IntakeStyle } from '../types';
-import { INTAKE_PRESETS, ROBOT_MAX_SIZE, ROBOT_MIN_WIDTH } from '../config';
+import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
+import {
+  INTAKE_PRESETS,
+  ROBOT_MAX_SIZE,
+  ROBOT_MIN_WIDTH,
+  ROBOT_MIN_MASS,
+  ROBOT_MAX_MASS,
+  ROBOT_MIN_RPM,
+  ROBOT_MAX_RPM,
+  ROBOT_PRESETS,
+  START_POSES,
+} from '../config';
+import { driveParams } from '../sim/drivetrain';
 import { ControlsSection } from './ControlsSection';
+
+const DRIVETRAIN_LABELS: Record<DrivetrainType, string> = {
+  mecanum: 'Mecanum',
+  tank: 'Tank',
+  swerve: 'Swerve',
+  xdrive: 'X-drive',
+};
+
+const DRIVETRAIN_BLURBS: Record<DrivetrainType, string> = {
+  mecanum: 'Full strafe at 85% — the FTC standard',
+  tank: 'No strafe; best straight-line speed and push',
+  swerve: 'Full-speed any direction; nimble',
+  xdrive: 'Full-speed strafe, slightly slower overall',
+};
+
+const INTAKE_LABELS: Record<IntakeStyle, string> = {
+  sloped: 'Sloped intake',
+  vector: 'Vector wheel intake',
+  triangle: 'Triangle intake',
+};
+
+const INTAKE_BLURBS: Record<IntakeStyle, string> = {
+  sloped: 'Trapezoid mouth in the frame — face the artifact and it rolls up; devours clumps',
+  vector:
+    'Vertical compliant wheels ahead of the chassis (11.5–14.5") — overhanging a narrower chassis they grab artifacts you strafe into',
+  triangle:
+    'Stores artifacts in a triangle; long trapezoid mouth devours clumps — slower transfer to the shooter (0.3s)',
+};
+
+/** does the current spec exactly match a preset? (value compare) */
+function specMatches(a: RobotSpec, b: RobotSpec): boolean {
+  return (
+    a.name === b.name &&
+    a.teamName === b.teamName &&
+    a.teamNumber === b.teamNumber &&
+    a.length === b.length &&
+    a.width === b.width &&
+    a.intake === b.intake &&
+    a.massLb === b.massLb &&
+    a.drivetrain === b.drivetrain &&
+    a.driveRpm === b.driveRpm &&
+    a.flywheelInertia === b.flywheelInertia &&
+    a.canSort === b.canSort
+  );
+}
+
+function driveStats(spec: RobotSpec): string {
+  const p = driveParams(spec);
+  return `${p.maxSpeed.toFixed(0)} in/s · ${p.maxTurn.toFixed(1)} rad/s`;
+}
 
 interface Props {
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
   onStart: () => void;
+  /** open the multiplayer lobby; undefined ⇒ Supabase not configured */
+  onMultiplayer?: () => void;
 }
 
-export function Menu({ settings, onChange, onStart }: Props) {
+export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
   const setSpec = (patch: Partial<GameSettings['spec']>) =>
     onChange({ ...settings, spec: { ...settings.spec, ...patch } });
@@ -115,66 +178,187 @@ export function Menu({ settings, onChange, onStart }: Props) {
 
         <section>
           <h2>Robot</h2>
-          <div className="spec-row">
-            <label>
-              Length {settings.spec.length}"
-              <input
-                type="range"
-                min={INTAKE_PRESETS[settings.spec.intake].minLength}
-                max={INTAKE_PRESETS[settings.spec.intake].maxLength}
-                step={0.5}
-                value={settings.spec.length}
-                onChange={(e) => setSpec({ length: Number(e.target.value) })}
-              />
-            </label>
-            <label>
-              Width {settings.spec.width}"
-              <input
-                type="range"
-                min={ROBOT_MIN_WIDTH}
-                max={ROBOT_MAX_SIZE}
-                step={0.5}
-                value={settings.spec.width}
-                onChange={(e) => setSpec({ width: Number(e.target.value) })}
-              />
-            </label>
+          <div className="card-row wrap">
+            {ROBOT_PRESETS.map((p) => (
+              <button
+                key={p.name}
+                className={`card preset-card ${specMatches(settings.spec, p) ? 'selected' : ''}`}
+                onClick={() => set({ spec: { ...p } })}
+              >
+                <strong>{p.name}</strong>
+                <span>
+                  {p.teamNumber} · {p.teamName}
+                </span>
+                <span className="preset-stats">
+                  {DRIVETRAIN_LABELS[p.drivetrain]} · {p.massLb} lb · {p.driveRpm} RPM ·{' '}
+                  {INTAKE_LABELS[p.intake]}
+                  {p.canSort ? ' · sorts' : ''}
+                </span>
+              </button>
+            ))}
           </div>
+
+          <div className="builder">
+            <h3>
+              {ROBOT_PRESETS.some((p) => specMatches(settings.spec, p))
+                ? 'Tweak it (becomes Custom)'
+                : 'Custom robot'}
+            </h3>
+            <div className="spec-row">
+              <label>
+                Robot name
+                <input
+                  type="text"
+                  maxLength={24}
+                  value={settings.spec.name}
+                  onChange={(e) => setSpec({ name: e.target.value })}
+                />
+              </label>
+              <label>
+                Team name
+                <input
+                  type="text"
+                  maxLength={24}
+                  value={settings.spec.teamName}
+                  onChange={(e) => setSpec({ teamName: e.target.value })}
+                />
+              </label>
+              <label>
+                Team #
+                <input
+                  type="number"
+                  min={0}
+                  max={99999}
+                  value={settings.spec.teamNumber || ''}
+                  onChange={(e) =>
+                    setSpec({ teamNumber: Math.max(0, Math.round(Number(e.target.value) || 0)) })
+                  }
+                />
+              </label>
+            </div>
+            <div className="card-row">
+              {(Object.keys(DRIVETRAIN_LABELS) as DrivetrainType[]).map((d) => (
+                <button
+                  key={d}
+                  className={`card mini ${settings.spec.drivetrain === d ? 'selected' : ''}`}
+                  onClick={() => setSpec({ drivetrain: d })}
+                >
+                  <strong>{DRIVETRAIN_LABELS[d]}</strong>
+                  <span>{DRIVETRAIN_BLURBS[d]}</span>
+                </button>
+              ))}
+            </div>
+            <div className="spec-row">
+              <label>
+                Length {settings.spec.length}"
+                <input
+                  type="range"
+                  min={INTAKE_PRESETS[settings.spec.intake].minLength}
+                  max={INTAKE_PRESETS[settings.spec.intake].maxLength}
+                  step={0.5}
+                  value={settings.spec.length}
+                  onChange={(e) => setSpec({ length: Number(e.target.value) })}
+                />
+              </label>
+              <label>
+                Width {settings.spec.width}"
+                <input
+                  type="range"
+                  min={ROBOT_MIN_WIDTH}
+                  max={ROBOT_MAX_SIZE}
+                  step={0.5}
+                  value={settings.spec.width}
+                  onChange={(e) => setSpec({ width: Number(e.target.value) })}
+                />
+              </label>
+              <label>
+                Mass {settings.spec.massLb} lb
+                <input
+                  type="range"
+                  min={ROBOT_MIN_MASS}
+                  max={ROBOT_MAX_MASS}
+                  step={1}
+                  value={settings.spec.massLb}
+                  onChange={(e) => setSpec({ massLb: Number(e.target.value) })}
+                />
+              </label>
+            </div>
+            <div className="spec-row">
+              <label>
+                Drive RPM {settings.spec.driveRpm}
+                <input
+                  type="range"
+                  min={ROBOT_MIN_RPM}
+                  max={ROBOT_MAX_RPM}
+                  step={5}
+                  value={settings.spec.driveRpm}
+                  onChange={(e) => setSpec({ driveRpm: Number(e.target.value) })}
+                />
+              </label>
+              <label>
+                Flywheel inertia {settings.spec.flywheelInertia.toFixed(2)}
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={settings.spec.flywheelInertia}
+                  onChange={(e) => setSpec({ flywheelInertia: Number(e.target.value) })}
+                />
+              </label>
+              <button
+                className={`card mini ${settings.spec.canSort ? 'selected' : ''}`}
+                onClick={() => setSpec({ canSort: !settings.spec.canSort })}
+              >
+                <strong>Sorter {settings.spec.canSort ? 'ON' : 'OFF'}</strong>
+                <span>Fires the color the motif needs next</span>
+              </button>
+            </div>
+            <p className="hint">
+              Heavier shoves harder but accelerates slower · higher RPM = faster top speed, softer
+              punch · high flywheel inertia keeps rapid fire fast on long-range shots. Speed/turn:{' '}
+              {driveStats(settings.spec)}. Chassis + intake reach ≤ {ROBOT_MAX_SIZE}"; base parking
+              counts only the wheels.
+            </p>
+          </div>
+
           <div className="card-row">
-            <button
-              className={`card ${settings.spec.intake === 'sloped' ? 'selected' : ''}`}
-              onClick={() => selectIntake('sloped')}
-            >
-              <strong>Sloped intake</strong>
-              <span>
-                Trapezoid mouth in the frame — face the artifact and it rolls up the ramp; devours
-                clumps
-              </span>
-            </button>
-            <button
-              className={`card ${settings.spec.intake === 'vector' ? 'selected' : ''}`}
-              onClick={() => selectIntake('vector')}
-            >
-              <strong>Vector wheel intake</strong>
-              <span>
-                Vertical compliant wheels ahead of the chassis (11.5–14.5") — where they overhang a
-                narrower chassis they also grab artifacts you strafe into; steady per-ball pace
-              </span>
-            </button>
-            <button
-              className={`card ${settings.spec.intake === 'triangle' ? 'selected' : ''}`}
-              onClick={() => selectIntake('triangle')}
-            >
-              <strong>Triangle intake</strong>
-              <span>
-                Stores artifacts in a triangle; long trapezoid mouth devours clumps — but transfer
-                to the shooter is slower (0.3s between shots)
-              </span>
-            </button>
+            {(Object.keys(INTAKE_LABELS) as IntakeStyle[]).map((i) => (
+              <button
+                key={i}
+                className={`card ${settings.spec.intake === i ? 'selected' : ''}`}
+                onClick={() => selectIntake(i)}
+              >
+                <strong>{INTAKE_LABELS[i]}</strong>
+                <span>{INTAKE_BLURBS[i]}</span>
+              </button>
+            ))}
           </div>
-          <p className="hint">
-            FTC sizing: chassis plus intake reach may not exceed {ROBOT_MAX_SIZE}". A chassis
-            narrower than the intake parks easier — base credit counts only the wheels.
-          </p>
+        </section>
+
+        <section>
+          <h2>Start position</h2>
+          <div className="card-row">
+            {START_POSES.map((p, i) => (
+              <button
+                key={p.label}
+                className={`card mini ${settings.startIndex === i ? 'selected' : ''}`}
+                onClick={() => set({ startIndex: i })}
+              >
+                <strong>{p.label}</strong>
+                <span>launch zone, mirrored to your alliance</span>
+              </button>
+            ))}
+            {settings.mode === 'free' && (
+              <button
+                className={`card mini ${settings.practiceDummies ? 'selected' : ''}`}
+                onClick={() => set({ practiceDummies: !settings.practiceDummies })}
+              >
+                <strong>Practice dummies {settings.practiceDummies ? 'ON' : 'OFF'}</strong>
+                <span>Three idle robots on the field to push against</span>
+              </button>
+            )}
+          </div>
         </section>
 
         <section>
@@ -209,6 +393,11 @@ export function Menu({ settings, onChange, onStart }: Props) {
         <button className="start-btn" onClick={onStart}>
           ENTER FIELD
         </button>
+        {onMultiplayer && (
+          <button className="start-btn secondary" onClick={onMultiplayer}>
+            ▲ MULTIPLAYER (2v2)
+          </button>
+        )}
       </div>
     </div>
   );

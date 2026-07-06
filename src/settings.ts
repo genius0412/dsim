@@ -1,6 +1,15 @@
 import type { GameSettings } from './game';
 import { DEFAULT_SPEC } from './sim/spawn';
-import { INTAKE_PRESETS, ROBOT_MAX_SIZE, ROBOT_MIN_WIDTH } from './config';
+import {
+  INTAKE_PRESETS,
+  ROBOT_MAX_SIZE,
+  ROBOT_MIN_WIDTH,
+  ROBOT_MIN_MASS,
+  ROBOT_MAX_MASS,
+  ROBOT_MIN_RPM,
+  ROBOT_MAX_RPM,
+  START_POSES,
+} from './config';
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
 import { clamp } from './math';
 
@@ -12,6 +21,8 @@ export function defaultSettings(): GameSettings {
     alliance: 'blue',
     assists: { fieldCentric: true, aimAssist: true, autoIntake: false, autoFire: false },
     spec: { ...DEFAULT_SPEC },
+    startIndex: 0,
+    practiceDummies: false,
     audio: { sounds: true, voice: true },
     bindings: cloneBindings(DEFAULT_BINDINGS),
   };
@@ -48,7 +59,34 @@ export function loadSettings(): GameSettings {
       // when the saved length is missing or belongs to another preset
       out.spec.length = clamp(out.spec.length, preset.minLength, preset.maxLength);
       if (typeof sp.width === 'number') out.spec.width = clamp(sp.width, ROBOT_MIN_WIDTH, ROBOT_MAX_SIZE);
+      if (typeof sp.name === 'string') out.spec.name = sp.name.slice(0, 24);
+      if (typeof sp.teamName === 'string') out.spec.teamName = sp.teamName.slice(0, 24);
+      if (typeof sp.teamNumber === 'number' && Number.isFinite(sp.teamNumber)) {
+        out.spec.teamNumber = clamp(Math.round(sp.teamNumber), 0, 99999);
+      }
+      if (
+        sp.drivetrain === 'mecanum' ||
+        sp.drivetrain === 'tank' ||
+        sp.drivetrain === 'swerve' ||
+        sp.drivetrain === 'xdrive'
+      ) {
+        out.spec.drivetrain = sp.drivetrain;
+      }
+      if (typeof sp.massLb === 'number') {
+        out.spec.massLb = clamp(sp.massLb, ROBOT_MIN_MASS, ROBOT_MAX_MASS);
+      }
+      if (typeof sp.driveRpm === 'number') {
+        out.spec.driveRpm = clamp(sp.driveRpm, ROBOT_MIN_RPM, ROBOT_MAX_RPM);
+      }
+      if (typeof sp.flywheelInertia === 'number') {
+        out.spec.flywheelInertia = clamp(sp.flywheelInertia, 0, 1);
+      }
+      if (typeof sp.canSort === 'boolean') out.spec.canSort = sp.canSort;
     }
+    if (typeof s.startIndex === 'number') {
+      out.startIndex = clamp(Math.round(s.startIndex), 0, START_POSES.length - 1);
+    }
+    if (typeof s.practiceDummies === 'boolean') out.practiceDummies = s.practiceDummies;
     if (typeof s.audio === 'object' && s.audio !== null) {
       const au = s.audio as Record<string, unknown>;
       if (typeof au.sounds === 'boolean') out.audio.sounds = au.sounds;

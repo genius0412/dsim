@@ -2,4 +2,7 @@ node_modules/
 dist/
 release/
 *.local
+.env
+.env.*
+!.env.example
 .DS_Store

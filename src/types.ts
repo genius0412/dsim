@@ -29,12 +29,27 @@ export interface AssistConfig {
 }
 
 export type IntakeStyle = 'sloped' | 'vector' | 'triangle';
+export type DrivetrainType = 'mecanum' | 'tank' | 'swerve' | 'xdrive';
 
 export interface RobotSpec {
+  /** robot display name, team name, team number (0 = unset) */
+  name: string;
+  teamName: string;
+  teamNumber: number;
   /** chassis length (front-back) and width, inches; chassis + intake reach must fit 18in */
   length: number;
   width: number;
   intake: IntakeStyle;
+  /** mass in lb (20–42): heavier shoves harder, accelerates slower */
+  massLb: number;
+  drivetrain: DrivetrainType;
+  /** wheel RPM abstraction (200–600): top speed up, acceleration down */
+  driveRpm: number;
+  /** 0–1: high inertia keeps rapid fire fast on long (high-speed) shots;
+   * low inertia is quick up close but recovers slowly after far shots */
+  flywheelInertia: number;
+  /** robot can pick which hopper color to fire (chases the motif) */
+  canSort: boolean;
 }
 
 export type BallState =
@@ -77,6 +92,12 @@ export interface RobotState {
   autoFire: boolean; // fire automatically when in the zone and on target
   lastFireAt: number;
   lastIntakeAt: number;
+  /** earliest world.time the shooter may fire again (transfer cadence +
+   * flywheel recovery after energetic shots) */
+  fireReadyAt: number;
+  /** G427: an opponent contacted this robot in its BASE during endgame — it
+   * counts as fully returned at match end regardless of where it ends up */
+  baseAwarded?: boolean;
 }
 
 export interface GoalState {
@@ -99,6 +120,8 @@ export interface ScoreBreakdown {
   telePattern: number;
   depot: number;
   base: number;
+  /** points awarded to THIS alliance from the opponent's fouls */
+  foulPoints: number;
   total: number;
 }
 
@@ -109,12 +132,40 @@ export interface MatchState {
   scores: Record<Alliance, ScoreBreakdown>;
   /** live provisional pattern points for the current ramp arrangement */
   provisionalPattern: Record<Alliance, number>;
+  /** fouls COMMITTED BY each alliance (counts, for the HUD); the resulting
+   * points land on the OTHER alliance's ScoreBreakdown.foulPoints */
+  fouls: Record<Alliance, { minor: number; major: number }>;
 }
 
 export interface HumanPlayerState {
   /** colors waiting to be placed into the loading zone, per alliance */
   stock: ArtifactColor[];
   nextPlaceAt: number;
+}
+
+/** accumulator for one ordered pinner→pinned pair (G422). Plain numbers so
+ * the whole World stays JSON-serializable / lockstep-safe. */
+export interface PinState {
+  /** seconds the pin condition has held continuously */
+  seconds: number;
+  /** where the pinned robot was when the pin began (escape = 24" from here) */
+  ox: number;
+  oy: number;
+  /** pinned robot pos last tick, to measure actual (post-solver) speed */
+  px: number;
+  py: number;
+}
+
+/** deterministic penalty-engine state (all plain JSON — serializable) */
+export interface PenaltyState {
+  /** episode debounce: `${rule}:${key}` -> last world.time the rule was active
+   * for that subject; a rule re-arms only after PENALTY_CLEAR s of no activity */
+  episodes: Record<string, number>;
+  /** pinning accumulators, keyed `${pinnerId}-${pinnedId}` */
+  pins: Record<string, PinState>;
+  /** how many pin fouls a given pinner (by id) has already committed, for the
+   * MINOR -> MAJOR escalation on a repeat pin */
+  pinFouls: Record<number, number>;
 }
 
 export interface World {
@@ -130,4 +181,9 @@ export interface World {
   match: MatchState;
   /** transient UI events emitted by the sim this tick (toasts) */
   events: string[];
+  /** robot-robot contact pairs registered THIS tick (transient, by robot id,
+   * a < b) — consumed by the penalty engine */
+  rrContacts: { a: number; b: number }[];
+  /** persistent penalty-engine state (Section 11 fouls) */
+  penalties: PenaltyState;
 }

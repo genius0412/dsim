@@ -17,6 +17,9 @@ import * as C from '../config';
  * the field center, and a small triangle centered on the audience wall.
  */
 
+/** the opposing alliance */
+export const other = (a: Alliance): Alliance => (a === 'blue' ? 'red' : 'blue');
+
 /** which side wall the alliance's GOAL corner is on: blue -1 (left), red +1 */
 export const goalSide = (a: Alliance): number => (a === 'blue' ? -1 : 1);
 /** which side wall the alliance's DRIVE TEAM / loading zone is on */
@@ -46,34 +49,54 @@ const sideRect = (side: number, x0: number, x1: number, y0: number, y1: number):
 
 // ------------------------------------------------------------------ goal ----
 
-/** signed value of the goal front-face line; > 0 means behind the face
- * (inside the goal footprint). blue: y - x - 117, red: y + x - 117 */
-export function goalLineValue(p: Vec2, a: Alliance): number {
-  return p.y + goalSide(a) * p.x - C.GOAL_LINE_C;
+/** the two endpoints of the goal FACE (hypotenuse): one on the far wall,
+ * one on the side wall. The right-angle corner is the field corner between
+ * them. Legs: GOAL_FACE_WIDTH along the far wall, GOAL_DEPTH down the side. */
+export function goalFacePoints(a: Alliance): [Vec2, Vec2] {
+  const g = goalSide(a);
+  const f = C.FIELD_HALF;
+  return [
+    { x: g * (f - C.GOAL_FACE_WIDTH), y: f }, // far-wall endpoint
+    { x: g * f, y: f - C.GOAL_DEPTH }, // side-wall endpoint
+  ];
 }
 
-/** unit normal of the goal face pointing out into the field */
+/** unit normal of the goal face pointing out into the field (not 45° — the
+ * face is the hypotenuse of the 26.5x18.3 corner triangle) */
 export function goalFaceNormal(a: Alliance): Vec2 {
-  const s = Math.SQRT1_2;
-  return { x: -goalSide(a) * s, y: -s };
+  return {
+    x: -goalSide(a) * (C.GOAL_DEPTH / C.GOAL_FACE_LEN),
+    y: -(C.GOAL_FACE_WIDTH / C.GOAL_FACE_LEN),
+  };
 }
 
+/** signed PERPENDICULAR distance (in) from the goal face; > 0 = behind the
+ * face (inside the goal footprint), < 0 = in front (field side) */
+export function goalLineValue(p: Vec2, a: Alliance): number {
+  const [far] = goalFacePoints(a);
+  const n = goalFaceNormal(a);
+  return n.x * (far.x - p.x) + n.y * (far.y - p.y);
+}
+
+/** aim target: centroid of the triangular goal opening */
 export function goalCenter(a: Alliance): Vec2 {
   const g = goalSide(a);
-  return { x: g * C.GOAL_CENTER.x, y: C.GOAL_CENTER.y };
+  const f = C.FIELD_HALF;
+  return {
+    x: (g * (f - C.GOAL_FACE_WIDTH) + 2 * g * f) / 3,
+    y: (2 * f + (f - C.GOAL_DEPTH)) / 3,
+  };
 }
 
-/** corners of the goal footprint wedge: it sits against the far wall with
- * its corner cut off by the classifier channel along the side wall */
+/** corners of the goal footprint: a right triangle tucked into the far
+ * corner, legs flush along the far wall (GOAL_FACE_WIDTH) and side wall
+ * (GOAL_DEPTH); the hypotenuse is the FACE. Order: far-wall face pt,
+ * side-wall face pt, corner. */
 export function goalTriangle(a: Alliance): [Vec2, Vec2, Vec2] {
-  const f = C.FIELD_HALF;
   const g = goalSide(a);
-  const edge = f - C.CLASSIFIER_W; // channel edge
-  return [
-    { x: g * C.GOAL_FACE_FAR_X, y: f },
-    { x: g * edge, y: C.GOAL_FACE_SIDE_Y },
-    { x: g * edge, y: f },
-  ];
+  const f = C.FIELD_HALF;
+  const [far, side] = goalFacePoints(a);
+  return [far, side, { x: g * f, y: f }];
 }
 
 /** the classifier channel along the side wall (gate up into the far corner)
@@ -86,6 +109,24 @@ export function classifierRect(a: Alliance): Rect {
 export function gateZone(a: Alliance): Rect {
   const g = goalSide(a);
   return sideRect(g, C.GATE_ZONE.xNear, C.GATE_ZONE.xFar, C.GATE_ZONE.y0, C.GATE_ZONE.y1);
+}
+
+/** the official GATE ZONE marking: two parallel alliance-colored tape LINES,
+ * 10in long, running from the side wall into the field, spaced GATE_TAPE_W
+ * (2.75in) apart and centered on the gate. The zone is the 2.75x10 strip
+ * between them; the interaction rect gateZone() is larger and undrawn. */
+export function gateTapeSegments(a: Alliance): [[Vec2, Vec2], [Vec2, Vec2]] {
+  const g = goalSide(a);
+  // the lines start at the CLASSIFIER edge (not the field wall) and run
+  // GATE_TAPE_LEN further into the field
+  const xOut = g * (C.FIELD_HALF - C.CLASSIFIER_W);
+  const xIn = g * (C.FIELD_HALF - C.CLASSIFIER_W - C.GATE_TAPE_LEN);
+  const yc = C.GATE_TAPE_Y;
+  const h = C.GATE_TAPE_W / 2;
+  return [
+    [{ x: xOut, y: yc - h }, { x: xIn, y: yc - h }],
+    [{ x: xOut, y: yc + h }, { x: xIn, y: yc + h }],
+  ];
 }
 
 export function tunnelExit(a: Alliance): Vec2 {
@@ -102,7 +143,27 @@ export function tunnelExitVel(a: Alliance): Vec2 {
  * OPPOSING alliance — it is on their wall) */
 export function tunnelStrip(a: Alliance): Rect {
   const g = goalSide(a);
-  return sideRect(g, C.FIELD_HALF, C.FIELD_HALF - C.CLASSIFIER_W, -46.5, C.GATE_ZONE.y0);
+  return sideRect(
+    g,
+    C.FIELD_HALF,
+    C.FIELD_HALF - C.TUNNEL_W,
+    C.GATE_ZONE.y0 - C.TUNNEL_STRIP_LEN,
+    C.GATE_ZONE.y0,
+  );
+}
+
+/** ALLIANCE AREA: the taped drive-team rectangle OUTSIDE the alliance's own
+ * wall (red left, blue right), running from the audience wall toward the far
+ * wall — not wall-centered (per the Section 9 figures) */
+export function allianceArea(a: Alliance): Rect {
+  const d = driverSide(a);
+  return sideRect(
+    d,
+    C.FIELD_HALF,
+    C.FIELD_HALF + C.ALLIANCE_AREA_DEEP,
+    -C.FIELD_HALF,
+    -C.FIELD_HALF + C.ALLIANCE_AREA_ALONG,
+  );
 }
 
 // ----------------------------------------------------------------- zones ----
@@ -116,18 +177,41 @@ export function inLaunchZone(p: Vec2, _a: Alliance): boolean {
   return main || aud;
 }
 
-/** all white launch-line tape segments (incl. depot lines) for LEAVE checks */
+/** the DEPOT tape line: white tape running flush ALONG the goal face (the
+ * hypotenuse), from the far-wall corner up to the CLASSIFIER edge (it stops
+ * at the classifier — it does not run through the channel to the side wall).
+ * It is a LAUNCH LINE. */
+export function depotSegment(a: Alliance): [Vec2, Vec2] {
+  const [far, side] = goalFacePoints(a);
+  // clip the side end where the face crosses the classifier's inner edge
+  const t = (C.GOAL_FACE_WIDTH - C.CLASSIFIER_W) / C.GOAL_FACE_WIDTH;
+  return [far, { x: far.x + t * (side.x - far.x), y: far.y + t * (side.y - far.y) }];
+}
+
+/** clip a segment running from the field toward a goal corner so it stops at
+ * the goal FACE instead of continuing into the goal footprint */
+function clipToGoalFace(apex: Vec2, corner: Vec2, a: Alliance): Vec2 {
+  const g0 = goalLineValue(apex, a); // < 0 in front of the face
+  const g1 = goalLineValue(corner, a); // > 0 inside the goal
+  if (g1 <= 0) return corner;
+  const t = g0 / (g0 - g1);
+  return { x: apex.x + t * (corner.x - apex.x), y: apex.y + t * (corner.y - apex.y) };
+}
+
+/** all white launch-line tape segments (incl. depot lines) for LEAVE checks.
+ * The big-triangle diagonals stop at the goal face (they don't run into the
+ * goal). */
 export function launchSegments(): [Vec2, Vec2][] {
   const f = C.FIELD_HALF;
-  const dep = C.GOAL_LINE_C - C.DEPOT_DEPTH * Math.SQRT2;
+  const apex = { x: 0, y: 0 };
   return [
-    [{ x: 0, y: 0 }, { x: f, y: f }],
-    [{ x: 0, y: 0 }, { x: -f, y: f }],
+    [apex, clipToGoalFace(apex, { x: f, y: f }, 'red')],
+    [apex, clipToGoalFace(apex, { x: -f, y: f }, 'blue')],
     [{ x: 0, y: -C.AUD_ZONE_APEX_Y }, { x: C.AUD_ZONE_HALF_W, y: -f }],
     [{ x: 0, y: -C.AUD_ZONE_APEX_Y }, { x: -C.AUD_ZONE_HALF_W, y: -f }],
-    // depot lines (they are launch lines too), parallel to each goal face
-    [{ x: -(dep - f), y: f }, { x: -f, y: dep - f }],
-    [{ x: dep - f, y: f }, { x: f, y: dep - f }],
+    // depot lines (they are launch lines too), flush along each goal face
+    depotSegment('red'),
+    depotSegment('blue'),
   ];
 }
 
@@ -153,8 +237,8 @@ export function loadSlots(a: Alliance): Vec2[] {
 
 /** ground ball resting in the depot band in front of the alliance's goal */
 export function inDepot(p: Vec2, a: Alliance): boolean {
-  const gv = goalLineValue(p, a);
-  return gv < 0 && gv > -C.DEPOT_DEPTH * Math.SQRT2;
+  const gv = goalLineValue(p, a); // signed perpendicular distance from the face
+  return gv < 0 && gv > -C.DEPOT_DEPTH;
 }
 
 /** spike marks: three 3-ball rows per side (balls in a horizontal row on the
@@ -178,10 +262,12 @@ export function spikeMarkBalls(a: Alliance): { pos: Vec2; color: 'purple' | 'gre
   return out;
 }
 
-export function startPose(a: Alliance): { pos: Vec2; heading: number } {
-  // robots stage inside the big launch zone near their own goal
+export function startPose(a: Alliance, index = 0): { pos: Vec2; heading: number } {
+  // robots stage inside the big launch zone near their own goal; `index`
+  // picks one of the named START_POSES (mirrored per alliance)
   const g = goalSide(a);
-  const pos = { x: g * C.START.x, y: C.START.y };
+  const p = C.START_POSES[Math.min(Math.max(index, 0), C.START_POSES.length - 1)];
+  const pos = { x: g * p.x, y: p.y };
   const gc = goalCenter(a);
   return { pos, heading: Math.atan2(gc.y - pos.y, gc.x - pos.x) };
 }
@@ -191,9 +277,11 @@ export function railEntrance(a: Alliance): Vec2 {
   return { x: goalSide(a) * (C.FIELD_HALF - C.RAMP_RAIL_INSET), y: C.CLASSIFIER_Y0 + C.RAIL_S_MAX };
 }
 
-/** the archway inside the goal where basin balls funnel toward the SQUARE */
+/** the archway inside the goal where basin balls funnel toward the SQUARE
+ * (top of the rail). Must sit just INSIDE the goal footprint (behind the
+ * face) so the basin's face-containment doesn't fence balls off from it. */
 export function basinFunnelTarget(a: Alliance): Vec2 {
-  return { x: goalSide(a) * (C.FIELD_HALF - C.CLASSIFIER_W - 2), y: C.CLASSIFIER_Y0 + C.RAIL_S_MAX + 4 };
+  return { x: goalSide(a) * (C.FIELD_HALF - C.RAMP_RAIL_INSET), y: C.CLASSIFIER_Y0 + C.RAIL_S_MAX };
 }
 
 /** rail coordinate s -> world position along the classifier */

@@ -5,6 +5,7 @@ import {
   collideBallRect,
   collideBallRobot,
   collideBallStatic,
+  collideRobots,
   constrainRobot,
   stepFlightBall,
   stepGroundBall,
@@ -15,6 +16,7 @@ import { checkGoalEntry, updateBasins, updateGates, updateRails } from './goal';
 import { updateHumanPlayers } from './humanPlayer';
 import { robotsEnabled, stepMatch } from './match';
 import { updateProvisionalPattern } from './scoring';
+import { updatePenalties } from './penalties';
 
 const ZERO_CMD: RobotCommand = {
   driveX: 0,
@@ -32,12 +34,27 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
 
   // ---- robots ------------------------------------------------------------
   const enabled = robotsEnabled(world);
+  world.rrContacts.length = 0;
   for (const r of world.robots) {
     const cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
     updateRobot(world, r, cmd, dt);
-    constrainRobot(r);
+  }
+  // robot-robot + static solver: pairs in ascending-id order (deterministic),
+  // walls re-applied after each pairwise pass so they always win a squeeze
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < world.robots.length; i++) {
+      for (let j = i + 1; j < world.robots.length; j++) {
+        collideRobots(world.robots[i], world.robots[j], pass === 0 ? world.rrContacts : null);
+      }
+    }
+    for (const r of world.robots) constrainRobot(r);
+  }
+  for (const r of world.robots) {
+    const cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
     updateIntake(world, r, cmd);
   }
+  // ---- penalties: rrContacts + final robot poses are settled for this tick -
+  updatePenalties(world, dt, commands);
 
   // ---- balls ---------------------------------------------------------------
   for (const b of world.balls) {

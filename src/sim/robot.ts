@@ -1,7 +1,8 @@
-import type { Artifact, RobotCommand, RobotState, World } from '../types';
+import type { Artifact, ArtifactColor, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
-import { approach, rot, wrapAngle } from '../math';
+import { approach, rot, wrapAngle, hyp } from '../math';
 import { goalCenter, inLaunchZone, viewAngleOf } from './field';
+import { driveParams } from './drivetrain';
 import { robotCorners } from './physics';
 import { robotsEnabled } from './match';
 
@@ -42,18 +43,19 @@ export function aimSolution(r: RobotState): { yaw: number; speed: number; angle:
   const wv = { x: r.vel.x * C.SHOT_ROBOT_VEL_INHERIT, y: r.vel.y * C.SHOT_ROBOT_VEL_INHERIT };
   let dx = g.x - tp.x;
   let dy = g.y - tp.y;
-  let sol = solveShot(Math.hypot(dx, dy));
+  let sol = solveShot(hyp(dx, dy));
   for (let i = 0; i < 3; i++) {
-    const t = Math.hypot(dx, dy) / Math.max(sol.speed * Math.cos(sol.angle), 1);
+    const t = hyp(dx, dy) / Math.max(sol.speed * Math.cos(sol.angle), 1);
     dx = g.x - tp.x - wv.x * t;
     dy = g.y - tp.y - wv.y * t;
-    sol = solveShot(Math.hypot(dx, dy));
+    sol = solveShot(hyp(dx, dy));
   }
   return { yaw: Math.atan2(dy, dx), speed: sol.speed, angle: sol.angle };
 }
 
 export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
   // ---- drive: driver frame -> robot frame -------------------------------
+  const dp = driveParams(r.spec);
   const viewAngle = viewAngleOf(r.alliance);
   // driver stick vector: +y = away from driver (screen up), +x = driver right.
   // screen -> world undoes the camera rotation
@@ -66,19 +68,24 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
     // robot-centric: stick up = robot forward (+x robot), stick right = strafe right (-y robot)
     robotVec = { x: stick.y, y: -stick.x };
   }
-  // mecanum power budget: combined demands share the same wheels
-  const demand = Math.abs(robotVec.x) + Math.abs(robotVec.y) + Math.abs(cmd.rotate);
+  if (dp.strafeMult === 0) robotVec.y = 0; // tank: strafe input is dead
+  // wheel power budget: combined demands share the same wheels, and the
+  // shape of the budget depends on the drivetrain (see DRIVETRAIN_PRESETS)
+  const demand =
+    dp.saturation === 'vec'
+      ? hyp(robotVec.x, robotVec.y) + Math.abs(cmd.rotate)
+      : Math.abs(robotVec.x) + Math.abs(robotVec.y) + Math.abs(cmd.rotate);
   const div = Math.max(1, demand);
-  const targetFwd = (robotVec.x / div) * C.DRIVE_MAX_SPEED;
-  const targetStrafe = (robotVec.y / div) * C.DRIVE_MAX_SPEED * C.STRAFE_MULT;
-  const targetOmega = (cmd.rotate / div) * C.TURN_MAX_SPEED;
+  const targetFwd = (robotVec.x / div) * dp.maxSpeed;
+  const targetStrafe = (robotVec.y / div) * dp.maxSpeed * dp.strafeMult;
+  const targetOmega = (cmd.rotate / div) * dp.maxTurn;
 
   // accel-clamped approach in the robot frame
   const velRobot = rot(r.vel, -r.heading);
-  velRobot.x = approach(velRobot.x, targetFwd, C.DRIVE_ACCEL * dt);
-  velRobot.y = approach(velRobot.y, targetStrafe, C.DRIVE_ACCEL * dt);
+  velRobot.x = approach(velRobot.x, targetFwd, dp.accel * dt);
+  velRobot.y = approach(velRobot.y, targetStrafe, dp.accel * dt);
   r.vel = rot(velRobot, r.heading);
-  r.angVel = approach(r.angVel, targetOmega, C.TURN_ACCEL * dt);
+  r.angVel = approach(r.angVel, targetOmega, dp.turnAccel * dt);
 
   r.pos.x += r.vel.x * dt;
   r.pos.y += r.vel.y * dt;
@@ -89,12 +96,13 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
     r.turretHeading = aimSolution(r).yaw;
   }
 
-  // ---- fire: no spin-up model — limited only by the intake preset's
-  // hopper-to-shooter transfer cadence (triangle transfers slower) ----------
+  // ---- fire: no spin-up before the FIRST shot; between shots the cadence
+  // is the intake transfer interval plus flywheel recovery after energetic
+  // (long-range) shots — see fireReadyAt set in fire() -----------------------
   if (
     robotsEnabled(world) && // no firing before AUTO starts / between periods
     r.hopper.length > 0 &&
-    world.time - r.lastFireAt >= C.INTAKE_PRESETS[r.spec.intake].fireInterval
+    world.time >= r.fireReadyAt
   ) {
     // any part of the robot inside a launch zone is enough; refusals are
     // shown by the HUD launch-zone indicator, not popups
@@ -104,7 +112,23 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
 }
 
 function fire(world: World, r: RobotState): void {
-  const color = r.hopper.shift()!;
+  // canSort: pick the hopper color that fills the next unfilled motif slot
+  // on this alliance's ramp; everyone else fires FIFO
+  let color: ArtifactColor;
+  if (r.spec.canSort) {
+    const retained = world.balls.filter(
+      (b) =>
+        b.state.kind === 'rail' &&
+        b.state.goal === r.alliance &&
+        !b.state.overflow &&
+        !b.state.pending,
+    ).length;
+    const want = world.motif[retained % 3];
+    const idx = r.hopper.indexOf(want);
+    color = idx >= 0 ? r.hopper.splice(idx, 1)[0] : r.hopper.shift()!;
+  } else {
+    color = r.hopper.shift()!;
+  }
   r.lastFireAt = world.time;
 
   const tp = turretWorldPos(r);
@@ -114,6 +138,16 @@ function fire(world: World, r: RobotState): void {
   const { speed, angle } = aimSolution(r);
   const yaw = r.turretHeading;
   const cos = Math.cos(angle);
+
+  // flywheel recovery: an energetic shot drains the wheel; a LOW-inertia
+  // flywheel needs extra time to spin back up before the next shot. Close
+  // shots (below FLYWHEEL_CLOSE_SPEED) recover within the transfer cadence.
+  const shotNorm = Math.max(
+    0,
+    Math.min(1, (speed - C.FLYWHEEL_CLOSE_SPEED) / (C.LAUNCH_MAX_SPEED - C.FLYWHEEL_CLOSE_SPEED)),
+  );
+  const recovery = C.FLYWHEEL_RECOVERY_MAX * shotNorm * shotNorm * (1 - r.spec.flywheelInertia);
+  r.fireReadyAt = world.time + C.INTAKE_PRESETS[r.spec.intake].fireInterval + recovery;
 
   const ball: Artifact = {
     id: world.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1,

@@ -11,7 +11,7 @@ import {
   tunnelExitVel,
 } from './field';
 import { addClassified, addOverflow } from './scoring';
-import { approach, nextRandom } from '../math';
+import { approach, nextRandom, hyp } from '../math';
 import { robotIntersectsRect } from './physics';
 
 /** balls of a goal's rail stack (non-overflow), sorted from the gate up */
@@ -30,7 +30,7 @@ export function checkGoalEntry(_world: World, b: Artifact, prevZ: number): boole
   if (!((prevZ - P) * (b.z - P) <= 0 && prevZ !== b.z)) return false;
   for (const a of ['red', 'blue'] as Alliance[]) {
     const g = goalCenter(a);
-    if (Math.hypot(b.pos.x - g.x, b.pos.y - g.y) > C.GOAL_OPENING_RADIUS) continue;
+    if (hyp(b.pos.x - g.x, b.pos.y - g.y) > C.GOAL_OPENING_RADIUS) continue;
     b.state = { kind: 'basin', goal: a };
     // keep entry velocity so the ball splashes around the whole basin
     b.vel.x *= C.BASIN_ENTRY_KEEP_V;
@@ -55,7 +55,7 @@ export function updateBasins(world: World, dt: number): void {
     const entry = basinFunnelTarget(a);
     const g = goalSide(a);
     const f = C.FIELD_HALF;
-    const channelEdge = g * (f - C.CLASSIFIER_W); // basin is field-side of the channel
+    const sideWall = g * f; // the goal footprint now reaches the side wall
 
     for (const b of balls) {
       // vertical: fall onto the funnel floor
@@ -71,9 +71,9 @@ export function updateBasins(world: World, dt: number): void {
       // once they slow down
       const dx = entry.x - b.pos.x;
       const dy = entry.y - b.pos.y;
-      const d = Math.hypot(dx, dy) || 1;
+      const d = hyp(dx, dy) || 1;
       const onFloor = b.z <= C.BASIN_FLOOR_Z + 1;
-      const speed = Math.hypot(b.vel.x, b.vel.y);
+      const speed = hyp(b.vel.x, b.vel.y);
       let pull = onFloor ? C.BASIN_FUNNEL_ACCEL : C.BASIN_FUNNEL_ACCEL * 0.25;
       if (speed > C.BASIN_FUNNEL_GRIP_SPEED) pull *= 0.3;
       b.vel.x += (dx / d) * pull * dt;
@@ -84,10 +84,10 @@ export function updateBasins(world: World, dt: number): void {
       b.pos.x += b.vel.x * dt;
       b.pos.y += b.vel.y * dt;
 
-      // containment: channel edge + far wall + the goal face from the inside
+      // containment: side wall + far wall + the goal face from the inside
       const rr = C.BALL_RADIUS;
-      if (g > 0 ? b.pos.x > channelEdge - rr : b.pos.x < channelEdge + rr) {
-        b.pos.x = channelEdge - g * rr;
+      if (g > 0 ? b.pos.x > sideWall - rr : b.pos.x < sideWall + rr) {
+        b.pos.x = sideWall - g * rr;
         b.vel.x = -b.vel.x * C.BASIN_WALL_RESTITUTION;
       }
       if (b.pos.y > f - rr) {
@@ -95,7 +95,7 @@ export function updateBasins(world: World, dt: number): void {
         b.vel.y = -b.vel.y * C.BASIN_WALL_RESTITUTION;
       }
       const gv = goalLineValue(b.pos, a); // > 0 inside the goal footprint
-      const pen = rr - gv / Math.SQRT2; // how far the ball pokes out the face
+      const pen = rr - gv; // how far the ball pokes out the face (perp distance)
       if (pen > 0) {
         const n = goalFaceNormal(a); // points out into the field
         b.pos.x -= n.x * pen; // push back INSIDE (against -n)
@@ -153,7 +153,7 @@ export function updateBasins(world: World, dt: number): void {
     );
     if (!entryBlocked) {
       for (const b of balls) {
-        const d = Math.hypot(b.pos.x - entry.x, b.pos.y - entry.y);
+        const d = hyp(b.pos.x - entry.x, b.pos.y - entry.y);
         if (d > C.BASIN_ENTRY_RADIUS || b.z > C.BASIN_FLOOR_Z + 2) continue;
         // hand-off keeps the ball's position: it glides onto the rail while
         // descending (x/z blend happens in updateRails) — no snapping
@@ -252,7 +252,9 @@ export function updateGates(world: World, dt: number): void {
   for (const a of ['red', 'blue'] as Alliance[]) {
     const goal = world.goals[a];
     const zone = gateZone(a);
-    const held = world.robots.some((r) => r.alliance === a && robotIntersectsRect(r, zone));
+    // any robot can physically work a gate (an opponent doing so is a MAJOR
+    // foul — see penalties.ts, not prevented by construction)
+    const held = world.robots.some((r) => robotIntersectsRect(r, zone));
     if (held) {
       goal.gateHoldTime += dt;
       if (goal.gateHoldTime >= C.GATE_OPEN_HOLD && !goal.gateOpen) {
