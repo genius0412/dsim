@@ -217,9 +217,9 @@ export const OVERFLOW_Z = 13.5; // overflow rolls over the retained balls
 export const BASIN_FLOOR_Z = 14; // funnel floor height inside the goal
 export const BASIN_RESTITUTION = 0.4; // vertical bounce off the funnel floor
 export const BASIN_WALL_RESTITUTION = 0.55; // lively caroms off the goal walls
-export const BASIN_FUNNEL_ACCEL = 140; // in/s^2 pull toward the classifier entrance (drains the basin briskly so balls don't clog)
+export const BASIN_FUNNEL_ACCEL = 500; // in/s^2 pull toward the classifier entrance (drains the basin briskly so balls don't clog)
 /** the funnel only really grips slow balls — fast ones carom around first */
-export const BASIN_FUNNEL_GRIP_SPEED = 55; // in/s (higher ⇒ funnels sooner, less caroming)
+export const BASIN_FUNNEL_GRIP_SPEED = 200; // in/s (higher ⇒ funnels sooner, less caroming)
 export const BASIN_DAMPING = 1.1; // 1/s horizontal velocity damping (settles onto the funnel faster)
 export const BASIN_ENTRY_RADIUS = 7.5; // in, hand-off distance to the rail (wider catch = fewer balls milling at the mouth)
 export const BASIN_ENTRY_KEEP_V = 0.55; // entry velocity retained (splash energy)
