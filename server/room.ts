@@ -5,6 +5,7 @@ import { step } from '../src/sim/world';
 import type { Alliance, Artifact, RobotCommand, World } from '../src/types';
 import {
   dequantizeCommand,
+  quantizeCommand,
   slimWorld,
   ROOM_CAPACITY,
   type BallDelta,
@@ -60,6 +61,8 @@ export class Room {
   // delta-snapshot state: last-sent balls (id -> JSON) + clients holding a baseline
   private prevBalls = new Map<number, string>();
   private readonly snapPrimed = new Set<string>();
+  // the command each robot ran on the latest tick (sent so clients predict remotes)
+  private lastFrame = new Map<number, RobotCommand>();
 
   constructor(
     readonly code: string,
@@ -220,19 +223,26 @@ export class Room {
     let last = Date.now();
     let acc = 0;
     this.loop = setInterval(() => {
-      this.checkGrace(); // finalize any driver whose reconnect grace has lapsed
-      if (this.clients.size === 0) return; // room emptied (loop already stopped)
-      const now = Date.now();
-      acc += (now - last) / 1000;
-      last = now;
-      if (acc > 0.25) acc = 0.25; // never fast-forward more than a quarter second
-      let n = 0;
-      while (acc >= C.SIM_DT && n < 8) {
-        const w = this.world as World;
-        step(w, C.SIM_DT, this.frameCommands(w.tick + 1));
-        acc -= C.SIM_DT;
-        n++;
-        if (w.tick % SNAPSHOT_INTERVAL === 0) this.broadcastSnapshot();
+      // a throw here would otherwise kill the whole process (every room) and Fly
+      // would report "app not listening" — contain it to this tick instead
+      try {
+        this.checkGrace(); // finalize any driver whose reconnect grace has lapsed
+        if (this.clients.size === 0) return; // room emptied (loop already stopped)
+        const now = Date.now();
+        acc += (now - last) / 1000;
+        last = now;
+        if (acc > 0.25) acc = 0.25; // never fast-forward more than a quarter second
+        let n = 0;
+        while (acc >= C.SIM_DT && n < 8) {
+          const w = this.world as World;
+          this.lastFrame = this.frameCommands(w.tick + 1);
+          step(w, C.SIM_DT, this.lastFrame);
+          acc -= C.SIM_DT;
+          n++;
+          if (w.tick % SNAPSHOT_INTERVAL === 0) this.broadcastSnapshot();
+        }
+      } catch (e) {
+        console.error(`[room ${this.code}] tick error at tick ${this.world?.tick}:`, e);
       }
     }, 1000 * C.SIM_DT);
   }
@@ -281,6 +291,7 @@ export class Room {
     for (const b of w.balls) if (cur.get(b.id) !== this.prevBalls.get(b.id)) changed.push(b);
     const order = w.balls.map((b) => b.id);
     const slim = slimWorld(w);
+    const cmds = this.frameCmds(w);
     for (const c of this.clients.values()) {
       const primed = this.snapPrimed.has(c.id);
       const balls: BallDelta = { order, upd: primed ? changed : w.balls };
@@ -289,6 +300,7 @@ export class Room {
         serverTick: w.tick,
         w: slim,
         balls,
+        cmds,
         ackInputTick: this.ackTick.get(c.id) ?? 0,
       });
       if (!primed) this.snapPrimed.add(c.id);
@@ -304,9 +316,15 @@ export class Room {
       serverTick: w.tick,
       w: slimWorld(w),
       balls: { order: w.balls.map((b) => b.id), upd: w.balls },
+      cmds: this.frameCmds(w),
       ackInputTick: this.ackTick.get(c.id) ?? 0,
     });
     this.snapPrimed.add(c.id);
+  }
+
+  /** each robot's last-run command, aligned with `world.robots` order */
+  private frameCmds(w: World): QCommand[] {
+    return w.robots.map((r) => quantizeCommand(this.lastFrame.get(r.id) ?? ZERO_CMD));
   }
 
   private broadcast(m: ServerMsg): void {

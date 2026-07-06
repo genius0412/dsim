@@ -20,6 +20,9 @@ export interface Snapshot {
   /** the server's sim tick this world is at */
   serverTick: number;
   world: World;
+  /** the command each robot ran this tick (by robot id) — the client holds these
+   * to PREDICT remote robots forward, so their collisions are actually simulated */
+  cmds: Map<number, RobotCommand>;
   /** newest input tick from this client the server had applied (diagnostic) */
   ackInputTick: number;
 }

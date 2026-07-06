@@ -112,9 +112,18 @@ export type ServerMsg =
   | { t: 'matchStart'; seed: number; setups: RobotSetup[]; yourRobotId: number }
   // authoritative world at `serverTick`, slimmed (spec-stripped robots) with the
   // balls delta-encoded; the client reassembles a full World via `unslimWorld`.
-  // `ackInputTick` is the newest input tick from THIS client the server folded in
-  // (diagnostic — the client reconciles off `serverTick`, replaying inputs past it)
-  | { t: 'snapshot'; serverTick: number; w: SlimWorld; balls: BallDelta; ackInputTick: number }
+  // `cmds[i]` is the command robot `w.robots[i]` ran this tick — the client holds
+  // it to PREDICT that robot forward (so remote collisions are actually simulated,
+  // not faked at render time). `ackInputTick` is the newest input tick from THIS
+  // client the server folded in (diagnostic — the client reconciles off `serverTick`).
+  | {
+      t: 'snapshot';
+      serverTick: number;
+      w: SlimWorld;
+      balls: BallDelta;
+      cmds: QCommand[];
+      ackInputTick: number;
+    }
   // a robot left: the server runs it on ZERO from `tick`; snapshots already
   // reflect this, so it is informational (drives the HUD)
   | { t: 'drop'; robotId: number; tick: number };

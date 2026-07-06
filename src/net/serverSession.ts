@@ -2,7 +2,13 @@ import type { Artifact, RobotCommand, RobotSpec } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { NetSession, NetStatus, Snapshot } from './session';
 import type { Transport } from './transport';
-import { encodeMsg, decodeServerMsg, quantizeCommand, unslimWorld } from './protocol';
+import {
+  encodeMsg,
+  decodeServerMsg,
+  quantizeCommand,
+  dequantizeCommand,
+  unslimWorld,
+} from './protocol';
 
 /**
  * Client half of the server-authoritative netcode. Constructed AFTER the server
@@ -103,8 +109,16 @@ export class ServerSession implements NetSession {
         .map((id) => this.baseBalls.get(id))
         .filter((b): b is Artifact => b !== undefined);
       const world = unslimWorld(m.w, balls, this.specById);
+      // each robot's command this tick, so the controller can predict remotes.
+      // tolerate an older server that doesn't send cmds (remotes just won't be
+      // predicted forward — no crash) so a version mismatch degrades gracefully
+      const cmds = new Map<number, RobotCommand>();
+      const qc = m.cmds ?? [];
+      m.w.robots.forEach((r, i) => {
+        if (qc[i]) cmds.set(r.id, dequantizeCommand(qc[i]));
+      });
       // keep only the freshest — the controller reconciles to the newest world
-      this.snapshot = { serverTick: m.serverTick, world, ackInputTick: m.ackInputTick };
+      this.snapshot = { serverTick: m.serverTick, world, cmds, ackInputTick: m.ackInputTick };
       this.connected = true; // snapshots flowing ⇒ we're synced
     } else if (m.t === 'matchStart') {
       // a host restart: adopt the new seed/setups and rebuild

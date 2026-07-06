@@ -7,7 +7,6 @@ import type {
   Motif,
   RobotCommand,
   RobotSpec,
-  RobotState,
   ScoreBreakdown,
   World,
 } from './types';
@@ -22,41 +21,6 @@ import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
 import type { NetSession, Snapshot } from './net/session';
 import { localizeCommand } from './net/protocol';
-
-/**
- * Remote robots render by DEAD RECKONING — extrapolated from the last snapshot's
- * pose + velocity to the present, so there is ZERO added display latency (unlike
- * interpolation, which renders behind real time). The only "lag" left is the
- * fundamental one: what the other driver did in the last one-way trip can't be
- * known yet. On a hard stop/reversal the estimate overshoots, then a per-robot
- * correction blends it back to authority over REMOTE_SMOOTH_TAU_MS.
- */
-const REMOTE_SMOOTH_TAU_MS = 70;
-/** cap dead-reckoning so a stalled feed can't fling a robot off the field */
-const REMOTE_MAX_EXTRAP_S = 0.25;
-
-/** wrap an angle delta to (-π, π] for shortest-arc correction (render-only) */
-function wrapPi(d: number): number {
-  while (d > Math.PI) d -= 2 * Math.PI;
-  while (d < -Math.PI) d += 2 * Math.PI;
-  return d;
-}
-
-/** dead-reckoning state for one remote robot: the latest authoritative sample
- * plus a correction offset (captured at `t`) that decays out for smoothness */
-interface RemoteRender {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  heading: number;
-  angVel: number;
-  turret: number;
-  t: number;
-  offX: number;
-  offY: number;
-  offH: number;
-}
 
 export interface GameSettings {
   mode: GameMode;
@@ -148,8 +112,9 @@ export class GameController {
   /** predict/reconcile input buffer: local commands not yet folded into a server
    * snapshot, replayed forward after each reconcile (keyed by the tick produced) */
   private inputBuf: { tick: number; cmd: RobotCommand }[] = [];
-  /** per remote-robot dead-reckoning state, for zero-latency render extrapolation */
-  private readonly remoteRender = new Map<number, RemoteRender>();
+  /** each remote robot's latest command (from the newest snapshot), held to
+   * PREDICT it forward so its collisions are simulated, not faked */
+  private remoteCmds = new Map<number, RobotCommand>();
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -378,11 +343,9 @@ export class GameController {
     const dtMs = this.lastT ? t - this.lastT : 16;
     this.lastT = t;
     if (!this.session) this.frameLogic(dtMs);
-    // remote robots render dead-reckoned to the present (smooth, zero latency);
-    // restore true sim state after drawing
-    const restore = this.session ? this.renderRemoteExtrap() : null;
+    // remotes are predicted in the sim (moved + collided), so render straight
+    // from the predicted world — no separate extrapolation layer
     this.renderer.render(this.ctx, this.world, this.lastCmd, this.localRobotId);
-    restore?.();
     this.raf = requestAnimationFrame(this.loop);
   };
 
@@ -430,7 +393,7 @@ export class GameController {
     // reconcile to the freshest server snapshot BEFORE predicting this frame
     const snap = s.takeSnapshot();
     if (snap) {
-      this.updateRemoteRender(snap); // refresh dead-reckoning from authoritative poses
+      this.remoteCmds = snap.cmds; // hold each robot's command to predict it forward
       this.reconcile(snap);
     }
 
@@ -442,8 +405,7 @@ export class GameController {
       const local = localizeCommand(cmd); // predict on what the server will decode
       s.sendInput(tick, cmd);
       this.inputBuf.push({ tick, cmd: local });
-      // only the local robot is predicted; remote robots default to ZERO in step()
-      step(this.world, C.SIM_DT, new Map([[this.localRobotId, local]]));
+      step(this.world, C.SIM_DT, this.cmdMap(local));
       this.acc -= C.SIM_DT;
       steps++;
     }
@@ -451,82 +413,23 @@ export class GameController {
     if (this.inputBuf.length > 600) this.inputBuf.splice(0, this.inputBuf.length - 600);
   }
 
+  /** the command map to step: the local robot's live command + every remote
+   * robot's held command (so remotes move + collide in the predicted world) */
+  private cmdMap(local: RobotCommand): Map<number, RobotCommand> {
+    const m = new Map(this.remoteCmds);
+    m.set(this.localRobotId, local);
+    return m;
+  }
+
   /** adopt the authoritative world, discard inputs it already reflects, and
-   * re-predict forward by replaying the local inputs past the snapshot tick */
+   * re-predict forward by replaying the local inputs (and held remote commands)
+   * past the snapshot tick */
   private reconcile(snap: Snapshot): void {
     this.world = snap.world;
     this.inputBuf = this.inputBuf.filter((b) => b.tick > snap.serverTick);
     for (const b of this.inputBuf) {
-      step(this.world, C.SIM_DT, new Map([[this.localRobotId, b.cmd]]));
+      step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
     }
-  }
-
-  /** refresh each remote robot's dead-reckoning state from an authoritative
-   * snapshot, capturing a correction offset (= where we were rendering vs the new
-   * truth) that decays out so the switch to the new sample is seamless */
-  private updateRemoteRender(snap: Snapshot): void {
-    const now = performance.now();
-    for (const r of snap.world.robots) {
-      if (r.id === this.localRobotId) continue;
-      const prev = this.remoteRender.get(r.id);
-      let offX = 0;
-      let offY = 0;
-      let offH = 0;
-      if (prev) {
-        const dt = Math.min((now - prev.t) / 1000, REMOTE_MAX_EXTRAP_S);
-        const decay = Math.exp(-(now - prev.t) / REMOTE_SMOOTH_TAU_MS);
-        // where the previous state is being rendered RIGHT NOW...
-        const curX = prev.x + prev.vx * dt + prev.offX * decay;
-        const curY = prev.y + prev.vy * dt + prev.offY * decay;
-        const curH = prev.heading + prev.angVel * dt + prev.offH * decay;
-        // ...becomes the starting offset from the new truth, so there's no jump
-        offX = curX - r.pos.x;
-        offY = curY - r.pos.y;
-        offH = wrapPi(curH - r.heading);
-      }
-      this.remoteRender.set(r.id, {
-        x: r.pos.x,
-        y: r.pos.y,
-        vx: r.vel.x,
-        vy: r.vel.y,
-        heading: r.heading,
-        angVel: r.angVel,
-        turret: r.turretHeading,
-        t: now,
-        offX,
-        offY,
-        offH,
-      });
-    }
-  }
-
-  /** override remote robots with their dead-reckoned present pose (zero added
-   * latency), returning a fn that restores the true sim state after render */
-  private renderRemoteExtrap(): (() => void) | null {
-    if (!this.remoteRender.size) return null;
-    const now = performance.now();
-    const saved: { r: RobotState; x: number; y: number; heading: number; turret: number }[] = [];
-    for (const r of this.world.robots) {
-      if (r.id === this.localRobotId) continue;
-      const s = this.remoteRender.get(r.id);
-      if (!s) continue;
-      const dt = Math.min((now - s.t) / 1000, REMOTE_MAX_EXTRAP_S);
-      const decay = Math.exp(-(now - s.t) / REMOTE_SMOOTH_TAU_MS);
-      saved.push({ r, x: r.pos.x, y: r.pos.y, heading: r.heading, turret: r.turretHeading });
-      r.pos.x = s.x + s.vx * dt + s.offX * decay;
-      r.pos.y = s.y + s.vy * dt + s.offY * decay;
-      r.heading = s.heading + s.angVel * dt + s.offH * decay;
-      r.turretHeading = s.turret;
-    }
-    if (!saved.length) return null;
-    return () => {
-      for (const v of saved) {
-        v.r.pos.x = v.x;
-        v.r.pos.y = v.y;
-        v.r.heading = v.heading;
-        v.r.turretHeading = v.turret;
-      }
-    };
   }
 
   /** host-authored restart arrived over the net: rebuild from the new seed */
@@ -540,7 +443,7 @@ export class GameController {
     this.frontFlipped = false;
     this.acc = 0;
     this.inputBuf = [];
-    this.remoteRender.clear();
+    this.remoteCmds = new Map();
     this.seedActionAudio();
     this.toasts = [];
   }

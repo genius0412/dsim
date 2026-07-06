@@ -31,6 +31,13 @@ const httpServer = createServer((req, res) => {
 });
 const wss = new WebSocketServer({ server: httpServer });
 
+// resilience: a game server must never let one stray error kill every room. Log
+// loudly and keep listening (the ws / room handlers already catch closer in).
+wss.on('error', (e) => console.error('[server] websocket server error:', e));
+httpServer.on('error', (e) => console.error('[server] http server error:', e));
+process.on('uncaughtException', (e) => console.error('[server] uncaughtException:', e));
+process.on('unhandledRejection', (e) => console.error('[server] unhandledRejection:', e));
+
 wss.on('connection', (ws: WebSocket) => {
   let id: string = randomUUID(); // reassigned to the reclaimed clientId on a rejoin
   let room: Room | null = null;
@@ -45,31 +52,36 @@ wss.on('connection', (ws: WebSocket) => {
     } catch {
       return; // ignore malformed frames
     }
-    if (msg.t === 'join') {
-      if (room) return; // already in a room on this connection
-      const code = msg.room.toLowerCase();
-      let r = rooms.get(code);
-      if (!r) {
-        r = new Room(code, () => rooms.delete(code));
-        rooms.set(code, r);
-      }
-      if (!r.canJoin()) {
-        send({ t: 'error', message: 'Room is full or a match is already in progress.' });
-        return;
-      }
-      room = r;
-      room.add({ id, send, player: { ...msg.player, clientId: id }, connected: true, disconnectAt: 0 });
-    } else if (msg.t === 'rejoin') {
-      if (room) return;
-      const r = rooms.get(msg.room.toLowerCase());
-      if (r && r.reattach(msg.clientId, send)) {
-        id = msg.clientId; // adopt the reclaimed identity on this socket
+    // never let a bad message take down the process (and every other room)
+    try {
+      if (msg.t === 'join') {
+        if (room) return; // already in a room on this connection
+        const code = msg.room.toLowerCase();
+        let r = rooms.get(code);
+        if (!r) {
+          r = new Room(code, () => rooms.delete(code));
+          rooms.set(code, r);
+        }
+        if (!r.canJoin()) {
+          send({ t: 'error', message: 'Room is full or a match is already in progress.' });
+          return;
+        }
         room = r;
-      } else {
-        send({ t: 'rejoined', ok: false });
+        room.add({ id, send, player: { ...msg.player, clientId: id }, connected: true, disconnectAt: 0 });
+      } else if (msg.t === 'rejoin') {
+        if (room) return;
+        const r = rooms.get(msg.room.toLowerCase());
+        if (r && r.reattach(msg.clientId, send)) {
+          id = msg.clientId; // adopt the reclaimed identity on this socket
+          room = r;
+        } else {
+          send({ t: 'rejoined', ok: false });
+        }
+      } else if (room) {
+        room.onMessage(id, msg);
       }
-    } else if (room) {
-      room.onMessage(id, msg);
+    } catch (e) {
+      console.error(`[server] error handling ${msg.t} from ${id}:`, e);
     }
   });
 
@@ -82,6 +94,8 @@ wss.on('connection', (ws: WebSocket) => {
   });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`[server] DECODE game server listening on ws://localhost:${PORT}`);
+// bind 0.0.0.0 explicitly — Fly (and most platforms) route to the app there, NOT
+// localhost/127.0.0.1 (a bind to localhost is unreachable ⇒ 502 / "not listening")
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`[server] DECODE game server listening on 0.0.0.0:${PORT}`);
 });

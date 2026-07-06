@@ -1491,6 +1491,50 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   );
 }
 
+// ---- remote prediction reproduces robot-robot collisions --------------------
+// The client predicts remote robots forward with their HELD command (not a
+// render-time hack), so `step()` moves + COLLIDES them exactly like the server.
+// Two robots seeded overlapping ⇒ collideRobots runs every tick; the client that
+// replays with the held remote command must match the server bit-for-bit.
+{
+  const setups = [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 0)];
+  const mk = (): World => {
+    const w = createWorld('match', 111, setups);
+    startMatch(w);
+    w.robots[0].pos = { x: 0, y: -5 }; // 10" apart, chassis ~18" ⇒ overlapping
+    w.robots[1].pos = { x: 0, y: 5 };
+    return w;
+  };
+  const c0 = localizeCommand(cmd({ driveY: 0.5, fire: true })); // local robot
+  const c1 = localizeCommand(cmd({ driveX: -0.5, intake: true })); // remote robot (held)
+
+  const auth = mk();
+  for (let t = 1; t <= 60; t++) step(auth, SIM_DT, new Map([[0, c0], [1, c1]]));
+  const overlapStart = Math.hypot(
+    auth.robots[0].pos.x - auth.robots[1].pos.x,
+    auth.robots[0].pos.y - auth.robots[1].pos.y,
+  );
+  const snap: World = JSON.parse(JSON.stringify(auth));
+  const buffered: RobotCommand[] = [];
+  for (let t = 61; t <= 90; t++) {
+    buffered.push(c0);
+    step(auth, SIM_DT, new Map([[0, c0], [1, c1]]));
+  }
+  // client: snapshot + replay local(0) live and remote(1) HELD command
+  const client: World = JSON.parse(JSON.stringify(snap));
+  for (const l of buffered) step(client, SIM_DT, new Map([[0, l], [1, c1]]));
+  check(
+    'remote prediction (held command) reproduces the world incl. robot-robot collisions',
+    worldHash(client) === worldHash(auth),
+    `client=${worldHash(client)} auth=${worldHash(auth)}`,
+  );
+  check(
+    'seeded-overlapping robots get separated by the sim (collision actually ran)',
+    overlapStart > 10,
+    `sep=${overlapStart.toFixed(1)}"`,
+  );
+}
+
 // ---- server drop degrades cleanly (ZERO from the drop tick) -----------------
 // a robot whose client left runs on ZERO and never stalls the others; the match
 // keeps advancing and the world stays finite.

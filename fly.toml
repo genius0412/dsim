@@ -1,29 +1,28 @@
-# Fly.io deploy for the DECODE game server. See docs/deploy.md.
-# Rename `app` to something unique, then: fly launch --no-deploy && fly deploy
-app = "decode-game-server"
-primary_region = "iad" # pick the region closest to your players (fly platform regions)
+# fly.toml app configuration file generated for dohun-sim-decode on 2026-07-06T18:01:15-04:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'dohun-sim-decode'
+primary_region = 'iad'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [http_service]
   internal_port = 8080
-  force_https = true # clients connect with wss://
-  # WebSockets ride the HTTP service (the upgrade is proxied). A realtime match
-  # server should stay warm — keep at least one machine running to avoid a
-  # cold-start on the first connection. Flip auto_stop on to trade a cold-start
-  # for lower idle cost.
-  auto_stop_machines = false
+  force_https = true
+  auto_stop_machines = 'off'
   auto_start_machines = true
   min_machines_running = 1
 
   [[http_service.checks]]
-    interval = "15s"
-    timeout = "2s"
-    grace_period = "5s"
-    method = "GET"
-    path = "/health"
+    interval = '15s'
+    timeout = '2s'
+    grace_period = '5s'
+    method = 'GET'
+    path = '/health'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb" # a 2D match for 4 robots is microseconds/tick + a few KB/s
+  size = 'shared-cpu-1x'
+  memory = '256mb'
