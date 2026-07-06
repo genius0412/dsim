@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { GameController, type GameSettings, type HudSnapshot } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
-import { ENDGAME_START } from '../config';
+import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
 import type { NetSession } from '../net/session';
 import type { Alliance, ScoreBreakdown } from '../types';
 
@@ -207,35 +207,9 @@ function Hud({ hud }: { hud: HudSnapshot }) {
   );
 }
 
-const RESULT_SECTIONS: [string, [string, keyof ScoreBreakdown][]][] = [
-  [
-    'AUTO',
-    [
-      ['Leave', 'leave'],
-      ['Classified', 'autoClassified'],
-      ['Overflow', 'autoOverflow'],
-      ['Pattern', 'autoPattern'],
-    ],
-  ],
-  [
-    'DRIVER-CONTROLLED',
-    [
-      ['Classified', 'teleClassified'],
-      ['Overflow', 'teleOverflow'],
-      ['Pattern', 'telePattern'],
-    ],
-  ],
-  [
-    'END OF MATCH',
-    [
-      ['Depot', 'depot'],
-      ['Base return', 'base'],
-    ],
-  ],
-  ['PENALTIES', [['Opponent fouls', 'foulPoints']]],
-];
-
-/** final match results — both alliances head-to-head with a full breakdown */
+/** final match results — RED | category | BLUE, like the FTC audience board.
+ * Foul rows show the POINTS each alliance was AWARDED from the opponent's fouls
+ * of that severity (minor 5 / major 15), split minor vs major. */
 function Results({
   hud,
   onRematch,
@@ -249,6 +223,43 @@ function Results({
   const blue = hud.alliance === 'blue' ? hud.score : hud.oppScore;
   const winner: Alliance | 'tie' =
     red.total > blue.total ? 'red' : blue.total > red.total ? 'blue' : 'tie';
+
+  // an alliance is awarded points from the OPPONENT's committed fouls
+  const f = hud.fouls;
+  const val = (get: (s: ScoreBreakdown) => number): [number, number] => [get(red), get(blue)];
+  const sections: [string, [string, number, number][]][] = [
+    [
+      'AUTONOMOUS',
+      [
+        ['Leave', ...val((s) => s.leave)],
+        ['Classified', ...val((s) => s.autoClassified)],
+        ['Overflow', ...val((s) => s.autoOverflow)],
+        ['Pattern', ...val((s) => s.autoPattern)],
+      ],
+    ],
+    [
+      'DRIVER-CONTROLLED',
+      [
+        ['Classified', ...val((s) => s.teleClassified)],
+        ['Overflow', ...val((s) => s.teleOverflow)],
+        ['Pattern', ...val((s) => s.telePattern)],
+      ],
+    ],
+    [
+      'END OF MATCH',
+      [
+        ['Depot', ...val((s) => s.depot)],
+        ['Base return', ...val((s) => s.base)],
+      ],
+    ],
+    [
+      'PENALTIES',
+      [
+        ['Minor fouls', f.blue.minor * PTS_FOUL_MINOR, f.red.minor * PTS_FOUL_MINOR],
+        ['Major fouls', f.blue.major * PTS_FOUL_MAJOR, f.red.major * PTS_FOUL_MAJOR],
+      ],
+    ],
+  ];
 
   return (
     <div className="overlay">
@@ -268,30 +279,30 @@ function Results({
         <table className="score-table results-table">
           <thead>
             <tr>
-              <th />
-              <th className="red">RED</th>
-              <th className="blue">BLUE</th>
+              <th className="rv red">RED</th>
+              <th className="cat" />
+              <th className="bv blue">BLUE</th>
             </tr>
           </thead>
           <tbody>
-            {RESULT_SECTIONS.map(([title, rows]) => (
+            {sections.map(([title, rows]) => (
               <Fragment key={title}>
                 <tr className="section-row">
                   <td colSpan={3}>{title}</td>
                 </tr>
-                {rows.map(([label, key]) => (
+                {rows.map(([label, rv, bv]) => (
                   <tr key={label}>
-                    <td>{label}</td>
-                    <td>{red[key]}</td>
-                    <td>{blue[key]}</td>
+                    <td className="rv">{rv}</td>
+                    <td className="cat">{label}</td>
+                    <td className="bv">{bv}</td>
                   </tr>
                 ))}
               </Fragment>
             ))}
             <tr className="total-row">
-              <td>TOTAL</td>
-              <td>{red.total}</td>
-              <td>{blue.total}</td>
+              <td className="rv">{red.total}</td>
+              <td className="cat">TOTAL</td>
+              <td className="bv">{blue.total}</td>
             </tr>
           </tbody>
         </table>

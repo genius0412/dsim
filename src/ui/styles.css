@@ -875,10 +875,17 @@ button.keycap:hover {
   text-align: center;
 }
 .results-table th {
-  font-size: 11px;
-  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 2px 0 6px;
+}
+.results-table th.red,
+.results-table td.rv {
   text-align: right;
-  padding: 2px 0 4px;
+}
+.results-table th.blue,
+.results-table td.bv {
+  text-align: left;
 }
 .results-table th.red {
   color: var(--red);
@@ -886,11 +893,20 @@ button.keycap:hover {
 .results-table th.blue {
   color: var(--blue);
 }
-.results-table td:nth-child(2),
-.results-table td:nth-child(3) {
-  text-align: right;
+.results-table td.rv,
+.results-table td.bv {
+  width: 64px;
   font-variant-numeric: tabular-nums;
-  width: 62px;
+  font-weight: 700;
+}
+.results-table td.cat,
+.results-table th.cat {
+  text-align: center;
+  color: var(--muted);
+  font-weight: 400;
+}
+.results-table .section-row td {
+  text-align: center;
 }
 
 /* ---------------------------------------------------------- multiplayer ---- */
