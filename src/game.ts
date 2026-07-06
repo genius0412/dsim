@@ -129,6 +129,13 @@ export class GameController {
     return this.world.robots.find((r) => r.id === this.localRobotId) ?? this.world.robots[0];
   }
 
+  /** the alliance whose viewpoint the camera + HUD use — the LOCAL robot's
+   * alliance (in multiplayer this is the lobby pick, which can differ from the
+   * menu's settings.alliance; in solo they are the same) */
+  private viewAlliance(): Alliance {
+    return this.localRobot().alliance;
+  }
+
   private makeWorld(): World {
     // multiplayer: everyone builds the identical world the host authored and
     // runs a SIM-DRIVEN countdown (transition lives in stepMatch, so it fires
@@ -163,7 +170,7 @@ export class GameController {
   }
 
   private onResize = (): void => {
-    this.renderer.camera.configure(this.canvas, this.settings.alliance);
+    this.renderer.camera.configure(this.canvas, this.viewAlliance());
   };
 
   private handlePhaseAudio(): void {
@@ -392,7 +399,7 @@ export class GameController {
   getHud(): HudSnapshot {
     const w = this.world;
     const r = this.localRobot();
-    const a = this.settings.alliance;
+    const a = this.viewAlliance();
     const opp: Alliance = a === 'blue' ? 'red' : 'blue';
     const goal = w.goals[a];
     return {
