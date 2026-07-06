@@ -1,16 +1,35 @@
 import type { Alliance, World } from '../types';
 import * as C from '../config';
-import { loadSlots } from './field';
+import { loadSlots, loadZone, inRect } from './field';
 import { hyp } from '../math';
 
-/** the human player feeds the grab row one artifact at a time from the box.
- * One-at-a-time placement is what keeps box + in-transit within the 6-out-of-play
- * cap (a 5-ball box can only ever "hold" one more, never two). */
+/** The human player works the loading zone. They CONTINUOUSLY grab loose/returned
+ * artifacts out of the zone into the off-field box (up to the 6-out-of-play cap),
+ * and feed the grab row from the box one artifact at a time — one-at-a-time keeps
+ * box + in-transit within the 6-out-of-play cap. */
 export function updateHumanPlayers(world: World): void {
   for (const a of ['red', 'blue'] as Alliance[]) {
     const hp = world.humanPlayers[a];
-    if (hp.box.length === 0 || world.time < hp.nextPlaceAt) continue;
     const slots = loadSlots(a);
+
+    // COLLECT: continuously pull a loose ground ball out of the loading zone into
+    // the off-field box (the returned/overflow artifacts the HP recycles). Skip a
+    // ball staged at a grab slot and any a robot is currently on.
+    if (hp.box.length < 6) {
+      for (let i = world.balls.length - 1; i >= 0; i--) {
+        const b = world.balls[i];
+        if (b.state.kind !== 'ground' || !inRect(b.pos, loadZone(a))) continue;
+        const atSlot = slots.some((s) => hyp(b.pos.x - s.x, b.pos.y - s.y) < C.BALL_RADIUS * 1.5);
+        const robotNear = world.robots.some((r) => hyp(r.pos.x - b.pos.x, r.pos.y - b.pos.y) < 14);
+        if (atSlot || robotNear) continue;
+        world.balls.splice(i, 1);
+        hp.box.push(b.color);
+        break; // one grab per tick — continuous but not instantaneous
+      }
+    }
+
+    // STAGE: feed the grab row from the box, one artifact at a time.
+    if (hp.box.length === 0 || world.time < hp.nextPlaceAt) continue;
     for (const slot of slots) {
       const occupied = world.balls.some(
         (b) =>

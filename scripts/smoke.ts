@@ -4,6 +4,7 @@
  */
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC } from '../src/sim/spawn';
 import { step } from '../src/sim/world';
+import { updateHumanPlayers } from '../src/sim/humanPlayer';
 import { startMatch } from '../src/sim/match';
 import {
   inLaunchZone,
@@ -1020,6 +1021,44 @@ const setup = (
   check(
     'the 2x3 box has 6 cells off the field (beyond the audience wall)',
     cells.length === 6 && cells.every((c) => c.y < -FIELD_HALF),
+  );
+}
+
+// ---- HP continuously grabs loose balls out of the loading zone into the box --
+{
+  const w = createWorld('match', 5, [setup(0, 'blue', {}, 0)]); // blue 1 robot, red 0
+  w.robots[0].pos = { x: 0, y: 40 }; // keep the robot out of the zone
+  const lz = loadZone('blue');
+  const loosePos = { x: (lz.x0 + lz.x1) / 2, y: lz.y1 - 5 }; // field-interior edge, clear of the grab row
+  w.balls.push({ id: 4242, color: 'green', state: { kind: 'ground' }, pos: loosePos, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  const before = w.humanPlayers.blue.box.length;
+  updateHumanPlayers(w);
+  check(
+    'HP grabs a loose ball out of the loading zone into the box',
+    !w.balls.some((b) => b.id === 4242) && w.humanPlayers.blue.box.length === before + 1,
+    `box ${before}->${w.humanPlayers.blue.box.length}`,
+  );
+
+  // a ball staged AT a grab slot is left alone (it is in play for robots)
+  const w2 = createWorld('match', 5, [setup(0, 'blue', {}, 0)]);
+  w2.robots[0].pos = { x: 0, y: 40 };
+  const staged = w2.balls.filter((b) => loadSlots('blue').some((s) => Math.hypot(b.pos.x - s.x, b.pos.y - s.y) < 0.1));
+  const boxBefore = w2.humanPlayers.blue.box.length;
+  updateHumanPlayers(w2);
+  const stagedStill = staged.every((b) => w2.balls.some((c) => c.id === b.id));
+  check(
+    'HP does not grab the staged grab-row balls',
+    staged.length === 3 && stagedStill && w2.humanPlayers.blue.box.length === boxBefore,
+  );
+
+  // at the 6-out-of-play cap the HP grabs nothing more
+  const w3 = createWorld('match', 5, []); // no robots -> both boxes start full (6)
+  const lz3 = loadZone('blue');
+  w3.balls.push({ id: 4243, color: 'green', state: { kind: 'ground' }, pos: { x: (lz3.x0 + lz3.x1) / 2, y: (lz3.y0 + lz3.y1) / 2 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  updateHumanPlayers(w3);
+  check(
+    'HP does not grab when the box is already at the 6-out-of-play cap',
+    w3.balls.some((b) => b.id === 4243) && w3.humanPlayers.blue.box.length === 6,
   );
 }
 

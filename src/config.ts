@@ -284,11 +284,13 @@ export const LOAD_ZONE_SIZE = 23;
  * The 2x3 BOX is the human player's out-of-play storage, tucked into the audience
  * corner behind the grab row. */
 export const LOAD_COL_XS = [54, 61, 68] as const; // 3 columns, ~7in apart, toward the side wall
-export const LOAD_ROW_Y = -53; // grab row y (field-interior edge of the zone)
+export const LOAD_ROW_Y = -65; // grab row y — ~7in in front of the audience wall (y=-72)
 // the box is OFF the field (the human player stands off-field): its two rows sit
-// beyond the audience wall (y < -FIELD_HALF) with a slight gap from it, aligned
-// below the grab row (and within the VIEW_MARGIN so it stays on-screen).
-export const LOAD_BOX_YS = [-77, -82] as const;
+// well beyond the audience wall (y < -FIELD_HALF) with a clear gap from it, aligned
+// below the grab row. This "beyond the audience wall" direction maps to the screen's
+// horizontal axis, which has slack past VIEW_MARGIN on landscape windows, so the box
+// stays on-screen without shrinking the field.
+export const LOAD_BOX_YS = [-80, -85] as const;
 
 /** depot band: floor in front of the goal face, out to the ~30in depot line
  * (the line spans the goal face base — endpoints are the face corners pushed
