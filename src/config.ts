@@ -149,7 +149,7 @@ export const INTAKE_PRESETS = {
    * against the 18in cap): must face the ball, but swallows fast */
   sloped: {
     reach: 3, halfWidth: 6, perBall: 0.12, clumpPerBall: 0.04, overhang: false,
-    minLength: 12, maxLength: 18, fireInterval: 0.1,
+    minLength: 12, maxLength: 18, fireInterval: 0.08,
   },
   /** VECTOR WHEEL intake: wide compliant wheels ride over artifacts ahead of
    * the chassis (within the 18in cap — chassis 11.5..14.5in). Grabs whatever
