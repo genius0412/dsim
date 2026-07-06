@@ -397,12 +397,14 @@ export class GameController {
       this.reconcile(snap);
     }
 
-    // cap the backlog so a backgrounded/throttled tab resumes at real time
+    // predict a small amount ahead in real time (the local robot stays responsive;
+    // the server accepts our slightly-late inputs by applying our latest command,
+    // so we do NOT fast-forward the whole world — that flung the balls around)
     if (this.acc > 0.25) this.acc = 0.25;
     let steps = 0;
     while (this.acc >= C.SIM_DT && steps < 30) {
-      const tick = this.world.tick + 1; // the tick this input produces
-      const local = localizeCommand(cmd); // predict on what the server will decode
+      const tick = this.world.tick + 1;
+      const local = localizeCommand(cmd);
       s.sendInput(tick, cmd);
       this.inputBuf.push({ tick, cmd: local });
       step(this.world, C.SIM_DT, this.cmdMap(local));

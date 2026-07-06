@@ -1,12 +1,24 @@
-# HANDOFF — session ending 2026-07-06 (Netcode Phase 0 + most of Phase 1)
+# HANDOFF — session ending 2026-07-06 (Netcode Phase 0 + Phase 1 SHIPPED LIVE)
 
 Read `CLAUDE.md` first (load-bearing rules), then this file. The netcode/physics
 roadmap is `docs/netcodeplan.md` (source of truth; supersedes the old "Road to
 Multiplayer" plan and all prior Phase D notes).
 
-## ✅ Current state: BUILD GREEN · `npm test` = 138 checks ALL PASS · server type-checks · live 2-client + reconnect + delta-wire runs PASS · user-verified live (control feel + smoothness)
+## ✅ Current state: BUILD GREEN · `npm test` = 140 checks ALL PASS · server type-checks · **DEPLOYED + user-verified over the internet on Fly**
 
-## Phase 1 status: reconnection + delta snapshots + deploy artifacts DONE; WebTransport deferred (needs a TLS deploy to validate)
+Multiplayer is live: client (Vite dev / `.env` → `wss://dohun-sim-decode.fly.dev`) ⇄
+authoritative Fly game server. User play-tested control feel, remote smoothness, AND
+robot-robot collisions over the real deploy — all good.
+
+## Phase 1 status: reconnection + delta snapshots DONE; **server DEPLOYED to Fly**;
+WebTransport deferred (needs the TLS deploy to validate); full-reload reconnect + the
+Vercel client deploy still open.
+
+## ⚠️ GIT: user commits, NOT me (they were explicit — **never commit yourself**)
+The earlier netcode overhaul is committed (in `c7e802e`). THIS session's later changes —
+remote-robot prediction (collision fix), server crash-hardening, delta snapshots, deploy
+files, new smoke tests — are in the working tree, **uncommitted**, for the user to commit.
+Only `fly.toml` differs at the git layer if you diff. Do not run `git commit`.
 
 ## Phase 0 was LIVE-VERIFIED by the user
 
@@ -17,12 +29,18 @@ Two browsers, localhost server. Findings + fixes this session (all shipped):
   per-tick input buffering on the server (`server/room.ts` `frameCommands`): consume the
   input tagged for the exact tick, hold-last on a brief gap (`HOLD_TICKS`), coast to ZERO
   when stale. Snapshot rate raised to 60 Hz (`SNAPSHOT_INTERVAL = 1`).
-- **Remote robot smoothness:** remote robots looked choppy (snapshot stepping). The user
-  wanted ZERO added latency, so I used **dead-reckoning extrapolation** (not interpolation):
-  `game.ts` `renderRemoteExtrap` draws each remote robot at its estimated PRESENT pose from
-  the last snapshot's pos+velocity, with a decaying correction offset (`REMOTE_SMOOTH_TAU_MS`)
-  so snapshots don't snap. Zero display latency; brief overshoot on hard cuts is the
-  fundamental network limit, not a bug. Tunables: `REMOTE_MAX_EXTRAP_S`, `REMOTE_SMOOTH_TAU_MS`.
+- **Remote robots (smoothness THEN collisions) — landed on FULL PREDICTION:** first pass
+  used dead-reckoning extrapolation in the render layer (smooth, zero latency) BUT it
+  ignored collisions, so robots visually overlapped when they rammed. A render-time
+  separation push was a band-aid the user (correctly) rejected. **Final, correct fix:** the
+  client now PREDICTS remote robots in the sim — `stepServer`/`reconcile` feed EVERY robot a
+  command via `cmdMap()` (local robot = live input, remotes = their last command from the
+  snapshot), so `step()` moves AND collides them exactly like the server. Render straight
+  from the predicted world — no extrapolation layer, no separation hack (both deleted).
+  Requires the server to send each robot's command: snapshot now carries `cmds: QCommand[]`
+  aligned with `w.robots` (server `lastFrame` → `frameCmds`; client holds `remoteCmds`).
+  Smoke-verified bit-identical incl. robot-robot collisions. The only residual is the
+  irreducible one: a remote's hard reversal mispredicts for ~1 RTT then corrects.
 
 ## Phase 1 progress — RECONNECTION (transient drops)
 
@@ -57,17 +75,37 @@ Verified: smoke round-trips (slim+unslim hash-identical; ball delta reconstructs
 3/27 balls sent) AND a live 2-client wire test — both clients reconstruct **identical
 worldHash every tick (85/85, 0 mismatches)**; avg snapshot ~1.8 KB.
 
-## Phase 1 progress — DEPLOY ARTIFACTS (Fly.io)
+## Phase 1 — DEPLOYED to Fly.io (app `dohun-sim-decode`, region iad)
 
-Ready to `fly deploy` (I can't run it — no Fly creds here). See **`docs/deploy.md`**.
+The server is LIVE at **`wss://dohun-sim-decode.fly.dev`** (`/health` → 200). Deployed via
+`fly deploy` (remote builder, ~62 MB image). See **`docs/deploy.md`** (has a beginner
+quickstart + a Render.com click-only alternative).
 - `Dockerfile` (node:22-alpine, `npm ci --omit=dev` ⇒ only react/react-dom/ws/tsx, NOT
-  electron/vite), `fly.toml` (port 8080, force_https ⇒ `wss://`, health check, 1 warm
-  machine), `.dockerignore`.
-- `server/index.ts` now serves **`GET /health` → 200** on the same port (verified) via an
-  explicit `http.Server` the WS server mounts on.
-- **`ws` + `tsx` moved to `dependencies`** (server runtime needs them; `--omit=dev` still
-  excludes electron/vite/typescript). Client (Vercel) build unaffected.
-- Client points at the server via `VITE_GAME_SERVER_URL` (already gated); prod = `wss://…`.
+  electron/vite), `fly.toml` (port 8080, force_https ⇒ `wss://`, `/health` check),
+  `.dockerignore`. `ws`+`tsx` are runtime `dependencies` now.
+- **SCALED TO 1 MACHINE (critical):** room state is in-memory PER MACHINE and Fly
+  load-balances each WS connection independently, so ≥2 machines = split-brain (two players
+  in the "same" room land on different machines, can't see each other). `fly scale count 1`.
+  If you ever `fly deploy` and it recreates 2, scale back to 1.
+- **`GET /health` → 200** via an explicit `http.Server` the WS server mounts on; binds
+  **`0.0.0.0`** (Fly requirement — a localhost bind is unreachable ⇒ 502).
+- Cost: one always-on `shared-cpu-1x`/256 MB ≈ a couple $/mo.
+- **STILL OPEN:** the **Vercel client** is the OLD build — to let people play without the
+  dev server, set `VITE_GAME_SERVER_URL=wss://dohun-sim-decode.fly.dev` on Vercel + deploy
+  the current code there.
+
+## Phase 1 — SERVER CRASH-HARDENING (from a live incident)
+
+The user hit a Fly outage ("app not listening", all robots disconnected) — an unhandled
+exception in a timer/socket handler had killed the whole Node process. Hardened so one bad
+tick/message/room can never take the process down:
+- `server/room.ts` tick loop wrapped in try/catch (logs `[room CODE] tick error …`).
+- `server/index.ts` wraps message routing in try/catch; adds `wss`/`httpServer` `error`
+  handlers + `process.on('uncaughtException'|'unhandledRejection')` — all LOG, don't exit.
+- So if it recurs, `fly logs` now shows the real stack (before, it died silently). If you
+  see a repeating tick error there, that's a genuine sim bug to fix at the source.
+- Client tolerates an older server missing `snapshot.cmds` (guards `m.cmds ?? []`) so a
+  version-skewed deploy degrades instead of crashing.
 
 ## WebTransport — DEFERRED (honest status)
 
@@ -117,9 +155,11 @@ authority, no cross-peer float-determinism requirement.
 Each sim tick: apply the local command immediately via `step()` on the predicted world,
 push `{tick, localizeCommand(cmd)}` into `inputBuf`, and `session.sendInput(tick, cmd)`.
 On a snapshot (`reconcile`): `this.world = snapshot.world`, drop inputs `<= serverTick`,
-replay the rest forward through `step()`. Only the local robot is predicted; remote
-robots default to ZERO in `step()` and are corrected each snapshot. **`session: null`
-⇒ solo path bit-identical** (unchanged). `rematch`/restart call `requestRestart()`.
+replay the rest forward through `step()`. **(Later corrected — see the FULL PREDICTION
+note above:** every robot is now stepped via `cmdMap()`, remotes on their held command, so
+their collisions are simulated. The original "remotes default to ZERO" caused overlap.)
+**`session: null` ⇒ solo path bit-identical** (unchanged). `rematch`/restart call
+`requestRestart()`.
 
 ### UI
 - `App.tsx` gates MULTIPLAYER on `gameServerConfigured()`.
@@ -138,17 +178,16 @@ host = first joiner, per-client robot ids, same seed, snapshot flow, and a mid-m
 drop that keeps the survivor advancing. (Deleted after running.)
 
 ## ⚠️ NOT DONE / next steps (in `docs/netcodeplan.md` order)
-1. **LIVE 2-browser verification on different networks** — start `npm run server`, set
-   `VITE_GAME_SERVER_URL=ws://localhost:8787` in `.env`, `npm run dev`, open two tabs,
-   same room code, host READY→START. Confirm no freezes, a tab-close degrades cleanly,
-   and a throttled client (DevTools) doesn't stall the other. This is the Phase 0 ship
-   criterion and the one thing only a real run can prove.
-2. **Phase 1 remaining** — reconnection (transient) + delta snapshots + deploy artifacts
-   are DONE (above). Still to do: **run `fly deploy`** (needs your Fly account; `docs/deploy.md`
-   is step-by-step) + set `VITE_GAME_SERVER_URL=wss://…` on Vercel; **WebTransport** (deferred,
-   validate on the TLS deploy); **full-reload reconnect** (localStorage session restore).
+1. **Vercel client deploy** — set `VITE_GAME_SERVER_URL=wss://dohun-sim-decode.fly.dev` in
+   Vercel env + deploy the CURRENT code (Vercel still serves the old pre-netcode build), so
+   people can play without the local dev server.
+2. **Phase 1 leftovers** — **WebTransport** (deferred, validate on the Fly TLS deploy);
+   **full-reload reconnect** (localStorage room+clientId, auto-rejoin on load — the transient
+   socket-drop case IS done). Optional: re-tune remote prediction if hard-reversal mispredict
+   feels off on high-ping links.
 3. **Phase 2** — Rapier 2D physics (replace `sim/physics.ts`); only THEN remove the
    `dsin/dcos/datan2` discipline from sim-reachable code (still required elsewhere until then).
+   Clean boundary for a FRESH session.
 4. **Phase 3** — Postgres/Clerk, ELO/leaderboards/matchmaking/replays + the UI redesign.
 
 ## Gotchas / notes
@@ -164,6 +203,10 @@ drop that keeps the survivor advancing. (Deleted after running.)
 - PowerShell 5.1: no `&&`; Bash tool available for POSIX.
 
 ## Standing user instructions
+- **NEVER commit — the user commits themselves.** (They were explicit after I committed
+  once without asking.) Also don't re-assert "it's uncommitted" repeatedly; state git facts
+  once, only when relevant.
 - Write/refresh this HANDOFF at the END of every session.
 - Product decisions in CLAUDE.md — do not regress. Physical models over scripted behavior.
 - Run `npm test` after any `src/sim`/`config`/`src/net` change; `npm run build` before "done".
+- Fly deploy: `fly` is authed on this machine (`fly deploy` works); keep it at 1 machine.

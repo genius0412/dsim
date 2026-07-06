@@ -54,7 +54,12 @@ export class Room {
   // per robot: future inputs keyed by the tick they apply to (consumed in order)
   private readonly pending = new Map<number, Map<number, RobotCommand>>();
   private readonly held = new Map<number, RobotCommand>(); // robotId -> last applied cmd
-  private readonly lastInputTick = new Map<number, number>(); // robotId -> newest tick seen
+  // for LENIENT input: the freshest command a client sent (by tick) + when we last
+  // heard from it, so a slightly-late input still moves the robot instead of being
+  // dropped (which froze laggy players at spawn)
+  private readonly latest = new Map<number, RobotCommand>();
+  private readonly latestTick = new Map<number, number>();
+  private readonly lastRecvTick = new Map<number, number>();
   private readonly ackTick = new Map<string, number>(); // clientId -> newest input tick
   private readonly dropped = new Set<number>();
   private loop: ReturnType<typeof setInterval> | null = null;
@@ -167,16 +172,25 @@ export class Room {
   private onInput(id: string, tick: number, q: QCommand): void {
     const rid = this.robotOf.get(id);
     if (rid === undefined || this.dropped.has(rid)) return;
-    const w = this.world;
-    // drop inputs for ticks already simulated (arrived too late to matter)
-    if (w && tick <= w.tick) return;
-    let buf = this.pending.get(rid);
-    if (!buf) {
-      buf = new Map();
-      this.pending.set(rid, buf);
+    const cmd = dequantizeCommand(q);
+    // track the freshest command by tick (even if it's now in the past) — this is
+    // what a late input still contributes, so the robot keeps moving
+    if (tick > (this.latestTick.get(rid) ?? -1)) {
+      this.latestTick.set(rid, tick);
+      this.latest.set(rid, cmd);
     }
-    buf.set(tick, dequantizeCommand(q));
-    if (tick > (this.lastInputTick.get(rid) ?? -1)) this.lastInputTick.set(rid, tick);
+    if (this.world) this.lastRecvTick.set(rid, this.world.tick); // liveness
+    // ALSO buffer FUTURE inputs by exact tick — an on-time client's robot then
+    // matches its own prediction exactly (smooth); a late one falls back to latest
+    const w = this.world;
+    if (!w || tick > w.tick) {
+      let buf = this.pending.get(rid);
+      if (!buf) {
+        buf = new Map();
+        this.pending.set(rid, buf);
+      }
+      buf.set(tick, cmd);
+    }
     if (tick > (this.ackTick.get(id) ?? -1)) this.ackTick.set(id, tick);
   }
 
@@ -206,7 +220,9 @@ export class Room {
     this.world = world;
     this.pending.clear();
     this.held.clear();
-    this.lastInputTick.clear();
+    this.latest.clear();
+    this.latestTick.clear();
+    this.lastRecvTick.clear();
     this.ackTick.clear();
     this.dropped.clear();
     this.prevBalls.clear();
@@ -247,9 +263,10 @@ export class Room {
     }, 1000 * C.SIM_DT);
   }
 
-  /** the command each robot runs at `tick`: its buffered input for that exact
-   * tick if present (so the server matches the client's prediction), else its
-   * last command for up to HOLD_TICKS (jitter tolerance), else ZERO */
+  /** the command each robot runs at `tick`: its buffered input for that EXACT tick
+   * if present (on-time client ⇒ matches its prediction, smooth); else its MOST
+   * RECENT command while it's still actively sending (late client ⇒ keeps moving
+   * instead of freezing); else ZERO once it's gone quiet for HOLD_TICKS */
   private frameCommands(tick: number): Map<number, RobotCommand> {
     const w = this.world as World;
     const frame = new Map<number, RobotCommand>();
@@ -263,10 +280,13 @@ export class Room {
       if (c !== undefined) {
         this.held.set(r.id, c);
         frame.set(r.id, c);
-      } else if (tick - (this.lastInputTick.get(r.id) ?? -1) <= HOLD_TICKS) {
-        frame.set(r.id, this.held.get(r.id) ?? ZERO_CMD); // brief gap: hold last
+      } else if (w.tick - (this.lastRecvTick.get(r.id) ?? -HOLD_TICKS - 1) <= HOLD_TICKS) {
+        // no exact input for this tick, but the client is live ⇒ apply its latest
+        const latest = this.latest.get(r.id) ?? this.held.get(r.id) ?? ZERO_CMD;
+        this.held.set(r.id, latest);
+        frame.set(r.id, latest);
       } else {
-        frame.set(r.id, ZERO_CMD); // stale: coast to a stop
+        frame.set(r.id, ZERO_CMD); // client went quiet: coast to a stop
       }
       // consumed / past inputs will never be needed again
       if (buf) for (const t of buf.keys()) if (t <= tick) buf.delete(t);
