@@ -14,8 +14,13 @@ import { localizeCommand } from './protocol';
  * ZERO_CMD robot). `canStep(T)` gates the fixed-timestep drain in the game loop.
  */
 
-export const INPUT_DELAY = 8; // ticks @120 Hz ≈ 66 ms (tunable 4–12)
-export const CHECKSUM_INTERVAL = 120; // ticks (1 s) between checksum exchanges
+// input-delay buffer in ticks. At the 60 Hz sim rate this is the wall-clock lag
+// applied to EVERY robot incl. your own (lockstep delays local input to match
+// when peers receive it), so it directly sets how responsive controls feel:
+// 4 ticks ≈ 66 ms. Lower = snappier but stalls if one-way latency exceeds it;
+// most direct P2P links are well under 66 ms. (Was 8 = 133 ms at 60 Hz — laggy.)
+export const INPUT_DELAY = 4;
+export const CHECKSUM_INTERVAL = 120; // ticks (~2 s @60 Hz) between checksum exchanges
 
 const ZERO_CMD: RobotCommand = {
   driveX: 0,
