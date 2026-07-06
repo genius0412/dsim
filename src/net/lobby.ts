@@ -13,6 +13,11 @@ import { getSupabase } from './env';
 
 export interface LobbyPlayer {
   peerId: string;
+  /** monotonic per-client revision. Re-tracking (alliance/ready changes) can
+   * STACK presence entries under one key, and their array order is not
+   * chronological and differs per client — so resolve a player to their
+   * highest-`ver` entry to get one consistent, current value everywhere. */
+  ver: number;
   name: string;
   teamName: string;
   teamNumber: number;
@@ -53,12 +58,12 @@ export class SupabaseLobby {
   private players: LobbyPlayer[] = [];
   private readonly handlers: Partial<Handlers> = {};
 
-  constructor(self: Omit<LobbyPlayer, 'peerId'>) {
+  constructor(self: Omit<LobbyPlayer, 'peerId' | 'ver'>) {
     this.peerId =
       typeof crypto !== 'undefined' && crypto.randomUUID
         ? crypto.randomUUID()
         : `p${Math.floor(Math.random() * 1e9).toString(36)}`;
-    this.self = { ...self, peerId: this.peerId };
+    this.self = { ...self, peerId: this.peerId, ver: 0 };
   }
 
   on<K extends keyof Handlers>(event: K, cb: Handlers[K]): void {
@@ -86,11 +91,14 @@ export class SupabaseLobby {
 
     channel.on('presence', { event: 'sync' }, () => {
       const state = channel.presenceState<LobbyPlayer>();
-      // one player PER presence key: re-tracking (e.g. an alliance switch) can
-      // stack several presence entries under the same key — take the most
-      // recent so a player never appears twice
+      // one player PER presence key, resolved to the HIGHEST-ver entry (stacked
+      // presences from re-tracking are not chronologically ordered, so "last"
+      // is unreliable and can differ across clients — ver is authoritative)
       this.players = Object.values(state)
-        .map((entries) => entries[entries.length - 1] as unknown as LobbyPlayer)
+        .map((entries) => {
+          const ps = entries as unknown as LobbyPlayer[];
+          return ps.reduce((a, b) => (b.ver >= a.ver ? b : a));
+        })
         .sort((a, b) => (a.peerId < b.peerId ? -1 : 1));
       this.handlers.players?.(this.players);
     });
@@ -119,8 +127,8 @@ export class SupabaseLobby {
   }
 
   /** update and re-broadcast our own lobby presence (name/spec/alliance/ready) */
-  async updateSelf(patch: Partial<Omit<LobbyPlayer, 'peerId'>>): Promise<void> {
-    this.self = { ...this.self, ...patch };
+  async updateSelf(patch: Partial<Omit<LobbyPlayer, 'peerId' | 'ver'>>): Promise<void> {
+    this.self = { ...this.self, ...patch, ver: this.self.ver + 1 };
     await this.channel?.track(this.self);
   }
 

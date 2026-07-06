@@ -830,6 +830,69 @@ button.keycap:hover {
   font-size: 16px;
 }
 
+/* both-alliance match results */
+.results-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 8px;
+}
+.res-side {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  border-radius: 10px;
+  padding: 10px;
+  color: white;
+  opacity: 0.7;
+}
+.res-side.win {
+  opacity: 1;
+  outline: 2px solid var(--amber);
+}
+.res-side.red {
+  background: linear-gradient(180deg, #7f1d1d, #991b1b);
+}
+.res-side.blue {
+  background: linear-gradient(180deg, #1e3a8a, #1d4ed8);
+}
+.res-side span {
+  font-weight: 800;
+  letter-spacing: 2px;
+  font-size: 13px;
+}
+.res-side strong {
+  font-size: 32px;
+  font-variant-numeric: tabular-nums;
+}
+.res-verdict {
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--amber);
+  min-width: 74px;
+  text-align: center;
+}
+.results-table th {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  padding: 2px 0 4px;
+}
+.results-table th.red {
+  color: var(--red);
+}
+.results-table th.blue {
+  color: var(--blue);
+}
+.results-table td:nth-child(2),
+.results-table td:nth-child(3) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  width: 62px;
+}
+
 /* ---------------------------------------------------------- multiplayer ---- */
 .start-btn.secondary {
   background: var(--panel-2);

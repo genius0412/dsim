@@ -48,6 +48,8 @@ export interface HudSnapshot {
   motif: Motif;
   score: ScoreBreakdown;
   oppTotal: number;
+  /** the opponent alliance's full breakdown (for the match-results screen) */
+  oppScore: ScoreBreakdown;
   provisionalPattern: number;
   /** fouls committed BY each alliance (counts, for the HUD chip) */
   fouls: Record<Alliance, { minor: number; major: number }>;
@@ -410,6 +412,7 @@ export class GameController {
       motif: w.motif,
       score: w.match.scores[a],
       oppTotal: w.match.scores[opp].total,
+      oppScore: w.match.scores[opp],
       provisionalPattern: w.match.provisionalPattern[a],
       fouls: { red: { ...w.match.fouls.red }, blue: { ...w.match.fouls.blue } },
       fieldCentric: r.fieldCentric,

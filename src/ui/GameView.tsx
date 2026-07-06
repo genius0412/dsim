@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { GameController, type GameSettings, type HudSnapshot } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
 import { ENDGAME_START } from '../config';
 import type { NetSession } from '../net/session';
+import type { Alliance, ScoreBreakdown } from '../types';
 
 interface Props {
   settings: GameSettings;
@@ -81,22 +82,7 @@ export function GameView({ settings, onExit, session = null }: Props) {
           {hud.countdown > 3 ? 'MATCH BEGINS IN' : hud.countdown}
         </div>
       )}
-      {hud?.phase === 'post' && (
-        <div className="overlay">
-          <div className="overlay-panel results">
-            <h2>MATCH RESULTS</h2>
-            <div className={`final-score alliance-${hud.alliance}`}>
-              <span>{hud.alliance.toUpperCase()}</span>
-              <strong>{hud.score.total}</strong>
-            </div>
-            <ScoreTable hud={hud} />
-            <div className="overlay-buttons">
-              <button onClick={() => controllerRef.current?.restart()}>REMATCH</button>
-              <button onClick={onExit}>MENU</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {hud?.phase === 'post' && <Results hud={hud} onRematch={() => controllerRef.current?.restart()} onExit={onExit} />}
     </div>
   );
 }
@@ -221,66 +207,100 @@ function Hud({ hud }: { hud: HudSnapshot }) {
   );
 }
 
-/** score review table, like the FTC scoring system's match details */
-function ScoreTable({ hud }: { hud: HudSnapshot }) {
-  const s = hud.score;
-  const sections: [string, [string, number][]][] = [
+const RESULT_SECTIONS: [string, [string, keyof ScoreBreakdown][]][] = [
+  [
+    'AUTO',
     [
-      'AUTO',
-      [
-        ['Leave', s.leave],
-        ['Classified artifacts', s.autoClassified],
-        ['Overflow artifacts', s.autoOverflow],
-        ['Pattern', s.autoPattern],
-      ],
+      ['Leave', 'leave'],
+      ['Classified', 'autoClassified'],
+      ['Overflow', 'autoOverflow'],
+      ['Pattern', 'autoPattern'],
     ],
+  ],
+  [
+    'DRIVER-CONTROLLED',
     [
-      'DRIVER-CONTROLLED',
-      [
-        ['Classified artifacts', s.teleClassified],
-        ['Overflow artifacts', s.teleOverflow],
-        ['Pattern', s.telePattern],
-      ],
+      ['Classified', 'teleClassified'],
+      ['Overflow', 'teleOverflow'],
+      ['Pattern', 'telePattern'],
     ],
+  ],
+  [
+    'END OF MATCH',
     [
-      'END OF MATCH',
-      [
-        ['Depot artifacts', s.depot],
-        ['Base return', s.base],
-      ],
+      ['Depot', 'depot'],
+      ['Base return', 'base'],
     ],
-    [
-      'PENALTIES',
-      [['Opponent fouls', s.foulPoints]],
-    ],
-  ];
+  ],
+  ['PENALTIES', [['Opponent fouls', 'foulPoints']]],
+];
+
+/** final match results — both alliances head-to-head with a full breakdown */
+function Results({
+  hud,
+  onRematch,
+  onExit,
+}: {
+  hud: HudSnapshot;
+  onRematch: () => void;
+  onExit: () => void;
+}) {
+  const red = hud.alliance === 'red' ? hud.score : hud.oppScore;
+  const blue = hud.alliance === 'blue' ? hud.score : hud.oppScore;
+  const winner: Alliance | 'tie' =
+    red.total > blue.total ? 'red' : blue.total > red.total ? 'blue' : 'tie';
+
   return (
-    <table className="score-table">
-      <tbody>
-        {sections.map(([title, rows]) => (
-          <SectionRows key={title} title={title} rows={rows} />
-        ))}
-        <tr className="total-row">
-          <td>TOTAL</td>
-          <td>{s.total}</td>
-        </tr>
-      </tbody>
-    </table>
+    <div className="overlay">
+      <div className="overlay-panel results">
+        <h2>MATCH RESULTS</h2>
+        <div className="results-head">
+          <div className={`res-side red ${winner === 'red' ? 'win' : ''}`}>
+            <span>RED</span>
+            <strong>{red.total}</strong>
+          </div>
+          <div className="res-verdict">{winner === 'tie' ? 'TIE' : `${winner.toUpperCase()} WINS`}</div>
+          <div className={`res-side blue ${winner === 'blue' ? 'win' : ''}`}>
+            <span>BLUE</span>
+            <strong>{blue.total}</strong>
+          </div>
+        </div>
+        <table className="score-table results-table">
+          <thead>
+            <tr>
+              <th />
+              <th className="red">RED</th>
+              <th className="blue">BLUE</th>
+            </tr>
+          </thead>
+          <tbody>
+            {RESULT_SECTIONS.map(([title, rows]) => (
+              <Fragment key={title}>
+                <tr className="section-row">
+                  <td colSpan={3}>{title}</td>
+                </tr>
+                {rows.map(([label, key]) => (
+                  <tr key={label}>
+                    <td>{label}</td>
+                    <td>{red[key]}</td>
+                    <td>{blue[key]}</td>
+                  </tr>
+                ))}
+              </Fragment>
+            ))}
+            <tr className="total-row">
+              <td>TOTAL</td>
+              <td>{red.total}</td>
+              <td>{blue.total}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div className="overlay-buttons">
+          <button onClick={onRematch}>REMATCH</button>
+          <button onClick={onExit}>MENU</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
-function SectionRows({ title, rows }: { title: string; rows: [string, number][] }) {
-  return (
-    <>
-      <tr className="section-row">
-        <td colSpan={2}>{title}</td>
-      </tr>
-      {rows.map(([label, val]) => (
-        <tr key={label}>
-          <td>{label}</td>
-          <td>{val}</td>
-        </tr>
-      ))}
-    </>
-  );
-}
