@@ -201,6 +201,19 @@ export function Menu({ settings, onChange, onStart }: Props) {
           </div>
         </section>
 
+        <section>
+          <h2>Visuals</h2>
+          <div className="card-row">
+            <button
+              className={`card ${settings.is3D ? 'selected' : ''}`}
+              onClick={() => set({ is3D: !settings.is3D })}
+            >
+              <strong>3D Mode {settings.is3D ? 'ON' : 'OFF'}</strong>
+              <span>Switch to an immersive 3D perspective of the field</span>
+            </button>
+          </div>
+        </section>
+
         <ControlsSection
           bindings={settings.bindings}
           onChange={(bindings) => set({ bindings })}

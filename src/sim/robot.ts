@@ -57,7 +57,7 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   const viewAngle = viewAngleOf(r.alliance);
   // driver stick vector: +y = away from driver (screen up), +x = driver right.
   // screen -> world undoes the camera rotation
-  const stick = { x: cmd.driveX, y: cmd.driveY };
+  const stick = { x: -cmd.driveX, y: cmd.driveY };
   let robotVec: { x: number; y: number };
   if (r.fieldCentric) {
     const fieldVec = rot(stick, -viewAngle);
@@ -71,7 +71,7 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   const div = Math.max(1, demand);
   const targetFwd = (robotVec.x / div) * C.DRIVE_MAX_SPEED;
   const targetStrafe = (robotVec.y / div) * C.DRIVE_MAX_SPEED * C.STRAFE_MULT;
-  const targetOmega = (cmd.rotate / div) * C.TURN_MAX_SPEED;
+  const targetOmega = (-cmd.rotate / div) * C.TURN_MAX_SPEED;
 
   // accel-clamped approach in the robot frame
   const velRobot = rot(r.vel, -r.heading);

@@ -14,6 +14,7 @@ export function defaultSettings(): GameSettings {
     spec: { ...DEFAULT_SPEC },
     audio: { sounds: true, voice: true },
     bindings: cloneBindings(DEFAULT_BINDINGS),
+    is3D: false,
   };
 }
 
@@ -55,6 +56,7 @@ export function loadSettings(): GameSettings {
       if (typeof au.voice === 'boolean') out.audio.voice = au.voice;
     }
     out.bindings = mergeBindings(s.bindings);
+    if (typeof s.is3D === 'boolean') out.is3D = s.is3D;
   } catch {
     /* corrupt storage or no localStorage — defaults */
   }
