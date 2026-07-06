@@ -18,6 +18,7 @@ import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
 import type { ControlBindings } from './input/bindings';
 import { Renderer } from './render/renderer';
+import { Renderer3D } from './render/renderer3d';
 import { MatchAudio } from './audio';
 
 export interface GameSettings {
@@ -27,6 +28,7 @@ export interface GameSettings {
   spec: RobotSpec;
   audio: { sounds: boolean; voice: boolean };
   bindings: ControlBindings;
+  is3D: boolean;
 }
 
 export interface Toast {
@@ -66,7 +68,8 @@ export class GameController {
   private world: World;
   private readonly input: InputManager;
   private readonly renderer = new Renderer();
-  private readonly ctx: CanvasRenderingContext2D;
+  private readonly renderer3d?: Renderer3D;
+  private readonly ctx: CanvasRenderingContext2D | null;
   private readonly audio = new MatchAudio();
   private raf = 0;
   private lastT = 0;
@@ -93,7 +96,11 @@ export class GameController {
     private readonly canvas: HTMLCanvasElement,
     private settings: GameSettings,
   ) {
-    this.ctx = canvas.getContext('2d')!;
+    this.ctx = settings.is3D ? null : canvas.getContext('2d')!;
+    if (settings.is3D) {
+      this.renderer3d = new Renderer3D(canvas);
+      this.renderer3d.configure(canvas, settings.alliance);
+    }
     this.audio.soundsEnabled = settings.audio.sounds;
     this.audio.voiceEnabled = settings.audio.voice;
     this.input = new InputManager(settings.bindings);
@@ -119,6 +126,9 @@ export class GameController {
 
   private onResize = (): void => {
     this.renderer.camera.configure(this.canvas, this.settings.alliance);
+    if (this.renderer3d) {
+      this.renderer3d.configure(this.canvas, this.settings.alliance);
+    }
   };
 
   private handlePhaseAudio(): void {
@@ -258,7 +268,12 @@ export class GameController {
     this.toasts = this.toasts.filter((x) => performance.now() - x.at < 2500).slice(-5);
     this.world.events.length = 0;
 
-    this.renderer.render(this.ctx, this.world, this.lastCmd);
+    if (this.settings.is3D && this.renderer3d) {
+      this.renderer3d.render(this.world, this.lastCmd);
+      this.renderer3d.draw();
+    } else if (this.ctx) {
+      this.renderer.render(this.ctx, this.world, this.lastCmd);
+    }
     this.raf = requestAnimationFrame(this.loop);
   };
 
@@ -276,6 +291,9 @@ export class GameController {
     this.frontFlipped = false;
     this.seedActionAudio();
     this.toasts = [];
+    if (this.renderer3d) {
+      this.renderer3d.cleanup();
+    }
   }
 
   getHud(): HudSnapshot {
