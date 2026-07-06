@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { World, Alliance } from '../types';
 import * as C from '../config';
-import { goalCenter, goalFaceNormal, classifierRect } from '../sim/field';
+import { goalCenter, goalFaceNormal, classifierRect, goalTriangle } from '../sim/field';
 
 export class Renderer3D {
   private scene = new THREE.Scene();
@@ -42,6 +42,11 @@ export class Renderer3D {
     this.fieldMesh = new THREE.Mesh(floorGeo, floorMat);
     this.fieldMesh.rotation.x = -Math.PI / 2;
     this.scene.add(this.fieldMesh);
+
+    // Tile grid
+    const grid = new THREE.GridHelper(C.FIELD_HALF * 2, (C.FIELD_HALF * 2) / C.TILE, 0x444444, 0x333333);
+    grid.position.y = 0.1;
+    this.scene.add(grid);
 
     // Legal Launch Zones (white outlines)
     const zoneMat = new THREE.LineBasicMaterial({ color: 0xffffff });
@@ -101,13 +106,56 @@ export class Renderer3D {
       face.lookAt(gCenter.x + n.x * 10, 19, gCenter.y + n.y * 10);
       group.add(face);
 
+      // Goal Walls (Triangle/Backboard)
+      const tri = goalTriangle(a);
+      const wallH = 45;
+      const wallMat = new THREE.MeshStandardMaterial({ color: a === 'red' ? 0xef4444 : 0x3b82f6 });
+
+      // Back wall (p0 to p2)
+      const backWallGeo = new THREE.BoxGeometry(21, wallH, 1);
+      const backWall = new THREE.Mesh(backWallGeo, wallMat);
+      backWall.position.set((tri[0].x + tri[2].x) / 2, wallH / 2, (tri[0].y + tri[2].y) / 2);
+      group.add(backWall);
+
+      // Side wall (p1 to p2)
+      const sideWallGeo = new THREE.BoxGeometry(21, wallH, 1);
+      const sideWall = new THREE.Mesh(sideWallGeo, wallMat);
+      sideWall.position.set((tri[1].x + tri[2].x) / 2, wallH / 2, (tri[1].y + tri[2].y) / 2);
+      sideWall.rotation.y = Math.PI / 2;
+      group.add(sideWall);
+
       // Classifier rail
       const rect = classifierRect(a);
-      const railGeo = new THREE.BoxGeometry(rect.x1 - rect.x0, 1, rect.y1 - rect.y0);
-      const railMat = new THREE.MeshStandardMaterial({ color: 0x4b5563 });
+      const railH = C.RAMP_SURFACE_Z - C.BALL_RADIUS;
+      const railGeo = new THREE.BoxGeometry(rect.x1 - rect.x0, railH, rect.y1 - rect.y0);
+      const railMat = new THREE.MeshStandardMaterial({ color: a === 'red' ? 0xef4444 : 0x3b82f6 });
       const rail = new THREE.Mesh(railGeo, railMat);
-      rail.position.set((rect.x0 + rect.x1) / 2, 0.5, (rect.y0 + rect.y1) / 2);
+      rail.position.set((rect.x0 + rect.x1) / 2, railH / 2, (rect.y0 + rect.y1) / 2);
       group.add(rail);
+
+      // Base Zone
+      const bzRect = (a === 'blue' ? { x0: 27, x1: 45, y0: -45, y1: -27 } : { x0: -45, x1: -27, y0: -45, y1: -27 });
+      const baseGeo = new THREE.PlaneGeometry(18, 18);
+      const baseMat = new THREE.MeshStandardMaterial({
+        color: a === 'red' ? 0xef4444 : 0x3b82f6,
+        transparent: true,
+        opacity: 0.2,
+      });
+      const base = new THREE.Mesh(baseGeo, baseMat);
+      base.rotation.x = -Math.PI / 2;
+      base.position.set((bzRect.x0 + bzRect.x1) / 2, 0.11, (bzRect.y0 + bzRect.y1) / 2);
+      group.add(base);
+
+      const baseBorderGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(bzRect.x0, 0.12, bzRect.y0),
+        new THREE.Vector3(bzRect.x1, 0.12, bzRect.y0),
+        new THREE.Vector3(bzRect.x1, 0.12, bzRect.y1),
+        new THREE.Vector3(bzRect.x0, 0.12, bzRect.y1),
+        new THREE.Vector3(bzRect.x0, 0.12, bzRect.y0),
+      ]);
+      const baseBorderMat = new THREE.LineBasicMaterial({ color: a === 'red' ? 0xef4444 : 0x3b82f6 });
+      const baseBorder = new THREE.Line(baseBorderGeo, baseBorderMat);
+      group.add(baseBorder);
 
       this.scene.add(group);
     }
@@ -149,11 +197,11 @@ export class Renderer3D {
         group.add(intakeMesh);
 
         // Shooter indicator (Turret)
-        const shooterGeo = new THREE.CylinderGeometry(2, 2, 8, 16);
+        const shooterGeo = new THREE.CylinderGeometry(2, 2, 12, 16);
         const shooterMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
         const shooter = new THREE.Mesh(shooterGeo, shooterMat);
         shooter.rotation.z = Math.PI / 2;
-        shooter.position.set(r.spec.length * C.TURRET_OFFSET_FRAC, 7, 0);
+        shooter.position.set(r.spec.length * C.TURRET_OFFSET_FRAC, 11, 0);
         group.add(shooter);
 
         this.scene.add(group);
