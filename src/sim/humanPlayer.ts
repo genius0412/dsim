@@ -32,7 +32,8 @@ export function updateHumanPlayers(world: World): void {
       }
     }
 
-    // STAGE: feed the grab row from the box, one artifact at a time.
+    // STAGE: feed the grab row from the box one artifact at a time (the pre-staged
+    // set is at the front, so the grab row fills PGP first once teleop begins).
     if (hp.box.length === 0 || world.time < hp.nextPlaceAt) continue;
     for (const slot of slots) {
       const occupied = world.balls.some(

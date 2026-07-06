@@ -283,7 +283,7 @@ export const LOAD_ZONE_SIZE = 23;
  * vertical on the driver's rotated screen) so a robot sweeps all 3 driving along x.
  * The 2x3 BOX is the human player's out-of-play storage, tucked into the audience
  * corner behind the grab row. */
-export const LOAD_COL_XS = [54, 61, 68] as const; // 3 columns, ~7in apart, toward the side wall
+export const LOAD_COL_XS = [51, 58, 65] as const; // 3 grab-row columns (clear of the corner pre-stage)
 export const LOAD_ROW_Y = -65; // grab row y — ~7in in front of the audience wall (y=-72)
 // the box is OFF the field (the human player stands off-field): its two rows sit
 // well beyond the audience wall (y < -FIELD_HALF) with a clear gap from it, aligned
@@ -325,7 +325,7 @@ export const START_POSES = [
 ] as const;
 
 // --------------------------------------------------------- human player ----
-export const HP_PLACE_DELAY = 0.35; // s between placements from the box into the grab row (fast HP)
+export const HP_PLACE_DELAY = 0.15; // s between placements from the box into the grab row (fast HP)
 /** the alliance-area pool is two 3-ball preload sets (4P+2G total); each present
  * robot takes one, and any leftover sets seed the human-player box (spawn.ts hpBox) */
 export const PRELOAD: readonly ('purple' | 'green')[] = ['purple', 'green', 'purple'];

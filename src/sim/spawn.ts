@@ -12,7 +12,7 @@ import type {
 } from '../types';
 import * as C from '../config';
 import { nextRandom } from '../math';
-import { loadSlots, spikeMarkBalls, startPose } from './field';
+import { loadPreStage, spikeMarkBalls, startPose } from './field';
 import { emptyScore } from './scoring';
 
 export const MOTIFS: Motif[] = [
@@ -52,9 +52,10 @@ export interface RobotSetup {
   startIndex: number;
 }
 
-/** leftover alliance-area preload sets seed the human-player box: each present
- * robot consumes one 3-ball set, so 2 robots -> 0, 1 -> PPG (3), 0 -> PGP+PPG
- * (6, 4P+2G). Balls here are out of play until placed into the grab row. */
+/** the off-field human-player box holds ONLY the alliance-area preload set(s) no
+ * present robot claimed (each present robot consumes one 3-ball set): 2 robots ->
+ * 0 (empty), 1 -> 3 (PPG), 0 -> 6 (PGP+PPG). The 3 pre-staged loading-zone
+ * artifacts are NOT in here — they sit on the field in the loading-zone corner. */
 function hpBox(present: number): ArtifactColor[] {
   return [[...C.PRELOAD], [...C.HP_INITIAL_STOCK]].slice(present).flat();
 }
@@ -89,10 +90,10 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[]):
 
   for (const a of ['red', 'blue'] as Alliance[]) {
     for (const s of spikeMarkBalls(a)) addBall(s.pos, s.color);
-    // loading zone balls, PGP against the perimeter
-    const slots = loadSlots(a);
-    const order: ArtifactColor[] = ['purple', 'green', 'purple'];
-    slots.forEach((p, i) => addBall(p, order[i]));
+    // the 3 pre-staged loading-zone artifacts (manual setup), in the corner
+    // against the alliance wall — on the field from the start; the human player
+    // arranges them into the grab row once teleop begins.
+    for (const s of loadPreStage(a)) addBall(s.pos, s.color);
   }
 
   // preloads come from the alliance area's 6 balls (4P+2G): the first robot

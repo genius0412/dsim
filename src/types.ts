@@ -142,8 +142,11 @@ export interface MatchState {
 }
 
 export interface HumanPlayerState {
-  /** out-of-play artifacts stored in the 2x3 loading-zone box (capacity 6), fed
-   * one at a time into the grab row as robots take them */
+  /** out-of-play artifacts in the off-field 2x3 loading-zone box (capacity 6).
+   * At setup it holds the 3 pre-staged loading-zone artifacts (PGP, manual setup)
+   * plus any unclaimed alliance-area preload set. The HP does nothing until
+   * teleop; then it stages the grab row from here one at a time and recycles
+   * returned balls back in. */
   box: ArtifactColor[];
   nextPlaceAt: number;
 }

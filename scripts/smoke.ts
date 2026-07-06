@@ -24,6 +24,7 @@ import {
   loadZone,
   loadSlots,
   loadBoxSlots,
+  loadPreStage,
   inRect,
 } from '../src/sim/field';
 import { assessMatchEnd } from '../src/sim/scoring';
@@ -37,7 +38,7 @@ import {
   FIELD_HALF,
   BALL_RADIUS,
   HP_INITIAL_STOCK,
-  PRELOAD,
+  HP_PLACE_DELAY,
 } from '../src/config';
 import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
 import { driveParams } from '../src/sim/drivetrain';
@@ -102,7 +103,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   const w = mkWorld('match', 'blue', 42);
   const purple = w.balls.filter((b) => b.color === 'purple').length;
   const green = w.balls.filter((b) => b.color === 'green').length;
-  check('24 on-field balls at spawn (9 spike + 3 loading per alliance)', w.balls.length === 24, `${w.balls.length}`);
+  check('24 on-field balls at spawn (9 spike + 3 loading pre-stage per alliance)', w.balls.length === 24, `${w.balls.length}`);
   check('on-field color split 16P/8G', purple === 16 && green === 8, `${purple}P ${green}G`);
   check('hopper preloaded with 3', w.robots[0].hopper.length === 3);
   check('start pose inside launch zone', inLaunchZone(w.robots[0].pos, 'blue'));
@@ -969,37 +970,39 @@ const setup = (
     `${blue1.hopper.join(',')}`,
   );
   check(
-    'HP box starts empty when two robots fill an alliance',
+    'HP box is empty when two robots fill an alliance',
     w.humanPlayers.blue.box.length === 0 && w.humanPlayers.red.box.length === 0,
+    `blue=${w.humanPlayers.blue.box.length} red=${w.humanPlayers.red.box.length}`,
   );
   const gap = Math.hypot(blue0.pos.x - blue1.pos.x, blue0.pos.y - blue1.pos.y);
   check('two robots on an alliance spawn at distinct, non-overlapping poses', gap > 20, `${gap.toFixed(1)} in apart`);
 }
 
-// ---- HP box scales with missing robots; grab row is 3 balls along x ---------
+// ---- HP box = missing-robot leftovers only; pre-stage sits in the corner -----
 {
-  // one robot per alliance -> the missing second robot's set (PPG) fills the box
+  // full 2v2 -> box empty (both robots preloaded)
+  const w2r = createWorld('match', 77, [setup(0, 'blue', {}, 0), setup(1, 'blue', {}, 1), setup(2, 'red', {}, 0), setup(3, 'red', {}, 1)]);
+  check(
+    'full 2v2 -> HP box is empty',
+    w2r.humanPlayers.blue.box.length === 0 && w2r.humanPlayers.red.box.length === 0,
+    `blue=${w2r.humanPlayers.blue.box.length}`,
+  );
+  // one robot -> box holds only the missing robot's set (3, PPG) — NOT full
   const w1 = createWorld('match', 77, [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 0)]);
   check(
-    'one-robot alliance seeds the box with the missing set (3, PPG)',
+    'one-robot alliance -> box holds only the missing set (3, PPG)',
     JSON.stringify(w1.humanPlayers.blue.box) === JSON.stringify([...HP_INITIAL_STOCK]),
     `box=${w1.humanPlayers.blue.box.join(',')}`,
   );
-  // an empty alliance -> both preload sets fill the box (6, PGP+PPG = 4P+2G)
+  // empty alliance -> both leftover sets (6, 4P+2G), at the cap
   const w0 = createWorld('match', 77, [setup(0, 'blue', {}, 0)]);
   const redBox = w0.humanPlayers.red.box;
   check(
-    'empty alliance seeds the box with both sets (6 = 4P+2G)',
-    JSON.stringify(redBox) === JSON.stringify([...PRELOAD, ...HP_INITIAL_STOCK]) &&
-      redBox.filter((c) => c === 'purple').length === 4 &&
-      redBox.filter((c) => c === 'green').length === 2,
+    'empty alliance -> box holds both leftover sets (6, 4P+2G)',
+    redBox.length === 6 && redBox.filter((c) => c === 'purple').length === 4 && redBox.filter((c) => c === 'green').length === 2,
     `box=${redBox.join(',')}`,
   );
-  check(
-    'the box never exceeds 6 out-of-play artifacts',
-    w0.humanPlayers.red.box.length <= 6 && w0.humanPlayers.blue.box.length <= 6,
-  );
-  // the 3 pre-staged PGP artifacts still spawn, now in a grab row along x
+  // grab-row geometry: 3 slots in a row along x
   const slots = loadSlots('blue');
   check('grab row is 3 slots', slots.length === 3);
   check('grab row shares one y (a row along x)', slots.every((s) => s.y === slots[0].y));
@@ -1008,14 +1011,18 @@ const setup = (
     Math.abs(slots[2].x - slots[0].x) > 2 * BALL_RADIUS,
     `dx=${(slots[2].x - slots[0].x).toFixed(1)}`,
   );
-  const staged = w0.balls.filter(
-    (b) => b.state.kind === 'ground' && slots.some((s) => Math.hypot(b.pos.x - s.x, b.pos.y - s.y) < 0.1),
-  );
+  // the 3 pre-staged artifacts (PGP) sit ON the field in the loading-zone corner,
+  // against the alliance wall, touching, and NOT at the grab-row slots
+  const pre = loadPreStage('blue');
+  check('pre-stage is 3 PGP artifacts', pre.length === 3 && pre.map((p) => p.color).join(',') === 'purple,green,purple');
+  check('pre-stage is flush against the alliance (side) wall', pre.every((p) => Math.abs(Math.abs(p.pos.x) - (FIELD_HALF - BALL_RADIUS)) < 1e-9));
+  check('pre-stage balls are touching each other', Math.abs(Math.abs(pre[1].pos.y - pre[0].pos.y) - 2 * BALL_RADIUS) < 1e-9);
   check(
-    'the 3 pre-staged loading-zone artifacts still spawn (PGP)',
-    staged.length === 3 && staged.filter((b) => b.color === 'purple').length === 2,
-    `staged=${staged.map((b) => b.color).join(',')}`,
+    'pre-stage is NOT at the grab-row slots',
+    pre.every((p) => slots.every((s) => Math.hypot(p.pos.x - s.x, p.pos.y - s.y) > BALL_RADIUS * 1.5)),
   );
+  const inZoneAtSetup = w0.balls.filter((b) => b.state.kind === 'ground' && inRect(b.pos, loadZone('blue')));
+  check('the 3 pre-stage artifacts are on the field in the loading zone at setup', inZoneAtSetup.length === 3, `${inZoneAtSetup.length}`);
   // the 2x3 box has 6 cells OFF the field, just beyond the audience wall
   const cells = loadBoxSlots('blue');
   check(
@@ -1024,35 +1031,51 @@ const setup = (
   );
 }
 
-// ---- HP is idle until teleop (no grabbing/staging in pre/auto/transition) ----
+// ---- HP is idle until teleop; then moves the corner pre-stage to the grab row -
 {
   const w = createWorld('match', 5, [setup(0, 'blue', {}, 0)]); // starts in 'pre'
   w.robots[0].pos = { x: 0, y: 40 };
-  const lz = loadZone('blue');
-  w.balls.push({ id: 4241, color: 'green', state: { kind: 'ground' }, pos: { x: (lz.x0 + lz.x1) / 2, y: lz.y1 - 5 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
-  const preBox = w.humanPlayers.blue.box.length;
-  w.match.phase = 'auto';
-  updateHumanPlayers(w);
+  const box0 = JSON.stringify(w.humanPlayers.blue.box);
+  const preStageStill = () => loadPreStage('blue').every((p) => w.balls.some((b) => b.state.kind === 'ground' && Math.hypot(b.pos.x - p.pos.x, b.pos.y - p.pos.y) < 0.1));
+  // pre / auto / transition: HP does nothing — box untouched, pre-stage untouched
+  for (const ph of ['pre', 'auto', 'transition'] as const) {
+    w.match.phase = ph;
+    updateHumanPlayers(w);
+  }
   check(
-    'HP does nothing during auto (idle until teleop)',
-    w.balls.some((b) => b.id === 4241) && w.humanPlayers.blue.box.length === preBox,
+    'HP does nothing before teleop (box + corner pre-stage untouched)',
+    JSON.stringify(w.humanPlayers.blue.box) === box0 && preStageStill(),
+    `boxMoved=${JSON.stringify(w.humanPlayers.blue.box) !== box0} preStage=${preStageStill()}`,
   );
+  // teleop: over a couple seconds the HP moves the 3 pre-stage balls into the grab row
   w.match.phase = 'teleop';
-  updateHumanPlayers(w);
+  for (let k = 0; k < 40; k++) {
+    updateHumanPlayers(w);
+    w.time += HP_PLACE_DELAY + 0.02;
+  }
+  const slots = loadSlots('blue');
+  const inGrabRow = slots.filter((s) => w.balls.some((b) => b.state.kind === 'ground' && Math.hypot(b.pos.x - s.x, b.pos.y - s.y) < 0.2)).length;
   check(
-    'HP starts working once teleop begins',
-    !w.balls.some((b) => b.id === 4241) && w.humanPlayers.blue.box.length === preBox + 1,
+    'HP moves the pre-stage into the grab row once teleop begins',
+    inGrabRow === 3 && !preStageStill(),
+    `grabRow=${inGrabRow}`,
   );
 }
 
-// ---- HP continuously grabs loose balls out of the loading zone into the box --
+// ---- HP recycles loose balls in teleop (grabs them into the box), capped ------
 {
-  const w = createWorld('match', 5, [setup(0, 'blue', {}, 0)]); // blue 1 robot, red 0
-  w.match.phase = 'teleop';
-  w.robots[0].pos = { x: 0, y: 40 }; // keep the robot out of the zone
+  const setups4 = [setup(0, 'blue', {}, 0), setup(1, 'blue', {}, 1), setup(2, 'red', {}, 0), setup(3, 'red', {}, 1)];
+  const slots = loadSlots('blue');
   const lz = loadZone('blue');
-  const loosePos = { x: (lz.x0 + lz.x1) / 2, y: lz.y1 - 5 }; // field-interior edge, clear of the grab row
-  w.balls.push({ id: 4242, color: 'green', state: { kind: 'ground' }, pos: loosePos, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+
+  // 2v2 -> box empty; fill the grab row so STAGING is a no-op, isolating COLLECT
+  const w = createWorld('match', 5, setups4);
+  w.match.phase = 'teleop';
+  for (const r of w.robots) r.pos = { x: 0, y: 40 };
+  // remove the corner pre-stage so only our injected loose ball is collectable
+  w.balls = w.balls.filter((b) => !(b.state.kind === 'ground' && inRect(b.pos, lz)));
+  slots.forEach((s, i) => w.balls.push({ id: 5000 + i, color: 'purple', state: { kind: 'ground' }, pos: { x: s.x, y: s.y }, vel: { x: 0, y: 0 }, z: 0, vz: 0 }));
+  w.balls.push({ id: 4242, color: 'green', state: { kind: 'ground' }, pos: { x: (lz.x0 + lz.x1) / 2, y: lz.y1 - 3 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
   const before = w.humanPlayers.blue.box.length;
   updateHumanPlayers(w);
   check(
@@ -1060,25 +1083,17 @@ const setup = (
     !w.balls.some((b) => b.id === 4242) && w.humanPlayers.blue.box.length === before + 1,
     `box ${before}->${w.humanPlayers.blue.box.length}`,
   );
-
-  // a ball staged AT a grab slot is left alone (it is in play for robots)
-  const w2 = createWorld('match', 5, [setup(0, 'blue', {}, 0)]);
-  w2.match.phase = 'teleop';
-  w2.robots[0].pos = { x: 0, y: 40 };
-  const staged = w2.balls.filter((b) => loadSlots('blue').some((s) => Math.hypot(b.pos.x - s.x, b.pos.y - s.y) < 0.1));
-  const boxBefore = w2.humanPlayers.blue.box.length;
-  updateHumanPlayers(w2);
-  const stagedStill = staged.every((b) => w2.balls.some((c) => c.id === b.id));
   check(
-    'HP does not grab the staged grab-row balls',
-    staged.length === 3 && stagedStill && w2.humanPlayers.blue.box.length === boxBefore,
+    'HP does not grab the balls staged at the grab slots',
+    [5000, 5001, 5002].every((id) => w.balls.some((b) => b.id === id)),
   );
 
   // at the 6-out-of-play cap the HP grabs nothing more
-  const w3 = createWorld('match', 5, []); // no robots -> both boxes start full (6)
+  const w3 = createWorld('match', 5, []); // no robots -> box = 6 (capped)
   w3.match.phase = 'teleop';
-  const lz3 = loadZone('blue');
-  w3.balls.push({ id: 4243, color: 'green', state: { kind: 'ground' }, pos: { x: (lz3.x0 + lz3.x1) / 2, y: (lz3.y0 + lz3.y1) / 2 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  w3.balls = w3.balls.filter((b) => !(b.state.kind === 'ground' && inRect(b.pos, lz)));
+  slots.forEach((s, i) => w3.balls.push({ id: 5200 + i, color: 'purple', state: { kind: 'ground' }, pos: { x: s.x, y: s.y }, vel: { x: 0, y: 0 }, z: 0, vz: 0 }));
+  w3.balls.push({ id: 4243, color: 'green', state: { kind: 'ground' }, pos: { x: (lz.x0 + lz.x1) / 2, y: lz.y1 - 3 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
   updateHumanPlayers(w3);
   check(
     'HP does not grab when the box is already at the 6-out-of-play cap',

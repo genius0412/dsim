@@ -11,34 +11,34 @@ Replaced the old "drip stock into a vertical column" human-player restock with t
 DECODE layout. GUI-verified via Electron (solo match: red box 6 / blue box 3; free-drive
 2v2: both boxes empty; each zone shows the 3-ball grab row).
 
-- **Grab row** — the 3 pre-staged loading-zone artifacts (PGP, part of the real game) are
-  now a **row along field-x** (`loadSlots` in `src/sim/field.ts` → `LOAD_COL_XS × LOAD_ROW_Y`
-  in config). Field-x reads *vertical on the driver's rotated screen*, so a robot cycling
-  the zone drives straight along x and sweeps all 3.
-- **2×3 box** — the human player's off-field artifacts live in a drawn `2×3` box (capacity
-  6, out of play): `loadBoxSlots(a)` (`LOAD_COL_XS × LOAD_BOX_YS`), drawn in
-  `src/render/drawField.ts` (dark backing + frame + stored balls; box balls are NOT in
-  `world.balls`, they stay off physics). It sits **OFF the field**, just beyond the
-  audience wall with a slight gap (`LOAD_BOX_YS = [-77,-82]`, y < -FIELD_HALF) — the human
-  player stands off-field. `HumanPlayerState.stock` → **`box`** (`src/types.ts`).
-- **Box init scales with missing robots** — `hpBox(present)` in `src/sim/spawn.ts` =
-  `[[...PRELOAD],[...HP_INITIAL_STOCK]].slice(present).flat()` → 2 robots → 0, 1 → PPG(3),
-  0 → PGP+PPG(6, 4P+2G). (Old code wrongly gave a 0-robot alliance only 3.)
+- **Corner pre-stage** — the 3 loading-zone artifacts (PGP) are pre-staged ON the field at
+  setup: `loadPreStage(a)` in `src/sim/field.ts` → PGP, touching, flush against the
+  alliance (side) wall `x=±(FIELD_HALF−BALL_RADIUS)`, stacked from the very corner. Present
+  from the start (manual setup); spawned in `createWorld`.
+- **Grab row** — where the HP arranges balls for robots in teleop: `loadSlots(a)` →
+  `LOAD_COL_XS × LOAD_ROW_Y` (a **row along field-x**, ~7in off the audience wall at
+  `LOAD_ROW_Y=-65`). Field-x reads *vertical on the driver's rotated screen*, so a robot
+  drives straight along x and sweeps all 3. `LOAD_COL_XS=[51,58,65]` — pulled inward so the
+  grab row never overlaps the corner pre-stage.
+- **2×3 box** — the human player's off-field, out-of-play storage: `loadBoxSlots(a)`, drawn
+  in `src/render/drawField.ts` (dark backing + frame + stored balls; box balls are NOT in
+  `world.balls`). Sits **OFF the field** just beyond the audience wall (`LOAD_BOX_YS =
+  [-80,-85]`). Holds **only the missing-robot leftovers**: `hpBox(present)` in `spawn.ts` =
+  `[[...PRELOAD],[...HP_INITIAL_STOCK]].slice(present).flat()` → 2 robots → **0** (empty),
+  1 → **3** (PPG), 0 → **6** (4P+2G). The pre-stage is NOT in the box.
+  `HumanPlayerState.stock` → **`box`** (`src/types.ts`).
 - **`updateHumanPlayers`** (`src/sim/humanPlayer.ts`) is **idle until teleop** (returns
-  early unless `phase` is `teleop` or `freeplay` — no grabbing/staging through
-  pre/auto/transition). Once teleop starts it does two things per tick: (1)
-  **CONTINUOUSLY grabs** a loose `ground` ball out of the loading zone into `hp.box`
-  (recycling returned/overflow artifacts; skips balls staged at a grab slot and any a
-  robot is on; gated by `box.length < 6`), and (2) **STAGES** the grab row from `hp.box`
-  one artifact per `HP_PLACE_DELAY` when a slot is free. One-at-a-time keeps box +
-  in-transit within the 6-out-of-play cap. `HP_PLACE_DELAY` cut 3 s → **0.35 s** (fast).
-  In 2v2 the box starts empty, so the loop is fed entirely by recycled returned balls.
-- `docs/decode-reference.md` Artifacts section updated. `scripts/smoke.ts` +9 checks
-  (box counts by robot count, grab-row-along-x, box ≤ 6, pre-staged PGP still spawns).
+  early unless `phase` is `teleop`/`freeplay`). Once teleop starts, per tick it (1)
+  **grabs** a loose `ground` ball out of the loading zone into `hp.box` (skips balls at a
+  grab slot + any a robot is on; gated `box.length < 6`) and (2) **stages** the grab row
+  from `hp.box` one artifact per `HP_PLACE_DELAY` (**0.35 s**). Net effect at teleop start:
+  the corner pre-stage migrates into the grab row (grab → box → stage), then returned balls
+  recycle. One-at-a-time keeps box + in-transit within the 6-out-of-play cap.
+- Headless-verified (auto→teleop step-through): idle in auto (box + pre-stage untouched),
+  pre-stage in the corner at setup, migrates to the grab row in teleop. `scripts/smoke.ts`
+  now **146 checks**; `docs/decode-reference.md` Artifacts section updated.
 
 ## 2026-07-06 (earlier) — LIVE multiplayer desync fixed (cross-browser)
-
-## 2026-07-06 session — LIVE multiplayer desync fixed (cross-browser)
 
 Symptom reported: in live MP, "other people's robots are desynced, headings wrong,
 everyone has different final scores, but NOTHING shows top-right (no DESYNC chip)."

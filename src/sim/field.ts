@@ -235,6 +235,20 @@ export function loadSlots(a: Alliance): Vec2[] {
   return C.LOAD_COL_XS.map((x) => ({ x: d * x, y: C.LOAD_ROW_Y }));
 }
 
+/** the 3 pre-staged loading-zone artifacts at match setup (manual): PGP, touching
+ * each other, flush against the alliance (side) wall, stacked up from the very
+ * corner of the loading zone. Distinct from the grab row — the HP moves them into
+ * the grab row once teleop starts. */
+export function loadPreStage(a: Alliance): { pos: Vec2; color: 'purple' | 'green' }[] {
+  const d = driverSide(a);
+  const x = d * (C.FIELD_HALF - C.BALL_RADIUS); // flush against the side wall
+  const colors: ('purple' | 'green')[] = ['purple', 'green', 'purple'];
+  return colors.map((color, i) => ({
+    pos: { x, y: -C.FIELD_HALF + C.BALL_RADIUS + i * 2 * C.BALL_RADIUS }, // touching, from the corner up
+    color,
+  }));
+}
+
 /** the 6 cell centers of the human player's 2x3 out-of-play box, which sits OFF
  * the field just beyond the audience wall, row-major (nearer row first),
  * side-wall-inward within each row. */

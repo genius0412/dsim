@@ -33,15 +33,18 @@ the 9 ramp positions, index 0 = nearest the gate.
 
 36 total: 24 purple, 12 green, 5 in diameter. Per alliance: 9 on spike marks
 (near = GPP, middle = PGP, far = PPG), 3 pre-staged in the loading zone (PGP), 6 in the
-alliance area (4P+2G). The 3 loading-zone artifacts form the GRAB ROW — a row along
-field-x (vertical on the driver's rotated screen) so a robot sweeps all 3 driving along
-x. Each present robot preloads one 3-ball alliance-area set; any set no robot claims
-seeds the human player's out-of-play 2×3 BOX (capacity 6: 2 robots → 0, 1 → 3, 0 → 6).
-The box is drawn OFF the field, well beyond the audience wall (the human player stands
-off-field). The HP continuously grabs loose/returned artifacts out of the loading zone
-into the box (up to the 6 cap) and feeds them back into the grab row one at a time
-(~0.35 s apart when a slot is free) — a continuous recycle loop. One-at-a-time keeps
-box + in-transit within the 6-out-of-play cap.
+alliance area (4P+2G). The 3 loading-zone artifacts are pre-staged ON the field in the
+loading-zone corner: PGP, touching, flush against the alliance (side) wall, stacked up
+from the very corner (manual setup — present from the start of the match). Each present
+robot preloads one 3-ball alliance-area set; any set no robot claims seeds the human
+player's out-of-play 2×3 BOX (leftovers only: 2 robots → 0, 1 → 3, 0 → 6), drawn OFF
+the field just beyond the audience wall (the human player stands off-field).
+**The human player does NOTHING until teleop** (idle through pre/auto/transition). Once
+teleop starts it (a) moves the corner pre-stage into the GRAB ROW — a row along field-x
+(vertical on the driver's rotated screen) so a robot sweeps all 3 driving along x — and
+(b) continuously grabs loose/returned artifacts out of the loading zone into the box (up
+to the 6 cap) and feeds them back into the grab row one at a time (~0.35 s apart when a
+slot is free). One-at-a-time keeps box + in-transit within the 6-out-of-play cap.
 
 ## Field map (sim world frame)
 
