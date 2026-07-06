@@ -135,6 +135,10 @@ export interface MatchState {
   /** fouls COMMITTED BY each alliance (counts, for the HUD); the resulting
    * points land on the OTHER alliance's ScoreBreakdown.foulPoints */
   fouls: Record<Alliance, { minor: number; major: number }>;
+  /** seconds left in a sim-driven pre-match countdown (multiplayer: the
+   * pre→auto transition runs INSIDE step() so every peer fires it on the same
+   * tick). undefined ⇒ no auto-countdown (solo waits for a keypress instead). */
+  preCountdown?: number;
 }
 
 export interface HumanPlayerState {

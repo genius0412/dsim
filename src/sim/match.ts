@@ -12,7 +12,20 @@ export function startMatch(world: World): void {
 
 export function stepMatch(world: World, dt: number): void {
   const m = world.match;
-  if (m.phase === 'freeplay' || m.phase === 'pre' || m.phase === 'post') return;
+  // sim-driven pre-match countdown (multiplayer): transition pre→auto here,
+  // inside step(), so it lands on the same tick for every lockstep peer
+  if (m.phase === 'pre') {
+    if (m.preCountdown == null) return; // solo: the controller starts the match
+    m.preCountdown -= dt;
+    if (m.preCountdown <= 0) {
+      m.preCountdown = undefined;
+      m.phase = 'auto';
+      m.phaseTimeLeft = C.AUTO_DURATION;
+      world.events.push('AUTO');
+    }
+    return;
+  }
+  if (m.phase === 'freeplay' || m.phase === 'post') return;
   m.phaseTimeLeft -= dt;
   if (m.phaseTimeLeft > 0) return;
   switch (m.phase) {

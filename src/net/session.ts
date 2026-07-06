@@ -46,6 +46,9 @@ export class NetSession {
   private desync = false;
   private waiting: string | null = null;
   private restartCb: ((seed: number) => void) | null = null;
+  /** peers we've received at least one command packet from (⇒ they're ready) */
+  private readonly heard = new Set<string>();
+  private resendCounter = 0;
 
   constructor(
     private readonly mesh: RtcMesh,
@@ -60,7 +63,7 @@ export class NetSession {
     this.localRobotId = start.assign[localPeerId];
     this.ls = new Lockstep(this.robotIds, this.localRobotId);
 
-    mesh.on('data', (_from, data) => this.onData(data));
+    mesh.on('data', (from, data) => this.onData(from, data));
     // a peer's channel just opened — resend the local inputs we already
     // produced (early broadcasts to a not-yet-open channel were dropped, and
     // lockstep is sequential, so the peer would otherwise stall on that gap)
@@ -80,6 +83,16 @@ export class NetSession {
   /** author + transmit local inputs for every tick up to `currentTick + delay`
    * (keeps the pipeline INPUT_DELAY ahead of stepping, no holes) */
   produce(currentTick: number, cmd: RobotCommand): void {
+    // STARTUP SELF-HEAL: until a connected peer sends us its first packet, keep
+    // resending our full history to it (~every 6 frames). Early sends can be
+    // lost to channel-open / handler-registration races that the reliable
+    // channel can't recover on its own; once the peer replies we stop.
+    if (this.resendCounter++ % 6 === 0) {
+      for (const peer of this.mesh.connectedPeers()) {
+        if (!this.heard.has(peer)) this.backfill(peer);
+      }
+    }
+
     const uptoTick = currentTick + INPUT_DELAY;
     if (this.inputTick > uptoTick) return;
     const q = quantizeCommand(cmd);
@@ -149,7 +162,7 @@ export class NetSession {
 
   // -------------------------------------------------------------- internals --
 
-  private onData(data: ArrayBuffer | string): void {
+  private onData(from: string, data: ArrayBuffer | string): void {
     if (typeof data === 'string') {
       const msg = decodeControl(data);
       if (msg.t === 'checksum') {
@@ -160,6 +173,7 @@ export class NetSession {
       }
       return;
     }
+    this.heard.add(from); // this peer is receiving/sending — stop resending to it
     const pkt = decodeCommandPacket(data);
     for (let i = 0; i < pkt.cmds.length; i++) {
       this.ls.receiveRemote(pkt.robotId, pkt.startTick + i, dequantizeCommand(pkt.cmds[i]));
@@ -178,6 +192,7 @@ export class NetSession {
     this.inputTick = INPUT_DELAY;
     this.myHashes.clear();
     this.peerHashes.clear();
+    this.heard.clear(); // re-sync the startup handshake for the new match
     this.desync = false;
     this.waiting = null;
     this.restartCb?.(seed);

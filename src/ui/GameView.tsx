@@ -52,7 +52,7 @@ export function GameView({ settings, onExit, session = null }: Props) {
           ⟲ RESET
         </button>
       </div>
-      {hud?.phase === 'pre' && hud.countdown === null && (
+      {hud?.phase === 'pre' && hud.countdown === null && !session && (
         <div className="overlay">
           <div className="overlay-panel">
             <h2>{hud.alliance.toUpperCase()} ALLIANCE</h2>

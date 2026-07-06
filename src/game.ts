@@ -131,10 +131,11 @@ export class GameController {
 
   private makeWorld(): World {
     // multiplayer: everyone builds the identical world the host authored and
-    // starts immediately (deterministic — no controller-local countdown/seed)
+    // runs a SIM-DRIVEN countdown (transition lives in stepMatch, so it fires
+    // on the same tick for every peer — no controller-local start/seed)
     if (this.session) {
       const w = createWorld('match', this.session.seed, this.session.setups);
-      startMatch(w);
+      w.match.preCountdown = C.PRE_COUNTDOWN;
       return w;
     }
     const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
@@ -241,21 +242,38 @@ export class GameController {
     }
   }
 
-  /** announcer: "Match begins in 3, 2, 1" — runs after start is pressed */
+  /** announcer: "Match begins in 3, 2, 1". Multiplayer mirrors the deterministic
+   * sim countdown (world.match.preCountdown); solo runs off a keypress. */
   private updateCountdown(): number | null {
-    if (this.world.match.phase !== 'pre' || this.countdownStart === null) return null;
+    if (this.world.match.phase !== 'pre') return null;
+
+    // multiplayer: the sim owns the countdown + the pre→auto transition; the
+    // controller only voices/announces it (audio is non-authoritative)
+    if (this.session) {
+      const left = this.world.match.preCountdown;
+      if (left == null) return null;
+      return this.voiceCountdown(left);
+    }
+
+    // solo: controller-driven, transitions the match itself
+    if (this.countdownStart === null) return null;
     const remaining = C.PRE_COUNTDOWN - (this.world.time - this.countdownStart);
     if (remaining <= 0) {
       this.countdownStart = null;
       startMatch(this.world);
       return null;
     }
+    return this.voiceCountdown(remaining);
+  }
+
+  /** shared: emit the spoken count on each new digit, return the HUD value */
+  private voiceCountdown(remaining: number): number {
     const n = Math.ceil(remaining);
     if (n !== this.lastBeepAt) {
       this.lastBeepAt = n;
       // numbers interrupt any in-flight speech so the spoken count always
       // lands exactly on the visual digit
-      if (n === C.PRE_COUNTDOWN) this.audio.say('Match begins in');
+      if (n >= C.PRE_COUNTDOWN) this.audio.say('Match begins in');
       else this.audio.say(String(n), true);
     }
     return n; // > 3 means the "Match begins in" lead-in
