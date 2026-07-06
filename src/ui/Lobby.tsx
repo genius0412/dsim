@@ -33,6 +33,8 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
   const lobbyRef = useRef<SupabaseLobby | null>(null);
   const meshRef = useRef<RtcMesh | null>(null);
   const startedRef = useRef(false);
+  /** last meshReady value we published, so we only re-track on a real change */
+  const reportedRef = useRef<boolean | null>(null);
 
   // tear down on unmount unless a match started (which hands ownership onward).
   // Also leave on pagehide so a tab refresh/close drops our presence instead of
@@ -59,10 +61,22 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
   const linkOf = (id: string): 'open' | 'connecting' | 'failed' | 'none' =>
     id === myPeerId ? 'open' : (meshRef.current?.linkStatus(id) ?? 'none');
   const others = players.filter((p) => p.peerId !== myPeerId);
-  // every in-room peer must hold an OPEN DataChannel before START, or the match
-  // would freeze at WAITING on whoever never connected
+  // MY view: an OPEN DataChannel to every other in-room driver
   const allConnected = others.every((p) => linkOf(p.peerId) === 'open');
   const failedPeers = others.filter((p) => linkOf(p.peerId) === 'failed');
+  // FULL-MESH gate: the match starts only when EVERY driver reports they see
+  // everyone (each p.meshReady). If A↔B is up but B↔C isn't, B reports false, so
+  // START stays locked — no one begins a match that would freeze at WAITING.
+  const everyoneConnected = players.length > 0 && players.every((p) => p.meshReady);
+
+  // publish OUR connectivity so the host can gate START on the full mesh (only
+  // re-track when it actually flips, to avoid a presence-update storm)
+  useEffect(() => {
+    if (phase !== 'room') return;
+    if (reportedRef.current === allConnected) return;
+    reportedRef.current = allConnected;
+    void lobbyRef.current?.updateSelf({ meshReady: allConnected });
+  }, [allConnected, phase]);
 
   async function join(): Promise<void> {
     if (!code.trim()) return;
@@ -74,6 +88,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
       alliance: settings.alliance,
       startIndex: settings.startIndex,
       ready: false,
+      meshReady: false,
       spec: settings.spec,
       assists: settings.assists,
     });
@@ -316,7 +331,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
           {isHost && (
             <button
               className="start-btn"
-              disabled={!allReady || !allConnected}
+              disabled={!allReady || !everyoneConnected}
               onClick={hostStart}
             >
               START MATCH ▶
@@ -327,11 +342,16 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
           </button>
         </div>
         {isHost && !allReady && <p className="hint">START unlocks once every driver is ready.</p>}
-        {isHost && allReady && !allConnected && (
+        {isHost && allReady && !everyoneConnected && (
           <p className="hint">
             {failedPeers.length > 0
               ? `⚠ Couldn't connect to ${failedPeers.map((p) => p.name).join(', ')} — check network/TURN, or kick to start without them.`
-              : 'Connecting to all drivers… START unlocks once everyone is linked.'}
+              : `Waiting for a full mesh — every driver must be linked to every other. Not yet connected: ${
+                  players
+                    .filter((p) => !p.meshReady)
+                    .map((p) => p.name)
+                    .join(', ') || '…'
+                }`}
           </p>
         )}
       </div>

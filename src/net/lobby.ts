@@ -29,6 +29,10 @@ export interface LobbyPlayer {
   alliance: Alliance;
   startIndex: number;
   ready: boolean;
+  /** this client has an OPEN mesh link to every other in-room driver. START is
+   * gated on EVERYONE reporting true, so the match only begins once the full
+   * mesh is up from every peer's own perspective (not just the host's). */
+  meshReady: boolean;
   spec: RobotSpec;
   assists: AssistConfig;
 }
