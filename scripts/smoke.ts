@@ -1024,9 +1024,31 @@ const setup = (
   );
 }
 
+// ---- HP is idle until teleop (no grabbing/staging in pre/auto/transition) ----
+{
+  const w = createWorld('match', 5, [setup(0, 'blue', {}, 0)]); // starts in 'pre'
+  w.robots[0].pos = { x: 0, y: 40 };
+  const lz = loadZone('blue');
+  w.balls.push({ id: 4241, color: 'green', state: { kind: 'ground' }, pos: { x: (lz.x0 + lz.x1) / 2, y: lz.y1 - 5 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  const preBox = w.humanPlayers.blue.box.length;
+  w.match.phase = 'auto';
+  updateHumanPlayers(w);
+  check(
+    'HP does nothing during auto (idle until teleop)',
+    w.balls.some((b) => b.id === 4241) && w.humanPlayers.blue.box.length === preBox,
+  );
+  w.match.phase = 'teleop';
+  updateHumanPlayers(w);
+  check(
+    'HP starts working once teleop begins',
+    !w.balls.some((b) => b.id === 4241) && w.humanPlayers.blue.box.length === preBox + 1,
+  );
+}
+
 // ---- HP continuously grabs loose balls out of the loading zone into the box --
 {
   const w = createWorld('match', 5, [setup(0, 'blue', {}, 0)]); // blue 1 robot, red 0
+  w.match.phase = 'teleop';
   w.robots[0].pos = { x: 0, y: 40 }; // keep the robot out of the zone
   const lz = loadZone('blue');
   const loosePos = { x: (lz.x0 + lz.x1) / 2, y: lz.y1 - 5 }; // field-interior edge, clear of the grab row
@@ -1041,6 +1063,7 @@ const setup = (
 
   // a ball staged AT a grab slot is left alone (it is in play for robots)
   const w2 = createWorld('match', 5, [setup(0, 'blue', {}, 0)]);
+  w2.match.phase = 'teleop';
   w2.robots[0].pos = { x: 0, y: 40 };
   const staged = w2.balls.filter((b) => loadSlots('blue').some((s) => Math.hypot(b.pos.x - s.x, b.pos.y - s.y) < 0.1));
   const boxBefore = w2.humanPlayers.blue.box.length;
@@ -1053,6 +1076,7 @@ const setup = (
 
   // at the 6-out-of-play cap the HP grabs nothing more
   const w3 = createWorld('match', 5, []); // no robots -> both boxes start full (6)
+  w3.match.phase = 'teleop';
   const lz3 = loadZone('blue');
   w3.balls.push({ id: 4243, color: 'green', state: { kind: 'ground' }, pos: { x: (lz3.x0 + lz3.x1) / 2, y: (lz3.y0 + lz3.y1) / 2 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
   updateHumanPlayers(w3);

@@ -8,6 +8,10 @@ import { hyp } from '../math';
  * and feed the grab row from the box one artifact at a time — one-at-a-time keeps
  * box + in-transit within the 6-out-of-play cap. */
 export function updateHumanPlayers(world: World): void {
+  // the human player does nothing until teleop (idle through pre / auto /
+  // transition); free-drive practice counts as always-teleop.
+  const phase = world.match.phase;
+  if (phase !== 'teleop' && phase !== 'freeplay') return;
   for (const a of ['red', 'blue'] as Alliance[]) {
     const hp = world.humanPlayers[a];
     const slots = loadSlots(a);

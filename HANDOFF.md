@@ -24,7 +24,9 @@ DECODE layout. GUI-verified via Electron (solo match: red box 6 / blue box 3; fr
 - **Box init scales with missing robots** — `hpBox(present)` in `src/sim/spawn.ts` =
   `[[...PRELOAD],[...HP_INITIAL_STOCK]].slice(present).flat()` → 2 robots → 0, 1 → PPG(3),
   0 → PGP+PPG(6, 4P+2G). (Old code wrongly gave a 0-robot alliance only 3.)
-- **`updateHumanPlayers`** (`src/sim/humanPlayer.ts`) does two things per tick: (1)
+- **`updateHumanPlayers`** (`src/sim/humanPlayer.ts`) is **idle until teleop** (returns
+  early unless `phase` is `teleop` or `freeplay` — no grabbing/staging through
+  pre/auto/transition). Once teleop starts it does two things per tick: (1)
   **CONTINUOUSLY grabs** a loose `ground` ball out of the loading zone into `hp.box`
   (recycling returned/overflow artifacts; skips balls staged at a grab slot and any a
   robot is on; gated by `box.length < 6`), and (2) **STAGES** the grab row from `hp.box`
