@@ -27,6 +27,8 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [connected, setConnected] = useState<string[]>([]);
   const [error, setError] = useState('');
+  // bumped on every mesh link event so per-peer connection status re-renders
+  const [, setLinkVer] = useState(0);
 
   const lobbyRef = useRef<SupabaseLobby | null>(null);
   const meshRef = useRef<RtcMesh | null>(null);
@@ -49,9 +51,17 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
     };
   }, []);
 
-  const me = players.find((p) => p.peerId === lobbyRef.current?.peerId) ?? null;
+  const myPeerId = lobbyRef.current?.peerId;
+  const me = players.find((p) => p.peerId === myPeerId) ?? null;
   const isHost = lobbyRef.current?.isHost() ?? false;
   const allReady = players.length > 0 && players.every((p) => p.ready);
+  const linkOf = (id: string): 'open' | 'connecting' | 'failed' | 'none' =>
+    id === myPeerId ? 'open' : (meshRef.current?.linkStatus(id) ?? 'none');
+  const others = players.filter((p) => p.peerId !== myPeerId);
+  // every in-room peer must hold an OPEN DataChannel before START, or the match
+  // would freeze at WAITING on whoever never connected
+  const allConnected = others.every((p) => linkOf(p.peerId) === 'open');
+  const failedPeers = others.filter((p) => linkOf(p.peerId) === 'failed');
 
   async function join(): Promise<void> {
     if (!code.trim()) return;
@@ -69,8 +79,16 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
     lobbyRef.current = lobby;
     const mesh = new RtcMesh(lobby, lobby.peerId);
     meshRef.current = mesh;
-    mesh.on('connect', () => setConnected(mesh.connectedPeers()));
-    mesh.on('disconnect', () => setConnected(mesh.connectedPeers()));
+    const bump = (): void => setLinkVer((v) => v + 1);
+    mesh.on('connect', () => {
+      setConnected(mesh.connectedPeers());
+      bump();
+    });
+    mesh.on('disconnect', () => {
+      setConnected(mesh.connectedPeers());
+      bump();
+    });
+    mesh.on('failed', bump); // a peer couldn't connect — re-render its status dot
 
     const leaveWith = (msg: string): void => {
       setError(msg);
@@ -80,8 +98,11 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
     };
 
     lobby.on('players', (list) => {
-      setPlayers(list);
-      // cap the room at the first ROOM_CAPACITY by join time.
+      // deterministic room membership: the first ROOM_CAPACITY by join time
+      // (peerId tiebreak). Every client computes this SAME split from the same
+      // presence snapshot, so once presence converges the rosters AGREE — and
+      // never exceed the cap. (Rendering the raw uncapped list is what made
+      // clients disagree on the count and show "more than 4".)
       const order = [...list].sort(
         (a, b) => a.joinedAt - b.joinedAt || (a.peerId < b.peerId ? -1 : 1),
       );
@@ -94,6 +115,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
       }
       // ...and the host kicks the excess as a backstop (deterministic order)
       if (lobby.isHost()) excess.forEach((p) => lobby.kick(p.peerId));
+      setPlayers(keep); // show ONLY the in-room drivers — same set for everyone
       mesh.connect(keep.map((p) => p.peerId)); // only link the in-room drivers
     });
     lobby.on('start', (msg) => handleStart(msg));
@@ -119,12 +141,18 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
   function hostStart(): void {
     const lobby = lobbyRef.current;
     if (!lobby) return;
+    // build ONLY the in-room drivers — the SAME deterministic cap as the roster
+    // — so a ghost/overflow presence never spawns a phantom robot that no one
+    // drives (its missing commands would stall every peer's lockstep)
+    const roster = [...lobby.getPlayers()]
+      .sort((a, b) => a.joinedAt - b.joinedAt || (a.peerId < b.peerId ? -1 : 1))
+      .slice(0, ROOM_CAPACITY);
     // honor each driver's chosen start position, but keep them DISTINCT within
     // an alliance (bump to the next free pose) so robots never spawn overlapping
     const used: Record<Alliance, Set<number>> = { red: new Set(), blue: new Set() };
     const setups: NetRobotSetup[] = [];
     const assign: Record<string, number> = {};
-    lobby.getPlayers().forEach((p, i) => {
+    roster.forEach((p, i) => {
       let si = p.startIndex ?? 0;
       while (used[p.alliance].has(si)) si = (si + 1) % START_POSES.length;
       used[p.alliance].add(si);
@@ -205,9 +233,14 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
           <div className="lobby-players">
             {players.map((p) => {
               const isMe = p.peerId === lobbyRef.current?.peerId;
+              const link = linkOf(p.peerId);
               return (
                 <div key={p.peerId} className={`lobby-player ${p.alliance}`}>
-                  <span className="lobby-dot" data-linked={isMe || connected.includes(p.peerId)} />
+                  <span
+                    className="lobby-dot"
+                    data-linked={link === 'open'}
+                    title={isMe ? 'you' : `connection: ${link}`}
+                  />
                   <span className="lobby-name">
                     {p.name}
                     {isMe ? ' (you)' : ''}
@@ -217,6 +250,11 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
                   </span>
                   <span className={`chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
                   <span className="chip">{START_POSES[p.startIndex]?.label ?? '—'}</span>
+                  {!isMe && link !== 'open' && (
+                    <span className={`chip ${link === 'failed' ? 'off' : 'warn'}`}>
+                      {link === 'failed' ? 'NO CONNECT' : 'CONNECTING…'}
+                    </span>
+                  )}
                   <span className={`chip ${p.ready ? 'on' : 'off'}`}>{p.ready ? 'READY' : 'NOT READY'}</span>
                   {isHost && !isMe && (
                     <button className="lobby-kick" title="Remove from room" onClick={() => kick(p.peerId)}>
@@ -274,7 +312,11 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
             {me?.ready ? '✓ READY — click to unready' : 'READY UP'}
           </button>
           {isHost && (
-            <button className="start-btn" disabled={!allReady} onClick={hostStart}>
+            <button
+              className="start-btn"
+              disabled={!allReady || !allConnected}
+              onClick={hostStart}
+            >
               START MATCH ▶
             </button>
           )}
@@ -283,6 +325,13 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
           </button>
         </div>
         {isHost && !allReady && <p className="hint">START unlocks once every driver is ready.</p>}
+        {isHost && allReady && !allConnected && (
+          <p className="hint">
+            {failedPeers.length > 0
+              ? `⚠ Couldn't connect to ${failedPeers.map((p) => p.name).join(', ')} — check network/TURN, or kick to start without them.`
+              : 'Connecting to all drivers… START unlocks once everyone is linked.'}
+          </p>
+        )}
       </div>
     </div>
   );

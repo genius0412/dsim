@@ -53,6 +53,10 @@ export class NetSession {
   /** peers we've received at least one command packet from (⇒ they're ready) */
   private readonly heard = new Set<string>();
   private resendCounter = 0;
+  /** robots already scheduled to drop (avoid re-authoring / re-applying a bye) */
+  private readonly dropped = new Set<number>();
+  /** most recent sim tick fed to produce() — a floor for a drop tick */
+  private lastProduceTick = 0;
 
   constructor(
     private readonly mesh: RtcMesh,
@@ -72,10 +76,11 @@ export class NetSession {
     // produced (early broadcasts to a not-yet-open channel were dropped, and
     // lockstep is sequential, so the peer would otherwise stall on that gap)
     mesh.on('connect', (peerId) => this.backfill(peerId));
-    mesh.on('disconnect', (peerId) => {
-      const rid = this.peerToRobot[peerId];
-      if (rid !== undefined) this.ls.markDisconnected(rid);
-    });
+    // a peer dropping (clean close, or a failed/timed-out link) must degrade the
+    // sim IDENTICALLY on every client. So the HOST authors a single drop tick and
+    // broadcasts it; nobody substitutes ZERO on their own wall-clock schedule.
+    mesh.on('disconnect', (peerId) => this.onPeerGone(peerId));
+    mesh.on('failed', (peerId) => this.onPeerGone(peerId));
     lobby.on('restart', (seed) => this.applyRestart(seed));
   }
 
@@ -87,6 +92,7 @@ export class NetSession {
   /** author + transmit local inputs for every tick up to `currentTick + delay`
    * (keeps the pipeline INPUT_DELAY ahead of stepping, no holes) */
   produce(currentTick: number, cmd: RobotCommand): void {
+    this.lastProduceTick = currentTick;
     // STARTUP SELF-HEAL: until a connected peer sends us its first packet, keep
     // resending our full history to it (~every 6 frames). Early sends can be
     // lost to channel-open / handler-registration races that the reliable
@@ -182,6 +188,8 @@ export class NetSession {
         this.compareAt(msg.tick);
       } else if (msg.t === 'restart') {
         this.applyRestart(msg.seed);
+      } else if (msg.t === 'bye') {
+        this.applyDrop(msg.robotId, msg.tick);
       }
       return;
     }
@@ -190,6 +198,29 @@ export class NetSession {
     for (let i = 0; i < pkt.cmds.length; i++) {
       this.ls.receiveRemote(pkt.robotId, pkt.startTick + i, dequantizeCommand(pkt.cmds[i]));
     }
+  }
+
+  /** a peer's link ended (clean disconnect or failed/timeout). Only the HOST
+   * turns this into a deterministic drop: it picks ONE tick — just past the
+   * departing robot's last known input, and never before the current sim
+   * frontier — and broadcasts it so every peer (incl. the host) drops the robot
+   * at the SAME tick. Non-hosts wait for that bye rather than ZEROing on their
+   * own clock (which silently desynced). */
+  private onPeerGone(peerId: string): void {
+    const rid = this.peerToRobot[peerId];
+    if (rid === undefined || rid === this.localRobotId || this.dropped.has(rid)) return;
+    if (!this.lobby.isHost()) return; // only the host authors the drop tick
+    const dropTick = Math.max(this.ls.lastTickFor(rid) + 1, this.lastProduceTick + INPUT_DELAY);
+    this.mesh.broadcast(encodeControl({ t: 'bye', robotId: rid, tick: dropTick }));
+    this.applyDrop(rid, dropTick);
+  }
+
+  /** schedule a robot to run on ZERO from `tick` onward (idempotent) */
+  private applyDrop(robotId: number, tick: number): void {
+    if (this.dropped.has(robotId)) return;
+    this.dropped.add(robotId);
+    this.ls.dropAt(robotId, tick);
+    console.info(`[net] robot ${robotId} dropped at tick ${tick}`);
   }
 
   /** flag a desync if our hash for `tick` disagrees with ANY peer that has
@@ -224,6 +255,8 @@ export class NetSession {
     this.myHashes.clear();
     this.peerHashes.clear();
     this.heard.clear(); // re-sync the startup handshake for the new match
+    this.dropped.clear(); // a fresh match: previously-dropped robots are back
+    this.lastProduceTick = 0;
     this.desync = false;
     this.waiting = null;
     this.restartCb?.(seed);

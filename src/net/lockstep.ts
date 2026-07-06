@@ -31,6 +31,12 @@ export class Lockstep {
   private readonly buf = new Map<number, Map<number, RobotCommand>>();
   /** robots we still wait on each tick (shrinks on disconnect) */
   private readonly waiting = new Set<number>();
+  /** robotId -> the tick FROM WHICH it is dropped: at/after it the robot is no
+   * longer required and runs on ZERO. Ticks BEFORE it still require the real
+   * buffered command, so a peer missing them stalls (safe) rather than silently
+   * diverging. Set deterministically (host-broadcast drop tick), so every peer
+   * substitutes ZERO from the exact same tick. */
+  private readonly dropTicks = new Map<number, number>();
 
   constructor(
     robotIds: number[],
@@ -70,10 +76,17 @@ export class Lockstep {
     return { start: ticks[0] ?? this.delay, cmds: ticks.map((t) => m.get(t) as RobotCommand) };
   }
 
-  /** the first still-connected robot missing a command for `tick` (what a stall
+  /** is this robot dropped as of `tick`? (dropped ⇒ not required, runs ZERO) */
+  private droppedAt(id: number, tick: number): boolean {
+    const drop = this.dropTicks.get(id);
+    return drop !== undefined && tick >= drop;
+  }
+
+  /** the first still-required robot missing a command for `tick` (what a stall
    * is waiting on), or null if `tick` is ready */
   missingAt(tick: number): number | null {
     for (const id of this.waiting) {
+      if (this.droppedAt(id, tick)) continue;
       if (!this.buf.get(id)?.has(tick)) return id;
     }
     return null;
@@ -84,23 +97,45 @@ export class Lockstep {
     this.buf.get(robotId)?.set(tick, cmd);
   }
 
-  /** a robot left: stop waiting on it; the sim runs it on ZERO from here */
-  markDisconnected(robotId: number): void {
-    this.waiting.delete(robotId);
+  /** the highest tick buffered for a robot, or -1 if none — the host uses this
+   * to choose a drop tick just past a departing robot's last known input */
+  lastTickFor(robotId: number): number {
+    const m = this.buf.get(robotId);
+    if (!m) return -1;
+    let max = -1;
+    for (const t of m.keys()) if (t > max) max = t;
+    return max;
   }
 
-  /** true once every still-connected robot has a command for `tick` */
+  /** drop a robot from `tick` onward: it stops being required and runs on ZERO
+   * there. Deterministic across peers when `tick` is the same everywhere (that's
+   * the host-broadcast drop tick). Idempotent to the EARLIEST drop tick. */
+  dropAt(robotId: number, tick: number): void {
+    const cur = this.dropTicks.get(robotId);
+    this.dropTicks.set(robotId, cur === undefined ? tick : Math.min(cur, tick));
+  }
+
+  /** a robot left with no coordinated tick: run it on ZERO from the very start
+   * (immediate). Used by the solo/degenerate path and unit tests. */
+  markDisconnected(robotId: number): void {
+    this.dropAt(robotId, 0);
+  }
+
+  /** true once every still-required robot has a command for `tick` */
   canStep(tick: number): boolean {
     for (const id of this.waiting) {
+      if (this.droppedAt(id, tick)) continue;
       if (!this.buf.get(id)?.has(tick)) return false;
     }
     return true;
   }
 
-  /** the command map to hand step() for `tick` (missing ⇒ ZERO) */
+  /** the command map to hand step() for `tick` (dropped/missing ⇒ ZERO) */
   commandsForTick(tick: number): Map<number, RobotCommand> {
     const out = new Map<number, RobotCommand>();
-    for (const [id, m] of this.buf) out.set(id, m.get(tick) ?? ZERO_CMD);
+    for (const [id, m] of this.buf) {
+      out.set(id, this.droppedAt(id, tick) ? ZERO_CMD : (m.get(tick) ?? ZERO_CMD));
+    }
     return out;
   }
 

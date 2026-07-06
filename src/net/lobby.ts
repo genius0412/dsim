@@ -58,6 +58,31 @@ type Handlers = {
   closed: () => void;
 };
 
+/** a random peer id */
+function freshPeerId(): string {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `p${Math.floor(Math.random() * 1e9).toString(36)}`;
+}
+
+/** a peerId that is STABLE across a page refresh (per tab, via sessionStorage).
+ * A random id every construction meant a reload rejoined under a NEW presence
+ * key while the old one lingered until timeout — a ghost that inflated the
+ * roster count, made clients disagree, and churned the earliest-joiner host
+ * election. Reusing the id makes a reload replace the same key cleanly. */
+function stablePeerId(): string {
+  try {
+    const KEY = 'decodesim.peerId';
+    const existing = sessionStorage.getItem(KEY);
+    if (existing) return existing;
+    const id = freshPeerId();
+    sessionStorage.setItem(KEY, id);
+    return id;
+  } catch {
+    return freshPeerId();
+  }
+}
+
 export class SupabaseLobby {
   readonly peerId: string;
   private channel: RealtimeChannel | null = null;
@@ -66,10 +91,7 @@ export class SupabaseLobby {
   private readonly handlers: Partial<Handlers> = {};
 
   constructor(self: Omit<LobbyPlayer, 'peerId' | 'ver' | 'joinedAt'>) {
-    this.peerId =
-      typeof crypto !== 'undefined' && crypto.randomUUID
-        ? crypto.randomUUID()
-        : `p${Math.floor(Math.random() * 1e9).toString(36)}`;
+    this.peerId = stablePeerId();
     this.self = { ...self, peerId: this.peerId, ver: 0, joinedAt: Date.now() };
   }
 
@@ -111,10 +133,9 @@ export class SupabaseLobby {
       // presences from re-tracking are not chronologically ordered, so "last"
       // is unreliable and can differ across clients — ver is authoritative)
       this.players = Object.values(state)
-        .map((entries) => {
-          const ps = entries as unknown as LobbyPlayer[];
-          return ps.reduce((a, b) => (b.ver >= a.ver ? b : a));
-        })
+        .map((entries) => entries as unknown as LobbyPlayer[])
+        .filter((ps) => ps.length > 0) // an empty key would throw the reduce below
+        .map((ps) => ps.reduce((a, b) => (b.ver >= a.ver ? b : a)))
         .sort((a, b) => (a.peerId < b.peerId ? -1 : 1));
       this.handlers.players?.(this.players);
     });

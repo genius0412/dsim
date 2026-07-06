@@ -37,6 +37,74 @@ never sent/handled. Proper fix = host broadcasts a deterministic "drop robot R a
 so all peers drop on the same tick. Not hit by the cross-browser bug above, but do this
 before shipping to flaky networks (STUN-only, no TURN).
 
+### Lobby stability fixes (same session)
+Reported: roster shows different counts per client / "more than 4" / leader keeps
+switching. All are presence-set instability. Fixes:
+- `Lobby.tsx` now renders the deterministic capped `keep` set (first `ROOM_CAPACITY`
+  by joinedAt, peerId tiebreak) instead of the raw uncapped presence list — never
+  shows >4, and all clients agree once presence converges.
+- `lobby.ts` `peerId` is now **stable per tab** (`sessionStorage`), so a refresh
+  replaces the same presence key instead of spawning a ghost under a new id (ghosts
+  were the main churn: inflated counts + stole the earliest-joiner host election).
+- `lobby.ts` presence dedup filters empty key arrays (an empty one threw the `reduce`
+  and froze the whole roster).
+- `hostStart` builds setups from the capped roster, not `getPlayers()` — a ghost/
+  overflow presence can no longer spawn a phantom, undriven robot that stalls lockstep.
+
+STILL imperfect (inherent): host = earliest `joinedAt`, which relies on wall clocks
+(skew) and flickers if the earliest member's presence transiently drops. The fixes cut
+the dominant churn (ghosts); a bulletproof host would need a heartbeat/consensus. Note
+the reported "everyone in different positions in-game" is the SAME cross-browser desync
+the deterministic-trig fix targets (not yet deployed) — distinct from normal lockstep
+tick-skew (clients a few ticks apart look momentarily offset, self-corrects) and from
+the per-alliance camera perspective (each side views mirrored).
+
+### ⛔ REAL ROOT CAUSE (found after deploy): the NETWORK/TRANSPORT layer, not the sim
+Deployed the deterministic-trig + detector + lobby fixes; live cross-browser test STILL
+broke ("positions all weird"), AND — the key clue — **"a lot of the time at match start
+everyone is at WAITING and the game is frozen."** That reframes everything:
+
+- The sim IS deterministic (verified again: `physics.ts` collisions are all `+ - * /`,
+  min/max/abs/round/sqrt, clamp, dot, `rot`, `datan2` — nothing engine-variant remains).
+  Weird positions are collisions/RNG AMPLIFYING a divergence that entered elsewhere.
+- `canStep(tick)` needs EVERY robot's command for that tick ⇒ needs an open DataChannel to
+  every peer. The mesh is **STUN-only, no TURN** (`mesh.ts:12`). Across mixed browsers/NATs
+  some pairs never connect ⇒ their commands never arrive ⇒ WAITING forever (frozen). A
+  link that opens then DROPS hits `markDisconnected` → unilateral `ZERO_CMD` at a per-peer
+  moment → that robot drifts differently per client ("weird positions"), UNDETECTABLE by
+  the checksum (can't hash-compare with a peer you've lost). Same fragility, two faces.
+
+**TRANSPORT FIXES — DONE this session (all 3 priorities), build-green, 128 smoke checks:**
+1. **TURN** (`env.ts` `iceServers()`/`loadIceServers()`, used in `mesh.ts`). Free Metered
+   Open Relay is the built-in DEFAULT (no signup) so NAT-bound peers relay out of the box.
+   Overridable: (A) `VITE_TURN_ICE_URL` = a runtime endpoint that mints EPHEMERAL creds
+   (secret-free, preferred — mesh fetches it on construction, falls back to sync default);
+   (B) static `VITE_TURN_URL/USERNAME/CREDENTIAL` pair. Security: never a provider API
+   *secret* in VITE (Vite inlines it); the static pair is client-side by nature (worst case
+   bandwidth theft, quota-capped), ephemeral (A) avoids even that. `.env.example` documents it.
+2. **Connection gate + timeout + status** (`mesh.ts` + `Lobby.tsx`). A link that doesn't
+   open within `CONNECT_TIMEOUT_MS` (20 s) or hits ICE 'failed' now fires a `'failed'`
+   event → per-peer dot in the lobby (open/connecting/NO CONNECT), and host START is
+   DISABLED until every in-room peer has an OPEN channel (`allConnected`). No more silently
+   starting a match that freezes at WAITING; a failed peer is shown so the host can kick.
+   Failed links are retried after `RETRY_COOLDOWN_MS` (8 s) — replaced the permanent
+   `attempted` block so a recovered network / reloaded peer reconnects.
+3. **Deterministic disconnect** (`protocol.ts` `{t:'bye',robotId,tick}` + `session.ts`
+   `onPeerGone`/`applyDrop` + `lockstep.ts` `dropAt`/`lastTickFor`/`dropTicks`). On a peer
+   drop/fail the HOST authors ONE drop tick (just past the robot's last input, ≥ the sim
+   frontier) and broadcasts it; every peer drops that robot at the SAME tick (ZERO from
+   there). Ticks BEFORE it still REQUIRE the real input, so a peer missing it STALLS (safe)
+   instead of silently ZEROing (which desynced). `markDisconnected` kept as `dropAt(id,0)`.
+
+Now the deterministic-trig + detector + lobby-presence fixes (earlier this session) finally
+get exercised on a connection that stays up.
+
+**Known transport limitations (next):** if the HOST itself drops, non-hosts wait for a bye
+that never comes → stall (no host migration in v1). Free Open Relay is best-effort/rate-
+limited — for reliability the user should set `VITE_TURN_ICE_URL` (their own ephemeral
+endpoint). Backfill packets cap at 255 ticks (Uint8 count) — fine given prune, but chunk
+it if a late-join path is ever added.
+
 ## ✅ Prior state: Phase C + Phase D landed
 
 All four phases (A markings, B robots/physics, C penalties, **D netcode**) are code-

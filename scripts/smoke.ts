@@ -1280,6 +1280,25 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   check('checksum ticks land on the interval only', Lockstep.isChecksumTick(120) && !Lockstep.isChecksumTick(0) && !Lockstep.isChecksumTick(121));
 }
 
+// ---- deterministic drop-at-tick (host-authored disconnect) ------------------
+// a departing robot must run on ZERO from ONE agreed tick on every peer, and
+// stall (never silently ZERO) for any earlier tick whose real input is missing
+{
+  const ls = new Lockstep([0, 1], 0, 8);
+  for (let t = 8; t <= 12; t++) ls.setLocal(t, cmd({ driveY: 1 })); // robot 0 ready 8..12
+  ls.receiveRemote(1, 8, cmd({ driveX: -1 }));
+  ls.receiveRemote(1, 10, cmd({ driveX: -1 })); // robot 1 has 8 & 10, MISSING 9
+  check('lastTickFor reports the highest buffered tick', ls.lastTickFor(1) === 10, `${ls.lastTickFor(1)}`);
+  ls.dropAt(1, 11); // deterministic drop from tick 11
+  check('before the drop tick a missing input still stalls (safe, no silent ZERO)', !ls.canStep(9));
+  check('real buffered input before the drop tick is still used', ls.commandsForTick(10).get(1)?.driveX === -1);
+  check('at/after the drop tick the robot is no longer required', ls.canStep(11));
+  const at11 = ls.commandsForTick(11);
+  check('a dropped robot runs on ZERO from its drop tick', at11.get(1)?.driveX === 0 && at11.get(1)?.driveY === 0);
+  ls.dropAt(1, 20);
+  check('dropAt keeps the EARLIEST drop tick (idempotent to min)', ls.canStep(11));
+}
+
 // ---- worldHash: replay determinism + sensitivity ---------------------------
 {
   const build = (): World =>

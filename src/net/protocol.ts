@@ -120,7 +120,10 @@ export type ControlMsg =
   | { t: 'start'; seed: number; setups: NetRobotSetup[] }
   | { t: 'restart'; seed: number }
   | { t: 'checksum'; tick: number; hash: number }
-  | { t: 'bye'; robotId: number };
+  // host-authored: every peer drops `robotId` at exactly `tick` (runs it on ZERO
+  // from there), so a disconnect degrades identically for all — not at each
+  // peer's own wall-clock moment (which silently desynced)
+  | { t: 'bye'; robotId: number; tick: number };
 
 export const encodeControl = (m: ControlMsg): string => JSON.stringify(m);
 export const decodeControl = (s: string): ControlMsg => JSON.parse(s) as ControlMsg;
