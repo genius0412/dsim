@@ -140,9 +140,11 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
         return;
       }
       mesh.connect(keep.map((p) => p.peerId));
+      // show our local view immediately (so nothing's blank during host election);
+      // non-hosts then get overridden by the host's authoritative 'roster' below
+      setPlayers(keep);
       if (lobby.isHost()) {
         rosterRef.current = keep;
-        setPlayers(keep);
         lobby.broadcastRoster(keep); // authoritative → everyone renders this
       }
     });

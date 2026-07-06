@@ -19,6 +19,10 @@ export const ROOM_CAPACITY = 4;
 const HEARTBEAT_MS = 2000;
 /** drop a member we haven't heard a hello from within this (crashed / gone) */
 const MEMBER_TIMEOUT_MS = 6000;
+/** a fresh client waits this long before claiming host, so it can hear (and
+ * adopt) an existing host instead of stealing it. Only a genuine cold start or
+ * a host that left past this grace self-elects. */
+const SETTLE_MS = 1200;
 
 export interface LobbyPlayer {
   peerId: string;
@@ -109,8 +113,11 @@ export class SupabaseLobby {
   /** peerId -> ms they announced leaving; filtered for a few seconds so a
    * straggler hello can't re-add a departed player before it stops arriving */
   private readonly recentlyLeft = new Map<string, number>();
-  /** host = smallest peerId present (recomputed each rebuild, clock-independent) */
+  /** current host — STICKY (kept while present) + adopted from peers' declarations,
+   * so a newcomer defers to the existing host instead of stealing it */
   private hostPeerId: string | null = null;
+  /** ms we subscribed — the settle-grace clock for cold-start host election */
+  private subscribedAt = 0;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private readonly handlers: Partial<Handlers> = {};
 
@@ -123,14 +130,31 @@ export class SupabaseLobby {
     this.handlers[event] = cb;
   }
 
-  /** host = the smallest peerId currently present. Deterministic + clock-
-   * independent, so every client agrees. NOT sticky: stickiness locked each
-   * client onto whoever it saw first — itself, before others' presence
-   * propagated — so everyone became their own host. Non-sticky reconverges to
-   * one agreed host the moment presence includes everyone. */
+  /** STICKY host: keep the current one while it's present (a newcomer can't
+   * steal it — it adopts the existing host via `adoptHost` from peers' hellos/
+   * rosters). Only elect when there's no valid host: a genuine cold start, or
+   * the host left — and even then a FRESH joiner waits SETTLE_MS first so it can
+   * hear an existing host before claiming. Tiebreak is smallest peerId. */
   private recomputeHost(): void {
     const ids = this.players.map((p) => p.peerId);
-    this.hostPeerId = ids.length ? ids.reduce((a, b) => (a < b ? a : b)) : null;
+    if (ids.length === 0) {
+      this.hostPeerId = null;
+      return;
+    }
+    if (this.hostPeerId && ids.includes(this.hostPeerId)) return; // keep it
+    if (Date.now() - this.subscribedAt > SETTLE_MS) {
+      this.hostPeerId = ids.reduce((a, b) => (a < b ? a : b));
+    }
+    // else: wait out the grace — an existing host's declaration may still arrive
+  }
+
+  /** adopt a host another peer declares (in their hello/roster), so a newcomer
+   * defers to the established host; on a rare dual-host cold-start, converge to
+   * the smaller peerId */
+  private adoptHost(host: string | null): void {
+    if (!host || !this.members.has(host)) return;
+    const cur = this.hostPeerId;
+    if (!cur || !this.members.has(cur) || host < cur) this.hostPeerId = host;
   }
 
   hostId(): string | null {
@@ -146,9 +170,10 @@ export class SupabaseLobby {
     return this.self;
   }
 
-  /** host-only: publish the authoritative roster so every client renders it */
+  /** host-only: publish the authoritative roster (with our host declaration) so
+   * every client renders the same list and adopts us as host */
   broadcastRoster(players: LobbyPlayer[]): void {
-    this.channel?.send({ type: 'broadcast', event: 'roster', payload: { players } });
+    this.channel?.send({ type: 'broadcast', event: 'roster', payload: { players, host: this.peerId } });
   }
 
   getPlayers(): LobbyPlayer[] {
@@ -165,12 +190,13 @@ export class SupabaseLobby {
     this.channel = channel;
 
     channel.on('broadcast', { event: 'hello' }, ({ payload }) => {
-      const p = payload as LobbyPlayer;
+      const { player: p, host } = payload as { player: LobbyPlayer; host: string | null };
       if (p.peerId === this.peerId || this.recentlyLeft.has(p.peerId)) return;
       const isNew = !this.members.has(p.peerId);
       const cur = this.members.get(p.peerId);
       if (!cur || p.ver >= cur.ver) this.members.set(p.peerId, p); // newest wins
       this.lastSeen.set(p.peerId, Date.now());
+      this.adoptHost(host); // defer to the host our peers already agree on
       if (isNew) this.sendHello(); // greet a newcomer so they learn US immediately
       this.rebuildPlayers();
     });
@@ -195,12 +221,15 @@ export class SupabaseLobby {
       this.rebuildPlayers(); // drop them from the roster right away
     });
     channel.on('broadcast', { event: 'roster' }, ({ payload }) => {
-      this.handlers.roster?.((payload as { players: LobbyPlayer[] }).players);
+      const { players, host } = payload as { players: LobbyPlayer[]; host: string | null };
+      this.adoptHost(host);
+      this.handlers.roster?.(players);
     });
 
     await new Promise<void>((resolve, reject) => {
       channel.subscribe((status) => {
         if (status === 'SUBSCRIBED') {
+          this.subscribedAt = Date.now();
           this.sendHello(); // announce ourselves; existing members greet back
           this.rebuildPlayers();
           this.heartbeat = setInterval(() => {
@@ -217,10 +246,15 @@ export class SupabaseLobby {
     });
   }
 
-  /** broadcast our current state so every client (re)learns us */
+  /** broadcast our current state + who we think the host is, so every client
+   * (re)learns us and newcomers adopt the established host */
   private sendHello(): void {
     this.lastSeen.set(this.peerId, Date.now());
-    this.channel?.send({ type: 'broadcast', event: 'hello', payload: this.self });
+    this.channel?.send({
+      type: 'broadcast',
+      event: 'hello',
+      payload: { player: this.self, host: this.hostPeerId },
+    });
   }
 
   /** rebuild the roster from tracked members: prune the timed-out and the

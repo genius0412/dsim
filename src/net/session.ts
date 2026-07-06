@@ -57,6 +57,8 @@ export class NetSession {
   private readonly dropped = new Set<number>();
   /** most recent sim tick fed to produce() — a floor for a drop tick */
   private lastProduceTick = 0;
+  /** throttles the WAITING diagnostic log */
+  private stallLog = 0;
 
   constructor(
     private readonly mesh: RtcMesh,
@@ -135,6 +137,15 @@ export class NetSession {
     if (!ok) {
       const rid = this.ls.missingAt(tick);
       this.waiting = rid === null ? null : this.robotName(rid);
+      // throttled diagnostic: what are we blocked on, and is the transport alive?
+      if (this.stallLog++ % 120 === 0) {
+        const peerRid = (p: string): number => this.peerToRobot[p];
+        console.warn(
+          `[net] WAITING tick ${tick} on robot ${rid} (${this.waiting}) | myRobot=${this.localRobotId}` +
+            ` | meshPeers=[${this.mesh.connectedPeers().map((p) => `${p.slice(0, 6)}→r${peerRid(p)}`).join(',')}]` +
+            ` | heard=[${[...this.heard].map((p) => p.slice(0, 6)).join(',')}]`,
+        );
+      }
     } else {
       this.waiting = null;
     }
@@ -193,8 +204,11 @@ export class NetSession {
       }
       return;
     }
-    this.heard.add(from); // this peer is receiving/sending — stop resending to it
     const pkt = decodeCommandPacket(data);
+    if (!this.heard.has(from)) {
+      this.heard.add(from); // this peer is receiving/sending — stop resending to it
+      console.info(`[net] first packet from ${from.slice(0, 6)} → robot ${pkt.robotId} @tick ${pkt.startTick}`);
+    }
     for (let i = 0; i < pkt.cmds.length; i++) {
       this.ls.receiveRemote(pkt.robotId, pkt.startTick + i, dequantizeCommand(pkt.cmds[i]));
     }
