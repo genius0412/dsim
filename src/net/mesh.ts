@@ -30,6 +30,10 @@ interface PeerLink {
 
 export class RtcMesh {
   private readonly links = new Map<string, PeerLink>();
+  /** peers we've already tried to link (kept even after a drop) so a repeated
+   * presence sync — or a ghost peer left over from a refresh — is not retried
+   * in a tight connect/fail/reconnect loop */
+  private readonly attempted = new Set<string>();
   private readonly handlers: Partial<MeshHandlers> = {};
 
   constructor(
@@ -43,10 +47,10 @@ export class RtcMesh {
     this.handlers[event] = cb;
   }
 
-  /** open links to every other peer (idempotent) */
+  /** open links to every other peer — ONCE per peer id (idempotent) */
   connect(peerIds: string[]): void {
     for (const id of peerIds) {
-      if (id === this.localPeerId || this.links.has(id)) continue;
+      if (id === this.localPeerId || this.attempted.has(id)) continue;
       this.makeLink(id, this.localPeerId < id); // lower id initiates
     }
   }
@@ -79,6 +83,7 @@ export class RtcMesh {
   // -------------------------------------------------------------- internals --
 
   private makeLink(peerId: string, initiator: boolean): PeerLink {
+    this.attempted.add(peerId);
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     const link: PeerLink = { pc, channel: null, pending: [], open: false };
     this.links.set(peerId, link);
@@ -91,7 +96,9 @@ export class RtcMesh {
     pc.onconnectionstatechange = () => {
       const st = pc.connectionState;
       console.info(`[mesh] ${peerId.slice(0, 6)} pc → ${st}`);
-      if (st === 'failed' || st === 'disconnected' || st === 'closed') this.dropLink(peerId);
+      // 'disconnected' is TRANSIENT — ICE often recovers it; only tear down on a
+      // terminal state, else we thrash good links into reconnect loops
+      if (st === 'failed' || st === 'closed') this.dropLink(peerId);
     };
     console.info(`[mesh] opening link to ${peerId.slice(0, 6)} (initiator=${initiator})`);
 

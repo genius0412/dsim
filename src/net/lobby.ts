@@ -11,6 +11,8 @@ import { getSupabase } from './env';
  * lexicographically smallest peerId (no creator flag, no host migration in v1).
  */
 
+export const ROOM_CAPACITY = 4;
+
 export interface LobbyPlayer {
   peerId: string;
   /** monotonic per-client revision. Re-tracking (alliance/ready changes) can
@@ -18,6 +20,9 @@ export interface LobbyPlayer {
    * chronological and differs per client — so resolve a player to their
    * highest-`ver` entry to get one consistent, current value everywhere. */
   ver: number;
+  /** ms epoch when this client joined — used to cap the room at the first
+   * ROOM_CAPACITY joiners (later joiners bounce themselves) */
+  joinedAt: number;
   name: string;
   teamName: string;
   teamNumber: number;
@@ -48,6 +53,8 @@ type Handlers = {
   signal: (msg: SignalMsg) => void;
   start: (msg: StartMsg) => void;
   restart: (seed: number) => void;
+  /** the host removed us from the room */
+  kicked: () => void;
   closed: () => void;
 };
 
@@ -58,12 +65,12 @@ export class SupabaseLobby {
   private players: LobbyPlayer[] = [];
   private readonly handlers: Partial<Handlers> = {};
 
-  constructor(self: Omit<LobbyPlayer, 'peerId' | 'ver'>) {
+  constructor(self: Omit<LobbyPlayer, 'peerId' | 'ver' | 'joinedAt'>) {
     this.peerId =
       typeof crypto !== 'undefined' && crypto.randomUUID
         ? crypto.randomUUID()
         : `p${Math.floor(Math.random() * 1e9).toString(36)}`;
-    this.self = { ...self, peerId: this.peerId, ver: 0 };
+    this.self = { ...self, peerId: this.peerId, ver: 0, joinedAt: Date.now() };
   }
 
   on<K extends keyof Handlers>(event: K, cb: Handlers[K]): void {
@@ -112,6 +119,9 @@ export class SupabaseLobby {
     channel.on('broadcast', { event: 'restart' }, ({ payload }) => {
       this.handlers.restart?.((payload as { seed: number }).seed);
     });
+    channel.on('broadcast', { event: 'kick' }, ({ payload }) => {
+      if ((payload as { peerId: string }).peerId === this.peerId) this.handlers.kicked?.();
+    });
 
     await new Promise<void>((resolve, reject) => {
       channel.subscribe((status) => {
@@ -127,9 +137,14 @@ export class SupabaseLobby {
   }
 
   /** update and re-broadcast our own lobby presence (name/spec/alliance/ready) */
-  async updateSelf(patch: Partial<Omit<LobbyPlayer, 'peerId' | 'ver'>>): Promise<void> {
+  async updateSelf(patch: Partial<Omit<LobbyPlayer, 'peerId' | 'ver' | 'joinedAt'>>): Promise<void> {
     this.self = { ...this.self, ...patch, ver: this.self.ver + 1 };
     await this.channel?.track(this.self);
+  }
+
+  /** host-only: remove a player from the room */
+  kick(peerId: string): void {
+    this.channel?.send({ type: 'broadcast', event: 'kick', payload: { peerId } });
   }
 
   /** relay a WebRTC signal to one peer */
@@ -153,8 +168,14 @@ export class SupabaseLobby {
 
   async leave(): Promise<void> {
     if (this.channel) {
-      await this.channel.unsubscribe();
+      const ch = this.channel;
       this.channel = null;
+      try {
+        await ch.untrack(); // drop our presence immediately (no ghost entry)
+      } catch {
+        /* ignore */
+      }
+      await ch.unsubscribe();
     }
   }
 }

@@ -982,3 +982,29 @@ button.keycap:hover {
   color: var(--blue);
   border-color: var(--blue);
 }
+.lobby-kick {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  line-height: 1;
+  flex: none;
+}
+.lobby-kick:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
+.card-note {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.card:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

@@ -105,6 +105,9 @@ export class GameController {
   readonly localRobotId: number;
   /** null in solo; the lockstep session in multiplayer */
   private readonly session: NetSession | null;
+  /** multiplayer sim-step timer (survives tab backgrounding); 0 = solo */
+  private simTimer = 0;
+  private lastSimT = 0;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -124,6 +127,15 @@ export class GameController {
     this.input.attach();
     window.addEventListener('resize', this.onResize);
     this.onResize();
+    // Multiplayer must keep simulating + producing inputs even when the tab is
+    // unfocused (else every peer stalls waiting on it), so drive the sim from a
+    // timer (+ audio keepalive to defeat background throttling) and use rAF for
+    // RENDER only. Solo stays on the plain rAF loop.
+    if (session) {
+      this.audio.startKeepAlive();
+      this.lastSimT = performance.now();
+      this.simTimer = window.setInterval(this.simStep, 1000 / 120);
+    }
     this.raf = requestAnimationFrame(this.loop);
   }
 
@@ -288,11 +300,8 @@ export class GameController {
     return n; // > 3 means the "Match begins in" lead-in
   }
 
-  private loop = (t: number): void => {
-    if (this.disposed) return;
-    const dtMs = this.lastT ? t - this.lastT : 16;
-    this.lastT = t;
-
+  /** everything a frame does EXCEPT render: sample input, step, audio, toasts */
+  private frameLogic(dtMs: number): void {
     const cmd = this.input.poll();
     // "flip front": reverse robot-centric drive so the shooter side leads.
     // Meaningless in field-centric (translation is driver-frame there).
@@ -318,9 +327,27 @@ export class GameController {
     }
     this.toasts = this.toasts.filter((x) => performance.now() - x.at < 2500).slice(-5);
     this.world.events.length = 0;
+  }
 
+  /** rAF loop: solo advances + renders here; multiplayer only RENDERS (the sim
+   * is driven by simStep so it survives tab backgrounding — rAF pauses then) */
+  private loop = (t: number): void => {
+    if (this.disposed) return;
+    const dtMs = this.lastT ? t - this.lastT : 16;
+    this.lastT = t;
+    if (!this.session) this.frameLogic(dtMs);
     this.renderer.render(this.ctx, this.world, this.lastCmd, this.localRobotId);
     this.raf = requestAnimationFrame(this.loop);
+  };
+
+  /** multiplayer sim driver — a timer (not rAF) so a backgrounded tab keeps
+   * stepping and feeding inputs to its peers instead of freezing the match */
+  private simStep = (): void => {
+    if (this.disposed) return;
+    const now = performance.now();
+    const dtMs = this.lastSimT ? now - this.lastSimT : 8;
+    this.lastSimT = now;
+    this.frameLogic(dtMs);
   };
 
   /** solo stepping: local keypress start/restart, one local command per tick */
@@ -353,19 +380,19 @@ export class GameController {
     if (this.input.restartPressed && s.isHost()) {
       s.requestRestart((Date.now() ^ (Math.random() * 0xffffffff)) >>> 0);
     }
+    // a lockstep stall freezes ALL peers together; on resume they must continue
+    // at real time, not fast-forward — so cap the backlog the accumulator holds
+    if (this.acc > 0.25) this.acc = 0.25;
     s.produce(this.world.tick, cmd);
+    // allow a healthy catch-up per call so a briefly-throttled peer can drain
+    // its backlog and keep feeding inputs to everyone else
     let steps = 0;
-    while (
-      this.acc >= C.SIM_DT &&
-      steps < C.MAX_STEPS_PER_FRAME &&
-      s.canStep(this.world.tick)
-    ) {
+    while (this.acc >= C.SIM_DT && steps < 30 && s.canStep(this.world.tick)) {
       step(this.world, C.SIM_DT, s.commandsForTick(this.world.tick));
       s.checkpoint(this.world);
       this.acc -= C.SIM_DT;
       steps++;
     }
-    if (steps === C.MAX_STEPS_PER_FRAME) this.acc = 0;
   }
 
   /** host-authored restart arrived over the net: rebuild from the new seed */
@@ -438,7 +465,9 @@ export class GameController {
   dispose(): void {
     this.disposed = true;
     this.audio.stopSpeech();
+    this.audio.stopKeepAlive();
     cancelAnimationFrame(this.raf);
+    if (this.simTimer) window.clearInterval(this.simTimer);
     this.input.detach();
     window.removeEventListener('resize', this.onResize);
   }

@@ -44,6 +44,40 @@ export class MatchAudio {
 
   private ctx: AudioContext | null = null;
 
+  private keepAlive: { ctx: AudioContext; osc: OscillatorNode } | null = null;
+
+  /** Keep the tab counted as "playing audio" so the browser does NOT throttle
+   * background timers — required for smooth lockstep multiplayer when a player
+   * unfocuses the tab (a throttled peer would stop feeding inputs and stall
+   * everyone). A silent (gain 0) oscillator connected to the destination keeps
+   * the AudioContext running; it is independent of the Sounds toggle. */
+  startKeepAlive(): void {
+    if (this.keepAlive) return;
+    try {
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      void ctx.resume();
+      this.keepAlive = { ctx, osc };
+    } catch {
+      /* no WebAudio — background throttling will apply, but the game still runs */
+    }
+  }
+
+  stopKeepAlive(): void {
+    if (!this.keepAlive) return;
+    try {
+      this.keepAlive.osc.stop();
+      void this.keepAlive.ctx.close();
+    } catch {
+      /* ignore */
+    }
+    this.keepAlive = null;
+  }
+
   private ensureCtx(): AudioContext | null {
     if (this.muted) return null;
     try {
