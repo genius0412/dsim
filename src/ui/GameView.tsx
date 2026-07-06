@@ -45,13 +45,17 @@ export function GameView({ settings, onExit, session = null }: Props) {
         <button className="game-btn" onClick={onExit} title="Back to menu (Esc)">
           ◄ MENU
         </button>
-        <button
-          className="game-btn"
-          onClick={() => controllerRef.current?.restart()}
-          title="Restart (R · gamepad Back/Select)"
-        >
-          ⟲ RESET
-        </button>
+        {/* RESET is a LOCAL rebuild — meaningless (and desyncing) in lockstep, so
+            solo only. In multiplayer use REMATCH on the results screen (host). */}
+        {!session && (
+          <button
+            className="game-btn"
+            onClick={() => controllerRef.current?.restart()}
+            title="Restart (R · gamepad Back/Select)"
+          >
+            ⟲ RESET
+          </button>
+        )}
       </div>
       {hud?.phase === 'pre' && hud.countdown === null && !session && (
         <div className="overlay">
@@ -82,7 +86,14 @@ export function GameView({ settings, onExit, session = null }: Props) {
           {hud.countdown > 3 ? 'MATCH BEGINS IN' : hud.countdown}
         </div>
       )}
-      {hud?.phase === 'post' && <Results hud={hud} onRematch={() => controllerRef.current?.restart()} onExit={onExit} />}
+      {hud?.phase === 'post' && (
+        <Results
+          hud={hud}
+          canRematch={!session || session.isHost()}
+          onRematch={() => controllerRef.current?.rematch()}
+          onExit={onExit}
+        />
+      )}
     </div>
   );
 }
@@ -213,10 +224,12 @@ function Hud({ hud }: { hud: HudSnapshot }) {
  * benefits the fouled alliance. */
 function Results({
   hud,
+  canRematch,
   onRematch,
   onExit,
 }: {
   hud: HudSnapshot;
+  canRematch: boolean;
   onRematch: () => void;
   onExit: () => void;
 }) {
@@ -313,7 +326,13 @@ function Results({
           alliance for the OPPONENT's fouls — already included in each TOTAL.
         </p>
         <div className="overlay-buttons">
-          <button onClick={onRematch}>REMATCH</button>
+          {canRematch ? (
+            <button onClick={onRematch}>REMATCH</button>
+          ) : (
+            <button disabled title="Only the host can start a rematch">
+              WAITING FOR HOST…
+            </button>
+          )}
           <button onClick={onExit}>MENU</button>
         </div>
       </div>

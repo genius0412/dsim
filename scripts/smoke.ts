@@ -44,14 +44,8 @@ import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
 import { driveParams } from '../src/sim/drivetrain';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, mergeBindings } from '../src/input/bindings';
-import {
-  quantizeCommand,
-  dequantizeCommand,
-  localizeCommand,
-  encodeCommandPacket,
-  decodeCommandPacket,
-} from '../src/net/protocol';
-import { Lockstep } from '../src/net/lockstep';
+import { quantizeCommand, localizeCommand, slimWorld, unslimWorld } from '../src/net/protocol';
+import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
 import { dsin, dcos, dtan, datan2 } from '../src/math';
 
@@ -1334,7 +1328,7 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
 }
 
 // ============================================================================
-// Phase D: netcode foundation (protocol / checksum / lockstep)
+// Phase 0: server-authoritative netcode (protocol / checksum / predict-reconcile)
 // ============================================================================
 
 // ---- command quantization: clamp + idempotent round-trip -------------------
@@ -1346,86 +1340,15 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     `dx=${q.dx} dy=${q.dy} rot=${q.rot} btn=${q.buttons}`,
   );
   // quantize∘dequantize is the identity on a QCommand, so localize is stable —
-  // the producer and every peer step the exact same float
+  // the client predicts on exactly what the server decodes from the same bytes
   const raw = cmd({ driveX: 0.37, driveY: -0.81, rotate: 0.12, fire: true });
   const once = localizeCommand(raw);
   const twice = localizeCommand(once);
   check(
-    'localizeCommand is stable (producer value == what peers decode)',
+    'localizeCommand is stable (client prediction == server-decoded value)',
     JSON.stringify(once) === JSON.stringify(twice),
     JSON.stringify(once),
   );
-}
-
-// ---- command packet binary round-trip --------------------------------------
-{
-  const qs = [
-    quantizeCommand(cmd({ driveX: 1, fire: true })),
-    quantizeCommand(cmd({ driveY: -0.5, intake: true })),
-    quantizeCommand(cmd({ rotate: 0.25 })),
-    quantizeCommand(cmd({})),
-  ];
-  const buf = encodeCommandPacket(3, 1000, qs);
-  const dec = decodeCommandPacket(buf);
-  check(
-    'command packet encodes/decodes (robotId, startTick, 4-byte ticks)',
-    buf.byteLength === 7 + 4 * 4 &&
-      dec.robotId === 3 &&
-      dec.startTick === 1000 &&
-      JSON.stringify(dec.cmds) === JSON.stringify(qs),
-    `bytes=${buf.byteLength} id=${dec.robotId} start=${dec.startTick}`,
-  );
-}
-
-// ---- lockstep: input delay, gating, disconnect substitution ----------------
-{
-  const ls = new Lockstep([0, 1], 0, 8); // robots 0 (local) & 1, delay 8
-  check('pre-seeded pipeline lets the match start (canStep(0))', ls.canStep(0));
-
-  const sched = ls.submitLocal(0, cmd({ driveX: 1, fire: true }));
-  check('local command is scheduled INPUT_DELAY ticks ahead', sched.tick === 8, `tick=${sched.tick}`);
-  check('cannot step tick 8 until the remote command arrives', !ls.canStep(8));
-
-  ls.receiveRemote(1, 8, cmd({ driveX: -1 }));
-  check('step unblocks once every connected robot has tick 8', ls.canStep(8));
-
-  const at8 = ls.commandsForTick(8);
-  check(
-    'commandsForTick assembles both robots (local round-tripped, remote as sent)',
-    Math.abs((at8.get(0)?.driveX ?? 0) - 1) < 1e-9 && at8.get(1)?.driveX === -1,
-    `r0=${at8.get(0)?.driveX} r1=${at8.get(1)?.driveX}`,
-  );
-
-  // a disconnect: stop waiting on robot 1; it runs on ZERO from now
-  ls.submitLocal(1, cmd({ driveY: 1 })); // lands at tick 9
-  ls.markDisconnected(1);
-  check('a disconnected robot no longer blocks stepping', ls.canStep(9));
-  const at9 = ls.commandsForTick(9);
-  check(
-    'a disconnected robot is stepped on ZERO_CMD',
-    at9.get(1)?.driveX === 0 && at9.get(1)?.driveY === 0 && at9.get(1)?.fire === false,
-  );
-
-  check('checksum ticks land on the interval only', Lockstep.isChecksumTick(120) && !Lockstep.isChecksumTick(0) && !Lockstep.isChecksumTick(121));
-}
-
-// ---- deterministic drop-at-tick (host-authored disconnect) ------------------
-// a departing robot must run on ZERO from ONE agreed tick on every peer, and
-// stall (never silently ZERO) for any earlier tick whose real input is missing
-{
-  const ls = new Lockstep([0, 1], 0, 8);
-  for (let t = 8; t <= 12; t++) ls.setLocal(t, cmd({ driveY: 1 })); // robot 0 ready 8..12
-  ls.receiveRemote(1, 8, cmd({ driveX: -1 }));
-  ls.receiveRemote(1, 10, cmd({ driveX: -1 })); // robot 1 has 8 & 10, MISSING 9
-  check('lastTickFor reports the highest buffered tick', ls.lastTickFor(1) === 10, `${ls.lastTickFor(1)}`);
-  ls.dropAt(1, 11); // deterministic drop from tick 11
-  check('before the drop tick a missing input still stalls (safe, no silent ZERO)', !ls.canStep(9));
-  check('real buffered input before the drop tick is still used', ls.commandsForTick(10).get(1)?.driveX === -1);
-  check('at/after the drop tick the robot is no longer required', ls.canStep(11));
-  const at11 = ls.commandsForTick(11);
-  check('a dropped robot runs on ZERO from its drop tick', at11.get(1)?.driveX === 0 && at11.get(1)?.driveY === 0);
-  ls.dropAt(1, 20);
-  check('dropAt keeps the EARLIEST drop tick (idempotent to min)', ls.canStep(11));
 }
 
 // ---- worldHash: replay determinism + sensitivity ---------------------------
@@ -1448,14 +1371,14 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     const out: number[] = [];
     for (let i = 0; i < 600; i++) {
       step(w, SIM_DT, cmds);
-      if (Lockstep.isChecksumTick(w.tick)) out.push(worldHash(w));
+      if (w.tick % 120 === 0) out.push(worldHash(w)); // sample every ~2 s
     }
     return out;
   };
   const h1 = hashesAt(build());
   const h2 = hashesAt(build());
   check(
-    'worldHash agrees across identical replays at every checksum tick',
+    'worldHash agrees across identical replays (server/client parity per tick)',
     h1.length === 5 && JSON.stringify(h1) === JSON.stringify(h2),
     `n=${h1.length}`,
   );
@@ -1465,6 +1388,128 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   const wb = build();
   wb.robots[0].pos.x += 1; // a 1" divergence must change the hash
   check('worldHash detects a diverged position', worldHash(wa) !== worldHash(wb));
+}
+
+// ---- snapshot fidelity: World survives a JSON snapshot round-trip -----------
+// (reconciliation replaces the world with a JSON snapshot from the server, so
+// the parsed world must hash identically to the original)
+{
+  const w = createWorld('match', 555, [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 1)]);
+  startMatch(w);
+  const cmds = new Map([
+    [0, cmd({ driveY: 1, rotate: 0.4, fire: true })],
+    [1, cmd({ driveX: -0.6, intake: true })],
+  ]);
+  for (let i = 0; i < 240; i++) step(w, SIM_DT, cmds);
+  const clone: World = JSON.parse(JSON.stringify(w));
+  check('World survives a JSON snapshot round-trip (hash-identical)', worldHash(clone) === worldHash(w));
+}
+
+// ---- delta snapshots: slim (spec-stripped) + ball delta reassemble exactly --
+{
+  const setups = [setup(0, 'blue', {}, 0), setup(1, 'red', { drivetrain: 'tank' }, 1)];
+  const w = createWorld('match', 654, setups);
+  startMatch(w);
+  const cmds = new Map([
+    [0, cmd({ driveY: 1, fire: true })],
+    [1, cmd({ driveX: -0.5, intake: true })],
+  ]);
+  // stop early, while balls are still in flight/motion (so the delta below has
+  // both changed and idle balls to distinguish)
+  for (let i = 0; i < 45; i++) step(w, SIM_DT, cmds);
+
+  // slim (drop balls + robot.spec) then reassemble with spec re-injected
+  const specById = (id: number): (typeof setups)[number]['spec'] =>
+    setups.find((s) => s.id === id)!.spec;
+  const rebuilt = unslimWorld(slimWorld(w), w.balls, specById);
+  check('slim+unslim snapshot reassembles to an identical worldHash', worldHash(rebuilt) === worldHash(w));
+  check(
+    'the slim wire world carries no robot spec (client re-injects it)',
+    !('spec' in (slimWorld(w).robots[0] as object)),
+  );
+
+  // ball delta: encode changes vs a baseline, apply to the baseline, compare
+  const baseline: Artifact[] = w.balls.map((b) => JSON.parse(JSON.stringify(b)));
+  const prevJson = new Map(baseline.map((b) => [b.id, JSON.stringify(b)]));
+  for (let i = 0; i < 6; i++) step(w, SIM_DT, cmds); // move some balls
+  const curJson = new Map(w.balls.map((b) => [b.id, JSON.stringify(b)]));
+  const order = w.balls.map((b) => b.id);
+  const upd = w.balls.filter((b) => curJson.get(b.id) !== prevJson.get(b.id));
+
+  // client-side apply: patch baseline by id, rebuild in the authoritative order
+  const base = new Map(baseline.map((b) => [b.id, b]));
+  for (const b of upd) base.set(b.id, JSON.parse(JSON.stringify(b)));
+  const keep = new Set(order);
+  for (const id of [...base.keys()]) if (!keep.has(id)) base.delete(id);
+  const applied = order.map((id) => base.get(id) as Artifact);
+
+  check(
+    'ball delta reconstructs the exact ball array (order + data)',
+    JSON.stringify(applied) === JSON.stringify(w.balls),
+    `sent ${upd.length}/${w.balls.length} balls`,
+  );
+  const unchanged = w.balls.filter((b) => prevJson.get(b.id) === curJson.get(b.id)).length;
+  check(
+    'ball delta sends only the moved balls (some changed, some idle)',
+    upd.length > 0 && unchanged > 0 && upd.length < w.balls.length,
+    `${upd.length} changed, ${unchanged} idle`,
+  );
+}
+
+// ---- predict/reconcile parity ----------------------------------------------
+// The client replaces its world with a server snapshot at `serverTick`, then
+// replays the local inputs it had buffered PAST that tick (remote robots default
+// to ZERO in step()). The result must equal the authoritative world stepped with
+// those same local inputs — this is exactly GameController.reconcile().
+{
+  const seed = 909;
+  const setups = [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 1)];
+  const localStream = (t: number): RobotCommand =>
+    cmd({ driveY: 0.8, rotate: 0.2, fire: t % 15 === 0 });
+
+  // authoritative world: local robot driven, remote robot idle (ZERO)
+  const auth = createWorld('match', seed, setups);
+  startMatch(auth);
+  for (let t = 1; t <= 100; t++) step(auth, SIM_DT, new Map([[0, localizeCommand(localStream(t))]]));
+  const snap: World = JSON.parse(JSON.stringify(auth)); // the "server snapshot" at tick 100
+
+  // authority runs 20 more ticks with the same local inputs
+  const buffered: RobotCommand[] = [];
+  for (let t = 101; t <= 120; t++) {
+    const l = localizeCommand(localStream(t));
+    buffered.push(l);
+    step(auth, SIM_DT, new Map([[0, l]]));
+  }
+
+  // client reconciles: adopt the snapshot, replay the 20 buffered local inputs
+  const client: World = JSON.parse(JSON.stringify(snap));
+  for (const l of buffered) step(client, SIM_DT, new Map([[0, l]]));
+  check(
+    'reconcile replay reproduces the authoritative world exactly',
+    worldHash(client) === worldHash(auth),
+    `client=${worldHash(client)} auth=${worldHash(auth)}`,
+  );
+}
+
+// ---- server drop degrades cleanly (ZERO from the drop tick) -----------------
+// a robot whose client left runs on ZERO and never stalls the others; the match
+// keeps advancing and the world stays finite.
+{
+  const w = createWorld('match', 42, [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 1)]);
+  startMatch(w);
+  // both robots active for a bit
+  for (let t = 0; t < 60; t++) {
+    step(w, SIM_DT, new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveX: 1 })]]));
+  }
+  const before = w.tick;
+  // robot 1 "drops": server feeds only robot 0; robot 1 gets ZERO by default
+  for (let t = 0; t < 120; t++) step(w, SIM_DT, new Map([[0, cmd({ driveY: -1 })]]));
+  const r1 = w.robots[1];
+  check(
+    'a dropped robot keeps the sim advancing (no stall) and stays finite',
+    w.tick === before + 120 && Number.isFinite(r1.pos.x) && Number.isFinite(r1.pos.y),
+    `tick=${w.tick} r1=(${r1.pos.x.toFixed(1)},${r1.pos.y.toFixed(1)})`,
+  );
 }
 
 // ---- deterministic trig: cross-engine lockstep needs Math-free sin/cos/atan2 -

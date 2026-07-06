@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
 import type { Alliance } from '../types';
 import { START_POSES } from '../config';
-import { SupabaseLobby, ROOM_CAPACITY, type LobbyPlayer, type StartMsg } from '../net/lobby';
-import { RtcMesh } from '../net/mesh';
-import { NetSession } from '../net/session';
-import type { NetRobotSetup } from '../net/protocol';
+import { gameServerUrl } from '../net/env';
+import { WebSocketTransport } from '../net/transport';
+import { LobbyClient, type MatchStart } from '../net/lobbyClient';
+import { ServerSession } from '../net/serverSession';
+import { ROOM_CAPACITY, type LobbyPlayer } from '../net/protocol';
+import type { NetSession } from '../net/session';
 
 interface Props {
   settings: GameSettings;
@@ -16,48 +18,33 @@ interface Props {
 type Phase = 'entry' | 'connecting' | 'room' | 'error';
 
 /**
- * Multiplayer lobby: join a room by code (Supabase Realtime), open a WebRTC
- * mesh to everyone present, ready-up, and — when the host hits START — mint a
- * NetSession that the App hands to the game. Empty slots simply spawn no robot.
+ * Multiplayer lobby over the authoritative game server (Phase 0): join a room by
+ * code, pick alliance / start pose, ready up, and — when the host starts — the
+ * server authors the match and everyone receives `matchStart`, at which point we
+ * mint a ServerSession that TAKES OVER the same socket. No WebRTC mesh, no
+ * presence: the server is the single source of truth for the roster and host, so
+ * one client can never stall the others.
  */
 export function Lobby({ settings, onStart, onCancel }: Props) {
   const [phase, setPhase] = useState<Phase>('entry');
   const [code, setCode] = useState('');
   const [name, setName] = useState(settings.spec.teamName || 'Player');
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
-  const [connected, setConnected] = useState<string[]>([]);
+  const [hostId, setHostId] = useState('');
+  const [myId, setMyId] = useState('');
   const [error, setError] = useState('');
-  // bumped on every mesh link event so per-peer connection status re-renders
-  const [, setLinkVer] = useState(0);
 
-  const lobbyRef = useRef<SupabaseLobby | null>(null);
-  const meshRef = useRef<RtcMesh | null>(null);
+  const lobbyRef = useRef<LobbyClient | null>(null);
   const startedRef = useRef(false);
-  /** last meshReady value we published, so we only re-track on a real change */
-  const reportedRef = useRef<boolean | null>(null);
-  /** the host's last-published roster (re-broadcast on the heartbeat) */
-  const rosterRef = useRef<LobbyPlayer[]>([]);
 
-  // tear down on unmount unless a match started (which hands ownership onward).
-  // Also leave on pagehide so a tab refresh/close drops our presence instead of
-  // leaving a ghost that pollutes the room + the mesh.
+  // tear down on unmount unless a match started (which hands the socket onward)
   useEffect(() => {
-    const onHide = (): void => {
-      if (!startedRef.current) void lobbyRef.current?.leave();
-    };
-    window.addEventListener('pagehide', onHide);
-    // (membership heartbeat now lives inside SupabaseLobby — the hello broadcast —
-    // and rebuilding there fires 'players', which re-publishes the host roster)
     return () => {
-      window.removeEventListener('pagehide', onHide);
-      if (!startedRef.current) {
-        meshRef.current?.close();
-        void lobbyRef.current?.leave();
-      }
+      if (!startedRef.current) lobbyRef.current?.dispose();
     };
   }, []);
 
-  // Esc leaves the lobby (⇒ unmount ⇒ leave() untracks + announces our exit)
+  // Esc leaves the lobby
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onCancel();
@@ -66,153 +53,70 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onCancel]);
 
-  const myPeerId = lobbyRef.current?.peerId;
-  const me = players.find((p) => p.peerId === myPeerId) ?? null;
-  const isHost = lobbyRef.current?.isHost() ?? false;
-  const hostId = lobbyRef.current?.hostId() ?? null;
+  const me = players.find((p) => p.clientId === myId) ?? null;
+  const isHost = myId !== '' && myId === hostId;
   const allReady = players.length > 0 && players.every((p) => p.ready);
-  const linkOf = (id: string): 'open' | 'connecting' | 'failed' | 'none' =>
-    id === myPeerId ? 'open' : (meshRef.current?.linkStatus(id) ?? 'none');
-  const others = players.filter((p) => p.peerId !== myPeerId);
-  // MY view: an OPEN DataChannel to every other in-room driver
-  const allConnected = others.every((p) => linkOf(p.peerId) === 'open');
-  const failedPeers = others.filter((p) => linkOf(p.peerId) === 'failed');
-  // FULL-MESH gate: the match starts only when EVERY driver reports they see
-  // everyone (each p.meshReady). If A↔B is up but B↔C isn't, B reports false, so
-  // START stays locked — no one begins a match that would freeze at WAITING.
-  const everyoneConnected = players.length > 0 && players.every((p) => p.meshReady);
 
-  // publish OUR connectivity so the host can gate START on the full mesh (only
-  // re-track when it actually flips, to avoid a presence-update storm)
-  useEffect(() => {
-    if (phase !== 'room') return;
-    if (reportedRef.current === allConnected) return;
-    reportedRef.current = allConnected;
-    void lobbyRef.current?.updateSelf({ meshReady: allConnected });
-  }, [allConnected, phase]);
+  function handleStart(m: MatchStart): void {
+    const lobby = lobbyRef.current;
+    if (!lobby) return;
+    startedRef.current = true;
+    // pass the identity + room so the session can reclaim its slot on a reconnect
+    onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, code.trim()));
+  }
 
-  async function join(): Promise<void> {
+  function join(): void {
     if (!code.trim()) return;
+    if (!gameServerUrl()) {
+      setError('multiplayer not configured');
+      setPhase('error');
+      return;
+    }
     setPhase('connecting');
-    const lobby = new SupabaseLobby({
+    let transport: WebSocketTransport;
+    try {
+      transport = new WebSocketTransport(gameServerUrl());
+    } catch {
+      setError('could not reach the game server');
+      setPhase('error');
+      return;
+    }
+    const lobby = new LobbyClient(transport);
+    lobbyRef.current = lobby;
+
+    lobby.on('roster', (list, host) => {
+      setPlayers(list);
+      setHostId(host);
+      setMyId(lobby.clientId);
+      setPhase((p) => (p === 'connecting' ? 'room' : p));
+    });
+    lobby.on('matchStart', handleStart);
+    lobby.on('error', (msg) => {
+      setError(msg);
+      setPhase('error');
+    });
+    lobby.on('closed', () => {
+      if (!startedRef.current) {
+        setError('lost connection to the game server');
+        setPhase('error');
+      }
+    });
+
+    lobby.join(code.trim(), {
       name,
       teamName: settings.spec.teamName,
       teamNumber: settings.spec.teamNumber,
       alliance: settings.alliance,
       startIndex: settings.startIndex,
       ready: false,
-      meshReady: false,
       spec: settings.spec,
       assists: settings.assists,
     });
-    lobbyRef.current = lobby;
-    const mesh = new RtcMesh(lobby, lobby.peerId);
-    meshRef.current = mesh;
-    const bump = (): void => setLinkVer((v) => v + 1);
-    mesh.on('connect', () => {
-      setConnected(mesh.connectedPeers());
-      bump();
-    });
-    mesh.on('disconnect', () => {
-      setConnected(mesh.connectedPeers());
-      bump();
-    });
-    mesh.on('failed', bump); // a peer couldn't connect — re-render its status dot
-
-    const leaveWith = (msg: string): void => {
-      setError(msg);
-      setPhase('error');
-      mesh.close();
-      void lobby.leave();
-    };
-
-    lobby.on('players', (list) => {
-      // membership capped by PEERID (clock-independent — joinedAt/Date.now differs
-      // per machine and made clients disagree). The HOST is the single source of
-      // truth: it publishes this list and EVERYONE renders the host's copy (via
-      // the 'roster' handler), so no two screens can show different things.
-      const order = [...list].sort((a, b) => (a.peerId < b.peerId ? -1 : 1));
-      const keep = order.slice(0, ROOM_CAPACITY);
-      const excess = order.slice(ROOM_CAPACITY);
-      // a driver over the cap bounces itself (safe — affects only itself)
-      if (excess.some((p) => p.peerId === lobby.peerId)) {
-        leaveWith(`Room is full (max ${ROOM_CAPACITY} drivers).`);
-        return;
-      }
-      mesh.connect(keep.map((p) => p.peerId));
-      // show our local view immediately (so nothing's blank during host election);
-      // non-hosts then get overridden by the host's authoritative 'roster' below
-      setPlayers(keep);
-      if (lobby.isHost()) {
-        rosterRef.current = keep;
-        lobby.broadcastRoster(keep); // authoritative → everyone renders this
-      }
-    });
-    // non-hosts render the HOST's roster (our own latest state overlaid so our
-    // alliance/ready toggles feel instant instead of waiting a round-trip)
-    lobby.on('roster', (hostList) => {
-      if (lobby.isHost()) return;
-      const self = lobby.getSelf();
-      const shown = hostList.map((p) => (p.peerId === self.peerId ? { ...p, ...self } : p));
-      if (!shown.some((p) => p.peerId === self.peerId)) shown.push(self);
-      setPlayers(shown);
-      meshRef.current?.connect(shown.map((p) => p.peerId));
-    });
-    lobby.on('start', (msg) => handleStart(msg));
-    lobby.on('kicked', () => leaveWith('You were removed from the room by the host.'));
-
-    try {
-      await lobby.join(code.trim());
-      setPhase('room');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'failed to join');
-      setPhase('error');
-    }
   }
 
-  function handleStart(msg: StartMsg): void {
-    const mesh = meshRef.current;
-    const lobby = lobbyRef.current;
-    if (!mesh || !lobby) return;
-    startedRef.current = true;
-    onStart(new NetSession(mesh, lobby, msg, lobby.peerId));
-  }
-
-  function hostStart(): void {
-    const lobby = lobbyRef.current;
-    if (!lobby) return;
-    // build ONLY the in-room drivers — the SAME deterministic cap as the roster
-    // — so a ghost/overflow presence never spawns a phantom robot that no one
-    // drives (its missing commands would stall every peer's lockstep)
-    const roster = [...lobby.getPlayers()]
-      .sort((a, b) => (a.peerId < b.peerId ? -1 : 1)) // SAME cap order as the roster
-      .slice(0, ROOM_CAPACITY);
-    // honor each driver's chosen start position, but keep them DISTINCT within
-    // an alliance (bump to the next free pose) so robots never spawn overlapping
-    const used: Record<Alliance, Set<number>> = { red: new Set(), blue: new Set() };
-    const setups: NetRobotSetup[] = [];
-    const assign: Record<string, number> = {};
-    roster.forEach((p, i) => {
-      let si = p.startIndex ?? 0;
-      while (used[p.alliance].has(si)) si = (si + 1) % START_POSES.length;
-      used[p.alliance].add(si);
-      setups.push({ id: i, alliance: p.alliance, spec: p.spec, assists: p.assists, startIndex: si });
-      assign[p.peerId] = i;
-    });
-    const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
-    const msg: StartMsg = { seed, setups, assign };
-    lobby.startMatch(msg);
-    handleStart(msg); // broadcasts don't echo to self
-  }
-
-  const setAlliance = (alliance: Alliance): void =>
-    void lobbyRef.current?.updateSelf({ alliance });
-  const setStartPos = (startIndex: number): void =>
-    void lobbyRef.current?.updateSelf({ startIndex });
-  const toggleReady = (): void =>
-    void lobbyRef.current?.updateSelf({ ready: !me?.ready });
-  const kick = (peerId: string): void => lobbyRef.current?.kick(peerId);
-  const refresh = (): void => void lobbyRef.current?.resync();
+  const setAlliance = (alliance: Alliance): void => lobbyRef.current?.update({ alliance });
+  const setStartPos = (startIndex: number): void => lobbyRef.current?.update({ startIndex });
+  const toggleReady = (): void => lobbyRef.current?.update({ ready: !me?.ready });
 
   if (phase === 'entry' || phase === 'connecting' || phase === 'error') {
     return (
@@ -264,29 +168,19 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
             ROOM <span className="accent">{code}</span>
           </h1>
           <p className="subtitle">
-            {isHost ? 'You are the host' : 'Waiting for the host to start'} ·{' '}
-            {players.length}/{ROOM_CAPACITY} drivers · {connected.length + 1} linked
+            {isHost ? 'You are the host' : 'Waiting for the host to start'} · {players.length}/
+            {ROOM_CAPACITY} drivers
           </p>
         </header>
 
         <section>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <h2>Drivers</h2>
-            <button className="game-btn" onClick={refresh} title="Re-sync the roster if it looks out of date">
-              ⟳ REFRESH
-            </button>
-          </div>
+          <h2>Drivers</h2>
           <div className="lobby-players">
             {players.map((p) => {
-              const isMe = p.peerId === lobbyRef.current?.peerId;
-              const link = linkOf(p.peerId);
+              const isMe = p.clientId === myId;
               return (
-                <div key={p.peerId} className={`lobby-player ${p.alliance}`}>
-                  <span
-                    className="lobby-dot"
-                    data-linked={link === 'open'}
-                    title={isMe ? 'you' : `connection: ${link}`}
-                  />
+                <div key={p.clientId} className={`lobby-player ${p.alliance}`}>
+                  <span className="lobby-dot" data-linked={true} title={isMe ? 'you' : 'connected'} />
                   <span className="lobby-name">
                     {p.name}
                     {isMe ? ' (you)' : ''}
@@ -294,20 +188,16 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
                   <span className="lobby-team">
                     {p.spec.name} · {p.teamNumber || '—'}
                   </span>
-                  {p.peerId === hostId && <span className="chip on" title="Room host">★ HOST</span>}
-                  <span className={`chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
-                  <span className="chip">{START_POSES[p.startIndex]?.label ?? '—'}</span>
-                  {!isMe && link !== 'open' && (
-                    <span className={`chip ${link === 'failed' ? 'off' : 'warn'}`}>
-                      {link === 'failed' ? 'NO CONNECT' : 'CONNECTING…'}
+                  {p.clientId === hostId && (
+                    <span className="chip on" title="Room host">
+                      ★ HOST
                     </span>
                   )}
-                  <span className={`chip ${p.ready ? 'on' : 'off'}`}>{p.ready ? 'READY' : 'NOT READY'}</span>
-                  {isHost && !isMe && (
-                    <button className="lobby-kick" title="Remove from room" onClick={() => kick(p.peerId)}>
-                      ✕
-                    </button>
-                  )}
+                  <span className={`chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
+                  <span className="chip">{START_POSES[p.startIndex]?.label ?? '—'}</span>
+                  <span className={`chip ${p.ready ? 'on' : 'off'}`}>
+                    {p.ready ? 'READY' : 'NOT READY'}
+                  </span>
                 </div>
               );
             })}
@@ -337,7 +227,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
           <div className="card-row">
             {START_POSES.map((pose, i) => {
               const taken = players.some(
-                (p) => p.peerId !== me?.peerId && p.alliance === me?.alliance && p.startIndex === i,
+                (p) => p.clientId !== me?.clientId && p.alliance === me?.alliance && p.startIndex === i,
               );
               return (
                 <button
@@ -361,8 +251,8 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
           {isHost && (
             <button
               className="start-btn"
-              disabled={!allReady || !everyoneConnected}
-              onClick={hostStart}
+              disabled={!allReady}
+              onClick={() => lobbyRef.current?.start()}
             >
               START MATCH ▶
             </button>
@@ -372,18 +262,6 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
           </button>
         </div>
         {isHost && !allReady && <p className="hint">START unlocks once every driver is ready.</p>}
-        {isHost && allReady && !everyoneConnected && (
-          <p className="hint">
-            {failedPeers.length > 0
-              ? `⚠ Couldn't connect to ${failedPeers.map((p) => p.name).join(', ')} — check network/TURN, or kick to start without them.`
-              : `Waiting for a full mesh — every driver must be linked to every other. Not yet connected: ${
-                  players
-                    .filter((p) => !p.meshReady)
-                    .map((p) => p.name)
-                    .join(', ') || '…'
-                }`}
-          </p>
-        )}
       </div>
     </div>
   );

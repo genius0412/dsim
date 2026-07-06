@@ -1,20 +1,28 @@
-import type { Alliance, AssistConfig, RobotCommand, RobotSpec } from '../types';
+import type {
+  Alliance,
+  Artifact,
+  AssistConfig,
+  RobotCommand,
+  RobotSpec,
+  RobotState,
+  World,
+} from '../types';
+import type { RobotSetup } from '../sim/spawn';
 import { clamp } from '../math';
 
 /**
- * Wire protocol for lockstep multiplayer. Two message classes share one
- * DataChannel and are told apart by JS type (WebRTC delivers ArrayBuffer vs
- * string distinctly):
- *   - COMMAND PACKETS (ArrayBuffer, hot path): a run of per-tick RobotCommands
- *     for one robot, quantized to 4 bytes/tick.
- *   - CONTROL MESSAGES (JSON string, cold path): start / restart / checksum /
- *     bye. Rare, so readability beats bytes.
+ * Wire protocol for the SERVER-AUTHORITATIVE netcode (Phase 0). All messages are
+ * JSON over a single WebSocket per client — binary/delta encoding is a Phase 1
+ * optimization. Two directions:
+ *   - ClientMsg (browser → server): lobby ops + per-tick `input`.
+ *   - ServerMsg (server → browser): roster, `matchStart`, `snapshot`, `drop`.
  *
- * CRITICAL determinism rule: commands are QUANTIZED AT THE PRODUCER, and the
- * producer feeds its OWN local sim the dequantized value (dequantizeCommand ∘
- * quantizeCommand). Every peer decodes the same bytes to the same float, so all
- * sims step bit-identical inputs. Never feed a raw (unquantized) command to the
- * local sim while sending a quantized one to peers.
+ * Determinism note (narrower than the old lockstep rule): the server is the sole
+ * authority, so cross-machine float determinism is NOT required. What IS required
+ * is that the value the client PREDICTS with matches the value the server steps:
+ * the client quantizes its command (`quantizeCommand`) before sending AND predicts
+ * on the round-tripped value (`localizeCommand`); the server dequantizes the same
+ * bytes. Never predict on a raw command while sending a quantized one.
  */
 
 /** a RobotCommand packed into 3 signed axes + a button bitfield (4 bytes) */
@@ -47,83 +55,125 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
   };
 }
 
-/** the exact command a producer must ALSO step locally (quantize round-trip) */
+/** the exact command the client must PREDICT with (quantize round-trip), so its
+ * local sim matches what the server computes from the same wire bytes */
 export function localizeCommand(c: RobotCommand): RobotCommand {
   return dequantizeCommand(quantizeCommand(c));
 }
 
-// ---- command packets (binary) ----------------------------------------------
+// ---- lobby model ------------------------------------------------------------
 
-/** [type=1][robotId u8][startTick u32][count u8][ count × (dx,dy,rot,buttons) ] */
-export const MSG_CMDS = 1;
+/** max drivers per room (2v2) */
+export const ROOM_CAPACITY = 4;
 
-export function encodeCommandPacket(
-  robotId: number,
-  startTick: number,
-  cmds: QCommand[],
-): ArrayBuffer {
-  const buf = new ArrayBuffer(7 + cmds.length * 4);
-  const dv = new DataView(buf);
-  dv.setUint8(0, MSG_CMDS);
-  dv.setUint8(1, robotId);
-  dv.setUint32(2, startTick >>> 0);
-  dv.setUint8(6, cmds.length);
-  let o = 7;
-  for (const c of cmds) {
-    dv.setInt8(o, c.dx);
-    dv.setInt8(o + 1, c.dy);
-    dv.setInt8(o + 2, c.rot);
-    dv.setUint8(o + 3, c.buttons);
-    o += 4;
-  }
-  return buf;
-}
-
-export interface CommandPacket {
-  robotId: number;
-  startTick: number;
-  cmds: QCommand[];
-}
-
-export function decodeCommandPacket(buf: ArrayBuffer): CommandPacket {
-  const dv = new DataView(buf);
-  if (dv.getUint8(0) !== MSG_CMDS) throw new Error('not a command packet');
-  const robotId = dv.getUint8(1);
-  const startTick = dv.getUint32(2);
-  const count = dv.getUint8(6);
-  const cmds: QCommand[] = [];
-  let o = 7;
-  for (let i = 0; i < count; i++) {
-    cmds.push({
-      dx: dv.getInt8(o),
-      dy: dv.getInt8(o + 1),
-      rot: dv.getInt8(o + 2),
-      buttons: dv.getUint8(o + 3),
-    });
-    o += 4;
-  }
-  return { robotId, startTick, cmds };
-}
-
-// ---- control messages (JSON) -----------------------------------------------
-
-/** one occupied slot the host assigns at match start */
-export interface NetRobotSetup {
-  id: number;
+/** a driver in a room (server-authoritative — no presence/mesh bookkeeping) */
+export interface LobbyPlayer {
+  clientId: string;
+  name: string;
+  teamName: string;
+  teamNumber: number;
   alliance: Alliance;
+  /** index into START_POSES (mirrored per alliance) */
+  startIndex: number;
+  ready: boolean;
   spec: RobotSpec;
   assists: AssistConfig;
-  startIndex: number;
 }
 
-export type ControlMsg =
-  | { t: 'start'; seed: number; setups: NetRobotSetup[] }
-  | { t: 'restart'; seed: number }
-  | { t: 'checksum'; tick: number; hash: number }
-  // host-authored: every peer drops `robotId` at exactly `tick` (runs it on ZERO
-  // from there), so a disconnect degrades identically for all — not at each
-  // peer's own wall-clock moment (which silently desynced)
-  | { t: 'bye'; robotId: number; tick: number };
+/** fields a client may change about itself while in the room */
+export type PlayerPatch = Partial<
+  Pick<
+    LobbyPlayer,
+    'name' | 'teamName' | 'teamNumber' | 'alliance' | 'startIndex' | 'ready' | 'spec' | 'assists'
+  >
+>;
 
-export const encodeControl = (m: ControlMsg): string => JSON.stringify(m);
-export const decodeControl = (s: string): ControlMsg => JSON.parse(s) as ControlMsg;
+// ---- client → server --------------------------------------------------------
+
+export type ClientMsg =
+  | { t: 'join'; room: string; player: Omit<LobbyPlayer, 'clientId'> }
+  // reclaim an in-match slot after a transient socket drop (within the grace
+  // window) — the server rebinds the robot to the new connection and resyncs
+  | { t: 'rejoin'; room: string; clientId: string }
+  | { t: 'update'; patch: PlayerPatch }
+  | { t: 'start' } // host only: build + broadcast the match world
+  | { t: 'restart' } // host only: re-author the match with a fresh seed
+  | { t: 'input'; tick: number; q: QCommand };
+
+// ---- server → client --------------------------------------------------------
+
+export type ServerMsg =
+  | { t: 'welcome'; clientId: string }
+  | { t: 'roster'; players: LobbyPlayer[]; hostId: string }
+  | { t: 'error'; message: string }
+  // reply to a 'rejoin': ok ⇒ slot reclaimed (a snapshot follows); !ok ⇒ the
+  // grace window lapsed / slot is gone, stop trying
+  | { t: 'rejoined'; ok: boolean }
+  | { t: 'matchStart'; seed: number; setups: RobotSetup[]; yourRobotId: number }
+  // authoritative world at `serverTick`, slimmed (spec-stripped robots) with the
+  // balls delta-encoded; the client reassembles a full World via `unslimWorld`.
+  // `ackInputTick` is the newest input tick from THIS client the server folded in
+  // (diagnostic — the client reconciles off `serverTick`, replaying inputs past it)
+  | { t: 'snapshot'; serverTick: number; w: SlimWorld; balls: BallDelta; ackInputTick: number }
+  // a robot left: the server runs it on ZERO from `tick`; snapshots already
+  // reflect this, so it is informational (drives the HUD)
+  | { t: 'drop'; robotId: number; tick: number };
+
+export const encodeMsg = (m: ClientMsg | ServerMsg): string => JSON.stringify(m);
+export const decodeClientMsg = (s: string): ClientMsg => JSON.parse(s) as ClientMsg;
+export const decodeServerMsg = (s: string): ServerMsg => JSON.parse(s) as ServerMsg;
+
+// ---- snapshot slimming + ball delta -----------------------------------------
+
+/**
+ * Wire snapshots drop bandwidth two ways without any determinism risk:
+ *  1. STRIP the static `spec` from each robot — it never changes after
+ *     matchStart, so the client re-injects it from `setups` (worldHash ignores
+ *     spec, so parity is unaffected).
+ *  2. DELTA the balls — send the authoritative id ORDER every frame (cheap, a
+ *     few dozen ints) but only the DATA for balls that changed since the last
+ *     snapshot. The client rebuilds the array in the sent order from its
+ *     baseline, so it is byte-identical to the server's `world.balls`.
+ *
+ * Sending the order every frame is what keeps it deterministic: array position
+ * drives collision/scoring iteration + `worldHash`, so it must match exactly.
+ * (Over the reliable+ordered WebSocket no ack is needed — the client's baseline
+ * is always the previous snapshot. A reconnect re-primes with a full keyframe.)
+ */
+export type SlimWorld = Omit<World, 'balls' | 'robots'> & {
+  robots: Omit<RobotState, 'spec'>[];
+};
+
+/** the authoritative ball id ORDER + full data for only the changed balls */
+export interface BallDelta {
+  order: number[];
+  upd: Artifact[];
+}
+
+function stripSpec(r: RobotState): Omit<RobotState, 'spec'> {
+  const c: Partial<RobotState> = { ...r };
+  delete c.spec;
+  return c as Omit<RobotState, 'spec'>;
+}
+
+/** world for the wire: balls removed, robots stripped of their static spec */
+export function slimWorld(world: World): SlimWorld {
+  const { robots, ...rest } = world; // `rest` still carries balls
+  const slim = { ...rest, robots: robots.map(stripSpec) };
+  delete (slim as { balls?: unknown }).balls;
+  return slim as SlimWorld;
+}
+
+/** rebuild a full World from a slim world + reconstructed ball array, re-injecting
+ * each robot's spec by id */
+export function unslimWorld(
+  w: SlimWorld,
+  balls: Artifact[],
+  specById: (id: number) => RobotSpec,
+): World {
+  return {
+    ...w,
+    robots: w.robots.map((r) => ({ ...r, spec: specById(r.id) })),
+    balls,
+  };
+}

@@ -1,0 +1,12 @@
+node_modules
+dist
+release
+.git
+.env
+.env.*
+electron
+public
+docs
+scripts
+*.md
+scratch-*.ts

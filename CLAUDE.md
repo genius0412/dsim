@@ -28,7 +28,8 @@ at session start if it exists — it may describe uncommitted mid-refactor state
 - `src/config.ts` is the single source of truth for ALL geometry, physics, and scoring
   constants. Tune there, not inline.
 - `src/render/` and `src/ui/` only read world state. `src/input/` only produces commands.
-- Fixed timestep 120 Hz (`SIM_DT`), rAF render loop in `src/game.ts` (GameController).
+- Fixed timestep 60 Hz (`SIM_DT` = 1/60, `MAX_STEPS_PER_FRAME` 5), rAF render loop in
+  `src/game.ts` (GameController).
 - HUD is React, polled at 10 Hz from `GameController.getHud()`.
 
 ## Field geometry — verified, do not "fix" from intuition
@@ -248,10 +249,11 @@ trapezoid mouths + geometric side-intake rules + clump feeding.
 **Phase A (field markings), Phase B (RobotSpec v2, four drivetrains, flywheel
 recovery, canSort, robot presets + custom builder, start positions, practice
 dummies, mass-weighted robot-robot collisions, multi-robot spawn/step), and
-Phase C (penalty engine) are DONE and green.** The "Road to Multiplayer" plan
-lives at `C:\Users\geniu\.claude\plans\if-artifacts-are-scored-vivid-sphinx.md`.
-Phase D (netcode) is CODE-COMPLETE + build-green but not yet verified live (see below).
-`scripts/smoke.ts` has 117 checks — keep adding one per behavior change.
+Phase C (penalty engine) are DONE and green.** The netcode/physics roadmap now lives
+at `docs/netcodeplan.md` (supersedes the old "Road to Multiplayer" plan + the Phase D
+notes). **Netcode Phase 0 (server-authoritative + client prediction) is DONE and
+build/smoke-green** (see below); the old P2P lockstep is deleted.
+`scripts/smoke.ts` has ~120 checks — keep adding one per behavior change.
 
 **Phase C — penalty engine** (`src/sim/penalties.ts`, `updatePenalties` called in
 `world.ts` after the robot-robot solver). **MINOR = 5 pts, MAJOR = 15 pts** (user-set,
@@ -272,35 +274,54 @@ one key, awards once). All penalty state (`world.penalties`: episodes/pins/pinFo
 plain JSON so determinism/lockstep hold. HUD: FOULS chip (committed counts) + a
 PENALTIES score-table row (`foulPoints`).
 
-**Phase D — netcode** is CODE-COMPLETE and build-green (`src/net/`), with the
-deterministic core smoke-tested (117 checks). NOT yet verified live — needs the 2-tab
-manual pass in `docs/multiplayer.md` + your Supabase keys. Architecture: `protocol.ts`
-(commands quantized to 4 B AT THE PRODUCER, which steps that same dequantized value, so
-every peer's sim gets identical inputs; binary command packets + JSON control msgs),
-`checksum.ts` (`worldHash` FNV-1a over rounded state → DESYNC detection), `lockstep.ts`
-(input-delay buffer, `INPUT_DELAY` 8 ticks, `canStep` gate, disconnect ⇒ ZERO_CMD),
-`lobby.ts` (`SupabaseLobby`: one Realtime channel/room, presence + broadcast, host =
-smallest peerId), `mesh.ts` (`RtcMesh`: full mesh ≤4, lower id offers, one
-ordered+reliable DataChannel, STUN only — no TURN in v1), `session.ts` (`NetSession`
-ties it together + host seed/restart authority). `GameController` takes an optional
-session (**null ⇒ solo path bit-identical**); its loop drives `produce → canStep →
-step → checkpoint`. Match world built from the host's `matchStart{seed,setups}` and
-started immediately (no controller-local seed/countdown — the fixed determinism seam).
-UI: `App.tsx` screens menu|lobby|game, `Lobby.tsx`, MULTIPLAYER menu button gated on
-`supabaseConfigured()`. Env-gated via `VITE_SUPABASE_URL/ANON_KEY` (`.env.example`);
-absent ⇒ multiplayer hidden, solo untouched. **Determinism hardening: `Math.hypot`→
-`hyp` (sqrt) across `src/sim` + `math.ts`** (engine-stable). **NEVER use
-`Math.sin/cos/tan/atan2` in `src/sim/` or in shared helpers the sim calls — they are
-NOT correctly-rounded and differ across browser engines/versions, forking a lockstep
-sim (this was the real cross-browser desync). Use `dsin/dcos/dtan/datan2` in `math.ts`
-(pure `+ - * /` and `Math.round/sqrt`, ~1e-9 vs `Math.*`); `rot` already routes through
-them. `Math.sqrt` IS exact — keep it. Render/UI trig may stay on `Math.*`.**
-Cross-browser multiplayer is supported (NOT Chromium-only), given the above.
+**Netcode Phase 0 — server-authoritative + client-side prediction** (DONE, build +
+smoke + live-2-client green). The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED
+(`mesh.ts`, `lockstep.ts`, `lobby.ts` gone); see `docs/netcodeplan.md` for the full
+roadmap (Phases 1–3 + UI redesign). Architecture:
+- **`server/`** (Node + `ws`, run via `tsx`) — imports the SHARED `src/sim` (no fork)
+  and runs a fixed-`SIM_DT` authoritative loop per room: ingest each client's latest
+  `RobotCommand` by robot id, `step(world, SIM_DT, inputs)`, broadcast a full-world
+  `snapshot` every 3 ticks (~20 Hz). `server/room.ts` = lobby + match + host lifecycle +
+  deterministic drop (a client leaving → its robot runs ZERO from the current tick,
+  broadcast). `server/index.ts` = WS accept + room registry. `tsconfig.server.json` +
+  `npm run server` / `server:start` / `server:check`.
+- **`src/net/protocol.ts`** — kept the quantize helpers (`quantize/dequantize/localize`);
+  replaced lockstep packets with JSON `ClientMsg` (join/update/start/restart/**input**)
+  and `ServerMsg` (welcome/roster/**matchStart**/**snapshot**/drop). Determinism rule is
+  now NARROWER: no cross-machine float determinism needed (server is authority) — only
+  that the client PREDICTS on `localizeCommand(cmd)` (what the server decodes).
+- **`src/net/session.ts`** is now the `NetSession` INTERFACE (reconcile contract:
+  `sendInput`, `takeSnapshot`, `isHost`, `requestRestart`, `onRestart`, `seed`, `setups`,
+  `localRobotId`, `status`, `dispose`). `transport.ts` (`WebSocketTransport`, Phase-1 seam
+  for WebTransport), `lobbyClient.ts` (thin lobby over the socket), `serverSession.ts`
+  (`ServerSession implements NetSession` — takes over the transport at matchStart).
+- **`game.ts`**: `stepNetworked` → **`stepServer` (predict + reconcile)**. Each tick it
+  applies its OWN command locally + `sendInput`, buffering it; on a snapshot it snaps
+  `this.world` to the authoritative world and REPLAYS buffered inputs past `serverTick`
+  (`reconcile`). Only the local robot is predicted; remote robots default to ZERO in
+  `step()` and get corrected each snapshot. **`session: null` ⇒ solo path bit-identical.**
+- **UI**: `App.tsx` gates MULTIPLAYER on `gameServerConfigured()` (`VITE_GAME_SERVER_URL`,
+  `.env.example`); `Lobby.tsx` runs on the game-server socket (no mesh/presence/ready-mesh
+  gating). HUD `net` chip shape unchanged.
+- **Why this fixes disconnects**: no head-of-line blocking (one laggy/dropped client never
+  freezes others — prediction + authoritative correction), central drop/liveness authority.
+  The old cross-browser-desync trig discipline (`dsin/dcos/datan2`) is NO LONGER a
+  correctness requirement here, but is **still in `src/sim`** and stays until Phase 2
+  removes it — do not rip it out yet.
 
-Still open: LIVE re-verification of Phase D after the deterministic-trig fix; a
-DETERMINISTIC disconnect handler (`markDisconnected` in session.ts unilaterally swaps a
-dropped robot to ZERO_CMD at a per-peer wall-clock moment — silent desync on a real WebRTC
-drop; the `{t:'bye'}` control msg exists but is unsent/unhandled — proper fix is a
-host-broadcast "drop robot R at tick T"); obelisk AprilTag visuals, mobile/touch
-controls, replays (record the per-tick command map + seed), TURN relay, and deferred
-fouls (G408 possession>3 / plowing, displacing pre-staged spike artifacts).
+**Phase 1 mostly DONE**: per-tick server input buffering (`frameCommands`, hold-last) +
+60 Hz snapshots fixed local jitter; remote robots render by DEAD-RECKONING extrapolation
+(`game.ts` `renderRemoteExtrap` — zero added latency, pos+vel projected to the present
+with a decaying correction). **RECONNECTION (transient drops)**: server holds a dropped
+slot `RECONNECT_GRACE_MS` (`room.ts` `detach`/`reattach`/`checkGrace`), transport
+auto-reconnects (`onReopen`/`onDown`/`onFail`), session re-sends `rejoin`. **DELTA
+SNAPSHOTS**: `slimWorld`/`unslimWorld` (`protocol.ts`) strip static robot `spec` (client
+re-injects from setups) + delta the balls (send the id ORDER every frame — determinism —
+but only CHANGED ball data); no ack needed on the ordered WebSocket, reconnect re-primes
+with a keyframe. **DEPLOY**: `Dockerfile`+`fly.toml`+`docs/deploy.md`, `GET /health` on the
+server; `ws`+`tsx` are now runtime `dependencies`. Still open: run `fly deploy` (needs Fly
+creds) + `VITE_GAME_SERVER_URL=wss://…` on Vercel; **WebTransport** (deferred — needs a TLS
+deploy to validate, and the delta must switch to ACK-keyed for unreliable datagrams);
+full-reload reconnect (localStorage session restore). Then Rapier 2D physics (Phase 2);
+DB/ELO/leaderboards/matchmaking/replays + UI redesign (Phase 3). Deferred: obelisk
+AprilTag visuals, mobile/touch, deferred fouls (G408 possession>3 / plowing).

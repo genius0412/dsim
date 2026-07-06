@@ -4,7 +4,7 @@ import { loadSettings, saveSettings } from '../settings';
 import { Menu } from './Menu';
 import { GameView } from './GameView';
 import { Lobby } from './Lobby';
-import { supabaseConfigured } from '../net/env';
+import { gameServerConfigured } from '../net/env';
 import type { NetSession } from '../net/session';
 
 type Screen = 'menu' | 'lobby' | 'game';
@@ -45,7 +45,7 @@ export function App() {
       settings={settings}
       onChange={update}
       onStart={() => setScreen('game')}
-      onMultiplayer={supabaseConfigured() ? () => setScreen('lobby') : undefined}
+      onMultiplayer={gameServerConfigured() ? () => setScreen('lobby') : undefined}
     />
   );
 }

@@ -9,6 +9,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "tsx scripts/smoke.ts",
+    "server": "tsx watch server/index.ts",
+    "server:start": "tsx server/index.ts",
+    "server:check": "tsc -p tsconfig.server.json",
     "electron": "electron .",
     "dist": "npm run build && electron-builder --win"
   },
@@ -34,17 +37,19 @@
     }
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.110.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "tsx": "^4.23.0",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^43.0.0",
     "electron-builder": "^26.15.3",
-    "tsx": "^4.23.0",
     "typescript": "^5.6.0",
     "vite": "^6.0.0"
   }

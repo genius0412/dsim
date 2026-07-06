@@ -7,6 +7,7 @@ import type {
   Motif,
   RobotCommand,
   RobotSpec,
+  RobotState,
   ScoreBreakdown,
   World,
 } from './types';
@@ -19,7 +20,43 @@ import { InputManager } from './input/input';
 import type { ControlBindings } from './input/bindings';
 import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
-import type { NetSession } from './net/session';
+import type { NetSession, Snapshot } from './net/session';
+import { localizeCommand } from './net/protocol';
+
+/**
+ * Remote robots render by DEAD RECKONING — extrapolated from the last snapshot's
+ * pose + velocity to the present, so there is ZERO added display latency (unlike
+ * interpolation, which renders behind real time). The only "lag" left is the
+ * fundamental one: what the other driver did in the last one-way trip can't be
+ * known yet. On a hard stop/reversal the estimate overshoots, then a per-robot
+ * correction blends it back to authority over REMOTE_SMOOTH_TAU_MS.
+ */
+const REMOTE_SMOOTH_TAU_MS = 70;
+/** cap dead-reckoning so a stalled feed can't fling a robot off the field */
+const REMOTE_MAX_EXTRAP_S = 0.25;
+
+/** wrap an angle delta to (-π, π] for shortest-arc correction (render-only) */
+function wrapPi(d: number): number {
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return d;
+}
+
+/** dead-reckoning state for one remote robot: the latest authoritative sample
+ * plus a correction offset (captured at `t`) that decays out for smoothness */
+interface RemoteRender {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  heading: number;
+  angVel: number;
+  turret: number;
+  t: number;
+  offX: number;
+  offY: number;
+  offH: number;
+}
 
 export interface GameSettings {
   mode: GameMode;
@@ -103,11 +140,16 @@ export class GameController {
   /** the local player's robot id (slot 0 in solo; assigned by the lobby in
    * multiplayer) */
   readonly localRobotId: number;
-  /** null in solo; the lockstep session in multiplayer */
+  /** null in solo; the server-authoritative session in multiplayer */
   private readonly session: NetSession | null;
   /** multiplayer sim-step timer (survives tab backgrounding); 0 = solo */
   private simTimer = 0;
   private lastSimT = 0;
+  /** predict/reconcile input buffer: local commands not yet folded into a server
+   * snapshot, replayed forward after each reconcile (keyed by the tick produced) */
+  private inputBuf: { tick: number; cmd: RobotCommand }[] = [];
+  /** per remote-robot dead-reckoning state, for zero-latency render extrapolation */
+  private readonly remoteRender = new Map<number, RemoteRender>();
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -315,7 +357,7 @@ export class GameController {
     this.lastCmd = cmd;
 
     this.acc += Math.min(dtMs / 1000, 0.25);
-    if (this.session) this.stepNetworked(cmd);
+    if (this.session) this.stepServer(cmd);
     else this.stepSolo(cmd);
 
     this.hudCountdown = this.updateCountdown();
@@ -336,7 +378,11 @@ export class GameController {
     const dtMs = this.lastT ? t - this.lastT : 16;
     this.lastT = t;
     if (!this.session) this.frameLogic(dtMs);
+    // remote robots render dead-reckoned to the present (smooth, zero latency);
+    // restore true sim state after drawing
+    const restore = this.session ? this.renderRemoteExtrap() : null;
     this.renderer.render(this.ctx, this.world, this.lastCmd, this.localRobotId);
+    restore?.();
     this.raf = requestAnimationFrame(this.loop);
   };
 
@@ -372,27 +418,115 @@ export class GameController {
     if (steps === C.MAX_STEPS_PER_FRAME) this.acc = 0;
   }
 
-  /** lockstep stepping: author + send local inputs `INPUT_DELAY` ahead, then
-   * advance only ticks every connected peer has an input for. A stall simply
-   * stops draining (the HUD shows WAITING). Restart is host-authored. */
-  private stepNetworked(cmd: RobotCommand): void {
+  /** server-authoritative stepping (predict + reconcile): every tick we apply
+   * our OWN command locally for instant response and send it to the server; when
+   * an authoritative snapshot arrives we snap the world to it and replay the
+   * local inputs it hadn't folded in yet. A dropped/laggy peer never blocks us —
+   * only our own robot is predicted, remote robots are corrected by snapshots. */
+  private stepServer(cmd: RobotCommand): void {
     const s = this.session!;
-    if (this.input.restartPressed && s.isHost()) {
-      s.requestRestart((Date.now() ^ (Math.random() * 0xffffffff)) >>> 0);
+    if (this.input.restartPressed && s.isHost()) s.requestRestart();
+
+    // reconcile to the freshest server snapshot BEFORE predicting this frame
+    const snap = s.takeSnapshot();
+    if (snap) {
+      this.updateRemoteRender(snap); // refresh dead-reckoning from authoritative poses
+      this.reconcile(snap);
     }
-    // a lockstep stall freezes ALL peers together; on resume they must continue
-    // at real time, not fast-forward — so cap the backlog the accumulator holds
+
+    // cap the backlog so a backgrounded/throttled tab resumes at real time
     if (this.acc > 0.25) this.acc = 0.25;
-    s.produce(this.world.tick, cmd);
-    // allow a healthy catch-up per call so a briefly-throttled peer can drain
-    // its backlog and keep feeding inputs to everyone else
     let steps = 0;
-    while (this.acc >= C.SIM_DT && steps < 30 && s.canStep(this.world.tick)) {
-      step(this.world, C.SIM_DT, s.commandsForTick(this.world.tick));
-      s.checkpoint(this.world);
+    while (this.acc >= C.SIM_DT && steps < 30) {
+      const tick = this.world.tick + 1; // the tick this input produces
+      const local = localizeCommand(cmd); // predict on what the server will decode
+      s.sendInput(tick, cmd);
+      this.inputBuf.push({ tick, cmd: local });
+      // only the local robot is predicted; remote robots default to ZERO in step()
+      step(this.world, C.SIM_DT, new Map([[this.localRobotId, local]]));
       this.acc -= C.SIM_DT;
       steps++;
     }
+    // bound the buffer (only recent, unacked inputs ever matter)
+    if (this.inputBuf.length > 600) this.inputBuf.splice(0, this.inputBuf.length - 600);
+  }
+
+  /** adopt the authoritative world, discard inputs it already reflects, and
+   * re-predict forward by replaying the local inputs past the snapshot tick */
+  private reconcile(snap: Snapshot): void {
+    this.world = snap.world;
+    this.inputBuf = this.inputBuf.filter((b) => b.tick > snap.serverTick);
+    for (const b of this.inputBuf) {
+      step(this.world, C.SIM_DT, new Map([[this.localRobotId, b.cmd]]));
+    }
+  }
+
+  /** refresh each remote robot's dead-reckoning state from an authoritative
+   * snapshot, capturing a correction offset (= where we were rendering vs the new
+   * truth) that decays out so the switch to the new sample is seamless */
+  private updateRemoteRender(snap: Snapshot): void {
+    const now = performance.now();
+    for (const r of snap.world.robots) {
+      if (r.id === this.localRobotId) continue;
+      const prev = this.remoteRender.get(r.id);
+      let offX = 0;
+      let offY = 0;
+      let offH = 0;
+      if (prev) {
+        const dt = Math.min((now - prev.t) / 1000, REMOTE_MAX_EXTRAP_S);
+        const decay = Math.exp(-(now - prev.t) / REMOTE_SMOOTH_TAU_MS);
+        // where the previous state is being rendered RIGHT NOW...
+        const curX = prev.x + prev.vx * dt + prev.offX * decay;
+        const curY = prev.y + prev.vy * dt + prev.offY * decay;
+        const curH = prev.heading + prev.angVel * dt + prev.offH * decay;
+        // ...becomes the starting offset from the new truth, so there's no jump
+        offX = curX - r.pos.x;
+        offY = curY - r.pos.y;
+        offH = wrapPi(curH - r.heading);
+      }
+      this.remoteRender.set(r.id, {
+        x: r.pos.x,
+        y: r.pos.y,
+        vx: r.vel.x,
+        vy: r.vel.y,
+        heading: r.heading,
+        angVel: r.angVel,
+        turret: r.turretHeading,
+        t: now,
+        offX,
+        offY,
+        offH,
+      });
+    }
+  }
+
+  /** override remote robots with their dead-reckoned present pose (zero added
+   * latency), returning a fn that restores the true sim state after render */
+  private renderRemoteExtrap(): (() => void) | null {
+    if (!this.remoteRender.size) return null;
+    const now = performance.now();
+    const saved: { r: RobotState; x: number; y: number; heading: number; turret: number }[] = [];
+    for (const r of this.world.robots) {
+      if (r.id === this.localRobotId) continue;
+      const s = this.remoteRender.get(r.id);
+      if (!s) continue;
+      const dt = Math.min((now - s.t) / 1000, REMOTE_MAX_EXTRAP_S);
+      const decay = Math.exp(-(now - s.t) / REMOTE_SMOOTH_TAU_MS);
+      saved.push({ r, x: r.pos.x, y: r.pos.y, heading: r.heading, turret: r.turretHeading });
+      r.pos.x = s.x + s.vx * dt + s.offX * decay;
+      r.pos.y = s.y + s.vy * dt + s.offY * decay;
+      r.heading = s.heading + s.angVel * dt + s.offH * decay;
+      r.turretHeading = s.turret;
+    }
+    if (!saved.length) return null;
+    return () => {
+      for (const v of saved) {
+        v.r.pos.x = v.x;
+        v.r.pos.y = v.y;
+        v.r.heading = v.heading;
+        v.r.turretHeading = v.turret;
+      }
+    };
   }
 
   /** host-authored restart arrived over the net: rebuild from the new seed */
@@ -405,6 +539,8 @@ export class GameController {
     this.hudCountdown = null;
     this.frontFlipped = false;
     this.acc = 0;
+    this.inputBuf = [];
+    this.remoteRender.clear();
     this.seedActionAudio();
     this.toasts = [];
   }
@@ -423,6 +559,24 @@ export class GameController {
     this.frontFlipped = false;
     this.seedActionAudio();
     this.toasts = [];
+  }
+
+  /** REMATCH: in multiplayer ONLY the host re-authors the match for everyone (a
+   * local rebuild would desync — the host broadcasts a fresh seed and every peer
+   * rebuilds via rebuildFromNet); in solo it just rebuilds locally. */
+  rematch(): void {
+    if (this.session) {
+      // host only: the server re-authors the match for everyone (picks the seed)
+      if (this.session.isHost()) this.session.requestRestart();
+      // non-host: no-op — only the host restarts
+    } else {
+      this.restart();
+    }
+  }
+
+  /** multiplayer session? (UI gates RESET / host-only REMATCH on this) */
+  isNetworked(): boolean {
+    return this.session !== null;
   }
 
   getHud(): HudSnapshot {

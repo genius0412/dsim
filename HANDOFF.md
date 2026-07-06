@@ -1,224 +1,169 @@
-# HANDOFF — session ending 2026-07-06 (human-player loading BOX)
+# HANDOFF — session ending 2026-07-06 (Netcode Phase 0 + most of Phase 1)
 
-Read `CLAUDE.md` first (load-bearing rules), then this file. Master plan lives at
-`C:\Users\geniu\.claude\plans\if-artifacts-are-scored-vivid-sphinx.md`.
+Read `CLAUDE.md` first (load-bearing rules), then this file. The netcode/physics
+roadmap is `docs/netcodeplan.md` (source of truth; supersedes the old "Road to
+Multiplayer" plan and all prior Phase D notes).
 
-## ✅ Current state: BUILD GREEN, `npm test` = 137 checks ALL PASS
+## ✅ Current state: BUILD GREEN · `npm test` = 138 checks ALL PASS · server type-checks · live 2-client + reconnect + delta-wire runs PASS · user-verified live (control feel + smoothness)
 
-## 2026-07-06 session — human-player loading rework (box + grab row)
+## Phase 1 status: reconnection + delta snapshots + deploy artifacts DONE; WebTransport deferred (needs a TLS deploy to validate)
 
-Replaced the old "drip stock into a vertical column" human-player restock with the real
-DECODE layout. GUI-verified via Electron (solo match: red box 6 / blue box 3; free-drive
-2v2: both boxes empty; each zone shows the 3-ball grab row).
+## Phase 0 was LIVE-VERIFIED by the user
 
-- **Corner pre-stage** — the 3 loading-zone artifacts (PGP) are pre-staged ON the field at
-  setup: `loadPreStage(a)` in `src/sim/field.ts` → PGP, touching, flush against the
-  alliance (side) wall `x=±(FIELD_HALF−BALL_RADIUS)`, stacked from the very corner. Present
-  from the start (manual setup); spawned in `createWorld`.
-- **Grab row** — where the HP arranges balls for robots in teleop: `loadSlots(a)` →
-  `LOAD_COL_XS × LOAD_ROW_Y` (a **row along field-x**, ~7in off the audience wall at
-  `LOAD_ROW_Y=-65`). Field-x reads *vertical on the driver's rotated screen*, so a robot
-  drives straight along x and sweeps all 3. `LOAD_COL_XS=[51,58,65]` — pulled inward so the
-  grab row never overlaps the corner pre-stage.
-- **2×3 box** — the human player's off-field, out-of-play storage: `loadBoxSlots(a)`, drawn
-  in `src/render/drawField.ts` (dark backing + frame + stored balls; box balls are NOT in
-  `world.balls`). Sits **OFF the field** just beyond the audience wall (`LOAD_BOX_YS =
-  [-80,-85]`). Holds **only the missing-robot leftovers**: `hpBox(present)` in `spawn.ts` =
-  `[[...PRELOAD],[...HP_INITIAL_STOCK]].slice(present).flat()` → 2 robots → **0** (empty),
-  1 → **3** (PPG), 0 → **6** (4P+2G). The pre-stage is NOT in the box.
-  `HumanPlayerState.stock` → **`box`** (`src/types.ts`).
-- **`updateHumanPlayers`** (`src/sim/humanPlayer.ts`) is **idle until teleop** (returns
-  early unless `phase` is `teleop`/`freeplay`). Once teleop starts, per tick it (1)
-  **grabs** a loose `ground` ball out of the loading zone into `hp.box` (skips balls at a
-  grab slot + any a robot is on; gated `box.length < 6`) and (2) **stages** the grab row
-  from `hp.box` one artifact per `HP_PLACE_DELAY` (**0.35 s**). Net effect at teleop start:
-  the corner pre-stage migrates into the grab row (grab → box → stage), then returned balls
-  recycle. One-at-a-time keeps box + in-transit within the 6-out-of-play cap.
-- Headless-verified (auto→teleop step-through): idle in auto (box + pre-stage untouched),
-  pre-stage in the corner at setup, migrates to the grab row in teleop. `scripts/smoke.ts`
-  now **146 checks**; `docs/decode-reference.md` Artifacts section updated.
+Two browsers, localhost server. Findings + fixes this session (all shipped):
+- **Local control feel:** initially the non-host robot was jittery. Root cause: the
+  server applied "latest command received" each tick instead of each client's command
+  FOR THAT TICK, so the client mispredicted and every snapshot yanked it back. Fixed by
+  per-tick input buffering on the server (`server/room.ts` `frameCommands`): consume the
+  input tagged for the exact tick, hold-last on a brief gap (`HOLD_TICKS`), coast to ZERO
+  when stale. Snapshot rate raised to 60 Hz (`SNAPSHOT_INTERVAL = 1`).
+- **Remote robot smoothness:** remote robots looked choppy (snapshot stepping). The user
+  wanted ZERO added latency, so I used **dead-reckoning extrapolation** (not interpolation):
+  `game.ts` `renderRemoteExtrap` draws each remote robot at its estimated PRESENT pose from
+  the last snapshot's pos+velocity, with a decaying correction offset (`REMOTE_SMOOTH_TAU_MS`)
+  so snapshots don't snap. Zero display latency; brief overshoot on hard cuts is the
+  fundamental network limit, not a bug. Tunables: `REMOTE_MAX_EXTRAP_S`, `REMOTE_SMOOTH_TAU_MS`.
 
-## 2026-07-06 (earlier) — LIVE multiplayer desync fixed (cross-browser)
+## Phase 1 progress — RECONNECTION (transient drops)
 
-Symptom reported: in live MP, "other people's robots are desynced, headings wrong,
-everyone has different final scores, but NOTHING shows top-right (no DESYNC chip)."
-Testers were **all web, different browsers**. Two bugs found + fixed:
+A mid-match socket drop no longer ends that player's game: the server HOLDS the slot for
+`RECONNECT_GRACE_MS` (15 s) while the robot coasts to ZERO, and the client auto-reconnects
+and reclaims it. Verified headlessly (spawned real server, dropped a client, reclaimed the
+same robot slot; bogus rejoin rejected).
+- **Transport** (`src/net/transport.ts`): `WebSocketTransport` now auto-reconnects with
+  backoff (`onOpen`/`onReopen`/`onDown`/`onFail`; ~20 s budget).
+- **Lobby** re-sends `join` on reopen; **`ServerSession`** re-sends `rejoin{room,clientId}`
+  on reopen and flips `connected` (HUD "reconnecting" via `status().waitingFor`).
+- **Server** (`server/room.ts`): `detach` (lobby ⇒ leave; match ⇒ hold), `reattach`
+  (reclaim + immediate resync snapshot + `{t:'rejoined',ok}`), `checkGrace` (finalize-drop
+  after the grace). `server/index.ts` routes `rejoin` and adopts the reclaimed clientId.
+- **Protocol**: added `rejoin` (client) + `rejoined` (server).
+- **LIMITATION**: only transient socket drops (wifi blip, laptop sleep) — a full PAGE
+  RELOAD loses the ServerSession/robotId, so it can't rejoin yet. Reload-reconnect needs
+  UI-level session restore (localStorage room+clientId, auto-rejoin on load) — future work.
 
-- **ROOT CAUSE — non-deterministic transcendentals.** `Math.sin/cos/tan/atan2` are NOT
-  spec-required to be correctly-rounded, so they differ by ~1 ULP **across browser
-  engines/versions**. The sim calls `rot()` (cos/sin) every tick per robot/ball, plus
-  atan2/tan in aim + `startPose` heading — so two different browsers fork within seconds,
-  and the basin's gate RNG (`goal.ts` `nextRandom`) amplifies it into totally different
-  games. FIX: added `dsin/dcos/dtan/datan2` to `src/math.ts` — built ONLY from `+ - * /`
-  and `Math.round/sqrt` (all IEEE-754 exact ⇒ bit-identical everywhere). Accuracy vs
-  `Math.*`: sin/cos 6e-12, atan2 2.7e-9. Routed ALL sim-path trig through them: `rot`
-  (math.ts), `robot.ts` (solveShot/aimSolution/fire/updateIntake), `physics.ts:160`,
-  `field.ts` `startPose`. **Rule: never use `Math.sin/cos/tan/atan2` in `src/sim/` or in
-  shared helpers the sim calls — use the `d*` versions.** (`Math.sqrt` IS exact — keep it;
-  that's why `hyp` already avoids `Math.hypot`.) Render/UI trig can stay on `Math.*`.
-- **DESYNC DETECTOR WAS MASKING FAILURES** (why nothing showed top-right). `NetSession`
-  had a single shared `peerHashes: Map<tick,hash>`; with >2 peers each peer's checksum
-  OVERWROTE the others, so a match with a diverging peer + a matching peer compared
-  against the matching one and missed it. FIX (`src/net/session.ts`): `peerHashes` is now
-  `Map<peerId, Map<tick,hash>>`; `compareAt(tick)` flags a mismatch vs ANY peer, is
-  sticky, `console.warn`s the exact first diverging tick, and prunes old hashes.
+## Phase 1 progress — DELTA SNAPSHOTS (bandwidth)
 
-**Still non-deterministic (known, next):** the disconnect path (`session.ts:71`
-`markDisconnected` → unilateral ZERO_CMD substitution at a per-peer wall-clock moment)
-can silently desync on a real WebRTC drop. The `{t:'bye'}` control msg is defined but
-never sent/handled. Proper fix = host broadcasts a deterministic "drop robot R at tick T"
-so all peers drop on the same tick. Not hit by the cross-browser bug above, but do this
-before shipping to flaky networks (STUN-only, no TURN).
+Snapshots are no longer full-world JSON. Two determinism-safe cuts (`src/net/protocol.ts`
+`slimWorld`/`unslimWorld`, used by `server/room.ts` + `src/net/serverSession.ts`):
+- **spec-stripped robots**: `robot.spec` is static, so it's dropped on the wire and the
+  client re-injects it from `setups` (worldHash ignores spec ⇒ parity intact).
+- **ball delta**: every snapshot sends the authoritative ball id ORDER (cheap) but only
+  the DATA for balls that CHANGED since the last snapshot; the client rebuilds the array
+  in that order from its baseline. Sending the order every frame is what keeps it
+  deterministic (array position drives collision/scoring iteration + worldHash).
+  Reliable+ordered WebSocket ⇒ no ack needed; a reconnect re-primes with a full keyframe.
+Verified: smoke round-trips (slim+unslim hash-identical; ball delta reconstructs exactly,
+3/27 balls sent) AND a live 2-client wire test — both clients reconstruct **identical
+worldHash every tick (85/85, 0 mismatches)**; avg snapshot ~1.8 KB.
 
-### Lobby stability fixes (same session)
-Reported: roster shows different counts per client / "more than 4" / leader keeps
-switching. All are presence-set instability. Fixes:
-- `Lobby.tsx` now renders the deterministic capped `keep` set (first `ROOM_CAPACITY`
-  by joinedAt, peerId tiebreak) instead of the raw uncapped presence list — never
-  shows >4, and all clients agree once presence converges.
-- `lobby.ts` `peerId` is now **stable per tab** (`sessionStorage`), so a refresh
-  replaces the same presence key instead of spawning a ghost under a new id (ghosts
-  were the main churn: inflated counts + stole the earliest-joiner host election).
-- `lobby.ts` presence dedup filters empty key arrays (an empty one threw the `reduce`
-  and froze the whole roster).
-- `hostStart` builds setups from the capped roster, not `getPlayers()` — a ghost/
-  overflow presence can no longer spawn a phantom, undriven robot that stalls lockstep.
+## Phase 1 progress — DEPLOY ARTIFACTS (Fly.io)
 
-STILL imperfect (inherent): host = earliest `joinedAt`, which relies on wall clocks
-(skew) and flickers if the earliest member's presence transiently drops. The fixes cut
-the dominant churn (ghosts); a bulletproof host would need a heartbeat/consensus. Note
-the reported "everyone in different positions in-game" is the SAME cross-browser desync
-the deterministic-trig fix targets (not yet deployed) — distinct from normal lockstep
-tick-skew (clients a few ticks apart look momentarily offset, self-corrects) and from
-the per-alliance camera perspective (each side views mirrored).
+Ready to `fly deploy` (I can't run it — no Fly creds here). See **`docs/deploy.md`**.
+- `Dockerfile` (node:22-alpine, `npm ci --omit=dev` ⇒ only react/react-dom/ws/tsx, NOT
+  electron/vite), `fly.toml` (port 8080, force_https ⇒ `wss://`, health check, 1 warm
+  machine), `.dockerignore`.
+- `server/index.ts` now serves **`GET /health` → 200** on the same port (verified) via an
+  explicit `http.Server` the WS server mounts on.
+- **`ws` + `tsx` moved to `dependencies`** (server runtime needs them; `--omit=dev` still
+  excludes electron/vite/typescript). Client (Vercel) build unaffected.
+- Client points at the server via `VITE_GAME_SERVER_URL` (already gated); prod = `wss://…`.
 
-### ⛔ REAL ROOT CAUSE (found after deploy): the NETWORK/TRANSPORT layer, not the sim
-Deployed the deterministic-trig + detector + lobby fixes; live cross-browser test STILL
-broke ("positions all weird"), AND — the key clue — **"a lot of the time at match start
-everyone is at WAITING and the game is frozen."** That reframes everything:
+## WebTransport — DEFERRED (honest status)
 
-- The sim IS deterministic (verified again: `physics.ts` collisions are all `+ - * /`,
-  min/max/abs/round/sqrt, clamp, dot, `rot`, `datan2` — nothing engine-variant remains).
-  Weird positions are collisions/RNG AMPLIFYING a divergence that entered elsewhere.
-- `canStep(tick)` needs EVERY robot's command for that tick ⇒ needs an open DataChannel to
-  every peer. The mesh is **STUN-only, no TURN** (`mesh.ts:12`). Across mixed browsers/NATs
-  some pairs never connect ⇒ their commands never arrive ⇒ WAITING forever (frozen). A
-  link that opens then DROPS hits `markDisconnected` → unilateral `ZERO_CMD` at a per-peer
-  moment → that robot drifts differently per client ("weird positions"), UNDETECTABLE by
-  the checksum (can't hash-compare with a peer you've lost). Same fragility, two faces.
+The `Transport` seam (`src/net/transport.ts`) is ready for a WebTransport (HTTP/3/QUIC)
+impl with WS fallback, but it is intentionally NOT written: WebTransport needs a real TLS
+cert + HTTP/3 and can only be exercised against an `https://` deploy (not localhost), so
+it must be built + validated ON the deployed Fly instance. Also, the current delta relies
+on WebSocket's ordered+reliable delivery (no ack); WebTransport datagrams are unreliable,
+so adding it means acking snapshots (`ackInputTick` is plumbed) and keying deltas off the
+last ACKed tick. WS is fully playable meanwhile (prediction masks loss). Details in
+`docs/deploy.md`.
 
-**TRANSPORT FIXES — DONE this session (all 3 priorities), build-green, 128 smoke checks:**
-1. **TURN** (`env.ts` `iceServers()`/`loadIceServers()`, used in `mesh.ts`). Free Metered
-   Open Relay is the built-in DEFAULT (no signup) so NAT-bound peers relay out of the box.
-   Overridable: (A) `VITE_TURN_ICE_URL` = a runtime endpoint that mints EPHEMERAL creds
-   (secret-free, preferred — mesh fetches it on construction, falls back to sync default);
-   (B) static `VITE_TURN_URL/USERNAME/CREDENTIAL` pair. Security: never a provider API
-   *secret* in VITE (Vite inlines it); the static pair is client-side by nature (worst case
-   bandwidth theft, quota-capped), ephemeral (A) avoids even that. `.env.example` documents it.
-2. **Connection gate + timeout + status** (`mesh.ts` + `Lobby.tsx`). A link that doesn't
-   open within `CONNECT_TIMEOUT_MS` (20 s) or hits ICE 'failed' now fires a `'failed'`
-   event → per-peer dot in the lobby (open/connecting/NO CONNECT), and host START is
-   DISABLED until every in-room peer has an OPEN channel (`allConnected`). No more silently
-   starting a match that freezes at WAITING; a failed peer is shown so the host can kick.
-   Failed links are retried after `RETRY_COOLDOWN_MS` (8 s) — replaced the permanent
-   `attempted` block so a recovered network / reloaded peer reconnects.
-3. **Deterministic disconnect** (`protocol.ts` `{t:'bye',robotId,tick}` + `session.ts`
-   `onPeerGone`/`applyDrop` + `lockstep.ts` `dropAt`/`lastTickFor`/`dropTicks`). On a peer
-   drop/fail the HOST authors ONE drop tick (just past the robot's last input, ≥ the sim
-   frontier) and broadcasts it; every peer drops that robot at the SAME tick (ZERO from
-   there). Ticks BEFORE it still REQUIRE the real input, so a peer missing it STALLS (safe)
-   instead of silently ZEROing (which desynced). `markDisconnected` kept as `dropAt(id,0)`.
+## This session — executed `docs/netcodeplan.md` **Phase 0**
 
-Now the deterministic-trig + detector + lobby-presence fixes (earlier this session) finally
-get exercised on a connection that stays up.
+Replaced the P2P WebRTC-lockstep multiplayer with a **server-authoritative sim +
+client-side prediction** (the Rocket League model). This kills the mid-match
+disconnects structurally: no head-of-line blocking, one central drop/liveness
+authority, no cross-peer float-determinism requirement.
 
-**Known transport limitations (next):** if the HOST itself drops, non-hosts wait for a bye
-that never comes → stall (no host migration in v1). Free Open Relay is best-effort/rate-
-limited — for reliability the user should set `VITE_TURN_ICE_URL` (their own ephemeral
-endpoint). Backfill packets cap at 255 ticks (Uint8 count) — fine given prune, but chunk
-it if a late-join path is ever added.
+### New: `server/` package (Node + `ws`, run via `tsx`)
+- `server/index.ts` — WebSocket accept + room registry (keyed by lowercased room code).
+- `server/room.ts` — lobby + authoritative match loop. Imports the **shared `src/sim`**
+  (no fork): each tick it ingests the latest `RobotCommand` per robot id, calls
+  `step(world, SIM_DT, inputs)`, and broadcasts a full-world `snapshot` every 3 ticks
+  (~20 Hz). Host = first joiner. Host `start` builds `RobotSetup[]` from the roster
+  (distinct start poses per alliance) + a seed, sets `preCountdown`, broadcasts
+  `matchStart{seed,setups,yourRobotId}`. A client leaving mid-match **drops its robot to
+  ZERO at the current tick** (broadcast `drop`) — the match never stalls.
+- `tsconfig.server.json` + scripts: `npm run server` (tsx watch), `server:start`,
+  `server:check` (tsc typecheck — green). Deps added: `ws`, `@types/ws`, `@types/node`.
 
-## ✅ Prior state: Phase C + Phase D landed
+### Rewired `src/net/`
+- `protocol.ts` — **kept** `quantize/dequantize/localizeCommand`; **replaced** lockstep
+  binary packets with JSON `ClientMsg` (join/update/start/restart/**input**) +
+  `ServerMsg` (welcome/roster/**matchStart**/**snapshot**/drop). `ROOM_CAPACITY` moved here.
+- `session.ts` — now the **`NetSession` INTERFACE** (reconcile contract): `sendInput`,
+  `takeSnapshot`, `isHost`, `requestRestart()` (no seed — server authors it), `onRestart`,
+  `seed`, `setups`, `localRobotId`, `status`, `dispose`. Plus `Snapshot`/`NetStatus`.
+- **New** `transport.ts` (`Transport` iface + `WebSocketTransport`; Phase-1 seam for
+  WebTransport), `lobbyClient.ts` (thin lobby over the socket), `serverSession.ts`
+  (`ServerSession implements NetSession` — takes over the transport at `matchStart`).
+- `env.ts` — dropped Supabase + TURN; now just `gameServerConfigured()` / `gameServerUrl()`
+  from `VITE_GAME_SERVER_URL`.
+- **Deleted**: `mesh.ts`, `lockstep.ts`, `lobby.ts`. `checksum.ts` kept (`worldHash`).
 
-All four phases (A markings, B robots/physics, C penalties, **D netcode**) are code-
-complete and green. `npm run build` passes (106 vite modules). Everything is still
-**uncommitted** working-tree changes (one big blob — commit when the user asks). New
-runtime dep this session: `@supabase/supabase-js`.
+### `game.ts` — `stepNetworked` → `stepServer` (predict + reconcile)
+Each sim tick: apply the local command immediately via `step()` on the predicted world,
+push `{tick, localizeCommand(cmd)}` into `inputBuf`, and `session.sendInput(tick, cmd)`.
+On a snapshot (`reconcile`): `this.world = snapshot.world`, drop inputs `<= serverTick`,
+replay the rest forward through `step()`. Only the local robot is predicted; remote
+robots default to ZERO in `step()` and are corrected each snapshot. **`session: null`
+⇒ solo path bit-identical** (unchanged). `rematch`/restart call `requestRestart()`.
 
-## This session (two big things)
+### UI
+- `App.tsx` gates MULTIPLAYER on `gameServerConfigured()`.
+- `Lobby.tsx` rebuilt on the game-server socket (`WebSocketTransport` + `LobbyClient` →
+  `ServerSession` at matchStart). No mesh/presence/ready-mesh gating; server owns the
+  roster + host. Same CSS classes, so styling is unchanged.
+- `GameView.tsx` untouched — the HUD `net` chip shape (`{waitingFor,desync,peers}`) is
+  preserved by `ServerSession.status()`.
 
-### Phase C — penalty engine (recap; see CLAUDE.md for the full rule list)
-MINOR = **5 pts**, MAJOR = **15 pts** (user-set, not the manual's 10/30). Fouls are
-**EDGE-TRIGGERED, NO cooldown** (user was emphatic): fire on false→true, once while
-held, again immediately on re-entry. `src/sim/penalties.ts`, wired in `world.ts` after
-the robot-robot solver. The gate is now physically openable by ANY robot (`updateGates`
-dropped its alliance filter) and working the opponent's gate is a MAJOR foul.
+### Tests
+`scripts/smoke.ts`: removed the lockstep/command-packet blocks; **added** worldHash
+JSON-snapshot fidelity, **predict/reconcile parity** (reconcile replay reproduces the
+authoritative world exactly), and a **drop-degrades-cleanly** check. A throwaway
+end-to-end script (spun up the real WS server + 2 `ws` clients) verified: roster,
+host = first joiner, per-client robot ids, same seed, snapshot flow, and a mid-match
+drop that keeps the survivor advancing. (Deleted after running.)
 
-### Phase D — netcode (NEW, `src/net/` — build-green, NOT yet live-verified)
-WebRTC lockstep over a Supabase lobby. Files + roles are documented in
-`docs/multiplayer.md` (also the manual 2-tab checklist). Key pieces:
-- `protocol.ts` — quantize command → 4 B **at the producer**, and the producer steps
-  the SAME dequantized value locally, so every peer's sim gets bit-identical inputs.
-  Binary command packets (ArrayBuffer) + JSON control messages (start/restart/checksum/
-  bye), told apart by JS type on the DataChannel.
-- `checksum.ts` — `worldHash` (FNV-1a over rounded poses/balls/scores/rngState/tick).
-- `lockstep.ts` — input-delay buffer, `INPUT_DELAY` 8 ticks; `canStep(tick)` gate;
-  disconnect ⇒ that robot runs on ZERO_CMD.
-- `lobby.ts` — `SupabaseLobby`: one Realtime channel per room code (presence +
-  broadcast, no DB tables). Host = smallest peerId.
-- `mesh.ts` — `RtcMesh`: full mesh ≤4, lower id offers, one ordered+reliable
-  DataChannel, STUN only (no TURN v1).
-- `session.ts` — `NetSession`: ties mesh+lockstep+host authority; the only net object
-  `GameController` touches.
-- `env.ts` — `supabaseConfigured()` / `getSupabase()` from `VITE_SUPABASE_URL/ANON_KEY`.
+## ⚠️ NOT DONE / next steps (in `docs/netcodeplan.md` order)
+1. **LIVE 2-browser verification on different networks** — start `npm run server`, set
+   `VITE_GAME_SERVER_URL=ws://localhost:8787` in `.env`, `npm run dev`, open two tabs,
+   same room code, host READY→START. Confirm no freezes, a tab-close degrades cleanly,
+   and a throttled client (DevTools) doesn't stall the other. This is the Phase 0 ship
+   criterion and the one thing only a real run can prove.
+2. **Phase 1 remaining** — reconnection (transient) + delta snapshots + deploy artifacts
+   are DONE (above). Still to do: **run `fly deploy`** (needs your Fly account; `docs/deploy.md`
+   is step-by-step) + set `VITE_GAME_SERVER_URL=wss://…` on Vercel; **WebTransport** (deferred,
+   validate on the TLS deploy); **full-reload reconnect** (localStorage session restore).
+3. **Phase 2** — Rapier 2D physics (replace `sim/physics.ts`); only THEN remove the
+   `dsin/dcos/datan2` discipline from sim-reachable code (still required elsewhere until then).
+4. **Phase 3** — Postgres/Clerk, ELO/leaderboards/matchmaking/replays + the UI redesign.
 
-Integration: `GameController` takes an optional `session` (**null ⇒ solo bit-
-identical**); the loop split into `stepSolo` (unchanged) and `stepNetworked`
-(`produce → canStep → step → checkpoint`). MP match world is built from the host's
-`matchStart{seed,setups}` and `startMatch`ed immediately at tick 0 — this is the
-determinism seam (NO controller-local countdown/seed in MP; the old batch-step +
-post-batch countdown would desync). Restart is host-authored. HUD gained `net`
-(NET peers / WAITING · <driver> / DESYNC chips). UI: `App.tsx` now menu|lobby|game;
-`Lobby.tsx` (room code, driver list, ready-up, host START); MULTIPLAYER menu button
-shows only when `supabaseConfigured()`.
-
-Also: **determinism hardening** — replaced `Math.hypot` with `hyp` (= `Math.sqrt(x*x+
-y*y)`, engine-stable) across `src/sim/*` + `math.ts`. Smoke unchanged (values identical
-at our magnitudes).
-
-## ⚠️ NOT DONE / next steps
-1. **RE-TEST live cross-browser MP** with the deterministic-trig fix — the reported
-   desync should be gone. If a DESYNC chip still appears, the `console.warn("[net] DESYNC
-   at tick …")` now names the first diverging tick — use it. Next suspect if so: the
-   disconnect ZERO_CMD hole (above), or any remaining non-determinism the smoke can't see
-   (the in-process determinism test can't catch cross-engine float drift — only a real
-   two-browser run can). Signaling/ICE/presence-race first-run bugs may still exist.
-2. `.env` is gitignored; `.env.example` documents the two vars. Vercel/Electron need the
-   same vars set (baked at build time).
-3. Deferred: TURN relay (cross-NAT), replays, obelisk AprilTags, mobile/touch, G408.
-
-## Gotchas (this session)
-- **Lockstep determinism seam**: any match-flow mutation OUTSIDE `step()` (countdown→
-  startMatch) desyncs if applied at different ticks per peer. MP fixes this by starting
-  the match at tick 0 from the host seed. If you add MP pre-match UI, DON'T gate stepping
-  on it — keep it a non-authoritative overlay, or fold the transition into the sim.
-- **Command frame** (still true from Phase C tests): `fieldCentric=false` ⇒ `driveY` is
-  robot-forward along `heading`; field-centric is rotated per alliance.
-- Broadcasts don't echo to self (`broadcast:{self:false}`) — the host must call its own
-  `handleStart`/`applyRestart` locally (it does).
-- Penalty point values are 5/15 and edge-triggered (no cooldown) — do not "restore" the
-  manual's 10/30 or the old 2 s debounce.
-
-## Verification & tooling
-- `npm test` after ANY `src/sim`/`config`/`src/net` change (122 checks; the netcode
-  foundation — protocol/lockstep/worldHash/deterministic-trig — is smoke-tested, the
-  browser layer is not).
-- `npm run build` before "done". Dev: `npm run dev`.
-- Manual PDFs: WebFetch `ftc-resources.firstinspires.org/ftc/game/manual-NN`.
+## Gotchas / notes
+- **Tick rate is 60 Hz** (`SIM_DT = 1/60`), NOT 120 — CLAUDE.md corrected this session.
+- The client predicts on `localizeCommand(cmd)` and the server steps the dequantized
+  wire value — keep these identical (don't predict on a raw command).
+- `docs/multiplayer.md` is now **STALE** (describes the deleted P2P/Supabase stack) —
+  rewrite or delete it when the Phase 0 UI/docs pass lands.
+- `@supabase/supabase-js` was removed from `dependencies` (bundle dropped ~accordingly);
+  nothing imports it anymore.
+- Server uses `Date.now()/Math.random()` freely (it is the single authority — the
+  determinism ban applies only to `src/sim`, which stays clean).
 - PowerShell 5.1: no `&&`; Bash tool available for POSIX.
 
 ## Standing user instructions
 - Write/refresh this HANDOFF at the END of every session.
 - Product decisions in CLAUDE.md — do not regress. Physical models over scripted behavior.
-- The user gives rapid, specific field/UX feedback and expects it addressed precisely; when
-  a visual is wrong they'd rather you look at the real render than argue from the docs.
+- Run `npm test` after any `src/sim`/`config`/`src/net` change; `npm run build` before "done".
