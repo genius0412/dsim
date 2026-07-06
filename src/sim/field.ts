@@ -235,8 +235,9 @@ export function loadSlots(a: Alliance): Vec2[] {
   return C.LOAD_COL_XS.map((x) => ({ x: d * x, y: C.LOAD_ROW_Y }));
 }
 
-/** the 6 cell centers of the human player's 2x3 out-of-play box, row-major
- * (back row first), side-wall-inward within each row. */
+/** the 6 cell centers of the human player's 2x3 out-of-play box, which sits OFF
+ * the field just beyond the audience wall, row-major (nearer row first),
+ * side-wall-inward within each row. */
 export function loadBoxSlots(a: Alliance): Vec2[] {
   const d = driverSide(a);
   const out: Vec2[] = [];

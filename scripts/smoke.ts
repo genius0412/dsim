@@ -1015,12 +1015,11 @@ const setup = (
     staged.length === 3 && staged.filter((b) => b.color === 'purple').length === 2,
     `staged=${staged.map((b) => b.color).join(',')}`,
   );
-  // the 2x3 box has 6 distinct cells inside the loading zone
+  // the 2x3 box has 6 cells OFF the field, just beyond the audience wall
   const cells = loadBoxSlots('blue');
-  const lz = loadZone('blue');
   check(
-    'the 2x3 box has 6 cells inside the loading zone',
-    cells.length === 6 && cells.every((c) => inRect(c, lz)),
+    'the 2x3 box has 6 cells off the field (beyond the audience wall)',
+    cells.length === 6 && cells.every((c) => c.y < -FIELD_HALF),
   );
 }
 

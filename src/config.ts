@@ -285,7 +285,10 @@ export const LOAD_ZONE_SIZE = 23;
  * corner behind the grab row. */
 export const LOAD_COL_XS = [54, 61, 68] as const; // 3 columns, ~7in apart, toward the side wall
 export const LOAD_ROW_Y = -53; // grab row y (field-interior edge of the zone)
-export const LOAD_BOX_YS = [-63, -69] as const; // 2x3 box rows toward the audience corner
+// the box is OFF the field (the human player stands off-field): its two rows sit
+// beyond the audience wall (y < -FIELD_HALF) with a slight gap from it, aligned
+// below the grab row (and within the VIEW_MARGIN so it stays on-screen).
+export const LOAD_BOX_YS = [-77, -82] as const;
 
 /** depot band: floor in front of the goal face, out to the ~30in depot line
  * (the line spans the goal face base — endpoints are the face corners pushed
@@ -320,7 +323,7 @@ export const START_POSES = [
 ] as const;
 
 // --------------------------------------------------------- human player ----
-export const HP_PLACE_DELAY = 3; // s between placements from the box into the grab row
+export const HP_PLACE_DELAY = 0.35; // s between placements from the box into the grab row (fast HP)
 /** the alliance-area pool is two 3-ball preload sets (4P+2G total); each present
  * robot takes one, and any leftover sets seed the human-player box (spawn.ts hpBox) */
 export const PRELOAD: readonly ('purple' | 'green')[] = ['purple', 'green', 'purple'];

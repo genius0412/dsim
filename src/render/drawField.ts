@@ -77,22 +77,21 @@ export function drawField(ctx: CanvasRenderingContext2D, world: World): void {
     fillRect(ctx, lz, 'rgba(229,231,235,0.05)');
     strokeRect(ctx, lz, C.COLORS.white);
 
-    // human-player 2x3 box (out-of-play storage): a frame around the cells plus
-    // the balls currently stored in it (not world.balls — they stay off physics)
+    // human-player 2x3 box: OFF-FIELD out-of-play storage (a station just beyond
+    // the audience wall). A backing + frame around the cells plus the balls
+    // stored in it (not world.balls — they stay off physics).
     const cells = loadBoxSlots(a);
-    const pad = C.BALL_RADIUS + 1.5;
+    const pad = C.BALL_RADIUS + 1;
     const xs = cells.map((c) => c.x);
     const ys = cells.map((c) => c.y);
-    strokeRect(
-      ctx,
-      {
-        x0: Math.min(...xs) - pad,
-        x1: Math.max(...xs) + pad,
-        y0: Math.min(...ys) - pad,
-        y1: Math.max(...ys) + pad,
-      },
-      C.COLORS.white,
-    );
+    const boxRect = {
+      x0: Math.min(...xs) - pad,
+      x1: Math.max(...xs) + pad,
+      y0: Math.min(...ys) - pad,
+      y1: Math.max(...ys) + pad,
+    };
+    fillRect(ctx, boxRect, '#191d24');
+    strokeRect(ctx, boxRect, C.COLORS.white);
     world.humanPlayers[a].box.forEach((color, i) => {
       const c = cells[i];
       if (!c) return;

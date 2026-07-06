@@ -37,8 +37,10 @@ alliance area (4P+2G). The 3 loading-zone artifacts form the GRAB ROW — a row 
 field-x (vertical on the driver's rotated screen) so a robot sweeps all 3 driving along
 x. Each present robot preloads one 3-ball alliance-area set; any set no robot claims
 seeds the human player's out-of-play 2×3 BOX (capacity 6: 2 robots → 0, 1 → 3, 0 → 6).
-The human player feeds the box into the grab row one artifact at a time (~3 s apart when
-a grab slot is free) — one-at-a-time keeps box + in-transit within the 6-out-of-play cap.
+The box is drawn OFF the field, just beyond the audience wall (the human player stands
+off-field). They feed the box into the grab row one artifact at a time (~0.35 s apart
+when a grab slot is free) — one-at-a-time keeps box + in-transit within the 6-out-of-play
+cap.
 
 ## Field map (sim world frame)
 

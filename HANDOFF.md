@@ -17,14 +17,17 @@ DECODE layout. GUI-verified via Electron (solo match: red box 6 / blue box 3; fr
   the zone drives straight along x and sweeps all 3.
 - **2×3 box** — the human player's off-field artifacts live in a drawn `2×3` box (capacity
   6, out of play): `loadBoxSlots(a)` (`LOAD_COL_XS × LOAD_BOX_YS`), drawn in
-  `src/render/drawField.ts` (frame + stored balls; box balls are NOT in `world.balls`,
-  they stay off physics). `HumanPlayerState.stock` → **`box`** (`src/types.ts`).
+  `src/render/drawField.ts` (dark backing + frame + stored balls; box balls are NOT in
+  `world.balls`, they stay off physics). It sits **OFF the field**, just beyond the
+  audience wall with a slight gap (`LOAD_BOX_YS = [-77,-82]`, y < -FIELD_HALF) — the human
+  player stands off-field. `HumanPlayerState.stock` → **`box`** (`src/types.ts`).
 - **Box init scales with missing robots** — `hpBox(present)` in `src/sim/spawn.ts` =
   `[[...PRELOAD],[...HP_INITIAL_STOCK]].slice(present).flat()` → 2 robots → 0, 1 → PPG(3),
   0 → PGP+PPG(6, 4P+2G). (Old code wrongly gave a 0-robot alliance only 3.)
 - **`updateHumanPlayers`** (`src/sim/humanPlayer.ts`) now feeds the grab row from `hp.box`
   one artifact per `HP_PLACE_DELAY` when a grab slot is free — one-at-a-time keeps
   box + in-transit within the 6-out-of-play cap (a 5-ball box can hold at most 1 more).
+  `HP_PLACE_DELAY` cut 3 s → **0.35 s** (fast HP restock).
 - `docs/decode-reference.md` Artifacts section updated. `scripts/smoke.ts` +9 checks
   (box counts by robot count, grab-row-along-x, box ≤ 6, pre-staged PGP still spawns).
 
