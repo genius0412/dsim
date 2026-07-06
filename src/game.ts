@@ -134,7 +134,7 @@ export class GameController {
     if (session) {
       this.audio.startKeepAlive();
       this.lastSimT = performance.now();
-      this.simTimer = window.setInterval(this.simStep, 1000 / 120);
+      this.simTimer = window.setInterval(this.simStep, 1000 * C.SIM_DT);
     }
     this.raf = requestAnimationFrame(this.loop);
   }

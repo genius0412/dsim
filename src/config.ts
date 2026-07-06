@@ -345,7 +345,11 @@ export const ROBOT_PRESETS: readonly RobotSpec[] = [
 ] as const;
 
 // ------------------------------------------------------------------ sim ----
-export const SIM_DT = 1 / 120;
+// 60 Hz fixed timestep. Lower than 120 so weaker browsers can sustain it (in
+// lockstep multiplayer everyone is coupled to the slowest peer) and so the
+// 8-tick INPUT_DELAY buffer covers ~133 ms of latency. step() is dt-parameterized
+// (physics scales with dt), so this stays deterministic across peers.
+export const SIM_DT = 1 / 60;
 export const MAX_STEPS_PER_FRAME = 5;
 
 // ------------------------------------------------------------ rendering ----
