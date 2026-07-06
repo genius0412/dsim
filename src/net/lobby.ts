@@ -86,9 +86,11 @@ export class SupabaseLobby {
 
     channel.on('presence', { event: 'sync' }, () => {
       const state = channel.presenceState<LobbyPlayer>();
+      // one player PER presence key: re-tracking (e.g. an alliance switch) can
+      // stack several presence entries under the same key — take the most
+      // recent so a player never appears twice
       this.players = Object.values(state)
-        .flat()
-        .map((p) => p as unknown as LobbyPlayer)
+        .map((entries) => entries[entries.length - 1] as unknown as LobbyPlayer)
         .sort((a, b) => (a.peerId < b.peerId ? -1 : 1));
       this.handlers.players?.(this.players);
     });
