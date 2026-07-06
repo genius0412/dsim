@@ -80,7 +80,7 @@ export const WHEEL_INSET = 2.6;
  * |fwd| + |strafe| + |rot| (the worst wheel sees all three demands added),
  * rotation tops out at wheelSpeed / (half track diagonal) like a real chassis,
  * and acceleration reflects an FTC bot hitting full speed in ~0.25s. */
-export const DRIVE_MAX_SPEED = 75; // in/s forward (~1.9 m/s, fast FTC drivetrain)
+export const DRIVE_MAX_SPEED = 100; // in/s forward (~1.9 m/s, fast FTC drivetrain)
 export const STRAFE_MULT = 0.85; // roller slip: strafing slightly slower
 export const TURN_MAX_SPEED = 7.0; // rad/s (~400°/s, wheelSpeed / half-diagonal)
 export const DRIVE_ACCEL = 280; // in/s^2
@@ -102,7 +102,7 @@ export const INTAKE_PRESETS = {
    * against the 18in cap): must face the ball, but swallows fast */
   sloped: {
     reach: 3, halfWidth: 6, perBall: 0.12, clumpPerBall: 0.04, overhang: false,
-    minLength: 12, maxLength: 18, fireInterval: 0.1,
+    minLength: 12, maxLength: 18, fireInterval: 0.01,
   },
   /** VECTOR WHEEL intake: wide compliant wheels ride over artifacts ahead of
    * the chassis (within the 18in cap — chassis 11.5..14.5in). Grabs whatever
@@ -178,7 +178,7 @@ export const BASIN_ENTRY_KEEP_V = 0.55; // entry velocity retained (splash energ
 // classifier rail (1D flow, contact stacking)
 export const RAIL_S_MAX = 48; // rail length: SQUARE at the top (y = CLASSIFIER_Y0 + s)
 export const RAIL_ACCEL = 80; // in/s^2 down-ramp
-export const RAIL_TERMINAL = 46; // in/s max flow speed
+export const RAIL_TERMINAL = 60; // in/s max flow speed
 export const RAIL_PITCH = 5.1; // ball contact spacing on the stack
 export const GATE_STOP_S = 2; // lowest rest position against the closed gate
 export const RAIL_ENTRY_BLOCK_S = 43.4; // entrance blocked while a ball is above this
