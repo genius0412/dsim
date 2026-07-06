@@ -35,6 +35,8 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
   const startedRef = useRef(false);
   /** last meshReady value we published, so we only re-track on a real change */
   const reportedRef = useRef<boolean | null>(null);
+  /** the host's last-published roster (re-broadcast on the heartbeat) */
+  const rosterRef = useRef<LobbyPlayer[]>([]);
 
   // tear down on unmount unless a match started (which hands ownership onward).
   // Also leave on pagehide so a tab refresh/close drops our presence instead of
@@ -47,7 +49,13 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
     // heartbeat: every client re-broadcasts its presence periodically, so anyone
     // whose roster drifted out of sync reconverges within one interval (Supabase
     // presence can silently miss an update; this keeps everyone honest)
-    const heartbeat = setInterval(() => void lobbyRef.current?.resync(), 3000);
+    const heartbeat = setInterval(() => {
+      const lobby = lobbyRef.current;
+      void lobby?.resync();
+      // host re-publishes the authoritative roster so a client that missed it
+      // (best-effort broadcast) reconverges within one interval
+      if (lobby?.isHost() && rosterRef.current.length) lobby.broadcastRoster(rosterRef.current);
+    }, 3000);
     return () => {
       window.removeEventListener('pagehide', onHide);
       clearInterval(heartbeat);
@@ -128,25 +136,34 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
     };
 
     lobby.on('players', (list) => {
-      // deterministic room membership: the first ROOM_CAPACITY by join time
-      // (peerId tiebreak). Every client computes this SAME split from the same
-      // presence snapshot, so once presence converges the rosters AGREE — and
-      // never exceed the cap. (Rendering the raw uncapped list is what made
-      // clients disagree on the count and show "more than 4".)
-      const order = [...list].sort(
-        (a, b) => a.joinedAt - b.joinedAt || (a.peerId < b.peerId ? -1 : 1),
-      );
+      // membership capped by PEERID (clock-independent — joinedAt/Date.now differs
+      // per machine and made clients disagree). The HOST is the single source of
+      // truth: it publishes this list and EVERYONE renders the host's copy (via
+      // the 'roster' handler), so no two screens can show different things.
+      const order = [...list].sort((a, b) => (a.peerId < b.peerId ? -1 : 1));
       const keep = order.slice(0, ROOM_CAPACITY);
       const excess = order.slice(ROOM_CAPACITY);
-      // a later joiner over the cap bounces itself...
+      // a driver over the cap bounces itself (safe — affects only itself)
       if (excess.some((p) => p.peerId === lobby.peerId)) {
         leaveWith(`Room is full (max ${ROOM_CAPACITY} drivers).`);
         return;
       }
-      // ...and the host kicks the excess as a backstop (deterministic order)
-      if (lobby.isHost()) excess.forEach((p) => lobby.kick(p.peerId));
-      setPlayers(keep); // show ONLY the in-room drivers — same set for everyone
-      mesh.connect(keep.map((p) => p.peerId)); // only link the in-room drivers
+      mesh.connect(keep.map((p) => p.peerId));
+      if (lobby.isHost()) {
+        rosterRef.current = keep;
+        setPlayers(keep);
+        lobby.broadcastRoster(keep); // authoritative → everyone renders this
+      }
+    });
+    // non-hosts render the HOST's roster (our own latest state overlaid so our
+    // alliance/ready toggles feel instant instead of waiting a round-trip)
+    lobby.on('roster', (hostList) => {
+      if (lobby.isHost()) return;
+      const self = lobby.getSelf();
+      const shown = hostList.map((p) => (p.peerId === self.peerId ? { ...p, ...self } : p));
+      if (!shown.some((p) => p.peerId === self.peerId)) shown.push(self);
+      setPlayers(shown);
+      meshRef.current?.connect(shown.map((p) => p.peerId));
     });
     lobby.on('start', (msg) => handleStart(msg));
     lobby.on('kicked', () => leaveWith('You were removed from the room by the host.'));
@@ -175,7 +192,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
     // — so a ghost/overflow presence never spawns a phantom robot that no one
     // drives (its missing commands would stall every peer's lockstep)
     const roster = [...lobby.getPlayers()]
-      .sort((a, b) => a.joinedAt - b.joinedAt || (a.peerId < b.peerId ? -1 : 1))
+      .sort((a, b) => (a.peerId < b.peerId ? -1 : 1)) // SAME cap order as the roster
       .slice(0, ROOM_CAPACITY);
     // honor each driver's chosen start position, but keep them DISTINCT within
     // an alliance (bump to the next free pose) so robots never spawn overlapping

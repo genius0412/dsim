@@ -59,6 +59,9 @@ type Handlers = {
   restart: (seed: number) => void;
   /** the host removed us from the room */
   kicked: () => void;
+  /** the host's AUTHORITATIVE roster — non-hosts render THIS instead of their own
+   * presence view, so every screen shows the same list */
+  roster: (players: LobbyPlayer[]) => void;
   closed: () => void;
 };
 
@@ -95,6 +98,10 @@ export class SupabaseLobby {
   /** peerId -> ms they announced leaving; filtered from the roster for a few
    * seconds so a slow/stale presence sync can't re-add a departed player */
   private readonly recentlyLeft = new Map<string, number>();
+  /** current host, held STICKY: only re-elected when it actually leaves. Keyed on
+   * peerId (NOT wall-clock joinedAt) so clock skew can't make a lagging-clock peer
+   * look like the earliest joiner and hijack it, and a new joiner can't steal it. */
+  private hostPeerId: string | null = null;
   private readonly handlers: Partial<Handlers> = {};
 
   constructor(self: Omit<LobbyPlayer, 'peerId' | 'ver' | 'joinedAt'>) {
@@ -106,19 +113,35 @@ export class SupabaseLobby {
     this.handlers[event] = cb;
   }
 
-  /** the room host = the EARLIEST joiner (joinedAt, peerId tiebreak). Stable:
-   * it only changes when the host actually leaves, and never flickers on a
-   * transient empty/partial presence sync (unlike a "smallest peerId" rule that
-   * returned true for everyone whenever the list was momentarily empty). */
+  /** re-elect the host only if the current one is gone (STICKY). Base election is
+   * the smallest peerId present — deterministic + clock-independent, so every
+   * client agrees on the same host. */
+  private recomputeHost(): void {
+    const ids = this.players.map((p) => p.peerId);
+    if (ids.length === 0) {
+      this.hostPeerId = null;
+      return;
+    }
+    if (this.hostPeerId && ids.includes(this.hostPeerId)) return; // keep it
+    this.hostPeerId = ids.reduce((a, b) => (a < b ? a : b));
+  }
+
   hostId(): string | null {
-    if (!this.players.length) return null;
-    return this.players.reduce((a, b) =>
-      a.joinedAt < b.joinedAt || (a.joinedAt === b.joinedAt && a.peerId < b.peerId) ? a : b,
-    ).peerId;
+    return this.hostPeerId;
   }
 
   isHost(): boolean {
-    return this.hostId() === this.peerId;
+    return this.hostPeerId === this.peerId;
+  }
+
+  /** our own current lobby state (for optimistic local display) */
+  getSelf(): LobbyPlayer {
+    return this.self;
+  }
+
+  /** host-only: publish the authoritative roster so every client renders it */
+  broadcastRoster(players: LobbyPlayer[]): void {
+    this.channel?.send({ type: 'broadcast', event: 'roster', payload: { players } });
   }
 
   getPlayers(): LobbyPlayer[] {
@@ -152,6 +175,9 @@ export class SupabaseLobby {
       this.recentlyLeft.set((payload as { peerId: string }).peerId, Date.now());
       this.rebuildPlayers(); // drop them from the roster right away
     });
+    channel.on('broadcast', { event: 'roster' }, ({ payload }) => {
+      this.handlers.roster?.((payload as { players: LobbyPlayer[] }).players);
+    });
 
     await new Promise<void>((resolve, reject) => {
       channel.subscribe((status) => {
@@ -178,6 +204,7 @@ export class SupabaseLobby {
       .map((ps) => ps.reduce((a, b) => (b.ver >= a.ver ? b : a)))
       .filter((p) => !this.recentlyLeft.has(p.peerId)) // hide players who just left
       .sort((a, b) => (a.peerId < b.peerId ? -1 : 1));
+    this.recomputeHost();
     this.handlers.players?.(this.players);
   }
 
