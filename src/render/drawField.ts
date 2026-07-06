@@ -7,6 +7,7 @@ import {
   goalTriangle,
   launchSegments,
   loadZone,
+  loadBoxSlots,
   driverSide,
   tunnelStrip,
   type Rect,
@@ -75,6 +76,31 @@ export function drawField(ctx: CanvasRenderingContext2D, world: World): void {
     const lz = loadZone(a);
     fillRect(ctx, lz, 'rgba(229,231,235,0.05)');
     strokeRect(ctx, lz, C.COLORS.white);
+
+    // human-player 2x3 box (out-of-play storage): a frame around the cells plus
+    // the balls currently stored in it (not world.balls — they stay off physics)
+    const cells = loadBoxSlots(a);
+    const pad = C.BALL_RADIUS + 1.5;
+    const xs = cells.map((c) => c.x);
+    const ys = cells.map((c) => c.y);
+    strokeRect(
+      ctx,
+      {
+        x0: Math.min(...xs) - pad,
+        x1: Math.max(...xs) + pad,
+        y0: Math.min(...ys) - pad,
+        y1: Math.max(...ys) + pad,
+      },
+      C.COLORS.white,
+    );
+    world.humanPlayers[a].box.forEach((color, i) => {
+      const c = cells[i];
+      if (!c) return;
+      ctx.fillStyle = color === 'green' ? C.COLORS.green : C.COLORS.purple;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, C.BALL_RADIUS, 0, Math.PI * 2);
+      ctx.fill();
+    });
 
     // SECRET TUNNEL floor strip beneath the OTHER alliance's classifier —
     // it belongs to THIS alliance (its drive team is on that wall), bounded

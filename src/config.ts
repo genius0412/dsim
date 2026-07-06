@@ -278,6 +278,15 @@ export const BASE_CENTER = { x: 33, y: -39 };
 /** loading zone: 23x23 audience corner on the drive-team side */
 export const LOAD_ZONE_SIZE = 23;
 
+/** loading-zone artifact layout (driverSide-relative in x; y is audience-anchored).
+ * The GRAB ROW is the 3 pre-staged artifacts, in a row along field-x (which reads
+ * vertical on the driver's rotated screen) so a robot sweeps all 3 driving along x.
+ * The 2x3 BOX is the human player's out-of-play storage, tucked into the audience
+ * corner behind the grab row. */
+export const LOAD_COL_XS = [54, 61, 68] as const; // 3 columns, ~7in apart, toward the side wall
+export const LOAD_ROW_Y = -53; // grab row y (field-interior edge of the zone)
+export const LOAD_BOX_YS = [-63, -69] as const; // 2x3 box rows toward the audience corner
+
 /** depot band: floor in front of the goal face, out to the ~30in depot line
  * (the line spans the goal face base — endpoints are the face corners pushed
  * DEPOT_DEPTH out along the face normal, giving the manual's ~30in length) */
@@ -311,8 +320,9 @@ export const START_POSES = [
 ] as const;
 
 // --------------------------------------------------------- human player ----
-export const HP_PLACE_DELAY = 3; // s between placements into the loading zone
-/** preloaded hopper (from the alliance area's 6: 4P+2G); rest becomes HP stock */
+export const HP_PLACE_DELAY = 3; // s between placements from the box into the grab row
+/** the alliance-area pool is two 3-ball preload sets (4P+2G total); each present
+ * robot takes one, and any leftover sets seed the human-player box (spawn.ts hpBox) */
 export const PRELOAD: readonly ('purple' | 'green')[] = ['purple', 'green', 'purple'];
 export const HP_INITIAL_STOCK: readonly ('purple' | 'green')[] = ['purple', 'purple', 'green'];
 

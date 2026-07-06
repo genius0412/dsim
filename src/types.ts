@@ -142,8 +142,9 @@ export interface MatchState {
 }
 
 export interface HumanPlayerState {
-  /** colors waiting to be placed into the loading zone, per alliance */
-  stock: ArtifactColor[];
+  /** out-of-play artifacts stored in the 2x3 loading-zone box (capacity 6), fed
+   * one at a time into the grab row as robots take them */
+  box: ArtifactColor[];
   nextPlaceAt: number;
 }
 

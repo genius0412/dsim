@@ -21,6 +21,8 @@ import {
   allianceArea,
   tunnelStrip,
   loadZone,
+  loadSlots,
+  loadBoxSlots,
   inRect,
 } from '../src/sim/field';
 import { assessMatchEnd } from '../src/sim/scoring';
@@ -34,6 +36,7 @@ import {
   FIELD_HALF,
   BALL_RADIUS,
   HP_INITIAL_STOCK,
+  PRELOAD,
 } from '../src/config';
 import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
 import { driveParams } from '../src/sim/drivetrain';
@@ -965,11 +968,60 @@ const setup = (
     `${blue1.hopper.join(',')}`,
   );
   check(
-    'HP stock starts empty when two robots fill an alliance',
-    w.humanPlayers.blue.stock.length === 0 && w.humanPlayers.red.stock.length === 0,
+    'HP box starts empty when two robots fill an alliance',
+    w.humanPlayers.blue.box.length === 0 && w.humanPlayers.red.box.length === 0,
   );
   const gap = Math.hypot(blue0.pos.x - blue1.pos.x, blue0.pos.y - blue1.pos.y);
   check('two robots on an alliance spawn at distinct, non-overlapping poses', gap > 20, `${gap.toFixed(1)} in apart`);
+}
+
+// ---- HP box scales with missing robots; grab row is 3 balls along x ---------
+{
+  // one robot per alliance -> the missing second robot's set (PPG) fills the box
+  const w1 = createWorld('match', 77, [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 0)]);
+  check(
+    'one-robot alliance seeds the box with the missing set (3, PPG)',
+    JSON.stringify(w1.humanPlayers.blue.box) === JSON.stringify([...HP_INITIAL_STOCK]),
+    `box=${w1.humanPlayers.blue.box.join(',')}`,
+  );
+  // an empty alliance -> both preload sets fill the box (6, PGP+PPG = 4P+2G)
+  const w0 = createWorld('match', 77, [setup(0, 'blue', {}, 0)]);
+  const redBox = w0.humanPlayers.red.box;
+  check(
+    'empty alliance seeds the box with both sets (6 = 4P+2G)',
+    JSON.stringify(redBox) === JSON.stringify([...PRELOAD, ...HP_INITIAL_STOCK]) &&
+      redBox.filter((c) => c === 'purple').length === 4 &&
+      redBox.filter((c) => c === 'green').length === 2,
+    `box=${redBox.join(',')}`,
+  );
+  check(
+    'the box never exceeds 6 out-of-play artifacts',
+    w0.humanPlayers.red.box.length <= 6 && w0.humanPlayers.blue.box.length <= 6,
+  );
+  // the 3 pre-staged PGP artifacts still spawn, now in a grab row along x
+  const slots = loadSlots('blue');
+  check('grab row is 3 slots', slots.length === 3);
+  check('grab row shares one y (a row along x)', slots.every((s) => s.y === slots[0].y));
+  check(
+    'grab row spans a range of x (robot sweeps along x)',
+    Math.abs(slots[2].x - slots[0].x) > 2 * BALL_RADIUS,
+    `dx=${(slots[2].x - slots[0].x).toFixed(1)}`,
+  );
+  const staged = w0.balls.filter(
+    (b) => b.state.kind === 'ground' && slots.some((s) => Math.hypot(b.pos.x - s.x, b.pos.y - s.y) < 0.1),
+  );
+  check(
+    'the 3 pre-staged loading-zone artifacts still spawn (PGP)',
+    staged.length === 3 && staged.filter((b) => b.color === 'purple').length === 2,
+    `staged=${staged.map((b) => b.color).join(',')}`,
+  );
+  // the 2x3 box has 6 distinct cells inside the loading zone
+  const cells = loadBoxSlots('blue');
+  const lz = loadZone('blue');
+  check(
+    'the 2x3 box has 6 cells inside the loading zone',
+    cells.length === 6 && cells.every((c) => inRect(c, lz)),
+  );
 }
 
 // ============================================================================

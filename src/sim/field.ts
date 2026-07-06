@@ -227,13 +227,21 @@ export function loadZone(a: Alliance): Rect {
   return sideRect(d, C.FIELD_HALF, C.FIELD_HALF - C.LOAD_ZONE_SIZE, -C.FIELD_HALF, -C.FIELD_HALF + C.LOAD_ZONE_SIZE);
 }
 
-/** artifact rest slots in the loading zone, against the perimeter, PGP order */
+/** grab row: the 3 pre-staged artifacts, laid out in a row along field-x
+ * (vertical on the driver's rotated screen) so a robot sweeps all 3 driving
+ * along x. PGP order reading from the field-interior side inward. */
 export function loadSlots(a: Alliance): Vec2[] {
   const d = driverSide(a);
-  return [0, 1, 2].map((i) => ({
-    x: d * (C.FIELD_HALF - 3.5),
-    y: -C.FIELD_HALF + 4 + i * 6,
-  }));
+  return C.LOAD_COL_XS.map((x) => ({ x: d * x, y: C.LOAD_ROW_Y }));
+}
+
+/** the 6 cell centers of the human player's 2x3 out-of-play box, row-major
+ * (back row first), side-wall-inward within each row. */
+export function loadBoxSlots(a: Alliance): Vec2[] {
+  const d = driverSide(a);
+  const out: Vec2[] = [];
+  for (const y of C.LOAD_BOX_YS) for (const x of C.LOAD_COL_XS) out.push({ x: d * x, y });
+  return out;
 }
 
 /** ground ball resting in the depot band in front of the alliance's goal */

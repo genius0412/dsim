@@ -52,6 +52,13 @@ export interface RobotSetup {
   startIndex: number;
 }
 
+/** leftover alliance-area preload sets seed the human-player box: each present
+ * robot consumes one 3-ball set, so 2 robots -> 0, 1 -> PPG (3), 0 -> PGP+PPG
+ * (6, 4P+2G). Balls here are out of play until placed into the grab row. */
+function hpBox(present: number): ArtifactColor[] {
+  return [[...C.PRELOAD], [...C.HP_INITIAL_STOCK]].slice(present).flat();
+}
+
 function goalState(alliance: Alliance): GoalState {
   return {
     alliance,
@@ -88,9 +95,9 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[]):
     slots.forEach((p, i) => addBall(p, order[i]));
   }
 
-  // preloads come from the alliance area's 6 balls (4P+2G). With one robot
-  // the leftover 3 become human-player stock; with two robots per alliance
-  // the second robot takes those 3 and the HP stock starts empty.
+  // preloads come from the alliance area's 6 balls (4P+2G): the first robot
+  // takes PRELOAD (PGP), the second takes HP_INITIAL_STOCK (PPG). Any set no
+  // present robot claims seeds the human-player box instead (see hpBox).
   const robots: RobotState[] = [];
   const allianceCount: Record<Alliance, number> = { red: 0, blue: 0 };
   for (const s of [...setups].sort((p, q) => p.id - q.id)) {
@@ -126,8 +133,8 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[]):
     balls,
     goals: { red: goalState('red'), blue: goalState('blue') },
     humanPlayers: {
-      red: { stock: allianceCount.red >= 2 ? [] : [...C.HP_INITIAL_STOCK], nextPlaceAt: 0 },
-      blue: { stock: allianceCount.blue >= 2 ? [] : [...C.HP_INITIAL_STOCK], nextPlaceAt: 0 },
+      red: { box: hpBox(allianceCount.red), nextPlaceAt: 0 },
+      blue: { box: hpBox(allianceCount.blue), nextPlaceAt: 0 },
     },
     match: {
       phase: mode === 'match' ? 'pre' : 'freeplay',

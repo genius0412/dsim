@@ -1,9 +1,34 @@
-# HANDOFF — session ending 2026-07-06 (multiplayer desync root-caused + fixed: deterministic trig)
+# HANDOFF — session ending 2026-07-06 (human-player loading BOX)
 
 Read `CLAUDE.md` first (load-bearing rules), then this file. Master plan lives at
 `C:\Users\geniu\.claude\plans\if-artifacts-are-scored-vivid-sphinx.md`.
 
-## ✅ Current state: BUILD GREEN, `npm test` = 122 checks ALL PASS
+## ✅ Current state: BUILD GREEN, `npm test` = 137 checks ALL PASS
+
+## 2026-07-06 session — human-player loading rework (box + grab row)
+
+Replaced the old "drip stock into a vertical column" human-player restock with the real
+DECODE layout. GUI-verified via Electron (solo match: red box 6 / blue box 3; free-drive
+2v2: both boxes empty; each zone shows the 3-ball grab row).
+
+- **Grab row** — the 3 pre-staged loading-zone artifacts (PGP, part of the real game) are
+  now a **row along field-x** (`loadSlots` in `src/sim/field.ts` → `LOAD_COL_XS × LOAD_ROW_Y`
+  in config). Field-x reads *vertical on the driver's rotated screen*, so a robot cycling
+  the zone drives straight along x and sweeps all 3.
+- **2×3 box** — the human player's off-field artifacts live in a drawn `2×3` box (capacity
+  6, out of play): `loadBoxSlots(a)` (`LOAD_COL_XS × LOAD_BOX_YS`), drawn in
+  `src/render/drawField.ts` (frame + stored balls; box balls are NOT in `world.balls`,
+  they stay off physics). `HumanPlayerState.stock` → **`box`** (`src/types.ts`).
+- **Box init scales with missing robots** — `hpBox(present)` in `src/sim/spawn.ts` =
+  `[[...PRELOAD],[...HP_INITIAL_STOCK]].slice(present).flat()` → 2 robots → 0, 1 → PPG(3),
+  0 → PGP+PPG(6, 4P+2G). (Old code wrongly gave a 0-robot alliance only 3.)
+- **`updateHumanPlayers`** (`src/sim/humanPlayer.ts`) now feeds the grab row from `hp.box`
+  one artifact per `HP_PLACE_DELAY` when a grab slot is free — one-at-a-time keeps
+  box + in-transit within the 6-out-of-play cap (a 5-ball box can hold at most 1 more).
+- `docs/decode-reference.md` Artifacts section updated. `scripts/smoke.ts` +9 checks
+  (box counts by robot count, grab-row-along-x, box ≤ 6, pre-staged PGP still spawns).
+
+## 2026-07-06 (earlier) — LIVE multiplayer desync fixed (cross-browser)
 
 ## 2026-07-06 session — LIVE multiplayer desync fixed (cross-browser)
 
