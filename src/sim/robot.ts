@@ -44,11 +44,11 @@ export function aimSolution(r: RobotState): { yaw: number; speed: number; angle:
   let dx = g.x - tp.x;
   let dy = g.y - tp.y;
 
-  console.log(`[Robot ${r.id} - ${r.alliance}] Aiming:`);
-  console.log(`  Robot Pos: (${r.pos.x.toFixed(2)}, ${r.pos.y.toFixed(2)}), Heading: ${(r.heading * 180 / Math.PI).toFixed(2)} deg`);
-  console.log(`  Turret Pos: (${tp.x.toFixed(2)}, ${tp.y.toFixed(2)})`);
-  console.log(`  Target Goal Center: (${g.x.toFixed(2)}, ${g.y.toFixed(2)})`);
-  console.log(`  Vector to Goal (dx, dy): (${dx.toFixed(2)}, ${dy.toFixed(2)})`);
+  // console.log(`[Robot ${r.id} - ${r.alliance}] Aiming:`);
+  // console.log(`  Robot Pos: (${r.pos.x.toFixed(2)}, ${r.pos.y.toFixed(2)}), Heading: ${(r.heading * 180 / Math.PI).toFixed(2)} deg`);
+  // console.log(`  Turret Pos: (${tp.x.toFixed(2)}, ${tp.y.toFixed(2)})`);
+  // console.log(`  Target Goal Center: (${g.x.toFixed(2)}, ${g.y.toFixed(2)})`);
+  // console.log(`  Vector to Goal (dx, dy): (${dx.toFixed(2)}, ${dy.toFixed(2)})`);
 
   let sol = solveShot(hyp(dx, dy));
   for (let i = 0; i < 3; i++) {
@@ -58,7 +58,7 @@ export function aimSolution(r: RobotState): { yaw: number; speed: number; angle:
     sol = solveShot(hyp(dx, dy));
   }
   const yaw = datan2(dy, dx);
-  console.log(`  Calculated Yaw: ${(yaw * 180 / Math.PI).toFixed(2)} deg`);
+  // console.log(`  Calculated Yaw: ${(yaw * 180 / Math.PI).toFixed(2)} deg`);
   return { yaw: yaw, speed: sol.speed, angle: sol.angle };
 }
 
@@ -133,7 +133,7 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
   // r.autoFire is true if forced by autoPathActive or set in settings.
   const fireCommanded = cmd.fire || r.autoFire;
 
-  console.log(`[Robot ${r.id}] Fire check: enabled=${robotsEnabled(world)}, hopper=${r.hopper.length}, time=${world.time.toFixed(2)}, fireReadyAt=${r.fireReadyAt.toFixed(2)}, zoneOk=${zoneOk}, cmd.fire=${cmd.fire}, r.autoFire=${r.autoFire}, autoPathActive=${r.autoPathActive}`);
+  // console.log(`[Robot ${r.id}] Fire check: enabled=${robotsEnabled(world)}, hopper=${r.hopper.length}, time=${world.time.toFixed(2)}, fireReadyAt=${r.fireReadyAt.toFixed(2)}, zoneOk=${zoneOk}, cmd.fire=${cmd.fire}, r.autoFire=${r.autoFire}, autoPathActive=${r.autoPathActive}`);
 
   if (canFire && zoneOk && fireCommanded) {
     fire(world, r);
@@ -145,7 +145,7 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
 
 
 function fire(world: World, r: RobotState): void {
-  console.log(`[Robot ${r.id}] Firing ball! Hopper size before: ${r.hopper.length}`);
+  // console.log(`[Robot ${r.id}] Firing ball! Hopper size before: ${r.hopper.length}`);
   // canSort: pick the hopper color that fills the next unfilled motif slot
   // on this alliance's ramp; everyone else fires FIFO
   let color: ArtifactColor;
@@ -206,11 +206,11 @@ function fire(world: World, r: RobotState): void {
  * unless the preset's wheels overhang the chassis (vector), the mouth is
  * clamped inside the frame and the chassis flanks encompass the intake. */
 export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): void {
-  console.log(`[Robot ${r.id}] Intake check: cmd.intake=${cmd.intake}, r.autoIntake=${r.autoIntake}, hopper.length=${r.hopper.length}`);
+  // console.log(`[Robot ${r.id}] Intake check: cmd.intake=${cmd.intake}, r.autoIntake=${r.autoIntake}, hopper.length=${r.hopper.length}`);
   if (!robotsEnabled(world)) return;
   const running = cmd.intake || r.autoIntake;
   if (!running || r.hopper.length >= C.HOPPER_CAPACITY) {
-    console.log(`[Robot ${r.id}] Intake not running or hopper full. running=${running}, hopper.length=${r.hopper.length}`);
+    // console.log(`[Robot ${r.id}] Intake not running or hopper full. running=${running}, hopper.length=${r.hopper.length}`);
     return;
   }
   const preset = C.INTAKE_PRESETS[r.spec.intake];
@@ -234,7 +234,7 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
       mouthY > rect.y0 &&
       mouthY < rect.y1
     ) {
-      console.log(`[Robot ${r.id}] Intake blocked by classifier rect.`);
+      // console.log(`[Robot ${r.id}] Intake blocked by classifier rect.`);
       return;
     }
   }
@@ -260,7 +260,7 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
     if ((inReach && inWidth) || sideTouch) candidates.push(b);
   }
   if (candidates.length === 0) {
-    console.log(`[Robot ${r.id}] No intake candidates.`);
+    // console.log(`[Robot ${r.id}] No intake candidates.`);
     return;
   }
 
@@ -268,12 +268,12 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   // are extremely efficient at eating clumps; vector keeps its steady pace
   const interval = candidates.length >= 2 ? preset.clumpPerBall : preset.perBall;
   if (world.time - r.lastIntakeAt < interval) {
-    console.log(`[Robot ${r.id}] Intake on cooldown. time=${world.time.toFixed(2)}, lastIntakeAt=${r.lastIntakeAt.toFixed(2)}, interval=${interval}`);
+    // console.log(`[Robot ${r.id}] Intake on cooldown. time=${world.time.toFixed(2)}, lastIntakeAt=${r.lastIntakeAt.toFixed(2)}, interval=${interval}`);
     return;
   }
   const b = candidates[0];
   r.hopper.push(b.color);
   r.lastIntakeAt = world.time;
   world.balls.splice(world.balls.indexOf(b), 1);
-  console.log(`[Robot ${r.id}] Ball intaken! New hopper size: ${r.hopper.length}`);
+  // console.log(`[Robot ${r.id}] Ball intaken! New hopper size: ${r.hopper.length}`);
 }

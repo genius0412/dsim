@@ -138,12 +138,12 @@ function getHeadingFromPathPoint(
 export function initializePathTraversal(robot: RobotState) {
   const autoPath = robot.autoPath;
   if (!autoPath) {
-    console.warn(`[PathTraversal] Robot ${robot.id}: No autoPath data found for initialization.`);
+    // console.warn(`[PathTraversal] Robot ${robot.id}: No autoPath data found for initialization.`);
     robot.autoPathActive = false;
     return;
   }
 
-  console.log(`[PathTraversal] Initializing auto path for robot ${robot.id} with path: ${autoPath.fileName}`);
+  // // console.log(`[PathTraversal] Initializing auto path for robot ${robot.id} with path: ${autoPath.fileName}`);
   robot.autoPathActive = true;
   robot.currentPathSegmentIndex = 0;
   robot.pathSegmentProgress = 0; // This will be 't' along the current path segment
@@ -207,7 +207,7 @@ export function updatePathTraversal(
   // --- Check if path is finished ---
   if (!autoPath.sequence || robot.pathSequenceIndex >= autoPath.sequence.length) {
     robot.autoPathActive = false; // Path finished
-    console.log(`[PathTraversal] Robot ${robot.id}: Path finished.`);
+    // console.log(`[PathTraversal] Robot ${robot.id}: Path finished.`);
     return ZERO_CMD;
   }
 
@@ -223,7 +223,7 @@ export function updatePathTraversal(
   // --- Apply waitBeforeMs if not already applied ---
   if (robot.pathSegmentProgress === 0 && currentPathLine.waitBeforeMs && currentPathLine.waitBeforeMs > 0) {
     robot.pathWaitTimer = currentPathLine.waitBeforeMs;
-    console.log(`[PathTraversal] Robot ${robot.id}: Waiting for ${currentPathLine.waitBeforeMs}ms (before segment).`);
+    // console.log(`[PathTraversal] Robot ${robot.id}: Waiting for ${currentPathLine.waitBeforeMs}ms (before segment).`);
     // During a wait, movement is zero, but intake/fire should be active
     return {
       driveX: 0,
@@ -280,18 +280,18 @@ export function updatePathTraversal(
     robot.pathSegmentProgress = 1.0; // Ensure it's exactly 1.0
     if (currentPathLine.waitAfterMs && currentPathLine.waitAfterMs > 0) {
       robot.pathWaitTimer = currentPathLine.waitAfterMs;
-      console.log(`[PathTraversal] Robot ${robot.id}: Waiting for ${currentPathLine.waitAfterMs}ms (after segment).`);
+      // console.log(`[PathTraversal] Robot ${robot.id}: Waiting for ${currentPathLine.waitAfterMs}ms (after segment).`);
     } else {
       robot.pathSequenceIndex++;
       robot.pathSegmentProgress = 0; // Reset for next sequence item
-      console.log(`[PathTraversal] Robot ${robot.id}: Segment ${currentPathLine.id} completed. Advancing to sequence item ${robot.pathSequenceIndex}.`);
+      // console.log(`[PathTraversal] Robot ${robot.id}: Segment ${currentPathLine.id} completed. Advancing to sequence item ${robot.pathSequenceIndex}.`);
     }
   }
 
   // If path is finished after advancing, deactivate
   if (robot.pathSequenceIndex >= autoPath.sequence.length) {
     robot.autoPathActive = false;
-    console.log(`[PathTraversal] Robot ${robot.id}: All sequence items completed. Path deactivated.`);
+    // console.log(`[PathTraversal] Robot ${robot.id}: All sequence items completed. Path deactivated.`);
     return ZERO_CMD;
   }
 

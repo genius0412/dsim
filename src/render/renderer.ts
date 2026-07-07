@@ -35,10 +35,8 @@ export class Renderer {
         (r.autoIntake && r.hopper.length < 3);
       drawRobot(ctx, r, intakeOn);
 
-      // Draw robot's pathing state (target point, heading)
-      if (r.id === localRobotId && r.autoPathActive) {
-        this.drawRobotPathState(ctx, r);
-      }
+
+
     }
     const screenUp = this.camera.screenUpWorld();
     drawBalls(ctx, world, screenUp);
@@ -130,45 +128,45 @@ export class Renderer {
     ctx.restore();
   }
 
-  private drawRobotPathState(ctx: CanvasRenderingContext2D, robot: RobotState): void {
-    ctx.save();
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = 'lime'; // Green for target visuals
-    ctx.fillStyle = 'lime';
-
-    // Draw target point
-    if (robot.pathTargetPoint) {
-      ctx.beginPath();
-      ctx.arc(robot.pathTargetPoint.x, robot.pathTargetPoint.y, 3, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      // Draw line from robot to target point
-      ctx.beginPath();
-      ctx.moveTo(robot.pos.x, robot.pos.y);
-      ctx.lineTo(robot.pathTargetPoint.x, robot.pathTargetPoint.y);
-      ctx.stroke();
-    }
-
-    // Draw target heading
-    if (robot.pathTargetHeading !== null) {
-      const arrowLength = 10;
-      const arrowX = robot.pos.x + dcos(robot.pathTargetHeading) * arrowLength;
-      const arrowY = robot.pos.y + dsin(robot.pathTargetHeading) * arrowLength;
-
-      ctx.beginPath();
-      ctx.moveTo(robot.pos.x, robot.pos.y);
-      ctx.lineTo(arrowX, arrowY);
-      ctx.stroke();
-
-      // Draw arrow head
-      ctx.beginPath();
-      ctx.moveTo(arrowX, arrowY);
-      ctx.lineTo(arrowX - dcos(robot.pathTargetHeading - Math.PI / 6) * 3, arrowY - dsin(robot.pathTargetHeading - Math.PI / 6) * 3);
-      ctx.moveTo(arrowX, arrowY);
-      ctx.lineTo(arrowX - dcos(robot.pathTargetHeading + Math.PI / 6) * 3, arrowY - dsin(robot.pathTargetHeading + Math.PI / 6) * 3);
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
+  // private drawRobotPathState(ctx: CanvasRenderingContext2D, robot: RobotState): void {
+  //   ctx.save();
+  //   ctx.lineWidth = 1;
+  //   ctx.strokeStyle = 'lime'; // Green for target visuals
+  //   ctx.fillStyle = 'lime';
+  //
+  //   // // Draw target point
+  //   // if (robot.pathTargetPoint) {
+  //   //   ctx.beginPath();
+  //   //   ctx.arc(robot.pathTargetPoint.x, robot.pathTargetPoint.y, 3, 0, Math.PI * 2);
+  //   //   ctx.fill();
+  //   //   ctx.stroke();
+  //   //
+  //   //   // Draw line from robot to target point
+  //   //   ctx.beginPath();
+  //   //   ctx.moveTo(robot.pos.x, robot.pos.y);
+  //   //   ctx.lineTo(robot.pathTargetPoint.x, robot.pathTargetPoint.y);
+  //   //   ctx.stroke();
+  //   // }
+  //
+  //   // // Draw target heading
+  //   // if (robot.pathTargetHeading !== null) {
+  //   //   const arrowLength = 10;
+  //   //   const arrowX = robot.pos.x + dcos(robot.pathTargetHeading) * arrowLength;
+  //   //   const arrowY = robot.pos.y + dsin(robot.pathTargetHeading) * arrowLength;
+  //   //
+  //   //   ctx.beginPath();
+  //   //   ctx.moveTo(robot.pos.x, robot.pos.y);
+  //   //   ctx.lineTo(arrowX, arrowY);
+  //   //   ctx.stroke();
+  //   //
+  //   //   // Draw arrow head
+  //   //   ctx.beginPath();
+  //   //   ctx.moveTo(arrowX, arrowY);
+  //   //   ctx.lineTo(arrowX - dcos(robot.pathTargetHeading - Math.PI / 6) * 3, arrowY - dsin(robot.pathTargetHeading - Math.PI / 6) * 3);
+  //   //   ctx.moveTo(arrowX, arrowY);
+  //   //   ctx.lineTo(arrowX - dcos(robot.pathTargetHeading + Math.PI / 6) * 3, arrowY - dsin(robot.pathTargetHeading + Math.PI / 6) * 3);
+  //   //   ctx.stroke();
+  //   // }
+  //   ctx.restore();
+  // }
 }
