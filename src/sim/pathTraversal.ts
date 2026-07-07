@@ -3,7 +3,7 @@ import type {
   World,
   PathPoint,
   PathLine,
-  AutoPathData,
+  Vec2,
   RobotCommand,
   SequenceItem, // Import SequenceItem
 } from '../types';
@@ -17,11 +17,8 @@ import {
   v,
   sub,
   len,
-  scale,
-  norm,
   clamp,
 } from '../math';
-import * as C from '../config';
 
 const ZERO_CMD: RobotCommand = {
   driveX: 0,
@@ -172,7 +169,7 @@ export function initializePathTraversal(robot: RobotState) {
  */
 export function updatePathTraversal(
     robot: RobotState,
-    world: World,
+    _world: World,
     dt: number,
 ): RobotCommand {
   if (!robot.autoPathActive) {

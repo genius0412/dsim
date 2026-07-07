@@ -141,7 +141,7 @@ function mirrorAutoPathData(autoPath: AutoPathData): AutoPathData {
 }
 
 
-export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], gameSettings: GameSettings): World {
+export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], gameSettings?: GameSettings): World {
   const rng = nextRandom(seed || 1);
   const motif = MOTIFS[Math.floor(rng.value * 3) % 3];
 
@@ -199,7 +199,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       lastIntakeAt: -10,
       fireReadyAt: 0,
       // Initialize new auto pathing fields
-      autoPathActive: s.autoPathEnabled && robotAutoPath !== undefined,
+      autoPathActive: !!(s.autoPathEnabled && robotAutoPath !== undefined),
       currentPathSegmentIndex: 0,
       pathSegmentProgress: 0,
       pathWaitTimer: 0,

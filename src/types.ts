@@ -1,3 +1,5 @@
+import type { ControlBindings } from './input/bindings';
+
 export type Alliance = 'red' | 'blue';
 export type ArtifactColor = 'purple' | 'green';
 export type Motif = readonly [ArtifactColor, ArtifactColor, ArtifactColor];
@@ -249,7 +251,7 @@ export interface GameSettings {
   startIndex: number;
   practiceDummies: boolean;
   assists: AssistConfig;
-  bindings: Record<string, string[]>;
+  bindings: ControlBindings;
   audio: {
     sounds: boolean;
     voice: boolean;
@@ -257,6 +259,9 @@ export interface GameSettings {
   // New fields for auto pathing
   autoPath: AutoPathData | null;
   autoPathEnabled: boolean;
+  /** park mode's speed cap, 0-100 (% of normal max speed); activation is
+   * gated to endgame / free drive regardless of this value */
+  parkSpeedPct: number;
 }
 
 export interface World {

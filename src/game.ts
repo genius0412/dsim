@@ -1,15 +1,13 @@
 import type {
   Alliance,
   ArtifactColor,
-  AssistConfig,
   GameMode,
   MatchPhase,
   Motif,
   RobotCommand,
-  RobotSpec,
   ScoreBreakdown,
   World,
-  AutoPathData, // Import AutoPathData
+  GameSettings,
 } from './types';
 import * as C from './config';
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
@@ -17,30 +15,14 @@ import { step } from './sim/world';
 import { startMatch } from './sim/match';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
-import type { ControlBindings } from './input/bindings';
 import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
 import type { MatchResultInfo, NetSession, Snapshot } from './net/session';
 import { localizeCommand } from './net/protocol';
 
-export interface GameSettings {
-  mode: GameMode;
-  alliance: Alliance;
-  assists: AssistConfig;
-  spec: RobotSpec;
-  /** which START_POSES slot the player's robot uses */
-  startIndex: number;
-  /** Free Drive only: spawn three default robots (ZERO_CMD) as obstacles */
-  practiceDummies: boolean;
-  audio: { sounds: boolean; voice: boolean };
-  bindings: ControlBindings;
-  // New fields for auto pathing
-  autoPath: AutoPathData | null;
-  autoPathEnabled: boolean;
-  /** park mode's speed cap, 0-100 (% of normal max speed); activation is
-   * gated to endgame / free drive regardless of this value */
-  parkSpeedPct: number;
-}
+// GameSettings is defined canonically in ./types; re-exported here because many
+// modules import it from './game'.
+export type { GameSettings };
 
 export interface Toast {
   id: number;
@@ -203,7 +185,7 @@ export class GameController {
         spec: s.spec,
         assists: s.assists,
         startIndex: s.startIndex,
-        autoPath: s.autoPath,
+        autoPath: s.autoPath ?? undefined,
         autoPathEnabled: s.autoPathEnabled,
       },
     ];

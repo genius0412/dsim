@@ -1,10 +1,9 @@
-import type { RobotCommand, World, AutoPathData, PathPoint, PathLine, Vec2 } from '../types';
+import type { RobotCommand, World, PathPoint, RobotState } from '../types';
 import { Camera } from './camera';
 import { drawField } from './drawField';
 import { drawBalls } from './drawBalls';
 import { drawRobot } from './drawRobot';
 import { drawRampStrips } from './drawGoals';
-import { linearPoint, quadraticBezierPoint, cubicBezierPoint, dcos, dsin } from '../math';
 
 export class Renderer {
   readonly camera = new Camera();

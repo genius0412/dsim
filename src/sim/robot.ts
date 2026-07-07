@@ -127,7 +127,7 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
  * Updates the robot's actions (turret, fire, intake).
  * This function is called for all robots regardless of movement type.
  */
-export function updateRobotActions(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
+export function updateRobotActions(world: World, r: RobotState, cmd: RobotCommand, _dt: number): void {
   // If autoPathActive, force aimAssist, autoIntake, and autoFire to true
   if (r.autoPathActive) {
     r.aimAssist = true;

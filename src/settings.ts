@@ -1,4 +1,4 @@
-import type { GameSettings, AutoPathData } from './game'; // Import AutoPathData from game for consistency
+import type { GameSettings, AutoPathData } from './types';
 import { DEFAULT_SPEC } from './sim/spawn';
 import {
   INTAKE_PRESETS,
