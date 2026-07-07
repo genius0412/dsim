@@ -24,13 +24,12 @@ export class Renderer {
     drawField(ctx, world);
     drawRampStrips(ctx, world);
 
-    // Draw auto paths if active
-    if (world.gameSettings?.autoPathEnabled && world.gameSettings.autoPath) {
-      this.drawAutoPath(ctx, world.gameSettings.autoPath, world.robots[0].alliance); // Assuming local robot's path
-    }
-
-    const screenUp = this.camera.screenUpWorld();
     for (const r of world.robots) {
+      // Draw auto paths if active for this robot
+      if (r.autoPathActive && r.autoPath) {
+        this.drawAutoPath(ctx, r);
+      }
+
       const intakeOn =
         (r.id === localRobotId && (lastCommand?.intake ?? false)) ||
         (r.autoIntake && r.hopper.length < 3);
@@ -41,6 +40,7 @@ export class Renderer {
         this.drawRobotPathState(ctx, r);
       }
     }
+    const screenUp = this.camera.screenUpWorld();
     drawBalls(ctx, world, screenUp);
 
     // name/team labels above the OTHER robots (the local driver knows theirs)
@@ -62,11 +62,14 @@ export class Renderer {
     }
   }
 
-  private drawAutoPath(ctx: CanvasRenderingContext2D, autoPath: AutoPathData, alliance: Alliance): void {
+  private drawAutoPath(ctx: CanvasRenderingContext2D, robot: RobotState): void {
+    const autoPath = robot.autoPath!; // We already checked for existence
+    const alliance = robot.alliance;
+
     ctx.save();
     ctx.lineWidth = 0.5;
-    ctx.strokeStyle = alliance === 'red' ? 'rgba(255, 0, 0, 0.7)' : 'rgba(0, 0, 255, 0.7)';
-    ctx.fillStyle = alliance === 'red' ? 'rgba(255, 0, 0, 0.5)' : 'rgba(0, 0, 255, 0.5)';
+    ctx.strokeStyle = alliance === 'red' ? 'rgba(200, 50, 50, 0.7)' : 'rgba(50, 50, 200, 0.7)'; // Desaturated alliance color
+    ctx.fillStyle = alliance === 'red' ? 'rgba(200, 50, 50, 0.5)' : 'rgba(50, 50, 200, 0.5)'; // Desaturated alliance color
 
     // Draw start point
     ctx.beginPath();
@@ -108,7 +111,7 @@ export class Renderer {
 
       // Draw control points
       if (line.controlPoints) {
-        ctx.fillStyle = 'rgba(255, 255, 0, 0.7)'; // Yellow for control points
+        ctx.fillStyle = 'rgba(180, 180, 180, 0.7)'; // Light grey for control points
         for (const cp of line.controlPoints) {
           ctx.beginPath();
           ctx.arc(cp.x, cp.y, 1, 0, Math.PI * 2);
