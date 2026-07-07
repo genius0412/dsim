@@ -5,8 +5,10 @@ import {
   ROBOT_MAX_SIZE,
   ROBOT_MIN_WIDTH,
   ROBOT_MIN_MASS,
+  SWERVE_MIN_MASS,
   ROBOT_MAX_MASS,
   ROBOT_MIN_RPM,
+  SWERVE_MAX_RPM,
   ROBOT_MAX_RPM,
   ROBOT_PRESETS,
 } from '../config';
@@ -86,8 +88,8 @@ export function Menu({ settings, onChange }: Props) {
 
   const spec = settings.spec;
   const isSwerve = spec.drivetrain === 'swerve';
-  const minMass = isSwerve ? 25 : ROBOT_MIN_MASS;
-  const maxRpm = isSwerve ? 500 : ROBOT_MAX_RPM;
+  const minMass = isSwerve ? SWERVE_MIN_MASS : ROBOT_MIN_MASS;
+  const maxRpm = isSwerve ? SWERVE_MAX_RPM : ROBOT_MAX_RPM;
   const dp = driveParams(spec);
   const isCustom = !ROBOT_PRESETS.some((p) => specMatches(spec, p));
 
@@ -223,7 +225,15 @@ export function Menu({ settings, onChange }: Props) {
                 <button
                   key={d}
                   className={`ds-opt mini ${spec.drivetrain === d ? 'on' : ''}`}
-                  onClick={() => setSpec({ drivetrain: d })}
+                  onClick={() => {
+                    const newMinMass = d === 'swerve' ? SWERVE_MIN_MASS : ROBOT_MIN_MASS;
+                    const newMaxRpm = d === 'swerve' ? SWERVE_MAX_RPM : ROBOT_MAX_RPM;
+                    setSpec({
+                      drivetrain: d,
+                      massLb: Math.max(newMinMass, Math.min(spec.massLb, ROBOT_MAX_MASS)),
+                      driveRpm: Math.max(ROBOT_MIN_RPM, Math.min(spec.driveRpm, newMaxRpm))
+                    });
+                  }}
                 >
                   <span className="ot">{DRIVETRAIN_LABELS[d]}</span>
                   <span className="od">{DRIVETRAIN_BLURBS[d]}</span>
