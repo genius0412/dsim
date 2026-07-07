@@ -177,6 +177,23 @@ export function inLaunchZone(p: Vec2, _a: Alliance): boolean {
   return main || aud;
 }
 
+/** the two shared launch zones AS POLYGONS (the same triangles drawn by
+ * launchSegments / inLaunchZone). Used for a proper robot-OBB overlap test:
+ * because the main wedge's boundary is the 45° diagonal converging at the field
+ * center, a robot straddling the APEX can cover the wedge while all four corners
+ * fall outside both diagonals — a corner-only test wrongly reads OUT. */
+export function launchTriangles(): Vec2[][] {
+  const f = C.FIELD_HALF;
+  return [
+    [{ x: 0, y: 0 }, { x: -f, y: f }, { x: f, y: f }],
+    [
+      { x: 0, y: -C.AUD_ZONE_APEX_Y },
+      { x: -C.AUD_ZONE_HALF_W, y: -f },
+      { x: C.AUD_ZONE_HALF_W, y: -f },
+    ],
+  ];
+}
+
 /** the DEPOT tape line: white tape running flush ALONG the goal face (the
  * hypotenuse), from the far-wall corner up to the CLASSIFIER edge (it stops
  * at the classifier — it does not run through the channel to the side wall).

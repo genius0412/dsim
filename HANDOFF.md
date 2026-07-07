@@ -1,134 +1,146 @@
-# HANDOFF — session ending 2026-07-06 (Netcode Phase 2 — Rapier GROUND-BALLS slice SHIPPED)
+# HANDOFF — session ending 2026-07-07 (Fly server perf/billing + Phase 3 design)
 
-Read `CLAUDE.md` first (load-bearing rules), then this file. The netcode/physics
-roadmap is `docs/netcodeplan.md` (source of truth). Prior slices (robots, Phase 0/1)
-are summarized further down; THIS session did **Phase 2, Slice 2: GROUND balls on
-Rapier**.
+Read `CLAUDE.md` first (load-bearing rules), then this file. Roadmap =
+`docs/netcodeplan.md`. THIS session was **ops + design**, not sim code:
+1. diagnosed & fixed the live Fly server lag/teleport + health-check flapping,
+2. hit the Fly **trial-ended suspension** (now BLOCKED on the user adding a card),
+3. switched the server to **auto-stop** (cheap idle),
+4. fully **designed Phase 3** (leaderboards / ranked / replays / auth / DB) — saved
+   to auto-memory (`phase3-leaderboards-spec.md`).
 
-## ✅ Current state: BUILD GREEN · `npm test` = **143 checks ALL PASS** · server type-checks · GUI live-verified
+The uncommitted **ball-physics follow-up fixes from the PRIOR session are still in
+the tree** (see bottom) — they were never committed; do not lose them.
 
-This session moved **ground balls** off the bespoke ball-collision passes onto
-**Rapier 2D** (ball↔ball, ball↔wall, ball↔goal-face, ball↔classifier). Flight,
-basin, rail, gate, and stock stay bespoke/scripted — the classified-vs-overflow
-contact-time scoring commit in `updateRails` was **not touched**.
+## ✅ Build state: GREEN · `npm test` = ALL PASS · `npm run server:check` clean
+## ⛔ Fly app `dohun-sim-decode` is SUSPENDED — Fly TRIAL ENDED. Needs a credit card.
 
-## The model — read before touching ball physics
+Every `fly` command now errors `trial has ended, please add a credit card`
+(https://fly.io/trial). Nothing can deploy/start until the user adds a card. This is
+BILLING, not a broken app — the fixes below are deployed and were healthy.
 
-Ground balls follow the same **stateless rebuild-per-step** pattern as robots, but
-in a **SEPARATE Rapier solve** from robots (`solveBalls`), NOT the robot solve.
+## What this session did
 
-Each `step()`, in the ball section of `world.ts` (AFTER robots + intake +
-penalties, matching the pre-existing order):
-1. **friction pre-pass** — `stepGroundBall(b, dt)` now decays velocity + rest-snaps
-   ONLY (it no longer integrates position; Rapier does, exactly like `updateRobot`
-   stopped integrating robot position in Slice 1).
-2. **`solveBalls(world, dt)`** (`physicsEngine.ts`) — a fresh Rapier world of the
-   static field colliders + one `ColliderDesc.ball(BALL_RADIUS)` dynamic body per
-   GROUND ball (built in stable `world.balls` id order → deterministic). Steps once,
-   writes `translation → b.pos`, `linvel → b.vel`. Robots are ABSENT from this world.
-3. **bespoke `collideBallRobot`** (iterated `BALL_SOLVER_ITERATIONS`×) — ball↔robot
-   is deliberately NOT a Rapier contact (see below).
-4. **hard field clamp** — `clampGroundBall(b)` snaps ground balls back inside walls +
-   goal faces (Rapier soft contacts allow ~0.2in penetration; the containment
-   invariant tolerates only ±0.01–0.02in).
+### 1. Server lag / teleport / health-check flapping — FIXED (committed to HEAD)
+Symptom: one game, server got laggy after a while, robots teleported, Fly health
+check failed (`app not responding on 8080`, machine flapping). Root cause = the Node
+event loop saturating + GC pressure on a 256 MB box, NOT too many games. Fixes:
+- **`server/room.ts`: `SNAPSHOT_INTERVAL` 1 → 3** (60 Hz → ~20 Hz full-world
+  snapshots). THE main fix — cut per-tick `JSON.stringify`/`slimWorld`/broadcast CPU
+  ~3×. Remotes are dead-reckoned client-side (`renderRemoteExtrap`) so 20 Hz looks
+  identical. (CLAUDE.md always documented 20 Hz; the "Fly io setup" commit had set it
+  to 1.)
+- **`fly.toml`: memory 256 → 512 MB** — headroom for the per-step Rapier WASM rebuild
+  + GC; stops the degrade-over-time (the teleport signature).
+- **`fly.toml`: health check `timeout` 2→5 s, `grace_period` 5→10 s** — survive brief
+  GC pauses + the cold-boot WASM init window.
+- **Cold-boot ordering (`server/index.ts` + `server/room.ts`)**: `httpServer.listen()`
+  now runs BEFORE `initPhysics()` so `/health` answers instantly on boot; match-start
+  is guarded on `physicsReady()` (refuses `start`/`restart` in the sub-second WASM-load
+  gap instead of throwing in the tick loop). Fixes the deploy-time "not listening on
+  8080" warning.
+  These are IN HEAD (user committed mid-session). Deployed twice; `/health` returned
+  `ok`, checks passing — until the trial lapsed.
 
-### ⚠️ Why ball↔robot stayed BESPOKE (the key design decision this session)
-The first attempt put robots + ground balls in ONE unified Rapier solve. Smoke
-immediately caught two failures that are actually FUNDAMENTAL, not tuning:
-- **Pin didn't stall the robot** — a light ball can't stop a robot whose linvel is
-  *force-set* every tick; the robot overran the ball to the wall.
-- **Gate outflow shoved the parked robot 5.5in** — product decision #7's "balls
-  arriving under their own momentum can't shove the chassis" is a *deliberately
-  NON-physical* rule. A real physical solve will never reproduce it.
+### 2. Auto-stop (UNCOMMITTED — the only server change not yet in HEAD)
+`fly.toml` now `auto_stop_machines = 'stop'` + `min_machines_running = 0` (was
+`'off'`/`1`). Fly bills $0 CPU/RAM when stopped (~1¢/mo rootfs) and auto-starts on the
+next connection. Trade-off: first player of a session eats a cold boot. NOTE the boot
+is ~7 s (`npm run server:start` → `tsx` transpiling the whole module graph at start;
+seen in `fly logs`). Optional future: precompile to JS (`tsc`→`node dist/`) to cut
+that to ~1 s — NOT done.
 
-The bespoke `collideBallRobot`/`pushRobotAt` encodes BOTH behaviors (the pin
-transmits only when the robot drives in past `BALL_PIN_PUSH_MIN_SPEED`). So the
-correct split is **ball↔ball + ball↔static → Rapier; ball↔robot → bespoke**. Bonus:
-the Slice-1 robot solve (`solveRobots`) is **byte-for-byte unchanged** — robots
-never see ball bodies, so every robot smoke check is identical.
+### 3. Phase 3 design — DONE (spec in memory `phase3-leaderboards-spec.md`)
+Two competition systems, no code yet (deferred until after the Fly card + it's a big
+phase):
+- **Record-chasing** (score-attack, RANDOM seed each run): **solo 1v0** + **duo 2v0**
+  (duo = both robots SAME drivetrain), per **all 4 drivetrains (mecanum, x-drive,
+  swerve, tank)** + an Overall board. Public replays.
+- **ELO ranked** (PvP): **1v1** + **2v2**, ELO split **per (mode × drivetrain) + an
+  Overall**. 2v2: same-drivetrain teams → that drivetrain's board + Overall; MIXED
+  teams → Overall ELO only. Runs on the existing authoritative netcode.
+- **Seasons keyed to a `BALANCE_VERSION` const in config.ts** (bumped deliberately per
+  balance patch): boards RESET each patch, past seasons archived + viewable. Every
+  record/replay stamped with the version. Consequence: an input-log replay only
+  re-simulates exactly under ITS sim version → store the immutable verified score
+  permanently; play old replays against that version's sim build (versioned bundles —
+  build current-season playback first).
+- **Replays = deterministic input-logs** `{seed, setups, compressed per-tick
+  RobotCommands}` (~10–30 KB, NOT video/snapshots) → ~25k fit in 500 MB. Fly server
+  RE-SIMULATES a submitted replay to VERIFY its score before writing (anti-cheat; the
+  seed is in the replay so random-seed doesn't weaken it).
+- **DB + Auth = Neon + Neon Auth** (settled after ruling out Supabase, then Neon+Clerk).
+  HARD REQ: user won't manually resume after dormancy. Supabase free pause needs a
+  MANUAL dashboard restore (+ deletes @90 days) → FAILS. Neon free scale-to-zero
+  auto-resumes ~0.5 s, no manual step. **Neon Auth** (Better Auth, identity stored IN
+  Postgres `neon_auth` schema → JOIN users to leaderboards; 60K MAU free; Vite/React
+  SDK) = single data service. CAVEAT: Neon Auth is BETA — verify GA + Discord/GitHub
+  OAuth at build time; fallback = self-host Better Auth (open-source) on the same DB.
+- **Stack:** Vercel (client) · Fly (sim + score verifier) · Neon (Postgres + Auth). All
+  free/near-free. OPEN: confirm Neon's long-idle project-DELETION policy before launch.
 
-### Restitution (single global `CoefficientCombineRule.Min`)
-Per-pair restitution isn't a Rapier primitive, but `Min` on every collider gives the
-right pairwise values from the existing constants: statics carry
-`BALL_WALL_RESTITUTION` (0.5), balls carry `BALL_BALL_RESTITUTION` (0.55) →
-ball↔static = 0.5, ball↔ball = 0.55. Robots (restitution 0) are in a different world
-now, so this doesn't touch them. `makeWorld()` factors the shared inch-scale
-integration params + statics for both solves.
-
-`BALL_MASS` (0.2 lb, new in config.ts) is essentially a numerical scale now — balls
-only meet equal-mass balls + immovable statics in `solveBalls` (mass cancels), since
-ball↔robot is bespoke. Kept at a physical foam-ball value for honesty.
-
-## Files touched this session
-- `src/sim/physicsEngine.ts` — `solveRobots` reverted to Slice-1 (robots only, now
-  via the shared `makeWorld`), NEW `solveBalls` (ground balls only), NEW `makeWorld`
-  helper, NEW `statics()` helper (restitution + Min on static colliders).
-- `src/sim/physics.ts` — `stepGroundBall` is friction+rest-snap only (dropped the
-  position integration); NEW exported `clampGroundBall` (reuses `clampBallPosToStatics`).
-  `collideBallRobot`/`collideBallBall`/`collideBallRect`/`collideBallStatic` stay LIVE
-  (ground ball↔robot bespoke + the whole FLIGHT path).
-- `src/sim/world.ts` — ball section restructured: ground friction → `solveBalls` →
-  iterated bespoke `collideBallRobot` → `clampGroundBall`; the bespoke
-  ball-ball/ball-robot/classifier/static passes are **narrowed to FLIGHT balls**
-  (`activeFlight`); flight block otherwise unchanged. Robot ordering unchanged.
-- `src/config.ts` — NEW `BALL_MASS`.
-- `scripts/smoke.ts` — 3 new checks (now 143): Rapier ball-ball separation, fast ball
-  doesn't tunnel a wall past the clamp, ground-ball collisions bit-for-bit
-  deterministic across two replays.
-
-## Verification done
-- `npm test` → **143/143**, incl. the pinned-ball stall, off-center scatter,
-  open-field push, gate-outflow-can't-shove (±0.01in), overflow-at-contact +
-  classified-during-drain (scoring commit), intake capture, 1200-tick robot
-  determinism, and the 3 new ground-ball checks.
-- `npm run build` (tsc strict + vite) green; `npm run server:check` green.
-- **GUI live-verified via the `verify` skill (Electron):** Free Drive — robot plows
-  through spike-mark ball columns, balls roll + PILE naturally against the left wall
-  (ball-ball + ball-wall via Rapier), some get intaked; robot squares up FLUSH against
-  the goal-face hypotenuse and stays contained (no tunnel) under sustained contact; no
-  explosions / all positions sane. (Screenshots in the session scratchpad.)
-
-## ⚠️ NOT DONE / next steps
-1. **Flight-low balls stay bespoke** (accepted deferral of the ground-only slice). A
-   low flight ball ↔ a ground ball is not resolved (flight bespoke, ground in Rapier).
-   Rare in practice (the shooter never misses, so shots always enter the goal). Porting
-   flight-low would need per-tick z-gated collision GROUPS (ball collides with robots
-   only if z<14, balls if z<10, goal-faces if z<37, …) — real machinery for near-zero
-   behavioral gain. Do it only if a flight-collision bug ever surfaces.
-2. **THEN cleanup** (still deferred, unchanged): delete the now dead-for-ground
-   `collideBallBall`/`collideBallStatic`-ground paths only once flight is also on
-   Rapier; the dead robot `collideRobots`/`constrainRobot` from Slice 1; and remove the
-   `dsin/dcos/datan2` discipline from sim-reachable code (STILL REQUIRED — robot.ts fire
-   + goal.ts + the in-process determinism checks rely on stable trig). Do NOT remove yet.
-3. **Feel re-tune watch:** `BALL_MASS` 0.2 + reusing `PHYS_CONTACT_FREQ`/solver iters
-   for ball contacts feel fine; the ~0.2in soft-contact penetration is invisible at
-   field scale (the ball-ball smoke check tolerates 0.5). Revisit if ball stacking ever
-   looks loose.
-4. Netcode leftovers from Phase 1 still open (unchanged): Vercel client redeploy with
+## ⚠️ Next steps (in order)
+1. **USER: add a Fly credit card** (https://fly.io/trial). Adding it ≠ being charged;
+   auto-stop keeps cost at pennies/mo.
+2. **THEN I deploy** (standing instruction: I run `fly deploy` myself — do NOT just
+   hand back the command): `fly deploy` to push the uncommitted auto-stop `fly.toml`;
+   confirm the machine sleeps when idle and wakes on connect (`fly status`,
+   `curl …/health`). App URL: `wss://dohun-sim-decode.fly.dev`.
+3. **Phase 3 build order** when the user is ready: (a) Neon + Neon Auth + schema +
+   saved robot configs/preset slots (ships value, independent of the game loop) →
+   (b) record-chasing (reuses the sim) → (c) ELO ranked (reuses the netcode) →
+   (d) replay viewer + seasons.
+4. Older netcode leftovers (unchanged): Vercel client redeploy with
    `VITE_GAME_SERVER_URL`, WebTransport, full-reload reconnect.
 
-## ⚠️ GIT: the USER commits, NOT me (they were explicit — never commit yourself)
-All of this session's work is in the working tree, uncommitted, for the user to commit.
-Do not run `git commit`.
+## ⚠️ GIT: the USER commits, NOT me. And I DEPLOY Fly for the user.
+- **NEVER `git commit`** — the user commits/amends themselves (they did so for the
+  server perf fixes this session). Uncommitted right now: `fly.toml` (auto-stop line),
+  `HANDOFF.md`, and the prior-session ball files below.
+- **DO run `fly deploy` myself** once the card is added (memory: `deploy-for-user`).
 
 ## Standing user instructions
-- **NEVER commit — the user commits themselves.**
 - Write/refresh this HANDOFF at the END of every session.
-- Product decisions in CLAUDE.md — do not regress. Physical models over scripted,
-  EXCEPT where a deliberately non-physical feel is documented (ball↔robot pin /
-  outflow-no-shove — that's why it stays bespoke).
 - Run `npm test` after any `src/sim`/`config`/`src/net` change; `npm run build` before
-  "done". `src/sim` stays deterministic (Rapier is deterministic in-process).
+  "done". `src/sim` stays deterministic.
+- Product decisions in CLAUDE.md — do not regress.
 
-## Prior context (Slice 1 — Rapier robots, unchanged this session)
-Slice 1 replaced the bespoke ROBOT collision solver with Rapier (`solveRobots` in
-`physicsEngine.ts`, `squareUpRobots` bespoke rotation nudge in `physics.ts`). The world
-is in INCHES → `integrationParameters.lengthUnit = PHYS_LENGTH_UNIT`; set-once linvel +
-read-back; rebuild-per-step (reconcile/determinism safe). `RAPIER.init()` is awaited at
-smoke/server/`main.tsx`. See the git history + `docs/netcodeplan.md`.
+---
 
-## Prior context (Phase 0/1 — netcode, unchanged)
-Server-authoritative sim + client prediction (Rocket League model) replaced the old P2P
-lockstep. `server/` (Node + ws + tsx) runs the shared `src/sim`; client predicts its own
-robot + reconciles to snapshots. Reconnection (15s grace), delta snapshots, deployed to
-Fly (`wss://dohun-sim-decode.fly.dev`, scale=1). See `docs/netcodeplan.md` + git history.
+## ⏳ PRIOR SESSION (2026-07-06) — Rapier GROUND-BALLS slice: STILL-UNCOMMITTED follow-ups
+These fixes are in the working tree (`src/config.ts`, `src/sim/field.ts`,
+`penalties.ts`, `physics.ts`, `physicsEngine.ts`, `robot.ts`, `scripts/smoke.ts`),
+committed by the user only in part — the ball slice itself is committed (`da1649e`),
+these follow-ups are NOT. Do not lose them:
+1. **Ground-ball rest overlap** → ball solve got its own stiffness knobs
+   (`PHYS_BALL_CONTACT_FREQ = 25`, `PHYS_BALL_ALLOWED_ERROR`) via `makeWorld(dt, freq,
+   allowedError)`; 25 Hz separates a resting clump AND keeps gate outflow at the
+   natural ~50 in/s (no `maxCorrectiveVelocity` knob in this Rapier build).
+2. **Launch-zone corner-only bug** (pre-existing) → true OBB-vs-triangle SAT
+   (`field.ts launchTriangles()` + `physics.ts robotIntersectsConvex()`); apex-straddle
+   now reads in-zone.
+3. **G402 auto-interference foul** used `goalSide` but goals are CROSS-COURT → switched
+   to `driverSide(r.alliance)`; now deterministically green.
+
+### The ball model (read before touching ball physics)
+Ground balls: **stateless rebuild-per-step**, in a SEPARATE Rapier solve (`solveBalls`)
+from robots. Flight/basin/rail/gate/stock stay bespoke/scripted; the
+classified-vs-overflow **contact-time scoring commit in `updateRails` was not touched**.
+**ball↔ball + ball↔static → Rapier; ball↔robot → BESPOKE** (`collideBallRobot`/
+`pushRobotAt`) because the pinned-ball stall + gate-outflow-can't-shove are deliberately
+NON-physical (product decision #7) and a real solve won't reproduce them. Restitution via
+single global `CoefficientCombineRule.Min`. `solveRobots` (Slice 1) is byte-for-byte
+unchanged — robots never see ball bodies.
+
+### Still deferred (unchanged)
+- Flight-low ↔ ground-ball collision (rare; shooter never misses). Needs z-gated
+  collision groups — do only if a flight bug surfaces.
+- Cleanup once flight is also on Rapier: delete dead `collideBallBall`/`collideBallStatic`
+  ground paths + dead robot `collideRobots`/`constrainRobot`; remove `dsin/dcos/datan2`
+  discipline (STILL REQUIRED until then — robot.ts fire + goal.ts + in-process
+  determinism rely on it). Do NOT remove yet.
+
+### Prior context (Slice 1 Rapier robots, Phase 0/1 netcode) — unchanged
+Slice 1: bespoke robot solver → Rapier (`solveRobots`; INCHES → `lengthUnit`;
+set-once/read-back linvel; rebuild-per-step). Phase 0/1: server-authoritative sim +
+client prediction (Fly `wss://dohun-sim-decode.fly.dev`), reconnection grace, delta
+snapshots. See `docs/netcodeplan.md` + git history.

@@ -1,15 +1,18 @@
 import type { Artifact, ArtifactColor, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
 import { approach, rot, wrapAngle, hyp, dsin, dcos, dtan, datan2 } from '../math';
-import { classifierRect, goalCenter, inLaunchZone, viewAngleOf } from './field';
+import { classifierRect, goalCenter, launchTriangles, viewAngleOf } from './field';
 import { driveParams } from './drivetrain';
-import { robotCorners } from './physics';
+import { robotIntersectsConvex } from './physics';
 import { robotsEnabled } from './match';
 
-/** launch is legal when ANY part of the robot is inside a launch zone */
+/** launch is legal when ANY part of the robot is inside a launch zone. Uses a
+ * true OBB-vs-triangle overlap (not just corner containment): the launch wedge
+ * narrows to a point at the field center, so a robot straddling that apex covers
+ * the zone even when all four corners sit outside both diagonals — a corner-only
+ * test read OUT there (the robot had to bury its center in before it would fire). */
 export function robotInLaunchZone(r: RobotState): boolean {
-  if (inLaunchZone(r.pos, r.alliance)) return true;
-  return robotCorners(r).some((c) => inLaunchZone(c, r.alliance));
+  return launchTriangles().some((t) => robotIntersectsConvex(r, t));
 }
 
 export function turretWorldPos(r: RobotState): { x: number; y: number } {
