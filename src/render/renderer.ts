@@ -63,6 +63,10 @@ export class Renderer {
     const autoPath = robot.autoPath!; // We already checked for existence
     const alliance = robot.alliance;
 
+    console.log(`[drawAutoPath] Drawing path for robot ${robot.id}, alliance ${alliance}`);
+    console.log(`[drawAutoPath] autoPath:`, autoPath);
+    console.log(`[drawAutoPath] startPoint: (${autoPath.startPoint.x}, ${autoPath.startPoint.y})`);
+
     ctx.save();
     ctx.lineWidth = 0.5;
     ctx.strokeStyle = alliance === 'red' ? 'rgba(200, 50, 50, 0.7)' : 'rgba(50, 50, 200, 0.7)'; // Desaturated alliance color
@@ -77,6 +81,7 @@ export class Renderer {
     // Draw path lines
     let currentPoint: PathPoint = autoPath.startPoint;
     for (const line of autoPath.lines) {
+      console.log(`[drawAutoPath] Drawing line from (${currentPoint.x}, ${currentPoint.y}) to (${line.endPoint.x}, ${line.endPoint.y})`);
       ctx.beginPath();
       ctx.moveTo(currentPoint.x, currentPoint.y);
 
