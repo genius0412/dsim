@@ -105,8 +105,8 @@ export function GameView({ settings, onExit, session = null }: Props) {
           onExit={onExit}
         />
       )}
-      {window.matchMedia('(pointer: coarse)').matches && (
-        <MobileControls inputManager={controllerRef.current?.getInputManager()} />
+      {window.matchMedia('(pointer: coarse)').matches && controllerRef.current && (
+        <MobileControls inputManager={controllerRef.current.getInputManager()} />
       )}
     </div>
   );
