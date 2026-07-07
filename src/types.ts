@@ -98,6 +98,17 @@ export interface RobotState {
   /** G427: an opponent contacted this robot in its BASE during endgame — it
    * counts as fully returned at match end regardless of where it ends up */
   baseAwarded?: boolean;
+
+  // --- Auto Pathing State ---
+  autoPathActive: boolean;
+  currentPathSegmentIndex: number;
+  pathSegmentProgress: number; // 0.0 to 1.0 along the current segment
+  pathWaitTimer: number; // countdown for waitBeforeMs/waitAfterMs
+  pathSequenceIndex: number; // index in the overall sequence
+  pathTargetPoint: Vec2 | null;
+  pathTargetHeading: number | null;
+  autoPath?: AutoPathData; // Add autoPath to RobotState
+  // --- End Auto Pathing State ---
 }
 
 export interface GoalState {
@@ -179,6 +190,73 @@ export interface PenaltyState {
   pinFouls: Record<number, number>;
 }
 
+// --- Auto Pathing Types ---
+export type HeadingType = 'linear' | 'constant' | 'tangential';
+
+export interface PathPoint extends Vec2 {
+  heading: HeadingType;
+  startDeg?: number; // For 'linear'
+  endDeg?: number;   // For 'linear'
+  degrees?: number;  // For 'constant'
+  reverse?: boolean; // For 'tangential'
+}
+
+export interface ControlPoint extends Vec2 {}
+
+export interface PathLine {
+  id: string;
+  endPoint: PathPoint;
+  controlPoints?: ControlPoint[]; // For Bezier curves
+  waitBeforeMs?: number;
+  waitAfterMs?: number;
+  waitBeforeName?: string;
+  waitAfterName?: string;
+}
+
+export interface PathShape {
+  // Define properties for shapes if needed, based on your .pp file structure
+  // For now, a minimal definition
+  id: string;
+  type: string; // e.g., 'rectangle', 'circle'
+  // ... other properties like position, size, color
+}
+
+export type SequenceItemKind = 'path' | 'wait' | 'action'; // 'action' is a placeholder
+
+export interface SequenceItem {
+  kind: SequenceItemKind;
+  lineId?: string; // For 'path' kind
+  // Add other properties for 'wait' or 'action' if needed
+}
+
+export interface AutoPathData {
+  fileName: string; // To store the name of the imported file
+  startPoint: PathPoint;
+  lines: PathLine[];
+  shapes?: PathShape[];
+  sequence?: SequenceItem[];
+  version?: string;
+  timestamp?: string;
+}
+// --- End Auto Pathing Types ---
+
+export interface GameSettings {
+  mode: GameMode;
+  alliance: Alliance;
+  spec: RobotSpec;
+  startIndex: number;
+  practiceDummies: boolean;
+  assists: AssistConfig;
+  bindings: Record<string, string[]>;
+  audio: {
+    sounds: boolean;
+    voice: boolean;
+  };
+  // New fields for auto pathing
+  autoPath: AutoPathData | null;
+  autoPathEnabled: boolean;
+}
+
 export interface World {
   mode: GameMode;
   time: number;
@@ -197,4 +275,6 @@ export interface World {
   rrContacts: { a: number; b: number }[];
   /** persistent penalty-engine state (Section 11 fouls) */
   penalties: PenaltyState;
+  // Add gameSettings to World interface
+  gameSettings?: GameSettings;
 }

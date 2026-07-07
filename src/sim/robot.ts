@@ -43,6 +43,13 @@ export function aimSolution(r: RobotState): { yaw: number; speed: number; angle:
   const wv = { x: r.vel.x * C.SHOT_ROBOT_VEL_INHERIT, y: r.vel.y * C.SHOT_ROBOT_VEL_INHERIT };
   let dx = g.x - tp.x;
   let dy = g.y - tp.y;
+
+  console.log(`[Robot ${r.id} - ${r.alliance}] Aiming:`);
+  console.log(`  Robot Pos: (${r.pos.x.toFixed(2)}, ${r.pos.y.toFixed(2)}), Heading: ${(r.heading * 180 / Math.PI).toFixed(2)} deg`);
+  console.log(`  Turret Pos: (${tp.x.toFixed(2)}, ${tp.y.toFixed(2)})`);
+  console.log(`  Target Goal Center: (${g.x.toFixed(2)}, ${g.y.toFixed(2)})`);
+  console.log(`  Vector to Goal (dx, dy): (${dx.toFixed(2)}, ${dy.toFixed(2)})`);
+
   let sol = solveShot(hyp(dx, dy));
   for (let i = 0; i < 3; i++) {
     const t = hyp(dx, dy) / Math.max(sol.speed * dcos(sol.angle), 1);
@@ -50,9 +57,15 @@ export function aimSolution(r: RobotState): { yaw: number; speed: number; angle:
     dy = g.y - tp.y - wv.y * t;
     sol = solveShot(hyp(dx, dy));
   }
-  return { yaw: datan2(dy, dx), speed: sol.speed, angle: sol.angle };
+  const yaw = datan2(dy, dx);
+  console.log(`  Calculated Yaw: ${(yaw * 180 / Math.PI).toFixed(2)} deg`);
+  return { yaw: yaw, speed: sol.speed, angle: sol.angle };
 }
 
+/**
+ * Updates the robot's drive physics (position, velocity, angular velocity, heading).
+ * This function is for movement only.
+ */
 export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
   // ---- drive: driver frame -> robot frame -------------------------------
   const dp = driveParams(r.spec);
@@ -91,8 +104,22 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   // this same tick; heading is integrated here (rotation is locked in Rapier and
   // the bespoke square-up nudge owns it).
   r.heading = wrapAngle(r.heading + r.angVel * dt);
+}
+
+/**
+ * Updates the robot's actions (turret, fire, intake).
+ * This function is called for all robots regardless of movement type.
+ */
+export function updateRobotActions(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
+  // If autoPathActive, force aimAssist, autoIntake, and autoFire to true
+  if (r.autoPathActive) {
+    r.aimAssist = true;
+    r.autoIntake = true;
+    r.autoFire = true;
+  }
 
   // ---- turret: aim assist tracks the firing solution exactly -------------
+  // Apply aim assist if enabled (now forced true during autoPathActive)
   if (r.aimAssist) {
     r.turretHeading = aimSolution(r).yaw;
   }
@@ -100,19 +127,25 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   // ---- fire: no spin-up before the FIRST shot; between shots the cadence
   // is the intake transfer interval plus flywheel recovery after energetic
   // (long-range) shots — see fireReadyAt set in fire() -----------------------
-  if (
-    robotsEnabled(world) && // no firing before AUTO starts / between periods
-    r.hopper.length > 0 &&
-    world.time >= r.fireReadyAt
-  ) {
-    // any part of the robot inside a launch zone is enough; refusals are
-    // shown by the HUD launch-zone indicator, not popups
-    const zoneOk = world.mode === 'free' || robotInLaunchZone(r);
-    if (zoneOk && (cmd.fire || r.autoFire)) fire(world, r);
+  const canFire = robotsEnabled(world) && r.hopper.length > 0 && world.time >= r.fireReadyAt;
+  const zoneOk = world.mode === 'free' || robotInLaunchZone(r);
+  // cmd.fire is true if pathTraversal returns it, or if driver presses it.
+  // r.autoFire is true if forced by autoPathActive or set in settings.
+  const fireCommanded = cmd.fire || r.autoFire;
+
+  console.log(`[Robot ${r.id}] Fire check: enabled=${robotsEnabled(world)}, hopper=${r.hopper.length}, time=${world.time.toFixed(2)}, fireReadyAt=${r.fireReadyAt.toFixed(2)}, zoneOk=${zoneOk}, cmd.fire=${cmd.fire}, r.autoFire=${r.autoFire}, autoPathActive=${r.autoPathActive}`);
+
+  if (canFire && zoneOk && fireCommanded) {
+    fire(world, r);
   }
+
+  // ---- intake ------------------------------------------------------------
+  updateIntake(world, r, cmd);
 }
 
+
 function fire(world: World, r: RobotState): void {
+  console.log(`[Robot ${r.id}] Firing ball! Hopper size before: ${r.hopper.length}`);
   // canSort: pick the hopper color that fills the next unfilled motif slot
   // on this alliance's ramp; everyone else fires FIFO
   let color: ArtifactColor;
@@ -173,9 +206,13 @@ function fire(world: World, r: RobotState): void {
  * unless the preset's wheels overhang the chassis (vector), the mouth is
  * clamped inside the frame and the chassis flanks encompass the intake. */
 export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): void {
+  console.log(`[Robot ${r.id}] Intake check: cmd.intake=${cmd.intake}, r.autoIntake=${r.autoIntake}, hopper.length=${r.hopper.length}`);
   if (!robotsEnabled(world)) return;
   const running = cmd.intake || r.autoIntake;
-  if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
+  if (!running || r.hopper.length >= C.HOPPER_CAPACITY) {
+    console.log(`[Robot ${r.id}] Intake not running or hopper full. running=${running}, hopper.length=${r.hopper.length}`);
+    return;
+  }
   const preset = C.INTAKE_PRESETS[r.spec.intake];
   const hl = r.spec.length / 2;
   const mouthHalf = preset.overhang
@@ -197,6 +234,7 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
       mouthY > rect.y0 &&
       mouthY < rect.y1
     ) {
+      console.log(`[Robot ${r.id}] Intake blocked by classifier rect.`);
       return;
     }
   }
@@ -221,14 +259,21 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
       velRobot.y * Math.sign(local.y) > C.INTAKE_SIDE_MIN_STRAFE;
     if ((inReach && inWidth) || sideTouch) candidates.push(b);
   }
-  if (candidates.length === 0) return;
+  if (candidates.length === 0) {
+    console.log(`[Robot ${r.id}] No intake candidates.`);
+    return;
+  }
 
   // a clump feeding the mouth swallows continuously — sloped and triangle
   // are extremely efficient at eating clumps; vector keeps its steady pace
   const interval = candidates.length >= 2 ? preset.clumpPerBall : preset.perBall;
-  if (world.time - r.lastIntakeAt < interval) return;
+  if (world.time - r.lastIntakeAt < interval) {
+    console.log(`[Robot ${r.id}] Intake on cooldown. time=${world.time.toFixed(2)}, lastIntakeAt=${r.lastIntakeAt.toFixed(2)}, interval=${interval}`);
+    return;
+  }
   const b = candidates[0];
   r.hopper.push(b.color);
   r.lastIntakeAt = world.time;
   world.balls.splice(world.balls.indexOf(b), 1);
+  console.log(`[Robot ${r.id}] Ball intaken! New hopper size: ${r.hopper.length}`);
 }

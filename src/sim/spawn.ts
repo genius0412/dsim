@@ -9,6 +9,11 @@ import type {
   RobotSpec,
   RobotState,
   World,
+  AutoPathData, // Import AutoPathData
+  GameSettings, // Import GameSettings
+  PathPoint, // Import PathPoint
+  ControlPoint, // Import ControlPoint
+  Vec2, // Import Vec2
 } from '../types';
 import * as C from '../config';
 import { nextRandom } from '../math';
@@ -50,6 +55,9 @@ export interface RobotSetup {
   assists: AssistConfig;
   /** index into START_POSES (mirrored per alliance) */
   startIndex: number;
+  // New fields for auto pathing
+  autoPath?: AutoPathData;
+  autoPathEnabled?: boolean;
 }
 
 /** the off-field human-player box holds ONLY the alliance-area preload set(s) no
@@ -70,7 +78,69 @@ function goalState(alliance: Alliance): GoalState {
   };
 }
 
-export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[]): World {
+// Helper function to mirror a Vec2 point across the y=0 axis
+function mirrorPoint(point: Vec2): Vec2 {
+  return { x: point.x, y: -point.y };
+}
+
+// Helper function to mirror a PathPoint across the y=0 axis
+function mirrorPathPoint(pathPoint: PathPoint): PathPoint {
+  const mirrored: PathPoint = { ...pathPoint, y: -pathPoint.y };
+  if (mirrored.degrees !== undefined) {
+    mirrored.degrees = -mirrored.degrees;
+  }
+  if (mirrored.startDeg !== undefined) {
+    mirrored.startDeg = -mirrored.startDeg;
+  }
+  if (mirrored.endDeg !== undefined) {
+    mirrored.endDeg = -mirrored.endDeg;
+  }
+  // The 'reverse' property should logically remain the same, as it indicates
+  // whether to drive the segment in reverse, not a direction relative to the field.
+  return mirrored;
+}
+
+// Helper function to mirror a ControlPoint across the y=0 axis
+function mirrorControlPoint(controlPoint: ControlPoint): ControlPoint {
+  return { ...controlPoint, y: -controlPoint.y };
+}
+
+// Helper function to deep copy and mirror AutoPathData
+function mirrorAutoPathData(autoPath: AutoPathData): AutoPathData {
+  const mirroredAutoPath: AutoPathData = JSON.parse(JSON.stringify(autoPath)); // Deep copy
+
+  mirroredAutoPath.startPoint = mirrorPathPoint(mirroredAutoPath.startPoint);
+
+  mirroredAutoPath.lines = mirroredAutoPath.lines.map((line) => {
+    const mirroredLine = { ...line };
+    mirroredLine.endPoint = mirrorPathPoint(mirroredLine.endPoint);
+    if (mirroredLine.controlPoints) {
+      mirroredLine.controlPoints = mirroredLine.controlPoints.map(mirrorControlPoint);
+    }
+    return mirroredLine;
+  });
+
+  // Mirror shapes if they exist and have position data
+  if (mirroredAutoPath.shapes) {
+    mirroredAutoPath.shapes = mirroredAutoPath.shapes.map((shape) => {
+      const mirroredShape = { ...shape };
+      // Assuming shapes have 'x' and 'y' properties directly or within a 'pos' object
+      // This part might need adjustment based on the actual structure of PathShape
+      if ('x' in mirroredShape && 'y' in mirroredShape) {
+        (mirroredShape as any).y = -(mirroredShape as any).y;
+      }
+      if ('pos' in mirroredShape && (mirroredShape.pos as Vec2)) {
+        (mirroredShape.pos as Vec2) = mirrorPoint(mirroredShape.pos as Vec2);
+      }
+      return mirroredShape;
+    });
+  }
+
+  return mirroredAutoPath;
+}
+
+
+export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], gameSettings: GameSettings): World {
   const rng = nextRandom(seed || 1);
   const motif = MOTIFS[Math.floor(rng.value * 3) % 3];
 
@@ -104,6 +174,12 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[]):
   for (const s of [...setups].sort((p, q) => p.id - q.id)) {
     const pose = startPose(s.alliance, s.startIndex);
     const nth = allianceCount[s.alliance]++;
+
+    let robotAutoPath = s.autoPath;
+    if (s.alliance === 'red' && s.autoPathEnabled && s.autoPath) {
+      robotAutoPath = mirrorAutoPathData(s.autoPath);
+    }
+
     robots.push({
       id: s.id,
       alliance: s.alliance,
@@ -121,7 +197,32 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[]):
       lastFireAt: -10,
       lastIntakeAt: -10,
       fireReadyAt: 0,
+      // Initialize new auto pathing fields
+      autoPathActive: s.autoPathEnabled && robotAutoPath !== undefined,
+      currentPathSegmentIndex: 0,
+      pathSegmentProgress: 0,
+      pathWaitTimer: 0,
+      pathSequenceIndex: 0,
+      pathTargetPoint: null,
+      pathTargetHeading: null,
+      autoPath: robotAutoPath, // Assign the (potentially mirrored) autoPath
     });
+
+    // If auto path is enabled, override initial position and heading
+    if (s.autoPathEnabled && robotAutoPath) {
+      const robot = robots[robots.length - 1]; // Get the newly added robot
+      robot.pos = { x: robotAutoPath.startPoint.x, y: robotAutoPath.startPoint.y };
+      // Convert degrees to radians for initial heading
+      if (robotAutoPath.startPoint.heading === 'constant' && robotAutoPath.startPoint.degrees !== undefined) {
+        robot.heading = robotAutoPath.startPoint.degrees * Math.PI / 180;
+        robot.turretHeading = robot.heading;
+      } else if (robotAutoPath.startPoint.heading === 'linear' && robotAutoPath.startPoint.startDeg !== undefined) {
+        robot.heading = robotAutoPath.startPoint.startDeg * Math.PI / 180;
+        robot.turretHeading = robot.heading;
+      }
+      // For tangential, initial heading will be determined by the first path segment.
+      // The path follower will handle this dynamically.
+    }
   }
 
   return {
@@ -147,5 +248,6 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[]):
     events: [],
     rrContacts: [],
     penalties: { episodes: {}, pins: {}, pinFouls: {} },
+    gameSettings: gameSettings, // Pass gameSettings to the world
   };
 }
