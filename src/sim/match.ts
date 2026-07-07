@@ -31,6 +31,7 @@ export function stepMatch(world: World, dt: number): void {
   switch (m.phase) {
     case 'auto':
       assessEndOfAuto(world);
+      for (const r of world.robots) { r.autoPathActive = false; }
       m.phase = 'transition';
       m.phaseTimeLeft = C.TRANSITION_DURATION;
       world.events.push('AUTO COMPLETE');
