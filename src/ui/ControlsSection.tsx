@@ -21,6 +21,7 @@ const KEY_LABELS: Record<KeyAction, string> = {
   intake: 'Intake (hold)',
   fire: 'Shoot (hold)',
   flipFront: 'Flip front',
+  park: 'Toggle park mode',
   start: 'Start match',
   restart: 'Restart',
 };
@@ -29,6 +30,7 @@ const PAD_LABELS: Record<PadAction, string> = {
   fire: 'Shoot',
   intake: 'Intake',
   flipFront: 'Flip front',
+  park: 'Toggle park mode',
   start: 'Start match',
   restart: 'Restart',
 };
@@ -199,6 +201,53 @@ export function ControlsSection({ bindings, onChange }: Props) {
                   {bindings.pad.driveStick === 'left' ? 'RIGHT (X axis)' : 'LEFT (X axis)'}
                 </span>
               </span>
+            </div>
+            <div className="bind-row">
+              <span className="bind-label">Stick deadzone {Math.round(bindings.pad.deadzone * 100)}%</span>
+              <input
+                type="range"
+                min={0}
+                max={0.4}
+                step={0.01}
+                value={bindings.pad.deadzone}
+                onChange={(e) =>
+                  onChange({ ...cloneBindings(bindings), pad: { ...bindings.pad, deadzone: Number(e.target.value) } })
+                }
+              />
+            </div>
+            <div className="bind-row">
+              <span className="bind-label">
+                Sensitivity curve {bindings.pad.curve.toFixed(1)}
+                {bindings.pad.curve === 1 ? ' (linear)' : ''}
+              </span>
+              <input
+                type="range"
+                min={1}
+                max={3}
+                step={0.1}
+                value={bindings.pad.curve}
+                onChange={(e) =>
+                  onChange({ ...cloneBindings(bindings), pad: { ...bindings.pad, curve: Number(e.target.value) } })
+                }
+              />
+            </div>
+            <div className="bind-row">
+              <span className="bind-label">
+                Trigger threshold {Math.round(bindings.pad.triggerThreshold * 100)}%
+              </span>
+              <input
+                type="range"
+                min={0.1}
+                max={0.9}
+                step={0.05}
+                value={bindings.pad.triggerThreshold}
+                onChange={(e) =>
+                  onChange({
+                    ...cloneBindings(bindings),
+                    pad: { ...bindings.pad, triggerThreshold: Number(e.target.value) },
+                  })
+                }
+              />
             </div>
             {PAD_ACTIONS.map((a) => (
               <div className="bind-row" key={a}>

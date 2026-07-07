@@ -181,6 +181,27 @@ export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
         </section>
 
         <section>
+          <h2>Park mode</h2>
+          <div className="spec-row">
+            <label>
+              Speed cap {settings.parkSpeedPct}%
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={settings.parkSpeedPct}
+                onChange={(e) => set({ parkSpeedPct: Number(e.target.value) })}
+              />
+            </label>
+          </div>
+          <p className="hint">
+            Toggle with P (keyboard) or X (controller) — only in the last 20s of teleop, or
+            anytime in Free Drive. Caps drive speed to the percentage above for precise control.
+          </p>
+        </section>
+
+        <section>
           <h2>Robot</h2>
           <div className="card-row wrap">
             {ROBOT_PRESETS.map((p) => (
