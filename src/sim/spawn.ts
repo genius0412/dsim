@@ -16,7 +16,7 @@ import type {
   Vec2, // Import Vec2
 } from '../types';
 import * as C from '../config';
-import { nextRandom } from '../math';
+import { nextRandom, wrapAngle } from '../math'; // Import wrapAngle
 import { loadPreStage, spikeMarkBalls, startPose } from './field';
 import { emptyScore } from './scoring';
 
@@ -78,31 +78,32 @@ function goalState(alliance: Alliance): GoalState {
   };
 }
 
-// Helper function to mirror a Vec2 point across the y=0 axis
+// Helper function to mirror a Vec2 point across the x=0 axis
 function mirrorPoint(point: Vec2): Vec2 {
-  return { x: point.x, y: -point.y };
+  return { x: -point.x, y: point.y };
 }
 
-// Helper function to mirror a PathPoint across the y=0 axis
+// Helper function to mirror a PathPoint across the x=0 axis
 function mirrorPathPoint(pathPoint: PathPoint): PathPoint {
-  const mirrored: PathPoint = { ...pathPoint, y: -pathPoint.y };
+  const mirrored: PathPoint = { ...pathPoint, x: -pathPoint.x };
   if (mirrored.degrees !== undefined) {
-    mirrored.degrees = -mirrored.degrees;
+    // Mirror angle: new_angle = 180 - old_angle (in degrees)
+    mirrored.degrees = wrapAngle((180 - mirrored.degrees) * Math.PI / 180) * 180 / Math.PI;
   }
   if (mirrored.startDeg !== undefined) {
-    mirrored.startDeg = -mirrored.startDeg;
+    mirrored.startDeg = wrapAngle((180 - mirrored.startDeg) * Math.PI / 180) * 180 / Math.PI;
   }
   if (mirrored.endDeg !== undefined) {
-    mirrored.endDeg = -mirrored.endDeg;
+    mirrored.endDeg = wrapAngle((180 - mirrored.endDeg) * Math.PI / 180) * 180 / Math.PI;
   }
   // The 'reverse' property should logically remain the same, as it indicates
   // whether to drive the segment in reverse, not a direction relative to the field.
   return mirrored;
 }
 
-// Helper function to mirror a ControlPoint across the y=0 axis
+// Helper function to mirror a ControlPoint across the x=0 axis
 function mirrorControlPoint(controlPoint: ControlPoint): ControlPoint {
-  return { ...controlPoint, y: -controlPoint.y };
+  return { ...controlPoint, x: -controlPoint.x };
 }
 
 // Helper function to deep copy and mirror AutoPathData
@@ -127,7 +128,7 @@ function mirrorAutoPathData(autoPath: AutoPathData): AutoPathData {
       // Assuming shapes have 'x' and 'y' properties directly or within a 'pos' object
       // This part might need adjustment based on the actual structure of PathShape
       if ('x' in mirroredShape && 'y' in mirroredShape) {
-        (mirroredShape as any).y = -(mirroredShape as any).y;
+        (mirroredShape as any).x = -(mirroredShape as any).x;
       }
       if ('pos' in mirroredShape && (mirroredShape.pos as Vec2)) {
         (mirroredShape.pos as Vec2) = mirrorPoint(mirroredShape.pos as Vec2);
