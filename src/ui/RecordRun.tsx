@@ -84,8 +84,6 @@ export function RecordRun({
         ready: true,
         spec: settings.spec,
         assists: settings.assists,
-        autoPath: settings.autoPath, // Add autoPath
-        autoPathEnabled: settings.autoPathEnabled, // Add autoPathEnabled
       },
       { kind: 'record', record: mode },
     );
