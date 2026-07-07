@@ -315,13 +315,14 @@ export const SPIKE_BALL_SPACING = 5.6;
 export const SPIKE_MARK_LEN = 10;
 
 /** robot start poses, all inside the big launch zone near the alliance's
- * goal (blue goal is far-left, so blue mirrors to the left). Values are for
- * goalSide=+1 and ≥20in apart so two 18in robots never spawn overlapping.
+ * goal (blue goal is far-left, so blue mirrors to the left). Coordinates and
+ * headings are authored for goalSide=+1; the spawn helper mirrors them for the
+ * other alliance. Headings are in degrees, measured in the field frame.
  * Index = the menu/lobby "start position" choice per robot slot. */
 export const START_POSES = [
-  { x: 30, y: 45, label: 'GOAL SIDE' }, // the original solo pose
-  { x: 8, y: 56, label: 'CENTER' },
-  { x: 48, y: 60, label: 'WALL SIDE' },
+  { x: 50, y: 55, headingDeg: 270, label: 'CLOSE SIDE' }, // the original solo pose
+  { x: 20, y: 40, headingDeg: 315, label: 'CENTER' },
+  { x: 18, y: -60, headingDeg: 0, label: 'FAR SIDE' },
 ] as const;
 
 // --------------------------------------------------------- human player ----

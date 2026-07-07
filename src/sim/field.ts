@@ -1,6 +1,5 @@
 import type { Alliance, Vec2 } from '../types';
 import * as C from '../config';
-import { datan2 } from '../math';
 
 /**
  * DECODE field geometry (verified against Competition Manual Section 9 figures
@@ -292,8 +291,8 @@ export function startPose(a: Alliance, index = 0): { pos: Vec2; heading: number 
   const g = goalSide(a);
   const p = C.START_POSES[Math.min(Math.max(index, 0), C.START_POSES.length - 1)];
   const pos = { x: g * p.x, y: p.y };
-  const gc = goalCenter(a);
-  return { pos, heading: datan2(gc.y - pos.y, gc.x - pos.x) };
+  const headingDeg = g > 0 ? p.headingDeg : 180 - p.headingDeg;
+  return { pos, heading: (headingDeg * Math.PI) / 180 };
 }
 
 /** the classifier SQUARE (rail entrance) — top of the ramp, below the goal */
