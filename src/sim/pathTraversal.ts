@@ -283,7 +283,7 @@ export function updatePathTraversal(
   // --- Advance robot's progress along the segment (t) ---
   // We need a way to define speed. Let's assume a constant speed for now.
   // This is a simplification, as real paths might have varying speeds.
-  const PATH_TRAVERSAL_SPEED = 60; // inches per second (example value)
+  const PATH_TRAVERSAL_SPEED = 100; // inches per second (example value)
   const segmentLength = getSegmentLength(segmentStartPoint, currentPathLine);
   let delta_t = 0;
   if (segmentLength > 1e-6) { // Avoid division by zero
