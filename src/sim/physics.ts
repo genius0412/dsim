@@ -95,6 +95,39 @@ export function robotIntersectsRect(r: RobotState, rect: Rect): boolean {
   return true;
 }
 
+/** SAT overlap test between the robot's OBB (intake included) and an arbitrary
+ * CONVEX polygon (e.g. a launch-zone triangle). Unlike a corner-in-polygon test,
+ * this catches the robot covering a polygon vertex (the launch wedge's apex) with
+ * every corner outside. Axes = the robot's two edge normals + each polygon edge
+ * normal. */
+export function robotIntersectsConvex(r: RobotState, poly: Vec2[]): boolean {
+  const rc = robotCorners(r);
+  const axes: Vec2[] = [rot({ x: 1, y: 0 }, r.heading), rot({ x: 0, y: 1 }, r.heading)];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    axes.push({ x: -(b.y - a.y), y: b.x - a.x }); // edge normal
+  }
+  for (const ax of axes) {
+    let aMin = Infinity;
+    let aMax = -Infinity;
+    for (const c of rc) {
+      const p = c.x * ax.x + c.y * ax.y;
+      if (p < aMin) aMin = p;
+      if (p > aMax) aMax = p;
+    }
+    let bMin = Infinity;
+    let bMax = -Infinity;
+    for (const c of poly) {
+      const p = c.x * ax.x + c.y * ax.y;
+      if (p < bMin) bMin = p;
+      if (p > bMax) bMax = p;
+    }
+    if (aMax < bMin || bMax < aMin) return false; // separating axis ⇒ no overlap
+  }
+  return true;
+}
+
 /** velocity of a point rigidly attached to the robot */
 export function robotPointVelocity(r: RobotState, p: Vec2): Vec2 {
   const rx = p.x - r.pos.x;

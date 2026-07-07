@@ -117,6 +117,17 @@ export const PHYS_ALLOWED_ERROR = 0.01;
 /** friction between chassis and walls / other chassis — resists a pinned robot
  * sliding out of a squeeze (the old model squared-and-held; 0 let it squirt) */
 export const PHYS_FRICTION = 0.7;
+/** BALL contact stiffness (Hz) for the ball solve — stiffer than the robot world
+ * (8 Hz), which let two grounded balls sit visibly overlapping for many ticks.
+ * Tuned to 25: separates a resting overlapping clump within ~0.5s (as clean as a
+ * much higher value) WITHOUT the explosive ejection a very stiff contact (≥60 Hz)
+ * gives the tightly-packed column draining out of the gate — at 120 Hz those exit
+ * balls shot out at ~2× their intended speed. 25 keeps gate outflow at the natural
+ * exit velocity while still killing resting overlap. */
+export const PHYS_BALL_CONTACT_FREQ = 25;
+/** BALL allowed penetration (× lengthUnit ⇒ inches): tight, so resting balls
+ * settle touching rather than at the ~0.1in slop the robot value leaves. */
+export const PHYS_BALL_ALLOWED_ERROR = 0.001;
 // ---------------------------------------------------------------- robot ----
 export const ROBOT_MAX_SIZE = 18; // FTC starting size cap (incl. intake reach)
 export const ROBOT_MIN_SIZE = 12;

@@ -6,7 +6,7 @@ import {
   loadZone,
   other,
   tunnelStrip,
-  inRect, goalSide,
+  inRect, driverSide,
 } from './field';
 import type { Rect } from './field';
 import { robotCorners, robotIntersectsRect } from './physics';
@@ -100,7 +100,12 @@ export function updatePenalties(
   // flagged per robot so it fires even if the contact ids differ.
   if (phase === 'auto') {
     for (const r of world.robots) {
-      const d = goalSide(r.alliance); // blue +1 (own side +x), red -1
+      // own DRIVE-team side sign (blue +x, red -x); "fully on the opponent's
+      // side" = every corner past the mid-line into the other half. Uses
+      // driverSide, NOT goalSide — goals are cross-court, so goalSide is the
+      // OPPOSITE sign and inverted this test (it only ever fired when a robot was
+      // shoved onto its OWN side while still touching).
+      const d = driverSide(r.alliance);
       if (robotCorners(r).every((c) => d * c.x < 0) && touchingOpponent(world, r)) {
         fire(`G402:${r.id}`, r.alliance, 'major', 'G402 auto interference');
       }

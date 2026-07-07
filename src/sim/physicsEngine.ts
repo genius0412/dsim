@@ -105,8 +105,17 @@ function buildStatics(rw: RAPIER.World): void {
 }
 
 /** a fresh Rapier world with our inch-scale tolerances + the static field
- * colliders. Shared by the robot and ball solves. */
-function makeWorld(dt: number): RAPIER.World {
+ * colliders. Shared by the robot and ball solves. Robots use SOFT contacts
+ * (a robot can start a step deep inside a wall via its intake reach — a stiff
+ * contact would eject it explosively); balls are small and slow and never start
+ * deeply embedded, so they use STIFF contacts (`freq`/`allowedError`) that push
+ * an overlapping pair fully apart in one step instead of leaving them visibly
+ * interpenetrating for several ticks. */
+function makeWorld(
+  dt: number,
+  freq: number = C.PHYS_CONTACT_FREQ,
+  allowedError: number = C.PHYS_ALLOWED_ERROR,
+): RAPIER.World {
   const rw = new RAPIER.World({ x: 0, y: 0 }); // top-down plane: no gravity
   rw.timestep = dt;
   // Rapier's tolerances default to METERS; our world is in INCHES (~40× bigger),
@@ -117,8 +126,8 @@ function makeWorld(dt: number): RAPIER.World {
   // (a full-speed pin) fully projected out each step, like the old solver did.
   rw.integrationParameters.lengthUnit = C.PHYS_LENGTH_UNIT;
   rw.integrationParameters.numSolverIterations = C.PHYS_SOLVER_ITERS;
-  rw.integrationParameters.contact_natural_frequency = C.PHYS_CONTACT_FREQ;
-  rw.integrationParameters.normalizedAllowedLinearError = C.PHYS_ALLOWED_ERROR;
+  rw.integrationParameters.contact_natural_frequency = freq;
+  rw.integrationParameters.normalizedAllowedLinearError = allowedError;
   buildStatics(rw);
   return rw;
 }
@@ -196,7 +205,7 @@ export function solveBalls(world: World, dt: number): void {
   const groundBalls = world.balls.filter((b) => b.state.kind === 'ground');
   if (groundBalls.length === 0) return;
 
-  const rw = makeWorld(dt);
+  const rw = makeWorld(dt, C.PHYS_BALL_CONTACT_FREQ, C.PHYS_BALL_ALLOWED_ERROR);
   const ballBodies: { b: Artifact; body: RAPIER.RigidBody }[] = [];
   for (const b of groundBalls) {
     const body = rw.createRigidBody(

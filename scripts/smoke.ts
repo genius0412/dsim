@@ -4,6 +4,7 @@
  */
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC } from '../src/sim/spawn';
 import { step } from '../src/sim/world';
+import { robotInLaunchZone } from '../src/sim/robot';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
 import { startMatch } from '../src/sim/match';
 import {
@@ -384,6 +385,26 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   run(w, cmd({ driveY: 1 }), 1);
   const dist = Math.hypot(ball.pos.x, ball.pos.y);
   check('open-field push sends the ball rolling', dist > 20, `moved ${dist.toFixed(1)} in`);
+}
+
+// ---- launch zone: robot straddling the wedge APEX is IN (OBB overlap, not just
+//      corners — the wedge narrows to a point at field center, so all four corners
+//      can sit outside both diagonals while the body covers the zone) -------------
+{
+  const w = mkWorld('free', 'blue', 30);
+  const r = w.robots[0];
+  r.heading = -Math.PI / 2; // intake points -y, AWAY from the wedge (can't help)
+  r.pos = { x: 0, y: -5 }; // body straddles the apex (0,0); no corner is inside
+  const cornersIn = robotCorners(r).some((c) => inLaunchZone(c, 'blue'));
+  check(
+    'robot straddling the launch-wedge apex counts as in-zone (no corner inside)',
+    robotInLaunchZone(r) && !cornersIn,
+    `result=${robotInLaunchZone(r)} anyCornerIn=${cornersIn}`,
+  );
+  // sanity: a robot parked in a far corner (well outside both zones) is OUT
+  r.pos = { x: 60, y: -60 };
+  r.heading = 0;
+  check('robot in a far corner is NOT in a launch zone', !robotInLaunchZone(r));
 }
 
 // ---- Rapier ground balls: ball-ball separation (no robot involved) -------------

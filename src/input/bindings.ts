@@ -12,16 +12,25 @@ export type KeyAction =
   | 'intake'
   | 'fire'
   | 'flipFront'
+  | 'park'
   | 'start'
   | 'restart';
 
-export type PadAction = 'fire' | 'intake' | 'flipFront' | 'start' | 'restart';
+export type PadAction = 'fire' | 'intake' | 'flipFront' | 'park' | 'start' | 'restart';
 
 export interface PadBindings {
   /** which stick translates the robot — the other stick's X axis turns */
   driveStick: 'left' | 'right';
   /** standard-mapping button indices per action */
   buttons: Record<PadAction, number[]>;
+  /** radial stick deadzone, 0-0.4 (fraction of full travel ignored near center) */
+  deadzone: number;
+  /** sensitivity curve exponent applied to stick input past the deadzone: 1 =
+   * linear, higher = softer/more precise near center, ramping to full at the
+   * stick's edge (classic RC/gaming "expo" curve) */
+  curve: number;
+  /** analog trigger press threshold, 0.1-0.9 (LT/RT register as "held" past this) */
+  triggerThreshold: number;
 }
 
 export interface ControlBindings {
@@ -40,11 +49,12 @@ export const KEY_ACTIONS: KeyAction[] = [
   'intake',
   'fire',
   'flipFront',
+  'park',
   'start',
   'restart',
 ];
 
-export const PAD_ACTIONS: PadAction[] = ['fire', 'intake', 'flipFront', 'start', 'restart'];
+export const PAD_ACTIONS: PadAction[] = ['fire', 'intake', 'flipFront', 'park', 'start', 'restart'];
 
 export const DEFAULT_BINDINGS: ControlBindings = {
   keys: {
@@ -57,6 +67,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     intake: ['shift', 'k'],
     fire: [' '],
     flipFront: ['f'],
+    park: ['p'],
     start: ['enter'],
     restart: ['r'],
   },
@@ -66,9 +77,13 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       fire: [7, 0], // RT or A
       intake: [6, 1], // LT or B
       flipFront: [3], // Y
+      park: [2], // X
       start: [9],
       restart: [8], // Back / Select / View
     },
+    deadzone: 0.12,
+    curve: 1,
+    triggerThreshold: 0.35,
   },
 };
 
@@ -77,7 +92,16 @@ export function cloneBindings(b: ControlBindings): ControlBindings {
   for (const a of KEY_ACTIONS) keys[a] = [...b.keys[a]];
   const buttons = {} as Record<PadAction, number[]>;
   for (const a of PAD_ACTIONS) buttons[a] = [...b.pad.buttons[a]];
-  return { keys, pad: { driveStick: b.pad.driveStick, buttons } };
+  return {
+    keys,
+    pad: {
+      driveStick: b.pad.driveStick,
+      buttons,
+      deadzone: b.pad.deadzone,
+      curve: b.pad.curve,
+      triggerThreshold: b.pad.triggerThreshold,
+    },
+  };
 }
 
 /** validate a possibly-stale/corrupt saved value field by field; anything
@@ -96,7 +120,13 @@ export function mergeBindings(saved: unknown): ControlBindings {
     }
   }
   if (typeof s.pad === 'object' && s.pad !== null) {
-    const pad = s.pad as { driveStick?: unknown; buttons?: unknown };
+    const pad = s.pad as {
+      driveStick?: unknown;
+      buttons?: unknown;
+      deadzone?: unknown;
+      curve?: unknown;
+      triggerThreshold?: unknown;
+    };
     if (pad.driveStick === 'left' || pad.driveStick === 'right') {
       out.pad.driveStick = pad.driveStick;
     }
@@ -108,6 +138,15 @@ export function mergeBindings(saved: unknown): ControlBindings {
           out.pad.buttons[a] = v as number[];
         }
       }
+    }
+    if (typeof pad.deadzone === 'number' && Number.isFinite(pad.deadzone)) {
+      out.pad.deadzone = Math.min(0.4, Math.max(0, pad.deadzone));
+    }
+    if (typeof pad.curve === 'number' && Number.isFinite(pad.curve)) {
+      out.pad.curve = Math.min(3, Math.max(1, pad.curve));
+    }
+    if (typeof pad.triggerThreshold === 'number' && Number.isFinite(pad.triggerThreshold)) {
+      out.pad.triggerThreshold = Math.min(0.9, Math.max(0.1, pad.triggerThreshold));
     }
   }
   return out;
