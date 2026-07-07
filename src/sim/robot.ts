@@ -1,15 +1,18 @@
 import type { Artifact, ArtifactColor, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
 import { approach, rot, wrapAngle, hyp, dsin, dcos, dtan, datan2 } from '../math';
-import { classifierRect, goalCenter, inLaunchZone, viewAngleOf } from './field';
+import { classifierRect, goalCenter, launchTriangles, viewAngleOf } from './field';
 import { driveParams } from './drivetrain';
-import { robotCorners } from './physics';
+import { robotIntersectsConvex } from './physics';
 import { robotsEnabled } from './match';
 
-/** launch is legal when ANY part of the robot is inside a launch zone */
+/** launch is legal when ANY part of the robot is inside a launch zone. Uses a
+ * true OBB-vs-triangle overlap (not just corner containment): the launch wedge
+ * narrows to a point at the field center, so a robot straddling that apex covers
+ * the zone even when all four corners sit outside both diagonals — a corner-only
+ * test read OUT there (the robot had to bury its center in before it would fire). */
 export function robotInLaunchZone(r: RobotState): boolean {
-  if (inLaunchZone(r.pos, r.alliance)) return true;
-  return robotCorners(r).some((c) => inLaunchZone(c, r.alliance));
+  return launchTriangles().some((t) => robotIntersectsConvex(r, t));
 }
 
 export function turretWorldPos(r: RobotState): { x: number; y: number } {
@@ -100,6 +103,20 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   r.vel = rot(velRobot, r.heading);
   r.angVel = approach(r.angVel, targetOmega, dp.turnAccel * dt);
 
+  // Swerve wobble: occasional slight heading jumps when moving forward
+  if (dp.saturation === 'vec') {
+    const fwdSpeed = rot(r.vel, -r.heading).x;
+    const speedRatio = fwdSpeed / dp.maxSpeed;
+    const phase = r.id * 1.23;
+    const freq = Math.PI; // 0.5 Hz
+    const now = Math.sin((world.time + phase) * freq);
+    const prev = Math.sin((world.time - dt + phase) * freq);
+    if (now > 0.99 && prev <= 0.99) {
+      const sign = Math.sin((world.time + phase) * 47 * Math.PI) > 0 ? 1 : -1;
+      r.heading += sign * 0.04 * speedRatio;
+    }
+  }
+
   // Rapier (solveRobots) integrates POSITION from r.vel and resolves collisions
   // this same tick; heading is integrated here (rotation is locked in Rapier and
   // the bespoke square-up nudge owns it).
@@ -181,7 +198,8 @@ function fire(world: World, r: RobotState): void {
     Math.min(1, (speed - C.FLYWHEEL_CLOSE_SPEED) / (C.LAUNCH_MAX_SPEED - C.FLYWHEEL_CLOSE_SPEED)),
   );
   const recovery = C.FLYWHEEL_RECOVERY_MAX * shotNorm * shotNorm * (1 - r.spec.flywheelInertia);
-  r.fireReadyAt = world.time + C.INTAKE_PRESETS[r.spec.intake].fireInterval + recovery;
+  const sortPenalty = r.spec.canSort ? C.SORT_FIRE_PENALTY : 0;
+  r.fireReadyAt = world.time + C.INTAKE_PRESETS[r.spec.intake].fireInterval + recovery + sortPenalty;
 
   const ball: Artifact = {
     id: world.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1,

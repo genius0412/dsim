@@ -375,6 +375,7 @@ button.keycap:hover {
   inset: 0;
   pointer-events: none;
   user-select: none;
+  z-index: 10;
 }
 
 /* FTC live-scoring style bar (bottom of screen): red panel | timer | blue panel */
@@ -614,6 +615,7 @@ button.keycap:hover {
   left: 12px;
   display: flex;
   gap: 8px;
+  z-index: 10;
 }
 
 .game-btn {
@@ -641,6 +643,7 @@ button.keycap:hover {
   display: flex;
   align-items: center;
   justify-content: center;
+  text-align: center;
   font-size: 44px;
   font-weight: 800;
   letter-spacing: 6px;
@@ -657,6 +660,7 @@ button.keycap:hover {
   display: flex;
   align-items: center;
   justify-content: center;
+  text-align: center;
   font-size: 160px;
   font-weight: 800;
   color: var(--text);
@@ -721,6 +725,7 @@ button.keycap:hover {
   justify-content: center;
   background: rgba(10, 12, 16, 0.55);
   backdrop-filter: blur(3px);
+  z-index: 20;
 }
 
 .overlay-panel {
@@ -1023,4 +1028,50 @@ button.keycap:hover {
 .card:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* ---------------------------------------------------------- mobile controls ---- */
+
+.mobile-controls {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  user-select: none;
+  z-index: 1;
+  touch-action: none;
+}
+
+.mobile-joystick-base {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  background: rgba(28, 32, 39, 0.6);
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+
+.mobile-joystick-label {
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.mobile-joystick-handle {
+  width: 44px;
+  height: 44px;
+  background: var(--text);
+  border-radius: 50%;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  transition: opacity 0.15s;
 }

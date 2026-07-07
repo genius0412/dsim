@@ -4,6 +4,14 @@ import { Keyboard } from './keyboard';
 import { GamepadInput } from './gamepad';
 import { KEY_ACTIONS, type ControlBindings } from './bindings';
 
+export interface VirtualInput {
+  driveX: number;
+  driveY: number;
+  rotate: number;
+  intake: boolean;
+  fire: boolean;
+}
+
 /** merges keyboard + gamepad into one driver command per frame, resolving
  * physical keys/buttons through the user's ControlBindings */
 export class InputManager {
@@ -16,9 +24,23 @@ export class InputManager {
   restartPressed = false;
   /** edge-triggered "flip robot front" from either device */
   flipPressed = false;
+  /** edge-triggered "toggle park mode" from either device */
+  parkPressed = false;
+
+  private virtualState: VirtualInput = {
+    driveX: 0,
+    driveY: 0,
+    rotate: 0,
+    intake: false,
+    fire: false,
+  };
 
   constructor(private bindings: ControlBindings) {
     this.applyPreventKeys();
+  }
+
+  setVirtualInput(update: Partial<VirtualInput>): void {
+    Object.assign(this.virtualState, update);
   }
 
   setBindings(bindings: ControlBindings): void {
@@ -56,13 +78,14 @@ export class InputManager {
     this.startPressed = pressedAny(keys.start) || g.start;
     this.restartPressed = pressedAny(keys.restart) || g.restart;
     this.flipPressed = pressedAny(keys.flipFront) || g.flipFront;
+    this.parkPressed = pressedAny(keys.park) || g.park;
 
     const cmd: RobotCommand = {
-      driveX: clamp(kx + g.driveX, -1, 1),
-      driveY: clamp(ky + g.driveY, -1, 1),
-      rotate: clamp(krot + g.rotate, -1, 1),
-      intake: heldAny(keys.intake) || g.intake,
-      fire: heldAny(keys.fire) || g.fire,
+      driveX: clamp(kx + g.driveX + this.virtualState.driveX, -1, 1),
+      driveY: clamp(ky + g.driveY + this.virtualState.driveY, -1, 1),
+      rotate: clamp(krot + g.rotate + this.virtualState.rotate, -1, 1),
+      intake: heldAny(keys.intake) || g.intake || this.virtualState.intake,
+      fire: heldAny(keys.fire) || g.fire || this.virtualState.fire,
     };
     k.endFrame();
     return cmd;

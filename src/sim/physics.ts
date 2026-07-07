@@ -95,6 +95,39 @@ export function robotIntersectsRect(r: RobotState, rect: Rect): boolean {
   return true;
 }
 
+/** SAT overlap test between the robot's OBB (intake included) and an arbitrary
+ * CONVEX polygon (e.g. a launch-zone triangle). Unlike a corner-in-polygon test,
+ * this catches the robot covering a polygon vertex (the launch wedge's apex) with
+ * every corner outside. Axes = the robot's two edge normals + each polygon edge
+ * normal. */
+export function robotIntersectsConvex(r: RobotState, poly: Vec2[]): boolean {
+  const rc = robotCorners(r);
+  const axes: Vec2[] = [rot({ x: 1, y: 0 }, r.heading), rot({ x: 0, y: 1 }, r.heading)];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    axes.push({ x: -(b.y - a.y), y: b.x - a.x }); // edge normal
+  }
+  for (const ax of axes) {
+    let aMin = Infinity;
+    let aMax = -Infinity;
+    for (const c of rc) {
+      const p = c.x * ax.x + c.y * ax.y;
+      if (p < aMin) aMin = p;
+      if (p > aMax) aMax = p;
+    }
+    let bMin = Infinity;
+    let bMax = -Infinity;
+    for (const c of poly) {
+      const p = c.x * ax.x + c.y * ax.y;
+      if (p < bMin) bMin = p;
+      if (p > bMax) bMax = p;
+    }
+    if (aMax < bMin || bMax < aMin) return false; // separating axis ⇒ no overlap
+  }
+  return true;
+}
+
 /** velocity of a point rigidly attached to the robot */
 export function robotPointVelocity(r: RobotState, p: Vec2): Vec2 {
   const rx = p.x - r.pos.x;
@@ -536,9 +569,11 @@ export function squareUpRobots(world: World, preVels: Map<number, Vec2>): void {
 
 // ------------------------------------------------------------ ball steps ----
 
+/** rolling friction + rest-snap for a ground ball, velocity ONLY. Rapier owns
+ * the position integration + all contact now (unified solve), so this no longer
+ * advances position — it just decays speed each tick before the solve reads the
+ * ball's linvel (mirrors how updateRobot stopped integrating robot position). */
 export function stepGroundBall(b: Artifact, dt: number): void {
-  b.pos.x += b.vel.x * dt;
-  b.pos.y += b.vel.y * dt;
   const speed = hyp(b.vel.x, b.vel.y);
   if (speed > 0) {
     const ns = speed - C.BALL_ROLL_FRICTION * dt;
@@ -551,6 +586,17 @@ export function stepGroundBall(b: Artifact, dt: number): void {
       b.vel.y *= k;
     }
   }
+}
+
+/** hard field clamp for a ground ball after the Rapier solve: Rapier's soft
+ * contacts allow ~0.2in penetration, but the containment invariant (a ball never
+ * leaves the field / pokes through a goal face) is tolerance-tight, so snap the
+ * position back onto the walls + goal faces. Position only — velocity was already
+ * resolved by the solve. */
+export function clampGroundBall(b: Artifact): void {
+  const c = clampBallPosToStatics(b.pos);
+  b.pos.x = c.x;
+  b.pos.y = c.y;
 }
 
 export function stepFlightBall(b: Artifact, dt: number): void {

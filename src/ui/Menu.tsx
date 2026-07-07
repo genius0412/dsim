@@ -212,6 +212,10 @@ export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
     set({ autoPath: null, autoPathEnabled: false });
     showToast('Auto path cleared.', 'info');
   };
+    
+  const isSwerve = settings.spec.drivetrain === 'swerve';
+  const minMass = isSwerve ? 25 : ROBOT_MIN_MASS;
+  const maxRpm = isSwerve ? 500 : ROBOT_MAX_RPM;
 
   return (
     <div className="menu-root">
@@ -308,6 +312,27 @@ export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
               <span>Shoots automatically inside the launch zone</span>
             </button>
           </div>
+        </section>
+
+        <section>
+          <h2>Park mode</h2>
+          <div className="spec-row">
+            <label>
+              Speed cap {settings.parkSpeedPct}%
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={settings.parkSpeedPct}
+                onChange={(e) => set({ parkSpeedPct: Number(e.target.value) })}
+              />
+            </label>
+          </div>
+          <p className="hint">
+            Toggle with P (keyboard) or X (controller) — only in the last 20s of teleop, or
+            anytime in Free Drive. Caps drive speed to the percentage above for precise control.
+          </p>
         </section>
 
         <section>
@@ -409,7 +434,7 @@ export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
                 Mass {settings.spec.massLb} lb
                 <input
                   type="range"
-                  min={ROBOT_MIN_MASS}
+                  min={minMass}
                   max={ROBOT_MAX_MASS}
                   step={1}
                   value={settings.spec.massLb}
@@ -423,7 +448,7 @@ export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
                 <input
                   type="range"
                   min={ROBOT_MIN_RPM}
-                  max={ROBOT_MAX_RPM}
+                  max={maxRpm}
                   step={5}
                   value={settings.spec.driveRpm}
                   onChange={(e) => setSpec({ driveRpm: Number(e.target.value) })}

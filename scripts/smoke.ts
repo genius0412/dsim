@@ -4,6 +4,7 @@
  */
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC } from '../src/sim/spawn';
 import { step } from '../src/sim/world';
+import { robotInLaunchZone } from '../src/sim/robot';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
 import { startMatch } from '../src/sim/match';
 import {
@@ -384,6 +385,91 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   run(w, cmd({ driveY: 1 }), 1);
   const dist = Math.hypot(ball.pos.x, ball.pos.y);
   check('open-field push sends the ball rolling', dist > 20, `moved ${dist.toFixed(1)} in`);
+}
+
+// ---- launch zone: robot straddling the wedge APEX is IN (OBB overlap, not just
+//      corners — the wedge narrows to a point at field center, so all four corners
+//      can sit outside both diagonals while the body covers the zone) -------------
+{
+  const w = mkWorld('free', 'blue', 30);
+  const r = w.robots[0];
+  r.heading = -Math.PI / 2; // intake points -y, AWAY from the wedge (can't help)
+  r.pos = { x: 0, y: -5 }; // body straddles the apex (0,0); no corner is inside
+  const cornersIn = robotCorners(r).some((c) => inLaunchZone(c, 'blue'));
+  check(
+    'robot straddling the launch-wedge apex counts as in-zone (no corner inside)',
+    robotInLaunchZone(r) && !cornersIn,
+    `result=${robotInLaunchZone(r)} anyCornerIn=${cornersIn}`,
+  );
+  // sanity: a robot parked in a far corner (well outside both zones) is OUT
+  r.pos = { x: 60, y: -60 };
+  r.heading = 0;
+  check('robot in a far corner is NOT in a launch zone', !robotInLaunchZone(r));
+}
+
+// ---- Rapier ground balls: ball-ball separation (no robot involved) -------------
+{
+  const w = mkWorld('free', 'blue', 24);
+  w.robots[0].pos = { x: 60, y: -60 }; // park the robot far from the balls
+  const a = w.balls[0];
+  const b = w.balls[1];
+  for (const bb of [a, b]) {
+    bb.state = { kind: 'ground' };
+    bb.z = 0;
+    bb.vz = 0;
+    bb.vel = { x: 0, y: 0 };
+  }
+  a.pos = { x: -2, y: 0 };
+  b.pos = { x: 2, y: 0 }; // overlapping (centers 4in < 5in diameter)
+  run(w, cmd({}), 0.5);
+  const sep = Math.hypot(a.pos.x - b.pos.x, a.pos.y - b.pos.y);
+  // started 4in apart (overlapping); Rapier pushes them out to ~contact distance
+  // (a small residual < BALL_RADIUS is the soft-contact steady penetration, the
+  // same slack robots rest at — the point is they separated, no explosion)
+  check(
+    'Rapier separates two overlapping ground balls (ball-ball contact)',
+    sep >= 2 * BALL_RADIUS - 0.5 && sep < 2 * BALL_RADIUS + 1 && Number.isFinite(sep),
+    `sep=${sep.toFixed(2)} in`,
+  );
+}
+
+// ---- Rapier ground ball never tunnels a wall (hard clamp holds) ----------------
+{
+  const w = mkWorld('free', 'blue', 25);
+  w.robots[0].pos = { x: -60, y: -60 };
+  const ball = w.balls[0];
+  ball.state = { kind: 'ground' };
+  ball.pos = { x: 0, y: FIELD_HALF - 8 };
+  ball.vel = { x: 0, y: 400 }; // fired hard at the far wall
+  ball.z = 0;
+  ball.vz = 0;
+  run(w, cmd({}), 0.5);
+  check(
+    'fast ground ball stays inside the wall (no tunnel past the clamp)',
+    ball.pos.y <= FIELD_HALF - BALL_RADIUS + 0.02 && Number.isFinite(ball.pos.y),
+    `y=${ball.pos.y.toFixed(3)}`,
+  );
+}
+
+// ---- Rapier ground-ball physics is deterministic across replays ----------------
+{
+  const mk = (): World => {
+    const w = mkWorld('free', 'blue', 26);
+    w.robots[0].pos = { x: 55, y: 55 };
+    const a = w.balls[0];
+    const b = w.balls[1];
+    a.state = { kind: 'ground' }; a.pos = { x: -20, y: 0 }; a.vel = { x: 120, y: 0 }; a.z = 0; a.vz = 0;
+    b.state = { kind: 'ground' }; b.pos = { x: 20, y: 0 }; b.vel = { x: -120, y: 0 }; b.z = 0; b.vz = 0;
+    return w;
+  };
+  const w1 = mk();
+  const w2 = mk();
+  for (let i = 0; i < 300; i++) { step(w1, SIM_DT, new Map()); step(w2, SIM_DT, new Map()); }
+  check(
+    'ground-ball collisions are bit-for-bit deterministic across two replays',
+    worldHash(w1) === worldHash(w2),
+    `${worldHash(w1)} vs ${worldHash(w2)}`,
+  );
 }
 
 // ---- driver-side view frames ------------------------------------------------

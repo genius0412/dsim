@@ -40,6 +40,7 @@ export function defaultSettings(): GameSettings {
     bindings: cloneBindings(DEFAULT_BINDINGS),
     autoPath: null, // Default to no auto path loaded
     autoPathEnabled: false, // Default to auto path disabled
+    parkSpeedPct: 30,
   };
 }
 
@@ -106,6 +107,9 @@ export function loadSettings(): GameSettings {
       const au = s.audio as Record<string, unknown>;
       if (typeof au.sounds === 'boolean') out.audio.sounds = au.sounds;
       if (typeof au.voice === 'boolean') out.audio.voice = au.voice;
+    }
+    if (typeof s.parkSpeedPct === 'number') {
+      out.parkSpeedPct = clamp(Math.round(s.parkSpeedPct), 0, 100);
     }
     out.bindings = mergeBindings(s.bindings);
 

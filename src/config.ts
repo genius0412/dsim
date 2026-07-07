@@ -63,6 +63,15 @@ export const GRAVITY = 386; // in/s^2
 /** light foam ball off a heavy chassis: nearly inelastic — the ball inherits
  * the chassis surface speed but gains almost no extra bounce */
 export const BALL_ROBOT_RESTITUTION = 0.05;
+/** ground-ball mass (lb) for the Rapier ball solve (`solveBalls`). Balls only
+ * meet other balls (equal mass ⇒ value cancels) and the immovable static field
+ * there — ball↔robot is the bespoke `collideBallRobot` pass, NOT Rapier, because
+ * the pin stall + "outflow can't shove a parked robot" feel (product decision #7)
+ * is deliberately non-physical. So this is essentially a numerical scale; a light
+ * foam-ball value is kept for physical honesty. Ball restitution combines with
+ * `CoefficientCombineRule.Min`, so ball↔static = min(BALL_BALL_RESTITUTION,
+ * BALL_WALL_RESTITUTION) = BALL_WALL_RESTITUTION and ball↔ball = BALL_BALL_REST. */
+export const BALL_MASS = 0.2; // lb
 /** a robot push refused by a wall beyond this distance means the ball is
  * PINNED — the constraint transmits back and stalls the robot */
 export const BALL_PIN_SLOP = 0.05; // in
@@ -108,6 +117,17 @@ export const PHYS_ALLOWED_ERROR = 0.01;
 /** friction between chassis and walls / other chassis — resists a pinned robot
  * sliding out of a squeeze (the old model squared-and-held; 0 let it squirt) */
 export const PHYS_FRICTION = 0.7;
+/** BALL contact stiffness (Hz) for the ball solve — stiffer than the robot world
+ * (8 Hz), which let two grounded balls sit visibly overlapping for many ticks.
+ * Tuned to 25: separates a resting overlapping clump within ~0.5s (as clean as a
+ * much higher value) WITHOUT the explosive ejection a very stiff contact (≥60 Hz)
+ * gives the tightly-packed column draining out of the gate — at 120 Hz those exit
+ * balls shot out at ~2× their intended speed. 25 keeps gate outflow at the natural
+ * exit velocity while still killing resting overlap. */
+export const PHYS_BALL_CONTACT_FREQ = 25;
+/** BALL allowed penetration (× lengthUnit ⇒ inches): tight, so resting balls
+ * settle touching rather than at the ~0.1in slop the robot value leaves. */
+export const PHYS_BALL_ALLOWED_ERROR = 0.001;
 // ---------------------------------------------------------------- robot ----
 export const ROBOT_MAX_SIZE = 18; // FTC starting size cap (incl. intake reach)
 export const ROBOT_MIN_SIZE = 12;
@@ -132,6 +152,9 @@ export const ROBOT_MAX_MASS = 42;
 export const ROBOT_MIN_RPM = 200;
 export const ROBOT_MAX_RPM = 600;
 
+/** penalty added to fireInterval when robot is sorting (canSort: true) */
+export const SORT_FIRE_PENALTY = 0.25;
+
 /** per-drivetrain multipliers + wheel-saturation model. saturation:
  * 'sum'   = |f|+|s|+|ω|  (mecanum/x-drive: the worst roller wheel sees all)
  * 'tank'  = |f|+|ω|      (no strafe at all — strafe input is dead)
@@ -142,7 +165,7 @@ export const DRIVETRAIN_PRESETS = {
   /** 45° omni pods: full-speed strafe, slight overall speed loss */
   xdrive: { strafeMult: 1.0, speedMult: 0.9, accelMult: 0.95, saturation: 'sum' },
   /** traction wheels: no strafe, best straight-line speed and push */
-  tank: { strafeMult: 0, speedMult: 1.05, accelMult: 1.1, saturation: 'tank' },
+  tank: { strafeMult: 0, speedMult: 1.05, accelMult: 1.4, saturation: 'tank' },
   /** independent steered modules: full-speed any direction */
   swerve: { strafeMult: 1.0, speedMult: 1.0, accelMult: 1.05, saturation: 'vec' },
 } as const;

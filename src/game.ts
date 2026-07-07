@@ -37,6 +37,9 @@ export interface GameSettings {
   // New fields for auto pathing
   autoPath: AutoPathData | null;
   autoPathEnabled: boolean;
+  /** park mode's speed cap, 0-100 (% of normal max speed); activation is
+   * gated to endgame / free drive regardless of this value */
+  parkSpeedPct: number;
 }
 
 export interface Toast {
@@ -67,6 +70,12 @@ export interface HudSnapshot {
   gamepadConnected: boolean;
   /** drive controls reversed so the shooter side leads (robot-centric only) */
   frontFlipped: boolean;
+  /** park mode active (speed capped to parkSpeedPct); only activatable in
+   * endgame / free drive, per canPark() */
+  parked: boolean;
+  /** can park mode be TURNED ON right now (endgame or free drive)? drives the
+   * HUD hint so the driver knows why the button isn't doing anything yet */
+  canPark: boolean;
   gateOpen: boolean;
   rampCount: number;
   classifiedCount: number;
@@ -100,6 +109,8 @@ export class GameController {
   private hudCountdown: number | null = null;
   /** drive controls reversed so the shooter side leads (robot-centric only) */
   private frontFlipped = false;
+  /** park mode: caps drive command magnitude to settings.parkSpeedPct while on */
+  private parked = false;
   // action-SFX edge trackers per robot id (seeded in seedActionAudio)
   private prevFireAt: Record<number, number> = {};
   private prevIntakeAt: Record<number, number> = {};
@@ -131,6 +142,14 @@ export class GameController {
     this.audio.soundsEnabled = settings.audio.sounds;
     this.audio.voiceEnabled = settings.audio.voice;
     this.input = new InputManager(settings.bindings);
+
+    // Mobile Mode: enable assists by default if touch-capable
+    if (window.matchMedia('(pointer: coarse)').matches) {
+      this.settings.assists.aimAssist = true;
+      this.settings.assists.autoFire = true;
+      this.settings.assists.autoIntake = true;
+    }
+
     this.world = this.makeWorld();
     this.prevPhase = this.world.match.phase;
     this.seedActionAudio();
@@ -148,6 +167,11 @@ export class GameController {
       this.simTimer = window.setInterval(this.simStep, 1000 * C.SIM_DT);
     }
     this.raf = requestAnimationFrame(this.loop);
+  }
+
+  /** expose input manager for mobile controls */
+  getInputManager() {
+    return this.input;
   }
 
   private localRobot() {
@@ -319,6 +343,13 @@ export class GameController {
     return n; // > 3 means the "Match begins in" lead-in
   }
 
+  /** can park mode be turned ON right now? Last ENDGAME_START seconds of
+   * teleop, or anywhere in free drive (which has no match clock) */
+  private canPark(): boolean {
+    const m = this.world.match;
+    return m.phase === 'freeplay' || (m.phase === 'teleop' && m.phaseTimeLeft <= C.ENDGAME_START);
+  }
+
   /** everything a frame does EXCEPT render: sample input, step, audio, toasts */
   private frameLogic(dtMs: number): void {
     const cmd = this.input.poll();
@@ -330,6 +361,19 @@ export class GameController {
         cmd.driveX = -cmd.driveX;
         cmd.driveY = -cmd.driveY;
       }
+    }
+    // park mode: toggle on press. Turning it ON is gated to endgame/free drive;
+    // turning it back OFF is always allowed. While on, cap the drive command's
+    // magnitude to the configured percentage for precision, low-speed control.
+    if (this.input.parkPressed) {
+      if (this.parked) this.parked = false;
+      else if (this.canPark()) this.parked = true;
+    }
+    if (this.parked) {
+      const k = Math.max(0, Math.min(100, this.settings.parkSpeedPct)) / 100;
+      cmd.driveX *= k;
+      cmd.driveY *= k;
+      cmd.rotate *= k;
     }
     this.lastCmd = cmd;
 
@@ -455,11 +499,20 @@ export class GameController {
     this.countdownStart = null;
     this.hudCountdown = null;
     this.frontFlipped = false;
+    this.parked = false;
     this.acc = 0;
     this.inputBuf = [];
     this.remoteCmds = new Map();
     this.seedActionAudio();
     this.toasts = [];
+  }
+
+  /** trigger the pre-match countdown (e.g. from a UI button) */
+  startMatch(): void {
+    if (this.world.match.phase === 'pre' && this.countdownStart === null) {
+      this.countdownStart = this.world.time;
+      this.lastBeepAt = -1;
+    }
   }
 
   /** restart with the same settings (new random seed / motif) */
@@ -474,6 +527,7 @@ export class GameController {
     this.countdownStart = null;
     this.hudCountdown = null;
     this.frontFlipped = false;
+    this.parked = false;
     this.seedActionAudio();
     this.toasts = [];
   }
@@ -521,6 +575,8 @@ export class GameController {
       inLaunchZone: w.mode === 'free' || robotInLaunchZone(r),
       gamepadConnected: this.input.gamepadConnected,
       frontFlipped: this.frontFlipped,
+      parked: this.parked,
+      canPark: this.canPark(),
       gateOpen: goal.gateOpen,
       rampCount: w.balls.filter(
         (b) => b.state.kind === 'rail' && b.state.goal === a && !b.state.overflow,

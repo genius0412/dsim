@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { GameController, type GameSettings, type HudSnapshot } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
+import { MobileControls } from './MobileControls';
 import type { NetSession } from '../net/session';
 import type { Alliance, ScoreBreakdown } from '../types';
 
@@ -40,6 +41,9 @@ export function GameView({ settings, onExit, session = null }: Props) {
   return (
     <div className="game-root">
       <canvas ref={canvasRef} className="game-canvas" />
+      {window.matchMedia('(pointer: coarse)').matches && controllerRef.current && (
+        <MobileControls inputManager={controllerRef.current.getInputManager()} />
+      )}
       {hud && <Hud hud={hud} />}
       <div className="game-buttons">
         <button className="game-btn" onClick={onExit} title="Back to menu (Esc)">
@@ -67,10 +71,28 @@ export function GameView({ settings, onExit, session = null }: Props) {
                 <span key={i} className={`motif-dot ${c}`} />
               ))}
             </p>
-            <p className="big">
-              Press {keyLabel(settings.bindings.keys.start[0] ?? 'enter')} or{' '}
-              {padButtonLabel(settings.bindings.pad.buttons.start[0] ?? 9)} to begin the MATCH
-            </p>
+            {!window.matchMedia('(pointer: coarse)').matches && (
+              <p className="big">
+                Press {keyLabel(settings.bindings.keys.start[0] ?? 'enter')} or{' '}
+                {padButtonLabel(settings.bindings.pad.buttons.start[0] ?? 9)} to begin the MATCH
+              </p>
+            )}
+            {window.matchMedia('(pointer: coarse)').matches && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
+                <button
+                  className="start-btn"
+                  onClick={() => controllerRef.current?.startMatch()}
+                >
+                  START MATCH
+                </button>
+                <button
+                  className="start-btn secondary"
+                  onClick={onExit}
+                >
+                  BACK TO MENU
+                </button>
+              </div>
+            )}
             <p className="hint">
               Esc returns to the menu · {keyLabel(settings.bindings.keys.restart[0] ?? '?')} or{' '}
               {padButtonLabel(settings.bindings.pad.buttons.restart[0] ?? 8)} restarts
@@ -172,40 +194,42 @@ function Hud({ hud }: { hud: HudSnapshot }) {
         </div>
       )}
 
-      <div className="status-wrap">
-        <div className="robot-status">
-          <div className="hopper">
-            {[0, 1, 2].map((i) => (
-              <span key={i} className={`hopper-pip ${hud.hopper[i] ?? 'empty'}`} />
-            ))}
-          </div>
-          <span className={`chip ${hud.inLaunchZone ? 'on' : 'warn'}`}>
-            {hud.inLaunchZone ? 'LAUNCH ZONE' : 'NO LAUNCH'}
-          </span>
-          {hud.gateOpen && <span className="chip on">GATE OPEN</span>}
-          {hud.mode === 'match' &&
-            (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
-              <span className="chip warn">
-                FOULS {hud.fouls[hud.alliance].minor}m {hud.fouls[hud.alliance].major}M
+      {(!window.matchMedia('(pointer: coarse)').matches) && (
+        <div className="status-wrap">
+          <div className="robot-status">
+            <div className="hopper">
+              {[0, 1, 2].map((i) => (
+                <span key={i} className={`hopper-pip ${hud.hopper[i] ?? 'empty'}`} />
+              ))}
+            </div>
+            <span className={`chip ${hud.inLaunchZone ? 'on' : 'warn'}`}>
+              {hud.inLaunchZone ? 'LAUNCH ZONE' : 'NO LAUNCH'}
+            </span>
+            {hud.gateOpen && <span className="chip on">GATE OPEN</span>}
+            {hud.mode === 'match' &&
+              (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
+                <span className="chip warn">
+                  FOULS {hud.fouls[hud.alliance].minor}m {hud.fouls[hud.alliance].major}M
+                </span>
+              )}
+            <span className="chip">{hud.fieldCentric ? 'FIELD' : 'ROBOT'}</span>
+            {hud.frontFlipped && <span className="chip warn">REVERSED</span>}
+            <span className={`chip ${hud.aimAssist ? 'on' : 'off'}`}>AIM</span>
+            <span className={`chip ${hud.autoIntake ? 'on' : 'off'}`}>AUTO-IN</span>
+            <span className={`chip ${hud.autoFire ? 'on' : 'off'}`}>AUTO-FIRE</span>
+            <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
+            {hud.net && (
+              <span className={`chip ${hud.net.peers > 0 ? 'on' : 'warn'}`}>
+                NET {hud.net.peers + 1}P
               </span>
             )}
-          <span className="chip">{hud.fieldCentric ? 'FIELD' : 'ROBOT'}</span>
-          {hud.frontFlipped && <span className="chip warn">REVERSED</span>}
-          <span className={`chip ${hud.aimAssist ? 'on' : 'off'}`}>AIM</span>
-          <span className={`chip ${hud.autoIntake ? 'on' : 'off'}`}>AUTO-IN</span>
-          <span className={`chip ${hud.autoFire ? 'on' : 'off'}`}>AUTO-FIRE</span>
-          <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
-          {hud.net && (
-            <span className={`chip ${hud.net.peers > 0 ? 'on' : 'warn'}`}>
-              NET {hud.net.peers + 1}P
-            </span>
-          )}
-          {hud.net?.waitingFor && (
-            <span className="chip warn">WAITING · {hud.net.waitingFor}</span>
-          )}
-          {hud.net?.desync && <span className="chip off">⚠ DESYNC</span>}
+            {hud.net?.waitingFor && (
+              <span className="chip warn">WAITING · {hud.net.waitingFor}</span>
+            )}
+            {hud.net?.desync && <span className="chip off">⚠ DESYNC</span>}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="eventlog">
         {hud.toasts.map((t) => (
