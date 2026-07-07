@@ -61,7 +61,7 @@ const INTAKE_BLURBS: Record<IntakeStyle, string> = {
 
 const ARCHETYPE_BLURBS: Record<Archetype, string> = {
   standard: '1 turreted shooter · full builder freedom',
-  tridexer: '3 fixed shooters, volley fire · no turret — align the chassis to shoot (hold G)',
+  tridexer: '3 fixed shooters, volley fire · no turret — align the chassis to shoot (hold Auto-align)',
   turreted: '3 shooters in a triangle, on a turret · volley fire · 18×18 · heavy',
 };
 
