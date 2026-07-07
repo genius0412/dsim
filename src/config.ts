@@ -166,8 +166,10 @@ export const TURN_ACCEL_PER_ACCEL = 40 / 280; // rad/s^2 per in/s^2 of drive acc
 /** robot mass range for the builder (lb) */
 export const ROBOT_MIN_MASS = 20;
 export const ROBOT_MAX_MASS = 42;
+export const SWERVE_MIN_MASS = 25;
 export const ROBOT_MIN_RPM = 200;
 export const ROBOT_MAX_RPM = 600;
+export const SWERVE_MAX_RPM = 500;
 
 /** penalty added to fireInterval when robot is sorting (canSort: true) */
 export const SORT_FIRE_PENALTY = 0.25;
