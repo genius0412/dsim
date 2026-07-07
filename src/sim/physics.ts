@@ -536,9 +536,11 @@ export function squareUpRobots(world: World, preVels: Map<number, Vec2>): void {
 
 // ------------------------------------------------------------ ball steps ----
 
+/** rolling friction + rest-snap for a ground ball, velocity ONLY. Rapier owns
+ * the position integration + all contact now (unified solve), so this no longer
+ * advances position — it just decays speed each tick before the solve reads the
+ * ball's linvel (mirrors how updateRobot stopped integrating robot position). */
 export function stepGroundBall(b: Artifact, dt: number): void {
-  b.pos.x += b.vel.x * dt;
-  b.pos.y += b.vel.y * dt;
   const speed = hyp(b.vel.x, b.vel.y);
   if (speed > 0) {
     const ns = speed - C.BALL_ROLL_FRICTION * dt;
@@ -551,6 +553,17 @@ export function stepGroundBall(b: Artifact, dt: number): void {
       b.vel.y *= k;
     }
   }
+}
+
+/** hard field clamp for a ground ball after the Rapier solve: Rapier's soft
+ * contacts allow ~0.2in penetration, but the containment invariant (a ball never
+ * leaves the field / pokes through a goal face) is tolerance-tight, so snap the
+ * position back onto the walls + goal faces. Position only — velocity was already
+ * resolved by the solve. */
+export function clampGroundBall(b: Artifact): void {
+  const c = clampBallPosToStatics(b.pos);
+  b.pos.x = c.x;
+  b.pos.y = c.y;
 }
 
 export function stepFlightBall(b: Artifact, dt: number): void {

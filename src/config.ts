@@ -63,6 +63,15 @@ export const GRAVITY = 386; // in/s^2
 /** light foam ball off a heavy chassis: nearly inelastic — the ball inherits
  * the chassis surface speed but gains almost no extra bounce */
 export const BALL_ROBOT_RESTITUTION = 0.05;
+/** ground-ball mass (lb) for the Rapier ball solve (`solveBalls`). Balls only
+ * meet other balls (equal mass ⇒ value cancels) and the immovable static field
+ * there — ball↔robot is the bespoke `collideBallRobot` pass, NOT Rapier, because
+ * the pin stall + "outflow can't shove a parked robot" feel (product decision #7)
+ * is deliberately non-physical. So this is essentially a numerical scale; a light
+ * foam-ball value is kept for physical honesty. Ball restitution combines with
+ * `CoefficientCombineRule.Min`, so ball↔static = min(BALL_BALL_RESTITUTION,
+ * BALL_WALL_RESTITUTION) = BALL_WALL_RESTITUTION and ball↔ball = BALL_BALL_REST. */
+export const BALL_MASS = 0.2; // lb
 /** a robot push refused by a wall beyond this distance means the ball is
  * PINNED — the constraint transmits back and stalls the robot */
 export const BALL_PIN_SLOP = 0.05; // in

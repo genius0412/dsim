@@ -1,5 +1,5 @@
 import RAPIER from '@dimforge/rapier2d-compat';
-import type { RobotState, Vec2, World } from '../types';
+import type { Artifact, RobotState, Vec2, World } from '../types';
 import * as C from '../config';
 import { classifierRect, goalFaceNormal, goalFacePoints } from './field';
 import { robotExtents } from './physics';
@@ -22,9 +22,19 @@ import { datan2, hyp } from '../math';
  * RobotState is canonical and rebuilt each tick — pinned-ball feedback, all for
  * free). Rotation is LOCKED on the bodies; the bespoke contact-torque "square
  * up flush" nudge stays in physics.ts (`squareUpRobots`), the one piece the
- * plan calls out as not a Rapier primitive. Balls remain fully bespoke in this
- * slice.
+ * plan calls out as not a Rapier primitive.
+ *
+ * Slice 2 adds GROUND balls to the SAME unified solve (circle bodies, tiny
+ * mass), so ball↔ball / ball↔robot / ball↔wall / ball↔goal-face /
+ * ball↔classifier resolve together — and the pinned-ball → robot feedback falls
+ * out of a real mass ratio. Rolling friction + rest-snap + the hard field clamp
+ * stay bespoke around the solve (top-down plane has no floor to rub on, and
+ * Rapier's soft contacts allow ~0.2in penetration the containment invariant
+ * won't tolerate). Restitution combines with `Min` across every collider so the
+ * per-pair coefficients fall straight out of the BALL_* constants. FLIGHT balls
+ * (ballistic + rare low collisions) stay bespoke in world.ts / physics.ts.
  */
+
 
 let ready = false;
 
@@ -45,15 +55,24 @@ const WALL_T = 10; // perimeter wall half-thickness (well outside the field)
 const WALL_L = C.FIELD_HALF + 20; // wall half-length (overlaps corners)
 const GOAL_FACE_T = 4; // goal-face slab half-thickness (behind the hypotenuse)
 
+/** give a static field collider a ball-bounce restitution combined with Min, so
+ * a ground ball caroms off it at BALL_WALL_RESTITUTION while a robot (restitution
+ * 0) still resolves fully inelastically against it — slice-1 robot feel intact. */
+function statics(desc: RAPIER.ColliderDesc): RAPIER.ColliderDesc {
+  return desc
+    .setRestitution(C.BALL_WALL_RESTITUTION)
+    .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min);
+}
+
 /** static field colliders: perimeter walls, goal-face hypotenuses, classifier
  * channels. Rebuilt each step (constant geometry — cheap). */
 function buildStatics(rw: RAPIER.World): void {
   const f = C.FIELD_HALF;
   // 4 perimeter walls: inner faces exactly at ±FIELD_HALF
-  rw.createCollider(RAPIER.ColliderDesc.cuboid(WALL_T, WALL_L).setTranslation(f + WALL_T, 0));
-  rw.createCollider(RAPIER.ColliderDesc.cuboid(WALL_T, WALL_L).setTranslation(-f - WALL_T, 0));
-  rw.createCollider(RAPIER.ColliderDesc.cuboid(WALL_L, WALL_T).setTranslation(0, f + WALL_T));
-  rw.createCollider(RAPIER.ColliderDesc.cuboid(WALL_L, WALL_T).setTranslation(0, -f - WALL_T));
+  rw.createCollider(statics(RAPIER.ColliderDesc.cuboid(WALL_T, WALL_L).setTranslation(f + WALL_T, 0)));
+  rw.createCollider(statics(RAPIER.ColliderDesc.cuboid(WALL_T, WALL_L).setTranslation(-f - WALL_T, 0)));
+  rw.createCollider(statics(RAPIER.ColliderDesc.cuboid(WALL_L, WALL_T).setTranslation(0, f + WALL_T)));
+  rw.createCollider(statics(RAPIER.ColliderDesc.cuboid(WALL_L, WALL_T).setTranslation(0, -f - WALL_T)));
 
   for (const a of ALLIANCES) {
     // goal FACE: a thin slab lying along the hypotenuse, offset toward the
@@ -65,34 +84,29 @@ function buildStatics(rw: RAPIER.World): void {
     const ang = datan2(side.y - far.y, side.x - far.x);
     const n = goalFaceNormal(a); // unit, points into the field
     rw.createCollider(
-      RAPIER.ColliderDesc.cuboid(len / 2, GOAL_FACE_T)
-        .setTranslation(mx - n.x * GOAL_FACE_T, my - n.y * GOAL_FACE_T)
-        .setRotation(ang),
+      statics(
+        RAPIER.ColliderDesc.cuboid(len / 2, GOAL_FACE_T)
+          .setTranslation(mx - n.x * GOAL_FACE_T, my - n.y * GOAL_FACE_T)
+          .setRotation(ang),
+      ),
     );
 
     // classifier channel (axis-aligned rect along the side wall)
     const r = classifierRect(a);
     rw.createCollider(
-      RAPIER.ColliderDesc.cuboid((r.x1 - r.x0) / 2, (r.y1 - r.y0) / 2).setTranslation(
-        (r.x0 + r.x1) / 2,
-        (r.y0 + r.y1) / 2,
+      statics(
+        RAPIER.ColliderDesc.cuboid((r.x1 - r.x0) / 2, (r.y1 - r.y0) / 2).setTranslation(
+          (r.x0 + r.x1) / 2,
+          (r.y0 + r.y1) / 2,
+        ),
       ),
     );
   }
 }
 
-/**
- * Resolve robot translation + velocity for one tick via Rapier: build bodies at
- * the robots' current poses (rotation locked, linvel = r.vel, mass = massLb),
- * step once, and write the resolved translation + velocity back into RobotState.
- * Returns each robot's PRE-solve velocity (keyed by id) so the bespoke square-up
- * pass can scale contact torque by how hard the robot was driving in.
- */
-export function solveRobots(world: World, dt: number): Map<number, Vec2> {
-  const preVels = new Map<number, Vec2>();
-  const robots = world.robots;
-  if (robots.length === 0) return preVels;
-
+/** a fresh Rapier world with our inch-scale tolerances + the static field
+ * colliders. Shared by the robot and ball solves. */
+function makeWorld(dt: number): RAPIER.World {
   const rw = new RAPIER.World({ x: 0, y: 0 }); // top-down plane: no gravity
   rw.timestep = dt;
   // Rapier's tolerances default to METERS; our world is in INCHES (~40× bigger),
@@ -106,7 +120,30 @@ export function solveRobots(world: World, dt: number): Map<number, Vec2> {
   rw.integrationParameters.contact_natural_frequency = C.PHYS_CONTACT_FREQ;
   rw.integrationParameters.normalizedAllowedLinearError = C.PHYS_ALLOWED_ERROR;
   buildStatics(rw);
+  return rw;
+}
 
+/**
+ * Resolve robot translation + velocity for one tick via Rapier: build bodies at
+ * the robots' current poses (rotation locked, linvel = r.vel, mass = massLb),
+ * step once, and write the resolved translation + velocity back into RobotState.
+ * Returns each robot's PRE-solve velocity (keyed by id) so the bespoke square-up
+ * pass can scale contact torque by how hard the robot was driving in.
+ *
+ * Robots only — BALLS are a SEPARATE solve (`solveBalls`) followed by the bespoke
+ * `collideBallRobot`. Ball↔robot is NOT a Rapier contact on purpose: the "gate
+ * outflow can't shove a parked robot" rule (product decision #7) is deliberately
+ * NON-physical, and a light ball can't stall a force-set-velocity robot in a
+ * single solve. Keeping ball↔robot bespoke preserves both the pin stall and the
+ * outflow-no-shove feel. Robots therefore never see ball bodies here (slice-1
+ * robot behavior is byte-for-byte unchanged).
+ */
+export function solveRobots(world: World, dt: number): Map<number, Vec2> {
+  const preVels = new Map<number, Vec2>();
+  const robots = world.robots;
+  if (robots.length === 0) return preVels;
+
+  const rw = makeWorld(dt);
   const bodies: { r: RobotState; body: RAPIER.RigidBody }[] = [];
   for (const r of robots) {
     preVels.set(r.id, { x: r.vel.x, y: r.vel.y });
@@ -144,4 +181,51 @@ export function solveRobots(world: World, dt: number): Map<number, Vec2> {
 
   rw.free();
   return preVels;
+}
+
+/**
+ * Resolve GROUND-ball translation + velocity for one tick via a separate Rapier
+ * solve: light circle bodies (linvel = b.vel, mass = BALL_MASS) against the
+ * static field only — ball↔ball and ball↔wall / ball↔goal-face / ball↔classifier
+ * contact. Robots are ABSENT (ball↔robot is the bespoke `collideBallRobot` pass,
+ * run after this, for the reasons in `solveRobots`). Friction/rest-snap (velocity
+ * pre-pass) and the hard field clamp are applied around this call in world.ts.
+ * Bodies are built in stable `world.balls` id order so the solve is deterministic.
+ */
+export function solveBalls(world: World, dt: number): void {
+  const groundBalls = world.balls.filter((b) => b.state.kind === 'ground');
+  if (groundBalls.length === 0) return;
+
+  const rw = makeWorld(dt);
+  const ballBodies: { b: Artifact; body: RAPIER.RigidBody }[] = [];
+  for (const b of groundBalls) {
+    const body = rw.createRigidBody(
+      RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(b.pos.x, b.pos.y)
+        .lockRotations()
+        .setLinvel(b.vel.x, b.vel.y),
+    );
+    rw.createCollider(
+      RAPIER.ColliderDesc.ball(C.BALL_RADIUS)
+        .setMass(C.BALL_MASS)
+        .setRestitution(C.BALL_BALL_RESTITUTION)
+        .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min)
+        .setFriction(C.PHYS_FRICTION),
+      body,
+    );
+    ballBodies.push({ b, body });
+  }
+
+  rw.step();
+
+  for (const { b, body } of ballBodies) {
+    const p = body.translation();
+    const v = body.linvel();
+    b.pos.x = p.x;
+    b.pos.y = p.y;
+    b.vel.x = v.x;
+    b.vel.y = v.y;
+  }
+
+  rw.free();
 }

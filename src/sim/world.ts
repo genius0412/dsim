@@ -1,6 +1,7 @@
 import type { RobotCommand, World } from '../types';
 import * as C from '../config';
 import {
+  clampGroundBall,
   collideBallBall,
   collideBallRect,
   collideBallRobot,
@@ -9,7 +10,7 @@ import {
   stepFlightBall,
   stepGroundBall,
 } from './physics';
-import { solveRobots } from './physicsEngine';
+import { solveBalls, solveRobots } from './physicsEngine';
 import { classifierRect } from './field';
 import { updateIntake, updateRobot } from './robot';
 import { checkGoalEntry, updateBasins, updateGates, updateRails } from './goal';
@@ -53,58 +54,75 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
   updatePenalties(world, dt, commands);
 
   // ---- balls ---------------------------------------------------------------
+  // GROUND balls: rolling friction (velocity only) → Rapier solve (ball↔ball,
+  // ball↔wall, ball↔goal-face, ball↔classifier) → bespoke ball↔robot (pin
+  // feedback / outflow-no-shove, kept scripted for feel) → hard field clamp.
   for (const b of world.balls) {
-    if (b.state.kind === 'ground') {
-      stepGroundBall(b, dt);
-      collideBallStatic(b);
-    } else if (b.state.kind === 'flight') {
-      const prevZ = b.z;
-      stepFlightBall(b, dt);
-      if (checkGoalEntry(world, b, prevZ)) continue;
-      if (b.z < C.GOAL_WALL_TOP) collideBallStatic(b);
-      if (b.z <= 0 && b.vz < 0) {
-        b.z = 0;
-        b.vz = -b.vz * C.BALL_GROUND_RESTITUTION;
-        b.vel.x *= C.BALL_BOUNCE_H_RETAIN;
-        b.vel.y *= C.BALL_BOUNCE_H_RETAIN;
-        if (b.vz < 20) {
-          b.vz = 0;
-          b.state = { kind: 'ground' };
-        }
+    if (b.state.kind === 'ground') stepGroundBall(b, dt);
+  }
+  solveBalls(world, dt);
+  // ball↔robot stays bespoke (see solveRobots): the pin stall + outflow-no-shove
+  // are deliberately non-physical. Iterated so a robot→ball→(wall/ball) chain
+  // converges instead of tunnelling in a single pass.
+  for (let pass = 0; pass < C.BALL_SOLVER_ITERATIONS; pass++) {
+    for (const b of world.balls) {
+      if (b.state.kind !== 'ground') continue;
+      for (const r of world.robots) collideBallRobot(b, r);
+    }
+  }
+  // hard field clamp: Rapier's soft contacts (and the bespoke ball↔robot push)
+  // can leave a ~0.2in penetration, so snap ground balls back inside the walls /
+  // goal faces (containment is tolerance-tight).
+  for (const b of world.balls) {
+    if (b.state.kind === 'ground') clampGroundBall(b);
+  }
+
+  // ---- balls: FLIGHT (ground balls resolved above) -------------------------
+  // Flight stays bespoke: ballistic arc + z axis (Rapier 2D has no z), goal-face
+  // bounce below the lip, and the ground-bounce landing transition. A ball that
+  // lands becomes 'ground' and joins the ground solve next tick.
+  for (const b of world.balls) {
+    if (b.state.kind !== 'flight') continue;
+    const prevZ = b.z;
+    stepFlightBall(b, dt);
+    if (checkGoalEntry(world, b, prevZ)) continue;
+    if (b.z < C.GOAL_WALL_TOP) collideBallStatic(b);
+    if (b.z <= 0 && b.vz < 0) {
+      b.z = 0;
+      b.vz = -b.vz * C.BALL_GROUND_RESTITUTION;
+      b.vel.x *= C.BALL_BOUNCE_H_RETAIN;
+      b.vel.y *= C.BALL_BOUNCE_H_RETAIN;
+      if (b.vz < 20) {
+        b.vz = 0;
+        b.state = { kind: 'ground' };
       }
     }
   }
 
-  // ball-ball then ball-robot, iterated so pushes propagate through chains
-  // (robot -> ball -> wall-pinned ball) instead of tunnelling in one pass
-  const active = world.balls.filter(
-    (b) => (b.state.kind === 'ground' || b.state.kind === 'flight') && b.z < C.BALL_RADIUS * 4,
+  // low flight balls collide bespoke with robots + other low flight balls (rare
+  // — the shooter never misses, so a shot is almost never near a robot in the
+  // plane). Ground balls are Rapier bodies and handled there; a flight↔ground
+  // cross-collision is the accepted deferral of the ground-only slice.
+  const activeFlight = world.balls.filter(
+    (b) => b.state.kind === 'flight' && b.z < C.BALL_RADIUS * 4,
   );
   for (let pass = 0; pass < C.BALL_SOLVER_ITERATIONS; pass++) {
-    // ball-ball collisions (grounded / low balls only)
-    for (let i = 0; i < active.length; i++) {
-      for (let j = i + 1; j < active.length; j++) {
-        collideBallBall(active[i], active[j]);
+    for (let i = 0; i < activeFlight.length; i++) {
+      for (let j = i + 1; j < activeFlight.length; j++) {
+        collideBallBall(activeFlight[i], activeFlight[j]);
       }
     }
-    // ball-robot collisions (skip airborne balls above the robot)
-    for (const b of active) {
+    for (const b of activeFlight) {
       if (b.z > 14) continue;
       for (const r of world.robots) collideBallRobot(b, r);
     }
   }
-
-  // stray balls never enter the classifier structures (balls emerging from
-  // the gate exit below the channel and roll away)
-  for (const b of active) {
+  for (const b of activeFlight) {
     if (b.z > 16) continue;
     collideBallRect(b, classifierRect('red'));
     collideBallRect(b, classifierRect('blue'));
   }
-
-  // final authority: robot/structure pushes can never leave a ball outside
-  // the field — re-run the wall constraint after all other collisions
-  for (const b of active) collideBallStatic(b);
+  for (const b of activeFlight) collideBallStatic(b);
 
   // ---- goals: basin jumble, rail flow, gate ---------------------------------
   updateGates(world, dt);
