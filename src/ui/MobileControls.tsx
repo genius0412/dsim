@@ -1,97 +1,32 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import type { InputManager } from '../input/input';
 
 interface JoystickProps {
   onValueChange: (value: { x: number; y: number }) => void;
   label?: string;
+  active: boolean;
+  basePos: { x: number; y: number };
+  handlePos: { x: number; y: number };
 }
 
-function Joystick({ onValueChange, label }: JoystickProps) {
-  const [pos, setPos] = useState({ x: 0, y: 0 });
-  const [active, setActive] = useState(false);
-  const [touchId, setTouchId] = useState<number | null>(null);
-  const baseRef = useRef<HTMLDivElement>(null);
-
-  const handleTouch = (clientX: number, clientY: number) => {
-    if (!baseRef.current) return;
-    const rect = baseRef.current.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-
-    const dx = clientX - centerX;
-    const dy = clientY - centerY;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    const maxRadius = rect.width / 2;
-
-    const clampedDistance = Math.min(distance, maxRadius);
-    const angle = Math.atan2(dy, dx);
-
-    const x = (Math.cos(angle) * clampedDistance) / maxRadius;
-    const y = (Math.sin(angle) * clampedDistance) / maxRadius;
-
-    setPos({ x, y });
-    onValueChange({ x, y });
-  };
-
-  const onTouchStart = (e: React.TouchEvent) => {
-    // Find which touch landed on this specific joystick
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const touch = e.changedTouches[i];
-      const rect = baseRef.current?.getBoundingClientRect();
-      if (!rect) continue;
-
-      if (
-        touch.clientX >= rect.left &&
-        touch.clientX <= rect.right &&
-        touch.clientY >= rect.top &&
-        touch.clientY <= rect.bottom
-      ) {
-        setTouchId(touch.identifier);
-        setActive(true);
-        handleTouch(touch.clientX, touch.clientY);
-        break;
-      }
-    }
-  };
-
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (touchId === null) return;
-
-    // Track only the finger that started the interaction with this joystick
-    const touch = Array.from(e.touches).find((t) => t.identifier === touchId);
-    if (touch) {
-      handleTouch(touch.clientX, touch.clientY);
-    }
-  };
-
-  const onTouchEnd = (e: React.TouchEvent) => {
-    // Only reset if the finger that was controlling this joystick was released
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const touch = e.changedTouches[i];
-      if (touch.identifier === touchId) {
-        setTouchId(null);
-        setActive(false);
-        setPos({ x: 0, y: 0 });
-        onValueChange({ x: 0, y: 0 });
-        break;
-      }
-    }
-  };
-
+function Joystick({ label, active, basePos, handlePos }: JoystickProps) {
   return (
     <div
       className="mobile-joystick-base"
-      ref={baseRef}
-      onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove}
-      onTouchEnd={onTouchEnd}
+      style={{
+        left: `${basePos.x}px`,
+        top: `${basePos.y}px`,
+        opacity: active ? 1 : 0,
+        pointerEvents: 'none',
+        transform: 'translate(-50%, -50%)',
+      }}
     >
       {label && <div className="mobile-joystick-label">{label}</div>}
       <div
         className="mobile-joystick-handle"
         style={{
-          transform: `translate(${pos.x * 40}px, ${pos.y * 40}px)`,
-          opacity: active ? 1 : 0.6
+          transform: `translate(${handlePos.x * 40}px, ${handlePos.y * 40}px)`,
+          opacity: active ? 1 : 0.6,
         }}
       />
     </div>
@@ -99,24 +34,123 @@ function Joystick({ onValueChange, label }: JoystickProps) {
 }
 
 export function MobileControls({ inputManager }: { inputManager: InputManager }) {
+  const [leftStick, setLeftStick] = useState({
+    active: false,
+    basePos: { x: 0, y: 0 },
+    handlePos: { x: 0, y: 0 },
+    touchId: null as number | null,
+  });
+  const [rightStick, setRightStick] = useState({
+    active: false,
+    basePos: { x: 0, y: 0 },
+    handlePos: { x: 0, y: 0 },
+    touchId: null as number | null,
+  });
+
+  const MAX_RADIUS = 60; // Max distance the handle can move from center
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+      if (touch.clientX < window.innerWidth / 2) {
+        setLeftStick({
+          active: true,
+          basePos: { x: touch.clientX, y: touch.clientY },
+          handlePos: { x: 0, y: 0 },
+          touchId: touch.identifier,
+        });
+      } else {
+        setRightStick({
+          active: true,
+          basePos: { x: touch.clientX, y: touch.clientY },
+          handlePos: { x: 0, y: 0 },
+          touchId: touch.identifier,
+        });
+      }
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    for (let i = 0; i < e.touches.length; i++) {
+      const touch = e.touches[i];
+
+      if (touch.identifier === leftStick.touchId) {
+        const dx = touch.clientX - leftStick.basePos.x;
+        const dy = touch.clientY - leftStick.basePos.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const clampedDist = Math.min(distance, MAX_RADIUS);
+        const angle = Math.atan2(dy, dx);
+
+        const x = (Math.cos(angle) * clampedDist) / MAX_RADIUS;
+        const y = (Math.sin(angle) * clampedDist) / MAX_RADIUS;
+
+        setLeftStick((prev) => ({ ...prev, handlePos: { x, y } }));
+        inputManager.setVirtualInput({ driveX: x, driveY: -y });
+      }
+
+      if (touch.identifier === rightStick.touchId) {
+        const dx = touch.clientX - rightStick.basePos.x;
+        const dy = touch.clientY - rightStick.basePos.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const clampedDist = Math.min(distance, MAX_RADIUS);
+        const angle = Math.atan2(dy, dx);
+
+        const x = (Math.cos(angle) * clampedDist) / MAX_RADIUS;
+        const y = (Math.sin(angle) * clampedDist) / MAX_RADIUS;
+
+        setRightStick((prev) => ({ ...prev, handlePos: { x, y } }));
+        inputManager.setVirtualInput({ rotate: -x });
+      }
+    }
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+
+      if (touch.identifier === leftStick.touchId) {
+        setLeftStick({
+          active: false,
+          basePos: { x: 0, y: 0 },
+          handlePos: { x: 0, y: 0 },
+          touchId: null,
+        });
+        inputManager.setVirtualInput({ driveX: 0, driveY: 0 });
+      }
+
+      if (touch.identifier === rightStick.touchId) {
+        setRightStick({
+          active: false,
+          basePos: { x: 0, y: 0 },
+          handlePos: { x: 0, y: 0 },
+          touchId: null,
+        });
+        inputManager.setVirtualInput({ rotate: 0 });
+      }
+    }
+  };
+
   return (
-    <div className="mobile-controls">
-      <div className="mobile-stick-left">
-        <Joystick
-          label="DRIVE"
-          onValueChange={({ x, y }) => {
-            inputManager.setVirtualInput({ driveX: x, driveY: -y }); // y is flipped in screen coords
-          }}
-        />
-      </div>
-      <div className="mobile-stick-right">
-        <Joystick
-          label="TURN"
-          onValueChange={({ x }) => {
-            inputManager.setVirtualInput({ rotate: -x }); // Rotate CCW is positive, right stick right = rotate CW (negative)
-          }}
-        />
-      </div>
+    <div
+      className="mobile-controls"
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
+      <Joystick
+        label="DRIVE"
+        active={leftStick.active}
+        basePos={leftStick.basePos}
+        handlePos={leftStick.handlePos}
+        onValueChange={() => {}}
+      />
+      <Joystick
+        label="TURN"
+        active={rightStick.active}
+        basePos={rightStick.basePos}
+        handlePos={rightStick.handlePos}
+        onValueChange={() => {}}
+      />
     </div>
   );
 }
