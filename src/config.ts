@@ -256,6 +256,12 @@ export interface ArchetypePreset {
   label: string;
   shooters: number;
   turret: boolean;
+  /** the in-game indexing toggle applies (multi-shooter: volley ⟷ indexed
+   * singles; spindexer: indexed-sort ⟷ passthrough FIFO) */
+  canToggleIndex: boolean;
+  /** sorting is part of the mechanism (spindexer) — the spec's canSort flag
+   * is forced off and the INDEXED mode sorts instead */
+  builtinSort: boolean;
   minMass: number; // lb
   drivetrains: readonly DrivetrainType[];
   intakes: readonly IntakeStyle[];
@@ -265,21 +271,48 @@ export interface ArchetypePreset {
 export const ARCHETYPE_PRESETS: Record<Archetype, ArchetypePreset> = {
   standard: {
     label: 'Standard',
-    shooters: 1, turret: true, minMass: ROBOT_MIN_MASS,
+    shooters: 1, turret: true, canToggleIndex: false, builtinSort: false,
+    minMass: ROBOT_MIN_MASS,
+    drivetrains: ['mecanum', 'tank', 'swerve', 'xdrive'],
+    intakes: ['sloped', 'vector', 'triangle'],
+    lockWidth: null, lockLength: null,
+  },
+  single: {
+    label: 'Fixed Single',
+    shooters: 1, turret: false, canToggleIndex: false, builtinSort: false,
+    minMass: ROBOT_MIN_MASS,
+    drivetrains: ['mecanum', 'tank', 'swerve', 'xdrive'],
+    intakes: ['sloped', 'vector', 'triangle'],
+    lockWidth: null, lockLength: null,
+  },
+  double: {
+    label: 'Fixed Double',
+    shooters: 2, turret: false, canToggleIndex: true, builtinSort: false,
+    minMass: ROBOT_MIN_MASS,
+    drivetrains: ['mecanum', 'tank', 'swerve', 'xdrive'],
+    intakes: ['sloped', 'triangle'],
+    lockWidth: null, lockLength: null,
+  },
+  spindexer: {
+    label: 'Passthrough Spindexer',
+    shooters: 1, turret: true, canToggleIndex: true, builtinSort: true,
+    minMass: ROBOT_MIN_MASS,
     drivetrains: ['mecanum', 'tank', 'swerve', 'xdrive'],
     intakes: ['sloped', 'vector', 'triangle'],
     lockWidth: null, lockLength: null,
   },
   tridexer: {
     label: 'Tridexer',
-    shooters: 3, turret: false, minMass: 30,
+    shooters: 3, turret: false, canToggleIndex: true, builtinSort: false,
+    minMass: 30,
     drivetrains: ['mecanum', 'tank'],
     intakes: ['tridexer'],
     lockWidth: 18, lockLength: null,
   },
   turreted: {
     label: 'Turreted Tridexer',
-    shooters: 3, turret: true, minMass: 40,
+    shooters: 3, turret: true, canToggleIndex: true, builtinSort: false,
+    minMass: 40,
     drivetrains: ['mecanum', 'tank'],
     intakes: ['sloped', 'tridexer'],
     lockWidth: 18, lockLength: 18,
@@ -298,6 +331,9 @@ export const TRIDEXER_ALIGN_TOL = (3 * Math.PI) / 180; // rad
 export const TRIDEXER_ALIGN_KP = 6;
 /** lateral spacing between the three volley muzzles (drawn + shot origin) */
 export const VOLLEY_MUZZLE_SPACING = 3.4; // in
+/** spindexer PASSTHROUGH mode: the artifact rides straight through the
+ * carousel into the shooter — faster than any indexed transfer, FIFO only */
+export const PASSTHROUGH_FIRE_INTERVAL = 0.06; // s
 
 // --------------------------------------------------------------- turret ----
 /** turret center as a fraction of chassis length behind the center of

@@ -12,9 +12,21 @@ export function hasTurret(spec: RobotSpec): boolean {
   return C.ARCHETYPE_PRESETS[archetypeOf(spec)].turret;
 }
 
-/** 3 for the tridexer archetypes (volley fire), 1 for standard */
+/** 3 for the tridexer archetypes, 2 for the fixed double, 1 otherwise */
 export function shooterCount(spec: RobotSpec): number {
   return C.ARCHETYPE_PRESETS[archetypeOf(spec)].shooters;
+}
+
+/** does the in-game indexing toggle apply to this robot? */
+export function canToggleIndex(spec: RobotSpec): boolean {
+  return C.ARCHETYPE_PRESETS[archetypeOf(spec)].canToggleIndex;
+}
+
+/** the toggle's start-of-match position: the spindexer starts INDEXED (its
+ * burst mode is the passthrough opt-in); volley archetypes start in VOLLEY
+ * (their signature move) */
+export function defaultIndexed(spec: RobotSpec): boolean {
+  return archetypeOf(spec) === 'spindexer';
 }
 
 /** force a spec legal for its archetype: drivetrain/intake allowlists (first
@@ -33,6 +45,8 @@ export function clampSpecToArchetype(spec: RobotSpec): RobotSpec {
   if (a.lockWidth !== null) out.width = a.lockWidth;
   const minMass = Math.max(a.minMass, out.drivetrain === 'swerve' ? 25 : 0);
   out.massLb = clamp(out.massLb, minMass, C.ROBOT_MAX_MASS);
-  if (a.shooters > 1) out.canSort = false;
+  // a volley has no order to sort; the spindexer's sorting is built into its
+  // INDEXED mode instead of the spec flag
+  if (a.shooters > 1 || a.builtinSort) out.canSort = false;
   return out;
 }

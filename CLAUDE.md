@@ -222,8 +222,15 @@ the gateway), so a tap usually drains the whole column.
     `canSort` OFF. AUTO-ALIGN is a HELD keybind (default G / pad LB) →
     `RobotCommand.autoAlign?` (wire bit2). `clampSpecToArchetype` is the single
     legality gate (settings load + Menu). `RobotSpec.appearance?` is COSMETIC only
-    (body/accent hex + pattern; absent = classic look via `DEFAULT_APPEARANCE`);
+    (body/accent/wheels hex + pattern; absent = classic look via `DEFAULT_APPEARANCE`);
     alliance bumper outline/chevron is never paintable and `specMatches` ignores it.
+    Further archetypes: `single` (standard, no turret, align-to-shoot), `double`
+    (2 fixed shooters, no vector intake), `spindexer` (turreted; sorting BUILT IN —
+    spec canSort forced off). The IN-GAME INDEXING TOGGLE (`toggleIndex` keybind,
+    I / pad RB) rides `RobotCommand.indexed` (wire bit3) as an ABSOLUTE per-tick
+    mode bit (sim stays edge-free): multi-shooter = volley ⟷ indexed singles;
+    spindexer = INDEXED motif-sort (+SORT_FIRE_PENALTY) ⟷ PASSTHROUGH FIFO
+    (`PASSTHROUGH_FIRE_INTERVAL`). HUD chip INDEXED/VOLLEY/PASSTHRU.
 15. **Robot is fully specced + the field is multi-robot** (Phase B, "Road to
     Multiplayer"). `RobotSpec` v2 carries name/team/number, `massLb` (20–42),
     `drivetrain`, `driveRpm` (200–600), `flywheelInertia` (0–1), `canSort`, plus

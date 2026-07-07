@@ -23,6 +23,11 @@ export interface RobotCommand {
   /** HELD: for turretless archetypes (tridexer), rotate the CHASSIS onto the
    * firing solution — overrides `rotate` while held. No-op with a turret. */
   autoAlign?: boolean;
+  /** MODE (absolute, sent every tick — the in-game toggle lives at the input
+   * layer): true = fire one artifact at a time (indexed); false/absent =
+   * the archetype's burst mode (volley for multi-shooter archetypes,
+   * passthrough for the spindexer). Ignored by archetypes with no toggle. */
+  indexed?: boolean;
 }
 
 /** menu-configured driver assists */
@@ -38,19 +43,27 @@ export type DrivetrainType = 'mecanum' | 'tank' | 'swerve' | 'xdrive';
 
 /** shooter/turret archetype — see ARCHETYPE_PRESETS in config.ts.
  * 'standard'  = 1 turreted shooter, the original robot.
+ * 'single'    = 1 chassis-fixed shooter, no turret (align the chassis to shoot).
+ * 'double'    = 2 chassis-fixed shooters, no turret; volley of 2 or indexed
+ *               single shots (in-game toggle); no vector intake.
+ * 'spindexer' = passthrough spindexer: standard turreted shooter whose indexer
+ *               toggles in-game between INDEXED (sorts the motif color, slower)
+ *               and PASSTHROUGH (fast FIFO transfer).
  * 'tridexer'  = 3 chassis-fixed shooters, volley fire, no turret (the chassis
  *               must align with the goal to shoot), full-width line intake.
  * 'turreted'  = turreted tridexer: 3 shooters in a triangle on a turret. */
-export type Archetype = 'standard' | 'tridexer' | 'turreted';
+export type Archetype = 'standard' | 'single' | 'double' | 'spindexer' | 'tridexer' | 'turreted';
 
 /** cosmetic paint job (never affects the sim; excluded from preset matching).
  * Alliance identity stays on the bumper outline/chevron regardless. */
-export type AppearancePattern = 'none' | 'stripes' | 'diagonal';
+export type AppearancePattern = 'none' | 'stripes' | 'diagonal' | 'checker' | 'split';
 export interface RobotAppearance {
   /** chassis fill, #rrggbb */
   body: string;
   /** hardware tint (intake, turret, pattern), #rrggbb */
   accent: string;
+  /** wheel pod color, #rrggbb; absent = the classic dark pods */
+  wheels?: string;
   pattern: AppearancePattern;
 }
 

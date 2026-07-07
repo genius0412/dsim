@@ -3,7 +3,7 @@ import * as C from '../config';
 import { approach, clamp, rot, wrapAngle, hyp, dsin, dcos, dtan, datan2 } from '../math';
 import { classifierRect, goalCenter, launchTriangles, viewAngleOf } from './field';
 import { driveParams } from './drivetrain';
-import { hasTurret, shooterCount } from './archetype';
+import { archetypeOf, hasTurret, shooterCount } from './archetype';
 import { robotIntersectsConvex } from './physics';
 import { robotsEnabled } from './match';
 
@@ -171,7 +171,7 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
   // console.log(`[Robot ${r.id}] Fire check: enabled=${robotsEnabled(world)}, hopper=${r.hopper.length}, time=${world.time.toFixed(2)}, fireReadyAt=${r.fireReadyAt.toFixed(2)}, zoneOk=${zoneOk}, cmd.fire=${cmd.fire}, r.autoFire=${r.autoFire}, autoPathActive=${r.autoPathActive}`);
 
   if (canFire && zoneOk && aligned && fireCommanded) {
-    fire(world, r);
+    fire(world, r, cmd.indexed === true);
   }
 
   // ---- intake ------------------------------------------------------------
@@ -179,15 +179,19 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
 }
 
 
-function fire(world: World, r: RobotState): void {
-  // volley archetypes (3 shooters) launch the WHOLE hopper in one tick;
-  // canSort: pick the hopper color that fills the next unfilled motif slot
-  // on this alliance's ramp; everyone else fires FIFO
-  const volley = shooterCount(r.spec) >= 3;
+function fire(world: World, r: RobotState, indexed: boolean): void {
+  // multi-shooter archetypes VOLLEY (launch up to one artifact per shooter in
+  // one tick) unless the driver toggled INDEXED single shots. Sorting robots
+  // (canSort spec flag, or a spindexer in INDEXED mode) pick the hopper color
+  // that fills the next unfilled motif slot; everyone else fires FIFO.
+  const shooters = shooterCount(r.spec);
+  const volley = shooters > 1 && !indexed;
+  const spindexer = archetypeOf(r.spec) === 'spindexer';
+  const sorting = r.spec.canSort || (spindexer && indexed);
   let colors: ArtifactColor[];
   if (volley) {
-    colors = r.hopper.splice(0, r.hopper.length);
-  } else if (r.spec.canSort) {
+    colors = r.hopper.splice(0, Math.min(shooters, r.hopper.length));
+  } else if (sorting) {
     const retained = world.balls.filter(
       (b) =>
         b.state.kind === 'rail' &&
@@ -221,12 +225,15 @@ function fire(world: World, r: RobotState): void {
     Math.min(1, (speed - C.FLYWHEEL_CLOSE_SPEED) / (C.LAUNCH_MAX_SPEED - C.FLYWHEEL_CLOSE_SPEED)),
   );
   const recovery = C.FLYWHEEL_RECOVERY_MAX * shotNorm * shotNorm * (1 - r.spec.flywheelInertia);
-  const sortPenalty = r.spec.canSort ? C.SORT_FIRE_PENALTY : 0;
+  const sortPenalty = sorting ? C.SORT_FIRE_PENALTY : 0;
   // volley: each spent shooter re-indexes at VOLLEY_INDEX_INTERVAL per ball —
-  // slower than firing all three at once (its stated tradeoff)
+  // slower than firing them all at once (its stated tradeoff). A spindexer in
+  // PASSTHROUGH rides the artifact straight through at the fastest cadence.
   const cadence = volley
     ? C.VOLLEY_INDEX_INTERVAL * colors.length
-    : C.INTAKE_PRESETS[r.spec.intake].fireInterval + sortPenalty;
+    : spindexer && !indexed
+      ? C.PASSTHROUGH_FIRE_INTERVAL
+      : C.INTAKE_PRESETS[r.spec.intake].fireInterval + sortPenalty;
   r.fireReadyAt = world.time + cadence + recovery;
 
   for (let i = 0; i < colors.length; i++) {

@@ -108,13 +108,17 @@ export function coerceSettings(raw: unknown): GameSettings {
       if (typeof sp.canSort === 'boolean') out.spec.canSort = sp.canSort;
       if (
         sp.archetype === 'standard' ||
+        sp.archetype === 'single' ||
+        sp.archetype === 'double' ||
+        sp.archetype === 'spindexer' ||
         sp.archetype === 'tridexer' ||
         sp.archetype === 'turreted'
       ) {
         out.spec.archetype = sp.archetype;
       }
       // cosmetic paint job: all-or-nothing — anything malformed falls back to
-      // the classic default look (appearance stays absent)
+      // the classic default look (appearance stays absent). The wheel color is
+      // optional (older paint jobs predate it).
       if (typeof sp.appearance === 'object' && sp.appearance !== null) {
         const ap = sp.appearance as Record<string, unknown>;
         if (
@@ -122,9 +126,16 @@ export function coerceSettings(raw: unknown): GameSettings {
           HEX_COLOR.test(ap.body) &&
           typeof ap.accent === 'string' &&
           HEX_COLOR.test(ap.accent) &&
-          (ap.pattern === 'none' || ap.pattern === 'stripes' || ap.pattern === 'diagonal')
+          (ap.pattern === 'none' ||
+            ap.pattern === 'stripes' ||
+            ap.pattern === 'diagonal' ||
+            ap.pattern === 'checker' ||
+            ap.pattern === 'split')
         ) {
           out.spec.appearance = { body: ap.body, accent: ap.accent, pattern: ap.pattern };
+          if (typeof ap.wheels === 'string' && HEX_COLOR.test(ap.wheels)) {
+            out.spec.appearance.wheels = ap.wheels;
+          }
         }
       }
       // enforce the archetype's build rules (drivetrain/intake allowlists,

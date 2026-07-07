@@ -1,7 +1,7 @@
 import type { RobotState } from '../types';
 import * as C from '../config';
 import { turretWorldPos } from '../sim/robot';
-import { hasTurret, shooterCount } from '../sim/archetype';
+import { archetypeOf, hasTurret, shooterCount } from '../sim/archetype';
 
 export function drawRobot(
   ctx: CanvasRenderingContext2D,
@@ -36,7 +36,7 @@ export function drawRobot(
 
   // wheels (mecanum pods) — INSIDE the frame, centered on the ground-contact
   // points that base parking scores (WHEEL_INSET from the chassis edges)
-  ctx.fillStyle = '#111318';
+  ctx.fillStyle = app.wheels ?? '#111318';
   const wx = Math.max(hl - C.WHEEL_INSET, 1);
   const wy = Math.max(hw - C.WHEEL_INSET, 1);
   for (const [px, py] of [
@@ -124,43 +124,45 @@ export function drawRobot(
   const reach = Math.min(hl - off, hw) - 0.5;
   const ring = Math.min(4.4, reach);
   const ready = r.hopper.length > 0 ? '#22c55e' : '#6b7280';
+  const shooters = shooterCount(r.spec);
   ctx.save();
   ctx.translate(tp.x, tp.y);
   ctx.rotate(r.turretHeading);
-  if (shooterCount(r.spec) >= 3) {
-    if (hasTurret(r.spec)) {
-      // turreted tridexer: ring + three shooters in a triangle on the turret
-      ctx.strokeStyle = ready;
-      ctx.lineWidth = 0.9;
+  if (!hasTurret(r.spec)) {
+    // chassis-fixed shooter bank (single / double / tridexer): 1–3 barrels
+    // side by side in a housing, aimed out the front
+    const s = C.VOLLEY_MUZZLE_SPACING;
+    const lats = Array.from({ length: shooters }, (_, i) => (i - (shooters - 1) / 2) * s);
+    const halfH = ((shooters - 1) / 2) * s + 1.6;
+    ctx.fillStyle = app.accent;
+    ctx.fillRect(-2.8, -halfH, 3.2, 2 * halfH); // shooter housing
+    ctx.strokeStyle = ready;
+    ctx.lineWidth = 0.7;
+    ctx.strokeRect(-2.8, -halfH, 3.2, 2 * halfH);
+    ctx.fillStyle = '#525b6b';
+    for (const lat of lats) ctx.fillRect(0, lat - 1.0, reach, 2.0);
+  } else if (shooters >= 3) {
+    // turreted tridexer: ring + three shooters in a triangle on the turret
+    ctx.strokeStyle = ready;
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.arc(0, 0, ring, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = app.accent;
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(ring - 1, 1.5), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#525b6b';
+    const verts = [
+      [0.45 * ring, 0],
+      [-0.35 * ring, 0.55 * ring],
+      [-0.35 * ring, -0.55 * ring],
+    ] as const;
+    for (const [vx, vy] of verts) {
+      ctx.fillRect(vx, vy - 0.7, reach - vx, 1.4);
       ctx.beginPath();
-      ctx.arc(0, 0, ring, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.fillStyle = app.accent;
-      ctx.beginPath();
-      ctx.arc(0, 0, Math.max(ring - 1, 1.5), 0, Math.PI * 2);
+      ctx.arc(vx, vy, 1.0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = '#525b6b';
-      const verts = [
-        [0.45 * ring, 0],
-        [-0.35 * ring, 0.55 * ring],
-        [-0.35 * ring, -0.55 * ring],
-      ] as const;
-      for (const [vx, vy] of verts) {
-        ctx.fillRect(vx, vy - 0.7, reach - vx, 1.4);
-        ctx.beginPath();
-        ctx.arc(vx, vy, 1.0, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    } else {
-      // tridexer: three chassis-fixed barrels side by side behind the intake
-      const s = C.VOLLEY_MUZZLE_SPACING;
-      ctx.fillStyle = app.accent;
-      ctx.fillRect(-2.8, -s - 1.6, 3.2, 2 * s + 3.2); // shooter housing
-      ctx.strokeStyle = ready;
-      ctx.lineWidth = 0.7;
-      ctx.strokeRect(-2.8, -s - 1.6, 3.2, 2 * s + 3.2);
-      ctx.fillStyle = '#525b6b';
-      for (const lat of [-s, 0, s]) ctx.fillRect(0, lat - 1.0, reach, 2.0);
     }
   } else {
     ctx.strokeStyle = ready;
@@ -175,6 +177,16 @@ export function drawRobot(
     ctx.fill();
     ctx.fillStyle = '#525b6b';
     ctx.fillRect(0, -1.2, reach, 2.4);
+    if (archetypeOf(r.spec) === 'spindexer') {
+      // carousel slots: three dots spinning with the turret body
+      ctx.fillStyle = '#2a303c';
+      const rr = Math.max(ring - 1, 1.5) * 0.55;
+      for (const a of [Math.PI / 2, Math.PI, -Math.PI / 2]) {
+        ctx.beginPath();
+        ctx.arc(Math.cos(a) * rr, Math.sin(a) * rr, 0.9, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   }
   ctx.restore();
 }
@@ -182,7 +194,7 @@ export function drawRobot(
 /** cosmetic chassis pattern, drawn clipped to the chassis in the accent color */
 function drawPattern(
   ctx: CanvasRenderingContext2D,
-  pattern: 'stripes' | 'diagonal',
+  pattern: 'stripes' | 'diagonal' | 'checker' | 'split',
   accent: string,
   hl: number,
   hw: number,
@@ -194,7 +206,7 @@ function drawPattern(
     const w = hw * 0.24;
     ctx.fillRect(-hl, -hw * 0.42 - w / 2, hl * 2, w);
     ctx.fillRect(-hl, hw * 0.42 - w / 2, hl * 2, w);
-  } else {
+  } else if (pattern === 'diagonal') {
     // diagonal hazard bands across the deck
     const step = 4.2;
     for (let x = -hl - 2 * hw; x < hl + 2 * hw; x += step) {
@@ -206,6 +218,17 @@ function drawPattern(
       ctx.closePath();
       ctx.fill();
     }
+  } else if (pattern === 'checker') {
+    // checkerboard deck
+    const c = 3.0;
+    for (let ix = 0; ix * c < hl * 2 + c; ix++) {
+      for (let iy = 0; iy * c < hw * 2 + c; iy++) {
+        if ((ix + iy) % 2 === 0) ctx.fillRect(-hl + ix * c, -hw + iy * c, c, c);
+      }
+    }
+  } else {
+    // split: the front half of the deck in the accent color
+    ctx.fillRect(0, -hw, hl, hw * 2);
   }
   ctx.globalAlpha = 1;
 }

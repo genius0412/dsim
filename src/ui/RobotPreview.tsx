@@ -1,7 +1,7 @@
 import { useId } from 'react';
 import type { RobotSpec } from '../types';
 import { INTAKE_PRESETS, TURRET_OFFSET_FRAC, VOLLEY_MUZZLE_SPACING, WHEEL_INSET } from '../config';
-import { hasTurret, shooterCount } from '../sim/archetype';
+import { archetypeOf, hasTurret, shooterCount } from '../sim/archetype';
 
 /**
  * Top-down schematic of a robot drawn straight from its `RobotSpec` — the live
@@ -22,7 +22,7 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
   const hw = intake.halfWidth;
   const app = spec.appearance;
   const turret = hasTurret(spec);
-  const volley = shooterCount(spec) >= 3;
+  const shooters = shooterCount(spec);
 
   const frontY = -len / 2; // chassis front edge (top)
   const tipY = frontY - reach; // intake tip
@@ -93,14 +93,27 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
     );
   }
 
-  // shooter bank: single turret / triangle turret / fixed tridexer barrels
+  // shooter bank: turret (single / spindexer / triangle) or a fixed bank of
+  // 1-3 barrels aimed out the front
   let shooterEl: JSX.Element;
-  if (!volley) {
+  if (turret && shooters === 1) {
+    const spin = archetypeOf(spec) === 'spindexer';
     shooterEl = (
       <g>
         <circle cx={0} cy={turretY} r={turretR} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
         <line x1={0} y1={turretY} x2={0} y2={turretY - turretR - 1.2} stroke={accent} strokeWidth={0.7} strokeLinecap="round" />
         {spec.canSort && <circle cx={0} cy={turretY} r={turretR * 0.4} fill={accent} opacity={0.8} />}
+        {spin &&
+          [90, 210, 330].map((deg) => (
+            <circle
+              key={deg}
+              cx={Math.cos((deg * Math.PI) / 180) * turretR * 0.5}
+              cy={turretY + Math.sin((deg * Math.PI) / 180) * turretR * 0.5}
+              r={turretR * 0.16}
+              fill={accent}
+              opacity={0.7}
+            />
+          ))}
       </g>
     );
   } else if (turret) {
@@ -122,12 +135,14 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
       </g>
     );
   } else {
-    // tridexer: three chassis-fixed barrels aimed out the front
+    // chassis-fixed bank (single / double / tridexer): 1-3 barrels out the front
     const s = VOLLEY_MUZZLE_SPACING;
+    const lats = Array.from({ length: shooters }, (_, i) => (i - (shooters - 1) / 2) * s);
+    const halfW = ((shooters - 1) / 2) * s + 1.4;
     shooterEl = (
       <g>
-        <rect x={-s - 1.4} y={turretY - 1.4} width={2 * s + 2.8} height={2.8} rx={0.6} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.4} />
-        {[-s, 0, s].map((lat) => (
+        <rect x={-halfW} y={turretY - 1.4} width={2 * halfW} height={2.8} rx={0.6} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.4} />
+        {lats.map((lat) => (
           <line key={lat} x1={lat} y1={turretY} x2={lat} y2={frontY + 1.2} stroke={accent} strokeWidth={0.9} strokeLinecap="round" />
         ))}
       </g>
@@ -162,7 +177,7 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
           width={wheelW}
           height={wheelH}
           rx={0.6}
-          fill="#0c151d"
+          fill={app?.wheels ?? '#0c151d'}
           stroke={stroke}
           strokeWidth={0.25}
         />
@@ -195,6 +210,22 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
             const x = -w + i * 4.2;
             return <line key={i} x1={x} y1={len / 2} x2={x + len} y2={-len / 2} />;
           })}
+        </g>
+      )}
+      {app && app.pattern === 'checker' && (
+        <g clipPath={`url(#${clipId})`} fill={accent} opacity={0.55}>
+          {Array.from({ length: Math.ceil((w + 3) / 3) }, (_, ix) =>
+            Array.from({ length: Math.ceil((len + 3) / 3) }, (_, iy) =>
+              (ix + iy) % 2 === 0 ? (
+                <rect key={`${ix}-${iy}`} x={-w / 2 + ix * 3} y={-len / 2 + iy * 3} width={3} height={3} />
+              ) : null,
+            ),
+          )}
+        </g>
+      )}
+      {app && app.pattern === 'split' && (
+        <g clipPath={`url(#${clipId})`} fill={accent} opacity={0.55}>
+          <rect x={-w / 2} y={-len / 2} width={w} height={len / 2} />
         </g>
       )}
 

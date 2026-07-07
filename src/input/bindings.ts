@@ -12,6 +12,7 @@ export type KeyAction =
   | 'intake'
   | 'fire'
   | 'autoAlign'
+  | 'toggleIndex'
   | 'flipFront'
   | 'park'
   | 'start'
@@ -21,6 +22,7 @@ export type PadAction =
   | 'fire'
   | 'intake'
   | 'autoAlign'
+  | 'toggleIndex'
   | 'flipFront'
   | 'park'
   | 'start'
@@ -57,6 +59,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   'intake',
   'fire',
   'autoAlign',
+  'toggleIndex',
   'flipFront',
   'park',
   'start',
@@ -67,6 +70,7 @@ export const PAD_ACTIONS: PadAction[] = [
   'fire',
   'intake',
   'autoAlign',
+  'toggleIndex',
   'flipFront',
   'park',
   'start',
@@ -84,6 +88,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     intake: ['shift', 'k'],
     fire: [' '],
     autoAlign: ['g'], // HELD: turretless (tridexer) chassis auto-align
+    toggleIndex: ['i'], // toggle indexed / volley (or spindexer passthrough)
     flipFront: ['f'],
     park: ['p'],
     start: ['enter'],
@@ -95,6 +100,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       fire: [7, 0], // RT or A
       intake: [6, 1], // LT or B
       autoAlign: [4], // LB (held)
+      toggleIndex: [5], // RB
       flipFront: [3], // Y
       park: [2], // X
       start: [9],

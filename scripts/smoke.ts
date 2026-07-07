@@ -1985,6 +1985,85 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   check('tridexer intake swallows a full-width line near-instantly', r.hopper.length === 3, `hopper=${r.hopper.length} after ${(5 * SIM_DT).toFixed(2)}s`);
 }
 
+// ---- fixed single / fixed double: align gate, volley of 2, indexed toggle ----
+{
+  // fixed single: standard robot, no turret — same align gate as the tridexer
+  const w = mkWorld('free', 'blue', 45, { archetype: 'single' });
+  const r = w.robots[0];
+  r.pos = { x: 10, y: 40 };
+  r.heading = wrapAngle(aimSolution(r).yaw + Math.PI / 2);
+  r.turretHeading = r.heading;
+  run(w, cmd({ fire: true }), 0.4);
+  check('misaligned fixed single holds fire', r.hopper.length === 3, `hopper=${r.hopper.length}`);
+  run(w, cmd({ fire: true, autoAlign: true }), 1.2);
+  check('auto-aligned fixed single shoots (one at a time)', r.hopper.length === 0, `hopper=${r.hopper.length}`);
+
+  // fixed double: volley of exactly 2, third stays until the shooters re-index
+  const w2 = mkWorld('free', 'blue', 46, { archetype: 'double', intake: 'sloped' });
+  const r2 = w2.robots[0];
+  r2.pos = { x: 10, y: 40 };
+  r2.heading = aimSolution(r2).yaw;
+  r2.turretHeading = r2.heading;
+  run(w2, cmd({ fire: true }), SIM_DT);
+  check('fixed double volleys exactly 2 artifacts in one tick', r2.hopper.length === 1, `hopper=${r2.hopper.length}`);
+  check(
+    'double volley re-indexes at 0.45s per artifact fired',
+    r2.fireReadyAt - w2.time >= 2 * VOLLEY_INDEX_INTERVAL - 1e-9,
+    `ready in ${(r2.fireReadyAt - w2.time).toFixed(2)}s`,
+  );
+
+  // indexed mode (in-game toggle): the same double fires singles at the
+  // intake's transfer cadence instead of volleying
+  const w3 = mkWorld('free', 'blue', 47, { archetype: 'double', intake: 'sloped' });
+  const r3 = w3.robots[0];
+  r3.pos = { x: 10, y: 40 };
+  r3.heading = aimSolution(r3).yaw;
+  r3.turretHeading = r3.heading;
+  run(w3, cmd({ fire: true, indexed: true }), SIM_DT);
+  check('INDEXED fixed double fires one artifact per shot', r3.hopper.length === 2, `hopper=${r3.hopper.length}`);
+}
+
+// ---- spindexer: INDEXED sorts the motif, PASSTHROUGH is the fastest FIFO ----
+{
+  // INDEXED: picks the motif color out of hopper order (like canSort)
+  const w = mkWorld('match', 'blue', 48, { archetype: 'spindexer' });
+  startMatch(w);
+  const r = w.robots[0];
+  r.pos = { x: 10, y: 40 };
+  const want = w.motif[0];
+  r.hopper = want === 'purple' ? ['green', 'purple', 'green'] : ['purple', 'green', 'purple'];
+  run(w, cmd({ fire: true, indexed: true }), SIM_DT);
+  const shot = w.balls.filter((b) => b.state.kind === 'flight')[0];
+  check('INDEXED spindexer fires the motif color first (sorts)', shot?.color === want, `shot=${shot?.color} want=${want}`);
+  check(
+    'INDEXED spindexer pays the sort penalty on cadence',
+    r.fireReadyAt - w.time >= 0.25,
+    `ready in ${(r.fireReadyAt - w.time).toFixed(2)}s`,
+  );
+
+  // PASSTHROUGH: FIFO at the passthrough cadence (0.06s + flywheel recovery) —
+  // the whole hopper clears in ~0.25s, where INDEXED sorting takes ~0.75s
+  const w2 = mkWorld('free', 'blue', 49, { archetype: 'spindexer' });
+  const r2 = w2.robots[0];
+  r2.pos = { x: 10, y: 40 };
+  run(w2, cmd({ fire: true }), 0.3);
+  check('PASSTHROUGH spindexer dumps the hopper in ~0.3s (FIFO)', r2.hopper.length === 0, `hopper=${r2.hopper.length}`);
+}
+
+// ---- tridexer indexed toggle: singles instead of the volley -------------------
+{
+  const w = mkWorld('free', 'blue', 50, {
+    archetype: 'tridexer', intake: 'tridexer', length: 15, width: 18,
+    massLb: 34, drivetrain: 'mecanum',
+  });
+  const r = w.robots[0];
+  r.pos = { x: 10, y: 40 };
+  r.heading = aimSolution(r).yaw;
+  r.turretHeading = r.heading;
+  run(w, cmd({ fire: true, indexed: true }), SIM_DT);
+  check('INDEXED tridexer fires one artifact per shot (toggle works)', r.hopper.length === 2, `hopper=${r.hopper.length}`);
+}
+
 // ---- archetype build rules + autoAlign on the wire ---------------------------
 {
   const bad: RobotSpec = {
@@ -2002,6 +2081,11 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     'autoAlign survives the quantize round-trip (and stays off by default)',
     localizeCommand(cmd({ autoAlign: true })).autoAlign === true &&
       localizeCommand(cmd({})).autoAlign === false,
+  );
+  check(
+    'indexed mode survives the quantize round-trip (and stays off by default)',
+    localizeCommand(cmd({ indexed: true })).indexed === true &&
+      localizeCommand(cmd({})).indexed === false,
   );
 }
 

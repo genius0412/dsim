@@ -1,4 +1,36 @@
-# HANDOFF — 2026-07-07 (session 5: tridexer archetypes + robot appearance) — READ FIRST
+# HANDOFF — 2026-07-07 (session 6: 3 more archetypes + indexing toggle + paint fixes) — READ FIRST
+
+Build + smoke (194 checks) + both tsc GREEN, second commit on
+`feature/tridexer-archetypes-appearance` (PR #22). Extends session 5:
+
+**Three new archetypes** (`ARCHETYPE_PRESETS` grew `canToggleIndex`/`builtinSort`):
+`single` (Fixed Single — standard robot, NO turret, align-to-shoot like the tridexer),
+`double` (Fixed Double — 2 fixed shooters, volley of 2 or indexed singles, no vector
+intake), `spindexer` (Passthrough Spindexer — standard turreted shooter; sorting is
+BUILT IN: spec `canSort` forced off, the INDEXED mode sorts instead).
+
+**In-game indexing toggle** (`toggleIndex` keybind, default I / pad RB, edge-triggered
+like park): flips `GameController.indexingOn`, which rides `RobotCommand.indexed`
+(wire bit3) as an ABSOLUTE mode bit every tick — the sim stays stateless/edge-free.
+Multi-shooter archetypes (double/tridexer/turreted): volley ⟷ indexed singles at the
+intake transfer cadence. Spindexer: INDEXED (motif-sorting, +SORT_FIRE_PENALTY) ⟷
+PASSTHROUGH (FIFO at `PASSTHROUGH_FIRE_INTERVAL` 0.06s, fastest transfer). Defaults:
+spindexer starts INDEXED (`defaultIndexed`), volley archetypes start VOLLEY. HUD chip
+shows INDEXED/VOLLEY/PASSTHRU (null for standard/single). Reset on restart/rebuild.
+
+**Appearance**: `.ds-color` CSS (shell.css) fixes the invisible color-input swatch
+(the `.ds-input` padding was hiding it); added optional `wheels` color + `checker`
+and `split` patterns. Old saved paint (no wheels field) still validates.
+
+`drawRobot`/`RobotPreview` generalize the fixed shooter bank to 1–3 barrels and give
+the spindexer carousel dots on the turret. VERIFIED LIVE in the Vite preview: toggle
+flips the HUD chip VOLLEY→INDEXED. **Gotcha discovered while testing: solo sim is
+rAF-driven, so a HIDDEN browser tab freezes the world (tick=0) — not a bug, but it
+makes headless testing confusing; drive `frameLogic` manually or keep the tab visible.**
+
+---
+
+# HANDOFF — 2026-07-07 (session 5: tridexer archetypes + robot appearance)
 
 Build + smoke (186 checks) + both tsc GREEN on branch
 `feature/tridexer-archetypes-appearance`. Three features:

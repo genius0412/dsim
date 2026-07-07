@@ -61,14 +61,19 @@ const INTAKE_BLURBS: Record<IntakeStyle, string> = {
 
 const ARCHETYPE_BLURBS: Record<Archetype, string> = {
   standard: '1 turreted shooter · full builder freedom',
-  tridexer: '3 fixed shooters, volley fire · no turret — align the chassis to shoot (hold Auto-align)',
-  turreted: '3 shooters in a triangle, on a turret · volley fire · 18×18 · heavy',
+  single: '1 fixed shooter · no turret — align the chassis to shoot (hold Auto-align)',
+  double: '2 fixed shooters, volley or indexed · no turret · no vector intake',
+  spindexer: 'Turreted · Toggle indexing between sorting indexer and fast passthrough',
+  tridexer: '3 fixed shooters, volley or indexed · no turret — align to shoot (hold Auto-align)',
+  turreted: '3 shooters in a triangle, on a turret · volley or indexed · 18×18 · heavy',
 };
 
 const PATTERN_LABELS: Record<AppearancePattern, string> = {
   none: 'Plain',
   stripes: 'Racing stripes',
   diagonal: 'Hazard bands',
+  checker: 'Checkerboard',
+  split: 'Two-tone split',
 };
 
 /** does the current spec exactly match a preset? (value compare — the
@@ -112,7 +117,8 @@ export function Menu({ settings, onChange }: Props) {
 
   const spec = settings.spec;
   const arch = ARCHETYPE_PRESETS[archetypeOf(spec)];
-  const volley = arch.shooters >= 3;
+  const volley = arch.shooters > 1;
+  const noSorter = volley || arch.builtinSort;
   const isSwerve = spec.drivetrain === 'swerve';
   const minMass = Math.max(arch.minMass, isSwerve ? 25 : ROBOT_MIN_MASS);
   const maxRpm = isSwerve ? 500 : ROBOT_MAX_RPM;
@@ -378,12 +384,16 @@ export function Menu({ settings, onChange }: Props) {
               <button
                 className={`ds-opt mini ${spec.canSort ? 'on' : ''}`}
                 style={{ flex: '1 1 150px' }}
-                disabled={volley}
+                disabled={noSorter}
                 onClick={() => setSpec({ canSort: !spec.canSort })}
               >
-                <span className="ot">Sorter {volley ? 'N/A' : spec.canSort ? 'ON' : 'OFF'}</span>
+                <span className="ot">Sorter {noSorter ? 'N/A' : spec.canSort ? 'ON' : 'OFF'}</span>
                 <span className="od">
-                  {volley ? 'A volley fires the whole hopper — nothing to sort' : 'Fires the color the motif needs'}
+                  {arch.builtinSort
+                    ? 'Built into the spindexer — toggle indexing in-game (I)'
+                    : volley
+                      ? 'A volley fires the whole hopper — nothing to sort'
+                      : 'Fires the color the motif needs'}
                 </span>
               </button>
             </div>
@@ -422,7 +432,7 @@ export function Menu({ settings, onChange }: Props) {
               <label className="ds-field" style={{ flex: '0 1 140px' }}>
                 <span className="cap">Body color</span>
                 <input
-                  className="ds-input"
+                  className="ds-input ds-color"
                   type="color"
                   value={appearance.body}
                   onChange={(e) => setAppearance({ body: e.target.value })}
@@ -431,10 +441,19 @@ export function Menu({ settings, onChange }: Props) {
               <label className="ds-field" style={{ flex: '0 1 140px' }}>
                 <span className="cap">Accent color</span>
                 <input
-                  className="ds-input"
+                  className="ds-input ds-color"
                   type="color"
                   value={appearance.accent}
                   onChange={(e) => setAppearance({ accent: e.target.value })}
+                />
+              </label>
+              <label className="ds-field" style={{ flex: '0 1 140px' }}>
+                <span className="cap">Wheel color</span>
+                <input
+                  className="ds-input ds-color"
+                  type="color"
+                  value={appearance.wheels ?? '#111318'}
+                  onChange={(e) => setAppearance({ wheels: e.target.value })}
                 />
               </label>
             </div>

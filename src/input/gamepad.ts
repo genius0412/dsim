@@ -20,6 +20,7 @@ export interface GamepadSample {
   fire: boolean;
   intake: boolean;
   autoAlign: boolean;
+  toggleIndex: boolean;
   flipFront: boolean;
   park: boolean;
   start: boolean;
@@ -34,6 +35,7 @@ const EMPTY: GamepadSample = {
   fire: false,
   intake: false,
   autoAlign: false,
+  toggleIndex: false,
   flipFront: false,
   park: false,
   start: false,
@@ -46,6 +48,7 @@ export class GamepadInput {
   private prevStart = false;
   private prevRestart = false;
   private prevFlip = false;
+  private prevIndex = false;
   private prevPark = false;
 
   sample(bindings: PadBindings): GamepadSample {
@@ -56,6 +59,7 @@ export class GamepadInput {
       this.prevRestart = false;
       this.prevFlip = false;
       this.prevPark = false;
+      this.prevIndex = false;
       return { ...EMPTY };
     }
     const btn = (i: number): boolean =>
@@ -68,6 +72,7 @@ export class GamepadInput {
     const startNow = anyBtn(bindings.buttons.start);
     const restartNow = anyBtn(bindings.buttons.restart);
     const flipNow = anyBtn(bindings.buttons.flipFront);
+    const indexNow = anyBtn(bindings.buttons.toggleIndex);
     const parkNow = anyBtn(bindings.buttons.park);
     const sampleOut: GamepadSample = {
       connected: true,
@@ -77,6 +82,7 @@ export class GamepadInput {
       fire: anyBtn(bindings.buttons.fire),
       intake: anyBtn(bindings.buttons.intake),
       autoAlign: anyBtn(bindings.buttons.autoAlign),
+      toggleIndex: indexNow && !this.prevIndex,
       flipFront: flipNow && !this.prevFlip,
       park: parkNow && !this.prevPark,
       start: startNow && !this.prevStart,
@@ -85,6 +91,7 @@ export class GamepadInput {
     this.prevStart = startNow;
     this.prevRestart = restartNow;
     this.prevFlip = flipNow;
+    this.prevIndex = indexNow;
     this.prevPark = parkNow;
     return sampleOut;
   }

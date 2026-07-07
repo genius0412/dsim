@@ -619,6 +619,25 @@ tr.lb-detail td {
   border-radius: var(--ds-round);
   padding: 9px 11px;
 }
+/* color pickers: the default .ds-input padding hides the swatch — give the
+   swatch the full box so the chosen color is visible in the control */
+.ds-color {
+  padding: 4px;
+  height: 42px;
+  min-width: 90px;
+  cursor: pointer;
+}
+.ds-color::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.ds-color::-webkit-color-swatch {
+  border: none;
+  border-radius: 6px;
+}
+.ds-color::-moz-color-swatch {
+  border: none;
+  border-radius: 6px;
+}
 .ds-input:focus-visible {
   outline: 2px solid var(--ds-accent);
   outline-offset: 1px;
