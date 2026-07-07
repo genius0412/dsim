@@ -6,7 +6,7 @@ import {
   loadZone,
   other,
   tunnelStrip,
-  inRect, driverSide,
+  inRect, goalSide,
 } from './field';
 import type { Rect } from './field';
 import { robotCorners, robotIntersectsRect } from './physics';
@@ -25,20 +25,30 @@ import { hyp } from '../math';
  * a per-episode debounce (PENALTY_CLEAR) makes a held contact fire once, not
  * every tick. Pinning (G422) owns a per-ordered-pair second-accumulator.
  *
- * Rules modeled here:
- *   GATE  opening the OPPONENT's gate  (MAJOR) — presence in their gate zone
- *   G425  secret tunnel                (MINOR)
- *   G426  own loading zone contact     (MINOR)
- *   G427  base zone, endgame           (MAJOR + counts the victim fully returned)
- *   G402  crossing fully to the opponent's side in AUTO (MAJOR)
+ * Rules modeled here (numbers/severities per Competition Manual Section 11):
+ *   G402  AUTO opponent interference   (MAJOR) — fully on the opponent's side
+ *                                       (own side = goalSide: robots stage near
+ *                                       their GOAL) while contacting an opponent
  *   G422  pinning ≥3 s                 (MINOR, MAJOR on a repeat by the same pinner)
- *   G428  gate zone                    (MAJOR) - goal-side robot in own gate zone, contacted by opponent
+ *   G424  GATE ZONE off limits         (MINOR) — cross-alliance contact while a
+ *                                       robot is in a gate zone; protects the
+ *                                       gate OWNER's access to their own gate
+ *   G425  SECRET TUNNEL                (MINOR) — contact while in the tunnel strip
+ *   G426  LOADING ZONE protection      (MINOR)
+ *   G427  BASE ZONE protection, endgame (MAJOR + counts the victim fully returned)
+ *
+ * Uniform "protected zone" model: gate/loading/base zones belong to the alliance
+ * whose side they sit on (foul the OTHER alliance on contact); the secret-tunnel
+ * strip on a wall belongs to the OPPOSING drive team (tunnelStrip(a) is owned by
+ * other(a), so the intruder/offender is alliance a).
  *
  * Rules PHYSICALLY PREVENTED by construction (no code needed):
  *   G403/G417  transition freeze — robots are disabled outside auto/teleop.
  *   G416  out-of-zone launching — the shooter simply refuses (see robot.ts).
- * Deferrable (not yet modeled): G408 possession>3 / plowing, and displacing an
- * opponent's pre-staged spike artifacts (the second half of G402).
+ * Deferrable (not yet modeled): G423 shutting down major gameplay (incl.
+ * completely blocking the opponent's gate — needs "completely blocking" +
+ * duration judgment), G408 possession>3 / plowing, and displacing an opponent's
+ * pre-staged spike artifacts (G402.B).
  */
 
 /** a robot "occupies" a zone if any wheel-corner or its center is inside it */
@@ -82,83 +92,79 @@ export function updatePenalties(
 
   const endgame = phase === 'teleop' && world.match.phaseTimeLeft <= C.ENDGAME_START;
 
-  // ---- GATE: a robot working/opening the OPPONENT's gate ------------------
-  // The gate is physically openable by anyone (updateGates), but only your own
-  // gate is legal — working the opponent's gate zone releases their scored
-  // artifacts, a MAJOR foul. Detected with the same SAT test updateGates uses
-  // (the gate zone overlaps the classifier, so a corner test would miss it).
-  // No robot-robot contact required.
-  for (const r of world.robots) {
-    if (robotIntersectsRect(r, gateZone(other(r.alliance)))) {
-      fire(`GATE:${r.id}`, r.alliance, 'major', 'opponent gate');
-    }
-  }
-
-  // ---- AUTO interference: fully across the field mid-line in AUTO ----------
-  // A robot entirely on the opponent's half during AUTO that contacts an
-  // opponent (below) is handled with the contact pairs; the crossing itself is
-  // flagged per robot so it fires even if the contact ids differ.
+  // ---- G402 AUTO interference: fully on the OPPONENT's side in AUTO --------
+  // A robot BELONGS on its own side; in this sim robots stage near their GOAL
+  // (startPose uses goalSide), so "own side" is goalSide(alliance) — blue -x,
+  // red +x. G402.A fires when the whole footprint has crossed to the opponent's
+  // side AND it contacts an opponent. (This uses goalSide, NOT driverSide: goals
+  // are cross-court, and the driverSide version was inverted — it fired when a
+  // robot sat on its OWN side and fouled the wrong alliance. G304.C ties the
+  // AUTO sides to the same columns each alliance starts in.)
   if (phase === 'auto') {
     for (const r of world.robots) {
-      // own DRIVE-team side sign (blue +x, red -x); "fully on the opponent's
-      // side" = every corner past the mid-line into the other half. Uses
-      // driverSide, NOT goalSide — goals are cross-court, so goalSide is the
-      // OPPOSITE sign and inverted this test (it only ever fired when a robot was
-      // shoved onto its OWN side while still touching).
-      const d = driverSide(r.alliance);
-      if (robotCorners(r).every((c) => d * c.x < 0) && touchingOpponent(world, r)) {
+      const g = goalSide(r.alliance);
+      if (robotCorners(r).every((c) => g * c.x < 0) && touchingOpponent(world, r)) {
         fire(`G402:${r.id}`, r.alliance, 'major', 'G402 auto interference');
       }
     }
   }
 
-  // ---- contact-pair rules (tunnel / loading / base / gate zone) -----------
+  // ---- contact-pair zone rules (gate / tunnel / loading / base) -----------
+  // Each protected zone is OWNED by one alliance. gate/loading/base sit on the
+  // owner's own side and a cross-alliance CONTACT while either robot occupies
+  // them fouls the NON-owner ("regardless of who initiates contact"). The
+  // secret-tunnel strip on a wall is owned by the OPPOSING drive team
+  // (tunnelStrip(a) belongs to other(a)), and — unlike the others — G425 fouls
+  // the INTRUDER, so it fires only when the intruder (the non-owner) is actually
+  // in the strip, not when the owner is merely defending inside its own tunnel.
+  //
+  // GATE↔TUNNEL overlap (G424.A): a robot's own gate zone and its opponent's
+  // secret tunnel share the classifier corner, so they can overlap. The two are
+  // MUTUALLY EXCLUSIVE — if the gate robot is ALSO in the opponent's tunnel the
+  // contact is a G425 (only), otherwise it is a G424 (only):
+  //   • X in own gate ∩ opponent tunnel, opponent in own tunnel  → G425 (on X)
+  //   • X in own gate, NOT opponent tunnel, opponent in own tunnel → G424 (on Y)
   for (const { a, b } of world.rrContacts) {
     const ra = byId.get(a);
     const rb = byId.get(b);
     if (!ra || !rb) continue;
     if (ra.alliance === rb.alliance) continue; // same-alliance contact never fouls
-    const lo = Math.min(a, b);
-    const hi = Math.max(a, b);
-    const pairKey = `${lo}-${hi}`;
+    const pairKey = `${Math.min(a, b)}-${Math.max(a, b)}`;
 
-    // G425 secret tunnel: tunnelStrip(g) sits under goal g but is owned by the
-    // OPPOSING drive team (other(g)); the intruder is therefore alliance g.
-    for (const g of ALLIANCES) {
-      if (robotInRect(ra, tunnelStrip(g)) || robotInRect(rb, tunnelStrip(g))) {
-        fire(`G425:${pairKey}`, g, 'minor', 'G425 secret tunnel');
+    for (const O of ALLIANCES) {
+      const opp = other(O); // non-owner of O's own zones == the offender
+      const oBot = ra.alliance === O ? ra : rb; // the alliance-O robot of the pair
+      const oppBot = oBot === ra ? rb : ra; // its opponent (other(O))
+
+      // G424 GATE ZONE is off limits — protect the OWNER's access to their own
+      // gate (SAT test: the body can cover the thin gate zone with no corner
+      // inside). Exception G424.A: the owner's robot in its own gate zone AND in
+      // the opponent's secret tunnel (tunnelStrip(O) is other(O)'s tunnel) is not
+      // protected here — G425 governs instead, so skip the gate foul.
+      const oInGate = robotIntersectsRect(oBot, gateZone(O));
+      const oppInGate = robotIntersectsRect(oppBot, gateZone(O));
+      if (oInGate || oppInGate) {
+        const exception = oInGate && robotInRect(oBot, tunnelStrip(O));
+        if (!exception) fire(`G424:${pairKey}`, opp, 'minor', 'G424 gate zone');
       }
-    }
 
-    // G426 loading zone: contact while the VICTIM is in its OWN loading zone
-    for (const victim of [ra, rb]) {
-      if (robotInRect(victim, loadZone(victim.alliance))) {
-        fire(`G426:${pairKey}`, other(victim.alliance), 'minor', 'G426 loading zone');
+      // G426 LOADING ZONE protection — owner's own loading zone.
+      if (robotInRect(ra, loadZone(O)) || robotInRect(rb, loadZone(O))) {
+        fire(`G426:${pairKey}`, opp, 'minor', 'G426 loading zone');
       }
-    }
 
-    // G427 base zone (endgame only): contact while a robot is in a base; the
-    // base's owner is the victim and is credited a full return
-    if (endgame) {
-      for (const X of ALLIANCES) {
-        if (robotInRect(ra, baseZone(X)) || robotInRect(rb, baseZone(X))) {
-          const victimRobot = ra.alliance === X ? ra : rb;
-          victimRobot.baseAwarded = true;
-          fire(`G427:${pairKey}`, other(X), 'major', 'G427 base zone');
-        }
+      // G427 BASE ZONE protection (endgame) — + credit the owner a full return.
+      if (endgame && (robotInRect(ra, baseZone(O)) || robotInRect(rb, baseZone(O)))) {
+        oBot.baseAwarded = true;
+        fire(`G427:${pairKey}`, opp, 'major', 'G427 base zone');
       }
-    }
 
-    // gate zone
-    for (const rGoal of [ra, rb]) {
-      const rDriver = (rGoal === ra) ? rb : ra;
-      if (robotIntersectsRect(rGoal, gateZone(rGoal.alliance))) {
-        fire(
-          `G428:${pairKey}:${rGoal.id}`,
-          rDriver.alliance,
-          'minor',
-          'G428 gate zone',
-        );
+      // G425 SECRET TUNNEL — tunnelStrip(O) sits under O's goal but is OWNED by
+      // other(O); the INTRUDER/offender is alliance O. Fires only when the
+      // intruder itself is in the strip (an owner defending its own tunnel is not
+      // a foul), which is also what makes G424/G425 mutually exclusive above.
+      if (robotInRect(oBot, tunnelStrip(O))) {
+        fire(`G425:${pairKey}`, O, 'minor', 'G425 secret tunnel');
       }
     }
   }
@@ -178,6 +184,27 @@ function touchingOpponent(world: World, r: RobotState): boolean {
   return false;
 }
 
+/** Is `pinned` trapped against a field boundary with `pinner` on the open-field
+ * side? True when the pinned robot's leading corner (straight AWAY from the
+ * pinner) sits within PIN_WALL_SLOP of the perimeter — i.e. it cannot retreat
+ * from the pinner without hitting a wall. This distinguishes the aggressor from
+ * the victim in a shove where both robots are slow and commanding motion. */
+function pinnedAgainstWall(pinner: RobotState, pinned: RobotState): boolean {
+  const dx = pinned.pos.x - pinner.pos.x;
+  const dy = pinned.pos.y - pinner.pos.y;
+  const d = hyp(dx, dy);
+  if (d < 1e-3) return false; // coincident — can't tell which way "away" is
+  const ex = dx / d;
+  const ey = dy / d; // escape direction: from the pinner toward (and past) the pinned
+  let reach = 0;
+  for (const c of robotCorners(pinned)) {
+    reach = Math.max(reach, (c.x - pinned.pos.x) * ex + (c.y - pinned.pos.y) * ey);
+  }
+  const px = pinned.pos.x + ex * (reach + C.PIN_WALL_SLOP);
+  const py = pinned.pos.y + ey * (reach + C.PIN_WALL_SLOP);
+  return Math.abs(px) >= C.FIELD_HALF || Math.abs(py) >= C.FIELD_HALF;
+}
+
 function updatePins(world: World, dt: number, commands: Map<number, RobotCommand>): void {
   const pen = world.penalties;
   // contacts this tick, as an undirected id-pair set
@@ -193,7 +220,11 @@ function updatePins(world: World, dt: number, commands: Map<number, RobotCommand
       const commandingMove =
         !!cmd && (hyp(cmd.driveX, cmd.driveY) > 0.1 || Math.abs(cmd.rotate) > 0.1);
 
-      if (!inContact(pinner.id, pinned.id) || !commandingMove) {
+      // Only the ACTUAL pinner is fouled: the pinned robot must be trapped
+      // against a field boundary with the pinner on the open-field side. Without
+      // this, a wall shove satisfies BOTH orderings (each robot is slow and
+      // commanding), and the victim's alliance was wrongly fouled too.
+      if (!inContact(pinner.id, pinned.id) || !commandingMove || !pinnedAgainstWall(pinner, pinned)) {
         delete pen.pins[key]; // condition broken — reset the accumulator
         continue;
       }

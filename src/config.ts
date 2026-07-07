@@ -60,6 +60,12 @@ export const PIN_SECONDS = 3;
 export const PIN_ESCAPE_DIST = 24; // in — getting this far away ends the pin
 /** pinned robot counts as "prevented from moving" below this actual speed */
 export const PIN_STUCK_SPEED = 8; // in/s
+/** the PINNED robot must be trapped against a field boundary with the pinner on
+ * the open-field side: its leading corner (straight away from the pinner) sits
+ * within this slop of the perimeter. This breaks the symmetry of a wall shove —
+ * without it BOTH robots look "slow + commanding" and the victim was wrongly
+ * fouled too. */
+export const PIN_WALL_SLOP = 3; // in
 /** A foul fires on the rising edge of its condition and does NOT re-fire while
  * the condition holds — continuous contact in a foul zone is ONE foul, not a
  * stream. It re-arms only after the condition has been CLEAR for this long, so

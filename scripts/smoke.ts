@@ -4,6 +4,7 @@
  */
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC } from '../src/sim/spawn';
 import { step } from '../src/sim/world';
+import { updatePenalties } from '../src/sim/penalties';
 import { robotInLaunchZone } from '../src/sim/robot';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
 import { startMatch } from '../src/sim/match';
@@ -1255,43 +1256,53 @@ function inGate(w: World, robotIdx: number, gate: 'red' | 'blue'): void {
   w.robots[robotIdx].pos = { x: (gz.x0 + gz.x1) / 2, y: (gz.y0 + gz.y1) / 2 };
 }
 
-// ---- opponent gate (MAJOR): working the other alliance's gate ---------------
+// ---- G424 GATE ZONE off limits (MINOR): contact while a robot is in a gate --
 {
   const w = foulWorld();
-  inGate(w, 0, 'red'); // blue robot intrudes into RED's gate
-  runCmds(w, new Map(), 0.5);
+  const gz = gateZone('red');
+  const gcx = (gz.x0 + gz.x1) / 2;
+  const gcy = (gz.y0 + gz.y1) / 2;
+  // blue intrudes into RED's gate zone and contacts a red robot there
+  w.robots[0].pos = { x: gcx, y: gcy };
+  w.robots[1].pos = { x: gcx, y: gcy + 1.5 };
+  runCmds(w, new Map(), 0.3);
   check(
-    'opponent in the gate zone draws a MAJOR foul (opening opponent gate)',
-    w.match.scores.red.foulPoints === 15 && w.match.fouls.blue.major === 1,
-    `redFoulPts=${w.match.scores.red.foulPoints} blueMajor=${w.match.fouls.blue.major}`,
+    'contact in a gate zone draws a MINOR foul on the offender (non-owner)',
+    w.match.scores.red.foulPoints === 5 && w.match.fouls.blue.minor === 1,
+    `redFoulPts=${w.match.scores.red.foulPoints} blueMinor=${w.match.fouls.blue.minor}`,
   );
-  // holding in the gate is ONE foul, not a stream (episode-debounced)
+  // holding the contact in the gate is ONE foul, not one per tick
   runCmds(w, new Map(), 1.5);
   check(
     'staying in the gate is a single foul, not one per tick',
-    w.match.fouls.blue.major === 1,
-    `blueMajor=${w.match.fouls.blue.major}`,
+    w.match.fouls.blue.minor === 1,
+    `blueMinor=${w.match.fouls.blue.minor}`,
   );
 
-  // leaving and coming back AFTER the clear window is a fresh foul
-  w.robots[0].pos = { x: 0, y: -8 }; // out
+  // separate past the clear window, then re-contact -> a fresh foul
+  w.robots[0].pos = { x: 0, y: -8 };
+  w.robots[1].pos = { x: 0, y: 20 };
   runCmds(w, new Map(), 1.3); // stay clear past PENALTY_CLEAR (1.0 s)
-  check('leaving the gate does not add a foul', w.match.fouls.blue.major === 1);
-  inGate(w, 0, 'red'); // back in
+  check('leaving the gate does not add a foul', w.match.fouls.blue.minor === 1);
+  w.robots[0].pos = { x: gcx, y: gcy };
+  w.robots[1].pos = { x: gcx, y: gcy + 1.5 };
   runCmds(w, new Map(), 0.3);
   check(
-    're-entering the opponent gate after the clear window fouls again',
-    w.match.fouls.blue.major === 2 && w.match.scores.red.foulPoints === 30,
-    `blueMajor=${w.match.fouls.blue.major} redFoulPts=${w.match.scores.red.foulPoints}`,
+    're-contacting in the gate after the clear window fouls again',
+    w.match.fouls.blue.minor === 2 && w.match.scores.red.foulPoints === 10,
+    `blueMinor=${w.match.fouls.blue.minor} redFoulPts=${w.match.scores.red.foulPoints}`,
   );
 
-  // a robot working its OWN gate is never fouled
+  // mere PRESENCE in the opponent's gate with NO contact is not a foul (the
+  // manual's G424 is contact-based; opening the gate is a legal play the owner
+  // may defend)
   const w2 = foulWorld();
-  inGate(w2, 0, 'blue');
+  inGate(w2, 0, 'red'); // blue alone in red's gate, red parked far away
   runCmds(w2, new Map(), 0.5);
   check(
-    'working your OWN gate is never a foul',
-    w2.match.scores.red.foulPoints === 0 && w2.match.fouls.blue.major === 0,
+    'being in the opponent gate WITHOUT contact is not a foul',
+    w2.match.scores.red.foulPoints === 0 && w2.match.fouls.blue.minor === 0,
+    `redFoulPts=${w2.match.scores.red.foulPoints} blueMinor=${w2.match.fouls.blue.minor}`,
   );
 }
 
@@ -1307,6 +1318,38 @@ function inGate(w: World, robotIdx: number, gate: 'red' | 'blue'): void {
     'contact in the secret tunnel draws a MINOR foul on the intruder',
     w.match.scores.blue.foulPoints === 5 && w.match.fouls.red.minor === 1,
     `blueFoulPts=${w.match.scores.blue.foulPoints} redMinor=${w.match.fouls.red.minor}`,
+  );
+}
+
+// ---- G424 x G425 exception: gate zone and secret tunnel are mutually exclusive
+// The LEFT wall holds BLUE's gate zone AND RED's secret tunnel (they overlap in
+// the classifier corner). Rules are hand-driven through updatePenalties with a
+// forced contact pair so the exact overlap geometry isn't perturbed by physics.
+{
+  // Scenario 1: blue is in its OWN gate zone AND in red's (opponent's) tunnel,
+  // red is in its own tunnel -> ONLY a secret-tunnel foul (on blue), no gate foul.
+  const w = foulWorld();
+  w.robots[0].pos = { x: -68, y: -3 };  // blue: overlaps gate zone + red's tunnel
+  w.robots[1].pos = { x: -68, y: -6 };  // red: in its own tunnel
+  w.rrContacts = [{ a: 0, b: 1 }];
+  updatePenalties(w, 1 / 60, new Map());
+  check(
+    'gate robot ALSO in the opponent tunnel: only a secret-tunnel foul (on blue), no gate foul',
+    w.match.fouls.blue.minor === 1 && w.match.fouls.red.minor === 0,
+    `blueMinor=${w.match.fouls.blue.minor} redMinor=${w.match.fouls.red.minor}`,
+  );
+
+  // Scenario 2: blue is in its OWN gate zone but NOT in red's tunnel, red is in
+  // its own tunnel -> ONLY a gate foul (on red), no secret-tunnel foul.
+  const w2 = foulWorld();
+  w2.robots[0].pos = { x: -64, y: 0 };  // blue: in its gate zone, clear of the tunnel
+  w2.robots[1].pos = { x: -68, y: -10 }; // red: in its own tunnel
+  w2.rrContacts = [{ a: 0, b: 1 }];
+  updatePenalties(w2, 1 / 60, new Map());
+  check(
+    'gate robot clear of the opponent tunnel: only a gate foul (on red), no secret-tunnel foul',
+    w2.match.fouls.red.minor === 1 && w2.match.fouls.blue.minor === 0,
+    `redMinor=${w2.match.fouls.red.minor} blueMinor=${w2.match.fouls.blue.minor}`,
   );
 }
 
@@ -1365,17 +1408,34 @@ function inGate(w: World, robotIdx: number, gate: 'red' | 'blue'): void {
 }
 
 // ---- G402 AUTO interference (MAJOR): fully on the opponent's side -----------
+// Each alliance BELONGS on its goal side (blue -x, red +x — robots stage near
+// their cross-court goal); crossing fully to the OPPONENT's side fouls the
+// crosser. (Regression: this used to key off driverSide and fired when a robot
+// sat on its OWN side, fouling the wrong alliance.)
 {
   const w = createWorld('match', 55, [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 0)]);
   startMatch(w); // -> auto
   for (const r of w.robots) { r.vel = { x: 0, y: 0 }; r.fieldCentric = false; }
-  w.robots[0].pos = { x: -30, y: 0 }; // blue entirely on red's (-x) side
-  w.robots[1].pos = { x: -30, y: 1 }; // contacting a red robot
+  w.robots[0].pos = { x: 30, y: 0 }; // blue entirely on RED's (+x) side
+  w.robots[1].pos = { x: 30, y: 1 }; // contacting a red robot
   runCmds(w, new Map(), 0.2);
   check(
-    'crossing fully onto the opponent side and contacting in AUTO is a MAJOR foul',
+    'crossing fully onto the opponent side and contacting in AUTO is a MAJOR foul on the crosser',
     w.match.scores.red.foulPoints === 15 && w.match.fouls.blue.major === 1,
     `redFoulPts=${w.match.scores.red.foulPoints} blueMajor=${w.match.fouls.blue.major}`,
+  );
+
+  // a robot fully on its OWN side (blue on -x) contacting an opponent is NOT G402
+  const w2 = createWorld('match', 55, [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 0)]);
+  startMatch(w2);
+  for (const r of w2.robots) { r.vel = { x: 0, y: 0 }; r.fieldCentric = false; }
+  w2.robots[0].pos = { x: -30, y: 0 }; // blue on its OWN (-x) side
+  w2.robots[1].pos = { x: -30, y: 1 }; // red has crossed onto blue's side
+  runCmds(w2, new Map(), 0.2);
+  check(
+    'G402 fouls the CROSSER, not the alliance sitting on its own side',
+    w2.match.fouls.blue.major === 0 && w2.match.fouls.red.major === 1,
+    `blueMajor=${w2.match.fouls.blue.major} redMajor=${w2.match.fouls.red.major}`,
   );
 }
 
@@ -1420,6 +1480,14 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     'a 3 s pin draws a MINOR foul on the pinner',
     w.match.fouls.blue.minor === 1,
     `blueMinor=${w.match.fouls.blue.minor}`,
+  );
+  // ONLY the pinner is fouled — the pinned victim's alliance (red) must not be
+  // (both robots are slow + commanding in a wall shove; the wall-trap test picks
+  // the real pinner)
+  check(
+    'the pinned victim alliance is NOT fouled (no wrong-alliance pin penalty)',
+    w.match.fouls.red.minor === 0 && w.match.fouls.red.major === 0,
+    `redMinor=${w.match.fouls.red.minor} redMajor=${w.match.fouls.red.major}`,
   );
   // separate: the accumulator must reset and stop fouling
   w.robots[0].pos = { x: 0, y: -20 };

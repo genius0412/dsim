@@ -270,14 +270,32 @@ build/smoke-green** (see below); the old P2P lockstep is deleted.
 `world.ts` after the robot-robot solver). **MINOR = 5 pts, MAJOR = 15 pts** (user-set,
 NOT the manual's 10/30), awarded to the OPPOSING (victim) alliance via `awardFoul` in
 scoring.ts → the victim's `ScoreBreakdown.foulPoints`; `match.fouls[offender]` tallies
-committed counts for the HUD. Rules: **opponent-gate** (MAJOR — a robot working the
-OTHER alliance's gate zone; the gate is now physically openable by ANYONE, `updateGates`
-dropped its own-alliance filter), **G425 tunnel** / **G426 loading** (MINOR, on
-cross-alliance contact in-zone), **G427 base** (MAJOR in endgame + sets `RobotState.
-baseAwarded` → full base at match end), **G402 auto interference** (MAJOR, fully on the
-opponent's −side + contact during AUTO), **G422 pinning** (MINOR, →MAJOR on a repeat by
-the same pinner: 3 s of contact while the pinned robot commands motion, stays < 8 in/s,
-and hasn't escaped 24"). **Fouls are EDGE-triggered — NO cooldown/timer** (user was
+committed counts for the HUD. Rules (numbers/severities per Section 11 — corrected
+July 2026 to follow the manual): **protected-zone** rules use one uniform model —
+each zone is OWNED by an alliance and a cross-alliance CONTACT while either robot is
+in it fouls the NON-owner ("regardless of who initiates"): **G424 gate zone** (MINOR
+— protects the OWNER's access to their own gate; contact-based, NOT the old homebrew
+"presence in the opponent gate = MAJOR", which is gone. The gate is still physically
+openable by ANYONE via `updateGates`; opening it is legal, only in-zone *contact*
+fouls), **G425 tunnel** (MINOR — `tunnelStrip(a)` sits under a's goal but is OWNED by
+`other(a)`, so the intruder/offender is `a`; G425 fires only when the INTRUDER itself
+is in the strip — an owner defending inside its OWN tunnel is not a foul). **G424.A
+gate↔tunnel exception**: a side wall holds one alliance's gate zone AND the other's
+secret tunnel (they overlap in the classifier corner), and the two rules are MUTUALLY
+EXCLUSIVE — if the gate robot is ALSO in the opponent's tunnel it's G425 only (on the
+gate robot); if it's clear of the tunnel it's G424 only (on the opponent). **G426
+loading** (MINOR), **G427 base**
+(MAJOR in endgame + sets `RobotState.baseAwarded` → full base at match end). **G402
+auto interference** (MAJOR): an alliance BELONGS on its **goalSide** (robots stage
+near their cross-court goal: blue −x, red +x — NOT driverSide, which was inverted and
+fouled the alliance sitting on its OWN side); fires when fully on the opponent's side
++ contact during AUTO, on the CROSSER. **G422 pinning** (MINOR, →MAJOR on a repeat by
+the same pinner: 3 s of contact while the pinned robot commands motion, stays < 8
+in/s, and hasn't escaped 24"). Pinner-vs-pinned is disambiguated by
+`pinnedAgainstWall` — the VICTIM must be trapped against a field boundary with the
+pinner on the open-field side (`PIN_WALL_SLOP`); without it a wall shove satisfied
+BOTH orderings and wrongly fouled the victim's alliance too. **Fouls are
+EDGE-triggered — NO cooldown/timer** (user was
 emphatic): a violation fires on the false→true edge, once while held, and AGAIN
 immediately on re-entry (leave the opponent gate and re-enter ⇒ instant new foul).
 `fire()` is idempotent within a tick (a duplicated `rrContacts` pair, or two rules on
