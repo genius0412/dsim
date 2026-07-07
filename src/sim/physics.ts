@@ -9,12 +9,17 @@ const ALLIANCES: Alliance[] = ['red', 'blue'];
 // ------------------------------------------------------------------ OBB ----
 
 /** collision extents in the robot frame: the intake is a physical part of
- * the robot, so the footprint extends forward by its reach */
+ * the robot, so the footprint extends forward by its reach. An overhanging
+ * preset (vector: its compliant wheels can be wider than the chassis) widens
+ * the whole box to its wheel span too — drawRobot.ts draws that overhang, so
+ * it needs to actually be solid (matches "the intake is physical... it cannot
+ * clip walls/goals") rather than a wall/robot passing straight through it. */
 export function robotExtents(r: RobotState): { front: number; rear: number; half: number } {
+  const preset = C.INTAKE_PRESETS[r.spec.intake];
   return {
-    front: r.spec.length / 2 + C.INTAKE_PRESETS[r.spec.intake].reach,
+    front: r.spec.length / 2 + preset.reach,
     rear: r.spec.length / 2,
-    half: r.spec.width / 2,
+    half: preset.overhang ? Math.max(r.spec.width / 2, preset.halfWidth) : r.spec.width / 2,
   };
 }
 
