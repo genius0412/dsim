@@ -2,12 +2,11 @@ import type { Alliance, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
 import {
   baseZone,
-  driverSide,
   gateZone,
   loadZone,
   other,
   tunnelStrip,
-  inRect,
+  inRect, goalSide,
 } from './field';
 import type { Rect } from './field';
 import { robotCorners, robotIntersectsRect } from './physics';
@@ -19,7 +18,7 @@ import { hyp } from '../math';
  * deterministic: it reads only world.time, robot positions/velocities, the
  * per-tick command map, and world.rrContacts (robot-robot contacts recorded by
  * the collision solver). All state lives in world.penalties as plain JSON, so
- * the sim stays serializable and lockstep-safe for netcode.
+ * the sim stays serializable and locklockstep-safe for netcode.
  *
  * Fouls are awarded TO the victim alliance (awardFoul in scoring.ts). Most
  * rules trigger on a CROSS-alliance contact pair while a robot sits in a zone;
@@ -33,6 +32,7 @@ import { hyp } from '../math';
  *   G427  base zone, endgame           (MAJOR + counts the victim fully returned)
  *   G402  crossing fully to the opponent's side in AUTO (MAJOR)
  *   G422  pinning ≥3 s                 (MINOR, MAJOR on a repeat by the same pinner)
+ *   G428  gate zone                    (MAJOR) - goal-side robot in own gate zone, contacted by opponent
  *
  * Rules PHYSICALLY PREVENTED by construction (no code needed):
  *   G403/G417  transition freeze — robots are disabled outside auto/teleop.
@@ -100,14 +100,14 @@ export function updatePenalties(
   // flagged per robot so it fires even if the contact ids differ.
   if (phase === 'auto') {
     for (const r of world.robots) {
-      const d = driverSide(r.alliance); // blue +1 (own side +x), red -1
+      const d = goalSide(r.alliance); // blue +1 (own side +x), red -1
       if (robotCorners(r).every((c) => d * c.x < 0) && touchingOpponent(world, r)) {
         fire(`G402:${r.id}`, r.alliance, 'major', 'G402 auto interference');
       }
     }
   }
 
-  // ---- contact-pair rules (tunnel / loading / base) -----------------------
+  // ---- contact-pair rules (tunnel / loading / base / gate zone) -----------
   for (const { a, b } of world.rrContacts) {
     const ra = byId.get(a);
     const rb = byId.get(b);
@@ -141,6 +141,19 @@ export function updatePenalties(
           victimRobot.baseAwarded = true;
           fire(`G427:${pairKey}`, other(X), 'major', 'G427 base zone');
         }
+      }
+    }
+
+    // gate zone
+    for (const rGoal of [ra, rb]) {
+      const rDriver = (rGoal === ra) ? rb : ra;
+      if (robotIntersectsRect(rGoal, gateZone(rGoal.alliance))) {
+        fire(
+          `G428:${pairKey}:${rGoal.id}`,
+          rDriver.alliance,
+          'minor',
+          'G428 gate zone',
+        );
       }
     }
   }

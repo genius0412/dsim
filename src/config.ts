@@ -141,6 +141,9 @@ export const ROBOT_MAX_MASS = 42;
 export const ROBOT_MIN_RPM = 200;
 export const ROBOT_MAX_RPM = 600;
 
+/** penalty added to fireInterval when robot is sorting (canSort: true) */
+export const SORT_FIRE_PENALTY = 0.25;
+
 /** per-drivetrain multipliers + wheel-saturation model. saturation:
  * 'sum'   = |f|+|s|+|ω|  (mecanum/x-drive: the worst roller wheel sees all)
  * 'tank'  = |f|+|ω|      (no strafe at all — strafe input is dead)
@@ -151,7 +154,7 @@ export const DRIVETRAIN_PRESETS = {
   /** 45° omni pods: full-speed strafe, slight overall speed loss */
   xdrive: { strafeMult: 1.0, speedMult: 0.9, accelMult: 0.95, saturation: 'sum' },
   /** traction wheels: no strafe, best straight-line speed and push */
-  tank: { strafeMult: 0, speedMult: 1.05, accelMult: 1.1, saturation: 'tank' },
+  tank: { strafeMult: 0, speedMult: 1.05, accelMult: 1.4, saturation: 'tank' },
   /** independent steered modules: full-speed any direction */
   swerve: { strafeMult: 1.0, speedMult: 1.0, accelMult: 1.05, saturation: 'vec' },
 } as const;
@@ -345,13 +348,14 @@ export const SPIKE_BALL_SPACING = 5.6;
 export const SPIKE_MARK_LEN = 10;
 
 /** robot start poses, all inside the big launch zone near the alliance's
- * goal (blue goal is far-left, so blue mirrors to the left). Values are for
- * goalSide=+1 and ≥20in apart so two 18in robots never spawn overlapping.
+ * goal (blue goal is far-left, so blue mirrors to the left). Coordinates and
+ * headings are authored for goalSide=+1; the spawn helper mirrors them for the
+ * other alliance. Headings are in degrees, measured in the field frame.
  * Index = the menu/lobby "start position" choice per robot slot. */
 export const START_POSES = [
-  { x: 30, y: 45, label: 'GOAL SIDE' }, // the original solo pose
-  { x: 8, y: 56, label: 'CENTER' },
-  { x: 48, y: 60, label: 'WALL SIDE' },
+  { x: 50, y: 55, headingDeg: 270, label: 'CLOSE SIDE' }, // the original solo pose
+  { x: 20, y: 40, headingDeg: 315, label: 'CENTER' },
+  { x: 18, y: -60, headingDeg: 0, label: 'FAR SIDE' },
 ] as const;
 
 // --------------------------------------------------------- human player ----

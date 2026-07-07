@@ -9,6 +9,7 @@ import { startMatch } from '../src/sim/match';
 import {
   inLaunchZone,
   gateZone,
+  startPose,
   goalCenter,
   goalTriangle,
   goalFaceNormal,
@@ -106,6 +107,12 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('on-field color split 16P/8G', purple === 16 && green === 8, `${purple}P ${green}G`);
   check('hopper preloaded with 3', w.robots[0].hopper.length === 3);
   check('start pose inside launch zone', inLaunchZone(w.robots[0].pos, 'blue'));
+  const pose = startPose('blue', 0);
+  check(
+    'start pose heading comes from START_POSES degrees',
+    Math.abs(w.robots[0].heading - pose.heading) < 1e-9,
+    `${(w.robots[0].heading * 180 / Math.PI).toFixed(1)}°`,
+  );
   check('blue goal is far-left (cross-court)', goalCenter('blue').x < 0 && goalCenter('blue').y > 0);
   check('red goal is far-right', goalCenter('red').x > 0 && goalCenter('red').y > 0);
 }
