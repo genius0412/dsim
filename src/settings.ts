@@ -25,6 +25,7 @@ export function defaultSettings(): GameSettings {
     practiceDummies: false,
     audio: { sounds: true, voice: true },
     bindings: cloneBindings(DEFAULT_BINDINGS),
+    parkSpeedPct: 30,
   };
 }
 
@@ -91,6 +92,9 @@ export function loadSettings(): GameSettings {
       const au = s.audio as Record<string, unknown>;
       if (typeof au.sounds === 'boolean') out.audio.sounds = au.sounds;
       if (typeof au.voice === 'boolean') out.audio.voice = au.voice;
+    }
+    if (typeof s.parkSpeedPct === 'number') {
+      out.parkSpeedPct = clamp(Math.round(s.parkSpeedPct), 0, 100);
     }
     out.bindings = mergeBindings(s.bindings);
   } catch {
