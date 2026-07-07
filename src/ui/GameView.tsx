@@ -223,22 +223,11 @@ function Hud({ hud }: { hud: HudSnapshot }) {
                 NET {hud.net.peers + 1}P
               </span>
             )}
-          <span className="chip">{hud.fieldCentric ? 'FIELD' : 'ROBOT'}</span>
-          {hud.frontFlipped && <span className="chip warn">REVERSED</span>}
-          {hud.parked && <span className="chip warn">PARKED</span>}
-          <span className={`chip ${hud.aimAssist ? 'on' : 'off'}`}>AIM</span>
-          <span className={`chip ${hud.autoIntake ? 'on' : 'off'}`}>AUTO-IN</span>
-          <span className={`chip ${hud.autoFire ? 'on' : 'off'}`}>AUTO-FIRE</span>
-          <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
-          {hud.net && (
-            <span className={`chip ${hud.net.peers > 0 ? 'on' : 'warn'}`}>
-              NET {hud.net.peers + 1}P
-            </span>
-          )}
-          {hud.net?.waitingFor && (
-            <span className="chip warn">WAITING · {hud.net.waitingFor}</span>
-          )}
-          {hud.net?.desync && <span className="chip off">⚠ DESYNC</span>}
+            {hud.net?.waitingFor && (
+              <span className="chip warn">WAITING · {hud.net.waitingFor}</span>
+            )}
+            {hud.net?.desync && <span className="chip off">⚠ DESYNC</span>}
+          </div>
         </div>
       )}
 
