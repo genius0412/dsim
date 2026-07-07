@@ -9,6 +9,7 @@ import type {
   RobotSpec,
   ScoreBreakdown,
   World,
+  AutoPathData, // Import AutoPathData
 } from './types';
 import * as C from './config';
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
@@ -33,6 +34,9 @@ export interface GameSettings {
   practiceDummies: boolean;
   audio: { sounds: boolean; voice: boolean };
   bindings: ControlBindings;
+  // New fields for auto pathing
+  autoPath: AutoPathData | null;
+  autoPathEnabled: boolean;
   /** park mode's speed cap, 0-100 (% of normal max speed); activation is
    * gated to endgame / free drive regardless of this value */
   parkSpeedPct: number;
@@ -186,14 +190,22 @@ export class GameController {
     // runs a SIM-DRIVEN countdown (transition lives in stepMatch, so it fires
     // on the same tick for every peer — no controller-local start/seed)
     if (this.session) {
-      const w = createWorld('match', this.session.seed, this.session.setups);
+      const w = createWorld('match', this.session.seed, this.session.setups, this.settings);
       w.match.preCountdown = C.PRE_COUNTDOWN;
       return w;
     }
     const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
     const s = this.settings;
     const setups: RobotSetup[] = [
-      { id: 0, alliance: s.alliance, spec: s.spec, assists: s.assists, startIndex: s.startIndex },
+      {
+        id: 0,
+        alliance: s.alliance,
+        spec: s.spec,
+        assists: s.assists,
+        startIndex: s.startIndex,
+        autoPath: s.autoPath,
+        autoPathEnabled: s.autoPathEnabled,
+      },
     ];
     if (s.mode === 'free' && s.practiceDummies) {
       // three idle default robots as physical obstacles / parking practice
@@ -211,7 +223,7 @@ export class GameController {
         dummy(3, opp, 1),
       );
     }
-    return createWorld(s.mode, seed, setups);
+    return createWorld(s.mode, seed, setups, this.settings);
   }
 
   private onResize = (): void => {

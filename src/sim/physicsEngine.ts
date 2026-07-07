@@ -155,26 +155,31 @@ export function solveRobots(world: World, dt: number): Map<number, Vec2> {
   const rw = makeWorld(dt);
   const bodies: { r: RobotState; body: RAPIER.RigidBody }[] = [];
   for (const r of robots) {
+    // Always record preVels for all robots, even if not simulated by Rapier
     preVels.set(r.id, { x: r.vel.x, y: r.vel.y });
-    const e = robotExtents(r);
-    const hx = (e.front + e.rear) / 2;
-    const forward = (e.front - e.rear) / 2; // intake reach shifts the box forward
-    const body = rw.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(r.pos.x, r.pos.y)
-        .setRotation(r.heading)
-        .lockRotations()
-        .setLinvel(r.vel.x, r.vel.y),
-    );
-    rw.createCollider(
-      RAPIER.ColliderDesc.cuboid(hx, e.half)
-        .setTranslation(forward, 0) // body-local (rotated by heading)
-        .setMass(r.spec.massLb)
-        .setRestitution(0)
-        .setFriction(C.PHYS_FRICTION),
-      body,
-    );
-    bodies.push({ r, body });
+
+    // Only create physics bodies for robots NOT on an auto path
+    if (!r.autoPathActive) {
+      const e = robotExtents(r);
+      const hx = (e.front + e.rear) / 2;
+      const forward = (e.front - e.rear) / 2; // intake reach shifts the box forward
+      const body = rw.createRigidBody(
+        RAPIER.RigidBodyDesc.dynamic()
+          .setTranslation(r.pos.x, r.pos.y)
+          .setRotation(r.heading)
+          .lockRotations()
+          .setLinvel(r.vel.x, r.vel.y),
+      );
+      rw.createCollider(
+        RAPIER.ColliderDesc.cuboid(hx, e.half)
+          .setTranslation(forward, 0) // body-local (rotated by heading)
+          .setMass(r.spec.massLb)
+          .setRestitution(0)
+          .setFriction(C.PHYS_FRICTION),
+        body,
+      );
+      bodies.push({ r, body });
+    }
   }
 
   rw.step();

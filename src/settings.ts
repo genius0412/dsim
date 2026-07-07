@@ -1,4 +1,4 @@
-import type { GameSettings } from './game';
+import type { GameSettings, AutoPathData } from './game'; // Import AutoPathData from game for consistency
 import { DEFAULT_SPEC } from './sim/spawn';
 import {
   INTAKE_PRESETS,
@@ -15,6 +15,19 @@ import { clamp } from './math';
 
 const STORAGE_KEY = 'decodesim.settings.v1';
 
+// Helper function to validate loaded AutoPathData
+function isValidAutoPathData(data: any): data is AutoPathData {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    typeof data.fileName === 'string' &&
+    typeof data.startPoint === 'object' &&
+    data.startPoint !== null &&
+    Array.isArray(data.lines)
+    // Add more rigorous checks if necessary, e.g., for startPoint and lines structure
+  );
+}
+
 export function defaultSettings(): GameSettings {
   return {
     mode: 'match',
@@ -25,6 +38,8 @@ export function defaultSettings(): GameSettings {
     practiceDummies: false,
     audio: { sounds: true, voice: true },
     bindings: cloneBindings(DEFAULT_BINDINGS),
+    autoPath: null, // Default to no auto path loaded
+    autoPathEnabled: false, // Default to auto path disabled
     parkSpeedPct: 30,
   };
 }
@@ -97,6 +112,21 @@ export function loadSettings(): GameSettings {
       out.parkSpeedPct = clamp(Math.round(s.parkSpeedPct), 0, 100);
     }
     out.bindings = mergeBindings(s.bindings);
+
+    // Load autoPath and autoPathEnabled
+    if (s.autoPath && isValidAutoPathData(s.autoPath)) {
+      out.autoPath = s.autoPath;
+      // If autoPathEnabled is not explicitly set or is invalid, enable it if a path is loaded
+      if (typeof s.autoPathEnabled === 'boolean') {
+        out.autoPathEnabled = s.autoPathEnabled;
+      } else {
+        out.autoPathEnabled = true;
+      }
+    } else {
+      out.autoPath = null;
+      out.autoPathEnabled = false;
+    }
+
   } catch {
     /* corrupt storage or no localStorage — defaults */
   }

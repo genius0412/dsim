@@ -1,4 +1,4 @@
-import type { GameSettings } from '../game';
+import type { GameSettings, AutoPathData, PathLine, SequenceItem, PathPoint, Vec2 } from '../types';
 import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
 import {
   INTAKE_PRESETS,
@@ -79,6 +79,140 @@ export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
   const setAssist = (patch: Partial<GameSettings['assists']>) =>
     onChange({ ...settings, assists: { ...settings.assists, ...patch } });
 
+  // Helper to get error message from unknown error type
+  function getErrorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    return String(error);
+  }
+
+  // Basic toast notification (can be replaced with a more sophisticated UI component)
+  function showToast(message: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') {
+    alert(`${type.toUpperCase()}: ${message}`);
+  }
+
+  // --- Coordinate Transformation for .pp files ---
+  const PP_FIELD_SIZE = 141.5;
+  const PP_CENTER_OFFSET = PP_FIELD_SIZE / 2; // 70.75
+  const SIM_FIELD_SIZE = 144; // From -72 to 72
+  const SCALE_FACTOR = SIM_FIELD_SIZE / PP_FIELD_SIZE; // 144 / 141.5
+
+  function transformPpCoordinate(coord: Vec2): Vec2 {
+    return {
+      x: (coord.x - PP_CENTER_OFFSET) * SCALE_FACTOR,
+      y: (coord.y - PP_CENTER_OFFSET) * SCALE_FACTOR,
+    };
+  }
+
+  function transformPathPoint(pathPoint: PathPoint): PathPoint {
+    const transformed = transformPpCoordinate(pathPoint);
+    return { ...pathPoint, x: transformed.x, y: transformed.y };
+  }
+  // --- End Coordinate Transformation ---
+
+  // Normalize lines to ensure ids and wait fields exist
+  function normalizeLines(input: PathLine[] = []): PathLine[] {
+    return (input || []).map((line) => ({
+      ...line,
+      id: line.id || `line-${Math.random().toString(36).slice(2)}`,
+      waitBeforeMs: Math.max(
+        0,
+        Number(line.waitBeforeMs ?? (line as any).waitBefore?.durationMs ?? 0),
+      ),
+      waitAfterMs: Math.max(
+        0,
+        Number(line.waitAfterMs ?? (line as any).waitAfter?.durationMs ?? 0),
+      ),
+      waitBeforeName:
+        line.waitBeforeName ?? (line as any).waitBefore?.name ?? '',
+      waitAfterName: line.waitAfterName ?? (line as any).waitAfter?.name ?? '',
+      // Apply transformation to endPoint
+      endPoint: transformPathPoint(line.endPoint),
+      // Apply transformation to controlPoints
+      controlPoints: line.controlPoints?.map(cp => transformPpCoordinate(cp)),
+    }));
+  }
+
+  // Normalize sequence data, falling back to path-only sequence if waits are missing
+  function deriveSequence(data: any, normalizedLines: PathLine[]): SequenceItem[] {
+    if (Array.isArray(data?.sequence) && data.sequence.length) {
+      return data.sequence as SequenceItem[];
+    }
+
+    return normalizedLines.map((ln) => ({
+      kind: 'path',
+      lineId: ln.id!,
+    }));
+  }
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    if (!file.name.endsWith('.pp')) {
+      showToast('Please select a .pp file.', 'error');
+      event.target.value = ''; // Clear the input
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const content = e.target?.result as string;
+        const data = JSON.parse(content);
+
+        // Validate the loaded data
+        if (!data.startPoint || !data.lines) {
+          throw new Error('Invalid file format: missing required fields (startPoint or lines)');
+        }
+
+        // Apply transformation to startPoint
+        const transformedStartPoint = transformPathPoint(data.startPoint);
+        const normalizedLines = normalizeLines(data.lines || []);
+
+        const autoPathData: AutoPathData = {
+          fileName: file.name,
+          startPoint: transformedStartPoint,
+          lines: normalizedLines,
+          shapes: data.shapes?.map((s: any) => ({
+            ...s,
+            // Assuming shapes also need transformation if they have position data
+            // This part might need further refinement based on actual shape structure
+            points: s.points?.map((p: Vec2) => transformPpCoordinate(p)),
+            x: s.x !== undefined ? transformPpCoordinate({x: s.x, y: 0}).x : undefined,
+            y: s.y !== undefined ? transformPpCoordinate({x: 0, y: s.y}).y : undefined,
+          })) || [],
+          sequence: deriveSequence(data, normalizedLines),
+          version: data.version,
+          timestamp: data.timestamp,
+        };
+
+        set({ autoPath: autoPathData, autoPathEnabled: true });
+        showToast(`Loaded auto path: ${file.name}`, 'success');
+      } catch (error) {
+        const errMsg = getErrorMessage(error);
+        const message = errMsg.includes('Invalid file format')
+          ? 'Invalid file format. This may not be a valid Pedro Pathing file.'
+          : `Error loading file: ${errMsg}`;
+        showToast(message, 'error');
+        set({ autoPath: null, autoPathEnabled: false }); // Clear any partial state
+      } finally {
+        event.target.value = ''; // Clear the input to allow re-uploading the same file
+      }
+    };
+    reader.onerror = () => {
+      showToast(`Failed to read file: ${reader.error?.message}`, 'error');
+      event.target.value = '';
+    };
+    reader.readAsText(file);
+  };
+
+  const clearAutoPath = () => {
+    set({ autoPath: null, autoPathEnabled: false });
+    showToast('Auto path cleared.', 'info');
+  };
+    
   const isSwerve = settings.spec.drivetrain === 'swerve';
   const minMass = isSwerve ? 25 : ROBOT_MIN_MASS;
   const maxRpm = isSwerve ? 500 : ROBOT_MAX_RPM;
@@ -385,6 +519,43 @@ export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
             )}
           </div>
         </section>
+
+        {/* NEW SECTION: Auto Path */}
+        <section>
+          <h2>Auto Path</h2>
+          <div className="card-row wrap">
+            <label className="card file-input-card">
+              <strong>Import .pp File</strong>
+              <span>{settings.autoPath ? settings.autoPath.fileName : 'No file selected'}</span>
+              <input
+                type="file"
+                accept=".pp"
+                onChange={handleFileChange}
+                style={{ display: 'none' }}
+              />
+            </label>
+            {settings.autoPath && (
+              <button className="card" onClick={clearAutoPath}>
+                <strong>Clear Path</strong>
+                <span>Remove the loaded auto path</span>
+              </button>
+            )}
+            <button
+              className={`card ${settings.autoPathEnabled ? 'selected' : ''}`}
+              onClick={() => set({ autoPathEnabled: !settings.autoPathEnabled })}
+              disabled={!settings.autoPath}
+            >
+              <strong>Auto Path {settings.autoPathEnabled ? 'ON' : 'OFF'}</strong>
+              <span>Follow the imported path during auto</span>
+            </button>
+          </div>
+          {settings.autoPath && (
+            <p className="hint">
+              Loaded: {settings.autoPath.fileName} (Version: {settings.autoPath.version || 'N/A'})
+            </p>
+          )}
+        </section>
+        {/* END NEW SECTION */}
 
         <section>
           <h2>Audio</h2>
