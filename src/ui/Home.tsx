@@ -20,6 +20,7 @@ export function Home({
   settings,
   onChange,
   multiplayer,
+  signedIn,
   onFreeDrive,
   onSoloMatch,
   onRecordRun,
@@ -30,6 +31,7 @@ export function Home({
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
   multiplayer: boolean;
+  signedIn: boolean;
   onFreeDrive: () => void;
   onSoloMatch: () => void;
   onRecordRun: () => void;
@@ -59,8 +61,8 @@ export function Home({
       </p>
       <h1 className="ds-h1">Ready to run.</h1>
       <p className="ds-sub">
-        Practice free, run a full scored match, or scrim a custom room. Driving{' '}
-        <b style={{ color: 'var(--ds-ink)' }}>{spec.name}</b> · {DRIVETRAIN_LABELS[spec.drivetrain]} ·{' '}
+        Driving <b style={{ color: 'var(--ds-ink)' }}>{spec.name}</b> ·{' '}
+        {DRIVETRAIN_LABELS[spec.drivetrain]} ·{' '}
         {spec.teamNumber ? `#${spec.teamNumber}` : 'no team'}.{' '}
         <button className="ds-btn ghost" style={{ padding: '2px 8px', fontSize: 13 }} onClick={onEditRobot}>
           Edit robot →
@@ -90,7 +92,7 @@ export function Home({
             <span className="k">Solo · Match</span>
             <span>
               <span className="t">Solo Match</span>
-              <span className="d">30s auto · 2:00 teleop · full DECODE scoring</span>
+              <span className="d">30s auto · 2:00 teleop</span>
             </span>
           </button>
 
@@ -98,7 +100,7 @@ export function Home({
             <span className="k">Practice</span>
             <span>
               <span className="t">Free Drive</span>
-              <span className="d">No clock, no stakes — just drive</span>
+              <span className="d">No clock — just drive</span>
             </span>
           </button>
 
@@ -117,17 +119,21 @@ export function Home({
             <span>
               <span className="t">Record Run</span>
               <span className="d">
-                {multiplayer ? 'Solo score-attack — sets a leaderboard time' : 'Needs the game server'}
+                {multiplayer ? 'Solo score-attack' : 'Needs the game server'}
               </span>
             </span>
           </button>
 
-          <button className="ds-tile" onClick={onRanked} disabled={!multiplayer}>
+          <button className="ds-tile" onClick={onRanked} disabled={!multiplayer || !signedIn}>
             <span className="k">Ranked</span>
             <span>
               <span className="t">Find Match</span>
               <span className="d">
-                {multiplayer ? '1v1 / 2v2 head-to-head ELO' : 'Needs the game server'}
+                {!multiplayer
+                  ? 'Needs the game server'
+                  : !signedIn
+                    ? 'Sign in to play ranked'
+                    : '1v1 / 2v2 ranked'}
               </span>
             </span>
           </button>

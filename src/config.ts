@@ -23,6 +23,11 @@ export const TELEOP_DURATION = 120;
 export const ENDGAME_START = 20; // s left in teleop
 /** announcer countdown after pressing start ("Match begins in" + 3,2,1) */
 export const PRE_COUNTDOWN = 4;
+/** delay from match end (phase 'post') to the "match_result" fanfare/whoosh.
+ * The results screen holds its score reveal until this exact moment so the
+ * count-up + winner slam land on the whoosh. Shared by the audio (game.ts) and
+ * the reveal animation (GameView). */
+export const MATCH_RESULT_REVEAL_MS = 2200;
 
 // --------------------------------------------------------------- season ----
 /** Balance / season version. Leaderboards (Phase 3) are keyed to this: it is

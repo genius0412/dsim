@@ -118,10 +118,7 @@ export function Leaderboard({ onWatch }: { onWatch?: (replayId: string) => void 
     <>
       <p className="ds-eyebrow">Season 1 · balance v1</p>
       <h1 className="ds-h1">Leaderboards</h1>
-      <p className="ds-sub">
-        Record boards are solo/duo score-attack; ranked is head-to-head ELO. Both are split by
-        drivetrain, plus an overall board. Every entry is a watchable replay.
-      </p>
+      <p className="ds-sub">Score-attack records and ranked ELO, split by drivetrain. Every entry is a replay.</p>
 
       <div className="ds-panel">
         <div className="ds-panel-h">
@@ -220,7 +217,7 @@ export function Leaderboard({ onWatch }: { onWatch?: (replayId: string) => void 
                                 e.stopPropagation();
                                 setOpenRow(isOpen ? null : r.userId);
                               }}
-                              title="Show robot configuration"
+                              title="View robot"
                             >
                               {DT_LABEL[cfg.spec.drivetrain]}
                               <span className="tw">{isOpen ? '▴' : '▾'}</span>

@@ -1,4 +1,59 @@
-# HANDOFF — 2026-07-07 (session 3: account features + server DEPLOYED) — READ FIRST
+# HANDOFF — 2026-07-07 (session 4: UI copy cleanup + score/intro animations) — READ FIRST
+
+Build + smoke (140 checks) + both tsc GREEN. Verified the UI at the real Electron
+surface (Home + My Robot screenshots) — copy reads clean, nothing truncated. Nothing
+committed/pushed. Two workstreams this session:
+
+**1. UI description cleanup (legibility).** Trimmed verbose helper text across the whole
+menu/UI — no behavior change, pure copy. Files: `Menu.tsx` (drivetrain/intake blurbs,
+builder + park hints, assist blurbs), `MatchSetup.tsx` (alliance/start/auto-path),
+`Home.tsx` (subtitle + play-tile descriptions), `ControlsSection.tsx`, `Lobby.tsx`,
+`Stats.tsx`, `Account.tsx`, `Leaderboard.tsx`, `Download.tsx`, `GameView.tsx` tooltips.
+
+**2. Score reveal + ranked intro animations.**
+- **Whoosh-synced final score:** `MATCH_RESULT_REVEAL_MS` (config.ts, =2200) is now the
+  single source for BOTH the `match_result` audio delay (game.ts) and the results reveal.
+  GameController records `matchOverAt = performance.now()` on the phase→post edge and
+  exposes `resultRevealAt` in the HUD. `GameView.Results` holds a "Tallying the score…"
+  suspense state, then at the whoosh moment count-ups the totals (`useCountUp`) + slams
+  the winner verdict + fades in the breakdown. Works in solo too (handlePhaseAudio runs
+  every frame regardless of session).
+- **Ranked pre-match intro:** new `RankedIntro` overlay (RED-vs-BLUE cards: team/name,
+  drivetrain badge, count-up ELO) shown during the ~4s pre countdown for ranked matches.
+  ELO is plumbed server→client: `matchmaking.ts` best-effort reads each authed driver's
+  overall ELO (`getRating`, guarded by `dbEnabled`, null on miss) → `room.setRankedIntro`
+  → `matchStart` gains optional `ranked`+`intros` (protocol.ts `PlayerIntro`, keyed by
+  robotId=add-order index) → `ServerSession.ranked/intros` (NetSession interface) →
+  `GameController.getIntro()`. Custom rooms/solo: `ranked=false` → no intro. Additive/
+  optional wire fields so old servers/clients degrade gracefully. CSS in styles.css
+  (`.intro-*`, `.results.tallying/.revealed`, keyframes); countdown z-index bumped to 30.
+- **NOT visually verified:** the reveal + intro need a completed match / live ranked
+  server, impractical in the Electron harness. Logic is type/smoke/build-green + reviewed.
+  Server ELO round-trip is `server:check`-green but not run against a live DB.
+
+**3. Ranked requires an account (gating).** Signed-out players can still use Custom Rooms
+(multiplayer) but NOT ranked/leaderboard. Client: App passes `signedIn` (=`accountUserId
+!== null`) to Home + Matchmaking. Home's Ranked tile is disabled with "Sign in to play
+ranked"; `Matchmaking.tsx` renders a sign-in prompt (→ account) instead of queueing when
+signed out. Server backstop: `index.ts` queue handler rejects with `error: 'Sign in to
+play ranked.'` when `verifyAuthToken` returns no user. VERIFIED in Electron (tile shows
+locked state while signed out; Custom Room stays open).
+
+**4. ELO change on the ranked results screen.** ELO math was already correct + smoke-
+tested; this SURFACES it. `applyMatchElo` now returns the overall-board `EloOutcome[]`
+(userId/before/after); `persistMatch` returns it; `Room.finalizeMatch` awaits it, re-keys
+userId→robotId (via a `robotByUser` map built at finalize), and broadcasts a new
+`eloResult` ServerMsg (protocol.ts `EloDelta{robotId,before,after}`). Client:
+`ServerSession.eloResults` (NetSession field) ← the message; `GameController.getEloResults()`
+enriches with name/alliance/isLocal from setups; `GameView` polls it and the ranked
+Results screen shows an ELO block (before → after with count-up `from`=before + colored
+delta), "Updating ELO…" until it lands (async DB write arrives a beat after the score).
+Reset on host-restart matchStart. New smoke check: "server Room broadcasts eloResult…"
+(+ re-key assertions). 176 smoke checks green.
+
+---
+
+# HANDOFF — 2026-07-07 (session 3: account features + server DEPLOYED)
 
 Build + smoke + both tsc GREEN. **Server was redeployed to Fly (`dohun-sim-decode`)
 and verified live** — this fixed the prod "My Stats 404" + "display name failed to

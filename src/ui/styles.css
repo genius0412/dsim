@@ -332,6 +332,7 @@ button {
   color: var(--text);
   text-shadow: 0 6px 30px rgba(0, 0, 0, 0.6);
   pointer-events: none;
+  z-index: 30; /* over the ranked intro overlay */
   animation: count-pop 1s ease-out;
 }
 
@@ -348,6 +349,7 @@ button {
   color: var(--text);
   text-shadow: 0 6px 30px rgba(0, 0, 0, 0.6);
   pointer-events: none;
+  z-index: 30; /* over the ranked intro overlay */
   animation: count-pop 1s ease-out;
 }
 
@@ -594,6 +596,345 @@ button {
 }
 .results-table .section-row td {
   text-align: center;
+}
+
+/* -------------------------------------------- results reveal (synced whoosh) -- */
+/* pre-reveal: the panel sits in a quiet "tallying" state; on reveal the winner
+   slams in and the totals count up so the payoff lands on the match_result whoosh */
+.overlay-panel.results.tallying .res-verdict {
+  color: var(--muted);
+  letter-spacing: 4px;
+  animation: verdict-wait 1.1s ease-in-out infinite;
+}
+.overlay-panel.results.tallying .res-side {
+  opacity: 0.55;
+}
+.results-wait {
+  margin: 0;
+  letter-spacing: 2px;
+}
+.results-head.reveal {
+  animation: results-pop 0.5s ease-out;
+}
+.results-head.reveal .res-side.win {
+  animation: win-pulse 0.7s ease-out;
+}
+.results-head.reveal .res-verdict {
+  animation: verdict-slam 0.5s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+/* the breakdown table + buttons fade up under the headline reveal */
+.overlay-panel.results.revealed .results-table,
+.overlay-panel.results.revealed .overlay-buttons,
+.overlay-panel.results.revealed > .ds-hint {
+  animation: results-fade-up 0.5s ease-out 0.25s both;
+}
+@keyframes verdict-wait {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes results-pop {
+  0% {
+    transform: scale(0.96);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes verdict-slam {
+  0% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes win-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0);
+  }
+  35% {
+    box-shadow: 0 0 26px 4px rgba(251, 191, 36, 0.7);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0);
+  }
+}
+@keyframes results-fade-up {
+  from {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* --------------------------------------------------- ranked pre-match intro -- */
+.intro-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  background: rgba(8, 10, 14, 0.72);
+  backdrop-filter: blur(4px);
+  z-index: 19; /* under the countdown digits (z-30) */
+  pointer-events: none;
+  animation: intro-bg 0.4s ease-out;
+}
+.intro-eyebrow {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 6px;
+  color: var(--amber);
+  animation: intro-drop 0.5s ease-out;
+}
+.intro-cols {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: min(9vw, 130px);
+  width: 100%;
+  max-width: 1000px;
+}
+.intro-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-end;
+  flex: 1;
+}
+.intro-col.right {
+  align-items: flex-start;
+}
+.intro-side-label {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 4px;
+}
+.intro-side-label.red {
+  color: var(--red);
+}
+.intro-side-label.blue {
+  color: var(--blue);
+}
+.intro-vs {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 3px;
+  color: var(--text);
+  opacity: 0.75;
+  animation: intro-drop 0.5s ease-out 0.1s both;
+}
+.intro-card {
+  width: 230px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  text-align: left;
+  opacity: 0;
+  animation: intro-slide-l 0.5s cubic-bezier(0.2, 1, 0.3, 1) both;
+}
+.intro-col.right .intro-card {
+  animation-name: intro-slide-r;
+}
+.intro-card.red {
+  border-left-color: var(--red);
+}
+.intro-card.blue {
+  border-left-color: var(--blue);
+}
+.intro-card.you {
+  box-shadow: 0 0 0 1px var(--amber) inset;
+}
+.intro-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.intro-team {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.intro-you {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  color: #0b0d12;
+  background: var(--amber);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.intro-name {
+  margin-top: 4px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.intro-sub {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.intro-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+  gap: 8px;
+}
+.intro-dt {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 2px 7px;
+}
+.intro-elo {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--amber);
+  font-variant-numeric: tabular-nums;
+}
+@keyframes intro-bg {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes intro-drop {
+  from {
+    transform: translateY(-10px);
+    opacity: 0;
+  }
+}
+@keyframes intro-slide-l {
+  from {
+    transform: translateX(-40px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+@keyframes intro-slide-r {
+  from {
+    transform: translateX(40px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* -------------------------------------------------- results ELO change block -- */
+.elo-block {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.elo-head {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: var(--amber);
+  text-align: center;
+}
+.elo-wait {
+  margin: 0;
+  text-align: center;
+  letter-spacing: 1.5px;
+}
+.elo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border-left: 3px solid var(--border);
+}
+.elo-row.red {
+  border-left-color: var(--red);
+}
+.elo-row.blue {
+  border-left-color: var(--blue);
+}
+.elo-row.you {
+  box-shadow: 0 0 0 1px var(--amber) inset;
+}
+.elo-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.elo-you {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  color: #0b0d12;
+  background: var(--amber);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.elo-nums {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.elo-before {
+  color: var(--muted);
+  font-weight: 600;
+}
+.elo-arrow {
+  color: var(--muted);
+}
+.elo-after {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--text);
+}
+.elo-delta {
+  min-width: 44px;
+  text-align: right;
+  font-weight: 800;
+}
+.elo-delta.up {
+  color: var(--ok, #34d399);
+}
+.elo-delta.down {
+  color: var(--danger, #f87171);
 }
 
 /* ---------------------------------------------------------- mobile controls ---- */

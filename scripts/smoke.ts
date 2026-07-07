@@ -1870,5 +1870,50 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   check('favored winner gains modestly (<16)', aT.after - aT.before > 0 && aT.after - aT.before < 16, `+${aT.after - aT.before}`);
 }
 
+// ---- ranked results: server broadcasts eloResult, re-keyed to robot ids ------
+{
+  const msgs: ServerMsg[] = [];
+  const mk = (id: string, alliance: 'red' | 'blue', userId: string): Client => ({
+    id,
+    send: (m) => msgs.push(m),
+    player: {
+      clientId: id,
+      name: id,
+      teamName: 'T',
+      teamNumber: 1,
+      alliance,
+      startIndex: 0,
+      ready: true,
+      spec: { ...DEFAULT_SPEC },
+      assists: { ...DEFAULT_ASSISTS },
+    },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+  });
+  // onResult resolves to overall-ELO changes (as applyMatchElo would); the Room
+  // must re-key them to robot ids (add order → robotId 0 = red, 1 = blue)
+  const onResult = () =>
+    Promise.resolve([
+      { userId: 'u-red', before: 1000, after: 1016 },
+      { userId: 'u-blue', before: 1000, after: 984 },
+    ]);
+  const room = new Room('smoke-elo', () => {}, { kind: 'versus' }, onResult);
+  room.add(mk('cr', 'red', 'u-red'));
+  room.add(mk('cb', 'blue', 'u-blue'));
+  room.onMessage('cr', { t: 'start' });
+  room.advanceForTest(maxMatchTicks() + 5);
+  await new Promise((r) => setTimeout(r, 0)); // flush the async eloResult broadcast
+
+  const elo = msgs.find((m) => m.t === 'eloResult');
+  check('server Room broadcasts eloResult after a ranked match', !!elo);
+  if (elo && elo.t === 'eloResult') {
+    const red = elo.results.find((r) => r.robotId === 0);
+    const blue = elo.results.find((r) => r.robotId === 1);
+    check('eloResult re-keys the winner delta to red robot 0', red?.after === 1016 && red?.before === 1000);
+    check('eloResult re-keys the loser delta to blue robot 1', blue?.after === 984 && blue?.before === 1000);
+  }
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

@@ -1,6 +1,6 @@
 import { dbEnabled } from './db/pool';
 import { ensureProfile, ensureSeason, saveReplay, submitRecord } from './db/repo';
-import { applyMatchElo } from './ranked';
+import { applyMatchElo, type EloOutcome } from './ranked';
 import type { MatchOutcome } from './room';
 
 /**
@@ -13,7 +13,7 @@ import type { MatchOutcome } from './room';
  * - VERSUS room → ranked ELO + match history.
  * Both save the recorded replay first (public, watchable, re-simulatable).
  */
-export async function persistMatch(o: MatchOutcome): Promise<void> {
+export async function persistMatch(o: MatchOutcome): Promise<EloOutcome[]> {
   const authed = o.participants.filter((p) => p.userId);
   const label = o.config.kind === 'record' ? `record/${o.config.record ?? 'solo'}` : 'versus';
   console.log(
@@ -21,11 +21,11 @@ export async function persistMatch(o: MatchOutcome): Promise<void> {
   );
   if (!dbEnabled) {
     console.log('[persist] SKIP — DATABASE_URL unset (no DB)');
-    return;
+    return [];
   }
   if (authed.length === 0) {
     console.log('[persist] SKIP — no authed participants (run is anonymous, dropped)');
-    return;
+    return [];
   }
   try {
     const bv = o.replay.balanceVersion;
@@ -51,10 +51,12 @@ export async function persistMatch(o: MatchOutcome): Promise<void> {
         `[persist] WROTE record ${id}: user=${primary.userId} score=${score} dt=${primary.drivetrain} season=${bv}`,
       );
     } else {
-      await applyMatchElo(authed, o, bv, replayId);
+      const elo = await applyMatchElo(authed, o, bv, replayId);
       console.log(`[persist] WROTE ELO for ${authed.length} players`);
+      return elo;
     }
   } catch (e) {
     console.error('[persist] FAILED writing to DB:', e);
   }
+  return [];
 }

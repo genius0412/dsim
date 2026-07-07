@@ -1,6 +1,7 @@
 import type {
   Alliance,
   ArtifactColor,
+  DrivetrainType,
   GameMode,
   MatchPhase,
   Motif,
@@ -28,6 +29,29 @@ export interface Toast {
   id: number;
   text: string;
   at: number; // performance.now() ms
+}
+
+/** one driver's overall-ELO change on the results screen (ranked matches only) */
+export interface EloResultRow {
+  robotId: number;
+  name: string;
+  alliance: Alliance;
+  before: number;
+  after: number;
+  isLocal: boolean;
+}
+
+/** one driver's pre-match intro card (ranked matches only) */
+export interface IntroPlayer {
+  robotId: number;
+  name: string;
+  teamName: string;
+  teamNumber: number;
+  drivetrain: DrivetrainType;
+  alliance: Alliance;
+  /** current ranked ELO, or null if unranked / signed out */
+  elo: number | null;
+  isLocal: boolean;
 }
 
 export interface HudSnapshot {
@@ -64,6 +88,9 @@ export interface HudSnapshot {
   overflowCount: number;
   /** pre-match "3-2-1" countdown value, or null when not counting down */
   countdown: number | null;
+  /** performance.now() ms at which the end-of-match fanfare (whoosh) fires and
+   * the results reveal should land; null except during phase 'post' */
+  resultRevealAt: number | null;
   toasts: Toast[];
   /** multiplayer status (null in solo): stall target + desync flag */
   net: { waitingFor: string | null; desync: boolean; peers: number } | null;
@@ -84,6 +111,9 @@ export class GameController {
   private disposed = false;
   private prevPhase: MatchPhase;
   private warningPlayed = false;
+  /** performance.now() ms when the match entered phase 'post' (drives the
+   * whoosh-synced results reveal); null until the match ends */
+  private matchOverAt: number | null = null;
   /** world.time when the pre-match countdown began (null = not started) */
   private countdownStart: number | null = null;
   private lastBeepAt = -1;
@@ -220,9 +250,12 @@ export class GameController {
       if (phase === 'teleop' && this.prevPhase === 'transition') this.audio.play('resume');
       if (phase === 'post') {
         this.audio.play('end');
+        // record the moment the match ended so the results screen can hold its
+        // score reveal until the whoosh lands (both use MATCH_RESULT_REVEAL_MS)
+        this.matchOverAt = performance.now();
         window.setTimeout(() => {
           if (!this.disposed && this.world.match.phase === 'post') this.audio.play('match_result');
-        }, 2200);
+        }, C.MATCH_RESULT_REVEAL_MS);
       }
       this.prevPhase = phase;
     }
@@ -478,6 +511,7 @@ export class GameController {
     this.world = this.makeWorld();
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
+    this.matchOverAt = null;
     this.countdownStart = null;
     this.hudCountdown = null;
     this.frontFlipped = false;
@@ -506,6 +540,7 @@ export class GameController {
     this.world = this.makeWorld();
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
+    this.matchOverAt = null;
     this.countdownStart = null;
     this.hudCountdown = null;
     this.frontFlipped = false;
@@ -536,6 +571,44 @@ export class GameController {
    * or null in solo / before phase 'post' */
   getMatchResult(): MatchResultInfo | null {
     return this.session?.getMatchResult() ?? null;
+  }
+
+  /** ranked pre-match intro roster (name/team/drivetrain + ELO per driver), or
+   * null for solo / free drive / non-ranked custom rooms. Drives the RankedIntro
+   * overlay. Static after matchStart, so the UI reads it once. */
+  getIntro(): IntroPlayer[] | null {
+    const s = this.session;
+    if (!s || !s.ranked) return null;
+    return s.setups.map((su) => ({
+      robotId: su.id,
+      name: su.spec.name,
+      teamName: su.spec.teamName,
+      teamNumber: su.spec.teamNumber,
+      drivetrain: su.spec.drivetrain,
+      alliance: su.alliance,
+      elo: s.intros.find((it) => it.id === su.id)?.elo ?? null,
+      isLocal: su.id === this.localRobotId,
+    }));
+  }
+
+  /** ranked results-screen ELO changes (before → after per driver), or null until
+   * the server's `eloResult` lands after the match is scored. Sorted red-then-blue
+   * to match the intro/results layout. */
+  getEloResults(): EloResultRow[] | null {
+    const s = this.session;
+    if (!s || !s.ranked || s.eloResults.length === 0) return null;
+    const rows = s.eloResults.map((d) => {
+      const su = s.setups.find((x) => x.id === d.robotId);
+      return {
+        robotId: d.robotId,
+        name: su?.spec.name ?? 'Driver',
+        alliance: su?.alliance ?? ('red' as Alliance),
+        before: d.before,
+        after: d.after,
+        isLocal: d.robotId === this.localRobotId,
+      };
+    });
+    return rows.sort((a, b) => (a.alliance === b.alliance ? 0 : a.alliance === 'red' ? -1 : 1));
   }
 
   getHud(): HudSnapshot {
@@ -572,6 +645,10 @@ export class GameController {
       classifiedCount: goal.classifiedCount,
       overflowCount: goal.overflowCount,
       countdown: this.hudCountdown,
+      resultRevealAt:
+        w.match.phase === 'post' && this.matchOverAt !== null
+          ? this.matchOverAt + C.MATCH_RESULT_REVEAL_MS
+          : null,
       toasts: [...this.toasts],
       net: this.session ? this.session.status() : null,
     };

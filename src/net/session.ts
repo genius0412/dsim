@@ -1,7 +1,7 @@
 import type { RobotCommand, World } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
-import type { RecordKind, RoomKind } from './protocol';
+import type { EloDelta, PlayerIntro, RecordKind, RoomKind } from './protocol';
 
 /** the server's authoritative end-of-match payload (score + recorded replay) */
 export interface MatchResultInfo {
@@ -52,6 +52,13 @@ export interface NetSession {
   seed: number;
   /** the robot slots in the match (updated on a host restart) */
   setups: RobotSetup[];
+  /** ranked matchmaking match? gates the pre-match ELO intro overlay */
+  ranked: boolean;
+  /** per-driver ELO for the intro overlay (empty unless ranked) */
+  intros: PlayerIntro[];
+  /** per-driver overall-ELO change for the results screen (populated shortly
+   * after phase 'post' in ranked matches; empty otherwise) */
+  eloResults: EloDelta[];
   /** does this client hold start/restart authority? */
   isHost(): boolean;
   /** host only: ask the server to re-author the match (server picks the seed) */

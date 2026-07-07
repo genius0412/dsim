@@ -134,7 +134,7 @@ export function MatchSetup({
       <div className="ds-panel-h">
         <span className="ds-panel-title">Match setup</span>
         <span className="ds-panel-title" style={{ color: 'var(--ds-mut)' }}>
-          applied when you start a match
+          applied at match start
         </span>
       </div>
 
@@ -147,14 +147,14 @@ export function MatchSetup({
               onClick={() => setAlliance('red')}
             >
               <span className="ot">RED</span>
-              <span className="od">Red wall — your goal is cross-court, top-left of your view</span>
+              <span className="od">Goal at top-left of your view</span>
             </button>
             <button
               className={`ds-opt blue ${settings.alliance === 'blue' ? 'on' : ''}`}
               onClick={() => setAlliance('blue')}
             >
               <span className="ot">BLUE</span>
-              <span className="od">Blue wall — your goal is cross-court, top-right of your view</span>
+              <span className="od">Goal at top-right of your view</span>
             </button>
           </div>
         </section>
@@ -169,7 +169,7 @@ export function MatchSetup({
                 onClick={() => set({ startIndex: i })}
               >
                 <span className="ot">{p.label}</span>
-                <span className="od">launch zone, mirrored to your alliance</span>
+                <span className="od">launch zone</span>
               </button>
             ))}
             <button
@@ -177,7 +177,7 @@ export function MatchSetup({
               onClick={() => set({ practiceDummies: !settings.practiceDummies })}
             >
               <span className="ot">Practice dummies {settings.practiceDummies ? 'ON' : 'OFF'}</span>
-              <span className="od">Three idle robots to push against (Free Drive)</span>
+              <span className="od">Idle robots to push against · Free Drive</span>
             </button>
           </div>
         </section>
@@ -193,7 +193,6 @@ export function MatchSetup({
             {settings.autoPath && (
               <button className="ds-opt" onClick={clearAutoPath}>
                 <span className="ot">Clear path</span>
-                <span className="od">Remove the loaded auto path</span>
               </button>
             )}
             <button
@@ -202,11 +201,11 @@ export function MatchSetup({
               disabled={!settings.autoPath}
             >
               <span className="ot">Auto path {settings.autoPathEnabled ? 'ON' : 'OFF'}</span>
-              <span className="od">Follow the imported path during auto</span>
+              <span className="od">Follow the imported path</span>
             </button>
           </div>
           <p className="ds-hint">
-            Build and export a <code>.pp</code> path at{' '}
+            Build a <code>.pp</code> path at{' '}
             <a
               href="https://visualizer.pedropathing.com"
               target="_blank"
@@ -215,9 +214,7 @@ export function MatchSetup({
             >
               visualizer.pedropathing.com
             </a>
-            , then import it here.
-            {settings.autoPath &&
-              ` Loaded: ${settings.autoPath.fileName} (Version: ${settings.autoPath.version || 'N/A'}).`}
+            .
           </p>
         </section>
       </div>

@@ -1,11 +1,49 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { GameController, type GameSettings, type HudSnapshot } from '../game';
+import {
+  GameController,
+  type GameSettings,
+  type HudSnapshot,
+  type IntroPlayer,
+  type EloResultRow,
+} from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
 import { MobileControls } from './MobileControls';
 import type { MatchResultInfo, NetSession } from '../net/session';
 import type { Replay } from '../sim/replay';
-import type { Alliance, ScoreBreakdown } from '../types';
+import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
+
+const DT_LABEL: Record<DrivetrainType, string> = {
+  mecanum: 'Mecanum',
+  tank: 'Tank',
+  swerve: 'Swerve',
+  xdrive: 'X-Drive',
+};
+
+/** count an integer from `from` to `target` over `duration` ms once `active` flips
+ * true (ease-out cubic). Used for the results score reveal (from 0) and the ELO
+ * change (from the old rating, so the delta ticks in). */
+function useCountUp(target: number, active: boolean, duration = 900, from = 0): number {
+  const [val, setVal] = useState(from);
+  useEffect(() => {
+    if (!active) {
+      setVal(from);
+      return;
+    }
+    let raf = 0;
+    let t0 = 0;
+    const tick = (t: number): void => {
+      if (!t0) t0 = t;
+      const p = Math.min(1, (t - t0) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setVal(Math.round(from + (target - from) * eased));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, active, duration, from]);
+  return active ? val : from;
+}
 
 interface Props {
   settings: GameSettings;
@@ -20,11 +58,13 @@ export function GameView({ settings, onExit, session = null, onWatchReplay }: Pr
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controllerRef = useRef<GameController | null>(null);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
+  const [intro, setIntro] = useState<IntroPlayer[] | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
     const controller = new GameController(canvas, settings, session);
     controllerRef.current = controller;
+    setIntro(controller.getIntro()); // ranked matches only; null otherwise
     const hudTimer = window.setInterval(() => setHud(controller.getHud()), 100);
     const onKey = (e: KeyboardEvent) => {
       // Escape is reserved (never rebindable); restart is handled by the
@@ -49,7 +89,7 @@ export function GameView({ settings, onExit, session = null, onWatchReplay }: Pr
       )}
       {hud && <Hud hud={hud} />}
       <div className="game-buttons">
-        <button className="game-btn" onClick={onExit} title="Back to menu (Esc)">
+        <button className="game-btn" onClick={onExit} title="Menu (Esc)">
           ◄ MENU
         </button>
         {/* RESET is a LOCAL rebuild — meaningless (and desyncing) in lockstep, so
@@ -58,7 +98,7 @@ export function GameView({ settings, onExit, session = null, onWatchReplay }: Pr
           <button
             className="game-btn"
             onClick={() => controllerRef.current?.restart()}
-            title="Restart (R · gamepad Back/Select)"
+            title="Restart"
           >
             ⟲ RESET
           </button>
@@ -77,7 +117,7 @@ export function GameView({ settings, onExit, session = null, onWatchReplay }: Pr
             {!window.matchMedia('(pointer: coarse)').matches && (
               <p className="big">
                 Press {keyLabel(settings.bindings.keys.start[0] ?? 'enter')} or{' '}
-                {padButtonLabel(settings.bindings.pad.buttons.start[0] ?? 9)} to begin the MATCH
+                {padButtonLabel(settings.bindings.pad.buttons.start[0] ?? 9)} to start
               </p>
             )}
             {window.matchMedia('(pointer: coarse)').matches && (
@@ -97,11 +137,13 @@ export function GameView({ settings, onExit, session = null, onWatchReplay }: Pr
               </div>
             )}
             <p className="ds-hint">
-              Esc returns to the menu · {keyLabel(settings.bindings.keys.restart[0] ?? '?')} or{' '}
-              {padButtonLabel(settings.bindings.pad.buttons.restart[0] ?? 8)} restarts
+              Esc · menu &nbsp;·&nbsp; {keyLabel(settings.bindings.keys.restart[0] ?? '?')} · restart
             </p>
           </div>
         </div>
+      )}
+      {intro && hud?.phase === 'pre' && (
+        <RankedIntro players={intro} viewAlliance={hud.alliance} />
       )}
       {hud?.phase === 'pre' && hud.countdown !== null && (
         <div
@@ -114,6 +156,9 @@ export function GameView({ settings, onExit, session = null, onWatchReplay }: Pr
       {hud?.phase === 'post' && (
         <Results
           hud={hud}
+          revealAt={hud.resultRevealAt}
+          ranked={!!session?.ranked}
+          eloResults={controllerRef.current?.getEloResults() ?? null}
           canRematch={!session || session.isHost()}
           onRematch={() => controllerRef.current?.rematch()}
           onExit={onExit}
@@ -247,12 +292,114 @@ function Hud({ hud }: { hud: HudSnapshot }) {
   );
 }
 
+/** one driver card in the ranked intro (team/name, drivetrain badge, count-up ELO) */
+function IntroCard({ p, index }: { p: IntroPlayer; index: number }) {
+  const elo = useCountUp(p.elo ?? 0, true, 1100);
+  return (
+    <div
+      className={`intro-card ${p.alliance} ${p.isLocal ? 'you' : ''}`}
+      style={{ animationDelay: `${0.15 + index * 0.12}s` }}
+    >
+      <div className="intro-card-head">
+        <span className="intro-team">{p.teamNumber ? `#${p.teamNumber}` : '—'}</span>
+        {p.isLocal && <span className="intro-you">YOU</span>}
+      </div>
+      <div className="intro-name">{p.name || 'Unnamed'}</div>
+      <div className="intro-sub">{p.teamName || 'No team'}</div>
+      <div className="intro-meta">
+        <span className="intro-dt">{DT_LABEL[p.drivetrain]}</span>
+        <span className="intro-elo">{p.elo === null ? 'UNRANKED' : elo}</span>
+      </div>
+    </div>
+  );
+}
+
+/** ranked pre-match intro: RED vs BLUE cards fly in from their sides, drivetrains
+ * shown, ELO counting up. Runs during the ~4s pre-match countdown (the "MATCH
+ * BEGINS IN" / 3-2-1 digits render on top). */
+function RankedIntro({
+  players,
+  viewAlliance,
+}: {
+  players: IntroPlayer[];
+  viewAlliance: Alliance;
+}) {
+  const red = players.filter((p) => p.alliance === 'red');
+  const blue = players.filter((p) => p.alliance === 'blue');
+  // put the local player's alliance on the left so it reads as "us vs them"
+  const [left, leftName, right, rightName] =
+    viewAlliance === 'blue'
+      ? ([blue, 'BLUE', red, 'RED'] as const)
+      : ([red, 'RED', blue, 'BLUE'] as const);
+  return (
+    <div className="intro-overlay">
+      <div className="intro-eyebrow">RANKED MATCH</div>
+      <div className="intro-cols">
+        <div className="intro-col">
+          <div className={`intro-side-label ${leftName.toLowerCase()}`}>{leftName}</div>
+          {left.map((p, i) => (
+            <IntroCard key={p.robotId} p={p} index={i} />
+          ))}
+        </div>
+        <div className="intro-vs">VS</div>
+        <div className="intro-col right">
+          <div className={`intro-side-label ${rightName.toLowerCase()}`}>{rightName}</div>
+          {right.map((p, i) => (
+            <IntroCard key={p.robotId} p={p} index={i} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** one driver's ELO change row: name, before → after, colored delta */
+function EloRow({ r }: { r: EloResultRow }) {
+  const delta = r.after - r.before;
+  const after = useCountUp(r.after, true, 900, r.before);
+  return (
+    <div className={`elo-row ${r.alliance} ${r.isLocal ? 'you' : ''}`}>
+      <span className="elo-name">
+        {r.name}
+        {r.isLocal && <span className="elo-you">YOU</span>}
+      </span>
+      <span className="elo-nums">
+        <span className="elo-before">{r.before}</span>
+        <span className="elo-arrow">→</span>
+        <span className="elo-after">{after}</span>
+        <span className={`elo-delta ${delta >= 0 ? 'up' : 'down'}`}>
+          {delta >= 0 ? `+${delta}` : delta}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+/** ranked ELO change section on the results screen. `rows` is null until the
+ * server's scored eloResult lands (a beat after the score), so we show a short
+ * "Updating ELO…" placeholder meanwhile. */
+function EloResults({ rows }: { rows: EloResultRow[] | null }) {
+  return (
+    <div className="elo-block">
+      <div className="elo-head">RANKED · ELO</div>
+      {rows === null ? (
+        <p className="ds-hint elo-wait">Updating ELO…</p>
+      ) : (
+        rows.map((r) => <EloRow key={r.robotId} r={r} />)
+      )}
+    </div>
+  );
+}
+
 /** final match results — RED | category | BLUE, like the FTC audience board.
  * Foul rows show the fouls each alliance COMMITTED (its own count) — the POINTS
  * for those go to the OPPONENT's total (see the footnote), so a foul always
  * benefits the fouled alliance. */
 function Results({
   hud,
+  revealAt,
+  ranked,
+  eloResults,
   canRematch,
   onRematch,
   onExit,
@@ -260,6 +407,13 @@ function Results({
   onWatchReplay,
 }: {
   hud: HudSnapshot;
+  /** performance.now() ms the whoosh fires — the reveal (count-up + winner slam)
+   * lands here; null ⇒ reveal immediately */
+  revealAt: number | null;
+  /** ranked match? shows the ELO-change section */
+  ranked: boolean;
+  /** per-driver ELO changes, or null until the server's eloResult lands */
+  eloResults: EloResultRow[] | null;
   canRematch: boolean;
   onRematch: () => void;
   onExit: () => void;
@@ -270,6 +424,20 @@ function Results({
   const blue = hud.alliance === 'blue' ? hud.score : hud.oppScore;
   const winner: Alliance | 'tie' =
     red.total > blue.total ? 'red' : blue.total > red.total ? 'blue' : 'tie';
+
+  // hold the reveal until the whoosh fires, then count up + slam the winner
+  const [revealed, setRevealed] = useState(false);
+  useEffect(() => {
+    if (revealAt === null) {
+      setRevealed(true);
+      return;
+    }
+    const delay = Math.max(0, revealAt - performance.now());
+    const id = window.setTimeout(() => setRevealed(true), delay);
+    return () => window.clearTimeout(id);
+  }, [revealAt]);
+  const redTotal = useCountUp(red.total, revealed, 900);
+  const blueTotal = useCountUp(blue.total, revealed, 900);
 
   const f = hud.fouls; // fouls COMMITTED by each alliance
   const val = (get: (s: ScoreBreakdown) => number): [number, number] => [get(red), get(blue)];
@@ -311,19 +479,24 @@ function Results({
 
   return (
     <div className="overlay">
-      <div className="overlay-panel results">
-        <h2>MATCH RESULTS</h2>
-        <div className="results-head">
-          <div className={`res-side red ${winner === 'red' ? 'win' : ''}`}>
+      <div className={`overlay-panel results ${revealed ? 'revealed' : 'tallying'}`}>
+        <h2>{revealed ? 'MATCH RESULTS' : 'FINAL SCORE'}</h2>
+        <div className={`results-head ${revealed ? 'reveal' : ''}`}>
+          <div className={`res-side red ${revealed && winner === 'red' ? 'win' : ''}`}>
             <span>RED</span>
-            <strong>{red.total}</strong>
+            <strong>{revealed ? redTotal : '—'}</strong>
           </div>
-          <div className="res-verdict">{winner === 'tie' ? 'TIE' : `${winner.toUpperCase()} WINS`}</div>
-          <div className={`res-side blue ${winner === 'blue' ? 'win' : ''}`}>
+          <div className="res-verdict">
+            {revealed ? (winner === 'tie' ? 'TIE' : `${winner.toUpperCase()} WINS`) : '···'}
+          </div>
+          <div className={`res-side blue ${revealed && winner === 'blue' ? 'win' : ''}`}>
             <span>BLUE</span>
-            <strong>{blue.total}</strong>
+            <strong>{revealed ? blueTotal : '—'}</strong>
           </div>
         </div>
+        {!revealed && <p className="ds-hint results-wait">Tallying the score…</p>}
+        {revealed && (
+          <>
         <table className="score-table results-table">
           <thead>
             <tr>
@@ -354,14 +527,15 @@ function Results({
             </tr>
           </tbody>
         </table>
+        {ranked && <EloResults rows={eloResults} />}
         <p className="ds-hint">
-          PENALTIES are the points (minor {PTS_FOUL_MINOR} · major {PTS_FOUL_MAJOR}) awarded to each
-          alliance for the OPPONENT's fouls — already included in each TOTAL.
+          Penalty points ({PTS_FOUL_MINOR} minor · {PTS_FOUL_MAJOR} major) come from the opponent's
+          fouls and are already in each total.
         </p>
         {matchResult && (
           <p className="ds-hint" style={{ color: 'var(--ds-accent)' }}>
             {matchResult.kind === 'record'
-              ? '✓ Recorded — sign in for it to hit the leaderboard.'
+              ? '✓ Recorded — sign in to save it to the leaderboard.'
               : '✓ Match recorded.'}
           </p>
         )}
@@ -378,6 +552,8 @@ function Results({
           )}
           <button onClick={onExit}>MENU</button>
         </div>
+          </>
+        )}
       </div>
     </div>
   );

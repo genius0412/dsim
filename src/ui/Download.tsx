@@ -29,10 +29,7 @@ export function Download() {
     <>
       <p className="ds-eyebrow">{APP_NAME} · Desktop</p>
       <h1 className="ds-h1">Download for desktop</h1>
-      <p className="ds-sub">
-        The desktop build is the full offline sim in a native window — no browser needed. Available
-        for Windows, macOS, and Linux.
-      </p>
+      <p className="ds-sub">The full offline sim in a native window. Windows, macOS, and Linux.</p>
 
       <div className="ds-dl-hero">
         <div className="ds-dl-plat">
@@ -58,16 +55,12 @@ export function Download() {
       <div className="ds-panelbox">
         <div className="ds-panel-title">Build it yourself</div>
         <p className="ds-hint" style={{ marginTop: -4 }}>
-          Prefer to build from source? Clone the{' '}
+          Clone the{' '}
           <a href={LINKS.repo} target="_blank" rel="noreferrer" style={{ color: 'var(--ds-accent)' }}>
             repository
-          </a>
-          , then with Node installed run{' '}
-          <code style={{ fontFamily: 'var(--ds-font-mono)' }}>npm run build</code> and{' '}
-          <code style={{ fontFamily: 'var(--ds-font-mono)' }}>npx electron-builder</code> for your
-          platform (or <code style={{ fontFamily: 'var(--ds-font-mono)' }}>npm run dist</code> on
-          Windows). Artifacts land in{' '}
-          <code style={{ fontFamily: 'var(--ds-font-mono)' }}>release/</code>.
+          </a>{' '}
+          and run <code style={{ fontFamily: 'var(--ds-font-mono)' }}>npm run dist</code>. Artifacts
+          land in <code style={{ fontFamily: 'var(--ds-font-mono)' }}>release/</code>.
         </p>
       </div>
     </>

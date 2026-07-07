@@ -118,14 +118,20 @@ wss.on('connection', (ws: WebSocket) => {
         }
       } else if (msg.t === 'queue') {
         if (room) return; // already in a room/match
-        // verify identity, then join the ranked queue; on a match the matchmaker
-        // sets our `room` so subsequent input routes there
+        // ranked REQUIRES a verified account (ELO/leaderboard only make sense with
+        // an identity). Anonymous players can still use custom rooms, just not
+        // ranked. Verify the JWT, then enqueue; on a match the matchmaker sets our
+        // `room` so subsequent input routes there.
         verifyAuthToken(msg.authToken).then((u) => {
+          if (!u) {
+            send({ t: 'error', message: 'Sign in to play ranked.' });
+            return;
+          }
           matchmaker.enqueue({
             id,
             send,
-            player: { ...msg.player, name: u?.handle ?? msg.player.name },
-            userId: u?.userId,
+            player: { ...msg.player, name: u.handle ?? msg.player.name },
+            userId: u.userId,
             mode: msg.mode,
             onRoom: (r) => {
               room = r;

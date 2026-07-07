@@ -21,11 +21,14 @@ import {
   DEFAULT_ROOM_CONFIG,
   type BallDelta,
   type ClientMsg,
+  type EloDelta,
   type LobbyPlayer,
+  type PlayerIntro,
   type QCommand,
   type RoomConfig,
   type ServerMsg,
 } from '../src/net/protocol';
+import type { EloOutcome } from './ranked';
 
 const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, intake: false, fire: false };
 /** send an authoritative snapshot every N ticks. 3 = ~20 Hz: remote robots are
@@ -111,6 +114,11 @@ export class Room {
   // recording: captures the input log for this match; finalized once at phase 'post'
   private recorder: ReplayRecorder | null = null;
   private finalized = false;
+  // ranked matchmaking rooms carry each driver's ELO so the client can play a
+  // pre-match intro; set by the Matchmaker before the match starts (keyed by the
+  // robot id assigned in startMatch = the client's add-order index)
+  private ranked = false;
+  private intros: PlayerIntro[] = [];
 
   constructor(
     readonly code: string,
@@ -119,9 +127,19 @@ export class Room {
     /** what this room runs (versus PvP vs. record-chasing); set at creation */
     readonly config: RoomConfig = DEFAULT_ROOM_CONFIG,
     /** invoked once at phase 'post' with the authoritative outcome, so the DB
-     * layer can persist it. DB-agnostic: tests/dev pass nothing. */
-    private readonly onResult?: (o: MatchOutcome) => void,
+     * layer can persist it. DB-agnostic: tests/dev pass nothing. May resolve to
+     * the per-player overall-ELO changes (ranked), which the room then broadcasts
+     * as `eloResult` for the results screen. */
+    private readonly onResult?: (o: MatchOutcome) => void | Promise<EloOutcome[] | void>,
   ) {}
+
+  /** mark this room as a ranked match and attach per-driver ELO for the intro
+   * overlay (called by the Matchmaker before startMatchNow). `intros` are keyed
+   * by the robot id startMatch assigns = the client's add-order index. */
+  setRankedIntro(intros: PlayerIntro[]): void {
+    this.ranked = true;
+    this.intros = intros;
+  }
 
   /** true if a fresh driver can still join (room not full, not mid-match) */
   canJoin(): boolean {
@@ -321,7 +339,14 @@ export class Room {
     this.finalized = false;
 
     for (const c of roster) {
-      c.send({ t: 'matchStart', seed, setups, yourRobotId: this.robotOf.get(c.id) ?? 0 });
+      c.send({
+        t: 'matchStart',
+        seed,
+        setups,
+        yourRobotId: this.robotOf.get(c.id) ?? 0,
+        ranked: this.ranked,
+        intros: this.ranked ? this.intros : undefined,
+      });
     }
     this.startLoop();
   }
@@ -379,10 +404,13 @@ export class Room {
     // hand the authoritative outcome to the persistence layer (off the hot path)
     if (this.onResult) {
       const participants: MatchParticipant[] = [];
+      // capture userId → robotId so the async ELO result can be re-keyed to robots
+      const robotByUser = new Map<string, number>();
       for (const c of this.clients.values()) {
         const rid = this.robotOf.get(c.id);
         const robot = rid !== undefined ? w.robots.find((r) => r.id === rid) : undefined;
         if (!robot) continue;
+        if (c.userId) robotByUser.set(c.userId, robot.id);
         participants.push({
           clientId: c.id,
           userId: c.userId,
@@ -394,7 +422,24 @@ export class Room {
           assists: c.player.assists,
         });
       }
-      this.onResult({ config: this.config, result, replay, participants });
+      const ret = this.onResult({ config: this.config, result, replay, participants });
+      // ranked matches resolve to ELO changes — broadcast them once persisted so
+      // the results screen can reveal each driver's before → after
+      if (ret && typeof (ret as Promise<unknown>).then === 'function') {
+        void (ret as Promise<EloOutcome[] | void>)
+          .then((elo) => {
+            if (!elo || !elo.length || this.clients.size === 0) return;
+            const results: EloDelta[] = [];
+            for (const e of elo) {
+              const robotId = robotByUser.get(e.userId);
+              if (robotId !== undefined) {
+                results.push({ robotId, before: e.before, after: e.after });
+              }
+            }
+            if (results.length) this.broadcast({ t: 'eloResult', results });
+          })
+          .catch((err) => console.error('[room] eloResult broadcast failed:', err));
+      }
     }
     this.stop();
   }

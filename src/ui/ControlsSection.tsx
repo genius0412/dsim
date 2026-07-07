@@ -280,8 +280,7 @@ export function ControlsSection({ bindings, onChange }: Props) {
           RESET TO DEFAULTS
         </button>
         <p className="ds-hint">
-          Click a binding, then press the new key or gamepad button (Esc cancels). A key already in
-          use moves to the new action.
+          Click a binding, then press the new key or button (Esc cancels).
         </p>
       </div>
     </section>

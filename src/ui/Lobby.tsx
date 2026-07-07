@@ -139,7 +139,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
             </h1>
           </div>
           <p className="ds-sub" style={{ marginTop: -10 }}>
-            Up to 2v2 · share a room code with your drivers.
+            Up to 2v2 · share a room code.
           </p>
           <div className="ds-panelbox">
             <label className="ds-field">
@@ -167,9 +167,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
                 {phase === 'connecting' ? 'CONNECTING…' : 'CREATE / JOIN'}
               </button>
             </div>
-            <p className="ds-hint">
-              Anyone who enters the same code lands in the same room. First one in hosts.
-            </p>
+            <p className="ds-hint">Same code = same room. First one in hosts.</p>
           </div>
         </div>
       </div>
@@ -271,7 +269,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
 
         <div className="ds-actions">
           <button className={`ds-cta ${me?.ready ? 'ghost' : ''}`} onClick={toggleReady}>
-            {me?.ready ? '✓ READY — click to unready' : 'READY UP'}
+            {me?.ready ? '✓ READY' : 'READY UP'}
           </button>
           {isHost && (
             <button className="ds-cta" disabled={!allReady} onClick={() => lobbyRef.current?.start()}>
@@ -279,7 +277,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
             </button>
           )}
         </div>
-        {isHost && !allReady && <p className="ds-hint">START unlocks once every driver is ready.</p>}
+        {isHost && !allReady && <p className="ds-hint">START unlocks when everyone is ready.</p>}
       </div>
     </div>
   );

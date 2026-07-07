@@ -8,6 +8,8 @@ import {
   quantizeCommand,
   dequantizeCommand,
   unslimWorld,
+  type EloDelta,
+  type PlayerIntro,
 } from './protocol';
 
 /**
@@ -26,6 +28,10 @@ export class ServerSession implements NetSession {
   readonly localRobotId: number;
   seed: number;
   setups: RobotSetup[];
+  ranked: boolean;
+  intros: PlayerIntro[];
+  /** per-driver overall-ELO change, arrives shortly after matchResult (ranked) */
+  eloResults: EloDelta[] = [];
 
   private snapshot: Snapshot | null = null;
   private matchResult: MatchResultInfo | null = null;
@@ -39,12 +45,20 @@ export class ServerSession implements NetSession {
   constructor(
     private readonly transport: Transport,
     private readonly host: boolean,
-    start: { seed: number; setups: RobotSetup[]; yourRobotId: number },
+    start: {
+      seed: number;
+      setups: RobotSetup[];
+      yourRobotId: number;
+      ranked?: boolean;
+      intros?: PlayerIntro[];
+    },
     private readonly clientId: string,
     private readonly room: string,
   ) {
     this.seed = start.seed;
     this.setups = start.setups;
+    this.ranked = start.ranked ?? false;
+    this.intros = start.intros ?? [];
     this.localRobotId = start.yourRobotId;
     this.otherRobots = Math.max(0, start.setups.length - 1);
     // take over routing + reconnection handling from the LobbyClient
@@ -127,10 +141,15 @@ export class ServerSession implements NetSession {
       this.connected = true; // snapshots flowing ⇒ we're synced
     } else if (m.t === 'matchResult') {
       this.matchResult = { kind: m.kind, record: m.record, result: m.result, replay: m.replay };
+    } else if (m.t === 'eloResult') {
+      this.eloResults = m.results;
     } else if (m.t === 'matchStart') {
       // a host restart: adopt the new seed/setups and rebuild
       this.seed = m.seed;
       this.setups = m.setups;
+      this.ranked = m.ranked ?? false;
+      this.intros = m.intros ?? [];
+      this.eloResults = [];
       this.snapshot = null;
       this.matchResult = null;
       this.baseBalls.clear();

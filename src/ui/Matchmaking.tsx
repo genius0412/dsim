@@ -15,12 +15,16 @@ import type { QueueMode } from '../net/protocol';
  */
 export function Matchmaking({
   settings,
+  signedIn,
   onStart,
   onCancel,
+  onSignIn,
 }: {
   settings: GameSettings;
+  signedIn: boolean;
   onStart: (s: NetSession) => void;
   onCancel: () => void;
+  onSignIn: () => void;
 }) {
   const [mode, setMode] = useState<QueueMode>('1v1');
   const [searching, setSearching] = useState(false);
@@ -89,6 +93,36 @@ export function Matchmaking({
     teardown();
     setSearching(false);
   };
+
+  // ranked requires an account (ELO / leaderboard). Custom rooms stay open to
+  // everyone — the server also rejects an anonymous queue as a backstop.
+  if (!signedIn) {
+    return (
+      <div className="ds-app">
+        <main
+          className="ds-main"
+          style={{ display: 'grid', placeItems: 'center', minHeight: '70vh' }}
+        >
+          <div style={{ textAlign: 'center', maxWidth: 460, width: '100%' }}>
+            <p className="ds-eyebrow">Ranked</p>
+            <h1 className="ds-h1">Sign in to play ranked</h1>
+            <p className="ds-sub" style={{ margin: '0 auto 20px' }}>
+              Ranked tracks ELO and the leaderboard, so it needs an account. Want to play now?
+              Custom Rooms are open to everyone.
+            </p>
+            <button className="ds-btn primary" onClick={onSignIn}>
+              Sign in
+            </button>
+            <div style={{ marginTop: 12 }}>
+              <button className="ds-btn ghost" onClick={onCancel}>
+                ← Home
+              </button>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="ds-app">

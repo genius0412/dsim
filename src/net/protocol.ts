@@ -104,6 +104,25 @@ export interface LobbyPlayer {
   assists: AssistConfig;
 }
 
+/** a driver's pre-match ranked intro data (ELO, keyed by the robot id the server
+ * assigns at matchStart). Sent only for ranked rooms; drives the intro overlay.
+ * Name / team / drivetrain come from the matching `RobotSetup`, so only the
+ * per-driver ELO travels here. */
+export interface PlayerIntro {
+  /** the robot id assigned in `matchStart.setups` */
+  id: number;
+  /** current overall ranked ELO, or null if the driver is signed out / unrated */
+  elo: number | null;
+}
+
+/** one driver's overall-ELO change, sent after a ranked match is scored so the
+ * results screen can show before → after (+delta). Keyed by robot id. */
+export interface EloDelta {
+  robotId: number;
+  before: number;
+  after: number;
+}
+
 /** fields a client may change about itself while in the room */
 export type PlayerPatch = Partial<
   Pick<
@@ -145,7 +164,17 @@ export type ServerMsg =
   // reply to a 'rejoin': ok ⇒ slot reclaimed (a snapshot follows); !ok ⇒ the
   // grace window lapsed / slot is gone, stop trying
   | { t: 'rejoined'; ok: boolean }
-  | { t: 'matchStart'; seed: number; setups: RobotSetup[]; yourRobotId: number }
+  // `ranked` + `intros` are present only for ranked matchmaking rooms; they
+  // drive the pre-match intro overlay (ELO reveal). Optional so custom rooms and
+  // older servers omit them and the client simply shows no intro.
+  | {
+      t: 'matchStart';
+      seed: number;
+      setups: RobotSetup[];
+      yourRobotId: number;
+      ranked?: boolean;
+      intros?: PlayerIntro[];
+    }
   // authoritative world at `serverTick`, slimmed (spec-stripped robots) with the
   // balls delta-encoded; the client reassembles a full World via `unslimWorld`.
   // `cmds[i]` is the command robot `w.robots[i]` ran this tick — the client holds
@@ -175,7 +204,11 @@ export type ServerMsg =
       record?: RecordKind;
       result: ReplayResult;
       replay: Replay;
-    };
+    }
+  // ranked only: each driver's overall-ELO change, sent shortly after matchResult
+  // once the match is scored + persisted (async DB write). Drives the results
+  // screen's ELO reveal. Absent for custom/anonymous/DB-off matches.
+  | { t: 'eloResult'; results: EloDelta[] };
 
 export const encodeMsg = (m: ClientMsg | ServerMsg): string => JSON.stringify(m);
 export const decodeClientMsg = (s: string): ClientMsg => JSON.parse(s) as ClientMsg;

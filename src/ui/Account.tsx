@@ -28,10 +28,7 @@ export function Account({
     <>
       <p className="ds-eyebrow">{APP_NAME} · Account</p>
       <h1 className="ds-h1">Account settings</h1>
-      <p className="ds-sub">
-        Your sign-in identity and the app-wide preferences. Robot loadout and match options live on
-        the My Robot page.
-      </p>
+      <p className="ds-sub">Your sign-in and app-wide preferences.</p>
 
       {authEnabled ? <Identity /> : <IdentityDisabled />}
 
@@ -45,14 +42,14 @@ export function Account({
             onClick={() => setAudio({ sounds: !settings.audio.sounds })}
           >
             <span className="ot">Sounds {settings.audio.sounds ? 'ON' : 'OFF'}</span>
-            <span className="od">Match sounds, countdowns, and voice — everything</span>
+            <span className="od">All audio</span>
           </button>
           <button
             className={`ds-opt ${settings.audio.voice ? 'on' : ''}`}
             onClick={() => setAudio({ voice: !settings.audio.voice })}
           >
             <span className="ot">Voice lines {settings.audio.voice ? 'ON' : 'OFF'}</span>
-            <span className="od">Announcer countdowns; beeps are used when off</span>
+            <span className="od">Announcer voice · beeps when off</span>
           </button>
         </div>
       </div>
@@ -63,7 +60,7 @@ export function Account({
         </div>
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start' }}>
           <p className="ds-hint" style={{ marginBottom: 2 }}>
-            Restore every setting — robot, controls, assists, audio — to the defaults.
+            Restore all settings to defaults.
           </p>
           <button
             className="ds-btn"
@@ -109,7 +106,7 @@ function Identity() {
       ) : (
         <div style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <p className="ds-hint" style={{ margin: 0 }}>
-            You’re signed out. Sign in to save records and climb the ranked ladder.
+            Sign in to save records and rank up.
           </p>
           <span className="ds-head-spacer" />
           <button className="ds-btn primary" onClick={() => setOpen(true)}>
@@ -193,7 +190,7 @@ function DisplayName({ userId, fallback }: { userId: string; fallback: string })
         </div>
       </label>
       <p className="ds-hint" style={{ margin: 0 }}>
-        This is the name shown on leaderboards and to other drivers. 2–24 characters.
+        Shown on leaderboards and to other drivers. 2–24 characters.
         {!configured && ' Editing needs the game server.'}
         {status === 'ok' && !dirty && <span style={{ color: 'var(--ds-ok)' }}> · Saved.</span>}
         {status === 'error' && <span style={{ color: 'var(--ds-danger)' }}> · {error}</span>}

@@ -29,6 +29,14 @@ export interface EloBoardUpdate {
   after: number;
 }
 
+/** the OVERALL-board rating change for one player, returned to the room so it can
+ * show each driver their ELO delta on the results screen */
+export interface EloOutcome {
+  userId: string;
+  before: number;
+  after: number;
+}
+
 /** standard team-Elo: team rating = mean of members; each member moves toward the
  * team's actual result by K·(actual − expected). Winner = higher alliance score
  * (equal ⇒ draw, 0.5 each). Returns the per-board rating changes. */
@@ -78,10 +86,10 @@ export async function applyMatchElo(
   outcome: MatchOutcome,
   balanceVersion: number,
   replayId: string,
-): Promise<void> {
+): Promise<EloOutcome[]> {
   const reds = authed.filter((p) => p.alliance === 'red');
   const blues = authed.filter((p) => p.alliance === 'blue');
-  if (!reds.length || !blues.length) return; // not a rankable head-to-head
+  if (!reds.length || !blues.length) return []; // not a rankable head-to-head
   const mode = eloMode(authed.length);
 
   const parts: EloParticipant[] = [];
@@ -113,4 +121,9 @@ export async function applyMatchElo(
       ratingAfter: overall.after,
     });
   }
+
+  // the overall-board delta per player, for the results-screen ELO reveal
+  return updates
+    .filter((u) => u.board === 'overall')
+    .map((u) => ({ userId: u.userId, before: u.before, after: u.after }));
 }

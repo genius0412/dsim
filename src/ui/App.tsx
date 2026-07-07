@@ -148,6 +148,10 @@ export function App() {
   };
 
   const multiplayer = gameServerConfigured();
+  // ranked needs a real account (ELO/leaderboard). accountUserId is set by
+  // AccountSync on sign-in and stays null when auth is off, so signed-out and
+  // no-auth builds both lock ranked — custom rooms stay open to everyone.
+  const signedIn = accountUserId !== null;
 
   // full-screen surfaces (outside the shell)
   if (screen === 'game') {
@@ -192,11 +196,13 @@ export function App() {
     return (
       <Matchmaking
         settings={settings}
+        signedIn={signedIn}
         onStart={(s) => {
           setSession(s);
           navigate('game');
         }}
         onCancel={() => navigate('home')}
+        onSignIn={() => navigate('account')}
       />
     );
   }
@@ -236,6 +242,7 @@ export function App() {
           settings={settings}
           onChange={update}
           multiplayer={multiplayer}
+          signedIn={signedIn}
           onFreeDrive={() => {
             update({ ...settings, mode: 'free' });
             navigate('game');

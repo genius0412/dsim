@@ -23,10 +23,10 @@ const DRIVETRAIN_LABELS: Record<DrivetrainType, string> = {
 };
 
 const DRIVETRAIN_BLURBS: Record<DrivetrainType, string> = {
-  mecanum: 'Full strafe at 85% — the FTC standard',
-  tank: 'No strafe; best straight-line speed and push',
-  swerve: 'Full-speed any direction; nimble',
-  xdrive: 'Full-speed strafe, slightly slower overall',
+  mecanum: '85% strafe · FTC standard',
+  tank: 'No strafe · best push',
+  swerve: 'Full-speed any direction',
+  xdrive: 'Full-speed strafe',
 };
 
 const INTAKE_LABELS: Record<IntakeStyle, string> = {
@@ -42,11 +42,9 @@ const INTAKE_SHORT: Record<IntakeStyle, string> = {
 };
 
 const INTAKE_BLURBS: Record<IntakeStyle, string> = {
-  sloped: 'Trapezoid mouth in the frame — face the artifact and it rolls up; devours clumps',
-  vector:
-    'Vertical compliant wheels ahead of the chassis (11.5–14.5") — overhanging a narrower chassis they grab artifacts you strafe into',
-  triangle:
-    'Stores artifacts in a triangle; long trapezoid mouth devours clumps — slower transfer to the shooter (0.3s)',
+  sloped: 'Face artifacts to scoop them up · eats clumps',
+  vector: 'Grabs artifacts you strafe into',
+  triangle: 'Long reach, eats clumps · slower transfer',
 };
 
 /** does the current spec exactly match a preset? (value compare) */
@@ -103,10 +101,7 @@ export function Menu({ settings, onChange }: Props) {
     <>
       <p className="ds-eyebrow">{APP_NAME} · Loadout</p>
       <h1 className="ds-h1">My Robot</h1>
-      <p className="ds-sub">
-        Build the robot you drive — pick a preset or customize the chassis, drivetrain, intake, and
-        driver assists. Match options live on Home.
-      </p>
+      <p className="ds-sub">Pick a preset or build your own. Match options live on Home.</p>
 
       <div className="ds-robot">
         {/* ---------- robot hero ---------- */}
@@ -185,7 +180,7 @@ export function Menu({ settings, onChange }: Props) {
 
         {/* ---------- builder ---------- */}
         <section className="ds-sec">
-          <h2>{isCustom ? 'Customize' : 'Tweak it (becomes Custom)'}</h2>
+          <h2>Customize</h2>
           <div className="ds-panelbox">
             <div className="ds-fields">
               <label className="ds-field">
@@ -316,14 +311,13 @@ export function Menu({ settings, onChange }: Props) {
                 onClick={() => setSpec({ canSort: !spec.canSort })}
               >
                 <span className="ot">Sorter {spec.canSort ? 'ON' : 'OFF'}</span>
-                <span className="od">Fires the color the motif needs next</span>
+                <span className="od">Fires the color the motif needs</span>
               </button>
             </div>
 
             <p className="ds-hint">
-              Heavier shoves harder but accelerates slower · higher RPM = faster top speed, softer
-              punch · high flywheel inertia keeps rapid fire fast on long-range shots. Chassis +
-              intake reach ≤ {ROBOT_MAX_SIZE}"; base parking counts only the wheels.
+              Heavier = more push, slower accel · higher RPM = faster top speed · more flywheel
+              inertia keeps long shots rapid. Chassis + intake ≤ {ROBOT_MAX_SIZE}".
             </p>
           </div>
 
@@ -370,21 +364,21 @@ export function Menu({ settings, onChange }: Props) {
               onClick={() => setAssist({ aimAssist: !settings.assists.aimAssist })}
             >
               <span className="ot">Aim assist {settings.assists.aimAssist ? 'ON' : 'OFF'}</span>
-              <span className="od">Turret always tracks the firing solution</span>
+              <span className="od">Turret auto-tracks the goal</span>
             </button>
             <button
               className={`ds-opt ${settings.assists.autoIntake ? 'on' : ''}`}
               onClick={() => setAssist({ autoIntake: !settings.assists.autoIntake })}
             >
               <span className="ot">Auto intake {settings.assists.autoIntake ? 'ON' : 'OFF'}</span>
-              <span className="od">Intake runs whenever the hopper has room</span>
+              <span className="od">Runs when the hopper has room</span>
             </button>
             <button
               className={`ds-opt ${settings.assists.autoFire ? 'on' : ''}`}
               onClick={() => setAssist({ autoFire: !settings.assists.autoFire })}
             >
               <span className="ot">Auto fire {settings.assists.autoFire ? 'ON' : 'OFF'}</span>
-              <span className="od">Shoots automatically inside the launch zone</span>
+              <span className="od">Fires inside the launch zone</span>
             </button>
           </div>
         </section>
@@ -407,8 +401,8 @@ export function Menu({ settings, onChange }: Props) {
               />
             </label>
             <p className="ds-hint">
-              Toggle with P (keyboard) or X (controller) — only in the last 20s of teleop, or
-              anytime in Free Drive. Caps drive speed to the percentage above for precise control.
+              Toggle with P or controller X. Caps drive speed for precise control — endgame only, or
+              anytime in Free Drive.
             </p>
           </div>
         </section>

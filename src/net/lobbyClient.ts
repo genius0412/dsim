@@ -5,6 +5,7 @@ import {
   encodeMsg,
   decodeServerMsg,
   type LobbyPlayer,
+  type PlayerIntro,
   type PlayerPatch,
   type QueueMode,
   type RoomConfig,
@@ -14,6 +15,9 @@ export interface MatchStart {
   seed: number;
   setups: RobotSetup[];
   yourRobotId: number;
+  /** ranked rooms only: drives the pre-match ELO intro overlay */
+  ranked?: boolean;
+  intros?: PlayerIntro[];
 }
 
 /**

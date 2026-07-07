@@ -62,9 +62,7 @@ function StatsSignedIn() {
     <>
       <p className="ds-eyebrow">{APP_NAME} · Career</p>
       <h1 className="ds-h1">My Stats</h1>
-      <p className="ds-sub">
-        Your overall ranked ELO, record personal-bests, and recent matches for the current season.
-      </p>
+      <p className="ds-sub">Your ranked ELO, personal bests, and recent matches this season.</p>
     </>
   );
 
@@ -86,7 +84,7 @@ function StatsSignedIn() {
         <div className="ds-panel">
           <div className="ds-empty">
             <div className="big">Sign in to see your stats</div>
-            Use the Sign in button in the top bar — your ELO and records follow your account.
+            Sign in from the top bar to track your ELO and records.
           </div>
         </div>
       </>
@@ -215,9 +213,7 @@ function StatsSignedIn() {
             )}
 
             {stats.match.played === 0 && solo?.best == null && duo?.best == null && (
-              <p className="ds-hint">
-                No games yet — play Ranked or set a Record Run and your stats will appear here.
-              </p>
+              <p className="ds-hint">No games yet — play Ranked or a Record Run to get started.</p>
             )}
           </div>
         )}
