@@ -87,6 +87,20 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   r.vel = rot(velRobot, r.heading);
   r.angVel = approach(r.angVel, targetOmega, dp.turnAccel * dt);
 
+  // Swerve wobble: occasional slight heading jumps when moving forward
+  if (dp.saturation === 'vec') {
+    const fwdSpeed = rot(r.vel, -r.heading).x;
+    const speedRatio = fwdSpeed / dp.maxSpeed;
+    const phase = r.id * 1.23;
+    const freq = Math.PI; // 0.5 Hz
+    const now = Math.sin((world.time + phase) * freq);
+    const prev = Math.sin((world.time - dt + phase) * freq);
+    if (now > 0.99 && prev <= 0.99) {
+      const sign = Math.sin((world.time + phase) * 47 * Math.PI) > 0 ? 1 : -1;
+      r.heading += sign * 0.04 * speedRatio;
+    }
+  }
+
   // Rapier (solveRobots) integrates POSITION from r.vel and resolves collisions
   // this same tick; heading is integrated here (rotation is locked in Rapier and
   // the bespoke square-up nudge owns it).
