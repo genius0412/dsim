@@ -9,6 +9,7 @@ interface JoystickProps {
 function Joystick({ onValueChange, label }: JoystickProps) {
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const [active, setActive] = useState(false);
+  const [touchId, setTouchId] = useState<number | null>(null);
   const baseRef = useRef<HTMLDivElement>(null);
 
   const handleTouch = (clientX: number, clientY: number) => {
@@ -33,20 +34,48 @@ function Joystick({ onValueChange, label }: JoystickProps) {
   };
 
   const onTouchStart = (e: React.TouchEvent) => {
-    setActive(true);
-    const touch = e.touches[0];
-    handleTouch(touch.clientX, touch.clientY);
+    // Find which touch landed on this specific joystick
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+      const rect = baseRef.current?.getBoundingClientRect();
+      if (!rect) continue;
+
+      if (
+        touch.clientX >= rect.left &&
+        touch.clientX <= rect.right &&
+        touch.clientY >= rect.top &&
+        touch.clientY <= rect.bottom
+      ) {
+        setTouchId(touch.identifier);
+        setActive(true);
+        handleTouch(touch.clientX, touch.clientY);
+        break;
+      }
+    }
   };
 
   const onTouchMove = (e: React.TouchEvent) => {
-    const touch = e.touches[0];
-    handleTouch(touch.clientX, touch.clientY);
+    if (touchId === null) return;
+
+    // Track only the finger that started the interaction with this joystick
+    const touch = Array.from(e.touches).find((t) => t.identifier === touchId);
+    if (touch) {
+      handleTouch(touch.clientX, touch.clientY);
+    }
   };
 
-  const onTouchEnd = () => {
-    setActive(false);
-    setPos({ x: 0, y: 0 });
-    onValueChange({ x: 0, y: 0 });
+  const onTouchEnd = (e: React.TouchEvent) => {
+    // Only reset if the finger that was controlling this joystick was released
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const touch = e.changedTouches[i];
+      if (touch.identifier === touchId) {
+        setTouchId(null);
+        setActive(false);
+        setPos({ x: 0, y: 0 });
+        onValueChange({ x: 0, y: 0 });
+        break;
+      }
+    }
   };
 
   return (
