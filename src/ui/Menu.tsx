@@ -1,6 +1,14 @@
 import type { GameSettings } from '../types';
-import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
+import type {
+  AppearancePattern,
+  Archetype,
+  DrivetrainType,
+  IntakeStyle,
+  RobotSpec,
+} from '../types';
 import {
+  ARCHETYPE_PRESETS,
+  DEFAULT_APPEARANCE,
   INTAKE_PRESETS,
   ROBOT_MAX_SIZE,
   ROBOT_MIN_WIDTH,
@@ -10,6 +18,7 @@ import {
   ROBOT_MAX_RPM,
   ROBOT_PRESETS,
 } from '../config';
+import { archetypeOf, clampSpecToArchetype } from '../sim/archetype';
 import { driveParams } from '../sim/drivetrain';
 import { ControlsSection } from './ControlsSection';
 import { RobotPreview } from './RobotPreview';
@@ -33,23 +42,45 @@ const INTAKE_LABELS: Record<IntakeStyle, string> = {
   sloped: 'Sloped intake',
   vector: 'Vector wheel intake',
   triangle: 'Triangle intake',
+  tridexer: 'Tridexer intake',
 };
 
 const INTAKE_SHORT: Record<IntakeStyle, string> = {
   sloped: 'Sloped',
   vector: 'Vector',
   triangle: 'Triangle',
+  tridexer: 'Tridexer',
 };
 
 const INTAKE_BLURBS: Record<IntakeStyle, string> = {
   sloped: 'Face artifacts to scoop them up · eats clumps',
   vector: 'Grabs artifacts you strafe into',
   triangle: 'Long reach, eats clumps · slower transfer',
+  tridexer: 'Full-width bar · inhales a whole line at once',
 };
 
-/** does the current spec exactly match a preset? (value compare) */
+const ARCHETYPE_BLURBS: Record<Archetype, string> = {
+  standard: '1 turreted shooter · full builder freedom',
+  single: '1 fixed shooter · no turret — align the chassis to shoot (hold Auto-align)',
+  double: '2 fixed shooters, volley or indexed · no turret · no vector intake',
+  spindexer: 'Turreted · Toggle indexing between sorting indexer and fast passthrough',
+  tridexer: '3 fixed shooters, volley or indexed · no turret — align to shoot (hold Auto-align)',
+  turreted: '3 shooters in a triangle, on a turret · volley or indexed · 18×18 · heavy',
+};
+
+const PATTERN_LABELS: Record<AppearancePattern, string> = {
+  none: 'Plain',
+  stripes: 'Racing stripes',
+  diagonal: 'Hazard bands',
+  checker: 'Checkerboard',
+  split: 'Two-tone split',
+};
+
+/** does the current spec exactly match a preset? (value compare — the
+ * cosmetic `appearance` is deliberately ignored so a repaint isn't "custom") */
 function specMatches(a: RobotSpec, b: RobotSpec): boolean {
   return (
+    archetypeOf(a) === archetypeOf(b) &&
     a.name === b.name &&
     a.teamName === b.teamName &&
     a.teamNumber === b.teamNumber &&
@@ -85,16 +116,33 @@ export function Menu({ settings, onChange }: Props) {
     onChange({ ...settings, assists: { ...settings.assists, ...patch } });
 
   const spec = settings.spec;
+  const arch = ARCHETYPE_PRESETS[archetypeOf(spec)];
+  const volley = arch.shooters > 1;
+  const noSorter = volley || arch.builtinSort;
   const isSwerve = spec.drivetrain === 'swerve';
-  const minMass = isSwerve ? 25 : ROBOT_MIN_MASS;
+  const minMass = Math.max(arch.minMass, isSwerve ? 25 : ROBOT_MIN_MASS);
   const maxRpm = isSwerve ? 500 : ROBOT_MAX_RPM;
   const dp = driveParams(spec);
   const isCustom = !ROBOT_PRESETS.some((p) => specMatches(spec, p));
+  const appearance = spec.appearance ?? DEFAULT_APPEARANCE;
+
+  function selectArchetype(archetype: Archetype) {
+    // re-clamp the whole spec into the archetype's build rules (drivetrain/
+    // intake allowlists, dimension locks, minimum mass, no sorter on volley)
+    set({ spec: clampSpecToArchetype({ ...spec, archetype }) });
+  }
 
   function selectIntake(intake: IntakeStyle) {
-    // keep chassis length inside the preset's legal range (18in cap etc.)
+    // keep chassis length inside the preset's legal range (18in cap etc.),
+    // unless the archetype locks the length outright
     const p = INTAKE_PRESETS[intake];
-    setSpec({ intake, length: Math.min(Math.max(spec.length, p.minLength), p.maxLength) });
+    const length =
+      arch.lockLength ?? Math.min(Math.max(spec.length, p.minLength), p.maxLength);
+    setSpec({ intake, length });
+  }
+
+  function setAppearance(patch: Partial<typeof appearance>) {
+    setSpec({ appearance: { ...appearance, ...patch } });
   }
 
   return (
@@ -169,6 +217,7 @@ export function Menu({ settings, onChange }: Props) {
                   {p.teamNumber} · {p.teamName}
                 </span>
                 <span className="om">
+                  {archetypeOf(p) !== 'standard' ? `${ARCHETYPE_PRESETS[archetypeOf(p)].label} · ` : ''}
                   {DRIVETRAIN_LABELS[p.drivetrain]} · {p.massLb} lb · {p.driveRpm} RPM ·{' '}
                   {INTAKE_SHORT[p.intake]}
                   {p.canSort ? ' · sorts' : ''}
@@ -218,23 +267,45 @@ export function Menu({ settings, onChange }: Props) {
               </label>
             </div>
 
-            <div className="ds-opts four">
-              {(Object.keys(DRIVETRAIN_LABELS) as DrivetrainType[]).map((d) => (
+            <div className="ds-opts">
+              {(Object.keys(ARCHETYPE_PRESETS) as Archetype[]).map((a) => (
                 <button
-                  key={d}
-                  className={`ds-opt mini ${spec.drivetrain === d ? 'on' : ''}`}
-                  onClick={() => setSpec({ drivetrain: d })}
+                  key={a}
+                  className={`ds-opt ${archetypeOf(spec) === a ? 'on' : ''}`}
+                  onClick={() => selectArchetype(a)}
                 >
-                  <span className="ot">{DRIVETRAIN_LABELS[d]}</span>
-                  <span className="od">{DRIVETRAIN_BLURBS[d]}</span>
+                  <span className="ot">{ARCHETYPE_PRESETS[a].label}</span>
+                  <span className="od">{ARCHETYPE_BLURBS[a]}</span>
                 </button>
               ))}
+            </div>
+
+            <div className="ds-opts four">
+              {(Object.keys(DRIVETRAIN_LABELS) as DrivetrainType[]).map((d) => {
+                const allowed = arch.drivetrains.includes(d);
+                return (
+                  <button
+                    key={d}
+                    className={`ds-opt mini ${spec.drivetrain === d ? 'on' : ''}`}
+                    disabled={!allowed}
+                    onClick={() => setSpec(clampSpecToArchetype({ ...spec, drivetrain: d }))}
+                  >
+                    <span className="ot">{DRIVETRAIN_LABELS[d]}</span>
+                    <span className="od">
+                      {allowed ? DRIVETRAIN_BLURBS[d] : `Not on a ${arch.label}`}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
 
             <div className="ds-fields">
               <label className="ds-field">
                 <span className="cap">
-                  Length <span className="val">{spec.length}"</span>
+                  Length{' '}
+                  <span className="val">
+                    {spec.length}"{arch.lockLength !== null ? ' (locked)' : ''}
+                  </span>
                 </span>
                 <input
                   className="ds-range"
@@ -243,12 +314,16 @@ export function Menu({ settings, onChange }: Props) {
                   max={INTAKE_PRESETS[spec.intake].maxLength}
                   step={0.5}
                   value={spec.length}
+                  disabled={arch.lockLength !== null}
                   onChange={(e) => setSpec({ length: Number(e.target.value) })}
                 />
               </label>
               <label className="ds-field">
                 <span className="cap">
-                  Width <span className="val">{spec.width}"</span>
+                  Width{' '}
+                  <span className="val">
+                    {spec.width}"{arch.lockWidth !== null ? ' (locked)' : ''}
+                  </span>
                 </span>
                 <input
                   className="ds-range"
@@ -257,6 +332,7 @@ export function Menu({ settings, onChange }: Props) {
                   max={ROBOT_MAX_SIZE}
                   step={0.5}
                   value={spec.width}
+                  disabled={arch.lockWidth !== null}
                   onChange={(e) => setSpec({ width: Number(e.target.value) })}
                 />
               </label>
@@ -308,10 +384,17 @@ export function Menu({ settings, onChange }: Props) {
               <button
                 className={`ds-opt mini ${spec.canSort ? 'on' : ''}`}
                 style={{ flex: '1 1 150px' }}
+                disabled={noSorter}
                 onClick={() => setSpec({ canSort: !spec.canSort })}
               >
-                <span className="ot">Sorter {spec.canSort ? 'ON' : 'OFF'}</span>
-                <span className="od">Fires the color the motif needs</span>
+                <span className="ot">Sorter {noSorter ? 'N/A' : spec.canSort ? 'ON' : 'OFF'}</span>
+                <span className="od">
+                  {arch.builtinSort
+                    ? 'Built into the spindexer — toggle indexing in-game (I)'
+                    : volley
+                      ? 'A volley fires the whole hopper — nothing to sort'
+                      : 'Fires the color the motif needs'}
+                </span>
               </button>
             </div>
 
@@ -322,16 +405,80 @@ export function Menu({ settings, onChange }: Props) {
           </div>
 
           <div className="ds-opts">
-            {(Object.keys(INTAKE_LABELS) as IntakeStyle[]).map((i) => (
+            {(Object.keys(INTAKE_LABELS) as IntakeStyle[]).map((i) => {
+              const allowed = arch.intakes.includes(i);
+              return (
+                <button
+                  key={i}
+                  className={`ds-opt ${spec.intake === i ? 'on' : ''}`}
+                  disabled={!allowed}
+                  onClick={() => selectIntake(i)}
+                >
+                  <span className="ot">{INTAKE_LABELS[i]}</span>
+                  <span className="od">
+                    {allowed ? INTAKE_BLURBS[i] : `Not on a ${arch.label}`}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* ---------- appearance ---------- */}
+        <section className="ds-sec">
+          <h2>Appearance</h2>
+          <div className="ds-panelbox">
+            <div className="ds-fields">
+              <label className="ds-field" style={{ flex: '0 1 140px' }}>
+                <span className="cap">Body color</span>
+                <input
+                  className="ds-input ds-color"
+                  type="color"
+                  value={appearance.body}
+                  onChange={(e) => setAppearance({ body: e.target.value })}
+                />
+              </label>
+              <label className="ds-field" style={{ flex: '0 1 140px' }}>
+                <span className="cap">Accent color</span>
+                <input
+                  className="ds-input ds-color"
+                  type="color"
+                  value={appearance.accent}
+                  onChange={(e) => setAppearance({ accent: e.target.value })}
+                />
+              </label>
+              <label className="ds-field" style={{ flex: '0 1 140px' }}>
+                <span className="cap">Wheel color</span>
+                <input
+                  className="ds-input ds-color"
+                  type="color"
+                  value={appearance.wheels ?? '#111318'}
+                  onChange={(e) => setAppearance({ wheels: e.target.value })}
+                />
+              </label>
+            </div>
+            <div className="ds-opts">
+              {(Object.keys(PATTERN_LABELS) as AppearancePattern[]).map((p) => (
+                <button
+                  key={p}
+                  className={`ds-opt mini ${appearance.pattern === p ? 'on' : ''}`}
+                  onClick={() => setAppearance({ pattern: p })}
+                >
+                  <span className="ot">{PATTERN_LABELS[p]}</span>
+                </button>
+              ))}
               <button
-                key={i}
-                className={`ds-opt ${spec.intake === i ? 'on' : ''}`}
-                onClick={() => selectIntake(i)}
+                className="ds-opt mini"
+                onClick={() => setSpec({ appearance: undefined })}
               >
-                <span className="ot">{INTAKE_LABELS[i]}</span>
-                <span className="od">{INTAKE_BLURBS[i]}</span>
+                <span className="ot">Reset paint</span>
+                <span className="od">Back to the classic look</span>
               </button>
-            ))}
+            </div>
+            <p className="ds-hint">
+              Paint is cosmetic only. Your bumper outline stays alliance-colored so everyone can
+              tell red from blue.
+            </p>
           </div>
         </section>
 

@@ -1,4 +1,10 @@
-import type { RobotSpec } from './types';
+import type {
+  Archetype,
+  DrivetrainType,
+  IntakeStyle,
+  RobotAppearance,
+  RobotSpec,
+} from './types';
 
 /**
  * Single source of truth for all field geometry, physics constants, and
@@ -226,11 +232,108 @@ export const INTAKE_PRESETS = {
     reach: 5, halfWidth: 7, perBall: 0.15, clumpPerBall: 0.05, overhang: false,
     minLength: 12, maxLength: 13, fireInterval: 0.3,
   },
+  /** TRIDEXER intake (archetype-locked): a full-width bar of compliant wheels
+   * across the whole 18in front. A horizontal LINE of artifacts is swallowed
+   * instantly (clumpPerBall 0 ⇒ one ball per tick while 2+ sit at the mouth);
+   * single balls feed at the vector wheel's steady pace. */
+  tridexer: {
+    reach: 2.5, halfWidth: 9, perBall: 0.22, clumpPerBall: 0, overhang: true,
+    minLength: 12, maxLength: 15.5, fireInterval: 0.1,
+  },
 } as const;
 /** flank capture engages only when actually strafing toward the ball */
 export const INTAKE_SIDE_MIN_STRAFE = 8; // in/s
 
 export const HOPPER_CAPACITY = 3;
+
+// ----------------------------------------------------------- archetypes ----
+/** per-archetype build constraints + shooter model. `lockWidth`/`lockLength`
+ * pin the chassis dimension; `drivetrains`/`intakes` are allowlists (first
+ * entry = the fallback when an illegal choice is coerced). Volley archetypes
+ * (shooters 3) fire the WHOLE hopper in one tick, then re-index each shooter
+ * at VOLLEY_INDEX_INTERVAL per ball — slower than the volley itself. */
+export interface ArchetypePreset {
+  label: string;
+  shooters: number;
+  turret: boolean;
+  /** the in-game indexing toggle applies (multi-shooter: volley ⟷ indexed
+   * singles; spindexer: indexed-sort ⟷ passthrough FIFO) */
+  canToggleIndex: boolean;
+  /** sorting is part of the mechanism (spindexer) — the spec's canSort flag
+   * is forced off and the INDEXED mode sorts instead */
+  builtinSort: boolean;
+  minMass: number; // lb
+  drivetrains: readonly DrivetrainType[];
+  intakes: readonly IntakeStyle[];
+  lockWidth: number | null;
+  lockLength: number | null;
+}
+export const ARCHETYPE_PRESETS: Record<Archetype, ArchetypePreset> = {
+  standard: {
+    label: 'Standard',
+    shooters: 1, turret: true, canToggleIndex: false, builtinSort: false,
+    minMass: ROBOT_MIN_MASS,
+    drivetrains: ['mecanum', 'tank', 'swerve', 'xdrive'],
+    intakes: ['sloped', 'vector', 'triangle'],
+    lockWidth: null, lockLength: null,
+  },
+  single: {
+    label: 'Fixed Single',
+    shooters: 1, turret: false, canToggleIndex: false, builtinSort: false,
+    minMass: ROBOT_MIN_MASS,
+    drivetrains: ['mecanum', 'tank', 'swerve', 'xdrive'],
+    intakes: ['sloped', 'vector', 'triangle'],
+    lockWidth: null, lockLength: null,
+  },
+  double: {
+    label: 'Fixed Double',
+    shooters: 2, turret: false, canToggleIndex: true, builtinSort: false,
+    minMass: ROBOT_MIN_MASS,
+    drivetrains: ['mecanum', 'tank', 'swerve', 'xdrive'],
+    intakes: ['sloped', 'triangle'],
+    lockWidth: null, lockLength: null,
+  },
+  spindexer: {
+    label: 'Passthrough Spindexer',
+    shooters: 1, turret: true, canToggleIndex: true, builtinSort: true,
+    minMass: ROBOT_MIN_MASS,
+    drivetrains: ['mecanum', 'tank', 'swerve', 'xdrive'],
+    intakes: ['sloped', 'vector', 'triangle'],
+    lockWidth: null, lockLength: null,
+  },
+  tridexer: {
+    label: 'Tridexer',
+    shooters: 3, turret: false, canToggleIndex: true, builtinSort: false,
+    minMass: 30,
+    drivetrains: ['mecanum', 'tank'],
+    intakes: ['tridexer'],
+    lockWidth: 18, lockLength: null,
+  },
+  turreted: {
+    label: 'Turreted Tridexer',
+    shooters: 3, turret: true, canToggleIndex: true, builtinSort: false,
+    minMass: 40,
+    drivetrains: ['mecanum', 'tank'],
+    intakes: ['sloped', 'tridexer'],
+    lockWidth: 18, lockLength: 18,
+  },
+};
+
+/** volley re-index cadence: after firing all shooters at once, each spent
+ * shooter takes this long to receive its next artifact from the hopper —
+ * deliberately slower per ball than a standard robot's transfer */
+export const VOLLEY_INDEX_INTERVAL = 0.45; // s per artifact fired
+/** a turretless robot may only FIRE with its chassis within this of the firing
+ * solution (the shot itself still uses the exact solution — never misses) */
+export const TRIDEXER_ALIGN_TOL = (3 * Math.PI) / 180; // rad
+/** auto-align (held keybind): rotate command per rad of heading error —
+ * full-rate turn beyond ~1/KP rad, easing in as it closes */
+export const TRIDEXER_ALIGN_KP = 6;
+/** lateral spacing between the three volley muzzles (drawn + shot origin) */
+export const VOLLEY_MUZZLE_SPACING = 3.4; // in
+/** spindexer PASSTHROUGH mode: the artifact rides straight through the
+ * carousel into the shooter — faster than any indexed transfer, FIFO only */
+export const PASSTHROUGH_FIRE_INTERVAL = 0.06; // s
 
 // --------------------------------------------------------------- turret ----
 /** turret center as a fraction of chassis length behind the center of
@@ -393,6 +496,16 @@ export const HP_PLACE_DELAY = 0.15; // s between placements from the box into th
 export const PRELOAD: readonly ('purple' | 'green')[] = ['purple', 'green', 'purple'];
 export const HP_INITIAL_STOCK: readonly ('purple' | 'green')[] = ['purple', 'purple', 'green'];
 
+// ---------------------------------------------------------- appearance ----
+/** the classic default paint job — a spec with no `appearance` renders with
+ * exactly these values, so old saves/robots look unchanged. Alliance identity
+ * (bumper outline + chevron) is NOT customizable and stays alliance-colored. */
+export const DEFAULT_APPEARANCE: RobotAppearance = {
+  body: '#1f242c',
+  accent: '#3a4150',
+  pattern: 'none',
+};
+
 // -------------------------------------------------------- robot presets ----
 /** named example robots covering the archetype matrix; the menu also offers
  * a fully custom builder. Keep DEFAULT ("Standard Issue") = the original
@@ -422,6 +535,16 @@ export const ROBOT_PRESETS: readonly RobotSpec[] = [
     name: 'The Librarian', teamName: 'Sorted Motors', teamNumber: 3141,
     length: 12.5, width: 16, intake: 'triangle', massLb: 32, drivetrain: 'mecanum',
     driveRpm: 400, flywheelInertia: 0.7, canSort: true,
+  },
+  {
+    name: 'Trident', teamName: 'Fork Union', teamNumber: 3330,
+    length: 15, width: 18, intake: 'tridexer', massLb: 34, drivetrain: 'mecanum',
+    driveRpm: 400, flywheelInertia: 0.6, canSort: false, archetype: 'tridexer',
+  },
+  {
+    name: 'Merry-Go-Round', teamName: 'Triple Crown', teamNumber: 7770,
+    length: 18, width: 18, intake: 'tridexer', massLb: 40, drivetrain: 'tank',
+    driveRpm: 380, flywheelInertia: 0.7, canSort: false, archetype: 'turreted',
   },
 ] as const;
 

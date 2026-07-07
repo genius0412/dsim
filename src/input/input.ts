@@ -10,6 +10,7 @@ export interface VirtualInput {
   rotate: number;
   intake: boolean;
   fire: boolean;
+  autoAlign: boolean;
 }
 
 /** merges keyboard + gamepad into one driver command per frame, resolving
@@ -26,6 +27,8 @@ export class InputManager {
   flipPressed = false;
   /** edge-triggered "toggle park mode" from either device */
   parkPressed = false;
+  /** edge-triggered "toggle indexing" from either device */
+  indexPressed = false;
 
   private virtualState: VirtualInput = {
     driveX: 0,
@@ -33,6 +36,7 @@ export class InputManager {
     rotate: 0,
     intake: false,
     fire: false,
+    autoAlign: false,
   };
 
   constructor(private bindings: ControlBindings) {
@@ -79,6 +83,7 @@ export class InputManager {
     this.restartPressed = pressedAny(keys.restart) || g.restart;
     this.flipPressed = pressedAny(keys.flipFront) || g.flipFront;
     this.parkPressed = pressedAny(keys.park) || g.park;
+    this.indexPressed = pressedAny(keys.toggleIndex) || g.toggleIndex;
 
     const cmd: RobotCommand = {
       driveX: clamp(kx + g.driveX + this.virtualState.driveX, -1, 1),
@@ -86,6 +91,7 @@ export class InputManager {
       rotate: clamp(krot + g.rotate + this.virtualState.rotate, -1, 1),
       intake: heldAny(keys.intake) || g.intake || this.virtualState.intake,
       fire: heldAny(keys.fire) || g.fire || this.virtualState.fire,
+      autoAlign: heldAny(keys.autoAlign) || g.autoAlign || this.virtualState.autoAlign,
     };
     k.endFrame();
     return cmd;

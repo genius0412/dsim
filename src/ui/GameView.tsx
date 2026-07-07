@@ -264,6 +264,11 @@ function Hud({ hud }: { hud: HudSnapshot }) {
               )}
             <span className="chip">{hud.fieldCentric ? 'FIELD' : 'ROBOT'}</span>
             {hud.frontFlipped && <span className="chip warn">REVERSED</span>}
+            {hud.indexMode !== null && (
+              <span className={`chip ${hud.indexMode === 'INDEXED' ? 'on' : ''}`}>
+                {hud.indexMode}
+              </span>
+            )}
             <span className={`chip ${hud.aimAssist ? 'on' : 'off'}`}>AIM</span>
             <span className={`chip ${hud.autoIntake ? 'on' : 'off'}`}>AUTO-IN</span>
             <span className={`chip ${hud.autoFire ? 'on' : 'off'}`}>AUTO-FIRE</span>

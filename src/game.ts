@@ -15,6 +15,7 @@ import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './s
 import { step } from './sim/world';
 import { startMatch } from './sim/match';
 import { robotInLaunchZone } from './sim/robot';
+import { archetypeOf, canToggleIndex, defaultIndexed } from './sim/archetype';
 import { InputManager } from './input/input';
 import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
@@ -76,6 +77,9 @@ export interface HudSnapshot {
   gamepadConnected: boolean;
   /** drive controls reversed so the shooter side leads (robot-centric only) */
   frontFlipped: boolean;
+  /** the indexing toggle's current mode label for the HUD chip, or null when
+   * the archetype has no toggle (standard / fixed single) */
+  indexMode: 'INDEXED' | 'VOLLEY' | 'PASSTHRU' | null;
   /** park mode active (speed capped to parkSpeedPct); only activatable in
    * endgame / free drive, per canPark() */
   parked: boolean;
@@ -123,6 +127,10 @@ export class GameController {
   private frontFlipped = false;
   /** park mode: caps drive command magnitude to settings.parkSpeedPct while on */
   private parked = false;
+  /** the in-game indexing toggle (I / pad RB): true = indexed single shots
+   * (spindexer: sort mode); false = volley / passthrough. Lives at the input
+   * layer like flip-front — the sim reads it from cmd.indexed every tick. */
+  private indexingOn = false;
   // action-SFX edge trackers per robot id (seeded in seedActionAudio)
   private prevFireAt: Record<number, number> = {};
   private prevIntakeAt: Record<number, number> = {};
@@ -154,6 +162,7 @@ export class GameController {
     this.audio.soundsEnabled = settings.audio.sounds;
     this.audio.voiceEnabled = settings.audio.voice;
     this.input = new InputManager(settings.bindings);
+    this.indexingOn = defaultIndexed(settings.spec);
 
     // Mobile Mode: enable assists by default if touch-capable
     if (window.matchMedia('(pointer: coarse)').matches) {
@@ -390,6 +399,12 @@ export class GameController {
       cmd.driveY *= k;
       cmd.rotate *= k;
     }
+    // indexing toggle: flips how the shooter bank fires (volley/passthrough vs
+    // indexed) — a MODE, so the command carries the absolute value every tick
+    if (this.input.indexPressed && canToggleIndex(this.localRobot().spec)) {
+      this.indexingOn = !this.indexingOn;
+    }
+    cmd.indexed = this.indexingOn;
     this.lastCmd = cmd;
 
     this.acc += Math.min(dtMs / 1000, 0.25);
@@ -516,6 +531,7 @@ export class GameController {
     this.hudCountdown = null;
     this.frontFlipped = false;
     this.parked = false;
+    this.indexingOn = defaultIndexed(this.localRobot().spec);
     this.acc = 0;
     this.inputBuf = [];
     this.remoteCmds = new Map();
@@ -545,6 +561,7 @@ export class GameController {
     this.hudCountdown = null;
     this.frontFlipped = false;
     this.parked = false;
+    this.indexingOn = defaultIndexed(this.localRobot().spec);
     this.seedActionAudio();
     this.toasts = [];
   }
@@ -636,6 +653,13 @@ export class GameController {
       inLaunchZone: w.mode === 'free' || robotInLaunchZone(r),
       gamepadConnected: this.input.gamepadConnected,
       frontFlipped: this.frontFlipped,
+      indexMode: canToggleIndex(r.spec)
+        ? this.indexingOn
+          ? 'INDEXED'
+          : archetypeOf(r.spec) === 'spindexer'
+            ? 'PASSTHRU'
+            : 'VOLLEY'
+        : null,
       parked: this.parked,
       canPark: this.canPark(),
       gateOpen: goal.gateOpen,

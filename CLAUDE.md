@@ -209,7 +209,29 @@ the gateway), so a tap usually drains the whole column.
     the HUD. All GameSettings persist to `localStorage['decodesim.settings.v1']`
     via `src/settings.ts` (validated field-by-field on load — corrupt/stale data
     falls back per field).
-14. **Robot is fully specced + the field is multi-robot** (Phase B, "Road to
+14. **Archetypes + appearance** (July 2026): `RobotSpec.archetype?`
+    ('standard'/'tridexer'/'turreted', absent = standard — read via `archetypeOf`
+    in `src/sim/archetype.ts`; build rules in `ARCHETYPE_PRESETS`). TRIDEXER = 3
+    chassis-fixed shooters, VOLLEY fire (whole hopper in one tick, re-index
+    `VOLLEY_INDEX_INTERVAL` 0.45 s/ball — slower than the volley), no turret (chassis
+    must be within `TRIDEXER_ALIGN_TOL` of the solution; the shot still uses the
+    exact solution so never-miss holds), full-width `tridexer` intake (inhales a
+    horizontal LINE in one tick, otherwise vector pace), width locked 18, ≥30 lb,
+    tank/mecanum only. TURRETED tridexer = 3 shooters in a triangle on a turret,
+    18×18, ≥40 lb, tank/mecanum, sloped-or-tridexer intake. Volley archetypes force
+    `canSort` OFF. AUTO-ALIGN is a HELD keybind (default G / pad LB) →
+    `RobotCommand.autoAlign?` (wire bit2). `clampSpecToArchetype` is the single
+    legality gate (settings load + Menu). `RobotSpec.appearance?` is COSMETIC only
+    (body/accent/wheels hex + pattern; absent = classic look via `DEFAULT_APPEARANCE`);
+    alliance bumper outline/chevron is never paintable and `specMatches` ignores it.
+    Further archetypes: `single` (standard, no turret, align-to-shoot), `double`
+    (2 fixed shooters, no vector intake), `spindexer` (turreted; sorting BUILT IN —
+    spec canSort forced off). The IN-GAME INDEXING TOGGLE (`toggleIndex` keybind,
+    I / pad RB) rides `RobotCommand.indexed` (wire bit3) as an ABSOLUTE per-tick
+    mode bit (sim stays edge-free): multi-shooter = volley ⟷ indexed singles;
+    spindexer = INDEXED motif-sort (+SORT_FIRE_PENALTY) ⟷ PASSTHROUGH FIFO
+    (`PASSTHROUGH_FIRE_INTERVAL`). HUD chip INDEXED/VOLLEY/PASSTHRU.
+15. **Robot is fully specced + the field is multi-robot** (Phase B, "Road to
     Multiplayer"). `RobotSpec` v2 carries name/team/number, `massLb` (20–42),
     `drivetrain`, `driveRpm` (200–600), `flywheelInertia` (0–1), `canSort`, plus
     the existing length/width/intake. The menu offers 5 named `ROBOT_PRESETS`

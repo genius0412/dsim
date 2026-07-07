@@ -1,8 +1,9 @@
 import type { Artifact, ArtifactColor, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
-import { approach, rot, wrapAngle, hyp, dsin, dcos, dtan, datan2 } from '../math';
+import { approach, clamp, rot, wrapAngle, hyp, dsin, dcos, dtan, datan2 } from '../math';
 import { classifierRect, goalCenter, launchTriangles, viewAngleOf } from './field';
 import { driveParams } from './drivetrain';
+import { archetypeOf, hasTurret, shooterCount } from './archetype';
 import { robotIntersectsConvex } from './physics';
 import { robotsEnabled } from './match';
 
@@ -85,16 +86,24 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
     robotVec = { x: stick.y, y: -stick.x };
   }
   if (dp.strafeMult === 0) robotVec.y = 0; // tank: strafe input is dead
+  // auto-align (held): a turretless shooter rotates its CHASSIS onto the
+  // firing solution — the align command replaces the driver's rotate input,
+  // easing in near the target so it settles inside the fire tolerance
+  let rotate = cmd.rotate;
+  if (cmd.autoAlign && !hasTurret(r.spec)) {
+    const err = wrapAngle(aimSolution(r).yaw - r.heading);
+    rotate = clamp(err * C.TRIDEXER_ALIGN_KP, -1, 1);
+  }
   // wheel power budget: combined demands share the same wheels, and the
   // shape of the budget depends on the drivetrain (see DRIVETRAIN_PRESETS)
   const demand =
     dp.saturation === 'vec'
-      ? hyp(robotVec.x, robotVec.y) + Math.abs(cmd.rotate)
-      : Math.abs(robotVec.x) + Math.abs(robotVec.y) + Math.abs(cmd.rotate);
+      ? hyp(robotVec.x, robotVec.y) + Math.abs(rotate)
+      : Math.abs(robotVec.x) + Math.abs(robotVec.y) + Math.abs(rotate);
   const div = Math.max(1, demand);
   const targetFwd = (robotVec.x / div) * dp.maxSpeed;
   const targetStrafe = (robotVec.y / div) * dp.maxSpeed * dp.strafeMult;
-  const targetOmega = (cmd.rotate / div) * dp.maxTurn;
+  const targetOmega = (rotate / div) * dp.maxTurn;
 
   // accel-clamped approach in the robot frame
   const velRobot = rot(r.vel, -r.heading);
@@ -136,8 +145,12 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
   }
 
   // ---- turret: aim assist tracks the firing solution exactly -------------
-  // Apply aim assist if enabled (now forced true during autoPathActive)
-  if (r.aimAssist) {
+  // Apply aim assist if enabled (now forced true during autoPathActive).
+  // Turretless archetypes have no turret to slew: their shooters are fixed to
+  // the chassis, so the drawn "turret" heading IS the chassis heading.
+  if (!hasTurret(r.spec)) {
+    r.turretHeading = r.heading;
+  } else if (r.aimAssist) {
     r.turretHeading = aimSolution(r).yaw;
   }
 
@@ -146,14 +159,19 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
   // (long-range) shots — see fireReadyAt set in fire() -----------------------
   const canFire = robotsEnabled(world) && r.hopper.length > 0 && world.time >= r.fireReadyAt;
   const zoneOk = world.mode === 'free' || robotInLaunchZone(r);
+  // turretless: the CHASSIS must be aligned with the firing solution to shoot
+  // (the shot itself still uses the exact solution, so a gated shot never misses)
+  const aligned =
+    hasTurret(r.spec) ||
+    Math.abs(wrapAngle(aimSolution(r).yaw - r.heading)) <= C.TRIDEXER_ALIGN_TOL;
   // cmd.fire is true if pathTraversal returns it, or if driver presses it.
   // r.autoFire is true if forced by autoPathActive or set in settings.
   const fireCommanded = cmd.fire || r.autoFire;
 
   // console.log(`[Robot ${r.id}] Fire check: enabled=${robotsEnabled(world)}, hopper=${r.hopper.length}, time=${world.time.toFixed(2)}, fireReadyAt=${r.fireReadyAt.toFixed(2)}, zoneOk=${zoneOk}, cmd.fire=${cmd.fire}, r.autoFire=${r.autoFire}, autoPathActive=${r.autoPathActive}`);
 
-  if (canFire && zoneOk && fireCommanded) {
-    fire(world, r);
+  if (canFire && zoneOk && aligned && fireCommanded) {
+    fire(world, r, cmd.indexed === true);
   }
 
   // ---- intake ------------------------------------------------------------
@@ -161,12 +179,19 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
 }
 
 
-function fire(world: World, r: RobotState): void {
-  // console.log(`[Robot ${r.id}] Firing ball! Hopper size before: ${r.hopper.length}`);
-  // canSort: pick the hopper color that fills the next unfilled motif slot
-  // on this alliance's ramp; everyone else fires FIFO
-  let color: ArtifactColor;
-  if (r.spec.canSort) {
+function fire(world: World, r: RobotState, indexed: boolean): void {
+  // multi-shooter archetypes VOLLEY (launch up to one artifact per shooter in
+  // one tick) unless the driver toggled INDEXED single shots. Sorting robots
+  // (canSort spec flag, or a spindexer in INDEXED mode) pick the hopper color
+  // that fills the next unfilled motif slot; everyone else fires FIFO.
+  const shooters = shooterCount(r.spec);
+  const volley = shooters > 1 && !indexed;
+  const spindexer = archetypeOf(r.spec) === 'spindexer';
+  const sorting = r.spec.canSort || (spindexer && indexed);
+  let colors: ArtifactColor[];
+  if (volley) {
+    colors = r.hopper.splice(0, Math.min(shooters, r.hopper.length));
+  } else if (sorting) {
     const retained = world.balls.filter(
       (b) =>
         b.state.kind === 'rail' &&
@@ -176,18 +201,20 @@ function fire(world: World, r: RobotState): void {
     ).length;
     const want = world.motif[retained % 3];
     const idx = r.hopper.indexOf(want);
-    color = idx >= 0 ? r.hopper.splice(idx, 1)[0] : r.hopper.shift()!;
+    colors = [idx >= 0 ? r.hopper.splice(idx, 1)[0] : r.hopper.shift()!];
   } else {
-    color = r.hopper.shift()!;
+    colors = [r.hopper.shift()!];
   }
   r.lastFireAt = world.time;
 
   const tp = turretWorldPos(r);
-  // exact solution, no dispersion — the shooter never misses. The ball
+  // exact solution, no dispersion — the shooter never misses. A turreted ball
   // leaves along the turret's CURRENT heading (aim assist keeps it on the
-  // lead-compensated solution).
-  const { speed, angle } = aimSolution(r);
-  const yaw = r.turretHeading;
+  // lead-compensated solution); a turretless robot is gated on chassis
+  // alignment and its shot uses the exact solution directly.
+  const sol = aimSolution(r);
+  const { speed, angle } = sol;
+  const yaw = hasTurret(r.spec) ? r.turretHeading : sol.yaw;
   const cos = dcos(angle);
 
   // flywheel recovery: an energetic shot drains the wheel; a LOW-inertia
@@ -198,22 +225,35 @@ function fire(world: World, r: RobotState): void {
     Math.min(1, (speed - C.FLYWHEEL_CLOSE_SPEED) / (C.LAUNCH_MAX_SPEED - C.FLYWHEEL_CLOSE_SPEED)),
   );
   const recovery = C.FLYWHEEL_RECOVERY_MAX * shotNorm * shotNorm * (1 - r.spec.flywheelInertia);
-  const sortPenalty = r.spec.canSort ? C.SORT_FIRE_PENALTY : 0;
-  r.fireReadyAt = world.time + C.INTAKE_PRESETS[r.spec.intake].fireInterval + recovery + sortPenalty;
+  const sortPenalty = sorting ? C.SORT_FIRE_PENALTY : 0;
+  // volley: each spent shooter re-indexes at VOLLEY_INDEX_INTERVAL per ball —
+  // slower than firing them all at once (its stated tradeoff). A spindexer in
+  // PASSTHROUGH rides the artifact straight through at the fastest cadence.
+  const cadence = volley
+    ? C.VOLLEY_INDEX_INTERVAL * colors.length
+    : spindexer && !indexed
+      ? C.PASSTHROUGH_FIRE_INTERVAL
+      : C.INTAKE_PRESETS[r.spec.intake].fireInterval + sortPenalty;
+  r.fireReadyAt = world.time + cadence + recovery;
 
-  const ball: Artifact = {
-    id: world.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1,
-    color,
-    state: { kind: 'flight', target: r.alliance },
-    pos: { x: tp.x, y: tp.y },
-    vel: {
-      x: dcos(yaw) * speed * cos + r.vel.x * C.SHOT_ROBOT_VEL_INHERIT,
-      y: dsin(yaw) * speed * cos + r.vel.y * C.SHOT_ROBOT_VEL_INHERIT,
-    },
-    z: C.LAUNCH_HEIGHT,
-    vz: speed * dsin(angle),
-  };
-  world.balls.push(ball);
+  for (let i = 0; i < colors.length; i++) {
+    // volley muzzles sit side by side: offset each ball perpendicular to the
+    // shot so the three fly as a visible parallel spread (opening is wide)
+    const lat = (i - (colors.length - 1) / 2) * C.VOLLEY_MUZZLE_SPACING;
+    const ball: Artifact = {
+      id: world.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1,
+      color: colors[i],
+      state: { kind: 'flight', target: r.alliance },
+      pos: { x: tp.x - dsin(yaw) * lat, y: tp.y + dcos(yaw) * lat },
+      vel: {
+        x: dcos(yaw) * speed * cos + r.vel.x * C.SHOT_ROBOT_VEL_INHERIT,
+        y: dsin(yaw) * speed * cos + r.vel.y * C.SHOT_ROBOT_VEL_INHERIT,
+      },
+      z: C.LAUNCH_HEIGHT,
+      vz: speed * dsin(angle),
+    };
+    world.balls.push(ball);
+  }
 }
 
 /** capture ground balls at the intake mouth into the hopper.
@@ -289,9 +329,13 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
     // console.log(`[Robot ${r.id}] Intake on cooldown. time=${world.time.toFixed(2)}, lastIntakeAt=${r.lastIntakeAt.toFixed(2)}, interval=${interval}`);
     return;
   }
-  const b = candidates[0];
-  r.hopper.push(b.color);
+  // clumpPerBall 0 (tridexer): the full-width bar inhales the WHOLE line in
+  // one tick; everyone else swallows one ball per cadence interval
+  const take = interval === 0 ? candidates : [candidates[0]];
+  for (const b of take) {
+    if (r.hopper.length >= C.HOPPER_CAPACITY) break;
+    r.hopper.push(b.color);
+    world.balls.splice(world.balls.indexOf(b), 1);
+  }
   r.lastIntakeAt = world.time;
-  world.balls.splice(world.balls.indexOf(b), 1);
-  // console.log(`[Robot ${r.id}] Ball intaken! New hopper size: ${r.hopper.length}`);
 }
