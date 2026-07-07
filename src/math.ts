@@ -18,6 +18,37 @@ export function norm(a: Vec2): Vec2 {
   return l > 1e-9 ? { x: a.x / l, y: a.y / l } : { x: 0, y: 0 };
 }
 
+// ---- Bezier Curve Functions -----------------------------------------------
+export function linearPoint(p0: Vec2, p1: Vec2, t: number): Vec2 {
+  return {
+    x: p0.x + (p1.x - p0.x) * t,
+    y: p0.y + (p1.y - p0.y) * t,
+  };
+}
+
+export function quadraticBezierPoint(p0: Vec2, p1: Vec2, p2: Vec2, t: number): Vec2 {
+  const mt = 1 - t;
+  const mt2 = mt * mt;
+  const t2 = t * t;
+  return {
+    x: mt2 * p0.x + 2 * mt * t * p1.x + t2 * p2.x,
+    y: mt2 * p0.y + 2 * mt * t * p1.y + t2 * p2.y,
+  };
+}
+
+export function cubicBezierPoint(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: number): Vec2 {
+  const mt = 1 - t;
+  const mt3 = mt * mt * mt;
+  const mt2t = mt * mt * t;
+  const t2mt = t * t * mt;
+  const t3 = t * t * t;
+  return {
+    x: mt3 * p0.x + 3 * mt2t * p1.x + 3 * t2mt * p2.x + t3 * p3.x,
+    y: mt3 * p0.y + 3 * mt2t * p1.y + 3 * t2mt * p2.y + t3 * p3.y,
+  };
+}
+// ---------------------------------------------------------------------------
+
 // ---- deterministic trig ----------------------------------------------------
 // Math.sin/cos/tan/atan2 are NOT required by the spec to be correctly-rounded,
 // so they differ by an ULP or two ACROSS JS ENGINES/browser versions. In a
@@ -64,12 +95,6 @@ export function dtan(x: number): number {
 const ATAN_T = 0.5773502691896257; // tan(PI/6) = 1/sqrt(3)
 const ATAN_LIM = 0.2679491924311227; // tan(PI/12)
 
-/** atan on a small argument via fast-converging Taylor (|z| ≤ tan(PI/12)) */
-function atanUnit(z: number): number {
-  const z2 = z * z;
-  return z * (1 + z2 * (-1 / 3 + z2 * (1 / 5 + z2 * (-1 / 7 + z2 * (1 / 9 + z2 * (-1 / 11))))));
-}
-
 /** deterministic atan (two-stage range reduction, ~1e-9 max error) */
 export function datan(x: number): number {
   const sign = x < 0 ? -1 : 1;
@@ -81,7 +106,24 @@ export function datan(x: number): number {
     a = (a - ATAN_T) / (1 + a * ATAN_T); // atan(a) = PI/6 + atan(a')
     shift = PI / 6;
   }
-  let r = atanUnit(a) + shift;
+
+  // Inlined atanUnit logic
+  const z = a;
+  const z2 = z * z;
+  const z4 = z2 * z2;
+  const z6 = z4 * z2;
+  const z8 = z6 * z2;
+  const z10 = z8 * z2;
+
+  let atanUnitResult = 1;
+  atanUnitResult -= z2 / 3;
+  atanUnitResult += z4 / 5;
+  atanUnitResult -= z6 / 7;
+  atanUnitResult += z8 / 9;
+  atanUnitResult -= z10 / 11;
+
+  let r = z * atanUnitResult + shift;
+
   if (recip) r = HALF_PI - r;
   return sign * r;
 }
