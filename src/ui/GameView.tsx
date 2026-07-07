@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { GameController, type GameSettings, type HudSnapshot } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
+import { MobileControls } from './MobileControls';
 import type { NetSession } from '../net/session';
 import type { Alliance, ScoreBreakdown } from '../types';
 
@@ -67,10 +68,20 @@ export function GameView({ settings, onExit, session = null }: Props) {
                 <span key={i} className={`motif-dot ${c}`} />
               ))}
             </p>
-            <p className="big">
-              Press {keyLabel(settings.bindings.keys.start[0] ?? 'enter')} or{' '}
-              {padButtonLabel(settings.bindings.pad.buttons.start[0] ?? 9)} to begin the MATCH
-            </p>
+            {!window.matchMedia('(pointer: coarse)').matches && (
+              <p className="big">
+                Press {keyLabel(settings.bindings.keys.start[0] ?? 'enter')} or{' '}
+                {padButtonLabel(settings.bindings.pad.buttons.start[0] ?? 9)} to begin the MATCH
+              </p>
+            )}
+            {window.matchMedia('(pointer: coarse)').matches && (
+              <button
+                className="start-btn"
+                onClick={() => controllerRef.current?.startMatch()}
+              >
+                START MATCH
+              </button>
+            )}
             <p className="hint">
               Esc returns to the menu · {keyLabel(settings.bindings.keys.restart[0] ?? '?')} or{' '}
               {padButtonLabel(settings.bindings.pad.buttons.restart[0] ?? 8)} restarts
@@ -93,6 +104,9 @@ export function GameView({ settings, onExit, session = null }: Props) {
           onRematch={() => controllerRef.current?.rematch()}
           onExit={onExit}
         />
+      )}
+      {window.matchMedia('(pointer: coarse)').matches && (
+        <MobileControls inputManager={controllerRef.current?.getInputManager()} />
       )}
     </div>
   );

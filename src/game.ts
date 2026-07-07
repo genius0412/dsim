@@ -127,6 +127,14 @@ export class GameController {
     this.audio.soundsEnabled = settings.audio.sounds;
     this.audio.voiceEnabled = settings.audio.voice;
     this.input = new InputManager(settings.bindings);
+
+    // Mobile Mode: enable assists by default if touch-capable
+    if (window.matchMedia('(pointer: coarse)').matches) {
+      this.settings.assists.aimAssist = true;
+      this.settings.assists.autoFire = true;
+      this.settings.assists.autoIntake = true;
+    }
+
     this.world = this.makeWorld();
     this.prevPhase = this.world.match.phase;
     this.seedActionAudio();
@@ -144,6 +152,11 @@ export class GameController {
       this.simTimer = window.setInterval(this.simStep, 1000 * C.SIM_DT);
     }
     this.raf = requestAnimationFrame(this.loop);
+  }
+
+  /** expose input manager for mobile controls */
+  getInputManager() {
+    return this.input;
   }
 
   private localRobot() {
@@ -448,6 +461,14 @@ export class GameController {
     this.remoteCmds = new Map();
     this.seedActionAudio();
     this.toasts = [];
+  }
+
+  /** trigger the pre-match countdown (e.g. from a UI button) */
+  startMatch(): void {
+    if (this.world.match.phase === 'pre' && this.countdownStart === null) {
+      this.countdownStart = this.world.time;
+      this.lastBeepAt = -1;
+    }
   }
 
   /** restart with the same settings (new random seed / motif) */
