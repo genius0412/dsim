@@ -12,7 +12,7 @@ import {
 } from './physics';
 import { solveBalls, solveRobots } from './physicsEngine';
 import { classifierRect } from './field';
-import { updateRobot, updateRobotActions } from './robot'; // Updated import
+import { updateRobot, updateRobotActions } from './robot';
 import { checkGoalEntry, updateBasins, updateGates, updateRails } from './goal';
 import { updateHumanPlayers } from './humanPlayer';
 import { robotsEnabled, stepMatch } from './match';
@@ -45,11 +45,20 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
 
     // Auto pathing logic: if active, override driver commands
     if (world.match.phase === 'auto' && r.autoPathActive) {
+      console.log(
+        `[World Step] Robot ${r.id} in auto phase. autoPathActive: ${r.autoPathActive}, autoPath exists: ${!!r.autoPath}`,
+      );
       // Use r.autoPath directly, which is already mirrored if necessary
       if (r.autoPath) {
         // Initialize auto path once at the very beginning of the auto phase
-        if (world.match.phaseTimeLeft >= C.AUTO_DURATION - C.SIM_DT && r.pathSequenceIndex === 0 && r.pathSegmentProgress === 0 && r.pathWaitTimer === 0) {
+        if (
+          world.match.phaseTimeLeft >= C.AUTO_DURATION - C.SIM_DT &&
+          r.pathSequenceIndex === 0 &&
+          r.pathSegmentProgress === 0 &&
+          r.pathWaitTimer === 0
+        ) {
           initializePathTraversal(r);
+          console.log(`[World Step] Robot ${r.id} initialized path traversal.`);
         }
         // Update robot's position and heading directly via path traversal
         // Capture the command returned by updatePathTraversal, which now includes intake/fire states.
@@ -61,6 +70,9 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
       } else {
         // If autoPathActive was true but no path data found in robot, deactivate
         r.autoPathActive = false;
+        console.log(
+          `[World Step] Robot ${r.id} autoPathActive was true but autoPath was null/undefined. Deactivating.`,
+        );
       }
     }
     actualCommands.set(r.id, currentCmd);
