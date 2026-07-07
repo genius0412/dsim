@@ -6,6 +6,7 @@ import type {
   RobotSpec,
   RobotState,
   World,
+  AutoPathData, // Import AutoPathData
 } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
@@ -102,6 +103,8 @@ export interface LobbyPlayer {
   ready: boolean;
   spec: RobotSpec;
   assists: AssistConfig;
+  autoPath?: AutoPathData; // Add autoPath
+  autoPathEnabled?: boolean; // Add autoPathEnabled
 }
 
 /** a driver's pre-match ranked intro data (ELO, keyed by the robot id the server
@@ -127,7 +130,7 @@ export interface EloDelta {
 export type PlayerPatch = Partial<
   Pick<
     LobbyPlayer,
-    'name' | 'teamName' | 'teamNumber' | 'alliance' | 'startIndex' | 'ready' | 'spec' | 'assists'
+    'name' | 'teamName' | 'teamNumber' | 'alliance' | 'startIndex' | 'ready' | 'spec' | 'assists' | 'autoPath' | 'autoPathEnabled'
   >
 >;
 

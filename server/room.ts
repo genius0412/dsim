@@ -317,6 +317,8 @@ export class Room {
         spec: c.player.spec,
         assists: c.player.assists,
         startIndex: si,
+        autoPath: c.player.autoPath, // Include autoPath
+        autoPathEnabled: c.player.autoPathEnabled, // Include autoPathEnabled
       });
       this.robotOf.set(c.id, i);
     });

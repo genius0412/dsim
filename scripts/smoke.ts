@@ -1641,7 +1641,7 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   const c1 = localizeCommand(cmd({ driveX: -0.5, intake: true })); // remote robot (held)
 
   const auth = mk();
-  for (let t = 1; t <= 60; t++) step(auth, SIM_DT, new Map([[0, c0], [1, c1]]));
+  for (let t = 1; t < 60; t++) step(auth, SIM_DT, new Map([[0, c0], [1, c1]]));
   const overlapStart = Math.hypot(
     auth.robots[0].pos.x - auth.robots[1].pos.x,
     auth.robots[0].pos.y - auth.robots[1].pos.y,
@@ -1739,8 +1739,8 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   };
 
   // recordSetups shape
-  const solo = recordSetups(DEFAULT_SPEC, 'solo');
-  const duo = recordSetups(DEFAULT_SPEC, 'duo');
+  const solo = recordSetups(DEFAULT_SPEC, 'solo', DEFAULT_ASSISTS, undefined, true);
+  const duo = recordSetups(DEFAULT_SPEC, 'duo', DEFAULT_ASSISTS, undefined, true);
   check('recordSetups solo = 1 robot (1v0)', solo.length === 1 && solo[0].id === 0);
   check(
     'recordSetups duo = 2 robots, same drivetrain, distinct poses',

@@ -1,4 +1,4 @@
-import type { Alliance, GameMode, RobotCommand, RobotSpec, World } from '../types';
+import type { Alliance, GameMode, RobotCommand, RobotSpec, World, AutoPathData } from '../types';
 import * as C from '../config';
 import { createWorld, DEFAULT_ASSISTS, type RobotSetup } from './spawn';
 import { step } from './world';
@@ -110,6 +110,8 @@ export class ReplayRecorder {
         ...s,
         spec: { ...s.spec },
         assists: { ...s.assists },
+        autoPath: s.autoPath, // Include autoPath
+        autoPathEnabled: s.autoPathEnabled, // Include autoPathEnabled
       })),
       ticks: this.ticks,
       tracks,
@@ -130,7 +132,7 @@ export class ReplayPlayer {
   constructor(private readonly replay: Replay) {
     this.world = createWorld(replay.mode, replay.seed, replay.setups);
     if (replay.mode === 'match') this.world.match.preCountdown = C.PRE_COUNTDOWN;
-    for (const s of replay.setups) this.current.set(s.id, { ...ZERO_CMD });
+    for (const s of this.replay.setups) this.current.set(s.id, { ...ZERO_CMD });
   }
 
   get done(): boolean {
@@ -213,6 +215,8 @@ export function recordSetups(
   spec: RobotSpec,
   mode: RecordMode,
   assists = DEFAULT_ASSISTS,
+  autoPath?: AutoPathData, // Add autoPath parameter
+  autoPathEnabled?: boolean, // Add autoPathEnabled parameter
 ): RobotSetup[] {
   const alliance: Alliance = 'blue';
   const slot = (id: number, startIndex: number): RobotSetup => ({
@@ -221,6 +225,8 @@ export function recordSetups(
     spec: { ...spec },
     assists: { ...assists },
     startIndex,
+    autoPath: autoPath, // Pass autoPath
+    autoPathEnabled: autoPathEnabled, // Pass autoPathEnabled
   });
   return mode === 'solo' ? [slot(0, 0)] : [slot(0, 0), slot(1, 1)];
 }
