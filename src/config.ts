@@ -132,6 +132,9 @@ export const ROBOT_MAX_MASS = 42;
 export const ROBOT_MIN_RPM = 200;
 export const ROBOT_MAX_RPM = 600;
 
+/** penalty added to fireInterval when robot is sorting (canSort: true) */
+export const SORT_FIRE_PENALTY = 0.25;
+
 /** per-drivetrain multipliers + wheel-saturation model. saturation:
  * 'sum'   = |f|+|s|+|ω|  (mecanum/x-drive: the worst roller wheel sees all)
  * 'tank'  = |f|+|ω|      (no strafe at all — strafe input is dead)

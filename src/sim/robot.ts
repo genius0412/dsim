@@ -148,7 +148,8 @@ function fire(world: World, r: RobotState): void {
     Math.min(1, (speed - C.FLYWHEEL_CLOSE_SPEED) / (C.LAUNCH_MAX_SPEED - C.FLYWHEEL_CLOSE_SPEED)),
   );
   const recovery = C.FLYWHEEL_RECOVERY_MAX * shotNorm * shotNorm * (1 - r.spec.flywheelInertia);
-  r.fireReadyAt = world.time + C.INTAKE_PRESETS[r.spec.intake].fireInterval + recovery;
+  const sortPenalty = r.spec.canSort ? C.SORT_FIRE_PENALTY : 0;
+  r.fireReadyAt = world.time + C.INTAKE_PRESETS[r.spec.intake].fireInterval + recovery + sortPenalty;
 
   const ball: Artifact = {
     id: world.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1,
