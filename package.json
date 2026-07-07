@@ -19,7 +19,7 @@
   },
   "build": {
     "appId": "com.decodesim.app",
-    "productName": "DECODE 2D Simulator",
+    "productName": "DohunSim",
     "files": [
       "dist/**/*",
       "electron/**/*"

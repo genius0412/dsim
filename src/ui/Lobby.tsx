@@ -8,6 +8,7 @@ import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
 import { ROOM_CAPACITY, type LobbyPlayer } from '../net/protocol';
 import type { NetSession } from '../net/session';
+import { APP_NAME } from '../seasons';
 
 interface Props {
   settings: GameSettings;
@@ -120,82 +121,105 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
 
   if (phase === 'entry' || phase === 'connecting' || phase === 'error') {
     return (
-      <div className="menu-root">
-        <div className="menu-panel lobby-entry">
-          <header className="menu-header">
+      <div className="ds-console">
+        <div className="ds-console-in" style={{ maxWidth: 520 }}>
+          <div className="ds-head">
+            <button className="ds-back" onClick={onCancel}>
+              ← Back
+            </button>
+            <span className="ds-mark">
+              <span className="glyph">D</span>
+              {APP_NAME}
+            </span>
+          </div>
+          <div className="ds-title">
             <h1>
-              MULTI<span className="accent">PLAYER</span>
+              Multi<span className="accent">player</span>
             </h1>
-            <p className="subtitle">Up to 2v2 · share a room code with your drivers</p>
-          </header>
-          <section>
-            <label className="field">
-              <span>Your name</span>
-              <input value={name} onChange={(e) => setName(e.target.value)} maxLength={20} />
-            </label>
-            <label className="field">
-              <span>Room code</span>
+          </div>
+          <p className="ds-sub" style={{ marginTop: -10 }}>
+            Up to 2v2 · share a room code with your drivers.
+          </p>
+          <div className="ds-panelbox">
+            <label className="ds-field">
+              <span className="cap">Your name</span>
               <input
+                className="ds-input"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                maxLength={20}
+              />
+            </label>
+            <label className="ds-field">
+              <span className="cap">Room code</span>
+              <input
+                className="ds-input"
                 value={code}
                 onChange={(e) => setCode(e.target.value.toUpperCase())}
-                placeholder="e.g. DECODE1"
+                placeholder="e.g. SCRIM1"
                 maxLength={12}
               />
             </label>
-            {phase === 'error' && <p className="lobby-error">⚠ {error}</p>}
-            <div className="lobby-actions">
-              <button className="start-btn" disabled={phase === 'connecting'} onClick={join}>
+            {phase === 'error' && <p className="ds-form-err">⚠ {error}</p>}
+            <div className="ds-actions">
+              <button className="ds-cta" disabled={phase === 'connecting'} onClick={join}>
                 {phase === 'connecting' ? 'CONNECTING…' : 'CREATE / JOIN'}
               </button>
-              <button className="game-btn" onClick={onCancel}>
-                ◄ BACK
-              </button>
             </div>
-            <p className="hint">
+            <p className="ds-hint">
               Anyone who enters the same code lands in the same room. First one in hosts.
             </p>
-          </section>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="menu-root">
-      <div className="menu-panel">
-        <header className="menu-header">
+    <div className="ds-console">
+      <div className="ds-console-in">
+        <div className="ds-head">
+          <button className="ds-back" onClick={onCancel}>
+            ← Leave
+          </button>
+          <span className="ds-mark">
+            <span className="glyph">D</span>
+            {APP_NAME}
+          </span>
+        </div>
+        <div className="ds-title">
           <h1>
-            ROOM <span className="accent">{code}</span>
+            Room <span className="accent">{code}</span>
           </h1>
-          <p className="subtitle">
-            {isHost ? 'You are the host' : 'Waiting for the host to start'} · {players.length}/
-            {ROOM_CAPACITY} drivers
-          </p>
-        </header>
+        </div>
+        <p className="ds-sub" style={{ marginTop: -10 }}>
+          {isHost ? 'You are the host' : 'Waiting for the host to start'} · {players.length}/
+          {ROOM_CAPACITY} drivers
+        </p>
 
-        <section>
+        <section className="ds-sec">
           <h2>Drivers</h2>
-          <div className="lobby-players">
+          <div className="ds-players">
             {players.map((p) => {
               const isMe = p.clientId === myId;
               return (
-                <div key={p.clientId} className={`lobby-player ${p.alliance}`}>
-                  <span className="lobby-dot" data-linked={true} title={isMe ? 'you' : 'connected'} />
-                  <span className="lobby-name">
+                <div key={p.clientId} className={`ds-player ${p.alliance}`}>
+                  <span className="pdot" title={isMe ? 'you' : 'connected'} />
+                  <span className="pnm">
                     {p.name}
                     {isMe ? ' (you)' : ''}
                   </span>
-                  <span className="lobby-team">
+                  <span className="ptm">
                     {p.spec.name} · {p.teamNumber || '—'}
                   </span>
                   {p.clientId === hostId && (
-                    <span className="chip on" title="Room host">
+                    <span className="ds-chip on" title="Room host">
                       ★ HOST
                     </span>
                   )}
-                  <span className={`chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
-                  <span className="chip">{START_POSES[p.startIndex]?.label ?? '—'}</span>
-                  <span className={`chip ${p.ready ? 'on' : 'off'}`}>
+                  <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
+                  <span className="ds-chip">{START_POSES[p.startIndex]?.label ?? '—'}</span>
+                  <span className={`ds-chip ${p.ready ? 'on' : 'off'}`}>
                     {p.ready ? 'READY' : 'NOT READY'}
                   </span>
                 </div>
@@ -204,27 +228,27 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
           </div>
         </section>
 
-        <section>
+        <section className="ds-sec">
           <h2>Your alliance</h2>
-          <div className="card-row">
+          <div className="ds-opts two">
             <button
-              className={`card ${me?.alliance === 'red' ? 'selected' : ''}`}
+              className={`ds-opt red ${me?.alliance === 'red' ? 'on' : ''}`}
               onClick={() => setAlliance('red')}
             >
-              RED
+              <span className="ot">RED</span>
             </button>
             <button
-              className={`card ${me?.alliance === 'blue' ? 'selected' : ''}`}
+              className={`ds-opt blue ${me?.alliance === 'blue' ? 'on' : ''}`}
               onClick={() => setAlliance('blue')}
             >
-              BLUE
+              <span className="ot">BLUE</span>
             </button>
           </div>
         </section>
 
-        <section>
+        <section className="ds-sec">
           <h2>Start position</h2>
-          <div className="card-row">
+          <div className="ds-opts">
             {START_POSES.map((pose, i) => {
               const taken = players.some(
                 (p) => p.clientId !== me?.clientId && p.alliance === me?.alliance && p.startIndex === i,
@@ -232,36 +256,29 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
               return (
                 <button
                   key={i}
-                  className={`card ${me?.startIndex === i ? 'selected' : ''}`}
+                  className={`ds-opt mini ${me?.startIndex === i ? 'on' : ''}`}
                   disabled={taken}
                   onClick={() => setStartPos(i)}
                 >
-                  {pose.label}
-                  {taken && <span className="card-note">taken</span>}
+                  <span className="ot">{pose.label}</span>
+                  {taken && <span className="ds-note">taken</span>}
                 </button>
               );
             })}
           </div>
         </section>
 
-        <div className="lobby-actions">
-          <button className={`start-btn ${me?.ready ? 'secondary' : ''}`} onClick={toggleReady}>
+        <div className="ds-actions">
+          <button className={`ds-cta ${me?.ready ? 'ghost' : ''}`} onClick={toggleReady}>
             {me?.ready ? '✓ READY — click to unready' : 'READY UP'}
           </button>
           {isHost && (
-            <button
-              className="start-btn"
-              disabled={!allReady}
-              onClick={() => lobbyRef.current?.start()}
-            >
+            <button className="ds-cta" disabled={!allReady} onClick={() => lobbyRef.current?.start()}>
               START MATCH ▶
             </button>
           )}
-          <button className="game-btn" onClick={onCancel}>
-            ◄ LEAVE
-          </button>
         </div>
-        {isHost && !allReady && <p className="hint">START unlocks once every driver is ready.</p>}
+        {isHost && !allReady && <p className="ds-hint">START unlocks once every driver is ready.</p>}
       </div>
     </div>
   );

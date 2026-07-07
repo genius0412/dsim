@@ -83,20 +83,20 @@ export function GameView({ settings, onExit, session = null, onWatchReplay }: Pr
             {window.matchMedia('(pointer: coarse)').matches && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
                 <button
-                  className="start-btn"
+                  className="ds-cta"
                   onClick={() => controllerRef.current?.startMatch()}
                 >
                   START MATCH
                 </button>
                 <button
-                  className="start-btn secondary"
+                  className="ds-cta ghost"
                   onClick={onExit}
                 >
                   BACK TO MENU
                 </button>
               </div>
             )}
-            <p className="hint">
+            <p className="ds-hint">
               Esc returns to the menu · {keyLabel(settings.bindings.keys.restart[0] ?? '?')} or{' '}
               {padButtonLabel(settings.bindings.pad.buttons.restart[0] ?? 8)} restarts
             </p>
@@ -354,12 +354,12 @@ function Results({
             </tr>
           </tbody>
         </table>
-        <p className="hint">
+        <p className="ds-hint">
           PENALTIES are the points (minor {PTS_FOUL_MINOR} · major {PTS_FOUL_MAJOR}) awarded to each
           alliance for the OPPONENT's fouls — already included in each TOTAL.
         </p>
         {matchResult && (
-          <p className="hint" style={{ color: 'var(--amber)' }}>
+          <p className="ds-hint" style={{ color: 'var(--ds-accent)' }}>
             {matchResult.kind === 'record'
               ? '✓ Recorded — sign in for it to hit the leaderboard.'
               : '✓ Match recorded.'}

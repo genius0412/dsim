@@ -11,12 +11,26 @@ import { RecordRun } from './RecordRun';
 import { Matchmaking } from './Matchmaking';
 import { ReplayView } from './ReplayView';
 import { AccountButton } from './AccountButton';
+import { Download } from './Download';
+import { Stats } from './Stats';
+import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
 import { gameServerConfigured } from '../net/env';
 import type { NetSession } from '../net/session';
 import type { Replay } from '../sim/replay';
 
-type Screen = 'home' | 'robot' | 'leaderboard' | 'lobby' | 'record' | 'matchmaking' | 'replay' | 'game';
+type Screen =
+  | 'home'
+  | 'robot'
+  | 'leaderboard'
+  | 'lobby'
+  | 'record'
+  | 'matchmaking'
+  | 'replay'
+  | 'game'
+  | 'download'
+  | 'stats'
+  | 'account';
 
 /**
  * Tiny path router (no dependency). Each screen is a real URL — /leaderboard,
@@ -45,6 +59,12 @@ function pathFor(screen: Screen, replayId: string | null): string {
       return replayId ? `/replay/${encodeURIComponent(replayId)}` : '/replay';
     case 'game':
       return '/play';
+    case 'download':
+      return '/download';
+    case 'stats':
+      return '/stats';
+    case 'account':
+      return '/account';
   }
 }
 
@@ -56,6 +76,9 @@ function parsePath(pathname: string): { screen: Screen; replayId: string | null 
   if (pathname.startsWith('/lobby')) return { screen: 'lobby', replayId: null };
   if (pathname.startsWith('/record')) return { screen: 'record', replayId: null };
   if (pathname.startsWith('/ranked')) return { screen: 'matchmaking', replayId: null };
+  if (pathname.startsWith('/download')) return { screen: 'download', replayId: null };
+  if (pathname.startsWith('/stats')) return { screen: 'stats', replayId: null };
+  if (pathname.startsWith('/account')) return { screen: 'account', replayId: null };
   // /play (a live game) can't be restored without a session ⇒ home
   return { screen: 'home', replayId: null };
 }
@@ -180,8 +203,21 @@ export function App() {
   }
 
   // shell screens
-  const right = authEnabled ? <AccountButton /> : <span className="ds-chip">SOLO</span>;
-  const active: ShellNav = screen === 'leaderboard' ? 'leaderboard' : 'home';
+  const right = authEnabled ? (
+    <AccountButton onAccount={() => navigate('account')} />
+  ) : (
+    <button className="ds-btn ghost" onClick={() => navigate('account')}>
+      Settings
+    </button>
+  );
+  const active: ShellNav =
+    screen === 'leaderboard'
+      ? 'leaderboard'
+      : screen === 'stats'
+        ? 'stats'
+        : screen === 'download'
+          ? 'download'
+          : 'home';
   return (
     <AppShell active={active} onNav={(n) => navigate(n)} right={right}>
       {screen === 'home' && (
@@ -203,6 +239,9 @@ export function App() {
         />
       )}
       {screen === 'leaderboard' && <Leaderboard onWatch={(id) => navigate('replay', id)} />}
+      {screen === 'stats' && <Stats />}
+      {screen === 'download' && <Download />}
+      {screen === 'account' && <Account settings={settings} onChange={update} />}
     </AppShell>
   );
 }

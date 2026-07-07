@@ -4,8 +4,9 @@ import { AuthPanel } from './AuthPanel';
 
 /** AppShell account slot. Only mounted when auth is enabled, so `authClient` is
  * non-null (keeps the `useSession` hook call unconditional). Shows the signed-in
- * handle + sign-out, or a sign-in button that opens the auth modal. */
-export function AccountButton() {
+ * handle (click → account settings) + sign-out, or a sign-in button that opens
+ * the auth modal. */
+export function AccountButton({ onAccount }: { onAccount?: () => void }) {
   const client = authClient!;
   const session = client.useSession();
   const [open, setOpen] = useState(false);
@@ -24,9 +25,14 @@ export function AccountButton() {
 
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-      <span className="ds-chip">
+      <button
+        className="ds-chip"
+        onClick={onAccount}
+        title="Account settings"
+        style={{ cursor: onAccount ? 'pointer' : 'default' }}
+      >
         <b>{user.name ?? user.email ?? 'Player'}</b>
-      </span>
+      </button>
       <button className="ds-btn ghost" onClick={() => client.signOut()}>Sign out</button>
     </div>
   );

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { BALANCE_VERSION } from '../src/config';
 import { dbEnabled } from './db/pool';
-import { eloLeaderboard, getReplay, recordLeaderboard } from './db/repo';
+import { eloLeaderboard, getReplay, getUserStats, recordLeaderboard } from './db/repo';
 
 /**
  * Public read API for the leaderboards + replay viewer (GET only; all writes go
@@ -11,6 +11,7 @@ import { eloLeaderboard, getReplay, recordLeaderboard } from './db/repo';
  *
  *   GET /api/records?mode=solo|duo&drivetrain=<dt|overall>&season=<n>&limit=<n>
  *   GET /api/elo?mode=1v1|2v2&drivetrain=<dt|overall>&season=<n>&limit=<n>
+ *   GET /api/user/<id>/stats?season=<n>   — one user's ELO+records+W/L+history
  *   GET /api/replay/<id>
  */
 export async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
@@ -46,6 +47,14 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         ? await eloLeaderboard({ mode, drivetrain, balanceVersion: season, limit })
         : [];
       return json(200, { season, mode, drivetrain, rows }), true;
+    }
+
+    const statsMatch = url.pathname.match(/^\/api\/user\/([\w|-]+)\/stats$/);
+    if (statsMatch) {
+      const userId = decodeURIComponent(statsMatch[1]);
+      const stats = dbEnabled ? await getUserStats(userId, season) : null;
+      if (!stats) return json(200, { season, userId, elo: [], records: [], match: { played: 0, wins: 0, losses: 0 }, recent: [], handle: null }), true;
+      return json(200, stats), true;
     }
 
     const replayMatch = url.pathname.match(/^\/api\/replay\/([\w-]+)$/);

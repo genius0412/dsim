@@ -124,7 +124,7 @@ export function ControlsSection({ bindings, onChange }: Props) {
   ) => (
     <button
       key={key}
-      className={`keycap ${active ? 'capturing' : ''} ${unbound ? 'unbound' : ''}`}
+      className={`ds-key ${active ? 'capturing' : ''} ${unbound ? 'unbound' : ''}`}
       onClick={onClick}
     >
       {active ? 'PRESS…' : label}
@@ -132,16 +132,16 @@ export function ControlsSection({ bindings, onChange }: Props) {
   );
 
   return (
-    <section className="controls-section">
+    <section className="ds-sec">
       <h2>Controls</h2>
-      <div className="bind-cols">
-        <div className="bind-block">
+      <div className="ds-binds">
+        <div className="ds-bind-block">
           <h3>Keyboard</h3>
-          <div className="bind-grid">
+          <div className="ds-bind-grid">
             {KEY_ACTIONS.map((a) => (
-              <div className="bind-row" key={a}>
-                <span className="bind-label">{KEY_LABELS[a]}</span>
-                <span className="bind-keys">
+              <div className="ds-bind-row" key={a}>
+                <span className="ds-bind-label">{KEY_LABELS[a]}</span>
+                <span className="ds-keys">
                   {bindings.keys[a].map((k, i) =>
                     keycap(
                       keyLabel(k),
@@ -161,23 +161,23 @@ export function ControlsSection({ bindings, onChange }: Props) {
                 </span>
               </div>
             ))}
-            <div className="bind-row">
-              <span className="bind-label">Menu</span>
-              <span className="bind-keys">
-                <span className="keycap fixed">ESC</span>
+            <div className="ds-bind-row">
+              <span className="ds-bind-label">Menu</span>
+              <span className="ds-keys">
+                <span className="ds-key fixed">ESC</span>
               </span>
             </div>
           </div>
         </div>
 
-        <div className="bind-block">
+        <div className="ds-bind-block">
           <h3>Gamepad</h3>
-          <div className="bind-grid">
-            <div className="bind-row">
-              <span className="bind-label">Drive stick</span>
-              <span className="bind-keys">
+          <div className="ds-bind-grid">
+            <div className="ds-bind-row">
+              <span className="ds-bind-label">Drive stick</span>
+              <span className="ds-keys">
                 <button
-                  className={`keycap ${bindings.pad.driveStick === 'left' ? 'selected' : ''}`}
+                  className={`ds-key ${bindings.pad.driveStick === 'left' ? 'selected' : ''}`}
                   onClick={() =>
                     onChange({ ...cloneBindings(bindings), pad: { ...bindings.pad, driveStick: 'left' } })
                   }
@@ -185,7 +185,7 @@ export function ControlsSection({ bindings, onChange }: Props) {
                   LEFT
                 </button>
                 <button
-                  className={`keycap ${bindings.pad.driveStick === 'right' ? 'selected' : ''}`}
+                  className={`ds-key ${bindings.pad.driveStick === 'right' ? 'selected' : ''}`}
                   onClick={() =>
                     onChange({ ...cloneBindings(bindings), pad: { ...bindings.pad, driveStick: 'right' } })
                   }
@@ -194,16 +194,16 @@ export function ControlsSection({ bindings, onChange }: Props) {
                 </button>
               </span>
             </div>
-            <div className="bind-row">
-              <span className="bind-label">Turn stick</span>
-              <span className="bind-keys">
-                <span className="keycap fixed">
+            <div className="ds-bind-row">
+              <span className="ds-bind-label">Turn stick</span>
+              <span className="ds-keys">
+                <span className="ds-key fixed">
                   {bindings.pad.driveStick === 'left' ? 'RIGHT (X axis)' : 'LEFT (X axis)'}
                 </span>
               </span>
             </div>
-            <div className="bind-row">
-              <span className="bind-label">Stick deadzone {Math.round(bindings.pad.deadzone * 100)}%</span>
+            <div className="ds-bind-row">
+              <span className="ds-bind-label">Stick deadzone {Math.round(bindings.pad.deadzone * 100)}%</span>
               <input
                 type="range"
                 min={0}
@@ -215,8 +215,8 @@ export function ControlsSection({ bindings, onChange }: Props) {
                 }
               />
             </div>
-            <div className="bind-row">
-              <span className="bind-label">
+            <div className="ds-bind-row">
+              <span className="ds-bind-label">
                 Sensitivity curve {bindings.pad.curve.toFixed(1)}
                 {bindings.pad.curve === 1 ? ' (linear)' : ''}
               </span>
@@ -231,8 +231,8 @@ export function ControlsSection({ bindings, onChange }: Props) {
                 }
               />
             </div>
-            <div className="bind-row">
-              <span className="bind-label">
+            <div className="ds-bind-row">
+              <span className="ds-bind-label">
                 Trigger threshold {Math.round(bindings.pad.triggerThreshold * 100)}%
               </span>
               <input
@@ -250,9 +250,9 @@ export function ControlsSection({ bindings, onChange }: Props) {
               />
             </div>
             {PAD_ACTIONS.map((a) => (
-              <div className="bind-row" key={a}>
-                <span className="bind-label">{PAD_LABELS[a]}</span>
-                <span className="bind-keys">
+              <div className="ds-bind-row" key={a}>
+                <span className="ds-bind-label">{PAD_LABELS[a]}</span>
+                <span className="ds-keys">
                   {bindings.pad.buttons[a].map((idx, i) =>
                     keycap(
                       padButtonLabel(idx),
@@ -275,11 +275,11 @@ export function ControlsSection({ bindings, onChange }: Props) {
           </div>
         </div>
       </div>
-      <div className="bind-footer">
-        <button className="bind-reset" onClick={() => onChange(cloneBindings(DEFAULT_BINDINGS))}>
+      <div className="ds-bind-foot">
+        <button className="ds-btn" onClick={() => onChange(cloneBindings(DEFAULT_BINDINGS))}>
           RESET TO DEFAULTS
         </button>
-        <p className="hint">
+        <p className="ds-hint">
           Click a binding, then press the new key or gamepad button (Esc cancels). A key already in
           use moves to the new action.
         </p>

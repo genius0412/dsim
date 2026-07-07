@@ -8,8 +8,8 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     autoHideMenuBar: true,
-    backgroundColor: '#14161a',
-    title: 'DECODE 2D Simulator',
+    backgroundColor: '#111a24',
+    title: 'DohunSim',
   });
   win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
 }

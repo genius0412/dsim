@@ -1,4 +1,58 @@
-# HANDOFF — 2026-07-07 (build fix + server perf) — READ THIS FIRST, then the section below
+# HANDOFF — 2026-07-07 (rebrand → DohunSim + UI overhaul) — READ THIS FIRST
+
+Build + smoke + server-tsc GREEN. Verified all new pages render over HTTP via Electron
+(the `file://` capture harness shows a blank root — that's a PRE-EXISTING `initPhysics()`
+WASM gate under `file://`, not from this work; nothing here touched physics/main.tsx).
+
+**Rebrand to "DohunSim" + season abstraction.** New `src/seasons.ts` is the branding hub:
+`APP_NAME='DohunSim'`, `LINKS` (repo + Discord), and a `SEASONS` registry with
+`CURRENT_SEASON` (DECODE, 2025–26). DECODE is now framed as ONE season; add future games by
+registering another `Season` and flipping `playable`. The *app* is DohunSim; *DECODE* is the
+loaded game — keep that split (scoring text still says "DECODE scoring", correctly).
+Rebranded: `index.html` title, `package.json` productName, `electron/main.cjs` title,
+`AppShell` mark, `Home` eyebrow, `Menu` header.
+
+**Legacy menu CSS DELETED.** The old `styles.css` menu design (`.menu-*/.card/.builder/
+.spec-row/.bind-*/.keycap/.start-btn/.lobby-*/.field/.subtitle/.hint`) is GONE (styles.css
+1078→644 lines). Everything migrated onto the Direction A `ds-` design system, with a big new
+"console layer" appended to `shell.css` (`.ds-console/.ds-opt/.ds-field/.ds-range/.ds-hero/
+.ds-stat/.ds-cta/.ds-key/.ds-player/.ds-season/.ds-foot/.ds-dl-*` etc.). The in-match FTC HUD
+(`.hud/.scorebar/.chip/.overlay*/.timer*/.mobile-*`) INTENTIONALLY still lives in styles.css —
+it is the deliberate FTC-live-scoring look (product decision), NOT legacy menu styling. Do not
+"finish migrating" it without being asked. Migrated files: `Menu`, `ControlsSection`, `Lobby`,
+`GameView` (overlay `.start-btn`/`.hint` leaks only).
+
+**My Robot page redesigned** (`Menu.tsx`, still the full-screen setup console). Leads with a
+robot HERO: live SVG preview (`RobotPreview.tsx`, drawn from the spec — chassis/intake/turret in
+inches) + 6 stat cards + season badge, then presets, builder, match-setup sections, controls,
+ENTER FIELD. Audio toggles MOVED OUT of Menu → Account page. Auto-path section now links
+visualizer.pedropathing.com for the .pp source.
+
+**New shell pages** (rendered inside AppShell `.ds-main`, routed in `App.tsx`; nav expanded to
+Home / My Robot / My Stats / Leaderboard / Download; account reached via the right-slot
+button):
+- `Download.tsx` (`/download`) — desktop-build page. Reads `src/download.ts` (env-configurable
+  `VITE_DOWNLOAD_*` URLs, else "not available yet" + build-it-yourself `npm run dist`).
+- `Stats.tsx` (`/stats`) — per-user career. Uses a NEW real endpoint, not board-filtering.
+- `Account.tsx` (`/account`) — identity (Neon Auth) + Audio prefs + reset-all-settings.
+- Footer (`AppShell`) carries GitHub + Discord links.
+
+**NEW server endpoint** `GET /api/user/:id/stats?season=` (`server/api.ts`) →
+`repo.getUserStats(userId, balanceVersion)`: overall ELO+rank per mode, record PB+rank per
+mode, W/L totals, recent match history — ranks computed server-side with window functions (no
+full board pulled). Client: `fetchUserStats` + `UserStats` types in `src/net/api.ts`. Per-user
+ELO already existed in the schema (`elo_ratings`); this just exposes it in one round-trip.
+
+**AccountButton** now takes `onAccount` (name chip → account page). When auth is OFF the
+right-slot shows a "Settings" button → account page (audio/reset still work without auth).
+
+Follow-ups / not done: host real desktop builds + set `VITE_DOWNLOAD_*`; the Account-page nav
+highlight falls back to "Home" (account isn't a nav item — cosmetic). `defaultSettings()` reset
+wipes robot too (intentional, behind a confirm()).
+
+---
+
+# HANDOFF — 2026-07-07 (build fix + server perf) — READ earlier context below
 
 Two follow-up fixes on top of the section below:
 

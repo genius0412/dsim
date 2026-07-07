@@ -225,6 +225,127 @@ export async function eloLeaderboard(opts: {
   );
 }
 
+// ---------------------------------------------------------- per-user stats --
+export interface UserEloStat {
+  mode: '1v1' | '2v2';
+  rating: number;
+  games: number;
+  rank: number | null;
+}
+export interface UserRecordStat {
+  mode: 'solo' | 'duo';
+  best: number | null;
+  rank: number | null;
+  replayId: string | null;
+}
+export interface UserMatchRow {
+  matchId: string;
+  mode: '1v1' | '2v2';
+  alliance: 'red' | 'blue';
+  score: number;
+  won: boolean;
+  ratingBefore: number;
+  ratingAfter: number;
+  createdAt: string;
+}
+export interface UserStats {
+  userId: string;
+  handle: string | null;
+  season: number;
+  elo: UserEloStat[];
+  records: UserRecordStat[];
+  match: { played: number; wins: number; losses: number };
+  recent: UserMatchRow[];
+}
+
+/**
+ * A user's whole competitive profile for a season in ONE round-trip: overall ELO
+ * (+ live rank) per mode, record personal-bests (+ rank) per mode, W/L totals,
+ * and recent PvP history. Ranks are computed server-side with window functions
+ * so the client never pulls a full board to find one row. Empty/zero when the
+ * player hasn't competed; the DB is disabled ⇒ callers no-op before this.
+ */
+export async function getUserStats(userId: string, balanceVersion: number): Promise<UserStats> {
+  const [profile, elo, recPb, recRank, match, recent] = await Promise.all([
+    q<{ handle: string }>(`select handle from profiles where user_id = $1`, [userId]),
+    q<{ mode: '1v1' | '2v2'; rating: number; games: number; rnk: string }>(
+      `with ranked as (
+         select user_id, mode, rating, games,
+                rank() over (partition by mode order by rating desc, games desc) as rnk
+         from elo_ratings
+         where balance_version = $1 and drivetrain = 'overall'
+       )
+       select mode, rating, games, rnk from ranked where user_id = $2`,
+      [balanceVersion, userId],
+    ),
+    q<{ mode: 'solo' | 'duo'; score: number; replay_id: string | null }>(
+      `select distinct on (mode) mode, score, replay_id
+       from records where user_id = $1 and balance_version = $2
+       order by mode, score desc, created_at asc`,
+      [userId, balanceVersion],
+    ),
+    q<{ mode: 'solo' | 'duo'; rnk: string }>(
+      `with best as (
+         select user_id, mode, max(score) as score
+         from records where balance_version = $1 group by user_id, mode
+       ), ranked as (
+         select user_id, mode, rank() over (partition by mode order by score desc) as rnk
+         from best
+       )
+       select mode, rnk from ranked where user_id = $2`,
+      [balanceVersion, userId],
+    ),
+    q<{ played: string; wins: string }>(
+      `select count(*) as played, count(*) filter (where mp.won) as wins
+       from match_participants mp join matches m on m.id = mp.match_id
+       where mp.user_id = $1 and m.balance_version = $2`,
+      [userId, balanceVersion],
+    ),
+    q<UserMatchRow>(
+      `select mp.match_id as "matchId", m.mode, mp.alliance, mp.score, mp.won,
+              mp.rating_before as "ratingBefore", mp.rating_after as "ratingAfter",
+              m.created_at as "createdAt"
+       from match_participants mp join matches m on m.id = mp.match_id
+       where mp.user_id = $1 and m.balance_version = $2
+       order by m.created_at desc limit 10`,
+      [userId, balanceVersion],
+    ),
+  ]);
+
+  const rankByMode = new Map(recRank.map((r) => [r.mode, Number(r.rnk)]));
+  const elos: UserEloStat[] = (['1v1', '2v2'] as const).map((mode) => {
+    const row = elo.find((e) => e.mode === mode);
+    const ranked = elo.find((e) => e.mode === mode);
+    return {
+      mode,
+      rating: row ? row.rating : 1000,
+      games: row ? row.games : 0,
+      rank: ranked ? Number(ranked.rnk) : null,
+    };
+  });
+  const records: UserRecordStat[] = (['solo', 'duo'] as const).map((mode) => {
+    const pb = recPb.find((r) => r.mode === mode);
+    return {
+      mode,
+      best: pb ? pb.score : null,
+      rank: rankByMode.get(mode) ?? null,
+      replayId: pb?.replay_id ?? null,
+    };
+  });
+  const played = Number(match[0]?.played ?? 0);
+  const wins = Number(match[0]?.wins ?? 0);
+
+  return {
+    userId,
+    handle: profile[0]?.handle ?? null,
+    season: balanceVersion,
+    elo: elos,
+    records,
+    match: { played, wins, losses: played - wins },
+    recent,
+  };
+}
+
 // ------------------------------------------------------ PvP match history ---
 export async function saveMatch(
   mode: '1v1' | '2v2',

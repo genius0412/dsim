@@ -55,6 +55,45 @@ export function fetchElo(
   return getJson(`/api/elo?mode=${mode}&drivetrain=${drivetrain}${s}`);
 }
 
+export interface UserEloStat {
+  mode: '1v1' | '2v2';
+  rating: number;
+  games: number;
+  rank: number | null;
+}
+export interface UserRecordStat {
+  mode: 'solo' | 'duo';
+  best: number | null;
+  rank: number | null;
+  replayId: string | null;
+}
+export interface UserMatchRow {
+  matchId: string;
+  mode: '1v1' | '2v2';
+  alliance: 'red' | 'blue';
+  score: number;
+  won: boolean;
+  ratingBefore: number;
+  ratingAfter: number;
+  createdAt: string;
+}
+export interface UserStats {
+  userId: string;
+  handle: string | null;
+  season: number;
+  elo: UserEloStat[];
+  records: UserRecordStat[];
+  match: { played: number; wins: number; losses: number };
+  recent: UserMatchRow[];
+}
+
+/** One round-trip: a user's whole competitive profile for the current season
+ * (ranks computed server-side — no full board pulled to the client). */
+export function fetchUserStats(userId: string, season?: number): Promise<UserStats> {
+  const s = season != null ? `?season=${season}` : '';
+  return getJson(`/api/user/${encodeURIComponent(userId)}/stats${s}`);
+}
+
 export function fetchReplay(id: string): Promise<Replay> {
   return getJson(`/api/replay/${id}`);
 }

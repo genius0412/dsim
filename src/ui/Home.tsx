@@ -1,5 +1,6 @@
 import type { GameSettings } from '../game';
 import type { DrivetrainType } from '../types';
+import { APP_NAME, CURRENT_SEASON } from '../seasons';
 
 const DRIVETRAIN_LABELS: Record<DrivetrainType, string> = {
   mecanum: 'Mecanum',
@@ -34,7 +35,9 @@ export function Home({
   const spec = settings.spec;
   return (
     <>
-      <p className="ds-eyebrow">DECODE presented by RTX · 2D Driver Sim</p>
+      <p className="ds-eyebrow">
+        {APP_NAME} · {CURRENT_SEASON.fullName} · 2D Driver Sim
+      </p>
       <h1 className="ds-h1">Ready to run.</h1>
       <p className="ds-sub">
         Practice free, run a full scored match, or scrim a custom room. Driving{' '}
