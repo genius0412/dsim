@@ -24,12 +24,22 @@ const JWKS_URL =
   process.env.NEON_AUTH_JWKS_URL ??
   (AUTH_URL ? `${AUTH_URL.replace(/\/$/, '')}/.well-known/jwks.json` : undefined);
 
-export const authConfigured = !!JWKS_URL;
-
-const jwks = JWKS_URL ? createRemoteJWKSet(new URL(JWKS_URL)) : null;
+// Build the JWKS set defensively: a malformed NEON_AUTH_URL would make `new URL()`
+// THROW at module load — and since this module is imported before `httpServer.listen()`,
+// that throw crashes the whole process at boot (nothing binds → Fly reports "app not
+// listening on 0.0.0.0:8080"). Degrade to anonymous instead of taking the server down.
+let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+if (JWKS_URL) {
+  try {
+    jwks = createRemoteJWKSet(new URL(JWKS_URL));
+  } catch (e) {
+    console.error(`[auth] invalid NEON_AUTH_URL/JWKS_URL (${JWKS_URL}) — all runs anonymous:`, e);
+  }
+}
+export const authConfigured = !!jwks;
 
 console.log(
-  `[auth] ${authConfigured ? `JWKS ${JWKS_URL}` : 'NEON_AUTH_URL unset — all runs anonymous'}`,
+  `[auth] ${authConfigured ? `JWKS ${JWKS_URL}` : 'auth not configured — all runs anonymous'}`,
 );
 
 export interface AuthedUser {

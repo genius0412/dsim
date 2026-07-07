@@ -22,11 +22,22 @@ primary_region = 'iad'
 
   [[http_service.checks]]
     interval = '15s'
-    timeout = '5s'
-    grace_period = '10s'
+    # generous timeout + grace so the probe tolerates a cold boot (auto_start wakes
+    # the machine on the first connection) without ever flapping the machine.
+    timeout = '10s'
+    grace_period = '30s'
     method = 'GET'
     path = '/health'
 
+# DEDICATED CPU. The room loop runs a continuous 60 Hz Rapier physics step; on a
+# burstable shared CPU that exhausts the burst credits within a minute, Fly then
+# throttles the machine to its tiny baseline, the single-threaded event loop stalls,
+# and even the trivial /health response blows past the probe timeout → the machine
+# flaps "unhealthy" even with ONE player. A dedicated vCPU is never throttled, so the
+# loop keeps real-time and /health always answers. auto_stop_machines='stop' +
+# min_machines_running=0 mean this only runs while someone is connected, so idle cost
+# stays ~0 despite the bigger VM. Drop to 'shared-cpu-2x'/1gb if cost matters more
+# than smoothness, but expect throttling to return under sustained play.
 [[vm]]
-  size = 'shared-cpu-1x'
-  memory = '512mb'
+  size = 'performance-1x'
+  memory = '2048mb'

@@ -1,3 +1,66 @@
+# HANDOFF — 2026-07-07 (build fix + server perf) — READ THIS FIRST, then the section below
+
+Two follow-up fixes on top of the section below:
+
+**1. Build was RED after the `NeonDB+Auth` merge — now GREEN.** Causes + fixes:
+- Deps in `package.json` were not installed (`@dimforge/rapier2d-compat`, `@neondatabase/auth`,
+  `pg`, `ws`) → ran `npm install`.
+- The merge left a DUPLICATE `GameSettings` (one in `src/game.ts` w/ `parkSpeedPct`+`ControlBindings`
+  bindings, a stale one in `src/types.ts` w/ `Record<string,string[]>`+no `parkSpeedPct`). Unified on
+  ONE canonical def in `src/types.ts` (now the richer version); `game.ts` re-exports it (`export type
+  { GameSettings }`) so all `from '../game'` importers still work. `settings.ts` now gets `AutoPathData`
+  from `./types`. Cleaned up the auto-path merge fallout in `renderer.ts`/`pathTraversal.ts` (imports),
+  `spawn.ts` (`createWorld` 4th arg `gameSettings?` optional; `autoPathActive` coerced to boolean),
+  `game.ts` (`autoPath: s.autoPath ?? undefined`). `npm run build` + `npm test` green.
+
+**2. Fly server was slow + flapping health checks with ONE player — fixed.** Root cause: the room loop
+runs a CONTINUOUS 60 Hz Rapier step; on the burstable `shared-cpu-1x` that drains burst credits in ~a
+minute, Fly throttles to baseline, the single event loop stalls, and `/health` times out → machine
+flaps. Changes:
+- **`fly.toml`**: `shared-cpu-1x`/512mb → **`performance-1x`/2048mb** (dedicated vCPU, never throttled).
+  Health `grace_period` 10s→30s, `timeout` 5s→10s (tolerate cold boot). auto-stop still on ⇒ idle ~$0.
+- **Cold boot**: `Dockerfile` is now a 2-stage esbuild BUNDLE run with plain `node` (was `tsx`, which
+  transpiled the whole tree ~7s each boot). New scripts `server:build`/`server:prod`; added `esbuild`
+  devDep; `dist-server/` gitignored. Validated: bundle builds (~108KB, 16ms) + serves `/health` + inits
+  physics in <1s.
+- **Per-tick CPU**: `physicsEngine.ts` `buildStatics` now MEMOIZES the constant field-collider geometry
+  (was recomputing goal trig + allocating on all ~120 world-builds/s; numbers identical ⇒ determinism +
+  smoke unchanged). `room.ts` `checkGrace()` early-returns when no client is disconnected (was spreading
+  the client map every tick).
+- **NOTE / next lever**: the biggest remaining per-tick cost is that `solveRobots`+`solveBalls` each
+  build+free a fresh Rapier `World` every step (2×/tick). Pooling a persistent scratch world would cut
+  that, but it's determinism-risky (client predicts with the fresh-world path; both sides must match, and
+  warm-start state must be cleared) — left alone; the dedicated CPU carries the runtime load. TODO for the
+  user: `fly deploy` to ship these (I can't run it — no Fly creds).
+
+**3. Bundling broke two runtime assumptions the `tsx` path hid — both fixed:**
+- **Migrations weren't shipped** → boot logged `migration failed ... ENOENT /app/dist-server/migrations`
+  and records stayed disabled. `db/migrate.ts` resolves `./migrations` via `import.meta.url`; under
+  `tsx` that was `/app/server/db/migrations` (whole `server/` tree copied), but in the bundle it's
+  `/app/dist-server/`. esbuild does NOT bundle the `.sql` (read at runtime with `readdirSync`), so the
+  Dockerfile now `COPY server/db/migrations ./dist-server/migrations` (next to the bundle). Verified the
+  path resolves + files list. (The ENOENT is caught/non-fatal, so the app still listened — the earlier
+  "not listening on 0.0.0.0:8080" was a transient boot-window warning, not a crash.)
+- **`jose` was undeclared** — `server/auth.ts` imports it directly but it was only present as a transitive
+  dep of the client-only `@neondatabase/auth`. Added `jose` to `dependencies` (was working by luck of
+  hoisting). Verified a prod-only `npm ci --omit=dev` install + bundle boot serves `/health` + inits
+  physics, with migrations beside the bundle.
+
+**4. Deploy prints `WARNING The app is not listening on ... 0.0.0.0:8080` — EXPECTED, not a bug (user
+chose to accept it).** The app DOES bind 0.0.0.0:8080 on Fly (proven: the boot log reaches `migrate()`,
+which runs AFTER `listen()`). The warning is a deploy-time reachability-check artifact of
+`auto_stop_machines = 'stop'` + `min_machines_running = 0`: Fly stops the machine right after the release,
+so its post-deploy check finds nothing listening. `auto_start` wakes it on the first real connection —
+verify with the public `…fly.dev/health` returning `ok`. To make the warning go away entirely, set
+`min_machines_running = 1` (always-on, no cold start, but the dedicated vCPU then bills continuously); the
+user opted to KEEP auto-stop for the cost savings and ignore the warning.
+- Hardened `server/auth.ts` while here: `createRemoteJWKSet(new URL(JWKS_URL))` now runs in a try/catch,
+  so a malformed `NEON_AUTH_URL` degrades to anonymous instead of throwing at module load (which, being
+  imported before `listen()`, would have caused a REAL "not listening" crash). Secrets are set + valid, so
+  this is belt-and-suspenders.
+
+---
+
 # HANDOFF — session ending 2026-07-07 (Fly auto-stop + Phase 3 backend spine)
 
 Read `CLAUDE.md` first (load-bearing rules), then this. Roadmap = `docs/netcodeplan.md`;
@@ -9,16 +72,16 @@ public read APIs). The remaining Phase 3 work is all CLIENT UI, gated on a desig
 ## ✅ Build: GREEN · `npm test` ALL PASS (~160 checks) · `npm run build` clean · `npm run server:check` clean
 ## ✅ Fly `dohun-sim-decode`: HEALTHY, auto-stops when idle, REDEPLOYED with the full backend + auth
 
-## 🔑 THE ONLY THING LEFT TO GO LIVE: the user sets TWO Fly secrets (I'm classifier-blocked from
-## setting secrets). Everything else is built, deployed, and end-to-end verified.
+## 🔑 Fly secrets (`DATABASE_URL` + `NEON_AUTH_URL`): ✅ ALREADY SET by the user (2026-07-07).
+Confirmed live: the boot log now shows the DB ENABLED (it reached `migrate()` and tried to read the
+migrations dir — that only happens when `DATABASE_URL` is set). So persistence + JWT auth are wired;
+records persist once the migrations-path fix above is deployed (`fly deploy`).
 ```
+# for reference only — already applied:
 fly secrets set DATABASE_URL='postgresql://…neon.tech/neondb?sslmode=require&channel_binding=require' \
                 NEON_AUTH_URL='https://ep-lingering-pine-ahq640vd.neonauth.c-3.us-east-1.aws.neon.tech/neondb/auth' \
                 -a dohun-sim-decode
 ```
-Server logs currently show `[db] DATABASE_URL unset` — the value the user put in `.env.example`
-never became a Fly secret (that file doesn't reach the server). After setting both: the machine
-restarts, auto-migrates the schema, enables persistence + JWT auth. THEN records persist.
 - Also confirm the JWKS path with ONE live sign-in (Neon's may differ from Better Auth's `/jwks`
   default → adjust `NEON_AUTH_JWKS_URL`; until then a signed-in run verifies as anonymous = safe).
 - Vercel client: set `VITE_GAME_SERVER_URL=wss://dohun-sim-decode.fly.dev` + `VITE_NEON_AUTH_URL`.

@@ -170,6 +170,16 @@ export class Room {
   /** finalize any disconnected driver whose grace has lapsed: drop its robot to
    * ZERO for good (broadcast) and free the slot */
   private checkGrace(): void {
+    // hot path: this runs every tick (60 Hz). Disconnects are rare, so avoid the
+    // array-spread allocation + Date.now() unless a slot is actually being held.
+    let anyDown = false;
+    for (const c of this.clients.values()) {
+      if (!c.connected) {
+        anyDown = true;
+        break;
+      }
+    }
+    if (!anyDown) return;
     const now = Date.now();
     for (const c of [...this.clients.values()]) {
       if (c.connected || now - c.disconnectAt <= RECONNECT_GRACE_MS) continue;

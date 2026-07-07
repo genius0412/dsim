@@ -80,15 +80,25 @@ fly launch --no-deploy        # pick a unique app name + region near your player
 fly deploy
 ```
 
-- `fly.toml` exposes port 8080, forces HTTPS (so clients use `wss://`), keeps one
-  machine warm (`min_machines_running = 1`) to avoid a cold-start on first connect,
-  and health-checks `GET /health`.
-- The Docker image installs only runtime deps (`--omit=dev`: react/react-dom/ws/tsx —
-  not electron/vite), so it builds fast.
+- `fly.toml` exposes port 8080, forces HTTPS (so clients use `wss://`), auto-stops the
+  machine when idle (`min_machines_running = 0`, `auto_stop_machines = 'stop'`) and
+  auto-starts it on the next connection, and health-checks `GET /health` (with a 30s
+  grace so a cold boot never flaps the machine). Set `min_machines_running = 1` to keep
+  one machine warm and skip the first-connect cold start, at the cost of always-on
+  billing for the dedicated vCPU.
+- The Docker image is a 2-stage build: it esbuild-BUNDLES `server/index.ts` (+ the
+  shared `src/sim`) to one plain-JS file, then runs it with plain `node`. This avoids
+  transpiling the TS tree with `tsx` on every cold boot (~7s), so an auto_started
+  machine is serving `/health` in well under a second.
 - Your server URL is `wss://<app-name>.fly.dev`.
-- Scale/region: a 2D match for 4 robots is microseconds/tick and a few KB/s, so one
-  `shared-cpu-1x` / 256 MB machine hosts many rooms. Add regions only if players are
-  international (`fly regions add <code>`).
+- Scale/CPU: the room loop runs a CONTINUOUS 60 Hz Rapier physics step. That is a
+  sustained CPU workload, so it runs on a **dedicated** `performance-1x` vCPU — a
+  burstable `shared-cpu-*` exhausts its burst credits within a minute of play, Fly then
+  throttles it to a tiny baseline, the event loop stalls, and even `/health` times out
+  (the machine flaps "unhealthy" with a single player). `auto_stop_machines = 'stop'` +
+  `min_machines_running = 0` mean the dedicated VM only runs while someone is connected,
+  so idle cost stays near $0; a played hour is ~$0.02–0.03. Add regions only if players
+  are international (`fly regions add <code>`).
 
 Any host that runs a container works (Railway, Render, a VPS with `npm ci --omit=dev &&
 npm run server:start`); Fly is just the documented path. The only requirements are a

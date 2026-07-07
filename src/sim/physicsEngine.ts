@@ -64,16 +64,31 @@ function statics(desc: RAPIER.ColliderDesc): RAPIER.ColliderDesc {
     .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min);
 }
 
-/** static field colliders: perimeter walls, goal-face hypotenuses, classifier
- * channels. Rebuilt each step (constant geometry — cheap). */
-function buildStatics(rw: RAPIER.World): void {
-  const f = C.FIELD_HALF;
-  // 4 perimeter walls: inner faces exactly at ±FIELD_HALF
-  rw.createCollider(statics(RAPIER.ColliderDesc.cuboid(WALL_T, WALL_L).setTranslation(f + WALL_T, 0)));
-  rw.createCollider(statics(RAPIER.ColliderDesc.cuboid(WALL_T, WALL_L).setTranslation(-f - WALL_T, 0)));
-  rw.createCollider(statics(RAPIER.ColliderDesc.cuboid(WALL_L, WALL_T).setTranslation(0, f + WALL_T)));
-  rw.createCollider(statics(RAPIER.ColliderDesc.cuboid(WALL_L, WALL_T).setTranslation(0, -f - WALL_T)));
+/** one static cuboid collider, as plain numbers (world-independent) */
+interface StaticSpec {
+  hx: number;
+  hy: number;
+  tx: number;
+  ty: number;
+  rot: number;
+}
 
+/** The static field geometry (perimeter walls, goal-face hypotenuses, classifier
+ * channels) is CONSTANT — but a fresh Rapier world is built ~120×/s, so computing
+ * the goal trig/points + allocating on every build is pure waste. Compute the
+ * cuboid params ONCE (identical numbers ⇒ bit-for-bit identical colliders ⇒
+ * determinism preserved) and just recreate colliders from the cache each step. */
+let STATIC_SPECS: StaticSpec[] | null = null;
+
+function computeStaticSpecs(): StaticSpec[] {
+  const f = C.FIELD_HALF;
+  const specs: StaticSpec[] = [
+    // 4 perimeter walls: inner faces exactly at ±FIELD_HALF
+    { hx: WALL_T, hy: WALL_L, tx: f + WALL_T, ty: 0, rot: 0 },
+    { hx: WALL_T, hy: WALL_L, tx: -f - WALL_T, ty: 0, rot: 0 },
+    { hx: WALL_L, hy: WALL_T, tx: 0, ty: f + WALL_T, rot: 0 },
+    { hx: WALL_L, hy: WALL_T, tx: 0, ty: -f - WALL_T, rot: 0 },
+  ];
   for (const a of ALLIANCES) {
     // goal FACE: a thin slab lying along the hypotenuse, offset toward the
     // corner so its field-side face IS the hypotenuse (robots pushed out)
@@ -83,23 +98,28 @@ function buildStatics(rw: RAPIER.World): void {
     const len = hyp(side.x - far.x, side.y - far.y);
     const ang = datan2(side.y - far.y, side.x - far.x);
     const n = goalFaceNormal(a); // unit, points into the field
-    rw.createCollider(
-      statics(
-        RAPIER.ColliderDesc.cuboid(len / 2, GOAL_FACE_T)
-          .setTranslation(mx - n.x * GOAL_FACE_T, my - n.y * GOAL_FACE_T)
-          .setRotation(ang),
-      ),
-    );
+    specs.push({ hx: len / 2, hy: GOAL_FACE_T, tx: mx - n.x * GOAL_FACE_T, ty: my - n.y * GOAL_FACE_T, rot: ang });
 
     // classifier channel (axis-aligned rect along the side wall)
     const r = classifierRect(a);
+    specs.push({
+      hx: (r.x1 - r.x0) / 2,
+      hy: (r.y1 - r.y0) / 2,
+      tx: (r.x0 + r.x1) / 2,
+      ty: (r.y0 + r.y1) / 2,
+      rot: 0,
+    });
+  }
+  return specs;
+}
+
+/** static field colliders from the cached specs. Rebuilt each step onto the fresh
+ * world (the geometry math is memoized above). */
+function buildStatics(rw: RAPIER.World): void {
+  if (!STATIC_SPECS) STATIC_SPECS = computeStaticSpecs();
+  for (const s of STATIC_SPECS) {
     rw.createCollider(
-      statics(
-        RAPIER.ColliderDesc.cuboid((r.x1 - r.x0) / 2, (r.y1 - r.y0) / 2).setTranslation(
-          (r.x0 + r.x1) / 2,
-          (r.y0 + r.y1) / 2,
-        ),
-      ),
+      statics(RAPIER.ColliderDesc.cuboid(s.hx, s.hy).setTranslation(s.tx, s.ty).setRotation(s.rot)),
     );
   }
 }
