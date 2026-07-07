@@ -2,6 +2,7 @@ import * as C from '../src/config';
 import { START_POSES } from '../src/config';
 import { createWorld, type RobotSetup } from '../src/sim/spawn';
 import { step } from '../src/sim/world';
+import { physicsReady } from '../src/sim/physicsEngine';
 import type { Alliance, Artifact, RobotCommand, World } from '../src/types';
 import {
   dequantizeCommand,
@@ -160,10 +161,15 @@ export class Room {
         this.broadcastRoster();
         break;
       case 'start':
-        if (id === this.hostId && this.world === null) this.startMatch();
+        // physics WASM may still be loading in the first moment after boot; refuse
+        // rather than throw inside step() (which would kill the tick loop)
+        if (id === this.hostId && this.world === null) {
+          if (physicsReady()) this.startMatch();
+          else c.send({ t: 'error', message: 'Server is starting up — try again in a moment.' });
+        }
         break;
       case 'restart':
-        if (id === this.hostId) this.startMatch();
+        if (id === this.hostId && physicsReady()) this.startMatch();
         break;
       case 'input':
         this.onInput(id, msg.tick, msg.q);

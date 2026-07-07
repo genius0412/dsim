@@ -97,13 +97,16 @@ wss.on('connection', (ws: WebSocket) => {
 
 // bind 0.0.0.0 explicitly — Fly (and most platforms) route to the app there, NOT
 // localhost/127.0.0.1 (a bind to localhost is unreachable ⇒ 502 / "not listening").
-// Init the Rapier physics WASM (shared src/sim) BEFORE accepting matches.
+// LISTEN FIRST so GET /health answers within the platform's boot window, THEN load
+// the Rapier WASM: loading it before listen() left nothing bound to the port during
+// the (sub-second, but real on a shared CPU) WASM init, so Fly saw "app not listening
+// on 8080" and flapped the machine. A match can't start until physicsReady() (guarded
+// in room.ts), so serving /health ahead of physics is safe.
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`[server] DECODE game server listening on 0.0.0.0:${PORT}`);
+});
 initPhysics()
-  .then(() => {
-    httpServer.listen(PORT, '0.0.0.0', () => {
-      console.log(`[server] DECODE game server listening on 0.0.0.0:${PORT}`);
-    });
-  })
+  .then(() => console.log('[server] Rapier physics ready — matches enabled'))
   .catch((e) => {
     console.error('[server] failed to init physics:', e);
     process.exit(1);
