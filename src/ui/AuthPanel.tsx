@@ -1,0 +1,77 @@
+import { useState, type FormEvent } from 'react';
+import { authClient } from '../lib/authClient';
+
+/** Sign-in / sign-up modal (email+password and Google), styled to Direction A.
+ * Only rendered when auth is enabled, so `authClient` is non-null. */
+export function AuthPanel({ onClose }: { onClose: () => void }) {
+  const client = authClient!;
+  const [mode, setMode] = useState<'in' | 'up'>('in');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      if (mode === 'up') await client.signUp.email({ email, password, name: name || email });
+      else await client.signIn.email({ email, password });
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong — try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const google = async () => {
+    setError('');
+    try {
+      await client.signIn.social({ provider: 'google', callbackURL: window.location.href });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Google sign-in failed.');
+    }
+  };
+
+  return (
+    <div className="ds-modal-backdrop" onClick={onClose}>
+      <div className="ds-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="ds-modal-h">
+          <span className="ds-panel-title">{mode === 'in' ? 'Sign in' : 'Create account'}</span>
+          <button className="ds-btn ghost" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <form className="ds-form" onSubmit={submit}>
+          {mode === 'up' && (
+            <label>
+              <span>Display name</span>
+              <input className="ds-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="On the leaderboard" />
+            </label>
+          )}
+          <label>
+            <span>Email</span>
+            <input className="ds-input" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+          </label>
+          <label>
+            <span>Password</span>
+            <input className="ds-input" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+          </label>
+          {error && <div className="ds-form-err">{error}</div>}
+          <button className="ds-btn primary" type="submit" disabled={busy}>
+            {busy ? 'Working…' : mode === 'in' ? 'Sign in' : 'Create account'}
+          </button>
+        </form>
+        <button className="ds-btn" style={{ width: '100%' }} onClick={google}>Continue with Google</button>
+        <div className="ds-form-switch">
+          {mode === 'in' ? (
+            <>New here? <button className="ds-btn ghost" onClick={() => setMode('up')}>Create an account</button></>
+          ) : (
+            <>Have an account? <button className="ds-btn ghost" onClick={() => setMode('in')}>Sign in</button></>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

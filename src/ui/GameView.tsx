@@ -3,7 +3,8 @@ import { GameController, type GameSettings, type HudSnapshot } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
 import { MobileControls } from './MobileControls';
-import type { NetSession } from '../net/session';
+import type { MatchResultInfo, NetSession } from '../net/session';
+import type { Replay } from '../sim/replay';
 import type { Alliance, ScoreBreakdown } from '../types';
 
 interface Props {
@@ -11,9 +12,11 @@ interface Props {
   onExit: () => void;
   /** null in solo; a live lockstep session in multiplayer */
   session?: NetSession | null;
+  /** watch the just-played run's replay (server matches only) */
+  onWatchReplay?: (replay: Replay) => void;
 }
 
-export function GameView({ settings, onExit, session = null }: Props) {
+export function GameView({ settings, onExit, session = null, onWatchReplay }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controllerRef = useRef<GameController | null>(null);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
@@ -103,6 +106,8 @@ export function GameView({ settings, onExit, session = null }: Props) {
           canRematch={!session || session.isHost()}
           onRematch={() => controllerRef.current?.rematch()}
           onExit={onExit}
+          matchResult={controllerRef.current?.getMatchResult() ?? null}
+          onWatchReplay={onWatchReplay}
         />
       )}
       {window.matchMedia('(pointer: coarse)').matches && controllerRef.current && (
@@ -242,11 +247,15 @@ function Results({
   canRematch,
   onRematch,
   onExit,
+  matchResult,
+  onWatchReplay,
 }: {
   hud: HudSnapshot;
   canRematch: boolean;
   onRematch: () => void;
   onExit: () => void;
+  matchResult: MatchResultInfo | null;
+  onWatchReplay?: (replay: Replay) => void;
 }) {
   const red = hud.alliance === 'red' ? hud.score : hud.oppScore;
   const blue = hud.alliance === 'blue' ? hud.score : hud.oppScore;
@@ -340,7 +349,17 @@ function Results({
           PENALTIES are the points (minor {PTS_FOUL_MINOR} · major {PTS_FOUL_MAJOR}) awarded to each
           alliance for the OPPONENT's fouls — already included in each TOTAL.
         </p>
+        {matchResult && (
+          <p className="hint" style={{ color: 'var(--amber)' }}>
+            {matchResult.kind === 'record'
+              ? '✓ Recorded — sign in for it to hit the leaderboard.'
+              : '✓ Match recorded.'}
+          </p>
+        )}
         <div className="overlay-buttons">
+          {matchResult && onWatchReplay && (
+            <button onClick={() => onWatchReplay(matchResult.replay)}>▶ WATCH REPLAY</button>
+          )}
           {canRematch ? (
             <button onClick={onRematch}>REMATCH</button>
           ) : (

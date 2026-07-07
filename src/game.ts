@@ -19,7 +19,7 @@ import { InputManager } from './input/input';
 import type { ControlBindings } from './input/bindings';
 import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
-import type { NetSession, Snapshot } from './net/session';
+import type { MatchResultInfo, NetSession, Snapshot } from './net/session';
 import { localizeCommand } from './net/protocol';
 
 export interface GameSettings {
@@ -536,6 +536,12 @@ export class GameController {
   /** multiplayer session? (UI gates RESET / host-only REMATCH on this) */
   isNetworked(): boolean {
     return this.session !== null;
+  }
+
+  /** the server's authoritative end-of-match result (score + recorded replay),
+   * or null in solo / before phase 'post' */
+  getMatchResult(): MatchResultInfo | null {
+    return this.session?.getMatchResult() ?? null;
   }
 
   getHud(): HudSnapshot {

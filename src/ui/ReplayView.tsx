@@ -1,0 +1,181 @@
+import { useEffect, useRef, useState } from 'react';
+import { fetchReplay } from '../net/api';
+import { ReplayPlayer, type Replay } from '../sim/replay';
+import { Renderer } from '../render/renderer';
+import { SIM_DT } from '../config';
+
+/**
+ * Replay viewer: fetches a deterministic input-log replay and re-simulates it in
+ * the browser, drawing with the same Renderer the live game uses. Physics WASM is
+ * already inited (main.tsx) before any screen renders, so `ReplayPlayer` is safe.
+ * Playback is cosmetic — the authoritative score lives on the board — so cross-
+ * machine float drift (if any) can't move standings.
+ */
+export function ReplayView({
+  replayId,
+  preloadReplay,
+  onClose,
+}: {
+  replayId?: string;
+  /** a replay already in hand (just-played run) — skips the fetch */
+  preloadReplay?: Replay;
+  onClose: () => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [error, setError] = useState('');
+  const [playing, setPlaying] = useState(true);
+  const [tick, setTick] = useState(0);
+  const [total, setTotal] = useState(1);
+
+  const renderer = useRef<Renderer | null>(null);
+  const player = useRef<ReplayPlayer | null>(null);
+  const replay = useRef<Replay | null>(null);
+  const playingRef = useRef(true);
+
+  // fetch the replay (or use a preloaded one) + build the player
+  useEffect(() => {
+    let dead = false;
+    setStatus('loading');
+    setError('');
+    const use = (r: Replay): void => {
+      replay.current = r;
+      player.current = new ReplayPlayer(r);
+      renderer.current = new Renderer();
+      setTotal(Math.max(1, r.ticks));
+      setTick(0);
+      setStatus('ready');
+    };
+    if (preloadReplay) {
+      use(preloadReplay);
+      return;
+    }
+    if (!replayId) {
+      setError('No replay specified.');
+      setStatus('error');
+      return;
+    }
+    fetchReplay(replayId)
+      .then((r) => {
+        if (!dead) use(r);
+      })
+      .catch((e: unknown) => {
+        if (dead) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setStatus('error');
+      });
+    return () => {
+      dead = true;
+    };
+  }, [replayId, preloadReplay]);
+
+  // render loop + a 10 Hz progress readout (no per-frame React churn)
+  useEffect(() => {
+    if (status !== 'ready') return;
+    const canvas = canvasRef.current!;
+    const ctx = canvas.getContext('2d')!;
+    const r = replay.current!;
+    const rend = renderer.current!;
+    const localId = r.setups[0]?.id ?? 0;
+    const alliance = r.setups[0]?.alliance ?? 'blue';
+
+    const resize = (): void => rend.camera.configure(canvas, alliance);
+    resize();
+    window.addEventListener('resize', resize);
+
+    let raf = 0;
+    let lastT = performance.now();
+    let acc = 0;
+    const loop = (t: number): void => {
+      const p = player.current!;
+      const dt = Math.min((t - lastT) / 1000, 0.25);
+      lastT = t;
+      if (playingRef.current) {
+        acc += dt;
+        let n = 0;
+        while (acc >= SIM_DT && n < 8 && !p.done) {
+          p.stepOnce();
+          acc -= SIM_DT;
+          n++;
+        }
+        if (p.done && playingRef.current) {
+          playingRef.current = false;
+          setPlaying(false);
+        }
+      }
+      rend.render(ctx, p.world, null, localId);
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    const readout = window.setInterval(() => setTick(player.current?.world.tick ?? 0), 100);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearInterval(readout);
+      window.removeEventListener('resize', resize);
+    };
+  }, [status]);
+
+  const setPlay = (v: boolean): void => {
+    // replaying from the end restarts
+    if (v && player.current?.done) rebuild();
+    playingRef.current = v;
+    setPlaying(v);
+  };
+  const rebuild = (): void => {
+    if (!replay.current) return;
+    player.current = new ReplayPlayer(replay.current);
+    setTick(0);
+  };
+  const seek = (target: number): void => {
+    const r = replay.current;
+    if (!r) return;
+    let p = player.current!;
+    if (target < p.world.tick) {
+      p = new ReplayPlayer(r);
+      player.current = p;
+    }
+    while (p.world.tick < target && !p.done) p.stepOnce();
+    setTick(p.world.tick);
+  };
+
+  const pct = Math.round((tick / total) * 100);
+
+  return (
+    <div className="ds-replay">
+      <div className="ds-replay-top">
+        <button className="ds-btn ghost" onClick={onClose}>← Leaderboard</button>
+        <span className="ds-panel-title">Replay · Season {replay.current?.balanceVersion ?? '—'}</span>
+        <span style={{ width: 90 }} />
+      </div>
+
+      {status === 'loading' && <div className="ds-loading" style={{ margin: 'auto' }}>Loading replay…</div>}
+      {status === 'error' && (
+        <div className="ds-empty" style={{ margin: 'auto' }}>
+          <div className="big">Couldn’t load the replay</div>
+          {error}
+        </div>
+      )}
+      <canvas ref={canvasRef} className="ds-replay-canvas" style={{ display: status === 'ready' ? 'block' : 'none' }} />
+
+      {status === 'ready' && (
+        <div className="ds-replay-controls">
+          <button className="ds-btn primary" onClick={() => setPlay(!playing)}>
+            {playing ? '❚❚ Pause' : player.current?.done ? '⟲ Replay' : '▶ Play'}
+          </button>
+          <button className="ds-btn" onClick={rebuild}>⟲ Restart</button>
+          <input
+            type="range"
+            className="ds-replay-seek"
+            min={0}
+            max={total}
+            value={tick}
+            onChange={(e) => seek(Number(e.target.value))}
+            aria-label="Seek"
+          />
+          <span className="ds-replay-time">{pct}%</span>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,6 +1,6 @@
 import type { Artifact, RobotCommand, RobotSpec } from '../types';
 import type { RobotSetup } from '../sim/spawn';
-import type { NetSession, NetStatus, Snapshot } from './session';
+import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './session';
 import type { Transport } from './transport';
 import {
   encodeMsg,
@@ -28,6 +28,7 @@ export class ServerSession implements NetSession {
   setups: RobotSetup[];
 
   private snapshot: Snapshot | null = null;
+  private matchResult: MatchResultInfo | null = null;
   private restartCb: (() => void) | null = null;
   private connected = true;
   /** other robots in the match (for the HUD "N players" chip) */
@@ -82,6 +83,10 @@ export class ServerSession implements NetSession {
     return s;
   }
 
+  getMatchResult(): MatchResultInfo | null {
+    return this.matchResult;
+  }
+
   status(): NetStatus {
     return {
       waitingFor: this.connected ? null : 'server',
@@ -120,11 +125,14 @@ export class ServerSession implements NetSession {
       // keep only the freshest — the controller reconciles to the newest world
       this.snapshot = { serverTick: m.serverTick, world, cmds, ackInputTick: m.ackInputTick };
       this.connected = true; // snapshots flowing ⇒ we're synced
+    } else if (m.t === 'matchResult') {
+      this.matchResult = { kind: m.kind, record: m.record, result: m.result, replay: m.replay };
     } else if (m.t === 'matchStart') {
       // a host restart: adopt the new seed/setups and rebuild
       this.seed = m.seed;
       this.setups = m.setups;
       this.snapshot = null;
+      this.matchResult = null;
       this.baseBalls.clear();
       this.restartCb?.();
     } else if (m.t === 'rejoined' && !m.ok) {

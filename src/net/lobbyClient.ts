@@ -1,10 +1,13 @@
 import type { RobotSetup } from '../sim/spawn';
 import type { Transport } from './transport';
+import { getAuthToken } from '../lib/authClient';
 import {
   encodeMsg,
   decodeServerMsg,
   type LobbyPlayer,
   type PlayerPatch,
+  type QueueMode,
+  type RoomConfig,
 } from './protocol';
 
 export interface MatchStart {
@@ -23,6 +26,7 @@ export interface MatchStart {
 type Handlers = {
   roster: (players: LobbyPlayer[], hostId: string) => void;
   matchStart: (m: MatchStart) => void;
+  queued: (mode: QueueMode, size: number, need: number) => void;
   error: (message: string) => void;
   closed: () => void;
 };
@@ -43,11 +47,16 @@ export class LobbyClient {
     this.handlers[event] = cb;
   }
 
-  /** join (or create) a room; (re)sends on open AND on any reconnect */
-  join(room: string, player: Omit<LobbyPlayer, 'clientId'>): void {
-    const doJoin = (): void => this.transport.send(encodeMsg({ t: 'join', room, player }));
-    this.transport.onOpen(doJoin);
-    this.transport.onReopen(doJoin);
+  /** join (or create) a room; (re)sends on open AND on any reconnect. `config`
+   * (set only by the room CREATOR) picks versus vs. record-chasing. Attaches the
+   * Neon Auth JWT (if signed in) so the server attributes the run. */
+  join(room: string, player: Omit<LobbyPlayer, 'clientId'>, config?: RoomConfig): void {
+    const doJoin = async (): Promise<void> => {
+      const authToken = (await getAuthToken()) ?? undefined;
+      this.transport.send(encodeMsg({ t: 'join', room, player, config, authToken }));
+    };
+    this.transport.onOpen(() => void doJoin());
+    this.transport.onReopen(() => void doJoin());
   }
 
   /** change our own alliance / start pose / ready / spec */
@@ -58,6 +67,21 @@ export class LobbyClient {
   /** host only: begin the match */
   start(): void {
     this.transport.send(encodeMsg({ t: 'start' }));
+  }
+
+  /** enter the ranked queue; on a match the server sends `matchStart` (handled
+   * exactly like a lobby start). (Re)sends on open + reconnect, with the auth JWT. */
+  queue(mode: QueueMode, player: Omit<LobbyPlayer, 'clientId'>): void {
+    const doQueue = async (): Promise<void> => {
+      const authToken = (await getAuthToken()) ?? undefined;
+      this.transport.send(encodeMsg({ t: 'queue', mode, player, authToken }));
+    };
+    this.transport.onOpen(() => void doQueue());
+    this.transport.onReopen(() => void doQueue());
+  }
+
+  leaveQueue(): void {
+    this.transport.send(encodeMsg({ t: 'leaveQueue' }));
   }
 
   isHost(): boolean {
@@ -78,6 +102,8 @@ export class LobbyClient {
       this.handlers.roster?.(m.players, m.hostId);
     } else if (m.t === 'matchStart') {
       this.handlers.matchStart?.(m);
+    } else if (m.t === 'queued') {
+      this.handlers.queued?.(m.mode, m.size, m.need);
     } else if (m.t === 'error') {
       this.handlers.error?.(m.message);
     }

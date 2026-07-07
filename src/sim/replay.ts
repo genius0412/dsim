@@ -1,0 +1,280 @@
+import type { Alliance, GameMode, RobotCommand, RobotSpec, World } from '../types';
+import * as C from '../config';
+import { createWorld, DEFAULT_ASSISTS, type RobotSetup } from './spawn';
+import { step } from './world';
+import {
+  dequantizeCommand,
+  localizeCommand,
+  quantizeCommand,
+  type QCommand,
+} from '../net/protocol';
+import { worldHash } from '../net/checksum';
+
+/**
+ * Deterministic REPLAYS + record-chasing (score-attack) scaffolding — Phase 3
+ * foundation (docs/netcodeplan.md). A replay is NOT video/snapshots: it is the
+ * seed + robot setups + a hold-last-compressed per-tick command log. Because the
+ * sim is a pure, command-driven state machine, re-running `step()` over that log
+ * reproduces the match byte-for-byte — which makes replays (a) tiny (~10–30 KB),
+ * (b) a continuous determinism check, and (c) the server's anti-cheat verifier
+ * (re-simulate a submitted replay, trust only the score IT computes).
+ *
+ * Determinism rule (from net/protocol.ts): the sim must step on the value the
+ * wire round-trips (`localizeCommand`), so a captured command re-simulates to
+ * the same result. `runRecordMatch`/`ReplayRecorder` localize + quantize on the
+ * same lattice, so record → simulate is exact. A record run is fully SIM-DRIVEN
+ * (preCountdown → auto → transition → teleop → post), so no controller state
+ * leaks in — {seed, setups, commands} alone reproduce it.
+ */
+
+const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, intake: false, fire: false };
+const ZERO_Q: QCommand = { dx: 0, dy: 0, rot: 0, buttons: 0 };
+
+/** bump on a breaking change to the replay container schema */
+export const REPLAY_FORMAT = 1;
+
+/**
+ * One robot's command timeline, HOLD-LAST compressed: a flat number array of
+ * 5-tuples `[tick, dx, dy, rot, buttons]`, one entry only when the quantized
+ * command CHANGES. The command in effect at any tick is the newest entry with
+ * `entry.tick <= tick` (ZERO before the first). Flat numbers (not objects) keep
+ * it compact and JSON-trivial.
+ */
+export type CommandTrack = number[];
+
+export interface Replay {
+  format: number; // REPLAY_FORMAT
+  /** C.BALANCE_VERSION when recorded — a replay only re-sims exactly under its
+   * own balance version's sim build (see config.ts BALANCE_VERSION) */
+  balanceVersion: number;
+  mode: GameMode;
+  seed: number;
+  setups: RobotSetup[];
+  /** total ticks recorded (== the final world.tick) */
+  ticks: number;
+  /** per-robot-id command track (absent id ⇒ ZERO the whole match) */
+  tracks: Record<number, CommandTrack>;
+}
+
+function packKey(q: QCommand): number {
+  // dx/dy/rot ∈ [-127,127] (8 bits signed), buttons ∈ [0,3]; pack for cheap
+  // change-detection (not stored — just an equality key)
+  return ((q.dx & 0xff) << 24) | ((q.dy & 0xff) << 16) | ((q.rot & 0xff) << 8) | (q.buttons & 0xff);
+}
+
+/**
+ * Captures a replay while a match is stepped. Feed it the SAME command map you
+ * pass to `step()` each tick (already localized — see the determinism rule); it
+ * records only the quantized changes per robot.
+ */
+export class ReplayRecorder {
+  private readonly tracks = new Map<number, CommandTrack>();
+  private readonly last = new Map<number, number>(); // robotId -> last recorded packKey
+  private ticks = 0;
+
+  constructor(
+    readonly seed: number,
+    readonly setups: RobotSetup[],
+    readonly mode: GameMode = 'match',
+  ) {}
+
+  /** record the command map applied at `tick` (1-based, == world.tick after the
+   * step it drove). Only stores an entry when a robot's quantized command differs
+   * from its last stored one (hold-last). */
+  record(tick: number, commands: Map<number, RobotCommand>): void {
+    this.ticks = tick;
+    for (const s of this.setups) {
+      const cmd = commands.get(s.id);
+      const q = cmd ? quantizeCommand(cmd) : ZERO_Q;
+      const key = packKey(q);
+      if (this.last.get(s.id) === key) continue;
+      this.last.set(s.id, key);
+      let track = this.tracks.get(s.id);
+      if (!track) {
+        track = [];
+        this.tracks.set(s.id, track);
+      }
+      track.push(tick, q.dx, q.dy, q.rot, q.buttons);
+    }
+  }
+
+  finish(): Replay {
+    const tracks: Record<number, CommandTrack> = {};
+    for (const [id, t] of this.tracks) tracks[id] = t;
+    return {
+      format: REPLAY_FORMAT,
+      balanceVersion: C.BALANCE_VERSION,
+      mode: this.mode,
+      seed: this.seed,
+      setups: this.setups.map((s) => ({
+        ...s,
+        spec: { ...s.spec },
+        assists: { ...s.assists },
+      })),
+      ticks: this.ticks,
+      tracks,
+    };
+  }
+}
+
+/**
+ * Plays a replay forward one tick at a time, rebuilding the exact world and
+ * feeding the recorded (hold-last) commands. `world` is live for rendering; the
+ * UI replay viewer drives this at 60 Hz, the verifier runs it to completion.
+ */
+export class ReplayPlayer {
+  readonly world: World;
+  private readonly cursor: Record<number, number> = {}; // robotId -> next entry index
+  private readonly current = new Map<number, RobotCommand>();
+
+  constructor(private readonly replay: Replay) {
+    this.world = createWorld(replay.mode, replay.seed, replay.setups);
+    if (replay.mode === 'match') this.world.match.preCountdown = C.PRE_COUNTDOWN;
+    for (const s of replay.setups) this.current.set(s.id, { ...ZERO_CMD });
+  }
+
+  get done(): boolean {
+    return this.world.tick >= this.replay.ticks;
+  }
+
+  /** advance exactly one tick; false once fully played */
+  stepOnce(): boolean {
+    if (this.done) return false;
+    const tick = this.world.tick + 1;
+    for (const s of this.replay.setups) {
+      const track = this.replay.tracks[s.id];
+      if (!track) continue;
+      let ei = this.cursor[s.id] ?? 0;
+      const entries = track.length / 5;
+      // apply every entry that has come due (normally 0 or 1 per tick)
+      while (ei < entries && track[ei * 5] <= tick) {
+        const q: QCommand = {
+          dx: track[ei * 5 + 1],
+          dy: track[ei * 5 + 2],
+          rot: track[ei * 5 + 3],
+          buttons: track[ei * 5 + 4],
+        };
+        this.current.set(s.id, dequantizeCommand(q));
+        ei++;
+      }
+      this.cursor[s.id] = ei;
+    }
+    step(this.world, C.SIM_DT, this.current);
+    return true;
+  }
+}
+
+/** re-simulate a replay to completion and return the final world (playback +
+ * verification share this). Deterministic: identical to the recorded run on the
+ * same balance version. */
+export function simulateReplay(replay: Replay): World {
+  const p = new ReplayPlayer(replay);
+  while (p.stepOnce());
+  return p.world;
+}
+
+export interface ReplayResult {
+  /** each alliance's final total (the record score is the run alliance's) */
+  score: Record<Alliance, number>;
+  hash: number;
+  ticks: number;
+}
+
+/** the server's anti-cheat entry point: re-simulate a submitted replay and
+ * return the authoritative score it produces — never trust a client-posted one */
+export function verifyReplay(replay: Replay): ReplayResult {
+  return worldResult(simulateReplay(replay));
+}
+
+/** the record/score of a finished world — read directly, no re-simulation (the
+ * server already holds the authoritative world at phase 'post') */
+export function worldResult(world: World): ReplayResult {
+  return {
+    score: { red: world.match.scores.red.total, blue: world.match.scores.blue.total },
+    hash: worldHash(world),
+    ticks: world.tick,
+  };
+}
+
+// ---- record-chasing (score-attack) setups -----------------------------------
+
+/** solo = 1 robot alone (1v0); duo = 2 co-op robots, same alliance, one field
+ * (2v0). Both are OPPONENT-FREE — the record is the alliance's total score. */
+export type RecordMode = 'solo' | 'duo';
+
+/**
+ * Build the RobotSetup[] for a record-chasing run. Score-attack has no opponent,
+ * so a single (blue) alliance holds the run robot(s); alliance is viewpoint-only.
+ * DUO requires both robots the SAME drivetrain (per the leaderboards spec) — we
+ * enforce it by cloning one spec into both slots. Distinct start poses keep them
+ * from spawning on top of each other.
+ */
+export function recordSetups(
+  spec: RobotSpec,
+  mode: RecordMode,
+  assists = DEFAULT_ASSISTS,
+): RobotSetup[] {
+  const alliance: Alliance = 'blue';
+  const slot = (id: number, startIndex: number): RobotSetup => ({
+    id,
+    alliance,
+    spec: { ...spec },
+    assists: { ...assists },
+    startIndex,
+  });
+  return mode === 'solo' ? [slot(0, 0)] : [slot(0, 0), slot(1, 1)];
+}
+
+/** the alliance a record run scores for (the run robots' alliance) */
+export function recordAlliance(setups: RobotSetup[]): Alliance {
+  return setups[0]?.alliance ?? 'blue';
+}
+
+// ---- headless record runner (verifier / tooling / tests) --------------------
+
+/** per-tick command provider: returns the RAW intended command map for `tick`
+ * (localization is applied by the runner). Absent robot ⇒ ZERO that tick. */
+export type CommandSource = (tick: number, world: World) => Map<number, RobotCommand>;
+
+export interface RecordRun {
+  world: World; // final world (phase 'post' unless stopped early)
+  replay: Replay;
+  result: ReplayResult;
+}
+
+/** upper bound on a full match's ticks (+ slack), so a runaway can't spin forever */
+export function maxMatchTicks(): number {
+  const secs = C.PRE_COUNTDOWN + C.AUTO_DURATION + C.TRANSITION_DURATION + C.TELEOP_DURATION + 2;
+  return Math.ceil(secs / C.SIM_DT);
+}
+
+/**
+ * Run a full, deterministic, SIM-DRIVEN record-chasing match headlessly and
+ * capture its replay. Commands from `src` are localized (quantize round-trip)
+ * before BOTH stepping and recording, so `simulateReplay(run.replay)` reproduces
+ * `run.world` exactly. Stops at phase 'post' (or `opts.stopTick` for a short run).
+ */
+export function runRecordMatch(
+  seed: number,
+  setups: RobotSetup[],
+  src: CommandSource,
+  opts: { mode?: GameMode; stopTick?: number } = {},
+): RecordRun {
+  const mode = opts.mode ?? 'match';
+  const world = createWorld(mode, seed, setups);
+  if (mode === 'match') world.match.preCountdown = C.PRE_COUNTDOWN;
+  const rec = new ReplayRecorder(seed, setups, mode);
+  const cap = opts.stopTick ?? maxMatchTicks();
+  while (world.match.phase !== 'post' && world.tick < cap) {
+    const tick = world.tick + 1;
+    const raw = src(tick, world);
+    const local = new Map<number, RobotCommand>();
+    for (const s of setups) {
+      const c = raw.get(s.id);
+      local.set(s.id, c ? localizeCommand(c) : { ...ZERO_CMD });
+    }
+    step(world, C.SIM_DT, local);
+    rec.record(tick, local);
+  }
+  return { world, replay: rec.finish(), result: worldResult(world) };
+}

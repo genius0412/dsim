@@ -1,9 +1,14 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { Room } from './room';
+import { Room, type Client } from './room';
 import { decodeClientMsg, encodeMsg, type ServerMsg } from '../src/net/protocol';
+import { verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
+import { migrate } from './db/migrate';
+import { persistMatch } from './persist';
+import { handleApi } from './api';
+import { Matchmaker } from './matchmaking';
 
 /**
  * Authoritative DECODE game server (Phase 0). One WebSocket per client; rooms are
@@ -18,6 +23,7 @@ import { initPhysics } from '../src/sim/physicsEngine';
 
 const PORT = Number(process.env.PORT ?? 8787);
 const rooms = new Map<string, Room>();
+const matchmaker = new Matchmaker();
 
 // an explicit HTTP server so we can answer GET /health (Fly/Load-balancer probe)
 // while the WebSocket upgrade rides the same port
@@ -25,6 +31,15 @@ const httpServer = createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end('ok');
+    return;
+  }
+  // public leaderboard / replay read API (GET /api/*)
+  if (req.url?.startsWith('/api/')) {
+    handleApi(req, res).catch((e) => {
+      console.error('[api] handler crash:', e);
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
     return;
   }
   res.writeHead(426, { 'content-type': 'text/plain' });
@@ -60,7 +75,11 @@ wss.on('connection', (ws: WebSocket) => {
         const code = msg.room.toLowerCase();
         let r = rooms.get(code);
         if (!r) {
-          r = new Room(code, () => rooms.delete(code));
+          // the CREATOR's join sets the room kind (versus vs. record); later
+          // joiners inherit it. Absent ⇒ the default PvP room. `persistOutcome`
+          // writes the verified score + replay to Neon at match end (no-op when
+          // the DB is unconfigured).
+          r = new Room(code, () => rooms.delete(code), msg.config, persistMatch);
           rooms.set(code, r);
         }
         if (!r.canJoin()) {
@@ -68,7 +87,26 @@ wss.on('connection', (ws: WebSocket) => {
           return;
         }
         room = r;
-        room.add({ id, send, player: { ...msg.player, clientId: id }, connected: true, disconnectAt: 0 });
+        const client: Client = {
+          id,
+          send,
+          player: { ...msg.player, clientId: id },
+          connected: true,
+          disconnectAt: 0,
+        };
+        room.add(client);
+        // verify the Neon Auth JWT out-of-band; on success attribute the slot to
+        // the real user (well before match start). Invalid/absent ⇒ anonymous.
+        if (msg.authToken) {
+          verifyAuthToken(msg.authToken)
+            .then((u) => {
+              if (u) {
+                client.userId = u.userId;
+                client.player.name = u.handle;
+              }
+            })
+            .catch(() => {});
+        }
       } else if (msg.t === 'rejoin') {
         if (room) return;
         const r = rooms.get(msg.room.toLowerCase());
@@ -78,6 +116,24 @@ wss.on('connection', (ws: WebSocket) => {
         } else {
           send({ t: 'rejoined', ok: false });
         }
+      } else if (msg.t === 'queue') {
+        if (room) return; // already in a room/match
+        // verify identity, then join the ranked queue; on a match the matchmaker
+        // sets our `room` so subsequent input routes there
+        verifyAuthToken(msg.authToken).then((u) => {
+          matchmaker.enqueue({
+            id,
+            send,
+            player: { ...msg.player, name: u?.handle ?? msg.player.name },
+            userId: u?.userId,
+            mode: msg.mode,
+            onRoom: (r) => {
+              room = r;
+            },
+          });
+        });
+      } else if (msg.t === 'leaveQueue') {
+        matchmaker.remove(id);
       } else if (room) {
         room.onMessage(id, msg);
       }
@@ -87,6 +143,7 @@ wss.on('connection', (ws: WebSocket) => {
   });
 
   ws.on('close', () => {
+    matchmaker.remove(id); // drop from any ranked queue
     room?.detach(id); // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect
   });
 
@@ -111,3 +168,9 @@ initPhysics()
     console.error('[server] failed to init physics:', e);
     process.exit(1);
   });
+
+// apply DB migrations at boot (off the hot path; no-ops without DATABASE_URL). A
+// DB failure must NOT take the game server down — records just won't persist.
+migrate()
+  .then(() => console.log('[server] database ready'))
+  .catch((e) => console.error('[server] migration failed (records disabled):', e));

@@ -1,32 +1,125 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings } from '../settings';
 import { Menu } from './Menu';
 import { GameView } from './GameView';
 import { Lobby } from './Lobby';
+import { AppShell, type ShellNav } from './AppShell';
+import { Home } from './Home';
+import { Leaderboard } from './Leaderboard';
+import { RecordRun } from './RecordRun';
+import { Matchmaking } from './Matchmaking';
+import { ReplayView } from './ReplayView';
+import { AccountButton } from './AccountButton';
+import { authEnabled } from '../lib/authClient';
 import { gameServerConfigured } from '../net/env';
 import type { NetSession } from '../net/session';
+import type { Replay } from '../sim/replay';
 
-type Screen = 'menu' | 'lobby' | 'game';
+type Screen = 'home' | 'robot' | 'leaderboard' | 'lobby' | 'record' | 'matchmaking' | 'replay' | 'game';
+
+/**
+ * Tiny path router (no dependency). Each screen is a real URL — /leaderboard,
+ * /my-robot, /replay/<id>, … — via the History API, so links are shareable and
+ * back/forward work. The web build uses an absolute base + a vercel.json SPA
+ * rewrite so a deep load/refresh resolves. Under Electron (file://) there is no
+ * History to push, so we route by state only (isWebHistory === false).
+ */
+const isWebHistory = typeof window !== 'undefined' && window.location.protocol !== 'file:';
+
+function pathFor(screen: Screen, replayId: string | null): string {
+  switch (screen) {
+    case 'home':
+      return '/';
+    case 'robot':
+      return '/my-robot';
+    case 'leaderboard':
+      return '/leaderboard';
+    case 'lobby':
+      return '/lobby';
+    case 'record':
+      return '/record';
+    case 'matchmaking':
+      return '/ranked';
+    case 'replay':
+      return replayId ? `/replay/${encodeURIComponent(replayId)}` : '/replay';
+    case 'game':
+      return '/play';
+  }
+}
+
+function parsePath(pathname: string): { screen: Screen; replayId: string | null } {
+  const replay = pathname.match(/^\/replay\/(.+)$/);
+  if (replay) return { screen: 'replay', replayId: decodeURIComponent(replay[1]) };
+  if (pathname.startsWith('/leaderboard')) return { screen: 'leaderboard', replayId: null };
+  if (pathname.startsWith('/my-robot')) return { screen: 'robot', replayId: null };
+  if (pathname.startsWith('/lobby')) return { screen: 'lobby', replayId: null };
+  if (pathname.startsWith('/record')) return { screen: 'record', replayId: null };
+  if (pathname.startsWith('/ranked')) return { screen: 'matchmaking', replayId: null };
+  // /play (a live game) can't be restored without a session ⇒ home
+  return { screen: 'home', replayId: null };
+}
 
 export function App() {
   const [settings, setSettings] = useState<GameSettings>(loadSettings);
-  const [screen, setScreen] = useState<Screen>('menu');
+  const start = isWebHistory
+    ? parsePath(window.location.pathname)
+    : { screen: 'home' as Screen, replayId: null };
+  const [screen, setScreen] = useState<Screen>(start.screen);
+  const [replayId, setReplayId] = useState<string | null>(start.replayId);
   const [session, setSession] = useState<NetSession | null>(null);
+  // a just-played replay to watch in-memory (not yet persisted, so no URL id)
+  const [replayObj, setReplayObj] = useState<Replay | null>(null);
 
-  const update = (s: GameSettings) => {
+  // reflect back/forward into state (no push — the URL already changed)
+  useEffect(() => {
+    if (!isWebHistory) return;
+    const onPop = (): void => {
+      const s = parsePath(window.location.pathname);
+      setScreen(s.screen);
+      setReplayId(s.replayId);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  /** the single way screens change — updates state AND the URL */
+  const navigate = (next: Screen, rid: string | null = null): void => {
+    setScreen(next);
+    setReplayId(rid);
+    if (next !== 'replay') setReplayObj(null); // leaving the viewer drops the in-memory replay
+    if (isWebHistory) {
+      const path = pathFor(next, rid);
+      if (window.location.pathname !== path) window.history.pushState(null, '', path);
+    }
+  };
+
+  const update = (s: GameSettings): void => {
     setSettings(s);
     saveSettings(s);
   };
 
-  const exitGame = () => {
+  const exitGame = (): void => {
     session?.dispose();
     setSession(null);
-    setScreen('menu');
+    navigate('home');
   };
 
+  const multiplayer = gameServerConfigured();
+
+  // full-screen surfaces (outside the shell)
   if (screen === 'game') {
-    return <GameView settings={settings} session={session} onExit={exitGame} />;
+    return (
+      <GameView
+        settings={settings}
+        session={session}
+        onExit={exitGame}
+        onWatchReplay={(r) => {
+          setReplayObj(r);
+          navigate('replay');
+        }}
+      />
+    );
   }
   if (screen === 'lobby') {
     return (
@@ -34,18 +127,82 @@ export function App() {
         settings={settings}
         onStart={(s) => {
           setSession(s);
-          setScreen('game');
+          navigate('game');
         }}
-        onCancel={() => setScreen('menu')}
+        onCancel={() => navigate('home')}
       />
     );
   }
+  if (screen === 'robot') {
+    return (
+      <Menu
+        settings={settings}
+        onChange={update}
+        onStart={() => navigate('game')}
+        onMultiplayer={multiplayer ? () => navigate('lobby') : undefined}
+        onBack={() => navigate('home')}
+      />
+    );
+  }
+  if (screen === 'record') {
+    return (
+      <RecordRun
+        settings={settings}
+        mode="solo"
+        onStart={(s) => {
+          setSession(s);
+          navigate('game');
+        }}
+        onCancel={() => navigate('home')}
+      />
+    );
+  }
+  if (screen === 'matchmaking') {
+    return (
+      <Matchmaking
+        settings={settings}
+        onStart={(s) => {
+          setSession(s);
+          navigate('game');
+        }}
+        onCancel={() => navigate('home')}
+      />
+    );
+  }
+  if (screen === 'replay' && (replayId || replayObj)) {
+    return (
+      <ReplayView
+        replayId={replayId ?? undefined}
+        preloadReplay={replayObj ?? undefined}
+        onClose={() => navigate(replayObj ? 'home' : 'leaderboard')}
+      />
+    );
+  }
+
+  // shell screens
+  const right = authEnabled ? <AccountButton /> : <span className="ds-chip">SOLO</span>;
+  const active: ShellNav = screen === 'leaderboard' ? 'leaderboard' : 'home';
   return (
-    <Menu
-      settings={settings}
-      onChange={update}
-      onStart={() => setScreen('game')}
-      onMultiplayer={gameServerConfigured() ? () => setScreen('lobby') : undefined}
-    />
+    <AppShell active={active} onNav={(n) => navigate(n)} right={right}>
+      {screen === 'home' && (
+        <Home
+          settings={settings}
+          multiplayer={multiplayer}
+          onFreeDrive={() => {
+            update({ ...settings, mode: 'free' });
+            navigate('game');
+          }}
+          onSoloMatch={() => {
+            update({ ...settings, mode: 'match' });
+            navigate('game');
+          }}
+          onRecordRun={() => navigate('record')}
+          onRanked={() => navigate('matchmaking')}
+          onCustomRoom={() => navigate('lobby')}
+          onEditRobot={() => navigate('robot')}
+        />
+      )}
+      {screen === 'leaderboard' && <Leaderboard onWatch={(id) => navigate('replay', id)} />}
+    </AppShell>
   );
 }

@@ -41,6 +41,7 @@ import {
   BALL_RADIUS,
   HP_INITIAL_STOCK,
   HP_PLACE_DELAY,
+  BALANCE_VERSION,
 } from '../src/config';
 import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
 import { driveParams } from '../src/sim/drivetrain';
@@ -49,6 +50,18 @@ import { DEFAULT_BINDINGS, mergeBindings } from '../src/input/bindings';
 import { quantizeCommand, localizeCommand, slimWorld, unslimWorld } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
+import {
+  runRecordMatch,
+  simulateReplay,
+  verifyReplay,
+  recordSetups,
+  maxMatchTicks,
+  REPLAY_FORMAT,
+  type CommandSource,
+} from '../src/sim/replay';
+import { Room, type Client } from '../server/room';
+import { computeElo, eloMode, type EloParticipant } from '../server/ranked';
+import type { ServerMsg } from '../src/net/protocol';
 import { dsin, dcos, dtan, datan2 } from '../src/math';
 import { initPhysics } from '../src/sim/physicsEngine';
 
@@ -1704,6 +1717,157 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   check('datan2 matches Math.atan2 (<1e-7) over all quadrants', maxAtan2 < 1e-7, maxAtan2.toExponential(2));
   // determinism proper: pure arithmetic ⇒ identical on repeat (no engine state)
   check('deterministic trig is referentially stable', dsin(1.2345) === dsin(1.2345) && datan2(3, -4) === datan2(3, -4));
+}
+
+// ---- replays + record-chasing (Phase 3 foundation) -------------------------
+{
+  // a scripted driver that varies its command (so tracks hold multiple entries)
+  // and fires + intakes throughout — the start poses sit in the launch zone with
+  // a preloaded hopper, so this scores real points to compare on.
+  const drive: CommandSource = (tick) => {
+    const seg = Math.floor(tick / 37) % 4;
+    const c: RobotCommand = {
+      driveX: seg === 1 ? 0.5 : 0,
+      driveY: seg === 2 ? -0.4 : 0,
+      rotate: seg === 3 ? 0.3 : 0,
+      intake: true,
+      fire: true,
+    };
+    const m = new Map<number, RobotCommand>();
+    for (const r of [0, 1]) m.set(r, c);
+    return m;
+  };
+
+  // recordSetups shape
+  const solo = recordSetups(DEFAULT_SPEC, 'solo');
+  const duo = recordSetups(DEFAULT_SPEC, 'duo');
+  check('recordSetups solo = 1 robot (1v0)', solo.length === 1 && solo[0].id === 0);
+  check(
+    'recordSetups duo = 2 robots, same drivetrain, distinct poses',
+    duo.length === 2 &&
+      duo[0].spec.drivetrain === duo[1].spec.drivetrain &&
+      duo[0].startIndex !== duo[1].startIndex,
+  );
+
+  // full SOLO record match → re-simulate → byte-identical (the core guarantee)
+  const run = runRecordMatch(0x51ce, solo, drive);
+  check('record match runs to phase "post"', run.world.match.phase === 'post');
+  check('replay stamped with format + balance version', run.replay.format === REPLAY_FORMAT && run.replay.balanceVersion === BALANCE_VERSION);
+  const entries0 = (run.replay.tracks[0]?.length ?? 0) / 5;
+  check('replay recorded a non-trivial run', run.replay.ticks > 1000 && entries0 >= 2);
+  check('replay hold-last compresses (entries << ticks)', entries0 * 20 < run.replay.ticks, `${entries0} entries / ${run.replay.ticks} ticks`);
+  check('record run scored points to compare on', run.result.score.blue > 0, `blue ${run.result.score.blue}`);
+
+  const v = verifyReplay(run.replay);
+  check('verifyReplay reproduces the final worldHash', v.hash === run.result.hash, `${v.hash} vs ${run.result.hash}`);
+  check('verifyReplay reproduces the score', v.score.blue === run.result.score.blue && v.score.red === run.result.score.red);
+  check('verifyReplay reproduces the tick count', v.ticks === run.result.ticks);
+  // referential determinism: a second re-sim is identical
+  check('simulateReplay is referentially stable', worldHash(simulateReplay(run.replay)) === v.hash);
+
+  // DUO (2v0) short run: two command tracks, both re-simulate deterministically
+  const duoRun = runRecordMatch(0xd0, duo, drive, { stopTick: 700 });
+  check('duo replay has a track per robot', !!duoRun.replay.tracks[0] && !!duoRun.replay.tracks[1]);
+  check('duo replay re-simulates deterministically', verifyReplay(duoRun.replay).hash === duoRun.result.hash);
+}
+
+// ---- server-side recording via a real Room (Phase 3 server spine) ----------
+{
+  const msgs: ServerMsg[] = [];
+  const host: Client = {
+    id: 'host-1',
+    send: (m) => msgs.push(m),
+    player: {
+      clientId: 'host-1',
+      name: 'Rec',
+      teamName: 'T',
+      teamNumber: 1,
+      alliance: 'red', // record must FORCE this to blue (co-op, opponent-free)
+      startIndex: 0,
+      ready: true,
+      spec: { ...DEFAULT_SPEC },
+      assists: { ...DEFAULT_ASSISTS },
+    },
+    connected: true,
+    disconnectAt: 0,
+  };
+  const room = new Room('smoke-rec', () => {}, { kind: 'record', record: 'solo' });
+  check('record-solo room caps the roster at 1', room.canJoin());
+  room.add(host);
+  check('record-solo room is full after 1 driver', !room.canJoin());
+  room.onMessage('host-1', { t: 'start' });
+  // pre-load a fire+intake command for every tick so the run scores real points
+  const cap = maxMatchTicks();
+  const fire = quantizeCommand({ driveX: 0, driveY: 0, rotate: 0, intake: true, fire: true });
+  for (let t = 1; t <= cap; t++) room.onMessage('host-1', { t: 'input', tick: t, q: fire });
+  room.advanceForTest(cap + 5);
+
+  const res = msgs.find((m) => m.t === 'matchResult');
+  check('server Room emits a matchResult at match end', !!res);
+  if (res && res.t === 'matchResult') {
+    check('matchResult tagged kind=record / solo', res.kind === 'record' && res.record === 'solo');
+    check(
+      'record forces the run onto blue (opponent-free, red player → blue robot)',
+      res.result.score.blue > 0 && res.result.score.red === 0,
+      `blue ${res.result.score.blue} red ${res.result.score.red}`,
+    );
+    check(
+      'server-recorded replay re-simulates to the authoritative world',
+      verifyReplay(res.replay).hash === res.result.hash,
+      `${verifyReplay(res.replay).hash} vs ${res.result.hash}`,
+    );
+    check('server replay stamped with balance version', res.replay.balanceVersion === BALANCE_VERSION);
+  }
+}
+
+// ---- ranked ELO math (Phase 3) ---------------------------------------------
+{
+  const p = (
+    userId: string,
+    alliance: 'red' | 'blue',
+    drivetrain: EloParticipant['drivetrain'],
+    r = 1000,
+  ): EloParticipant => ({
+    userId,
+    alliance,
+    drivetrain,
+    ratingOverall: r,
+    ratingDrivetrain: r,
+  });
+
+  check('eloMode: 2 players = 1v1, 4 = 2v2', eloMode(2) === '1v1' && eloMode(4) === '2v2');
+
+  // even 1v1, same drivetrain, red wins → symmetric ±16 on BOTH boards
+  const evenRedWin = computeElo([p('a', 'red', 'mecanum'), p('b', 'blue', 'mecanum')], {
+    red: 50,
+    blue: 30,
+  });
+  const boards = new Set(evenRedWin.map((u) => u.board));
+  check('same-drivetrain game updates overall + that drivetrain board', boards.has('overall') && boards.has('mecanum') && boards.size === 2);
+  const aOverall = evenRedWin.find((u) => u.userId === 'a' && u.board === 'overall')!;
+  const bOverall = evenRedWin.find((u) => u.userId === 'b' && u.board === 'overall')!;
+  check('winner +16 / loser -16 on even ratings', aOverall.after === 1016 && bOverall.after === 984, `${aOverall.after}/${bOverall.after}`);
+
+  // mixed drivetrains → OVERALL board only (no per-drivetrain board)
+  const mixed = computeElo([p('a', 'red', 'mecanum'), p('b', 'blue', 'tank')], { red: 50, blue: 30 });
+  check('mixed-drivetrain game updates OVERALL only', new Set(mixed.map((u) => u.board)).size === 1 && mixed.every((u) => u.board === 'overall'));
+
+  // a draw moves nobody
+  const draw = computeElo([p('a', 'red', 'swerve'), p('b', 'blue', 'swerve')], { red: 40, blue: 40 });
+  check('a draw leaves ratings unchanged', draw.every((u) => u.after === u.before));
+
+  // 2v2, red team stronger, red wins → red gains less (favored), blue loses less
+  const team = computeElo(
+    [
+      p('a', 'red', 'swerve', 1200),
+      p('b', 'red', 'swerve', 1200),
+      p('c', 'blue', 'swerve', 1000),
+      p('d', 'blue', 'swerve', 1000),
+    ],
+    { red: 60, blue: 20 },
+  );
+  const aT = team.find((u) => u.userId === 'a' && u.board === 'overall')!;
+  check('favored winner gains modestly (<16)', aT.after - aT.before > 0 && aT.after - aT.before < 16, `+${aT.after - aT.before}`);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

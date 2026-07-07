@@ -24,6 +24,18 @@ export const ENDGAME_START = 20; // s left in teleop
 /** announcer countdown after pressing start ("Match begins in" + 3,2,1) */
 export const PRE_COUNTDOWN = 4;
 
+// --------------------------------------------------------------- season ----
+/** Balance / season version. Leaderboards (Phase 3) are keyed to this: it is
+ * bumped DELIBERATELY on a gameplay-affecting balance change (any physics or
+ * scoring constant below that would move a record's score), which starts a
+ * fresh ranked season and archives the previous one. Every record + replay is
+ * stamped with the value in effect when it was set, because a deterministic
+ * input-log replay only re-simulates to the same score under the exact sim
+ * build that produced it. Do NOT auto-derive this from a file hash — that would
+ * reset every season on a trivial, non-gameplay edit. See docs/netcodeplan.md
+ * Phase 3 + the phase3-leaderboards spec. */
+export const BALANCE_VERSION = 1;
+
 // -------------------------------------------------------------- scoring ----
 export const PTS_LEAVE = 3;
 export const PTS_CLASSIFIED = 3;

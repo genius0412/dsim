@@ -70,9 +70,11 @@ interface Props {
   onStart: () => void;
   /** open the multiplayer lobby; undefined ⇒ Supabase not configured */
   onMultiplayer?: () => void;
+  /** return to Home (Phase 3 shell); undefined ⇒ standalone menu (no back) */
+  onBack?: () => void;
 }
 
-export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
+export function Menu({ settings, onChange, onStart, onMultiplayer, onBack }: Props) {
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
   const setSpec = (patch: Partial<GameSettings['spec']>) =>
     onChange({ ...settings, spec: { ...settings.spec, ...patch } });
@@ -87,6 +89,11 @@ export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
     <div className="menu-root">
       <div className="menu-panel">
         <header className="menu-header">
+          {onBack && (
+            <button className="ds-btn ghost" style={{ marginBottom: 12 }} onClick={onBack}>
+              ← Home
+            </button>
+          )}
           <h1>
             DECODE<span className="accent">SIM</span>
           </h1>

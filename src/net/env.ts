@@ -14,3 +14,8 @@ const GAME_SERVER = import.meta.env.VITE_GAME_SERVER_URL as string | undefined;
 export const gameServerConfigured = (): boolean => !!GAME_SERVER;
 
 export const gameServerUrl = (): string => GAME_SERVER ?? '';
+
+/** the same server over HTTP(S) for the read APIs (leaderboards, replays):
+ * ws://→http://, wss://→https:// */
+export const gameServerHttpUrl = (): string =>
+  GAME_SERVER ? GAME_SERVER.replace(/^ws/, 'http') : '';

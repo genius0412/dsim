@@ -1,0 +1,546 @@
+/* =====================================================================
+   DECODE — Phase 3 front-end · Direction A "Driver Station"
+   Broadcast-telemetry dark: cool near-black, signal-amber accent, mono
+   data, thin rules, a faint 24" tile grid. These tokens are the new
+   design system; screens are built with the `ds-` component classes
+   below. (The in-match FTC HUD + legacy menu keep their own styles.css
+   until each is migrated onto these tokens.)
+   ===================================================================== */
+:root {
+  /* Direction A palette v2 — "Steel + Cyan" (no orange/black): cool blue-slate
+     ground with an electric-cyan signal accent, the one lively hue that clears
+     the reserved semantics (alliance red/blue, artifact green/purple). */
+  --ds-bg: #111a24;
+  --ds-bar: #142131;
+  --ds-panel: #192634;
+  --ds-tile: #1d2c3c;
+  --ds-ink: #d6e1ec;
+  --ds-ink-dim: #9fb0c1;
+  --ds-mut: #74889b;
+  --ds-line: #2b3d4f;
+  --ds-line-soft: #213041;
+  --ds-accent: #2ad4e0;
+  --ds-accent-ink: #04222a;
+  --ds-cyan: #2ad4e0;
+  --ds-you: rgba(42, 212, 224, 0.1);
+  --ds-round: 4px;
+
+  /* fixed scoring semantics (never the interface accent) */
+  --ds-red: #ff4d4d;
+  --ds-blue: #3d8bff;
+  --ds-green: #37d67a;
+  --ds-purple: #a96bff;
+  --ds-danger: #ff5c5c;
+  --ds-ok: #37d67a;
+
+  --ds-font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --ds-font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+}
+
+/* Retheme the LEGACY menu / lobby / controls (styles.css) onto Direction A by
+   overriding its tokens — steel ground + cyan accent, no markup changes. Loaded
+   after styles.css so these win. `--amber` was the old orange accent; it now
+   carries the cyan signal color so every legacy highlight re-tints at once. */
+:root {
+  --bg: #111a24;
+  --panel: #192634;
+  --panel-2: #1d2c3c;
+  --border: #2b3d4f;
+  --text: #d6e1ec;
+  --muted: #74889b;
+  --red: #ff4d4d;
+  --blue: #3d8bff;
+  --green: #37d67a;
+  --purple: #a96bff;
+  --amber: #2ad4e0;
+}
+
+/* ---- app surface + top bar ------------------------------------------- */
+.ds-app {
+  min-height: 100vh;
+  background: var(--ds-bg);
+  color: var(--ds-ink);
+  font-family: var(--ds-font-ui);
+  display: flex;
+  flex-direction: column;
+}
+.ds-app *,
+.ds-app *::before,
+.ds-app *::after {
+  box-sizing: border-box;
+}
+
+.ds-bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--ds-line);
+  background: var(--ds-bar);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.ds-mark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  font-size: 18px;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+}
+.ds-mark .glyph {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--ds-round);
+  background: var(--ds-accent);
+  color: var(--ds-accent-ink);
+  font-weight: 900;
+  font-size: 14px;
+}
+.ds-nav {
+  display: flex;
+  gap: 4px;
+}
+.ds-nav button {
+  background: none;
+  border: 0;
+  color: var(--ds-mut);
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 12px;
+  border-radius: var(--ds-round);
+  cursor: pointer;
+}
+.ds-nav button:hover {
+  color: var(--ds-ink);
+}
+.ds-nav button.on {
+  color: var(--ds-ink);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--ds-accent) 12%, transparent);
+}
+.ds-bar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ds-main {
+  flex: 1;
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 28px 22px 72px;
+}
+
+/* ---- chips + buttons ------------------------------------------------- */
+.ds-chip {
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--ds-line);
+  color: var(--ds-ink);
+  background: var(--ds-panel);
+}
+.ds-chip b {
+  color: var(--ds-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.ds-btn {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 16px;
+  border-radius: var(--ds-round);
+  border: 1px solid var(--ds-line);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  cursor: pointer;
+}
+.ds-btn:hover {
+  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
+}
+.ds-btn.primary {
+  background: var(--ds-accent);
+  color: var(--ds-accent-ink);
+  border-color: transparent;
+}
+.ds-btn.primary:hover {
+  background: color-mix(in srgb, var(--ds-accent) 88%, white);
+}
+.ds-btn.ghost {
+  background: none;
+}
+.ds-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ds-btn:focus-visible,
+.ds-nav button:focus-visible,
+.ds-tile:focus-visible,
+.ds-seg:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+
+/* ---- page headings --------------------------------------------------- */
+.ds-eyebrow {
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ds-accent);
+  margin: 0 0 10px;
+}
+.ds-h1 {
+  font-size: clamp(26px, 4vw, 38px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+  text-wrap: balance;
+}
+.ds-sub {
+  color: var(--ds-mut);
+  margin: 0 0 24px;
+  max-width: 64ch;
+}
+
+/* ---- play tiles ------------------------------------------------------ */
+.ds-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
+}
+.ds-tile {
+  position: relative;
+  overflow: hidden;
+  text-align: left;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-tile);
+  color: var(--ds-ink);
+  padding: 18px;
+  min-height: 118px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  cursor: pointer;
+  font: inherit;
+}
+.ds-tile:hover {
+  border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));
+}
+.ds-tile .k {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.ds-tile .t {
+  display: block;
+  font-size: 18px;
+  font-weight: 750;
+  margin-top: 10px;
+}
+.ds-tile .d {
+  display: block;
+  font-size: 13px;
+  color: var(--ds-mut);
+  margin-top: 3px;
+}
+.ds-tile.primary {
+  background: var(--ds-accent);
+  color: var(--ds-accent-ink);
+  border-color: transparent;
+}
+.ds-tile.primary .k,
+.ds-tile.primary .d {
+  color: color-mix(in srgb, var(--ds-accent-ink) 72%, transparent);
+}
+.ds-tile:disabled {
+  cursor: not-allowed;
+}
+.ds-tile:disabled .t {
+  color: var(--ds-mut);
+}
+/* faint 24" tile grid behind the play area */
+.ds-grid-bg {
+  position: relative;
+}
+.ds-grid-bg::before {
+  content: '';
+  position: absolute;
+  inset: -28px -22px 0;
+  pointer-events: none;
+  opacity: 0.45;
+  z-index: 0;
+  background-image: linear-gradient(var(--ds-line-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--ds-line-soft) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(120% 80% at 85% 0%, #000 15%, transparent 72%);
+}
+.ds-grid-bg > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ---- panels + tables ------------------------------------------------- */
+.ds-panel {
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-panel);
+  overflow: hidden;
+}
+.ds-panel-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--ds-line);
+  flex-wrap: wrap;
+}
+.ds-panel-title {
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+
+.ds-segs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.ds-seg {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--ds-round);
+  color: var(--ds-mut);
+  background: none;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.ds-seg:hover {
+  color: var(--ds-ink);
+}
+.ds-seg.on {
+  background: var(--ds-accent);
+  color: var(--ds-accent-ink);
+  font-weight: 700;
+}
+
+.ds-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.ds-table th,
+.ds-table td {
+  text-align: left;
+  padding: 10px 16px;
+}
+.ds-table th {
+  font-family: var(--ds-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+  font-weight: 600;
+  border-bottom: 1px solid var(--ds-line);
+}
+.ds-table tbody tr {
+  border-bottom: 1px solid var(--ds-line-soft);
+}
+.ds-table tbody tr:last-child {
+  border-bottom: none;
+}
+.ds-table .rk {
+  font-family: var(--ds-font-mono);
+  color: var(--ds-mut);
+  width: 34px;
+}
+.ds-table .sc {
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  font-weight: 700;
+  color: var(--ds-accent);
+}
+.ds-table tr.you {
+  background: var(--ds-you);
+}
+.ds-table tr.you .rk {
+  color: var(--ds-accent);
+  font-weight: 700;
+}
+.ds-dt {
+  font-family: var(--ds-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--ds-line);
+  color: var(--ds-mut);
+  text-transform: uppercase;
+}
+.ds-table tr.ds-clickable {
+  cursor: pointer;
+}
+.ds-table tr.ds-clickable:hover {
+  background: color-mix(in srgb, var(--ds-accent) 8%, transparent);
+}
+.ds-watch {
+  color: var(--ds-accent);
+  font-size: 11px;
+}
+
+/* ---- states ---------------------------------------------------------- */
+.ds-empty {
+  padding: 44px 20px;
+  text-align: center;
+  color: var(--ds-mut);
+  font-size: 14px;
+}
+.ds-empty .big {
+  font-size: 16px;
+  color: var(--ds-ink-dim);
+  margin-bottom: 6px;
+}
+.ds-loading {
+  padding: 44px 20px;
+  text-align: center;
+  color: var(--ds-mut);
+  font-family: var(--ds-font-mono);
+  font-size: 13px;
+}
+
+/* ---- replay viewer --------------------------------------------------- */
+.ds-replay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--ds-bg);
+  display: flex;
+  flex-direction: column;
+}
+.ds-replay-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--ds-line);
+  background: var(--ds-bar);
+}
+.ds-replay-canvas {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+}
+.ds-replay-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--ds-line);
+  background: var(--ds-bar);
+}
+.ds-replay-seek {
+  flex: 1;
+  accent-color: var(--ds-accent);
+  cursor: pointer;
+}
+.ds-replay-time {
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--ds-mut);
+  width: 44px;
+  text-align: right;
+}
+
+/* ---- auth modal + forms ---------------------------------------------- */
+.ds-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(6, 10, 15, 0.68);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+.ds-modal {
+  width: 100%;
+  max-width: 380px;
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-line);
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 24px 70px -30px rgba(0, 0, 0, 0.7);
+}
+.ds-modal-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.ds-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.ds-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--ds-mut);
+}
+.ds-input {
+  font: inherit;
+  font-size: 14px;
+  color: var(--ds-ink);
+  background: var(--ds-bg);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  padding: 9px 11px;
+}
+.ds-input:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+.ds-form-err {
+  font-size: 13px;
+  color: var(--ds-danger);
+}
+.ds-form-switch {
+  margin-top: 12px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ds-mut);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

@@ -1,5 +1,15 @@
 import type { RobotCommand, World } from '../types';
 import type { RobotSetup } from '../sim/spawn';
+import type { Replay, ReplayResult } from '../sim/replay';
+import type { RecordKind, RoomKind } from './protocol';
+
+/** the server's authoritative end-of-match payload (score + recorded replay) */
+export interface MatchResultInfo {
+  kind: RoomKind;
+  record?: RecordKind;
+  result: ReplayResult;
+  replay: Replay;
+}
 
 /**
  * The entire networking boundary the GameController sees. In solo play the
@@ -52,6 +62,9 @@ export interface NetSession {
   sendInput(tick: number, cmd: RobotCommand): void;
   /** pull the freshest unconsumed snapshot, or null if none arrived */
   takeSnapshot(): Snapshot | null;
+  /** the server's end-of-match result (score + recorded replay), or null before
+   * phase 'post' — drives the Results screen's "recorded / watch replay" */
+  getMatchResult(): MatchResultInfo | null;
   status(): NetStatus;
   dispose(): void;
 }

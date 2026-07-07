@@ -8,6 +8,7 @@ import type {
   World,
 } from '../types';
 import type { RobotSetup } from '../sim/spawn';
+import type { Replay, ReplayResult } from '../sim/replay';
 import { clamp } from '../math';
 
 /**
@@ -66,6 +67,29 @@ export function localizeCommand(c: RobotCommand): RobotCommand {
 /** max drivers per room (2v2) */
 export const ROOM_CAPACITY = 4;
 
+/** what a room runs. 'versus' = the existing PvP match (ELO). 'record' =
+ * opponent-free score-attack for the record boards; solo = 1 robot (1v0), duo =
+ * 2 co-op robots on one alliance, same drivetrain (2v0). */
+export type RoomKind = 'versus' | 'record';
+export type RecordKind = 'solo' | 'duo';
+/** ranked matchmaking bucket */
+export type QueueMode = '1v1' | '2v2';
+export const QUEUE_NEED: Record<QueueMode, number> = { '1v1': 2, '2v2': 4 };
+
+export interface RoomConfig {
+  kind: RoomKind;
+  /** set when kind === 'record' */
+  record?: RecordKind;
+}
+
+export const DEFAULT_ROOM_CONFIG: RoomConfig = { kind: 'versus' };
+
+/** roster cap for a room kind (record rooms are opponent-free + small) */
+export function roomCapacity(config: RoomConfig): number {
+  if (config.kind === 'record') return config.record === 'duo' ? 2 : 1;
+  return ROOM_CAPACITY;
+}
+
 /** a driver in a room (server-authoritative — no presence/mesh bookkeeping) */
 export interface LobbyPlayer {
   clientId: string;
@@ -91,14 +115,26 @@ export type PlayerPatch = Partial<
 // ---- client → server --------------------------------------------------------
 
 export type ClientMsg =
-  | { t: 'join'; room: string; player: Omit<LobbyPlayer, 'clientId'> }
+  // `authToken` is the Neon Auth JWT; the server verifies it to attribute the
+  // run to a real user (absent/invalid ⇒ anonymous). See server/auth.ts.
+  | {
+      t: 'join';
+      room: string;
+      player: Omit<LobbyPlayer, 'clientId'>;
+      config?: RoomConfig;
+      authToken?: string;
+    }
   // reclaim an in-match slot after a transient socket drop (within the grace
   // window) — the server rebinds the robot to the new connection and resyncs
   | { t: 'rejoin'; room: string; clientId: string }
   | { t: 'update'; patch: PlayerPatch }
   | { t: 'start' } // host only: build + broadcast the match world
   | { t: 'restart' } // host only: re-author the match with a fresh seed
-  | { t: 'input'; tick: number; q: QCommand };
+  | { t: 'input'; tick: number; q: QCommand }
+  // ranked matchmaking: enter/leave a queue. On a match the server assigns a room
+  // and sends `matchStart` (same as the lobby), so no separate 'matched' message.
+  | { t: 'queue'; mode: QueueMode; player: Omit<LobbyPlayer, 'clientId'>; authToken?: string }
+  | { t: 'leaveQueue' };
 
 // ---- server → client --------------------------------------------------------
 
@@ -124,9 +160,22 @@ export type ServerMsg =
       cmds: QCommand[];
       ackInputTick: number;
     }
+  // matchmaking status: how many are queued for your bucket + how many are needed
+  | { t: 'queued'; mode: QueueMode; size: number; need: number }
   // a robot left: the server runs it on ZERO from `tick`; snapshots already
   // reflect this, so it is informational (drives the HUD)
-  | { t: 'drop'; robotId: number; tick: number };
+  | { t: 'drop'; robotId: number; tick: number }
+  // the match reached phase 'post': the SERVER's authoritative final score + the
+  // full deterministic replay it recorded (input log). The server persists this
+  // to the leaderboard (Phase 3 DB); clients render the results screen + can
+  // replay it. `kind`/`record` say which board it belongs to.
+  | {
+      t: 'matchResult';
+      kind: RoomKind;
+      record?: RecordKind;
+      result: ReplayResult;
+      replay: Replay;
+    };
 
 export const encodeMsg = (m: ClientMsg | ServerMsg): string => JSON.stringify(m);
 export const decodeClientMsg = (s: string): ClientMsg => JSON.parse(s) as ClientMsg;

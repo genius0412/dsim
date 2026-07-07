@@ -3,16 +3,19 @@ import { START_POSES } from '../src/config';
 import { createWorld, type RobotSetup } from '../src/sim/spawn';
 import { step } from '../src/sim/world';
 import { physicsReady } from '../src/sim/physicsEngine';
-import type { Alliance, Artifact, RobotCommand, World } from '../src/types';
+import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from '../src/sim/replay';
+import type { Alliance, Artifact, DrivetrainType, RobotCommand, World } from '../src/types';
 import {
   dequantizeCommand,
   quantizeCommand,
   slimWorld,
-  ROOM_CAPACITY,
+  roomCapacity,
+  DEFAULT_ROOM_CONFIG,
   type BallDelta,
   type ClientMsg,
   type LobbyPlayer,
   type QCommand,
+  type RoomConfig,
   type ServerMsg,
 } from '../src/net/protocol';
 
@@ -38,6 +41,27 @@ export interface Client {
   connected: boolean;
   /** ms epoch the socket dropped (0 = connected) */
   disconnectAt: number;
+  /** the authenticated user id (Neon Auth subject), set once the client proves a
+   * session; leaderboard/ELO writes attribute to it. Absent ⇒ anonymous run. */
+  userId?: string;
+}
+
+/** one driver's outcome in a finished match (for persistence) */
+export interface MatchParticipant {
+  clientId: string;
+  userId?: string;
+  handle?: string;
+  alliance: Alliance;
+  drivetrain: DrivetrainType;
+  score: number;
+}
+
+/** everything the persistence layer needs when a match reaches phase 'post' */
+export interface MatchOutcome {
+  config: RoomConfig;
+  result: ReplayResult;
+  replay: Replay;
+  participants: MatchParticipant[];
 }
 
 /**
@@ -73,16 +97,29 @@ export class Room {
   private readonly snapPrimed = new Set<string>();
   // the command each robot ran on the latest tick (sent so clients predict remotes)
   private lastFrame = new Map<number, RobotCommand>();
+  // recording: captures the input log for this match; finalized once at phase 'post'
+  private recorder: ReplayRecorder | null = null;
+  private finalized = false;
 
   constructor(
     readonly code: string,
     /** called when the room empties, so the registry can drop it */
     private readonly onEmpty: () => void,
+    /** what this room runs (versus PvP vs. record-chasing); set at creation */
+    readonly config: RoomConfig = DEFAULT_ROOM_CONFIG,
+    /** invoked once at phase 'post' with the authoritative outcome, so the DB
+     * layer can persist it. DB-agnostic: tests/dev pass nothing. */
+    private readonly onResult?: (o: MatchOutcome) => void,
   ) {}
 
   /** true if a fresh driver can still join (room not full, not mid-match) */
   canJoin(): boolean {
-    return this.clients.size < ROOM_CAPACITY && this.world === null;
+    return this.clients.size < roomCapacity(this.config) && this.world === null;
+  }
+
+  /** authoritative sim tick (0 before the match starts) */
+  get tick(): number {
+    return this.world?.tick ?? 0;
   }
 
   add(client: Client): void {
@@ -204,19 +241,40 @@ export class Room {
     if (tick > (this.ackTick.get(id) ?? -1)) this.ackTick.set(id, tick);
   }
 
+  /** matchmaking start: no host handshake — the matchmaker fills the roster (with
+   * alliances assigned) and starts once physics is ready. */
+  startMatchNow(): void {
+    if (this.world === null && physicsReady()) this.startMatch();
+  }
+
   private startMatch(): void {
+    const record = this.config.kind === 'record';
+    // record runs are OPPONENT-FREE co-op: every robot on one alliance (blue).
+    // duo additionally requires both robots the SAME drivetrain (the board is
+    // segmented by drivetrain) — refuse to start a mismatched duo.
+    if (record && this.config.record === 'duo') {
+      const dts = new Set([...this.clients.values()].map((c) => c.player.spec.drivetrain));
+      if (this.clients.size >= 2 && dts.size > 1) {
+        this.broadcast({
+          t: 'error',
+          message: 'Duo record runs need both robots on the same drivetrain.',
+        });
+        return;
+      }
+    }
     // build setups from the current roster; keep start poses distinct per alliance
     const roster = [...this.clients.values()];
     const used: Record<Alliance, Set<number>> = { red: new Set(), blue: new Set() };
     const setups: RobotSetup[] = [];
     this.robotOf.clear();
     roster.forEach((c, i) => {
+      const alliance: Alliance = record ? 'blue' : c.player.alliance;
       let si = c.player.startIndex ?? 0;
-      while (used[c.player.alliance].has(si)) si = (si + 1) % START_POSES.length;
-      used[c.player.alliance].add(si);
+      while (used[alliance].has(si)) si = (si + 1) % START_POSES.length;
+      used[alliance].add(si);
       setups.push({
         id: i,
-        alliance: c.player.alliance,
+        alliance,
         spec: c.player.spec,
         assists: c.player.assists,
         startIndex: si,
@@ -237,6 +295,9 @@ export class Room {
     this.dropped.clear();
     this.prevBalls.clear();
     this.snapPrimed.clear();
+    // start recording the input log; finalized once at phase 'post'
+    this.recorder = new ReplayRecorder(seed, setups, 'match');
+    this.finalized = false;
 
     for (const c of roster) {
       c.send({ t: 'matchStart', seed, setups, yourRobotId: this.robotOf.get(c.id) ?? 0 });
@@ -259,18 +320,68 @@ export class Room {
         last = now;
         if (acc > 0.25) acc = 0.25; // never fast-forward more than a quarter second
         let n = 0;
-        while (acc >= C.SIM_DT && n < 8) {
-          const w = this.world as World;
-          this.lastFrame = this.frameCommands(w.tick + 1);
-          step(w, C.SIM_DT, this.lastFrame);
+        while (acc >= C.SIM_DT && n < 8 && !this.finalized) {
+          this.stepOnce();
           acc -= C.SIM_DT;
           n++;
-          if (w.tick % SNAPSHOT_INTERVAL === 0) this.broadcastSnapshot();
         }
       } catch (e) {
         console.error(`[room ${this.code}] tick error at tick ${this.world?.tick}:`, e);
       }
     }, 1000 * C.SIM_DT);
+  }
+
+  /** advance the authoritative sim exactly one tick: build the per-robot command
+   * frame, step, RECORD it (the replay input log), snapshot on cadence, and
+   * finalize at match end. Both the real-time loop and `advanceForTest` go
+   * through here, so recording is identical live and headless. */
+  private stepOnce(): void {
+    const w = this.world as World;
+    this.lastFrame = this.frameCommands(w.tick + 1);
+    step(w, C.SIM_DT, this.lastFrame);
+    this.recorder?.record(w.tick, this.lastFrame);
+    if (w.tick % SNAPSHOT_INTERVAL === 0) this.broadcastSnapshot();
+    if (w.match.phase === 'post' && !this.finalized) this.finalizeMatch();
+  }
+
+  /** the match reached phase 'post': broadcast the SERVER's authoritative score +
+   * the recorded replay (the leaderboard submission), then stop the loop but keep
+   * clients connected for the results screen. Idempotent (fires once). Phase 3's
+   * DB layer persists `result`/`replay` from here. */
+  private finalizeMatch(): void {
+    if (this.finalized || !this.world || !this.recorder) return;
+    this.finalized = true;
+    const w = this.world;
+    const replay: Replay = this.recorder.finish();
+    const result = worldResult(w);
+    this.broadcast({ t: 'matchResult', kind: this.config.kind, record: this.config.record, result, replay });
+    // hand the authoritative outcome to the persistence layer (off the hot path)
+    if (this.onResult) {
+      const participants: MatchParticipant[] = [];
+      for (const c of this.clients.values()) {
+        const rid = this.robotOf.get(c.id);
+        const robot = rid !== undefined ? w.robots.find((r) => r.id === rid) : undefined;
+        if (!robot) continue;
+        participants.push({
+          clientId: c.id,
+          userId: c.userId,
+          handle: c.player.name,
+          alliance: robot.alliance,
+          drivetrain: robot.spec.drivetrain,
+          score: w.match.scores[robot.alliance].total,
+        });
+      }
+      this.onResult({ config: this.config, result, replay, participants });
+    }
+    this.stop();
+  }
+
+  /** TEST / TOOL SEAM: drive an already-started match deterministically with NO
+   * timers, up to `maxTicks` or match end. Production drives `stepOnce` from the
+   * setInterval loop; this lets smoke/tools run a full room match reproducibly. */
+  advanceForTest(maxTicks: number): void {
+    this.stop(); // drop the real-time timer — the test pumps synchronously
+    for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) this.stepOnce();
   }
 
   /** the command each robot runs at `tick`: its buffered input for that EXACT tick
