@@ -1,6 +1,12 @@
 import type { Replay } from '../../src/sim/replay';
-import type { RobotSpec } from '../../src/types';
+import type { AssistConfig, RobotSpec } from '../../src/types';
 import { q } from './pool';
+
+/** the robot configuration a record run used (denormalized onto the row) */
+export interface RecordConfig {
+  spec: RobotSpec;
+  assists: AssistConfig;
+}
 
 /**
  * Data-access for Phase 3 (records, ELO, replays, presets, seasons). The SERVER
@@ -39,6 +45,23 @@ export async function setHandle(userId: string, handle: string): Promise<void> {
 export async function getProfile(userId: string): Promise<{ userId: string; handle: string } | null> {
   const rows = await q<{ handle: string }>(`select handle from profiles where user_id = $1`, [userId]);
   return rows[0] ? { userId, handle: rows[0].handle } : null;
+}
+
+// -------------------------------------------------- per-account settings ----
+/** a user's synced GameSettings blob (client-shaped JSON), or null if unset */
+export async function getUserSettings(userId: string): Promise<unknown | null> {
+  const rows = await q<{ settings: unknown }>(`select settings from profiles where user_id = $1`, [
+    userId,
+  ]);
+  return rows[0]?.settings ?? null;
+}
+
+/** upsert a user's settings blob (profile row is ensured first by the caller) */
+export async function saveUserSettings(userId: string, settings: unknown): Promise<void> {
+  await q(`update profiles set settings = $2, updated_at = now() where user_id = $1`, [
+    userId,
+    JSON.stringify(settings),
+  ]);
 }
 
 // ------------------------------------------------------------- replays ------
@@ -89,13 +112,23 @@ export interface RecordSubmit {
   score: number;
   balanceVersion: number;
   replayId: string;
+  config?: RecordConfig;
 }
 
 export async function submitRecord(r: RecordSubmit): Promise<string> {
   const rows = await q<{ id: string }>(
-    `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id)
-     values ($1, $2, $3, $4, $5, $6, $7) returning id`,
-    [r.userId, r.partnerId ?? null, r.mode, r.drivetrain, r.score, r.balanceVersion, r.replayId],
+    `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config)
+     values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
+    [
+      r.userId,
+      r.partnerId ?? null,
+      r.mode,
+      r.drivetrain,
+      r.score,
+      r.balanceVersion,
+      r.replayId,
+      r.config ? JSON.stringify(r.config) : null,
+    ],
   );
   return rows[0].id;
 }
@@ -107,6 +140,7 @@ export interface BoardRow {
   score: number;
   replayId: string | null;
   createdAt: string;
+  config: RecordConfig | null;
 }
 
 /** best score per player within a season × mode × drivetrain, ranked. Pass
@@ -128,13 +162,13 @@ export async function recordLeaderboard(opts: {
   return q<BoardRow>(
     `with best as (
        select distinct on (r.user_id)
-         r.user_id, r.partner_id, r.score, r.replay_id, r.created_at
+         r.user_id, r.partner_id, r.score, r.replay_id, r.created_at, r.config
        from records r
        where r.balance_version = $1 and r.mode = $2 ${dtFilter}
        order by r.user_id, r.score desc, r.created_at asc
      )
      select b.user_id as "userId", p.handle, b.partner_id as "partnerId",
-            b.score, b.replay_id as "replayId", b.created_at as "createdAt"
+            b.score, b.replay_id as "replayId", b.created_at as "createdAt", b.config
      from best b join profiles p on p.user_id = b.user_id
      order by b.score desc, b.created_at asc
      limit $${params.length}`,

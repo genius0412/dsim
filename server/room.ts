@@ -4,7 +4,15 @@ import { createWorld, type RobotSetup } from '../src/sim/spawn';
 import { step } from '../src/sim/world';
 import { physicsReady } from '../src/sim/physicsEngine';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from '../src/sim/replay';
-import type { Alliance, Artifact, DrivetrainType, RobotCommand, World } from '../src/types';
+import type {
+  Alliance,
+  Artifact,
+  AssistConfig,
+  DrivetrainType,
+  RobotCommand,
+  RobotSpec,
+  World,
+} from '../src/types';
 import {
   dequantizeCommand,
   quantizeCommand,
@@ -54,6 +62,9 @@ export interface MatchParticipant {
   alliance: Alliance;
   drivetrain: DrivetrainType;
   score: number;
+  /** the full robot config this driver used (for record-board display) */
+  spec: RobotSpec;
+  assists: AssistConfig;
 }
 
 /** everything the persistence layer needs when a match reaches phase 'post' */
@@ -379,6 +390,8 @@ export class Room {
           alliance: robot.alliance,
           drivetrain: robot.spec.drivetrain,
           score: w.match.scores[robot.alliance].total,
+          spec: robot.spec,
+          assists: c.player.assists,
         });
       }
       this.onResult({ config: this.config, result, replay, participants });

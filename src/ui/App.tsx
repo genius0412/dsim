@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings } from '../settings';
+import { saveAccountSettings } from '../net/api';
+import { AccountSync } from './AccountSync';
 import { Menu } from './Menu';
 import { GameView } from './GameView';
 import { Lobby } from './Lobby';
@@ -117,10 +119,27 @@ export function App() {
     }
   };
 
+  // when signed in, mirror settings to the account (debounced) as well as local
+  const [accountUserId, setAccountUserId] = useState<string | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
   const update = (s: GameSettings): void => {
     setSettings(s);
     saveSettings(s);
+    if (accountUserId) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => void saveAccountSettings(s), 700);
+    }
   };
+
+  const onSyncUser = useCallback((id: string | null) => setAccountUserId(id), []);
+  const onSyncLoad = useCallback((s: GameSettings) => {
+    setSettings(s);
+    saveSettings(s);
+  }, []);
+  const onSyncSeed = useCallback(() => void saveAccountSettings(settingsRef.current), []);
 
   const exitGame = (): void => {
     session?.dispose();
@@ -211,6 +230,7 @@ export function App() {
             : 'home';
   return (
     <AppShell active={active} onNav={(n) => navigate(n)} right={right}>
+      {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
       {screen === 'home' && (
         <Home
           settings={settings}

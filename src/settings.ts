@@ -44,14 +44,14 @@ export function defaultSettings(): GameSettings {
   };
 }
 
-/** load persisted settings, validating field by field — anything stale,
- * missing, or corrupt falls back to its default without crashing */
-export function loadSettings(): GameSettings {
+/** validate an arbitrary settings object field by field — anything stale,
+ * missing, or corrupt falls back to its default. Shared by the localStorage
+ * load and the per-account (server) load, so both paths sanitize identically. */
+export function coerceSettings(raw: unknown): GameSettings {
   const out = defaultSettings();
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return out;
-    const s = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof raw !== 'object' || raw === null) return out;
+    const s = raw as Record<string, unknown>;
     if (s.mode === 'match' || s.mode === 'free') out.mode = s.mode;
     if (s.alliance === 'red' || s.alliance === 'blue') out.alliance = s.alliance;
     if (typeof s.assists === 'object' && s.assists !== null) {
@@ -128,9 +128,20 @@ export function loadSettings(): GameSettings {
     }
 
   } catch {
-    /* corrupt storage or no localStorage — defaults */
+    /* corrupt data — defaults */
   }
   return out;
+}
+
+/** load persisted settings from localStorage (validated field by field) */
+export function loadSettings(): GameSettings {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return defaultSettings();
+    return coerceSettings(JSON.parse(raw));
+  } catch {
+    return defaultSettings();
+  }
 }
 
 export function saveSettings(s: GameSettings): void {

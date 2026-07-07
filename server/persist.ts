@@ -45,6 +45,7 @@ export async function persistMatch(o: MatchOutcome): Promise<void> {
         score,
         balanceVersion: bv,
         replayId,
+        config: { spec: primary.spec, assists: primary.assists },
       });
       console.log(
         `[persist] WROTE record ${id}: user=${primary.userId} score=${score} dt=${primary.drivetrain} season=${bv}`,

@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import {
   fetchElo,
   fetchRecords,
   type Board,
   type EloMode,
   type EloRow,
+  type RecordConfig,
   type RecordMode,
   type RecordRow,
 } from '../net/api';
 import { gameServerConfigured } from '../net/env';
+import type { DrivetrainType, IntakeStyle } from '../types';
 
 type Kind = 'records' | 'ranked';
 
@@ -19,6 +21,49 @@ const BOARDS: { id: Board; label: string }[] = [
   { id: 'swerve', label: 'Swerve' },
   { id: 'xdrive', label: 'X-Drive' },
 ];
+
+const DT_LABEL: Record<DrivetrainType, string> = {
+  mecanum: 'Mecanum',
+  tank: 'Tank',
+  swerve: 'Swerve',
+  xdrive: 'X-drive',
+};
+const INTAKE_LABEL: Record<IntakeStyle, string> = {
+  sloped: 'Sloped',
+  vector: 'Vector',
+  triangle: 'Triangle',
+};
+
+/** the robot config a record was set with — spec stats + assists */
+function ConfigSummary({ cfg }: { cfg: RecordConfig }) {
+  const { spec, assists } = cfg;
+  const chip = (label: string, on: boolean) => (
+    <span className={`ds-chip ${on ? 'on' : 'off'}`}>{label}</span>
+  );
+  return (
+    <div className="lb-config">
+      <div className="lb-config-name">
+        {spec.name}
+        {spec.teamNumber ? ` · #${spec.teamNumber}` : ''}
+        {spec.teamName ? ` · ${spec.teamName}` : ''}
+      </div>
+      <div className="ds-stats">
+        <div className="ds-stat"><span className="sv" style={{ fontSize: 14 }}>{DT_LABEL[spec.drivetrain]}</span><span className="sl">drivetrain</span></div>
+        <div className="ds-stat"><span className="sv">{spec.massLb}</span><span className="sl">lb mass</span></div>
+        <div className="ds-stat"><span className="sv">{spec.driveRpm}</span><span className="sl">drive rpm</span></div>
+        <div className="ds-stat"><span className="sv" style={{ fontSize: 14 }}>{INTAKE_LABEL[spec.intake]}{spec.canSort ? ' +sort' : ''}</span><span className="sl">intake</span></div>
+        <div className="ds-stat"><span className="sv">{spec.flywheelInertia.toFixed(2)}</span><span className="sl">flywheel</span></div>
+        <div className="ds-stat"><span className="sv">{spec.length}×{spec.width}"</span><span className="sl">size</span></div>
+      </div>
+      <div className="lb-config-assists">
+        {chip(assists.fieldCentric ? 'Field-centric' : 'Robot-centric', true)}
+        {chip('Aim assist', assists.aimAssist)}
+        {chip('Auto intake', assists.autoIntake)}
+        {chip('Auto fire', assists.autoFire)}
+      </div>
+    </div>
+  );
+}
 
 /**
  * Ranked + record leaderboards. Segmented by board type (records / ranked),
@@ -34,6 +79,7 @@ export function Leaderboard({ onWatch }: { onWatch?: (replayId: string) => void 
   const [rows, setRows] = useState<(RecordRow | EloRow)[]>([]);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
   const [error, setError] = useState('');
+  const [openRow, setOpenRow] = useState<string | null>(null);
 
   const configured = gameServerConfigured();
 
@@ -140,6 +186,7 @@ export function Leaderboard({ onWatch }: { onWatch?: (replayId: string) => void 
               <tr>
                 <th className="rk">#</th>
                 <th>Driver</th>
+                {isRecords && <th>Robot</th>}
                 {!isRecords && <th>Games</th>}
                 <th style={{ textAlign: 'right' }}>{valueLabel}</th>
               </tr>
@@ -148,26 +195,55 @@ export function Leaderboard({ onWatch }: { onWatch?: (replayId: string) => void 
               {rows.map((r, i) => {
                 const rec = r as RecordRow;
                 const watchable = isRecords && !!rec.replayId && !!onWatch;
+                const cfg = isRecords ? rec.config : null;
+                const isOpen = openRow === r.userId;
                 return (
-                  <tr
-                    key={r.userId}
-                    className={watchable ? 'ds-clickable' : ''}
-                    onClick={watchable ? () => onWatch!(rec.replayId!) : undefined}
-                    title={watchable ? 'Watch replay' : undefined}
-                  >
-                    <td className="rk">{i + 1}</td>
-                    <td>
-                      {r.handle}
-                      {isRecords && rec.partnerId && (
-                        <span className="ds-dt" style={{ marginLeft: 8 }}>DUO</span>
+                  <Fragment key={r.userId}>
+                    <tr
+                      className={watchable ? 'ds-clickable' : ''}
+                      onClick={watchable ? () => onWatch!(rec.replayId!) : undefined}
+                      title={watchable ? 'Watch replay' : undefined}
+                    >
+                      <td className="rk">{i + 1}</td>
+                      <td>
+                        {r.handle}
+                        {isRecords && rec.partnerId && (
+                          <span className="ds-dt" style={{ marginLeft: 8 }}>DUO</span>
+                        )}
+                      </td>
+                      {isRecords && (
+                        <td>
+                          {cfg ? (
+                            <button
+                              className="lb-robot"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenRow(isOpen ? null : r.userId);
+                              }}
+                              title="Show robot configuration"
+                            >
+                              {DT_LABEL[cfg.spec.drivetrain]}
+                              <span className="tw">{isOpen ? '▴' : '▾'}</span>
+                            </button>
+                          ) : (
+                            <span style={{ color: 'var(--ds-mut)' }}>—</span>
+                          )}
+                        </td>
                       )}
-                    </td>
-                    {!isRecords && <td>{(r as EloRow).games}</td>}
-                    <td className="sc">
-                      {isRecords ? rec.score : (r as EloRow).rating}
-                      {watchable && <span className="ds-watch"> ▶</span>}
-                    </td>
-                  </tr>
+                      {!isRecords && <td>{(r as EloRow).games}</td>}
+                      <td className="sc">
+                        {isRecords ? rec.score : (r as EloRow).rating}
+                        {watchable && <span className="ds-watch"> ▶</span>}
+                      </td>
+                    </tr>
+                    {isRecords && isOpen && cfg && (
+                      <tr className="lb-detail">
+                        <td colSpan={4}>
+                          <ConfigSummary cfg={cfg} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>

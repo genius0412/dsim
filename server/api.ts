@@ -7,8 +7,10 @@ import {
   getGlobalStats,
   getProfile,
   getReplay,
+  getUserSettings,
   getUserStats,
   recordLeaderboard,
+  saveUserSettings,
   setHandle,
 } from './db/repo';
 import { verifyAuthToken } from './auth';
@@ -27,6 +29,8 @@ import { verifyAuthToken } from './auth';
  *   GET  /api/user/<id>/stats?season=<n>   — one user's ELO+records+W/L+history
  *   GET  /api/user/<id>                     — a user's public profile (handle)
  *   POST /api/user/handle  {handle}         — set your OWN display name (Bearer JWT)
+ *   GET  /api/user/settings                  — your synced settings (Bearer JWT)
+ *   POST /api/user/settings {settings}       — save your settings (Bearer JWT)
  *   GET  /api/replay/<id>
  */
 
@@ -42,7 +46,7 @@ function readBody(req: IncomingMessage): Promise<string> {
     let data = '';
     req.on('data', (c) => {
       data += c;
-      if (data.length > 1e4) reject(new Error('body too large')); // 10KB cap
+      if (data.length > 512 * 1024) reject(new Error('body too large')); // 512KB cap (settings can carry an auto-path)
     });
     req.on('end', () => resolve(data));
     req.on('error', reject);
@@ -89,6 +93,34 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return json(200, { userId: user.userId, handle: clean }), true;
     }
 
+    // ---- per-account settings (read + write your own) ----------------------
+    if (url.pathname === '/api/user/settings' && (req.method === 'GET' || req.method === 'POST')) {
+      const auth = req.headers['authorization'];
+      const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+      const user = await verifyAuthToken(token);
+      if (!user) return json(401, { error: 'sign in required' }), true;
+
+      if (req.method === 'GET') {
+        const settings = dbEnabled ? await getUserSettings(user.userId) : null;
+        return json(200, { settings }), true;
+      }
+      // POST: save the whole settings blob
+      let settings: unknown;
+      try {
+        settings = JSON.parse(await readBody(req)).settings;
+      } catch {
+        return json(400, { error: 'bad request' }), true;
+      }
+      if (typeof settings !== 'object' || settings === null) {
+        return json(400, { error: 'settings must be an object' }), true;
+      }
+      if (dbEnabled) {
+        await ensureProfile(user.userId, user.handle);
+        await saveUserSettings(user.userId, settings);
+      }
+      return json(200, { ok: true }), true;
+    }
+
     const season = Number(url.searchParams.get('season') ?? BALANCE_VERSION);
     const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? 100)));
 
@@ -117,7 +149,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return json(200, { season, mode, drivetrain, rows }), true;
     }
 
-    const statsMatch = url.pathname.match(/^\/api\/user\/([\w|-]+)\/stats$/);
+    const statsMatch = url.pathname.match(/^\/api\/user\/([^/]+)\/stats$/);
     if (statsMatch) {
       const userId = decodeURIComponent(statsMatch[1]);
       const stats = dbEnabled ? await getUserStats(userId, season) : null;
@@ -125,7 +157,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return json(200, stats), true;
     }
 
-    const profileMatch = url.pathname.match(/^\/api\/user\/([\w|-]+)$/);
+    const profileMatch = url.pathname.match(/^\/api\/user\/([^/]+)$/);
     if (profileMatch) {
       const userId = decodeURIComponent(profileMatch[1]);
       const profile = dbEnabled ? await getProfile(userId) : null;

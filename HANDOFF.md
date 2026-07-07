@@ -1,4 +1,43 @@
-# HANDOFF — 2026-07-07 (session 2 follow-ups) — READ THIS FIRST
+# HANDOFF — 2026-07-07 (session 3: account features + server DEPLOYED) — READ FIRST
+
+Build + smoke + both tsc GREEN. **Server was redeployed to Fly (`dohun-sim-decode`)
+and verified live** — this fixed the prod "My Stats 404" + "display name failed to
+fetch" (the client had shipped new endpoints the old server lacked; leaderboard kept
+working because `/api/records|elo` already existed). New this session:
+
+- **Editable display name** (from session 2) — now WORKS in prod after deploy.
+- **Homepage counts** — `GET /api/stats` → `{users, games, byCategory{solo,duo,1v1,2v2}}`
+  (`repo.getGlobalStats`, cheap COUNT/GROUP BY). Home shows Players + Games played +
+  a category breakdown (only when the game server is configured). Client
+  `fetchGlobalStats`. NOTE: "games" = server-persisted runs (record + PvP); offline
+  Solo Match / Free Drive aren't reported, so not counted.
+- **Record config on the leaderboard** — each record row now stores the robot config
+  it was set with. Migration `0002_record_config.sql` (records.config jsonb).
+  `MatchParticipant` carries `spec`+`assists`; `persist.ts` writes
+  `config:{spec,assists}`; `submitRecord`/`recordLeaderboard`/`BoardRow` carry it.
+  Client `RecordRow.config`; `Leaderboard.tsx` adds a "Robot" column that expands to a
+  `ConfigSummary` (drivetrain/mass/rpm/intake/flywheel/size + assist chips). Old rows =
+  `config:null` → show "—".
+- **Per-account settings sync** — migration `0003_profile_settings.sql`
+  (profiles.settings jsonb). `GET/POST /api/user/settings` (JWT-verified;
+  `repo.getUserSettings/saveUserSettings`). `settings.ts` refactored to expose
+  `coerceSettings(raw)` (shared validator). `AccountSync.tsx` (mounted in App shell when
+  authEnabled) loads the account's settings on sign-in (or seeds from local if none) —
+  guarded by a MODULE-LEVEL `syncedUser` so returning from a game never re-fetches and
+  clobbers unsaved edits. App `update()` debounce-saves to the server (700ms) when
+  signed in; localStorage still always written. Request body cap raised to 512KB (an
+  imported .pp auto-path rides inside settings).
+- **Route regexes** for `/api/user/:id[/stats]` widened to `[^/]+` (any non-slash id).
+
+**STILL NEEDED for the newest UI in prod:** redeploy the FRONT-END (git push → Vercel).
+The server is ready for everything; the client bundle on Vercel must be updated for the
+leaderboard config expander, homepage counts, and settings sync to appear. (Display
+name + My Stats already worked once the server deployed, since that client was already
+live.) Nothing has been committed/pushed by me.
+
+---
+
+# HANDOFF — 2026-07-07 (session 2 follow-ups)
 
 Build + smoke + both tsc GREEN; GUI verified over HTTP. Follow-ups on top of the
 "UI overhaul" section below (which still says "DohunSim" — the app is now **DSIM**):

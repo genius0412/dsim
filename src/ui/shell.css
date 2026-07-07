@@ -464,6 +464,50 @@
   font-size: 11px;
 }
 
+/* leaderboard record config (expandable robot column) */
+.lb-robot {
+  font: inherit;
+  font-size: 12.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--ds-line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  color: var(--ds-ink);
+  cursor: pointer;
+}
+.lb-robot:hover {
+  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
+}
+.lb-robot .tw {
+  color: var(--ds-accent);
+  font-size: 10px;
+}
+tr.lb-detail td {
+  background: var(--ds-bg);
+  padding: 0;
+}
+.lb-config {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+}
+.lb-config-name {
+  font-weight: 700;
+  font-size: 14px;
+}
+.lb-config .ds-stats {
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+}
+.lb-config-assists {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 /* ---- states ---------------------------------------------------------- */
 .ds-empty {
   padding: 44px 20px;

@@ -1,4 +1,5 @@
 import type { Replay } from '../sim/replay';
+import type { AssistConfig, RobotSpec } from '../types';
 import { gameServerHttpUrl } from './env';
 import { getAuthToken } from '../lib/authClient';
 
@@ -9,6 +10,11 @@ import { getAuthToken } from '../lib/authClient';
  * loop on the server.
  */
 
+export interface RecordConfig {
+  spec: RobotSpec;
+  assists: AssistConfig;
+}
+
 export interface RecordRow {
   userId: string;
   handle: string;
@@ -16,6 +22,7 @@ export interface RecordRow {
   score: number;
   replayId: string | null;
   createdAt: string;
+  config: RecordConfig | null;
 }
 
 export interface EloRow {
@@ -109,6 +116,33 @@ export function fetchGlobalStats(): Promise<GlobalStats> {
 /** a user's public profile (display handle) */
 export function fetchProfile(userId: string): Promise<{ userId: string; handle: string | null }> {
   return getJson(`/api/user/${encodeURIComponent(userId)}`);
+}
+
+/** fetch the signed-in user's synced settings blob (null if never saved) */
+export async function fetchAccountSettings(): Promise<unknown | null> {
+  const base = gameServerHttpUrl();
+  if (!base) return null;
+  const token = await getAuthToken();
+  if (!token) return null;
+  const res = await fetch(base + '/api/user/settings', {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const data = (await res.json().catch(() => ({}))) as { settings?: unknown };
+  return data.settings ?? null;
+}
+
+/** save the signed-in user's settings blob (best-effort; server verifies JWT) */
+export async function saveAccountSettings(settings: unknown): Promise<void> {
+  const base = gameServerHttpUrl();
+  if (!base) return;
+  const token = await getAuthToken();
+  if (!token) return;
+  await fetch(base + '/api/user/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ settings }),
+  });
 }
 
 /** set the signed-in user's OWN display name (server verifies the Neon Auth JWT) */
