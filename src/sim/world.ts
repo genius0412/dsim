@@ -48,7 +48,8 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
       // Use r.autoPath directly, which is already mirrored if necessary
       if (r.autoPath) {
         // Initialize auto path once at the very beginning of the auto phase
-        if (world.match.phaseTimeLeft >= C.AUTO_DURATION - C.SIM_DT && r.pathSequenceIndex === 0 && r.pathSegmentProgress === 0 && r.pathWaitTimer === 0) {
+        // Simplified condition: initialize if the robot is at the start of its path sequence
+        if (r.pathSequenceIndex === 0 && r.pathSegmentProgress === 0 && r.pathWaitTimer === 0) {
           initializePathTraversal(r);
         }
         // Update robot's position and heading directly via path traversal
