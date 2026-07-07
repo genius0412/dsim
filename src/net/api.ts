@@ -113,6 +113,22 @@ export function fetchGlobalStats(): Promise<GlobalStats> {
   return getJson(`/api/stats`);
 }
 
+export interface Presence {
+  /** open sockets to the game server (people engaged with multiplayer — solo /
+   * free-drive players never connect, so this is "who's around to play with") */
+  online: number;
+  /** distinct authenticated users currently connected */
+  signedIn: number;
+  /** how many players are waiting in each ranked bucket right now */
+  queues: { '1v1': number; '2v2': number };
+}
+
+/** live presence: who's online + how deep each ranked queue is, so a player can
+ * see it BEFORE queueing. Cheap JSON off the same host; poll it (usePresence). */
+export function fetchPresence(): Promise<Presence> {
+  return getJson(`/api/presence`);
+}
+
 /** a user's public profile (display handle) */
 export function fetchProfile(userId: string): Promise<{ userId: string; handle: string | null }> {
   return getJson(`/api/user/${encodeURIComponent(userId)}`);

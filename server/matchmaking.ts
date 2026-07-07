@@ -108,6 +108,13 @@ export class Matchmaker {
     room.startMatchNow();
   }
 
+  /** live queue depth per bucket, for the public presence endpoint — shown to
+   * players BEFORE they commit to queueing (the `queued` push only reaches you
+   * once you're already in the queue, which is too late to be useful). */
+  queueSizes(): Record<QueueMode, number> {
+    return { '1v1': this.queues['1v1'].length, '2v2': this.queues['2v2'].length };
+  }
+
   private broadcastStatus(mode: QueueMode): void {
     const size = this.queues[mode].length;
     for (const e of this.queues[mode]) {

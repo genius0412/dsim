@@ -6,6 +6,7 @@ import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
 import type { NetSession } from '../net/session';
 import type { QueueMode } from '../net/protocol';
+import { usePresence } from './usePresence';
 
 /**
  * Ranked matchmaking. Pick a bracket (1v1 / 2v2), enter the server queue, and when
@@ -27,6 +28,7 @@ export function Matchmaking({
   onSignIn: () => void;
 }) {
   const [mode, setMode] = useState<QueueMode>('1v1');
+  const presence = usePresence(); // live queue depths, refreshed while on this screen
   const [searching, setSearching] = useState(false);
   const [queue, setQueue] = useState({ size: 0, need: 2 });
   const [elapsed, setElapsed] = useState(0);
@@ -136,10 +138,22 @@ export function Matchmaking({
                 Head-to-head ELO — the winner takes rating, split by drivetrain plus an overall
                 board. Sign in for it to count.
               </p>
-              <div className="ds-segs" style={{ justifyContent: 'center', marginBottom: 20 }}>
+              <div className="ds-segs" style={{ justifyContent: 'center', marginBottom: 12 }}>
                 <button className={`ds-seg ${mode === '1v1' ? 'on' : ''}`} onClick={() => setMode('1v1')}>1v1</button>
                 <button className={`ds-seg ${mode === '2v2' ? 'on' : ''}`} onClick={() => setMode('2v2')}>2v2</button>
               </div>
+              <p className="ds-sub" style={{ margin: '0 auto 20px', fontSize: 13 }}>
+                {presence ? (
+                  <>
+                    <b style={{ color: 'var(--ds-ink)' }}>{presence.queues[mode]}</b> waiting in{' '}
+                    {mode.toUpperCase()} ·{' '}
+                    {presence.queues[mode === '1v1' ? '2v2' : '1v1']} in{' '}
+                    {(mode === '1v1' ? '2v2' : '1v1').toUpperCase()} · {presence.online} online
+                  </>
+                ) : (
+                  <span style={{ opacity: 0.6 }}>Checking who’s online…</span>
+                )}
+              </p>
               {error && <p className="ds-form-err" style={{ marginBottom: 12 }}>{error}</p>}
               <button className="ds-btn primary" onClick={find}>Find Match</button>
               <div style={{ marginTop: 12 }}>

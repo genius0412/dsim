@@ -25,12 +25,39 @@ const PORT = Number(process.env.PORT ?? 8787);
 const rooms = new Map<string, Room>();
 const matchmaker = new Matchmaker();
 
+// live presence, surfaced at GET /api/presence (polled by the client so the
+// homepage/ranked screens can show who's around WITHOUT anyone holding a standing
+// socket — a persistent presence connection from every visitor would keep the
+// auto-stopping Fly machine awake 24/7 and defeat the idle-to-zero cost model).
+// `online` = open sockets (people actually engaged with multiplayer; solo/free
+// players never connect). `signedIn` = DISTINCT authenticated users (deduped by
+// userId, so multiple tabs count once).
+let onlineCount = 0;
+const authedUsers = new Map<string, number>(); // userId -> live socket count
+
 // an explicit HTTP server so we can answer GET /health (Fly/Load-balancer probe)
 // while the WebSocket upgrade rides the same port
 const httpServer = createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end('ok');
+    return;
+  }
+  // live presence (served here, not in api.ts, because the counts live on this
+  // process: the socket registry + the in-memory matchmaker queues)
+  if (req.method === 'GET' && req.url === '/api/presence') {
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'cache-control': 'no-store',
+      'access-control-allow-origin': '*',
+    });
+    res.end(
+      JSON.stringify({
+        online: onlineCount,
+        signedIn: authedUsers.size,
+        queues: matchmaker.queueSizes(),
+      }),
+    );
     return;
   }
   // public leaderboard / replay read API (GET /api/*)
@@ -57,6 +84,15 @@ process.on('unhandledRejection', (e) => console.error('[server] unhandledRejecti
 wss.on('connection', (ws: WebSocket) => {
   let id: string = randomUUID(); // reassigned to the reclaimed clientId on a rejoin
   let room: Room | null = null;
+  onlineCount++;
+  // the authed user this socket belongs to (set once its JWT verifies), so the
+  // signed-in tally can be decremented cleanly on close
+  let authedUserId: string | null = null;
+  const markAuthed = (userId: string): void => {
+    if (authedUserId) return; // count each connection's user exactly once
+    authedUserId = userId;
+    authedUsers.set(userId, (authedUsers.get(userId) ?? 0) + 1);
+  };
   const send = (m: ServerMsg): void => {
     if (ws.readyState === WebSocket.OPEN) ws.send(encodeMsg(m));
   };
@@ -103,6 +139,7 @@ wss.on('connection', (ws: WebSocket) => {
               if (u) {
                 client.userId = u.userId;
                 client.player.name = u.handle;
+                markAuthed(u.userId);
               }
             })
             .catch(() => {});
@@ -127,6 +164,7 @@ wss.on('connection', (ws: WebSocket) => {
             send({ t: 'error', message: 'Sign in to play ranked.' });
             return;
           }
+          markAuthed(u.userId);
           matchmaker.enqueue({
             id,
             send,
@@ -149,6 +187,12 @@ wss.on('connection', (ws: WebSocket) => {
   });
 
   ws.on('close', () => {
+    onlineCount--;
+    if (authedUserId) {
+      const n = (authedUsers.get(authedUserId) ?? 1) - 1;
+      if (n <= 0) authedUsers.delete(authedUserId);
+      else authedUsers.set(authedUserId, n);
+    }
     matchmaker.remove(id); // drop from any ranked queue
     room?.detach(id); // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect
   });

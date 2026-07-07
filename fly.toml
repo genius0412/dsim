@@ -36,8 +36,15 @@ primary_region = 'iad'
 # flaps "unhealthy" even with ONE player. A dedicated vCPU is never throttled, so the
 # loop keeps real-time and /health always answers. auto_stop_machines='stop' +
 # min_machines_running=0 mean this only runs while someone is connected, so idle cost
-# stays ~0 despite the bigger VM. Drop to 'shared-cpu-2x'/1gb if cost matters more
-# than smoothness, but expect throttling to return under sustained play.
+# stays ~0 despite the bigger VM.
+#
+# performance-2x = 2 dedicated vCPUs. The Node sim loop is single-threaded (one event
+# loop drives every room), so the 2nd core does NOT parallelize matches — but V8 runs
+# GC + JIT on background threads, and giving those a dedicated core off the main thread
+# removes the GC-pause stalls that jitter the 60 Hz loop under sustained play. The extra
+# RAM (4GB) further cuts GC frequency. This is the single-thread headroom win; true
+# multi-match parallelism would need worker threads (not done). Drop to 'performance-1x'
+# /2048mb if cost matters more than smoothness.
 [[vm]]
-  size = 'performance-1x'
-  memory = '2048mb'
+  size = 'performance-2x'
+  memory = '4096mb'

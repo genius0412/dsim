@@ -60,8 +60,9 @@ import {
   type CommandSource,
 } from '../src/sim/replay';
 import { Room, type Client } from '../server/room';
+import { Matchmaker, type QueueEntry } from '../server/matchmaking';
 import { computeElo, eloMode, type EloParticipant } from '../server/ranked';
-import type { ServerMsg } from '../src/net/protocol';
+import type { ServerMsg, QueueMode } from '../src/net/protocol';
 import { dsin, dcos, dtan, datan2 } from '../src/math';
 import { initPhysics } from '../src/sim/physicsEngine';
 
@@ -1913,6 +1914,40 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     check('eloResult re-keys the winner delta to red robot 0', red?.after === 1016 && red?.before === 1000);
     check('eloResult re-keys the loser delta to blue robot 1', blue?.after === 984 && blue?.before === 1000);
   }
+}
+
+// ---- matchmaker exposes live queue depth (powers GET /api/presence) ---------
+{
+  const mm = new Matchmaker();
+  const entry = (id: string, mode: QueueMode): QueueEntry => ({
+    id,
+    send: () => {},
+    player: {
+      name: id,
+      teamName: 'T',
+      teamNumber: 1,
+      alliance: 'red',
+      startIndex: 0,
+      ready: true,
+      spec: { ...DEFAULT_SPEC },
+      assists: { ...DEFAULT_ASSISTS },
+    },
+    mode,
+    onRoom: () => {},
+  });
+  // 1v1 needs 2 and 2v2 needs 4, so single entries stay queued (no match fires)
+  mm.enqueue(entry('q1', '1v1'));
+  mm.enqueue(entry('q2', '2v2'));
+  check(
+    'matchmaker queueSizes reports per-bucket depth',
+    mm.queueSizes()['1v1'] === 1 && mm.queueSizes()['2v2'] === 1,
+    `1v1=${mm.queueSizes()['1v1']} 2v2=${mm.queueSizes()['2v2']}`,
+  );
+  mm.remove('q1');
+  check(
+    'matchmaker queueSizes drops when a player leaves the queue',
+    mm.queueSizes()['1v1'] === 0 && mm.queueSizes()['2v2'] === 1,
+  );
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
