@@ -1038,6 +1038,7 @@ button.keycap:hover {
   pointer-events: auto;
   user-select: none;
   z-index: 1;
+  touch-action: none;
 }
 
 .mobile-joystick-base {
