@@ -156,17 +156,6 @@ export function App() {
       />
     );
   }
-  if (screen === 'robot') {
-    return (
-      <Menu
-        settings={settings}
-        onChange={update}
-        onStart={() => navigate('game')}
-        onMultiplayer={multiplayer ? () => navigate('lobby') : undefined}
-        onBack={() => navigate('home')}
-      />
-    );
-  }
   if (screen === 'record') {
     return (
       <RecordRun
@@ -217,12 +206,15 @@ export function App() {
         ? 'stats'
         : screen === 'download'
           ? 'download'
-          : 'home';
+          : screen === 'robot'
+            ? 'robot'
+            : 'home';
   return (
     <AppShell active={active} onNav={(n) => navigate(n)} right={right}>
       {screen === 'home' && (
         <Home
           settings={settings}
+          onChange={update}
           multiplayer={multiplayer}
           onFreeDrive={() => {
             update({ ...settings, mode: 'free' });
@@ -238,6 +230,7 @@ export function App() {
           onEditRobot={() => navigate('robot')}
         />
       )}
+      {screen === 'robot' && <Menu settings={settings} onChange={update} />}
       {screen === 'leaderboard' && <Leaderboard onWatch={(id) => navigate('replay', id)} />}
       {screen === 'stats' && <Stats />}
       {screen === 'download' && <Download />}

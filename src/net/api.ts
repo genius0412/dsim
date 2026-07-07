@@ -1,5 +1,6 @@
 import type { Replay } from '../sim/replay';
 import { gameServerHttpUrl } from './env';
+import { getAuthToken } from '../lib/authClient';
 
 /**
  * Client for the server's public read APIs (leaderboards + replays). These are
@@ -92,6 +93,38 @@ export interface UserStats {
 export function fetchUserStats(userId: string, season?: number): Promise<UserStats> {
   const s = season != null ? `?season=${season}` : '';
   return getJson(`/api/user/${encodeURIComponent(userId)}/stats${s}`);
+}
+
+export interface GlobalStats {
+  users: number;
+  games: number;
+  byCategory: { solo: number; duo: number; '1v1': number; '2v2': number };
+}
+
+/** site-wide totals for the homepage (players + games played, by category) */
+export function fetchGlobalStats(): Promise<GlobalStats> {
+  return getJson(`/api/stats`);
+}
+
+/** a user's public profile (display handle) */
+export function fetchProfile(userId: string): Promise<{ userId: string; handle: string | null }> {
+  return getJson(`/api/user/${encodeURIComponent(userId)}`);
+}
+
+/** set the signed-in user's OWN display name (server verifies the Neon Auth JWT) */
+export async function updateHandle(handle: string): Promise<{ userId: string; handle: string }> {
+  const base = gameServerHttpUrl();
+  if (!base) throw new Error('Changing your name needs the game server (VITE_GAME_SERVER_URL).');
+  const token = await getAuthToken();
+  if (!token) throw new Error('Please sign in again.');
+  const res = await fetch(base + '/api/user/handle', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ handle }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { handle?: string; error?: string };
+  if (!res.ok) throw new Error(data.error ?? `Server returned ${res.status}`);
+  return { userId: '', handle: data.handle ?? handle };
 }
 
 export function fetchReplay(id: string): Promise<Replay> {

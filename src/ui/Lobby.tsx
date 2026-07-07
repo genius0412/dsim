@@ -9,6 +9,7 @@ import { ServerSession } from '../net/serverSession';
 import { ROOM_CAPACITY, type LobbyPlayer } from '../net/protocol';
 import type { NetSession } from '../net/session';
 import { APP_NAME } from '../seasons';
+import { Logo } from './Logo';
 
 interface Props {
   settings: GameSettings;
@@ -128,7 +129,7 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
               ← Back
             </button>
             <span className="ds-mark">
-              <span className="glyph">D</span>
+              <Logo size={24} />
               {APP_NAME}
             </span>
           </div>

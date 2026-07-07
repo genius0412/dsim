@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { GameSettings } from '../game';
 import { defaultSettings } from '../settings';
 import { authEnabled, authClient } from '../lib/authClient';
+import { gameServerConfigured } from '../net/env';
+import { fetchProfile, updateHandle } from '../net/api';
 import { AuthPanel } from './AuthPanel';
 import { APP_NAME } from '../seasons';
 
@@ -91,12 +93,9 @@ function Identity() {
         <span className="ds-panel-title">Account</span>
         {session.isPending && <span className="ds-chip">…</span>}
       </div>
-      <div style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-        {user ? (
-          <>
-            <div className="ds-hero-name" style={{ fontSize: 20 }}>
-              {user.name ?? 'Player'}
-            </div>
+      {user ? (
+        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
             <span className="ds-chip">
               <b>{user.email ?? 'signed in'}</b>
             </span>
@@ -104,20 +103,101 @@ function Identity() {
             <button className="ds-btn ghost" onClick={() => client.signOut()}>
               Sign out
             </button>
-          </>
-        ) : (
-          <>
-            <p className="ds-hint" style={{ margin: 0 }}>
-              You’re signed out. Sign in to save records and climb the ranked ladder.
-            </p>
-            <span className="ds-head-spacer" />
-            <button className="ds-btn primary" onClick={() => setOpen(true)}>
-              Sign in
-            </button>
-          </>
-        )}
-      </div>
+          </div>
+          <DisplayName userId={user.id} fallback={user.name ?? 'Player'} />
+        </div>
+      ) : (
+        <div style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <p className="ds-hint" style={{ margin: 0 }}>
+            You’re signed out. Sign in to save records and climb the ranked ladder.
+          </p>
+          <span className="ds-head-spacer" />
+          <button className="ds-btn primary" onClick={() => setOpen(true)}>
+            Sign in
+          </button>
+        </div>
+      )}
       {open && <AuthPanel onClose={() => setOpen(false)} />}
+    </div>
+  );
+}
+
+/** editable public display name (the leaderboard/profile handle) */
+function DisplayName({ userId, fallback }: { userId: string; fallback: string }) {
+  const configured = gameServerConfigured();
+  const [name, setName] = useState(fallback);
+  const [saved, setSaved] = useState(fallback);
+  const [status, setStatus] = useState<'idle' | 'saving' | 'ok' | 'error'>('idle');
+  const [error, setError] = useState('');
+
+  // load the current handle from the server (may differ from the auth name)
+  useEffect(() => {
+    if (!configured) return;
+    let alive = true;
+    fetchProfile(userId)
+      .then((p) => {
+        if (!alive || !p.handle) return;
+        setName(p.handle);
+        setSaved(p.handle);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [userId, configured]);
+
+  const trimmed = name.trim();
+  const dirty = trimmed !== saved;
+  const valid = trimmed.length >= 2 && trimmed.length <= 24;
+
+  const save = (): void => {
+    if (!dirty || !valid) return;
+    setStatus('saving');
+    setError('');
+    updateHandle(trimmed)
+      .then((r) => {
+        setSaved(r.handle);
+        setName(r.handle);
+        setStatus('ok');
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : String(e));
+        setStatus('error');
+      });
+  };
+
+  return (
+    <div className="ds-panelbox">
+      <label className="ds-field">
+        <span className="cap">
+          Display name <span className="val" style={{ color: valid ? undefined : 'var(--ds-danger)' }}>
+            {trimmed.length}/24
+          </span>
+        </span>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            className="ds-input"
+            style={{ flex: '1 1 240px' }}
+            type="text"
+            maxLength={24}
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+              if (status !== 'idle') setStatus('idle');
+            }}
+            placeholder="Shown on leaderboards"
+          />
+          <button className="ds-btn primary" disabled={!dirty || !valid || status === 'saving'} onClick={save}>
+            {status === 'saving' ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </label>
+      <p className="ds-hint" style={{ margin: 0 }}>
+        This is the name shown on leaderboards and to other drivers. 2–24 characters.
+        {!configured && ' Editing needs the game server.'}
+        {status === 'ok' && !dirty && <span style={{ color: 'var(--ds-ok)' }}> · Saved.</span>}
+        {status === 'error' && <span style={{ color: 'var(--ds-danger)' }}> · {error}</span>}
+      </p>
     </div>
   );
 }

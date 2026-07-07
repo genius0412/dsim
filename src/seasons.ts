@@ -11,7 +11,7 @@
  * just the game currently loaded.
  */
 
-export const APP_NAME = 'DohunSim';
+export const APP_NAME = 'DSIM';
 export const APP_TAGLINE = '2D Driver Practice';
 
 /** external links surfaced in the footer / download page */

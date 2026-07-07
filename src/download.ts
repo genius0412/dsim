@@ -1,37 +1,78 @@
+import { LINKS } from './seasons';
+
 /**
- * Desktop-build download config, read from Vite env (baked in at build time).
+ * Desktop-build download config.
  *
- * The Electron desktop shell is produced with `npm run dist` (electron-builder,
- * Windows nsis installer + portable exe → `release/`). Host those artifacts
- * anywhere (GitHub Releases, a CDN, Vercel static) and point these envs at them;
- * the Download page links to whatever is configured and otherwise explains how
- * to build it yourself. No URL configured ⇒ the page still renders with the
- * build-it-yourself instructions.
+ * The Electron desktop shell is produced with electron-builder and published to
+ * GitHub Releases by `.github/workflows/release.yml` on every `v*` tag, for
+ * Windows / macOS / Linux, under STABLE asset names (DSIM-Setup.exe,
+ * DSIM-Portable.exe, DSIM-mac.dmg, DSIM-linux.AppImage). So by DEFAULT the
+ * buttons point at `releases/latest/download/<asset>` — always the newest build.
+ * Override any URL with Vite env (e.g. to host on a CDN):
+ *   VITE_DOWNLOAD_INSTALLER_URL / VITE_DOWNLOAD_PORTABLE_URL /
+ *   VITE_DOWNLOAD_MAC_URL / VITE_DOWNLOAD_LINUX_URL /
+ *   VITE_DOWNLOAD_RELEASES_URL / VITE_APP_VERSION
  */
 
-const INSTALLER = import.meta.env.VITE_DOWNLOAD_INSTALLER_URL as string | undefined;
-const PORTABLE = import.meta.env.VITE_DOWNLOAD_PORTABLE_URL as string | undefined;
-/** optional "all releases" page (e.g. a GitHub releases URL) */
-const RELEASES = import.meta.env.VITE_DOWNLOAD_RELEASES_URL as string | undefined;
-/** optional human-readable version label shown on the page */
-const VERSION = import.meta.env.VITE_APP_VERSION as string | undefined;
+const RELEASES_PAGE = `${LINKS.repo}/releases`;
+const LATEST = `${RELEASES_PAGE}/latest/download`;
+const env = import.meta.env;
+
+export type OS = 'windows' | 'mac' | 'linux';
 
 export interface DesktopBuild {
+  os: OS;
   /** platform + format label, e.g. "Windows · Installer" */
   label: string;
-  /** short note (size / kind) */
+  /** short note (kind / arch) */
   note: string;
-  /** download URL, or null when not configured */
-  url: string | null;
+  /** download URL (the GitHub latest-release asset by default) */
+  url: string;
 }
 
 export const DESKTOP_BUILDS: DesktopBuild[] = [
-  { label: 'Windows · Installer', note: '.exe · one-click NSIS setup', url: INSTALLER ?? null },
-  { label: 'Windows · Portable', note: '.exe · no install, run anywhere', url: PORTABLE ?? null },
+  {
+    os: 'windows',
+    label: 'Windows · Installer',
+    note: '.exe · one-click NSIS setup',
+    url: (env.VITE_DOWNLOAD_INSTALLER_URL as string | undefined) ?? `${LATEST}/DSIM-Setup.exe`,
+  },
+  {
+    os: 'windows',
+    label: 'Windows · Portable',
+    note: '.exe · no install, run anywhere',
+    url: (env.VITE_DOWNLOAD_PORTABLE_URL as string | undefined) ?? `${LATEST}/DSIM-Portable.exe`,
+  },
+  {
+    os: 'mac',
+    label: 'macOS · Universal',
+    note: '.dmg · Apple Silicon + Intel',
+    url: (env.VITE_DOWNLOAD_MAC_URL as string | undefined) ?? `${LATEST}/DSIM-mac.dmg`,
+  },
+  {
+    os: 'linux',
+    label: 'Linux · AppImage',
+    note: '.AppImage · portable',
+    url: (env.VITE_DOWNLOAD_LINUX_URL as string | undefined) ?? `${LATEST}/DSIM-linux.AppImage`,
+  },
 ];
 
-export const releasesUrl = (): string | null => RELEASES ?? null;
-export const appVersion = (): string | null => VERSION ?? null;
-/** any download actually configured? */
-export const hasDesktopBuilds = (): boolean =>
-  DESKTOP_BUILDS.some((b) => b.url) || !!RELEASES;
+export const OS_LABEL: Record<OS, string> = {
+  windows: 'Windows 10 / 11 · 64-bit',
+  mac: 'macOS 11+ · Apple Silicon & Intel',
+  linux: 'Linux · x86-64 AppImage',
+};
+
+export const releasesUrl = (): string =>
+  (env.VITE_DOWNLOAD_RELEASES_URL as string | undefined) ?? RELEASES_PAGE;
+export const appVersion = (): string | null => (env.VITE_APP_VERSION as string | undefined) ?? null;
+
+/** best-guess the visitor's OS so its build can be featured first */
+export function detectOS(): OS | null {
+  if (typeof navigator === 'undefined') return null;
+  const s = `${navigator.userAgent} ${navigator.platform}`.toLowerCase();
+  if (s.includes('win')) return 'windows';
+  if (s.includes('mac') || s.includes('iphone') || s.includes('ipad')) return 'mac';
+  if (s.includes('linux') || s.includes('x11')) return 'linux';
+  return null;
+}

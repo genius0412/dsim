@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { APP_NAME, CURRENT_SEASON, LINKS } from '../seasons';
+import { Logo } from './Logo';
 
 export type ShellNav = 'home' | 'robot' | 'stats' | 'leaderboard' | 'download';
 
@@ -29,7 +30,7 @@ export function AppShell({
     <div className="ds-app">
       <header className="ds-bar">
         <button className="ds-mark" onClick={() => onNav('home')} aria-label={`${APP_NAME} home`}>
-          <span className="glyph">D</span>
+          <Logo size={24} />
           {APP_NAME}
         </button>
         <nav className="ds-nav">

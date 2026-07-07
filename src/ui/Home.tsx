@@ -1,6 +1,9 @@
+import { useEffect, useState } from 'react';
 import type { GameSettings } from '../game';
 import type { DrivetrainType } from '../types';
 import { APP_NAME, CURRENT_SEASON } from '../seasons';
+import { MatchSetup } from './MatchSetup';
+import { fetchGlobalStats, type GlobalStats } from '../net/api';
 
 const DRIVETRAIN_LABELS: Record<DrivetrainType, string> = {
   mecanum: 'Mecanum',
@@ -15,6 +18,7 @@ const DRIVETRAIN_LABELS: Record<DrivetrainType, string> = {
  */
 export function Home({
   settings,
+  onChange,
   multiplayer,
   onFreeDrive,
   onSoloMatch,
@@ -24,6 +28,7 @@ export function Home({
   onEditRobot,
 }: {
   settings: GameSettings;
+  onChange: (s: GameSettings) => void;
   multiplayer: boolean;
   onFreeDrive: () => void;
   onSoloMatch: () => void;
@@ -33,6 +38,20 @@ export function Home({
   onEditRobot: () => void;
 }) {
   const spec = settings.spec;
+
+  // site-wide counters (players + games played), when the server is configured
+  const [stats, setStats] = useState<GlobalStats | null>(null);
+  useEffect(() => {
+    if (!multiplayer) return;
+    let alive = true;
+    fetchGlobalStats()
+      .then((s) => alive && setStats(s))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [multiplayer]);
+
   return (
     <>
       <p className="ds-eyebrow">
@@ -47,6 +66,23 @@ export function Home({
           Edit robot →
         </button>
       </p>
+
+      {stats && (
+        <div className="ds-homestats">
+          <div className="ds-stat">
+            <span className="sv">{stats.users.toLocaleString()}</span>
+            <span className="sl">Players</span>
+          </div>
+          <div className="ds-stat">
+            <span className="sv">{stats.games.toLocaleString()}</span>
+            <span className="sl">Games played</span>
+          </div>
+          <span className="ds-homestats-break">
+            solo {stats.byCategory.solo} · duo {stats.byCategory.duo} · 1v1 {stats.byCategory['1v1']} ·
+            2v2 {stats.byCategory['2v2']}
+          </span>
+        </div>
+      )}
 
       <div className="ds-grid-bg">
         <div className="ds-tiles">
@@ -96,6 +132,10 @@ export function Home({
             </span>
           </button>
         </div>
+      </div>
+
+      <div style={{ marginTop: 28 }}>
+        <MatchSetup settings={settings} onChange={onChange} />
       </div>
     </>
   );

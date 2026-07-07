@@ -57,7 +57,10 @@
 
 /* ---- app surface + top bar ------------------------------------------- */
 .ds-app {
-  min-height: 100vh;
+  /* the app shell is the scroll container (html/body are overflow:hidden for the
+     full-screen game canvas), so shell screens taller than the viewport scroll */
+  height: 100vh;
+  overflow-y: auto;
   background: var(--ds-bg);
   color: var(--ds-ink);
   font-family: var(--ds-font-ui);
@@ -246,6 +249,26 @@
   color: var(--ds-mut);
   margin: 0 0 24px;
   max-width: 64ch;
+}
+
+/* ---- homepage site stats -------------------------------------------- */
+.ds-homestats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 2px 0 24px;
+}
+.ds-homestats .ds-stat {
+  min-width: 128px;
+}
+.ds-homestats .ds-stat .sv {
+  font-size: 22px;
+}
+.ds-homestats-break {
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  color: var(--ds-mut);
 }
 
 /* ---- play tiles ------------------------------------------------------ */
@@ -663,6 +686,14 @@
 }
 .ds-title .accent {
   color: var(--ds-accent);
+}
+
+/* vertical stack of builder sections (My Robot content) */
+.ds-robot {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  margin-top: 18px;
 }
 
 /* ---- section --------------------------------------------------------- */

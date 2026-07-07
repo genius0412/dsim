@@ -1,4 +1,36 @@
-# HANDOFF — 2026-07-07 (rebrand → DohunSim + UI overhaul) — READ THIS FIRST
+# HANDOFF — 2026-07-07 (session 2 follow-ups) — READ THIS FIRST
+
+Build + smoke + both tsc GREEN; GUI verified over HTTP. Follow-ups on top of the
+"UI overhaul" section below (which still says "DohunSim" — the app is now **DSIM**):
+
+- **Renamed DohunSim → DSIM** everywhere via `APP_NAME` in `src/seasons.ts` (one const
+  drives header/footer/eyebrows), plus `index.html`, `package.json` productName +
+  electron-builder `artifactName`s, `electron/main.cjs`.
+- **New logo** — `src/ui/Logo.tsx` (a top-down robot + barrel on a cyan badge) replaces
+  the plain "D" glyph in every `.ds-mark`; `public/favicon.svg` is the same artwork.
+- **Display name is editable** — `POST /api/user/handle` (JWT-verified via
+  `verifyAuthToken`, the ONE authed HTTP write; CORS preflight added) + `GET /api/user/:id`
+  (`repo.getProfile`). Client `updateHandle`/`fetchProfile` in `src/net/api.ts`; editor in
+  `Account.tsx` (`DisplayName`), edits the profile `handle` (the public board name).
+- **Desktop downloads are wired to GitHub Releases** — `src/download.ts` defaults every
+  build URL to `releases/latest/download/<stable-asset>`; Windows (installer+portable),
+  **macOS (universal .dmg)**, and **Linux (AppImage)**. `.github/workflows/release.yml`
+  builds all three on a `v*` tag matrix and `electron-builder --publish always` uploads
+  them (built-in GITHUB_TOKEN; mac unsigned via `mac.identity:null`). Stable
+  artifactNames in `package.json`: DSIM-Setup.exe / DSIM-Portable.exe / DSIM-mac.dmg /
+  DSIM-linux.AppImage. Download page features the visitor's detected OS first. **To make
+  bytes exist: push a version tag** (`git tag v0.1.0 && git push --tags`) — the workflow
+  publishes the release the links point at.
+- **Match config split OUT of My Robot** — new `src/ui/MatchSetup.tsx` (alliance, start
+  position, practice dummies, `.pp` auto-path import — all moved out of Menu) renders on
+  **Home** below the play tiles. `Menu.tsx` (My Robot) is now ROBOT-ONLY: presets, builder,
+  intake, drive style, assists, park, controls — NO game mode / alliance / start / auto
+  path, and NO "ENTER FIELD"/"MULTIPLAYER" buttons (matches start from Home). Game MODE is
+  the play-tile choice on Home. `Menu` props dropped `onStart`/`onMultiplayer`.
+
+---
+
+# HANDOFF — 2026-07-07 (rebrand → DohunSim + UI overhaul)
 
 Build + smoke + server-tsc GREEN. Verified all new pages render over HTTP via Electron
 (the `file://` capture harness shows a blank root — that's a PRE-EXISTING `initPhysics()`

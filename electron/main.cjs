@@ -9,7 +9,7 @@ function createWindow() {
     minHeight: 600,
     autoHideMenuBar: true,
     backgroundColor: '#111a24',
-    title: 'DohunSim',
+    title: 'DSIM',
   });
   win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
 }

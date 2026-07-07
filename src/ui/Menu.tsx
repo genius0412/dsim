@@ -1,4 +1,4 @@
-import type { GameSettings, AutoPathData, PathLine, SequenceItem, PathPoint, Vec2 } from '../types';
+import type { GameSettings } from '../types';
 import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
 import {
   INTAKE_PRESETS,
@@ -9,12 +9,11 @@ import {
   ROBOT_MIN_RPM,
   ROBOT_MAX_RPM,
   ROBOT_PRESETS,
-  START_POSES,
 } from '../config';
 import { driveParams } from '../sim/drivetrain';
 import { ControlsSection } from './ControlsSection';
 import { RobotPreview } from './RobotPreview';
-import { APP_NAME, CURRENT_SEASON } from '../seasons';
+import { APP_NAME } from '../seasons';
 
 const DRIVETRAIN_LABELS: Record<DrivetrainType, string> = {
   mecanum: 'Mecanum',
@@ -70,153 +69,22 @@ function specMatches(a: RobotSpec, b: RobotSpec): boolean {
 interface Props {
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
-  onStart: () => void;
-  /** open the multiplayer lobby; undefined ⇒ Supabase not configured */
-  onMultiplayer?: () => void;
-  /** return to Home (Phase 3 shell); undefined ⇒ standalone menu (no back) */
-  onBack?: () => void;
 }
 
-export function Menu({ settings, onChange, onStart, onMultiplayer, onBack }: Props) {
+/**
+ * My Robot — the robot loadout builder. Renders as shell content (inside the
+ * AppShell top bar, like Home/Stats/Download). ROBOT-only by design: presets,
+ * the custom builder, intake, and driver-preference tuning (drive style,
+ * assists, park, controls). Match configuration (game mode, alliance, start
+ * position, auto path) lives on Home in `MatchSetup`, and matches are started
+ * from Home — there is deliberately no "start match" here.
+ */
+export function Menu({ settings, onChange }: Props) {
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
   const setSpec = (patch: Partial<GameSettings['spec']>) =>
     onChange({ ...settings, spec: { ...settings.spec, ...patch } });
   const setAssist = (patch: Partial<GameSettings['assists']>) =>
     onChange({ ...settings, assists: { ...settings.assists, ...patch } });
-
-  // Helper to get error message from unknown error type
-  function getErrorMessage(error: unknown): string {
-    if (error instanceof Error) return error.message;
-    return String(error);
-  }
-
-  // Basic toast notification (can be replaced with a more sophisticated UI component)
-  function showToast(message: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') {
-    alert(`${type.toUpperCase()}: ${message}`);
-  }
-
-  // --- Coordinate Transformation for .pp files ---
-  const PP_FIELD_SIZE = 141.5;
-  const PP_CENTER_OFFSET = PP_FIELD_SIZE / 2; // 70.75
-  const SIM_FIELD_SIZE = 144; // From -72 to 72
-  const SCALE_FACTOR = SIM_FIELD_SIZE / PP_FIELD_SIZE; // 144 / 141.5
-
-  function transformPpCoordinate(coord: Vec2): Vec2 {
-    return {
-      x: (coord.x - PP_CENTER_OFFSET) * SCALE_FACTOR,
-      y: (coord.y - PP_CENTER_OFFSET) * SCALE_FACTOR,
-    };
-  }
-
-  function transformPathPoint(pathPoint: PathPoint): PathPoint {
-    const transformed = transformPpCoordinate(pathPoint);
-    return { ...pathPoint, x: transformed.x, y: transformed.y };
-  }
-  // --- End Coordinate Transformation ---
-
-  // Normalize lines to ensure ids and wait fields exist
-  function normalizeLines(input: PathLine[] = []): PathLine[] {
-    return (input || []).map((line) => ({
-      ...line,
-      id: line.id || `line-${Math.random().toString(36).slice(2)}`,
-      waitBeforeMs: Math.max(
-        0,
-        Number(line.waitBeforeMs ?? (line as any).waitBefore?.durationMs ?? 0),
-      ),
-      waitAfterMs: Math.max(
-        0,
-        Number(line.waitAfterMs ?? (line as any).waitAfter?.durationMs ?? 0),
-      ),
-      waitBeforeName:
-        line.waitBeforeName ?? (line as any).waitBefore?.name ?? '',
-      waitAfterName: line.waitAfterName ?? (line as any).waitAfter?.name ?? '',
-      // Apply transformation to endPoint
-      endPoint: transformPathPoint(line.endPoint),
-      // Apply transformation to controlPoints
-      controlPoints: line.controlPoints?.map(cp => transformPpCoordinate(cp)),
-    }));
-  }
-
-  // Normalize sequence data, falling back to path-only sequence if waits are missing
-  function deriveSequence(data: any, normalizedLines: PathLine[]): SequenceItem[] {
-    if (Array.isArray(data?.sequence) && data.sequence.length) {
-      return data.sequence as SequenceItem[];
-    }
-
-    return normalizedLines.map((ln) => ({
-      kind: 'path',
-      lineId: ln.id!,
-    }));
-  }
-
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    if (!file.name.endsWith('.pp')) {
-      showToast('Please select a .pp file.', 'error');
-      event.target.value = ''; // Clear the input
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const content = e.target?.result as string;
-        const data = JSON.parse(content);
-
-        // Validate the loaded data
-        if (!data.startPoint || !data.lines) {
-          throw new Error('Invalid file format: missing required fields (startPoint or lines)');
-        }
-
-        // Apply transformation to startPoint
-        const transformedStartPoint = transformPathPoint(data.startPoint);
-        const normalizedLines = normalizeLines(data.lines || []);
-
-        const autoPathData: AutoPathData = {
-          fileName: file.name,
-          startPoint: transformedStartPoint,
-          lines: normalizedLines,
-          shapes: data.shapes?.map((s: any) => ({
-            ...s,
-            // Assuming shapes also need transformation if they have position data
-            // This part might need further refinement based on actual shape structure
-            points: s.points?.map((p: Vec2) => transformPpCoordinate(p)),
-            x: s.x !== undefined ? transformPpCoordinate({x: s.x, y: 0}).x : undefined,
-            y: s.y !== undefined ? transformPpCoordinate({x: 0, y: s.y}).y : undefined,
-          })) || [],
-          sequence: deriveSequence(data, normalizedLines),
-          version: data.version,
-          timestamp: data.timestamp,
-        };
-
-        set({ autoPath: autoPathData, autoPathEnabled: true });
-        showToast(`Loaded auto path: ${file.name}`, 'success');
-      } catch (error) {
-        const errMsg = getErrorMessage(error);
-        const message = errMsg.includes('Invalid file format')
-          ? 'Invalid file format. This may not be a valid Pedro Pathing file.'
-          : `Error loading file: ${errMsg}`;
-        showToast(message, 'error');
-        set({ autoPath: null, autoPathEnabled: false }); // Clear any partial state
-      } finally {
-        event.target.value = ''; // Clear the input to allow re-uploading the same file
-      }
-    };
-    reader.onerror = () => {
-      showToast(`Failed to read file: ${reader.error?.message}`, 'error');
-      event.target.value = '';
-    };
-    reader.readAsText(file);
-  };
-
-  const clearAutoPath = () => {
-    set({ autoPath: null, autoPathEnabled: false });
-    showToast('Auto path cleared.', 'info');
-  };
 
   const spec = settings.spec;
   const isSwerve = spec.drivetrain === 'swerve';
@@ -232,32 +100,15 @@ export function Menu({ settings, onChange, onStart, onMultiplayer, onBack }: Pro
   }
 
   return (
-    <div className="ds-console">
-      <div className="ds-console-in">
-        <div className="ds-head">
-          {onBack && (
-            <button className="ds-back" onClick={onBack}>
-              ← Home
-            </button>
-          )}
-          <span className="ds-mark">
-            <span className="glyph">D</span>
-            {APP_NAME}
-          </span>
-          <span className="ds-head-spacer" />
-          <span className="ds-season" title={CURRENT_SEASON.blurb}>
-            <span className="dot" />
-            <span className="nm">{CURRENT_SEASON.name}</span>
-            <span className="yr">{CURRENT_SEASON.years}</span>
-          </span>
-        </div>
+    <>
+      <p className="ds-eyebrow">{APP_NAME} · Loadout</p>
+      <h1 className="ds-h1">My Robot</h1>
+      <p className="ds-sub">
+        Build the robot you drive — pick a preset or customize the chassis, drivetrain, intake, and
+        driver assists. Match options live on Home.
+      </p>
 
-        <div className="ds-title">
-          <h1>
-            My <span className="accent">Robot</span>
-          </h1>
-        </div>
-
+      <div className="ds-robot">
         {/* ---------- robot hero ---------- */}
         <div className="ds-hero">
           <div className="ds-hero-view">
@@ -490,47 +341,7 @@ export function Menu({ settings, onChange, onStart, onMultiplayer, onBack }: Pro
           </div>
         </section>
 
-        {/* ---------- match setup ---------- */}
-        <section className="ds-sec">
-          <h2>Game mode</h2>
-          <div className="ds-opts two">
-            <button
-              className={`ds-opt ${settings.mode === 'match' ? 'on' : ''}`}
-              onClick={() => set({ mode: 'match' })}
-            >
-              <span className="ot">Solo Match</span>
-              <span className="od">30s AUTO · 8s transition · 2:00 TELEOP, full DECODE scoring</span>
-            </button>
-            <button
-              className={`ds-opt ${settings.mode === 'free' ? 'on' : ''}`}
-              onClick={() => set({ mode: 'free' })}
-            >
-              <span className="ot">Free Drive</span>
-              <span className="od">No timer, no launch-zone limits — just practice</span>
-            </button>
-          </div>
-        </section>
-
-        <section className="ds-sec">
-          <h2>Alliance</h2>
-          <div className="ds-opts two">
-            <button
-              className={`ds-opt red ${settings.alliance === 'red' ? 'on' : ''}`}
-              onClick={() => set({ alliance: 'red' })}
-            >
-              <span className="ot">RED</span>
-              <span className="od">You stand at the red wall — your goal is cross-court, top-left of your view</span>
-            </button>
-            <button
-              className={`ds-opt blue ${settings.alliance === 'blue' ? 'on' : ''}`}
-              onClick={() => set({ alliance: 'blue' })}
-            >
-              <span className="ot">BLUE</span>
-              <span className="od">You stand at the blue wall — your goal is cross-court, top-right of your view</span>
-            </button>
-          </div>
-        </section>
-
+        {/* ---------- driver preferences ---------- */}
         <section className="ds-sec">
           <h2>Drive style</h2>
           <div className="ds-opts two">
@@ -602,83 +413,8 @@ export function Menu({ settings, onChange, onStart, onMultiplayer, onBack }: Pro
           </div>
         </section>
 
-        <section className="ds-sec">
-          <h2>Start position</h2>
-          <div className="ds-opts">
-            {START_POSES.map((p, i) => (
-              <button
-                key={p.label}
-                className={`ds-opt mini ${settings.startIndex === i ? 'on' : ''}`}
-                onClick={() => set({ startIndex: i })}
-              >
-                <span className="ot">{p.label}</span>
-                <span className="od">launch zone, mirrored to your alliance</span>
-              </button>
-            ))}
-            {settings.mode === 'free' && (
-              <button
-                className={`ds-opt mini ${settings.practiceDummies ? 'on' : ''}`}
-                onClick={() => set({ practiceDummies: !settings.practiceDummies })}
-              >
-                <span className="ot">Practice dummies {settings.practiceDummies ? 'ON' : 'OFF'}</span>
-                <span className="od">Three idle robots on the field to push against</span>
-              </button>
-            )}
-          </div>
-        </section>
-
-        <section className="ds-sec">
-          <h2>Auto path</h2>
-          <div className="ds-opts">
-            <label className="ds-opt" style={{ cursor: 'pointer' }}>
-              <span className="ot">Import .pp file</span>
-              <span className="od">{settings.autoPath ? settings.autoPath.fileName : 'No file selected'}</span>
-              <input type="file" accept=".pp" onChange={handleFileChange} style={{ display: 'none' }} />
-            </label>
-            {settings.autoPath && (
-              <button className="ds-opt" onClick={clearAutoPath}>
-                <span className="ot">Clear path</span>
-                <span className="od">Remove the loaded auto path</span>
-              </button>
-            )}
-            <button
-              className={`ds-opt ${settings.autoPathEnabled ? 'on' : ''}`}
-              onClick={() => set({ autoPathEnabled: !settings.autoPathEnabled })}
-              disabled={!settings.autoPath}
-            >
-              <span className="ot">Auto path {settings.autoPathEnabled ? 'ON' : 'OFF'}</span>
-              <span className="od">Follow the imported path during auto</span>
-            </button>
-          </div>
-          <p className="ds-hint">
-            Build and export a <code>.pp</code> path at{' '}
-            <a
-              href="https://visualizer.pedropathing.com"
-              target="_blank"
-              rel="noreferrer"
-              style={{ color: 'var(--ds-accent)' }}
-            >
-              visualizer.pedropathing.com
-            </a>
-            , then import it here.
-            {settings.autoPath &&
-              ` Loaded: ${settings.autoPath.fileName} (Version: ${settings.autoPath.version || 'N/A'}).`}
-          </p>
-        </section>
-
         <ControlsSection bindings={settings.bindings} onChange={(bindings) => set({ bindings })} />
-
-        <div className="ds-actions" style={{ marginTop: 4 }}>
-          <button className="ds-cta" onClick={onStart}>
-            ENTER FIELD
-          </button>
-          {onMultiplayer && (
-            <button className="ds-cta ghost" onClick={onMultiplayer}>
-              ▲ MULTIPLAYER (2v2)
-            </button>
-          )}
-        </div>
       </div>
-    </div>
+    </>
   );
 }

@@ -1,0 +1,45 @@
+name: Release desktop build
+
+# Build the desktop app for Windows, macOS, and Linux and publish them to a
+# GitHub Release whenever a version tag is pushed (e.g.
+# `git tag v0.1.0 && git push --tags`). electron-builder uploads assets under the
+# stable names DSIM-Setup.exe / DSIM-Portable.exe / DSIM-mac.dmg /
+# DSIM-linux.AppImage, which the Download page links to via
+# releases/latest/download/<asset>. Uses the built-in GITHUB_TOKEN — no secrets
+# to configure (macOS build is unsigned: `mac.identity: null`).
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # web bundle with the relative base the Electron shell needs under file://
+      - run: npm run build
+        env:
+          ELECTRON: '1'
+
+      # package for the host OS + publish to this tag's GitHub Release
+      - run: npx electron-builder --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

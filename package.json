@@ -19,7 +19,7 @@
   },
   "build": {
     "appId": "com.decodesim.app",
-    "productName": "DohunSim",
+    "productName": "DSIM",
     "files": [
       "dist/**/*",
       "electron/**/*"
@@ -35,8 +35,37 @@
     },
     "nsis": {
       "oneClick": true,
-      "deleteAppDataOnUninstall": true
-    }
+      "deleteAppDataOnUninstall": true,
+      "artifactName": "DSIM-Setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "DSIM-Portable.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": "universal"
+        }
+      ],
+      "identity": null,
+      "category": "public.app-category.games",
+      "artifactName": "DSIM-mac.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Game",
+      "artifactName": "DSIM-linux.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "genius0412",
+        "repo": "2d-decode-sim"
+      }
+    ]
   },
   "dependencies": {
     "@dimforge/rapier2d-compat": "^0.19.3",

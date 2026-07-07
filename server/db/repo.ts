@@ -35,6 +35,12 @@ export async function setHandle(userId: string, handle: string): Promise<void> {
   ]);
 }
 
+/** a user's public profile (currently just the display handle), or null */
+export async function getProfile(userId: string): Promise<{ userId: string; handle: string } | null> {
+  const rows = await q<{ handle: string }>(`select handle from profiles where user_id = $1`, [userId]);
+  return rows[0] ? { userId, handle: rows[0].handle } : null;
+}
+
 // ------------------------------------------------------------- replays ------
 export async function saveReplay(replay: Replay): Promise<string> {
   const rows = await q<{ id: string }>(
@@ -223,6 +229,30 @@ export async function eloLeaderboard(opts: {
      limit $4`,
     [opts.balanceVersion, opts.mode, opts.drivetrain, opts.limit ?? 100],
   );
+}
+
+// -------------------------------------------------------- global stats -----
+export interface GlobalStats {
+  users: number;
+  games: number;
+  byCategory: { solo: number; duo: number; '1v1': number; '2v2': number };
+}
+
+/** site-wide totals for the homepage: registered players + games played, split
+ * by category (solo/duo record runs + 1v1/2v2 PvP matches — the server-tracked
+ * games). Cheap COUNT/GROUP BY over indexed tables. Zeros when the DB is off. */
+export async function getGlobalStats(): Promise<GlobalStats> {
+  const [users, recRows, matchRows] = await Promise.all([
+    q<{ n: string }>(`select count(*) as n from profiles`),
+    q<{ mode: string; n: string }>(`select mode, count(*) as n from records group by mode`),
+    q<{ mode: string; n: string }>(`select mode, count(*) as n from matches group by mode`),
+  ]);
+  const byCategory: GlobalStats['byCategory'] = { solo: 0, duo: 0, '1v1': 0, '2v2': 0 };
+  for (const r of [...recRows, ...matchRows]) {
+    if (r.mode in byCategory) byCategory[r.mode as keyof GlobalStats['byCategory']] = Number(r.n);
+  }
+  const games = byCategory.solo + byCategory.duo + byCategory['1v1'] + byCategory['2v2'];
+  return { users: Number(users[0]?.n ?? 0), games, byCategory };
 }
 
 // ---------------------------------------------------------- per-user stats --
