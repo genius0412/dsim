@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Room } from './room';
 import { decodeClientMsg, encodeMsg, type ServerMsg } from '../src/net/protocol';
+import { initPhysics } from '../src/sim/physicsEngine';
 
 /**
  * Authoritative DECODE game server (Phase 0). One WebSocket per client; rooms are
@@ -95,7 +96,15 @@ wss.on('connection', (ws: WebSocket) => {
 });
 
 // bind 0.0.0.0 explicitly — Fly (and most platforms) route to the app there, NOT
-// localhost/127.0.0.1 (a bind to localhost is unreachable ⇒ 502 / "not listening")
-httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`[server] DECODE game server listening on 0.0.0.0:${PORT}`);
-});
+// localhost/127.0.0.1 (a bind to localhost is unreachable ⇒ 502 / "not listening").
+// Init the Rapier physics WASM (shared src/sim) BEFORE accepting matches.
+initPhysics()
+  .then(() => {
+    httpServer.listen(PORT, '0.0.0.0', () => {
+      console.log(`[server] DECODE game server listening on 0.0.0.0:${PORT}`);
+    });
+  })
+  .catch((e) => {
+    console.error('[server] failed to init physics:', e);
+    process.exit(1);
+  });

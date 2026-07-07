@@ -25,6 +25,17 @@ at session start if it exists — it may describe uncommitted mid-refactor state
   a seeded mulberry32 PRNG stored in `world.rngState`. This is the seam for future
   **2v2 multiplayer with real people** (a stated user goal): more robots = more
   `RobotState`s + command sources replayed into `step()`.
+- **ROBOT collision is now Rapier 2D** (`@dimforge/rapier2d-compat`, Phase 2 slice 1):
+  `src/sim/physicsEngine.ts` `solveRobots()` rebuilds a fresh Rapier world each `step()`
+  (stateless → reconcile/determinism safe, no WASM leak), owns robot translation +
+  velocity (walls/goal-faces/classifier + mass-weighted robot-robot + velocity-kill),
+  and writes `pos/vel` back into the canonical `RobotState`. The bespoke square-up
+  torque + `rrContacts` stay in `physics.ts` `squareUpRobots`. `RAPIER.init()` is async
+  → `initPhysics()` is awaited in smoke, server, and `main.tsx` before any step.
+  **BALLS are still bespoke** (slice 2, deferred). Rapier is deterministic in-process
+  (all the server-authoritative model needs); the `dsin/dcos/datan2` discipline STAYS
+  until balls also move to Rapier. Key gotcha: the world is in INCHES → set
+  `integrationParameters.lengthUnit` (see `PHYS_*` constants + `HANDOFF.md`).
 - `src/config.ts` is the single source of truth for ALL geometry, physics, and scoring
   constants. Tune there, not inline.
 - `src/render/` and `src/ui/` only read world state. `src/input/` only produces commands.
@@ -322,6 +333,13 @@ with a keyframe. **DEPLOY**: `Dockerfile`+`fly.toml`+`docs/deploy.md`, `GET /hea
 server; `ws`+`tsx` are now runtime `dependencies`. Still open: run `fly deploy` (needs Fly
 creds) + `VITE_GAME_SERVER_URL=wss://…` on Vercel; **WebTransport** (deferred — needs a TLS
 deploy to validate, and the delta must switch to ACK-keyed for unreliable datagrams);
-full-reload reconnect (localStorage session restore). Then Rapier 2D physics (Phase 2);
+full-reload reconnect (localStorage session restore).
 DB/ELO/leaderboards/matchmaking/replays + UI redesign (Phase 3). Deferred: obelisk
 AprilTag visuals, mobile/touch, deferred fouls (G408 possession>3 / plowing).
+
+**Phase 2 — Rapier 2D physics: ROBOTS slice DONE + green (140 smoke checks).** Robot
+collision is Rapier (`physicsEngine.ts` — see the architecture bullet above); balls are
+still bespoke (slice 2, deferred — the trickiest port per `docs/netcodeplan.md`). Slice
+2 = balls → Rapier bodies/sensors while KEEPING basin/rail/gate scripted (contact-time
+classified-vs-overflow commit must stay exact); ONLY after that, delete the dead
+`collideRobots`/`constrainRobot` and remove the `dsin/dcos/datan2` discipline.

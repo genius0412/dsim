@@ -16,9 +16,13 @@ import {
 } from '../src/net/protocol';
 
 const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, intake: false, fire: false };
-/** send an authoritative snapshot every N ticks (1 = 60 Hz — remote robots stay
- * smooth; Phase 1 delta-encodes to cut bandwidth) */
-const SNAPSHOT_INTERVAL = 1;
+/** send an authoritative snapshot every N ticks. 3 = ~20 Hz: remote robots are
+ * dead-reckoned/extrapolated client-side (game.ts renderRemoteExtrap), so 20 Hz
+ * looks identical to 60 Hz on screen while cutting per-tick JSON/slimWorld CPU and
+ * bandwidth ~3×. Sending every tick (1) saturates the event loop on a shared CPU
+ * and starves the /health probe → Fly flaps the machine + snapshots burst → the
+ * "robots teleport after a while" symptom. Phase 1 delta-encodes on top of this. */
+const SNAPSHOT_INTERVAL = 3;
 /** how many ticks to keep re-applying a robot's last command when its next input
  * hasn't arrived (absorbs jitter without freezing); past this it coasts to ZERO */
 const HOLD_TICKS = 15;

@@ -5,11 +5,11 @@ import {
   collideBallRect,
   collideBallRobot,
   collideBallStatic,
-  collideRobots,
-  constrainRobot,
+  squareUpRobots,
   stepFlightBall,
   stepGroundBall,
 } from './physics';
+import { solveRobots } from './physicsEngine';
 import { classifierRect } from './field';
 import { updateIntake, updateRobot } from './robot';
 import { checkGoalEntry, updateBasins, updateGates, updateRails } from './goal';
@@ -39,16 +39,12 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
     const cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
     updateRobot(world, r, cmd, dt);
   }
-  // robot-robot + static solver: pairs in ascending-id order (deterministic),
-  // walls re-applied after each pairwise pass so they always win a squeeze
-  for (let pass = 0; pass < 2; pass++) {
-    for (let i = 0; i < world.robots.length; i++) {
-      for (let j = i + 1; j < world.robots.length; j++) {
-        collideRobots(world.robots[i], world.robots[j], pass === 0 ? world.rrContacts : null);
-      }
-    }
-    for (const r of world.robots) constrainRobot(r);
-  }
+  // robot translation + velocity: resolved by Rapier (walls, goal faces,
+  // classifier channels, mass-weighted robot-robot shoving, velocity-kill). The
+  // bespoke square-up pass then rotates tilted chassis flush and records the
+  // robot-robot contacts (rrContacts) the penalty engine consumes.
+  const preVels = solveRobots(world, dt);
+  squareUpRobots(world, preVels);
   for (const r of world.robots) {
     const cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
     updateIntake(world, r, cmd);

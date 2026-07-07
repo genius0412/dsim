@@ -87,6 +87,27 @@ export const CONTACT_ALIGN_RATE_MAX = 0.12;
 /** spin injected per (contact torque × in/s of impact speed) — a fast angled
  * hit visibly converts momentum into rotation; dead-center hits add nothing */
 export const CONTACT_IMPACT_SPIN = 0.12;
+/** touch tolerance (in) for the post-Rapier square-up pass: Rapier resolves
+ * translation and leaves a chassis resting AT a face (near-zero penetration),
+ * so the bespoke torque nudge treats a contact within this band as touching */
+export const CONTACT_TOUCH_EPS = 0.5;
+/** Rapier length scale: the world is in INCHES, not meters. Rapier scales its
+ * internal penetration/prediction tolerances by this so contacts resolve firmly
+ * at our scale (a typical object — robot/ball — is ~10 in). */
+export const PHYS_LENGTH_UNIT = 10;
+/** Rapier constraint solver iterations per step — high enough that a full-speed
+ * pin is fully separated each tick (no penetration accumulation / axis flip) */
+export const PHYS_SOLVER_ITERS = 8;
+/** Rapier contact stiffness (Hz): LOW = soft contacts, so a body starting deep
+ * in a wall (e.g. intake reach) is bled out gently over several ticks instead of
+ * ejected with a huge recovery velocity (solver explosion). */
+export const PHYS_CONTACT_FREQ = 8;
+/** normalized allowed penetration error (× lengthUnit ⇒ inches): a little slack
+ * so shallow resting contacts aren't fought every tick */
+export const PHYS_ALLOWED_ERROR = 0.01;
+/** friction between chassis and walls / other chassis — resists a pinned robot
+ * sliding out of a squeeze (the old model squared-and-held; 0 let it squirt) */
+export const PHYS_FRICTION = 0.7;
 // ---------------------------------------------------------------- robot ----
 export const ROBOT_MAX_SIZE = 18; // FTC starting size cap (incl. intake reach)
 export const ROBOT_MIN_SIZE = 12;

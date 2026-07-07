@@ -18,11 +18,11 @@ primary_region = 'iad'
 
   [[http_service.checks]]
     interval = '15s'
-    timeout = '2s'
-    grace_period = '5s'
+    timeout = '5s'
+    grace_period = '10s'
     method = 'GET'
     path = '/health'
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '256mb'
+  memory = '512mb'

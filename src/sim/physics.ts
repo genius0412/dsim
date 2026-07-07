@@ -1,4 +1,4 @@
-import type { Alliance, Artifact, RobotState, Vec2 } from '../types';
+import type { Alliance, Artifact, RobotState, Vec2, World } from '../types';
 import * as C from '../config';
 import { classifierRect, goalFaceNormal, goalLineValue, type Rect } from './field';
 import { dot, rot, clamp, hyp, datan2 } from '../math';
@@ -388,6 +388,150 @@ export function constrainRobot(r: RobotState): void {
       pushRobotAt(r, mtv.nx, mtv.ny, mtv.depth, contacts, contacts.length > 1);
     }
   }
+}
+
+// ------------------------------------------- square-up (Rapier robot slice) --
+// Rapier (physicsEngine.ts) now owns robot translation + velocity: wall/robot
+// pushout, velocity-kill, mass-weighted shoving. These run AFTER the Rapier
+// solve and add ONLY the bespoke pieces Rapier isn't: the contact-torque "square
+// up flush" nudge (rotation) and the robot-robot contact record for penalties.
+
+/** how hard the robot was driving INTO a contact (in/s), from its PRE-solve
+ * velocity — scales the square-up torque (a fast hit swings hard; a settled
+ * chassis barely turns) */
+function pressAlong(preVel: Vec2 | undefined, nx: number, ny: number): number {
+  if (!preVel) return 0;
+  const vn = preVel.x * nx + preVel.y * ny; // >0 = moving along the push (outward)
+  return vn < 0 ? -vn : 0; // driving IN
+}
+
+/** torque-only static square-up: Rapier already resolved translation, so this
+ * only rotates a tilted chassis flush against walls / goal faces / classifier
+ * structures it is resting on. Detection mirrors constrainRobot; `preVel` gives
+ * the drive-in pressure the torque scales with. */
+function squareUpStatics(r: RobotState, preVel: Vec2 | undefined): void {
+  const f = C.FIELD_HALF;
+  const eps = C.CONTACT_TOUCH_EPS;
+  const corners = robotCorners(r);
+
+  const walls: [number, number, (c: Vec2) => number][] = [
+    [-1, 0, (c) => c.x - f],
+    [1, 0, (c) => -f - c.x],
+    [0, -1, (c) => c.y - f],
+    [0, 1, (c) => -f - c.y],
+  ];
+  for (const [nx, ny, depthOf] of walls) {
+    const contacts: { c: Vec2; d: number }[] = [];
+    for (const c of corners) {
+      const d = depthOf(c);
+      if (d > -eps) contacts.push({ c, d: Math.max(d, 0) });
+    }
+    if (contacts.length > 0) applyContactTorque(r, nx, ny, pressAlong(preVel, nx, ny), contacts, true);
+  }
+
+  for (const a of ALLIANCES) {
+    const contacts: { c: Vec2; d: number }[] = [];
+    for (const c of corners) {
+      const d = goalLineValue(c, a);
+      if (d > -eps) contacts.push({ c, d: Math.max(d, 0) });
+    }
+    if (contacts.length > 0) {
+      const n = goalFaceNormal(a);
+      applyContactTorque(r, n.x, n.y, pressAlong(preVel, n.x, n.y), contacts, true);
+    }
+  }
+
+  for (const a of ALLIANCES) {
+    const rect = classifierRect(a);
+    const mtv = classifierMTV(r, rect);
+    if (!mtv) continue;
+    const wallDir = rect.x0 <= -C.FIELD_HALF + 0.01 ? -1 : 1;
+    if (mtv.nx * wallDir > 0.5) continue;
+    const contacts = robotCorners(r)
+      .filter((c) => c.x > rect.x0 && c.x < rect.x1 && c.y > rect.y0 && c.y < rect.y1)
+      .map((c) => ({ c, d: mtv.depth }));
+    if (contacts.length > 0)
+      applyContactTorque(r, mtv.nx, mtv.ny, pressAlong(preVel, mtv.nx, mtv.ny), contacts, contacts.length > 1);
+  }
+}
+
+/** torque + rrContacts for a robot pair. Rapier resolved the shove; this only
+ * squares the two chassis against each other and records the contact for the
+ * penalty engine. Detection mirrors collideRobots' SAT (touch within EPS). */
+function squareUpPair(
+  a: RobotState,
+  b: RobotState,
+  preVels: Map<number, Vec2>,
+  out: { a: number; b: number }[],
+): void {
+  const ca = robotCorners(a);
+  const cb = robotCorners(b);
+  const axes = [
+    rot({ x: 1, y: 0 }, a.heading),
+    rot({ x: 0, y: 1 }, a.heading),
+    rot({ x: 1, y: 0 }, b.heading),
+    rot({ x: 0, y: 1 }, b.heading),
+  ];
+  let minPen = Infinity;
+  let minAxis: Vec2 | null = null;
+  for (const ax of axes) {
+    let aMin = Infinity;
+    let aMax = -Infinity;
+    for (const c of ca) {
+      const p = c.x * ax.x + c.y * ax.y;
+      if (p < aMin) aMin = p;
+      if (p > aMax) aMax = p;
+    }
+    let bMin = Infinity;
+    let bMax = -Infinity;
+    for (const c of cb) {
+      const p = c.x * ax.x + c.y * ax.y;
+      if (p < bMin) bMin = p;
+      if (p > bMax) bMax = p;
+    }
+    const overlap = Math.min(aMax, bMax) - Math.max(aMin, bMin);
+    if (overlap <= -C.CONTACT_TOUCH_EPS) return; // clearly separated
+    if (overlap < minPen) {
+      minPen = overlap;
+      minAxis = ax;
+    }
+  }
+  if (!minAxis) return;
+  let nx = minAxis.x;
+  let ny = minAxis.y;
+  if ((b.pos.x - a.pos.x) * nx + (b.pos.y - a.pos.y) * ny < 0) {
+    nx = -nx;
+    ny = -ny;
+  }
+  out.push(a.id < b.id ? { a: a.id, b: b.id } : { a: b.id, b: a.id });
+
+  const contacts: { c: Vec2; d: number }[] = [];
+  for (const c of cb) {
+    const d = pointDepthInRobot(a, c);
+    if (d > -C.CONTACT_TOUCH_EPS) contacts.push({ c, d: Math.max(d, 0) });
+  }
+  for (const c of ca) {
+    const d = pointDepthInRobot(b, c);
+    if (d > -C.CONTACT_TOUCH_EPS) contacts.push({ c, d: Math.max(d, 0) });
+  }
+  const pva = preVels.get(a.id);
+  const pvb = preVels.get(b.id);
+  const pressA = pva ? Math.max(0, pva.x * nx + pva.y * ny) : 0;
+  const pressB = pvb ? Math.max(0, -(pvb.x * nx + pvb.y * ny)) : 0;
+  applyContactTorque(a, -nx, -ny, pressA, contacts, true);
+  applyContactTorque(b, nx, ny, pressB, contacts, true);
+}
+
+/** post-Rapier bespoke pass: square tilted chassis flush and record robot-robot
+ * contacts (rrContacts) for the penalty engine. `preVels` are the pre-solve
+ * velocities from solveRobots (drive-in pressure the torque scales with). */
+export function squareUpRobots(world: World, preVels: Map<number, Vec2>): void {
+  for (let i = 0; i < world.robots.length; i++) {
+    for (let j = i + 1; j < world.robots.length; j++) {
+      squareUpPair(world.robots[i], world.robots[j], preVels, world.rrContacts);
+    }
+  }
+  for (const r of world.robots) squareUpStatics(r, preVels.get(r.id));
 }
 
 // ------------------------------------------------------------ ball steps ----

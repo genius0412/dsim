@@ -48,6 +48,11 @@ import { quantizeCommand, localizeCommand, slimWorld, unslimWorld } from '../src
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
 import { dsin, dcos, dtan, datan2 } from '../src/math';
+import { initPhysics } from '../src/sim/physicsEngine';
+
+// the sim now steps a Rapier physics world (robots) — load the WASM before any
+// step() runs. tsx runs this file as ESM, so top-level await is available.
+await initPhysics();
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -258,6 +263,27 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
     'no heading oscillation while squared against the wall',
     hMax - hMin < 0.01,
     `jitter=${(hMax - hMin).toFixed(4)} rad`,
+  );
+}
+
+// ---- Rapier containment: full-speed wall drive never tunnels ----------------
+{
+  const w = mkWorld('free', 'blue', 33);
+  const r = w.robots[0];
+  r.pos = { x: 0, y: 0 }; // center column: the far wall at x=0 is clear of goals
+  r.heading = Math.PI / 2; // +y forward
+  r.fieldCentric = false;
+  run(w, cmd({ driveY: 1 }), 3); // slam the far (+y) wall for 3s
+  const front = robotExtents(r).front;
+  // soft contacts allow a sub-half-inch steady penetration (invisible at field
+  // scale); the point of the check is that it can't tunnel THROUGH the wall
+  const inField = robotCorners(r).every(
+    (c) => Math.abs(c.x) <= FIELD_HALF + 0.6 && Math.abs(c.y) <= FIELD_HALF + 0.6,
+  );
+  check(
+    'full-speed wall drive is contained (no tunneling, front edge at the wall)',
+    inField && r.pos.y + front <= FIELD_HALF + 0.6 && r.pos.y + front > FIELD_HALF - 2,
+    `frontEdge=${(r.pos.y + front).toFixed(2)} wall=${FIELD_HALF}`,
   );
 }
 

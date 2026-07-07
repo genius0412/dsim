@@ -87,8 +87,9 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   r.vel = rot(velRobot, r.heading);
   r.angVel = approach(r.angVel, targetOmega, dp.turnAccel * dt);
 
-  r.pos.x += r.vel.x * dt;
-  r.pos.y += r.vel.y * dt;
+  // Rapier (solveRobots) integrates POSITION from r.vel and resolves collisions
+  // this same tick; heading is integrated here (rotation is locked in Rapier and
+  // the bespoke square-up nudge owns it).
   r.heading = wrapAngle(r.heading + r.angVel * dt);
 
   // ---- turret: aim assist tracks the firing solution exactly -------------
