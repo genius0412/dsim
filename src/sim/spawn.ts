@@ -199,7 +199,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       lastIntakeAt: -10,
       fireReadyAt: 0,
       // Initialize new auto pathing fields
-      autoPathActive: !!(s.autoPathEnabled && robotAutoPath), // Corrected condition
+      autoPathActive: !!(s.autoPathEnabled && robotAutoPath !== undefined),
       currentPathSegmentIndex: 0,
       pathSegmentProgress: 0,
       pathWaitTimer: 0,

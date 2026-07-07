@@ -23,7 +23,7 @@ type Phase = 'entry' | 'connecting' | 'room' | 'error';
  * Multiplayer lobby over the authoritative game server (Phase 0): join a room by
  * code, pick alliance / start pose, ready up, and — when the host starts — the
  * server authors the match and everyone receives `matchStart`, at which point we
- * mint a ServerSession that TAKES OVER this same transport. No WebRTC mesh, no
+ * mint a ServerSession that TAKES OVER the same socket. No WebRTC mesh, no
  * presence: the server is the single source of truth for the roster and host, so
  * one client can never stall the others.
  */
@@ -113,8 +113,6 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
       ready: false,
       spec: settings.spec,
       assists: settings.assists,
-      autoPath: settings.autoPath, // Add autoPath
-      autoPathEnabled: settings.autoPathEnabled, // Add autoPathEnabled
     });
   }
 

@@ -30,7 +30,7 @@ import {
   inRect,
 } from '../src/sim/field';
 import { assessMatchEnd } from '../src/sim/scoring';
-import type { Alliance, GameMode, RobotCommand, RobotSpec, World, AutoPathData } from '../src/types';
+import type { Alliance, GameMode, RobotCommand, RobotSpec, World } from '../src/types';
 import {
   SIM_DT,
   GATE_STOP_S,
@@ -1738,22 +1738,9 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     return m;
   };
 
-  // Dummy AutoPathData for testing auto-pathing activation
-  const dummyAutoPathData: AutoPathData = {
-    fileName: 'dummy_path',
-    startPoint: { x: 0, y: 0, heading: 'constant', degrees: 0 },
-    lines: [
-      {
-        id: 'line1',
-        endPoint: { x: 10, y: 0, heading: 'constant', degrees: 0 },
-      },
-    ],
-    sequence: [{ kind: 'path', lineId: 'line1' }],
-  };
-
   // recordSetups shape
-  const solo = recordSetups(DEFAULT_SPEC, 'solo', DEFAULT_ASSISTS, dummyAutoPathData, true);
-  const duo = recordSetups(DEFAULT_SPEC, 'duo', DEFAULT_ASSISTS, dummyAutoPathData, true);
+  const solo = recordSetups(DEFAULT_SPEC, 'solo', DEFAULT_ASSISTS, undefined, true);
+  const duo = recordSetups(DEFAULT_SPEC, 'duo', DEFAULT_ASSISTS, undefined, true);
   check('recordSetups solo = 1 robot (1v0)', solo.length === 1 && solo[0].id === 0);
   check(
     'recordSetups duo = 2 robots, same drivetrain, distinct poses',
