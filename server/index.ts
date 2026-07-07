@@ -38,7 +38,13 @@ httpServer.on('error', (e) => console.error('[server] http server error:', e));
 process.on('uncaughtException', (e) => console.error('[server] uncaughtException:', e));
 process.on('unhandledRejection', (e) => console.error('[server] unhandledRejection:', e));
 
-wss.on('connection', (ws: WebSocket) => {
+wss.on('connection', (ws: WebSocket, req) => {
+  // disable Nagle's algorithm: Node's TCP sockets buffer small outgoing writes
+  // by default (coalescing for ~40ms), which is exactly wrong for a 60 Hz
+  // real-time game server sending frequent small input/snapshot frames — every
+  // one of those would otherwise eat an extra tick or more of latency for
+  // nothing. req.socket is the raw TCP socket the WS upgrade rode in on.
+  req.socket.setNoDelay(true);
   let id: string = randomUUID(); // reassigned to the reclaimed clientId on a rejoin
   let room: Room | null = null;
   const send = (m: ServerMsg): void => {
