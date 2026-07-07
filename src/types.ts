@@ -225,8 +225,10 @@ export type SequenceItemKind = 'path' | 'wait' | 'action'; // 'action' is a plac
 
 export interface SequenceItem {
   kind: SequenceItemKind;
+  id?: string; // For 'wait' kind
+  durationMs?: number; // For 'wait' kind
   lineId?: string; // For 'path' kind
-  // Add other properties for 'wait' or 'action' if needed
+  // Add other properties for 'action' if needed
 }
 
 export interface AutoPathData {

@@ -5,6 +5,7 @@ import type {
   PathLine,
   AutoPathData,
   RobotCommand,
+  SequenceItem, // Import SequenceItem
 } from '../types';
 import {
   dist,
@@ -185,14 +186,13 @@ export function updatePathTraversal(
     return ZERO_CMD;
   }
 
-  // --- Handle Waits ---
+  // --- Handle active waits (from waitBeforeMs, waitAfterMs, or sequence 'wait' item) ---
   if (robot.pathWaitTimer > 0) {
-    robot.pathWaitTimer -= dt * 1000; // dt is in seconds, waitBeforeMs/waitAfterMs are in milliseconds
+    robot.pathWaitTimer -= dt * 1000; // dt is in seconds, waitBeforeMs/waitAfterMs/durationMs are in milliseconds
     if (robot.pathWaitTimer <= 0) {
       robot.pathWaitTimer = 0;
-      // Wait finished, advance to next sequence item
-      robot.pathSequenceIndex++;
-      robot.pathSegmentProgress = 0; // Reset segment progress for the new item
+      // Wait finished. The sequence index was already advanced when the timer was set
+      // for a 'wait' sequence item. For waitBeforeMs/waitAfterMs, the index is advanced later.
     }
     // During a wait, movement is zero, but intake/fire should be active
     return {
@@ -211,7 +211,39 @@ export function updatePathTraversal(
     return ZERO_CMD;
   }
 
-  const currentSequenceItem = autoPath.sequence[robot.pathSequenceIndex];
+  let currentSequenceItem: SequenceItem = autoPath.sequence[robot.pathSequenceIndex];
+
+  // --- Handle sequence 'wait' item ---
+  if (currentSequenceItem.kind === 'wait') {
+    if (currentSequenceItem.durationMs !== undefined && currentSequenceItem.durationMs > 0) {
+      robot.pathWaitTimer = currentSequenceItem.durationMs;
+      // console.log(`[PathTraversal] Robot ${robot.id}: Waiting for ${currentSequenceItem.durationMs}ms (sequence wait).`);
+      robot.pathSequenceIndex++; // Advance immediately to process next item on next tick after wait
+      return {
+        driveX: 0,
+        driveY: 0,
+        rotate: 0,
+        intake: true,
+        fire: true,
+      };
+    } else {
+      // Invalid wait item, just skip it and try to process the next item immediately
+      console.warn(`[PathTraversal] Robot ${robot.id}: Invalid 'wait' item with no durationMs or durationMs <= 0. Skipping.`);
+      robot.pathSequenceIndex++;
+      // To avoid infinite loop if many invalid wait items, let's return ZERO_CMD for this tick
+      // and the next tick will re-evaluate the new currentSequenceItem.
+      return ZERO_CMD;
+    }
+  }
+
+  // If we reach here, it must be a 'path' kind or an 'action' kind (which we don't handle yet for movement)
+  // For now, assume it's 'path'
+  if (currentSequenceItem.kind !== 'path') {
+      console.warn(`[PathTraversal] Robot ${robot.id}: Unknown sequence item kind '${currentSequenceItem.kind}'. Skipping.`);
+      robot.pathSequenceIndex++;
+      return ZERO_CMD;
+  }
+
   const currentPathLine = autoPath.lines.find((line) => line.id === currentSequenceItem.lineId);
 
   if (!currentPathLine) {
@@ -224,7 +256,6 @@ export function updatePathTraversal(
   if (robot.pathSegmentProgress === 0 && currentPathLine.waitBeforeMs && currentPathLine.waitBeforeMs > 0) {
     robot.pathWaitTimer = currentPathLine.waitBeforeMs;
     // console.log(`[PathTraversal] Robot ${robot.id}: Waiting for ${currentPathLine.waitBeforeMs}ms (before segment).`);
-    // During a wait, movement is zero, but intake/fire should be active
     return {
       driveX: 0,
       driveY: 0,
@@ -235,14 +266,21 @@ export function updatePathTraversal(
   }
 
   // --- Determine the start point for the current path segment ---
-  let segmentStartPoint: PathPoint;
-  if (robot.pathSequenceIndex === 0) {
-    segmentStartPoint = autoPath.startPoint;
-  } else {
-    // Find the end point of the previous path segment in the sequence
-    const prevSequenceItem = autoPath.sequence[robot.pathSequenceIndex - 1];
-    const prevPathLine = autoPath.lines.find(line => line.id === prevSequenceItem?.lineId);
-    segmentStartPoint = prevPathLine?.endPoint || autoPath.startPoint; // Fallback to autoPath.startPoint if previous line not found
+  let segmentStartPoint: PathPoint = autoPath.startPoint; // Default to the overall path start point
+
+  // If we are not at the very beginning of the sequence, find the end point of the *last path segment*
+  // that was executed. This correctly handles 'wait' items in between path segments.
+  if (robot.pathSequenceIndex > 0) {
+    for (let i = robot.pathSequenceIndex - 1; i >= 0; i--) {
+      const prevSequenceItem = autoPath.sequence[i];
+      if (prevSequenceItem.kind === 'path' && prevSequenceItem.lineId) {
+        const prevPathLine = autoPath.lines.find(line => line.id === prevSequenceItem.lineId);
+        if (prevPathLine) {
+          segmentStartPoint = prevPathLine.endPoint;
+          break; // Found the last path segment's end point, so we can stop
+        }
+      }
+    }
   }
 
   // --- Advance robot's progress along the segment (t) ---
