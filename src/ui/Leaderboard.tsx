@@ -32,6 +32,7 @@ const INTAKE_LABEL: Record<IntakeStyle, string> = {
   sloped: 'Sloped',
   vector: 'Vector',
   triangle: 'Triangle',
+  tridexer: 'Tridexer',
 };
 
 /** the robot config a record was set with — spec stats + assists */

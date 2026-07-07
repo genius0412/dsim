@@ -1,5 +1,7 @@
+import { useId } from 'react';
 import type { RobotSpec } from '../types';
-import { INTAKE_PRESETS, TURRET_OFFSET_FRAC, WHEEL_INSET } from '../config';
+import { INTAKE_PRESETS, TURRET_OFFSET_FRAC, VOLLEY_MUZZLE_SPACING, WHEEL_INSET } from '../config';
+import { hasTurret, shooterCount } from '../sim/archetype';
 
 /**
  * Top-down schematic of a robot drawn straight from its `RobotSpec` — the live
@@ -8,13 +10,19 @@ import { INTAKE_PRESETS, TURRET_OFFSET_FRAC, WHEEL_INSET } from '../config';
  * dimensions, and colors reference the Direction A ds- tokens so it themes with
  * the app. Purely presentational; reads nothing but the spec + a few geometry
  * constants (matching the sim's own robotExtents / turret placement rules).
+ * A custom `appearance` overrides the themed body/accent colors so the builder
+ * shows the paint job live.
  */
 export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: number }) {
+  const clipId = useId();
   const w = spec.width;
   const len = spec.length;
   const intake = INTAKE_PRESETS[spec.intake];
   const reach = intake.reach;
   const hw = intake.halfWidth;
+  const app = spec.appearance;
+  const turret = hasTurret(spec);
+  const volley = shooterCount(spec) >= 3;
 
   const frontY = -len / 2; // chassis front edge (top)
   const tipY = frontY - reach; // intake tip
@@ -38,13 +46,15 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
   const wheelH = isTank ? 4.2 : 3.2;
 
   const stroke = 'var(--ds-ink-dim)';
-  const accent = 'var(--ds-accent)';
+  const accent = app?.accent ?? 'var(--ds-accent)';
+  const body = app?.body ?? 'var(--ds-panel)';
 
   // intake geometry
   let intakeEl: JSX.Element;
-  if (spec.intake === 'vector') {
-    // a row of vertical compliant wheels ahead of the chassis (may overhang)
-    const n = 5;
+  if (intake.overhang) {
+    // vector / tridexer: a row of vertical compliant wheels ahead of the
+    // chassis (the tridexer's bar spans the full front)
+    const n = spec.intake === 'tridexer' ? 9 : 5;
     const rw = 1.15;
     const gap = (hw * 2 - rw) / (n - 1);
     intakeEl = (
@@ -83,6 +93,47 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
     );
   }
 
+  // shooter bank: single turret / triangle turret / fixed tridexer barrels
+  let shooterEl: JSX.Element;
+  if (!volley) {
+    shooterEl = (
+      <g>
+        <circle cx={0} cy={turretY} r={turretR} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
+        <line x1={0} y1={turretY} x2={0} y2={turretY - turretR - 1.2} stroke={accent} strokeWidth={0.7} strokeLinecap="round" />
+        {spec.canSort && <circle cx={0} cy={turretY} r={turretR * 0.4} fill={accent} opacity={0.8} />}
+      </g>
+    );
+  } else if (turret) {
+    // turreted tridexer: three shooters in a triangle on the turret ring
+    const verts: [number, number][] = [
+      [0, turretY - 0.45 * turretR],
+      [0.55 * turretR, turretY + 0.35 * turretR],
+      [-0.55 * turretR, turretY + 0.35 * turretR],
+    ];
+    shooterEl = (
+      <g>
+        <circle cx={0} cy={turretY} r={turretR} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
+        {verts.map(([vx, vy], i) => (
+          <g key={i}>
+            <line x1={vx} y1={vy} x2={vx} y2={turretY - turretR - 1.0} stroke={accent} strokeWidth={0.7} strokeLinecap="round" />
+            <circle cx={vx} cy={vy} r={0.8} fill={accent} />
+          </g>
+        ))}
+      </g>
+    );
+  } else {
+    // tridexer: three chassis-fixed barrels aimed out the front
+    const s = VOLLEY_MUZZLE_SPACING;
+    shooterEl = (
+      <g>
+        <rect x={-s - 1.4} y={turretY - 1.4} width={2 * s + 2.8} height={2.8} rx={0.6} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.4} />
+        {[-s, 0, s].map((lat) => (
+          <line key={lat} x1={lat} y1={turretY} x2={lat} y2={frontY + 1.2} stroke={accent} strokeWidth={0.9} strokeLinecap="round" />
+        ))}
+      </g>
+    );
+  }
+
   return (
     <svg
       width={size}
@@ -91,6 +142,12 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
       role="img"
       aria-label={`${spec.width} by ${spec.length} inch robot, ${spec.intake} intake`}
     >
+      <defs>
+        <clipPath id={clipId}>
+          <rect x={-w / 2} y={-len / 2} width={w} height={len} rx={1.4} />
+        </clipPath>
+      </defs>
+
       {/* wheels (under the chassis) */}
       {[
         [wx, wy],
@@ -120,16 +177,32 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
         width={w}
         height={len}
         rx={1.4}
-        fill="var(--ds-panel)"
+        fill={body}
         stroke={stroke}
         strokeWidth={0.5}
       />
+
+      {/* cosmetic paint pattern, clipped to the chassis */}
+      {app && app.pattern === 'stripes' && (
+        <g clipPath={`url(#${clipId})`} fill={accent} opacity={0.55}>
+          <rect x={-w * 0.42 - w * 0.12} y={-len / 2} width={w * 0.24} height={len} />
+          <rect x={w * 0.42 - w * 0.12} y={-len / 2} width={w * 0.24} height={len} />
+        </g>
+      )}
+      {app && app.pattern === 'diagonal' && (
+        <g clipPath={`url(#${clipId})`} stroke={accent} strokeWidth={1.6} opacity={0.55}>
+          {Array.from({ length: 9 }, (_, i) => {
+            const x = -w + i * 4.2;
+            return <line key={i} x1={x} y1={len / 2} x2={x + len} y2={-len / 2} />;
+          })}
+        </g>
+      )}
 
       {/* front indicator (a chevron at the front edge) */}
       <polyline
         points={`${-w * 0.18},${frontY + 1.6} 0,${frontY + 0.4} ${w * 0.18},${frontY + 1.6}`}
         fill="none"
-        stroke={accent}
+        stroke={app?.accent ?? 'var(--ds-accent)'}
         strokeWidth={0.5}
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -146,10 +219,7 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
         />
       )}
 
-      {/* turret ring + barrel toward front */}
-      <circle cx={0} cy={turretY} r={turretR} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
-      <line x1={0} y1={turretY} x2={0} y2={turretY - turretR - 1.2} stroke={accent} strokeWidth={0.7} strokeLinecap="round" />
-      {spec.canSort && <circle cx={0} cy={turretY} r={turretR * 0.4} fill={accent} opacity={0.8} />}
+      {shooterEl}
 
       {/* width dimension label */}
       <text

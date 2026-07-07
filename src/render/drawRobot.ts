@@ -1,6 +1,7 @@
 import type { RobotState } from '../types';
 import * as C from '../config';
 import { turretWorldPos } from '../sim/robot';
+import { hasTurret, shooterCount } from '../sim/archetype';
 
 export function drawRobot(
   ctx: CanvasRenderingContext2D,
@@ -10,17 +11,27 @@ export function drawRobot(
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
   const color = r.alliance === 'blue' ? C.COLORS.blue : C.COLORS.red;
+  // cosmetic paint job — absent (old saves/clients) renders the classic look.
+  // Alliance identity (bumper outline + chevron) is deliberately NOT painted.
+  const app = r.spec.appearance ?? C.DEFAULT_APPEARANCE;
 
   ctx.save();
   ctx.translate(r.pos.x, r.pos.y);
   ctx.rotate(r.heading);
 
   // chassis
-  ctx.fillStyle = '#1f242c';
+  ctx.fillStyle = app.body;
   ctx.strokeStyle = color;
   ctx.lineWidth = 1;
   roundRect(ctx, -hl, -hw, r.spec.length, r.spec.width, 1.6);
   ctx.fill();
+  if (app.pattern !== 'none') {
+    ctx.save();
+    ctx.clip(); // pattern stays inside the chassis
+    drawPattern(ctx, app.pattern, app.accent, hl, hw);
+    ctx.restore();
+    roundRect(ctx, -hl, -hw, r.spec.length, r.spec.width, 1.6); // path for the stroke
+  }
   ctx.stroke();
 
   // wheels (mecanum pods) — INSIDE the frame, centered on the ground-contact
@@ -40,11 +51,12 @@ export function drawRobot(
   // intake at the front — drawn at its full physical reach (it collides)
   const preset = C.INTAKE_PRESETS[r.spec.intake];
   const tip = hl + preset.reach;
-  ctx.fillStyle = intakeOn ? 'rgba(34,197,94,0.85)' : '#3a4150';
-  if (r.spec.intake === 'vector') {
+  ctx.fillStyle = intakeOn ? 'rgba(34,197,94,0.85)' : app.accent;
+  if (preset.overhang) {
+    // vector / tridexer: a bar of VERTICAL compliant wheels ahead of the
+    // chassis — from above they read as a row of small rectangles along the
+    // wheel line at the tip (the tridexer's bar spans the full 18in front)
     ctx.fillRect(hl - 0.6, -preset.halfWidth, preset.reach + 0.6, preset.halfWidth * 2);
-    // compliant wheels are mounted VERTICALLY: from above they read as a
-    // row of small rectangles along the wheel line at the tip
     ctx.fillStyle = intakeOn ? '#16a34a' : '#2a303c';
     for (let i = -3; i <= 3; i++) {
       ctx.fillRect(tip - 2.2, i * (preset.halfWidth / 3.4) - 0.8, 1.8, 1.6);
@@ -64,7 +76,7 @@ export function drawRobot(
     ctx.closePath();
     ctx.fill();
     // chassis side prongs alongside the mouth
-    ctx.fillStyle = '#1f242c';
+    ctx.fillStyle = app.body;
     ctx.strokeStyle = color;
     ctx.lineWidth = 1;
     for (const s of [1, -1] as const) {
@@ -102,29 +114,100 @@ export function drawRobot(
   }
   ctx.restore();
 
-  // turret on top (world orientation) — sized so nothing pokes past the
+  // shooter on top (world orientation) — sized so nothing pokes past the
   // chassis in ANY turret direction: max reach is the distance from the
-  // turret center to the nearest chassis edge
+  // turret center to the nearest chassis edge. For the turretless tridexer
+  // r.turretHeading IS the chassis heading (the sim locks it), so the fixed
+  // shooter bank rotates with the chassis.
   const tp = turretWorldPos(r);
   const off = Math.abs(r.spec.length * C.TURRET_OFFSET_FRAC);
   const reach = Math.min(hl - off, hw) - 0.5;
   const ring = Math.min(4.4, reach);
+  const ready = r.hopper.length > 0 ? '#22c55e' : '#6b7280';
   ctx.save();
   ctx.translate(tp.x, tp.y);
   ctx.rotate(r.turretHeading);
-  ctx.strokeStyle = r.hopper.length > 0 ? '#22c55e' : '#6b7280';
-  ctx.lineWidth = 0.9;
-  ctx.beginPath();
-  ctx.arc(0, 0, ring, 0, Math.PI * 2);
-  ctx.stroke();
-  // turret body + barrel
-  ctx.fillStyle = '#3a4150';
-  ctx.beginPath();
-  ctx.arc(0, 0, Math.max(ring - 1, 1.5), 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#525b6b';
-  ctx.fillRect(0, -1.2, reach, 2.4);
+  if (shooterCount(r.spec) >= 3) {
+    if (hasTurret(r.spec)) {
+      // turreted tridexer: ring + three shooters in a triangle on the turret
+      ctx.strokeStyle = ready;
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.arc(0, 0, ring, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = app.accent;
+      ctx.beginPath();
+      ctx.arc(0, 0, Math.max(ring - 1, 1.5), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#525b6b';
+      const verts = [
+        [0.45 * ring, 0],
+        [-0.35 * ring, 0.55 * ring],
+        [-0.35 * ring, -0.55 * ring],
+      ] as const;
+      for (const [vx, vy] of verts) {
+        ctx.fillRect(vx, vy - 0.7, reach - vx, 1.4);
+        ctx.beginPath();
+        ctx.arc(vx, vy, 1.0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      // tridexer: three chassis-fixed barrels side by side behind the intake
+      const s = C.VOLLEY_MUZZLE_SPACING;
+      ctx.fillStyle = app.accent;
+      ctx.fillRect(-2.8, -s - 1.6, 3.2, 2 * s + 3.2); // shooter housing
+      ctx.strokeStyle = ready;
+      ctx.lineWidth = 0.7;
+      ctx.strokeRect(-2.8, -s - 1.6, 3.2, 2 * s + 3.2);
+      ctx.fillStyle = '#525b6b';
+      for (const lat of [-s, 0, s]) ctx.fillRect(0, lat - 1.0, reach, 2.0);
+    }
+  } else {
+    ctx.strokeStyle = ready;
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.arc(0, 0, ring, 0, Math.PI * 2);
+    ctx.stroke();
+    // turret body + barrel
+    ctx.fillStyle = app.accent;
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(ring - 1, 1.5), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#525b6b';
+    ctx.fillRect(0, -1.2, reach, 2.4);
+  }
   ctx.restore();
+}
+
+/** cosmetic chassis pattern, drawn clipped to the chassis in the accent color */
+function drawPattern(
+  ctx: CanvasRenderingContext2D,
+  pattern: 'stripes' | 'diagonal',
+  accent: string,
+  hl: number,
+  hw: number,
+): void {
+  ctx.fillStyle = accent;
+  ctx.globalAlpha = 0.55;
+  if (pattern === 'stripes') {
+    // twin racing stripes running the length of the chassis
+    const w = hw * 0.24;
+    ctx.fillRect(-hl, -hw * 0.42 - w / 2, hl * 2, w);
+    ctx.fillRect(-hl, hw * 0.42 - w / 2, hl * 2, w);
+  } else {
+    // diagonal hazard bands across the deck
+    const step = 4.2;
+    for (let x = -hl - 2 * hw; x < hl + 2 * hw; x += step) {
+      ctx.beginPath();
+      ctx.moveTo(x, -hw);
+      ctx.lineTo(x + 2 * hw, hw);
+      ctx.lineTo(x + 2 * hw + step * 0.4, hw);
+      ctx.lineTo(x + step * 0.4, -hw);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
 }
 
 function roundRect(

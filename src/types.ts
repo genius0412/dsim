@@ -20,6 +20,9 @@ export interface RobotCommand {
   rotate: number; // -1..1, CCW positive in driver frame
   intake: boolean;
   fire: boolean;
+  /** HELD: for turretless archetypes (tridexer), rotate the CHASSIS onto the
+   * firing solution — overrides `rotate` while held. No-op with a turret. */
+  autoAlign?: boolean;
 }
 
 /** menu-configured driver assists */
@@ -30,8 +33,26 @@ export interface AssistConfig {
   autoFire: boolean;
 }
 
-export type IntakeStyle = 'sloped' | 'vector' | 'triangle';
+export type IntakeStyle = 'sloped' | 'vector' | 'triangle' | 'tridexer';
 export type DrivetrainType = 'mecanum' | 'tank' | 'swerve' | 'xdrive';
+
+/** shooter/turret archetype — see ARCHETYPE_PRESETS in config.ts.
+ * 'standard'  = 1 turreted shooter, the original robot.
+ * 'tridexer'  = 3 chassis-fixed shooters, volley fire, no turret (the chassis
+ *               must align with the goal to shoot), full-width line intake.
+ * 'turreted'  = turreted tridexer: 3 shooters in a triangle on a turret. */
+export type Archetype = 'standard' | 'tridexer' | 'turreted';
+
+/** cosmetic paint job (never affects the sim; excluded from preset matching).
+ * Alliance identity stays on the bumper outline/chevron regardless. */
+export type AppearancePattern = 'none' | 'stripes' | 'diagonal';
+export interface RobotAppearance {
+  /** chassis fill, #rrggbb */
+  body: string;
+  /** hardware tint (intake, turret, pattern), #rrggbb */
+  accent: string;
+  pattern: AppearancePattern;
+}
 
 export interface RobotSpec {
   /** robot display name, team name, team number (0 = unset) */
@@ -52,6 +73,11 @@ export interface RobotSpec {
   flywheelInertia: number;
   /** robot can pick which hopper color to fire (chases the motif) */
   canSort: boolean;
+  /** shooter archetype; absent (old saves / old clients) = 'standard' —
+   * always read via archetypeOf(spec) in src/sim/archetype.ts */
+  archetype?: Archetype;
+  /** cosmetic paint job; absent = the classic default look */
+  appearance?: RobotAppearance;
 }
 
 export type BallState =

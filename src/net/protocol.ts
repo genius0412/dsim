@@ -31,18 +31,20 @@ export interface QCommand {
   dx: number; // int8, -127..127  (driveX * 127)
   dy: number; // int8
   rot: number; // int8
-  buttons: number; // uint8 bitfield: bit0 intake, bit1 fire
+  buttons: number; // uint8 bitfield: bit0 intake, bit1 fire, bit2 autoAlign
 }
 
 const BTN_INTAKE = 1;
 const BTN_FIRE = 2;
+const BTN_ALIGN = 4;
 
 export function quantizeCommand(c: RobotCommand): QCommand {
   return {
     dx: Math.round(clamp(c.driveX, -1, 1) * 127),
     dy: Math.round(clamp(c.driveY, -1, 1) * 127),
     rot: Math.round(clamp(c.rotate, -1, 1) * 127),
-    buttons: (c.intake ? BTN_INTAKE : 0) | (c.fire ? BTN_FIRE : 0),
+    buttons:
+      (c.intake ? BTN_INTAKE : 0) | (c.fire ? BTN_FIRE : 0) | (c.autoAlign ? BTN_ALIGN : 0),
   };
 }
 
@@ -53,6 +55,7 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     rotate: q.rot / 127,
     intake: (q.buttons & BTN_INTAKE) !== 0,
     fire: (q.buttons & BTN_FIRE) !== 0,
+    autoAlign: (q.buttons & BTN_ALIGN) !== 0,
   };
 }
 

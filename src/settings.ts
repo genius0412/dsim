@@ -11,7 +11,10 @@ import {
   START_POSES,
 } from './config';
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
+import { clampSpecToArchetype } from './sim/archetype';
 import { clamp } from './math';
+
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
 const STORAGE_KEY = 'decodesim.settings.v1';
 
@@ -62,7 +65,12 @@ export function coerceSettings(raw: unknown): GameSettings {
     }
     if (typeof s.spec === 'object' && s.spec !== null) {
       const sp = s.spec as Record<string, unknown>;
-      if (sp.intake === 'sloped' || sp.intake === 'vector' || sp.intake === 'triangle') {
+      if (
+        sp.intake === 'sloped' ||
+        sp.intake === 'vector' ||
+        sp.intake === 'triangle' ||
+        sp.intake === 'tridexer'
+      ) {
         out.spec.intake = sp.intake;
       } else if (sp.intake === 'compact') {
         out.spec.intake = 'sloped'; // legacy preset names from older saves
@@ -98,6 +106,30 @@ export function coerceSettings(raw: unknown): GameSettings {
         out.spec.flywheelInertia = clamp(sp.flywheelInertia, 0, 1);
       }
       if (typeof sp.canSort === 'boolean') out.spec.canSort = sp.canSort;
+      if (
+        sp.archetype === 'standard' ||
+        sp.archetype === 'tridexer' ||
+        sp.archetype === 'turreted'
+      ) {
+        out.spec.archetype = sp.archetype;
+      }
+      // cosmetic paint job: all-or-nothing — anything malformed falls back to
+      // the classic default look (appearance stays absent)
+      if (typeof sp.appearance === 'object' && sp.appearance !== null) {
+        const ap = sp.appearance as Record<string, unknown>;
+        if (
+          typeof ap.body === 'string' &&
+          HEX_COLOR.test(ap.body) &&
+          typeof ap.accent === 'string' &&
+          HEX_COLOR.test(ap.accent) &&
+          (ap.pattern === 'none' || ap.pattern === 'stripes' || ap.pattern === 'diagonal')
+        ) {
+          out.spec.appearance = { body: ap.body, accent: ap.accent, pattern: ap.pattern };
+        }
+      }
+      // enforce the archetype's build rules (drivetrain/intake allowlists,
+      // dimension locks, minimum mass) over whatever the save claimed
+      out.spec = clampSpecToArchetype(out.spec);
     }
     if (typeof s.startIndex === 'number') {
       out.startIndex = clamp(Math.round(s.startIndex), 0, START_POSES.length - 1);

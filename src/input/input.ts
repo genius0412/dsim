@@ -10,6 +10,7 @@ export interface VirtualInput {
   rotate: number;
   intake: boolean;
   fire: boolean;
+  autoAlign: boolean;
 }
 
 /** merges keyboard + gamepad into one driver command per frame, resolving
@@ -33,6 +34,7 @@ export class InputManager {
     rotate: 0,
     intake: false,
     fire: false,
+    autoAlign: false,
   };
 
   constructor(private bindings: ControlBindings) {
@@ -86,6 +88,7 @@ export class InputManager {
       rotate: clamp(krot + g.rotate + this.virtualState.rotate, -1, 1),
       intake: heldAny(keys.intake) || g.intake || this.virtualState.intake,
       fire: heldAny(keys.fire) || g.fire || this.virtualState.fire,
+      autoAlign: heldAny(keys.autoAlign) || g.autoAlign || this.virtualState.autoAlign,
     };
     k.endFrame();
     return cmd;

@@ -20,6 +20,7 @@ const KEY_LABELS: Record<KeyAction, string> = {
   rotateCW: 'Turn right',
   intake: 'Intake (hold)',
   fire: 'Shoot (hold)',
+  autoAlign: 'Auto-align (hold)',
   flipFront: 'Flip front',
   park: 'Toggle park mode',
   start: 'Start match',
@@ -29,6 +30,7 @@ const KEY_LABELS: Record<KeyAction, string> = {
 const PAD_LABELS: Record<PadAction, string> = {
   fire: 'Shoot',
   intake: 'Intake',
+  autoAlign: 'Auto-align (hold)',
   flipFront: 'Flip front',
   park: 'Toggle park mode',
   start: 'Start match',

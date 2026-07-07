@@ -11,12 +11,20 @@ export type KeyAction =
   | 'rotateCW'
   | 'intake'
   | 'fire'
+  | 'autoAlign'
   | 'flipFront'
   | 'park'
   | 'start'
   | 'restart';
 
-export type PadAction = 'fire' | 'intake' | 'flipFront' | 'park' | 'start' | 'restart';
+export type PadAction =
+  | 'fire'
+  | 'intake'
+  | 'autoAlign'
+  | 'flipFront'
+  | 'park'
+  | 'start'
+  | 'restart';
 
 export interface PadBindings {
   /** which stick translates the robot — the other stick's X axis turns */
@@ -48,13 +56,22 @@ export const KEY_ACTIONS: KeyAction[] = [
   'rotateCW',
   'intake',
   'fire',
+  'autoAlign',
   'flipFront',
   'park',
   'start',
   'restart',
 ];
 
-export const PAD_ACTIONS: PadAction[] = ['fire', 'intake', 'flipFront', 'park', 'start', 'restart'];
+export const PAD_ACTIONS: PadAction[] = [
+  'fire',
+  'intake',
+  'autoAlign',
+  'flipFront',
+  'park',
+  'start',
+  'restart',
+];
 
 export const DEFAULT_BINDINGS: ControlBindings = {
   keys: {
@@ -66,6 +83,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     rotateCW: ['arrowright', 'e'],
     intake: ['shift', 'k'],
     fire: [' '],
+    autoAlign: ['g'], // HELD: turretless (tridexer) chassis auto-align
     flipFront: ['f'],
     park: ['p'],
     start: ['enter'],
@@ -76,6 +94,7 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     buttons: {
       fire: [7, 0], // RT or A
       intake: [6, 1], // LT or B
+      autoAlign: [4], // LB (held)
       flipFront: [3], // Y
       park: [2], // X
       start: [9],

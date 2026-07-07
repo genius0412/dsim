@@ -19,6 +19,7 @@ export interface GamepadSample {
   rotate: number;
   fire: boolean;
   intake: boolean;
+  autoAlign: boolean;
   flipFront: boolean;
   park: boolean;
   start: boolean;
@@ -32,6 +33,7 @@ const EMPTY: GamepadSample = {
   rotate: 0,
   fire: false,
   intake: false,
+  autoAlign: false,
   flipFront: false,
   park: false,
   start: false,
@@ -74,6 +76,7 @@ export class GamepadInput {
       rotate: -ax(rotAxis),
       fire: anyBtn(bindings.buttons.fire),
       intake: anyBtn(bindings.buttons.intake),
+      autoAlign: anyBtn(bindings.buttons.autoAlign),
       flipFront: flipNow && !this.prevFlip,
       park: parkNow && !this.prevPark,
       start: startNow && !this.prevStart,

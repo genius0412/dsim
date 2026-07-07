@@ -1,4 +1,48 @@
-# HANDOFF — 2026-07-07 (session 4: UI copy cleanup + score/intro animations) — READ FIRST
+# HANDOFF — 2026-07-07 (session 5: tridexer archetypes + robot appearance) — READ FIRST
+
+Build + smoke (186 checks) + both tsc GREEN on branch
+`feature/tridexer-archetypes-appearance`. Three features:
+
+**1. Robot appearance (My Robot → Appearance).** `RobotSpec.appearance?`
+(`{body, accent, pattern}` — hex colors + 'none'/'stripes'/'diagonal', types.ts) is
+COSMETIC ONLY: absent ⇒ the classic look (`DEFAULT_APPEARANCE` in config.ts matches the
+old hardcoded colors exactly). Alliance identity (bumper outline + heading chevron) is
+deliberately NOT paintable. Excluded from `specMatches` (a repaint isn't "custom").
+Rendered in `drawRobot.ts` (pattern clipped to the chassis) and live in
+`RobotPreview.tsx` (SVG clipPath). Validated all-or-nothing in `coerceSettings`.
+
+**2. Tridexer archetype.** `RobotSpec.archetype?: 'standard'|'tridexer'|'turreted'`
+(absent = standard — ALWAYS read via `archetypeOf` in the new `src/sim/archetype.ts`).
+Per-archetype build rules live in `ARCHETYPE_PRESETS` (config.ts): tridexer = 3
+chassis-FIXED shooters (no turret), width locked 18, min 30 lb, tank/mecanum only,
+intake locked to the new full-width `tridexer` intake preset (a vector-style bar that
+inhales a whole horizontal LINE in one tick — `clumpPerBall: 0` + the take-all branch
+in `updateIntake`; single balls at vector pace). VOLLEY fire: `fire()` launches the
+entire hopper in one tick from 3 side-by-side muzzles (`VOLLEY_MUZZLE_SPACING`), then
+re-indexes at `VOLLEY_INDEX_INTERVAL` (0.45 s) PER ball — slower than the volley. No
+turret ⇒ the CHASSIS must be within `TRIDEXER_ALIGN_TOL` (3°) of the firing solution
+to fire (the shot itself still uses the exact solution — never-miss holds). AUTO-ALIGN
+is a new HELD keybind (`autoAlign`, default G / pad LB, rebindable): overrides the
+rotate input with P-control onto the solution (`TRIDEXER_ALIGN_KP`). It rides
+`RobotCommand.autoAlign?` (optional ⇒ ZERO_CMD/pathTraversal untouched) and wire
+bit2 in `QCommand.buttons`.
+
+**3. Turreted tridexer.** Same volley/indexing; 3 shooters in a triangle ON a turret
+(aim assist etc. unchanged), locked 18×18, min 40 lb, tank/mecanum, intake sloped or
+tridexer. `canSort` is forced OFF for both volley archetypes (a volley fires the whole
+hopper — nothing to sort; the builder disables the toggle).
+
+`clampSpecToArchetype` (archetype.ts) is the single legality gate — used by
+`coerceSettings` AND the Menu (archetype/drivetrain selection re-clamps). Menu gained
+Archetype cards + disabled-with-reason drivetrain/intake options + locked sliders. Two
+new `ROBOT_PRESETS` (Trident / Merry-Go-Round). Leaderboard intake label map extended.
+10 new smoke checks (volley, align gate, auto-align convergence, line intake, clamp,
+wire round-trip). NOT visually verified in a browser (headless session) — the drawRobot/
+RobotPreview archetype art is type/build-green but worth an eyeball pass.
+
+---
+
+# HANDOFF — 2026-07-07 (session 4: UI copy cleanup + score/intro animations)
 
 Build + smoke (140 checks) + both tsc GREEN. Verified the UI at the real Electron
 surface (Home + My Robot screenshots) — copy reads clean, nothing truncated. Nothing
