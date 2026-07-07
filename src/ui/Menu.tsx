@@ -79,6 +79,10 @@ export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
   const setAssist = (patch: Partial<GameSettings['assists']>) =>
     onChange({ ...settings, assists: { ...settings.assists, ...patch } });
 
+  const isSwerve = settings.spec.drivetrain === 'swerve';
+  const minMass = isSwerve ? 25 : ROBOT_MIN_MASS;
+  const maxRpm = isSwerve ? 500 : ROBOT_MAX_RPM;
+
   return (
     <div className="menu-root">
       <div className="menu-panel">
@@ -275,7 +279,7 @@ export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
                 Mass {settings.spec.massLb} lb
                 <input
                   type="range"
-                  min={ROBOT_MIN_MASS}
+                  min={minMass}
                   max={ROBOT_MAX_MASS}
                   step={1}
                   value={settings.spec.massLb}
@@ -289,7 +293,7 @@ export function Menu({ settings, onChange, onStart, onMultiplayer }: Props) {
                 <input
                   type="range"
                   min={ROBOT_MIN_RPM}
-                  max={ROBOT_MAX_RPM}
+                  max={maxRpm}
                   step={5}
                   value={settings.spec.driveRpm}
                   onChange={(e) => setSpec({ driveRpm: Number(e.target.value) })}
