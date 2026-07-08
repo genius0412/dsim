@@ -140,7 +140,7 @@ the gateway), so a tap usually drains the whole column.
    (`DRIVETRAIN_PRESETS` × `driveRpm` × `massLb`, calibrated so the DEFAULT spec
    reproduces the legacy 75/7/280 EXACTLY — smoke-checked, do not break). Four
    drivetrains with distinct wheel-saturation models: mecanum `|f|+|s|+|ω|`
-   (0.85 strafe), x-drive same-but-full-strafe, tank `|f|+|ω|` (strafe input DEAD),
+   (0.85 strafe), x-drive same-but-full-strafe, tank `|f|+|ω|` (strafe input DEAD, controlled via traditional tank drive: left stick/W-S for left side, right stick/Up-Down for right side),
    swerve `hypot(f,s)+|ω|` (direction-independent). `maxTurn = wheelSpeed /
    halfDiagonal` (smaller/faster bots turn quicker, capped at `TURN_MAX_SPEED`).
    The mecanum wheel-saturation model is correct physics — keep it. Wall/structure contacts apply

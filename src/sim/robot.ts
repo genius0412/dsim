@@ -87,14 +87,27 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   if (dp.strafeMult === 0) robotVec.y = 0; // tank: strafe input is dead
   // wheel power budget: combined demands share the same wheels, and the
   // shape of the budget depends on the drivetrain (see DRIVETRAIN_PRESETS)
-  const demand =
-    dp.saturation === 'vec'
-      ? hyp(robotVec.x, robotVec.y) + Math.abs(cmd.rotate)
-      : Math.abs(robotVec.x) + Math.abs(robotVec.y) + Math.abs(cmd.rotate);
-  const div = Math.max(1, demand);
-  const targetFwd = (robotVec.x / div) * dp.maxSpeed;
-  const targetStrafe = (robotVec.y / div) * dp.maxSpeed * dp.strafeMult;
-  const targetOmega = (cmd.rotate / div) * dp.maxTurn;
+  let targetFwd = 0;
+  let targetStrafe = 0;
+  let targetOmega = 0;
+
+  if (dp.saturation === 'tank') {
+    // Traditional Tank Drive: leftDrive and rightDrive independently control sides
+    const ld = cmd.leftDrive;
+    const rd = cmd.rightDrive;
+    targetFwd = ((ld + rd) / 2) * dp.maxSpeed;
+    targetOmega = (rd - ld) * (dp.maxTurn / 2);
+    targetStrafe = 0;
+  } else {
+    const demand =
+      dp.saturation === 'vec'
+        ? hyp(robotVec.x, robotVec.y) + Math.abs(cmd.rotate)
+        : Math.abs(robotVec.x) + Math.abs(robotVec.y) + Math.abs(cmd.rotate);
+    const div = Math.max(1, demand);
+    targetFwd = (robotVec.x / div) * dp.maxSpeed;
+    targetStrafe = (robotVec.y / div) * dp.maxSpeed * dp.strafeMult;
+    targetOmega = (cmd.rotate / div) * dp.maxTurn;
+  }
 
   // accel-clamped approach in the robot frame
   const velRobot = rot(r.vel, -r.heading);
