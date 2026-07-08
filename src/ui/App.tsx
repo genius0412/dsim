@@ -30,6 +30,7 @@ type Screen =
   | 'leaderboard'
   | 'lobby'
   | 'record'
+  | 'duorecord'
   | 'matchmaking'
   | 'replay'
   | 'game'
@@ -59,6 +60,8 @@ function pathFor(screen: Screen, replayId: string | null): string {
       return '/lobby';
     case 'record':
       return '/record';
+    case 'duorecord':
+      return '/duo-record';
     case 'matchmaking':
       return '/ranked';
     case 'replay':
@@ -82,6 +85,7 @@ function parsePath(pathname: string): { screen: Screen; replayId: string | null 
   if (pathname.startsWith('/leaderboard')) return { screen: 'leaderboard', replayId: null };
   if (pathname.startsWith('/my-robot')) return { screen: 'robot', replayId: null };
   if (pathname.startsWith('/lobby')) return { screen: 'lobby', replayId: null };
+  if (pathname.startsWith('/duo-record')) return { screen: 'duorecord', replayId: null };
   if (pathname.startsWith('/record')) return { screen: 'record', replayId: null };
   if (pathname.startsWith('/ranked')) return { screen: 'matchmaking', replayId: null };
   if (pathname.startsWith('/download')) return { screen: 'download', replayId: null };
@@ -240,6 +244,19 @@ export function App() {
       />
     );
   }
+  if (screen === 'duorecord') {
+    return (
+      <Lobby
+        settings={settings}
+        config={{ kind: 'record', record: 'duo' }}
+        onStart={(s) => {
+          setSession(s);
+          navigate('game');
+        }}
+        onCancel={() => navigate('home')}
+      />
+    );
+  }
   if (screen === 'matchmaking') {
     return (
       <Matchmaking
@@ -306,6 +323,7 @@ export function App() {
             })
           }
           onRecordRun={() => guardStart(() => navigate('record'))}
+          onDuoRecord={() => guardStart(() => navigate('duorecord'))}
           onRanked={() => guardStart(() => navigate('matchmaking'))}
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onEditRobot={() => navigate('robot')}
