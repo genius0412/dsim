@@ -13,8 +13,6 @@ export class Renderer {
     world: World,
     lastCommand: RobotCommand | null,
     localRobotId = 0,
-    /** visual-only offset applied to the LOCAL robot (reconcile error smoothing) */
-    localOffset?: { x: number; y: number; heading: number },
   ): void {
     const canvas = ctx.canvas;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -34,17 +32,7 @@ export class Renderer {
       const intakeOn =
         (r.id === localRobotId && (lastCommand?.intake ?? false)) ||
         (r.autoIntake && r.hopper.length < 3);
-      // apply the visual smoothing offset to the local robot only (a shallow copy
-      // so the sim state in `world` is never mutated)
-      const rd =
-        localOffset && r.id === localRobotId
-          ? {
-              ...r,
-              pos: { x: r.pos.x + localOffset.x, y: r.pos.y + localOffset.y },
-              heading: r.heading + localOffset.heading,
-            }
-          : r;
-      drawRobot(ctx, rd, intakeOn);
+      drawRobot(ctx, r, intakeOn);
 
 
 
