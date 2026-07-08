@@ -86,12 +86,15 @@ export function updatePenalties(
     offender: Alliance,
     severity: 'minor' | 'major',
     rule: string,
-  ): void => {
+  ): boolean => {
     const last = pen.episodes[key];
+    let fired = false;
     if (last === undefined || world.time - last > C.PENALTY_CLEAR) {
       awardFoul(world, offender, severity, rule);
+      fired = true;
     }
     pen.episodes[key] = world.time;
+    return fired;
   };
 
   const endgame = phase === 'teleop' && world.match.phaseTimeLeft <= C.ENDGAME_START;
@@ -180,7 +183,7 @@ export function updatePenalties(
   updatePins(world, dt, commands);
 }
 
-type FireFn = (key: string, offender: Alliance, severity: 'minor' | 'major', rule: string) => void;
+type FireFn = (key: string, offender: Alliance, severity: 'minor' | 'major', rule: string) => boolean;
 
 /** G417 (contacting/operating an OPPOSING GATE — MAJOR) + G418.B (each classified
  * ARTIFACT that leaves an opponent's RAMP because their gate was opened — MAJOR
@@ -203,29 +206,22 @@ function updateGateFouls(world: World, fire: FireFn): void {
     for (const r of world.robots) {
       if (r.alliance === a) continue;
       if (robotIntersectsRect(r, zone) && r.pos.y >= zone.y0 - C.GATE_LONG_SIDE_MARGIN) {
-        fire(`G417:${a}:${r.id}`, r.alliance, 'major', 'G417 opponent gate');
+        if (fire(`G417:${a}:${r.id}`, r.alliance, 'major', 'G417 opponent gate')) {
+          // G418: penalty per classified ball on the ramp at the moment of opening
+          let ballsOnRamp = 0;
+          for (const b of world.balls) {
+            const st = b.state;
+            if (st.kind === 'rail' && st.goal === a && !st.overflow && !st.pending) {
+              ballsOnRamp++;
+            }
+          }
+          for (let i = 0; i < ballsOnRamp; i++) {
+            awardFoul(world, r.alliance, 'major', 'G418 artifact off opponent ramp');
+          }
+        }
         workingOpp = r.alliance;
       }
     }
-
-    // classified (committed, non-overflow) artifacts resting on a's ramp now
-    const onRamp: number[] = [];
-    for (const b of world.balls) {
-      const st = b.state;
-      if (st.kind === 'rail' && st.goal === a && !st.overflow && !st.pending) onRamp.push(b.id);
-    }
-
-    // G418.B: one MAJOR for each artifact that LEFT the ramp while an opponent is
-    // the responsible party (billed BEFORE we re-evaluate responsibility below, so
-    // the final ball that drains as the gate shuts still counts)
-    const culprit = pen.gateCulprit[a];
-    if (culprit) {
-      const now = new Set(onRamp);
-      for (const id of pen.rampBallIds[a]) {
-        if (!now.has(id)) awardFoul(world, culprit, 'major', 'G418 artifact off opponent ramp');
-      }
-    }
-    pen.rampBallIds[a] = onRamp;
 
     // update who is responsible for gate a being open: an opponent operating it
     // takes the blame and keeps it through the drain; it clears only once the gate

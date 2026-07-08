@@ -8,13 +8,10 @@ clean.
 - **G417** — operating an OPPONENT's gate = immediate **MAJOR** (edge-triggered via the
   `fire` episode debounce). Detected with updateGates' lever condition (in the gate zone,
   field side), filtered to the owner's opponents. Operating your own gate is legal.
-- **G418.B** — each classified (committed, non-overflow) artifact that leaves an
-  opponent's RAMP because you opened their gate = **MAJOR per artifact**.
+- **G418.B** — each classified (committed, non-overflow) artifact INSIDE an
+  opponent's RAMP at the moment you open their gate = **MAJOR per artifact**.
 - Attribution: `penalties.gateCulprit[goal]` records which opponent opened each gate
-  (set while they operate it, held through the drain, cleared when the gate shuts);
-  `penalties.rampBallIds[goal]` tracks the ramp's committed balls tick-to-tick, and every
-  departure while a culprit is set bills that opponent. Matches manual Example 3 (open
-  the opponent gate → 1 G417 + N G418; smoke verifies blueMajor == N+1).
+  (set while they operate it, held through the drain, cleared when the gate shuts).
 - Two new `PenaltyState` fields (`gateCulprit`, `rampBallIds`) — plain JSON, init in
   spawn.ts. Note `updatePenalties` runs BEFORE this tick's `updateGates`/`updateRails`
   (world.ts), so it observes end-of-previous-tick gate/ball state — consistent for the
