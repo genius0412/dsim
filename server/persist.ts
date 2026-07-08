@@ -69,7 +69,11 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
       return { record: info };
     } else {
       const elo = await applyMatchElo(authed, o, bv, replayId);
-      console.log(`[persist] WROTE ELO for ${authed.length} players`);
+      console.log(
+        elo.length
+          ? `[persist] WROTE ELO — ${elo.length} ratings updated`
+          : `[persist] NO ELO — not a rankable head-to-head (participants=${o.participants.length}, authed=${authed.length})`,
+      );
       return { elo };
     }
   } catch (e) {
