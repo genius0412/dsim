@@ -35,12 +35,60 @@ const matchmaker = new Matchmaker();
 let onlineCount = 0;
 const authedUsers = new Map<string, number>(); // userId -> live socket count
 
+// a pending admin notice (scheduled restart / info) broadcast to every client and
+// re-sent to anyone who connects while it's still live, so late joiners see it too
+let currentNotice: (ServerMsg & { t: 'serverNotice' }) | null = null;
+const noticeLive = (): boolean =>
+  !!currentNotice && (currentNotice.until === undefined || currentNotice.until > Date.now());
+
+/** broadcast a message to EVERY open socket; returns how many got it */
+function broadcastAll(m: ServerMsg): number {
+  const payload = encodeMsg(m);
+  let n = 0;
+  for (const ws of wss.clients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(payload);
+      n++;
+    }
+  }
+  return n;
+}
+
 // an explicit HTTP server so we can answer GET /health (Fly/Load-balancer probe)
 // while the WebSocket upgrade rides the same port
 const httpServer = createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end('ok');
+    return;
+  }
+  // ADMIN: schedule a restart / broadcast a notice to every connected client.
+  //   POST /admin/announce?secret=…&seconds=300&msg=Scheduled+restart
+  //   POST /admin/announce?secret=…&cancel=1        (clears a pending notice)
+  // Gated by the ADMIN_SECRET env (endpoint disabled if unset). Then deploy at ~0.
+  if (req.method === 'POST' && req.url?.startsWith('/admin/announce')) {
+    const u = new URL(req.url, 'http://x');
+    const ok = process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
+    if (!ok) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('forbidden');
+      return;
+    }
+    if (u.searchParams.get('cancel')) {
+      currentNotice = { t: 'serverNotice', kind: 'info', message: '' }; // empty => clear on the client
+      const n = broadcastAll(currentNotice);
+      currentNotice = null;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, cancelled: true, notified: n }));
+      return;
+    }
+    const seconds = Math.max(0, Number(u.searchParams.get('seconds') ?? 300));
+    const message = u.searchParams.get('msg') ?? 'Server restarting for an update';
+    currentNotice = { t: 'serverNotice', kind: 'restart', message, until: Date.now() + seconds * 1000 };
+    const notified = broadcastAll(currentNotice);
+    console.log(`[admin] restart notice in ${seconds}s -> ${notified} clients: "${message}"`);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, notified, until: currentNotice.until }));
     return;
   }
   // live presence (served here, not in api.ts, because the counts live on this
@@ -108,6 +156,8 @@ wss.on('connection', (ws: WebSocket) => {
   const send = (m: ServerMsg): void => {
     if (ws.readyState === WebSocket.OPEN) ws.send(encodeMsg(m));
   };
+  // a late joiner during a pending restart still gets the countdown banner
+  if (noticeLive() && currentNotice) send(currentNotice);
 
   ws.on('message', (data: unknown) => {
     let msg;

@@ -217,7 +217,11 @@ export type ServerMsg =
   // record runs only: the run's standing on the leaderboard (its mode×drivetrain×
   // season bucket), sent shortly after matchResult once persisted. Drives the solo
   // results screen's PB / WR / rank line. Absent for anonymous/DB-off runs.
-  | { t: 'recordResult'; info: RecordRankInfo };
+  | { t: 'recordResult'; info: RecordRankInfo }
+  // an admin broadcast to EVERY connected client: a scheduled server restart (with
+  // a countdown to `until`, epoch ms) or a general info message. Shown as a banner
+  // so players aren't caught off guard by a restart mid-session.
+  | { t: 'serverNotice'; kind: 'restart' | 'info'; message: string; until?: number };
 
 /** a finished record run's leaderboard standing (its mode×drivetrain×season
  * bucket). `score` is the NET score (earned − own penalties). */

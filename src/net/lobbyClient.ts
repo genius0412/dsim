@@ -1,6 +1,7 @@
 import type { RobotSetup } from '../sim/spawn';
 import type { Transport } from './transport';
 import { getAuthToken } from '../lib/authClient';
+import { setServerNotice } from './notice';
 import {
   encodeMsg,
   decodeServerMsg,
@@ -110,6 +111,8 @@ export class LobbyClient {
       this.handlers.queued?.(m.mode, m.size, m.need);
     } else if (m.t === 'error') {
       this.handlers.error?.(m.message);
+    } else if (m.t === 'serverNotice') {
+      setServerNotice(m.message ? { kind: m.kind, message: m.message, until: m.until } : null);
     }
   }
 }

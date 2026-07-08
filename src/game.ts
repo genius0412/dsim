@@ -113,7 +113,7 @@ export interface HudSnapshot {
   resultRevealAt: number | null;
   toasts: Toast[];
   /** multiplayer status (null in solo): stall target + desync flag */
-  net: { waitingFor: string | null; desync: boolean; peers: number } | null;
+  net: { waitingFor: string | null; desync: boolean; peers: number; failed: boolean } | null;
 }
 
 export class GameController {

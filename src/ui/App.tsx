@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings } from '../settings';
 import { saveAccountSettings } from '../net/api';
+import { useNewVersion } from '../net/version';
 import { AccountSync } from './AccountSync';
 import { Menu } from './Menu';
 import { GameView } from './GameView';
@@ -147,6 +148,15 @@ export function App() {
     navigate('home');
   };
 
+  // a newer client build shipped while this tab stayed open: prompt to refresh when
+  // the player STARTS a run (never mid-run), so they aren't stuck on a stale version
+  const newVersion = useNewVersion();
+  const [pendingStart, setPendingStart] = useState<(() => void) | null>(null);
+  const guardStart = (go: () => void): void => {
+    if (newVersion) setPendingStart(() => go);
+    else go();
+  };
+
   const multiplayer = gameServerConfigured();
   // ranked needs a real account (ELO/leaderboard). accountUserId is set by
   // AccountSync on sign-in and stays null when auth is off, so signed-out and
@@ -244,19 +254,46 @@ export function App() {
           onChange={update}
           multiplayer={multiplayer}
           signedIn={signedIn}
-          onFreeDrive={() => {
-            update({ ...settings, mode: 'free' });
-            navigate('game');
-          }}
-          onSoloMatch={() => {
-            update({ ...settings, mode: 'match' });
-            navigate('game');
-          }}
-          onRecordRun={() => navigate('record')}
-          onRanked={() => navigate('matchmaking')}
-          onCustomRoom={() => navigate('lobby')}
+          onFreeDrive={() =>
+            guardStart(() => {
+              update({ ...settings, mode: 'free' });
+              navigate('game');
+            })
+          }
+          onSoloMatch={() =>
+            guardStart(() => {
+              update({ ...settings, mode: 'match' });
+              navigate('game');
+            })
+          }
+          onRecordRun={() => guardStart(() => navigate('record'))}
+          onRanked={() => guardStart(() => navigate('matchmaking'))}
+          onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onEditRobot={() => navigate('robot')}
         />
+      )}
+      {pendingStart && (
+        <div className="overlay">
+          <div className="overlay-panel">
+            <h2>Update available</h2>
+            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
+              A newer version of the sim has shipped. Refresh to get it — starting on an old
+              build can glitch or mismatch the server.
+            </p>
+            <div className="overlay-buttons">
+              <button onClick={() => window.location.reload()}>REFRESH &amp; UPDATE</button>
+              <button
+                onClick={() => {
+                  const go = pendingStart;
+                  setPendingStart(null);
+                  go?.();
+                }}
+              >
+                START ANYWAY
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {screen === 'robot' && <Menu settings={settings} onChange={update} />}
       {screen === 'leaderboard' && <Leaderboard onWatch={(id) => navigate('replay', id)} />}
