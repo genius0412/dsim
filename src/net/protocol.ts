@@ -158,7 +158,10 @@ export type ClientMsg =
   // ranked matchmaking: enter/leave a queue. On a match the server assigns a room
   // and sends `matchStart` (same as the lobby), so no separate 'matched' message.
   | { t: 'queue'; mode: QueueMode; player: Omit<LobbyPlayer, 'clientId'>; authToken?: string }
-  | { t: 'leaveQueue' };
+  | { t: 'leaveQueue' }
+  // latency probe: the server echoes `ts` straight back in a `pong`, so the client
+  // measures round-trip time for the connection-quality HUD (no server clock needed)
+  | { t: 'ping'; ts: number };
 
 // ---- server → client --------------------------------------------------------
 
@@ -221,7 +224,9 @@ export type ServerMsg =
   // an admin broadcast to EVERY connected client: a scheduled server restart (with
   // a countdown to `until`, epoch ms) or a general info message. Shown as a banner
   // so players aren't caught off guard by a restart mid-session.
-  | { t: 'serverNotice'; kind: 'restart' | 'info'; message: string; until?: number };
+  | { t: 'serverNotice'; kind: 'restart' | 'info'; message: string; until?: number }
+  // echo of a client `ping` (same `ts`); the client computes RTT = now − ts
+  | { t: 'pong'; ts: number };
 
 /** a finished record run's leaderboard standing (its mode×drivetrain×season
  * bucket). `score` is the NET score (earned − own penalties). */

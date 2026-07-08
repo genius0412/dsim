@@ -225,6 +225,21 @@ button {
   margin-left: 3px;
 }
 
+/* connection-quality readout: monospaced numbers so the ping/Hz/jitter don't
+   jitter the chip width every update, plus a coloured signal dot */
+.chip.net-quality {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+  gap: 6px;
+}
+
+.net-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
 .motif-dot.purple {
   background: var(--purple);
 }

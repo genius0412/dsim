@@ -19,7 +19,7 @@ import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
 import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
-import type { MatchResultInfo, NetSession, Snapshot } from './net/session';
+import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './net/session';
 import { localizeCommand } from './net/protocol';
 import type { RecordRankInfo } from './net/protocol';
 
@@ -112,8 +112,8 @@ export interface HudSnapshot {
    * the results reveal should land; null except during phase 'post' */
   resultRevealAt: number | null;
   toasts: Toast[];
-  /** multiplayer status (null in solo): stall target + desync flag */
-  net: { waitingFor: string | null; desync: boolean; peers: number; failed: boolean } | null;
+  /** multiplayer status (null in solo): stall target + desync + connection quality */
+  net: NetStatus | null;
 }
 
 export class GameController {
