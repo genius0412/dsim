@@ -400,13 +400,20 @@ function EloRow({ r, index }: { r: EloResultRow; index: number }) {
 
 /** ranked ELO change section on the results screen. `rows` is null until the
  * server's scored eloResult lands (a beat after the score), so we show a short
- * "Updating ELO…" placeholder meanwhile. */
+ * "Updating ELO…" placeholder — but never hang: if nothing arrives within a few
+ * seconds (e.g. a match that couldn't be rated), fall back to a clear message. */
 function EloResults({ rows }: { rows: EloResultRow[] | null }) {
+  const [timedOut, setTimedOut] = useState(false);
+  useEffect(() => {
+    if (rows !== null) return;
+    const id = window.setTimeout(() => setTimedOut(true), 9000);
+    return () => window.clearTimeout(id);
+  }, [rows]);
   return (
     <div className="elo-block">
       <div className="elo-head">RANKED · ELO</div>
       {rows === null ? (
-        <p className="ds-hint elo-wait">Updating ELO…</p>
+        <p className="ds-hint elo-wait">{timedOut ? 'No rating change this match.' : 'Updating ELO…'}</p>
       ) : (
         rows.map((r, i) => <EloRow key={r.robotId} r={r} index={i} />)
       )}

@@ -125,6 +125,12 @@ export class Room {
   // world.time at which phase 'post' began, to hold the settle window before
   // finalizing (null until the match ends)
   private postSince: number | null = null;
+  // authed players who LEFT mid-match (robotId -> identity). Their robot stays in
+  // the world coasting at ZERO, but their client object is gone once grace lapses,
+  // so they'd drop out of the finalize roster and the match would become unratable
+  // (one alliance). Retaining them keeps an abandoned ranked match RATED: the
+  // player who stayed wins on score + gains rating; the leaver takes the loss.
+  private departed = new Map<number, { userId: string; handle: string; assists: AssistConfig }>();
   // ranked matchmaking rooms carry each driver's ELO so the client can play a
   // pre-match intro; set by the Matchmaker before the match starts (keyed by the
   // robot id assigned in startMatch = the client's add-order index)
@@ -227,6 +233,11 @@ export class Room {
       if (rid !== undefined && !this.dropped.has(rid)) {
         this.dropped.add(rid);
         this.broadcast({ t: 'drop', robotId: rid, tick: (this.world as World).tick });
+      }
+      // mid-match departure of an authed player: retain them so the match is still
+      // rated (abandonment = a rated loss for them, a win for whoever stayed)
+      if (this.world !== null && c.userId && rid !== undefined) {
+        this.departed.set(rid, { userId: c.userId, handle: c.player.name, assists: c.player.assists });
       }
       this.clients.delete(c.id);
       this.snapPrimed.delete(c.id);
@@ -351,6 +362,7 @@ export class Room {
     this.recorder = new ReplayRecorder(seed, setups, 'match');
     this.finalized = false;
     this.postSince = null;
+    this.departed.clear();
 
     for (const c of roster) {
       c.send({
@@ -441,6 +453,24 @@ export class Room {
           score: w.match.scores[robot.alliance].total,
           spec: robot.spec,
           assists: c.player.assists,
+        });
+      }
+      // include authed players who LEFT mid-match (their robot is still in the
+      // world at zero) so an abandoned ranked match is still rated
+      for (const [rid, d] of this.departed) {
+        if (robotByUser.has(d.userId)) continue; // reconnected / still present
+        const robot = w.robots.find((r) => r.id === rid);
+        if (!robot) continue;
+        robotByUser.set(d.userId, robot.id);
+        participants.push({
+          clientId: '',
+          userId: d.userId,
+          handle: d.handle,
+          alliance: robot.alliance,
+          drivetrain: robot.spec.drivetrain,
+          score: w.match.scores[robot.alliance].total,
+          spec: robot.spec,
+          assists: d.assists,
         });
       }
       const ret = this.onResult({ config: this.config, result, replay, participants });
