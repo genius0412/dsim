@@ -38,7 +38,7 @@ export interface PersistOutcome {
   record?: RecordRankInfo;
 }
 
-const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, intake: false, fire: false };
+const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false };
 /** send an authoritative snapshot every N ticks. 2 = 30 Hz: the client hard-snaps
  * to each snapshot, so a higher rate means smaller, more frequent corrections =>
  * less visible stutter between them (bumped from 3/20 Hz for smoothness). Sending
