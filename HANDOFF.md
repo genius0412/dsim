@@ -1,4 +1,9 @@
-# HANDOFF — 2026-07-08 (session 7: intake/ball feel + seasons + multi-server) — READ FIRST
+# HANDOFF — 2026-07-08 (session 8: region-aware matchmaking + fly-replay routing) — READ FIRST
+
+> Latest work: **region-aware matchmaking + `fly-replay` routing** (one Fly app, machines per
+> region). See its section below + `docs/netcodeplan.md` Phase 4. Build/smoke green, uncommitted
+> on alpha, pending live multi-region verification. Earlier session-7 notes (intake/seasons/
+> multi-server foundation) follow.
 
 ## Branch strategy (IMPORTANT — this session introduced a two-branch split)
 - **`alpha`** = the primary dev line: physics/ball tuning **plus** the new backend features.
@@ -70,24 +75,51 @@ start a fresh season at runtime without a redeploy.
   localStorage) and restored on load (App effect on `settings.preferredServerId`).
 - `.env.example` documents `VITE_GAME_SERVERS`.
 
-## NEXT UP (where I stopped — matchmaking regions)
-Multiplayer cross-region matchmaking is **not done**. Chosen design (confirmed approach):
-**region-aware matchmaking — cross-region by default + a region-lock filter.** Plan:
-1. `protocol.ts` `queue` msg: add `region?: string` + `regionLock?: boolean` (I started this
-   edit then reverted it to keep the tree clean — re-apply it).
-2. `server/matchmaking.ts`: `QueueEntry` gains `region`/`regionLock`; replace the FIFO
-   `splice(0, need)` with a `findGroup` that only pairs a region-locked player with same-region
-   players (unlocked = cross-region). Add a smoke test for the pairing rule.
-3. `server/index.ts` queue handler: pass `region`/`regionLock` from the msg to `enqueue`.
-4. `src/net/lobbyClient.ts` `queue()` + `src/ui/Matchmaking.tsx`: a region-lock toggle; send
-   the selected server's region.
-- **Cross-INSTANCE matchmaking** (matching players on physically different Fly regions) needs
-  SHARED queue state (the matchmaker is in-process per instance). Deferred: either route all
-  ranked to ONE matchmaking instance (config/deploy choice), or a Postgres-backed shared queue.
-  Document the deploy choice; don't build speculative shared-queue infra until multi-region Fly
-  is actually provisioned.
-- **Fly multi-region provisioning** needs the user's `flyctl`/account: `fly regions add <code>`,
-  set `VITE_GAME_SERVERS` on Vercel to the per-region wss:// URLs. Not doable from here.
+## Region-aware matchmaking + `fly-replay` routing — DONE (uncommitted on alpha, build/smoke green)
+Full plan in `docs/netcodeplan.md` **Phase 4**; plan file `~/.claude/plans/yes-plan-mode-on-ancient-rain.md`.
+Model: **ONE Fly app, one machine per region** (`iad/sjc/lhr/syd/nrt`), routing via `fly-replay`
+(NOT separate apps, NOT the old region-lock). The earlier region-lock toggle/`findGroup` were
+REPLACED. Region-local ranked by default; search radius widens over time / on demand; a
+cross-region match is hosted on the fair MIDPOINT region (minimax).
+- **`server/regions.ts`** (new): `DEPLOY_REGIONS`, `MATCHMAKER_REGION` (env, default iad),
+  `INTER_REGION_MS` static RTT matrix (SEED values — calibrate post-deploy), `bestHost()` minimax
+  → `{hostRegion, cost, spread}`. **`server/matchTypes.ts`** (new): `PendingMatch`/roster.
+- **`server/matchmaking.ts`** (rewritten): `QueueEntry` now `homeRegion/accessMs/noWiden/
+  enqueuedAt/expandBumps`; `radiusCeiling()` (cross-region-ms gate, 0→300 widening); `findMatch`
+  FIFO-greedy under the radius; `assign()` stages `pending_matches` + sends `matchAssigned`;
+  `localStart()` no-DB dev fallback (hosts on the matchmaker machine). Injectable `now`/`stage`
+  for tests. `expand(id)` = `expandSearch`.
+- **`server/index.ts`**: WSS `noServer` + `httpServer.on('upgrade')` interceptor → `routeTarget`
+  (`?mm=1`→MATCHMAKER_REGION, `?room=<region>-…`, `?region=`) answers with `fly-replay: region=<r>`
+  (loop-guarded on `fly-replay-src`; inert when `FLY_REGION=''`). `/health?region=` also fly-replays
+  (per-region ping). `join` is now async `joinRoom`: claims a staged match via `takePendingMatch`,
+  verifies auth BEFORE add (maps roster by userId), `maybeStartRanked`. Queue handler uses the new
+  fields; `expandSearch` wired. Periodic `cleanupStalePending`.
+- **`server/room.ts`**: `applyPending()`/`maybeStartRanked()`/`cancelPending()` build the
+  authoritative ranked match from the staged roster (ignores client specs) once all userIds
+  reconnect (or 20s join grace → cancel). Extracted `beginMatch()` shared by all start paths.
+- **DB**: `0005_pending_matches.sql` + repo `createPendingMatch/takePendingMatch(delete-returning)/
+  cleanupStalePending`.
+- **Client**: `protocol.ts` queue msg (`homeRegion/accessMs/noWiden`), `matchAssigned` ServerMsg,
+  `expandSearch` ClientMsg. `ping.ts` `probeHome()` (reads `x-region`) + `pingServer` appends
+  `?region`. `env.ts` `gameServerUrlWith(hint)`. `lobbyClient.queue(mode,player,homeRegion,accessMs,
+  noWiden)` + `expandSearch()` + `matchAssigned` handler. `Matchmaking.tsx`: connect `?mm=1`, probe
+  home, on `matchAssigned` DROP the mm socket and reconnect `?room=<code>` (two-socket handoff);
+  region-lock checkbox REPLACED by expand-search + widening status + `noWiden` opt-in. `Lobby.tsx`
+  region `<select>` + `?region` connect; `RecordRun.tsx` `?region` connect.
+- **Config**: `fly.toml` `min_machines_running=1` (warm matchmaker region). `.env.example` Model-M
+  block + `MATCHMAKER_REGION`. `deploy.md` multi-region recipe. 14 new smoke checks (bestHost,
+  radiusCeiling, region-local/cross-region/noWiden/expand, staged code+roster shape).
+- **Decisions**: designated matchmaker machine (not Postgres shared queue); built A+B+C.
+- **NOT committed** — edited alpha directly (per protocol re-author on `beta` then cherry-pick, or
+  commit alpha + backport). Cross-region ranked needs `DATABASE_URL` (roster staging); region-local
+  + custom rooms don't.
+- **PENDING LIVE VERIFICATION**: `fly-replay` can't be exercised on localhost (needs the Fly proxy).
+  After the multi-region deploy, confirm `?region=lhr` from the US lands on lhr (`/api/presence`),
+  and a widened cross-region ranked match hosts on the minimax region. Provisioning is user-run:
+  `fly deploy` → `fly scale count 1 --region <code>` (×5) → `fly secrets set MATCHMAKER_REGION=iad`
+  → set `VITE_GAME_SERVERS` (all same base URL, per-region entries) on Vercel. Then calibrate
+  `INTER_REGION_MS` from real `/health` pings.
 
 ## Gotchas / how to work here
 - **Two-branch flow**: author backend features on `beta`, `git cherry-pick <sha>` onto `alpha`.
