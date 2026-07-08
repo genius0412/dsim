@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
-import { gameServerUrl } from '../net/env';
+import { gameServerUrl, multiServer, selectedServerId } from '../net/env';
 import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
 import type { NetSession } from '../net/session';
 import type { RecordKind } from '../net/protocol';
+import { ServerPicker } from './ServerPicker';
 
 /**
  * Record-chasing launcher (opponent-free score attack). Unlike the custom-room
@@ -20,17 +21,25 @@ export function RecordRun({
   mode,
   onStart,
   onCancel,
+  onPreferServer,
 }: {
   settings: GameSettings;
   mode: RecordKind;
   onStart: (s: NetSession) => void;
   onCancel: () => void;
+  /** persist the chosen server id to the account/settings (remember last choice) */
+  onPreferServer?: (id: string) => void;
 }) {
   const [status, setStatus] = useState('Connecting to the record server…');
   const [error, setError] = useState('');
   const startedRef = useRef(false);
+  // show the server (region) picker BEFORE connecting when there's a choice; a
+  // single-server deploy skips straight to connecting (confirmed = true).
+  const [confirmed, setConfirmed] = useState(!multiServer());
+  const [pick, setPick] = useState(selectedServerId());
 
   useEffect(() => {
+    if (!confirmed) return;
     if (!gameServerUrl()) {
       setError('The game server isn’t configured.');
       return;
@@ -93,7 +102,35 @@ export function RecordRun({
       if (!startedRef.current) lobby.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [confirmed]);
+
+  // pre-run server picker (only when there's more than one region to choose)
+  if (!confirmed && !error) {
+    return (
+      <div className="ds-app">
+        <main className="ds-main" style={{ display: 'grid', placeItems: 'center', minHeight: '70vh' }}>
+          <div style={{ textAlign: 'center', maxWidth: 460 }}>
+            <p className="ds-eyebrow">Record Run · {mode === 'duo' ? 'Duo 2v0' : 'Solo 1v0'}</p>
+            <h1 className="ds-h1">Choose a server</h1>
+            <p className="ds-sub" style={{ margin: '0 auto 16px' }}>
+              Pick the region with the lowest ping. We’ll remember your choice.
+            </p>
+            <ServerPicker
+              value={pick}
+              onChange={(id) => {
+                setPick(id);
+                onPreferServer?.(id);
+              }}
+            />
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button className="ds-btn ghost" onClick={onCancel}>← Back</button>
+              <button className="ds-btn" onClick={() => setConfirmed(true)}>Start run →</button>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="ds-app">

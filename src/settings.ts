@@ -111,6 +111,9 @@ export function coerceSettings(raw: unknown): GameSettings {
     if (typeof s.parkSpeedPct === 'number') {
       out.parkSpeedPct = clamp(Math.round(s.parkSpeedPct), 0, 100);
     }
+    if (typeof s.preferredServerId === 'string') {
+      out.preferredServerId = s.preferredServerId;
+    }
     out.bindings = mergeBindings(s.bindings);
 
     // Load autoPath and autoPathEnabled
