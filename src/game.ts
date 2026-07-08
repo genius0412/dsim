@@ -163,13 +163,12 @@ export class GameController {
    * correction is eased in (render loop decays it) instead of snapping — hides
    * rubberbanding from jittery snapshots. Never affects `this.world`. */
   private localSmooth = { x: 0, y: 0, heading: 0 };
-  /** authoritative entity poses per received snapshot (id order stripped to just
-   * pose), for interpolating REMOTE robots + balls between them. Captured BEFORE
-   * reconcile mutates the snapshot world. */
+  /** authoritative REMOTE-robot poses per received snapshot, for interpolating them
+   * between snapshots. Captured BEFORE reconcile mutates the snapshot world. (Balls
+   * are NOT interpolated — see displayWorld.) */
   private snapBuf: {
     tick: number;
     robots: { id: number; x: number; y: number; heading: number }[];
-    balls: { id: number; x: number; y: number; z: number }[];
   }[] = [];
   /** the interpolation render clock (in server ticks), lagging the latest snapshot
    * by ~INTERP_DELAY_TICKS; eased forward each frame for smooth playback */
@@ -544,7 +543,6 @@ export class GameController {
     this.snapBuf.push({
       tick: snap.serverTick,
       robots: w.robots.map((r) => ({ id: r.id, x: r.pos.x, y: r.pos.y, heading: r.heading })),
-      balls: w.balls.map((b) => ({ id: b.id, x: b.pos.x, y: b.pos.y, z: b.z })),
     });
     if (this.snapBuf.length > INTERP_BUFFER) this.snapBuf.shift();
   }
@@ -589,9 +587,11 @@ export class GameController {
     const a = span > 0 ? Math.max(0, Math.min(1, (this.renderTick - s0.tick) / span)) : 0;
     const r0 = new Map(s0.robots.map((r) => [r.id, r] as const));
     const r1 = new Map(s1.robots.map((r) => [r.id, r] as const));
-    const b0 = new Map(s0.balls.map((b) => [b.id, b] as const));
-    const b1 = new Map(s1.balls.map((b) => [b.id, b] as const));
 
+    // ONLY remote robots interpolate. Balls are rendered straight from the predicted
+    // sim: they're fast, spawn/despawn (launches), and collide — interpolating them
+    // ghosts a freshly-spawned ball between its predicted and past positions and lerps
+    // colliding balls THROUGH each other (the "blend"). Predicted balls stay accurate.
     const robots = this.world.robots.map((r) => {
       if (r.id === this.localRobotId) return local(r); // predicted, responsive
       const p = r0.get(r.id);
@@ -603,13 +603,7 @@ export class GameController {
         heading: lerpAngle(p.heading, q.heading, a),
       };
     });
-    const balls = this.world.balls.map((ball) => {
-      const p = b0.get(ball.id);
-      const q = b1.get(ball.id);
-      if (!p || !q) return ball;
-      return { ...ball, pos: { x: lerp(p.x, q.x, a), y: lerp(p.y, q.y, a) }, z: lerp(p.z, q.z, a) };
-    });
-    return { ...this.world, robots, balls };
+    return { ...this.world, robots };
   }
 
   /** adopt the authoritative world, discard inputs it already reflects, and
