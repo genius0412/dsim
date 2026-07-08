@@ -1,8 +1,16 @@
 # Netcode & Physics Overhaul — Architecture & Roadmap
 
-Status: **planning / reference doc.** This supersedes the scattered "Phase D" netcode
-notes in `CLAUDE.md` and `HANDOFF.md`. Future implementation sessions execute against
-this; it is not itself an implementation.
+Status: **reference doc.** This supersedes the scattered "Phase D" netcode notes in
+`CLAUDE.md` and `HANDOFF.md`. Future implementation sessions execute against this; it is
+not itself an implementation.
+
+**Implementation progress (see `CLAUDE.md` "State of play" for detail):** Phase 0
+(authoritative server + prediction) — DONE & deployed. Phase 1 (delta snapshots, 30 Hz,
+reconnection, entity interpolation, connection-quality HUD, Fly deploy) — DONE; only
+WebTransport + full-reload reconnect remain. Phase 2 (Rapier 2D) — ROBOTS slice DONE,
+balls slice deferred. Phase 3 (Neon Postgres, Glicko-2 ranked, solo record boards, admin
+menu, version gate) — CORE LIVE; matchmaking polish, replay UI, leaderboard tiers, and the
+full VISUAL REDESIGN below remain.
 
 Decision on the P2P path: it is **deleted outright** (no coexistence flag). Phase 0
 removes the WebRTC mesh, lockstep, and TURN from the match path entirely.
@@ -334,10 +342,12 @@ Keep numbers only where a driver actually tunes on them (e.g. speed in the build
 - **Matchmaking** (`Matchmaking.tsx`, Phase 3): Quick Play or Ranked → queue card (elapsed time,
   ELO band, cancel); on match found the server assigns a room and routes to `'game'`.
 - **Game / HUD** (`GameView.tsx`): keep the bottom scorebar structure; restyle its chrome to the
-  new system. **Add** a top-right **connection indicator** (ping + good/laggy/reconnecting dot
-  from `hud.net`) and replace the cosmetic **DESYNC banner** with a **"Reconnecting…" overlay**
-  (server-authoritative; clears on snapshot resume). Prediction means the local robot never
-  visibly stalls.
+  new system. **Top-right connection indicator — DONE**: `NetQuality` chip shows a
+  SMOOTH/OK/CHOPPY dot + live RTT (ping/pong probe) / snapshot Hz / inter-arrival jitter from
+  `hud.net` (`NetStatus.rttMs/snapHz/jitterMs/quality`); the **"Reconnecting…" overlay** already
+  replaced the cosmetic DESYNC banner (server-authoritative; clears on snapshot resume).
+  Prediction means the local robot never visibly stalls. (The chrome RESTYLE is still pending the
+  visual redesign.)
 - **Results** (`Results.tsx`, extracted from the post-match overlay): full `ScoreBreakdown`
   table, **ELO delta** + new rank (Phase 3), actions Rematch (existing `rematch()`), Queue
   Again, Home, **Watch Replay** (Phase 3).

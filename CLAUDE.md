@@ -264,7 +264,7 @@ Phase C (penalty engine) are DONE and green.** The netcode/physics roadmap now l
 at `docs/netcodeplan.md` (supersedes the old "Road to Multiplayer" plan + the Phase D
 notes). **Netcode Phase 0 (server-authoritative + client prediction) is DONE and
 build/smoke-green** (see below); the old P2P lockstep is deleted.
-`scripts/smoke.ts` has ~120 checks — keep adding one per behavior change.
+`scripts/smoke.ts` has ~190 checks — keep adding one per behavior change.
 
 **Phase C — penalty engine** (`src/sim/penalties.ts`, `updatePenalties` called in
 `world.ts` after the robot-robot solver). **MINOR = 5 pts, MAJOR = 15 pts** (user-set,
@@ -347,26 +347,77 @@ roadmap (Phases 1–3 + UI redesign). Architecture:
   correctness requirement here, but is **still in `src/sim`** and stays until Phase 2
   removes it — do not rip it out yet.
 
-**Phase 1 mostly DONE**: per-tick server input buffering (`frameCommands`, hold-last) +
-60 Hz snapshots fixed local jitter; remote robots render by DEAD-RECKONING extrapolation
-(`game.ts` `renderRemoteExtrap` — zero added latency, pos+vel projected to the present
-with a decaying correction). **RECONNECTION (transient drops)**: server holds a dropped
-slot `RECONNECT_GRACE_MS` (`room.ts` `detach`/`reattach`/`checkGrace`), transport
-auto-reconnects (`onReopen`/`onDown`/`onFail`), session re-sends `rejoin`. **DELTA
-SNAPSHOTS**: `slimWorld`/`unslimWorld` (`protocol.ts`) strip static robot `spec` (client
-re-injects from setups) + delta the balls (send the id ORDER every frame — determinism —
-but only CHANGED ball data); no ack needed on the ordered WebSocket, reconnect re-primes
-with a keyframe. **DEPLOY**: `Dockerfile`+`fly.toml`+`docs/deploy.md`, `GET /health` on the
-server; `ws`+`tsx` are now runtime `dependencies`. Still open: run `fly deploy` (needs Fly
-creds) + `VITE_GAME_SERVER_URL=wss://…` on Vercel; **WebTransport** (deferred — needs a TLS
-deploy to validate, and the delta must switch to ACK-keyed for unreliable datagrams);
-full-reload reconnect (localStorage session restore).
-DB/ELO/leaderboards/matchmaking/replays + UI redesign (Phase 3). Deferred: obelisk
-AprilTag visuals, mobile/touch, deferred fouls (G408 possession>3 / plowing).
+**Phase 1 DONE + DEPLOYED** (Fly app `dohun-sim-decode`, `VITE_GAME_SERVER_URL` on
+Vercel). Per-tick server input buffering (`frameCommands`, hold-last). **SNAPSHOT RATE
+is 30 Hz** (`room.ts` `SNAPSHOT_INTERVAL = 2`) — dropped from 60 after network profiling
+(user was emphatic the lag was NETWORK, not CPU; halving snapshot bandwidth + TCP frames
+was part of the fix, alongside `setNoDelay(true)` to kill Nagle on the server sockets).
+**SMOOTHING is Minecraft-style entity INTERPOLATION, not extrapolation** (`game.ts`
+`displayWorld`/`snapBuf`/`renderTick`, `INTERP_DELAY_TICKS`/`INTERP_BUFFER`): the render
+clock runs a few ticks behind the newest snapshot and REMOTE ROBOTS lerp between the two
+bracketing authoritative snapshots, so they glide at any snapshot rate. The LOCAL robot
+stays predicted with a decaying `localSmooth` error offset (cosmetic only — never touches
+`this.world`, so determinism/anti-cheat hold). **BALLS are NOT interpolated** — they spawn/
+despawn (launches) and collide, and lerping them ghost-cloned fresh balls + blended
+colliding balls THROUGH each other; they render straight from the predicted sim.
+**CONNECTION-QUALITY HUD** (`ServerSession` + `NetQuality` chip, top-right): a `ping`/`pong`
+probe (once/sec, echoed at the server socket level) → smoothed RTT; snapshot arrival rate
+(Hz) + inter-arrival JITTER (mean-abs-dev) measured client-side; a SMOOTH/OK/CHOPPY
+coloured dot from rtt+jitter. Jitter is the real choppiness signal — surface it when
+diagnosing lag reports. **RECONNECTION (transient drops)**: server holds a dropped slot
+`RECONNECT_GRACE_MS` (`room.ts` `detach`/`reattach`/`checkGrace`), transport auto-reconnects
+(`onReopen`/`onDown`/`onFail`), session re-sends `rejoin`. **DELTA SNAPSHOTS**:
+`slimWorld`/`unslimWorld` (`protocol.ts`) strip static robot `spec` (client re-injects from
+setups) + delta the balls (send the id ORDER every frame — determinism — but only CHANGED
+ball data); reconnect re-primes with a keyframe. **DEPLOY**: `Dockerfile`+`fly.toml`+
+`docs/deploy.md`, `GET /health`; `ws`+`tsx` are runtime `dependencies`. Deploy protocol
+(SIM/server change): commit on alpha → merge main → `flyctl deploy --remote-only` → verify
+`/health` → Vercel auto-deploys client → sync alpha/beta to main. Still open: **WebTransport**
+(deferred — needs TLS-deploy validation, and the delta must switch to ACK-keyed for
+unreliable datagrams); full-reload reconnect (localStorage session restore). Deferred:
+obelisk AprilTag visuals, mobile/touch, deferred fouls (G408 possession>3 / plowing).
 
-**Phase 2 — Rapier 2D physics: ROBOTS slice DONE + green (140 smoke checks).** Robot
+**Phase 3 — accounts / ranked / leaderboards / records (LIVE).** Neon Postgres via
+`server/db/` (`repo.ts` + `migrations/`, `0003_glicko.sql` adds rd/vol), written at match
+end OFF the hot path. **Ranked is Glicko-2** (`server/ranked.ts`: rating + RD + volatility,
+`SCALE 173.7178`, `CENTER 1500`, provisional RD shown with a "?"), decided AFTER the score
+SETTLES (`room.ts` `MATCH_SETTLE_S` — late-draining balls finish scoring before finalize);
+an opponent who LEAVES mid-match is retained (`departed`) so the match still rates (chess.com
+forfeit). `EloDelta` drives the results-screen reveal animation. **SOLO RECORD RUNS**
+(score-attack, no PvP): the results screen shows NET score (earned − own penalties, `−`
+sign), NO opponent/winner, and PB / WR / global-rank (`RecordRankInfo`, per mode×drivetrain×
+season); the DB save + reveal are synced to the whoosh so late points aren't cut off.
+**ADMIN MENU** (`src/ui/Admin.tsx`, `/admin`): gated on the signed-in UUID (`ADMIN_USER_IDS`
+env; server enforces every action independently) — schedule a server restart with a countdown
+notice broadcast to all clients (`serverNotice` banner). **VERSION GATE**: a new client build
+is detected (`__BUILD_ID__` from git sha → `/version.json` poll, `useNewVersion`) and, when a
+player STARTS a run (never mid-run), forces a refresh — NO "play anyway" (everyone must be on
+the same version for multiplayer). Still open (Phase 3): matchmaking polish, replay UI,
+leaderboard tiers, the full UI redesign (`docs/netcodeplan.md`).
+
+**Phase 2 — Rapier 2D physics: ROBOTS slice DONE + green (~190 smoke checks).** Robot
 collision is Rapier (`physicsEngine.ts` — see the architecture bullet above); balls are
 still bespoke (slice 2, deferred — the trickiest port per `docs/netcodeplan.md`). Slice
 2 = balls → Rapier bodies/sensors while KEEPING basin/rail/gate scripted (contact-time
 classified-vs-overflow commit must stay exact); ONLY after that, delete the dead
 `collideRobots`/`constrainRobot` and remove the `dsin/dcos/datan2` discipline.
+**Ball containment invariant** (added when a ground ball could mesh under the classifier
+and become ungrabbable): ground balls get a HARD geometric eviction pass in `world.ts`
+(walls + goal faces via `clampBallPosToStatics`, AND `collideBallRect` against both
+classifier rects) because Rapier's soft contacts can't clear a DEEPLY embedded body. Any
+new solid a ball can tunnel into needs the same geometric clamp, not just a Rapier collider.
+
+## Next up (roadmap — not yet started)
+
+1. **Penalty hitbox audit** — the foul rules are correct (Phase C), but re-verify the
+   ZONE GEOMETRY / contact hitboxes each rule tests against the manual figures:
+   `gateZone`/`gateTapeSegments`, `tunnelStrip`, `allianceArea` (loading/base), the
+   `pinnedAgainstWall` slop, and the SAT contact test (`rrContacts`) — make sure the
+   trigger volumes match the real field markings and robot bumper extents, not just the
+   rule logic. Tighten with smoke cases per zone.
+2. **Major intake revamp** — a substantial rework of the intake model (the three presets
+   sloped/vector/triangle, the capture band, trapezoid mouths + geometric side-intake
+   rules, clump feeding). Treat product decision #10 as the CURRENT baseline to improve
+   on, not a frozen spec — but preserve the user-named presets + the "no side intake
+   except where the vector wheel overhangs a narrower chassis" feel unless the user
+   redirects. Re-smoke intake capture after any change.
