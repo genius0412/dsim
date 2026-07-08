@@ -385,7 +385,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       balls.push({
         id: id++,
         color,
-        state: { kind: 'ground' },
+        state: { kind: 'held', robot: created.id, slot, lx: lp.x, ly: lp.y, side },
         pos: { x: created.pos.x + wp.x, y: created.pos.y + wp.y },
         vel: { x: 0, y: 0 },
         z: 0,
