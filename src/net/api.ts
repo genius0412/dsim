@@ -180,3 +180,45 @@ export async function updateHandle(handle: string): Promise<{ userId: string; ha
 export function fetchReplay(id: string): Promise<Replay> {
   return getJson(`/api/replay/${id}`);
 }
+
+// ---- admin (authorized server-side by ADMIN_USER_IDS against your auth JWT) ----
+
+/** whether the signed-in user is an admin (+ their userId, so you can find the
+ * UUID to put in ADMIN_USER_IDS). Safe for anyone to call — false when signed out. */
+export async function fetchAdminStatus(): Promise<{ isAdmin: boolean; userId: string | null }> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return { isAdmin: false, userId: null };
+  try {
+    const res = await fetch(base + '/api/admin/status', { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) return { isAdmin: false, userId: null };
+    return (await res.json()) as { isAdmin: boolean; userId: string | null };
+  } catch {
+    return { isAdmin: false, userId: null };
+  }
+}
+
+/** broadcast a scheduled-restart countdown to every connected client */
+export async function adminAnnounce(seconds: number, message: string): Promise<boolean> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return false;
+  const q = new URLSearchParams({ seconds: String(Math.max(0, Math.round(seconds))), msg: message });
+  const res = await fetch(base + '/api/admin/announce?' + q.toString(), {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return res.ok;
+}
+
+/** clear a pending restart notice */
+export async function adminCancelNotice(): Promise<boolean> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return false;
+  const res = await fetch(base + '/api/admin/announce?cancel=1', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return res.ok;
+}

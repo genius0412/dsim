@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings } from '../settings';
-import { saveAccountSettings } from '../net/api';
+import { saveAccountSettings, fetchAdminStatus } from '../net/api';
 import { useNewVersion } from '../net/version';
+import { Admin } from './Admin';
 import { AccountSync } from './AccountSync';
 import { Menu } from './Menu';
 import { GameView } from './GameView';
@@ -33,7 +34,8 @@ type Screen =
   | 'game'
   | 'download'
   | 'stats'
-  | 'account';
+  | 'account'
+  | 'admin';
 
 /**
  * Tiny path router (no dependency). Each screen is a real URL — /leaderboard,
@@ -68,6 +70,8 @@ function pathFor(screen: Screen, replayId: string | null): string {
       return '/stats';
     case 'account':
       return '/account';
+    case 'admin':
+      return '/admin';
   }
 }
 
@@ -82,6 +86,7 @@ function parsePath(pathname: string): { screen: Screen; replayId: string | null 
   if (pathname.startsWith('/download')) return { screen: 'download', replayId: null };
   if (pathname.startsWith('/stats')) return { screen: 'stats', replayId: null };
   if (pathname.startsWith('/account')) return { screen: 'account', replayId: null };
+  if (pathname.startsWith('/admin')) return { screen: 'admin', replayId: null };
   // /play (a live game) can't be restored without a session ⇒ home
   return { screen: 'home', replayId: null };
 }
@@ -122,6 +127,22 @@ export function App() {
 
   // when signed in, mirror settings to the account (debounced) as well as local
   const [accountUserId, setAccountUserId] = useState<string | null>(null);
+  // is this account an admin? (server-authorized against ADMIN_USER_IDS) — gates the
+  // Admin tab; the server independently enforces every admin action
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    if (!accountUserId) {
+      setIsAdmin(false);
+      return;
+    }
+    let cancelled = false;
+    fetchAdminStatus().then((s) => {
+      if (!cancelled) setIsAdmin(s.isAdmin);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountUserId]);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -244,9 +265,11 @@ export function App() {
           ? 'download'
           : screen === 'robot'
             ? 'robot'
-            : 'home';
+            : screen === 'admin'
+              ? 'admin'
+              : 'home';
   return (
-    <AppShell active={active} onNav={(n) => navigate(n)} right={right}>
+    <AppShell active={active} onNav={(n) => navigate(n)} right={right} showAdmin={isAdmin}>
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
       {screen === 'home' && (
         <Home
@@ -300,6 +323,7 @@ export function App() {
       {screen === 'stats' && <Stats />}
       {screen === 'download' && <Download />}
       {screen === 'account' && <Account settings={settings} onChange={update} />}
+      {screen === 'admin' && isAdmin && <Admin />}
     </AppShell>
   );
 }
