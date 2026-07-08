@@ -269,3 +269,88 @@ export async function adminPurgeReplays(season?: number): Promise<number | null>
   const data = (await res.json().catch(() => ({}))) as { freed?: number };
   return data.freed ?? 0;
 }
+
+// ---- admin moderation: leaderboard records + display names ------------------
+
+/** one moderation row: the best run per player in a bucket, with its record id */
+export interface AdminRecordRow {
+  recordId: string;
+  userId: string;
+  handle: string;
+  score: number;
+  drivetrain: string;
+  replayId: string | null;
+  createdAt: string;
+}
+
+/** fetch the moderation view of a record-board bucket (live season) */
+export async function adminFetchRecords(
+  mode: 'solo' | 'duo',
+  drivetrain: string,
+  limit = 100,
+): Promise<AdminRecordRow[]> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return [];
+  const q = new URLSearchParams({ mode, drivetrain, limit: String(limit) });
+  const res = await fetch(base + '/api/admin/records?' + q.toString(), {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return [];
+  const data = (await res.json().catch(() => ({}))) as { rows?: AdminRecordRow[] };
+  return data.rows ?? [];
+}
+
+/** delete one record run (+ its replay) by id */
+export async function adminDeleteRecord(id: string): Promise<boolean> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return false;
+  const res = await fetch(base + '/api/admin/record/delete?id=' + encodeURIComponent(id), {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return res.ok;
+}
+
+/** delete EVERY record run by a user (confirmed cheater); returns count removed */
+export async function adminClearUserRecords(userId: string): Promise<number | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const res = await fetch(base + '/api/admin/user/records/clear?userId=' + encodeURIComponent(userId), {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const data = (await res.json().catch(() => ({}))) as { removed?: number };
+  return data.removed ?? 0;
+}
+
+/** search profiles by handle (substring) or exact userId, for renaming */
+export async function adminSearchUsers(query: string): Promise<{ userId: string; handle: string }[]> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token || !query.trim()) return [];
+  const res = await fetch(base + '/api/admin/users?q=' + encodeURIComponent(query.trim()), {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return [];
+  const data = (await res.json().catch(() => ({}))) as { users?: { userId: string; handle: string }[] };
+  return data.users ?? [];
+}
+
+/** force a user's display name to a clean value; returns the saved handle or null */
+export async function adminRenameUser(userId: string, handle: string): Promise<string | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const q = new URLSearchParams({ userId, handle: handle.trim() });
+  const res = await fetch(base + '/api/admin/user/rename?' + q.toString(), {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const data = (await res.json().catch(() => ({}))) as { handle?: string };
+  return data.handle ?? null;
+}

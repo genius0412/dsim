@@ -1251,3 +1251,34 @@ button {
 .admin-field input[type="number"] { width: 72px; }
 .admin-field.col input { width: 100%; }
 .admin-buttons { display: flex; gap: 10px; margin-top: 4px; }
+.admin-field select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 7px 10px;
+  font: inherit;
+}
+.admin-list { display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; }
+.admin-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+.admin-row .admin-rank { opacity: 0.5; min-width: 20px; text-align: right; font-variant-numeric: tabular-nums; }
+.admin-row .admin-grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.admin-row input.admin-grow {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 5px 8px;
+  font: inherit;
+}
+.ds-btn.sm { padding: 5px 10px; font-size: 12px; }
+.ds-btn.danger { color: #ff6b6b; border-color: #ff6b6b66; }

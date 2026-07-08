@@ -19,6 +19,12 @@ import {
   startNewSeason,
   takePendingMatch,
   cleanupStalePending,
+  adminListRecords,
+  deleteRecordById,
+  deleteUserRecords,
+  searchProfiles,
+  setHandle,
+  getProfile,
 } from './db/repo';
 
 /**
@@ -202,6 +208,100 @@ const httpServer = createServer((req, res) => {
         console.log(`[admin] purged ${freed} archived-season replays`);
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true, freed }));
+        return;
+      }
+
+      // MODERATION — inspect/delete leaderboard records + rename inappropriate
+      // display names. Same admin gate as above (JWT admin id OR ADMIN_SECRET);
+      // every action is re-authorized here on the server, never trusting the UI.
+      if (
+        u.pathname === '/api/admin/records' ||
+        u.pathname === '/api/admin/record/delete' ||
+        u.pathname === '/api/admin/user/records/clear' ||
+        u.pathname === '/api/admin/users' ||
+        u.pathname === '/api/admin/user/rename'
+      ) {
+        const secretOk =
+          !!process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
+        if (!isAdmin && !secretOk) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        if (!dbEnabled) {
+          res.writeHead(503, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'DB disabled' }));
+          return;
+        }
+        const jsonOut = (code: number, body: unknown): void => {
+          res.writeHead(code, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify(body));
+        };
+
+        // GET /api/admin/records?mode=&drivetrain=&limit= — moderation board view
+        if (req.method === 'GET' && u.pathname === '/api/admin/records') {
+          const mode = u.searchParams.get('mode') === 'duo' ? 'duo' : 'solo';
+          const drivetrain = u.searchParams.get('drivetrain') ?? 'overall';
+          const limit = Math.min(500, Math.max(1, Number(u.searchParams.get('limit') ?? 100)));
+          const season = await currentSeasonNumber(BALANCE_VERSION);
+          const rows = await adminListRecords({ mode, drivetrain, balanceVersion: season, limit });
+          jsonOut(200, { season, mode, drivetrain, rows });
+          return;
+        }
+        // POST /api/admin/record/delete?id= — remove one run (+ its replay)
+        if (req.method === 'POST' && u.pathname === '/api/admin/record/delete') {
+          const id = u.searchParams.get('id') ?? '';
+          if (!id) {
+            jsonOut(400, { ok: false, error: 'missing id' });
+            return;
+          }
+          const deleted = await deleteRecordById(id);
+          console.log(`[admin] delete record ${id} -> ${deleted}`);
+          jsonOut(deleted ? 200 : 404, { ok: deleted });
+          return;
+        }
+        // POST /api/admin/user/records/clear?userId= — nuke a cheater's runs
+        if (req.method === 'POST' && u.pathname === '/api/admin/user/records/clear') {
+          const uid = u.searchParams.get('userId') ?? '';
+          if (!uid) {
+            jsonOut(400, { ok: false, error: 'missing userId' });
+            return;
+          }
+          const removed = await deleteUserRecords(uid);
+          console.log(`[admin] cleared ${removed} records for user ${uid}`);
+          jsonOut(200, { ok: true, removed });
+          return;
+        }
+        // GET /api/admin/users?q= — find profiles to rename/moderate
+        if (req.method === 'GET' && u.pathname === '/api/admin/users') {
+          const query = (u.searchParams.get('q') ?? '').trim();
+          const users = query ? await searchProfiles(query) : [];
+          jsonOut(200, { users });
+          return;
+        }
+        // POST /api/admin/user/rename?userId=&handle= — force a clean display name
+        if (req.method === 'POST' && u.pathname === '/api/admin/user/rename') {
+          const uid = u.searchParams.get('userId') ?? '';
+          const handle = (u.searchParams.get('handle') ?? '').trim();
+          if (!uid) {
+            jsonOut(400, { ok: false, error: 'missing userId' });
+            return;
+          }
+          if (handle.length < 2 || handle.length > 24) {
+            jsonOut(400, { ok: false, error: 'name must be 2–24 characters' });
+            return;
+          }
+          const profile = await getProfile(uid);
+          if (!profile) {
+            jsonOut(404, { ok: false, error: 'no such user' });
+            return;
+          }
+          await setHandle(uid, handle);
+          console.log(`[admin] renamed ${uid}: "${profile.handle}" -> "${handle}"`);
+          jsonOut(200, { ok: true, userId: uid, handle });
+          return;
+        }
+        jsonOut(404, { ok: false, error: 'unknown admin route' });
         return;
       }
       res.writeHead(404, cors);
