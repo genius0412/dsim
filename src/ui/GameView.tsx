@@ -426,7 +426,7 @@ function EloRow({ r, index }: { r: EloResultRow; index: number }) {
         {r.name}
         {r.isLocal && <span className="elo-you">YOU</span>}
         {r.provisional && (
-          <span className="elo-prov" title="Provisional — your rating is still settling">
+          <span className="elo-prov" title="In placements — finish your placement matches to join the leaderboard">
             ?
           </span>
         )}

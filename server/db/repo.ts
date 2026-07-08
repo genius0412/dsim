@@ -1,6 +1,7 @@
 import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
+import { PLACEMENT_GAMES } from '../../src/config';
 import { q } from './pool';
 
 /** the robot configuration a record run used (denormalized onto the row) */
@@ -504,6 +505,9 @@ export async function getRatingFull(
   return { rating: r?.rating ?? 1000, rd: r?.rd ?? 350, vol: r?.vol ?? 0.06 };
 }
 
+/** Upsert a player's rating for one board and return their NEW total games on it
+ * (games after this match) — the caller uses it to decide the games-based
+ * placement / provisional flag for the results screen. */
 export async function upsertRating(
   userId: string,
   mode: '1v1' | '2v2',
@@ -512,17 +516,22 @@ export async function upsertRating(
   rating: number,
   rd: number,
   vol: number,
-): Promise<void> {
-  await q(
+): Promise<number> {
+  const rows = await q<{ games: number }>(
     `insert into elo_ratings (user_id, mode, drivetrain, balance_version, rating, rd, vol, games)
      values ($1, $2, $3, $4, $5, $6, $7, 1)
      on conflict (user_id, mode, drivetrain, balance_version)
        do update set rating = excluded.rating, rd = excluded.rd, vol = excluded.vol,
-                     games = elo_ratings.games + 1, updated_at = now()`,
+                     games = elo_ratings.games + 1, updated_at = now()
+     returning games`,
     [userId, mode, drivetrain, balanceVersion, Math.round(rating), rd, vol],
   );
+  return rows[0]?.games ?? 1;
 }
 
+/** The public leaderboard for a board — PLACED players only (games >=
+ * PLACEMENT_GAMES). Players still in placements are intentionally omitted;
+ * `eloUserStanding` reports the viewer's own standing separately. */
 export async function eloLeaderboard(opts: {
   mode: '1v1' | '2v2';
   drivetrain: string;
@@ -532,11 +541,39 @@ export async function eloLeaderboard(opts: {
   return q<{ userId: string; handle: string; username: string | null; rating: number; games: number }>(
     `select e.user_id as "userId", p.handle, p.username, e.rating, e.games
      from elo_ratings e join profiles p on p.user_id = e.user_id
-     where e.balance_version = $1 and e.mode = $2 and e.drivetrain = $3
+     where e.balance_version = $1 and e.mode = $2 and e.drivetrain = $3 and e.games >= $5
      order by e.rating desc, e.games desc
      limit $4`,
-    [opts.balanceVersion, opts.mode, opts.drivetrain, opts.limit ?? 100],
+    [opts.balanceVersion, opts.mode, opts.drivetrain, opts.limit ?? 100, PLACEMENT_GAMES],
   );
+}
+
+/** The viewing player's own standing on a board, whether or not they're placed:
+ * their rating + games, and their rank AMONG PLACED PLAYERS (null while still in
+ * placements). Returns null if they've never played this board. Rank uses the
+ * same order as `eloLeaderboard` so the two always agree. */
+export async function eloUserStanding(opts: {
+  userId: string;
+  mode: '1v1' | '2v2';
+  drivetrain: string;
+  balanceVersion: number;
+}): Promise<{ rank: number | null; rating: number; games: number } | null> {
+  const rows = await q<{ rating: number; games: number; rnk: string | null }>(
+    `with placed as (
+       select user_id,
+              rank() over (order by rating desc, games desc) as rnk
+       from elo_ratings
+       where balance_version = $1 and mode = $2 and drivetrain = $3 and games >= $4
+     )
+     select e.rating, e.games, p.rnk
+     from elo_ratings e
+     left join placed p on p.user_id = e.user_id
+     where e.balance_version = $1 and e.mode = $2 and e.drivetrain = $3 and e.user_id = $5`,
+    [opts.balanceVersion, opts.mode, opts.drivetrain, PLACEMENT_GAMES, opts.userId],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return { rank: r.rnk != null ? Number(r.rnk) : null, rating: r.rating, games: r.games };
 }
 
 // -------------------------------------------------------- global stats -----
@@ -610,15 +647,18 @@ export async function getUserStats(userId: string, balanceVersion: number): Prom
       `select handle, username from profiles where user_id = $1`,
       [userId],
     ),
-    q<{ mode: '1v1' | '2v2'; rating: number; games: number; rnk: string }>(
-      `with ranked as (
-         select user_id, mode, rating, games,
+    q<{ mode: '1v1' | '2v2'; rating: number; games: number; rnk: string | null }>(
+      `with placed as (
+         select user_id, mode,
                 rank() over (partition by mode order by rating desc, games desc) as rnk
          from elo_ratings
-         where balance_version = $1 and drivetrain = 'overall'
+         where balance_version = $1 and drivetrain = 'overall' and games >= $3
        )
-       select mode, rating, games, rnk from ranked where user_id = $2`,
-      [balanceVersion, userId],
+       select e.mode, e.rating, e.games, p.rnk
+       from elo_ratings e
+       left join placed p on p.user_id = e.user_id and p.mode = e.mode
+       where e.balance_version = $1 and e.drivetrain = 'overall' and e.user_id = $2`,
+      [balanceVersion, userId, PLACEMENT_GAMES],
     ),
     q<{ mode: 'solo' | 'duo'; score: number; replay_id: string | null }>(
       `select distinct on (mode) mode, score, replay_id
@@ -657,12 +697,12 @@ export async function getUserStats(userId: string, balanceVersion: number): Prom
   const rankByMode = new Map(recRank.map((r) => [r.mode, Number(r.rnk)]));
   const elos: UserEloStat[] = (['1v1', '2v2'] as const).map((mode) => {
     const row = elo.find((e) => e.mode === mode);
-    const ranked = elo.find((e) => e.mode === mode);
     return {
       mode,
       rating: row ? row.rating : 1000,
       games: row ? row.games : 0,
-      rank: ranked ? Number(ranked.rnk) : null,
+      // placed-only rank: null while the player is still in placements
+      rank: row && row.rnk != null ? Number(row.rnk) : null,
     };
   });
   const records: UserRecordStat[] = (['solo', 'duo'] as const).map((mode) => {

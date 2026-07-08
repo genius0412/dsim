@@ -93,10 +93,14 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
 
   if (dp.saturation === 'tank') {
     // Traditional Tank Drive: leftDrive and rightDrive independently control sides.
-    // Default to 0 when absent (e.g. a driver-frame stick command with no tank
-    // fields) — otherwise (undefined + undefined)/2 is NaN and the pose explodes.
-    const ld = cmd.leftDrive ?? 0;
-    const rd = cmd.rightDrive ?? 0;
+    // Normal Tank Drive: derive side-drive from Arcade-style inputs (driveY, rotate).
+    const mode = world.gameSettings?.tankControlMode ?? 'traditional';
+    let ld = cmd.leftDrive ?? 0;
+    let rd = cmd.rightDrive ?? 0;
+    if (mode === 'normal') {
+      ld = cmd.driveY - cmd.rotate;
+      rd = cmd.driveY + cmd.rotate;
+    }
     targetFwd = ((ld + rd) / 2) * dp.maxSpeed;
     targetOmega = (rd - ld) * (dp.maxTurn / 2);
     targetStrafe = 0;

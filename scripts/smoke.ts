@@ -45,6 +45,7 @@ import {
   HP_INITIAL_STOCK,
   HP_PLACE_DELAY,
   BALANCE_VERSION,
+  PLACEMENT_GAMES,
   INTAKE_PRESETS,
   ROBOT_MAX_SIZE,
   ROBOT_MAX_MASS,
@@ -2053,8 +2054,8 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   const onResult = () =>
     Promise.resolve({
       elo: [
-        { userId: 'u-red', before: 1000, after: 1016, rd: 120 },
-        { userId: 'u-blue', before: 1000, after: 984, rd: 120 },
+        { userId: 'u-red', before: 1000, after: 1016, rd: 120, games: 4 },
+        { userId: 'u-blue', before: 1000, after: 984, rd: 120, games: 12 },
       ],
     });
   const room = new Room('smoke-elo', () => {}, { kind: 'versus' }, onResult);
@@ -2071,7 +2072,42 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     const blue = elo.results.find((r) => r.robotId === 1);
     check('eloResult re-keys the winner delta to red robot 0', red?.after === 1016 && red?.before === 1000);
     check('eloResult re-keys the loser delta to blue robot 1', blue?.after === 984 && blue?.before === 1000);
+    // games-based placement: the "?" is now driven by games < PLACEMENT_GAMES,
+    // NOT by RD. red (4 games) is still in placements; blue (12) is placed.
+    check('eloResult carries overall-board games for placement', red?.games === 4 && blue?.games === 12);
+    check('placement flag is games-based (red in placements, blue placed)', red!.games < PLACEMENT_GAMES && blue!.games >= PLACEMENT_GAMES);
   }
+}
+
+// ---- custom 4-on-one-alliance room starts (no infinite pose-dedup loop) ------
+// regression: ROOM_CAPACITY (4) > START_POSES.length (3), so 4 drivers on one
+// alliance exhaust the distinct poses. The old `while (used.has(si))` spun
+// forever, hanging the tick loop / health probe until Fly killed the box.
+{
+  const msgs: ServerMsg[] = [];
+  const mk = (id: string): Client => ({
+    id,
+    send: (m) => msgs.push(m),
+    player: {
+      clientId: id,
+      name: id,
+      teamName: 'T',
+      teamNumber: 1,
+      alliance: 'blue', // ALL on blue: 0 on red
+      startIndex: 0,
+      ready: true,
+      spec: { ...DEFAULT_SPEC },
+      assists: { ...DEFAULT_ASSISTS },
+    },
+    connected: true,
+    disconnectAt: 0,
+  });
+  const room = new Room('smoke-4v0', () => {}, { kind: 'versus' });
+  for (const id of ['a', 'b', 'c', 'd']) room.add(mk(id));
+  room.onMessage('a', { t: 'start' }); // 'a' is host — must return, not hang
+  room.advanceForTest(3);
+  const started = msgs.filter((m) => m.t === 'matchStart').length;
+  check('custom 4-on-one-alliance room starts without hanging', started === 4);
 }
 
 // ---- region-aware matchmaking: minimax host + expanding radius --------------

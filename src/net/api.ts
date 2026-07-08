@@ -37,6 +37,14 @@ export interface EloRow {
   games: number;
 }
 
+/** the viewing player's own standing on a board (placed or not). `rank` is null
+ * while still in placements; derive placement from `games` against PLACEMENT_GAMES. */
+export interface EloStanding {
+  rank: number | null;
+  rating: number;
+  games: number;
+}
+
 export type RecordMode = 'solo' | 'duo';
 export type EloMode = '1v1' | '2v2';
 /** a specific drivetrain board or the cross-drivetrain 'overall' */
@@ -63,9 +71,11 @@ export function fetchElo(
   mode: EloMode,
   drivetrain: Board,
   season?: number,
-): Promise<{ rows: EloRow[] }> {
+  me?: string | null,
+): Promise<{ rows: EloRow[]; me: EloStanding | null }> {
   const s = season != null ? `&season=${season}` : '';
-  return getJson(`/api/elo?mode=${mode}&drivetrain=${drivetrain}${s}`);
+  const m = me ? `&me=${encodeURIComponent(me)}` : '';
+  return getJson(`/api/elo?mode=${mode}&drivetrain=${drivetrain}${s}${m}`);
 }
 
 export interface UserEloStat {

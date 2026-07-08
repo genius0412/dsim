@@ -126,8 +126,11 @@ export interface EloDelta {
   robotId: number;
   before: number;
   after: number;
-  /** new Glicko rating deviation — high ⇒ provisional (shown with a "?") */
+  /** new Glicko rating deviation (kept for reference; no longer drives the "?") */
   rd: number;
+  /** overall-board games AFTER this match — < PLACEMENT_GAMES ⇒ still in
+   * placements, shown with a "?" on the results screen */
+  games: number;
 }
 
 /** fields a client may change about itself while in the room */

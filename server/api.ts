@@ -6,6 +6,7 @@ import {
   ensureProfile,
   ensureSeason,
   eloLeaderboard,
+  eloUserStanding,
   getGlobalStats,
   getProfile,
   getProfileByUsername,
@@ -228,10 +229,17 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     if (url.pathname === '/api/elo') {
       const mode = url.searchParams.get('mode') === '2v2' ? '2v2' : '1v1';
       const drivetrain = url.searchParams.get('drivetrain') ?? 'overall';
+      const meId = url.searchParams.get('me');
       const rows = dbEnabled
         ? await eloLeaderboard({ mode, drivetrain, balanceVersion: season, limit })
         : [];
-      return json(200, { season, mode, drivetrain, rows }), true;
+      // the viewer's own standing (rank among placed, or games-in-placements),
+      // so the board can surface it even when they're off the visible page
+      const me =
+        dbEnabled && meId
+          ? await eloUserStanding({ userId: meId, mode, drivetrain, balanceVersion: season })
+          : null;
+      return json(200, { season, mode, drivetrain, rows, me }), true;
     }
 
     // public match history keyed by USERNAME (the profile page's history list)

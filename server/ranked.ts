@@ -109,12 +109,15 @@ export interface EloBoardUpdate {
 }
 
 /** the OVERALL-board rating change for one player, returned to the room so it can
- * show each driver their rating delta (+ provisional flag) on the results screen */
+ * show each driver their rating delta (+ provisional flag) on the results screen.
+ * `games` is the player's OVERALL-board game count AFTER this match — it drives
+ * the games-based placement / provisional "?" (see PLACEMENT_GAMES). */
 export interface EloOutcome {
   userId: string;
   before: number;
   after: number;
   rd: number;
+  games: number;
 }
 
 /** Glicko-2 team update: each player is scored against the OPPOSING alliance as a
@@ -185,6 +188,7 @@ export async function persistVersusMatch(
   const { red, blue } = outcome.result.score;
 
   let updates: EloBoardUpdate[] = [];
+  const overallGames = new Map<string, number>(); // userId -> overall-board games after this match
   if (ranked) {
     const parts: EloParticipant[] = [];
     for (const p of authed) {
@@ -198,7 +202,8 @@ export async function persistVersusMatch(
     }
     updates = computeGlicko(parts, outcome.result.score);
     for (const u of updates) {
-      await upsertRating(u.userId, mode, u.board, balanceVersion, u.state.rating, u.state.rd, u.state.vol);
+      const games = await upsertRating(u.userId, mode, u.board, balanceVersion, u.state.rating, u.state.rd, u.state.vol);
+      if (u.board === 'overall') overallGames.set(u.userId, games);
     }
   }
 
@@ -221,5 +226,5 @@ export async function persistVersusMatch(
   // (ranked only; custom returns nothing so no reveal fires)
   return updates
     .filter((u) => u.board === 'overall')
-    .map((u) => ({ userId: u.userId, before: u.before, after: u.after, rd: u.rd }));
+    .map((u) => ({ userId: u.userId, before: u.before, after: u.after, rd: u.rd, games: overallGames.get(u.userId) ?? 0 }));
 }

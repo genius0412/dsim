@@ -381,7 +381,7 @@ export function App() {
       )}
       {screen === 'robot' && <Menu settings={settings} onChange={update} />}
       {screen === 'leaderboard' && (
-        <Leaderboard onWatch={(id) => navigate('replay', id)} onOpenProfile={openProfile} />
+        <Leaderboard myUserId={accountUserId} onWatch={(id) => navigate('replay', id)} onOpenProfile={openProfile} />
       )}
       {screen === 'stats' && (
         <Stats onWatch={(id) => navigate('replay', id)} onOpenProfile={openProfile} />
