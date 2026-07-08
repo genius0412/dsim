@@ -3,6 +3,7 @@ import type { GameSettings } from '../game';
 import { loadSettings, saveSettings } from '../settings';
 import { saveAccountSettings, fetchAdminStatus } from '../net/api';
 import { useNewVersion } from '../net/version';
+import { useServerNotice } from '../net/notice';
 import { Admin } from './Admin';
 import { AccountSync } from './AccountSync';
 import { Menu } from './Menu';
@@ -179,8 +180,16 @@ export function App() {
   // the player STARTS a run (never mid-run), so they aren't stuck on a stale version
   const newVersion = useNewVersion();
   const [pendingStart, setPendingStart] = useState<(() => void) | null>(null);
+  // a scheduled server restart is live (admin notice): don't let anyone START a new
+  // game / queue — they'd just get dropped by the restart. People already in a game
+  // are untouched (this only guards the start actions). Info notices don't block.
+  const notice = useServerNotice();
+  const restartPending =
+    !!notice && notice.kind === 'restart' && (notice.until === undefined || notice.until > Date.now());
+  const [startBlocked, setStartBlocked] = useState(false);
   const guardStart = (go: () => void): void => {
-    if (newVersion) setPendingStart(() => go);
+    if (restartPending) setStartBlocked(true);
+    else if (newVersion) setPendingStart(() => go);
     else go();
   };
 
@@ -301,6 +310,20 @@ export function App() {
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onEditRobot={() => navigate('robot')}
         />
+      )}
+      {startBlocked && (
+        <div className="overlay">
+          <div className="overlay-panel">
+            <h2>Server restarting soon</h2>
+            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
+              A scheduled server update is about to happen, so new games are paused for a moment —
+              you’d only get dropped by the restart. Hang tight; it’ll be back in a minute.
+            </p>
+            <div className="overlay-buttons">
+              <button onClick={() => setStartBlocked(false)}>OK</button>
+            </div>
+          </div>
+        </div>
       )}
       {pendingStart && (
         <div className="overlay">

@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './ui/App';
 import { ServerNoticeBanner } from './ui/ServerNoticeBanner';
+import { NoticePoller } from './ui/NoticePoller';
 import { initPhysics } from './sim/physicsEngine';
 import './ui/styles.css';
 import './ui/shell.css';
@@ -14,6 +15,7 @@ initPhysics().then(() => {
     <StrictMode>
       <App />
       <ServerNoticeBanner />
+      <NoticePoller />
     </StrictMode>,
   );
 });

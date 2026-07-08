@@ -8,6 +8,7 @@ import { ServerSession } from '../net/serverSession';
 import type { NetSession } from '../net/session';
 import type { QueueMode } from '../net/protocol';
 import { usePresence } from './usePresence';
+import { useServerNotice } from '../net/notice';
 
 /**
  * Region-aware ranked matchmaking. We connect to the DESIGNATED matchmaker (a
@@ -35,6 +36,10 @@ export function Matchmaking({
   const [mode, setMode] = useState<QueueMode>('1v1');
   const [noWiden, setNoWiden] = useState(false);
   const presence = usePresence(); // live queue depths, refreshed while on this screen
+  // block queueing while a server restart is scheduled (you'd only get dropped)
+  const notice = useServerNotice();
+  const restartPending =
+    !!notice && notice.kind === 'restart' && (notice.until === undefined || notice.until > Date.now());
   const [searching, setSearching] = useState(false);
   const [queue, setQueue] = useState({ size: 0, need: 2 });
   const [elapsed, setElapsed] = useState(0);
@@ -74,6 +79,10 @@ export function Matchmaking({
   const find = async (): Promise<void> => {
     if (!gameServerUrl()) {
       setError('The game server isn’t configured.');
+      return;
+    }
+    if (restartPending) {
+      setError('Server is restarting shortly — try again in a minute.');
       return;
     }
     setError('');
@@ -210,7 +219,14 @@ export function Matchmaking({
                 </div>
               )}
               {error && <p className="ds-form-err" style={{ marginBottom: 12 }}>{error}</p>}
-              <button className="ds-btn primary" onClick={() => void find()}>Find Match</button>
+              {restartPending && (
+                <p className="ds-form-err" style={{ marginBottom: 12 }}>
+                  Server is restarting shortly — queueing is paused for a moment.
+                </p>
+              )}
+              <button className="ds-btn primary" disabled={restartPending} onClick={() => void find()}>
+                Find Match
+              </button>
               <div style={{ marginTop: 12 }}>
                 <button className="ds-btn ghost" onClick={onCancel}>← Home</button>
               </div>

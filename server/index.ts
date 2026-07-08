@@ -327,6 +327,13 @@ const httpServer = createServer((req, res) => {
         online: onlineCount,
         signedIn: authedUsers.size,
         queues: matchmaker.queueSizes(),
+        // include any LIVE admin notice so the client can show the restart banner
+        // (and block starting new games) on EVERY page — even disconnected ones
+        // like Home/solo where no WebSocket delivers `serverNotice`.
+        notice:
+          noticeLive() && currentNotice
+            ? { kind: currentNotice.kind, message: currentNotice.message, until: currentNotice.until }
+            : null,
       }),
     );
     return;
