@@ -2,12 +2,14 @@ import { Fragment, useEffect, useState } from 'react';
 import {
   fetchElo,
   fetchRecords,
+  fetchSeasons,
   type Board,
   type EloMode,
   type EloRow,
   type RecordConfig,
   type RecordMode,
   type RecordRow,
+  type SeasonInfo,
 } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import type { DrivetrainType, IntakeStyle } from '../types';
@@ -81,7 +83,27 @@ export function Leaderboard({ onWatch }: { onWatch?: (replayId: string) => void 
   const [error, setError] = useState('');
   const [openRow, setOpenRow] = useState<string | null>(null);
 
+  // seasons: null selection = the live season (server default)
+  const [seasons, setSeasons] = useState<SeasonInfo[]>([]);
+  const [current, setCurrent] = useState<number | null>(null);
+  const [season, setSeason] = useState<number | null>(null);
+
   const configured = gameServerConfigured();
+
+  useEffect(() => {
+    if (!configured) return;
+    let alive = true;
+    fetchSeasons()
+      .then((r) => {
+        if (!alive) return;
+        setSeasons(r.seasons);
+        setCurrent(r.current);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [configured]);
 
   useEffect(() => {
     if (!configured) {
@@ -91,10 +113,11 @@ export function Leaderboard({ onWatch }: { onWatch?: (replayId: string) => void 
     }
     let alive = true;
     setStatus('loading');
+    const s = season ?? undefined;
     const req =
       kind === 'records'
-        ? fetchRecords(recMode, board).then((r) => r.rows)
-        : fetchElo(eloMode, board).then((r) => r.rows);
+        ? fetchRecords(recMode, board, s).then((r) => r.rows)
+        : fetchElo(eloMode, board, s).then((r) => r.rows);
     req
       .then((rows) => {
         if (!alive) return;
@@ -109,16 +132,44 @@ export function Leaderboard({ onWatch }: { onWatch?: (replayId: string) => void 
     return () => {
       alive = false;
     };
-  }, [kind, recMode, eloMode, board, configured]);
+  }, [kind, recMode, eloMode, board, season, configured]);
 
   const isRecords = kind === 'records';
   const valueLabel = isRecords ? 'Score' : 'ELO';
+  const viewing = season ?? current;
+  const viewingSeason = seasons.find((s) => s.season === viewing);
+  const seasonLabel = viewingSeason?.name ?? (viewing != null ? `Season ${viewing}` : 'Current season');
+  const isArchived = viewing != null && current != null && viewing < current;
 
   return (
     <>
-      <p className="ds-eyebrow">Season 1 · balance v1</p>
+      <p className="ds-eyebrow">
+        {seasonLabel}
+        {isArchived ? ' · archived' : ''}
+      </p>
       <h1 className="ds-h1">Leaderboards</h1>
       <p className="ds-sub">Score-attack records and ranked ELO, split by drivetrain. Every entry is a replay.</p>
+
+      {seasons.length > 1 && (
+        <div className="ds-panel-h" style={{ marginBottom: 8 }}>
+          <span className="ds-panel-title">Season</span>
+          <select
+            className="ds-select"
+            value={viewing ?? ''}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setSeason(current != null && v === current ? null : v);
+            }}
+          >
+            {seasons.map((s) => (
+              <option key={s.season} value={s.season}>
+                {s.name}
+                {s.season === current ? ' (current)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="ds-panel">
         <div className="ds-panel-h">

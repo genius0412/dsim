@@ -9,6 +9,9 @@ import { migrate } from './db/migrate';
 import { persistMatch } from './persist';
 import { handleApi } from './api';
 import { Matchmaker } from './matchmaking';
+import { BALANCE_VERSION } from '../src/config';
+import { dbEnabled } from './db/pool';
+import { currentSeasonNumber, purgeSeasonReplays, startNewSeason } from './db/repo';
 
 /**
  * Authoritative DECODE game server (Phase 0). One WebSocket per client; rooms are
@@ -122,6 +125,53 @@ const httpServer = createServer((req, res) => {
         console.log(`[admin] restart notice in ${seconds}s -> ${notified} clients: "${message}"`);
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true, notified, until: currentNotice.until }));
+        return;
+      }
+      // SEASONS: archive the live boards and open a fresh season, or purge the
+      // replays of an archived season (frees storage; boards stay, watchability
+      // drops). Both are admin-gated (JWT admin id OR the ADMIN_SECRET query).
+      if (
+        req.method === 'POST' &&
+        (u.pathname === '/api/admin/season/start' || u.pathname === '/api/admin/season/purge-replays')
+      ) {
+        const secretOk =
+          !!process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
+        if (!isAdmin && !secretOk) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        if (!dbEnabled) {
+          res.writeHead(503, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'DB disabled' }));
+          return;
+        }
+        if (u.pathname === '/api/admin/season/start') {
+          const name = u.searchParams.get('name') ?? undefined;
+          const season = await startNewSeason(BALANCE_VERSION, name);
+          console.log(`[admin] started new season ${season}${name ? ` "${name}"` : ''}`);
+          res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, season }));
+          return;
+        }
+        // purge-replays: default to every season BEFORE the live one when unspecified
+        const seasonArg = u.searchParams.get('season');
+        const current = await currentSeasonNumber(BALANCE_VERSION);
+        let freed = 0;
+        if (seasonArg !== null) {
+          const s = Number(seasonArg);
+          if (s >= current) {
+            res.writeHead(400, { ...cors, 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'refusing to purge the live season' }));
+            return;
+          }
+          freed = await purgeSeasonReplays(s);
+        } else {
+          for (let s = 1; s < current; s++) freed += await purgeSeasonReplays(s);
+        }
+        console.log(`[admin] purged ${freed} archived-season replays`);
+        res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, freed }));
         return;
       }
       res.writeHead(404, cors);
