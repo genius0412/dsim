@@ -6,9 +6,10 @@ import { gameServerUrl, gameServerUrlWith, gameServers, multiServer, selectedSer
 import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
-import { ROOM_CAPACITY, type LobbyPlayer } from '../net/protocol';
+import { roomCapacity, type LobbyPlayer, type RoomConfig } from '../net/protocol';
 import type { NetSession } from '../net/session';
 import { useServerNotice } from '../net/notice';
+import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 
@@ -16,6 +17,9 @@ interface Props {
   settings: GameSettings;
   onStart: (session: NetSession) => void;
   onCancel: () => void;
+  /** what this room runs. Default: a versus custom room (2v2). Pass a record/duo
+   * config to run this same lobby as a 2v0 co-op record run (opponent-free). */
+  config?: RoomConfig;
 }
 
 type Phase = 'entry' | 'connecting' | 'room' | 'error';
@@ -28,9 +32,14 @@ type Phase = 'entry' | 'connecting' | 'room' | 'error';
  * presence: the server is the single source of truth for the roster and host, so
  * one client can never stall the others.
  */
-export function Lobby({ settings, onStart, onCancel }: Props) {
+export function Lobby({ settings, onStart, onCancel, config = { kind: 'versus' } }: Props) {
+  const isRecord = config.kind === 'record';
+  const capacity = roomCapacity(config);
   const [phase, setPhase] = useState<Phase>('entry');
   const [code, setCode] = useState('');
+  // entry sub-mode: pick whether you're creating a fresh room or joining a code
+  const [entryMode, setEntryMode] = useState<'create' | 'join'>('create');
+  const [copied, setCopied] = useState(false);
   // one-app multi-region: friends must meet on the SAME region for a cross-region
   // room to land them on the same machine. Defaults to the account's picked region.
   const [region, setRegion] = useState(selectedServer()?.region ?? '');
@@ -66,6 +75,10 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
   const me = players.find((p) => p.clientId === myId) ?? null;
   const isHost = myId !== '' && myId === hostId;
   const allReady = players.length > 0 && players.every((p) => p.ready);
+  // a duo record run needs BOTH drivers present before it can start (it's 2v0);
+  // versus custom rooms can start with fewer (1v1, etc.)
+  const enoughPlayers = !isRecord || players.length >= capacity;
+  const canStart = allReady && enoughPlayers && !restartPending;
 
   function handleStart(m: MatchStart): void {
     const lobby = lobbyRef.current;
@@ -75,8 +88,25 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
     onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, code.trim()));
   }
 
-  function join(): void {
-    if (!code.trim()) return;
+  /** create a brand-new room with a freshly generated code (you host it) */
+  function createRoom(): void {
+    join(generateRoomCode());
+  }
+
+  /** join an existing room by its shared code */
+  function joinWithCode(): void {
+    const c = normalizeRoomCode(code);
+    if (!isValidRoomCode(c)) {
+      setError(`Enter a valid ${ROOM_CODE_LENGTH}-character room code.`);
+      setPhase('error');
+      return;
+    }
+    join(c);
+  }
+
+  function join(roomCode: string): void {
+    if (!roomCode) return;
+    setCode(roomCode);
     if (!gameServerUrl()) {
       setError('multiplayer not configured');
       setPhase('error');
@@ -114,16 +144,21 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
       }
     });
 
-    lobby.join(code.trim(), {
-      name,
-      teamName: settings.spec.teamName,
-      teamNumber: settings.spec.teamNumber,
-      alliance: settings.alliance,
-      startIndex: settings.startIndex,
-      ready: false,
-      spec: settings.spec,
-      assists: settings.assists,
-    });
+    lobby.join(
+      roomCode,
+      {
+        name,
+        teamName: settings.spec.teamName,
+        teamNumber: settings.spec.teamNumber,
+        // record runs are opponent-free (one alliance) — force blue, matching the server
+        alliance: isRecord ? 'blue' : settings.alliance,
+        startIndex: settings.startIndex,
+        ready: false,
+        spec: settings.spec,
+        assists: settings.assists,
+      },
+      config,
+    );
   }
 
   const setAlliance = (alliance: Alliance): void => lobbyRef.current?.update({ alliance });
@@ -145,11 +180,17 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
           </div>
           <div className="ds-title">
             <h1>
-              Multi<span className="accent">player</span>
+              {isRecord ? (
+                <>Duo <span className="accent">Record</span></>
+              ) : (
+                <>Multi<span className="accent">player</span></>
+              )}
             </h1>
           </div>
           <p className="ds-sub" style={{ marginTop: -10 }}>
-            Up to 2v2 · share a room code.
+            {isRecord
+              ? '2v0 co-op score attack · same drivetrain · share a room code.'
+              : 'Up to 2v2 · share a room code.'}
           </p>
           <div className="ds-panelbox">
             <label className="ds-field">
@@ -159,16 +200,6 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 maxLength={20}
-              />
-            </label>
-            <label className="ds-field">
-              <span className="cap">Room code</span>
-              <input
-                className="ds-input"
-                value={code}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
-                placeholder="e.g. SCRIM1"
-                maxLength={12}
               />
             </label>
             {multiServer() && (
@@ -187,14 +218,56 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
                 </select>
               </label>
             )}
-            {phase === 'error' && <p className="ds-form-err">⚠ {error}</p>}
-            <div className="ds-actions">
-              <button className="ds-cta" disabled={phase === 'connecting'} onClick={join}>
-                {phase === 'connecting' ? 'CONNECTING…' : 'CREATE / JOIN'}
+            <div className="ds-opts two" style={{ marginTop: 4 }}>
+              <button
+                className={`ds-opt ${entryMode === 'create' ? 'on' : ''}`}
+                onClick={() => setEntryMode('create')}
+              >
+                <span className="ot">Create room</span>
+                <span className="od">Get a code to share</span>
+              </button>
+              <button
+                className={`ds-opt ${entryMode === 'join' ? 'on' : ''}`}
+                onClick={() => setEntryMode('join')}
+              >
+                <span className="ot">Join room</span>
+                <span className="od">Enter a friend’s code</span>
               </button>
             </div>
+            {entryMode === 'join' && (
+              <label className="ds-field">
+                <span className="cap">Room code</span>
+                <input
+                  className="ds-input"
+                  value={code}
+                  onChange={(e) => setCode(normalizeRoomCode(e.target.value))}
+                  onKeyDown={(e) => e.key === 'Enter' && joinWithCode()}
+                  placeholder={`${ROOM_CODE_LENGTH} characters`}
+                  maxLength={ROOM_CODE_LENGTH}
+                  autoFocus
+                />
+              </label>
+            )}
+            {phase === 'error' && <p className="ds-form-err">⚠ {error}</p>}
+            <div className="ds-actions">
+              {entryMode === 'create' ? (
+                <button className="ds-cta" disabled={phase === 'connecting'} onClick={createRoom}>
+                  {phase === 'connecting' ? 'CREATING…' : 'CREATE ROOM ▶'}
+                </button>
+              ) : (
+                <button
+                  className="ds-cta"
+                  disabled={phase === 'connecting' || code.length !== ROOM_CODE_LENGTH}
+                  onClick={joinWithCode}
+                >
+                  {phase === 'connecting' ? 'JOINING…' : 'JOIN ▶'}
+                </button>
+              )}
+            </div>
             <p className="ds-hint">
-              Same code = same room. First one in hosts.
+              {isRecord
+                ? 'Both drivers must be on the SAME drivetrain (the board is split by drivetrain).'
+                : 'Codes are auto-generated — share yours with your friends.'}
               {multiServer() && ' Both players must pick the same region.'}
             </p>
           </div>
@@ -217,12 +290,26 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
         </div>
         <div className="ds-title">
           <h1>
-            Room <span className="accent">{code}</span>
+            {isRecord ? 'Duo' : 'Room'} <span className="accent">{code}</span>
           </h1>
         </div>
-        <p className="ds-sub" style={{ marginTop: -10 }}>
-          {isHost ? 'You are the host' : 'Waiting for the host to start'} · {players.length}/
-          {ROOM_CAPACITY} drivers
+        <p className="ds-sub" style={{ marginTop: -10, display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap' }}>
+          <span>
+            {isHost ? 'You are the host' : 'Waiting for the host to start'} · {players.length}/
+            {capacity} drivers
+          </span>
+          <button
+            className="ds-chip"
+            title="Copy the room code to share"
+            style={{ cursor: 'pointer' }}
+            onClick={() => {
+              void navigator.clipboard?.writeText(code);
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1500);
+            }}
+          >
+            {copied ? '✓ Copied' : '⧉ Copy code'}
+          </button>
         </p>
 
         <section className="ds-sec">
@@ -256,23 +343,25 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
           </div>
         </section>
 
-        <section className="ds-sec">
-          <h2>Your alliance</h2>
-          <div className="ds-opts two">
-            <button
-              className={`ds-opt red ${me?.alliance === 'red' ? 'on' : ''}`}
-              onClick={() => setAlliance('red')}
-            >
-              <span className="ot">RED</span>
-            </button>
-            <button
-              className={`ds-opt blue ${me?.alliance === 'blue' ? 'on' : ''}`}
-              onClick={() => setAlliance('blue')}
-            >
-              <span className="ot">BLUE</span>
-            </button>
-          </div>
-        </section>
+        {!isRecord && (
+          <section className="ds-sec">
+            <h2>Your alliance</h2>
+            <div className="ds-opts two">
+              <button
+                className={`ds-opt red ${me?.alliance === 'red' ? 'on' : ''}`}
+                onClick={() => setAlliance('red')}
+              >
+                <span className="ot">RED</span>
+              </button>
+              <button
+                className={`ds-opt blue ${me?.alliance === 'blue' ? 'on' : ''}`}
+                onClick={() => setAlliance('blue')}
+              >
+                <span className="ot">BLUE</span>
+              </button>
+            </div>
+          </section>
+        )}
 
         <section className="ds-sec">
           <h2>Start position</h2>
@@ -301,16 +390,17 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
             {me?.ready ? '✓ READY' : 'READY UP'}
           </button>
           {isHost && (
-            <button
-              className="ds-cta"
-              disabled={!allReady || restartPending}
-              onClick={() => lobbyRef.current?.start()}
-            >
-              START MATCH ▶
+            <button className="ds-cta" disabled={!canStart} onClick={() => lobbyRef.current?.start()}>
+              {isRecord ? 'START RUN ▶' : 'START MATCH ▶'}
             </button>
           )}
         </div>
-        {isHost && !allReady && <p className="ds-hint">START unlocks when everyone is ready.</p>}
+        {isHost && !enoughPlayers && (
+          <p className="ds-hint">Waiting for your partner to join with the code…</p>
+        )}
+        {isHost && enoughPlayers && !allReady && (
+          <p className="ds-hint">START unlocks when everyone is ready.</p>
+        )}
         {isHost && restartPending && (
           <p className="ds-hint">Server is restarting shortly — starting is paused for a moment.</p>
         )}
