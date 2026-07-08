@@ -540,6 +540,12 @@ export const ROBOT_PRESETS: readonly RobotSpec[] = [
 // (physics scales with dt), so this stays deterministic across peers.
 export const SIM_DT = 1 / 60;
 export const MAX_STEPS_PER_FRAME = 5;
+/** Angle tolerance (radians) for heading alignment between path segments.
+ * If the difference between the robot's current heading and the next segment's
+ * start heading is greater than this, the robot will rotate to align. */
+export const ALIGNMENT_ANGLE_TOLERANCE = 0.02; // ~1.1 degrees
+/** Rotational speed (radians/second) for heading alignment. */
+export const ALIGNMENT_ROTATIONAL_SPEED = 3.0; // rad/s
 
 // ------------------------------------------------------------ rendering ----
 export const COLORS = {

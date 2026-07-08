@@ -354,6 +354,8 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       pathSequenceIndex: 0,
       pathTargetPoint: null,
       pathTargetHeading: null,
+      isAligningHeading: false, // Initialize new state
+      targetAlignmentHeading: null, // Initialize new state
       autoPath: robotAutoPath, // Assign the (potentially mirrored) autoPath
     });
 
@@ -383,7 +385,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       balls.push({
         id: id++,
         color,
-        state: { kind: 'held', robot: created.id, slot, lx: lp.x, ly: lp.y, side },
+        state: { kind: 'ground' },
         pos: { x: created.pos.x + wp.x, y: created.pos.y + wp.y },
         vel: { x: 0, y: 0 },
         z: 0,

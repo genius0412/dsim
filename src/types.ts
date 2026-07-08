@@ -123,6 +123,8 @@ export interface RobotState {
   pathTargetPoint: Vec2 | null;
   pathTargetHeading: number | null;
   autoPath?: AutoPathData; // Add autoPath to RobotState
+  isAligningHeading: boolean; // New state for heading alignment
+  targetAlignmentHeading: number | null; // The heading to align to
   // --- End Auto Pathing State ---
 }
 
