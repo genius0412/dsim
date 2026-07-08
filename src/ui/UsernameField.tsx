@@ -19,7 +19,7 @@ export interface UsernameCheck {
 }
 
 /**
- * Live-validates a username as the user types: local FORMAT check (3–20 lowercase
+ * Live-validates a username as the user types: local FORMAT check (4–20 lowercase
  * letters/digits) is instant, then a debounced server AVAILABILITY check. Shared
  * by sign-up, the blocking username gate, and the account editor so all three
  * agree on the rules. `ownValue` (the user's current username) is treated as
@@ -60,9 +60,9 @@ export function useUsernameCheck(raw: string, ownValue?: string): UsernameCheck 
 
   const message =
     status === 'empty'
-      ? 'Lowercase letters and numbers, 3–20 characters.'
+      ? 'Lowercase letters and numbers, 4–20 characters.'
       : status === 'invalid'
-        ? 'Only lowercase letters and numbers (3–20).'
+        ? 'Only lowercase letters and numbers (4–20).'
         : status === 'checking'
           ? 'Checking…'
           : status === 'available'
