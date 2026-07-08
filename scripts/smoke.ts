@@ -2408,6 +2408,20 @@ const mkMM = () => {
   check('matchmaker queueSizes drops when a player leaves', mm.queueSizes()['1v1'] === 0);
 }
 
+// a user can never be matched with THEMSELF (a 2nd tab / a stale reconnect entry
+// under a fresh connection id). That produced a roster with two slots for one
+// identity → one robot frozen ("ghost" the driver also controls). Same userId ⇒
+// the newer entry REPLACES the old one; two distinct users pair normally.
+{
+  const { mm } = mkMM();
+  mm.enqueue({ ...rEntry('conn1', 'iad'), userId: 'userU' });
+  mm.enqueue({ ...rEntry('conn2', 'iad'), userId: 'userU' }); // same account, new socket
+  // if it self-paired, the queue would empty (matched); dedup keeps exactly one
+  check('same-user 2nd queue entry replaces the first (no self-pair)', mm.queueSizes()['1v1'] === 1);
+  mm.enqueue({ ...rEntry('conn3', 'iad'), userId: 'userV' }); // a real opponent
+  check('a genuine 2nd user pairs (queue empties)', mm.queueSizes()['1v1'] === 0);
+}
+
 // ---- shareable room codes (generated, 6-char, vowel-free, profanity-safe) ----
 {
   let allValid = true;
