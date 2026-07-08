@@ -45,10 +45,10 @@ import { verifyAuthToken } from './auth';
  *   GET  /api/replay/<id>
  */
 
-/** Public usernames: lowercase letters + digits only, 3–20 chars. Kept in sync
+/** Public usernames: lowercase letters + digits only, 4–20 chars. Kept in sync
  * with the client's validator (src/net/api.ts `USERNAME_RE`) and the DB's unique
  * index. Returns the normalized (trimmed, lowercased) value or null if invalid. */
-const USERNAME_RE = /^[a-z0-9]{3,20}$/;
+const USERNAME_RE = /^[a-z0-9]{4,20}$/;
 function normalizeUsername(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const u = raw.trim().toLowerCase();
@@ -128,7 +128,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       }
       const username = normalizeUsername(raw);
       if (!username) {
-        return json(400, { error: '3–20 characters, lowercase letters and numbers only' }), true;
+        return json(400, { error: '4–20 characters, lowercase letters and numbers only' }), true;
       }
       if (dbEnabled) {
         await ensureProfile(user.userId, user.handle);

@@ -160,9 +160,9 @@ export function fetchUserStatsByUsername(username: string, season?: number): Pro
   return getJson(`/api/profile/${encodeURIComponent(username)}/stats${s}`);
 }
 
-/** Public username format: 3–20 lowercase letters/digits. Mirrors the server
+/** Public username format: 4–20 lowercase letters/digits. Mirrors the server
  * (`server/api.ts` USERNAME_RE) and the DB unique index. */
-export const USERNAME_RE = /^[a-z0-9]{3,20}$/;
+export const USERNAME_RE = /^[a-z0-9]{4,20}$/;
 
 /** is a username validly-formatted AND free? (server-checked; format-checks
  * locally first so a bad string never hits the network) */
