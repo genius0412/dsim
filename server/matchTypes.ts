@@ -21,6 +21,8 @@ export interface PendingRosterEntry {
   alliance: Alliance;
   /** overall ELO snapshot for the pre-match intro overlay (null if unrated/DB-off) */
   introElo: number | null;
+  autoPath?: string;
+  autoPathEnabled?: boolean;
 }
 
 export interface PendingMatch {

@@ -440,7 +440,15 @@ export class Room {
     const setups: RobotSetup[] = [];
     this.robotOf.clear();
     p.roster.forEach((r, i) => {
-      setups.push({ id: i, alliance: r.alliance, spec: r.spec, assists: r.assists, startIndex: r.startIndex });
+      setups.push({
+        id: i,
+        alliance: r.alliance,
+        spec: r.spec,
+        assists: r.assists,
+        startIndex: r.startIndex,
+        autoPath: r.autoPath, // Include autoPath
+        autoPathEnabled: r.autoPathEnabled, // Include autoPathEnabled
+      });
       const c = r.userId ? byUser.get(r.userId) : undefined;
       if (c) this.robotOf.set(c.id, i);
     });
