@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type { UserStats } from '../net/api';
 
 /**
@@ -12,11 +13,14 @@ export function CareerPanel({
   status,
   error,
   name,
+  headerAction,
 }: {
   stats: UserStats | null;
   status: 'loading' | 'ok' | 'error';
   error?: string;
   name: string;
+  /** optional control rendered in the panel header (e.g. a Share button) */
+  headerAction?: ReactNode;
 }) {
   const elo1 = stats?.elo.find((e) => e.mode === '1v1');
   const elo2 = stats?.elo.find((e) => e.mode === '2v2');
@@ -30,9 +34,11 @@ export function CareerPanel({
     <div className="ds-panel">
       <div className="ds-panel-h">
         <span className="ds-panel-title">Season {stats?.season ?? '—'} · Overall</span>
+        <span className="ds-head-spacer" />
         <span className="ds-chip">
           <b>{name}</b>
         </span>
+        {headerAction}
       </div>
 
       {status === 'loading' && <div className="ds-loading">Loading…</div>}

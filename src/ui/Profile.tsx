@@ -3,6 +3,7 @@ import { fetchUserStatsByUsername, type UserStats } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { APP_NAME } from '../seasons';
 import { CareerPanel } from './CareerPanel';
+import { ShareButton } from './ShareButton';
 
 /**
  * Public player profile at `/profile/<username>` — anyone can view any player's
@@ -66,7 +67,13 @@ export function Profile({ username }: { username: string }) {
           </div>
         </div>
       ) : (
-        <CareerPanel stats={stats} status={status} error={error} name={name} />
+        <CareerPanel
+          stats={stats}
+          status={status}
+          error={error}
+          name={name}
+          headerAction={<ShareButton username={stats?.username ?? username} />}
+        />
       )}
     </>
   );

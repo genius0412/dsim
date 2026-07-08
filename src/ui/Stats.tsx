@@ -4,6 +4,7 @@ import { gameServerConfigured } from '../net/env';
 import { authEnabled, authClient } from '../lib/authClient';
 import { APP_NAME } from '../seasons';
 import { CareerPanel } from './CareerPanel';
+import { ShareButton } from './ShareButton';
 
 /**
  * My Stats — a signed-in player's competitive profile, read in ONE call from the
@@ -16,8 +17,8 @@ export function Stats() {
   if (!authEnabled) {
     return (
       <>
-        <p className="ds-eyebrow">{APP_NAME} · Career</p>
-        <h1 className="ds-h1">My Stats</h1>
+        <p className="ds-eyebrow">{APP_NAME}</p>
+        <h1 className="ds-h1">Career</h1>
         <div className="ds-panel">
           <div className="ds-empty">
             <div className="big">Accounts are off in this build</div>
@@ -61,8 +62,8 @@ function StatsSignedIn() {
 
   const head = (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Career</p>
-      <h1 className="ds-h1">My Stats</h1>
+      <p className="ds-eyebrow">{APP_NAME}</p>
+      <h1 className="ds-h1">Career</h1>
       <p className="ds-sub">Your ranked ELO, personal bests, and recent matches this season.</p>
     </>
   );
@@ -115,6 +116,7 @@ function StatsSignedIn() {
         status={status === 'idle' ? 'loading' : status}
         error={error}
         name={name}
+        headerAction={stats?.username ? <ShareButton username={stats.username} label="Share my profile" /> : undefined}
       />
     </>
   );
