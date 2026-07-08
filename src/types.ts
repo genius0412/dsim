@@ -275,6 +275,8 @@ export interface GameSettings {
   /** preferred game server id (multi-region). Remembered across sessions and,
    * for signed-in players, synced to the account. Undefined ⇒ auto-pick fastest. */
   preferredServerId?: string;
+  /** tank drive control: 'traditional' (separate sticks) or 'normal' (Arcade-style) */
+  tankControlMode: 'traditional' | 'normal';
 }
 
 export interface World {

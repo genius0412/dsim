@@ -364,6 +364,24 @@ export function Menu({ settings, onChange }: Props) {
               <span className="od">Stick up drives toward the robot's front</span>
             </button>
           </div>
+          {spec.drivetrain === 'tank' && (
+            <div className="ds-opts two" style={{ marginTop: 12 }}>
+              <button
+                className={`ds-opt ${settings.tankControlMode === 'traditional' ? 'on' : ''}`}
+                onClick={() => set({ tankControlMode: 'traditional' })}
+              >
+                <span className="ot">Traditional Tank</span>
+                <span className="od">L-stick/W-S: Left · R-stick/Arrows: Right</span>
+              </button>
+              <button
+                className={`ds-opt ${settings.tankControlMode === 'normal' ? 'on' : ''}`}
+                onClick={() => set({ tankControlMode: 'normal' })}
+              >
+                <span className="ot">Normal Tank</span>
+                <span className="od">L-stick/W-S: Fwd/Back · R-stick/Arrows: Turn</span>
+              </button>
+            </div>
+          )}
         </section>
 
         <section className="ds-sec">
