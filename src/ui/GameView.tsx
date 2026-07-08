@@ -359,12 +359,20 @@ function RankedIntro({
   );
 }
 
-/** one driver's ELO change row: name, before → after, colored delta */
-function EloRow({ r }: { r: EloResultRow }) {
+/** one driver's ELO change row. Rows reveal in a stagger; the rating rolls from
+ * `before` up/down to `after` while the delta chip slams in and pulses. */
+function EloRow({ r, index }: { r: EloResultRow; index: number }) {
   const delta = r.after - r.before;
-  const after = useCountUp(r.after, true, 900, r.before);
+  // stagger each row, then run the count-up (and the CSS pop keys off `.in`)
+  const [live, setLive] = useState(false);
+  useEffect(() => {
+    const id = window.setTimeout(() => setLive(true), 120 + index * 260);
+    return () => window.clearTimeout(id);
+  }, [index]);
+  const after = useCountUp(r.after, live, 1100, r.before);
+  const dir = delta >= 0 ? 'up' : 'down';
   return (
-    <div className={`elo-row ${r.alliance} ${r.isLocal ? 'you' : ''}`}>
+    <div className={`elo-row ${r.alliance} ${r.isLocal ? 'you' : ''} ${live ? 'in' : ''}`}>
       <span className="elo-name">
         {r.name}
         {r.isLocal && <span className="elo-you">YOU</span>}
@@ -372,8 +380,9 @@ function EloRow({ r }: { r: EloResultRow }) {
       <span className="elo-nums">
         <span className="elo-before">{r.before}</span>
         <span className="elo-arrow">→</span>
-        <span className="elo-after">{after}</span>
-        <span className={`elo-delta ${delta >= 0 ? 'up' : 'down'}`}>
+        <span className={`elo-after ${live ? dir : ''}`}>{after}</span>
+        <span className={`elo-delta ${dir} ${live ? 'pop' : ''}`}>
+          <span className="elo-delta-caret">{delta >= 0 ? '▲' : '▼'}</span>
           {delta >= 0 ? `+${delta}` : delta}
         </span>
       </span>
@@ -391,7 +400,7 @@ function EloResults({ rows }: { rows: EloResultRow[] | null }) {
       {rows === null ? (
         <p className="ds-hint elo-wait">Updating ELO…</p>
       ) : (
-        rows.map((r) => <EloRow key={r.robotId} r={r} />)
+        rows.map((r, i) => <EloRow key={r.robotId} r={r} index={i} />)
       )}
     </div>
   );
