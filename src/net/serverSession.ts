@@ -10,6 +10,7 @@ import {
   unslimWorld,
   type EloDelta,
   type PlayerIntro,
+  type RecordRankInfo,
 } from './protocol';
 
 /**
@@ -35,6 +36,8 @@ export class ServerSession implements NetSession {
 
   private snapshot: Snapshot | null = null;
   private matchResult: MatchResultInfo | null = null;
+  /** record run's leaderboard standing, arrives shortly after matchResult */
+  private recordResult: RecordRankInfo | null = null;
   private restartCb: (() => void) | null = null;
   private connected = true;
   /** other robots in the match (for the HUD "N players" chip) */
@@ -101,6 +104,10 @@ export class ServerSession implements NetSession {
     return this.matchResult;
   }
 
+  getRecordResult(): RecordRankInfo | null {
+    return this.recordResult;
+  }
+
   status(): NetStatus {
     return {
       waitingFor: this.connected ? null : 'server',
@@ -143,6 +150,8 @@ export class ServerSession implements NetSession {
       this.matchResult = { kind: m.kind, record: m.record, result: m.result, replay: m.replay };
     } else if (m.t === 'eloResult') {
       this.eloResults = m.results;
+    } else if (m.t === 'recordResult') {
+      this.recordResult = m.info;
     } else if (m.t === 'matchStart') {
       // a host restart: adopt the new seed/setups and rebuild
       this.seed = m.seed;
@@ -152,6 +161,7 @@ export class ServerSession implements NetSession {
       this.eloResults = [];
       this.snapshot = null;
       this.matchResult = null;
+      this.recordResult = null;
       this.baseBalls.clear();
       this.restartCb?.();
     } else if (m.t === 'rejoined' && !m.ok) {

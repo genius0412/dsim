@@ -56,9 +56,11 @@ import {
   simulateReplay,
   verifyReplay,
   recordSetups,
+  recordScore,
   maxMatchTicks,
   REPLAY_FORMAT,
   type CommandSource,
+  type ReplayResult,
 } from '../src/sim/replay';
 import { Room, type Client } from '../server/room';
 import { Matchmaker, type QueueEntry } from '../server/matchmaking';
@@ -1853,6 +1855,15 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
       duo[0].startIndex !== duo[1].startIndex,
   );
 
+  // recordScore: an opponent-free run's NET score subtracts the player's OWN
+  // fouls (awarded to the empty opposing alliance), clamped at 0
+  {
+    const r: ReplayResult = { score: { blue: 90, red: 0 }, foulPoints: { blue: 0, red: 20 }, hash: 0, ticks: 0 };
+    check('recordScore subtracts the player\'s own penalties from the net score', recordScore(r, 'blue') === 70, `${recordScore(r, 'blue')}`);
+    const r2: ReplayResult = { score: { blue: 10, red: 0 }, foulPoints: { blue: 0, red: 45 }, hash: 0, ticks: 0 };
+    check('recordScore clamps a penalty-heavy run at 0 (never negative)', recordScore(r2, 'blue') === 0, `${recordScore(r2, 'blue')}`);
+  }
+
   // full SOLO record match → re-simulate → byte-identical (the core guarantee)
   const run = runRecordMatch(0x51ce, solo, drive);
   check('record match runs to phase "post"', run.world.match.phase === 'post');
@@ -1998,10 +2009,12 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   // onResult resolves to overall-ELO changes (as applyMatchElo would); the Room
   // must re-key them to robot ids (add order → robotId 0 = red, 1 = blue)
   const onResult = () =>
-    Promise.resolve([
-      { userId: 'u-red', before: 1000, after: 1016 },
-      { userId: 'u-blue', before: 1000, after: 984 },
-    ]);
+    Promise.resolve({
+      elo: [
+        { userId: 'u-red', before: 1000, after: 1016 },
+        { userId: 'u-blue', before: 1000, after: 984 },
+      ],
+    });
   const room = new Room('smoke-elo', () => {}, { kind: 'versus' }, onResult);
   room.add(mk('cr', 'red', 'u-red'));
   room.add(mk('cb', 'blue', 'u-blue'));

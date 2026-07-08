@@ -27,7 +27,12 @@ export const PRE_COUNTDOWN = 4;
  * The results screen holds its score reveal until this exact moment so the
  * count-up + winner slam land on the whoosh. Shared by the audio (game.ts) and
  * the reveal animation (GameView). */
-export const MATCH_RESULT_REVEAL_MS = 2200;
+export const MATCH_RESULT_REVEAL_MS = 2800;
+/** seconds the SERVER keeps stepping the sim in phase 'post' before it captures
+ * the authoritative final score + saves the record — long enough for balls still
+ * flowing down the ramp/gate to settle and score. Matched to the reveal delay so
+ * the number saved to the leaderboard is exactly the one shown at the whoosh. */
+export const MATCH_SETTLE_S = MATCH_RESULT_REVEAL_MS / 1000;
 
 // --------------------------------------------------------------- season ----
 /** Balance / season version. Leaderboards (Phase 3) are keyed to this: it is

@@ -211,7 +211,23 @@ export type ServerMsg =
   // ranked only: each driver's overall-ELO change, sent shortly after matchResult
   // once the match is scored + persisted (async DB write). Drives the results
   // screen's ELO reveal. Absent for custom/anonymous/DB-off matches.
-  | { t: 'eloResult'; results: EloDelta[] };
+  | { t: 'eloResult'; results: EloDelta[] }
+  // record runs only: the run's standing on the leaderboard (its mode×drivetrain×
+  // season bucket), sent shortly after matchResult once persisted. Drives the solo
+  // results screen's PB / WR / rank line. Absent for anonymous/DB-off runs.
+  | { t: 'recordResult'; info: RecordRankInfo };
+
+/** a finished record run's leaderboard standing (its mode×drivetrain×season
+ * bucket). `score` is the NET score (earned − own penalties). */
+export interface RecordRankInfo {
+  mode: RecordKind;
+  drivetrain: string;
+  score: number;
+  rank: number; // 1-based position in the bucket
+  total: number; // number of ranked players in the bucket
+  isPB: boolean; // this run beat the player's previous best in the bucket
+  isWR: boolean; // rank === 1
+}
 
 export const encodeMsg = (m: ClientMsg | ServerMsg): string => JSON.stringify(m);
 export const decodeClientMsg = (s: string): ClientMsg => JSON.parse(s) as ClientMsg;

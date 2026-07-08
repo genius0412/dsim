@@ -178,8 +178,21 @@ export function simulateReplay(replay: Replay): World {
 export interface ReplayResult {
   /** each alliance's final total (the record score is the run alliance's) */
   score: Record<Alliance, number>;
+  /** each alliance's penalty POINTS (points it was AWARDED from the opponent's
+   * fouls). In an opponent-free record run these belong to the empty opposing
+   * alliance and represent the fouls the PLAYER committed — subtracted from the
+   * player's score by `recordScore()`. */
+  foulPoints: Record<Alliance, number>;
   hash: number;
   ticks: number;
+}
+
+/** the net leaderboard score for an opponent-free record run by `alliance`: the
+ * alliance's earned total MINUS the penalty points it handed the (empty) opponent
+ * — i.e. its own committed fouls. Clamped at 0 (a run can't score negative). */
+export function recordScore(result: ReplayResult, alliance: Alliance): number {
+  const opp: Alliance = alliance === 'blue' ? 'red' : 'blue';
+  return Math.max(0, result.score[alliance] - result.foulPoints[opp]);
 }
 
 /** the server's anti-cheat entry point: re-simulate a submitted replay and
@@ -193,6 +206,7 @@ export function verifyReplay(replay: Replay): ReplayResult {
 export function worldResult(world: World): ReplayResult {
   return {
     score: { red: world.match.scores.red.total, blue: world.match.scores.blue.total },
+    foulPoints: { red: world.match.scores.red.foulPoints, blue: world.match.scores.blue.foulPoints },
     hash: worldHash(world),
     ticks: world.tick,
   };
@@ -250,7 +264,8 @@ export interface RecordRun {
 
 /** upper bound on a full match's ticks (+ slack), so a runaway can't spin forever */
 export function maxMatchTicks(): number {
-  const secs = C.PRE_COUNTDOWN + C.AUTO_DURATION + C.TRANSITION_DURATION + C.TELEOP_DURATION + 2;
+  const secs =
+    C.PRE_COUNTDOWN + C.AUTO_DURATION + C.TRANSITION_DURATION + C.TELEOP_DURATION + C.MATCH_SETTLE_S + 2;
   return Math.ceil(secs / C.SIM_DT);
 }
 
