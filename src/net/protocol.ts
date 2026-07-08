@@ -52,6 +52,8 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     driveX: q.dx / 127,
     driveY: q.dy / 127,
     rotate: q.rot / 127,
+    leftDrive: 0,
+    rightDrive: 0,
     intake: (q.buttons & BTN_INTAKE) !== 0,
     fire: (q.buttons & BTN_FIRE) !== 0,
   };

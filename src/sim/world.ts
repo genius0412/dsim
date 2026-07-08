@@ -24,6 +24,8 @@ const ZERO_CMD: RobotCommand = {
   driveX: 0,
   driveY: 0,
   rotate: 0,
+  leftDrive: 0,
+  rightDrive: 0,
   intake: false,
   fire: false,
 };

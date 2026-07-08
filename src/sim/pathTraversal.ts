@@ -24,6 +24,8 @@ const ZERO_CMD: RobotCommand = {
   driveX: 0,
   driveY: 0,
   rotate: 0,
+  leftDrive: 0,
+  rightDrive: 0,
   intake: false,
   fire: false,
 };
@@ -196,6 +198,8 @@ export function updatePathTraversal(
       driveX: 0,
       driveY: 0,
       rotate: 0,
+      leftDrive: 0,
+      rightDrive: 0,
       intake: true, // Force intake active during auto
       fire: true,   // Force fire active during auto
     };
@@ -220,6 +224,8 @@ export function updatePathTraversal(
         driveX: 0,
         driveY: 0,
         rotate: 0,
+        leftDrive: 0,
+        rightDrive: 0,
         intake: true,
         fire: true,
       };
@@ -257,6 +263,8 @@ export function updatePathTraversal(
       driveX: 0,
       driveY: 0,
       rotate: 0,
+      leftDrive: 0,
+      rightDrive: 0,
       intake: true, // Force intake active during auto
       fire: true,   // Force fire active during auto
     };
@@ -335,6 +343,8 @@ export function updatePathTraversal(
     driveX: 0,
     driveY: 0,
     rotate: 0,
+    leftDrive: 0,
+    rightDrive: 0,
     intake: true, // Force intake active during auto
     fire: true,   // Force fire active during auto
   };
