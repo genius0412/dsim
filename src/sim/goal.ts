@@ -256,19 +256,16 @@ export function updateRails(world: World, dt: number): void {
       let r1 = nextRandom(world.rngState);
       let r2 = nextRandom(r1.state);
       world.rngState = r2.state;
-      // gentle release: low forward momentum so the drain doesn't plow out in a
-      // straight line. A small forward-speed jitter plus a lateral kick breaks
-      // the collinearity; friction stalls the front balls and the ones behind
-      // carom off them (Rapier ball↔ball), fanning the drain across the floor.
-      const fwd = 0.75 + r1.value * 0.5; // 0.75–1.25 forward
-      const lat = (r2.value - 0.5) * C.TUNNEL_EXIT_SPREAD; // ± sideways kick
-      const speed0 = hyp(vel.x, vel.y) || 1;
-      const ux = -vel.y / speed0; // unit perpendicular to the exit direction
-      const uy = vel.x / speed0;
       b.state = { kind: 'ground' };
       b.z = 0;
       b.vz = 0;
-      b.vel = { x: vel.x * fwd + ux * lat, y: vel.y * fwd + uy * lat };
+      // gentle release, SAME treatment the overflow balls get: low forward
+      // momentum (friction + ball↔ball contact spread the drain instead of it
+      // plowing out) with an INDEPENDENT x/y jitter that fans the exit directions
+      // into a cone. A symmetric perpendicular kick was tried and split the tight
+      // drain column into TWO diverging branches — the independent jitter keeps
+      // every ball moving in the same quadrant, so they fan out instead.
+      b.vel = { x: vel.x * (0.6 + r1.value * 0.8), y: vel.y * (0.6 + r2.value * 0.8) };
     }
   }
 }

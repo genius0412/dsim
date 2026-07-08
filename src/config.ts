@@ -432,9 +432,6 @@ export const TUNNEL_EXIT = { x: 68, y: -3 };
  * front balls stall on friction and the ones behind carom off them, so the
  * drain fans out across the floor instead of running linear. */
 export const TUNNEL_EXIT_VEL = { along: 22, inward: 8 }; // toward audience, off the wall
-/** random lateral (sideways) kick on release, in/s — breaks the collinearity so
- * ball-ball contact has something to amplify into a spread */
-export const TUNNEL_EXIT_SPREAD = 14; // in/s
 
 // ---------------------------------------------------------------- zones ----
 /** small audience-side launch zone: apex (0,-48), base 2 tiles on the wall */
