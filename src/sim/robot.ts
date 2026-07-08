@@ -92,9 +92,11 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   let targetOmega = 0;
 
   if (dp.saturation === 'tank') {
-    // Traditional Tank Drive: leftDrive and rightDrive independently control sides
-    const ld = cmd.leftDrive;
-    const rd = cmd.rightDrive;
+    // Traditional Tank Drive: leftDrive and rightDrive independently control sides.
+    // Default to 0 when absent (e.g. a driver-frame stick command with no tank
+    // fields) — otherwise (undefined + undefined)/2 is NaN and the pose explodes.
+    const ld = cmd.leftDrive ?? 0;
+    const rd = cmd.rightDrive ?? 0;
     targetFwd = ((ld + rd) / 2) * dp.maxSpeed;
     targetOmega = (rd - ld) * (dp.maxTurn / 2);
     targetStrafe = 0;
