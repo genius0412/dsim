@@ -1,4 +1,29 @@
-# HANDOFF — 2026-07-08 (session 7: intake/ball feel + seasons + multi-server) — READ FIRST
+# HANDOFF — 2026-07-08 (session 8: high-ping robot-collision fix) — READ FIRST
+
+## This session (on `main`, build + smoke GREEN, NOT committed/pushed yet)
+**Fixed: robot-robot & robot-field collisions feeling wrong at high ping** (phantom
+contacts + visible overlap). Root cause was a render/physics TIME-BASE mismatch in
+`src/game.ts`: the local robot was drawn at its predicted PRESENT pose, but remote
+robots were drawn via past-time entity interpolation (`snapBuf`/`renderTick`,
+~RTT/2+66ms behind), while collision physics in `this.world` resolves against remotes'
+predicted-PRESENT poses. So you collided with where a remote *was*, not where it was
+*drawn* — scaling with ping.
+**Fix**: deleted the past-time interpolation and now render EVERY robot at its
+predicted-present pose + a decaying cosmetic correction offset — the local robot's
+`localSmooth` technique, extended to remotes via `remoteSmooth` (Map by id). Remotes
+are already predicted forward in `this.world` from their held command, so seen ==
+collided, and client physics stays aligned with the server (no rubberband on
+push/pin — right for this push-heavy game; cf. Rocket League). Changed only
+`game.ts` (`displayWorld`/`reconcile`/decay loop/fields) + doc'd in CLAUDE.md Phase 1.
+Balls were already rendered from the predicted sim — unchanged.
+**Next steps if issues persist**: watch for remote *overshoot* on sudden direction
+reversals at very high ping (held-command prediction is stale ~RTT/2); if bad, cap
+remote prediction lead or add held-command decay. `SMOOTH_HALFLIFE`/`SMOOTH_MAX_DIST`
+tune the ease-in vs. snap. Verify live 2-client at real latency (smoke can't).
+
+---
+
+# HANDOFF — 2026-07-08 (session 7: intake/ball feel + seasons + multi-server)
 
 ## Branch strategy (IMPORTANT — this session introduced a two-branch split)
 - **`alpha`** = the primary dev line: physics/ball tuning **plus** the new backend features.
