@@ -6,6 +6,7 @@ import type {
   MatchPhase,
   Motif,
   RobotCommand,
+  RobotState,
   ScoreBreakdown,
   World,
   GameSettings,
@@ -26,11 +27,21 @@ import type { RecordRankInfo } from './net/protocol';
 // modules import it from './game'.
 export type { GameSettings };
 
-// Visual error-smoothing for the local robot on reconcile (rubberbanding fix):
-// ease the rendered position to the authoritative one over ~SMOOTH_HALFLIFE, but
-// SNAP when a correction exceeds SMOOTH_MAX_DIST (a real desync, not jitter).
+// Visual error-smoothing for the LOCAL robot on reconcile (it stays predicted for
+// zero input lag; the snap correction is eased in over ~SMOOTH_HALFLIFE, or SNAPs
+// past SMOOTH_MAX_DIST — a real desync, not jitter).
 const SMOOTH_HALFLIFE = 0.06; // s — the offset halves every 60ms (~gone in 200ms)
 const SMOOTH_MAX_DIST = 16; // in — larger corrections snap instead of floating
+
+// Minecraft-style entity INTERPOLATION for REMOTE robots + balls: render them a
+// couple snapshots in the PAST and lerp between the two authoritative states that
+// bracket the render clock — buttery smooth at any FPS regardless of tick rate.
+const INTERP_DELAY_TICKS = 4; // render remotes/balls ~4 ticks (66ms) behind latest
+const INTERP_BUFFER = 8; // authoritative snapshots kept for interpolation
+const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+/** shortest-arc angle lerp */
+const lerpAngle = (a: number, b: number, t: number): number =>
+  a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * t;
 
 export interface Toast {
   id: number;
@@ -152,6 +163,17 @@ export class GameController {
    * correction is eased in (render loop decays it) instead of snapping — hides
    * rubberbanding from jittery snapshots. Never affects `this.world`. */
   private localSmooth = { x: 0, y: 0, heading: 0 };
+  /** authoritative entity poses per received snapshot (id order stripped to just
+   * pose), for interpolating REMOTE robots + balls between them. Captured BEFORE
+   * reconcile mutates the snapshot world. */
+  private snapBuf: {
+    tick: number;
+    robots: { id: number; x: number; y: number; heading: number }[];
+    balls: { id: number; x: number; y: number; z: number }[];
+  }[] = [];
+  /** the interpolation render clock (in server ticks), lagging the latest snapshot
+   * by ~INTERP_DELAY_TICKS; eased forward each frame for smooth playback */
+  private renderTick = 0;
   /** each remote robot's latest command (from the newest snapshot), held to
    * PREDICT it forward so its collisions are simulated, not faked */
   private remoteCmds = new Map<number, RobotCommand>();
@@ -427,16 +449,16 @@ export class GameController {
     const dtMs = this.lastT ? t - this.lastT : 16;
     this.lastT = t;
     if (!this.session) this.frameLogic(dtMs);
-    // decay the visual smoothing offset toward 0 (frame-rate independent), so the
-    // rendered local robot glides to the authoritative position after a reconcile
+    // decay the local robot's error-smoothing offset toward 0 (frame-rate independent)
     const dtSec = Math.min(dtMs / 1000, 0.1);
     const k = Math.pow(2, -dtSec / SMOOTH_HALFLIFE);
     this.localSmooth.x *= k;
     this.localSmooth.y *= k;
     this.localSmooth.heading *= k;
-    // remotes are predicted in the sim (moved + collided), so render straight from
-    // the predicted world; the local robot gets the eased-in reconcile offset
-    this.renderer.render(this.ctx, this.world, this.lastCmd, this.localRobotId, this.localSmooth);
+    // solo renders the predicted world directly; the networked path renders remote
+    // robots + balls INTERPOLATED (smooth) with the local robot predicted
+    const world = this.session ? this.displayWorld(dtMs) : this.world;
+    this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId);
     this.raf = requestAnimationFrame(this.loop);
   };
 
@@ -484,6 +506,7 @@ export class GameController {
     // reconcile to the freshest server snapshot BEFORE predicting this frame
     const snap = s.takeSnapshot();
     if (snap) {
+      this.bufferSnapshot(snap); // capture authoritative poses BEFORE reconcile mutates them
       this.remoteCmds = snap.cmds; // hold each robot's command to predict it forward
       this.reconcile(snap);
     }
@@ -512,6 +535,81 @@ export class GameController {
     const m = new Map(this.remoteCmds);
     m.set(this.localRobotId, local);
     return m;
+  }
+
+  /** record an authoritative snapshot's entity poses for interpolation. Copies the
+   * poses (not the world) — the snapshot world is mutated by reconcile right after. */
+  private bufferSnapshot(snap: Snapshot): void {
+    const w = snap.world;
+    this.snapBuf.push({
+      tick: snap.serverTick,
+      robots: w.robots.map((r) => ({ id: r.id, x: r.pos.x, y: r.pos.y, heading: r.heading })),
+      balls: w.balls.map((b) => ({ id: b.id, x: b.pos.x, y: b.pos.y, z: b.z })),
+    });
+    if (this.snapBuf.length > INTERP_BUFFER) this.snapBuf.shift();
+  }
+
+  /** the world to RENDER (networked path): the local robot stays predicted (+ eased
+   * error offset) for responsiveness; remote robots + balls are INTERPOLATED between
+   * the two authoritative snapshots bracketing the render clock — Minecraft-style, so
+   * they glide smoothly regardless of the 30 Hz snapshot rate or network jitter. */
+  private displayWorld(dtMs: number): World {
+    const local = (r: RobotState): RobotState =>
+      ({
+        ...r,
+        pos: { x: r.pos.x + this.localSmooth.x, y: r.pos.y + this.localSmooth.y },
+        heading: r.heading + this.localSmooth.heading,
+      });
+
+    const buf = this.snapBuf;
+    if (buf.length < 2) {
+      // not enough history to interpolate yet — just apply local smoothing
+      return { ...this.world, robots: this.world.robots.map((r) => (r.id === this.localRobotId ? local(r) : r)) };
+    }
+
+    // advance the interpolation clock at real-time rate, then gently pull it toward
+    // (latest - delay) to absorb clock drift + snapshot jitter; clamp to the buffer
+    const latest = buf[buf.length - 1].tick;
+    const oldest = buf[0].tick;
+    this.renderTick += Math.min(dtMs / 1000, 0.1) / C.SIM_DT;
+    this.renderTick += (latest - INTERP_DELAY_TICKS - this.renderTick) * 0.1;
+    this.renderTick = Math.max(oldest, Math.min(this.renderTick, latest));
+
+    // find the pair of snapshots bracketing the render clock
+    let s0 = buf[0];
+    let s1 = buf[1];
+    for (let i = buf.length - 2; i >= 0; i--) {
+      if (buf[i].tick <= this.renderTick) {
+        s0 = buf[i];
+        s1 = buf[i + 1];
+        break;
+      }
+    }
+    const span = s1.tick - s0.tick;
+    const a = span > 0 ? Math.max(0, Math.min(1, (this.renderTick - s0.tick) / span)) : 0;
+    const r0 = new Map(s0.robots.map((r) => [r.id, r] as const));
+    const r1 = new Map(s1.robots.map((r) => [r.id, r] as const));
+    const b0 = new Map(s0.balls.map((b) => [b.id, b] as const));
+    const b1 = new Map(s1.balls.map((b) => [b.id, b] as const));
+
+    const robots = this.world.robots.map((r) => {
+      if (r.id === this.localRobotId) return local(r); // predicted, responsive
+      const p = r0.get(r.id);
+      const q = r1.get(r.id);
+      if (!p || !q) return r; // just spawned/left the buffer — fall back to predicted
+      return {
+        ...r,
+        pos: { x: lerp(p.x, q.x, a), y: lerp(p.y, q.y, a) },
+        heading: lerpAngle(p.heading, q.heading, a),
+      };
+    });
+    const balls = this.world.balls.map((ball) => {
+      const p = b0.get(ball.id);
+      const q = b1.get(ball.id);
+      if (!p || !q) return ball;
+      return { ...ball, pos: { x: lerp(p.x, q.x, a), y: lerp(p.y, q.y, a) }, z: lerp(p.z, q.z, a) };
+    });
+    return { ...this.world, robots, balls };
   }
 
   /** adopt the authoritative world, discard inputs it already reflects, and
@@ -565,6 +663,9 @@ export class GameController {
     this.acc = 0;
     this.inputBuf = [];
     this.remoteCmds = new Map();
+    this.snapBuf = [];
+    this.renderTick = 0;
+    this.localSmooth = { x: 0, y: 0, heading: 0 };
     this.seedActionAudio();
     this.toasts = [];
   }
