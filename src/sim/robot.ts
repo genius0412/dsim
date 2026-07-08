@@ -1,7 +1,7 @@
 import type { Artifact, ArtifactColor, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
 import { approach, rot, wrapAngle, hyp, dsin, dcos, dtan, datan2, clamp } from '../math';
-import { classifierRect, goalCenter, launchTriangles, viewAngleOf } from './field';
+import { classifierRect, flywheelSpinTarget, goalCenter, launchTriangles, viewAngleOf } from './field';
 import { driveParams } from './drivetrain';
 import { robotIntersectsConvex } from './physics';
 import { robotsEnabled } from './match';
@@ -78,9 +78,15 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   // 75/7/280 calibration holds) and record it for the Rapier shove.
   const intakeDraw =
     (cmd.intake || r.autoIntake) && r.hopper.length < C.HOPPER_CAPACITY;
+  // flywheel: a small steady HOLD cost (being far barely matters) plus the
+  // DOMINANT SPIN-UP cost of accelerating the wheel while driving away from the
+  // goal — both scale with the wheel's inertia (heavy = expensive to spin up).
+  const flywheelDraw =
+    r.spec.flywheelInertia *
+    (C.POWER_DRAW_FLYWHEEL_HOLD * r.flywheelSpin +
+      C.POWER_DRAW_FLYWHEEL_SPINUP * r.flywheelSpinRate);
   const draw = Math.min(
-    C.POWER_DRAW_FLYWHEEL * r.spec.flywheelInertia * r.flywheelSpin +
-      (intakeDraw ? C.POWER_DRAW_INTAKE : 0),
+    flywheelDraw + (intakeDraw ? C.POWER_DRAW_INTAKE : 0),
     C.POWER_DRAW_MAX,
   );
   r.powerDraw = draw;
@@ -163,7 +169,7 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
  * Updates the robot's actions (turret, fire, intake).
  * This function is called for all robots regardless of movement type.
  */
-export function updateRobotActions(world: World, r: RobotState, cmd: RobotCommand, _dt: number): void {
+export function updateRobotActions(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
   // If autoPathActive, force aimAssist, autoIntake, and autoFire to true
   if (r.autoPathActive) {
     r.aimAssist = true;
@@ -178,12 +184,14 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
   }
 
   // ---- flywheel spin: ramps with distance to this robot's OWN goal (a far
-  // shot needs a faster wheel). Read one tick later by updateRobot's power
-  // draw — the one-tick lag is invisible and keeps the sim deterministic. ----
+  // shot needs a faster wheel), and its positive RATE of change tracks how fast
+  // the wheel is spinning up as the robot drives away. Both are read one tick
+  // later by updateRobot's power draw — the lag is invisible and deterministic.
   {
-    const g = goalCenter(r.alliance);
-    const d = hyp(g.x - r.pos.x, g.y - r.pos.y);
-    r.flywheelSpin = clamp((d - C.FLY_SPIN_NEAR) / (C.FLY_SPIN_FAR - C.FLY_SPIN_NEAR), 0, 1);
+    const target = flywheelSpinTarget(r.alliance, r.pos);
+    // spin-UP only: driving toward the goal (spin falling) draws no drive power
+    r.flywheelSpinRate = dt > 0 ? Math.max(0, (target - r.flywheelSpin) / dt) : 0;
+    r.flywheelSpin = target;
   }
 
   // ---- fire: no spin-up before the FIRST shot; between shots the cadence

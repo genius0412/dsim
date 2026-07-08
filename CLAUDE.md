@@ -123,15 +123,21 @@ the gateway), so a tap usually drains the whole column.
    (shotNorm≈0 ⇒ recovery≈0); only FAR shots are slowed, and only for low-inertia
    flywheels (high inertia ⇒ base cadence even at range). `r.fireReadyAt` gates the
    next shot in `robot.ts`. The DEFAULT robot (inertia 0.5) keeps a snappy burst.
-   **POWER DRAW** (session 7): a spun-up flywheel (`flywheelInertia × flywheelSpin`,
-   where `flywheelSpin` ramps 0→1 with distance to the robot's OWN goal,
-   `FLY_SPIN_NEAR`→`FLY_SPIN_FAR`) plus a running intake pull current off the drive
-   motors — `r.powerDraw = min(POWER_DRAW_FLYWHEEL·inertia·spin + (intake?
-   POWER_DRAW_INTAKE:0), POWER_DRAW_MAX 0.18)`. It scales a LOCAL `driveParams` copy in
-   `updateRobot` (speed/accel/turn ×(1−draw)) — `driveParams()` itself is untouched so
-   the 75/7/280 calibration holds — AND weakens the shove (see #7). One-tick lag (fire
-   runs after drive) is invisible + deterministic. `flywheelSpin`/`powerDraw` are
-   serialized `RobotState` fields.
+   **POWER DRAW** (session 7; rebalanced session 11): a running intake plus the
+   flywheel pull current off the drive motors. The flywheel has TWO terms, both
+   ×`flywheelInertia`: a small steady HOLD (`POWER_DRAW_FLYWHEEL_HOLD·spin` — just
+   being far from the goal barely matters, by design) and the DOMINANT SPIN-UP
+   (`POWER_DRAW_FLYWHEEL_SPINUP·flywheelSpinRate` — the cost of ACCELERATING the
+   wheel while driving AWAY from the goal; spinning DOWN costs nothing). `flywheelSpin`
+   ramps 0→1 with distance to the robot's OWN goal (`FLY_SPIN_NEAR`→`FLY_SPIN_FAR`,
+   via `flywheelSpinTarget`) and `flywheelSpinRate` is its positive rate of change
+   (1/s); both set in `updateRobotActions`. `r.powerDraw = min(inertia·(HOLD·spin +
+   SPINUP·spinRate) + (intake?POWER_DRAW_INTAKE:0), POWER_DRAW_MAX 0.18)`. It scales a
+   LOCAL `driveParams` copy in `updateRobot` (speed/accel/turn ×(1−draw)) —
+   `driveParams()` itself is untouched so the 75/7/280 calibration holds — AND weakens
+   the shove (see #7). One-tick lag (fire runs after drive) is invisible + deterministic.
+   `flywheelSpin` seeds at the spawn-distance target so there's no phantom first-tick
+   spin-up.
 2. **The shooter NEVER misses**: no dispersion; adaptive hood angle (55°→80°) so an
    exact solution exists at every distance incl. point-blank; turret is always exactly
    on the lead-compensated solution (no slew limit); opening accepts ascending entries.

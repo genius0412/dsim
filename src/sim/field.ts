@@ -88,6 +88,17 @@ export function goalCenter(a: Alliance): Vec2 {
   };
 }
 
+/** flywheel spin TARGET (0..1) for a robot at `pos`: a far shot needs a faster
+ * wheel, so this ramps with distance to the robot's OWN goal
+ * (FLY_SPIN_NEAR→FLY_SPIN_FAR). Shared by spawn init and the per-tick update so
+ * the ramp can't drift between them. */
+export function flywheelSpinTarget(a: Alliance, pos: Vec2): number {
+  const g = goalCenter(a);
+  const d = Math.hypot(g.x - pos.x, g.y - pos.y);
+  const t = (d - C.FLY_SPIN_NEAR) / (C.FLY_SPIN_FAR - C.FLY_SPIN_NEAR);
+  return t < 0 ? 0 : t > 1 ? 1 : t;
+}
+
 /** corners of the goal footprint: a right triangle tucked into the far
  * corner, legs flush along the far wall (GOAL_FACE_WIDTH) and side wall
  * (GOAL_DEPTH); the hypotenuse is the FACE. Order: far-wall face pt,

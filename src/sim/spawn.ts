@@ -22,7 +22,7 @@ import * as C from '../config';
 import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
 import { massLimits, rpmLimits } from './drivetrain';
 import { heldSlotPos } from './physics';
-import { loadPreStage, spikeMarkBalls, startPose } from './field';
+import { flywheelSpinTarget, loadPreStage, spikeMarkBalls, startPose } from './field';
 import { emptyScore } from './scoring';
 
 export const MOTIFS: Motif[] = [
@@ -344,7 +344,9 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       lastFireAt: -10,
       lastIntakeAt: -10,
       fireReadyAt: 0,
-      flywheelSpin: 0,
+      // seed at the spawn-distance target so the first tick sees no phantom spin-up
+      flywheelSpin: flywheelSpinTarget(s.alliance, pose.pos),
+      flywheelSpinRate: 0,
       powerDraw: 0,
       // Initialize new auto pathing fields
       autoPathActive: !!(s.autoPathEnabled && robotAutoPath !== undefined),

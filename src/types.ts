@@ -109,6 +109,10 @@ export interface RobotState {
   /** 0..1 flywheel spin level, ramped by distance to this robot's own goal
    * (set in updateRobotActions; feeds power draw one tick later) */
   flywheelSpin: number;
+  /** positive rate of change of flywheelSpin (1/s) — how fast the wheel is
+   * SPINNING UP as the robot drives away from its goal (0 when idle or spinning
+   * down; set in updateRobotActions; feeds power draw one tick later) */
+  flywheelSpinRate: number;
   /** 0..POWER_DRAW_MAX current drawn from the drive motors by the flywheel +
    * intake (set in updateRobot); slows the robot and weakens its shove */
   powerDraw: number;

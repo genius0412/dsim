@@ -244,12 +244,21 @@ export const DRIVETRAIN_PRESETS = {
 export const FLYWHEEL_CLOSE_SPEED = 135; // in/s launch speed considered "close"
 export const FLYWHEEL_RECOVERY_MAX = 1.25; // s extra between max-range shots at inertia 0
 
-/** POWER DRAW: a spun-up flywheel (high inertia × far shot) or a running intake
- * pulls current away from the drive motors, so the robot gets slightly slower
- * AND pushes weaker. Draw scales drive speed/accel down by (1 − draw) and the
- * Rapier shove mass by the same, capped so it stays "slight". flywheelSpin is a
- * 0..1 ramp with distance to the robot's own goal (FLY_SPIN_NEAR→FLY_SPIN_FAR). */
-export const POWER_DRAW_FLYWHEEL = 0.12; // full-inertia, fully-spun flywheel
+/** POWER DRAW: a running intake, plus the flywheel, pull current away from the
+ * drive motors, so the robot gets slightly slower AND pushes weaker. Draw scales
+ * drive speed/accel down by (1 − draw) and the Rapier shove mass by the same,
+ * capped so it stays "slight". The flywheel has TWO terms (both × inertia):
+ *  - HOLD: a small steady cost for keeping a spun-up wheel turning. Just being
+ *    far from the goal barely matters — this is intentionally light.
+ *  - SPIN-UP: the DOMINANT cost of ACCELERATING the wheel, i.e. actively driving
+ *    AWAY from the goal so the required spin is climbing. Proportional to how
+ *    fast the spin target is rising (per second) — a heavy (high-inertia) wheel
+ *    is expensive to spin up, a light one is nearly free. Spinning DOWN (driving
+ *    toward the goal) costs nothing. flywheelSpin is a 0..1 ramp with distance to
+ *    the robot's own goal (FLY_SPIN_NEAR→FLY_SPIN_FAR); flywheelSpinRate is its
+ *    positive rate of change (1/s), both set in updateRobotActions. */
+export const POWER_DRAW_FLYWHEEL_HOLD = 0.04; // steady: inertia × spin (far & idle)
+export const POWER_DRAW_FLYWHEEL_SPINUP = 0.45; // per 1/s of rising spin: inertia × rate
 export const POWER_DRAW_INTAKE = 0.06; // intake motors running
 export const POWER_DRAW_MAX = 0.18; // cap ⇒ at most ~18% slower ("slightly")
 export const FLY_SPIN_NEAR = 40; // in to goal: flywheel spin 0
