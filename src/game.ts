@@ -20,6 +20,7 @@ import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
 import type { MatchResultInfo, NetSession, Snapshot } from './net/session';
 import { localizeCommand } from './net/protocol';
+import type { RecordRankInfo } from './net/protocol';
 
 // GameSettings is defined canonically in ./types; re-exported here because many
 // modules import it from './game'.
@@ -571,6 +572,12 @@ export class GameController {
    * or null in solo / before phase 'post' */
   getMatchResult(): MatchResultInfo | null {
     return this.session?.getMatchResult() ?? null;
+  }
+
+  /** a record run's leaderboard standing (PB / WR / rank), or null until the
+   * server's recordResult lands (record runs only) */
+  getRecordResult(): RecordRankInfo | null {
+    return this.session?.getRecordResult?.() ?? null;
   }
 
   /** ranked pre-match intro roster (name/team/drivetrain + ELO per driver), or

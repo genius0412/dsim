@@ -159,6 +159,7 @@ export function App() {
       <GameView
         settings={settings}
         session={session}
+        signedIn={signedIn}
         onExit={exitGame}
         onWatchReplay={(r) => {
           setReplayObj(r);

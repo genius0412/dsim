@@ -190,6 +190,29 @@ export async function personalBest(
   return rows[0]?.score ?? null;
 }
 
+/** the user's standing in a season × mode × drivetrain bucket, by their BEST
+ * score there: 1-based `rank` (ties share the better rank) and the bucket's
+ * player `total`. Call AFTER submitting the run so it reflects it. */
+export async function recordRank(
+  userId: string,
+  mode: 'solo' | 'duo',
+  drivetrain: string,
+  balanceVersion: number,
+): Promise<{ rank: number; total: number }> {
+  const rows = await q<{ rank: number; total: number }>(
+    `with best as (
+       select user_id, max(score) as s from records
+       where balance_version = $1 and mode = $2 and drivetrain = $3
+       group by user_id
+     ), me as (select s from best where user_id = $4)
+     select
+       (select count(*) from best)::int as total,
+       (1 + (select count(*) from best where s > (select s from me)))::int as rank`,
+    [balanceVersion, mode, drivetrain, userId],
+  );
+  return { rank: rows[0]?.rank ?? 1, total: rows[0]?.total ?? 1 };
+}
+
 // -------------------------------------------------------- robot presets -----
 export async function listPresets(
   userId: string,

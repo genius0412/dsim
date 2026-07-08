@@ -10,6 +10,7 @@ import { keyLabel, padButtonLabel } from '../input/bindings';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
 import { MobileControls } from './MobileControls';
 import type { MatchResultInfo, NetSession } from '../net/session';
+import type { RecordRankInfo } from '../net/protocol';
 import type { Replay } from '../sim/replay';
 import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
 
@@ -52,9 +53,12 @@ interface Props {
   session?: NetSession | null;
   /** watch the just-played run's replay (server matches only) */
   onWatchReplay?: (replay: Replay) => void;
+  /** whether the player is signed in — drives the record results "sign in to
+   * save & rank" prompt vs the live PB / WR / rank line */
+  signedIn?: boolean;
 }
 
-export function GameView({ settings, onExit, session = null, onWatchReplay }: Props) {
+export function GameView({ settings, onExit, session = null, onWatchReplay, signedIn = false }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controllerRef = useRef<GameController | null>(null);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
@@ -163,6 +167,8 @@ export function GameView({ settings, onExit, session = null, onWatchReplay }: Pr
           onRematch={() => controllerRef.current?.rematch()}
           onExit={onExit}
           matchResult={controllerRef.current?.getMatchResult() ?? null}
+          recordResult={controllerRef.current?.getRecordResult() ?? null}
+          signedIn={signedIn}
           onWatchReplay={onWatchReplay}
         />
       )}
@@ -404,6 +410,8 @@ function Results({
   onRematch,
   onExit,
   matchResult,
+  recordResult,
+  signedIn,
   onWatchReplay,
 }: {
   hud: HudSnapshot;
@@ -418,12 +426,24 @@ function Results({
   onRematch: () => void;
   onExit: () => void;
   matchResult: MatchResultInfo | null;
+  /** record run's leaderboard standing, or null until the server's recordResult
+   * lands (or forever if anonymous) */
+  recordResult: RecordRankInfo | null;
+  signedIn: boolean;
   onWatchReplay?: (replay: Replay) => void;
 }) {
   const red = hud.alliance === 'red' ? hud.score : hud.oppScore;
   const blue = hud.alliance === 'blue' ? hud.score : hud.oppScore;
   const winner: Alliance | 'tie' =
     red.total > blue.total ? 'red' : blue.total > red.total ? 'blue' : 'tie';
+
+  // RECORD runs are opponent-free score attacks: no winner, and the player's own
+  // fouls (which are "awarded" to the empty opposing alliance) SUBTRACT from the
+  // net score shown + saved.
+  const isRecord = matchResult?.kind === 'record';
+  const mine = hud.score; // the player's own breakdown
+  const penaltyPts = hud.oppScore.foulPoints; // points the player's fouls handed the empty opponent
+  const netScore = Math.max(0, mine.total - penaltyPts);
 
   // hold the reveal until the whoosh fires, then count up + slam the winner
   const [revealed, setRevealed] = useState(false);
@@ -438,6 +458,27 @@ function Results({
   }, [revealAt]);
   const redTotal = useCountUp(red.total, revealed, 900);
   const blueTotal = useCountUp(blue.total, revealed, 900);
+  const netTotal = useCountUp(netScore, revealed, 900);
+
+  if (isRecord) {
+    return (
+      <RecordResults
+        hud={hud}
+        mine={mine}
+        penaltyPts={penaltyPts}
+        netScore={netScore}
+        netTotal={netTotal}
+        revealed={revealed}
+        recordResult={recordResult}
+        signedIn={signedIn}
+        matchResult={matchResult}
+        canRematch={canRematch}
+        onRematch={onRematch}
+        onExit={onExit}
+        onWatchReplay={onWatchReplay}
+      />
+    );
+  }
 
   const f = hud.fouls; // fouls COMMITTED by each alliance
   const val = (get: (s: ScoreBreakdown) => number): [number, number] => [get(red), get(blue)];
@@ -552,6 +593,160 @@ function Results({
           )}
           <button onClick={onExit}>MENU</button>
         </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const DRIVETRAIN_LABEL: Record<string, string> = {
+  mecanum: 'Mecanum',
+  xdrive: 'X-Drive',
+  tank: 'Tank',
+  swerve: 'Swerve',
+};
+const prettyDrivetrain = (d: string): string => DRIVETRAIN_LABEL[d] ?? d;
+
+/** the PB / WR / rank line on a record run's results screen. Null info ⇒ either
+ * the run is still being scored (signed in) or it was anonymous (prompt to sign
+ * in — anonymous runs are never persisted, so no rank exists). */
+function RecordStanding({ info, signedIn }: { info: RecordRankInfo | null; signedIn: boolean }) {
+  if (!info) {
+    return signedIn ? (
+      <p className="ds-hint record-standing pending">Saving · computing your rank…</p>
+    ) : (
+      <p className="record-standing signin">Sign in to save this run &amp; see your rank →</p>
+    );
+  }
+  const cat = `${info.mode === 'duo' ? 'Duo' : 'Solo'} · ${prettyDrivetrain(info.drivetrain)}`;
+  if (info.isWR) {
+    return (
+      <div className="record-standing wr">
+        <strong>🏆 WORLD RECORD</strong>
+        <span>{cat} · #1 of {info.total}</span>
+      </div>
+    );
+  }
+  if (info.isPB) {
+    return (
+      <div className="record-standing pb">
+        <strong>★ NEW PERSONAL BEST</strong>
+        <span>{cat} · #{info.rank} of {info.total}</span>
+      </div>
+    );
+  }
+  return (
+    <div className="record-standing rank">
+      <strong>#{info.rank}</strong>
+      <span>of {info.total} · {cat}</span>
+    </div>
+  );
+}
+
+/** opponent-free record-run results: one net score (own penalties subtracted),
+ * a PB / WR / rank line, and a single-column breakdown. No opponent, no winner. */
+function RecordResults({
+  hud,
+  mine,
+  penaltyPts,
+  netScore,
+  netTotal,
+  revealed,
+  recordResult,
+  signedIn,
+  matchResult,
+  canRematch,
+  onRematch,
+  onExit,
+  onWatchReplay,
+}: {
+  hud: HudSnapshot;
+  mine: ScoreBreakdown;
+  penaltyPts: number;
+  netScore: number;
+  netTotal: number;
+  revealed: boolean;
+  recordResult: RecordRankInfo | null;
+  signedIn: boolean;
+  matchResult: MatchResultInfo | null;
+  canRematch: boolean;
+  onRematch: () => void;
+  onExit: () => void;
+  onWatchReplay?: (replay: Replay) => void;
+}) {
+  const f = hud.fouls[hud.alliance]; // fouls the PLAYER committed
+  const sections: [string, [string, number][]][] = [
+    ['AUTONOMOUS', [
+      ['Leave', mine.leave],
+      ['Classified', mine.autoClassified],
+      ['Overflow', mine.autoOverflow],
+      ['Pattern', mine.autoPattern],
+    ]],
+    ['DRIVER-CONTROLLED', [
+      ['Classified', mine.teleClassified],
+      ['Overflow', mine.teleOverflow],
+      ['Pattern', mine.telePattern],
+    ]],
+    ['END OF MATCH', [
+      ['Depot', mine.depot],
+      ['Base return', mine.base],
+    ]],
+  ];
+
+  return (
+    <div className="overlay">
+      <div className={`overlay-panel results record ${revealed ? 'revealed' : 'tallying'}`}>
+        <h2>{revealed ? 'RUN COMPLETE' : 'FINAL SCORE'}</h2>
+        <div className={`record-scoreline ${revealed ? 'reveal' : ''}`}>
+          <strong className="record-total">{revealed ? netTotal : '—'}</strong>
+          <span className="record-total-label">POINTS</span>
+        </div>
+        {!revealed && <p className="ds-hint results-wait">Tallying the score…</p>}
+        {revealed && (
+          <>
+            <RecordStanding info={recordResult} signedIn={signedIn} />
+            <table className="score-table results-table record-table">
+              <tbody>
+                {sections.map(([title, rows]) => (
+                  <Fragment key={title}>
+                    <tr className="section-row"><td colSpan={2}>{title}</td></tr>
+                    {rows.map(([label, v]) => (
+                      <tr key={label}>
+                        <td className="cat">{label}</td>
+                        <td className="bv">{v}</td>
+                      </tr>
+                    ))}
+                  </Fragment>
+                ))}
+                <tr className="section-row"><td colSpan={2}>PENALTIES</td></tr>
+                <tr className="penalty-row">
+                  <td className="cat">
+                    Fouls committed ({f.minor} minor · {f.major} major)
+                  </td>
+                  <td className="bv">{penaltyPts > 0 ? `−${penaltyPts}` : 0}</td>
+                </tr>
+                <tr className="total-row">
+                  <td className="cat">NET SCORE</td>
+                  <td className="bv">{netScore}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="ds-hint">
+              Your own fouls ({PTS_FOUL_MINOR} pt minor · {PTS_FOUL_MAJOR} pt major) subtract from
+              your score.
+            </p>
+            <div className="overlay-buttons">
+              {matchResult && onWatchReplay && (
+                <button onClick={() => onWatchReplay(matchResult.replay)}>▶ WATCH REPLAY</button>
+              )}
+              {canRematch ? (
+                <button onClick={onRematch}>RUN AGAIN</button>
+              ) : (
+                <button disabled>WAITING FOR HOST…</button>
+              )}
+              <button onClick={onExit}>MENU</button>
+            </div>
           </>
         )}
       </div>

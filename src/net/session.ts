@@ -1,7 +1,7 @@
 import type { RobotCommand, World } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
-import type { EloDelta, PlayerIntro, RecordKind, RoomKind } from './protocol';
+import type { EloDelta, PlayerIntro, RecordKind, RecordRankInfo, RoomKind } from './protocol';
 
 /** the server's authoritative end-of-match payload (score + recorded replay) */
 export interface MatchResultInfo {
@@ -72,6 +72,9 @@ export interface NetSession {
   /** the server's end-of-match result (score + recorded replay), or null before
    * phase 'post' — drives the Results screen's "recorded / watch replay" */
   getMatchResult(): MatchResultInfo | null;
+  /** a record run's leaderboard standing (PB / WR / rank), or null until the
+   * server's `recordResult` lands after persistence — record runs only */
+  getRecordResult?(): RecordRankInfo | null;
   status(): NetStatus;
   dispose(): void;
 }
