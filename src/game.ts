@@ -40,6 +40,8 @@ export interface EloResultRow {
   before: number;
   after: number;
   isLocal: boolean;
+  /** Glicko rating deviation after the game — high ⇒ provisional rating */
+  provisional: boolean;
 }
 
 /** one driver's pre-match intro card (ranked matches only) */
@@ -613,6 +615,7 @@ export class GameController {
         before: d.before,
         after: d.after,
         isLocal: d.robotId === this.localRobotId,
+        provisional: d.rd > 110, // RD_PROVISIONAL — still a wide confidence band
       };
     });
     return rows.sort((a, b) => (a.alliance === b.alliance ? 0 : a.alliance === 'red' ? -1 : 1));

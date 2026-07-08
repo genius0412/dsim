@@ -256,19 +256,39 @@ export async function getRating(
   return rows[0]?.rating ?? 1000;
 }
 
+/** the full Glicko-2 state (rating + deviation + volatility). Defaults are a
+ * fresh, maximally-uncertain player: 1000 / RD 350 / vol 0.06. */
+export async function getRatingFull(
+  userId: string,
+  mode: '1v1' | '2v2',
+  drivetrain: string,
+  balanceVersion: number,
+): Promise<{ rating: number; rd: number; vol: number }> {
+  const rows = await q<{ rating: number; rd: number; vol: number }>(
+    `select rating, rd, vol from elo_ratings
+     where user_id = $1 and mode = $2 and drivetrain = $3 and balance_version = $4`,
+    [userId, mode, drivetrain, balanceVersion],
+  );
+  const r = rows[0];
+  return { rating: r?.rating ?? 1000, rd: r?.rd ?? 350, vol: r?.vol ?? 0.06 };
+}
+
 export async function upsertRating(
   userId: string,
   mode: '1v1' | '2v2',
   drivetrain: string,
   balanceVersion: number,
   rating: number,
+  rd: number,
+  vol: number,
 ): Promise<void> {
   await q(
-    `insert into elo_ratings (user_id, mode, drivetrain, balance_version, rating, games)
-     values ($1, $2, $3, $4, $5, 1)
+    `insert into elo_ratings (user_id, mode, drivetrain, balance_version, rating, rd, vol, games)
+     values ($1, $2, $3, $4, $5, $6, $7, 1)
      on conflict (user_id, mode, drivetrain, balance_version)
-       do update set rating = excluded.rating, games = elo_ratings.games + 1, updated_at = now()`,
-    [userId, mode, drivetrain, balanceVersion, rating],
+       do update set rating = excluded.rating, rd = excluded.rd, vol = excluded.vol,
+                     games = elo_ratings.games + 1, updated_at = now()`,
+    [userId, mode, drivetrain, balanceVersion, Math.round(rating), rd, vol],
   );
 }
 

@@ -124,6 +124,8 @@ export interface EloDelta {
   robotId: number;
   before: number;
   after: number;
+  /** new Glicko rating deviation — high ⇒ provisional (shown with a "?") */
+  rd: number;
 }
 
 /** fields a client may change about itself while in the room */

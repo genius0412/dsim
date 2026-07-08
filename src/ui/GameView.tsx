@@ -376,11 +376,19 @@ function EloRow({ r, index }: { r: EloResultRow; index: number }) {
       <span className="elo-name">
         {r.name}
         {r.isLocal && <span className="elo-you">YOU</span>}
+        {r.provisional && (
+          <span className="elo-prov" title="Provisional — your rating is still settling">
+            ?
+          </span>
+        )}
       </span>
       <span className="elo-nums">
         <span className="elo-before">{r.before}</span>
         <span className="elo-arrow">→</span>
-        <span className={`elo-after ${live ? dir : ''}`}>{after}</span>
+        <span className={`elo-after ${live ? dir : ''}`}>
+          {after}
+          {r.provisional && <span className="elo-prov-mark">?</span>}
+        </span>
         <span className={`elo-delta ${dir} ${live ? 'pop' : ''}`}>
           <span className="elo-delta-caret">{delta >= 0 ? '▲' : '▼'}</span>
           {delta >= 0 ? `+${delta}` : delta}
