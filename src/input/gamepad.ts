@@ -17,6 +17,8 @@ export interface GamepadSample {
   driveX: number;
   driveY: number;
   rotate: number;
+  leftY: number; // raw left stick Y (inverted)
+  rightY: number; // raw right stick Y (inverted)
   fire: boolean;
   intake: boolean;
   flipFront: boolean;
@@ -30,6 +32,8 @@ const EMPTY: GamepadSample = {
   driveX: 0,
   driveY: 0,
   rotate: 0,
+  leftY: 0,
+  rightY: 0,
   fire: false,
   intake: false,
   flipFront: false,
@@ -72,6 +76,8 @@ export class GamepadInput {
       driveX: ax(drive[0]),
       driveY: -ax(drive[1]),
       rotate: -ax(rotAxis),
+      leftY: -ax(1),
+      rightY: -ax(3),
       fire: anyBtn(bindings.buttons.fire),
       intake: anyBtn(bindings.buttons.intake),
       flipFront: flipNow && !this.prevFlip,

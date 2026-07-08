@@ -19,6 +19,7 @@ export function defaultSettings(): GameSettings {
     autoPath: null, // Default to no auto path loaded
     autoPathEnabled: false, // Default to auto path disabled
     parkSpeedPct: 30,
+    tankControlMode: 'traditional',
   };
 }
 
@@ -51,6 +52,9 @@ export function coerceSettings(raw: unknown): GameSettings {
     }
     if (typeof s.preferredServerId === 'string') {
       out.preferredServerId = s.preferredServerId;
+    }
+    if (s.tankControlMode === 'traditional' || s.tankControlMode === 'normal') {
+      out.tankControlMode = s.tankControlMode;
     }
     out.bindings = mergeBindings(s.bindings);
 

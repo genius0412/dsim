@@ -40,7 +40,7 @@ export interface PersistOutcome {
   record?: RecordRankInfo;
 }
 
-const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, intake: false, fire: false };
+const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false };
 /** send an authoritative snapshot every N ticks. 2 = 30 Hz: the client hard-snaps
  * to each snapshot, so a higher rate means smaller, more frequent corrections =>
  * less visible stutter between them (bumped from 3/20 Hz for smoothness). Sending
@@ -346,7 +346,14 @@ export class Room {
     roster.forEach((c, i) => {
       const alliance: Alliance = record ? 'blue' : c.player.alliance;
       let si = c.player.startIndex ?? 0;
-      while (used[alliance].has(si)) si = (si + 1) % START_POSES.length;
+      // find an unused pose, but stop after a full cycle: with more robots on one
+      // alliance than there are START_POSES (ROOM_CAPACITY 4 > 3 poses — e.g. a
+      // custom 4-on-one room), every pose is taken and an unbounded `while` would
+      // spin forever, hanging the tick loop / health probe until Fly kills the box.
+      // Reuse a pose instead (the physics solver pushes the overlap apart).
+      for (let n = 0; n < START_POSES.length && used[alliance].has(si); n++) {
+        si = (si + 1) % START_POSES.length;
+      }
       used[alliance].add(si);
       setups.push({
         id: i,
@@ -580,7 +587,7 @@ export class Room {
               for (const e of out.elo) {
                 const robotId = robotByUser.get(e.userId);
                 if (robotId !== undefined) {
-                  results.push({ robotId, before: e.before, after: e.after, rd: e.rd });
+                  results.push({ robotId, before: e.before, after: e.after, rd: e.rd, games: e.games });
                 }
               }
               if (results.length) this.broadcast({ t: 'eloResult', results });

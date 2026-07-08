@@ -18,6 +18,8 @@ export interface RobotCommand {
   driveX: number; // -1..1
   driveY: number; // -1..1
   rotate: number; // -1..1, CCW positive in driver frame
+  leftDrive: number; // -1..1, for tank drive (left side)
+  rightDrive: number; // -1..1, for tank drive (right side)
   intake: boolean;
   fire: boolean;
 }
@@ -288,6 +290,8 @@ export interface GameSettings {
   /** preferred game server id (multi-region). Remembered across sessions and,
    * for signed-in players, synced to the account. Undefined ⇒ auto-pick fastest. */
   preferredServerId?: string;
+  /** tank drive control: 'traditional' (separate sticks) or 'normal' (Arcade-style) */
+  tankControlMode: 'traditional' | 'normal';
 }
 
 export interface World {
