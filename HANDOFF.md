@@ -1,83 +1,71 @@
-# HANDOFF — 2026-07-07 (session 5: penalty engine corrected to the manual) — READ FIRST
+# HANDOFF — 2026-07-08 (session 6: classifier ball fix + connection-quality HUD) — READ FIRST
 
 ## Build state
-GREEN. `npm test` = 183/183 checks pass (0 fail). `npm run build` (tsc strict + vite)
-clean.
+GREEN. `npm test` = **190/190** checks pass (0 fail). `npm run build` (tsc strict + vite)
+clean. `npx tsc -p tsconfig.server.json` (server) clean. main = alpha = beta, all pushed.
+Fly (`dohun-sim-decode`) deployed, `/health` → ok. Vercel auto-deploys the client.
 
-## Latest addition — G417 / G418 gate-and-ramp fouls (`updateGateFouls` in penalties.ts)
-- **G417** — operating an OPPONENT's gate = immediate **MAJOR** (edge-triggered via the
-  `fire` episode debounce). Detected with updateGates' lever condition (in the gate zone,
-  field side), filtered to the owner's opponents. Operating your own gate is legal.
-- **G418.B** — each classified (committed, non-overflow) artifact INSIDE an
-  opponent's RAMP at the moment you open their gate = **MAJOR per artifact**.
-- Attribution: `penalties.gateCulprit[goal]` records which opponent opened each gate
-  (set while they operate it, held through the drain, cleared when the gate shuts).
-- Two new `PenaltyState` fields (`gateCulprit`, `rampBallIds`) — plain JSON, init in
-  spawn.ts. Note `updatePenalties` runs BEFORE this tick's `updateGates`/`updateRails`
-  (world.ts), so it observes end-of-previous-tick gate/ball state — consistent for the
-  cross-tick ramp-departure comparison.
-- G417 co-occurs with G424 whenever an opponent is in your gate zone (robots are wide,
-  the gate zone is 10"); that's realistic. Smoke isolates G424 (owner defends its own
-  gate, opponent contacts from the field side clear of the zone) and G417 (operate the
-  gate, no contact needed) with direct `updatePenalties` calls.
+## What shipped this session
 
-## What was done — Section 11 penalty fixes (`src/sim/penalties.ts`)
+### 1. Ground balls can no longer mesh under the classifier (`src/sim/world.ts`)
+Root cause: the hard geometric clamp for ground balls (`clampBallPosToStatics`) covered
+walls + goal faces but NOT the classifier channel, so a ball that entered the channel and
+became `ground` (e.g. a flight ball that landed inside before the flight-phase eviction
+ran) had only Rapier for containment — and Rapier's soft contacts can't clear a DEEPLY
+embedded body. It sat meshed and ungrabbable (the robot's intake OBB can't reach into the
+channel). Fix: ground balls now get `collideBallRect(b, classifierRect('red'|'blue'))` in
+the clamp loop — the same geometric eviction flight balls already use — pushing the ball
+out the field side (the only valid exit). Tunnel-exit balls become `ground` at the channel
+bottom edge already moving out, so they're unaffected. Smoke: "a ground ball meshed in the
+classifier is evicted out the field side (grabbable)". **Invariant for the future:** any
+new solid a ball can tunnel into needs a geometric clamp, not just a Rapier collider.
 
-The user reported: **AUTO interference and pinning fouls went to the WRONG alliance**,
-and **gate/secret-tunnel rules didn't follow the manual**. I pulled the actual
-Competition Manual Section 11 (text extracted from the PDF via scratchpad `extract.cjs`)
-and fixed:
+### 2. Connection-quality readout in the top-right HUD (multiplayer only)
+So a laggy player can tell whether it's their link or the game. New `NetQuality` chip in
+`GameView.tsx` (in the `.status-wrap` top-right cluster) shows `● 42ms · 30Hz · ±6ms`:
+- **Ping** — new `ping`/`pong` protocol messages; the client probes once/sec, the server
+  echoes the timestamp at the SOCKET level (`server/index.ts`, answers in lobby AND match),
+  RTT = now − ts, EWMA-smoothed.
+- **Hz** — snapshot arrival rate, measured client-side (target 30).
+- **±jitter** — snapshot inter-arrival mean-abs-deviation. THE real choppiness signal.
+- Coloured dot + SMOOTH/OK/CHOPPY bucket from rtt+jitter; tooltip spells them out.
+- `NetStatus` (`src/net/session.ts`) gained `rttMs/snapHz/jitterMs/quality`; measured in
+  `ServerSession` (ping loop cleared in `dispose`). Solo path unaffected (`net` stays null).
 
-1. **G402 AUTO interference — was inverted (WRONG ALLIANCE).** It keyed "own side" off
-   `driverSide`, but robots stage near their cross-court GOAL (`startPose` uses
-   `goalSide`), so an alliance's own side is its **goalSide** (blue −x, red +x, matching
-   G304.C start columns). The old code fired when a robot sat on its OWN side. Now uses
-   `goalSide`; fires only when a robot is fully on the OPPONENT's side + contacting an
-   opponent, fouling the crosser.
-
-2. **G422 pinning — both orderings fired (WRONG ALLIANCE).** In a wall shove both robots
-   are slow + commanding motion, so it accumulated a pin for (A pins B) AND (B pins A),
-   fouling the victim's alliance too. Added `pinnedAgainstWall(pinner, pinned)`: the
-   victim must be trapped against a field boundary with the pinner on the open-field side
-   (leading corner within `PIN_WALL_SLOP` (config, =3") of the perimeter). Only the real
-   pinner is fouled now.
-
-3. **Gate — replaced homebrew rule with manual G424.** Deleted the "presence in the
-   opponent's gate = MAJOR (no contact)" rule (not in the manual) and the mislabeled
-   "G428 gate zone". New **G424** = MINOR, contact-based, protects the gate OWNER's
-   access to their own gate. Opening a gate is still legal (`updateGates` unchanged) —
-   only in-zone *contact* fouls.
-
-4. **Unified all contact-pair zone rules** (G424/G425/G426/G427) into one by-owner loop:
-   each zone is owned by an alliance; a cross-alliance contact while either robot is in
-   it fouls the non-owner. Also fixed a completeness gap — an INVADER in the owner's
-   loading/base zone now fouls (old code only checked "victim in its own zone").
-
-5. **G424↔G425 mutual exclusivity (G424.A exception).** A side wall holds one alliance's
-   gate zone AND the other alliance's secret tunnel (overlapping in the classifier
-   corner). Two fixes so exactly one rule fires:
-   - **G425 now fouls only when the INTRUDER (non-owner) is in the strip.** Previously it
-     fired if EITHER robot was in the tunnel, so an owner *defending in its own tunnel*
-     wrongly drew a tunnel foul on the opponent.
-   - **G424 exception:** if the gate robot is ALSO in the opponent's tunnel, skip the gate
-     foul (G425 governs). Result: gate-robot-in-both → G425 only (on the gate robot);
-     gate-robot-clear-of-tunnel → G424 only (on the opponent). Two smoke tests
-     (`updatePenalties` driven directly with a forced contact) lock both cases.
-
-Files touched: `src/sim/penalties.ts`, `src/config.ts` (`PIN_WALL_SLOP`),
-`scripts/smoke.ts` (gate test → G424 MINOR/contact; G402 test → opponent side + own-side
-negative; pinning → asserts victim alliance NOT fouled), `CLAUDE.md` (Phase C rewritten).
+Commits: `d4f5552` (classifier), `32c1c76` (connection HUD). No Co-Authored-By trailer
+(per user rule — commits must look hand-typed).
 
 ## Gotchas / notes
-- Goals are CROSS-COURT. Blue goal + blue gate zone + blue AUTO start are all on −x
-  (left, red's drive wall); blue drive team / loading / base are on +x. `tunnelStrip(a)`
-  sits on `goalSide(a)` but is OWNED by `other(a)`.
-- Deferred (unchanged): G423 (completely blocking opponent's gate — needs "blocking" +
-  duration judgment), G408 possession/plowing, G402.B pre-staged artifact displacement.
-- Manual Section 11 text dump lives at scratchpad `m11.txt` (regenerate with
-  `extract.cjs` on a re-downloaded `manual-11` PDF if needed).
+- **Deploy protocol for SIM or server changes** (BOTH the classifier fix and the ping
+  handler needed it): commit on alpha → `git checkout main; git merge alpha --no-ff` →
+  `flyctl deploy --remote-only` → `curl .../health` → Vercel auto-deploys client →
+  `git branch -f alpha main; git branch -f beta main; git push origin alpha beta`.
+- A sim-behaviour change shifts the deterministic worldHash, so OLD replays that hit the
+  changed scenario (a ball in the classifier) won't re-verify identically. This session did
+  NOT bump `BALANCE_VERSION` (a bump resets the whole leaderboard season) since the impact
+  is a rare edge case — if strict record integrity is ever wanted, bump it deliberately.
+- The connection HUD's RTT needs the SERVER ping handler deployed (it is). If you ever run
+  against an old server, ping shows "—" / quality "MEASURING" but Hz+jitter still work.
+- `ADMIN_USER_IDS` on Fly is what enables the admin menu + scheduled-restart notices; once
+  set, FUTURE deploys can warn players first instead of dropping matches cold.
 
-## Next steps
-- None outstanding for penalties. Optionally model G423.D (blocking the opponent's gate)
-  later — it needs duration + "completely blocking" heuristics.
-- Not verified at the GUI surface this session (pure sim/logic change, covered by smoke).
+## Next steps (user's stated TODO — in order)
+1. **Penalty hitbox audit.** The foul RULES are correct (Phase C). Re-verify the trigger
+   GEOMETRY against the manual figures: `gateZone`/`gateTapeSegments`, `tunnelStrip`,
+   `allianceArea` (loading/base), `pinnedAgainstWall` slop, and the SAT contact test that
+   fills `rrContacts` — confirm the trigger VOLUMES match the real markings + bumper
+   extents, not just the rule logic. Add smoke cases per zone. (Extract manual Section 11
+   figures with the scratchpad `extract-imgs.cjs` pattern and Read them as images.)
+2. **Major intake revamp.** Substantial rework of the intake model (presets sloped/vector/
+   triangle, capture band, trapezoid mouths, geometric side-intake rules, clump feeding).
+   Product decision #10 in CLAUDE.md is the CURRENT baseline to improve on — preserve the
+   user-named presets + the side-intake feel unless the user redirects. Re-smoke capture
+   after any change; `src/sim/physics.ts` (`robotExtents`, capture) + `robot.ts`
+   (`updateIntake`) + the preset defs are the surface.
+
+## Doc state
+`CLAUDE.md` State-of-play updated (Phase 1 = 30 Hz + interpolation not 60 Hz/extrapolation,
+connection HUD, Phase 3 core LIVE, ball-containment invariant, "Next up" section, smoke
+count 190). `docs/netcodeplan.md` marked Phase 0/1/2-robots/3-core done + connection
+indicator done. `docs/decode-reference.md` (field geometry source) is unchanged and still
+accurate.
