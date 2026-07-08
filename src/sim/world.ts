@@ -116,9 +116,18 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
   }
   // hard field clamp: Rapier's soft contacts (and the bespoke ball↔robot push)
   // can leave a ~0.2in penetration, so snap ground balls back inside the walls /
-  // goal faces (containment is tolerance-tight).
+  // goal faces (containment is tolerance-tight). ALSO geometrically evict from the
+  // classifier channel: Rapier's contact solver can't clear a DEEPLY embedded ball
+  // (a flight ball that landed inside the channel becomes 'ground' before the
+  // flight-phase eviction runs, then stays meshed + ungrabbable — the robot's OBB
+  // can't reach into the channel). collideBallRect pushes it out the field side,
+  // the only valid exit, exactly like the wall/goal clamp. Tunnel-exit balls become
+  // 'ground' at the channel's bottom edge already moving out, so they're unaffected.
   for (const b of world.balls) {
-    if (b.state.kind === 'ground') clampGroundBall(b);
+    if (b.state.kind !== 'ground') continue;
+    collideBallRect(b, classifierRect('red'));
+    collideBallRect(b, classifierRect('blue'));
+    clampGroundBall(b);
   }
 
   // ---- balls: FLIGHT (ground balls resolved above) -------------------------

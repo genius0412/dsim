@@ -332,6 +332,25 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('robot drives free after the eviction', r.pos.y < -25, `y=${r.pos.y.toFixed(1)}`);
 }
 
+// ---- a ground ball meshed in the classifier channel is evicted (not stuck) --
+{
+  const w = mkWorld('free', 'blue', 11);
+  const cr = classifierRect('red'); // right-wall channel, x ∈ [66, 72]
+  const ball = w.balls[0];
+  ball.state = { kind: 'ground' };
+  ball.pos = { x: (cr.x0 + cr.x1) / 2, y: 20 }; // dead-center inside the channel
+  ball.vel = { x: 0, y: 0 };
+  ball.z = 0;
+  ball.vz = 0;
+  run(w, cmd({}), 0.3);
+  const inside = ball.pos.x > cr.x0 && ball.pos.x < cr.x1 && ball.pos.y > cr.y0 && ball.pos.y < cr.y1;
+  check(
+    'a ground ball meshed in the classifier is evicted out the field side (grabbable)',
+    !inside && ball.pos.x <= cr.x0 - BALL_RADIUS + 0.01,
+    `pos=(${ball.pos.x.toFixed(1)},${ball.pos.y.toFixed(1)})`,
+  );
+}
+
 // ---- pinned ball resists the robot ------------------------------------------
 {
   const w = mkWorld('free', 'blue', 21);
