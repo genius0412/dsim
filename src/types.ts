@@ -18,6 +18,8 @@ export interface RobotCommand {
   driveX: number; // -1..1
   driveY: number; // -1..1
   rotate: number; // -1..1, CCW positive in driver frame
+  leftDrive: number; // -1..1, for tank drive (left side)
+  rightDrive: number; // -1..1, for tank drive (right side)
   intake: boolean;
   fire: boolean;
 }

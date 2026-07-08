@@ -27,7 +27,7 @@ import { worldHash } from '../net/checksum';
  * leaks in — {seed, setups, commands} alone reproduce it.
  */
 
-const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, intake: false, fire: false };
+const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false };
 const ZERO_Q: QCommand = { dx: 0, dy: 0, rot: 0, buttons: 0 };
 
 /** bump on a breaking change to the replay container schema */

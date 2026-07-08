@@ -195,7 +195,7 @@ export const DRIVETRAIN_PRESETS = {
   /** 45° omni pods: full-speed strafe, slight overall speed loss */
   xdrive: { strafeMult: 1.0, speedMult: 0.9, accelMult: 0.95, saturation: 'sum' },
   /** traction wheels: no strafe, best straight-line speed and push */
-  tank: { strafeMult: 0, speedMult: 1.05, accelMult: 1.4, saturation: 'tank' },
+  tank: { strafeMult: 0, speedMult: 1.2, accelMult: 2.0, saturation: 'tank' },
   /** independent steered modules: full-speed any direction */
   swerve: { strafeMult: 1.0, speedMult: 1.0, accelMult: 1.05, saturation: 'vec' },
 } as const;

@@ -8,6 +8,8 @@ export interface VirtualInput {
   driveX: number;
   driveY: number;
   rotate: number;
+  leftDrive: number;
+  rightDrive: number;
   intake: boolean;
   fire: boolean;
 }
@@ -31,6 +33,8 @@ export class InputManager {
     driveX: 0,
     driveY: 0,
     rotate: 0,
+    leftDrive: 0,
+    rightDrive: 0,
     intake: false,
     fire: false,
   };
@@ -75,6 +79,10 @@ export class InputManager {
     const ky = (heldAny(keys.driveUp) ? 1 : 0) - (heldAny(keys.driveDown) ? 1 : 0);
     const krot = (heldAny(keys.rotateCCW) ? 1 : 0) - (heldAny(keys.rotateCW) ? 1 : 0);
 
+    // Tank drive specific keyboard mapping: W/S for left, Up/Down for right
+    const kLeft = (heldAny(keys.driveUp) ? 1 : 0) - (heldAny(keys.driveDown) ? 1 : 0);
+    const kRight = (k.held('arrowup') ? 1 : 0) - (k.held('arrowdown') ? 1 : 0);
+
     this.startPressed = pressedAny(keys.start) || g.start;
     this.restartPressed = pressedAny(keys.restart) || g.restart;
     this.flipPressed = pressedAny(keys.flipFront) || g.flipFront;
@@ -84,6 +92,8 @@ export class InputManager {
       driveX: clamp(kx + g.driveX + this.virtualState.driveX, -1, 1),
       driveY: clamp(ky + g.driveY + this.virtualState.driveY, -1, 1),
       rotate: clamp(krot + g.rotate + this.virtualState.rotate, -1, 1),
+      leftDrive: clamp(kLeft + g.leftY + this.virtualState.leftDrive, -1, 1),
+      rightDrive: clamp(kRight + g.rightY + this.virtualState.rightDrive, -1, 1),
       intake: heldAny(keys.intake) || g.intake || this.virtualState.intake,
       fire: heldAny(keys.fire) || g.fire || this.virtualState.fire,
     };

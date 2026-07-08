@@ -7,8 +7,20 @@ Fly (`dohun-sim-decode`) deployed, `/health` → ok. Vercel auto-deploys the cli
 
 ## What shipped this session
 
-### 1. Ground balls can no longer mesh under the classifier (`src/sim/world.ts`)
+### 1. Traditional Tank Drive controls
+Implemented a true tank-drive input model where the left and right sides are controlled independently:
+- Gamepad: Left Stick Y $\to$ Left side, Right Stick Y $\to$ Right side.
+- Keyboard: W/S $\to$ Left side, Up/Down arrows $\to$ Right side.
+- Updated `RobotCommand` to pass independent `leftDrive` and `rightDrive` signals.
+
+### 2. Tank Drivetrain Buff
+Increased the speed and acceleration multipliers for the tank drivetrain preset:
+- `speedMult`: 1.05 $\to$ 1.2
+- `accelMult`: 1.4 $\to$ 2.0
+
+### 3. Ground balls can no longer mesh under the classifier (`src/sim/world.ts`)
 Root cause: the hard geometric clamp for ground balls (`clampBallPosToStatics`) covered
+...
 walls + goal faces but NOT the classifier channel, so a ball that entered the channel and
 became `ground` (e.g. a flight ball that landed inside before the flight-phase eviction
 ran) had only Rapier for containment — and Rapier's soft contacts can't clear a DEEPLY
