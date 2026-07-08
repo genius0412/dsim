@@ -1,6 +1,27 @@
-# HANDOFF — 2026-07-08 (session 9: anti-cheat spec sanitization) — READ FIRST
+# HANDOFF — 2026-07-08 (usernames + profiles + duo-name fix, on session 9) — READ FIRST
 
-> **LATEST (session 9): server-authoritative spec/settings sanitization (anti-cheat).**
+> **LATEST (usernames + public profiles + duo-name fix): rebased onto session 9, GREEN.**
+> `npm run build` + `npm run server:check` + `npm test` all pass.
+> - **USERNAME** — unique lowercase `[a-z0-9]` slug per account, SEPARATE from the display
+>   `handle`. Migration `0006_username.sql` (renamed from 0005 to dodge the
+>   `0005_pending_matches.sql` collision): nullable `profiles.username` + unique index.
+>   Format `^[a-z0-9]{3,20}$`, validated in the DB index + `server/api.ts` +
+>   `src/net/api.ts`.
+> - **DUO names** — root cause was read-side only (`partner_id` was always stored).
+>   `recordLeaderboard` now `left join`s the partner profile → `partnerHandle`/
+>   `partnerUsername`; `Leaderboard.tsx` `DriverName` renders host + partner and links
+>   each to `/profile/<username>` (records + ranked boards).
+> - **Public profile** — `/profile/:username` route in `App.tsx`; `Profile.tsx` +
+>   `Stats.tsx` share the extracted `CareerPanel.tsx`. Capture: required sign-up field,
+>   the non-dismissible `UsernameGate.tsx` (any signed-in account with no username), and
+>   the Account editor — all via `UsernameField.tsx` (debounced availability check).
+> - **Endpoints** — `POST /api/user/username` (JWT, 409 taken), `GET /api/username-available`,
+>   `GET /api/profile/:username[/stats]`.
+> - Deployed physics-free (beta/main); migration `0006` runs at server boot.
+>
+> Session 9 (anti-cheat) notes follow.
+
+> **session 9: server-authoritative spec/settings sanitization (anti-cheat).**
 > Players were spoofing their robot config via devtools (inspect-element / edited
 > `localStorage` / hand-crafted wire messages) to spawn oversized or NaN-dimensioned
 > robots. Fixed by making config validation a SINGLE SOURCE OF TRUTH enforced at every
@@ -23,6 +44,8 @@
 >   `length/width/mass/rpm: NaN` through (no finiteness guard).
 >
 > Earlier session-8 notes (region-aware matchmaking + `fly-replay` routing) follow.
+
+# HANDOFF — 2026-07-08 (session 7: intake/ball feel + seasons + multi-server)
 
 ## Branch strategy (IMPORTANT — this session introduced a two-branch split)
 - **`alpha`** = the primary dev line: physics/ball tuning **plus** the new backend features.
