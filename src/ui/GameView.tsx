@@ -9,10 +9,36 @@ import {
 import { keyLabel, padButtonLabel } from '../input/bindings';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
 import { MobileControls } from './MobileControls';
-import type { MatchResultInfo, NetSession } from '../net/session';
+import type { MatchResultInfo, NetSession, NetStatus } from '../net/session';
 import type { RecordRankInfo } from '../net/protocol';
 import type { Replay } from '../sim/replay';
 import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
+
+/** top-right connection-quality readout (multiplayer only): a coloured signal dot
+ * + live RTT / snapshot-rate / jitter, so a laggy player can see AT A GLANCE whether
+ * it's their link (high ping/jitter) or the game. Colour tracks `net.quality`; the
+ * tooltip spells the three numbers out. */
+function NetQuality({ net }: { net: NetStatus }) {
+  const q = net.quality; // 'good' | 'fair' | 'poor' | null (measuring)
+  const cls = q === 'good' ? 'on' : q === 'fair' ? 'warn' : q === 'poor' ? 'off' : '';
+  const dot = q === 'good' ? '#3ad17a' : q === 'fair' ? '#e5b567' : q === 'poor' ? '#e5636b' : '#93a1ad';
+  const label =
+    q === 'good' ? 'SMOOTH' : q === 'fair' ? 'OK' : q === 'poor' ? 'CHOPPY' : 'MEASURING';
+  const ping = net.rttMs === null ? '—' : `${net.rttMs}ms`;
+  const hz = net.snapHz === null ? '—' : `${net.snapHz}Hz`;
+  const jit = net.jitterMs === null ? '—' : `±${net.jitterMs}ms`;
+  const title =
+    `Connection: ${label.toLowerCase()}\n` +
+    `Round-trip ping: ${ping} (you ↔ server)\n` +
+    `Server updates: ${hz} (target 30)\n` +
+    `Jitter: ${jit} (unevenness — the main cause of choppiness)`;
+  return (
+    <span className={`chip net-quality ${cls}`} title={title}>
+      <span className="net-dot" style={{ background: dot, boxShadow: `0 0 6px ${dot}` }} />
+      {ping} · {hz} · {jit}
+    </span>
+  );
+}
 
 const DT_LABEL: Record<DrivetrainType, string> = {
   mecanum: 'Mecanum',
@@ -301,6 +327,7 @@ function Hud({ hud }: { hud: HudSnapshot }) {
                 NET {hud.net.peers + 1}P
               </span>
             )}
+            {hud.net && !hud.net.waitingFor && <NetQuality net={hud.net} />}
             {hud.net?.waitingFor && (
               <span className="chip warn">WAITING · {hud.net.waitingFor}</span>
             )}

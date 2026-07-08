@@ -14,6 +14,16 @@ import {
   type RecordRankInfo,
 } from './protocol';
 
+/** monotonic wall clock (ms). performance.now() in the browser; Date.now() as a
+ * fallback for any non-DOM context. Diagnostics only — never touches the sim. */
+const nowMs = (): number =>
+  typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+/** how often to probe latency (a pong per second is plenty for a smoothed RTT) */
+const PING_INTERVAL_MS = 1000;
+/** window of snapshot inter-arrival gaps kept for the rate + jitter estimate */
+const SNAP_WINDOW = 30;
+
 /**
  * Client half of the server-authoritative netcode. Constructed AFTER the server
  * sends `matchStart` (so seed/setups/robotId are known), it takes over the
@@ -48,6 +58,15 @@ export class ServerSession implements NetSession {
   /** running ball baseline the delta-encoded snapshots patch (keyed by id) */
   private readonly baseBalls = new Map<number, Artifact>();
 
+  // ---- connection-quality diagnostics (for the HUD net readout) --------------
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  /** smoothed round-trip time (EWMA over pong samples), null until the first pong */
+  private rttMs: number | null = null;
+  /** wall-clock of the previous snapshot, to time inter-arrival gaps */
+  private lastSnapAt: number | null = null;
+  /** recent snapshot inter-arrival gaps (ms) — feeds snapHz + jitter */
+  private readonly snapGaps: number[] = [];
+
   constructor(
     private readonly transport: Transport,
     private readonly host: boolean,
@@ -81,6 +100,11 @@ export class ServerSession implements NetSession {
       this.connected = false; // retries exhausted (the server likely restarted)
       this.failed = true;
     });
+    // probe latency continuously while the match is live (a no-op send when the
+    // socket is down); each pong updates the smoothed RTT for the HUD
+    this.pingTimer = setInterval(() => {
+      transport.send(encodeMsg({ t: 'ping', ts: nowMs() }));
+    }, PING_INTERVAL_MS);
   }
 
   isHost(): boolean {
@@ -114,15 +138,41 @@ export class ServerSession implements NetSession {
   }
 
   status(): NetStatus {
+    // snapshot rate + jitter from the recent inter-arrival gaps (mean + mean-abs-dev)
+    let snapHz: number | null = null;
+    let jitterMs: number | null = null;
+    if (this.snapGaps.length >= 3) {
+      const mean = this.snapGaps.reduce((a, b) => a + b, 0) / this.snapGaps.length;
+      if (mean > 0) snapHz = Math.round(1000 / mean);
+      jitterMs = Math.round(
+        this.snapGaps.reduce((a, b) => a + Math.abs(b - mean), 0) / this.snapGaps.length,
+      );
+    }
+    const rttMs = this.rttMs === null ? null : Math.round(this.rttMs);
+    // smoothness bucket: jitter dominates the visual feel, latency is secondary.
+    // reconnecting ⇒ always poor; unmeasured ⇒ null (HUD shows "measuring…")
+    let quality: NetStatus['quality'] = null;
+    if (!this.connected) {
+      quality = 'poor';
+    } else if (rttMs !== null && jitterMs !== null) {
+      if (rttMs < 90 && jitterMs < 12) quality = 'good';
+      else if (rttMs < 180 && jitterMs < 28) quality = 'fair';
+      else quality = 'poor';
+    }
     return {
       waitingFor: this.connected ? null : 'server',
       desync: false,
       peers: this.otherRobots,
       failed: this.failed,
+      rttMs,
+      snapHz,
+      jitterMs,
+      quality,
     };
   }
 
   dispose(): void {
+    if (this.pingTimer) clearInterval(this.pingTimer);
     this.transport.close();
   }
 
@@ -152,6 +202,24 @@ export class ServerSession implements NetSession {
       // keep only the freshest — the controller reconciles to the newest world
       this.snapshot = { serverTick: m.serverTick, world, cmds, ackInputTick: m.ackInputTick };
       this.connected = true; // snapshots flowing ⇒ we're synced
+      // time the gap since the last snapshot for the rate + jitter readout. A huge
+      // gap (backgrounded tab / a reconnect keyframe) is discarded so it can't
+      // poison the jitter estimate — start a fresh window instead.
+      const t = nowMs();
+      if (this.lastSnapAt !== null) {
+        const gap = t - this.lastSnapAt;
+        if (gap < 1000) {
+          this.snapGaps.push(gap);
+          if (this.snapGaps.length > SNAP_WINDOW) this.snapGaps.shift();
+        } else {
+          this.snapGaps.length = 0;
+        }
+      }
+      this.lastSnapAt = t;
+    } else if (m.t === 'pong') {
+      // round-trip sample → exponentially-weighted moving average (favour recent)
+      const sample = nowMs() - m.ts;
+      this.rttMs = this.rttMs === null ? sample : this.rttMs * 0.6 + sample * 0.4;
     } else if (m.t === 'matchResult') {
       this.matchResult = { kind: m.kind, record: m.record, result: m.result, replay: m.replay };
     } else if (m.t === 'eloResult') {

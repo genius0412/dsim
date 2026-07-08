@@ -45,6 +45,16 @@ export interface NetStatus {
   peers: number;
   /** reconnection budget exhausted (server likely restarted) — prompt a refresh */
   failed: boolean;
+  // ---- connection-quality diagnostics (null until measured / solo path) -------
+  /** smoothed round-trip time to the server in ms (ping → pong) */
+  rttMs: number | null;
+  /** measured authoritative-snapshot arrival rate in Hz (server sends ~30) */
+  snapHz: number | null;
+  /** snapshot inter-arrival jitter in ms (mean absolute deviation) — the single
+   * best predictor of visible choppiness */
+  jitterMs: number | null;
+  /** overall smoothness bucket derived from rtt + jitter (drives the HUD colour) */
+  quality: 'good' | 'fair' | 'poor' | null;
 }
 
 export interface NetSession {

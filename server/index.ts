@@ -210,6 +210,12 @@ wss.on('connection', (ws: WebSocket) => {
     }
     // never let a bad message take down the process (and every other room)
     try {
+      if (msg.t === 'ping') {
+        // latency probe — echo the client's timestamp straight back so it can
+        // measure RTT for the connection-quality HUD (answered in lobby OR match)
+        send({ t: 'pong', ts: msg.ts });
+        return;
+      }
       if (msg.t === 'join') {
         if (room) return; // already in a room on this connection
         const code = msg.room.toLowerCase();
