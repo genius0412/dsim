@@ -72,7 +72,19 @@ const httpServer = createServer((req, res) => {
   res.writeHead(426, { 'content-type': 'text/plain' });
   res.end('WebSocket only');
 });
-const wss = new WebSocketServer({ server: httpServer });
+// LOW-LATENCY SOCKETS. Disable Nagle's algorithm on every connection: the room
+// loop streams a ~20 Hz burst of SMALL delta frames, and Nagle batches small
+// writes (waiting on the peer's ACK) — which, against TCP delayed-ACK, injects
+// 40–200 ms stalls. That is exactly the symptom seen here: a healthy p50 (~40 ms)
+// but a p95/p99 tail of 400–570 ms (periodic spikes / rubberbanding), and the
+// classic Fly.io 60 Hz-game report. Nagle is PER-SOCKET (no OS/Dockerfile toggle
+// works), so we set TCP_NODELAY on each socket in-process. Covers WS upgrades and
+// the small HTTP (health/API) responses too.
+httpServer.on('connection', (socket) => socket.setNoDelay(true));
+
+// perMessageDeflate off: compression buffers/among-frames context adds latency +
+// memory for our tiny JSON frames and buys little on already-delta'd snapshots.
+const wss = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
 
 // resilience: a game server must never let one stray error kill every room. Log
 // loudly and keep listening (the ws / room handlers already catch closer in).
