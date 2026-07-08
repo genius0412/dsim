@@ -298,21 +298,15 @@ export function App() {
       {pendingStart && (
         <div className="overlay">
           <div className="overlay-panel">
-            <h2>Update available</h2>
+            <h2>Update required</h2>
             <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
-              A newer version of the sim has shipped. Refresh to get it — starting on an old
-              build can glitch or mismatch the server.
+              A newer version of the sim has shipped. Everyone has to be on the same version to
+              play — especially for multiplayer — so refresh to update before starting a run.
             </p>
             <div className="overlay-buttons">
               <button onClick={() => window.location.reload()}>REFRESH &amp; UPDATE</button>
-              <button
-                onClick={() => {
-                  const go = pendingStart;
-                  setPendingStart(null);
-                  go?.();
-                }}
-              >
-                START ANYWAY
+              <button className="ghost" onClick={() => setPendingStart(null)}>
+                NOT NOW
               </button>
             </div>
           </div>
