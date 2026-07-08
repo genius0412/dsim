@@ -30,6 +30,7 @@ import {
   type ServerMsg,
 } from '../src/net/protocol';
 import type { EloOutcome } from './ranked';
+import type { PendingMatch } from './matchTypes';
 
 /** what the persistence layer resolves to after a finished match: ranked ELO
  * deltas (versus) or a record run's leaderboard standing (record). */
@@ -51,6 +52,9 @@ const SNAPSHOT_INTERVAL = 2;
 const HOLD_TICKS = 15;
 /** hold a disconnected driver's slot this long for a reconnect before dropping */
 const RECONNECT_GRACE_MS = 15000;
+/** a staged ranked match waits this long for every paired player to (re)connect to
+ * the host machine before it gives up and cancels (a no-show ⇒ no rated match) */
+const RANKED_JOIN_GRACE_MS = 20000;
 
 export interface Client {
   id: string;
@@ -136,6 +140,11 @@ export class Room {
   // robot id assigned in startMatch = the client's add-order index)
   private ranked = false;
   private intros: PlayerIntro[] = [];
+  // set on the HOST machine when this room was staged by the designated matchmaker
+  // (region-aware ranked). The roster is authoritative; the match starts once every
+  // staged player has (re)connected here, or cancels after RANKED_JOIN_GRACE_MS.
+  private pendingMatch: PendingMatch | null = null;
+  private pendingTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     readonly code: string,
@@ -346,6 +355,13 @@ export class Room {
     });
 
     const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
+    this.beginMatch(setups, seed);
+  }
+
+  /** shared world-init + `matchStart` broadcast + loop, for the host-handshake,
+   * matchmaker, and ranked-from-pending paths. The caller must have built `setups`
+   * and populated `robotOf` first. */
+  private beginMatch(setups: RobotSetup[], seed: number): void {
     const world = createWorld('match', seed, setups);
     world.match.preCountdown = C.PRE_COUNTDOWN; // sim-driven pre→auto, same as the client
     this.world = world;
@@ -364,7 +380,7 @@ export class Room {
     this.postSince = null;
     this.departed.clear();
 
-    for (const c of roster) {
+    for (const c of this.clients.values()) {
       c.send({
         t: 'matchStart',
         seed,
@@ -375,6 +391,67 @@ export class Room {
       });
     }
     this.startLoop();
+  }
+
+  // ---- region-aware ranked: host-side build from a staged roster --------------
+
+  /** stage this room as the host for a matchmaker-paired ranked match. The roster
+   * (specs/alliances/seed) is authoritative; the match begins once every staged
+   * player reconnects (`maybeStartRanked`) or cancels after the join grace. */
+  applyPending(p: PendingMatch): void {
+    this.pendingMatch = p;
+    this.ranked = true;
+    this.intros = p.roster.map((r, i) => ({ id: i, elo: r.introElo }));
+    if (this.pendingTimer) clearTimeout(this.pendingTimer);
+    this.pendingTimer = setTimeout(() => this.cancelPending(), RANKED_JOIN_GRACE_MS);
+    if (this.pendingTimer.unref) this.pendingTimer.unref();
+    this.maybeStartRanked(); // in case everyone is already here
+  }
+
+  /** the room code this room was staged under (null if not a staged ranked room) */
+  pendingCode(): string | null {
+    return this.pendingMatch?.code ?? null;
+  }
+
+  /** start the staged match once every roster member (by verified user id) is
+   * connected. Called after each client's identity resolves. */
+  maybeStartRanked(): void {
+    const p = this.pendingMatch;
+    if (!p || this.world !== null) return;
+    const present = new Set(
+      [...this.clients.values()].filter((c) => c.connected && c.userId).map((c) => c.userId),
+    );
+    const allHere = p.roster.every((r) => r.userId && present.has(r.userId));
+    if (!allHere) return;
+    if (!physicsReady()) {
+      setTimeout(() => this.maybeStartRanked(), 200); // WASM still loading; retry shortly
+      return;
+    }
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
+    // roster index = robotId; map each connected client to its slot by user id
+    const byUser = new Map<string, Client>();
+    for (const c of this.clients.values()) if (c.userId) byUser.set(c.userId, c);
+    const setups: RobotSetup[] = [];
+    this.robotOf.clear();
+    p.roster.forEach((r, i) => {
+      setups.push({ id: i, alliance: r.alliance, spec: r.spec, assists: r.assists, startIndex: r.startIndex });
+      const c = r.userId ? byUser.get(r.userId) : undefined;
+      if (c) this.robotOf.set(c.id, i);
+    });
+    this.beginMatch(setups, p.seed);
+  }
+
+  /** a staged ranked match no player (or not everyone) showed up for: tell whoever
+   * did connect and tear the room down (no rated match runs). */
+  private cancelPending(): void {
+    if (this.world !== null) return; // already started
+    this.broadcast({ t: 'error', message: 'Match cancelled — an opponent did not connect.' });
+    this.pendingTimer = null;
+    this.stop();
+    this.onEmpty();
   }
 
   private startLoop(): void {

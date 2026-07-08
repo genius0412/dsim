@@ -66,7 +66,9 @@ import {
   type ReplayResult,
 } from '../src/sim/replay';
 import { Room, type Client } from '../server/room';
-import { Matchmaker, type QueueEntry } from '../server/matchmaking';
+import { Matchmaker, radiusCeiling, type QueueEntry } from '../server/matchmaking';
+import { bestHost } from '../server/regions';
+import type { PendingMatch } from '../server/matchTypes';
 import { computeGlicko, glicko2Update, eloMode, RD_PROVISIONAL, type EloParticipant } from '../server/ranked';
 import type { ServerMsg, QueueMode } from '../src/net/protocol';
 import { dsin, dcos, dtan, datan2 } from '../src/math';
@@ -2234,38 +2236,115 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   }
 }
 
-// ---- matchmaker exposes live queue depth (powers GET /api/presence) ---------
+// ---- region-aware matchmaking: minimax host + expanding radius --------------
+// helpers: a queue entry (new region-aware shape) + a flush for the async assign
+const rEntry = (
+  id: string,
+  homeRegion: string,
+  opts: { accessMs?: number; noWiden?: boolean } = {},
+): QueueEntry => ({
+  id,
+  send: () => {},
+  player: {
+    name: id,
+    teamName: 'T',
+    teamNumber: 1,
+    alliance: 'red',
+    startIndex: 0,
+    ready: true,
+    spec: { ...DEFAULT_SPEC },
+    assists: { ...DEFAULT_ASSISTS },
+  },
+  userId: id,
+  mode: '1v1',
+  homeRegion,
+  accessMs: opts.accessMs ?? 20,
+  noWiden: opts.noWiden ?? false,
+  enqueuedAt: 0,
+  expandBumps: 0,
+});
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+// a matchmaker with a controlled clock + a recording stage (no DB): lets us drive
+// the widening deterministically and inspect the staged match.
+const mkMM = () => {
+  const staged: PendingMatch[] = [];
+  let clock = 0;
+  const mm = new Matchmaker({ now: () => clock, stage: async (m) => void staged.push(m) });
+  return { mm, staged, setNow: (v: number) => (clock = v) };
+};
+
+// bestHost: minimax picks the fair MIDPOINT region and its worst-case ping/spread
 {
-  const mm = new Matchmaker();
-  const entry = (id: string, mode: QueueMode): QueueEntry => ({
-    id,
-    send: () => {},
-    player: {
-      name: id,
-      teamName: 'T',
-      teamNumber: 1,
-      alliance: 'red',
-      startIndex: 0,
-      ready: true,
-      spec: { ...DEFAULT_SPEC },
-      assists: { ...DEFAULT_ASSISTS },
-    },
-    mode,
-    onRoom: () => {},
-  });
-  // 1v1 needs 2 and 2v2 needs 4, so single entries stay queued (no match fires)
-  mm.enqueue(entry('q1', '1v1'));
-  mm.enqueue(entry('q2', '2v2'));
-  check(
-    'matchmaker queueSizes reports per-bucket depth',
-    mm.queueSizes()['1v1'] === 1 && mm.queueSizes()['2v2'] === 1,
-    `1v1=${mm.queueSizes()['1v1']} 2v2=${mm.queueSizes()['2v2']}`,
-  );
+  const local = bestHost([{ homeRegion: 'iad', accessMs: 20 }, { homeRegion: 'iad', accessMs: 20 }]);
+  check('bestHost: same-region hosts locally with spread 0', local.hostRegion === 'iad' && local.spread === 0);
+  const far = bestHost([{ homeRegion: 'iad', accessMs: 20 }, { homeRegion: 'syd', accessMs: 20 }]);
+  // iad↔syd hosts on nrt (worst ping 170) not on either endpoint (240) — the midpoint
+  check('bestHost: iad+syd hosts on the fair midpoint (nrt), not an endpoint', far.hostRegion === 'nrt', `host=${far.hostRegion} cost=${far.cost}`);
+  check('bestHost: midpoint minimises the worst ping (170ms)', far.cost === 170, `cost=${far.cost}`);
+}
+
+// radiusCeiling: region-local at t=0, widens with wait / expand, capped, noWiden pins 0
+{
+  check('radius: 0 at t=0 (region-local only)', radiusCeiling(0, 0, false) === 0);
+  check('radius: one step after one interval', radiusCeiling(8000, 0, false) === 60);
+  check('radius: expand bumps add steps', radiusCeiling(0, 3, false) === 180);
+  check('radius: capped at max', radiusCeiling(10_000_000, 0, false) === 300);
+  check('radius: noWiden pins to 0 forever', radiusCeiling(10_000_000, 9, true) === 0);
+}
+
+// region-local pair matches immediately and stages a match hosted in that region
+{
+  const { mm, staged } = mkMM();
+  mm.enqueue(rEntry('a', 'iad'));
+  mm.enqueue(rEntry('b', 'iad'));
+  check('region-local: same-region 1v1 pairs immediately', mm.queueSizes()['1v1'] === 0);
+  await flush();
+  check('staged host = the shared region; code is region-coded', staged[0]?.hostRegion === 'iad' && !!staged[0]?.code.startsWith('iad-'));
+  check('staged roster splits red/blue with distinct start poses', staged[0]?.roster[0].alliance === 'red' && staged[0]?.roster[1].alliance === 'blue');
+}
+
+// cross-region does NOT pair at t=0 (spread > radius), but DOES once widened
+{
+  const { mm, staged, setNow } = mkMM();
+  mm.enqueue(rEntry('a', 'iad'));
+  mm.enqueue(rEntry('b', 'syd'));
+  check('cross-region: no pair while radius is region-local (t=0)', mm.queueSizes()['1v1'] === 2);
+  setNow(30_000); // radius now 210ms ≥ the 150ms iad↔nrt↔syd spread
+  mm.tick();
+  check('cross-region: pairs after the radius widens with wait', mm.queueSizes()['1v1'] === 0);
+  await flush();
+  check('widened cross-region hosts on the midpoint (nrt)', staged[0]?.hostRegion === 'nrt', `host=${staged[0]?.hostRegion}`);
+}
+
+// noWiden never reaches across regions, no matter how long it waits
+{
+  const { mm, setNow } = mkMM();
+  mm.enqueue(rEntry('a', 'iad', { noWiden: true }));
+  mm.enqueue(rEntry('b', 'syd', { noWiden: true }));
+  setNow(10_000_000);
+  mm.tick();
+  check('noWiden: stays region-local forever (never pairs cross-region)', mm.queueSizes()['1v1'] === 2);
+}
+
+// expandSearch widens on demand: a cross-region pair matches once BOTH expand enough
+{
+  const { mm } = mkMM();
+  mm.enqueue(rEntry('a', 'iad'));
+  mm.enqueue(rEntry('b', 'syd'));
+  for (let i = 0; i < 3; i++) {
+    mm.expand('a');
+    mm.expand('b');
+  }
+  check('expandSearch: manual widening pairs a cross-region match', mm.queueSizes()['1v1'] === 0);
+}
+
+// queue depth is still reported per bucket (powers GET /api/presence)
+{
+  const { mm } = mkMM();
+  mm.enqueue(rEntry('q1', 'iad'));
+  check('matchmaker queueSizes reports per-bucket depth', mm.queueSizes()['1v1'] === 1 && mm.queueSizes()['2v2'] === 0);
   mm.remove('q1');
-  check(
-    'matchmaker queueSizes drops when a player leaves the queue',
-    mm.queueSizes()['1v1'] === 0 && mm.queueSizes()['2v2'] === 1,
-  );
+  check('matchmaker queueSizes drops when a player leaves', mm.queueSizes()['1v1'] === 0);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

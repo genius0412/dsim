@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
 import type { Alliance } from '../types';
 import { START_POSES } from '../config';
-import { gameServerUrl } from '../net/env';
+import { gameServerUrl, gameServerUrlWith, gameServers, multiServer, selectedServer } from '../net/env';
 import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
@@ -30,6 +30,9 @@ type Phase = 'entry' | 'connecting' | 'room' | 'error';
 export function Lobby({ settings, onStart, onCancel }: Props) {
   const [phase, setPhase] = useState<Phase>('entry');
   const [code, setCode] = useState('');
+  // one-app multi-region: friends must meet on the SAME region for a cross-region
+  // room to land them on the same machine. Defaults to the account's picked region.
+  const [region, setRegion] = useState(selectedServer()?.region ?? '');
   const [name, setName] = useState(settings.spec.teamName || 'Player');
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [hostId, setHostId] = useState('');
@@ -75,9 +78,11 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
       return;
     }
     setPhase('connecting');
+    // route both players to the same region so a shared code lands on one machine
+    const url = multiServer() && region ? gameServerUrlWith({ region }) : gameServerUrl();
     let transport: WebSocketTransport;
     try {
-      transport = new WebSocketTransport(gameServerUrl());
+      transport = new WebSocketTransport(url);
     } catch {
       setError('could not reach the game server');
       setPhase('error');
@@ -161,13 +166,32 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
                 maxLength={12}
               />
             </label>
+            {multiServer() && (
+              <label className="ds-field">
+                <span className="cap">Region</span>
+                <select
+                  className="ds-input"
+                  value={region}
+                  onChange={(e) => setRegion(e.target.value)}
+                >
+                  {gameServers().map((s) => (
+                    <option key={s.id} value={s.region}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {phase === 'error' && <p className="ds-form-err">⚠ {error}</p>}
             <div className="ds-actions">
               <button className="ds-cta" disabled={phase === 'connecting'} onClick={join}>
                 {phase === 'connecting' ? 'CONNECTING…' : 'CREATE / JOIN'}
               </button>
             </div>
-            <p className="ds-hint">Same code = same room. First one in hosts.</p>
+            <p className="ds-hint">
+              Same code = same room. First one in hosts.
+              {multiServer() && ' Both players must pick the same region.'}
+            </p>
           </div>
         </div>
       </div>

@@ -18,7 +18,10 @@ primary_region = 'iad'
   # usage is bursty, so this idles to near-free vs. ~$3.32/mo always-on.
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  # keep ONE machine warm (the primary region = the designated MATCHMAKER_REGION):
+  # ranked queueing fly-replays to it, so it must always be up. Other regions still
+  # idle to zero and cold-boot on the first connection (auto_start).
+  min_machines_running = 1
 
   [[http_service.checks]]
     interval = '15s'
