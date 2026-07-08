@@ -13,7 +13,6 @@ import {
   ROBOT_PRESETS,
 } from '../config';
 import { driveParams } from '../sim/drivetrain';
-import { ControlsSection } from './ControlsSection';
 import { RobotPreview } from './RobotPreview';
 import { APP_NAME } from '../seasons';
 
@@ -75,9 +74,10 @@ interface Props {
  * My Robot — the robot loadout builder. Renders as shell content (inside the
  * AppShell top bar, like Home/Stats/Download). ROBOT-only by design: presets,
  * the custom builder, intake, and driver-preference tuning (drive style,
- * assists, park, controls). Match configuration (game mode, alliance, start
- * position, auto path) lives on Home in `MatchSetup`, and matches are started
- * from Home — there is deliberately no "start match" here.
+ * assists, park). Key/gamepad CONTROLS + the server region live in Account
+ * settings (app-wide, not per-robot). Match configuration (game mode, alliance,
+ * start position, auto path) lives on Home in `MatchSetup`, and matches are
+ * started from Home — there is deliberately no "start match" here.
  */
 export function Menu({ settings, onChange }: Props) {
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
@@ -416,8 +416,6 @@ export function Menu({ settings, onChange }: Props) {
             </p>
           </div>
         </section>
-
-        <ControlsSection bindings={settings.bindings} onChange={(bindings) => set({ bindings })} />
       </div>
     </>
   );
