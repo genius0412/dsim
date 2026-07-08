@@ -26,6 +26,12 @@ import type { RecordRankInfo } from './net/protocol';
 // modules import it from './game'.
 export type { GameSettings };
 
+// Visual error-smoothing for the local robot on reconcile (rubberbanding fix):
+// ease the rendered position to the authoritative one over ~SMOOTH_HALFLIFE, but
+// SNAP when a correction exceeds SMOOTH_MAX_DIST (a real desync, not jitter).
+const SMOOTH_HALFLIFE = 0.06; // s — the offset halves every 60ms (~gone in 200ms)
+const SMOOTH_MAX_DIST = 16; // in — larger corrections snap instead of floating
+
 export interface Toast {
   id: number;
   text: string;
@@ -142,6 +148,10 @@ export class GameController {
   /** predict/reconcile input buffer: local commands not yet folded into a server
    * snapshot, replayed forward after each reconcile (keyed by the tick produced) */
   private inputBuf: { tick: number; cmd: RobotCommand }[] = [];
+  /** VISUAL-only offset for the local robot, set on each reconcile so a snapshot
+   * correction is eased in (render loop decays it) instead of snapping — hides
+   * rubberbanding from jittery snapshots. Never affects `this.world`. */
+  private localSmooth = { x: 0, y: 0, heading: 0 };
   /** each remote robot's latest command (from the newest snapshot), held to
    * PREDICT it forward so its collisions are simulated, not faked */
   private remoteCmds = new Map<number, RobotCommand>();
@@ -417,9 +427,16 @@ export class GameController {
     const dtMs = this.lastT ? t - this.lastT : 16;
     this.lastT = t;
     if (!this.session) this.frameLogic(dtMs);
-    // remotes are predicted in the sim (moved + collided), so render straight
-    // from the predicted world — no separate extrapolation layer
-    this.renderer.render(this.ctx, this.world, this.lastCmd, this.localRobotId);
+    // decay the visual smoothing offset toward 0 (frame-rate independent), so the
+    // rendered local robot glides to the authoritative position after a reconcile
+    const dtSec = Math.min(dtMs / 1000, 0.1);
+    const k = Math.pow(2, -dtSec / SMOOTH_HALFLIFE);
+    this.localSmooth.x *= k;
+    this.localSmooth.y *= k;
+    this.localSmooth.heading *= k;
+    // remotes are predicted in the sim (moved + collided), so render straight from
+    // the predicted world; the local robot gets the eased-in reconcile offset
+    this.renderer.render(this.ctx, this.world, this.lastCmd, this.localRobotId, this.localSmooth);
     this.raf = requestAnimationFrame(this.loop);
   };
 
@@ -501,10 +518,36 @@ export class GameController {
    * re-predict forward by replaying the local inputs (and held remote commands)
    * past the snapshot tick */
   private reconcile(snap: Snapshot): void {
+    // VISUAL error smoothing (rubberbanding fix): capture where the LOCAL robot is
+    // currently rendered (predicted pos + the decaying offset). After we snap to
+    // the authoritative world below, we set `localSmooth` so the RENDERED position
+    // stays continuous, then it eases to the real position over ~1 decay in the
+    // render loop — so a late/uneven snapshot glides instead of teleporting. Purely
+    // cosmetic: it never touches `this.world`, so determinism/anti-cheat are intact.
+    const pre = this.world.robots.find((r) => r.id === this.localRobotId);
+    const preX = pre ? pre.pos.x + this.localSmooth.x : 0;
+    const preY = pre ? pre.pos.y + this.localSmooth.y : 0;
+    const preH = pre ? pre.heading + this.localSmooth.heading : 0;
+
     this.world = snap.world;
     this.inputBuf = this.inputBuf.filter((b) => b.tick > snap.serverTick);
     for (const b of this.inputBuf) {
       step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
+    }
+
+    const post = this.world.robots.find((r) => r.id === this.localRobotId);
+    if (pre && post) {
+      let dx = preX - post.pos.x;
+      let dy = preY - post.pos.y;
+      let dh = Math.atan2(Math.sin(preH - post.heading), Math.cos(preH - post.heading));
+      // a genuinely large correction (desync/teleport) should SNAP, not float far
+      // behind for a beat — only smooth sub-robot-scale errors
+      if (Math.hypot(dx, dy) > SMOOTH_MAX_DIST) {
+        dx = 0;
+        dy = 0;
+        dh = 0;
+      }
+      this.localSmooth = { x: dx, y: dy, heading: dh };
     }
   }
 
