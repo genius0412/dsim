@@ -21,17 +21,18 @@ export type Region = (typeof DEPLOY_REGIONS)[number];
 export const MATCHMAKER_REGION: string = process.env.MATCHMAKER_REGION ?? 'iad';
 
 /**
- * Static, symmetric inter-region RTT estimates in milliseconds (diagonal = 0).
- * SEED VALUES — ballpark public-internet round trips between Fly regions; calibrate
- * from real `/health` pings after the multi-region deploy and tune here. Only the
- * relative ordering matters for host selection, so rough is fine to start.
+ * Static, symmetric inter-region RTT in milliseconds (diagonal = 0). MEASURED
+ * 2026-07-08 machine-to-machine over Fly's 6PN mesh (TCP handshake to each region's
+ * hallpass), symmetric averages rounded. Re-measure + retune when the region set or
+ * Fly's backbone changes (see docs/deploy.md). Only relative ordering matters for
+ * host selection, so small drift is harmless.
  */
 const RTT: Record<string, Record<string, number>> = {
-  iad: { iad: 0, sjc: 60, lhr: 80, syd: 220, nrt: 150 },
-  sjc: { sjc: 0, iad: 60, lhr: 140, syd: 160, nrt: 100 },
-  lhr: { lhr: 0, iad: 80, sjc: 140, syd: 250, nrt: 230 },
-  syd: { syd: 0, iad: 220, sjc: 160, lhr: 250, nrt: 110 },
-  nrt: { nrt: 0, iad: 150, sjc: 100, lhr: 230, syd: 110 },
+  iad: { iad: 0, sjc: 85, lhr: 76, syd: 190, nrt: 164 },
+  sjc: { sjc: 0, iad: 85, lhr: 133, syd: 148, nrt: 109 },
+  lhr: { lhr: 0, iad: 76, sjc: 133, syd: 251, nrt: 236 },
+  syd: { syd: 0, iad: 190, sjc: 148, lhr: 251, nrt: 114 },
+  nrt: { nrt: 0, iad: 164, sjc: 109, lhr: 236, syd: 114 },
 };
 
 /** inter-region RTT (ms). Unknown regions fall back to a large penalty so an

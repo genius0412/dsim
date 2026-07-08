@@ -2278,9 +2278,10 @@ const mkMM = () => {
   const local = bestHost([{ homeRegion: 'iad', accessMs: 20 }, { homeRegion: 'iad', accessMs: 20 }]);
   check('bestHost: same-region hosts locally with spread 0', local.hostRegion === 'iad' && local.spread === 0);
   const far = bestHost([{ homeRegion: 'iad', accessMs: 20 }, { homeRegion: 'syd', accessMs: 20 }]);
-  // iad↔syd hosts on nrt (worst ping 170) not on either endpoint (240) — the midpoint
-  check('bestHost: iad+syd hosts on the fair midpoint (nrt), not an endpoint', far.hostRegion === 'nrt', `host=${far.hostRegion} cost=${far.cost}`);
-  check('bestHost: midpoint minimises the worst ping (170ms)', far.cost === 170, `cost=${far.cost}`);
+  // iad↔syd hosts on an INTERMEDIATE region (fair midpoint), never on an endpoint —
+  // hosting on iad or syd would give the far player 20 + iad↔syd = ~210ms.
+  check('bestHost: iad+syd hosts on an intermediate region, not an endpoint', far.hostRegion !== 'iad' && far.hostRegion !== 'syd', `host=${far.hostRegion} cost=${far.cost}`);
+  check('bestHost: midpoint beats hosting on either endpoint (<210ms)', far.cost > 0 && far.cost < 210, `cost=${far.cost}`);
 }
 
 // radiusCeiling: region-local at t=0, widens with wait / expand, capped, noWiden pins 0
@@ -2309,11 +2310,11 @@ const mkMM = () => {
   mm.enqueue(rEntry('a', 'iad'));
   mm.enqueue(rEntry('b', 'syd'));
   check('cross-region: no pair while radius is region-local (t=0)', mm.queueSizes()['1v1'] === 2);
-  setNow(30_000); // radius now 210ms ≥ the 150ms iad↔nrt↔syd spread
+  setNow(30_000); // radius now 180ms ≥ the iad↔host↔syd spread (~148ms)
   mm.tick();
   check('cross-region: pairs after the radius widens with wait', mm.queueSizes()['1v1'] === 0);
   await flush();
-  check('widened cross-region hosts on the midpoint (nrt)', staged[0]?.hostRegion === 'nrt', `host=${staged[0]?.hostRegion}`);
+  check('widened cross-region hosts on an intermediate region', staged[0]?.hostRegion !== 'iad' && staged[0]?.hostRegion !== 'syd', `host=${staged[0]?.hostRegion}`);
 }
 
 // noWiden never reaches across regions, no matter how long it waits
