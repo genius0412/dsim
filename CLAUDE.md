@@ -352,25 +352,14 @@ Vercel). Per-tick server input buffering (`frameCommands`, hold-last). **SNAPSHO
 is 30 Hz** (`room.ts` `SNAPSHOT_INTERVAL = 2`) — dropped from 60 after network profiling
 (user was emphatic the lag was NETWORK, not CPU; halving snapshot bandwidth + TCP frames
 was part of the fix, alongside `setNoDelay(true)` to kill Nagle on the server sockets).
-**SMOOTHING is PREDICT-PRESENT + ERROR-SMOOTHING for ALL robots** (`game.ts`
-`displayWorld`/`reconcile`, `localSmooth`/`remoteSmooth`, `SMOOTH_HALFLIFE`/
-`SMOOTH_MAX_DIST`). Both the local AND remote robots are rendered at their PREDICTED-
-PRESENT pose plus a decaying cosmetic correction offset: the local robot is predicted
-from live input, and remotes are predicted forward in `this.world` from their held
-command (`remoteCmds`, reconcile replays them to present). On each snapshot, reconcile
-sets each robot's offset = (where it was rendered) − (where it now is) so the render
-stays continuous, then the render loop eases every offset toward 0 (large corrections
-SNAP past `SMOOTH_MAX_DIST`). Offsets are cosmetic only — never touch `this.world`, so
-determinism/anti-cheat hold. **This REPLACED the old Minecraft-style past-time entity
-interpolation** (`snapBuf`/`renderTick`/`INTERP_DELAY_TICKS`, deleted July 2026):
-interpolation drew remotes ~RTT/2+66ms BEHIND where physics actually collided them,
-so at high ping robots collided when visually apart and visibly overlapped. Rendering
-remotes at predicted-present keeps SEEN positions == COLLIDED positions and keeps
-client physics aligned with the server, so pushing/pinning doesn't rubberband — the
-right model for this push-heavy game (cf. Rocket League) vs. hitscan shooters where
-interpolation+server lag-comp is fine. **BALLS also render straight from the predicted
-sim** (never interpolated) — they spawn/despawn (launches) and collide, and lerping
-them ghost-cloned fresh balls + blended colliding balls THROUGH each other.
+**SMOOTHING is Minecraft-style entity INTERPOLATION, not extrapolation** (`game.ts`
+`displayWorld`/`snapBuf`/`renderTick`, `INTERP_DELAY_TICKS`/`INTERP_BUFFER`): the render
+clock runs a few ticks behind the newest snapshot and REMOTE ROBOTS lerp between the two
+bracketing authoritative snapshots, so they glide at any snapshot rate. The LOCAL robot
+stays predicted with a decaying `localSmooth` error offset (cosmetic only — never touches
+`this.world`, so determinism/anti-cheat hold). **BALLS are NOT interpolated** — they spawn/
+despawn (launches) and collide, and lerping them ghost-cloned fresh balls + blended
+colliding balls THROUGH each other; they render straight from the predicted sim.
 **CONNECTION-QUALITY HUD** (`ServerSession` + `NetQuality` chip, top-right): a `ping`/`pong`
 probe (once/sec, echoed at the server socket level) → smoothed RTT; snapshot arrival rate
 (Hz) + inter-arrival JITTER (mean-abs-dev) measured client-side; a SMOOTH/OK/CHOPPY
