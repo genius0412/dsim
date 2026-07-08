@@ -44,7 +44,7 @@ export const MATCH_SETTLE_S = MATCH_RESULT_REVEAL_MS / 1000;
  * build that produced it. Do NOT auto-derive this from a file hash — that would
  * reset every season on a trivial, non-gameplay edit. See docs/netcodeplan.md
  * Phase 3 + the phase3-leaderboards spec. */
-export const BALANCE_VERSION = 1;
+export const BALANCE_VERSION = 0;
 
 // -------------------------------------------------------------- scoring ----
 export const PTS_LEAVE = 3;
