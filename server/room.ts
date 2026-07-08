@@ -29,6 +29,7 @@ import {
   type RoomConfig,
   type ServerMsg,
 } from '../src/net/protocol';
+import { sanitizePlayerPatch } from '../src/net/sanitize';
 import type { EloOutcome } from './ranked';
 import type { PendingMatch } from './matchTypes';
 
@@ -264,7 +265,9 @@ export class Room {
     if (!c) return;
     switch (msg.t) {
       case 'update':
-        Object.assign(c.player, msg.patch);
+        // sanitize the patch against this player's current config: a spoofed
+        // spec/size/assist patch is clamped to legal ranges before it applies
+        Object.assign(c.player, sanitizePlayerPatch(msg.patch, c.player));
         this.broadcastRoster();
         break;
       case 'start':

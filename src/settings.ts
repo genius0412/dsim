@@ -1,32 +1,10 @@
-import type { GameSettings, AutoPathData } from './types';
-import { DEFAULT_SPEC } from './sim/spawn';
-import {
-  INTAKE_PRESETS,
-  ROBOT_MAX_SIZE,
-  ROBOT_MIN_WIDTH,
-  ROBOT_MIN_MASS,
-  ROBOT_MAX_MASS,
-  ROBOT_MIN_RPM,
-  ROBOT_MAX_RPM,
-  START_POSES,
-} from './config';
+import type { GameSettings } from './types';
+import { DEFAULT_SPEC, coerceSpec, coerceAssists, coerceAutoPath } from './sim/spawn';
+import { START_POSES } from './config';
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
 import { clamp } from './math';
 
 const STORAGE_KEY = 'decodesim.settings.v1';
-
-// Helper function to validate loaded AutoPathData
-function isValidAutoPathData(data: any): data is AutoPathData {
-  return (
-    typeof data === 'object' &&
-    data !== null &&
-    typeof data.fileName === 'string' &&
-    typeof data.startPoint === 'object' &&
-    data.startPoint !== null &&
-    Array.isArray(data.lines)
-    // Add more rigorous checks if necessary, e.g., for startPoint and lines structure
-  );
-}
 
 export function defaultSettings(): GameSettings {
   return {
@@ -54,51 +32,11 @@ export function coerceSettings(raw: unknown): GameSettings {
     const s = raw as Record<string, unknown>;
     if (s.mode === 'match' || s.mode === 'free') out.mode = s.mode;
     if (s.alliance === 'red' || s.alliance === 'blue') out.alliance = s.alliance;
-    if (typeof s.assists === 'object' && s.assists !== null) {
-      const a = s.assists as Record<string, unknown>;
-      for (const key of ['fieldCentric', 'aimAssist', 'autoIntake', 'autoFire'] as const) {
-        if (typeof a[key] === 'boolean') out.assists[key] = a[key] as boolean;
-      }
-    }
-    if (typeof s.spec === 'object' && s.spec !== null) {
-      const sp = s.spec as Record<string, unknown>;
-      if (sp.intake === 'sloped' || sp.intake === 'vector' || sp.intake === 'triangle') {
-        out.spec.intake = sp.intake;
-      } else if (sp.intake === 'compact') {
-        out.spec.intake = 'sloped'; // legacy preset names from older saves
-      } else if (sp.intake === 'extended') {
-        out.spec.intake = 'vector';
-      }
-      const preset = INTAKE_PRESETS[out.spec.intake];
-      if (typeof sp.length === 'number') out.spec.length = sp.length;
-      // clamp unconditionally: the preset's legal length range must hold even
-      // when the saved length is missing or belongs to another preset
-      out.spec.length = clamp(out.spec.length, preset.minLength, preset.maxLength);
-      if (typeof sp.width === 'number') out.spec.width = clamp(sp.width, ROBOT_MIN_WIDTH, ROBOT_MAX_SIZE);
-      if (typeof sp.name === 'string') out.spec.name = sp.name.slice(0, 24);
-      if (typeof sp.teamName === 'string') out.spec.teamName = sp.teamName.slice(0, 24);
-      if (typeof sp.teamNumber === 'number' && Number.isFinite(sp.teamNumber)) {
-        out.spec.teamNumber = clamp(Math.round(sp.teamNumber), 0, 99999);
-      }
-      if (
-        sp.drivetrain === 'mecanum' ||
-        sp.drivetrain === 'tank' ||
-        sp.drivetrain === 'swerve' ||
-        sp.drivetrain === 'xdrive'
-      ) {
-        out.spec.drivetrain = sp.drivetrain;
-      }
-      if (typeof sp.massLb === 'number') {
-        out.spec.massLb = clamp(sp.massLb, ROBOT_MIN_MASS, ROBOT_MAX_MASS);
-      }
-      if (typeof sp.driveRpm === 'number') {
-        out.spec.driveRpm = clamp(sp.driveRpm, ROBOT_MIN_RPM, ROBOT_MAX_RPM);
-      }
-      if (typeof sp.flywheelInertia === 'number') {
-        out.spec.flywheelInertia = clamp(sp.flywheelInertia, 0, 1);
-      }
-      if (typeof sp.canSort === 'boolean') out.spec.canSort = sp.canSort;
-    }
+    // assists + spec share ONE validation path with the server (coerceAssists /
+    // coerceSpec in sim/spawn): a hand-edited localStorage spec is clamped to the
+    // same legal ranges as a spoofed wire spec, so both surfaces agree exactly.
+    out.assists = coerceAssists(s.assists, out.assists);
+    if (s.spec !== undefined) out.spec = coerceSpec(s.spec, out.spec);
     if (typeof s.startIndex === 'number') {
       out.startIndex = clamp(Math.round(s.startIndex), 0, START_POSES.length - 1);
     }
@@ -116,9 +54,10 @@ export function coerceSettings(raw: unknown): GameSettings {
     }
     out.bindings = mergeBindings(s.bindings);
 
-    // Load autoPath and autoPathEnabled
-    if (s.autoPath && isValidAutoPathData(s.autoPath)) {
-      out.autoPath = s.autoPath;
+    // Load autoPath and autoPathEnabled (validated + field-clamped by coerceAutoPath)
+    const autoPath = coerceAutoPath(s.autoPath);
+    if (autoPath) {
+      out.autoPath = autoPath;
       // If autoPathEnabled is not explicitly set or is invalid, enable it if a path is loaded
       if (typeof s.autoPathEnabled === 'boolean') {
         out.autoPathEnabled = s.autoPathEnabled;
