@@ -49,7 +49,6 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
       if (r.autoPath) {
         // Initialize auto path once at the very beginning of the auto phase
         if (
-          world.match.phaseTimeLeft >= C.AUTO_DURATION - C.SIM_DT &&
           r.pathSequenceIndex === 0 &&
           r.pathSegmentProgress === 0 &&
           r.pathWaitTimer === 0
