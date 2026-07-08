@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { authClient } from '../lib/authClient';
+import { updateUsername } from '../net/api';
+import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
 
 /** Sign-in / sign-up modal (email+password and Google), styled to Direction A.
  * Only rendered when auth is enabled, so `authClient` is non-null. */
@@ -9,16 +11,30 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const uname = useUsernameCheck(username);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (mode === 'up' && !uname.ok) return; // username must be valid + free
     setBusy(true);
     setError('');
     try {
-      if (mode === 'up') await client.signUp.email({ email, password, name: name || email });
-      else await client.signIn.email({ email, password });
+      if (mode === 'up') {
+        await client.signUp.email({ email, password, name: name || email });
+        // claim the chosen username on our own profile (server verifies the fresh
+        // JWT). If it doesn't land here — e.g. the token isn't ready yet — the
+        // blocking UsernameGate will prompt for it on the next load.
+        try {
+          await updateUsername(uname.normalized);
+        } catch {
+          /* gate is the fallback */
+        }
+      } else {
+        await client.signIn.email({ email, password });
+      }
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong — try again.');
@@ -45,10 +61,19 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
         </div>
         <form className="ds-form" onSubmit={submit}>
           {mode === 'up' && (
-            <label>
-              <span>Display name</span>
-              <input className="ds-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="On the leaderboard" />
-            </label>
+            <>
+              <label>
+                <span>Display name</span>
+                <input className="ds-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="On the leaderboard" />
+              </label>
+              <label>
+                <span>Username</span>
+                <UsernameInput value={username} onChange={setUsername} />
+                <span className="ds-form-hint" style={{ color: usernameHintColor(uname.status) }}>
+                  {uname.message}
+                </span>
+              </label>
+            </>
           )}
           <label>
             <span>Email</span>
@@ -59,7 +84,11 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
             <input className="ds-input" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
           </label>
           {error && <div className="ds-form-err">{error}</div>}
-          <button className="ds-btn primary" type="submit" disabled={busy}>
+          <button
+            className="ds-btn primary"
+            type="submit"
+            disabled={busy || (mode === 'up' && !uname.ok)}
+          >
             {busy ? 'Working…' : mode === 'in' ? 'Sign in' : 'Create account'}
           </button>
         </form>

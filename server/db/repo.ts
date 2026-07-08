@@ -125,10 +125,63 @@ export async function setHandle(userId: string, handle: string): Promise<void> {
   ]);
 }
 
-/** a user's public profile (currently just the display handle), or null */
-export async function getProfile(userId: string): Promise<{ userId: string; handle: string } | null> {
-  const rows = await q<{ handle: string }>(`select handle from profiles where user_id = $1`, [userId]);
-  return rows[0] ? { userId, handle: rows[0].handle } : null;
+export interface PublicProfile {
+  userId: string;
+  handle: string;
+  /** unique lowercase [a-z0-9] slug, or null for a legacy profile with none yet */
+  username: string | null;
+}
+
+/** a user's public profile (display handle + unique username), or null */
+export async function getProfile(userId: string): Promise<PublicProfile | null> {
+  const rows = await q<{ handle: string; username: string | null }>(
+    `select handle, username from profiles where user_id = $1`,
+    [userId],
+  );
+  return rows[0] ? { userId, handle: rows[0].handle, username: rows[0].username } : null;
+}
+
+/** resolve a public username → profile (the /profile/<username> read path), or null */
+export async function getProfileByUsername(username: string): Promise<PublicProfile | null> {
+  const rows = await q<{ user_id: string; handle: string; username: string | null }>(
+    `select user_id, handle, username from profiles where username = $1`,
+    [username],
+  );
+  const r = rows[0];
+  return r ? { userId: r.user_id, handle: r.handle, username: r.username } : null;
+}
+
+/** thrown by setUsername when the requested username is already taken */
+export class UsernameTakenError extends Error {
+  constructor() {
+    super('username taken');
+    this.name = 'UsernameTakenError';
+  }
+}
+
+/** claim a username for a user (profile row must already exist — caller ensures
+ * it). Usernames are one-per-account and globally unique; a collision throws
+ * `UsernameTakenError` (Postgres unique-violation 23505 on profiles_username_key). */
+export async function setUsername(userId: string, username: string): Promise<void> {
+  try {
+    await q(`update profiles set username = $2, updated_at = now() where user_id = $1`, [
+      userId,
+      username,
+    ]);
+  } catch (e) {
+    if (e && typeof e === 'object' && (e as { code?: string }).code === '23505') {
+      throw new UsernameTakenError();
+    }
+    throw e;
+  }
+}
+
+/** is a username free to claim? (false if any other user already holds it) */
+export async function usernameAvailable(username: string, forUserId?: string): Promise<boolean> {
+  const rows = await q<{ user_id: string }>(`select user_id from profiles where username = $1`, [
+    username,
+  ]);
+  return rows.length === 0 || (!!forUserId && rows[0].user_id === forUserId);
 }
 
 // -------------------------------------------------- per-account settings ----
@@ -220,7 +273,11 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
 export interface BoardRow {
   userId: string;
   handle: string;
+  username: string | null;
   partnerId: string | null;
+  /** partner's display name + username (duo runs only; null for solo / unknown) */
+  partnerHandle: string | null;
+  partnerUsername: string | null;
   score: number;
   replayId: string | null;
   createdAt: string;
@@ -251,9 +308,13 @@ export async function recordLeaderboard(opts: {
        where r.balance_version = $1 and r.mode = $2 ${dtFilter}
        order by r.user_id, r.score desc, r.created_at asc
      )
-     select b.user_id as "userId", p.handle, b.partner_id as "partnerId",
+     select b.user_id as "userId", p.handle, p.username,
+            b.partner_id as "partnerId",
+            pp.handle as "partnerHandle", pp.username as "partnerUsername",
             b.score, b.replay_id as "replayId", b.created_at as "createdAt", b.config
-     from best b join profiles p on p.user_id = b.user_id
+     from best b
+       join profiles p on p.user_id = b.user_id
+       left join profiles pp on pp.user_id = b.partner_id
      order by b.score desc, b.created_at asc
      limit $${params.length}`,
     params,
@@ -467,9 +528,9 @@ export async function eloLeaderboard(opts: {
   drivetrain: string;
   balanceVersion: number;
   limit?: number;
-}): Promise<{ userId: string; handle: string; rating: number; games: number }[]> {
-  return q<{ userId: string; handle: string; rating: number; games: number }>(
-    `select e.user_id as "userId", p.handle, e.rating, e.games
+}): Promise<{ userId: string; handle: string; username: string | null; rating: number; games: number }[]> {
+  return q<{ userId: string; handle: string; username: string | null; rating: number; games: number }>(
+    `select e.user_id as "userId", p.handle, p.username, e.rating, e.games
      from elo_ratings e join profiles p on p.user_id = e.user_id
      where e.balance_version = $1 and e.mode = $2 and e.drivetrain = $3
      order by e.rating desc, e.games desc
@@ -528,6 +589,7 @@ export interface UserMatchRow {
 export interface UserStats {
   userId: string;
   handle: string | null;
+  username: string | null;
   season: number;
   elo: UserEloStat[];
   records: UserRecordStat[];
@@ -544,7 +606,10 @@ export interface UserStats {
  */
 export async function getUserStats(userId: string, balanceVersion: number): Promise<UserStats> {
   const [profile, elo, recPb, recRank, match, recent] = await Promise.all([
-    q<{ handle: string }>(`select handle from profiles where user_id = $1`, [userId]),
+    q<{ handle: string; username: string | null }>(
+      `select handle, username from profiles where user_id = $1`,
+      [userId],
+    ),
     q<{ mode: '1v1' | '2v2'; rating: number; games: number; rnk: string }>(
       `with ranked as (
          select user_id, mode, rating, games,
@@ -615,6 +680,7 @@ export async function getUserStats(userId: string, balanceVersion: number): Prom
   return {
     userId,
     handle: profile[0]?.handle ?? null,
+    username: profile[0]?.username ?? null,
     season: balanceVersion,
     elo: elos,
     records,

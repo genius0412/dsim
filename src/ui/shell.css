@@ -558,6 +558,43 @@
   font-size: 11px;
 }
 
+/* leaderboard driver names (display handle + clickable @username, duo pairs) */
+.lb-drivers {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lb-amp {
+  color: var(--ds-mut);
+  font-size: 12px;
+}
+.lb-duo-tag {
+  margin-left: 2px;
+}
+.lb-name {
+  font: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--ds-ink);
+}
+.lb-name .lb-name-h {
+  border-bottom: 1px dotted transparent;
+}
+.lb-name:hover .lb-name-h {
+  color: var(--ds-accent);
+  border-bottom-color: color-mix(in srgb, var(--ds-accent) 60%, transparent);
+}
+.lb-at {
+  color: var(--ds-mut);
+  font-size: 12px;
+}
+
 /* leaderboard record config (expandable robot column) */
 .lb-robot {
   font: inherit;
@@ -721,6 +758,41 @@ tr.lb-detail td {
 .ds-form-err {
   font-size: 13px;
   color: var(--ds-danger);
+}
+.ds-form-hint {
+  font-size: 12.5px;
+  color: var(--ds-mut);
+  min-height: 1em;
+}
+/* username input with a fixed @ prefix */
+.ds-username-input {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-bg);
+  overflow: hidden;
+}
+.ds-username-input:focus-within {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 1px;
+}
+.ds-username-input .at {
+  display: flex;
+  align-items: center;
+  padding: 0 4px 0 11px;
+  color: var(--ds-mut);
+  font-size: 14px;
+}
+.ds-username-input .ds-input {
+  border: none;
+  border-radius: 0;
+  background: none;
+  flex: 1;
+  padding-left: 2px;
+}
+.ds-username-input .ds-input:focus-visible {
+  outline: none;
 }
 .ds-form-switch {
   margin-top: 12px;
