@@ -93,6 +93,13 @@ export class Matchmaker {
 
   enqueue(entry: QueueEntry): void {
     this.remove(entry.id); // never double-queue a connection
+    // never let one ACCOUNT hold two queue entries at once (a second tab, or a
+    // stale entry a `?mm=1` reconnect left behind under a fresh connection id).
+    // Otherwise the matchmaker could pair a user with THEMSELF, staging a roster
+    // with two slots for one identity — on the host, `byUser` collapses to one
+    // client, so one robot takes the driver's input (a "ghost" they control) and
+    // the other is left unmapped + frozen. Drop any prior entry for this user.
+    if (entry.userId) this.removeUser(entry.userId, entry.id);
     entry.enqueuedAt = this.now();
     entry.expandBumps = entry.expandBumps ?? 0;
     this.queues[entry.mode].push(entry);
@@ -108,6 +115,17 @@ export class Matchmaker {
         q.splice(i, 1);
         this.broadcastStatus(mode);
       }
+    }
+  }
+
+  /** drop every queue entry belonging to `userId` EXCEPT connection `keepId`
+   * (the fresh entry). Prevents one account from holding two queue slots. */
+  private removeUser(userId: string, keepId: string): void {
+    for (const mode of Object.keys(this.queues) as QueueMode[]) {
+      const q = this.queues[mode];
+      const before = q.length;
+      this.queues[mode] = q.filter((e) => e.userId !== userId || e.id === keepId);
+      if (this.queues[mode].length !== before) this.broadcastStatus(mode);
     }
   }
 
@@ -156,6 +174,9 @@ export class Matchmaker {
       const group = [q[i]];
       for (let j = 0; j < q.length && group.length < need; j++) {
         if (j === i) continue;
+        // never put the same account in a group twice (backstop for the userId
+        // dedup above) — a self-pair produces a frozen "ghost" robot
+        if (q[j].userId && group.some((g) => g.userId === q[j].userId)) continue;
         const trial = [...group, q[j]];
         const { spread } = bestHost(trial.map(toPing));
         const ceiling = Math.min(...trial.map((e) => this.ceilingOf(e, now)));
