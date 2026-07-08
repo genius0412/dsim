@@ -248,7 +248,13 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
     },
     events: [],
     rrContacts: [],
-    penalties: { episodes: {}, pins: {}, pinFouls: {} },
+    penalties: {
+      episodes: {},
+      pins: {},
+      pinFouls: {},
+      gateCulprit: { red: null, blue: null },
+      rampBallIds: { red: [], blue: [] },
+    },
     gameSettings: gameSettings, // Pass gameSettings to the world
   };
 }

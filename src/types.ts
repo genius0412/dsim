@@ -190,6 +190,14 @@ export interface PenaltyState {
   /** how many pin fouls a given pinner (by id) has already committed, for the
    * MINOR -> MAJOR escalation on a repeat pin */
   pinFouls: Record<number, number>;
+  /** which OPPONENT alliance (if any) is responsible for each goal's gate being
+   * open — set when an opponent operates the gate, held through the drain, and
+   * cleared once the gate shuts. Artifacts leaving that ramp meanwhile are billed
+   * to them (G418.B). null = closed, or opened legally by the owner. */
+  gateCulprit: Record<Alliance, Alliance | null>;
+  /** ids of the classified (committed, non-overflow) artifacts resting on each
+   * goal's ramp last tick, to detect ones that leave (G418.B) */
+  rampBallIds: Record<Alliance, number[]>;
 }
 
 // --- Auto Pathing Types ---

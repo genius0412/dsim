@@ -1256,53 +1256,88 @@ function inGate(w: World, robotIdx: number, gate: 'red' | 'blue'): void {
   w.robots[robotIdx].pos = { x: (gz.x0 + gz.x1) / 2, y: (gz.y0 + gz.y1) / 2 };
 }
 
-// ---- G424 GATE ZONE off limits (MINOR): contact while a robot is in a gate --
+// ---- G417 operating an OPPONENT's gate (MAJOR) -----------------------------
+// Rules driven directly through updatePenalties (world.time advanced by hand) so
+// the episode debounce can be exercised without physics moving the robot.
 {
   const w = foulWorld();
   const gz = gateZone('red');
   const gcx = (gz.x0 + gz.x1) / 2;
   const gcy = (gz.y0 + gz.y1) / 2;
-  // blue intrudes into RED's gate zone and contacts a red robot there
-  w.robots[0].pos = { x: gcx, y: gcy };
-  w.robots[1].pos = { x: gcx, y: gcy + 1.5 };
-  runCmds(w, new Map(), 0.3);
+  w.time = 0;
+  w.robots[0].pos = { x: gcx, y: gcy }; // blue OPERATING red's gate
+  w.robots[1].pos = { x: 0, y: 20 };    // red elsewhere
+  updatePenalties(w, 1 / 60, new Map());
   check(
-    'contact in a gate zone draws a MINOR foul on the offender (non-owner)',
-    w.match.scores.red.foulPoints === 5 && w.match.fouls.blue.minor === 1,
-    `redFoulPts=${w.match.scores.red.foulPoints} blueMinor=${w.match.fouls.blue.minor}`,
+    'operating the opponent gate is an immediate MAJOR (G417), no robot contact needed',
+    w.match.fouls.blue.major === 1 && w.match.scores.red.foulPoints === 15,
+    `blueMajor=${w.match.fouls.blue.major} redFoulPts=${w.match.scores.red.foulPoints}`,
   );
-  // holding the contact in the gate is ONE foul, not one per tick
-  runCmds(w, new Map(), 1.5);
-  check(
-    'staying in the gate is a single foul, not one per tick',
-    w.match.fouls.blue.minor === 1,
-    `blueMinor=${w.match.fouls.blue.minor}`,
-  );
-
-  // separate past the clear window, then re-contact -> a fresh foul
+  // holding at the gate is ONE foul (episode-debounced)
+  w.time = 0.5;
+  updatePenalties(w, 1 / 60, new Map());
+  check('holding at the opponent gate is a single G417 foul', w.match.fouls.blue.major === 1, `blueMajor=${w.match.fouls.blue.major}`);
+  // leave past the clear window, then return -> a fresh foul
   w.robots[0].pos = { x: 0, y: -8 };
-  w.robots[1].pos = { x: 0, y: 20 };
-  runCmds(w, new Map(), 1.3); // stay clear past PENALTY_CLEAR (1.0 s)
-  check('leaving the gate does not add a foul', w.match.fouls.blue.minor === 1);
+  w.time = 2.0;
+  updatePenalties(w, 1 / 60, new Map());
+  check('leaving the gate does not add a foul', w.match.fouls.blue.major === 1);
   w.robots[0].pos = { x: gcx, y: gcy };
-  w.robots[1].pos = { x: gcx, y: gcy + 1.5 };
-  runCmds(w, new Map(), 0.3);
-  check(
-    're-contacting in the gate after the clear window fouls again',
-    w.match.fouls.blue.minor === 2 && w.match.scores.red.foulPoints === 10,
-    `blueMinor=${w.match.fouls.blue.minor} redFoulPts=${w.match.scores.red.foulPoints}`,
-  );
+  w.time = 2.1;
+  updatePenalties(w, 1 / 60, new Map());
+  check('re-entering the opponent gate after the clear window fouls again', w.match.fouls.blue.major === 2, `blueMajor=${w.match.fouls.blue.major}`);
 
-  // mere PRESENCE in the opponent's gate with NO contact is not a foul (the
-  // manual's G424 is contact-based; opening the gate is a legal play the owner
-  // may defend)
+  // operating your OWN gate is legal
   const w2 = foulWorld();
-  inGate(w2, 0, 'red'); // blue alone in red's gate, red parked far away
-  runCmds(w2, new Map(), 0.5);
+  w2.robots[1].pos = { x: gcx, y: gcy }; // red on red's own gate
+  updatePenalties(w2, 1 / 60, new Map());
   check(
-    'being in the opponent gate WITHOUT contact is not a foul',
-    w2.match.scores.red.foulPoints === 0 && w2.match.fouls.blue.minor === 0,
-    `redFoulPts=${w2.match.scores.red.foulPoints} blueMinor=${w2.match.fouls.blue.minor}`,
+    'operating your OWN gate is not a foul',
+    w2.match.scores.red.foulPoints === 0 && w2.match.fouls.red.major === 0,
+    `redFoulPts=${w2.match.scores.red.foulPoints} redMajor=${w2.match.fouls.red.major}`,
+  );
+}
+
+// ---- G424 GATE ZONE off limits (MINOR): robot-robot contact at the gate -----
+// Isolated from G417: the OWNER (red) sits in its own gate zone and the opponent
+// (blue) contacts from the field side, clear of the gate zone (so blue is not
+// operating the gate). Only G424 should fire.
+{
+  const w = foulWorld();
+  for (const r of w.robots) r.heading = 0;
+  w.robots[1].pos = { x: 52, y: 0 };  // red (owner) in its own gate zone, clear of the tunnel corner
+  w.robots[0].pos = { x: 30, y: 0 };  // blue contacts from the field side, clear of the gate zone
+  w.rrContacts = [{ a: 0, b: 1 }];
+  updatePenalties(w, 1 / 60, new Map());
+  check(
+    'robot contact with the gate owner in its own gate is a MINOR G424 on the opponent (and NOT G417)',
+    w.match.fouls.blue.minor === 1 && w.match.fouls.blue.major === 0 && w.match.scores.red.foulPoints === 5,
+    `blueMinor=${w.match.fouls.blue.minor} blueMajor=${w.match.fouls.blue.major} redFoulPts=${w.match.scores.red.foulPoints}`,
+  );
+}
+
+// ---- G418.B artifacts off the opponent's ramp (MAJOR per artifact) ----------
+// Manual Example 3: open the opponent gate, N artifacts drain off their ramp ->
+// 1 MAJOR (G417) + N MAJOR (G418.B, one per artifact).
+{
+  const w = foulWorld();
+  const N = 3;
+  for (let i = 0; i < N; i++) {
+    const b = w.balls[i];
+    b.state = { kind: 'rail', goal: 'red', s: GATE_STOP_S + i * RAIL_PITCH, v: 0, overflow: false };
+    b.pos = railPos('red', GATE_STOP_S + i * RAIL_PITCH);
+    b.vel = { x: 0, y: 0 };
+    b.z = RAMP_SURFACE_Z;
+  }
+  const gz = gateZone('red');
+  w.robots[0].pos = { x: (gz.x0 + gz.x1) / 2, y: (gz.y0 + gz.y1) / 2 }; // blue opens red's gate
+  w.robots[1].pos = { x: 0, y: 30 };
+  runCmds(w, new Map(), 2.5); // gate opens, the column drains off red's ramp
+  const drained = w.balls.filter((b) => !(b.state.kind === 'rail' && b.state.goal === 'red')).length;
+  check(
+    'opening the opponent gate: 1 G417 + one G418 per artifact that drains off their ramp',
+    w.match.fouls.blue.major === N + 1,
+    `blueMajor=${w.match.fouls.blue.major} (expected ${N + 1})  redFoulPts=${w.match.scores.red.foulPoints}`,
   );
 }
 

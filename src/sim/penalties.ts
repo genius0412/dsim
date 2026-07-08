@@ -30,6 +30,10 @@ import { hyp } from '../math';
  *                                       (own side = goalSide: robots stage near
  *                                       their GOAL) while contacting an opponent
  *   G422  pinning ≥3 s                 (MINOR, MAJOR on a repeat by the same pinner)
+ *   G417  operating an OPPONENT's GATE  (MAJOR) — contacting/working their gate
+ *   G418  artifact off an opponent RAMP (MAJOR per artifact) — each classified
+ *                                       ball that leaves an opponent's ramp
+ *                                       because you opened their gate (G418.B)
  *   G424  GATE ZONE off limits         (MINOR) — cross-alliance contact while a
  *                                       robot is in a gate zone; protects the
  *                                       gate OWNER's access to their own gate
@@ -169,8 +173,66 @@ export function updatePenalties(
     }
   }
 
+  // ---- G417 opponent gate + G418 artifacts off the opponent's ramp --------
+  updateGateFouls(world, fire);
+
   // ---- G422 pinning (ordered pairs, own second-accumulator) ---------------
   updatePins(world, dt, commands);
+}
+
+type FireFn = (key: string, offender: Alliance, severity: 'minor' | 'major', rule: string) => void;
+
+/** G417 (contacting/operating an OPPOSING GATE — MAJOR) + G418.B (each classified
+ * ARTIFACT that leaves an opponent's RAMP because their gate was opened — MAJOR
+ * per artifact). Uses updateGates' lever condition to decide who is operating a
+ * gate, and remembers which opponent opened each gate so the balls that then drain
+ * off that ramp are billed to them even after they leave (the flow finishes the
+ * drain). Operating your OWN gate is legal (that is how an alliance clears its own
+ * overflow). Matches the manual's Example 3: open the opponent gate => 1 G417 +
+ * one G418 per artifact that leaves. */
+function updateGateFouls(world: World, fire: FireFn): void {
+  const pen = world.penalties;
+  for (const a of ALLIANCES) {
+    const goal = world.goals[a];
+    const zone = gateZone(a);
+
+    // opponents currently OPERATING gate a (same lever test updateGates uses):
+    // in the gate zone, worked from the long/field side. Operating your own gate
+    // is legal, so only the owner's opponents are flagged.
+    let workingOpp: Alliance | null = null;
+    for (const r of world.robots) {
+      if (r.alliance === a) continue;
+      if (robotIntersectsRect(r, zone) && r.pos.y >= zone.y0 - C.GATE_LONG_SIDE_MARGIN) {
+        fire(`G417:${a}:${r.id}`, r.alliance, 'major', 'G417 opponent gate');
+        workingOpp = r.alliance;
+      }
+    }
+
+    // classified (committed, non-overflow) artifacts resting on a's ramp now
+    const onRamp: number[] = [];
+    for (const b of world.balls) {
+      const st = b.state;
+      if (st.kind === 'rail' && st.goal === a && !st.overflow && !st.pending) onRamp.push(b.id);
+    }
+
+    // G418.B: one MAJOR for each artifact that LEFT the ramp while an opponent is
+    // the responsible party (billed BEFORE we re-evaluate responsibility below, so
+    // the final ball that drains as the gate shuts still counts)
+    const culprit = pen.gateCulprit[a];
+    if (culprit) {
+      const now = new Set(onRamp);
+      for (const id of pen.rampBallIds[a]) {
+        if (!now.has(id)) awardFoul(world, culprit, 'major', 'G418 artifact off opponent ramp');
+      }
+    }
+    pen.rampBallIds[a] = onRamp;
+
+    // update who is responsible for gate a being open: an opponent operating it
+    // takes the blame and keeps it through the drain; it clears only once the gate
+    // is shut and unattended (opened legally by the owner => stays null)
+    if (workingOpp) pen.gateCulprit[a] = workingOpp;
+    else if (!goal.gateOpen) pen.gateCulprit[a] = null;
+  }
 }
 
 /** does robot r share a recorded contact with any opposing robot this tick? */

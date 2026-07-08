@@ -271,7 +271,16 @@ build/smoke-green** (see below); the old P2P lockstep is deleted.
 NOT the manual's 10/30), awarded to the OPPOSING (victim) alliance via `awardFoul` in
 scoring.ts → the victim's `ScoreBreakdown.foulPoints`; `match.fouls[offender]` tallies
 committed counts for the HUD. Rules (numbers/severities per Section 11 — corrected
-July 2026 to follow the manual): **protected-zone** rules use one uniform model —
+July 2026 to follow the manual): **GATE/RAMP rules** (`updateGateFouls`) — **G417**
+operating an OPPONENT's gate is an immediate **MAJOR** (edge-triggered; detected with
+updateGates' own lever condition, so it fires exactly when a robot could open the
+gate — operating your OWN gate is legal), and **G418.B** each classified artifact
+that leaves an opponent's RAMP because you opened their gate is a **MAJOR per
+artifact**. The engine remembers which opponent opened each gate (`penalties.
+gateCulprit`) and bills every ball that then drains off that ramp (`penalties.
+rampBallIds` tracks the committed, non-overflow rail balls) to them even after they
+leave — matching manual Example 3 (open the opponent gate → 1 G417 + N G418). Then the
+**protected-zone** rules use one uniform model —
 each zone is OWNED by an alliance and a cross-alliance CONTACT while either robot is
 in it fouls the NON-owner ("regardless of who initiates"): **G424 gate zone** (MINOR
 — protects the OWNER's access to their own gate; contact-based, NOT the old homebrew
