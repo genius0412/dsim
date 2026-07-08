@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react';
 import type { GameSettings } from '../game';
 import { defaultSettings } from '../settings';
 import { authEnabled, authClient } from '../lib/authClient';
-import { gameServerConfigured } from '../net/env';
+import { gameServerConfigured, multiServer, selectedServerId } from '../net/env';
 import { fetchProfile, updateHandle } from '../net/api';
 import { AuthPanel } from './AuthPanel';
+import { ServerPicker } from './ServerPicker';
+import { ControlsSection } from './ControlsSection';
 import { APP_NAME } from '../seasons';
 
 /**
@@ -28,9 +30,27 @@ export function Account({
     <>
       <p className="ds-eyebrow">{APP_NAME} · Account</p>
       <h1 className="ds-h1">Account settings</h1>
-      <p className="ds-sub">Your sign-in and app-wide preferences.</p>
+      <p className="ds-sub">Your sign-in and app-wide preferences. Signed-in preferences sync to your account.</p>
 
       {authEnabled ? <Identity /> : <IdentityDisabled />}
+
+      {multiServer() && (
+        <div className="ds-panel" style={{ marginTop: 18 }}>
+          <div className="ds-panel-h">
+            <span className="ds-panel-title">Server region</span>
+          </div>
+          <div style={{ padding: 16 }}>
+            <ServerPicker
+              value={settings.preferredServerId ?? selectedServerId()}
+              onChange={(id) => onChange({ ...settings, preferredServerId: id })}
+            />
+            <p className="ds-hint" style={{ marginTop: 12, marginBottom: 0 }}>
+              Your default region for matches and record runs. Remembered on this device and, when
+              signed in, synced to your account.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="ds-panel" style={{ marginTop: 18 }}>
         <div className="ds-panel-h">
@@ -52,6 +72,13 @@ export function Account({
             <span className="od">Announcer voice · beeps when off</span>
           </button>
         </div>
+      </div>
+
+      <div style={{ marginTop: 18 }}>
+        <ControlsSection
+          bindings={settings.bindings}
+          onChange={(bindings) => onChange({ ...settings, bindings })}
+        />
       </div>
 
       <div className="ds-panel" style={{ marginTop: 18 }}>

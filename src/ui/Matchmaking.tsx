@@ -199,23 +199,15 @@ export function Matchmaking({
                 )}
               </p>
               {multiServer() && (
-                <label
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    marginBottom: 16,
-                    fontSize: 13,
-                    cursor: 'pointer',
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={noWiden}
-                    onChange={(e) => setNoWiden(e.target.checked)}
-                  />
-                  <span>Only match in my region (don’t widen)</span>
-                </label>
+                <div className="ds-opts" style={{ marginBottom: 16 }}>
+                  <button
+                    className={`ds-opt ${noWiden ? 'on' : ''}`}
+                    onClick={() => setNoWiden(!noWiden)}
+                  >
+                    <span className="ot">Only my region {noWiden ? 'ON' : 'OFF'}</span>
+                    <span className="od">Never widen the search — lowest ping, may wait longer</span>
+                  </button>
+                </div>
               )}
               {error && <p className="ds-form-err" style={{ marginBottom: 12 }}>{error}</p>}
               <button className="ds-btn primary" onClick={() => void find()}>Find Match</button>
