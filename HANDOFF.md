@@ -1,9 +1,28 @@
-# HANDOFF — 2026-07-08 (session 8: region-aware matchmaking + fly-replay routing) — READ FIRST
+# HANDOFF — 2026-07-08 (session 9: anti-cheat spec sanitization) — READ FIRST
 
-> Latest work: **region-aware matchmaking + `fly-replay` routing** (one Fly app, machines per
-> region). See its section below + `docs/netcodeplan.md` Phase 4. Build/smoke green, uncommitted
-> on alpha, pending live multi-region verification. Earlier session-7 notes (intake/seasons/
-> multi-server foundation) follow.
+> **LATEST (session 9): server-authoritative spec/settings sanitization (anti-cheat).**
+> Players were spoofing their robot config via devtools (inspect-element / edited
+> `localStorage` / hand-crafted wire messages) to spawn oversized or NaN-dimensioned
+> robots. Fixed by making config validation a SINGLE SOURCE OF TRUTH enforced at every
+> layer. Build + smoke (+18 new checks) + server:check GREEN, uncommitted on alpha.
+>
+> - **`src/sim/spawn.ts`** now owns the canonical coercers: `coerceSpec` (clamps every
+>   numeric axis to its per-drivetrain / per-preset legal range, GUARDS finiteness — bare
+>   `clamp(NaN,…)` returns NaN, which previously slipped through), `coerceAssists`,
+>   `coerceAutoPath` (structural + field-bound clamp so a spoofed auto path can't teleport
+>   a robot to an absurd/NaN pos), and `coerceSetup`. All idempotent.
+> - **`createWorld` runs `coerceSetup` on EVERY setup** — the ultimate chokepoint: no spawn
+>   path (client localStorage, wire join, DB-staged ranked match) can produce an illegal
+>   robot. Deterministic + idempotent ⇒ live play and replay re-runs agree.
+> - **`src/net/sanitize.ts`** (new): `sanitizePlayer` / `sanitizePlayerPatch` for server
+>   ingress. Wired into `server/index.ts` (`join` + ranked `queue`) and `server/room.ts`
+>   (`update` patch) — a spoofed spec is clamped BEFORE it lands on the roster.
+> - **`src/settings.ts`** `coerceSettings` refactored to delegate to the same coercers
+>   (deleted its inline spec block + `isValidAutoPathData`), so client + server sanitize
+>   identically. NOTE: this also FIXED a latent client bug — the old inline path let
+>   `length/width/mass/rpm: NaN` through (no finiteness guard).
+>
+> Earlier session-8 notes (region-aware matchmaking + `fly-replay` routing) follow.
 
 ## Branch strategy (IMPORTANT — this session introduced a two-branch split)
 - **`alpha`** = the primary dev line: physics/ball tuning **plus** the new backend features.
