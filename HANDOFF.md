@@ -1,8 +1,28 @@
 # HANDOFF — 2026-07-07 (session 5: penalty engine corrected to the manual) — READ FIRST
 
 ## Build state
-GREEN. `npm test` = 181/181 checks pass (0 fail). `npm run build` (tsc strict + vite)
-clean. Nothing committed/pushed.
+GREEN. `npm test` = 183/183 checks pass (0 fail). `npm run build` (tsc strict + vite)
+clean.
+
+## Latest addition — G417 / G418 gate-and-ramp fouls (`updateGateFouls` in penalties.ts)
+- **G417** — operating an OPPONENT's gate = immediate **MAJOR** (edge-triggered via the
+  `fire` episode debounce). Detected with updateGates' lever condition (in the gate zone,
+  field side), filtered to the owner's opponents. Operating your own gate is legal.
+- **G418.B** — each classified (committed, non-overflow) artifact that leaves an
+  opponent's RAMP because you opened their gate = **MAJOR per artifact**.
+- Attribution: `penalties.gateCulprit[goal]` records which opponent opened each gate
+  (set while they operate it, held through the drain, cleared when the gate shuts);
+  `penalties.rampBallIds[goal]` tracks the ramp's committed balls tick-to-tick, and every
+  departure while a culprit is set bills that opponent. Matches manual Example 3 (open
+  the opponent gate → 1 G417 + N G418; smoke verifies blueMajor == N+1).
+- Two new `PenaltyState` fields (`gateCulprit`, `rampBallIds`) — plain JSON, init in
+  spawn.ts. Note `updatePenalties` runs BEFORE this tick's `updateGates`/`updateRails`
+  (world.ts), so it observes end-of-previous-tick gate/ball state — consistent for the
+  cross-tick ramp-departure comparison.
+- G417 co-occurs with G424 whenever an opponent is in your gate zone (robots are wide,
+  the gate zone is 10"); that's realistic. Smoke isolates G424 (owner defends its own
+  gate, opponent contacts from the field side clear of the zone) and G417 (operate the
+  gate, no contact needed) with direct `updatePenalties` calls.
 
 ## What was done — Section 11 penalty fixes (`src/sim/penalties.ts`)
 
