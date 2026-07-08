@@ -121,6 +121,9 @@ export interface Presence {
   signedIn: number;
   /** how many players are waiting in each ranked bucket right now */
   queues: { '1v1': number; '2v2': number };
+  /** the live admin notice (scheduled restart / info), or null — mirrors the
+   * WebSocket `serverNotice` so disconnected pages can show the banner too */
+  notice?: { kind: 'restart' | 'info'; message: string; until?: number } | null;
 }
 
 /** live presence: who's online + how deep each ranked queue is, so a player can
