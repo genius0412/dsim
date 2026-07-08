@@ -1,5 +1,13 @@
 import { dbEnabled } from './db/pool';
-import { ensureProfile, ensureSeason, personalBest, recordRank, saveReplay, submitRecord } from './db/repo';
+import {
+  currentSeasonNumber,
+  ensureProfile,
+  ensureSeason,
+  personalBest,
+  recordRank,
+  saveReplay,
+  submitRecord,
+} from './db/repo';
 import { applyMatchElo } from './ranked';
 import { recordScore } from '../src/sim/replay';
 import type { MatchOutcome, PersistOutcome } from './room';
@@ -29,7 +37,11 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
     return {};
   }
   try {
-    const bv = o.replay.balanceVersion;
+    // Season = the DB-controlled current season (>= the replay's balance version),
+    // so an admin-started season stamps new results without a redeploy. Stamp the
+    // replay row with the same season so a season purge can delete it directly.
+    const bv = await currentSeasonNumber(o.replay.balanceVersion);
+    o.replay.balanceVersion = bv;
     await ensureSeason(bv);
     for (const p of authed) await ensureProfile(p.userId!, p.handle ?? 'Player');
     const replayId = await saveReplay(o.replay);

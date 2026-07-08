@@ -25,6 +25,89 @@ export async function ensureSeason(balanceVersion: number): Promise<void> {
   await q(`update seasons set active = false where balance_version <> $1`, [balanceVersion]);
 }
 
+/**
+ * The CURRENT season number. Season is the `balance_version` key, but the live
+ * season is DB-controlled so an admin can start a fresh season at runtime WITHOUT
+ * a code redeploy (`startNewSeason`). It is the greater of the highest season row
+ * on record and the code's `BALANCE_VERSION` fallback — so a genuine balance bump
+ * (config `BALANCE_VERSION`↑) still rolls the season automatically, and an admin
+ * bump (a higher `seasons` row) wins when there's been no balance change.
+ */
+export async function currentSeasonNumber(fallback: number): Promise<number> {
+  const rows = await q<{ bv: number | null }>(`select max(balance_version) as bv from seasons`);
+  return Math.max(Number(rows[0]?.bv ?? 0), fallback);
+}
+
+export interface SeasonRow {
+  season: number;
+  name: string;
+  active: boolean;
+  startedAt: string;
+  records: number;
+  matches: number;
+}
+
+/** every season that exists (a `seasons` row OR any data stamped with it),
+ * newest first, with how much data each holds. */
+export async function listSeasons(): Promise<SeasonRow[]> {
+  const rows = await q<{
+    season: number;
+    name: string | null;
+    active: boolean | null;
+    started_at: string | null;
+    records: string;
+    matches: string;
+  }>(
+    `with versions as (
+       select balance_version as v from seasons
+       union select balance_version from records
+       union select balance_version from matches
+     )
+     select v.v as season,
+            s.name as name,
+            coalesce(s.active, false) as active,
+            s.started_at as started_at,
+            (select count(*) from records r where r.balance_version = v.v) as records,
+            (select count(*) from matches m where m.balance_version = v.v) as matches
+     from versions v
+     left join seasons s on s.balance_version = v.v
+     order by v.v desc`,
+  );
+  return rows.map((r) => ({
+    season: r.season,
+    name: r.name ?? `Season ${r.season}`,
+    active: !!r.active,
+    startedAt: r.started_at ?? '',
+    records: Number(r.records),
+    matches: Number(r.matches),
+  }));
+}
+
+/** Archive the live season and open a fresh one (admin action). The new season
+ * number is one past the current, so its boards start empty; old seasons stay
+ * fully queryable. Returns the new season number. */
+export async function startNewSeason(fallback: number, name?: string): Promise<number> {
+  const next = (await currentSeasonNumber(fallback)) + 1;
+  await q(
+    `insert into seasons (balance_version, name, active) values ($1, $2, true)
+     on conflict (balance_version) do update set name = excluded.name, active = true`,
+    [next, name && name.trim() ? name.trim() : `Season ${next}`],
+  );
+  await q(`update seasons set active = false where balance_version <> $1`, [next]);
+  return next;
+}
+
+/** Delete all replays stamped with a given (archived) season. The record/match
+ * rows survive — their `replay_id` FK is `on delete set null`, so leaderboard
+ * entries stay visible, they just stop being watchable. Returns the count freed. */
+export async function purgeSeasonReplays(season: number): Promise<number> {
+  const rows = await q<{ id: string }>(
+    `delete from replays where balance_version = $1 returning id`,
+    [season],
+  );
+  return rows.length;
+}
+
 // ------------------------------------------------------------ profiles ------
 export async function ensureProfile(userId: string, handle: string): Promise<void> {
   await q(

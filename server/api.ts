@@ -2,13 +2,16 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { BALANCE_VERSION } from '../src/config';
 import { dbEnabled } from './db/pool';
 import {
+  currentSeasonNumber,
   ensureProfile,
+  ensureSeason,
   eloLeaderboard,
   getGlobalStats,
   getProfile,
   getReplay,
   getUserSettings,
   getUserStats,
+  listSeasons,
   recordLeaderboard,
   saveUserSettings,
   setHandle,
@@ -121,7 +124,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return json(200, { ok: true }), true;
     }
 
-    const season = Number(url.searchParams.get('season') ?? BALANCE_VERSION);
+    // default board view = the live season (which may be admin-advanced past the
+    // code's BALANCE_VERSION); an explicit ?season= picks an archived one.
+    const seasonParam = url.searchParams.get('season');
+    const season =
+      seasonParam !== null
+        ? Number(seasonParam)
+        : dbEnabled
+          ? await currentSeasonNumber(BALANCE_VERSION)
+          : BALANCE_VERSION;
     const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? 100)));
 
     if (url.pathname === '/api/stats') {
@@ -129,6 +140,14 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         ? await getGlobalStats()
         : { users: 0, games: 0, byCategory: { solo: 0, duo: 0, '1v1': 0, '2v2': 0 } };
       return json(200, stats), true;
+    }
+
+    // season list for the leaderboard's season picker; `current` is the live one
+    if (url.pathname === '/api/seasons') {
+      const current = dbEnabled ? await currentSeasonNumber(BALANCE_VERSION) : BALANCE_VERSION;
+      if (dbEnabled) await ensureSeason(current); // guarantee the live season shows
+      const seasons = dbEnabled ? await listSeasons() : [];
+      return json(200, { current, seasons }), true;
     }
 
     if (url.pathname === '/api/records') {

@@ -181,6 +181,22 @@ export function fetchReplay(id: string): Promise<Replay> {
   return getJson(`/api/replay/${id}`);
 }
 
+// ---- seasons ---------------------------------------------------------------
+
+export interface SeasonInfo {
+  season: number;
+  name: string;
+  active: boolean;
+  startedAt: string;
+  records: number;
+  matches: number;
+}
+
+/** all seasons (newest first) + which one is live, for the board's season picker */
+export function fetchSeasons(): Promise<{ current: number; seasons: SeasonInfo[] }> {
+  return getJson(`/api/seasons`);
+}
+
 // ---- admin (authorized server-side by ADMIN_USER_IDS against your auth JWT) ----
 
 /** whether the signed-in user is an admin (+ their userId, so you can find the
@@ -221,4 +237,35 @@ export async function adminCancelNotice(): Promise<boolean> {
     headers: { authorization: `Bearer ${token}` },
   });
   return res.ok;
+}
+
+/** archive the live boards and open a fresh season; returns the new season number */
+export async function adminStartSeason(name?: string): Promise<number | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const q = name && name.trim() ? '?name=' + encodeURIComponent(name.trim()) : '';
+  const res = await fetch(base + '/api/admin/season/start' + q, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const data = (await res.json().catch(() => ({}))) as { season?: number };
+  return data.season ?? null;
+}
+
+/** delete the replays of an archived season (omit `season` to purge every one
+ * before the live season). Boards stay; those runs just stop being watchable. */
+export async function adminPurgeReplays(season?: number): Promise<number | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const q = season != null ? '?season=' + season : '';
+  const res = await fetch(base + '/api/admin/season/purge-replays' + q, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const data = (await res.json().catch(() => ({}))) as { freed?: number };
+  return data.freed ?? 0;
 }
