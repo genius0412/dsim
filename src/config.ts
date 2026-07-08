@@ -46,6 +46,16 @@ export const MATCH_SETTLE_S = MATCH_RESULT_REVEAL_MS / 1000;
  * Phase 3 + the phase3-leaderboards spec. */
 export const BALANCE_VERSION = 0;
 
+/** Ranked PLACEMENT: a player is "in placements" until they've completed this
+ * many ranked games on a board (counted per mode × drivetrain, incl. Overall).
+ * Until placed they are HIDDEN from the leaderboard and shown a "?" plus an
+ * "N matches until placement" line. This REPLACES the old RD-based provisional
+ * flag (`rd > 110`), which stayed set far too long in a young pool: Glicko RD
+ * shrinks only slowly when opponents are themselves uncertain, so players kept
+ * the "?" for dozens of games. RD is still used INTERNALLY by Glicko-2 to size
+ * how hard each result swings the rating — it just no longer drives the UI. */
+export const PLACEMENT_GAMES = 10;
+
 // -------------------------------------------------------------- scoring ----
 export const PTS_LEAVE = 3;
 export const PTS_CLASSIFIED = 3;

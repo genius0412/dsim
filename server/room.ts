@@ -579,7 +579,7 @@ export class Room {
               for (const e of out.elo) {
                 const robotId = robotByUser.get(e.userId);
                 if (robotId !== undefined) {
-                  results.push({ robotId, before: e.before, after: e.after, rd: e.rd });
+                  results.push({ robotId, before: e.before, after: e.after, rd: e.rd, games: e.games });
                 }
               }
               if (results.length) this.broadcast({ t: 'eloResult', results });

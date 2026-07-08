@@ -705,6 +705,85 @@
   font-size: 12px;
 }
 
+/* the viewer's own ranked standing (rank once placed, or placement progress) */
+.lb-standing {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 2px 0 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--ds-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ds-accent) 8%, var(--ds-panel));
+}
+.lb-standing.placed {
+  border-color: color-mix(in srgb, var(--ds-accent) 55%, var(--ds-line));
+}
+.lb-standing.placing {
+  background: color-mix(in srgb, #f5a623 9%, var(--ds-panel));
+  border-color: color-mix(in srgb, #f5a623 45%, var(--ds-line));
+}
+.lb-standing-rank {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--ds-accent);
+  letter-spacing: -0.5px;
+}
+.lb-standing-badge {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-weight: 800;
+  color: #04222a;
+  background: #f5a623;
+}
+.lb-standing-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.lb-standing-text {
+  color: var(--ds-ink);
+  font-size: 14px;
+}
+.lb-standing-text strong {
+  color: var(--ds-accent);
+}
+.lb-standing.placing .lb-standing-text strong {
+  color: #f5a623;
+}
+.lb-standing-sub {
+  color: var(--ds-mut);
+  font-size: 12px;
+}
+.lb-standing-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--ds-line);
+  overflow: hidden;
+  margin-top: 3px;
+}
+.lb-standing-bar > span {
+  display: block;
+  height: 100%;
+  background: #f5a623;
+}
+
+/* highlight the viewer's own row in the board */
+tr.lb-you > td {
+  background: color-mix(in srgb, var(--ds-accent) 12%, transparent);
+}
+.lb-you-tag {
+  margin-left: 2px;
+  color: var(--ds-accent-ink);
+  background: var(--ds-accent);
+}
+
 /* leaderboard record config (expandable robot column) */
 .lb-robot {
   font: inherit;

@@ -6,12 +6,14 @@ import {
   type Board,
   type EloMode,
   type EloRow,
+  type EloStanding,
   type RecordConfig,
   type RecordMode,
   type RecordRow,
   type SeasonInfo,
 } from '../net/api';
 import { gameServerConfigured } from '../net/env';
+import { PLACEMENT_GAMES } from '../config';
 import type { DrivetrainType, IntakeStyle } from '../types';
 
 type Kind = 'records' | 'ranked';
@@ -99,15 +101,52 @@ function ConfigSummary({ cfg }: { cfg: RecordConfig }) {
   );
 }
 
+/** the signed-in viewer's own standing on the selected ranked board: their rank
+ * once PLACED, or a "matches until placement" progress line while still in
+ * placements. Only placed players appear in the table above, so this is the one
+ * place a not-yet-placed (or off-page) player sees where they stand. */
+function MyStanding({ me }: { me: EloStanding }) {
+  const placed = me.rank != null;
+  if (placed) {
+    return (
+      <div className="lb-standing placed">
+        <span className="lb-standing-rank">#{me.rank}</span>
+        <span className="lb-standing-text">
+          Your rank · <strong>{me.rating}</strong> ELO
+        </span>
+      </div>
+    );
+  }
+  const remaining = Math.max(0, PLACEMENT_GAMES - me.games);
+  return (
+    <div className="lb-standing placing">
+      <span className="lb-standing-badge">?</span>
+      <div className="lb-standing-col">
+        <span className="lb-standing-text">
+          <strong>{remaining}</strong> {remaining === 1 ? 'match' : 'matches'} until placement
+        </span>
+        <span className="lb-standing-sub">
+          {me.games}/{PLACEMENT_GAMES} placement matches played — finish them to join the leaderboard.
+        </span>
+        <span className="lb-standing-bar" aria-hidden>
+          <span style={{ width: `${Math.min(100, (me.games / PLACEMENT_GAMES) * 100)}%` }} />
+        </span>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Ranked + record leaderboards. Segmented by board type (records / ranked),
  * mode, and drivetrain, read live from the server's public API. Empty and error
  * states are first-class (the boards start empty and fill as matches are played).
  */
 export function Leaderboard({
+  myUserId,
   onWatch,
   onOpenProfile,
 }: {
+  myUserId?: string | null;
   onWatch?: (replayId: string) => void;
   onOpenProfile?: (username: string) => void;
 }) {
@@ -117,6 +156,7 @@ export function Leaderboard({
   const [board, setBoard] = useState<Board>('overall');
 
   const [rows, setRows] = useState<(RecordRow | EloRow)[]>([]);
+  const [me, setMe] = useState<EloStanding | null>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
   const [error, setError] = useState('');
   const [openRow, setOpenRow] = useState<string | null>(null);
@@ -151,15 +191,17 @@ export function Leaderboard({
     }
     let alive = true;
     setStatus('loading');
+    setMe(null);
     const s = season ?? undefined;
     const req =
       kind === 'records'
-        ? fetchRecords(recMode, board, s).then((r) => r.rows)
-        : fetchElo(eloMode, board, s).then((r) => r.rows);
+        ? fetchRecords(recMode, board, s).then((r) => ({ rows: r.rows, me: null as EloStanding | null }))
+        : fetchElo(eloMode, board, s, myUserId);
     req
-      .then((rows) => {
+      .then(({ rows, me }) => {
         if (!alive) return;
         setRows(rows);
+        setMe(me);
         setStatus('ok');
       })
       .catch((e: unknown) => {
@@ -170,7 +212,7 @@ export function Leaderboard({
     return () => {
       alive = false;
     };
-  }, [kind, recMode, eloMode, board, season, configured]);
+  }, [kind, recMode, eloMode, board, season, configured, myUserId]);
 
   const isRecords = kind === 'records';
   const valueLabel = isRecords ? 'Score' : 'ELO';
@@ -253,6 +295,8 @@ export function Leaderboard({
           </div>
         </div>
 
+        {!isRecords && status === 'ok' && me && <MyStanding me={me} />}
+
         {status === 'loading' && <div className="ds-loading">Loading…</div>}
         {status === 'error' && (
           <div className="ds-empty">
@@ -262,8 +306,10 @@ export function Leaderboard({
         )}
         {status === 'ok' && rows.length === 0 && (
           <div className="ds-empty">
-            <div className="big">No entries yet</div>
-            Be the first to set a time on this board.
+            <div className="big">{isRecords ? 'No entries yet' : 'No placed players yet'}</div>
+            {isRecords
+              ? 'Be the first to set a time on this board.'
+              : `Players appear here after ${PLACEMENT_GAMES} ranked matches. Be the first to place.`}
           </div>
         )}
         {status === 'ok' && rows.length > 0 && (
@@ -283,10 +329,11 @@ export function Leaderboard({
                 const watchable = isRecords && !!rec.replayId && !!onWatch;
                 const cfg = isRecords ? rec.config : null;
                 const isOpen = openRow === r.userId;
+                const isMe = !!myUserId && r.userId === myUserId;
                 return (
                   <Fragment key={r.userId}>
                     <tr
-                      className={watchable ? 'ds-clickable' : ''}
+                      className={`${watchable ? 'ds-clickable' : ''}${isMe ? ' lb-you' : ''}`}
                       onClick={watchable ? () => onWatch!(rec.replayId!) : undefined}
                       title={watchable ? 'Watch replay' : undefined}
                     >
@@ -309,6 +356,7 @@ export function Leaderboard({
                               <span className="ds-dt lb-duo-tag">DUO</span>
                             </>
                           )}
+                          {isMe && <span className="ds-dt lb-you-tag">YOU</span>}
                         </span>
                       </td>
                       {isRecords && (

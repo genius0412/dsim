@@ -707,7 +707,7 @@ export class GameController {
         before: d.before,
         after: d.after,
         isLocal: d.robotId === this.localRobotId,
-        provisional: d.rd > 110, // RD_PROVISIONAL — still a wide confidence band
+        provisional: d.games < C.PLACEMENT_GAMES, // still in placements (games-based)
       };
     });
     return rows.sort((a, b) => (a.alliance === b.alliance ? 0 : a.alliance === 'red' ? -1 : 1));

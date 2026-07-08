@@ -1,4 +1,43 @@
-# HANDOFF — 2026-07-08 (session 8: high-ping robot-collision fix) — READ FIRST
+# HANDOFF — 2026-07-08 (session 9: ranked placement / leaderboard standing) — READ FIRST
+
+## This session (on `main`, build + smoke + server:check GREEN, NOT committed/pushed yet)
+**Reworked ranked "provisional" from RD-based → GAMES-BASED placement**, and gave the
+ranked leaderboard a real "your standing" surface. Motivation: users kept the "?" for
+dozens of games because it was `rd > 110` (Glicko RD shrinks slowly in a young pool —
+you learn little from uncertain opponents), which felt broken and had no relation to
+match count.
+
+**What changed:**
+- **`src/config.ts`**: new `PLACEMENT_GAMES = 10` (single source of truth, imported by
+  server + client + smoke). RD is still used INTERNALLY by Glicko-2 to size swings — it
+  just no longer drives any UI.
+- **Placement = games-based**, per board (mode × drivetrain, incl. Overall). A player is
+  "in placements" until they've played `PLACEMENT_GAMES` ranked games on that board.
+- **Leaderboard hides un-placed players** (`eloLeaderboard` now `and e.games >= PLACEMENT_GAMES`).
+- **New `eloUserStanding(userId, mode, drivetrain, bv)`** in `repo.ts` → `{rank|null, rating, games}`;
+  rank is computed AMONG PLACED PLAYERS with the same order as the board (so they agree).
+  `/api/elo?...&me=<uuid>` returns it as `me`. `fetchElo(mode, dt, season?, me?)` now returns
+  `{rows, me}`. `getUserStats` ELO rank also switched to placed-only (Career agrees).
+- **`Leaderboard.tsx`**: takes `myUserId` (from `App` `accountUserId`), renders a `MyStanding`
+  banner — "#N · your rank · <rating> ELO" once placed, or a "? · N matches until placement
+  (games/PLACEMENT_GAMES) + progress bar" while placing. Highlights the viewer's own row
+  (`.lb-you` + YOU tag). Ranked empty-state text updated. CSS in `shell.css` (`.lb-standing*`,
+  `tr.lb-you`, `.lb-you-tag`).
+- **Results screen "?"** now games-based: `EloOutcome`/`EloDelta` carry `games` (overall board,
+  after the match); `upsertRating` returns new games; `persistVersusMatch` threads it; `room.ts`
+  forwards it; `game.ts` `getEloResults` → `provisional: d.games < C.PLACEMENT_GAMES`. Tooltip
+  reworded to "In placements…".
+- **smoke.ts**: eloResult stub carries `games`; 2 new checks (games passthrough + placement
+  threshold). All ~192 checks pass.
+
+**Not done / possible follow-ups**: Career panel still says "Unranked" (not "In placements")
+for un-placed players — intentional, out of scope. No DB migration needed (uses existing
+`elo_ratings.games`). **Deploy note**: this touches `server/` → follow the deploy protocol
+(commit → `flyctl deploy --remote-only` → verify `/health` → Vercel auto-deploys client).
+
+---
+
+# HANDOFF — 2026-07-08 (session 8: high-ping robot-collision fix)
 
 ## This session (on `main`, build + smoke GREEN, NOT committed/pushed yet)
 **Fixed: robot-robot & robot-field collisions feeling wrong at high ping** (phantom
