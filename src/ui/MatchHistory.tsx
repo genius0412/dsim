@@ -187,10 +187,10 @@ export function MatchHistory({
 
   return (
     <div className="ds-panel" style={{ marginTop: 18 }}>
-      <div className="ds-panel-h" style={{ flexWrap: 'wrap', gap: 8 }}>
+      <div className="ds-panel-h">
         <span className="ds-panel-title">Match history</span>
-        <span className="ds-head-spacer" />
-        <div className="mh-filters">
+      </div>
+      <div className="mh-filters">
           {seasons.length > 1 && (
             <select
               className="ds-select"
@@ -234,7 +234,6 @@ export function MatchHistory({
               </option>
             ))}
           </select>
-        </div>
       </div>
 
       {status === 'loading' && <div className="ds-loading">Loading…</div>}
