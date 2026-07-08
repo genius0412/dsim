@@ -19,6 +19,7 @@ import {
   len,
   clamp,
 } from '../math';
+import * as C from '../config'; // Import all from config
 
 const ZERO_CMD: RobotCommand = {
   driveX: 0,
@@ -281,9 +282,10 @@ export function updatePathTraversal(
   }
 
   // --- Advance robot's progress along the segment (t) ---
-  // We need a way to define speed. Let's assume a constant speed for now.
-  // This is a simplification, as real paths might have varying speeds.
-  const PATH_TRAVERSAL_SPEED = 100; // inches per second (example value)
+  // Calculate PATH_TRAVERSAL_SPEED based on robot's drivetrain
+  const drivePreset = C.DRIVETRAIN_PRESETS[robot.spec.drivetrain];
+  const PATH_TRAVERSAL_SPEED = C.SPEED_PER_RPM * robot.spec.driveRpm * drivePreset.speedMult;
+
   const segmentLength = getSegmentLength(segmentStartPoint, currentPathLine);
   let delta_t = 0;
   if (segmentLength > 1e-6) { // Avoid division by zero
