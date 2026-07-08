@@ -160,6 +160,69 @@ export function fetchUserStatsByUsername(username: string, season?: number): Pro
   return getJson(`/api/profile/${encodeURIComponent(username)}/stats${s}`);
 }
 
+// ---- unified match history (Career + public profile) -----------------------
+
+export interface MatchHistoryPlayer {
+  userId: string;
+  handle: string;
+  username: string | null;
+  alliance: 'red' | 'blue' | null; // null for record-run partners
+}
+export interface MatchHistoryEntry {
+  kind: 'versus' | 'record';
+  id: string;
+  mode: string; // '1v1'|'2v2' (versus) or 'solo'|'duo' (record)
+  ranked: boolean | null; // versus only
+  drivetrain: string | null; // record only
+  createdAt: string;
+  replayId: string | null;
+  score: number;
+  won: boolean | null; // versus only
+  eloBefore: number | null;
+  eloAfter: number | null;
+  players: MatchHistoryPlayer[];
+}
+export interface MatchHistoryPage {
+  rows: MatchHistoryEntry[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+/** filter/paging options for the match history */
+export interface MatchHistoryOpts {
+  season?: number;
+  offset?: number;
+  limit?: number;
+  type?: 'all' | 'ranked' | 'custom' | 'solo' | 'duo';
+  result?: 'all' | 'win' | 'loss';
+}
+function historyQuery(o: MatchHistoryOpts): string {
+  const p = new URLSearchParams();
+  if (o.season != null) p.set('season', String(o.season));
+  if (o.offset) p.set('offset', String(o.offset));
+  if (o.limit != null) p.set('limit', String(o.limit));
+  if (o.type && o.type !== 'all') p.set('type', o.type);
+  if (o.result && o.result !== 'all') p.set('result', o.result);
+  const s = p.toString();
+  return s ? `?${s}` : '';
+}
+
+/** a signed-in user's paginated match history (by user id — "my Career") */
+export function fetchUserMatches(
+  userId: string,
+  opts: MatchHistoryOpts = {},
+): Promise<MatchHistoryPage> {
+  return getJson(`/api/user/${encodeURIComponent(userId)}/matches${historyQuery(opts)}`);
+}
+
+/** a public player's paginated match history (by username — profile page) */
+export function fetchUserMatchesByUsername(
+  username: string,
+  opts: MatchHistoryOpts = {},
+): Promise<MatchHistoryPage> {
+  return getJson(`/api/profile/${encodeURIComponent(username)}/matches${historyQuery(opts)}`);
+}
+
 /** Public username format: 4–20 lowercase letters/digits. Mirrors the server
  * (`server/api.ts` USERNAME_RE) and the DB unique index. */
 export const USERNAME_RE = /^[a-z0-9]{4,20}$/;

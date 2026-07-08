@@ -7,7 +7,8 @@ import { addMatchParticipant, getRatingFull, saveMatch, upsertRating } from './d
  * each rating carries a rating DEVIATION (RD, the confidence interval) and a
  * VOLATILITY. A fresh/idle player has a high RD, so early games swing the rating
  * hard; as RD shrinks with games the rating settles. `computeGlicko` is PURE +
- * unit-tested; `applyMatchElo` wraps it with the DB reads/writes at match end.
+ * unit-tested; `persistVersusMatch` wraps it with the DB reads/writes at match end
+ * (ranked matches only — custom rooms persist the match but move no rating).
  *
  * Boards (per the leaderboards spec): the OVERALL board always updates for every
  * player. The (mode × drivetrain) board updates ONLY when every participant shares
@@ -163,39 +164,47 @@ export function eloMode(count: number): '1v1' | '2v2' {
   return count >= 4 ? '2v2' : '1v1';
 }
 
-/** read current ratings, apply Glicko-2, persist ratings + match history. Requires
- * both alliances present (≥2 authed players). Called from persistMatch. */
-export async function applyMatchElo(
+/** Persist a finished VERSUS match + its participants (for the match history and
+ * replay). Requires both alliances present (≥2 authed players). When `ranked`, it
+ * also reads current ratings, applies Glicko-2, upserts the new ratings, and
+ * stores each player's rating before/after — returning the per-player overall
+ * deltas for the results-screen reveal. When NOT ranked (a custom room) it records
+ * the match with `ranked=false` and NULL ratings, moves NO ELO, and returns [].
+ * Called from persistMatch. */
+export async function persistVersusMatch(
   authed: MatchParticipant[],
   outcome: MatchOutcome,
   balanceVersion: number,
   replayId: string,
+  ranked: boolean,
 ): Promise<EloOutcome[]> {
   const reds = authed.filter((p) => p.alliance === 'red');
   const blues = authed.filter((p) => p.alliance === 'blue');
-  if (!reds.length || !blues.length) return []; // not a rankable head-to-head
+  if (!reds.length || !blues.length) return []; // not a two-sided match
   const mode = eloMode(authed.length);
-
-  const parts: EloParticipant[] = [];
-  for (const p of authed) {
-    parts.push({
-      userId: p.userId!,
-      alliance: p.alliance,
-      drivetrain: p.drivetrain,
-      overall: await getRatingFull(p.userId!, mode, 'overall', balanceVersion),
-      drive: await getRatingFull(p.userId!, mode, p.drivetrain, balanceVersion),
-    });
-  }
-  const updates = computeGlicko(parts, outcome.result.score);
-  for (const u of updates) {
-    await upsertRating(u.userId, mode, u.board, balanceVersion, u.state.rating, u.state.rd, u.state.vol);
-  }
-
-  const matchId = await saveMatch(mode, balanceVersion, replayId);
   const { red, blue } = outcome.result.score;
+
+  let updates: EloBoardUpdate[] = [];
+  if (ranked) {
+    const parts: EloParticipant[] = [];
+    for (const p of authed) {
+      parts.push({
+        userId: p.userId!,
+        alliance: p.alliance,
+        drivetrain: p.drivetrain,
+        overall: await getRatingFull(p.userId!, mode, 'overall', balanceVersion),
+        drive: await getRatingFull(p.userId!, mode, p.drivetrain, balanceVersion),
+      });
+    }
+    updates = computeGlicko(parts, outcome.result.score);
+    for (const u of updates) {
+      await upsertRating(u.userId, mode, u.board, balanceVersion, u.state.rating, u.state.rd, u.state.vol);
+    }
+  }
+
+  const matchId = await saveMatch(mode, balanceVersion, replayId, ranked);
   for (const p of authed) {
-    const overall = updates.find((u) => u.userId === p.userId && u.board === 'overall');
-    if (!overall) continue;
+    const overall = ranked ? updates.find((u) => u.userId === p.userId && u.board === 'overall') : undefined;
     await addMatchParticipant({
       matchId,
       userId: p.userId!,
@@ -203,12 +212,13 @@ export async function applyMatchElo(
       drivetrain: p.drivetrain,
       score: p.score,
       won: p.alliance === 'red' ? red > blue : blue > red,
-      ratingBefore: overall.before,
-      ratingAfter: overall.after,
+      ratingBefore: overall ? overall.before : null,
+      ratingAfter: overall ? overall.after : null,
     });
   }
 
   // the overall-board change per player, for the results-screen rating reveal
+  // (ranked only; custom returns nothing so no reveal fires)
   return updates
     .filter((u) => u.board === 'overall')
     .map((u) => ({ userId: u.userId, before: u.before, after: u.after, rd: u.rd }));

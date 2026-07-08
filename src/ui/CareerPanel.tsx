@@ -105,50 +105,6 @@ export function CareerPanel({
             </div>
           </div>
 
-          {stats.recent.length > 0 && (
-            <div>
-              <span className="ds-panel-title" style={{ display: 'block', marginBottom: 8 }}>
-                Recent matches
-              </span>
-              <table className="ds-table">
-                <thead>
-                  <tr>
-                    <th>Mode</th>
-                    <th>Alliance</th>
-                    <th>Result</th>
-                    <th style={{ textAlign: 'right' }}>Score</th>
-                    <th style={{ textAlign: 'right' }}>ELO Δ</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stats.recent.map((m) => {
-                    const delta = m.ratingAfter - m.ratingBefore;
-                    return (
-                      <tr key={m.matchId}>
-                        <td>{m.mode}</td>
-                        <td>
-                          <span className="ds-dt">{m.alliance.toUpperCase()}</span>
-                        </td>
-                        <td style={{ color: m.won ? 'var(--ds-ok)' : 'var(--ds-mut)' }}>
-                          {m.won ? 'WIN' : 'LOSS'}
-                        </td>
-                        <td className="sc" style={{ color: 'var(--ds-ink)' }}>
-                          {m.score}
-                        </td>
-                        <td
-                          className="sc"
-                          style={{ color: delta >= 0 ? 'var(--ds-ok)' : 'var(--ds-danger)' }}
-                        >
-                          {delta >= 0 ? `+${delta}` : delta}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
           {stats.match.played === 0 && solo?.best == null && duo?.best == null && (
             <p className="ds-hint">No games played yet this season.</p>
           )}

@@ -8,7 +8,7 @@ import {
   saveReplay,
   submitRecord,
 } from './db/repo';
-import { applyMatchElo } from './ranked';
+import { persistVersusMatch } from './ranked';
 import { recordScore } from '../src/sim/replay';
 import type { MatchOutcome, PersistOutcome } from './room';
 
@@ -80,11 +80,10 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
       );
       return { record: info };
     } else {
-      const elo = await applyMatchElo(authed, o, bv, replayId);
+      const elo = await persistVersusMatch(authed, o, bv, replayId, o.ranked);
       console.log(
-        elo.length
-          ? `[persist] WROTE ELO — ${elo.length} ratings updated`
-          : `[persist] NO ELO — not a rankable head-to-head (participants=${o.participants.length}, authed=${authed.length})`,
+        `[persist] WROTE versus match (ranked=${o.ranked}) — ${elo.length} ratings updated` +
+          (elo.length === 0 && o.ranked ? ' (not a two-sided match)' : ''),
       );
       return { elo };
     }

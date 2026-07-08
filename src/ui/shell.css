@@ -558,6 +558,88 @@
   font-size: 11px;
 }
 
+/* ---- match history (Career + profile) -------------------------------- */
+.mh-filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.mh-scroll {
+  overflow-x: auto;
+}
+.mh-table {
+  min-width: 640px;
+}
+.mh-when {
+  color: var(--ds-mut);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.mh-type {
+  white-space: nowrap;
+}
+.mh-type.ranked {
+  color: var(--ds-accent);
+}
+.mh-type.custom {
+  opacity: 0.85;
+}
+.mh-players {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.mh-player {
+  font: inherit;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ds-ink);
+}
+.mh-player.al-red {
+  color: var(--ds-red, #ff6b6b);
+}
+.mh-player.al-blue {
+  color: var(--ds-blue, #5b9dff);
+}
+.mh-player.link {
+  cursor: pointer;
+  border-bottom: 1px dotted transparent;
+}
+.mh-player.link:hover {
+  border-bottom-color: currentColor;
+}
+.mh-sep {
+  color: var(--ds-mut);
+}
+.mh-vs {
+  color: var(--ds-mut);
+  font-size: 11px;
+  margin: 0 7px;
+  text-transform: uppercase;
+}
+.mh-run {
+  color: var(--ds-mut);
+  font-size: 12px;
+}
+.mh-watch {
+  font-size: 12px;
+  padding: 3px 10px;
+}
+.mh-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--ds-line);
+}
+.mh-count {
+  color: var(--ds-mut);
+  font-size: 13px;
+}
+
 /* share-profile button in a career/profile panel header */
 .ds-share {
   margin-left: 8px;
