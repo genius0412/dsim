@@ -275,7 +275,7 @@ July 2026 to follow the manual): **GATE/RAMP rules** (`updateGateFouls`) — **G
 operating an OPPONENT's gate is an immediate **MAJOR** (edge-triggered; detected with
 updateGates' own lever condition, so it fires exactly when a robot could open the
 gate — operating your OWN gate is legal), and **G418.B** each classified artifact
-that leaves an opponent's RAMP because you opened their gate is a **MAJOR per
+INSIDE the opponent's RAMP at the moment the gate is opened is a **MAJOR per
 artifact**. The engine remembers which opponent opened each gate (`penalties.
 gateCulprit`) and bills every ball that then drains off that ramp (`penalties.
 rampBallIds` tracks the committed, non-overflow rail balls) to them even after they
