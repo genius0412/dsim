@@ -283,6 +283,9 @@ export interface GameSettings {
   /** park mode's speed cap, 0-100 (% of normal max speed); activation is
    * gated to endgame / free drive regardless of this value */
   parkSpeedPct: number;
+  /** preferred game server id (multi-region). Remembered across sessions and,
+   * for signed-in players, synced to the account. Undefined ⇒ auto-pick fastest. */
+  preferredServerId?: string;
 }
 
 export interface World {

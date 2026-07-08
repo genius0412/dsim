@@ -19,7 +19,7 @@ import { Download } from './Download';
 import { Stats } from './Stats';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
-import { gameServerConfigured } from '../net/env';
+import { gameServerConfigured, setSelectedServer } from '../net/env';
 import type { NetSession } from '../net/session';
 import type { Replay } from '../sim/replay';
 
@@ -147,6 +147,12 @@ export function App() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
+  // restore the player's preferred server region (from local settings, or synced
+  // from the account once AccountSync applies it) so every connect uses it
+  useEffect(() => {
+    if (settings.preferredServerId) setSelectedServer(settings.preferredServerId);
+  }, [settings.preferredServerId]);
+
   const update = (s: GameSettings): void => {
     setSettings(s);
     saveSettings(s);
@@ -221,6 +227,7 @@ export function App() {
           navigate('game');
         }}
         onCancel={() => navigate('home')}
+        onPreferServer={(id) => update({ ...settings, preferredServerId: id })}
       />
     );
   }
