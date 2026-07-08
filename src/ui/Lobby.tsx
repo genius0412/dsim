@@ -8,6 +8,7 @@ import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
 import { ROOM_CAPACITY, type LobbyPlayer } from '../net/protocol';
 import type { NetSession } from '../net/session';
+import { useServerNotice } from '../net/notice';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 
@@ -37,6 +38,10 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [hostId, setHostId] = useState('');
   const [myId, setMyId] = useState('');
+  // block starting a custom match while a server restart is scheduled
+  const notice = useServerNotice();
+  const restartPending =
+    !!notice && notice.kind === 'restart' && (notice.until === undefined || notice.until > Date.now());
   const [error, setError] = useState('');
 
   const lobbyRef = useRef<LobbyClient | null>(null);
@@ -296,12 +301,19 @@ export function Lobby({ settings, onStart, onCancel }: Props) {
             {me?.ready ? '✓ READY' : 'READY UP'}
           </button>
           {isHost && (
-            <button className="ds-cta" disabled={!allReady} onClick={() => lobbyRef.current?.start()}>
+            <button
+              className="ds-cta"
+              disabled={!allReady || restartPending}
+              onClick={() => lobbyRef.current?.start()}
+            >
               START MATCH ▶
             </button>
           )}
         </div>
         {isHost && !allReady && <p className="ds-hint">START unlocks when everyone is ready.</p>}
+        {isHost && restartPending && (
+          <p className="ds-hint">Server is restarting shortly — starting is paused for a moment.</p>
+        )}
       </div>
     </div>
   );
