@@ -986,6 +986,24 @@ button {
   border-radius: 4px;
   padding: 1px 6px;
 }
+.elo-prov {
+  font-size: 9px;
+  font-weight: 800;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+}
+.elo-prov-mark {
+  color: var(--muted);
+  font-weight: 800;
+  margin-left: 1px;
+}
 .elo-nums {
   display: flex;
   align-items: center;
