@@ -96,9 +96,37 @@ fly deploy
   burstable `shared-cpu-*` exhausts its burst credits within a minute of play, Fly then
   throttles it to a tiny baseline, the event loop stalls, and even `/health` times out
   (the machine flaps "unhealthy" with a single player). `auto_stop_machines = 'stop'` +
-  `min_machines_running = 0` mean the dedicated VM only runs while someone is connected,
-  so idle cost stays near $0; a played hour is ~$0.02–0.03. Add regions only if players
-  are international (`fly regions add <code>`).
+  `min_machines_running = 1` keep ONE machine warm (the primary region = the
+  designated `MATCHMAKER_REGION`, which ranked queueing routes to), while other regions
+  idle to zero and cold-boot on first connect.
+
+### Multi-region (one app, one machine per region)
+
+For a geographically spread player base, run the SAME app in several regions — this is
+easier to manage than N separate apps and is what the client is built for (region-local
+matchmaking + a fair-midpoint host via `fly-replay`; see `docs/netcodeplan.md` Phase 4).
+
+```bash
+fly deploy --remote-only                       # ship the image
+fly scale count 1 --region iad -a dohun-sim-decode   # one machine PER region
+fly scale count 1 --region sjc -a dohun-sim-decode
+fly scale count 1 --region lhr -a dohun-sim-decode
+fly scale count 1 --region syd -a dohun-sim-decode
+fly scale count 1 --region nrt -a dohun-sim-decode
+fly secrets set MATCHMAKER_REGION=iad -a dohun-sim-decode   # holds the global ranked queue
+```
+
+- Keep it at **one machine per region** — two machines in one region re-split room/queue
+  affinity (the matchmaker + rooms are in-process). The primary region stays warm
+  (`min_machines_running = 1`); the rest auto-stop to ~$0 and wake on connect.
+- Set `VITE_GAME_SERVERS` on Vercel to the region list, **all sharing the one app URL**
+  (each entry differs only by `region`/`label`); the client adds a `?region=`/`?mm=`/`?room=`
+  hint and the server `fly-replay`s the connection to the right region. See `.env.example`.
+- Cross-region **ranked** also needs `DATABASE_URL` (the paired roster is staged in Postgres
+  for the host machine). Region-local ranked and custom rooms do not.
+- **`fly-replay` routing can only be verified on the deployed app** (the Fly proxy isn't in
+  the loop on localhost) — after deploy, confirm a `?region=lhr` connection from the US lands
+  on the `lhr` machine (`/api/presence` shows its region).
 
 Any host that runs a container works (Railway, Render, a VPS with `npm ci --omit=dev &&
 npm run server:start`); Fly is just the documented path. The only requirements are a

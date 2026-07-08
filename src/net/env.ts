@@ -69,6 +69,22 @@ export function setSelectedServer(id: string): void {
 
 export const gameServerUrl = (): string => selectedServer()?.url ?? '';
 
+/**
+ * The game-server WS URL with a fly-replay routing HINT in the query string (one
+ * app, many regions). The server's upgrade interceptor reads these to route the
+ * connection to the right machine:
+ *   - `{ mm: '1' }`            → the designated matchmaker region (ranked queueing)
+ *   - `{ room: 'iad-abc123' }` → the room's host region (region-coded code)
+ *   - `{ region: 'lhr' }`      → an explicit region pick (manual "play elsewhere")
+ * On a single-region deploy the hints are harmless (the one machine accepts them).
+ */
+export function gameServerUrlWith(params: Record<string, string>): string {
+  const base = gameServerUrl();
+  if (!base) return base;
+  const qs = new URLSearchParams(params).toString();
+  return qs ? `${base}?${qs}` : base;
+}
+
 /** the selected server over HTTP(S) for the read APIs (leaderboards, replays,
  * health/ping): ws://→http://, wss://→https:// */
 export const gameServerHttpUrl = (): string => httpOf(selectedServer()?.url);

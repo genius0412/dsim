@@ -255,6 +255,46 @@ and is removed from sim-reachable code — but only *after* lockstep is gone (Ph
 
 ---
 
+## Phase 4 — Region-aware matchmaking + `fly-replay` routing (DONE, build/smoke-green)
+
+Goal: lower ping for a spread-out player base with easy ops — **one Fly app, one machine per
+region** (`iad, sjc, lhr, syd, nrt`), NOT N separate apps. Region-local ranked by default; a
+search radius that widens over time / on demand; and when distant players do match, the
+authoritative sim runs on the fair MIDPOINT region so neither eats the whole penalty. This
+supersedes the old "multi-region only if international" note (Phase 1) and the deferred
+"shared queue" option (Phase 3 / old Key-risks).
+
+- **Routing = `fly-replay` on the WS upgrade** (`server/index.ts`, `noServer` WSS + an
+  `httpServer.on('upgrade')` interceptor). A hint on the WS URL decides the target region and
+  the interceptor answers the upgrade with `fly-replay: region=<r>` (Fly replays the whole
+  upgrade there) or accepts locally. Hints: `?mm=1` → `MATCHMAKER_REGION`; `?room=<region>-<code>`
+  → that room's host region (**room codes are region-coded**, so one machine per region ⇒
+  region routing == machine affinity, no room registry); `?region=<code>` → an explicit pick
+  (custom rooms / record runs). Loop-guarded on `fly-replay-src`; inert locally (`FLY_REGION=''`).
+- **Region-local ranked = Fly Anycast, ~zero code.** Nearest-region routing puts same-region
+  players on one machine; the in-process matchmaker pairs them and hosts locally.
+- **Cross-region ranked = designated matchmaker.** All `?mm=1` connections pin to one region
+  (`server/regions.ts` `MATCHMAKER_REGION`). It holds the global queue, estimates each player's
+  ping to every region from their reported `homeRegion + accessMs` and a static `INTER_REGION_MS`
+  matrix, and hosts on `bestHost` (minimax → fair midpoint). A pairing is legal once its
+  cross-region `spread` is under every member's search radius, which widens with wait time /
+  `expandSearch` (`radiusCeiling`). On a match it STAGES the roster to Postgres (`pending_matches`,
+  migration `0005`) and sends `matchAssigned`; clients reconnect to `?room=<code>` and the host
+  machine claims + builds the authoritative match (`Room.applyPending`/`maybeStartRanked`). No-DB
+  dev falls back to hosting on the matchmaker machine (`Matchmaker.localStart`).
+- **Cross-region custom rooms**: both friends pick the same region (`?region=` hint,
+  `Lobby.tsx`) → same machine → same room. Record runs route to the picked region too.
+- **Files**: `server/regions.ts`, `server/matchTypes.ts`, `server/matchmaking.ts`,
+  `server/room.ts`, `server/index.ts`, `server/db/repo.ts` + `migrations/0005_pending_matches.sql`;
+  `src/net/{protocol,ping,env,lobbyClient}.ts`, `src/ui/{Matchmaking,Lobby,RecordRun}.tsx`;
+  `fly.toml`, `.env.example`, `scripts/smoke.ts`.
+- **Ship criterion**: region-local match with low ping for both players; a widened cross-region
+  match hosts on the minimax region; the `fly-replay` upgrade path verified on the DEPLOYED
+  multi-region app (not testable on localhost). **DONE + build/smoke-green; the `fly-replay` +
+  multi-region deploy is the only part pending live verification.**
+
+---
+
 ## UI redesign plan
 
 Today the app is one menu: three `Screen`s (`'menu'|'lobby'|'game'`, `ui/App.tsx:10`), a single

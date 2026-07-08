@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
-import { gameServerUrl } from '../net/env';
+import { gameServerUrl, gameServerUrlWith, gameServerHttpUrl, multiServer } from '../net/env';
+import { probeHome } from '../net/ping';
 import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
@@ -9,10 +10,14 @@ import type { QueueMode } from '../net/protocol';
 import { usePresence } from './usePresence';
 
 /**
- * Ranked matchmaking. Pick a bracket (1v1 / 2v2), enter the server queue, and when
- * it fills the server assigns a room + sends `matchStart` — handed to a
- * ServerSession exactly like a custom room. ELO is applied server-side on match
- * end (sign in for it to count).
+ * Region-aware ranked matchmaking. We connect to the DESIGNATED matchmaker (a
+ * `?mm=1` connection Fly routes to one region), report our home region + access
+ * latency, and queue. Matchmaking is region-local first and WIDENS over time (or on
+ * "Expand search"). On a match the server sends `matchAssigned` with a region-coded
+ * room; we drop this socket and reconnect to `?room=…` (routed to the fair host
+ * region) to actually play. On a single-region / no-DB dev server the server instead
+ * sends `matchStart` straight back on this socket (handled too). ELO is applied
+ * server-side on match end.
  */
 export function Matchmaking({
   settings,
@@ -28,6 +33,7 @@ export function Matchmaking({
   onSignIn: () => void;
 }) {
   const [mode, setMode] = useState<QueueMode>('1v1');
+  const [noWiden, setNoWiden] = useState(false);
   const presence = usePresence(); // live queue depths, refreshed while on this screen
   const [searching, setSearching] = useState(false);
   const [queue, setQueue] = useState({ size: 0, need: 2 });
@@ -36,6 +42,7 @@ export function Matchmaking({
 
   const lobbyRef = useRef<LobbyClient | null>(null);
   const startedRef = useRef(false);
+  const assigningRef = useRef(false); // reconnecting from matchmaker → host
 
   const teardown = (): void => {
     if (!startedRef.current) {
@@ -53,43 +60,80 @@ export function Matchmaking({
     return () => window.clearInterval(iv);
   }, [searching]);
 
-  const find = (): void => {
+  const playerInfo = () => ({
+    name: settings.spec.teamName || 'Player',
+    teamName: settings.spec.teamName,
+    teamNumber: settings.spec.teamNumber,
+    alliance: 'red' as const, // matchmaking assigns the real alliance
+    startIndex: settings.startIndex,
+    ready: true,
+    spec: settings.spec,
+    assists: settings.assists,
+  });
+
+  const find = async (): Promise<void> => {
     if (!gameServerUrl()) {
       setError('The game server isn’t configured.');
       return;
     }
     setError('');
     setElapsed(0);
+    setSearching(true);
+    // measure our home region + access latency (best-effort — the matchmaker falls
+    // back to its own region if we can't report one)
+    const home = await probeHome(gameServerHttpUrl());
     let transport: WebSocketTransport;
     try {
-      transport = new WebSocketTransport(gameServerUrl());
+      transport = new WebSocketTransport(gameServerUrlWith({ mm: '1' }));
     } catch {
       setError('Could not reach the game server.');
+      setSearching(false);
       return;
     }
     const lobby = new LobbyClient(transport);
     lobbyRef.current = lobby;
     lobby.on('queued', (_m, size, need) => setQueue({ size, need }));
+    // dev / single-region / no-DB: the match runs on this same socket
     lobby.on('matchStart', (m: MatchStart) => {
       startedRef.current = true;
       onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
     });
+    // normal path: reconnect to the assigned host region to play
+    lobby.on('matchAssigned', (room) => joinAssignedMatch(room));
     lobby.on('error', (msg) => setError(msg));
     lobby.on('closed', () => {
-      if (!startedRef.current) setError('Lost connection to the game server.');
+      if (!startedRef.current && !assigningRef.current)
+        setError('Lost connection to the game server.');
     });
-    lobby.queue(mode, {
-      name: settings.spec.teamName || 'Player',
-      teamName: settings.spec.teamName,
-      teamNumber: settings.spec.teamNumber,
-      alliance: 'red', // matchmaking assigns the real alliance
-      startIndex: settings.startIndex,
-      ready: true,
-      spec: settings.spec,
-      assists: settings.assists,
-    });
-    setSearching(true);
+    lobby.queue(mode, playerInfo(), home?.region ?? '', home?.accessMs ?? 0, noWiden);
   };
+
+  /** a ranked match was assigned: drop the matchmaker socket and open a fresh one to
+   * the region-coded room (fly-replay routes it to the fair host region). */
+  const joinAssignedMatch = (room: string): void => {
+    assigningRef.current = true;
+    lobbyRef.current?.dispose();
+    let transport: WebSocketTransport;
+    try {
+      transport = new WebSocketTransport(gameServerUrlWith({ room }));
+    } catch {
+      setError('Could not reach the match server.');
+      return;
+    }
+    const lobby = new LobbyClient(transport);
+    lobbyRef.current = lobby;
+    lobby.on('matchStart', (m: MatchStart) => {
+      startedRef.current = true;
+      onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, room));
+    });
+    lobby.on('error', (msg) => setError(msg));
+    lobby.on('closed', () => {
+      if (!startedRef.current) setError('Lost connection to the match server.');
+    });
+    lobby.join(room, playerInfo());
+  };
+
+  const expand = (): void => lobbyRef.current?.expandSearch();
 
   const cancel = (): void => {
     teardown();
@@ -154,19 +198,51 @@ export function Matchmaking({
                   <span style={{ opacity: 0.6 }}>Checking who’s online…</span>
                 )}
               </p>
+              {multiServer() && (
+                <label
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    marginBottom: 16,
+                    fontSize: 13,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={noWiden}
+                    onChange={(e) => setNoWiden(e.target.checked)}
+                  />
+                  <span>Only match in my region (don’t widen)</span>
+                </label>
+              )}
               {error && <p className="ds-form-err" style={{ marginBottom: 12 }}>{error}</p>}
-              <button className="ds-btn primary" onClick={find}>Find Match</button>
+              <button className="ds-btn primary" onClick={() => void find()}>Find Match</button>
               <div style={{ marginTop: 12 }}>
                 <button className="ds-btn ghost" onClick={onCancel}>← Home</button>
               </div>
             </>
           ) : (
             <>
-              <p className="ds-sub" style={{ margin: '0 auto 16px' }}>
+              <p className="ds-sub" style={{ margin: '0 auto 8px' }}>
                 {mode.toUpperCase()} · {queue.size}/{queue.need} in queue · {elapsed}s
               </p>
+              {/* region-local first; widen automatically as you wait, or on demand */}
+              {!noWiden && multiServer() && (
+                <p className="ds-sub" style={{ margin: '0 auto 16px', fontSize: 13, opacity: 0.75 }}>
+                  {elapsed < 8
+                    ? 'Searching your region…'
+                    : 'Widening search to nearby regions…'}
+                </p>
+              )}
               {error && <p className="ds-form-err" style={{ marginBottom: 12 }}>{error}</p>}
-              <button className="ds-btn" onClick={cancel}>Cancel</button>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+                {!noWiden && multiServer() && (
+                  <button className="ds-btn" onClick={expand}>Expand search</button>
+                )}
+                <button className="ds-btn" onClick={cancel}>Cancel</button>
+              </div>
             </>
           )}
         </div>

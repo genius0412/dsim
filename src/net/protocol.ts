@@ -157,9 +157,25 @@ export type ClientMsg =
   | { t: 'start' } // host only: build + broadcast the match world
   | { t: 'restart' } // host only: re-author the match with a fresh seed
   | { t: 'input'; tick: number; q: QCommand }
-  // ranked matchmaking: enter/leave a queue. On a match the server assigns a room
-  // and sends `matchStart` (same as the lobby), so no separate 'matched' message.
-  | { t: 'queue'; mode: QueueMode; player: Omit<LobbyPlayer, 'clientId'>; authToken?: string }
+  // ranked matchmaking: enter/leave a queue. Sent over a `?mm=1` connection that
+  // fly-replay pins to the designated matchmaker machine. `homeRegion` is the region
+  // Fly routed this client to (from the /health x-region header) and `accessMs` is
+  // its measured RTT there; the matchmaker estimates cross-region latency from these
+  // to pick a fair host. `noWiden` ⇒ never widen past my own region (stay local
+  // forever). On a match the server sends `matchAssigned` (not `matchStart`): the
+  // client reconnects to the assigned host region, where the real match is built.
+  | {
+      t: 'queue';
+      mode: QueueMode;
+      player: Omit<LobbyPlayer, 'clientId'>;
+      authToken?: string;
+      homeRegion: string;
+      accessMs: number;
+      noWiden?: boolean;
+    }
+  // widen my search radius NOW (impatient player), instead of waiting for the timed
+  // auto-widen. Idempotent; ignored once the ceiling is already at max.
+  | { t: 'expandSearch' }
   | { t: 'leaveQueue' }
   // latency probe: the server echoes `ts` straight back in a `pong`, so the client
   // measures round-trip time for the connection-quality HUD (no server clock needed)
@@ -201,6 +217,12 @@ export type ServerMsg =
     }
   // matchmaking status: how many are queued for your bucket + how many are needed
   | { t: 'queued'; mode: QueueMode; size: number; need: number }
+  // ranked match found: the matchmaker picked a fair host region and staged the
+  // roster (in Postgres). The client must DROP this matchmaker connection and open a
+  // new one to `?room=<room>` (fly-replay routes it to `hostRegion`), where the host
+  // machine builds the authoritative match and sends `matchStart`. `room` is already
+  // region-coded (`<hostRegion>-<code>`).
+  | { t: 'matchAssigned'; mode: QueueMode; room: string; hostRegion: string }
   // a robot left: the server runs it on ZERO from `tick`; snapshots already
   // reflect this, so it is informational (drives the HUD)
   | { t: 'drop'; robotId: number; tick: number }

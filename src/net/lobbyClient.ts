@@ -32,6 +32,9 @@ type Handlers = {
   roster: (players: LobbyPlayer[], hostId: string) => void;
   matchStart: (m: MatchStart) => void;
   queued: (mode: QueueMode, size: number, need: number) => void;
+  /** ranked match found on a `?mm=1` connection: reconnect to `?room=<room>` (the
+   * server routes it to `hostRegion`) to actually play */
+  matchAssigned: (room: string, hostRegion: string, mode: QueueMode) => void;
   error: (message: string) => void;
   closed: () => void;
 };
@@ -74,15 +77,30 @@ export class LobbyClient {
     this.transport.send(encodeMsg({ t: 'start' }));
   }
 
-  /** enter the ranked queue; on a match the server sends `matchStart` (handled
-   * exactly like a lobby start). (Re)sends on open + reconnect, with the auth JWT. */
-  queue(mode: QueueMode, player: Omit<LobbyPlayer, 'clientId'>): void {
+  /** enter the ranked queue on this `?mm=1` connection. On a match the server sends
+   * `matchAssigned` (reconnect to the host region). (Re)sends on open + reconnect,
+   * with the auth JWT. `homeRegion`/`accessMs` are the client's network position (so
+   * the matchmaker can pick a fair host); `noWiden` ⇒ never widen past my region. */
+  queue(
+    mode: QueueMode,
+    player: Omit<LobbyPlayer, 'clientId'>,
+    homeRegion: string,
+    accessMs: number,
+    noWiden?: boolean,
+  ): void {
     const doQueue = async (): Promise<void> => {
       const authToken = (await getAuthToken()) ?? undefined;
-      this.transport.send(encodeMsg({ t: 'queue', mode, player, authToken }));
+      this.transport.send(
+        encodeMsg({ t: 'queue', mode, player, authToken, homeRegion, accessMs, noWiden }),
+      );
     };
     this.transport.onOpen(() => void doQueue());
     this.transport.onReopen(() => void doQueue());
+  }
+
+  /** widen the search radius now (impatient player) */
+  expandSearch(): void {
+    this.transport.send(encodeMsg({ t: 'expandSearch' }));
   }
 
   leaveQueue(): void {
@@ -109,6 +127,8 @@ export class LobbyClient {
       this.handlers.matchStart?.(m);
     } else if (m.t === 'queued') {
       this.handlers.queued?.(m.mode, m.size, m.need);
+    } else if (m.t === 'matchAssigned') {
+      this.handlers.matchAssigned?.(m.room, m.hostRegion, m.mode);
     } else if (m.t === 'error') {
       this.handlers.error?.(m.message);
     } else if (m.t === 'serverNotice') {

@@ -2,16 +2,23 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Room, type Client } from './room';
-import { decodeClientMsg, encodeMsg, type ServerMsg } from '../src/net/protocol';
+import { decodeClientMsg, encodeMsg, type ClientMsg, type ServerMsg } from '../src/net/protocol';
 import { verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { migrate } from './db/migrate';
 import { persistMatch } from './persist';
 import { handleApi } from './api';
 import { Matchmaker } from './matchmaking';
+import { MATCHMAKER_REGION } from './regions';
 import { BALANCE_VERSION } from '../src/config';
 import { dbEnabled } from './db/pool';
-import { currentSeasonNumber, purgeSeasonReplays, startNewSeason } from './db/repo';
+import {
+  currentSeasonNumber,
+  purgeSeasonReplays,
+  startNewSeason,
+  takePendingMatch,
+  cleanupStalePending,
+} from './db/repo';
 
 /**
  * Authoritative DECODE game server (Phase 0). One WebSocket per client; rooms are
@@ -70,7 +77,21 @@ function broadcastAll(m: ServerMsg): number {
 // while the WebSocket upgrade rides the same port
 const REGION = process.env.FLY_REGION ?? process.env.SERVER_REGION ?? '';
 const httpServer = createServer((req, res) => {
-  if (req.method === 'GET' && req.url === '/health') {
+  if (req.method === 'GET' && req.url?.startsWith('/health')) {
+    // `?region=<code>` lets the client ping a SPECIFIC region (the picker) or read
+    // its home region: on Fly we fly-replay the GET to that region's machine, which
+    // answers with its own x-region. Locally (REGION='') we just answer here.
+    const want = new URL(req.url, 'http://x').searchParams.get('region');
+    const already = !!req.headers['fly-replay-src'];
+    if (REGION && want && want !== REGION && !already) {
+      res.writeHead(200, {
+        'fly-replay': `region=${want}`,
+        'access-control-allow-origin': '*',
+        'cache-control': 'no-store',
+      });
+      res.end();
+      return;
+    }
     // CORS so the web client (different origin) can time this for the pre-connect
     // ping picker. Includes the region so a client can confirm which one answered.
     res.writeHead(200, {
@@ -233,7 +254,51 @@ httpServer.on('connection', (socket) => socket.setNoDelay(true));
 
 // perMessageDeflate off: compression buffers/among-frames context adds latency +
 // memory for our tiny JSON frames and buys little on already-delta'd snapshots.
-const wss = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
+// noServer: we intercept the upgrade ourselves (below) to do region routing.
+const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+
+// ---- region routing (fly-replay) --------------------------------------------
+// One Fly app, one machine per region. A WebSocket upgrade carries a routing hint
+// in its query string; if it belongs to a DIFFERENT region we answer the upgrade
+// with a `fly-replay` header instead of accepting it, and Fly's proxy replays the
+// whole upgrade to the target region's machine (which then holds the connection).
+// Hints:  ?mm=1 → the designated matchmaker region;  ?room=<region>-<code> → that
+// room's host region;  ?region=<code> → an explicit pick.
+// Only active on Fly (FLY_REGION set); locally REGION='' so we always accept here.
+function routeTarget(url: URL): string | null {
+  if (url.searchParams.get('mm') === '1') return MATCHMAKER_REGION;
+  const region = url.searchParams.get('region');
+  if (region) return region;
+  const room = url.searchParams.get('room');
+  if (room) {
+    const dash = room.indexOf('-');
+    if (dash > 0) return room.slice(0, dash); // region-coded `<region>-<code>`
+  }
+  return null;
+}
+
+httpServer.on('upgrade', (req, socket, head) => {
+  try {
+    const url = new URL(req.url ?? '/', 'http://x');
+    const target = routeTarget(url);
+    // `fly-replay-src` is set by Fly after it has already replayed once — never
+    // replay again (loop guard); accept locally as a graceful fallback.
+    const alreadyReplayed = !!req.headers['fly-replay-src'];
+    if (REGION && target && target !== REGION && !alreadyReplayed) {
+      socket.write(
+        'HTTP/1.1 200 OK\r\n' +
+          `fly-replay: region=${target}\r\n` +
+          'content-length: 0\r\n' +
+          'connection: close\r\n\r\n',
+      );
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  } catch {
+    socket.destroy();
+  }
+});
 
 // resilience: a game server must never let one stray error kill every room. Log
 // loudly and keep listening (the ws / room handlers already catch closer in).
@@ -260,6 +325,49 @@ wss.on('connection', (ws: WebSocket) => {
   // a late joiner during a pending restart still gets the countdown banner
   if (noticeLive() && currentNotice) send(currentNotice);
 
+  // Join (or create) a room. Async because a region-coded code may name a ranked
+  // match the designated matchmaker STAGED in Postgres: the first joiner claims it
+  // (atomic delete-returning) and makes the room authoritative from that roster, and
+  // we verify identity BEFORE adding so a ranked room can map each driver to a roster
+  // slot by user id. The registry slot is claimed synchronously (before any await) so
+  // a racing second joiner finds the same room instead of creating a duplicate.
+  const joinRoom = async (msg: Extract<ClientMsg, { t: 'join' }>): Promise<void> => {
+    const code = msg.room.toLowerCase();
+    let r = rooms.get(code);
+    let created = false;
+    if (!r) {
+      r = new Room(code, () => rooms.delete(code), msg.config, persistMatch);
+      rooms.set(code, r);
+      created = true;
+    }
+    if (created && dbEnabled) {
+      const pending = await takePendingMatch(code).catch(() => null);
+      if (pending) r.applyPending(pending);
+    }
+    let user: Awaited<ReturnType<typeof verifyAuthToken>> = null;
+    if (msg.authToken) user = await verifyAuthToken(msg.authToken).catch(() => null);
+    if (room) return; // a concurrent frame already placed this socket
+    if (!r.canJoin()) {
+      send({ t: 'error', message: 'Room is full or a match is already in progress.' });
+      return;
+    }
+    room = r;
+    const client: Client = {
+      id,
+      send,
+      player: { ...msg.player, clientId: id },
+      connected: true,
+      disconnectAt: 0,
+    };
+    if (user) {
+      client.userId = user.userId;
+      client.player.name = user.handle;
+      markAuthed(user.userId);
+    }
+    room.add(client);
+    room.maybeStartRanked(); // no-op unless a staged ranked room is now fully present
+  };
+
   ws.on('message', (data: unknown) => {
     let msg;
     try {
@@ -277,42 +385,7 @@ wss.on('connection', (ws: WebSocket) => {
       }
       if (msg.t === 'join') {
         if (room) return; // already in a room on this connection
-        const code = msg.room.toLowerCase();
-        let r = rooms.get(code);
-        if (!r) {
-          // the CREATOR's join sets the room kind (versus vs. record); later
-          // joiners inherit it. Absent ⇒ the default PvP room. `persistOutcome`
-          // writes the verified score + replay to Neon at match end (no-op when
-          // the DB is unconfigured).
-          r = new Room(code, () => rooms.delete(code), msg.config, persistMatch);
-          rooms.set(code, r);
-        }
-        if (!r.canJoin()) {
-          send({ t: 'error', message: 'Room is full or a match is already in progress.' });
-          return;
-        }
-        room = r;
-        const client: Client = {
-          id,
-          send,
-          player: { ...msg.player, clientId: id },
-          connected: true,
-          disconnectAt: 0,
-        };
-        room.add(client);
-        // verify the Neon Auth JWT out-of-band; on success attribute the slot to
-        // the real user (well before match start). Invalid/absent ⇒ anonymous.
-        if (msg.authToken) {
-          verifyAuthToken(msg.authToken)
-            .then((u) => {
-              if (u) {
-                client.userId = u.userId;
-                client.player.name = u.handle;
-                markAuthed(u.userId);
-              }
-            })
-            .catch(() => {});
-        }
+        void joinRoom(msg).catch((e) => console.error(`[server] join error from ${id}:`, e));
       } else if (msg.t === 'rejoin') {
         if (room) return;
         const r = rooms.get(msg.room.toLowerCase());
@@ -340,11 +413,21 @@ wss.on('connection', (ws: WebSocket) => {
             player: { ...msg.player, name: u.handle ?? msg.player.name },
             userId: u.userId,
             mode: msg.mode,
+            // the client's home region (Fly's x-region for its connection) + measured
+            // access latency; the matchmaker estimates cross-region ping from these to
+            // pick a fair host. Falls back to THIS instance's region if omitted.
+            homeRegion: msg.homeRegion || REGION,
+            accessMs: msg.accessMs ?? 0,
+            noWiden: msg.noWiden ?? false,
+            enqueuedAt: 0, // stamped by enqueue()
+            expandBumps: 0,
             onRoom: (r) => {
-              room = r;
+              room = r; // dev/no-DB local fallback only
             },
           });
         });
+      } else if (msg.t === 'expandSearch') {
+        matchmaker.expand(id);
       } else if (msg.t === 'leaveQueue') {
         matchmaker.remove(id);
       } else if (room) {
@@ -393,3 +476,12 @@ initPhysics()
 migrate()
   .then(() => console.log('[server] database ready'))
   .catch((e) => console.error('[server] migration failed (records disabled):', e));
+
+// reap staged ranked matches nobody claimed (both clients vanished after assign).
+// Only meaningful on the matchmaker/host machines; harmless elsewhere.
+if (dbEnabled) {
+  const reaper = setInterval(() => {
+    cleanupStalePending(60_000).catch((e) => console.error('[server] pending cleanup:', e));
+  }, 60_000);
+  reaper.unref();
+}

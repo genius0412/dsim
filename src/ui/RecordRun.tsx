@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
-import { gameServerUrl, multiServer, selectedServerId } from '../net/env';
+import { gameServerUrl, gameServerUrlWith, multiServer, selectedServer, selectedServerId } from '../net/env';
 import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
@@ -45,9 +45,12 @@ export function RecordRun({
       return;
     }
     const room = 'rec-' + Math.random().toString(36).slice(2, 9); // private, ephemeral
+    // route to the picked region (one-app multi-region); solo, so no cross-region concern
+    const region = selectedServer()?.region ?? '';
+    const url = multiServer() && region ? gameServerUrlWith({ region }) : gameServerUrl();
     let transport: WebSocketTransport;
     try {
-      transport = new WebSocketTransport(gameServerUrl());
+      transport = new WebSocketTransport(url);
     } catch {
       setError('Could not reach the game server.');
       return;

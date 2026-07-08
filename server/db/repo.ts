@@ -1,5 +1,6 @@
 import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, RobotSpec } from '../../src/types';
+import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
 import { q } from './pool';
 
 /** the robot configuration a record run used (denormalized onto the row) */
@@ -566,4 +567,50 @@ export async function addMatchParticipant(p: {
      on conflict (match_id, user_id) do nothing`,
     [p.matchId, p.userId, p.alliance, p.drivetrain, p.score, p.won, p.ratingBefore, p.ratingAfter],
   );
+}
+
+// -------------------------------------------------- pending (staged) matches ---
+// The designated matchmaker stages a paired ranked match; the fair host-region
+// machine claims it when the players reconnect. See server/matchTypes.ts.
+
+export async function createPendingMatch(m: PendingMatch): Promise<void> {
+  await q(
+    `insert into pending_matches (code, host_region, mode, seed, roster, ranked)
+     values ($1, $2, $3, $4, $5::jsonb, $6)
+     on conflict (code) do nothing`,
+    [m.code, m.hostRegion, m.mode, m.seed, JSON.stringify(m.roster), m.ranked],
+  );
+}
+
+/** atomically claim a staged match (delete-returning, so exactly one host builds
+ * it even if two clients race the first connect). Returns null if unknown/already
+ * claimed. */
+export async function takePendingMatch(code: string): Promise<PendingMatch | null> {
+  const rows = await q<{
+    code: string;
+    host_region: string;
+    mode: string;
+    seed: string;
+    roster: PendingRosterEntry[];
+    ranked: boolean;
+  }>(`delete from pending_matches where code = $1 returning *`, [code]);
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    code: r.code,
+    hostRegion: r.host_region,
+    mode: r.mode as PendingMatch['mode'],
+    seed: Number(r.seed),
+    roster: r.roster,
+    ranked: r.ranked,
+  };
+}
+
+/** reap staged matches nobody claimed (e.g. both clients vanished after assign) */
+export async function cleanupStalePending(olderThanMs: number): Promise<number> {
+  const rows = await q<{ code: string }>(
+    `delete from pending_matches where created_at < now() - ($1 || ' milliseconds')::interval returning code`,
+    [String(olderThanMs)],
+  );
+  return rows.length;
 }

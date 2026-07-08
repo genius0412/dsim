@@ -1,43 +1,100 @@
 import { Room, type Client } from './room';
 import { persistMatch } from './persist';
-import { getRating } from './db/repo';
+import { getRating, createPendingMatch } from './db/repo';
 import { dbEnabled } from './db/pool';
 import { BALANCE_VERSION } from '../src/config';
-import {
-  QUEUE_NEED,
-  type LobbyPlayer,
-  type PlayerIntro,
-  type QueueMode,
-  type ServerMsg,
-} from '../src/net/protocol';
+import { bestHost, type PingInfo } from './regions';
+import type { PendingMatch, PendingRosterEntry } from './matchTypes';
+import { QUEUE_NEED, type LobbyPlayer, type PlayerIntro, type QueueMode, type ServerMsg } from '../src/net/protocol';
 
 /**
- * Ranked matchmaking: an in-memory FIFO queue per bucket (1v1 / 2v2). When a
- * bucket fills, the matchmaker creates a versus Room, splits the group into red /
- * blue alliances, adds everyone (with their verified user id), and auto-starts.
- * The paired clients then receive `matchStart` and run exactly like a custom-room
- * match. ELO is applied on match end by `persistMatch`. (A first cut: FIFO, not
- * ELO-banded — ELO-band pairing is a later refinement over the same queue.)
+ * Region-aware ranked matchmaking. Runs on the DESIGNATED matchmaker machine (all
+ * `?mm=1` connections are fly-replayed here), so it holds ONE global queue per
+ * bucket across every region. Pairing is region-local first and widens over time:
+ *
+ *  - Each entry reports `homeRegion` + `accessMs`; the matchmaker estimates every
+ *    player's latency to every region (`bestHost`) and hosts a match on the fair
+ *    MIDPOINT region (minimax).
+ *  - A pairing is only allowed once its cross-region `spread` fits under every
+ *    member's SEARCH RADIUS, which starts at 0 (same region only) and widens with
+ *    wait time / an explicit `expandSearch`. So you get a local match if one is
+ *    available soon, and a farther one only after waiting.
+ *
+ * On a match the matchmaker STAGES the roster (Postgres `pending_matches`) and sends
+ * `matchAssigned`; the clients reconnect to the host region, which builds the real
+ * match. When the DB is off (local dev) it falls back to hosting the match right
+ * here (`localStart`), which only works for same-machine players — fine for dev.
  */
+
+// search-radius schedule, in CROSS-REGION ms (not absolute ping — a player's own
+// access latency never counts against the gate, so a bad local link can't block a
+// local match). Starts region-local, widens one region-hop every interval.
+export const RADIUS_BASE_MS = 0;
+export const RADIUS_STEP_MS = 60;
+export const RADIUS_INTERVAL_MS = 8000;
+export const RADIUS_MAX_MS = 300;
+
+/** the widening ceiling for one waiting entry (cross-region ms it will tolerate) */
+export function radiusCeiling(waitedMs: number, expandBumps: number, noWiden?: boolean): number {
+  if (noWiden) return 0; // stay region-local forever
+  const steps = Math.floor(Math.max(0, waitedMs) / RADIUS_INTERVAL_MS) + expandBumps;
+  return Math.min(RADIUS_MAX_MS, RADIUS_BASE_MS + RADIUS_STEP_MS * steps);
+}
+
 export interface QueueEntry {
   id: string;
   send: (m: ServerMsg) => void;
   player: Omit<LobbyPlayer, 'clientId'>;
   userId?: string;
   mode: QueueMode;
-  /** told which Room this connection landed in, so the socket layer routes to it */
-  onRoom: (room: Room) => void;
+  homeRegion: string;
+  accessMs: number;
+  /** true ⇒ never widen past my own region */
+  noWiden?: boolean;
+  /** set by enqueue (this.now()); drives the widening ceiling */
+  enqueuedAt: number;
+  /** extra manual widen steps from `expandSearch` */
+  expandBumps: number;
+  /** DEV FALLBACK only: told which local Room this connection landed in */
+  onRoom?: (room: Room) => void;
+}
+
+/** how a paired group is handed off to its host machine. Production stages it to
+ * Postgres; tests inject a recorder. */
+export type StageFn = (m: PendingMatch) => Promise<void>;
+
+export interface MatchmakerDeps {
+  /** injectable clock (tests control widening); when set, the auto-widen timer is off */
+  now?: () => number;
+  /** override the staging step (default: Postgres pending_matches when dbEnabled) */
+  stage?: StageFn;
 }
 
 let roomSeq = 0;
+const rand6 = (): string => Math.floor(Math.random() * 0x7fffffff).toString(36).padStart(6, '0').slice(-6);
 
 export class Matchmaker {
   private readonly queues: Record<QueueMode, QueueEntry[]> = { '1v1': [], '2v2': [] };
   private readonly rooms = new Set<Room>();
+  private readonly now: () => number;
+  private readonly stage?: StageFn;
+  private readonly timer: ReturnType<typeof setInterval> | null;
+
+  constructor(deps: MatchmakerDeps = {}) {
+    this.now = deps.now ?? (() => Date.now());
+    // default staging: write to Postgres so the host machine can claim it. Absent
+    // (no injected stage AND no DB) ⇒ localStart fallback.
+    this.stage = deps.stage ?? (dbEnabled ? (m) => createPendingMatch(m) : undefined);
+    // auto-widen: re-attempt matches as ceilings grow. Disabled when a clock is
+    // injected (deterministic tests drive matching via enqueue/expand/tick).
+    this.timer = deps.now ? null : setInterval(() => this.tick(), 1000);
+    if (this.timer?.unref) this.timer.unref(); // never keep the process alive
+  }
 
   enqueue(entry: QueueEntry): void {
-    // never double-queue a connection
-    this.remove(entry.id);
+    this.remove(entry.id); // never double-queue a connection
+    entry.enqueuedAt = this.now();
+    entry.expandBumps = entry.expandBumps ?? 0;
     this.queues[entry.mode].push(entry);
     this.tryMatch(entry.mode);
     this.broadcastStatus(entry.mode);
@@ -54,19 +111,66 @@ export class Matchmaker {
     }
   }
 
-  private tryMatch(mode: QueueMode): void {
-    const need = QUEUE_NEED[mode];
-    const q = this.queues[mode];
-    while (q.length >= need) {
-      // splice removes the group synchronously (no double-match) before the async
-      // ELO fetch; fire-and-forget so the queue keeps draining
-      void this.startMatch(mode, q.splice(0, need));
+  /** impatient player: widen their radius one step now, then retry */
+  expand(id: string): void {
+    for (const mode of Object.keys(this.queues) as QueueMode[]) {
+      const e = this.queues[mode].find((x) => x.id === id);
+      if (e) {
+        e.expandBumps++;
+        this.tryMatch(mode);
+        return;
+      }
     }
   }
 
-  /** current overall ELO for one queued driver's intro card (best-effort: null
-   * when the DB is off, the driver is signed out, or the read fails — the intro
-   * then shows "Unranked" rather than blocking the match on the DB) */
+  /** periodic re-attempt as wait-driven ceilings grow (auto-widen) */
+  tick(): void {
+    this.tryMatch('1v1');
+    this.tryMatch('2v2');
+  }
+
+  private ceilingOf(e: QueueEntry, now: number): number {
+    return radiusCeiling(now - e.enqueuedAt, e.expandBumps, e.noWiden);
+  }
+
+  private tryMatch(mode: QueueMode): void {
+    let m = this.findMatch(mode);
+    while (m) {
+      const ids = new Set(m.group.map((g) => g.id));
+      this.queues[mode] = this.queues[mode].filter((e) => !ids.has(e.id));
+      void this.startMatch(mode, m.group, m.hostRegion);
+      m = this.findMatch(mode);
+    }
+  }
+
+  /**
+   * FIFO-anchored greedy pairing: for the oldest waiting entry, add later entries
+   * that keep the group hostable under EVERY member's current radius, until the
+   * bucket is full. Returns the group + its fair host region, or null.
+   */
+  private findMatch(mode: QueueMode): { group: QueueEntry[]; hostRegion: string } | null {
+    const need = QUEUE_NEED[mode];
+    const q = this.queues[mode];
+    const now = this.now();
+    for (let i = 0; i < q.length; i++) {
+      const group = [q[i]];
+      for (let j = 0; j < q.length && group.length < need; j++) {
+        if (j === i) continue;
+        const trial = [...group, q[j]];
+        const { spread } = bestHost(trial.map(toPing));
+        const ceiling = Math.min(...trial.map((e) => this.ceilingOf(e, now)));
+        if (spread <= ceiling) group.push(q[j]);
+      }
+      if (group.length === need) {
+        const { hostRegion } = bestHost(group.map(toPing));
+        return { group, hostRegion };
+      }
+    }
+    return null;
+  }
+
+  /** current overall ELO for a driver's intro card (best-effort; null on DB-off /
+   * signed-out / read failure — the intro just shows "Unranked") */
   private async introElo(entry: QueueEntry, mode: QueueMode): Promise<number | null> {
     if (!dbEnabled || !entry.userId) return null;
     try {
@@ -76,21 +180,42 @@ export class Matchmaker {
     }
   }
 
-  private async startMatch(mode: QueueMode, group: QueueEntry[]): Promise<void> {
-    const code = `mm-${mode}-${roomSeq++}`;
-    const room = new Room(
-      code,
-      () => this.rooms.delete(room),
-      { kind: 'versus' },
-      persistMatch,
+  private async startMatch(mode: QueueMode, group: QueueEntry[], hostRegion: string): Promise<void> {
+    if (this.stage) await this.assign(mode, group, hostRegion);
+    else this.localStart(mode, group); // dev fallback: host here (same-machine only)
+  }
+
+  /** stage the roster for the host region + tell each client to reconnect there */
+  private async assign(mode: QueueMode, group: QueueEntry[], hostRegion: string): Promise<void> {
+    const half = group.length / 2;
+    const seed = (this.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
+    const code = `${hostRegion}-${mode}${roomSeq++}${rand6()}`;
+    const roster: PendingRosterEntry[] = await Promise.all(
+      group.map(async (e, i) => ({
+        userId: e.userId,
+        name: e.player.name,
+        teamName: e.player.teamName,
+        teamNumber: e.player.teamNumber,
+        spec: e.player.spec,
+        assists: e.player.assists,
+        // distinct START_POSES index per alliance (not trusted from the client)
+        startIndex: i < half ? i : i - half,
+        alliance: (i < half ? 'red' : 'blue') as PendingRosterEntry['alliance'],
+        introElo: await this.introElo(e, mode),
+      })),
     );
+    await this.stage!({ code, hostRegion, mode, seed, roster, ranked: true });
+    for (const e of group) e.send({ t: 'matchAssigned', mode, room: code, hostRegion });
+  }
+
+  /** DEV/no-DB fallback: run the match on THIS machine (the old behavior). Only
+   * reachable when DATABASE_URL is unset, where everyone is on one machine anyway. */
+  private localStart(mode: QueueMode, group: QueueEntry[]): void {
+    const code = `mm-${mode}-${roomSeq++}`;
+    const room = new Room(code, () => this.rooms.delete(room), { kind: 'versus' }, persistMatch);
     this.rooms.add(room);
     const half = group.length / 2;
-    // robot ids are assigned by add-order in room.startMatch, so build the intro
-    // keyed by index i (= robotId) and read each driver's ELO in parallel
-    const intros: PlayerIntro[] = await Promise.all(
-      group.map(async (e, i) => ({ id: i, elo: await this.introElo(e, mode) })),
-    );
+    const intros: PlayerIntro[] = group.map((_e, i) => ({ id: i, elo: null }));
     group.forEach((e, i) => {
       const alliance = i < half ? 'red' : 'blue';
       const client: Client = {
@@ -102,15 +227,13 @@ export class Matchmaker {
         userId: e.userId,
       };
       room.add(client);
-      e.onRoom(room); // the socket layer now routes this connection's msgs to `room`
+      e.onRoom?.(room);
     });
     room.setRankedIntro(intros);
     room.startMatchNow();
   }
 
-  /** live queue depth per bucket, for the public presence endpoint — shown to
-   * players BEFORE they commit to queueing (the `queued` push only reaches you
-   * once you're already in the queue, which is too late to be useful). */
+  /** live queue depth per bucket, for the public presence endpoint */
   queueSizes(): Record<QueueMode, number> {
     return { '1v1': this.queues['1v1'].length, '2v2': this.queues['2v2'].length };
   }
@@ -122,3 +245,5 @@ export class Matchmaker {
     }
   }
 }
+
+const toPing = (e: QueueEntry): PingInfo => ({ homeRegion: e.homeRegion, accessMs: e.accessMs });

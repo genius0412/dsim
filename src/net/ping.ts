@@ -15,7 +15,9 @@ export async function pingServer(
   samples = 3,
   timeoutMs = 3000,
 ): Promise<number | null> {
-  const url = httpOf(s.url) + '/health';
+  // `?region` lets a one-app multi-region deploy (shared base URL) actually measure
+  // THIS region via fly-replay; separate-URL deploys ignore the harmless hint.
+  const url = httpOf(s.url) + '/health' + (s.region ? `?region=${encodeURIComponent(s.region)}` : '');
   let best: number | null = null;
   for (let i = 0; i < samples; i++) {
     const ctl = new AbortController();
@@ -35,6 +37,49 @@ export async function pingServer(
     }
   }
   return best;
+}
+
+/** the client's own network position, for the ranked matchmaker: which region Fly's
+ * Anycast routed us to (the `/health` `x-region` header) + our measured RTT there.
+ * The matchmaker estimates our latency to every other region from these two values,
+ * so we never have to ping each region separately (which CORS/`fly-prefer-region`
+ * would make painful). `region` is '' if the server didn't send `x-region`. */
+export interface HomeProbe {
+  region: string;
+  accessMs: number;
+}
+
+/** probe the connected server (over HTTP) for our home region + access latency.
+ * `httpBase` is `gameServerHttpUrl()`. Returns null if the server is unreachable. */
+export async function probeHome(
+  httpBase: string,
+  samples = 3,
+  timeoutMs = 3000,
+): Promise<HomeProbe | null> {
+  const url = httpBase + '/health';
+  let best: number | null = null;
+  let region = '';
+  for (let i = 0; i < samples; i++) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    const t0 = performance.now();
+    try {
+      const res = await fetch(url, { cache: 'no-store', signal: ctl.signal });
+      if (res.ok) {
+        await res.text().catch(() => {});
+        const rtt = performance.now() - t0;
+        if (best === null || rtt < best) {
+          best = rtt;
+          region = res.headers.get('x-region') ?? region;
+        }
+      }
+    } catch {
+      /* unreachable / aborted */
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return best === null ? null : { region, accessMs: best };
 }
 
 export function pingQuality(ms: number | null): PingQuality {
