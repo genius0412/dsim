@@ -69,8 +69,10 @@ export type BallState =
   /** captured and PHYSICALLY stored in a robot's intake: parked at storage slot
    * `slot` of robot `robot`. `lx`/`ly` are the ball's CURRENT offset in the robot
    * frame — it tracks the robot rigidly (no lag) and slides these toward the slot
-   * target. The robot's `hopper` color array mirrors these (count + colors synced). */
-  | { kind: 'held'; robot: number; slot: number; lx: number; ly: number }
+   * target. `side` (−1/+1/0) is which side of the triangle front row it sits on
+   * (a 3rd ball entering a side pushes the resident ball to the other side). The
+   * robot's `hopper` color array mirrors these (count + colors synced). */
+  | { kind: 'held'; robot: number; slot: number; lx: number; ly: number; side: number }
   | { kind: 'stock'; alliance: Alliance }; // held by the human player, off-field
 
 export interface Artifact {

@@ -211,7 +211,7 @@ function positionHeldBalls(world: World, dt: number): void {
     }
     // slide the STORED local offset toward the slot (no world round-trip, so the
     // ball tracks the robot rigidly — no lag when it drives)
-    const target = heldSlotPos(r.spec, st.slot, r.hopper.length);
+    const target = heldSlotPos(r.spec, st.slot, st.side);
     st.lx = approach(st.lx, target.x, C.HELD_SLIDE_SPEED * dt);
     st.ly = approach(st.ly, target.y, C.HELD_SLIDE_SPEED * dt);
     const wp = rot({ x: st.lx, y: st.ly }, r.heading);

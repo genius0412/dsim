@@ -81,8 +81,8 @@ export const PENALTY_CLEAR = 1.0; // s
 
 // ------------------------------------------------------------ artifacts ----
 export const BALL_RADIUS = 2.5; // 5 in diameter
-export const BALL_ROLL_FRICTION = 55; // in/s^2 — balls carry "mass": a bump doesn't
-// send them skittering far, so they're harder to push around
+export const BALL_ROLL_FRICTION = 30; // in/s^2 — a touch of "mass" over the legacy
+// 25, but the clump push-drag (BALL_PUSH_DRAG) carries the harder-to-push feel
 /** fraction of the robot's into-the-ball speed bled off per ball contact each
  * solver pass — small per ball, but a big CLUMP is cumulatively a little heavier
  * to push (the drivetrain meets resistance, accelerates into it slower) */

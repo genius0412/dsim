@@ -231,14 +231,14 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
     // preloaded artifacts are PHYSICAL held balls (the hopper mirrors their colors);
     // step()'s positionHeldBalls parks them at the storage slots
     const created = robots[robots.length - 1];
-    const n = created.hopper.length;
     created.hopper.forEach((color, slot) => {
-      const lp = heldSlotPos(created.spec, slot, n);
+      const side = slot >= 1 ? (slot === 1 ? -1 : 1) : 0; // triangle front row: opposite sides
+      const lp = heldSlotPos(created.spec, slot, side);
       const wp = rot(lp, created.heading);
       balls.push({
         id: id++,
         color,
-        state: { kind: 'held', robot: created.id, slot, lx: lp.x, ly: lp.y },
+        state: { kind: 'held', robot: created.id, slot, lx: lp.x, ly: lp.y, side },
         pos: { x: created.pos.x + wp.x, y: created.pos.y + wp.y },
         vel: { x: 0, y: 0 },
         z: 0,

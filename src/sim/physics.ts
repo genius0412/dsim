@@ -23,14 +23,13 @@ export function robotExtents(r: RobotState): { front: number; rear: number; half
  * vector queue them in a line near the mouth; triangle stores 1 deep + 2 near the
  * mouth — and with only 2 balls the front one CENTERS in the 2-wide space, then
  * slides aside when the 3rd arrives (positionHeldBalls tweens between these). */
-export function heldSlotPos(spec: RobotState['spec'], slot: number, _count: number): Vec2 {
+export function heldSlotPos(spec: RobotState['spec'], slot: number, side: number): Vec2 {
   const hl = spec.length / 2;
   if (spec.intake === 'triangle') {
-    // 1 deep + a 2-wide front row; the front ball sits to ONE side (never dead
-    // center, which would block a 3rd ball) — it can still slide within its side
+    // 1 deep + a 2-wide front row; a front ball sits on `side` (never dead center,
+    // which would block a 3rd) — a 3rd entering that side pushes it to the other
     if (slot <= 0) return { x: hl - 4, y: 0 }; // deep (loaded first)
-    if (slot === 1) return { x: hl + 2, y: -2.7 }; // front, one side
-    return { x: hl + 2, y: 2.7 }; // front, other side
+    return { x: hl + 2, y: (side || -1) * 2.7 };
   }
   const xs = [hl - 8, hl - 3, hl + 2];
   return { x: xs[Math.min(Math.max(slot, 0), 2)], y: 0 };

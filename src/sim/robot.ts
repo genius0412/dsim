@@ -370,7 +370,19 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
     // (the color hopper mirrors it); positionHeldBalls slides it in each tick.
     // Seed lx/ly from where it currently sits so it slides IN from the mouth.
     const loc = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
-    b.state = { kind: 'held', robot: r.id, slot: r.hopper.length, lx: loc.x, ly: loc.y };
+    const slot = r.hopper.length;
+    // triangle FRONT row (slot ≥ 1): the ball takes the side it entered from; any
+    // resident front ball on that side slides to the other side to make room
+    let side = 0;
+    if (r.spec.intake === 'triangle' && slot >= 1) {
+      side = loc.y >= 0 ? 1 : -1;
+      for (const o of world.balls) {
+        if (o.state.kind === 'held' && o.state.robot === r.id && o.state.slot >= 1 && o.state.side === side) {
+          o.state.side = -side;
+        }
+      }
+    }
+    b.state = { kind: 'held', robot: r.id, slot, lx: loc.x, ly: loc.y, side };
     b.vel = { x: 0, y: 0 };
     b.z = 0;
     b.vz = 0;
