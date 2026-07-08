@@ -39,13 +39,13 @@ export interface PersistOutcome {
 }
 
 const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, intake: false, fire: false };
-/** send an authoritative snapshot every N ticks. 3 = ~20 Hz: remote robots are
- * dead-reckoned/extrapolated client-side (game.ts renderRemoteExtrap), so 20 Hz
- * looks identical to 60 Hz on screen while cutting per-tick JSON/slimWorld CPU and
- * bandwidth ~3×. Sending every tick (1) saturates the event loop on a shared CPU
- * and starves the /health probe → Fly flaps the machine + snapshots burst → the
- * "robots teleport after a while" symptom. Phase 1 delta-encodes on top of this. */
-const SNAPSHOT_INTERVAL = 3;
+/** send an authoritative snapshot every N ticks. 2 = 30 Hz: the client hard-snaps
+ * to each snapshot, so a higher rate means smaller, more frequent corrections =>
+ * less visible stutter between them (bumped from 3/20 Hz for smoothness). Sending
+ * every tick (1) saturates the event loop + starves the /health probe and bursts
+ * snapshots; 30 Hz is the balance. Delta-encoding (Phase 1) keeps each frame small,
+ * so the ~50% more frames over 20 Hz is cheap. */
+const SNAPSHOT_INTERVAL = 2;
 /** how many ticks to keep re-applying a robot's last command when its next input
  * hasn't arrived (absorbs jitter without freezing); past this it coasts to ZERO */
 const HOLD_TICKS = 15;
