@@ -1,9 +1,16 @@
-import { useEffect, useState } from 'react';
-import { fetchUserStatsByUsername, type UserStats } from '../net/api';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  fetchUserStatsByUsername,
+  fetchUserMatchesByUsername,
+  type MatchHistoryOpts,
+  type UserStats,
+} from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { APP_NAME } from '../seasons';
 import { CareerPanel } from './CareerPanel';
+import { MatchHistory } from './MatchHistory';
 import { ShareButton } from './ShareButton';
+import type { CareerNav } from './Stats';
 
 /**
  * Public player profile at `/profile/<username>` — anyone can view any player's
@@ -12,11 +19,15 @@ import { ShareButton } from './ShareButton';
  * resolved server-side from the username. A 404 (unknown username) is a
  * first-class "player not found" state.
  */
-export function Profile({ username }: { username: string }) {
+export function Profile({ username, nav = {} }: { username: string; nav?: CareerNav }) {
   const configured = gameServerConfigured();
   const [stats, setStats] = useState<UserStats | null>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error' | 'notfound'>('loading');
   const [error, setError] = useState('');
+  const fetchPage = useCallback(
+    (opts: MatchHistoryOpts) => fetchUserMatchesByUsername(username, opts),
+    [username],
+  );
 
   useEffect(() => {
     if (!configured) {
@@ -67,13 +78,18 @@ export function Profile({ username }: { username: string }) {
           </div>
         </div>
       ) : (
-        <CareerPanel
-          stats={stats}
-          status={status}
-          error={error}
-          name={name}
-          headerAction={<ShareButton username={stats?.username ?? username} />}
-        />
+        <>
+          <CareerPanel
+            stats={stats}
+            status={status}
+            error={error}
+            name={name}
+            headerAction={<ShareButton username={stats?.username ?? username} />}
+          />
+          {configured && (
+            <MatchHistory fetchPage={fetchPage} onWatch={nav.onWatch} onOpenProfile={nav.onOpenProfile} />
+          )}
+        </>
       )}
     </>
   );

@@ -1,10 +1,16 @@
-import { useEffect, useState } from 'react';
-import { fetchUserStats, type UserStats } from '../net/api';
+import { useCallback, useEffect, useState } from 'react';
+import { fetchUserStats, fetchUserMatches, type MatchHistoryOpts, type UserStats } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { authEnabled, authClient } from '../lib/authClient';
 import { APP_NAME } from '../seasons';
 import { CareerPanel } from './CareerPanel';
+import { MatchHistory } from './MatchHistory';
 import { ShareButton } from './ShareButton';
+
+export interface CareerNav {
+  onWatch?: (replayId: string) => void;
+  onOpenProfile?: (username: string) => void;
+}
 
 /**
  * My Stats — a signed-in player's competitive profile, read in ONE call from the
@@ -13,7 +19,7 @@ import { ShareButton } from './ShareButton';
  * computed server-side, so the client never pulls a full leaderboard. Auth is a
  * stable module constant, so the early return before hooks is safe.
  */
-export function Stats() {
+export function Stats(nav: CareerNav = {}) {
   if (!authEnabled) {
     return (
       <>
@@ -28,12 +34,17 @@ export function Stats() {
       </>
     );
   }
-  return <StatsSignedIn />;
+  return <StatsSignedIn nav={nav} />;
 }
 
-function StatsSignedIn() {
+function StatsSignedIn({ nav }: { nav: CareerNav }) {
   const session = authClient!.useSession();
   const user = session.data?.user;
+  const userId = user?.id;
+  const fetchPage = useCallback(
+    (opts: MatchHistoryOpts) => fetchUserMatches(userId!, opts),
+    [userId],
+  );
   const configured = gameServerConfigured();
 
   const [stats, setStats] = useState<UserStats | null>(null);
@@ -118,6 +129,9 @@ function StatsSignedIn() {
         name={name}
         headerAction={stats?.username ? <ShareButton username={stats.username} label="Share my profile" /> : undefined}
       />
+      {configured && userId && (
+        <MatchHistory fetchPage={fetchPage} onWatch={nav.onWatch} onOpenProfile={nav.onOpenProfile} />
+      )}
     </>
   );
 }

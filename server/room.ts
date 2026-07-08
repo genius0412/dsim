@@ -86,6 +86,9 @@ export interface MatchParticipant {
 /** everything the persistence layer needs when a match reaches phase 'post' */
 export interface MatchOutcome {
   config: RoomConfig;
+  /** true only for matchmade ranked rooms; custom versus rooms persist for the
+   * history + replay but do NOT move ELO */
+  ranked: boolean;
   result: ReplayResult;
   replay: Replay;
   participants: MatchParticipant[];
@@ -561,7 +564,7 @@ export class Room {
           assists: d.assists,
         });
       }
-      const ret = this.onResult({ config: this.config, result, replay, participants });
+      const ret = this.onResult({ config: this.config, ranked: this.ranked, result, replay, participants });
       // resolves once persisted (async DB write): versus → per-driver ELO deltas;
       // record → the run's leaderboard standing. Broadcast so the results screen
       // can reveal the ELO change (versus) or the PB / WR / rank line (record).

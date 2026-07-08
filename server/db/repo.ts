@@ -694,10 +694,11 @@ export async function saveMatch(
   mode: '1v1' | '2v2',
   balanceVersion: number,
   replayId: string,
+  ranked: boolean,
 ): Promise<string> {
   const rows = await q<{ id: string }>(
-    `insert into matches (mode, balance_version, replay_id) values ($1, $2, $3) returning id`,
-    [mode, balanceVersion, replayId],
+    `insert into matches (mode, balance_version, replay_id, ranked) values ($1, $2, $3, $4) returning id`,
+    [mode, balanceVersion, replayId, ranked],
   );
   return rows[0].id;
 }
@@ -709,8 +710,9 @@ export async function addMatchParticipant(p: {
   drivetrain: string;
   score: number;
   won: boolean;
-  ratingBefore: number;
-  ratingAfter: number;
+  /** null for a custom (unranked) match — no rating change */
+  ratingBefore: number | null;
+  ratingAfter: number | null;
 }): Promise<void> {
   await q(
     `insert into match_participants
@@ -719,6 +721,179 @@ export async function addMatchParticipant(p: {
      on conflict (match_id, user_id) do nothing`,
     [p.matchId, p.userId, p.alliance, p.drivetrain, p.score, p.won, p.ratingBefore, p.ratingAfter],
   );
+}
+
+// ---------------------------------------------------- unified match history ---
+export interface MatchHistoryPlayer {
+  userId: string;
+  handle: string;
+  username: string | null;
+  alliance: 'red' | 'blue' | null; // null for record-run partners
+}
+export interface MatchHistoryEntry {
+  kind: 'versus' | 'record';
+  id: string;
+  mode: string; // '1v1'|'2v2' (versus) or 'solo'|'duo' (record)
+  ranked: boolean | null; // versus only
+  drivetrain: string | null; // record only (shared drivetrain)
+  createdAt: string;
+  replayId: string | null;
+  score: number;
+  won: boolean | null; // versus only
+  eloBefore: number | null;
+  eloAfter: number | null;
+  players: MatchHistoryPlayer[]; // everyone who played (incl. the queried user)
+}
+export interface MatchHistoryPage {
+  rows: MatchHistoryEntry[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+/**
+ * A user's UNIFIED match history for a season — versus matches (ranked + custom,
+ * with every participant) AND record runs (solo/duo, with the partner) merged and
+ * newest-first, paginated + filterable. `type`: all|ranked|custom|solo|duo;
+ * `result`: all|win|loss (win/loss applies to versus only). One feed query + one
+ * participant fan-out; ranks/deltas already stored, so it's cheap.
+ */
+export async function userMatchHistory(
+  userId: string,
+  opts: {
+    balanceVersion: number;
+    offset?: number;
+    limit?: number;
+    type?: string;
+    result?: string;
+  },
+): Promise<MatchHistoryPage> {
+  const limit = Math.min(100, Math.max(1, opts.limit ?? 25));
+  const offset = Math.max(0, opts.offset ?? 0);
+
+  const conds: string[] = [];
+  switch (opts.type) {
+    case 'ranked': conds.push(`kind = 'versus' and ranked is true`); break;
+    case 'custom': conds.push(`kind = 'versus' and ranked is not true`); break;
+    case 'solo': conds.push(`kind = 'record' and mode = 'solo'`); break;
+    case 'duo': conds.push(`kind = 'record' and mode = 'duo'`); break;
+    case 'versus': conds.push(`kind = 'versus'`); break;
+    case 'record': conds.push(`kind = 'record'`); break;
+  }
+  if (opts.result === 'win') conds.push(`won is true`);
+  else if (opts.result === 'loss') conds.push(`won is false`);
+  const where = conds.length ? `where ${conds.join(' and ')}` : '';
+
+  const feed = `
+    with feed as (
+      select 'versus' as kind, m.id::text as id, m.mode as mode, m.ranked as ranked,
+             null::text as drivetrain, m.created_at as created_at, m.replay_id::text as replay_id,
+             mp.score as score, mp.won as won,
+             mp.rating_before as elo_before, mp.rating_after as elo_after
+      from match_participants mp join matches m on m.id = mp.match_id
+      where mp.user_id = $1 and m.balance_version = $2
+      union all
+      select 'record', r.id::text, r.mode, null::boolean,
+             r.drivetrain, r.created_at, r.replay_id::text,
+             r.score, null::boolean, null::int, null::int
+      from records r
+      where r.user_id = $1 and r.balance_version = $2
+    )`;
+
+  const [rows, countRows] = await Promise.all([
+    q<{
+      kind: 'versus' | 'record';
+      id: string;
+      mode: string;
+      ranked: boolean | null;
+      drivetrain: string | null;
+      created_at: string;
+      replay_id: string | null;
+      score: number;
+      won: boolean | null;
+      elo_before: number | null;
+      elo_after: number | null;
+    }>(`${feed} select * from feed ${where} order by created_at desc limit $3 offset $4`, [
+      userId,
+      opts.balanceVersion,
+      limit,
+      offset,
+    ]),
+    q<{ n: string }>(`${feed} select count(*)::int as n from feed ${where}`, [
+      userId,
+      opts.balanceVersion,
+    ]),
+  ]);
+
+  // fan-out players: all participants of the versus matches on this page, plus the
+  // self+partner of record runs. One query for versus participants, one for the
+  // profiles referenced by record runs.
+  const versusIds = rows.filter((r) => r.kind === 'versus').map((r) => r.id);
+  const byMatch = new Map<string, MatchHistoryPlayer[]>();
+  if (versusIds.length) {
+    const parts = await q<{
+      id: string;
+      user_id: string;
+      alliance: 'red' | 'blue';
+      handle: string;
+      username: string | null;
+    }>(
+      `select mp.match_id::text as id, mp.user_id, mp.alliance, p.handle, p.username
+       from match_participants mp join profiles p on p.user_id = mp.user_id
+       where mp.match_id = any($1::uuid[])`,
+      [versusIds],
+    );
+    for (const p of parts) {
+      const list = byMatch.get(p.id) ?? [];
+      list.push({ userId: p.user_id, handle: p.handle, username: p.username, alliance: p.alliance });
+      byMatch.set(p.id, list);
+    }
+  }
+  // profiles for record runs (self + partners)
+  const recordIds = rows.filter((r) => r.kind === 'record').map((r) => r.id);
+  const recPlayers = new Map<string, MatchHistoryPlayer[]>();
+  if (recordIds.length) {
+    const recs = await q<{ id: string; partner_id: string | null }>(
+      `select id::text as id, partner_id from records where id = any($1::uuid[])`,
+      [recordIds],
+    );
+    const need = new Set<string>([userId]);
+    for (const r of recs) if (r.partner_id) need.add(r.partner_id);
+    const profs = await q<{ user_id: string; handle: string; username: string | null }>(
+      `select user_id, handle, username from profiles where user_id = any($1::text[])`,
+      [[...need]],
+    );
+    const byUser = new Map(profs.map((p) => [p.user_id, p]));
+    const mk = (uid: string): MatchHistoryPlayer => {
+      const p = byUser.get(uid);
+      return { userId: uid, handle: p?.handle ?? 'Player', username: p?.username ?? null, alliance: null };
+    };
+    for (const r of recs) {
+      const list = [mk(userId)];
+      if (r.partner_id) list.push(mk(r.partner_id));
+      recPlayers.set(r.id, list);
+    }
+  }
+
+  return {
+    rows: rows.map((r) => ({
+      kind: r.kind,
+      id: r.id,
+      mode: r.mode,
+      ranked: r.ranked,
+      drivetrain: r.drivetrain,
+      createdAt: r.created_at,
+      replayId: r.replay_id,
+      score: r.score,
+      won: r.won,
+      eloBefore: r.elo_before,
+      eloAfter: r.elo_after,
+      players: (r.kind === 'versus' ? byMatch.get(r.id) : recPlayers.get(r.id)) ?? [],
+    })),
+    total: Number(countRows[0]?.n ?? 0),
+    offset,
+    limit,
+  };
 }
 
 // -------------------------------------------------- pending (staged) matches ---
