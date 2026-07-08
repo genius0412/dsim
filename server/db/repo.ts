@@ -297,6 +297,92 @@ export async function recordRank(
   return { rank: rows[0]?.rank ?? 1, total: rows[0]?.total ?? 1 };
 }
 
+// --------------------------------------------------- admin moderation -------
+/** one moderation row: the best run per player in a bucket, WITH its record +
+ * replay id so an admin can delete it (the public board omits these ids). */
+export interface AdminRecordRow {
+  recordId: string;
+  userId: string;
+  handle: string;
+  score: number;
+  drivetrain: string;
+  replayId: string | null;
+  createdAt: string;
+}
+
+/** admin: the moderation view of a leaderboard bucket — same best-per-player
+ * ranking the public board shows, but carrying the record id for deletion. */
+export async function adminListRecords(opts: {
+  mode: 'solo' | 'duo';
+  drivetrain?: string;
+  balanceVersion: number;
+  limit?: number;
+}): Promise<AdminRecordRow[]> {
+  const params: unknown[] = [opts.balanceVersion, opts.mode];
+  let dtFilter = '';
+  if (opts.drivetrain && opts.drivetrain !== 'overall') {
+    params.push(opts.drivetrain);
+    dtFilter = `and r.drivetrain = $${params.length}`;
+  }
+  params.push(opts.limit ?? 100);
+  return q<AdminRecordRow>(
+    `with best as (
+       select distinct on (r.user_id)
+         r.id, r.user_id, r.score, r.drivetrain, r.replay_id, r.created_at
+       from records r
+       where r.balance_version = $1 and r.mode = $2 ${dtFilter}
+       order by r.user_id, r.score desc, r.created_at asc
+     )
+     select b.id as "recordId", b.user_id as "userId", p.handle, b.score,
+            b.drivetrain, b.replay_id as "replayId", b.created_at as "createdAt"
+     from best b join profiles p on p.user_id = b.user_id
+     order by b.score desc, b.created_at asc
+     limit $${params.length}`,
+    params,
+  );
+}
+
+/** admin: delete a single record run by id, plus its now-orphaned replay
+ * (records → replays is `on delete set null`, so this can't strand a board row).
+ * Returns true if a row was deleted. */
+export async function deleteRecordById(id: string): Promise<boolean> {
+  const rows = await q<{ replay_id: string | null }>(
+    `delete from records where id = $1 returning replay_id`,
+    [id],
+  );
+  const r = rows[0];
+  if (!r) return false;
+  if (r.replay_id) await q(`delete from replays where id = $1`, [r.replay_id]).catch(() => {});
+  return true;
+}
+
+/** admin: delete EVERY record run by a user (a confirmed cheater) + their
+ * replays. The profile + ELO stay; only the record board is cleared. Returns the
+ * number of runs removed. */
+export async function deleteUserRecords(userId: string): Promise<number> {
+  const rows = await q<{ replay_id: string | null }>(
+    `delete from records where user_id = $1 returning replay_id`,
+    [userId],
+  );
+  const ids = rows.map((r) => r.replay_id).filter((x): x is string => !!x);
+  if (ids.length) await q(`delete from replays where id = any($1)`, [ids]).catch(() => {});
+  return rows.length;
+}
+
+/** admin: find profiles by handle (case-insensitive substring) or exact userId,
+ * for the rename / moderation picker. */
+export async function searchProfiles(
+  query: string,
+  limit = 25,
+): Promise<{ userId: string; handle: string }[]> {
+  return q<{ userId: string; handle: string }>(
+    `select user_id as "userId", handle from profiles
+     where handle ilike $1 or user_id = $2
+     order by handle limit $3`,
+    [`%${query}%`, query, limit],
+  );
+}
+
 // -------------------------------------------------------- robot presets -----
 export async function listPresets(
   userId: string,
