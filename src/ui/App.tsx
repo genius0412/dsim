@@ -18,6 +18,8 @@ import { ReplayView } from './ReplayView';
 import { AccountButton } from './AccountButton';
 import { Download } from './Download';
 import { Stats } from './Stats';
+import { Profile } from './Profile';
+import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
 import { gameServerConfigured, setSelectedServer } from '../net/env';
@@ -36,6 +38,7 @@ type Screen =
   | 'game'
   | 'download'
   | 'stats'
+  | 'profile'
   | 'account'
   | 'admin';
 
@@ -48,8 +51,10 @@ type Screen =
  */
 const isWebHistory = typeof window !== 'undefined' && window.location.protocol !== 'file:';
 
-function pathFor(screen: Screen, replayId: string | null): string {
+function pathFor(screen: Screen, replayId: string | null, username: string | null): string {
   switch (screen) {
+    case 'profile':
+      return username ? `/profile/${encodeURIComponent(username)}` : '/leaderboard';
     case 'home':
       return '/';
     case 'robot':
@@ -79,30 +84,38 @@ function pathFor(screen: Screen, replayId: string | null): string {
   }
 }
 
-function parsePath(pathname: string): { screen: Screen; replayId: string | null } {
+function parsePath(pathname: string): {
+  screen: Screen;
+  replayId: string | null;
+  username: string | null;
+} {
   const replay = pathname.match(/^\/replay\/(.+)$/);
-  if (replay) return { screen: 'replay', replayId: decodeURIComponent(replay[1]) };
-  if (pathname.startsWith('/leaderboard')) return { screen: 'leaderboard', replayId: null };
-  if (pathname.startsWith('/my-robot')) return { screen: 'robot', replayId: null };
-  if (pathname.startsWith('/lobby')) return { screen: 'lobby', replayId: null };
-  if (pathname.startsWith('/duo-record')) return { screen: 'duorecord', replayId: null };
-  if (pathname.startsWith('/record')) return { screen: 'record', replayId: null };
-  if (pathname.startsWith('/ranked')) return { screen: 'matchmaking', replayId: null };
-  if (pathname.startsWith('/download')) return { screen: 'download', replayId: null };
-  if (pathname.startsWith('/stats')) return { screen: 'stats', replayId: null };
-  if (pathname.startsWith('/account')) return { screen: 'account', replayId: null };
-  if (pathname.startsWith('/admin')) return { screen: 'admin', replayId: null };
+  if (replay) return { screen: 'replay', replayId: decodeURIComponent(replay[1]), username: null };
+  const profile = pathname.match(/^\/profile\/(.+)$/);
+  if (profile)
+    return { screen: 'profile', replayId: null, username: decodeURIComponent(profile[1]) };
+  if (pathname.startsWith('/leaderboard')) return { screen: 'leaderboard', replayId: null, username: null };
+  if (pathname.startsWith('/my-robot')) return { screen: 'robot', replayId: null, username: null };
+  if (pathname.startsWith('/lobby')) return { screen: 'lobby', replayId: null, username: null };
+  if (pathname.startsWith('/duo-record')) return { screen: 'duorecord', replayId: null, username: null };
+  if (pathname.startsWith('/record')) return { screen: 'record', replayId: null, username: null };
+  if (pathname.startsWith('/ranked')) return { screen: 'matchmaking', replayId: null, username: null };
+  if (pathname.startsWith('/download')) return { screen: 'download', replayId: null, username: null };
+  if (pathname.startsWith('/stats')) return { screen: 'stats', replayId: null, username: null };
+  if (pathname.startsWith('/account')) return { screen: 'account', replayId: null, username: null };
+  if (pathname.startsWith('/admin')) return { screen: 'admin', replayId: null, username: null };
   // /play (a live game) can't be restored without a session ⇒ home
-  return { screen: 'home', replayId: null };
+  return { screen: 'home', replayId: null, username: null };
 }
 
 export function App() {
   const [settings, setSettings] = useState<GameSettings>(loadSettings);
   const start = isWebHistory
     ? parsePath(window.location.pathname)
-    : { screen: 'home' as Screen, replayId: null };
+    : { screen: 'home' as Screen, replayId: null, username: null };
   const [screen, setScreen] = useState<Screen>(start.screen);
   const [replayId, setReplayId] = useState<string | null>(start.replayId);
+  const [profileUser, setProfileUser] = useState<string | null>(start.username);
   const [session, setSession] = useState<NetSession | null>(null);
   // a just-played replay to watch in-memory (not yet persisted, so no URL id)
   const [replayObj, setReplayObj] = useState<Replay | null>(null);
@@ -114,21 +127,26 @@ export function App() {
       const s = parsePath(window.location.pathname);
       setScreen(s.screen);
       setReplayId(s.replayId);
+      setProfileUser(s.username);
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
   /** the single way screens change — updates state AND the URL */
-  const navigate = (next: Screen, rid: string | null = null): void => {
+  const navigate = (next: Screen, rid: string | null = null, uname: string | null = null): void => {
     setScreen(next);
     setReplayId(rid);
+    setProfileUser(uname);
     if (next !== 'replay') setReplayObj(null); // leaving the viewer drops the in-memory replay
     if (isWebHistory) {
-      const path = pathFor(next, rid);
+      const path = pathFor(next, rid, uname);
       if (window.location.pathname !== path) window.history.pushState(null, '', path);
     }
   };
+
+  /** open a player's public profile page (/profile/<username>) */
+  const openProfile = (username: string): void => navigate('profile', null, username);
 
   // when signed in, mirror settings to the account (debounced) as well as local
   const [accountUserId, setAccountUserId] = useState<string | null>(null);
@@ -304,6 +322,7 @@ export function App() {
   return (
     <AppShell active={active} onNav={(n) => navigate(n)} right={right} showAdmin={isAdmin}>
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
+      {authEnabled && <UsernameGate />}
       {screen === 'home' && (
         <Home
           settings={settings}
@@ -361,8 +380,11 @@ export function App() {
         </div>
       )}
       {screen === 'robot' && <Menu settings={settings} onChange={update} />}
-      {screen === 'leaderboard' && <Leaderboard onWatch={(id) => navigate('replay', id)} />}
+      {screen === 'leaderboard' && (
+        <Leaderboard onWatch={(id) => navigate('replay', id)} onOpenProfile={openProfile} />
+      )}
       {screen === 'stats' && <Stats />}
+      {screen === 'profile' && profileUser && <Profile username={profileUser} />}
       {screen === 'download' && <Download />}
       {screen === 'account' && <Account settings={settings} onChange={update} />}
       {screen === 'admin' && isAdmin && <Admin />}

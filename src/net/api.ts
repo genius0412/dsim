@@ -18,7 +18,11 @@ export interface RecordConfig {
 export interface RecordRow {
   userId: string;
   handle: string;
+  username: string | null;
   partnerId: string | null;
+  /** duo partner's display name + username (null for solo runs / legacy) */
+  partnerHandle: string | null;
+  partnerUsername: string | null;
   score: number;
   replayId: string | null;
   createdAt: string;
@@ -28,6 +32,7 @@ export interface RecordRow {
 export interface EloRow {
   userId: string;
   handle: string;
+  username: string | null;
   rating: number;
   games: number;
 }
@@ -88,6 +93,7 @@ export interface UserMatchRow {
 export interface UserStats {
   userId: string;
   handle: string | null;
+  username: string | null;
   season: number;
   elo: UserEloStat[];
   records: UserRecordStat[];
@@ -132,9 +138,65 @@ export function fetchPresence(): Promise<Presence> {
   return getJson(`/api/presence`);
 }
 
-/** a user's public profile (display handle) */
-export function fetchProfile(userId: string): Promise<{ userId: string; handle: string | null }> {
+export interface PublicProfile {
+  userId: string;
+  handle: string | null;
+  username: string | null;
+}
+
+/** a user's public profile (display handle + unique username), keyed by user id */
+export function fetchProfile(userId: string): Promise<PublicProfile> {
   return getJson(`/api/user/${encodeURIComponent(userId)}`);
+}
+
+/** a public profile by its username (the /profile/<username> page). Rejects on 404. */
+export function fetchProfileByUsername(username: string): Promise<PublicProfile> {
+  return getJson(`/api/profile/${encodeURIComponent(username)}`);
+}
+
+/** one user's full stats by username (the public profile page). Rejects on 404. */
+export function fetchUserStatsByUsername(username: string, season?: number): Promise<UserStats> {
+  const s = season != null ? `?season=${season}` : '';
+  return getJson(`/api/profile/${encodeURIComponent(username)}/stats${s}`);
+}
+
+/** Public username format: 3–20 lowercase letters/digits. Mirrors the server
+ * (`server/api.ts` USERNAME_RE) and the DB unique index. */
+export const USERNAME_RE = /^[a-z0-9]{3,20}$/;
+
+/** is a username validly-formatted AND free? (server-checked; format-checks
+ * locally first so a bad string never hits the network) */
+export async function checkUsername(
+  username: string,
+): Promise<{ valid: boolean; available: boolean }> {
+  const u = username.trim().toLowerCase();
+  if (!USERNAME_RE.test(u)) return { valid: false, available: false };
+  const base = gameServerHttpUrl();
+  if (!base) return { valid: true, available: true }; // no server ⇒ can't check; allow
+  try {
+    const res = await fetch(base + `/api/username-available?u=${encodeURIComponent(u)}`);
+    if (!res.ok) return { valid: true, available: false };
+    return (await res.json()) as { valid: boolean; available: boolean };
+  } catch {
+    return { valid: true, available: false };
+  }
+}
+
+/** claim the signed-in user's unique username (server verifies the JWT + uniqueness).
+ * Throws with the server's message (e.g. "That username is taken.") on failure. */
+export async function updateUsername(username: string): Promise<{ username: string }> {
+  const base = gameServerHttpUrl();
+  if (!base) throw new Error('Setting a username needs the game server (VITE_GAME_SERVER_URL).');
+  const token = await getAuthToken();
+  if (!token) throw new Error('Please sign in again.');
+  const res = await fetch(base + '/api/user/username', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ username: username.trim().toLowerCase() }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { username?: string; error?: string };
+  if (!res.ok) throw new Error(data.error ?? `Server returned ${res.status}`);
+  return { username: data.username ?? username.trim().toLowerCase() };
 }
 
 /** fetch the signed-in user's synced settings blob (null if never saved) */

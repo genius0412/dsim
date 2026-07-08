@@ -36,6 +36,38 @@ const INTAKE_LABEL: Record<IntakeStyle, string> = {
   triangle: 'Triangle',
 };
 
+/** a driver's name on a board: display handle + muted @username, clickable to
+ * their public profile when they have a username (legacy rows without one render
+ * as plain text). Stops propagation so clicking a name never triggers the row's
+ * watch-replay handler. */
+function DriverName({
+  handle,
+  username,
+  onOpenProfile,
+}: {
+  handle: string | null;
+  username: string | null;
+  onOpenProfile?: (username: string) => void;
+}) {
+  const label = handle ?? (username ? `@${username}` : 'Player');
+  if (username && onOpenProfile) {
+    return (
+      <button
+        className="lb-name"
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenProfile(username);
+        }}
+        title={`View @${username}`}
+      >
+        <span className="lb-name-h">{label}</span>
+        <span className="lb-at">@{username}</span>
+      </button>
+    );
+  }
+  return <span className="lb-name-h">{label}</span>;
+}
+
 /** the robot config a record was set with — spec stats + assists */
 function ConfigSummary({ cfg }: { cfg: RecordConfig }) {
   const { spec, assists } = cfg;
@@ -72,7 +104,13 @@ function ConfigSummary({ cfg }: { cfg: RecordConfig }) {
  * mode, and drivetrain, read live from the server's public API. Empty and error
  * states are first-class (the boards start empty and fill as matches are played).
  */
-export function Leaderboard({ onWatch }: { onWatch?: (replayId: string) => void }) {
+export function Leaderboard({
+  onWatch,
+  onOpenProfile,
+}: {
+  onWatch?: (replayId: string) => void;
+  onOpenProfile?: (username: string) => void;
+}) {
   const [kind, setKind] = useState<Kind>('records');
   const [recMode, setRecMode] = useState<RecordMode>('solo');
   const [eloMode, setEloMode] = useState<EloMode>('1v1');
@@ -254,10 +292,24 @@ export function Leaderboard({ onWatch }: { onWatch?: (replayId: string) => void 
                     >
                       <td className="rk">{i + 1}</td>
                       <td>
-                        {r.handle}
-                        {isRecords && rec.partnerId && (
-                          <span className="ds-dt" style={{ marginLeft: 8 }}>DUO</span>
-                        )}
+                        <span className="lb-drivers">
+                          <DriverName
+                            handle={r.handle}
+                            username={r.username}
+                            onOpenProfile={onOpenProfile}
+                          />
+                          {isRecords && rec.partnerId && (
+                            <>
+                              <span className="lb-amp">+</span>
+                              <DriverName
+                                handle={rec.partnerHandle}
+                                username={rec.partnerUsername}
+                                onOpenProfile={onOpenProfile}
+                              />
+                              <span className="ds-dt lb-duo-tag">DUO</span>
+                            </>
+                          )}
+                        </span>
                       </td>
                       {isRecords && (
                         <td>
