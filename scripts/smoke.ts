@@ -2,7 +2,8 @@
  * Headless smoke test of the sim core: drives, shoots (incl. on the move),
  * opens the gate, and checks scoring math. Run with: npx tsx scripts/smoke.ts
  */
-import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC } from '../src/sim/spawn';
+import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, coerceSpec } from '../src/sim/spawn';
+import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
 import { step } from '../src/sim/world';
 import { updatePenalties } from '../src/sim/penalties';
 import { robotInLaunchZone } from '../src/sim/robot';
@@ -45,6 +46,7 @@ import {
   BALANCE_VERSION,
   INTAKE_PRESETS,
   ROBOT_PRESETS,
+  ROBOT_MAX_SIZE,
 } from '../src/config';
 import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
 import { driveParams, massLimits, rpmLimits } from '../src/sim/drivetrain';
@@ -1128,6 +1130,63 @@ const setup = (
   const floor = massLimits('swerve', 0.8).min; // 22 + 6·0.8 = 26.8
   check('coerceSettings clamps swerve mass up to the inertia-coupled floor', Math.abs(s.spec.massLb - floor) < 1e-9, `${s.spec.massLb} vs ${floor}`);
   check('coerceSettings clamps swerve rpm down to 500', s.spec.driveRpm === 500, `${s.spec.driveRpm}`);
+}
+
+// ---- untrusted spec sanitization (anti-cheat: spoofed devtools / wire spec) --
+{
+  // an attacker sends an absurd oversized robot: coerceSpec must clamp EVERY axis
+  const evil = coerceSpec({
+    intake: 'sloped',
+    length: 999,
+    width: 999,
+    massLb: 9999,
+    driveRpm: 99999,
+    flywheelInertia: 50,
+    teamNumber: 1e12,
+    name: 'x'.repeat(500),
+    drivetrain: 'mecanum',
+  });
+  check('coerceSpec clamps length to the preset max', evil.length <= INTAKE_PRESETS.sloped.maxLength, `${evil.length}`);
+  check('coerceSpec clamps width to ROBOT_MAX_SIZE', evil.width <= ROBOT_MAX_SIZE, `${evil.width}`);
+  check('coerceSpec clamps mass to the drivetrain max', evil.massLb <= massLimits('mecanum', 1).max, `${evil.massLb}`);
+  check('coerceSpec clamps rpm to the drivetrain max', evil.driveRpm <= rpmLimits('mecanum').max, `${evil.driveRpm}`);
+  check('coerceSpec clamps inertia to 1', evil.flywheelInertia === 1, `${evil.flywheelInertia}`);
+  check('coerceSpec clamps teamNumber to 99999', evil.teamNumber === 99999, `${evil.teamNumber}`);
+  check('coerceSpec truncates an over-long name', evil.name.length <= 24, `${evil.name.length}`);
+
+  // NaN / Infinity injected via devtools must NOT slip through (bare clamp lets
+  // NaN pass — the whole reason coerceSpec guards finiteness)
+  const nan = coerceSpec({ length: NaN, width: Infinity, massLb: NaN, driveRpm: -Infinity, flywheelInertia: NaN });
+  check('coerceSpec rejects NaN length (finite fallback)', Number.isFinite(nan.length), `${nan.length}`);
+  check('coerceSpec rejects Infinity width', Number.isFinite(nan.width) && nan.width <= ROBOT_MAX_SIZE, `${nan.width}`);
+  check('coerceSpec rejects NaN mass', Number.isFinite(nan.massLb), `${nan.massLb}`);
+  check('coerceSpec rejects -Infinity rpm', Number.isFinite(nan.driveRpm) && nan.driveRpm >= rpmLimits('mecanum').min, `${nan.driveRpm}`);
+
+  // garbage / missing input falls back to a fully-legal default spec
+  const junk = coerceSpec(undefined);
+  check('coerceSpec(undefined) returns a legal default', junk.length === DEFAULT_SPEC.length && junk.width === DEFAULT_SPEC.width);
+
+  // the ULTIMATE chokepoint: createWorld sanitizes every setup, so even a raw
+  // spoofed setup can never spawn an oversized robot in the actual world
+  const setups: RobotSetup[] = [{
+    id: 0,
+    alliance: 'blue',
+    spec: { ...DEFAULT_SPEC, length: 999, width: 999, massLb: 9999 },
+    assists: { ...DEFAULT_ASSISTS },
+    startIndex: 99,
+  }];
+  const w = createWorld('match', 1, setups);
+  const rspec = w.robots[0].spec;
+  check('createWorld sanitizes a spoofed setup spec (length)', rspec.length <= INTAKE_PRESETS[rspec.intake].maxLength, `${rspec.length}`);
+  check('createWorld sanitizes a spoofed setup spec (width)', rspec.width <= ROBOT_MAX_SIZE, `${rspec.width}`);
+  check('createWorld clamps an out-of-range startIndex (no crash, robot spawned)', w.robots.length === 1);
+
+  // server ingress: a spoofed join / update patch is clamped before it hits the roster
+  const player = sanitizePlayer({ name: 'A', alliance: 'blue', spec: { length: 999, width: 999 }, assists: {} });
+  check('sanitizePlayer clamps a spoofed join spec', player.spec.width <= ROBOT_MAX_SIZE && player.spec.length <= INTAKE_PRESETS[player.spec.intake].maxLength);
+  const patched = sanitizePlayerPatch({ spec: { width: 999, massLb: 9999 } }, { ...player, clientId: 'x' });
+  check('sanitizePlayerPatch clamps a spoofed spec patch', (patched.spec?.width ?? 0) <= ROBOT_MAX_SIZE, `${patched.spec?.width}`);
+  check('sanitizePlayerPatch ignores unknown/absent fields (empty patch is a no-op)', Object.keys(sanitizePlayerPatch({ bogus: 1 }, { ...player, clientId: 'x' })).length === 0);
 }
 
 // ---- vector intake: WHERE the ball enters decides the swallow time -----------

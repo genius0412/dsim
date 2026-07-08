@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Room, type Client } from './room';
 import { decodeClientMsg, encodeMsg, type ClientMsg, type ServerMsg } from '../src/net/protocol';
+import { sanitizePlayer } from '../src/net/sanitize';
 import { verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { migrate } from './db/migrate';
@@ -355,7 +356,9 @@ wss.on('connection', (ws: WebSocket) => {
     const client: Client = {
       id,
       send,
-      player: { ...msg.player, clientId: id },
+      // NEVER trust the wire spec: sanitize the whole player to legal ranges
+      // before it lands on the roster (a spoofed devtools spec is clamped here)
+      player: { ...sanitizePlayer(msg.player), clientId: id },
       connected: true,
       disconnectAt: 0,
     };
@@ -410,7 +413,8 @@ wss.on('connection', (ws: WebSocket) => {
           matchmaker.enqueue({
             id,
             send,
-            player: { ...msg.player, name: u.handle ?? msg.player.name },
+            // sanitize the ranked player's spec/assists too (same clamp as join)
+            player: { ...sanitizePlayer(msg.player), name: u.handle ?? msg.player.name },
             userId: u.userId,
             mode: msg.mode,
             // the client's home region (Fly's x-region for its connection) + measured

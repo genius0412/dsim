@@ -12,11 +12,15 @@ import type {
   AutoPathData, // Import AutoPathData
   GameSettings, // Import GameSettings
   PathPoint, // Import PathPoint
+  PathLine,
+  PathShape,
+  SequenceItem,
   ControlPoint, // Import ControlPoint
   Vec2, // Import Vec2
 } from '../types';
 import * as C from '../config';
-import { nextRandom, wrapAngle, rot } from '../math'; // Import wrapAngle
+import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
+import { massLimits, rpmLimits } from './drivetrain';
 import { heldSlotPos } from './physics';
 import { loadPreStage, spikeMarkBalls, startPose } from './field';
 import { emptyScore } from './scoring';
@@ -47,6 +51,143 @@ export const DEFAULT_ASSISTS: AssistConfig = {
   autoIntake: false,
   autoFire: false,
 };
+
+// ---- untrusted-input sanitization -------------------------------------------
+// A player's robot config arrives from localStorage (hand-editable) AND, in
+// multiplayer, straight off the wire from an untrusted client (people have
+// spoofed it via devtools to spawn oversized / NaN-dimensioned robots). These
+// coercers are the SINGLE SOURCE OF TRUTH for "what is a legal config": every
+// numeric field is forced finite and clamped to its per-drivetrain / per-preset
+// range, every enum is checked, and anything missing falls back to a default.
+// They are IDEMPOTENT, so it is safe to run them at multiple layers (client
+// settings load, server ingress, AND createWorld) — belt and suspenders.
+
+/** clamp `n` to [lo,hi], substituting `fallback` when it is not a finite number
+ * (guards against NaN/Infinity: bare `clamp(NaN,...)` returns NaN unchanged) */
+function clampFinite(n: unknown, lo: number, hi: number, fallback: number): number {
+  return typeof n === 'number' && Number.isFinite(n) ? clamp(n, lo, hi) : clamp(fallback, lo, hi);
+}
+
+/** Coerce an arbitrary value into a fully-legal RobotSpec. Unknown/missing/
+ * corrupt fields fall back to `base` (default: DEFAULT_SPEC); all numeric fields
+ * are clamped to their legal ranges (length per intake preset, mass per
+ * drivetrain×inertia, rpm per drivetrain). Never throws; always returns a spec
+ * safe to spawn. */
+export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotSpec {
+  const out: RobotSpec = { ...base };
+  const sp = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+
+  // intake style (legacy preset names from older saves migrate)
+  if (sp.intake === 'sloped' || sp.intake === 'vector' || sp.intake === 'triangle') out.intake = sp.intake;
+  else if (sp.intake === 'compact') out.intake = 'sloped';
+  else if (sp.intake === 'extended') out.intake = 'vector';
+
+  if (
+    sp.drivetrain === 'mecanum' ||
+    sp.drivetrain === 'tank' ||
+    sp.drivetrain === 'swerve' ||
+    sp.drivetrain === 'xdrive'
+  ) {
+    out.drivetrain = sp.drivetrain;
+  }
+  if (typeof sp.canSort === 'boolean') out.canSort = sp.canSort;
+  if (typeof sp.name === 'string' && sp.name.trim()) out.name = sp.name.slice(0, 24);
+  if (typeof sp.teamName === 'string') out.teamName = sp.teamName.slice(0, 24);
+  out.teamNumber = Math.round(clampFinite(sp.teamNumber, 0, 99999, base.teamNumber));
+
+  // inertia BEFORE mass: the mass floor is coupled to flywheel inertia, and the
+  // mass/rpm ranges are per-drivetrain (resolved above)
+  out.flywheelInertia = clampFinite(sp.flywheelInertia, 0, 1, base.flywheelInertia);
+  const preset = C.INTAKE_PRESETS[out.intake];
+  out.length = clampFinite(sp.length, preset.minLength, preset.maxLength, base.length);
+  out.width = clampFinite(sp.width, C.ROBOT_MIN_WIDTH, C.ROBOT_MAX_SIZE, base.width);
+  const mass = massLimits(out.drivetrain, out.flywheelInertia);
+  const rpm = rpmLimits(out.drivetrain);
+  out.massLb = clampFinite(sp.massLb, mass.min, mass.max, base.massLb);
+  out.driveRpm = clampFinite(sp.driveRpm, rpm.min, rpm.max, base.driveRpm);
+  return out;
+}
+
+/** Coerce an arbitrary value into a legal AssistConfig (each flag defaults to
+ * `base` when absent / non-boolean). */
+export function coerceAssists(raw: unknown, base: AssistConfig = DEFAULT_ASSISTS): AssistConfig {
+  const out: AssistConfig = { ...base };
+  if (typeof raw === 'object' && raw !== null) {
+    const a = raw as Record<string, unknown>;
+    for (const k of ['fieldCentric', 'aimAssist', 'autoIntake', 'autoFire'] as const) {
+      if (typeof a[k] === 'boolean') out[k] = a[k];
+    }
+  }
+  return out;
+}
+
+/** clamp a single path point's coordinates to the field (finite, in-bounds) so a
+ * spoofed auto path can never teleport a robot out of the world or to NaN */
+function coercePathPoint(p: PathPoint): PathPoint {
+  const out: PathPoint = { ...p };
+  out.x = clampFinite(p.x, -C.FIELD_HALF, C.FIELD_HALF, 0);
+  out.y = clampFinite(p.y, -C.FIELD_HALF, C.FIELD_HALF, 0);
+  for (const k of ['startDeg', 'endDeg', 'degrees'] as const) {
+    if (out[k] !== undefined) out[k] = clampFinite(out[k], -720, 720, 0);
+  }
+  return out;
+}
+
+/** Structurally validate + bound-clamp an auto path from untrusted input. Returns
+ * null when the shape is not a usable AutoPathData (the caller then disables auto
+ * pathing). Coordinates are clamped to the field so `pathTraversal` cannot be
+ * driven to spawn a robot at an absurd / NaN position. */
+export function coerceAutoPath(raw: unknown): AutoPathData | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const d = raw as Record<string, unknown>;
+  if (typeof d.fileName !== 'string') return null;
+  if (typeof d.startPoint !== 'object' || d.startPoint === null) return null;
+  if (!Array.isArray(d.lines)) return null;
+  try {
+    const out: AutoPathData = {
+      fileName: d.fileName.slice(0, 120),
+      startPoint: coercePathPoint(d.startPoint as PathPoint),
+      lines: (d.lines as PathLine[]).slice(0, 200).map((line) => {
+        const l: PathLine = { ...line };
+        l.endPoint = coercePathPoint(line.endPoint);
+        if (Array.isArray(line.controlPoints)) {
+          l.controlPoints = line.controlPoints.map((c) => ({
+            x: clampFinite(c.x, -C.FIELD_HALF, C.FIELD_HALF, 0),
+            y: clampFinite(c.y, -C.FIELD_HALF, C.FIELD_HALF, 0),
+          }));
+        }
+        return l;
+      }),
+      shapes: Array.isArray(d.shapes) ? (d.shapes as PathShape[]) : undefined,
+      sequence: Array.isArray(d.sequence) ? (d.sequence as SequenceItem[]) : undefined,
+      version: typeof d.version === 'string' ? d.version : undefined,
+      timestamp: typeof d.timestamp === 'string' ? d.timestamp : undefined,
+    };
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** Coerce a whole RobotSetup from untrusted input into a spawn-safe one: legal
+ * spec/assists, valid alliance, in-range startIndex, sanitized auto path. The
+ * `id` is preserved (it keys the command map). This is the LAST line of defense —
+ * `createWorld` runs it on every setup, so no spawn path can produce a bad robot
+ * regardless of how the setup was assembled. */
+export function coerceSetup(s: RobotSetup): RobotSetup {
+  const autoPath = s.autoPath !== undefined ? coerceAutoPath(s.autoPath) : null;
+  return {
+    id: s.id,
+    alliance: s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue',
+    spec: coerceSpec(s.spec),
+    assists: coerceAssists(s.assists),
+    startIndex: Number.isFinite(s.startIndex)
+      ? clamp(Math.round(s.startIndex), 0, C.START_POSES.length - 1)
+      : 0,
+    autoPath: autoPath ?? undefined,
+    autoPathEnabled: autoPath ? s.autoPathEnabled === true : false,
+  };
+}
 
 /** one robot slot in a match: only filled slots spawn robots */
 export interface RobotSetup {
@@ -173,7 +314,11 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
   // present robot claims seeds the human-player box instead (see hpBox).
   const robots: RobotState[] = [];
   const allianceCount: Record<Alliance, number> = { red: 0, blue: 0 };
-  for (const s of [...setups].sort((p, q) => p.id - q.id)) {
+  // FINAL sanitization pass: no matter how these setups were assembled (client
+  // localStorage, wire message, DB-staged ranked match), force every robot to a
+  // legal, spawn-safe config here. Deterministic + idempotent, so live play and
+  // replay re-runs agree. See coerceSetup / coerceSpec above.
+  for (const s of [...setups].map(coerceSetup).sort((p, q) => p.id - q.id)) {
     const pose = startPose(s.alliance, s.startIndex);
     const nth = allianceCount[s.alliance]++;
 
