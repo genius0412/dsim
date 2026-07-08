@@ -8,6 +8,7 @@ import {
   eloLeaderboard,
   getGlobalStats,
   getProfile,
+  getProfileByUsername,
   getReplay,
   getUserSettings,
   getUserStats,
@@ -15,6 +16,9 @@ import {
   recordLeaderboard,
   saveUserSettings,
   setHandle,
+  setUsername,
+  usernameAvailable,
+  UsernameTakenError,
 } from './db/repo';
 import { verifyAuthToken } from './auth';
 
@@ -32,10 +36,24 @@ import { verifyAuthToken } from './auth';
  *   GET  /api/user/<id>/stats?season=<n>   — one user's ELO+records+W/L+history
  *   GET  /api/user/<id>                     — a user's public profile (handle)
  *   POST /api/user/handle  {handle}         — set your OWN display name (Bearer JWT)
+ *   POST /api/user/username {username}       — claim your OWN unique username (Bearer JWT)
+ *   GET  /api/username-available?u=<name>    — is a username free + valid-format?
+ *   GET  /api/profile/<username>             — public profile by username (handle+id)
+ *   GET  /api/profile/<username>/stats?season=<n> — one user's stats, by username
  *   GET  /api/user/settings                  — your synced settings (Bearer JWT)
  *   POST /api/user/settings {settings}       — save your settings (Bearer JWT)
  *   GET  /api/replay/<id>
  */
+
+/** Public usernames: lowercase letters + digits only, 3–20 chars. Kept in sync
+ * with the client's validator (src/net/api.ts `USERNAME_RE`) and the DB's unique
+ * index. Returns the normalized (trimmed, lowercased) value or null if invalid. */
+const USERNAME_RE = /^[a-z0-9]{3,20}$/;
+function normalizeUsername(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const u = raw.trim().toLowerCase();
+  return USERNAME_RE.test(u) ? u : null;
+}
 
 const CORS = {
   'access-control-allow-origin': '*',
@@ -94,6 +112,44 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         await setHandle(user.userId, clean);
       }
       return json(200, { userId: user.userId, handle: clean }), true;
+    }
+
+    // ---- authenticated write: claim your own unique username ----------------
+    if (req.method === 'POST' && url.pathname === '/api/user/username') {
+      const auth = req.headers['authorization'];
+      const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+      const user = await verifyAuthToken(token);
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      let raw: unknown;
+      try {
+        raw = JSON.parse(await readBody(req)).username;
+      } catch {
+        return json(400, { error: 'bad request' }), true;
+      }
+      const username = normalizeUsername(raw);
+      if (!username) {
+        return json(400, { error: '3–20 characters, lowercase letters and numbers only' }), true;
+      }
+      if (dbEnabled) {
+        await ensureProfile(user.userId, user.handle);
+        try {
+          await setUsername(user.userId, username);
+        } catch (e) {
+          if (e instanceof UsernameTakenError) {
+            return json(409, { error: 'That username is taken.' }), true;
+          }
+          throw e;
+        }
+      }
+      return json(200, { userId: user.userId, username }), true;
+    }
+
+    // ---- public: is a username free to claim? (format + uniqueness) ---------
+    if (req.method === 'GET' && url.pathname === '/api/username-available') {
+      const username = normalizeUsername(url.searchParams.get('u'));
+      if (!username) return json(200, { valid: false, available: false }), true;
+      const available = dbEnabled ? await usernameAvailable(username) : true;
+      return json(200, { valid: true, available, username }), true;
     }
 
     // ---- per-account settings (read + write your own) ----------------------
@@ -168,11 +224,28 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return json(200, { season, mode, drivetrain, rows }), true;
     }
 
+    // public profile + stats keyed by USERNAME (the /profile/<username> page)
+    const profStatsMatch = url.pathname.match(/^\/api\/profile\/([^/]+)\/stats$/);
+    if (profStatsMatch) {
+      const username = decodeURIComponent(profStatsMatch[1]).toLowerCase();
+      const profile = dbEnabled ? await getProfileByUsername(username) : null;
+      if (!profile) return json(404, { error: 'no such user' }), true;
+      const stats = await getUserStats(profile.userId, season);
+      return json(200, stats), true;
+    }
+    const profMatch = url.pathname.match(/^\/api\/profile\/([^/]+)$/);
+    if (profMatch) {
+      const username = decodeURIComponent(profMatch[1]).toLowerCase();
+      const profile = dbEnabled ? await getProfileByUsername(username) : null;
+      if (!profile) return json(404, { error: 'no such user' }), true;
+      return json(200, profile), true;
+    }
+
     const statsMatch = url.pathname.match(/^\/api\/user\/([^/]+)\/stats$/);
     if (statsMatch) {
       const userId = decodeURIComponent(statsMatch[1]);
       const stats = dbEnabled ? await getUserStats(userId, season) : null;
-      if (!stats) return json(200, { season, userId, elo: [], records: [], match: { played: 0, wins: 0, losses: 0 }, recent: [], handle: null }), true;
+      if (!stats) return json(200, { season, userId, elo: [], records: [], match: { played: 0, wins: 0, losses: 0 }, recent: [], handle: null, username: null }), true;
       return json(200, stats), true;
     }
 
@@ -180,7 +253,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     if (profileMatch) {
       const userId = decodeURIComponent(profileMatch[1]);
       const profile = dbEnabled ? await getProfile(userId) : null;
-      return json(200, profile ?? { userId, handle: null }), true;
+      return json(200, profile ?? { userId, handle: null, username: null }), true;
     }
 
     const replayMatch = url.pathname.match(/^\/api\/replay\/([\w-]+)$/);

@@ -3,10 +3,11 @@ import type { GameSettings } from '../game';
 import { defaultSettings } from '../settings';
 import { authEnabled, authClient } from '../lib/authClient';
 import { gameServerConfigured, multiServer, selectedServerId } from '../net/env';
-import { fetchProfile, updateHandle } from '../net/api';
+import { fetchProfile, updateHandle, updateUsername } from '../net/api';
 import { AuthPanel } from './AuthPanel';
 import { ServerPicker } from './ServerPicker';
 import { ControlsSection } from './ControlsSection';
+import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
 import { APP_NAME } from '../seasons';
 
 /**
@@ -129,6 +130,7 @@ function Identity() {
             </button>
           </div>
           <DisplayName userId={user.id} fallback={user.name ?? 'Player'} />
+          <Username userId={user.id} />
           <div>
             <p className="ds-hint" style={{ margin: '0 0 4px' }}>Account ID (for ADMIN_USER_IDS)</p>
             <code
@@ -231,6 +233,81 @@ function DisplayName({ userId, fallback }: { userId: string; fallback: string })
         {!configured && ' Editing needs the game server.'}
         {status === 'ok' && !dirty && <span style={{ color: 'var(--ds-ok)' }}> · Saved.</span>}
         {status === 'error' && <span style={{ color: 'var(--ds-danger)' }}> · {error}</span>}
+      </p>
+    </div>
+  );
+}
+
+/** the unique public username (the /profile/<username> slug + @-mention) */
+function Username({ userId }: { userId: string }) {
+  const configured = gameServerConfigured();
+  const [value, setValue] = useState('');
+  const [current, setCurrent] = useState<string | null>(null);
+  const [status, setStatus] = useState<'idle' | 'saving' | 'ok' | 'error'>('idle');
+  const [error, setError] = useState('');
+  const check = useUsernameCheck(value, current ?? undefined);
+
+  useEffect(() => {
+    if (!configured) return;
+    let alive = true;
+    fetchProfile(userId)
+      .then((p) => {
+        if (!alive) return;
+        setCurrent(p.username);
+        if (p.username) setValue(p.username);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [userId, configured]);
+
+  const dirty = check.normalized !== (current ?? '');
+  const canSave = dirty && check.ok && status !== 'saving';
+
+  const save = (): void => {
+    if (!canSave) return;
+    setStatus('saving');
+    setError('');
+    updateUsername(check.normalized)
+      .then((r) => {
+        setCurrent(r.username);
+        setValue(r.username);
+        setStatus('ok');
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : String(e));
+        setStatus('error');
+      });
+  };
+
+  return (
+    <div className="ds-panelbox">
+      <label className="ds-field">
+        <span className="cap">Username</span>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 240px' }}>
+            <UsernameInput value={value} onChange={setValue} />
+          </div>
+          <button className="ds-btn primary" disabled={!canSave} onClick={save}>
+            {status === 'saving' ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </label>
+      <p className="ds-hint" style={{ margin: 0 }}>
+        {current ? (
+          <>Your profile: <code>/profile/{current}</code>. </>
+        ) : (
+          'Unique — lowercase letters and numbers, 3–20 characters. '
+        )}
+        {!configured && 'Editing needs the game server. '}
+        {status === 'error' ? (
+          <span style={{ color: 'var(--ds-danger)' }}>{error}</span>
+        ) : status === 'ok' && !dirty ? (
+          <span style={{ color: 'var(--ds-ok)' }}>Saved.</span>
+        ) : (
+          dirty && <span style={{ color: usernameHintColor(check.status) }}>{check.message}</span>
+        )}
       </p>
     </div>
   );
