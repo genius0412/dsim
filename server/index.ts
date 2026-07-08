@@ -35,6 +35,15 @@ const matchmaker = new Matchmaker();
 let onlineCount = 0;
 const authedUsers = new Map<string, number>(); // userId -> live socket count
 
+// accounts allowed to use the admin API (their auth-JWT `sub`/userId). Set as a
+// Fly secret: ADMIN_USER_IDS="uuid1,uuid2". Empty => admin API is locked to nobody.
+const ADMIN_IDS = new Set(
+  (process.env.ADMIN_USER_IDS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+
 // a pending admin notice (scheduled restart / info) broadcast to every client and
 // re-sent to anyone who connects while it's still live, so late joiners see it too
 let currentNotice: (ServerMsg & { t: 'serverNotice' }) | null = null;
@@ -62,33 +71,66 @@ const httpServer = createServer((req, res) => {
     res.end('ok');
     return;
   }
-  // ADMIN: schedule a restart / broadcast a notice to every connected client.
-  //   POST /admin/announce?secret=…&seconds=300&msg=Scheduled+restart
-  //   POST /admin/announce?secret=…&cancel=1        (clears a pending notice)
-  // Gated by the ADMIN_SECRET env (endpoint disabled if unset). Then deploy at ~0.
-  if (req.method === 'POST' && req.url?.startsWith('/admin/announce')) {
+  // ADMIN API — gated by ADMIN_USER_IDS (your account's UUID, via the signed-in
+  // JWT); the ADMIN_SECRET query still works for curl. CORS'd for the web app.
+  //   GET  /api/admin/status                          -> { isAdmin, userId }
+  //   POST /api/admin/announce?seconds=300&msg=…       schedule a restart notice
+  //   POST /api/admin/announce?cancel=1                clear a pending notice
+  if (req.url?.startsWith('/api/admin/')) {
+    const cors = {
+      'access-control-allow-origin': '*',
+      'access-control-allow-headers': 'authorization, content-type',
+      'access-control-allow-methods': 'GET, POST, OPTIONS',
+    };
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, cors);
+      res.end();
+      return;
+    }
     const u = new URL(req.url, 'http://x');
-    const ok = process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
-    if (!ok) {
-      res.writeHead(403, { 'content-type': 'text/plain' });
-      res.end('forbidden');
-      return;
-    }
-    if (u.searchParams.get('cancel')) {
-      currentNotice = { t: 'serverNotice', kind: 'info', message: '' }; // empty => clear on the client
-      const n = broadcastAll(currentNotice);
-      currentNotice = null;
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, cancelled: true, notified: n }));
-      return;
-    }
-    const seconds = Math.max(0, Number(u.searchParams.get('seconds') ?? 300));
-    const message = u.searchParams.get('msg') ?? 'Server restarting for an update';
-    currentNotice = { t: 'serverNotice', kind: 'restart', message, until: Date.now() + seconds * 1000 };
-    const notified = broadcastAll(currentNotice);
-    console.log(`[admin] restart notice in ${seconds}s -> ${notified} clients: "${message}"`);
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, notified, until: currentNotice.until }));
+    void (async () => {
+      const auth = req.headers['authorization'];
+      const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+      const user = await verifyAuthToken(token);
+      const isAdmin = !!user && ADMIN_IDS.has(user.userId);
+
+      if (req.method === 'GET' && u.pathname === '/api/admin/status') {
+        res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+        res.end(JSON.stringify({ isAdmin, userId: user?.userId ?? null }));
+        return;
+      }
+      if (req.method === 'POST' && u.pathname === '/api/admin/announce') {
+        const secretOk =
+          !!process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
+        if (!isAdmin && !secretOk) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        if (u.searchParams.get('cancel')) {
+          currentNotice = { t: 'serverNotice', kind: 'info', message: '' }; // empty => clear on client
+          const n = broadcastAll(currentNotice);
+          currentNotice = null;
+          res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, cancelled: true, notified: n }));
+          return;
+        }
+        const seconds = Math.max(0, Number(u.searchParams.get('seconds') ?? 300));
+        const message = u.searchParams.get('msg') || 'Server restarting for an update';
+        currentNotice = { t: 'serverNotice', kind: 'restart', message, until: Date.now() + seconds * 1000 };
+        const notified = broadcastAll(currentNotice);
+        console.log(`[admin] restart notice in ${seconds}s -> ${notified} clients: "${message}"`);
+        res.writeHead(200, { ...cors, 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, notified, until: currentNotice.until }));
+        return;
+      }
+      res.writeHead(404, cors);
+      res.end();
+    })().catch((e) => {
+      console.error('[admin] handler error:', e);
+      if (!res.headersSent) res.writeHead(500, cors);
+      res.end();
+    });
     return;
   }
   // live presence (served here, not in api.ts, because the counts live on this

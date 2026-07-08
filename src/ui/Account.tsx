@@ -102,6 +102,16 @@ function Identity() {
             </button>
           </div>
           <DisplayName userId={user.id} fallback={user.name ?? 'Player'} />
+          <div>
+            <p className="ds-hint" style={{ margin: '0 0 4px' }}>Account ID (for ADMIN_USER_IDS)</p>
+            <code
+              title="Click to copy"
+              onClick={() => void navigator.clipboard?.writeText(user.id)}
+              style={{ cursor: 'pointer', fontSize: 12, wordBreak: 'break-all', color: 'var(--muted)' }}
+            >
+              {user.id}
+            </code>
+          </div>
         </div>
       ) : (
         <div style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>

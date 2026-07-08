@@ -4,7 +4,7 @@ import { Logo } from './Logo';
 import { usePresence } from './usePresence';
 import type { Presence } from '../net/api';
 
-export type ShellNav = 'home' | 'robot' | 'stats' | 'leaderboard' | 'download';
+export type ShellNav = 'home' | 'robot' | 'stats' | 'leaderboard' | 'download' | 'admin';
 
 /** ambient "who's around" chip in the top bar: a live-green dot + the online /
  * signed-in tally, with the ranked-queue depth in the tooltip. Renders nothing
@@ -53,11 +53,14 @@ export function AppShell({
   onNav,
   right,
   children,
+  showAdmin,
 }: {
   active: ShellNav;
   onNav: (n: ShellNav) => void;
   right?: ReactNode;
   children: ReactNode;
+  /** show the Admin tab (only the signed-in admin account) */
+  showAdmin?: boolean;
 }) {
   const presence = usePresence();
   const item = (id: ShellNav, label: string) => (
@@ -78,6 +81,7 @@ export function AppShell({
           {item('stats', 'My Stats')}
           {item('leaderboard', 'Leaderboard')}
           {item('download', 'Download')}
+          {showAdmin && item('admin', 'Admin')}
         </nav>
         <div className="ds-bar-right">
           {presence && <PresenceChip p={presence} />}
