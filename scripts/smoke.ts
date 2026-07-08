@@ -4,6 +4,7 @@
  */
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, coerceSpec } from '../src/sim/spawn';
 import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
+import { generateRoomCode, isValidRoomCode, normalizeRoomCode } from '../src/net/roomCode';
 import { step } from '../src/sim/world';
 import { updatePenalties } from '../src/sim/penalties';
 import { robotInLaunchZone } from '../src/sim/robot';
@@ -2237,6 +2238,26 @@ const mkMM = () => {
   const patched = sanitizePlayerPatch({ spec: { width: 999, massLb: 9999 } }, { ...player, clientId: 'x' });
   check('sanitizePlayerPatch clamps a spoofed spec patch', (patched.spec?.width ?? 0) <= ROBOT_MAX_SIZE, `${patched.spec?.width}`);
   check('sanitizePlayerPatch ignores unknown/absent fields (empty patch is a no-op)', Object.keys(sanitizePlayerPatch({ bogus: 1 }, { ...player, clientId: 'x' })).length === 0);
+}
+
+// ---- shareable room codes (generated, 6-char, vowel-free, profanity-safe) ----
+{
+  let allValid = true;
+  let anyBad = false;
+  const seen = new Set<string>();
+  for (let i = 0; i < 5000; i++) {
+    const c = generateRoomCode();
+    if (!isValidRoomCode(c)) allValid = false;
+    if (/[AEIOU01IL]/.test(c)) anyBad = true; // no vowels / ambiguous chars ever
+    seen.add(c);
+  }
+  check('generateRoomCode always yields a valid code', allValid);
+  check('generated codes never contain vowels / ambiguous chars', !anyBad);
+  check('generated codes are 6 chars', generateRoomCode().length === 6);
+  check('generated codes vary (not a constant)', seen.size > 100, `${seen.size} distinct`);
+  check('isValidRoomCode rejects the wrong length', !isValidRoomCode('ABC') && !isValidRoomCode('BCDFGHJ'));
+  check('isValidRoomCode rejects vowels', !isValidRoomCode('BANANA'));
+  check('normalizeRoomCode strips junk + uppercases', normalizeRoomCode(' b2-c3 d4x ') === 'B2C3D4');
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

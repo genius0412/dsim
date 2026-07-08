@@ -24,6 +24,7 @@ export function Home({
   onFreeDrive,
   onSoloMatch,
   onRecordRun,
+  onDuoRecord,
   onRanked,
   onCustomRoom,
   onEditRobot,
@@ -35,6 +36,7 @@ export function Home({
   onFreeDrive: () => void;
   onSoloMatch: () => void;
   onRecordRun: () => void;
+  onDuoRecord: () => void;
   onRanked: () => void;
   onCustomRoom: () => void;
   onEditRobot: () => void;
@@ -120,6 +122,16 @@ export function Home({
               <span className="t">Record Run</span>
               <span className="d">
                 {multiplayer ? 'Solo score-attack' : 'Needs the game server'}
+              </span>
+            </span>
+          </button>
+
+          <button className="ds-tile" onClick={onDuoRecord} disabled={!multiplayer}>
+            <span className="k">Records</span>
+            <span>
+              <span className="t">Duo Record</span>
+              <span className="d">
+                {multiplayer ? '2v0 co-op · invite by code' : 'Needs the game server'}
               </span>
             </span>
           </button>
