@@ -72,15 +72,28 @@ export function updateBasins(world: World, dt: number): void {
       const dx = entry.x - b.pos.x;
       const dy = entry.y - b.pos.y;
       const d = hyp(dx, dy) || 1;
+      const nx = dx / d; // unit direction toward the classifier throat
+      const ny = dy / d;
       const onFloor = b.z <= C.BASIN_FLOOR_Z + 1;
       const speed = hyp(b.vel.x, b.vel.y);
       let pull = onFloor ? C.BASIN_FUNNEL_ACCEL : C.BASIN_FUNNEL_ACCEL * 0.25;
       if (speed > C.BASIN_FUNNEL_GRIP_SPEED) pull *= 0.3;
-      b.vel.x += (dx / d) * pull * dt;
-      b.vel.y += (dy / d) * pull * dt;
+      b.vel.x += nx * pull * dt;
+      b.vel.y += ny * pull * dt;
       const damp = Math.max(0, 1 - C.BASIN_DAMPING * dt);
       b.vel.x *= damp;
       b.vel.y *= damp;
+      // split velocity into radial (toward the throat) + tangential (orbital)
+      // and damp the tangential part hard: the goal is a right triangle, not a
+      // round bowl, so balls should stream STRAIGHT into the classifier rather
+      // than swirl in a circle around the throat. Radial pull is left intact so
+      // funneling stays brisk.
+      const vr = b.vel.x * nx + b.vel.y * ny;
+      const vtx = b.vel.x - vr * nx;
+      const vty = b.vel.y - vr * ny;
+      const tdamp = Math.max(0, 1 - C.BASIN_TANGENT_DAMPING * dt);
+      b.vel.x = vr * nx + vtx * tdamp;
+      b.vel.y = vr * ny + vty * tdamp;
       b.pos.x += b.vel.x * dt;
       b.pos.y += b.vel.y * dt;
 
@@ -243,10 +256,19 @@ export function updateRails(world: World, dt: number): void {
       let r1 = nextRandom(world.rngState);
       let r2 = nextRandom(r1.state);
       world.rngState = r2.state;
+      // gentle release: low forward momentum so the drain doesn't plow out in a
+      // straight line. A small forward-speed jitter plus a lateral kick breaks
+      // the collinearity; friction stalls the front balls and the ones behind
+      // carom off them (Rapier ball↔ball), fanning the drain across the floor.
+      const fwd = 0.75 + r1.value * 0.5; // 0.75–1.25 forward
+      const lat = (r2.value - 0.5) * C.TUNNEL_EXIT_SPREAD; // ± sideways kick
+      const speed0 = hyp(vel.x, vel.y) || 1;
+      const ux = -vel.y / speed0; // unit perpendicular to the exit direction
+      const uy = vel.x / speed0;
       b.state = { kind: 'ground' };
       b.z = 0;
       b.vz = 0;
-      b.vel = { x: vel.x * (0.8 + r1.value * 0.4), y: vel.y * (0.8 + r2.value * 0.4) };
+      b.vel = { x: vel.x * fwd + ux * lat, y: vel.y * fwd + uy * lat };
     }
   }
 }

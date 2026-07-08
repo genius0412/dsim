@@ -314,6 +314,7 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   // A ball under the wheels is pulled to the throat (hl, 0) — vector VECTORS an
   // off-center ball to center; the funnel just seats a ball the slopes delivered.
   const wheelSpan = m.wedge ? m.throatHalf : m.mouthHalf;
+
   const candidates: { b: Artifact; y: number }[] = [];
   for (const b of world.balls) {
     if (b.state.kind !== 'ground' || b.z > 6) continue;
@@ -324,14 +325,30 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
       local.x < tip + C.BALL_RADIUS &&
       Math.abs(local.y) < wheelSpan;
     if (underWheels && m.drawIn > 0) {
-      const dxT = hl - local.x;
-      const dyT = -local.y;
-      const dl = hyp(dxT, dyT);
-      if (dl > 0.3) {
-        const vLocal = rot(b.vel, -r.heading);
-        vLocal.x = approach(vLocal.x, (dxT / dl) * m.drawIn, m.drawIn);
-        vLocal.y = approach(vLocal.y, (dyT / dl) * m.drawIn, m.drawIn);
-        b.vel = rot(vLocal, r.heading);
+      const vLocal = rot(b.vel, -r.heading);
+      // FLAT (vector) intake, OFF-CENTER ball struck at high CLOSING speed: the
+      // non-compliant side wheels can't grip a fast impact — so DON'T vector it.
+      // With no suction the ball just bounces off the flat front as an ordinary
+      // impact collision (collideBallRobot), scattering it. This is IMPACT-only:
+      // `closing` is the ball's approach speed RELATIVE to the robot, so once the
+      // ball rides along with the chassis (low closing speed) it vectors in as
+      // normal even while the bot keeps pushing at speed. The CENTER compliant
+      // wheels always vector; wedge funnels never scatter.
+      const closing = velRobot.x - vLocal.x; // >0: ball closing on the front faster than the bot
+      const sideImpact =
+        !m.wedge &&
+        Math.abs(local.y) > captureHalf &&
+        velRobot.x > 0 &&
+        closing > C.INTAKE_RAM_SPEED;
+      if (!sideImpact) {
+        const dxT = hl - local.x;
+        const dyT = -local.y;
+        const dl = hyp(dxT, dyT);
+        if (dl > 0.3) {
+          vLocal.x = approach(vLocal.x, (dxT / dl) * m.drawIn, m.drawIn);
+          vLocal.y = approach(vLocal.y, (dyT / dl) * m.drawIn, m.drawIn);
+          b.vel = rot(vLocal, r.heading);
+        }
       }
     }
     // capture once the ball reaches the throat, centered under the wheels
@@ -358,7 +375,10 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   // a clump of 2+ feeds at the faster clumpInterval
   const t = clamp(candidates[0].y / captureHalf, 0, 1);
   const single = m.capMin + (m.capMax - m.capMin) * t;
-  const interval = candidates.length >= 2 ? m.clumpInterval : single;
+  // the clump SPEED bonus is a WEDGE (funnel) trait — the slopes gather a pile and
+  // feed it fast. A FLAT vector intake gets NO clump bonus: it can't devour a pile,
+  // so a clump feeds at the normal per-ball (vectoring) rate, not faster.
+  const interval = candidates.length >= 2 && m.wedge ? m.clumpInterval : single;
   if (world.time - r.lastIntakeAt < interval) return;
 
   // triangle devours TWO from a clump per cycle (its two front storage slots)

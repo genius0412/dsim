@@ -313,13 +313,21 @@ export const INTAKE_PRESETS = {
   triangle: {
     reach: 5, overhang: false, minLength: 11, maxLength: 13, fireInterval: 0.1, fireCap: 0.18,
     mouth: {
-      wedge: true, mouthHalf: 7, throatHalf: 3.5, drawIn: 28,
-      capMin: 0.06, capMax: 0.11, clumpInterval: 0.05, dual: true,
+      // strongest INTAKE of the three (its identity — devours clumps): a hard
+      // suction (drawIn) snaps balls to the throat and it swallows quickest. The
+      // tradeoff is TRANSFER (fireCap), not the grab — those stay untouched.
+      wedge: true, mouthHalf: 7, throatHalf: 3.5, drawIn: 46,
+      capMin: 0.04, capMax: 0.07, clumpInterval: 0.035, dual: true,
     },
   },
 } as const;
 /** flank capture engages only when actually strafing toward the ball */
 export const INTAKE_SIDE_MIN_STRAFE = 8; // in/s
+/** forward speed above which a FLAT (vector) intake driven into a CLUMP scatters
+ * it instead of vectoring it in: the non-compliant wheels + impact force push the
+ * pile away. Below this a controlled approach still intakes normally. Wedge
+ * (sloped/triangle) funnels are immune — they devour clumps by design. */
+export const INTAKE_RAM_SPEED = 32; // in/s
 
 export const HOPPER_CAPACITY = 3;
 
@@ -369,12 +377,17 @@ export const OVERFLOW_Z = 13.5; // overflow rolls over the retained balls
 export const BASIN_FLOOR_Z = 14; // funnel floor height inside the goal
 export const BASIN_RESTITUTION = 0.4; // vertical bounce off the funnel floor
 export const BASIN_WALL_RESTITUTION = 0.55; // lively caroms off the goal walls
-export const BASIN_FUNNEL_ACCEL = 500; // in/s^2 pull toward the classifier entrance (drains the basin briskly so balls don't clog)
+export const BASIN_FUNNEL_ACCEL = 700; // in/s^2 pull toward the classifier entrance (drains the basin briskly so balls don't clog)
 /** the funnel only really grips slow balls — fast ones carom around first */
-export const BASIN_FUNNEL_GRIP_SPEED = 200; // in/s (higher ⇒ funnels sooner, less caroming)
+export const BASIN_FUNNEL_GRIP_SPEED = 260; // in/s (higher ⇒ funnels sooner, less caroming)
 export const BASIN_DAMPING = 1.1; // 1/s horizontal velocity damping (settles onto the funnel faster)
+/** tangential (orbital) velocity damping about the funnel throat, 1/s. High so
+ * balls SPIRAL straight into the classifier instead of circling the throat —
+ * the goal footprint is a triangle, not a bowl, so there is no round basin for
+ * them to orbit. This is what stops the "circular jumble". */
+export const BASIN_TANGENT_DAMPING = 6; // 1/s
 export const BASIN_ENTRY_RADIUS = 7.5; // in, hand-off distance to the rail (wider catch = fewer balls milling at the mouth)
-export const BASIN_ENTRY_KEEP_V = 0.55; // entry velocity retained (splash energy)
+export const BASIN_ENTRY_KEEP_V = 0.45; // entry velocity retained (splash energy)
 
 // classifier rail (1D flow, contact stacking)
 export const RAIL_S_MAX = 55; // rail length: SQUARE at the top (y = CLASSIFIER_Y0 + s), at the goal's inner exit
@@ -414,7 +427,14 @@ export const GATE_TAPE_LEN = 10; // line length, into the field from the wall
 export const GATE_TAPE_Y = (GATE_ZONE.y0 + GATE_ZONE.y1) / 2; // gate center y
 /** where released/overflow balls emerge onto the floor, on the goal's wall */
 export const TUNNEL_EXIT = { x: 68, y: -3 };
-export const TUNNEL_EXIT_VEL = { along: 42, inward: 7 }; // toward audience, off the wall
+/** gate-release exit velocity. Kept GENTLE (low `along`): a big forward push
+ * plows the whole drain out in a straight conga line. With little momentum the
+ * front balls stall on friction and the ones behind carom off them, so the
+ * drain fans out across the floor instead of running linear. */
+export const TUNNEL_EXIT_VEL = { along: 22, inward: 8 }; // toward audience, off the wall
+/** random lateral (sideways) kick on release, in/s — breaks the collinearity so
+ * ball-ball contact has something to amplify into a spread */
+export const TUNNEL_EXIT_SPREAD = 14; // in/s
 
 // ---------------------------------------------------------------- zones ----
 /** small audience-side launch zone: apex (0,-48), base 2 tiles on the wall */
