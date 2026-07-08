@@ -100,6 +100,30 @@ fly deploy
   designated `MATCHMAKER_REGION`, which ranked queueing routes to), while other regions
   idle to zero and cold-boot on first connect.
 
+### Safe deploy — warn players, then deploy (`scripts/announce-deploy.sh`)
+
+A bare deploy restarts the server process, dropping anyone mid-match. When players
+may be online, deploy through the announce wrapper instead: it broadcasts a
+`serverNotice` countdown banner to every connected client (and re-sends it to
+anyone who joins during the window), waits, then runs `scripts/fly-deploy.sh` and
+polls `/health`.
+
+```bash
+# one-time: authorize the announce endpoint from the CLI (no browser session)
+fly secrets set ADMIN_SECRET='<random>' -a dohun-sim-decode
+
+# every deploy when players may be online (5-min warning by default):
+ADMIN_SECRET='<same value>' scripts/announce-deploy.sh "Server update — reconnecting shortly"
+# custom wait (seconds); 0 = deploy immediately (use when /api/presence shows 0 online):
+ADMIN_SECRET='<same value>' scripts/announce-deploy.sh "msg" 120
+```
+
+The `ADMIN_SECRET` must match the Fly secret of the same name; the announce endpoint
+also accepts a signed-in admin's JWT (the Admin panel's "Announce restart" button does
+the same thing manually). Check `GET /api/presence` first — if `online` is 0, you can
+skip the wait. Keep `ADMIN_SECRET` out of git (it's only ever passed via env / the Fly
+secret; never commit it).
+
 ### Multi-region (one app, one machine per region)
 
 For a geographically spread player base, run the SAME app in several regions — this is
