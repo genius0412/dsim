@@ -2074,6 +2074,37 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   }
 }
 
+// ---- custom 4-on-one-alliance room starts (no infinite pose-dedup loop) ------
+// regression: ROOM_CAPACITY (4) > START_POSES.length (3), so 4 drivers on one
+// alliance exhaust the distinct poses. The old `while (used.has(si))` spun
+// forever, hanging the tick loop / health probe until Fly killed the box.
+{
+  const msgs: ServerMsg[] = [];
+  const mk = (id: string): Client => ({
+    id,
+    send: (m) => msgs.push(m),
+    player: {
+      clientId: id,
+      name: id,
+      teamName: 'T',
+      teamNumber: 1,
+      alliance: 'blue', // ALL on blue: 0 on red
+      startIndex: 0,
+      ready: true,
+      spec: { ...DEFAULT_SPEC },
+      assists: { ...DEFAULT_ASSISTS },
+    },
+    connected: true,
+    disconnectAt: 0,
+  });
+  const room = new Room('smoke-4v0', () => {}, { kind: 'versus' });
+  for (const id of ['a', 'b', 'c', 'd']) room.add(mk(id));
+  room.onMessage('a', { t: 'start' }); // 'a' is host — must return, not hang
+  room.advanceForTest(3);
+  const started = msgs.filter((m) => m.t === 'matchStart').length;
+  check('custom 4-on-one-alliance room starts without hanging', started === 4);
+}
+
 // ---- region-aware matchmaking: minimax host + expanding radius --------------
 // helpers: a queue entry (new region-aware shape) + a flush for the async assign
 const rEntry = (

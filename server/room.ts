@@ -346,7 +346,14 @@ export class Room {
     roster.forEach((c, i) => {
       const alliance: Alliance = record ? 'blue' : c.player.alliance;
       let si = c.player.startIndex ?? 0;
-      while (used[alliance].has(si)) si = (si + 1) % START_POSES.length;
+      // find an unused pose, but stop after a full cycle: with more robots on one
+      // alliance than there are START_POSES (ROOM_CAPACITY 4 > 3 poses — e.g. a
+      // custom 4-on-one room), every pose is taken and an unbounded `while` would
+      // spin forever, hanging the tick loop / health probe until Fly kills the box.
+      // Reuse a pose instead (the physics solver pushes the overlap apart).
+      for (let n = 0; n < START_POSES.length && used[alliance].has(si); n++) {
+        si = (si + 1) % START_POSES.length;
+      }
       used[alliance].add(si);
       setups.push({
         id: i,
