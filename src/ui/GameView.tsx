@@ -91,6 +91,28 @@ export function GameView({ settings, onExit, session = null, onWatchReplay, sign
       {window.matchMedia('(pointer: coarse)').matches && controllerRef.current && (
         <MobileControls inputManager={controllerRef.current.getInputManager()} />
       )}
+      {hud?.net && (hud.net.failed || hud.net.waitingFor === 'server') && (
+        <div className="net-overlay">
+          <div className="net-overlay-card">
+            {hud.net.failed ? (
+              <>
+                <h3>Connection lost</h3>
+                <p>The server may have restarted. Refresh the page to reconnect.</p>
+                <div className="overlay-buttons">
+                  <button onClick={() => window.location.reload()}>REFRESH</button>
+                  <button onClick={onExit}>MENU</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="net-spinner" />
+                <h3>Reconnecting…</h3>
+                <p>Restoring your connection — your run keeps going.</p>
+              </>
+            )}
+          </div>
+        </div>
+      )}
       {hud && <Hud hud={hud} />}
       <div className="game-buttons">
         <button className="game-btn" onClick={onExit} title="Menu (Esc)">

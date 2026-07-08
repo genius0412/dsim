@@ -2,6 +2,7 @@ import type { Artifact, RobotCommand, RobotSpec } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './session';
 import type { Transport } from './transport';
+import { setServerNotice } from './notice';
 import {
   encodeMsg,
   decodeServerMsg,
@@ -40,6 +41,8 @@ export class ServerSession implements NetSession {
   private recordResult: RecordRankInfo | null = null;
   private restartCb: (() => void) | null = null;
   private connected = true;
+  /** reconnection budget exhausted — the server likely restarted; prompt a refresh */
+  private failed = false;
   /** other robots in the match (for the HUD "N players" chip) */
   private readonly otherRobots: number;
   /** running ball baseline the delta-encoded snapshots patch (keyed by id) */
@@ -71,10 +74,12 @@ export class ServerSession implements NetSession {
     });
     transport.onReopen(() => {
       // reclaim our in-match slot on the fresh socket; a snapshot resyncs us
+      this.failed = false;
       transport.send(encodeMsg({ t: 'rejoin', room: this.room, clientId: this.clientId }));
     });
     transport.onFail(() => {
-      this.connected = false; // retries exhausted; user can leave to the menu
+      this.connected = false; // retries exhausted (the server likely restarted)
+      this.failed = true;
     });
   }
 
@@ -113,6 +118,7 @@ export class ServerSession implements NetSession {
       waitingFor: this.connected ? null : 'server',
       desync: false,
       peers: this.otherRobots,
+      failed: this.failed,
     };
   }
 
@@ -152,6 +158,8 @@ export class ServerSession implements NetSession {
       this.eloResults = m.results;
     } else if (m.t === 'recordResult') {
       this.recordResult = m.info;
+    } else if (m.t === 'serverNotice') {
+      setServerNotice(m.message ? { kind: m.kind, message: m.message, until: m.until } : null);
     } else if (m.t === 'matchStart') {
       // a host restart: adopt the new seed/setups and rebuild
       this.seed = m.seed;

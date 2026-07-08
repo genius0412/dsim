@@ -43,6 +43,8 @@ export interface NetStatus {
   waitingFor: string | null;
   desync: boolean;
   peers: number;
+  /** reconnection budget exhausted (server likely restarted) — prompt a refresh */
+  failed: boolean;
 }
 
 export interface NetSession {

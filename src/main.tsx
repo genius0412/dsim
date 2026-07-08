@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './ui/App';
+import { ServerNoticeBanner } from './ui/ServerNoticeBanner';
 import { initPhysics } from './sim/physicsEngine';
 import './ui/styles.css';
 import './ui/shell.css';
@@ -12,6 +13,7 @@ initPhysics().then(() => {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <App />
+      <ServerNoticeBanner />
     </StrictMode>,
   );
 });
