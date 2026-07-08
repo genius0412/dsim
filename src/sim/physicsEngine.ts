@@ -3,7 +3,7 @@ import type { Artifact, RobotState, Vec2, World } from '../types';
 import * as C from '../config';
 import { classifierRect, goalFaceNormal, goalFacePoints } from './field';
 import { robotExtents } from './physics';
-import { datan2, hyp } from '../math';
+import { datan2, hyp, clamp } from '../math';
 
 /**
  * Rapier 2D physics bridge (netcodeplan Phase 2, robots-first slice).
@@ -190,10 +190,18 @@ export function solveRobots(world: World, dt: number): Map<number, Vec2> {
           .lockRotations()
           .setLinvel(r.vel.x, r.vel.y),
       );
+      // PUSHING POWER (effective shove mass): real mass × drivetrain traction
+      // × wheel torque (geared for speed ⇒ less push, inverse RPM) × available
+      // current (1 − power draw). driveParams.accel uses the REAL massLb, so
+      // inflating the shove mass here never touches linear accel. At the DEFAULT
+      // reference (mecanum, 435 rpm, at rest) all factors = 1 ⇒ shove unchanged.
+      const p = C.DRIVETRAIN_PRESETS[r.spec.drivetrain];
+      const rpmPush = clamp(C.REF_DRIVE_RPM / r.spec.driveRpm, 0.6, 1.8);
+      const shoveMass = r.spec.massLb * p.pushMult * rpmPush * (1 - r.powerDraw);
       rw.createCollider(
         RAPIER.ColliderDesc.cuboid(hx, e.half)
           .setTranslation(forward, 0) // body-local (rotated by heading)
-          .setMass(r.spec.massLb)
+          .setMass(shoveMass)
           .setRestitution(0)
           .setFriction(C.PHYS_FRICTION),
         body,

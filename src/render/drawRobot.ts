@@ -1,11 +1,13 @@
-import type { RobotState } from '../types';
+import type { Artifact, RobotState } from '../types';
 import * as C from '../config';
 import { turretWorldPos } from '../sim/robot';
+import { rot } from '../math';
 
 export function drawRobot(
   ctx: CanvasRenderingContext2D,
   r: RobotState,
   intakeOn: boolean,
+  held: Artifact[] = [],
 ): void {
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
@@ -37,43 +39,56 @@ export function drawRobot(
     ctx.fillRect(px - 2.2, py - 1.1, 4.4, 2.2);
   }
 
-  // intake at the front — drawn at its full physical reach (it collides)
+  // intake at the front (RobotPreview.tsx draws the same). FUNNEL presets
+  // (sloped/triangle) are two RIGHT TRIANGLES — one per side — whose hypotenuses
+  // are the slopes that funnel balls to the compliant wheels at the throat (no
+  // flat front). VECTOR is a flat plate with a full-width wheel roller.
   const preset = C.INTAKE_PRESETS[r.spec.intake];
-  const tip = hl + preset.reach;
-  ctx.fillStyle = intakeOn ? 'rgba(34,197,94,0.85)' : '#3a4150';
-  if (r.spec.intake === 'vector') {
-    ctx.fillRect(hl - 0.6, -preset.halfWidth, preset.reach + 0.6, preset.halfWidth * 2);
-    // compliant wheels are mounted VERTICALLY: from above they read as a
-    // row of small rectangles along the wheel line at the tip
-    ctx.fillStyle = intakeOn ? '#16a34a' : '#2a303c';
+  const m = preset.mouth;
+  const rw = m.mouthHalf;
+  const wedgeTip = hl + preset.reach - 0.5; // wedge/plate front — just behind the roller
+  const rollerTip = hl + preset.reach + 0.5; // shaft + wheels ride out just past the wedges
+  const mouthOn = intakeOn ? 'rgba(34,197,94,0.85)' : '#2a303c';
+  const drawRoller = () => {
+    ctx.fillStyle = intakeOn ? '#166534' : '#333a45';
+    ctx.fillRect(wedgeTip, -rw, rollerTip - wedgeTip, rw * 2);
     for (let i = -3; i <= 3; i++) {
-      ctx.fillRect(tip - 2.2, i * (preset.halfWidth / 3.4) - 0.8, 1.8, 1.6);
+      const center = Math.abs(i) <= 1;
+      ctx.fillStyle = center ? (intakeOn ? '#22c55e' : '#6b7280') : intakeOn ? '#15803d' : '#4b5563';
+      ctx.fillRect(rollerTip - 1.5, (i * rw) / 3.4 - 0.8, 1.3, 1.6);
     }
-  } else {
-    // sloped / triangle: trapezoid mouth — wide opening at the tip narrowing
-    // into the throat, truncated (no point), recessed within the frame. The
-    // mouth never exceeds the chassis: the frame's side prongs encompass it,
-    // which is what physically rules out side intake for these presets.
-    const mouthHalf = Math.min(preset.halfWidth, hw - 0.75);
-    const throat = mouthHalf * 0.45;
+  };
+  if (m.wedge) {
+    const th = m.throatHalf;
+    // funnel mouth: opening at the (recessed) wedge line, narrowing to the throat
+    ctx.fillStyle = mouthOn;
     ctx.beginPath();
-    ctx.moveTo(tip, -mouthHalf);
-    ctx.lineTo(tip, mouthHalf);
-    ctx.lineTo(hl - 0.6, throat);
-    ctx.lineTo(hl - 0.6, -throat);
+    ctx.moveTo(wedgeTip, -hw);
+    ctx.lineTo(wedgeTip, hw);
+    ctx.lineTo(hl, th);
+    ctx.lineTo(hl, -th);
     ctx.closePath();
     ctx.fill();
-    // chassis side prongs alongside the mouth
+    // two right triangles (right angle at the chassis front-outer corner; the
+    // hypotenuse from the front corner in to the throat is the slope)
     ctx.fillStyle = '#1f242c';
     ctx.strokeStyle = color;
     ctx.lineWidth = 1;
     for (const s of [1, -1] as const) {
-      const y0 = s > 0 ? mouthHalf + 0.3 : -hw;
-      const h = hw - mouthHalf - 0.3;
-      if (h <= 0) continue;
-      ctx.fillRect(hl - 0.6, y0, preset.reach + 0.6, h);
-      ctx.strokeRect(hl - 0.6, y0, preset.reach + 0.6, h);
+      ctx.beginPath();
+      ctx.moveTo(hl, s * hw);
+      ctx.lineTo(wedgeTip, s * hw);
+      ctx.lineTo(hl, s * th);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
     }
+    drawRoller();
+  } else {
+    // vector: flat plate to the (barely recessed) wedge line + the roller out front
+    ctx.fillStyle = mouthOn;
+    ctx.fillRect(hl, -rw, wedgeTip - hl, rw * 2);
+    drawRoller();
   }
 
   // heading chevron
@@ -85,20 +100,17 @@ export function drawRobot(
   ctx.closePath();
   ctx.fill();
 
-  // hopper pips (held artifacts) — the TRIANGLE intake stores its artifacts
-  // in a triangle; the others queue them in a line
-  for (let i = 0; i < C.HOPPER_CAPACITY; i++) {
-    const c = r.hopper[i];
-    ctx.fillStyle = c ? (c === 'purple' ? C.COLORS.purple : C.COLORS.green) : '#101216';
-    const [px, py] =
-      r.spec.intake === 'triangle'
-        ? i === 2
-          ? [-hl + 6.8, 0]
-          : [-hl + 3, i === 0 ? -2.2 : 2.2]
-        : [-hl + 3.4, (i - 1) * 4];
+  // held artifacts — the actual PHYSICAL balls (they slide within the intake),
+  // drawn HERE in the robot's local frame so they sit BELOW the turret/shooter.
+  for (const b of held) {
+    const lp = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+    ctx.fillStyle = b.color === 'purple' ? C.COLORS.purple : C.COLORS.green;
     ctx.beginPath();
-    ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+    ctx.arc(lp.x, lp.y, C.BALL_RADIUS, 0, Math.PI * 2);
     ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 0.4;
+    ctx.stroke();
   }
   ctx.restore();
 

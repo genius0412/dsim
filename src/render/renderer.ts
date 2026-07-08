@@ -32,7 +32,8 @@ export class Renderer {
       const intakeOn =
         (r.id === localRobotId && (lastCommand?.intake ?? false)) ||
         (r.autoIntake && r.hopper.length < 3);
-      drawRobot(ctx, r, intakeOn);
+      const held = world.balls.filter((b) => b.state.kind === 'held' && b.state.robot === r.id);
+      drawRobot(ctx, r, intakeOn, held);
 
 
 

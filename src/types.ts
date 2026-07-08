@@ -66,6 +66,11 @@ export type BallState =
    * but not yet met the stack — classified vs overflow is decided at first
    * contact (9 retained below at that moment ⇒ overflow). */
   | { kind: 'rail'; goal: Alliance; s: number; v: number; overflow: boolean; pending?: boolean }
+  /** captured and PHYSICALLY stored in a robot's intake: parked at storage slot
+   * `slot` of robot `robot`. `lx`/`ly` are the ball's CURRENT offset in the robot
+   * frame — it tracks the robot rigidly (no lag) and slides these toward the slot
+   * target. The robot's `hopper` color array mirrors these (count + colors synced). */
+  | { kind: 'held'; robot: number; slot: number; lx: number; ly: number }
   | { kind: 'stock'; alliance: Alliance }; // held by the human player, off-field
 
 export interface Artifact {
@@ -97,6 +102,12 @@ export interface RobotState {
   /** earliest world.time the shooter may fire again (transfer cadence +
    * flywheel recovery after energetic shots) */
   fireReadyAt: number;
+  /** 0..1 flywheel spin level, ramped by distance to this robot's own goal
+   * (set in updateRobotActions; feeds power draw one tick later) */
+  flywheelSpin: number;
+  /** 0..POWER_DRAW_MAX current drawn from the drive motors by the flywheel +
+   * intake (set in updateRobot); slows the robot and weakens its shove */
+  powerDraw: number;
   /** G427: an opponent contacted this robot in its BASE during endgame — it
    * counts as fully returned at match end regardless of where it ends up */
   baseAwarded?: boolean;

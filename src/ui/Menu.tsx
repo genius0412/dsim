@@ -4,15 +4,10 @@ import {
   INTAKE_PRESETS,
   ROBOT_MAX_SIZE,
   ROBOT_MIN_WIDTH,
-  ROBOT_MIN_MASS,
-  SWERVE_MIN_MASS,
-  ROBOT_MAX_MASS,
-  ROBOT_MIN_RPM,
-  SWERVE_MAX_RPM,
-  ROBOT_MAX_RPM,
   ROBOT_PRESETS,
 } from '../config';
-import { driveParams } from '../sim/drivetrain';
+import { driveParams, massLimits, rpmLimits } from '../sim/drivetrain';
+import { clamp } from '../math';
 import { ControlsSection } from './ControlsSection';
 import { RobotPreview } from './RobotPreview';
 import { APP_NAME } from '../seasons';
@@ -81,22 +76,31 @@ interface Props {
  */
 export function Menu({ settings, onChange }: Props) {
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
-  const setSpec = (patch: Partial<GameSettings['spec']>) =>
-    onChange({ ...settings, spec: { ...settings.spec, ...patch } });
+  // any spec edit RE-CLAMPS all coupled values (mass floor moves with drivetrain +
+  // flywheel inertia; rpm ceiling with drivetrain; length with the intake preset)
+  const setSpec = (patch: Partial<GameSettings['spec']>) => {
+    const next = { ...settings.spec, ...patch };
+    const mass = massLimits(next.drivetrain, next.flywheelInertia);
+    const rpm = rpmLimits(next.drivetrain);
+    const ip = INTAKE_PRESETS[next.intake];
+    next.massLb = clamp(next.massLb, mass.min, mass.max);
+    next.driveRpm = clamp(next.driveRpm, rpm.min, rpm.max);
+    next.length = clamp(next.length, ip.minLength, ip.maxLength);
+    onChange({ ...settings, spec: next });
+  };
   const setAssist = (patch: Partial<GameSettings['assists']>) =>
     onChange({ ...settings, assists: { ...settings.assists, ...patch } });
 
   const spec = settings.spec;
-  const isSwerve = spec.drivetrain === 'swerve';
-  const minMass = isSwerve ? SWERVE_MIN_MASS : ROBOT_MIN_MASS;
-  const maxRpm = isSwerve ? SWERVE_MAX_RPM : ROBOT_MAX_RPM;
+  // per-drivetrain envelopes; the mass FLOOR also rises with flywheel inertia
+  const { min: minMass, max: maxMass } = massLimits(spec.drivetrain, spec.flywheelInertia);
+  const { min: minRpm, max: maxRpm } = rpmLimits(spec.drivetrain);
   const dp = driveParams(spec);
   const isCustom = !ROBOT_PRESETS.some((p) => specMatches(spec, p));
 
   function selectIntake(intake: IntakeStyle) {
-    // keep chassis length inside the preset's legal range (18in cap etc.)
-    const p = INTAKE_PRESETS[intake];
-    setSpec({ intake, length: Math.min(Math.max(spec.length, p.minLength), p.maxLength) });
+    // setSpec re-clamps chassis length into the new preset's range (18in cube)
+    setSpec({ intake });
   }
 
   return (
@@ -225,15 +229,7 @@ export function Menu({ settings, onChange }: Props) {
                 <button
                   key={d}
                   className={`ds-opt mini ${spec.drivetrain === d ? 'on' : ''}`}
-                  onClick={() => {
-                    const newMinMass = d === 'swerve' ? SWERVE_MIN_MASS : ROBOT_MIN_MASS;
-                    const newMaxRpm = d === 'swerve' ? SWERVE_MAX_RPM : ROBOT_MAX_RPM;
-                    setSpec({
-                      drivetrain: d,
-                      massLb: Math.max(newMinMass, Math.min(spec.massLb, ROBOT_MAX_MASS)),
-                      driveRpm: Math.max(ROBOT_MIN_RPM, Math.min(spec.driveRpm, newMaxRpm))
-                    });
-                  }}
+                  onClick={() => setSpec({ drivetrain: d })}
                 >
                   <span className="ot">{DRIVETRAIN_LABELS[d]}</span>
                   <span className="od">{DRIVETRAIN_BLURBS[d]}</span>
@@ -278,7 +274,7 @@ export function Menu({ settings, onChange }: Props) {
                   className="ds-range"
                   type="range"
                   min={minMass}
-                  max={ROBOT_MAX_MASS}
+                  max={maxMass}
                   step={1}
                   value={spec.massLb}
                   onChange={(e) => setSpec({ massLb: Number(e.target.value) })}
@@ -294,7 +290,7 @@ export function Menu({ settings, onChange }: Props) {
                 <input
                   className="ds-range"
                   type="range"
-                  min={ROBOT_MIN_RPM}
+                  min={minRpm}
                   max={maxRpm}
                   step={5}
                   value={spec.driveRpm}
@@ -312,6 +308,8 @@ export function Menu({ settings, onChange }: Props) {
                   max={1}
                   step={0.05}
                   value={spec.flywheelInertia}
+                  // a bigger flywheel weighs more: setSpec raises the mass floor
+                  // and pulls mass up with it so the loadout stays legal
                   onChange={(e) => setSpec({ flywheelInertia: Number(e.target.value) })}
                 />
               </label>

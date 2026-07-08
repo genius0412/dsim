@@ -44,7 +44,7 @@ export const MATCH_SETTLE_S = MATCH_RESULT_REVEAL_MS / 1000;
  * build that produced it. Do NOT auto-derive this from a file hash — that would
  * reset every season on a trivial, non-gameplay edit. See docs/netcodeplan.md
  * Phase 3 + the phase3-leaderboards spec. */
-export const BALANCE_VERSION = 1;
+export const BALANCE_VERSION = 2;
 
 // -------------------------------------------------------------- scoring ----
 export const PTS_LEAVE = 3;
@@ -81,7 +81,12 @@ export const PENALTY_CLEAR = 1.0; // s
 
 // ------------------------------------------------------------ artifacts ----
 export const BALL_RADIUS = 2.5; // 5 in diameter
-export const BALL_ROLL_FRICTION = 25; // in/s^2
+export const BALL_ROLL_FRICTION = 55; // in/s^2 — balls carry "mass": a bump doesn't
+// send them skittering far, so they're harder to push around
+/** fraction of the robot's into-the-ball speed bled off per ball contact each
+ * solver pass — small per ball, but a big CLUMP is cumulatively a little heavier
+ * to push (the drivetrain meets resistance, accelerates into it slower) */
+export const BALL_PUSH_DRAG = 0.01;
 export const BALL_REST_SPEED = 2; // in/s, snap to rest below this
 export const BALL_WALL_RESTITUTION = 0.5;
 export const BALL_BALL_RESTITUTION = 0.55;
@@ -169,18 +174,33 @@ export const WHEEL_INSET = 2.6;
  * calibrated so the DEFAULT robot reproduces the original tuned feel exactly
  * (75 in/s, 7 rad/s, 280 in/s²) — verified by a smoke check. */
 export const REF_DRIVE_RPM = 435;
-export const REF_MASS_LB = 30;
+export const REF_MASS_LB = 26;
 export const SPEED_PER_RPM = 75 / 435; // in/s per wheel RPM
 export const BASE_DRIVE_ACCEL = 280; // in/s^2 at reference RPM/mass
 export const TURN_MAX_SPEED = 12.0; // rad/s absolute cap (small fast bots approach it; default is 7)
 export const TURN_ACCEL_PER_ACCEL = 40 / 280; // rad/s^2 per in/s^2 of drive accel
-/** robot mass range for the builder (lb) */
+/** robot mass/rpm GLOBAL fallbacks for the builder (lb / wheel rpm). The real
+ * limits are per-drivetrain (DRIVETRAIN_LIMITS below); these bound the widest
+ * envelope and still gate settings validation where a drivetrain isn't known. */
 export const ROBOT_MIN_MASS = 20;
 export const ROBOT_MAX_MASS = 42;
-export const SWERVE_MIN_MASS = 25;
 export const ROBOT_MIN_RPM = 200;
 export const ROBOT_MAX_RPM = 600;
-export const SWERVE_MAX_RPM = 500;
+
+/** per-drivetrain weight + RPM envelopes. Tank runs heavy with a torque-biased
+ * (lower) RPM ceiling; swerve modules are complex → a raised mass floor and a
+ * lower RPM ceiling; mecanum/x-drive get the full range. The MASS FLOOR is
+ * further raised by flywheel inertia (a heavier flywheel — see massLimits). */
+export const DRIVETRAIN_LIMITS = {
+  mecanum: { minMass: 18, maxMass: 42, minRpm: 200, maxRpm: 600 },
+  xdrive: { minMass: 18, maxMass: 42, minRpm: 200, maxRpm: 600 },
+  tank: { minMass: 22, maxMass: 42, minRpm: 200, maxRpm: 560 },
+  swerve: { minMass: 22, maxMass: 40, minRpm: 200, maxRpm: 500 },
+} as const;
+/** lb added to a drivetrain's mass floor at flywheelInertia 1 (a big flywheel
+ * weighs more): effective floor = base + INERTIA_MASS_FLOOR·inertia. Kept small
+ * so inertia only nudges the mass range. */
+export const INERTIA_MASS_FLOOR = 6;
 
 /** penalty added to fireInterval when robot is sorting (canSort: true) */
 export const SORT_FIRE_PENALTY = 0.25;
@@ -188,56 +208,114 @@ export const SORT_FIRE_PENALTY = 0.25;
 /** per-drivetrain multipliers + wheel-saturation model. saturation:
  * 'sum'   = |f|+|s|+|ω|  (mecanum/x-drive: the worst roller wheel sees all)
  * 'tank'  = |f|+|ω|      (no strafe at all — strafe input is dead)
- * 'vec'   = hypot(f,s)+|ω| (swerve modules are direction-independent) */
+ * 'vec'   = hypot(f,s)+|ω| (swerve modules are direction-independent)
+ * accelMult + pushMult order (tank > swerve > mecanum > xdrive): traction
+ * wheels bite hardest, then steered modules, then rollers. pushMult scales the
+ * EFFECTIVE shove mass in the Rapier robot solver (physicsEngine.ts) alongside
+ * real mass, RPM (torque), and power draw. mecanum stays 1.0/1.0 — it is the
+ * DEFAULT calibration anchor (75 in/s, 7 rad/s, 280 in/s²). */
 export const DRIVETRAIN_PRESETS = {
   /** the FTC standard: full strafe at roller-slip speed */
-  mecanum: { strafeMult: 0.85, speedMult: 1.0, accelMult: 1.0, saturation: 'sum' },
-  /** 45° omni pods: full-speed strafe, slight overall speed loss */
-  xdrive: { strafeMult: 1.0, speedMult: 0.9, accelMult: 0.95, saturation: 'sum' },
-  /** traction wheels: no strafe, best straight-line speed and push */
-  tank: { strafeMult: 0, speedMult: 1.05, accelMult: 1.4, saturation: 'tank' },
-  /** independent steered modules: full-speed any direction */
-  swerve: { strafeMult: 1.0, speedMult: 1.0, accelMult: 1.05, saturation: 'vec' },
+  mecanum: { strafeMult: 0.85, speedMult: 1.0, accelMult: 1.0, pushMult: 1.0, saturation: 'sum' },
+  /** 45° omni pods: full-speed strafe, slight overall speed loss + least bite */
+  xdrive: { strafeMult: 1.0, speedMult: 0.9, accelMult: 0.92, pushMult: 0.9, saturation: 'sum' },
+  /** traction wheels: no strafe, best straight-line speed, accel, and push */
+  tank: { strafeMult: 0, speedMult: 1.05, accelMult: 1.5, pushMult: 1.5, saturation: 'tank' },
+  /** independent steered modules: full-speed any direction, strong bite */
+  swerve: { strafeMult: 1.0, speedMult: 1.0, accelMult: 1.12, pushMult: 1.15, saturation: 'vec' },
 } as const;
 
 /** flywheel recovery: after an energetic (long-range) shot, a LOW-inertia
  * flywheel needs time to spin back up before the next shot. Shots below
- * FLYWHEEL_CLOSE_SPEED add nothing; recovery scales with (speed over that)²
- * and with (1 - inertia). High inertia ⇒ rapid fire even in the far zone. */
-export const FLYWHEEL_CLOSE_SPEED = 140; // in/s launch speed considered "close"
-export const FLYWHEEL_RECOVERY_MAX = 0.6; // s extra between max-range shots at inertia 0
+ * FLYWHEEL_CLOSE_SPEED add nothing (so ANY robot rapid-fires up close), then
+ * recovery ramps STRONGLY with (speed over that)² and with (1 - inertia) — so
+ * DISTANCE dominates the cadence, and low inertia is punished hard far out while
+ * high inertia keeps firing fast at range. */
+export const FLYWHEEL_CLOSE_SPEED = 135; // in/s launch speed considered "close"
+export const FLYWHEEL_RECOVERY_MAX = 1.25; // s extra between max-range shots at inertia 0
 
-/** capture happens when a compliant wheel is DIRECTLY ABOVE the artifact:
- * the wheel line sits at the tip of the intake's reach, and a ball within
- * this band of it (ball radius + compliance squish) gets swallowed */
-export const INTAKE_CAPTURE_BAND = 0.5; // in beyond ball radius, each way (tight mouth — no vacuuming from a distance)
-/** fireInterval = transfer (outtake) cadence from hopper to shooter — the
- * ONLY firing rate limit (no flywheel spin-up model, per product decision).
- * overhang = the compliant wheels may stick out past a narrower chassis;
- * without it the chassis ENCOMPASSES the intake (trapezoid mouth recessed
- * between side prongs), which is what geometrically rules out side intake.
- * clumpPerBall = swallow cadence while 2+ balls sit at the mouth — sloped
- * and triangle devour clumps, vector feeds at its steady pace. */
+/** POWER DRAW: a spun-up flywheel (high inertia × far shot) or a running intake
+ * pulls current away from the drive motors, so the robot gets slightly slower
+ * AND pushes weaker. Draw scales drive speed/accel down by (1 − draw) and the
+ * Rapier shove mass by the same, capped so it stays "slight". flywheelSpin is a
+ * 0..1 ramp with distance to the robot's own goal (FLY_SPIN_NEAR→FLY_SPIN_FAR). */
+export const POWER_DRAW_FLYWHEEL = 0.12; // full-inertia, fully-spun flywheel
+export const POWER_DRAW_INTAKE = 0.06; // intake motors running
+export const POWER_DRAW_MAX = 0.18; // cap ⇒ at most ~18% slower ("slightly")
+export const FLY_SPIN_NEAR = 40; // in to goal: flywheel spin 0
+export const FLY_SPIN_FAR = 170; // in to goal: flywheel spin 1
+
+/** capture tolerance beyond the ball radius, each way (tight — no vacuuming
+ * balls from a distance; a ball must actually reach the compliant wheels) */
+export const INTAKE_CAPTURE_BAND = 0.5;
+/** how fast a HELD ball slides between storage slots (in/s), in the robot frame —
+ * so the triangle's front ball visibly slides aside to make room for a 3rd */
+export const HELD_SLIDE_SPEED = 45;
+/** the intake ROLLER (axle + compliant wheels) sticks out this far past the
+ * ball-colliding wedges. The roller is a physical hitbox for ROBOTS/WALLS (the
+ * full `reach`, via robotExtents), but it rides HIGH in z so BALLS pass under it
+ * and never collide with it — only the recessed wedges deflect balls. So the
+ * ball hitbox is `reach − INTAKE_WHEEL_STICKOUT` deep. */
+export const INTAKE_WHEEL_STICKOUT = 1.3;
+/** Intake presets model the REAL mechanism, not a touch-and-wait hitbox.
+ * TOP LEVEL (feeds robotExtents → the Rapier robot-robot/wall collider, length
+ * clamps, drawing):
+ *   reach       forward extension of the box past the chassis front
+ *   overhang    the compliant wheels may stick out past a narrower chassis
+ *               (vector); without it the chassis ENCOMPASSES the intake so side
+ *               intake is geometrically impossible
+ *   min/maxLength  legal chassis length range · fireInterval  hopper→shooter cadence
+ * mouth GEOMETRY (robot-local inches, front = +x):
+ *   wedge       true = a FUNNEL front: two angled side slopes (from the front
+ *               corners in to the throat) direct balls to the CENTER compliant
+ *               wheels — NO flat front wall (sloped/triangle). false = a flat
+ *               front, wheels span the whole mouth (vector).
+ *   mouthHalf   half-width of the opening at the tip
+ *   throatHalf  half-width of the compliant-wheel CAPTURE zone: at the chassis
+ *               front for a funnel (balls funnel to center there), = the full
+ *               mouth for a flat front (vector captures across the tip)
+ *   drawIn      suction speed (in/s) the running intake pulls a ball in the
+ *               mouth toward the throat (0 = flat front, wheels grab in place)
+ *   capMin/capMax  swallow interval as the capture point goes CENTER→EDGE
+ *               (vector: compliant center fast, vectoring sides slow)
+ *   clumpInterval  swallow cadence while 2+ balls sit at the mouth
+ *   dual        capture TWO balls per cycle from a clump (triangle's 2 front slots) */
 export const INTAKE_PRESETS = {
-  /** sloped ramp with a trapezoid mouth recessed in the frame (doesn't count
-   * against the 18in cap): must face the ball, but swallows fast */
+  /** SLOPED: two side slopes funnel artifacts into the compliant wheels at the
+   * throat — no flat front. maxLength = 18 − reach (the roller counts toward the
+   * 18in cube). Fast + eats clumps. */
   sloped: {
-    reach: 3, halfWidth: 6, perBall: 0.12, clumpPerBall: 0.04, overhang: false,
-    minLength: 12, maxLength: 18, fireInterval: 0.08,
+    reach: 3, overhang: false, minLength: 13.5, maxLength: 15, fireInterval: 0.08, fireCap: 0,
+    mouth: {
+      wedge: true, mouthHalf: 7, throatHalf: 3, drawIn: 26,
+      capMin: 0.05, capMax: 0.09, clumpInterval: 0.04, dual: false,
+    },
   },
-  /** VECTOR WHEEL intake: wide compliant wheels ride over artifacts ahead of
-   * the chassis (within the 18in cap — chassis 11.5..14.5in). Grabs whatever
-   * is under a wheel — including balls strafed into, wherever the wheels
-   * overhang the chassis — but slower per ball */
+  /** VECTOR WHEEL: flat front (no side slopes), the roller spans the whole mouth
+   * so the throat is full-width; balls are sucked straight to the chassis front.
+   * CENTER intakes fast, the SIDES slower (vectoring), and the overhang lets it
+   * grab balls strafed into its flank. Chassis 11.5..14.5in. */
   vector: {
-    reach: 3.5, halfWidth: 8.5, perBall: 0.22, clumpPerBall: 0.22, overhang: true,
-    minLength: 11.5, maxLength: 14.5, fireInterval: 0.1,
+    reach: 3.5, overhang: true, minLength: 11.5, maxLength: 14.5, fireInterval: 0.1, fireCap: 0,
+    mouth: {
+      // flat plate `mouthHalf` wide; the mecanum wheels VECTOR a ball laterally
+      // (drawIn) to the center compliant zone (throatHalf) before sucking it in,
+      // so edge entries take longer — the vectoring time
+      wedge: false, mouthHalf: 8.5, throatHalf: 3, drawIn: 18,
+      capMin: 0.08, capMax: 0.14, clumpInterval: 0.12, dual: false,
+    },
   },
-  /** TRIANGLE intake: named for the triangular ball storage inside the robot.
-   * Longest reach, trapezoid mouth in the frame, slower transfer out */
+  /** TRIANGLE: named for the triangular ball storage (2 near the mouth, 1 deep).
+   * Sloped-style funnel slopes + longest reach; devours a clump TWO at a time.
+   * Transfer is the SAME as the others EXCEPT a max-rate CAP (`fireCap`): it can't
+   * fire faster than that, but when conditions are already slower than the cap
+   * (flywheel recovery on far shots) it fires at the same rate as everyone else. */
   triangle: {
-    reach: 5, halfWidth: 7, perBall: 0.15, clumpPerBall: 0.05, overhang: false,
-    minLength: 12, maxLength: 13, fireInterval: 0.3,
+    reach: 5, overhang: false, minLength: 11, maxLength: 13, fireInterval: 0.1, fireCap: 0.18,
+    mouth: {
+      wedge: true, mouthHalf: 7, throatHalf: 3.5, drawIn: 28,
+      capMin: 0.06, capMax: 0.11, clumpInterval: 0.05, dual: true,
+    },
   },
 } as const;
 /** flank capture engages only when actually strafing toward the ball */
@@ -413,28 +491,28 @@ export const HP_INITIAL_STOCK: readonly ('purple' | 'green')[] = ['purple', 'pur
 export const ROBOT_PRESETS: readonly RobotSpec[] = [
   {
     name: 'Standard Issue', teamName: 'Baseline Robotics', teamNumber: 1234,
-    length: 18, width: 18, intake: 'sloped', massLb: 30, drivetrain: 'mecanum',
+    length: 15, width: 18, intake: 'sloped', massLb: 26, drivetrain: 'mecanum',
     driveRpm: 435, flywheelInertia: 0.5, canSort: false,
   },
   {
     name: 'Bulldozer', teamName: 'Iron Plows', teamNumber: 9909,
-    length: 18, width: 18, intake: 'sloped', massLb: 42, drivetrain: 'tank',
+    length: 15, width: 18, intake: 'sloped', massLb: 36, drivetrain: 'tank',
     driveRpm: 340, flywheelInertia: 0.9, canSort: false,
   },
   {
     name: 'Hummingbird', teamName: 'Featherweights', teamNumber: 5511,
-    length: 12.5, width: 12, intake: 'vector', massLb: 21, drivetrain: 'swerve',
-    driveRpm: 560, flywheelInertia: 0.15, canSort: false,
+    length: 12.5, width: 12, intake: 'vector', massLb: 22, drivetrain: 'swerve',
+    driveRpm: 500, flywheelInertia: 0, canSort: false,
   },
   {
     name: 'Crossfire', teamName: 'Diagonal Society', teamNumber: 8080,
-    length: 13, width: 14, intake: 'triangle', massLb: 26, drivetrain: 'xdrive',
-    driveRpm: 480, flywheelInertia: 0.4, canSort: false,
+    length: 13, width: 14, intake: 'triangle', massLb: 23, drivetrain: 'xdrive',
+    driveRpm: 480, flywheelInertia: 0.35, canSort: false,
   },
   {
     name: 'The Librarian', teamName: 'Sorted Motors', teamNumber: 3141,
-    length: 12.5, width: 16, intake: 'triangle', massLb: 32, drivetrain: 'mecanum',
-    driveRpm: 400, flywheelInertia: 0.7, canSort: true,
+    length: 12.5, width: 16, intake: 'triangle', massLb: 26, drivetrain: 'mecanum',
+    driveRpm: 400, flywheelInertia: 0.6, canSort: true,
   },
 ] as const;
 

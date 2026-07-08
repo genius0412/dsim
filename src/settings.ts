@@ -4,12 +4,9 @@ import {
   INTAKE_PRESETS,
   ROBOT_MAX_SIZE,
   ROBOT_MIN_WIDTH,
-  ROBOT_MIN_MASS,
-  ROBOT_MAX_MASS,
-  ROBOT_MIN_RPM,
-  ROBOT_MAX_RPM,
   START_POSES,
 } from './config';
+import { massLimits, rpmLimits } from './sim/drivetrain';
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
 import { clamp } from './math';
 
@@ -88,14 +85,22 @@ export function coerceSettings(raw: unknown): GameSettings {
       ) {
         out.spec.drivetrain = sp.drivetrain;
       }
-      if (typeof sp.massLb === 'number') {
-        out.spec.massLb = clamp(sp.massLb, ROBOT_MIN_MASS, ROBOT_MAX_MASS);
-      }
-      if (typeof sp.driveRpm === 'number') {
-        out.spec.driveRpm = clamp(sp.driveRpm, ROBOT_MIN_RPM, ROBOT_MAX_RPM);
-      }
+      // read inertia BEFORE mass — the mass floor is coupled to flywheel inertia,
+      // and both mass + rpm ranges are per-drivetrain (drivetrain resolved above)
       if (typeof sp.flywheelInertia === 'number') {
         out.spec.flywheelInertia = clamp(sp.flywheelInertia, 0, 1);
+      }
+      const mass = massLimits(out.spec.drivetrain, out.spec.flywheelInertia);
+      const rpm = rpmLimits(out.spec.drivetrain);
+      if (typeof sp.massLb === 'number') {
+        out.spec.massLb = clamp(sp.massLb, mass.min, mass.max);
+      } else {
+        out.spec.massLb = clamp(out.spec.massLb, mass.min, mass.max);
+      }
+      if (typeof sp.driveRpm === 'number') {
+        out.spec.driveRpm = clamp(sp.driveRpm, rpm.min, rpm.max);
+      } else {
+        out.spec.driveRpm = clamp(out.spec.driveRpm, rpm.min, rpm.max);
       }
       if (typeof sp.canSort === 'boolean') out.spec.canSort = sp.canSort;
     }

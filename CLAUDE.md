@@ -123,6 +123,15 @@ the gateway), so a tap usually drains the whole column.
    (shotNorm≈0 ⇒ recovery≈0); only FAR shots are slowed, and only for low-inertia
    flywheels (high inertia ⇒ base cadence even at range). `r.fireReadyAt` gates the
    next shot in `robot.ts`. The DEFAULT robot (inertia 0.5) keeps a snappy burst.
+   **POWER DRAW** (session 7): a spun-up flywheel (`flywheelInertia × flywheelSpin`,
+   where `flywheelSpin` ramps 0→1 with distance to the robot's OWN goal,
+   `FLY_SPIN_NEAR`→`FLY_SPIN_FAR`) plus a running intake pull current off the drive
+   motors — `r.powerDraw = min(POWER_DRAW_FLYWHEEL·inertia·spin + (intake?
+   POWER_DRAW_INTAKE:0), POWER_DRAW_MAX 0.18)`. It scales a LOCAL `driveParams` copy in
+   `updateRobot` (speed/accel/turn ×(1−draw)) — `driveParams()` itself is untouched so
+   the 75/7/280 calibration holds — AND weakens the shove (see #7). One-tick lag (fire
+   runs after drive) is invisible + deterministic. `flywheelSpin`/`powerDraw` are
+   serialized `RobotState` fields.
 2. **The shooter NEVER misses**: no dispersion; adaptive hood angle (55°→80°) so an
    exact solution exists at every distance incl. point-blank; turret is always exactly
    on the lead-compensated solution (no slew limit); opening accepts ascending entries.
@@ -143,6 +152,19 @@ the gateway), so a tap usually drains the whole column.
    (0.85 strafe), x-drive same-but-full-strafe, tank `|f|+|ω|` (strafe input DEAD),
    swerve `hypot(f,s)+|ω|` (direction-independent). `maxTurn = wheelSpeed /
    halfDiagonal` (smaller/faster bots turn quicker, capped at `TURN_MAX_SPEED`).
+   accel + push order is tank > swerve > mecanum > xdrive (`accelMult`/`pushMult` in
+   `DRIVETRAIN_PRESETS`); mecanum stays 1.0/1.0 as the calibration anchor. mass↑→accel↓,
+   rpm↑→(accel↓, topspeed↑) already held. **PUSHING POWER = effective Rapier shove mass**
+   (session 7) at `physicsEngine.ts` `setMass`: `massLb · pushMult · rpmPush · (1−powerDraw)`,
+   `rpmPush = clamp(REF_DRIVE_RPM/driveRpm, 0.6, 1.8)` — geared-for-speed ⇒ less torque.
+   So push scales with drivetrain, mass↑, rpm↓, power-draw↓ (real motors). `driveParams.accel`
+   uses REAL mass, so inflating the shove mass never touches linear accel; at the reference
+   (mecanum/435/rest) every factor = 1 so the mass-weighted-shove smoke checks are unchanged.
+   **Per-drivetrain CLAMPS** live in `DRIVETRAIN_LIMITS` ({min/maxMass, min/maxRpm}, replacing
+   the old `SWERVE_*` consts); the mass FLOOR is raised by flywheel inertia
+   (`INERTIA_MASS_FLOOR 14`, a heavier flywheel) via `massLimits(dt, inertia)` / `rpmLimits(dt)`
+   in `drivetrain.ts` — consumed by the Menu sliders (the inertia slider bumps mass to the new
+   floor; drivetrain-switch re-clamps) and `settings.ts` `coerceSettings` (reads inertia first).
    The mecanum wheel-saturation model is correct physics — keep it. Wall/structure contacts apply
    TORQUE (summed over touching corners) so a tilted robot squares up flush.
    Contact torque is PRESSURE-SCALED (`CONTACT_PRESS_GAIN`): pushing into the wall
@@ -179,16 +201,25 @@ the gateway), so a tap usually drains the whole column.
     **Triangle** (named for its TRIANGULAR internal ball storage — hopper pips
     draw in a triangle; longest reach, devours clumps, slower transfer).
     Internal keys: sloped/vector/triangle ('compact'/'extended' in old saves
-    migrate in settings.ts). CAPTURE MODEL (user was explicit): intaking
-    happens when a compliant wheel is DIRECTLY ABOVE the artifact — a band at
-    the wheel line (tip of reach) in updateIntake, not a deep window. Sloped/
-    triangle mouths are TRAPEZOIDS (truncated — never a pointed tip) clamped
-    inside the chassis, whose side prongs ENCOMPASS the intake: that geometry
-    (not a code flag) is what rules out side intake — flank capture exists
-    only where the vector's wheel span overhangs a narrower chassis, and the
-    check compares SPANS, not penetration (the robot moves before the ball
-    pass each tick, so depth tests see phantom overlap). Clump feeding:
-    `clumpPerBall` cadence applies while 2+ balls sit at the mouth.
+    migrate in settings.ts). **CAPTURE MODEL (session-7 physical rewrite):** each
+    preset carries a `mouth` sub-object (`INTAKE_PRESETS[*].mouth`): `mouthHalf`
+    (opening at the tip), `wheelHalf` (compliant-wheel capture line), `wedge`/
+    `wedgeWidth`/`funnel`, `capMin`/`capMax`, `clumpInterval`, `dual`. A ball is
+    captured on the wheel line at the tip of reach (width `wheelHalf`); non-overhang
+    presets clamp the mouth inside the frame so a full-width chassis geometrically
+    forbids side intake (unchanged). **Timing depends on WHERE the ball enters:**
+    `single = capMin + (capMax−capMin)·(|localY|/wheelHalf)` — vector CENTER fast,
+    its vectoring SIDES slow. **Wedges FUNNEL** off-center balls toward the
+    centerline (sloped/triangle): a lateral VELOCITY nudge only (`approach(vLocal.y,
+    −sign·funnel, funnel)`), never a position write — it runs before the ball solve so
+    Rapier/`collideBallRobot` own penetration (no OBB fight, no explosion). **Triangle
+    takes TWO per cycle** from a clump (`dual`); hopper stays a flat color array. Flank
+    capture (`sideTouch`) still exists only where the vector's wheel span overhangs a
+    narrower chassis, comparing SPANS not penetration (the robot moves before the ball
+    pass each tick, so depth tests see phantom overlap). A clump of 2+ feeds at
+    `clumpInterval`. NOTE: `halfWidth`/`perBall`/`clumpPerBall` were REMOVED (grep before
+    reintroducing); top-level `reach`/`overhang`/`min/maxLength`/`fireInterval` stayed so
+    `robotExtents`/the Rapier collider/length clamps are unchanged.
     Per-preset length ranges live in the preset (`minLength`/`maxLength`).
     The chassis may be NARROWER than the intake (`ROBOT_MIN_WIDTH` 10 < vector's
     17). BASE PARKING counts only the four WHEEL ground-contact points
@@ -256,7 +287,11 @@ overflow decision, synthesized shoot/intake/gate SFX, pressure-scaled wall torqu
 END GAME at 20s left (`ENDGAME_START`: warning cue + HUD label/tint), vector-intake
 side capture, wheel-contact base parking + narrow chassis, three named intake
 presets (sloped / vector wheel / triangle) with per-preset length + fire cadence,
-trapezoid mouths + geometric side-intake rules + clump feeding.
+trapezoid mouths + geometric side-intake rules + clump feeding, **session-7 physical
+intake rewrite** (per-preset `mouth` geometry, position-dependent swallow timing, wedge
+funneling, triangle dual-capture), **power draw** (spun-up flywheel + intake slow the
+drive and weaken the shove), **drivetrain push/accel retune + per-drivetrain clamps +
+inertia→mass-floor coupling** (`BALANCE_VERSION` 2).
 **Phase A (field markings), Phase B (RobotSpec v2, four drivetrains, flywheel
 recovery, canSort, robot presets + custom builder, start positions, practice
 dummies, mass-weighted robot-robot collisions, multi-robot spawn/step), and
@@ -264,7 +299,7 @@ Phase C (penalty engine) are DONE and green.** The netcode/physics roadmap now l
 at `docs/netcodeplan.md` (supersedes the old "Road to Multiplayer" plan + the Phase D
 notes). **Netcode Phase 0 (server-authoritative + client prediction) is DONE and
 build/smoke-green** (see below); the old P2P lockstep is deleted.
-`scripts/smoke.ts` has ~190 checks — keep adding one per behavior change.
+`scripts/smoke.ts` has ~205 checks — keep adding one per behavior change.
 
 **Phase C — penalty engine** (`src/sim/penalties.ts`, `updatePenalties` called in
 `world.ts` after the robot-robot solver). **MINOR = 5 pts, MAJOR = 15 pts** (user-set,
@@ -395,7 +430,7 @@ player STARTS a run (never mid-run), forces a refresh — NO "play anyway" (ever
 the same version for multiplayer). Still open (Phase 3): matchmaking polish, replay UI,
 leaderboard tiers, the full UI redesign (`docs/netcodeplan.md`).
 
-**Phase 2 — Rapier 2D physics: ROBOTS slice DONE + green (~190 smoke checks).** Robot
+**Phase 2 — Rapier 2D physics: ROBOTS slice DONE + green (~205 smoke checks).** Robot
 collision is Rapier (`physicsEngine.ts` — see the architecture bullet above); balls are
 still bespoke (slice 2, deferred — the trickiest port per `docs/netcodeplan.md`). Slice
 2 = balls → Rapier bodies/sensors while KEEPING basin/rail/gate scripted (contact-time
@@ -415,9 +450,9 @@ new solid a ball can tunnel into needs the same geometric clamp, not just a Rapi
    `pinnedAgainstWall` slop, and the SAT contact test (`rrContacts`) — make sure the
    trigger volumes match the real field markings and robot bumper extents, not just the
    rule logic. Tighten with smoke cases per zone.
-2. **Major intake revamp** — a substantial rework of the intake model (the three presets
-   sloped/vector/triangle, the capture band, trapezoid mouths + geometric side-intake
-   rules, clump feeding). Treat product decision #10 as the CURRENT baseline to improve
-   on, not a frozen spec — but preserve the user-named presets + the "no side intake
-   except where the vector wheel overhangs a narrower chassis" feel unless the user
-   redirects. Re-smoke intake capture after any change.
+2. **Major intake revamp — DONE (session 7).** Rewrote the intake to a physical `mouth`
+   model (per-preset geometry, position-dependent swallow timing, wedge funneling, triangle
+   dual-capture) alongside power draw + the drivetrain push/clamp/inertia-coupling work. See
+   product decision #10 (updated) + HANDOFF. Preserved the user-named presets and the "no side
+   intake except where the vector wheel overhangs a narrower chassis" feel. Further tuning is
+   welcome — #10 is the new baseline, not a frozen spec.

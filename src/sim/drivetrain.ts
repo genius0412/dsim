@@ -1,5 +1,6 @@
-import type { RobotSpec } from '../types';
+import type { DrivetrainType, RobotSpec } from '../types';
 import * as C from '../config';
+import { clamp } from '../math';
 
 /** derived per-robot drive parameters. Everything the drivetrain influences
  * comes from the spec: type multipliers × RPM (speed up / accel down) × mass
@@ -16,8 +17,10 @@ export interface DriveParams {
 }
 
 const REF_SPEED = C.SPEED_PER_RPM * C.REF_DRIVE_RPM; // 75
-const REF_TURN = 7.0; // rad/s of the reference 18x18 chassis
-const REF_HALF_DIAG = Math.sqrt(18 * 18 + 18 * 18) / 2;
+const REF_TURN = 7.0; // rad/s of the reference (DEFAULT 15×18) chassis
+// anchored to the DEFAULT chassis (15 long incl. intake budget × 18 wide) so the
+// default robot still turns at 7 rad/s; smaller footprints turn quicker
+const REF_HALF_DIAG = Math.sqrt(15 * 15 + 18 * 18) / 2;
 
 export function driveParams(spec: RobotSpec): DriveParams {
   const p = C.DRIVETRAIN_PRESETS[spec.drivetrain];
@@ -42,4 +45,23 @@ export function driveParams(spec: RobotSpec): DriveParams {
     turnAccel: accel * C.TURN_ACCEL_PER_ACCEL,
     saturation: p.saturation,
   };
+}
+
+/** the wheel-RPM range this drivetrain allows (torque-biased drivetrains cap
+ * lower). Consumed by the builder sliders + settings validation. */
+export function rpmLimits(dt: DrivetrainType): { min: number; max: number } {
+  const L = C.DRIVETRAIN_LIMITS[dt];
+  return { min: L.minRpm, max: L.maxRpm };
+}
+
+/** the mass range this drivetrain allows, with the floor RAISED by flywheel
+ * inertia (a bigger flywheel weighs more). At inertia 1 the floor climbs by
+ * INERTIA_MASS_FLOOR, clamped to the drivetrain's max. */
+export function massLimits(
+  dt: DrivetrainType,
+  flywheelInertia: number,
+): { min: number; max: number } {
+  const L = C.DRIVETRAIN_LIMITS[dt];
+  const min = clamp(L.minMass + C.INERTIA_MASS_FLOOR * flywheelInertia, L.minMass, L.maxMass);
+  return { min, max: L.maxMass };
 }

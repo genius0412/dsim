@@ -16,7 +16,8 @@ import type {
   Vec2, // Import Vec2
 } from '../types';
 import * as C from '../config';
-import { nextRandom, wrapAngle } from '../math'; // Import wrapAngle
+import { nextRandom, wrapAngle, rot } from '../math'; // Import wrapAngle
+import { heldSlotPos } from './physics';
 import { loadPreStage, spikeMarkBalls, startPose } from './field';
 import { emptyScore } from './scoring';
 
@@ -30,10 +31,10 @@ export const DEFAULT_SPEC: RobotSpec = {
   name: 'Standard Issue',
   teamName: 'Baseline Robotics',
   teamNumber: 1234,
-  length: 18,
+  length: 15,
   width: 18,
   intake: 'sloped',
-  massLb: 30,
+  massLb: 26,
   drivetrain: 'mecanum',
   driveRpm: 435,
   flywheelInertia: 0.5,
@@ -198,6 +199,8 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       lastFireAt: -10,
       lastIntakeAt: -10,
       fireReadyAt: 0,
+      flywheelSpin: 0,
+      powerDraw: 0,
       // Initialize new auto pathing fields
       autoPathActive: !!(s.autoPathEnabled && robotAutoPath !== undefined),
       currentPathSegmentIndex: 0,
@@ -224,6 +227,24 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       // For tangential, initial heading will be determined by the first path segment.
       // The path follower will handle this dynamically.
     }
+
+    // preloaded artifacts are PHYSICAL held balls (the hopper mirrors their colors);
+    // step()'s positionHeldBalls parks them at the storage slots
+    const created = robots[robots.length - 1];
+    const n = created.hopper.length;
+    created.hopper.forEach((color, slot) => {
+      const lp = heldSlotPos(created.spec, slot, n);
+      const wp = rot(lp, created.heading);
+      balls.push({
+        id: id++,
+        color,
+        state: { kind: 'held', robot: created.id, slot, lx: lp.x, ly: lp.y },
+        pos: { x: created.pos.x + wp.x, y: created.pos.y + wp.y },
+        vel: { x: 0, y: 0 },
+        z: 0,
+        vz: 0,
+      });
+    });
   }
 
   return {

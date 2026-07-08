@@ -14,16 +14,21 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
   const len = spec.length;
   const intake = INTAKE_PRESETS[spec.intake];
   const reach = intake.reach;
-  const hw = intake.halfWidth;
+  const mouthHalf = intake.mouth.mouthHalf;
+  const throatHalf = intake.mouth.throatHalf;
+  const wedge = intake.mouth.wedge;
+  const halfW = w / 2;
 
-  const frontY = -len / 2; // chassis front edge (top)
-  const tipY = frontY - reach; // intake tip
+  const frontY = -len / 2; // chassis front edge (top) = the throat
+  const wedgeTipY = frontY - (reach - 0.5); // wedge/plate front — just behind the roller
+  const rollerTipY = frontY - (reach + 0.5); // shaft + wheels ride out just past the wedges
+  const tipY = rollerTipY; // front-most, for the viewBox
   // turret sits behind center of rotation, scaled by chassis length
   const turretY = -TURRET_OFFSET_FRAC * len;
   const turretR = Math.min(w, len) * 0.2;
 
   // viewBox spans the widest of chassis/intake plus a margin, kept square-ish
-  const halfSpan = Math.max(w / 2, hw) + 2.5;
+  const halfSpan = Math.max(w / 2, mouthHalf) + 2.5;
   const top = tipY - 2;
   const bottom = len / 2 + 3.5; // room for the width dimension label
   const vbW = halfSpan * 2;
@@ -40,45 +45,57 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
   const stroke = 'var(--ds-ink-dim)';
   const accent = 'var(--ds-accent)';
 
-  // intake geometry
+  // intake geometry — MATCHES the in-game sprite (drawRobot.ts): front faces UP
+  // here, so the sim's forward +x maps to −y. The ball-colliding wedges/mouth are
+  // RECESSED (to wedgeTipY); the ROLLER (axle + compliant wheels) sticks out past
+  // them to tipY. Funnel presets show two side slopes into the throat (no flat
+  // front); the flat (vector) preset shows an open mouth to the chassis front.
+  const roller = (
+    <g>
+      <rect x={-mouthHalf} y={rollerTipY} width={mouthHalf * 2} height={wedgeTipY - rollerTipY} fill={accent} opacity={0.45} />
+      {[-3, -2, -1, 0, 1, 2, 3].map((i) => (
+        <rect
+          key={i}
+          x={(i * mouthHalf) / 3.4 - 0.5}
+          y={rollerTipY}
+          width={1}
+          height={1.6}
+          rx={0.3}
+          fill={accent}
+          opacity={Math.abs(i) <= 1 ? 0.95 : 0.6}
+        />
+      ))}
+    </g>
+  );
   let intakeEl: JSX.Element;
-  if (spec.intake === 'vector') {
-    // a row of vertical compliant wheels ahead of the chassis (may overhang)
-    const n = 5;
-    const rw = 1.15;
-    const gap = (hw * 2 - rw) / (n - 1);
+  if (!wedge) {
     intakeEl = (
       <g>
-        {Array.from({ length: n }, (_, i) => (
-          <rect
-            key={i}
-            x={-hw + i * gap}
-            y={tipY}
-            width={rw}
-            height={reach + 1}
-            rx={0.5}
-            fill={accent}
-            opacity={0.85}
-          />
-        ))}
+        <rect x={-mouthHalf} y={wedgeTipY} width={mouthHalf * 2} height={frontY - wedgeTipY} fill={accent} opacity={0.28} />
+        {roller}
       </g>
     );
   } else {
-    // trapezoid mouth recessed between side prongs, opening forward
-    const inHalf = hw * 0.55;
-    const outHalf = hw;
     intakeEl = (
       <g>
+        {/* funnel mouth: opening at the wedge line narrowing to the throat */}
         <polygon
-          points={`${-inHalf},${frontY} ${inHalf},${frontY} ${outHalf},${tipY} ${-outHalf},${tipY}`}
+          points={`${-halfW},${wedgeTipY} ${halfW},${wedgeTipY} ${throatHalf},${frontY} ${-throatHalf},${frontY}`}
           fill={accent}
           opacity={0.28}
           stroke={accent}
           strokeWidth={0.35}
         />
-        {/* side prongs */}
-        <rect x={outHalf - 0.6} y={tipY} width={0.9} height={reach} rx={0.3} fill={accent} opacity={0.8} />
-        <rect x={-outHalf - 0.3} y={tipY} width={0.9} height={reach} rx={0.3} fill={accent} opacity={0.8} />
+        {/* two right triangles — hypotenuse is the slope, no flat front */}
+        {[1, -1].map((s) => (
+          <polygon
+            key={s}
+            points={`${s * halfW},${frontY} ${s * halfW},${wedgeTipY} ${s * throatHalf},${frontY}`}
+            fill={accent}
+            opacity={0.6}
+          />
+        ))}
+        {roller}
       </g>
     );
   }
@@ -135,10 +152,11 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
         strokeLinejoin="round"
       />
 
-      {/* triangle-intake internal storage hint */}
+      {/* triangle-intake internal storage hint: two near the mouth (front/up),
+          one deeper (rear/down) */}
       {spec.intake === 'triangle' && (
         <polygon
-          points={`0,${turretY - 2.4} 1.7,${turretY + 0.6} ${-1.7},${turretY + 0.6}`}
+          points={`${-1.7},${turretY - 0.6} 1.7,${turretY - 0.6} 0,${turretY + 2.4}`}
           fill="none"
           stroke={stroke}
           strokeWidth={0.3}

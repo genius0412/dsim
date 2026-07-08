@@ -3,13 +3,16 @@ import * as C from '../config';
 import {
   clampGroundBall,
   collideBallBall,
+  collideBallHeld,
   collideBallRect,
   collideBallRobot,
   collideBallStatic,
   squareUpRobots,
   stepFlightBall,
   stepGroundBall,
+  heldSlotPos,
 } from './physics';
+import { rot, approach } from '../math';
 import { solveBalls, solveRobots } from './physicsEngine';
 import { classifierRect } from './field';
 import { updateRobot, updateRobotActions } from './robot';
@@ -108,10 +111,13 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
   // ball↔robot stays bespoke (see solveRobots): the pin stall + outflow-no-shove
   // are deliberately non-physical. Iterated so a robot→ball→(wall/ball) chain
   // converges instead of tunnelling in a single pass.
+  const heldBalls = world.balls.filter((b) => b.state.kind === 'held');
   for (let pass = 0; pass < C.BALL_SOLVER_ITERATIONS; pass++) {
     for (const b of world.balls) {
       if (b.state.kind !== 'ground') continue;
       for (const r of world.robots) collideBallRobot(b, r);
+      // held balls physically occupy the intake — incoming balls pile up on them
+      for (const h of heldBalls) collideBallHeld(b, h);
     }
   }
   // hard field clamp: Rapier's soft contacts (and the bespoke ball↔robot push)
@@ -186,4 +192,32 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
   // ---- match flow ----------------------------------------------------------
   stepMatch(world, dt);
   updateProvisionalPattern(world);
+
+  // ---- held balls: slide each captured ball toward its storage slot ----------
+  positionHeldBalls(world, dt);
+}
+
+/** Park each HELD ball at its robot's storage slot, moving rigidly WITH the robot
+ * but SLIDING (in the robot frame) toward its slot — so the triangle's front ball
+ * slides aside when a 3rd arrives. A held ball whose robot is gone drops to the floor. */
+function positionHeldBalls(world: World, dt: number): void {
+  for (const b of world.balls) {
+    if (b.state.kind !== 'held') continue;
+    const st = b.state;
+    const r = world.robots.find((rr) => rr.id === st.robot);
+    if (!r) {
+      b.state = { kind: 'ground' };
+      continue;
+    }
+    // slide the STORED local offset toward the slot (no world round-trip, so the
+    // ball tracks the robot rigidly — no lag when it drives)
+    const target = heldSlotPos(r.spec, st.slot, r.hopper.length);
+    st.lx = approach(st.lx, target.x, C.HELD_SLIDE_SPEED * dt);
+    st.ly = approach(st.ly, target.y, C.HELD_SLIDE_SPEED * dt);
+    const wp = rot({ x: st.lx, y: st.ly }, r.heading);
+    b.pos = { x: r.pos.x + wp.x, y: r.pos.y + wp.y };
+    b.vel = { x: r.vel.x, y: r.vel.y };
+    b.z = 0;
+    b.vz = 0;
+  }
 }

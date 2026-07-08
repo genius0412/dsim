@@ -16,7 +16,8 @@ export function drawBalls(
     ctx.fill();
   }
   for (const b of world.balls) {
-    if (b.state.kind === 'stock') continue;
+    // 'stock' is off-field; 'held' balls are drawn by drawRobot (below the turret)
+    if (b.state.kind === 'stock' || b.state.kind === 'held') continue;
     let x = b.pos.x;
     let y = b.pos.y;
     let rad = C.BALL_RADIUS;

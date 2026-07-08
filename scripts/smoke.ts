@@ -43,9 +43,12 @@ import {
   HP_INITIAL_STOCK,
   HP_PLACE_DELAY,
   BALANCE_VERSION,
+  INTAKE_PRESETS,
+  ROBOT_PRESETS,
 } from '../src/config';
 import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
-import { driveParams } from '../src/sim/drivetrain';
+import { driveParams, massLimits, rpmLimits } from '../src/sim/drivetrain';
+import { coerceSettings } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, mergeBindings } from '../src/input/bindings';
 import { quantizeCommand, localizeCommand, slimWorld, unslimWorld } from '../src/net/protocol';
@@ -119,9 +122,11 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 // ---- spawn sanity ----------------------------------------------------------
 {
   const w = mkWorld('match', 'blue', 42);
-  const purple = w.balls.filter((b) => b.color === 'purple').length;
-  const green = w.balls.filter((b) => b.color === 'green').length;
-  check('24 on-field balls at spawn (9 spike + 3 loading pre-stage per alliance)', w.balls.length === 24, `${w.balls.length}`);
+  // on-field = ground balls (preloads are now PHYSICAL 'held' balls inside robots)
+  const field = w.balls.filter((b) => b.state.kind === 'ground');
+  const purple = field.filter((b) => b.color === 'purple').length;
+  const green = field.filter((b) => b.color === 'green').length;
+  check('24 on-field balls at spawn (9 spike + 3 loading pre-stage per alliance)', field.length === 24, `${field.length}`);
   check('on-field color split 16P/8G', purple === 16 && green === 8, `${purple}P ${green}G`);
   check('hopper preloaded with 3', w.robots[0].hopper.length === 3);
   check('start pose inside launch zone', inLaunchZone(w.robots[0].pos, 'blue'));
@@ -365,13 +370,15 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   ball.z = 0;
   ball.vz = 0;
   run(w, cmd({ driveY: 1 }), 2.5); // grind straight into the pinned ball
-  const front = robotExtents(r).front;
   const ballSpeed = Math.hypot(ball.vel.x, ball.vel.y);
   const robotSpeed = Math.hypot(r.vel.x, r.vel.y);
+  // the funnel mouth is OPEN, so a centered ball nestles against the throat
+  // (chassis front) with the intake around it — the CHASSIS must stall behind
+  // the ball (the intake tip legitimately overlaps it in the open mouth)
   check(
     'wall-pinned ball stalls the robot (no grind-through)',
-    r.pos.y + front < FIELD_HALF - 2 * BALL_RADIUS + 0.5,
-    `front edge y=${(r.pos.y + front).toFixed(1)}`,
+    r.pos.y + r.spec.length / 2 < FIELD_HALF - BALL_RADIUS,
+    `chassis front y=${(r.pos.y + r.spec.length / 2).toFixed(1)}`,
   );
   check('robot stalled against the pinned ball', robotSpeed < 5, `v=${robotSpeed.toFixed(1)}`);
   check(
@@ -397,9 +404,11 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   ball.vz = 0;
   const startX = ball.pos.x;
   run(w, cmd({ driveY: 1 }), 2.5);
+  // a ball beside the chassis (past the intake) gets brushed aside, not funneled,
+  // and the robot drives on past it
   check(
-    'corner-hit wall ball squirts out sideways',
-    ball.pos.x > startX + 4 && Math.abs(ball.pos.x) <= FIELD_HALF - BALL_RADIUS + 0.01,
+    'corner-hit wall ball is nudged aside (not funneled in)',
+    ball.pos.x > startX + 0.5 && Math.abs(ball.pos.x) <= FIELD_HALF - BALL_RADIUS + 0.01,
     `x ${startX.toFixed(1)} -> ${ball.pos.x.toFixed(1)}`,
   );
   check('robot drove on once the ball escaped', r.pos.y > 52, `y=${r.pos.y.toFixed(1)}`);
@@ -559,6 +568,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   const w = mkWorld('free', 'blue', 42);
   const r = w.robots[0];
   r.hopper = [];
+  w.balls = w.balls.filter((b) => b.state.kind !== 'held'); // clear physical preloads too
   // blue spike column is on the blue (right) side at x=+46
   r.pos = { x: 46, y: -55 };
   r.heading = Math.PI / 2;
@@ -633,47 +643,57 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   );
 }
 
-// ---- sloped/triangle devour clumps at the mouth ----------------------------------
+// ---- sloped drives into a clump; the slopes funnel it to the throat wheels -------
 {
   const w = mkWorld('free', 'blue', 6);
   const r = w.robots[0];
   r.hopper = [];
-  r.pos = { x: 0, y: 0 };
-  r.heading = Math.PI / 2;
+  r.pos = { x: 0, y: -12 };
+  r.heading = Math.PI / 2; // forward = +y
   r.fieldCentric = false;
   r.vel = { x: 0, y: 0 };
-  // three balls clumped just ahead of the mouth (touching the intake tip —
-  // not center-on the face, which would eject them via the deep-overlap path)
+  // three balls a bit ahead; the robot drives in and the physical slopes deflect
+  // the off-center ones to the center compliant wheels (no wide vacuum)
   w.balls.splice(3);
-  const clumpY = r.spec.length / 2 + 3 + 2; // wheel line + shallow contact
-  [-5.1, 0, 5.1].forEach((off, i) => {
+  const ahead = -12 + r.spec.length / 2 + 4;
+  [-4, 0, 4].forEach((off, i) => {
     const b = w.balls[i];
     b.state = { kind: 'ground' };
-    b.pos = { x: -off, y: clumpY }; // local y=off at heading π/2
+    b.pos = { x: off, y: ahead };
     b.vel = { x: 0, y: 0 };
     b.z = 0;
     b.vz = 0;
   });
-  run(w, cmd({ intake: true }), 0.2); // steady pace would only manage 2
+  run(w, cmd({ driveY: 0.3, intake: true }), 1.6);
   check(
-    'sloped intake devours a clump (3 balls in 0.2s)',
+    'sloped drives a clump in via the slopes (all 3)',
     r.hopper.length === 3,
     `hopper=${r.hopper.length}`,
   );
 }
 
-// ---- triangle intake transfers (outtakes) slower ---------------------------------
+// ---- triangle transfer is CAPPED, not generally slower --------------------------
 {
-  const spec = { length: 12, width: 14, intake: 'triangle' as const };
-  const w = mkWorld('free', 'blue', 6, spec);
-  const r = w.robots[0];
-  r.pos = { x: 10, y: 40 };
-  run(w, cmd({ fire: true }), 0.5); // sloped/vector would empty 3 preloads in ~0.3s
+  // CLOSE range (recovery ~0): the triangle's max-rate cap bites, so it fires
+  // FEWER shots than a fast sloped intake over the same window
+  const fired = (intake: 'sloped' | 'triangle') => {
+    const w = mkWorld('free', 'blue', 6, { length: 12, width: 14, intake });
+    const r = w.robots[0];
+    const g = goalCenter('blue');
+    r.pos = { x: g.x + 8, y: g.y - 8 }; // point-blank → recovery ~0, so the cap shows
+    const start = r.hopper.length;
+    run(w, cmd({ fire: true }), 0.3);
+    return start - r.hopper.length;
+  };
+  const sloped = fired('sloped');
+  const triangle = fired('triangle');
   check(
-    'triangle intake fires slower (0.3s transfer)',
-    r.hopper.length === 1,
-    `hopper=${r.hopper.length} after 0.5s burst`,
+    'triangle fires FEWER than sloped up close (max-rate cap bites)',
+    triangle < sloped,
+    `triangle ${triangle} vs sloped ${sloped}`,
   );
+  // at the cap, ~1 shot per 0.18s → at most 2-3 in 0.28s (never the sloped 3-4)
+  check('triangle close-range cadence honors the fireCap', triangle <= 2, `${triangle} shots`);
 }
 
 // ---- gate release --------------------------------------------------------------
@@ -827,6 +847,7 @@ function queueTenth(w: World): void {
   const w = mkWorld('free', 'blue', 5);
   const r = w.robots[0];
   r.hopper = [];
+  w.balls = w.balls.filter((b) => b.state.kind !== 'held'); // clear physical preloads too
   r.autoIntake = true;
   r.autoFire = true;
   // drive up the blue spike column with no buttons held
@@ -1012,6 +1033,154 @@ const setup = (
   const da = Math.hypot(a.pos.x - a0.x, a.pos.y - a0.y);
   const db = Math.hypot(b.pos.x - b0.x, b.pos.y - b0.y);
   check('equal-mass robots separate symmetrically', Math.abs(da - db) < 0.05, `da=${da.toFixed(2)} db=${db.toFixed(2)}`);
+}
+
+// ---- every bundled preset obeys its drivetrain's clamps ---------------------
+{
+  let ok = true;
+  const bad: string[] = [];
+  for (const p of ROBOT_PRESETS) {
+    const mass = massLimits(p.drivetrain, p.flywheelInertia);
+    const rpm = rpmLimits(p.drivetrain);
+    if (p.massLb < mass.min || p.massLb > mass.max || p.driveRpm < rpm.min || p.driveRpm > rpm.max) {
+      ok = false;
+      bad.push(`${p.name}(${p.massLb}lb/${p.driveRpm}rpm want mass[${mass.min},${mass.max}] rpm[${rpm.min},${rpm.max}])`);
+    }
+  }
+  check('all ROBOT_PRESETS satisfy their drivetrain mass/rpm clamps (incl. inertia floor)', ok, bad.join(' '));
+}
+
+// ---- accel ordering: tank > swerve > mecanum > xdrive -----------------------
+{
+  const a = (dt: RobotSpec['drivetrain']) => driveParams({ ...DEFAULT_SPEC, drivetrain: dt }).accel;
+  const t = a('tank'), s = a('swerve'), me = a('mecanum'), x = a('xdrive');
+  check(
+    'drivetrain accel order tank > swerve > mecanum > xdrive',
+    t > s && s > me && me > x,
+    `${t.toFixed(0)}/${s.toFixed(0)}/${me.toFixed(0)}/${x.toFixed(0)}`,
+  );
+}
+
+// ---- pushing power: equal-mass tank out-pushes mecanum ----------------------
+{
+  const w = createWorld('free', 7, [
+    setup(0, 'blue', { massLb: 30, drivetrain: 'mecanum' }, 0),
+    setup(1, 'blue', { massLb: 30, drivetrain: 'tank' }, 1),
+  ]);
+  const [a, b] = w.robots;
+  a.pos = { x: -5, y: 0 }; a.heading = 0; a.vel = { x: 0, y: 0 };
+  b.pos = { x: 5, y: 0 }; b.heading = 0; b.vel = { x: 0, y: 0 };
+  const a0 = { ...a.pos }, b0 = { ...b.pos };
+  step(w, SIM_DT, new Map());
+  const da = Math.hypot(a.pos.x - a0.x, a.pos.y - a0.y);
+  const db = Math.hypot(b.pos.x - b0.x, b.pos.y - b0.y);
+  check('equal-mass tank out-pushes mecanum (mecanum yields more)', da > db * 1.2, `mecanum ${da.toFixed(2)} vs tank ${db.toFixed(2)}`);
+}
+
+// ---- pushing power: a geared-for-speed (high RPM) robot pushes weaker --------
+{
+  const w = createWorld('free', 7, [
+    setup(0, 'blue', { massLb: 30, drivetrain: 'mecanum', driveRpm: 600 }, 0),
+    setup(1, 'blue', { massLb: 30, drivetrain: 'mecanum', driveRpm: 300 }, 1),
+  ]);
+  const [a, b] = w.robots;
+  a.pos = { x: -5, y: 0 }; a.heading = 0; a.vel = { x: 0, y: 0 };
+  b.pos = { x: 5, y: 0 }; b.heading = 0; b.vel = { x: 0, y: 0 };
+  const a0 = { ...a.pos }, b0 = { ...b.pos };
+  step(w, SIM_DT, new Map());
+  const da = Math.hypot(a.pos.x - a0.x, a.pos.y - a0.y);
+  const db = Math.hypot(b.pos.x - b0.x, b.pos.y - b0.y);
+  check('geared-for-speed (600 rpm) robot yields more than a torquey (300 rpm) one', da > db * 1.2, `600rpm ${da.toFixed(2)} vs 300rpm ${db.toFixed(2)}`);
+}
+
+// ---- power draw: a spun-up flywheel is slightly slower far from goal ---------
+{
+  const measure = (inertia: number) => {
+    const w = mkWorld('free', 'blue', 9, { flywheelInertia: inertia });
+    const r = w.robots[0];
+    // far from the blue goal + heading +x so driving forward keeps distance high
+    r.pos = { x: 0, y: -60 }; r.heading = 0; r.vel = { x: 0, y: 0 }; r.fieldCentric = false;
+    run(w, cmd({ driveY: 1 }), 0.7);
+    return Math.hypot(r.vel.x, r.vel.y);
+  };
+  const v0 = measure(0), v1 = measure(1);
+  const ratio = v1 / v0;
+  check('power draw: spun-up flywheel is ~10% slower far from goal', ratio > 0.8 && ratio < 0.97, `inertia1 ${v1.toFixed(1)} vs inertia0 ${v0.toFixed(1)} (${(ratio * 100).toFixed(0)}%)`);
+  check(
+    'power draw leaves driveParams calibration byte-identical',
+    driveParams({ ...DEFAULT_SPEC, flywheelInertia: 1 }).maxSpeed ===
+      driveParams({ ...DEFAULT_SPEC, flywheelInertia: 0 }).maxSpeed,
+  );
+}
+
+// ---- per-drivetrain clamps + inertia→mass-floor coupling --------------------
+{
+  check('massLimits mecanum floor is 18 at inertia 0', massLimits('mecanum', 0).min === 18);
+  check('massLimits mecanum floor climbs to 24 at inertia 1', massLimits('mecanum', 1).min === 24);
+  check('massLimits swerve floor is 22 at inertia 0', massLimits('swerve', 0).min === 22);
+  check('inertia only nudges the floor (< raising it by more than a few lb)', massLimits('mecanum', 1).min - massLimits('mecanum', 0).min <= 6);
+  check('rpmLimits swerve caps at 500', rpmLimits('swerve').max === 500);
+  const s = coerceSettings({
+    spec: { drivetrain: 'swerve', massLb: 18, driveRpm: 600, flywheelInertia: 0.8 },
+  });
+  const floor = massLimits('swerve', 0.8).min; // 22 + 6·0.8 = 26.8
+  check('coerceSettings clamps swerve mass up to the inertia-coupled floor', Math.abs(s.spec.massLb - floor) < 1e-9, `${s.spec.massLb} vs ${floor}`);
+  check('coerceSettings clamps swerve rpm down to 500', s.spec.driveRpm === 500, `${s.spec.driveRpm}`);
+}
+
+// ---- vector intake: WHERE the ball enters decides the swallow time -----------
+{
+  // one ball at the mouth, capture cadence started (lastIntakeAt = now) so the
+  // first swallow must wait the position-dependent interval
+  const capTicks = (localY: number) => {
+    const w = mkWorld('free', 'blue', 6, { length: 12, width: 14, intake: 'vector' });
+    const r = w.robots[0];
+    r.hopper = []; r.pos = { x: 0, y: 0 }; r.heading = Math.PI / 2; r.fieldCentric = false; r.vel = { x: 0, y: 0 };
+    r.lastIntakeAt = w.time;
+    const wheelLine = r.spec.length / 2 + INTAKE_PRESETS.vector.reach; // 6 + 3.5
+    const b = w.balls[0]; w.balls.splice(1);
+    b.state = { kind: 'ground' };
+    // shallow contact just ahead of the face (placing dead-on the OBB face
+    // triggers the deep-push eviction); at heading π/2 world = (−localY, localX)
+    b.pos = { x: -localY, y: wheelLine + 2 }; b.vel = { x: 0, y: 0 }; b.z = 0; b.vz = 0;
+    const commands = new Map([[0, cmd({ intake: true })]]);
+    let ticks = 0;
+    while (r.hopper.length === 0 && ticks < 120) { step(w, SIM_DT, commands); ticks++; }
+    return ticks;
+  };
+  const center = capTicks(0), edge = capTicks(8);
+  check('vector intake swallows a CENTER ball faster than an EDGE ball', edge > center + 3, `center ${center}t vs edge ${edge}t`);
+}
+
+// ---- sloped: driving into an OFF-CENTER ball, the slopes funnel it to center ----
+{
+  const w = mkWorld('free', 'blue', 6, { intake: 'sloped' }); // default 18-wide chassis
+  const r = w.robots[0];
+  r.hopper = []; r.pos = { x: 0, y: -12 }; r.heading = Math.PI / 2; r.fieldCentric = false; r.vel = { x: 0, y: 0 };
+  const b = w.balls[0]; w.balls.splice(1);
+  b.state = { kind: 'ground' };
+  // off-center ball ahead (on the slope path); only the physical slope + drive can
+  // bring it to the center wheels — the edge of the intake can't grab it
+  b.pos = { x: 4, y: -12 + r.spec.length / 2 + 4 }; b.vel = { x: 0, y: 0 }; b.z = 0; b.vz = 0;
+  run(w, cmd({ driveY: 0.3, intake: true }), 1.3);
+  check('sloped slopes funnel an off-center ball to the center wheels', r.hopper.length === 1, `hopper=${r.hopper.length}`);
+}
+
+// ---- triangle intake devours TWO from a clump per cycle ---------------------
+{
+  const w = mkWorld('free', 'blue', 6, { length: 12, width: 14, intake: 'triangle' });
+  const r = w.robots[0];
+  r.hopper = []; r.pos = { x: 0, y: 0 }; r.heading = Math.PI / 2; r.fieldCentric = false; r.vel = { x: 0, y: 0 };
+  const throat = r.spec.length / 2 + BALL_RADIUS; // where the compliant wheels grab
+  w.balls.splice(2);
+  // two balls side by side at the throat: local (throat, ±2.5) → world (∓2.5, throat)
+  [2.5, -2.5].forEach((ly, i) => {
+    const b = w.balls[i];
+    b.state = { kind: 'ground' };
+    b.pos = { x: -ly, y: throat }; b.vel = { x: 0, y: 0 }; b.z = 0; b.vz = 0;
+  });
+  run(w, cmd({ intake: true }), 0.03); // one cycle
+  check('triangle intake devours two clumped balls in one cycle', r.hopper.length === 2, `hopper=${r.hopper.length}`);
 }
 
 // ---- a robot squeezed by an opponent against a wall stays in-field ----------
