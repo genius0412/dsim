@@ -17,6 +17,7 @@ import {
   saveUserSettings,
   setHandle,
   setUsername,
+  userMatchHistory,
   usernameAvailable,
   UsernameTakenError,
 } from './db/repo';
@@ -190,6 +191,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
           ? await currentSeasonNumber(BALANCE_VERSION)
           : BALANCE_VERSION;
     const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? 100)));
+    // paginated match-history opts (repo clamps limit to [1,100], default 25)
+    const historyOpts = {
+      balanceVersion: season,
+      offset: Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0),
+      limit: url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined,
+      type: url.searchParams.get('type') ?? undefined,
+      result: url.searchParams.get('result') ?? undefined,
+    };
+    const emptyHistory = { rows: [], total: 0, offset: historyOpts.offset, limit: historyOpts.limit ?? 25 };
 
     if (url.pathname === '/api/stats') {
       const stats = dbEnabled
@@ -224,6 +234,16 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return json(200, { season, mode, drivetrain, rows }), true;
     }
 
+    // public match history keyed by USERNAME (the profile page's history list)
+    const profMatchesMatch = url.pathname.match(/^\/api\/profile\/([^/]+)\/matches$/);
+    if (profMatchesMatch) {
+      const username = decodeURIComponent(profMatchesMatch[1]).toLowerCase();
+      const profile = dbEnabled ? await getProfileByUsername(username) : null;
+      if (!profile) return json(404, { error: 'no such user' }), true;
+      const page = await userMatchHistory(profile.userId, historyOpts);
+      return json(200, page), true;
+    }
+
     // public profile + stats keyed by USERNAME (the /profile/<username> page)
     const profStatsMatch = url.pathname.match(/^\/api\/profile\/([^/]+)\/stats$/);
     if (profStatsMatch) {
@@ -239,6 +259,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const profile = dbEnabled ? await getProfileByUsername(username) : null;
       if (!profile) return json(404, { error: 'no such user' }), true;
       return json(200, profile), true;
+    }
+
+    const matchesMatch = url.pathname.match(/^\/api\/user\/([^/]+)\/matches$/);
+    if (matchesMatch) {
+      const userId = decodeURIComponent(matchesMatch[1]);
+      const page = dbEnabled ? await userMatchHistory(userId, historyOpts) : emptyHistory;
+      return json(200, page), true;
     }
 
     const statsMatch = url.pathname.match(/^\/api\/user\/([^/]+)\/stats$/);

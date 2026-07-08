@@ -383,8 +383,15 @@ export function App() {
       {screen === 'leaderboard' && (
         <Leaderboard onWatch={(id) => navigate('replay', id)} onOpenProfile={openProfile} />
       )}
-      {screen === 'stats' && <Stats />}
-      {screen === 'profile' && profileUser && <Profile username={profileUser} />}
+      {screen === 'stats' && (
+        <Stats onWatch={(id) => navigate('replay', id)} onOpenProfile={openProfile} />
+      )}
+      {screen === 'profile' && profileUser && (
+        <Profile
+          username={profileUser}
+          nav={{ onWatch: (id) => navigate('replay', id), onOpenProfile: openProfile }}
+        />
+      )}
       {screen === 'download' && <Download />}
       {screen === 'account' && <Account settings={settings} onChange={update} />}
       {screen === 'admin' && isAdmin && <Admin />}
