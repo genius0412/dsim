@@ -3,19 +3,76 @@
  * the Electron build). When absent, the Multiplayer entry is hidden and the solo
  * game is completely unaffected — there is no runtime network dependency.
  *
- * Phase 0 replaced the P2P stack (Supabase Realtime lobby + WebRTC mesh + TURN)
- * with a single authoritative game server, so this collapses to one URL. Point
- * it at the `server/` package (default ws://localhost:8787 in dev; a Fly.io wss://
- * URL in prod).
+ * MULTI-SERVER: the app supports a LIST of game servers (regions) so a player can
+ * pick the closest one (a pre-connection ping picker) for a record run or a
+ * match. Configure with `VITE_GAME_SERVERS` — a JSON array of
+ * `{ id, label, region, url }`. For back-compat, a single `VITE_GAME_SERVER_URL`
+ * still works and becomes a one-entry list. The SELECTED server (module state,
+ * restored from the account preference) is what every connect site uses via
+ * `gameServerUrl()` / `gameServerHttpUrl()`.
  */
 
-const GAME_SERVER = import.meta.env.VITE_GAME_SERVER_URL as string | undefined;
+export interface GameServer {
+  /** stable id used to persist the player's preference */
+  id: string;
+  /** human label for the picker (defaults to region/url) */
+  label: string;
+  /** region code, e.g. 'iad', 'lhr' — '' if single/unknown */
+  region: string;
+  /** ws:// or wss:// base URL of the server */
+  url: string;
+}
 
-export const gameServerConfigured = (): boolean => !!GAME_SERVER;
+function parseServers(): GameServer[] {
+  const raw = import.meta.env.VITE_GAME_SERVERS as string | undefined;
+  if (raw) {
+    try {
+      const arr = JSON.parse(raw) as Partial<GameServer>[];
+      const clean = arr
+        .filter((s): s is Partial<GameServer> => !!s && typeof s.url === 'string' && !!s.url)
+        .map((s, i) => ({
+          id: s.id || `srv${i}`,
+          label: s.label || s.region || (s.url as string),
+          region: s.region || '',
+          url: s.url as string,
+        }));
+      if (clean.length) return clean;
+    } catch {
+      /* malformed JSON → fall back to the single-URL var */
+    }
+  }
+  const single = import.meta.env.VITE_GAME_SERVER_URL as string | undefined;
+  if (single) return [{ id: 'default', label: 'Default', region: '', url: single }];
+  return [];
+}
 
-export const gameServerUrl = (): string => GAME_SERVER ?? '';
+const SERVERS = parseServers();
+let selectedId = SERVERS[0]?.id ?? '';
 
-/** the same server over HTTP(S) for the read APIs (leaderboards, replays):
- * ws://→http://, wss://→https:// */
-export const gameServerHttpUrl = (): string =>
-  GAME_SERVER ? GAME_SERVER.replace(/^ws/, 'http') : '';
+/** all configured servers (regions); empty ⇒ multiplayer/records disabled */
+export const gameServers = (): GameServer[] => SERVERS;
+
+export const gameServerConfigured = (): boolean => SERVERS.length > 0;
+
+/** whether the player actually has a CHOICE of server (≥2 configured) */
+export const multiServer = (): boolean => SERVERS.length > 1;
+
+export const selectedServer = (): GameServer | undefined =>
+  SERVERS.find((s) => s.id === selectedId) ?? SERVERS[0];
+
+export const selectedServerId = (): string => selectedServer()?.id ?? '';
+
+/** choose the active server (by id). No-ops on an unknown id. */
+export function setSelectedServer(id: string): void {
+  if (SERVERS.some((s) => s.id === id)) selectedId = id;
+}
+
+export const gameServerUrl = (): string => selectedServer()?.url ?? '';
+
+/** the selected server over HTTP(S) for the read APIs (leaderboards, replays,
+ * health/ping): ws://→http://, wss://→https:// */
+export const gameServerHttpUrl = (): string => httpOf(selectedServer()?.url);
+
+/** ws(s):// → http(s):// for any server's url */
+export const httpOf = (wsUrl: string | undefined): string =>
+  wsUrl ? wsUrl.replace(/^ws/, 'http') : '';

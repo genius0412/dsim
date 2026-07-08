@@ -68,9 +68,17 @@ function broadcastAll(m: ServerMsg): number {
 
 // an explicit HTTP server so we can answer GET /health (Fly/Load-balancer probe)
 // while the WebSocket upgrade rides the same port
+const REGION = process.env.FLY_REGION ?? process.env.SERVER_REGION ?? '';
 const httpServer = createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200, { 'content-type': 'text/plain' });
+    // CORS so the web client (different origin) can time this for the pre-connect
+    // ping picker. Includes the region so a client can confirm which one answered.
+    res.writeHead(200, {
+      'content-type': 'text/plain',
+      'access-control-allow-origin': '*',
+      'cache-control': 'no-store',
+      ...(REGION ? { 'x-region': REGION } : {}),
+    });
     res.end('ok');
     return;
   }
@@ -193,6 +201,7 @@ const httpServer = createServer((req, res) => {
     });
     res.end(
       JSON.stringify({
+        region: REGION,
         online: onlineCount,
         signedIn: authedUsers.size,
         queues: matchmaker.queueSizes(),
