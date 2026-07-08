@@ -558,6 +558,12 @@
   font-size: 11px;
 }
 
+/* share-profile button in a career/profile panel header */
+.ds-share {
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
 /* leaderboard driver names (display handle + clickable @username, duo pairs) */
 .lb-drivers {
   display: inline-flex;

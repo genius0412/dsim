@@ -78,7 +78,7 @@ export function AppShell({
         <nav className="ds-nav">
           {item('home', 'Home')}
           {item('robot', 'My Robot')}
-          {item('stats', 'My Stats')}
+          {item('stats', 'Career')}
           {item('leaderboard', 'Leaderboard')}
           {item('download', 'Download')}
           {showAdmin && item('admin', 'Admin')}
