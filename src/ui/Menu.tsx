@@ -4,14 +4,8 @@ import { MAX_SAVED_ROBOTS, ROBOT_MAX_SIZE, ROBOT_PRESETS } from '../config';
 import { driveParams, lengthLimits, massLimits, rpmLimits, widthLimits } from '../sim/drivetrain';
 import { coerceSpec } from '../sim/spawn';
 import { RobotPreview } from './RobotPreview';
+import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './robotLabels';
 import { APP_NAME } from '../seasons';
-
-const DRIVETRAIN_LABELS: Record<DrivetrainType, string> = {
-  mecanum: 'Mecanum',
-  tank: 'Tank',
-  swerve: 'Swerve',
-  xdrive: 'X-drive',
-};
 
 const DRIVETRAIN_BLURBS: Record<DrivetrainType, string> = {
   mecanum: '85% strafe · FTC standard',
@@ -24,12 +18,6 @@ const INTAKE_LABELS: Record<IntakeStyle, string> = {
   sloped: 'Sloped intake',
   vector: 'Vector wheel intake',
   triangle: 'Triangle intake',
-};
-
-const INTAKE_SHORT: Record<IntakeStyle, string> = {
-  sloped: 'Sloped',
-  vector: 'Vector',
-  triangle: 'Triangle',
 };
 
 /** the shooting range a flywheel inertia is tuned for: a LOW-inertia wheel spins

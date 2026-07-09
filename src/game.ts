@@ -461,6 +461,27 @@ export class GameController {
     // robots + balls INTERPOLATED (smooth) with the local robot predicted
     const world = this.session ? this.displayWorld(dtMs) : this.world;
     this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId);
+    // TEMP DEBUG (remove): local robot logical vs drawn pos + roster ids
+    {
+      const lw = this.world.robots.find((r) => r.id === this.localRobotId);
+      const ld = world.robots.find((r) => r.id === this.localRobotId);
+      const ctx = this.ctx;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = '#0f0';
+      ctx.font = '13px monospace';
+      const ids = world.robots.map((r) => r.id).join(',');
+      (window as unknown as { __dbg: unknown }).__dbg = {
+        LR: this.localRobotId, n: world.robots.length,
+        logic: lw ? [Math.round(lw.pos.x), Math.round(lw.pos.y)] : null,
+        drawn: ld ? [Math.round(ld.pos.x), Math.round(ld.pos.y)] : null,
+        phase: this.world.match.phase,
+      };
+      ctx.fillText(
+        `LR=${this.localRobotId} n=${world.robots.length} ids=[${ids}] logic=(${lw?.pos.x.toFixed(1)},${lw?.pos.y.toFixed(1)}) drawn=(${ld?.pos.x.toFixed(1)},${ld?.pos.y.toFixed(1)}) sm=(${this.localSmooth.x.toFixed(1)},${this.localSmooth.y.toFixed(1)}) sess=${!!this.session}`,
+        8,
+        16,
+      );
+    }
     this.raf = requestAnimationFrame(this.loop);
   };
 

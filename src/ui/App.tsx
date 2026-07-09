@@ -286,6 +286,7 @@ export function App() {
         }}
         onCancel={() => navigate('home')}
         onSignIn={() => navigate('account')}
+        onSettingsChange={update}
       />
     );
   }

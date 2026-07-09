@@ -1,3 +1,94 @@
+# HANDOFF — 2026-07-09 (ranked pre-match STRATEGY window) — READ FIRST
+
+> **LATEST (pre-match strategy lobby for random matchmaking): GREEN, uncommitted on alpha.**
+> `npm run build` + `npm run server:check` + `npm test` (+20 new checks) all pass.
+>
+> **Problem:** ranked matchmaking paired strangers and dropped them STRAIGHT into the
+> match — no reveal, no coordination; the `ready` flag existed but was never enforced;
+> start poses were silently de-conflicted server-side.
+>
+> **What shipped — a `phase: 'connecting' | 'strategy' | 'match'` window on staged ranked
+> rooms** (`server/room.ts`). Once every paired player connects, `maybeStartRanked` now
+> calls `enterStrategy()` (NOT `beginMatch`): it seeds each client's authoritative
+> alliance + default pose from the staged roster, resets `ready`, arms a strict
+> `STRATEGY_DURATION_MS` (60s) deadline, and sends each client a new `strategyStart`
+> ServerMsg. Drivers then re-pick / claim a pose / ready via the existing `update`/
+> `roster`; `maybeBeginRanked` starts the match the instant all ready, or
+> `onStrategyDeadline` CANCELS if anyone isn't ready in time (user decision — strict, no
+> auto-start). `beginRanked` builds setups from the LIVE re-picked specs (alliance/seed
+> stay authoritative from the staged `PendingMatch`; spec re-clamped by
+> `coerceSpec`/`coerceSetup` so re-pick can't break the build limits).
+>
+> - **Alliance-only reveal is server-side.** `broadcastRoster` is now per-recipient during
+>   strategy: own + same-alliance entries full (with a `slot` for ELO lookup); OPPONENT
+>   entries redacted to name/team/ELO (`hidden:true`, spec/assists neutralized to
+>   `DEFAULT_SPEC`/`DEFAULT_ASSISTS`). Opponent detail is revealed only at `matchStart`.
+>   **Gotcha closed:** during `'connecting'` (before strategy) clients self-report alliance
+>   `'red'` (placeholder), so alliance-based redaction can't work — the roster is WITHHELD
+>   entirely for a staged room until `enterStrategy` sends the redacted one.
+> - **Alliance is locked** during ranked strategy (the `update` handler strips `alliance`).
+> - **Disconnect during strategy CANCELS** the match (`detach` → `cancelPending`); the
+>   `join`-based reconnect can't reclaim a held pre-match slot. Full strategy-phase
+>   reconnection is DEFERRED.
+> - **Protocol** (`src/net/protocol.ts`): `LobbyPlayer` gained `slot?`/`hidden?` (server-
+>   authored, never patchable); new `strategyStart` ServerMsg. `lobbyClient.ts` dispatches
+>   it. No new ClientMsg — `ready`/`startIndex`/`spec` ride the existing `update`.
+> - **Client** (`src/ui/MatchStrategy.tsx`, new): alliance build cards (reuses
+>   `RobotPreview`), minimal opponent cards, close/far start-pose claim (`START_POSES`),
+>   saved-robot quick-swap + full builder (reuses `Menu`), ready + live countdown. Wired
+>   into `Matchmaking.tsx` (`wireStrategy` attaches to both the dev mm-socket and the
+>   production host-room socket; `playerInfo` now sends `ready:false`); `App.tsx` passes
+>   `onSettingsChange={update}` so re-picks persist. Shared labels lifted to
+>   `src/ui/robotLabels.ts`. New CSS `.ds-strat-*` in `shell.css`.
+> - **Dev parity** (`server/matchmaking.ts`): `localStart` (no-DB) now routes through
+>   `applyPending` (synthesizing a stable userId per connection) so the strategy window is
+>   exercisable locally without Postgres.
+> - **`STRATEGY_DURATION_MS = 60s`** — tune in `server/room.ts` if needed.
+>
+> **BACKWARD-COMPATIBLE SINGLE SERVER (mixed client versions safe).** Because one Fly app
+> serves EVERY client (alpha/beta/main all bake the same `VITE_GAME_SERVER_URL`), the new
+> server must not break old clients. Fix: a **capability handshake** — the client sends
+> `caps: CLIENT_CAPS` (`['strategy']`) on `join`/`queue` (`protocol.ts`), the server stores
+> it per-`Client`, and `maybeStartRanked` opens the strategy window ONLY if EVERY connected
+> client advertises `'strategy'`; otherwise it calls the new `startRankedImmediate()` (the
+> old instant-start with STAGED specs). So: all-new room ⇒ strategy; any old client ⇒
+> instant start (old clients never get a `strategyStart` they can't render); a new client in
+> a fallback room just gets `matchStart` and skips the screen; a new client against an OLD
+> (not-yet-deployed) server also just works (no `strategyStart` ever arrives). This means
+> you can `fly deploy` the new server WITHOUT breaking main/beta users, and roll the client
+> out to alpha→beta→main at your own pace. **Nuance:** one shared matchmaking queue ⇒ a
+> cross-version pair skips strategy; it fires only when two updated clients meet. Once all
+> branches carry the new client, it's universal.
+>
+> **NOT yet done:** live end-to-end UI verification (needs a running game server + two
+> signed-in clients; couldn't orchestrate headlessly). Deploy is now SAFE from alpha
+> (`flyctl deploy` — `server/` changed); no need to sync branches first thanks to the
+> capability gate. Consider strategy-phase reconnection + a config for the deadline length
+> as follow-ups.
+>
+> **BUG FIX (separate, pre-existing — TANK frozen over the network).** `quantizeCommand`/
+> `dequantizeCommand` (`src/net/protocol.ts`) only encoded `dx/dy/rot/buttons` and
+> hard-set `leftDrive/rightDrive = 0`. TANK is the only drivetrain that steers via
+> `leftDrive`/`rightDrive` (mecanum/swerve/xdrive use `driveX/driveY`), so a networked
+> tank robot (multiplayer OR record run — both go through `ServerSession` → `quantize`)
+> got ZERO drive and sat frozen at its spawn = the middle of the field, while the local
+> client kept predicting its movement (`localizeCommand` = `dequantize∘quantize`, so
+> prediction ALSO dropped the tank fields → the robot was frozen everywhere the net path
+> ran). Mecanum worked (its axes are transmitted); solo FREE-DRIVE worked (`stepSolo` uses
+> the raw command, no quantize). FIX: added `ld`/`rd` (int8) to `QCommand` +
+> quantize/dequantize, with `?? 0` guards so an older client's ld/rd-less packet still
+> decodes. Verified with a headless tank record-run probe (robot now drives) + 2 smoke
+> checks. **DEPLOY NOTE:** tank only works over the net once BOTH the client (Vercel) and
+> the server (Fly) carry this fix — a client/server version skew here is exactly the
+> desync class the capability/backward-compat work above is meant to make safe.
+>
+> **BONUS FIX:** `server:check` (strict tsc for `tsconfig.server.json`) was already RED at
+> HEAD — the staged-roster `autoPath` (a `string`) never type-checked against
+> `RobotSetup.autoPath: AutoPathData`. `startRankedImmediate` now coerces it via
+> `coerceAutoPath`, so `server:check` is green again.
+
+---
+
 # HANDOFF — 2026-07-08 (usernames + profiles + duo-name fix, on session 9) — READ FIRST
 
 > **LATEST (usernames + public profiles + duo-name fix): rebased onto session 9, GREEN.**

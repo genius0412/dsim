@@ -55,7 +55,7 @@ import { driveParams, massLimits, rpmLimits } from '../src/sim/drivetrain';
 import { coerceSettings } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, mergeBindings } from '../src/input/bindings';
-import { quantizeCommand, localizeCommand, slimWorld, unslimWorld } from '../src/net/protocol';
+import { quantizeCommand, dequantizeCommand, localizeCommand, slimWorld, unslimWorld } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
 import {
@@ -1884,6 +1884,17 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     JSON.stringify(once) === JSON.stringify(twice),
     JSON.stringify(once),
   );
+  // TANK drive lives in leftDrive/rightDrive — these MUST survive quantization or a
+  // networked tank robot gets zero drive and sits frozen at spawn (regression guard).
+  const tank = dequantizeCommand(quantizeCommand(cmd({ leftDrive: 1, rightDrive: -0.5 })));
+  check(
+    'quantization carries tank leftDrive/rightDrive (not dropped to 0)',
+    tank.leftDrive === 1 && Math.abs(tank.rightDrive + 0.5) < 0.02,
+    `ld=${tank.leftDrive} rd=${tank.rightDrive}`,
+  );
+  // an OLD client's ld/rd-less packet still decodes (missing ⇒ 0, the old behavior)
+  const legacy = dequantizeCommand({ dx: 0, dy: 64, rot: 0, buttons: 0 });
+  check('dequantize tolerates a legacy ld/rd-less packet', legacy.leftDrive === 0 && legacy.rightDrive === 0);
 }
 
 // ---- worldHash: replay determinism + sensitivity ---------------------------
@@ -2316,6 +2327,7 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     connected: true,
     disconnectAt: 0,
     userId,
+    caps: ['strategy'],
   });
   // onResult resolves to overall-ELO changes (as applyMatchElo would); the Room
   // must re-key them to robot ids (add order → robotId 0 = red, 1 = blue)
@@ -2341,6 +2353,169 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     check('eloResult re-keys the winner delta to red robot 0', red?.after === 1016 && red?.before === 1000);
     check('eloResult re-keys the loser delta to blue robot 1', blue?.after === 984 && blue?.before === 1000);
   }
+}
+
+// ---- pre-match STRATEGY window: reveal / re-pick / ready gate / redaction ----
+// a staged ranked 1v1 opens a strategy window instead of starting immediately: both
+// drivers see their own alliance (opponents redacted), may re-pick within the build
+// limits, and the match starts only when both ready (else it cancels).
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string, teamNumber: number): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: {
+      clientId: id,
+      name: id,
+      teamName: 'T',
+      teamNumber,
+      alliance: 'red',
+      startIndex: 0,
+      ready: false,
+      spec: { ...DEFAULT_SPEC },
+      assists: { ...DEFAULT_ASSISTS },
+    },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
+  });
+  const mkRoster = (): PendingMatch => ({
+    code: 'iad-strat',
+    hostRegion: 'iad',
+    mode: '1v1',
+    seed: 42,
+    ranked: true,
+    roster: [
+      { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 111, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200 },
+      { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 222, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: 1300 },
+    ],
+  });
+  // mirror production order: the host stages the pending match FIRST, then each
+  // paired client joins and the host re-checks (index.ts: add → maybeStartRanked).
+  const room = new Room('smoke-strat', () => {}, { kind: 'versus' });
+  room.applyPending(mkRoster());
+  room.add(mkC('red', 'u-red', 111));
+  room.maybeStartRanked();
+  // only red is here: no opponent roster may have leaked while still connecting
+  check('strategy: no roster revealed before everyone connects', !rec.red.some((m) => m.t === 'roster'));
+  check('strategy: no strategyStart until all paired players connect', !rec.red.some((m) => m.t === 'strategyStart'));
+  room.add(mkC('blue', 'u-blue', 222));
+  room.maybeStartRanked();
+
+  const ssRed = rec.red.find((m) => m.t === 'strategyStart');
+  const ssBlue = rec.blue.find((m) => m.t === 'strategyStart');
+  check('strategy: strategyStart sent to both drivers', !!ssRed && !!ssBlue);
+  check('strategy: yourRobotId matches roster slot', ssRed?.t === 'strategyStart' && ssRed.yourRobotId === 0 && ssBlue?.t === 'strategyStart' && ssBlue.yourRobotId === 1);
+  check('strategy: deadline is in the future', ssRed?.t === 'strategyStart' && ssRed.deadline > Date.now());
+  check('strategy: no matchStart before anyone readies', !rec.red.some((m) => m.t === 'matchStart'));
+
+  const lastRoster = (id: string): Extract<ServerMsg, { t: 'roster' }> | undefined =>
+    [...rec[id]].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+  const redRoster = lastRoster('red');
+  const opp = redRoster?.players.find((p) => p.alliance === 'blue');
+  const own = redRoster?.players.find((p) => p.alliance === 'red');
+  check('strategy: opponent card is hidden (redacted), keeps name/team/slot', opp?.hidden === true && opp?.teamNumber === 222 && opp?.slot === 1);
+  check('strategy: opponent spec is neutralized (no counter-pick)', opp?.spec.drivetrain === DEFAULT_SPEC.drivetrain && opp?.spec.intake === DEFAULT_SPEC.intake);
+  check('strategy: own card is full + carries its slot', own?.hidden !== true && own?.slot === 0);
+
+  // alliance is server-authoritative during strategy: a client can't switch sides
+  room.onMessage('red', { t: 'update', patch: { alliance: 'blue' } });
+  const afterAlliance = lastRoster('red')?.players.find((p) => p.slot === 0);
+  check('strategy: alliance lockdown — red stays red', afterAlliance?.alliance === 'red');
+
+  // live re-pick within the limits: swap to tank + an over-limit mass (clamped)
+  check('strategy: DEFAULT_SPEC is not already tank (re-pick is a real change)', DEFAULT_SPEC.drivetrain !== 'tank');
+  room.onMessage('red', { t: 'update', patch: { spec: { ...DEFAULT_SPEC, drivetrain: 'tank', massLb: 999 } } });
+
+  // ready gate: only starts once BOTH ready
+  room.onMessage('red', { t: 'update', patch: { ready: true } });
+  check('strategy: still no match with only one driver ready', !rec.red.some((m) => m.t === 'matchStart'));
+  room.onMessage('blue', { t: 'update', patch: { ready: true } });
+  const ms = rec.red.find((m) => m.t === 'matchStart');
+  check('strategy: match starts once both drivers ready', ms?.t === 'matchStart');
+  if (ms?.t === 'matchStart') {
+    const redSetup = ms.setups.find((s) => s.id === 0);
+    check('strategy: match uses the LIVE re-picked build (tank)', redSetup?.spec.drivetrain === 'tank');
+    check('strategy: re-pick is clamped to the build limits (mass ≤ 42)', (redSetup?.spec.massLb ?? 999) <= 42);
+    check('strategy: alliance stays authoritative from the staged roster', redSetup?.alliance === 'red');
+  }
+}
+
+// strict deadline: if not everyone readies in time, the match CANCELS
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
+  });
+  const room = new Room('smoke-strat-deadline', () => {}, { kind: 'versus' });
+  room.add(mkC('red', 'u-red'));
+  room.add(mkC('blue', 'u-blue'));
+  room.applyPending({ code: 'iad-d', hostRegion: 'iad', mode: '1v1', seed: 7, ranked: true, roster: [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: null },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: null },
+  ] });
+  room.onMessage('red', { t: 'update', patch: { ready: true } }); // only red readies
+  room.forceStrategyDeadlineForTest();
+  check('strategy deadline: cancels (error) when not everyone readied', rec.red.some((m) => m.t === 'error'));
+  check('strategy deadline: no match started', !rec.red.some((m) => m.t === 'matchStart'));
+}
+
+// a disconnect during strategy cancels the (unratable) pre-match
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
+  });
+  const room = new Room('smoke-strat-drop', () => {}, { kind: 'versus' });
+  room.add(mkC('red', 'u-red'));
+  room.add(mkC('blue', 'u-blue'));
+  room.applyPending({ code: 'iad-x', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true, roster: [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: null },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: null },
+  ] });
+  room.detach('blue');
+  check('strategy drop: cancels the match (error to the remaining driver)', rec.red.some((m) => m.t === 'error'));
+  check('strategy drop: no match started', !rec.red.some((m) => m.t === 'matchStart'));
+}
+
+// backward compat: a MIXED room (one old client without the 'strategy' cap) skips the
+// strategy window and starts immediately with the staged specs — so one server can
+// serve alpha/beta/main clients at once without stranding an old build.
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string, caps: string[]): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps,
+  });
+  const room = new Room('smoke-strat-mixed', () => {}, { kind: 'versus' });
+  room.applyPending({ code: 'iad-m', hostRegion: 'iad', mode: '1v1', seed: 5, ranked: true, roster: [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: null },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: null },
+  ] });
+  room.add(mkC('red', 'u-red', ['strategy'])); // new client
+  room.maybeStartRanked();
+  room.add(mkC('blue', 'u-blue', [])); // OLD client — no 'strategy' cap
+  room.maybeStartRanked();
+  check('compat: mixed room skips the strategy window (no strategyStart)', !rec.red.some((m) => m.t === 'strategyStart'));
+  check('compat: mixed room starts immediately (matchStart to both)', rec.red.some((m) => m.t === 'matchStart') && rec.blue.some((m) => m.t === 'matchStart'));
 }
 
 // ---- region-aware matchmaking: minimax host + expanding radius --------------

@@ -6,7 +6,8 @@ import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
 import type { NetSession } from '../net/session';
-import type { QueueMode } from '../net/protocol';
+import type { LobbyPlayer, PlayerIntro, QueueMode } from '../net/protocol';
+import { MatchStrategy } from './MatchStrategy';
 import { usePresence } from './usePresence';
 import { useServerNotice } from '../net/notice';
 
@@ -20,18 +21,30 @@ import { useServerNotice } from '../net/notice';
  * sends `matchStart` straight back on this socket (handled too). ELO is applied
  * server-side on match end.
  */
+/** the pre-match strategy window state, once a paired match opens one */
+interface StrategyState {
+  lobby: LobbyClient;
+  players: LobbyPlayer[];
+  myClientId: string;
+  deadline: number;
+  mode: QueueMode;
+  intros: PlayerIntro[];
+}
+
 export function Matchmaking({
   settings,
   signedIn,
   onStart,
   onCancel,
   onSignIn,
+  onSettingsChange,
 }: {
   settings: GameSettings;
   signedIn: boolean;
   onStart: (s: NetSession) => void;
   onCancel: () => void;
   onSignIn: () => void;
+  onSettingsChange: (s: GameSettings) => void;
 }) {
   const [mode, setMode] = useState<QueueMode>('1v1');
   const [noWiden, setNoWiden] = useState(false);
@@ -44,6 +57,8 @@ export function Matchmaking({
   const [queue, setQueue] = useState({ size: 0, need: 2 });
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState('');
+  // set once a paired match opens its pre-match strategy window (see MatchStrategy)
+  const [strategy, setStrategy] = useState<StrategyState | null>(null);
 
   const lobbyRef = useRef<LobbyClient | null>(null);
   const startedRef = useRef(false);
@@ -71,10 +86,36 @@ export function Matchmaking({
     teamNumber: settings.spec.teamNumber,
     alliance: 'red' as const, // matchmaking assigns the real alliance
     startIndex: settings.startIndex,
-    ready: true,
+    ready: false, // the pre-match strategy screen owns readiness now
     spec: settings.spec,
     assists: settings.assists,
   });
+
+  /** attach the pre-match strategy handlers to a lobby socket (dev mm-socket path
+   * AND the production reconnected host-room path both open a strategy window). */
+  const wireStrategy = (lobby: LobbyClient): void => {
+    lobby.on('roster', (players) =>
+      setStrategy((s) => (s ? { ...s, players, myClientId: lobby.clientId } : s)),
+    );
+    lobby.on('strategyStart', (deadline, _yourRobotId, m, intros) =>
+      setStrategy({
+        lobby,
+        players: lobby.players,
+        myClientId: lobby.clientId,
+        deadline,
+        mode: m,
+        intros,
+      }),
+    );
+  };
+
+  /** a cancel/close arrived (deadline lapsed, opponent left): drop the strategy
+   * screen back to the queue with the reason shown. */
+  const strategyCancelled = (msg: string): void => {
+    setStrategy(null);
+    setSearching(false);
+    setError(msg);
+  };
 
   const find = async (): Promise<void> => {
     if (!gameServerUrl()) {
@@ -102,14 +143,15 @@ export function Matchmaking({
     const lobby = new LobbyClient(transport);
     lobbyRef.current = lobby;
     lobby.on('queued', (_m, size, need) => setQueue({ size, need }));
-    // dev / single-region / no-DB: the match runs on this same socket
+    // dev / single-region / no-DB: the strategy window + match run on this same socket
+    wireStrategy(lobby);
     lobby.on('matchStart', (m: MatchStart) => {
       startedRef.current = true;
       onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
     });
     // normal path: reconnect to the assigned host region to play
     lobby.on('matchAssigned', (room) => joinAssignedMatch(room));
-    lobby.on('error', (msg) => setError(msg));
+    lobby.on('error', (msg) => strategyCancelled(msg));
     lobby.on('closed', () => {
       if (!startedRef.current && !assigningRef.current)
         setError('Lost connection to the game server.');
@@ -131,13 +173,14 @@ export function Matchmaking({
     }
     const lobby = new LobbyClient(transport);
     lobbyRef.current = lobby;
+    wireStrategy(lobby);
     lobby.on('matchStart', (m: MatchStart) => {
       startedRef.current = true;
       onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, room));
     });
-    lobby.on('error', (msg) => setError(msg));
+    lobby.on('error', (msg) => strategyCancelled(msg));
     lobby.on('closed', () => {
-      if (!startedRef.current) setError('Lost connection to the match server.');
+      if (!startedRef.current) strategyCancelled('Lost connection to the match server.');
     });
     lobby.join(room, playerInfo());
   };
@@ -176,6 +219,27 @@ export function Matchmaking({
           </div>
         </main>
       </div>
+    );
+  }
+
+  // a paired match opened its pre-match strategy window: take over the whole screen
+  if (strategy) {
+    return (
+      <MatchStrategy
+        lobby={strategy.lobby}
+        players={strategy.players}
+        myClientId={strategy.myClientId}
+        deadline={strategy.deadline}
+        mode={strategy.mode}
+        intros={strategy.intros}
+        settings={settings}
+        onSettingsChange={onSettingsChange}
+        onLeave={() => {
+          teardown();
+          setStrategy(null);
+          setSearching(false);
+        }}
+      />
     );
   }
 

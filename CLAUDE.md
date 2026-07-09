@@ -416,8 +416,14 @@ diagnosing lag reports. **RECONNECTION (transient drops)**: server holds a dropp
 setups) + delta the balls (send the id ORDER every frame — determinism — but only CHANGED
 ball data); reconnect re-primes with a keyframe. **DEPLOY**: `Dockerfile`+`fly.toml`+
 `docs/deploy.md`, `GET /health`; `ws`+`tsx` are runtime `dependencies`. Deploy protocol
-(SIM/server change): commit on alpha → merge main → `flyctl deploy --remote-only` → verify
-`/health` → Vercel auto-deploys client → sync alpha/beta to main. Still open: **WebTransport**
+(SIM/server change): commit on alpha → `flyctl deploy --remote-only` → verify `/health` →
+Vercel auto-deploys clients. **The one Fly app serves EVERY client version** (alpha/beta/
+main all bake the same `VITE_GAME_SERVER_URL`), so protocol changes MUST stay
+backward-compatible — new clients advertise `caps` (`CLIENT_CAPS` in `protocol.ts`) on
+`join`/`queue` and the server feature-gates on them (e.g. the pre-match strategy window
+only opens when every client supports `'strategy'`, else `startRankedImmediate`). With
+that discipline you no longer have to merge/sync alpha→main before deploying the server —
+old branch clients keep working. Still open: **WebTransport**
 (deferred — needs TLS-deploy validation, and the delta must switch to ACK-keyed for
 unreliable datagrams); full-reload reconnect (localStorage session restore). Deferred:
 obelisk AprilTag visuals, mobile/touch, deferred fouls (G408 possession>3 / plowing).

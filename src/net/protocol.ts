@@ -33,6 +33,11 @@ export interface QCommand {
   dy: number; // int8
   rot: number; // int8
   buttons: number; // uint8 bitfield: bit0 intake, bit1 fire
+  // TANK drive steers via leftDrive/rightDrive (NOT dx/dy) — these MUST be on the
+  // wire or a networked tank robot gets zero drive and sits frozen at spawn. Optional
+  // so a packet from an older client still decodes (missing ⇒ 0, the old behavior).
+  ld?: number; // int8 (leftDrive * 127)
+  rd?: number; // int8 (rightDrive * 127)
 }
 
 const BTN_INTAKE = 1;
@@ -44,6 +49,8 @@ export function quantizeCommand(c: RobotCommand): QCommand {
     dy: Math.round(clamp(c.driveY, -1, 1) * 127),
     rot: Math.round(clamp(c.rotate, -1, 1) * 127),
     buttons: (c.intake ? BTN_INTAKE : 0) | (c.fire ? BTN_FIRE : 0),
+    ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
+    rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
 }
 
@@ -52,8 +59,8 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     driveX: q.dx / 127,
     driveY: q.dy / 127,
     rotate: q.rot / 127,
-    leftDrive: 0,
-    rightDrive: 0,
+    leftDrive: (q.ld ?? 0) / 127, // ?? 0: tolerate an older client's ld/rd-less packet
+    rightDrive: (q.rd ?? 0) / 127,
     intake: (q.buttons & BTN_INTAKE) !== 0,
     fire: (q.buttons & BTN_FIRE) !== 0,
   };
@@ -107,6 +114,13 @@ export interface LobbyPlayer {
   assists: AssistConfig;
   autoPath?: AutoPathData; // Add autoPath
   autoPathEnabled?: boolean; // Add autoPathEnabled
+  // ---- server-authored, set only during the ranked pre-match STRATEGY phase ----
+  // (never accepted from a client patch). `slot` is this player's roster/robot
+  // index so its card can look up its `PlayerIntro` ELO; `hidden` marks an OPPONENT
+  // card the server has redacted (name/team/ELO only — its `spec`/`assists` are
+  // neutralized placeholders so an opponent can't be counter-picked pre-match).
+  slot?: number;
+  hidden?: boolean;
 }
 
 /** a driver's pre-match ranked intro data (ELO, keyed by the robot id the server
@@ -143,15 +157,26 @@ export type PlayerPatch = Partial<
 
 // ---- client → server --------------------------------------------------------
 
+/** capabilities THIS client build understands, sent on `join`/`queue` so ONE server
+ * can serve mixed client versions (alpha/beta/main all point at it). A staged ranked
+ * room opens the pre-match strategy window only when EVERY member advertises
+ * 'strategy'; otherwise it starts immediately (the pre-strategy behavior), so an old
+ * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
+ * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
+ * protocol grows. */
+export const CLIENT_CAPS: string[] = ['strategy'];
+
 export type ClientMsg =
   // `authToken` is the Neon Auth JWT; the server verifies it to attribute the
   // run to a real user (absent/invalid ⇒ anonymous). See server/auth.ts.
+  // `caps` (optional) advertises this client build's protocol capabilities.
   | {
       t: 'join';
       room: string;
       player: Omit<LobbyPlayer, 'clientId'>;
       config?: RoomConfig;
       authToken?: string;
+      caps?: string[];
     }
   // reclaim an in-match slot after a transient socket drop (within the grace
   // window) — the server rebinds the robot to the new connection and resyncs
@@ -175,6 +200,7 @@ export type ClientMsg =
       homeRegion: string;
       accessMs: number;
       noWiden?: boolean;
+      caps?: string[];
     }
   // widen my search radius NOW (impatient player), instead of waiting for the timed
   // auto-widen. Idempotent; ignored once the ceiling is already at max.
@@ -226,6 +252,16 @@ export type ServerMsg =
   // machine builds the authoritative match and sends `matchStart`. `room` is already
   // region-coded (`<hostRegion>-<code>`).
   | { t: 'matchAssigned'; mode: QueueMode; room: string; hostRegion: string }
+  // ranked pre-match STRATEGY phase (server-authoritative rooms only): every paired
+  // player has connected, so instead of starting immediately the room opens a
+  // coordination window. The client switches to the strategy screen; live changes
+  // (re-pick spec / claim a start pose / ready) flow through the existing
+  // `update`/`roster` messages (the roster is REDACTED per-recipient so opponents
+  // show name/team/ELO only). The match begins (a `matchStart` follows) once every
+  // player readies, or the room CANCELS (an `error`) if not everyone readies by
+  // `deadline` (epoch ms). `yourRobotId` = this client's roster slot; `intros`
+  // carry per-slot ELO for the opponent/teammate cards.
+  | { t: 'strategyStart'; deadline: number; yourRobotId: number; mode: QueueMode; intros: PlayerIntro[] }
   // a robot left: the server runs it on ZERO from `tick`; snapshots already
   // reflect this, so it is informational (drives the HUD)
   | { t: 'drop'; robotId: number; tick: number }

@@ -5,7 +5,7 @@ import { dbEnabled } from './db/pool';
 import { BALANCE_VERSION } from '../src/config';
 import { bestHost, type PingInfo } from './regions';
 import type { PendingMatch, PendingRosterEntry } from './matchTypes';
-import { QUEUE_NEED, type LobbyPlayer, type PlayerIntro, type QueueMode, type ServerMsg } from '../src/net/protocol';
+import { QUEUE_NEED, type LobbyPlayer, type QueueMode, type ServerMsg } from '../src/net/protocol';
 
 /**
  * Region-aware ranked matchmaking. Runs on the DESIGNATED matchmaker machine (all
@@ -51,6 +51,8 @@ export interface QueueEntry {
   accessMs: number;
   /** true ⇒ never widen past my own region */
   noWiden?: boolean;
+  /** protocol capabilities this client build advertised (mixed-version safe) */
+  caps?: string[];
   /** set by enqueue (this.now()); drives the widening ceiling */
   enqueuedAt: number;
   /** extra manual widen steps from `expandSearch` */
@@ -229,29 +231,42 @@ export class Matchmaker {
     for (const e of group) e.send({ t: 'matchAssigned', mode, room: code, hostRegion });
   }
 
-  /** DEV/no-DB fallback: run the match on THIS machine (the old behavior). Only
-   * reachable when DATABASE_URL is unset, where everyone is on one machine anyway. */
+  /** DEV/no-DB fallback: run the match on THIS machine. Only reachable when
+   * DATABASE_URL is unset, where everyone is on one machine anyway. Routes through
+   * the SAME staged-roster path (`applyPending`) as production so the pre-match
+   * STRATEGY window runs in dev too — dev clients may be anonymous, so synthesize a
+   * stable per-connection id for the userId→slot mapping. */
   private localStart(mode: QueueMode, group: QueueEntry[]): void {
     const code = `mm-${mode}-${roomSeq++}`;
     const room = new Room(code, () => this.rooms.delete(room), { kind: 'versus' }, persistMatch);
     this.rooms.add(room);
     const half = group.length / 2;
-    const intros: PlayerIntro[] = group.map((_e, i) => ({ id: i, elo: null }));
+    const seed = (this.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
+    const roster: PendingRosterEntry[] = group.map((e, i) => ({
+      userId: e.userId ?? e.id, // dev: a stable id so the host can map roster slots
+      name: e.player.name,
+      teamName: e.player.teamName,
+      teamNumber: e.player.teamNumber,
+      spec: e.player.spec,
+      assists: e.player.assists,
+      startIndex: i < half ? i : i - half,
+      alliance: (i < half ? 'red' : 'blue') as PendingRosterEntry['alliance'],
+      introElo: null,
+    }));
     group.forEach((e, i) => {
-      const alliance = i < half ? 'red' : 'blue';
       const client: Client = {
         id: e.id,
         send: e.send,
-        player: { ...e.player, clientId: e.id, alliance },
+        player: { ...e.player, clientId: e.id, alliance: roster[i].alliance },
         connected: true,
         disconnectAt: 0,
-        userId: e.userId,
+        userId: roster[i].userId,
+        caps: e.caps,
       };
       room.add(client);
       e.onRoom?.(room);
     });
-    room.setRankedIntro(intros);
-    room.startMatchNow();
+    room.applyPending({ code, hostRegion: '', mode, seed, roster, ranked: true });
   }
 
   /** live queue depth per bucket, for the public presence endpoint */

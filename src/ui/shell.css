@@ -1578,6 +1578,46 @@ button.ds-key:hover {
   color: var(--ds-mut);
   opacity: 0.7;
 }
+/* pre-match strategy: alliance build cards (RobotPreview + spec readout) */
+.ds-strat-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+.ds-strat-card {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-line);
+  border-left: 3px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  padding: 10px 12px;
+}
+.ds-strat-card.red {
+  border-left-color: var(--ds-red);
+}
+.ds-strat-card.blue {
+  border-left-color: var(--ds-blue);
+}
+.ds-strat-prev {
+  flex: none;
+  display: grid;
+  place-items: center;
+}
+.ds-strat-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ds-strat-meta .pnm {
+  font-weight: 700;
+}
+.ds-strat-meta .ptm {
+  color: var(--ds-mut);
+  font-size: 13px;
+}
 .ds-kick {
   background: transparent;
   border: 1px solid var(--ds-line);

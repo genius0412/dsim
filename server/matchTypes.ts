@@ -4,9 +4,14 @@ import type { QueueMode } from '../src/net/protocol';
 /**
  * A ranked match staged by the designated matchmaker for a DIFFERENT machine (the
  * fair host region) to build. It is written to Postgres (`pending_matches`) and the
- * host machine claims it when the paired clients reconnect with `?room=<code>`. The
- * roster is authoritative — the host ignores client-supplied specs so a client can't
- * tamper with a ranked match by lying on its `join`.
+ * host machine claims it when the paired clients reconnect with `?room=<code>`.
+ *
+ * The roster is authoritative for IDENTITY (userId→slot), ALLIANCE, and SEED — a
+ * client can't move itself to another side or change the seed. The `spec`/`assists`
+ * here are the pre-match BASELINE only: during the pre-match strategy window a driver
+ * may RE-PICK its build, and the host takes the LIVE roster spec at start (re-validated
+ * by `coerceSpec`/`coerceSetup`, so it still can't exceed the build limits). So this
+ * staged spec seeds the intro/fallback, not the final robot.
  */
 export interface PendingRosterEntry {
   /** verified user id (ranked requires auth, so this is always set in practice) */

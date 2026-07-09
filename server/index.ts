@@ -468,6 +468,9 @@ wss.on('connection', (ws: WebSocket) => {
       player: { ...sanitizePlayer(msg.player), clientId: id },
       connected: true,
       disconnectAt: 0,
+      // protocol capabilities this client build understands (mixed-version safe:
+      // the room only opens the strategy window if EVERY member supports it)
+      caps: Array.isArray(msg.caps) ? msg.caps : [],
     };
     if (user) {
       client.userId = user.userId;
@@ -530,6 +533,7 @@ wss.on('connection', (ws: WebSocket) => {
             homeRegion: msg.homeRegion || REGION,
             accessMs: msg.accessMs ?? 0,
             noWiden: msg.noWiden ?? false,
+            caps: Array.isArray(msg.caps) ? msg.caps : [],
             enqueuedAt: 0, // stamped by enqueue()
             expandBumps: 0,
             onRoom: (r) => {
