@@ -207,6 +207,11 @@ export type ClientMsg =
       caps?: string[];
       /** release channel (see `join.channel`): alpha queues only pair with alpha */
       channel?: string;
+      /** this client's build id (git sha). The matchmaker segregates the queue by
+       * build so two DIFFERENT builds never share an authoritative match — the exact
+       * "same code" invariant (channel is only a coarse, manual proxy). Absent ⇒ the
+       * server falls back to channel-only separation. */
+      build?: string;
     }
   // widen my search radius NOW (impatient player), instead of waiting for the timed
   // auto-widen. Idempotent; ignored once the ceiling is already at max.

@@ -2551,10 +2551,11 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
 const rEntry = (
   id: string,
   homeRegion: string,
-  opts: { accessMs?: number; noWiden?: boolean; channel?: string } = {},
+  opts: { accessMs?: number; noWiden?: boolean; channel?: string; build?: string } = {},
 ): QueueEntry => ({
   id,
   channel: opts.channel,
+  build: opts.build,
   send: () => {},
   player: {
     name: id,
@@ -2631,6 +2632,29 @@ const mkMM = () => {
   check('channel: two alpha players DO pair', mm.queueSizes()['1v1'] === 0);
   await flush();
   check('channel: the staged alpha match is tagged alpha (→ unpersisted)', staged[0]?.channel === 'alpha');
+}
+
+// BUILD SEGREGATION: two DIFFERENT builds never share an authoritative match even
+// inside one channel (the "same code" invariant — alpha and main always have
+// different shas, so this separates them automatically without VITE_APP_CHANNEL).
+{
+  const { mm } = mkMM();
+  mm.enqueue(rEntry('a', 'iad', { build: 'sha_alpha' }));
+  mm.enqueue(rEntry('b', 'iad', { build: 'sha_main' })); // same (default) channel, different build
+  check('build: two different builds in the same region do NOT pair', mm.queueSizes()['1v1'] === 2);
+}
+{
+  const { mm } = mkMM();
+  mm.enqueue(rEntry('a', 'iad', { build: 'sha_x' }));
+  mm.enqueue(rEntry('b', 'iad', { build: 'sha_x' }));
+  check('build: two same-build players DO pair', mm.queueSizes()['1v1'] === 0);
+}
+{
+  // old clients that send no build fall back to channel-only separation (still pair)
+  const { mm } = mkMM();
+  mm.enqueue(rEntry('a', 'iad'));
+  mm.enqueue(rEntry('b', 'iad'));
+  check('build: two build-less (old) clients still pair (channel-only fallback)', mm.queueSizes()['1v1'] === 0);
 }
 
 // cross-region does NOT pair at t=0 (spread > radius), but DOES once widened

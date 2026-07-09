@@ -57,6 +57,15 @@ export interface QueueEntry {
    * of the same channel — alpha and stable run different src/sim, so a shared
    * authoritative match would desync. Absent ⇒ 'stable'. */
   channel?: string;
+  /** this client build's id (the git sha, `__BUILD_ID__`). The matchmaker ALSO
+   * segregates by build so two different builds NEVER share an authoritative match
+   * even inside one channel — the exact "same code" invariant (a channel is only a
+   * coarse, manually-set proxy). This is what actually keeps alpha and main apart
+   * automatically: their shas always differ, no `VITE_APP_CHANNEL` required. Matches
+   * the client-side version gate ("everyone on the same version for multiplayer"),
+   * enforced authoritatively here. Absent (old client that predates this) ⇒ falls
+   * back to channel-only separation. */
+  build?: string;
   /** set by enqueue (this.now()); drives the widening ceiling */
   enqueuedAt: number;
   /** extra manual widen steps from `expandSearch` */
@@ -176,14 +185,14 @@ export class Matchmaker {
     const need = QUEUE_NEED[mode];
     const q = this.queues[mode];
     const now = this.now();
-    const chan = (e: QueueEntry): string => e.channel ?? 'stable';
     for (let i = 0; i < q.length; i++) {
       const group = [q[i]];
       for (let j = 0; j < q.length && group.length < need; j++) {
         if (j === i) continue;
-        // never pair across release channels — alpha and stable run a different
-        // src/sim, so a shared authoritative match would desync both clients
-        if (chan(q[j]) !== chan(q[i])) continue;
+        // never pair across compatibility buckets (channel + build) — different
+        // src/sim (alpha vs stable) OR different builds run different code, so a
+        // shared authoritative match would desync both clients
+        if (bucketKey(q[j]) !== bucketKey(q[i])) continue;
         // never put the same account in a group twice (backstop for the userId
         // dedup above) — a self-pair produces a frozen "ghost" robot
         if (q[j].userId && group.some((g) => g.userId === q[j].userId)) continue;
@@ -285,14 +294,20 @@ export class Matchmaker {
   }
 
   private broadcastStatus(mode: QueueMode): void {
-    // report each waiter the depth of ITS OWN channel — pairing is channel-scoped,
-    // so a mixed count would falsely read "enough players" and never match
+    // report each waiter the depth of ITS OWN bucket (channel + build) — pairing is
+    // bucket-scoped, so a mixed count would falsely read "enough players" and never
+    // match (a lone alpha queuer must not be told a pool of stable/older builds is ready)
     for (const e of this.queues[mode]) {
-      const ch = e.channel ?? 'stable';
-      const size = this.queues[mode].reduce((n, x) => n + ((x.channel ?? 'stable') === ch ? 1 : 0), 0);
+      const key = bucketKey(e);
+      const size = this.queues[mode].reduce((n, x) => n + (bucketKey(x) === key ? 1 : 0), 0);
       e.send({ t: 'queued', mode, size, need: QUEUE_NEED[mode] });
     }
   }
 }
 
 const toPing = (e: QueueEntry): PingInfo => ({ homeRegion: e.homeRegion, accessMs: e.accessMs });
+
+/** matchmaking compatibility bucket: two entries may only be paired when this key
+ * matches — same release channel AND same client build. Absent build ⇒ '' (old
+ * clients fall back to channel-only separation). */
+const bucketKey = (e: QueueEntry): string => `${e.channel ?? 'stable'}|${e.build ?? ''}`;

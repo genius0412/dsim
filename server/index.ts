@@ -537,6 +537,8 @@ wss.on('connection', (ws: WebSocket) => {
             noWiden: msg.noWiden ?? false,
             caps: Array.isArray(msg.caps) ? msg.caps : [],
             channel: typeof msg.channel === 'string' ? msg.channel : undefined,
+            // segregate the pool by build too (two builds never share a match)
+            build: typeof msg.build === 'string' ? msg.build : undefined,
             enqueuedAt: 0, // stamped by enqueue()
             expandBumps: 0,
             onRoom: (r) => {

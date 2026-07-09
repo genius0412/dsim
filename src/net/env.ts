@@ -60,6 +60,16 @@ let selectedId = SERVERS[0]?.id ?? '';
 export const appChannel = (): string =>
   (import.meta.env.VITE_APP_CHANNEL as string | undefined)?.trim() || 'stable';
 
+/** THIS client's build id — the git sha baked in by vite (`__BUILD_ID__`; the same
+ * value `/version.json` carries). Sent to the server on `queue` so the matchmaker
+ * segregates the pool by build (two different builds never share an authoritative
+ * match — the "same code" invariant behind the version gate). 'dev' when unbuilt.
+ * Declared here (not imported from `version.ts`, which pulls in React) so pure net
+ * modules can read it. */
+declare const __BUILD_ID__: string;
+export const appBuild = (): string =>
+  typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : 'dev';
+
 /** all configured servers (regions); empty ⇒ multiplayer/records disabled */
 export const gameServers = (): GameServer[] => SERVERS;
 

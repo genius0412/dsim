@@ -1,4 +1,51 @@
-# HANDOFF — 2026-07-09 (FIX: networked robot NaN → renders at field centre) — READ FIRST
+# HANDOFF — 2026-07-09 (FIX: alpha↔main matchmaking pool separation → strategy window) — READ FIRST
+
+> **LATEST (build-id matchmaking segregation): GREEN, uncommitted on alpha.**
+> `npm test` (+3 checks) + `npm run server:check` + `npm run build` all pass.
+>
+> **Symptom (reported):** an alpha 2v2 RANKED match did NOT open the pre-match STRATEGY
+> window (it should). Alpha and main were sharing a matchmaking pool.
+>
+> **Root cause — one bug, both symptoms.** The strategy window opens only if EVERY client
+> in a staged ranked room advertises the `strategy` cap (`server/room.ts:492`). `main`
+> clients advertise NEITHER a `channel` NOR the `strategy` cap (verified:
+> `git show main:server/matchmaking.ts`/`:src/net/protocol.ts` have neither). The
+> matchmaker already segregates by `channel`, but ONLY if alpha actually reports
+> `channel:'alpha'` — which comes from `VITE_APP_CHANNEL`, a MANUAL Vercel env var
+> (`.env.example:46`, commented). If it's unset, the alpha client reports `'stable'`, so
+> alpha and main land in one pool; an alpha 2v2 can then include a `main` client (no
+> `strategy` cap) → the server falls to `startRankedImmediate()` → no strategy window.
+> (A *pure* alpha 2v2 already works — the whole reconnect/caps path was traced.)
+>
+> **Fix — automatic pool separation by BUILD ID (`__BUILD_ID__`, the git sha).** The client
+> now sends its build id on `queue` and the matchmaker segregates by (channel + build), so
+> two DIFFERENT builds NEVER share an authoritative match — the exact "same code" invariant
+> the client-side version gate already implies, now enforced server-side. Alpha and main
+> always have different shas ⇒ separated automatically, no env var needed.
+> - `server/matchmaking.ts`: `QueueEntry.build`; new `bucketKey(e)=`${channel}|${build}``;
+>   `findMatch` + `broadcastStatus` bucket by it (was channel-only). Absent build ⇒ '' ⇒
+>   channel-only fallback (old clients still pair among themselves).
+> - `src/net/protocol.ts`: optional `build?` on the `queue` ClientMsg.
+> - `src/net/env.ts`: `appBuild()` (reads `__BUILD_ID__`; declared here, NOT imported from
+>   `version.ts` which pulls React). `src/net/lobbyClient.ts` `queue()` sends `build: appBuild()`.
+> - `server/index.ts`: queue handler reads `msg.build` → `enqueue`.
+> - `scripts/smoke.ts`: +3 (different builds don't pair; same build pairs; build-less old
+>   clients still pair via channel fallback).
+>
+> **DEPLOY (both needed; the code alone does nothing until the SERVER runs it):**
+> 1. **Redeploy the Fly server from current alpha** (`flyctl deploy --remote-only`) — the
+>    matchmaker must run this bucketing code. Verify `/health`.
+> 2. **Rebuild the alpha client on Vercel** so it sends `build`. (A build id is baked on
+>    every deploy already — no config needed for separation.)
+> 3. **STILL set `VITE_APP_CHANNEL=alpha`** on the alpha Vercel project — the `channel`
+>    remains what keeps alpha results OFF the leaderboard/ELO (unpersisted); build-id only
+>    handles pool separation. Both matter.
+> Note: build-id bucketing means a client on an OLD build (pre-refresh) only matches other
+> old-build clients until the version gate refreshes it — intended (never pair mismatched sims).
+
+---
+
+# HANDOFF — 2026-07-09 (FIX: networked robot NaN → renders at field centre)
 
 > **LATEST (old-server field-skew NaN fix): GREEN, uncommitted on alpha.**
 > `npm run build` + `npm test` (+2 new checks) + `npm run server:check` all pass.

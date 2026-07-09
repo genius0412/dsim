@@ -2,7 +2,7 @@ import type { RobotSetup } from '../sim/spawn';
 import type { Transport } from './transport';
 import { getAuthToken } from '../lib/authClient';
 import { setServerNotice } from './notice';
-import { appChannel } from './env';
+import { appChannel, appBuild } from './env';
 import {
   encodeMsg,
   decodeServerMsg,
@@ -100,7 +100,7 @@ export class LobbyClient {
       this.transport.send(
         encodeMsg({
           t: 'queue', mode, player, authToken, homeRegion, accessMs, noWiden,
-          caps: CLIENT_CAPS, channel: appChannel(),
+          caps: CLIENT_CAPS, channel: appChannel(), build: appBuild(),
         }),
       );
     };
