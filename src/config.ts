@@ -526,34 +526,39 @@ export const PRELOAD: readonly ('purple' | 'green')[] = ['purple', 'green', 'pur
 export const HP_INITIAL_STOCK: readonly ('purple' | 'green')[] = ['purple', 'purple', 'green'];
 
 // -------------------------------------------------------- robot presets ----
-/** named example robots covering the archetype matrix; the menu also offers
- * a fully custom builder. Keep DEFAULT ("Standard Issue") = the original
- * tuned solo feel. */
+/** real FTC teams covering the archetype matrix; the menu also offers a fully
+ * custom builder. The first entry (TW) mirrors DEFAULT_SPEC — the robot a new
+ * player starts with. */
 export const ROBOT_PRESETS: readonly RobotSpec[] = [
   {
-    name: 'Standard Issue', teamName: 'Baseline Robotics', teamNumber: 1234,
-    length: 15, width: 18, intake: 'sloped', massLb: 26, drivetrain: 'mecanum',
-    driveRpm: 435, flywheelInertia: 0.5, canSort: false,
+    name: 'TW', teamName: 'Turtle Walkers', teamNumber: 19745,
+    length: 14.5, width: 16.5, intake: 'sloped', massLb: 23.5, drivetrain: 'mecanum',
+    driveRpm: 500, flywheelInertia: 0.4, canSort: false,
   },
   {
-    name: 'Bulldozer', teamName: 'Iron Plows', teamNumber: 9909,
+    name: 'Dugtrio', teamName: 'Blu Cru', teamNumber: 6417,
     length: 15, width: 18, intake: 'sloped', massLb: 36, drivetrain: 'tank',
     driveRpm: 340, flywheelInertia: 0.9, canSort: false,
   },
   {
-    name: 'Hummingbird', teamName: 'Featherweights', teamNumber: 5511,
+    name: 'Cypher', teamName: 'Seattle Solvers', teamNumber: 23511,
     length: 12.5, width: 12, intake: 'vector', massLb: 22, drivetrain: 'swerve',
     driveRpm: 500, flywheelInertia: 0, canSort: false,
   },
   {
-    name: 'Crossfire', teamName: 'Diagonal Society', teamNumber: 8080,
-    length: 13, width: 14, intake: 'triangle', massLb: 23, drivetrain: 'xdrive',
-    driveRpm: 480, flywheelInertia: 0.35, canSort: false,
+    name: 'Exodus V3', teamName: 'Exodus', teamNumber: 30030,
+    length: 13, width: 17.5, intake: 'triangle', massLb: 34, drivetrain: 'mecanum',
+    driveRpm: 395, flywheelInertia: 0.8, canSort: false,
   },
   {
-    name: 'The Librarian', teamName: 'Sorted Motors', teamNumber: 3141,
-    length: 12.5, width: 16, intake: 'triangle', massLb: 26, drivetrain: 'mecanum',
-    driveRpm: 400, flywheelInertia: 0.6, canSort: true,
+    name: 'Ditto', teamName: 'Galactic Narwhal Chicken Effect - Diamond', teamNumber: 22489,
+    length: 14.5, width: 16, intake: 'vector', massLb: 28, drivetrain: 'mecanum',
+    driveRpm: 450, flywheelInertia: 0.9, canSort: false,
+  },
+  {
+    name: 'Standard Issue', teamName: 'Baseline Robotics', teamNumber: 1234,
+    length: 15, width: 18, intake: 'sloped', massLb: 26, drivetrain: 'mecanum',
+    driveRpm: 435, flywheelInertia: 0.5, canSort: false,
   },
 ] as const;
 

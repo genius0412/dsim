@@ -624,7 +624,9 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- side capture is geometric: a full-width chassis encompasses the wheels -----
 {
-  const spec = { length: 11.5, width: 18, intake: 'vector' as const };
+  // pin speed + mass so the fixed strafe window is dynamics-stable regardless of
+  // what DEFAULT_SPEC (a named team robot) happens to be geared/weighted at
+  const spec = { length: 11.5, width: 18, intake: 'vector' as const, driveRpm: 435, massLb: 26 };
   const w = mkWorld('free', 'blue', 6, spec);
   const r = w.robots[0];
   r.hopper = [];
@@ -978,11 +980,18 @@ const setup = (
   startIndex,
 });
 
-// ---- default spec reproduces the legacy tuned feel exactly ------------------
+// ---- drivetrain calibration reproduces the legacy tuned feel exactly --------
 {
-  const dp = driveParams(DEFAULT_SPEC);
+  // the drivetrain constants were tuned so a 26lb / 435rpm mecanum (15x18) hits
+  // 75/7/280. DEFAULT_SPEC is now a named team robot, so anchor this to the
+  // explicit legacy reference rather than whatever the default happens to be.
+  const CALIB_REF: RobotSpec = {
+    ...DEFAULT_SPEC, length: 15, width: 18, intake: 'sloped',
+    massLb: 26, drivetrain: 'mecanum', driveRpm: 435, flywheelInertia: 0.5,
+  };
+  const dp = driveParams(CALIB_REF);
   check(
-    'default spec drives at the legacy 75 in/s, 7 rad/s, 280 in/s²',
+    'legacy calibration ref drives at 75 in/s, 7 rad/s, 280 in/s²',
     Math.abs(dp.maxSpeed - 75) < 1e-6 &&
       Math.abs(dp.maxTurn - 7) < 1e-6 &&
       Math.abs(dp.accel - 280) < 1e-6,

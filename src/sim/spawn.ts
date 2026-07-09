@@ -32,16 +32,16 @@ export const MOTIFS: Motif[] = [
 ];
 
 export const DEFAULT_SPEC: RobotSpec = {
-  name: 'Standard Issue',
-  teamName: 'Baseline Robotics',
-  teamNumber: 1234,
-  length: 15,
-  width: 18,
+  name: 'TW',
+  teamName: 'Turtle Walkers',
+  teamNumber: 19745,
+  length: 14.5,
+  width: 16.5,
   intake: 'sloped',
-  massLb: 26,
+  massLb: 23.5,
   drivetrain: 'mecanum',
-  driveRpm: 435,
-  flywheelInertia: 0.5,
+  driveRpm: 500,
+  flywheelInertia: 0.4,
   canSort: false,
 };
 
@@ -92,7 +92,7 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
   }
   if (typeof sp.canSort === 'boolean') out.canSort = sp.canSort;
   if (typeof sp.name === 'string' && sp.name.trim()) out.name = sp.name.slice(0, 24);
-  if (typeof sp.teamName === 'string') out.teamName = sp.teamName.slice(0, 24);
+  if (typeof sp.teamName === 'string') out.teamName = sp.teamName.slice(0, 48);
   out.teamNumber = Math.round(clampFinite(sp.teamNumber, 0, 99999, base.teamNumber));
 
   // inertia BEFORE mass: the mass floor is coupled to flywheel inertia, and the

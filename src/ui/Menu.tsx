@@ -37,6 +37,15 @@ const INTAKE_SHORT: Record<IntakeStyle, string> = {
   triangle: 'Triangle',
 };
 
+/** the shooting range a flywheel inertia is tuned for: a LOW-inertia wheel spins
+ * up fast for close rapid-fire, a HIGH-inertia wheel holds speed to sustain long
+ * shots (matches the flywheel-recovery cadence model). */
+function optimizedZone(inertia: number): string {
+  if (inertia <= 0.4) return 'Close range';
+  if (inertia <= 0.7) return 'Mid range';
+  return 'Long range';
+}
+
 const INTAKE_BLURBS: Record<IntakeStyle, string> = {
   sloped: 'Face artifacts to scoop them up · eats clumps',
   vector: 'Grabs artifacts you strafe into',
@@ -184,9 +193,10 @@ export function Menu({ settings, onChange }: Props) {
                 </span>
                 <span className="om">
                   {DRIVETRAIN_LABELS[p.drivetrain]} · {p.massLb} lb · {p.driveRpm} RPM ·{' '}
-                  {INTAKE_SHORT[p.intake]}
+                  {INTAKE_SHORT[p.intake]} · {p.flywheelInertia} inertia
                   {p.canSort ? ' · sorts' : ''}
                 </span>
+                <span className="oz">🎯 {optimizedZone(p.flywheelInertia)}</span>
               </button>
             ))}
           </div>
@@ -212,7 +222,7 @@ export function Menu({ settings, onChange }: Props) {
                 <input
                   className="ds-input"
                   type="text"
-                  maxLength={24}
+                  maxLength={48}
                   value={spec.teamName}
                   onChange={(e) => setSpec({ teamName: e.target.value })}
                 />

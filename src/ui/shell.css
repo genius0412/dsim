@@ -1165,6 +1165,19 @@ tr.lb-detail td {
   letter-spacing: 0.02em;
   color: var(--ds-ink-dim);
 }
+.ds-opt .oz {
+  margin-top: 3px;
+  align-self: flex-start;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ds-accent-ink);
+  background: color-mix(in srgb, var(--ds-accent) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ds-accent) 40%, var(--ds-line));
+  border-radius: 999px;
+  padding: 2px 9px;
+}
 .ds-opt.mini {
   padding: 10px 13px;
 }
