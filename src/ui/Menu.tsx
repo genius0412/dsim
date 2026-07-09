@@ -1,14 +1,8 @@
 import type { GameSettings } from '../types';
 import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
-import {
-  INTAKE_PRESETS,
-  MAX_SAVED_ROBOTS,
-  ROBOT_MAX_SIZE,
-  ROBOT_MIN_WIDTH,
-  ROBOT_PRESETS,
-} from '../config';
-import { driveParams, massLimits, rpmLimits } from '../sim/drivetrain';
-import { clamp } from '../math';
+import { MAX_SAVED_ROBOTS, ROBOT_MAX_SIZE, ROBOT_PRESETS } from '../config';
+import { driveParams, lengthLimits, massLimits, rpmLimits, widthLimits } from '../sim/drivetrain';
+import { coerceSpec } from '../sim/spawn';
 import { RobotPreview } from './RobotPreview';
 import { APP_NAME } from '../seasons';
 
@@ -88,22 +82,31 @@ export function Menu({ settings, onChange }: Props) {
   // any spec edit RE-CLAMPS all coupled values (mass floor moves with drivetrain +
   // flywheel inertia; rpm ceiling with drivetrain; length with the intake preset)
   const setSpec = (patch: Partial<GameSettings['spec']>) => {
-    const next = { ...settings.spec, ...patch };
-    const mass = massLimits(next.drivetrain, next.flywheelInertia);
-    const rpm = rpmLimits(next.drivetrain);
-    const ip = INTAKE_PRESETS[next.intake];
-    next.massLb = clamp(next.massLb, mass.min, mass.max);
-    next.driveRpm = clamp(next.driveRpm, rpm.min, rpm.max);
-    next.length = clamp(next.length, ip.minLength, ip.maxLength);
+    // STRICT: every edit runs through the SAME canonical validator as load / save /
+    // server / spawn (coerceSpec), so the live spec can never hold an out-of-range
+    // size, mass, speed, or inertia — length is clamped per intake preset, width to
+    // the 18" cube, mass to the drivetrain×inertia floor/ceiling, rpm to the
+    // drivetrain range, inertia to 0..1. Identity TEXT (name/team) is kept as typed;
+    // it is length-capped on save, not mid-keystroke.
+    const merged = { ...settings.spec, ...patch };
+    const next: GameSettings['spec'] = {
+      ...coerceSpec(merged),
+      name: merged.name,
+      teamName: merged.teamName,
+    };
     onChange({ ...settings, spec: next });
   };
   const setAssist = (patch: Partial<GameSettings['assists']>) =>
     onChange({ ...settings, assists: { ...settings.assists, ...patch } });
 
   const spec = settings.spec;
-  // per-drivetrain envelopes; the mass FLOOR also rises with flywheel inertia
-  const { min: minMass, max: maxMass } = massLimits(spec.drivetrain, spec.flywheelInertia);
+  // slider envelopes come from the SAME limit functions coerceSpec clamps with,
+  // in the same dependency order (intake → size, drivetrain → rpm, drivetrain ×
+  // inertia → mass), so the UI and the validator can never disagree
+  const { min: minLength, max: maxLength } = lengthLimits(spec.intake);
+  const { min: minWidth, max: maxWidth } = widthLimits(spec.intake);
   const { min: minRpm, max: maxRpm } = rpmLimits(spec.drivetrain);
+  const { min: minMass, max: maxMass } = massLimits(spec.drivetrain, spec.flywheelInertia);
   const dp = driveParams(spec);
   const isCustom = !ROBOT_PRESETS.some((p) => specMatches(spec, p));
 
@@ -346,8 +349,8 @@ export function Menu({ settings, onChange }: Props) {
                 <input
                   className="ds-range"
                   type="range"
-                  min={INTAKE_PRESETS[spec.intake].minLength}
-                  max={INTAKE_PRESETS[spec.intake].maxLength}
+                  min={minLength}
+                  max={maxLength}
                   step={0.5}
                   value={spec.length}
                   onChange={(e) => setSpec({ length: Number(e.target.value) })}
@@ -360,8 +363,8 @@ export function Menu({ settings, onChange }: Props) {
                 <input
                   className="ds-range"
                   type="range"
-                  min={ROBOT_MIN_WIDTH}
-                  max={ROBOT_MAX_SIZE}
+                  min={minWidth}
+                  max={maxWidth}
                   step={0.5}
                   value={spec.width}
                   onChange={(e) => setSpec({ width: Number(e.target.value) })}

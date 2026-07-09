@@ -20,7 +20,7 @@ import type {
 } from '../types';
 import * as C from '../config';
 import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
-import { massLimits, rpmLimits } from './drivetrain';
+import { lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
 import { heldSlotPos } from './physics';
 import { flywheelSpinTarget, loadPreStage, spikeMarkBalls, startPose } from './field';
 import { emptyScore } from './scoring';
@@ -79,11 +79,25 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
   const out: RobotSpec = { ...base };
   const sp = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
 
-  // intake style (legacy preset names from older saves migrate)
+  // The clamp order is DELIBERATE — it mirrors the builder UI's dependency graph
+  // exactly, so a hand-edited / spoofed / stale spec is bounded the same way the
+  // sliders bound a live one. Each numeric range is resolved from ONLY the
+  // field(s) it depends on, in this order:
+  //   1. INTAKE            → length range + width range   (lengthLimits/widthLimits)
+  //   2. DRIVETRAIN        → rpm range                     (rpmLimits)
+  //   3. INERTIA           → 0..1
+  //   4. DRIVETRAIN×INERTIA → mass range                   (massLimits: floor ↑ inertia)
+
+  // 1) INTAKE (legacy preset names from older saves migrate) → size ranges
   if (sp.intake === 'sloped' || sp.intake === 'vector' || sp.intake === 'triangle') out.intake = sp.intake;
   else if (sp.intake === 'compact') out.intake = 'sloped';
   else if (sp.intake === 'extended') out.intake = 'vector';
+  const len = lengthLimits(out.intake);
+  const wid = widthLimits(out.intake);
+  out.length = clampFinite(sp.length, len.min, len.max, base.length);
+  out.width = clampFinite(sp.width, wid.min, wid.max, base.width);
 
+  // 2) DRIVETRAIN → rpm range
   if (
     sp.drivetrain === 'mecanum' ||
     sp.drivetrain === 'tank' ||
@@ -92,21 +106,21 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
   ) {
     out.drivetrain = sp.drivetrain;
   }
+  const rpm = rpmLimits(out.drivetrain);
+  out.driveRpm = clampFinite(sp.driveRpm, rpm.min, rpm.max, base.driveRpm);
+
+  // 3) INERTIA in 0..1
+  out.flywheelInertia = clampFinite(sp.flywheelInertia, 0, 1, base.flywheelInertia);
+
+  // 4) MASS range from DRIVETRAIN × INERTIA (the floor rises with inertia)
+  const mass = massLimits(out.drivetrain, out.flywheelInertia);
+  out.massLb = clampFinite(sp.massLb, mass.min, mass.max, base.massLb);
+
+  // identity + flags (no cross-field dependency)
   if (typeof sp.canSort === 'boolean') out.canSort = sp.canSort;
   if (typeof sp.name === 'string' && sp.name.trim()) out.name = sp.name.slice(0, 24);
   if (typeof sp.teamName === 'string') out.teamName = sp.teamName.slice(0, 48);
   out.teamNumber = Math.round(clampFinite(sp.teamNumber, 0, 99999, base.teamNumber));
-
-  // inertia BEFORE mass: the mass floor is coupled to flywheel inertia, and the
-  // mass/rpm ranges are per-drivetrain (resolved above)
-  out.flywheelInertia = clampFinite(sp.flywheelInertia, 0, 1, base.flywheelInertia);
-  const preset = C.INTAKE_PRESETS[out.intake];
-  out.length = clampFinite(sp.length, preset.minLength, preset.maxLength, base.length);
-  out.width = clampFinite(sp.width, C.ROBOT_MIN_WIDTH, C.ROBOT_MAX_SIZE, base.width);
-  const mass = massLimits(out.drivetrain, out.flywheelInertia);
-  const rpm = rpmLimits(out.drivetrain);
-  out.massLb = clampFinite(sp.massLb, mass.min, mass.max, base.massLb);
-  out.driveRpm = clampFinite(sp.driveRpm, rpm.min, rpm.max, base.driveRpm);
   return out;
 }
 

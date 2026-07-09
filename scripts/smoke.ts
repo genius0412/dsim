@@ -48,6 +48,7 @@ import {
   INTAKE_PRESETS,
   ROBOT_PRESETS,
   ROBOT_MAX_SIZE,
+  ROBOT_MIN_WIDTH,
 } from '../src/config';
 import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
 import { driveParams, massLimits, rpmLimits } from '../src/sim/drivetrain';
@@ -1189,6 +1190,25 @@ const setup = (
   check('coerceSpec rejects Infinity width', Number.isFinite(nan.width) && nan.width <= ROBOT_MAX_SIZE, `${nan.width}`);
   check('coerceSpec rejects NaN mass', Number.isFinite(nan.massLb), `${nan.massLb}`);
   check('coerceSpec rejects -Infinity rpm', Number.isFinite(nan.driveRpm) && nan.driveRpm >= rpmLimits('mecanum').min, `${nan.driveRpm}`);
+
+  // BELOW-minimum values are clamped UP just as strictly as over-max is clamped down
+  const tiny = coerceSpec({
+    intake: 'sloped', drivetrain: 'mecanum', flywheelInertia: 0.5,
+    length: -5, width: 0, massLb: 1, driveRpm: 1,
+  });
+  check('coerceSpec clamps length UP to the preset min', tiny.length >= INTAKE_PRESETS.sloped.minLength, `${tiny.length}`);
+  check('coerceSpec clamps width UP to ROBOT_MIN_WIDTH', tiny.width >= ROBOT_MIN_WIDTH, `${tiny.width}`);
+  check('coerceSpec clamps mass UP to the drivetrain×inertia floor', tiny.massLb >= massLimits('mecanum', 0.5).min, `${tiny.massLb}`);
+  check('coerceSpec clamps rpm UP to the drivetrain min', tiny.driveRpm >= rpmLimits('mecanum').min, `${tiny.driveRpm}`);
+  check('coerceSpec clamps a NEGATIVE inertia to 0', coerceSpec({ flywheelInertia: -3 }).flywheelInertia === 0);
+  // the mass floor tracks inertia: max inertia demands a heavier minimum than min inertia
+  check('mass floor rises with inertia', massLimits('mecanum', 1).min > massLimits('mecanum', 0).min);
+  // ORDER matters: an out-of-range inertia is clamped to 1 FIRST, so the mass floor
+  // is then computed from the CLAMPED inertia (not the raw 9) — mass is pulled up to
+  // the inertia-1 floor. This is the dependency chain the builder UI also follows.
+  const ord = coerceSpec({ drivetrain: 'mecanum', flywheelInertia: 9, massLb: 18 });
+  check('mass range uses the CLAMPED inertia (intake→drivetrain→inertia→mass order)',
+    ord.flywheelInertia === 1 && ord.massLb >= massLimits('mecanum', 1).min, `${ord.massLb} @ i=${ord.flywheelInertia}`);
 
   // garbage / missing input falls back to a fully-legal default spec
   const junk = coerceSpec(undefined);

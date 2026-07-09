@@ -1,4 +1,4 @@
-import type { DrivetrainType, RobotSpec } from '../types';
+import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
 import * as C from '../config';
 import { clamp } from '../math';
 
@@ -49,6 +49,25 @@ export function driveParams(spec: RobotSpec): DriveParams {
 
 /** the wheel-RPM range this drivetrain allows (torque-biased drivetrains cap
  * lower). Consumed by the builder sliders + settings validation. */
+// ---- the loadout limit functions (SINGLE SOURCE shared by coerceSpec + the UI
+// sliders). Each range is derived ONLY from the field(s) it depends on, so the
+// builder's dependency order is explicit: intake → length/width, drivetrain →
+// rpm, inertia → 0..1, then drivetrain×inertia → mass. ------------------------
+
+/** chassis LENGTH range (in) — determined by the intake preset (its reach counts
+ * toward the 18" cube, so each preset bakes in maxLength = 18 − reach). */
+export function lengthLimits(intake: IntakeStyle): { min: number; max: number } {
+  const p = C.INTAKE_PRESETS[intake];
+  return { min: p.minLength, max: p.maxLength };
+}
+
+/** chassis WIDTH range (in). The intake extends the robot's LENGTH, not its
+ * width, so the width envelope is the 18" cube — the same for every intake.
+ * Kept intake-parameterized so this stays the one place width policy lives. */
+export function widthLimits(_intake: IntakeStyle): { min: number; max: number } {
+  return { min: C.ROBOT_MIN_WIDTH, max: C.ROBOT_MAX_SIZE };
+}
+
 export function rpmLimits(dt: DrivetrainType): { min: number; max: number } {
   const L = C.DRIVETRAIN_LIMITS[dt];
   return { min: L.minRpm, max: L.maxRpm };
