@@ -547,7 +547,7 @@ export const ROBOT_PRESETS: readonly RobotSpec[] = [
     driveRpm: 500, flywheelInertia: 0, canSort: false,
   },
   {
-    name: 'Exodus V3', teamName: 'Exodus', teamNumber: 30030,
+    name: 'Rohan', teamName: 'Exodus', teamNumber: 30030,
     length: 13, width: 17.5, intake: 'triangle', massLb: 34, drivetrain: 'mecanum',
     driveRpm: 395, flywheelInertia: 0.8, canSort: false,
   },
