@@ -132,8 +132,16 @@ export function Menu({ settings, onChange }: Props) {
                 <span className="sl">in/s top</span>
               </div>
               <div className="ds-stat">
+                <span className="sv">{dp.accel.toFixed(0)}</span>
+                <span className="sl">in/s² accel</span>
+              </div>
+              <div className="ds-stat">
                 <span className="sv">{dp.maxTurn.toFixed(1)}</span>
                 <span className="sl">rad/s turn</span>
+              </div>
+              <div className="ds-stat">
+                <span className="sv">{dp.turnAccel.toFixed(1)}</span>
+                <span className="sl">rad/s² ang. accel</span>
               </div>
               <div className="ds-stat">
                 <span className="sv">{spec.massLb}</span>
