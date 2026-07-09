@@ -91,8 +91,9 @@ export const PENALTY_CLEAR = 1.0; // s
 
 // ------------------------------------------------------------ artifacts ----
 export const BALL_RADIUS = 2.5; // 5 in diameter
-export const BALL_ROLL_FRICTION = 30; // in/s^2 — a touch of "mass" over the legacy
-// 25, but the clump push-drag (BALL_PUSH_DRAG) carries the harder-to-push feel
+export const BALL_ROLL_FRICTION = 20; // in/s^2 — low enough that classifier
+// outflow carries to the human-player loading zone (~4-5 of 9 reach the corner);
+// the clump push-drag (BALL_PUSH_DRAG) still carries the harder-to-push feel
 /** fraction of the robot's into-the-ball speed bled off per ball contact each
  * solver pass — small per ball, but a big CLUMP is cumulatively a little heavier
  * to push (the drivetrain meets resistance, accelerates into it slower) */
