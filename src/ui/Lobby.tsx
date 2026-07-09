@@ -319,7 +319,7 @@ export function Lobby({ settings, onStart, onCancel, config = { kind: 'versus' }
               const isMe = p.clientId === myId;
               return (
                 <div key={p.clientId} className={`ds-player ${p.alliance}`}>
-                  <span className="pdot" title={isMe ? 'you' : 'connected'} />
+                  <span className="pdot" />
                   <span className="pnm">
                     {p.name}
                     {isMe ? ' (you)' : ''}
@@ -328,9 +328,7 @@ export function Lobby({ settings, onStart, onCancel, config = { kind: 'versus' }
                     {p.spec.name} · {p.teamNumber || '—'}
                   </span>
                   {p.clientId === hostId && (
-                    <span className="ds-chip on" title="Room host">
-                      ★ HOST
-                    </span>
+                    <span className="ds-chip on">★ HOST</span>
                   )}
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
                   <span className="ds-chip">{START_POSES[p.startIndex]?.label ?? '—'}</span>

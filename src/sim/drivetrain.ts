@@ -4,9 +4,9 @@ import { clamp } from '../math';
 
 /** derived per-robot drive parameters. Everything the drivetrain influences
  * comes from the spec: type multipliers × RPM (speed up / accel down) × mass
- * (accel down, shove up — shove lives in the collision code). The reference
- * spec (mecanum, 435 rpm, 30 lb, 18×18) reproduces the original tuned
- * constants exactly: 75 in/s, 7 rad/s, 280 in/s². */
+ * (accel down, shove up — shove lives in the collision code). The BASE calibration
+ * (SPEED_PER_RPM / BASE_DRIVE_ACCEL) is 75 in/s, 7 rad/s, 280 in/s² at mult=1; each
+ * drivetrain rides above/below it (e.g. mecanum ×1.02 speed / ×1.06 accel). */
 export interface DriveParams {
   maxSpeed: number; // in/s forward
   strafeMult: number;

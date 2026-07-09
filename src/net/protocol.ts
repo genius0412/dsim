@@ -240,6 +240,11 @@ export type ServerMsg =
       yourRobotId: number;
       ranked?: boolean;
       intros?: PlayerIntro[];
+      /** the Fly region actually hosting this match (e.g. 'iad'). The client shows
+       * it in the HUD so a player always knows which server they were matched on.
+       * Absent from older servers ⇒ the client falls back to the room-code prefix
+       * or the picked server label. */
+      region?: string;
     }
   // authoritative world at `serverTick`, slimmed (spec-stripped robots) with the
   // balls delta-encoded; the client reassembles a full World via `unslimWorld`.

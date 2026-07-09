@@ -21,6 +21,8 @@ export interface MatchStart {
   /** ranked rooms only: drives the pre-match ELO intro overlay */
   ranked?: boolean;
   intros?: PlayerIntro[];
+  /** the Fly region hosting the match (for the "matched on …" HUD chip) */
+  region?: string;
 }
 
 /**

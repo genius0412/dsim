@@ -291,8 +291,8 @@
   border-radius: var(--ds-round);
   background: var(--ds-tile);
   color: var(--ds-ink);
-  padding: 18px;
-  min-height: 118px;
+  padding: 16px 18px;
+  min-height: 94px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -355,6 +355,49 @@
 .ds-grid-bg > * {
   position: relative;
   z-index: 1;
+}
+
+/* home play sections (Practice / Compete / Custom) */
+.ds-tileset + .ds-tileset {
+  margin-top: 20px;
+}
+.ds-tileset-label {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+  margin: 0 0 10px 2px;
+}
+
+/* collapsible panel (details/summary) — used by Match setup on Home */
+.ds-collapse > .ds-collapse-sum {
+  cursor: pointer;
+  list-style: none;
+}
+.ds-collapse > .ds-collapse-sum::-webkit-details-marker {
+  display: none;
+}
+.ds-collapse-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ds-collapse-hint {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.ds-collapse-chev {
+  color: var(--ds-mut);
+  font-size: 13px;
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+.ds-collapse[open] > .ds-collapse-sum .ds-collapse-chev {
+  transform: rotate(90deg);
 }
 
 /* ---- panels + tables ------------------------------------------------- */
@@ -830,7 +873,7 @@ tr.lb-detail td {
 
 /* ---- states ---------------------------------------------------------- */
 .ds-empty {
-  padding: 44px 20px;
+  padding: 30px 20px;
   text-align: center;
   color: var(--ds-mut);
   font-size: 14px;
@@ -841,7 +884,7 @@ tr.lb-detail td {
   margin-bottom: 6px;
 }
 .ds-loading {
-  padding: 44px 20px;
+  padding: 30px 20px;
   text-align: center;
   color: var(--ds-mut);
   font-family: var(--ds-font-mono);
@@ -1318,8 +1361,16 @@ input[type='range'].ds-range {
     var(--ds-bg);
   border: 1px solid var(--ds-line-soft);
   border-radius: var(--ds-round);
-  min-height: 200px;
+  min-height: 150px;
   padding: 12px;
+}
+/* keep a portrait (long, narrow) robot from stretching the hero card tall — cap it
+ * a touch under the stats column so the stats drive the height (no empty gap) */
+.ds-hero-view svg {
+  max-height: 190px;
+  max-width: 100%;
+  width: auto;
+  height: auto;
 }
 .ds-hero-info {
   display: flex;

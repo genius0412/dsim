@@ -3,6 +3,7 @@ import type { RobotSetup } from '../sim/spawn';
 import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './session';
 import type { Transport } from './transport';
 import { setServerNotice } from './notice';
+import { regionLabel, isKnownRegion, selectedServer } from './env';
 import {
   encodeMsg,
   decodeServerMsg,
@@ -18,6 +19,16 @@ import {
  * fallback for any non-DOM context. Diagnostics only — never touches the sim. */
 const nowMs = (): number =>
   typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+/** the display label for the server/region a match runs on. Prefer the region the
+ * server reported at matchStart; else infer it from a region-coded room code
+ * (`iad-…`); else fall back to the picked server's label. Blank ⇒ HUD hides it. */
+function deriveServerLabel(reportedRegion: string | undefined, room: string): string {
+  if (reportedRegion) return regionLabel(reportedRegion);
+  const prefix = /^([a-z]{3})-/.exec(room)?.[1];
+  if (prefix && isKnownRegion(prefix)) return regionLabel(prefix);
+  return selectedServer()?.label ?? '';
+}
 
 /** how often to probe latency (a pong per second is plenty for a smoothed RTT) */
 const PING_INTERVAL_MS = 1000;
@@ -55,6 +66,8 @@ export class ServerSession implements NetSession {
   private failed = false;
   /** other robots in the match (for the HUD "N players" chip) */
   private readonly otherRobots: number;
+  /** human-readable label of the server/region hosting this match (HUD) */
+  private readonly serverLabel: string;
   /** running ball baseline the delta-encoded snapshots patch (keyed by id) */
   private readonly baseBalls = new Map<number, Artifact>();
 
@@ -76,6 +89,7 @@ export class ServerSession implements NetSession {
       yourRobotId: number;
       ranked?: boolean;
       intros?: PlayerIntro[];
+      region?: string;
     },
     private readonly clientId: string,
     private readonly room: string,
@@ -86,6 +100,7 @@ export class ServerSession implements NetSession {
     this.intros = start.intros ?? [];
     this.localRobotId = start.yourRobotId;
     this.otherRobots = Math.max(0, start.setups.length - 1);
+    this.serverLabel = deriveServerLabel(start.region, room);
     // take over routing + reconnection handling from the LobbyClient
     transport.onMessage((d) => this.onMessage(d));
     transport.onDown(() => {
@@ -168,6 +183,7 @@ export class ServerSession implements NetSession {
       snapHz,
       jitterMs,
       quality,
+      server: this.serverLabel || null,
     };
   }
 

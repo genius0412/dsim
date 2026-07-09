@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GameSettings, RobotSpec } from '../types';
 import { START_POSES } from '../config';
 import type { LobbyClient } from '../net/lobbyClient';
@@ -6,7 +6,12 @@ import type { LobbyPlayer, PlayerIntro, QueueMode } from '../net/protocol';
 import { RobotPreview } from './RobotPreview';
 import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './robotLabels';
 import { Menu } from './Menu';
+import { MatchAudio } from '../audio';
 import { APP_NAME } from '../seasons';
+
+/** beep once per second over the final STRAT_TICK_FROM seconds of the strategy
+ * deadline, rising in pitch as it nears (like a match countdown). */
+const STRAT_TICK_FROM = 5;
 
 interface Props {
   lobby: LobbyClient;
@@ -66,6 +71,24 @@ export function MatchStrategy({
   };
 
   const secsLeft = Math.max(0, Math.ceil((deadline - now) / 1000));
+
+  // countdown SFX: tick down over the final seconds before the deadline. Own audio
+  // instance (the game controller isn't up yet here), gated by the Sounds toggle.
+  const audioRef = useRef<MatchAudio | null>(null);
+  if (audioRef.current === null) audioRef.current = new MatchAudio();
+  audioRef.current.soundsEnabled = settings.audio.sounds;
+  audioRef.current.voiceEnabled = settings.audio.voice;
+  const lastTickRef = useRef(Infinity);
+  useEffect(() => {
+    const a = audioRef.current;
+    // fire once per new second in the danger zone (poll runs at 4 Hz, so guard on a
+    // strict decrease so we don't re-beep within the same second)
+    if (a && secsLeft >= 1 && secsLeft <= STRAT_TICK_FROM && secsLeft < lastTickRef.current) {
+      a.beep(700 + (STRAT_TICK_FROM - secsLeft) * 90, secsLeft === 1 ? 0.24 : 0.1, 0.4);
+    }
+    lastTickRef.current = secsLeft;
+  }, [secsLeft]);
+
   const readyCount = players.filter((p) => p.ready).length;
   const allReady = players.length > 0 && players.every((p) => p.ready);
 
@@ -149,7 +172,7 @@ export function MatchStrategy({
           <span>
             {mode.toUpperCase()} · coordinate then ready up · {readyCount}/{players.length} ready
           </span>
-          <span className={`ds-chip ${secsLeft <= 10 ? 'off' : 'on'}`} title="Match cancels if not everyone readies in time">
+          <span className={`ds-chip ${secsLeft <= STRAT_TICK_FROM ? 'off' : 'on'}`} title="Match cancels if not everyone readies in time">
             ⏱ {secsLeft}s
           </span>
         </p>

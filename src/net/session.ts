@@ -55,6 +55,9 @@ export interface NetStatus {
   jitterMs: number | null;
   /** overall smoothness bucket derived from rtt + jitter (drives the HUD colour) */
   quality: 'good' | 'fair' | 'poor' | null;
+  /** human-readable label of the server/region hosting the match (e.g. 'US East'),
+   * or null on a single-region / unknown deploy. Shown in the HUD. */
+  server: string | null;
 }
 
 export interface NetSession {

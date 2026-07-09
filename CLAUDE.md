@@ -156,14 +156,17 @@ the gateway), so a tap usually drains the whole column.
    points (assessed end-of-AUTO and end-of-match — never a live matched count).
 7. Drivetrain feel: fast (75 in/s, 7 rad/s turn, snappy accel). Per-robot drive
    params now DERIVE from the spec via `driveParams(spec)` in `src/sim/drivetrain.ts`
-   (`DRIVETRAIN_PRESETS` × `driveRpm` × `massLb`, calibrated so the DEFAULT spec
-   reproduces the legacy 75/7/280 EXACTLY — smoke-checked, do not break). Four
+   (`DRIVETRAIN_PRESETS` × `driveRpm` × `massLb`; the BASE calibration
+   `SPEED_PER_RPM`/`BASE_DRIVE_ACCEL` reproduces the legacy 75/7/280 at mult=1 —
+   smoke-checked via the mecanum ref × its mult, do not break the base). Four
    drivetrains with distinct wheel-saturation models: mecanum `|f|+|s|+|ω|`
    (0.85 strafe), x-drive same-but-full-strafe, tank `|f|+|ω|` (strafe input DEAD, controlled via traditional tank drive: left stick/W-S for left side, right stick/Up-Down for right side),
    swerve `hypot(f,s)+|ω|` (direction-independent). `maxTurn = wheelSpeed /
    halfDiagonal` (smaller/faster bots turn quicker, capped at `TURN_MAX_SPEED`).
    accel + push order is tank > swerve > mecanum > xdrive (`accelMult`/`pushMult` in
-   `DRIVETRAIN_PRESETS`); mecanum stays 1.0/1.0 as the calibration anchor. mass↑→accel↓,
+   `DRIVETRAIN_PRESETS`); mecanum's `pushMult` stays 1.0 as the mass-shove anchor. Its
+   speed/accel were rebalanced 2026-07 (tank eased down, mecanum nudged up — tank still
+   tops speed + the accel order holds; base 75/280 untouched). mass↑→accel↓,
    rpm↑→(accel↓, topspeed↑) already held. **PUSHING POWER = effective Rapier shove mass**
    (session 7) at `physicsEngine.ts` `setMass`: `massLb · pushMult · rpmPush · (1−powerDraw)`,
    `rpmPush = clamp(REF_DRIVE_RPM/driveRpm, 0.6, 1.8)` — geared-for-speed ⇒ less torque.

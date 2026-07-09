@@ -1,4 +1,87 @@
-# HANDOFF — 2026-07-09 (FIX: alpha↔main matchmaking pool separation → strategy window) — READ FIRST
+# HANDOFF — 2026-07-09 (strategy 20s + countdown SFX; "matched on <server>" HUD chip) — READ FIRST
+
+> **LATEST: GREEN, uncommitted on alpha.** `npm test` + `npm run server:check` + `npm run build` pass.
+> **Needs a Fly redeploy** for the strategy-time + server-region pieces to take effect (client-only
+> bits ship via the Vercel push).
+>
+> **1. Ranked strategy window 60s → 20s.** `server/room.ts` `STRATEGY_DURATION_MS = 20000`.
+>
+> **2. Countdown SFX in the strategy screen** (`src/ui/MatchStrategy.tsx`). The window now beeps
+> once per second over the final `STRAT_TICK_FROM = 5` seconds, rising in pitch, with a longer
+> final beep at 1s. Own `MatchAudio` instance (the GameController isn't up yet pre-match), gated
+> by the player's Sounds toggle (`settings.audio.sounds`). Fires once per new second (poll is 4 Hz,
+> guarded on a strict decrease of `secsLeft`). The ⏱ chip's warning style now flips at ≤5s (was ≤10)
+> to match the shorter window.
+>
+> **3. "Matched on <server>" HUD chip for ALL multiplayer games** (ranked, custom, record).
+> - Server now reports its Fly region at matchStart: `server/room.ts` `SERVER_REGION`
+>   (`FLY_REGION`/`SERVER_REGION` env) → new optional `region` on the `matchStart` ServerMsg
+>   (`src/net/protocol.ts`) + `MatchStart` (`src/net/lobbyClient.ts`).
+> - `src/net/env.ts`: `regionLabel(code)` (iad→'US East', sjc→'US West', lhr→'Europe', syd→
+>   'Australia', nrt→'Asia'; unknown→UPPER) + `isKnownRegion`.
+> - `ServerSession` derives a `serverLabel` (`deriveServerLabel`): reported region → region-coded
+>   room-code prefix (`iad-…`) → picked server label. Surfaced as `NetStatus.server` (new field).
+> - `GameView.tsx`: a `🌐 <label>` chip next to the NET chip (only when `hud.net.server` is set).
+> - Backward-compatible: an OLD server omits `region`, so the client falls back to the room-code
+>   prefix (accurate for ranked) or the selected server's label.
+>
+> **4. Fly VM cost downgrade.** `fly.toml` default performance-2x/4GB → **performance-1x/2GB**
+> (applies to iad + sjc; still dedicated). `scripts/fly-deploy.sh` far satellites (lhr/syd/nrt)
+> performance-1x → **shared-cpu-1x/1024MB** (`SATELLITE_SIZE`/`SATELLITE_MEMORY`, now passes
+> `--vm-memory`). Shared CPU can throttle-flap a sustained 60Hz match (the exact risk the
+> dedicated-CPU note warns about) — accepted for the low-traffic far regions (they auto-stop when
+> idle + rarely host); bump back to a performance-* size if one flaps. Applied on the next
+> `fly-deploy.sh` run (the satellite-resize step), OR live now via `fly machine update`.
+>
+> **5. Homepage redesign** (`src/ui/Home.tsx`, `MatchSetup.tsx`, `shell.css`). Play tiles are now
+> grouped into three labeled sections (`.ds-tileset`/`.ds-tileset-label`): **Practice · offline**
+> (Solo Practice primary + Free Drive), **Compete · online** (Find Match, Record Run, Duo Record),
+> **Custom** (Custom Room) LAST. "Solo Match" → **"Solo Practice"** (was misleading — it's a full
+> match, used for practice). **Match setup** is now a COLLAPSED `<details>` panel
+> (`.ds-collapse`/`.ds-collapse-sum`) with the hint "Alliance, start & auto · Ranked and Custom set
+> these in the lobby" — those options only apply to solo/offline modes, so they no longer clutter
+> the landing. GUI-verified via Electron (structure + collapsed→expanded). Client-only (no deploy
+> dependency beyond the Vercel push). NOTE: `verify` needs `ELECTRON=1 npm run build` (relative
+> `base` for `file://`); the plain web build uses `base:'/'` and renders blank under Electron.
+>
+> **6. UI de-clutter pass** (`shell.css`, `Menu.tsx`, `Lobby.tsx`, `MatchHistory.tsx`). Trimmed
+> over-tall boxes: the My Robot HERO card was ~292px (a long/narrow robot preview stretched it) →
+> **239px** — `RobotPreview size={160}` in Menu + `.ds-hero-view svg { max-height:190px }` (capped
+> just under the stats column so the stats drive the height, killing the empty bottom-right gap) +
+> `.ds-hero-view` min-height 200→150. Home `.ds-tile` min-height 118→94 (lone Custom Room tile no
+> longer looms). `.ds-empty`/`.ds-loading` padding 44→30px. Removed 3 redundant tooltips: Lobby
+> ★HOST chip (text already says it) + the presence dot ('you'/'connected', row already shows "(you)"),
+> and the MatchHistory season `<select>` (options name the seasons). Kept genuinely-explanatory ones
+> (copy-room-code, ServerPicker ping-dot quality, net-stat chips, view-@user). GUI-verified via Electron.
+>
+> **7. Park mode box too tall — real layout bug** (`Menu.tsx`). The Park-mode `.ds-panelbox` was
+> 214px with a ~150px empty gap between the slider and the hint. Cause: a bare `.ds-field` (`flex:
+> 1 1 150px`) sat directly in the panelbox's COLUMN flex, so its 150px flex-BASIS became a forced
+> HEIGHT. Fix: wrap it in `.ds-fields` (a row) like every other section does → basis is width again;
+> box 214→**102px**. (No CSS change — purely the missing wrapper.)
+>
+> **8. Settings reachable when signed out** (`AccountButton.tsx`). Auth-enabled + signed-out showed
+> ONLY "Sign in" (a modal) with no path to the settings page, so controls/audio were unreachable
+> without an account. Added a "Settings" ghost button beside "Sign in" (in the account-name slot)
+> → `onAccount` → the Account page, which already renders Controls/Audio/Reset regardless of sign-in.
+> GUI-verified: header shows Settings·Sign in, and Settings lands on Account → Controls section.
+>
+> **9. Drivetrain rebalance** (`config.ts` `DRIVETRAIN_PRESETS`). Small tuning: **tank**
+> speedMult 1.05→1.03, accelMult 1.5→1.42; **mecanum** speedMult 1.0→1.02, accelMult 1.0→1.06.
+> Preserves the core accel order tank>swerve>mecanum>xdrive (383/302/286/248 in/s²) and keeps tank
+> the top straight-line speed (1.03>1.02); `pushMult` untouched so mass-shove calibration holds.
+> Mecanum is NO LONGER the 1.0/1.0 anchor — the BASE (`SPEED_PER_RPM`/`BASE_DRIVE_ACCEL`) is the
+> 75/7/280 calibration and the ref mecanum now reads 76.5/7.14/296.8. Updated the calibration smoke
+> check to divide out the mecanum mult (pins the base regardless of tuning) + 2 new checks (speed
+> order, mecanum buffed). Comments updated in config.ts / drivetrain.ts / CLAUDE.md. smoke + build green.
+>
+> **NOT live-verified for the multiplayer bits** (#2/#3 need a running server + 2 signed-in clients —
+> couldn't orchestrate headlessly, same as the strategy-window ship). Deploy is safe from alpha
+> (server + client changed): commit → `flyctl deploy` → verify /health → Vercel auto-deploys the client.
+
+---
+
+# HANDOFF — 2026-07-09 (FIX: alpha↔main matchmaking pool separation → strategy window)
 
 > **LATEST (build-id matchmaking segregation): GREEN, uncommitted on alpha.**
 > `npm test` (+3 checks) + `npm run server:check` + `npm run build` all pass.

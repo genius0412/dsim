@@ -129,7 +129,7 @@ export function Menu({ settings, onChange }: Props) {
         {/* ---------- robot hero ---------- */}
         <div className="ds-hero">
           <div className="ds-hero-view">
-            <RobotPreview spec={spec} />
+            <RobotPreview spec={spec} size={160} />
           </div>
           <div className="ds-hero-info">
             <div>
@@ -504,20 +504,22 @@ export function Menu({ settings, onChange }: Props) {
         <section className="ds-sec">
           <h2>Park mode</h2>
           <div className="ds-panelbox">
-            <label className="ds-field">
-              <span className="cap">
-                Speed cap <span className="val">{settings.parkSpeedPct}%</span>
-              </span>
-              <input
-                className="ds-range"
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={settings.parkSpeedPct}
-                onChange={(e) => set({ parkSpeedPct: Number(e.target.value) })}
-              />
-            </label>
+            <div className="ds-fields">
+              <label className="ds-field">
+                <span className="cap">
+                  Speed cap <span className="val">{settings.parkSpeedPct}%</span>
+                </span>
+                <input
+                  className="ds-range"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={settings.parkSpeedPct}
+                  onChange={(e) => set({ parkSpeedPct: Number(e.target.value) })}
+                />
+              </label>
+            </div>
             <p className="ds-hint">
               Toggle with P or controller X. Caps drive speed for precise control — endgame only, or
               anytime in Free Drive.

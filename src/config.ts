@@ -223,15 +223,18 @@ export const SORT_FIRE_PENALTY = 0.25;
  * accelMult + pushMult order (tank > swerve > mecanum > xdrive): traction
  * wheels bite hardest, then steered modules, then rollers. pushMult scales the
  * EFFECTIVE shove mass in the Rapier robot solver (physicsEngine.ts) alongside
- * real mass, RPM (torque), and power draw. mecanum stays 1.0/1.0 — it is the
- * DEFAULT calibration anchor (75 in/s, 7 rad/s, 280 in/s²). */
+ * real mass, RPM (torque), and power draw. The BASE calibration (SPEED_PER_RPM /
+ * BASE_DRIVE_ACCEL) is 75 in/s, 7 rad/s, 280 in/s² at mult=1; mecanum's pushMult
+ * stays 1.0 as the mass-shove anchor. Speed/accel were rebalanced July 2026: tank
+ * eased down a touch and mecanum nudged up a touch, holding the accel order. */
 export const DRIVETRAIN_PRESETS = {
-  /** the FTC standard: full strafe at roller-slip speed */
-  mecanum: { strafeMult: 0.85, speedMult: 1.0, accelMult: 1.0, pushMult: 1.0, saturation: 'sum' },
+  /** the FTC standard: full strafe at roller-slip speed (slightly buffed 2026-07) */
+  mecanum: { strafeMult: 0.85, speedMult: 1.02, accelMult: 1.06, pushMult: 1.0, saturation: 'sum' },
   /** 45° omni pods: full-speed strafe, slight overall speed loss + least bite */
   xdrive: { strafeMult: 1.0, speedMult: 0.9, accelMult: 0.92, pushMult: 0.9, saturation: 'sum' },
-  /** traction wheels: no strafe, best straight-line speed, accel, and push */
-  tank: { strafeMult: 0, speedMult: 1.05, accelMult: 1.5, pushMult: 1.5, saturation: 'tank' },
+  /** traction wheels: no strafe, best straight-line speed, accel, and push
+   * (eased down a touch 2026-07 — still tops speed + the accel order) */
+  tank: { strafeMult: 0, speedMult: 1.03, accelMult: 1.42, pushMult: 1.5, saturation: 'tank' },
   /** independent steered modules: full-speed any direction, strong bite */
   swerve: { strafeMult: 1.0, speedMult: 1.0, accelMult: 1.12, pushMult: 1.15, saturation: 'vec' },
 } as const;

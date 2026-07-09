@@ -70,6 +70,22 @@ declare const __BUILD_ID__: string;
 export const appBuild = (): string =>
   typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : 'dev';
 
+/** friendly short names for the Fly deploy regions (code → place). Unknown codes
+ * fall back to their uppercase code so a new region still shows something sane. */
+const REGION_LABELS: Record<string, string> = {
+  iad: 'US East',
+  sjc: 'US West',
+  lhr: 'Europe',
+  syd: 'Australia',
+  nrt: 'Asia',
+};
+export const regionLabel = (code: string): string =>
+  REGION_LABELS[code] ?? (code ? code.toUpperCase() : '');
+
+/** whether `code` is a known deploy region (used to tell a region-coded room code
+ * like `iad-abc` from an ordinary custom room code). */
+export const isKnownRegion = (code: string): boolean => code in REGION_LABELS;
+
 /** all configured servers (regions); empty ⇒ multiplayer/records disabled */
 export const gameServers = (): GameServer[] => SERVERS;
 

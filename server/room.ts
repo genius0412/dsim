@@ -60,7 +60,11 @@ const RANKED_JOIN_GRACE_MS = 20000;
  * alliance's builds, re-pick, claim a close/far start pose, and ready up. The match
  * begins the instant all ready; if anyone hasn't readied by the deadline the match
  * is CANCELLED (user decision — strict, so nobody waits forever on an idle player). */
-const STRATEGY_DURATION_MS = 60000;
+const STRATEGY_DURATION_MS = 20000;
+
+/** the Fly region this server machine runs in (blank on a single-region / local
+ * deploy). Sent to clients at matchStart so the HUD can show "matched on <region>". */
+const SERVER_REGION: string = process.env.FLY_REGION ?? process.env.SERVER_REGION ?? '';
 
 export interface Client {
   id: string;
@@ -442,6 +446,7 @@ export class Room {
         yourRobotId: this.robotOf.get(c.id) ?? 0,
         ranked: this.ranked,
         intros: this.ranked ? this.intros : undefined,
+        region: SERVER_REGION || undefined,
       });
     }
     this.startLoop();

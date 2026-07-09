@@ -344,6 +344,11 @@ function Hud({ hud }: { hud: HudSnapshot }) {
                 NET {hud.net.peers + 1}P
               </span>
             )}
+            {hud.net?.server && (
+              <span className="chip on" title={`This match is hosted on the ${hud.net.server} server`}>
+                🌐 {hud.net.server}
+              </span>
+            )}
             {hud.net && !hud.net.waitingFor && <NetQuality net={hud.net} />}
             {hud.net?.waitingFor && (
               <span className="chip warn">WAITING · {hud.net.waitingFor}</span>

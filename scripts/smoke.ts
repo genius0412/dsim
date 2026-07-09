@@ -49,6 +49,7 @@ import {
   ROBOT_PRESETS,
   ROBOT_MAX_SIZE,
   ROBOT_MIN_WIDTH,
+  DRIVETRAIN_PRESETS,
 } from '../src/config';
 import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
 import { driveParams, massLimits, rpmLimits } from '../src/sim/drivetrain';
@@ -983,19 +984,21 @@ const setup = (
 
 // ---- drivetrain calibration reproduces the legacy tuned feel exactly --------
 {
-  // the drivetrain constants were tuned so a 26lb / 435rpm mecanum (15x18) hits
-  // 75/7/280. DEFAULT_SPEC is now a named team robot, so anchor this to the
-  // explicit legacy reference rather than whatever the default happens to be.
+  // the BASE calibration (SPEED_PER_RPM / BASE_DRIVE_ACCEL) is tuned so a 26lb /
+  // 435rpm mecanum (15x18) hits 75/7/280 at mult=1. Mecanum's speed/accel mult were
+  // nudged up in the 2026-07 rebalance, so divide them out here to keep pinning the
+  // BASE calibration regardless of the per-drivetrain tuning.
   const CALIB_REF: RobotSpec = {
     ...DEFAULT_SPEC, length: 15, width: 18, intake: 'sloped',
     massLb: 26, drivetrain: 'mecanum', driveRpm: 435, flywheelInertia: 0.5,
   };
   const dp = driveParams(CALIB_REF);
+  const M = DRIVETRAIN_PRESETS.mecanum; // maxSpeed/turn scale with speedMult, accel with accelMult
   check(
-    'legacy calibration ref drives at 75 in/s, 7 rad/s, 280 in/s²',
-    Math.abs(dp.maxSpeed - 75) < 1e-6 &&
-      Math.abs(dp.maxTurn - 7) < 1e-6 &&
-      Math.abs(dp.accel - 280) < 1e-6,
+    'base calibration ref: 75 in/s, 7 rad/s, 280 in/s² (× mecanum mult)',
+    Math.abs(dp.maxSpeed - 75 * M.speedMult) < 1e-6 &&
+      Math.abs(dp.maxTurn - 7 * M.speedMult) < 1e-6 &&
+      Math.abs(dp.accel - 280 * M.accelMult) < 1e-6,
     `${dp.maxSpeed.toFixed(2)} / ${dp.maxTurn.toFixed(2)} / ${dp.accel.toFixed(1)}`,
   );
 }
@@ -1074,6 +1077,15 @@ const setup = (
     t > s && s > me && me > x,
     `${t.toFixed(0)}/${s.toFixed(0)}/${me.toFixed(0)}/${x.toFixed(0)}`,
   );
+}
+
+// ---- 2026-07 rebalance: tank still tops speed, mecanum buffed above the base -
+{
+  const sp = (dt: RobotSpec['drivetrain']) => driveParams({ ...DEFAULT_SPEC, drivetrain: dt }).maxSpeed;
+  // tank eased down but still the fastest straight line; mecanum nudged above swerve
+  check('speed order tank ≥ mecanum > swerve (tank still tops speed)', sp('tank') >= sp('mecanum') && sp('mecanum') > sp('swerve'));
+  // mecanum sits ABOVE the base calibration on both axes (the buff)
+  check('mecanum buffed above the base (speed & accel mult > 1)', DRIVETRAIN_PRESETS.mecanum.speedMult > 1 && DRIVETRAIN_PRESETS.mecanum.accelMult > 1);
 }
 
 // ---- pushing power: equal-mass tank out-pushes mecanum ----------------------

@@ -199,7 +199,6 @@ export function MatchHistory({
                 const v = Number(e.target.value);
                 changeSeason(current != null && v === current ? null : v);
               }}
-              title="Season"
             >
               {seasons.map((s) => (
                 <option key={s.season} value={s.season}>
