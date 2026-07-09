@@ -1124,6 +1124,7 @@ tr.lb-detail td {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 .ds-opt {
+  position: relative;
   text-align: left;
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
@@ -1136,6 +1137,48 @@ tr.lb-detail td {
   cursor: pointer;
   font: inherit;
   transition: border-color 0.14s, background 0.14s, box-shadow 0.14s;
+}
+/* count badge next to a section title, e.g. "Saved robots 2/3" */
+.ds-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ds-mut);
+}
+/* per-card delete (✕) button, top-right */
+.ds-opt-del {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ds-mut);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.14s, background 0.14s, border-color 0.14s;
+}
+.ds-opt-del:hover {
+  color: var(--ds-red, #ef4444);
+  background: color-mix(in srgb, var(--ds-red, #ef4444) 14%, transparent);
+  border-color: color-mix(in srgb, var(--ds-red, #ef4444) 40%, var(--ds-line));
+}
+/* "save current" / "add" slot: dashed, muted until hovered */
+.ds-opt-add {
+  border-style: dashed;
+  color: var(--ds-mut);
+  justify-content: center;
+}
+.ds-opt-add:not(:disabled):hover {
+  color: var(--ds-ink);
+  border-color: var(--ds-accent);
+}
+.ds-opt-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .ds-opt:hover {
   border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));

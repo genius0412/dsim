@@ -1142,6 +1142,24 @@ const setup = (
   check('coerceSettings clamps swerve rpm down to 500', s.spec.driveRpm === 500, `${s.spec.driveRpm}`);
 }
 
+// ---- saved robot / auto libraries are validated + capped ---------------------
+{
+  const validAuto = (name: string) => ({
+    fileName: name,
+    startPoint: { x: 0, y: 0, heading: 'constant', degrees: 0 },
+    lines: [],
+    sequence: [],
+  });
+  const lib = coerceSettings({
+    savedRobots: Array.from({ length: 6 }, () => ({ drivetrain: 'mecanum' })),
+    savedAutos: [validAuto('a'), null, { bogus: true }, validAuto('b'), validAuto('c'), validAuto('d'), validAuto('e')],
+  });
+  check('savedRobots capped at MAX_SAVED_ROBOTS', lib.savedRobots.length === 3, `${lib.savedRobots.length}`);
+  check('each saved robot is coerced to a legal spec', lib.savedRobots.every((r) => r.driveRpm >= 200 && r.massLb >= 10));
+  check('savedAutos drops invalid entries + caps at MAX_SAVED_AUTOS', lib.savedAutos.length === 4, `${lib.savedAutos.length}`);
+  check('defaultSettings starts with empty libraries', coerceSettings({}).savedRobots.length === 0 && coerceSettings({}).savedAutos.length === 0);
+}
+
 // ---- untrusted spec sanitization (anti-cheat: spoofed devtools / wire spec) --
 {
   // an attacker sends an absurd oversized robot: coerceSpec must clamp EVERY axis

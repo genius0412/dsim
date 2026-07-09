@@ -7,7 +7,7 @@ import type {
   Vec2,
   Alliance,
 } from '../types';
-import { START_POSES } from '../config';
+import { START_POSES, MAX_SAVED_AUTOS } from '../config';
 
 /**
  * Match configuration — the pre-game options that belong to the MATCH, not the
@@ -77,6 +77,11 @@ export function MatchSetup({
       event.target.value = '';
       return;
     }
+    if (settings.savedAutos.length >= MAX_SAVED_AUTOS) {
+      showToast(`You can save up to ${MAX_SAVED_AUTOS} autos — delete one first.`, 'warning');
+      event.target.value = '';
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
@@ -102,15 +107,19 @@ export function MatchSetup({
           version: data.version,
           timestamp: data.timestamp,
         };
-        set({ autoPath: autoPathData, autoPathEnabled: true });
-        showToast(`Loaded auto path: ${file.name}`, 'success');
+        // add to the library AND select it as the active auto
+        set({
+          savedAutos: [...settings.savedAutos, autoPathData],
+          autoPath: autoPathData,
+          autoPathEnabled: true,
+        });
+        showToast(`Saved auto: ${file.name}`, 'success');
       } catch (error) {
         const errMsg = getErrorMessage(error);
         const message = errMsg.includes('Invalid file format')
           ? 'Invalid file format. This may not be a valid Pedro Pathing file.'
           : `Error loading file: ${errMsg}`;
         showToast(message, 'error');
-        set({ autoPath: null, autoPathEnabled: false });
       } finally {
         event.target.value = '';
       }
@@ -122,9 +131,13 @@ export function MatchSetup({
     reader.readAsText(file);
   };
 
-  const clearAutoPath = () => {
-    set({ autoPath: null, autoPathEnabled: false });
-    showToast('Auto path cleared.', 'info');
+  // select a saved auto as the active one (a copy stays in the library)
+  const selectAuto = (a: AutoPathData) => set({ autoPath: a, autoPathEnabled: true });
+  const deleteAuto = (i: number) => {
+    const removed = settings.savedAutos[i];
+    const savedAutos = settings.savedAutos.filter((_, j) => j !== i);
+    const wasActive = !!removed && settings.autoPath?.fileName === removed.fileName;
+    set(wasActive ? { savedAutos, autoPath: null, autoPathEnabled: false } : { savedAutos });
   };
 
   const setAlliance = (alliance: Alliance) => set({ alliance });
@@ -183,27 +196,65 @@ export function MatchSetup({
         </section>
 
         <section className="ds-sec">
-          <h2>Auto path</h2>
+          <h2>
+            Auto path{' '}
+            <span className="ds-count">
+              {settings.savedAutos.length}/{MAX_SAVED_AUTOS}
+            </span>
+          </h2>
           <div className="ds-opts">
-            <label className="ds-opt" style={{ cursor: 'pointer' }}>
-              <span className="ot">Import .pp file</span>
-              <span className="od">{settings.autoPath ? settings.autoPath.fileName : 'No file selected'}</span>
-              <input type="file" accept=".pp" onChange={handleFileChange} style={{ display: 'none' }} />
-            </label>
-            {settings.autoPath && (
-              <button className="ds-opt" onClick={clearAutoPath}>
-                <span className="ot">Clear path</span>
-              </button>
+            {settings.savedAutos.map((a, i) => {
+              const active = settings.autoPath?.fileName === a.fileName;
+              return (
+                <div
+                  key={i}
+                  className={`ds-opt ${active ? 'on' : ''}`}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => selectAuto(a)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') selectAuto(a);
+                  }}
+                >
+                  <button
+                    className="ds-opt-del"
+                    title="Delete this auto"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteAuto(i);
+                    }}
+                  >
+                    ✕
+                  </button>
+                  <span className="ot">{a.fileName}</span>
+                  <span className="od">
+                    {a.lines?.length ?? 0} segments{active ? ' · selected' : ''}
+                  </span>
+                </div>
+              );
+            })}
+            {settings.savedAutos.length < MAX_SAVED_AUTOS && (
+              <label className="ds-opt ds-opt-add" style={{ cursor: 'pointer' }}>
+                <span className="ot">＋ Import .pp</span>
+                <span className="od">Add an auto to your library</span>
+                <input type="file" accept=".pp" onChange={handleFileChange} style={{ display: 'none' }} />
+              </label>
             )}
+          </div>
+          {settings.autoPath && (
             <button
               className={`ds-opt ${settings.autoPathEnabled ? 'on' : ''}`}
+              style={{ marginTop: 10 }}
               onClick={() => set({ autoPathEnabled: !settings.autoPathEnabled })}
-              disabled={!settings.autoPath}
             >
               <span className="ot">Auto path {settings.autoPathEnabled ? 'ON' : 'OFF'}</span>
-              <span className="od">Follow the imported path</span>
+              <span className="od">
+                {settings.autoPathEnabled
+                  ? `Running: ${settings.autoPath.fileName}`
+                  : 'Selected auto is off'}
+              </span>
             </button>
-          </div>
+          )}
           <p className="ds-hint">
             Build a <code>.pp</code> path at{' '}
             <a

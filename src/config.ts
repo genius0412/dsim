@@ -526,6 +526,10 @@ export const PRELOAD: readonly ('purple' | 'green')[] = ['purple', 'green', 'pur
 export const HP_INITIAL_STOCK: readonly ('purple' | 'green')[] = ['purple', 'purple', 'green'];
 
 // -------------------------------------------------------- robot presets ----
+/** how many of the player's OWN robots / autos they can keep in their library */
+export const MAX_SAVED_ROBOTS = 3;
+export const MAX_SAVED_AUTOS = 4;
+
 /** real FTC team BUILDS covering the archetype matrix; the menu also offers a
  * fully custom builder. Picking a preset copies its BUILD only — the player's
  * name/team/number are their own. The first entry (TW) is the DEFAULT_SPEC build

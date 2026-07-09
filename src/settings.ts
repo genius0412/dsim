@@ -1,6 +1,6 @@
 import type { GameSettings } from './types';
 import { DEFAULT_SPEC, coerceSpec, coerceAssists, coerceAutoPath } from './sim/spawn';
-import { START_POSES } from './config';
+import { START_POSES, MAX_SAVED_ROBOTS, MAX_SAVED_AUTOS } from './config';
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
 import { clamp } from './math';
 
@@ -12,6 +12,8 @@ export function defaultSettings(): GameSettings {
     alliance: 'blue',
     assists: { fieldCentric: true, aimAssist: true, autoIntake: false, autoFire: false },
     spec: { ...DEFAULT_SPEC },
+    savedRobots: [],
+    savedAutos: [],
     startIndex: 0,
     practiceDummies: false,
     audio: { sounds: true, voice: true },
@@ -38,6 +40,16 @@ export function coerceSettings(raw: unknown): GameSettings {
     // same legal ranges as a spoofed wire spec, so both surfaces agree exactly.
     out.assists = coerceAssists(s.assists, out.assists);
     if (s.spec !== undefined) out.spec = coerceSpec(s.spec, out.spec);
+    // saved libraries: validate each entry through the same coercers, cap the count
+    if (Array.isArray(s.savedRobots)) {
+      out.savedRobots = s.savedRobots.slice(0, MAX_SAVED_ROBOTS).map((r) => coerceSpec(r));
+    }
+    if (Array.isArray(s.savedAutos)) {
+      out.savedAutos = s.savedAutos
+        .map((a) => coerceAutoPath(a))
+        .filter((a): a is NonNullable<typeof a> => a !== null)
+        .slice(0, MAX_SAVED_AUTOS);
+    }
     if (typeof s.startIndex === 'number') {
       out.startIndex = clamp(Math.round(s.startIndex), 0, START_POSES.length - 1);
     }

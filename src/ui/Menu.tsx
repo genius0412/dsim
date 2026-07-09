@@ -2,6 +2,7 @@ import type { GameSettings } from '../types';
 import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
 import {
   INTAKE_PRESETS,
+  MAX_SAVED_ROBOTS,
   ROBOT_MAX_SIZE,
   ROBOT_MIN_WIDTH,
   ROBOT_PRESETS,
@@ -106,6 +107,22 @@ export function Menu({ settings, onChange }: Props) {
   const dp = driveParams(spec);
   const isCustom = !ROBOT_PRESETS.some((p) => specMatches(spec, p));
 
+  // ---- the player's SAVED robot library (their own full robots, up to 3) ----
+  const savedRobots = settings.savedRobots;
+  // a saved slot is the active one when the whole robot matches (identity + build)
+  const sameRobot = (a: RobotSpec, b: RobotSpec): boolean =>
+    specMatches(a, b) &&
+    a.name === b.name &&
+    a.teamName === b.teamName &&
+    a.teamNumber === b.teamNumber;
+  const alreadySaved = savedRobots.some((r) => sameRobot(spec, r));
+  const saveCurrentRobot = (): void => {
+    if (savedRobots.length >= MAX_SAVED_ROBOTS || alreadySaved) return;
+    set({ savedRobots: [...savedRobots, { ...spec }] });
+  };
+  const deleteSavedRobot = (i: number): void =>
+    set({ savedRobots: savedRobots.filter((_, j) => j !== i) });
+
   function selectIntake(intake: IntakeStyle) {
     // setSpec re-clamps chassis length into the new preset's range (18in cube)
     setSpec({ intake });
@@ -175,6 +192,63 @@ export function Menu({ settings, onChange }: Props) {
             </div>
           </div>
         </div>
+
+        {/* ---------- saved robots (the player's own garage) ---------- */}
+        <section className="ds-sec">
+          <h2>
+            Saved robots <span className="ds-count">{savedRobots.length}/{MAX_SAVED_ROBOTS}</span>
+          </h2>
+          <div className="ds-opts">
+            {savedRobots.map((r, i) => (
+              <div
+                key={i}
+                className={`ds-opt ${sameRobot(spec, r) ? 'on' : ''}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => set({ spec: { ...r } })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') set({ spec: { ...r } });
+                }}
+              >
+                <button
+                  className="ds-opt-del"
+                  title="Delete this robot"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteSavedRobot(i);
+                  }}
+                >
+                  ✕
+                </button>
+                <span className="ot">{r.name || 'Unnamed'}</span>
+                <span className="od">
+                  {r.teamNumber ? `${r.teamNumber} · ` : ''}
+                  {r.teamName || 'No team'}
+                </span>
+                <span className="om">
+                  {DRIVETRAIN_LABELS[r.drivetrain]} · {r.massLb} lb · {r.driveRpm} RPM ·{' '}
+                  {INTAKE_SHORT[r.intake]} · {r.flywheelInertia} inertia
+                  {r.canSort ? ' · sorts' : ''}
+                </span>
+              </div>
+            ))}
+            {savedRobots.length < MAX_SAVED_ROBOTS && (
+              <button
+                className="ds-opt ds-opt-add"
+                onClick={saveCurrentRobot}
+                disabled={alreadySaved}
+                title={alreadySaved ? 'This robot is already saved' : 'Save the current robot'}
+              >
+                <span className="ot">＋ Save current</span>
+                <span className="od">
+                  {alreadySaved
+                    ? 'Already in your garage'
+                    : `${spec.name || 'Unnamed'} → slot ${savedRobots.length + 1}`}
+                </span>
+              </button>
+            )}
+          </div>
+        </section>
 
         {/* ---------- presets ---------- */}
         <section className="ds-sec">

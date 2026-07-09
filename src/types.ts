@@ -277,6 +277,12 @@ export interface GameSettings {
   mode: GameMode;
   alliance: Alliance;
   spec: RobotSpec;
+  /** the player's saved robot library (up to MAX_SAVED_ROBOTS). `spec` is the
+   * ACTIVE robot; loading a slot copies it into `spec`, saving copies `spec` in. */
+  savedRobots: RobotSpec[];
+  /** the player's saved auto library (up to MAX_SAVED_AUTOS). `autoPath` is the
+   * ACTIVE auto; selecting a slot copies it into `autoPath`. */
+  savedAutos: AutoPathData[];
   startIndex: number;
   practiceDummies: boolean;
   assists: AssistConfig;
