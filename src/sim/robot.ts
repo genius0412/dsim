@@ -88,8 +88,18 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   // swerve: the four steering (pivot) motors pull steady current just to hold +
   // correct the pod angles, on top of the drive motors — always a bit slower.
   const swerveDraw = dp.saturation === 'vec' ? C.POWER_DRAW_SWERVE : 0;
+  // drive current rises with RPM: a drivetrain geared for more speed pulls more
+  // current from the pack (only above the reference rpm, so base calibration holds)
+  // → diminishing top-speed returns on cranking rpm + more sag under load.
+  const driveDraw =
+    C.POWER_DRAW_DRIVE *
+    clamp(
+      (r.spec.driveRpm - C.REF_DRIVE_RPM) / (C.POWER_DRAW_DRIVE_TOP_RPM - C.REF_DRIVE_RPM),
+      0,
+      1,
+    );
   const draw = Math.min(
-    flywheelDraw + (intakeDraw ? C.POWER_DRAW_INTAKE : 0) + swerveDraw,
+    flywheelDraw + (intakeDraw ? C.POWER_DRAW_INTAKE : 0) + swerveDraw + driveDraw,
     C.POWER_DRAW_MAX,
   );
   r.powerDraw = draw;

@@ -1248,6 +1248,13 @@ const setup = (
   step(mecIdle, SIM_DT, new Map());
   check('swerve pulls steady steering power (mecanum does not)', swIdle.robots[0].powerDraw >= POWER_DRAW_SWERVE - 1e-9 && mecIdle.robots[0].powerDraw < swIdle.robots[0].powerDraw, `swerve ${swIdle.robots[0].powerDraw.toFixed(3)} vs mecanum ${mecIdle.robots[0].powerDraw.toFixed(3)}`);
 
+  // drive current rises with RPM: a higher-geared drivetrain pulls more from the pack
+  const hiRpm = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'mecanum', flywheelInertia: 0, driveRpm: 600 }, 0)]);
+  step(hiRpm, SIM_DT, new Map());
+  const loRpm = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'mecanum', flywheelInertia: 0, driveRpm: 435 }, 0)]);
+  step(loRpm, SIM_DT, new Map());
+  check('higher-rpm drivetrain pulls more current', hiRpm.robots[0].powerDraw > loRpm.robots[0].powerDraw + 0.02, `600rpm ${hiRpm.robots[0].powerDraw.toFixed(3)} vs 435rpm ${loRpm.robots[0].powerDraw.toFixed(3)}`);
+
   // WOBBLE done right: driving straight, the four pods hunt INDEPENDENTLY (their
   // angles differ), producing BOTH a path drift AND a net YAW wobble (heading
   // oscillates). Mecanum holds a perfect line + heading.

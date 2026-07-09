@@ -325,9 +325,10 @@ export const DRIVETRAIN_PRESETS = {
    * rollers slip trivially (weakest traction → poor accel, shoved by everyone), and even
    * rotation scrubs. Fully symmetric (strafe = forward). A hard-mode/style pick only. */
   xdrive: { strafeMult: 1.0, speedMult: 0.74, accelMult: 0.58, pushMult: 0.35, turnMult: 0.9, saturation: 'sum' },
-  /** traction wheels: no strafe, but the best straight-line speed, accel, and
-   * pushing power — the defensive anchor. */
-  tank: { strafeMult: 0, speedMult: 1.0, accelMult: 1.45, pushMult: 1.7, turnMult: 1.0, saturation: 'tank' },
+  /** traction wheels: no strafe, but a clear top-SPEED lead plus the best accel and
+   * pushing power — the defensive anchor. speedMult 1.06: pushed above the ideal datum so
+   * tank is decisively the fastest in a straight line (grippy wheels, least drivetrain loss). */
+  tank: { strafeMult: 0, speedMult: 1.06, accelMult: 1.45, pushMult: 1.7, turnMult: 1.0, saturation: 'tank' },
   // (tank accelMult 1.45 × base 240 = 348 ≈ μ·g at μ 0.9 — the traction ceiling)
   /** steered traction modules: the HEAVY all-rounder — full-speed any direction +
    * strong push + good top speed, but its weight (mass FLOOR below) tanks its accel
@@ -338,7 +339,8 @@ export const DRIVETRAIN_PRESETS = {
   // losses cancel → identical straight-line top speed. accel stays traction-limited, push
   // unaffected. turnMult 1.15: it VECTORS all four wheels tangentially for rotation → the
   // fastest TURNER, its signature. Tradeoffs: WOBBLE (imprecise line), heavy mass, steering draw.
-  swerve: { strafeMult: 1.0, speedMult: 0.92, accelMult: 1.3, pushMult: 1.35, turnMult: 1.15, saturation: 'vec' },
+  // turnMult 1.18: kept above tank's raised speed so swerve stays the fastest turner.
+  swerve: { strafeMult: 1.0, speedMult: 0.92, accelMult: 1.3, pushMult: 1.35, turnMult: 1.18, saturation: 'vec' },
 } as const;
 
 /** flywheel recovery: after an energetic (long-range) shot, a LOW-inertia
@@ -376,6 +378,13 @@ export const POWER_DRAW_INTAKE = 0.06; // intake motors running
  * equivalent mecanum. Applied whenever the drivetrain is swerve. */
 export const POWER_DRAW_SWERVE = 0.1; // steady steering-motor current — kept modest; swerve's
 // main weakness is now the mechanical efficiency loss baked into its speedMult, not amperage.
+/** DRIVE current scales with RPM: a drivetrain geared for higher rpm pulls more current
+ * from the pack to hold power at speed. Modeled only ABOVE the reference rpm (so the
+ * 435-rpm base calibration is untouched), ramping to POWER_DRAW_DRIVE at the top rpm —
+ * so high-rpm builds top out SUB-linearly and hit the draw cap sooner when also
+ * shooting/intaking (voltage sag). Low-rpm builds draw nothing extra. */
+export const POWER_DRAW_DRIVE = 0.05;
+export const POWER_DRAW_DRIVE_TOP_RPM = 600;
 export const POWER_DRAW_MAX = 0.2; // cap ⇒ at most ~20% slower
 export const FLY_SPIN_NEAR = 40; // in to goal: flywheel spin 0
 export const FLY_SPIN_FAR = 170; // in to goal: flywheel spin 1
