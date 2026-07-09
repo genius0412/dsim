@@ -7,7 +7,9 @@ import type {
   Vec2,
   Alliance,
 } from '../types';
-import { START_POSES, MAX_SAVED_AUTOS } from '../config';
+import { MAX_SAVED_AUTOS } from '../config';
+import { StartPositionEditor } from './StartPositionEditor';
+import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
 
 /**
  * Match configuration — the pre-game options that belong to the MATCH, not the
@@ -180,17 +182,20 @@ export function MatchSetup({
 
         <section className="ds-sec">
           <h2>Start position</h2>
-          <div className="ds-opts">
-            {START_POSES.map((p, i) => (
-              <button
-                key={p.label}
-                className={`ds-opt mini ${settings.startIndex === i ? 'on' : ''}`}
-                onClick={() => set({ startIndex: i })}
-              >
-                <span className="ot">{p.label}</span>
-                <span className="od">launch zone</span>
-              </button>
-            ))}
+          <StartPositionEditor
+            spec={settings.spec}
+            alliance={settings.alliance}
+            value={settings.startPose}
+            startIndex={settings.startIndex}
+            category={settings.startCat}
+            saved={settings.savedStartPoses}
+            onChange={(startPose) => startPose && set(selectStart(settings, { index: -1, pose: startPose }))}
+            onPickPreset={(i) => set(selectStart(settings, { index: i, pose: null }))}
+            onCategory={(c) => set(switchCategory(settings, c))}
+            onSave={(pose) => set(saveStart(settings, pose))}
+            onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
+          />
+          <div className="ds-opts" style={{ marginTop: 12 }}>
             <button
               className={`ds-opt mini ${settings.practiceDummies ? 'on' : ''}`}
               onClick={() => set({ practiceDummies: !settings.practiceDummies })}

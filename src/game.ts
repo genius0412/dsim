@@ -252,6 +252,7 @@ export class GameController {
         spec: s.spec,
         assists: s.assists,
         startIndex: s.startIndex,
+        startPose: s.startPose ?? undefined,
         autoPath: s.autoPath ?? undefined,
         autoPathEnabled: s.autoPathEnabled,
       },
@@ -267,7 +268,8 @@ export class GameController {
         startIndex,
       });
       setups.push(
-        dummy(1, s.alliance, s.startIndex === 1 ? 2 : 1),
+        // the partner dummy takes the OTHER preset so it never overlaps the player
+        dummy(1, s.alliance, s.startIndex === 1 ? 0 : 1),
         dummy(2, opp, 0),
         dummy(3, opp, 1),
       );

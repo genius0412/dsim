@@ -240,6 +240,7 @@ export function App() {
     return (
       <Lobby
         settings={settings}
+        onSettingsChange={update}
         onStart={(s) => {
           setSession(s);
           navigate('game');
@@ -266,6 +267,7 @@ export function App() {
     return (
       <Lobby
         settings={settings}
+        onSettingsChange={update}
         config={{ kind: 'record', record: 'duo' }}
         onStart={(s) => {
           setSession(s);

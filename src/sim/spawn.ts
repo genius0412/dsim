@@ -17,12 +17,13 @@ import type {
   SequenceItem,
   ControlPoint, // Import ControlPoint
   Vec2, // Import Vec2
+  StartPose,
 } from '../types';
 import * as C from '../config';
 import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
 import { lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
 import { heldSlotPos } from './physics';
-import { flywheelSpinTarget, loadPreStage, spikeMarkBalls, startPose } from './field';
+import { flywheelSpinTarget, loadPreStage, mirrorStartPose, snapStartToLegal, spikeMarkBalls, startPose } from './field';
 import { emptyScore } from './scoring';
 
 export const MOTIFS: Motif[] = [
@@ -190,16 +191,45 @@ export function coerceAutoPath(raw: unknown): AutoPathData | null {
  * `id` is preserved (it keys the command map). This is the LAST line of defense —
  * `createWorld` runs it on every setup, so no spawn path can produce a bad robot
  * regardless of how the setup was assembled. */
+/** structural + bounds coercion for a custom start pose (canonical goalSide=+1
+ * frame). Returns null for anything non-finite. Field-clamps x/y and normalizes
+ * the heading to [0,360). G304 LEGALITY (over a launch line, touching a surface,
+ * own half) is NOT enforced here — that needs the alliance+spec and is applied by
+ * `coerceSetup` via `snapStartToLegal`, the spawn chokepoint. */
+export function coerceStartPose(raw: unknown): StartPose | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const p = raw as Record<string, unknown>;
+  if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.headingDeg)) return null;
+  let h = (p.headingDeg as number) % 360;
+  if (h < 0) h += 360;
+  return {
+    x: clamp(p.x as number, -C.FIELD_HALF, C.FIELD_HALF),
+    y: clamp(p.y as number, -C.FIELD_HALF, C.FIELD_HALF),
+    headingDeg: h,
+  };
+}
+
 export function coerceSetup(s: RobotSetup): RobotSetup {
   const autoPath = s.autoPath !== undefined ? coerceAutoPath(s.autoPath) : null;
+  const alliance = s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue';
+  const spec = coerceSpec(s.spec);
+  // a custom pose overrides the preset; snap it G304-legal for THIS spec+alliance
+  // so no spawn path (localStorage, wire, staged match) can place an illegal robot.
+  let startPose: StartPose | undefined;
+  const raw = coerceStartPose(s.startPose);
+  if (raw) {
+    const actual = snapStartToLegal(spec, mirrorStartPose(raw, alliance), alliance);
+    startPose = mirrorStartPose(actual, alliance); // store back canonical
+  }
   return {
     id: s.id,
-    alliance: s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue',
-    spec: coerceSpec(s.spec),
+    alliance,
+    spec,
     assists: coerceAssists(s.assists),
     startIndex: Number.isFinite(s.startIndex)
       ? clamp(Math.round(s.startIndex), 0, C.START_POSES.length - 1)
       : 0,
+    startPose,
     autoPath: autoPath ?? undefined,
     autoPathEnabled: autoPath ? s.autoPathEnabled === true : false,
   };
@@ -211,8 +241,11 @@ export interface RobotSetup {
   alliance: Alliance;
   spec: RobotSpec;
   assists: AssistConfig;
-  /** index into START_POSES (mirrored per alliance) */
+  /** index into START_POSES (mirrored per alliance) — the quick-pick fallback */
   startIndex: number;
+  /** a fully-placed CUSTOM start pose (canonical goalSide=+1 frame). Overrides
+   * startIndex when present; `coerceSetup` snaps it G304-legal at spawn. */
+  startPose?: StartPose;
   // New fields for auto pathing
   autoPath?: AutoPathData;
   autoPathEnabled?: boolean;
@@ -335,7 +368,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
   // legal, spawn-safe config here. Deterministic + idempotent, so live play and
   // replay re-runs agree. See coerceSetup / coerceSpec above.
   for (const s of [...setups].map(coerceSetup).sort((p, q) => p.id - q.id)) {
-    const pose = startPose(s.alliance, s.startIndex);
+    const pose = startPose(s.alliance, s.startIndex, s.startPose, s.spec);
     const nth = allianceCount[s.alliance]++;
 
     let robotAutoPath = s.autoPath;

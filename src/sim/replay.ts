@@ -1,4 +1,4 @@
-import type { Alliance, GameMode, RobotCommand, RobotSpec, World, AutoPathData } from '../types';
+import type { Alliance, GameMode, RobotCommand, RobotSpec, World, AutoPathData, StartPose } from '../types';
 import * as C from '../config';
 import { createWorld, DEFAULT_ASSISTS, type RobotSetup } from './spawn';
 import { step } from './world';
@@ -231,18 +231,21 @@ export function recordSetups(
   assists = DEFAULT_ASSISTS,
   autoPath?: AutoPathData, // Add autoPath parameter
   autoPathEnabled?: boolean, // Add autoPathEnabled parameter
+  startPose?: StartPose, // custom start pose (applied to slot 0 only)
 ): RobotSetup[] {
   const alliance: Alliance = 'blue';
-  const slot = (id: number, startIndex: number): RobotSetup => ({
+  const slot = (id: number, startIndex: number, pose?: StartPose): RobotSetup => ({
     id,
     alliance,
     spec: { ...spec },
     assists: { ...assists },
     startIndex,
+    startPose: pose,
     autoPath: autoPath, // Pass autoPath
     autoPathEnabled: autoPathEnabled, // Pass autoPathEnabled
   });
-  return mode === 'solo' ? [slot(0, 0)] : [slot(0, 0), slot(1, 1)];
+  // slot 1 stays on a preset so a duo can't spawn both robots on one custom spot
+  return mode === 'solo' ? [slot(0, 0, startPose)] : [slot(0, 0, startPose), slot(1, 1)];
 }
 
 /** the alliance a record run scores for (the run robots' alliance) */

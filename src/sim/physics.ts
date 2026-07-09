@@ -1,6 +1,6 @@
 import type { Alliance, Artifact, RobotState, Vec2, World } from '../types';
 import * as C from '../config';
-import { classifierRect, goalFaceNormal, goalLineValue, type Rect } from './field';
+import { classifierRect, footprintExtents, goalFaceNormal, goalLineValue, type Rect } from './field';
 import { dot, rot, clamp, hyp, datan2 } from '../math';
 import { driveParams } from './drivetrain';
 
@@ -11,11 +11,7 @@ const ALLIANCES: Alliance[] = ['red', 'blue'];
 /** collision extents in the robot frame: the intake is a physical part of
  * the robot, so the footprint extends forward by its reach */
 export function robotExtents(r: RobotState): { front: number; rear: number; half: number } {
-  return {
-    front: r.spec.length / 2 + C.INTAKE_PRESETS[r.spec.intake].reach,
-    rear: r.spec.length / 2,
-    half: r.spec.width / 2,
-  };
+  return footprintExtents(r.spec);
 }
 
 /** local (robot-frame) storage position of the held ball at `slot` (slot 0 = oldest,

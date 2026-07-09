@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
-import type { Alliance } from '../types';
+import type { Alliance, GameSettings as GS } from '../types';
 import { START_POSES } from '../config';
+import { StartPositionEditor } from './StartPositionEditor';
+import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
+import { useRoleSwap, useDismissable } from './useRoleSwap';
+import { RoleSwapBar } from './RoleSwapBar';
 import { gameServerUrl, gameServerUrlWith, gameServers, multiServer, selectedServer } from '../net/env';
 import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
@@ -15,6 +19,7 @@ import { Logo } from './Logo';
 
 interface Props {
   settings: GameSettings;
+  onSettingsChange: (s: GameSettings) => void;
   onStart: (session: NetSession) => void;
   onCancel: () => void;
   /** what this room runs. Default: a versus custom room (2v2). Pass a record/duo
@@ -32,7 +37,7 @@ type Phase = 'entry' | 'connecting' | 'room' | 'error';
  * presence: the server is the single source of truth for the roster and host, so
  * one client can never stall the others.
  */
-export function Lobby({ settings, onStart, onCancel, config = { kind: 'versus' } }: Props) {
+export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = { kind: 'versus' } }: Props) {
   const isRecord = config.kind === 'record';
   const capacity = roomCapacity(config);
   const [phase, setPhase] = useState<Phase>('entry');
@@ -153,6 +158,7 @@ export function Lobby({ settings, onStart, onCancel, config = { kind: 'versus' }
         // record runs are opponent-free (one alliance) — force blue, matching the server
         alliance: isRecord ? 'blue' : settings.alliance,
         startIndex: settings.startIndex,
+        startPose: settings.startPose ?? null,
         ready: false,
         spec: settings.spec,
         assists: settings.assists,
@@ -162,8 +168,27 @@ export function Lobby({ settings, onStart, onCancel, config = { kind: 'versus' }
   }
 
   const setAlliance = (alliance: Alliance): void => lobbyRef.current?.update({ alliance });
-  const setStartPos = (startIndex: number): void => lobbyRef.current?.update({ startIndex });
   const toggleReady = (): void => lobbyRef.current?.update({ ready: !me?.ready });
+
+  // 2v2 ROLE + consent swap: first robot on the alliance = CLOSE, second = FAR;
+  // either can propose a swap the other must accept (see useRoleSwap).
+  const rs = useRoleSwap(players, me, (patch) => lobbyRef.current?.update(patch));
+  const startRole = rs.role;
+  const [swapDismissed, dismissSwap] = useDismissable(rs.incoming);
+
+  // route a settings patch: ACTIVE start (startIndex/startPose) → the roster,
+  // library/memory (startCat/startMemory/savedStartPoses) → local settings.
+  const applyStart = (patch: Partial<GS>): void => {
+    const roster: Record<string, unknown> = {};
+    if ('startIndex' in patch) roster.startIndex = patch.startIndex;
+    if ('startPose' in patch) roster.startPose = patch.startPose ?? null;
+    if (Object.keys(roster).length) lobbyRef.current?.update(roster);
+    const keys: (keyof GS)[] = ['startCat', 'startMemory', 'savedStartPoses'];
+    if (keys.some((k) => k in patch)) onSettingsChange({ ...settings, ...patch });
+  };
+  // settings with the category forced to the locked role (so the helpers write
+  // memory/library into the right bucket even though the tabs are hidden)
+  const sCat: GS = { ...settings, startCat: startRole ?? settings.startCat };
 
   if (phase === 'entry' || phase === 'connecting' || phase === 'error') {
     return (
@@ -331,7 +356,7 @@ export function Lobby({ settings, onStart, onCancel, config = { kind: 'versus' }
                     <span className="ds-chip on">★ HOST</span>
                   )}
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
-                  <span className="ds-chip">{START_POSES[p.startIndex]?.label ?? '—'}</span>
+                  <span className="ds-chip">{p.startPose ? 'CUSTOM' : (START_POSES[p.startIndex]?.label ?? '—')}</span>
                   <span className={`ds-chip ${p.ready ? 'on' : 'off'}`}>
                     {p.ready ? 'READY' : 'NOT READY'}
                   </span>
@@ -361,27 +386,34 @@ export function Lobby({ settings, onStart, onCancel, config = { kind: 'versus' }
           </section>
         )}
 
-        <section className="ds-sec">
-          <h2>Start position</h2>
-          <div className="ds-opts">
-            {START_POSES.map((pose, i) => {
-              const taken = players.some(
-                (p) => p.clientId !== me?.clientId && p.alliance === me?.alliance && p.startIndex === i,
-              );
-              return (
-                <button
-                  key={i}
-                  className={`ds-opt mini ${me?.startIndex === i ? 'on' : ''}`}
-                  disabled={taken}
-                  onClick={() => setStartPos(i)}
-                >
-                  <span className="ot">{pose.label}</span>
-                  {taken && <span className="ds-note">taken</span>}
-                </button>
-              );
-            })}
-          </div>
-        </section>
+        {me && (
+          <section className="ds-sec">
+            <h2>Start position</h2>
+            {rs.canSwap && (
+              <RoleSwapBar
+                role={startRole}
+                partnerName={rs.partner?.name ?? 'Partner'}
+                rs={rs}
+                dismissed={swapDismissed}
+                onDismiss={dismissSwap}
+              />
+            )}
+            <StartPositionEditor
+              spec={me.spec}
+              alliance={me.alliance}
+              value={me.startPose}
+              startIndex={me.startIndex}
+              category={startRole ?? settings.startCat}
+              saved={settings.savedStartPoses}
+              lockedCategory={startRole}
+              onChange={(startPose) => startPose && applyStart(selectStart(sCat, { index: -1, pose: startPose }))}
+              onPickPreset={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
+              onCategory={(c) => applyStart(switchCategory(settings, c))}
+              onSave={(pose) => applyStart(saveStart(sCat, pose))}
+              onDeleteSaved={(c, i) => applyStart(deleteSavedStart(sCat, c, i))}
+            />
+          </section>
+        )}
 
         <div className="ds-actions">
           <button className={`ds-cta ${me?.ready ? 'ghost' : ''}`} onClick={toggleReady}>

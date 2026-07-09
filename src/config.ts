@@ -510,16 +510,39 @@ export const SPIKE_ROW_YS = [-35.5, -12.8, 11.1]; // near, middle, far
 export const SPIKE_BALL_SPACING = 5.6;
 export const SPIKE_MARK_LEN = 10;
 
-/** robot start poses, all inside the big launch zone near the alliance's
- * goal (blue goal is far-left, so blue mirrors to the left). Coordinates and
- * headings are authored for goalSide=+1; the spawn helper mirrors them for the
- * other alliance. Headings are in degrees, measured in the field frame.
- * Index = the menu/lobby "start position" choice per robot slot. */
+/** named quick-pick robot start poses. Every preset is a LEGAL G304 setup
+ * (over a LAUNCH LINE, touching the GOAL or the FIELD perimeter, fully inside
+ * the alliance's own half). Coordinates + headings are authored for goalSide=+1
+ * (red); the spawn helper mirrors them for blue. Headings are degrees in the
+ * field frame. Index = the menu/lobby "start position" quick-pick; a player may
+ * also drag a fully CUSTOM pose (validated against the same G304 rule).
+ * NOTE: these were re-authored July 2026 to satisfy G304 — the old poses sat
+ * mid-launch-zone, touching nothing, which is NOT a legal setup. */
+// Semantic ANCHORS (canonical goalSide=+1 / red frame) resolved per-chassis by
+// presetPose. Authored so BLUE displays the intended headings (270 is mirror-
+// invariant; canonical 0 shows as 180 for blue). NOTE: index 0 and 1 must sit far
+// apart — a 2-robot alliance spawns its two slots at indices 0/1 (smoke-checked).
+export type StartCategory = 'close' | 'far';
 export const START_POSES = [
-  { x: 50, y: 55, headingDeg: 270, label: 'CLOSE SIDE' }, // the original solo pose
-  { x: 20, y: 40, headingDeg: 315, label: 'CENTER' },
-  { x: 18, y: -60, headingDeg: 0, label: 'FAR SIDE' },
+  { x: 58, y: 48.5, headingDeg: 270, label: 'GATE', cat: 'close' }, // goal, gate end, facing the audience
+  { x: 31.25, y: -63.75, headingDeg: 0, label: 'AUDIENCE', cat: 'far' }, // audience corner: tucked toward the loading zone, on the tape, against the back wall
+  { x: 48, y: 57, headingDeg: 270, label: 'GOAL', cat: 'close' }, // in front of the goal (far-wall end), x=48 fixed, facing the audience
+  { x: 53.25, y: 54.25, headingDeg: 55, label: 'INTAKE', cat: 'close' }, // intake flush on the goal face, a corner at the tape↔classifier point
+  { x: 55, y: 56.75, headingDeg: 235, label: 'BACK', cat: 'close' }, // back flush on the goal face, a corner at the tape↔classifier point
 ] as const;
+/** how many of the player's OWN custom start positions per category (close/far) */
+export const MAX_SAVED_STARTS = 2;
+
+/** G304 "touching the GOAL or FIELD perimeter" slack (inches): a start pose
+ * whose footprint is within this of the goal face or a wall counts as touching.
+ * Also the snap distance the drag editor uses to pull a robot onto a surface. */
+export const START_TOUCH_TOL = 1.25;
+
+/** how far a start footprint may sink into a solid STRUCTURE (goal wedge /
+ * classifier channel) before it counts as penetrating rather than resting
+ * against it — a small collision-box tolerance so "flush on the goal" is legal
+ * but "inside the goal" is not. */
+export const START_PEN_SLOP = 0.75;
 
 // --------------------------------------------------------- human player ----
 export const HP_PLACE_DELAY = 0.15; // s between placements from the box into the grab row (fast HP)

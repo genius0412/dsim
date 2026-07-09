@@ -93,6 +93,7 @@ export function RecordRun({
         teamNumber: settings.spec.teamNumber,
         alliance: 'blue', // record runs are forced to one alliance server-side
         startIndex: settings.startIndex,
+        startPose: settings.startPose ?? null,
         ready: true,
         spec: settings.spec,
         assists: settings.assists,

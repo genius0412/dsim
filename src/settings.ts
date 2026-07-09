@@ -1,6 +1,7 @@
 import type { GameSettings } from './types';
-import { DEFAULT_SPEC, coerceSpec, coerceAssists, coerceAutoPath } from './sim/spawn';
-import { START_POSES, MAX_SAVED_ROBOTS, MAX_SAVED_AUTOS } from './config';
+import { DEFAULT_SPEC, coerceSpec, coerceAssists, coerceAutoPath, coerceStartPose } from './sim/spawn';
+import { START_POSES, MAX_SAVED_ROBOTS, MAX_SAVED_AUTOS, MAX_SAVED_STARTS } from './config';
+import type { StartSel, StartPose } from './types';
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
 import { clamp } from './math';
 
@@ -15,6 +16,10 @@ export function defaultSettings(): GameSettings {
     savedRobots: [],
     savedAutos: [],
     startIndex: 0,
+    startCat: 'close',
+    savedStartPoses: { close: [], far: [] },
+    // GATE (index 0, close) + AUDIENCE (index 1, far) are the default per-category picks
+    startMemory: { close: { index: 0, pose: null }, far: { index: 1, pose: null } },
     practiceDummies: false,
     audio: { sounds: true, voice: true },
     bindings: cloneBindings(DEFAULT_BINDINGS),
@@ -52,6 +57,36 @@ export function coerceSettings(raw: unknown): GameSettings {
     }
     if (typeof s.startIndex === 'number') {
       out.startIndex = clamp(Math.round(s.startIndex), 0, START_POSES.length - 1);
+    }
+    // custom start pose: structural + field-bounds only here (G304 legality is
+    // enforced spec+alliance-aware at spawn via coerceSetup). null ⇒ use preset.
+    if ('startPose' in s) out.startPose = s.startPose == null ? null : coerceStartPose(s.startPose);
+    if (s.startCat === 'close' || s.startCat === 'far') out.startCat = s.startCat;
+    // saved start-position library: coerce each pose, cap per category
+    const coerceSaves = (raw: unknown): StartPose[] =>
+      Array.isArray(raw)
+        ? raw.map((p) => coerceStartPose(p)).filter((p): p is StartPose => p !== null).slice(0, MAX_SAVED_STARTS)
+        : [];
+    if (typeof s.savedStartPoses === 'object' && s.savedStartPoses !== null) {
+      const sp = s.savedStartPoses as Record<string, unknown>;
+      out.savedStartPoses = { close: coerceSaves(sp.close), far: coerceSaves(sp.far) };
+    }
+    // per-category memory: clamp index, coerce pose
+    const coerceSel = (raw: unknown, fallback: StartSel): StartSel => {
+      if (typeof raw !== 'object' || raw === null) return fallback;
+      const r = raw as Record<string, unknown>;
+      const index = typeof r.index === 'number' && Number.isFinite(r.index)
+        ? clamp(Math.round(r.index), -1, START_POSES.length - 1)
+        : fallback.index;
+      const pose = r.pose == null ? null : coerceStartPose(r.pose);
+      return { index, pose };
+    };
+    if (typeof s.startMemory === 'object' && s.startMemory !== null) {
+      const m = s.startMemory as Record<string, unknown>;
+      out.startMemory = {
+        close: coerceSel(m.close, out.startMemory.close),
+        far: coerceSel(m.far, out.startMemory.far),
+      };
     }
     if (typeof s.practiceDummies === 'boolean') out.practiceDummies = s.practiceDummies;
     if (typeof s.audio === 'object' && s.audio !== null) {

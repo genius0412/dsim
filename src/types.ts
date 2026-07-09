@@ -273,6 +273,27 @@ export interface AutoPathData {
 }
 // --- End Auto Pathing Types ---
 
+/** a robot start pose (field frame, heading in degrees). Custom poses are stored
+ * in the CANONICAL goalSide=+1 (red) frame like START_POSES and mirrored per
+ * alliance at spawn. Defined here (not sim/field) so settings can reference it
+ * without a circular import. */
+export interface StartPose {
+  x: number;
+  y: number;
+  headingDeg: number;
+}
+
+/** start positions are grouped by proximity to the goal: 'close' (goal-side) vs
+ * 'far' (audience side). In a 2v2 an alliance fills one Close and one Far slot. */
+export type StartCat = 'close' | 'far';
+
+/** a remembered start selection within a category: a preset (by index) OR a
+ * custom/saved pose (`pose` set, `index` = -1). */
+export interface StartSel {
+  index: number;
+  pose: StartPose | null;
+}
+
 export interface GameSettings {
   mode: GameMode;
   alliance: Alliance;
@@ -284,6 +305,17 @@ export interface GameSettings {
    * ACTIVE auto; selecting a slot copies it into `autoPath`. */
   savedAutos: AutoPathData[];
   startIndex: number;
+  /** a fully-placed CUSTOM start pose (canonical goalSide=+1 frame). When set it
+   * OVERRIDES startIndex; validated against G304 and snapped legal at spawn.
+   * `startIndex`/`startPose` are the ACTIVE start (what spawns / goes on the wire);
+   * the fields below are the client-side library + per-category memory. */
+  startPose?: StartPose | null;
+  /** which category the ACTIVE start belongs to (solo picks it; a 2v2 role locks it) */
+  startCat: StartCat;
+  /** the player's own saved start positions, up to MAX_SAVED_STARTS per category */
+  savedStartPoses: { close: StartPose[]; far: StartPose[] };
+  /** last-used selection in each category, so switching tabs restores your choice */
+  startMemory: { close: StartSel; far: StartSel };
   practiceDummies: boolean;
   assists: AssistConfig;
   bindings: ControlBindings;

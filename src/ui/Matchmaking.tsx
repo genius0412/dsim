@@ -86,6 +86,7 @@ export function Matchmaking({
     teamNumber: settings.spec.teamNumber,
     alliance: 'red' as const, // matchmaking assigns the real alliance
     startIndex: settings.startIndex,
+    startPose: settings.startPose ?? null,
     ready: false, // the pre-match strategy screen owns readiness now
     spec: settings.spec,
     assists: settings.assists,

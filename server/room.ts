@@ -405,6 +405,9 @@ export class Room {
         spec: c.player.spec,
         assists: c.player.assists,
         startIndex: si,
+        // a custom pose overrides the de-conflicted startIndex; createWorld snaps
+        // it G304-legal. Old clients omit it → the preset is used.
+        startPose: c.player.startPose ?? undefined,
         autoPath: c.player.autoPath, // Include autoPath
         autoPathEnabled: c.player.autoPathEnabled, // Include autoPathEnabled
       });
@@ -631,6 +634,7 @@ export class Room {
         spec: c.player.spec, // LIVE re-picked build
         assists: c.player.assists,
         startIndex: si,
+        startPose: c.player.startPose ?? undefined, // LIVE re-picked custom pose
         autoPath: c.player.autoPath,
         autoPathEnabled: c.player.autoPathEnabled,
       });

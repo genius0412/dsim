@@ -1727,3 +1727,196 @@ button.ds-key:hover {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ---- start position editor (drag mini-field + coords, G304) ---------------- */
+.ds-startpos {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.ds-startpos-stage {
+  flex: 0 0 auto;
+  line-height: 0;
+}
+.ds-startpos-canvas {
+  border-radius: 10px;
+  background: var(--ds-bg);
+  border: 1px solid var(--ds-line);
+  touch-action: none; /* pointer drag, not scroll */
+  max-width: 100%;
+  display: block;
+}
+.ds-startpos-side {
+  flex: 1 1 190px;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ds-startpos-status {
+  font: 600 12px/1.3 ui-monospace, monospace;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--ds-line);
+}
+.ds-startpos-status.ok {
+  color: var(--ds-ok);
+  background: color-mix(in srgb, var(--ds-ok) 12%, var(--ds-panel));
+  border-color: color-mix(in srgb, var(--ds-ok) 40%, var(--ds-line));
+}
+.ds-startpos-status.bad {
+  color: var(--ds-red);
+  background: color-mix(in srgb, var(--ds-red) 12%, var(--ds-panel));
+  border-color: color-mix(in srgb, var(--ds-red) 40%, var(--ds-line));
+}
+.ds-startpos-inputs {
+  display: flex;
+  gap: 8px;
+}
+.ds-startpos-inputs label {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font: 600 10px/1.2 var(--ds-font, inherit);
+  color: var(--ds-ink-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.ds-startpos-inputs label small {
+  font-weight: 400;
+  text-transform: none;
+  color: var(--ds-mut);
+}
+.ds-startpos-inputs input {
+  width: 100%;
+  padding: 6px 7px;
+  border-radius: 7px;
+  border: 1px solid var(--ds-line);
+  background: var(--ds-bg);
+  color: var(--ds-ink);
+  font: 600 13px/1 ui-monospace, monospace;
+}
+.ds-startpos-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ds-startpos-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 12px/1 inherit;
+  color: var(--ds-ink-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.ds-startpos-toggle input {
+  accent-color: var(--ds-accent);
+  width: 15px;
+  height: 15px;
+}
+.ds-startpos-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--ds-bg);
+  border: 1px solid var(--ds-line);
+  align-self: flex-start;
+}
+.ds-startpos-tab {
+  padding: 5px 16px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ds-ink-dim);
+  font: 700 12px/1 inherit;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.ds-startpos-tab.on {
+  background: var(--ds-accent);
+  color: var(--ds-accent-ink);
+}
+.ds-startpos-role {
+  font: 700 11px/1 inherit;
+  letter-spacing: 0.06em;
+  color: var(--ds-mut);
+  text-transform: uppercase;
+}
+.ds-startpos-presets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+.ds-startpos-presets .ds-opt.mini.saved {
+  position: relative;
+  padding-right: 20px;
+}
+.ds-startpos-presets .ds-opt.mini.add {
+  border-style: dashed;
+  opacity: 0.9;
+}
+.ds-startpos-presets .ds-opt.mini.add:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ds-startpos-del {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--ds-mut);
+  padding: 1px 2px;
+  border-radius: 4px;
+}
+.ds-startpos-del:hover {
+  color: var(--ds-red);
+  background: color-mix(in srgb, var(--ds-red) 15%, transparent);
+}
+.ds-startpos-presets .ds-opt.mini {
+  flex: 1 1 auto;
+}
+.ds-startpos-hint {
+  margin: 0;
+  font: 400 11px/1.4 inherit;
+  color: var(--ds-mut);
+}
+
+/* ---- 2v2 start-role swap bar ---------------------------------------------- */
+.ds-roleswap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  margin-bottom: 10px;
+  border-radius: 8px;
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-line);
+}
+.ds-roleswap-role {
+  font: 500 12px/1.3 inherit;
+  color: var(--ds-ink-dim);
+}
+.ds-roleswap-role b {
+  color: var(--ds-accent);
+  letter-spacing: 0.04em;
+}
+.ds-roleswap-ctl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ds-roleswap-note {
+  font: 500 12px/1.3 inherit;
+  color: var(--ds-mut);
+}

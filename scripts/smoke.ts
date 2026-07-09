@@ -12,6 +12,7 @@ import { updateHumanPlayers } from '../src/sim/humanPlayer';
 import { startMatch } from '../src/sim/match';
 import {
   inLaunchZone,
+  evalStartPose,
   gateZone,
   startPose,
   goalCenter,
@@ -136,7 +137,10 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('24 on-field balls at spawn (9 spike + 3 loading pre-stage per alliance)', field.length === 24, `${field.length}`);
   check('on-field color split 16P/8G', purple === 16 && green === 8, `${purple}P ${green}G`);
   check('hopper preloaded with 3', w.robots[0].hopper.length === 3);
-  check('start pose inside launch zone', inLaunchZone(w.robots[0].pos, 'blue'));
+  check(
+    'default spawn is a legal G304 start (blue)',
+    evalStartPose(w.robots[0].spec, { x: w.robots[0].pos.x, y: w.robots[0].pos.y, headingDeg: (w.robots[0].heading * 180) / Math.PI }, 'blue').legal,
+  );
   const pose = startPose('blue', 0);
   check(
     'start pose heading comes from START_POSES degrees',

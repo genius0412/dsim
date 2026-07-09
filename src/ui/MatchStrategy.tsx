@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GameSettings, RobotSpec } from '../types';
 import { START_POSES } from '../config';
+import { StartPositionEditor } from './StartPositionEditor';
+import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
+import { useRoleSwap, useDismissable } from './useRoleSwap';
+import { RoleSwapBar } from './RoleSwapBar';
 import type { LobbyClient } from '../net/lobbyClient';
 import type { LobbyPlayer, PlayerIntro, QueueMode } from '../net/protocol';
 import { RobotPreview } from './RobotPreview';
@@ -92,8 +96,21 @@ export function MatchStrategy({
   const readyCount = players.filter((p) => p.ready).length;
   const allReady = players.length > 0 && players.every((p) => p.ready);
 
-  const claimPose = (i: number): void => lobby.update({ startIndex: i });
   const toggleReady = (): void => lobby.update({ ready: !me?.ready });
+
+  // 2v2 ROLE + consent swap (shared with Lobby via useRoleSwap)
+  const rs = useRoleSwap(players, me, (patch) => lobby.update(patch));
+  const startRole = rs.role;
+  const [swapDismissed, dismissSwap] = useDismissable(rs.incoming);
+  const sCat: GameSettings = { ...settings, startCat: startRole ?? settings.startCat };
+  const applyStart = (patch: Partial<GameSettings>): void => {
+    const roster: Record<string, unknown> = {};
+    if ('startIndex' in patch) roster.startIndex = patch.startIndex;
+    if ('startPose' in patch) roster.startPose = patch.startPose ?? null;
+    if (Object.keys(roster).length) lobby.update(roster);
+    const keys: (keyof GameSettings)[] = ['startCat', 'startMemory', 'savedStartPoses'];
+    if (keys.some((k) => k in patch)) onSettingsChange({ ...settings, ...patch });
+  };
 
   /** re-pick: swap to a saved robot (or any spec) — echoes to the server + persists */
   const pickSpec = (spec: RobotSpec): void => {
@@ -222,7 +239,7 @@ export function MatchStrategy({
                     {buildRow(spec)}
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
                       <span className={`ds-chip ${pl.alliance}`}>{pl.alliance.toUpperCase()}</span>
-                      <span className="ds-chip">{START_POSES[pl.startIndex]?.label ?? '—'}</span>
+                      <span className="ds-chip">{pl.startPose ? 'CUSTOM' : (START_POSES[pl.startIndex]?.label ?? '—')}</span>
                       <span className="ds-chip">ELO {eloOf(pl)}</span>
                       <span className={`ds-chip ${pl.ready ? 'on' : 'off'}`}>
                         {pl.ready ? 'READY' : 'NOT READY'}
@@ -235,26 +252,35 @@ export function MatchStrategy({
           </div>
         </section>
 
-        {/* start position = the close/far decision (partners claim distinct poses) */}
-        <section className="ds-sec">
-          <h2>Start position {mates.length > 0 && <span className="ds-note">— agree who goes close / far</span>}</h2>
-          <div className="ds-opts">
-            {START_POSES.map((pose, i) => {
-              const taken = mates.some((p) => p.startIndex === i);
-              return (
-                <button
-                  key={i}
-                  className={`ds-opt mini ${me?.startIndex === i ? 'on' : ''}`}
-                  disabled={taken}
-                  onClick={() => claimPose(i)}
-                >
-                  <span className="ot">{pose.label}</span>
-                  {taken && <span className="ds-note">partner</span>}
-                </button>
-              );
-            })}
-          </div>
-        </section>
+        {/* start position — drag to place, constrained to a legal G304 setup */}
+        {me && (
+          <section className="ds-sec">
+            <h2>Start position {mates.length > 0 && <span className="ds-note">— agree who goes where</span>}</h2>
+            {rs.canSwap && (
+              <RoleSwapBar
+                role={startRole}
+                partnerName={rs.partner?.name ?? 'Partner'}
+                rs={rs}
+                dismissed={swapDismissed}
+                onDismiss={dismissSwap}
+              />
+            )}
+            <StartPositionEditor
+              spec={me.spec}
+              alliance={me.alliance}
+              value={me.startPose}
+              startIndex={me.startIndex}
+              category={startRole ?? settings.startCat}
+              saved={settings.savedStartPoses}
+              lockedCategory={startRole}
+              onChange={(startPose) => startPose && applyStart(selectStart(sCat, { index: -1, pose: startPose }))}
+              onPickPreset={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
+              onCategory={(c) => applyStart(switchCategory(settings, c))}
+              onSave={(pose) => applyStart(saveStart(sCat, pose))}
+              onDeleteSaved={(c, i) => applyStart(deleteSavedStart(sCat, c, i))}
+            />
+          </section>
+        )}
 
         {/* re-pick: quick-swap a saved robot, or open the full builder */}
         <section className="ds-sec">

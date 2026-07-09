@@ -7,6 +7,8 @@ import type {
   RobotState,
   World,
   AutoPathData, // Import AutoPathData
+  StartPose,
+  StartCat,
 } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
@@ -108,8 +110,17 @@ export interface LobbyPlayer {
   teamName: string;
   teamNumber: number;
   alliance: Alliance;
-  /** index into START_POSES (mirrored per alliance) */
+  /** index into START_POSES (mirrored per alliance) — the quick-pick fallback */
   startIndex: number;
+  /** a fully-placed CUSTOM start pose (canonical goalSide=+1 frame). Overrides
+   * startIndex when present; the server + createWorld snap it G304-legal. */
+  startPose?: StartPose | null;
+  /** 2v2 start ROLE (which start category this robot may pick). Absent ⇒ derived
+   * from alliance join order. Set explicitly only after a consented role swap. */
+  startRole?: StartCat;
+  /** true while this player has an outstanding / accepted role-swap request. When
+   * BOTH alliance members set it, each flips its own role and clears the flag. */
+  swapReq?: boolean;
   ready: boolean;
   spec: RobotSpec;
   assists: AssistConfig;
@@ -152,7 +163,7 @@ export interface EloDelta {
 export type PlayerPatch = Partial<
   Pick<
     LobbyPlayer,
-    'name' | 'teamName' | 'teamNumber' | 'alliance' | 'startIndex' | 'ready' | 'spec' | 'assists' | 'autoPath' | 'autoPathEnabled'
+    'name' | 'teamName' | 'teamNumber' | 'alliance' | 'startIndex' | 'startPose' | 'startRole' | 'swapReq' | 'ready' | 'spec' | 'assists' | 'autoPath' | 'autoPathEnabled'
   >
 >;
 
@@ -165,7 +176,7 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy'];
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose'];
 
 export type ClientMsg =
   // `authToken` is the Neon Auth JWT; the server verifies it to attribute the
