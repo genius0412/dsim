@@ -1,6 +1,6 @@
 import type { Artifact, ArtifactColor, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
-import { approach, rot, wrapAngle, hyp, dsin, dcos, dtan, datan2, clamp } from '../math';
+import { approach, rot, wrapAngle, hyp, dsin, dcos, datan2, clamp } from '../math';
 import { classifierRect, flywheelSpinTarget, goalCenter, launchTriangles, viewAngleOf } from './field';
 import { driveParams } from './drivetrain';
 import { robotIntersectsConvex } from './physics';
@@ -24,17 +24,17 @@ export function turretWorldPos(r: RobotState): { x: number; y: number } {
  * steepens at close range so a solution exists at every distance. */
 function solveShot(d: number): { speed: number; angle: number } {
   const dh = C.GOAL_OPENING_Z - C.LAUNCH_HEIGHT;
-  const lineOfSight = datan2(dh, Math.max(d, 0.5));
-  const angle = Math.min(
-    Math.max(C.LAUNCH_ANGLE, lineOfSight + C.LAUNCH_ANGLE_MARGIN),
-    C.LAUNCH_ANGLE_MAX,
-  );
-  const cos = dcos(angle);
-  const denom = 2 * cos * cos * (d * dtan(angle) - dh);
-  const speed =
-    denom > 0
-      ? Math.min(Math.sqrt((C.GRAVITY * d * d) / denom), C.LAUNCH_MAX_SPEED)
-      : C.LAUNCH_MAX_SPEED * 0.3;
+  const dd = Math.max(d, 0.5);
+  // Minimum-speed trajectory that reaches the goal opening at (dd, dh). Unlike a
+  // fixed-hood solve, it ALWAYS exists, is finite, and varies SMOOTHLY with
+  // distance — no clamp singularity and no point-blank fallback (the old solve
+  // jumped 96→316→178 in/s across d=4..6 and had NO solution inside ~5in). The
+  // launch angle is the adaptive hood: it sweeps from ~89° at point-blank (a
+  // near-vertical lob into the elevated goal) down toward ~45° far out.
+  //   v_min² = g·(dh + √(d²+dh²)),  angle = atan2(dh + √(d²+dh²), d)
+  const reach = hyp(dd, dh);
+  const angle = datan2(dh + reach, dd);
+  const speed = Math.min(Math.sqrt(C.GRAVITY * (dh + reach)), C.LAUNCH_MAX_SPEED);
   return { speed, angle };
 }
 

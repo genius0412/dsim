@@ -138,9 +138,13 @@ the gateway), so a tap usually drains the whole column.
    the shove (see #7). One-tick lag (fire runs after drive) is invisible + deterministic.
    `flywheelSpin` seeds at the spawn-distance target so there's no phantom first-tick
    spin-up.
-2. **The shooter NEVER misses**: no dispersion; adaptive hood angle (55°→80°) so an
-   exact solution exists at every distance incl. point-blank; turret is always exactly
-   on the lead-compensated solution (no slew limit); opening accepts ascending entries.
+2. **The shooter NEVER misses**: no dispersion; `solveShot` uses the MINIMUM-SPEED
+   trajectory to the goal opening — the adaptive hood angle sweeps ~89° (near-vertical
+   lob at point-blank) down to ~45° far out, so an exact, finite solution exists at
+   EVERY distance incl. point-blank and the required launch speed is a SMOOTH function
+   of distance (`v²=g·(dh+√(d²+dh²))` — the old fixed-hood 55°→80° solve had no solution
+   inside ~5in and spiked 96→316 in/s across d=4..6). Turret is always exactly on the
+   lead-compensated solution (no slew limit); opening accepts ascending entries.
    No aim ray / no dashed goal-tracking line drawn.
 3. **Assists are menu-only**: field/robot-centric, aim assist, auto intake, auto fire
    are configured in the main menu — NO in-game toggle keybinds.
