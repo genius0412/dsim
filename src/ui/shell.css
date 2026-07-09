@@ -1172,8 +1172,8 @@ tr.lb-detail td {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--ds-accent-ink);
-  background: color-mix(in srgb, var(--ds-accent) 22%, transparent);
+  color: var(--ds-accent);
+  background: color-mix(in srgb, var(--ds-accent) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--ds-accent) 40%, var(--ds-line));
   border-radius: 999px;
   padding: 2px 9px;
