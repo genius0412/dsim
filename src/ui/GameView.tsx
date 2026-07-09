@@ -7,7 +7,7 @@ import {
   type EloResultRow,
 } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
-import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
+import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
 import type { MatchResultInfo, NetSession, NetStatus } from '../net/session';
 import type { RecordRankInfo } from '../net/protocol';
@@ -36,6 +36,28 @@ function NetQuality({ net }: { net: NetStatus }) {
     <span className={`chip net-quality ${cls}`} title={title}>
       <span className="net-dot" style={{ background: dot, boxShadow: `0 0 6px ${dot}` }} />
       {ping} · {hz} · {jit}
+    </span>
+  );
+}
+
+/** top-right drive power-draw gauge: how much current the flywheel spin-up + intake
+ * are pulling off the drive motors right now (0 → POWER_DRAW_MAX). The bar fills
+ * toward the cap and shifts green→amber→red; the number is the actual % the drive is
+ * slowed at that instant. */
+function PowerGauge({ draw }: { draw: number }) {
+  const frac = Math.max(0, Math.min(1, draw / POWER_DRAW_MAX)); // 0..1 of the cap
+  const pct = Math.round(draw * 100); // actual drive slowdown right now
+  const cls = frac > 0.75 ? 'hot' : frac > 0.4 ? 'warm' : '';
+  return (
+    <span
+      className="power-gauge"
+      title={`Drive power draw — flywheel spin-up + intake pulling current off the drive motors (${pct}% slower right now)`}
+    >
+      <span className="pg-label">PWR</span>
+      <span className="pg-bar">
+        <span className={`pg-fill ${cls}`} style={{ width: `${frac * 100}%` }} />
+      </span>
+      <span className="pg-num">{pct}%</span>
     </span>
   );
 }
@@ -306,9 +328,7 @@ function Hud({ hud }: { hud: HudSnapshot }) {
                 <span key={i} className={`hopper-pip ${hud.hopper[i] ?? 'empty'}`} />
               ))}
             </div>
-            <span className={`chip ${hud.inLaunchZone ? 'on' : 'warn'}`}>
-              {hud.inLaunchZone ? 'LAUNCH ZONE' : 'NO LAUNCH'}
-            </span>
+            <PowerGauge draw={hud.powerDraw} />
             {hud.gateOpen && <span className="chip on">GATE OPEN</span>}
             {hud.mode === 'match' &&
               (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
@@ -316,11 +336,7 @@ function Hud({ hud }: { hud: HudSnapshot }) {
                   FOULS {hud.fouls[hud.alliance].minor}m {hud.fouls[hud.alliance].major}M
                 </span>
               )}
-            <span className="chip">{hud.fieldCentric ? 'FIELD' : 'ROBOT'}</span>
             {hud.frontFlipped && <span className="chip warn">REVERSED</span>}
-            <span className={`chip ${hud.aimAssist ? 'on' : 'off'}`}>AIM</span>
-            <span className={`chip ${hud.autoIntake ? 'on' : 'off'}`}>AUTO-IN</span>
-            <span className={`chip ${hud.autoFire ? 'on' : 'off'}`}>AUTO-FIRE</span>
             <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
             {hud.net && (
               <span className={`chip ${hud.net.peers > 0 ? 'on' : 'warn'}`}>

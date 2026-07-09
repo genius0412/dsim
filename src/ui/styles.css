@@ -286,8 +286,19 @@ button {
   background: var(--green);
 }
 
-.flywheel-bar {
-  width: 110px;
+/* drive power-draw gauge in the top-right status bar */
+.power-gauge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+
+.power-gauge .pg-bar {
+  width: 66px;
   height: 8px;
   border-radius: 999px;
   background: #101216;
@@ -295,14 +306,25 @@ button {
   overflow: hidden;
 }
 
-.flywheel-fill {
+.power-gauge .pg-fill {
   height: 100%;
-  background: var(--muted);
-  transition: width 0.1s linear;
+  background: var(--green);
+  transition: width 0.1s linear, background 0.2s;
 }
 
-.flywheel-fill.ready {
-  background: var(--green);
+.power-gauge .pg-fill.warm {
+  background: var(--amber);
+}
+
+.power-gauge .pg-fill.hot {
+  background: var(--red);
+}
+
+.power-gauge .pg-num {
+  min-width: 30px;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 /* on-screen leave/reset buttons (Esc/R keyboard shortcuts also work) */

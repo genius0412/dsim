@@ -92,6 +92,9 @@ export interface HudSnapshot {
   autoIntake: boolean;
   autoFire: boolean;
   hopper: ArtifactColor[];
+  /** local robot's current drive power draw (0..POWER_DRAW_MAX) — flywheel
+   * spin-up + intake pulling current off the drive motors; shown as the HUD gauge */
+  powerDraw: number;
   inLaunchZone: boolean;
   gamepadConnected: boolean;
   /** drive controls reversed so the shooter side leads (robot-centric only) */
@@ -781,6 +784,7 @@ export class GameController {
       autoIntake: r.autoIntake,
       autoFire: r.autoFire,
       hopper: [...r.hopper],
+      powerDraw: r.powerDraw,
       inLaunchZone: w.mode === 'free' || robotInLaunchZone(r),
       gamepadConnected: this.input.gamepadConnected,
       frontFlipped: this.frontFlipped,
