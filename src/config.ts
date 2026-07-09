@@ -672,7 +672,7 @@ export const ROBOT_PRESETS: readonly RobotSpec[] = [
   {
     name: 'TW', teamName: 'Turtle Walkers', teamNumber: 19745,
     length: 14.5, width: 16.5, intake: 'sloped', massLb: 23.5, drivetrain: 'mecanum',
-    driveRpm: 500, flywheelInertia: 0.7, canSort: false,
+    driveRpm: 440, flywheelInertia: 0.7, canSort: false,
   },
   {
     name: 'Dugtrio', teamName: 'Blu Cru', teamNumber: 6417,
@@ -681,8 +681,8 @@ export const ROBOT_PRESETS: readonly RobotSpec[] = [
   },
   {
     name: 'Cypher', teamName: 'Seattle Solvers', teamNumber: 23511,
-    length: 14, width: 14, intake: 'vector', massLb: 23, drivetrain: 'swerve',
-    driveRpm: 500, flywheelInertia: 0, canSort: false,
+    length: 14, width: 14, intake: 'vector', massLb: 23.5, drivetrain: 'swerve',
+    driveRpm: 500, flywheelInertia: 0.1, canSort: false,
   },
   {
     name: 'Rohan', teamName: 'Exodus', teamNumber: 30030,
