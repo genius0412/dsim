@@ -34,7 +34,7 @@ export function driveParams(spec: RobotSpec): DriveParams {
   // chassis: faster wheels or a smaller footprint turn quicker
   const halfDiag = Math.sqrt(spec.length * spec.length + spec.width * spec.width) / 2;
   const maxTurn = Math.min(
-    REF_TURN * (maxSpeed / REF_SPEED) * (REF_HALF_DIAG / halfDiag),
+    REF_TURN * (maxSpeed / REF_SPEED) * (REF_HALF_DIAG / halfDiag) * p.turnMult,
     C.TURN_MAX_SPEED,
   );
   return {

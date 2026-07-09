@@ -218,8 +218,9 @@ export const SPEED_PER_RPM = (Math.PI * (WHEEL_DIAMETER_MM / 25.4)) / 60 * DRIVE
  * slip first, so real peak accel = μ·g (g≈386 in/s²). This base × accelMult lands
  * each drivetrain at its traction limit (tank μ≈0.9 → ~347 … x-drive μ≈0.45 → ~175). */
 export const BASE_DRIVE_ACCEL = 240;
-export const TURN_MAX_SPEED = 12.0; // rad/s absolute cap (small fast bots approach it; default is 7)
-export const TURN_ACCEL_PER_ACCEL = 40 / 280; // rad/s^2 per in/s^2 of drive accel
+export const TURN_MAX_SPEED = 10.0; // rad/s absolute cap ≈ 573°/s (only small/fast bots reach it; default ~7)
+export const TURN_ACCEL_PER_ACCEL = 40 / 280; // rad/s^2 per in/s^2 of drive accel (≈0.143; traction-limited, so
+// turn spin-up tracks linear accel → tank ramps up quickest, xdrive slowest; ~0.15–0.25 s to max spin)
 
 // --- motor torque–speed curve (how the stall accel falls off with speed) ---
 /** 0 = old CONSTANT accel; 1 = physically real (force ∝ 1 − v/v_free). Higher =
@@ -298,30 +299,42 @@ export const SORT_FIRE_PENALTY = 0.25;
  *   accelMult   peak accel ÷ base (each drivetrain's traction limit μ·g ÷ the base)
  *   pushMult    EFFECTIVE shove mass in the Rapier solver (physicsEngine.ts) — real
  *               traction; mecanum/x-drive have little, so a tank shoves them around
+ *   turnMult    max spin rate ÷ the geometric base (wheelSpeed/halfDiag). swerve > 1
+ *               (vectored rotation = fastest turner); the rest = 1 (geometric)
  *   saturation  wheel budget: 'sum' |f|+|s|+|ω| · 'tank' |f|+|ω| · 'vec' hypot(f,s)+|ω|
- * Orders (all realistic): speed tank>swerve>mecanum>xdrive · push tank>swerve≫mecanum>xdrive
- * · accel tank>swerve>mecanum>xdrive. Rebalanced 2026-07 for real-motor feel
- * (mecanum de-buffed: it now loses speed AND pushing, per GM0). */
+ * Orders (all realistic): speed tank>swerve≳mecanum≫xdrive (swerve edges mecanum on grippy
+ * traction wheels; xdrive far back) · push tank>swerve≫mecanum>xdrive · accel
+ * tank>swerve>mecanum>xdrive · turn swerve>tank>mecanum>xdrive (swerve vectors for rotation).
+ * Rebalanced 2026-07: tank the bulldozer, swerve the powerful/holonomic-but-wobbly all-rounder,
+ * mecanum the light/PRECISE holonomic, xdrive a deliberately-weak novelty (worst by a margin). */
 export const DRIVETRAIN_PRESETS = {
-  /** FTC standard mecanum: the LIGHT, INSTANT one — rollers change direction with
-   * ZERO reorient lag (unlike swerve's pods) and its low mass FLOOR gives the best
-   * holonomic accel, so it's the nimble/twitchy pick. Costs: ~13% forward loss,
-   * slower strafe, and LITTLE pushing power (shoved by everyone). */
-  mecanum: { strafeMult: 0.8, speedMult: 0.87, accelMult: 0.88, pushMult: 0.65, saturation: 'sum' },
-  /** 45° omni X-drive: a deliberately-WEAK novelty (no honest competitive niche,
-   * in-sim or IRL). Fully symmetric (strafe = forward) but flimsy omni wheels give
-   * it the WEAKEST traction of all — easily pushed, poor accel, no speed edge. A
-   * hard-mode/style pick, not a balanced option. */
-  xdrive: { strafeMult: 1.0, speedMult: 0.84, accelMult: 0.73, pushMult: 0.45, saturation: 'sum' },
+  /** FTC standard mecanum: the LIGHT, INSTANT, PRECISE holonomic pick — rollers change
+   * direction with ZERO reorient lag (unlike swerve's pods), no wobble, and its low mass
+   * FLOOR keeps it nimble. It's now the 2nd-fastest straight line (single-stage direct
+   * drive, unlike swerve's gear-lossy modules), so it's "tank-lite + strafe": you give up
+   * accel and pushing power vs tank in exchange for maneuverability. Costs: ~8% forward
+   * loss (roller scrub), slower strafe, and modest pushing power (shoved by tank/swerve). */
+  mecanum: { strafeMult: 0.8, speedMult: 0.92, accelMult: 0.98, pushMult: 0.8, turnMult: 1.0, saturation: 'sum' },
+  /** 45° omni X-drive: a deliberately-WEAK novelty with no honest competitive niche.
+   * REALISTICALLY the worst by a wide margin: each omni sits at 45°, so a big chunk of
+   * every wheel's speed is wasted off-axis (low top speed), the free-spinning side
+   * rollers slip trivially (weakest traction → poor accel, shoved by everyone), and even
+   * rotation scrubs. Fully symmetric (strafe = forward). A hard-mode/style pick only. */
+  xdrive: { strafeMult: 1.0, speedMult: 0.74, accelMult: 0.58, pushMult: 0.35, turnMult: 0.9, saturation: 'sum' },
   /** traction wheels: no strafe, but the best straight-line speed, accel, and
    * pushing power — the defensive anchor. */
-  tank: { strafeMult: 0, speedMult: 1.0, accelMult: 1.45, pushMult: 1.7, saturation: 'tank' },
+  tank: { strafeMult: 0, speedMult: 1.0, accelMult: 1.45, pushMult: 1.7, turnMult: 1.0, saturation: 'tank' },
   // (tank accelMult 1.45 × base 240 = 348 ≈ μ·g at μ 0.9 — the traction ceiling)
   /** steered traction modules: the HEAVY all-rounder — full-speed any direction +
    * strong push + good top speed, but its weight (mass FLOOR below) tanks its accel
    * and the pods must REORIENT on direction changes (MODULE_SLEW_RATE). Master of
    * none: tank out-accels + out-pushes it, mecanum out-accels + out-responds it. */
-  swerve: { strafeMult: 1.0, speedMult: 0.95, accelMult: 1.3, pushMult: 1.35, saturation: 'vec' },
+  // speedMult 0.94: the module gearing (bevel + reductions) is lossy, but swerve rolls on
+  // GRIPPY traction wheels (vs mecanum's scrubbing rollers), so on balance it EDGES mecanum
+  // on forward — still the strong all-rounder. accel stays traction-limited, push unaffected.
+  // turnMult 1.15: it VECTORS all four wheels tangentially for rotation → the fastest TURNER,
+  // its signature. Tradeoffs are WOBBLE (imprecise line), heavy mass, and steering power draw.
+  swerve: { strafeMult: 1.0, speedMult: 0.94, accelMult: 1.3, pushMult: 1.35, turnMult: 1.15, saturation: 'vec' },
 } as const;
 
 /** flywheel recovery: after an energetic (long-range) shot, a LOW-inertia
@@ -357,7 +370,8 @@ export const POWER_DRAW_INTAKE = 0.06; // intake motors running
  * pull current to hold + correct pod angle even driving straight, on top of the 4
  * drive motors. So a swerve chassis is always a bit slower / weaker-shoving than an
  * equivalent mecanum. Applied whenever the drivetrain is swerve. */
-export const POWER_DRAW_SWERVE = 0.1;
+export const POWER_DRAW_SWERVE = 0.1; // steady steering-motor current — kept modest; swerve's
+// main weakness is now the mechanical efficiency loss baked into its speedMult, not amperage.
 export const POWER_DRAW_MAX = 0.2; // cap ⇒ at most ~20% slower
 export const FLY_SPIN_NEAR = 40; // in to goal: flywheel spin 0
 export const FLY_SPIN_FAR = 170; // in to goal: flywheel spin 1

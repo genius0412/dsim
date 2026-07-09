@@ -1096,7 +1096,7 @@ const setup = (
   check(
     'base calibration ref: refFree in/s, 7 rad/s, base accel (× mecanum mult)',
     Math.abs(dp.maxSpeed - refFree * M.speedMult) < 1e-6 &&
-      Math.abs(dp.maxTurn - 7 * M.speedMult) < 1e-6 &&
+      Math.abs(dp.maxTurn - 7 * M.speedMult * M.turnMult) < 1e-6 &&
       Math.abs(dp.accel - BASE_DRIVE_ACCEL * M.accelMult) < 1e-6,
     `${dp.maxSpeed.toFixed(2)} / ${dp.maxTurn.toFixed(2)} / ${dp.accel.toFixed(1)}`,
   );
@@ -1181,14 +1181,20 @@ const setup = (
 // ---- 2026-07 real-motor retune: mecanum has losses, tank tops speed ----------
 {
   const sp = (dt: RobotSpec['drivetrain']) => driveParams({ ...DEFAULT_SPEC, drivetrain: dt }).maxSpeed;
-  // realistic straight-line order: traction fastest; mecanum beats the X-drive
-  // compromise on forward; X-drive slowest (flimsy omni, no straight-line edge)
-  check('speed order tank > swerve > mecanum > xdrive', sp('tank') > sp('swerve') && sp('swerve') > sp('mecanum') && sp('mecanum') > sp('xdrive'));
+  // realistic straight-line order: traction fastest; swerve EDGES mecanum (grippy traction
+  // wheels vs scrubbing rollers); X-drive far back (45° omnis waste speed off-axis).
+  check('speed order tank > swerve > mecanum > xdrive', sp('tank') > sp('swerve') && sp('swerve') > sp('mecanum') && sp('mecanum') > sp('xdrive'), `tank ${sp('tank').toFixed(1)} sw ${sp('swerve').toFixed(1)} mec ${sp('mecanum').toFixed(1)} x ${sp('xdrive').toFixed(1)}`);
+  // xdrive is the clear worst — a wide margin below the pack on speed AND push
+  check('xdrive is way worse (speed & push well below mecanum)', sp('xdrive') < sp('mecanum') - 8 && DRIVETRAIN_PRESETS.xdrive.pushMult < DRIVETRAIN_PRESETS.mecanum.pushMult - 0.2, `x ${sp('xdrive').toFixed(1)} vs mec ${sp('mecanum').toFixed(1)}`);
   // mecanum now sits BELOW the ideal base on every axis (roller slip + friction)
   const M = DRIVETRAIN_PRESETS.mecanum;
   check('mecanum has real losses (speed/accel/push all < 1)', M.speedMult < 1 && M.accelMult < 1 && M.pushMult < 1);
   // pushing order: traction bites, rollers get shoved
   check('push order tank > swerve > mecanum > xdrive', DRIVETRAIN_PRESETS.tank.pushMult > DRIVETRAIN_PRESETS.swerve.pushMult && DRIVETRAIN_PRESETS.swerve.pushMult > M.pushMult && M.pushMult > DRIVETRAIN_PRESETS.xdrive.pushMult);
+  // swerve VECTORS its wheels for rotation → the fastest turner (its signature),
+  // even though tank has a higher straight-line speed. turnMult > 1 buys this.
+  const tr = (dt: RobotSpec['drivetrain']) => driveParams({ ...DEFAULT_SPEC, drivetrain: dt }).maxTurn;
+  check('swerve is the fastest turner (turnMult edge beats tank)', tr('swerve') > tr('tank') && tr('tank') > tr('mecanum') && tr('mecanum') > tr('xdrive'), `swerve ${tr('swerve').toFixed(2)} tank ${tr('tank').toFixed(2)} mec ${tr('mecanum').toFixed(2)} x ${tr('xdrive').toFixed(2)}`);
 
   // print the tuning table (visible on every run so a balance edit shows its effect)
   const rows = driveSummary().map((r) => `${r.dt.padEnd(7)} fwd ${r.fwd.toFixed(1).padStart(5)}  strafe ${r.strafe.toFixed(1).padStart(5)}  accel ${r.accel.toFixed(0).padStart(4)}  push ${r.push.toFixed(2)}`);
