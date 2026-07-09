@@ -8,7 +8,9 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     autoHideMenuBar: true,
-    backgroundColor: '#111a24',
+    // tracks --ds-bg in src/ui/shell.css — otherwise the window flashes the old
+    // dark ground before the renderer first paints
+    backgroundColor: '#f9faf7',
     title: 'DSIM',
   });
   win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));

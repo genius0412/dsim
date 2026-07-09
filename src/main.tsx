@@ -4,6 +4,11 @@ import { App } from './ui/App';
 import { ServerNoticeBanner } from './ui/ServerNoticeBanner';
 import { NoticePoller } from './ui/NoticePoller';
 import { initPhysics } from './sim/physicsEngine';
+// Self-hosted (not a CDN <link>): the Electron build runs from file:// with
+// vite `base: './'`, so fingerprinted woff2 must be bundled to resolve offline.
+// Variable cuts, because shell.css asks for weights off the 100 grid (750).
+import '@fontsource-variable/plus-jakarta-sans';
+import '@fontsource-variable/space-grotesk';
 import './ui/styles.css';
 import './ui/shell.css';
 

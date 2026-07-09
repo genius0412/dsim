@@ -1,58 +1,107 @@
 /* =====================================================================
-   DECODE — Phase 3 front-end · Direction A "Driver Station"
-   Broadcast-telemetry dark: cool near-black, signal-amber accent, mono
-   data, thin rules, a faint 24" tile grid. These tokens are the new
-   design system; screens are built with the `ds-` component classes
-   below. (The in-match FTC HUD + legacy menu keep their own styles.css
-   until each is migrated onto these tokens.)
+   DSim — "Low-Poly" design system (see DESIGN.md at the repo root)
+   Indie-game tactility: a warm off-white floor, desaturated pastels,
+   deep-charcoal (never black) ink, and depth built from HARD offset
+   shadows rather than blur — a fixed sun from the top-left, as in an
+   isometric toy world. Screens are built with the `ds-` classes below.
+
+   The FIELD CANVAS stays dark (src/render/ is untouched), so the HUD in
+   styles.css floats LIGHT cards over a dark field. That contrast is
+   deliberate; see the HUD section there before "fixing" it.
    ===================================================================== */
 :root {
-  /* Direction A palette v2 — "Steel + Cyan" (no orange/black): cool blue-slate
-     ground with an electric-cyan signal accent, the one lively hue that clears
-     the reserved semantics (alliance red/blue, artifact green/purple). */
-  --ds-bg: #111a24;
-  --ds-bar: #142131;
-  --ds-panel: #192634;
-  --ds-tile: #1d2c3c;
-  --ds-ink: #d6e1ec;
-  --ds-ink-dim: #9fb0c1;
-  --ds-mut: #74889b;
-  --ds-line: #2b3d4f;
-  --ds-line-soft: #213041;
-  --ds-accent: #2ad4e0;
-  --ds-accent-ink: #04222a;
-  --ds-cyan: #2ad4e0;
-  --ds-you: rgba(42, 212, 224, 0.1);
-  --ds-round: 4px;
+  /* ---- surfaces (Level 0 floor → Level 1 cards) ---- */
+  --ds-bg: #f9faf7;
+  --ds-bar: #f3f4f1;
+  --ds-panel: #ffffff;
+  --ds-tile: #edeeec;
 
-  /* fixed scoring semantics (never the interface accent) */
+  /* ---- ink: deep charcoal-grey, never pure black (DESIGN.md "Neutrals") ---- */
+  --ds-ink: #191c1b;
+  --ds-ink-dim: #404945;
+  /* DESIGN.md's `outline` #707975 lands at ~3.9:1 on the floor — below AA for
+     body text. Darkened to clear 4.5:1; the pastel outline lives on --ds-line. */
+  --ds-mut: #5c645f;
+
+  --ds-line: #c0c9c4;
+  --ds-line-soft: #d9dad8;
+
+  /* ---- primary: soft mint ---- */
+  --ds-accent: #366758;
+  --ds-accent-ink: #ffffff;
+  /* the darker hue under a "thick" keycap button + the block-shadow it presses into */
+  --ds-accent-edge: #24463b;
+  --ds-accent-soft: #b5ead7;
+  --ds-accent-soft-ink: #1c4f41;
+
+  /* ---- secondary + categorical accents (chips, icon containers, terrain) ---- */
+  --ds-blush: #fdd9c0;
+  --ds-sage: #d6e4c0;
+  --ds-lavender: #c9c3f0;
+  --ds-sky: #b6dcf0;
+  /* readable ink for the sky family — the pastel itself is a FILL, never type */
+  --ds-sky-ink: #0e6f8e;
+
+  --ds-you: rgba(54, 103, 88, 0.1);
+
+  /* ---- shape: "soft-blocky" molded plastic ---- */
+  --ds-round-sm: 4px;
+  --ds-round: 8px;
+  --ds-round-md: 12px;
+  --ds-round-lg: 16px;
+  --ds-round-xl: 24px;
+  --ds-round-full: 9999px;
+
+  /* ---- elevation: low-blur, high-opacity, offset to the bottom-right ---- */
+  --ds-block: 4px 4px 0 var(--ds-line-soft);
+  --ds-block-sm: 2px 2px 0 var(--ds-line-soft);
+  --ds-edge: 0 3px 0 var(--ds-accent-edge);
+
+  /* fixed scoring semantics (never the interface accent). These break the pastel
+     harmony ON PURPOSE — alliance + artifact identity must command attention. */
   --ds-red: #ff4d4d;
   --ds-blue: #3d8bff;
   --ds-green: #37d67a;
   --ds-purple: #a96bff;
-  --ds-danger: #ff5c5c;
-  --ds-ok: #37d67a;
+  --ds-danger: #ba1a1a;
+  --ds-ok: #2f9e5f;
+  /* CAUTION, distinct from the mint accent. The legacy `--amber` carried BOTH
+     meanings; on light they must not collapse (a warning that looks like the
+     brand accent reads as decoration). Burnt amber clears 4.5:1 on the floor. */
+  --ds-warn: #8f5400;
 
-  --ds-font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --ds-font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+  /* ---- HUD over the DARK field canvas (src/render/ is untouched) ----
+     Light cards floating on a dark ground: the field supplies the separation,
+     so these carry a 1px stroke and NO block shadow (a pale offset block on a
+     dark field reads as a stray highlight, not as depth). --ds-on-field is for
+     glyphs painted straight onto the canvas with no card behind them. */
+  --ds-hud: rgba(255, 255, 255, 0.94);
+  --ds-hud-soft: rgba(255, 255, 255, 0.86);
+  --ds-on-field: #f9faf7;
+
+  /* Jakarta = the friendly workhorse; Grotesk = labels + technical data (scores,
+     timers, keycaps). Both are VARIABLE cuts, so `font-weight: 750` is real. */
+  --ds-font-ui: 'Plus Jakarta Sans Variable', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --ds-font-mono: 'Space Grotesk Variable', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
-/* Retheme the LEGACY menu / lobby / controls (styles.css) onto Direction A by
-   overriding its tokens — steel ground + cyan accent, no markup changes. Loaded
-   after styles.css so these win. `--amber` was the old orange accent; it now
-   carries the cyan signal color so every legacy highlight re-tints at once. */
+/* Retheme the LEGACY in-match HUD (styles.css) by overriding ITS tokens — loaded
+   after styles.css so these win, re-tinting every token-driven HUD rule at once.
+   `--amber` was the old signal accent (16 uses: timer warnings, focus rings,
+   results, elo flashes). On a light ground it MUST stay dark enough to read, so
+   it now carries mint — do not point it at a bright hue. */
 :root {
-  --bg: #111a24;
-  --panel: #192634;
-  --panel-2: #1d2c3c;
-  --border: #2b3d4f;
-  --text: #d6e1ec;
-  --muted: #74889b;
+  --bg: #f9faf7;
+  --panel: #ffffff;
+  --panel-2: #edeeec;
+  --border: #c0c9c4;
+  --text: #191c1b;
+  --muted: #5c645f;
   --red: #ff4d4d;
   --blue: #3d8bff;
   --green: #37d67a;
   --purple: #a96bff;
-  --amber: #2ad4e0;
+  --amber: #366758;
 }
 
 /* ---- app surface + top bar ------------------------------------------- */

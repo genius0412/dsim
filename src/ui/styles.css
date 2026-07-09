@@ -29,7 +29,7 @@ body,
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-family: var(--ds-font-ui, system-ui, sans-serif);
 }
 
 button {
@@ -68,11 +68,10 @@ button {
   transform: translateX(-50%);
   display: flex;
   align-items: stretch;
-  border-radius: 14px 14px 0 0;
+  border-radius: var(--ds-round-lg) var(--ds-round-lg) 0 0;
   overflow: hidden;
   border: 1px solid var(--border);
   border-bottom: none;
-  box-shadow: 0 -4px 18px rgba(0, 0, 0, 0.45);
 }
 
 .score-panel {
@@ -98,8 +97,9 @@ button {
 }
 
 .panel-score {
+  font-family: var(--ds-font-mono);
   font-size: 34px;
-  font-weight: 800;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: white;
   text-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
@@ -121,27 +121,30 @@ button {
   align-items: center;
   justify-content: center;
   padding: 8px 26px;
-  background: rgba(16, 18, 22, 0.95);
+  background: var(--ds-hud);
   min-width: 190px;
   gap: 2px;
 }
 
 .timer-phase {
+  font-family: var(--ds-font-mono);
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 2.5px;
   color: var(--muted);
 }
 
 .timer-time {
+  font-family: var(--ds-font-mono);
   font-size: 30px;
-  font-weight: 800;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1;
+  color: var(--text);
 }
 
 .timer-panel.warning .timer-time {
-  color: var(--amber);
+  color: var(--ds-warn);
 }
 
 .timer-panel.urgent .timer-time {
@@ -170,12 +173,13 @@ button {
 }
 
 .breakdown-row span {
-  background: rgba(28, 32, 39, 0.85);
+  background: var(--ds-hud-soft);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--ds-round-full);
   padding: 3px 11px;
+  font-family: var(--ds-font-mono);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 1px;
   color: var(--muted);
 }
@@ -184,27 +188,34 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: rgba(28, 32, 39, 0.9);
+  background: var(--ds-hud);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--ds-round-full);
   padding: 4px 11px;
+  font-family: var(--ds-font-mono);
   font-size: 11.5px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 1px;
+  color: var(--text);
 }
 
+/* Alliance identity is FILLED, not tinted text: #ff4d4d / #3d8bff as 11.5px type
+   on a white chip lands under 4.5:1. As a fill with white ink it clears AA and
+   commands more attention — which is what the alliance colors are reserved for. */
 .chip.alliance-red {
-  color: var(--red);
-  border-color: var(--red);
+  background: var(--red);
+  border-color: transparent;
+  color: #fff;
 }
 
 .chip.alliance-blue {
-  color: var(--blue);
-  border-color: var(--blue);
+  background: var(--blue);
+  border-color: transparent;
+  color: #fff;
 }
 
 .chip.on {
-  color: var(--green);
+  color: var(--ds-ok);
 }
 
 .chip.off {
@@ -213,8 +224,8 @@ button {
 }
 
 .chip.warn {
-  color: var(--amber);
-  border-color: var(--amber);
+  color: var(--ds-warn);
+  border-color: var(--ds-warn);
 }
 
 .motif-dot {
@@ -259,9 +270,9 @@ button {
   display: flex;
   align-items: center;
   gap: 12px;
-  background: rgba(28, 32, 39, 0.9);
+  background: var(--ds-hud);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--ds-round-md);
   padding: 8px 14px;
 }
 
@@ -275,7 +286,8 @@ button {
   height: 14px;
   border-radius: 50%;
   border: 1px solid var(--border);
-  background: #101216;
+  /* an EMPTY slot: recessed light well, not a dark hole */
+  background: var(--ds-tile);
 }
 
 .hopper-pip.purple {
@@ -291,29 +303,32 @@ button {
   display: flex;
   align-items: center;
   gap: 7px;
+  font-family: var(--ds-font-mono);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 1px;
   color: var(--muted);
 }
 
+/* chunky bar, rounded caps, light grey-beige track (DESIGN.md "Progress Bars") */
 .power-gauge .pg-bar {
   width: 66px;
   height: 8px;
-  border-radius: 999px;
-  background: #101216;
+  border-radius: var(--ds-round-full);
+  background: var(--ds-tile);
   border: 1px solid var(--border);
   overflow: hidden;
 }
 
 .power-gauge .pg-fill {
   height: 100%;
-  background: var(--green);
+  border-radius: var(--ds-round-full);
+  background: var(--ds-ok);
   transition: width 0.1s linear, background 0.2s;
 }
 
 .power-gauge .pg-fill.warm {
-  background: var(--amber);
+  background: var(--ds-warn);
 }
 
 .power-gauge .pg-fill.hot {
@@ -339,11 +354,12 @@ button {
 
 .game-btn {
   pointer-events: auto;
-  background: rgba(28, 32, 39, 0.9);
+  background: var(--ds-hud);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--muted);
+  border-radius: var(--ds-round);
+  color: var(--ds-ink-dim);
   padding: 6px 13px;
+  font-family: var(--ds-font-mono);
   font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 1.5px;
@@ -352,10 +368,12 @@ button {
 
 .game-btn:hover {
   color: var(--text);
-  border-color: var(--blue);
+  border-color: var(--ds-accent);
 }
 
-/* "MATCH BEGINS IN" lead-in before the digits */
+/* "MATCH BEGINS IN" lead-in before the digits.
+   NOTE: this paints straight onto the DARK field canvas with no card behind it,
+   so it must stay LIGHT — `var(--text)` is charcoal now and would vanish. */
 .countdown-text {
   position: absolute;
   inset: 0;
@@ -366,14 +384,14 @@ button {
   font-size: 44px;
   font-weight: 800;
   letter-spacing: 6px;
-  color: var(--text);
+  color: var(--ds-on-field);
   text-shadow: 0 6px 30px rgba(0, 0, 0, 0.6);
   pointer-events: none;
   z-index: 30; /* over the ranked intro overlay */
   animation: count-pop 1s ease-out;
 }
 
-/* big pre-match countdown */
+/* big pre-match countdown — likewise drawn on the canvas, likewise light */
 .countdown-num {
   position: absolute;
   inset: 0;
@@ -381,9 +399,10 @@ button {
   align-items: center;
   justify-content: center;
   text-align: center;
+  font-family: var(--ds-font-mono);
   font-size: 160px;
-  font-weight: 800;
-  color: var(--text);
+  font-weight: 700;
+  color: var(--ds-on-field);
   text-shadow: 0 6px 30px rgba(0, 0, 0, 0.6);
   pointer-events: none;
   z-index: 30; /* over the ranked intro overlay */
@@ -419,14 +438,15 @@ button {
 }
 
 .eventlog-line {
-  background: rgba(28, 32, 39, 0.6);
-  border-left: 2px solid var(--border);
-  border-radius: 3px;
+  background: var(--ds-hud-soft);
+  border-left: 2px solid var(--ds-accent);
+  border-radius: var(--ds-round-sm);
   padding: 2px 9px;
+  font-family: var(--ds-font-mono);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 1px;
-  color: var(--muted);
+  color: var(--ds-ink-dim);
   animation: log-out 0.5s ease-in 2s forwards;
 }
 
@@ -449,10 +469,12 @@ button {
   z-index: 20;
 }
 
+/* a light card on the dark scrim — here the block shadow DOES read, because the
+   scrim behind it is uniformly dark rather than the busy field */
 .overlay-panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--ds-round-lg);
   padding: 30px 40px;
   text-align: center;
   display: flex;
@@ -653,13 +675,13 @@ button {
   outline: 1px solid rgba(56, 189, 248, 0.5);
 }
 .record-standing.pb strong {
-  color: #38bdf8;
+  color: var(--ds-sky-ink);
 }
 .record-standing.rank strong {
   font-size: 28px;
 }
 .record-standing.signin {
-  color: #38bdf8;
+  color: var(--ds-sky-ink);
   font-weight: 700;
 }
 .record-table {
@@ -881,7 +903,7 @@ button {
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 1.5px;
-  color: #0b0d12;
+  color: var(--ds-accent-ink);
   background: var(--amber);
   border-radius: 4px;
   padding: 1px 6px;
@@ -1018,7 +1040,7 @@ button {
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 1.5px;
-  color: #0b0d12;
+  color: var(--ds-accent-ink);
   background: var(--amber);
   border-radius: 4px;
   padding: 1px 6px;
@@ -1072,7 +1094,7 @@ button {
     color: var(--text);
   }
   40% {
-    color: #34d399;
+    color: var(--ds-ok);
   }
 }
 @keyframes elo-flash-down {
@@ -1081,7 +1103,7 @@ button {
     color: var(--text);
   }
   40% {
-    color: #f87171;
+    color: var(--ds-danger);
   }
 }
 .elo-delta {
@@ -1100,11 +1122,11 @@ button {
   font-size: 10px;
 }
 .elo-delta.up {
-  color: #34d399;
+  color: var(--ds-ok);
   background: rgba(52, 211, 153, 0.12);
 }
 .elo-delta.down {
-  color: #f87171;
+  color: var(--ds-danger);
   background: rgba(248, 113, 113, 0.12);
 }
 /* the delta chip slams in a beat after the row, then settles with a soft pulse */

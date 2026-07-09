@@ -78,6 +78,8 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@fontsource-variable/plus-jakarta-sans": "^5.2.8",
+    "@fontsource-variable/space-grotesk": "^5.2.10",
     "@types/node": "^22.10.0",
     "@types/pg": "^8.20.0",
     "@types/react": "^18.3.12",
