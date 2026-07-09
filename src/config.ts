@@ -314,8 +314,11 @@ export const DRIVETRAIN_PRESETS = {
    * FLOOR keeps it nimble. It's now the 2nd-fastest straight line (single-stage direct
    * drive, unlike swerve's gear-lossy modules), so it's "tank-lite + strafe": you give up
    * accel and pushing power vs tank in exchange for maneuverability. Costs: ~8% forward
-   * loss (roller scrub), slower strafe, and modest pushing power (shoved by tank/swerve). */
-  mecanum: { strafeMult: 0.8, speedMult: 0.92, accelMult: 0.98, pushMult: 0.8, turnMult: 1.0, saturation: 'sum' },
+   * loss (roller scrub), slower strafe, and modest pushing power (shoved by tank/swerve).
+   * accelMult 1.12: close to swerve's EFFECTIVE accel (swerve's steady power draw eats ~10%
+   * of its 1.3), so straight-line FEEL matches even though swerve keeps a slight burst edge
+   * and more raw accel — mecanum was feeling sluggish off the line at the old 0.98. */
+  mecanum: { strafeMult: 0.8, speedMult: 0.92, accelMult: 1.12, pushMult: 0.8, turnMult: 1.0, saturation: 'sum' },
   /** 45° omni X-drive: a deliberately-WEAK novelty with no honest competitive niche.
    * REALISTICALLY the worst by a wide margin: each omni sits at 45°, so a big chunk of
    * every wheel's speed is wasted off-axis (low top speed), the free-spinning side

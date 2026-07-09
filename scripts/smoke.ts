@@ -1188,7 +1188,9 @@ const setup = (
   check('xdrive is way worse (speed & push well below mecanum)', sp('xdrive') < sp('mecanum') - 8 && DRIVETRAIN_PRESETS.xdrive.pushMult < DRIVETRAIN_PRESETS.mecanum.pushMult - 0.2, `x ${sp('xdrive').toFixed(1)} vs mec ${sp('mecanum').toFixed(1)}`);
   // mecanum now sits BELOW the ideal base on every axis (roller slip + friction)
   const M = DRIVETRAIN_PRESETS.mecanum;
-  check('mecanum has real losses (speed/accel/push all < 1)', M.speedMult < 1 && M.accelMult < 1 && M.pushMult < 1);
+  // mecanum loses forward SPEED (roller scrub) and PUSH (shoved around); its accel is a
+  // tuned feel value (raised so straights don't feel sluggish vs swerve) — not a "loss".
+  check('mecanum loses speed & push (roller scrub / low traction)', M.speedMult < 1 && M.pushMult < 1);
   // pushing order: traction bites, rollers get shoved
   check('push order tank > swerve > mecanum > xdrive', DRIVETRAIN_PRESETS.tank.pushMult > DRIVETRAIN_PRESETS.swerve.pushMult && DRIVETRAIN_PRESETS.swerve.pushMult > M.pushMult && M.pushMult > DRIVETRAIN_PRESETS.xdrive.pushMult);
   // swerve VECTORS its wheels for rotation → the fastest turner (its signature),
