@@ -1121,14 +1121,14 @@ const setup = (
 // ---- per-drivetrain clamps + inertia→mass-floor coupling --------------------
 {
   check('massLimits mecanum floor is 18 at inertia 0', massLimits('mecanum', 0).min === 18);
-  check('massLimits mecanum floor climbs to 24 at inertia 1', massLimits('mecanum', 1).min === 24);
+  check('massLimits mecanum floor climbs to 22 at inertia 1', massLimits('mecanum', 1).min === 22);
   check('massLimits swerve floor is 22 at inertia 0', massLimits('swerve', 0).min === 22);
-  check('inertia only nudges the floor (< raising it by more than a few lb)', massLimits('mecanum', 1).min - massLimits('mecanum', 0).min <= 6);
+  check('inertia only nudges the floor (≤ 4 lb across the whole range)', massLimits('mecanum', 1).min - massLimits('mecanum', 0).min <= 4);
   check('rpmLimits swerve caps at 500', rpmLimits('swerve').max === 500);
   const s = coerceSettings({
     spec: { drivetrain: 'swerve', massLb: 18, driveRpm: 600, flywheelInertia: 0.8 },
   });
-  const floor = massLimits('swerve', 0.8).min; // 22 + 6·0.8 = 26.8
+  const floor = massLimits('swerve', 0.8).min; // 22 + 4·0.8 = 25.2
   check('coerceSettings clamps swerve mass up to the inertia-coupled floor', Math.abs(s.spec.massLb - floor) < 1e-9, `${s.spec.massLb} vs ${floor}`);
   check('coerceSettings clamps swerve rpm down to 500', s.spec.driveRpm === 500, `${s.spec.driveRpm}`);
 }

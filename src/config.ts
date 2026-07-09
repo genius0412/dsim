@@ -210,7 +210,7 @@ export const DRIVETRAIN_LIMITS = {
 /** lb added to a drivetrain's mass floor at flywheelInertia 1 (a big flywheel
  * weighs more): effective floor = base + INERTIA_MASS_FLOOR·inertia. Kept small
  * so inertia only nudges the mass range. */
-export const INERTIA_MASS_FLOOR = 6;
+export const INERTIA_MASS_FLOOR = 4;
 
 /** penalty added to fireInterval when robot is sorting (canSort: true) */
 export const SORT_FIRE_PENALTY = 0.25;
