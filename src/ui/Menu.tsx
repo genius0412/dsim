@@ -53,11 +53,10 @@ const INTAKE_BLURBS: Record<IntakeStyle, string> = {
 };
 
 /** does the current spec exactly match a preset? (value compare) */
+/** a preset match is about the BUILD only — name/team/number are the player's
+ * own identity, never copied from (or compared against) a preset. */
 function specMatches(a: RobotSpec, b: RobotSpec): boolean {
   return (
-    a.name === b.name &&
-    a.teamName === b.teamName &&
-    a.teamNumber === b.teamNumber &&
     a.length === b.length &&
     a.width === b.width &&
     a.intake === b.intake &&
@@ -185,7 +184,17 @@ export function Menu({ settings, onChange }: Props) {
               <button
                 key={p.name}
                 className={`ds-opt ${specMatches(spec, p) ? 'on' : ''}`}
-                onClick={() => set({ spec: { ...p } })}
+                onClick={() =>
+                  // copy the BUILD only — keep the player's own name/team/number
+                  set({
+                    spec: {
+                      ...p,
+                      name: spec.name,
+                      teamName: spec.teamName,
+                      teamNumber: spec.teamNumber,
+                    },
+                  })
+                }
               >
                 <span className="ot">{p.name}</span>
                 <span className="od">

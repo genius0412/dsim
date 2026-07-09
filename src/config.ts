@@ -526,9 +526,10 @@ export const PRELOAD: readonly ('purple' | 'green')[] = ['purple', 'green', 'pur
 export const HP_INITIAL_STOCK: readonly ('purple' | 'green')[] = ['purple', 'purple', 'green'];
 
 // -------------------------------------------------------- robot presets ----
-/** real FTC teams covering the archetype matrix; the menu also offers a fully
- * custom builder. The first entry (TW) mirrors DEFAULT_SPEC — the robot a new
- * player starts with. */
+/** real FTC team BUILDS covering the archetype matrix; the menu also offers a
+ * fully custom builder. Picking a preset copies its BUILD only — the player's
+ * name/team/number are their own. The first entry (TW) is the DEFAULT_SPEC build
+ * a new player starts with. */
 export const ROBOT_PRESETS: readonly RobotSpec[] = [
   {
     name: 'TW', teamName: 'Turtle Walkers', teamNumber: 19745,
@@ -554,11 +555,6 @@ export const ROBOT_PRESETS: readonly RobotSpec[] = [
     name: 'Ditto', teamName: 'Galactic Narwhal Chicken Effect - Diamond', teamNumber: 22489,
     length: 14.5, width: 16, intake: 'vector', massLb: 28, drivetrain: 'mecanum',
     driveRpm: 450, flywheelInertia: 0.9, canSort: false,
-  },
-  {
-    name: 'Standard Issue', teamName: 'Baseline Robotics', teamNumber: 1234,
-    length: 15, width: 18, intake: 'sloped', massLb: 26, drivetrain: 'mecanum',
-    driveRpm: 435, flywheelInertia: 0.5, canSort: false,
   },
 ] as const;
 

@@ -31,10 +31,12 @@ export const MOTIFS: Motif[] = [
   ['purple', 'purple', 'green'], // 23: PPG
 ];
 
+// A new player starts on the TW BUILD (Turtle Walkers' archetype) but with a
+// generic identity they fill in themselves — a preset is a build, not a name.
 export const DEFAULT_SPEC: RobotSpec = {
-  name: 'TW',
-  teamName: 'Turtle Walkers',
-  teamNumber: 19745,
+  name: 'My Robot',
+  teamName: '',
+  teamNumber: 0,
   length: 14.5,
   width: 16.5,
   intake: 'sloped',
