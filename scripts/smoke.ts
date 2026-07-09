@@ -1181,9 +1181,9 @@ const setup = (
 // ---- 2026-07 real-motor retune: mecanum has losses, tank tops speed ----------
 {
   const sp = (dt: RobotSpec['drivetrain']) => driveParams({ ...DEFAULT_SPEC, drivetrain: dt }).maxSpeed;
-  // realistic straight-line order: traction fastest; swerve EDGES mecanum (grippy traction
-  // wheels vs scrubbing rollers); X-drive far back (45° omnis waste speed off-axis).
-  check('speed order tank > swerve > mecanum > xdrive', sp('tank') > sp('swerve') && sp('swerve') > sp('mecanum') && sp('mecanum') > sp('xdrive'), `tank ${sp('tank').toFixed(1)} sw ${sp('swerve').toFixed(1)} mec ${sp('mecanum').toFixed(1)} x ${sp('xdrive').toFixed(1)}`);
+  // realistic straight-line order: traction fastest; swerve and mecanum tie (gear loss ≈
+  // roller scrub); X-drive far back (45° omnis waste speed off-axis).
+  check('speed order tank > swerve = mecanum > xdrive', sp('tank') > sp('swerve') && Math.abs(sp('swerve') - sp('mecanum')) < 0.01 && sp('mecanum') > sp('xdrive'), `tank ${sp('tank').toFixed(1)} sw ${sp('swerve').toFixed(1)} mec ${sp('mecanum').toFixed(1)} x ${sp('xdrive').toFixed(1)}`);
   // xdrive is the clear worst — a wide margin below the pack on speed AND push
   check('xdrive is way worse (speed & push well below mecanum)', sp('xdrive') < sp('mecanum') - 8 && DRIVETRAIN_PRESETS.xdrive.pushMult < DRIVETRAIN_PRESETS.mecanum.pushMult - 0.2, `x ${sp('xdrive').toFixed(1)} vs mec ${sp('mecanum').toFixed(1)}`);
   // mecanum now sits BELOW the ideal base on every axis (roller slip + friction)

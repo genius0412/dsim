@@ -302,8 +302,9 @@ export const SORT_FIRE_PENALTY = 0.25;
  *   turnMult    max spin rate ÷ the geometric base (wheelSpeed/halfDiag). swerve > 1
  *               (vectored rotation = fastest turner); the rest = 1 (geometric)
  *   saturation  wheel budget: 'sum' |f|+|s|+|ω| · 'tank' |f|+|ω| · 'vec' hypot(f,s)+|ω|
- * Orders (all realistic): speed tank>swerve≳mecanum≫xdrive (swerve edges mecanum on grippy
- * traction wheels; xdrive far back) · push tank>swerve≫mecanum>xdrive · accel
+ * Orders (all realistic): speed tank>swerve=mecanum≫xdrive (swerve's gear loss ≈ mecanum's
+ * roller scrub → identical straight-line top speed; xdrive far back) · push
+ * tank>swerve≫mecanum>xdrive · accel
  * tank>swerve>mecanum>xdrive · turn swerve>tank>mecanum>xdrive (swerve vectors for rotation).
  * Rebalanced 2026-07: tank the bulldozer, swerve the powerful/holonomic-but-wobbly all-rounder,
  * mecanum the light/PRECISE holonomic, xdrive a deliberately-weak novelty (worst by a margin). */
@@ -329,12 +330,12 @@ export const DRIVETRAIN_PRESETS = {
    * strong push + good top speed, but its weight (mass FLOOR below) tanks its accel
    * and the pods must REORIENT on direction changes (MODULE_SLEW_RATE). Master of
    * none: tank out-accels + out-pushes it, mecanum out-accels + out-responds it. */
-  // speedMult 0.94: the module gearing (bevel + reductions) is lossy, but swerve rolls on
-  // GRIPPY traction wheels (vs mecanum's scrubbing rollers), so on balance it EDGES mecanum
-  // on forward — still the strong all-rounder. accel stays traction-limited, push unaffected.
-  // turnMult 1.15: it VECTORS all four wheels tangentially for rotation → the fastest TURNER,
-  // its signature. Tradeoffs are WOBBLE (imprecise line), heavy mass, and steering power draw.
-  swerve: { strafeMult: 1.0, speedMult: 0.94, accelMult: 1.3, pushMult: 1.35, turnMult: 1.15, saturation: 'vec' },
+  // speedMult 0.92: MATCHED to mecanum — the module gearing (bevel + reductions) is lossy
+  // but swerve rolls on GRIPPY traction wheels (vs mecanum's scrubbing rollers), and the two
+  // losses cancel → identical straight-line top speed. accel stays traction-limited, push
+  // unaffected. turnMult 1.15: it VECTORS all four wheels tangentially for rotation → the
+  // fastest TURNER, its signature. Tradeoffs: WOBBLE (imprecise line), heavy mass, steering draw.
+  swerve: { strafeMult: 1.0, speedMult: 0.92, accelMult: 1.3, pushMult: 1.35, turnMult: 1.15, saturation: 'vec' },
 } as const;
 
 /** flywheel recovery: after an energetic (long-range) shot, a LOW-inertia
