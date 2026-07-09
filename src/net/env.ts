@@ -49,6 +49,17 @@ function parseServers(): GameServer[] {
 const SERVERS = parseServers();
 let selectedId = SERVERS[0]?.id ?? '';
 
+/**
+ * RELEASE CHANNEL of THIS client build (baked from `VITE_APP_CHANNEL`; default
+ * 'stable'). The pre-release 'alpha' deployment sets it to 'alpha'. The server
+ * uses it to (a) matchmake alpha players SEPARATELY from stable ones — they run
+ * a different `src/sim`, so mixing them in one authoritative match would desync —
+ * and (b) NOT persist alpha results to the leaderboard/ELO DB (in-development
+ * scores stay off the boards). Sent to the server on join/queue; absent ⇒
+ * 'stable' (older builds + the stable deployment). */
+export const appChannel = (): string =>
+  (import.meta.env.VITE_APP_CHANNEL as string | undefined)?.trim() || 'stable';
+
 /** all configured servers (regions); empty ⇒ multiplayer/records disabled */
 export const gameServers = (): GameServer[] => SERVERS;
 

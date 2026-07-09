@@ -1974,6 +1974,34 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     !('spec' in (slimWorld(w).robots[0] as object)),
   );
 
+  // OLD-SERVER SKEW: one Fly app serves every client version, so a newer client
+  // can receive a snapshot from an older server whose RobotState predates the
+  // power-draw fields. Simulate that by stripping flywheelSpin/flywheelSpinRate/
+  // powerDraw from the wire, then unslim + step — the client must NOT go NaN
+  // (regression: it rendered the robot at the field centre and froze).
+  const oldWire = slimWorld(w);
+  for (const r of oldWire.robots) {
+    delete (r as Record<string, unknown>).flywheelSpin;
+    delete (r as Record<string, unknown>).flywheelSpinRate;
+    delete (r as Record<string, unknown>).powerDraw;
+  }
+  const oldRebuilt = unslimWorld(oldWire, w.balls, specById);
+  check(
+    'unslim back-fills missing power-draw fields (old-server skew, no undefined)',
+    oldRebuilt.robots.every(
+      (r) =>
+        Number.isFinite(r.flywheelSpin) &&
+        Number.isFinite(r.flywheelSpinRate) &&
+        Number.isFinite(r.powerDraw),
+    ),
+  );
+  for (let i = 0; i < 30; i++) step(oldRebuilt, SIM_DT, cmds);
+  check(
+    'stepping an old-server snapshot never NaNs the robot position',
+    oldRebuilt.robots.every((r) => Number.isFinite(r.pos.x) && Number.isFinite(r.pos.y)),
+    oldRebuilt.robots.map((r) => `(${r.pos.x.toFixed(1)},${r.pos.y.toFixed(1)})`).join(' '),
+  );
+
   // ball delta: encode changes vs a baseline, apply to the baseline, compare
   const baseline: Artifact[] = w.balls.map((b) => JSON.parse(JSON.stringify(b)));
   const prevJson = new Map(baseline.map((b) => [b.id, JSON.stringify(b)]));
@@ -2523,9 +2551,10 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
 const rEntry = (
   id: string,
   homeRegion: string,
-  opts: { accessMs?: number; noWiden?: boolean } = {},
+  opts: { accessMs?: number; noWiden?: boolean; channel?: string } = {},
 ): QueueEntry => ({
   id,
+  channel: opts.channel,
   send: () => {},
   player: {
     name: id,
@@ -2584,6 +2613,24 @@ const mkMM = () => {
   await flush();
   check('staged host = the shared region; code is region-coded', staged[0]?.hostRegion === 'iad' && !!staged[0]?.code.startsWith('iad-'));
   check('staged roster splits red/blue with distinct start poses', staged[0]?.roster[0].alliance === 'red' && staged[0]?.roster[1].alliance === 'blue');
+}
+
+// CHANNEL SEGREGATION: alpha players never pair with stable ones (they run a
+// different src/sim — a shared authoritative match would desync). Same-channel
+// pairs normally, and the staged match carries the channel (→ unpersisted alpha).
+{
+  const { mm } = mkMM();
+  mm.enqueue(rEntry('a', 'iad', { channel: 'alpha' }));
+  mm.enqueue(rEntry('b', 'iad')); // stable (no channel)
+  check('channel: alpha + stable in the same region do NOT pair', mm.queueSizes()['1v1'] === 2);
+}
+{
+  const { mm, staged } = mkMM();
+  mm.enqueue(rEntry('a', 'iad', { channel: 'alpha' }));
+  mm.enqueue(rEntry('b', 'iad', { channel: 'alpha' }));
+  check('channel: two alpha players DO pair', mm.queueSizes()['1v1'] === 0);
+  await flush();
+  check('channel: the staged alpha match is tagged alpha (→ unpersisted)', staged[0]?.channel === 'alpha');
 }
 
 // cross-region does NOT pair at t=0 (spread > radius), but DOES once widened

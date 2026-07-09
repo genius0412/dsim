@@ -1,4 +1,65 @@
-# HANDOFF — 2026-07-09 (ranked pre-match STRATEGY window) — READ FIRST
+# HANDOFF — 2026-07-09 (FIX: networked robot NaN → renders at field centre) — READ FIRST
+
+> **LATEST (old-server field-skew NaN fix): GREEN, uncommitted on alpha.**
+> `npm run build` + `npm test` (+2 new checks) + `npm run server:check` all pass.
+>
+> **Bug (reported on the alpha DEPLOYMENT only):** in any server-connected mode the local
+> robot rendered at its start pose for one frame, then vanished and a static robot appeared
+> at the field CENTRE (0,0), while the "real" robot stayed faintly controllable. HUD showed
+> `PWR NaN%`.
+>
+> **Root cause — client/server SIM version skew.** The deployed Fly server
+> (`dohun-sim-decode`) is running an OLDER `src/sim` that PREDATES the power-draw model, so
+> its snapshot `RobotState` has NO `flywheelSpin` / `flywheelSpinRate` / `powerDraw` (verified
+> by scanning a live snapshot: robot keys end at `pathTargetHeading`). The newer alpha CLIENT
+> reconciles `this.world = snap.world`, so those fields arrive `undefined`; then `updateRobot`
+> computes `POWER_DRAW_FLYWHEEL_HOLD * undefined` → NaN → `powerDraw` NaN → `dp.maxSpeed *=
+> (1 − NaN)` → NaN velocity/position. `ctx.translate(NaN,NaN)` is a no-op, so the robot draws
+> at the camera origin = field centre and freezes. Never reproduced LOCALLY because
+> `npm run server` runs the CURRENT sim (fields present). One Fly app serves every client
+> version, so this old→new skew is exactly the backward-compat hazard `CLAUDE.md` warns about
+> (cf. the tank `ld/rd ?? 0` guard).
+>
+> **Fix (`src/net/protocol.ts` `unslimWorld` → new `backfillRobot`):** when the client rebuilds
+> a world from the wire, back-fill any missing/non-finite dynamic robot field to a sane value
+> (`flywheelSpin` ← `flywheelSpinTarget(alliance,pos)` like spawn, `flywheelSpinRate`/`powerDraw`
+> ← 0). `finiteOr` catches `undefined` AND `null` (JSON serializes NaN→null). Harmless when the
+> server DOES send them. Also removed the leftover TEMP DEBUG overlay in `game.ts` (green text +
+> `window.__dbg`) that was left in to chase this. +2 smoke checks (old-server skew: back-fill is
+> finite; stepping the stripped snapshot never NaNs the position).
+>
+> **CHOSEN FIX (user directive): segregate + don't persist ALPHA, plus the NaN guard.**
+> A single Fly binary can only run ONE `src/sim`, so alpha (new physics) and stable (old
+> physics) clients can't safely share an authoritative match. Instead of forcing everyone onto
+> one sim, the build now carries a **release channel** and the server keeps the two apart:
+> - **`src/net/env.ts` `appChannel()`** — baked from `VITE_APP_CHANNEL` (default `'stable'`; the
+>   alpha Vercel project sets `alpha`). Sent to the server on `join`/`queue` (`lobbyClient.ts`,
+>   new optional `channel` on both `ClientMsg`s).
+> - **Matchmaking segregation** (`server/matchmaking.ts`): `findMatch` only groups entries of the
+>   SAME channel; `broadcastStatus` counts per-channel (so an alpha queuer isn't told a mixed
+>   pool is "ready"); the staged `PendingMatch` + each roster entry carry the channel (persisted
+>   inside the roster jsonb — NO schema migration; `repo.ts` `takePendingMatch` reads it back).
+> - **No DB writes for alpha** (`server/room.ts`): `Room.channel` is set from the first client
+>   (or the staged roster); `finalizeMatch` still broadcasts `matchResult` (results + replay
+>   work) but RETURNS before `onResult` when `channel === 'alpha'` — no leaderboard/ELO/record
+>   rows. Client shows "Not saved / Not rated on this test build" (`GameView.tsx`) instead of
+>   spinning on "computing rank…".
+> - **NaN guard kept** (`unslimWorld` back-fill) as defence-in-depth for any residual field skew.
+>
+> **DEPLOY STEPS (both needed for the feature; the client push alone already stops the NaN):**
+> 1. **Set `VITE_APP_CHANNEL=alpha`** on the alpha Vercel project (Settings → Env), then push →
+>    Vercel rebuilds `alphadec.dohunkim.xyz`. WITHOUT this the alpha client reports `stable` and
+>    won't segregate / stays persisted.
+> 2. **Redeploy the Fly server from current alpha** (`scripts/announce-deploy.sh` to warn players,
+>    then `flyctl deploy --remote-only`) so the server knows `channel` AND runs the current sim.
+>    Note: the server then runs the alpha sim for ALL rooms (stable clients would rubber-band on
+>    the changed physics but never NaN — extra snapshot fields are ignored). Verify `/health`.
+> Repro/diagnosis: headless `ws` clients + an Electron driver pointed at the live deployment
+> reading `window.__dbg` (that TEMP overlay is now removed).
+
+---
+
+# HANDOFF — 2026-07-09 (ranked pre-match STRATEGY window)
 
 > **LATEST (pre-match strategy lobby for random matchmaking): GREEN, uncommitted on alpha.**
 > `npm run build` + `npm run server:check` + `npm test` (+20 new checks) all pass.

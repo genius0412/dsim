@@ -7,6 +7,7 @@ import {
   type EloResultRow,
 } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
+import { appChannel } from '../net/env';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
 import type { MatchResultInfo, NetSession, NetStatus } from '../net/session';
@@ -474,6 +475,16 @@ function EloResults({ rows }: { rows: EloResultRow[] | null }) {
     const id = window.setTimeout(() => setTimedOut(true), 9000);
     return () => window.clearTimeout(id);
   }, [rows]);
+  // alpha builds never persist — the server sends no eloResult, so say so up front
+  // instead of spinning on "Updating ELO…"
+  if (appChannel() === 'alpha' && rows === null) {
+    return (
+      <div className="elo-block">
+        <div className="elo-head">RANKED · ELO</div>
+        <p className="ds-hint elo-wait">Not rated on this test build.</p>
+      </div>
+    );
+  }
   return (
     <div className="elo-block">
       <div className="elo-head">RANKED · ELO</div>
@@ -702,6 +713,11 @@ const prettyDrivetrain = (d: string): string => DRIVETRAIN_LABEL[d] ?? d;
  * in — anonymous runs are never persisted, so no rank exists). */
 function RecordStanding({ info, signedIn }: { info: RecordRankInfo | null; signedIn: boolean }) {
   if (!info) {
+    // alpha builds are not persisted server-side (no recordResult ever arrives) —
+    // don't leave a signed-in player spinning on "Saving…"
+    if (appChannel() === 'alpha') {
+      return <p className="ds-hint record-standing pending">Not saved on this test build.</p>;
+    }
     return signedIn ? (
       <p className="ds-hint record-standing pending">Saving · computing your rank…</p>
     ) : (

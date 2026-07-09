@@ -970,6 +970,9 @@ export async function takePendingMatch(code: string): Promise<PendingMatch | nul
     seed: Number(r.seed),
     roster: r.roster,
     ranked: r.ranked,
+    // channel is carried inside the roster jsonb (no schema column) — all entries
+    // share one, so read it off the first
+    channel: r.roster[0]?.channel,
   };
 }
 

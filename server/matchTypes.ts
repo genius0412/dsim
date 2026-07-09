@@ -28,6 +28,10 @@ export interface PendingRosterEntry {
   introElo: number | null;
   autoPath?: string;
   autoPathEnabled?: boolean;
+  /** release channel of this player (all entries share one — the matchmaker only
+   * groups a single channel). Stored in the roster jsonb so the host region can
+   * recover `PendingMatch.channel` without a schema column. */
+  channel?: string;
 }
 
 export interface PendingMatch {
@@ -38,4 +42,7 @@ export interface PendingMatch {
   seed: number;
   roster: PendingRosterEntry[];
   ranked: boolean;
+  /** release channel of the paired players ('alpha' | 'stable' | …); the matchmaker
+   * only ever groups a single channel. Alpha rooms are not persisted (in-dev). */
+  channel?: string;
 }

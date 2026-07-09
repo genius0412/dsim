@@ -471,6 +471,8 @@ wss.on('connection', (ws: WebSocket) => {
       // protocol capabilities this client build understands (mixed-version safe:
       // the room only opens the strategy window if EVERY member supports it)
       caps: Array.isArray(msg.caps) ? msg.caps : [],
+      // release channel: alpha rooms are segregated + never persisted (in-dev)
+      channel: typeof msg.channel === 'string' ? msg.channel : undefined,
     };
     if (user) {
       client.userId = user.userId;
@@ -534,6 +536,7 @@ wss.on('connection', (ws: WebSocket) => {
             accessMs: msg.accessMs ?? 0,
             noWiden: msg.noWiden ?? false,
             caps: Array.isArray(msg.caps) ? msg.caps : [],
+            channel: typeof msg.channel === 'string' ? msg.channel : undefined,
             enqueuedAt: 0, // stamped by enqueue()
             expandBumps: 0,
             onRoom: (r) => {

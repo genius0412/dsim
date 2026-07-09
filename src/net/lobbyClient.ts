@@ -2,6 +2,7 @@ import type { RobotSetup } from '../sim/spawn';
 import type { Transport } from './transport';
 import { getAuthToken } from '../lib/authClient';
 import { setServerNotice } from './notice';
+import { appChannel } from './env';
 import {
   encodeMsg,
   decodeServerMsg,
@@ -65,7 +66,9 @@ export class LobbyClient {
   join(room: string, player: Omit<LobbyPlayer, 'clientId'>, config?: RoomConfig): void {
     const doJoin = async (): Promise<void> => {
       const authToken = (await getAuthToken()) ?? undefined;
-      this.transport.send(encodeMsg({ t: 'join', room, player, config, authToken, caps: CLIENT_CAPS }));
+      this.transport.send(
+        encodeMsg({ t: 'join', room, player, config, authToken, caps: CLIENT_CAPS, channel: appChannel() }),
+      );
     };
     this.transport.onOpen(() => void doJoin());
     this.transport.onReopen(() => void doJoin());
@@ -95,7 +98,10 @@ export class LobbyClient {
     const doQueue = async (): Promise<void> => {
       const authToken = (await getAuthToken()) ?? undefined;
       this.transport.send(
-        encodeMsg({ t: 'queue', mode, player, authToken, homeRegion, accessMs, noWiden, caps: CLIENT_CAPS }),
+        encodeMsg({
+          t: 'queue', mode, player, authToken, homeRegion, accessMs, noWiden,
+          caps: CLIENT_CAPS, channel: appChannel(),
+        }),
       );
     };
     this.transport.onOpen(() => void doQueue());

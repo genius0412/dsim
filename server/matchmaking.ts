@@ -53,6 +53,10 @@ export interface QueueEntry {
   noWiden?: boolean;
   /** protocol capabilities this client build advertised (mixed-version safe) */
   caps?: string[];
+  /** release channel ('alpha' | 'stable' | …). The matchmaker ONLY pairs entries
+   * of the same channel — alpha and stable run different src/sim, so a shared
+   * authoritative match would desync. Absent ⇒ 'stable'. */
+  channel?: string;
   /** set by enqueue (this.now()); drives the widening ceiling */
   enqueuedAt: number;
   /** extra manual widen steps from `expandSearch` */
@@ -172,10 +176,14 @@ export class Matchmaker {
     const need = QUEUE_NEED[mode];
     const q = this.queues[mode];
     const now = this.now();
+    const chan = (e: QueueEntry): string => e.channel ?? 'stable';
     for (let i = 0; i < q.length; i++) {
       const group = [q[i]];
       for (let j = 0; j < q.length && group.length < need; j++) {
         if (j === i) continue;
+        // never pair across release channels — alpha and stable run a different
+        // src/sim, so a shared authoritative match would desync both clients
+        if (chan(q[j]) !== chan(q[i])) continue;
         // never put the same account in a group twice (backstop for the userId
         // dedup above) — a self-pair produces a frozen "ghost" robot
         if (q[j].userId && group.some((g) => g.userId === q[j].userId)) continue;
@@ -225,9 +233,10 @@ export class Matchmaker {
         startIndex: i < half ? i : i - half,
         alliance: (i < half ? 'red' : 'blue') as PendingRosterEntry['alliance'],
         introElo: await this.introElo(e, mode),
+        channel: e.channel,
       })),
     );
-    await this.stage!({ code, hostRegion, mode, seed, roster, ranked: true });
+    await this.stage!({ code, hostRegion, mode, seed, roster, ranked: true, channel: group[0].channel });
     for (const e of group) e.send({ t: 'matchAssigned', mode, room: code, hostRegion });
   }
 
@@ -262,6 +271,7 @@ export class Matchmaker {
         disconnectAt: 0,
         userId: roster[i].userId,
         caps: e.caps,
+        channel: e.channel,
       };
       room.add(client);
       e.onRoom?.(room);
@@ -275,8 +285,11 @@ export class Matchmaker {
   }
 
   private broadcastStatus(mode: QueueMode): void {
-    const size = this.queues[mode].length;
+    // report each waiter the depth of ITS OWN channel — pairing is channel-scoped,
+    // so a mixed count would falsely read "enough players" and never match
     for (const e of this.queues[mode]) {
+      const ch = e.channel ?? 'stable';
+      const size = this.queues[mode].reduce((n, x) => n + ((x.channel ?? 'stable') === ch ? 1 : 0), 0);
       e.send({ t: 'queued', mode, size, need: QUEUE_NEED[mode] });
     }
   }

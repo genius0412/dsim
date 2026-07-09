@@ -11,6 +11,7 @@ import type {
 import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { clamp } from '../math';
+import { flywheelSpinTarget } from '../sim/field';
 
 /**
  * Wire protocol for the SERVER-AUTHORITATIVE netcode (Phase 0). All messages are
@@ -177,6 +178,9 @@ export type ClientMsg =
       config?: RoomConfig;
       authToken?: string;
       caps?: string[];
+      /** this client build's release channel ('alpha' | 'stable' | …). Absent ⇒
+       * 'stable'. Alpha rooms are segregated + never persisted (see server). */
+      channel?: string;
     }
   // reclaim an in-match slot after a transient socket drop (within the grace
   // window) — the server rebinds the robot to the new connection and resyncs
@@ -201,6 +205,8 @@ export type ClientMsg =
       accessMs: number;
       noWiden?: boolean;
       caps?: string[];
+      /** release channel (see `join.channel`): alpha queues only pair with alpha */
+      channel?: string;
     }
   // widen my search radius NOW (impatient player), instead of waiting for the timed
   // auto-widen. Idempotent; ignored once the ceiling is already at max.
@@ -348,8 +354,38 @@ export function slimWorld(world: World): SlimWorld {
   return slim as SlimWorld;
 }
 
+/** finite number or a fallback — guards against a field that arrived undefined
+ * (an older server never sent it) or as `null` (JSON serializes NaN/Infinity to
+ * null). Bare arithmetic on either poisons the sim to NaN. */
+const finiteOr = (v: unknown, fallback: number): number =>
+  typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+
+/**
+ * BACKWARD-COMPAT SHIM: the shared `src/sim` grows new per-tick RobotState fields
+ * over time (e.g. the power-draw model added `flywheelSpin` / `flywheelSpinRate` /
+ * `powerDraw`). ONE Fly app serves every client version, so a NEWER client can
+ * receive a snapshot from an OLDER server whose RobotState predates those fields —
+ * they arrive `undefined`. The newer client's `step()` then does
+ * `POWER_DRAW_FLYWHEEL_HOLD * undefined` → NaN, which propagates into the drive
+ * params and blows the robot's position to NaN (it renders at the camera origin /
+ * field centre and freezes). Re-seed any missing/non-finite dynamic field to a
+ * sane value (mirrors `createWorld`'s spawn seeding) so an old→new skew degrades
+ * gracefully instead of NaN-ing. Harmless when the server DOES send them.
+ */
+function backfillRobot(r: RobotState): RobotState {
+  return {
+    ...r,
+    // flywheel spin is DERIVED from distance to the robot's own goal; seed it at
+    // the position target (like spawn) so there's no phantom spin-up spike.
+    flywheelSpin: finiteOr(r.flywheelSpin, flywheelSpinTarget(r.alliance, r.pos)),
+    flywheelSpinRate: finiteOr(r.flywheelSpinRate, 0),
+    powerDraw: finiteOr(r.powerDraw, 0),
+  };
+}
+
 /** rebuild a full World from a slim world + reconstructed ball array, re-injecting
- * each robot's spec by id */
+ * each robot's spec by id (and back-filling any dynamic fields an older server
+ * omitted — see `backfillRobot`) */
 export function unslimWorld(
   w: SlimWorld,
   balls: Artifact[],
@@ -357,7 +393,7 @@ export function unslimWorld(
 ): World {
   return {
     ...w,
-    robots: w.robots.map((r) => ({ ...r, spec: specById(r.id) })),
+    robots: w.robots.map((r) => backfillRobot({ ...r, spec: specById(r.id) })),
     balls,
   };
 }

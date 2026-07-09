@@ -76,6 +76,9 @@ export interface Client {
   /** protocol capabilities this client build advertised on join/queue (mixed-version
    * safe: a room opens the strategy window only if EVERY member supports 'strategy') */
   caps?: string[];
+  /** release channel this client build reported ('alpha' | 'stable' | …). The first
+   * client to join sets the ROOM's channel; alpha rooms are never persisted. */
+  channel?: string;
 }
 
 /** one driver's outcome in a finished match (for persistence) */
@@ -162,6 +165,12 @@ export class Room {
   // is built. Custom rooms skip 'strategy' (connecting → match). `world===null` still
   // means "not in a match" (true for both connecting and strategy).
   private phase: 'connecting' | 'strategy' | 'match' = 'connecting';
+  // release channel of this room, set from the FIRST client to join (or the staged
+  // ranked roster). 'alpha' rooms are IN-DEVELOPMENT: their results are never
+  // persisted to the leaderboard/ELO DB (see finalizeMatch), and the matchmaker
+  // only ever pairs alpha with alpha (server/matchmaking.ts) — mixing channels
+  // would desync since each runs a different src/sim.
+  private channel = 'stable';
   private strategyDeadline = 0;
   private strategyTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly slotOf = new Map<string, number>(); // clientId -> roster slot (= robotId)
@@ -195,10 +204,19 @@ export class Room {
   }
 
   add(client: Client): void {
+    // the first client to land defines the room's release channel (custom/record
+    // rooms are single-channel by construction — the matchmaker segregates ranked)
+    if (this.clients.size === 0 && client.channel) this.channel = client.channel;
     this.clients.set(client.id, client);
     if (!this.hostId) this.hostId = client.id;
     client.send({ t: 'welcome', clientId: client.id });
     this.broadcastRoster();
+  }
+
+  /** true when this room's results must NOT be written to the leaderboard/ELO DB
+   * (in-development alpha builds) */
+  private get unpersisted(): boolean {
+    return this.channel === 'alpha';
   }
 
   /** a socket dropped. In the lobby that's an outright leave; mid-match the slot
@@ -437,6 +455,9 @@ export class Room {
   applyPending(p: PendingMatch): void {
     this.pendingMatch = p;
     this.ranked = true;
+    // the matchmaker groups a single channel; carry it so an alpha ranked match
+    // is segregated + unpersisted just like custom/record alpha rooms
+    if (p.channel) this.channel = p.channel;
     this.intros = p.roster.map((r, i) => ({ id: i, elo: r.introElo }));
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
     this.pendingTimer = setTimeout(() => this.cancelPending(), RANKED_JOIN_GRACE_MS);
@@ -687,8 +708,11 @@ export class Room {
     const replay: Replay = this.recorder.finish();
     const result = worldResult(w);
     this.broadcast({ t: 'matchResult', kind: this.config.kind, record: this.config.record, result, replay });
-    // hand the authoritative outcome to the persistence layer (off the hot path)
-    if (this.onResult) {
+    // hand the authoritative outcome to the persistence layer (off the hot path).
+    // ALPHA (in-development) rooms are NEVER persisted: the results screen + replay
+    // still work from the broadcast above, but no leaderboard/ELO/record DB write
+    // happens (and no recordResult/eloResult follows — the client shows "not saved").
+    if (this.onResult && !this.unpersisted) {
       const participants: MatchParticipant[] = [];
       // capture userId → robotId so the async ELO result can be re-keyed to robots
       const robotByUser = new Map<string, number>();
