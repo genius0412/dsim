@@ -96,6 +96,19 @@ export interface RobotState {
   vel: Vec2; // field frame, in/s
   angVel: number;
   turretHeading: number; // field frame
+  /** SWERVE per-module steer angles (robot frame, rad), one per wheel in the
+   * corner order [FL, FR, BL, BR] (matching drawRobot's wheels). Each module has
+   * its OWN imperfect steering loop, so their small INDEPENDENT angle errors don't
+   * cancel — producing the real drift + yaw wobble when driving straight. The net
+   * chassis motion is the forward-kinematics of the four modules. Unused by other
+   * drivetrains (all stay 0). Drives the per-pod wheel rendering. */
+  moduleAngles: number[];
+  /** SWERVE per-module TARGET steer angles (robot frame, rad) — the last COMMANDED
+   * direction the pods are slewing to. Updated from the drive command; HELD when the
+   * stick is released so the pods finish turning to (and keep) the commanded angle
+   * even after a brief tap, instead of freezing partway. `moduleAngles` chases these
+   * (plus the wobble). */
+  moduleTargets: number[];
   hopper: ArtifactColor[]; // FIFO, max 3
   fieldCentric: boolean;
   aimAssist: boolean;

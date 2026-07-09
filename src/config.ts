@@ -44,7 +44,7 @@ export const MATCH_SETTLE_S = MATCH_RESULT_REVEAL_MS / 1000;
  * build that produced it. Do NOT auto-derive this from a file hash — that would
  * reset every season on a trivial, non-gameplay edit. See docs/netcodeplan.md
  * Phase 3 + the phase3-leaderboards spec. */
-export const BALANCE_VERSION = 1;
+export const BALANCE_VERSION = 2; // 2: real-motor drivetrain retune (torque–speed curve + mecanum losses)
 
 /** Ranked PLACEMENT: a player is "in placements" until they've completed this
  * many ranked games on a board (counted per mode × drivetrain, incl. Overall).
@@ -180,16 +180,83 @@ export const ROBOT_MIN_WIDTH = 10;
 /** wheel centers sit this far INSIDE the chassis edge (typical FTC build);
  * the four wheel ground-contact points are what counts for base parking */
 export const WHEEL_INSET = 2.6;
-/** drivetrain modeling: per-robot params derive from spec (drivetrain type,
- * driveRpm, massLb) in src/sim/drivetrain.ts. Reference values below are
- * calibrated so the DEFAULT robot reproduces the original tuned feel exactly
- * (75 in/s, 7 rad/s, 280 in/s²) — verified by a smoke check. */
+// ============================================================================
+// DRIVETRAIN & MOTOR BALANCE — TUNE HERE
+// ----------------------------------------------------------------------------
+// Grounded in real FTC hardware: a 104 mm goBILDA drive wheel + the MATRIX /
+// goBILDA 5000-series 12VDC brushed motor (5800 rpm free, 20.45 oz-in / 9.2 A
+// stall, 0.25 A free). A brushed DC motor has a LINEAR torque–speed curve, which
+// is exactly the motorStep model below.
+// The model (src/sim/drivetrain.ts + robot.ts):
+//   1. BASE reference = an IDEAL traction wheel: free speed = wheel geometry
+//      (WHEEL_DIAMETER_MM) × driveRpm × DRIVE_EFFICIENCY; BASE_DRIVE_ACCEL stall
+//      accel. `driveRpm` is the WHEEL rpm (post-gearbox); the datum is "no roller
+//      loss", i.e. what a traction wheel on this motor would do.
+//   2. Each DRIVETRAIN_PRESET applies REAL efficiency FACTORS on top (all ≤ 1
+//      except tank ≈ ideal): mecanum/x-drive rollers slip → less speed, accel,
+//      and pushing; tank/swerve traction bites hard. See the table.
+//   3. MOTORS follow the DC torque–speed curve (motorStep): full stall torque off
+//      the line, falling ~linearly to zero at free speed, so velocity approaches
+//      top speed asymptotically instead of a constant ramp.
+//   4. Mass ↓ accel, RPM ↑ speed / ↓ accel (torque), power draw ↓ everything.
+// To rebalance: edit the numbers here; `npm test` prints the resulting speed /
+// strafe / accel / push table (driveSummary) so the effect is immediately visible.
+// ============================================================================
 export const REF_DRIVE_RPM = 435;
 export const REF_MASS_LB = 26;
-export const SPEED_PER_RPM = 75 / 435; // in/s per wheel RPM
-export const BASE_DRIVE_ACCEL = 280; // in/s^2 at reference RPM/mass
+/** goBILDA 104 mm mecanum / traction drive wheel */
+export const WHEEL_DIAMETER_MM = 104;
+/** loaded drivetrain efficiency: a real motor never reaches free speed on the
+ * field (gearbox + bearing + rolling losses), so the top speed it APPROACHES is
+ * ~80% of the 104 mm free-speed geometry. Bump toward 1 for a floatier top end. */
+export const DRIVE_EFFICIENCY = 0.95;
+/** in/s of loaded top speed per WHEEL rpm = (π·104 mm → in / 60) · efficiency.
+ * ≈ 0.204 → 435 wheel-rpm ≈ 89 in/s (7.4 ft/s), a real fast FTC drive. */
+export const SPEED_PER_RPM = (Math.PI * (WHEEL_DIAMETER_MM / 25.4)) / 60 * DRIVE_EFFICIENCY;
+/** in/s^2 PEAK accel at reference RPM/mass, TRACTION-limited (μ·g), NOT motor-
+ * limited: the MATRIX motor's stall torque could give ~460 in/s² but the wheels
+ * slip first, so real peak accel = μ·g (g≈386 in/s²). This base × accelMult lands
+ * each drivetrain at its traction limit (tank μ≈0.9 → ~347 … x-drive μ≈0.45 → ~175). */
+export const BASE_DRIVE_ACCEL = 240;
 export const TURN_MAX_SPEED = 12.0; // rad/s absolute cap (small fast bots approach it; default is 7)
 export const TURN_ACCEL_PER_ACCEL = 40 / 280; // rad/s^2 per in/s^2 of drive accel
+
+// --- motor torque–speed curve (how the stall accel falls off with speed) ---
+/** 0 = old CONSTANT accel; 1 = physically real (force ∝ 1 − v/v_free). Higher =
+ * punchier off the line, gentler approach to top speed (a real motor is 1.0). */
+export const MOTOR_TORQUE_CURVE = 1.0;
+/** floor on the torque fraction near free speed so a bot still closes the last
+ * few % to top speed instead of crawling forever. */
+export const MOTOR_MIN_TORQUE_FRAC = 0.06;
+/** braking torque multiplier: reversing / slowing pulls harder than peak drive
+ * accel (motor back-EMF + reverse), so stops feel crisp. */
+export const MOTOR_BRAKE_MULT = 1.4;
+
+/** SWERVE module steer rate (rad/s): how fast the four steered pods re-aim to a
+ * new drive direction. With MODULE OPTIMIZATION (pod flip — see robot.ts) the pods
+ * never rotate more than 90° (a bigger change flips the drive motor instead), so
+ * ~7 ⇒ at most ~0.22 s to re-aim. The target angle is set immediately; the pods
+ * just physically slew to it while the drive keeps running. This reorient LAG is
+ * swerve's real cost vs mecanum's instant rollers — keep it felt (don't raise high). */
+export const MODULE_SLEW_RATE = 7;
+/** SWERVE control-loop imperfection: each of the four modules has its OWN steering
+ * loop (always running) that can't perfectly HOLD its angle, so an INDEPENDENT,
+ * FAST oscillating error is superimposed while driving. It's a SUM of a few
+ * incommensurate sinusoids at per-module-varied frequencies (robot.ts) — an
+ * IRREGULAR, non-periodic jitter, NOT a clean uniform sine — so each pod hunts on
+ * its own. The errors don't cancel → the forward-kinematics of the mispointed pods
+ * yields a small path DRIFT + net YAW jitter driving straight. Swerve's balancing
+ * weakness (imprecise line), NOT weight. Disturbance ∝ actual SPEED, so at rest it's
+ * zero and the pods converge to one angle. AMP = peak per-pod error (rad); FREQ =
+ * the base jitter rate. Tune AMP for how imprecise, FREQ for how jittery. */
+export const SWERVE_WOBBLE_AMP = 0.2; // rad (~8.6°) peak per module, at full speed
+export const SWERVE_WOBBLE_FREQ = 30; // rad/s — the FAST jitter component (the buzz)
+/** rad/s of the SLOW per-module drift component. Low enough that it does NOT
+ * average out over a wall-to-wall run — the four modules meander independently,
+ * so the net heading (yaw) wanders and the robot DRIFTS off a straight line
+ * (fast jitter alone just buzzes and cancels). This is what makes swerve hard to
+ * track straight. Raise the drift weight/amp for more veer. */
+export const SWERVE_DRIFT_FREQ = 2.2;
 /** robot mass/rpm GLOBAL fallbacks for the builder (lb / wheel rpm). The real
  * limits are per-drivetrain (DRIVETRAIN_LIMITS below); these bound the widest
  * envelope and still gate settings validation where a drivetrain isn't known. */
@@ -206,7 +273,7 @@ export const DRIVETRAIN_LIMITS = {
   mecanum: { minMass: 18, maxMass: 42, minRpm: 200, maxRpm: 600 },
   xdrive: { minMass: 18, maxMass: 42, minRpm: 200, maxRpm: 600 },
   tank: { minMass: 22, maxMass: 42, minRpm: 200, maxRpm: 560 },
-  swerve: { minMass: 22, maxMass: 40, minRpm: 200, maxRpm: 500 },
+  swerve: { minMass: 23, maxMass: 40, minRpm: 200, maxRpm: 500 }, // a touch heavier base (8 motors + modules)
 } as const;
 /** lb added to a drivetrain's mass floor at flywheelInertia 1 (a big flywheel
  * weighs more): effective floor = base + INERTIA_MASS_FLOOR·inertia. Kept small
@@ -216,27 +283,45 @@ export const INERTIA_MASS_FLOOR = 4;
 /** penalty added to fireInterval when robot is sorting (canSort: true) */
 export const SORT_FIRE_PENALTY = 0.25;
 
-/** per-drivetrain multipliers + wheel-saturation model. saturation:
- * 'sum'   = |f|+|s|+|ω|  (mecanum/x-drive: the worst roller wheel sees all)
- * 'tank'  = |f|+|ω|      (no strafe at all — strafe input is dead)
- * 'vec'   = hypot(f,s)+|ω| (swerve modules are direction-independent)
- * accelMult + pushMult order (tank > swerve > mecanum > xdrive): traction
- * wheels bite hardest, then steered modules, then rollers. pushMult scales the
- * EFFECTIVE shove mass in the Rapier robot solver (physicsEngine.ts) alongside
- * real mass, RPM (torque), and power draw. The BASE calibration (SPEED_PER_RPM /
- * BASE_DRIVE_ACCEL) is 75 in/s, 7 rad/s, 280 in/s² at mult=1; mecanum's pushMult
- * stays 1.0 as the mass-shove anchor. Speed/accel were rebalanced July 2026: tank
- * eased down a touch and mecanum nudged up a touch, holding the accel order. */
+/** per-drivetrain REALISM factors + wheel-saturation model. Every factor is a
+ * fraction of the ideal-traction BASE — tank ≈ 1 (traction bites), the roller
+ * drives (mecanum/x-drive) pay real losses. Resulting free speeds at the 435-rpm
+ * reference (base ~89 in/s): tank 89 · swerve 84 · mecanum 77 · x-drive 74; peak
+ * accel (μ·g): tank 348 · swerve 312 · mecanum 211 · x-drive 175.
+ * DRIVETRAIN NICHES: tank = raw power + no strafe; swerve = strongest holonomic
+ * (speed/accel/push/full-strafe) BUT its imperfect pod control makes it WOBBLE
+ * driving straight (imprecise line) + pods reorient on direction changes; mecanum =
+ * the LIGHT, INSTANT, PRECISE holonomic (no wobble, zero reorient lag) but slower +
+ * weak push; x-drive = deliberately-weak novelty.
+ *   strafeMult  strafe speed ÷ forward (mecanum rollers < 1; omni/steered = 1; tank dead)
+ *   speedMult   forward FREE speed ÷ ideal (roller slip + friction loss)
+ *   accelMult   peak accel ÷ base (each drivetrain's traction limit μ·g ÷ the base)
+ *   pushMult    EFFECTIVE shove mass in the Rapier solver (physicsEngine.ts) — real
+ *               traction; mecanum/x-drive have little, so a tank shoves them around
+ *   saturation  wheel budget: 'sum' |f|+|s|+|ω| · 'tank' |f|+|ω| · 'vec' hypot(f,s)+|ω|
+ * Orders (all realistic): speed tank>swerve>mecanum>xdrive · push tank>swerve≫mecanum>xdrive
+ * · accel tank>swerve>mecanum>xdrive. Rebalanced 2026-07 for real-motor feel
+ * (mecanum de-buffed: it now loses speed AND pushing, per GM0). */
 export const DRIVETRAIN_PRESETS = {
-  /** the FTC standard: full strafe at roller-slip speed (slightly buffed 2026-07) */
-  mecanum: { strafeMult: 0.85, speedMult: 1.02, accelMult: 1.06, pushMult: 1.0, saturation: 'sum' },
-  /** 45° omni pods: full-speed strafe, slight overall speed loss + least bite */
-  xdrive: { strafeMult: 1.0, speedMult: 0.9, accelMult: 0.92, pushMult: 0.9, saturation: 'sum' },
-  /** traction wheels: no strafe, best straight-line speed, accel, and push
-   * (eased down a touch 2026-07 — still tops speed + the accel order) */
-  tank: { strafeMult: 0, speedMult: 1.03, accelMult: 1.42, pushMult: 1.5, saturation: 'tank' },
-  /** independent steered modules: full-speed any direction, strong bite */
-  swerve: { strafeMult: 1.0, speedMult: 1.0, accelMult: 1.12, pushMult: 1.15, saturation: 'vec' },
+  /** FTC standard mecanum: the LIGHT, INSTANT one — rollers change direction with
+   * ZERO reorient lag (unlike swerve's pods) and its low mass FLOOR gives the best
+   * holonomic accel, so it's the nimble/twitchy pick. Costs: ~13% forward loss,
+   * slower strafe, and LITTLE pushing power (shoved by everyone). */
+  mecanum: { strafeMult: 0.8, speedMult: 0.87, accelMult: 0.88, pushMult: 0.65, saturation: 'sum' },
+  /** 45° omni X-drive: a deliberately-WEAK novelty (no honest competitive niche,
+   * in-sim or IRL). Fully symmetric (strafe = forward) but flimsy omni wheels give
+   * it the WEAKEST traction of all — easily pushed, poor accel, no speed edge. A
+   * hard-mode/style pick, not a balanced option. */
+  xdrive: { strafeMult: 1.0, speedMult: 0.84, accelMult: 0.73, pushMult: 0.45, saturation: 'sum' },
+  /** traction wheels: no strafe, but the best straight-line speed, accel, and
+   * pushing power — the defensive anchor. */
+  tank: { strafeMult: 0, speedMult: 1.0, accelMult: 1.45, pushMult: 1.7, saturation: 'tank' },
+  // (tank accelMult 1.45 × base 240 = 348 ≈ μ·g at μ 0.9 — the traction ceiling)
+  /** steered traction modules: the HEAVY all-rounder — full-speed any direction +
+   * strong push + good top speed, but its weight (mass FLOOR below) tanks its accel
+   * and the pods must REORIENT on direction changes (MODULE_SLEW_RATE). Master of
+   * none: tank out-accels + out-pushes it, mecanum out-accels + out-responds it. */
+  swerve: { strafeMult: 1.0, speedMult: 0.95, accelMult: 1.3, pushMult: 1.35, saturation: 'vec' },
 } as const;
 
 /** flywheel recovery: after an energetic (long-range) shot, a LOW-inertia
@@ -268,7 +353,12 @@ export const FLYWHEEL_RECOVERY_MAX = 1.25; // s extra between max-range shots at
 export const POWER_DRAW_FLYWHEEL_HOLD = 0.04; // steady: inertia × spin (far & idle)
 export const POWER_DRAW_FLYWHEEL_SPINUP = 0.45; // per 1/s of rising spin: inertia × rate
 export const POWER_DRAW_INTAKE = 0.06; // intake motors running
-export const POWER_DRAW_MAX = 0.18; // cap ⇒ at most ~18% slower ("slightly")
+/** SWERVE draws steady current just RUNNING — the four steering (pivot) motors
+ * pull current to hold + correct pod angle even driving straight, on top of the 4
+ * drive motors. So a swerve chassis is always a bit slower / weaker-shoving than an
+ * equivalent mecanum. Applied whenever the drivetrain is swerve. */
+export const POWER_DRAW_SWERVE = 0.1;
+export const POWER_DRAW_MAX = 0.2; // cap ⇒ at most ~20% slower
 export const FLY_SPIN_NEAR = 40; // in to goal: flywheel spin 0
 export const FLY_SPIN_FAR = 170; // in to goal: flywheel spin 1
 
@@ -573,7 +663,7 @@ export const ROBOT_PRESETS: readonly RobotSpec[] = [
   },
   {
     name: 'Cypher', teamName: 'Seattle Solvers', teamNumber: 23511,
-    length: 12.5, width: 12, intake: 'vector', massLb: 22, drivetrain: 'swerve',
+    length: 12.5, width: 12, intake: 'vector', massLb: 23, drivetrain: 'swerve',
     driveRpm: 500, flywheelInertia: 0, canSort: false,
   },
   {

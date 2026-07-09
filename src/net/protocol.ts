@@ -401,6 +401,14 @@ function backfillRobot(r: RobotState): RobotState {
     flywheelSpin: finiteOr(r.flywheelSpin, flywheelSpinTarget(r.alliance, r.pos)),
     flywheelSpinRate: finiteOr(r.flywheelSpinRate, 0),
     powerDraw: finiteOr(r.powerDraw, 0),
+    moduleAngles:
+      Array.isArray(r.moduleAngles) && r.moduleAngles.length === 4
+        ? r.moduleAngles.map((a) => finiteOr(a, 0))
+        : [0, 0, 0, 0],
+    moduleTargets:
+      Array.isArray(r.moduleTargets) && r.moduleTargets.length === 4
+        ? r.moduleTargets.map((a) => finiteOr(a, 0))
+        : [0, 0, 0, 0],
   };
 }
 

@@ -67,6 +67,43 @@ for the full map and sources. Key facts people get wrong:
   **`goalLineValue` now returns TRUE perpendicular inches** from the face (>0 behind,
   inside the footprint; <0 field side) — do NOT divide by SQRT2 anywhere (the old
   45°-face scaling was removed at every call site).
+- **START POSITIONS are configurable + rulebook-constrained (G304).** A robot may
+  start on any pose satisfying **G304** (verified from Section 11): (A) footprint
+  OVER a white LAUNCH LINE, (B) TOUCHING the GOAL or the FIELD perimeter, (C) fully
+  within its own half (blue x≤0 / red x≥0) — PLUS the collision box may only rest
+  AGAINST a solid, never penetrate it (goal wedge / classifier channel). All in
+  `src/sim/field.ts`: `evalStartPose(spec,pose,a)→StartLegality` (footprint =
+  chassis+intake via `footprintExtents`/`footprintCorners`, SAT tests), `snapStartToLegal`
+  (nearest legal along the goal-face + audience loci), `mirrorStartPose` (canonical
+  goalSide=+1 ↔ actual, self-inverse), `startPose(a,index,custom?,spec?)`. Tolerances
+  `START_TOUCH_TOL`/`START_PEN_SLOP` in config. `START_POSES` (3 named quick-picks:
+  GOAL·FAR / AUDIENCE / GOAL·GATE) are **semantic ANCHORS resolved DYNAMICALLY per
+  chassis** via `presetPose(index,a,spec)` (= snap the anchor legal for THAT robot),
+  so a preset is legal at ANY size — not a fixed coordinate. **Anchor index 0 & 1
+  MUST stay far apart** (a 2-robot alliance spawns slots at 0/1 — smoke-checked). Custom poses ride
+  `RobotSetup.startPose`/`GameSettings.startPose`/`LobbyPlayer.startPose` (canonical,
+  overrides `startIndex`), sanitized by `coerceStartPose` + snapped legal at the spawn
+  chokepoint `coerceSetup`. UI `src/ui/StartPositionEditor.tsx`: a CANVAS reusing the
+  real `drawField`/`drawRobot` renderers + drag/rotate + X/Y/heading inputs; snapping
+  is an OPT-IN toggle (default OFF) and an illegal pose is previewed red but NEVER
+  saved (reverts to the last legal on release). Wired into MatchSetup / Lobby /
+  MatchStrategy. `caps:'startpose'` advertised for future server-gating.
+  **START POSITIONS split CLOSE vs FAR** (by distance to goal; presets carry `cat` in
+  config): a per-player SAVED library (`GameSettings.savedStartPoses{close,far}`, ≤
+  `MAX_SAVED_STARTS` each) + `startMemory` (last pick per category, restored on tab
+  switch) + `startCat`. Pure patch-helpers in `src/ui/startPositions.ts`
+  (`categoryPresets/switchCategory/selectStart/saveStart/deleteSavedStart/samePose`).
+  `startIndex`/`startPose` stay the ACTIVE start (spawn+wire); the library/memory are
+  LOCAL settings (persist + account-sync, no protocol change). In a 2v2 the robot's
+  role LOCKS the category (1st on the alliance by clientId = CLOSE, 2nd = FAR; derived
+  client-side in Lobby/MatchStrategy → `lockedCategory`). Editor gotcha: a preset pick
+  must be ONE settings patch (`selectStart`), never two `set()` calls (stale-closure
+  overwrite drops one). **ROLE is SWAPPABLE by mutual consent** (`src/ui/useRoleSwap.ts`
+  + `RoleSwapBar.tsx`): `LobbyPlayer.startRole?`/`swapReq?` (protocol + sanitize passthrough
+  — needs a server redeploy) drive a two-flag handshake (propose→accept; when both set
+  each client flips ITS OWN role to the opposite, race-free; `enacted` ref guards the
+  broadcast window). The enact also resets the active start to the new category default.
+  Decline is LOCAL-only (a partner can't clear your flag).
 - Spike marks: horizontal 10" tape at x=±48.5 — that is ONE tile (~23.5") from the
   side wall (re-verified July 2026; an old "two tiles" comment was wrong, the value
   right), rows y = -35.5 / -12.8 / +11.1, 3 balls per row (GPP / PGP / PPG near→far).
@@ -154,25 +191,53 @@ the gateway), so a tap usually drains the whole column.
 6. HUD mimics the FTC live scoring display: red|timer|blue bar at the BOTTOM.
    Breakdown chips show artifact COUNTS, not points. PATTERN shows only BANKED
    points (assessed end-of-AUTO and end-of-match — never a live matched count).
-7. Drivetrain feel: fast (75 in/s, 7 rad/s turn, snappy accel). Per-robot drive
-   params now DERIVE from the spec via `driveParams(spec)` in `src/sim/drivetrain.ts`
-   (`DRIVETRAIN_PRESETS` × `driveRpm` × `massLb`; the BASE calibration
-   `SPEED_PER_RPM`/`BASE_DRIVE_ACCEL` reproduces the legacy 75/7/280 at mult=1 —
-   smoke-checked via the mecanum ref × its mult, do not break the base). Four
-   drivetrains with distinct wheel-saturation models: mecanum `|f|+|s|+|ω|`
-   (0.85 strafe), x-drive same-but-full-strafe, tank `|f|+|ω|` (strafe input DEAD, controlled via traditional tank drive: left stick/W-S for left side, right stick/Up-Down for right side),
-   swerve `hypot(f,s)+|ω|` (direction-independent). `maxTurn = wheelSpeed /
-   halfDiagonal` (smaller/faster bots turn quicker, capped at `TURN_MAX_SPEED`).
-   accel + push order is tank > swerve > mecanum > xdrive (`accelMult`/`pushMult` in
-   `DRIVETRAIN_PRESETS`); mecanum's `pushMult` stays 1.0 as the mass-shove anchor. Its
-   speed/accel were rebalanced 2026-07 (tank eased down, mecanum nudged up — tank still
-   tops speed + the accel order holds; base 75/280 untouched). mass↑→accel↓,
-   rpm↑→(accel↓, topspeed↑) already held. **PUSHING POWER = effective Rapier shove mass**
+7. **Drivetrain feel — REAL-MOTOR model (retuned 2026-07, `BALANCE_VERSION` 2).**
+   ALL drivetrain/motor knobs live in ONE documented `DRIVETRAIN & MOTOR BALANCE`
+   block in `config.ts` (edit there; `npm test` prints the `driveSummary` table so a
+   tweak's effect is visible). Grounded in real hardware: `SPEED_PER_RPM` is DERIVED
+   from a **104 mm goBILDA wheel** (`WHEEL_DIAMETER_MM`) free-speed geometry ×
+   `DRIVE_EFFICIENCY` 0.95 (gearbox/bearing loss) → **~89 in/s at 435 wheel-rpm (7.4
+   ft/s)**. The modeled motor is the **MATRIX / goBILDA 5000-series 12VDC** brushed
+   motor (5800 rpm free, 20.45 oz-in stall) — its LINEAR torque–speed curve IS the
+   motorStep model. **PEAK accel is TRACTION-limited (μ·g), NOT motor-limited** — the
+   stall torque could give ~460 in/s² but the wheels slip first, so `BASE_DRIVE_ACCEL`
+   240 × accelMult lands each drivetrain at its μ·g ceiling (tank μ≈0.9 → 348 …
+   x-drive omni μ≈0.45 → 175). Each `DRIVETRAIN_PRESETS` entry applies REAL efficiency
+   factors on the ideal-traction datum. **MOTORS follow a
+   torque–speed curve** (`motorStep` in drivetrain.ts, used by robot.ts for fwd/strafe/turn): full stall
+   accel off the line, falling ~linearly to `MOTOR_MIN_TORQUE_FRAC` at the free speed
+   (`MOTOR_TORQUE_CURVE` 1.0 = physically real, 0 = old constant accel), so speed
+   approaches the top asymptotically (~0.5–0.8 s to 95%); braking pulls harder
+   (`MOTOR_BRAKE_MULT`). **Mecanum is now realistically LOSSY** (per GM0 rollers): speed
+   0.87 / strafe 0.80 / accel 0.88 / **push 0.65** — it loses straight-line speed AND
+   gets shoved by tank (no longer the pushMult=1.0 anchor). Realistic orders: speed
+   tank>swerve>mecanum>xdrive · push tank>swerve≫mecanum>xdrive · accel
+   tank>swerve>mecanum>xdrive (@435rpm: speed tank 89 / swerve 84 / mecanum 77 / xdrive
+   74 in/s; peak accel tank 348 / swerve 312 / mecanum 211 / xdrive 175 in/s²). Mecanum
+   beats the X-drive compromise on forward. Four wheel-saturation models: mecanum/xdrive
+   `|f|+|s|+|ω|`, tank `|f|+|ω|` (strafe DEAD — traditional tank drive: left stick/W-S
+   left side, right stick/Up-Down right side), swerve `hypot(f,s)+|ω|`. `maxTurn =
+   wheelSpeed / halfDiagonal` (smaller/faster bots turn quicker, capped at
+   `TURN_MAX_SPEED`). mass↑→accel↓, rpm↑→(accel↓, topspeed↑). **SWERVE has STEERING PODS**
+   (`RobotState.moduleAngle`, robot frame): robot.ts steers them to the commanded direction
+   with WPILib-style MODULE OPTIMIZATION — target set immediately, and a >90° change FLIPS the
+   pod + REVERSES the drive (pod flip) so pods never rotate >90° and a 180° reversal is instant
+   (`MODULE_SLEW_RATE` 7). **Swerve = FOUR INDEPENDENT modules** (`RobotState.moduleAngles[4]`,
+   FL/FR/BL/BR): robot.ts does real per-module INVERSE kinematics (target vel = translation + ω×r),
+   per-module pod-flip + slew, and FORWARD kinematics of the pods for the achieved chassis motion.
+   **Balancing WEAKNESS is WOBBLE, not weight** (user decision — a heavy-swerve nerf was tried +
+   reverted): each module's control loop is imperfect (`SWERVE_WOBBLE_AMP`/`_FREQ`, INDEPENDENT
+   phase per pod), so the mispointed pods don't cancel → real path DRIFT + a net YAW wobble driving
+   straight (mecanum tracks perfectly). Rendered as 4 independently swiveling/wobbling pods
+   (`drawRobot` reads `moduleAngles[i]`; `RobotPreview` static-forward, on top of the chassis); X-DRIVE renders as a
+   proper X (omnis at ±45°). NICHES: tank raw power/no-strafe · swerve strongest-but-imprecise
+   (wobble + reorient lag) · mecanum light/instant/precise but weaker · x-drive deliberately-weak
+   novelty. **PUSHING POWER = effective Rapier shove mass**
    (session 7) at `physicsEngine.ts` `setMass`: `massLb · pushMult · rpmPush · (1−powerDraw)`,
    `rpmPush = clamp(REF_DRIVE_RPM/driveRpm, 0.6, 1.8)` — geared-for-speed ⇒ less torque.
-   So push scales with drivetrain, mass↑, rpm↓, power-draw↓ (real motors). `driveParams.accel`
-   uses REAL mass, so inflating the shove mass never touches linear accel; at the reference
-   (mecanum/435/rest) every factor = 1 so the mass-weighted-shove smoke checks are unchanged.
+   So push scales with drivetrain (tank 1.7 … xdrive 0.45), mass↑, rpm↓, power-draw↓.
+   `driveParams.accel` uses REAL mass, so inflating the shove mass never touches linear
+   accel; the mass-weighted-shove smoke checks divide out the mults so they hold.
    **Per-drivetrain CLAMPS** live in `DRIVETRAIN_LIMITS` ({min/maxMass, min/maxRpm}, replacing
    the old `SWERVE_*` consts); the mass FLOOR is raised by flywheel inertia
    (`INERTIA_MASS_FLOOR 14`, a heavier flywheel) via `massLimits(dt, inertia)` / `rpmLimits(dt)`

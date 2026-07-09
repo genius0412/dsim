@@ -385,6 +385,8 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       vel: { x: 0, y: 0 },
       angVel: 0,
       turretHeading: pose.heading,
+      moduleAngles: [0, 0, 0, 0], // swerve pods (FL,FR,BL,BR) start pointing forward
+      moduleTargets: [0, 0, 0, 0], // and their commanded targets
       hopper: nth === 0 ? [...C.PRELOAD] : [...C.HP_INITIAL_STOCK],
       fieldCentric: s.assists.fieldCentric,
       aimAssist: s.assists.aimAssist,

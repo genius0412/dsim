@@ -25,18 +25,62 @@ export function drawRobot(
   ctx.fill();
   ctx.stroke();
 
-  // wheels (mecanum pods) — INSIDE the frame, centered on the ground-contact
-  // points that base parking scores (WHEEL_INSET from the chassis edges)
-  ctx.fillStyle = '#111318';
+  // wheels — INSIDE the frame, on the ground-contact points base parking scores
+  // (WHEEL_INSET from the chassis edges). Drawn per drivetrain: mecanum/tank point
+  // forward, SWERVE pods steer to r.moduleAngle, X-drive omnis sit at 45° (an X).
   const wx = Math.max(hl - C.WHEEL_INSET, 1);
   const wy = Math.max(hw - C.WHEEL_INSET, 1);
-  for (const [px, py] of [
+  const corners = [
     [wx, wy],
     [wx, -wy],
     [-wx, wy],
     [-wx, -wy],
-  ] as const) {
-    ctx.fillRect(px - 2.2, py - 1.1, 4.4, 2.2);
+  ] as const;
+  const drawWheel = (px: number, py: number, ang: number, len = 4.4, wid = 2.2, fill = '#12171e'): void => {
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(ang);
+    ctx.fillStyle = fill;
+    ctx.fillRect(-len / 2, -wid / 2, len, wid);
+    // a light edge so the wheel's ORIENTATION reads (X-drive X, swerve steer)
+    ctx.strokeStyle = 'rgba(190,205,220,0.4)';
+    ctx.lineWidth = 0.35;
+    ctx.strokeRect(-len / 2, -wid / 2, len, wid);
+    ctx.restore();
+  };
+  if (r.spec.drivetrain === 'swerve') {
+    // each of the four pods renders at its OWN angle — they visibly swivel + wobble
+    corners.forEach(([px, py], i) => {
+      const ang = r.moduleAngles[i] ?? 0;
+      // steering module housing
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.fillStyle = '#0c1016';
+      ctx.fillRect(-2.6, -2.6, 5.2, 5.2);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 0.4;
+      ctx.strokeRect(-2.6, -2.6, 5.2, 5.2);
+      ctx.restore();
+      drawWheel(px, py, ang, 4.2, 1.8, '#1b212b');
+      // a tick showing which way this pod points
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.rotate(ang);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(2.4, 0);
+      ctx.stroke();
+      ctx.restore();
+    });
+  } else if (r.spec.drivetrain === 'xdrive') {
+    // omni wheels canted 45°, opposite corners on the same diagonal → an X. Long +
+    // lighter so the X clearly reads; the diagonals nearly meet at the center.
+    const reach = Math.hypot(wx, wy);
+    for (const [px, py] of corners) drawWheel(px, py, px * py >= 0 ? Math.PI / 4 : -Math.PI / 4, Math.min(reach * 1.15, 7.5), 2.0, '#2b333e');
+  } else {
+    for (const [px, py] of corners) drawWheel(px, py, 0);
   }
 
   // intake at the front (RobotPreview.tsx draws the same). FUNNEL presets

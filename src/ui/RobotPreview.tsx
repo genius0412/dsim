@@ -108,26 +108,6 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
       role="img"
       aria-label={`${spec.width} by ${spec.length} inch robot, ${spec.intake} intake`}
     >
-      {/* wheels (under the chassis) */}
-      {[
-        [wx, wy],
-        [-wx, wy],
-        [wx, -wy],
-        [-wx, -wy],
-      ].map(([x, y], i) => (
-        <rect
-          key={i}
-          x={x - wheelW / 2}
-          y={y - wheelH / 2}
-          width={wheelW}
-          height={wheelH}
-          rx={0.6}
-          fill="#0c151d"
-          stroke={stroke}
-          strokeWidth={0.25}
-        />
-      ))}
-
       {intakeEl}
 
       {/* chassis */}
@@ -141,6 +121,44 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
         stroke={stroke}
         strokeWidth={0.5}
       />
+
+      {/* wheels ON TOP of the chassis (like the in-game drawRobot) — per
+          drivetrain: mecanum/tank forward, SWERVE steering pods, X-drive omnis
+          canted 45° into an X. Front = UP. */}
+      {(() => {
+        const corners: [number, number][] = [
+          [wx, wy],
+          [-wx, wy],
+          [wx, -wy],
+          [-wx, -wy],
+        ];
+        const wheelRect = (x: number, y: number, deg: number, ww: number, wh: number, fill: string) => (
+          <rect
+            key={`w${x}_${y}`}
+            x={-ww / 2}
+            y={-wh / 2}
+            width={ww}
+            height={wh}
+            rx={0.5}
+            fill={fill}
+            stroke={stroke}
+            strokeWidth={0.25}
+            transform={`translate(${x} ${y}) rotate(${deg})`}
+          />
+        );
+        if (spec.drivetrain === 'swerve') {
+          return corners.flatMap(([x, y]) => [
+            <rect key={`h${x}_${y}`} x={x - 2.6} y={y - 2.6} width={5.2} height={5.2} rx={1} fill="#0c1016" stroke={accent} strokeWidth={0.3} />,
+            wheelRect(x, y, 0, wheelW, wheelH, '#1b212b'),
+            <line key={`t${x}_${y}`} x1={x} y1={y} x2={x} y2={y - 2.4} stroke={accent} strokeWidth={0.5} />,
+          ]);
+        }
+        if (spec.drivetrain === 'xdrive') {
+          const long = Math.min(Math.hypot(wx, wy) * 1.1, 7.2);
+          return corners.map(([x, y]) => wheelRect(x, y, x * y >= 0 ? 45 : -45, 2.0, long, '#2b333e'));
+        }
+        return corners.map(([x, y]) => wheelRect(x, y, 0, wheelW, wheelH, '#0c151d'));
+      })()}
 
       {/* front indicator (a chevron at the front edge) */}
       <polyline

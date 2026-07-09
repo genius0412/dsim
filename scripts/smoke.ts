@@ -2,7 +2,7 @@
  * Headless smoke test of the sim core: drives, shoots (incl. on the move),
  * opens the gate, and checks scoring math. Run with: npx tsx scripts/smoke.ts
  */
-import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, coerceSpec } from '../src/sim/spawn';
+import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
 import { generateRoomCode, isValidRoomCode, normalizeRoomCode } from '../src/net/roomCode';
 import { step } from '../src/sim/world';
@@ -12,7 +12,6 @@ import { updateHumanPlayers } from '../src/sim/humanPlayer';
 import { startMatch } from '../src/sim/match';
 import {
   inLaunchZone,
-  evalStartPose,
   gateZone,
   startPose,
   goalCenter,
@@ -32,6 +31,10 @@ import {
   loadBoxSlots,
   loadPreStage,
   inRect,
+  evalStartPose,
+  snapStartToLegal,
+  mirrorStartPose,
+  presetPose,
 } from '../src/sim/field';
 import { assessMatchEnd } from '../src/sim/scoring';
 import type { Alliance, GameMode, RobotCommand, RobotSpec, World } from '../src/types';
@@ -51,9 +54,16 @@ import {
   ROBOT_MAX_SIZE,
   ROBOT_MIN_WIDTH,
   DRIVETRAIN_PRESETS,
+  START_POSES,
+  SPEED_PER_RPM,
+  REF_DRIVE_RPM,
+  DRIVE_EFFICIENCY,
+  WHEEL_DIAMETER_MM,
+  BASE_DRIVE_ACCEL,
+  POWER_DRAW_SWERVE,
 } from '../src/config';
 import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
-import { driveParams, massLimits, rpmLimits } from '../src/sim/drivetrain';
+import { driveParams, massLimits, rpmLimits, motorStep, driveSummary } from '../src/sim/drivetrain';
 import { coerceSettings } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, mergeBindings } from '../src/input/bindings';
@@ -149,6 +159,88 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   );
   check('blue goal is far-left (cross-court)', goalCenter('blue').x < 0 && goalCenter('blue').y > 0);
   check('red goal is far-right', goalCenter('red').x > 0 && goalCenter('red').y > 0);
+}
+
+// ---- configurable start positions (rule G304) ------------------------------
+{
+  // every named preset is a LEGAL setup for the default spec, both alliances
+  let presetsLegal = true;
+  for (const p of START_POSES) {
+    const canon = { x: p.x, y: p.y, headingDeg: p.headingDeg };
+    if (!evalStartPose(DEFAULT_SPEC, canon, 'red').legal) presetsLegal = false;
+    if (!evalStartPose(DEFAULT_SPEC, mirrorStartPose(canon, 'blue'), 'blue').legal) presetsLegal = false;
+  }
+  check('every START_POSES preset is a legal G304 setup (both alliances)', presetsLegal);
+
+  // DYNAMIC presets: presetPose resolves EVERY preset legal for ANY chassis size
+  let dynOk = true;
+  const chassis = [DEFAULT_SPEC, { ...DEFAULT_SPEC, length: 18, width: 18, intake: 'triangle' as const }, { ...DEFAULT_SPEC, length: 10, width: 10, intake: 'vector' as const }];
+  for (const s of chassis) for (const a of ['red', 'blue'] as const) for (let i = 0; i < START_POSES.length; i++) {
+    if (!evalStartPose(s, presetPose(i, a, s), a).legal) dynOk = false;
+  }
+  check('presetPose yields a legal pose for every preset/alliance/chassis size', dynOk);
+
+  // a mid-field pose (touching nothing) is NOT legal — the OLD presets were here
+  const midField = evalStartPose(DEFAULT_SPEC, { x: 20, y: 40, headingDeg: 315 }, 'red');
+  check('mid-launch-zone pose fails G304 (not touching goal/wall)', !midField.legal && !midField.touching);
+
+  // a pose off the field / into the opponent half fails the containment clauses
+  check('off-field pose fails containment', !evalStartPose(DEFAULT_SPEC, { x: 71, y: 71, headingDeg: 0 }, 'red').contained);
+  check('pose in the opponent half fails ownHalf', !evalStartPose(DEFAULT_SPEC, { x: -30, y: 50, headingDeg: 0 }, 'red').ownHalf);
+
+  // collision box: a pose buried in the goal corner is NOT clear (penetrates the structure)
+  const buried = evalStartPose(DEFAULT_SPEC, { x: 62, y: 62, headingDeg: 0 }, 'red');
+  check('footprint inside the goal structure fails the clear clause', !buried.clear && !buried.legal);
+
+  // snapping makes ANY spec legal from ANY seed, both alliances
+  let snapOk = true;
+  const specs = [DEFAULT_SPEC, { ...DEFAULT_SPEC, length: 18, width: 18, intake: 'triangle' as const }, { ...DEFAULT_SPEC, length: 10, width: 10, intake: 'vector' as const }];
+  const seeds = [{ x: 5, y: 5, headingDeg: 33 }, { x: 30, y: 0, headingDeg: 100 }, { x: 65, y: -10, headingDeg: 200 }, { x: 10, y: 65, headingDeg: 0 }];
+  for (const s of specs) for (const a of ['red', 'blue'] as const) for (const seed of seeds) {
+    if (!evalStartPose(s, snapStartToLegal(s, seed, a), a).legal) snapOk = false;
+  }
+  check('snapStartToLegal yields a legal pose for any spec/alliance/seed', snapOk);
+  check('snapStartToLegal leaves an already-legal pose unchanged', (() => {
+    const legal = mirrorStartPose({ x: START_POSES[0].x, y: START_POSES[0].y, headingDeg: START_POSES[0].headingDeg }, 'red');
+    const s = snapStartToLegal(DEFAULT_SPEC, legal, 'red');
+    return s.x === legal.x && s.y === legal.y && s.headingDeg === legal.headingDeg;
+  })());
+
+  // mirror is self-inverse
+  const mp = { x: 33.3, y: -12.1, headingDeg: 47 };
+  const rt = mirrorStartPose(mirrorStartPose(mp, 'blue'), 'blue');
+  check('mirrorStartPose is self-inverse', Math.abs(rt.x - mp.x) < 1e-9 && Math.abs(rt.headingDeg - mp.headingDeg) < 1e-9);
+
+  // coerceStartPose rejects junk, clamps to the field
+  check('coerceStartPose rejects non-finite', coerceStartPose({ x: NaN, y: 0, headingDeg: 0 }) === null);
+  check('coerceStartPose rejects non-object', coerceStartPose(null) === null && coerceStartPose('x') === null);
+  const clamped = coerceStartPose({ x: 999, y: -999, headingDeg: 725 });
+  check('coerceStartPose clamps x/y to field + normalizes heading', !!clamped && clamped.x === FIELD_HALF && clamped.y === -FIELD_HALF && clamped.headingDeg === 5);
+
+  // coerceSetup snaps a spoofed illegal custom pose to a legal spawn pose
+  const bad = coerceSetup({ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0, startPose: { x: 0, y: 0, headingDeg: 0 } });
+  check('coerceSetup snaps an illegal custom startPose legal', !!bad.startPose && evalStartPose(DEFAULT_SPEC, mirrorStartPose(bad.startPose, 'blue'), 'blue').legal);
+
+  // a custom pose actually drives the spawn position (canonical → mirrored)
+  const customCanon = { x: START_POSES[1].x, y: START_POSES[1].y, headingDeg: START_POSES[1].headingDeg };
+  const cw = createWorld('match', 1, [{ id: 0, alliance: 'red', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0, startPose: customCanon }]);
+  const want = startPose('red', 0, customCanon);
+  check('custom startPose overrides startIndex at spawn', Math.hypot(cw.robots[0].pos.x - want.pos.x, cw.robots[0].pos.y - want.pos.y) < 1e-6);
+
+  // the spawned robot (red = canonical frame) is a legal G304 setup
+  const spawnedPose = { x: cw.robots[0].pos.x, y: cw.robots[0].pos.y, headingDeg: (cw.robots[0].heading * 180) / Math.PI };
+  check('spawned custom-pose robot is a legal G304 setup', evalStartPose(cw.robots[0].spec, spawnedPose, 'red').legal);
+
+  // Close/Far categories: presets partition, and each is legal in its own category
+  const closeP = START_POSES.filter((p) => p.cat === 'close');
+  const farP = START_POSES.filter((p) => p.cat === 'far');
+  check('presets partition into close + far (both non-empty)', closeP.length > 0 && farP.length > 0 && closeP.length + farP.length === START_POSES.length);
+
+  // settings: new start fields default sanely + saved library caps per category
+  const def = coerceSettings({});
+  check('coerceSettings defaults startCat/library/memory', def.startCat === 'close' && Array.isArray(def.savedStartPoses.close) && def.startMemory.far.index === 1);
+  const capped = coerceSettings({ savedStartPoses: { close: [{ x: 5, y: 6, headingDeg: 0 }, { x: 7, y: 8, headingDeg: 10 }, { x: 9, y: 9, headingDeg: 20 }], far: [{ x: NaN, y: 0, headingDeg: 0 }, 'junk'] } });
+  check('coerceSettings caps saved starts per category + drops junk', capped.savedStartPoses.close.length === 2 && capped.savedStartPoses.far.length === 0);
 }
 
 // ---- field markings geometry (manual Section 9) ----------------------------
@@ -986,12 +1078,15 @@ const setup = (
   startIndex,
 });
 
-// ---- drivetrain calibration reproduces the legacy tuned feel exactly --------
+// ---- drivetrain calibration: derived from real 104mm-wheel geometry ---------
 {
-  // the BASE calibration (SPEED_PER_RPM / BASE_DRIVE_ACCEL) is tuned so a 26lb /
-  // 435rpm mecanum (15x18) hits 75/7/280 at mult=1. Mecanum's speed/accel mult were
-  // nudged up in the 2026-07 rebalance, so divide them out here to keep pinning the
-  // BASE calibration regardless of the per-drivetrain tuning.
+  // BASE speed derives from the 104 mm wheel free-speed geometry × DRIVE_EFFICIENCY;
+  // the ref 26lb / 435rpm chassis lands ~75/7/280 at mult=1 (× the per-drivetrain
+  // mult). Check against the FORMULA (not a magic 75) so it survives wheel/efficiency
+  // edits, plus a realistic-band assertion.
+  const refFree = SPEED_PER_RPM * REF_DRIVE_RPM; // loaded top speed of the ideal traction datum
+  check('104mm-wheel derived ref speed is a realistic FTC drive (~6–8 ft/s)', refFree > 72 && refFree < 96, `${refFree.toFixed(2)} in/s = ${(refFree / 12).toFixed(1)} ft/s`);
+  check('SPEED_PER_RPM = π·wheel/60 · efficiency', Math.abs(SPEED_PER_RPM - (Math.PI * (WHEEL_DIAMETER_MM / 25.4)) / 60 * DRIVE_EFFICIENCY) < 1e-9);
   const CALIB_REF: RobotSpec = {
     ...DEFAULT_SPEC, length: 15, width: 18, intake: 'sloped',
     massLb: 26, drivetrain: 'mecanum', driveRpm: 435, flywheelInertia: 0.5,
@@ -999,10 +1094,10 @@ const setup = (
   const dp = driveParams(CALIB_REF);
   const M = DRIVETRAIN_PRESETS.mecanum; // maxSpeed/turn scale with speedMult, accel with accelMult
   check(
-    'base calibration ref: 75 in/s, 7 rad/s, 280 in/s² (× mecanum mult)',
-    Math.abs(dp.maxSpeed - 75 * M.speedMult) < 1e-6 &&
+    'base calibration ref: refFree in/s, 7 rad/s, base accel (× mecanum mult)',
+    Math.abs(dp.maxSpeed - refFree * M.speedMult) < 1e-6 &&
       Math.abs(dp.maxTurn - 7 * M.speedMult) < 1e-6 &&
-      Math.abs(dp.accel - 280 * M.accelMult) < 1e-6,
+      Math.abs(dp.accel - BASE_DRIVE_ACCEL * M.accelMult) < 1e-6,
     `${dp.maxSpeed.toFixed(2)} / ${dp.maxTurn.toFixed(2)} / ${dp.accel.toFixed(1)}`,
   );
 }
@@ -1083,13 +1178,141 @@ const setup = (
   );
 }
 
-// ---- 2026-07 rebalance: tank still tops speed, mecanum buffed above the base -
+// ---- 2026-07 real-motor retune: mecanum has losses, tank tops speed ----------
 {
   const sp = (dt: RobotSpec['drivetrain']) => driveParams({ ...DEFAULT_SPEC, drivetrain: dt }).maxSpeed;
-  // tank eased down but still the fastest straight line; mecanum nudged above swerve
-  check('speed order tank ≥ mecanum > swerve (tank still tops speed)', sp('tank') >= sp('mecanum') && sp('mecanum') > sp('swerve'));
-  // mecanum sits ABOVE the base calibration on both axes (the buff)
-  check('mecanum buffed above the base (speed & accel mult > 1)', DRIVETRAIN_PRESETS.mecanum.speedMult > 1 && DRIVETRAIN_PRESETS.mecanum.accelMult > 1);
+  // realistic straight-line order: traction fastest; mecanum beats the X-drive
+  // compromise on forward; X-drive slowest (flimsy omni, no straight-line edge)
+  check('speed order tank > swerve > mecanum > xdrive', sp('tank') > sp('swerve') && sp('swerve') > sp('mecanum') && sp('mecanum') > sp('xdrive'));
+  // mecanum now sits BELOW the ideal base on every axis (roller slip + friction)
+  const M = DRIVETRAIN_PRESETS.mecanum;
+  check('mecanum has real losses (speed/accel/push all < 1)', M.speedMult < 1 && M.accelMult < 1 && M.pushMult < 1);
+  // pushing order: traction bites, rollers get shoved
+  check('push order tank > swerve > mecanum > xdrive', DRIVETRAIN_PRESETS.tank.pushMult > DRIVETRAIN_PRESETS.swerve.pushMult && DRIVETRAIN_PRESETS.swerve.pushMult > M.pushMult && M.pushMult > DRIVETRAIN_PRESETS.xdrive.pushMult);
+
+  // print the tuning table (visible on every run so a balance edit shows its effect)
+  const rows = driveSummary().map((r) => `${r.dt.padEnd(7)} fwd ${r.fwd.toFixed(1).padStart(5)}  strafe ${r.strafe.toFixed(1).padStart(5)}  accel ${r.accel.toFixed(0).padStart(4)}  push ${r.push.toFixed(2)}`);
+  console.log('  drivetrain @435rpm/26lb:\n    ' + rows.join('\n    '));
+}
+
+// ---- motor torque–speed curve: accel eases off near top speed ----------------
+{
+  const ref = { ...DEFAULT_SPEC, drivetrain: 'tank' as const, driveRpm: 435, massLb: 26 };
+  const dp = driveParams(ref);
+  const aStall = dp.accel;
+  // off the line = full stall accel; near free speed = a small fraction
+  const aStart = (motorStep(0, dp.maxSpeed, aStall, dp.maxSpeed, SIM_DT) - 0) / SIM_DT;
+  const aNearTop = (motorStep(dp.maxSpeed * 0.98, dp.maxSpeed, aStall, dp.maxSpeed, SIM_DT) - dp.maxSpeed * 0.98) / SIM_DT;
+  check('motor accel is full stall off the line', Math.abs(aStart - aStall) < 1e-6, `${aStart.toFixed(1)} vs ${aStall.toFixed(1)}`);
+  check('motor accel falls off near free speed (torque curve)', aNearTop < aStall * 0.2, `${aNearTop.toFixed(1)}`);
+  // braking pulls harder than peak drive accel
+  const aBrake = (dp.maxSpeed - motorStep(dp.maxSpeed, 0, aStall, dp.maxSpeed, SIM_DT)) / SIM_DT;
+  check('motor braking is stronger than stall accel', aBrake > aStall, `${aBrake.toFixed(1)} vs ${aStall.toFixed(1)}`);
+  // integrate: reaches ~95% of free speed in a realistic ~0.6–1.0 s (not instant)
+  let v = 0;
+  let t95 = 0;
+  for (let i = 0; i < 300; i++) {
+    v = motorStep(v, dp.maxSpeed, aStall, dp.maxSpeed, SIM_DT);
+    if (v >= dp.maxSpeed * 0.95) { t95 = (i + 1) * SIM_DT; break; }
+  }
+  check('reaches 95% top speed in a realistic ~0.5–1.2 s', t95 > 0.5 && t95 < 1.2, `${t95.toFixed(2)} s`);
+}
+
+// ---- swerve = 4 independent steered modules (kinematics + pod flip + wobble) --
+{
+  const strafe = { driveX: 1, driveY: 0, rotate: 0, buttons: {}, leftDrive: 0, rightDrive: 0 } as unknown as RobotCommand;
+  const w = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'swerve' }, 0)]);
+  const r = w.robots[0];
+  r.fieldCentric = false;
+  r.moduleAngles = [0, 0, 0, 0];
+  step(w, SIM_DT, new Map([[0, strafe]]));
+  // 90° command (no flip): each pod turns toward -90° but is slew-limited after 1 tick
+  check('swerve pods steer (not instant) toward a 90° command', r.moduleAngles.every((a) => a < -0.01 && a > -Math.PI / 2 + 0.5), `${r.moduleAngles.map((a) => a.toFixed(2)).join(',')} after 1 tick`);
+  for (let i = 0; i < 40; i++) step(w, SIM_DT, new Map([[0, strafe]]));
+  check('all four pods reach the commanded direction (~-90° ± wobble)', r.moduleAngles.every((a) => Math.abs(a - -Math.PI / 2) < 0.3), `${r.moduleAngles.map((a) => a.toFixed(2)).join(',')}`);
+  const mec = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'mecanum' }, 0)]).robots[0];
+  check('only swerve uses moduleAngles (mecanum stays [0,0,0,0])', mec.moduleAngles.every((a) => a === 0));
+
+  // swerve draws steady STEERING current (pivot motors) just running — mecanum doesn't
+  const swIdle = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'swerve', flywheelInertia: 0 }, 0)]);
+  step(swIdle, SIM_DT, new Map());
+  const mecIdle = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'mecanum', flywheelInertia: 0 }, 0)]);
+  step(mecIdle, SIM_DT, new Map());
+  check('swerve pulls steady steering power (mecanum does not)', swIdle.robots[0].powerDraw >= POWER_DRAW_SWERVE - 1e-9 && mecIdle.robots[0].powerDraw < swIdle.robots[0].powerDraw, `swerve ${swIdle.robots[0].powerDraw.toFixed(3)} vs mecanum ${mecIdle.robots[0].powerDraw.toFixed(3)}`);
+
+  // WOBBLE done right: driving straight, the four pods hunt INDEPENDENTLY (their
+  // angles differ), producing BOTH a path drift AND a net YAW wobble (heading
+  // oscillates). Mecanum holds a perfect line + heading.
+  const w3 = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'swerve' }, 0)]);
+  const r3 = w3.robots[0];
+  r3.fieldCentric = false;
+  r3.pos = { x: 0, y: -40 };
+  r3.heading = Math.PI / 2; // face +y, drive straight up the field
+  const fwd1 = { driveX: 0, driveY: 1, rotate: 0, buttons: {}, leftDrive: 0, rightDrive: 0 } as unknown as RobotCommand;
+  for (let i = 0; i < 40; i++) step(w3, SIM_DT, new Map([[0, fwd1]])); // build speed
+  let podSpread = 0;
+  let lateral = 0;
+  let headingDev = 0;
+  for (let i = 0; i < 100; i++) {
+    step(w3, SIM_DT, new Map([[0, fwd1]]));
+    podSpread = Math.max(podSpread, Math.max(...r3.moduleAngles) - Math.min(...r3.moduleAngles));
+    lateral = Math.max(lateral, Math.abs(r3.pos.x)); // drift off the straight-up line
+    headingDev = Math.max(headingDev, Math.abs(r3.heading - Math.PI / 2));
+  }
+  check('swerve pods hunt INDEPENDENTLY (angles differ) driving straight', podSpread > 0.01, `spread ${podSpread.toFixed(3)} rad`);
+  check('swerve DRIFTS off a straight line (path wobble)', lateral > 0.02, `${lateral.toFixed(2)} in`);
+  check('swerve HEADING wobbles from mispointed pods (yaw)', headingDev > 0.001, `${(headingDev * 180 / Math.PI).toFixed(2)}°`);
+  // control loops are ALWAYS applied: releasing the stick, the disturbance fades
+  // with speed and every pod shares the target → they CONVERGE to one angle at rest
+  for (let i = 0; i < 200; i++) step(w3, SIM_DT, new Map()); // coast to a stop, no command
+  const rest = Math.max(...r3.moduleAngles) - Math.min(...r3.moduleAngles);
+  check('swerve pods CONVERGE to one angle when stopped (no frozen mis-alignment)', rest < 1e-4, `spread ${rest.toExponential(1)} rad, speed ${Math.hypot(r3.vel.x, r3.vel.y).toFixed(2)}`);
+
+  // releasing the stick HOLDS the last driven direction, NOT forward: strafe (pods
+  // → -90°), then coast to a stop → the pods stay pointing ~-90°, converged.
+  const wh = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'swerve' }, 0)]);
+  const rh = wh.robots[0];
+  rh.fieldCentric = false;
+  rh.pos = { x: 0, y: 0 };
+  rh.heading = 0;
+  for (let i = 0; i < 60; i++) step(wh, SIM_DT, new Map([[0, strafe]])); // steer pods to -90 + drive
+  for (let i = 0; i < 260; i++) step(wh, SIM_DT, new Map()); // release + coast to a stop
+  const held = rh.moduleAngles;
+  check('swerve HOLDS the last driven direction at rest (not snapping forward)', Math.abs(held[0] - -Math.PI / 2) < 0.1 && Math.max(...held) - Math.min(...held) < 1e-4, `${held.map((a) => a.toFixed(2)).join(',')}`);
+
+  // a BRIEF TAP still commits the target: tap strafe for a few ticks (pods only
+  // start turning), let go → they FINISH slewing to the commanded ~-90°, not freeze.
+  const wt = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'swerve' }, 0)]);
+  const rt = wt.robots[0];
+  rt.fieldCentric = false;
+  rt.pos = { x: 0, y: 0 };
+  rt.heading = 0;
+  for (let i = 0; i < 3; i++) step(wt, SIM_DT, new Map([[0, strafe]])); // brief tap right
+  const partway = rt.moduleAngles[0]; // only partly turned toward -90 after 3 ticks
+  for (let i = 0; i < 40; i++) step(wt, SIM_DT, new Map()); // let go → pods keep going to target
+  check('swerve finishes turning to the tapped target after release (not frozen partway)', partway > -Math.PI / 2 + 0.3 && Math.abs(rt.moduleAngles[0] - -Math.PI / 2) < 0.1, `partway ${partway.toFixed(2)} → ${rt.moduleAngles[0].toFixed(2)}`);
+
+  const w4 = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'mecanum' }, 0)]);
+  const r4 = w4.robots[0];
+  r4.fieldCentric = false;
+  r4.pos = { x: 0, y: -40 };
+  r4.heading = Math.PI / 2;
+  for (let i = 0; i < 140; i++) step(w4, SIM_DT, new Map([[0, fwd1]]));
+  check('mecanum holds a perfect line + heading (no wobble)', Math.abs(r4.pos.x) < 1e-6 && Math.abs(r4.heading - Math.PI / 2) < 1e-6, `x=${r4.pos.x.toFixed(3)}`);
+
+  // MODULE OPTIMIZATION (pod flip): a 180° reversal must NOT rotate the pods —
+  // it flips each drive motor instead, so the pods stay put and the robot reverses.
+  const w2 = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'swerve' }, 0)]);
+  const r2 = w2.robots[0];
+  r2.fieldCentric = false;
+  r2.moduleAngles = [0, 0, 0, 0];
+  r2.pos = { x: 0, y: 0 };
+  r2.heading = 0;
+  const back = { driveX: 0, driveY: -1, rotate: 0, buttons: {}, leftDrive: 0, rightDrive: 0 } as unknown as RobotCommand;
+  for (let i = 0; i < 25; i++) step(w2, SIM_DT, new Map([[0, back]]));
+  const fwd = r2.vel.x * Math.cos(r2.heading) + r2.vel.y * Math.sin(r2.heading);
+  check('swerve pod-flips a 180° reversal (pods stay, no big rotation)', r2.moduleAngles.every((a) => Math.abs(a) < 0.35), `${r2.moduleAngles.map((a) => a.toFixed(2)).join(',')}`);
+  check('swerve reversal drives BACKWARD via flipped motors', fwd < -5, `${fwd.toFixed(1)} in/s fwd`);
 }
 
 // ---- pushing power: equal-mass tank out-pushes mecanum ----------------------
@@ -1148,7 +1371,7 @@ const setup = (
 {
   check('massLimits mecanum floor is 18 at inertia 0', massLimits('mecanum', 0).min === 18);
   check('massLimits mecanum floor climbs to 22 at inertia 1', massLimits('mecanum', 1).min === 22);
-  check('massLimits swerve floor is 22 at inertia 0', massLimits('swerve', 0).min === 22);
+  check('massLimits swerve floor is 23 at inertia 0', massLimits('swerve', 0).min === 23);
   check('inertia only nudges the floor (≤ 4 lb across the whole range)', massLimits('mecanum', 1).min - massLimits('mecanum', 0).min <= 4);
   check('rpmLimits swerve caps at 500', rpmLimits('swerve').max === 500);
   const s = coerceSettings({
@@ -1251,6 +1474,14 @@ const setup = (
   const patched = sanitizePlayerPatch({ spec: { width: 999, massLb: 9999 } }, { ...player, clientId: 'x' });
   check('sanitizePlayerPatch clamps a spoofed spec patch', (patched.spec?.width ?? 0) <= ROBOT_MAX_SIZE, `${patched.spec?.width}`);
   check('sanitizePlayerPatch ignores unknown/absent fields (empty patch is a no-op)', Object.keys(sanitizePlayerPatch({ bogus: 1 }, { ...player, clientId: 'x' })).length === 0);
+
+  // 2v2 start-ROLE swap fields survive server sanitization (the server passes them
+  // through so the consent handshake can propagate over the roster)
+  const rolePlayer = sanitizePlayer({ name: 'R', alliance: 'red', spec: {}, assists: {}, startRole: 'far', swapReq: true });
+  check('sanitizePlayer passes a valid startRole + swapReq', rolePlayer.startRole === 'far' && rolePlayer.swapReq === true);
+  check('sanitizePlayer rejects a bogus startRole', sanitizePlayer({ name: 'R', spec: {}, assists: {}, startRole: 'middle' }).startRole === undefined);
+  const rolePatch = sanitizePlayerPatch({ startRole: 'close', swapReq: true }, { ...player, clientId: 'x' });
+  check('sanitizePlayerPatch passes startRole + swapReq', rolePatch.startRole === 'close' && rolePatch.swapReq === true);
 }
 
 // ---- vector intake: WHERE the ball enters decides the swallow time -----------

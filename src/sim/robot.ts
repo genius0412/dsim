@@ -2,7 +2,7 @@ import type { Artifact, ArtifactColor, RobotCommand, RobotState, World } from '.
 import * as C from '../config';
 import { approach, rot, wrapAngle, hyp, dsin, dcos, datan2, clamp } from '../math';
 import { classifierRect, flywheelSpinTarget, goalCenter, launchTriangles, viewAngleOf } from './field';
-import { driveParams } from './drivetrain';
+import { driveParams, motorStep } from './drivetrain';
 import { robotIntersectsConvex } from './physics';
 import { robotsEnabled } from './match';
 
@@ -85,8 +85,11 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
     r.spec.flywheelInertia *
     (C.POWER_DRAW_FLYWHEEL_HOLD * r.flywheelSpin +
       C.POWER_DRAW_FLYWHEEL_SPINUP * r.flywheelSpinRate);
+  // swerve: the four steering (pivot) motors pull steady current just to hold +
+  // correct the pod angles, on top of the drive motors — always a bit slower.
+  const swerveDraw = dp.saturation === 'vec' ? C.POWER_DRAW_SWERVE : 0;
   const draw = Math.min(
-    flywheelDraw + (intakeDraw ? C.POWER_DRAW_INTAKE : 0),
+    flywheelDraw + (intakeDraw ? C.POWER_DRAW_INTAKE : 0) + swerveDraw,
     C.POWER_DRAW_MAX,
   );
   r.powerDraw = draw;
@@ -138,26 +141,97 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
     targetOmega = (cmd.rotate / div) * dp.maxTurn;
   }
 
-  // accel-clamped approach in the robot frame
-  const velRobot = rot(r.vel, -r.heading);
-  velRobot.x = approach(velRobot.x, targetFwd, dp.accel * dt);
-  velRobot.y = approach(velRobot.y, targetStrafe, dp.accel * dt);
-  r.vel = rot(velRobot, r.heading);
-  r.angVel = approach(r.angVel, targetOmega, dp.turnAccel * dt);
-
-  // Swerve wobble: occasional slight heading jumps when moving forward
+  // SWERVE: modeled as FOUR independent steered modules at the wheel corners.
+  // Inverse kinematics gives each pod its own target (velocity = translation +
+  // ω×r), it steers there with MODULE OPTIMIZATION (pod flip: a >90° change aims
+  // the pod opposite + reverses drive, so it never rotates >90° and a 180° reversal
+  // is instant), and — crucially — each pod's control loop is IMPERFECT, adding a
+  // small INDEPENDENT oscillating error it can't null out. Because the four errors
+  // don't cancel, the FORWARD kinematics of the mis-pointed pods yields real drift
+  // AND a net yaw wobble when driving straight. `moduleAngles` are the actual pod
+  // directions (also rendered).
   if (dp.saturation === 'vec') {
-    const fwdSpeed = rot(r.vel, -r.heading).x;
-    const speedRatio = fwdSpeed / dp.maxSpeed;
-    const phase = r.id * 1.23;
-    const freq = Math.PI; // 0.5 Hz
-    const now = Math.sin((world.time + phase) * freq);
-    const prev = Math.sin((world.time - dt + phase) * freq);
-    if (now > 0.99 && prev <= 0.99) {
-      const sign = Math.sin((world.time + phase) * 47 * Math.PI) > 0 ? 1 : -1;
-      r.heading += sign * 0.04 * speedRatio;
+    const cvx = targetFwd; // commanded chassis velocity (robot frame) + rotation
+    const cvy = targetStrafe;
+    const cw = targetOmega;
+    const hx = Math.max(r.spec.length / 2 - C.WHEEL_INSET, 1);
+    const hy = Math.max(r.spec.width / 2 - C.WHEEL_INSET, 1);
+    const pos: [number, number][] = [
+      [hx, hy],
+      [hx, -hy],
+      [-hx, hy],
+      [-hx, -hy],
+    ]; // FL, FR, BL, BR — matches drawRobot's wheel order
+    const maxStep = C.MODULE_SLEW_RATE * dt;
+    const speedFrac = clamp(hyp(r.vel.x, r.vel.y) / dp.maxSpeed, 0, 1);
+    let sumX = 0;
+    let sumY = 0;
+    let sumT = 0;
+    for (let i = 0; i < 4; i++) {
+      // inverse kinematics: this module's desired velocity vector
+      const dvx = cvx - cw * pos[i][1];
+      const dvy = cvy + cw * pos[i][0];
+      const spd = hyp(dvx, dvy);
+      let driveSpd = 0;
+      if (spd > 0.02 * dp.maxSpeed) {
+        // there IS a command → set this module's TARGET from it (with pod flip)
+        driveSpd = spd;
+        let tgt = datan2(dvy, dvx);
+        if (Math.abs(wrapAngle(tgt - r.moduleAngles[i])) > Math.PI / 2) {
+          tgt = wrapAngle(tgt + Math.PI); // pod flip + reverse this module
+          driveSpd = -spd;
+        }
+        r.moduleTargets[i] = tgt;
+      }
+      // else: HOLD the last commanded target (r.moduleTargets[i]) — the pods keep
+      // slewing to the direction you set even after you let go of the stick, so a
+      // brief tap still finishes the turn (they don't freeze partway or snap forward).
+      const target = r.moduleTargets[i];
+      // the steering loop runs EVERY tick (control loops are always applied): it
+      // chases a DISTURBED setpoint (target + an independent, speed-scaled error it
+      // can't null). One imperfect loop, two visible symptoms: FAST hunt (the buzz you
+      // see) rides on a slowly-varying steady-state MISPOINT the loop can't trim. The
+      // slow mispoint is what actually carries the robot off line (fast zero-mean hunt
+      // integrates to nothing) — but it is DETUNED per pod (each its own slow rate), so
+      // the four biases beat in and out of phase and the net offset MEANDERS/REVERSES
+      // across a drive instead of a clean constant crab. Same wobble, emergent drift.
+      // ∝ actual speed → at rest it's zero and every pod shares `target` → CONVERGE.
+      const t = world.time;
+      const f = C.SWERVE_WOBBLE_FREQ;
+      const ph = i * 1.87 + r.id * 0.7;
+      // per-pod detune of the SLOW mispoint — a wide spread so the 4 de-cohere within
+      // one wall-to-wall drive (→ the drift direction rotates as you cross the field)
+      const drift = C.SWERVE_DRIFT_FREQ * (1 + i * 0.19 + r.id * 0.05);
+      const noise =
+        0.34 * dsin(t * f * (1 + i * 0.11) + ph) + // fast visible hunt
+        0.2 * dsin(t * f * 2.17 + ph * 1.7 + 1.3) + // fast visible hunt
+        0.5 * dsin(t * drift + ph * 2.3); // slow steady-state MISPOINT (detuned) → the drift
+      const err = C.SWERVE_WOBBLE_AMP * speedFrac * noise;
+      const setpoint = wrapAngle(target + err);
+      let d = wrapAngle(setpoint - r.moduleAngles[i]);
+      if (Math.abs(d) > maxStep) d = Math.sign(d) * maxStep;
+      r.moduleAngles[i] = wrapAngle(r.moduleAngles[i] + d);
+      // this module actually pushes at driveSpd along its (mis-pointed) direction
+      const fx = driveSpd * dcos(r.moduleAngles[i]);
+      const fy = driveSpd * dsin(r.moduleAngles[i]);
+      sumX += fx;
+      sumY += fy;
+      sumT += pos[i][0] * fy - pos[i][1] * fx; // moment about center
     }
+    // forward kinematics of the four modules → the ACHIEVED chassis motion (equals
+    // the command when perfect; the pod errors make it drift + yaw)
+    targetFwd = sumX / 4;
+    targetStrafe = sumY / 4;
+    targetOmega = sumT / (4 * (hx * hx + hy * hy));
   }
+
+  // motor torque–speed integration in the robot frame: accel falls off toward the
+  // free speed (dp.maxSpeed / dp.maxTurn) like a real DC motor (see motorStep).
+  const velRobot = rot(r.vel, -r.heading);
+  velRobot.x = motorStep(velRobot.x, targetFwd, dp.accel, dp.maxSpeed, dt);
+  velRobot.y = motorStep(velRobot.y, targetStrafe, dp.accel, dp.maxSpeed, dt);
+  r.vel = rot(velRobot, r.heading);
+  r.angVel = motorStep(r.angVel, targetOmega, dp.turnAccel, dp.maxTurn, dt);
 
   // Rapier (solveRobots) integrates POSITION from r.vel and resolves collisions
   // this same tick; heading is integrated here (rotation is locked in Rapier and

@@ -1,6 +1,6 @@
 import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
 import * as C from '../config';
-import { clamp } from '../math';
+import { clamp, approach } from '../math';
 
 /** derived per-robot drive parameters. Everything the drivetrain influences
  * comes from the spec: type multipliers × RPM (speed up / accel down) × mass
@@ -45,6 +45,37 @@ export function driveParams(spec: RobotSpec): DriveParams {
     turnAccel: accel * C.TURN_ACCEL_PER_ACCEL,
     saturation: p.saturation,
   };
+}
+
+/** advance a velocity toward `target` for one tick using a DC-motor torque–speed
+ * curve: available (stall) accel falls ~linearly from full at rest to
+ * MOTOR_MIN_TORQUE_FRAC near the free speed `vFree`, so speed approaches the top
+ * asymptotically instead of a constant ramp. Braking (target opposes v) pulls
+ * harder (MOTOR_BRAKE_MULT). `MOTOR_TORQUE_CURVE` 0 ⇒ the old constant accel.
+ * Deterministic (pure arithmetic); shared by fwd / strafe / turn. */
+export function motorStep(v: number, target: number, aStall: number, vFree: number, dt: number): number {
+  const err = target - v;
+  if (err === 0) return v;
+  const braking = v !== 0 && Math.sign(err) !== Math.sign(v);
+  let frac: number;
+  if (braking) {
+    frac = C.MOTOR_BRAKE_MULT;
+  } else {
+    const s = vFree > 0 ? Math.min(Math.abs(v) / vFree, 1) : 0;
+    frac = Math.max(1 - C.MOTOR_TORQUE_CURVE * s, C.MOTOR_MIN_TORQUE_FRAC);
+  }
+  return approach(v, target, aStall * frac * dt);
+}
+
+/** dev/tuning table: the resulting free speed / strafe / stall accel / push for
+ * each drivetrain at the reference RPM+mass. Printed by the smoke suite so a
+ * balance edit's effect is visible at a glance. */
+export function driveSummary(): { dt: DrivetrainType; fwd: number; strafe: number; accel: number; push: number }[] {
+  return (Object.keys(C.DRIVETRAIN_PRESETS) as DrivetrainType[]).map((dt) => {
+    const p = C.DRIVETRAIN_PRESETS[dt];
+    const fwd = C.SPEED_PER_RPM * C.REF_DRIVE_RPM * p.speedMult;
+    return { dt, fwd, strafe: fwd * p.strafeMult, accel: C.BASE_DRIVE_ACCEL * p.accelMult, push: p.pushMult };
+  });
 }
 
 /** the wheel-RPM range this drivetrain allows (torque-biased drivetrains cap

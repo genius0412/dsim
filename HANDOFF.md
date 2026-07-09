@@ -1,4 +1,290 @@
-# HANDOFF — 2026-07-09 (strategy 20s + countdown SFX; "matched on <server>" HUD chip) — READ FIRST
+# HANDOFF — 2026-07-09 (swerve: 4-module kinematics, fast wobble, converge-at-rest, steering power) — READ FIRST
+
+> **LATEST: GREEN, uncommitted on alpha.** `npm test` (334), `server:check`, `build` pass.
+> Iterations on the 4-module swerve wobble (below), plus swerve STEERING POWER DRAW:
+> - **Wobble is a FAST, IRREGULAR jitter** (`SWERVE_WOBBLE_FREQ` 8→30 rad/s, `SWERVE_WOBBLE_AMP`
+>   ~0.15 rad — user-dialed). Each pod's error is a SUM of 3 incommensurate sinusoids at
+>   per-module-varied frequencies (robot.ts), so it's non-periodic and every pod hunts on its own —
+>   NOT a clean uniform sine (fixed a "too uniform" complaint). Pods buzz independently (~12°
+>   spread), heading jitters ±~1° fast, path drifts ~0.3 in. Tunable knobs in the balance block.
+> - **Bounded-model fix (important):** the wobble is now added by slewing each pod toward a
+>   DISTURBED setpoint (`target + err`) rather than adding `err` after slewing — the old way
+>   ACCUMULATED once `err` exceeded the per-tick slew step (that's why amp 0.18 blew up to a 20°
+>   heading swing). Now it scales cleanly with AMP, no runaway.
+> - **Pods slew to the last COMMANDED target** (`RobotState.moduleTargets[4]`, new; spawn/backfill
+>   [0,0,0,0]): the drive command sets each pod's target (with flip); when the stick is released the
+>   target is HELD, so `moduleAngles` keep slewing to it. A BRIEF TAP therefore finishes the turn
+>   (3-tick tap → pods at -0.35 rad, release → they complete to exactly -90°) instead of freezing
+>   partway or snapping to forward. Replaced the earlier circular-MEAN idle hold (which held the
+>   pods' current position, not the commanded angle — that was the "faces forward when moving" bug).
+>   Disturbance ∝ speed → 0 at rest, so pods still converge to exactly one aligned angle (spread 0.0)
+>   and hold EXACTLY the last direction (-90° after a strafe, not -94°).
+> - **Swerve steering power draw** (`POWER_DRAW_SWERVE` ~0.1, user-dialed): the pivot motors pull
+>   steady current just running, on top of the flywheel/intake draws (`POWER_DRAW_MAX` raised
+>   0.18→0.2) — so a swerve chassis is always a bit slower/weaker-shoving. Smoke checks it (swerve
+>   powerDraw ≥ the constant, mecanum 0).
+> - Smoke: reworked swerve block — pods hunt independently / drift / heading-yaw jitter / CONVERGE
+>   at rest / steady steering power / per-module pod-flip. Tolerances widened for the wobble. (334)
+>
+> ---
+
+# HANDOFF — 2026-07-09 (swerve = FOUR independent steered modules, proper kinematics)
+
+> **LATEST: GREEN, uncommitted on alpha.** `npm test` (332), `server:check`, `build` pass.
+> **Swerve is now modeled as 4 INDEPENDENT modules** (user: "properly model wheel swivel", not a
+> single sideways drift). `RobotState.moduleAngle` (scalar) → **`moduleAngles: number[4]`** (FL,FR,
+> BL,BR). robot.ts swerve block (the `vec` branch) does real per-module INVERSE kinematics (each
+> pod's target vel = translation + ω×r), per-module pod-flip optimization + slew, an INDEPENDENT
+> phase-offset control-loop error per module (`SWERVE_WOBBLE_AMP`/`_FREQ`), then FORWARD kinematics
+> (`targetFwd=Σfx/4`, `targetStrafe=Σfy/4`, `targetOmega=Στorque/(4·Σ|r|²)`) → the ACHIEVED chassis
+> motion. When perfect it recovers the command exactly; the independent pod errors make it DRIFT
+> AND YAW-WOBBLE driving straight (headless: pods spread ~5.4°, ~0.87 in drift, ~2.0° heading
+> wobble; mecanum = perfectly straight, heading fixed). `drawRobot` renders each of the 4 pods at
+> its own `moduleAngles[i]` (they visibly swivel + wobble independently). backfill/spawn updated
+> ([0,0,0,0]); snapshot round-trip covers the array. Deterministic (dsin, world.time+id+i).
+> - Swerve keeps its STRENGTH (accel/push/speed/full-strafe); weakness = the wobble + reorient lag.
+>   `SWERVE_WOBBLE_AMP` is the balance dial (raise for harder-to-drive swerve). X-drive = novelty.
+> - Smoke: reworked the swerve block for the array — pods hunt independently, drift, heading-yaw
+>   wobble, mecanum perfect line+heading, per-module pod-flip. (332 total.)
+>
+> ---
+
+# HANDOFF — 2026-07-09 (swerve WOBBLE weakness + drivetrain niches)
+
+> **LATEST: GREEN, uncommitted on alpha.** `npm test` (330), `server:check`, `build` pass.
+> **Drivetrain BALANCE philosophy (agreed w/ user): distinct niches, not a strict hierarchy.**
+> - **Swerve's weakness is WOBBLE, not weight.** A heavy-swerve nerf (mass floor 28 + lower
+>   accel/push) was implemented then **REVERTED** on user direction. Instead: imperfect pivot
+>   control — `SWERVE_WOBBLE_AMP` 0.05 rad / `SWERVE_WOBBLE_FREQ` 8 (robot.ts swerve block)
+>   superimposes a small speed-scaled oscillation on `moduleAngle` (dsin, deterministic) so the
+>   pods can't HOLD an exact angle → the drive direction + PATH wobble driving straight (headless:
+>   ~0.6 in lateral drift; mecanum 0.00). Swerve keeps its STRENGTH (accel 1.3 / push 1.35 / speed
+>   0.95 / full strafe restored); its cost is imprecision + pod reorient lag (`MODULE_SLEW_RATE`
+>   10→7). Swerve mass floor is back to **23** (the earlier +1, not the reverted 28). The old crude
+>   "heading jump" wobble code is deleted.
+> - **Niches:** tank raw power/no-strafe · swerve strongest-but-imprecise · mecanum
+>   light/instant/precise-but-weaker · **x-drive = deliberately-weak novelty** (user chose to keep
+>   it weak rather than fake a niche or remove it). `SWERVE_WOBBLE_AMP` is the tuning knob if the
+>   wobble should bite harder for balance.
+> - Smoke: swerve floor 23, pod-reach tolerance widened for wobble, +2 (swerve wobbles at speed /
+>   mecanum holds a perfect line). Removed the heavy-swerve niche checks.
+>
+> ---
+
+# HANDOFF — 2026-07-09 (swerve steering pods + X-drive X visuals; WPILib-style module optimization)
+
+> **LATEST: GREEN, uncommitted on alpha.** `npm test` (328), `server:check`, `build` pass. GUI-verified.
+> - **Swerve modules now STEER — visually + in the sim.** New `RobotState.moduleAngle` (robot-frame
+>   pod angle; spawn 0, backfilled in `unslimWorld` for old snapshots). robot.ts `updateRobot` (the
+>   `saturation==='vec'` branch) steers the pods toward the commanded direction with **WPILib-style
+>   MODULE OPTIMIZATION (pod flip)**: the target angle is set IMMEDIATELY, and if it's >90° from the
+>   pods, they aim the OPPOSITE way and the drive motor REVERSES — pods never rotate >90°, a 180°
+>   reversal is instant (no rotation, just flipped power). `MODULE_SLEW_RATE = 10` rad/s (≤~0.16 s
+>   to re-aim). The drive follows the pods (they push where they point). Uses the dsin/dcos/datan2
+>   discipline (determinism). Deterministic + serialized (snapshot round-trip covers it).
+> - **Visuals** (`render/drawRobot.ts` + `ui/RobotPreview.tsx`): wheels now drawn per drivetrain
+>   ON TOP of the chassis (RobotPreview previously hid them under it). SWERVE = 4 steering-pod
+>   housings + wheels rotated to `moduleAngle` (in-game they turn live) + a direction tick. X-DRIVE =
+>   4 omni wheels canted ±45° into a proper **X**. mecanum/tank = forward wheels. A light wheel
+>   outline makes orientation read. All wheels use `r.moduleAngle` only for swerve (else 0).
+> - **Swerve base weight +1 lb** (user): `DRIVETRAIN_LIMITS.swerve.minMass` 22→**23** (heaviest base
+>   — 8 motors + modules); the `Cypher` swerve preset mass 22→23 to match. Smoke updated.
+> - Smoke +5 (pod steer ≤90°, reach command, pod-flip stays put, reversal drives backward, mecanum
+>   moduleAngle stays 0).
+>
+> ---
+
+# HANDOFF — 2026-07-09 (drivetrain: 95% efficiency, higher tops, traction-limited accel)
+
+> **LATEST: GREEN, uncommitted on alpha.** `npm test` (323), `server:check`, `build` pass.
+> User feedback double-check: **efficiency ~95%, top speeds way higher, accels lower.** Applied:
+> - `DRIVE_EFFICIENCY` 0.80 → **0.95** (real gearbox/bearing loss). Tops rise ~19%: @435rpm now
+>   tank 88.6 / swerve 84.2 / mecanum 77.1 / xdrive 74.4 in/s (7.4/6.6 ft/s); on-field ~78/68 with
+>   flywheel power-draw. DEFAULT mecanum bot ~73 → ~89 theoretical.
+> - **Accel is now TRACTION-limited (μ·g), not motor-limited** — the MATRIX stall torque could give
+>   ~460 in/s² but wheels slip first. `BASE_DRIVE_ACCEL` 280 → **240**; accelMults land each at μ·g:
+>   tank 348 (μ0.9) / swerve 312 / mecanum 211 (μ0.55) / xdrive 175 (μ0.45). All LOWER than before
+>   (was 406/322/230/224). mecanum accelMult 0.82→0.88, xdrive 0.80→0.73, swerve 1.15→1.30.
+> - Smoke checks made constant-based (no magic 75/280): calibration uses `BASE_DRIVE_ACCEL` +
+>   `SPEED_PER_RPM`; ref-speed band widened to a realistic 6–8 ft/s; formula check uses
+>   `WHEEL_DIAMETER_MM`/`DRIVE_EFFICIENCY`.
+>
+> ---
+
+# HANDOFF — 2026-07-09 (drivetrain grounded in real 104mm wheel + MATRIX 12VDC motor)
+
+> **LATEST: GREEN, uncommitted on alpha.** `npm test` (323), `server:check`, `build` pass.
+> Follow-ups to the real-motor retune (below):
+> - **mecanum ≥ xdrive on forward** (user correction — mecanum is optimized for forward; X-drive's
+>   omni wheels are the compromise). mecanum speed 0.85→**0.87**, xdrive 0.90→**0.84**. New order
+>   speed tank>swerve>mecanum>xdrive; smoke check updated. @435: tank 74.6 / swerve 70.9 / mecanum
+>   64.9 / xdrive 62.7.
+> - **`SPEED_PER_RPM` now DERIVED from real hardware**: `WHEEL_DIAMETER_MM = 104` (goBILDA wheel)
+>   free-speed geometry × `DRIVE_EFFICIENCY = 0.80` (a motor never reaches free speed under load) =
+>   0.1714 in/s per wheel-rpm ≈ the old hand-tuned 75/435. Modeled motor = MATRIX / goBILDA
+>   5000-series 12VDC (5800 rpm free, 20.45 oz-in stall) — its LINEAR torque–speed curve is the
+>   motorStep model. Grounding only — magnitudes ~unchanged, so the mecanum balance holds. The
+>   calibration smoke check is now FORMULA-based (no magic 75) + a 104mm-geometry check.
+>
+> ---
+
+# HANDOFF — 2026-07-09 (real-motor drivetrain realism + one-block balancing)
+
+> **LATEST: GREEN, uncommitted on alpha.** `npm test` (321, +7), `server:check`, `build` pass.
+> Pure-sim change (deterministic); `BALANCE_VERSION` 1→2 (alpha only, physics never went to main,
+> so the season reset is a non-issue per the user).
+>
+> **Drivetrains are now physically realistic + all balance knobs live in ONE place.**
+> - **Real DC-motor torque–speed curve** (`motorStep` in `src/sim/drivetrain.ts`, used by
+>   `robot.ts` for fwd/strafe/turn instead of constant-accel `approach`): full stall accel off the
+>   line, falling ~linearly to `MOTOR_MIN_TORQUE_FRAC` at the free speed, so velocity approaches the
+>   top ASYMPTOTICALLY (~0.5–0.8 s to 95% vs the old 0.27 s). `MOTOR_TORQUE_CURVE` 1.0 = real, 0 =
+>   old ramp; `MOTOR_BRAKE_MULT` makes stops crisp. New consts in config's balance block.
+> - **Mecanum de-buffed to real losses** (per GM0 — 45° rollers slip, low friction): was
+>   speed 1.02 / accel 1.06 / **push 1.0 (the old anchor)**; now **0.85 / 0.82 / push 0.65** +
+>   strafe 0.80. It loses straight-line speed AND gets shoved by tank. Full retune of all four
+>   (tank 1.0/1.45/push1.7, swerve 0.95/1.15/push1.35, xdrive 0.90/0.80/push0.45). Orders now
+>   realistic: speed tank>swerve>mecanum>xdrive, push tank>swerve≫mecanum>xdrive. DEFAULT mecanum
+>   bot ~88→~73 in/s. Headless-checked: tank 70 / swerve 65 / xdrive 62 / mecanum 58 top.
+> - **Easy balancing**: one documented `DRIVETRAIN & MOTOR BALANCE — TUNE HERE` block in
+>   `config.ts`; `driveSummary()` + a smoke test PRINT the speed/strafe/accel/push table every
+>   `npm test` run so any edit's effect is immediate. Base 75/280 kept as the ideal-traction datum
+>   (calibration check self-adjusts via the mecanum mult).
+> - Smoke: replaced the 2 old-buff checks (speed/push order + "mecanum has losses"), added 4 motor-
+>   curve checks (stall off the line, falloff near top, strong braking, ~0.5–1.2 s to 95%).
+> - **Scope note**: the user picked "everything tunable + how actual motors work." I delivered the
+>   drive/motor realism (the explicit ask) + the one-block restructure; power-draw/flywheel/intake
+>   values are left as-is but are the next candidates if further realism is wanted (all reference-
+>   linked from the balance block header).
+>
+> ---
+
+# HANDOFF — 2026-07-09 (2v2 start-role consent swap)
+
+> **LATEST: GREEN, uncommitted on alpha.** `npm test` (316), `server:check`, `build` pass.
+> **NEEDS A FLY REDEPLOY** for the swap to work over the network (server `sanitize` must pass the
+> new roster fields; an old server STRIPS them → the Swap button is a graceful no-op). Not
+> live-verified (needs a running server + 2 same-alliance clients — can't orchestrate headlessly,
+> same as prior multiplayer ships).
+>
+> **2v2 start ROLE (Close/Far) is now swappable by mutual consent.** The role still defaults to
+> alliance join order (1st by clientId = CLOSE, 2nd = FAR) and LOCKS the editor category, but
+> either member can propose a swap the other must ACCEPT.
+> - **Handshake rides two self-patched roster flags — no new server message, no cross-patching:**
+>   `LobbyPlayer.startRole?` + `LobbyPlayer.swapReq?` (protocol.ts + PlayerPatch; sanitize.ts passes
+>   both through — the ONLY reason a redeploy is needed). A member proposes by setting `swapReq`; the
+>   partner accepts by setting theirs; when BOTH are set each client flips ITS OWN role to the
+>   opposite (`other(role)`) and clears its flag. Race-free/convergent (they always held opposite
+>   roles) and a `enacted` ref stops a double-flip in the patch→broadcast window.
+> - **`src/ui/useRoleSwap.ts`** (new hook): derives the role, exposes `requesting/incoming/swapping`
+>   + `requestSwap/acceptSwap/cancelSwap`, and runs the enact effect. The enact ALSO resets the
+>   active start to the new category's default (`categoryDefaultIndex`) so a now-FAR robot isn't left
+>   sitting at a CLOSE preset. `useDismissable` handles Decline (LOCAL hide — a partner can't clear
+>   my flag; "must accept to switch" ⇒ non-accept = no swap). **`src/ui/RoleSwapBar.tsx`** = the UI
+>   (role label + propose/accept/cancel), rendered in Lobby + MatchStrategy above the editor.
+> - Both surfaces now derive the role via the hook (replacing the inline clientId-order derivation).
+>   Smoke +3 (sanitize passthrough / bogus-role reject).
+>
+> ---
+
+# HANDOFF — 2026-07-09 (start positions: Close/Far categories + saved library)
+
+> **LATEST: GREEN, uncommitted on alpha.** `npm test` (313), `server:check`, `build` pass;
+> GUI-verified. Client-only (no deploy needed — the saved library + category are LOCAL settings;
+> only the active start rides the existing wire fields).
+>
+> **Start positions are now split CLOSE vs FAR (by distance to goal) with a per-player saved
+> library.** Built on the G304 editor below.
+> - **Presets carry `cat: 'close'|'far'`** (`config.ts` START_POSES): close = GATE/GOAL/INTAKE/BACK,
+>   far = AUDIENCE. `MAX_SAVED_STARTS = 2`.
+> - **Settings** (`types.ts`/`settings.ts`, coerced + persisted + account-synced): `startCat`,
+>   `savedStartPoses: {close:StartPose[], far:StartPose[]}` (≤2 each), `startMemory: {close,far}`
+>   (last selection per category so switching tabs restores it). `startIndex`/`startPose` remain the
+>   ACTIVE start (spawn + wire) — the new fields are the client library/memory only.
+> - **`src/ui/startPositions.ts`** (new, pure): `categoryPresets`, `switchCategory`, `selectStart`,
+>   `saveStart`, `deleteSavedStart`, `samePose`. These return GameSettings PATCHES.
+> - **Editor** (`StartPositionEditor.tsx`): CLOSE/FAR tabs + category presets + saved ★ slots
+>   (＋Save, disabled when illegal/at cap; × to delete). New props: `category/saved/lockedCategory/
+>   onCategory/onSave/onDeleteSaved`. `.ds-startpos-tabs/-tab/-role/-del` CSS.
+> - **2v2 role lock**: in Lobby + MatchStrategy the first robot on an alliance (by clientId sort) is
+>   the CLOSE robot, the second FAR — `lockedCategory` hides the tabs and limits the picks (derived
+>   CLIENT-side; positions stay all-legal so no server enforcement needed). Solo/1-robot ⇒ both tabs.
+>   `App.tsx` now passes `onSettingsChange` to Lobby. `applyStart` routes active→roster,
+>   library/memory→settings.
+> - Smoke +3 (partition, coerce defaults, saved-cap). **Reminder gotcha:** a preset click must be
+>   ONE settings patch (`selectStart`), not two calls — stale-closure overwrite (see below).
+>
+> ---
+
+# HANDOFF — 2026-07-09 (configurable start positions, rulebook G304)
+
+> **LATEST: GREEN, uncommitted on alpha.** `npm test` (309, +16), `npm run server:check`,
+> `npm run build` all pass. GUI-verified via Electron. **Client-only for solo/free/record**
+> (works today, no deploy). Multiplayer custom poses need a Fly redeploy (server passes
+> `startPose` through); until then a networked custom pose falls back to the preset — SAFE
+> (backward-compatible additive field), never a crash.
+>
+> **What shipped — players can drag/place a CUSTOM start pose, constrained to the rulebook.**
+> Replaces the old 3 fixed mid-launch-zone presets (which were NOT even G304-legal).
+>
+> **Rule: G304** (pulled from the live Competition Manual §11 this session — extract via the
+> scratchpad `extract.cjs` PDF-text pattern): a robot must be (A) over a white LAUNCH LINE,
+> (B) touching the GOAL or the FIELD perimeter, (C) fully in its own half — and (my addition,
+> per the user "abide to collision boxes") its collision box may only REST AGAINST a solid,
+> not penetrate it.
+>
+> **Sim core (`src/sim/field.ts`):** `evalStartPose`/`StartLegality` (flags: overLaunchLine /
+> touching / contained / ownHalf / clear), `snapStartToLegal` (nearest legal along goal-face +
+> audience loci; deterministic), `mirrorStartPose` (canonical↔actual, self-inverse),
+> `footprintExtents`/`footprintCorners` (extracted; `physics.robotExtents` now delegates),
+> `startPose(a,i,custom?)`. Config: `START_TOUCH_TOL` 1.25, `START_PEN_SLOP` 0.75, new legal
+> `START_POSES` (GOAL·FAR / AUDIENCE / GOAL·GATE — **index 0/1 kept far apart** for the 2-robot
+> spawn invariant). `StartPose` type lives in `types.ts` (avoids a settings↔field cycle).
+>
+> **Data model (backward-compatible additive):** optional `startPose` (canonical goalSide=+1,
+> OVERRIDES `startIndex`) on `RobotSetup` / `GameSettings` / `LobbyPlayer` / `PlayerPatch`.
+> `coerceStartPose` (structural+bounds) in spawn.ts + settings.ts + net/sanitize.ts;
+> **`coerceSetup` snaps any custom pose G304-legal at the spawn chokepoint** so no path
+> (localStorage / wire / staged match) spawns an illegal robot. Threaded through game.ts,
+> replay.ts (`recordSetups`), server/room.ts (both LIVE-player setup sites pass
+> `c.player.startPose`). `CLIENT_CAPS` gains `'startpose'`.
+>
+> **BUGFIX (user follow-up):** (1) snap-OFF no longer reverts an illegal release to the last
+> legal pose — it leaves the robot exactly where dropped (red, "won't save"); only the toggle
+> or the "Snap now" button ever moves it. (2) Preset buttons were a no-op/glitch because the
+> editor called `onPickPreset(i)` AND `onChange(null)` — two separate `set()` calls spreading
+> the SAME stale `settings`, so the second clobbered the first (startIndex lost). Now the
+> editor calls ONLY `onPickPreset`, and each parent clears startPose + sets startIndex in ONE
+> update (`{ startIndex, startPose: null }`). Watch for this stale-closure double-set pattern.
+>
+> **Preset tuning (user follow-ups):** current `START_POSES` = **GOAL·GATE** (58,48.5,270),
+> **AUDIENCE** (31.25,−63.75,0 → tucked into the audience/loading corner, blue shows 180),
+> **GOAL·FAR** (48,57,270 — x fixed 48, y chosen legal). Index 0/1 (GATE+AUDIENCE) stay far
+> apart for the 2-robot spawn invariant; a new preset goes at index 2+. game.ts practice-dummy
+> partner index is `startIndex===1?0:1` (never overlaps the player). The old "start pose inside
+> launch zone" smoke check became "default spawn is a legal G304 start" (a goal-hugging default
+> has its CENTER outside the launch triangle but the footprint over the depot line).
+>
+> **DYNAMIC presets (user follow-up):** `START_POSES` are semantic ANCHORS resolved per
+> chassis via `presetPose(index,a,spec)` (= snap the anchor legal for that robot), so every
+> preset is legal at ANY size. `startPose` gained a `spec?` arg; spawn passes `s.spec`; the
+> editor's base pose uses `presetPose`. Smoke: presetPose legal for default/big/small.
+>
+> **UI (`src/ui/StartPositionEditor.tsx`, new):** a CANVAS that reuses the REAL renderers
+> (`drawField`/`drawRobot`) — actual field markings + the actual selected robot sprite — with
+> drag-to-place, a heading handle, and X/Y/heading inputs. **Snapping is an OPT-IN toggle
+> (default OFF)** — the user found always-snapping hard to control. An illegal pose is
+> PREVIEWED red ("— won't save") but NEVER committed; releasing an illegal drag reverts to the
+> last legal pose (or snaps if the toggle is on). `.ds-startpos-*` CSS. Wired into MatchSetup
+> (solo/free), Lobby, MatchStrategy; roster chips show "CUSTOM". +16 smoke checks.
+>
+> **DEPLOY (for networked custom poses):** commit on alpha → `flyctl deploy --remote-only` →
+> verify `/health` → Vercel auto-deploys the client. Old server ignores `startPose` (preset
+> fallback) — no break. Solo/free/record need no deploy.
+
+---
+
+# HANDOFF — 2026-07-09 (strategy 20s + countdown SFX; "matched on <server>" HUD chip)
 
 > **LATEST: GREEN, uncommitted on alpha.** `npm test` + `npm run server:check` + `npm run build` pass.
 > **Needs a Fly redeploy** for the strategy-time + server-region pieces to take effect (client-only
