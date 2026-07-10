@@ -52,16 +52,25 @@ export function awardFoul(
   world.events.push(`${severity === 'major' ? 'MAJOR' : 'MINOR'} FOUL — ${victim.toUpperCase()} +${pts} (${rule})`);
 }
 
+/** Rule A: assessment of CLASSIFIED/OVERFLOW happens throughout the match and
+ * continues until all artifacts come to rest after the match ends. An artifact that
+ * meets its criteria BEFORE the start of TELEOP is assessed as AUTO — that includes
+ * the post-auto `transition` settle window, not just the `auto` clock. Everything
+ * from TELEOP onward (including the post-match settle) is TELEOP. */
+function scoredAsAuto(world: World): boolean {
+  return world.match.phase === 'auto' || world.match.phase === 'transition';
+}
+
 export function addClassified(world: World, alliance: Alliance): void {
   const s = world.match.scores[alliance];
-  if (world.match.phase === 'auto') s.autoClassified += C.PTS_CLASSIFIED;
+  if (scoredAsAuto(world)) s.autoClassified += C.PTS_CLASSIFIED;
   else s.teleClassified += C.PTS_CLASSIFIED;
   recomputeTotal(s);
 }
 
 export function addOverflow(world: World, alliance: Alliance): void {
   const s = world.match.scores[alliance];
-  if (world.match.phase === 'auto') s.autoOverflow += C.PTS_OVERFLOW;
+  if (scoredAsAuto(world)) s.autoOverflow += C.PTS_OVERFLOW;
   else s.teleOverflow += C.PTS_OVERFLOW;
   recomputeTotal(s);
 }
@@ -106,27 +115,41 @@ function robotOverLaunchLine(world: World, robotIdx: number): boolean {
   return false;
 }
 
-export function assessEndOfAuto(world: World): void {
+/** Rule E: LEAVE is assessed at the END OF AUTO — a robot whose footprint no longer
+ * overlaps its launch line has left. Called ONCE, on the auto→transition edge. */
+export function assessLeave(world: World): void {
   for (let i = 0; i < world.robots.length; i++) {
     const r = world.robots[i];
     if (!robotOverLaunchLine(world, i)) {
       world.match.scores[r.alliance].leave += C.PTS_LEAVE;
       world.events.push(`LEAVE +${C.PTS_LEAVE}`);
+      recomputeTotal(world.match.scores[r.alliance]);
     }
   }
+}
+
+/** Rule B: AUTO PATTERN is assessed when all artifacts come to rest after AUTO or at
+ * the start of TELEOP, whichever comes first. This is an IDEMPOTENT snapshot of the
+ * banked pattern from the currently-settled classifier stack — `stepMatch` recomputes
+ * it through the post-auto `transition` window and locks the final value at TELEOP
+ * start, so a ball still in flight/on the rail at the auto buzzer is counted once it
+ * settles. No events (would spam every tick); the AUTO PATTERN event fires at the lock. */
+export function assessAutoPattern(world: World): void {
   for (const a of ['red', 'blue'] as Alliance[]) {
-    const pts = patternPoints(world, world.goals[a]);
-    world.match.scores[a].autoPattern = pts;
-    if (pts > 0 && world.robots.some((r) => r.alliance === a)) {
-      world.events.push(`AUTO PATTERN +${pts}`);
-    }
+    world.match.scores[a].autoPattern = patternPoints(world, world.goals[a]);
     recomputeTotal(world.match.scores[a]);
   }
 }
 
+/** Rules C/D/F: TELEOP PATTERN, DEPOT and BASE are assessed when all ROBOTS and
+ * ARTIFACTS have come to rest after the match. IDEMPOTENT (every term is recomputed
+ * from scratch, not accumulated) so `stepMatch` can call it each tick through the
+ * post-match settle window — late-draining balls and still-rolling depot balls are
+ * folded in as they stop, and the final resting value locks when stepping ceases. */
 export function assessMatchEnd(world: World): void {
   for (const a of ['red', 'blue'] as Alliance[]) {
     const s = world.match.scores[a];
+    s.base = 0; // recomputed from robot positions below (idempotent — see doc)
     s.telePattern = patternPoints(world, world.goals[a]);
     // depot: ground balls resting in the alliance's depot band
     let depot = 0;

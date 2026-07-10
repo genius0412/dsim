@@ -38,7 +38,7 @@ import {
   mirrorStartPose,
   presetPose,
 } from '../src/sim/field';
-import { assessMatchEnd } from '../src/sim/scoring';
+import { addClassified, addOverflow, assessMatchEnd } from '../src/sim/scoring';
 import type { Alliance, GameMode, RobotCommand, RobotSpec, World } from '../src/types';
 import {
   SIM_DT,
@@ -1173,6 +1173,49 @@ function queueTenth(w: World): void {
   run(w, cmd({}), 120.2);
   check('teleop -> post after 2:00', w.match.phase === 'post', w.match.phase);
   check('leave scored (drove off launch lines)', w.match.scores.blue.leave === 3, `${w.match.scores.blue.leave}`);
+}
+
+// ---- Rule A: artifacts assessed BEFORE teleop (incl. the post-auto transition
+// settle) count as AUTO, not TELEOP -------------------------------------------------
+{
+  const w = mkWorld('match', 'blue', 7);
+  w.match.phase = 'transition';
+  addClassified(w, 'blue');
+  addOverflow(w, 'blue');
+  check(
+    'artifact scored during transition banks as AUTO, not TELEOP (Rule A)',
+    w.match.scores.blue.autoClassified === 3 &&
+      w.match.scores.blue.autoOverflow === 1 &&
+      w.match.scores.blue.teleClassified === 0 &&
+      w.match.scores.blue.teleOverflow === 0,
+    `autoC=${w.match.scores.blue.autoClassified} autoO=${w.match.scores.blue.autoOverflow} teleC=${w.match.scores.blue.teleClassified}`,
+  );
+}
+
+// ---- Rules C/D/F: resting-position scores (TELEOP PATTERN / DEPOT / BASE) are
+// RE-ASSESSED through the post-match settle window, not frozen on the buzzer tick ---
+{
+  const spec = { length: 11.5, width: 12, intake: 'vector' as const };
+  const w = mkWorld('match', 'blue', 8, spec);
+  const zone = baseZone('blue');
+  const cx = (zone.x0 + zone.x1) / 2;
+  const cy = (zone.y0 + zone.y1) / 2;
+  // enter 'post' with the robot AWAY from its base, as if the buzzer caught it out
+  w.robots[0].pos = { x: 0, y: 0 };
+  w.match.phase = 'post';
+  w.match.phaseTimeLeft = 0;
+  assessMatchEnd(w); // buzzer snapshot: no base credit yet
+  check('base not yet earned at the buzzer', w.match.scores.blue.base === 0, `base=${w.match.scores.blue.base}`);
+  // the robot comes to rest inside its base during the settle window
+  w.robots[0].pos = { x: cx, y: cy };
+  w.robots[0].heading = 0;
+  w.robots[0].vel = { x: 0, y: 0 };
+  run(w, cmd({}), 0.1); // post-phase ticks -> stepMatch recomputes assessMatchEnd
+  check(
+    'BASE re-assessed as the robot settles in the post window (Rules C/D/F)',
+    w.match.scores.blue.base === 10,
+    `base=${w.match.scores.blue.base}`,
+  );
 }
 
 // ---- base parking counts wheels on the ground, not intake overhang --------------

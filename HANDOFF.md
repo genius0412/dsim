@@ -1,76 +1,60 @@
-# HANDOFF — 2026-07-10 (gate "easier to open" — ram-scaled + no jolt) — READ FIRST
+# HANDOFF — 2026-07-10 (scoring-assessment TIMING per manual 9.x A–F) — READ FIRST
 
-> **GREEN — `npm run build` + `npm test` (all checks, incl. the gate suite) pass.**
-> **No server/DB change; no `BALANCE_VERSION` bump.** This is a sim-tuning + physics
-> change in `src/sim` (gate arm), so it IS a protocol-relevant sim change for
-> multiplayer determinism — but it's server-authoritative and identical everywhere, so
-> a redeploy is only needed if you want the live server running the new gate feel
-> (`flyctl deploy --remote-only`). Solo/local is already live via the dev server.
+> **GREEN — `npm run build` + `npm test` (all checks, incl. two new ones) pass.**
+> **Sim change in `src/sim` (`scoring.ts` + `match.ts`), no protocol/DB/config change,
+> no `BALANCE_VERSION` bump.** Server-authoritative and identical everywhere, so a live
+> redeploy is only needed if you want the Fly server running the new timing
+> (`flyctl deploy --remote-only`). Determinism holds (pure functions of world state).
 
-## What shipped this session — the gate opens easier
+## What shipped this session — WHEN each score is assessed (manual rules A–F)
 
-User feedback: "when driving in to open the gate, the hitbox makes the drivetrain
-suddenly stop for a split second — make it easier to open", then "it should open faster
-based on how hard I'm ramming it, and I still don't like the 1-tick stop."
+The manual specifies exactly when each score is locked in. Three of the six were being
+assessed on the buzzer tick, before artifacts/robots came to rest. Fixed all three; the
+sim already keeps stepping through the `transition` and post-match settle windows (solo
+`stepSolo` + server), so the scores just needed to be (re)computed as things settle.
 
-Two coupled changes, both in the gate arm model:
+- **Rule A** (CLASSIFIED/OVERFLOW throughout, and *anything before TELEOP starts counts
+  as AUTO*): `addClassified`/`addOverflow` now bucket `auto` **OR `transition`** as AUTO
+  (new `scoredAsAuto` helper in `scoring.ts`). A ball that commits during the post-auto
+  transition settle was previously mis-billed TELEOP. Everything from teleop onward
+  (incl. the post-match settle) is TELEOP.
+- **Rule B** (AUTO PATTERN at rest-after-auto OR teleop-start, whichever first): no
+  longer snapshotted on the auto buzzer. `assessAutoPattern` (idempotent, no events) is
+  recomputed every `transition` tick and **locked at TELEOP start** (that's where the
+  `AUTO PATTERN +N` event now fires). A ball still in flight/on the rail at the auto
+  buzzer is counted once it settles.
+- **Rules C/D/F** (TELEOP PATTERN / DEPOT / BASE at rest-after-match): `assessMatchEnd`
+  is now **idempotent** (base is reset + recomputed, not accumulated) and `stepMatch`
+  calls it **every tick during phase `post`**, so late-draining ramp balls, still-rolling
+  depot balls, and a robot coasting into its base during the settle window are all folded
+  in; the value locks when motion ceases.
+- **Rule E** (LEAVE at end of AUTO): unchanged behavior — split out into `assessLeave`,
+  still called once on the auto→transition edge.
 
-1. **Ram-speed-scaled lift.** The arm now lifts at `gateLiftRate(ramSpeed) =
-   GATE_OPEN_RATE(10) + GATE_OPEN_RATE_SPEED(1.2)·ramSpeed`, capped at
-   `GATE_OPEN_RATE_MAX(66)` — a hard ram (~≥47 in/s) opens it in ~one tick; a gentle
-   lean still eases it open over several ticks. `GATE_OPEN_HOLD` is now **0** (was 0.02)
-   so the lift begins on the contact tick (the `pushingGate` straight-ram gate already
-   prevents accidental opens, so no debounce is needed).
-
-2. **No 1-tick jolt (collider anticipation).** `buildGateArms` (physicsEngine, inside
-   `solveRobots`) runs one step BEFORE `updateGates` mutates `gatePos`, so it used to
-   build the handle collider from last tick's still-closed `gatePos` and hard-stop a
-   robot that was, that very tick, ramming the gate open. Now `gateColliderPos(world,
-   dt, cmds, a)` (goal.ts) anticipates the exact lift `updateGates` is about to apply,
-   and `world.ts` passes a `Record<Alliance,number>` into `solveRobots`→`buildGateArms`,
-   so the handle retracts on the SAME tick the push lands. Harder ram ⇒ bigger first-tick
-   retract ⇒ you glide through instead of bouncing off.
+`assessEndOfAuto` is GONE (was leave+pattern in one); replaced by `assessLeave` +
+`assessAutoPattern`. Only `match.ts` and `smoke.ts` referenced the scoring exports.
 
 ### Files touched
-- `src/config.ts` — `GATE_OPEN_HOLD` 0.08→0.02→**0**; `GATE_OPEN_RATE` 8→**10**; new
-  `GATE_OPEN_RATE_SPEED`, `GATE_OPEN_RATE_MAX`.
-- `src/sim/goal.ts` — new `gateRamSpeed` (shared ram metric; `pushingGate` now =
-  `gateRamSpeed>0`), `gateLiftRate`, `gateColliderPos`; `updateGates` computes `ram` and
-  uses `gateLiftRate(ram)`.
-- `src/sim/physicsEngine.ts` — `solveRobots(world, dt, gateCol?)` +
-  `buildGateArms(rw, world, gateCol?)` use the anticipated open fraction; imports
-  `Alliance`.
-- `src/sim/world.ts` — computes `gateCol` (red/blue) via `gateColliderPos` before
-  `solveRobots` and passes it in.
-- `scripts/smoke.ts` — "eases open" test now samples a gentle 1-tick lean; the old
-  pinned-`gatePos` one-way-door geometry test is replaced by a direct `gateColliderPos`
-  mechanism test (idle = solid, ram = same-tick retract, harder ram = more retract).
-- `CLAUDE.md` — gate paragraph updated.
-
-### Behavior contract change (intended)
-A STRAIGHT ram now *yields* the handle on contact (it's a one-way door that opens to a
-push), so the old "a straight push is blocked at a closed gate" is gone — that's the
-point. The one-way property remains for NON-pushing motion: a strafe along the wall
-still sees the solid closed stub (`gateRamSpeed=0` ⇒ raw `gatePos`). G417 (touching an
-opponent's gate arm) is unaffected — it keys off `gateArmRect` intersection, not the
-collider.
+- `src/sim/scoring.ts` — `scoredAsAuto`; `addClassified`/`addOverflow` bucket by it;
+  `assessEndOfAuto` → `assessLeave` + `assessAutoPattern` (idempotent); `assessMatchEnd`
+  now resets `s.base` (idempotent, safe to recompute each tick).
+- `src/sim/match.ts` — `stepMatch`: `post` recomputes `assessMatchEnd` each tick;
+  `transition` recomputes `assessAutoPattern` each tick; auto-end calls `assessLeave` +
+  seeds pattern; teleop-start locks the final auto pattern + fires the event.
+- `scripts/smoke.ts` — imports `addClassified`/`addOverflow`; +2 checks: (1) an artifact
+  scored in `transition` banks as AUTO; (2) BASE is re-assessed as a robot settles into
+  base during the `post` window (0 at buzzer → 10 after it rests).
 
 ## Gotchas / notes
-- `gateColliderPos` reads POST-`updateRobot` velocity (pre-collision commanded vel);
-  `updateGates` reads post-solve velocity. For a clean ram these match (velocity
-  preserved through the retracted handle); for a partially-blocked medium ram the
-  collider can be a hair more open than `gatePos` for one tick — imperceptible, self-
-  corrects next tick.
-- A step()-based "harder ram lifts faster" test does NOT work: `updateRobot` recomputes
-  velocity from the command each tick, so a single tick can't build up 55 in/s and both
-  speeds hit the gentle lean-floor. The speed-scaling is proven directly against
-  `gateColliderPos` instead (which shares `gateLiftRate` with `updateGates`).
-- Local dev: `.env.local` has `VITE_GAME_SERVER_URL=` (empty) to disable the
-  multiplayer/username gate for solo testing. Restore the `ws://localhost:8789` line (or
-  delete the empty override) + restart dev to test multiplayer again.
+- `assessMatchEnd` is now safe to call repeatedly (idempotent). Smoke calls it directly
+  on fresh worlds — still fine.
+- Nothing gates balls by phase in `step()`, so they keep flowing/scoring in `transition`
+  and `post` — that's what makes the deferred assessment work. Don't add a phase gate to
+  ball physics or you'll re-break rules A/B/C/D.
+- The `AUTO PATTERN +N` event now fires at TELEOP start (was auto end). Cosmetic (event
+  log only).
 
-## Exact next steps (unchanged roadmap)
-- Feel-tune the gate constants if the user wants (e.g. `GATE_OPEN_RATE_SPEED` /
-  `GATE_OPEN_RATE_MAX` for how snappy a hard ram is). `npm test` after any `src/sim` edit.
-- Roadmap item 1 still open: penalty hitbox/zone-geometry audit.
-- Balls → Rapier (Phase 2 slice 2) still deferred.
+## Prev session (still true) — gate "easier to open"
+Ram-speed-scaled gate lift (`gateLiftRate`) + anticipated collider retract
+(`gateColliderPos` → `buildGateArms`) so no 1-tick jolt. `GATE_OPEN_HOLD` 0,
+`GATE_OPEN_RATE` 10, new `GATE_OPEN_RATE_SPEED`/`_MAX`. See git log for detail.
