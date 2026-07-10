@@ -128,15 +128,12 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   let targetOmega = 0;
 
   if (dp.saturation === 'tank') {
-    // Traditional Tank Drive: leftDrive and rightDrive independently control sides.
-    // Normal Tank Drive: derive side-drive from Arcade-style inputs (driveY, rotate).
-    const mode = world.gameSettings?.tankControlMode ?? 'traditional';
-    let ld = cmd.leftDrive ?? 0;
-    let rd = cmd.rightDrive ?? 0;
-    if (mode === 'normal') {
-      ld = cmd.driveY - cmd.rotate;
-      rd = cmd.driveY + cmd.rotate;
-    }
+    // Tank drive is always commanded as independent side-drive (leftDrive/rightDrive).
+    // The control-STYLE preference (Traditional separate-sticks vs Normal arcade) is a
+    // per-driver INPUT concern resolved in GameController, so the sim stays pure and
+    // the choice applies the same in solo and multiplayer.
+    const ld = cmd.leftDrive ?? 0;
+    const rd = cmd.rightDrive ?? 0;
     targetFwd = ((ld + rd) / 2) * dp.maxSpeed;
     targetOmega = (rd - ld) * (dp.maxTurn / 2);
     targetStrafe = 0;

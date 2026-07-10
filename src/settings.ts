@@ -26,7 +26,7 @@ export function defaultSettings(): GameSettings {
     autoPath: null, // Default to no auto path loaded
     autoPathEnabled: false, // Default to auto path disabled
     parkSpeedPct: 30,
-    tankControlMode: 'traditional',
+    tankControlMode: 'normal',
   };
 }
 

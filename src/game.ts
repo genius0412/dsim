@@ -21,6 +21,7 @@ import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
 import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './net/session';
 import { localizeCommand } from './net/protocol';
+import { clamp } from './math';
 import type { RecordRankInfo } from './net/protocol';
 
 // GameSettings is defined canonically in ./types; re-exported here because many
@@ -447,6 +448,16 @@ export class GameController {
       cmd.driveX *= k;
       cmd.driveY *= k;
       cmd.rotate *= k;
+    }
+    // Tank control style is a PER-DRIVER input preference (not a shared world
+    // setting), so resolve it here: "Normal" tank derives side-drive from arcade
+    // driveY/rotate, "Traditional" keeps the raw separate-stick leftDrive/rightDrive.
+    // The sim's tank branch then always reads leftDrive/rightDrive, so the choice
+    // works identically in solo and multiplayer (the server never sees these
+    // settings). Runs after flip/park so both still apply in Normal tank.
+    if (this.localRobot().spec.drivetrain === 'tank' && this.settings.tankControlMode === 'normal') {
+      cmd.leftDrive = clamp(cmd.driveY - cmd.rotate, -1, 1);
+      cmd.rightDrive = clamp(cmd.driveY + cmd.rotate, -1, 1);
     }
     this.lastCmd = cmd;
 

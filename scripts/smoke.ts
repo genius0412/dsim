@@ -1348,6 +1348,30 @@ const setup = (
   check('swerve reversal drives BACKWARD via flipped motors', fwd < -5, `${fwd.toFixed(1)} in/s fwd`);
 }
 
+// ---- tank reads side-drive only (control STYLE resolved at the input layer) --
+{
+  // The sim's tank branch must drive from leftDrive/rightDrive alone — the
+  // Traditional-vs-Normal preference is converted to side-drive in GameController,
+  // so the same command behaves identically regardless of any world setting.
+  const w = createWorld('free', 5, [setup(0, 'blue', { drivetrain: 'tank' }, 0)]);
+  const r = w.robots[0];
+  r.fieldCentric = false;
+  r.pos = { x: 0, y: -40 }; r.heading = Math.PI / 2;
+  const side = { driveX: 0, driveY: 0, rotate: 0, buttons: {}, leftDrive: 1, rightDrive: 1 } as unknown as RobotCommand;
+  for (let i = 0; i < 30; i++) step(w, SIM_DT, new Map([[0, side]]));
+  const fwdSpeed = r.vel.x * Math.cos(r.heading) + r.vel.y * Math.sin(r.heading);
+  check('tank drives from leftDrive/rightDrive (side-drive command)', fwdSpeed > 20, `${fwdSpeed.toFixed(1)} in/s fwd`);
+  // arcade driveY/rotate on their own do NOT move a tank robot in the sim (the
+  // Normal-tank conversion into side-drive happens BEFORE the command reaches step)
+  const w2 = createWorld('free', 5, [setup(0, 'blue', { drivetrain: 'tank' }, 0)]);
+  const r2 = w2.robots[0];
+  r2.fieldCentric = false;
+  r2.pos = { x: 0, y: -40 }; r2.heading = Math.PI / 2;
+  const arcade = { driveX: 0, driveY: 1, rotate: 0, buttons: {}, leftDrive: 0, rightDrive: 0 } as unknown as RobotCommand;
+  for (let i = 0; i < 30; i++) step(w2, SIM_DT, new Map([[0, arcade]]));
+  check('tank ignores raw arcade driveY (no side-drive ⇒ no motion)', Math.hypot(r2.vel.x, r2.vel.y) < 1e-6, `speed ${Math.hypot(r2.vel.x, r2.vel.y).toExponential(1)}`);
+}
+
 // ---- pushing power: equal-mass tank out-pushes mecanum ----------------------
 {
   const w = createWorld('free', 7, [
