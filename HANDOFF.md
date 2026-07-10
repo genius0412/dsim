@@ -1,7 +1,25 @@
-# HANDOFF — 2026-07-10 (Markdown announcements + scoring-timing per manual 9.x A–F) — READ FIRST
+# HANDOFF — 2026-07-10 (multiplayer held-ball render fix; prev: Markdown announcements + scoring-timing) — READ FIRST
 
-> **GREEN — `npm run build`, `npm test`, `npm run contrast` all pass. Deployed
-> (Fly server + pushed to alpha for Vercel).**
+> **GREEN — `npm run build`, `npm test` pass.**
+
+## Latest — held balls of REMOTE robots didn't move with the robot (multiplayer)
+
+Symptom: balls held inside *other* robots in a room floated/lagged relative to the
+robot body. Cause: remote robots render at an **interpolated** pos (`displayWorld` in
+`game.ts`), but balls are NOT interpolated (render from the predicted sim). `drawRobot`
+recovered each held ball's local offset via `b.pos - r.pos` — the interpolated `r.pos`
+and the sim-built `b.pos` diverge, so the ball was misplaced.
+
+Fix (`src/render/drawRobot.ts`, render-only — sim/netcode untouched): held balls carry
+their true robot-frame offset in state (`b.state.lx/ly`, already synced in the ball
+delta), so draw them from that directly instead of the world round-trip. They now track
+the body rigidly regardless of interpolation. No smoke change (render layer).
+
+---
+
+## Prev session — Markdown announcements + scoring-timing per manual 9.x A–F
+
+> Was GREEN incl. `npm run contrast`; deployed (Fly server + pushed to alpha for Vercel).
 
 ## This session, part 2 — Markdown announcement bodies
 

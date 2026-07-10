@@ -147,7 +147,14 @@ export function drawRobot(
   // held artifacts — the actual PHYSICAL balls (they slide within the intake),
   // drawn HERE in the robot's local frame so they sit BELOW the turret/shooter.
   for (const b of held) {
-    const lp = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+    // use the STORED local offset, not `b.pos - r.pos`: for a remote robot the
+    // rendered `r.pos` is INTERPOLATED but the ball's world `b.pos` comes straight
+    // from the predicted sim (balls aren't interpolated), so the world round-trip
+    // would misplace the ball relative to the robot body. lx/ly track it rigidly.
+    const lp =
+      b.state.kind === 'held'
+        ? { x: b.state.lx, y: b.state.ly }
+        : rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
     ctx.fillStyle = b.color === 'purple' ? C.COLORS.purple : C.COLORS.green;
     ctx.beginPath();
     ctx.arc(lp.x, lp.y, C.BALL_RADIUS, 0, Math.PI * 2);
