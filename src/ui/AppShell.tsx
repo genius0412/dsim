@@ -80,7 +80,8 @@ export function AppShell({
           {item('robot', 'My Robot')}
           {item('stats', 'Career')}
           {item('leaderboard', 'Leaderboard')}
-          {item('download', 'Download')}
+          {/* Download is admin-only for now (the page is broken / under repair) */}
+          {showAdmin && item('download', 'Download')}
           {showAdmin && item('admin', 'Admin')}
         </nav>
         <div className="ds-bar-right">

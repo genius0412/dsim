@@ -44,7 +44,10 @@ export const MATCH_SETTLE_S = MATCH_RESULT_REVEAL_MS / 1000;
  * build that produced it. Do NOT auto-derive this from a file hash — that would
  * reset every season on a trivial, non-gameplay edit. See docs/netcodeplan.md
  * Phase 3 + the phase3-leaderboards spec. */
-export const BALANCE_VERSION = 2; // 2: real-motor drivetrain retune (torque–speed curve + mecanum losses)
+export const BALANCE_VERSION = 3; // 2: real-motor drivetrain retune (torque–speed curve + mecanum losses)
+// 3: swerve wobble ↓ + faster turning (REF_TURN 8.5 / cap 12) + tank control-style at input layer
+// Bumping this INVALIDATES older replays for playback (they only re-sim exactly under their own
+// version's build): ReplayView gates on it and shows "recorded on an older version" instead.
 
 /** Ranked PLACEMENT: a player is "in placements" until they've completed this
  * many ranked games on a board (counted per mode × drivetrain, incl. Overall).

@@ -1,3 +1,48 @@
+# HANDOFF — 2026-07-10 (MP restart/rejoin overhaul + replay version gate + downloads lockdown + balance) — READ FIRST
+
+> **GREEN, committed on alpha (build + server:check + smoke all pass, ~347 checks).** `BALANCE_VERSION`
+> bumped **2 → 3** (swerve/turn/tank changes are gameplay-affecting → new season + old replays gated).
+> **SERVER CHANGE ⇒ needs `flyctl deploy --remote-only`** (room.ts + index.ts). Backward-compatible
+> (old clients get plain `error` messages / a no-op restart), so no branch-sync required first.
+>
+> This session, in order:
+> - **Balance:** swerve wobble ↓ (`SWERVE_WOBBLE_AMP` 0.2→0.15); faster turning (`REF_TURN` 7→8.5 in
+>   drivetrain.ts, `TURN_MAX_SPEED` 10→12 so the default small/fast chassis isn't clamped). Swerve
+>   stays the fastest turner. Smoke calibration checks updated (7→8.5).
+> - **Tank control style now resolves at the INPUT layer** (`game.ts` frameLogic), not the sim: Normal
+>   tank converts arcade driveY/rotate → leftDrive/rightDrive on the local command; the sim's tank
+>   branch always reads side-drive. Fixes MP (server never had `gameSettings`, so the preference was
+>   silently dropped). Default is now **Normal** (`settings.ts`), UI order swapped (Normal first).
+> - **MP restart/rematch REMOVED** (was the "everyone stuck/jitter next game" bug): host keyboard
+>   restart gone from `stepServer`; results REMATCH button is solo-only (`canRematch={!session}`, the
+>   "WAITING FOR HOST…" disabled button deleted); `rematch()` is solo-only; **server `case 'restart'`
+>   is a no-op for ALL clients**. Players return to the lobby for a fresh match.
+> - **One live game per user + REJOIN** (`src/net/activeGame.ts`, localStorage `decodesim.activeGame.v1`):
+>   a networked match is saved (room+clientId+matchStart payload) on start; Home shows a **"Rejoin
+>   your match"** card (`Home` `activeGame`/`onRejoin`); `guardStart` blocks starting a 2nd game
+>   (rejoin/abandon overlay). Rejoin opens a fresh transport, sends `rejoin` on first open, rebuilds a
+>   `ServerSession` from the stored payload. Cleared when the match hits `post`/`failed` (GameView
+>   250ms poll) or on abandon. **Server backstop:** `userRoom` Map (index.ts) keyed by userId, set at
+>   `beginMatch` (Room `onUserActive`/`onUserInactive`), released at finalize/grace-drop/stop; a 2nd
+>   `join`/`queue` while active is refused with `error`. `rejoin` bypasses it (own game always
+>   reclaimable). **Reconnect grace 15s → 45s** (covers navigate-away-and-back); transport auto-retry
+>   20→40 attempts to match. `ServerSession` sets `failed=true` on `rejoined{ok:false}` so the HUD
+>   shows the connection-lost panel instead of spinning.
+> - **Replays version-gated:** `ReplayView` refuses playback when `replay.balanceVersion !==
+>   BALANCE_VERSION` (or `format !== REPLAY_FORMAT`) → "recorded on an older version" message (score
+>   still stands). No DB migration — the stamp already exists. Bumping `BALANCE_VERSION` is the single
+>   lever that invalidates old replays going forward.
+> - **Downloads page is ADMIN-ONLY** (broken/under repair): nav tab gated on `showAdmin`, screen
+>   render gated on `isAdmin`, and a non-admin deep-link to `/download` redirects home (`adminChecked`
+>   guards the async admin check so a real admin isn't bounced).
+> - New smoke: tank side-drive contract, single-game lock lifecycle, restart-ignored-mid-match.
+> - **Still open / notes:** rejoin-after-reload only works within the 45s server grace (a longer
+>   absence → the room may be gone, rejoin fails cleanly + clears). `world.gameSettings` is now unused
+>   by the sim (tank moved out) — harmless, left in place. Consider a userId-keyed slot reclaim if a
+>   longer come-back window is wanted.
+>
+> ---
+
 # HANDOFF — 2026-07-09 (netcode anti-stutter: snapshot coalescing + prediction lead cap + ping graph) — READ FIRST
 
 > **LATEST: GREEN, uncommitted on alpha.** `npm test`, `server:check`, `build` all pass.

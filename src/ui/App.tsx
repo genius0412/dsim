@@ -22,8 +22,12 @@ import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
-import { gameServerConfigured, setSelectedServer } from '../net/env';
+import { gameServerConfigured, setSelectedServer, gameServerUrlWith } from '../net/env';
 import type { NetSession } from '../net/session';
+import { ServerSession } from '../net/serverSession';
+import { WebSocketTransport } from '../net/transport';
+import { encodeMsg } from '../net/protocol';
+import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } from '../net/activeGame';
 import type { Replay } from '../sim/replay';
 
 type Screen =
@@ -153,19 +157,34 @@ export function App() {
   // is this account an admin? (server-authorized against ADMIN_USER_IDS) — gates the
   // Admin tab; the server independently enforces every admin action
   const [isAdmin, setIsAdmin] = useState(false);
+  // has the admin-status check settled? (so we don't bounce a real admin off an
+  // admin-only deep-link before the async check resolves)
+  const [adminChecked, setAdminChecked] = useState(false);
   useEffect(() => {
     if (!accountUserId) {
       setIsAdmin(false);
+      setAdminChecked(true);
       return;
     }
     let cancelled = false;
+    setAdminChecked(false);
     fetchAdminStatus().then((s) => {
-      if (!cancelled) setIsAdmin(s.isAdmin);
+      if (!cancelled) {
+        setIsAdmin(s.isAdmin);
+        setAdminChecked(true);
+      }
     });
     return () => {
       cancelled = true;
     };
   }, [accountUserId]);
+  // the Download page is admin-only for now — bounce a non-admin who deep-links or
+  // refreshes on /download back home (once the admin check has actually settled)
+  useEffect(() => {
+    if (screen === 'download' && adminChecked && !isAdmin) navigate('home');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, adminChecked, isAdmin]);
+
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -192,9 +211,65 @@ export function App() {
   }, []);
   const onSyncSeed = useCallback(() => void saveAccountSettings(settingsRef.current), []);
 
+  // the multiplayer game this browser is currently in (persisted to localStorage), so
+  // the player can REJOIN it after navigating away and is stopped from starting a 2nd.
+  const [activeGame, setActiveGame] = useState<ActiveGameRef | null>(() => loadActiveGame());
+
+  /** enter a networked game: remember it (for rejoin + the single-game guard), then
+   * show the game screen. Solo play never calls this (it has no session). */
+  const beginSession = (s: NetSession, kind: ActiveGameRef['kind']): void => {
+    if (s.room && s.clientId) {
+      const ref: ActiveGameRef = {
+        room: s.room,
+        region: s.region,
+        clientId: s.clientId,
+        start: {
+          seed: s.seed,
+          setups: s.setups,
+          yourRobotId: s.localRobotId,
+          ranked: s.ranked,
+          intros: s.intros,
+          region: s.region,
+        },
+        ranked: s.ranked,
+        kind,
+        savedAt: Date.now(),
+      };
+      saveActiveGame(ref);
+      setActiveGame(ref);
+    }
+    setSession(s);
+    navigate('game');
+  };
+
+  /** reconnect to and re-enter the match this browser last left (reclaims our held
+   * server slot within its reconnect grace; fails cleanly to the "connection lost"
+   * panel if the slot is already gone). */
+  const rejoinGame = (ref: ActiveGameRef): void => {
+    const params: Record<string, string> = { room: ref.room };
+    if (ref.region) params.region = ref.region;
+    let transport: WebSocketTransport;
+    try {
+      transport = new WebSocketTransport(gameServerUrlWith(params));
+    } catch {
+      clearActiveGame();
+      setActiveGame(null);
+      return;
+    }
+    // send `rejoin` on the FIRST open (ServerSession only re-sends it on reconnects);
+    // the server reattaches our held slot and a snapshot resyncs us
+    transport.onOpen(() => transport.send(encodeMsg({ t: 'rejoin', room: ref.room, clientId: ref.clientId })));
+    const s = new ServerSession(transport, false, ref.start, ref.clientId, ref.room);
+    setSession(s);
+    navigate('game');
+  };
+
   const exitGame = (): void => {
     session?.dispose();
     setSession(null);
+    // a match that FINISHED (or whose slot is gone) clears its rejoin record in
+    // GameView; a mid-match exit keeps it so Home can offer "rejoin your match".
+    setActiveGame(loadActiveGame());
     navigate('home');
   };
 
@@ -209,10 +284,22 @@ export function App() {
   const restartPending =
     !!notice && notice.kind === 'restart' && (notice.until === undefined || notice.until > Date.now());
   const [startBlocked, setStartBlocked] = useState(false);
+  // set when the player tries to start a new game while one is already in progress —
+  // drives the "you have a game in progress" overlay (rejoin or abandon)
+  const [blockedByActive, setBlockedByActive] = useState(false);
   const guardStart = (go: () => void): void => {
-    if (restartPending) setStartBlocked(true);
+    if (loadActiveGame()) setBlockedByActive(true);
+    else if (restartPending) setStartBlocked(true);
     else if (newVersion) setPendingStart(() => go);
     else go();
+  };
+
+  /** abandon the in-progress game: forget it locally (its server slot then coasts +
+   * drops after the grace) so the player is free to start something new. */
+  const abandonActiveGame = (): void => {
+    clearActiveGame();
+    setActiveGame(null);
+    setBlockedByActive(false);
   };
 
   const multiplayer = gameServerConfigured();
@@ -241,10 +328,7 @@ export function App() {
       <Lobby
         settings={settings}
         onSettingsChange={update}
-        onStart={(s) => {
-          setSession(s);
-          navigate('game');
-        }}
+        onStart={(s) => beginSession(s, 'custom')}
         onCancel={() => navigate('home')}
       />
     );
@@ -254,10 +338,7 @@ export function App() {
       <RecordRun
         settings={settings}
         mode="solo"
-        onStart={(s) => {
-          setSession(s);
-          navigate('game');
-        }}
+        onStart={(s) => beginSession(s, 'record')}
         onCancel={() => navigate('home')}
         onPreferServer={(id) => update({ ...settings, preferredServerId: id })}
       />
@@ -269,10 +350,7 @@ export function App() {
         settings={settings}
         onSettingsChange={update}
         config={{ kind: 'record', record: 'duo' }}
-        onStart={(s) => {
-          setSession(s);
-          navigate('game');
-        }}
+        onStart={(s) => beginSession(s, 'record')}
         onCancel={() => navigate('home')}
       />
     );
@@ -282,10 +360,7 @@ export function App() {
       <Matchmaking
         settings={settings}
         signedIn={signedIn}
-        onStart={(s) => {
-          setSession(s);
-          navigate('game');
-        }}
+        onStart={(s) => beginSession(s, 'ranked')}
         onCancel={() => navigate('home')}
         onSignIn={() => navigate('account')}
         onSettingsChange={update}
@@ -332,6 +407,12 @@ export function App() {
           onChange={update}
           multiplayer={multiplayer}
           signedIn={signedIn}
+          activeGame={activeGame ? { kind: activeGame.kind } : null}
+          onRejoin={() => {
+            const ref = loadActiveGame();
+            if (ref) rejoinGame(ref);
+            else setActiveGame(null);
+          }}
           onFreeDrive={() =>
             guardStart(() => {
               update({ ...settings, mode: 'free' });
@@ -350,6 +431,32 @@ export function App() {
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onEditRobot={() => navigate('robot')}
         />
+      )}
+      {blockedByActive && (
+        <div className="overlay">
+          <div className="overlay-panel">
+            <h2>You’re already in a game</h2>
+            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
+              You can only be in one game at a time. Rejoin the one you’re in, or abandon it to
+              start something new.
+            </p>
+            <div className="overlay-buttons">
+              <button
+                onClick={() => {
+                  const ref = loadActiveGame();
+                  setBlockedByActive(false);
+                  if (ref) rejoinGame(ref);
+                  else setActiveGame(null);
+                }}
+              >
+                REJOIN
+              </button>
+              <button className="ghost" onClick={abandonActiveGame}>
+                ABANDON
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {startBlocked && (
         <div className="overlay">
@@ -395,7 +502,7 @@ export function App() {
           nav={{ onWatch: (id) => navigate('replay', id), onOpenProfile: openProfile }}
         />
       )}
-      {screen === 'download' && <Download />}
+      {screen === 'download' && isAdmin && <Download />}
       {screen === 'account' && <Account settings={settings} onChange={update} />}
       {screen === 'admin' && isAdmin && <Admin />}
     </AppShell>

@@ -67,6 +67,11 @@ export interface NetStatus {
 export interface NetSession {
   /** the local player's robot id (assigned by the server at match start) */
   readonly localRobotId: number;
+  /** the room code + our clientId + hosting region (ServerSession only) — used to
+   * persist an "active game" record so the player can REJOIN this same match later */
+  readonly room?: string;
+  readonly clientId?: string;
+  readonly region?: string;
   /** the match seed the world was built from (updated on a host restart) */
   seed: number;
   /** the robot slots in the match (updated on a host restart) */

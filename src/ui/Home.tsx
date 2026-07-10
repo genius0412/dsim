@@ -21,6 +21,8 @@ export function Home({
   onChange,
   multiplayer,
   signedIn,
+  activeGame,
+  onRejoin,
   onFreeDrive,
   onSoloMatch,
   onRecordRun,
@@ -33,6 +35,9 @@ export function Home({
   onChange: (s: GameSettings) => void;
   multiplayer: boolean;
   signedIn: boolean;
+  /** a multiplayer game this browser is mid-way through (offer to rejoin it), or null */
+  activeGame: { kind: 'ranked' | 'custom' | 'record' } | null;
+  onRejoin: () => void;
   onFreeDrive: () => void;
   onSoloMatch: () => void;
   onRecordRun: () => void;
@@ -85,6 +90,24 @@ export function Home({
             solo {stats.byCategory.solo} · duo {stats.byCategory.duo} · 1v1 {stats.byCategory['1v1']} ·
             2v2 {stats.byCategory['2v2']}
           </span>
+        </div>
+      )}
+
+      {activeGame && (
+        <div className="ds-rejoin" role="alert">
+          <div className="ds-rejoin-txt">
+            <b>You have a game in progress.</b>{' '}
+            <span className="ds-sub" style={{ fontSize: 13 }}>
+              {activeGame.kind === 'ranked'
+                ? 'A ranked match is waiting — hop back in.'
+                : activeGame.kind === 'record'
+                  ? 'Your record run is still going.'
+                  : 'Your match is still going.'}
+            </span>
+          </div>
+          <button className="ds-btn primary" onClick={onRejoin}>
+            Rejoin match →
+          </button>
         </div>
       )}
 

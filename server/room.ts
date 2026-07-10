@@ -51,8 +51,10 @@ const SNAPSHOT_INTERVAL = 2;
 /** how many ticks to keep re-applying a robot's last command when its next input
  * hasn't arrived (absorbs jitter without freezing); past this it coasts to ZERO */
 const HOLD_TICKS = 15;
-/** hold a disconnected driver's slot this long for a reconnect before dropping */
-const RECONNECT_GRACE_MS = 15000;
+/** hold a disconnected driver's slot this long for a reconnect before dropping. Long
+ * enough to cover a full page reload / navigate-away-and-come-back (the "rejoin your
+ * match" flow), not just a transient socket blip. The robot coasts to ZERO meanwhile. */
+const RECONNECT_GRACE_MS = 45000;
 /** a staged ranked match waits this long for every paired player to (re)connect to
  * the host machine before it gives up and cancels (a no-show ⇒ no rated match) */
 const RANKED_JOIN_GRACE_MS = 20000;
@@ -190,7 +192,23 @@ export class Room {
      * the per-player overall-ELO changes (ranked), which the room then broadcasts
      * as `eloResult` for the results screen. */
     private readonly onResult?: (o: MatchOutcome) => void | Promise<PersistOutcome | void>,
+    /** called when an authed user's MATCH becomes live in this room, and again when
+     * their slot is released (match finalized / dropped / room stopped). The registry
+     * uses this to enforce "one live game per user" — a user with a lock here is
+     * refused a second join/queue elsewhere (they must rejoin or leave this one). */
+    private readonly onUserActive?: (userId: string) => void,
+    private readonly onUserInactive?: (userId: string) => void,
   ) {}
+
+  /** authed users whose match is currently live in THIS room (holds their single-
+   * game lock). Registered at match begin, released at finalize / drop / stop. */
+  private readonly activeUserIds = new Set<string>();
+
+  /** release every held single-game lock this room owns (idempotent) */
+  private releaseActiveUsers(): void {
+    for (const uid of this.activeUserIds) this.onUserInactive?.(uid);
+    this.activeUserIds.clear();
+  }
 
   /** true if a fresh driver can still join (room not full, not mid-match, and not
    * already locked into the pre-match strategy window) */
@@ -295,6 +313,11 @@ export class Room {
       if (this.world !== null && c.userId && rid !== undefined) {
         this.departed.set(rid, { userId: c.userId, handle: c.player.name, assists: c.player.assists });
       }
+      // their grace lapsed — free their single-game lock so they can start fresh
+      if (c.userId) {
+        this.activeUserIds.delete(c.userId);
+        this.onUserInactive?.(c.userId);
+      }
       this.clients.delete(c.id);
       this.snapPrimed.delete(c.id);
       this.robotOf.delete(c.id);
@@ -332,7 +355,10 @@ export class Room {
         }
         break;
       case 'restart':
-        if (id === this.hostId && physicsReady()) this.startMatch();
+        // Rematch/restart is DISABLED for multiplayer: re-authoring a live match for
+        // everyone caused post-restart desync (stuck/jitter). Ignored for ALL clients
+        // (incl. older builds that still show a host REMATCH button) — players return
+        // to the lobby to start a fresh match instead.
         break;
       case 'input':
         this.onInput(id, msg.tick, msg.q);
@@ -440,6 +466,15 @@ export class Room {
     this.finalized = false;
     this.postSince = null;
     this.departed.clear();
+
+    // register each authed driver's single-game lock: while this match is live they
+    // can't start a second game elsewhere (they'd have to rejoin or leave this one)
+    for (const c of this.clients.values()) {
+      if (c.userId) {
+        this.activeUserIds.add(c.userId);
+        this.onUserActive?.(c.userId);
+      }
+    }
 
     for (const c of this.clients.values()) {
       c.send({
@@ -726,6 +761,9 @@ export class Room {
   private finalizeMatch(): void {
     if (this.finalized || !this.world || !this.recorder) return;
     this.finalized = true;
+    // the match is DECIDED — free every single-game lock so players can immediately
+    // start a fresh game (the room lingers in 'post' only for the results screen)
+    this.releaseActiveUsers();
     const w = this.world;
     const replay: Replay = this.recorder.finish();
     const result = worldResult(w);
@@ -846,6 +884,9 @@ export class Room {
       clearInterval(this.loop);
       this.loop = null;
     }
+    // room is going away — free any single-game locks it still holds (e.g. a match
+    // abandoned before finalize) so those users aren't stuck unable to start again
+    this.releaseActiveUsers();
   }
 
   private broadcastSnapshot(): void {

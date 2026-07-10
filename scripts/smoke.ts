@@ -2575,6 +2575,52 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   }
 }
 
+// ---- single live game per user + restart disabled (server enforcement) ------
+{
+  const active: string[] = [];
+  const inactive: string[] = [];
+  const msgs: ServerMsg[] = [];
+  const client: Client = {
+    id: 'c1',
+    send: (m) => msgs.push(m),
+    player: {
+      clientId: 'c1',
+      name: 'U',
+      teamName: 'T',
+      teamNumber: 1,
+      alliance: 'blue',
+      startIndex: 0,
+      ready: true,
+      spec: { ...DEFAULT_SPEC },
+      assists: { ...DEFAULT_ASSISTS },
+    },
+    connected: true,
+    disconnectAt: 0,
+    userId: 'user-1',
+  };
+  const room = new Room(
+    'smoke-lock',
+    () => {},
+    { kind: 'versus' },
+    undefined,
+    (uid) => active.push(uid),
+    (uid) => inactive.push(uid),
+  );
+  room.add(client);
+  room.onMessage('c1', { t: 'start' });
+  check('single-game lock registered for an authed driver at match begin', active.includes('user-1'));
+
+  // restart is DISABLED in multiplayer — it must NOT re-author the live match
+  const startsBefore = msgs.filter((m) => m.t === 'matchStart').length;
+  room.onMessage('c1', { t: 'restart' });
+  const startsAfter = msgs.filter((m) => m.t === 'matchStart').length;
+  check('restart is ignored mid-match (no re-authored match)', startsAfter === startsBefore && startsBefore === 1);
+
+  // run to the end → the lock is released at finalize so the user can start again
+  room.advanceForTest(maxMatchTicks() + 5);
+  check('single-game lock released when the match finalizes', inactive.includes('user-1'));
+}
+
 // ---- ranked ELO math (Phase 3) ---------------------------------------------
 {
   const p = (

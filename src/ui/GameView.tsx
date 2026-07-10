@@ -11,6 +11,7 @@ import { appChannel } from '../net/env';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
 import type { MatchResultInfo, NetSession, NetStatus } from '../net/session';
+import { clearActiveGame } from '../net/activeGame';
 import type { RecordRankInfo } from '../net/protocol';
 import type { Replay } from '../sim/replay';
 import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
@@ -185,8 +186,17 @@ export function GameView({ settings, onExit, session = null, onWatchReplay, sign
       if (e.key === 'Escape') onExit();
     };
     window.addEventListener('keydown', onKey);
+    // once a networked match is DECIDED (phase 'post') or its slot is gone (failed),
+    // there's nothing to rejoin — forget the saved active-game record so Home stops
+    // offering "rejoin your match" for a finished/dead game.
+    const clearTimer = window.setInterval(() => {
+      if (!session) return;
+      const h = controller.getHud();
+      if (h && (h.phase === 'post' || h.net?.failed)) clearActiveGame();
+    }, 250);
     return () => {
       window.clearInterval(hudTimer);
+      window.clearInterval(clearTimer);
       window.removeEventListener('keydown', onKey);
       controller.dispose();
       controllerRef.current = null;
@@ -294,7 +304,7 @@ export function GameView({ settings, onExit, session = null, onWatchReplay, sign
           revealAt={hud.resultRevealAt}
           ranked={!!session?.ranked}
           eloResults={controllerRef.current?.getEloResults() ?? null}
-          canRematch={!session || session.isHost()}
+          canRematch={!session}
           onRematch={() => controllerRef.current?.rematch()}
           onExit={onExit}
           matchResult={controllerRef.current?.getMatchResult() ?? null}
@@ -757,13 +767,7 @@ function Results({
           {matchResult && onWatchReplay && (
             <button onClick={() => onWatchReplay(matchResult.replay)}>▶ WATCH REPLAY</button>
           )}
-          {canRematch ? (
-            <button onClick={onRematch}>REMATCH</button>
-          ) : (
-            <button disabled title="Only the host can start a rematch">
-              WAITING FOR HOST…
-            </button>
-          )}
+          {canRematch && <button onClick={onRematch}>REMATCH</button>}
           <button onClick={onExit}>MENU</button>
         </div>
           </>
@@ -918,11 +922,7 @@ function RecordResults({
               {matchResult && onWatchReplay && (
                 <button onClick={() => onWatchReplay(matchResult.replay)}>▶ WATCH REPLAY</button>
               )}
-              {canRematch ? (
-                <button onClick={onRematch}>RUN AGAIN</button>
-              ) : (
-                <button disabled>WAITING FOR HOST…</button>
-              )}
+              {canRematch && <button onClick={onRematch}>RUN AGAIN</button>}
               <button onClick={onExit}>MENU</button>
             </div>
           </>

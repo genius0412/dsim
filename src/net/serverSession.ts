@@ -57,6 +57,8 @@ export class ServerSession implements NetSession {
   setups: RobotSetup[];
   ranked: boolean;
   intros: PlayerIntro[];
+  /** the Fly region hosting this match (raw, for reconnect routing) */
+  readonly region?: string;
   /** per-driver overall-ELO change, arrives shortly after matchResult (ranked) */
   eloResults: EloDelta[] = [];
 
@@ -98,13 +100,14 @@ export class ServerSession implements NetSession {
       intros?: PlayerIntro[];
       region?: string;
     },
-    private readonly clientId: string,
-    private readonly room: string,
+    readonly clientId: string,
+    readonly room: string,
   ) {
     this.seed = start.seed;
     this.setups = start.setups;
     this.ranked = start.ranked ?? false;
     this.intros = start.intros ?? [];
+    this.region = start.region;
     this.localRobotId = start.yourRobotId;
     this.otherRobots = Math.max(0, start.setups.length - 1);
     this.serverLabel = deriveServerLabel(start.region, room);
@@ -268,8 +271,11 @@ export class ServerSession implements NetSession {
       this.baseBalls.clear();
       this.restartCb?.();
     } else if (m.t === 'rejoined' && !m.ok) {
-      // the grace window lapsed — stop reconnecting (HUD stays "reconnecting")
+      // the grace window lapsed / the match is gone — the held slot can't be
+      // reclaimed. Surface it as a hard failure so the HUD shows the "connection
+      // lost" panel (MENU/refresh) instead of spinning "reconnecting" forever.
       this.connected = false;
+      this.failed = true;
       this.transport.close();
     }
     // 'drop' is reflected in the next snapshot already; nothing to do here

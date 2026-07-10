@@ -52,6 +52,24 @@ const matchmaker = new Matchmaker();
 let onlineCount = 0;
 const authedUsers = new Map<string, number>(); // userId -> live socket count
 
+// "one live game per user": userId -> code of the room whose MATCH they're currently
+// in. Set by a room when its match begins (Room.onUserActive), cleared when their slot
+// is released (finalize / grace-drop / room stop). A user with an entry here is refused
+// a second join/queue elsewhere — they must rejoin or leave that game first. Reconnects
+// (the `rejoin` message) bypass this, so returning to your OWN game always works.
+const userRoom = new Map<string, string>();
+/** true if this user already has a LIVE match in a DIFFERENT room (stale entries whose
+ * room has since vanished are pruned and treated as clear). */
+const activeElsewhere = (userId: string, code: string): boolean => {
+  const other = userRoom.get(userId);
+  if (!other || other === code) return false;
+  if (!rooms.has(other)) {
+    userRoom.delete(userId);
+    return false;
+  }
+  return true;
+};
+
 // accounts allowed to use the admin API (their auth-JWT `sub`/userId). Set as a
 // Fly secret: ADMIN_USER_IDS="uuid1,uuid2". Empty => admin API is locked to nobody.
 const ADMIN_IDS = new Set(
@@ -444,7 +462,16 @@ wss.on('connection', (ws: WebSocket) => {
     let r = rooms.get(code);
     let created = false;
     if (!r) {
-      r = new Room(code, () => rooms.delete(code), msg.config, persistMatch);
+      r = new Room(
+        code,
+        () => rooms.delete(code),
+        msg.config,
+        persistMatch,
+        (uid) => userRoom.set(uid, code),
+        (uid) => {
+          if (userRoom.get(uid) === code) userRoom.delete(uid);
+        },
+      );
       rooms.set(code, r);
       created = true;
     }
@@ -457,6 +484,15 @@ wss.on('connection', (ws: WebSocket) => {
     if (room) return; // a concurrent frame already placed this socket
     if (!r.canJoin()) {
       send({ t: 'error', message: 'Room is full or a match is already in progress.' });
+      if (created) rooms.delete(code); // don't leave an empty just-created room behind
+      return;
+    }
+    // one live game per user: refuse a second game while one is in progress (they
+    // rejoin/leave it from Home). Reconnects use `rejoin`, so this never blocks
+    // returning to your OWN match.
+    if (user && activeElsewhere(user.userId, code)) {
+      send({ t: 'error', message: 'You already have a game in progress — rejoin or leave it first.' });
+      if (created) rooms.delete(code);
       return;
     }
     room = r;
@@ -519,6 +555,11 @@ wss.on('connection', (ws: WebSocket) => {
         verifyAuthToken(msg.authToken).then((u) => {
           if (!u) {
             send({ t: 'error', message: 'Sign in to play ranked.' });
+            return;
+          }
+          // one live game per user: can't queue ranked while another game is live
+          if (activeElsewhere(u.userId, '')) {
+            send({ t: 'error', message: 'You already have a game in progress — rejoin or leave it first.' });
             return;
           }
           markAuthed(u.userId);

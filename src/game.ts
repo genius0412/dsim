@@ -535,7 +535,9 @@ export class GameController {
    * only our own robot is predicted, remote robots are corrected by snapshots. */
   private stepServer(cmd: RobotCommand): void {
     const s = this.session!;
-    if (this.input.restartPressed && s.isHost()) s.requestRestart();
+    // NOTE: no restart/rematch in multiplayer — a local or host-authored rebuild
+    // desynced everyone (post-restart stuck/jitter). Players return to the lobby to
+    // start a fresh match instead. Restart stays a SOLO-only affordance (stepSolo).
 
     // reconcile to the freshest server snapshot BEFORE predicting this frame
     const snap = s.takeSnapshot();
@@ -744,17 +746,12 @@ export class GameController {
     this.toasts = [];
   }
 
-  /** REMATCH: in multiplayer ONLY the host re-authors the match for everyone (a
-   * local rebuild would desync — the host broadcasts a fresh seed and every peer
-   * rebuilds via rebuildFromNet); in solo it just rebuilds locally. */
+  /** REMATCH: SOLO only — rebuild locally with a fresh seed/motif. Multiplayer has
+   * no rematch (it re-authored the match for everyone and desynced on rebuild);
+   * networked players return to the lobby to queue a fresh match. */
   rematch(): void {
-    if (this.session) {
-      // host only: the server re-authors the match for everyone (picks the seed)
-      if (this.session.isHost()) this.session.requestRestart();
-      // non-host: no-op — only the host restarts
-    } else {
-      this.restart();
-    }
+    if (this.session) return; // multiplayer: no-op (UI hides the button)
+    this.restart();
   }
 
   /** multiplayer session? (UI gates RESET / host-only REMATCH on this) */

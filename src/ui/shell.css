@@ -277,6 +277,25 @@
   color: var(--ds-mut);
 }
 
+/* ---- rejoin banner (an in-progress multiplayer game to return to) ---- */
+.ds-rejoin {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 2px 0 24px;
+  padding: 14px 18px;
+  border: 1px solid var(--ds-accent, #3ad17a);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ds-accent, #3ad17a) 12%, transparent);
+}
+.ds-rejoin-txt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 /* ---- play tiles ------------------------------------------------------ */
 .ds-tiles {
   display: grid;
