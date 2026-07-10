@@ -557,18 +557,42 @@ export const OVERFLOW_FLOW_SPEED = 58; // in/s, overflow rides over everything (
 /** lateral/vertical glide rate as a ball settles onto the rail line */
 export const RAIL_BLEND_SPEED = 30; // in/s
 
-export const GATE_OPEN_HOLD = 0.08; // s of push before the gate swings open
-/** once open, the spring can only re-close when no ball occupies the gateway */
+export const GATE_OPEN_HOLD = 0.08; // s of push before the gate arm starts to lift
+/** once open, gravity/flow decide re-close: it can only fall while no ball occupies
+ * the gateway (a ball streaming under the arm physically holds it up) */
 export const GATE_CLOSE_CLEAR_LO = -4;
 export const GATE_CLOSE_CLEAR_HI = 4.5;
+/** GATE as a PHYSICAL push-to-open arm (manual 9.8.3): a robot shoves the arm the
+ * ~2in open, and it is "closed by gravity" — after release it does NOT snap shut but
+ * SWINGS closed, starting slow and accelerating (a hinged arm falling), so a tap
+ * "may or may not stay open" long enough to clear the ramp. `gatePos` is the arm's
+ * physical open fraction 0 (down/closed) .. 1 (fully lifted); `gateVel` is its swing
+ * rate. `gateOpen` (a ball can pass) is DERIVED = gatePos >= GATE_PASS_FRAC. */
+export const GATE_OPEN_RATE = 8; // 1/s: how fast a pushing robot lifts the arm open
+export const GATE_GRAVITY = 10; // 1/s^2 on gatePos: gravity swinging the released arm shut
+export const GATE_CLOSE_MAX = 5; // 1/s: terminal swing speed as it falls closed
+export const GATE_PASS_FRAC = 0.4; // arm must be at least this lifted for an ARTIFACT to pass
+export const GATE_OPEN_EPS = 0.03; // below this the arm is effectively down (won't flow-hold)
+export const GATE_DISPLACE = 2; // in, real closed->open horizontal displacement (manual 9.8.3)
+export const GATE_SWING = 0.95; // rad (~54deg) the drawn arm sweeps from closed to fully open
+/** the gate does NOT open just because a robot LOITERS in the zone — the arm is a
+ * push-to-open mechanism, so the robot must actively PRESS toward it. Detected as
+ * a velocity toward the arm (ramming it) OR a drive command toward it (leaning on it
+ * while stalled against the classifier, where velocity reads ~0). */
+export const GATE_PUSH_MIN_SPEED = 6; // in/s toward the arm to open by driving into it
+export const GATE_PUSH_MIN_CMD = 0.35; // drive-command component toward the arm to hold it open
 /** gate zone tape in front of the gate: 10in from the wall at y ~ 0 */
 /** gate INTERACTION rect (a robot overlapping it works the gate). The tape
  * marking on the mat is drawn separately — see GATE_TAPE_* / gateTapeSegments */
 export const GATE_ZONE = { xNear: 62, xFar: 72, y0: -2, y1: 3 };
-/** how far BELOW the gate a robot's center may sit and still count as working
- * the gate from the long (field) side. Only a robot deeper than this — coming
- * up from the gate mouth / audience side — is a short-end tap that won't open it. */
-export const GATE_LONG_SIDE_MARGIN = 10; // in
+/** the physical GATE ARM's contact footprint at the channel mouth (`gateArmRect`).
+ * A robot whose bumper reaches within GATE_ARM_REACH of the classifier face here is
+ * TOUCHING the gate — the trigger for G417 (touching an opponent's gate, even
+ * without opening it, is a MAJOR) and the contact half of the push-to-open test.
+ * Tighter than GATE_ZONE: a robot must actually be against the arm, not loitering. */
+export const GATE_ARM_REACH = 3; // in, field-side approach band where a bumper meets the arm
+export const GATE_ARM_Y0 = -1; // mouth band low edge (a robot deep in the tunnel mouth misses it)
+export const GATE_ARM_Y1 = 6; // mouth band high edge
 /** official GATE ZONE marking (manual Section 9): a 2.75in-wide x 10in-long
  * volume bounded by TWO parallel alliance-colored tape LINES, 10in long,
  * running perpendicular to the side wall (into the field), spaced 2.75in

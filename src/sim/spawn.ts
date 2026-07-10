@@ -263,6 +263,8 @@ function goalState(alliance: Alliance): GoalState {
   return {
     alliance,
     gateOpen: false,
+    gatePos: 0,
+    gateVel: 0,
     gateHoldTime: 0,
     classifiedCount: 0,
     overflowCount: 0,

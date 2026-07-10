@@ -2,6 +2,7 @@ import type { Alliance, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
 import {
   baseZone,
+  gateArmRect,
   gateZone,
   loadZone,
   other,
@@ -185,27 +186,28 @@ export function updatePenalties(
 
 type FireFn = (key: string, offender: Alliance, severity: 'minor' | 'major', rule: string) => boolean;
 
-/** G417 (contacting/operating an OPPOSING GATE — MAJOR) + G418.B (each classified
- * ARTIFACT that leaves an opponent's RAMP because their gate was opened — MAJOR
- * per artifact). Uses updateGates' lever condition to decide who is operating a
- * gate, and remembers which opponent opened each gate so the balls that then drain
- * off that ramp are billed to them even after they leave (the flow finishes the
- * drain). Operating your OWN gate is legal (that is how an alliance clears its own
- * overflow). Matches the manual's Example 3: open the opponent gate => 1 G417 +
- * one G418 per artifact that leaves. */
+/** G417 (TOUCHING an OPPOSING GATE — MAJOR) + G418.B (each classified ARTIFACT that
+ * leaves an opponent's RAMP because their gate was opened — MAJOR per artifact).
+ * G417 fires when an opponent is TOUCHING the gate arm (`gateArmRect`): merely
+ * touching the opponent's gate is a foul even if the robot never opens it (you don't
+ * have to succeed in opening it — contact with the arm is the violation). It
+ * remembers which opponent touched each gate so the balls that then drain off that
+ * ramp are billed to them even after they leave (the flow finishes the drain).
+ * Touching your OWN gate is legal (that is how an alliance clears its own overflow).
+ * Matches the manual's Example 3: work the opponent gate => 1 G417 + one G418 per
+ * artifact that leaves. */
 function updateGateFouls(world: World, fire: FireFn): void {
   const pen = world.penalties;
   for (const a of ALLIANCES) {
     const goal = world.goals[a];
-    const zone = gateZone(a);
 
-    // opponents currently OPERATING gate a (same lever test updateGates uses):
-    // in the gate zone, worked from the long/field side. Operating your own gate
-    // is legal, so only the owner's opponents are flagged.
+    // opponents TOUCHING gate a's arm (contact with the physical gate, not merely
+    // loitering in the gate zone). Touching your own gate is legal, so only the
+    // owner's opponents are flagged — and no push/opening is required.
     let workingOpp: Alliance | null = null;
     for (const r of world.robots) {
       if (r.alliance === a) continue;
-      if (robotIntersectsRect(r, zone) && r.pos.y >= zone.y0 - C.GATE_LONG_SIDE_MARGIN) {
+      if (robotIntersectsRect(r, gateArmRect(a))) {
         if (fire(`G417:${a}:${r.id}`, r.alliance, 'major', 'G417 opponent gate')) {
           // G418: penalty per classified ball on the ramp at the moment of opening
           let ballsOnRamp = 0;

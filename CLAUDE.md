@@ -143,8 +143,18 @@ floor) does it commit — 9 retained below it at that instant ⇒ overflow (1 pt
 classified (3 pts). Scoring happens at that decision moment, so a gate tap that drains
 in time SAVES an incoming ball. A pending ball that flows out an open gate untouched
 classifies at exit.
-Gate physics: push opens it; **flow holds it open** (can't close while a ball occupies
-the gateway), so a tap usually drains the whole column.
+Gate physics (manual 9.8.3, `updateGates` in goal.ts): the gate is a PHYSICAL
+push-to-open ARM, not a boolean. A continuous `GoalState.gatePos` (0 closed .. 1 fully
+lifted) + `gateVel` model it: a robot **actively PRESSING the arm** (`pushingGate` —
+TOUCHING `gateArmRect` at the channel mouth AND driving into it via velocity or drive
+command; merely LOITERING in the gate zone no longer opens it) lifts it at
+`GATE_OPEN_RATE`; on release it is **"closed by gravity"** — it does NOT snap shut but
+SWINGS closed (`GATE_GRAVITY`, starts slow, accelerates), so a tap "may or may not stay
+open" a moment longer. **Flow holds it open** — a ball occupying the gateway suspends
+gravity (can't close while an artifact streams under the arm), so a tap usually drains
+the whole column. `gateOpen` (an artifact can pass) is DERIVED = `gatePos >=
+GATE_PASS_FRAC`. Rendered as a hinged arm swinging from a pivot at the channel's inner
+edge (`drawGateArm`, greening as it opens) — see `GATE_*` constants in config.ts.
 
 ## Product decisions the user insisted on (do not regress)
 
@@ -389,9 +399,12 @@ NOT the manual's 10/30), awarded to the OPPOSING (victim) alliance via `awardFou
 scoring.ts → the victim's `ScoreBreakdown.foulPoints`; `match.fouls[offender]` tallies
 committed counts for the HUD. Rules (numbers/severities per Section 11 — corrected
 July 2026 to follow the manual): **GATE/RAMP rules** (`updateGateFouls`) — **G417**
-operating an OPPONENT's gate is an immediate **MAJOR** (edge-triggered; detected with
-updateGates' own lever condition, so it fires exactly when a robot could open the
-gate — operating your OWN gate is legal), and **G418.B** each classified artifact
+TOUCHING an OPPONENT's gate is an immediate **MAJOR** (edge-triggered; fires when the
+opponent's bumper contacts the gate ARM — `robotIntersectsRect(r, gateArmRect(a))` —
+**even if it never opens the gate**: contact with the arm is the violation, no push
+required. This is deliberately DIFFERENT from `updateGates`' physical push-to-open
+condition (`pushingGate`, which additionally needs an active shove). Touching your OWN
+gate is legal), and **G418.B** each classified artifact
 INSIDE the opponent's RAMP at the moment the gate is opened is a **MAJOR per
 artifact**. The engine remembers which opponent opened each gate (`penalties.
 gateCulprit`) and bills every ball that then drains off that ramp (`penalties.

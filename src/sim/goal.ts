@@ -1,18 +1,62 @@
-import type { Alliance, Artifact, World } from '../types';
+import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
 import {
   basinFunnelTarget,
-  gateZone,
+  gateArmRect,
   goalCenter,
   goalFaceNormal,
   goalLineValue,
   goalSide,
   railPos,
   tunnelExitVel,
+  viewAngleOf,
 } from './field';
 import { addClassified, addOverflow } from './scoring';
-import { approach, nextRandom, hyp } from '../math';
+import { approach, nextRandom, hyp, rot } from '../math';
 import { robotIntersectsRect } from './physics';
+
+const ZERO_CMD: RobotCommand = {
+  driveX: 0,
+  driveY: 0,
+  rotate: 0,
+  leftDrive: 0,
+  rightDrive: 0,
+  intake: false,
+  fire: false,
+};
+
+/** the field-frame direction a robot is COMMANDING its drive (0 if idle). Mirrors
+ * the stick→chassis transform in robot.ts so "pressing toward the gate" reads the
+ * same intent the drivetrain acts on — needed because a robot stalled against the
+ * classifier reports ~0 velocity yet is plainly leaning on the gate arm. */
+function commandFieldDir(r: RobotState, cmd: RobotCommand): { x: number; y: number } {
+  if (r.spec.drivetrain === 'tank') {
+    const fwd = (cmd.leftDrive + cmd.rightDrive) / 2; // tank is commanded via its two sides
+    return rot({ x: fwd, y: 0 }, r.heading);
+  }
+  const stick = { x: cmd.driveX, y: cmd.driveY };
+  if (r.fieldCentric) return rot(stick, -viewAngleOf(r.alliance));
+  return rot({ x: stick.y, y: -stick.x }, r.heading);
+}
+
+/** is robot r actively PUSHING gate a's arm this tick? The gate is a push-to-open
+ * mechanism (manual 9.8.3): the robot must be TOUCHING the arm (gateArmRect, at the
+ * channel mouth) AND driving INTO it — merely being at the gate no longer opens it.
+ * (Touching alone, without a push, does NOT open — but it IS a G417 foul when done to
+ * an opponent's gate; see penalties.ts.) */
+export function pushingGate(r: RobotState, cmd: RobotCommand, a: Alliance): boolean {
+  if (!robotIntersectsRect(r, gateArmRect(a))) return false; // must be against the arm
+  const arm = railPos(a, 0);
+  const dx = arm.x - r.pos.x;
+  const dy = arm.y - r.pos.y;
+  const d = hyp(dx, dy) || 1;
+  const nx = dx / d;
+  const ny = dy / d;
+  const velToward = r.vel.x * nx + r.vel.y * ny; // ramming the arm
+  if (velToward >= C.GATE_PUSH_MIN_SPEED) return true;
+  const cd = commandFieldDir(r, cmd); // leaning on it while stalled (velocity ~0)
+  return cd.x * nx + cd.y * ny >= C.GATE_PUSH_MIN_CMD;
+}
 
 /** balls of a goal's rail stack (non-overflow), sorted from the gate up */
 export function railStack(world: World, a: Alliance): Artifact[] {
@@ -270,45 +314,62 @@ export function updateRails(world: World, dt: number): void {
   }
 }
 
-/** the gate is a physical valve: a push swings it open, and once balls are
- * streaming through, the spring can't close it against the flow — it only
- * shuts when a gap opens at the gateway. A tap therefore usually drains the
- * whole column, but can stop early if the flow breaks up. */
-export function updateGates(world: World, dt: number): void {
+/** the gate is a PHYSICAL push-to-open arm (manual 9.8.3): a robot shoves it the
+ * ~2in open, and it is "closed by gravity" — released, it does NOT snap shut but
+ * SWINGS closed, starting slow and accelerating as a hinged arm falls. A ball
+ * streaming under the lifted arm physically holds it up (gravity suspended), so a
+ * tap usually drains the whole column and the gate "may or may not stay open" a
+ * moment after the last ball, matching "the GATE not closing immediately... is not
+ * a FAULT". `gatePos` is the arm's continuous open fraction; `gateOpen` (a ball can
+ * pass) is derived from it. */
+export function updateGates(
+  world: World,
+  dt: number,
+  commands: Map<number, RobotCommand>,
+): void {
   for (const a of ['red', 'blue'] as Alliance[]) {
     const goal = world.goals[a];
-    const zone = gateZone(a);
-    // The gate is a LEVER worked from the classifier's LONG (field) side: a
-    // robot at the gate opens it just by being there (no need to actively push
-    // toward it). Only a robot coming UP from deep in the gate MOUTH / audience
-    // side — well below the gate — is a short-end tap that doesn't leverage it.
-    // Any robot can work it (an opponent doing so is a MAJOR foul, penalties.ts).
-    const held = world.robots.some(
-      (r) => robotIntersectsRect(r, zone) && r.pos.y >= zone.y0 - C.GATE_LONG_SIDE_MARGIN,
+    // The gate arm only lifts while a robot actively PRESSES it (push-to-open): a
+    // robot merely loitering in the gate zone no longer opens it. Any robot can work
+    // it (an opponent doing so is a MAJOR foul, penalties.ts).
+    const pushing = world.robots.some((r) =>
+      pushingGate(r, commands.get(r.id) ?? ZERO_CMD, a),
     );
-    if (held) {
+    const wasOpen = goal.gateOpen;
+
+    if (pushing) {
+      // the robot shoves the arm the ~2in open — it lifts quickly toward fully open
       goal.gateHoldTime += dt;
-      if (goal.gateHoldTime >= C.GATE_OPEN_HOLD && !goal.gateOpen) {
-        goal.gateOpen = true;
-        world.events.push('GATE OPEN');
+      if (goal.gateHoldTime >= C.GATE_OPEN_HOLD) {
+        goal.gatePos = Math.min(1, goal.gatePos + C.GATE_OPEN_RATE * dt);
+        goal.gateVel = 0;
       }
     } else {
       goal.gateHoldTime = 0;
-      if (goal.gateOpen) {
-        // the flow holds the gate open while a ball occupies the gateway. Balls
-        // now descend as a packed column (velocity inheritance in updateRails),
-        // so this narrow window stays continuously occupied through the whole
-        // drain and only clears once the last ball has passed — draining the
-        // column without holding the gate open any longer than that.
-        const ballInGateway = world.balls.some(
-          (b) =>
-            b.state.kind === 'rail' &&
-            b.state.goal === a &&
-            b.state.s > C.GATE_CLOSE_CLEAR_LO &&
-            b.state.s < C.GATE_CLOSE_CLEAR_HI,
-        );
-        if (!ballInGateway) goal.gateOpen = false;
+      // a ball occupying the gateway physically props the lifted arm up: gravity
+      // can't swing it shut while artifacts stream underneath (velocity-inheritance
+      // in updateRails keeps the column packed, so this window stays occupied through
+      // the whole drain and only clears once the last ball passes)
+      const ballInGateway = world.balls.some(
+        (b) =>
+          b.state.kind === 'rail' &&
+          b.state.goal === a &&
+          b.state.s > C.GATE_CLOSE_CLEAR_LO &&
+          b.state.s < C.GATE_CLOSE_CLEAR_HI,
+      );
+      if (goal.gatePos > C.GATE_OPEN_EPS && ballInGateway) {
+        goal.gateVel = 0; // held up by the flow — gravity suspended
+      } else if (goal.gatePos > 0) {
+        // released: the arm falls closed under gravity, starting slow and
+        // accelerating (variable, non-instant close — manual 9.8.3)
+        goal.gateVel = Math.max(goal.gateVel - C.GATE_GRAVITY * dt, -C.GATE_CLOSE_MAX);
+        goal.gatePos = Math.max(0, goal.gatePos + goal.gateVel * dt);
+        if (goal.gatePos === 0) goal.gateVel = 0;
       }
     }
+
+    // an artifact can pass once the arm has lifted past the pass fraction
+    goal.gateOpen = goal.gatePos >= C.GATE_PASS_FRAC;
+    if (goal.gateOpen && !wasOpen) world.events.push('GATE OPEN');
   }
 }

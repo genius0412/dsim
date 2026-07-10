@@ -830,9 +830,10 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   const ramped = slotCount(w, 'blue');
   const zone = gateZone('blue');
   r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
-  r.heading = Math.PI;
+  r.heading = Math.PI; // face the -x (blue) wall
+  r.fieldCentric = false;
   r.vel = { x: 0, y: 0 };
-  run(w, cmd({}), 4);
+  run(w, cmd({ driveY: 1 }), 4); // drive INTO the gate arm to open it (push-to-open)
   check('gate opened and released ramp balls', slotCount(w, 'blue') < ramped, `slots ${ramped} -> ${slotCount(w, 'blue')}`);
   const groundBalls = w.balls.filter((b) => b.state.kind === 'ground').length;
   check('released balls rolled out onto the field', groundBalls >= 21 + ramped - 1, `${groundBalls} ground`);
@@ -849,12 +850,45 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   const ramped = slotCount(w, 'blue');
   const zone = gateZone('blue');
   r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
+  r.heading = Math.PI; // face the -x (blue) wall
+  r.fieldCentric = false;
   r.vel = { x: 0, y: 0 };
-  run(w, cmd({}), 0.3); // tap...
+  run(w, cmd({ driveY: 1 }), 0.3); // tap: a brief push opens the arm...
   r.pos = { x: 0, y: -30 }; // ...and drive away immediately
   run(w, cmd({}), 4);
   check('tapped gate kept draining (flow holds it open)', ramped >= 2 && slotCount(w, 'blue') === 0, `slots ${ramped} -> ${slotCount(w, 'blue')}`);
   check('gate re-closed after the column cleared', !w.goals.blue.gateOpen);
+  check('gate arm fell fully closed (gatePos 0) after draining', w.goals.blue.gatePos === 0, `gatePos ${w.goals.blue.gatePos.toFixed(3)}`);
+}
+
+// ---- gate is a physical arm: only opens on a real push, then lifts/falls smoothly
+{
+  const w = mkWorld('match', 'blue', 42);
+  startMatch(w);
+  const g = w.goals.blue;
+  const zone = gateZone('blue');
+  const r = w.robots[0];
+  r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
+  r.heading = Math.PI; // face the -x (blue) wall
+  r.fieldCentric = false;
+  r.vel = { x: 0, y: 0 };
+  // merely LOITERING in the gate zone (no drive input) must NOT open the arm
+  run(w, cmd({}), 0.5);
+  check('loitering in the gate zone does not open the gate', g.gatePos === 0 && !g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+  // a real push just past the open debounce: the arm eases open, not instant
+  r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
+  run(w, cmd({ driveY: 1 }), 0.11);
+  check('a real push eases the arm open (not instant)', g.gatePos > 0 && g.gatePos < 1, `gatePos ${g.gatePos.toFixed(3)}`);
+  // keep pushing: the arm reaches fully open
+  run(w, cmd({ driveY: 1 }), 0.5);
+  check('sustained push lifts the arm fully open', g.gatePos >= 0.99 && g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+  // release: gravity swings it shut, but NOT instantly (no ball in the gateway here)
+  r.pos = { x: 0, y: -30 };
+  run(w, cmd({}), 1 / 60);
+  const mid = g.gatePos;
+  check('released arm swings closed gradually (still partly open next tick)', mid > 0 && mid < 1, `gatePos ${mid.toFixed(3)}`);
+  run(w, cmd({}), 1); // and given a moment, gravity finishes closing it
+  check('gate arm eventually falls fully closed', g.gatePos === 0 && !g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
 }
 
 // fill the blue rail with 9 retained balls by direct placement (bypasses
@@ -906,8 +940,10 @@ function queueTenth(w: World): void {
   const r = w.robots[0];
   const zone = gateZone('blue');
   r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
+  r.heading = Math.PI; // face the -x (blue) wall
+  r.fieldCentric = false;
   r.vel = { x: 0, y: 0 };
-  run(w, cmd({}), 0.3); // tap...
+  run(w, cmd({ driveY: 1 }), 0.3); // tap: push opens the gate...
   r.pos = { x: 0, y: -30 };
   run(w, cmd({}), 0.7);
   // a late ball arrives while the drain is under way: by the time it reaches
@@ -933,7 +969,8 @@ function queueTenth(w: World): void {
   r.heading = Math.PI / 2; // front (intake) faces the oncoming flow
   r.vel = { x: 0, y: 0 };
   const start = { x: r.pos.x, y: r.pos.y };
-  w.goals.blue.gateOpen = true; // flow keeps it open while balls stream out
+  w.goals.blue.gatePos = 1; // arm lifted open; flow keeps it up while balls stream out
+  w.goals.blue.gateOpen = true;
   run(w, cmd({}), 4);
   const moved = Math.hypot(r.pos.x - start.x, r.pos.y - start.y);
   const strays = w.balls.filter(
@@ -1868,11 +1905,12 @@ function inGate(w: World, robotIdx: number, gate: 'red' | 'blue'): void {
   const gcx = (gz.x0 + gz.x1) / 2;
   const gcy = (gz.y0 + gz.y1) / 2;
   w.time = 0;
-  w.robots[0].pos = { x: gcx, y: gcy }; // blue OPERATING red's gate
+  w.robots[0].pos = { x: gcx, y: gcy }; // blue TOUCHING red's gate arm (no push, idle)
+  w.robots[0].vel = { x: 0, y: 0 };
   w.robots[1].pos = { x: 0, y: 20 };    // red elsewhere
   updatePenalties(w, 1 / 60, new Map());
   check(
-    'operating the opponent gate is an immediate MAJOR (G417), no robot contact needed',
+    'TOUCHING the opponent gate (even without opening it) is an immediate MAJOR (G417)',
     w.match.fouls.blue.major === 1 && w.match.scores.red.foulPoints === 15,
     `blueMajor=${w.match.fouls.blue.major} redFoulPts=${w.match.scores.red.foulPoints}`,
   );
@@ -1933,9 +1971,12 @@ function inGate(w: World, robotIdx: number, gate: 'red' | 'blue'): void {
     b.z = RAMP_SURFACE_Z;
   }
   const gz = gateZone('red');
-  w.robots[0].pos = { x: (gz.x0 + gz.x1) / 2, y: (gz.y0 + gz.y1) / 2 }; // blue opens red's gate
+  w.robots[0].pos = { x: gz.x0 - 7, y: (gz.y0 + gz.y1) / 2 }; // blue field-side of red's gate
+  w.robots[0].heading = 0; // face the +x (red) wall
+  w.robots[0].fieldCentric = false;
   w.robots[1].pos = { x: 0, y: 30 };
-  runCmds(w, new Map(), 2.5); // gate opens, the column drains off red's ramp
+  // blue drives INTO red's gate arm (push-to-open) — the column drains off red's ramp
+  runCmds(w, new Map([[0, cmd({ driveY: 1 })]]), 2.5);
   const drained = w.balls.filter((b) => !(b.state.kind === 'rail' && b.state.goal === 'red')).length;
   check(
     'opening the opponent gate: 1 G417 + one G418 per artifact that drains off their ramp',

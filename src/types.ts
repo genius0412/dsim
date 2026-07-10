@@ -149,8 +149,10 @@ export interface RobotState {
 
 export interface GoalState {
   alliance: Alliance;
-  gateOpen: boolean;
-  gateHoldTime: number; // accumulated time a robot has been in the gate zone
+  gateOpen: boolean; // DERIVED: an artifact can pass (gatePos >= GATE_PASS_FRAC)
+  gatePos: number; // physical arm open fraction 0 (closed) .. 1 (fully lifted)
+  gateVel: number; // arm swing rate (1/s) — gravity accelerates it shut
+  gateHoldTime: number; // accumulated time a robot has been pushing the gate arm
   classifiedCount: number; // cumulative, for stats
   overflowCount: number;
 }

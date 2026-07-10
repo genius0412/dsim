@@ -125,6 +125,22 @@ export function gateZone(a: Alliance): Rect {
   return sideRect(g, C.GATE_ZONE.xNear, C.GATE_ZONE.xFar, C.GATE_ZONE.y0, C.GATE_ZONE.y1);
 }
 
+/** the physical GATE ARM's contact footprint at the channel mouth: the classifier
+ * face plus a short field-side approach band (GATE_ARM_REACH). A robot whose bumper
+ * overlaps this is TOUCHING the gate — used by G417 (touching an opponent's gate,
+ * even without opening it, is a MAJOR) and as the contact half of the push-to-open
+ * test. Tighter than gateZone: the robot must be against the arm, not loitering. */
+export function gateArmRect(a: Alliance): Rect {
+  const g = goalSide(a);
+  return sideRect(
+    g,
+    C.FIELD_HALF,
+    C.FIELD_HALF - C.CLASSIFIER_W - C.GATE_ARM_REACH,
+    C.GATE_ARM_Y0,
+    C.GATE_ARM_Y1,
+  );
+}
+
 /** the official GATE ZONE marking: two parallel alliance-colored tape LINES,
  * 10in long, running from the side wall into the field, spaced GATE_TAPE_W
  * (2.75in) apart and centered on the gate. The zone is the 2.75x10 strip

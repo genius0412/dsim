@@ -186,7 +186,7 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
   for (const b of activeFlight) collideBallStatic(b);
 
   // ---- goals: basin jumble, rail flow, gate ---------------------------------
-  updateGates(world, dt);
+  updateGates(world, dt, actualCommands);
   updateBasins(world, dt);
   updateRails(world, dt);
   updateHumanPlayers(world);
