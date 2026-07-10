@@ -266,6 +266,7 @@ function goalState(alliance: Alliance): GoalState {
     gatePos: 0,
     gateVel: 0,
     gateHoldTime: 0,
+    gateLatch: 0,
     classifiedCount: 0,
     overflowCount: 0,
   };

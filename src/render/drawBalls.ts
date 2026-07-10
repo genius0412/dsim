@@ -15,9 +15,14 @@ export function drawBalls(
     ctx.ellipse(b.pos.x, b.pos.y, C.BALL_RADIUS * k, C.BALL_RADIUS * k * 0.8, 0, 0, Math.PI * 2);
     ctx.fill();
   }
-  for (const b of world.balls) {
-    // 'stock' is off-field; 'held' balls are drawn by drawRobot (below the turret)
-    if (b.state.kind === 'stock' || b.state.kind === 'held') continue;
+  // draw LOW z first so higher balls paint on top — in particular OVERFLOW artifacts
+  // (OVERFLOW_Z) ride OVER the retained/classified column (RAMP_SURFACE_Z), so they must
+  // render ABOVE it, not below. ('stock' is off-field; 'held' balls are drawn by drawRobot.)
+  const drawn = world.balls
+    .filter((b) => b.state.kind !== 'stock' && b.state.kind !== 'held')
+    .slice()
+    .sort((p, q) => p.z - q.z);
+  for (const b of drawn) {
     let x = b.pos.x;
     let y = b.pos.y;
     let rad = C.BALL_RADIUS;

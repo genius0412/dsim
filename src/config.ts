@@ -558,6 +558,11 @@ export const OVERFLOW_FLOW_SPEED = 58; // in/s, overflow rides over everything (
 export const RAIL_BLEND_SPEED = 30; // in/s
 
 export const GATE_OPEN_HOLD = 0.08; // s of push before the gate arm starts to lift
+/** a TOUCH commits the arm open and LATCHES it up for this long, so the driver does
+ * NOT have to keep pressing to hold it open — a tap lifts it fully and it stays up a
+ * beat. After the latch lapses (and no artifact is streaming under it) gravity swings
+ * it shut as before, so it still "may or may not stay open" a moment longer. */
+export const GATE_OPEN_LATCH_S = 0.5; // s the arm stays latched open after a tap (then it swings shut)
 /** once open, gravity/flow decide re-close: it can only fall while no ball occupies
  * the gateway (a ball streaming under the arm physically holds it up) */
 export const GATE_CLOSE_CLEAR_LO = -4;
@@ -569,18 +574,32 @@ export const GATE_CLOSE_CLEAR_HI = 4.5;
  * physical open fraction 0 (down/closed) .. 1 (fully lifted); `gateVel` is its swing
  * rate. `gateOpen` (a ball can pass) is DERIVED = gatePos >= GATE_PASS_FRAC. */
 export const GATE_OPEN_RATE = 8; // 1/s: how fast a pushing robot lifts the arm open
-export const GATE_GRAVITY = 10; // 1/s^2 on gatePos: gravity swinging the released arm shut
-export const GATE_CLOSE_MAX = 5; // 1/s: terminal swing speed as it falls closed
+export const GATE_GRAVITY = 22; // 1/s^2 on gatePos: gravity swinging the released arm shut
+export const GATE_CLOSE_MAX = 9; // 1/s: terminal swing speed as it falls closed
 export const GATE_PASS_FRAC = 0.4; // arm must be at least this lifted for an ARTIFACT to pass
-export const GATE_OPEN_EPS = 0.03; // below this the arm is effectively down (won't flow-hold)
 export const GATE_DISPLACE = 2; // in, real closed->open horizontal displacement (manual 9.8.3)
-/** the gate is a LEVER (manual Figure 9-15): it pivots at the classifier face and its
- * paddle STICKS OUT toward the field (the gate-zone side), centered between the two
- * gate-zone tape lines. Closed (by gravity) it lies out blocking; pushed, it SWINGS UP
- * out of plane — drawn top-down by FORESHORTENING the paddle toward the pivot as it
- * lifts (`proj = GATE_ARM_LEN·cos(gatePos·GATE_LIFT)`). */
-export const GATE_ARM_LEN = 5; // in, how far the paddle sticks out of the classifier when closed
+/** the gate is a class-1 LEVER (manual Figure 9-15) hinged at the CLASSIFIER EDGE — where
+ * the gate-zone tape starts (|x| = FIELD_HALF − CLASSIFIER_W = the classifier's field-side
+ * rail). It has TWO arms about that pivot:
+ *  - a SHORT handle that sticks OUT of the classifier into the field, along the gate-zone
+ *    tape — this is what a robot pushes, and the small part that pokes into the open field;
+ *  - a LONG paddle that lies ACROSS the channel to the far (WALL) edge, COVERING the
+ *    artifacts stacked in the channel.
+ * Pushing the handle SWINGS the lever: the long paddle LIFTS off the artifacts (releasing
+ * them). Drawn top-down by FORESHORTENING each arm toward the pivot as it lifts
+ * (`proj = len·cos(gatePos·GATE_LIFT)`); the long paddle greens as it clears the channel. */
+export const GATE_ARM_LONG = CLASSIFIER_W; // in, long paddle: pivot → wall edge (covers the 6in channel)
+export const GATE_ARM_SHORT = 2.5; // in, short handle poking past the field edge into the gate zone
 export const GATE_LIFT = 1.35; // rad (~77deg) the paddle swings up from closed to fully open
+/** the handle is a PHYSICAL one-way door: a solid robot collider spanning the SHORT arm's
+ * (foreshortened) field-side reach, so a robot CANNOT strafe/drive through it — the only
+ * way past is to OPEN it (a straight push, which lifts gatePos and RETRACTS the handle
+ * toward the pivot, so the opening robot glides in rather than being shoved back). The arm
+ * is LIGHT: it never shoves a resting robot because a robot touching the OPEN gate holds
+ * it open (touch-hold in updateGates), so it doesn't swing closed against you. The long
+ * paddle needs no collider — it lies over the already-solid classifier channel. Robot-solve
+ * ONLY (not the ball solve): released artifacts still roll out beneath the lifted paddle. */
+export const GATE_ARM_THICK = 3; // in, physical thickness (y) of the handle collider
 /** the gate does NOT open just because a robot LOITERS in the zone — the arm is a
  * push-to-open mechanism, so the robot must actively PRESS toward it. Detected as
  * a velocity toward the arm (ramming it) OR a drive command toward it (leaning on it
@@ -595,10 +614,11 @@ export const GATE_ZONE = { xNear: 62, xFar: 72, y0: -2, y1: 3 };
  * A robot whose bumper reaches within GATE_ARM_REACH of the classifier face here is
  * TOUCHING the gate — the trigger for G417 (touching an opponent's gate, even
  * without opening it, is a MAJOR) and the contact half of the push-to-open test.
- * Tighter than GATE_ZONE: a robot must actually be against the arm, not loitering. */
-export const GATE_ARM_REACH = 5; // in, field-side reach of the protruding lever (= GATE_ARM_LEN)
-export const GATE_ARM_Y0 = -1; // mouth band low edge (a robot deep in the tunnel mouth misses it)
-export const GATE_ARM_Y1 = 6; // mouth band high edge
+ * Kept TIGHT around the actual lever handle (which pokes GATE_ARM_SHORT into the field,
+ * centered on GATE_TAPE_Y): NOT a big loitering region — a robot must be against the arm. */
+export const GATE_ARM_REACH = 3; // in, field-side reach past the classifier edge (~ the handle)
+export const GATE_ARM_Y0 = -2; // mouth band edges, centered on the lever (GATE_TAPE_Y = 0.5)
+export const GATE_ARM_Y1 = 3;
 /** official GATE ZONE marking (manual Section 9): a 2.75in-wide x 10in-long
  * volume bounded by TWO parallel alliance-colored tape LINES, 10in long,
  * running perpendicular to the side wall (into the field), spaced 2.75in

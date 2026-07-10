@@ -46,16 +46,15 @@ function commandFieldDir(r: RobotState, cmd: RobotCommand): { x: number; y: numb
  * an opponent's gate; see penalties.ts.) */
 export function pushingGate(r: RobotState, cmd: RobotCommand, a: Alliance): boolean {
   if (!robotIntersectsRect(r, gateArmRect(a))) return false; // must be against the arm
-  const arm = railPos(a, 0);
-  const dx = arm.x - r.pos.x;
-  const dy = arm.y - r.pos.y;
-  const d = hyp(dx, dy) || 1;
-  const nx = dx / d;
-  const ny = dy / d;
-  const velToward = r.vel.x * nx + r.vel.y * ny; // ramming the arm
+  // the lever actuates along X only: it opens when a robot drives STRAIGHT into the
+  // handle (toward the classifier/wall). Driving SIDEWAYS along the wall (Y) past the
+  // lever does NOT open it. `goalSide` is +1 for red (wall at +x) / −1 for blue (−x),
+  // so `g` is the unit push direction into the handle.
+  const g = goalSide(a);
+  const velToward = r.vel.x * g; // ramming the handle toward the wall
   if (velToward >= C.GATE_PUSH_MIN_SPEED) return true;
   const cd = commandFieldDir(r, cmd); // leaning on it while stalled (velocity ~0)
-  return cd.x * nx + cd.y * ny >= C.GATE_PUSH_MIN_CMD;
+  return cd.x * g >= C.GATE_PUSH_MIN_CMD;
 }
 
 /** balls of a goal's rail stack (non-overflow), sorted from the gate up */
@@ -335,37 +334,51 @@ export function updateGates(
     const pushing = world.robots.some((r) =>
       pushingGate(r, commands.get(r.id) ?? ZERO_CMD, a),
     );
+    // a robot merely TOUCHING the (already-open) arm keeps it up — see the latch below
+    const touching = world.robots.some((r) => robotIntersectsRect(r, gateArmRect(a)));
     const wasOpen = goal.gateOpen;
 
     if (pushing) {
-      // the robot shoves the arm the ~2in open — it lifts quickly toward fully open
+      // a push (past the tiny debounce) COMMITS the arm open and re-arms a latch — the
+      // driver does NOT have to keep pressing: a tap lifts it fully and it stays up.
       goal.gateHoldTime += dt;
-      if (goal.gateHoldTime >= C.GATE_OPEN_HOLD) {
-        goal.gatePos = Math.min(1, goal.gatePos + C.GATE_OPEN_RATE * dt);
-        goal.gateVel = 0;
-      }
+      if (goal.gateHoldTime >= C.GATE_OPEN_HOLD) goal.gateLatch = C.GATE_OPEN_LATCH_S;
+    } else if (touching && goal.gateOpen) {
+      // resting against an already-OPEN gate holds it open without re-pushing (the light
+      // arm doesn't shove the robot off). NOT a way to OPEN a closed gate — that needs a
+      // push — so loitering against a shut gate still does nothing.
+      goal.gateHoldTime = 0;
+      goal.gateLatch = C.GATE_OPEN_LATCH_S;
     } else {
       goal.gateHoldTime = 0;
-      // a ball occupying the gateway physically props the lifted arm up: gravity
-      // can't swing it shut while artifacts stream underneath (velocity-inheritance
-      // in updateRails keeps the column packed, so this window stays occupied through
-      // the whole drain and only clears once the last ball passes)
-      const ballInGateway = world.balls.some(
-        (b) =>
-          b.state.kind === 'rail' &&
-          b.state.goal === a &&
-          b.state.s > C.GATE_CLOSE_CLEAR_LO &&
-          b.state.s < C.GATE_CLOSE_CLEAR_HI,
-      );
-      if (goal.gatePos > C.GATE_OPEN_EPS && ballInGateway) {
-        goal.gateVel = 0; // held up by the flow — gravity suspended
-      } else if (goal.gatePos > 0) {
-        // released: the arm falls closed under gravity, starting slow and
-        // accelerating (variable, non-instant close — manual 9.8.3)
-        goal.gateVel = Math.max(goal.gateVel - C.GATE_GRAVITY * dt, -C.GATE_CLOSE_MAX);
-        goal.gatePos = Math.max(0, goal.gatePos + goal.gateVel * dt);
-        if (goal.gatePos === 0) goal.gateVel = 0;
-      }
+      goal.gateLatch = Math.max(0, goal.gateLatch - dt);
+    }
+
+    // a ball occupying the gateway props the OPEN arm up: gravity can't swing it shut
+    // while artifacts stream underneath. It only HOLDS an already-open arm — a ball
+    // reaching an almost-closed gate must NOT lift it back open (only a robot push does).
+    const ballInGateway = world.balls.some(
+      (b) =>
+        b.state.kind === 'rail' &&
+        b.state.goal === a &&
+        b.state.s > C.GATE_CLOSE_CLEAR_LO &&
+        b.state.s < C.GATE_CLOSE_CLEAR_HI,
+    );
+
+    if (goal.gateLatch > 0) {
+      // latched open (a push, or resting against the open arm): lift toward fully open
+      goal.gatePos = Math.min(1, goal.gatePos + C.GATE_OPEN_RATE * dt);
+      goal.gateVel = 0;
+    } else if (goal.gateOpen && ballInGateway) {
+      // an artifact is streaming under the OPEN arm — HOLD its position (gravity
+      // suspended) but do NOT lift it, so a new ball can't reopen a near-closed gate
+      goal.gateVel = 0;
+    } else if (goal.gatePos > 0) {
+      // released and unheld: the arm falls closed under gravity, starting slow and
+      // accelerating (variable, non-instant close — manual 9.8.3)
+      goal.gateVel = Math.max(goal.gateVel - C.GATE_GRAVITY * dt, -C.GATE_CLOSE_MAX);
+      goal.gatePos = Math.max(0, goal.gatePos + goal.gateVel * dt);
+      if (goal.gatePos === 0) goal.gateVel = 0;
     }
 
     // an artifact can pass once the arm has lifted past the pass fraction

@@ -1,70 +1,72 @@
-# HANDOFF — 2026-07-10 (realistic GATE: physical push-to-open arm + G417 touch-fix) — READ FIRST
+# HANDOFF — 2026-07-10 (GATE lever reshape + activation, field-render cleanups) — READ FIRST
 
-> **GREEN (build + smoke both pass, 351 checks; GUI visually verified via Electron).**
-> **SIM-CORE change** (`src/sim/goal.ts`, `world.ts`, `penalties.ts`, `types.ts`, `config.ts`)
-> ⇒ a server that runs matches must **`flyctl deploy --remote-only`** to stay in sync.
-> `slimWorld`/`unslimWorld` pass `goals` through whole, so the two new numeric `GoalState`
-> fields ride snapshots fine, but a stale server would run the OLD gate model → redeploy.
-> No `BALANCE_VERSION` bump (gate feel, not drivetrain calibration).
+> **GREEN (build + smoke both pass, 359 checks).**
+> **SIM-CORE change** (`src/sim/goal.ts`, `physicsEngine.ts`, `types.ts`, `spawn.ts`,
+> `config.ts`) ⇒ a server running matches must **`flyctl deploy --remote-only`** to stay
+> in sync. `slimWorld`/`unslimWorld` pass `goals` through whole, so the new
+> `GoalState.gateLatch` numeric field rides snapshots fine, but a stale server would run
+> the OLD gate model → redeploy. No `BALANCE_VERSION` bump (gate feel + render, not
+> drivetrain/scoring calibration).
 
-## What changed this session (read the manual → make the gate realistic)
+## What shipped this session
 
-Manual §9.8.3: the GATE is a ROBOT-activated **push-to-open** arm (~2 in horizontal
-displacement), **"closed by gravity"**, that takes a **variable, non-instant** time to
-close ("may or may not stay open"; not-closing-immediately is not a fault). Holds back
-CLASSIFIED artifacts; OVERFLOW rides over the top. The old sim was a boolean that
-snapped open/closed and opened when a robot merely LOITERED in the gate zone.
+Reshaped the GATE and reworked how it opens/holds/closes, plus a few field-render cleanups.
+NOTE: an experimental "classifier outflow jam / robot-catches-the-drain" feature was
+prototyped and then **REVERTED at the user's request** — only the gate SHAPE + ACTIVATION
+changes were kept. `updateRails` is back at its pre-session behavior (balls drain off the
+lip normally). Do not reintroduce `outflowFloor`/`outflowJammed`/`GATE_JAM_*`/`GATE_CATCH_*`.
 
-1. **Physical arm model** (`updateGates` in `src/sim/goal.ts`). New `GoalState.gatePos`
-   (0 closed .. 1 fully lifted) + `gateVel`. A robot **actively pressing** the arm lifts
-   it at `GATE_OPEN_RATE`; released, it **swings closed under gravity** (`GATE_GRAVITY`,
-   starts slow → accelerates, terminal `GATE_CLOSE_MAX`) — not instant. **Flow holds it
-   open**: a ball in the gateway suspends gravity (unchanged behavior, now physical).
-   `gateOpen` (an artifact can pass) is DERIVED = `gatePos >= GATE_PASS_FRAC` — every old
-   reader (rail flow, HUD chip, sfx edge, penalties culprit-clear) still works off it.
-2. **Push-to-open detection fixed (was "extremely lenient")** (`pushingGate`, exported):
-   opening now requires the robot to be **TOUCHING the arm** (`gateArmRect` — a tight
-   contact footprint at the channel mouth, `GATE_ARM_REACH`/`_Y0`/`_Y1` in config, added
-   to `field.ts`) **AND driving INTO it** — velocity toward the arm (`GATE_PUSH_MIN_SPEED`)
-   OR a drive command toward it (`GATE_PUSH_MIN_CMD`, via `commandFieldDir` which mirrors
-   robot.ts's stick→chassis transform — needed because a robot stalled against the
-   classifier reads ~0 velocity yet is plainly leaning on the arm). Loitering in the gate
-   zone no longer opens it. `updateGates(world, dt, actualCommands)` now takes commands.
-3. **G417 penalty fixed (user: "touching the opponent gate, even if you don't open it,
-   is still a MAJOR")** (`updateGateFouls` in `penalties.ts`). G417 now fires on
-   `robotIntersectsRect(r, gateArmRect(a))` — CONTACT with the opponent's gate arm, **no
-   push/open required** — deliberately DIFFERENT from `pushingGate`. Removed the old loose
-   gate-ZONE + `GATE_LONG_SIDE_MARGIN` test (the const is gone). G418.B still bills the
-   on-ramp balls at the G417 edge; culprit retention unchanged.
-4. **Rendering** (`src/render/drawGoals.ts` `drawGateArm`, manual Figure 9-15): the gate is a
-   **LEVER** that pivots at the classifier face and its paddle **sticks OUT toward the
-   field** (the gate-zone side), **centered between the two gate-zone tape lines**. Closed
-   it lies out at full `GATE_ARM_LEN` reach; as it opens it **swings UP**, drawn top-down by
-   FORESHORTENING the paddle toward the pivot (`cos(gatePos·GATE_LIFT)`), steel→green, with a
-   ghost of the closed reach. (Replaced an earlier wrong version that swept an arm across the
-   channel toward −y.) Visually verified open + closed in the GUI.
+1. **Gate geometry — class-1 LEVER** (`drawGateArm` in `render/drawGoals.ts`;
+   `GATE_ARM_LONG`/`GATE_ARM_SHORT`/`GATE_LIFT` in config). Hinges at the CLASSIFIER EDGE
+   where the gate-zone tape starts (|x| = `FIELD_HALF − CLASSIFIER_W`): a SHORT handle pokes
+   into the gate zone (pushable), a LONG paddle lies across the channel to the WALL edge
+   covering the artifacts; both foreshorten toward the pivot as they lift. Drawn thinner
+   (lineWidth 2.0, square cap).
 
-Config: all new knobs in the `classifier / gate` block of `config.ts` (`GATE_OPEN_RATE`,
-`GATE_GRAVITY`, `GATE_CLOSE_MAX`, `GATE_PASS_FRAC`, `GATE_OPEN_EPS`, `GATE_ARM_LEN`,
-`GATE_LIFT`, `GATE_PUSH_MIN_SPEED`, `GATE_PUSH_MIN_CMD`, `GATE_ARM_REACH` (=5, matches the
-lever reach), `GATE_ARM_Y0/Y1`). `GATE_LONG_SIDE_MARGIN` REMOVED.
+2. **Latch + touch-hold** (`updateGates`, new `GoalState.gateLatch`). A push sets
+   `gateLatch = GATE_OPEN_LATCH_S` (0.5 s) — a TAP fully opens it, no holding. RESTING
+   against an already-open gate re-arms the latch (touch-hold). Untouched → latch decays →
+   gravity swings it shut, sped up (`GATE_GRAVITY` 22 / `GATE_CLOSE_MAX` 9). Flow-hold
+   (`ballInGateway`) keeps an OPEN gate open during a drain but does NOT lift it, so a ball
+   reaching an almost-closed gate can't reopen it.
 
-## Smoke (`scripts/smoke.ts`) — new / changed gate cases
+3. **One-directional opening** (`pushingGate`): only a STRAIGHT push toward the wall opens
+   it (`velToward = r.vel.x · goalSide`, or the drive-command x-component). Driving SIDEWAYS
+   along the wall does NOT open it.
 
-- New: loitering does NOT open · a real push eases the arm open (not instant) · sustained
-  push fully opens · released arm swings closed gradually · falls fully closed · gatePos 0
-  after a drain. Existing gate-open tests now DRIVE into the gate (`cmd({driveY:1})`,
-  `fieldCentric=false`, heading toward the wall) instead of just standing in the zone.
-- G417 test now asserts **touching (idle, no push) still fouls**; G418 test drives into
-  the gate. G424/G425 exception tests unchanged and green.
+4. **Physical one-way door** (`buildGateArms` in `physicsEngine.ts`, robot solve only,
+   `GATE_ARM_THICK`): the SHORT handle is a solid robot collider (retracts as the gate opens)
+   so a robot can't strafe THROUGH the closed lever; a straight push lifts it and the robot
+   glides in. Long paddle needs no collider (over the already-solid classifier).
 
-## State / next
+5. **Tighter activation rect** (`gateArmRect`, `GATE_ARM_REACH` 5→3, `GATE_ARM_Y0/Y1`
+   −1..6 → −2..3, centered on `GATE_TAPE_Y`).
 
-- Build green, 351 smoke checks green, gate arm verified in the Electron GUI (closed =
-  gray hinged arm + ghost; open = green arm swung from the hinge; opens only on a push).
-- **Not committed yet.** Uncommitted files: `config.ts`, `types.ts`, `sim/{goal,world,
-  penalties,field}.ts`, `render/drawGoals.ts`, `scripts/smoke.ts`, `CLAUDE.md`.
-- Gotcha: `commandFieldDir` reads `cmd.leftDrive/rightDrive` (required fields) for tank;
-  ZERO_CMD in goal.ts includes them. `RobotCommand` has no optional drive fields.
-- Deferred/untouched: the roadmap "penalty hitbox audit" could now also verify
-  `gateArmRect` extents against the manual figure alongside the other zones.
+6. **Field-render cleanups** (`render/drawField.ts`, `drawBalls.ts`):
+   - Secret-tunnel strip: only its FIELD-SIDE long edge is stroked (its short edges sat on
+     the classifier box border — which must win — and its other long edge sat on the
+     perimeter wall).
+   - Loading zone: only the two INTERIOR edges, drawn as ONE connected L so the corner joins
+     cleanly (the other two sat on the perimeter walls).
+   - Balls now draw z-sorted (low→high), so OVERFLOW artifacts (`OVERFLOW_Z` 13.5) render
+     ABOVE the retained/classified column (`RAMP_SURFACE_Z` 10), not below.
+
+## State / next steps
+
+- `npm test` (359) + `npm run build` both GREEN. Committed + pushed on `alpha`.
+- Not visually verified in the Electron GUI this session — worth a `/verify` pass to eyeball
+  the lever + the render cleanups (classifier box border intact for both alliances, loading
+  zone L, overflow balls on top).
+- If deploying the match server: commit on `alpha` → `flyctl deploy --remote-only` → verify
+  `/health` (server imports `src/sim`, so the gate model must match clients).
+
+## Gotchas
+
+- `GATE_OPEN_EPS` was removed (the old flow-hold used it; the new one keys on `goal.gateOpen`
+  = `gatePos >= GATE_PASS_FRAC`, which is what gives "almost-closed can't reopen").
+- The physical-door collider is built from live `gatePos` each step (fresh Rapier world),
+  one tick behind `updateGates` — deterministic. The `pressIntoGate` smoke test pins
+  `gatePos` each tick so the collider it exercises is deterministic.
+- `pushingGate`'s command path (not just velocity) is why a robot stalled against the closed
+  handle collider still opens it: the collider kills inward velocity, but the drive command
+  toward the wall still trips `GATE_PUSH_MIN_CMD`.

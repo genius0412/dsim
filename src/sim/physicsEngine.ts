@@ -1,9 +1,9 @@
 import RAPIER from '@dimforge/rapier2d-compat';
 import type { Artifact, RobotState, Vec2, World } from '../types';
 import * as C from '../config';
-import { classifierRect, goalFaceNormal, goalFacePoints } from './field';
+import { classifierRect, goalFaceNormal, goalFacePoints, goalSide } from './field';
 import { robotExtents } from './physics';
-import { datan2, hyp, clamp } from '../math';
+import { datan2, dcos, hyp, clamp } from '../math';
 
 /**
  * Rapier 2D physics bridge (netcodeplan Phase 2, robots-first slice).
@@ -124,6 +124,30 @@ function buildStatics(rw: RAPIER.World): void {
   }
 }
 
+/** the physical GATE handle as a one-way door: a thin solid slab spanning the SHORT
+ * arm's (foreshortened) reach from the field-edge pivot OUT into the gate zone. A robot
+ * CANNOT strafe/drive through it — the only way to nose past is to OPEN the gate: a push
+ * lifts `gatePos` and the handle RETRACTS toward the pivot, so the opening robot glides in
+ * rather than being shoved. (It won't shove a resting robot either — touch-hold keeps an
+ * open gate open so it never swings closed against you.) The LONG paddle needs no collider
+ * (it lies over the already-solid classifier channel). Robot-solve ONLY (never the ball
+ * solve): released artifacts roll out beneath the lifted paddle. Rebuilt each step from the
+ * live `gatePos` (one-tick lag vs updateGates, like power draw — deterministic). */
+function buildGateArms(rw: RAPIER.World, world: World): void {
+  for (const a of ALLIANCES) {
+    const g = goalSide(a);
+    const proj = C.GATE_ARM_SHORT * dcos(world.goals[a].gatePos * C.GATE_LIFT);
+    if (proj <= 0) continue;
+    const pivotX = g * (C.FIELD_HALF - C.CLASSIFIER_W); // classifier field-side edge (pivot)
+    rw.createCollider(
+      statics(
+        RAPIER.ColliderDesc.cuboid(proj / 2, C.GATE_ARM_THICK / 2)
+          .setTranslation(pivotX - g * (proj / 2), C.GATE_TAPE_Y), // handle reaches into the field (−g)
+      ),
+    );
+  }
+}
+
 /** a fresh Rapier world with our inch-scale tolerances + the static field
  * colliders. Shared by the robot and ball solves. Robots use SOFT contacts
  * (a robot can start a step deep inside a wall via its intake reach — a stiff
@@ -209,6 +233,9 @@ export function solveRobots(world: World, dt: number): Map<number, Vec2> {
       bodies.push({ r, body });
     }
   }
+
+  // the physical gate handles (one-way doors) — after the robot bodies, before the step
+  buildGateArms(rw, world);
 
   rw.step();
 

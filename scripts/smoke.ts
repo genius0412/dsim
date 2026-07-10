@@ -10,9 +10,11 @@ import { updatePenalties } from '../src/sim/penalties';
 import { robotInLaunchZone } from '../src/sim/robot';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
 import { startMatch } from '../src/sim/match';
+import { pushingGate } from '../src/sim/goal';
 import {
   inLaunchZone,
   gateZone,
+  gateArmRect,
   startPose,
   goalCenter,
   goalTriangle,
@@ -41,6 +43,8 @@ import type { Alliance, GameMode, RobotCommand, RobotSpec, World } from '../src/
 import {
   SIM_DT,
   GATE_STOP_S,
+  GATE_OPEN_LATCH_S,
+  GATE_TAPE_Y,
   RAIL_PITCH,
   BASIN_FLOOR_Z,
   RAMP_SURFACE_Z,
@@ -879,16 +883,128 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
   run(w, cmd({ driveY: 1 }), 0.11);
   check('a real push eases the arm open (not instant)', g.gatePos > 0 && g.gatePos < 1, `gatePos ${g.gatePos.toFixed(3)}`);
-  // keep pushing: the arm reaches fully open
+  // a brief TAP (not a sustained hold) still lifts it fully — the driver should not
+  // have to keep pressing for it to open
   run(w, cmd({ driveY: 1 }), 0.5);
   check('sustained push lifts the arm fully open', g.gatePos >= 0.99 && g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
-  // release: gravity swings it shut, but NOT instantly (no ball in the gateway here)
+  // release with no ball flowing: the arm stays LATCHED open a beat (no need to hold),
+  // then gravity swings it shut
   r.pos = { x: 0, y: -30 };
   run(w, cmd({}), 1 / 60);
-  const mid = g.gatePos;
-  check('released arm swings closed gradually (still partly open next tick)', mid > 0 && mid < 1, `gatePos ${mid.toFixed(3)}`);
-  run(w, cmd({}), 1); // and given a moment, gravity finishes closing it
-  check('gate arm eventually falls fully closed', g.gatePos === 0 && !g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+  check('gate stays open right after release (latched — no need to keep pressing)', g.gatePos >= 0.99 && g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+  run(w, cmd({}), GATE_OPEN_LATCH_S + 1); // latch lapses, then gravity finishes closing it
+  check('gate arm eventually falls fully closed once the latch lapses', g.gatePos === 0 && !g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+}
+
+// ---- gate TAP latches open (no continuous pressing needed) ----------------------
+{
+  const w = mkWorld('match', 'blue', 42);
+  startMatch(w);
+  const g = w.goals.blue;
+  const zone = gateZone('blue');
+  const r = w.robots[0];
+  r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
+  r.heading = Math.PI; // face the -x (blue) wall
+  r.fieldCentric = false;
+  r.vel = { x: 0, y: 0 };
+  run(w, cmd({ driveY: 1 }), 0.15); // a brief TAP against the arm
+  r.pos = { x: 0, y: -30 }; // then drive away immediately (stop pressing)
+  run(w, cmd({}), 0.3); // no ball flowing, no push — yet the latch holds it up
+  check('a brief tap latches the gate fully open without holding', g.gatePos >= 0.99 && g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+}
+
+// ---- gate opens on a straight push only — NOT driving sideways along the lever ---
+{
+  const w = mkWorld('match', 'blue', 42);
+  startMatch(w);
+  const r = w.robots[0];
+  const ar = gateArmRect('blue');
+  r.pos = { x: (ar.x0 + ar.x1) / 2, y: GATE_TAPE_Y }; // squarely against the arm
+  // sideways: fast motion ALONG the wall (Y), none into the handle (X) — must NOT open
+  r.vel = { x: 0, y: 12 };
+  check('driving sideways along the lever does not open the gate', !pushingGate(r, cmd({}), 'blue'));
+  // straight in: motion toward the wall (−x for blue) DOES open it
+  r.vel = { x: -12, y: 0 };
+  check('driving straight into the handle opens the gate', pushingGate(r, cmd({}), 'blue'));
+}
+
+// ---- gate handle is a PHYSICAL one-way door: solid when closed, retracts when open --
+{
+  // press a robot straight into the mouth with the arm pinned CLOSED vs OPEN. The
+  // closed handle (a solid stub poking into the field) blocks the robot ~a stub sooner
+  // than the classifier face alone; open, the stub has retracted toward the pivot so
+  // the robot noses in further. (A robot that can't open it — e.g. strafing — is simply
+  // blocked by the closed stub.)
+  function pressIntoGate(pos: number): number {
+    const w = mkWorld('match', 'blue', 42);
+    startMatch(w);
+    const r = w.robots[0];
+    r.pos = { x: -40, y: GATE_TAPE_Y };
+    r.heading = Math.PI; // face the -x (blue) wall so drive pushes toward the arm
+    r.fieldCentric = false;
+    r.vel = { x: 0, y: 0 };
+    const commands = new Map([[0, cmd({ driveY: 1 })]]);
+    for (let i = 0; i < Math.round(2 / SIM_DT); i++) {
+      w.goals.blue.gatePos = pos; // pin the arm state the robot solve reads
+      step(w, SIM_DT, commands);
+    }
+    return r.pos.x;
+  }
+  const closedX = pressIntoGate(0); // handle down: solid stub in the field
+  const openX = pressIntoGate(1); // handle lifted: stub retracted toward the pivot
+  check(
+    'closed gate handle physically blocks the robot further out than when open',
+    closedX - openX >= 1.0,
+    `closedX ${closedX.toFixed(2)} openX ${openX.toFixed(2)} Δ ${(closedX - openX).toFixed(2)}`,
+  );
+}
+
+// ---- resting against the OPEN gate holds it open without re-pushing ---------------
+{
+  const w = mkWorld('match', 'blue', 42);
+  startMatch(w);
+  const g = w.goals.blue;
+  const zone = gateZone('blue');
+  const r = w.robots[0];
+  r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
+  r.heading = Math.PI;
+  r.fieldCentric = false;
+  r.vel = { x: 0, y: 0 };
+  run(w, cmd({ driveY: 1 }), 0.5); // push it open
+  check('gate is open after the push', g.gateOpen && g.gatePos >= 0.99, `gatePos ${g.gatePos.toFixed(3)}`);
+  // now STOP driving but stay resting against the arm — it must stay open (no re-push)
+  r.pos = { x: (gateArmRect('blue').x0 + gateArmRect('blue').x1) / 2, y: GATE_TAPE_Y };
+  r.vel = { x: 0, y: 0 };
+  run(w, cmd({}), 2); // idle, just touching — well past the latch time
+  check('resting against the open gate holds it open (no constant push needed)', g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+  // back away entirely — now it swings shut
+  r.pos = { x: 0, y: -30 };
+  run(w, cmd({}), GATE_OPEN_LATCH_S + 1);
+  check('leaving the gate lets it swing shut', g.gatePos === 0 && !g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+}
+
+// ---- a near-closed gate does NOT reopen when a fresh ball reaches the gateway -----
+{
+  const w = mkWorld('match', 'blue', 42);
+  startMatch(w);
+  const g = w.goals.blue;
+  w.robots[0].pos = { x: 0, y: -30 }; // robot nowhere near the gate
+  // one ball sitting right in the gateway window
+  const b = w.balls[0];
+  b.state = { kind: 'rail', goal: 'blue', s: 0, v: 0, overflow: false };
+  b.pos = railPos('blue', 0);
+  b.vel = { x: 0, y: 0 };
+  // arm caught almost shut (below the pass fraction) with a little downward swing
+  g.gatePos = 0.25;
+  g.gateVel = -1;
+  g.gateLatch = 0;
+  g.gateOpen = false;
+  run(w, cmd({}), 0.5);
+  check(
+    'a ball reaching an almost-closed gate does not reopen it',
+    g.gatePos === 0 && !g.gateOpen,
+    `gatePos ${g.gatePos.toFixed(3)}`,
+  );
 }
 
 // fill the blue rail with 9 retained balls by direct placement (bypasses

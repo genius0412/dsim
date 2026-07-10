@@ -26,37 +26,49 @@ export function drawRampStrips(ctx: CanvasRenderingContext2D, world: World): voi
   }
 }
 
-/** the gate LEVER (manual Figure 9-15). It pivots at the classifier face and its paddle
- * sticks OUT toward the field (the gate-zone side), centered between the two gate-zone
- * tape lines. Closed (by gravity) it lies out at full reach; pushed, it SWINGS UP out of
- * the plane — shown top-down by FORESHORTENING the paddle toward the pivot (proj shrinks)
- * plus a faint ghost of the closed reach so the lift reads. */
+/** the gate LEVER (manual Figure 9-15). It is a class-1 lever hinged at the CLASSIFIER
+ * EDGE, where the gate-zone tape starts: a SHORT handle pokes OUT into the gate zone
+ * (what a robot pushes), and a LONG paddle lies ACROSS the channel to the WALL edge,
+ * COVERING the artifacts. Pushed, the lever SWINGS UP out of plane — shown top-down by
+ * FORESHORTENING each arm toward the pivot (proj shrinks, uncovering the channel) plus a
+ * faint ghost of the long paddle's closed reach so the lift reads. */
 function drawGateArm(ctx: CanvasRenderingContext2D, a: Alliance, pos: number): void {
   const g = goalSide(a);
-  const px = g * (C.FIELD_HALF - C.CLASSIFIER_W); // pivot x: classifier face
+  const px = g * (C.FIELD_HALF - C.CLASSIFIER_W); // pivot x: the classifier edge (gate-tape start)
   const py = C.GATE_TAPE_Y; // centered between the two gate-zone tape lines
-  const dir = -g; // points OUT of the classifier into the field (toward smaller |x|)
-  const proj = C.GATE_ARM_LEN * Math.cos(pos * C.GATE_LIFT); // foreshortens as it lifts
+  const toWall = g; // long paddle reaches ACROSS the channel toward the wall
+  const toField = -g; // short handle pokes OUT into the field (gate-zone side)
+  const cos = Math.cos(pos * C.GATE_LIFT); // foreshortens as it lifts
+  const longProj = C.GATE_ARM_LONG * cos;
+  const shortProj = C.GATE_ARM_SHORT * cos;
 
-  // faint ghost of the closed (fully-extended, blocking) reach
+  // faint ghost of the long paddle's closed (fully-covering) reach to the wall
   ctx.strokeStyle = 'rgba(148,163,184,0.22)';
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(px, py);
-  ctx.lineTo(px + dir * C.GATE_ARM_LEN, py);
+  ctx.lineTo(px + toWall * C.GATE_ARM_LONG, py);
   ctx.stroke();
 
-  // the paddle: steel when down/closed, greening as it swings up open
+  // the LONG paddle over the channel: steel when down/covering, greening as it lifts clear
   ctx.strokeStyle = pos >= C.GATE_PASS_FRAC ? '#22c55e' : '#8896a8';
-  ctx.lineWidth = 2.6;
-  ctx.lineCap = 'round';
+  ctx.lineWidth = 2.0;
+  ctx.lineCap = 'square';
   ctx.beginPath();
   ctx.moveTo(px, py);
-  ctx.lineTo(px + dir * proj, py);
+  ctx.lineTo(px + toWall * longProj, py);
+  ctx.stroke();
+
+  // the SHORT handle poking into the field (always steel — the pushable stub)
+  ctx.strokeStyle = '#8896a8';
+  ctx.lineWidth = 2.0;
+  ctx.beginPath();
+  ctx.moveTo(px, py);
+  ctx.lineTo(px + toField * shortProj, py);
   ctx.stroke();
   ctx.lineCap = 'butt';
 
-  // pivot at the classifier face
+  // pivot at the classifier's field-side edge
   ctx.fillStyle = '#94a3b8';
   ctx.beginPath();
   ctx.arc(px, py, 1.1, 0, Math.PI * 2);

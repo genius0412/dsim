@@ -153,6 +153,7 @@ export interface GoalState {
   gatePos: number; // physical arm open fraction 0 (closed) .. 1 (fully lifted)
   gateVel: number; // arm swing rate (1/s) — gravity accelerates it shut
   gateHoldTime: number; // accumulated time a robot has been pushing the gate arm
+  gateLatch: number; // s remaining the arm stays latched open after a tap (no need to hold)
   classifiedCount: number; // cumulative, for stats
   overflowCount: number;
 }

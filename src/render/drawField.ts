@@ -72,10 +72,24 @@ export function drawField(ctx: CanvasRenderingContext2D, world: World): void {
     fillRect(ctx, bz, allianceColor(a, true));
     strokeRect(ctx, bz, allianceColor(a));
 
-    // loading zone (white tape corner)
+    // loading zone (white tape corner) — only the two INTERIOR edges (facing the
+    // field) are stroked; the other two lie on the perimeter walls (side + audience)
+    // and would overdraw them
     const lz = loadZone(a);
     fillRect(ctx, lz, 'rgba(229,231,235,0.05)');
-    strokeRect(ctx, lz, C.COLORS.white);
+    const lzInX = Math.abs(lz.x0) === C.FIELD_HALF ? lz.x1 : lz.x0; // interior vertical edge
+    const lzInY = Math.abs(lz.y0) === C.FIELD_HALF ? lz.y1 : lz.y0; // interior horizontal edge (audience wall is y0)
+    const lzWallX = lzInX === lz.x0 ? lz.x1 : lz.x0; // side-wall end of the horizontal edge
+    // one connected L so the interior corner joins cleanly (the other two edges lie on
+    // the perimeter walls and are dropped)
+    ctx.strokeStyle = C.COLORS.white;
+    ctx.lineWidth = C.TAPE_W;
+    ctx.lineJoin = 'miter';
+    ctx.beginPath();
+    ctx.moveTo(lzInX, lz.y0);
+    ctx.lineTo(lzInX, lzInY);
+    ctx.lineTo(lzWallX, lzInY);
+    ctx.stroke();
 
     // human-player 2x3 box: OFF-FIELD out-of-play storage (a station just beyond
     // the audience wall). A backing + frame around the cells plus the balls
@@ -102,11 +116,19 @@ export function drawField(ctx: CanvasRenderingContext2D, world: World): void {
     });
 
     // SECRET TUNNEL floor strip beneath the OTHER alliance's classifier —
-    // it belongs to THIS alliance (its drive team is on that wall), bounded
-    // by alliance-colored tape
+    // it belongs to THIS alliance (its drive team is on that wall). Only the
+    // FIELD-SIDE long edge is stroked: the SHORT edges sit on the classifier
+    // box's border (which must take priority) and the other long edge sits on
+    // the field perimeter wall — both are dropped so nothing overdraws them.
     const ts = tunnelStrip(other(a));
     fillRect(ctx, ts, allianceColor(a, true));
-    strokeRect(ctx, ts, allianceColor(a));
+    const tunnelFieldX = Math.abs(ts.x0) === C.FIELD_HALF ? ts.x1 : ts.x0;
+    ctx.strokeStyle = allianceColor(a);
+    ctx.lineWidth = C.TAPE_W;
+    ctx.beginPath();
+    ctx.moveTo(tunnelFieldX, ts.y0);
+    ctx.lineTo(tunnelFieldX, ts.y1);
+    ctx.stroke();
 
     // classifier ramp structure (robot obstacle) next to this alliance's goal
     // — a neutral gray STRUCTURE, not an alliance tape line

@@ -143,21 +143,31 @@ floor) does it commit — 9 retained below it at that instant ⇒ overflow (1 pt
 classified (3 pts). Scoring happens at that decision moment, so a gate tap that drains
 in time SAVES an incoming ball. A pending ball that flows out an open gate untouched
 classifies at exit.
-Gate physics (manual 9.8.3, `updateGates` in goal.ts): the gate is a PHYSICAL
-push-to-open ARM, not a boolean. A continuous `GoalState.gatePos` (0 closed .. 1 fully
-lifted) + `gateVel` model it: a robot **actively PRESSING the arm** (`pushingGate` —
-TOUCHING `gateArmRect` at the channel mouth AND driving into it via velocity or drive
-command; merely LOITERING in the gate zone no longer opens it) lifts it at
-`GATE_OPEN_RATE`; on release it is **"closed by gravity"** — it does NOT snap shut but
-SWINGS closed (`GATE_GRAVITY`, starts slow, accelerates), so a tap "may or may not stay
-open" a moment longer. **Flow holds it open** — a ball occupying the gateway suspends
-gravity (can't close while an artifact streams under the arm), so a tap usually drains
-the whole column. `gateOpen` (an artifact can pass) is DERIVED = `gatePos >=
-GATE_PASS_FRAC`. Rendered (`drawGateArm`, manual Figure 9-15) as a LEVER that pivots at
-the classifier face and its paddle STICKS OUT toward the field (the gate-zone side),
-centered between the two gate-zone tape lines; closed it lies out at full reach, and as
-it opens it SWINGS UP — shown top-down by FORESHORTENING the paddle toward the pivot
-(`GATE_ARM_LEN`·cos(`gatePos`·`GATE_LIFT`)), greening past the pass fraction. See
+Gate physics (manual 9.8.3, `updateGates` in goal.ts): the gate is a PHYSICAL class-1
+LEVER, not a boolean. A continuous `GoalState.gatePos` (0 closed .. 1 fully lifted) +
+`gateVel` + `gateLatch` model it. **Geometry (Figure 9-15):** the lever HINGES at the
+CLASSIFIER EDGE where the gate-zone tape starts (|x| = `FIELD_HALF − CLASSIFIER_W`) — a
+SHORT handle (`GATE_ARM_SHORT`) pokes OUT into the gate zone (what a robot pushes) and a
+LONG paddle (`GATE_ARM_LONG` = `CLASSIFIER_W`) lies ACROSS the channel to the WALL edge,
+COVERING the artifacts. **Opening is ONE-DIRECTIONAL** (`pushingGate`): only a STRAIGHT
+push toward the wall opens it — `velToward = r.vel.x·goalSide` (or the drive-command
+component); driving SIDEWAYS along the wall does NOT open it. Merely LOITERING doesn't
+open it either. **A tap LATCHES it open** (`gateLatch = GATE_OPEN_LATCH_S`) so the driver
+does NOT keep pressing; **resting against an already-OPEN gate re-arms the latch** (touch-
+hold) so it stays open without re-pushing. When released/untouched the latch decays and it
+is **"closed by gravity"** — SWINGS shut (`GATE_GRAVITY`/`GATE_CLOSE_MAX`, non-instant).
+**Flow holds an OPEN gate open** — a ball in the gateway suspends gravity (drains the whole
+column) but does NOT LIFT it: a ball reaching an ALMOST-CLOSED gate (below `GATE_PASS_FRAC`)
+can't reopen it — only a robot push can. `gateOpen` (an artifact can pass) is DERIVED =
+`gatePos >= GATE_PASS_FRAC`. **The handle is a PHYSICAL one-way door** — a robot-only
+Rapier collider (`buildGateArms` in physicsEngine.ts, robot solve only) spanning the SHORT
+arm's foreshortened reach, so a robot can't strafe/drive THROUGH the closed lever; a
+straight push lifts `gatePos` and RETRACTS the collider so the opening robot glides in
+(not shoved), and touch-hold means it never swings closed against a resting robot (light
+arm). The LONG paddle needs no collider (over the already-solid classifier). `gateArmRect`
+(the push/foul contact rect, `GATE_ARM_REACH`/`GATE_ARM_Y0/Y1`) is kept TIGHT around the
+handle. Rendered (`drawGateArm`) top-down by FORESHORTENING each arm toward the pivot
+(`len·cos(gatePos·GATE_LIFT)`), the long paddle greening past the pass fraction. See
 `GATE_*` constants in config.ts.
 
 ## Product decisions the user insisted on (do not regress)
