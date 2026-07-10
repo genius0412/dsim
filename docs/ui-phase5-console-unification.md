@@ -285,9 +285,13 @@ Manual checks:
    when `MatchStrategy` mounts. This is the regression R1 was about, and it's the one
    thing a screenshot diff will catch.
 3. `/lobby` and `/duo-record` unchanged (they were already `.ds-console`).
-4. Re-run the layout-shift auditor (`<scratchpad>/shiftaudit.cjs`) — it covers 10 routes
-   and the live HUD; it was last at **435 state changes · 0 shifts**. Add `/record` and
-   `/ranked` to its `PAGES` array, which today it does not cover.
+4. Re-run the layout-shift auditor — now `scripts/shiftaudit.cjs` (`npm run shiftaudit`), not
+   a scratchpad file. **Done in Phase 7b: 888 state changes · 0 shifts, both themes.** Note it
+   had been silently SKIPPING the live HUD since this phase landed: its in-game navigation
+   clicked `.ds-menu-btn` / `.ds-tile`, the very classes this phase deleted, so it logged
+   `canvas=false` and moved on. Fixed to match on button text.
+   Still open: `/record` and `/ranked` are absent from its `PAGES` array. Both are gated on
+   `gameServerConfigured()`, so covering them needs a preview build with `VITE_GAME_SERVER_URL`.
 
 Both `.ds-app` and `.ds-console` use `overflow-y: scroll`, so no new scrollbar-driven
 horizontal shift can appear — but confirm anyway, since that bug shipped once already.

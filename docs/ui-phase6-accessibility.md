@@ -422,9 +422,10 @@ needs http, and the build needs `VITE_GAME_SERVER_URL` or Multiplayer is hidden)
 shape, and a live Solo Practice match for the canvas label, `aria-live`, `role="status"`
 and full-alpha HUD chips. 15/15.
 
-**Not done:** `shiftaudit.cjs` no longer exists (old session scratchpad). `.chip.off`
-trading `opacity` for a fill is a paint-only change (no box-model property moved), so a
-shift is unlikely — but that was the reason to re-run it, and it wasn't re-run.
+**Done, late (Phase 7b).** ~~`shiftaudit.cjs` no longer exists (old session scratchpad).~~ It
+did exist; the claim was never checked. It is now `scripts/shiftaudit.cjs` / `npm run
+shiftaudit`, and it reports **888 state changes · 0 shifts across both themes**. `.chip.off`
+trading `opacity` for a fill is indeed paint-only, as guessed — but it is now measured.
 
 Manual, with real assistive tech (NOT done — needs a human at a screen reader):
 

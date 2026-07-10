@@ -562,8 +562,15 @@
 .ds-subnav-btn.on .sh {
   color: color-mix(in srgb, var(--ds-accent-soft-ink) 78%, transparent);
 }
+/* Owns the vertical rhythm for whatever section is routed into it. A section may render
+   SEVERAL top-level cards (Audio = Audio + Visual), and cards carry a hard 4px offset
+   shadow, so zero-margin siblings don't merely touch — the upper card paints ON the
+   lower one. 22px matches `.ds-robot`, the sibling tab in the same subnav. */
 .ds-subnav-body {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
 }
 
 .ds-tabs {
@@ -655,8 +662,15 @@
 /* KEYCAP: a solid cap sitting 3px above its own darker edge. Hover sinks 1px,
    press sinks the full 3px so the cap meets the edge — a physical click. The
    cap moves with `transform`, never `margin`, so nothing around it reflows. */
+/* `display` is SET, not inherited from the UA. A <button> is inline-block for free, but
+   `.ds-btn` is also worn by an <a> (Download), and an inline box ignores vertical padding
+   for layout while still PAINTING it — the cap bled over the card above and the panel
+   below. Same reason `text-decoration` is reset here rather than on a link-only selector. */
 .ds-btn {
   font: inherit;
+  display: inline-block;
+  text-align: center;
+  text-decoration: none;
   font-size: 14px;
   font-weight: 600;
   padding: 9px 16px;
@@ -1708,6 +1722,7 @@ tr.lb-detail td {
 .ds-opt {
   position: relative;
   text-align: left;
+  text-decoration: none; /* it is an <a> on the Download page */
   border: 1px solid var(--ds-line-strong);
   border-radius: var(--ds-round);
   background: var(--ds-panel);
@@ -2018,6 +2033,7 @@ input[type='range']:focus-visible {
   font-size: 24px;
   font-weight: 800;
   letter-spacing: -0.01em;
+  line-height: 1.2;
 }
 .ds-hero-name .cust {
   font-family: var(--ds-font-mono);
@@ -2031,10 +2047,14 @@ input[type='range']:focus-visible {
   margin-left: 10px;
   vertical-align: middle;
 }
+/* The name/team pair is a two-line unit, so the space between them is set here rather
+   than left to the two line boxes' leading. It used to be `margin-top: -6px`, which
+   cancelled the name's leading and then pulled the team 6px INTO the name's box. */
 .ds-hero-team {
   color: var(--ds-mut);
   font-size: 13px;
-  margin-top: -6px;
+  line-height: 1.35;
+  margin-top: 4px;
 }
 .ds-stats {
   display: grid;
@@ -2420,6 +2440,15 @@ button.ds-key:active {
 }
 
 /* ---- download page --------------------------------------------------- */
+.ds-dl {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+/* a stretched flex item would run the ghost button the full column width */
+.ds-dl > .ds-btn {
+  align-self: flex-start;
+}
 .ds-dl-hero {
   display: flex;
   flex-direction: column;

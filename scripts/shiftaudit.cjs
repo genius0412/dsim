@@ -124,6 +124,12 @@ app.whenReady().then(async () => {
         await sleep(60);
         const cur = await js(RECTS);
         await cmd('CSS.forcePseudoState', { nodeId: nodeIds[i], forcedPseudoClasses: [] });
+        // SETTLE AFTER CLEARING. Pressable surfaces hover via `transform: translate(-1px,-1px)`
+        // — correct, since transforms don't reflow — but getBoundingClientRect() REPORTS the
+        // transform. Without this wait, the cleared transform is still applied when the NEXT
+        // element's baseline is read, and its 1px snap-back gets blamed on that element.
+        // (Cost me a false positive on `.ds-subnav-btn` that was really `.ds-opt`.)
+        await sleep(60);
         checked++;
         const d = diff(base, cur, skip, tags);
         if (d.length) {
@@ -172,6 +178,7 @@ app.whenReady().then(async () => {
           await sleep(60);
           const cur = await js(RECTS);
           await js(`document.querySelectorAll(${JSON.stringify(sel)})[${i}].classList.toggle(${JSON.stringify(cls)})`);
+          await sleep(60); // settle before the next baseline — see probePseudo
           checked++;
           const d = diff(base, cur, skip, tags);
           if (d.length) {

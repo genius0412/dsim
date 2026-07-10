@@ -451,10 +451,13 @@ Phase 5 is independent — it moves JSX between scaffolds and touches no colour.
 - **Extend `scripts/contrast.mjs`** (proposed in Phase 6 §7) with a `THEMES` dimension: the
   `PAIRS` table becomes `theme × pair`, and every pair asserts in both. This is the only way
   the invariant in §5 stays true a year from now. It is dependency-free and CI-runnable.
-- **Re-run `shiftaudit.cjs`** (scratchpad; 435 state changes across 10 routes + the live HUD →
-  0 shifts). Dark mode must not change a single `border-width`, `font-weight`, or `padding`.
-  If the audit reports a shift, a theme rule changed geometry — which is always a bug.
-  Add `data-theme` stamping to the harness so it runs both themes.
+- ~~**Re-run `shiftaudit.cjs`**~~ **— DONE in Phase 7b.** It is `scripts/shiftaudit.cjs` now
+  (`npm run shiftaudit`), it stamps `data-theme` and runs BOTH themes as this item asked, and
+  it reports **888 state changes · 0 shifts**. Dark mode must not change a single
+  `border-width`, `font-weight`, or `padding`; a reported shift means a theme rule changed
+  geometry, which is always a bug. Note the auditor's own trap: hover moves pressables via
+  `transform`, `getBoundingClientRect()` REPORTS transforms, so it must settle after clearing
+  a forced pseudo-state or it blames the stale transform on the next element probed.
 - The `verify` skill (Electron) for: the launch flash (§7), the always-visible **scrollbar**
   colour (§2 — the single most likely thing to look broken), native `<select>` popups, and the
   in-match HUD over the dark field.

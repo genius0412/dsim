@@ -16,6 +16,14 @@ at session start if it exists — it may describe uncommitted mid-refactor state
 - `npm test` — **headless sim verification** (`scripts/smoke.ts`, ~30 checks). Run this
   after ANY change to `src/sim/` or `src/config.ts`. It is fast and catches almost everything.
 - `npm run build` — tsc (strict) + vite build. Run before claiming work done.
+- `npm run contrast` — WCAG audit of the palette (`scripts/contrast.mjs`, 135 pairs, light +
+  dark, no deps). Run after ANY colour/token edit. Not wired into `npm test` on purpose: a red
+  `npm test` must keep meaning "physics broke".
+- `npm run shiftaudit` — layout-shift audit (`scripts/shiftaudit.cjs`, Electron). Needs a
+  build + `npx vite preview --port 4173` in another shell. Forces `:hover`/`:active` and the
+  `on`/`primary` state classes on every interactive element across 10 routes + the live HUD,
+  in BOTH themes, and asserts nothing outside that element's own subtree moves. Pressables must
+  move via `transform`/`box-shadow`, never a border or margin that appears on hover.
 - `npm run electron` / `npm run dist` — desktop shell / Windows installer (`release/`)
 
 ## Architecture (load-bearing rules)

@@ -1,9 +1,35 @@
-# HANDOFF — 2026-07-09 (UI Phase 7b: the HUD themes too) — READ FIRST
+# HANDOFF — 2026-07-10 (UI Phase 7b: the HUD themes too; + spacing fixes) — READ FIRST
 
 > **GREEN, uncommitted on `low-poly-ui`.** `npm run build` + `npm test` + `npm run contrast`
-> (**135** checks) + `npm run server:check` all pass. Electron-verified in both themes: 32 DOM
+> (**135** checks) + `npm run shiftaudit` (**888** checks, 0 shifts, both themes) +
+> `npm run server:check` all pass. Electron-verified in both themes: 32 DOM
 > assertions in-match + a live canvas pixel probe, and 38 more probing the server-gated
 > screens' CSS rules. Client-only — **no server change, no Fly redeploy.** `src/sim/` untouched.
+>
+> ## SPACING PASS (2026-07-10) — three user-reported collisions, one shared cause
+>
+> Cards in this design system cast a **hard 4px offset shadow** (`--ds-block`), so two
+> zero-margin siblings don't merely touch: the upper one *paints on* the lower. Nothing in the
+> shell owned the gap between top-level cards. Fixed by giving the two offending stacks their
+> own rhythm — `.ds-subnav-body` (`display:flex; gap:22px`, matching `.ds-robot`, its sibling
+> tab) and a new `.ds-dl` wrapper on the Download page (`gap:18px`).
+>
+> - **`.ds-btn` now sets `display: inline-block`.** It was relying on the UA's `inline-block`
+>   for `<button>`, but `Download.tsx` wears it on an `<a>` — and an **inline** box ignores
+>   vertical padding for *layout* while still *painting* it, so the "All releases" cap bled
+>   over the card above and the panel below. That is the whole download-page overlap. `.ds-btn`
+>   and `.ds-opt` also reset `text-decoration` (the download cards were underlined; `.ds-opt`
+>   is an `<a>` only there).
+> - **`.ds-hero-team` was `margin-top: -6px`** — it cancelled the name's leading and then pulled
+>   the team line 6px *into* `.ds-hero-name`'s box (measured gap `-6.0`). Both now carry explicit
+>   line-heights and a `+4px` margin. Watch for the same species elsewhere: `Download.tsx` still
+>   has an inline `marginTop: -4` on its `.ds-hint`.
+>
+> Verified by driving the built app in Electron and measuring `getBoundingClientRect()` gaps
+> between every top-level child of `.ds-main` / `.ds-subnav-body` / `.ds-robot` across all 10
+> routes, subtracting each element's own shadow extent. Only the two flagged stacks measured
+> negative; after the fix none do. `npm run shiftaudit` still reports 0 shifts — the check that
+> matters for the `display` and block→flex changes.
 >
 > ## READ THIS FIRST: the light island is DEAD (it was the wrong call)
 >
@@ -144,9 +170,27 @@
 > whenever the pref is `system` (the default); one frame mismatches if the user forced a theme
 > against their OS. Accepted (the fix is an IPC/userData round-trip for one frame).
 >
-> **Not done:** `prefers-contrast: more` block; real screen-reader passes; `shiftaudit.cjs`
-> (gone with an old scratchpad) so no layout-shift re-run across themes — dark mode changes no
-> geometry, but that was the check. All three redesign phases (5, 6, 7) are now landed.
+> **LAYOUT SHIFT: audited, clean.** `shiftaudit.cjs` was NOT gone — it survived in an older
+> session scratchpad and was twice reported deleted without anyone checking. It now lives at
+> **`scripts/shiftaudit.cjs`** (`npm run shiftaudit`, needs `npx vite preview --port 4173`).
+> **888 state changes across 10 routes + the live HUD, in BOTH themes → 0 layout shifts**, exit 0.
+>
+> Three fixes were needed before it could be trusted:
+>
+> - It audited **one theme**. It now forces `decodesim.theme` before each load (both by default).
+> - Its in-game navigation clicked `.ds-menu-btn` / `.ds-tile`, classes **Phase 5 deleted**. It
+>   would have logged `canvas=false` and silently skipped the entire HUD — the one surface this
+>   session changed. Now matches on button text.
+> - **It had a false-positive bug.** Pressable surfaces hover via `transform: translate(-1px,-1px)`
+>   (correct — transforms don't reflow, and the auditor skips the hovered element's own subtree).
+>   But `getBoundingClientRect()` REPORTS transforms, and after clearing `forcePseudoState` the
+>   auditor read the NEXT element's baseline with no settle — so a stale transform landed in the
+>   baseline and its 1px snap-back was blamed on whatever was probed next. It reported a phantom
+>   `.ds-subnav-btn` shift that was really `.ds-opt`. Added a settle after every clear.
+>   *A tool presumed to be covering something may be quietly covering nothing.*
+>
+> **Not done:** `prefers-contrast: more` block; real screen-reader passes. All three redesign
+> phases (5, 6, 7) are landed, plus 7b (the HUD themes).
 
 ---
 
@@ -202,9 +246,10 @@
 > Practice match. 15/15. (Two initial FAILs were both driver bugs — I queried the first
 > `.ds-opt`, which is *selected*, and Free Drive's static `.timer-phase`.)
 >
-> **Not done:** `shiftaudit.cjs` is gone (old scratchpad), so no layout-shift re-run; real
-> screen-reader passes (VoiceOver) need a human. `prefers-contrast: more` block still absent
-> (optional per the doc). Remaining redesign phase: `docs/ui-phase7-dark-mode.md`.
+> **Not done:** ~~`shiftaudit.cjs` is gone (old scratchpad), so no layout-shift re-run~~ —
+> **wrong, and corrected in 7b**: it was never gone, it is now `scripts/shiftaudit.cjs`, and it
+> reports 0 shifts across both themes. Real screen-reader passes (VoiceOver) need a human.
+> `prefers-contrast: more` block still absent (optional per the doc).
 
 ---
 
@@ -239,8 +284,10 @@
 > and Esc → `/modes`. 8/8 PASS.
 >
 > **Not done:** §9 item 4 (add `/record` + `/ranked` to the layout-shift auditor's `PAGES`).
-> `shiftaudit.cjs` lived in an old session scratchpad and is **gone** — regenerate it if you
-> want that coverage. R1 (the mint-gradient/column-width flash at ranked pairing) is
+> ~~`shiftaudit.cjs` … is **gone**~~ — wrong; it is `scripts/shiftaudit.cjs` as of 7b. The
+> routes are still absent from its `PAGES` because both are gated on `gameServerConfigured()`
+> and the audit runs against a preview build with no `VITE_GAME_SERVER_URL`; covering them
+> means building with one set. R1 (the mint-gradient/column-width flash at ranked pairing) is
 > structurally dead now that both sides of the handoff are `.ds-console`, but I did not
 > screenshot-diff the live pairing (needs a server + two signed-in clients).
 >
