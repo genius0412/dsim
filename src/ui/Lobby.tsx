@@ -12,6 +12,7 @@ import { useServerNotice } from '../net/notice';
 import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
+import { useEscape } from './useEscape';
 
 interface Props {
   settings: GameSettings;
@@ -63,14 +64,7 @@ export function Lobby({ settings, onStart, onCancel, config = { kind: 'versus' }
     };
   }, []);
 
-  // Esc leaves the lobby
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onCancel();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onCancel]);
+  useEscape(onCancel); // Esc leaves the lobby, same as ← Back
 
   const me = players.find((p) => p.clientId === myId) ?? null;
   const isHost = myId !== '' && myId === hostId;

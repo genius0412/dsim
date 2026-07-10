@@ -100,10 +100,11 @@ function Identity() {
           <Username userId={user.id} />
           <div>
             <p className="ds-hint" style={{ margin: '0 0 4px' }}>Account ID (for ADMIN_USER_IDS)</p>
+            {/* --ds-mut, not the --muted bridge: that one belongs to the in-match HUD */}
             <code
               title="Click to copy"
               onClick={() => void navigator.clipboard?.writeText(user.id)}
-              style={{ cursor: 'pointer', fontSize: 12, wordBreak: 'break-all', color: 'var(--muted)' }}
+              style={{ cursor: 'pointer', fontSize: 12, wordBreak: 'break-all', color: 'var(--ds-mut)' }}
             >
               {user.id}
             </code>

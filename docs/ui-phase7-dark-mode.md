@@ -1,9 +1,95 @@
 # UI Phase 7 — Dark Mode
 
-**Status:** proposed, not started.
-**Depends on:** Phase 6 (`docs/ui-phase6-accessibility.md`) — see §8. Do not start this first.
-**Blast radius:** `src/ui/shell.css`, `src/ui/styles.css`, `index.html`, `electron/main.cjs`,
-`src/ui/Logo.tsx`, one new `src/theme.ts`. **Nothing in `src/sim/` or `src/render/`.**
+**Status: SHIPPED, then AMENDED by Phase 7b.** `npm run contrast` (**135** checks) +
+`npm run build` + `npm test` + `npm run server:check` green; Electron-verified in both themes
+(32 in-match DOM assertions + a live canvas pixel probe, + 38 probing the server-gated screens).
+
+> ## ⚠️ §0 BELOW IS SUPERSEDED — the `.game-root` light island was DELETED
+>
+> Phase 7 kept the in-match HUD permanently light, reasoning that a dark card is 1.19:1 on the
+> dark field. **The user overruled it** ("hud elements need to be themed dark also") and was
+> right: that measures the FILL, but a floating card is identified by its **EDGE**. WCAG 1.4.11
+> measures the boundary — the same argument the user had already accepted for the field mat,
+> which separates from the dark letterbox by its outline alone at 1.03:1.
+>
+> What replaced it: `--ds-hud-line` (light `#c0c9c4` / dark `#727d86`) on every floating
+> surface, and the legacy bridge now **aliases** the `--ds-*` tokens instead of holding pinned
+> light values. A THIRD token category was introduced for text whose ground is the CANVAS
+> (`--ds-on-field` / `-dim` / `-accent`), which is the part of §0's reasoning that survives:
+> the field never themes, so *some* things must not. Just far fewer than an entire HUD.
+>
+> Read `HANDOFF.md` (Phase 7b) for the full list, including ~11 latent light-mode bugs the
+> island had been hiding — among them a solo record-run total rendered **white on white**.
+>
+> §§1–9 below (storage, first paint, the palette, `system` resolution, Electron) are unchanged
+> and still accurate.
+
+**Where the control lives:** Configure ▸ **Audio and Visual** (the `audio` section, renamed;
+the route key stays `/configure/audio` so old deep links work). Three toggle buttons —
+System / Light / Dark. Storage is still D3's own `localStorage['decodesim.theme']`, NOT
+`GameSettings` — UI placement and storage are independent.
+
+**Corrections to this plan, all found by measuring:**
+
+1. **§5's `--ds-line-strong: #6b7680` fails 1.4.11.** It was measured against `--ds-bg`
+   (3.29), but an input's border sits on the **card behind it** — on `--ds-panel #272e35`
+   it is **2.96**. Light mode tunes to panel too (3.06). Shipped **`#727d86`** (3.27 panel).
+2. **§6's `Logo.tsx` finding is wrong.** The `<rect>` fills the whole 32×32 viewBox, so the
+   `#14332a` strokes sit on the mint badge, never on `--ds-bar`. The mark is self-contained
+   and needs no change. Confirmed by eye on the dark top bar.
+3. **§6's `.ds-select` chevron: the `mask-image` it prefers is not available.** A `<select>`
+   can't carry a `::after` to mask, and masking the element itself would eat its background.
+   Shipped as a duplicated rule under `[data-theme='dark']`, kept adjacent to the light one.
+4. **`--ds-panel-2` never existed** (`shell.css` `.server-row`) — it silently fell back to a
+   3%-white wash from the pre-redesign dark theme, i.e. transparent on the light panel. A
+   latent light-mode bug, now `--ds-tile`.
+5. ~~**The `.game-root` light island is the real mechanism**~~ — **reverted in Phase 7b**
+   (see the banner above). The part that held up: §4's bridge audit was too narrow, because
+   `styles.css` reads ~20 `--ds-*` tokens directly, not just the four bridge names.
+6. **The letterbox now DOES theme** (`COLORS.backdropDark`), which §10 listed as a non-goal.
+   User decision: without it, entering a match from a dark menu flashed a bright screen. The
+   FIELD itself is untouched (pixel-probed identical in both themes); only the surround moves,
+   and the field's existing outline keeps the board separated from the dark floor.
+
+**Blast radius (as built):** `src/ui/shell.css`, `src/ui/styles.css`, `index.html`,
+`electron/main.cjs`, `src/main.tsx`, `src/ui/AudioSection.tsx`, `src/ui/Configure.tsx`,
+new `src/theme.ts`, `scripts/contrast.mjs` — plus **`src/config.ts` + `src/render/renderer.ts`**
+for the letterbox (see correction 6). `src/sim/` untouched.
+
+---
+
+## 0. ~~The mechanism that actually makes this work: the `.game-root` light island~~ (SUPERSEDED — see the banner at the top)
+
+§4 said "audit which `var(--panel|--text|--muted|--border)` uses in `styles.css` are HUD".
+The problem is **larger**: `styles.css` also reads ~20 `--ds-*` tokens directly
+(`--ds-warn`, `--ds-ok-ink`, `--ds-accent-ink`, `--ds-ink-dim`, `--ds-tile`, …). Re-pointing
+only the bridge would still have inverted all of those underneath the HUD — painting the
+amber END GAME warning at ~2.4:1 on a white timer card.
+
+The fix is one selector. The light palette block is declared by:
+
+```css
+:root,
+:root[data-theme='dark'] .game-root { /* …the entire light palette… */ }
+
+:root[data-theme='dark']            { /* …dark overrides… */ }
+```
+
+`:root[data-theme='dark'] .game-root` (0,2,1) outranks `:root[data-theme='dark']` (0,2,0),
+so the in-match HUD re-establishes the **whole** light palette for its subtree. Every token
+is covered because they all live in that one block — no per-token audit to keep in sync.
+
+Consequences worth knowing:
+
+- `.game-root` is `GameView`'s only wrapper. `ReplayView` draws the field but wears shell
+  chrome (`.ds-replay-*`), so it themes normally. That is correct.
+- **Never read `--ds-bg` from inside the game screen to decide the theme** — it is always
+  `#f9faf7` there. `renderer.ts` reads `document.documentElement.dataset.theme` instead.
+- The bridge (`--bg`, `--panel`, `--text`, …) is now **unshared** and stays pinned light:
+  the only two non-HUD rules in `styles.css` (`.admin-*`, `.ds-btn.danger`) were moved onto
+  `--ds-*` tokens. `body` was moved to `--ds-bg`/`--ds-ink` too (identical in light).
+
+---
 
 ---
 

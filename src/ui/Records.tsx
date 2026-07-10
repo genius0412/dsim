@@ -39,19 +39,23 @@ export function Records({
       <h1 className="ds-h1">Records</h1>
       <p className="ds-sub">Where you stand, and how you got there.</p>
 
-      <div className="ds-tabs" role="tablist">
+      {/* These buttons change the URL (/records vs /records/career), so they are
+          NAVIGATION, not an ARIA tablist. The old `role="tab"` + `aria-selected` was a
+          partial tabs pattern — worse than none: a screen reader announced "tab, 1 of 2",
+          the user pressed → expecting to move, and nothing happened (no tabpanel, no
+          aria-controls, no roving tabindex). Matches Configure's sub-nav and NavRail. */}
+      <nav className="ds-tabs" aria-label="Records sections">
         {RECORDS_TABS.map((t) => (
           <button
             key={t}
-            role="tab"
-            aria-selected={tab === t}
             className={`ds-tab${tab === t ? ' on' : ''}`}
+            aria-current={tab === t ? 'page' : undefined}
             onClick={() => onTab(t)}
           >
             {LABELS[t]}
           </button>
         ))}
-      </div>
+      </nav>
 
       {tab === 'leaderboard' ? (
         <Leaderboard myUserId={myUserId} onWatch={onWatch} onOpenProfile={onOpenProfile} />

@@ -35,6 +35,9 @@ interface Props {
  * the full builder; the server takes the live build at match start (still clamped to
  * the build limits). The match starts the instant everyone readies; if the deadline
  * passes with anyone not ready the server cancels (arrives as an `error` → onLeave).
+ *
+ * NO `useEscape` here, unlike the other console screens: `onLeave` forfeits a paired
+ * ranked match for everyone in the room, so it stays a deliberate click on ← Leave.
  */
 export function MatchStrategy({
   lobby,

@@ -12,6 +12,7 @@ import { usePresence } from './usePresence';
 import { useServerNotice } from '../net/notice';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
+import { useEscape } from './useEscape';
 
 /**
  * Region-aware ranked matchmaking. We connect to the DESIGNATED matchmaker (a
@@ -65,6 +66,10 @@ export function Matchmaking({
   const lobbyRef = useRef<LobbyClient | null>(null);
   const startedRef = useRef(false);
   const assigningRef = useRef(false); // reconnecting from matchmaker → host
+
+  // Esc backs out, same as ← Back — but NOT once a match has paired: MatchStrategy
+  // owns the screen then, and its ← Leave forfeits. A stray Esc must not do that.
+  useEscape(onCancel, !strategy);
 
   const teardown = (): void => {
     if (!startedRef.current) {

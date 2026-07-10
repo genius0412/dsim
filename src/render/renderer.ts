@@ -6,6 +6,18 @@ import { drawBalls } from './drawBalls';
 import { drawRobot } from './drawRobot';
 import { drawRampStrips } from './drawGoals';
 
+/**
+ * The letterbox around the field follows the app theme (the FIELD itself never does).
+ *
+ * Read the theme off <html> rather than `getComputedStyle` of the canvas: the canvas
+ * carries no themed background of its own, and going through the cascade here would
+ * force a style flush on every frame of the render loop.
+ */
+const backdropColor = (): string =>
+  typeof document !== 'undefined' && document.documentElement.dataset.theme === 'dark'
+    ? COLORS.backdropDark
+    : COLORS.backdrop;
+
 export class Renderer {
   readonly camera = new Camera();
 
@@ -17,7 +29,7 @@ export class Renderer {
   ): void {
     const canvas = ctx.canvas;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = COLORS.backdrop;
+    ctx.fillStyle = backdropColor();
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     this.camera.apply(ctx);

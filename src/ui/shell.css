@@ -5,10 +5,20 @@
    shadows rather than blur — a fixed sun from the top-left, as in an
    isometric toy world. Screens are built with the `ds-` classes below.
 
-   The FIELD CANVAS stays dark (src/render/ is untouched), so the HUD in
-   styles.css floats LIGHT cards over a dark field. That contrast is
-   deliberate; see the HUD section there before "fixing" it.
+   The FIELD CANVAS stays dark (src/render/ is untouched). The HUD floats
+   CARDS over it, and those cards DO follow the theme — see `--ds-hud*` below.
    ===================================================================== */
+/* The light palette.
+
+   HISTORY — do not reintroduce: this block was once shared with a
+   `:root[data-theme='dark'] .game-root` "light island", so the in-match HUD stayed
+   light in dark mode. The reasoning was that a dark card on the dark field is only
+   1.19:1 on FILL alone. But a floating card is identified by its EDGE, not its fill
+   (WCAG 1.4.11 measures the boundary), exactly as the field mat is separated from the
+   dark letterbox by its outline alone. So the HUD now themes, and `--ds-hud-line`
+   carries the separation. What must NOT theme is text painted STRAIGHT onto the
+   canvas with no card behind it — that is `--ds-on-field*`, and it is absent from the
+   dark block on purpose. */
 :root {
   /* ---- surfaces (Level 0 floor → Level 1 cards) ---- */
   --ds-bg: #f9faf7;
@@ -25,6 +35,12 @@
 
   --ds-line: #c0c9c4;
   --ds-line-soft: #d9dad8;
+  /* INTERACTIVE boundaries only (WCAG 1.4.11 wants 3:1). `.ds-input` is a --ds-tile
+     fill on a --ds-panel card = 1.16:1, so its 1px border IS the whole control.
+     Card strokes stay on --ds-line — the pastel look depends on it staying soft.
+     3.06:1 on --ds-panel; only ~2.6 on --ds-tile, so an input recessed into a tile
+     well needs darker (#7d8883). Measure before assuming. */
+  --ds-line-strong: #8b9691;
 
   /* ---- primary: soft mint ---- */
   --ds-accent: #366758;
@@ -61,26 +77,63 @@
   --ds-edge-soft: 0 3px 0 var(--ds-line);
 
   /* fixed scoring semantics (never the interface accent). These break the pastel
-     harmony ON PURPOSE — alliance + artifact identity must command attention. */
+     harmony ON PURPOSE — alliance + artifact identity must command attention.
+
+     ---- READ THIS BEFORE REUSING ONE OF THESE ----
+     A colour that is both a FILL and a TEXT colour will fail one of the two.
+     `--amber` did (caution vs brand); `--ds-ok` did (gauge vs GATE OPEN). Every
+     token below is a FILL: at 11.5-12px they all land near 3:1 on the light floor,
+     under the 4.5:1 body-text bar. Need the same hue as type? Use its `-ink`
+     sibling. Do NOT darken these — src/render/ paints --ds-red/--ds-blue on the
+     dark field and .score-panel gradients depend on their exact values.
+     Enforced by `node scripts/contrast.mjs`. */
   --ds-red: #ff4d4d;
   --ds-blue: #3d8bff;
   --ds-green: #37d67a;
   --ds-purple: #a96bff;
   --ds-danger: #ba1a1a;
   --ds-ok: #2f9e5f;
+
+  /* text siblings of the fills above — dark enough for 11.5px type on any surface */
+  --ds-ok-ink: #1f7a46;
+  --ds-red-ink: #b3261e;
+  --ds-blue-ink: #175cd3;
+  --ds-purple-ink: #6b3fc4;
+
+  /* chip FILLS, deep enough to carry white ink at 11.5px (the raw alliance hues
+     only reach ~3.3:1 under white, which is the large-text bar, not the body one) */
+  --ds-red-chip: #d32020;
+  --ds-blue-chip: #1f6fe0;
+
+  /* PROVISIONAL/medal gold (Leaderboard placement). A fill with fixed dark ink, so it
+     does NOT invert — same category as the alliance chips. Gold as TYPE is 1.98:1 on
+     the light panel; use --ds-warn there, which is the same idea, themed. */
+  --ds-gold: #f5a623;
+  --ds-gold-ink: #04222a;
+
   /* CAUTION, distinct from the mint accent. The legacy `--amber` carried BOTH
      meanings; on light they must not collapse (a warning that looks like the
      brand accent reads as decoration). Burnt amber clears 4.5:1 on the floor. */
   --ds-warn: #8f5400;
 
-  /* ---- HUD over the DARK field canvas (src/render/ is untouched) ----
-     Light cards floating on a dark ground: the field supplies the separation,
-     so these carry a 1px stroke and NO block shadow (a pale offset block on a
-     dark field reads as a stray highlight, not as depth). --ds-on-field is for
-     glyphs painted straight onto the canvas with no card behind them. */
+  /* ---- HUD cards floating over the DARK field canvas (src/render/ is untouched) ----
+     These carry a 1px stroke and NO block shadow (an offset block on a dark field
+     reads as a stray highlight, not as depth). The stroke is what separates the card
+     from the field, so it gets its OWN token: `--ds-line` is tuned against the card
+     BEHIND it, but --ds-hud-line must read against BOTH the card and the field. */
   --ds-hud: rgba(255, 255, 255, 0.94);
   --ds-hud-soft: rgba(255, 255, 255, 0.86);
+  --ds-hud-line: #c0c9c4;
+
+  /* ---- glyphs painted STRAIGHT onto the canvas, no card behind them ----
+     The countdown digits, the mobile joystick, the ranked-intro eyebrow. The field is
+     hardcoded dark and never themes, so NEITHER DO THESE. They are deliberately absent
+     from the dark block below; do not "complete" the set.
+     `-accent` is the DARK palette's mint on purpose: the canvas is a dark ground, so
+     the on-field family borrows the values tuned for one (7.9:1 on the intro scrim). */
   --ds-on-field: #f9faf7;
+  --ds-on-field-dim: #b9beb8;
+  --ds-on-field-accent: #5fb597;
 
   /* Jakarta = the friendly workhorse; Grotesk = labels + technical data (scores,
      timers, keycaps). Both are VARIABLE cuts, so `font-weight: 750` is real. */
@@ -88,23 +141,138 @@
   --ds-font-mono: 'Space Grotesk Variable', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
+/* =====================================================================
+   DARK THEME (docs/ui-phase7-dark-mode.md)
+
+   Stamped on <html> by the inline script in index.html, then owned by
+   src/theme.ts. `system` is resolved in JS, so CSS only ever sees two
+   states and an explicit choice can beat the OS without duplicating
+   this block inside a @media query.
+
+   THE RULE (Phase 6 §5, restated): a token whose job is "readable against
+   the surface" INVERTS. A token whose job is "a fill with fixed ink" does
+   NOT. So --ds-ink/-mut/-accent/-warn/-danger/-sky-ink/-ok-ink/-line/
+   -line-strong all flip; --ds-red/-blue/-green/-red-chip/-blue-chip do
+   not (white on #d32020 is 5.25:1 whatever is behind the chip).
+
+   The FIELD CANVAS never themes (src/render/ is hardcoded dark), so there is a
+   THIRD category here: a token whose ground is the CANVAS rather than a themed
+   surface. Those (--ds-on-field, --ds-on-field-dim) appear only in the light
+   block. HUD *cards* are themed surfaces and do invert. Verified by
+   `npm run contrast`, which asserts every pair in BOTH themes.
+   ===================================================================== */
+:root[data-theme='dark'] {
+  /* scrollbars, native <select> popups, range thumbs. Load-bearing: .ds-app and
+     .ds-console are `overflow-y: scroll`, so without this a LIGHT scrollbar track
+     sits on the dark page. */
+  color-scheme: dark;
+
+  /* Surfaces. #20262c is not a fashion choice: the block shadow needs luminance
+     headroom BELOW the surface. At #101317 the darkest possible shadow (#000) is
+     1.13:1 — invisible. At #20262c it reads 1.32:1, within 0.02 of light mode's
+     1.34, so the sun stays in the top-left and the shadow RULES don't change.
+     Bonus: #20262c is lighter than the field #14161a, so the canvas reads as a
+     recessed well in the app surface. */
+  --ds-bg: #20262c;
+  --ds-bar: #252b32;
+  --ds-panel: #272e35;
+  --ds-tile: #1a2026; /* recessed is DARKER than its panel in both modes */
+
+  --ds-ink: #e8eae7;
+  --ds-ink-dim: #b6bcb8;
+  /* #8d9691 was the obvious mirror but lands at 4.52 on --ds-panel — a rounding
+     error from failing, the same trap as light mode's #707975. */
+  --ds-mut: #949e98;
+
+  --ds-line: #404a52;
+  --ds-line-soft: #04070a; /* the block shadow; see the surfaces note above */
+  /* Interactive borders. The plan proposed #6b7680 (3.29 vs --ds-bg), but an input's
+     border is measured against the CARD BEHIND IT, not the floor — and #6b7680 is only
+     2.96 on --ds-panel, failing 1.4.11 by 0.04. Light mode tunes to panel too (3.06). */
+  --ds-line-strong: #727d86; /* 3.27 on --ds-panel · 3.63 on --ds-bg */
+
+  /* THE INKS INVERT WITH THE FILL. White on the light mint #5fb597 is 2.46:1 —
+     the single most dangerous swap in this theme. */
+  --ds-accent: #5fb597;
+  --ds-accent-ink: #0f1214;
+  --ds-accent-edge: #3f7f69; /* keycap edge stays darker than its fill in both modes */
+  --ds-accent-soft: #22463c; /* a mint-tinted dark, not a pale blob */
+  --ds-accent-soft-ink: #8fdcc2;
+  --ds-you: rgba(95, 181, 151, 0.14);
+
+  /* Semantics that must stay READABLE invert. --ds-warn's dark value is essentially
+     the pre-redesign --amber: it only became burnt amber to survive the light floor. */
+  --ds-warn: #e0a437;
+  --ds-danger: #f2857f;
+  --ds-sky-ink: #6ec8e8;
+  --ds-ok-ink: #4ec27f;
+  --ds-red-ink: #ff9d96;
+  --ds-blue-ink: #8cb8ff;
+  --ds-purple-ink: #bf8fff;
+
+  /* --ds-red/-blue/-green/-purple and the -chip fills are NOT re-valued: they are
+     alliance/artifact identity, painted by src/render/ on the fixed dark field. */
+
+  /* A 7%-black inset on a #1a2026 tile is invisible; the recessed input needs a
+     real well. Tokenized so the four sites stay in sync. */
+  --ds-inset: rgba(0, 0, 0, 0.35);
+
+  /* The pastels are FILLS THAT CARRY DARK INK. Left bright, they'd be four glowing
+     rectangles on a dark page, so each gets a tinted-dark sibling in the same spirit
+     as --ds-accent-soft. Their ink (--ds-ink) inverts with them. */
+  --ds-blush: #4a3428;
+  --ds-sage: #333f27;
+  --ds-lavender: #34305c;
+  --ds-sky: #21414f;
+
+  /* HUD cards = --ds-panel over the field, mirroring light mode (where the card #fff
+     also sits one step above its floor). The card is only ~1.4:1 on the field by fill,
+     so --ds-hud-line does the separating: --ds-line (#404a52) would vanish against the
+     field, so the HUD edge steps up to the --ds-line-strong value (3.6:1 on the field,
+     3.3:1 on the card — visible from BOTH sides, which is the whole job). */
+  --ds-hud: rgba(39, 46, 53, 0.94);
+  --ds-hud-soft: rgba(39, 46, 53, 0.86);
+  --ds-hud-line: #727d86;
+
+  /* NO --ds-on-field/-dim override: their ground is the canvas, which never themes. */
+}
+
+/* Recessed-input inner shadow. Light mode's 7%-black is the historical value; dark
+   needs far more to carve a well into an already-dark tile. */
+:root {
+  --ds-inset: rgba(25, 28, 27, 0.07);
+}
+
 /* Retheme the LEGACY in-match HUD (styles.css) by overriding ITS tokens — loaded
    after styles.css so these win, re-tinting every token-driven HUD rule at once.
-   `--amber` was the old signal accent (16 uses: timer warnings, focus rings,
-   results, elo flashes). On a light ground it MUST stay dark enough to read, so
-   it now carries mint — do not point it at a bright hue. */
+
+   These are ALIASES, not values. Each one forwards to the --ds-* token that owns the
+   same job, so the HUD follows the theme with no second palette to keep in sync. (The
+   `var()` resolves on :root, where the dark block also lands, so the alias picks up
+   the dark value.) The only reason the bridge still exists is that styles.css has ~90
+   uses of these names; new rules should reach for --ds-* directly.
+
+   `--amber` was the old signal accent (16 uses: timer warnings, focus rings, results,
+   elo flashes) and forwards to --ds-accent, which inverts. It must never carry a fixed
+   hue: on the light panel a bright amber is ~2:1.
+
+   ---- THE ONE THING THAT DOES NOT THEME ----
+   Text painted straight onto the field canvas, which is hardcoded `#14161a` in
+   render/renderer.ts. `--text` here is charcoal in light mode and would vanish on the
+   field, so those rules (countdown digits, joystick, ranked-intro eyebrow/VS) use
+   --ds-on-field / --ds-on-field-dim instead. Grep for them before adding canvas text. */
 :root {
-  --bg: #f9faf7;
-  --panel: #ffffff;
-  --panel-2: #edeeec;
-  --border: #c0c9c4;
-  --text: #191c1b;
-  --muted: #5c645f;
-  --red: #ff4d4d;
-  --blue: #3d8bff;
-  --green: #37d67a;
-  --purple: #a96bff;
-  --amber: #366758;
+  --bg: var(--ds-bg);
+  --panel: var(--ds-panel);
+  --panel-2: var(--ds-tile);
+  --border: var(--ds-line);
+  --text: var(--ds-ink);
+  --muted: var(--ds-mut);
+  --red: var(--ds-red);
+  --blue: var(--ds-blue);
+  --green: var(--ds-green);
+  --purple: var(--ds-purple);
+  --amber: var(--ds-accent);
 }
 
 /* ---- app surface + top bar ------------------------------------------- */
@@ -785,17 +953,26 @@
   border-radius: var(--ds-round);
   color: var(--ds-ink);
   background-color: var(--ds-tile);
-  /* custom chevron so the control matches the theme instead of native chrome;
-     the stroke is url-encoded --ds-mut (#5c645f) — a light slate vanished here */
+  /* custom chevron so the control matches the theme instead of native chrome; the
+     stroke is url-encoded --ds-mut (#5c645f) — a light slate vanished here.
+     `var()` is ILLEGAL inside a data: URI, so the dark stroke is a duplicated rule
+     below rather than a token. A `mask-image` would give one source of truth, but a
+     <select> can't carry a ::after to mask, and masking the element itself would eat
+     its background. Two literals, kept adjacent. */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%235c645f' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
-  border: 1px solid var(--ds-line);
-  box-shadow: inset 0 2px 0 rgba(25, 28, 27, 0.07);
+  border: 1px solid var(--ds-line-strong); /* 1.4.11: the border IS the control (tile-on-panel is 1.16:1) */
+  box-shadow: inset 0 2px 0 var(--ds-inset);
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
   -moz-appearance: none;
+}
+/* dark chevron stroke = --ds-mut's dark value (#949e98). Keep in sync with the rule
+   above; a data: URI cannot read a custom property. */
+:root[data-theme='dark'] .ds-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%23949e98' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 .ds-select:hover {
   border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));
@@ -805,9 +982,10 @@
   outline-offset: 1px;
   border-color: transparent;
 }
-/* the popup option list can't be fully themed cross-browser, but set sane colors */
+/* the popup option list can't be fully themed cross-browser, but set sane colors.
+   (`color-scheme: dark` on :root does most of the real work here.) */
 .ds-select option {
-  background: var(--ds-panel, #141c26);
+  background: var(--ds-panel);
   color: var(--ds-ink);
 }
 
@@ -837,8 +1015,11 @@
   padding: 10px 12px;
   border-radius: var(--ds-round);
   color: var(--ds-ink);
-  background: var(--ds-panel-2, rgba(255, 255, 255, 0.03));
-  border: 1px solid var(--ds-line, rgba(255, 255, 255, 0.12));
+  /* `--ds-panel-2` never existed (the HUD bridge token is `--panel-2`), so this
+     silently fell back to a 3%-white wash from the pre-redesign dark theme — i.e.
+     transparent on the light panel. The recessed surface is `--ds-tile`. */
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line);
   cursor: pointer;
   text-align: left;
 }
@@ -871,17 +1052,22 @@
   flex: none;
   background: var(--ds-mut);
 }
+/* A 9px dot is a graphical object (1.4.11, 3:1). The old literals were a dark-theme
+   set: #22c55e / #eab308 / #f97316 landed at 2.2 / 1.85 / 2.9 on the LIGHT tile — the
+   "fair" dot was all but invisible. These four themed tokens carry the same
+   green → amber → red → grey ladder and are asserted by `npm run contrast`.
+   (The ms figure renders as text alongside, so the dot has never been the sole cue.) */
 .ping-dot.good {
-  background: #22c55e;
+  background: var(--ds-ok-ink);
 }
 .ping-dot.fair {
-  background: #eab308;
+  background: var(--ds-warn);
 }
 .ping-dot.poor {
-  background: #f97316;
+  background: var(--ds-danger);
 }
 .ping-dot.down {
-  background: #6b7280;
+  background: var(--ds-mut);
 }
 
 .ds-table {
@@ -994,11 +1180,13 @@
   background: none;
   color: var(--ds-ink);
 }
+/* the `-ink` siblings: --ds-red/--ds-blue are FILLS (3.1:1 / 3.4:1 as type on the light
+   panel). The dead `#ff6b6b`/`#5b9dff` fallbacks were pre-redesign dark values. */
 .mh-player.al-red {
-  color: var(--ds-red, #ff6b6b);
+  color: var(--ds-red-ink);
 }
 .mh-player.al-blue {
-  color: var(--ds-blue, #5b9dff);
+  color: var(--ds-blue-ink);
 }
 .mh-player.link {
   cursor: pointer;
@@ -1093,9 +1281,11 @@
 .lb-standing.placed {
   border-color: color-mix(in srgb, var(--ds-accent) 55%, var(--ds-line));
 }
+/* PROVISIONAL gold. --ds-gold is a FILL; where the same idea has to be TYPE it uses
+   --ds-warn (burnt amber on light, gold on dark) — the fill/text split, again. */
 .lb-standing.placing {
-  background: color-mix(in srgb, #f5a623 9%, var(--ds-panel));
-  border-color: color-mix(in srgb, #f5a623 45%, var(--ds-line));
+  background: color-mix(in srgb, var(--ds-gold) 9%, var(--ds-panel));
+  border-color: color-mix(in srgb, var(--ds-gold) 45%, var(--ds-line));
 }
 .lb-standing-rank {
   font-size: 22px;
@@ -1111,8 +1301,8 @@
   place-items: center;
   border-radius: 50%;
   font-weight: 800;
-  color: #04222a;
-  background: #f5a623;
+  color: var(--ds-gold-ink);
+  background: var(--ds-gold);
 }
 .lb-standing-col {
   display: flex;
@@ -1128,8 +1318,9 @@
 .lb-standing-text strong {
   color: var(--ds-accent);
 }
+/* TYPE, so --ds-warn — the raw gold is 1.98:1 on the tinted light panel */
 .lb-standing.placing .lb-standing-text strong {
-  color: #f5a623;
+  color: var(--ds-warn);
 }
 .lb-standing-sub {
   color: var(--ds-mut);
@@ -1145,7 +1336,7 @@
 .lb-standing-bar > span {
   display: block;
   height: 100%;
-  background: #f5a623;
+  background: var(--ds-gold);
 }
 
 /* highlight the viewer's own row in the board */
@@ -1282,9 +1473,10 @@ tr.lb-detail td {
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round-md);
   padding: 20px;
-  /* a hard block, not a realistic blur — it sits on a dark backdrop, so the
-     offset shade is drawn in the ink rather than the pastel line colour */
-  box-shadow: 6px 6px 0 rgba(25, 28, 27, 0.28);
+  /* a hard block, not a realistic blur. An alpha-black block on the dark scrim is
+     ~invisible in dark mode, so point it at --ds-line-soft (which IS the block-shadow
+     token and inverts with the theme) rather than a literal ink alpha. */
+  box-shadow: 6px 6px 0 var(--ds-line-soft);
 }
 .ds-modal-h {
   display: flex;
@@ -1311,10 +1503,10 @@ tr.lb-detail td {
   font-size: 14px;
   color: var(--ds-ink);
   background: var(--ds-tile);
-  border: 1px solid var(--ds-line);
+  border: 1px solid var(--ds-line-strong); /* 1.4.11: the border IS the control (tile-on-panel is 1.16:1) */
   border-radius: var(--ds-round);
   padding: 9px 11px;
-  box-shadow: inset 0 2px 0 rgba(25, 28, 27, 0.07);
+  box-shadow: inset 0 2px 0 var(--ds-inset);
 }
 .ds-input:focus-visible {
   outline: 2px solid var(--ds-accent);
@@ -1337,7 +1529,7 @@ tr.lb-detail td {
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
   background: var(--ds-tile);
-  box-shadow: inset 0 2px 0 rgba(25, 28, 27, 0.07);
+  box-shadow: inset 0 2px 0 var(--ds-inset);
   overflow: hidden;
 }
 .ds-username-input:focus-within {
@@ -1503,13 +1695,20 @@ tr.lb-detail td {
 .ds-opts.two {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
+.ds-opts.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 .ds-opts.four {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
+/* An UNSELECTED .ds-opt is a control whose only boundary is this border, so it takes
+   --ds-line-strong (1.4.11). It lives on a --ds-panel card (`.ds-panelbox`), which is
+   the ground --ds-line-strong is tuned for — 3.06:1. Dropped straight onto --ds-bg it
+   would measure 2.92 and need #7d8883 instead. */
 .ds-opt {
   position: relative;
   text-align: left;
-  border: 1px solid var(--ds-line);
+  border: 1px solid var(--ds-line-strong);
   border-radius: var(--ds-round);
   background: var(--ds-panel);
   color: var(--ds-ink);
@@ -1545,10 +1744,11 @@ tr.lb-detail td {
   cursor: pointer;
   transition: color 0.14s, background 0.14s, border-color 0.14s;
 }
+/* the GLYPH takes --ds-red-ink (it is 12px type); the tint + border may stay the fill */
 .ds-opt-del:hover {
-  color: var(--ds-red, #ef4444);
-  background: color-mix(in srgb, var(--ds-red, #ef4444) 14%, transparent);
-  border-color: color-mix(in srgb, var(--ds-red, #ef4444) 40%, var(--ds-line));
+  color: var(--ds-red-ink);
+  background: color-mix(in srgb, var(--ds-red) 14%, transparent);
+  border-color: color-mix(in srgb, var(--ds-red) 40%, var(--ds-line));
 }
 /* "save current" / "add" slot: dashed, muted until hovered */
 .ds-opt-add {
@@ -1734,8 +1934,8 @@ input[type='range'].ds-range::-webkit-slider-runnable-track,
     var(--ds-accent) 0 var(--fill, 0%),
     var(--ds-tile) var(--fill, 0%) 100%
   );
-  border: 1px solid var(--ds-line);
-  box-shadow: inset 0 1px 0 rgba(25, 28, 27, 0.06);
+  border: 1px solid var(--ds-line-strong); /* 1.4.11: the unfilled track is --ds-tile, near-invisible without it */
+  box-shadow: inset 0 1px 0 var(--ds-inset);
 }
 input[type='range'].ds-range::-webkit-slider-thumb,
 .ds-bind-row input[type='range']::-webkit-slider-thumb,
@@ -2128,21 +2328,31 @@ button.ds-key:active {
   font-size: 13px;
   margin-right: auto;
 }
+/* Alliance identity is FILLED, not tinted text — same pattern as the HUD's
+   `.chip.alliance-*`. The raw hues are ~3.2:1 as small type on the light chip;
+   as a deep fill with white ink they clear AA and command the attention the
+   alliance colours are reserved for. */
 .ds-chip.red {
-  color: var(--ds-red);
-  border-color: color-mix(in srgb, var(--ds-red) 55%, var(--ds-line));
+  background: var(--ds-red-chip);
+  border-color: transparent;
+  color: #fff;
 }
 .ds-chip.blue {
-  color: var(--ds-blue);
-  border-color: color-mix(in srgb, var(--ds-blue) 55%, var(--ds-line));
+  background: var(--ds-blue-chip);
+  border-color: transparent;
+  color: #fff;
 }
 .ds-chip.on {
-  color: var(--ds-ok);
+  color: var(--ds-ok-ink); /* TEXT — --ds-ok is 3.25:1 here. Border may stay the fill hue. */
   border-color: color-mix(in srgb, var(--ds-ok) 55%, var(--ds-line));
 }
+/* "off" is STATUS (NOT READY), not a disabled control: its text carries the
+   information, so it stays at full alpha and recedes via border+fill instead.
+   `opacity` here multiplied --ds-mut down to 3.07:1. */
 .ds-chip.off {
   color: var(--ds-mut);
-  opacity: 0.7;
+  border-color: var(--ds-line-soft);
+  background: var(--ds-tile);
 }
 /* pre-match strategy: alliance build cards (RobotPreview + spec readout) */
 .ds-strat-cards {

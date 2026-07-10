@@ -1,7 +1,20 @@
 # UI Phase 6 — Accessibility & contrast audit
 
-**Status:** partially landed · **Blast radius:** `src/ui/shell.css`, `src/ui/styles.css`, a few `.tsx`
-· **Sim:** untouched
+**Status: F1–F7 all landed.** Verified by `npm run contrast` (37 checks, new — see §7) plus
+an Electron drive of `/lobby`, `/records` and a live Solo Practice match (15 DOM assertions,
+all pass). `npm run build` + `npm test` green.
+
+Two corrections to this document, found while implementing:
+
+1. **The HUD-card ground was stale.** §2 composites `--ds-hud` over a dark field `#0e1116`
+   → `#f0f0f1`. The in-game backdrop became the light menu floor in a later session, so the
+   darkest ground behind a HUD card is now the **mat `#23262b`** (`config.ts COLORS.mat`),
+   compositing to **`#f2f2f2`**. `scripts/contrast.mjs` derives this instead of hardcoding it.
+   The findings are unaffected (the numbers move by <0.1).
+2. **F5's two `Matchmaking.tsx` inline opacities no longer exist** — Phase 5's `page()`
+   refactor removed them.
+
+**Blast radius:** `src/ui/shell.css`, `src/ui/styles.css`, a few `.tsx` · **Sim:** untouched
 
 Part of the low-poly UI redesign. Phase 1 inverted a dark theme to a light pastel one,
 which invalidates every contrast assumption the old palette carried. This is the sweep.
@@ -79,7 +92,12 @@ Ink on the pastel fills (all comfortably pass, no action):
 
 ## 3. Findings
 
-### F1 — `--ds-ok` repeats the `--amber` two-meanings bug · **high**
+### F1 — `--ds-ok` repeats the `--amber` two-meanings bug · **high** · ✅ DONE
+
+> Shipped: `--ds-ok-ink #1f7a46` added; the four TEXT sites repointed
+> (`.ds-chip.on`, `.chip.on`, `@keyframes elo-flash-up`, `.elo-delta.up`). The four fill
+> sites keep `--ds-ok`. `.elo-delta.up` sits on its own green tint over the white results
+> panel, not a bare card — that exact composite is in `contrast.mjs`.
 
 `--ds-ok #2f9e5f` is used as **both a fill and a text colour**, exactly the mistake that
 forced `--ds-warn` to be split out of `--amber` in Phase 1.
@@ -114,7 +132,11 @@ Leave the three fill sites on `--ds-ok`. Add a comment on the pair mirroring the
 `.ds-chip.on`'s `border-color: color-mix(… var(--ds-ok) 55% …)` is a boundary, not text —
 it may stay, but see **F4**.
 
-### F2 — Alliance chips: white on saturated red/blue is 3.3:1 · **high**
+### F2 — Alliance chips: white on saturated red/blue is 3.3:1 · **high** · ✅ DONE (option a)
+
+> Shipped: `--ds-red-chip #d32020` (5.25) / `--ds-blue-chip #1f6fe0` (4.76), used by
+> `.chip.alliance-*` and `.ds-chip.red/.blue`. `--ds-red`/`--ds-blue` untouched. The
+> false "clears AA" comment in `styles.css` is corrected in place.
 
 Phase 1 fixed these by making them **fills with white ink** (`styles.css:205-215`), with
 a comment saying it "clears AA". It does not, quite:
@@ -144,7 +166,12 @@ gradient there — that one is fine). Introduce chip-scoped tokens.
 Also audit `.final-score.alliance-red` / `.alliance-blue` (`styles.css:597,601`) — large
 display type, likely passes at 3:1, but confirm the actual `font-size`.
 
-### F3 — `.ds-chip.red` / `.ds-chip.blue` / `--ds-purple` as text · **medium**
+### F3 — `.ds-chip.red` / `.ds-chip.blue` / `--ds-purple` as text · **medium** · ✅ DONE (filled)
+
+> Shipped: `.ds-chip.red/.blue` converted to the F2 filled treatment — they render the
+> same `RED`/`BLUE` alliance labels as the HUD chips, so they now share one pattern.
+> `--ds-red-ink` / `--ds-blue-ink` / `--ds-purple-ink` are defined for any future
+> tinted-text site and are contrast-checked, but nothing consumes them yet.
 
 `shell.css:2142` sets `.ds-chip.blue { color: var(--ds-blue) }` (3.16:1) and there is a
 matching `.red`. `--ds-purple` (3.22:1) is used the same way elsewhere. Same class of bug
@@ -154,7 +181,12 @@ as F1: a saturated hue used as small type on a light ground.
 `#6b3fc4` = 6.40) or convert these chips to the filled treatment from F2. Prefer filled —
 it matches the alliance chips and reuses one pattern.
 
-### F4 — Control boundaries fail 1.4.11 · **medium**
+### F4 — Control boundaries fail 1.4.11 · **medium** · ✅ DONE
+
+> Shipped: `--ds-line-strong #8b9691` on `.ds-input`, `.ds-select`, the range track, and
+> **unselected** `.ds-opt`. Cards stay on `--ds-line`. Confirmed in the browser that a
+> SELECTED `.ds-opt.on` still wears the accent border (the first `.ds-opt` on `/lobby` is
+> selected — an early check queried it and read the accent, not a regression).
 
 `--ds-line #c0c9c4` scores **1.69:1 on panel**, **1.46 on tile**. For a *card* stroke
 that's fine (decorative; the card is separated by fill and shadow anyway). For a **UI
@@ -183,7 +215,24 @@ it*, panel is the relevant ground and 3.06 is the number that matters — but if
 a recessed input directly on `--ds-bg` or inside a `--ds-tile` well anywhere, it needs a
 darker value (`#7d8883` ≈ 3.4 on bg). Check before assuming.
 
-### F5 — `opacity` on status text · **medium**
+### F5 — `opacity` on status text · **medium** · ✅ DONE
+
+> Shipped. `.chip.off` and `.ds-chip.off` drop `opacity` and recede via a `--ds-tile`
+> fill (+ softer border) at full-alpha `--ds-mut`.
+>
+> The sweep found **two more real ones**, and confirmed the rest are fine:
+> - **`.res-side` (results, losing alliance) was the worst site in the file** and is not
+>   in the list below. `opacity: .7` on the element composites the WHOLE group — gradient
+>   *and* white ink both blend toward the panel — dragging the 13px `BLUE` label to
+>   **3.57:1** (red 4.34). The 32px score beside it passed only because it's large text.
+>   `.res-side.win` **already** carried an amber outline, so the dimming was redundant
+>   emphasis bought with contrast. Removed; the winner is marked additively.
+> - `.admin-row .admin-rank` — `opacity:.5` on a rank number (content) = 3.19:1 → `--ds-mut`.
+>
+> **Deliberately left:** every `:disabled` rule (`shell.css:563,1595,1625,1989` — WCAG
+> exempts inactive components), all `@keyframes` opacity (transient), `.ds-grid-bg::before`
+> (decorative), `.intro-vs` (26px/800 = large text, 7.51:1 at `.75`), and
+> `.results.tallying .res-side` (a ~1s pre-reveal veil that animates to full).
 
 Two chips dim their text with `opacity`, which multiplies the contrast down:
 
@@ -207,7 +256,12 @@ Sweep the other sub-0.8 opacities on text while you're here — `shell.css:547, 
 `Matchmaking.tsx:305` (0.75). Several are on genuinely decorative elements; check each,
 don't bulk-edit.
 
-### F6 — `role="tab"` without the rest of the pattern · **medium**
+### F6 — `role="tab"` without the rest of the pattern · **medium** · ✅ DONE (option b)
+
+> Shipped: `Records.tsx`'s strip is now `<nav aria-label="Records sections">` with
+> `aria-current="page"` — the buttons change the URL, so they are navigation. Matches
+> `Configure`'s sub-nav and `NavRail`. Verified: no `role="tablist"`/`role="tab"` in the
+> rendered DOM, `aria-current="page"` on the active one.
 
 `Records.tsx:42-47` declares `role="tablist"`, `role="tab"`, `aria-selected` — and then
 stops. There is no `role="tabpanel"`, no `aria-controls`, no `id` linkage, and no roving
@@ -232,7 +286,17 @@ Native buttons with no roles at least behave predictably under `Tab`.
 which both already use `aria-current="page"` on URL-changing buttons. The tabs *are*
 navigation.
 
-### F7 — The game canvas is unlabelled and unannounced · **low (won't fix now)**
+### F7 — The game canvas is unlabelled and unannounced · **low** · ✅ cheap wins DONE
+
+> **Decision recorded: a screen-reader-playable driving sim stays out of scope.** Both
+> sanctioned cheap wins shipped: `<canvas role="img" aria-label=…>`, `.eventlog`
+> `aria-live="polite"`, and `role="status"` on `.timer-phase`.
+>
+> `role="status"` is on the PHASE label only, never the digits beside it — the timer
+> reticks every frame and would flood a screen reader; the phase changes ~4× a match.
+> Note there are **two** `.timer-phase` spans: the match one (live) and Free Drive's
+> static `"FREE DRIVE"` (`GameView.tsx:311`), which is deliberately left plain — a label
+> that never changes must not be a live region.
 
 `GameView.tsx:111` renders a bare `<canvas>`. All match state — score, timer, gate,
 penalties — is painted or lives in chips that never announce changes.
@@ -306,8 +370,24 @@ the palette:
 
 ## 7. Verification
 
-Add `scripts/contrast.mjs` — a standalone luminance checker that reads the token block
-and asserts the pairs above. It has no deps and can run in CI:
+`scripts/contrast.mjs` **exists** (`npm run contrast`, 37 checks, no deps, exits 1 on
+regression). It does three things:
+
+- **Reads the real token values out of `shell.css`** rather than restating them, so a
+  token edit that breaks a documented pair fails here instead of in an audit.
+- **Derives composites** (`--ds-hud` over the mat; `opacity` on text; `.elo-delta`'s tint)
+  instead of hardcoding a ground that can go stale — which is exactly what happened to
+  this doc's `#0e1116`.
+- **Asserts the fill-only tokens still FAIL as text.** `--ds-red`, `--ds-blue`,
+  `--ds-green`, `--ds-ok`, `--ds-purple` must stay under 4.5:1 on the floor. If someone
+  "fixes" one by darkening it, the check fails and tells them to add an `-ink` sibling —
+  because `src/render/` and `.score-panel` depend on those exact values.
+
+`npm run contrast` is **not** wired into `npm test`: that command is the sim smoke
+(CLAUDE.md), and conflating a CSS audit with the physics canary would make a red `npm test`
+ambiguous. Run both.
+
+The original sketch, for reference:
 
 ```js
 // usage: node scripts/contrast.mjs   → exits 1 on any regression
@@ -331,16 +411,22 @@ Then:
 
 ```sh
 export PATH="$HOME/.nvm/versions/node/v26.5.0/bin:$PATH"
-node scripts/contrast.mjs
+npm run contrast         # 37 checks
 npm run build
 npm test                 # ~205 sim checks — canary. Nothing here touches src/sim/
 ```
 
-Visual regression: re-run `<scratchpad>/shiftaudit.cjs` (435 state changes, 10 routes +
-the live HUD). Colour changes shouldn't shift layout — but `.chip.off` losing `opacity`
-in favour of a border change *could*, so re-run it rather than assuming.
+**Done, via an Electron drive** (`vite preview` + a driver in the repo — path routing
+needs http, and the build needs `VITE_GAME_SERVER_URL` or Multiplayer is hidden): computed
+`border-color` on `.ds-input` / `.ds-opt:not(.on)` / `.ds-opt.on`, the `/records` ARIA
+shape, and a live Solo Practice match for the canvas label, `aria-live`, `role="status"`
+and full-alpha HUD chips. 15/15.
 
-Manual, with real assistive tech:
+**Not done:** `shiftaudit.cjs` no longer exists (old session scratchpad). `.chip.off`
+trading `opacity` for a fill is a paint-only change (no box-model property moved), so a
+shift is unlikely — but that was the reason to re-run it, and it wasn't re-run.
+
+Manual, with real assistive tech (NOT done — needs a human at a screen reader):
 
 - Tab through `/`, `/configure/robot`, `/records` — every stop must show a visible ring.
 - macOS VoiceOver on `/records`: confirm the tab/link decision from **F6** announces

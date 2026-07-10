@@ -4,19 +4,11 @@
   box-sizing: border-box;
 }
 
-:root {
-  --bg: #14161a;
-  --panel: #1c2027;
-  --panel-2: #232833;
-  --border: #313847;
-  --text: #e5e7eb;
-  --muted: #8b93a3;
-  --red: #ef4444;
-  --blue: #3b82f6;
-  --green: #22c55e;
-  --purple: #a855f7;
-  --amber: #fbbf24;
-}
+/* The `--bg`/`--panel`/`--border`/`--text`/`--muted`/`--amber` bridge this file runs on
+   is DEFINED IN shell.css (which main.tsx imports right after this one), where it
+   forwards to the themed --ds-* tokens. It used to be re-declared here with the
+   pre-redesign dark values — dead since the retheme, and a landmine: they silently won
+   for any rule shell.css did not re-point. */
 
 html,
 body,
@@ -27,8 +19,8 @@ body,
 }
 
 body {
-  background: var(--bg);
-  color: var(--text);
+  background: var(--ds-bg);
+  color: var(--ds-ink);
   font-family: var(--ds-font-ui, system-ui, sans-serif);
 }
 
@@ -60,6 +52,14 @@ button {
   z-index: 10;
 }
 
+/* ---------------------------------------------------------------------------
+   HUD CARDS FLOAT ON THE FIELD, WHICH NEVER THEMES.
+   Their fill (--ds-hud) is the themed panel, but a dark card on the dark field is
+   only ~1.4:1 by fill — so the EDGE identifies the card, and it uses --ds-hud-line
+   (readable against both the card and the field), never --ds-line. Rules that draw a
+   separator INSIDE a card keep --border. See the token block in shell.css.
+   --------------------------------------------------------------------------- */
+
 /* FTC live-scoring style bar (bottom of screen): red panel | timer | blue panel */
 .scorebar {
   position: absolute;
@@ -70,7 +70,7 @@ button {
   align-items: stretch;
   border-radius: var(--ds-round-lg) var(--ds-round-lg) 0 0;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 1px solid var(--ds-hud-line);
   border-bottom: none;
 }
 
@@ -147,8 +147,11 @@ button {
   color: var(--ds-warn);
 }
 
+/* --ds-red-ink, not the --red fill: the fill is 2.92:1 on the HUD card, i.e. it misses
+   even the 3:1 LARGE-text bar this 30px timer qualifies for. The last ten seconds of a
+   match is the worst possible place for a number you have to squint at. */
 .timer-panel.urgent .timer-time {
-  color: var(--red);
+  color: var(--ds-red-ink);
   animation: blink 1s steps(2) infinite;
 }
 
@@ -174,7 +177,7 @@ button {
 
 .breakdown-row span {
   background: var(--ds-hud-soft);
-  border: 1px solid var(--border);
+  border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-full);
   padding: 3px 11px;
   font-family: var(--ds-font-mono);
@@ -189,7 +192,7 @@ button {
   align-items: center;
   gap: 5px;
   background: var(--ds-hud);
-  border: 1px solid var(--border);
+  border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-full);
   padding: 4px 11px;
   font-family: var(--ds-font-mono);
@@ -201,26 +204,31 @@ button {
 
 /* Alliance identity is FILLED, not tinted text: #ff4d4d / #3d8bff as 11.5px type
    on a white chip lands under 4.5:1. As a fill with white ink it clears AA and
-   commands more attention — which is what the alliance colors are reserved for. */
+   commands more attention — which is what the alliance colors are reserved for.
+   The fill is --ds-*-chip, NOT --ds-red/--ds-blue: white on the raw hues is only
+   3.3:1 (the LARGE-text bar, and .chip is 11.5px). --ds-red/--ds-blue stay exactly
+   as they are — src/render/ paints them on the dark field. */
 .chip.alliance-red {
-  background: var(--red);
+  background: var(--ds-red-chip);
   border-color: transparent;
   color: #fff;
 }
 
 .chip.alliance-blue {
-  background: var(--blue);
+  background: var(--ds-blue-chip);
   border-color: transparent;
   color: #fff;
 }
 
 .chip.on {
-  color: var(--ds-ok);
+  color: var(--ds-ok-ink); /* GATE OPEN is status text — --ds-ok is 3.0:1 on a HUD card */
 }
 
+/* GATE CLOSED is status, not a disabled control: the text IS the information, so
+   full alpha (`opacity:.6` dragged --muted to 2.45:1). It recedes via fill instead. */
 .chip.off {
   color: var(--muted);
-  opacity: 0.6;
+  background: var(--ds-tile);
 }
 
 .chip.warn {
@@ -271,7 +279,7 @@ button {
   align-items: center;
   gap: 12px;
   background: var(--ds-hud);
-  border: 1px solid var(--border);
+  border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-md);
   padding: 8px 14px;
 }
@@ -281,12 +289,16 @@ button {
   gap: 5px;
 }
 
+/* An EMPTY slot is a --ds-tile well, only ~1.03:1 against the card it sits on in EITHER
+   theme — so the RING, not the fill, is what says "slot", and the hopper count has no
+   other visual cue. --ds-line was 2.4:1; --ds-line-strong is tuned against --ds-panel
+   (3.06) but the HUD card is the translucent #f2f2f2 composite, where it drops to 2.73.
+   --ds-mut is the token whose whole job is "reads against the surface": 5.4 / 5.5. */
 .hopper-pip {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  border: 1px solid var(--border);
-  /* an EMPTY slot: recessed light well, not a dark hole */
+  border: 1px solid var(--ds-mut);
   background: var(--ds-tile);
 }
 
@@ -310,13 +322,14 @@ button {
   color: var(--muted);
 }
 
-/* chunky bar, rounded caps, light grey-beige track (DESIGN.md "Progress Bars") */
+/* chunky bar, rounded caps, recessed track (DESIGN.md "Progress Bars").
+   Empty track vs card is ~1.03:1, so the ring carries it — as on .hopper-pip. */
 .power-gauge .pg-bar {
   width: 66px;
   height: 8px;
   border-radius: var(--ds-round-full);
   background: var(--ds-tile);
-  border: 1px solid var(--border);
+  border: 1px solid var(--ds-mut);
   overflow: hidden;
 }
 
@@ -355,7 +368,7 @@ button {
 .game-btn {
   pointer-events: auto;
   background: var(--ds-hud);
-  border: 1px solid var(--border);
+  border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round);
   color: var(--ds-ink-dim);
   padding: 6px 13px;
@@ -389,8 +402,9 @@ button {
 }
 
 /* "MATCH BEGINS IN" lead-in before the digits.
-   NOTE: this paints straight onto the DARK field canvas with no card behind it,
-   so it must stay LIGHT — `var(--text)` is charcoal now and would vanish. */
+   NOTE: this paints straight onto the DARK field canvas with no card behind it, so it
+   must stay LIGHT IN BOTH THEMES — `var(--text)` is charcoal in light mode and would
+   vanish. --ds-on-field has no dark-mode value for precisely this reason. */
 .countdown-text {
   position: absolute;
   inset: 0;
@@ -456,9 +470,9 @@ button {
 
 .eventlog-line {
   background: var(--ds-hud-soft);
-  /* the log sits in the left letterbox, which is now the warm floor — it needs a
+  /* the log sits in the left letterbox (the themed floor, not the field) — it needs a
      full edge, not just the accent bar, to separate from it */
-  border: 1px solid var(--border);
+  border: 1px solid var(--ds-hud-line);
   border-left: 2px solid var(--ds-accent);
   border-radius: var(--ds-round-sm);
   padding: 2px 9px;
@@ -489,11 +503,11 @@ button {
   z-index: 20;
 }
 
-/* a light card on the dark scrim — here the block shadow DOES read, because the
-   scrim behind it is uniformly dark rather than the busy field */
+/* a card on the dark scrim. The scrim is dark in BOTH themes (it dims the field), so
+   the panel edge is a HUD edge, not a shell one. */
 .overlay-panel {
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-lg);
   padding: 30px 40px;
   text-align: center;
@@ -630,6 +644,11 @@ button {
   gap: 10px;
   margin: 2px 0 8px;
 }
+/* No group `opacity` on the losing side. `opacity` composites the WHOLE group — the
+   gradient AND the white ink both blend toward the panel — so dimming to .7 dragged
+   the 13px "BLUE" label to 3.57:1 (red 4.34). The winner is already marked by the
+   outline below, so the dimming was redundant emphasis bought with contrast.
+   Emphasize the winner additively; never de-emphasize by fading real content. */
 .res-side {
   flex: 1;
   display: flex;
@@ -639,10 +658,8 @@ button {
   border-radius: 10px;
   padding: 10px;
   color: white;
-  opacity: 0.7;
 }
 .res-side.win {
-  opacity: 1;
   outline: 2px solid var(--amber);
 }
 .res-side.red {
@@ -676,12 +693,14 @@ button {
   gap: 2px;
   margin: 6px 0 12px;
 }
+/* was a hardcoded #fff — stranded from the pre-redesign dark theme. `.overlay-panel` is
+   `var(--panel)`, i.e. #ffffff in light mode, so the 58px run total was WHITE ON WHITE. */
 .record-total {
   font-size: 58px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
   line-height: 1;
-  color: #fff;
+  color: var(--ds-ink);
 }
 .record-total-label {
   font-size: 11px;
@@ -733,7 +752,7 @@ button {
   min-width: 300px;
 }
 .record-table .penalty-row td.bv {
-  color: var(--red);
+  color: var(--ds-red-ink);
 }
 .results-table th {
   font-size: 12px;
@@ -748,11 +767,13 @@ button {
 .results-table td.bv {
   text-align: left;
 }
+/* the `-ink` siblings, not --ds-red/--ds-blue: these are 12px TYPE on the results card
+   (~3.1:1 for the raw hues). The fills stay reserved for the alliance gradients. */
 .results-table th.red {
-  color: var(--red);
+  color: var(--ds-red-ink);
 }
 .results-table th.blue {
-  color: var(--blue);
+  color: var(--ds-blue-ink);
 }
 .results-table td.rv,
 .results-table td.bv {
@@ -866,11 +887,15 @@ button {
   pointer-events: none;
   animation: intro-bg 0.4s ease-out;
 }
+/* "RANKED MATCH" and "VS" sit on the intro SCRIM (rgba(8,10,14,.72) over the field),
+   which is near-black in both themes — no card. So they take --ds-on-field, like the
+   countdown. They used to take --amber/--text, which the light retheme had turned into
+   mint-on-black (3.0:1) and charcoal-on-black (1.2:1) — both effectively unreadable. */
 .intro-eyebrow {
   font-size: 13px;
   font-weight: 800;
   letter-spacing: 6px;
-  color: var(--amber);
+  color: var(--ds-on-field-accent);
   animation: intro-drop 0.5s ease-out;
 }
 .intro-cols {
@@ -902,19 +927,20 @@ button {
 .intro-side-label.blue {
   color: var(--blue);
 }
+/* no `opacity: .75` — it composited toward the near-black scrim. --ds-on-field-dim IS
+   the dimmed-on-canvas value, applied as a colour so the contrast is knowable. */
 .intro-vs {
   font-size: 26px;
   font-weight: 800;
   letter-spacing: 3px;
-  color: var(--text);
-  opacity: 0.75;
+  color: var(--ds-on-field-dim);
   animation: intro-drop 0.5s ease-out 0.1s both;
 }
 .intro-card {
   width: 230px;
   background: var(--panel);
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--border);
+  border: 1px solid var(--ds-hud-line);
+  border-left: 4px solid var(--ds-hud-line);
   border-radius: 10px;
   padding: 12px 14px;
   text-align: left;
@@ -1139,7 +1165,7 @@ button {
     color: var(--text);
   }
   40% {
-    color: var(--ds-ok);
+    color: var(--ds-ok-ink);
   }
 }
 @keyframes elo-flash-down {
@@ -1167,7 +1193,7 @@ button {
   font-size: 10px;
 }
 .elo-delta.up {
-  color: var(--ds-ok);
+  color: var(--ds-ok-ink);
   background: rgba(52, 211, 153, 0.12);
 }
 .elo-delta.down {
@@ -1224,12 +1250,16 @@ button {
   touch-action: none;
 }
 
+/* The joystick is drawn ON the field canvas, with only a translucent dark puck behind
+   it — so like the countdown it takes the fixed --ds-on-field family. It previously
+   used the --text/--muted bridge, which the retheme had turned CHARCOAL: a near-black
+   handle on a near-black field. Broken in light mode, and invisible either way. */
 .mobile-joystick-base {
   position: absolute;
   width: 120px;
   height: 120px;
   background: rgba(28, 32, 39, 0.6);
-  border: 2px solid var(--border);
+  border: 2px solid var(--ds-hud-line);
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -1245,14 +1275,14 @@ button {
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 1px;
-  color: var(--muted);
+  color: var(--ds-on-field-dim);
   text-transform: uppercase;
 }
 
 .mobile-joystick-handle {
   width: 44px;
   height: 44px;
-  background: var(--text);
+  background: var(--ds-on-field);
   border-radius: 50%;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
   pointer-events: none;
@@ -1298,7 +1328,7 @@ button {
 }
 .net-overlay-card {
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: 1px solid var(--ds-hud-line);
   border-radius: 14px;
   padding: 24px 32px;
   text-align: center;
@@ -1318,9 +1348,16 @@ button {
 @keyframes net-spin { to { transform: rotate(360deg); } }
 
 /* admin console form */
+/* ---------------------------------------------------------------------------
+   ADMIN + .ds-btn.danger are the ONLY rules in this file that are NOT in-match.
+   They render on the SHELL (the /admin page), so they must follow the theme —
+   which the un-prefixed bridge tokens (--panel/--text/--border/--muted) must NOT
+   do, since those are what the light HUD cards are made of. Hence --ds-* here.
+   See the bridge block in shell.css. Do not "unify" these back.
+   --------------------------------------------------------------------------- */
 .admin-card {
-  background: var(--panel);
-  border: 1px solid var(--border);
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-line);
   border-radius: 12px;
   padding: 18px;
   display: flex;
@@ -1330,10 +1367,10 @@ button {
 .admin-field { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
 .admin-field.col { flex-direction: column; align-items: stretch; gap: 5px; }
 .admin-field input {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line-strong);
   border-radius: 8px;
-  color: var(--text);
+  color: var(--ds-ink);
   padding: 7px 10px;
   font: inherit;
 }
@@ -1341,10 +1378,10 @@ button {
 .admin-field.col input { width: 100%; }
 .admin-buttons { display: flex; gap: 10px; margin-top: 4px; }
 .admin-field select {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line-strong);
   border-radius: 8px;
-  color: var(--text);
+  color: var(--ds-ink);
   padding: 7px 10px;
   font: inherit;
 }
@@ -1353,21 +1390,27 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line);
   border-radius: 8px;
   padding: 7px 10px;
   font-size: 13px;
 }
-.admin-row .admin-rank { opacity: 0.5; min-width: 20px; text-align: right; font-variant-numeric: tabular-nums; }
+/* the rank NUMBER is content, not chrome — `opacity:.5` put it at 3.19:1 */
+.admin-row .admin-rank { color: var(--ds-mut); min-width: 20px; text-align: right; font-variant-numeric: tabular-nums; }
 .admin-row .admin-grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .admin-row input.admin-grow {
-  background: var(--panel);
-  border: 1px solid var(--border);
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-line-strong);
   border-radius: 6px;
-  color: var(--text);
+  color: var(--ds-ink);
   padding: 5px 8px;
   font: inherit;
 }
 .ds-btn.sm { padding: 5px 10px; font-size: 12px; }
-.ds-btn.danger { color: #ff6b6b; border-color: #ff6b6b66; }
+/* was a hardcoded #ff6b6b — a DARK-mode red, stranded here since before the light
+   retheme, and only ~2.6:1 on a light panel. --ds-danger is 6.17 light / 6.14 dark. */
+.ds-btn.danger {
+  color: var(--ds-danger);
+  border-color: color-mix(in srgb, var(--ds-danger) 40%, transparent);
+}

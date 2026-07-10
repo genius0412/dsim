@@ -1,4 +1,255 @@
-# HANDOFF — 2026-07-09 (in-game backdrop → menu floor; console-scaffold unification) — READ FIRST
+# HANDOFF — 2026-07-09 (UI Phase 7b: the HUD themes too) — READ FIRST
+
+> **GREEN, uncommitted on `low-poly-ui`.** `npm run build` + `npm test` + `npm run contrast`
+> (**135** checks) + `npm run server:check` all pass. Electron-verified in both themes: 32 DOM
+> assertions in-match + a live canvas pixel probe, and 38 more probing the server-gated
+> screens' CSS rules. Client-only — **no server change, no Fly redeploy.** `src/sim/` untouched.
+>
+> ## READ THIS FIRST: the light island is DEAD (it was the wrong call)
+>
+> Phase 7 shipped the in-match HUD as a permanent LIGHT ISLAND, on the argument that a dark
+> card is only 1.19:1 on the dark field. **The user rejected that** ("hud elements need to be
+> themed dark also"), and they were right: the argument measured the FILL, but a floating card
+> is identified by its **EDGE** (WCAG 1.4.11 measures the boundary) — exactly the reasoning the
+> same user had already accepted for the field mat, which is separated from the dark letterbox
+> by its outline alone at 1.03:1.
+>
+> So: **`:root[data-theme='dark'] .game-root` is gone**, and the legacy bridge
+> (`--bg`/`--panel`/`--panel-2`/`--border`/`--text`/`--muted`/`--amber`) no longer holds
+> values — each one now **aliases** the `--ds-*` token that owns the same job, so the HUD
+> follows the theme with no second palette to keep in sync.
+>
+> **The mechanism that replaces the island is `--ds-hud-line`.** `--ds-line` is tuned against
+> the card *behind* it and would vanish against the field; `--ds-hud-line` must read from BOTH
+> sides. Light `#c0c9c4`, dark `#727d86` (3.6:1 on the field, 3.3:1 on the card). Every
+> floating surface takes it: `.scorebar`, `.chip`, `.breakdown-row span`, `.robot-status`,
+> `.game-btn`, `.eventlog-line`, `.overlay-panel`, `.intro-card`, `.net-overlay-card`.
+>
+> **A THIRD token category now exists.** Not "inverts" vs "fixed fill", but *its ground is the
+> CANVAS*: `--ds-on-field` / `--ds-on-field-dim` / `--ds-on-field-accent`. The field is
+> hardcoded dark, so these are **deliberately absent from the dark block** — do not "complete
+> the pair". They cover text with no card behind it: countdown digits, the mobile joystick, and
+> the ranked-intro eyebrow/VS. `-accent` is the DARK palette's mint on purpose (the canvas is a
+> dark ground, so the on-field family borrows values tuned for one).
+>
+> ## Latent bugs this surfaced — all pre-existing, all now fixed
+>
+> Invisible because the island hid the HUD from the retheme, and because the server-gated
+> screens never render without `VITE_GAME_SERVER_URL`.
+>
+> - **`.record-total` was `color:#fff` on `.overlay-panel` (`--ds-panel` = `#ffffff`).** The
+>   58px solo record-run total was **white on white**. Now `--ds-ink`.
+> - **`.intro-vs` ("VS") was `--text` (charcoal) at `opacity:.75` on a near-black scrim** —
+>   ~1.2:1, invisible. **`.intro-eyebrow` ("RANKED MATCH")** was `--amber` (mint) on the same
+>   scrim, 3.0:1. Both are ranked-only, so nobody saw them. Now the on-field family.
+> - **`.mobile-joystick-handle` was `--text`** — a charcoal puck on a near-black field.
+> - **`.timer-panel.urgent` was `--red`**, which is 2.92:1 on the HUD card: it misses even the
+>   3:1 LARGE-text bar the 30px timer qualifies for. The last ten seconds of a match. Now
+>   `--ds-red-ink`.
+> - **`.hopper-pip` / `.pg-bar` rings were `--ds-line`** (2.4:1). The empty-slot fill is 1.03:1
+>   on its card, so the RING is the only cue for the hopper count. `--ds-line-strong` is tuned
+>   against `--ds-panel` (3.06) and drops to **2.73** on the translucent HUD card — use
+>   `--ds-mut` there (5.4 / 5.0). *Measure against the actual ground, every time.*
+> - **`.results-table th.red/.blue`, `.mh-player.al-*`, `.ds-opt-del:hover`** used the fill
+>   hues as small TYPE (~3.1:1). Now the `-ink` siblings.
+> - **`usernameHintColor()` returned `var(--ds-ok)`** — a fill token, as text, on the sign-in
+>   panel. Now `--ds-ok-ink`.
+> - **ServerPicker's `.ping-dot`s were a stranded dark-theme set** (`#22c55e`/`#eab308`/
+>   `#f97316`): **2.2 / 1.85 / 2.9** on the light tile — "fair" was all but invisible. Now a
+>   themed green→amber→red→grey ladder (`--ds-ok-ink`/`--ds-warn`/`--ds-danger`/`--ds-mut`).
+> - **Leaderboard's `#f5a623` gold was both fill and text** (1.98:1 as type on its own tint).
+>   Split into `--ds-gold`/`--ds-gold-ink` (a fixed fill) with `--ds-warn` for the type.
+> - **`Account.tsx` styled the account id with `var(--muted)` inline** — a bridge token, then
+>   pinned light, so ~2.0:1 in dark mode. Now `--ds-mut`.
+> - **styles.css re-declared the whole bridge with pre-redesign DARK values.** Dead since the
+>   retheme (shell.css loads after), but a landmine for any rule shell.css did not re-point.
+>   Deleted.
+>
+> ## The contrast checker grew teeth (135 checks, was 75)
+>
+> - HUD pairs are asserted **per theme**, against that theme's `--ds-hud` composited over the
+>   mat (light `#f2f2f2`, dark `#272e34` — the mat is the worst case in *both*: the darkest
+>   backing for a translucent white card, the lightest for a translucent charcoal one).
+> - New `serverPairs()` group covers the screens you cannot reach without a game server.
+> - New `checkCardIdentifiable()`: a card must be identifiable on the field by **fill OR edge**,
+>   `max()` not `and`. Asserting both would demand a light-mode border that reads on a white
+>   card. Light passes by fill (16.18, edge 10.69); dark passes by edge (4.31, fill 1.32).
+>   That single check is what licenses the HUD to theme at all.
+>
+> ---
+>
+> ## Phase 7 (dark mode) — still true, minus the island
+>
+> Items **1** and **2** below describe the light island and the pinned bridge, and are
+> **superseded by the section above**. The rest stands.
+>
+> **The toggle lives in Configure ▸ "Audio and Visual"** (user request). The `audio` section
+> was renamed; the ROUTE KEY stays `audio`, so `/configure/audio` deep links still work. Three
+> buttons: System / Light / Dark. They're `aria-pressed` toggle buttons, NOT an ARIA radiogroup
+> — a radiogroup owes roving tabindex + arrow keys, and a partial pattern is worse than none
+> (Phase 6 F6's lesson).
+>
+> **Storage is `localStorage['decodesim.theme']`, NOT `GameSettings`** (`src/theme.ts`).
+> `GameSettings` syncs to Postgres per account; a display pref must not follow you to another
+> monitor or require signing in. First paint is stamped by a **blocking inline script in
+> `index.html`** before the stylesheet — React mounts after first paint, so reading the pref
+> from `src/` would guarantee a flash. `system` is resolved in JS so CSS sees only two states;
+> the `prefers-color-scheme` listener is armed ONLY while the pref is `system` (`setThemePref`
+> is the single place that arms/disarms it).
+>
+> **1. ~~THE KEY MECHANISM — the `.game-root` LIGHT ISLAND.~~ SUPERSEDED (Phase 7b).** The
+> island is deleted; the HUD themes. Kept for the record: the island argued that a light HUD
+> card is 16:1 on the field and a dark one 1.19:1 — true of the FILL, and irrelevant, because
+> the EDGE identifies the card. What was NOT wrong, and is worth remembering: `styles.css`
+> reads ~20 `--ds-*` tokens directly, not just the four bridge names, so any scheme that
+> re-points the bridge alone is incomplete. **Still true: `renderer.ts` reads
+> `document.documentElement.dataset.theme`, not `getComputedStyle`.**
+>
+> **2. ~~The bridge is now UNSHARED and stays pinned light.~~ SUPERSEDED (Phase 7b).** The
+> bridge now ALIASES `--ds-*` and themes. Still true from this item: the two non-HUD rules in
+> `styles.css` (`.admin-*`, `.ds-btn.danger`) are on `--ds-*` tokens, `body` uses
+> `--ds-bg`/`--ds-ink`, and `.ds-btn.danger`'s hardcoded `#ff6b6b` was a stranded DARK-mode red
+> at ~2.6:1 on the light panel — now `--ds-danger`, inverting for free.
+>
+> **3. The LETTERBOX themes; the FIELD does not** (user decision — the plan listed `src/render/`
+> as a non-goal). `COLORS.backdropDark #20262c` in `config.ts`; `renderer.ts` picks by
+> `data-theme`. Entering a match from a dark menu no longer flashes bright. The field mat/tile
+> are byte-identical in both themes (pixel-probed `#2c3038` centre); the board stays separated
+> from the dark floor by its existing outline (`mat #23262b` vs `bg #20262c` is only 1.03:1 on
+> fill alone, so **do not remove that outline**).
+>
+> **4. Two plan values were WRONG and are corrected in the doc.**
+> - `--ds-line-strong: #6b7680` was measured against `--ds-bg` (3.29) but an input's border
+>   sits on the **panel** behind it, where it is **2.96** — failing 1.4.11 by 0.04. Shipped
+>   **`#727d86`** (3.27 on panel). Light mode tunes to panel too.
+> - `Logo.tsx` does NOT need changing: its `<rect>` fills the whole viewBox, so the dark
+>   strokes sit on the mint badge, never on `--ds-bar`.
+>
+> **5. `--ds-panel-2` never existed.** `.server-row` fell back to a 3%-white wash from the
+> pre-redesign dark theme (⇒ transparent on the light panel). Latent light-mode bug, now
+> `--ds-tile`.
+>
+> **6. `npm run contrast` asserts BOTH themes**: it parses the light `:root` block AND the
+> `:root[data-theme='dark']` overrides out of `shell.css`. ~~The HUD pairs always resolve
+> against the LIGHT tokens (the island).~~ *Phase 7b: HUD pairs now resolve per theme.* Still
+> true: the fill-only guard (`--ds-red` etc. must FAIL as text) runs on **light only** — on the
+> dark floor those hues genuinely pass, so asserting a failure there would assert a falsehood;
+> "fill-only" is policy in dark, measurement in light.
+>
+> **7. `.ds-select`'s chevron is a duplicated rule, not a mask.** `var()` is illegal in a
+> `data:` URI; the plan preferred `mask-image`, but a `<select>` can't carry a `::after` and
+> masking the element eats its background. Two literals, kept adjacent.
+>
+> **Electron**: `backgroundColor` now follows `nativeTheme.shouldUseDarkColors`. Correct
+> whenever the pref is `system` (the default); one frame mismatches if the user forced a theme
+> against their OS. Accepted (the fix is an IPC/userData round-trip for one frame).
+>
+> **Not done:** `prefers-contrast: more` block; real screen-reader passes; `shiftaudit.cjs`
+> (gone with an old scratchpad) so no layout-shift re-run across themes — dark mode changes no
+> geometry, but that was the check. All three redesign phases (5, 6, 7) are now landed.
+
+---
+
+# HANDOFF — 2026-07-09 (UI Phase 6: accessibility + contrast)
+
+> **GREEN, uncommitted on `low-poly-ui`.** `npm run contrast` (37, NEW) + `npm run build` +
+> `npm test` (ALL PASS). Client-only, `src/ui/` + `scripts/` — **no server/sim change.**
+>
+> **`docs/ui-phase6-accessibility.md` F1–F7 are all landed.** Read that doc — every finding
+> now carries a ✅ block saying what shipped and why. Highlights:
+>
+> **1. `npm run contrast` (`scripts/contrast.mjs`, new).** Standalone WCAG checker, no deps,
+> exits 1 on regression. It **parses the token values out of `shell.css`** instead of
+> restating them, and **derives composites** rather than hardcoding grounds. It also asserts
+> the FILL-ONLY tokens (`--ds-red/-blue/-green/-ok/-purple`) still **fail** as text — darken
+> one and the check fails, telling you to add an `-ink` sibling. Deliberately NOT wired into
+> `npm test` (that's the sim smoke; a red `npm test` must keep meaning "physics broke").
+>
+> **2. The governing rule, now a comment at the top of the palette:** *a colour that is both
+> a fill and a text colour will fail one of the two.* `--amber` did; `--ds-ok` did. New
+> tokens: `--ds-ok-ink`, `--ds-red-ink`, `--ds-blue-ink`, `--ds-purple-ink` (text),
+> `--ds-red-chip`/`--ds-blue-chip` (deep fills for white ink at 11.5px),
+> `--ds-line-strong #8b9691` (INTERACTIVE boundaries only — `.ds-input`, `.ds-select`, range
+> track, unselected `.ds-opt`; cards stay on the soft `--ds-line`).
+>
+> **3. The doc's HUD-card ground was STALE and is corrected.** It composited `--ds-hud` over
+> a dark field `#0e1116`. The in-game backdrop became the light menu floor two sessions ago,
+> so the darkest ground behind a HUD card is now the **mat `#23262b`** → `#f2f2f2`. The
+> script derives this. Findings unaffected (<0.1 movement), but don't reuse `#0e1116`.
+>
+> **4. Worst site was NOT in the audit's list: `.res-side` (results, losing alliance).**
+> `opacity:.7` on the element composites the WHOLE group — gradient AND white ink blend
+> toward the panel — putting the 13px `BLUE` label at **3.57:1**. `.res-side.win` already had
+> an amber outline, so the dimming was redundant emphasis bought with contrast. Removed.
+> **Lesson: `opacity` on a element with its own background degrades its INTERNAL contrast.**
+>
+> **5. `.chip.off` / `.ds-chip.off` recede via a `--ds-tile` fill, not `opacity`** (status
+> text, not disabled controls — WCAG's inactive exemption doesn't apply). `:disabled` rules,
+> keyframes, and `.intro-vs` (large text) were checked and deliberately left.
+>
+> **6. `Records.tsx` tabs → `<nav aria-label>` + `aria-current="page"`.** They change the URL,
+> so they're navigation; the old `role="tab"` + `aria-selected` was a PARTIAL tabs pattern
+> (no tabpanel, no roving tabindex), which is worse than none. Matches Configure/NavRail.
+>
+> **7. F7 decision recorded: screen-reader-playable driving stays out of scope.** Cheap wins
+> shipped: `<canvas role="img" aria-label>`, `.eventlog aria-live="polite"`, `role="status"`
+> on `.timer-phase`. **Gotcha: there are TWO `.timer-phase` spans** — the match one (live) and
+> Free Drive's static `"FREE DRIVE"` (`GameView.tsx:311`), left plain on purpose. `role=status`
+> is on the phase, never the digits (they retick every frame → screen-reader flood).
+>
+> **GUI-verified** via Electron over `vite preview`: computed border colours on
+> `.ds-input`/`.ds-opt:not(.on)`/`.ds-opt.on`, the `/records` ARIA shape, and a live Solo
+> Practice match. 15/15. (Two initial FAILs were both driver bugs — I queried the first
+> `.ds-opt`, which is *selected*, and Free Drive's static `.timer-phase`.)
+>
+> **Not done:** `shiftaudit.cjs` is gone (old scratchpad), so no layout-shift re-run; real
+> screen-reader passes (VoiceOver) need a human. `prefers-contrast: more` block still absent
+> (optional per the doc). Remaining redesign phase: `docs/ui-phase7-dark-mode.md`.
+
+---
+
+# HANDOFF — 2026-07-09 (UI Phase 5 closed out: shared `useEscape`)
+
+> **GREEN, uncommitted on `low-poly-ui`.** `npm run build` + `npm test` (ALL PASS).
+> Client-only, `src/ui/` only — **no server/sim change, no Fly redeploy.**
+>
+> **Phase 5 was already 90% done.** `23906fe` had landed §5/§6/§8.1 of
+> `docs/ui-phase5-console-unification.md` (RecordRun + Matchmaking onto `.ds-console`,
+> one `<Logo>` brand mark). The doc still said "not started" — it now says DONE, with the
+> two deliberate deltas recorded (`maxWidth: 520` to match Lobby, not the 460 §4 guessed;
+> both screens render via a local `page(title, sub, body)` helper).
+>
+> **What this session added — §8.2, the Escape inconsistency.** Only `Lobby` handled Esc,
+> so on `/record` and `/ranked` the `.ds-back` button said "Back" and Esc did nothing.
+> - **`src/ui/useEscape.ts`** (new): `useEscape(fn, enabled = true)`. Esc is defined as a
+>   shortcut for whatever the visible `.ds-back` button runs — never a second exit with
+>   its own semantics. Used by `Lobby` (replacing its inline listener), `RecordRun`,
+>   `Matchmaking`.
+> - **`MatchStrategy` deliberately has NO Esc** (commented in its docblock): `onLeave`
+>   forfeits a paired ranked match for the whole room, so it stays a deliberate click.
+> - **`Matchmaking` passes `enabled: !strategy`.** That's what the second arg exists for:
+>   once Matchmaking hands the viewport to `MatchStrategy`, the parent's listener is still
+>   mounted, and without the flag a stray Esc would reach *past* the child and forfeit the
+>   match. If you add a console screen that renders a child owning its own back semantics,
+>   gate its `useEscape` the same way.
+>
+> **GUI-verified** via Electron over `vite preview` (path routing needs http, not `file://`;
+> build with `VITE_GAME_SERVER_URL` set or Multiplayer is hidden). `/record`, `/ranked`,
+> `/lobby` each: `.ds-console` + `.ds-console-in`, no `.ds-app`/`.ds-main`, `<Logo>` mark,
+> and Esc → `/modes`. 8/8 PASS.
+>
+> **Not done:** §9 item 4 (add `/record` + `/ranked` to the layout-shift auditor's `PAGES`).
+> `shiftaudit.cjs` lived in an old session scratchpad and is **gone** — regenerate it if you
+> want that coverage. R1 (the mint-gradient/column-width flash at ranked pairing) is
+> structurally dead now that both sides of the handoff are `.ds-console`, but I did not
+> screenshot-diff the live pairing (needs a server + two signed-in clients).
+>
+> Remaining in the low-poly redesign: `docs/ui-phase6-accessibility.md` (partly landed) and
+> `docs/ui-phase7-dark-mode.md`.
+
+---
+
+# HANDOFF — 2026-07-09 (in-game backdrop → menu floor; console-scaffold unification)
 
 > **LATEST: GREEN, uncommitted on `low-poly-ui`.** `npm run build` + `npm test` (ALL PASS) pass.
 > Client-only — **no server/sim behavior change, no Fly redeploy needed.** GUI-verified via Electron

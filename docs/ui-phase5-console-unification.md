@@ -1,6 +1,18 @@
 # UI Phase 5 — Unify the full-screen "console" surfaces
 
-**Status:** not started · **Blast radius:** `src/ui/` only · **Sim:** untouched (`npm test` is a canary, not a target)
+**Status: DONE.** §5, §6 and §8.1 landed in `23906fe`; §8.2 (Escape) landed after it.
+§9 verified: `npm run build` + `npm test` green, and an Electron drive of `/record`,
+`/ranked`, `/lobby` confirms `.ds-console` + `.ds-console-in` with no `.ds-app`/`.ds-main`,
+a `<Logo>` mark on each, and Esc backing out to `/modes` on all three.
+
+Two deltas from the plan as written, both deliberate:
+
+- **`.ds-console-in` uses `maxWidth: 520`, not the 460 §4 suggested** — it matches Lobby
+  exactly, which is the whole point of the phase.
+- **Both screens render through a local `page(title, sub, body)` helper** rather than
+  inlining the scaffold twice per file.
+
+**Blast radius:** `src/ui/` only · **Sim:** untouched (`npm test` is a canary, not a target)
 
 Part of the low-poly UI redesign. Phases 1–4 and most of 6 are landed; this is one of
 the two remaining pieces (the other is [Phase 6](./ui-phase6-accessibility.md)).
@@ -237,13 +249,15 @@ Both are pre-existing, cheap, and in the blast radius anyway.
    does `MatchStrategy.tsx:121`. The `glyph` span is the pre-`Logo.tsx` fallback.
    Standardize on `<Logo size={24} />` in all four places.
 
-2. **Only `Lobby` handles Escape** (`Lobby.tsx:67-73`). `RecordRun`, `Matchmaking`, and
-   `MatchStrategy` do not, so Esc does nothing on three of the four console screens
-   while the `.ds-back` button says "Back". Either lift the listener into a shared
-   `useEscape(onCancel)` hook and use it on all four, or drop it from `Lobby` — but
-   don't leave it inconsistent. Note `MatchStrategy`'s Esc should map to `onLeave`,
-   which forfeits; consider requiring a confirm there, or omitting it deliberately with
-   a comment.
+2. ~~**Only `Lobby` handles Escape**~~ — **DONE.** Lifted into `src/ui/useEscape.ts` and
+   used by `Lobby`, `RecordRun`, and `Matchmaking`. Esc is defined as a shortcut for
+   whatever the visible `.ds-back` button does, never a second exit path.
+
+   `MatchStrategy` **deliberately has no Esc** (commented in its docblock): `onLeave`
+   forfeits a paired ranked match for the whole room, so it stays a deliberate click.
+   For the same reason `Matchmaking` passes `enabled: !strategy` — once it hands the
+   viewport to `MatchStrategy`, the parent's Esc must not reach past the child and
+   forfeit. That `enabled` flag is the whole reason the hook takes a second argument.
 
 ---
 

@@ -9,6 +9,7 @@ import type { RecordKind } from '../net/protocol';
 import { ServerPicker } from './ServerPicker';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
+import { useEscape } from './useEscape';
 
 /**
  * Record-chasing launcher (opponent-free score attack). Unlike the custom-room
@@ -39,6 +40,8 @@ export function RecordRun({
   // single-server deploy skips straight to connecting (confirmed = true).
   const [confirmed, setConfirmed] = useState(!multiServer());
   const [pick, setPick] = useState(selectedServerId());
+
+  useEscape(onCancel); // Esc backs out, same as ← Back
 
   useEffect(() => {
     if (!confirmed) return;
