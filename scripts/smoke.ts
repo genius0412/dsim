@@ -785,26 +785,33 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 
 // ---- triangle transfer is CAPPED, not generally slower --------------------------
 {
-  // CLOSE range (recovery ~0): the triangle's max-rate cap bites, so it fires
-  // FEWER shots than a fast sloped intake over the same window
-  const fired = (intake: 'sloped' | 'triangle') => {
+  // CLOSE range (recovery ~0): the triangle's max-rate cap (fireCap 0.12) is its only
+  // limit, so it fires a touch slower than a fast sloped intake (interval 0.08). Keep the
+  // hopper topped up every tick so CADENCE — not the 3-ball hopper — bounds the count;
+  // measure over a full second so the 0.08-vs-0.12 gap resolves cleanly.
+  const firedPerSec = (intake: 'sloped' | 'triangle') => {
     const w = mkWorld('free', 'blue', 6, { length: 12, width: 14, intake });
     const r = w.robots[0];
     const g = goalCenter('blue');
     r.pos = { x: g.x + 8, y: g.y - 8 }; // point-blank → recovery ~0, so the cap shows
-    const start = r.hopper.length;
-    run(w, cmd({ fire: true }), 0.3);
-    return start - r.hopper.length;
+    let shots = 0;
+    for (let i = 0; i < Math.round(1.0 / SIM_DT); i++) {
+      while (r.hopper.length < 3) r.hopper.push('green'); // unlimited ammo ⇒ cadence limits
+      const before = r.hopper.length;
+      step(w, SIM_DT, new Map([[0, cmd({ fire: true })]]));
+      shots += before - r.hopper.length;
+    }
+    return shots;
   };
-  const sloped = fired('sloped');
-  const triangle = fired('triangle');
+  const sloped = firedPerSec('sloped');
+  const triangle = firedPerSec('triangle');
   check(
     'triangle fires FEWER than sloped up close (max-rate cap bites)',
     triangle < sloped,
     `triangle ${triangle} vs sloped ${sloped}`,
   );
-  // at the cap, ~1 shot per 0.18s → at most 2-3 in 0.28s (never the sloped 3-4)
-  check('triangle close-range cadence honors the fireCap', triangle <= 2, `${triangle} shots`);
+  // buffed cap 0.12 → ~1/0.12 ≈ 8-9 shots/s, comfortably faster than the old 0.18 cap (~6)
+  check('triangle close-range cadence honors the buffed fireCap', triangle >= 8, `${triangle} shots/s`);
 }
 
 // ---- CLOSE-range rapid fire: near-zero inertia carries a small floor -------------

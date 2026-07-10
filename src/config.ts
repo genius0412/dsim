@@ -480,7 +480,7 @@ export const INTAKE_PRESETS = {
    * fire faster than that, but when conditions are already slower than the cap
    * (flywheel recovery on far shots) it fires at the same rate as everyone else. */
   triangle: {
-    reach: 5, overhang: false, minLength: 11, maxLength: 13, fireInterval: 0.1, fireCap: 0.18,
+    reach: 5, overhang: false, minLength: 11, maxLength: 13, fireInterval: 0.1, fireCap: 0.12,
     mouth: {
       // strongest INTAKE of the three (its identity — devours clumps): a hard
       // suction (drawIn) snaps balls to the throat and it swallows quickest. The
