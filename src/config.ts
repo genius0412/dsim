@@ -92,10 +92,10 @@ export const PIN_WALL_SLOP = 3; // in
 export const POSSESSION_LIMIT = 3; // == HOPPER_CAPACITY
 /** a loose ground ball counts as CONTROLLED (plowed) when its surface is within
  * this many inches of the robot's collision footprint. */
-export const POSSESSION_CONTROL_MARGIN = 1.5; // in
+export const POSSESSION_CONTROL_MARGIN = 0.8; // in
 /** herding requires motion — a parked robot merely resting against loose balls
  * is not controlling them (they can roll free), so ignore control below this. */
-export const POSSESSION_MOVE_SPEED = 5; // in/s
+export const POSSESSION_MOVE_SPEED = 7; // in/s
 /** grace before over-possession is fouled — just long enough to forgive an
  * incidental brush-by (a normal intake capture is < 0.2 s, so driving through a
  * clump to collect it never trips the foul), but short enough that sustained
