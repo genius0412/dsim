@@ -1,10 +1,36 @@
-# HANDOFF — 2026-07-10 (scoring-assessment TIMING per manual 9.x A–F) — READ FIRST
+# HANDOFF — 2026-07-10 (Markdown announcements + scoring-timing per manual 9.x A–F) — READ FIRST
 
-> **GREEN — `npm run build` + `npm test` (all checks, incl. two new ones) pass.**
-> **Sim change in `src/sim` (`scoring.ts` + `match.ts`), no protocol/DB/config change,
-> no `BALANCE_VERSION` bump.** Server-authoritative and identical everywhere, so a live
-> redeploy is only needed if you want the Fly server running the new timing
-> (`flyctl deploy --remote-only`). Determinism holds (pure functions of world state).
+> **GREEN — `npm run build`, `npm test`, `npm run contrast` all pass. Deployed
+> (Fly server + pushed to alpha for Vercel).**
+
+## This session, part 2 — Markdown announcement bodies
+
+Announcement bodies (patch notes / season / act) now render as **Markdown** instead of
+being flattened into flat bullets. New self-contained renderer (NO deps — project rule),
+React elements only (no `dangerouslySetInnerHTML`), so admin-authored bodies can use
+structure with no HTML-injection surface. Unsafe link schemes (e.g. `javascript:`) → `#`.
+Supported: `#`..`######` headings, paragraphs, `-`/`*`/`•`/`+` + `1.` lists (nested by
+indent), `**bold**`/`*italic*`/`` `code` ``, `[label](url)`, `---` rules.
+
+- `src/ui/markdown.tsx` (NEW) — `<Markdown text=… className=… />`. Block parser +
+  earliest-match inline tokenizer; nested lists via an indent stack; safe-href guard.
+  Verified with a `react-dom/server` render harness (9 structure/security asserts).
+- `src/ui/Announcements.tsx` — "What's new" list renders `<Markdown>`; dropped the old
+  `bulletLines` flattener.
+- `src/ui/Admin.tsx` — composer advertises Markdown + shows a **live preview**; textarea
+  `maxLength` 4000→8000, `rows` 5→8.
+- `server/index.ts` — announcement body cap `slice(0,4000)`→**8000** (long patch notes).
+  *This is the only server change → needed a redeploy (done).*
+- `src/ui/styles.css` — replaced `.ann-list*` with themed `.md*` classes (headings, lists,
+  code, links, hr). `npm run contrast` still 135/135 in both themes.
+- `PATCHNOTES.md` (repo root) — user-facing patch notes for the whole alpha-vs-main delta
+  (written this session; ready to paste into an announcement).
+
+## This session, part 1 — scoring-assessment TIMING per manual 9.x A–F
+
+> Sim change in `src/sim` (`scoring.ts` + `match.ts`), no protocol/DB/config change,
+> no `BALANCE_VERSION` bump. Server-authoritative + identical everywhere; deployed.
+> Determinism holds (pure functions of world state).
 
 ## What shipped this session — WHEN each score is assessed (manual rules A–F)
 
