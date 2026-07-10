@@ -26,40 +26,39 @@ export function drawRampStrips(ctx: CanvasRenderingContext2D, world: World): voi
   }
 }
 
-/** the hinged gate arm. Hinge sits at the channel's inner (field-side) edge; the
- * arm reaches across the channel to the side wall when closed and swings downstream
- * (toward the audience) as it opens. */
+/** the gate LEVER (manual Figure 9-15). It pivots at the classifier face and its paddle
+ * sticks OUT toward the field (the gate-zone side), centered between the two gate-zone
+ * tape lines. Closed (by gravity) it lies out at full reach; pushed, it SWINGS UP out of
+ * the plane — shown top-down by FORESHORTENING the paddle toward the pivot (proj shrinks)
+ * plus a faint ghost of the closed reach so the lift reads. */
 function drawGateArm(ctx: CanvasRenderingContext2D, a: Alliance, pos: number): void {
   const g = goalSide(a);
-  const hx = g * (C.FIELD_HALF - C.CLASSIFIER_W); // hinge x: inner channel edge
-  const hy = C.CLASSIFIER_Y0; // hinge y: gate end of the channel
-  const len = C.CLASSIFIER_W; // spans the channel to the wall
-  const ang = pos * C.GATE_SWING; // closed dir = (g,0), swung toward -y as it opens
-  const tx = hx + g * Math.cos(ang) * len;
-  const ty = hy - Math.sin(ang) * len;
+  const px = g * (C.FIELD_HALF - C.CLASSIFIER_W); // pivot x: classifier face
+  const py = C.GATE_TAPE_Y; // centered between the two gate-zone tape lines
+  const dir = -g; // points OUT of the classifier into the field (toward smaller |x|)
+  const proj = C.GATE_ARM_LEN * Math.cos(pos * C.GATE_LIFT); // foreshortens as it lifts
 
-  // faint ghost of the closed position, so an open gate reads as "lifted from here"
-  ctx.strokeStyle = 'rgba(148,163,184,0.25)';
+  // faint ghost of the closed (fully-extended, blocking) reach
+  ctx.strokeStyle = 'rgba(148,163,184,0.22)';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(hx, hy);
-  ctx.lineTo(hx + g * len, hy);
+  ctx.moveTo(px, py);
+  ctx.lineTo(px + dir * C.GATE_ARM_LEN, py);
   ctx.stroke();
 
-  // the arm: steel when closed, greening as it opens
-  const open = Math.min(1, pos / C.GATE_PASS_FRAC);
-  ctx.strokeStyle = pos >= C.GATE_PASS_FRAC ? '#22c55e' : open > 0 ? '#7d8a63' : '#64748b';
-  ctx.lineWidth = 2.2;
+  // the paddle: steel when down/closed, greening as it swings up open
+  ctx.strokeStyle = pos >= C.GATE_PASS_FRAC ? '#22c55e' : '#8896a8';
+  ctx.lineWidth = 2.6;
   ctx.lineCap = 'round';
   ctx.beginPath();
-  ctx.moveTo(hx, hy);
-  ctx.lineTo(tx, ty);
+  ctx.moveTo(px, py);
+  ctx.lineTo(px + dir * proj, py);
   ctx.stroke();
   ctx.lineCap = 'butt';
 
-  // hinge pivot
+  // pivot at the classifier face
   ctx.fillStyle = '#94a3b8';
   ctx.beginPath();
-  ctx.arc(hx, hy, 1.1, 0, Math.PI * 2);
+  ctx.arc(px, py, 1.1, 0, Math.PI * 2);
   ctx.fill();
 }

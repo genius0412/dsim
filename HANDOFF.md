@@ -36,15 +36,18 @@ snapped open/closed and opened when a robot merely LOITERED in the gate zone.
    push/open required** — deliberately DIFFERENT from `pushingGate`. Removed the old loose
    gate-ZONE + `GATE_LONG_SIDE_MARGIN` test (the const is gone). G418.B still bills the
    on-ramp balls at the G417 edge; culprit retention unchanged.
-4. **Rendering** (`src/render/drawGoals.ts` `drawGateArm`): the gate is now a **hinged arm**
-   swinging from a pivot at the channel's inner edge (rotates up to `GATE_SWING` rad by
-   `gatePos`, steel→green as it opens, with a faint ghost of the closed position + a hinge
-   dot), replacing the old flat color-flipping rect. Visually verified open + closed.
+4. **Rendering** (`src/render/drawGoals.ts` `drawGateArm`, manual Figure 9-15): the gate is a
+   **LEVER** that pivots at the classifier face and its paddle **sticks OUT toward the
+   field** (the gate-zone side), **centered between the two gate-zone tape lines**. Closed
+   it lies out at full `GATE_ARM_LEN` reach; as it opens it **swings UP**, drawn top-down by
+   FORESHORTENING the paddle toward the pivot (`cos(gatePos·GATE_LIFT)`), steel→green, with a
+   ghost of the closed reach. (Replaced an earlier wrong version that swept an arm across the
+   channel toward −y.) Visually verified open + closed in the GUI.
 
 Config: all new knobs in the `classifier / gate` block of `config.ts` (`GATE_OPEN_RATE`,
-`GATE_GRAVITY`, `GATE_CLOSE_MAX`, `GATE_PASS_FRAC`, `GATE_OPEN_EPS`, `GATE_DISPLACE`,
-`GATE_SWING`, `GATE_PUSH_MIN_SPEED`, `GATE_PUSH_MIN_CMD`, `GATE_ARM_REACH`,
-`GATE_ARM_Y0/Y1`). `GATE_LONG_SIDE_MARGIN` REMOVED.
+`GATE_GRAVITY`, `GATE_CLOSE_MAX`, `GATE_PASS_FRAC`, `GATE_OPEN_EPS`, `GATE_ARM_LEN`,
+`GATE_LIFT`, `GATE_PUSH_MIN_SPEED`, `GATE_PUSH_MIN_CMD`, `GATE_ARM_REACH` (=5, matches the
+lever reach), `GATE_ARM_Y0/Y1`). `GATE_LONG_SIDE_MARGIN` REMOVED.
 
 ## Smoke (`scripts/smoke.ts`) — new / changed gate cases
 

@@ -574,7 +574,13 @@ export const GATE_CLOSE_MAX = 5; // 1/s: terminal swing speed as it falls closed
 export const GATE_PASS_FRAC = 0.4; // arm must be at least this lifted for an ARTIFACT to pass
 export const GATE_OPEN_EPS = 0.03; // below this the arm is effectively down (won't flow-hold)
 export const GATE_DISPLACE = 2; // in, real closed->open horizontal displacement (manual 9.8.3)
-export const GATE_SWING = 0.95; // rad (~54deg) the drawn arm sweeps from closed to fully open
+/** the gate is a LEVER (manual Figure 9-15): it pivots at the classifier face and its
+ * paddle STICKS OUT toward the field (the gate-zone side), centered between the two
+ * gate-zone tape lines. Closed (by gravity) it lies out blocking; pushed, it SWINGS UP
+ * out of plane — drawn top-down by FORESHORTENING the paddle toward the pivot as it
+ * lifts (`proj = GATE_ARM_LEN·cos(gatePos·GATE_LIFT)`). */
+export const GATE_ARM_LEN = 5; // in, how far the paddle sticks out of the classifier when closed
+export const GATE_LIFT = 1.35; // rad (~77deg) the paddle swings up from closed to fully open
 /** the gate does NOT open just because a robot LOITERS in the zone — the arm is a
  * push-to-open mechanism, so the robot must actively PRESS toward it. Detected as
  * a velocity toward the arm (ramming it) OR a drive command toward it (leaning on it
@@ -590,7 +596,7 @@ export const GATE_ZONE = { xNear: 62, xFar: 72, y0: -2, y1: 3 };
  * TOUCHING the gate — the trigger for G417 (touching an opponent's gate, even
  * without opening it, is a MAJOR) and the contact half of the push-to-open test.
  * Tighter than GATE_ZONE: a robot must actually be against the arm, not loitering. */
-export const GATE_ARM_REACH = 3; // in, field-side approach band where a bumper meets the arm
+export const GATE_ARM_REACH = 5; // in, field-side reach of the protruding lever (= GATE_ARM_LEN)
 export const GATE_ARM_Y0 = -1; // mouth band low edge (a robot deep in the tunnel mouth misses it)
 export const GATE_ARM_Y1 = 6; // mouth band high edge
 /** official GATE ZONE marking (manual Section 9): a 2.75in-wide x 10in-long

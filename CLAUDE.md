@@ -153,8 +153,12 @@ SWINGS closed (`GATE_GRAVITY`, starts slow, accelerates), so a tap "may or may n
 open" a moment longer. **Flow holds it open** — a ball occupying the gateway suspends
 gravity (can't close while an artifact streams under the arm), so a tap usually drains
 the whole column. `gateOpen` (an artifact can pass) is DERIVED = `gatePos >=
-GATE_PASS_FRAC`. Rendered as a hinged arm swinging from a pivot at the channel's inner
-edge (`drawGateArm`, greening as it opens) — see `GATE_*` constants in config.ts.
+GATE_PASS_FRAC`. Rendered (`drawGateArm`, manual Figure 9-15) as a LEVER that pivots at
+the classifier face and its paddle STICKS OUT toward the field (the gate-zone side),
+centered between the two gate-zone tape lines; closed it lies out at full reach, and as
+it opens it SWINGS UP — shown top-down by FORESHORTENING the paddle toward the pivot
+(`GATE_ARM_LEN`·cos(`gatePos`·`GATE_LIFT`)), greening past the pass fraction. See
+`GATE_*` constants in config.ts.
 
 ## Product decisions the user insisted on (do not regress)
 
