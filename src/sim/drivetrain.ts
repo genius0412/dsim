@@ -17,9 +17,9 @@ export interface DriveParams {
 }
 
 const REF_SPEED = C.SPEED_PER_RPM * C.REF_DRIVE_RPM; // 75
-const REF_TURN = 7.0; // rad/s of the reference (DEFAULT 15×18) chassis
+const REF_TURN = 8.5; // rad/s of the reference (DEFAULT 15×18) chassis
 // anchored to the DEFAULT chassis (15 long incl. intake budget × 18 wide) so the
-// default robot still turns at 7 rad/s; smaller footprints turn quicker
+// default robot still turns at 8.5 rad/s; smaller footprints turn quicker
 const REF_HALF_DIAG = Math.sqrt(15 * 15 + 18 * 18) / 2;
 
 export function driveParams(spec: RobotSpec): DriveParams {

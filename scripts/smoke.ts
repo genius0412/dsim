@@ -1112,9 +1112,9 @@ const setup = (
   const dp = driveParams(CALIB_REF);
   const M = DRIVETRAIN_PRESETS.mecanum; // maxSpeed/turn scale with speedMult, accel with accelMult
   check(
-    'base calibration ref: refFree in/s, 7 rad/s, base accel (× mecanum mult)',
+    'base calibration ref: refFree in/s, 8.5 rad/s, base accel (× mecanum mult)',
     Math.abs(dp.maxSpeed - refFree * M.speedMult) < 1e-6 &&
-      Math.abs(dp.maxTurn - 7 * M.speedMult * M.turnMult) < 1e-6 &&
+      Math.abs(dp.maxTurn - 8.5 * M.speedMult * M.turnMult) < 1e-6 &&
       Math.abs(dp.accel - BASE_DRIVE_ACCEL * M.accelMult) < 1e-6,
     `${dp.maxSpeed.toFixed(2)} / ${dp.maxTurn.toFixed(2)} / ${dp.accel.toFixed(1)}`,
   );

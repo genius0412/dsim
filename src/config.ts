@@ -218,7 +218,7 @@ export const SPEED_PER_RPM = (Math.PI * (WHEEL_DIAMETER_MM / 25.4)) / 60 * DRIVE
  * slip first, so real peak accel = μ·g (g≈386 in/s²). This base × accelMult lands
  * each drivetrain at its traction limit (tank μ≈0.9 → ~347 … x-drive μ≈0.45 → ~175). */
 export const BASE_DRIVE_ACCEL = 240;
-export const TURN_MAX_SPEED = 10.0; // rad/s absolute cap ≈ 573°/s (only small/fast bots reach it; default ~7)
+export const TURN_MAX_SPEED = 12.0; // rad/s absolute cap ≈ 687°/s (only small/fast bots reach it; default ~8.5)
 export const TURN_ACCEL_PER_ACCEL = 40 / 280; // rad/s^2 per in/s^2 of drive accel (≈0.143; traction-limited, so
 // turn spin-up tracks linear accel → tank ramps up quickest, xdrive slowest; ~0.15–0.25 s to max spin)
 
@@ -250,7 +250,7 @@ export const MODULE_SLEW_RATE = 7;
  * weakness (imprecise line), NOT weight. Disturbance ∝ actual SPEED, so at rest it's
  * zero and the pods converge to one angle. AMP = peak per-pod error (rad); FREQ =
  * the base jitter rate. Tune AMP for how imprecise, FREQ for how jittery. */
-export const SWERVE_WOBBLE_AMP = 0.2; // rad (~8.6°) peak per module, at full speed
+export const SWERVE_WOBBLE_AMP = 0.15; // rad (~8.6°) peak per module, at full speed
 export const SWERVE_WOBBLE_FREQ = 30; // rad/s — the FAST jitter component (the buzz)
 /** rad/s of the SLOW per-module drift component. Low enough that it does NOT
  * average out over a wall-to-wall run — the four modules meander independently,
