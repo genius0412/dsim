@@ -13,11 +13,12 @@ import { START_POSES, MAX_SAVED_AUTOS } from '../config';
  * Match configuration — the pre-game options that belong to the MATCH, not the
  * robot: alliance, start position, practice dummies, and an imported auto path.
  * These apply to the SOLO/offline modes (Solo Practice, Free Drive, Records);
- * Ranked and Custom assign alliance + start in the lobby / strategy screen, so this
- * is a COLLAPSIBLE panel (closed by default) to keep the homepage clean. Lives on
- * Home (game MODE is chosen by which play tile you click). Kept separate from the My
- * Robot loadout builder on purpose. `.pp` import + the Pedro-Pathing → sim coordinate
- * transform live here.
+ * Ranked and Custom assign alliance + start in the lobby / strategy screen.
+ *
+ * The MATCH section of `Configure`. It used to be a collapsed `<details>` on the
+ * homepage; now it has a route of its own (`/configure/match`), so it renders
+ * open. Kept separate from the robot loadout builder on purpose. `.pp` import +
+ * the Pedro-Pathing → sim coordinate transform live here.
  */
 export function MatchSetup({
   settings,
@@ -146,16 +147,13 @@ export function MatchSetup({
   const setAlliance = (alliance: Alliance) => set({ alliance });
 
   return (
-    <details className="ds-panel ds-collapse">
-      <summary className="ds-panel-h ds-collapse-sum">
+    <section className="ds-panel">
+      <div className="ds-panel-h">
         <span className="ds-panel-title">Match setup</span>
-        <span className="ds-collapse-right">
-          <span className="ds-collapse-hint">
-            Alliance, start &amp; auto · Ranked and Custom set these in the lobby
-          </span>
-          <span className="ds-collapse-chev">▸</span>
+        <span className="ds-collapse-hint">
+          Ranked and Custom set alliance &amp; start in the lobby
         </span>
-      </summary>
+      </div>
 
       <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 18 }}>
         <section className="ds-sec">
@@ -275,6 +273,6 @@ export function MatchSetup({
           </p>
         </section>
       </div>
-    </details>
+    </section>
   );
 }

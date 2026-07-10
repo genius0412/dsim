@@ -1,6 +1,65 @@
-# HANDOFF — 2026-07-09 (strategy 20s + countdown SFX; "matched on <server>" HUD chip) — READ FIRST
+# HANDOFF — 2026-07-09 (in-game backdrop → menu floor; console-scaffold unification) — READ FIRST
 
-> **LATEST: GREEN, uncommitted on alpha.** `npm test` + `npm run server:check` + `npm run build` pass.
+> **LATEST: GREEN, uncommitted on `low-poly-ui`.** `npm run build` + `npm test` (ALL PASS) pass.
+> Client-only — **no server/sim behavior change, no Fly redeploy needed.** GUI-verified via Electron
+> (`/modes` → Free Drive, `/lobby`, `/ranked`, `/record`), screenshots + a canvas pixel probe.
+>
+> **1. In-game backdrop is now the menu floor.** `renderer.ts` filled the canvas `#14161a` before
+> drawing; it now fills `COLORS.backdrop` (`#f9faf7`, new in `config.ts`, tracks `--ds-bg`). **The
+> FIELD is untouched** — mat stays `#23262b`, so the board reads as a physical object on the warm
+> floor. Verified by sampling the live canvas: letterbox corner `#f9faf7`, field center `#2c3038`.
+> Two knock-ons that the light letterbox exposed and that are now fixed:
+> - `.eventlog-line` (`styles.css`) was the ONE HUD surface with no border (only an accent bar) —
+>   it sits in the left letterbox and would have floated invisibly. Given `1px solid var(--border)`.
+> - Remote-robot name labels (`renderer.ts`) are light glyphs; a robot pinned to the far wall
+>   pushes its label off the mat onto the light backdrop. They now carry a dark `strokeText`
+>   outline, so they read on both.
+>
+> Everything else already worked: the HUD was rethemed to light cards with pastel borders last
+> session, so the light backdrop actually *completes* that. Countdown text stays light on purpose
+> (it paints on the dark mat, centered) — `styles.css` already comments this.
+>
+> **2. Console-scaffold unification (custom room + online screens).** `shell.css`'s own comment
+> says the console layer is for "Lobby, Record Run, Ranked", but only **Lobby** and
+> **MatchStrategy** used it. `Matchmaking.tsx` and `RecordRun.tsx` were bare `.ds-app`/`.ds-main`
+> renders *outside* `AppShell` — centered text, no header, `ds-btn primary` instead of the pill
+> `ds-cta`. Both now render through a local `page(title, sub, body)` helper that emits the exact
+> Lobby scaffold: `.ds-console` → `.ds-console-in` (max 520) → `.ds-head` (← Back + `<Logo>` +
+> APP_NAME) → `.ds-title` h1 with an `.accent` span → `.ds-sub` → `.ds-panelbox`. Ranked's 1v1/2v2
+> `.ds-segs` became `.ds-opts.two` + `.ds-opt` (title + description), matching Lobby's
+> Create/Join room pair.
+>
+> **3. One brand mark.** `Lobby.tsx` used `<Logo>` on its entry screen but a hardcoded
+> `<span className="glyph">D</span>` on its room screen; `MatchStrategy.tsx` used the glyph twice.
+> All four are `<Logo size={24} />` now, and the dead `.ds-mark .glyph` rule is deleted from
+> `shell.css` (`.ds-dl-plat .glyph` in Download is unrelated and stays).
+>
+> **4. `.ds-field` layout bug — fixed at the SOURCE this time.** Last session's item 7 hit this in
+> Menu's Park panel and worked around it by wrapping the field in a `.ds-fields` row. The real bug:
+> `.ds-field { flex: 1 1 150px }` is a column WIDTH inside the `.ds-fields` row, but a `.ds-field`
+> dropped straight into a `.ds-panelbox` (a COLUMN flexbox) turned that basis into a **150px row
+> HEIGHT** — a dead ~90px gap under the input. It was live on **Lobby** ("Your name") and **Account**.
+> The flex sizing now lives on `.ds-fields > .ds-field`; bare `.ds-field` is layout-neutral.
+> Menu's inline `flex: '0 1 110px'` override still wins. If you add a `.ds-field` to a ROW, it must
+> be inside a `.ds-fields`.
+>
+> **5. `.server-picker`** lost its `margin: 0 auto 20px; max-width: 380px` — both call sites
+> (Account panel, Record Run console) are left-aligned padded containers that own their spacing.
+>
+> **Gotchas for the next `verify` run.** `ELECTRON_RUN_AS_NODE=1` is set in this shell — `unset` it
+> or `npx electron` runs as plain Node and `require('electron')` returns a path string. The driver
+> script must live INSIDE the repo (module resolution). To reach `/lobby` `/ranked` `/record` you
+> need path routing, which is disabled under `file://` — build with `VITE_GAME_SERVER_URL` set
+> (else Multiplayer is hidden), serve `dist` with `npx vite preview --port 4173`, and `loadURL`
+> the http routes. The ranked route is **`/ranked`**, not `/matchmaking`. The signed-out ranked
+> gate is what renders without an account; to shoot the queue screen, temporarily short-circuit
+> `if (!signedIn)`.
+
+---
+
+# HANDOFF — 2026-07-09 (strategy 20s + countdown SFX; "matched on <server>" HUD chip)
+
+> **GREEN, uncommitted on alpha.** `npm test` + `npm run server:check` + `npm run build` pass.
 > **Needs a Fly redeploy** for the strategy-time + server-region pieces to take effect (client-only
 > bits ship via the Vercel push).
 >

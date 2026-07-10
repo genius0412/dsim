@@ -5,7 +5,7 @@ import { driveParams, lengthLimits, massLimits, rpmLimits, widthLimits } from '.
 import { coerceSpec } from '../sim/spawn';
 import { RobotPreview } from './RobotPreview';
 import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './robotLabels';
-import { APP_NAME } from '../seasons';
+import { rangeFill } from './rangeFill';
 
 const DRIVETRAIN_BLURBS: Record<DrivetrainType, string> = {
   mecanum: '85% strafe · FTC standard',
@@ -57,13 +57,12 @@ interface Props {
 }
 
 /**
- * My Robot — the robot loadout builder. Renders as shell content (inside the
- * AppShell top bar, like Home/Stats/Download). ROBOT-only by design: presets,
- * the custom builder, intake, and driver-preference tuning (drive style,
- * assists, park). Key/gamepad CONTROLS + the server region live in Account
- * settings (app-wide, not per-robot). Match configuration (game mode, alliance,
- * start position, auto path) lives on Home in `MatchSetup`, and matches are
- * started from Home — there is deliberately no "start match" here.
+ * The robot loadout builder — the ROBOT section of `Configure`, which owns the
+ * page heading. Robot-only by design: presets, the custom builder, intake, and
+ * driver-preference tuning (drive style, assists, park). Its sibling Configure
+ * sections hold the match setup, controls, and audio; the server region and
+ * identity stay in Account. Matches start from `ModeSelect` — there is
+ * deliberately no "start match" here.
  */
 export function Menu({ settings, onChange }: Props) {
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
@@ -121,10 +120,7 @@ export function Menu({ settings, onChange }: Props) {
 
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Loadout</p>
-      <h1 className="ds-h1">My Robot</h1>
-      <p className="ds-sub">Pick a preset or build your own. Match options live on Home.</p>
-
+      {/* the page heading is owned by the Configure host */}
       <div className="ds-robot">
         {/* ---------- robot hero ---------- */}
         <div className="ds-hero">
@@ -341,6 +337,7 @@ export function Menu({ settings, onChange }: Props) {
                   max={maxLength}
                   step={0.5}
                   value={spec.length}
+                  style={rangeFill(spec.length, minLength, maxLength)}
                   onChange={(e) => setSpec({ length: Number(e.target.value) })}
                 />
               </label>
@@ -355,6 +352,7 @@ export function Menu({ settings, onChange }: Props) {
                   max={maxWidth}
                   step={0.5}
                   value={spec.width}
+                  style={rangeFill(spec.width, minWidth, maxWidth)}
                   onChange={(e) => setSpec({ width: Number(e.target.value) })}
                 />
               </label>
@@ -369,6 +367,7 @@ export function Menu({ settings, onChange }: Props) {
                   max={maxMass}
                   step={1}
                   value={spec.massLb}
+                  style={rangeFill(spec.massLb, minMass, maxMass)}
                   onChange={(e) => setSpec({ massLb: Number(e.target.value) })}
                 />
               </label>
@@ -386,6 +385,7 @@ export function Menu({ settings, onChange }: Props) {
                   max={maxRpm}
                   step={5}
                   value={spec.driveRpm}
+                  style={rangeFill(spec.driveRpm, minRpm, maxRpm)}
                   onChange={(e) => setSpec({ driveRpm: Number(e.target.value) })}
                 />
               </label>
@@ -400,6 +400,7 @@ export function Menu({ settings, onChange }: Props) {
                   max={1}
                   step={0.05}
                   value={spec.flywheelInertia}
+                  style={rangeFill(spec.flywheelInertia, 0, 1)}
                   // a bigger flywheel weighs more: setSpec raises the mass floor
                   // and pulls mass up with it so the loadout stays legal
                   onChange={(e) => setSpec({ flywheelInertia: Number(e.target.value) })}
@@ -516,6 +517,7 @@ export function Menu({ settings, onChange }: Props) {
                   max={100}
                   step={5}
                   value={settings.parkSpeedPct}
+                  style={rangeFill(settings.parkSpeedPct, 0, 100)}
                   onChange={(e) => set({ parkSpeedPct: Number(e.target.value) })}
                 />
               </label>

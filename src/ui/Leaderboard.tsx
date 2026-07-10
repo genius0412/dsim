@@ -223,11 +223,11 @@ export function Leaderboard({
 
   return (
     <>
+      {/* the page heading is owned by the Records host; the season badge is not */}
       <p className="ds-eyebrow">
         {seasonLabel}
         {isArchived ? ' · archived' : ''}
       </p>
-      <h1 className="ds-h1">Leaderboards</h1>
       <p className="ds-sub">Score-attack records and ranked ELO, split by drivetrain. Every entry is a replay.</p>
 
       {seasons.length > 1 && (

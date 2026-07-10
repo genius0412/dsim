@@ -581,6 +581,9 @@ export const ALIGNMENT_ROTATIONAL_SPEED = 3.0; // rad/s
 
 // ------------------------------------------------------------ rendering ----
 export const COLORS = {
+  /** letterbox around the field — tracks `--ds-bg` in shell.css. The field mat
+   * stays dark: the board reads as a physical object on the warm floor. */
+  backdrop: '#f9faf7',
   mat: '#23262b',
   tile: '#2c3038',
   wall: '#4b5563',

@@ -8,6 +8,7 @@ import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './robotLabels';
 import { Menu } from './Menu';
 import { MatchAudio } from '../audio';
 import { APP_NAME } from '../seasons';
+import { Logo } from './Logo';
 
 /** beep once per second over the final STRAT_TICK_FROM seconds of the strategy
  * deadline, rising in pitch as it nears (like a match countdown). */
@@ -119,7 +120,7 @@ export function MatchStrategy({
               ← Done
             </button>
             <span className="ds-mark">
-              <span className="glyph">D</span>
+              <Logo size={24} />
               {APP_NAME}
             </span>
           </div>
@@ -149,7 +150,7 @@ export function MatchStrategy({
             ← Leave
           </button>
           <span className="ds-mark">
-            <span className="glyph">D</span>
+            <Logo size={24} />
             {APP_NAME}
           </span>
         </div>

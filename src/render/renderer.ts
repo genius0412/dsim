@@ -1,4 +1,5 @@
 import type { RobotCommand, World, PathPoint, RobotState } from '../types';
+import { COLORS } from '../config';
 import { Camera } from './camera';
 import { drawField } from './drawField';
 import { drawBalls } from './drawBalls';
@@ -16,7 +17,7 @@ export class Renderer {
   ): void {
     const canvas = ctx.canvas;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#14161a';
+    ctx.fillStyle = COLORS.backdrop;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     this.camera.apply(ctx);
@@ -52,8 +53,14 @@ export class Renderer {
         ctx.scale(1, -1);
         ctx.font = '600 4px system-ui, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillStyle = 'rgba(229,231,235,0.75)';
         const label = r.spec.teamNumber > 0 ? `${r.spec.teamNumber} ${r.spec.name}` : r.spec.name;
+        // a robot pinned to the far wall pushes its label off the mat onto the
+        // light backdrop, so the light glyphs carry a dark outline to read on both
+        ctx.lineWidth = 0.7;
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = 'rgba(20,22,26,0.8)';
+        ctx.strokeText(label, 0, -14);
+        ctx.fillStyle = 'rgba(229,231,235,0.9)';
         ctx.fillText(label, 0, -14);
         ctx.restore();
       }

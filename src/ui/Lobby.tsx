@@ -284,7 +284,7 @@ export function Lobby({ settings, onStart, onCancel, config = { kind: 'versus' }
             ← Leave
           </button>
           <span className="ds-mark">
-            <span className="glyph">D</span>
+            <Logo size={24} />
             {APP_NAME}
           </span>
         </div>

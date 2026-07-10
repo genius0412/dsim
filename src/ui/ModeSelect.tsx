@@ -1,24 +1,11 @@
-import { useEffect, useState } from 'react';
-import type { GameSettings } from '../game';
-import type { DrivetrainType } from '../types';
-import { APP_NAME, CURRENT_SEASON } from '../seasons';
-import { MatchSetup } from './MatchSetup';
-import { fetchGlobalStats, type GlobalStats } from '../net/api';
-
-const DRIVETRAIN_LABELS: Record<DrivetrainType, string> = {
-  mecanum: 'Mecanum',
-  tank: 'Tank',
-  swerve: 'Swerve',
-  xdrive: 'X-Drive',
-};
+import { APP_NAME } from '../seasons';
 
 /**
- * Home / landing. Play tiles for the ways to start; the current loadout summary
- * up top. Ranked is disabled until auth + a game server land (Phase 3 remainder).
+ * Game-mode select — reached from PLAY. These are the tiles that used to live on
+ * Home. Every start action is still wrapped in App's `guardStart()` (stale-build
+ * refresh + scheduled-restart block) by the caller, so nothing here bypasses it.
  */
-export function Home({
-  settings,
-  onChange,
+export function ModeSelect({
   multiplayer,
   signedIn,
   onFreeDrive,
@@ -27,10 +14,7 @@ export function Home({
   onDuoRecord,
   onRanked,
   onCustomRoom,
-  onEditRobot,
 }: {
-  settings: GameSettings;
-  onChange: (s: GameSettings) => void;
   multiplayer: boolean;
   signedIn: boolean;
   onFreeDrive: () => void;
@@ -39,54 +23,12 @@ export function Home({
   onDuoRecord: () => void;
   onRanked: () => void;
   onCustomRoom: () => void;
-  onEditRobot: () => void;
 }) {
-  const spec = settings.spec;
-
-  // site-wide counters (players + games played), when the server is configured
-  const [stats, setStats] = useState<GlobalStats | null>(null);
-  useEffect(() => {
-    if (!multiplayer) return;
-    let alive = true;
-    fetchGlobalStats()
-      .then((s) => alive && setStats(s))
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [multiplayer]);
-
   return (
     <>
-      <p className="ds-eyebrow">
-        {APP_NAME} · {CURRENT_SEASON.fullName} · 2D Driver Sim
-      </p>
-      <h1 className="ds-h1">Ready to run.</h1>
-      <p className="ds-sub">
-        Driving <b style={{ color: 'var(--ds-ink)' }}>{spec.name}</b> ·{' '}
-        {DRIVETRAIN_LABELS[spec.drivetrain]} ·{' '}
-        {spec.teamNumber ? `#${spec.teamNumber}` : 'no team'}.{' '}
-        <button className="ds-btn ghost" style={{ padding: '2px 8px', fontSize: 13 }} onClick={onEditRobot}>
-          Edit robot →
-        </button>
-      </p>
-
-      {stats && (
-        <div className="ds-homestats">
-          <div className="ds-stat">
-            <span className="sv">{stats.users.toLocaleString()}</span>
-            <span className="sl">Players</span>
-          </div>
-          <div className="ds-stat">
-            <span className="sv">{stats.games.toLocaleString()}</span>
-            <span className="sl">Games played</span>
-          </div>
-          <span className="ds-homestats-break">
-            solo {stats.byCategory.solo} · duo {stats.byCategory.duo} · 1v1 {stats.byCategory['1v1']} ·
-            2v2 {stats.byCategory['2v2']}
-          </span>
-        </div>
-      )}
+      <p className="ds-eyebrow">{APP_NAME} · Play</p>
+      <h1 className="ds-h1">Pick a mode.</h1>
+      <p className="ds-sub">Practice offline, or take it online for ranked and records.</p>
 
       <div className="ds-grid-bg">
         {/* Offline, always available — the safe default (Solo Practice is primary) */}
@@ -166,10 +108,6 @@ export function Home({
             </button>
           </div>
         </section>
-      </div>
-
-      <div style={{ marginTop: 24 }}>
-        <MatchSetup settings={settings} onChange={onChange} />
       </div>
     </>
   );

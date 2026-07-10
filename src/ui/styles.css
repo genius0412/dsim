@@ -363,12 +363,29 @@ button {
   font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 1.5px;
-  transition: color 0.15s, border-color 0.15s;
+  box-shadow: var(--ds-edge-soft);
+  transition: transform 0.06s ease, box-shadow 0.06s ease, color 0.15s, border-color 0.15s;
 }
 
 .game-btn:hover {
   color: var(--text);
   border-color: var(--ds-accent);
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--ds-line);
+}
+
+.game-btn:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--ds-line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .game-btn:hover,
+  .game-btn:active,
+  .overlay-buttons button:hover,
+  .overlay-buttons button:active {
+    transform: none;
+  }
 }
 
 /* "MATCH BEGINS IN" lead-in before the digits.
@@ -439,6 +456,9 @@ button {
 
 .eventlog-line {
   background: var(--ds-hud-soft);
+  /* the log sits in the left letterbox, which is now the warm floor — it needs a
+     full edge, not just the accent bar, to separate from it */
+  border: 1px solid var(--border);
   border-left: 2px solid var(--ds-accent);
   border-radius: var(--ds-round-sm);
   padding: 2px 9px;
@@ -501,16 +521,41 @@ button {
 
 .overlay-buttons button {
   padding: 10px 22px;
-  border-radius: 8px;
+  border-radius: var(--ds-round);
   border: 1px solid var(--border);
-  background: var(--panel-2);
+  background: var(--ds-accent);
+  color: var(--ds-accent-ink);
   font-weight: 700;
   letter-spacing: 1.5px;
-  transition: border-color 0.15s;
+  border-color: transparent;
+  box-shadow: var(--ds-edge);
+  transition: transform 0.06s ease, box-shadow 0.06s ease, background 0.15s;
 }
 
 .overlay-buttons button:hover {
-  border-color: var(--blue);
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--ds-accent-edge);
+}
+
+.overlay-buttons button:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--ds-accent-edge);
+}
+
+/* secondary action in an overlay (e.g. "NOT NOW") — a neutral cap */
+.overlay-buttons button.ghost {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border);
+  box-shadow: var(--ds-edge-soft);
+}
+
+.overlay-buttons button.ghost:hover {
+  box-shadow: 0 2px 0 var(--ds-line);
+}
+
+.overlay-buttons button.ghost:active {
+  box-shadow: 0 0 0 var(--ds-line);
 }
 
 .score-table {

@@ -55,7 +55,10 @@
   /* ---- elevation: low-blur, high-opacity, offset to the bottom-right ---- */
   --ds-block: 4px 4px 0 var(--ds-line-soft);
   --ds-block-sm: 2px 2px 0 var(--ds-line-soft);
+  /* the "thick" bottom edge under a pressable keycap: a darker shade of the
+     element's own colour. --ds-edge for mint, --ds-edge-soft for neutral fills. */
   --ds-edge: 0 3px 0 var(--ds-accent-edge);
+  --ds-edge-soft: 0 3px 0 var(--ds-line);
 
   /* fixed scoring semantics (never the interface accent). These break the pastel
      harmony ON PURPOSE — alliance + artifact identity must command attention. */
@@ -109,7 +112,14 @@
   /* the app shell is the scroll container (html/body are overflow:hidden for the
      full-screen game canvas), so shell screens taller than the viewport scroll */
   height: 100vh;
-  overflow-y: auto;
+  /* `scroll`, not `auto`. A tall section (Configure ▸ Robot) gets a scrollbar and a
+     short one (▸ Audio) doesn't; since `.ds-main` is centered, that appearing and
+     disappearing scrollbar slid every centered element sideways by half its width
+     as you switched sections. Keeping the track always present pins the layout.
+     (`scrollbar-gutter: stable` also fixes the shift, but leaves a blank strip that
+     the bar/rail/footer visibly stop short of. On macOS's overlay scrollbars this
+     reserves nothing, so nothing changes there either way.) */
+  overflow-y: scroll;
   background: var(--ds-bg);
   color: var(--ds-ink);
   font-family: var(--ds-font-ui);
@@ -145,39 +155,6 @@
   color: inherit;
   cursor: pointer;
 }
-.ds-mark .glyph {
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--ds-round);
-  background: var(--ds-accent);
-  color: var(--ds-accent-ink);
-  font-weight: 900;
-  font-size: 14px;
-}
-.ds-nav {
-  display: flex;
-  gap: 4px;
-}
-.ds-nav button {
-  background: none;
-  border: 0;
-  color: var(--ds-mut);
-  font: inherit;
-  font-size: 14px;
-  padding: 6px 12px;
-  border-radius: var(--ds-round);
-  cursor: pointer;
-}
-.ds-nav button:hover {
-  color: var(--ds-ink);
-}
-.ds-nav button.on {
-  color: var(--ds-ink);
-  font-weight: 600;
-  background: color-mix(in srgb, var(--ds-accent) 12%, transparent);
-}
 .ds-bar-right {
   margin-left: auto;
   display: flex;
@@ -191,6 +168,272 @@
   max-width: 1080px;
   margin: 0 auto;
   padding: 28px 22px 48px;
+  min-width: 0; /* let long tables shrink instead of stretching the flex row */
+}
+
+/* ---- rail layout ------------------------------------------------------
+   `.ds-app` is the ONLY scroll container (html/body/#root are overflow:hidden
+   for the full-screen game canvas), so the rail is a flex SIBLING of the content
+   column, never `position: fixed` — a fixed rail would scroll independently and
+   fight `.ds-app`. It sticks below the top bar instead. */
+/* FULL-BLEED: no max-width here, so the rail sits flush against the viewport's
+   left edge. `.ds-main` keeps its own max-width + auto margins, so the content
+   stays centered in whatever space the rail leaves. */
+.ds-body {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+}
+.ds-rail {
+  flex: none;
+  width: 214px;
+  align-self: stretch;
+  padding: 24px 14px 40px;
+  border-right: 1px solid var(--ds-line);
+  background: var(--ds-bar);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.ds-rail-home {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: var(--ds-round);
+  border: 1px solid transparent;
+  background: none;
+  color: var(--ds-mut);
+  cursor: pointer;
+}
+.ds-rail-home:hover {
+  color: var(--ds-ink);
+  border-color: var(--ds-line);
+  background: var(--ds-panel);
+}
+.ds-rail-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ds-rail-btn {
+  font: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: var(--ds-round);
+  border: 1px solid transparent;
+  background: none;
+  color: var(--ds-ink-dim);
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, color 0.14s;
+}
+.ds-rail-btn .rl {
+  font-size: 15px;
+  font-weight: 700;
+}
+.ds-rail-btn .rh {
+  font-size: 11.5px;
+  color: var(--ds-mut);
+}
+.ds-rail-btn:hover {
+  color: var(--ds-ink);
+  background: var(--ds-panel);
+  border-color: var(--ds-line);
+}
+.ds-rail-btn.on {
+  background: var(--ds-accent-soft);
+  border-color: var(--ds-accent);
+  color: var(--ds-accent-soft-ink);
+  box-shadow: var(--ds-block-sm);
+}
+.ds-rail-btn.on .rh {
+  color: color-mix(in srgb, var(--ds-accent-soft-ink) 78%, transparent);
+}
+
+/* ---- home: the menu IS the navigation --------------------------------- */
+.ds-main-home {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ds-home {
+  width: 100%;
+  max-width: 460px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 0 8px;
+}
+.ds-home-title {
+  font-size: clamp(44px, 7vw, 64px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  margin: 2px 0 22px;
+}
+.ds-menu {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ds-menu-btn {
+  font: inherit;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 15px 18px;
+  border-radius: var(--ds-round-full);
+  border: 1px solid var(--ds-line);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  cursor: pointer;
+  box-shadow: var(--ds-edge-soft);
+  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.15s, background 0.15s;
+}
+.ds-menu-btn .ml {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.ds-menu-btn .mh {
+  font-family: var(--ds-font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--ds-mut);
+}
+.ds-menu-btn:hover {
+  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--ds-line);
+}
+.ds-menu-btn:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--ds-line);
+}
+.ds-menu-btn.primary {
+  background: var(--ds-accent);
+  color: var(--ds-accent-ink);
+  border-color: transparent;
+  box-shadow: var(--ds-edge);
+}
+.ds-menu-btn.primary .mh {
+  color: color-mix(in srgb, var(--ds-accent-ink) 74%, transparent);
+}
+.ds-menu-btn.primary:hover {
+  background: color-mix(in srgb, var(--ds-accent) 88%, white);
+  box-shadow: 0 2px 0 var(--ds-accent-edge);
+}
+.ds-menu-btn.primary:active {
+  box-shadow: 0 0 0 var(--ds-accent-edge);
+}
+.ds-home-loadout {
+  margin-top: 22px;
+  font-size: 13.5px;
+  color: var(--ds-mut);
+}
+.ds-home-loadout b {
+  color: var(--ds-ink);
+}
+
+/* ---- section sub-nav (Configure) + tab strip (Records) ---------------- */
+.ds-subnav-layout {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: 22px;
+  align-items: start;
+  margin-top: 20px;
+}
+.ds-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: sticky;
+  top: 84px; /* clears the sticky top bar */
+}
+.ds-subnav-btn {
+  font: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 9px 11px;
+  border-radius: var(--ds-round);
+  border: 1px solid transparent;
+  background: none;
+  color: var(--ds-ink-dim);
+  cursor: pointer;
+}
+.ds-subnav-btn .sl {
+  font-size: 14px;
+  font-weight: 700;
+}
+.ds-subnav-btn .sh {
+  font-size: 11px;
+  color: var(--ds-mut);
+}
+.ds-subnav-btn:hover {
+  background: var(--ds-panel);
+  border-color: var(--ds-line);
+  color: var(--ds-ink);
+}
+.ds-subnav-btn.on {
+  background: var(--ds-accent-soft);
+  border-color: var(--ds-accent);
+  color: var(--ds-accent-soft-ink);
+}
+.ds-subnav-btn.on .sh {
+  color: color-mix(in srgb, var(--ds-accent-soft-ink) 78%, transparent);
+}
+.ds-subnav-body {
+  min-width: 0;
+}
+
+.ds-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 18px 0 16px;
+  border-bottom: 1px solid var(--ds-line);
+}
+.ds-tab {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 9px 14px;
+  border: 0;
+  background: none;
+  color: var(--ds-mut);
+  cursor: pointer;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -1px;
+}
+.ds-tab:hover {
+  color: var(--ds-ink);
+}
+.ds-tab.on {
+  color: var(--ds-accent);
+  border-bottom-color: var(--ds-accent);
+}
+
+.ds-foot-link {
+  font: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+}
+.ds-foot-link:hover {
+  color: var(--ds-ink);
 }
 
 /* ---- footer ---------------------------------------------------------- */
@@ -241,6 +484,9 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* KEYCAP: a solid cap sitting 3px above its own darker edge. Hover sinks 1px,
+   press sinks the full 3px so the cap meets the edge — a physical click. The
+   cap moves with `transform`, never `margin`, so nothing around it reflows. */
 .ds-btn {
   font: inherit;
   font-size: 14px;
@@ -251,29 +497,57 @@
   background: var(--ds-panel);
   color: var(--ds-ink);
   cursor: pointer;
+  box-shadow: var(--ds-edge-soft);
+  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.15s, background 0.15s;
 }
 .ds-btn:hover {
   border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--ds-line);
+}
+.ds-btn:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--ds-line);
 }
 .ds-btn.primary {
   background: var(--ds-accent);
   color: var(--ds-accent-ink);
   border-color: transparent;
+  box-shadow: var(--ds-edge);
 }
 .ds-btn.primary:hover {
   background: color-mix(in srgb, var(--ds-accent) 88%, white);
+  box-shadow: 0 2px 0 var(--ds-accent-edge);
 }
+.ds-btn.primary:active {
+  box-shadow: 0 0 0 var(--ds-accent-edge);
+}
+/* ghost is a flat text button — it has no cap, so it must not press */
 .ds-btn.ghost {
   background: none;
+  box-shadow: none;
+}
+.ds-btn.ghost:hover,
+.ds-btn.ghost:active {
+  transform: none;
+  box-shadow: none;
 }
 .ds-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  transform: none;
 }
 .ds-btn:focus-visible,
-.ds-nav button:focus-visible,
 .ds-tile:focus-visible,
-.ds-seg:focus-visible {
+.ds-seg:focus-visible,
+.ds-mark:focus-visible,
+.ds-menu-btn:focus-visible,
+.ds-rail-btn:focus-visible,
+.ds-rail-home:focus-visible,
+.ds-subnav-btn:focus-visible,
+.ds-tab:focus-visible,
+.ds-cta:focus-visible,
+.ds-opt:focus-visible {
   outline: 2px solid var(--ds-accent);
   outline-offset: 2px;
 }
@@ -347,9 +621,23 @@
   justify-content: space-between;
   cursor: pointer;
   font: inherit;
+  /* Level-1 card: flat fill, 1px stroke, hard offset block toward the bottom-right
+     (the sun sits top-left). It lifts on hover and presses INTO its shadow. */
+  box-shadow: var(--ds-block);
+  transition: transform 0.08s ease, box-shadow 0.08s ease, border-color 0.15s;
 }
 .ds-tile:hover {
   border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));
+  transform: translate(-1px, -1px);
+  box-shadow: 5px 5px 0 var(--ds-line-soft);
+}
+.ds-tile:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--ds-line-soft);
+}
+.ds-tile:disabled {
+  transform: none;
+  box-shadow: var(--ds-block-sm);
 }
 .ds-tile .k {
   font-family: var(--ds-font-mono);
@@ -374,6 +662,13 @@
   background: var(--ds-accent);
   color: var(--ds-accent-ink);
   border-color: transparent;
+  box-shadow: 4px 4px 0 var(--ds-accent-edge);
+}
+.ds-tile.primary:hover {
+  box-shadow: 5px 5px 0 var(--ds-accent-edge);
+}
+.ds-tile.primary:active {
+  box-shadow: 1px 1px 0 var(--ds-accent-edge);
 }
 .ds-tile.primary .k,
 .ds-tile.primary .d {
@@ -419,34 +714,14 @@
   margin: 0 0 10px 2px;
 }
 
-/* collapsible panel (details/summary) — used by Match setup on Home */
-.ds-collapse > .ds-collapse-sum {
-  cursor: pointer;
-  list-style: none;
-}
-.ds-collapse > .ds-collapse-sum::-webkit-details-marker {
-  display: none;
-}
-.ds-collapse-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
+/* the aside in a panel header (e.g. Match setup's "Ranked and Custom set …").
+   The rest of the old <details>/<summary> collapse rules went with the panel. */
 .ds-collapse-hint {
   font-family: var(--ds-font-mono);
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ds-mut);
-}
-.ds-collapse-chev {
-  color: var(--ds-mut);
-  font-size: 13px;
-  display: inline-block;
-  transition: transform 0.15s ease;
-}
-.ds-collapse[open] > .ds-collapse-sum .ds-collapse-chev {
-  transform: rotate(90deg);
 }
 
 /* ---- panels + tables ------------------------------------------------- */
@@ -455,6 +730,7 @@
   border-radius: var(--ds-round);
   background: var(--ds-panel);
   overflow: hidden;
+  box-shadow: var(--ds-block);
 }
 .ds-panel-h {
   display: flex;
@@ -481,6 +757,10 @@
 .ds-seg {
   font: inherit;
   font-size: 12px;
+  /* Weight is CONSTANT across states. `.on` used to bump this to 700, which made
+     the label wider and shoved every sibling segment sideways on click. Selection
+     is carried by colour + fill only — nothing here may affect layout. */
+  font-weight: 700;
   padding: 4px 10px;
   border-radius: var(--ds-round);
   color: var(--ds-mut);
@@ -494,9 +774,9 @@
 .ds-seg.on {
   background: var(--ds-accent);
   color: var(--ds-accent-ink);
-  font-weight: 700;
 }
 
+/* RECESSED: a darker-than-surface well with an inner top shadow, as if carved in */
 .ds-select {
   font: inherit;
   font-size: 13px;
@@ -504,12 +784,14 @@
   padding: 0 30px 0 11px;
   border-radius: var(--ds-round);
   color: var(--ds-ink);
-  background-color: var(--ds-bg, #0e141b);
-  /* custom chevron so the control matches the dark theme instead of native chrome */
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%238aa0b0' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-color: var(--ds-tile);
+  /* custom chevron so the control matches the theme instead of native chrome;
+     the stroke is url-encoded --ds-mut (#5c645f) — a light slate vanished here */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%235c645f' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
-  border: 1px solid var(--ds-line, rgba(255, 255, 255, 0.14));
+  border: 1px solid var(--ds-line);
+  box-shadow: inset 0 2px 0 rgba(25, 28, 27, 0.07);
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
@@ -530,10 +812,10 @@
 }
 
 /* ---- server (region) picker ----------------------------------------- */
+/* both call sites (Account panel, Record Run console) are left-aligned padded
+   containers that own their own spacing — the picker just fills them */
 .server-picker {
   text-align: left;
-  margin: 0 auto 20px;
-  max-width: 380px;
 }
 .server-picker-h {
   display: flex;
@@ -972,7 +1254,6 @@ tr.lb-detail td {
 }
 .ds-replay-seek {
   flex: 1;
-  accent-color: var(--ds-accent);
   cursor: pointer;
 }
 .ds-replay-time {
@@ -999,9 +1280,11 @@ tr.lb-detail td {
   max-width: 380px;
   background: var(--ds-panel);
   border: 1px solid var(--ds-line);
-  border-radius: 10px;
+  border-radius: var(--ds-round-md);
   padding: 20px;
-  box-shadow: 0 24px 70px -30px rgba(0, 0, 0, 0.7);
+  /* a hard block, not a realistic blur — it sits on a dark backdrop, so the
+     offset shade is drawn in the ink rather than the pastel line colour */
+  box-shadow: 6px 6px 0 rgba(25, 28, 27, 0.28);
 }
 .ds-modal-h {
   display: flex;
@@ -1022,14 +1305,16 @@ tr.lb-detail td {
   font-size: 12px;
   color: var(--ds-mut);
 }
+/* RECESSED: carved into the surface it sits on (DESIGN.md "Input Fields") */
 .ds-input {
   font: inherit;
   font-size: 14px;
   color: var(--ds-ink);
-  background: var(--ds-bg);
+  background: var(--ds-tile);
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
   padding: 9px 11px;
+  box-shadow: inset 0 2px 0 rgba(25, 28, 27, 0.07);
 }
 .ds-input:focus-visible {
   outline: 2px solid var(--ds-accent);
@@ -1051,7 +1336,8 @@ tr.lb-detail td {
   align-items: stretch;
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
-  background: var(--ds-bg);
+  background: var(--ds-tile);
+  box-shadow: inset 0 2px 0 rgba(25, 28, 27, 0.07);
   overflow: hidden;
 }
 .ds-username-input:focus-within {
@@ -1069,6 +1355,8 @@ tr.lb-detail td {
   border: none;
   border-radius: 0;
   background: none;
+  /* the wrapper already carries the recess — don't double it */
+  box-shadow: none;
   flex: 1;
   padding-left: 2px;
 }
@@ -1083,16 +1371,19 @@ tr.lb-detail td {
 }
 
 /* =====================================================================
-   CONSOLE LAYER — full-screen setup surfaces (My Robot, Lobby, Download)
-   built entirely on the Direction A tokens above. This REPLACES the old
-   legacy menu look (the removed styles.css menu/card/builder rules).
+   CONSOLE LAYER — full-screen setup surfaces (Lobby, Record Run, Ranked)
+   built entirely on the design tokens above. The scaffold's own background
+   is a soft mint wash over the warm floor (both token-derived, so it moved
+   with the palette rather than needing a rewrite).
    ===================================================================== */
 
 /* ---- page scaffold --------------------------------------------------- */
 .ds-console {
   min-height: 100vh;
   height: 100%;
-  overflow-y: auto;
+  /* same reason as `.ds-app`: its centered `.ds-console-in` must not slide when a
+     lobby/queue screen grows past the viewport */
+  overflow-y: scroll;
   background:
     radial-gradient(1100px 460px at 50% -8%, color-mix(in srgb, var(--ds-accent) 10%, transparent), transparent),
     var(--ds-bg);
@@ -1228,7 +1519,8 @@ tr.lb-detail td {
   gap: 4px;
   cursor: pointer;
   font: inherit;
-  transition: border-color 0.14s, background 0.14s, box-shadow 0.14s;
+  box-shadow: var(--ds-block-sm);
+  transition: transform 0.08s ease, border-color 0.14s, background 0.14s, box-shadow 0.08s ease;
 }
 /* count badge next to a section title, e.g. "Saved robots 2/3" */
 .ds-count {
@@ -1275,15 +1567,33 @@ tr.lb-detail td {
 .ds-opt:hover {
   border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));
   background: var(--ds-tile);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ds-line-soft);
 }
+.ds-opt:active {
+  transform: translate(1px, 1px);
+  box-shadow: 0 0 0 var(--ds-line-soft);
+}
+/* SELECTED. These cards carry the ON/OFF toggles (Sorter, Aim assist, …), so the
+   chosen state reads as a filled soft-mint chip, not a hairline tint. */
 .ds-opt.on {
   border-color: var(--ds-accent);
-  background: color-mix(in srgb, var(--ds-accent) 9%, var(--ds-panel));
-  box-shadow: inset 0 0 0 1px var(--ds-accent);
+  background: var(--ds-accent-soft);
+  color: var(--ds-accent-soft-ink);
+  box-shadow: 2px 2px 0 var(--ds-accent-edge);
+}
+.ds-opt.on:hover {
+  background: var(--ds-accent-soft);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--ds-accent-edge);
+}
+.ds-opt.on:active {
+  box-shadow: 0 0 0 var(--ds-accent-edge);
 }
 .ds-opt:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+  transform: none;
 }
 .ds-opt .ot {
   font-size: 14.5px;
@@ -1326,15 +1636,19 @@ tr.lb-detail td {
 .ds-opt.blue .ot {
   color: var(--ds-blue);
 }
+/* alliance selection keeps its OWN tint (red/blue are reserved semantics), so it
+   must also undo the soft-mint ink inherited from `.ds-opt.on` */
 .ds-opt.red.on {
   border-color: var(--ds-red);
   background: color-mix(in srgb, var(--ds-red) 12%, var(--ds-panel));
-  box-shadow: inset 0 0 0 1px var(--ds-red);
+  color: var(--ds-ink);
+  box-shadow: 2px 2px 0 color-mix(in srgb, var(--ds-red) 45%, var(--ds-line-soft));
 }
 .ds-opt.blue.on {
   border-color: var(--ds-blue);
   background: color-mix(in srgb, var(--ds-blue) 12%, var(--ds-panel));
-  box-shadow: inset 0 0 0 1px var(--ds-blue);
+  color: var(--ds-ink);
+  box-shadow: 2px 2px 0 color-mix(in srgb, var(--ds-blue) 45%, var(--ds-line-soft));
 }
 .ds-opt .go {
   margin-left: auto;
@@ -1359,6 +1673,7 @@ tr.lb-detail td {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  box-shadow: var(--ds-block);
 }
 .ds-fields {
   display: flex;
@@ -1366,11 +1681,16 @@ tr.lb-detail td {
   flex-wrap: wrap;
 }
 .ds-field {
-  flex: 1 1 150px;
-  min-width: 140px;
   display: flex;
   flex-direction: column;
   gap: 7px;
+}
+/* the 150px basis is a COLUMN WIDTH in the `.ds-fields` row. A `.ds-field` placed
+   straight into a `.ds-panelbox` (Lobby, Account) is a child of a COLUMN flexbox,
+   where that same basis became a 150px row HEIGHT — a blank gap under the input. */
+.ds-fields > .ds-field {
+  flex: 1 1 150px;
+  min-width: 140px;
 }
 .ds-field > .cap {
   display: flex;
@@ -1386,10 +1706,76 @@ tr.lb-detail td {
   color: var(--ds-accent);
   font-weight: 600;
 }
-input[type='range'].ds-range {
+/* ---- chunky sliders -------------------------------------------------
+   A thick track with rounded caps in a light grey-beige, a mint fill, and a
+   large circular "puck". `accent-color` alone can't give us the cap radius or
+   the puck ring, so the track/thumb are drawn per-engine. Applies to every
+   range in the app (builder, controls, replay seek) via the shared selector. */
+input[type='range'].ds-range,
+.ds-bind-row input[type='range'],
+.ds-replay-seek {
   width: 100%;
-  accent-color: var(--ds-accent);
   cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  height: 22px;
+}
+/* The mint FILL comes from `--fill`, set per-input by rangeFill() — `accent-color`
+   stops painting it the moment we take over the track. Custom properties inherit
+   into pseudo-elements, so the gradient can read it here. */
+input[type='range'].ds-range::-webkit-slider-runnable-track,
+.ds-bind-row input[type='range']::-webkit-slider-runnable-track,
+.ds-replay-seek::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: var(--ds-round-full);
+  background: linear-gradient(
+    to right,
+    var(--ds-accent) 0 var(--fill, 0%),
+    var(--ds-tile) var(--fill, 0%) 100%
+  );
+  border: 1px solid var(--ds-line);
+  box-shadow: inset 0 1px 0 rgba(25, 28, 27, 0.06);
+}
+input[type='range'].ds-range::-webkit-slider-thumb,
+.ds-bind-row input[type='range']::-webkit-slider-thumb,
+.ds-replay-seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -6px; /* centre the puck on the 8px track */
+  border-radius: 50%;
+  background: var(--ds-accent);
+  border: 2px solid var(--ds-panel);
+  box-shadow: 0 2px 0 var(--ds-accent-edge);
+}
+input[type='range'].ds-range::-moz-range-track,
+.ds-bind-row input[type='range']::-moz-range-track,
+.ds-replay-seek::-moz-range-track {
+  height: 8px;
+  border-radius: var(--ds-round-full);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line);
+}
+input[type='range'].ds-range::-moz-range-progress,
+.ds-bind-row input[type='range']::-moz-range-progress,
+.ds-replay-seek::-moz-range-progress {
+  height: 8px;
+  border-radius: var(--ds-round-full);
+  background: var(--ds-accent);
+}
+input[type='range'].ds-range::-moz-range-thumb,
+.ds-bind-row input[type='range']::-moz-range-thumb,
+.ds-replay-seek::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ds-accent);
+  border: 2px solid var(--ds-panel);
+}
+input[type='range']:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
 }
 
 /* ---- robot hero ------------------------------------------------------ */
@@ -1401,6 +1787,7 @@ input[type='range'].ds-range {
   border-radius: var(--ds-round);
   background: linear-gradient(160deg, var(--ds-tile), var(--ds-panel));
   padding: 18px;
+  box-shadow: var(--ds-block);
 }
 .ds-hero-view {
   display: grid;
@@ -1457,8 +1844,9 @@ input[type='range'].ds-range {
 .ds-stat {
   border: 1px solid var(--ds-line-soft);
   border-radius: var(--ds-round);
-  background: var(--ds-bg);
+  background: var(--ds-panel);
   padding: 8px 10px;
+  box-shadow: var(--ds-block-sm);
 }
 .ds-stat .sv {
   font-family: var(--ds-font-mono);
@@ -1476,45 +1864,115 @@ input[type='range'].ds-range {
   color: var(--ds-mut);
   margin-top: 1px;
 }
+/* ---- narrow viewports -------------------------------------------------
+   The rail and the Configure sub-nav are vertical columns beside the content;
+   below ~900px there isn't room, so both become horizontal scrolling strips
+   above it. `.ds-app` stays the only vertical scroll container throughout. */
+@media (max-width: 900px) {
+  .ds-body {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ds-rail {
+    width: 100%;
+    align-self: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--ds-line);
+    overflow-x: auto;
+  }
+  .ds-rail-items {
+    flex-direction: row;
+    gap: 6px;
+  }
+  .ds-rail-home {
+    flex: none;
+  }
+  .ds-rail-btn {
+    flex: none;
+    padding: 7px 12px;
+  }
+  /* the hint line is the first thing to go when the rail turns horizontal */
+  .ds-rail-btn .rh,
+  .ds-subnav-btn .sh {
+    display: none;
+  }
+
+  .ds-subnav-layout {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  .ds-subnav {
+    position: static;
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+  .ds-subnav-btn {
+    flex: none;
+  }
+}
+
 @media (max-width: 640px) {
   .ds-hero {
     grid-template-columns: 1fr;
   }
+  .ds-home-title {
+    margin-bottom: 16px;
+  }
+  .ds-main-home {
+    align-items: flex-start;
+  }
 }
 
 /* ---- primary CTA + hint --------------------------------------------- */
+/* the high-action button: PILL corners set it apart from the layout blocks */
 .ds-cta {
   font: inherit;
   font-size: 16px;
   font-weight: 800;
   letter-spacing: 0.16em;
   padding: 16px;
-  border-radius: var(--ds-round);
+  border-radius: var(--ds-round-full);
   border: 1px solid transparent;
   background: var(--ds-accent);
   color: var(--ds-accent-ink);
   cursor: pointer;
-  transition: filter 0.14s, transform 0.1s;
+  box-shadow: var(--ds-edge);
+  transition: transform 0.06s ease, box-shadow 0.06s ease, background 0.15s, border-color 0.15s;
 }
 .ds-cta:hover {
-  filter: brightness(1.08);
+  background: color-mix(in srgb, var(--ds-accent) 88%, white);
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--ds-accent-edge);
 }
 .ds-cta:active {
-  transform: translateY(1px);
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--ds-accent-edge);
 }
 .ds-cta:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  transform: none;
 }
 .ds-cta.ghost {
   background: var(--ds-panel);
   color: var(--ds-ink);
   border-color: var(--ds-line);
   letter-spacing: 0.1em;
+  box-shadow: var(--ds-edge-soft);
 }
 .ds-cta.ghost:hover {
   border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
-  filter: none;
+  background: var(--ds-panel);
+  box-shadow: 0 2px 0 var(--ds-line);
+}
+.ds-cta.ghost:active {
+  box-shadow: 0 0 0 var(--ds-line);
 }
 .ds-hint {
   color: var(--ds-mut);
@@ -1534,6 +1992,7 @@ input[type='range'].ds-range {
   border-radius: var(--ds-round);
   background: var(--ds-panel);
   padding: 13px 15px;
+  box-shadow: var(--ds-block);
 }
 .ds-bind-block h3 {
   margin: 0 0 11px;
@@ -1561,7 +2020,6 @@ input[type='range'].ds-range {
 }
 .ds-bind-row input[type='range'] {
   width: 130px;
-  accent-color: var(--ds-accent);
   cursor: pointer;
 }
 .ds-keys {
@@ -1570,23 +2028,31 @@ input[type='range'].ds-range {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+/* a literal keycap — Space Grotesk (technical data), sitting on its own edge */
 .ds-key {
-  font: inherit;
-  background: var(--ds-tile);
+  font-family: var(--ds-font-mono);
+  background: var(--ds-panel);
   border: 1px solid var(--ds-line);
-  border-bottom-width: 2px;
-  border-radius: 6px;
+  border-radius: var(--ds-round-sm);
   padding: 3px 10px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.03em;
   color: var(--ds-ink);
   min-width: 34px;
   text-align: center;
   cursor: pointer;
+  box-shadow: var(--ds-edge-soft);
+  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.14s;
 }
 button.ds-key:hover {
   border-color: color-mix(in srgb, var(--ds-accent) 55%, var(--ds-line));
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--ds-line);
+}
+button.ds-key:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--ds-line);
 }
 .ds-key.on,
 .ds-key.selected {
@@ -1774,5 +2240,23 @@ button.ds-key:hover {
   * {
     animation-duration: 0.001ms !important;
     transition-duration: 0.001ms !important;
+  }
+  /* Zeroing the DURATION alone still snaps the keycap/card down instantly, which
+     is the motion these users opted out of. Hold every pressable flush instead —
+     the colour + border feedback carries the state on its own. */
+  .ds-btn:hover,
+  .ds-btn:active,
+  .ds-cta:hover,
+  .ds-cta:active,
+  .ds-tile:hover,
+  .ds-tile:active,
+  .ds-opt:hover,
+  .ds-opt:active,
+  .ds-opt.on:hover,
+  button.ds-key:hover,
+  button.ds-key:active,
+  .ds-menu-btn:hover,
+  .ds-menu-btn:active {
+    transform: none;
   }
 }

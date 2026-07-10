@@ -10,6 +10,8 @@ import type { LobbyPlayer, PlayerIntro, QueueMode } from '../net/protocol';
 import { MatchStrategy } from './MatchStrategy';
 import { usePresence } from './usePresence';
 import { useServerNotice } from '../net/notice';
+import { APP_NAME } from '../seasons';
+import { Logo } from './Logo';
 
 /**
  * Region-aware ranked matchmaking. We connect to the DESIGNATED matchmaker (a
@@ -192,33 +194,50 @@ export function Matchmaking({
     setSearching(false);
   };
 
+  /** the console scaffold every full-screen setup surface shares (Lobby, Record
+   * Run, MatchStrategy) — back control + brand mark, then a titled panel. */
+  const page = (title: JSX.Element, sub: string, body: JSX.Element): JSX.Element => (
+    <div className="ds-console">
+      <div className="ds-console-in" style={{ maxWidth: 520 }}>
+        <div className="ds-head">
+          <button className="ds-back" onClick={onCancel}>
+            ← Back
+          </button>
+          <span className="ds-mark">
+            <Logo size={24} />
+            {APP_NAME}
+          </span>
+        </div>
+        <div className="ds-title">
+          <h1>{title}</h1>
+        </div>
+        <p className="ds-sub" style={{ marginTop: -10 }}>
+          {sub}
+        </p>
+        <div className="ds-panelbox">{body}</div>
+      </div>
+    </div>
+  );
+
   // ranked requires an account (ELO / leaderboard). Custom rooms stay open to
   // everyone — the server also rejects an anonymous queue as a backstop.
   if (!signedIn) {
-    return (
-      <div className="ds-app">
-        <main
-          className="ds-main"
-          style={{ display: 'grid', placeItems: 'center', minHeight: '70vh' }}
-        >
-          <div style={{ textAlign: 'center', maxWidth: 460, width: '100%' }}>
-            <p className="ds-eyebrow">Ranked</p>
-            <h1 className="ds-h1">Sign in to play ranked</h1>
-            <p className="ds-sub" style={{ margin: '0 auto 20px' }}>
-              Ranked tracks ELO and the leaderboard, so it needs an account. Want to play now?
-              Custom Rooms are open to everyone.
-            </p>
-            <button className="ds-btn primary" onClick={onSignIn}>
-              Sign in
-            </button>
-            <div style={{ marginTop: 12 }}>
-              <button className="ds-btn ghost" onClick={onCancel}>
-                ← Home
-              </button>
-            </div>
-          </div>
-        </main>
-      </div>
+    return page(
+      <>
+        Ranked <span className="accent">Match</span>
+      </>,
+      'Head-to-head rating, split by drivetrain plus an overall board.',
+      <>
+        <p className="ds-hint">
+          Ranked tracks rating and the leaderboard, so it needs an account. Want to play now? Custom
+          Rooms are open to everyone.
+        </p>
+        <div className="ds-actions">
+          <button className="ds-cta" onClick={onSignIn}>
+            SIGN IN ▶
+          </button>
+        </div>
+      </>,
     );
   }
 
@@ -243,82 +262,78 @@ export function Matchmaking({
     );
   }
 
-  return (
-    <div className="ds-app">
-      <main className="ds-main" style={{ display: 'grid', placeItems: 'center', minHeight: '70vh' }}>
-        <div style={{ textAlign: 'center', maxWidth: 460, width: '100%' }}>
-          <p className="ds-eyebrow">Ranked</p>
-          <h1 className="ds-h1">{searching ? 'Finding a match…' : 'Ranked matchmaking'}</h1>
-          {!searching ? (
-            <>
-              <p className="ds-sub" style={{ margin: '0 auto 20px' }}>
-                Head-to-head ELO — the winner takes rating, split by drivetrain plus an overall
-                board. Sign in for it to count.
-              </p>
-              <div className="ds-segs" style={{ justifyContent: 'center', marginBottom: 12 }}>
-                <button className={`ds-seg ${mode === '1v1' ? 'on' : ''}`} onClick={() => setMode('1v1')}>1v1</button>
-                <button className={`ds-seg ${mode === '2v2' ? 'on' : ''}`} onClick={() => setMode('2v2')}>2v2</button>
-              </div>
-              <p className="ds-sub" style={{ margin: '0 auto 20px', fontSize: 13 }}>
-                {presence ? (
-                  <>
-                    <b style={{ color: 'var(--ds-ink)' }}>{presence.queues[mode]}</b> waiting in{' '}
-                    {mode.toUpperCase()} ·{' '}
-                    {presence.queues[mode === '1v1' ? '2v2' : '1v1']} in{' '}
-                    {(mode === '1v1' ? '2v2' : '1v1').toUpperCase()} · {presence.online} online
-                  </>
-                ) : (
-                  <span style={{ opacity: 0.6 }}>Checking who’s online…</span>
-                )}
-              </p>
-              {multiServer() && (
-                <div className="ds-opts" style={{ marginBottom: 16 }}>
-                  <button
-                    className={`ds-opt ${noWiden ? 'on' : ''}`}
-                    onClick={() => setNoWiden(!noWiden)}
-                  >
-                    <span className="ot">Only my region {noWiden ? 'ON' : 'OFF'}</span>
-                    <span className="od">Never widen the search — lowest ping, may wait longer</span>
-                  </button>
-                </div>
-              )}
-              {error && <p className="ds-form-err" style={{ marginBottom: 12 }}>{error}</p>}
-              {restartPending && (
-                <p className="ds-form-err" style={{ marginBottom: 12 }}>
-                  Server is restarting shortly — queueing is paused for a moment.
-                </p>
-              )}
-              <button className="ds-btn primary" disabled={restartPending} onClick={() => void find()}>
-                Find Match
-              </button>
-              <div style={{ marginTop: 12 }}>
-                <button className="ds-btn ghost" onClick={onCancel}>← Home</button>
-              </div>
-            </>
-          ) : (
-            <>
-              <p className="ds-sub" style={{ margin: '0 auto 8px' }}>
-                {mode.toUpperCase()} · {queue.size}/{queue.need} in queue · {elapsed}s
-              </p>
-              {/* region-local first; widen automatically as you wait, or on demand */}
-              {!noWiden && multiServer() && (
-                <p className="ds-sub" style={{ margin: '0 auto 16px', fontSize: 13, opacity: 0.75 }}>
-                  {elapsed < 8
-                    ? 'Searching your region…'
-                    : 'Widening search to nearby regions…'}
-                </p>
-              )}
-              {error && <p className="ds-form-err" style={{ marginBottom: 12 }}>{error}</p>}
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
-                {!noWiden && multiServer() && (
-                  <button className="ds-btn" onClick={expand}>Expand search</button>
-                )}
-                <button className="ds-btn" onClick={cancel}>Cancel</button>
-              </div>
-            </>
+  if (searching) {
+    return page(
+      <>
+        Finding a <span className="accent">match…</span>
+      </>,
+      `${mode.toUpperCase()} · ${queue.size}/${queue.need} in queue · ${elapsed}s`,
+      <>
+        {/* region-local first; widen automatically as you wait, or on demand */}
+        {!noWiden && multiServer() && (
+          <p className="ds-hint">
+            {elapsed < 8 ? 'Searching your region…' : 'Widening search to nearby regions…'}
+          </p>
+        )}
+        {error && <p className="ds-form-err">⚠ {error}</p>}
+        <div className="ds-actions">
+          {!noWiden && multiServer() && (
+            <button className="ds-cta ghost" onClick={expand}>
+              EXPAND SEARCH
+            </button>
           )}
+          <button className="ds-cta ghost" onClick={cancel}>
+            CANCEL
+          </button>
         </div>
-      </main>
-    </div>
+      </>,
+    );
+  }
+
+  return page(
+    <>
+      Ranked <span className="accent">Match</span>
+    </>,
+    'Head-to-head rating — the winner takes it, split by drivetrain plus an overall board.',
+    <>
+      <div className="ds-opts two">
+        <button className={`ds-opt ${mode === '1v1' ? 'on' : ''}`} onClick={() => setMode('1v1')}>
+          <span className="ot">1v1</span>
+          <span className="od">One driver each</span>
+        </button>
+        <button className={`ds-opt ${mode === '2v2' ? 'on' : ''}`} onClick={() => setMode('2v2')}>
+          <span className="ot">2v2</span>
+          <span className="od">Two drivers per alliance</span>
+        </button>
+      </div>
+      <p className="ds-hint">
+        {presence ? (
+          <>
+            <b style={{ color: 'var(--ds-ink)' }}>{presence.queues[mode]}</b> waiting in{' '}
+            {mode.toUpperCase()} · {presence.queues[mode === '1v1' ? '2v2' : '1v1']} in{' '}
+            {(mode === '1v1' ? '2v2' : '1v1').toUpperCase()} · {presence.online} online
+          </>
+        ) : (
+          'Checking who’s online…'
+        )}
+      </p>
+      {multiServer() && (
+        <div className="ds-opts">
+          <button className={`ds-opt ${noWiden ? 'on' : ''}`} onClick={() => setNoWiden(!noWiden)}>
+            <span className="ot">Only my region {noWiden ? 'ON' : 'OFF'}</span>
+            <span className="od">Never widen the search — lowest ping, may wait longer</span>
+          </button>
+        </div>
+      )}
+      {error && <p className="ds-form-err">⚠ {error}</p>}
+      {restartPending && (
+        <p className="ds-form-err">⚠ Server is restarting shortly — queueing is paused for a moment.</p>
+      )}
+      <div className="ds-actions">
+        <button className="ds-cta" disabled={restartPending} onClick={() => void find()}>
+          FIND MATCH ▶
+        </button>
+      </div>
+    </>,
   );
 }
