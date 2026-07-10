@@ -395,7 +395,7 @@ const httpServer = createServer((req, res) => {
             jsonOut(400, { ok: false, error: 'title must be 2–80 characters' });
             return;
           }
-          const body = (payload.body ?? '').slice(0, 4000);
+          const body = (payload.body ?? '').slice(0, 8000); // long-form Markdown patch notes
           const tagline = (payload.tagline ?? '').trim().slice(0, 80) || null;
           const row = await createAnnouncement({ kind: payload.kind ?? 'patch', title, body, tagline });
           console.log(`[admin] published ${row.kind} announcement "${row.title}"`);

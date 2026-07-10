@@ -16,6 +16,7 @@ import {
   type Announcement,
   type AnnouncementKind,
 } from '../net/api';
+import { Markdown } from './markdown';
 
 type RecMode = 'solo' | 'duo';
 const DRIVETRAINS = ['overall', 'mecanum', 'tank', 'swerve', 'xdrive'] as const;
@@ -271,16 +272,28 @@ export function Admin() {
           </label>
         )}
         <label className="admin-field col">
-          <span>{isCinematic ? 'Details (one bullet per line, shown in “What’s new”)' : 'Notes (one bullet per line)'}</span>
+          <span>{isCinematic ? 'Details (shown in “What’s new”) — Markdown' : 'Notes — Markdown'}</span>
           <textarea
             className="admin-textarea"
             value={annBody}
-            maxLength={4000}
-            rows={5}
-            placeholder={'Fixed the gate lever swinging closed on a resting robot\nFaster basin drain\nNew swerve pod wobble tuning'}
+            maxLength={8000}
+            rows={8}
+            placeholder={'## Gate & Intake\n- Fixed the gate lever swinging closed on a **resting** robot\n- Faster basin drain\n\n## Drivetrain\n- New swerve pod wobble tuning — see [the notes](https://example.com)'}
             onChange={(e) => setAnnBody(e.target.value)}
           />
+          <span className="ds-hint" style={{ marginTop: 4 }}>
+            Supports Markdown: <code>## headings</code>, <code>**bold**</code>, <code>- bullets</code>{' '}
+            (indent to nest), <code>[links](url)</code>, <code>---</code> rules.
+          </span>
         </label>
+        {annBody.trim() && (
+          <div className="admin-field col">
+            <span className="ds-hint">Preview</span>
+            <div className="ann-item" style={{ borderLeftColor: 'var(--ds-accent)' }}>
+              <Markdown text={annBody} className="ann-md" />
+            </div>
+          </div>
+        )}
         <div className="admin-buttons">
           <button className="ds-btn" disabled={annBusy} onClick={publishAnnouncement}>
             PUBLISH

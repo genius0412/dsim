@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Announcement, AnnouncementKind } from '../net/api';
 import { useAnnouncements } from '../net/announcements';
+import { Markdown } from './markdown';
 
 /**
  * Shows unseen announcements once, the first time a player opens the app after one
@@ -15,14 +16,6 @@ const KIND_LABEL: Record<AnnouncementKind, string> = {
   season: 'New season',
   act: 'New act',
 };
-
-/** split a body blob into bullet lines (blank lines dropped). */
-function bulletLines(body: string): string[] {
-  return body
-    .split('\n')
-    .map((l) => l.replace(/^\s*[-•*]\s*/, '').trim())
-    .filter(Boolean);
-}
 
 /** a short celebratory swell for the cinematic reveal. Best-effort + self-contained
  * (no dependency on the game audio manager); silently no-ops if audio is blocked. */
@@ -119,26 +112,17 @@ function WhatsNew({ items, onClose }: { items: Announcement[]; onClose: () => vo
       <div className="ann-panel" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="What's new">
         <p className="ds-eyebrow">What's new</p>
         <div className="ann-scroll">
-          {items.map((a) => {
-            const lines = bulletLines(a.body);
-            return (
-              <article key={a.id} className={`ann-item ${a.kind}`}>
-                <header className="ann-item-head">
-                  <KindBadge kind={a.kind} />
-                  <time className="ds-hint">{new Date(a.publishedAt).toLocaleDateString()}</time>
-                </header>
-                <h2 className="ann-item-title">{a.title}</h2>
-                {a.tagline && <p className="ann-item-tag">{a.tagline}</p>}
-                {lines.length > 0 && (
-                  <ul className="ann-list">
-                    {lines.map((l, i) => (
-                      <li key={i}>{l}</li>
-                    ))}
-                  </ul>
-                )}
-              </article>
-            );
-          })}
+          {items.map((a) => (
+            <article key={a.id} className={`ann-item ${a.kind}`}>
+              <header className="ann-item-head">
+                <KindBadge kind={a.kind} />
+                <time className="ds-hint">{new Date(a.publishedAt).toLocaleDateString()}</time>
+              </header>
+              <h2 className="ann-item-title">{a.title}</h2>
+              {a.tagline && <p className="ann-item-tag">{a.tagline}</p>}
+              {a.body.trim() && <Markdown text={a.body} className="ann-md" />}
+            </article>
+          ))}
         </div>
         <div className="ann-actions">
           <button className="ds-btn" onClick={onClose}>
