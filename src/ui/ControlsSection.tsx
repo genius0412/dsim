@@ -10,6 +10,7 @@ import {
   type KeyAction,
   type PadAction,
 } from '../input/bindings';
+import { rangeFill } from './rangeFill';
 
 const KEY_LABELS: Record<KeyAction, string> = {
   driveUp: 'Drive forward',
@@ -210,6 +211,7 @@ export function ControlsSection({ bindings, onChange }: Props) {
                 max={0.4}
                 step={0.01}
                 value={bindings.pad.deadzone}
+                style={rangeFill(bindings.pad.deadzone, 0, 0.4)}
                 onChange={(e) =>
                   onChange({ ...cloneBindings(bindings), pad: { ...bindings.pad, deadzone: Number(e.target.value) } })
                 }
@@ -226,6 +228,7 @@ export function ControlsSection({ bindings, onChange }: Props) {
                 max={3}
                 step={0.1}
                 value={bindings.pad.curve}
+                style={rangeFill(bindings.pad.curve, 1, 3)}
                 onChange={(e) =>
                   onChange({ ...cloneBindings(bindings), pad: { ...bindings.pad, curve: Number(e.target.value) } })
                 }
@@ -241,6 +244,7 @@ export function ControlsSection({ bindings, onChange }: Props) {
                 max={0.9}
                 step={0.05}
                 value={bindings.pad.triggerThreshold}
+                style={rangeFill(bindings.pad.triggerThreshold, 0.1, 0.9)}
                 onChange={(e) =>
                   onChange({
                     ...cloneBindings(bindings),

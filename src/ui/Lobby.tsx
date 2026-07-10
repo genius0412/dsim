@@ -16,6 +16,7 @@ import { useServerNotice } from '../net/notice';
 import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
+import { useEscape } from './useEscape';
 
 interface Props {
   settings: GameSettings;
@@ -68,14 +69,7 @@ export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = 
     };
   }, []);
 
-  // Esc leaves the lobby
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onCancel();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onCancel]);
+  useEscape(onCancel); // Esc leaves the lobby, same as ← Back
 
   const me = players.find((p) => p.clientId === myId) ?? null;
   const isHost = myId !== '' && myId === hostId;
@@ -309,7 +303,7 @@ export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = 
             ← Leave
           </button>
           <span className="ds-mark">
-            <span className="glyph">D</span>
+            <Logo size={24} />
             {APP_NAME}
           </span>
         </div>

@@ -74,9 +74,10 @@ export function useUsernameCheck(raw: string, ownValue?: string): UsernameCheck 
   return { normalized, status, ok: status === 'available', message };
 }
 
-/** color for the status hint text */
+/** colour for the status hint TEXT. --ds-ok-ink, not --ds-ok: the latter is a fill
+ *  (3.25:1 as 12px type on the light panel). --ds-danger is already a text token. */
 export function usernameHintColor(status: UsernameStatus): string | undefined {
-  if (status === 'available') return 'var(--ds-ok)';
+  if (status === 'available') return 'var(--ds-ok-ink)';
   if (status === 'invalid' || status === 'taken' || status === 'error') return 'var(--ds-danger)';
   return undefined;
 }

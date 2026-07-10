@@ -12,6 +12,7 @@ import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './robotLabels';
 import { Menu } from './Menu';
 import { MatchAudio } from '../audio';
 import { APP_NAME } from '../seasons';
+import { Logo } from './Logo';
 
 /** beep once per second over the final STRAT_TICK_FROM seconds of the strategy
  * deadline, rising in pitch as it nears (like a match countdown). */
@@ -38,6 +39,9 @@ interface Props {
  * the full builder; the server takes the live build at match start (still clamped to
  * the build limits). The match starts the instant everyone readies; if the deadline
  * passes with anyone not ready the server cancels (arrives as an `error` → onLeave).
+ *
+ * NO `useEscape` here, unlike the other console screens: `onLeave` forfeits a paired
+ * ranked match for everyone in the room, so it stays a deliberate click on ← Leave.
  */
 export function MatchStrategy({
   lobby,
@@ -136,7 +140,7 @@ export function MatchStrategy({
               ← Done
             </button>
             <span className="ds-mark">
-              <span className="glyph">D</span>
+              <Logo size={24} />
               {APP_NAME}
             </span>
           </div>
@@ -166,7 +170,7 @@ export function MatchStrategy({
             ← Leave
           </button>
           <span className="ds-mark">
-            <span className="glyph">D</span>
+            <Logo size={24} />
             {APP_NAME}
           </span>
         </div>

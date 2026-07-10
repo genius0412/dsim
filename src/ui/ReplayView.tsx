@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchReplay } from '../net/api';
 import { ReplayPlayer, REPLAY_FORMAT, type Replay } from '../sim/replay';
 import { Renderer } from '../render/renderer';
+import { rangeFill } from './rangeFill';
 import { SIM_DT, BALANCE_VERSION } from '../config';
 
 /**
@@ -191,6 +192,7 @@ export function ReplayView({
             min={0}
             max={total}
             value={tick}
+            style={rangeFill(tick, 0, total)}
             onChange={(e) => seek(Number(e.target.value))}
             aria-label="Seek"
           />

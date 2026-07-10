@@ -6,15 +6,14 @@ import { gameServerConfigured, multiServer, selectedServerId } from '../net/env'
 import { fetchProfile, updateHandle, updateUsername } from '../net/api';
 import { AuthPanel } from './AuthPanel';
 import { ServerPicker } from './ServerPicker';
-import { ControlsSection } from './ControlsSection';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
 import { APP_NAME } from '../seasons';
 
 /**
- * Account settings — identity (sign in / out via Neon Auth) plus the app-level
- * preferences that aren't part of a robot loadout (audio, a settings reset).
- * Audio lives here rather than in the robot builder because it is global. Auth
- * is a stable module constant, so the `authEnabled` branch that skips the
+ * Profile — identity (sign in / out via Neon Auth), the default server region,
+ * and a settings reset. Audio and controls moved to `Configure`, which owns
+ * everything you tune before a match; what stays here is the ACCOUNT itself.
+ * Auth is a stable module constant, so the `authEnabled` branch that skips the
  * session hook is safe.
  */
 export function Account({
@@ -24,14 +23,11 @@ export function Account({
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
 }) {
-  const setAudio = (patch: Partial<GameSettings['audio']>) =>
-    onChange({ ...settings, audio: { ...settings.audio, ...patch } });
-
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Account</p>
-      <h1 className="ds-h1">Account settings</h1>
-      <p className="ds-sub">Your sign-in and app-wide preferences. Signed-in preferences sync to your account.</p>
+      <p className="ds-eyebrow">{APP_NAME} · Profile</p>
+      <h1 className="ds-h1">Profile</h1>
+      <p className="ds-sub">Your sign-in and account preferences. Signed-in preferences sync to your account.</p>
 
       {authEnabled ? <Identity /> : <IdentityDisabled />}
 
@@ -52,35 +48,6 @@ export function Account({
           </div>
         </div>
       )}
-
-      <div className="ds-panel" style={{ marginTop: 18 }}>
-        <div className="ds-panel-h">
-          <span className="ds-panel-title">Audio</span>
-        </div>
-        <div className="ds-opts two" style={{ padding: 16 }}>
-          <button
-            className={`ds-opt ${settings.audio.sounds ? 'on' : ''}`}
-            onClick={() => setAudio({ sounds: !settings.audio.sounds })}
-          >
-            <span className="ot">Sounds {settings.audio.sounds ? 'ON' : 'OFF'}</span>
-            <span className="od">All audio</span>
-          </button>
-          <button
-            className={`ds-opt ${settings.audio.voice ? 'on' : ''}`}
-            onClick={() => setAudio({ voice: !settings.audio.voice })}
-          >
-            <span className="ot">Voice lines {settings.audio.voice ? 'ON' : 'OFF'}</span>
-            <span className="od">Announcer voice · beeps when off</span>
-          </button>
-        </div>
-      </div>
-
-      <div style={{ marginTop: 18 }}>
-        <ControlsSection
-          bindings={settings.bindings}
-          onChange={(bindings) => onChange({ ...settings, bindings })}
-        />
-      </div>
 
       <div className="ds-panel" style={{ marginTop: 18 }}>
         <div className="ds-panel-h">
@@ -133,10 +100,11 @@ function Identity() {
           <Username userId={user.id} />
           <div>
             <p className="ds-hint" style={{ margin: '0 0 4px' }}>Account ID (for ADMIN_USER_IDS)</p>
+            {/* --ds-mut, not the --muted bridge: that one belongs to the in-match HUD */}
             <code
               title="Click to copy"
               onClick={() => void navigator.clipboard?.writeText(user.id)}
-              style={{ cursor: 'pointer', fontSize: 12, wordBreak: 'break-all', color: 'var(--muted)' }}
+              style={{ cursor: 'pointer', fontSize: 12, wordBreak: 'break-all', color: 'var(--ds-mut)' }}
             >
               {user.id}
             </code>

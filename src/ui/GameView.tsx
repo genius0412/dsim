@@ -206,7 +206,15 @@ export function GameView({ settings, onExit, session = null, onWatchReplay, sign
 
   return (
     <div className="game-root">
-      <canvas ref={canvasRef} className="game-canvas" />
+      {/* A screen-reader-playable driving sim is out of scope (see the Phase 6 audit,
+          F7). The label at least stops this being an unlabelled interactive region;
+          score/timer/gate state is announced by the live regions below. */}
+      <canvas
+        ref={canvasRef}
+        className="game-canvas"
+        role="img"
+        aria-label="DECODE field, top-down view. Match state is announced in the event log."
+      />
       {window.matchMedia('(pointer: coarse)').matches && controllerRef.current && (
         <MobileControls inputManager={controllerRef.current.getInputManager()} />
       )}
@@ -349,7 +357,11 @@ function Hud({ hud }: { hud: HudSnapshot }) {
             <span className="panel-score">{redScore}</span>
           </div>
           <div className={`timer-panel ${urgent ? 'urgent' : endgame ? 'warning' : ''}`}>
-            <span className="timer-phase">{endgame ? 'END GAME' : PHASE_LABEL[hud.phase]}</span>
+            {/* status on the PHASE only — the digits beside it retick every frame and
+                would flood a screen reader. This changes ~4 times a match. */}
+            <span className="timer-phase" role="status">
+              {endgame ? 'END GAME' : PHASE_LABEL[hud.phase]}
+            </span>
             <span className="timer-time">
               {hud.phase === 'post' ? '0:00' : fmtTime(hud.timeLeft)}
             </span>
@@ -436,7 +448,9 @@ function Hud({ hud }: { hud: HudSnapshot }) {
         </div>
       )}
 
-      <div className="eventlog">
+      {/* polite: match events shouldn't interrupt, but they are the only non-visual
+          channel for scoring/gate/penalty state. */}
+      <div className="eventlog" aria-live="polite">
         {hud.toasts.map((t) => (
           <div key={t.id} className="eventlog-line">
             {t.text}

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchUserStats, fetchUserMatches, type MatchHistoryOpts, type UserStats } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { authEnabled, authClient } from '../lib/authClient';
-import { APP_NAME } from '../seasons';
 import { CareerPanel } from './CareerPanel';
 import { MatchHistory } from './MatchHistory';
 import { ShareButton } from './ShareButton';
@@ -23,8 +22,6 @@ export function Stats(nav: CareerNav = {}) {
   if (!authEnabled) {
     return (
       <>
-        <p className="ds-eyebrow">{APP_NAME}</p>
-        <h1 className="ds-h1">Career</h1>
         <div className="ds-panel">
           <div className="ds-empty">
             <div className="big">Accounts are off in this build</div>
@@ -71,12 +68,9 @@ function StatsSignedIn({ nav }: { nav: CareerNav }) {
     };
   }, [user, configured]);
 
+  // the page heading is owned by the Records host — this is just the tab's blurb
   const head = (
-    <>
-      <p className="ds-eyebrow">{APP_NAME}</p>
-      <h1 className="ds-h1">Career</h1>
-      <p className="ds-sub">Your ranked ELO, personal bests, and recent matches this season.</p>
-    </>
+    <p className="ds-sub">Your ranked ELO, personal bests, and recent matches this season.</p>
   );
 
   if (session.isPending) {

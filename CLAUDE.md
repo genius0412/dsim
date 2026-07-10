@@ -16,6 +16,14 @@ at session start if it exists — it may describe uncommitted mid-refactor state
 - `npm test` — **headless sim verification** (`scripts/smoke.ts`, ~30 checks). Run this
   after ANY change to `src/sim/` or `src/config.ts`. It is fast and catches almost everything.
 - `npm run build` — tsc (strict) + vite build. Run before claiming work done.
+- `npm run contrast` — WCAG audit of the palette (`scripts/contrast.mjs`, 135 pairs, light +
+  dark, no deps). Run after ANY colour/token edit. Not wired into `npm test` on purpose: a red
+  `npm test` must keep meaning "physics broke".
+- `npm run shiftaudit` — layout-shift audit (`scripts/shiftaudit.cjs`, Electron). Needs a
+  build + `npx vite preview --port 4173` in another shell. Forces `:hover`/`:active` and the
+  `on`/`primary` state classes on every interactive element across 10 routes + the live HUD,
+  in BOTH themes, and asserts nothing outside that element's own subtree moves. Pressables must
+  move via `transform`/`box-shadow`, never a border or margin that appears on hover.
 - `npm run electron` / `npm run dist` — desktop shell / Windows installer (`release/`)
 
 ## Architecture (load-bearing rules)
@@ -368,6 +376,31 @@ handle. Rendered (`drawGateArm`) top-down by FORESHORTENING each arm toward the 
 
 ## Gotchas
 
+- **THEMING (dark mode).** Pref lives in `localStorage['decodesim.theme']` (`src/theme.ts`),
+  never in `GameSettings` (that syncs to Postgres per account). First paint is stamped by a
+  blocking inline script in `index.html`; `system` is resolved in JS so CSS sees only
+  `data-theme="light|dark"`. **EVERYTHING THEMES, INCLUDING THE IN-MATCH HUD** — the old
+  `:root[data-theme='dark'] .game-root` "light island" is GONE, and so is the pinning of the
+  legacy bridge (`--bg`/`--panel`/`--panel-2`/`--border`/`--text`/`--muted`/`--amber`), which
+  now simply ALIASES the matching `--ds-*` tokens. Three categories decide how a token behaves:
+  (1) *readable against the surface* ⇒ INVERTS (`--ds-ink`, `--ds-mut`, `--ds-accent`,
+  `--ds-warn`, the `-ink` siblings); (2) *a fill with fixed ink* ⇒ does NOT (`--ds-red`,
+  `--ds-*-chip`, `--ds-gold`); (3) *its ground is the CANVAS* ⇒ does NOT, because the field is
+  hardcoded dark — that is `--ds-on-field` / `-dim` / `-accent`, deliberately absent from the
+  dark block. Use category 3 for anything drawn straight on the field or on the dark overlay
+  scrims (countdown digits, mobile joystick, ranked-intro eyebrow/VS).
+  A dark HUD card is only ~1.4:1 on the dark field by FILL, so its EDGE identifies it:
+  floating surfaces take **`--ds-hud-line`** (readable against card *and* field), never
+  `--ds-line`, which is tuned against the card behind it. `--ds-line-strong` is likewise tuned
+  against `--ds-panel` and drops to 2.73:1 on the translucent HUD card — rings that must read
+  there (`.hopper-pip`, `.pg-bar`) use `--ds-mut`. To detect the theme in JS read
+  `document.documentElement.dataset.theme` (as `renderer.ts` does for the letterbox), not
+  `getComputedStyle`. `npm run contrast` (`scripts/contrast.mjs`) asserts 135 pairs in BOTH
+  themes — including the HUD, the canvas grounds, and the server-gated screens — and exits 1
+  on a regression; run it after any palette edit. **A colour that is both a fill and a text
+  colour will fail one of the two** — split it (`--ds-ok`/`--ds-ok-ink`).
+  The letterbox themes (`COLORS.backdropDark`) but the field mat does NOT; the board is
+  separated from the dark floor by its outline alone (mat vs dark bg is 1.03:1), so keep it.
 - Camera/screen math: `worldToScreen` = rotate by `viewAngle`, then y-flip. Driver
   stick → field frame uses `rot(stick, -viewAngle)` (the INVERSE — sign matters since
   view angles are ±90°).

@@ -1,9 +1,22 @@
 import type { RobotCommand, World, PathPoint, RobotState } from '../types';
+import { COLORS } from '../config';
 import { Camera } from './camera';
 import { drawField } from './drawField';
 import { drawBalls } from './drawBalls';
 import { drawRobot } from './drawRobot';
 import { drawRampStrips } from './drawGoals';
+
+/**
+ * The letterbox around the field follows the app theme (the FIELD itself never does).
+ *
+ * Read the theme off <html> rather than `getComputedStyle` of the canvas: the canvas
+ * carries no themed background of its own, and going through the cascade here would
+ * force a style flush on every frame of the render loop.
+ */
+const backdropColor = (): string =>
+  typeof document !== 'undefined' && document.documentElement.dataset.theme === 'dark'
+    ? COLORS.backdropDark
+    : COLORS.backdrop;
 
 export class Renderer {
   readonly camera = new Camera();
@@ -16,7 +29,7 @@ export class Renderer {
   ): void {
     const canvas = ctx.canvas;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#14161a';
+    ctx.fillStyle = backdropColor();
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     this.camera.apply(ctx);
@@ -52,8 +65,14 @@ export class Renderer {
         ctx.scale(1, -1);
         ctx.font = '600 4px system-ui, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillStyle = 'rgba(229,231,235,0.75)';
         const label = r.spec.teamNumber > 0 ? `${r.spec.teamNumber} ${r.spec.name}` : r.spec.name;
+        // a robot pinned to the far wall pushes its label off the mat onto the
+        // light backdrop, so the light glyphs carry a dark outline to read on both
+        ctx.lineWidth = 0.7;
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = 'rgba(20,22,26,0.8)';
+        ctx.strokeText(label, 0, -14);
+        ctx.fillStyle = 'rgba(229,231,235,0.9)';
         ctx.fillText(label, 0, -14);
         ctx.restore();
       }

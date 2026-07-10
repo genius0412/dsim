@@ -6,18 +6,18 @@ import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
 import { Admin } from './Admin';
 import { AccountSync } from './AccountSync';
-import { Menu } from './Menu';
 import { GameView } from './GameView';
 import { Lobby } from './Lobby';
 import { AppShell, type ShellNav } from './AppShell';
-import { Home } from './Home';
-import { Leaderboard } from './Leaderboard';
+import { HomeMenu } from './HomeMenu';
+import { ModeSelect } from './ModeSelect';
+import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
+import { Records, isRecordsTab, type RecordsTab } from './Records';
 import { RecordRun } from './RecordRun';
 import { Matchmaking } from './Matchmaking';
 import { ReplayView } from './ReplayView';
 import { AccountButton } from './AccountButton';
 import { Download } from './Download';
-import { Stats } from './Stats';
 import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
@@ -32,8 +32,9 @@ import type { Replay } from '../sim/replay';
 
 type Screen =
   | 'home'
-  | 'robot'
-  | 'leaderboard'
+  | 'modes'
+  | 'configure'
+  | 'records'
   | 'lobby'
   | 'record'
   | 'duorecord'
@@ -41,30 +42,43 @@ type Screen =
   | 'replay'
   | 'game'
   | 'download'
-  | 'stats'
   | 'profile'
   | 'account'
   | 'admin';
 
+/** everything a route needs beyond the screen itself */
+interface RouteArgs {
+  /** `/replay/<id>` */
+  replayId: string | null;
+  /** `/profile/<username>` */
+  username: string | null;
+  /** the section/tab of a screen that has them: `/configure/<sub>`, `/records/<sub>` */
+  sub: string | null;
+}
+const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null };
+
 /**
- * Tiny path router (no dependency). Each screen is a real URL — /leaderboard,
- * /my-robot, /replay/<id>, … — via the History API, so links are shareable and
- * back/forward work. The web build uses an absolute base + a vercel.json SPA
- * rewrite so a deep load/refresh resolves. Under Electron (file://) there is no
- * History to push, so we route by state only (isWebHistory === false).
+ * Tiny path router (no dependency). Each screen is a real URL — /modes,
+ * /configure/robot, /records/career, /replay/<id>, … — via the History API, so
+ * links are shareable and back/forward work. The web build uses an absolute base
+ * + a vercel.json SPA rewrite so a deep load/refresh resolves. Under Electron
+ * (file://) there is no History to push, so we route by state only
+ * (isWebHistory === false).
  */
 const isWebHistory = typeof window !== 'undefined' && window.location.protocol !== 'file:';
 
-function pathFor(screen: Screen, replayId: string | null, username: string | null): string {
+function pathFor(screen: Screen, a: RouteArgs): string {
   switch (screen) {
-    case 'profile':
-      return username ? `/profile/${encodeURIComponent(username)}` : '/leaderboard';
     case 'home':
       return '/';
-    case 'robot':
-      return '/my-robot';
-    case 'leaderboard':
-      return '/leaderboard';
+    case 'modes':
+      return '/modes';
+    case 'configure':
+      return `/configure/${isConfigureSection(a.sub) ? a.sub : 'robot'}`;
+    case 'records':
+      return a.sub === 'career' ? '/records/career' : '/records';
+    case 'profile':
+      return a.username ? `/profile/${encodeURIComponent(a.username)}` : '/records';
     case 'lobby':
       return '/lobby';
     case 'record':
@@ -74,13 +88,11 @@ function pathFor(screen: Screen, replayId: string | null, username: string | nul
     case 'matchmaking':
       return '/ranked';
     case 'replay':
-      return replayId ? `/replay/${encodeURIComponent(replayId)}` : '/replay';
+      return a.replayId ? `/replay/${encodeURIComponent(a.replayId)}` : '/replay';
     case 'game':
       return '/play';
     case 'download':
       return '/download';
-    case 'stats':
-      return '/stats';
     case 'account':
       return '/account';
     case 'admin':
@@ -88,38 +100,89 @@ function pathFor(screen: Screen, replayId: string | null, username: string | nul
   }
 }
 
-function parsePath(pathname: string): {
-  screen: Screen;
-  replayId: string | null;
-  username: string | null;
-} {
+function parsePath(pathname: string): { screen: Screen } & RouteArgs {
+  const at = (screen: Screen, extra: Partial<RouteArgs> = {}) => ({
+    screen,
+    ...NO_ARGS,
+    ...extra,
+  });
+
   const replay = pathname.match(/^\/replay\/(.+)$/);
-  if (replay) return { screen: 'replay', replayId: decodeURIComponent(replay[1]), username: null };
+  if (replay) return at('replay', { replayId: decodeURIComponent(replay[1]) });
   const profile = pathname.match(/^\/profile\/(.+)$/);
-  if (profile)
-    return { screen: 'profile', replayId: null, username: decodeURIComponent(profile[1]) };
-  if (pathname.startsWith('/leaderboard')) return { screen: 'leaderboard', replayId: null, username: null };
-  if (pathname.startsWith('/my-robot')) return { screen: 'robot', replayId: null, username: null };
-  if (pathname.startsWith('/lobby')) return { screen: 'lobby', replayId: null, username: null };
-  if (pathname.startsWith('/duo-record')) return { screen: 'duorecord', replayId: null, username: null };
-  if (pathname.startsWith('/record')) return { screen: 'record', replayId: null, username: null };
-  if (pathname.startsWith('/ranked')) return { screen: 'matchmaking', replayId: null, username: null };
-  if (pathname.startsWith('/download')) return { screen: 'download', replayId: null, username: null };
-  if (pathname.startsWith('/stats')) return { screen: 'stats', replayId: null, username: null };
-  if (pathname.startsWith('/account')) return { screen: 'account', replayId: null, username: null };
-  if (pathname.startsWith('/admin')) return { screen: 'admin', replayId: null, username: null };
+  if (profile) return at('profile', { username: decodeURIComponent(profile[1]) });
+
+  const configure = pathname.match(/^\/configure(?:\/([^/]+))?/);
+  if (configure) return at('configure', { sub: configure[1] ?? 'robot' });
+  const records = pathname.match(/^\/records(?:\/([^/]+))?/);
+  if (records) return at('records', { sub: records[1] ?? 'leaderboard' });
+
+  // legacy paths kept alive so old links (and anything a player bookmarked
+  // before the nav restructure) still resolve to their new home
+  if (pathname.startsWith('/my-robot')) return at('configure', { sub: 'robot' });
+  if (pathname.startsWith('/leaderboard')) return at('records', { sub: 'leaderboard' });
+  if (pathname.startsWith('/stats')) return at('records', { sub: 'career' });
+
+  if (pathname.startsWith('/modes')) return at('modes');
+  if (pathname.startsWith('/lobby')) return at('lobby');
+  if (pathname.startsWith('/duo-record')) return at('duorecord');
+  if (pathname.startsWith('/record')) return at('record');
+  if (pathname.startsWith('/ranked')) return at('matchmaking');
+  if (pathname.startsWith('/download')) return at('download');
+  if (pathname.startsWith('/account')) return at('account');
+  if (pathname.startsWith('/admin')) return at('admin');
   // /play (a live game) can't be restored without a session ⇒ home
-  return { screen: 'home', replayId: null, username: null };
+  return at('home');
+}
+
+/** which rail/menu entry lights up for a given screen */
+function navFor(screen: Screen): ShellNav {
+  switch (screen) {
+    case 'modes':
+    case 'game':
+    case 'lobby':
+    case 'record':
+    case 'duorecord':
+    case 'matchmaking':
+      return 'play';
+    case 'configure':
+      return 'configure';
+    case 'records':
+      return 'records';
+    case 'account':
+      return 'profile';
+    case 'admin':
+      return 'admin';
+    default:
+      return 'home';
+  }
+}
+
+/** the landing route for each top-level destination */
+function screenForNav(n: ShellNav): Screen {
+  switch (n) {
+    case 'home':
+      return 'home';
+    case 'play':
+      return 'modes';
+    case 'configure':
+      return 'configure';
+    case 'records':
+      return 'records';
+    case 'profile':
+      return 'account';
+    case 'admin':
+      return 'admin';
+  }
 }
 
 export function App() {
   const [settings, setSettings] = useState<GameSettings>(loadSettings);
   const start = isWebHistory
     ? parsePath(window.location.pathname)
-    : { screen: 'home' as Screen, replayId: null, username: null };
+    : { screen: 'home' as Screen, ...NO_ARGS };
   const [screen, setScreen] = useState<Screen>(start.screen);
-  const [replayId, setReplayId] = useState<string | null>(start.replayId);
-  const [profileUser, setProfileUser] = useState<string | null>(start.username);
+  const [route, setRoute] = useState<RouteArgs>(start);
   const [session, setSession] = useState<NetSession | null>(null);
   // a just-played replay to watch in-memory (not yet persisted, so no URL id)
   const [replayObj, setReplayObj] = useState<Replay | null>(null);
@@ -130,32 +193,32 @@ export function App() {
     const onPop = (): void => {
       const s = parsePath(window.location.pathname);
       setScreen(s.screen);
-      setReplayId(s.replayId);
-      setProfileUser(s.username);
+      setRoute(s);
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
   /** the single way screens change — updates state AND the URL */
-  const navigate = (next: Screen, rid: string | null = null, uname: string | null = null): void => {
+  const navigate = (next: Screen, args: Partial<RouteArgs> = {}): void => {
+    const a: RouteArgs = { ...NO_ARGS, ...args };
     setScreen(next);
-    setReplayId(rid);
-    setProfileUser(uname);
+    setRoute(a);
     if (next !== 'replay') setReplayObj(null); // leaving the viewer drops the in-memory replay
     if (isWebHistory) {
-      const path = pathFor(next, rid, uname);
+      const path = pathFor(next, a);
       if (window.location.pathname !== path) window.history.pushState(null, '', path);
     }
   };
 
   /** open a player's public profile page (/profile/<username>) */
-  const openProfile = (username: string): void => navigate('profile', null, username);
+  const openProfile = (username: string): void => navigate('profile', { username });
+  const watchReplay = (replayId: string): void => navigate('replay', { replayId });
 
   // when signed in, mirror settings to the account (debounced) as well as local
   const [accountUserId, setAccountUserId] = useState<string | null>(null);
   // is this account an admin? (server-authorized against ADMIN_USER_IDS) — gates the
-  // Admin tab; the server independently enforces every admin action
+  // Admin entry; the server independently enforces every admin action
   const [isAdmin, setIsAdmin] = useState(false);
   // has the admin-status check settled? (so we don't bounce a real admin off an
   // admin-only deep-link before the async check resolves)
@@ -329,7 +392,7 @@ export function App() {
         settings={settings}
         onSettingsChange={update}
         onStart={(s) => beginSession(s, 'custom')}
-        onCancel={() => navigate('home')}
+        onCancel={() => navigate('modes')}
       />
     );
   }
@@ -339,7 +402,7 @@ export function App() {
         settings={settings}
         mode="solo"
         onStart={(s) => beginSession(s, 'record')}
-        onCancel={() => navigate('home')}
+        onCancel={() => navigate('modes')}
         onPreferServer={(id) => update({ ...settings, preferredServerId: id })}
       />
     );
@@ -351,7 +414,7 @@ export function App() {
         onSettingsChange={update}
         config={{ kind: 'record', record: 'duo' }}
         onStart={(s) => beginSession(s, 'record')}
-        onCancel={() => navigate('home')}
+        onCancel={() => navigate('modes')}
       />
     );
   }
@@ -361,18 +424,18 @@ export function App() {
         settings={settings}
         signedIn={signedIn}
         onStart={(s) => beginSession(s, 'ranked')}
-        onCancel={() => navigate('home')}
+        onCancel={() => navigate('modes')}
         onSignIn={() => navigate('account')}
         onSettingsChange={update}
       />
     );
   }
-  if (screen === 'replay' && (replayId || replayObj)) {
+  if (screen === 'replay' && (route.replayId || replayObj)) {
     return (
       <ReplayView
-        replayId={replayId ?? undefined}
+        replayId={route.replayId ?? undefined}
         preloadReplay={replayObj ?? undefined}
-        onClose={() => navigate(replayObj ? 'home' : 'leaderboard')}
+        onClose={() => (replayObj ? navigate('home') : navigate('records'))}
       />
     );
   }
@@ -385,26 +448,32 @@ export function App() {
       Settings
     </button>
   );
-  const active: ShellNav =
-    screen === 'leaderboard'
-      ? 'leaderboard'
-      : screen === 'stats'
-        ? 'stats'
-        : screen === 'download'
-          ? 'download'
-          : screen === 'robot'
-            ? 'robot'
-            : screen === 'admin'
-              ? 'admin'
-              : 'home';
+
+  const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
+  const recordsTab: RecordsTab = isRecordsTab(route.sub) ? route.sub : 'leaderboard';
+
   return (
-    <AppShell active={active} onNav={(n) => navigate(n)} right={right} showAdmin={isAdmin}>
+    <AppShell
+      active={navFor(screen)}
+      onNav={(n) => navigate(screenForNav(n))}
+      right={right}
+      showAdmin={isAdmin}
+      showRail={screen !== 'home'}
+      onDownload={() => navigate('download')}
+    >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
       {authEnabled && <UsernameGate />}
+
       {screen === 'home' && (
-        <Home
+        <HomeMenu
           settings={settings}
-          onChange={update}
+          multiplayer={multiplayer}
+          onNav={(n) => navigate(screenForNav(n))}
+        />
+      )}
+
+      {screen === 'modes' && (
+        <ModeSelect
           multiplayer={multiplayer}
           signedIn={signedIn}
           activeGame={activeGame ? { kind: activeGame.kind } : null}
@@ -429,9 +498,10 @@ export function App() {
           onDuoRecord={() => guardStart(() => navigate('duorecord'))}
           onRanked={() => guardStart(() => navigate('matchmaking'))}
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
-          onEditRobot={() => navigate('robot')}
         />
       )}
+      {/* the start guards live here, not on `modes`, because a start can also be
+          triggered from a lobby/queue screen that this shell doesn't render */}
       {blockedByActive && (
         <div className="overlay">
           <div className="overlay-panel">
@@ -489,17 +559,30 @@ export function App() {
           </div>
         </div>
       )}
-      {screen === 'robot' && <Menu settings={settings} onChange={update} />}
-      {screen === 'leaderboard' && (
-        <Leaderboard myUserId={accountUserId} onWatch={(id) => navigate('replay', id)} onOpenProfile={openProfile} />
+
+      {screen === 'configure' && (
+        <Configure
+          settings={settings}
+          onChange={update}
+          section={configureSection}
+          onSection={(s) => navigate('configure', { sub: s })}
+        />
       )}
-      {screen === 'stats' && (
-        <Stats onWatch={(id) => navigate('replay', id)} onOpenProfile={openProfile} />
+
+      {screen === 'records' && (
+        <Records
+          tab={recordsTab}
+          onTab={(t) => navigate('records', { sub: t })}
+          myUserId={accountUserId}
+          onWatch={watchReplay}
+          onOpenProfile={openProfile}
+        />
       )}
-      {screen === 'profile' && profileUser && (
+
+      {screen === 'profile' && route.username && (
         <Profile
-          username={profileUser}
-          nav={{ onWatch: (id) => navigate('replay', id), onOpenProfile: openProfile }}
+          username={route.username}
+          nav={{ onWatch: watchReplay, onOpenProfile: openProfile }}
         />
       )}
       {screen === 'download' && isAdmin && <Download />}

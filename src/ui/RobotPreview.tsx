@@ -1,12 +1,15 @@
 import type { RobotSpec } from '../types';
 import { INTAKE_PRESETS, TURRET_OFFSET_FRAC, WHEEL_INSET } from '../config';
 
+/** dimension-label type size, in the viewBox's inch units */
+const DIM_FONT = 1.7;
+
 /**
  * Top-down schematic of a robot drawn straight from its `RobotSpec` — the live
  * preview in the My Robot builder. Front faces UP (screen −y). Everything is in
  * inches inside the viewBox so the drawing scales with the real chassis/intake
- * dimensions, and colors reference the Direction A ds- tokens so it themes with
- * the app. Purely presentational; reads nothing but the spec + a few geometry
+ * dimensions, and colors reference the ds- design tokens so it themes with the
+ * app. Purely presentational; reads nothing but the spec + a few geometry
  * constants (matching the sim's own robotExtents / turret placement rules).
  */
 export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: number }) {
@@ -27,8 +30,13 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
   const turretY = -TURRET_OFFSET_FRAC * len;
   const turretR = Math.min(w, len) * 0.2;
 
-  // viewBox spans the widest of chassis/intake plus a margin, kept square-ish
-  const halfSpan = Math.max(w / 2, mouthHalf) + 2.5;
+  // viewBox spans the widest of chassis/intake plus a margin, kept square-ish.
+  // The dimension label is centered and can be WIDER than a narrow chassis, so it
+  // has to be measured in too — an <svg> clips to its viewport, and a 10"-wide
+  // robot would otherwise lop the ends off "16.5" wide · 14.5" long".
+  const dimLabel = `${w}" wide · ${len}" long`;
+  const labelHalf = (dimLabel.length * DIM_FONT * 0.56) / 2; // ~0.56em avg advance
+  const halfSpan = Math.max(w / 2, mouthHalf, labelHalf) + 2.5;
   const top = tipY - 2;
   const bottom = len / 2 + 3.5; // room for the width dimension label
   const vbW = halfSpan * 2;
@@ -193,10 +201,10 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
         y={len / 2 + 2.6}
         textAnchor="middle"
         fill="var(--ds-mut)"
-        fontSize={1.7}
-        fontFamily="ui-monospace, monospace"
+        fontSize={DIM_FONT}
+        fontFamily="var(--ds-font-mono)"
       >
-        {w}" wide · {len}" long
+        {dimLabel}
       </text>
     </svg>
   );
