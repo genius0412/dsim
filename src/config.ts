@@ -95,12 +95,12 @@ export const POSSESSION_LIMIT = 3; // == HOPPER_CAPACITY
 export const POSSESSION_CONTROL_MARGIN = 0.8; // in
 /** herding requires motion — a parked robot merely resting against loose balls
  * is not controlling them (they can roll free), so ignore control below this. */
-export const POSSESSION_MOVE_SPEED = 7; // in/s
+export const POSSESSION_MOVE_SPEED = 8; // in/s
 /** grace before over-possession is fouled — just long enough to forgive an
  * incidental brush-by (a normal intake capture is < 0.2 s, so driving through a
  * clump to collect it never trips the foul), but short enough that sustained
  * plowing/hoarding bites quickly. */
-export const POSSESSION_GRACE = 0.6; // s
+export const POSSESSION_GRACE = 1.0; // s
 /** A foul fires on the rising edge of its condition and does NOT re-fire while
  * the condition holds — continuous contact in a foul zone is ONE foul, not a
  * stream. It re-arms only after the condition has been CLEAR for this long, so
