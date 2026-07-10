@@ -18,7 +18,7 @@ import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
  * + live RTT / snapshot-rate / jitter, so a laggy player can see AT A GLANCE whether
  * it's their link (high ping/jitter) or the game. Colour tracks `net.quality`; the
  * tooltip spells the three numbers out. */
-function NetQuality({ net }: { net: NetStatus }) {
+function NetQuality({ net, open, onToggle }: { net: NetStatus; open: boolean; onToggle: () => void }) {
   const q = net.quality; // 'good' | 'fair' | 'poor' | null (measuring)
   const cls = q === 'good' ? 'on' : q === 'fair' ? 'warn' : q === 'poor' ? 'off' : '';
   const dot = q === 'good' ? '#3ad17a' : q === 'fair' ? '#e5b567' : q === 'poor' ? '#e5636b' : '#93a1ad';
@@ -31,12 +31,72 @@ function NetQuality({ net }: { net: NetStatus }) {
     `Connection: ${label.toLowerCase()}\n` +
     `Round-trip ping: ${ping} (you ↔ server)\n` +
     `Server updates: ${hz} (target 30)\n` +
-    `Jitter: ${jit} (unevenness — the main cause of choppiness)`;
+    `Jitter: ${jit} (unevenness — the main cause of choppiness)\n` +
+    `Click to ${open ? 'hide' : 'show'} the ping graph`;
   return (
-    <span className={`chip net-quality ${cls}`} title={title}>
+    <span
+      className={`chip net-quality clickable ${cls} ${open ? 'active' : ''}`}
+      title={title}
+      onClick={onToggle}
+      role="button"
+    >
       <span className="net-dot" style={{ background: dot, boxShadow: `0 0 6px ${dot}` }} />
-      {ping} · {hz} · {jit}
+      {ping} · {hz} · {jit} <span className="net-caret">📈</span>
     </span>
+  );
+}
+
+/** expandable ping GRAPH — a sparkline of the RAW round-trip samples so spikes the
+ * smoothed number hides are visible. min/avg/max + a spike count over the window. */
+function PingGraph({ net }: { net: NetStatus }) {
+  const data = net.rttHistory ?? [];
+  const W = 240;
+  const H = 64;
+  if (data.length < 2) {
+    return (
+      <div className="ping-graph">
+        <div className="ping-graph-empty">measuring ping…</div>
+      </div>
+    );
+  }
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const avg = data.reduce((a, b) => a + b, 0) / data.length;
+  // a "spike" = a sample well above the running average (jitter, not steady latency)
+  const spikeThresh = Math.max(avg * 1.8, avg + 40);
+  const spikes = data.filter((v) => v > spikeThresh).length;
+  // scale to the graph box (pad the top so the peak isn't clipped)
+  const top = Math.max(max * 1.1, 20);
+  const x = (i: number): number => (i / (data.length - 1)) * W;
+  const y = (v: number): number => H - (v / top) * H;
+  const pts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const avgY = y(avg);
+  const spikeColor = spikes > 0 ? '#e5636b' : '#3ad17a';
+  return (
+    <div className="ping-graph">
+      <div className="ping-graph-head">
+        <span>PING (ms)</span>
+        <span className="ping-graph-stats">
+          <span>min {Math.round(min)}</span>
+          <span>avg {Math.round(avg)}</span>
+          <span>max {Math.round(max)}</span>
+          <span style={{ color: spikeColor }}>spikes {spikes}</span>
+        </span>
+      </div>
+      <svg
+        className="ping-graph-svg"
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        width={W}
+        height={H}
+      >
+        <line x1="0" y1={avgY} x2={W} y2={avgY} className="ping-graph-avg" />
+        <polyline points={pts} className="ping-graph-line" />
+      </svg>
+      <div className="ping-graph-foot">
+        last {data.length} samples · newest → right
+      </div>
+    </div>
   );
 }
 
@@ -241,6 +301,7 @@ const PHASE_LABEL: Record<string, string> = {
 
 /** styled after the FTC live scoring audience display: red panel | timer | blue panel */
 function Hud({ hud }: { hud: HudSnapshot }) {
+  const [pingGraph, setPingGraph] = useState(false);
   const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
   const endgame = hud.timeLeft <= ENDGAME_START && hud.phase === 'teleop';
   const redScore = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
@@ -327,12 +388,19 @@ function Hud({ hud }: { hud: HudSnapshot }) {
                 NET {hud.net.peers + 1}P
               </span>
             )}
-            {hud.net && !hud.net.waitingFor && <NetQuality net={hud.net} />}
+            {hud.net && !hud.net.waitingFor && (
+              <NetQuality
+                net={hud.net}
+                open={pingGraph}
+                onToggle={() => setPingGraph((v) => !v)}
+              />
+            )}
             {hud.net?.waitingFor && (
               <span className="chip warn">WAITING · {hud.net.waitingFor}</span>
             )}
             {hud.net?.desync && <span className="chip off">⚠ DESYNC</span>}
           </div>
+          {hud.net && pingGraph && <PingGraph net={hud.net} />}
         </div>
       )}
 

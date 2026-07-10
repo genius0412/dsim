@@ -55,6 +55,10 @@ export interface NetStatus {
   jitterMs: number | null;
   /** overall smoothness bucket derived from rtt + jitter (drives the HUD colour) */
   quality: 'good' | 'fair' | 'poor' | null;
+  /** recent RAW round-trip samples (ms, oldest→newest) for the ping GRAPH — the
+   * smoothed `rttMs` hides sub-second spikes, so this raw series is what surfaces
+   * them. null until the first pong / solo path. */
+  rttHistory: number[] | null;
 }
 
 export interface NetSession {
