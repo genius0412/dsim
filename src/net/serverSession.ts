@@ -30,10 +30,14 @@ function deriveServerLabel(reportedRegion: string | undefined, room: string): st
   return selectedServer()?.label ?? '';
 }
 
-/** how often to probe latency (a pong per second is plenty for a smoothed RTT) */
-const PING_INTERVAL_MS = 1000;
+/** how often to probe latency. Faster than the old 1 Hz so the ping GRAPH can
+ * actually resolve sub-second spikes (the smoothed RTT number can't). ~3 Hz is a
+ * trivial number of tiny frames. */
+const PING_INTERVAL_MS = 300;
 /** window of snapshot inter-arrival gaps kept for the rate + jitter estimate */
 const SNAP_WINDOW = 30;
+/** raw RTT samples retained for the ping graph (~36 s at PING_INTERVAL_MS) */
+const RTT_HISTORY = 120;
 
 /**
  * Client half of the server-authoritative netcode. Constructed AFTER the server
@@ -75,6 +79,9 @@ export class ServerSession implements NetSession {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   /** smoothed round-trip time (EWMA over pong samples), null until the first pong */
   private rttMs: number | null = null;
+  /** RAW round-trip samples (oldest→newest) for the ping graph — un-smoothed so a
+   * spike shows as a spike */
+  private readonly rttSamples: number[] = [];
   /** wall-clock of the previous snapshot, to time inter-arrival gaps */
   private lastSnapAt: number | null = null;
   /** recent snapshot inter-arrival gaps (ms) — feeds snapHz + jitter */
@@ -183,6 +190,7 @@ export class ServerSession implements NetSession {
       snapHz,
       jitterMs,
       quality,
+      rttHistory: this.rttSamples.length ? this.rttSamples.slice() : null,
       server: this.serverLabel || null,
     };
   }
@@ -236,6 +244,9 @@ export class ServerSession implements NetSession {
       // round-trip sample → exponentially-weighted moving average (favour recent)
       const sample = nowMs() - m.ts;
       this.rttMs = this.rttMs === null ? sample : this.rttMs * 0.6 + sample * 0.4;
+      // also keep the RAW sample for the ping graph (spikes the EWMA would smooth away)
+      this.rttSamples.push(sample);
+      if (this.rttSamples.length > RTT_HISTORY) this.rttSamples.shift();
     } else if (m.t === 'matchResult') {
       this.matchResult = { kind: m.kind, record: m.record, result: m.result, replay: m.replay };
     } else if (m.t === 'eloResult') {

@@ -36,8 +36,21 @@ const SMOOTH_MAX_DIST = 16; // in — larger corrections snap instead of floatin
 // Minecraft-style entity INTERPOLATION for REMOTE robots + balls: render them a
 // couple snapshots in the PAST and lerp between the two authoritative states that
 // bracket the render clock — buttery smooth at any FPS regardless of tick rate.
-const INTERP_DELAY_TICKS = 4; // render remotes/balls ~4 ticks (66ms) behind latest
+const INTERP_DELAY_TICKS = 5; // render remotes ~5 ticks (~83ms) behind latest: one
+// extra tick of cushion over the old 4 so a single 30 Hz snapshot gap (33ms) no
+// longer drains the interpolation buffer and freezes/warps remotes (a stutter source)
 const INTERP_BUFFER = 8; // authoritative snapshots kept for interpolation
+
+// PREDICTION LEAD CAP. During a snapshot stall (a ping spike / a dropped burst) the
+// client keeps predicting and buffering its own inputs. Without a bound, the input
+// buffer grows unboundedly and the NEXT snapshot triggers a single synchronous
+// reconcile that replays hundreds of full sim steps at once — a multi-hundred-ms
+// hitch that also re-simulates balls/remotes from a stale state, so everything
+// "flies around" on recovery. Cap how far prediction runs ahead of the newest
+// authoritative tick: past this the local robot pauses (honest "you're lagging")
+// instead of building a replay bomb. ~667ms of headroom covers legitimately high
+// latency; beyond it the link is unplayable anyway.
+const MAX_PREDICT_LEAD = 40; // ticks
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 /** shortest-arc angle lerp */
 const lerpAngle = (a: number, b: number, t: number): number =>
@@ -179,6 +192,12 @@ export class GameController {
   /** each remote robot's latest command (from the newest snapshot), held to
    * PREDICT it forward so its collisions are simulated, not faked */
   private remoteCmds = new Map<number, RobotCommand>();
+  /** newest authoritative tick reconciled to; prediction is capped MAX_PREDICT_LEAD
+   * ticks past it so a snapshot stall can't build an unbounded replay buffer */
+  private lastServerTick = 0;
+  /** true once the first snapshot has arrived — the lead cap only applies after that
+   * (before it, the sim-driven pre-match countdown must predict freely from tick 0) */
+  private gotSnapshot = false;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -521,6 +540,15 @@ export class GameController {
     if (this.acc > 0.25) this.acc = 0.25;
     let steps = 0;
     while (this.acc >= C.SIM_DT && steps < 30) {
+      // LEAD CAP: don't predict more than MAX_PREDICT_LEAD ticks past the newest
+      // authoritative tick. During a snapshot stall this holds the local robot at
+      // the lead edge instead of building an unbounded input buffer that reconcile
+      // then replays in one giant hitch (the "everything flies on recovery" bug).
+      // Drain the accumulator so we don't burst-catch-up when snapshots resume.
+      if (this.gotSnapshot && this.world.tick - this.lastServerTick >= MAX_PREDICT_LEAD) {
+        this.acc = 0;
+        break;
+      }
       const tick = this.world.tick + 1;
       const local = localizeCommand(cmd);
       s.sendInput(tick, cmd);
@@ -627,7 +655,15 @@ export class GameController {
     const preH = pre ? pre.heading + this.localSmooth.heading : 0;
 
     this.world = snap.world;
+    this.lastServerTick = snap.serverTick;
+    this.gotSnapshot = true;
     this.inputBuf = this.inputBuf.filter((b) => b.tick > snap.serverTick);
+    // Defensive replay bound: with the lead cap the buffer stays small, but never
+    // replay more than MAX_PREDICT_LEAD ticks synchronously (a stale/duplicate old
+    // snapshot must not stall the frame). Older inputs are already reflected.
+    if (this.inputBuf.length > MAX_PREDICT_LEAD) {
+      this.inputBuf.splice(0, this.inputBuf.length - MAX_PREDICT_LEAD);
+    }
     for (const b of this.inputBuf) {
       step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
     }
@@ -662,6 +698,8 @@ export class GameController {
     this.acc = 0;
     this.inputBuf = [];
     this.remoteCmds = new Map();
+    this.lastServerTick = 0;
+    this.gotSnapshot = false;
     this.snapBuf = [];
     this.renderTick = 0;
     this.localSmooth = { x: 0, y: 0, heading: 0 };

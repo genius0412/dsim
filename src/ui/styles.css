@@ -253,6 +253,78 @@ button {
   top: 12px;
   right: 12px;
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* the connection chip doubles as a toggle for the expandable ping graph */
+.chip.net-quality.clickable {
+  cursor: pointer;
+  user-select: none;
+}
+.chip.net-quality.clickable:hover {
+  border-color: var(--accent, #6ea8ff);
+}
+.chip.net-quality.active {
+  border-color: var(--accent, #6ea8ff);
+}
+.net-caret {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+/* expandable ping graph: a raw-RTT sparkline that exposes sub-second spikes the
+   smoothed number hides */
+.ping-graph {
+  background: rgba(20, 24, 30, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  width: 260px;
+  font-variant-numeric: tabular-nums;
+}
+.ping-graph-empty {
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+  padding: 18px 0;
+}
+.ping-graph-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+.ping-graph-stats {
+  display: flex;
+  gap: 8px;
+}
+.ping-graph-svg {
+  display: block;
+  width: 100%;
+  height: 64px;
+}
+.ping-graph-line {
+  fill: none;
+  stroke: #6ea8ff;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.ping-graph-avg {
+  stroke: rgba(147, 161, 173, 0.5);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+.ping-graph-foot {
+  font-size: 9.5px;
+  color: var(--muted);
+  margin-top: 4px;
+  text-align: right;
 }
 
 .robot-status {

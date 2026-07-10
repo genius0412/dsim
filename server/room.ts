@@ -675,11 +675,21 @@ export class Room {
         last = now;
         if (acc > 0.25) acc = 0.25; // never fast-forward more than a quarter second
         let n = 0;
+        let due = false;
         while (acc >= C.SIM_DT && n < 8 && !this.finalized) {
-          this.stepOnce();
+          if (this.stepOnce()) due = true;
           acc -= C.SIM_DT;
           n++;
         }
+        // COALESCE snapshots: send AT MOST ONE per timer fire, at the newest tick.
+        // When a scheduling hitch / GC pause delays this timer, the loop catches up
+        // several ticks in one turn — and the old "broadcast inside stepOnce on every
+        // interval crossing" then flushed a BURST of snapshots back-to-back down the
+        // same socket. The client received them with ~0 ms spacing followed by a gap,
+        // which reads as snapshot jitter → the exact stutter/rubberband being chased
+        // (CPU is idle; it's timing, not load). One send per fire keeps outbound
+        // spacing even and hands the client a single freshest world to reconcile to.
+        if (due && !this.finalized) this.broadcastSnapshot();
       } catch (e) {
         console.error(`[room ${this.code}] tick error at tick ${this.world?.tick}:`, e);
       }
@@ -689,13 +699,15 @@ export class Room {
   /** advance the authoritative sim exactly one tick: build the per-robot command
    * frame, step, RECORD it (the replay input log), snapshot on cadence, and
    * finalize at match end. Both the real-time loop and `advanceForTest` go
-   * through here, so recording is identical live and headless. */
-  private stepOnce(): void {
+   * through here, so recording is identical live and headless. Returns whether this
+   * tick is a snapshot-cadence tick; the caller coalesces a catch-up burst into ONE
+   * broadcast (see startLoop) so a delayed timer never floods the socket. */
+  private stepOnce(): boolean {
     const w = this.world as World;
     this.lastFrame = this.frameCommands(w.tick + 1);
     step(w, C.SIM_DT, this.lastFrame);
     this.recorder?.record(w.tick, this.lastFrame);
-    if (w.tick % SNAPSHOT_INTERVAL === 0) this.broadcastSnapshot();
+    const due = w.tick % SNAPSHOT_INTERVAL === 0;
     // Don't finalize the instant the match ends: balls are still flowing down the
     // ramp/through the gate and scoring for a beat. Keep stepping (and recording)
     // through a settle window so the authoritative score we save is the SETTLED
@@ -704,6 +716,7 @@ export class Room {
       if (this.postSince === null) this.postSince = w.time;
       if (w.time - this.postSince >= C.MATCH_SETTLE_S) this.finalizeMatch();
     }
+    return due;
   }
 
   /** the match reached phase 'post': broadcast the SERVER's authoritative score +
@@ -792,7 +805,9 @@ export class Room {
    * setInterval loop; this lets smoke/tools run a full room match reproducibly. */
   advanceForTest(maxTicks: number): void {
     this.stop(); // drop the real-time timer — the test pumps synchronously
-    for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) this.stepOnce();
+    for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
+      if (this.stepOnce()) this.broadcastSnapshot();
+    }
   }
 
   /** the command each robot runs at `tick`: its buffered input for that EXACT tick

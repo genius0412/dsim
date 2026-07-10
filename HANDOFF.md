@@ -1,4 +1,43 @@
-# HANDOFF — 2026-07-09 (swerve: 4-module kinematics, fast wobble, converge-at-rest, steering power) — READ FIRST
+# HANDOFF — 2026-07-09 (netcode anti-stutter: snapshot coalescing + prediction lead cap + ping graph) — READ FIRST
+
+> **LATEST: GREEN, uncommitted on alpha.** `npm test`, `server:check`, `build` all pass.
+> Chasing the "connected games feel weird — stutter / rubberband / things fly around, even at low
+> CPU and stable *average* ping" report. Diagnosis: it's TIMING/jitter, not load. Fixes (all
+> revertible, no protocol change — backward-compatible with the deployed Fly server):
+> - **SERVER snapshot-burst COALESCING** (`server/room.ts`): the tick loop catches up several ticks
+>   in one `setInterval` fire after any scheduling hitch/GC; the old "broadcast inside `stepOnce` on
+>   every SNAPSHOT_INTERVAL crossing" then flushed a BURST of snapshots back-to-back down one socket
+>   → the client saw ~0ms spacing then a gap = snapshot jitter = the stutter. `stepOnce` now RETURNS
+>   whether the tick is snapshot-due; the loop broadcasts AT MOST ONE snapshot per fire (newest
+>   tick). Steady state is unchanged 30 Hz (every even tick still triggers exactly one send); only
+>   catch-up bursts collapse. `advanceForTest` preserves per-due-tick broadcast (tests unaffected).
+> - **CLIENT prediction LEAD CAP** (`src/game.ts`, `MAX_PREDICT_LEAD` 40 ticks ≈ 667ms): during a
+>   snapshot stall the client kept predicting + buffering its own inputs unboundedly; the next
+>   snapshot then reconciled with a single SYNCHRONOUS replay of hundreds of full sim steps (balls +
+>   Rapier) — a multi-hundred-ms hitch that re-sims from a stale state, so everything "flies" on
+>   recovery. Now prediction pauses at the lead edge (drains `acc`, no burst-catch-up) instead of
+>   building a replay bomb; the local robot freezes (honest "you're lagging") rather than exploding.
+>   Reconcile also defensively bounds replay to MAX_PREDICT_LEAD ticks. Gated on `gotSnapshot` so
+>   the pre-match sim countdown still predicts freely from tick 0. `lastServerTick`/`gotSnapshot`
+>   reset in `rebuildFromNet`.
+> - **INTERP cushion** `INTERP_DELAY_TICKS` 4→5 (~83ms): one extra tick so a single 30 Hz gap (33ms)
+>   no longer drains the remote-interp buffer and freezes/warps remotes.
+> - **PING GRAPH** (user-requested, to catch sub-second spikes the smoothed number hides):
+>   `ServerSession` keeps a RAW RTT ring buffer (`rttSamples`, 120 ≈ 36s) and probes faster
+>   (`PING_INTERVAL_MS` 1000→300, ~3 Hz — trivial bandwidth). `NetStatus.rttHistory` carries it.
+>   HUD: the connection chip is now CLICKABLE (📈) → toggles a `PingGraph` SVG sparkline (min/avg/max
+>   + spike count vs a 1.8×avg threshold) under the top-right chips. `src/ui/GameView.tsx` +
+>   `.ping-graph*` CSS; `.status-wrap` is now a right-aligned column so the graph drops below.
+> - NOT changed (documented, lower impact): no explicit clock-sync (lead still floats with
+>   instantaneous latency, but is now bounded); local-correction snap threshold `SMOOTH_MAX_DIST`
+>   16"; balls remain un-interpolated (inherent — mitigated by the two fixes above); client sim is
+>   still a `setInterval`. Revisit if stutter persists after deploy.
+> - **DEPLOY NEEDED**: the coalescing lives in `server/room.ts` → requires `flyctl deploy
+>   --remote-only` to take effect (per the deploy protocol). The client fixes ship via Vercel.
+>
+> ---
+
+# HANDOFF — 2026-07-09 (swerve: 4-module kinematics, fast wobble, converge-at-rest, steering power)
 
 > **LATEST: GREEN, uncommitted on alpha.** `npm test` (334), `server:check`, `build` pass.
 > Iterations on the 4-module swerve wobble (below), plus swerve STEERING POWER DRAW:
