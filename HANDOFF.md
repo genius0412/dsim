@@ -1,72 +1,70 @@
-# HANDOFF — 2026-07-10 (GATE lever reshape + activation, field-render cleanups) — READ FIRST
+# HANDOFF — 2026-07-10 (G408 over-possession / plowing penalty) — READ FIRST
 
-> **GREEN (build + smoke both pass, 359 checks).**
-> **SIM-CORE change** (`src/sim/goal.ts`, `physicsEngine.ts`, `types.ts`, `spawn.ts`,
-> `config.ts`) ⇒ a server running matches must **`flyctl deploy --remote-only`** to stay
-> in sync. `slimWorld`/`unslimWorld` pass `goals` through whole, so the new
-> `GoalState.gateLatch` numeric field rides snapshots fine, but a stale server would run
-> the OLD gate model → redeploy. No `BALANCE_VERSION` bump (gate feel + render, not
-> drivetrain/scoring calibration).
+> **GREEN (build + smoke both pass, 363 checks).**
+> **SIM-CORE change** (`src/sim/penalties.ts`, `src/types.ts`, `src/sim/spawn.ts`,
+> `src/config.ts`) ⇒ a server running matches should **`flyctl deploy --remote-only`**
+> to stay in sync. The new `PenaltyState.possession` map is plain JSON and rides
+> `slimWorld`/`unslimWorld` snapshots fine (penalties pass through whole), so a stale
+> server is not a correctness hazard — it just won't assess G408 until redeployed.
+> No `BALANCE_VERSION` bump (new foul rule, not drivetrain/scoring calibration).
 
 ## What shipped this session
 
-Reshaped the GATE and reworked how it opens/holds/closes, plus a few field-render cleanups.
-NOTE: an experimental "classifier outflow jam / robot-catches-the-drain" feature was
-prototyped and then **REVERTED at the user's request** — only the gate SHAPE + ACTIVATION
-changes were kept. `updateRails` is back at its pre-session behavior (balls drain off the
-lip normally). Do not reintroduce `outflowFloor`/`outflowJammed`/`GATE_JAM_*`/`GATE_CATCH_*`.
+Added the **G408 over-possession / plowing** penalty (was on the deferred list in
+`penalties.ts` and the CLAUDE.md roadmap). A ROBOT may CONTROL at most
+`POSSESSION_LIMIT` (= 3 = `HOPPER_CAPACITY`) artifacts at once; controlling more past a
+short grace draws a MINOR foul on the offender's alliance (→ +5 to the victim), via the
+same `awardFoul` path as every other rule.
 
-1. **Gate geometry — class-1 LEVER** (`drawGateArm` in `render/drawGoals.ts`;
-   `GATE_ARM_LONG`/`GATE_ARM_SHORT`/`GATE_LIFT` in config). Hinges at the CLASSIFIER EDGE
-   where the gate-zone tape starts (|x| = `FIELD_HALF − CLASSIFIER_W`): a SHORT handle pokes
-   into the gate zone (pushable), a LONG paddle lies across the channel to the WALL edge
-   covering the artifacts; both foreshorten toward the pivot as they lift. Drawn thinner
-   (lineWidth 2.0, square cap).
+### How "control" is counted (`controlledArtifacts` in `penalties.ts`)
+- **Stored:** `r.hopper.length` (the hopper mirror of held balls) — caps at 3.
+- **Plowed:** loose `kind: 'ground'` balls whose surface is within
+  `POSSESSION_CONTROL_MARGIN` (1.5") of the robot's collision footprint
+  (`closestPointOnRobot`) **while the robot is moving** (`|vel| >=
+  POSSESSION_MOVE_SPEED` = 5 in/s). Motion is required so a parked robot merely
+  resting against loose balls isn't "controlling" them (they can roll free).
+- Only `ground` balls count as loose — flight/basin/rail/held-by-others are excluded,
+  so held balls are never double-counted.
 
-2. **Latch + touch-hold** (`updateGates`, new `GoalState.gateLatch`). A push sets
-   `gateLatch = GATE_OPEN_LATCH_S` (0.5 s) — a TAP fully opens it, no holding. RESTING
-   against an already-open gate re-arms the latch (touch-hold). Untouched → latch decays →
-   gravity swings it shut, sped up (`GATE_GRAVITY` 22 / `GATE_CLOSE_MAX` 9). Flow-hold
-   (`ballInGateway`) keeps an OPEN gate open during a drain but does NOT lift it, so a ball
-   reaching an almost-closed gate can't reopen it.
+### Firing (`updatePossession`)
+Per robot, a per-id second-accumulator (`PenaltyState.possession[id]`): while
+`controlled > POSSESSION_LIMIT` it ticks up, and once it passes `POSSESSION_GRACE`
+(**0.35 s** — user asked for a short grace) it `fire()`s `G408 over-possession`
+(MINOR). Dropping back to the limit resets the clock to 0. The grace is comfortably
+longer than any intake capture (all presets' `capMax`/`clumpInterval` are < 0.2 s), so
+driving through a clump to *collect* it never trips the foul — only sustained
+plowing/hoarding does. Re-arm after firing uses the shared `PENALTY_CLEAR` episode
+debounce (one foul per over-possession episode; release and re-offend fouls again).
 
-3. **One-directional opening** (`pushingGate`): only a STRAIGHT push toward the wall opens
-   it (`velToward = r.vel.x · goalSide`, or the drive-command x-component). Driving SIDEWAYS
-   along the wall does NOT open it.
+### Why MINOR
+Consistent with the other control/zone violations (G422/G424/G425/G426 are MINOR).
+The manual groups G408 with plowing as a control violation, not a game-breaking act.
+If you later want a MINOR→MAJOR escalation on repeat (like G422), mirror the
+`pinFouls` pattern with a per-id committed counter.
 
-4. **Physical one-way door** (`buildGateArms` in `physicsEngine.ts`, robot solve only,
-   `GATE_ARM_THICK`): the SHORT handle is a solid robot collider (retracts as the gate opens)
-   so a robot can't strafe THROUGH the closed lever; a straight push lifts it and the robot
-   glides in. Long paddle needs no collider (over the already-solid classifier).
+## Files touched
+- `src/config.ts` — `POSSESSION_LIMIT`, `POSSESSION_CONTROL_MARGIN`,
+  `POSSESSION_MOVE_SPEED`, `POSSESSION_GRACE` (in the fouls block, after `PIN_WALL_SLOP`).
+- `src/types.ts` — `PenaltyState.possession: Record<number, number>`.
+- `src/sim/spawn.ts` — init `possession: {}` in the penalties block.
+- `src/sim/penalties.ts` — header doc updated (moved G408 out of "deferrable" into the
+  modeled list), `updatePossession` + `controlledArtifacts`, wired after `updateGateFouls`.
+- `scripts/smoke.ts` — 4 new checks: over-limit-moving fires; parked-touching does not;
+  full-hopper-at-limit is legal; briefer-than-grace does not fire. (+2 config imports.)
 
-5. **Tighter activation rect** (`gateArmRect`, `GATE_ARM_REACH` 5→3, `GATE_ARM_Y0/Y1`
-   −1..6 → −2..3, centered on `GATE_TAPE_Y`).
+## Verify
+- `npm test` → ALL PASS (363 checks).
+- `npm run build` → green.
 
-6. **Field-render cleanups** (`render/drawField.ts`, `drawBalls.ts`):
-   - Secret-tunnel strip: only its FIELD-SIDE long edge is stroked (its short edges sat on
-     the classifier box border — which must win — and its other long edge sat on the
-     perimeter wall).
-   - Loading zone: only the two INTERIOR edges, drawn as ONE connected L so the corner joins
-     cleanly (the other two sat on the perimeter walls).
-   - Balls now draw z-sorted (low→high), so OVERFLOW artifacts (`OVERFLOW_Z` 13.5) render
-     ABOVE the retained/classified column (`RAMP_SURFACE_Z` 10), not below.
+## Gotchas / notes
+- `updatePenalties` still early-returns outside `auto`/`teleop`, so G408 only assesses
+  during live play (correct — no possession rules pre-match/transition).
+- The move-speed gate reads **actual `r.vel`** (post-solver), robust whether or not a
+  blocked robot's velocity was zeroed — same choice the pin accumulator makes.
+- Deferred fouls remaining: G423 (shutting down major gameplay / completely blocking a
+  gate — needs duration+"completely" judgment), G402.B (displacing pre-staged spike
+  artifacts). Everything else in Section 11 is modeled.
 
-## State / next steps
-
-- `npm test` (359) + `npm run build` both GREEN. Committed + pushed on `alpha`.
-- Not visually verified in the Electron GUI this session — worth a `/verify` pass to eyeball
-  the lever + the render cleanups (classifier box border intact for both alliances, loading
-  zone L, overflow balls on top).
-- If deploying the match server: commit on `alpha` → `flyctl deploy --remote-only` → verify
-  `/health` (server imports `src/sim`, so the gate model must match clients).
-
-## Gotchas
-
-- `GATE_OPEN_EPS` was removed (the old flow-hold used it; the new one keys on `goal.gateOpen`
-  = `gatePos >= GATE_PASS_FRAC`, which is what gives "almost-closed can't reopen").
-- The physical-door collider is built from live `gatePos` each step (fresh Rapier world),
-  one tick behind `updateGates` — deterministic. The `pressIntoGate` smoke test pins
-  `gatePos` each tick so the collider it exercises is deterministic.
-- `pushingGate`'s command path (not just velocity) is why a robot stalled against the closed
-  handle collider still opens it: the collider kills inward velocity, but the drive command
-  toward the wall still trips `GATE_PUSH_MIN_CMD`.
+## Next up (unchanged from roadmap)
+1. Penalty hitbox audit — re-verify each rule's ZONE GEOMETRY against the manual figures.
+2. Balls → Rapier (Phase 2 slice 2, deferred — keep basin/rail/gate scripted).

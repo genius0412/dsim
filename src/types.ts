@@ -227,6 +227,10 @@ export interface PenaltyState {
   /** how many pin fouls a given pinner (by id) has already committed, for the
    * MINOR -> MAJOR escalation on a repeat pin */
   pinFouls: Record<number, number>;
+  /** G408 over-possession: seconds a robot (by id) has continuously CONTROLLED
+   * more than POSSESSION_LIMIT artifacts. Fires once past POSSESSION_GRACE;
+   * resets to 0 the moment control drops back to the limit. */
+  possession: Record<number, number>;
   /** which OPPONENT alliance (if any) is responsible for each goal's gate being
    * open — set when an opponent operates the gate, held through the drain, and
    * cleared once the gate shuts. Artifacts leaving that ramp meanwhile are billed

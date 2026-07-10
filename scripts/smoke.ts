@@ -65,6 +65,8 @@ import {
   WHEEL_DIAMETER_MM,
   BASE_DRIVE_ACCEL,
   POWER_DRAW_SWERVE,
+  POSSESSION_MOVE_SPEED,
+  POSSESSION_GRACE,
 } from '../src/config';
 import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
 import { driveParams, massLimits, rpmLimits, motorStep, driveSummary } from '../src/sim/drivetrain';
@@ -2052,6 +2054,82 @@ function inGate(w: World, robotIdx: number, gate: 'red' | 'blue'): void {
     'operating your OWN gate is not a foul',
     w2.match.scores.red.foulPoints === 0 && w2.match.fouls.red.major === 0,
     `redFoulPts=${w2.match.scores.red.foulPoints} redMajor=${w2.match.fouls.red.major}`,
+  );
+}
+
+// ---- G408 over-possession / plowing (MINOR) --------------------------------
+// A robot CONTROLLING more than POSSESSION_LIMIT artifacts (hopper + herded
+// loose balls) past POSSESSION_GRACE draws a MINOR foul on its own alliance.
+{
+  const w = foulWorld();
+  const r = w.robots[0]; // blue
+  r.pos = { x: 0, y: -8 };
+  r.heading = 0;
+  r.hopper = ['green', 'green', 'green']; // full hopper = 3 stored (at the limit)
+  r.vel = { x: POSSESSION_MOVE_SPEED + 4, y: 0 }; // driving = herding
+  // a loose ground ball plowed against the robot -> 4 controlled, over the limit
+  w.balls.push({ id: 9001, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  // hold the over-possession just past the grace window
+  for (let i = 0; i < Math.round(POSSESSION_GRACE / (1 / 60)) + 2; i++) {
+    w.time = i / 60;
+    updatePenalties(w, 1 / 60, new Map());
+  }
+  check(
+    'controlling a 4th artifact (full hopper + a plowed loose ball) past the grace is a MINOR G408',
+    w.match.fouls.blue.minor === 1 && w.match.scores.red.foulPoints === 5,
+    `blueMinor=${w.match.fouls.blue.minor} redFoulPts=${w.match.scores.red.foulPoints}`,
+  );
+
+  // a PARKED robot merely resting against the same ball is not controlling it
+  const w2 = foulWorld();
+  const r2 = w2.robots[0];
+  r2.pos = { x: 0, y: -8 };
+  r2.heading = 0;
+  r2.hopper = ['green', 'green', 'green'];
+  r2.vel = { x: 0, y: 0 }; // stationary
+  w2.balls.push({ id: 9002, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  for (let i = 0; i < Math.round(POSSESSION_GRACE / (1 / 60)) + 2; i++) {
+    w2.time = i / 60;
+    updatePenalties(w2, 1 / 60, new Map());
+  }
+  check(
+    'a stationary robot resting against a loose ball is not over-possession (no G408)',
+    w2.match.fouls.blue.minor === 0 && w2.match.scores.red.foulPoints === 0,
+    `blueMinor=${w2.match.fouls.blue.minor} redFoulPts=${w2.match.scores.red.foulPoints}`,
+  );
+
+  // a full hopper with NO plowed ball is exactly at the limit — no foul
+  const w3 = foulWorld();
+  const r3 = w3.robots[0];
+  r3.pos = { x: 0, y: -8 };
+  r3.hopper = ['green', 'green', 'green'];
+  r3.vel = { x: POSSESSION_MOVE_SPEED + 4, y: 0 };
+  for (let i = 0; i < Math.round(POSSESSION_GRACE / (1 / 60)) + 2; i++) {
+    w3.time = i / 60;
+    updatePenalties(w3, 1 / 60, new Map());
+  }
+  check(
+    'a full hopper at the possession limit (no plowed ball) is legal (no G408)',
+    w3.match.fouls.blue.minor === 0,
+    `blueMinor=${w3.match.fouls.blue.minor}`,
+  );
+
+  // brief contact under the grace window does not foul (normal intake pass)
+  const w4 = foulWorld();
+  const r4 = w4.robots[0];
+  r4.pos = { x: 0, y: -8 };
+  r4.heading = 0;
+  r4.hopper = ['green', 'green', 'green'];
+  r4.vel = { x: POSSESSION_MOVE_SPEED + 4, y: 0 };
+  w4.balls.push({ id: 9003, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  for (let i = 0; i < Math.floor((POSSESSION_GRACE / 2) / (1 / 60)); i++) { // < grace
+    w4.time = i / 60;
+    updatePenalties(w4, 1 / 60, new Map());
+  }
+  check(
+    'over-possession briefer than the grace window does not foul',
+    w4.match.fouls.blue.minor === 0,
+    `blueMinor=${w4.match.fouls.blue.minor}`,
   );
 }
 

@@ -10,7 +10,7 @@ import {
   inRect, goalSide,
 } from './field';
 import type { Rect } from './field';
-import { robotCorners, robotIntersectsRect } from './physics';
+import { closestPointOnRobot, robotCorners, robotIntersectsRect } from './physics';
 import { awardFoul } from './scoring';
 import { hyp } from '../math';
 
@@ -30,6 +30,9 @@ import { hyp } from '../math';
  *   G402  AUTO opponent interference   (MAJOR) — fully on the opponent's side
  *                                       (own side = goalSide: robots stage near
  *                                       their GOAL) while contacting an opponent
+ *   G408  over-possession / plowing    (MINOR) — CONTROLLING more than
+ *                                       POSSESSION_LIMIT artifacts (hopper +
+ *                                       herded loose balls) past a short grace
  *   G422  pinning ≥3 s                 (MINOR, MAJOR on a repeat by the same pinner)
  *   G417  operating an OPPONENT's GATE  (MAJOR) — contacting/working their gate
  *   G418  artifact off an opponent RAMP (MAJOR per artifact) — each classified
@@ -52,8 +55,8 @@ import { hyp } from '../math';
  *   G416  out-of-zone launching — the shooter simply refuses (see robot.ts).
  * Deferrable (not yet modeled): G423 shutting down major gameplay (incl.
  * completely blocking the opponent's gate — needs "completely blocking" +
- * duration judgment), G408 possession>3 / plowing, and displacing an opponent's
- * pre-staged spike artifacts (G402.B).
+ * duration judgment) and displacing an opponent's pre-staged spike artifacts
+ * (G402.B).
  */
 
 /** a robot "occupies" a zone if any wheel-corner or its center is inside it */
@@ -180,8 +183,51 @@ export function updatePenalties(
   // ---- G417 opponent gate + G418 artifacts off the opponent's ramp --------
   updateGateFouls(world, fire);
 
+  // ---- G408 over-possession / plowing (per robot, own second-accumulator) --
+  updatePossession(world, dt, fire);
+
   // ---- G422 pinning (ordered pairs, own second-accumulator) ---------------
   updatePins(world, dt, commands);
+}
+
+/** G408 — a ROBOT may CONTROL at most POSSESSION_LIMIT artifacts. "Control" =
+ * artifacts stored in the hopper PLUS loose ground balls the robot is actively
+ * herding (touching its footprint while it drives). The hopper is capped at
+ * HOPPER_CAPACITY, so this catches a full robot that keeps plowing extra loose
+ * balls, or a robot shepherding a clump bigger than the limit. Momentary contact
+ * is forgiven by POSSESSION_GRACE (well over a normal intake capture), and a
+ * parked robot merely resting against balls isn't controlling them. */
+function updatePossession(world: World, dt: number, fire: FireFn): void {
+  const pen = world.penalties;
+  for (const r of world.robots) {
+    const controlled = controlledArtifacts(world, r);
+    if (controlled > C.POSSESSION_LIMIT) {
+      const t = (pen.possession[r.id] ?? 0) + dt;
+      pen.possession[r.id] = t;
+      if (t >= C.POSSESSION_GRACE) {
+        fire(`G408:${r.id}`, r.alliance, 'minor', 'G408 over-possession');
+      }
+    } else {
+      pen.possession[r.id] = 0; // back within the limit — reset the grace clock
+    }
+  }
+}
+
+/** how many artifacts robot r is CONTROLLING: its stored hopper balls plus the
+ * loose GROUND balls it is herding (surface within POSSESSION_CONTROL_MARGIN of
+ * its footprint while it is moving). Balls in flight/basin/rail/held-by-others
+ * are not "loose" and never count here. */
+function controlledArtifacts(world: World, r: RobotState): number {
+  let count = r.hopper.length; // stored possession
+  const moving = hyp(r.vel.x, r.vel.y) >= C.POSSESSION_MOVE_SPEED;
+  if (!moving) return count; // no herding without motion — balls can roll free
+  const reach = C.BALL_RADIUS + C.POSSESSION_CONTROL_MARGIN;
+  for (const b of world.balls) {
+    if (b.state.kind !== 'ground') continue;
+    const cp = closestPointOnRobot(r, b.pos);
+    if (hyp(b.pos.x - cp.x, b.pos.y - cp.y) <= reach) count++;
+  }
+  return count;
 }
 
 type FireFn = (key: string, offender: Alliance, severity: 'minor' | 'major', rule: string) => boolean;
