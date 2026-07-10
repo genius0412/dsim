@@ -772,6 +772,7 @@
 .ds-homestats {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 12px;
   flex-wrap: wrap;
   margin: 2px 0 24px;
@@ -1599,6 +1600,9 @@ tr.lb-detail td {
   text-align: center;
   font-size: 13px;
   color: var(--ds-mut);
+}
+.ds-form-switch .ds-btn {
+  margin-left: 8px;
 }
 
 /* =====================================================================
