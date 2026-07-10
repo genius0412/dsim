@@ -801,6 +801,24 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('triangle close-range cadence honors the fireCap', triangle <= 2, `${triangle} shots`);
 }
 
+// ---- CLOSE-range rapid fire: near-zero inertia carries a small floor -------------
+{
+  // point-blank, so the DISTANCE recovery is ~0 and only the close floor differs:
+  // a ~0-inertia wheel fires FEWER shots in a tight window than a ~0.2-inertia one.
+  const closeShots = (inertia: number) => {
+    const w = mkWorld('free', 'blue', 7, { intake: 'sloped', flywheelInertia: inertia });
+    const r = w.robots[0];
+    const g = goalCenter('blue');
+    r.pos = { x: g.x + 8, y: g.y - 8 };
+    const start = r.hopper.length;
+    run(w, cmd({ fire: true }), 0.25);
+    return start - r.hopper.length;
+  };
+  const lo = closeShots(0);
+  const hi = closeShots(0.2);
+  check('close rapid fire: ~0 inertia is nerfed vs 0.2 inertia', lo < hi, `inertia0 ${lo} vs inertia0.2 ${hi}`);
+}
+
 // ---- gate release --------------------------------------------------------------
 {
   const w = mkWorld('match', 'blue', 42);

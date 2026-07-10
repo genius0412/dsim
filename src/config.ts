@@ -345,16 +345,21 @@ export const DRIVETRAIN_PRESETS = {
 
 /** flywheel recovery: after an energetic (long-range) shot, a LOW-inertia
  * flywheel needs time to spin back up before the next shot. Shots below
- * FLYWHEEL_CLOSE_SPEED add nothing (so ANY robot rapid-fires up close), then
- * recovery ramps STRONGLY with (speed over that)² and with (1 - inertia) — so
- * DISTANCE dominates the cadence, and low inertia is punished hard far out while
- * high inertia keeps firing fast at range. NOTE the threshold must sit ABOVE the
- * launch speed of a genuinely CLOSE shot or the penalty bleeds into point-blank
- * range: a 12in shot already needs ~149in/s and a 2-tile (~48in) shot ~180, so
- * 180 keeps everything within ~2 tiles recovery-free (low inertia rapid-fires
- * close) and only ramps the penalty in past that. */
+ * FLYWHEEL_CLOSE_SPEED add only a small CLOSE floor (below), then recovery ramps
+ * STRONGLY with (speed over that)² and with (1 - inertia) — so DISTANCE dominates the
+ * cadence, and low inertia is punished hard far out while high inertia keeps firing
+ * fast at range. NOTE the threshold must sit ABOVE the launch speed of a genuinely
+ * CLOSE shot or the DISTANCE penalty bleeds into point-blank range: a 12in shot already
+ * needs ~149in/s and a 2-tile (~48in) shot ~180, so 180 keeps everything within ~2
+ * tiles free of the distance penalty and only ramps that in past that. */
 export const FLYWHEEL_CLOSE_SPEED = 180; // in/s launch speed considered "close" (≈2-tile shot)
 export const FLYWHEEL_RECOVERY_MAX = 1.25; // s extra between max-range shots at inertia 0
+/** CLOSE-range floor: even a close shot leaves a NEAR-ZERO-inertia wheel needing a brief
+ * respin, so close-zone rapid fire isn't quite free at inertia 0. The penalty FADES OUT by
+ * FLYWHEEL_CLOSE_INERTIA_KNEE — so a close-zone cycler wants a little inertia (~0.1–0.2),
+ * not 0, but doesn't need a heavy far-range wheel. (Was 0 at every inertia before.) */
+export const FLYWHEEL_CLOSE_RECOVERY = 0.04; // s extra between CLOSE rapid-fire shots at inertia 0
+export const FLYWHEEL_CLOSE_INERTIA_KNEE = 0.2; // inertia at/above which the close floor vanishes
 
 /** POWER DRAW: a running intake, plus the flywheel, pull current away from the
  * drive motors, so the robot gets slightly slower AND pushes weaker. Draw scales

@@ -347,7 +347,14 @@ function fire(world: World, r: RobotState): void {
     0,
     Math.min(1, (speed - C.FLYWHEEL_CLOSE_SPEED) / (C.LAUNCH_MAX_SPEED - C.FLYWHEEL_CLOSE_SPEED)),
   );
-  const recovery = C.FLYWHEEL_RECOVERY_MAX * shotNorm * shotNorm * (1 - r.spec.flywheelInertia);
+  // CLOSE floor: even a close shot leaves a near-zero-inertia wheel needing a brief
+  // respin — fades out by FLYWHEEL_CLOSE_INERTIA_KNEE, so close-zone cyclers want a
+  // little inertia (~0.1–0.2) rather than 0. Distance recovery is the shotNorm² term.
+  const closeRecovery =
+    C.FLYWHEEL_CLOSE_RECOVERY *
+    Math.max(0, 1 - r.spec.flywheelInertia / C.FLYWHEEL_CLOSE_INERTIA_KNEE);
+  const recovery =
+    closeRecovery + C.FLYWHEEL_RECOVERY_MAX * shotNorm * shotNorm * (1 - r.spec.flywheelInertia);
   const sortPenalty = r.spec.canSort ? C.SORT_FIRE_PENALTY : 0;
   const ip = C.INTAKE_PRESETS[r.spec.intake];
   // triangle transfer isn't generally slower — it's the same cadence with a MAX-RATE

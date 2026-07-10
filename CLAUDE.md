@@ -154,12 +154,16 @@ the gateway), so a tap usually drains the whole column.
    (`INTAKE_PRESETS[*].fireInterval`: 0.1 s, except triangle 0.3 s — slower transfer
    is its stated tradeoff) PLUS a flywheel-recovery term (Phase B, in the approved
    plan). Recovery scales with the previous shot's energy and the robot's
-   `flywheelInertia` (0–1 builder slider): `recovery = FLYWHEEL_RECOVERY_MAX ·
-   shotNorm² · (1−inertia)`, where `shotNorm` ramps in only past
-   `FLYWHEEL_CLOSE_SPEED`. So CLOSE-RANGE rapid fire is unchanged at any inertia
-   (shotNorm≈0 ⇒ recovery≈0); only FAR shots are slowed, and only for low-inertia
-   flywheels (high inertia ⇒ base cadence even at range). `r.fireReadyAt` gates the
-   next shot in `robot.ts`. The DEFAULT robot (inertia 0.5) keeps a snappy burst.
+   `flywheelInertia` (0–1 builder slider): `recovery = closeRecovery +
+   FLYWHEEL_RECOVERY_MAX · shotNorm² · (1−inertia)`, where `shotNorm` ramps in only
+   past `FLYWHEEL_CLOSE_SPEED` (the DISTANCE term). FAR shots are slowed for low-inertia
+   flywheels (high inertia ⇒ base cadence even at range). **CLOSE-range rapid fire now
+   carries a SMALL floor for near-zero inertia** (`closeRecovery = FLYWHEEL_CLOSE_RECOVERY
+   · max(0, 1 − inertia/FLYWHEEL_CLOSE_INERTIA_KNEE)`): +0.04 s cadence at inertia 0,
+   fading to 0 by inertia 0.2 — so a close-zone cycler wants a LITTLE inertia (~0.1–0.2)
+   rather than 0, without needing a heavy far-range wheel. (Previously close fire was
+   unchanged at any inertia; user revised this.) `r.fireReadyAt` gates the next shot in
+   `robot.ts`. The DEFAULT robot (inertia 0.5) keeps a snappy burst.
    **POWER DRAW** (session 7; rebalanced session 11): a running intake plus the
    flywheel pull current off the drive motors. The flywheel has TWO terms, both
    ×`flywheelInertia`: a small steady HOLD (`POWER_DRAW_FLYWHEEL_HOLD·spin` — just
