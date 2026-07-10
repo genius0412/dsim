@@ -25,6 +25,8 @@ import {
   searchProfiles,
   setHandle,
   getProfile,
+  createAnnouncement,
+  deleteAnnouncement,
 } from './db/repo';
 
 /**
@@ -96,6 +98,20 @@ function broadcastAll(m: ServerMsg): number {
     }
   }
   return n;
+}
+
+/** read a small request body (admin POSTs) with a hard cap so a bad client can't
+ * exhaust memory. Rejects past 16KB — announcements are tiny. */
+function readAdminBody(req: import('node:http').IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (c) => {
+      data += c;
+      if (data.length > 16 * 1024) reject(new Error('body too large'));
+    });
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
 }
 
 // an explicit HTTP server so we can answer GET /health (Fly/Load-balancer probe)
@@ -204,6 +220,17 @@ const httpServer = createServer((req, res) => {
           const name = u.searchParams.get('name') ?? undefined;
           const season = await startNewSeason(BALANCE_VERSION, name);
           console.log(`[admin] started new season ${season}${name ? ` "${name}"` : ''}`);
+          // auto-publish a cinematic season announcement (editable/retire-able from
+          // the admin console). `announce=0` opts out for a silent season roll.
+          if (u.searchParams.get('announce') !== '0') {
+            const label = name && name.trim() ? name.trim() : `Season ${season}`;
+            await createAnnouncement({
+              kind: 'season',
+              title: label,
+              tagline: 'A NEW SEASON BEGINS',
+              body: 'Fresh leaderboards and ranked ratings are live. Set a new record and climb from the top.',
+            }).catch((e) => console.error('[admin] season announcement failed:', e));
+          }
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: true, season }));
           return;
@@ -317,6 +344,65 @@ const httpServer = createServer((req, res) => {
           await setHandle(uid, handle);
           console.log(`[admin] renamed ${uid}: "${profile.handle}" -> "${handle}"`);
           jsonOut(200, { ok: true, userId: uid, handle });
+          return;
+        }
+        jsonOut(404, { ok: false, error: 'unknown admin route' });
+        return;
+      }
+
+      // ANNOUNCEMENTS — publish patch notes / new-season / new-act reveals, or
+      // retire an existing one. Same admin gate (JWT admin id OR ADMIN_SECRET);
+      // reads go through the PUBLIC GET /api/announcements (active feed).
+      if (u.pathname === '/api/admin/announcement' || u.pathname === '/api/admin/announcement/delete') {
+        const secretOk =
+          !!process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
+        if (!isAdmin && !secretOk) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        if (!dbEnabled) {
+          res.writeHead(503, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'DB disabled' }));
+          return;
+        }
+        const jsonOut = (code: number, body: unknown): void => {
+          res.writeHead(code, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify(body));
+        };
+        if (req.method === 'POST' && u.pathname === '/api/admin/announcement/delete') {
+          const id = u.searchParams.get('id') ?? '';
+          if (!id) {
+            jsonOut(400, { ok: false, error: 'missing id' });
+            return;
+          }
+          const deleted = await deleteAnnouncement(id);
+          console.log(`[admin] retire announcement ${id} -> ${deleted}`);
+          jsonOut(deleted ? 200 : 404, { ok: deleted });
+          return;
+        }
+        // POST /api/admin/announcement — publish. Body: {kind,title,body,tagline}
+        if (req.method === 'POST' && u.pathname === '/api/admin/announcement') {
+          let payload: { kind?: string; title?: string; body?: string; tagline?: string };
+          try {
+            payload = JSON.parse(await readAdminBody(req));
+          } catch {
+            jsonOut(400, { ok: false, error: 'bad request' });
+            return;
+          }
+          const title = (payload.title ?? '').trim();
+          if (title.length < 2 || title.length > 80) {
+            jsonOut(400, { ok: false, error: 'title must be 2–80 characters' });
+            return;
+          }
+          const body = (payload.body ?? '').slice(0, 4000);
+          const tagline = (payload.tagline ?? '').trim().slice(0, 80) || null;
+          const row = await createAnnouncement({ kind: payload.kind ?? 'patch', title, body, tagline });
+          console.log(`[admin] published ${row.kind} announcement "${row.title}"`);
+          // a live-info banner nudges connected players to look — the feed itself
+          // shows on their NEXT load (localStorage "seen" gate), but this makes it
+          // feel immediate for anyone already online.
+          jsonOut(200, { ok: true, announcement: row });
           return;
         }
         jsonOut(404, { ok: false, error: 'unknown admin route' });

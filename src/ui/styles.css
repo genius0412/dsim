@@ -1457,6 +1457,17 @@ button {
   padding: 7px 10px;
   font: inherit;
 }
+.admin-textarea {
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line-strong);
+  border-radius: 8px;
+  color: var(--ds-ink);
+  padding: 8px 10px;
+  font: inherit;
+  width: 100%;
+  resize: vertical;
+  line-height: 1.5;
+}
 .admin-list { display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; }
 .admin-row {
   display: flex;
@@ -1485,4 +1496,224 @@ button {
 .ds-btn.danger {
   color: var(--ds-danger);
   border-color: color-mix(in srgb, var(--ds-danger) 40%, transparent);
+}
+
+/* ================================================================= *
+ *  ANNOUNCEMENTS — patch notes ("What's new") + new-season/act reveal
+ *  (src/ui/Announcements.tsx). Shown once on the menu shell.
+ * ================================================================= */
+
+/* kind pill — a bordered chip tinted from its own (themed) text colour, so it
+   stays readable on the light panel AND the dark tile without a hardcoded fill. */
+.ann-badge {
+  display: inline-block;
+  border-radius: var(--ds-round-full);
+  border: 1px solid color-mix(in srgb, currentColor 55%, transparent);
+  background: color-mix(in srgb, currentColor 13%, transparent);
+  padding: 2px 9px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.ann-badge.patch { color: var(--ds-accent); }
+.ann-badge.season { color: var(--ds-warn); }
+.ann-badge.act { color: var(--ds-accent); }
+
+/* ---- "What's new" modal ------------------------------------------------- */
+.ann-overlay {
+  position: fixed;
+  z-index: 60; /* above the nav rail + shell */
+  animation: ann-fade 0.25s ease-out;
+}
+.ann-panel {
+  background: var(--panel);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-lg);
+  padding: 22px 24px 20px;
+  width: min(560px, calc(100vw - 40px));
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  animation: ann-pop 0.28s cubic-bezier(0.2, 1, 0.3, 1);
+}
+.ann-panel .ds-eyebrow { margin: 0; }
+.ann-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.ann-item {
+  border: 1px solid var(--ds-line);
+  border-left: 4px solid var(--ds-accent);
+  border-radius: var(--ds-round-md);
+  background: var(--ds-tile);
+  padding: 13px 15px;
+}
+.ann-item.season { border-left-color: var(--ds-warn); }
+.ann-item.act { border-left-color: var(--ds-accent); }
+.ann-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.ann-item-head .ds-hint { margin: 0; }
+.ann-item-title {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  color: var(--ds-ink);
+  margin: 0;
+}
+.ann-item-tag {
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+  margin: 3px 0 0;
+}
+.ann-list {
+  margin: 9px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.ann-list li {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ds-ink-dim);
+}
+.ann-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 2px;
+}
+
+/* ---- full-screen cinematic reveal (new season / new act) ---------------- */
+.ann-cinema {
+  --cin: var(--ds-gold); /* season accent; act overrides to mint below */
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  /* the scrim is intentionally near-black in BOTH themes (it's a canvas ground),
+     so the reveal uses the --ds-on-field family, never themed text tokens. */
+  background:
+    radial-gradient(120% 80% at 50% 42%, color-mix(in srgb, var(--cin) 22%, #05070b) 0%, #05070b 62%),
+    #05070b;
+  animation: ann-cin-scrim 0.6s ease-out;
+}
+.ann-cinema.act { --cin: var(--ds-on-field-accent); }
+.ann-cinema-glow {
+  position: absolute;
+  width: 90vmax;
+  height: 90vmax;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--cin) 30%, transparent) 0%, transparent 60%);
+  filter: blur(20px);
+  opacity: 0;
+  animation: ann-cin-glow 3.4s ease-in-out infinite alternate, ann-cin-glow-in 0.9s ease-out forwards;
+}
+.ann-cinema-inner {
+  position: relative;
+  text-align: center;
+  padding: 0 24px;
+  max-width: 900px;
+}
+.ann-cinema-eyebrow {
+  font-size: clamp(11px, 2.4vw, 15px);
+  font-weight: 800;
+  letter-spacing: 8px;
+  color: var(--cin);
+  margin: 0 0 14px;
+  opacity: 0;
+  animation: ann-cin-eyebrow 0.7s ease-out 0.2s both;
+}
+.ann-cinema-title {
+  font-size: clamp(34px, 8vw, 82px);
+  font-weight: 800;
+  line-height: 1.02;
+  letter-spacing: 1px;
+  color: var(--ds-on-field);
+  margin: 0;
+  text-shadow: 0 0 40px color-mix(in srgb, var(--cin) 55%, transparent);
+  opacity: 0;
+  animation: ann-cin-title 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.32s both;
+}
+.ann-cinema-tag {
+  font-size: clamp(12px, 2.6vw, 18px);
+  font-weight: 700;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--ds-on-field-dim);
+  margin: 16px 0 0;
+  opacity: 0;
+  animation: ann-cin-fade 0.8s ease-out 0.75s both;
+}
+.ann-cinema-rule {
+  height: 2px;
+  width: min(340px, 60vw);
+  margin: 26px auto 30px;
+  background: color-mix(in srgb, var(--ds-on-field) 16%, transparent);
+  position: relative;
+  overflow: hidden;
+  opacity: 0;
+  animation: ann-cin-fade 0.8s ease-out 0.9s both;
+}
+.ann-cinema-rule span {
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--cin), transparent);
+  animation: ann-cin-sweep 2.4s ease-in-out 1.1s infinite;
+}
+.ann-cinema-btn {
+  font-family: var(--ds-font-mono);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 3px;
+  color: #05070b;
+  background: var(--cin);
+  border: none;
+  border-radius: var(--ds-round-full);
+  padding: 12px 34px;
+  cursor: pointer;
+  opacity: 0;
+  animation: ann-cin-fade 0.8s ease-out 1.15s both;
+  box-shadow: 0 0 30px color-mix(in srgb, var(--cin) 45%, transparent);
+  transition: transform 0.08s ease, box-shadow 0.15s ease;
+}
+.ann-cinema-btn:hover { transform: translateY(-1px); box-shadow: 0 0 44px color-mix(in srgb, var(--cin) 65%, transparent); }
+.ann-cinema-btn:active { transform: translateY(1px); }
+
+@keyframes ann-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ann-pop { from { opacity: 0; transform: translateY(14px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes ann-cin-scrim { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ann-cin-glow-in { to { opacity: 1; } }
+@keyframes ann-cin-glow { from { transform: scale(0.92); } to { transform: scale(1.06); } }
+@keyframes ann-cin-eyebrow { from { opacity: 0; letter-spacing: 2px; transform: translateY(8px); } to { opacity: 0.95; letter-spacing: 8px; transform: none; } }
+@keyframes ann-cin-title { from { opacity: 0; transform: translateY(26px) scale(0.94); filter: blur(10px); } to { opacity: 1; transform: none; filter: blur(0); } }
+@keyframes ann-cin-fade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes ann-cin-sweep { 0% { transform: translateX(-120%); } 60%, 100% { transform: translateX(320%); } }
+
+/* respect reduced-motion: keep the reveal, drop the movement */
+@media (prefers-reduced-motion: reduce) {
+  .ann-cinema, .ann-cinema-glow, .ann-cinema-eyebrow, .ann-cinema-title,
+  .ann-cinema-tag, .ann-cinema-rule, .ann-cinema-rule span, .ann-cinema-btn,
+  .ann-panel, .ann-overlay {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

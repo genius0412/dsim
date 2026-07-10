@@ -319,6 +319,67 @@ export function fetchReplay(id: string): Promise<Replay> {
   return getJson(`/api/replay/${id}`);
 }
 
+// ---- announcements (patch notes / new season / new act) --------------------
+
+export type AnnouncementKind = 'patch' | 'season' | 'act';
+export interface Announcement {
+  id: string;
+  kind: AnnouncementKind;
+  title: string;
+  /** newline-separated bullet lines (rendered as a list) */
+  body: string;
+  /** optional headline for the cinematic season/act reveal */
+  tagline: string | null;
+  publishedAt: string;
+}
+
+/** recent active announcements (newest first). Empty when no server/DB. Never
+ * throws — the announcements gate is best-effort and must not break the app. */
+export async function fetchAnnouncements(limit = 12): Promise<Announcement[]> {
+  const base = gameServerHttpUrl();
+  if (!base) return [];
+  try {
+    const res = await fetch(base + `/api/announcements?limit=${limit}`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { announcements?: Announcement[] };
+    return data.announcements ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** publish an announcement (admin only; server re-authorizes). */
+export async function adminPublishAnnouncement(input: {
+  kind: AnnouncementKind;
+  title: string;
+  body: string;
+  tagline?: string;
+}): Promise<Announcement | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const res = await fetch(base + '/api/admin/announcement', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) return null;
+  const data = (await res.json().catch(() => ({}))) as { announcement?: Announcement };
+  return data.announcement ?? null;
+}
+
+/** retire an announcement (soft delete — stops appearing in the feed). */
+export async function adminDeleteAnnouncement(id: string): Promise<boolean> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return false;
+  const res = await fetch(base + '/api/admin/announcement/delete?id=' + encodeURIComponent(id), {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return res.ok;
+}
+
 // ---- seasons ---------------------------------------------------------------
 
 export interface SeasonInfo {

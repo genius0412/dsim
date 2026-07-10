@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   adminAnnounce,
   adminCancelNotice,
@@ -9,11 +9,21 @@ import {
   adminClearUserRecords,
   adminSearchUsers,
   adminRenameUser,
+  adminPublishAnnouncement,
+  adminDeleteAnnouncement,
+  fetchAnnouncements,
   type AdminRecordRow,
+  type Announcement,
+  type AnnouncementKind,
 } from '../net/api';
 
 type RecMode = 'solo' | 'duo';
 const DRIVETRAINS = ['overall', 'mecanum', 'tank', 'swerve', 'xdrive'] as const;
+const ANN_KINDS: { value: AnnouncementKind; label: string }[] = [
+  { value: 'patch', label: 'Patch notes / bug fixes' },
+  { value: 'season', label: 'New season (cinematic)' },
+  { value: 'act', label: 'New act (cinematic)' },
+];
 
 /** admin console — only reachable by the account(s) in the server's ADMIN_USER_IDS.
  * Broadcasts a scheduled-restart countdown to every connected player; then you
@@ -34,6 +44,15 @@ export function Admin() {
   const [records, setRecords] = useState<AdminRecordRow[]>([]);
   const [recStatus, setRecStatus] = useState<string | null>(null);
   const [recBusy, setRecBusy] = useState(false);
+
+  // announcements — patch notes / new-season + new-act reveals
+  const [annKind, setAnnKind] = useState<AnnouncementKind>('patch');
+  const [annTitle, setAnnTitle] = useState('');
+  const [annTagline, setAnnTagline] = useState('');
+  const [annBody, setAnnBody] = useState('');
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [annStatus, setAnnStatus] = useState<string | null>(null);
+  const [annBusy, setAnnBusy] = useState(false);
 
   // moderation — user display names
   const [userQuery, setUserQuery] = useState('');
@@ -121,6 +140,51 @@ export function Admin() {
     );
   };
 
+  const loadAnnouncements = async (): Promise<void> => {
+    const rows = await fetchAnnouncements(50);
+    setAnnouncements(rows);
+  };
+  // pull the current feed once so the admin sees what's live + can retire old ones
+  useEffect(() => {
+    void loadAnnouncements();
+  }, []);
+
+  const publishAnnouncement = async (): Promise<void> => {
+    const title = annTitle.trim();
+    if (title.length < 2) {
+      setAnnStatus('Give it a title (2+ characters).');
+      return;
+    }
+    setAnnBusy(true);
+    const created = await adminPublishAnnouncement({
+      kind: annKind,
+      title,
+      body: annBody,
+      tagline: annTagline.trim() || undefined,
+    });
+    setAnnBusy(false);
+    if (created) {
+      setAnnouncements((rows) => [created, ...rows]);
+      setAnnTitle('');
+      setAnnTagline('');
+      setAnnBody('');
+      setAnnStatus(`Published — players see it on their next load. ${created.kind === 'patch' ? '' : 'It plays a cinematic reveal.'}`);
+    } else {
+      setAnnStatus('Failed — check admin sign-in / DB.');
+    }
+  };
+
+  const retireAnnouncement = async (a: Announcement): Promise<void> => {
+    if (!window.confirm(`Retire "${a.title}"? It stops appearing for anyone who hasn't seen it yet.`)) return;
+    setAnnBusy(true);
+    const ok = await adminDeleteAnnouncement(a.id);
+    setAnnBusy(false);
+    if (ok) setAnnouncements((rows) => rows.filter((r) => r.id !== a.id));
+    setAnnStatus(ok ? `Retired "${a.title}".` : 'Failed — check admin sign-in.');
+  };
+
+  const isCinematic = annKind !== 'patch';
+
   return (
     <div className="ds-section" style={{ maxWidth: 520 }}>
       <p className="ds-eyebrow">Admin</p>
@@ -168,6 +232,78 @@ export function Admin() {
         Reminder: this only warns players — it doesn’t restart the server. Run your deploy when
         the countdown reaches 0.
       </p>
+
+      <h2 className="ds-h2" style={{ marginTop: 32 }}>Announcements</h2>
+      <p className="ds-sub" style={{ margin: '0 0 20px' }}>
+        Publish patch notes, bug-fix summaries, or a new season / act. Each player sees it once —
+        the first time they open the app after you publish. A new season or act plays a full-screen
+        cinematic reveal; patch notes show in a “What’s new” panel.
+      </p>
+      <div className="admin-card">
+        <label className="admin-field col">
+          <span>Type</span>
+          <select value={annKind} onChange={(e) => setAnnKind(e.target.value as AnnouncementKind)}>
+            {ANN_KINDS.map((k) => (
+              <option key={k.value} value={k.value}>{k.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="admin-field col">
+          <span>{isCinematic ? 'Title (the big reveal headline)' : 'Title'}</span>
+          <input
+            type="text"
+            value={annTitle}
+            maxLength={80}
+            placeholder={isCinematic ? 'e.g. Act II — The Rising Tide' : 'e.g. Build 42 — gate + intake fixes'}
+            onChange={(e) => setAnnTitle(e.target.value)}
+          />
+        </label>
+        {isCinematic && (
+          <label className="admin-field col">
+            <span>Tagline (optional subtitle under the reveal)</span>
+            <input
+              type="text"
+              value={annTagline}
+              maxLength={80}
+              placeholder="e.g. A NEW SEASON BEGINS"
+              onChange={(e) => setAnnTagline(e.target.value)}
+            />
+          </label>
+        )}
+        <label className="admin-field col">
+          <span>{isCinematic ? 'Details (one bullet per line, shown in “What’s new”)' : 'Notes (one bullet per line)'}</span>
+          <textarea
+            className="admin-textarea"
+            value={annBody}
+            maxLength={4000}
+            rows={5}
+            placeholder={'Fixed the gate lever swinging closed on a resting robot\nFaster basin drain\nNew swerve pod wobble tuning'}
+            onChange={(e) => setAnnBody(e.target.value)}
+          />
+        </label>
+        <div className="admin-buttons">
+          <button className="ds-btn" disabled={annBusy} onClick={publishAnnouncement}>
+            PUBLISH
+          </button>
+        </div>
+        {annStatus && <p className="ds-hint" style={{ marginTop: 12 }}>{annStatus}</p>}
+        {announcements.length > 0 && (
+          <div className="admin-list" style={{ marginTop: 12 }}>
+            {announcements.map((a) => (
+              <div key={a.id} className="admin-row">
+                <span className={`ann-badge ${a.kind}`}>{a.kind}</span>
+                <span className="admin-grow">
+                  <strong>{a.title}</strong>
+                  <span className="ds-hint"> · {new Date(a.publishedAt).toLocaleDateString()}</span>
+                </span>
+                <button className="ds-btn ghost sm danger" disabled={annBusy} onClick={() => retireAnnouncement(a)}>
+                  RETIRE
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <h2 className="ds-h2" style={{ marginTop: 32 }}>Seasons</h2>
       <p className="ds-sub" style={{ margin: '0 0 20px' }}>

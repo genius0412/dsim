@@ -110,6 +110,89 @@ export async function purgeSeasonReplays(season: number): Promise<number> {
   return rows.length;
 }
 
+// -------------------------------------------------------- announcements -----
+
+export type AnnouncementKind = 'patch' | 'season' | 'act';
+export interface AnnouncementRow {
+  id: string;
+  kind: AnnouncementKind;
+  title: string;
+  body: string;
+  tagline: string | null;
+  publishedAt: string;
+}
+
+const ANNOUNCEMENT_KINDS: AnnouncementKind[] = ['patch', 'season', 'act'];
+const asKind = (k: unknown): AnnouncementKind =>
+  ANNOUNCEMENT_KINDS.includes(k as AnnouncementKind) ? (k as AnnouncementKind) : 'patch';
+
+/** publish an announcement (admin only). Returns the created row. */
+export async function createAnnouncement(input: {
+  kind: string;
+  title: string;
+  body: string;
+  tagline?: string | null;
+}): Promise<AnnouncementRow> {
+  const rows = await q<{
+    id: string;
+    kind: string;
+    title: string;
+    body: string;
+    tagline: string | null;
+    published_at: string;
+  }>(
+    `insert into announcements (kind, title, body, tagline)
+     values ($1, $2, $3, $4)
+     returning id, kind, title, body, tagline, published_at`,
+    [asKind(input.kind), input.title, input.body ?? '', input.tagline?.trim() || null],
+  );
+  const r = rows[0];
+  return {
+    id: r.id,
+    kind: asKind(r.kind),
+    title: r.title,
+    body: r.body,
+    tagline: r.tagline,
+    publishedAt: r.published_at,
+  };
+}
+
+/** recent active announcements, newest first (the client feed + admin list). */
+export async function listAnnouncements(limit = 12): Promise<AnnouncementRow[]> {
+  const rows = await q<{
+    id: string;
+    kind: string;
+    title: string;
+    body: string;
+    tagline: string | null;
+    published_at: string;
+  }>(
+    `select id, kind, title, body, tagline, published_at
+       from announcements
+      where active
+      order by published_at desc
+      limit $1`,
+    [Math.min(50, Math.max(1, limit))],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    kind: asKind(r.kind),
+    title: r.title,
+    body: r.body,
+    tagline: r.tagline,
+    publishedAt: r.published_at,
+  }));
+}
+
+/** retire an announcement (soft delete — it stops appearing in the feed). */
+export async function deleteAnnouncement(id: string): Promise<boolean> {
+  const rows = await q<{ id: string }>(
+    `update announcements set active = false where id = $1 and active returning id`,
+    [id],
+  );
+  return rows.length > 0;
+}
+
 // ------------------------------------------------------------ profiles ------
 export async function ensureProfile(userId: string, handle: string): Promise<void> {
   await q(

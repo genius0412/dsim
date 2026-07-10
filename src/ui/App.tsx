@@ -5,6 +5,7 @@ import { saveAccountSettings, fetchAdminStatus } from '../net/api';
 import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
 import { Admin } from './Admin';
+import { Announcements } from './Announcements';
 import { AccountSync } from './AccountSync';
 import { GameView } from './GameView';
 import { Lobby } from './Lobby';
@@ -463,6 +464,9 @@ export function App() {
     >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
       {authEnabled && <UsernameGate />}
+      {/* patch notes / new-season + new-act reveals — shown once on the menu shell,
+          never over a live match (the game screen returns before this) */}
+      <Announcements muted={!settings.audio.sounds} />
 
       {screen === 'home' && (
         <HomeMenu

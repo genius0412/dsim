@@ -5,6 +5,7 @@ import {
   currentSeasonNumber,
   ensureProfile,
   ensureSeason,
+  listAnnouncements,
   eloLeaderboard,
   eloUserStanding,
   getGlobalStats,
@@ -201,6 +202,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       result: url.searchParams.get('result') ?? undefined,
     };
     const emptyHistory = { rows: [], total: 0, offset: historyOpts.offset, limit: historyOpts.limit ?? 25 };
+
+    // recent announcements (patch notes / new season / new act) — public, cheap;
+    // the client fetches this on load and shows any it hasn't marked seen locally.
+    if (url.pathname === '/api/announcements') {
+      const rows = dbEnabled ? await listAnnouncements(Math.min(50, limit)) : [];
+      return json(200, { announcements: rows }), true;
+    }
 
     if (url.pathname === '/api/stats') {
       const stats = dbEnabled

@@ -1,7 +1,62 @@
-# HANDOFF — 2026-07-10 (merge low-poly UI into alpha) — READ FIRST
+# HANDOFF — 2026-07-10 (announcements / patch notes / season+act reveal) — READ FIRST
+
+> **GREEN — `npm run build` + `npm test` (363 checks) + `npm run contrast` (135 pairs)
+> all pass.** **SERVER + DB change** (new migration + admin/public routes) ⇒ a running
+> server should **`flyctl deploy --remote-only`** to pick up the announcements table +
+> endpoints. Backward-compatible: old clients simply never call the new endpoint; the
+> new DB migration is additive. No `BALANCE_VERSION` bump (no sim/scoring change).
+
+## What shipped this session — announcements system
+
+An **announcements** feature: an admin publishes patch notes / bug-fix summaries / a new
+season or act, and each player sees it **once**, the first time they open the app after it's
+published. Persisted in Postgres (survives deploys; shown to players who were offline when
+it went out), NOT the ephemeral in-memory `serverNotice`.
+
+- **DB** (`server/db/migrations/0008_announcements.sql`): `announcements` table
+  (`kind` patch|season|act, `title`, `body` = newline bullets, `tagline`, `published_at`,
+  `active`), newest-active index. Auto-applied at boot by the existing migrate runner.
+- **Repo** (`server/db/repo.ts`): `createAnnouncement` / `listAnnouncements` /
+  `deleteAnnouncement` (soft-delete via `active=false`) + `AnnouncementRow` type.
+- **Public API** (`server/api.ts`): `GET /api/announcements?limit=` — recent active feed.
+- **Admin API** (`server/index.ts`): `POST /api/admin/announcement` (publish, JSON body),
+  `POST /api/admin/announcement/delete?id=` (retire). Same admin gate (JWT admin id OR
+  `ADMIN_SECRET`). **Starting a season now auto-publishes a `season` announcement**
+  (editable/retire-able; `?announce=0` opts out) — the "Auto + manual" choice.
+- **Client feed** (`src/net/api.ts` + `src/net/announcements.ts`): `fetchAnnouncements`,
+  `adminPublishAnnouncement`, `adminDeleteAnnouncement`, and a `useAnnouncements` hook that
+  compares the feed against a localStorage **seen set** (`decodesim.seenAnnouncements.v1`),
+  shows only unseen items published within 21 days (cap 4), and prunes the seen set to the
+  live feed so it stays small. Works for anon + signed-in (no per-user DB write).
+- **UI** (`src/ui/Announcements.tsx`): a `season`/`act` shows a **full-screen cinematic
+  reveal** (dark scrim + accent glow, eyebrow/title/tagline sequence, sweep rule, CONTINUE;
+  a self-contained WebAudio swell gated by `settings.audio.sounds`), then flows into a
+  **"What's new"** modal listing all unseen items as cards. Mounted inside `AppShell` in
+  `App.tsx`, so it never appears over a live match (the game screen returns before the shell).
+- **Admin console** (`src/ui/Admin.tsx`): a new **Announcements** section — kind select,
+  title, tagline (season/act only), body textarea, PUBLISH, + a list of live announcements
+  with RETIRE.
+- **CSS** (`src/ui/styles.css`): `.ann-*` styles + cinematic keyframes + `.admin-textarea`,
+  reduced-motion guard. Reveal uses the `--ds-on-field*` family (dark-canvas tokens, don't
+  theme); the panel uses themed tokens. New classes aren't in the `contrast.mjs` audit list
+  (still green) — add pairs there if you want them asserted.
+
+### Preview
+Interactive artifact (faithful copy of the components, same tokens): the season/act reveal
++ the What's-new panel, theme-toggleable.
+
+### Gotchas / next
+- The "seen" gate is client-side localStorage → clearing storage re-shows recent items. If
+  you later want per-account seen-state, add a `seen_announcements` table + JWT write.
+- `fetchAnnouncements` no-ops without `VITE_GAME_SERVER_URL`, so solo/offline never shows it.
+- To assert the flow in smoke, you'd need a DB; current smoke doesn't cover server routes.
+
+---
+
+## Prior session — merge low-poly UI into alpha
 
 > **GREEN — `npm run build` + `npm test` (363 checks) both pass; GUI verified in
-> Electron.** No sim-core change this session → **no server redeploy needed.**
+> Electron.** No sim-core change → no server redeploy needed.
 
 ## What shipped this session — low-poly UI merge
 
