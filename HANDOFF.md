@@ -1,4 +1,41 @@
-# HANDOFF — 2026-07-10 (G408 over-possession / plowing penalty) — READ FIRST
+# HANDOFF — 2026-07-10 (merge low-poly UI into alpha) — READ FIRST
+
+> **GREEN — `npm run build` + `npm test` (363 checks) both pass; GUI verified in
+> Electron.** No sim-core change this session → **no server redeploy needed.**
+
+## What shipped this session — low-poly UI merge
+
+Merged `origin/low-poly-ui` (the 4-commit low-poly design-system retheme: `theme.ts`,
+`shell.css`, `NavRail`/`HomeMenu`/`ModeSelect`/`Configure`/`Records` shell, dark mode +
+accessibility) **into alpha** (which had the gate-lever, G408, drivetrain, netcode, and
+start-position/role-swap work). Branches diverged at `2cadad7`; 16 files overlapped.
+
+- **Conflicts resolved (4 files):** `App.tsx` (kept alpha's `beginSession`
+  one-game-per-user + `blockedByActive` overlay, adopted low-poly's `navigate('modes')`
+  IA + `startBlocked`/comment), `AppShell.tsx` (dropped the old header nav — low-poly's
+  side `NavRail` replaces it), `ReplayView.tsx` (both imports), `HANDOFF.md` (took ours).
+  `config.ts` auto-merged (kept alpha's `BALANCE_VERSION = 3`). `Home.tsx`→`ModeSelect.tsx`
+  rename carried alpha's rejoin banner across cleanly.
+- **New dep:** low-poly added `@fontsource-variable/plus-jakarta-sans` + `space-grotesk`
+  → **run `npm install`** after pulling. The **Electron build needs `ELECTRON=1
+  npm run build`** (relative asset base) or the file:// bundle 404s to a blank page.
+- **Design-system audit of alpha-new UI** (`RoleSwapBar`, `StartPositionEditor`, the
+  ModeSelect rejoin banner — none of which low-poly ever rethemed): they already used
+  the `--ds-*` tokens from the `2cadad7` base, so they inherit the retheme + dark mode
+  for free. Fixed three gaps in `shell.css`: added the missing `.ds-btn.small` keycap
+  variant (used but never defined → buttons rendered full-size), `--ds-font` →
+  `--ds-font-ui` (low-poly renamed it), and start-position status/inputs now use
+  `--ds-font-mono` (Space Grotesk) instead of raw `ui-monospace`. Verified in Electron:
+  home, Configure/Robot, Configure/Match (start-position editor), and Play/ModeSelect
+  all render coherently in the low-poly dark theme.
+- **Backup branch:** `alpha-pre-lowpoly-merge` (pre-merge alpha HEAD, `a0cb653`).
+
+Known-benign: `.ds-section` (Admin.tsx only) has no CSS rule on ANY branch — a plain
+unstyled wrapper with an inline `maxWidth`; left as-is (pre-existing, admin-only).
+
+---
+
+## Prior session — G408 over-possession / plowing penalty
 
 > **GREEN (build + smoke both pass, 363 checks).**
 > **SIM-CORE change** (`src/sim/penalties.ts`, `src/types.ts`, `src/sim/spawn.ts`,
