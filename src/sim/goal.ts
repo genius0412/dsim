@@ -39,22 +39,59 @@ function commandFieldDir(r: RobotState, cmd: RobotCommand): { x: number; y: numb
   return rot({ x: stick.y, y: -stick.x }, r.heading);
 }
 
-/** is robot r actively PUSHING gate a's arm this tick? The gate is a push-to-open
- * mechanism (manual 9.8.3): the robot must be TOUCHING the arm (gateArmRect, at the
- * channel mouth) AND driving INTO it — merely being at the gate no longer opens it.
- * (Touching alone, without a push, does NOT open — but it IS a G417 foul when done to
- * an opponent's gate; see penalties.ts.) */
-export function pushingGate(r: RobotState, cmd: RobotCommand, a: Alliance): boolean {
-  if (!robotIntersectsRect(r, gateArmRect(a))) return false; // must be against the arm
-  // the lever actuates along X only: it opens when a robot drives STRAIGHT into the
-  // handle (toward the classifier/wall). Driving SIDEWAYS along the wall (Y) past the
-  // lever does NOT open it. `goalSide` is +1 for red (wall at +x) / −1 for blue (−x),
-  // so `g` is the unit push direction into the handle.
+/** how HARD robot r is ramming gate a's arm this tick (in/s toward the wall), or 0 if
+ * it isn't pushing at all. The gate is a push-to-open mechanism (manual 9.8.3): the
+ * robot must be TOUCHING the arm (gateArmRect, at the channel mouth) AND driving INTO it
+ * — merely being at the gate no longer opens it. The lever actuates along X only: it
+ * opens on a STRAIGHT drive into the handle (toward the classifier/wall); driving
+ * SIDEWAYS along the wall (Y) past it does NOT open it. `goalSide` is +1 for red (wall at
+ * +x) / −1 for blue (−x), so `g` is the unit push direction into the handle. The returned
+ * magnitude scales the lift rate (harder ram ⇒ opens faster — see gateLiftRate). */
+export function gateRamSpeed(r: RobotState, cmd: RobotCommand, a: Alliance): number {
+  if (!robotIntersectsRect(r, gateArmRect(a))) return 0; // must be against the arm
   const g = goalSide(a);
   const velToward = r.vel.x * g; // ramming the handle toward the wall
-  if (velToward >= C.GATE_PUSH_MIN_SPEED) return true;
+  if (velToward >= C.GATE_PUSH_MIN_SPEED) return velToward; // real ram speed
   const cd = commandFieldDir(r, cmd); // leaning on it while stalled (velocity ~0)
-  return cd.x * g >= C.GATE_PUSH_MIN_CMD;
+  if (cd.x * g >= C.GATE_PUSH_MIN_CMD) return C.GATE_PUSH_MIN_SPEED; // gentle lean floor
+  return 0;
+}
+
+/** is robot r actively PUSHING gate a's arm this tick? (Touching alone, without a push,
+ * does NOT open — but it IS a G417 foul when done to an opponent's gate; see
+ * penalties.ts.) */
+export function pushingGate(r: RobotState, cmd: RobotCommand, a: Alliance): boolean {
+  return gateRamSpeed(r, cmd, a) > 0;
+}
+
+/** how fast the arm lifts given how hard it's being rammed. A gentle push eases it open
+ * at the base rate; a hard ram approaches the cap (~fully open in a single tick). */
+export function gateLiftRate(ramSpeed: number): number {
+  return Math.min(C.GATE_OPEN_RATE + C.GATE_OPEN_RATE_SPEED * ramSpeed, C.GATE_OPEN_RATE_MAX);
+}
+
+/** the open fraction the PHYSICAL handle collider should use THIS tick. buildGateArms
+ * (in physicsEngine solveRobots) runs one step BEFORE updateGates mutates gatePos, so
+ * without this it would build the handle from last tick's (still-closed) gatePos and
+ * hard-stop a robot that is, this very tick, ramming the gate open — the "1-tick jolt".
+ * We ANTICIPATE the lift updateGates is about to apply (same ram-scaled rate), so the
+ * handle retracts on the SAME tick the push lands: ram harder ⇒ bigger first-tick retract
+ * ⇒ you glide through instead of bouncing off. A non-pushing robot (strafing along the
+ * wall) gets the raw gatePos, so the closed handle still blocks sneaking past. */
+export function gateColliderPos(
+  world: World,
+  dt: number,
+  commands: Map<number, RobotCommand>,
+  a: Alliance,
+): number {
+  const goal = world.goals[a];
+  let ram = 0;
+  for (const r of world.robots) {
+    const s = gateRamSpeed(r, commands.get(r.id) ?? ZERO_CMD, a);
+    if (s > ram) ram = s;
+  }
+  if (ram <= 0) return goal.gatePos;
+  return Math.min(1, goal.gatePos + gateLiftRate(ram) * dt);
 }
 
 /** balls of a goal's rail stack (non-overflow), sorted from the gate up */
@@ -330,10 +367,15 @@ export function updateGates(
     const goal = world.goals[a];
     // The gate arm only lifts while a robot actively PRESSES it (push-to-open): a
     // robot merely loitering in the gate zone no longer opens it. Any robot can work
-    // it (an opponent doing so is a MAJOR foul, penalties.ts).
-    const pushing = world.robots.some((r) =>
-      pushingGate(r, commands.get(r.id) ?? ZERO_CMD, a),
-    );
+    // it (an opponent doing so is a MAJOR foul, penalties.ts). `ram` is how hard the
+    // hardest pusher is driving into the handle — it scales the lift rate (ram harder ⇒
+    // opens faster), and gateColliderPos anticipated this exact lift for the collider.
+    let ram = 0;
+    for (const r of world.robots) {
+      const s = gateRamSpeed(r, commands.get(r.id) ?? ZERO_CMD, a);
+      if (s > ram) ram = s;
+    }
+    const pushing = ram > 0;
     // a robot merely TOUCHING the (already-open) arm keeps it up — see the latch below
     const touching = world.robots.some((r) => robotIntersectsRect(r, gateArmRect(a)));
     const wasOpen = goal.gateOpen;
@@ -366,8 +408,9 @@ export function updateGates(
     );
 
     if (goal.gateLatch > 0) {
-      // latched open (a push, or resting against the open arm): lift toward fully open
-      goal.gatePos = Math.min(1, goal.gatePos + C.GATE_OPEN_RATE * dt);
+      // latched open (a push, or resting against the open arm): lift toward fully open at
+      // the ram-scaled rate (a harder push swings it up faster — matches gateColliderPos)
+      goal.gatePos = Math.min(1, goal.gatePos + gateLiftRate(ram) * dt);
       goal.gateVel = 0;
     } else if (goal.gateOpen && ballInGateway) {
       // an artifact is streaming under the OPEN arm — HOLD its position (gravity

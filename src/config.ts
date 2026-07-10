@@ -574,7 +574,7 @@ export const OVERFLOW_FLOW_SPEED = 58; // in/s, overflow rides over everything (
 /** lateral/vertical glide rate as a ball settles onto the rail line */
 export const RAIL_BLEND_SPEED = 30; // in/s
 
-export const GATE_OPEN_HOLD = 0.08; // s of push before the gate arm starts to lift
+export const GATE_OPEN_HOLD = 0; // s of push before the gate arm starts to lift. ZERO so the lift (and the handle-collider retract that rides on it, see gateColliderPos) begins on the very tick you contact it — no debounce means no jam against the closed stub. The push gate (pushingGate: a STRAIGHT ram, not a graze) already prevents accidental opens.
 /** a TOUCH commits the arm open and LATCHES it up for this long, so the driver does
  * NOT have to keep pressing to hold it open — a tap lifts it fully and it stays up a
  * beat. After the latch lapses (and no artifact is streaming under it) gravity swings
@@ -590,7 +590,15 @@ export const GATE_CLOSE_CLEAR_HI = 4.5;
  * "may or may not stay open" long enough to clear the ramp. `gatePos` is the arm's
  * physical open fraction 0 (down/closed) .. 1 (fully lifted); `gateVel` is its swing
  * rate. `gateOpen` (a ball can pass) is DERIVED = gatePos >= GATE_PASS_FRAC. */
-export const GATE_OPEN_RATE = 8; // 1/s: how fast a pushing robot lifts the arm open
+export const GATE_OPEN_RATE = 10; // 1/s: BASE lift rate for a gentle push (light nudge still eases the arm open over several ticks)
+/** the lift rate SCALES with how hard you ram the handle (ramSpeed = in/s toward the
+ * wall): rate = GATE_OPEN_RATE + GATE_OPEN_RATE_SPEED·ramSpeed, capped at
+ * GATE_OPEN_RATE_MAX. A near-full-speed ram lifts the arm ~fully in a single tick, so
+ * the physical handle collider — which ANTICIPATES this same lift (gateColliderPos in
+ * goal.ts, fed into buildGateArms) — is already out of the drivetrain's path the instant
+ * you touch it: it "opens faster the harder you drive into it", with no bounce-off jolt. */
+export const GATE_OPEN_RATE_SPEED = 1.2; // extra 1/s of lift per in/s of ram speed
+export const GATE_OPEN_RATE_MAX = 66; // 1/s cap (~fully open in one tick at a hard ram)
 export const GATE_GRAVITY = 22; // 1/s^2 on gatePos: gravity swinging the released arm shut
 export const GATE_CLOSE_MAX = 9; // 1/s: terminal swing speed as it falls closed
 export const GATE_PASS_FRAC = 0.4; // arm must be at least this lifted for an ARTIFACT to pass

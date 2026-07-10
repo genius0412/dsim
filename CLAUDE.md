@@ -172,7 +172,17 @@ Rapier collider (`buildGateArms` in physicsEngine.ts, robot solve only) spanning
 arm's foreshortened reach, so a robot can't strafe/drive THROUGH the closed lever; a
 straight push lifts `gatePos` and RETRACTS the collider so the opening robot glides in
 (not shoved), and touch-hold means it never swings closed against a resting robot (light
-arm). The LONG paddle needs no collider (over the already-solid classifier). `gateArmRect`
+arm). **The lift is RAM-SPEED-SCALED and the collider retract is ANTICIPATED (no jolt):**
+`gateLiftRate(ramSpeed) = GATE_OPEN_RATE + GATE_OPEN_RATE_SPEED·ramSpeed` (cap
+`GATE_OPEN_RATE_MAX`) — harder ram ⇒ opens faster (~fully in one tick at a hard ram),
+`GATE_OPEN_HOLD` is now 0. `buildGateArms` runs one step BEFORE `updateGates`, so it would
+otherwise build the handle from last tick's still-closed `gatePos` and hard-stop a robot
+that is, THIS tick, ramming it open (the old "1-tick jolt"). `gateColliderPos(world,dt,
+cmds,a)` in goal.ts anticipates the exact lift `updateGates` is about to apply and world.ts
+passes it (`Record<Alliance,number>`) into `solveRobots`→`buildGateArms`, so the handle
+retracts on the SAME tick the push lands (`gateRamSpeed` is the shared ram metric;
+`pushingGate = gateRamSpeed>0`). A non-pushing robot (strafe) still sees the raw closed
+stub. The LONG paddle needs no collider (over the already-solid classifier). `gateArmRect`
 (the push/foul contact rect, `GATE_ARM_REACH`/`GATE_ARM_Y0/Y1`) is kept TIGHT around the
 handle. Rendered (`drawGateArm`) top-down by FORESHORTENING each arm toward the pivot
 (`len·cos(gatePos·GATE_LIFT)`), the long paddle greening past the pass fraction. See

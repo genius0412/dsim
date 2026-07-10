@@ -1,5 +1,5 @@
 import RAPIER from '@dimforge/rapier2d-compat';
-import type { Artifact, RobotState, Vec2, World } from '../types';
+import type { Alliance, Artifact, RobotState, Vec2, World } from '../types';
 import * as C from '../config';
 import { classifierRect, goalFaceNormal, goalFacePoints, goalSide } from './field';
 import { robotExtents } from './physics';
@@ -133,10 +133,18 @@ function buildStatics(rw: RAPIER.World): void {
  * (it lies over the already-solid classifier channel). Robot-solve ONLY (never the ball
  * solve): released artifacts roll out beneath the lifted paddle. Rebuilt each step from the
  * live `gatePos` (one-tick lag vs updateGates, like power draw — deterministic). */
-function buildGateArms(rw: RAPIER.World, world: World): void {
+function buildGateArms(
+  rw: RAPIER.World,
+  world: World,
+  gateCol?: Record<Alliance, number>,
+): void {
   for (const a of ALLIANCES) {
     const g = goalSide(a);
-    const proj = C.GATE_ARM_SHORT * dcos(world.goals[a].gatePos * C.GATE_LIFT);
+    // use the ANTICIPATED open fraction (this tick's lift already folded in by
+    // gateColliderPos) when provided, so a robot ramming the gate open glides through
+    // on the same tick instead of hard-stopping against last tick's closed stub.
+    const pos = gateCol ? gateCol[a] : world.goals[a].gatePos;
+    const proj = C.GATE_ARM_SHORT * dcos(pos * C.GATE_LIFT);
     if (proj <= 0) continue;
     const pivotX = g * (C.FIELD_HALF - C.CLASSIFIER_W); // classifier field-side edge (pivot)
     rw.createCollider(
@@ -191,7 +199,11 @@ function makeWorld(
  * outflow-no-shove feel. Robots therefore never see ball bodies here (slice-1
  * robot behavior is byte-for-byte unchanged).
  */
-export function solveRobots(world: World, dt: number): Map<number, Vec2> {
+export function solveRobots(
+  world: World,
+  dt: number,
+  gateCol?: Record<Alliance, number>,
+): Map<number, Vec2> {
   const preVels = new Map<number, Vec2>();
   const robots = world.robots;
   if (robots.length === 0) return preVels;
@@ -235,7 +247,7 @@ export function solveRobots(world: World, dt: number): Map<number, Vec2> {
   }
 
   // the physical gate handles (one-way doors) — after the robot bodies, before the step
-  buildGateArms(rw, world);
+  buildGateArms(rw, world, gateCol);
 
   rw.step();
 

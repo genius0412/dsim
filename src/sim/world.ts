@@ -1,4 +1,4 @@
-import type { RobotCommand, World } from '../types';
+import type { Alliance, RobotCommand, World } from '../types';
 import * as C from '../config';
 import {
   clampGroundBall,
@@ -16,7 +16,7 @@ import { rot, approach } from '../math';
 import { solveBalls, solveRobots } from './physicsEngine';
 import { classifierRect } from './field';
 import { updateRobot, updateRobotActions } from './robot';
-import { checkGoalEntry, updateBasins, updateGates, updateRails } from './goal';
+import { checkGoalEntry, gateColliderPos, updateBasins, updateGates, updateRails } from './goal';
 import { updateHumanPlayers } from './humanPlayer';
 import { robotsEnabled, stepMatch } from './match';
 import { updateProvisionalPattern } from './scoring';
@@ -91,7 +91,13 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
   // robot-robot contacts (rrContacts) the penalty engine consumes.
   // This will run for all robots. For autoPathActive robots, since their velocities
   // were zeroed, they should ideally not move much due to physics, unless pushed.
-  const preVels = solveRobots(world, dt);
+  // anticipate this tick's gate-arm lift so the handle collider retracts on the SAME
+  // tick a robot rams it open (no 1-tick jolt) — updateGates applies the matching lift.
+  const gateCol: Record<Alliance, number> = {
+    red: gateColliderPos(world, dt, actualCommands, 'red'),
+    blue: gateColliderPos(world, dt, actualCommands, 'blue'),
+  };
+  const preVels = solveRobots(world, dt, gateCol);
   squareUpRobots(world, preVels);
 
   // ---- robots (actions: intake/fire/turret) ------------------------------

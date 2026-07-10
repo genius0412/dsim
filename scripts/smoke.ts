@@ -10,7 +10,7 @@ import { updatePenalties } from '../src/sim/penalties';
 import { robotInLaunchZone } from '../src/sim/robot';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
 import { startMatch } from '../src/sim/match';
-import { pushingGate } from '../src/sim/goal';
+import { gateColliderPos, pushingGate } from '../src/sim/goal';
 import {
   inLaunchZone,
   gateZone,
@@ -881,12 +881,13 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   // merely LOITERING in the gate zone (no drive input) must NOT open the arm
   run(w, cmd({}), 0.5);
   check('loitering in the gate zone does not open the gate', g.gatePos === 0 && !g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
-  // a real push just past the open debounce: the arm eases open, not instant
-  r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
-  run(w, cmd({ driveY: 1 }), 0.11);
+  // a real push eases the arm open — it travels continuously (not a teleport to full).
+  // One tick of a gentle lean lifts it partway, not all the way.
+  r.pos = { x: (gateArmRect('blue').x0 + gateArmRect('blue').x1) / 2, y: GATE_TAPE_Y };
+  r.vel = { x: 0, y: 0 };
+  run(w, cmd({ driveY: 1 }), 1 / 60);
   check('a real push eases the arm open (not instant)', g.gatePos > 0 && g.gatePos < 1, `gatePos ${g.gatePos.toFixed(3)}`);
-  // a brief TAP (not a sustained hold) still lifts it fully — the driver should not
-  // have to keep pressing for it to open
+  // keep leaning on it: it lifts fully open
   run(w, cmd({ driveY: 1 }), 0.5);
   check('sustained push lifts the arm fully open', g.gatePos >= 0.99 && g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
   // release with no ball flowing: the arm stays LATCHED open a beat (no need to hold),
@@ -930,34 +931,33 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('driving straight into the handle opens the gate', pushingGate(r, cmd({}), 'blue'));
 }
 
-// ---- gate handle is a PHYSICAL one-way door: solid when closed, retracts when open --
+// ---- gate handle is a PHYSICAL one-way door: solid when idle, YIELDS on the same
+// ---- tick you ram it (no 1-tick jolt), and retracts further the harder you ram -----
 {
-  // press a robot straight into the mouth with the arm pinned CLOSED vs OPEN. The
-  // closed handle (a solid stub poking into the field) blocks the robot ~a stub sooner
-  // than the classifier face alone; open, the stub has retracted toward the pivot so
-  // the robot noses in further. (A robot that can't open it — e.g. strafing — is simply
-  // blocked by the closed stub.)
-  function pressIntoGate(pos: number): number {
-    const w = mkWorld('match', 'blue', 42);
-    startMatch(w);
-    const r = w.robots[0];
-    r.pos = { x: -40, y: GATE_TAPE_Y };
-    r.heading = Math.PI; // face the -x (blue) wall so drive pushes toward the arm
-    r.fieldCentric = false;
-    r.vel = { x: 0, y: 0 };
-    const commands = new Map([[0, cmd({ driveY: 1 })]]);
-    for (let i = 0; i < Math.round(2 / SIM_DT); i++) {
-      w.goals.blue.gatePos = pos; // pin the arm state the robot solve reads
-      step(w, SIM_DT, commands);
-    }
-    return r.pos.x;
-  }
-  const closedX = pressIntoGate(0); // handle down: solid stub in the field
-  const openX = pressIntoGate(1); // handle lifted: stub retracted toward the pivot
+  // gateColliderPos is the open fraction buildGateArms uses for the handle collider.
+  // With the arm pinned CLOSED (gatePos 0): an idle/strafing robot sees the solid stub;
+  // a robot ramming it sees the handle already retracting THIS tick (anticipated lift),
+  // so it glides through instead of bouncing off — and a harder ram retracts it more.
+  const w = mkWorld('match', 'blue', 42);
+  startMatch(w);
+  const r = w.robots[0];
+  r.pos = { x: (gateArmRect('blue').x0 + gateArmRect('blue').x1) / 2, y: GATE_TAPE_Y };
+  r.heading = Math.PI; // face the -x (blue) wall
+  r.fieldCentric = false;
+  w.goals.blue.gatePos = 0; // handle down (closed)
+  const push = new Map([[0, cmd({ driveY: 1 })]]);
+  r.vel = { x: 0, y: 0 };
+  const idle = gateColliderPos(w, SIM_DT, new Map([[0, cmd({})]]), 'blue');
+  r.vel = { x: -10, y: 0 }; // gentle ram toward the -x wall
+  const soft = gateColliderPos(w, SIM_DT, push, 'blue');
+  r.vel = { x: -55, y: 0 }; // hard ram
+  const hard = gateColliderPos(w, SIM_DT, push, 'blue');
+  check('idle at a closed gate leaves the handle down (collider not retracted)', idle === 0, `pos ${idle.toFixed(3)}`);
+  check('ramming retracts the handle collider on the same tick (no 1-tick jolt)', soft > 0, `pos ${soft.toFixed(3)}`);
   check(
-    'closed gate handle physically blocks the robot further out than when open',
-    closedX - openX >= 1.0,
-    `closedX ${closedX.toFixed(2)} openX ${openX.toFixed(2)} Δ ${(closedX - openX).toFixed(2)}`,
+    'a harder ram retracts the handle collider further (speed-scaled)',
+    hard > soft,
+    `hard ${hard.toFixed(3)} > soft ${soft.toFixed(3)}`,
   );
 }
 
