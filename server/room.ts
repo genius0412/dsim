@@ -85,6 +85,12 @@ export interface Client {
   /** release channel this client build reported ('alpha' | 'stable' | …). The first
    * client to join sets the ROOM's channel; alpha rooms are never persisted. */
   channel?: string;
+  /** monotonic id of the SOCKET that currently owns this slot, bumped on every
+   * (re)attach. A reconnect can arrive before the server has reaped the dropped
+   * socket (a partitioned TCP connection lingers for tens of seconds), so the old
+   * socket's eventual close must be able to tell it is stale — it carries the conn
+   * it was issued and `detach` ignores it if a newer socket has taken over. */
+  conn?: number;
 }
 
 /** one driver's outcome in a finished match (for persistence) */
@@ -124,6 +130,9 @@ export interface MatchOutcome {
 export class Room {
   private readonly clients = new Map<string, Client>();
   private hostId = '';
+  // monotonic connection counter: every add/reattach stamps the owning socket with
+  // the next value so a stale old socket's close can be recognised and ignored.
+  private connSeq = 0;
 
   private world: World | null = null;
   private readonly robotOf = new Map<string, number>(); // clientId -> robotId
@@ -229,6 +238,7 @@ export class Room {
     // the first client to land defines the room's release channel (custom/record
     // rooms are single-channel by construction — the matchmaker segregates ranked)
     if (this.clients.size === 0 && client.channel) this.channel = client.channel;
+    client.conn = ++this.connSeq;
     this.clients.set(client.id, client);
     if (!this.hostId) this.hostId = client.id;
     client.send({ t: 'welcome', clientId: client.id });
@@ -243,9 +253,13 @@ export class Room {
 
   /** a socket dropped. In the lobby that's an outright leave; mid-match the slot
    * is HELD for the reconnect grace (the robot coasts to ZERO meanwhile). */
-  detach(id: string): void {
+  detach(id: string, conn?: number): void {
     const c = this.clients.get(id);
     if (!c) return;
+    // a STALE socket closing after a newer one already reclaimed this slot (fast
+    // reconnect, old TCP not yet reaped): ignore it, or we'd mark a live player
+    // disconnected and eventually grace-drop their robot mid-match.
+    if (conn !== undefined && c.conn !== undefined && conn !== c.conn) return;
     if (this.world === null) {
       // a drop during the ranked strategy window can't be rated one-sided and the
       // reconnect path (a fresh `join`) can't reclaim a held pre-match slot — so a
@@ -271,20 +285,27 @@ export class Room {
     }
   }
 
-  /** reclaim a held slot on a fresh socket (within the grace). Returns false if
-   * unknown or the slot was already finalized/dropped. */
-  reattach(id: string, send: (m: ServerMsg) => void): boolean {
+  /** reclaim a held slot on a fresh socket. Returns the new owning-connection id on
+   * success, or null if the slot is gone for good (grace lapsed → the client was
+   * deleted, so its robot can no longer be reclaimed). A rejoin carrying the right
+   * clientId PROVES ownership, so we take over even if the slot still shows
+   * `connected` — a fast reconnect routinely beats the reaping of the dropped socket
+   * (a partitioned TCP connection lingers), and refusing it stranded the player on a
+   * "connection lost" screen. The old socket is orphaned (its `send` is replaced) and
+   * its later close is ignored via the conn stamp. */
+  reattach(id: string, send: (m: ServerMsg) => void): number | null {
     const c = this.clients.get(id);
-    if (!c || c.connected) return false;
+    if (!c) return null;
     c.send = send;
     c.connected = true;
     c.disconnectAt = 0;
+    c.conn = ++this.connSeq; // this socket now owns the slot (stale old close ignored)
     this.snapPrimed.delete(id); // lost its baseline — force a full keyframe
     send({ t: 'welcome', clientId: id });
     send({ t: 'rejoined', ok: true });
     if (this.world) this.sendSnapshotTo(c); // immediate full resync (re-primes)
     this.broadcastRoster();
-    return true;
+    return c.conn;
   }
 
   /** finalize any disconnected driver whose grace has lapsed: drop its robot to
@@ -396,18 +417,9 @@ export class Room {
   private startMatch(): void {
     const record = this.config.kind === 'record';
     // record runs are OPPONENT-FREE co-op: every robot on one alliance (blue).
-    // duo additionally requires both robots the SAME drivetrain (the board is
-    // segmented by drivetrain) — refuse to start a mismatched duo.
-    if (record && this.config.record === 'duo') {
-      const dts = new Set([...this.clients.values()].map((c) => c.player.spec.drivetrain));
-      if (this.clients.size >= 2 && dts.size > 1) {
-        this.broadcast({
-          t: 'error',
-          message: 'Duo record runs need both robots on the same drivetrain.',
-        });
-        return;
-      }
-    }
+    // A duo where the two robots use DIFFERENT drivetrains is allowed — it just
+    // counts on the OVERALL record board, not a drivetrain-specific one (decided
+    // at persist time, mirroring ranked ELO). So there is no drivetrain gate here.
     // build setups from the current roster; keep start poses distinct per alliance
     const roster = [...this.clients.values()];
     const used: Record<Alliance, Set<number>> = { red: new Set(), blue: new Set() };

@@ -2860,6 +2860,48 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   }
 }
 
+// ---- mid-match reconnect race: fast rejoin before the dropped socket is reaped -
+// A transient network drop breaks the client's TCP, it reconnects in ~1s and sends
+// `rejoin` — but the server often hasn't reaped the OLD socket yet (a partitioned
+// connection lingers for tens of seconds). Reattach must take over anyway (the
+// clientId proves ownership), and the stale old socket's later close must NOT knock
+// the reconnected player offline. Covers both duo-record and versus (same code path).
+{
+  const a2: ServerMsg[] = []; // messages to the RECONNECTED 'a' socket
+  const b1: ServerMsg[] = []; // messages to 'b' (watch for roster churn)
+  const mkC = (id: string, alliance: 'red' | 'blue', sink: ServerMsg[]): Client => ({
+    id,
+    send: (m) => sink.push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+  const room = new Room('smoke-reconnect', () => {}, { kind: 'versus' });
+  const a = mkC('a', 'red', []);
+  const b = mkC('b', 'blue', b1);
+  room.add(a);
+  room.add(b);
+  room.onMessage('a', { t: 'start' }); // host 'a' starts the match (world != null)
+  room.advanceForTest(30); // a few live ticks, then the real-time loop is stopped
+
+  const oldConn = a.conn; // the connection stamp issued to the ORIGINAL socket
+  // 'a' drops but its old socket is NOT reaped yet (no detach). The client reconnects
+  // on a fresh socket and reattaches — this used to be REFUSED (c.connected still true).
+  const nc = room.reattach('a', (m) => a2.push(m));
+  check('reconnect: fast rejoin reclaims the slot even while it still shows connected', nc !== null && nc !== oldConn);
+  check('reconnect: the reconnected socket gets an immediate resync snapshot', a2.some((m) => m.t === 'snapshot'));
+
+  b1.length = 0; // watch for roster churn caused by a (mis)handled close
+  room.detach('a', oldConn); // the STALE old socket finally closes — must be ignored
+  check('reconnect: the stale old-socket close is ignored (no disconnect churn)', !b1.some((m) => m.t === 'roster'));
+  // positive control: a close carrying the CURRENT conn IS honoured (broadcasts roster)
+  room.detach('a', nc as number);
+  check('reconnect: the current socket close is honoured (roster broadcast)', b1.some((m) => m.t === 'roster'));
+
+  check('reconnect: reattach on an unknown/gone slot returns null (→ rejoined:false)', room.reattach('ghost', () => {}) === null);
+}
+
 // ---- single live game per user + restart disabled (server enforcement) ------
 {
   const active: string[] = [];

@@ -7,6 +7,7 @@ import {
   type MatchHistoryPlayer,
   type SeasonInfo,
 } from '../net/api';
+import { periodLabel } from '../seasons';
 
 type TypeFilter = NonNullable<MatchHistoryOpts['type']>;
 type ResultFilter = NonNullable<MatchHistoryOpts['result']>;
@@ -181,9 +182,18 @@ export function MatchHistory({
   const from = total === 0 ? 0 : offset + 1;
   const to = Math.min(offset + pageSize, total);
   const viewingSeason = season ?? current;
-  const seasonName =
-    seasons.find((s) => s.season === viewingSeason)?.name ??
-    (viewingSeason != null ? `Season ${viewingSeason}` : 'Current season');
+  const viewingInfo = seasons.find((s) => s.season === viewingSeason);
+  const seasonName = viewingInfo ? periodLabel(viewingInfo) : 'Current period';
+  // group periods by act for the picker (newest-first ⇒ acts descending)
+  const acts: { act: number; items: SeasonInfo[] }[] = [];
+  for (const s of seasons) {
+    let g = acts.find((a) => a.act === s.act);
+    if (!g) {
+      g = { act: s.act, items: [] };
+      acts.push(g);
+    }
+    g.items.push(s);
+  }
 
   return (
     <div className="ds-panel" style={{ marginTop: 18 }}>
@@ -200,11 +210,15 @@ export function MatchHistory({
                 changeSeason(current != null && v === current ? null : v);
               }}
             >
-              {seasons.map((s) => (
-                <option key={s.season} value={s.season}>
-                  {s.name}
-                  {s.season === current ? ' (current)' : ''}
-                </option>
+              {acts.map((g) => (
+                <optgroup key={g.act} label={g.act === 0 ? 'Act 0 · Beta' : `Act ${g.act}`}>
+                  {g.items.map((s) => (
+                    <option key={s.season} value={s.season}>
+                      {s.name?.trim() ? s.name.trim() : `Season ${s.seasonNo}`}
+                      {s.season === current ? ' (current)' : ''}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           )}

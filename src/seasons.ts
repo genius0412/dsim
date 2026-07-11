@@ -52,3 +52,18 @@ export const SEASONS: readonly Season[] = [
 /** the season the sim is currently built for */
 export const CURRENT_SEASON: Season =
   SEASONS.find((s) => s.playable) ?? SEASONS[0];
+
+/**
+ * Canonical label for a competitive PERIOD (a leaderboard/records bucket).
+ *
+ * Periods form an Act → Season hierarchy: multiple seasons per act, both
+ * 1-indexed, plus a historical **Act 0** for the beta / pre-season. The label is
+ * the admin's custom title when set, else the structured "Act X · Season Y"
+ * coordinate. Used by the leaderboard badge/picker and the career panel so every
+ * surface names a period identically.
+ */
+export function periodLabel(p: { name?: string | null; act: number; seasonNo: number }): string {
+  const custom = p.name?.trim();
+  if (custom) return custom;
+  return `Act ${p.act} · Season ${p.seasonNo}`;
+}

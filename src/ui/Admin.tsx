@@ -119,14 +119,21 @@ export function Admin() {
     setStatus(ok ? okMsg : 'Failed — are you still signed in as an admin?');
   };
 
-  const startSeason = async (): Promise<void> => {
-    if (!window.confirm('Archive the live leaderboards and start a fresh season? Old boards stay viewable.')) return;
+  const startSeason = async (newAct: boolean): Promise<void> => {
+    const what = newAct ? 'ACT' : 'season';
+    if (
+      !window.confirm(
+        `Archive the live leaderboards and start a fresh ${what}? Old boards stay viewable.` +
+          (newAct ? ' A new act resets the season count to 1.' : ''),
+      )
+    )
+      return;
     setSeasonBusy(true);
-    const season = await adminStartSeason(seasonName);
+    const season = await adminStartSeason(seasonName, { newAct });
     setSeasonBusy(false);
     setSeasonStatus(
       season != null
-        ? `Started Season ${season}. New runs now score onto it; older seasons are archived but still viewable.`
+        ? `Started a new ${what}. New runs now score onto it; older periods are archived but still viewable.`
         : 'Failed — are you still signed in as an admin (and is the DB configured)?',
     );
   };
@@ -318,25 +325,31 @@ export function Admin() {
         )}
       </div>
 
-      <h2 className="ds-h2" style={{ marginTop: 32 }}>Seasons</h2>
+      <h2 className="ds-h2" style={{ marginTop: 32 }}>Acts &amp; Seasons</h2>
       <p className="ds-sub" style={{ margin: '0 0 20px' }}>
-        Start a fresh competitive season (records + ranked ELO). Past seasons stay fully viewable
-        in the leaderboard’s season picker; only new runs score onto the live one.
+        Competitive periods are grouped Act → Season (both 1-indexed; Act 0 is the beta).
+        A <b>new season</b> resets the boards within the current act; a <b>new act</b> also
+        rolls the act and restarts the season count at 1, firing the “A NEW ACT” cinematic.
+        Past periods stay fully viewable in the leaderboard’s picker; only new runs score onto
+        the live one. Leave the name blank to auto-label “Act X · Season Y”.
       </p>
       <div className="admin-card">
         <label className="admin-field col">
-          <span>New season name (optional)</span>
+          <span>Custom title (optional)</span>
           <input
             type="text"
             value={seasonName}
             maxLength={40}
-            placeholder="e.g. Season 2 — Spring"
+            placeholder="e.g. Spring Showdown — blank ⇒ Act X · Season Y"
             onChange={(e) => setSeasonName(e.target.value)}
           />
         </label>
         <div className="admin-buttons">
-          <button className="ds-btn" disabled={seasonBusy} onClick={startSeason}>
+          <button className="ds-btn" disabled={seasonBusy} onClick={() => startSeason(false)}>
             START NEW SEASON
+          </button>
+          <button className="ds-btn" disabled={seasonBusy} onClick={() => startSeason(true)}>
+            START NEW ACT
           </button>
           <button className="ds-btn ghost" disabled={seasonBusy} onClick={purgeReplays}>
             PURGE ARCHIVED REPLAYS

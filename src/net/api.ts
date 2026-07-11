@@ -383,8 +383,14 @@ export async function adminDeleteAnnouncement(id: string): Promise<boolean> {
 // ---- seasons ---------------------------------------------------------------
 
 export interface SeasonInfo {
+  /** internal balance_version key */
   season: number;
-  name: string;
+  /** grouping era; 0 = beta/pre-season, then 1-indexed */
+  act: number;
+  /** 1-indexed ordinal of this season within its act (for display) */
+  seasonNo: number;
+  /** admin's custom title, or null to use the structured "Act X · Season Y" */
+  name: string | null;
   active: boolean;
   startedAt: string;
   records: number;
@@ -438,13 +444,20 @@ export async function adminCancelNotice(): Promise<boolean> {
   return res.ok;
 }
 
-/** archive the live boards and open a fresh season; returns the new season number */
-export async function adminStartSeason(name?: string): Promise<number | null> {
+/** archive the live boards and open a fresh period; `newAct` opens a new ACT
+ * (else a new season in the current act). Returns the new balance_version. */
+export async function adminStartSeason(
+  name?: string,
+  opts?: { newAct?: boolean },
+): Promise<number | null> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
-  const q = name && name.trim() ? '?name=' + encodeURIComponent(name.trim()) : '';
-  const res = await fetch(base + '/api/admin/season/start' + q, {
+  const params = new URLSearchParams();
+  if (name && name.trim()) params.set('name', name.trim());
+  if (opts?.newAct) params.set('act', 'new');
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(base + '/api/admin/season/start' + qs, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}` },
   });

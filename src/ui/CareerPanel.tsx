@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { fetchSeasons, type UserStats } from '../net/api';
+import { fetchSeasons, type SeasonInfo, type UserStats } from '../net/api';
+import { periodLabel } from '../seasons';
 
 /**
  * The competitive-stats panel shared by "My Stats" (own account) and the public
@@ -22,25 +23,26 @@ export function CareerPanel({
   /** optional control rendered in the panel header (e.g. a Share button) */
   headerAction?: ReactNode;
 }) {
-  // Resolve the season's DISPLAY NAME (what the Leaderboard shows) for the number
-  // in `stats.season`, so Career and the boards label the season identically (a
-  // season can be named e.g. "Season 0" while numbered 1). Falls back to the raw
-  // number until the lookup lands / if the server is unconfigured.
-  const [seasonNames, setSeasonNames] = useState<Record<number, string>>({});
+  // Resolve the "Act X · Season Y" label (what the Leaderboard shows) for the
+  // balance_version in `stats.season`, so Career and the boards name the period
+  // identically. Falls back to the raw number until the lookup lands / if the
+  // server is unconfigured.
+  const [periods, setPeriods] = useState<Record<number, SeasonInfo>>({});
   useEffect(() => {
     let alive = true;
     fetchSeasons()
       .then((r) => {
         if (!alive) return;
-        setSeasonNames(Object.fromEntries(r.seasons.map((s) => [s.season, s.name])));
+        setPeriods(Object.fromEntries(r.seasons.map((s) => [s.season, s])));
       })
       .catch(() => {});
     return () => {
       alive = false;
     };
   }, []);
+  const period = stats?.season != null ? periods[stats.season] : undefined;
   const seasonLabel =
-    stats?.season != null ? (seasonNames[stats.season] ?? `Season ${stats.season}`) : '—';
+    stats?.season == null ? '—' : period ? periodLabel(period) : `Season ${stats.season}`;
 
   const elo1 = stats?.elo.find((e) => e.mode === '1v1');
   const elo2 = stats?.elo.find((e) => e.mode === '2v2');

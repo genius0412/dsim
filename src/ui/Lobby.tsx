@@ -208,7 +208,7 @@ export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = 
           </div>
           <p className="ds-sub" style={{ marginTop: -10 }}>
             {isRecord
-              ? '2v0 co-op score attack · same drivetrain · share a room code.'
+              ? '2v0 co-op score attack · any drivetrains · share a room code.'
               : 'Up to 2v2 · share a room code.'}
           </p>
           <div className="ds-panelbox">
@@ -285,7 +285,7 @@ export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = 
             </div>
             <p className="ds-hint">
               {isRecord
-                ? 'Both drivers must be on the SAME drivetrain (the board is split by drivetrain).'
+                ? 'Matching drivetrains rank on that drivetrain’s board; a MIXED pair counts on the OVERALL board only.'
                 : 'Codes are auto-generated — share yours with your friends.'}
               {multiServer() && ' Both players must pick the same region.'}
             </p>

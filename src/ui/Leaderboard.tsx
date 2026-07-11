@@ -13,6 +13,7 @@ import {
   type SeasonInfo,
 } from '../net/api';
 import { gameServerConfigured } from '../net/env';
+import { periodLabel } from '../seasons';
 import { PLACEMENT_GAMES } from '../config';
 import type { DrivetrainType, IntakeStyle } from '../types';
 
@@ -218,8 +219,20 @@ export function Leaderboard({
   const valueLabel = isRecords ? 'Score' : 'ELO';
   const viewing = season ?? current;
   const viewingSeason = seasons.find((s) => s.season === viewing);
-  const seasonLabel = viewingSeason?.name ?? (viewing != null ? `Season ${viewing}` : 'Current season');
+  const seasonLabel = viewingSeason ? periodLabel(viewingSeason) : 'Current period';
   const isArchived = viewing != null && current != null && viewing < current;
+
+  // group periods by act for the picker (seasons are newest-first, so acts come
+  // out descending); within an act, options show "Season Y" or a custom title.
+  const acts: { act: number; items: SeasonInfo[] }[] = [];
+  for (const s of seasons) {
+    let g = acts.find((a) => a.act === s.act);
+    if (!g) {
+      g = { act: s.act, items: [] };
+      acts.push(g);
+    }
+    g.items.push(s);
+  }
 
   return (
     <>
@@ -232,7 +245,7 @@ export function Leaderboard({
 
       {seasons.length > 1 && (
         <div className="ds-panel-h" style={{ marginBottom: 8 }}>
-          <span className="ds-panel-title">Season</span>
+          <span className="ds-panel-title">Period</span>
           <select
             className="ds-select"
             value={viewing ?? ''}
@@ -241,11 +254,15 @@ export function Leaderboard({
               setSeason(current != null && v === current ? null : v);
             }}
           >
-            {seasons.map((s) => (
-              <option key={s.season} value={s.season}>
-                {s.name}
-                {s.season === current ? ' (current)' : ''}
-              </option>
+            {acts.map((g) => (
+              <optgroup key={g.act} label={g.act === 0 ? 'Act 0 · Beta' : `Act ${g.act}`}>
+                {g.items.map((s) => (
+                  <option key={s.season} value={s.season}>
+                    {s.name?.trim() ? s.name.trim() : `Season ${s.seasonNo}`}
+                    {s.season === current ? ' (current)' : ''}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </div>

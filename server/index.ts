@@ -12,6 +12,7 @@ import { handleApi } from './api';
 import { Matchmaker } from './matchmaking';
 import { MATCHMAKER_REGION } from './regions';
 import { BALANCE_VERSION } from '../src/config';
+import { periodLabel } from '../src/seasons';
 import { dbEnabled } from './db/pool';
 import {
   currentSeasonNumber,
@@ -218,21 +219,26 @@ const httpServer = createServer((req, res) => {
         }
         if (u.pathname === '/api/admin/season/start') {
           const name = u.searchParams.get('name') ?? undefined;
-          const season = await startNewSeason(BALANCE_VERSION, name);
-          console.log(`[admin] started new season ${season}${name ? ` "${name}"` : ''}`);
-          // auto-publish a cinematic season announcement (editable/retire-able from
-          // the admin console). `announce=0` opts out for a silent season roll.
+          // `act=new` opens a fresh ACT (act++, season resets to 1); otherwise a
+          // new season in the current act.
+          const bumpAct = u.searchParams.get('act') === 'new';
+          const { season, act, seasonNo } = await startNewSeason(BALANCE_VERSION, name, bumpAct);
+          const label = periodLabel({ name, act, seasonNo });
+          console.log(
+            `[admin] started new ${bumpAct ? 'act' : 'season'}: bv=${season} (${label})`,
+          );
+          // auto-publish a cinematic announcement (editable/retire-able from the
+          // admin console). `announce=0` opts out for a silent roll.
           if (u.searchParams.get('announce') !== '0') {
-            const label = name && name.trim() ? name.trim() : `Season ${season}`;
             await createAnnouncement({
-              kind: 'season',
+              kind: bumpAct ? 'act' : 'season',
               title: label,
-              tagline: 'A NEW SEASON BEGINS',
+              tagline: bumpAct ? 'A NEW ACT BEGINS' : 'A NEW SEASON BEGINS',
               body: 'Fresh leaderboards and ranked ratings are live. Set a new record and climb from the top.',
-            }).catch((e) => console.error('[admin] season announcement failed:', e));
+            }).catch((e) => console.error('[admin] announcement failed:', e));
           }
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, season }));
+          res.end(JSON.stringify({ ok: true, season, act, seasonNo }));
           return;
         }
         // purge-replays: default to every season BEFORE the live one when unspecified
@@ -522,6 +528,10 @@ process.on('unhandledRejection', (e) => console.error('[server] unhandledRejecti
 wss.on('connection', (ws: WebSocket) => {
   let id: string = randomUUID(); // reassigned to the reclaimed clientId on a rejoin
   let room: Room | null = null;
+  // the owning-connection stamp this socket was issued for its slot (0 until it
+  // joins/rejoins). Passed to detach on close so a stale socket that a newer
+  // reconnect already superseded can't knock the live player offline.
+  let conn = 0;
   onlineCount++;
   // the authed user this socket belongs to (set once its JWT verifies), so the
   // signed-in tally can be decremented cleanly on close
@@ -602,6 +612,7 @@ wss.on('connection', (ws: WebSocket) => {
       markAuthed(user.userId);
     }
     room.add(client);
+    conn = client.conn ?? 0; // remember which socket-generation owns our slot
     room.maybeStartRanked(); // no-op unless a staged ranked room is now fully present
   };
 
@@ -626,9 +637,11 @@ wss.on('connection', (ws: WebSocket) => {
       } else if (msg.t === 'rejoin') {
         if (room) return;
         const r = rooms.get(msg.room.toLowerCase());
-        if (r && r.reattach(msg.clientId, send)) {
+        const nc = r ? r.reattach(msg.clientId, send) : null;
+        if (r && nc !== null) {
           id = msg.clientId; // adopt the reclaimed identity on this socket
           room = r;
+          conn = nc; // this socket now owns the slot (supersedes the dropped one)
         } else {
           send({ t: 'rejoined', ok: false });
         }
@@ -693,7 +706,9 @@ wss.on('connection', (ws: WebSocket) => {
       else authedUsers.set(authedUserId, n);
     }
     matchmaker.remove(id); // drop from any ranked queue
-    room?.detach(id); // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect
+    // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect. `conn` lets the room
+    // ignore this close if a newer socket already reclaimed the slot (fast reconnect).
+    room?.detach(id, conn);
   });
 
   ws.on('error', () => {

@@ -82,7 +82,8 @@ export const ROOM_CAPACITY = 4;
 
 /** what a room runs. 'versus' = the existing PvP match (ELO). 'record' =
  * opponent-free score-attack for the record boards; solo = 1 robot (1v0), duo =
- * 2 co-op robots on one alliance, same drivetrain (2v0). */
+ * 2 co-op robots on one alliance (2v0). A duo may mix drivetrains — a mixed pair
+ * ranks the OVERALL board only, a matched pair also ranks that drivetrain's. */
 export type RoomKind = 'versus' | 'record';
 export type RecordKind = 'solo' | 'duo';
 /** ranked matchmaking bucket */

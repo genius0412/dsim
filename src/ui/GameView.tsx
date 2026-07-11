@@ -796,6 +796,8 @@ const DRIVETRAIN_LABEL: Record<string, string> = {
   xdrive: 'X-Drive',
   tank: 'Tank',
   swerve: 'Swerve',
+  // sentinel for a mixed-drivetrain duo run (overall board only, no dt-specific)
+  overall: 'Mixed',
 };
 const prettyDrivetrain = (d: string): string => DRIVETRAIN_LABEL[d] ?? d;
 

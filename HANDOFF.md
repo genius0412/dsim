@@ -1,8 +1,111 @@
-# HANDOFF — 2026-07-10 (multiplayer held-ball render fix; prev: Markdown announcements + scoring-timing) — READ FIRST
+# HANDOFF — 2026-07-10 (Act→Season hierarchy; prev: duo-record mixed drivetrains) — READ FIRST
 
-> **GREEN — `npm run build`, `npm test` pass.**
+> **GREEN — `npm run build`, `npm test`, `npm run server:check` all pass.** (Server + DB +
+> client UI; no `src/sim/` touch.)
 
-## Latest — held balls of REMOTE robots didn't move with the robot (multiplayer)
+## Latest — Act & Season system (competitive periods now Act → Season)
+
+User model: periods form an **Act → Season** hierarchy — MULTIPLE seasons per act, both
+1-indexed, plus **Act 0** for the historical beta/pre-season. Before, the leaderboard bucket
+was a single flat integer (`balance_version`) auto-labeled `Season N`; since `BALANCE_VERSION`
+starts at 3 the first board read "Season 3" (the "weird name"), the picker showed raw ints and
+hid itself for one period, and career showed the same. Now everything reads "Act X · Season Y".
+
+Key idea: `balance_version` stays the internal per-record/match/replay key. A NEW `act` column
+GROUPS versions; the displayed **season number is the version's 1-indexed ORDINAL WITHIN ITS
+ACT** (derived via `row_number`), so it's always contiguous from 1 regardless of the raw bv.
+
+Changes:
+- `server/db/migrations/0010_season_acts.sql` — `seasons.act int not null default 0` (all
+  existing rows → Act 0 = beta), and `seasons.name` made nullable (null ⇒ use structured label).
+- `server/db/repo.ts` — `SeasonRow` gains `act`/`seasonNo`, `name: string|null`; `listSeasons`
+  computes `season_no = row_number() over (partition by act order by balance_version)` and
+  NULLs legacy auto `"Season N"` names; `ensureSeason` no longer bakes a name; `startNewSeason
+  (fallback, name?, bumpAct?)` returns `{season, act, seasonNo}` — `bumpAct` ⇒ act++, season
+  ordinal resets to 1, else same act.
+- `server/index.ts` — `/api/admin/season/start` reads `act=new`, fires the `'act'` vs
+  `'season'` cinematic announcement, returns `{season, act, seasonNo}`. Label via `periodLabel`.
+- `src/seasons.ts` — new pure `periodLabel({name, act, seasonNo})` = custom name || "Act X ·
+  Season Y" (shared by leaderboard, career, match history, server announcement).
+- `src/net/api.ts` — `SeasonInfo` gains `act`/`seasonNo`, `name` nullable; `adminStartSeason
+  (name?, {newAct?})`.
+- `src/ui/Leaderboard.tsx` + `MatchHistory.tsx` — picker is now `<optgroup>`-per-act
+  ("Act 0 · Beta" for act 0), options show "Season Y" / custom title; badges use `periodLabel`.
+- `src/ui/CareerPanel.tsx` — maps `stats.season` → full `SeasonInfo` and labels via `periodLabel`.
+- `src/ui/Admin.tsx` — "Acts & Seasons" card: START NEW SEASON + START NEW ACT buttons, custom
+  title optional (blank ⇒ auto label).
+
+Behavior on the live prod DB (bv3, name "Season 3", beta): migration adds act 0 → the board
+now reads **"Act 0 · Season 1"**. When ready to launch, admin clicks START NEW ACT → bv4,
+**"Act 1 · Season 1"**. Non-destructive: underlying balance_version stamps are untouched; only
+the DISPLAY is derived. Deploy: server + migration ⇒ `flyctl deploy --remote-only` (migration
+runs at boot; verify `/health`), Vercel auto-deploys clients. Protocol unchanged, backward-compat
+(old clients that don't send `act=new` just start a same-act season).
+
+## Prev — duo record now allows DIFFERENT drivetrains (mixed ⇒ overall board only)
+
+User: duo record mode should let the pair run different drivetrains — such a run counts
+on the OVERALL record ranking but NOT any drivetrain-specific board. Previously the server
+hard-refused to start a mismatched duo. This mirrors ranked ELO's existing rule
+(`computeGlicko`: the per-drivetrain board updates only when all participants share one
+drivetrain; mixed teams hit `overall` only).
+
+Changes (server + DB + client copy — NO protocol shape change, backward-compatible):
+- `server/room.ts` `startMatch` — DELETED the `dts.size > 1` block that broadcast an error
+  and refused to start a mismatched duo. No drivetrain gate remains.
+- `server/persist.ts` — a duo whose participants ran different drivetrains keys the
+  `'overall'` sentinel instead of `primary.drivetrain`
+  (`new Set(o.participants.map(p=>p.drivetrain)).size > 1 ? 'overall' : primary.drivetrain`).
+  Uses ALL participants (incl. an unauthed partner) so the mix reflects the robots that played.
+- `server/db/repo.ts` — `personalBest` + `recordRank` now treat `drivetrain === 'overall'`
+  as NO drivetrain filter (matching `recordLeaderboard`'s existing 'overall' semantics), so a
+  mixed run's PB/rank is computed on the cross-drivetrain board it actually lands on.
+- `server/db/migrations/0009_record_overall_drivetrain.sql` — relaxes the `records.drivetrain`
+  CHECK to also allow `'overall'` (elo_ratings already permitted it). WITHOUT this the INSERT
+  throws 23514 and the run is silently dropped (results screen hangs on "computing rank").
+- `src/net/protocol.ts`, `src/ui/Lobby.tsx` — copy updated (no longer says "same drivetrain").
+- `src/ui/GameView.tsx` — `DRIVETRAIN_LABEL.overall = 'Mixed'` so the results line reads
+  "Duo · Mixed" not lowercase "overall".
+
+Deploy: server + migration ⇒ `flyctl deploy --remote-only` (migration runs at boot; verify
+`/health`), then Vercel auto-deploys clients. Protocol unchanged → old clients keep working
+(they'd just render a received `drivetrain:'overall'` via their `?? d` fallback).
+
+Design note: matched-drivetrain duos are UNCHANGED — they still rank both that drivetrain's
+board and (via best-any) the overall board. Only mixed pairs are new, and they land on
+overall alone.
+
+## Prev — rejoin worked "weirdly" for duo-record + multiplayer (reconnect race)
+
+> `npm run build`, `npm test` (5 new reconnect checks), `npm run server:check` passed then.
+
+Symptom: after a transient drop, rejoining a live match often failed to a "Connection
+lost" panel (or the reconnected player mysteriously went offline / got dropped).
+
+Root cause: on a transient network partition the client reconnects fast (~1s) and sends
+`rejoin`, but the server hasn't reaped the OLD socket yet (a partitioned TCP connection
+lingers for tens of seconds, so `c.connected` is still true). `Room.reattach` REFUSED a
+reclaim whenever `c.connected` — so the fast reconnect was rejected (`rejoined:false` →
+hard fail). Naively allowing it introduced the mirror bug: the stale old socket's
+eventual `close` → `detach` would then knock the freshly-reconnected player offline.
+
+Fix (server only, sim/protocol untouched):
+- `server/room.ts` — each slot carries a monotonic owning-connection stamp
+  `Client.conn` (bumped by `add`/`reattach` from `connSeq`). `reattach` now takes over
+  even a still-`connected` slot (the correct clientId proves ownership; the old socket is
+  orphaned — its `send` is replaced) and returns the new conn (or `null` only when the
+  slot is truly gone → grace lapsed). `detach(id, conn?)` ignores a close whose `conn`
+  doesn't match the current owner (the stale old socket).
+- `server/index.ts` — the connection tracks its `conn` (set on join/rejoin) and passes it
+  to `detach` on close; the rejoin branch adopts the conn `reattach` returns.
+- `scripts/smoke.ts` — +5 checks: fast rejoin reclaims a still-connected slot, resync
+  snapshot sent, stale old-close ignored (no roster churn), current-close honoured,
+  unknown slot → null.
+
+Deploy: server change ⇒ needs `flyctl deploy --remote-only` (verify `/health`). Protocol
+is unchanged (no new caps), so it's backward-compatible with old clients.
+
+## Prev — held balls of REMOTE robots didn't move with the robot (multiplayer)
 
 Symptom: balls held inside *other* robots in a room floated/lagged relative to the
 robot body. Cause: remote robots render at an **interpolated** pos (`displayWorld` in

@@ -50,7 +50,14 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
       const primary = authed[0];
       const partner = authed[1];
       const mode = o.config.record ?? 'solo';
-      const drivetrain = primary.drivetrain;
+      // A duo whose two robots ran DIFFERENT drivetrains keys the 'overall'
+      // bucket (cross-drivetrain board only, no drivetrain-specific board) —
+      // mirroring ranked ELO's computeGlicko (per-drivetrain board only when all
+      // participants share one drivetrain). Solo runs and shared-drivetrain duos
+      // key their real drivetrain. Uses ALL participants (incl. an unauthed
+      // partner) so the mix is judged on the robots that actually played.
+      const drivetrains = new Set(o.participants.map((p) => p.drivetrain));
+      const drivetrain = drivetrains.size > 1 ? 'overall' : primary.drivetrain;
       // NET score: the alliance's earned total minus the penalty points it handed
       // the (empty) opposing alliance — i.e. the fouls the player(s) committed.
       const score = recordScore(o.result, primary.alliance);
