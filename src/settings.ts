@@ -1,5 +1,13 @@
 import type { GameSettings } from './types';
-import { DEFAULT_SPEC, coerceSpec, coerceAssists, coerceAutoPath, coerceStartPose } from './sim/spawn';
+import {
+  DEFAULT_SPEC,
+  coerceSpec,
+  coerceAssists,
+  coerceAutoPath,
+  coerceStartPose,
+  defaultAssistsFor,
+  defaultAssistsByDrivetrain,
+} from './sim/spawn';
 import { START_POSES, MAX_SAVED_ROBOTS, MAX_SAVED_AUTOS, MAX_SAVED_STARTS } from './config';
 import type { StartSel, StartPose } from './types';
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
@@ -11,7 +19,9 @@ export function defaultSettings(): GameSettings {
   return {
     mode: 'match',
     alliance: 'blue',
-    assists: { fieldCentric: true, aimAssist: true, autoIntake: false, autoFire: false },
+    // active assists = the default spec's drivetrain slot; library = per-drivetrain defaults
+    assists: defaultAssistsFor(DEFAULT_SPEC.drivetrain),
+    assistsByDrivetrain: defaultAssistsByDrivetrain(),
     spec: { ...DEFAULT_SPEC },
     savedRobots: [],
     savedAutos: [],
@@ -43,8 +53,26 @@ export function coerceSettings(raw: unknown): GameSettings {
     // assists + spec share ONE validation path with the server (coerceAssists /
     // coerceSpec in sim/spawn): a hand-edited localStorage spec is clamped to the
     // same legal ranges as a spoofed wire spec, so both surfaces agree exactly.
-    out.assists = coerceAssists(s.assists, out.assists);
+    // Spec is coerced FIRST because its drivetrain decides the active-assist fallback.
     if (s.spec !== undefined) out.spec = coerceSpec(s.spec, out.spec);
+    // per-drivetrain assist library: each slot coerced against its own drivetrain default
+    const dfltByDt = defaultAssistsByDrivetrain();
+    const hadByDt = typeof s.assistsByDrivetrain === 'object' && s.assistsByDrivetrain !== null;
+    const rawByDt = hadByDt ? (s.assistsByDrivetrain as Record<string, unknown>) : {};
+    out.assistsByDrivetrain = {
+      mecanum: coerceAssists(rawByDt.mecanum, dfltByDt.mecanum),
+      tank: coerceAssists(rawByDt.tank, dfltByDt.tank),
+      swerve: coerceAssists(rawByDt.swerve, dfltByDt.swerve),
+      xdrive: coerceAssists(rawByDt.xdrive, dfltByDt.xdrive),
+    };
+    // active assists: an explicitly-stored value wins; else this drivetrain's slot
+    out.assists = coerceAssists(s.assists, out.assistsByDrivetrain[out.spec.drivetrain]);
+    // migration: an old save with no per-drivetrain library seeds the active
+    // drivetrain's slot from its stored active assists, so the choice survives a
+    // drivetrain round-trip (other drivetrains get the new defaults)
+    if (!hadByDt && s.assists !== undefined) {
+      out.assistsByDrivetrain[out.spec.drivetrain] = { ...out.assists };
+    }
     // saved libraries: validate each entry through the same coercers, cap the count
     if (Array.isArray(s.savedRobots)) {
       out.savedRobots = s.savedRobots.slice(0, MAX_SAVED_ROBOTS).map((r) => coerceSpec(r));

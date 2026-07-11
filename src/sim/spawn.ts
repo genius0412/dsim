@@ -3,6 +3,7 @@ import type {
   Artifact,
   ArtifactColor,
   AssistConfig,
+  DrivetrainType,
   GameMode,
   GoalState,
   Motif,
@@ -48,12 +49,33 @@ export const DEFAULT_SPEC: RobotSpec = {
   canSort: false,
 };
 
+// Neutral sim/wire FALLBACK for assists (used by coercion bases, replay, server
+// fill-robots, dummies, and smoke). Deliberately NOT the same as the player's
+// menu default (`defaultAssistsFor` below): tests + fallbacks want auto OFF.
 export const DEFAULT_ASSISTS: AssistConfig = {
   fieldCentric: true,
   aimAssist: true,
   autoIntake: false,
   autoFire: false,
 };
+
+// The player-facing DEFAULT assists, remembered PER DRIVETRAIN. Every drivetrain
+// defaults to robot-centric with all assists ON, EXCEPT swerve, which defaults
+// field-centric (its holonomic pods make field-relative driving the natural pick —
+// this is what makes the Cypher swerve preset field-centric out of the box).
+export function defaultAssistsFor(d: DrivetrainType): AssistConfig {
+  return { fieldCentric: d === 'swerve', aimAssist: true, autoIntake: true, autoFire: true };
+}
+
+/** the full per-drivetrain assist library a fresh player starts with */
+export function defaultAssistsByDrivetrain(): Record<DrivetrainType, AssistConfig> {
+  return {
+    mecanum: defaultAssistsFor('mecanum'),
+    tank: defaultAssistsFor('tank'),
+    swerve: defaultAssistsFor('swerve'),
+    xdrive: defaultAssistsFor('xdrive'),
+  };
+}
 
 // ---- untrusted-input sanitization -------------------------------------------
 // A player's robot config arrives from localStorage (hand-editable) AND, in

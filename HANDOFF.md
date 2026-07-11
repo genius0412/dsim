@@ -1,8 +1,36 @@
-# HANDOFF — 2026-07-11 (replay version gate = sim-code not season · duo record requires both signed in) — READ FIRST
+# HANDOFF — 2026-07-11 (driver assists → PER DRIVETRAIN; prev: replay version gate + duo record sign-in) — READ FIRST
 
-> **GREEN — `npm run build`, `npm test` (ALL PASS), `npm run server:check` all pass.** (No palette edits → didn't re-run `contrast`.)
+> **GREEN — `npm run build` (tsc strict + vite) and `npm test` (~205 checks) pass. CLIENT-ONLY change (no server/ or protocol edit) → Vercel on push, NO Fly deploy.**
 
-## Latest — replay "older version" false-positive + duo one-name records (both SERVER-only)
+## Latest — driver assists are now remembered PER DRIVETRAIN (was per-user)
+
+Field-centric/robot-centric + aim assist + auto intake + auto fire are now saved **per
+drivetrain**, not as one global. New default per drivetrain: **robot-centric, aim/intake/fire
+all ON** — EXCEPT **swerve, which defaults field-centric** (so the Cypher swerve preset loads
+field-centric out of the box, every other preset robot-centric). Design: keep the ACTIVE
+`assists` as the resolved config that spawns + goes on the wire (no protocol change), add a
+LOCAL per-drivetrain library that persists + account-syncs — mirrors the `savedStartPoses`
+pattern.
+
+- `src/types.ts` — `GameSettings.assistsByDrivetrain: Record<DrivetrainType, AssistConfig>`.
+- `src/sim/spawn.ts` — `defaultAssistsFor(d)` (swerve ⇒ field-centric, else robot-centric, all
+  auto ON) + `defaultAssistsByDrivetrain()`. **`DEFAULT_ASSISTS` deliberately UNCHANGED** — it
+  stays the neutral sim/wire/replay/dummy/**smoke** fallback (auto OFF); only the player-facing
+  menu default moved. Don't conflate the two.
+- `src/settings.ts` — `defaultSettings()` sets active `assists = defaultAssistsFor(DEFAULT_SPEC
+  .drivetrain)` (mecanum) + the full library. `coerceSettings` coerces spec FIRST, then each
+  drivetrain slot, then active assists (base = the spec-drivetrain slot). Migration: an old save
+  with no `assistsByDrivetrain` seeds the active drivetrain's slot from its stored active assists.
+- `src/ui/Menu.tsx` — new `applySpec(next)` helper swaps active assists to `assistsByDrivetrain
+  [next.drivetrain]` whenever the drivetrain CHANGES; `setSpec`, the drivetrain buttons, saved-
+  robot loads, and ROBOT_PRESETS cards all route through it. `setAssist` writes active + the
+  current drivetrain's slot. Drive-style/assists UI stayed in the ROBOT menu (per-drivetrain =
+  a build property, so NOT moved to Controls). Added a "Saved per drivetrain (…)" hint.
+- No smoke change needed (DEFAULT_ASSISTS unchanged; UI/settings only).
+
+Note: `tankControlMode` was left as-is (tank-only already ⇒ effectively per-drivetrain).
+
+## Prev — replay "older version" false-positive + duo one-name records (both SERVER-only)
 
 Two bug fixes, both entirely server-side (client `ReplayView` gate + `Leaderboard`
 partner rendering were already correct). Deployed via `scripts/announce-deploy.sh`
