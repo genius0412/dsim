@@ -1,5 +1,40 @@
 import type { GameSettings, StartCat, StartPose, StartSel } from '../types';
+import type { LobbyPlayer } from '../net/protocol';
 import { START_POSES, MAX_SAVED_STARTS } from '../config';
+
+export const otherCat = (c: StartCat): StartCat => (c === 'close' ? 'far' : 'close');
+
+/**
+ * This player's locked 2v2 start role (CLOSE/FAR), GUARANTEEING the two alliance
+ * members hold DISTINCT roles. Precedence:
+ *  1. both members carry an explicit `startRole` and they differ → honour mine;
+ *  2. only I'm explicit → mine;
+ *  3. only my PARTNER is explicit → the OPPOSITE of theirs;
+ *  4. neither explicit (or both explicit but IDENTICAL — a collision) → a
+ *     deterministic positional split by clientId (first = close, second = far).
+ *
+ * Rule 3 fixes the swap→host-leave→rejoin bug: a lobby rejoin returns as a fresh
+ * `join` with a NEW clientId and NO `startRole` (rejoin never reattaches a duo
+ * lobby slot), so the rejoiner must take the opposite of its partner's RETAINED
+ * swapped role — the old clientId-only sort ignored the partner and could land
+ * both on the same role. Both clients compute this identically from the shared
+ * roster, so they always converge on one close + one far. Returns undefined unless
+ * exactly the alliance has ≥2 visible members.
+ */
+export function derivedRole(players: LobbyPlayer[], me: LobbyPlayer): StartCat | undefined {
+  const allies = players
+    .filter((p) => p.alliance === me.alliance && !p.hidden)
+    .sort((a, b) => a.clientId.localeCompare(b.clientId));
+  if (allies.length < 2) return undefined;
+  const [first, second] = allies;
+  const partner = first.clientId === me.clientId ? second : first;
+  const mine = me.startRole;
+  const theirs = partner.startRole;
+  if (mine && theirs && mine !== theirs) return mine;
+  if (mine && !theirs) return mine;
+  if (!mine && theirs) return otherCat(theirs);
+  return first.clientId === me.clientId ? 'close' : 'far';
+}
 
 /**
  * Pure helpers for the Close/Far start-position model shared by the editor and

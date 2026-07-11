@@ -1,8 +1,40 @@
-# HANDOFF — 2026-07-10 (start-pose block + room-code kind-scoping; prev: Act→Season) — READ FIRST
+# HANDOFF — 2026-07-10 (duo CLOSE/FAR role fixes; prev: start-pose block + room codes) — READ FIRST
 
-> **GREEN — `npm run build`, `npm test` (2 new checks), `npm run server:check` all pass.**
+> **GREEN — `npm run build`, `npm test` (role checks), `npm run server:check` all pass.**
 
-## Latest — two fixes: illegal start-pose block + kind-scoped room codes
+## Latest — duo/2v2 CLOSE·FAR role: distinct-role guarantee + category force (CLIENT-ONLY)
+
+Two bugs, both in `src/ui/useRoleSwap.ts` role logic + the start-category wiring:
+1. **Both players ended up FAR** after: duo room → 2 join → SWAP roles → host leaves (partner
+   becomes host) → original host rejoins. Cause: `derivedRole` split roles purely by clientId
+   sort, ignoring the partner's explicit `startRole`. A lobby rejoin returns as a FRESH `join`
+   (rejoin never reattaches a duo lobby slot — "rejoin doesn't appear for duo") with a NEW random
+   clientId and NO `startRole`, so the rejoiner fell to the positional sort, which — since the new
+   UUID sorted after the partner — gave `far` while the partner kept its swapped `far`. Both far.
+2. **Locked role didn't force the start position**: role = CLOSE but a FAR start (carried from
+   single-player settings) stayed FAR instead of being forced to a CLOSE spot.
+
+Fixes:
+- `src/ui/startPositions.ts` — `derivedRole` moved here (pure, no React) and rewritten to
+  GUARANTEE distinct roles: honour an explicit `startRole`; a member WITHOUT one takes the
+  OPPOSITE of a partner who HAS one (rule 3 — this is what fixes the rejoiner); only fall back to
+  the clientId positional split when neither (or both-identical) is explicit. Deterministic +
+  identical on both clients from the shared roster → always one close + one far. `otherCat` also
+  moved here. (No `startRole` preservation across rejoin needed — the partner's retained role
+  decides the rejoiner.)
+- `src/ui/useRoleSwap.ts` — imports `derivedRole`/`otherCat`; `role` is now just
+  `derivedRole(players, me)` (it already folds in `startRole`), dropping the old
+  `me.startRole ?? derived`.
+- `src/ui/Lobby.tsx` + `src/ui/MatchStrategy.tsx` — new effect: when a role is locked and the
+  active start is in the OTHER category (`me.startPose ? settings.startCat : indexCategory
+  (me.startIndex)` ≠ role), `applyStart(switchCategory(sCat, role))` forces it to the role's
+  remembered/default pick.
+- `scripts/smoke.ts` — +4 role checks (fresh split; explicit honored; **rejoiner takes opposite
+  of partner’s retained role — the exact repro**; identical-collision still distinct).
+
+Deploy: CLIENT-ONLY (no server/ change) → Vercel picks it up on push; NO Fly deploy needed.
+
+## Prev — start-pose block + room-code kind-scoping (deployed to Fly, c552e37)
 
 ### (1) EVERY game refuses an illegal custom start pose (block-and-warn)
 Bug report: "the game should not start with an invalid starting position" when a custom

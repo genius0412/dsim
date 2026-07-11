@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { StartCat } from '../types';
 import type { LobbyPlayer, PlayerPatch } from '../net/protocol';
-import { categoryDefaultIndex } from './startPositions';
+import { categoryDefaultIndex, derivedRole, otherCat as other } from './startPositions';
 
 /**
  * 2v2 start-ROLE negotiation. An alliance fills one CLOSE and one FAR slot; the
@@ -16,16 +16,6 @@ import { categoryDefaultIndex } from './startPositions';
  * opposite roles, so flipping both = a swap). A `enacted` ref stops a double-flip
  * during the patch→broadcast window. Only meaningful with exactly two members.
  */
-
-const other = (c: StartCat): StartCat => (c === 'close' ? 'far' : 'close');
-
-function derivedRole(players: LobbyPlayer[], me: LobbyPlayer): StartCat | undefined {
-  const allies = players
-    .filter((p) => p.alliance === me.alliance && !p.hidden)
-    .sort((a, b) => a.clientId.localeCompare(b.clientId));
-  if (allies.length < 2) return undefined;
-  return allies.findIndex((p) => p.clientId === me.clientId) === 0 ? 'close' : 'far';
-}
 
 export interface RoleSwap {
   /** the locked start category for this robot, or undefined when not a 2-member alliance */
@@ -49,12 +39,11 @@ export function useRoleSwap(
   me: LobbyPlayer | null,
   update: (patch: PlayerPatch) => void,
 ): RoleSwap {
-  const derived = me ? derivedRole(players, me) : undefined;
+  const role = me ? derivedRole(players, me) : undefined;
   const partner = me
     ? players.find((p) => p.alliance === me.alliance && !p.hidden && p.clientId !== me.clientId) ?? null
     : null;
-  const canSwap = derived !== undefined && partner !== null;
-  const role: StartCat | undefined = (me?.startRole ?? derived) as StartCat | undefined;
+  const canSwap = role !== undefined && partner !== null;
   const iWant = canSwap && me?.swapReq === true;
   const partnerWants = canSwap && partner?.swapReq === true;
   const bothWant = iWant && partnerWants;

@@ -4,7 +4,7 @@ import type { Alliance, GameSettings as GS } from '../types';
 import { START_POSES } from '../config';
 import { activeStartLegal } from '../sim/field';
 import { StartPositionEditor } from './StartPositionEditor';
-import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
+import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
 import { gameServerUrl, gameServerUrlWith, gameServers, multiServer, selectedServer } from '../net/env';
@@ -187,6 +187,18 @@ export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = 
   // settings with the category forced to the locked role (so the helpers write
   // memory/library into the right bucket even though the tabs are hidden)
   const sCat: GS = { ...settings, startCat: startRole ?? settings.startCat };
+
+  // A locked ROLE forces its category: if my active start is in the OTHER category
+  // (carried in from single-player settings, or an old role before a swap/rejoin),
+  // switch it to this role's remembered/default pick — never leave a FAR robot
+  // sitting on a CLOSE spot (or vice-versa). Custom poses are categorized by
+  // settings.startCat (what the locked editor writes when you pick one).
+  useEffect(() => {
+    if (!startRole || !me) return;
+    const activeCat = me.startPose ? settings.startCat : indexCategory(me.startIndex);
+    if (activeCat !== startRole) applyStart(switchCategory(sCat, startRole));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startRole, me?.startIndex, me?.startPose, settings.startCat]);
 
   if (phase === 'entry' || phase === 'connecting' || phase === 'error') {
     return (

@@ -3,7 +3,7 @@ import type { GameSettings, RobotSpec } from '../types';
 import { START_POSES } from '../config';
 import { activeStartLegal } from '../sim/field';
 import { StartPositionEditor } from './StartPositionEditor';
-import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
+import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
 import type { LobbyClient } from '../net/lobbyClient';
@@ -116,6 +116,16 @@ export function MatchStrategy({
     const keys: (keyof GameSettings)[] = ['startCat', 'startMemory', 'savedStartPoses'];
     if (keys.some((k) => k in patch)) onSettingsChange({ ...settings, ...patch });
   };
+
+  // A locked ROLE forces its category: if my active start is in the OTHER category,
+  // switch it to this role's remembered/default pick so a FAR robot never sits on a
+  // CLOSE spot (or vice-versa). See the matching effect in Lobby.
+  useEffect(() => {
+    if (!startRole || !me) return;
+    const activeCat = me.startPose ? settings.startCat : indexCategory(me.startIndex);
+    if (activeCat !== startRole) applyStart(switchCategory(sCat, startRole));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startRole, me?.startIndex, me?.startPose, settings.startCat]);
 
   /** re-pick: swap to a saved robot (or any spec) — echoes to the server + persists */
   const pickSpec = (spec: RobotSpec): void => {

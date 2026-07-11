@@ -4,6 +4,8 @@
  */
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
+import { derivedRole } from '../src/ui/startPositions';
+import type { LobbyPlayer } from '../src/net/protocol';
 import { generateRoomCode, isValidRoomCode, normalizeRoomCode } from '../src/net/roomCode';
 import { step } from '../src/sim/world';
 import { updatePenalties } from '../src/sim/penalties';
@@ -255,6 +257,33 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
       }
   check('activeStartLegal ok for a preset (null pose)', activeStartLegal(bigSpec, 'blue', null));
   check('activeStartLegal flags a pose legal for a small chassis but illegal for a big one', crossChassisCaught);
+
+  // 2v2 CLOSE/FAR role derivation always yields DISTINCT roles for the two allies —
+  // including after a swap + host-leave + rejoin (rejoiner returns with a NEW
+  // clientId and NO startRole; partner keeps its swapped role).
+  const lp = (clientId: string, startRole?: 'close' | 'far'): LobbyPlayer =>
+    ({ clientId, alliance: 'blue', hidden: false, startRole }) as unknown as LobbyPlayer;
+  const rolesDistinct = (a: LobbyPlayer, b: LobbyPlayer): boolean => {
+    const ra = derivedRole([a, b], a);
+    const rb = derivedRole([a, b], b);
+    return ra !== undefined && rb !== undefined && ra !== rb;
+  };
+  check('duo roles: a fresh pair splits close/far', rolesDistinct(lp('a'), lp('b')));
+  check(
+    'duo roles: after a swap, explicit distinct roles are honored',
+    derivedRole([lp('a', 'far'), lp('b', 'close')], lp('a', 'far')) === 'far',
+  );
+  // the reported bug: swap (partner keeps far), host leaves, rejoins with a NEW
+  // higher clientId + no startRole — old clientId-only sort put BOTH on far.
+  check(
+    'duo roles: rejoiner (new id, no role) takes the OPPOSITE of partner’s retained role',
+    (() => {
+      const partner = lp('a', 'far'); // stayed, kept swapped role
+      const rejoiner = lp('z'); // rejoined: new id sorts after 'a', no startRole
+      return derivedRole([partner, rejoiner], partner) === 'far' && derivedRole([partner, rejoiner], rejoiner) === 'close';
+    })(),
+  );
+  check('duo roles: identical explicit roles (collision) still resolve distinct', rolesDistinct(lp('a', 'far'), lp('b', 'far')));
 
   // Close/Far categories: presets partition, and each is legal in its own category
   const closeP = START_POSES.filter((p) => p.cat === 'close');
