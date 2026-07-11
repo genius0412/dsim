@@ -37,7 +37,6 @@ export function Records({
     <>
       <p className="ds-eyebrow">{APP_NAME} · Records</p>
       <h1 className="ds-h1">Records</h1>
-      <p className="ds-sub">Where you stand, and how you got there.</p>
 
       {/* These buttons change the URL (/records vs /records/career), so they are
           NAVIGATION, not an ARIA tablist. The old `role="tab"` + `aria-selected` was a

@@ -14,6 +14,7 @@ import {
 } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { periodLabel } from '../seasons';
+import { PeriodPicker } from './PeriodPicker';
 import { PLACEMENT_GAMES } from '../config';
 import type { DrivetrainType, IntakeStyle } from '../types';
 
@@ -222,51 +223,15 @@ export function Leaderboard({
   const seasonLabel = viewingSeason ? periodLabel(viewingSeason) : 'Current period';
   const isArchived = viewing != null && current != null && viewing < current;
 
-  // group periods by act for the picker (seasons are newest-first, so acts come
-  // out descending); within an act, options show "Season Y" or a custom title.
-  const acts: { act: number; items: SeasonInfo[] }[] = [];
-  for (const s of seasons) {
-    let g = acts.find((a) => a.act === s.act);
-    if (!g) {
-      g = { act: s.act, items: [] };
-      acts.push(g);
-    }
-    g.items.push(s);
-  }
-
   return (
     <>
       {/* the page heading is owned by the Records host; the season badge is not */}
-      <p className="ds-eyebrow">
+      <h2 className="ds-h2 lb-period-head">
         {seasonLabel}
         {isArchived ? ' · archived' : ''}
-      </p>
-      <p className="ds-sub">Score-attack records and ranked ELO, split by drivetrain. Every entry is a replay.</p>
+      </h2>
 
-      {seasons.length > 1 && (
-        <div className="ds-panel-h" style={{ marginBottom: 8 }}>
-          <span className="ds-panel-title">Period</span>
-          <select
-            className="ds-select"
-            value={viewing ?? ''}
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              setSeason(current != null && v === current ? null : v);
-            }}
-          >
-            {acts.map((g) => (
-              <optgroup key={g.act} label={g.act === 0 ? 'Act 0 · Beta' : `Act ${g.act}`}>
-                {g.items.map((s) => (
-                  <option key={s.season} value={s.season}>
-                    {s.name?.trim() ? s.name.trim() : `Season ${s.seasonNo}`}
-                    {s.season === current ? ' (current)' : ''}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-        </div>
-      )}
+      <PeriodPicker seasons={seasons} current={current} value={season} onChange={setSeason} label="Period" />
 
       <div className="ds-panel">
         <div className="ds-panel-h">

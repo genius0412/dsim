@@ -957,6 +957,24 @@
   color: var(--ds-mut);
 }
 
+/* the leaderboard's large Act·Season heading (sits below the Records tab strip) */
+.lb-period-head {
+  margin-top: 18px;
+}
+
+/* Act + Season period picker (shared by the leaderboard and career) — a label
+   plus the two selects on one row; wraps on narrow widths. */
+.ds-period {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ds-period .ds-select {
+  flex: 0 1 auto;
+}
+
 .ds-segs {
   display: flex;
   gap: 4px;
@@ -1247,6 +1265,25 @@
 .mh-run {
   color: var(--ds-mut);
   font-size: 12px;
+}
+/* versus score cell — both alliances' final totals, winner emphasised */
+.mh-vscore {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.mh-vscore .al-red {
+  color: var(--ds-red-ink);
+}
+.mh-vscore .al-blue {
+  color: var(--ds-blue-ink);
+}
+.mh-vscore .w {
+  font-weight: 800;
+}
+.mh-vscore-dash {
+  color: var(--ds-mut);
 }
 .mh-watch {
   font-size: 12px;

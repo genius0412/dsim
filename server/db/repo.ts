@@ -909,6 +909,11 @@ export interface MatchHistoryEntry {
   createdAt: string;
   replayId: string | null;
   score: number;
+  /** both alliances' FINAL totals (versus only; null for record runs). The
+   * per-participant `score` is the alliance total, so red/blue are recoverable
+   * from the participant fan-out below without a dedicated match-score column. */
+  redScore: number | null;
+  blueScore: number | null;
   won: boolean | null; // versus only
   eloBefore: number | null;
   eloAfter: number | null;
@@ -1000,15 +1005,19 @@ export async function userMatchHistory(
   // profiles referenced by record runs.
   const versusIds = rows.filter((r) => r.kind === 'versus').map((r) => r.id);
   const byMatch = new Map<string, MatchHistoryPlayer[]>();
+  // both alliances' final totals per match (score is the alliance total, so any
+  // participant on a side carries it — see room.ts scores[alliance].total)
+  const scoreByMatch = new Map<string, { red: number | null; blue: number | null }>();
   if (versusIds.length) {
     const parts = await q<{
       id: string;
       user_id: string;
       alliance: 'red' | 'blue';
+      score: number;
       handle: string;
       username: string | null;
     }>(
-      `select mp.match_id::text as id, mp.user_id, mp.alliance, p.handle, p.username
+      `select mp.match_id::text as id, mp.user_id, mp.alliance, mp.score, p.handle, p.username
        from match_participants mp join profiles p on p.user_id = mp.user_id
        where mp.match_id = any($1::uuid[])`,
       [versusIds],
@@ -1017,6 +1026,10 @@ export async function userMatchHistory(
       const list = byMatch.get(p.id) ?? [];
       list.push({ userId: p.user_id, handle: p.handle, username: p.username, alliance: p.alliance });
       byMatch.set(p.id, list);
+      const s = scoreByMatch.get(p.id) ?? { red: null, blue: null };
+      if (p.alliance === 'red') s.red = p.score;
+      else s.blue = p.score;
+      scoreByMatch.set(p.id, s);
     }
   }
   // profiles for record runs (self + partners)
@@ -1055,6 +1068,8 @@ export async function userMatchHistory(
       createdAt: r.created_at,
       replayId: r.replay_id,
       score: r.score,
+      redScore: r.kind === 'versus' ? scoreByMatch.get(r.id)?.red ?? null : null,
+      blueScore: r.kind === 'versus' ? scoreByMatch.get(r.id)?.blue ?? null : null,
       won: r.won,
       eloBefore: r.elo_before,
       eloAfter: r.elo_after,

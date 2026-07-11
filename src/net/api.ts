@@ -187,6 +187,9 @@ export interface MatchHistoryEntry {
   createdAt: string;
   replayId: string | null;
   score: number;
+  /** both alliances' final totals (versus only; null for record runs) */
+  redScore: number | null;
+  blueScore: number | null;
   won: boolean | null; // versus only
   eloBefore: number | null;
   eloAfter: number | null;

@@ -27,24 +27,18 @@ export function Account({
     <>
       <p className="ds-eyebrow">{APP_NAME} · Profile</p>
       <h1 className="ds-h1">Profile</h1>
-      <p className="ds-sub">Your sign-in and account preferences. Signed-in preferences sync to your account.</p>
 
       {authEnabled ? <Identity /> : <IdentityDisabled />}
 
       {multiServer() && (
         <div className="ds-panel" style={{ marginTop: 18 }}>
-          <div className="ds-panel-h">
-            <span className="ds-panel-title">Server region</span>
-          </div>
+          {/* ServerPicker renders its own "Server region" header + Refresh, so the
+              panel wrapper deliberately omits a panel-h title (avoids a dupe). */}
           <div style={{ padding: 16 }}>
             <ServerPicker
               value={settings.preferredServerId ?? selectedServerId()}
               onChange={(id) => onChange({ ...settings, preferredServerId: id })}
             />
-            <p className="ds-hint" style={{ marginTop: 12, marginBottom: 0 }}>
-              Your default region for matches and record runs. Remembered on this device and, when
-              signed in, synced to your account.
-            </p>
           </div>
         </div>
       )}
@@ -99,7 +93,7 @@ function Identity() {
           <DisplayName userId={user.id} fallback={user.name ?? 'Player'} />
           <Username userId={user.id} />
           <div>
-            <p className="ds-hint" style={{ margin: '0 0 4px' }}>Account ID (for ADMIN_USER_IDS)</p>
+            <p className="ds-hint" style={{ margin: '0 0 4px' }}>Account ID</p>
             {/* --ds-mut, not the --muted bridge: that one belongs to the in-match HUD */}
             <code
               title="Click to copy"

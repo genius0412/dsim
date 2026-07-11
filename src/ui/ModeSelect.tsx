@@ -33,7 +33,6 @@ export function ModeSelect({
     <>
       <p className="ds-eyebrow">{APP_NAME} · Play</p>
       <h1 className="ds-h1">Pick a mode.</h1>
-      <p className="ds-sub">Practice offline, or take it online for ranked and records.</p>
 
       {activeGame && (
         <div className="ds-rejoin" role="alert">
@@ -62,7 +61,7 @@ export function ModeSelect({
               <span className="k">Solo</span>
               <span>
                 <span className="t">Solo Practice</span>
-                <span className="d">Full match · 30s auto · 2:00 teleop</span>
+                <span className="d">Full match</span>
               </span>
             </button>
 
@@ -70,7 +69,7 @@ export function ModeSelect({
               <span className="k">Practice</span>
               <span>
                 <span className="t">Free Drive</span>
-                <span className="d">No clock — just drive</span>
+                <span className="d">Practice freely with no restrictions</span>
               </span>
             </button>
           </div>
@@ -97,7 +96,7 @@ export function ModeSelect({
             <button className="ds-tile" onClick={onRecordRun} disabled={!multiplayer}>
               <span className="k">Records</span>
               <span>
-                <span className="t">Record Run</span>
+                <span className="t">Solo Record</span>
                 <span className="d">
                   {multiplayer ? 'Solo score-attack' : 'Needs the game server'}
                 </span>
@@ -109,7 +108,7 @@ export function ModeSelect({
               <span>
                 <span className="t">Duo Record</span>
                 <span className="d">
-                  {multiplayer ? '2v0 co-op · invite by code' : 'Needs the game server'}
+                  {multiplayer ? '2v0 co-op' : 'Needs the game server'}
                 </span>
               </span>
             </button>
@@ -125,7 +124,7 @@ export function ModeSelect({
               <span>
                 <span className="t">Custom Room</span>
                 <span className="d">
-                  {multiplayer ? 'Invite by code · up to 2v2' : 'Needs the game server'}
+                  {multiplayer ? 'Up to 2v2' : 'Needs the game server'}
                 </span>
               </span>
             </button>

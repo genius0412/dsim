@@ -45,7 +45,6 @@ export function Configure({
     <>
       <p className="ds-eyebrow">{APP_NAME} · Configure</p>
       <h1 className="ds-h1">Configure</h1>
-      <p className="ds-sub">Your robot, the match, and how you drive it.</p>
 
       <div className="ds-subnav-layout">
         <nav className="ds-subnav" aria-label="Configure sections">

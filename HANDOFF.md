@@ -1,8 +1,51 @@
-# HANDOFF — 2026-07-10 (duo CLOSE/FAR role fixes; prev: start-pose block + room codes) — READ FIRST
+# HANDOFF — 2026-07-10 (leaderboard/career Act+Season pickers; prev: duo CLOSE/FAR role fixes) — READ FIRST
 
-> **GREEN — `npm run build`, `npm test` (role checks), `npm run server:check` all pass.**
+> **GREEN — `npm run build`, `npm test` (ALL PASS), `npm run server:check`, `npm run contrast` (135/135) all pass.**
 
-## Latest — duo/2v2 CLOSE·FAR role: distinct-role guarantee + category force (CLIENT-ONLY)
+## Latest — leaderboard + career: split Act/Season pickers · both-team scores · end-of-season final stats
+
+User ask: "For the leaderboard and career, there should be an act selector and a season selector. For
+career, show the final scores of both teams. Show the final stats of the user at the end of the season
+for historical stats." Three changes, all backward-compatible.
+
+### 1) Split ACT + SEASON pickers (was one combined `<optgroup>` select)
+- `src/ui/PeriodPicker.tsx` (NEW) — shared component: an **Act** `<select>` + a **Season** `<select>`
+  (seasons filtered to the chosen act). `value` = selected `balance_version` (null = live); `onChange`
+  emits null when the pick lands on the current period. Renders nothing until `seasons.length > 1`.
+  Picking an act jumps to that act's latest season. CSS `.ds-period` in `shell.css`.
+- `src/ui/Leaderboard.tsx` — dropped the inline combined select + `acts` grouping; now `<PeriodPicker
+  label="Period" />`.
+
+### 2) Career match history shows BOTH teams' final scores
+- **No migration** — `match_participants.score` already stores the **alliance total** (`room.ts:826`
+  writes `w.match.scores[alliance].total`), so red/blue are recoverable from the participant fan-out.
+- `server/db/repo.ts` `userMatchHistory` — added `mp.score` to the participants query, built
+  `scoreByMatch` (red/blue per match), and added `redScore`/`blueScore` to `MatchHistoryEntry` (null for
+  record runs). Mirrored the two fields in `src/net/api.ts`.
+- `src/ui/MatchHistory.tsx` — new `ScoreCell`: a versus row renders `redScore–blueScore` (red/blue ink
+  via `.mh-vscore`, winner bold); record runs keep the single score. **Backward-compat:** an old server
+  omits the fields ⇒ `redScore == null` ⇒ falls back to `r.score`.
+
+### 3) End-of-season historical stats (one picker drives BOTH stats + history)
+- `src/ui/CareerView.tsx` (NEW) — the shared Career body: owns ONE period picker, fetches
+  `UserStats` for the selected season, and renders `CareerPanel` + `MatchHistory` (both season-controlled).
+  A PAST period ⇒ `archived` ⇒ CareerPanel header reads "… · **Final**" + a FINAL tag (that season's
+  final standings). 404 from `loadStats` ⇒ the `notFound` slot.
+- `src/ui/MatchHistory.tsx` — now **controlled**: `season`/`seasonLabel` props (dropped its own
+  `fetchSeasons` + season select). Resets to page 1 on a period switch.
+- `src/ui/CareerPanel.tsx` — takes `seasonLabel`/`archived` props (dropped its own `fetchSeasons`).
+- `src/ui/Stats.tsx` + `Profile.tsx` — thin wrappers over `CareerView` (inject `loadStats`/`fetchPage`
+  bound to user id / username; keep their own head + auth/notfound gating).
+
+**Server season handling already worked** (`/api/user/:id/stats?season=` + `/api/*/matches?season=` route
+through `getUserStats`/`userMatchHistory` with the season). Only `userMatchHistory` changed on the server.
+
+**DEPLOY:** server change (repo.ts) ⇒ `flyctl deploy --remote-only` (verify `/health`), then Vercel
+auto-deploys clients. Additive JSON, protocol unchanged → fully backward-compatible (old client ignores
+the new fields; new client on the old server falls back to the single score). No smoke change (UI/DB, no
+sim behavior). NOT yet committed/deployed.
+
+## Prev — duo/2v2 CLOSE·FAR role: distinct-role guarantee + category force (CLIENT-ONLY)
 
 Two bugs, both in `src/ui/useRoleSwap.ts` role logic + the start-category wiring:
 1. **Both players ended up FAR** after: duo room → 2 join → SWAP roles → host leaves (partner

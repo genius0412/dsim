@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback } from 'react';
 import {
   fetchUserStatsByUsername,
   fetchUserMatchesByUsername,
@@ -7,90 +7,71 @@ import {
 } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { APP_NAME } from '../seasons';
-import { CareerPanel } from './CareerPanel';
-import { MatchHistory } from './MatchHistory';
+import { CareerView } from './CareerView';
 import { ShareButton } from './ShareButton';
 import type { CareerNav } from './Stats';
 
 /**
  * Public player profile at `/profile/<username>` — anyone can view any player's
  * competitive stats by their unique username (no sign-in needed). Reuses the
- * shared `CareerPanel`; the data is the SAME `UserStats` shape as "My Stats" but
- * resolved server-side from the username. A 404 (unknown username) is a
- * first-class "player not found" state.
+ * shared `CareerView`, so it gets the same Act/Season period picker (a past
+ * season shows that player's final standings + matches). A 404 (unknown username)
+ * renders a first-class "player not found" state.
  */
 export function Profile({ username, nav = {} }: { username: string; nav?: CareerNav }) {
   const configured = gameServerConfigured();
-  const [stats, setStats] = useState<UserStats | null>(null);
-  const [status, setStatus] = useState<'loading' | 'ok' | 'error' | 'notfound'>('loading');
-  const [error, setError] = useState('');
+  const loadStats = useCallback(
+    (season?: number) => fetchUserStatsByUsername(username, season),
+    [username],
+  );
   const fetchPage = useCallback(
     (opts: MatchHistoryOpts) => fetchUserMatchesByUsername(username, opts),
     [username],
   );
 
-  useEffect(() => {
-    if (!configured) {
-      setStatus('error');
-      setError('Profiles need the game server (set VITE_GAME_SERVER_URL).');
-      return;
-    }
-    let alive = true;
-    setStatus('loading');
-    fetchUserStatsByUsername(username)
-      .then((s) => {
-        if (!alive) return;
-        setStats(s);
-        setStatus('ok');
-      })
-      .catch((e: unknown) => {
-        if (!alive) return;
-        const msg = e instanceof Error ? e.message : String(e);
-        // the server answers 404 for an unknown username → a clean "not found"
-        if (/404/.test(msg)) {
-          setStatus('notfound');
-        } else {
-          setError(msg);
-          setStatus('error');
-        }
-      });
-    return () => {
-      alive = false;
-    };
-  }, [username, configured]);
-
-  const name = stats?.handle ?? `@${username}`;
-
-  return (
+  const head = (stats: UserStats | null) => (
     <>
       <p className="ds-eyebrow">{APP_NAME} · Player</p>
       <h1 className="ds-h1">{stats?.handle ?? `@${username}`}</h1>
       <p className="ds-sub">
         {stats?.username ? `@${stats.username} · ` : ''}
-        Public profile — ranked ELO, personal bests, and recent matches this season.
+        Public profile — ranked ELO, personal bests, and match history.
       </p>
+    </>
+  );
 
-      {status === 'notfound' ? (
+  if (!configured) {
+    return (
+      <>
+        {head(null)}
         <div className="ds-panel">
           <div className="ds-empty">
-            <div className="big">No such player</div>
-            No account with the username <code>@{username}</code>.
+            <div className="big">Profiles need the game server</div>
+            Set <code>VITE_GAME_SERVER_URL</code>.
           </div>
         </div>
-      ) : (
-        <>
-          <CareerPanel
-            stats={stats}
-            status={status}
-            error={error}
-            name={name}
-            headerAction={<ShareButton username={stats?.username ?? username} />}
-          />
-          {configured && (
-            <MatchHistory fetchPage={fetchPage} onWatch={nav.onWatch} onOpenProfile={nav.onOpenProfile} />
-          )}
-        </>
-      )}
-    </>
+      </>
+    );
+  }
+
+  const notFound = (
+    <div className="ds-panel">
+      <div className="ds-empty">
+        <div className="big">No such player</div>
+        No account with the username <code>@{username}</code>.
+      </div>
+    </div>
+  );
+
+  return (
+    <CareerView
+      loadStats={loadStats}
+      fetchPage={fetchPage}
+      nameFallback={`@${username}`}
+      head={head}
+      headerAction={(stats) => <ShareButton username={stats?.username ?? username} />}
+      nav={nav}
+      notFound={notFound}
+    />
   );
 }
