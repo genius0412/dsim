@@ -7,10 +7,13 @@ import type {
   RobotState,
   World,
   AutoPathData, // Import AutoPathData
+  StartPose,
+  StartCat,
 } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { clamp } from '../math';
+import { flywheelSpinTarget } from '../sim/field';
 
 /**
  * Wire protocol for the SERVER-AUTHORITATIVE netcode (Phase 0). All messages are
@@ -33,6 +36,11 @@ export interface QCommand {
   dy: number; // int8
   rot: number; // int8
   buttons: number; // uint8 bitfield: bit0 intake, bit1 fire
+  // TANK drive steers via leftDrive/rightDrive (NOT dx/dy) — these MUST be on the
+  // wire or a networked tank robot gets zero drive and sits frozen at spawn. Optional
+  // so a packet from an older client still decodes (missing ⇒ 0, the old behavior).
+  ld?: number; // int8 (leftDrive * 127)
+  rd?: number; // int8 (rightDrive * 127)
 }
 
 const BTN_INTAKE = 1;
@@ -44,6 +52,8 @@ export function quantizeCommand(c: RobotCommand): QCommand {
     dy: Math.round(clamp(c.driveY, -1, 1) * 127),
     rot: Math.round(clamp(c.rotate, -1, 1) * 127),
     buttons: (c.intake ? BTN_INTAKE : 0) | (c.fire ? BTN_FIRE : 0),
+    ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
+    rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
 }
 
@@ -52,8 +62,8 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     driveX: q.dx / 127,
     driveY: q.dy / 127,
     rotate: q.rot / 127,
-    leftDrive: 0,
-    rightDrive: 0,
+    leftDrive: (q.ld ?? 0) / 127, // ?? 0: tolerate an older client's ld/rd-less packet
+    rightDrive: (q.rd ?? 0) / 127,
     intake: (q.buttons & BTN_INTAKE) !== 0,
     fire: (q.buttons & BTN_FIRE) !== 0,
   };
@@ -72,7 +82,8 @@ export const ROOM_CAPACITY = 4;
 
 /** what a room runs. 'versus' = the existing PvP match (ELO). 'record' =
  * opponent-free score-attack for the record boards; solo = 1 robot (1v0), duo =
- * 2 co-op robots on one alliance, same drivetrain (2v0). */
+ * 2 co-op robots on one alliance (2v0). A duo may mix drivetrains — a mixed pair
+ * ranks the OVERALL board only, a matched pair also ranks that drivetrain's. */
 export type RoomKind = 'versus' | 'record';
 export type RecordKind = 'solo' | 'duo';
 /** ranked matchmaking bucket */
@@ -100,13 +111,29 @@ export interface LobbyPlayer {
   teamName: string;
   teamNumber: number;
   alliance: Alliance;
-  /** index into START_POSES (mirrored per alliance) */
+  /** index into START_POSES (mirrored per alliance) — the quick-pick fallback */
   startIndex: number;
+  /** a fully-placed CUSTOM start pose (canonical goalSide=+1 frame). Overrides
+   * startIndex when present; the server + createWorld snap it G304-legal. */
+  startPose?: StartPose | null;
+  /** 2v2 start ROLE (which start category this robot may pick). Absent ⇒ derived
+   * from alliance join order. Set explicitly only after a consented role swap. */
+  startRole?: StartCat;
+  /** true while this player has an outstanding / accepted role-swap request. When
+   * BOTH alliance members set it, each flips its own role and clears the flag. */
+  swapReq?: boolean;
   ready: boolean;
   spec: RobotSpec;
   assists: AssistConfig;
   autoPath?: AutoPathData; // Add autoPath
   autoPathEnabled?: boolean; // Add autoPathEnabled
+  // ---- server-authored, set only during the ranked pre-match STRATEGY phase ----
+  // (never accepted from a client patch). `slot` is this player's roster/robot
+  // index so its card can look up its `PlayerIntro` ELO; `hidden` marks an OPPONENT
+  // card the server has redacted (name/team/ELO only — its `spec`/`assists` are
+  // neutralized placeholders so an opponent can't be counter-picked pre-match).
+  slot?: number;
+  hidden?: boolean;
 }
 
 /** a driver's pre-match ranked intro data (ELO, keyed by the robot id the server
@@ -137,21 +164,35 @@ export interface EloDelta {
 export type PlayerPatch = Partial<
   Pick<
     LobbyPlayer,
-    'name' | 'teamName' | 'teamNumber' | 'alliance' | 'startIndex' | 'ready' | 'spec' | 'assists' | 'autoPath' | 'autoPathEnabled'
+    'name' | 'teamName' | 'teamNumber' | 'alliance' | 'startIndex' | 'startPose' | 'startRole' | 'swapReq' | 'ready' | 'spec' | 'assists' | 'autoPath' | 'autoPathEnabled'
   >
 >;
 
 // ---- client → server --------------------------------------------------------
 
+/** capabilities THIS client build understands, sent on `join`/`queue` so ONE server
+ * can serve mixed client versions (alpha/beta/main all point at it). A staged ranked
+ * room opens the pre-match strategy window only when EVERY member advertises
+ * 'strategy'; otherwise it starts immediately (the pre-strategy behavior), so an old
+ * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
+ * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
+ * protocol grows. */
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose'];
+
 export type ClientMsg =
   // `authToken` is the Neon Auth JWT; the server verifies it to attribute the
   // run to a real user (absent/invalid ⇒ anonymous). See server/auth.ts.
+  // `caps` (optional) advertises this client build's protocol capabilities.
   | {
       t: 'join';
       room: string;
       player: Omit<LobbyPlayer, 'clientId'>;
       config?: RoomConfig;
       authToken?: string;
+      caps?: string[];
+      /** this client build's release channel ('alpha' | 'stable' | …). Absent ⇒
+       * 'stable'. Alpha rooms are segregated + never persisted (see server). */
+      channel?: string;
     }
   // reclaim an in-match slot after a transient socket drop (within the grace
   // window) — the server rebinds the robot to the new connection and resyncs
@@ -175,6 +216,14 @@ export type ClientMsg =
       homeRegion: string;
       accessMs: number;
       noWiden?: boolean;
+      caps?: string[];
+      /** release channel (see `join.channel`): alpha queues only pair with alpha */
+      channel?: string;
+      /** this client's build id (git sha). The matchmaker segregates the queue by
+       * build so two DIFFERENT builds never share an authoritative match — the exact
+       * "same code" invariant (channel is only a coarse, manual proxy). Absent ⇒ the
+       * server falls back to channel-only separation. */
+      build?: string;
     }
   // widen my search radius NOW (impatient player), instead of waiting for the timed
   // auto-widen. Idempotent; ignored once the ceiling is already at max.
@@ -203,6 +252,11 @@ export type ServerMsg =
       yourRobotId: number;
       ranked?: boolean;
       intros?: PlayerIntro[];
+      /** the Fly region actually hosting this match (e.g. 'iad'). The client shows
+       * it in the HUD so a player always knows which server they were matched on.
+       * Absent from older servers ⇒ the client falls back to the room-code prefix
+       * or the picked server label. */
+      region?: string;
     }
   // authoritative world at `serverTick`, slimmed (spec-stripped robots) with the
   // balls delta-encoded; the client reassembles a full World via `unslimWorld`.
@@ -226,6 +280,16 @@ export type ServerMsg =
   // machine builds the authoritative match and sends `matchStart`. `room` is already
   // region-coded (`<hostRegion>-<code>`).
   | { t: 'matchAssigned'; mode: QueueMode; room: string; hostRegion: string }
+  // ranked pre-match STRATEGY phase (server-authoritative rooms only): every paired
+  // player has connected, so instead of starting immediately the room opens a
+  // coordination window. The client switches to the strategy screen; live changes
+  // (re-pick spec / claim a start pose / ready) flow through the existing
+  // `update`/`roster` messages (the roster is REDACTED per-recipient so opponents
+  // show name/team/ELO only). The match begins (a `matchStart` follows) once every
+  // player readies, or the room CANCELS (an `error`) if not everyone readies by
+  // `deadline` (epoch ms). `yourRobotId` = this client's roster slot; `intros`
+  // carry per-slot ELO for the opponent/teammate cards.
+  | { t: 'strategyStart'; deadline: number; yourRobotId: number; mode: QueueMode; intros: PlayerIntro[] }
   // a robot left: the server runs it on ZERO from `tick`; snapshots already
   // reflect this, so it is informational (drives the HUD)
   | { t: 'drop'; robotId: number; tick: number }
@@ -312,8 +376,46 @@ export function slimWorld(world: World): SlimWorld {
   return slim as SlimWorld;
 }
 
+/** finite number or a fallback — guards against a field that arrived undefined
+ * (an older server never sent it) or as `null` (JSON serializes NaN/Infinity to
+ * null). Bare arithmetic on either poisons the sim to NaN. */
+const finiteOr = (v: unknown, fallback: number): number =>
+  typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+
+/**
+ * BACKWARD-COMPAT SHIM: the shared `src/sim` grows new per-tick RobotState fields
+ * over time (e.g. the power-draw model added `flywheelSpin` / `flywheelSpinRate` /
+ * `powerDraw`). ONE Fly app serves every client version, so a NEWER client can
+ * receive a snapshot from an OLDER server whose RobotState predates those fields —
+ * they arrive `undefined`. The newer client's `step()` then does
+ * `POWER_DRAW_FLYWHEEL_HOLD * undefined` → NaN, which propagates into the drive
+ * params and blows the robot's position to NaN (it renders at the camera origin /
+ * field centre and freezes). Re-seed any missing/non-finite dynamic field to a
+ * sane value (mirrors `createWorld`'s spawn seeding) so an old→new skew degrades
+ * gracefully instead of NaN-ing. Harmless when the server DOES send them.
+ */
+function backfillRobot(r: RobotState): RobotState {
+  return {
+    ...r,
+    // flywheel spin is DERIVED from distance to the robot's own goal; seed it at
+    // the position target (like spawn) so there's no phantom spin-up spike.
+    flywheelSpin: finiteOr(r.flywheelSpin, flywheelSpinTarget(r.alliance, r.pos)),
+    flywheelSpinRate: finiteOr(r.flywheelSpinRate, 0),
+    powerDraw: finiteOr(r.powerDraw, 0),
+    moduleAngles:
+      Array.isArray(r.moduleAngles) && r.moduleAngles.length === 4
+        ? r.moduleAngles.map((a) => finiteOr(a, 0))
+        : [0, 0, 0, 0],
+    moduleTargets:
+      Array.isArray(r.moduleTargets) && r.moduleTargets.length === 4
+        ? r.moduleTargets.map((a) => finiteOr(a, 0))
+        : [0, 0, 0, 0],
+  };
+}
+
 /** rebuild a full World from a slim world + reconstructed ball array, re-injecting
- * each robot's spec by id */
+ * each robot's spec by id (and back-filling any dynamic fields an older server
+ * omitted — see `backfillRobot`) */
 export function unslimWorld(
   w: SlimWorld,
   balls: Artifact[],
@@ -321,7 +423,7 @@ export function unslimWorld(
 ): World {
   return {
     ...w,
-    robots: w.robots.map((r) => ({ ...r, spec: specById(r.id) })),
+    robots: w.robots.map((r) => backfillRobot({ ...r, spec: specById(r.id) })),
     balls,
   };
 }

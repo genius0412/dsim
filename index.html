@@ -4,7 +4,30 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- keep in sync with --ds-bg (shell.css) and THEME_BG (src/theme.ts) -->
+    <meta name="theme-color" content="#f9faf7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#20262c" media="(prefers-color-scheme: dark)" />
     <title>DSIM — 2D FTC Driver Sim</title>
+    <!--
+      Stamp the theme BEFORE the stylesheet loads. React mounts after first paint, so
+      reading the pref from src/ would guarantee a flash of the wrong theme. This must
+      stay inline, dependency-free, and above the CSS. Mirrors src/theme.ts — CSS only
+      ever sees the resolved 'light' | 'dark'.
+    -->
+    <script>
+      (function () {
+        var p = 'system';
+        try {
+          p = localStorage.getItem('decodesim.theme') || 'system';
+        } catch (e) {}
+        if (p !== 'light' && p !== 'dark') {
+          p = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches
+            ? 'dark'
+            : 'light';
+        }
+        document.documentElement.dataset.theme = p;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -2,17 +2,21 @@
  * Headless smoke test of the sim core: drives, shoots (incl. on the move),
  * opens the gate, and checks scoring math. Run with: npx tsx scripts/smoke.ts
  */
-import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, coerceSpec } from '../src/sim/spawn';
+import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
+import { derivedRole } from '../src/ui/startPositions';
+import type { LobbyPlayer } from '../src/net/protocol';
 import { generateRoomCode, isValidRoomCode, normalizeRoomCode } from '../src/net/roomCode';
 import { step } from '../src/sim/world';
 import { updatePenalties } from '../src/sim/penalties';
 import { robotInLaunchZone } from '../src/sim/robot';
 import { updateHumanPlayers } from '../src/sim/humanPlayer';
 import { startMatch } from '../src/sim/match';
+import { gateColliderPos, pushingGate } from '../src/sim/goal';
 import {
   inLaunchZone,
   gateZone,
+  gateArmRect,
   startPose,
   goalCenter,
   goalTriangle,
@@ -31,12 +35,19 @@ import {
   loadBoxSlots,
   loadPreStage,
   inRect,
+  evalStartPose,
+  snapStartToLegal,
+  mirrorStartPose,
+  presetPose,
+  activeStartLegal,
 } from '../src/sim/field';
-import { assessMatchEnd } from '../src/sim/scoring';
+import { addClassified, addOverflow, assessMatchEnd } from '../src/sim/scoring';
 import type { Alliance, GameMode, RobotCommand, RobotSpec, World } from '../src/types';
 import {
   SIM_DT,
   GATE_STOP_S,
+  GATE_OPEN_LATCH_S,
+  GATE_TAPE_Y,
   RAIL_PITCH,
   BASIN_FLOOR_Z,
   RAMP_SURFACE_Z,
@@ -45,18 +56,29 @@ import {
   HP_INITIAL_STOCK,
   HP_PLACE_DELAY,
   BALANCE_VERSION,
-  PLACEMENT_GAMES,
   INTAKE_PRESETS,
+  ROBOT_PRESETS,
   ROBOT_MAX_SIZE,
-  ROBOT_MAX_MASS,
-  ROBOT_MAX_RPM,
-  ROBOT_MIN_RPM,
+  ROBOT_MIN_WIDTH,
+  SWERVE_MIN_WIDTH,
+  intakeMouth,
+  DRIVETRAIN_PRESETS,
+  START_POSES,
+  SPEED_PER_RPM,
+  REF_DRIVE_RPM,
+  DRIVE_EFFICIENCY,
+  WHEEL_DIAMETER_MM,
+  BASE_DRIVE_ACCEL,
+  POWER_DRAW_SWERVE,
+  POSSESSION_MOVE_SPEED,
+  POSSESSION_GRACE,
 } from '../src/config';
 import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
-import { driveParams } from '../src/sim/drivetrain';
+import { driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits } from '../src/sim/drivetrain';
+import { coerceSettings } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, mergeBindings } from '../src/input/bindings';
-import { quantizeCommand, localizeCommand, slimWorld, unslimWorld } from '../src/net/protocol';
+import { quantizeCommand, dequantizeCommand, localizeCommand, slimWorld, unslimWorld } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
 import {
@@ -129,12 +151,17 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
 // ---- spawn sanity ----------------------------------------------------------
 {
   const w = mkWorld('match', 'blue', 42);
-  const purple = w.balls.filter((b) => b.color === 'purple').length;
-  const green = w.balls.filter((b) => b.color === 'green').length;
-  check('24 on-field balls at spawn (9 spike + 3 loading pre-stage per alliance)', w.balls.length === 24, `${w.balls.length}`);
+  // on-field = ground balls (preloads are now PHYSICAL 'held' balls inside robots)
+  const field = w.balls.filter((b) => b.state.kind === 'ground');
+  const purple = field.filter((b) => b.color === 'purple').length;
+  const green = field.filter((b) => b.color === 'green').length;
+  check('24 on-field balls at spawn (9 spike + 3 loading pre-stage per alliance)', field.length === 24, `${field.length}`);
   check('on-field color split 16P/8G', purple === 16 && green === 8, `${purple}P ${green}G`);
   check('hopper preloaded with 3', w.robots[0].hopper.length === 3);
-  check('start pose inside launch zone', inLaunchZone(w.robots[0].pos, 'blue'));
+  check(
+    'default spawn is a legal G304 start (blue)',
+    evalStartPose(w.robots[0].spec, { x: w.robots[0].pos.x, y: w.robots[0].pos.y, headingDeg: (w.robots[0].heading * 180) / Math.PI }, 'blue').legal,
+  );
   const pose = startPose('blue', 0);
   check(
     'start pose heading comes from START_POSES degrees',
@@ -143,6 +170,133 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   );
   check('blue goal is far-left (cross-court)', goalCenter('blue').x < 0 && goalCenter('blue').y > 0);
   check('red goal is far-right', goalCenter('red').x > 0 && goalCenter('red').y > 0);
+}
+
+// ---- configurable start positions (rule G304) ------------------------------
+{
+  // every named preset is a LEGAL setup for the default spec, both alliances
+  let presetsLegal = true;
+  for (const p of START_POSES) {
+    const canon = { x: p.x, y: p.y, headingDeg: p.headingDeg };
+    if (!evalStartPose(DEFAULT_SPEC, canon, 'red').legal) presetsLegal = false;
+    if (!evalStartPose(DEFAULT_SPEC, mirrorStartPose(canon, 'blue'), 'blue').legal) presetsLegal = false;
+  }
+  check('every START_POSES preset is a legal G304 setup (both alliances)', presetsLegal);
+
+  // DYNAMIC presets: presetPose resolves EVERY preset legal for ANY chassis size
+  let dynOk = true;
+  const chassis = [DEFAULT_SPEC, { ...DEFAULT_SPEC, length: 18, width: 18, intake: 'triangle' as const }, { ...DEFAULT_SPEC, length: 10, width: 10, intake: 'vector' as const }];
+  for (const s of chassis) for (const a of ['red', 'blue'] as const) for (let i = 0; i < START_POSES.length; i++) {
+    if (!evalStartPose(s, presetPose(i, a, s), a).legal) dynOk = false;
+  }
+  check('presetPose yields a legal pose for every preset/alliance/chassis size', dynOk);
+
+  // a mid-field pose (touching nothing) is NOT legal — the OLD presets were here
+  const midField = evalStartPose(DEFAULT_SPEC, { x: 20, y: 40, headingDeg: 315 }, 'red');
+  check('mid-launch-zone pose fails G304 (not touching goal/wall)', !midField.legal && !midField.touching);
+
+  // a pose off the field / into the opponent half fails the containment clauses
+  check('off-field pose fails containment', !evalStartPose(DEFAULT_SPEC, { x: 71, y: 71, headingDeg: 0 }, 'red').contained);
+  check('pose in the opponent half fails ownHalf', !evalStartPose(DEFAULT_SPEC, { x: -30, y: 50, headingDeg: 0 }, 'red').ownHalf);
+
+  // collision box: a pose buried in the goal corner is NOT clear (penetrates the structure)
+  const buried = evalStartPose(DEFAULT_SPEC, { x: 62, y: 62, headingDeg: 0 }, 'red');
+  check('footprint inside the goal structure fails the clear clause', !buried.clear && !buried.legal);
+
+  // snapping makes ANY spec legal from ANY seed, both alliances
+  let snapOk = true;
+  const specs = [DEFAULT_SPEC, { ...DEFAULT_SPEC, length: 18, width: 18, intake: 'triangle' as const }, { ...DEFAULT_SPEC, length: 10, width: 10, intake: 'vector' as const }];
+  const seeds = [{ x: 5, y: 5, headingDeg: 33 }, { x: 30, y: 0, headingDeg: 100 }, { x: 65, y: -10, headingDeg: 200 }, { x: 10, y: 65, headingDeg: 0 }];
+  for (const s of specs) for (const a of ['red', 'blue'] as const) for (const seed of seeds) {
+    if (!evalStartPose(s, snapStartToLegal(s, seed, a), a).legal) snapOk = false;
+  }
+  check('snapStartToLegal yields a legal pose for any spec/alliance/seed', snapOk);
+  check('snapStartToLegal leaves an already-legal pose unchanged', (() => {
+    const legal = mirrorStartPose({ x: START_POSES[0].x, y: START_POSES[0].y, headingDeg: START_POSES[0].headingDeg }, 'red');
+    const s = snapStartToLegal(DEFAULT_SPEC, legal, 'red');
+    return s.x === legal.x && s.y === legal.y && s.headingDeg === legal.headingDeg;
+  })());
+
+  // mirror is self-inverse
+  const mp = { x: 33.3, y: -12.1, headingDeg: 47 };
+  const rt = mirrorStartPose(mirrorStartPose(mp, 'blue'), 'blue');
+  check('mirrorStartPose is self-inverse', Math.abs(rt.x - mp.x) < 1e-9 && Math.abs(rt.headingDeg - mp.headingDeg) < 1e-9);
+
+  // coerceStartPose rejects junk, clamps to the field
+  check('coerceStartPose rejects non-finite', coerceStartPose({ x: NaN, y: 0, headingDeg: 0 }) === null);
+  check('coerceStartPose rejects non-object', coerceStartPose(null) === null && coerceStartPose('x') === null);
+  const clamped = coerceStartPose({ x: 999, y: -999, headingDeg: 725 });
+  check('coerceStartPose clamps x/y to field + normalizes heading', !!clamped && clamped.x === FIELD_HALF && clamped.y === -FIELD_HALF && clamped.headingDeg === 5);
+
+  // coerceSetup snaps a spoofed illegal custom pose to a legal spawn pose
+  const bad = coerceSetup({ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0, startPose: { x: 0, y: 0, headingDeg: 0 } });
+  check('coerceSetup snaps an illegal custom startPose legal', !!bad.startPose && evalStartPose(DEFAULT_SPEC, mirrorStartPose(bad.startPose, 'blue'), 'blue').legal);
+
+  // a custom pose actually drives the spawn position (canonical → mirrored)
+  const customCanon = { x: START_POSES[1].x, y: START_POSES[1].y, headingDeg: START_POSES[1].headingDeg };
+  const cw = createWorld('match', 1, [{ id: 0, alliance: 'red', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0, startPose: customCanon }]);
+  const want = startPose('red', 0, customCanon);
+  check('custom startPose overrides startIndex at spawn', Math.hypot(cw.robots[0].pos.x - want.pos.x, cw.robots[0].pos.y - want.pos.y) < 1e-6);
+
+  // the spawned robot (red = canonical frame) is a legal G304 setup
+  const spawnedPose = { x: cw.robots[0].pos.x, y: cw.robots[0].pos.y, headingDeg: (cw.robots[0].heading * 180) / Math.PI };
+  check('spawned custom-pose robot is a legal G304 setup', evalStartPose(cw.robots[0].spec, spawnedPose, 'red').legal);
+
+  // activeStartLegal (LOCAL start guard): null (preset) is always ok; a custom pose
+  // legal for a SMALL chassis but illegal for a BIGGER one is caught so the local
+  // game start can block-and-warn instead of silently snapping.
+  const smallSpec = coerceSpec({ ...DEFAULT_SPEC, length: 11, width: 10, intake: 'vector' });
+  const bigSpec = coerceSpec({ ...DEFAULT_SPEC, length: 18, width: 18, intake: 'vector' });
+  let crossChassisCaught = false;
+  outer: for (let x = -70; x <= 70 && !crossChassisCaught; x += 3)
+    for (let y = -70; y <= 70; y += 3)
+      for (let h = 0; h < 360; h += 30) {
+        const p = { x, y, headingDeg: h };
+        if (evalStartPose(smallSpec, p, 'red').legal && !evalStartPose(bigSpec, p, 'red').legal) {
+          crossChassisCaught = activeStartLegal(smallSpec, 'red', p) && !activeStartLegal(bigSpec, 'red', p);
+          if (crossChassisCaught) break outer;
+        }
+      }
+  check('activeStartLegal ok for a preset (null pose)', activeStartLegal(bigSpec, 'blue', null));
+  check('activeStartLegal flags a pose legal for a small chassis but illegal for a big one', crossChassisCaught);
+
+  // 2v2 CLOSE/FAR role derivation always yields DISTINCT roles for the two allies —
+  // including after a swap + host-leave + rejoin (rejoiner returns with a NEW
+  // clientId and NO startRole; partner keeps its swapped role).
+  const lp = (clientId: string, startRole?: 'close' | 'far'): LobbyPlayer =>
+    ({ clientId, alliance: 'blue', hidden: false, startRole }) as unknown as LobbyPlayer;
+  const rolesDistinct = (a: LobbyPlayer, b: LobbyPlayer): boolean => {
+    const ra = derivedRole([a, b], a);
+    const rb = derivedRole([a, b], b);
+    return ra !== undefined && rb !== undefined && ra !== rb;
+  };
+  check('duo roles: a fresh pair splits close/far', rolesDistinct(lp('a'), lp('b')));
+  check(
+    'duo roles: after a swap, explicit distinct roles are honored',
+    derivedRole([lp('a', 'far'), lp('b', 'close')], lp('a', 'far')) === 'far',
+  );
+  // the reported bug: swap (partner keeps far), host leaves, rejoins with a NEW
+  // higher clientId + no startRole — old clientId-only sort put BOTH on far.
+  check(
+    'duo roles: rejoiner (new id, no role) takes the OPPOSITE of partner’s retained role',
+    (() => {
+      const partner = lp('a', 'far'); // stayed, kept swapped role
+      const rejoiner = lp('z'); // rejoined: new id sorts after 'a', no startRole
+      return derivedRole([partner, rejoiner], partner) === 'far' && derivedRole([partner, rejoiner], rejoiner) === 'close';
+    })(),
+  );
+  check('duo roles: identical explicit roles (collision) still resolve distinct', rolesDistinct(lp('a', 'far'), lp('b', 'far')));
+
+  // Close/Far categories: presets partition, and each is legal in its own category
+  const closeP = START_POSES.filter((p) => p.cat === 'close');
+  const farP = START_POSES.filter((p) => p.cat === 'far');
+  check('presets partition into close + far (both non-empty)', closeP.length > 0 && farP.length > 0 && closeP.length + farP.length === START_POSES.length);
+
+  // settings: new start fields default sanely + saved library caps per category
+  const def = coerceSettings({});
+  check('coerceSettings defaults startCat/library/memory', def.startCat === 'close' && Array.isArray(def.savedStartPoses.close) && def.startMemory.far.index === 1);
+  const capped = coerceSettings({ savedStartPoses: { close: [{ x: 5, y: 6, headingDeg: 0 }, { x: 7, y: 8, headingDeg: 10 }, { x: 9, y: 9, headingDeg: 20 }], far: [{ x: NaN, y: 0, headingDeg: 0 }, 'junk'] } });
+  check('coerceSettings caps saved starts per category + drops junk', capped.savedStartPoses.close.length === 2 && capped.savedStartPoses.far.length === 0);
 }
 
 // ---- field markings geometry (manual Section 9) ----------------------------
@@ -375,13 +529,15 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   ball.z = 0;
   ball.vz = 0;
   run(w, cmd({ driveY: 1 }), 2.5); // grind straight into the pinned ball
-  const front = robotExtents(r).front;
   const ballSpeed = Math.hypot(ball.vel.x, ball.vel.y);
   const robotSpeed = Math.hypot(r.vel.x, r.vel.y);
+  // the funnel mouth is OPEN, so a centered ball nestles against the throat
+  // (chassis front) with the intake around it — the CHASSIS must stall behind
+  // the ball (the intake tip legitimately overlaps it in the open mouth)
   check(
     'wall-pinned ball stalls the robot (no grind-through)',
-    r.pos.y + front < FIELD_HALF - 2 * BALL_RADIUS + 0.5,
-    `front edge y=${(r.pos.y + front).toFixed(1)}`,
+    r.pos.y + r.spec.length / 2 < FIELD_HALF - BALL_RADIUS,
+    `chassis front y=${(r.pos.y + r.spec.length / 2).toFixed(1)}`,
   );
   check('robot stalled against the pinned ball', robotSpeed < 5, `v=${robotSpeed.toFixed(1)}`);
   check(
@@ -407,9 +563,11 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   ball.vz = 0;
   const startX = ball.pos.x;
   run(w, cmd({ driveY: 1 }), 2.5);
+  // a ball beside the chassis (past the intake) gets brushed aside, not funneled,
+  // and the robot drives on past it
   check(
-    'corner-hit wall ball squirts out sideways',
-    ball.pos.x > startX + 4 && Math.abs(ball.pos.x) <= FIELD_HALF - BALL_RADIUS + 0.01,
+    'corner-hit wall ball is nudged aside (not funneled in)',
+    ball.pos.x > startX + 0.5 && Math.abs(ball.pos.x) <= FIELD_HALF - BALL_RADIUS + 0.01,
     `x ${startX.toFixed(1)} -> ${ball.pos.x.toFixed(1)}`,
   );
   check('robot drove on once the ball escaped', r.pos.y > 52, `y=${r.pos.y.toFixed(1)}`);
@@ -569,6 +727,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   const w = mkWorld('free', 'blue', 42);
   const r = w.robots[0];
   r.hopper = [];
+  w.balls = w.balls.filter((b) => b.state.kind !== 'held'); // clear physical preloads too
   // blue spike column is on the blue (right) side at x=+46
   r.pos = { x: 46, y: -55 };
   r.heading = Math.PI / 2;
@@ -578,24 +737,20 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('hopper capped at 3', r.hopper.length <= 3);
 }
 
-// ---- vector intake: strafing into a ball swallows it (wheels overhang) ----------
+// ---- vector intake spans EXACTLY the chassis width (no overhang) -------------
 {
-  const spec = { length: 11.5, width: 14, intake: 'vector' as const };
-  const w = mkWorld('free', 'blue', 6, spec);
-  const r = w.robots[0];
-  r.hopper = [];
-  r.pos = { x: 0, y: 0 };
-  r.heading = Math.PI / 2;
-  r.fieldCentric = false;
-  const ball = w.balls[0];
-  w.balls.splice(1); // only this ball on the field
-  ball.state = { kind: 'ground' };
-  ball.pos = { x: -12, y: 8 }; // beside the protruding intake's flank
-  ball.vel = { x: 0, y: 0 };
-  ball.z = 0;
-  ball.vz = 0;
-  run(w, cmd({ driveX: -1, intake: true }), 1); // strafe into it
-  check('vector intake grabs a ball it strafes into', r.hopper.length === 1, `hopper=${r.hopper.length}`);
+  // the vector wheel row is as wide as the frame — mouthHalf tracks width/2
+  const vm14 = intakeMouth({ intake: 'vector', width: 14 });
+  const vm18 = intakeMouth({ intake: 'vector', width: 18 });
+  check('vector mouth = chassis half-width (no overhang)', vm14.mouthHalf === 7 && vm18.mouthHalf === 9);
+  // never wider than the frame, at either width extreme
+  check('vector mouth never overhangs the frame', vm14.mouthHalf <= 14 / 2 && vm18.mouthHalf <= 18 / 2);
+  // funnel presets keep their FIXED mouth (width-independent)
+  check(
+    'sloped/triangle keep their fixed funnel mouth',
+    intakeMouth({ intake: 'sloped', width: 14 }).mouthHalf === INTAKE_PRESETS.sloped.mouth.mouthHalf &&
+      intakeMouth({ intake: 'triangle', width: 18 }).mouthHalf === INTAKE_PRESETS.triangle.mouth.mouthHalf,
+  );
 }
 
 // ---- sloped intake: the same maneuver only shoves the ball ---------------------
@@ -617,9 +772,11 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('sloped intake has no side capture', r.hopper.length === 0, `hopper=${r.hopper.length}`);
 }
 
-// ---- side capture is geometric: a full-width chassis encompasses the wheels -----
+// ---- vector intake grabs at the FRONT only — never from the chassis flank ------
 {
-  const spec = { length: 11.5, width: 18, intake: 'vector' as const };
+  // the vector mouth spans the full chassis width now (no overhang), but it's still
+  // a FRONT-face intake: a ball sitting beside the chassis BODY is never captured.
+  const spec = { length: 11.5, width: 18, intake: 'vector' as const, driveRpm: 435, massLb: 26 };
   const w = mkWorld('free', 'blue', 6, spec);
   const r = w.robots[0];
   r.hopper = [];
@@ -629,61 +786,97 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   const ball = w.balls[0];
   w.balls.splice(1);
   ball.state = { kind: 'ground' };
-  ball.pos = { x: -12, y: 8 };
+  // beside the chassis body (local x≈0), just past the side edge — at heading π/2,
+  // world (−(half+2), 0) maps to robot-local (0, half+2): flank, NOT in front
+  const half = spec.width / 2;
+  ball.pos = { x: -(half + 2), y: 0 };
   ball.vel = { x: 0, y: 0 };
   ball.z = 0;
   ball.vz = 0;
-  // short window: long strafes may legitimately roll the ball around the
-  // front corner into the mouth — the flank itself must never capture
-  run(w, cmd({ driveX: -1, intake: true }), 0.35);
+  run(w, cmd({ intake: true }), 0.5); // intake running, not driven into the front
   check(
-    '18" chassis encompasses the vector wheels — no side capture',
+    'vector intake never captures from the chassis flank',
     r.hopper.length === 0,
     `hopper=${r.hopper.length}`,
   );
 }
 
-// ---- sloped/triangle devour clumps at the mouth ----------------------------------
+// ---- sloped drives into a clump; the slopes funnel it to the throat wheels -------
 {
   const w = mkWorld('free', 'blue', 6);
   const r = w.robots[0];
   r.hopper = [];
-  r.pos = { x: 0, y: 0 };
-  r.heading = Math.PI / 2;
+  r.pos = { x: 0, y: -12 };
+  r.heading = Math.PI / 2; // forward = +y
   r.fieldCentric = false;
   r.vel = { x: 0, y: 0 };
-  // three balls clumped just ahead of the mouth (touching the intake tip —
-  // not center-on the face, which would eject them via the deep-overlap path)
+  // three balls a bit ahead; the robot drives in and the physical slopes deflect
+  // the off-center ones to the center compliant wheels (no wide vacuum)
   w.balls.splice(3);
-  const clumpY = r.spec.length / 2 + 3 + 2; // wheel line + shallow contact
-  [-5.1, 0, 5.1].forEach((off, i) => {
+  const ahead = -12 + r.spec.length / 2 + 4;
+  [-4, 0, 4].forEach((off, i) => {
     const b = w.balls[i];
     b.state = { kind: 'ground' };
-    b.pos = { x: -off, y: clumpY }; // local y=off at heading π/2
+    b.pos = { x: off, y: ahead };
     b.vel = { x: 0, y: 0 };
     b.z = 0;
     b.vz = 0;
   });
-  run(w, cmd({ intake: true }), 0.2); // steady pace would only manage 2
+  run(w, cmd({ driveY: 0.3, intake: true }), 1.6);
   check(
-    'sloped intake devours a clump (3 balls in 0.2s)',
+    'sloped drives a clump in via the slopes (all 3)',
     r.hopper.length === 3,
     `hopper=${r.hopper.length}`,
   );
 }
 
-// ---- triangle intake transfers (outtakes) slower ---------------------------------
+// ---- triangle transfer is CAPPED, not generally slower --------------------------
 {
-  const spec = { length: 12, width: 14, intake: 'triangle' as const };
-  const w = mkWorld('free', 'blue', 6, spec);
-  const r = w.robots[0];
-  r.pos = { x: 10, y: 40 };
-  run(w, cmd({ fire: true }), 0.5); // sloped/vector would empty 3 preloads in ~0.3s
+  // CLOSE range (recovery ~0): the triangle's max-rate cap (fireCap 0.12) is its only
+  // limit, so it fires a touch slower than a fast sloped intake (interval 0.08). Keep the
+  // hopper topped up every tick so CADENCE — not the 3-ball hopper — bounds the count;
+  // measure over a full second so the 0.08-vs-0.12 gap resolves cleanly.
+  const firedPerSec = (intake: 'sloped' | 'triangle') => {
+    const w = mkWorld('free', 'blue', 6, { length: 12, width: 14, intake });
+    const r = w.robots[0];
+    const g = goalCenter('blue');
+    r.pos = { x: g.x + 8, y: g.y - 8 }; // point-blank → recovery ~0, so the cap shows
+    let shots = 0;
+    for (let i = 0; i < Math.round(1.0 / SIM_DT); i++) {
+      while (r.hopper.length < 3) r.hopper.push('green'); // unlimited ammo ⇒ cadence limits
+      const before = r.hopper.length;
+      step(w, SIM_DT, new Map([[0, cmd({ fire: true })]]));
+      shots += before - r.hopper.length;
+    }
+    return shots;
+  };
+  const sloped = firedPerSec('sloped');
+  const triangle = firedPerSec('triangle');
   check(
-    'triangle intake fires slower (0.3s transfer)',
-    r.hopper.length === 1,
-    `hopper=${r.hopper.length} after 0.5s burst`,
+    'triangle fires FEWER than sloped up close (max-rate cap bites)',
+    triangle < sloped,
+    `triangle ${triangle} vs sloped ${sloped}`,
   );
+  // buffed cap 0.12 → ~1/0.12 ≈ 8-9 shots/s, comfortably faster than the old 0.18 cap (~6)
+  check('triangle close-range cadence honors the buffed fireCap', triangle >= 8, `${triangle} shots/s`);
+}
+
+// ---- CLOSE-range rapid fire: near-zero inertia carries a small floor -------------
+{
+  // point-blank, so the DISTANCE recovery is ~0 and only the close floor differs:
+  // a ~0-inertia wheel fires FEWER shots in a tight window than a ~0.2-inertia one.
+  const closeShots = (inertia: number) => {
+    const w = mkWorld('free', 'blue', 7, { intake: 'sloped', flywheelInertia: inertia });
+    const r = w.robots[0];
+    const g = goalCenter('blue');
+    r.pos = { x: g.x + 8, y: g.y - 8 };
+    const start = r.hopper.length;
+    run(w, cmd({ fire: true }), 0.25);
+    return start - r.hopper.length;
+  };
+  const lo = closeShots(0);
+  const hi = closeShots(0.2);
+  check('close rapid fire: ~0 inertia is nerfed vs 0.2 inertia', lo < hi, `inertia0 ${lo} vs inertia0.2 ${hi}`);
 }
 
 // ---- gate release --------------------------------------------------------------
@@ -697,9 +890,10 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   const ramped = slotCount(w, 'blue');
   const zone = gateZone('blue');
   r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
-  r.heading = Math.PI;
+  r.heading = Math.PI; // face the -x (blue) wall
+  r.fieldCentric = false;
   r.vel = { x: 0, y: 0 };
-  run(w, cmd({}), 4);
+  run(w, cmd({ driveY: 1 }), 4); // drive INTO the gate arm to open it (push-to-open)
   check('gate opened and released ramp balls', slotCount(w, 'blue') < ramped, `slots ${ramped} -> ${slotCount(w, 'blue')}`);
   const groundBalls = w.balls.filter((b) => b.state.kind === 'ground').length;
   check('released balls rolled out onto the field', groundBalls >= 21 + ramped - 1, `${groundBalls} ground`);
@@ -716,12 +910,157 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   const ramped = slotCount(w, 'blue');
   const zone = gateZone('blue');
   r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
+  r.heading = Math.PI; // face the -x (blue) wall
+  r.fieldCentric = false;
   r.vel = { x: 0, y: 0 };
-  run(w, cmd({}), 0.3); // tap...
+  run(w, cmd({ driveY: 1 }), 0.3); // tap: a brief push opens the arm...
   r.pos = { x: 0, y: -30 }; // ...and drive away immediately
   run(w, cmd({}), 4);
   check('tapped gate kept draining (flow holds it open)', ramped >= 2 && slotCount(w, 'blue') === 0, `slots ${ramped} -> ${slotCount(w, 'blue')}`);
   check('gate re-closed after the column cleared', !w.goals.blue.gateOpen);
+  check('gate arm fell fully closed (gatePos 0) after draining', w.goals.blue.gatePos === 0, `gatePos ${w.goals.blue.gatePos.toFixed(3)}`);
+}
+
+// ---- gate is a physical arm: only opens on a real push, then lifts/falls smoothly
+{
+  const w = mkWorld('match', 'blue', 42);
+  startMatch(w);
+  const g = w.goals.blue;
+  const zone = gateZone('blue');
+  const r = w.robots[0];
+  r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
+  r.heading = Math.PI; // face the -x (blue) wall
+  r.fieldCentric = false;
+  r.vel = { x: 0, y: 0 };
+  // merely LOITERING in the gate zone (no drive input) must NOT open the arm
+  run(w, cmd({}), 0.5);
+  check('loitering in the gate zone does not open the gate', g.gatePos === 0 && !g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+  // a real push eases the arm open — it travels continuously (not a teleport to full).
+  // One tick of a gentle lean lifts it partway, not all the way.
+  r.pos = { x: (gateArmRect('blue').x0 + gateArmRect('blue').x1) / 2, y: GATE_TAPE_Y };
+  r.vel = { x: 0, y: 0 };
+  run(w, cmd({ driveY: 1 }), 1 / 60);
+  check('a real push eases the arm open (not instant)', g.gatePos > 0 && g.gatePos < 1, `gatePos ${g.gatePos.toFixed(3)}`);
+  // keep leaning on it: it lifts fully open
+  run(w, cmd({ driveY: 1 }), 0.5);
+  check('sustained push lifts the arm fully open', g.gatePos >= 0.99 && g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+  // release with no ball flowing: the arm stays LATCHED open a beat (no need to hold),
+  // then gravity swings it shut
+  r.pos = { x: 0, y: -30 };
+  run(w, cmd({}), 1 / 60);
+  check('gate stays open right after release (latched — no need to keep pressing)', g.gatePos >= 0.99 && g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+  run(w, cmd({}), GATE_OPEN_LATCH_S + 1); // latch lapses, then gravity finishes closing it
+  check('gate arm eventually falls fully closed once the latch lapses', g.gatePos === 0 && !g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+}
+
+// ---- gate TAP latches open (no continuous pressing needed) ----------------------
+{
+  const w = mkWorld('match', 'blue', 42);
+  startMatch(w);
+  const g = w.goals.blue;
+  const zone = gateZone('blue');
+  const r = w.robots[0];
+  r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
+  r.heading = Math.PI; // face the -x (blue) wall
+  r.fieldCentric = false;
+  r.vel = { x: 0, y: 0 };
+  run(w, cmd({ driveY: 1 }), 0.15); // a brief TAP against the arm
+  r.pos = { x: 0, y: -30 }; // then drive away immediately (stop pressing)
+  run(w, cmd({}), 0.3); // no ball flowing, no push — yet the latch holds it up
+  check('a brief tap latches the gate fully open without holding', g.gatePos >= 0.99 && g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+}
+
+// ---- gate opens on a straight push only — NOT driving sideways along the lever ---
+{
+  const w = mkWorld('match', 'blue', 42);
+  startMatch(w);
+  const r = w.robots[0];
+  const ar = gateArmRect('blue');
+  r.pos = { x: (ar.x0 + ar.x1) / 2, y: GATE_TAPE_Y }; // squarely against the arm
+  // sideways: fast motion ALONG the wall (Y), none into the handle (X) — must NOT open
+  r.vel = { x: 0, y: 12 };
+  check('driving sideways along the lever does not open the gate', !pushingGate(r, cmd({}), 'blue'));
+  // straight in: motion toward the wall (−x for blue) DOES open it
+  r.vel = { x: -12, y: 0 };
+  check('driving straight into the handle opens the gate', pushingGate(r, cmd({}), 'blue'));
+}
+
+// ---- gate handle is a PHYSICAL one-way door: solid when idle, YIELDS on the same
+// ---- tick you ram it (no 1-tick jolt), and retracts further the harder you ram -----
+{
+  // gateColliderPos is the open fraction buildGateArms uses for the handle collider.
+  // With the arm pinned CLOSED (gatePos 0): an idle/strafing robot sees the solid stub;
+  // a robot ramming it sees the handle already retracting THIS tick (anticipated lift),
+  // so it glides through instead of bouncing off — and a harder ram retracts it more.
+  const w = mkWorld('match', 'blue', 42);
+  startMatch(w);
+  const r = w.robots[0];
+  r.pos = { x: (gateArmRect('blue').x0 + gateArmRect('blue').x1) / 2, y: GATE_TAPE_Y };
+  r.heading = Math.PI; // face the -x (blue) wall
+  r.fieldCentric = false;
+  w.goals.blue.gatePos = 0; // handle down (closed)
+  const push = new Map([[0, cmd({ driveY: 1 })]]);
+  r.vel = { x: 0, y: 0 };
+  const idle = gateColliderPos(w, SIM_DT, new Map([[0, cmd({})]]), 'blue');
+  r.vel = { x: -10, y: 0 }; // gentle ram toward the -x wall
+  const soft = gateColliderPos(w, SIM_DT, push, 'blue');
+  r.vel = { x: -55, y: 0 }; // hard ram
+  const hard = gateColliderPos(w, SIM_DT, push, 'blue');
+  check('idle at a closed gate leaves the handle down (collider not retracted)', idle === 0, `pos ${idle.toFixed(3)}`);
+  check('ramming retracts the handle collider on the same tick (no 1-tick jolt)', soft > 0, `pos ${soft.toFixed(3)}`);
+  check(
+    'a harder ram retracts the handle collider further (speed-scaled)',
+    hard > soft,
+    `hard ${hard.toFixed(3)} > soft ${soft.toFixed(3)}`,
+  );
+}
+
+// ---- resting against the OPEN gate holds it open without re-pushing ---------------
+{
+  const w = mkWorld('match', 'blue', 42);
+  startMatch(w);
+  const g = w.goals.blue;
+  const zone = gateZone('blue');
+  const r = w.robots[0];
+  r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
+  r.heading = Math.PI;
+  r.fieldCentric = false;
+  r.vel = { x: 0, y: 0 };
+  run(w, cmd({ driveY: 1 }), 0.5); // push it open
+  check('gate is open after the push', g.gateOpen && g.gatePos >= 0.99, `gatePos ${g.gatePos.toFixed(3)}`);
+  // now STOP driving but stay resting against the arm — it must stay open (no re-push)
+  r.pos = { x: (gateArmRect('blue').x0 + gateArmRect('blue').x1) / 2, y: GATE_TAPE_Y };
+  r.vel = { x: 0, y: 0 };
+  run(w, cmd({}), 2); // idle, just touching — well past the latch time
+  check('resting against the open gate holds it open (no constant push needed)', g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+  // back away entirely — now it swings shut
+  r.pos = { x: 0, y: -30 };
+  run(w, cmd({}), GATE_OPEN_LATCH_S + 1);
+  check('leaving the gate lets it swing shut', g.gatePos === 0 && !g.gateOpen, `gatePos ${g.gatePos.toFixed(3)}`);
+}
+
+// ---- a near-closed gate does NOT reopen when a fresh ball reaches the gateway -----
+{
+  const w = mkWorld('match', 'blue', 42);
+  startMatch(w);
+  const g = w.goals.blue;
+  w.robots[0].pos = { x: 0, y: -30 }; // robot nowhere near the gate
+  // one ball sitting right in the gateway window
+  const b = w.balls[0];
+  b.state = { kind: 'rail', goal: 'blue', s: 0, v: 0, overflow: false };
+  b.pos = railPos('blue', 0);
+  b.vel = { x: 0, y: 0 };
+  // arm caught almost shut (below the pass fraction) with a little downward swing
+  g.gatePos = 0.25;
+  g.gateVel = -1;
+  g.gateLatch = 0;
+  g.gateOpen = false;
+  run(w, cmd({}), 0.5);
+  check(
+    'a ball reaching an almost-closed gate does not reopen it',
+    g.gatePos === 0 && !g.gateOpen,
+    `gatePos ${g.gatePos.toFixed(3)}`,
+  );
 }
 
 // fill the blue rail with 9 retained balls by direct placement (bypasses
@@ -773,8 +1112,10 @@ function queueTenth(w: World): void {
   const r = w.robots[0];
   const zone = gateZone('blue');
   r.pos = { x: zone.x1 + 7, y: (zone.y0 + zone.y1) / 2 };
+  r.heading = Math.PI; // face the -x (blue) wall
+  r.fieldCentric = false;
   r.vel = { x: 0, y: 0 };
-  run(w, cmd({}), 0.3); // tap...
+  run(w, cmd({ driveY: 1 }), 0.3); // tap: push opens the gate...
   r.pos = { x: 0, y: -30 };
   run(w, cmd({}), 0.7);
   // a late ball arrives while the drain is under way: by the time it reaches
@@ -800,7 +1141,8 @@ function queueTenth(w: World): void {
   r.heading = Math.PI / 2; // front (intake) faces the oncoming flow
   r.vel = { x: 0, y: 0 };
   const start = { x: r.pos.x, y: r.pos.y };
-  w.goals.blue.gateOpen = true; // flow keeps it open while balls stream out
+  w.goals.blue.gatePos = 1; // arm lifted open; flow keeps it up while balls stream out
+  w.goals.blue.gateOpen = true;
   run(w, cmd({}), 4);
   const moved = Math.hypot(r.pos.x - start.x, r.pos.y - start.y);
   const strays = w.balls.filter(
@@ -837,6 +1179,7 @@ function queueTenth(w: World): void {
   const w = mkWorld('free', 'blue', 5);
   const r = w.robots[0];
   r.hopper = [];
+  w.balls = w.balls.filter((b) => b.state.kind !== 'held'); // clear physical preloads too
   r.autoIntake = true;
   r.autoFire = true;
   // drive up the blue spike column with no buttons held
@@ -877,6 +1220,49 @@ function queueTenth(w: World): void {
   run(w, cmd({}), 120.2);
   check('teleop -> post after 2:00', w.match.phase === 'post', w.match.phase);
   check('leave scored (drove off launch lines)', w.match.scores.blue.leave === 3, `${w.match.scores.blue.leave}`);
+}
+
+// ---- Rule A: artifacts assessed BEFORE teleop (incl. the post-auto transition
+// settle) count as AUTO, not TELEOP -------------------------------------------------
+{
+  const w = mkWorld('match', 'blue', 7);
+  w.match.phase = 'transition';
+  addClassified(w, 'blue');
+  addOverflow(w, 'blue');
+  check(
+    'artifact scored during transition banks as AUTO, not TELEOP (Rule A)',
+    w.match.scores.blue.autoClassified === 3 &&
+      w.match.scores.blue.autoOverflow === 1 &&
+      w.match.scores.blue.teleClassified === 0 &&
+      w.match.scores.blue.teleOverflow === 0,
+    `autoC=${w.match.scores.blue.autoClassified} autoO=${w.match.scores.blue.autoOverflow} teleC=${w.match.scores.blue.teleClassified}`,
+  );
+}
+
+// ---- Rules C/D/F: resting-position scores (TELEOP PATTERN / DEPOT / BASE) are
+// RE-ASSESSED through the post-match settle window, not frozen on the buzzer tick ---
+{
+  const spec = { length: 11.5, width: 12, intake: 'vector' as const };
+  const w = mkWorld('match', 'blue', 8, spec);
+  const zone = baseZone('blue');
+  const cx = (zone.x0 + zone.x1) / 2;
+  const cy = (zone.y0 + zone.y1) / 2;
+  // enter 'post' with the robot AWAY from its base, as if the buzzer caught it out
+  w.robots[0].pos = { x: 0, y: 0 };
+  w.match.phase = 'post';
+  w.match.phaseTimeLeft = 0;
+  assessMatchEnd(w); // buzzer snapshot: no base credit yet
+  check('base not yet earned at the buzzer', w.match.scores.blue.base === 0, `base=${w.match.scores.blue.base}`);
+  // the robot comes to rest inside its base during the settle window
+  w.robots[0].pos = { x: cx, y: cy };
+  w.robots[0].heading = 0;
+  w.robots[0].vel = { x: 0, y: 0 };
+  run(w, cmd({}), 0.1); // post-phase ticks -> stepMatch recomputes assessMatchEnd
+  check(
+    'BASE re-assessed as the robot settles in the post window (Rules C/D/F)',
+    w.match.scores.blue.base === 10,
+    `base=${w.match.scores.blue.base}`,
+  );
 }
 
 // ---- base parking counts wheels on the ground, not intake overhang --------------
@@ -962,14 +1348,26 @@ const setup = (
   startIndex,
 });
 
-// ---- default spec reproduces the legacy tuned feel exactly ------------------
+// ---- drivetrain calibration: derived from real 104mm-wheel geometry ---------
 {
-  const dp = driveParams(DEFAULT_SPEC);
+  // BASE speed derives from the 104 mm wheel free-speed geometry × DRIVE_EFFICIENCY;
+  // the ref 26lb / 435rpm chassis lands ~75/7/280 at mult=1 (× the per-drivetrain
+  // mult). Check against the FORMULA (not a magic 75) so it survives wheel/efficiency
+  // edits, plus a realistic-band assertion.
+  const refFree = SPEED_PER_RPM * REF_DRIVE_RPM; // loaded top speed of the ideal traction datum
+  check('104mm-wheel derived ref speed is a realistic FTC drive (~6–8 ft/s)', refFree > 72 && refFree < 96, `${refFree.toFixed(2)} in/s = ${(refFree / 12).toFixed(1)} ft/s`);
+  check('SPEED_PER_RPM = π·wheel/60 · efficiency', Math.abs(SPEED_PER_RPM - (Math.PI * (WHEEL_DIAMETER_MM / 25.4)) / 60 * DRIVE_EFFICIENCY) < 1e-9);
+  const CALIB_REF: RobotSpec = {
+    ...DEFAULT_SPEC, length: 15, width: 18, intake: 'sloped',
+    massLb: 26, drivetrain: 'mecanum', driveRpm: 435, flywheelInertia: 0.5,
+  };
+  const dp = driveParams(CALIB_REF);
+  const M = DRIVETRAIN_PRESETS.mecanum; // maxSpeed/turn scale with speedMult, accel with accelMult
   check(
-    'default spec drives at the legacy 75 in/s, 7 rad/s, 280 in/s²',
-    Math.abs(dp.maxSpeed - 75) < 1e-6 &&
-      Math.abs(dp.maxTurn - 7) < 1e-6 &&
-      Math.abs(dp.accel - 280) < 1e-6,
+    'base calibration ref: refFree in/s, 8.5 rad/s, base accel (× mecanum mult)',
+    Math.abs(dp.maxSpeed - refFree * M.speedMult) < 1e-6 &&
+      Math.abs(dp.maxTurn - 8.5 * M.speedMult * M.turnMult) < 1e-6 &&
+      Math.abs(dp.accel - BASE_DRIVE_ACCEL * M.accelMult) < 1e-6,
     `${dp.maxSpeed.toFixed(2)} / ${dp.maxTurn.toFixed(2)} / ${dp.accel.toFixed(1)}`,
   );
 }
@@ -1022,6 +1420,455 @@ const setup = (
   const da = Math.hypot(a.pos.x - a0.x, a.pos.y - a0.y);
   const db = Math.hypot(b.pos.x - b0.x, b.pos.y - b0.y);
   check('equal-mass robots separate symmetrically', Math.abs(da - db) < 0.05, `da=${da.toFixed(2)} db=${db.toFixed(2)}`);
+}
+
+// ---- every bundled preset obeys its drivetrain's clamps ---------------------
+{
+  let ok = true;
+  const bad: string[] = [];
+  for (const p of ROBOT_PRESETS) {
+    const mass = massLimits(p.drivetrain, p.flywheelInertia);
+    const rpm = rpmLimits(p.drivetrain);
+    if (p.massLb < mass.min || p.massLb > mass.max || p.driveRpm < rpm.min || p.driveRpm > rpm.max) {
+      ok = false;
+      bad.push(`${p.name}(${p.massLb}lb/${p.driveRpm}rpm want mass[${mass.min},${mass.max}] rpm[${rpm.min},${rpm.max}])`);
+    }
+  }
+  check('all ROBOT_PRESETS satisfy their drivetrain mass/rpm clamps (incl. inertia floor)', ok, bad.join(' '));
+}
+
+// ---- accel ordering: tank > swerve > mecanum > xdrive -----------------------
+{
+  const a = (dt: RobotSpec['drivetrain']) => driveParams({ ...DEFAULT_SPEC, drivetrain: dt }).accel;
+  const t = a('tank'), s = a('swerve'), me = a('mecanum'), x = a('xdrive');
+  check(
+    'drivetrain accel order tank > swerve > mecanum > xdrive',
+    t > s && s > me && me > x,
+    `${t.toFixed(0)}/${s.toFixed(0)}/${me.toFixed(0)}/${x.toFixed(0)}`,
+  );
+}
+
+// ---- 2026-07 real-motor retune: mecanum has losses, tank tops speed ----------
+{
+  const sp = (dt: RobotSpec['drivetrain']) => driveParams({ ...DEFAULT_SPEC, drivetrain: dt }).maxSpeed;
+  // realistic straight-line order: traction fastest; swerve and mecanum tie (gear loss ≈
+  // roller scrub); X-drive far back (45° omnis waste speed off-axis).
+  check('speed order tank > swerve = mecanum > xdrive', sp('tank') > sp('swerve') && Math.abs(sp('swerve') - sp('mecanum')) < 0.01 && sp('mecanum') > sp('xdrive'), `tank ${sp('tank').toFixed(1)} sw ${sp('swerve').toFixed(1)} mec ${sp('mecanum').toFixed(1)} x ${sp('xdrive').toFixed(1)}`);
+  // xdrive is the clear worst — a wide margin below the pack on speed AND push
+  check('xdrive is way worse (speed & push well below mecanum)', sp('xdrive') < sp('mecanum') - 8 && DRIVETRAIN_PRESETS.xdrive.pushMult < DRIVETRAIN_PRESETS.mecanum.pushMult - 0.2, `x ${sp('xdrive').toFixed(1)} vs mec ${sp('mecanum').toFixed(1)}`);
+  // mecanum now sits BELOW the ideal base on every axis (roller slip + friction)
+  const M = DRIVETRAIN_PRESETS.mecanum;
+  // mecanum loses forward SPEED (roller scrub) and PUSH (shoved around); its accel is a
+  // tuned feel value (raised so straights don't feel sluggish vs swerve) — not a "loss".
+  check('mecanum loses speed & push (roller scrub / low traction)', M.speedMult < 1 && M.pushMult < 1);
+  // pushing order: traction bites, rollers get shoved
+  check('push order tank > swerve > mecanum > xdrive', DRIVETRAIN_PRESETS.tank.pushMult > DRIVETRAIN_PRESETS.swerve.pushMult && DRIVETRAIN_PRESETS.swerve.pushMult > M.pushMult && M.pushMult > DRIVETRAIN_PRESETS.xdrive.pushMult);
+  // swerve VECTORS its wheels for rotation → the fastest turner (its signature),
+  // even though tank has a higher straight-line speed. turnMult > 1 buys this.
+  const tr = (dt: RobotSpec['drivetrain']) => driveParams({ ...DEFAULT_SPEC, drivetrain: dt }).maxTurn;
+  check('swerve is the fastest turner (turnMult edge beats tank)', tr('swerve') > tr('tank') && tr('tank') > tr('mecanum') && tr('mecanum') > tr('xdrive'), `swerve ${tr('swerve').toFixed(2)} tank ${tr('tank').toFixed(2)} mec ${tr('mecanum').toFixed(2)} x ${tr('xdrive').toFixed(2)}`);
+
+  // print the tuning table (visible on every run so a balance edit shows its effect)
+  const rows = driveSummary().map((r) => `${r.dt.padEnd(7)} fwd ${r.fwd.toFixed(1).padStart(5)}  strafe ${r.strafe.toFixed(1).padStart(5)}  accel ${r.accel.toFixed(0).padStart(4)}  push ${r.push.toFixed(2)}`);
+  console.log('  drivetrain @435rpm/26lb:\n    ' + rows.join('\n    '));
+}
+
+// ---- motor torque–speed curve: accel eases off near top speed ----------------
+{
+  const ref = { ...DEFAULT_SPEC, drivetrain: 'tank' as const, driveRpm: 435, massLb: 26 };
+  const dp = driveParams(ref);
+  const aStall = dp.accel;
+  // off the line = full stall accel; near free speed = a small fraction
+  const aStart = (motorStep(0, dp.maxSpeed, aStall, dp.maxSpeed, SIM_DT) - 0) / SIM_DT;
+  const aNearTop = (motorStep(dp.maxSpeed * 0.98, dp.maxSpeed, aStall, dp.maxSpeed, SIM_DT) - dp.maxSpeed * 0.98) / SIM_DT;
+  check('motor accel is full stall off the line', Math.abs(aStart - aStall) < 1e-6, `${aStart.toFixed(1)} vs ${aStall.toFixed(1)}`);
+  check('motor accel falls off near free speed (torque curve)', aNearTop < aStall * 0.2, `${aNearTop.toFixed(1)}`);
+  // braking pulls harder than peak drive accel
+  const aBrake = (dp.maxSpeed - motorStep(dp.maxSpeed, 0, aStall, dp.maxSpeed, SIM_DT)) / SIM_DT;
+  check('motor braking is stronger than stall accel', aBrake > aStall, `${aBrake.toFixed(1)} vs ${aStall.toFixed(1)}`);
+  // integrate: reaches ~95% of free speed in a realistic ~0.6–1.0 s (not instant)
+  let v = 0;
+  let t95 = 0;
+  for (let i = 0; i < 300; i++) {
+    v = motorStep(v, dp.maxSpeed, aStall, dp.maxSpeed, SIM_DT);
+    if (v >= dp.maxSpeed * 0.95) { t95 = (i + 1) * SIM_DT; break; }
+  }
+  check('reaches 95% top speed in a realistic ~0.5–1.2 s', t95 > 0.5 && t95 < 1.2, `${t95.toFixed(2)} s`);
+}
+
+// ---- swerve = 4 independent steered modules (kinematics + pod flip + wobble) --
+{
+  const strafe = { driveX: 1, driveY: 0, rotate: 0, buttons: {}, leftDrive: 0, rightDrive: 0 } as unknown as RobotCommand;
+  const w = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'swerve' }, 0)]);
+  const r = w.robots[0];
+  r.fieldCentric = false;
+  r.moduleAngles = [0, 0, 0, 0];
+  step(w, SIM_DT, new Map([[0, strafe]]));
+  // 90° command (no flip): each pod turns toward -90° but is slew-limited after 1 tick
+  check('swerve pods steer (not instant) toward a 90° command', r.moduleAngles.every((a) => a < -0.01 && a > -Math.PI / 2 + 0.5), `${r.moduleAngles.map((a) => a.toFixed(2)).join(',')} after 1 tick`);
+  for (let i = 0; i < 40; i++) step(w, SIM_DT, new Map([[0, strafe]]));
+  check('all four pods reach the commanded direction (~-90° ± wobble)', r.moduleAngles.every((a) => Math.abs(a - -Math.PI / 2) < 0.3), `${r.moduleAngles.map((a) => a.toFixed(2)).join(',')}`);
+  const mec = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'mecanum' }, 0)]).robots[0];
+  check('only swerve uses moduleAngles (mecanum stays [0,0,0,0])', mec.moduleAngles.every((a) => a === 0));
+
+  // swerve draws steady STEERING current (pivot motors) just running — mecanum doesn't
+  const swIdle = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'swerve', flywheelInertia: 0 }, 0)]);
+  step(swIdle, SIM_DT, new Map());
+  const mecIdle = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'mecanum', flywheelInertia: 0 }, 0)]);
+  step(mecIdle, SIM_DT, new Map());
+  check('swerve pulls steady steering power (mecanum does not)', swIdle.robots[0].powerDraw >= POWER_DRAW_SWERVE - 1e-9 && mecIdle.robots[0].powerDraw < swIdle.robots[0].powerDraw, `swerve ${swIdle.robots[0].powerDraw.toFixed(3)} vs mecanum ${mecIdle.robots[0].powerDraw.toFixed(3)}`);
+
+  // drive current rises with RPM: a higher-geared drivetrain pulls more from the pack
+  const hiRpm = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'mecanum', flywheelInertia: 0, driveRpm: 600 }, 0)]);
+  step(hiRpm, SIM_DT, new Map());
+  const loRpm = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'mecanum', flywheelInertia: 0, driveRpm: 435 }, 0)]);
+  step(loRpm, SIM_DT, new Map());
+  check('higher-rpm drivetrain pulls more current', hiRpm.robots[0].powerDraw > loRpm.robots[0].powerDraw + 0.02, `600rpm ${hiRpm.robots[0].powerDraw.toFixed(3)} vs 435rpm ${loRpm.robots[0].powerDraw.toFixed(3)}`);
+
+  // WOBBLE done right: driving straight, the four pods hunt INDEPENDENTLY (their
+  // angles differ), producing BOTH a path drift AND a net YAW wobble (heading
+  // oscillates). Mecanum holds a perfect line + heading.
+  const w3 = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'swerve' }, 0)]);
+  const r3 = w3.robots[0];
+  r3.fieldCentric = false;
+  r3.pos = { x: 0, y: -40 };
+  r3.heading = Math.PI / 2; // face +y, drive straight up the field
+  const fwd1 = { driveX: 0, driveY: 1, rotate: 0, buttons: {}, leftDrive: 0, rightDrive: 0 } as unknown as RobotCommand;
+  for (let i = 0; i < 40; i++) step(w3, SIM_DT, new Map([[0, fwd1]])); // build speed
+  let podSpread = 0;
+  let lateral = 0;
+  let headingDev = 0;
+  for (let i = 0; i < 100; i++) {
+    step(w3, SIM_DT, new Map([[0, fwd1]]));
+    podSpread = Math.max(podSpread, Math.max(...r3.moduleAngles) - Math.min(...r3.moduleAngles));
+    lateral = Math.max(lateral, Math.abs(r3.pos.x)); // drift off the straight-up line
+    headingDev = Math.max(headingDev, Math.abs(r3.heading - Math.PI / 2));
+  }
+  check('swerve pods hunt INDEPENDENTLY (angles differ) driving straight', podSpread > 0.01, `spread ${podSpread.toFixed(3)} rad`);
+  check('swerve DRIFTS off a straight line (path wobble)', lateral > 0.02, `${lateral.toFixed(2)} in`);
+  check('swerve HEADING wobbles from mispointed pods (yaw)', headingDev > 0.001, `${(headingDev * 180 / Math.PI).toFixed(2)}°`);
+  // control loops are ALWAYS applied: releasing the stick, the disturbance fades
+  // with speed and every pod shares the target → they CONVERGE to one angle at rest
+  for (let i = 0; i < 200; i++) step(w3, SIM_DT, new Map()); // coast to a stop, no command
+  const rest = Math.max(...r3.moduleAngles) - Math.min(...r3.moduleAngles);
+  check('swerve pods CONVERGE to one angle when stopped (no frozen mis-alignment)', rest < 1e-4, `spread ${rest.toExponential(1)} rad, speed ${Math.hypot(r3.vel.x, r3.vel.y).toFixed(2)}`);
+
+  // releasing the stick HOLDS the last driven direction, NOT forward: strafe (pods
+  // → -90°), then coast to a stop → the pods stay pointing ~-90°, converged.
+  const wh = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'swerve' }, 0)]);
+  const rh = wh.robots[0];
+  rh.fieldCentric = false;
+  rh.pos = { x: 0, y: 0 };
+  rh.heading = 0;
+  for (let i = 0; i < 60; i++) step(wh, SIM_DT, new Map([[0, strafe]])); // steer pods to -90 + drive
+  for (let i = 0; i < 260; i++) step(wh, SIM_DT, new Map()); // release + coast to a stop
+  const held = rh.moduleAngles;
+  check('swerve HOLDS the last driven direction at rest (not snapping forward)', Math.abs(held[0] - -Math.PI / 2) < 0.1 && Math.max(...held) - Math.min(...held) < 1e-4, `${held.map((a) => a.toFixed(2)).join(',')}`);
+
+  // a BRIEF TAP still commits the target: tap strafe for a few ticks (pods only
+  // start turning), let go → they FINISH slewing to the commanded ~-90°, not freeze.
+  const wt = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'swerve' }, 0)]);
+  const rt = wt.robots[0];
+  rt.fieldCentric = false;
+  rt.pos = { x: 0, y: 0 };
+  rt.heading = 0;
+  for (let i = 0; i < 3; i++) step(wt, SIM_DT, new Map([[0, strafe]])); // brief tap right
+  const partway = rt.moduleAngles[0]; // only partly turned toward -90 after 3 ticks
+  for (let i = 0; i < 40; i++) step(wt, SIM_DT, new Map()); // let go → pods keep going to target
+  check('swerve finishes turning to the tapped target after release (not frozen partway)', partway > -Math.PI / 2 + 0.3 && Math.abs(rt.moduleAngles[0] - -Math.PI / 2) < 0.1, `partway ${partway.toFixed(2)} → ${rt.moduleAngles[0].toFixed(2)}`);
+
+  const w4 = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'mecanum' }, 0)]);
+  const r4 = w4.robots[0];
+  r4.fieldCentric = false;
+  r4.pos = { x: 0, y: -40 };
+  r4.heading = Math.PI / 2;
+  for (let i = 0; i < 140; i++) step(w4, SIM_DT, new Map([[0, fwd1]]));
+  check('mecanum holds a perfect line + heading (no wobble)', Math.abs(r4.pos.x) < 1e-6 && Math.abs(r4.heading - Math.PI / 2) < 1e-6, `x=${r4.pos.x.toFixed(3)}`);
+
+  // MODULE OPTIMIZATION (pod flip): a 180° reversal must NOT rotate the pods —
+  // it flips each drive motor instead, so the pods stay put and the robot reverses.
+  const w2 = createWorld('free', 3, [setup(0, 'blue', { drivetrain: 'swerve' }, 0)]);
+  const r2 = w2.robots[0];
+  r2.fieldCentric = false;
+  r2.moduleAngles = [0, 0, 0, 0];
+  r2.pos = { x: 0, y: 0 };
+  r2.heading = 0;
+  const back = { driveX: 0, driveY: -1, rotate: 0, buttons: {}, leftDrive: 0, rightDrive: 0 } as unknown as RobotCommand;
+  for (let i = 0; i < 25; i++) step(w2, SIM_DT, new Map([[0, back]]));
+  const fwd = r2.vel.x * Math.cos(r2.heading) + r2.vel.y * Math.sin(r2.heading);
+  check('swerve pod-flips a 180° reversal (pods stay, no big rotation)', r2.moduleAngles.every((a) => Math.abs(a) < 0.35), `${r2.moduleAngles.map((a) => a.toFixed(2)).join(',')}`);
+  check('swerve reversal drives BACKWARD via flipped motors', fwd < -5, `${fwd.toFixed(1)} in/s fwd`);
+}
+
+// ---- tank reads side-drive only (control STYLE resolved at the input layer) --
+{
+  // The sim's tank branch must drive from leftDrive/rightDrive alone — the
+  // Traditional-vs-Normal preference is converted to side-drive in GameController,
+  // so the same command behaves identically regardless of any world setting.
+  const w = createWorld('free', 5, [setup(0, 'blue', { drivetrain: 'tank' }, 0)]);
+  const r = w.robots[0];
+  r.fieldCentric = false;
+  r.pos = { x: 0, y: -40 }; r.heading = Math.PI / 2;
+  const side = { driveX: 0, driveY: 0, rotate: 0, buttons: {}, leftDrive: 1, rightDrive: 1 } as unknown as RobotCommand;
+  for (let i = 0; i < 30; i++) step(w, SIM_DT, new Map([[0, side]]));
+  const fwdSpeed = r.vel.x * Math.cos(r.heading) + r.vel.y * Math.sin(r.heading);
+  check('tank drives from leftDrive/rightDrive (side-drive command)', fwdSpeed > 20, `${fwdSpeed.toFixed(1)} in/s fwd`);
+  // arcade driveY/rotate on their own do NOT move a tank robot in the sim (the
+  // Normal-tank conversion into side-drive happens BEFORE the command reaches step)
+  const w2 = createWorld('free', 5, [setup(0, 'blue', { drivetrain: 'tank' }, 0)]);
+  const r2 = w2.robots[0];
+  r2.fieldCentric = false;
+  r2.pos = { x: 0, y: -40 }; r2.heading = Math.PI / 2;
+  const arcade = { driveX: 0, driveY: 1, rotate: 0, buttons: {}, leftDrive: 0, rightDrive: 0 } as unknown as RobotCommand;
+  for (let i = 0; i < 30; i++) step(w2, SIM_DT, new Map([[0, arcade]]));
+  check('tank ignores raw arcade driveY (no side-drive ⇒ no motion)', Math.hypot(r2.vel.x, r2.vel.y) < 1e-6, `speed ${Math.hypot(r2.vel.x, r2.vel.y).toExponential(1)}`);
+}
+
+// ---- pushing power: equal-mass tank out-pushes mecanum ----------------------
+{
+  const w = createWorld('free', 7, [
+    setup(0, 'blue', { massLb: 30, drivetrain: 'mecanum' }, 0),
+    setup(1, 'blue', { massLb: 30, drivetrain: 'tank' }, 1),
+  ]);
+  const [a, b] = w.robots;
+  a.pos = { x: -5, y: 0 }; a.heading = 0; a.vel = { x: 0, y: 0 };
+  b.pos = { x: 5, y: 0 }; b.heading = 0; b.vel = { x: 0, y: 0 };
+  const a0 = { ...a.pos }, b0 = { ...b.pos };
+  step(w, SIM_DT, new Map());
+  const da = Math.hypot(a.pos.x - a0.x, a.pos.y - a0.y);
+  const db = Math.hypot(b.pos.x - b0.x, b.pos.y - b0.y);
+  check('equal-mass tank out-pushes mecanum (mecanum yields more)', da > db * 1.2, `mecanum ${da.toFixed(2)} vs tank ${db.toFixed(2)}`);
+}
+
+// ---- pushing power: a geared-for-speed (high RPM) robot pushes weaker --------
+{
+  const w = createWorld('free', 7, [
+    setup(0, 'blue', { massLb: 30, drivetrain: 'mecanum', driveRpm: 600 }, 0),
+    setup(1, 'blue', { massLb: 30, drivetrain: 'mecanum', driveRpm: 300 }, 1),
+  ]);
+  const [a, b] = w.robots;
+  a.pos = { x: -5, y: 0 }; a.heading = 0; a.vel = { x: 0, y: 0 };
+  b.pos = { x: 5, y: 0 }; b.heading = 0; b.vel = { x: 0, y: 0 };
+  const a0 = { ...a.pos }, b0 = { ...b.pos };
+  step(w, SIM_DT, new Map());
+  const da = Math.hypot(a.pos.x - a0.x, a.pos.y - a0.y);
+  const db = Math.hypot(b.pos.x - b0.x, b.pos.y - b0.y);
+  check('geared-for-speed (600 rpm) robot yields more than a torquey (300 rpm) one', da > db * 1.2, `600rpm ${da.toFixed(2)} vs 300rpm ${db.toFixed(2)}`);
+}
+
+// ---- power draw: a spun-up flywheel is slightly slower far from goal ---------
+{
+  const measure = (inertia: number) => {
+    const w = mkWorld('free', 'blue', 9, { flywheelInertia: inertia });
+    const r = w.robots[0];
+    // far from the blue goal + heading +x so driving forward keeps distance high
+    r.pos = { x: 0, y: -60 }; r.heading = 0; r.vel = { x: 0, y: 0 }; r.fieldCentric = false;
+    run(w, cmd({ driveY: 1 }), 0.7);
+    return Math.hypot(r.vel.x, r.vel.y);
+  };
+  const v0 = measure(0), v1 = measure(1);
+  const ratio = v1 / v0;
+  check('power draw: spun-up flywheel is ~10% slower far from goal', ratio > 0.8 && ratio < 0.97, `inertia1 ${v1.toFixed(1)} vs inertia0 ${v0.toFixed(1)} (${(ratio * 100).toFixed(0)}%)`);
+  check(
+    'power draw leaves driveParams calibration byte-identical',
+    driveParams({ ...DEFAULT_SPEC, flywheelInertia: 1 }).maxSpeed ===
+      driveParams({ ...DEFAULT_SPEC, flywheelInertia: 0 }).maxSpeed,
+  );
+}
+
+// ---- per-drivetrain clamps + inertia→mass-floor coupling --------------------
+{
+  check('massLimits mecanum floor is 18 at inertia 0', massLimits('mecanum', 0).min === 18);
+  check('massLimits mecanum floor climbs to 22 at inertia 1', massLimits('mecanum', 1).min === 22);
+  check('massLimits swerve floor is 21.5 at inertia 0', massLimits('swerve', 0).min === 21.5);
+  check('inertia only nudges the floor (≤ 4 lb across the whole range)', massLimits('mecanum', 1).min - massLimits('mecanum', 0).min <= 4);
+  check('rpmLimits swerve caps at 500', rpmLimits('swerve').max === 500);
+  // swerve keeps its raw-accel edge even at the WORST case for it: a min-weight,
+  // MAX-inertia, 500rpm build out-accels the equivalent mecanum (massLb 0 → the
+  // per-drivetrain×inertia floor). Its higher accelMult (1.32) beats its heavier floor.
+  {
+    const accelOf = (drivetrain: 'swerve' | 'mecanum') =>
+      driveParams(coerceSpec({ drivetrain, driveRpm: 500, flywheelInertia: 1, massLb: 0 })).accel;
+    const sw = accelOf('swerve'), me = accelOf('mecanum');
+    check('swerve out-accels a 500rpm max-inertia min-weight mecanum', sw > me, `swerve ${sw.toFixed(1)} vs mecanum ${me.toFixed(1)}`);
+  }
+  const s = coerceSettings({
+    spec: { drivetrain: 'swerve', massLb: 18, driveRpm: 600, flywheelInertia: 0.8 },
+  });
+  const floor = massLimits('swerve', 0.8).min; // 21.5 + 4·0.8 = 24.7
+  check('coerceSettings clamps swerve mass up to the inertia-coupled floor', Math.abs(s.spec.massLb - floor) < 1e-9, `${s.spec.massLb} vs ${floor}`);
+  check('coerceSettings clamps swerve rpm down to 500', s.spec.driveRpm === 500, `${s.spec.driveRpm}`);
+}
+
+// ---- saved robot / auto libraries are validated + capped ---------------------
+{
+  const validAuto = (name: string) => ({
+    fileName: name,
+    startPoint: { x: 0, y: 0, heading: 'constant', degrees: 0 },
+    lines: [],
+    sequence: [],
+  });
+  const lib = coerceSettings({
+    savedRobots: Array.from({ length: 6 }, () => ({ drivetrain: 'mecanum' })),
+    savedAutos: [validAuto('a'), null, { bogus: true }, validAuto('b'), validAuto('c'), validAuto('d'), validAuto('e')],
+  });
+  check('savedRobots capped at MAX_SAVED_ROBOTS', lib.savedRobots.length === 3, `${lib.savedRobots.length}`);
+  check('each saved robot is coerced to a legal spec', lib.savedRobots.every((r) => r.driveRpm >= 200 && r.massLb >= 10));
+  check('savedAutos drops invalid entries + caps at MAX_SAVED_AUTOS', lib.savedAutos.length === 4, `${lib.savedAutos.length}`);
+  check('defaultSettings starts with empty libraries', coerceSettings({}).savedRobots.length === 0 && coerceSettings({}).savedAutos.length === 0);
+}
+
+// ---- untrusted spec sanitization (anti-cheat: spoofed devtools / wire spec) --
+{
+  // an attacker sends an absurd oversized robot: coerceSpec must clamp EVERY axis
+  const evil = coerceSpec({
+    intake: 'sloped',
+    length: 999,
+    width: 999,
+    massLb: 9999,
+    driveRpm: 99999,
+    flywheelInertia: 50,
+    teamNumber: 1e12,
+    name: 'x'.repeat(500),
+    drivetrain: 'mecanum',
+  });
+  check('coerceSpec clamps length to the preset max', evil.length <= INTAKE_PRESETS.sloped.maxLength, `${evil.length}`);
+  check('coerceSpec clamps width to ROBOT_MAX_SIZE', evil.width <= ROBOT_MAX_SIZE, `${evil.width}`);
+  check('coerceSpec clamps mass to the drivetrain max', evil.massLb <= massLimits('mecanum', 1).max, `${evil.massLb}`);
+  check('coerceSpec clamps rpm to the drivetrain max', evil.driveRpm <= rpmLimits('mecanum').max, `${evil.driveRpm}`);
+  check('coerceSpec clamps inertia to 1', evil.flywheelInertia === 1, `${evil.flywheelInertia}`);
+  check('coerceSpec clamps teamNumber to 99999', evil.teamNumber === 99999, `${evil.teamNumber}`);
+  check('coerceSpec truncates an over-long name', evil.name.length <= 24, `${evil.name.length}`);
+
+  // NaN / Infinity injected via devtools must NOT slip through (bare clamp lets
+  // NaN pass — the whole reason coerceSpec guards finiteness)
+  const nan = coerceSpec({ length: NaN, width: Infinity, massLb: NaN, driveRpm: -Infinity, flywheelInertia: NaN });
+  check('coerceSpec rejects NaN length (finite fallback)', Number.isFinite(nan.length), `${nan.length}`);
+  check('coerceSpec rejects Infinity width', Number.isFinite(nan.width) && nan.width <= ROBOT_MAX_SIZE, `${nan.width}`);
+  check('coerceSpec rejects NaN mass', Number.isFinite(nan.massLb), `${nan.massLb}`);
+  check('coerceSpec rejects -Infinity rpm', Number.isFinite(nan.driveRpm) && nan.driveRpm >= rpmLimits('mecanum').min, `${nan.driveRpm}`);
+
+  // BELOW-minimum values are clamped UP just as strictly as over-max is clamped down
+  const tiny = coerceSpec({
+    intake: 'sloped', drivetrain: 'mecanum', flywheelInertia: 0.5,
+    length: -5, width: 0, massLb: 1, driveRpm: 1,
+  });
+  check('coerceSpec clamps length UP to the preset min', tiny.length >= INTAKE_PRESETS.sloped.minLength, `${tiny.length}`);
+  check('coerceSpec clamps width UP to ROBOT_MIN_WIDTH', tiny.width >= ROBOT_MIN_WIDTH, `${tiny.width}`);
+  // swerve needs a wider base — its width floors at SWERVE_MIN_WIDTH, above the others
+  // isolate the drivetrain floor with a VECTOR intake (its own width floor is the
+  // lowest — ROBOT_MIN_WIDTH — so it doesn't mask the drivetrain floor)
+  const swWide = coerceSpec({ drivetrain: 'swerve', intake: 'vector', width: 10 });
+  check('coerceSpec clamps swerve width UP to SWERVE_MIN_WIDTH', swWide.width === SWERVE_MIN_WIDTH, `${swWide.width}`);
+  check('non-swerve vector width floor stays ROBOT_MIN_WIDTH', coerceSpec({ drivetrain: 'mecanum', intake: 'vector', width: 10 }).width === ROBOT_MIN_WIDTH);
+  // per-INTAKE width floors: the funnel presets need a wider frame than vector
+  check('widthLimits sloped floors at 14.5', widthLimits('sloped', 'mecanum').min === 14.5, `${widthLimits('sloped', 'mecanum').min}`);
+  check('widthLimits triangle floors at 15.5', widthLimits('triangle', 'mecanum').min === 15.5, `${widthLimits('triangle', 'mecanum').min}`);
+  // the floor is the MAX of the intake + drivetrain floors
+  check('widthLimits takes the MAX of intake + drivetrain floor', widthLimits('triangle', 'swerve').min === 15.5 && widthLimits('vector', 'swerve').min === SWERVE_MIN_WIDTH);
+  check('coerceSpec clamps a sloped robot UP to the intake width floor', coerceSpec({ intake: 'sloped', width: 10 }).width === 14.5, `${coerceSpec({ intake: 'sloped', width: 10 }).width}`);
+  check('coerceSpec clamps mass UP to the drivetrain×inertia floor', tiny.massLb >= massLimits('mecanum', 0.5).min, `${tiny.massLb}`);
+  check('coerceSpec clamps rpm UP to the drivetrain min', tiny.driveRpm >= rpmLimits('mecanum').min, `${tiny.driveRpm}`);
+  check('coerceSpec clamps a NEGATIVE inertia to 0', coerceSpec({ flywheelInertia: -3 }).flywheelInertia === 0);
+  // the mass floor tracks inertia: max inertia demands a heavier minimum than min inertia
+  check('mass floor rises with inertia', massLimits('mecanum', 1).min > massLimits('mecanum', 0).min);
+  // ORDER matters: an out-of-range inertia is clamped to 1 FIRST, so the mass floor
+  // is then computed from the CLAMPED inertia (not the raw 9) — mass is pulled up to
+  // the inertia-1 floor. This is the dependency chain the builder UI also follows.
+  const ord = coerceSpec({ drivetrain: 'mecanum', flywheelInertia: 9, massLb: 18 });
+  check('mass range uses the CLAMPED inertia (intake→drivetrain→inertia→mass order)',
+    ord.flywheelInertia === 1 && ord.massLb >= massLimits('mecanum', 1).min, `${ord.massLb} @ i=${ord.flywheelInertia}`);
+
+  // garbage / missing input falls back to a fully-legal default spec
+  const junk = coerceSpec(undefined);
+  check('coerceSpec(undefined) returns a legal default', junk.length === DEFAULT_SPEC.length && junk.width === DEFAULT_SPEC.width);
+
+  // the ULTIMATE chokepoint: createWorld sanitizes every setup, so even a raw
+  // spoofed setup can never spawn an oversized robot in the actual world
+  const setups: RobotSetup[] = [{
+    id: 0,
+    alliance: 'blue',
+    spec: { ...DEFAULT_SPEC, length: 999, width: 999, massLb: 9999 },
+    assists: { ...DEFAULT_ASSISTS },
+    startIndex: 99,
+  }];
+  const w = createWorld('match', 1, setups);
+  const rspec = w.robots[0].spec;
+  check('createWorld sanitizes a spoofed setup spec (length)', rspec.length <= INTAKE_PRESETS[rspec.intake].maxLength, `${rspec.length}`);
+  check('createWorld sanitizes a spoofed setup spec (width)', rspec.width <= ROBOT_MAX_SIZE, `${rspec.width}`);
+  check('createWorld clamps an out-of-range startIndex (no crash, robot spawned)', w.robots.length === 1);
+
+  // server ingress: a spoofed join / update patch is clamped before it hits the roster
+  const player = sanitizePlayer({ name: 'A', alliance: 'blue', spec: { length: 999, width: 999 }, assists: {} });
+  check('sanitizePlayer clamps a spoofed join spec', player.spec.width <= ROBOT_MAX_SIZE && player.spec.length <= INTAKE_PRESETS[player.spec.intake].maxLength);
+  const patched = sanitizePlayerPatch({ spec: { width: 999, massLb: 9999 } }, { ...player, clientId: 'x' });
+  check('sanitizePlayerPatch clamps a spoofed spec patch', (patched.spec?.width ?? 0) <= ROBOT_MAX_SIZE, `${patched.spec?.width}`);
+  check('sanitizePlayerPatch ignores unknown/absent fields (empty patch is a no-op)', Object.keys(sanitizePlayerPatch({ bogus: 1 }, { ...player, clientId: 'x' })).length === 0);
+
+  // 2v2 start-ROLE swap fields survive server sanitization (the server passes them
+  // through so the consent handshake can propagate over the roster)
+  const rolePlayer = sanitizePlayer({ name: 'R', alliance: 'red', spec: {}, assists: {}, startRole: 'far', swapReq: true });
+  check('sanitizePlayer passes a valid startRole + swapReq', rolePlayer.startRole === 'far' && rolePlayer.swapReq === true);
+  check('sanitizePlayer rejects a bogus startRole', sanitizePlayer({ name: 'R', spec: {}, assists: {}, startRole: 'middle' }).startRole === undefined);
+  const rolePatch = sanitizePlayerPatch({ startRole: 'close', swapReq: true }, { ...player, clientId: 'x' });
+  check('sanitizePlayerPatch passes startRole + swapReq', rolePatch.startRole === 'close' && rolePatch.swapReq === true);
+}
+
+// ---- vector intake: WHERE the ball enters decides the swallow time -----------
+{
+  // one ball at the mouth, capture cadence started (lastIntakeAt = now) so the
+  // first swallow must wait the position-dependent interval
+  const capTicks = (localY: number) => {
+    const w = mkWorld('free', 'blue', 6, { length: 12, width: 14, intake: 'vector' });
+    const r = w.robots[0];
+    r.hopper = []; r.pos = { x: 0, y: 0 }; r.heading = Math.PI / 2; r.fieldCentric = false; r.vel = { x: 0, y: 0 };
+    r.lastIntakeAt = w.time;
+    const wheelLine = r.spec.length / 2 + INTAKE_PRESETS.vector.reach; // 6 + 3.5
+    const b = w.balls[0]; w.balls.splice(1);
+    b.state = { kind: 'ground' };
+    // shallow contact just ahead of the face (placing dead-on the OBB face
+    // triggers the deep-push eviction); at heading π/2 world = (−localY, localX)
+    b.pos = { x: -localY, y: wheelLine + 2 }; b.vel = { x: 0, y: 0 }; b.z = 0; b.vz = 0;
+    const commands = new Map([[0, cmd({ intake: true })]]);
+    let ticks = 0;
+    while (r.hopper.length === 0 && ticks < 120) { step(w, SIM_DT, commands); ticks++; }
+    return ticks;
+  };
+  // width 14 → vector mouth half-width 7, so an edge entry sits at localY 6 (inside
+  // the mouth); the vectoring travel to center makes it slower than a center entry
+  const center = capTicks(0), edge = capTicks(6);
+  check('vector intake swallows a CENTER ball faster than an EDGE ball', edge > center + 3, `center ${center}t vs edge ${edge}t`);
+}
+
+// ---- sloped: driving into an OFF-CENTER ball, the slopes funnel it to center ----
+{
+  const w = mkWorld('free', 'blue', 6, { intake: 'sloped' }); // default 18-wide chassis
+  const r = w.robots[0];
+  r.hopper = []; r.pos = { x: 0, y: -12 }; r.heading = Math.PI / 2; r.fieldCentric = false; r.vel = { x: 0, y: 0 };
+  const b = w.balls[0]; w.balls.splice(1);
+  b.state = { kind: 'ground' };
+  // off-center ball ahead (on the slope path); only the physical slope + drive can
+  // bring it to the center wheels — the edge of the intake can't grab it
+  b.pos = { x: 4, y: -12 + r.spec.length / 2 + 4 }; b.vel = { x: 0, y: 0 }; b.z = 0; b.vz = 0;
+  run(w, cmd({ driveY: 0.3, intake: true }), 1.3);
+  check('sloped slopes funnel an off-center ball to the center wheels', r.hopper.length === 1, `hopper=${r.hopper.length}`);
+}
+
+// ---- triangle intake devours TWO from a clump per cycle ---------------------
+{
+  const w = mkWorld('free', 'blue', 6, { length: 12, width: 14, intake: 'triangle' });
+  const r = w.robots[0];
+  r.hopper = []; r.pos = { x: 0, y: 0 }; r.heading = Math.PI / 2; r.fieldCentric = false; r.vel = { x: 0, y: 0 };
+  const throat = r.spec.length / 2 + BALL_RADIUS; // where the compliant wheels grab
+  w.balls.splice(2);
+  // two balls side by side at the throat: local (throat, ±2.5) → world (∓2.5, throat)
+  [2.5, -2.5].forEach((ly, i) => {
+    const b = w.balls[i];
+    b.state = { kind: 'ground' };
+    b.pos = { x: -ly, y: throat }; b.vel = { x: 0, y: 0 }; b.z = 0; b.vz = 0;
+  });
+  run(w, cmd({ intake: true }), 0.03); // one cycle
+  check('triangle intake devours two clumped balls in one cycle', r.hopper.length === 2, `hopper=${r.hopper.length}`);
 }
 
 // ---- a robot squeezed by an opponent against a wall stays in-field ----------
@@ -1296,11 +2143,12 @@ function inGate(w: World, robotIdx: number, gate: 'red' | 'blue'): void {
   const gcx = (gz.x0 + gz.x1) / 2;
   const gcy = (gz.y0 + gz.y1) / 2;
   w.time = 0;
-  w.robots[0].pos = { x: gcx, y: gcy }; // blue OPERATING red's gate
+  w.robots[0].pos = { x: gcx, y: gcy }; // blue TOUCHING red's gate arm (no push, idle)
+  w.robots[0].vel = { x: 0, y: 0 };
   w.robots[1].pos = { x: 0, y: 20 };    // red elsewhere
   updatePenalties(w, 1 / 60, new Map());
   check(
-    'operating the opponent gate is an immediate MAJOR (G417), no robot contact needed',
+    'TOUCHING the opponent gate (even without opening it) is an immediate MAJOR (G417)',
     w.match.fouls.blue.major === 1 && w.match.scores.red.foulPoints === 15,
     `blueMajor=${w.match.fouls.blue.major} redFoulPts=${w.match.scores.red.foulPoints}`,
   );
@@ -1326,6 +2174,82 @@ function inGate(w: World, robotIdx: number, gate: 'red' | 'blue'): void {
     'operating your OWN gate is not a foul',
     w2.match.scores.red.foulPoints === 0 && w2.match.fouls.red.major === 0,
     `redFoulPts=${w2.match.scores.red.foulPoints} redMajor=${w2.match.fouls.red.major}`,
+  );
+}
+
+// ---- G408 over-possession / plowing (MINOR) --------------------------------
+// A robot CONTROLLING more than POSSESSION_LIMIT artifacts (hopper + herded
+// loose balls) past POSSESSION_GRACE draws a MINOR foul on its own alliance.
+{
+  const w = foulWorld();
+  const r = w.robots[0]; // blue
+  r.pos = { x: 0, y: -8 };
+  r.heading = 0;
+  r.hopper = ['green', 'green', 'green']; // full hopper = 3 stored (at the limit)
+  r.vel = { x: POSSESSION_MOVE_SPEED + 4, y: 0 }; // driving = herding
+  // a loose ground ball plowed against the robot -> 4 controlled, over the limit
+  w.balls.push({ id: 9001, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  // hold the over-possession just past the grace window
+  for (let i = 0; i < Math.round(POSSESSION_GRACE / (1 / 60)) + 2; i++) {
+    w.time = i / 60;
+    updatePenalties(w, 1 / 60, new Map());
+  }
+  check(
+    'controlling a 4th artifact (full hopper + a plowed loose ball) past the grace is a MINOR G408',
+    w.match.fouls.blue.minor === 1 && w.match.scores.red.foulPoints === 5,
+    `blueMinor=${w.match.fouls.blue.minor} redFoulPts=${w.match.scores.red.foulPoints}`,
+  );
+
+  // a PARKED robot merely resting against the same ball is not controlling it
+  const w2 = foulWorld();
+  const r2 = w2.robots[0];
+  r2.pos = { x: 0, y: -8 };
+  r2.heading = 0;
+  r2.hopper = ['green', 'green', 'green'];
+  r2.vel = { x: 0, y: 0 }; // stationary
+  w2.balls.push({ id: 9002, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  for (let i = 0; i < Math.round(POSSESSION_GRACE / (1 / 60)) + 2; i++) {
+    w2.time = i / 60;
+    updatePenalties(w2, 1 / 60, new Map());
+  }
+  check(
+    'a stationary robot resting against a loose ball is not over-possession (no G408)',
+    w2.match.fouls.blue.minor === 0 && w2.match.scores.red.foulPoints === 0,
+    `blueMinor=${w2.match.fouls.blue.minor} redFoulPts=${w2.match.scores.red.foulPoints}`,
+  );
+
+  // a full hopper with NO plowed ball is exactly at the limit — no foul
+  const w3 = foulWorld();
+  const r3 = w3.robots[0];
+  r3.pos = { x: 0, y: -8 };
+  r3.hopper = ['green', 'green', 'green'];
+  r3.vel = { x: POSSESSION_MOVE_SPEED + 4, y: 0 };
+  for (let i = 0; i < Math.round(POSSESSION_GRACE / (1 / 60)) + 2; i++) {
+    w3.time = i / 60;
+    updatePenalties(w3, 1 / 60, new Map());
+  }
+  check(
+    'a full hopper at the possession limit (no plowed ball) is legal (no G408)',
+    w3.match.fouls.blue.minor === 0,
+    `blueMinor=${w3.match.fouls.blue.minor}`,
+  );
+
+  // brief contact under the grace window does not foul (normal intake pass)
+  const w4 = foulWorld();
+  const r4 = w4.robots[0];
+  r4.pos = { x: 0, y: -8 };
+  r4.heading = 0;
+  r4.hopper = ['green', 'green', 'green'];
+  r4.vel = { x: POSSESSION_MOVE_SPEED + 4, y: 0 };
+  w4.balls.push({ id: 9003, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+  for (let i = 0; i < Math.floor((POSSESSION_GRACE / 2) / (1 / 60)); i++) { // < grace
+    w4.time = i / 60;
+    updatePenalties(w4, 1 / 60, new Map());
+  }
+  check(
+    'over-possession briefer than the grace window does not foul',
+    w4.match.fouls.blue.minor === 0,
+    `blueMinor=${w4.match.fouls.blue.minor}`,
   );
 }
 
@@ -1361,9 +2285,12 @@ function inGate(w: World, robotIdx: number, gate: 'red' | 'blue'): void {
     b.z = RAMP_SURFACE_Z;
   }
   const gz = gateZone('red');
-  w.robots[0].pos = { x: (gz.x0 + gz.x1) / 2, y: (gz.y0 + gz.y1) / 2 }; // blue opens red's gate
+  w.robots[0].pos = { x: gz.x0 - 7, y: (gz.y0 + gz.y1) / 2 }; // blue field-side of red's gate
+  w.robots[0].heading = 0; // face the +x (red) wall
+  w.robots[0].fieldCentric = false;
   w.robots[1].pos = { x: 0, y: 30 };
-  runCmds(w, new Map(), 2.5); // gate opens, the column drains off red's ramp
+  // blue drives INTO red's gate arm (push-to-open) — the column drains off red's ramp
+  runCmds(w, new Map([[0, cmd({ driveY: 1 })]]), 2.5);
   const drained = w.balls.filter((b) => !(b.state.kind === 'rail' && b.state.goal === 'red')).length;
   check(
     'opening the opponent gate: 1 G417 + one G418 per artifact that drains off their ramp',
@@ -1616,6 +2543,17 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     JSON.stringify(once) === JSON.stringify(twice),
     JSON.stringify(once),
   );
+  // TANK drive lives in leftDrive/rightDrive — these MUST survive quantization or a
+  // networked tank robot gets zero drive and sits frozen at spawn (regression guard).
+  const tank = dequantizeCommand(quantizeCommand(cmd({ leftDrive: 1, rightDrive: -0.5 })));
+  check(
+    'quantization carries tank leftDrive/rightDrive (not dropped to 0)',
+    tank.leftDrive === 1 && Math.abs(tank.rightDrive + 0.5) < 0.02,
+    `ld=${tank.leftDrive} rd=${tank.rightDrive}`,
+  );
+  // an OLD client's ld/rd-less packet still decodes (missing ⇒ 0, the old behavior)
+  const legacy = dequantizeCommand({ dx: 0, dy: 64, rot: 0, buttons: 0 });
+  check('dequantize tolerates a legacy ld/rd-less packet', legacy.leftDrive === 0 && legacy.rightDrive === 0);
 }
 
 // ---- worldHash: replay determinism + sensitivity ---------------------------
@@ -1693,6 +2631,34 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   check(
     'the slim wire world carries no robot spec (client re-injects it)',
     !('spec' in (slimWorld(w).robots[0] as object)),
+  );
+
+  // OLD-SERVER SKEW: one Fly app serves every client version, so a newer client
+  // can receive a snapshot from an older server whose RobotState predates the
+  // power-draw fields. Simulate that by stripping flywheelSpin/flywheelSpinRate/
+  // powerDraw from the wire, then unslim + step — the client must NOT go NaN
+  // (regression: it rendered the robot at the field centre and froze).
+  const oldWire = slimWorld(w);
+  for (const r of oldWire.robots) {
+    delete (r as Record<string, unknown>).flywheelSpin;
+    delete (r as Record<string, unknown>).flywheelSpinRate;
+    delete (r as Record<string, unknown>).powerDraw;
+  }
+  const oldRebuilt = unslimWorld(oldWire, w.balls, specById);
+  check(
+    'unslim back-fills missing power-draw fields (old-server skew, no undefined)',
+    oldRebuilt.robots.every(
+      (r) =>
+        Number.isFinite(r.flywheelSpin) &&
+        Number.isFinite(r.flywheelSpinRate) &&
+        Number.isFinite(r.powerDraw),
+    ),
+  );
+  for (let i = 0; i < 30; i++) step(oldRebuilt, SIM_DT, cmds);
+  check(
+    'stepping an old-server snapshot never NaNs the robot position',
+    oldRebuilt.robots.every((r) => Number.isFinite(r.pos.x) && Number.isFinite(r.pos.y)),
+    oldRebuilt.robots.map((r) => `(${r.pos.x.toFixed(1)},${r.pos.y.toFixed(1)})`).join(' '),
   );
 
   // ball delta: encode changes vs a baseline, apply to the baseline, compare
@@ -1878,10 +2844,22 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   const duo = recordSetups(DEFAULT_SPEC, 'duo', DEFAULT_ASSISTS, undefined, true);
   check('recordSetups solo = 1 robot (1v0)', solo.length === 1 && solo[0].id === 0);
   check(
-    'recordSetups duo = 2 robots, same drivetrain, distinct poses',
-    duo.length === 2 &&
-      duo[0].spec.drivetrain === duo[1].spec.drivetrain &&
-      duo[0].startIndex !== duo[1].startIndex,
+    'recordSetups duo = 2 robots at distinct poses',
+    duo.length === 2 && duo[0].startIndex !== duo[1].startIndex,
+  );
+  // each duo driver brings their OWN build — a duo can mix drivetrains
+  const mixedDuo = recordSetups(
+    { ...DEFAULT_SPEC, drivetrain: 'tank' },
+    'duo',
+    DEFAULT_ASSISTS,
+    undefined,
+    true,
+    undefined,
+    { ...DEFAULT_SPEC, drivetrain: 'swerve' },
+  );
+  check(
+    'recordSetups duo keeps each driver’s own drivetrain',
+    mixedDuo[0].spec.drivetrain === 'tank' && mixedDuo[1].spec.drivetrain === 'swerve',
   );
 
   // recordScore: an opponent-free run's NET score subtracts the player's OWN
@@ -1964,34 +2942,115 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   }
 }
 
+// ---- mid-match reconnect race: fast rejoin before the dropped socket is reaped -
+// A transient network drop breaks the client's TCP, it reconnects in ~1s and sends
+// `rejoin` — but the server often hasn't reaped the OLD socket yet (a partitioned
+// connection lingers for tens of seconds). Reattach must take over anyway (the
+// clientId proves ownership), and the stale old socket's later close must NOT knock
+// the reconnected player offline. Covers both duo-record and versus (same code path).
+{
+  const a2: ServerMsg[] = []; // messages to the RECONNECTED 'a' socket
+  const b1: ServerMsg[] = []; // messages to 'b' (watch for roster churn)
+  const mkC = (id: string, alliance: 'red' | 'blue', sink: ServerMsg[]): Client => ({
+    id,
+    send: (m) => sink.push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+  const room = new Room('smoke-reconnect', () => {}, { kind: 'versus' });
+  const a = mkC('a', 'red', []);
+  const b = mkC('b', 'blue', b1);
+  room.add(a);
+  room.add(b);
+  room.onMessage('a', { t: 'start' }); // host 'a' starts the match (world != null)
+  room.advanceForTest(30); // a few live ticks, then the real-time loop is stopped
+
+  const oldConn = a.conn; // the connection stamp issued to the ORIGINAL socket
+  // 'a' drops but its old socket is NOT reaped yet (no detach). The client reconnects
+  // on a fresh socket and reattaches — this used to be REFUSED (c.connected still true).
+  const nc = room.reattach('a', (m) => a2.push(m));
+  check('reconnect: fast rejoin reclaims the slot even while it still shows connected', nc !== null && nc !== oldConn);
+  check('reconnect: the reconnected socket gets an immediate resync snapshot', a2.some((m) => m.t === 'snapshot'));
+
+  b1.length = 0; // watch for roster churn caused by a (mis)handled close
+  room.detach('a', oldConn); // the STALE old socket finally closes — must be ignored
+  check('reconnect: the stale old-socket close is ignored (no disconnect churn)', !b1.some((m) => m.t === 'roster'));
+  // positive control: a close carrying the CURRENT conn IS honoured (broadcasts roster)
+  room.detach('a', nc as number);
+  check('reconnect: the current socket close is honoured (roster broadcast)', b1.some((m) => m.t === 'roster'));
+
+  check('reconnect: reattach on an unknown/gone slot returns null (→ rejoined:false)', room.reattach('ghost', () => {}) === null);
+}
+
+// ---- single live game per user + restart disabled (server enforcement) ------
+{
+  const active: string[] = [];
+  const inactive: string[] = [];
+  const msgs: ServerMsg[] = [];
+  const client: Client = {
+    id: 'c1',
+    send: (m) => msgs.push(m),
+    player: {
+      clientId: 'c1',
+      name: 'U',
+      teamName: 'T',
+      teamNumber: 1,
+      alliance: 'blue',
+      startIndex: 0,
+      ready: true,
+      spec: { ...DEFAULT_SPEC },
+      assists: { ...DEFAULT_ASSISTS },
+    },
+    connected: true,
+    disconnectAt: 0,
+    userId: 'user-1',
+  };
+  const room = new Room(
+    'smoke-lock',
+    () => {},
+    { kind: 'versus' },
+    undefined,
+    (uid) => active.push(uid),
+    (uid) => inactive.push(uid),
+  );
+  room.add(client);
+  room.onMessage('c1', { t: 'start' });
+  check('single-game lock registered for an authed driver at match begin', active.includes('user-1'));
+
+  // restart is DISABLED in multiplayer — it must NOT re-author the live match
+  const startsBefore = msgs.filter((m) => m.t === 'matchStart').length;
+  room.onMessage('c1', { t: 'restart' });
+  const startsAfter = msgs.filter((m) => m.t === 'matchStart').length;
+  check('restart is ignored mid-match (no re-authored match)', startsAfter === startsBefore && startsBefore === 1);
+
+  // run to the end → the lock is released at finalize so the user can start again
+  room.advanceForTest(maxMatchTicks() + 5);
+  check('single-game lock released when the match finalizes', inactive.includes('user-1'));
+}
+
 // ---- ranked ELO math (Phase 3) ---------------------------------------------
 {
   const p = (
     userId: string,
     alliance: 'red' | 'blue',
-    drivetrain: EloParticipant['drivetrain'],
     rating = 1000,
     rd = 350,
   ): EloParticipant => ({
     userId,
     alliance,
-    drivetrain,
-    overall: { rating, rd, vol: 0.06 },
-    drive: { rating, rd, vol: 0.06 },
+    rating: { rating, rd, vol: 0.06 },
   });
 
   check('eloMode: 2 players = 1v1, 4 = 2v2', eloMode(2) === '1v1' && eloMode(4) === '2v2');
 
-  // even 1v1, same drivetrain, red wins → symmetric swing on BOTH boards; a fresh
-  // PROVISIONAL (RD 350) rating moves a LOT (unlike settled Elo's ±16)
-  const evenRedWin = computeGlicko([p('a', 'red', 'mecanum'), p('b', 'blue', 'mecanum')], {
-    red: 50,
-    blue: 30,
-  });
-  const boards = new Set(evenRedWin.map((u) => u.board));
-  check('same-drivetrain game updates overall + that drivetrain board', boards.has('overall') && boards.has('mecanum') && boards.size === 2);
-  const aOverall = evenRedWin.find((u) => u.userId === 'a' && u.board === 'overall')!;
-  const bOverall = evenRedWin.find((u) => u.userId === 'b' && u.board === 'overall')!;
+  // even 1v1, red wins → single-board symmetric swing (ranked is NOT split by
+  // drivetrain); a fresh PROVISIONAL (RD 350) rating moves a LOT (vs settled ±16)
+  const evenRedWin = computeGlicko([p('a', 'red'), p('b', 'blue')], { red: 50, blue: 30 });
+  check('a game produces exactly one rating update per player', evenRedWin.length === 2);
+  const aOverall = evenRedWin.find((u) => u.userId === 'a')!;
+  const bOverall = evenRedWin.find((u) => u.userId === 'b')!;
   check(
     'provisional win swings hard (>100) and is symmetric',
     aOverall.after - 1000 > 100 && Math.abs(aOverall.after - 1000 + (bOverall.after - 1000)) <= 1,
@@ -2000,13 +3059,13 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   check('a game shrinks the rating deviation (more certainty)', aOverall.rd < 350 && bOverall.rd < 350, `rd ${aOverall.rd}`);
   check('a fresh rating is still provisional after one game', aOverall.rd > RD_PROVISIONAL, `rd ${aOverall.rd}`);
 
-  // mixed drivetrains → OVERALL board only (no per-drivetrain board)
-  const mixed = computeGlicko([p('a', 'red', 'mecanum'), p('b', 'blue', 'tank')], { red: 50, blue: 30 });
-  check('mixed-drivetrain game updates OVERALL only', new Set(mixed.map((u) => u.board)).size === 1 && mixed.every((u) => u.board === 'overall'));
+  // mixed drivetrains rate identically — the board is not divided by drivetrain
+  const mixed = computeGlicko([p('a', 'red'), p('b', 'blue')], { red: 50, blue: 30 });
+  check('mixed-drivetrain game rates on the one board', mixed.length === 2);
 
   // a draw between equals leaves the rating put but still sharpens RD
-  const draw = computeGlicko([p('a', 'red', 'swerve'), p('b', 'blue', 'swerve')], { red: 40, blue: 40 });
-  const aDraw = draw.find((u) => u.userId === 'a' && u.board === 'overall')!;
+  const draw = computeGlicko([p('a', 'red'), p('b', 'blue')], { red: 40, blue: 40 });
+  const aDraw = draw.find((u) => u.userId === 'a')!;
   check('a draw between equals leaves rating ~unchanged but shrinks RD', Math.abs(aDraw.after - 1000) <= 1 && aDraw.rd < 350, `${aDraw.after} rd${aDraw.rd}`);
 
   // ESTABLISHED (low-RD) ratings barely move — the chess.com "settled" feel
@@ -2017,14 +3076,14 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   // heavily-favored winner (settled RD) gains only a little
   const team = computeGlicko(
     [
-      p('a', 'red', 'swerve', 1400, 60),
-      p('b', 'red', 'swerve', 1400, 60),
-      p('c', 'blue', 'swerve', 1000, 60),
-      p('d', 'blue', 'swerve', 1000, 60),
+      p('a', 'red', 1400, 60),
+      p('b', 'red', 1400, 60),
+      p('c', 'blue', 1000, 60),
+      p('d', 'blue', 1000, 60),
     ],
     { red: 60, blue: 20 },
   );
-  const aT = team.find((u) => u.userId === 'a' && u.board === 'overall')!;
+  const aT = team.find((u) => u.userId === 'a')!;
   check('favored winner gains modestly', aT.after - aT.before > 0 && aT.after - aT.before < 40, `+${aT.after - aT.before}`);
 }
 
@@ -2048,14 +3107,15 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     connected: true,
     disconnectAt: 0,
     userId,
+    caps: ['strategy'],
   });
   // onResult resolves to overall-ELO changes (as applyMatchElo would); the Room
   // must re-key them to robot ids (add order → robotId 0 = red, 1 = blue)
   const onResult = () =>
     Promise.resolve({
       elo: [
-        { userId: 'u-red', before: 1000, after: 1016, rd: 120, games: 4 },
-        { userId: 'u-blue', before: 1000, after: 984, rd: 120, games: 12 },
+        { userId: 'u-red', before: 1000, after: 1016, rd: 120 },
+        { userId: 'u-blue', before: 1000, after: 984, rd: 120 },
       ],
     });
   const room = new Room('smoke-elo', () => {}, { kind: 'versus' }, onResult);
@@ -2072,42 +3132,170 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     const blue = elo.results.find((r) => r.robotId === 1);
     check('eloResult re-keys the winner delta to red robot 0', red?.after === 1016 && red?.before === 1000);
     check('eloResult re-keys the loser delta to blue robot 1', blue?.after === 984 && blue?.before === 1000);
-    // games-based placement: the "?" is now driven by games < PLACEMENT_GAMES,
-    // NOT by RD. red (4 games) is still in placements; blue (12) is placed.
-    check('eloResult carries overall-board games for placement', red?.games === 4 && blue?.games === 12);
-    check('placement flag is games-based (red in placements, blue placed)', red!.games < PLACEMENT_GAMES && blue!.games >= PLACEMENT_GAMES);
   }
 }
 
-// ---- custom 4-on-one-alliance room starts (no infinite pose-dedup loop) ------
-// regression: ROOM_CAPACITY (4) > START_POSES.length (3), so 4 drivers on one
-// alliance exhaust the distinct poses. The old `while (used.has(si))` spun
-// forever, hanging the tick loop / health probe until Fly killed the box.
+// ---- pre-match STRATEGY window: reveal / re-pick / ready gate / redaction ----
+// a staged ranked 1v1 opens a strategy window instead of starting immediately: both
+// drivers see their own alliance (opponents redacted), may re-pick within the build
+// limits, and the match starts only when both ready (else it cancels).
 {
-  const msgs: ServerMsg[] = [];
-  const mk = (id: string): Client => ({
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string, teamNumber: number): Client => ({
     id,
-    send: (m) => msgs.push(m),
+    send: (m) => rec[id].push(m),
     player: {
       clientId: id,
       name: id,
       teamName: 'T',
-      teamNumber: 1,
-      alliance: 'blue', // ALL on blue: 0 on red
+      teamNumber,
+      alliance: 'red',
       startIndex: 0,
-      ready: true,
+      ready: false,
       spec: { ...DEFAULT_SPEC },
       assists: { ...DEFAULT_ASSISTS },
     },
     connected: true,
     disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
   });
-  const room = new Room('smoke-4v0', () => {}, { kind: 'versus' });
-  for (const id of ['a', 'b', 'c', 'd']) room.add(mk(id));
-  room.onMessage('a', { t: 'start' }); // 'a' is host — must return, not hang
-  room.advanceForTest(3);
-  const started = msgs.filter((m) => m.t === 'matchStart').length;
-  check('custom 4-on-one-alliance room starts without hanging', started === 4);
+  const mkRoster = (): PendingMatch => ({
+    code: 'iad-strat',
+    hostRegion: 'iad',
+    mode: '1v1',
+    seed: 42,
+    ranked: true,
+    roster: [
+      { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 111, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200 },
+      { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 222, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: 1300 },
+    ],
+  });
+  // mirror production order: the host stages the pending match FIRST, then each
+  // paired client joins and the host re-checks (index.ts: add → maybeStartRanked).
+  const room = new Room('smoke-strat', () => {}, { kind: 'versus' });
+  room.applyPending(mkRoster());
+  room.add(mkC('red', 'u-red', 111));
+  room.maybeStartRanked();
+  // only red is here: no opponent roster may have leaked while still connecting
+  check('strategy: no roster revealed before everyone connects', !rec.red.some((m) => m.t === 'roster'));
+  check('strategy: no strategyStart until all paired players connect', !rec.red.some((m) => m.t === 'strategyStart'));
+  room.add(mkC('blue', 'u-blue', 222));
+  room.maybeStartRanked();
+
+  const ssRed = rec.red.find((m) => m.t === 'strategyStart');
+  const ssBlue = rec.blue.find((m) => m.t === 'strategyStart');
+  check('strategy: strategyStart sent to both drivers', !!ssRed && !!ssBlue);
+  check('strategy: yourRobotId matches roster slot', ssRed?.t === 'strategyStart' && ssRed.yourRobotId === 0 && ssBlue?.t === 'strategyStart' && ssBlue.yourRobotId === 1);
+  check('strategy: deadline is in the future', ssRed?.t === 'strategyStart' && ssRed.deadline > Date.now());
+  check('strategy: no matchStart before anyone readies', !rec.red.some((m) => m.t === 'matchStart'));
+
+  const lastRoster = (id: string): Extract<ServerMsg, { t: 'roster' }> | undefined =>
+    [...rec[id]].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+  const redRoster = lastRoster('red');
+  const opp = redRoster?.players.find((p) => p.alliance === 'blue');
+  const own = redRoster?.players.find((p) => p.alliance === 'red');
+  check('strategy: opponent card is hidden (redacted), keeps name/team/slot', opp?.hidden === true && opp?.teamNumber === 222 && opp?.slot === 1);
+  check('strategy: opponent spec is neutralized (no counter-pick)', opp?.spec.drivetrain === DEFAULT_SPEC.drivetrain && opp?.spec.intake === DEFAULT_SPEC.intake);
+  check('strategy: own card is full + carries its slot', own?.hidden !== true && own?.slot === 0);
+
+  // alliance is server-authoritative during strategy: a client can't switch sides
+  room.onMessage('red', { t: 'update', patch: { alliance: 'blue' } });
+  const afterAlliance = lastRoster('red')?.players.find((p) => p.slot === 0);
+  check('strategy: alliance lockdown — red stays red', afterAlliance?.alliance === 'red');
+
+  // live re-pick within the limits: swap to tank + an over-limit mass (clamped)
+  check('strategy: DEFAULT_SPEC is not already tank (re-pick is a real change)', DEFAULT_SPEC.drivetrain !== 'tank');
+  room.onMessage('red', { t: 'update', patch: { spec: { ...DEFAULT_SPEC, drivetrain: 'tank', massLb: 999 } } });
+
+  // ready gate: only starts once BOTH ready
+  room.onMessage('red', { t: 'update', patch: { ready: true } });
+  check('strategy: still no match with only one driver ready', !rec.red.some((m) => m.t === 'matchStart'));
+  room.onMessage('blue', { t: 'update', patch: { ready: true } });
+  const ms = rec.red.find((m) => m.t === 'matchStart');
+  check('strategy: match starts once both drivers ready', ms?.t === 'matchStart');
+  if (ms?.t === 'matchStart') {
+    const redSetup = ms.setups.find((s) => s.id === 0);
+    check('strategy: match uses the LIVE re-picked build (tank)', redSetup?.spec.drivetrain === 'tank');
+    check('strategy: re-pick is clamped to the build limits (mass ≤ 42)', (redSetup?.spec.massLb ?? 999) <= 42);
+    check('strategy: alliance stays authoritative from the staged roster', redSetup?.alliance === 'red');
+  }
+}
+
+// strict deadline: if not everyone readies in time, the match CANCELS
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
+  });
+  const room = new Room('smoke-strat-deadline', () => {}, { kind: 'versus' });
+  room.add(mkC('red', 'u-red'));
+  room.add(mkC('blue', 'u-blue'));
+  room.applyPending({ code: 'iad-d', hostRegion: 'iad', mode: '1v1', seed: 7, ranked: true, roster: [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: null },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: null },
+  ] });
+  room.onMessage('red', { t: 'update', patch: { ready: true } }); // only red readies
+  room.forceStrategyDeadlineForTest();
+  check('strategy deadline: cancels (error) when not everyone readied', rec.red.some((m) => m.t === 'error'));
+  check('strategy deadline: no match started', !rec.red.some((m) => m.t === 'matchStart'));
+}
+
+// a disconnect during strategy cancels the (unratable) pre-match
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps: ['strategy'],
+  });
+  const room = new Room('smoke-strat-drop', () => {}, { kind: 'versus' });
+  room.add(mkC('red', 'u-red'));
+  room.add(mkC('blue', 'u-blue'));
+  room.applyPending({ code: 'iad-x', hostRegion: 'iad', mode: '1v1', seed: 9, ranked: true, roster: [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: null },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: null },
+  ] });
+  room.detach('blue');
+  check('strategy drop: cancels the match (error to the remaining driver)', rec.red.some((m) => m.t === 'error'));
+  check('strategy drop: no match started', !rec.red.some((m) => m.t === 'matchStart'));
+}
+
+// backward compat: a MIXED room (one old client without the 'strategy' cap) skips the
+// strategy window and starts immediately with the staged specs — so one server can
+// serve alpha/beta/main clients at once without stranding an old build.
+{
+  const rec: Record<string, ServerMsg[]> = { red: [], blue: [] };
+  const mkC = (id: string, userId: string, caps: string[]): Client => ({
+    id,
+    send: (m) => rec[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId,
+    caps,
+  });
+  const room = new Room('smoke-strat-mixed', () => {}, { kind: 'versus' });
+  room.applyPending({ code: 'iad-m', hostRegion: 'iad', mode: '1v1', seed: 5, ranked: true, roster: [
+    { userId: 'u-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: null },
+    { userId: 'u-blue', name: 'blue', teamName: 'T', teamNumber: 1, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: null },
+  ] });
+  room.add(mkC('red', 'u-red', ['strategy'])); // new client
+  room.maybeStartRanked();
+  room.add(mkC('blue', 'u-blue', [])); // OLD client — no 'strategy' cap
+  room.maybeStartRanked();
+  check('compat: mixed room skips the strategy window (no strategyStart)', !rec.red.some((m) => m.t === 'strategyStart'));
+  check('compat: mixed room starts immediately (matchStart to both)', rec.red.some((m) => m.t === 'matchStart') && rec.blue.some((m) => m.t === 'matchStart'));
 }
 
 // ---- region-aware matchmaking: minimax host + expanding radius --------------
@@ -2115,9 +3303,11 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
 const rEntry = (
   id: string,
   homeRegion: string,
-  opts: { accessMs?: number; noWiden?: boolean } = {},
+  opts: { accessMs?: number; noWiden?: boolean; channel?: string; build?: string } = {},
 ): QueueEntry => ({
   id,
+  channel: opts.channel,
+  build: opts.build,
   send: () => {},
   player: {
     name: id,
@@ -2178,6 +3368,47 @@ const mkMM = () => {
   check('staged roster splits red/blue with distinct start poses', staged[0]?.roster[0].alliance === 'red' && staged[0]?.roster[1].alliance === 'blue');
 }
 
+// CHANNEL SEGREGATION: alpha players never pair with stable ones (they run a
+// different src/sim — a shared authoritative match would desync). Same-channel
+// pairs normally, and the staged match carries the channel (→ unpersisted alpha).
+{
+  const { mm } = mkMM();
+  mm.enqueue(rEntry('a', 'iad', { channel: 'alpha' }));
+  mm.enqueue(rEntry('b', 'iad')); // stable (no channel)
+  check('channel: alpha + stable in the same region do NOT pair', mm.queueSizes()['1v1'] === 2);
+}
+{
+  const { mm, staged } = mkMM();
+  mm.enqueue(rEntry('a', 'iad', { channel: 'alpha' }));
+  mm.enqueue(rEntry('b', 'iad', { channel: 'alpha' }));
+  check('channel: two alpha players DO pair', mm.queueSizes()['1v1'] === 0);
+  await flush();
+  check('channel: the staged alpha match is tagged alpha (→ unpersisted)', staged[0]?.channel === 'alpha');
+}
+
+// BUILD SEGREGATION: two DIFFERENT builds never share an authoritative match even
+// inside one channel (the "same code" invariant — alpha and main always have
+// different shas, so this separates them automatically without VITE_APP_CHANNEL).
+{
+  const { mm } = mkMM();
+  mm.enqueue(rEntry('a', 'iad', { build: 'sha_alpha' }));
+  mm.enqueue(rEntry('b', 'iad', { build: 'sha_main' })); // same (default) channel, different build
+  check('build: two different builds in the same region do NOT pair', mm.queueSizes()['1v1'] === 2);
+}
+{
+  const { mm } = mkMM();
+  mm.enqueue(rEntry('a', 'iad', { build: 'sha_x' }));
+  mm.enqueue(rEntry('b', 'iad', { build: 'sha_x' }));
+  check('build: two same-build players DO pair', mm.queueSizes()['1v1'] === 0);
+}
+{
+  // old clients that send no build fall back to channel-only separation (still pair)
+  const { mm } = mkMM();
+  mm.enqueue(rEntry('a', 'iad'));
+  mm.enqueue(rEntry('b', 'iad'));
+  check('build: two build-less (old) clients still pair (channel-only fallback)', mm.queueSizes()['1v1'] === 0);
+}
+
 // cross-region does NOT pair at t=0 (spread > radius), but DOES once widened
 {
   const { mm, staged, setNow } = mkMM();
@@ -2220,60 +3451,6 @@ const mkMM = () => {
   check('matchmaker queueSizes reports per-bucket depth', mm.queueSizes()['1v1'] === 1 && mm.queueSizes()['2v2'] === 0);
   mm.remove('q1');
   check('matchmaker queueSizes drops when a player leaves', mm.queueSizes()['1v1'] === 0);
-}
-
-// ---- untrusted spec sanitization (anti-cheat: spoofed devtools / wire spec) --
-{
-  const evil = coerceSpec({
-    intake: 'sloped',
-    length: 999,
-    width: 999,
-    massLb: 9999,
-    driveRpm: 99999,
-    flywheelInertia: 50,
-    teamNumber: 1e12,
-    name: 'x'.repeat(500),
-    drivetrain: 'mecanum',
-  });
-  check('coerceSpec clamps length to the preset max', evil.length <= INTAKE_PRESETS.sloped.maxLength, `${evil.length}`);
-  check('coerceSpec clamps width to ROBOT_MAX_SIZE', evil.width <= ROBOT_MAX_SIZE, `${evil.width}`);
-  check('coerceSpec clamps mass to ROBOT_MAX_MASS', evil.massLb <= ROBOT_MAX_MASS, `${evil.massLb}`);
-  check('coerceSpec clamps rpm to ROBOT_MAX_RPM', evil.driveRpm <= ROBOT_MAX_RPM, `${evil.driveRpm}`);
-  check('coerceSpec clamps inertia to 1', evil.flywheelInertia === 1, `${evil.flywheelInertia}`);
-  check('coerceSpec clamps teamNumber to 99999', evil.teamNumber === 99999, `${evil.teamNumber}`);
-  check('coerceSpec truncates an over-long name', evil.name.length <= 24, `${evil.name.length}`);
-
-  // NaN / Infinity injected via devtools must NOT slip through (bare clamp lets
-  // NaN pass — the whole reason coerceSpec guards finiteness)
-  const nan = coerceSpec({ length: NaN, width: Infinity, massLb: NaN, driveRpm: -Infinity, flywheelInertia: NaN });
-  check('coerceSpec rejects NaN length (finite fallback)', Number.isFinite(nan.length), `${nan.length}`);
-  check('coerceSpec rejects Infinity width', Number.isFinite(nan.width) && nan.width <= ROBOT_MAX_SIZE, `${nan.width}`);
-  check('coerceSpec rejects NaN mass', Number.isFinite(nan.massLb), `${nan.massLb}`);
-  check('coerceSpec rejects -Infinity rpm', Number.isFinite(nan.driveRpm) && nan.driveRpm >= ROBOT_MIN_RPM, `${nan.driveRpm}`);
-
-  const junk = coerceSpec(undefined);
-  check('coerceSpec(undefined) returns a legal default', junk.length === DEFAULT_SPEC.length && junk.width === DEFAULT_SPEC.width);
-
-  // the ULTIMATE chokepoint: createWorld sanitizes every setup
-  const setups: RobotSetup[] = [{
-    id: 0,
-    alliance: 'blue',
-    spec: { ...DEFAULT_SPEC, length: 999, width: 999, massLb: 9999 },
-    assists: { ...DEFAULT_ASSISTS },
-    startIndex: 99,
-  }];
-  const w = createWorld('match', 1, setups);
-  const rspec = w.robots[0].spec;
-  check('createWorld sanitizes a spoofed setup spec (length)', rspec.length <= INTAKE_PRESETS[rspec.intake].maxLength, `${rspec.length}`);
-  check('createWorld sanitizes a spoofed setup spec (width)', rspec.width <= ROBOT_MAX_SIZE, `${rspec.width}`);
-  check('createWorld clamps an out-of-range startIndex (no crash, robot spawned)', w.robots.length === 1);
-
-  // server ingress: a spoofed join / update patch is clamped before it hits the roster
-  const player = sanitizePlayer({ name: 'A', alliance: 'blue', spec: { length: 999, width: 999 }, assists: {} });
-  check('sanitizePlayer clamps a spoofed join spec', player.spec.width <= ROBOT_MAX_SIZE && player.spec.length <= INTAKE_PRESETS[player.spec.intake].maxLength);
-  const patched = sanitizePlayerPatch({ spec: { width: 999, massLb: 9999 } }, { ...player, clientId: 'x' });
-  check('sanitizePlayerPatch clamps a spoofed spec patch', (patched.spec?.width ?? 0) <= ROBOT_MAX_SIZE, `${patched.spec?.width}`);
-  check('sanitizePlayerPatch ignores unknown/absent fields (empty patch is a no-op)', Object.keys(sanitizePlayerPatch({ bogus: 1 }, { ...player, clientId: 'x' })).length === 0);
 }
 
 // a user can never be matched with THEMSELF (a 2nd tab / a stale reconnect entry

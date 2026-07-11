@@ -7,14 +7,20 @@ import type {
   Vec2,
   Alliance,
 } from '../types';
-import { START_POSES } from '../config';
+import { MAX_SAVED_AUTOS } from '../config';
+import { StartPositionEditor } from './StartPositionEditor';
+import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
 
 /**
  * Match configuration — the pre-game options that belong to the MATCH, not the
  * robot: alliance, start position, practice dummies, and an imported auto path.
- * Lives on Home (game MODE is chosen by which play tile you click). Kept separate
- * from the My Robot loadout builder on purpose. `.pp` import + the Pedro-Pathing
- * → sim coordinate transform live here.
+ * These apply to the SOLO/offline modes (Solo Practice, Free Drive, Records);
+ * Ranked and Custom assign alliance + start in the lobby / strategy screen.
+ *
+ * The MATCH section of `Configure`. It used to be a collapsed `<details>` on the
+ * homepage; now it has a route of its own (`/configure/match`), so it renders
+ * open. Kept separate from the robot loadout builder on purpose. `.pp` import +
+ * the Pedro-Pathing → sim coordinate transform live here.
  */
 export function MatchSetup({
   settings,
@@ -77,6 +83,11 @@ export function MatchSetup({
       event.target.value = '';
       return;
     }
+    if (settings.savedAutos.length >= MAX_SAVED_AUTOS) {
+      showToast(`You can save up to ${MAX_SAVED_AUTOS} autos — delete one first.`, 'warning');
+      event.target.value = '';
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
@@ -102,15 +113,19 @@ export function MatchSetup({
           version: data.version,
           timestamp: data.timestamp,
         };
-        set({ autoPath: autoPathData, autoPathEnabled: true });
-        showToast(`Loaded auto path: ${file.name}`, 'success');
+        // add to the library AND select it as the active auto
+        set({
+          savedAutos: [...settings.savedAutos, autoPathData],
+          autoPath: autoPathData,
+          autoPathEnabled: true,
+        });
+        showToast(`Saved auto: ${file.name}`, 'success');
       } catch (error) {
         const errMsg = getErrorMessage(error);
         const message = errMsg.includes('Invalid file format')
           ? 'Invalid file format. This may not be a valid Pedro Pathing file.'
           : `Error loading file: ${errMsg}`;
         showToast(message, 'error');
-        set({ autoPath: null, autoPathEnabled: false });
       } finally {
         event.target.value = '';
       }
@@ -122,19 +137,23 @@ export function MatchSetup({
     reader.readAsText(file);
   };
 
-  const clearAutoPath = () => {
-    set({ autoPath: null, autoPathEnabled: false });
-    showToast('Auto path cleared.', 'info');
+  // select a saved auto as the active one (a copy stays in the library)
+  const selectAuto = (a: AutoPathData) => set({ autoPath: a, autoPathEnabled: true });
+  const deleteAuto = (i: number) => {
+    const removed = settings.savedAutos[i];
+    const savedAutos = settings.savedAutos.filter((_, j) => j !== i);
+    const wasActive = !!removed && settings.autoPath?.fileName === removed.fileName;
+    set(wasActive ? { savedAutos, autoPath: null, autoPathEnabled: false } : { savedAutos });
   };
 
   const setAlliance = (alliance: Alliance) => set({ alliance });
 
   return (
-    <div className="ds-panel">
+    <section className="ds-panel">
       <div className="ds-panel-h">
         <span className="ds-panel-title">Match setup</span>
-        <span className="ds-panel-title" style={{ color: 'var(--ds-mut)' }}>
-          applied at match start
+        <span className="ds-collapse-hint">
+          Ranked and Custom set alliance &amp; start in the lobby
         </span>
       </div>
 
@@ -161,17 +180,20 @@ export function MatchSetup({
 
         <section className="ds-sec">
           <h2>Start position</h2>
-          <div className="ds-opts">
-            {START_POSES.map((p, i) => (
-              <button
-                key={p.label}
-                className={`ds-opt mini ${settings.startIndex === i ? 'on' : ''}`}
-                onClick={() => set({ startIndex: i })}
-              >
-                <span className="ot">{p.label}</span>
-                <span className="od">launch zone</span>
-              </button>
-            ))}
+          <StartPositionEditor
+            spec={settings.spec}
+            alliance={settings.alliance}
+            value={settings.startPose}
+            startIndex={settings.startIndex}
+            category={settings.startCat}
+            saved={settings.savedStartPoses}
+            onChange={(startPose) => startPose && set(selectStart(settings, { index: -1, pose: startPose }))}
+            onPickPreset={(i) => set(selectStart(settings, { index: i, pose: null }))}
+            onCategory={(c) => set(switchCategory(settings, c))}
+            onSave={(pose) => set(saveStart(settings, pose))}
+            onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
+          />
+          <div className="ds-opts" style={{ marginTop: 12 }}>
             <button
               className={`ds-opt mini ${settings.practiceDummies ? 'on' : ''}`}
               onClick={() => set({ practiceDummies: !settings.practiceDummies })}
@@ -183,27 +205,65 @@ export function MatchSetup({
         </section>
 
         <section className="ds-sec">
-          <h2>Auto path</h2>
+          <h2>
+            Auto path{' '}
+            <span className="ds-count">
+              {settings.savedAutos.length}/{MAX_SAVED_AUTOS}
+            </span>
+          </h2>
           <div className="ds-opts">
-            <label className="ds-opt" style={{ cursor: 'pointer' }}>
-              <span className="ot">Import .pp file</span>
-              <span className="od">{settings.autoPath ? settings.autoPath.fileName : 'No file selected'}</span>
-              <input type="file" accept=".pp" onChange={handleFileChange} style={{ display: 'none' }} />
-            </label>
-            {settings.autoPath && (
-              <button className="ds-opt" onClick={clearAutoPath}>
-                <span className="ot">Clear path</span>
-              </button>
+            {settings.savedAutos.map((a, i) => {
+              const active = settings.autoPath?.fileName === a.fileName;
+              return (
+                <div
+                  key={i}
+                  className={`ds-opt ${active ? 'on' : ''}`}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => selectAuto(a)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') selectAuto(a);
+                  }}
+                >
+                  <button
+                    className="ds-opt-del"
+                    title="Delete this auto"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteAuto(i);
+                    }}
+                  >
+                    ✕
+                  </button>
+                  <span className="ot">{a.fileName}</span>
+                  <span className="od">
+                    {a.lines?.length ?? 0} segments{active ? ' · selected' : ''}
+                  </span>
+                </div>
+              );
+            })}
+            {settings.savedAutos.length < MAX_SAVED_AUTOS && (
+              <label className="ds-opt ds-opt-add" style={{ cursor: 'pointer' }}>
+                <span className="ot">＋ Import .pp</span>
+                <span className="od">Add an auto to your library</span>
+                <input type="file" accept=".pp" onChange={handleFileChange} style={{ display: 'none' }} />
+              </label>
             )}
+          </div>
+          {settings.autoPath && (
             <button
               className={`ds-opt ${settings.autoPathEnabled ? 'on' : ''}`}
+              style={{ marginTop: 10 }}
               onClick={() => set({ autoPathEnabled: !settings.autoPathEnabled })}
-              disabled={!settings.autoPath}
             >
               <span className="ot">Auto path {settings.autoPathEnabled ? 'ON' : 'OFF'}</span>
-              <span className="od">Follow the imported path</span>
+              <span className="od">
+                {settings.autoPathEnabled
+                  ? `Running: ${settings.autoPath.fileName}`
+                  : 'Selected auto is off'}
+              </span>
             </button>
-          </div>
+          )}
           <p className="ds-hint">
             Build a <code>.pp</code> path at{' '}
             <a
@@ -218,6 +278,6 @@ export function MatchSetup({
           </p>
         </section>
       </div>
-    </div>
+    </section>
   );
 }

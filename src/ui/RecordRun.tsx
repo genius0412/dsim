@@ -7,6 +7,9 @@ import { ServerSession } from '../net/serverSession';
 import type { NetSession } from '../net/session';
 import type { RecordKind } from '../net/protocol';
 import { ServerPicker } from './ServerPicker';
+import { APP_NAME } from '../seasons';
+import { Logo } from './Logo';
+import { useEscape } from './useEscape';
 
 /**
  * Record-chasing launcher (opponent-free score attack). Unlike the custom-room
@@ -37,6 +40,8 @@ export function RecordRun({
   // single-server deploy skips straight to connecting (confirmed = true).
   const [confirmed, setConfirmed] = useState(!multiServer());
   const [pick, setPick] = useState(selectedServerId());
+
+  useEscape(onCancel); // Esc backs out, same as ← Back
 
   useEffect(() => {
     if (!confirmed) return;
@@ -93,6 +98,7 @@ export function RecordRun({
         teamNumber: settings.spec.teamNumber,
         alliance: 'blue', // record runs are forced to one alliance server-side
         startIndex: settings.startIndex,
+        startPose: settings.startPose ?? null,
         ready: true,
         spec: settings.spec,
         assists: settings.assists,
@@ -107,56 +113,89 @@ export function RecordRun({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [confirmed]);
 
+  /** the console scaffold every full-screen setup surface shares (Lobby,
+   * Matchmaking, MatchStrategy) — back control + brand mark, then a titled panel. */
+  const page = (title: JSX.Element, sub: string, body: JSX.Element): JSX.Element => (
+    <div className="ds-console">
+      <div className="ds-console-in" style={{ maxWidth: 520 }}>
+        <div className="ds-head">
+          <button className="ds-back" onClick={onCancel}>
+            ← Back
+          </button>
+          <span className="ds-mark">
+            <Logo size={24} />
+            {APP_NAME}
+          </span>
+        </div>
+        <div className="ds-title">
+          <h1>{title}</h1>
+        </div>
+        <p className="ds-sub" style={{ marginTop: -10 }}>
+          {sub}
+        </p>
+        <div className="ds-panelbox">{body}</div>
+      </div>
+    </div>
+  );
+
+  const kind = mode === 'duo' ? 'Duo 2v0' : 'Solo 1v0';
+
   // pre-run server picker (only when there's more than one region to choose)
   if (!confirmed && !error) {
-    return (
-      <div className="ds-app">
-        <main className="ds-main" style={{ display: 'grid', placeItems: 'center', minHeight: '70vh' }}>
-          <div style={{ textAlign: 'center', maxWidth: 460 }}>
-            <p className="ds-eyebrow">Record Run · {mode === 'duo' ? 'Duo 2v0' : 'Solo 1v0'}</p>
-            <h1 className="ds-h1">Choose a server</h1>
-            <p className="ds-sub" style={{ margin: '0 auto 16px' }}>
-              Pick the region with the lowest ping. We’ll remember your choice.
-            </p>
-            <ServerPicker
-              value={pick}
-              onChange={(id) => {
-                setPick(id);
-                onPreferServer?.(id);
-              }}
-            />
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-              <button className="ds-btn ghost" onClick={onCancel}>← Back</button>
-              <button className="ds-btn" onClick={() => setConfirmed(true)}>Start run →</button>
-            </div>
-          </div>
-        </main>
-      </div>
+    return page(
+      <>
+        Record <span className="accent">Run</span>
+      </>,
+      `${kind} · pick the region with the lowest ping. We’ll remember your choice.`,
+      <>
+        <ServerPicker
+          value={pick}
+          onChange={(id) => {
+            setPick(id);
+            onPreferServer?.(id);
+          }}
+        />
+        <div className="ds-actions">
+          <button className="ds-cta" onClick={() => setConfirmed(true)}>
+            START RUN ▶
+          </button>
+        </div>
+      </>,
     );
   }
 
-  return (
-    <div className="ds-app">
-      <main className="ds-main" style={{ display: 'grid', placeItems: 'center', minHeight: '70vh' }}>
-        <div style={{ textAlign: 'center', maxWidth: 460 }}>
-          <p className="ds-eyebrow">Record Run · {mode === 'duo' ? 'Duo 2v0' : 'Solo 1v0'}</p>
-          {error ? (
-            <>
-              <h1 className="ds-h1">Couldn’t start</h1>
-              <p className="ds-sub" style={{ margin: '0 auto 20px' }}>{error}</p>
-            </>
-          ) : (
-            <>
-              <h1 className="ds-h1">{status}</h1>
-              <p className="ds-sub" style={{ margin: '0 auto 20px' }}>
-                Your run records on the server for the leaderboard. First run after a quiet spell
-                waits a few seconds for the server to wake.
-              </p>
-            </>
-          )}
-          <button className="ds-btn" onClick={onCancel}>← Back to Home</button>
+  if (error) {
+    return page(
+      <>
+        Couldn’t <span className="accent">start</span>
+      </>,
+      kind,
+      <>
+        <p className="ds-form-err">⚠ {error}</p>
+        <div className="ds-actions">
+          <button className="ds-cta ghost" onClick={onCancel}>
+            BACK TO HOME
+          </button>
         </div>
-      </main>
-    </div>
+      </>,
+    );
+  }
+
+  return page(
+    <>
+      Record <span className="accent">Run</span>
+    </>,
+    `${kind} · ${status}`,
+    <>
+      <p className="ds-hint">
+        Your run records on the server for the leaderboard. First run after a quiet spell waits a
+        few seconds for the server to wake.
+      </p>
+      <div className="ds-actions">
+        <button className="ds-cta ghost" onClick={onCancel}>
+          BACK TO HOME
+        </button>
+      </div>
+    </>,
   );
 }

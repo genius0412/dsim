@@ -49,6 +49,43 @@ function parseServers(): GameServer[] {
 const SERVERS = parseServers();
 let selectedId = SERVERS[0]?.id ?? '';
 
+/**
+ * RELEASE CHANNEL of THIS client build (baked from `VITE_APP_CHANNEL`; default
+ * 'stable'). The pre-release 'alpha' deployment sets it to 'alpha'. The server
+ * uses it to (a) matchmake alpha players SEPARATELY from stable ones — they run
+ * a different `src/sim`, so mixing them in one authoritative match would desync —
+ * and (b) NOT persist alpha results to the leaderboard/ELO DB (in-development
+ * scores stay off the boards). Sent to the server on join/queue; absent ⇒
+ * 'stable' (older builds + the stable deployment). */
+export const appChannel = (): string =>
+  (import.meta.env.VITE_APP_CHANNEL as string | undefined)?.trim() || 'stable';
+
+/** THIS client's build id — the git sha baked in by vite (`__BUILD_ID__`; the same
+ * value `/version.json` carries). Sent to the server on `queue` so the matchmaker
+ * segregates the pool by build (two different builds never share an authoritative
+ * match — the "same code" invariant behind the version gate). 'dev' when unbuilt.
+ * Declared here (not imported from `version.ts`, which pulls in React) so pure net
+ * modules can read it. */
+declare const __BUILD_ID__: string;
+export const appBuild = (): string =>
+  typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : 'dev';
+
+/** friendly short names for the Fly deploy regions (code → place). Unknown codes
+ * fall back to their uppercase code so a new region still shows something sane. */
+const REGION_LABELS: Record<string, string> = {
+  iad: 'US East',
+  sjc: 'US West',
+  lhr: 'Europe',
+  syd: 'Australia',
+  nrt: 'Asia',
+};
+export const regionLabel = (code: string): string =>
+  REGION_LABELS[code] ?? (code ? code.toUpperCase() : '');
+
+/** whether `code` is a known deploy region (used to tell a region-coded room code
+ * like `iad-abc` from an ordinary custom room code). */
+export const isKnownRegion = (code: string): boolean => code in REGION_LABELS;
+
 /** all configured servers (regions); empty ⇒ multiplayer/records disabled */
 export const gameServers = (): GameServer[] => SERVERS;
 

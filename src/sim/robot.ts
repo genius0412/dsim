@@ -1,8 +1,8 @@
 import type { Artifact, ArtifactColor, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
-import { approach, rot, wrapAngle, hyp, dsin, dcos, dtan, datan2 } from '../math';
-import { classifierRect, goalCenter, launchTriangles, viewAngleOf } from './field';
-import { driveParams } from './drivetrain';
+import { approach, rot, wrapAngle, hyp, dsin, dcos, datan2, clamp } from '../math';
+import { classifierRect, flywheelSpinTarget, goalCenter, launchTriangles, viewAngleOf } from './field';
+import { driveParams, motorStep } from './drivetrain';
 import { robotIntersectsConvex } from './physics';
 import { robotsEnabled } from './match';
 
@@ -24,17 +24,17 @@ export function turretWorldPos(r: RobotState): { x: number; y: number } {
  * steepens at close range so a solution exists at every distance. */
 function solveShot(d: number): { speed: number; angle: number } {
   const dh = C.GOAL_OPENING_Z - C.LAUNCH_HEIGHT;
-  const lineOfSight = datan2(dh, Math.max(d, 0.5));
-  const angle = Math.min(
-    Math.max(C.LAUNCH_ANGLE, lineOfSight + C.LAUNCH_ANGLE_MARGIN),
-    C.LAUNCH_ANGLE_MAX,
-  );
-  const cos = dcos(angle);
-  const denom = 2 * cos * cos * (d * dtan(angle) - dh);
-  const speed =
-    denom > 0
-      ? Math.min(Math.sqrt((C.GRAVITY * d * d) / denom), C.LAUNCH_MAX_SPEED)
-      : C.LAUNCH_MAX_SPEED * 0.3;
+  const dd = Math.max(d, 0.5);
+  // Minimum-speed trajectory that reaches the goal opening at (dd, dh). Unlike a
+  // fixed-hood solve, it ALWAYS exists, is finite, and varies SMOOTHLY with
+  // distance — no clamp singularity and no point-blank fallback (the old solve
+  // jumped 96→316→178 in/s across d=4..6 and had NO solution inside ~5in). The
+  // launch angle is the adaptive hood: it sweeps from ~89° at point-blank (a
+  // near-vertical lob into the elevated goal) down toward ~45° far out.
+  //   v_min² = g·(dh + √(d²+dh²)),  angle = atan2(dh + √(d²+dh²), d)
+  const reach = hyp(dd, dh);
+  const angle = datan2(dh + reach, dd);
+  const speed = Math.min(Math.sqrt(C.GRAVITY * (dh + reach)), C.LAUNCH_MAX_SPEED);
   return { speed, angle };
 }
 
@@ -72,6 +72,42 @@ export function aimSolution(r: RobotState): { yaw: number; speed: number; angle:
 export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
   // ---- drive: driver frame -> robot frame -------------------------------
   const dp = driveParams(r.spec);
+  // ---- power draw: a spun-up flywheel (inertia × spin, set last tick in
+  // updateRobotActions) plus a running intake pull current off the drive
+  // motors — slow the LOCAL dp copy (driveParams() itself is untouched so the
+  // 75/7/280 calibration holds) and record it for the Rapier shove.
+  const intakeDraw =
+    (cmd.intake || r.autoIntake) && r.hopper.length < C.HOPPER_CAPACITY;
+  // flywheel: a small steady HOLD cost (being far barely matters) plus the
+  // DOMINANT SPIN-UP cost of accelerating the wheel while driving away from the
+  // goal — both scale with the wheel's inertia (heavy = expensive to spin up).
+  const flywheelDraw =
+    r.spec.flywheelInertia *
+    (C.POWER_DRAW_FLYWHEEL_HOLD * r.flywheelSpin +
+      C.POWER_DRAW_FLYWHEEL_SPINUP * r.flywheelSpinRate);
+  // swerve: the four steering (pivot) motors pull steady current just to hold +
+  // correct the pod angles, on top of the drive motors — always a bit slower.
+  const swerveDraw = dp.saturation === 'vec' ? C.POWER_DRAW_SWERVE : 0;
+  // drive current rises with RPM: a drivetrain geared for more speed pulls more
+  // current from the pack (only above the reference rpm, so base calibration holds)
+  // → diminishing top-speed returns on cranking rpm + more sag under load.
+  const driveDraw =
+    C.POWER_DRAW_DRIVE *
+    clamp(
+      (r.spec.driveRpm - C.REF_DRIVE_RPM) / (C.POWER_DRAW_DRIVE_TOP_RPM - C.REF_DRIVE_RPM),
+      0,
+      1,
+    );
+  const draw = Math.min(
+    flywheelDraw + (intakeDraw ? C.POWER_DRAW_INTAKE : 0) + swerveDraw + driveDraw,
+    C.POWER_DRAW_MAX,
+  );
+  r.powerDraw = draw;
+  const slow = 1 - draw;
+  dp.maxSpeed *= slow;
+  dp.accel *= slow;
+  dp.maxTurn *= slow;
+  dp.turnAccel *= slow;
   const viewAngle = viewAngleOf(r.alliance);
   // driver stick vector: +y = away from driver (screen up), +x = driver right.
   // screen -> world undoes the camera rotation
@@ -92,15 +128,12 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   let targetOmega = 0;
 
   if (dp.saturation === 'tank') {
-    // Traditional Tank Drive: leftDrive and rightDrive independently control sides.
-    // Normal Tank Drive: derive side-drive from Arcade-style inputs (driveY, rotate).
-    const mode = world.gameSettings?.tankControlMode ?? 'traditional';
-    let ld = cmd.leftDrive ?? 0;
-    let rd = cmd.rightDrive ?? 0;
-    if (mode === 'normal') {
-      ld = cmd.driveY - cmd.rotate;
-      rd = cmd.driveY + cmd.rotate;
-    }
+    // Tank drive is always commanded as independent side-drive (leftDrive/rightDrive).
+    // The control-STYLE preference (Traditional separate-sticks vs Normal arcade) is a
+    // per-driver INPUT concern resolved in GameController, so the sim stays pure and
+    // the choice applies the same in solo and multiplayer.
+    const ld = cmd.leftDrive ?? 0;
+    const rd = cmd.rightDrive ?? 0;
     targetFwd = ((ld + rd) / 2) * dp.maxSpeed;
     targetOmega = (rd - ld) * (dp.maxTurn / 2);
     targetStrafe = 0;
@@ -115,26 +148,97 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
     targetOmega = (cmd.rotate / div) * dp.maxTurn;
   }
 
-  // accel-clamped approach in the robot frame
-  const velRobot = rot(r.vel, -r.heading);
-  velRobot.x = approach(velRobot.x, targetFwd, dp.accel * dt);
-  velRobot.y = approach(velRobot.y, targetStrafe, dp.accel * dt);
-  r.vel = rot(velRobot, r.heading);
-  r.angVel = approach(r.angVel, targetOmega, dp.turnAccel * dt);
-
-  // Swerve wobble: occasional slight heading jumps when moving forward
+  // SWERVE: modeled as FOUR independent steered modules at the wheel corners.
+  // Inverse kinematics gives each pod its own target (velocity = translation +
+  // ω×r), it steers there with MODULE OPTIMIZATION (pod flip: a >90° change aims
+  // the pod opposite + reverses drive, so it never rotates >90° and a 180° reversal
+  // is instant), and — crucially — each pod's control loop is IMPERFECT, adding a
+  // small INDEPENDENT oscillating error it can't null out. Because the four errors
+  // don't cancel, the FORWARD kinematics of the mis-pointed pods yields real drift
+  // AND a net yaw wobble when driving straight. `moduleAngles` are the actual pod
+  // directions (also rendered).
   if (dp.saturation === 'vec') {
-    const fwdSpeed = rot(r.vel, -r.heading).x;
-    const speedRatio = fwdSpeed / dp.maxSpeed;
-    const phase = r.id * 1.23;
-    const freq = Math.PI; // 0.5 Hz
-    const now = Math.sin((world.time + phase) * freq);
-    const prev = Math.sin((world.time - dt + phase) * freq);
-    if (now > 0.99 && prev <= 0.99) {
-      const sign = Math.sin((world.time + phase) * 47 * Math.PI) > 0 ? 1 : -1;
-      r.heading += sign * 0.04 * speedRatio;
+    const cvx = targetFwd; // commanded chassis velocity (robot frame) + rotation
+    const cvy = targetStrafe;
+    const cw = targetOmega;
+    const hx = Math.max(r.spec.length / 2 - C.WHEEL_INSET, 1);
+    const hy = Math.max(r.spec.width / 2 - C.WHEEL_INSET, 1);
+    const pos: [number, number][] = [
+      [hx, hy],
+      [hx, -hy],
+      [-hx, hy],
+      [-hx, -hy],
+    ]; // FL, FR, BL, BR — matches drawRobot's wheel order
+    const maxStep = C.MODULE_SLEW_RATE * dt;
+    const speedFrac = clamp(hyp(r.vel.x, r.vel.y) / dp.maxSpeed, 0, 1);
+    let sumX = 0;
+    let sumY = 0;
+    let sumT = 0;
+    for (let i = 0; i < 4; i++) {
+      // inverse kinematics: this module's desired velocity vector
+      const dvx = cvx - cw * pos[i][1];
+      const dvy = cvy + cw * pos[i][0];
+      const spd = hyp(dvx, dvy);
+      let driveSpd = 0;
+      if (spd > 0.02 * dp.maxSpeed) {
+        // there IS a command → set this module's TARGET from it (with pod flip)
+        driveSpd = spd;
+        let tgt = datan2(dvy, dvx);
+        if (Math.abs(wrapAngle(tgt - r.moduleAngles[i])) > Math.PI / 2) {
+          tgt = wrapAngle(tgt + Math.PI); // pod flip + reverse this module
+          driveSpd = -spd;
+        }
+        r.moduleTargets[i] = tgt;
+      }
+      // else: HOLD the last commanded target (r.moduleTargets[i]) — the pods keep
+      // slewing to the direction you set even after you let go of the stick, so a
+      // brief tap still finishes the turn (they don't freeze partway or snap forward).
+      const target = r.moduleTargets[i];
+      // the steering loop runs EVERY tick (control loops are always applied): it
+      // chases a DISTURBED setpoint (target + an independent, speed-scaled error it
+      // can't null). One imperfect loop, two visible symptoms: FAST hunt (the buzz you
+      // see) rides on a slowly-varying steady-state MISPOINT the loop can't trim. The
+      // slow mispoint is what actually carries the robot off line (fast zero-mean hunt
+      // integrates to nothing) — but it is DETUNED per pod (each its own slow rate), so
+      // the four biases beat in and out of phase and the net offset MEANDERS/REVERSES
+      // across a drive instead of a clean constant crab. Same wobble, emergent drift.
+      // ∝ actual speed → at rest it's zero and every pod shares `target` → CONVERGE.
+      const t = world.time;
+      const f = C.SWERVE_WOBBLE_FREQ;
+      const ph = i * 1.87 + r.id * 0.7;
+      // per-pod detune of the SLOW mispoint — a wide spread so the 4 de-cohere within
+      // one wall-to-wall drive (→ the drift direction rotates as you cross the field)
+      const drift = C.SWERVE_DRIFT_FREQ * (1 + i * 0.19 + r.id * 0.05);
+      const noise =
+        0.34 * dsin(t * f * (1 + i * 0.11) + ph) + // fast visible hunt
+        0.2 * dsin(t * f * 2.17 + ph * 1.7 + 1.3) + // fast visible hunt
+        0.5 * dsin(t * drift + ph * 2.3); // slow steady-state MISPOINT (detuned) → the drift
+      const err = C.SWERVE_WOBBLE_AMP * speedFrac * noise;
+      const setpoint = wrapAngle(target + err);
+      let d = wrapAngle(setpoint - r.moduleAngles[i]);
+      if (Math.abs(d) > maxStep) d = Math.sign(d) * maxStep;
+      r.moduleAngles[i] = wrapAngle(r.moduleAngles[i] + d);
+      // this module actually pushes at driveSpd along its (mis-pointed) direction
+      const fx = driveSpd * dcos(r.moduleAngles[i]);
+      const fy = driveSpd * dsin(r.moduleAngles[i]);
+      sumX += fx;
+      sumY += fy;
+      sumT += pos[i][0] * fy - pos[i][1] * fx; // moment about center
     }
+    // forward kinematics of the four modules → the ACHIEVED chassis motion (equals
+    // the command when perfect; the pod errors make it drift + yaw)
+    targetFwd = sumX / 4;
+    targetStrafe = sumY / 4;
+    targetOmega = sumT / (4 * (hx * hx + hy * hy));
   }
+
+  // motor torque–speed integration in the robot frame: accel falls off toward the
+  // free speed (dp.maxSpeed / dp.maxTurn) like a real DC motor (see motorStep).
+  const velRobot = rot(r.vel, -r.heading);
+  velRobot.x = motorStep(velRobot.x, targetFwd, dp.accel, dp.maxSpeed, dt);
+  velRobot.y = motorStep(velRobot.y, targetStrafe, dp.accel, dp.maxSpeed, dt);
+  r.vel = rot(velRobot, r.heading);
+  r.angVel = motorStep(r.angVel, targetOmega, dp.turnAccel, dp.maxTurn, dt);
 
   // Rapier (solveRobots) integrates POSITION from r.vel and resolves collisions
   // this same tick; heading is integrated here (rotation is locked in Rapier and
@@ -146,7 +250,7 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
  * Updates the robot's actions (turret, fire, intake).
  * This function is called for all robots regardless of movement type.
  */
-export function updateRobotActions(world: World, r: RobotState, cmd: RobotCommand, _dt: number): void {
+export function updateRobotActions(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
   // If autoPathActive, force aimAssist, autoIntake, and autoFire to true
   if (r.autoPathActive) {
     r.aimAssist = true;
@@ -158,6 +262,17 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
   // Apply aim assist if enabled (now forced true during autoPathActive)
   if (r.aimAssist) {
     r.turretHeading = aimSolution(r).yaw;
+  }
+
+  // ---- flywheel spin: ramps with distance to this robot's OWN goal (a far
+  // shot needs a faster wheel), and its positive RATE of change tracks how fast
+  // the wheel is spinning up as the robot drives away. Both are read one tick
+  // later by updateRobot's power draw — the lag is invisible and deterministic.
+  {
+    const target = flywheelSpinTarget(r.alliance, r.pos);
+    // spin-UP only: driving toward the goal (spin falling) draws no drive power
+    r.flywheelSpinRate = dt > 0 ? Math.max(0, (target - r.flywheelSpin) / dt) : 0;
+    r.flywheelSpin = target;
   }
 
   // ---- fire: no spin-up before the FIRST shot; between shots the cadence
@@ -180,11 +295,21 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
 }
 
 
+/** a robot's PHYSICAL held balls, in slot order (slot 0 = oldest / fired first) */
+function heldSlot(b: Artifact): number {
+  return b.state.kind === 'held' ? b.state.slot : 0;
+}
+function heldBallsOf(world: World, robotId: number): Artifact[] {
+  return world.balls
+    .filter((b) => b.state.kind === 'held' && b.state.robot === robotId)
+    .sort((a, b) => heldSlot(a) - heldSlot(b));
+}
+
 function fire(world: World, r: RobotState): void {
-  // console.log(`[Robot ${r.id}] Firing ball! Hopper size before: ${r.hopper.length}`);
-  // canSort: pick the hopper color that fills the next unfilled motif slot
-  // on this alliance's ramp; everyone else fires FIFO
-  let color: ArtifactColor;
+  // pick the PHYSICAL held ball to fire; canSort picks the color that fills the
+  // next unfilled motif slot on this alliance's ramp, everyone else fires FIFO
+  const held = heldBallsOf(world, r.id);
+  let fireBall: Artifact | undefined;
   if (r.spec.canSort) {
     const retained = world.balls.filter(
       (b) =>
@@ -194,11 +319,14 @@ function fire(world: World, r: RobotState): void {
         !b.state.pending,
     ).length;
     const want = world.motif[retained % 3];
-    const idx = r.hopper.indexOf(want);
-    color = idx >= 0 ? r.hopper.splice(idx, 1)[0] : r.hopper.shift()!;
+    fireBall = held.find((b) => b.color === want) ?? held[0];
   } else {
-    color = r.hopper.shift()!;
+    fireBall = held[0];
   }
+  // keep the color hopper in sync
+  const color: ArtifactColor = fireBall ? fireBall.color : r.hopper[0]!;
+  const hIdx = r.hopper.indexOf(color);
+  if (hIdx >= 0) r.hopper.splice(hIdx, 1);
   r.lastFireAt = world.time;
 
   const tp = turretWorldPos(r);
@@ -216,101 +344,184 @@ function fire(world: World, r: RobotState): void {
     0,
     Math.min(1, (speed - C.FLYWHEEL_CLOSE_SPEED) / (C.LAUNCH_MAX_SPEED - C.FLYWHEEL_CLOSE_SPEED)),
   );
-  const recovery = C.FLYWHEEL_RECOVERY_MAX * shotNorm * shotNorm * (1 - r.spec.flywheelInertia);
+  // CLOSE floor: even a close shot leaves a near-zero-inertia wheel needing a brief
+  // respin — fades out by FLYWHEEL_CLOSE_INERTIA_KNEE, so close-zone cyclers want a
+  // little inertia (~0.1–0.2) rather than 0. Distance recovery is the shotNorm² term.
+  const closeRecovery =
+    C.FLYWHEEL_CLOSE_RECOVERY *
+    Math.max(0, 1 - r.spec.flywheelInertia / C.FLYWHEEL_CLOSE_INERTIA_KNEE);
+  const recovery =
+    closeRecovery + C.FLYWHEEL_RECOVERY_MAX * shotNorm * shotNorm * (1 - r.spec.flywheelInertia);
   const sortPenalty = r.spec.canSort ? C.SORT_FIRE_PENALTY : 0;
-  r.fireReadyAt = world.time + C.INTAKE_PRESETS[r.spec.intake].fireInterval + recovery + sortPenalty;
+  const ip = C.INTAKE_PRESETS[r.spec.intake];
+  // triangle transfer isn't generally slower — it's the same cadence with a MAX-RATE
+  // cap (fireCap): it can't fire faster than the cap, but a slower shot (recovery >
+  // cap) fires at the same rate as everyone else.
+  const interval = Math.max(ip.fireInterval + recovery + sortPenalty, ip.fireCap);
+  r.fireReadyAt = world.time + interval;
 
-  const ball: Artifact = {
-    id: world.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1,
-    color,
-    state: { kind: 'flight', target: r.alliance },
-    pos: { x: tp.x, y: tp.y },
-    vel: {
-      x: dcos(yaw) * speed * cos + r.vel.x * C.SHOT_ROBOT_VEL_INHERIT,
-      y: dsin(yaw) * speed * cos + r.vel.y * C.SHOT_ROBOT_VEL_INHERIT,
-    },
-    z: C.LAUNCH_HEIGHT,
-    vz: speed * dsin(angle),
+  const vel = {
+    x: dcos(yaw) * speed * cos + r.vel.x * C.SHOT_ROBOT_VEL_INHERIT,
+    y: dsin(yaw) * speed * cos + r.vel.y * C.SHOT_ROBOT_VEL_INHERIT,
   };
-  world.balls.push(ball);
+  if (fireBall) {
+    // reuse the held ball as the shot (physical ball leaves the intake)
+    fireBall.state = { kind: 'flight', target: r.alliance };
+    fireBall.pos = { x: tp.x, y: tp.y };
+    fireBall.vel = vel;
+    fireBall.z = C.LAUNCH_HEIGHT;
+    fireBall.vz = speed * dsin(angle);
+  } else {
+    // fallback: no physical held ball (shouldn't happen once preloads are held)
+    world.balls.push({
+      id: world.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1,
+      color,
+      state: { kind: 'flight', target: r.alliance },
+      pos: { x: tp.x, y: tp.y },
+      vel,
+      z: C.LAUNCH_HEIGHT,
+      vz: speed * dsin(angle),
+    });
+  }
+  // re-slot the remaining held balls so slot stays == hopper index
+  heldBallsOf(world, r.id).forEach((b, i) => {
+    if (b.state.kind === 'held') b.state.slot = i;
+  });
 }
 
-/** capture ground balls at the intake mouth into the hopper.
- * Capture happens when a compliant wheel is DIRECTLY ABOVE the artifact: the
- * wheel line sits at the tip of the intake's reach, and a ball within its
- * band gets swallowed (a pushed ball rides at wheelLine + BALL_RADIUS —
- * inside the band). Side intake is ruled out GEOMETRICALLY, not by a flag:
- * unless the preset's wheels overhang the chassis (vector), the mouth is
- * clamped inside the frame and the chassis flanks encompass the intake. */
+/** Capture ground balls into the hopper via a PHYSICAL mouth model.
+ * WEDGE presets (sloped/triangle): the running intake SUCKS balls sitting in the
+ * mouth toward the throat — the compliant wheels at the chassis front center —
+ * and only swallows them once they arrive there. Off-center balls visibly funnel
+ * in (the side slopes deflect them in `collideBallRobot`, and this suction pulls
+ * them to center) before capture — nothing swallows instantly from the flank or
+ * the tip. FLAT presets (vector): the wheels span the whole mouth and grab at the
+ * tip; capture TIMING depends on WHERE across the mouth the ball sits (compliant
+ * center fast, vectoring sides slow), and the overhang enables the strafe-in flank
+ * grab. A clump feeds faster, and the triangle takes two at a time. */
 export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): void {
-  // console.log(`[Robot ${r.id}] Intake check: cmd.intake=${cmd.intake}, r.autoIntake=${r.autoIntake}, hopper.length=${r.hopper.length}`);
   if (!robotsEnabled(world)) return;
   const running = cmd.intake || r.autoIntake;
-  if (!running || r.hopper.length >= C.HOPPER_CAPACITY) {
-    // console.log(`[Robot ${r.id}] Intake not running or hopper full. running=${running}, hopper.length=${r.hopper.length}`);
-    return;
-  }
-  const preset = C.INTAKE_PRESETS[r.spec.intake];
-  const hl = r.spec.length / 2;
-  const mouthHalf = preset.overhang
-    ? preset.halfWidth
-    : Math.min(preset.halfWidth, r.spec.width / 2 - 0.75);
-  const wheelLine = hl + preset.reach;
-  const velRobot = rot(r.vel, -r.heading);
+  if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
 
-  // the intake can't reach INTO the classifier: if the mouth is at/inside a
-  // classifier structure (e.g. the robot pressed parallel against it), no
-  // capture — you can't vacuum balls through the ramp wall
-  const mouthX = r.pos.x + dcos(r.heading) * wheelLine;
-  const mouthY = r.pos.y + dsin(r.heading) * wheelLine;
+  const preset = C.INTAKE_PRESETS[r.spec.intake];
+  const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
+  const hl = r.spec.length / 2;
+  const half = r.spec.width / 2;
+  const tip = hl + preset.reach; // the roller line (balls pass UNDER it)
+  const velRobot = rot(r.vel, -r.heading);
+  // ALL intakes capture at the CENTER, directly under the compliant wheels
+  // (funnel throat for sloped/triangle; the vectored-to center for vector)
+  const captureHalf = m.throatHalf;
+
+  // the intake can't reach INTO the classifier: no vacuuming through the ramp wall
+  const capWx = r.pos.x + dcos(r.heading) * (hl + C.BALL_RADIUS);
+  const capWy = r.pos.y + dsin(r.heading) * (hl + C.BALL_RADIUS);
   for (const a of ['red', 'blue'] as const) {
     const rect = classifierRect(a);
-    if (
-      mouthX > rect.x0 - 0.5 &&
-      mouthX < rect.x1 + 0.5 &&
-      mouthY > rect.y0 &&
-      mouthY < rect.y1
-    ) {
-      // console.log(`[Robot ${r.id}] Intake blocked by classifier rect.`);
+    if (capWx > rect.x0 - 0.5 && capWx < rect.x1 + 0.5 && capWy > rect.y0 && capWy < rect.y1) {
       return;
     }
   }
 
-  // every ball currently at the mouth (or under an overhanging wheel)
-  const candidates: Artifact[] = [];
+  // the compliant wheels grab a ball DIRECTLY UNDER them (in z): the funnel throat
+  // is narrow (throatHalf), the vector wheel row spans the whole mouth (mouthHalf).
+  // A ball under the wheels is pulled to the throat (hl, 0) — vector VECTORS an
+  // off-center ball to center; the funnel just seats a ball the slopes delivered.
+  const wheelSpan = m.wedge ? m.throatHalf : m.mouthHalf;
+
+  const candidates: { b: Artifact; y: number }[] = [];
   for (const b of world.balls) {
     if (b.state.kind !== 'ground' || b.z > 6) continue;
     const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
-    const inReach = Math.abs(local.x - wheelLine) < C.BALL_RADIUS + C.INTAKE_CAPTURE_BAND;
-    const inWidth = Math.abs(local.y) < mouthHalf + C.BALL_RADIUS * 0.25;
-    // flank capture: only where the wheel span actually OVERHANGS the chassis
-    // can a ball the robot strafes into end up under a wheel. Compare spans
-    // directly (not penetration depth — the robot moves before the ball's
-    // collision pass each tick, so a depth test sees a phantom overlap)
-    const sideTouch =
-      mouthHalf > r.spec.width / 2 + 0.5 &&
-      local.x > hl - 2 &&
-      local.x < wheelLine + C.BALL_RADIUS &&
-      Math.abs(local.y) > r.spec.width / 2 - 0.5 &&
-      Math.abs(local.y) < r.spec.width / 2 + C.BALL_RADIUS + 0.6 &&
-      velRobot.y * Math.sign(local.y) > C.INTAKE_SIDE_MIN_STRAFE;
-    if ((inReach && inWidth) || sideTouch) candidates.push(b);
-  }
-  if (candidates.length === 0) {
-    // console.log(`[Robot ${r.id}] No intake candidates.`);
-    return;
-  }
 
-  // a clump feeding the mouth swallows continuously — sloped and triangle
-  // are extremely efficient at eating clumps; vector keeps its steady pace
-  const interval = candidates.length >= 2 ? preset.clumpPerBall : preset.perBall;
-  if (world.time - r.lastIntakeAt < interval) {
-    // console.log(`[Robot ${r.id}] Intake on cooldown. time=${world.time.toFixed(2)}, lastIntakeAt=${r.lastIntakeAt.toFixed(2)}, interval=${interval}`);
-    return;
+    const underWheels =
+      local.x > hl - C.BALL_RADIUS &&
+      local.x < tip + C.BALL_RADIUS &&
+      Math.abs(local.y) < wheelSpan;
+    if (underWheels && m.drawIn > 0) {
+      const vLocal = rot(b.vel, -r.heading);
+      // FLAT (vector) intake, OFF-CENTER ball struck at high CLOSING speed: the
+      // non-compliant side wheels can't grip a fast impact — so DON'T vector it.
+      // With no suction the ball just bounces off the flat front as an ordinary
+      // impact collision (collideBallRobot), scattering it. This is IMPACT-only:
+      // `closing` is the ball's approach speed RELATIVE to the robot, so once the
+      // ball rides along with the chassis (low closing speed) it vectors in as
+      // normal even while the bot keeps pushing at speed. The CENTER compliant
+      // wheels always vector; wedge funnels never scatter.
+      const closing = velRobot.x - vLocal.x; // >0: ball closing on the front faster than the bot
+      const sideImpact =
+        !m.wedge &&
+        Math.abs(local.y) > captureHalf &&
+        velRobot.x > 0 &&
+        closing > C.INTAKE_RAM_SPEED;
+      if (!sideImpact) {
+        const dxT = hl - local.x;
+        const dyT = -local.y;
+        const dl = hyp(dxT, dyT);
+        if (dl > 0.3) {
+          vLocal.x = approach(vLocal.x, (dxT / dl) * m.drawIn, m.drawIn);
+          vLocal.y = approach(vLocal.y, (dyT / dl) * m.drawIn, m.drawIn);
+          b.vel = rot(vLocal, r.heading);
+        }
+      }
+    }
+    // capture once the ball reaches the throat, centered under the wheels
+    const atThroat =
+      local.x > hl - 1 &&
+      local.x < hl + C.BALL_RADIUS + C.INTAKE_CAPTURE_BAND &&
+      Math.abs(local.y) < captureHalf + C.BALL_RADIUS * 0.25;
+    // flank grab: only where the wheels OVERHANG a narrower chassis (vector)
+    const sideTouch =
+      m.mouthHalf > half + 0.5 &&
+      local.x > hl - 2 &&
+      local.x < tip + C.BALL_RADIUS &&
+      Math.abs(local.y) > half - 0.5 &&
+      Math.abs(local.y) < half + C.BALL_RADIUS + 0.6 &&
+      velRobot.y * Math.sign(local.y) > C.INTAKE_SIDE_MIN_STRAFE;
+    if (atThroat || sideTouch) candidates.push({ b, y: Math.abs(local.y) });
   }
-  const b = candidates[0];
-  r.hopper.push(b.color);
+  if (candidates.length === 0) return;
+
+  // most-central ball first (deterministic tie-break by id)
+  candidates.sort((p, q) => p.y - q.y || p.b.id - q.b.id);
+
+  // timing: center of the capture zone is fast, the edges slow (vector vectoring);
+  // a clump of 2+ feeds at the faster clumpInterval
+  const t = clamp(candidates[0].y / captureHalf, 0, 1);
+  const single = m.capMin + (m.capMax - m.capMin) * t;
+  // the clump SPEED bonus is a WEDGE (funnel) trait — the slopes gather a pile and
+  // feed it fast. A FLAT vector intake gets NO clump bonus: it can't devour a pile,
+  // so a clump feeds at the normal per-ball (vectoring) rate, not faster.
+  const interval = candidates.length >= 2 && m.wedge ? m.clumpInterval : single;
+  if (world.time - r.lastIntakeAt < interval) return;
+
+  // triangle devours TWO from a clump per cycle (its two front storage slots)
+  const room = C.HOPPER_CAPACITY - r.hopper.length;
+  const take = m.dual && candidates.length >= 2 && room >= 2 ? 2 : 1;
+  for (let i = 0; i < take; i++) {
+    const b = candidates[i].b;
+    // the ball stays a PHYSICAL world object, now HELD at the next storage slot
+    // (the color hopper mirrors it); positionHeldBalls slides it in each tick.
+    // Seed lx/ly from where it currently sits so it slides IN from the mouth.
+    const loc = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+    const slot = r.hopper.length;
+    // triangle FRONT row (slot ≥ 1): the ball takes the side it entered from; any
+    // resident front ball on that side slides to the other side to make room
+    let side = 0;
+    if (r.spec.intake === 'triangle' && slot >= 1) {
+      side = loc.y >= 0 ? 1 : -1;
+      for (const o of world.balls) {
+        if (o.state.kind === 'held' && o.state.robot === r.id && o.state.slot >= 1 && o.state.side === side) {
+          o.state.side = -side;
+        }
+      }
+    }
+    b.state = { kind: 'held', robot: r.id, slot, lx: loc.x, ly: loc.y, side };
+    b.vel = { x: 0, y: 0 };
+    b.z = 0;
+    b.vz = 0;
+    r.hopper.push(b.color);
+  }
   r.lastIntakeAt = world.time;
-  world.balls.splice(world.balls.indexOf(b), 1);
-  // console.log(`[Robot ${r.id}] Ball intaken! New hopper size: ${r.hopper.length}`);
 }

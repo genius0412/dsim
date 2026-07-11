@@ -7,9 +7,11 @@ import {
   type EloResultRow,
 } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
-import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR } from '../config';
+import { appChannel } from '../net/env';
+import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
 import type { MatchResultInfo, NetSession, NetStatus } from '../net/session';
+import { clearActiveGame } from '../net/activeGame';
 import type { RecordRankInfo } from '../net/protocol';
 import type { Replay } from '../sim/replay';
 import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
@@ -100,6 +102,28 @@ function PingGraph({ net }: { net: NetStatus }) {
   );
 }
 
+/** top-right drive power-draw gauge: how much current the flywheel spin-up + intake
+ * are pulling off the drive motors right now (0 → POWER_DRAW_MAX). The bar fills
+ * toward the cap and shifts green→amber→red; the number is the actual % the drive is
+ * slowed at that instant. */
+function PowerGauge({ draw }: { draw: number }) {
+  const frac = Math.max(0, Math.min(1, draw / POWER_DRAW_MAX)); // 0..1 of the cap
+  const pct = Math.round(draw * 100); // actual drive slowdown right now
+  const cls = frac > 0.75 ? 'hot' : frac > 0.4 ? 'warm' : '';
+  return (
+    <span
+      className="power-gauge"
+      title={`Drive power draw — flywheel spin-up + intake pulling current off the drive motors (${pct}% slower right now)`}
+    >
+      <span className="pg-label">PWR</span>
+      <span className="pg-bar">
+        <span className={`pg-fill ${cls}`} style={{ width: `${frac * 100}%` }} />
+      </span>
+      <span className="pg-num">{pct}%</span>
+    </span>
+  );
+}
+
 const DT_LABEL: Record<DrivetrainType, string> = {
   mecanum: 'Mecanum',
   tank: 'Tank',
@@ -162,8 +186,17 @@ export function GameView({ settings, onExit, session = null, onWatchReplay, sign
       if (e.key === 'Escape') onExit();
     };
     window.addEventListener('keydown', onKey);
+    // once a networked match is DECIDED (phase 'post') or its slot is gone (failed),
+    // there's nothing to rejoin — forget the saved active-game record so Home stops
+    // offering "rejoin your match" for a finished/dead game.
+    const clearTimer = window.setInterval(() => {
+      if (!session) return;
+      const h = controller.getHud();
+      if (h && (h.phase === 'post' || h.net?.failed)) clearActiveGame();
+    }, 250);
     return () => {
       window.clearInterval(hudTimer);
+      window.clearInterval(clearTimer);
       window.removeEventListener('keydown', onKey);
       controller.dispose();
       controllerRef.current = null;
@@ -173,7 +206,15 @@ export function GameView({ settings, onExit, session = null, onWatchReplay, sign
 
   return (
     <div className="game-root">
-      <canvas ref={canvasRef} className="game-canvas" />
+      {/* A screen-reader-playable driving sim is out of scope (see the Phase 6 audit,
+          F7). The label at least stops this being an unlabelled interactive region;
+          score/timer/gate state is announced by the live regions below. */}
+      <canvas
+        ref={canvasRef}
+        className="game-canvas"
+        role="img"
+        aria-label="DECODE field, top-down view. Match state is announced in the event log."
+      />
       {window.matchMedia('(pointer: coarse)').matches && controllerRef.current && (
         <MobileControls inputManager={controllerRef.current.getInputManager()} />
       )}
@@ -271,7 +312,7 @@ export function GameView({ settings, onExit, session = null, onWatchReplay, sign
           revealAt={hud.resultRevealAt}
           ranked={!!session?.ranked}
           eloResults={controllerRef.current?.getEloResults() ?? null}
-          canRematch={!session || session.isHost()}
+          canRematch={!session}
           onRematch={() => controllerRef.current?.rematch()}
           onExit={onExit}
           matchResult={controllerRef.current?.getMatchResult() ?? null}
@@ -316,7 +357,11 @@ function Hud({ hud }: { hud: HudSnapshot }) {
             <span className="panel-score">{redScore}</span>
           </div>
           <div className={`timer-panel ${urgent ? 'urgent' : endgame ? 'warning' : ''}`}>
-            <span className="timer-phase">{endgame ? 'END GAME' : PHASE_LABEL[hud.phase]}</span>
+            {/* status on the PHASE only — the digits beside it retick every frame and
+                would flood a screen reader. This changes ~4 times a match. */}
+            <span className="timer-phase" role="status">
+              {endgame ? 'END GAME' : PHASE_LABEL[hud.phase]}
+            </span>
             <span className="timer-time">
               {hud.phase === 'post' ? '0:00' : fmtTime(hud.timeLeft)}
             </span>
@@ -367,9 +412,7 @@ function Hud({ hud }: { hud: HudSnapshot }) {
                 <span key={i} className={`hopper-pip ${hud.hopper[i] ?? 'empty'}`} />
               ))}
             </div>
-            <span className={`chip ${hud.inLaunchZone ? 'on' : 'warn'}`}>
-              {hud.inLaunchZone ? 'LAUNCH ZONE' : 'NO LAUNCH'}
-            </span>
+            <PowerGauge draw={hud.powerDraw} />
             {hud.gateOpen && <span className="chip on">GATE OPEN</span>}
             {hud.mode === 'match' &&
               (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
@@ -377,15 +420,16 @@ function Hud({ hud }: { hud: HudSnapshot }) {
                   FOULS {hud.fouls[hud.alliance].minor}m {hud.fouls[hud.alliance].major}M
                 </span>
               )}
-            <span className="chip">{hud.fieldCentric ? 'FIELD' : 'ROBOT'}</span>
             {hud.frontFlipped && <span className="chip warn">REVERSED</span>}
-            <span className={`chip ${hud.aimAssist ? 'on' : 'off'}`}>AIM</span>
-            <span className={`chip ${hud.autoIntake ? 'on' : 'off'}`}>AUTO-IN</span>
-            <span className={`chip ${hud.autoFire ? 'on' : 'off'}`}>AUTO-FIRE</span>
             <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
             {hud.net && (
               <span className={`chip ${hud.net.peers > 0 ? 'on' : 'warn'}`}>
                 NET {hud.net.peers + 1}P
+              </span>
+            )}
+            {hud.net?.server && (
+              <span className="chip on" title={`This match is hosted on the ${hud.net.server} server`}>
+                🌐 {hud.net.server}
               </span>
             )}
             {hud.net && !hud.net.waitingFor && (
@@ -404,7 +448,9 @@ function Hud({ hud }: { hud: HudSnapshot }) {
         </div>
       )}
 
-      <div className="eventlog">
+      {/* polite: match events shouldn't interrupt, but they are the only non-visual
+          channel for scoring/gate/penalty state. */}
+      <div className="eventlog" aria-live="polite">
         {hud.toasts.map((t) => (
           <div key={t.id} className="eventlog-line">
             {t.text}
@@ -526,6 +572,16 @@ function EloResults({ rows }: { rows: EloResultRow[] | null }) {
     const id = window.setTimeout(() => setTimedOut(true), 9000);
     return () => window.clearTimeout(id);
   }, [rows]);
+  // alpha builds never persist — the server sends no eloResult, so say so up front
+  // instead of spinning on "Updating ELO…"
+  if (appChannel() === 'alpha' && rows === null) {
+    return (
+      <div className="elo-block">
+        <div className="elo-head">RANKED · ELO</div>
+        <p className="ds-hint elo-wait">Not rated on this test build.</p>
+      </div>
+    );
+  }
   return (
     <div className="elo-block">
       <div className="elo-head">RANKED · ELO</div>
@@ -725,13 +781,7 @@ function Results({
           {matchResult && onWatchReplay && (
             <button onClick={() => onWatchReplay(matchResult.replay)}>▶ WATCH REPLAY</button>
           )}
-          {canRematch ? (
-            <button onClick={onRematch}>REMATCH</button>
-          ) : (
-            <button disabled title="Only the host can start a rematch">
-              WAITING FOR HOST…
-            </button>
-          )}
+          {canRematch && <button onClick={onRematch}>REMATCH</button>}
           <button onClick={onExit}>MENU</button>
         </div>
           </>
@@ -746,6 +796,8 @@ const DRIVETRAIN_LABEL: Record<string, string> = {
   xdrive: 'X-Drive',
   tank: 'Tank',
   swerve: 'Swerve',
+  // sentinel for a mixed-drivetrain duo run (overall board only, no dt-specific)
+  overall: 'Mixed',
 };
 const prettyDrivetrain = (d: string): string => DRIVETRAIN_LABEL[d] ?? d;
 
@@ -754,6 +806,11 @@ const prettyDrivetrain = (d: string): string => DRIVETRAIN_LABEL[d] ?? d;
  * in — anonymous runs are never persisted, so no rank exists). */
 function RecordStanding({ info, signedIn }: { info: RecordRankInfo | null; signedIn: boolean }) {
   if (!info) {
+    // alpha builds are not persisted server-side (no recordResult ever arrives) —
+    // don't leave a signed-in player spinning on "Saving…"
+    if (appChannel() === 'alpha') {
+      return <p className="ds-hint record-standing pending">Not saved on this test build.</p>;
+    }
     return signedIn ? (
       <p className="ds-hint record-standing pending">Saving · computing your rank…</p>
     ) : (
@@ -881,11 +938,7 @@ function RecordResults({
               {matchResult && onWatchReplay && (
                 <button onClick={() => onWatchReplay(matchResult.replay)}>▶ WATCH REPLAY</button>
               )}
-              {canRematch ? (
-                <button onClick={onRematch}>RUN AGAIN</button>
-              ) : (
-                <button disabled>WAITING FOR HOST…</button>
-              )}
+              {canRematch && <button onClick={onRematch}>RUN AGAIN</button>}
               <button onClick={onExit}>MENU</button>
             </div>
           </>

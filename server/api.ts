@@ -5,6 +5,7 @@ import {
   currentSeasonNumber,
   ensureProfile,
   ensureSeason,
+  listAnnouncements,
   eloLeaderboard,
   eloUserStanding,
   getGlobalStats,
@@ -34,7 +35,7 @@ import { verifyAuthToken } from './auth';
  *
  *   GET  /api/stats                          — site-wide players + games played
  *   GET  /api/records?mode=solo|duo&drivetrain=<dt|overall>&season=<n>&limit=<n>
- *   GET  /api/elo?mode=1v1|2v2&drivetrain=<dt|overall>&season=<n>&limit=<n>
+ *   GET  /api/elo?mode=1v1|2v2&season=<n>&limit=<n>
  *   GET  /api/user/<id>/stats?season=<n>   — one user's ELO+records+W/L+history
  *   GET  /api/user/<id>                     — a user's public profile (handle)
  *   POST /api/user/handle  {handle}         — set your OWN display name (Bearer JWT)
@@ -202,6 +203,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     };
     const emptyHistory = { rows: [], total: 0, offset: historyOpts.offset, limit: historyOpts.limit ?? 25 };
 
+    // recent announcements (patch notes / new season / new act) — public, cheap;
+    // the client fetches this on load and shows any it hasn't marked seen locally.
+    if (url.pathname === '/api/announcements') {
+      const rows = dbEnabled ? await listAnnouncements(Math.min(50, limit)) : [];
+      return json(200, { announcements: rows }), true;
+    }
+
     if (url.pathname === '/api/stats') {
       const stats = dbEnabled
         ? await getGlobalStats()
@@ -228,18 +236,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
 
     if (url.pathname === '/api/elo') {
       const mode = url.searchParams.get('mode') === '2v2' ? '2v2' : '1v1';
-      const drivetrain = url.searchParams.get('drivetrain') ?? 'overall';
       const meId = url.searchParams.get('me');
-      const rows = dbEnabled
-        ? await eloLeaderboard({ mode, drivetrain, balanceVersion: season, limit })
-        : [];
+      const rows = dbEnabled ? await eloLeaderboard({ mode, balanceVersion: season, limit }) : [];
       // the viewer's own standing (rank among placed, or games-in-placements),
       // so the board can surface it even when they're off the visible page
       const me =
         dbEnabled && meId
-          ? await eloUserStanding({ userId: meId, mode, drivetrain, balanceVersion: season })
+          ? await eloUserStanding({ userId: meId, mode, balanceVersion: season })
           : null;
-      return json(200, { season, mode, drivetrain, rows, me }), true;
+      return json(200, { season, mode, rows, me }), true;
     }
 
     // public match history keyed by USERNAME (the profile page's history list)

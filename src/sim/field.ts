@@ -1,5 +1,8 @@
-import type { Alliance, Vec2 } from '../types';
+import type { Alliance, RobotSpec, StartPose, Vec2 } from '../types';
 import * as C from '../config';
+import { rot } from '../math';
+
+export type { StartPose } from '../types';
 
 /**
  * DECODE field geometry (verified against Competition Manual Section 9 figures
@@ -88,6 +91,17 @@ export function goalCenter(a: Alliance): Vec2 {
   };
 }
 
+/** flywheel spin TARGET (0..1) for a robot at `pos`: a far shot needs a faster
+ * wheel, so this ramps with distance to the robot's OWN goal
+ * (FLY_SPIN_NEAR→FLY_SPIN_FAR). Shared by spawn init and the per-tick update so
+ * the ramp can't drift between them. */
+export function flywheelSpinTarget(a: Alliance, pos: Vec2): number {
+  const g = goalCenter(a);
+  const d = Math.hypot(g.x - pos.x, g.y - pos.y);
+  const t = (d - C.FLY_SPIN_NEAR) / (C.FLY_SPIN_FAR - C.FLY_SPIN_NEAR);
+  return t < 0 ? 0 : t > 1 ? 1 : t;
+}
+
 /** corners of the goal footprint: a right triangle tucked into the far
  * corner, legs flush along the far wall (GOAL_FACE_WIDTH) and side wall
  * (GOAL_DEPTH); the hypotenuse is the FACE. Order: far-wall face pt,
@@ -109,6 +123,22 @@ export function classifierRect(a: Alliance): Rect {
 export function gateZone(a: Alliance): Rect {
   const g = goalSide(a);
   return sideRect(g, C.GATE_ZONE.xNear, C.GATE_ZONE.xFar, C.GATE_ZONE.y0, C.GATE_ZONE.y1);
+}
+
+/** the physical GATE ARM's contact footprint at the channel mouth: the classifier
+ * face plus a short field-side approach band (GATE_ARM_REACH). A robot whose bumper
+ * overlaps this is TOUCHING the gate — used by G417 (touching an opponent's gate,
+ * even without opening it, is a MAJOR) and as the contact half of the push-to-open
+ * test. Tighter than gateZone: the robot must be against the arm, not loitering. */
+export function gateArmRect(a: Alliance): Rect {
+  const g = goalSide(a);
+  return sideRect(
+    g,
+    C.FIELD_HALF,
+    C.FIELD_HALF - C.CLASSIFIER_W - C.GATE_ARM_REACH,
+    C.GATE_ARM_Y0,
+    C.GATE_ARM_Y1,
+  );
 }
 
 /** the official GATE ZONE marking: two parallel alliance-colored tape LINES,
@@ -238,6 +268,239 @@ export function baseZone(a: Alliance): Rect {
   return { x0: c.x - 9, x1: c.x + 9, y0: c.y - 9, y1: c.y + 9 };
 }
 
+// ---------------------------------------------------- start position (G304) --
+
+/** why a start pose is / isn't a legal G304 setup (each flag = one clause). */
+export interface StartLegality {
+  legal: boolean;
+  overLaunchLine: boolean; // A. footprint is over a white LAUNCH LINE
+  touching: boolean; // B. footprint touches the GOAL or the FIELD perimeter
+  contained: boolean; // C. footprint fully inside the FIELD perimeter
+  ownHalf: boolean; // C. footprint fully within the alliance's own half (columns)
+  clear: boolean; // collision box does not PENETRATE a solid structure (goal / classifier)
+}
+
+/** footprint extents in the robot frame (chassis + intake reach). Single source
+ * of truth reused by physics.robotExtents and the G304 start validator. */
+export function footprintExtents(spec: RobotSpec): { front: number; rear: number; half: number } {
+  return {
+    front: spec.length / 2 + C.INTAKE_PRESETS[spec.intake].reach,
+    rear: spec.length / 2,
+    half: spec.width / 2,
+  };
+}
+
+/** world-frame corners of a robot footprint (chassis + intake) at an arbitrary
+ * pose, optionally grown outward by `pad` inches (a "touching" slack). */
+export function footprintCorners(
+  spec: RobotSpec,
+  pos: Vec2,
+  heading: number,
+  pad = 0,
+): Vec2[] {
+  const e = footprintExtents(spec);
+  const local = [
+    { x: e.front + pad, y: e.half + pad },
+    { x: e.front + pad, y: -e.half - pad },
+    { x: -e.rear - pad, y: -e.half - pad },
+    { x: -e.rear - pad, y: e.half + pad },
+  ];
+  return local.map((p) => {
+    const w = rot(p, heading);
+    return { x: w.x + pos.x, y: w.y + pos.y };
+  });
+}
+
+const SAT_EPS = 1e-6;
+
+function projRange(pts: Vec2[], ax: Vec2): [number, number] {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const p of pts) {
+    const d = p.x * ax.x + p.y * ax.y;
+    if (d < lo) lo = d;
+    if (d > hi) hi = d;
+  }
+  return [lo, hi];
+}
+
+function disjointOnAxis(a: Vec2[], b: Vec2[], ax: Vec2): boolean {
+  if (Math.abs(ax.x) < SAT_EPS && Math.abs(ax.y) < SAT_EPS) return false; // degenerate axis
+  const [a0, a1] = projRange(a, ax);
+  const [b0, b1] = projRange(b, ax);
+  return a1 < b0 - SAT_EPS || b1 < a0 - SAT_EPS;
+}
+
+function edgeNormals(poly: Vec2[]): Vec2[] {
+  const out: Vec2[] = [];
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i];
+    const q = poly[(i + 1) % poly.length];
+    out.push({ x: -(q.y - p.y), y: q.x - p.x });
+  }
+  return out;
+}
+
+/** SAT overlap between two convex polygons (CCW/CW both fine). */
+function convexOverlap(a: Vec2[], b: Vec2[]): boolean {
+  for (const ax of [...edgeNormals(a), ...edgeNormals(b)]) {
+    if (disjointOnAxis(a, b, ax)) return false;
+  }
+  return true;
+}
+
+/** does a convex quad overlap the segment a→b? (segment = degenerate convex) */
+function quadCrossesSegment(quad: Vec2[], a: Vec2, b: Vec2): boolean {
+  const seg = [a, b];
+  const axes = [
+    ...edgeNormals(quad),
+    { x: -(b.y - a.y), y: b.x - a.x }, // segment normal
+    { x: b.x - a.x, y: b.y - a.y }, // segment direction
+  ];
+  for (const ax of axes) if (disjointOnAxis(quad, seg, ax)) return false;
+  return true;
+}
+
+/** rect → corner quad */
+function rectCorners(r: Rect): Vec2[] {
+  return [
+    { x: r.x0, y: r.y0 },
+    { x: r.x1, y: r.y0 },
+    { x: r.x1, y: r.y1 },
+    { x: r.x0, y: r.y1 },
+  ];
+}
+
+/** evaluate a start pose against G304 (§11). `pose` is in `a`'s ACTUAL field
+ * frame. Clauses: (A) over a LAUNCH LINE, (B) touching the GOAL or the FIELD
+ * perimeter, (C) fully contained within the alliance's own half — PLUS the robot's
+ * collision box may only REST AGAINST a solid structure, never penetrate it (the
+ * goal footprint / classifier channel), so a placement is physically valid. The
+ * footprint includes the intake reach (a physical part of the robot). */
+export function evalStartPose(spec: RobotSpec, pose: StartPose, a: Alliance): StartLegality {
+  const pos = { x: pose.x, y: pose.y };
+  const heading = (pose.headingDeg * Math.PI) / 180;
+  const f = C.FIELD_HALF;
+  const corners = footprintCorners(spec, pos, heading);
+  const g = goalSide(a);
+
+  const contained = corners.every((c) => Math.abs(c.x) <= f + SAT_EPS && Math.abs(c.y) <= f + SAT_EPS);
+  const ownHalf = corners.every((c) => g * c.x >= -SAT_EPS);
+  const overLaunchLine = launchSegments().some(([p, q]) => quadCrossesSegment(corners, p, q));
+
+  // grown footprint tests "touching" (within START_TOUCH_TOL of a surface)
+  const grown = footprintCorners(spec, pos, heading, C.START_TOUCH_TOL);
+  const touchingWall = grown.some((c) => Math.abs(c.x) >= f || Math.abs(c.y) >= f);
+  const touchingGoal = convexOverlap(grown, goalTriangle(a));
+  const touching = touchingWall || touchingGoal;
+
+  // collision box must not sink into a solid: shrink the footprint by the
+  // penetration slack — if it STILL overlaps the goal wedge or classifier
+  // channel, the robot is inside the structure (not merely resting against it).
+  const core = footprintCorners(spec, pos, heading, -C.START_PEN_SLOP);
+  const clear = !convexOverlap(core, goalTriangle(a)) && !convexOverlap(core, rectCorners(classifierRect(a)));
+
+  return {
+    legal: contained && ownHalf && overLaunchLine && touching && clear,
+    overLaunchLine,
+    touching,
+    contained,
+    ownHalf,
+    clear,
+  };
+}
+
+/** the loci where a legal G304 setup can sit: along the goal FACE (which is also
+ * the depot LAUNCH LINE), and along the shared audience LAUNCH LINE on this
+ * alliance's own half. Returns [segment endpoint A, B] pairs in `a`'s frame. */
+function startLoci(a: Alliance): [Vec2, Vec2][] {
+  const g = goalSide(a);
+  const f = C.FIELD_HALF;
+  return [
+    goalFacePoints(a), // goal face / depot launch line
+    // this alliance's audience launch line (apex → own-side back corner)
+    [{ x: 0, y: -C.AUD_ZONE_APEX_Y }, { x: g * C.AUD_ZONE_HALF_W, y: -f }],
+  ];
+}
+
+/** snap a start pose to the NEAREST legal G304 pose for this spec/alliance. If
+ * the pose is already legal it is returned unchanged. Otherwise candidates are
+ * generated along the legal loci (goal face + audience line), each pushed out to
+ * just touch its surface, and the closest legal one (position, then heading) to
+ * the input is returned. Used by `coerceSetup` (spawn-safe for ANY spec) and by
+ * the drag editor's "snap" assist. Deterministic (fixed sample grid). */
+export function snapStartToLegal(spec: RobotSpec, pose: StartPose, a: Alliance): StartPose {
+  if (evalStartPose(spec, pose, a).legal) return pose;
+  const e = footprintExtents(spec);
+  const reach = Math.hypot(Math.max(e.front, e.rear), e.half); // max center→corner
+  const headings = [pose.headingDeg];
+  for (let dh = 15; dh <= 180; dh += 15) headings.push(pose.headingDeg + dh, pose.headingDeg - dh);
+
+  let best: StartPose | null = null;
+  let bestCost = Infinity;
+  for (const [p, q] of startLoci(a)) {
+    const nx = -(q.y - p.y);
+    const ny = q.x - p.x;
+    const nlen = Math.hypot(nx, ny) || 1;
+    // inward normal points toward the field interior (away from the surface)
+    let inx = nx / nlen;
+    let iny = ny / nlen;
+    if (inx * (0 - (p.x + q.x) / 2) + iny * (0 - (p.y + q.y) / 2) < 0) {
+      inx = -inx;
+      iny = -iny;
+    }
+    for (let t = 0; t <= 1; t += 1 / 24) {
+      const bx = p.x + t * (q.x - p.x);
+      const by = p.y + t * (q.y - p.y);
+      for (let push = 0; push <= reach + 2; push += 1) {
+        const cx = bx + inx * push;
+        const cy = by + iny * push;
+        for (const h of headings) {
+          const cand = { x: cx, y: cy, headingDeg: h };
+          if (!evalStartPose(spec, cand, a).legal) continue;
+          let dh = Math.abs(((h - pose.headingDeg) % 360) + 360) % 360;
+          if (dh > 180) dh = 360 - dh;
+          const cost = (cx - pose.x) ** 2 + (cy - pose.y) ** 2 + (dh / 30) ** 2;
+          if (cost < bestCost) {
+            bestCost = cost;
+            best = cand;
+          }
+        }
+      }
+    }
+  }
+  // last resort: the alliance's default preset in its actual frame
+  const d = C.START_POSES[0];
+  return best ?? mirrorStartPose({ x: d.x, y: d.y, headingDeg: d.headingDeg }, a);
+}
+
+/** mirror a start pose between the canonical goalSide=+1 (red) frame and an
+ * alliance's actual frame. Self-inverse: `mirror(mirror(p,a),a) === p`. Red is a
+ * no-op; blue reflects across x=0 (x→−x, heading→180−heading). */
+export function mirrorStartPose(p: StartPose, a: Alliance): StartPose {
+  if (goalSide(a) > 0) return { x: p.x, y: p.y, headingDeg: p.headingDeg };
+  let h = (180 - p.headingDeg) % 360;
+  if (h < 0) h += 360;
+  return { x: -p.x, y: p.y, headingDeg: h };
+}
+
+/** Is the ACTIVE start selection legal for this chassis + alliance? A `null` pose
+ * means "use the preset" (`presetPose` resolves it legal for ANY size — always ok);
+ * a custom pose (canonical frame, like `settings`/`LobbyPlayer.startPose`) is checked
+ * in the actual frame. A pose authored for one chassis can be illegal for a
+ * different-sized one — callers use this to REFUSE ready-up / game-start rather than
+ * let `createWorld` silently relocate the robot at spawn. Alliance-symmetric (a
+ * canonical pose legal for one alliance is legal for the other), so the settings
+ * alliance is safe even if the server later reassigns. */
+export function activeStartLegal(
+  spec: RobotSpec,
+  a: Alliance,
+  startPose: StartPose | null | undefined,
+): boolean {
+  if (!startPose) return true;
+  return evalStartPose(spec, mirrorStartPose(startPose, a), a).legal;
+}
+
 export function loadZone(a: Alliance): Rect {
   const d = driverSide(a);
   return sideRect(d, C.FIELD_HALF, C.FIELD_HALF - C.LOAD_ZONE_SIZE, -C.FIELD_HALF, -C.FIELD_HALF + C.LOAD_ZONE_SIZE);
@@ -302,14 +565,32 @@ export function spikeMarkBalls(a: Alliance): { pos: Vec2; color: 'purple' | 'gre
   return out;
 }
 
-export function startPose(a: Alliance, index = 0): { pos: Vec2; heading: number } {
-  // robots stage inside the big launch zone near their own goal; `index`
-  // picks one of the named START_POSES (mirrored per alliance)
-  const g = goalSide(a);
-  const p = C.START_POSES[Math.min(Math.max(index, 0), C.START_POSES.length - 1)];
-  const pos = { x: g * p.x, y: p.y };
-  const headingDeg = g > 0 ? p.headingDeg : 180 - p.headingDeg;
-  return { pos, heading: (headingDeg * Math.PI) / 180 };
+/** resolve a named preset to a concrete LEGAL pose (actual `a` frame) for THIS
+ * chassis: the `START_POSES` entry is a semantic ANCHOR (goal-far / audience /
+ * goal-gate), snapped G304-legal for the given spec — so a preset is legal no
+ * matter the robot's size. Without a spec it returns the raw anchor (legal for
+ * default sizes; the spawn chokepoint still snaps). */
+export function presetPose(index: number, a: Alliance, spec?: RobotSpec): StartPose {
+  const i = Math.min(Math.max(index, 0), C.START_POSES.length - 1);
+  const anchor = C.START_POSES[i];
+  const actual = mirrorStartPose({ x: anchor.x, y: anchor.y, headingDeg: anchor.headingDeg }, a);
+  return spec ? snapStartToLegal(spec, actual, a) : actual;
+}
+
+export function startPose(
+  a: Alliance,
+  index = 0,
+  custom?: StartPose | null,
+  spec?: RobotSpec,
+): { pos: Vec2; heading: number } {
+  // robots stage per G304. `custom` (a fully-placed pose) overrides the named
+  // START_POSES quick-pick; a preset is resolved DYNAMICALLY against the chassis
+  // (`presetPose`) so it is legal at any size. Poses are authored canonical
+  // (goalSide=+1) and mirrored for blue.
+  const p = custom
+    ? mirrorStartPose(custom, a) // canonical → actual
+    : presetPose(index, a, spec);
+  return { pos: { x: p.x, y: p.y }, heading: (p.headingDeg * Math.PI) / 180 };
 }
 
 /** the classifier SQUARE (rail entrance) — top of the ramp, below the goal */

@@ -15,11 +15,16 @@ export function AccountButton({ onAccount }: { onAccount?: () => void }) {
 
   const user = session.data?.user;
   if (!user) {
+    // signed out: still expose Settings (controls / audio) — it lives on the account
+    // page, which doesn't require an account. Sign-in sits beside it.
     return (
-      <>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button className="ds-btn ghost" onClick={onAccount} title="Settings — controls & audio">
+          Settings
+        </button>
         <button className="ds-btn" onClick={() => setOpen(true)}>Sign in</button>
         {open && <AuthPanel onClose={() => setOpen(false)} />}
-      </>
+      </div>
     );
   }
 

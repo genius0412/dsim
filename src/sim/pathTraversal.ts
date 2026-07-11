@@ -19,6 +19,7 @@ import {
   len,
   clamp,
 } from '../math';
+import * as C from '../config'; // Import all from config
 
 const ZERO_CMD: RobotCommand = {
   driveX: 0,
@@ -151,6 +152,8 @@ export function initializePathTraversal(robot: RobotState) {
   robot.pathSequenceIndex = 0;
   robot.pathTargetPoint = null;
   robot.pathTargetHeading = null;
+  robot.isAligningHeading = false; // Initialize new state
+  robot.targetAlignmentHeading = null; // Initialize new state
 
   // Set initial position and heading from the autoPath's startPoint
   robot.pos = { x: autoPath.startPoint.x, y: autoPath.startPoint.y };
@@ -203,6 +206,33 @@ export function updatePathTraversal(
       intake: true, // Force intake active during auto
       fire: true,   // Force fire active during auto
     };
+  }
+
+  // --- Handle heading alignment between segments ---
+  if (robot.isAligningHeading && robot.targetAlignmentHeading !== null) {
+    const angleDiff = wrapAngle(robot.targetAlignmentHeading - robot.heading);
+    if (Math.abs(angleDiff) < C.ALIGNMENT_ANGLE_TOLERANCE) {
+      // Alignment complete, proceed to next segment
+      robot.heading = robot.targetAlignmentHeading; // Snap to target heading
+      robot.isAligningHeading = false;
+      robot.targetAlignmentHeading = null;
+      robot.pathSequenceIndex++;
+      robot.pathSegmentProgress = 0; // Reset for next sequence item
+      // console.log(`[PathTraversal] Robot ${robot.id}: Heading alignment complete. Advancing to sequence item ${robot.pathSequenceIndex}.`);
+    } else {
+      // Still aligning, rotate towards target heading
+      const rotateSpeed = Math.sign(angleDiff) * C.ALIGNMENT_ROTATIONAL_SPEED;
+      robot.heading = wrapAngle(robot.heading + rotateSpeed * dt);
+      return {
+        driveX: 0,
+        driveY: 0,
+        rotate: rotateSpeed,
+        leftDrive: 0,
+        rightDrive: 0,
+        intake: true,
+        fire: true,
+      };
+    }
   }
 
   // --- Check if path is finished ---
@@ -289,9 +319,10 @@ export function updatePathTraversal(
   }
 
   // --- Advance robot's progress along the segment (t) ---
-  // We need a way to define speed. Let's assume a constant speed for now.
-  // This is a simplification, as real paths might have varying speeds.
-  const PATH_TRAVERSAL_SPEED = 100; // inches per second (example value)
+  // Calculate PATH_TRAVERSAL_SPEED based on robot's drivetrain
+  const drivePreset = C.DRIVETRAIN_PRESETS[robot.spec.drivetrain];
+  const PATH_TRAVERSAL_SPEED = C.SPEED_PER_RPM * robot.spec.driveRpm * drivePreset.speedMult;
+
   const segmentLength = getSegmentLength(segmentStartPoint, currentPathLine);
   let delta_t = 0;
   if (segmentLength > 1e-6) { // Avoid division by zero
@@ -321,6 +352,45 @@ export function updatePathTraversal(
   // Segment is considered complete when pathSegmentProgress reaches 1.0
   if (robot.pathSegmentProgress >= 1.0) {
     robot.pathSegmentProgress = 1.0; // Ensure it's exactly 1.0
+
+    // Check for heading alignment to the next segment
+    const nextSequenceIndex = robot.pathSequenceIndex + 1;
+    if (nextSequenceIndex < autoPath.sequence.length) {
+      const nextSequenceItem = autoPath.sequence[nextSequenceIndex];
+      if (nextSequenceItem.kind === 'path' && nextSequenceItem.lineId) {
+        const nextPathLine = autoPath.lines.find(line => line.id === nextSequenceItem.lineId);
+        if (nextPathLine) {
+          // Get the start point of the next path line
+          const nextSegmentStartPoint = currentPathLine.endPoint; // The end of current is start of next
+          const nextSegmentStartHeading = getHeadingFromPathPoint(
+              nextSegmentStartPoint,
+              robot.heading, // Use current robot heading as fallback
+              0, // At the start of the segment
+              evaluatePathSegment(nextSegmentStartPoint, nextPathLine, 0).tangentHeading
+          );
+
+          const angleDiff = wrapAngle(nextSegmentStartHeading - robot.heading);
+          if (Math.abs(angleDiff) > C.ALIGNMENT_ANGLE_TOLERANCE) {
+            // Initiate heading alignment
+            robot.isAligningHeading = true;
+            robot.targetAlignmentHeading = nextSegmentStartHeading;
+            robot.pathSegmentProgress = 0; // Keep progress at 0 for the current segment until aligned
+            // console.log(`[PathTraversal] Robot ${robot.id}: Initiating heading alignment to ${nextSegmentStartHeading * 180 / Math.PI} deg.`);
+            return {
+              driveX: 0,
+              driveY: 0,
+              rotate: Math.sign(angleDiff) * C.ALIGNMENT_ROTATIONAL_SPEED,
+              leftDrive: 0,
+              rightDrive: 0,
+              intake: true,
+              fire: true,
+            };
+          }
+        }
+      }
+    }
+
+    // If no alignment needed or last segment, handle waitAfterMs or advance
     if (currentPathLine.waitAfterMs && currentPathLine.waitAfterMs > 0) {
       robot.pathWaitTimer = currentPathLine.waitAfterMs;
       // console.log(`[PathTraversal] Robot ${robot.id}: Waiting for ${currentPathLine.waitAfterMs}ms (after segment).`);

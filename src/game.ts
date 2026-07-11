@@ -21,6 +21,7 @@ import { Renderer } from './render/renderer';
 import { MatchAudio } from './audio';
 import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './net/session';
 import { localizeCommand } from './net/protocol';
+import { clamp } from './math';
 import type { RecordRankInfo } from './net/protocol';
 
 // GameSettings is defined canonically in ./types; re-exported here because many
@@ -105,6 +106,9 @@ export interface HudSnapshot {
   autoIntake: boolean;
   autoFire: boolean;
   hopper: ArtifactColor[];
+  /** local robot's current drive power draw (0..POWER_DRAW_MAX) — flywheel
+   * spin-up + intake pulling current off the drive motors; shown as the HUD gauge */
+  powerDraw: number;
   inLaunchZone: boolean;
   gamepadConnected: boolean;
   /** drive controls reversed so the shooter side leads (robot-centric only) */
@@ -268,6 +272,7 @@ export class GameController {
         spec: s.spec,
         assists: s.assists,
         startIndex: s.startIndex,
+        startPose: s.startPose ?? undefined,
         autoPath: s.autoPath ?? undefined,
         autoPathEnabled: s.autoPathEnabled,
       },
@@ -283,7 +288,8 @@ export class GameController {
         startIndex,
       });
       setups.push(
-        dummy(1, s.alliance, s.startIndex === 1 ? 2 : 1),
+        // the partner dummy takes the OTHER preset so it never overlaps the player
+        dummy(1, s.alliance, s.startIndex === 1 ? 0 : 1),
         dummy(2, opp, 0),
         dummy(3, opp, 1),
       );
@@ -443,6 +449,16 @@ export class GameController {
       cmd.driveY *= k;
       cmd.rotate *= k;
     }
+    // Tank control style is a PER-DRIVER input preference (not a shared world
+    // setting), so resolve it here: "Normal" tank derives side-drive from arcade
+    // driveY/rotate, "Traditional" keeps the raw separate-stick leftDrive/rightDrive.
+    // The sim's tank branch then always reads leftDrive/rightDrive, so the choice
+    // works identically in solo and multiplayer (the server never sees these
+    // settings). Runs after flip/park so both still apply in Normal tank.
+    if (this.localRobot().spec.drivetrain === 'tank' && this.settings.tankControlMode === 'normal') {
+      cmd.leftDrive = clamp(cmd.driveY - cmd.rotate, -1, 1);
+      cmd.rightDrive = clamp(cmd.driveY + cmd.rotate, -1, 1);
+    }
     this.lastCmd = cmd;
 
     this.acc += Math.min(dtMs / 1000, 0.25);
@@ -519,7 +535,9 @@ export class GameController {
    * only our own robot is predicted, remote robots are corrected by snapshots. */
   private stepServer(cmd: RobotCommand): void {
     const s = this.session!;
-    if (this.input.restartPressed && s.isHost()) s.requestRestart();
+    // NOTE: no restart/rematch in multiplayer — a local or host-authored rebuild
+    // desynced everyone (post-restart stuck/jitter). Players return to the lobby to
+    // start a fresh match instead. Restart stays a SOLO-only affordance (stepSolo).
 
     // reconcile to the freshest server snapshot BEFORE predicting this frame
     const snap = s.takeSnapshot();
@@ -728,17 +746,12 @@ export class GameController {
     this.toasts = [];
   }
 
-  /** REMATCH: in multiplayer ONLY the host re-authors the match for everyone (a
-   * local rebuild would desync — the host broadcasts a fresh seed and every peer
-   * rebuilds via rebuildFromNet); in solo it just rebuilds locally. */
+  /** REMATCH: SOLO only — rebuild locally with a fresh seed/motif. Multiplayer has
+   * no rematch (it re-authored the match for everyone and desynced on rebuild);
+   * networked players return to the lobby to queue a fresh match. */
   rematch(): void {
-    if (this.session) {
-      // host only: the server re-authors the match for everyone (picks the seed)
-      if (this.session.isHost()) this.session.requestRestart();
-      // non-host: no-op — only the host restarts
-    } else {
-      this.restart();
-    }
+    if (this.session) return; // multiplayer: no-op (UI hides the button)
+    this.restart();
   }
 
   /** multiplayer session? (UI gates RESET / host-only REMATCH on this) */
@@ -819,6 +832,7 @@ export class GameController {
       autoIntake: r.autoIntake,
       autoFire: r.autoFire,
       hopper: [...r.hopper],
+      powerDraw: r.powerDraw,
       inLaunchZone: w.mode === 'free' || robotInLaunchZone(r),
       gamepadConnected: this.input.gamepadConnected,
       frontFlipped: this.frontFlipped,

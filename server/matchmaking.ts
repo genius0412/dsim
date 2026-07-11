@@ -5,7 +5,7 @@ import { dbEnabled } from './db/pool';
 import { BALANCE_VERSION } from '../src/config';
 import { bestHost, type PingInfo } from './regions';
 import type { PendingMatch, PendingRosterEntry } from './matchTypes';
-import { QUEUE_NEED, type LobbyPlayer, type PlayerIntro, type QueueMode, type ServerMsg } from '../src/net/protocol';
+import { QUEUE_NEED, type LobbyPlayer, type QueueMode, type ServerMsg } from '../src/net/protocol';
 
 /**
  * Region-aware ranked matchmaking. Runs on the DESIGNATED matchmaker machine (all
@@ -51,6 +51,21 @@ export interface QueueEntry {
   accessMs: number;
   /** true ⇒ never widen past my own region */
   noWiden?: boolean;
+  /** protocol capabilities this client build advertised (mixed-version safe) */
+  caps?: string[];
+  /** release channel ('alpha' | 'stable' | …). The matchmaker ONLY pairs entries
+   * of the same channel — alpha and stable run different src/sim, so a shared
+   * authoritative match would desync. Absent ⇒ 'stable'. */
+  channel?: string;
+  /** this client build's id (the git sha, `__BUILD_ID__`). The matchmaker ALSO
+   * segregates by build so two different builds NEVER share an authoritative match
+   * even inside one channel — the exact "same code" invariant (a channel is only a
+   * coarse, manually-set proxy). This is what actually keeps alpha and main apart
+   * automatically: their shas always differ, no `VITE_APP_CHANNEL` required. Matches
+   * the client-side version gate ("everyone on the same version for multiplayer"),
+   * enforced authoritatively here. Absent (old client that predates this) ⇒ falls
+   * back to channel-only separation. */
+  build?: string;
   /** set by enqueue (this.now()); drives the widening ceiling */
   enqueuedAt: number;
   /** extra manual widen steps from `expandSearch` */
@@ -174,6 +189,10 @@ export class Matchmaker {
       const group = [q[i]];
       for (let j = 0; j < q.length && group.length < need; j++) {
         if (j === i) continue;
+        // never pair across compatibility buckets (channel + build) — different
+        // src/sim (alpha vs stable) OR different builds run different code, so a
+        // shared authoritative match would desync both clients
+        if (bucketKey(q[j]) !== bucketKey(q[i])) continue;
         // never put the same account in a group twice (backstop for the userId
         // dedup above) — a self-pair produces a frozen "ghost" robot
         if (q[j].userId && group.some((g) => g.userId === q[j].userId)) continue;
@@ -195,7 +214,7 @@ export class Matchmaker {
   private async introElo(entry: QueueEntry, mode: QueueMode): Promise<number | null> {
     if (!dbEnabled || !entry.userId) return null;
     try {
-      return await getRating(entry.userId, mode, 'overall', BALANCE_VERSION);
+      return await getRating(entry.userId, mode, BALANCE_VERSION);
     } catch {
       return null;
     }
@@ -223,35 +242,50 @@ export class Matchmaker {
         startIndex: i < half ? i : i - half,
         alliance: (i < half ? 'red' : 'blue') as PendingRosterEntry['alliance'],
         introElo: await this.introElo(e, mode),
+        channel: e.channel,
       })),
     );
-    await this.stage!({ code, hostRegion, mode, seed, roster, ranked: true });
+    await this.stage!({ code, hostRegion, mode, seed, roster, ranked: true, channel: group[0].channel });
     for (const e of group) e.send({ t: 'matchAssigned', mode, room: code, hostRegion });
   }
 
-  /** DEV/no-DB fallback: run the match on THIS machine (the old behavior). Only
-   * reachable when DATABASE_URL is unset, where everyone is on one machine anyway. */
+  /** DEV/no-DB fallback: run the match on THIS machine. Only reachable when
+   * DATABASE_URL is unset, where everyone is on one machine anyway. Routes through
+   * the SAME staged-roster path (`applyPending`) as production so the pre-match
+   * STRATEGY window runs in dev too — dev clients may be anonymous, so synthesize a
+   * stable per-connection id for the userId→slot mapping. */
   private localStart(mode: QueueMode, group: QueueEntry[]): void {
     const code = `mm-${mode}-${roomSeq++}`;
     const room = new Room(code, () => this.rooms.delete(room), { kind: 'versus' }, persistMatch);
     this.rooms.add(room);
     const half = group.length / 2;
-    const intros: PlayerIntro[] = group.map((_e, i) => ({ id: i, elo: null }));
+    const seed = (this.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
+    const roster: PendingRosterEntry[] = group.map((e, i) => ({
+      userId: e.userId ?? e.id, // dev: a stable id so the host can map roster slots
+      name: e.player.name,
+      teamName: e.player.teamName,
+      teamNumber: e.player.teamNumber,
+      spec: e.player.spec,
+      assists: e.player.assists,
+      startIndex: i < half ? i : i - half,
+      alliance: (i < half ? 'red' : 'blue') as PendingRosterEntry['alliance'],
+      introElo: null,
+    }));
     group.forEach((e, i) => {
-      const alliance = i < half ? 'red' : 'blue';
       const client: Client = {
         id: e.id,
         send: e.send,
-        player: { ...e.player, clientId: e.id, alliance },
+        player: { ...e.player, clientId: e.id, alliance: roster[i].alliance },
         connected: true,
         disconnectAt: 0,
-        userId: e.userId,
+        userId: roster[i].userId,
+        caps: e.caps,
+        channel: e.channel,
       };
       room.add(client);
       e.onRoom?.(room);
     });
-    room.setRankedIntro(intros);
-    room.startMatchNow();
+    room.applyPending({ code, hostRegion: '', mode, seed, roster, ranked: true });
   }
 
   /** live queue depth per bucket, for the public presence endpoint */
@@ -260,11 +294,20 @@ export class Matchmaker {
   }
 
   private broadcastStatus(mode: QueueMode): void {
-    const size = this.queues[mode].length;
+    // report each waiter the depth of ITS OWN bucket (channel + build) — pairing is
+    // bucket-scoped, so a mixed count would falsely read "enough players" and never
+    // match (a lone alpha queuer must not be told a pool of stable/older builds is ready)
     for (const e of this.queues[mode]) {
+      const key = bucketKey(e);
+      const size = this.queues[mode].reduce((n, x) => n + (bucketKey(x) === key ? 1 : 0), 0);
       e.send({ t: 'queued', mode, size, need: QUEUE_NEED[mode] });
     }
   }
 }
 
 const toPing = (e: QueueEntry): PingInfo => ({ homeRegion: e.homeRegion, accessMs: e.accessMs });
+
+/** matchmaking compatibility bucket: two entries may only be paired when this key
+ * matches — same release channel AND same client build. Absent build ⇒ '' (old
+ * clients fall back to channel-only separation). */
+const bucketKey = (e: QueueEntry): string => `${e.channel ?? 'stable'}|${e.build ?? ''}`;

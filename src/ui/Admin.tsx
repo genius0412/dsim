@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   adminAnnounce,
   adminCancelNotice,
@@ -9,11 +9,22 @@ import {
   adminClearUserRecords,
   adminSearchUsers,
   adminRenameUser,
+  adminPublishAnnouncement,
+  adminDeleteAnnouncement,
+  fetchAnnouncements,
   type AdminRecordRow,
+  type Announcement,
+  type AnnouncementKind,
 } from '../net/api';
+import { Markdown } from './markdown';
 
 type RecMode = 'solo' | 'duo';
 const DRIVETRAINS = ['overall', 'mecanum', 'tank', 'swerve', 'xdrive'] as const;
+const ANN_KINDS: { value: AnnouncementKind; label: string }[] = [
+  { value: 'patch', label: 'Patch notes / bug fixes' },
+  { value: 'season', label: 'New season (cinematic)' },
+  { value: 'act', label: 'New act (cinematic)' },
+];
 
 /** admin console — only reachable by the account(s) in the server's ADMIN_USER_IDS.
  * Broadcasts a scheduled-restart countdown to every connected player; then you
@@ -34,6 +45,15 @@ export function Admin() {
   const [records, setRecords] = useState<AdminRecordRow[]>([]);
   const [recStatus, setRecStatus] = useState<string | null>(null);
   const [recBusy, setRecBusy] = useState(false);
+
+  // announcements — patch notes / new-season + new-act reveals
+  const [annKind, setAnnKind] = useState<AnnouncementKind>('patch');
+  const [annTitle, setAnnTitle] = useState('');
+  const [annTagline, setAnnTagline] = useState('');
+  const [annBody, setAnnBody] = useState('');
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [annStatus, setAnnStatus] = useState<string | null>(null);
+  const [annBusy, setAnnBusy] = useState(false);
 
   // moderation — user display names
   const [userQuery, setUserQuery] = useState('');
@@ -99,14 +119,21 @@ export function Admin() {
     setStatus(ok ? okMsg : 'Failed — are you still signed in as an admin?');
   };
 
-  const startSeason = async (): Promise<void> => {
-    if (!window.confirm('Archive the live leaderboards and start a fresh season? Old boards stay viewable.')) return;
+  const startSeason = async (newAct: boolean): Promise<void> => {
+    const what = newAct ? 'ACT' : 'season';
+    if (
+      !window.confirm(
+        `Archive the live leaderboards and start a fresh ${what}? Old boards stay viewable.` +
+          (newAct ? ' A new act resets the season count to 1.' : ''),
+      )
+    )
+      return;
     setSeasonBusy(true);
-    const season = await adminStartSeason(seasonName);
+    const season = await adminStartSeason(seasonName, { newAct });
     setSeasonBusy(false);
     setSeasonStatus(
       season != null
-        ? `Started Season ${season}. New runs now score onto it; older seasons are archived but still viewable.`
+        ? `Started a new ${what}. New runs now score onto it; older periods are archived but still viewable.`
         : 'Failed — are you still signed in as an admin (and is the DB configured)?',
     );
   };
@@ -120,6 +147,51 @@ export function Admin() {
       freed != null ? `Purged ${freed} archived-season replay${freed === 1 ? '' : 's'}.` : 'Failed — check admin sign-in / DB.',
     );
   };
+
+  const loadAnnouncements = async (): Promise<void> => {
+    const rows = await fetchAnnouncements(50);
+    setAnnouncements(rows);
+  };
+  // pull the current feed once so the admin sees what's live + can retire old ones
+  useEffect(() => {
+    void loadAnnouncements();
+  }, []);
+
+  const publishAnnouncement = async (): Promise<void> => {
+    const title = annTitle.trim();
+    if (title.length < 2) {
+      setAnnStatus('Give it a title (2+ characters).');
+      return;
+    }
+    setAnnBusy(true);
+    const created = await adminPublishAnnouncement({
+      kind: annKind,
+      title,
+      body: annBody,
+      tagline: annTagline.trim() || undefined,
+    });
+    setAnnBusy(false);
+    if (created) {
+      setAnnouncements((rows) => [created, ...rows]);
+      setAnnTitle('');
+      setAnnTagline('');
+      setAnnBody('');
+      setAnnStatus(`Published — players see it on their next load. ${created.kind === 'patch' ? '' : 'It plays a cinematic reveal.'}`);
+    } else {
+      setAnnStatus('Failed — check admin sign-in / DB.');
+    }
+  };
+
+  const retireAnnouncement = async (a: Announcement): Promise<void> => {
+    if (!window.confirm(`Retire "${a.title}"? It stops appearing for anyone who hasn't seen it yet.`)) return;
+    setAnnBusy(true);
+    const ok = await adminDeleteAnnouncement(a.id);
+    setAnnBusy(false);
+    if (ok) setAnnouncements((rows) => rows.filter((r) => r.id !== a.id));
+    setAnnStatus(ok ? `Retired "${a.title}".` : 'Failed — check admin sign-in.');
+  };
+
+  const isCinematic = annKind !== 'patch';
 
   return (
     <div className="ds-section" style={{ maxWidth: 520 }}>
@@ -169,25 +241,115 @@ export function Admin() {
         the countdown reaches 0.
       </p>
 
-      <h2 className="ds-h2" style={{ marginTop: 32 }}>Seasons</h2>
+      <h2 className="ds-h2" style={{ marginTop: 32 }}>Announcements</h2>
       <p className="ds-sub" style={{ margin: '0 0 20px' }}>
-        Start a fresh competitive season (records + ranked ELO). Past seasons stay fully viewable
-        in the leaderboard’s season picker; only new runs score onto the live one.
+        Publish patch notes, bug-fix summaries, or a new season / act. Each player sees it once —
+        the first time they open the app after you publish. A new season or act plays a full-screen
+        cinematic reveal; patch notes show in a “What’s new” panel.
       </p>
       <div className="admin-card">
         <label className="admin-field col">
-          <span>New season name (optional)</span>
+          <span>Type</span>
+          <select value={annKind} onChange={(e) => setAnnKind(e.target.value as AnnouncementKind)}>
+            {ANN_KINDS.map((k) => (
+              <option key={k.value} value={k.value}>{k.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="admin-field col">
+          <span>{isCinematic ? 'Title (the big reveal headline)' : 'Title'}</span>
+          <input
+            type="text"
+            value={annTitle}
+            maxLength={80}
+            placeholder={isCinematic ? 'e.g. Act II — The Rising Tide' : 'e.g. Build 42 — gate + intake fixes'}
+            onChange={(e) => setAnnTitle(e.target.value)}
+          />
+        </label>
+        {isCinematic && (
+          <label className="admin-field col">
+            <span>Tagline (optional subtitle under the reveal)</span>
+            <input
+              type="text"
+              value={annTagline}
+              maxLength={80}
+              placeholder="e.g. A NEW SEASON BEGINS"
+              onChange={(e) => setAnnTagline(e.target.value)}
+            />
+          </label>
+        )}
+        <label className="admin-field col">
+          <span>{isCinematic ? 'Details (shown in “What’s new”) — Markdown' : 'Notes — Markdown'}</span>
+          <textarea
+            className="admin-textarea"
+            value={annBody}
+            maxLength={8000}
+            rows={8}
+            placeholder={'## Gate & Intake\n- Fixed the gate lever swinging closed on a **resting** robot\n- Faster basin drain\n\n## Drivetrain\n- New swerve pod wobble tuning — see [the notes](https://example.com)'}
+            onChange={(e) => setAnnBody(e.target.value)}
+          />
+          <span className="ds-hint" style={{ marginTop: 4 }}>
+            Supports Markdown: <code>## headings</code>, <code>**bold**</code>, <code>- bullets</code>{' '}
+            (indent to nest), <code>[links](url)</code>, <code>---</code> rules.
+          </span>
+        </label>
+        {annBody.trim() && (
+          <div className="admin-field col">
+            <span className="ds-hint">Preview</span>
+            <div className="ann-item" style={{ borderLeftColor: 'var(--ds-accent)' }}>
+              <Markdown text={annBody} className="ann-md" />
+            </div>
+          </div>
+        )}
+        <div className="admin-buttons">
+          <button className="ds-btn" disabled={annBusy} onClick={publishAnnouncement}>
+            PUBLISH
+          </button>
+        </div>
+        {annStatus && <p className="ds-hint" style={{ marginTop: 12 }}>{annStatus}</p>}
+        {announcements.length > 0 && (
+          <div className="admin-list" style={{ marginTop: 12 }}>
+            {announcements.map((a) => (
+              <div key={a.id} className="admin-row">
+                <span className={`ann-badge ${a.kind}`}>{a.kind}</span>
+                <span className="admin-grow">
+                  <strong>{a.title}</strong>
+                  <span className="ds-hint"> · {new Date(a.publishedAt).toLocaleDateString()}</span>
+                </span>
+                <button className="ds-btn ghost sm danger" disabled={annBusy} onClick={() => retireAnnouncement(a)}>
+                  RETIRE
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <h2 className="ds-h2" style={{ marginTop: 32 }}>Acts &amp; Seasons</h2>
+      <p className="ds-sub" style={{ margin: '0 0 20px' }}>
+        Competitive periods are grouped Act → Season (both 1-indexed; Act 0 is the beta).
+        A <b>new season</b> resets the boards within the current act; a <b>new act</b> also
+        rolls the act and restarts the season count at 1, firing the “A NEW ACT” cinematic.
+        Past periods stay fully viewable in the leaderboard’s picker; only new runs score onto
+        the live one. Leave the name blank to auto-label “Act X · Season Y”.
+      </p>
+      <div className="admin-card">
+        <label className="admin-field col">
+          <span>Custom title (optional)</span>
           <input
             type="text"
             value={seasonName}
             maxLength={40}
-            placeholder="e.g. Season 2 — Spring"
+            placeholder="e.g. Spring Showdown — blank ⇒ Act X · Season Y"
             onChange={(e) => setSeasonName(e.target.value)}
           />
         </label>
         <div className="admin-buttons">
-          <button className="ds-btn" disabled={seasonBusy} onClick={startSeason}>
+          <button className="ds-btn" disabled={seasonBusy} onClick={() => startSeason(false)}>
             START NEW SEASON
+          </button>
+          <button className="ds-btn" disabled={seasonBusy} onClick={() => startSeason(true)}>
+            START NEW ACT
           </button>
           <button className="ds-btn ghost" disabled={seasonBusy} onClick={purgeReplays}>
             PURGE ARCHIVED REPLAYS

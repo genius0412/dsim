@@ -13,6 +13,9 @@ import { getAuthToken } from '../lib/authClient';
 export interface RecordConfig {
   spec: RobotSpec;
   assists: AssistConfig;
+  /** in a DUO run, the co-op partner's robot (each driver brings their own build,
+   * so a duo can mix drivetrains). Absent for solo runs / legacy rows. */
+  partnerSpec?: RobotSpec;
 }
 
 export interface RecordRow {
@@ -47,7 +50,8 @@ export interface EloStanding {
 
 export type RecordMode = 'solo' | 'duo';
 export type EloMode = '1v1' | '2v2';
-/** a specific drivetrain board or the cross-drivetrain 'overall' */
+/** a record board: a specific drivetrain or the cross-drivetrain 'overall'.
+ * RANKED (ELO) is NOT split by drivetrain — only the record boards are. */
 export type Board = 'mecanum' | 'tank' | 'swerve' | 'xdrive' | 'overall';
 
 async function getJson<T>(path: string): Promise<T> {
@@ -69,13 +73,12 @@ export function fetchRecords(
 
 export function fetchElo(
   mode: EloMode,
-  drivetrain: Board,
   season?: number,
   me?: string | null,
 ): Promise<{ rows: EloRow[]; me: EloStanding | null }> {
   const s = season != null ? `&season=${season}` : '';
   const m = me ? `&me=${encodeURIComponent(me)}` : '';
-  return getJson(`/api/elo?mode=${mode}&drivetrain=${drivetrain}${s}${m}`);
+  return getJson(`/api/elo?mode=${mode}${s}${m}`);
 }
 
 export interface UserEloStat {
@@ -187,6 +190,9 @@ export interface MatchHistoryEntry {
   createdAt: string;
   replayId: string | null;
   score: number;
+  /** both alliances' final totals (versus only; null for record runs) */
+  redScore: number | null;
+  blueScore: number | null;
   won: boolean | null; // versus only
   eloBefore: number | null;
   eloAfter: number | null;
@@ -319,11 +325,78 @@ export function fetchReplay(id: string): Promise<Replay> {
   return getJson(`/api/replay/${id}`);
 }
 
+// ---- announcements (patch notes / new season / new act) --------------------
+
+export type AnnouncementKind = 'patch' | 'season' | 'act';
+export interface Announcement {
+  id: string;
+  kind: AnnouncementKind;
+  title: string;
+  /** newline-separated bullet lines (rendered as a list) */
+  body: string;
+  /** optional headline for the cinematic season/act reveal */
+  tagline: string | null;
+  publishedAt: string;
+}
+
+/** recent active announcements (newest first). Empty when no server/DB. Never
+ * throws — the announcements gate is best-effort and must not break the app. */
+export async function fetchAnnouncements(limit = 12): Promise<Announcement[]> {
+  const base = gameServerHttpUrl();
+  if (!base) return [];
+  try {
+    const res = await fetch(base + `/api/announcements?limit=${limit}`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { announcements?: Announcement[] };
+    return data.announcements ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** publish an announcement (admin only; server re-authorizes). */
+export async function adminPublishAnnouncement(input: {
+  kind: AnnouncementKind;
+  title: string;
+  body: string;
+  tagline?: string;
+}): Promise<Announcement | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const res = await fetch(base + '/api/admin/announcement', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) return null;
+  const data = (await res.json().catch(() => ({}))) as { announcement?: Announcement };
+  return data.announcement ?? null;
+}
+
+/** retire an announcement (soft delete — stops appearing in the feed). */
+export async function adminDeleteAnnouncement(id: string): Promise<boolean> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return false;
+  const res = await fetch(base + '/api/admin/announcement/delete?id=' + encodeURIComponent(id), {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return res.ok;
+}
+
 // ---- seasons ---------------------------------------------------------------
 
 export interface SeasonInfo {
+  /** internal balance_version key */
   season: number;
-  name: string;
+  /** grouping era; 0 = beta/pre-season, then 1-indexed */
+  act: number;
+  /** 1-indexed ordinal of this season within its act (for display) */
+  seasonNo: number;
+  /** admin's custom title, or null to use the structured "Act X · Season Y" */
+  name: string | null;
   active: boolean;
   startedAt: string;
   records: number;
@@ -377,13 +450,20 @@ export async function adminCancelNotice(): Promise<boolean> {
   return res.ok;
 }
 
-/** archive the live boards and open a fresh season; returns the new season number */
-export async function adminStartSeason(name?: string): Promise<number | null> {
+/** archive the live boards and open a fresh period; `newAct` opens a new ACT
+ * (else a new season in the current act). Returns the new balance_version. */
+export async function adminStartSeason(
+  name?: string,
+  opts?: { newAct?: boolean },
+): Promise<number | null> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
-  const q = name && name.trim() ? '?name=' + encodeURIComponent(name.trim()) : '';
-  const res = await fetch(base + '/api/admin/season/start' + q, {
+  const params = new URLSearchParams();
+  if (name && name.trim()) params.set('name', name.trim());
+  if (opts?.newAct) params.set('act', 'new');
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(base + '/api/admin/season/start' + qs, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}` },
   });

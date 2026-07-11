@@ -6,9 +6,13 @@ import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
 import type { NetSession } from '../net/session';
-import type { QueueMode } from '../net/protocol';
+import type { LobbyPlayer, PlayerIntro, QueueMode } from '../net/protocol';
+import { MatchStrategy } from './MatchStrategy';
 import { usePresence } from './usePresence';
 import { useServerNotice } from '../net/notice';
+import { APP_NAME } from '../seasons';
+import { Logo } from './Logo';
+import { useEscape } from './useEscape';
 
 /**
  * Region-aware ranked matchmaking. We connect to the DESIGNATED matchmaker (a
@@ -20,18 +24,30 @@ import { useServerNotice } from '../net/notice';
  * sends `matchStart` straight back on this socket (handled too). ELO is applied
  * server-side on match end.
  */
+/** the pre-match strategy window state, once a paired match opens one */
+interface StrategyState {
+  lobby: LobbyClient;
+  players: LobbyPlayer[];
+  myClientId: string;
+  deadline: number;
+  mode: QueueMode;
+  intros: PlayerIntro[];
+}
+
 export function Matchmaking({
   settings,
   signedIn,
   onStart,
   onCancel,
   onSignIn,
+  onSettingsChange,
 }: {
   settings: GameSettings;
   signedIn: boolean;
   onStart: (s: NetSession) => void;
   onCancel: () => void;
   onSignIn: () => void;
+  onSettingsChange: (s: GameSettings) => void;
 }) {
   const [mode, setMode] = useState<QueueMode>('1v1');
   const [noWiden, setNoWiden] = useState(false);
@@ -44,10 +60,16 @@ export function Matchmaking({
   const [queue, setQueue] = useState({ size: 0, need: 2 });
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState('');
+  // set once a paired match opens its pre-match strategy window (see MatchStrategy)
+  const [strategy, setStrategy] = useState<StrategyState | null>(null);
 
   const lobbyRef = useRef<LobbyClient | null>(null);
   const startedRef = useRef(false);
   const assigningRef = useRef(false); // reconnecting from matchmaker → host
+
+  // Esc backs out, same as ← Back — but NOT once a match has paired: MatchStrategy
+  // owns the screen then, and its ← Leave forfeits. A stray Esc must not do that.
+  useEscape(onCancel, !strategy);
 
   const teardown = (): void => {
     if (!startedRef.current) {
@@ -71,10 +93,37 @@ export function Matchmaking({
     teamNumber: settings.spec.teamNumber,
     alliance: 'red' as const, // matchmaking assigns the real alliance
     startIndex: settings.startIndex,
-    ready: true,
+    startPose: settings.startPose ?? null,
+    ready: false, // the pre-match strategy screen owns readiness now
     spec: settings.spec,
     assists: settings.assists,
   });
+
+  /** attach the pre-match strategy handlers to a lobby socket (dev mm-socket path
+   * AND the production reconnected host-room path both open a strategy window). */
+  const wireStrategy = (lobby: LobbyClient): void => {
+    lobby.on('roster', (players) =>
+      setStrategy((s) => (s ? { ...s, players, myClientId: lobby.clientId } : s)),
+    );
+    lobby.on('strategyStart', (deadline, _yourRobotId, m, intros) =>
+      setStrategy({
+        lobby,
+        players: lobby.players,
+        myClientId: lobby.clientId,
+        deadline,
+        mode: m,
+        intros,
+      }),
+    );
+  };
+
+  /** a cancel/close arrived (deadline lapsed, opponent left): drop the strategy
+   * screen back to the queue with the reason shown. */
+  const strategyCancelled = (msg: string): void => {
+    setStrategy(null);
+    setSearching(false);
+    setError(msg);
+  };
 
   const find = async (): Promise<void> => {
     if (!gameServerUrl()) {
@@ -102,14 +151,15 @@ export function Matchmaking({
     const lobby = new LobbyClient(transport);
     lobbyRef.current = lobby;
     lobby.on('queued', (_m, size, need) => setQueue({ size, need }));
-    // dev / single-region / no-DB: the match runs on this same socket
+    // dev / single-region / no-DB: the strategy window + match run on this same socket
+    wireStrategy(lobby);
     lobby.on('matchStart', (m: MatchStart) => {
       startedRef.current = true;
       onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
     });
     // normal path: reconnect to the assigned host region to play
     lobby.on('matchAssigned', (room) => joinAssignedMatch(room));
-    lobby.on('error', (msg) => setError(msg));
+    lobby.on('error', (msg) => strategyCancelled(msg));
     lobby.on('closed', () => {
       if (!startedRef.current && !assigningRef.current)
         setError('Lost connection to the game server.');
@@ -131,13 +181,14 @@ export function Matchmaking({
     }
     const lobby = new LobbyClient(transport);
     lobbyRef.current = lobby;
+    wireStrategy(lobby);
     lobby.on('matchStart', (m: MatchStart) => {
       startedRef.current = true;
       onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, room));
     });
-    lobby.on('error', (msg) => setError(msg));
+    lobby.on('error', (msg) => strategyCancelled(msg));
     lobby.on('closed', () => {
-      if (!startedRef.current) setError('Lost connection to the match server.');
+      if (!startedRef.current) strategyCancelled('Lost connection to the match server.');
     });
     lobby.join(room, playerInfo());
   };
@@ -149,112 +200,146 @@ export function Matchmaking({
     setSearching(false);
   };
 
+  /** the console scaffold every full-screen setup surface shares (Lobby, Record
+   * Run, MatchStrategy) — back control + brand mark, then a titled panel. */
+  const page = (title: JSX.Element, sub: string, body: JSX.Element): JSX.Element => (
+    <div className="ds-console">
+      <div className="ds-console-in" style={{ maxWidth: 520 }}>
+        <div className="ds-head">
+          <button className="ds-back" onClick={onCancel}>
+            ← Back
+          </button>
+          <span className="ds-mark">
+            <Logo size={24} />
+            {APP_NAME}
+          </span>
+        </div>
+        <div className="ds-title">
+          <h1>{title}</h1>
+        </div>
+        <p className="ds-sub" style={{ marginTop: -10 }}>
+          {sub}
+        </p>
+        <div className="ds-panelbox">{body}</div>
+      </div>
+    </div>
+  );
+
   // ranked requires an account (ELO / leaderboard). Custom rooms stay open to
   // everyone — the server also rejects an anonymous queue as a backstop.
   if (!signedIn) {
-    return (
-      <div className="ds-app">
-        <main
-          className="ds-main"
-          style={{ display: 'grid', placeItems: 'center', minHeight: '70vh' }}
-        >
-          <div style={{ textAlign: 'center', maxWidth: 460, width: '100%' }}>
-            <p className="ds-eyebrow">Ranked</p>
-            <h1 className="ds-h1">Sign in to play ranked</h1>
-            <p className="ds-sub" style={{ margin: '0 auto 20px' }}>
-              Ranked tracks ELO and the leaderboard, so it needs an account. Want to play now?
-              Custom Rooms are open to everyone.
-            </p>
-            <button className="ds-btn primary" onClick={onSignIn}>
-              Sign in
-            </button>
-            <div style={{ marginTop: 12 }}>
-              <button className="ds-btn ghost" onClick={onCancel}>
-                ← Home
-              </button>
-            </div>
-          </div>
-        </main>
-      </div>
+    return page(
+      <>
+        Ranked <span className="accent">Match</span>
+      </>,
+      'Head-to-head rating on a single leaderboard per mode.',
+      <>
+        <p className="ds-hint">
+          Ranked tracks rating and the leaderboard, so it needs an account. Want to play now? Custom
+          Rooms are open to everyone.
+        </p>
+        <div className="ds-actions">
+          <button className="ds-cta" onClick={onSignIn}>
+            SIGN IN ▶
+          </button>
+        </div>
+      </>,
     );
   }
 
-  return (
-    <div className="ds-app">
-      <main className="ds-main" style={{ display: 'grid', placeItems: 'center', minHeight: '70vh' }}>
-        <div style={{ textAlign: 'center', maxWidth: 460, width: '100%' }}>
-          <p className="ds-eyebrow">Ranked</p>
-          <h1 className="ds-h1">{searching ? 'Finding a match…' : 'Ranked matchmaking'}</h1>
-          {!searching ? (
-            <>
-              <p className="ds-sub" style={{ margin: '0 auto 20px' }}>
-                Head-to-head ELO — the winner takes rating, split by drivetrain plus an overall
-                board. Sign in for it to count.
-              </p>
-              <div className="ds-segs" style={{ justifyContent: 'center', marginBottom: 12 }}>
-                <button className={`ds-seg ${mode === '1v1' ? 'on' : ''}`} onClick={() => setMode('1v1')}>1v1</button>
-                <button className={`ds-seg ${mode === '2v2' ? 'on' : ''}`} onClick={() => setMode('2v2')}>2v2</button>
-              </div>
-              <p className="ds-sub" style={{ margin: '0 auto 20px', fontSize: 13 }}>
-                {presence ? (
-                  <>
-                    <b style={{ color: 'var(--ds-ink)' }}>{presence.queues[mode]}</b> waiting in{' '}
-                    {mode.toUpperCase()} ·{' '}
-                    {presence.queues[mode === '1v1' ? '2v2' : '1v1']} in{' '}
-                    {(mode === '1v1' ? '2v2' : '1v1').toUpperCase()} · {presence.online} online
-                  </>
-                ) : (
-                  <span style={{ opacity: 0.6 }}>Checking who’s online…</span>
-                )}
-              </p>
-              {multiServer() && (
-                <div className="ds-opts" style={{ marginBottom: 16 }}>
-                  <button
-                    className={`ds-opt ${noWiden ? 'on' : ''}`}
-                    onClick={() => setNoWiden(!noWiden)}
-                  >
-                    <span className="ot">Only my region {noWiden ? 'ON' : 'OFF'}</span>
-                    <span className="od">Never widen the search — lowest ping, may wait longer</span>
-                  </button>
-                </div>
-              )}
-              {error && <p className="ds-form-err" style={{ marginBottom: 12 }}>{error}</p>}
-              {restartPending && (
-                <p className="ds-form-err" style={{ marginBottom: 12 }}>
-                  Server is restarting shortly — queueing is paused for a moment.
-                </p>
-              )}
-              <button className="ds-btn primary" disabled={restartPending} onClick={() => void find()}>
-                Find Match
-              </button>
-              <div style={{ marginTop: 12 }}>
-                <button className="ds-btn ghost" onClick={onCancel}>← Home</button>
-              </div>
-            </>
-          ) : (
-            <>
-              <p className="ds-sub" style={{ margin: '0 auto 8px' }}>
-                {mode.toUpperCase()} · {queue.size}/{queue.need} in queue · {elapsed}s
-              </p>
-              {/* region-local first; widen automatically as you wait, or on demand */}
-              {!noWiden && multiServer() && (
-                <p className="ds-sub" style={{ margin: '0 auto 16px', fontSize: 13, opacity: 0.75 }}>
-                  {elapsed < 8
-                    ? 'Searching your region…'
-                    : 'Widening search to nearby regions…'}
-                </p>
-              )}
-              {error && <p className="ds-form-err" style={{ marginBottom: 12 }}>{error}</p>}
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
-                {!noWiden && multiServer() && (
-                  <button className="ds-btn" onClick={expand}>Expand search</button>
-                )}
-                <button className="ds-btn" onClick={cancel}>Cancel</button>
-              </div>
-            </>
+  // a paired match opened its pre-match strategy window: take over the whole screen
+  if (strategy) {
+    return (
+      <MatchStrategy
+        lobby={strategy.lobby}
+        players={strategy.players}
+        myClientId={strategy.myClientId}
+        deadline={strategy.deadline}
+        mode={strategy.mode}
+        intros={strategy.intros}
+        settings={settings}
+        onSettingsChange={onSettingsChange}
+        onLeave={() => {
+          teardown();
+          setStrategy(null);
+          setSearching(false);
+        }}
+      />
+    );
+  }
+
+  if (searching) {
+    return page(
+      <>
+        Finding a <span className="accent">match…</span>
+      </>,
+      `${mode.toUpperCase()} · ${queue.size}/${queue.need} in queue · ${elapsed}s`,
+      <>
+        {/* region-local first; widen automatically as you wait, or on demand */}
+        {!noWiden && multiServer() && (
+          <p className="ds-hint">
+            {elapsed < 8 ? 'Searching your region…' : 'Widening search to nearby regions…'}
+          </p>
+        )}
+        {error && <p className="ds-form-err">⚠ {error}</p>}
+        <div className="ds-actions">
+          {!noWiden && multiServer() && (
+            <button className="ds-cta ghost" onClick={expand}>
+              EXPAND SEARCH
+            </button>
           )}
+          <button className="ds-cta ghost" onClick={cancel}>
+            CANCEL
+          </button>
         </div>
-      </main>
-    </div>
+      </>,
+    );
+  }
+
+  return page(
+    <>
+      Ranked <span className="accent">Match</span>
+    </>,
+    'Head-to-head rating — the winner takes it, on a single leaderboard per mode.',
+    <>
+      <div className="ds-opts two">
+        <button className={`ds-opt ${mode === '1v1' ? 'on' : ''}`} onClick={() => setMode('1v1')}>
+          <span className="ot">1v1</span>
+          <span className="od">One driver each</span>
+        </button>
+        <button className={`ds-opt ${mode === '2v2' ? 'on' : ''}`} onClick={() => setMode('2v2')}>
+          <span className="ot">2v2</span>
+          <span className="od">Two drivers per alliance</span>
+        </button>
+      </div>
+      <p className="ds-hint">
+        {presence ? (
+          <>
+            <b style={{ color: 'var(--ds-ink)' }}>{presence.queues[mode]}</b> waiting in{' '}
+            {mode.toUpperCase()} · {presence.queues[mode === '1v1' ? '2v2' : '1v1']} in{' '}
+            {(mode === '1v1' ? '2v2' : '1v1').toUpperCase()} · {presence.online} online
+          </>
+        ) : (
+          'Checking who’s online…'
+        )}
+      </p>
+      {multiServer() && (
+        <div className="ds-opts">
+          <button className={`ds-opt ${noWiden ? 'on' : ''}`} onClick={() => setNoWiden(!noWiden)}>
+            <span className="ot">Only my region {noWiden ? 'ON' : 'OFF'}</span>
+            <span className="od">Never widen the search — lowest ping, may wait longer</span>
+          </button>
+        </div>
+      )}
+      {error && <p className="ds-form-err">⚠ {error}</p>}
+      {restartPending && (
+        <p className="ds-form-err">⚠ Server is restarting shortly — queueing is paused for a moment.</p>
+      )}
+      <div className="ds-actions">
+        <button className="ds-cta" disabled={restartPending} onClick={() => void find()}>
+          FIND MATCH ▶
+        </button>
+      </div>
+    </>,
   );
 }

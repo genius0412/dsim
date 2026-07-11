@@ -17,10 +17,13 @@ import type {
   SequenceItem,
   ControlPoint, // Import ControlPoint
   Vec2, // Import Vec2
+  StartPose,
 } from '../types';
 import * as C from '../config';
-import { nextRandom, wrapAngle, clamp } from '../math'; // Import wrapAngle
-import { loadPreStage, spikeMarkBalls, startPose } from './field';
+import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
+import { lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
+import { heldSlotPos } from './physics';
+import { flywheelSpinTarget, loadPreStage, mirrorStartPose, snapStartToLegal, spikeMarkBalls, startPose } from './field';
 import { emptyScore } from './scoring';
 
 export const MOTIFS: Motif[] = [
@@ -29,17 +32,19 @@ export const MOTIFS: Motif[] = [
   ['purple', 'purple', 'green'], // 23: PPG
 ];
 
+// A new player starts on the TW BUILD (Turtle Walkers' archetype) but with a
+// generic identity they fill in themselves — a preset is a build, not a name.
 export const DEFAULT_SPEC: RobotSpec = {
-  name: 'Standard Issue',
-  teamName: 'Baseline Robotics',
-  teamNumber: 1234,
-  length: 18,
-  width: 18,
+  name: 'My Robot',
+  teamName: '',
+  teamNumber: 0,
+  length: 14.5,
+  width: 16.5,
   intake: 'sloped',
-  massLb: 30,
+  massLb: 23.5,
   drivetrain: 'mecanum',
-  driveRpm: 435,
-  flywheelInertia: 0.5,
+  driveRpm: 500,
+  flywheelInertia: 0.4,
   canSort: false,
 };
 
@@ -55,10 +60,10 @@ export const DEFAULT_ASSISTS: AssistConfig = {
 // multiplayer, straight off the wire from an untrusted client (people have
 // spoofed it via devtools to spawn oversized / NaN-dimensioned robots). These
 // coercers are the SINGLE SOURCE OF TRUTH for "what is a legal config": every
-// numeric field is forced finite and clamped to its legal range, every enum is
-// checked, and anything missing falls back to a default. They are IDEMPOTENT, so
-// it is safe to run them at multiple layers (client settings load, server
-// ingress, AND createWorld) — belt and suspenders.
+// numeric field is forced finite and clamped to its per-drivetrain / per-preset
+// range, every enum is checked, and anything missing falls back to a default.
+// They are IDEMPOTENT, so it is safe to run them at multiple layers (client
+// settings load, server ingress, AND createWorld) — belt and suspenders.
 
 /** clamp `n` to [lo,hi], substituting `fallback` when it is not a finite number
  * (guards against NaN/Infinity: bare `clamp(NaN,...)` returns NaN unchanged) */
@@ -68,17 +73,27 @@ function clampFinite(n: unknown, lo: number, hi: number, fallback: number): numb
 
 /** Coerce an arbitrary value into a fully-legal RobotSpec. Unknown/missing/
  * corrupt fields fall back to `base` (default: DEFAULT_SPEC); all numeric fields
- * are clamped to their legal ranges (length per intake preset, mass + rpm to the
- * global limits). Never throws; always returns a spec safe to spawn. */
+ * are clamped to their legal ranges (length per intake preset, mass per
+ * drivetrain×inertia, rpm per drivetrain). Never throws; always returns a spec
+ * safe to spawn. */
 export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotSpec {
   const out: RobotSpec = { ...base };
   const sp = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
 
-  // intake style (legacy preset names from older saves migrate)
+  // The clamp order is DELIBERATE — it mirrors the builder UI's dependency graph
+  // exactly, so a hand-edited / spoofed / stale spec is bounded the same way the
+  // sliders bound a live one. Each numeric range is resolved from ONLY the
+  // field(s) it depends on, in this order:
+  //   1. INTAKE + DRIVETRAIN → length range (intake) + width range (drivetrain floor)
+  //   2. DRIVETRAIN         → rpm range                     (rpmLimits)
+  //   3. INERTIA            → 0..1
+  //   4. DRIVETRAIN×INERTIA → mass range                   (massLimits: floor ↑ inertia)
+
+  // resolve INTAKE + DRIVETRAIN first (width's floor depends on the drivetrain —
+  // swerve needs a wider base). Legacy preset names from older saves migrate.
   if (sp.intake === 'sloped' || sp.intake === 'vector' || sp.intake === 'triangle') out.intake = sp.intake;
   else if (sp.intake === 'compact') out.intake = 'sloped';
   else if (sp.intake === 'extended') out.intake = 'vector';
-
   if (
     sp.drivetrain === 'mecanum' ||
     sp.drivetrain === 'tank' ||
@@ -87,17 +102,29 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
   ) {
     out.drivetrain = sp.drivetrain;
   }
+
+  // 1) SIZE: length from the intake preset, width floored per drivetrain
+  const len = lengthLimits(out.intake);
+  const wid = widthLimits(out.intake, out.drivetrain);
+  out.length = clampFinite(sp.length, len.min, len.max, base.length);
+  out.width = clampFinite(sp.width, wid.min, wid.max, base.width);
+
+  // 2) DRIVETRAIN → rpm range
+  const rpm = rpmLimits(out.drivetrain);
+  out.driveRpm = clampFinite(sp.driveRpm, rpm.min, rpm.max, base.driveRpm);
+
+  // 3) INERTIA in 0..1
+  out.flywheelInertia = clampFinite(sp.flywheelInertia, 0, 1, base.flywheelInertia);
+
+  // 4) MASS range from DRIVETRAIN × INERTIA (the floor rises with inertia)
+  const mass = massLimits(out.drivetrain, out.flywheelInertia);
+  out.massLb = clampFinite(sp.massLb, mass.min, mass.max, base.massLb);
+
+  // identity + flags (no cross-field dependency)
   if (typeof sp.canSort === 'boolean') out.canSort = sp.canSort;
   if (typeof sp.name === 'string' && sp.name.trim()) out.name = sp.name.slice(0, 24);
-  if (typeof sp.teamName === 'string') out.teamName = sp.teamName.slice(0, 24);
+  if (typeof sp.teamName === 'string') out.teamName = sp.teamName.slice(0, 48);
   out.teamNumber = Math.round(clampFinite(sp.teamNumber, 0, 99999, base.teamNumber));
-
-  out.flywheelInertia = clampFinite(sp.flywheelInertia, 0, 1, base.flywheelInertia);
-  const preset = C.INTAKE_PRESETS[out.intake];
-  out.length = clampFinite(sp.length, preset.minLength, preset.maxLength, base.length);
-  out.width = clampFinite(sp.width, C.ROBOT_MIN_WIDTH, C.ROBOT_MAX_SIZE, base.width);
-  out.massLb = clampFinite(sp.massLb, C.ROBOT_MIN_MASS, C.ROBOT_MAX_MASS, base.massLb);
-  out.driveRpm = clampFinite(sp.driveRpm, C.ROBOT_MIN_RPM, C.ROBOT_MAX_RPM, base.driveRpm);
   return out;
 }
 
@@ -167,16 +194,45 @@ export function coerceAutoPath(raw: unknown): AutoPathData | null {
  * `id` is preserved (it keys the command map). This is the LAST line of defense —
  * `createWorld` runs it on every setup, so no spawn path can produce a bad robot
  * regardless of how the setup was assembled. */
+/** structural + bounds coercion for a custom start pose (canonical goalSide=+1
+ * frame). Returns null for anything non-finite. Field-clamps x/y and normalizes
+ * the heading to [0,360). G304 LEGALITY (over a launch line, touching a surface,
+ * own half) is NOT enforced here — that needs the alliance+spec and is applied by
+ * `coerceSetup` via `snapStartToLegal`, the spawn chokepoint. */
+export function coerceStartPose(raw: unknown): StartPose | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const p = raw as Record<string, unknown>;
+  if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.headingDeg)) return null;
+  let h = (p.headingDeg as number) % 360;
+  if (h < 0) h += 360;
+  return {
+    x: clamp(p.x as number, -C.FIELD_HALF, C.FIELD_HALF),
+    y: clamp(p.y as number, -C.FIELD_HALF, C.FIELD_HALF),
+    headingDeg: h,
+  };
+}
+
 export function coerceSetup(s: RobotSetup): RobotSetup {
   const autoPath = s.autoPath !== undefined ? coerceAutoPath(s.autoPath) : null;
+  const alliance = s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue';
+  const spec = coerceSpec(s.spec);
+  // a custom pose overrides the preset; snap it G304-legal for THIS spec+alliance
+  // so no spawn path (localStorage, wire, staged match) can place an illegal robot.
+  let startPose: StartPose | undefined;
+  const raw = coerceStartPose(s.startPose);
+  if (raw) {
+    const actual = snapStartToLegal(spec, mirrorStartPose(raw, alliance), alliance);
+    startPose = mirrorStartPose(actual, alliance); // store back canonical
+  }
   return {
     id: s.id,
-    alliance: s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue',
-    spec: coerceSpec(s.spec),
+    alliance,
+    spec,
     assists: coerceAssists(s.assists),
     startIndex: Number.isFinite(s.startIndex)
       ? clamp(Math.round(s.startIndex), 0, C.START_POSES.length - 1)
       : 0,
+    startPose,
     autoPath: autoPath ?? undefined,
     autoPathEnabled: autoPath ? s.autoPathEnabled === true : false,
   };
@@ -188,8 +244,11 @@ export interface RobotSetup {
   alliance: Alliance;
   spec: RobotSpec;
   assists: AssistConfig;
-  /** index into START_POSES (mirrored per alliance) */
+  /** index into START_POSES (mirrored per alliance) — the quick-pick fallback */
   startIndex: number;
+  /** a fully-placed CUSTOM start pose (canonical goalSide=+1 frame). Overrides
+   * startIndex when present; `coerceSetup` snaps it G304-legal at spawn. */
+  startPose?: StartPose;
   // New fields for auto pathing
   autoPath?: AutoPathData;
   autoPathEnabled?: boolean;
@@ -207,7 +266,10 @@ function goalState(alliance: Alliance): GoalState {
   return {
     alliance,
     gateOpen: false,
+    gatePos: 0,
+    gateVel: 0,
     gateHoldTime: 0,
+    gateLatch: 0,
     classifiedCount: 0,
     overflowCount: 0,
   };
@@ -312,7 +374,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
   // legal, spawn-safe config here. Deterministic + idempotent, so live play and
   // replay re-runs agree. See coerceSetup / coerceSpec above.
   for (const s of [...setups].map(coerceSetup).sort((p, q) => p.id - q.id)) {
-    const pose = startPose(s.alliance, s.startIndex);
+    const pose = startPose(s.alliance, s.startIndex, s.startPose, s.spec);
     const nth = allianceCount[s.alliance]++;
 
     let robotAutoPath = s.autoPath;
@@ -329,6 +391,8 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       vel: { x: 0, y: 0 },
       angVel: 0,
       turretHeading: pose.heading,
+      moduleAngles: [0, 0, 0, 0], // swerve pods (FL,FR,BL,BR) start pointing forward
+      moduleTargets: [0, 0, 0, 0], // and their commanded targets
       hopper: nth === 0 ? [...C.PRELOAD] : [...C.HP_INITIAL_STOCK],
       fieldCentric: s.assists.fieldCentric,
       aimAssist: s.assists.aimAssist,
@@ -337,6 +401,10 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       lastFireAt: -10,
       lastIntakeAt: -10,
       fireReadyAt: 0,
+      // seed at the spawn-distance target so the first tick sees no phantom spin-up
+      flywheelSpin: flywheelSpinTarget(s.alliance, pose.pos),
+      flywheelSpinRate: 0,
+      powerDraw: 0,
       // Initialize new auto pathing fields
       autoPathActive: !!(s.autoPathEnabled && robotAutoPath !== undefined),
       currentPathSegmentIndex: 0,
@@ -345,6 +413,8 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       pathSequenceIndex: 0,
       pathTargetPoint: null,
       pathTargetHeading: null,
+      isAligningHeading: false, // Initialize new state
+      targetAlignmentHeading: null, // Initialize new state
       autoPath: robotAutoPath, // Assign the (potentially mirrored) autoPath
     });
 
@@ -363,6 +433,24 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       // For tangential, initial heading will be determined by the first path segment.
       // The path follower will handle this dynamically.
     }
+
+    // preloaded artifacts are PHYSICAL held balls (the hopper mirrors their colors);
+    // step()'s positionHeldBalls parks them at the storage slots
+    const created = robots[robots.length - 1];
+    created.hopper.forEach((color, slot) => {
+      const side = slot >= 1 ? (slot === 1 ? -1 : 1) : 0; // triangle front row: opposite sides
+      const lp = heldSlotPos(created.spec, slot, side);
+      const wp = rot(lp, created.heading);
+      balls.push({
+        id: id++,
+        color,
+        state: { kind: 'held', robot: created.id, slot, lx: lp.x, ly: lp.y, side },
+        pos: { x: created.pos.x + wp.x, y: created.pos.y + wp.y },
+        vel: { x: 0, y: 0 },
+        z: 0,
+        vz: 0,
+      });
+    });
   }
 
   return {
@@ -391,6 +479,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       episodes: {},
       pins: {},
       pinFouls: {},
+      possession: {},
       gateCulprit: { red: null, blue: null },
       rampBallIds: { red: [], blue: [] },
     },

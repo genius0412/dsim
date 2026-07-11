@@ -5,31 +5,38 @@ import { saveAccountSettings, fetchAdminStatus } from '../net/api';
 import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
 import { Admin } from './Admin';
+import { Announcements } from './Announcements';
 import { AccountSync } from './AccountSync';
-import { Menu } from './Menu';
 import { GameView } from './GameView';
 import { Lobby } from './Lobby';
 import { AppShell, type ShellNav } from './AppShell';
-import { Home } from './Home';
-import { Leaderboard } from './Leaderboard';
+import { HomeMenu } from './HomeMenu';
+import { ModeSelect } from './ModeSelect';
+import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
+import { Records, isRecordsTab, type RecordsTab } from './Records';
 import { RecordRun } from './RecordRun';
 import { Matchmaking } from './Matchmaking';
 import { ReplayView } from './ReplayView';
 import { AccountButton } from './AccountButton';
 import { Download } from './Download';
-import { Stats } from './Stats';
 import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
-import { gameServerConfigured, setSelectedServer } from '../net/env';
+import { gameServerConfigured, setSelectedServer, gameServerUrlWith } from '../net/env';
 import type { NetSession } from '../net/session';
+import { ServerSession } from '../net/serverSession';
+import { WebSocketTransport } from '../net/transport';
+import { encodeMsg } from '../net/protocol';
+import { activeStartLegal } from '../sim/field';
+import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } from '../net/activeGame';
 import type { Replay } from '../sim/replay';
 
 type Screen =
   | 'home'
-  | 'robot'
-  | 'leaderboard'
+  | 'modes'
+  | 'configure'
+  | 'records'
   | 'lobby'
   | 'record'
   | 'duorecord'
@@ -37,30 +44,43 @@ type Screen =
   | 'replay'
   | 'game'
   | 'download'
-  | 'stats'
   | 'profile'
   | 'account'
   | 'admin';
 
+/** everything a route needs beyond the screen itself */
+interface RouteArgs {
+  /** `/replay/<id>` */
+  replayId: string | null;
+  /** `/profile/<username>` */
+  username: string | null;
+  /** the section/tab of a screen that has them: `/configure/<sub>`, `/records/<sub>` */
+  sub: string | null;
+}
+const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null };
+
 /**
- * Tiny path router (no dependency). Each screen is a real URL — /leaderboard,
- * /my-robot, /replay/<id>, … — via the History API, so links are shareable and
- * back/forward work. The web build uses an absolute base + a vercel.json SPA
- * rewrite so a deep load/refresh resolves. Under Electron (file://) there is no
- * History to push, so we route by state only (isWebHistory === false).
+ * Tiny path router (no dependency). Each screen is a real URL — /modes,
+ * /configure/robot, /records/career, /replay/<id>, … — via the History API, so
+ * links are shareable and back/forward work. The web build uses an absolute base
+ * + a vercel.json SPA rewrite so a deep load/refresh resolves. Under Electron
+ * (file://) there is no History to push, so we route by state only
+ * (isWebHistory === false).
  */
 const isWebHistory = typeof window !== 'undefined' && window.location.protocol !== 'file:';
 
-function pathFor(screen: Screen, replayId: string | null, username: string | null): string {
+function pathFor(screen: Screen, a: RouteArgs): string {
   switch (screen) {
-    case 'profile':
-      return username ? `/profile/${encodeURIComponent(username)}` : '/leaderboard';
     case 'home':
       return '/';
-    case 'robot':
-      return '/my-robot';
-    case 'leaderboard':
-      return '/leaderboard';
+    case 'modes':
+      return '/modes';
+    case 'configure':
+      return `/configure/${isConfigureSection(a.sub) ? a.sub : 'robot'}`;
+    case 'records':
+      return a.sub === 'career' ? '/records/career' : '/records';
+    case 'profile':
+      return a.username ? `/profile/${encodeURIComponent(a.username)}` : '/records';
     case 'lobby':
       return '/lobby';
     case 'record':
@@ -70,13 +90,11 @@ function pathFor(screen: Screen, replayId: string | null, username: string | nul
     case 'matchmaking':
       return '/ranked';
     case 'replay':
-      return replayId ? `/replay/${encodeURIComponent(replayId)}` : '/replay';
+      return a.replayId ? `/replay/${encodeURIComponent(a.replayId)}` : '/replay';
     case 'game':
       return '/play';
     case 'download':
       return '/download';
-    case 'stats':
-      return '/stats';
     case 'account':
       return '/account';
     case 'admin':
@@ -84,38 +102,89 @@ function pathFor(screen: Screen, replayId: string | null, username: string | nul
   }
 }
 
-function parsePath(pathname: string): {
-  screen: Screen;
-  replayId: string | null;
-  username: string | null;
-} {
+function parsePath(pathname: string): { screen: Screen } & RouteArgs {
+  const at = (screen: Screen, extra: Partial<RouteArgs> = {}) => ({
+    screen,
+    ...NO_ARGS,
+    ...extra,
+  });
+
   const replay = pathname.match(/^\/replay\/(.+)$/);
-  if (replay) return { screen: 'replay', replayId: decodeURIComponent(replay[1]), username: null };
+  if (replay) return at('replay', { replayId: decodeURIComponent(replay[1]) });
   const profile = pathname.match(/^\/profile\/(.+)$/);
-  if (profile)
-    return { screen: 'profile', replayId: null, username: decodeURIComponent(profile[1]) };
-  if (pathname.startsWith('/leaderboard')) return { screen: 'leaderboard', replayId: null, username: null };
-  if (pathname.startsWith('/my-robot')) return { screen: 'robot', replayId: null, username: null };
-  if (pathname.startsWith('/lobby')) return { screen: 'lobby', replayId: null, username: null };
-  if (pathname.startsWith('/duo-record')) return { screen: 'duorecord', replayId: null, username: null };
-  if (pathname.startsWith('/record')) return { screen: 'record', replayId: null, username: null };
-  if (pathname.startsWith('/ranked')) return { screen: 'matchmaking', replayId: null, username: null };
-  if (pathname.startsWith('/download')) return { screen: 'download', replayId: null, username: null };
-  if (pathname.startsWith('/stats')) return { screen: 'stats', replayId: null, username: null };
-  if (pathname.startsWith('/account')) return { screen: 'account', replayId: null, username: null };
-  if (pathname.startsWith('/admin')) return { screen: 'admin', replayId: null, username: null };
+  if (profile) return at('profile', { username: decodeURIComponent(profile[1]) });
+
+  const configure = pathname.match(/^\/configure(?:\/([^/]+))?/);
+  if (configure) return at('configure', { sub: configure[1] ?? 'robot' });
+  const records = pathname.match(/^\/records(?:\/([^/]+))?/);
+  if (records) return at('records', { sub: records[1] ?? 'leaderboard' });
+
+  // legacy paths kept alive so old links (and anything a player bookmarked
+  // before the nav restructure) still resolve to their new home
+  if (pathname.startsWith('/my-robot')) return at('configure', { sub: 'robot' });
+  if (pathname.startsWith('/leaderboard')) return at('records', { sub: 'leaderboard' });
+  if (pathname.startsWith('/stats')) return at('records', { sub: 'career' });
+
+  if (pathname.startsWith('/modes')) return at('modes');
+  if (pathname.startsWith('/lobby')) return at('lobby');
+  if (pathname.startsWith('/duo-record')) return at('duorecord');
+  if (pathname.startsWith('/record')) return at('record');
+  if (pathname.startsWith('/ranked')) return at('matchmaking');
+  if (pathname.startsWith('/download')) return at('download');
+  if (pathname.startsWith('/account')) return at('account');
+  if (pathname.startsWith('/admin')) return at('admin');
   // /play (a live game) can't be restored without a session ⇒ home
-  return { screen: 'home', replayId: null, username: null };
+  return at('home');
+}
+
+/** which rail/menu entry lights up for a given screen */
+function navFor(screen: Screen): ShellNav {
+  switch (screen) {
+    case 'modes':
+    case 'game':
+    case 'lobby':
+    case 'record':
+    case 'duorecord':
+    case 'matchmaking':
+      return 'play';
+    case 'configure':
+      return 'configure';
+    case 'records':
+      return 'records';
+    case 'account':
+      return 'profile';
+    case 'admin':
+      return 'admin';
+    default:
+      return 'home';
+  }
+}
+
+/** the landing route for each top-level destination */
+function screenForNav(n: ShellNav): Screen {
+  switch (n) {
+    case 'home':
+      return 'home';
+    case 'play':
+      return 'modes';
+    case 'configure':
+      return 'configure';
+    case 'records':
+      return 'records';
+    case 'profile':
+      return 'account';
+    case 'admin':
+      return 'admin';
+  }
 }
 
 export function App() {
   const [settings, setSettings] = useState<GameSettings>(loadSettings);
   const start = isWebHistory
     ? parsePath(window.location.pathname)
-    : { screen: 'home' as Screen, replayId: null, username: null };
+    : { screen: 'home' as Screen, ...NO_ARGS };
   const [screen, setScreen] = useState<Screen>(start.screen);
-  const [replayId, setReplayId] = useState<string | null>(start.replayId);
-  const [profileUser, setProfileUser] = useState<string | null>(start.username);
+  const [route, setRoute] = useState<RouteArgs>(start);
   const [session, setSession] = useState<NetSession | null>(null);
   // a just-played replay to watch in-memory (not yet persisted, so no URL id)
   const [replayObj, setReplayObj] = useState<Replay | null>(null);
@@ -126,46 +195,61 @@ export function App() {
     const onPop = (): void => {
       const s = parsePath(window.location.pathname);
       setScreen(s.screen);
-      setReplayId(s.replayId);
-      setProfileUser(s.username);
+      setRoute(s);
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
   /** the single way screens change — updates state AND the URL */
-  const navigate = (next: Screen, rid: string | null = null, uname: string | null = null): void => {
+  const navigate = (next: Screen, args: Partial<RouteArgs> = {}): void => {
+    const a: RouteArgs = { ...NO_ARGS, ...args };
     setScreen(next);
-    setReplayId(rid);
-    setProfileUser(uname);
+    setRoute(a);
     if (next !== 'replay') setReplayObj(null); // leaving the viewer drops the in-memory replay
     if (isWebHistory) {
-      const path = pathFor(next, rid, uname);
+      const path = pathFor(next, a);
       if (window.location.pathname !== path) window.history.pushState(null, '', path);
     }
   };
 
   /** open a player's public profile page (/profile/<username>) */
-  const openProfile = (username: string): void => navigate('profile', null, username);
+  const openProfile = (username: string): void => navigate('profile', { username });
+  const watchReplay = (replayId: string): void => navigate('replay', { replayId });
 
   // when signed in, mirror settings to the account (debounced) as well as local
   const [accountUserId, setAccountUserId] = useState<string | null>(null);
   // is this account an admin? (server-authorized against ADMIN_USER_IDS) — gates the
-  // Admin tab; the server independently enforces every admin action
+  // Admin entry; the server independently enforces every admin action
   const [isAdmin, setIsAdmin] = useState(false);
+  // has the admin-status check settled? (so we don't bounce a real admin off an
+  // admin-only deep-link before the async check resolves)
+  const [adminChecked, setAdminChecked] = useState(false);
   useEffect(() => {
     if (!accountUserId) {
       setIsAdmin(false);
+      setAdminChecked(true);
       return;
     }
     let cancelled = false;
+    setAdminChecked(false);
     fetchAdminStatus().then((s) => {
-      if (!cancelled) setIsAdmin(s.isAdmin);
+      if (!cancelled) {
+        setIsAdmin(s.isAdmin);
+        setAdminChecked(true);
+      }
     });
     return () => {
       cancelled = true;
     };
   }, [accountUserId]);
+  // the Download page is admin-only for now — bounce a non-admin who deep-links or
+  // refreshes on /download back home (once the admin check has actually settled)
+  useEffect(() => {
+    if (screen === 'download' && adminChecked && !isAdmin) navigate('home');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, adminChecked, isAdmin]);
+
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -192,9 +276,65 @@ export function App() {
   }, []);
   const onSyncSeed = useCallback(() => void saveAccountSettings(settingsRef.current), []);
 
+  // the multiplayer game this browser is currently in (persisted to localStorage), so
+  // the player can REJOIN it after navigating away and is stopped from starting a 2nd.
+  const [activeGame, setActiveGame] = useState<ActiveGameRef | null>(() => loadActiveGame());
+
+  /** enter a networked game: remember it (for rejoin + the single-game guard), then
+   * show the game screen. Solo play never calls this (it has no session). */
+  const beginSession = (s: NetSession, kind: ActiveGameRef['kind']): void => {
+    if (s.room && s.clientId) {
+      const ref: ActiveGameRef = {
+        room: s.room,
+        region: s.region,
+        clientId: s.clientId,
+        start: {
+          seed: s.seed,
+          setups: s.setups,
+          yourRobotId: s.localRobotId,
+          ranked: s.ranked,
+          intros: s.intros,
+          region: s.region,
+        },
+        ranked: s.ranked,
+        kind,
+        savedAt: Date.now(),
+      };
+      saveActiveGame(ref);
+      setActiveGame(ref);
+    }
+    setSession(s);
+    navigate('game');
+  };
+
+  /** reconnect to and re-enter the match this browser last left (reclaims our held
+   * server slot within its reconnect grace; fails cleanly to the "connection lost"
+   * panel if the slot is already gone). */
+  const rejoinGame = (ref: ActiveGameRef): void => {
+    const params: Record<string, string> = { room: ref.room };
+    if (ref.region) params.region = ref.region;
+    let transport: WebSocketTransport;
+    try {
+      transport = new WebSocketTransport(gameServerUrlWith(params));
+    } catch {
+      clearActiveGame();
+      setActiveGame(null);
+      return;
+    }
+    // send `rejoin` on the FIRST open (ServerSession only re-sends it on reconnects);
+    // the server reattaches our held slot and a snapshot resyncs us
+    transport.onOpen(() => transport.send(encodeMsg({ t: 'rejoin', room: ref.room, clientId: ref.clientId })));
+    const s = new ServerSession(transport, false, ref.start, ref.clientId, ref.room);
+    setSession(s);
+    navigate('game');
+  };
+
   const exitGame = (): void => {
     session?.dispose();
     setSession(null);
+    // a match that FINISHED (or whose slot is gone) clears its rejoin record in
+    // GameView; a mid-match exit keeps it so Home can offer "rejoin your match".
+    setActiveGame(loadActiveGame());
     navigate('home');
   };
 
@@ -209,10 +349,30 @@ export function App() {
   const restartPending =
     !!notice && notice.kind === 'restart' && (notice.until === undefined || notice.until > Date.now());
   const [startBlocked, setStartBlocked] = useState(false);
+  // set when the player tries to start a new game while one is already in progress —
+  // drives the "you have a game in progress" overlay (rejoin or abandon)
+  const [blockedByActive, setBlockedByActive] = useState(false);
+  // set when a game start is refused because the active custom start pose is illegal
+  // for the current chassis (block-and-warn instead of silently snapping at spawn)
+  const [badStart, setBadStart] = useState(false);
+  // Guards EVERY game entry — local (free/solo) AND server-provided (record, duo,
+  // ranked, custom room). Even though the server snaps an illegal pose legal at
+  // spawn, the player configured it for a DIFFERENT chassis, so we refuse to start
+  // anywhere and send them to fix it rather than relocating their robot silently.
   const guardStart = (go: () => void): void => {
-    if (restartPending) setStartBlocked(true);
+    if (loadActiveGame()) setBlockedByActive(true);
+    else if (restartPending) setStartBlocked(true);
+    else if (!activeStartLegal(settings.spec, settings.alliance, settings.startPose)) setBadStart(true);
     else if (newVersion) setPendingStart(() => go);
     else go();
+  };
+
+  /** abandon the in-progress game: forget it locally (its server slot then coasts +
+   * drops after the grace) so the player is free to start something new. */
+  const abandonActiveGame = (): void => {
+    clearActiveGame();
+    setActiveGame(null);
+    setBlockedByActive(false);
   };
 
   const multiplayer = gameServerConfigured();
@@ -240,11 +400,9 @@ export function App() {
     return (
       <Lobby
         settings={settings}
-        onStart={(s) => {
-          setSession(s);
-          navigate('game');
-        }}
-        onCancel={() => navigate('home')}
+        onSettingsChange={update}
+        onStart={(s) => beginSession(s, 'custom')}
+        onCancel={() => navigate('modes')}
       />
     );
   }
@@ -253,11 +411,8 @@ export function App() {
       <RecordRun
         settings={settings}
         mode="solo"
-        onStart={(s) => {
-          setSession(s);
-          navigate('game');
-        }}
-        onCancel={() => navigate('home')}
+        onStart={(s) => beginSession(s, 'record')}
+        onCancel={() => navigate('modes')}
         onPreferServer={(id) => update({ ...settings, preferredServerId: id })}
       />
     );
@@ -266,12 +421,10 @@ export function App() {
     return (
       <Lobby
         settings={settings}
+        onSettingsChange={update}
         config={{ kind: 'record', record: 'duo' }}
-        onStart={(s) => {
-          setSession(s);
-          navigate('game');
-        }}
-        onCancel={() => navigate('home')}
+        onStart={(s) => beginSession(s, 'record')}
+        onCancel={() => navigate('modes')}
       />
     );
   }
@@ -280,21 +433,19 @@ export function App() {
       <Matchmaking
         settings={settings}
         signedIn={signedIn}
-        onStart={(s) => {
-          setSession(s);
-          navigate('game');
-        }}
-        onCancel={() => navigate('home')}
+        onStart={(s) => beginSession(s, 'ranked')}
+        onCancel={() => navigate('modes')}
         onSignIn={() => navigate('account')}
+        onSettingsChange={update}
       />
     );
   }
-  if (screen === 'replay' && (replayId || replayObj)) {
+  if (screen === 'replay' && (route.replayId || replayObj)) {
     return (
       <ReplayView
-        replayId={replayId ?? undefined}
+        replayId={route.replayId ?? undefined}
         preloadReplay={replayObj ?? undefined}
-        onClose={() => navigate(replayObj ? 'home' : 'leaderboard')}
+        onClose={() => (replayObj ? navigate('home') : navigate('records'))}
       />
     );
   }
@@ -307,28 +458,43 @@ export function App() {
       Settings
     </button>
   );
-  const active: ShellNav =
-    screen === 'leaderboard'
-      ? 'leaderboard'
-      : screen === 'stats'
-        ? 'stats'
-        : screen === 'download'
-          ? 'download'
-          : screen === 'robot'
-            ? 'robot'
-            : screen === 'admin'
-              ? 'admin'
-              : 'home';
+
+  const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
+  const recordsTab: RecordsTab = isRecordsTab(route.sub) ? route.sub : 'leaderboard';
+
   return (
-    <AppShell active={active} onNav={(n) => navigate(n)} right={right} showAdmin={isAdmin}>
+    <AppShell
+      active={navFor(screen)}
+      onNav={(n) => navigate(screenForNav(n))}
+      right={right}
+      showAdmin={isAdmin}
+      showRail={screen !== 'home'}
+      onDownload={() => navigate('download')}
+    >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
       {authEnabled && <UsernameGate />}
+      {/* patch notes / new-season + new-act reveals — shown once on the menu shell,
+          never over a live match (the game screen returns before this) */}
+      <Announcements muted={!settings.audio.sounds} />
+
       {screen === 'home' && (
-        <Home
+        <HomeMenu
           settings={settings}
-          onChange={update}
+          multiplayer={multiplayer}
+          onNav={(n) => navigate(screenForNav(n))}
+        />
+      )}
+
+      {screen === 'modes' && (
+        <ModeSelect
           multiplayer={multiplayer}
           signedIn={signedIn}
+          activeGame={activeGame ? { kind: activeGame.kind } : null}
+          onRejoin={() => {
+            const ref = loadActiveGame();
+            if (ref) rejoinGame(ref);
+            else setActiveGame(null);
+          }}
           onFreeDrive={() =>
             guardStart(() => {
               update({ ...settings, mode: 'free' });
@@ -345,8 +511,60 @@ export function App() {
           onDuoRecord={() => guardStart(() => navigate('duorecord'))}
           onRanked={() => guardStart(() => navigate('matchmaking'))}
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
-          onEditRobot={() => navigate('robot')}
         />
+      )}
+      {/* the start guards live here, not on `modes`, because a start can also be
+          triggered from a lobby/queue screen that this shell doesn't render */}
+      {blockedByActive && (
+        <div className="overlay">
+          <div className="overlay-panel">
+            <h2>You’re already in a game</h2>
+            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
+              You can only be in one game at a time. Rejoin the one you’re in, or abandon it to
+              start something new.
+            </p>
+            <div className="overlay-buttons">
+              <button
+                onClick={() => {
+                  const ref = loadActiveGame();
+                  setBlockedByActive(false);
+                  if (ref) rejoinGame(ref);
+                  else setActiveGame(null);
+                }}
+              >
+                REJOIN
+              </button>
+              <button className="ghost" onClick={abandonActiveGame}>
+                ABANDON
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {badStart && (
+        <div className="overlay">
+          <div className="overlay-panel">
+            <h2>Start position invalid</h2>
+            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
+              Your saved custom start position isn’t legal for the chassis you’ve got selected —
+              a different-sized robot doesn’t fit where it was placed. Fix the start position (or
+              pick a preset) for this chassis before starting.
+            </p>
+            <div className="overlay-buttons">
+              <button
+                onClick={() => {
+                  setBadStart(false);
+                  navigate('configure', { sub: 'match' });
+                }}
+              >
+                FIX START POSITION
+              </button>
+              <button className="ghost" onClick={() => setBadStart(false)}>
+                CANCEL
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {startBlocked && (
         <div className="overlay">
@@ -379,20 +597,33 @@ export function App() {
           </div>
         </div>
       )}
-      {screen === 'robot' && <Menu settings={settings} onChange={update} />}
-      {screen === 'leaderboard' && (
-        <Leaderboard myUserId={accountUserId} onWatch={(id) => navigate('replay', id)} onOpenProfile={openProfile} />
-      )}
-      {screen === 'stats' && (
-        <Stats onWatch={(id) => navigate('replay', id)} onOpenProfile={openProfile} />
-      )}
-      {screen === 'profile' && profileUser && (
-        <Profile
-          username={profileUser}
-          nav={{ onWatch: (id) => navigate('replay', id), onOpenProfile: openProfile }}
+
+      {screen === 'configure' && (
+        <Configure
+          settings={settings}
+          onChange={update}
+          section={configureSection}
+          onSection={(s) => navigate('configure', { sub: s })}
         />
       )}
-      {screen === 'download' && <Download />}
+
+      {screen === 'records' && (
+        <Records
+          tab={recordsTab}
+          onTab={(t) => navigate('records', { sub: t })}
+          myUserId={accountUserId}
+          onWatch={watchReplay}
+          onOpenProfile={openProfile}
+        />
+      )}
+
+      {screen === 'profile' && route.username && (
+        <Profile
+          username={route.username}
+          nav={{ onWatch: watchReplay, onOpenProfile: openProfile }}
+        />
+      )}
+      {screen === 'download' && isAdmin && <Download />}
       {screen === 'account' && <Account settings={settings} onChange={update} />}
       {screen === 'admin' && isAdmin && <Admin />}
     </AppShell>

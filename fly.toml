@@ -32,22 +32,21 @@ primary_region = 'iad'
     method = 'GET'
     path = '/health'
 
-# DEDICATED CPU. The room loop runs a continuous 60 Hz Rapier physics step; on a
-# burstable shared CPU that exhausts the burst credits within a minute, Fly then
-# throttles the machine to its tiny baseline, the single-threaded event loop stalls,
-# and even the trivial /health response blows past the probe timeout → the machine
-# flaps "unhealthy" even with ONE player. A dedicated vCPU is never throttled, so the
-# loop keeps real-time and /health always answers. auto_stop_machines='stop' +
-# min_machines_running=0 mean this only runs while someone is connected, so idle cost
-# stays ~0 despite the bigger VM.
+# DEDICATED CPU (the primary + high-traffic regions). The room loop runs a continuous
+# 60 Hz Rapier physics step; on a burstable SHARED CPU that exhausts the burst credits
+# within a minute, Fly then throttles the machine to its tiny baseline, the single-
+# threaded event loop stalls, and even the trivial /health response blows past the probe
+# timeout → the machine flaps "unhealthy" even with ONE player. A dedicated vCPU is never
+# throttled, so the loop keeps real-time and /health always answers. auto_stop_machines=
+# 'stop' means a region only runs while someone is connected, so idle cost stays ~0.
 #
-# performance-2x = 2 dedicated vCPUs. The Node sim loop is single-threaded (one event
-# loop drives every room), so the 2nd core does NOT parallelize matches — but V8 runs
-# GC + JIT on background threads, and giving those a dedicated core off the main thread
-# removes the GC-pause stalls that jitter the 60 Hz loop under sustained play. The extra
-# RAM (4GB) further cuts GC frequency. This is the single-thread headroom win; true
-# multi-match parallelism would need worker threads (not done). Drop to 'performance-1x'
-# /2048mb if cost matters more than smoothness.
+# COST DOWNGRADE (2026-07-09): this default applies to iad (always-warm matchmaker/primary
+# = the dominant always-on bill) and sjc (US West). Dropped performance-2x/4GB →
+# performance-1x/2GB: still ONE DEDICATED vCPU (no throttle-flap), half the cores + RAM.
+# The 2nd core only ever bought GC/JIT headroom off the main thread (the sim loop is
+# single-threaded), so a busy region may jitter slightly more under sustained multi-match
+# load — acceptable for the traffic these see. Bump back to performance-2x if it stutters.
+# The far satellites (lhr/syd/nrt) go MUCH smaller (shared-cpu-1x) in scripts/fly-deploy.sh.
 [[vm]]
-  size = 'performance-2x'
-  memory = '4096mb'
+  size = 'performance-1x'
+  memory = '2048mb'

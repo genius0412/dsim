@@ -1,11 +1,9 @@
 import { useEffect, useState } from 'react';
 import {
-  fetchSeasons,
   type MatchHistoryEntry,
   type MatchHistoryOpts,
   type MatchHistoryPage,
   type MatchHistoryPlayer,
-  type SeasonInfo,
 } from '../net/api';
 
 type TypeFilter = NonNullable<MatchHistoryOpts['type']>;
@@ -96,21 +94,45 @@ function Players({
   return <span className="mh-players">{join(r.players)}</span>;
 }
 
+/** the score cell — a versus match shows BOTH alliances' final totals (red vs
+ * blue, winner emphasised); a record run shows the single run score. */
+function ScoreCell({ r }: { r: MatchHistoryEntry }) {
+  if (r.kind === 'versus' && r.redScore != null && r.blueScore != null) {
+    const redWon = r.redScore > r.blueScore;
+    const blueWon = r.blueScore > r.redScore;
+    return (
+      <span className="mh-vscore">
+        <span className={`al-red${redWon ? ' w' : ''}`}>{r.redScore}</span>
+        <span className="mh-vscore-dash">–</span>
+        <span className={`al-blue${blueWon ? ' w' : ''}`}>{r.blueScore}</span>
+      </span>
+    );
+  }
+  return <span>{r.score}</span>;
+}
+
 /**
  * Paginated, filterable match history for a player — the core of the Career page
  * and public profiles. Shows every persisted game (ranked + custom versus AND
  * solo/duo record runs) with a timestamp, who played (clickable @usernames),
- * result (WIN green / LOSS red), score, ELO Δ, and a Watch-replay link. Filter by
- * type/result/season and page through with a "show N" selector — nothing dumps the
- * whole history at once. `fetchPage` is bound to a user id (Career) or username
- * (public profile) by the caller.
+ * result (WIN green / LOSS red), the final scores of BOTH teams, ELO Δ, and a
+ * Watch-replay link. Filter by type/result and page through with a "show N"
+ * selector — nothing dumps the whole history at once. The SEASON is controlled by
+ * the parent Career view (one Act/Season picker drives both the stats panel and
+ * this list); `fetchPage` is bound to a user id (Career) or username (profile).
  */
 export function MatchHistory({
   fetchPage,
+  season,
+  seasonLabel,
   onWatch,
   onOpenProfile,
 }: {
   fetchPage: (opts: MatchHistoryOpts) => Promise<MatchHistoryPage>;
+  /** the selected period's balance_version, or null for the live season */
+  season: number | null;
+  /** "Act X · Season Y" label for the empty-state copy */
+  seasonLabel: string;
   onWatch?: (replayId: string) => void;
   onOpenProfile?: (username: string) => void;
 }) {
@@ -118,27 +140,15 @@ export function MatchHistory({
   const [result, setResult] = useState<ResultFilter>('all');
   const [pageSize, setPageSize] = useState(25);
   const [offset, setOffset] = useState(0);
-  const [season, setSeason] = useState<number | null>(null); // null = current
 
-  const [seasons, setSeasons] = useState<SeasonInfo[]>([]);
-  const [current, setCurrent] = useState<number | null>(null);
   const [page, setPage] = useState<MatchHistoryPage | null>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
   const [error, setError] = useState('');
 
+  // a period switch resets to the first page (the old offset may exceed the count)
   useEffect(() => {
-    let alive = true;
-    fetchSeasons()
-      .then((r) => {
-        if (!alive) return;
-        setSeasons(r.seasons);
-        setCurrent(r.current);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
+    setOffset(0);
+  }, [season]);
 
   useEffect(() => {
     let alive = true;
@@ -172,18 +182,11 @@ export function MatchHistory({
     setPageSize(n);
     setOffset(0);
   };
-  const changeSeason = (v: number | null) => {
-    setSeason(v);
-    setOffset(0);
-  };
 
   const total = page?.total ?? 0;
   const from = total === 0 ? 0 : offset + 1;
   const to = Math.min(offset + pageSize, total);
-  const viewingSeason = season ?? current;
-  const seasonName =
-    seasons.find((s) => s.season === viewingSeason)?.name ??
-    (viewingSeason != null ? `Season ${viewingSeason}` : 'Current season');
+  const seasonName = seasonLabel;
 
   return (
     <div className="ds-panel" style={{ marginTop: 18 }}>
@@ -191,24 +194,6 @@ export function MatchHistory({
         <span className="ds-panel-title">Match history</span>
       </div>
       <div className="mh-filters">
-          {seasons.length > 1 && (
-            <select
-              className="ds-select"
-              value={viewingSeason ?? ''}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                changeSeason(current != null && v === current ? null : v);
-              }}
-              title="Season"
-            >
-              {seasons.map((s) => (
-                <option key={s.season} value={s.season}>
-                  {s.name}
-                  {s.season === current ? ' (current)' : ''}
-                </option>
-              ))}
-            </select>
-          )}
           <select className="ds-select" value={type} onChange={(e) => changeType(e.target.value as TypeFilter)}>
             {TYPE_OPTS.map((o) => (
               <option key={o.id} value={o.id}>
@@ -293,7 +278,7 @@ export function MatchHistory({
                         )}
                       </td>
                       <td className="sc" style={{ color: 'var(--ds-ink)' }}>
-                        {r.score}
+                        <ScoreCell r={r} />
                       </td>
                       <td
                         className="sc"

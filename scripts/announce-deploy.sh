@@ -20,7 +20,9 @@ set -euo pipefail
 
 APP="${FLY_APP:-dohun-sim-decode}"
 HOST="${DECODE_HOST:-https://dohun-sim-decode.fly.dev}"
-MSG="${1:-Server updating shortly — you'll be reconnected automatically}"
+# NOTE: no apostrophe in this default — a literal ' inside "${1:-…}" is parsed by
+# bash as an unterminated single quote (script fails to parse), so keep it out.
+MSG="${1:-Server updating shortly — you will be reconnected automatically}"
 WAIT="${2:-300}"
 : "${ADMIN_SECRET:?set ADMIN_SECRET (matches the Fly secret) to authorize the announce}"
 

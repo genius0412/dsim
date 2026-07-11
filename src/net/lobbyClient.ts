@@ -2,9 +2,11 @@ import type { RobotSetup } from '../sim/spawn';
 import type { Transport } from './transport';
 import { getAuthToken } from '../lib/authClient';
 import { setServerNotice } from './notice';
+import { appChannel, appBuild } from './env';
 import {
   encodeMsg,
   decodeServerMsg,
+  CLIENT_CAPS,
   type LobbyPlayer,
   type PlayerIntro,
   type PlayerPatch,
@@ -19,6 +21,8 @@ export interface MatchStart {
   /** ranked rooms only: drives the pre-match ELO intro overlay */
   ranked?: boolean;
   intros?: PlayerIntro[];
+  /** the Fly region hosting the match (for the "matched on …" HUD chip) */
+  region?: string;
 }
 
 /**
@@ -35,6 +39,9 @@ type Handlers = {
   /** ranked match found on a `?mm=1` connection: reconnect to `?room=<room>` (the
    * server routes it to `hostRegion`) to actually play */
   matchAssigned: (room: string, hostRegion: string, mode: QueueMode) => void;
+  /** ranked pre-match strategy window opened: switch to the strategy screen. Live
+   * changes ride the existing `update`/`roster`; a `matchStart` follows on ready. */
+  strategyStart: (deadline: number, yourRobotId: number, mode: QueueMode, intros: PlayerIntro[]) => void;
   error: (message: string) => void;
   closed: () => void;
 };
@@ -61,7 +68,9 @@ export class LobbyClient {
   join(room: string, player: Omit<LobbyPlayer, 'clientId'>, config?: RoomConfig): void {
     const doJoin = async (): Promise<void> => {
       const authToken = (await getAuthToken()) ?? undefined;
-      this.transport.send(encodeMsg({ t: 'join', room, player, config, authToken }));
+      this.transport.send(
+        encodeMsg({ t: 'join', room, player, config, authToken, caps: CLIENT_CAPS, channel: appChannel() }),
+      );
     };
     this.transport.onOpen(() => void doJoin());
     this.transport.onReopen(() => void doJoin());
@@ -91,7 +100,10 @@ export class LobbyClient {
     const doQueue = async (): Promise<void> => {
       const authToken = (await getAuthToken()) ?? undefined;
       this.transport.send(
-        encodeMsg({ t: 'queue', mode, player, authToken, homeRegion, accessMs, noWiden }),
+        encodeMsg({
+          t: 'queue', mode, player, authToken, homeRegion, accessMs, noWiden,
+          caps: CLIENT_CAPS, channel: appChannel(), build: appBuild(),
+        }),
       );
     };
     this.transport.onOpen(() => void doQueue());
@@ -129,6 +141,8 @@ export class LobbyClient {
       this.handlers.queued?.(m.mode, m.size, m.need);
     } else if (m.t === 'matchAssigned') {
       this.handlers.matchAssigned?.(m.room, m.hostRegion, m.mode);
+    } else if (m.t === 'strategyStart') {
+      this.handlers.strategyStart?.(m.deadline, m.yourRobotId, m.mode, m.intros);
     } else if (m.t === 'error') {
       this.handlers.error?.(m.message);
     } else if (m.t === 'serverNotice') {

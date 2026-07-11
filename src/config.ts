@@ -44,10 +44,13 @@ export const MATCH_SETTLE_S = MATCH_RESULT_REVEAL_MS / 1000;
  * build that produced it. Do NOT auto-derive this from a file hash — that would
  * reset every season on a trivial, non-gameplay edit. See docs/netcodeplan.md
  * Phase 3 + the phase3-leaderboards spec. */
-export const BALANCE_VERSION = 0;
+export const BALANCE_VERSION = 3; // 2: real-motor drivetrain retune (torque–speed curve + mecanum losses)
+// 3: swerve wobble ↓ + faster turning (REF_TURN 8.5 / cap 12) + tank control-style at input layer
+// Bumping this INVALIDATES older replays for playback (they only re-sim exactly under their own
+// version's build): ReplayView gates on it and shows "recorded on an older version" instead.
 
 /** Ranked PLACEMENT: a player is "in placements" until they've completed this
- * many ranked games on a board (counted per mode × drivetrain, incl. Overall).
+ * many ranked games on a board (counted per mode).
  * Until placed they are HIDDEN from the leaderboard and shown a "?" plus an
  * "N matches until placement" line. This REPLACES the old RD-based provisional
  * flag (`rd > 110`), which stayed set far too long in a young pool: Glicko RD
@@ -81,6 +84,23 @@ export const PIN_STUCK_SPEED = 8; // in/s
  * without it BOTH robots look "slow + commanding" and the victim was wrongly
  * fouled too. */
 export const PIN_WALL_SLOP = 3; // in
+/** G408 over-possession / plowing: a ROBOT may CONTROL at most this many
+ * ARTIFACTS at once — held in the hopper PLUS any loose ground balls it is
+ * actively herding (plowing). The hopper caps at HOPPER_CAPACITY, so the foul
+ * bites when a full robot keeps shoving extra loose balls, or when a clump of
+ * more than this many is driven around. */
+export const POSSESSION_LIMIT = 3; // == HOPPER_CAPACITY
+/** a loose ground ball counts as CONTROLLED (plowed) when its surface is within
+ * this many inches of the robot's collision footprint. */
+export const POSSESSION_CONTROL_MARGIN = 0.9; // in
+/** herding requires motion — a parked robot merely resting against loose balls
+ * is not controlling them (they can roll free), so ignore control below this. */
+export const POSSESSION_MOVE_SPEED = 9; // in/s
+/** grace before over-possession is fouled — just long enough to forgive an
+ * incidental brush-by (a normal intake capture is < 0.2 s, so driving through a
+ * clump to collect it never trips the foul), but short enough that sustained
+ * plowing/hoarding bites quickly. */
+export const POSSESSION_GRACE = 0.7; // s
 /** A foul fires on the rising edge of its condition and does NOT re-fire while
  * the condition holds — continuous contact in a foul zone is ONE foul, not a
  * stream. It re-arms only after the condition has been CLEAR for this long, so
@@ -91,7 +111,13 @@ export const PENALTY_CLEAR = 1.0; // s
 
 // ------------------------------------------------------------ artifacts ----
 export const BALL_RADIUS = 2.5; // 5 in diameter
-export const BALL_ROLL_FRICTION = 25; // in/s^2
+export const BALL_ROLL_FRICTION = 20; // in/s^2 — low enough that classifier
+// outflow carries to the human-player loading zone (~4-5 of 9 reach the corner);
+// the clump push-drag (BALL_PUSH_DRAG) still carries the harder-to-push feel
+/** fraction of the robot's into-the-ball speed bled off per ball contact each
+ * solver pass — small per ball, but a big CLUMP is cumulatively a little heavier
+ * to push (the drivetrain meets resistance, accelerates into it slower) */
+export const BALL_PUSH_DRAG = 0.01;
 export const BALL_REST_SPEED = 2; // in/s, snap to rest below this
 export const BALL_WALL_RESTITUTION = 0.5;
 export const BALL_BALL_RESTITUTION = 0.55;
@@ -171,87 +197,335 @@ export const ROBOT_MAX_SIZE = 18; // FTC starting size cap (incl. intake reach)
 export const ROBOT_MIN_SIZE = 12;
 /** the chassis may be narrower than the intake (easier base parking) */
 export const ROBOT_MIN_WIDTH = 10;
+/** SWERVE needs a wider base than the other drivetrains — four steering modules
+ * at the corners don't fit a tiny frame — so its minimum width floors higher. */
+export const SWERVE_MIN_WIDTH = 13.5;
 /** wheel centers sit this far INSIDE the chassis edge (typical FTC build);
  * the four wheel ground-contact points are what counts for base parking */
 export const WHEEL_INSET = 2.6;
-/** drivetrain modeling: per-robot params derive from spec (drivetrain type,
- * driveRpm, massLb) in src/sim/drivetrain.ts. Reference values below are
- * calibrated so the DEFAULT robot reproduces the original tuned feel exactly
- * (75 in/s, 7 rad/s, 280 in/s²) — verified by a smoke check. */
+// ============================================================================
+// DRIVETRAIN & MOTOR BALANCE — TUNE HERE
+// ----------------------------------------------------------------------------
+// Grounded in real FTC hardware: a 104 mm goBILDA drive wheel + the MATRIX /
+// goBILDA 5000-series 12VDC brushed motor (5800 rpm free, 20.45 oz-in / 9.2 A
+// stall, 0.25 A free). A brushed DC motor has a LINEAR torque–speed curve, which
+// is exactly the motorStep model below.
+// The model (src/sim/drivetrain.ts + robot.ts):
+//   1. BASE reference = an IDEAL traction wheel: free speed = wheel geometry
+//      (WHEEL_DIAMETER_MM) × driveRpm × DRIVE_EFFICIENCY; BASE_DRIVE_ACCEL stall
+//      accel. `driveRpm` is the WHEEL rpm (post-gearbox); the datum is "no roller
+//      loss", i.e. what a traction wheel on this motor would do.
+//   2. Each DRIVETRAIN_PRESET applies REAL efficiency FACTORS on top (all ≤ 1
+//      except tank ≈ ideal): mecanum/x-drive rollers slip → less speed, accel,
+//      and pushing; tank/swerve traction bites hard. See the table.
+//   3. MOTORS follow the DC torque–speed curve (motorStep): full stall torque off
+//      the line, falling ~linearly to zero at free speed, so velocity approaches
+//      top speed asymptotically instead of a constant ramp.
+//   4. Mass ↓ accel, RPM ↑ speed / ↓ accel (torque), power draw ↓ everything.
+// To rebalance: edit the numbers here; `npm test` prints the resulting speed /
+// strafe / accel / push table (driveSummary) so the effect is immediately visible.
+// ============================================================================
 export const REF_DRIVE_RPM = 435;
-export const REF_MASS_LB = 30;
-export const SPEED_PER_RPM = 75 / 435; // in/s per wheel RPM
-export const BASE_DRIVE_ACCEL = 280; // in/s^2 at reference RPM/mass
-export const TURN_MAX_SPEED = 12.0; // rad/s absolute cap (small fast bots approach it; default is 7)
-export const TURN_ACCEL_PER_ACCEL = 40 / 280; // rad/s^2 per in/s^2 of drive accel
-/** robot mass range for the builder (lb) */
+export const REF_MASS_LB = 26;
+/** goBILDA 104 mm mecanum / traction drive wheel */
+export const WHEEL_DIAMETER_MM = 104;
+/** loaded drivetrain efficiency: a real motor never reaches free speed on the
+ * field (gearbox + bearing + rolling losses), so the top speed it APPROACHES is
+ * ~80% of the 104 mm free-speed geometry. Bump toward 1 for a floatier top end. */
+export const DRIVE_EFFICIENCY = 0.95;
+/** in/s of loaded top speed per WHEEL rpm = (π·104 mm → in / 60) · efficiency.
+ * ≈ 0.204 → 435 wheel-rpm ≈ 89 in/s (7.4 ft/s), a real fast FTC drive. */
+export const SPEED_PER_RPM = (Math.PI * (WHEEL_DIAMETER_MM / 25.4)) / 60 * DRIVE_EFFICIENCY;
+/** in/s^2 PEAK accel at reference RPM/mass, TRACTION-limited (μ·g), NOT motor-
+ * limited: the MATRIX motor's stall torque could give ~460 in/s² but the wheels
+ * slip first, so real peak accel = μ·g (g≈386 in/s²). This base × accelMult lands
+ * each drivetrain at its traction limit (tank μ≈0.9 → ~347 … x-drive μ≈0.45 → ~175). */
+export const BASE_DRIVE_ACCEL = 240;
+export const TURN_MAX_SPEED = 12.0; // rad/s absolute cap ≈ 687°/s (only small/fast bots reach it; default ~8.5)
+export const TURN_ACCEL_PER_ACCEL = 40 / 280; // rad/s^2 per in/s^2 of drive accel (≈0.143; traction-limited, so
+// turn spin-up tracks linear accel → tank ramps up quickest, xdrive slowest; ~0.15–0.25 s to max spin)
+
+// --- motor torque–speed curve (how the stall accel falls off with speed) ---
+/** 0 = old CONSTANT accel; 1 = physically real (force ∝ 1 − v/v_free). Higher =
+ * punchier off the line, gentler approach to top speed (a real motor is 1.0). */
+export const MOTOR_TORQUE_CURVE = 1.0;
+/** floor on the torque fraction near free speed so a bot still closes the last
+ * few % to top speed instead of crawling forever. */
+export const MOTOR_MIN_TORQUE_FRAC = 0.06;
+/** braking torque multiplier: reversing / slowing pulls harder than peak drive
+ * accel (motor back-EMF + reverse), so stops feel crisp. */
+export const MOTOR_BRAKE_MULT = 1.4;
+
+/** SWERVE module steer rate (rad/s): how fast the four steered pods re-aim to a
+ * new drive direction. With MODULE OPTIMIZATION (pod flip — see robot.ts) the pods
+ * never rotate more than 90° (a bigger change flips the drive motor instead), so
+ * ~7 ⇒ at most ~0.22 s to re-aim. The target angle is set immediately; the pods
+ * just physically slew to it while the drive keeps running. This reorient LAG is
+ * swerve's real cost vs mecanum's instant rollers — keep it felt (don't raise high). */
+export const MODULE_SLEW_RATE = 7;
+/** SWERVE control-loop imperfection: each of the four modules has its OWN steering
+ * loop (always running) that can't perfectly HOLD its angle, so an INDEPENDENT,
+ * FAST oscillating error is superimposed while driving. It's a SUM of a few
+ * incommensurate sinusoids at per-module-varied frequencies (robot.ts) — an
+ * IRREGULAR, non-periodic jitter, NOT a clean uniform sine — so each pod hunts on
+ * its own. The errors don't cancel → the forward-kinematics of the mispointed pods
+ * yields a small path DRIFT + net YAW jitter driving straight. Swerve's balancing
+ * weakness (imprecise line), NOT weight. Disturbance ∝ actual SPEED, so at rest it's
+ * zero and the pods converge to one angle. AMP = peak per-pod error (rad); FREQ =
+ * the base jitter rate. Tune AMP for how imprecise, FREQ for how jittery. */
+export const SWERVE_WOBBLE_AMP = 0.15; // rad (~8.6°) peak per module, at full speed
+export const SWERVE_WOBBLE_FREQ = 30; // rad/s — the FAST jitter component (the buzz)
+/** rad/s of the SLOW per-module drift component. Low enough that it does NOT
+ * average out over a wall-to-wall run — the four modules meander independently,
+ * so the net heading (yaw) wanders and the robot DRIFTS off a straight line
+ * (fast jitter alone just buzzes and cancels). This is what makes swerve hard to
+ * track straight. Raise the drift weight/amp for more veer. */
+export const SWERVE_DRIFT_FREQ = 2.2;
+/** robot mass/rpm GLOBAL fallbacks for the builder (lb / wheel rpm). The real
+ * limits are per-drivetrain (DRIVETRAIN_LIMITS below); these bound the widest
+ * envelope and still gate settings validation where a drivetrain isn't known. */
 export const ROBOT_MIN_MASS = 20;
 export const ROBOT_MAX_MASS = 42;
-export const SWERVE_MIN_MASS = 25;
 export const ROBOT_MIN_RPM = 200;
 export const ROBOT_MAX_RPM = 600;
-export const SWERVE_MAX_RPM = 500;
+
+/** per-drivetrain weight + RPM envelopes. Tank runs heavy with a torque-biased
+ * (lower) RPM ceiling; swerve modules are complex → a raised mass floor and a
+ * lower RPM ceiling; mecanum/x-drive get the full range. The MASS FLOOR is
+ * further raised by flywheel inertia (a heavier flywheel — see massLimits). */
+export const DRIVETRAIN_LIMITS = {
+  mecanum: { minMass: 18, maxMass: 42, minRpm: 200, maxRpm: 600 },
+  xdrive: { minMass: 18, maxMass: 42, minRpm: 200, maxRpm: 600 },
+  tank: { minMass: 22, maxMass: 42, minRpm: 200, maxRpm: 560 },
+  swerve: { minMass: 21.5, maxMass: 40, minRpm: 200, maxRpm: 500 }, // a touch heavier base (8 motors + modules)
+} as const;
+/** lb added to a drivetrain's mass floor at flywheelInertia 1 (a big flywheel
+ * weighs more): effective floor = base + INERTIA_MASS_FLOOR·inertia. Kept small
+ * so inertia only nudges the mass range. */
+export const INERTIA_MASS_FLOOR = 4;
 
 /** penalty added to fireInterval when robot is sorting (canSort: true) */
 export const SORT_FIRE_PENALTY = 0.25;
 
-/** per-drivetrain multipliers + wheel-saturation model. saturation:
- * 'sum'   = |f|+|s|+|ω|  (mecanum/x-drive: the worst roller wheel sees all)
- * 'tank'  = |f|+|ω|      (no strafe at all — strafe input is dead)
- * 'vec'   = hypot(f,s)+|ω| (swerve modules are direction-independent) */
+/** per-drivetrain REALISM factors + wheel-saturation model. Every factor is a
+ * fraction of the ideal-traction BASE — tank ≈ 1 (traction bites), the roller
+ * drives (mecanum/x-drive) pay real losses. Resulting free speeds at the 435-rpm
+ * reference (base ~89 in/s): tank 89 · swerve 84 · mecanum 77 · x-drive 74; peak
+ * accel (μ·g): tank 348 · swerve 317 · mecanum 211 · x-drive 175.
+ * DRIVETRAIN NICHES: tank = raw power + no strafe; swerve = strongest holonomic
+ * (speed/accel/push/full-strafe) BUT its imperfect pod control makes it WOBBLE
+ * driving straight (imprecise line) + pods reorient on direction changes; mecanum =
+ * the LIGHT, INSTANT, PRECISE holonomic (no wobble, zero reorient lag) but slower +
+ * weak push; x-drive = deliberately-weak novelty.
+ *   strafeMult  strafe speed ÷ forward (mecanum rollers < 1; omni/steered = 1; tank dead)
+ *   speedMult   forward FREE speed ÷ ideal (roller slip + friction loss)
+ *   accelMult   peak accel ÷ base (each drivetrain's traction limit μ·g ÷ the base)
+ *   pushMult    EFFECTIVE shove mass in the Rapier solver (physicsEngine.ts) — real
+ *               traction; mecanum/x-drive have little, so a tank shoves them around
+ *   turnMult    max spin rate ÷ the geometric base (wheelSpeed/halfDiag). swerve > 1
+ *               (vectored rotation = fastest turner); the rest = 1 (geometric)
+ *   saturation  wheel budget: 'sum' |f|+|s|+|ω| · 'tank' |f|+|ω| · 'vec' hypot(f,s)+|ω|
+ * Orders (all realistic): speed tank>swerve=mecanum≫xdrive (swerve's gear loss ≈ mecanum's
+ * roller scrub → identical straight-line top speed; xdrive far back) · push
+ * tank>swerve≫mecanum>xdrive · accel
+ * tank>swerve>mecanum>xdrive · turn swerve>tank>mecanum>xdrive (swerve vectors for rotation).
+ * Rebalanced 2026-07: tank the bulldozer, swerve the powerful/holonomic-but-wobbly all-rounder,
+ * mecanum the light/PRECISE holonomic, xdrive a deliberately-weak novelty (worst by a margin). */
 export const DRIVETRAIN_PRESETS = {
-  /** the FTC standard: full strafe at roller-slip speed */
-  mecanum: { strafeMult: 0.85, speedMult: 1.0, accelMult: 1.0, saturation: 'sum' },
-  /** 45° omni pods: full-speed strafe, slight overall speed loss */
-  xdrive: { strafeMult: 1.0, speedMult: 0.9, accelMult: 0.95, saturation: 'sum' },
-  /** traction wheels: no strafe, best straight-line speed and push */
-  tank: { strafeMult: 0, speedMult: 1.2, accelMult: 2.0, saturation: 'tank' },
-  /** independent steered modules: full-speed any direction */
-  swerve: { strafeMult: 1.0, speedMult: 1.0, accelMult: 1.05, saturation: 'vec' },
+  /** FTC standard mecanum: the LIGHT, INSTANT, PRECISE holonomic pick — rollers change
+   * direction with ZERO reorient lag (unlike swerve's pods), no wobble, and its low mass
+   * FLOOR keeps it nimble. It's now the 2nd-fastest straight line (single-stage direct
+   * drive, unlike swerve's gear-lossy modules), so it's "tank-lite + strafe": you give up
+   * accel and pushing power vs tank in exchange for maneuverability. Costs: ~8% forward
+   * loss (roller scrub), slower strafe, and modest pushing power (shoved by tank/swerve).
+   * accelMult 1.12: close to swerve's EFFECTIVE accel (swerve's steady power draw eats ~10%
+   * of its 1.32), so straight-line FEEL matches even though swerve keeps a slight burst edge
+   * and more raw accel at equal weight — mecanum was feeling sluggish off the line at the old
+   * 0.98. Even at the EXTREME min-weight, MAX-inertia, 500rpm corner, swerve (1.32 / floor
+   * 21.5 → 25.5lb) still edges out the equivalent mecanum (1.12 / floor 18 → 22lb) by ~1.7% —
+   * its higher accelMult just beats its heavier module floor. Swerve keeps the raw-accel edge. */
+  mecanum: { strafeMult: 0.8, speedMult: 0.92, accelMult: 1.12, pushMult: 0.8, turnMult: 1.0, saturation: 'sum' },
+  /** 45° omni X-drive: a deliberately-WEAK novelty with no honest competitive niche.
+   * REALISTICALLY the worst by a wide margin: each omni sits at 45°, so a big chunk of
+   * every wheel's speed is wasted off-axis (low top speed), the free-spinning side
+   * rollers slip trivially (weakest traction → poor accel, shoved by everyone), and even
+   * rotation scrubs. Fully symmetric (strafe = forward). A hard-mode/style pick only. */
+  xdrive: { strafeMult: 1.0, speedMult: 0.74, accelMult: 0.58, pushMult: 0.35, turnMult: 0.9, saturation: 'sum' },
+  /** traction wheels: no strafe, but a clear top-SPEED lead plus the best accel and
+   * pushing power — the defensive anchor. speedMult 1.06: pushed above the ideal datum so
+   * tank is decisively the fastest in a straight line (grippy wheels, least drivetrain loss). */
+  tank: { strafeMult: 0, speedMult: 1.06, accelMult: 1.45, pushMult: 1.7, turnMult: 1.0, saturation: 'tank' },
+  // (tank accelMult 1.45 × base 240 = 348 ≈ μ·g at μ 0.9 — the traction ceiling)
+  /** steered traction modules: the HEAVY all-rounder — full-speed any direction +
+   * strong push + good top speed, but its weight (mass FLOOR below) tanks its accel
+   * and the pods must REORIENT on direction changes (MODULE_SLEW_RATE). Master of
+   * none: tank out-accels + out-pushes it, mecanum out-accels + out-responds it. */
+  // speedMult 0.92: MATCHED to mecanum — the module gearing (bevel + reductions) is lossy
+  // but swerve rolls on GRIPPY traction wheels (vs mecanum's scrubbing rollers), and the two
+  // losses cancel → identical straight-line top speed. accel stays traction-limited, push
+  // unaffected. turnMult 1.15: it VECTORS all four wheels tangentially for rotation → the
+  // fastest TURNER, its signature. Tradeoffs: WOBBLE (imprecise line), heavy mass, steering draw.
+  // turnMult 1.18: kept above tank's raised speed so swerve stays the fastest turner.
+  swerve: { strafeMult: 1.0, speedMult: 0.92, accelMult: 1.32, pushMult: 1.35, turnMult: 1.18, saturation: 'vec' },
 } as const;
 
 /** flywheel recovery: after an energetic (long-range) shot, a LOW-inertia
  * flywheel needs time to spin back up before the next shot. Shots below
- * FLYWHEEL_CLOSE_SPEED add nothing; recovery scales with (speed over that)²
- * and with (1 - inertia). High inertia ⇒ rapid fire even in the far zone. */
-export const FLYWHEEL_CLOSE_SPEED = 140; // in/s launch speed considered "close"
-export const FLYWHEEL_RECOVERY_MAX = 0.6; // s extra between max-range shots at inertia 0
+ * FLYWHEEL_CLOSE_SPEED add only a small CLOSE floor (below), then recovery ramps
+ * STRONGLY with (speed over that)² and with (1 - inertia) — so DISTANCE dominates the
+ * cadence, and low inertia is punished hard far out while high inertia keeps firing
+ * fast at range. NOTE the threshold must sit ABOVE the launch speed of a genuinely
+ * CLOSE shot or the DISTANCE penalty bleeds into point-blank range: a 12in shot already
+ * needs ~149in/s and a 2-tile (~48in) shot ~180, so 180 keeps everything within ~2
+ * tiles free of the distance penalty and only ramps that in past that. */
+export const FLYWHEEL_CLOSE_SPEED = 180; // in/s launch speed considered "close" (≈2-tile shot)
+export const FLYWHEEL_RECOVERY_MAX = 1.25; // s extra between max-range shots at inertia 0
+/** CLOSE-range floor: even a close shot leaves a NEAR-ZERO-inertia wheel needing a brief
+ * respin, so close-zone rapid fire isn't quite free at inertia 0. The penalty FADES OUT by
+ * FLYWHEEL_CLOSE_INERTIA_KNEE — so a close-zone cycler wants a little inertia (~0.1–0.2),
+ * not 0, but doesn't need a heavy far-range wheel. (Was 0 at every inertia before.) */
+export const FLYWHEEL_CLOSE_RECOVERY = 0.04; // s extra between CLOSE rapid-fire shots at inertia 0
+export const FLYWHEEL_CLOSE_INERTIA_KNEE = 0.2; // inertia at/above which the close floor vanishes
 
-/** capture happens when a compliant wheel is DIRECTLY ABOVE the artifact:
- * the wheel line sits at the tip of the intake's reach, and a ball within
- * this band of it (ball radius + compliance squish) gets swallowed */
-export const INTAKE_CAPTURE_BAND = 0.5; // in beyond ball radius, each way (tight mouth — no vacuuming from a distance)
-/** fireInterval = transfer (outtake) cadence from hopper to shooter — the
- * ONLY firing rate limit (no flywheel spin-up model, per product decision).
- * overhang = the compliant wheels may stick out past a narrower chassis;
- * without it the chassis ENCOMPASSES the intake (trapezoid mouth recessed
- * between side prongs), which is what geometrically rules out side intake.
- * clumpPerBall = swallow cadence while 2+ balls sit at the mouth — sloped
- * and triangle devour clumps, vector feeds at its steady pace. */
+/** POWER DRAW: a running intake, plus the flywheel, pull current away from the
+ * drive motors, so the robot gets slightly slower AND pushes weaker. Draw scales
+ * drive speed/accel down by (1 − draw) and the Rapier shove mass by the same,
+ * capped so it stays "slight". The flywheel has TWO terms (both × inertia):
+ *  - HOLD: a small steady cost for keeping a spun-up wheel turning. Just being
+ *    far from the goal barely matters — this is intentionally light.
+ *  - SPIN-UP: the DOMINANT cost of ACCELERATING the wheel, i.e. actively driving
+ *    AWAY from the goal so the required spin is climbing. Proportional to how
+ *    fast the spin target is rising (per second) — a heavy (high-inertia) wheel
+ *    is expensive to spin up, a light one is nearly free. Spinning DOWN (driving
+ *    toward the goal) costs nothing. flywheelSpin is a 0..1 ramp with distance to
+ *    the robot's own goal (FLY_SPIN_NEAR→FLY_SPIN_FAR); flywheelSpinRate is its
+ *    positive rate of change (1/s), both set in updateRobotActions. */
+export const POWER_DRAW_FLYWHEEL_HOLD = 0.04; // steady: inertia × spin (far & idle)
+export const POWER_DRAW_FLYWHEEL_SPINUP = 0.45; // per 1/s of rising spin: inertia × rate
+export const POWER_DRAW_INTAKE = 0.06; // intake motors running
+/** SWERVE draws steady current just RUNNING — the four steering (pivot) motors
+ * pull current to hold + correct pod angle even driving straight, on top of the 4
+ * drive motors. So a swerve chassis is always a bit slower / weaker-shoving than an
+ * equivalent mecanum. Applied whenever the drivetrain is swerve. */
+export const POWER_DRAW_SWERVE = 0.1; // steady steering-motor current — kept modest; swerve's
+// main weakness is now the mechanical efficiency loss baked into its speedMult, not amperage.
+/** DRIVE current scales with RPM: a drivetrain geared for higher rpm pulls more current
+ * from the pack to hold power at speed. Modeled only ABOVE the reference rpm (so the
+ * 435-rpm base calibration is untouched), ramping to POWER_DRAW_DRIVE at the top rpm —
+ * so high-rpm builds top out SUB-linearly and hit the draw cap sooner when also
+ * shooting/intaking (voltage sag). Low-rpm builds draw nothing extra. */
+export const POWER_DRAW_DRIVE = 0.05;
+export const POWER_DRAW_DRIVE_TOP_RPM = 600;
+export const POWER_DRAW_MAX = 0.2; // cap ⇒ at most ~20% slower
+export const FLY_SPIN_NEAR = 40; // in to goal: flywheel spin 0
+export const FLY_SPIN_FAR = 170; // in to goal: flywheel spin 1
+
+/** capture tolerance beyond the ball radius, each way (tight — no vacuuming
+ * balls from a distance; a ball must actually reach the compliant wheels) */
+export const INTAKE_CAPTURE_BAND = 0.5;
+/** how fast a HELD ball slides between storage slots (in/s), in the robot frame —
+ * so the triangle's front ball visibly slides aside to make room for a 3rd */
+export const HELD_SLIDE_SPEED = 45;
+/** the intake ROLLER (axle + compliant wheels) sticks out this far past the
+ * ball-colliding wedges. The roller is a physical hitbox for ROBOTS/WALLS (the
+ * full `reach`, via robotExtents), but it rides HIGH in z so BALLS pass under it
+ * and never collide with it — only the recessed wedges deflect balls. So the
+ * ball hitbox is `reach − INTAKE_WHEEL_STICKOUT` deep. */
+export const INTAKE_WHEEL_STICKOUT = 1.3;
+/** Intake presets model the REAL mechanism, not a touch-and-wait hitbox.
+ * TOP LEVEL (feeds robotExtents → the Rapier robot-robot/wall collider, length
+ * clamps, drawing):
+ *   reach       forward extension of the box past the chassis front
+ *   overhang    the compliant wheels may stick out past a narrower chassis
+ *               (vector); without it the chassis ENCOMPASSES the intake so side
+ *               intake is geometrically impossible
+ *   min/maxLength  legal chassis length range · fireInterval  hopper→shooter cadence
+ * mouth GEOMETRY (robot-local inches, front = +x):
+ *   wedge       true = a FUNNEL front: two angled side slopes (from the front
+ *               corners in to the throat) direct balls to the CENTER compliant
+ *               wheels — NO flat front wall (sloped/triangle). false = a flat
+ *               front, wheels span the whole mouth (vector).
+ *   mouthHalf   half-width of the opening at the tip
+ *   throatHalf  half-width of the compliant-wheel CAPTURE zone: at the chassis
+ *               front for a funnel (balls funnel to center there), = the full
+ *               mouth for a flat front (vector captures across the tip)
+ *   drawIn      suction speed (in/s) the running intake pulls a ball in the
+ *               mouth toward the throat (0 = flat front, wheels grab in place)
+ *   capMin/capMax  swallow interval as the capture point goes CENTER→EDGE
+ *               (vector: compliant center fast, vectoring sides slow)
+ *   clumpInterval  swallow cadence while 2+ balls sit at the mouth
+ *   dual        capture TWO balls per cycle from a clump (triangle's 2 front slots) */
 export const INTAKE_PRESETS = {
-  /** sloped ramp with a trapezoid mouth recessed in the frame (doesn't count
-   * against the 18in cap): must face the ball, but swallows fast */
+  /** SLOPED: two side slopes funnel artifacts into the compliant wheels at the
+   * throat — no flat front. maxLength = 18 − reach (the roller counts toward the
+   * 18in cube). Fast + eats clumps. */
   sloped: {
-    reach: 3, halfWidth: 6, perBall: 0.12, clumpPerBall: 0.04, overhang: false,
-    minLength: 12, maxLength: 18, fireInterval: 0.08,
+    reach: 3, overhang: false, minLength: 13.5, maxLength: 15, minWidth: 14.5, fireInterval: 0.08, fireCap: 0,
+    mouth: {
+      wedge: true, mouthHalf: 7, throatHalf: 3, drawIn: 26,
+      capMin: 0.05, capMax: 0.09, clumpInterval: 0.04, dual: false,
+    },
   },
-  /** VECTOR WHEEL intake: wide compliant wheels ride over artifacts ahead of
-   * the chassis (within the 18in cap — chassis 11.5..14.5in). Grabs whatever
-   * is under a wheel — including balls strafed into, wherever the wheels
-   * overhang the chassis — but slower per ball */
+  /** VECTOR WHEEL: flat front (no side slopes), the roller spans the whole mouth.
+   * The mouth is exactly as WIDE AS THE CHASSIS (mouthHalf = width/2, applied per
+   * robot in `intakeMouth` — the `8.5` below is only a fallback base), so there's
+   * NO overhang: the wheel row matches the frame. CENTER intakes fast, the SIDES
+   * slower (vectoring). Chassis 11.5..14.5in. */
   vector: {
-    reach: 3.5, halfWidth: 8.5, perBall: 0.22, clumpPerBall: 0.22, overhang: true,
-    minLength: 11.5, maxLength: 14.5, fireInterval: 0.1,
+    reach: 3.5, overhang: false, minLength: 11.5, maxLength: 14.5, minWidth: ROBOT_MIN_WIDTH, fireInterval: 0.1, fireCap: 0,
+    mouth: {
+      // flat plate spanning the chassis width; the mecanum wheels VECTOR a ball
+      // laterally (drawIn) to the center compliant zone (throatHalf) before sucking
+      // it in, so edge entries take longer — the vectoring time. `mouthHalf` here is
+      // a fallback; the live value is the robot's half-width (see `intakeMouth`).
+      wedge: false, mouthHalf: 8.5, throatHalf: 3, drawIn: 18,
+      capMin: 0.08, capMax: 0.14, clumpInterval: 0.12, dual: false,
+    },
   },
-  /** TRIANGLE intake: named for the triangular ball storage inside the robot.
-   * Longest reach, trapezoid mouth in the frame, slower transfer out */
+  /** TRIANGLE: named for the triangular ball storage (2 near the mouth, 1 deep).
+   * Sloped-style funnel slopes + longest reach; devours a clump TWO at a time.
+   * Transfer is the SAME as the others EXCEPT a max-rate CAP (`fireCap`): it can't
+   * fire faster than that, but when conditions are already slower than the cap
+   * (flywheel recovery on far shots) it fires at the same rate as everyone else. */
   triangle: {
-    reach: 5, halfWidth: 7, perBall: 0.15, clumpPerBall: 0.05, overhang: false,
-    minLength: 12, maxLength: 13, fireInterval: 0.3,
+    reach: 5, overhang: false, minLength: 11, maxLength: 13, minWidth: 15.5, fireInterval: 0.1, fireCap: 0.12,
+    mouth: {
+      // strongest INTAKE of the three (its identity — devours clumps): a hard
+      // suction (drawIn) snaps balls to the throat and it swallows quickest. The
+      // tradeoff is TRANSFER (fireCap), not the grab — those stay untouched.
+      wedge: true, mouthHalf: 7, throatHalf: 3.5, drawIn: 46,
+      capMin: 0.04, capMax: 0.07, clumpInterval: 0.035, dual: true,
+    },
   },
 } as const;
+
+/** the intake mouth geometry as it applies to a SPECIFIC robot. The VECTOR wheel
+ * row spans the FULL chassis width (mouthHalf = width/2 — the intake is exactly as
+ * wide as the robot, no overhang); sloped/triangle keep their fixed funnel mouth.
+ * Every site that reads the mouth width per-robot (capture, ball collision, both
+ * renderers) goes through here so the width rule lives in ONE place. */
+export interface IntakeMouth {
+  wedge: boolean;
+  mouthHalf: number;
+  throatHalf: number;
+  drawIn: number;
+  capMin: number;
+  capMax: number;
+  clumpInterval: number;
+  dual: boolean;
+}
+export function intakeMouth(spec: { intake: keyof typeof INTAKE_PRESETS; width: number }): IntakeMouth {
+  const m = INTAKE_PRESETS[spec.intake].mouth;
+  return spec.intake === 'vector' ? { ...m, mouthHalf: spec.width / 2 } : m;
+}
+
 /** flank capture engages only when actually strafing toward the ball */
 export const INTAKE_SIDE_MIN_STRAFE = 8; // in/s
+/** forward speed above which a FLAT (vector) intake driven into a CLUMP scatters
+ * it instead of vectoring it in: the non-compliant wheels + impact force push the
+ * pile away. Below this a controlled approach still intakes normally. Wedge
+ * (sloped/triangle) funnels are immune — they devour clumps by design. */
+export const INTAKE_RAM_SPEED = 32; // in/s
 
 export const HOPPER_CAPACITY = 3;
 
@@ -301,12 +575,17 @@ export const OVERFLOW_Z = 13.5; // overflow rolls over the retained balls
 export const BASIN_FLOOR_Z = 14; // funnel floor height inside the goal
 export const BASIN_RESTITUTION = 0.4; // vertical bounce off the funnel floor
 export const BASIN_WALL_RESTITUTION = 0.55; // lively caroms off the goal walls
-export const BASIN_FUNNEL_ACCEL = 500; // in/s^2 pull toward the classifier entrance (drains the basin briskly so balls don't clog)
+export const BASIN_FUNNEL_ACCEL = 1150; // in/s^2 pull toward the classifier entrance (drains the basin briskly so balls don't clog)
 /** the funnel only really grips slow balls — fast ones carom around first */
-export const BASIN_FUNNEL_GRIP_SPEED = 200; // in/s (higher ⇒ funnels sooner, less caroming)
+export const BASIN_FUNNEL_GRIP_SPEED = 360; // in/s (higher ⇒ funnels sooner, less caroming)
 export const BASIN_DAMPING = 1.1; // 1/s horizontal velocity damping (settles onto the funnel faster)
-export const BASIN_ENTRY_RADIUS = 7.5; // in, hand-off distance to the rail (wider catch = fewer balls milling at the mouth)
-export const BASIN_ENTRY_KEEP_V = 0.55; // entry velocity retained (splash energy)
+/** tangential (orbital) velocity damping about the funnel throat, 1/s. High so
+ * balls SPIRAL straight into the classifier instead of circling the throat —
+ * the goal footprint is a triangle, not a bowl, so there is no round basin for
+ * them to orbit. This is what stops the "circular jumble". */
+export const BASIN_TANGENT_DAMPING = 6; // 1/s
+export const BASIN_ENTRY_RADIUS = 10.5; // in, hand-off distance to the rail (wider catch = fewer balls milling at the mouth)
+export const BASIN_ENTRY_KEEP_V = 0.45; // entry velocity retained (splash energy)
 
 // classifier rail (1D flow, contact stacking)
 export const RAIL_S_MAX = 55; // rail length: SQUARE at the top (y = CLASSIFIER_Y0 + s), at the goal's inner exit
@@ -324,18 +603,76 @@ export const OVERFLOW_FLOW_SPEED = 58; // in/s, overflow rides over everything (
 /** lateral/vertical glide rate as a ball settles onto the rail line */
 export const RAIL_BLEND_SPEED = 30; // in/s
 
-export const GATE_OPEN_HOLD = 0.08; // s of push before the gate swings open
-/** once open, the spring can only re-close when no ball occupies the gateway */
+export const GATE_OPEN_HOLD = 0; // s of push before the gate arm starts to lift. ZERO so the lift (and the handle-collider retract that rides on it, see gateColliderPos) begins on the very tick you contact it — no debounce means no jam against the closed stub. The push gate (pushingGate: a STRAIGHT ram, not a graze) already prevents accidental opens.
+/** a TOUCH commits the arm open and LATCHES it up for this long, so the driver does
+ * NOT have to keep pressing to hold it open — a tap lifts it fully and it stays up a
+ * beat. After the latch lapses (and no artifact is streaming under it) gravity swings
+ * it shut as before, so it still "may or may not stay open" a moment longer. */
+export const GATE_OPEN_LATCH_S = 0.5; // s the arm stays latched open after a tap (then it swings shut)
+/** once open, gravity/flow decide re-close: it can only fall while no ball occupies
+ * the gateway (a ball streaming under the arm physically holds it up) */
 export const GATE_CLOSE_CLEAR_LO = -4;
 export const GATE_CLOSE_CLEAR_HI = 4.5;
+/** GATE as a PHYSICAL push-to-open arm (manual 9.8.3): a robot shoves the arm the
+ * ~2in open, and it is "closed by gravity" — after release it does NOT snap shut but
+ * SWINGS closed, starting slow and accelerating (a hinged arm falling), so a tap
+ * "may or may not stay open" long enough to clear the ramp. `gatePos` is the arm's
+ * physical open fraction 0 (down/closed) .. 1 (fully lifted); `gateVel` is its swing
+ * rate. `gateOpen` (a ball can pass) is DERIVED = gatePos >= GATE_PASS_FRAC. */
+export const GATE_OPEN_RATE = 10; // 1/s: BASE lift rate for a gentle push (light nudge still eases the arm open over several ticks)
+/** the lift rate SCALES with how hard you ram the handle (ramSpeed = in/s toward the
+ * wall): rate = GATE_OPEN_RATE + GATE_OPEN_RATE_SPEED·ramSpeed, capped at
+ * GATE_OPEN_RATE_MAX. A near-full-speed ram lifts the arm ~fully in a single tick, so
+ * the physical handle collider — which ANTICIPATES this same lift (gateColliderPos in
+ * goal.ts, fed into buildGateArms) — is already out of the drivetrain's path the instant
+ * you touch it: it "opens faster the harder you drive into it", with no bounce-off jolt. */
+export const GATE_OPEN_RATE_SPEED = 1.2; // extra 1/s of lift per in/s of ram speed
+export const GATE_OPEN_RATE_MAX = 66; // 1/s cap (~fully open in one tick at a hard ram)
+export const GATE_GRAVITY = 22; // 1/s^2 on gatePos: gravity swinging the released arm shut
+export const GATE_CLOSE_MAX = 9; // 1/s: terminal swing speed as it falls closed
+export const GATE_PASS_FRAC = 0.4; // arm must be at least this lifted for an ARTIFACT to pass
+export const GATE_DISPLACE = 2; // in, real closed->open horizontal displacement (manual 9.8.3)
+/** the gate is a class-1 LEVER (manual Figure 9-15) hinged at the CLASSIFIER EDGE — where
+ * the gate-zone tape starts (|x| = FIELD_HALF − CLASSIFIER_W = the classifier's field-side
+ * rail). It has TWO arms about that pivot:
+ *  - a SHORT handle that sticks OUT of the classifier into the field, along the gate-zone
+ *    tape — this is what a robot pushes, and the small part that pokes into the open field;
+ *  - a LONG paddle that lies ACROSS the channel to the far (WALL) edge, COVERING the
+ *    artifacts stacked in the channel.
+ * Pushing the handle SWINGS the lever: the long paddle LIFTS off the artifacts (releasing
+ * them). Drawn top-down by FORESHORTENING each arm toward the pivot as it lifts
+ * (`proj = len·cos(gatePos·GATE_LIFT)`); the long paddle greens as it clears the channel. */
+export const GATE_ARM_LONG = CLASSIFIER_W; // in, long paddle: pivot → wall edge (covers the 6in channel)
+export const GATE_ARM_SHORT = 2.5; // in, short handle poking past the field edge into the gate zone
+export const GATE_LIFT = 1.35; // rad (~77deg) the paddle swings up from closed to fully open
+/** the handle is a PHYSICAL one-way door: a solid robot collider spanning the SHORT arm's
+ * (foreshortened) field-side reach, so a robot CANNOT strafe/drive through it — the only
+ * way past is to OPEN it (a straight push, which lifts gatePos and RETRACTS the handle
+ * toward the pivot, so the opening robot glides in rather than being shoved back). The arm
+ * is LIGHT: it never shoves a resting robot because a robot touching the OPEN gate holds
+ * it open (touch-hold in updateGates), so it doesn't swing closed against you. The long
+ * paddle needs no collider — it lies over the already-solid classifier channel. Robot-solve
+ * ONLY (not the ball solve): released artifacts still roll out beneath the lifted paddle. */
+export const GATE_ARM_THICK = 3; // in, physical thickness (y) of the handle collider
+/** the gate does NOT open just because a robot LOITERS in the zone — the arm is a
+ * push-to-open mechanism, so the robot must actively PRESS toward it. Detected as
+ * a velocity toward the arm (ramming it) OR a drive command toward it (leaning on it
+ * while stalled against the classifier, where velocity reads ~0). */
+export const GATE_PUSH_MIN_SPEED = 6; // in/s toward the arm to open by driving into it
+export const GATE_PUSH_MIN_CMD = 0.35; // drive-command component toward the arm to hold it open
 /** gate zone tape in front of the gate: 10in from the wall at y ~ 0 */
 /** gate INTERACTION rect (a robot overlapping it works the gate). The tape
  * marking on the mat is drawn separately — see GATE_TAPE_* / gateTapeSegments */
 export const GATE_ZONE = { xNear: 62, xFar: 72, y0: -2, y1: 3 };
-/** how far BELOW the gate a robot's center may sit and still count as working
- * the gate from the long (field) side. Only a robot deeper than this — coming
- * up from the gate mouth / audience side — is a short-end tap that won't open it. */
-export const GATE_LONG_SIDE_MARGIN = 10; // in
+/** the physical GATE ARM's contact footprint at the channel mouth (`gateArmRect`).
+ * A robot whose bumper reaches within GATE_ARM_REACH of the classifier face here is
+ * TOUCHING the gate — the trigger for G417 (touching an opponent's gate, even
+ * without opening it, is a MAJOR) and the contact half of the push-to-open test.
+ * Kept TIGHT around the actual lever handle (which pokes GATE_ARM_SHORT into the field,
+ * centered on GATE_TAPE_Y): NOT a big loitering region — a robot must be against the arm. */
+export const GATE_ARM_REACH = 3; // in, field-side reach past the classifier edge (~ the handle)
+export const GATE_ARM_Y0 = -2; // mouth band edges, centered on the lever (GATE_TAPE_Y = 0.5)
+export const GATE_ARM_Y1 = 3;
 /** official GATE ZONE marking (manual Section 9): a 2.75in-wide x 10in-long
  * volume bounded by TWO parallel alliance-colored tape LINES, 10in long,
  * running perpendicular to the side wall (into the field), spaced 2.75in
@@ -346,7 +683,11 @@ export const GATE_TAPE_LEN = 10; // line length, into the field from the wall
 export const GATE_TAPE_Y = (GATE_ZONE.y0 + GATE_ZONE.y1) / 2; // gate center y
 /** where released/overflow balls emerge onto the floor, on the goal's wall */
 export const TUNNEL_EXIT = { x: 68, y: -3 };
-export const TUNNEL_EXIT_VEL = { along: 42, inward: 7 }; // toward audience, off the wall
+/** gate-release exit velocity. Kept GENTLE (low `along`): a big forward push
+ * plows the whole drain out in a straight conga line. With little momentum the
+ * front balls stall on friction and the ones behind carom off them, so the
+ * drain fans out across the floor instead of running linear. */
+export const TUNNEL_EXIT_VEL = { along: 22, inward: 8 }; // toward audience, off the wall
 
 // ---------------------------------------------------------------- zones ----
 /** small audience-side launch zone: apex (0,-48), base 2 tiles on the wall */
@@ -398,16 +739,39 @@ export const SPIKE_ROW_YS = [-35.5, -12.8, 11.1]; // near, middle, far
 export const SPIKE_BALL_SPACING = 5.6;
 export const SPIKE_MARK_LEN = 10;
 
-/** robot start poses, all inside the big launch zone near the alliance's
- * goal (blue goal is far-left, so blue mirrors to the left). Coordinates and
- * headings are authored for goalSide=+1; the spawn helper mirrors them for the
- * other alliance. Headings are in degrees, measured in the field frame.
- * Index = the menu/lobby "start position" choice per robot slot. */
+/** named quick-pick robot start poses. Every preset is a LEGAL G304 setup
+ * (over a LAUNCH LINE, touching the GOAL or the FIELD perimeter, fully inside
+ * the alliance's own half). Coordinates + headings are authored for goalSide=+1
+ * (red); the spawn helper mirrors them for blue. Headings are degrees in the
+ * field frame. Index = the menu/lobby "start position" quick-pick; a player may
+ * also drag a fully CUSTOM pose (validated against the same G304 rule).
+ * NOTE: these were re-authored July 2026 to satisfy G304 — the old poses sat
+ * mid-launch-zone, touching nothing, which is NOT a legal setup. */
+// Semantic ANCHORS (canonical goalSide=+1 / red frame) resolved per-chassis by
+// presetPose. Authored so BLUE displays the intended headings (270 is mirror-
+// invariant; canonical 0 shows as 180 for blue). NOTE: index 0 and 1 must sit far
+// apart — a 2-robot alliance spawns its two slots at indices 0/1 (smoke-checked).
+export type StartCategory = 'close' | 'far';
 export const START_POSES = [
-  { x: 50, y: 55, headingDeg: 270, label: 'CLOSE SIDE' }, // the original solo pose
-  { x: 20, y: 40, headingDeg: 315, label: 'CENTER' },
-  { x: 18, y: -60, headingDeg: 0, label: 'FAR SIDE' },
+  { x: 58, y: 48.5, headingDeg: 270, label: 'GATE', cat: 'close' }, // goal, gate end, facing the audience
+  { x: 31.25, y: -63.75, headingDeg: 0, label: 'AUDIENCE', cat: 'far' }, // audience corner: tucked toward the loading zone, on the tape, against the back wall
+  { x: 48, y: 57, headingDeg: 270, label: 'GOAL', cat: 'close' }, // in front of the goal (far-wall end), x=48 fixed, facing the audience
+  { x: 53.25, y: 54.25, headingDeg: 55, label: 'INTAKE', cat: 'close' }, // intake flush on the goal face, a corner at the tape↔classifier point
+  { x: 55, y: 56.75, headingDeg: 235, label: 'BACK', cat: 'close' }, // back flush on the goal face, a corner at the tape↔classifier point
 ] as const;
+/** how many of the player's OWN custom start positions per category (close/far) */
+export const MAX_SAVED_STARTS = 2;
+
+/** G304 "touching the GOAL or FIELD perimeter" slack (inches): a start pose
+ * whose footprint is within this of the goal face or a wall counts as touching.
+ * Also the snap distance the drag editor uses to pull a robot onto a surface. */
+export const START_TOUCH_TOL = 1.25;
+
+/** how far a start footprint may sink into a solid STRUCTURE (goal wedge /
+ * classifier channel) before it counts as penetrating rather than resting
+ * against it — a small collision-box tolerance so "flush on the goal" is legal
+ * but "inside the goal" is not. */
+export const START_PEN_SLOP = 0.75;
 
 // --------------------------------------------------------- human player ----
 export const HP_PLACE_DELAY = 0.15; // s between placements from the box into the grab row (fast HP)
@@ -417,34 +781,39 @@ export const PRELOAD: readonly ('purple' | 'green')[] = ['purple', 'green', 'pur
 export const HP_INITIAL_STOCK: readonly ('purple' | 'green')[] = ['purple', 'purple', 'green'];
 
 // -------------------------------------------------------- robot presets ----
-/** named example robots covering the archetype matrix; the menu also offers
- * a fully custom builder. Keep DEFAULT ("Standard Issue") = the original
- * tuned solo feel. */
+/** how many of the player's OWN robots / autos they can keep in their library */
+export const MAX_SAVED_ROBOTS = 3;
+export const MAX_SAVED_AUTOS = 4;
+
+/** real FTC team BUILDS covering the archetype matrix; the menu also offers a
+ * fully custom builder. Picking a preset copies its BUILD only — the player's
+ * name/team/number are their own. The first entry (TW) is the DEFAULT_SPEC build
+ * a new player starts with. */
 export const ROBOT_PRESETS: readonly RobotSpec[] = [
   {
-    name: 'Standard Issue', teamName: 'Baseline Robotics', teamNumber: 1234,
-    length: 18, width: 18, intake: 'sloped', massLb: 30, drivetrain: 'mecanum',
-    driveRpm: 435, flywheelInertia: 0.5, canSort: false,
+    name: 'TW', teamName: 'Turtle Walkers', teamNumber: 19745,
+    length: 14.5, width: 16.5, intake: 'sloped', massLb: 23.5, drivetrain: 'mecanum',
+    driveRpm: 440, flywheelInertia: 0.7, canSort: false,
   },
   {
-    name: 'Bulldozer', teamName: 'Iron Plows', teamNumber: 9909,
-    length: 18, width: 18, intake: 'sloped', massLb: 42, drivetrain: 'tank',
+    name: 'Dugtrio', teamName: 'Blu Cru', teamNumber: 6417,
+    length: 15, width: 18, intake: 'sloped', massLb: 36, drivetrain: 'tank',
     driveRpm: 340, flywheelInertia: 0.9, canSort: false,
   },
   {
-    name: 'Hummingbird', teamName: 'Featherweights', teamNumber: 5511,
-    length: 12.5, width: 12, intake: 'vector', massLb: 21, drivetrain: 'swerve',
-    driveRpm: 560, flywheelInertia: 0.15, canSort: false,
+    name: 'Cypher', teamName: 'Seattle Solvers', teamNumber: 23511,
+    length: 14, width: 14, intake: 'vector', massLb: 23.5, drivetrain: 'swerve',
+    driveRpm: 500, flywheelInertia: 0.1, canSort: false,
   },
   {
-    name: 'Crossfire', teamName: 'Diagonal Society', teamNumber: 8080,
-    length: 13, width: 14, intake: 'triangle', massLb: 26, drivetrain: 'xdrive',
-    driveRpm: 480, flywheelInertia: 0.4, canSort: false,
+    name: 'Rohan', teamName: 'Exodus', teamNumber: 30030,
+    length: 13, width: 17.5, intake: 'triangle', massLb: 34, drivetrain: 'mecanum',
+    driveRpm: 395, flywheelInertia: 0.8, canSort: false,
   },
   {
-    name: 'The Librarian', teamName: 'Sorted Motors', teamNumber: 3141,
-    length: 12.5, width: 16, intake: 'triangle', massLb: 32, drivetrain: 'mecanum',
-    driveRpm: 400, flywheelInertia: 0.7, canSort: true,
+    name: 'Ditto', teamName: 'Galactic Narwhal Chicken Effect - Diamond', teamNumber: 22489,
+    length: 14.5, width: 16, intake: 'vector', massLb: 28, drivetrain: 'mecanum',
+    driveRpm: 450, flywheelInertia: 0.9, canSort: false,
   },
 ] as const;
 
@@ -455,9 +824,21 @@ export const ROBOT_PRESETS: readonly RobotSpec[] = [
 // (physics scales with dt), so this stays deterministic across peers.
 export const SIM_DT = 1 / 60;
 export const MAX_STEPS_PER_FRAME = 5;
+/** Angle tolerance (radians) for heading alignment between path segments.
+ * If the difference between the robot's current heading and the next segment's
+ * start heading is greater than this, the robot will rotate to align. */
+export const ALIGNMENT_ANGLE_TOLERANCE = 0.02; // ~1.1 degrees
+/** Rotational speed (radians/second) for heading alignment. */
+export const ALIGNMENT_ROTATIONAL_SPEED = 3.0; // rad/s
 
 // ------------------------------------------------------------ rendering ----
 export const COLORS = {
+  /** letterbox around the field — tracks `--ds-bg` in shell.css, per THEME.
+   * The field mat NEVER themes: the board reads as a physical object sitting on
+   * the floor, and its outline keeps it separated even when the floor goes dark
+   * (`backdropDark` #20262c vs `mat` #23262b is only 1.03:1 on fill alone). */
+  backdrop: '#f9faf7',
+  backdropDark: '#20262c',
   mat: '#23262b',
   tile: '#2c3038',
   wall: '#4b5563',

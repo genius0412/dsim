@@ -1,5 +1,5 @@
 import type { LobbyPlayer, PlayerPatch } from './protocol';
-import { coerceSpec, coerceAssists, coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS } from '../sim/spawn';
+import { coerceSpec, coerceAssists, coerceAutoPath, coerceStartPose, DEFAULT_SPEC, DEFAULT_ASSISTS } from '../sim/spawn';
 import { START_POSES } from '../config';
 import { clamp } from '../math';
 
@@ -38,6 +38,11 @@ export function sanitizePlayer(raw: unknown): Omit<LobbyPlayer, 'clientId'> {
     teamNumber: spec.teamNumber,
     alliance: p.alliance === 'red' || p.alliance === 'blue' ? p.alliance : 'blue',
     startIndex: coerceStartIndex(p.startIndex),
+    // structural + field-bounds only; G304 legality is snapped spec/alliance-aware
+    // by createWorld → coerceSetup, the spawn chokepoint.
+    startPose: p.startPose == null ? null : coerceStartPose(p.startPose),
+    startRole: p.startRole === 'close' || p.startRole === 'far' ? p.startRole : undefined,
+    swapReq: p.swapReq === true,
     ready: p.ready === true,
     spec,
     assists: coerceAssists(p.assists, DEFAULT_ASSISTS),
@@ -57,6 +62,9 @@ export function sanitizePlayerPatch(raw: unknown, current: LobbyPlayer): PlayerP
   if ('name' in p) out.name = coerceName(p.name, current.name);
   if ('alliance' in p && (p.alliance === 'red' || p.alliance === 'blue')) out.alliance = p.alliance;
   if ('startIndex' in p) out.startIndex = coerceStartIndex(p.startIndex);
+  if ('startPose' in p) out.startPose = p.startPose == null ? null : coerceStartPose(p.startPose);
+  if ('startRole' in p) out.startRole = p.startRole === 'close' || p.startRole === 'far' ? p.startRole : undefined;
+  if ('swapReq' in p) out.swapReq = p.swapReq === true;
   if ('ready' in p) out.ready = p.ready === true;
   if ('assists' in p) out.assists = coerceAssists(p.assists, current.assists);
   if ('spec' in p) {

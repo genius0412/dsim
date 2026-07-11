@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { fetchReplay } from '../net/api';
-import { ReplayPlayer, type Replay } from '../sim/replay';
+import { ReplayPlayer, REPLAY_FORMAT, type Replay } from '../sim/replay';
 import { Renderer } from '../render/renderer';
-import { SIM_DT } from '../config';
+import { rangeFill } from './rangeFill';
+import { SIM_DT, BALANCE_VERSION } from '../config';
 
 /**
  * Replay viewer: fetches a deterministic input-log replay and re-simulates it in
@@ -22,8 +23,10 @@ export function ReplayView({
   onClose: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error' | 'stale'>('loading');
   const [error, setError] = useState('');
+  // the version a stale replay was recorded under (for the message)
+  const [staleVersion, setStaleVersion] = useState<number | null>(null);
   const [playing, setPlaying] = useState(true);
   const [tick, setTick] = useState(0);
   const [total, setTotal] = useState(1);
@@ -40,6 +43,16 @@ export function ReplayView({
     setError('');
     const use = (r: Replay): void => {
       replay.current = r;
+      // A replay is a deterministic INPUT log — it only re-simulates to its original
+      // outcome under the exact sim build that recorded it. After a physics/balance
+      // update (BALANCE_VERSION bump) or a replay-container change (REPLAY_FORMAT),
+      // re-running it here would diverge, so refuse playback and say why instead of
+      // showing a silently-wrong game.
+      if (r.format !== REPLAY_FORMAT || r.balanceVersion !== BALANCE_VERSION) {
+        setStaleVersion(r.balanceVersion ?? null);
+        setStatus('stale');
+        return;
+      }
       player.current = new ReplayPlayer(r);
       renderer.current = new Renderer();
       setTotal(Math.max(1, r.ticks));
@@ -156,6 +169,15 @@ export function ReplayView({
           {error}
         </div>
       )}
+      {status === 'stale' && (
+        <div className="ds-empty" style={{ margin: 'auto' }}>
+          <div className="big">Replay unavailable</div>
+          This match was recorded on an older version of the sim
+          {staleVersion !== null ? ` (Season ${staleVersion})` : ''}. Physics and balance have
+          changed since, so it can no longer be played back accurately. The score on the
+          leaderboard still stands.
+        </div>
+      )}
       <canvas ref={canvasRef} className="ds-replay-canvas" style={{ display: status === 'ready' ? 'block' : 'none' }} />
 
       {status === 'ready' && (
@@ -170,6 +192,7 @@ export function ReplayView({
             min={0}
             max={total}
             value={tick}
+            style={rangeFill(tick, 0, total)}
             onChange={(e) => seek(Number(e.target.value))}
             aria-label="Seek"
           />

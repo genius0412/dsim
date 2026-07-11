@@ -3,6 +3,7 @@ import type { RobotSetup } from '../sim/spawn';
 import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './session';
 import type { Transport } from './transport';
 import { setServerNotice } from './notice';
+import { regionLabel, isKnownRegion, selectedServer } from './env';
 import {
   encodeMsg,
   decodeServerMsg,
@@ -18,6 +19,16 @@ import {
  * fallback for any non-DOM context. Diagnostics only — never touches the sim. */
 const nowMs = (): number =>
   typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+/** the display label for the server/region a match runs on. Prefer the region the
+ * server reported at matchStart; else infer it from a region-coded room code
+ * (`iad-…`); else fall back to the picked server's label. Blank ⇒ HUD hides it. */
+function deriveServerLabel(reportedRegion: string | undefined, room: string): string {
+  if (reportedRegion) return regionLabel(reportedRegion);
+  const prefix = /^([a-z]{3})-/.exec(room)?.[1];
+  if (prefix && isKnownRegion(prefix)) return regionLabel(prefix);
+  return selectedServer()?.label ?? '';
+}
 
 /** how often to probe latency. Faster than the old 1 Hz so the ping GRAPH can
  * actually resolve sub-second spikes (the smoothed RTT number can't). ~3 Hz is a
@@ -46,6 +57,8 @@ export class ServerSession implements NetSession {
   setups: RobotSetup[];
   ranked: boolean;
   intros: PlayerIntro[];
+  /** the Fly region hosting this match (raw, for reconnect routing) */
+  readonly region?: string;
   /** per-driver overall-ELO change, arrives shortly after matchResult (ranked) */
   eloResults: EloDelta[] = [];
 
@@ -59,6 +72,8 @@ export class ServerSession implements NetSession {
   private failed = false;
   /** other robots in the match (for the HUD "N players" chip) */
   private readonly otherRobots: number;
+  /** human-readable label of the server/region hosting this match (HUD) */
+  private readonly serverLabel: string;
   /** running ball baseline the delta-encoded snapshots patch (keyed by id) */
   private readonly baseBalls = new Map<number, Artifact>();
 
@@ -83,16 +98,19 @@ export class ServerSession implements NetSession {
       yourRobotId: number;
       ranked?: boolean;
       intros?: PlayerIntro[];
+      region?: string;
     },
-    private readonly clientId: string,
-    private readonly room: string,
+    readonly clientId: string,
+    readonly room: string,
   ) {
     this.seed = start.seed;
     this.setups = start.setups;
     this.ranked = start.ranked ?? false;
     this.intros = start.intros ?? [];
+    this.region = start.region;
     this.localRobotId = start.yourRobotId;
     this.otherRobots = Math.max(0, start.setups.length - 1);
+    this.serverLabel = deriveServerLabel(start.region, room);
     // take over routing + reconnection handling from the LobbyClient
     transport.onMessage((d) => this.onMessage(d));
     transport.onDown(() => {
@@ -176,6 +194,7 @@ export class ServerSession implements NetSession {
       jitterMs,
       quality,
       rttHistory: this.rttSamples.length ? this.rttSamples.slice() : null,
+      server: this.serverLabel || null,
     };
   }
 
@@ -252,8 +271,11 @@ export class ServerSession implements NetSession {
       this.baseBalls.clear();
       this.restartCb?.();
     } else if (m.t === 'rejoined' && !m.ok) {
-      // the grace window lapsed — stop reconnecting (HUD stays "reconnecting")
+      // the grace window lapsed / the match is gone — the held slot can't be
+      // reclaimed. Surface it as a hard failure so the HUD shows the "connection
+      // lost" panel (MENU/refresh) instead of spinning "reconnecting" forever.
       this.connected = false;
+      this.failed = true;
       this.transport.close();
     }
     // 'drop' is reflected in the next snapshot already; nothing to do here

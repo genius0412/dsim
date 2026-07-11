@@ -31,37 +31,39 @@ export function Download() {
       <h1 className="ds-h1">Download for desktop</h1>
       <p className="ds-sub">The full offline sim in a native window. Windows, macOS, and Linux.</p>
 
-      <div className="ds-dl-hero">
-        <div className="ds-dl-plat">
-          <span className="glyph">🖥️</span>
-          {os ? OS_LABEL[os] : 'Windows · macOS · Linux'}
-          {os && <span className="ds-chip" style={{ marginLeft: 4 }}>your platform</span>}
+      {/* `.ds-dl` owns the gaps: these cards cast hard offset shadows, and headings are
+          the only elements in the design system that carry their own bottom margin. */}
+      <div className="ds-dl">
+        <div className="ds-dl-hero">
+          <div className="ds-dl-plat">
+            <span className="glyph">🖥️</span>
+            {os ? OS_LABEL[os] : 'Windows · macOS · Linux'}
+            {os && <span className="ds-chip" style={{ marginLeft: 4 }}>your platform</span>}
+          </div>
+          <div className="ds-req">
+            <span>≈120 MB</span>
+            <span>Installer or portable</span>
+            <span>{version ? version : 'latest release'}</span>
+          </div>
         </div>
-        <div className="ds-req">
-          <span>≈120 MB</span>
-          <span>Installer or portable</span>
-          <span>{version ? version : 'latest release'}</span>
-        </div>
-      </div>
 
-      <div className="ds-opts two">{builds.map(card)}</div>
+        <div className="ds-opts two">{builds.map(card)}</div>
 
-      <p>
         <a className="ds-btn ghost" href={releasesUrl()} target="_blank" rel="noreferrer">
           All releases →
         </a>
-      </p>
 
-      <div className="ds-panelbox">
-        <div className="ds-panel-title">Build it yourself</div>
-        <p className="ds-hint" style={{ marginTop: -4 }}>
-          Clone the{' '}
-          <a href={LINKS.repo} target="_blank" rel="noreferrer" style={{ color: 'var(--ds-accent)' }}>
-            repository
-          </a>{' '}
-          and run <code style={{ fontFamily: 'var(--ds-font-mono)' }}>npm run dist</code>. Artifacts
-          land in <code style={{ fontFamily: 'var(--ds-font-mono)' }}>release/</code>.
-        </p>
+        <div className="ds-panelbox">
+          <div className="ds-panel-title">Build it yourself</div>
+          <p className="ds-hint" style={{ marginTop: -4 }}>
+            Clone the{' '}
+            <a href={LINKS.repo} target="_blank" rel="noreferrer" style={{ color: 'var(--ds-accent)' }}>
+              repository
+            </a>{' '}
+            and run <code style={{ fontFamily: 'var(--ds-font-mono)' }}>npm run dist</code>. Artifacts
+            land in <code style={{ fontFamily: 'var(--ds-font-mono)' }}>release/</code>.
+          </p>
+        </div>
       </div>
     </>
   );

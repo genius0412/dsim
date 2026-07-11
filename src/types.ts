@@ -68,6 +68,13 @@ export type BallState =
    * but not yet met the stack — classified vs overflow is decided at first
    * contact (9 retained below at that moment ⇒ overflow). */
   | { kind: 'rail'; goal: Alliance; s: number; v: number; overflow: boolean; pending?: boolean }
+  /** captured and PHYSICALLY stored in a robot's intake: parked at storage slot
+   * `slot` of robot `robot`. `lx`/`ly` are the ball's CURRENT offset in the robot
+   * frame — it tracks the robot rigidly (no lag) and slides these toward the slot
+   * target. `side` (−1/+1/0) is which side of the triangle front row it sits on
+   * (a 3rd ball entering a side pushes the resident ball to the other side). The
+   * robot's `hopper` color array mirrors these (count + colors synced). */
+  | { kind: 'held'; robot: number; slot: number; lx: number; ly: number; side: number }
   | { kind: 'stock'; alliance: Alliance }; // held by the human player, off-field
 
 export interface Artifact {
@@ -89,6 +96,19 @@ export interface RobotState {
   vel: Vec2; // field frame, in/s
   angVel: number;
   turretHeading: number; // field frame
+  /** SWERVE per-module steer angles (robot frame, rad), one per wheel in the
+   * corner order [FL, FR, BL, BR] (matching drawRobot's wheels). Each module has
+   * its OWN imperfect steering loop, so their small INDEPENDENT angle errors don't
+   * cancel — producing the real drift + yaw wobble when driving straight. The net
+   * chassis motion is the forward-kinematics of the four modules. Unused by other
+   * drivetrains (all stay 0). Drives the per-pod wheel rendering. */
+  moduleAngles: number[];
+  /** SWERVE per-module TARGET steer angles (robot frame, rad) — the last COMMANDED
+   * direction the pods are slewing to. Updated from the drive command; HELD when the
+   * stick is released so the pods finish turning to (and keep) the commanded angle
+   * even after a brief tap, instead of freezing partway. `moduleAngles` chases these
+   * (plus the wobble). */
+  moduleTargets: number[];
   hopper: ArtifactColor[]; // FIFO, max 3
   fieldCentric: boolean;
   aimAssist: boolean;
@@ -99,6 +119,16 @@ export interface RobotState {
   /** earliest world.time the shooter may fire again (transfer cadence +
    * flywheel recovery after energetic shots) */
   fireReadyAt: number;
+  /** 0..1 flywheel spin level, ramped by distance to this robot's own goal
+   * (set in updateRobotActions; feeds power draw one tick later) */
+  flywheelSpin: number;
+  /** positive rate of change of flywheelSpin (1/s) — how fast the wheel is
+   * SPINNING UP as the robot drives away from its goal (0 when idle or spinning
+   * down; set in updateRobotActions; feeds power draw one tick later) */
+  flywheelSpinRate: number;
+  /** 0..POWER_DRAW_MAX current drawn from the drive motors by the flywheel +
+   * intake (set in updateRobot); slows the robot and weakens its shove */
+  powerDraw: number;
   /** G427: an opponent contacted this robot in its BASE during endgame — it
    * counts as fully returned at match end regardless of where it ends up */
   baseAwarded?: boolean;
@@ -112,13 +142,18 @@ export interface RobotState {
   pathTargetPoint: Vec2 | null;
   pathTargetHeading: number | null;
   autoPath?: AutoPathData; // Add autoPath to RobotState
+  isAligningHeading: boolean; // New state for heading alignment
+  targetAlignmentHeading: number | null; // The heading to align to
   // --- End Auto Pathing State ---
 }
 
 export interface GoalState {
   alliance: Alliance;
-  gateOpen: boolean;
-  gateHoldTime: number; // accumulated time a robot has been in the gate zone
+  gateOpen: boolean; // DERIVED: an artifact can pass (gatePos >= GATE_PASS_FRAC)
+  gatePos: number; // physical arm open fraction 0 (closed) .. 1 (fully lifted)
+  gateVel: number; // arm swing rate (1/s) — gravity accelerates it shut
+  gateHoldTime: number; // accumulated time a robot has been pushing the gate arm
+  gateLatch: number; // s remaining the arm stays latched open after a tap (no need to hold)
   classifiedCount: number; // cumulative, for stats
   overflowCount: number;
 }
@@ -192,6 +227,10 @@ export interface PenaltyState {
   /** how many pin fouls a given pinner (by id) has already committed, for the
    * MINOR -> MAJOR escalation on a repeat pin */
   pinFouls: Record<number, number>;
+  /** G408 over-possession: seconds a robot (by id) has continuously CONTROLLED
+   * more than POSSESSION_LIMIT artifacts. Fires once past POSSESSION_GRACE;
+   * resets to 0 the moment control drops back to the limit. */
+  possession: Record<number, number>;
   /** which OPPONENT alliance (if any) is responsible for each goal's gate being
    * open — set when an opponent operates the gate, held through the drain, and
    * cleared once the gate shuts. Artifacts leaving that ramp meanwhile are billed
@@ -254,11 +293,49 @@ export interface AutoPathData {
 }
 // --- End Auto Pathing Types ---
 
+/** a robot start pose (field frame, heading in degrees). Custom poses are stored
+ * in the CANONICAL goalSide=+1 (red) frame like START_POSES and mirrored per
+ * alliance at spawn. Defined here (not sim/field) so settings can reference it
+ * without a circular import. */
+export interface StartPose {
+  x: number;
+  y: number;
+  headingDeg: number;
+}
+
+/** start positions are grouped by proximity to the goal: 'close' (goal-side) vs
+ * 'far' (audience side). In a 2v2 an alliance fills one Close and one Far slot. */
+export type StartCat = 'close' | 'far';
+
+/** a remembered start selection within a category: a preset (by index) OR a
+ * custom/saved pose (`pose` set, `index` = -1). */
+export interface StartSel {
+  index: number;
+  pose: StartPose | null;
+}
+
 export interface GameSettings {
   mode: GameMode;
   alliance: Alliance;
   spec: RobotSpec;
+  /** the player's saved robot library (up to MAX_SAVED_ROBOTS). `spec` is the
+   * ACTIVE robot; loading a slot copies it into `spec`, saving copies `spec` in. */
+  savedRobots: RobotSpec[];
+  /** the player's saved auto library (up to MAX_SAVED_AUTOS). `autoPath` is the
+   * ACTIVE auto; selecting a slot copies it into `autoPath`. */
+  savedAutos: AutoPathData[];
   startIndex: number;
+  /** a fully-placed CUSTOM start pose (canonical goalSide=+1 frame). When set it
+   * OVERRIDES startIndex; validated against G304 and snapped legal at spawn.
+   * `startIndex`/`startPose` are the ACTIVE start (what spawns / goes on the wire);
+   * the fields below are the client-side library + per-category memory. */
+  startPose?: StartPose | null;
+  /** which category the ACTIVE start belongs to (solo picks it; a 2v2 role locks it) */
+  startCat: StartCat;
+  /** the player's own saved start positions, up to MAX_SAVED_STARTS per category */
+  savedStartPoses: { close: StartPose[]; far: StartPose[] };
+  /** last-used selection in each category, so switching tabs restores your choice */
+  startMemory: { close: StartSel; far: StartSel };
   practiceDummies: boolean;
   assists: AssistConfig;
   bindings: ControlBindings;

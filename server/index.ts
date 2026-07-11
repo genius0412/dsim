@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Room, type Client } from './room';
-import { decodeClientMsg, encodeMsg, type ClientMsg, type ServerMsg } from '../src/net/protocol';
+import { decodeClientMsg, encodeMsg, DEFAULT_ROOM_CONFIG, type ClientMsg, type ServerMsg } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
@@ -12,6 +12,7 @@ import { handleApi } from './api';
 import { Matchmaker } from './matchmaking';
 import { MATCHMAKER_REGION } from './regions';
 import { BALANCE_VERSION } from '../src/config';
+import { periodLabel } from '../src/seasons';
 import { dbEnabled } from './db/pool';
 import {
   currentSeasonNumber,
@@ -25,6 +26,8 @@ import {
   searchProfiles,
   setHandle,
   getProfile,
+  createAnnouncement,
+  deleteAnnouncement,
 } from './db/repo';
 
 /**
@@ -52,6 +55,24 @@ const matchmaker = new Matchmaker();
 let onlineCount = 0;
 const authedUsers = new Map<string, number>(); // userId -> live socket count
 
+// "one live game per user": userId -> code of the room whose MATCH they're currently
+// in. Set by a room when its match begins (Room.onUserActive), cleared when their slot
+// is released (finalize / grace-drop / room stop). A user with an entry here is refused
+// a second join/queue elsewhere — they must rejoin or leave that game first. Reconnects
+// (the `rejoin` message) bypass this, so returning to your OWN game always works.
+const userRoom = new Map<string, string>();
+/** true if this user already has a LIVE match in a DIFFERENT room (stale entries whose
+ * room has since vanished are pruned and treated as clear). */
+const activeElsewhere = (userId: string, code: string): boolean => {
+  const other = userRoom.get(userId);
+  if (!other || other === code) return false;
+  if (!rooms.has(other)) {
+    userRoom.delete(userId);
+    return false;
+  }
+  return true;
+};
+
 // accounts allowed to use the admin API (their auth-JWT `sub`/userId). Set as a
 // Fly secret: ADMIN_USER_IDS="uuid1,uuid2". Empty => admin API is locked to nobody.
 const ADMIN_IDS = new Set(
@@ -78,6 +99,20 @@ function broadcastAll(m: ServerMsg): number {
     }
   }
   return n;
+}
+
+/** read a small request body (admin POSTs) with a hard cap so a bad client can't
+ * exhaust memory. Rejects past 16KB — announcements are tiny. */
+function readAdminBody(req: import('node:http').IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (c) => {
+      data += c;
+      if (data.length > 16 * 1024) reject(new Error('body too large'));
+    });
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
 }
 
 // an explicit HTTP server so we can answer GET /health (Fly/Load-balancer probe)
@@ -184,10 +219,26 @@ const httpServer = createServer((req, res) => {
         }
         if (u.pathname === '/api/admin/season/start') {
           const name = u.searchParams.get('name') ?? undefined;
-          const season = await startNewSeason(BALANCE_VERSION, name);
-          console.log(`[admin] started new season ${season}${name ? ` "${name}"` : ''}`);
+          // `act=new` opens a fresh ACT (act++, season resets to 1); otherwise a
+          // new season in the current act.
+          const bumpAct = u.searchParams.get('act') === 'new';
+          const { season, act, seasonNo } = await startNewSeason(BALANCE_VERSION, name, bumpAct);
+          const label = periodLabel({ name, act, seasonNo });
+          console.log(
+            `[admin] started new ${bumpAct ? 'act' : 'season'}: bv=${season} (${label})`,
+          );
+          // auto-publish a cinematic announcement (editable/retire-able from the
+          // admin console). `announce=0` opts out for a silent roll.
+          if (u.searchParams.get('announce') !== '0') {
+            await createAnnouncement({
+              kind: bumpAct ? 'act' : 'season',
+              title: label,
+              tagline: bumpAct ? 'A NEW ACT BEGINS' : 'A NEW SEASON BEGINS',
+              body: 'Fresh leaderboards and ranked ratings are live. Set a new record and climb from the top.',
+            }).catch((e) => console.error('[admin] announcement failed:', e));
+          }
           res.writeHead(200, { ...cors, 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, season }));
+          res.end(JSON.stringify({ ok: true, season, act, seasonNo }));
           return;
         }
         // purge-replays: default to every season BEFORE the live one when unspecified
@@ -299,6 +350,65 @@ const httpServer = createServer((req, res) => {
           await setHandle(uid, handle);
           console.log(`[admin] renamed ${uid}: "${profile.handle}" -> "${handle}"`);
           jsonOut(200, { ok: true, userId: uid, handle });
+          return;
+        }
+        jsonOut(404, { ok: false, error: 'unknown admin route' });
+        return;
+      }
+
+      // ANNOUNCEMENTS — publish patch notes / new-season / new-act reveals, or
+      // retire an existing one. Same admin gate (JWT admin id OR ADMIN_SECRET);
+      // reads go through the PUBLIC GET /api/announcements (active feed).
+      if (u.pathname === '/api/admin/announcement' || u.pathname === '/api/admin/announcement/delete') {
+        const secretOk =
+          !!process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
+        if (!isAdmin && !secretOk) {
+          res.writeHead(403, cors);
+          res.end('forbidden');
+          return;
+        }
+        if (!dbEnabled) {
+          res.writeHead(503, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'DB disabled' }));
+          return;
+        }
+        const jsonOut = (code: number, body: unknown): void => {
+          res.writeHead(code, { ...cors, 'content-type': 'application/json' });
+          res.end(JSON.stringify(body));
+        };
+        if (req.method === 'POST' && u.pathname === '/api/admin/announcement/delete') {
+          const id = u.searchParams.get('id') ?? '';
+          if (!id) {
+            jsonOut(400, { ok: false, error: 'missing id' });
+            return;
+          }
+          const deleted = await deleteAnnouncement(id);
+          console.log(`[admin] retire announcement ${id} -> ${deleted}`);
+          jsonOut(deleted ? 200 : 404, { ok: deleted });
+          return;
+        }
+        // POST /api/admin/announcement — publish. Body: {kind,title,body,tagline}
+        if (req.method === 'POST' && u.pathname === '/api/admin/announcement') {
+          let payload: { kind?: string; title?: string; body?: string; tagline?: string };
+          try {
+            payload = JSON.parse(await readAdminBody(req));
+          } catch {
+            jsonOut(400, { ok: false, error: 'bad request' });
+            return;
+          }
+          const title = (payload.title ?? '').trim();
+          if (title.length < 2 || title.length > 80) {
+            jsonOut(400, { ok: false, error: 'title must be 2–80 characters' });
+            return;
+          }
+          const body = (payload.body ?? '').slice(0, 8000); // long-form Markdown patch notes
+          const tagline = (payload.tagline ?? '').trim().slice(0, 80) || null;
+          const row = await createAnnouncement({ kind: payload.kind ?? 'patch', title, body, tagline });
+          console.log(`[admin] published ${row.kind} announcement "${row.title}"`);
+          // a live-info banner nudges connected players to look — the feed itself
+          // shows on their NEXT load (localStorage "seen" gate), but this makes it
+          // feel immediate for anyone already online.
+          jsonOut(200, { ok: true, announcement: row });
           return;
         }
         jsonOut(404, { ok: false, error: 'unknown admin route' });
@@ -418,6 +528,10 @@ process.on('unhandledRejection', (e) => console.error('[server] unhandledRejecti
 wss.on('connection', (ws: WebSocket) => {
   let id: string = randomUUID(); // reassigned to the reclaimed clientId on a rejoin
   let room: Room | null = null;
+  // the owning-connection stamp this socket was issued for its slot (0 until it
+  // joins/rejoins). Passed to detach on close so a stale socket that a newer
+  // reconnect already superseded can't knock the live player offline.
+  let conn = 0;
   onlineCount++;
   // the authed user this socket belongs to (set once its JWT verifies), so the
   // signed-in tally can be decremented cleanly on close
@@ -444,9 +558,32 @@ wss.on('connection', (ws: WebSocket) => {
     let r = rooms.get(code);
     let created = false;
     if (!r) {
-      r = new Room(code, () => rooms.delete(code), msg.config, persistMatch);
+      r = new Room(
+        code,
+        () => rooms.delete(code),
+        msg.config,
+        persistMatch,
+        (uid) => userRoom.set(uid, code),
+        (uid) => {
+          if (userRoom.get(uid) === code) userRoom.delete(uid);
+        },
+      );
       rooms.set(code, r);
       created = true;
+    }
+    // Room codes are KIND-SCOPED: a custom (versus) code must never admit a
+    // duo-record joiner, or vice-versa (both mint codes from the same generator, so
+    // a shared/typo'd code could otherwise drop you into the wrong game mode — wrong
+    // capacity, alliance layout, and leaderboard). The client sends its intended
+    // config on every join; when the code already names a room, its config wins and a
+    // mismatched joiner is refused. (A just-created room can't mismatch — its config
+    // IS the joiner's.)
+    if (!created) {
+      const want = msg.config ?? DEFAULT_ROOM_CONFIG;
+      if (r.config.kind !== want.kind || r.config.record !== want.record) {
+        send({ t: 'error', message: 'That code is for a different game mode.' });
+        return;
+      }
     }
     if (created && dbEnabled) {
       const pending = await takePendingMatch(code).catch(() => null);
@@ -457,6 +594,15 @@ wss.on('connection', (ws: WebSocket) => {
     if (room) return; // a concurrent frame already placed this socket
     if (!r.canJoin()) {
       send({ t: 'error', message: 'Room is full or a match is already in progress.' });
+      if (created) rooms.delete(code); // don't leave an empty just-created room behind
+      return;
+    }
+    // one live game per user: refuse a second game while one is in progress (they
+    // rejoin/leave it from Home). Reconnects use `rejoin`, so this never blocks
+    // returning to your OWN match.
+    if (user && activeElsewhere(user.userId, code)) {
+      send({ t: 'error', message: 'You already have a game in progress — rejoin or leave it first.' });
+      if (created) rooms.delete(code);
       return;
     }
     room = r;
@@ -468,6 +614,11 @@ wss.on('connection', (ws: WebSocket) => {
       player: { ...sanitizePlayer(msg.player), clientId: id },
       connected: true,
       disconnectAt: 0,
+      // protocol capabilities this client build understands (mixed-version safe:
+      // the room only opens the strategy window if EVERY member supports it)
+      caps: Array.isArray(msg.caps) ? msg.caps : [],
+      // release channel: alpha rooms are segregated + never persisted (in-dev)
+      channel: typeof msg.channel === 'string' ? msg.channel : undefined,
     };
     if (user) {
       client.userId = user.userId;
@@ -475,6 +626,7 @@ wss.on('connection', (ws: WebSocket) => {
       markAuthed(user.userId);
     }
     room.add(client);
+    conn = client.conn ?? 0; // remember which socket-generation owns our slot
     room.maybeStartRanked(); // no-op unless a staged ranked room is now fully present
   };
 
@@ -499,9 +651,11 @@ wss.on('connection', (ws: WebSocket) => {
       } else if (msg.t === 'rejoin') {
         if (room) return;
         const r = rooms.get(msg.room.toLowerCase());
-        if (r && r.reattach(msg.clientId, send)) {
+        const nc = r ? r.reattach(msg.clientId, send) : null;
+        if (r && nc !== null) {
           id = msg.clientId; // adopt the reclaimed identity on this socket
           room = r;
+          conn = nc; // this socket now owns the slot (supersedes the dropped one)
         } else {
           send({ t: 'rejoined', ok: false });
         }
@@ -514,6 +668,11 @@ wss.on('connection', (ws: WebSocket) => {
         verifyAuthToken(msg.authToken).then((u) => {
           if (!u) {
             send({ t: 'error', message: 'Sign in to play ranked.' });
+            return;
+          }
+          // one live game per user: can't queue ranked while another game is live
+          if (activeElsewhere(u.userId, '')) {
+            send({ t: 'error', message: 'You already have a game in progress — rejoin or leave it first.' });
             return;
           }
           markAuthed(u.userId);
@@ -530,6 +689,10 @@ wss.on('connection', (ws: WebSocket) => {
             homeRegion: msg.homeRegion || REGION,
             accessMs: msg.accessMs ?? 0,
             noWiden: msg.noWiden ?? false,
+            caps: Array.isArray(msg.caps) ? msg.caps : [],
+            channel: typeof msg.channel === 'string' ? msg.channel : undefined,
+            // segregate the pool by build too (two builds never share a match)
+            build: typeof msg.build === 'string' ? msg.build : undefined,
             enqueuedAt: 0, // stamped by enqueue()
             expandBumps: 0,
             onRoom: (r) => {
@@ -557,7 +720,9 @@ wss.on('connection', (ws: WebSocket) => {
       else authedUsers.set(authedUserId, n);
     }
     matchmaker.remove(id); // drop from any ranked queue
-    room?.detach(id); // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect
+    // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect. `conn` lets the room
+    // ignore this close if a newer socket already reclaimed the slot (fast reconnect).
+    room?.detach(id, conn);
   });
 
   ws.on('error', () => {

@@ -1,6 +1,6 @@
 import type { Alliance, Artifact, RobotState, Vec2, World } from '../types';
 import * as C from '../config';
-import { classifierRect, goalFaceNormal, goalLineValue, type Rect } from './field';
+import { classifierRect, footprintExtents, goalFaceNormal, goalLineValue, type Rect } from './field';
 import { dot, rot, clamp, hyp, datan2 } from '../math';
 import { driveParams } from './drivetrain';
 
@@ -11,11 +11,24 @@ const ALLIANCES: Alliance[] = ['red', 'blue'];
 /** collision extents in the robot frame: the intake is a physical part of
  * the robot, so the footprint extends forward by its reach */
 export function robotExtents(r: RobotState): { front: number; rear: number; half: number } {
-  return {
-    front: r.spec.length / 2 + C.INTAKE_PRESETS[r.spec.intake].reach,
-    rear: r.spec.length / 2,
-    half: r.spec.width / 2,
-  };
+  return footprintExtents(r.spec);
+}
+
+/** local (robot-frame) storage position of the held ball at `slot` (slot 0 = oldest,
+ * fired first) given how many balls (`count`) the robot currently holds. Sloped/
+ * vector queue them in a line near the mouth; triangle stores 1 deep + 2 near the
+ * mouth — and with only 2 balls the front one CENTERS in the 2-wide space, then
+ * slides aside when the 3rd arrives (positionHeldBalls tweens between these). */
+export function heldSlotPos(spec: RobotState['spec'], slot: number, side: number): Vec2 {
+  const hl = spec.length / 2;
+  if (spec.intake === 'triangle') {
+    // 1 deep + a 2-wide front row; a front ball sits on `side` (never dead center,
+    // which would block a 3rd) — a 3rd entering that side pushes it to the other
+    if (slot <= 0) return { x: hl - 4, y: 0 }; // deep (loaded first)
+    return { x: hl + 2, y: (side || -1) * 2.7 };
+  }
+  const xs = [hl - 8, hl - 3, hl + 2];
+  return { x: xs[Math.min(Math.max(slot, 0), 2)], y: 0 };
 }
 
 export function robotCorners(r: RobotState): Vec2[] {
@@ -670,6 +683,28 @@ export function collideBallBall(a: Artifact, b: Artifact): void {
   }
 }
 
+/** a HELD ball (stored in a robot's intake) is a solid immovable obstacle to an
+ * incoming GROUND ball — so a full intake physically blocks the mouth: no more
+ * can be funneled in past the balls already occupying it. Pushes the ground ball
+ * only (the held ball is kinematic). */
+export function collideBallHeld(b: Artifact, held: Artifact): void {
+  const dx = b.pos.x - held.pos.x;
+  const dy = b.pos.y - held.pos.y;
+  const d2 = dx * dx + dy * dy;
+  const minD = C.BALL_RADIUS * 2;
+  if (d2 >= minD * minD || d2 < 1e-9) return;
+  const d = Math.sqrt(d2);
+  const nx = dx / d;
+  const ny = dy / d;
+  b.pos.x += nx * (minD - d);
+  b.pos.y += ny * (minD - d);
+  const vn = b.vel.x * nx + b.vel.y * ny;
+  if (vn < 0) {
+    b.vel.x -= nx * vn;
+    b.vel.y -= ny * vn;
+  }
+}
+
 /** position-only clamp against walls and goal faces: where a pushed ball is
  * actually allowed to end up. The difference between the requested and the
  * clamped position is the part of a push the field refused. */
@@ -688,6 +723,107 @@ function clampBallPosToStatics(p: Vec2): Vec2 {
   return out;
 }
 
+/** Ball↔robot contact (world frame) or null if not touching. FLAT-front intakes
+ * (vector) + the chassis are a plain OBB. WEDGE intakes (sloped/triangle) have a
+ * FUNNEL front — two side slopes from the front corners in to the throat, with an
+ * OPEN mouth between them and NO flat front wall — so a ball is deflected toward
+ * the center compliant wheels (at the chassis front) instead of stopping flat. */
+function ballRobotContact(
+  r: RobotState,
+  p: Vec2,
+): { nx: number; ny: number; pen: number; cp: Vec2 } | null {
+  const R = C.BALL_RADIUS;
+  const preset = C.INTAKE_PRESETS[r.spec.intake];
+  const local = rot({ x: p.x - r.pos.x, y: p.y - r.pos.y }, -r.heading);
+  const hl = r.spec.length / 2;
+  const half = r.spec.width / 2;
+  const toWorld = (nlx: number, nly: number, pen: number, clx: number, cly: number) => {
+    const n = rot({ x: nlx, y: nly }, r.heading);
+    const c = rot({ x: clx, y: cly }, r.heading);
+    return { nx: n.x, ny: n.y, pen, cp: { x: c.x + r.pos.x, y: c.y + r.pos.y } };
+  };
+
+  const mouth = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
+  const mh = mouth.mouthHalf;
+  const th = mouth.throatHalf;
+  // The side structure (slopes / rails) is solid at ball height out to the full
+  // reach — that's what stops a wide frame being entered off its flank. The CENTER
+  // (under the wheels) is OPEN: the wheels ride high in z, so balls pass under them
+  // (never pushed by a plate) and funnel/vector to the throat at the chassis front.
+  const tip = hl + preset.reach;
+
+  // ---- 1) chassis body [-hl, hl] × [-half, half] (shared) ----
+  if (local.x <= hl) {
+    const cx = clamp(local.x, -hl, hl);
+    const cy = clamp(local.y, -half, half);
+    const dx = local.x - cx;
+    const dy = local.y - cy;
+    if (dx !== 0 || dy !== 0) {
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= R * R) return null;
+      const d = Math.sqrt(d2);
+      return toWorld(dx / d, dy / d, R - d, cx, cy);
+    }
+    // inside the chassis: eject through the nearest face
+    const dl = local.x + hl, dr = hl - local.x, dt = half - local.y, db = half + local.y;
+    const mm = Math.min(dl, dr, dt, db);
+    if (mm === dr) return toWorld(1, 0, R + dr, hl, local.y);
+    if (mm === dl) return toWorld(-1, 0, R + dl, -hl, local.y);
+    if (mm === dt) return toWorld(0, 1, R + dt, local.x, half);
+    return toWorld(0, -1, R + db, local.x, -half);
+  }
+
+  if (local.x > tip) return null; // under the roller front (high in z) — open to balls
+
+  // ---- intake region hl < x <= tip ----
+  const ay = Math.abs(local.y);
+  const s = local.y >= 0 ? 1 : -1;
+
+  if (mouth.wedge) {
+    // FUNNEL (sloped/triangle): open mouth in the center, solid side SLOPES that
+    // deflect balls in to the throat. No flat front.
+    if (ay > half) {
+      const pen = R - (ay - half); // flank side wall — no side intake
+      return pen > 0 ? toWorld(0, s, pen, local.x, s * half) : null;
+    }
+    const reach = tip - hl;
+    const L = Math.hypot(reach, mh - th);
+    const nsx = (mh - th) / L;
+    const nsy = (-s * reach) / L;
+    const sd = (local.x - hl) * nsx + (local.y - s * th) * nsy;
+    const penSlope = R - sd;
+    const penFront = hl + R - local.x;
+    let best: { nlx: number; nly: number; pen: number; clx: number; cly: number } | null = null;
+    const consider = (nlx: number, nly: number, pen: number, clx: number, cly: number) => {
+      if (pen > 0 && (!best || pen > best.pen)) best = { nlx, nly, pen, clx, cly };
+    };
+    consider(nsx, nsy, penSlope, local.x - nsx * sd, local.y - nsy * sd);
+    consider(1, 0, penFront, hl, local.y);
+    if (!best) return null;
+    const bb = best as { nlx: number; nly: number; pen: number; clx: number; cly: number };
+    return toWorld(bb.nlx, bb.nly, bb.pen, bb.clx, bb.cly);
+  }
+
+  // FLAT (vector): OPEN center notch |y| < mouthHalf — the wheels ride above it, so
+  // balls pass UNDER and are never pushed by a plate. Where the frame is wider than
+  // the wheels, solid side RAILS keep the notch from being entered off the flank.
+  if (ay < mh) {
+    const penFront = hl + R - local.x; // only the chassis front (throat) stops it
+    return penFront > 0 ? toWorld(1, 0, penFront, hl, local.y) : null;
+  }
+  if (ay <= half) {
+    // rail: an inner wall at the notch edge pushes balls back OUT (no flank entry)
+    const penWall = R - (ay - mh);
+    if (penWall > 0) return toWorld(0, s, penWall, local.x, s * mh);
+    const dOuter = half - ay, dFront = tip - local.x, dBack = local.x - hl;
+    const mm = Math.min(dOuter, dFront, dBack);
+    if (mm === dOuter) return toWorld(0, s, R + dOuter, local.x, s * half);
+    if (mm === dFront) return toWorld(1, 0, R + dFront, tip, local.y);
+    return toWorld(-1, 0, R + dBack, hl, local.y);
+  }
+  return null; // beyond the frame width, forward → open (overhang region)
+}
+
 /** push a ground ball out of a robot chassis, inheriting surface velocity.
  * A ball squeezed between the chassis and a wall is incompressible: the part
  * of the push the wall refuses transmits back onto the ROBOT (positional
@@ -695,28 +831,9 @@ function clampBallPosToStatics(p: Vec2): Vec2 {
  * against a pinned ball instead of grinding it through. Off-center balls keep
  * the tangential part of the push and squirt out sideways. */
 export function collideBallRobot(b: Artifact, r: RobotState): void {
-  const cp = closestPointOnRobot(r, b.pos);
-  const dx = b.pos.x - cp.x;
-  const dy = b.pos.y - cp.y;
-  const d2 = dx * dx + dy * dy;
-  if (d2 >= C.BALL_RADIUS * C.BALL_RADIUS) return;
-  let nx: number;
-  let ny: number;
-  let pen: number;
-  if (d2 > 1e-9) {
-    const d = Math.sqrt(d2);
-    nx = dx / d;
-    ny = dy / d;
-    pen = C.BALL_RADIUS - d;
-  } else {
-    // ball center inside the OBB: push out along the vector from robot center
-    const ox = b.pos.x - r.pos.x;
-    const oy = b.pos.y - r.pos.y;
-    const ol = hyp(ox, oy) || 1;
-    nx = ox / ol;
-    ny = oy / ol;
-    pen = C.BALL_RADIUS + 2;
-  }
+  const contact = ballRobotContact(r, b.pos);
+  if (!contact) return;
+  const { nx, ny, pen, cp } = contact;
   const tx = b.pos.x + nx * pen;
   const ty = b.pos.y + ny * pen;
   const c = clampBallPosToStatics({ x: tx, y: ty });
@@ -735,6 +852,15 @@ export function collideBallRobot(b: Artifact, r: RobotState): void {
     if (drivingIn > C.BALL_PIN_PUSH_MIN_SPEED) {
       pushRobotAt(r, -inx, -iny, blocked, [{ c: cp, d: blocked }], false);
     }
+  } else {
+    // open field: balls have MASS — shoving one bleeds a little robot momentum,
+    // so a large CLUMP is cumulatively heavy to push (pinned balls use the stall
+    // path above; this would fight it)
+    const into = r.vel.x * nx + r.vel.y * ny; // robot speed INTO the ball
+    if (into > 0) {
+      r.vel.x -= nx * into * C.BALL_PUSH_DRAG;
+      r.vel.y -= ny * into * C.BALL_PUSH_DRAG;
+    }
   }
   const sv = robotPointVelocity(r, cp);
   const rvx = b.vel.x - sv.x;
@@ -743,6 +869,13 @@ export function collideBallRobot(b: Artifact, r: RobotState): void {
   if (vn < 0) {
     b.vel.x -= nx * vn * (1 + C.BALL_ROBOT_RESTITUTION);
     b.vel.y -= ny * vn * (1 + C.BALL_ROBOT_RESTITUTION);
+  }
+  // balls have MASS: shoving one costs the robot a little momentum, so a large
+  // CLUMP is cumulatively heavy to push (each contact drags the robot a bit)
+  const into = r.vel.x * nx + r.vel.y * ny; // robot speed INTO the ball (>0 = pushing)
+  if (into > 0) {
+    r.vel.x -= nx * into * C.BALL_PUSH_DRAG;
+    r.vel.y -= ny * into * C.BALL_PUSH_DRAG;
   }
 }
 

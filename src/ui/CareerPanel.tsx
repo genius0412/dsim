@@ -1,47 +1,34 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { fetchSeasons, type UserStats } from '../net/api';
+import { type ReactNode } from 'react';
+import { type UserStats } from '../net/api';
 
 /**
  * The competitive-stats panel shared by "My Stats" (own account) and the public
  * `/profile/<username>` page: overall 1v1/2v2 ELO + rank, solo/duo record bests +
  * rank, ranked W–L, and recent match history. Purely presentational — the caller
- * fetches the `UserStats` (by user id for self, by username for a public profile)
- * and owns the surrounding page head. `name` is the chip shown in the panel header.
+ * (a `CareerView`) fetches the `UserStats` for the selected period and passes the
+ * resolved "Act X · Season Y" label. `name` is the chip shown in the panel header;
+ * `archived` marks a PAST period, whose numbers are that season's FINAL standings.
  */
 export function CareerPanel({
   stats,
   status,
   error,
   name,
+  seasonLabel,
+  archived,
   headerAction,
 }: {
   stats: UserStats | null;
   status: 'loading' | 'ok' | 'error';
   error?: string;
   name: string;
+  /** "Act X · Season Y" label for the selected period */
+  seasonLabel: string;
+  /** true when viewing a past period ⇒ these are the season's final stats */
+  archived?: boolean;
   /** optional control rendered in the panel header (e.g. a Share button) */
   headerAction?: ReactNode;
 }) {
-  // Resolve the season's DISPLAY NAME (what the Leaderboard shows) for the number
-  // in `stats.season`, so Career and the boards label the season identically (a
-  // season can be named e.g. "Season 0" while numbered 1). Falls back to the raw
-  // number until the lookup lands / if the server is unconfigured.
-  const [seasonNames, setSeasonNames] = useState<Record<number, string>>({});
-  useEffect(() => {
-    let alive = true;
-    fetchSeasons()
-      .then((r) => {
-        if (!alive) return;
-        setSeasonNames(Object.fromEntries(r.seasons.map((s) => [s.season, s.name])));
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
-  const seasonLabel =
-    stats?.season != null ? (seasonNames[stats.season] ?? `Season ${stats.season}`) : '—';
-
   const elo1 = stats?.elo.find((e) => e.mode === '1v1');
   const elo2 = stats?.elo.find((e) => e.mode === '2v2');
   const solo = stats?.records.find((r) => r.mode === 'solo');
@@ -53,7 +40,10 @@ export function CareerPanel({
   return (
     <div className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">{seasonLabel} · Overall</span>
+        <span className="ds-panel-title">
+          {seasonLabel} · {archived ? 'Final' : 'Overall'}
+        </span>
+        {archived && <span className="ds-dt lb-you-tag">FINAL</span>}
         <span className="ds-head-spacer" />
         <span className="ds-chip">
           <b>{name}</b>
@@ -106,7 +96,9 @@ export function CareerPanel({
           </div>
 
           {stats.match.played === 0 && solo?.best == null && duo?.best == null && (
-            <p className="ds-hint">No games played yet this season.</p>
+            <p className="ds-hint">
+              {archived ? 'No games were played this period.' : 'No games played yet this period.'}
+            </p>
           )}
         </div>
       )}

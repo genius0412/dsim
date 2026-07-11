@@ -29,8 +29,10 @@ export interface Transport {
 }
 
 const RECONNECT_DELAY_MS = 1000;
-/** ~20 s of retries before giving up (covers the server-side reconnect grace) */
-const MAX_RECONNECT_ATTEMPTS = 20;
+/** ~40 s of auto-retries before giving up — roughly matches the server-side reconnect
+ * grace (45 s) so a transient outage recovers on its own; a longer absence falls back
+ * to the manual "rejoin your match" flow from Home. */
+const MAX_RECONNECT_ATTEMPTS = 40;
 
 export class WebSocketTransport implements Transport {
   private ws: WebSocket | null = null;

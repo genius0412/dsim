@@ -1,0 +1,136 @@
+import { APP_NAME } from '../seasons';
+
+/**
+ * Game-mode select — reached from PLAY. These are the tiles that used to live on
+ * Home. Every start action is still wrapped in App's `guardStart()` (stale-build
+ * refresh + scheduled-restart block) by the caller, so nothing here bypasses it.
+ */
+export function ModeSelect({
+  multiplayer,
+  signedIn,
+  activeGame,
+  onRejoin,
+  onFreeDrive,
+  onSoloMatch,
+  onRecordRun,
+  onDuoRecord,
+  onRanked,
+  onCustomRoom,
+}: {
+  multiplayer: boolean;
+  signedIn: boolean;
+  /** a multiplayer game this browser is mid-way through (offer to rejoin it), or null */
+  activeGame: { kind: 'ranked' | 'custom' | 'record' } | null;
+  onRejoin: () => void;
+  onFreeDrive: () => void;
+  onSoloMatch: () => void;
+  onRecordRun: () => void;
+  onDuoRecord: () => void;
+  onRanked: () => void;
+  onCustomRoom: () => void;
+}) {
+  return (
+    <>
+      <p className="ds-eyebrow">{APP_NAME} · Play</p>
+      <h1 className="ds-h1">Pick a mode.</h1>
+
+      {activeGame && (
+        <div className="ds-rejoin" role="alert">
+          <div className="ds-rejoin-txt">
+            <b>You have a game in progress.</b>{' '}
+            <span className="ds-sub" style={{ fontSize: 13 }}>
+              {activeGame.kind === 'ranked'
+                ? 'A ranked match is waiting — hop back in.'
+                : activeGame.kind === 'record'
+                  ? 'Your record run is still going.'
+                  : 'Your match is still going.'}
+            </span>
+          </div>
+          <button className="ds-btn primary" onClick={onRejoin}>
+            Rejoin match →
+          </button>
+        </div>
+      )}
+
+      <div className="ds-grid-bg">
+        {/* Offline, always available — the safe default (Solo Practice is primary) */}
+        <section className="ds-tileset">
+          <p className="ds-tileset-label">Practice · offline</p>
+          <div className="ds-tiles">
+            <button className="ds-tile primary" onClick={onSoloMatch}>
+              <span className="k">Solo</span>
+              <span>
+                <span className="t">Solo Practice</span>
+                <span className="d">Full match</span>
+              </span>
+            </button>
+
+            <button className="ds-tile" onClick={onFreeDrive}>
+              <span className="k">Practice</span>
+              <span>
+                <span className="t">Free Drive</span>
+                <span className="d">Practice freely with no restrictions</span>
+              </span>
+            </button>
+          </div>
+        </section>
+
+        {/* Online — ranked + score-attack records (need the game server / sign-in) */}
+        <section className="ds-tileset">
+          <p className="ds-tileset-label">Compete · online</p>
+          <div className="ds-tiles">
+            <button className="ds-tile" onClick={onRanked} disabled={!multiplayer || !signedIn}>
+              <span className="k">Ranked</span>
+              <span>
+                <span className="t">Find Match</span>
+                <span className="d">
+                  {!multiplayer
+                    ? 'Needs the game server'
+                    : !signedIn
+                      ? 'Sign in to play ranked'
+                      : '1v1 / 2v2 ranked'}
+                </span>
+              </span>
+            </button>
+
+            <button className="ds-tile" onClick={onRecordRun} disabled={!multiplayer}>
+              <span className="k">Records</span>
+              <span>
+                <span className="t">Solo Record</span>
+                <span className="d">
+                  {multiplayer ? 'Solo score-attack' : 'Needs the game server'}
+                </span>
+              </span>
+            </button>
+
+            <button className="ds-tile" onClick={onDuoRecord} disabled={!multiplayer}>
+              <span className="k">Records</span>
+              <span>
+                <span className="t">Duo Record</span>
+                <span className="d">
+                  {multiplayer ? '2v0 co-op' : 'Needs the game server'}
+                </span>
+              </span>
+            </button>
+          </div>
+        </section>
+
+        {/* Custom room — last, per its niche use */}
+        <section className="ds-tileset">
+          <p className="ds-tileset-label">Custom</p>
+          <div className="ds-tiles">
+            <button className="ds-tile" onClick={onCustomRoom} disabled={!multiplayer}>
+              <span className="k">Custom</span>
+              <span>
+                <span className="t">Custom Room</span>
+                <span className="d">
+                  {multiplayer ? 'Up to 2v2' : 'Needs the game server'}
+                </span>
+              </span>
+            </button>
+          </div>
+        </section>
+      </div>
+    </>
+  );
+}

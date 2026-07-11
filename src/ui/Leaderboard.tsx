@@ -13,11 +13,15 @@ import {
   type SeasonInfo,
 } from '../net/api';
 import { gameServerConfigured } from '../net/env';
+import { periodLabel } from '../seasons';
+import { PeriodPicker } from './PeriodPicker';
 import { PLACEMENT_GAMES } from '../config';
-import type { DrivetrainType, IntakeStyle } from '../types';
+import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
 
 type Kind = 'records' | 'ranked';
 
+// RECORD boards are split by drivetrain (+ a cross-drivetrain Overall); the
+// picker shows for records only — ranked (ELO) is a single board per mode.
 const BOARDS: { id: Board; label: string }[] = [
   { id: 'overall', label: 'Overall' },
   { id: 'mecanum', label: 'Mecanum' },
@@ -70,14 +74,10 @@ function DriverName({
   return <span className="lb-name-h">{label}</span>;
 }
 
-/** the robot config a record was set with — spec stats + assists */
-function ConfigSummary({ cfg }: { cfg: RecordConfig }) {
-  const { spec, assists } = cfg;
-  const chip = (label: string, on: boolean) => (
-    <span className={`ds-chip ${on ? 'on' : 'off'}`}>{label}</span>
-  );
+/** one robot's spec stats (shared by solo + each half of a duo) */
+function RobotSpecSummary({ spec }: { spec: RobotSpec }) {
   return (
-    <div className="lb-config">
+    <>
       <div className="lb-config-name">
         {spec.name}
         {spec.teamNumber ? ` · #${spec.teamNumber}` : ''}
@@ -91,6 +91,21 @@ function ConfigSummary({ cfg }: { cfg: RecordConfig }) {
         <div className="ds-stat"><span className="sv">{spec.flywheelInertia.toFixed(2)}</span><span className="sl">flywheel</span></div>
         <div className="ds-stat"><span className="sv">{spec.length}×{spec.width}"</span><span className="sl">size</span></div>
       </div>
+    </>
+  );
+}
+
+/** the robot config a record was set with — each driver's spec stats + the
+ * owner's assists. A duo shows BOTH robots (drivers bring their own builds). */
+function ConfigSummary({ cfg }: { cfg: RecordConfig }) {
+  const { spec, assists, partnerSpec } = cfg;
+  const chip = (label: string, on: boolean) => (
+    <span className={`ds-chip ${on ? 'on' : 'off'}`}>{label}</span>
+  );
+  return (
+    <div className="lb-config">
+      <RobotSpecSummary spec={spec} />
+      {partnerSpec && <RobotSpecSummary spec={partnerSpec} />}
       <div className="lb-config-assists">
         {chip(assists.fieldCentric ? 'Field-centric' : 'Robot-centric', true)}
         {chip('Aim assist', assists.aimAssist)}
@@ -153,7 +168,7 @@ export function Leaderboard({
   const [kind, setKind] = useState<Kind>('records');
   const [recMode, setRecMode] = useState<RecordMode>('solo');
   const [eloMode, setEloMode] = useState<EloMode>('1v1');
-  const [board, setBoard] = useState<Board>('overall');
+  const [board, setBoard] = useState<Board>('overall'); // record boards only
 
   const [rows, setRows] = useState<(RecordRow | EloRow)[]>([]);
   const [me, setMe] = useState<EloStanding | null>(null);
@@ -196,7 +211,7 @@ export function Leaderboard({
     const req =
       kind === 'records'
         ? fetchRecords(recMode, board, s).then((r) => ({ rows: r.rows, me: null as EloStanding | null }))
-        : fetchElo(eloMode, board, s, myUserId);
+        : fetchElo(eloMode, s, myUserId);
     req
       .then(({ rows, me }) => {
         if (!alive) return;
@@ -218,38 +233,18 @@ export function Leaderboard({
   const valueLabel = isRecords ? 'Score' : 'ELO';
   const viewing = season ?? current;
   const viewingSeason = seasons.find((s) => s.season === viewing);
-  const seasonLabel = viewingSeason?.name ?? (viewing != null ? `Season ${viewing}` : 'Current season');
+  const seasonLabel = viewingSeason ? periodLabel(viewingSeason) : 'Current period';
   const isArchived = viewing != null && current != null && viewing < current;
 
   return (
     <>
-      <p className="ds-eyebrow">
+      {/* the page heading is owned by the Records host; the season badge is not */}
+      <h2 className="ds-h2 lb-period-head">
         {seasonLabel}
         {isArchived ? ' · archived' : ''}
-      </p>
-      <h1 className="ds-h1">Leaderboards</h1>
-      <p className="ds-sub">Score-attack records and ranked ELO, split by drivetrain. Every entry is a replay.</p>
+      </h2>
 
-      {seasons.length > 1 && (
-        <div className="ds-panel-h" style={{ marginBottom: 8 }}>
-          <span className="ds-panel-title">Season</span>
-          <select
-            className="ds-select"
-            value={viewing ?? ''}
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              setSeason(current != null && v === current ? null : v);
-            }}
-          >
-            {seasons.map((s) => (
-              <option key={s.season} value={s.season}>
-                {s.name}
-                {s.season === current ? ' (current)' : ''}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
+      <PeriodPicker seasons={seasons} current={current} value={season} onChange={setSeason} label="Period" />
 
       <div className="ds-panel">
         <div className="ds-panel-h">
@@ -284,16 +279,18 @@ export function Leaderboard({
           </div>
         </div>
 
-        <div className="ds-panel-h">
-          <span className="ds-panel-title">Drivetrain</span>
-          <div className="ds-segs">
-            {BOARDS.map((b) => (
-              <button key={b.id} className={`ds-seg ${board === b.id ? 'on' : ''}`} onClick={() => setBoard(b.id)}>
-                {b.label}
-              </button>
-            ))}
+        {isRecords && (
+          <div className="ds-panel-h">
+            <span className="ds-panel-title">Drivetrain</span>
+            <div className="ds-segs">
+              {BOARDS.map((b) => (
+                <button key={b.id} className={`ds-seg ${board === b.id ? 'on' : ''}`} onClick={() => setBoard(b.id)}>
+                  {b.label}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
         {!isRecords && status === 'ok' && me && <MyStanding me={me} />}
 
@@ -371,6 +368,7 @@ export function Leaderboard({
                               title="View robot"
                             >
                               {DT_LABEL[cfg.spec.drivetrain]}
+                              {cfg.partnerSpec && ` + ${DT_LABEL[cfg.partnerSpec.drivetrain]}`}
                               <span className="tw">{isOpen ? '▴' : '▾'}</span>
                             </button>
                           ) : (

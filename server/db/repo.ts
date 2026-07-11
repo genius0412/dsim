@@ -8,6 +8,9 @@ import { q } from './pool';
 export interface RecordConfig {
   spec: RobotSpec;
   assists: AssistConfig;
+  /** in a DUO run, the co-op PARTNER's robot (each driver brings their own build,
+   * so a duo can mix drivetrains). Absent for solo runs / legacy rows. */
+  partnerSpec?: RobotSpec;
 }
 
 /**
@@ -19,10 +22,13 @@ export interface RecordConfig {
 
 // ------------------------------------------------------------- seasons ------
 export async function ensureSeason(balanceVersion: number): Promise<void> {
+  // No baked-in name — the structured "Act X · Season Y" label is derived in
+  // listSeasons. `name` stays null (a fresh row) or whatever custom title an
+  // admin set (on conflict we only re-activate; act is left untouched).
   await q(
-    `insert into seasons (balance_version, name, active) values ($1, $2, true)
+    `insert into seasons (balance_version, active) values ($1, true)
      on conflict (balance_version) do update set active = true`,
-    [balanceVersion, `Season ${balanceVersion}`],
+    [balanceVersion],
   );
   await q(`update seasons set active = false where balance_version <> $1`, [balanceVersion]);
 }
@@ -41,8 +47,14 @@ export async function currentSeasonNumber(fallback: number): Promise<number> {
 }
 
 export interface SeasonRow {
+  /** internal balance_version key (stamped on every record/match/replay) */
   season: number;
-  name: string;
+  /** grouping era; 0 = beta/pre-season, then 1-indexed */
+  act: number;
+  /** 1-indexed ordinal of this season WITHIN its act (for display) */
+  seasonNo: number;
+  /** admin's custom title, or null to use the structured "Act X · Season Y" */
+  name: string | null;
   active: boolean;
   startedAt: string;
   records: number;
@@ -50,10 +62,12 @@ export interface SeasonRow {
 }
 
 /** every season that exists (a `seasons` row OR any data stamped with it),
- * newest first, with how much data each holds. */
+ * newest first, with its act + within-act ordinal and how much data it holds. */
 export async function listSeasons(): Promise<SeasonRow[]> {
   const rows = await q<{
     season: number;
+    act: number;
+    season_no: number;
     name: string | null;
     active: boolean | null;
     started_at: string | null;
@@ -64,20 +78,31 @@ export async function listSeasons(): Promise<SeasonRow[]> {
        select balance_version as v from seasons
        union select balance_version from records
        union select balance_version from matches
+     ),
+     rows as (
+       select v.v as season,
+              coalesce(s.act, 0) as act,
+              s.name as name,
+              coalesce(s.active, false) as active,
+              s.started_at as started_at,
+              (select count(*) from records r where r.balance_version = v.v) as records,
+              (select count(*) from matches m where m.balance_version = v.v) as matches
+       from versions v
+       left join seasons s on s.balance_version = v.v
      )
-     select v.v as season,
-            s.name as name,
-            coalesce(s.active, false) as active,
-            s.started_at as started_at,
-            (select count(*) from records r where r.balance_version = v.v) as records,
-            (select count(*) from matches m where m.balance_version = v.v) as matches
-     from versions v
-     left join seasons s on s.balance_version = v.v
-     order by v.v desc`,
+     select season, act, name, active, started_at, records, matches,
+            (row_number() over (partition by act order by season))::int as season_no
+     from rows
+     order by season desc`,
   );
+  // legacy rows carry the old baked-in "Season N" name — treat those as auto
+  // (null) so the structured label wins; keep only genuine custom titles.
+  const isAuto = (n: string | null): boolean => !n || /^season\s+\d+$/i.test(n.trim());
   return rows.map((r) => ({
-    season: r.season,
-    name: r.name ?? `Season ${r.season}`,
+    season: Number(r.season),
+    act: Number(r.act),
+    seasonNo: Number(r.season_no),
+    name: isAuto(r.name) ? null : r.name,
     active: !!r.active,
     startedAt: r.started_at ?? '',
     records: Number(r.records),
@@ -85,18 +110,34 @@ export async function listSeasons(): Promise<SeasonRow[]> {
   }));
 }
 
-/** Archive the live season and open a fresh one (admin action). The new season
- * number is one past the current, so its boards start empty; old seasons stay
- * fully queryable. Returns the new season number. */
-export async function startNewSeason(fallback: number, name?: string): Promise<number> {
+/** Archive the live season and open a fresh one (admin action). The new
+ * balance_version is one past the current, so its boards start empty; old
+ * seasons stay fully queryable. `bumpAct` opens a new ACT (act++, its season
+ * ordinal resets to 1); otherwise it's a new season in the SAME act. `name` is
+ * an optional custom title (null ⇒ the structured "Act X · Season Y"). Returns
+ * the new version + its act and within-act ordinal. */
+export async function startNewSeason(
+  fallback: number,
+  name?: string,
+  bumpAct = false,
+): Promise<{ season: number; act: number; seasonNo: number }> {
   const next = (await currentSeasonNumber(fallback)) + 1;
+  const cur = await q<{ act: number | null }>(
+    `select act from seasons order by balance_version desc limit 1`,
+  );
+  const act = Number(cur[0]?.act ?? 0) + (bumpAct ? 1 : 0);
+  const custom = name && name.trim() ? name.trim() : null;
   await q(
-    `insert into seasons (balance_version, name, active) values ($1, $2, true)
-     on conflict (balance_version) do update set name = excluded.name, active = true`,
-    [next, name && name.trim() ? name.trim() : `Season ${next}`],
+    `insert into seasons (balance_version, name, act, active) values ($1, $2, $3, true)
+     on conflict (balance_version) do update set name = excluded.name, act = excluded.act, active = true`,
+    [next, custom, act],
   );
   await q(`update seasons set active = false where balance_version <> $1`, [next]);
-  return next;
+  const cnt = await q<{ n: number }>(
+    `select count(*)::int as n from seasons where act = $1`,
+    [act],
+  );
+  return { season: next, act, seasonNo: Number(cnt[0]?.n ?? 1) };
 }
 
 /** Delete all replays stamped with a given (archived) season. The record/match
@@ -108,6 +149,89 @@ export async function purgeSeasonReplays(season: number): Promise<number> {
     [season],
   );
   return rows.length;
+}
+
+// -------------------------------------------------------- announcements -----
+
+export type AnnouncementKind = 'patch' | 'season' | 'act';
+export interface AnnouncementRow {
+  id: string;
+  kind: AnnouncementKind;
+  title: string;
+  body: string;
+  tagline: string | null;
+  publishedAt: string;
+}
+
+const ANNOUNCEMENT_KINDS: AnnouncementKind[] = ['patch', 'season', 'act'];
+const asKind = (k: unknown): AnnouncementKind =>
+  ANNOUNCEMENT_KINDS.includes(k as AnnouncementKind) ? (k as AnnouncementKind) : 'patch';
+
+/** publish an announcement (admin only). Returns the created row. */
+export async function createAnnouncement(input: {
+  kind: string;
+  title: string;
+  body: string;
+  tagline?: string | null;
+}): Promise<AnnouncementRow> {
+  const rows = await q<{
+    id: string;
+    kind: string;
+    title: string;
+    body: string;
+    tagline: string | null;
+    published_at: string;
+  }>(
+    `insert into announcements (kind, title, body, tagline)
+     values ($1, $2, $3, $4)
+     returning id, kind, title, body, tagline, published_at`,
+    [asKind(input.kind), input.title, input.body ?? '', input.tagline?.trim() || null],
+  );
+  const r = rows[0];
+  return {
+    id: r.id,
+    kind: asKind(r.kind),
+    title: r.title,
+    body: r.body,
+    tagline: r.tagline,
+    publishedAt: r.published_at,
+  };
+}
+
+/** recent active announcements, newest first (the client feed + admin list). */
+export async function listAnnouncements(limit = 12): Promise<AnnouncementRow[]> {
+  const rows = await q<{
+    id: string;
+    kind: string;
+    title: string;
+    body: string;
+    tagline: string | null;
+    published_at: string;
+  }>(
+    `select id, kind, title, body, tagline, published_at
+       from announcements
+      where active
+      order by published_at desc
+      limit $1`,
+    [Math.min(50, Math.max(1, limit))],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    kind: asKind(r.kind),
+    title: r.title,
+    body: r.body,
+    tagline: r.tagline,
+    publishedAt: r.published_at,
+  }));
+}
+
+/** retire an announcement (soft delete — it stops appearing in the feed). */
+export async function deleteAnnouncement(id: string): Promise<boolean> {
+  const rows = await q<{ id: string }>(
+    `update announcements set active = false where id = $1 and active returning id`,
+    [id],
+  );
+  return rows.length > 0;
 }
 
 // ------------------------------------------------------------ profiles ------
@@ -328,33 +452,42 @@ export async function personalBest(
   drivetrain: string,
   balanceVersion: number,
 ): Promise<number | null> {
+  // 'overall' = the cross-drivetrain board (no drivetrain filter), matching
+  // recordLeaderboard — a mixed-drivetrain duo run's PB is over ALL the user's
+  // runs in this mode×season, not one drivetrain.
+  const overall = drivetrain === 'overall';
   const rows = await q<{ score: number | null }>(
     `select max(score) as score from records
-     where user_id = $1 and mode = $2 and drivetrain = $3 and balance_version = $4`,
-    [userId, mode, drivetrain, balanceVersion],
+     where user_id = $1 and mode = $2 and balance_version = $3
+       ${overall ? '' : 'and drivetrain = $4'}`,
+    overall ? [userId, mode, balanceVersion] : [userId, mode, balanceVersion, drivetrain],
   );
   return rows[0]?.score ?? null;
 }
 
 /** the user's standing in a season × mode × drivetrain bucket, by their BEST
  * score there: 1-based `rank` (ties share the better rank) and the bucket's
- * player `total`. Call AFTER submitting the run so it reflects it. */
+ * player `total`. Pass drivetrain 'overall' for the cross-drivetrain board (no
+ * drivetrain filter — matching recordLeaderboard), where mixed-drivetrain duos
+ * land. Call AFTER submitting the run so it reflects it. */
 export async function recordRank(
   userId: string,
   mode: 'solo' | 'duo',
   drivetrain: string,
   balanceVersion: number,
 ): Promise<{ rank: number; total: number }> {
+  const overall = drivetrain === 'overall';
   const rows = await q<{ rank: number; total: number }>(
     `with best as (
        select user_id, max(score) as s from records
-       where balance_version = $1 and mode = $2 and drivetrain = $3
+       where balance_version = $1 and mode = $2
+         ${overall ? '' : 'and drivetrain = $4'}
        group by user_id
-     ), me as (select s from best where user_id = $4)
+     ), me as (select s from best where user_id = $3)
      select
        (select count(*) from best)::int as total,
        (1 + (select count(*) from best where s > (select s from me)))::int as rank`,
-    [balanceVersion, mode, drivetrain, userId],
+    overall ? [balanceVersion, mode, userId] : [balanceVersion, mode, userId, drivetrain],
   );
   return { rank: rows[0]?.rank ?? 1, total: rows[0]?.total ?? 1 };
 }
@@ -477,13 +610,12 @@ export async function deletePreset(userId: string, slot: number): Promise<void> 
 export async function getRating(
   userId: string,
   mode: '1v1' | '2v2',
-  drivetrain: string,
   balanceVersion: number,
 ): Promise<number> {
   const rows = await q<{ rating: number }>(
     `select rating from elo_ratings
-     where user_id = $1 and mode = $2 and drivetrain = $3 and balance_version = $4`,
-    [userId, mode, drivetrain, balanceVersion],
+     where user_id = $1 and mode = $2 and balance_version = $3`,
+    [userId, mode, balanceVersion],
   );
   return rows[0]?.rating ?? 1000;
 }
@@ -493,38 +625,36 @@ export async function getRating(
 export async function getRatingFull(
   userId: string,
   mode: '1v1' | '2v2',
-  drivetrain: string,
   balanceVersion: number,
 ): Promise<{ rating: number; rd: number; vol: number }> {
   const rows = await q<{ rating: number; rd: number; vol: number }>(
     `select rating, rd, vol from elo_ratings
-     where user_id = $1 and mode = $2 and drivetrain = $3 and balance_version = $4`,
-    [userId, mode, drivetrain, balanceVersion],
+     where user_id = $1 and mode = $2 and balance_version = $3`,
+    [userId, mode, balanceVersion],
   );
   const r = rows[0];
   return { rating: r?.rating ?? 1000, rd: r?.rd ?? 350, vol: r?.vol ?? 0.06 };
 }
 
-/** Upsert a player's rating for one board and return their NEW total games on it
+/** Upsert a player's rating for a board and return their NEW total games on it
  * (games after this match) — the caller uses it to decide the games-based
  * placement / provisional flag for the results screen. */
 export async function upsertRating(
   userId: string,
   mode: '1v1' | '2v2',
-  drivetrain: string,
   balanceVersion: number,
   rating: number,
   rd: number,
   vol: number,
 ): Promise<number> {
   const rows = await q<{ games: number }>(
-    `insert into elo_ratings (user_id, mode, drivetrain, balance_version, rating, rd, vol, games)
-     values ($1, $2, $3, $4, $5, $6, $7, 1)
-     on conflict (user_id, mode, drivetrain, balance_version)
+    `insert into elo_ratings (user_id, mode, balance_version, rating, rd, vol, games)
+     values ($1, $2, $3, $4, $5, $6, 1)
+     on conflict (user_id, mode, balance_version)
        do update set rating = excluded.rating, rd = excluded.rd, vol = excluded.vol,
                      games = elo_ratings.games + 1, updated_at = now()
      returning games`,
-    [userId, mode, drivetrain, balanceVersion, Math.round(rating), rd, vol],
+    [userId, mode, balanceVersion, Math.round(rating), rd, vol],
   );
   return rows[0]?.games ?? 1;
 }
@@ -534,17 +664,16 @@ export async function upsertRating(
  * `eloUserStanding` reports the viewer's own standing separately. */
 export async function eloLeaderboard(opts: {
   mode: '1v1' | '2v2';
-  drivetrain: string;
   balanceVersion: number;
   limit?: number;
 }): Promise<{ userId: string; handle: string; username: string | null; rating: number; games: number }[]> {
   return q<{ userId: string; handle: string; username: string | null; rating: number; games: number }>(
     `select e.user_id as "userId", p.handle, p.username, e.rating, e.games
      from elo_ratings e join profiles p on p.user_id = e.user_id
-     where e.balance_version = $1 and e.mode = $2 and e.drivetrain = $3 and e.games >= $5
+     where e.balance_version = $1 and e.mode = $2 and e.games >= $4
      order by e.rating desc, e.games desc
-     limit $4`,
-    [opts.balanceVersion, opts.mode, opts.drivetrain, opts.limit ?? 100, PLACEMENT_GAMES],
+     limit $3`,
+    [opts.balanceVersion, opts.mode, opts.limit ?? 100, PLACEMENT_GAMES],
   );
 }
 
@@ -555,7 +684,6 @@ export async function eloLeaderboard(opts: {
 export async function eloUserStanding(opts: {
   userId: string;
   mode: '1v1' | '2v2';
-  drivetrain: string;
   balanceVersion: number;
 }): Promise<{ rank: number | null; rating: number; games: number } | null> {
   const rows = await q<{ rating: number; games: number; rnk: string | null }>(
@@ -563,13 +691,13 @@ export async function eloUserStanding(opts: {
        select user_id,
               rank() over (order by rating desc, games desc) as rnk
        from elo_ratings
-       where balance_version = $1 and mode = $2 and drivetrain = $3 and games >= $4
+       where balance_version = $1 and mode = $2 and games >= $3
      )
      select e.rating, e.games, p.rnk
      from elo_ratings e
      left join placed p on p.user_id = e.user_id
-     where e.balance_version = $1 and e.mode = $2 and e.drivetrain = $3 and e.user_id = $5`,
-    [opts.balanceVersion, opts.mode, opts.drivetrain, PLACEMENT_GAMES, opts.userId],
+     where e.balance_version = $1 and e.mode = $2 and e.user_id = $4`,
+    [opts.balanceVersion, opts.mode, PLACEMENT_GAMES, opts.userId],
   );
   const r = rows[0];
   if (!r) return null;
@@ -652,12 +780,12 @@ export async function getUserStats(userId: string, balanceVersion: number): Prom
          select user_id, mode,
                 rank() over (partition by mode order by rating desc, games desc) as rnk
          from elo_ratings
-         where balance_version = $1 and drivetrain = 'overall' and games >= $3
+         where balance_version = $1 and games >= $3
        )
        select e.mode, e.rating, e.games, p.rnk
        from elo_ratings e
        left join placed p on p.user_id = e.user_id and p.mode = e.mode
-       where e.balance_version = $1 and e.drivetrain = 'overall' and e.user_id = $2`,
+       where e.balance_version = $1 and e.user_id = $2`,
       [balanceVersion, userId, PLACEMENT_GAMES],
     ),
     q<{ mode: 'solo' | 'duo'; score: number; replay_id: string | null }>(
@@ -775,10 +903,15 @@ export interface MatchHistoryEntry {
   id: string;
   mode: string; // '1v1'|'2v2' (versus) or 'solo'|'duo' (record)
   ranked: boolean | null; // versus only
-  drivetrain: string | null; // record only (shared drivetrain)
+  drivetrain: string | null; // record only (its leaderboard bucket)
   createdAt: string;
   replayId: string | null;
   score: number;
+  /** both alliances' FINAL totals (versus only; null for record runs). The
+   * per-participant `score` is the alliance total, so red/blue are recoverable
+   * from the participant fan-out below without a dedicated match-score column. */
+  redScore: number | null;
+  blueScore: number | null;
   won: boolean | null; // versus only
   eloBefore: number | null;
   eloAfter: number | null;
@@ -870,15 +1003,19 @@ export async function userMatchHistory(
   // profiles referenced by record runs.
   const versusIds = rows.filter((r) => r.kind === 'versus').map((r) => r.id);
   const byMatch = new Map<string, MatchHistoryPlayer[]>();
+  // both alliances' final totals per match (score is the alliance total, so any
+  // participant on a side carries it — see room.ts scores[alliance].total)
+  const scoreByMatch = new Map<string, { red: number | null; blue: number | null }>();
   if (versusIds.length) {
     const parts = await q<{
       id: string;
       user_id: string;
       alliance: 'red' | 'blue';
+      score: number;
       handle: string;
       username: string | null;
     }>(
-      `select mp.match_id::text as id, mp.user_id, mp.alliance, p.handle, p.username
+      `select mp.match_id::text as id, mp.user_id, mp.alliance, mp.score, p.handle, p.username
        from match_participants mp join profiles p on p.user_id = mp.user_id
        where mp.match_id = any($1::uuid[])`,
       [versusIds],
@@ -887,6 +1024,10 @@ export async function userMatchHistory(
       const list = byMatch.get(p.id) ?? [];
       list.push({ userId: p.user_id, handle: p.handle, username: p.username, alliance: p.alliance });
       byMatch.set(p.id, list);
+      const s = scoreByMatch.get(p.id) ?? { red: null, blue: null };
+      if (p.alliance === 'red') s.red = p.score;
+      else s.blue = p.score;
+      scoreByMatch.set(p.id, s);
     }
   }
   // profiles for record runs (self + partners)
@@ -925,6 +1066,8 @@ export async function userMatchHistory(
       createdAt: r.created_at,
       replayId: r.replay_id,
       score: r.score,
+      redScore: r.kind === 'versus' ? scoreByMatch.get(r.id)?.red ?? null : null,
+      blueScore: r.kind === 'versus' ? scoreByMatch.get(r.id)?.blue ?? null : null,
       won: r.won,
       eloBefore: r.elo_before,
       eloAfter: r.elo_after,
@@ -970,6 +1113,9 @@ export async function takePendingMatch(code: string): Promise<PendingMatch | nul
     seed: Number(r.seed),
     roster: r.roster,
     ranked: r.ranked,
+    // channel is carried inside the roster jsonb (no schema column) — all entries
+    // share one, so read it off the first
+    channel: r.roster[0]?.channel,
   };
 }
 

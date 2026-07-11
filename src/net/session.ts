@@ -59,11 +59,19 @@ export interface NetStatus {
    * smoothed `rttMs` hides sub-second spikes, so this raw series is what surfaces
    * them. null until the first pong / solo path. */
   rttHistory: number[] | null;
+  /** human-readable label of the server/region hosting the match (e.g. 'US East'),
+   * or null on a single-region / unknown deploy. Shown in the HUD. */
+  server: string | null;
 }
 
 export interface NetSession {
   /** the local player's robot id (assigned by the server at match start) */
   readonly localRobotId: number;
+  /** the room code + our clientId + hosting region (ServerSession only) — used to
+   * persist an "active game" record so the player can REJOIN this same match later */
+  readonly room?: string;
+  readonly clientId?: string;
+  readonly region?: string;
   /** the match seed the world was built from (updated on a host restart) */
   seed: number;
   /** the robot slots in the match (updated on a host restart) */

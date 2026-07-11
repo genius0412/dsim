@@ -1,6 +1,7 @@
 import * as C from '../src/config';
 import { START_POSES } from '../src/config';
-import { createWorld, type RobotSetup } from '../src/sim/spawn';
+import { activeStartLegal } from '../src/sim/field';
+import { createWorld, coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { step } from '../src/sim/world';
 import { physicsReady } from '../src/sim/physicsEngine';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from '../src/sim/replay';
@@ -51,11 +52,22 @@ const SNAPSHOT_INTERVAL = 2;
 /** how many ticks to keep re-applying a robot's last command when its next input
  * hasn't arrived (absorbs jitter without freezing); past this it coasts to ZERO */
 const HOLD_TICKS = 15;
-/** hold a disconnected driver's slot this long for a reconnect before dropping */
-const RECONNECT_GRACE_MS = 15000;
+/** hold a disconnected driver's slot this long for a reconnect before dropping. Long
+ * enough to cover a full page reload / navigate-away-and-come-back (the "rejoin your
+ * match" flow), not just a transient socket blip. The robot coasts to ZERO meanwhile. */
+const RECONNECT_GRACE_MS = 45000;
 /** a staged ranked match waits this long for every paired player to (re)connect to
  * the host machine before it gives up and cancels (a no-show ⇒ no rated match) */
 const RANKED_JOIN_GRACE_MS = 20000;
+/** ranked pre-match STRATEGY window: once everyone has connected, drivers see their
+ * alliance's builds, re-pick, claim a close/far start pose, and ready up. The match
+ * begins the instant all ready; if anyone hasn't readied by the deadline the match
+ * is CANCELLED (user decision — strict, so nobody waits forever on an idle player). */
+const STRATEGY_DURATION_MS = 20000;
+
+/** the Fly region this server machine runs in (blank on a single-region / local
+ * deploy). Sent to clients at matchStart so the HUD can show "matched on <region>". */
+const SERVER_REGION: string = process.env.FLY_REGION ?? process.env.SERVER_REGION ?? '';
 
 export interface Client {
   id: string;
@@ -68,6 +80,18 @@ export interface Client {
   /** the authenticated user id (Neon Auth subject), set once the client proves a
    * session; leaderboard/ELO writes attribute to it. Absent ⇒ anonymous run. */
   userId?: string;
+  /** protocol capabilities this client build advertised on join/queue (mixed-version
+   * safe: a room opens the strategy window only if EVERY member supports 'strategy') */
+  caps?: string[];
+  /** release channel this client build reported ('alpha' | 'stable' | …). The first
+   * client to join sets the ROOM's channel; alpha rooms are never persisted. */
+  channel?: string;
+  /** monotonic id of the SOCKET that currently owns this slot, bumped on every
+   * (re)attach. A reconnect can arrive before the server has reaped the dropped
+   * socket (a partitioned TCP connection lingers for tens of seconds), so the old
+   * socket's eventual close must be able to tell it is stale — it carries the conn
+   * it was issued and `detach` ignores it if a newer socket has taken over. */
+  conn?: number;
 }
 
 /** one driver's outcome in a finished match (for persistence) */
@@ -107,6 +131,9 @@ export interface MatchOutcome {
 export class Room {
   private readonly clients = new Map<string, Client>();
   private hostId = '';
+  // monotonic connection counter: every add/reattach stamps the owning socket with
+  // the next value so a stale old socket's close can be recognised and ignored.
+  private connSeq = 0;
 
   private world: World | null = null;
   private readonly robotOf = new Map<string, number>(); // clientId -> robotId
@@ -149,6 +176,20 @@ export class Room {
   // staged player has (re)connected here, or cancels after RANKED_JOIN_GRACE_MS.
   private pendingMatch: PendingMatch | null = null;
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
+  // ranked lifecycle: 'connecting' while paired players are still arriving, then
+  // 'strategy' during the pre-match coordination window, then 'match' once the world
+  // is built. Custom rooms skip 'strategy' (connecting → match). `world===null` still
+  // means "not in a match" (true for both connecting and strategy).
+  private phase: 'connecting' | 'strategy' | 'match' = 'connecting';
+  // release channel of this room, set from the FIRST client to join (or the staged
+  // ranked roster). 'alpha' rooms are IN-DEVELOPMENT: their results are never
+  // persisted to the leaderboard/ELO DB (see finalizeMatch), and the matchmaker
+  // only ever pairs alpha with alpha (server/matchmaking.ts) — mixing channels
+  // would desync since each runs a different src/sim.
+  private channel = 'stable';
+  private strategyDeadline = 0;
+  private strategyTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly slotOf = new Map<string, number>(); // clientId -> roster slot (= robotId)
 
   constructor(
     readonly code: string,
@@ -161,19 +202,32 @@ export class Room {
      * the per-player overall-ELO changes (ranked), which the room then broadcasts
      * as `eloResult` for the results screen. */
     private readonly onResult?: (o: MatchOutcome) => void | Promise<PersistOutcome | void>,
+    /** called when an authed user's MATCH becomes live in this room, and again when
+     * their slot is released (match finalized / dropped / room stopped). The registry
+     * uses this to enforce "one live game per user" — a user with a lock here is
+     * refused a second join/queue elsewhere (they must rejoin or leave this one). */
+    private readonly onUserActive?: (userId: string) => void,
+    private readonly onUserInactive?: (userId: string) => void,
   ) {}
 
-  /** mark this room as a ranked match and attach per-driver ELO for the intro
-   * overlay (called by the Matchmaker before startMatchNow). `intros` are keyed
-   * by the robot id startMatch assigns = the client's add-order index. */
-  setRankedIntro(intros: PlayerIntro[]): void {
-    this.ranked = true;
-    this.intros = intros;
+  /** authed users whose match is currently live in THIS room (holds their single-
+   * game lock). Registered at match begin, released at finalize / drop / stop. */
+  private readonly activeUserIds = new Set<string>();
+
+  /** release every held single-game lock this room owns (idempotent) */
+  private releaseActiveUsers(): void {
+    for (const uid of this.activeUserIds) this.onUserInactive?.(uid);
+    this.activeUserIds.clear();
   }
 
-  /** true if a fresh driver can still join (room not full, not mid-match) */
+  /** true if a fresh driver can still join (room not full, not mid-match, and not
+   * already locked into the pre-match strategy window) */
   canJoin(): boolean {
-    return this.clients.size < roomCapacity(this.config) && this.world === null;
+    return (
+      this.clients.size < roomCapacity(this.config) &&
+      this.world === null &&
+      this.phase !== 'strategy'
+    );
   }
 
   /** authoritative sim tick (0 before the match starts) */
@@ -182,18 +236,40 @@ export class Room {
   }
 
   add(client: Client): void {
+    // the first client to land defines the room's release channel (custom/record
+    // rooms are single-channel by construction — the matchmaker segregates ranked)
+    if (this.clients.size === 0 && client.channel) this.channel = client.channel;
+    client.conn = ++this.connSeq;
     this.clients.set(client.id, client);
     if (!this.hostId) this.hostId = client.id;
     client.send({ t: 'welcome', clientId: client.id });
     this.broadcastRoster();
   }
 
+  /** true when this room's results must NOT be written to the leaderboard/ELO DB
+   * (in-development alpha builds) */
+  private get unpersisted(): boolean {
+    return this.channel === 'alpha';
+  }
+
   /** a socket dropped. In the lobby that's an outright leave; mid-match the slot
    * is HELD for the reconnect grace (the robot coasts to ZERO meanwhile). */
-  detach(id: string): void {
+  detach(id: string, conn?: number): void {
     const c = this.clients.get(id);
     if (!c) return;
+    // a STALE socket closing after a newer one already reclaimed this slot (fast
+    // reconnect, old TCP not yet reaped): ignore it, or we'd mark a live player
+    // disconnected and eventually grace-drop their robot mid-match.
+    if (conn !== undefined && c.conn !== undefined && conn !== c.conn) return;
     if (this.world === null) {
+      // a drop during the ranked strategy window can't be rated one-sided and the
+      // reconnect path (a fresh `join`) can't reclaim a held pre-match slot — so a
+      // pre-match departure CANCELS the staged match (both drivers requeue). Full
+      // strategy-phase reconnection is deferred (see docs/netcodeplan.md).
+      if (this.pendingMatch && this.phase === 'strategy') {
+        this.cancelPending('Match cancelled — a player disconnected.');
+        return;
+      }
       this.clients.delete(id);
       this.snapPrimed.delete(id);
       if (this.hostId === id) this.hostId = this.clients.keys().next().value ?? '';
@@ -210,20 +286,27 @@ export class Room {
     }
   }
 
-  /** reclaim a held slot on a fresh socket (within the grace). Returns false if
-   * unknown or the slot was already finalized/dropped. */
-  reattach(id: string, send: (m: ServerMsg) => void): boolean {
+  /** reclaim a held slot on a fresh socket. Returns the new owning-connection id on
+   * success, or null if the slot is gone for good (grace lapsed → the client was
+   * deleted, so its robot can no longer be reclaimed). A rejoin carrying the right
+   * clientId PROVES ownership, so we take over even if the slot still shows
+   * `connected` — a fast reconnect routinely beats the reaping of the dropped socket
+   * (a partitioned TCP connection lingers), and refusing it stranded the player on a
+   * "connection lost" screen. The old socket is orphaned (its `send` is replaced) and
+   * its later close is ignored via the conn stamp. */
+  reattach(id: string, send: (m: ServerMsg) => void): number | null {
     const c = this.clients.get(id);
-    if (!c || c.connected) return false;
+    if (!c) return null;
     c.send = send;
     c.connected = true;
     c.disconnectAt = 0;
+    c.conn = ++this.connSeq; // this socket now owns the slot (stale old close ignored)
     this.snapPrimed.delete(id); // lost its baseline — force a full keyframe
     send({ t: 'welcome', clientId: id });
     send({ t: 'rejoined', ok: true });
     if (this.world) this.sendSnapshotTo(c); // immediate full resync (re-primes)
     this.broadcastRoster();
-    return true;
+    return c.conn;
   }
 
   /** finalize any disconnected driver whose grace has lapsed: drop its robot to
@@ -252,6 +335,11 @@ export class Room {
       if (this.world !== null && c.userId && rid !== undefined) {
         this.departed.set(rid, { userId: c.userId, handle: c.player.name, assists: c.player.assists });
       }
+      // their grace lapsed — free their single-game lock so they can start fresh
+      if (c.userId) {
+        this.activeUserIds.delete(c.userId);
+        this.onUserInactive?.(c.userId);
+      }
       this.clients.delete(c.id);
       this.snapPrimed.delete(c.id);
       this.robotOf.delete(c.id);
@@ -267,12 +355,28 @@ export class Room {
     const c = this.clients.get(id);
     if (!c) return;
     switch (msg.t) {
-      case 'update':
+      case 'update': {
         // sanitize the patch against this player's current config: a spoofed
         // spec/size/assist patch is clamped to legal ranges before it applies
-        Object.assign(c.player, sanitizePlayerPatch(msg.patch, c.player));
+        const patch = sanitizePlayerPatch(msg.patch, c.player);
+        // in the ranked strategy window, alliance is server-authoritative (staged by
+        // the matchmaker) — a client may re-pick its spec / pose / ready, never its
+        // side, or two partners could stack one alliance.
+        if (this.pendingMatch && this.phase === 'strategy') delete patch.alliance;
+        Object.assign(c.player, patch);
+        // AUTHORITATIVE ready gate: a player can't be ready with a start pose that's
+        // illegal for their (possibly just-swapped) chassis — otherwise createWorld
+        // would silently relocate their robot at spawn. Runs on every patch (ready
+        // toggle, spec swap, pose edit), so any state that leaves an illegal pose
+        // clears ready. Closes the host-start + ranked auto-start paths against a
+        // stale/spoofed ready.
+        if (c.player.ready && !activeStartLegal(c.player.spec, c.player.alliance, c.player.startPose)) {
+          c.player.ready = false;
+        }
         this.broadcastRoster();
+        if (this.phase === 'strategy') this.maybeBeginRanked();
         break;
+      }
       case 'start':
         // physics WASM may still be loading in the first moment after boot; refuse
         // rather than throw inside step() (which would kill the tick loop)
@@ -282,7 +386,10 @@ export class Room {
         }
         break;
       case 'restart':
-        if (id === this.hostId && physicsReady()) this.startMatch();
+        // Rematch/restart is DISABLED for multiplayer: re-authoring a live match for
+        // everyone caused post-restart desync (stuck/jitter). Ignored for ALL clients
+        // (incl. older builds that still show a host REMATCH button) — players return
+        // to the lobby to start a fresh match instead.
         break;
       case 'input':
         this.onInput(id, msg.tick, msg.q);
@@ -317,27 +424,26 @@ export class Room {
     if (tick > (this.ackTick.get(id) ?? -1)) this.ackTick.set(id, tick);
   }
 
-  /** matchmaking start: no host handshake — the matchmaker fills the roster (with
-   * alliances assigned) and starts once physics is ready. */
-  startMatchNow(): void {
-    if (this.world === null && physicsReady()) this.startMatch();
-  }
-
   private startMatch(): void {
     const record = this.config.kind === 'record';
-    // record runs are OPPONENT-FREE co-op: every robot on one alliance (blue).
-    // duo additionally requires both robots the SAME drivetrain (the board is
-    // segmented by drivetrain) — refuse to start a mismatched duo.
-    if (record && this.config.record === 'duo') {
-      const dts = new Set([...this.clients.values()].map((c) => c.player.spec.drivetrain));
-      if (this.clients.size >= 2 && dts.size > 1) {
+    // Refuse to start if any driver's start pose is illegal for their chassis — we
+    // block-and-warn rather than let createWorld silently relocate the robot. The
+    // ready gate (case 'update') already prevents this in normal flow; this also
+    // closes the host-start path, which is NOT gated on all-ready server-side.
+    for (const c of this.clients.values()) {
+      const a: Alliance = record ? 'blue' : c.player.alliance;
+      if (!activeStartLegal(c.player.spec, a, c.player.startPose)) {
         this.broadcast({
           t: 'error',
-          message: 'Duo record runs need both robots on the same drivetrain.',
+          message: 'A driver’s start position is invalid for their chassis — fix it to start.',
         });
         return;
       }
     }
+    // record runs are OPPONENT-FREE co-op: every robot on one alliance (blue).
+    // Each driver brings their OWN build, so a duo may mix drivetrains — a mixed
+    // pair just keys the record board's OVERALL bucket (decided at persist time).
+    // So there is no drivetrain gate here.
     // build setups from the current roster; keep start poses distinct per alliance
     const roster = [...this.clients.values()];
     const used: Record<Alliance, Set<number>> = { red: new Set(), blue: new Set() };
@@ -361,6 +467,9 @@ export class Room {
         spec: c.player.spec,
         assists: c.player.assists,
         startIndex: si,
+        // a custom pose overrides the de-conflicted startIndex; createWorld snaps
+        // it G304-legal. Old clients omit it → the preset is used.
+        startPose: c.player.startPose ?? undefined,
         autoPath: c.player.autoPath, // Include autoPath
         autoPathEnabled: c.player.autoPathEnabled, // Include autoPathEnabled
       });
@@ -375,6 +484,13 @@ export class Room {
    * matchmaker, and ranked-from-pending paths. The caller must have built `setups`
    * and populated `robotOf` first. */
   private beginMatch(setups: RobotSetup[], seed: number): void {
+    // Autonomous does NOT run in server-authoritative matches yet — an auto path
+    // isn't reconciled against the server's authority, so it would desync. Strip
+    // it from EVERY setup here (the one chokepoint all match paths funnel through),
+    // regardless of what a client advertised. Local session-less practice, which
+    // never reaches Room, keeps running auto client-side.
+    setups = setups.map((s) => ({ ...s, autoPath: undefined, autoPathEnabled: false }));
+    this.phase = 'match';
     const world = createWorld('match', seed, setups);
     world.match.preCountdown = C.PRE_COUNTDOWN; // sim-driven pre→auto, same as the client
     this.world = world;
@@ -393,6 +509,15 @@ export class Room {
     this.postSince = null;
     this.departed.clear();
 
+    // register each authed driver's single-game lock: while this match is live they
+    // can't start a second game elsewhere (they'd have to rejoin or leave this one)
+    for (const c of this.clients.values()) {
+      if (c.userId) {
+        this.activeUserIds.add(c.userId);
+        this.onUserActive?.(c.userId);
+      }
+    }
+
     for (const c of this.clients.values()) {
       c.send({
         t: 'matchStart',
@@ -401,6 +526,7 @@ export class Room {
         yourRobotId: this.robotOf.get(c.id) ?? 0,
         ranked: this.ranked,
         intros: this.ranked ? this.intros : undefined,
+        region: SERVER_REGION || undefined,
       });
     }
     this.startLoop();
@@ -414,6 +540,9 @@ export class Room {
   applyPending(p: PendingMatch): void {
     this.pendingMatch = p;
     this.ranked = true;
+    // the matchmaker groups a single channel; carry it so an alpha ranked match
+    // is segregated + unpersisted just like custom/record alpha rooms
+    if (p.channel) this.channel = p.channel;
     this.intros = p.roster.map((r, i) => ({ id: i, elo: r.introElo }));
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
     this.pendingTimer = setTimeout(() => this.cancelPending(), RANKED_JOIN_GRACE_MS);
@@ -430,39 +559,180 @@ export class Room {
    * connected. Called after each client's identity resolves. */
   maybeStartRanked(): void {
     const p = this.pendingMatch;
-    if (!p || this.world !== null) return;
+    if (!p || this.world !== null || this.phase !== 'connecting') return;
     const present = new Set(
       [...this.clients.values()].filter((c) => c.connected && c.userId).map((c) => c.userId),
     );
     const allHere = p.roster.every((r) => r.userId && present.has(r.userId));
     if (!allHere) return;
-    if (!physicsReady()) {
-      setTimeout(() => this.maybeStartRanked(), 200); // WASM still loading; retry shortly
-      return;
-    }
+    // everyone's here: stop waiting for connections.
     if (this.pendingTimer) {
       clearTimeout(this.pendingTimer);
       this.pendingTimer = null;
     }
-    // roster index = robotId; map each connected client to its slot by user id
+    // MIXED-VERSION SAFETY: open the pre-match strategy window only if EVERY connected
+    // client understands it. If any is an OLD build (didn't advertise the 'strategy'
+    // cap), start immediately with the STAGED specs — the pre-strategy behavior — so
+    // one server can serve alpha/beta/main clients at once without stranding anyone.
+    const allSupport = [...this.clients.values()].every(
+      (c) => c.connected && c.caps?.includes('strategy'),
+    );
+    if (allSupport) this.enterStrategy();
+    else this.startRankedImmediate();
+  }
+
+  /** legacy ranked start (no strategy window): build setups straight from the STAGED
+   * roster and begin. Used when any paired client is an old build that can't render
+   * the strategy screen. Old clients can't re-pick, so the staged spec is what they
+   * queued with — correct. */
+  private startRankedImmediate(): void {
+    const p = this.pendingMatch;
+    if (!p || this.world !== null || this.phase !== 'connecting') return;
+    if (!physicsReady()) {
+      setTimeout(() => this.startRankedImmediate(), 200); // WASM still loading; retry
+      return;
+    }
     const byUser = new Map<string, Client>();
     for (const c of this.clients.values()) if (c.userId) byUser.set(c.userId, c);
     const setups: RobotSetup[] = [];
     this.robotOf.clear();
     p.roster.forEach((r, i) => {
-      setups.push({ id: i, alliance: r.alliance, spec: r.spec, assists: r.assists, startIndex: r.startIndex });
+      // the staged autoPath is a serialized string (and in practice unset); coerce it
+      // to the AutoPathData shape RobotSetup expects (createWorld re-coerces anyway).
+      const autoPath = coerceAutoPath(r.autoPath) ?? undefined;
+      setups.push({
+        id: i,
+        alliance: r.alliance,
+        spec: r.spec,
+        assists: r.assists,
+        startIndex: r.startIndex,
+        autoPath,
+        autoPathEnabled: autoPath ? r.autoPathEnabled === true : false,
+      });
       const c = r.userId ? byUser.get(r.userId) : undefined;
       if (c) this.robotOf.set(c.id, i);
     });
     this.beginMatch(setups, p.seed);
   }
 
+  /** open the pre-match STRATEGY window: seed each client's authoritative identity
+   * (alliance + default pose from the staged roster), reset ready, arm the strict
+   * deadline, and switch every client to the strategy screen. Spec/assists stay as
+   * the client supplied on join — that's the re-pick baseline. */
+  private enterStrategy(): void {
+    const p = this.pendingMatch;
+    if (!p || this.world !== null || this.phase !== 'connecting') return;
+    const byUser = new Map<string, Client>();
+    for (const c of this.clients.values()) if (c.userId) byUser.set(c.userId, c);
+    this.slotOf.clear();
+    p.roster.forEach((r, i) => {
+      const c = r.userId ? byUser.get(r.userId) : undefined;
+      if (!c) return;
+      this.slotOf.set(c.id, i); // roster index = robotId
+      c.player.alliance = r.alliance; // authoritative (client can't change it)
+      c.player.startIndex = r.startIndex; // default claim; the driver may re-pick
+      c.player.ready = false;
+    });
+    this.phase = 'strategy';
+    this.strategyDeadline = Date.now() + STRATEGY_DURATION_MS;
+    this.strategyTimer = setTimeout(() => this.onStrategyDeadline(), STRATEGY_DURATION_MS);
+    if (this.strategyTimer.unref) this.strategyTimer.unref();
+    for (const c of this.clients.values()) {
+      c.send({
+        t: 'strategyStart',
+        deadline: this.strategyDeadline,
+        yourRobotId: this.slotOf.get(c.id) ?? 0,
+        mode: p.mode,
+        intros: this.intros,
+      });
+    }
+    this.broadcastRoster(); // redacted per-recipient (opponent builds hidden)
+  }
+
+  /** start as soon as every connected driver has readied up */
+  private maybeBeginRanked(): void {
+    const p = this.pendingMatch;
+    if (!p || this.phase !== 'strategy' || this.world !== null) return;
+    const connected = [...this.clients.values()].filter((c) => c.connected);
+    if (connected.length === p.roster.length && connected.every((c) => c.player.ready)) {
+      this.beginRanked();
+    }
+  }
+
+  /** the strategy deadline fired: STRICT — start only if everyone readied in time,
+   * otherwise cancel the match (nobody waits forever on an idle player). */
+  private onStrategyDeadline(): void {
+    this.strategyTimer = null;
+    const p = this.pendingMatch;
+    if (!p || this.phase !== 'strategy' || this.world !== null) return;
+    const connected = [...this.clients.values()].filter((c) => c.connected);
+    if (connected.length === p.roster.length && connected.every((c) => c.player.ready)) {
+      this.beginRanked();
+    } else {
+      this.cancelPending('Match cancelled — not everyone readied up in time.');
+    }
+  }
+
+  /** build the authoritative setups from the LIVE (re-picked) roster and start the
+   * match. Alliance/seed stay authoritative from the staged `PendingMatch`; the spec
+   * is taken live (already clamped by `sanitizePlayerPatch`/`coerceSpec`, and again
+   * by `createWorld`→`coerceSetup`). A missing/dropped slot ⇒ cancel (unratable). */
+  private beginRanked(): void {
+    const p = this.pendingMatch;
+    if (!p || this.world !== null || this.phase !== 'strategy') return;
+    if (!physicsReady()) {
+      setTimeout(() => this.beginRanked(), 200); // WASM still loading; retry shortly
+      return;
+    }
+    if (this.strategyTimer) {
+      clearTimeout(this.strategyTimer);
+      this.strategyTimer = null;
+    }
+    const byUser = new Map<string, Client>();
+    for (const c of this.clients.values()) if (c.connected && c.userId) byUser.set(c.userId, c);
+    if (!p.roster.every((r) => r.userId && byUser.has(r.userId))) {
+      this.cancelPending('Match cancelled — an opponent disconnected.');
+      return;
+    }
+    // roster index = robotId; keep start poses distinct per alliance as an AFK fallback
+    const used: Record<Alliance, Set<number>> = { red: new Set(), blue: new Set() };
+    const setups: RobotSetup[] = [];
+    this.robotOf.clear();
+    p.roster.forEach((r, i) => {
+      const c = byUser.get(r.userId as string) as Client;
+      let si = c.player.startIndex ?? 0;
+      for (let n = 0; n < START_POSES.length && used[r.alliance].has(si); n++) {
+        si = (si + 1) % START_POSES.length;
+      }
+      used[r.alliance].add(si);
+      setups.push({
+        id: i,
+        alliance: r.alliance, // authoritative (from the staged roster)
+        spec: c.player.spec, // LIVE re-picked build
+        assists: c.player.assists,
+        startIndex: si,
+        startPose: c.player.startPose ?? undefined, // LIVE re-picked custom pose
+        autoPath: c.player.autoPath,
+        autoPathEnabled: c.player.autoPathEnabled,
+      });
+      this.robotOf.set(c.id, i);
+    });
+    this.beginMatch(setups, p.seed);
+  }
+
   /** a staged ranked match no player (or not everyone) showed up for: tell whoever
    * did connect and tear the room down (no rated match runs). */
-  private cancelPending(): void {
+  private cancelPending(message = 'Match cancelled — an opponent did not connect.'): void {
     if (this.world !== null) return; // already started
-    this.broadcast({ t: 'error', message: 'Match cancelled — an opponent did not connect.' });
-    this.pendingTimer = null;
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
+    if (this.strategyTimer) {
+      clearTimeout(this.strategyTimer);
+      this.strategyTimer = null;
+    }
+    this.broadcast({ t: 'error', message });
     this.stop();
     this.onEmpty();
   }
@@ -533,12 +803,18 @@ export class Room {
   private finalizeMatch(): void {
     if (this.finalized || !this.world || !this.recorder) return;
     this.finalized = true;
+    // the match is DECIDED — free every single-game lock so players can immediately
+    // start a fresh game (the room lingers in 'post' only for the results screen)
+    this.releaseActiveUsers();
     const w = this.world;
     const replay: Replay = this.recorder.finish();
     const result = worldResult(w);
     this.broadcast({ t: 'matchResult', kind: this.config.kind, record: this.config.record, result, replay });
-    // hand the authoritative outcome to the persistence layer (off the hot path)
-    if (this.onResult) {
+    // hand the authoritative outcome to the persistence layer (off the hot path).
+    // ALPHA (in-development) rooms are NEVER persisted: the results screen + replay
+    // still work from the broadcast above, but no leaderboard/ELO/record DB write
+    // happens (and no recordResult/eloResult follows — the client shows "not saved").
+    if (this.onResult && !this.unpersisted) {
       const participants: MatchParticipant[] = [];
       // capture userId → robotId so the async ELO result can be re-keyed to robots
       const robotByUser = new Map<string, number>();
@@ -650,6 +926,9 @@ export class Room {
       clearInterval(this.loop);
       this.loop = null;
     }
+    // room is going away — free any single-game locks it still holds (e.g. a match
+    // abandoned before finalize) so those users aren't stuck unable to start again
+    this.releaseActiveUsers();
   }
 
   private broadcastSnapshot(): void {
@@ -703,7 +982,50 @@ export class Room {
   }
 
   private broadcastRoster(): void {
-    const players = [...this.clients.values()].map((c) => c.player);
-    this.broadcast({ t: 'roster', players, hostId: this.hostId });
+    // a STAGED ranked room must never reveal opponent builds before the redacted
+    // strategy roster: while still 'connecting' its clients self-report alliance
+    // 'red' (a placeholder), so alliance-based redaction can't work yet — simply
+    // withhold the roster until `enterStrategy` sends the redacted one. (The
+    // matchmaking client shows no roster while connecting anyway.)
+    if (this.pendingMatch && this.phase === 'connecting') return;
+    // outside the strategy window everyone sees the same roster (custom lobby / not
+    // yet staged): the full build reveal is fine there.
+    if (this.phase !== 'strategy') {
+      const players = [...this.clients.values()].map((c) => c.player);
+      this.broadcast({ t: 'roster', players, hostId: this.hostId });
+      return;
+    }
+    // strategy window: ALLIANCE-ONLY reveal. Each recipient sees its own alliance's
+    // builds in full (with the roster `slot` so cards can find ELO), but OPPONENT
+    // cards are redacted to name/team/ELO — their spec/assists are neutralized so a
+    // client (even via devtools) can't counter-pick the opponent's build pre-match.
+    // Opponent detail is revealed only at matchStart (its `setups` carry full specs).
+    const all = [...this.clients.values()];
+    for (const c of all) {
+      const mine = c.player.alliance;
+      const players: LobbyPlayer[] = all.map((o) => {
+        const slot = this.slotOf.get(o.id);
+        if (o.id === c.id || o.player.alliance === mine) return { ...o.player, slot };
+        return {
+          clientId: o.player.clientId,
+          name: o.player.name,
+          teamName: o.player.teamName,
+          teamNumber: o.player.teamNumber,
+          alliance: o.player.alliance,
+          startIndex: 0,
+          ready: o.player.ready,
+          spec: DEFAULT_SPEC,
+          assists: DEFAULT_ASSISTS,
+          slot,
+          hidden: true,
+        };
+      });
+      c.send({ t: 'roster', players, hostId: this.hostId });
+    }
+  }
+
+  /** TEST SEAM: fire the strategy deadline synchronously (no real timer). */
+  forceStrategyDeadlineForTest(): void {
+    this.onStrategyDeadline();
   }
 }
