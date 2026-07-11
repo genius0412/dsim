@@ -66,6 +66,18 @@ interface Props {
  */
 export function Menu({ settings, onChange }: Props) {
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
+  // Apply a fully-formed spec, and when the DRIVETRAIN changes, swap the ACTIVE
+  // assists to that drivetrain's remembered slot (assists are per-drivetrain: swerve
+  // field-centric, everything else robot-centric). Used by the drivetrain buttons,
+  // the intake/slider edits (via setSpec), and preset/saved-robot loads.
+  const applySpec = (next: RobotSpec) => {
+    const dtChanged = next.drivetrain !== settings.spec.drivetrain;
+    onChange({
+      ...settings,
+      spec: next,
+      ...(dtChanged ? { assists: settings.assistsByDrivetrain[next.drivetrain] } : {}),
+    });
+  };
   // any spec edit RE-CLAMPS all coupled values (mass floor moves with drivetrain +
   // flywheel inertia; rpm ceiling with drivetrain; length with the intake preset)
   const setSpec = (patch: Partial<GameSettings['spec']>) => {
@@ -81,10 +93,18 @@ export function Menu({ settings, onChange }: Props) {
       name: merged.name,
       teamName: merged.teamName,
     };
-    onChange({ ...settings, spec: next });
+    applySpec(next);
   };
-  const setAssist = (patch: Partial<GameSettings['assists']>) =>
-    onChange({ ...settings, assists: { ...settings.assists, ...patch } });
+  // an assist edit updates the ACTIVE assists AND writes back to the current
+  // drivetrain's remembered slot, so the choice sticks per drivetrain
+  const setAssist = (patch: Partial<GameSettings['assists']>) => {
+    const merged = { ...settings.assists, ...patch };
+    onChange({
+      ...settings,
+      assists: merged,
+      assistsByDrivetrain: { ...settings.assistsByDrivetrain, [settings.spec.drivetrain]: merged },
+    });
+  };
 
   const spec = settings.spec;
   // slider envelopes come from the SAME limit functions coerceSpec clamps with,
@@ -192,9 +212,9 @@ export function Menu({ settings, onChange }: Props) {
                 className={`ds-opt ${sameRobot(spec, r) ? 'on' : ''}`}
                 role="button"
                 tabIndex={0}
-                onClick={() => set({ spec: { ...r } })}
+                onClick={() => applySpec({ ...r })}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') set({ spec: { ...r } });
+                  if (e.key === 'Enter' || e.key === ' ') applySpec({ ...r });
                 }}
               >
                 <button
@@ -246,14 +266,14 @@ export function Menu({ settings, onChange }: Props) {
                 key={p.name}
                 className={`ds-opt ${specMatches(spec, p) ? 'on' : ''}`}
                 onClick={() =>
-                  // copy the BUILD only — keep the player's own name/team/number
-                  set({
-                    spec: {
-                      ...p,
-                      name: spec.name,
-                      teamName: spec.teamName,
-                      teamNumber: spec.teamNumber,
-                    },
+                  // copy the BUILD only — keep the player's own name/team/number.
+                  // applySpec swaps assists to the preset's drivetrain slot (so the
+                  // Cypher swerve preset loads field-centric, the rest robot-centric).
+                  applySpec({
+                    ...p,
+                    name: spec.name,
+                    teamName: spec.teamName,
+                    teamNumber: spec.teamNumber,
                   })
                 }
               >
@@ -436,9 +456,13 @@ export function Menu({ settings, onChange }: Props) {
           </div>
         </section>
 
-        {/* ---------- driver preferences ---------- */}
+        {/* ---------- driver preferences (remembered per drivetrain) ---------- */}
         <section className="ds-sec">
           <h2>Drive style</h2>
+          <p className="ds-hint">
+            Saved per drivetrain ({DRIVETRAIN_LABELS[spec.drivetrain]}) — switching drivetrains
+            restores its own settings.
+          </p>
           <div className="ds-opts two">
             <button
               className={`ds-opt ${settings.assists.fieldCentric ? 'on' : ''}`}

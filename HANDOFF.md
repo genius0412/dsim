@@ -1,8 +1,36 @@
-# HANDOFF — 2026-07-11 (swerve min width 13.5 · vector intake = chassis width · ranked drivetrain split dropped · no server auto · duo shows both drivetrains) — READ FIRST
+# HANDOFF — 2026-07-11 (driver assists → PER DRIVETRAIN; prev: swerve min width / vector intake / ranked split) — READ FIRST
 
-> **GREEN — `npm run build`, `npm test` (ALL PASS), `npm run server:check` all pass.** (No palette edits → didn't re-run `contrast`.)
+> **GREEN — `npm run build` (tsc strict + vite) and `npm test` (~205 checks) pass. CLIENT-ONLY change (no server/ or protocol edit) → Vercel on push, NO Fly deploy.**
 
-## Latest — balance: swerve accel/weight + per-intake minimum widths
+## Latest — driver assists are now remembered PER DRIVETRAIN (was per-user)
+
+Field-centric/robot-centric + aim assist + auto intake + auto fire are now saved **per
+drivetrain**, not as one global. New default per drivetrain: **robot-centric, aim/intake/fire
+all ON** — EXCEPT **swerve, which defaults field-centric** (so the Cypher swerve preset loads
+field-centric out of the box, every other preset robot-centric). Design: keep the ACTIVE
+`assists` as the resolved config that spawns + goes on the wire (no protocol change), add a
+LOCAL per-drivetrain library that persists + account-syncs — mirrors the `savedStartPoses`
+pattern.
+
+- `src/types.ts` — `GameSettings.assistsByDrivetrain: Record<DrivetrainType, AssistConfig>`.
+- `src/sim/spawn.ts` — `defaultAssistsFor(d)` (swerve ⇒ field-centric, else robot-centric, all
+  auto ON) + `defaultAssistsByDrivetrain()`. **`DEFAULT_ASSISTS` deliberately UNCHANGED** — it
+  stays the neutral sim/wire/replay/dummy/**smoke** fallback (auto OFF); only the player-facing
+  menu default moved. Don't conflate the two.
+- `src/settings.ts` — `defaultSettings()` sets active `assists = defaultAssistsFor(DEFAULT_SPEC
+  .drivetrain)` (mecanum) + the full library. `coerceSettings` coerces spec FIRST, then each
+  drivetrain slot, then active assists (base = the spec-drivetrain slot). Migration: an old save
+  with no `assistsByDrivetrain` seeds the active drivetrain's slot from its stored active assists.
+- `src/ui/Menu.tsx` — new `applySpec(next)` helper swaps active assists to `assistsByDrivetrain
+  [next.drivetrain]` whenever the drivetrain CHANGES; `setSpec`, the drivetrain buttons, saved-
+  robot loads, and ROBOT_PRESETS cards all route through it. `setAssist` writes active + the
+  current drivetrain's slot. Drive-style/assists UI stayed in the ROBOT menu (per-drivetrain =
+  a build property, so NOT moved to Controls). Added a "Saved per drivetrain (…)" hint.
+- No smoke change needed (DEFAULT_ASSISTS unchanged; UI/settings only).
+
+Note: `tankControlMode` was left as-is (tank-only already ⇒ effectively per-drivetrain).
+
+## Prev — balance: swerve accel/weight + per-intake minimum widths
 
 - **Swerve** (`config.ts`): `accelMult` 1.30 → **1.32**, base min weight (`DRIVETRAIN_LIMITS.swerve.minMass`) → **21.5** lb. Tuned so a min-weight / max-inertia / 500rpm swerve just OUT-accels the equivalent mecanum (~1.7%); at equal weight swerve is clearly ahead (1.32 vs mecanum 1.12). Smoke pins the corner comparison. (Peak accel ~317 in/s².)
 - **Per-intake MIN WIDTH** (`INTAKE_PRESETS[*].minWidth`, applied in `drivetrain.ts` `widthLimits`): sloped **14.5"**, triangle **15.5"**, vector **10"** (`ROBOT_MIN_WIDTH`). The width floor is now `max(drivetrain floor, intake floor)` — so swerve+triangle = 15.5, mecanum+vector = 10. All 5 `ROBOT_PRESETS` + `DEFAULT_SPEC` already clear the new floors.

@@ -337,7 +337,14 @@ export interface GameSettings {
   /** last-used selection in each category, so switching tabs restores your choice */
   startMemory: { close: StartSel; far: StartSel };
   practiceDummies: boolean;
+  /** the ACTIVE resolved driver assists (what spawns + goes on the wire) */
   assists: AssistConfig;
+  /** driver assists remembered PER DRIVETRAIN. Switching drivetrain (or picking a
+   * robot preset) loads that drivetrain's slot into `assists`; editing an assist
+   * writes back to the active drivetrain's slot. Swerve defaults field-centric, every
+   * other drivetrain robot-centric. LOCAL setting — persists + account-syncs, and is
+   * NOT sent over the wire (only the resolved `assists` is), so no protocol change. */
+  assistsByDrivetrain: Record<DrivetrainType, AssistConfig>;
   bindings: ControlBindings;
   audio: {
     sounds: boolean;
