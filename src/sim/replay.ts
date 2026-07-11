@@ -221,9 +221,11 @@ export type RecordMode = 'solo' | 'duo';
 /**
  * Build the RobotSetup[] for a record-chasing run. Score-attack has no opponent,
  * so a single (blue) alliance holds the run robot(s); alliance is viewpoint-only.
- * DUO requires both robots the SAME drivetrain (per the leaderboards spec) — we
- * enforce it by cloning one spec into both slots. Distinct start poses keep them
- * from spawning on top of each other.
+ * A DUO has TWO drivers, each with their OWN build — pass `partnerSpec` for slot 1
+ * (it falls back to `spec` only when a second build isn't supplied). Distinct start
+ * poses keep the two robots from spawning on top of each other. (In production the
+ * server builds a duo's setups from each client's spec; this helper is for
+ * headless runs + tests.)
  */
 export function recordSetups(
   spec: RobotSpec,
@@ -232,12 +234,13 @@ export function recordSetups(
   autoPath?: AutoPathData, // Add autoPath parameter
   autoPathEnabled?: boolean, // Add autoPathEnabled parameter
   startPose?: StartPose, // custom start pose (applied to slot 0 only)
+  partnerSpec?: RobotSpec, // duo slot 1's own build (defaults to `spec`)
 ): RobotSetup[] {
   const alliance: Alliance = 'blue';
-  const slot = (id: number, startIndex: number, pose?: StartPose): RobotSetup => ({
+  const slot = (id: number, startIndex: number, robotSpec: RobotSpec, pose?: StartPose): RobotSetup => ({
     id,
     alliance,
-    spec: { ...spec },
+    spec: { ...robotSpec },
     assists: { ...assists },
     startIndex,
     startPose: pose,
@@ -245,7 +248,9 @@ export function recordSetups(
     autoPathEnabled: autoPathEnabled, // Pass autoPathEnabled
   });
   // slot 1 stays on a preset so a duo can't spawn both robots on one custom spot
-  return mode === 'solo' ? [slot(0, 0, startPose)] : [slot(0, 0, startPose), slot(1, 1)];
+  return mode === 'solo'
+    ? [slot(0, 0, spec, startPose)]
+    : [slot(0, 0, spec, startPose), slot(1, 1, partnerSpec ?? spec)];
 }
 
 /** the alliance a record run scores for (the run robots' alliance) */

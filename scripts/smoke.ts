@@ -2822,10 +2822,22 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   const duo = recordSetups(DEFAULT_SPEC, 'duo', DEFAULT_ASSISTS, undefined, true);
   check('recordSetups solo = 1 robot (1v0)', solo.length === 1 && solo[0].id === 0);
   check(
-    'recordSetups duo = 2 robots, same drivetrain, distinct poses',
-    duo.length === 2 &&
-      duo[0].spec.drivetrain === duo[1].spec.drivetrain &&
-      duo[0].startIndex !== duo[1].startIndex,
+    'recordSetups duo = 2 robots at distinct poses',
+    duo.length === 2 && duo[0].startIndex !== duo[1].startIndex,
+  );
+  // each duo driver brings their OWN build — a duo can mix drivetrains
+  const mixedDuo = recordSetups(
+    { ...DEFAULT_SPEC, drivetrain: 'tank' },
+    'duo',
+    DEFAULT_ASSISTS,
+    undefined,
+    true,
+    undefined,
+    { ...DEFAULT_SPEC, drivetrain: 'swerve' },
+  );
+  check(
+    'recordSetups duo keeps each driver’s own drivetrain',
+    mixedDuo[0].spec.drivetrain === 'tank' && mixedDuo[1].spec.drivetrain === 'swerve',
   );
 
   // recordScore: an opponent-free run's NET score subtracts the player's OWN
@@ -3001,29 +3013,22 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   const p = (
     userId: string,
     alliance: 'red' | 'blue',
-    drivetrain: EloParticipant['drivetrain'],
     rating = 1000,
     rd = 350,
   ): EloParticipant => ({
     userId,
     alliance,
-    drivetrain,
-    overall: { rating, rd, vol: 0.06 },
-    drive: { rating, rd, vol: 0.06 },
+    rating: { rating, rd, vol: 0.06 },
   });
 
   check('eloMode: 2 players = 1v1, 4 = 2v2', eloMode(2) === '1v1' && eloMode(4) === '2v2');
 
-  // even 1v1, same drivetrain, red wins → symmetric swing on BOTH boards; a fresh
-  // PROVISIONAL (RD 350) rating moves a LOT (unlike settled Elo's ±16)
-  const evenRedWin = computeGlicko([p('a', 'red', 'mecanum'), p('b', 'blue', 'mecanum')], {
-    red: 50,
-    blue: 30,
-  });
-  const boards = new Set(evenRedWin.map((u) => u.board));
-  check('same-drivetrain game updates overall + that drivetrain board', boards.has('overall') && boards.has('mecanum') && boards.size === 2);
-  const aOverall = evenRedWin.find((u) => u.userId === 'a' && u.board === 'overall')!;
-  const bOverall = evenRedWin.find((u) => u.userId === 'b' && u.board === 'overall')!;
+  // even 1v1, red wins → single-board symmetric swing (ranked is NOT split by
+  // drivetrain); a fresh PROVISIONAL (RD 350) rating moves a LOT (vs settled ±16)
+  const evenRedWin = computeGlicko([p('a', 'red'), p('b', 'blue')], { red: 50, blue: 30 });
+  check('a game produces exactly one rating update per player', evenRedWin.length === 2);
+  const aOverall = evenRedWin.find((u) => u.userId === 'a')!;
+  const bOverall = evenRedWin.find((u) => u.userId === 'b')!;
   check(
     'provisional win swings hard (>100) and is symmetric',
     aOverall.after - 1000 > 100 && Math.abs(aOverall.after - 1000 + (bOverall.after - 1000)) <= 1,
@@ -3032,13 +3037,13 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   check('a game shrinks the rating deviation (more certainty)', aOverall.rd < 350 && bOverall.rd < 350, `rd ${aOverall.rd}`);
   check('a fresh rating is still provisional after one game', aOverall.rd > RD_PROVISIONAL, `rd ${aOverall.rd}`);
 
-  // mixed drivetrains → OVERALL board only (no per-drivetrain board)
-  const mixed = computeGlicko([p('a', 'red', 'mecanum'), p('b', 'blue', 'tank')], { red: 50, blue: 30 });
-  check('mixed-drivetrain game updates OVERALL only', new Set(mixed.map((u) => u.board)).size === 1 && mixed.every((u) => u.board === 'overall'));
+  // mixed drivetrains rate identically — the board is not divided by drivetrain
+  const mixed = computeGlicko([p('a', 'red'), p('b', 'blue')], { red: 50, blue: 30 });
+  check('mixed-drivetrain game rates on the one board', mixed.length === 2);
 
   // a draw between equals leaves the rating put but still sharpens RD
-  const draw = computeGlicko([p('a', 'red', 'swerve'), p('b', 'blue', 'swerve')], { red: 40, blue: 40 });
-  const aDraw = draw.find((u) => u.userId === 'a' && u.board === 'overall')!;
+  const draw = computeGlicko([p('a', 'red'), p('b', 'blue')], { red: 40, blue: 40 });
+  const aDraw = draw.find((u) => u.userId === 'a')!;
   check('a draw between equals leaves rating ~unchanged but shrinks RD', Math.abs(aDraw.after - 1000) <= 1 && aDraw.rd < 350, `${aDraw.after} rd${aDraw.rd}`);
 
   // ESTABLISHED (low-RD) ratings barely move — the chess.com "settled" feel
@@ -3049,14 +3054,14 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   // heavily-favored winner (settled RD) gains only a little
   const team = computeGlicko(
     [
-      p('a', 'red', 'swerve', 1400, 60),
-      p('b', 'red', 'swerve', 1400, 60),
-      p('c', 'blue', 'swerve', 1000, 60),
-      p('d', 'blue', 'swerve', 1000, 60),
+      p('a', 'red', 1400, 60),
+      p('b', 'red', 1400, 60),
+      p('c', 'blue', 1000, 60),
+      p('d', 'blue', 1000, 60),
     ],
     { red: 60, blue: 20 },
   );
-  const aT = team.find((u) => u.userId === 'a' && u.board === 'overall')!;
+  const aT = team.find((u) => u.userId === 'a')!;
   check('favored winner gains modestly', aT.after - aT.before > 0 && aT.after - aT.before < 40, `+${aT.after - aT.before}`);
 }
 

@@ -37,7 +37,7 @@
 ## 🕹️ Autonomous
 
 - **Realistic auto driving** — no more instant heading snaps or unrealistic chassis speeds.
-- **Auto runs in multiplayer**, too.
+- Auto runs in local solo practice; it's **not enabled in online matches yet** while we finish syncing it with the match server.
 
 ## 🌐 Multiplayer & Connection
 

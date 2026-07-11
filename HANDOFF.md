@@ -1,8 +1,63 @@
-# HANDOFF — 2026-07-10 (leaderboard/career Act+Season pickers; prev: duo CLOSE/FAR role fixes) — READ FIRST
+# HANDOFF — 2026-07-10 (drop drivetrain divisions · no server auto · duo shows both drivetrains; prev: leaderboard/career Act+Season pickers) — READ FIRST
 
-> **GREEN — `npm run build`, `npm test` (ALL PASS), `npm run server:check`, `npm run contrast` (135/135) all pass.**
+> **GREEN — `npm run build`, `npm test` (ALL PASS), `npm run server:check` all pass.** (No palette edits this session → didn't re-run `contrast`.)
 
-## Latest — leaderboard + career: split Act/Season pickers · both-team scores · end-of-season final stats
+## Latest — three user asks: (1) drop per-drivetrain divisions from RANKED ONLY (records keep theirs), (2) auto never runs on the server, (3) duo records show BOTH drivetrains
+
+### 1) RANKED (ELO) no longer divided by drivetrain — RECORD boards UNCHANGED
+Scope correction mid-session: the user wanted the drivetrain split gone from **ranked
+only**, NOT from the record leaderboards. Ranked collapses to one rating per **(user ×
+mode × season)**; the record boards KEEP their per-drivetrain buckets (+ the mixed-duo
+`'overall'` bucket) exactly as before.
+- **DB migration `server/db/migrations/0011_drop_drivetrain_boards.sql`** (DESTRUCTIVE, runs at
+  server boot via `migrate.ts`) — ELO ONLY: `delete from elo_ratings where drivetrain <> 'overall'`,
+  drop the `drivetrain` column + it from the PK + `elo_board_idx` (recreated de-keyed). `records`
+  and `match_participants` are left fully intact.
+- **`server/ranked.ts`** — `EloParticipant` lost `drivetrain`/`drive`; `computeGlicko` writes ONE
+  update per player (no `board` field). `persistVersusMatch` reads/writes one rating per (mode,season).
+- **`server/db/repo.ts`** — the ELO fns (`getRating`, `getRatingFull`, `upsertRating`,
+  `eloLeaderboard`, `eloUserStanding`) + `getUserStats`'s elo query dropped the drivetrain
+  param/filter. The RECORD fns (`submitRecord`, `recordLeaderboard`, `personalBest`, `recordRank`,
+  `adminListRecords`) + the match-history record branch STILL carry drivetrain (unchanged).
+- **`server/persist.ts`** — records still compute `drivetrain` (solo/matched-duo = that drivetrain,
+  mixed duo = `'overall'`); only `persistVersusMatch` (ranked) lost it. `api.ts` `/api/elo` dropped the
+  drivetrain param; `/api/records` kept it. `matchmaking.ts` `getRating` call updated.
+- **Client**: `src/net/api.ts` — `fetchElo` lost its `Board` arg; `fetchRecords`/`adminFetchRecords` +
+  the `Board` type KEPT. `src/ui/Leaderboard.tsx` — the Drivetrain segmented picker now renders for
+  **records only** (`{isRecords && …}`); ranked shows no picker. `Admin.tsx`, `GameView.tsx`
+  `RecordStanding`, `protocol.ts` `RecordRankInfo.drivetrain`, `Lobby.tsx` record copy — all UNCHANGED
+  (reverted to HEAD). `Matchmaking.tsx` ranked copy + `config.ts` PLACEMENT comment updated (ranked).
+
+### 2) Autonomous never runs in server-authoritative matches
+User: "Auto runs in multiplayer" (in PATCHNOTES) is FALSE — server-required things must not run auto now.
+- **`server/room.ts` `beginMatch`** (the ONE chokepoint all three setup-build paths funnel through) now
+  strips `autoPath`/`autoPathEnabled` from every setup before `createWorld` + the `ReplayRecorder`, so
+  NO server room (versus or record) runs auto, whatever a client advertised. **Local session-less
+  practice (GameController, `session===null`) never reaches Room → still runs auto client-side.**
+- `PATCHNOTES.md` line corrected ("not enabled in online matches yet").
+
+### 3) Duo records store + show BOTH drivers' drivetrains
+Real duos already spawn each client's OWN spec (`room.ts` builds from `c.player.spec`) — only the
+test-only `recordSetups` helper cloned. But a duo record persisted only the PRIMARY's spec, so the
+board showed one drivetrain.
+- **`RecordConfig` gained `partnerSpec?: RobotSpec`** (`server/db/repo.ts` + mirror in `src/net/api.ts`;
+  stored in the `records.config` jsonb — no schema change). `server/persist.ts` writes
+  `partnerSpec: partner?.spec`.
+- **`src/ui/Leaderboard.tsx`** — the robot cell shows `Mecanum + Tank` for a duo; `ConfigSummary`
+  refactored to `RobotSpecSummary` and renders BOTH robots when `partnerSpec` present.
+- `src/sim/replay.ts` `recordSetups` now takes an optional `partnerSpec` (duo slot 1's own build,
+  defaults to `spec`); comment + smoke updated (a duo may mix drivetrains).
+
+**DEPLOY (REQUIRED — server + DESTRUCTIVE migration):** commit on alpha → `flyctl deploy --remote-only`
+→ verify `/health` → Vercel auto-deploys clients. Migration 0011 deletes per-drivetrain ELO rows +
+drops the `elo_ratings.drivetrain` column on first boot (the `'overall'` rows = everyone's real rating
+survive; `records`/`match_participants` untouched). **The one Fly app serves all client versions** — an
+old client sends `&drivetrain=…` to `/api/elo` (server ignores it) and still gets a valid elo board;
+`recordResult` still carries `drivetrain` (records unchanged), so no client regresses. Backward-compatible.
+
+---
+
+## Prev — leaderboard + career: split Act/Season pickers · both-team scores · end-of-season final stats
 
 User ask: "For the leaderboard and career, there should be an act selector and a season selector. For
 career, show the final scores of both teams. Show the final stats of the user at the end of the season

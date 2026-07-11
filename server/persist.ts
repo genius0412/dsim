@@ -50,12 +50,11 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
       const primary = authed[0];
       const partner = authed[1];
       const mode = o.config.record ?? 'solo';
-      // A duo whose two robots ran DIFFERENT drivetrains keys the 'overall'
-      // bucket (cross-drivetrain board only, no drivetrain-specific board) —
-      // mirroring ranked ELO's computeGlicko (per-drivetrain board only when all
-      // participants share one drivetrain). Solo runs and shared-drivetrain duos
-      // key their real drivetrain. Uses ALL participants (incl. an unauthed
-      // partner) so the mix is judged on the robots that actually played.
+      // RECORD boards ARE split by drivetrain. A duo whose two robots ran DIFFERENT
+      // drivetrains keys the 'overall' bucket (cross-drivetrain board only); solo
+      // runs and shared-drivetrain duos key their real drivetrain. Uses ALL
+      // participants (incl. an unauthed partner) so the mix is judged on the robots
+      // that actually played. (Ranked ELO, by contrast, is no longer split.)
       const drivetrains = new Set(o.participants.map((p) => p.drivetrain));
       const drivetrain = drivetrains.size > 1 ? 'overall' : primary.drivetrain;
       // NET score: the alliance's earned total minus the penalty points it handed
@@ -70,7 +69,9 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
         score,
         balanceVersion: bv,
         replayId,
-        config: { spec: primary.spec, assists: primary.assists },
+        // each driver brings their OWN robot; a duo stores both so the board can
+        // show both drivetrains (partner absent ⇒ solo run)
+        config: { spec: primary.spec, assists: primary.assists, partnerSpec: partner?.spec },
       });
       const { rank, total } = await recordRank(primary.userId!, mode, drivetrain, bv);
       const info = {

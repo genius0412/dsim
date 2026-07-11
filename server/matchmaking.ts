@@ -214,7 +214,7 @@ export class Matchmaker {
   private async introElo(entry: QueueEntry, mode: QueueMode): Promise<number | null> {
     if (!dbEnabled || !entry.userId) return null;
     try {
-      return await getRating(entry.userId, mode, 'overall', BALANCE_VERSION);
+      return await getRating(entry.userId, mode, BALANCE_VERSION);
     } catch {
       return null;
     }

@@ -13,6 +13,9 @@ import { getAuthToken } from '../lib/authClient';
 export interface RecordConfig {
   spec: RobotSpec;
   assists: AssistConfig;
+  /** in a DUO run, the co-op partner's robot (each driver brings their own build,
+   * so a duo can mix drivetrains). Absent for solo runs / legacy rows. */
+  partnerSpec?: RobotSpec;
 }
 
 export interface RecordRow {
@@ -47,7 +50,8 @@ export interface EloStanding {
 
 export type RecordMode = 'solo' | 'duo';
 export type EloMode = '1v1' | '2v2';
-/** a specific drivetrain board or the cross-drivetrain 'overall' */
+/** a record board: a specific drivetrain or the cross-drivetrain 'overall'.
+ * RANKED (ELO) is NOT split by drivetrain — only the record boards are. */
 export type Board = 'mecanum' | 'tank' | 'swerve' | 'xdrive' | 'overall';
 
 async function getJson<T>(path: string): Promise<T> {
@@ -69,13 +73,12 @@ export function fetchRecords(
 
 export function fetchElo(
   mode: EloMode,
-  drivetrain: Board,
   season?: number,
   me?: string | null,
 ): Promise<{ rows: EloRow[]; me: EloStanding | null }> {
   const s = season != null ? `&season=${season}` : '';
   const m = me ? `&me=${encodeURIComponent(me)}` : '';
-  return getJson(`/api/elo?mode=${mode}&drivetrain=${drivetrain}${s}${m}`);
+  return getJson(`/api/elo?mode=${mode}${s}${m}`);
 }
 
 export interface UserEloStat {

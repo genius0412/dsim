@@ -1,4 +1,4 @@
-import type { Alliance, DrivetrainType } from '../src/types';
+import type { Alliance } from '../src/types';
 import type { MatchOutcome, MatchParticipant } from './room';
 import { addMatchParticipant, getRatingFull, saveMatch, upsertRating } from './db/repo';
 
@@ -10,10 +10,8 @@ import { addMatchParticipant, getRatingFull, saveMatch, upsertRating } from './d
  * unit-tested; `persistVersusMatch` wraps it with the DB reads/writes at match end
  * (ranked matches only — custom rooms persist the match but move no rating).
  *
- * Boards (per the leaderboards spec): the OVERALL board always updates for every
- * player. The (mode × drivetrain) board updates ONLY when every participant shares
- * one drivetrain — a mixed-drivetrain game is cross-cutting, so it counts to
- * Overall alone. `mode` is inferred from the head count: 2 players ⇒ 1v1, 4 ⇒ 2v2.
+ * Boards: one rating per (mode × season) — ranked is NOT divided by drivetrain.
+ * `mode` is inferred from the head count: 2 players ⇒ 1v1, 4 ⇒ 2v2.
  */
 
 // Glicko-2 constants. SCALE/CENTER map the public rating onto the internal (μ, φ)
@@ -94,14 +92,11 @@ export function glicko2Update(player: Glicko, oppRating: number, oppRd: number, 
 export interface EloParticipant {
   userId: string;
   alliance: Alliance;
-  drivetrain: DrivetrainType;
-  overall: Glicko;
-  drive: Glicko;
+  rating: Glicko;
 }
 
 export interface EloBoardUpdate {
   userId: string;
-  board: 'overall' | DrivetrainType;
   before: number; // rating before, rounded
   after: number; // rating after, rounded
   rd: number; // new RD, rounded (drives the provisional "?" indicator)
@@ -130,35 +125,28 @@ export function computeGlicko(
   const sRed = scores.red > scores.blue ? 1 : scores.red < scores.blue ? 0 : 0.5;
   const updates: EloBoardUpdate[] = [];
 
-  const applyBoard = (board: 'overall' | DrivetrainType, get: (p: EloParticipant) => Glicko): void => {
-    const red = participants.filter((p) => p.alliance === 'red');
-    const blue = participants.filter((p) => p.alliance === 'blue');
-    if (!red.length || !blue.length) return;
-    const agg = (ps: EloParticipant[]): { rating: number; rd: number } => ({
-      rating: ps.reduce((s, p) => s + get(p).rating, 0) / ps.length,
-      rd: Math.sqrt(ps.reduce((s, p) => s + get(p).rd * get(p).rd, 0) / ps.length),
+  const red = participants.filter((p) => p.alliance === 'red');
+  const blue = participants.filter((p) => p.alliance === 'blue');
+  if (!red.length || !blue.length) return updates;
+  const agg = (ps: EloParticipant[]): { rating: number; rd: number } => ({
+    rating: ps.reduce((s, p) => s + p.rating.rating, 0) / ps.length,
+    rd: Math.sqrt(ps.reduce((s, p) => s + p.rating.rd * p.rating.rd, 0) / ps.length),
+  });
+  const oppOfRed = agg(blue);
+  const oppOfBlue = agg(red);
+  for (const p of participants) {
+    const s = p.alliance === 'red' ? sRed : 1 - sRed;
+    const opp = p.alliance === 'red' ? oppOfRed : oppOfBlue;
+    const cur = p.rating;
+    const next = glicko2Update(cur, opp.rating, opp.rd, s);
+    updates.push({
+      userId: p.userId,
+      before: Math.round(cur.rating),
+      after: Math.round(next.rating),
+      rd: Math.round(next.rd),
+      state: next,
     });
-    const oppOfRed = agg(blue);
-    const oppOfBlue = agg(red);
-    for (const p of participants) {
-      const s = p.alliance === 'red' ? sRed : 1 - sRed;
-      const opp = p.alliance === 'red' ? oppOfRed : oppOfBlue;
-      const cur = get(p);
-      const next = glicko2Update(cur, opp.rating, opp.rd, s);
-      updates.push({
-        userId: p.userId,
-        board,
-        before: Math.round(cur.rating),
-        after: Math.round(next.rating),
-        rd: Math.round(next.rd),
-        state: next,
-      });
-    }
-  };
-
-  applyBoard('overall', (p) => p.overall);
-  const drivetrains = new Set(participants.map((p) => p.drivetrain));
-  if (drivetrains.size === 1) applyBoard([...drivetrains][0], (p) => p.drive);
+  }
   return updates;
 }
 
@@ -188,28 +176,26 @@ export async function persistVersusMatch(
   const { red, blue } = outcome.result.score;
 
   let updates: EloBoardUpdate[] = [];
-  const overallGames = new Map<string, number>(); // userId -> overall-board games after this match
+  const gamesAfter = new Map<string, number>(); // userId -> board games after this match
   if (ranked) {
     const parts: EloParticipant[] = [];
     for (const p of authed) {
       parts.push({
         userId: p.userId!,
         alliance: p.alliance,
-        drivetrain: p.drivetrain,
-        overall: await getRatingFull(p.userId!, mode, 'overall', balanceVersion),
-        drive: await getRatingFull(p.userId!, mode, p.drivetrain, balanceVersion),
+        rating: await getRatingFull(p.userId!, mode, balanceVersion),
       });
     }
     updates = computeGlicko(parts, outcome.result.score);
     for (const u of updates) {
-      const games = await upsertRating(u.userId, mode, u.board, balanceVersion, u.state.rating, u.state.rd, u.state.vol);
-      if (u.board === 'overall') overallGames.set(u.userId, games);
+      const games = await upsertRating(u.userId, mode, balanceVersion, u.state.rating, u.state.rd, u.state.vol);
+      gamesAfter.set(u.userId, games);
     }
   }
 
   const matchId = await saveMatch(mode, balanceVersion, replayId, ranked);
   for (const p of authed) {
-    const overall = ranked ? updates.find((u) => u.userId === p.userId && u.board === 'overall') : undefined;
+    const u = ranked ? updates.find((x) => x.userId === p.userId) : undefined;
     await addMatchParticipant({
       matchId,
       userId: p.userId!,
@@ -217,14 +203,18 @@ export async function persistVersusMatch(
       drivetrain: p.drivetrain,
       score: p.score,
       won: p.alliance === 'red' ? red > blue : blue > red,
-      ratingBefore: overall ? overall.before : null,
-      ratingAfter: overall ? overall.after : null,
+      ratingBefore: u ? u.before : null,
+      ratingAfter: u ? u.after : null,
     });
   }
 
-  // the overall-board change per player, for the results-screen rating reveal
-  // (ranked only; custom returns nothing so no reveal fires)
-  return updates
-    .filter((u) => u.board === 'overall')
-    .map((u) => ({ userId: u.userId, before: u.before, after: u.after, rd: u.rd, games: overallGames.get(u.userId) ?? 0 }));
+  // the rating change per player, for the results-screen reveal (ranked only;
+  // custom returns nothing so no reveal fires)
+  return updates.map((u) => ({
+    userId: u.userId,
+    before: u.before,
+    after: u.after,
+    rd: u.rd,
+    games: gamesAfter.get(u.userId) ?? 0,
+  }));
 }

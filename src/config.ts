@@ -50,7 +50,7 @@ export const BALANCE_VERSION = 3; // 2: real-motor drivetrain retune (torque–s
 // version's build): ReplayView gates on it and shows "recorded on an older version" instead.
 
 /** Ranked PLACEMENT: a player is "in placements" until they've completed this
- * many ranked games on a board (counted per mode × drivetrain, incl. Overall).
+ * many ranked games on a board (counted per mode).
  * Until placed they are HIDDEN from the leaderboard and shown a "?" plus an
  * "N matches until placement" line. This REPLACES the old RD-based provisional
  * flag (`rd > 110`), which stayed set far too long in a young pool: Glicko RD

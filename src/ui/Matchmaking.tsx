@@ -232,7 +232,7 @@ export function Matchmaking({
       <>
         Ranked <span className="accent">Match</span>
       </>,
-      'Head-to-head rating, split by drivetrain plus an overall board.',
+      'Head-to-head rating on a single leaderboard per mode.',
       <>
         <p className="ds-hint">
           Ranked tracks rating and the leaderboard, so it needs an account. Want to play now? Custom
@@ -300,7 +300,7 @@ export function Matchmaking({
     <>
       Ranked <span className="accent">Match</span>
     </>,
-    'Head-to-head rating — the winner takes it, split by drivetrain plus an overall board.',
+    'Head-to-head rating — the winner takes it, on a single leaderboard per mode.',
     <>
       <div className="ds-opts two">
         <button className={`ds-opt ${mode === '1v1' ? 'on' : ''}`} onClick={() => setMode('1v1')}>

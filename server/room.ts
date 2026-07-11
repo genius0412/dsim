@@ -441,9 +441,9 @@ export class Room {
       }
     }
     // record runs are OPPONENT-FREE co-op: every robot on one alliance (blue).
-    // A duo where the two robots use DIFFERENT drivetrains is allowed — it just
-    // counts on the OVERALL record board, not a drivetrain-specific one (decided
-    // at persist time, mirroring ranked ELO). So there is no drivetrain gate here.
+    // Each driver brings their OWN build, so a duo may mix drivetrains — a mixed
+    // pair just keys the record board's OVERALL bucket (decided at persist time).
+    // So there is no drivetrain gate here.
     // build setups from the current roster; keep start poses distinct per alliance
     const roster = [...this.clients.values()];
     const used: Record<Alliance, Set<number>> = { red: new Set(), blue: new Set() };
@@ -484,6 +484,12 @@ export class Room {
    * matchmaker, and ranked-from-pending paths. The caller must have built `setups`
    * and populated `robotOf` first. */
   private beginMatch(setups: RobotSetup[], seed: number): void {
+    // Autonomous does NOT run in server-authoritative matches yet — an auto path
+    // isn't reconciled against the server's authority, so it would desync. Strip
+    // it from EVERY setup here (the one chokepoint all match paths funnel through),
+    // regardless of what a client advertised. Local session-less practice, which
+    // never reaches Room, keeps running auto client-side.
+    setups = setups.map((s) => ({ ...s, autoPath: undefined, autoPathEnabled: false }));
     this.phase = 'match';
     const world = createWorld('match', seed, setups);
     world.match.preCountdown = C.PRE_COUNTDOWN; // sim-driven pre→auto, same as the client
