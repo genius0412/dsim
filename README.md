@@ -66,3 +66,19 @@ command sources; the physics, scoring, and match flow already handle any robot c
 
 `npx tsx scripts/smoke.ts` runs a headless verification of the sim (spawn layout,
 drive ratios, classification, gate, intake, match phases, scoring).
+
+## Contributing
+
+Contributions are welcome — please read [`CONTRIBUTING.md`](./CONTRIBUTING.md) first. All
+contributors must agree to the [Contributor License Agreement](./CLA.md).
+
+## License
+
+Source-available under the [PolyForm Noncommercial License 1.0.0](./LICENSE): you may use,
+study, modify, and share it for **noncommercial** purposes. **Commercial use requires a
+separate license** from the copyright holder (genius0412.tech@gmail.com). This is *not* an
+OSI open-source license.
+
+**Not affiliated with FIRST, FIRST Tech Challenge, or RTX.** "FIRST", "FTC", "DECODE",
+"DECODE presented by RTX", and "RTX" are trademarks of their respective owners, referenced
+only to describe the real-world game this simulator practices for. See [`NOTICE`](./NOTICE).

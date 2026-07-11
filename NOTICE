@@ -1,0 +1,43 @@
+DECODE 2D Simulator
+Copyright 2026 Dohun Kim (https://github.com/genius0412)
+
+Licensed under the PolyForm Noncommercial License 1.0.0. See the LICENSE file.
+This is a SOURCE-AVAILABLE license, not an open-source (OSI) license: you may use,
+study, modify, and share the software for NONCOMMERCIAL purposes only. Commercial use
+requires a separate license from the copyright holder.
+
+Required Notice: Copyright 2026 Dohun Kim (https://github.com/genius0412)
+
+
+TRADEMARK / NON-AFFILIATION DISCLAIMER
+--------------------------------------
+This project is an independent, fan-made simulator. It is NOT affiliated with,
+authorized by, endorsed by, or sponsored by any of the following, and no such
+association is claimed or implied:
+
+  - FIRST (For Inspiration and Recognition of Science and Technology)
+  - FIRST Tech Challenge (FTC)
+  - RTX Corporation
+
+"FIRST", the FIRST logo, "FIRST Tech Challenge", "FTC", "DECODE", "DECODE presented
+by RTX", and "RTX" are trademarks and/or copyrighted works of their respective owners.
+They are referenced here only to describe, factually, the real-world game this
+simulator is designed to practice for (nominative fair use). All rights in those marks
+and in the official game design, field artwork, and season branding remain with their
+owners.
+
+If you are a rights holder and have a concern about this project, please contact
+genius0412.tech@gmail.com.
+
+
+THIRD-PARTY SOFTWARE
+--------------------
+This project depends on third-party open-source software distributed under its own
+license, including but not limited to:
+
+  - React (MIT License)
+  - Vite (MIT License)
+  - @dimforge/rapier2d-compat (Apache License 2.0)
+
+Those components remain under their respective licenses; this project's license does
+not modify them.
