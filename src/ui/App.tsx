@@ -28,6 +28,7 @@ import type { NetSession } from '../net/session';
 import { ServerSession } from '../net/serverSession';
 import { WebSocketTransport } from '../net/transport';
 import { encodeMsg } from '../net/protocol';
+import { activeStartLegal } from '../sim/field';
 import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } from '../net/activeGame';
 import type { Replay } from '../sim/replay';
 
@@ -351,9 +352,17 @@ export function App() {
   // set when the player tries to start a new game while one is already in progress —
   // drives the "you have a game in progress" overlay (rejoin or abandon)
   const [blockedByActive, setBlockedByActive] = useState(false);
+  // set when a game start is refused because the active custom start pose is illegal
+  // for the current chassis (block-and-warn instead of silently snapping at spawn)
+  const [badStart, setBadStart] = useState(false);
+  // Guards EVERY game entry — local (free/solo) AND server-provided (record, duo,
+  // ranked, custom room). Even though the server snaps an illegal pose legal at
+  // spawn, the player configured it for a DIFFERENT chassis, so we refuse to start
+  // anywhere and send them to fix it rather than relocating their robot silently.
   const guardStart = (go: () => void): void => {
     if (loadActiveGame()) setBlockedByActive(true);
     else if (restartPending) setStartBlocked(true);
+    else if (!activeStartLegal(settings.spec, settings.alliance, settings.startPose)) setBadStart(true);
     else if (newVersion) setPendingStart(() => go);
     else go();
   };
@@ -527,6 +536,31 @@ export function App() {
               </button>
               <button className="ghost" onClick={abandonActiveGame}>
                 ABANDON
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {badStart && (
+        <div className="overlay">
+          <div className="overlay-panel">
+            <h2>Start position invalid</h2>
+            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
+              Your saved custom start position isn’t legal for the chassis you’ve got selected —
+              a different-sized robot doesn’t fit where it was placed. Fix the start position (or
+              pick a preset) for this chassis before starting.
+            </p>
+            <div className="overlay-buttons">
+              <button
+                onClick={() => {
+                  setBadStart(false);
+                  navigate('configure', { sub: 'match' });
+                }}
+              >
+                FIX START POSITION
+              </button>
+              <button className="ghost" onClick={() => setBadStart(false)}>
+                CANCEL
               </button>
             </div>
           </div>

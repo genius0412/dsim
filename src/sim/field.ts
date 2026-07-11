@@ -484,6 +484,23 @@ export function mirrorStartPose(p: StartPose, a: Alliance): StartPose {
   return { x: -p.x, y: p.y, headingDeg: h };
 }
 
+/** Is the ACTIVE start selection legal for this chassis + alliance? A `null` pose
+ * means "use the preset" (`presetPose` resolves it legal for ANY size — always ok);
+ * a custom pose (canonical frame, like `settings`/`LobbyPlayer.startPose`) is checked
+ * in the actual frame. A pose authored for one chassis can be illegal for a
+ * different-sized one — callers use this to REFUSE ready-up / game-start rather than
+ * let `createWorld` silently relocate the robot at spawn. Alliance-symmetric (a
+ * canonical pose legal for one alliance is legal for the other), so the settings
+ * alliance is safe even if the server later reassigns. */
+export function activeStartLegal(
+  spec: RobotSpec,
+  a: Alliance,
+  startPose: StartPose | null | undefined,
+): boolean {
+  if (!startPose) return true;
+  return evalStartPose(spec, mirrorStartPose(startPose, a), a).legal;
+}
+
 export function loadZone(a: Alliance): Rect {
   const d = driverSide(a);
   return sideRect(d, C.FIELD_HALF, C.FIELD_HALF - C.LOAD_ZONE_SIZE, -C.FIELD_HALF, -C.FIELD_HALF + C.LOAD_ZONE_SIZE);

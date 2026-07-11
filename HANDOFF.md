@@ -1,9 +1,55 @@
-# HANDOFF — 2026-07-10 (Act→Season hierarchy; prev: duo-record mixed drivetrains) — READ FIRST
+# HANDOFF — 2026-07-10 (start-pose block + room-code kind-scoping; prev: Act→Season) — READ FIRST
 
-> **GREEN — `npm run build`, `npm test`, `npm run server:check` all pass.** (Server + DB +
-> client UI; no `src/sim/` touch.)
+> **GREEN — `npm run build`, `npm test` (2 new checks), `npm run server:check` all pass.**
 
-## Latest — Act & Season system (competitive periods now Act → Season)
+## Latest — two fixes: illegal start-pose block + kind-scoped room codes
+
+### (1) EVERY game refuses an illegal custom start pose (block-and-warn)
+Bug report: "the game should not start with an invalid starting position" when a custom
+start pose is saved with one chassis then used with a DIFFERENT-sized chassis — and it happens
+in BOTH local and SERVER games. Investigation (scratchpad repro against the real sim) showed the
+sim spawn is geometrically robust — `createWorld` → `coerceSetup` → `snapStartToLegal` re-snaps
+every custom pose legal for the actual chassis on both client AND server (server `beginMatch`
+calls `createWorld`; 0/2312 cross-chassis poses spawn illegal). So the robot never spawns
+overlapping — but the user configured the pose for a DIFFERENT chassis, and wants the game to
+**refuse to start and warn** rather than silently RELOCATE the robot. Applies to all games (the
+"server games don't matter" read was wrong — corrected: server games did it too).
+- `src/sim/field.ts` — new pure `activeStartLegal(spec, alliance, startPose)`: `null` (a preset)
+  is always ok; a custom pose is `evalStartPose(spec, mirrorStartPose(pose, a), a)` (same
+  actual-frame check the editor uses; canonical poses are alliance-symmetric so the settings
+  alliance is fine even if the server reassigns). Lives in `field.ts` (pure geometry) so the
+  SERVER can import it too.
+- `src/ui/App.tsx` — the check lives INSIDE `guardStart`, which gates ALL six entry points
+  (free drive, solo match, record, duo record, ranked, custom room). On an illegal active pose
+  it shows a new overlay ("Start position invalid" → FIX START POSITION jumps to
+  `configure/match`, or CANCEL) instead of entering the game/lobby.
+- **READY-UP gate (lobby + pre-match)** — a player can't ready up with an illegal pose:
+  - `src/ui/Lobby.tsx` + `src/ui/MatchStrategy.tsx` — compute `startLegal =
+    activeStartLegal(me.spec, me.alliance, me.startPose)`; the READY UP button is `disabled`
+    when illegal (still allows UN-readying), with a ⚠ hint. These screens let a player SWAP
+    chassis right next to ready, which is what makes a saved pose go illegal mid-lobby.
+  - `server/room.ts` (AUTHORITATIVE) — `case 'update'` force-clears `ready` whenever the
+    resulting pose is illegal for the player's spec (covers spec-swap-then-stale-ready +
+    spoofed ready), so the ranked auto-start (`maybeBeginRanked`, all-ready) can't fire. And
+    `startMatch()` refuses (broadcasts an error) if ANY driver's pose is illegal — closing the
+    host-start path, which isn't gated on all-ready server-side. The server still SNAPS at
+    `createWorld` as a last resort, but these gates mean an illegal pose never reaches it.
+- `scripts/smoke.ts` — +2 checks (null pose ok; a pose legal for a small chassis but illegal
+  for a big one is flagged).
+- Auto-path was explicitly OUT of scope (user said ignore). NOT changed.
+
+### (2) Room codes are kind-scoped (custom room ≠ duo record)
+Bug: custom (versus) rooms and duo-record rooms mint codes from the SAME `generateRoomCode()`
+into ONE shared `rooms` map, and `joinRoom` attached a joiner to whatever room owned the code
+WITHOUT comparing kind — so a duo-record code typed into the custom join box (or a rare random
+collision) dropped you into the wrong mode (wrong capacity/alliance/leaderboard).
+- `server/index.ts` `joinRoom` — when the code already names a room (`!created`), compare the
+  joiner's `msg.config` (kind + record) to `r.config`; on mismatch send `{t:'error', message:
+  'That code is for a different game mode.'}` and refuse. A just-created room can't mismatch.
+  Client already surfaces server `error` (Lobby → phase 'error'). No protocol change →
+  backward-compatible. Deploy: server change ⇒ `flyctl deploy --remote-only`.
+
+## Prev — Act & Season system (competitive periods now Act → Season)
 
 User model: periods form an **Act → Season** hierarchy — MULTIPLE seasons per act, both
 1-indexed, plus **Act 0** for the historical beta/pre-season. Before, the leaderboard bucket

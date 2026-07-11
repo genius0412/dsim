@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GameSettings, RobotSpec } from '../types';
 import { START_POSES } from '../config';
+import { activeStartLegal } from '../sim/field';
 import { StartPositionEditor } from './StartPositionEditor';
 import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
@@ -129,6 +130,8 @@ export function MatchStrategy({
   };
 
   const mySpec = me?.spec ?? settings.spec;
+  // my start pose must be legal for my (possibly just-swapped) chassis to ready up
+  const startLegal = activeStartLegal(mySpec, myAlliance ?? settings.alliance, me?.startPose);
 
   // full-builder takeover: reuse the My Robot menu, with a Done button back
   if (building) {
@@ -317,14 +320,20 @@ export function MatchStrategy({
         </section>
 
         <div className="ds-actions">
-          <button className={`ds-cta ${me?.ready ? 'ghost' : ''}`} onClick={toggleReady}>
+          <button
+            className={`ds-cta ${me?.ready ? 'ghost' : ''}`}
+            disabled={!startLegal && !me?.ready}
+            onClick={toggleReady}
+          >
             {me?.ready ? '✓ READY' : 'READY UP'}
           </button>
         </div>
         <p className="ds-hint">
-          {allReady
-            ? 'Everyone ready — starting…'
-            : `The match starts when all ${players.length} drivers are ready. It CANCELS if anyone isn’t ready in ${secsLeft}s.`}
+          {!startLegal
+            ? '⚠ Your start position isn’t legal for this chassis — fix it above (or pick a preset) to ready up.'
+            : allReady
+              ? 'Everyone ready — starting…'
+              : `The match starts when all ${players.length} drivers are ready. It CANCELS if anyone isn’t ready in ${secsLeft}s.`}
         </p>
       </div>
     </div>

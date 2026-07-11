@@ -1,5 +1,6 @@
 import * as C from '../src/config';
 import { START_POSES } from '../src/config';
+import { activeStartLegal } from '../src/sim/field';
 import { createWorld, coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { step } from '../src/sim/world';
 import { physicsReady } from '../src/sim/physicsEngine';
@@ -363,6 +364,15 @@ export class Room {
         // side, or two partners could stack one alliance.
         if (this.pendingMatch && this.phase === 'strategy') delete patch.alliance;
         Object.assign(c.player, patch);
+        // AUTHORITATIVE ready gate: a player can't be ready with a start pose that's
+        // illegal for their (possibly just-swapped) chassis — otherwise createWorld
+        // would silently relocate their robot at spawn. Runs on every patch (ready
+        // toggle, spec swap, pose edit), so any state that leaves an illegal pose
+        // clears ready. Closes the host-start + ranked auto-start paths against a
+        // stale/spoofed ready.
+        if (c.player.ready && !activeStartLegal(c.player.spec, c.player.alliance, c.player.startPose)) {
+          c.player.ready = false;
+        }
         this.broadcastRoster();
         if (this.phase === 'strategy') this.maybeBeginRanked();
         break;
@@ -416,6 +426,20 @@ export class Room {
 
   private startMatch(): void {
     const record = this.config.kind === 'record';
+    // Refuse to start if any driver's start pose is illegal for their chassis — we
+    // block-and-warn rather than let createWorld silently relocate the robot. The
+    // ready gate (case 'update') already prevents this in normal flow; this also
+    // closes the host-start path, which is NOT gated on all-ready server-side.
+    for (const c of this.clients.values()) {
+      const a: Alliance = record ? 'blue' : c.player.alliance;
+      if (!activeStartLegal(c.player.spec, a, c.player.startPose)) {
+        this.broadcast({
+          t: 'error',
+          message: 'A driver’s start position is invalid for their chassis — fix it to start.',
+        });
+        return;
+      }
+    }
     // record runs are OPPONENT-FREE co-op: every robot on one alliance (blue).
     // A duo where the two robots use DIFFERENT drivetrains is allowed — it just
     // counts on the OVERALL record board, not a drivetrain-specific one (decided

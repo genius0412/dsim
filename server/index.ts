@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Room, type Client } from './room';
-import { decodeClientMsg, encodeMsg, type ClientMsg, type ServerMsg } from '../src/net/protocol';
+import { decodeClientMsg, encodeMsg, DEFAULT_ROOM_CONFIG, type ClientMsg, type ServerMsg } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
@@ -570,6 +570,20 @@ wss.on('connection', (ws: WebSocket) => {
       );
       rooms.set(code, r);
       created = true;
+    }
+    // Room codes are KIND-SCOPED: a custom (versus) code must never admit a
+    // duo-record joiner, or vice-versa (both mint codes from the same generator, so
+    // a shared/typo'd code could otherwise drop you into the wrong game mode — wrong
+    // capacity, alliance layout, and leaderboard). The client sends its intended
+    // config on every join; when the code already names a room, its config wins and a
+    // mismatched joiner is refused. (A just-created room can't mismatch — its config
+    // IS the joiner's.)
+    if (!created) {
+      const want = msg.config ?? DEFAULT_ROOM_CONFIG;
+      if (r.config.kind !== want.kind || r.config.record !== want.record) {
+        send({ t: 'error', message: 'That code is for a different game mode.' });
+        return;
+      }
     }
     if (created && dbEnabled) {
       const pending = await takePendingMatch(code).catch(() => null);

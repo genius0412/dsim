@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
 import type { Alliance, GameSettings as GS } from '../types';
 import { START_POSES } from '../config';
+import { activeStartLegal } from '../sim/field';
 import { StartPositionEditor } from './StartPositionEditor';
 import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
@@ -74,6 +75,9 @@ export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = 
   const me = players.find((p) => p.clientId === myId) ?? null;
   const isHost = myId !== '' && myId === hostId;
   const allReady = players.length > 0 && players.every((p) => p.ready);
+  // my active start pose must be legal for my chassis to ready up (a pose authored
+  // for a different-sized robot would otherwise be silently relocated at spawn)
+  const startLegal = !me || activeStartLegal(me.spec, me.alliance, me.startPose);
   // a duo record run needs BOTH drivers present before it can start (it's 2v0);
   // versus custom rooms can start with fewer (1v1, etc.)
   const enoughPlayers = !isRecord || players.length >= capacity;
@@ -410,7 +414,11 @@ export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = 
         )}
 
         <div className="ds-actions">
-          <button className={`ds-cta ${me?.ready ? 'ghost' : ''}`} onClick={toggleReady}>
+          <button
+            className={`ds-cta ${me?.ready ? 'ghost' : ''}`}
+            disabled={!startLegal && !me?.ready}
+            onClick={toggleReady}
+          >
             {me?.ready ? '✓ READY' : 'READY UP'}
           </button>
           {isHost && (
@@ -419,6 +427,12 @@ export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = 
             </button>
           )}
         </div>
+        {!startLegal && (
+          <p className="ds-hint">
+            ⚠ Your start position isn’t legal for this chassis — fix it above (or pick a preset) to
+            ready up.
+          </p>
+        )}
         {isHost && !enoughPlayers && (
           <p className="ds-hint">Waiting for your partner to join with the code…</p>
         )}

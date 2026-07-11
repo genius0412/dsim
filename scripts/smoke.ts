@@ -37,6 +37,7 @@ import {
   snapStartToLegal,
   mirrorStartPose,
   presetPose,
+  activeStartLegal,
 } from '../src/sim/field';
 import { addClassified, addOverflow, assessMatchEnd } from '../src/sim/scoring';
 import type { Alliance, GameMode, RobotCommand, RobotSpec, World } from '../src/types';
@@ -236,6 +237,24 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   // the spawned robot (red = canonical frame) is a legal G304 setup
   const spawnedPose = { x: cw.robots[0].pos.x, y: cw.robots[0].pos.y, headingDeg: (cw.robots[0].heading * 180) / Math.PI };
   check('spawned custom-pose robot is a legal G304 setup', evalStartPose(cw.robots[0].spec, spawnedPose, 'red').legal);
+
+  // activeStartLegal (LOCAL start guard): null (preset) is always ok; a custom pose
+  // legal for a SMALL chassis but illegal for a BIGGER one is caught so the local
+  // game start can block-and-warn instead of silently snapping.
+  const smallSpec = coerceSpec({ ...DEFAULT_SPEC, length: 11, width: 10, intake: 'vector' });
+  const bigSpec = coerceSpec({ ...DEFAULT_SPEC, length: 18, width: 18, intake: 'vector' });
+  let crossChassisCaught = false;
+  outer: for (let x = -70; x <= 70 && !crossChassisCaught; x += 3)
+    for (let y = -70; y <= 70; y += 3)
+      for (let h = 0; h < 360; h += 30) {
+        const p = { x, y, headingDeg: h };
+        if (evalStartPose(smallSpec, p, 'red').legal && !evalStartPose(bigSpec, p, 'red').legal) {
+          crossChassisCaught = activeStartLegal(smallSpec, 'red', p) && !activeStartLegal(bigSpec, 'red', p);
+          if (crossChassisCaught) break outer;
+        }
+      }
+  check('activeStartLegal ok for a preset (null pose)', activeStartLegal(bigSpec, 'blue', null));
+  check('activeStartLegal flags a pose legal for a small chassis but illegal for a big one', crossChassisCaught);
 
   // Close/Far categories: presets partition, and each is legal in its own category
   const closeP = START_POSES.filter((p) => p.cat === 'close');
