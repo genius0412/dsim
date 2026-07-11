@@ -1,8 +1,45 @@
-# HANDOFF — 2026-07-11 (swerve min width 13.5 · vector intake = chassis width · ranked drivetrain split dropped · no server auto · duo shows both drivetrains) — READ FIRST
+# HANDOFF — 2026-07-11 (replay version gate = sim-code not season · duo record requires both signed in) — READ FIRST
 
 > **GREEN — `npm run build`, `npm test` (ALL PASS), `npm run server:check` all pass.** (No palette edits → didn't re-run `contrast`.)
 
-## Latest — balance: swerve accel/weight + per-intake minimum widths
+## Latest — replay "older version" false-positive + duo one-name records (both SERVER-only)
+
+Two bug fixes, both entirely server-side (client `ReplayView` gate + `Leaderboard`
+partner rendering were already correct). Deployed via `scripts/announce-deploy.sh`
+(5-min player warning). Migration `0012` runs at server boot.
+
+### 1) Replays read as "recorded on an older version" when they weren't
+- ROOT CAUSE: `persist.ts` overwrote `o.replay.balanceVersion` with the DB **season**
+  (`currentSeasonNumber` = `max(seasons.balance_version, code BALANCE_VERSION)`), but the
+  playback gate (`src/ui/ReplayView.tsx:51`) compares it to the client's compiled
+  `BALANCE_VERSION`. An **admin season bump** (no physics change) pushes the season past
+  the code version → `4 !== 3` → false "older version (Season 4)".
+- FIX: keep the **season** on `replays.balance_version` (purge-by-season + its 0004 index),
+  store the real **sim-code version** in a new `replays.sim_version` column (migration
+  `0012`), and gate on THAT. `saveReplay(replay, season)` now takes the season separately
+  (persist no longer clobbers `replay.balanceVersion`); `getReplay` returns
+  `sim_version ?? balance_version`.
+- BACKFILL (`0012`): `sim_version = least(balance_version, 3)` — 3 = current `BALANCE_VERSION`,
+  the highest REAL physics version, so season-bumped replays (stamped >3) become watchable
+  again while genuine v1/v2 replays stay correctly gated. **If BALANCE_VERSION later bumps
+  for a real physics change, that hardcoded 3 in the already-applied migration is fine (one-time
+  historical backfill); new replays get their true version via `saveReplay`.**
+
+### 2) Duo record runs showed only one user
+- The whole pipeline (DB `partner_id`, API `partnerId/partnerHandle`, `Leaderboard.tsx:345`)
+  is correct. `persist.ts` only credits a partner that is **authed** (`partner = authed[1]`),
+  so a **guest** second driver saved a one-name record.
+- FIX: `room.ts` `startMatch` refuses to start a **duo record** until every client has a
+  `userId` (broadcasts an `error`, same backstop shape as the illegal-start-pose check).
+  `LobbyPlayer` does NOT expose auth status, so there's no client-side pre-check yet — the
+  server error surfaces in the Lobby (kicks to its error screen). A nicer client hint would
+  need a protocol field on the roster (deferred).
+
+**DEPLOY (this session):** committed on main (`baa7de0`) → `scripts/announce-deploy.sh "…" 300`
+(announce fired: `notified:2`) → `fly-deploy.sh` → `/health`. No client rebuild needed
+(server-only), but Vercel will still pick up main.
+
+## Prev — balance: swerve accel/weight + per-intake minimum widths
 
 - **Swerve** (`config.ts`): `accelMult` 1.30 → **1.32**, base min weight (`DRIVETRAIN_LIMITS.swerve.minMass`) → **21.5** lb. Tuned so a min-weight / max-inertia / 500rpm swerve just OUT-accels the equivalent mecanum (~1.7%); at equal weight swerve is clearly ahead (1.32 vs mecanum 1.12). Smoke pins the corner comparison. (Peak accel ~317 in/s².)
 - **Per-intake MIN WIDTH** (`INTAKE_PRESETS[*].minWidth`, applied in `drivetrain.ts` `widthLimits`): sloped **14.5"**, triangle **15.5"**, vector **10"** (`ROBOT_MIN_WIDTH`). The width floor is now `max(drivetrain floor, intake floor)` — so swerve+triangle = 15.5, mecanum+vector = 10. All 5 `ROBOT_PRESETS` + `DEFAULT_SPEC` already clear the new floors.
