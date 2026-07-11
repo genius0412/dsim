@@ -426,6 +426,20 @@ export class Room {
 
   private startMatch(): void {
     const record = this.config.kind === 'record';
+    // A DUO record credits BOTH drivers on the leaderboard (primary + partner), but
+    // the partner is only persisted if they're signed in (persist.ts filters to
+    // authed participants). A guest partner would silently save as a one-name run,
+    // so refuse to start a duo record until every driver is authenticated.
+    if (record && this.config.record === 'duo') {
+      const guest = [...this.clients.values()].find((c) => !c.userId);
+      if (guest) {
+        this.broadcast({
+          t: 'error',
+          message: 'Both drivers must be signed in to save a Duo record run.',
+        });
+        return;
+      }
+    }
     // Refuse to start if any driver's start pose is illegal for their chassis — we
     // block-and-warn rather than let createWorld silently relocate the robot. The
     // ready gate (case 'update') already prevents this in normal flow; this also

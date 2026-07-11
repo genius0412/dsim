@@ -327,13 +327,18 @@ export async function saveUserSettings(userId: string, settings: unknown): Promi
 }
 
 // ------------------------------------------------------------- replays ------
-export async function saveReplay(replay: Replay): Promise<string> {
+/** Persist a replay. `season` (= currentSeasonNumber) is the SEASON stamp used for
+ * purge-by-season; `replay.balanceVersion` is the real sim-code version that
+ * recorded it (config.BALANCE_VERSION) — stored separately in `sim_version` so the
+ * playback gate compares CODE-vs-CODE, not code-vs-season (0012). */
+export async function saveReplay(replay: Replay, season: number): Promise<string> {
   const rows = await q<{ id: string }>(
-    `insert into replays (format, balance_version, seed, ticks, setups, tracks)
-     values ($1, $2, $3, $4, $5, $6) returning id`,
+    `insert into replays (format, balance_version, sim_version, seed, ticks, setups, tracks)
+     values ($1, $2, $3, $4, $5, $6, $7) returning id`,
     [
       replay.format,
-      replay.balanceVersion,
+      season, // balance_version = SEASON (purge key + index, see 0004)
+      replay.balanceVersion, // sim_version = the sim-code version that recorded it
       replay.seed,
       replay.ticks,
       JSON.stringify(replay.setups),
@@ -347,16 +352,22 @@ export async function getReplay(id: string): Promise<Replay | null> {
   const rows = await q<{
     format: number;
     balance_version: number;
+    sim_version: number | null;
     seed: string;
     ticks: number;
     setups: Replay['setups'];
     tracks: Replay['tracks'];
-  }>(`select format, balance_version, seed, ticks, setups, tracks from replays where id = $1`, [id]);
+  }>(
+    `select format, balance_version, sim_version, seed, ticks, setups, tracks from replays where id = $1`,
+    [id],
+  );
   const r = rows[0];
   if (!r) return null;
   return {
     format: r.format,
-    balanceVersion: r.balance_version,
+    // the gate re-sims: it needs the CODE version. Fall back to balance_version for
+    // any legacy row the 0012 backfill somehow missed.
+    balanceVersion: r.sim_version ?? r.balance_version,
     mode: 'match',
     seed: Number(r.seed),
     ticks: r.ticks,
