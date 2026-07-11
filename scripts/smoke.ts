@@ -1681,7 +1681,7 @@ const setup = (
 {
   check('massLimits mecanum floor is 18 at inertia 0', massLimits('mecanum', 0).min === 18);
   check('massLimits mecanum floor climbs to 22 at inertia 1', massLimits('mecanum', 1).min === 22);
-  check('massLimits swerve floor is 23 at inertia 0', massLimits('swerve', 0).min === 23);
+  check('massLimits swerve floor is 22 at inertia 0', massLimits('swerve', 0).min === 22);
   check('inertia only nudges the floor (≤ 4 lb across the whole range)', massLimits('mecanum', 1).min - massLimits('mecanum', 0).min <= 4);
   check('rpmLimits swerve caps at 500', rpmLimits('swerve').max === 500);
   const s = coerceSettings({

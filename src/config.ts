@@ -294,7 +294,7 @@ export const DRIVETRAIN_LIMITS = {
   mecanum: { minMass: 18, maxMass: 42, minRpm: 200, maxRpm: 600 },
   xdrive: { minMass: 18, maxMass: 42, minRpm: 200, maxRpm: 600 },
   tank: { minMass: 22, maxMass: 42, minRpm: 200, maxRpm: 560 },
-  swerve: { minMass: 23, maxMass: 40, minRpm: 200, maxRpm: 500 }, // a touch heavier base (8 motors + modules)
+  swerve: { minMass: 22, maxMass: 40, minRpm: 200, maxRpm: 500 }, // a touch heavier base (8 motors + modules)
 } as const;
 /** lb added to a drivetrain's mass floor at flywheelInertia 1 (a big flywheel
  * weighs more): effective floor = base + INERTIA_MASS_FLOOR·inertia. Kept small
