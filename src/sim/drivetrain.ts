@@ -92,15 +92,18 @@ export function lengthLimits(intake: IntakeStyle): { min: number; max: number } 
   return { min: p.minLength, max: p.maxLength };
 }
 
-/** chassis WIDTH range (in). The intake extends the robot's LENGTH, not its
- * width, so the ceiling is the 18" cube for every intake. The FLOOR is normally
- * ROBOT_MIN_WIDTH, but SWERVE needs a wider base (corner steering modules) so it
- * floors at SWERVE_MIN_WIDTH. This is the one place width policy lives. */
+/** chassis WIDTH range (in). The ceiling is the 18" cube for every intake. The
+ * FLOOR is the widest of two constraints: (1) the DRIVETRAIN floor — swerve needs
+ * a wider base (corner steering modules) → SWERVE_MIN_WIDTH, others ROBOT_MIN_WIDTH;
+ * and (2) the INTAKE floor — the funnel presets (sloped/triangle) need a wider frame
+ * to house their side slopes (per-preset `minWidth`). This is the one place width
+ * policy lives. */
 export function widthLimits(
-  _intake: IntakeStyle,
+  intake: IntakeStyle,
   drivetrain: DrivetrainType,
 ): { min: number; max: number } {
-  const min = drivetrain === 'swerve' ? C.SWERVE_MIN_WIDTH : C.ROBOT_MIN_WIDTH;
+  const dtFloor = drivetrain === 'swerve' ? C.SWERVE_MIN_WIDTH : C.ROBOT_MIN_WIDTH;
+  const min = Math.max(dtFloor, C.INTAKE_PRESETS[intake].minWidth);
   return { min, max: C.ROBOT_MAX_SIZE };
 }
 

@@ -297,7 +297,7 @@ export const DRIVETRAIN_LIMITS = {
   mecanum: { minMass: 18, maxMass: 42, minRpm: 200, maxRpm: 600 },
   xdrive: { minMass: 18, maxMass: 42, minRpm: 200, maxRpm: 600 },
   tank: { minMass: 22, maxMass: 42, minRpm: 200, maxRpm: 560 },
-  swerve: { minMass: 22, maxMass: 40, minRpm: 200, maxRpm: 500 }, // a touch heavier base (8 motors + modules)
+  swerve: { minMass: 21.5, maxMass: 40, minRpm: 200, maxRpm: 500 }, // a touch heavier base (8 motors + modules)
 } as const;
 /** lb added to a drivetrain's mass floor at flywheelInertia 1 (a big flywheel
  * weighs more): effective floor = base + INERTIA_MASS_FLOOR·inertia. Kept small
@@ -311,7 +311,7 @@ export const SORT_FIRE_PENALTY = 0.25;
  * fraction of the ideal-traction BASE — tank ≈ 1 (traction bites), the roller
  * drives (mecanum/x-drive) pay real losses. Resulting free speeds at the 435-rpm
  * reference (base ~89 in/s): tank 89 · swerve 84 · mecanum 77 · x-drive 74; peak
- * accel (μ·g): tank 348 · swerve 312 · mecanum 211 · x-drive 175.
+ * accel (μ·g): tank 348 · swerve 317 · mecanum 211 · x-drive 175.
  * DRIVETRAIN NICHES: tank = raw power + no strafe; swerve = strongest holonomic
  * (speed/accel/push/full-strafe) BUT its imperfect pod control makes it WOBBLE
  * driving straight (imprecise line) + pods reorient on direction changes; mecanum =
@@ -339,8 +339,11 @@ export const DRIVETRAIN_PRESETS = {
    * accel and pushing power vs tank in exchange for maneuverability. Costs: ~8% forward
    * loss (roller scrub), slower strafe, and modest pushing power (shoved by tank/swerve).
    * accelMult 1.12: close to swerve's EFFECTIVE accel (swerve's steady power draw eats ~10%
-   * of its 1.3), so straight-line FEEL matches even though swerve keeps a slight burst edge
-   * and more raw accel — mecanum was feeling sluggish off the line at the old 0.98. */
+   * of its 1.32), so straight-line FEEL matches even though swerve keeps a slight burst edge
+   * and more raw accel at equal weight — mecanum was feeling sluggish off the line at the old
+   * 0.98. Even at the EXTREME min-weight, MAX-inertia, 500rpm corner, swerve (1.32 / floor
+   * 21.5 → 25.5lb) still edges out the equivalent mecanum (1.12 / floor 18 → 22lb) by ~1.7% —
+   * its higher accelMult just beats its heavier module floor. Swerve keeps the raw-accel edge. */
   mecanum: { strafeMult: 0.8, speedMult: 0.92, accelMult: 1.12, pushMult: 0.8, turnMult: 1.0, saturation: 'sum' },
   /** 45° omni X-drive: a deliberately-WEAK novelty with no honest competitive niche.
    * REALISTICALLY the worst by a wide margin: each omni sits at 45°, so a big chunk of
@@ -363,7 +366,7 @@ export const DRIVETRAIN_PRESETS = {
   // unaffected. turnMult 1.15: it VECTORS all four wheels tangentially for rotation → the
   // fastest TURNER, its signature. Tradeoffs: WOBBLE (imprecise line), heavy mass, steering draw.
   // turnMult 1.18: kept above tank's raised speed so swerve stays the fastest turner.
-  swerve: { strafeMult: 1.0, speedMult: 0.92, accelMult: 1.3, pushMult: 1.35, turnMult: 1.18, saturation: 'vec' },
+  swerve: { strafeMult: 1.0, speedMult: 0.92, accelMult: 1.32, pushMult: 1.35, turnMult: 1.18, saturation: 'vec' },
 } as const;
 
 /** flywheel recovery: after an energetic (long-range) shot, a LOW-inertia
@@ -457,7 +460,7 @@ export const INTAKE_PRESETS = {
    * throat — no flat front. maxLength = 18 − reach (the roller counts toward the
    * 18in cube). Fast + eats clumps. */
   sloped: {
-    reach: 3, overhang: false, minLength: 13.5, maxLength: 15, fireInterval: 0.08, fireCap: 0,
+    reach: 3, overhang: false, minLength: 13.5, maxLength: 15, minWidth: 14.5, fireInterval: 0.08, fireCap: 0,
     mouth: {
       wedge: true, mouthHalf: 7, throatHalf: 3, drawIn: 26,
       capMin: 0.05, capMax: 0.09, clumpInterval: 0.04, dual: false,
@@ -469,7 +472,7 @@ export const INTAKE_PRESETS = {
    * NO overhang: the wheel row matches the frame. CENTER intakes fast, the SIDES
    * slower (vectoring). Chassis 11.5..14.5in. */
   vector: {
-    reach: 3.5, overhang: false, minLength: 11.5, maxLength: 14.5, fireInterval: 0.1, fireCap: 0,
+    reach: 3.5, overhang: false, minLength: 11.5, maxLength: 14.5, minWidth: ROBOT_MIN_WIDTH, fireInterval: 0.1, fireCap: 0,
     mouth: {
       // flat plate spanning the chassis width; the mecanum wheels VECTOR a ball
       // laterally (drawIn) to the center compliant zone (throatHalf) before sucking
@@ -485,7 +488,7 @@ export const INTAKE_PRESETS = {
    * fire faster than that, but when conditions are already slower than the cap
    * (flywheel recovery on far shots) it fires at the same rate as everyone else. */
   triangle: {
-    reach: 5, overhang: false, minLength: 11, maxLength: 13, fireInterval: 0.1, fireCap: 0.12,
+    reach: 5, overhang: false, minLength: 11, maxLength: 13, minWidth: 15.5, fireInterval: 0.1, fireCap: 0.12,
     mouth: {
       // strongest INTAKE of the three (its identity — devours clumps): a hard
       // suction (drawIn) snaps balls to the throat and it swallows quickest. The

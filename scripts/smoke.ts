@@ -74,7 +74,7 @@ import {
   POSSESSION_GRACE,
 } from '../src/config';
 import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
-import { driveParams, massLimits, rpmLimits, motorStep, driveSummary } from '../src/sim/drivetrain';
+import { driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits } from '../src/sim/drivetrain';
 import { coerceSettings } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, mergeBindings } from '../src/input/bindings';
@@ -1680,13 +1680,22 @@ const setup = (
 {
   check('massLimits mecanum floor is 18 at inertia 0', massLimits('mecanum', 0).min === 18);
   check('massLimits mecanum floor climbs to 22 at inertia 1', massLimits('mecanum', 1).min === 22);
-  check('massLimits swerve floor is 22 at inertia 0', massLimits('swerve', 0).min === 22);
+  check('massLimits swerve floor is 21.5 at inertia 0', massLimits('swerve', 0).min === 21.5);
   check('inertia only nudges the floor (≤ 4 lb across the whole range)', massLimits('mecanum', 1).min - massLimits('mecanum', 0).min <= 4);
   check('rpmLimits swerve caps at 500', rpmLimits('swerve').max === 500);
+  // swerve keeps its raw-accel edge even at the WORST case for it: a min-weight,
+  // MAX-inertia, 500rpm build out-accels the equivalent mecanum (massLb 0 → the
+  // per-drivetrain×inertia floor). Its higher accelMult (1.32) beats its heavier floor.
+  {
+    const accelOf = (drivetrain: 'swerve' | 'mecanum') =>
+      driveParams(coerceSpec({ drivetrain, driveRpm: 500, flywheelInertia: 1, massLb: 0 })).accel;
+    const sw = accelOf('swerve'), me = accelOf('mecanum');
+    check('swerve out-accels a 500rpm max-inertia min-weight mecanum', sw > me, `swerve ${sw.toFixed(1)} vs mecanum ${me.toFixed(1)}`);
+  }
   const s = coerceSettings({
     spec: { drivetrain: 'swerve', massLb: 18, driveRpm: 600, flywheelInertia: 0.8 },
   });
-  const floor = massLimits('swerve', 0.8).min; // 22 + 4·0.8 = 25.2
+  const floor = massLimits('swerve', 0.8).min; // 21.5 + 4·0.8 = 24.7
   check('coerceSettings clamps swerve mass up to the inertia-coupled floor', Math.abs(s.spec.massLb - floor) < 1e-9, `${s.spec.massLb} vs ${floor}`);
   check('coerceSettings clamps swerve rpm down to 500', s.spec.driveRpm === 500, `${s.spec.driveRpm}`);
 }
@@ -1747,9 +1756,17 @@ const setup = (
   check('coerceSpec clamps length UP to the preset min', tiny.length >= INTAKE_PRESETS.sloped.minLength, `${tiny.length}`);
   check('coerceSpec clamps width UP to ROBOT_MIN_WIDTH', tiny.width >= ROBOT_MIN_WIDTH, `${tiny.width}`);
   // swerve needs a wider base — its width floors at SWERVE_MIN_WIDTH, above the others
-  const swWide = coerceSpec({ drivetrain: 'swerve', width: 10 });
+  // isolate the drivetrain floor with a VECTOR intake (its own width floor is the
+  // lowest — ROBOT_MIN_WIDTH — so it doesn't mask the drivetrain floor)
+  const swWide = coerceSpec({ drivetrain: 'swerve', intake: 'vector', width: 10 });
   check('coerceSpec clamps swerve width UP to SWERVE_MIN_WIDTH', swWide.width === SWERVE_MIN_WIDTH, `${swWide.width}`);
-  check('non-swerve width floor stays ROBOT_MIN_WIDTH', coerceSpec({ drivetrain: 'mecanum', width: 10 }).width === ROBOT_MIN_WIDTH);
+  check('non-swerve vector width floor stays ROBOT_MIN_WIDTH', coerceSpec({ drivetrain: 'mecanum', intake: 'vector', width: 10 }).width === ROBOT_MIN_WIDTH);
+  // per-INTAKE width floors: the funnel presets need a wider frame than vector
+  check('widthLimits sloped floors at 14.5', widthLimits('sloped', 'mecanum').min === 14.5, `${widthLimits('sloped', 'mecanum').min}`);
+  check('widthLimits triangle floors at 15.5', widthLimits('triangle', 'mecanum').min === 15.5, `${widthLimits('triangle', 'mecanum').min}`);
+  // the floor is the MAX of the intake + drivetrain floors
+  check('widthLimits takes the MAX of intake + drivetrain floor', widthLimits('triangle', 'swerve').min === 15.5 && widthLimits('vector', 'swerve').min === SWERVE_MIN_WIDTH);
+  check('coerceSpec clamps a sloped robot UP to the intake width floor', coerceSpec({ intake: 'sloped', width: 10 }).width === 14.5, `${coerceSpec({ intake: 'sloped', width: 10 }).width}`);
   check('coerceSpec clamps mass UP to the drivetrain×inertia floor', tiny.massLb >= massLimits('mecanum', 0.5).min, `${tiny.massLb}`);
   check('coerceSpec clamps rpm UP to the drivetrain min', tiny.driveRpm >= rpmLimits('mecanum').min, `${tiny.driveRpm}`);
   check('coerceSpec clamps a NEGATIVE inertia to 0', coerceSpec({ flywheelInertia: -3 }).flywheelInertia === 0);

@@ -2,7 +2,12 @@
 
 > **GREEN — `npm run build`, `npm test` (ALL PASS), `npm run server:check` all pass.** (No palette edits → didn't re-run `contrast`.)
 
-## Latest — swerve minimum width 13.5" · vector intake spans the chassis width
+## Latest — balance: swerve accel/weight + per-intake minimum widths
+
+- **Swerve** (`config.ts`): `accelMult` 1.30 → **1.32**, base min weight (`DRIVETRAIN_LIMITS.swerve.minMass`) → **21.5** lb. Tuned so a min-weight / max-inertia / 500rpm swerve just OUT-accels the equivalent mecanum (~1.7%); at equal weight swerve is clearly ahead (1.32 vs mecanum 1.12). Smoke pins the corner comparison. (Peak accel ~317 in/s².)
+- **Per-intake MIN WIDTH** (`INTAKE_PRESETS[*].minWidth`, applied in `drivetrain.ts` `widthLimits`): sloped **14.5"**, triangle **15.5"**, vector **10"** (`ROBOT_MIN_WIDTH`). The width floor is now `max(drivetrain floor, intake floor)` — so swerve+triangle = 15.5, mecanum+vector = 10. All 5 `ROBOT_PRESETS` + `DEFAULT_SPEC` already clear the new floors.
+
+## Prev — swerve minimum width 13.5" · vector intake spans the chassis width
 
 Two builder/intake tweaks (both `src/sim`+`config`, so they change SERVER behavior too → deploy client+server together).
 
