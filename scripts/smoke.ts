@@ -60,6 +60,8 @@ import {
   ROBOT_PRESETS,
   ROBOT_MAX_SIZE,
   ROBOT_MIN_WIDTH,
+  SWERVE_MIN_WIDTH,
+  intakeMouth,
   DRIVETRAIN_PRESETS,
   START_POSES,
   SPEED_PER_RPM,
@@ -735,24 +737,20 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('hopper capped at 3', r.hopper.length <= 3);
 }
 
-// ---- vector intake: strafing into a ball swallows it (wheels overhang) ----------
+// ---- vector intake spans EXACTLY the chassis width (no overhang) -------------
 {
-  const spec = { length: 11.5, width: 14, intake: 'vector' as const };
-  const w = mkWorld('free', 'blue', 6, spec);
-  const r = w.robots[0];
-  r.hopper = [];
-  r.pos = { x: 0, y: 0 };
-  r.heading = Math.PI / 2;
-  r.fieldCentric = false;
-  const ball = w.balls[0];
-  w.balls.splice(1); // only this ball on the field
-  ball.state = { kind: 'ground' };
-  ball.pos = { x: -12, y: 8 }; // beside the protruding intake's flank
-  ball.vel = { x: 0, y: 0 };
-  ball.z = 0;
-  ball.vz = 0;
-  run(w, cmd({ driveX: -1, intake: true }), 1); // strafe into it
-  check('vector intake grabs a ball it strafes into', r.hopper.length === 1, `hopper=${r.hopper.length}`);
+  // the vector wheel row is as wide as the frame — mouthHalf tracks width/2
+  const vm14 = intakeMouth({ intake: 'vector', width: 14 });
+  const vm18 = intakeMouth({ intake: 'vector', width: 18 });
+  check('vector mouth = chassis half-width (no overhang)', vm14.mouthHalf === 7 && vm18.mouthHalf === 9);
+  // never wider than the frame, at either width extreme
+  check('vector mouth never overhangs the frame', vm14.mouthHalf <= 14 / 2 && vm18.mouthHalf <= 18 / 2);
+  // funnel presets keep their FIXED mouth (width-independent)
+  check(
+    'sloped/triangle keep their fixed funnel mouth',
+    intakeMouth({ intake: 'sloped', width: 14 }).mouthHalf === INTAKE_PRESETS.sloped.mouth.mouthHalf &&
+      intakeMouth({ intake: 'triangle', width: 18 }).mouthHalf === INTAKE_PRESETS.triangle.mouth.mouthHalf,
+  );
 }
 
 // ---- sloped intake: the same maneuver only shoves the ball ---------------------
@@ -774,10 +772,10 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('sloped intake has no side capture', r.hopper.length === 0, `hopper=${r.hopper.length}`);
 }
 
-// ---- side capture is geometric: a full-width chassis encompasses the wheels -----
+// ---- vector intake grabs at the FRONT only — never from the chassis flank ------
 {
-  // pin speed + mass so the fixed strafe window is dynamics-stable regardless of
-  // what DEFAULT_SPEC (a named team robot) happens to be geared/weighted at
+  // the vector mouth spans the full chassis width now (no overhang), but it's still
+  // a FRONT-face intake: a ball sitting beside the chassis BODY is never captured.
   const spec = { length: 11.5, width: 18, intake: 'vector' as const, driveRpm: 435, massLb: 26 };
   const w = mkWorld('free', 'blue', 6, spec);
   const r = w.robots[0];
@@ -788,15 +786,16 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   const ball = w.balls[0];
   w.balls.splice(1);
   ball.state = { kind: 'ground' };
-  ball.pos = { x: -12, y: 8 };
+  // beside the chassis body (local x≈0), just past the side edge — at heading π/2,
+  // world (−(half+2), 0) maps to robot-local (0, half+2): flank, NOT in front
+  const half = spec.width / 2;
+  ball.pos = { x: -(half + 2), y: 0 };
   ball.vel = { x: 0, y: 0 };
   ball.z = 0;
   ball.vz = 0;
-  // short window: long strafes may legitimately roll the ball around the
-  // front corner into the mouth — the flank itself must never capture
-  run(w, cmd({ driveX: -1, intake: true }), 0.35);
+  run(w, cmd({ intake: true }), 0.5); // intake running, not driven into the front
   check(
-    '18" chassis encompasses the vector wheels — no side capture',
+    'vector intake never captures from the chassis flank',
     r.hopper.length === 0,
     `hopper=${r.hopper.length}`,
   );
@@ -1747,6 +1746,10 @@ const setup = (
   });
   check('coerceSpec clamps length UP to the preset min', tiny.length >= INTAKE_PRESETS.sloped.minLength, `${tiny.length}`);
   check('coerceSpec clamps width UP to ROBOT_MIN_WIDTH', tiny.width >= ROBOT_MIN_WIDTH, `${tiny.width}`);
+  // swerve needs a wider base — its width floors at SWERVE_MIN_WIDTH, above the others
+  const swWide = coerceSpec({ drivetrain: 'swerve', width: 10 });
+  check('coerceSpec clamps swerve width UP to SWERVE_MIN_WIDTH', swWide.width === SWERVE_MIN_WIDTH, `${swWide.width}`);
+  check('non-swerve width floor stays ROBOT_MIN_WIDTH', coerceSpec({ drivetrain: 'mecanum', width: 10 }).width === ROBOT_MIN_WIDTH);
   check('coerceSpec clamps mass UP to the drivetrain×inertia floor', tiny.massLb >= massLimits('mecanum', 0.5).min, `${tiny.massLb}`);
   check('coerceSpec clamps rpm UP to the drivetrain min', tiny.driveRpm >= rpmLimits('mecanum').min, `${tiny.driveRpm}`);
   check('coerceSpec clamps a NEGATIVE inertia to 0', coerceSpec({ flywheelInertia: -3 }).flywheelInertia === 0);
@@ -1814,7 +1817,9 @@ const setup = (
     while (r.hopper.length === 0 && ticks < 120) { step(w, SIM_DT, commands); ticks++; }
     return ticks;
   };
-  const center = capTicks(0), edge = capTicks(8);
+  // width 14 → vector mouth half-width 7, so an edge entry sits at localY 6 (inside
+  // the mouth); the vectoring travel to center makes it slower than a center entry
+  const center = capTicks(0), edge = capTicks(6);
   check('vector intake swallows a CENTER ball faster than an EDGE ball', edge > center + 3, `center ${center}t vs edge ${edge}t`);
 }
 

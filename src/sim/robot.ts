@@ -405,7 +405,7 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
 
   const preset = C.INTAKE_PRESETS[r.spec.intake];
-  const m = preset.mouth;
+  const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
   const hl = r.spec.length / 2;
   const half = r.spec.width / 2;
   const tip = hl + preset.reach; // the roller line (balls pass UNDER it)

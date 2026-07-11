@@ -88,7 +88,7 @@ export function drawRobot(
   // are the slopes that funnel balls to the compliant wheels at the throat (no
   // flat front). VECTOR is a flat plate with a full-width wheel roller.
   const preset = C.INTAKE_PRESETS[r.spec.intake];
-  const m = preset.mouth;
+  const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
   const rw = m.mouthHalf;
   const wedgeTip = hl + preset.reach - 0.5; // wedge/plate front — just behind the roller
   const rollerTip = hl + preset.reach + 0.5; // shaft + wheels ride out just past the wedges

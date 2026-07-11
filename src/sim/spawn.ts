@@ -84,21 +84,16 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
   // exactly, so a hand-edited / spoofed / stale spec is bounded the same way the
   // sliders bound a live one. Each numeric range is resolved from ONLY the
   // field(s) it depends on, in this order:
-  //   1. INTAKE            → length range + width range   (lengthLimits/widthLimits)
-  //   2. DRIVETRAIN        → rpm range                     (rpmLimits)
-  //   3. INERTIA           → 0..1
+  //   1. INTAKE + DRIVETRAIN → length range (intake) + width range (drivetrain floor)
+  //   2. DRIVETRAIN         → rpm range                     (rpmLimits)
+  //   3. INERTIA            → 0..1
   //   4. DRIVETRAIN×INERTIA → mass range                   (massLimits: floor ↑ inertia)
 
-  // 1) INTAKE (legacy preset names from older saves migrate) → size ranges
+  // resolve INTAKE + DRIVETRAIN first (width's floor depends on the drivetrain —
+  // swerve needs a wider base). Legacy preset names from older saves migrate.
   if (sp.intake === 'sloped' || sp.intake === 'vector' || sp.intake === 'triangle') out.intake = sp.intake;
   else if (sp.intake === 'compact') out.intake = 'sloped';
   else if (sp.intake === 'extended') out.intake = 'vector';
-  const len = lengthLimits(out.intake);
-  const wid = widthLimits(out.intake);
-  out.length = clampFinite(sp.length, len.min, len.max, base.length);
-  out.width = clampFinite(sp.width, wid.min, wid.max, base.width);
-
-  // 2) DRIVETRAIN → rpm range
   if (
     sp.drivetrain === 'mecanum' ||
     sp.drivetrain === 'tank' ||
@@ -107,6 +102,14 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
   ) {
     out.drivetrain = sp.drivetrain;
   }
+
+  // 1) SIZE: length from the intake preset, width floored per drivetrain
+  const len = lengthLimits(out.intake);
+  const wid = widthLimits(out.intake, out.drivetrain);
+  out.length = clampFinite(sp.length, len.min, len.max, base.length);
+  out.width = clampFinite(sp.width, wid.min, wid.max, base.width);
+
+  // 2) DRIVETRAIN → rpm range
   const rpm = rpmLimits(out.drivetrain);
   out.driveRpm = clampFinite(sp.driveRpm, rpm.min, rpm.max, base.driveRpm);
 

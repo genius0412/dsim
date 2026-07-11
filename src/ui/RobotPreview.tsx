@@ -1,5 +1,5 @@
 import type { RobotSpec } from '../types';
-import { INTAKE_PRESETS, TURRET_OFFSET_FRAC, WHEEL_INSET } from '../config';
+import { INTAKE_PRESETS, TURRET_OFFSET_FRAC, WHEEL_INSET, intakeMouth } from '../config';
 
 /** dimension-label type size, in the viewBox's inch units */
 const DIM_FONT = 1.7;
@@ -17,9 +17,10 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
   const len = spec.length;
   const intake = INTAKE_PRESETS[spec.intake];
   const reach = intake.reach;
-  const mouthHalf = intake.mouth.mouthHalf;
-  const throatHalf = intake.mouth.throatHalf;
-  const wedge = intake.mouth.wedge;
+  const mouth = intakeMouth(spec); // vector's mouth spans the chassis width
+  const mouthHalf = mouth.mouthHalf;
+  const throatHalf = mouth.throatHalf;
+  const wedge = mouth.wedge;
   const halfW = w / 2;
 
   const frontY = -len / 2; // chassis front edge (top) = the throat

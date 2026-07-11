@@ -197,6 +197,9 @@ export const ROBOT_MAX_SIZE = 18; // FTC starting size cap (incl. intake reach)
 export const ROBOT_MIN_SIZE = 12;
 /** the chassis may be narrower than the intake (easier base parking) */
 export const ROBOT_MIN_WIDTH = 10;
+/** SWERVE needs a wider base than the other drivetrains — four steering modules
+ * at the corners don't fit a tiny frame — so its minimum width floors higher. */
+export const SWERVE_MIN_WIDTH = 13.5;
 /** wheel centers sit this far INSIDE the chassis edge (typical FTC build);
  * the four wheel ground-contact points are what counts for base parking */
 export const WHEEL_INSET = 2.6;
@@ -460,16 +463,18 @@ export const INTAKE_PRESETS = {
       capMin: 0.05, capMax: 0.09, clumpInterval: 0.04, dual: false,
     },
   },
-  /** VECTOR WHEEL: flat front (no side slopes), the roller spans the whole mouth
-   * so the throat is full-width; balls are sucked straight to the chassis front.
-   * CENTER intakes fast, the SIDES slower (vectoring), and the overhang lets it
-   * grab balls strafed into its flank. Chassis 11.5..14.5in. */
+  /** VECTOR WHEEL: flat front (no side slopes), the roller spans the whole mouth.
+   * The mouth is exactly as WIDE AS THE CHASSIS (mouthHalf = width/2, applied per
+   * robot in `intakeMouth` — the `8.5` below is only a fallback base), so there's
+   * NO overhang: the wheel row matches the frame. CENTER intakes fast, the SIDES
+   * slower (vectoring). Chassis 11.5..14.5in. */
   vector: {
-    reach: 3.5, overhang: true, minLength: 11.5, maxLength: 14.5, fireInterval: 0.1, fireCap: 0,
+    reach: 3.5, overhang: false, minLength: 11.5, maxLength: 14.5, fireInterval: 0.1, fireCap: 0,
     mouth: {
-      // flat plate `mouthHalf` wide; the mecanum wheels VECTOR a ball laterally
-      // (drawIn) to the center compliant zone (throatHalf) before sucking it in,
-      // so edge entries take longer — the vectoring time
+      // flat plate spanning the chassis width; the mecanum wheels VECTOR a ball
+      // laterally (drawIn) to the center compliant zone (throatHalf) before sucking
+      // it in, so edge entries take longer — the vectoring time. `mouthHalf` here is
+      // a fallback; the live value is the robot's half-width (see `intakeMouth`).
       wedge: false, mouthHalf: 8.5, throatHalf: 3, drawIn: 18,
       capMin: 0.08, capMax: 0.14, clumpInterval: 0.12, dual: false,
     },
@@ -490,6 +495,27 @@ export const INTAKE_PRESETS = {
     },
   },
 } as const;
+
+/** the intake mouth geometry as it applies to a SPECIFIC robot. The VECTOR wheel
+ * row spans the FULL chassis width (mouthHalf = width/2 — the intake is exactly as
+ * wide as the robot, no overhang); sloped/triangle keep their fixed funnel mouth.
+ * Every site that reads the mouth width per-robot (capture, ball collision, both
+ * renderers) goes through here so the width rule lives in ONE place. */
+export interface IntakeMouth {
+  wedge: boolean;
+  mouthHalf: number;
+  throatHalf: number;
+  drawIn: number;
+  capMin: number;
+  capMax: number;
+  clumpInterval: number;
+  dual: boolean;
+}
+export function intakeMouth(spec: { intake: keyof typeof INTAKE_PRESETS; width: number }): IntakeMouth {
+  const m = INTAKE_PRESETS[spec.intake].mouth;
+  return spec.intake === 'vector' ? { ...m, mouthHalf: spec.width / 2 } : m;
+}
+
 /** flank capture engages only when actually strafing toward the ball */
 export const INTAKE_SIDE_MIN_STRAFE = 8; // in/s
 /** forward speed above which a FLAT (vector) intake driven into a CLUMP scatters

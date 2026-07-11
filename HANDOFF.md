@@ -1,8 +1,24 @@
-# HANDOFF — 2026-07-10 (drop drivetrain divisions · no server auto · duo shows both drivetrains; prev: leaderboard/career Act+Season pickers) — READ FIRST
+# HANDOFF — 2026-07-11 (swerve min width 13.5 · vector intake = chassis width · ranked drivetrain split dropped · no server auto · duo shows both drivetrains) — READ FIRST
 
-> **GREEN — `npm run build`, `npm test` (ALL PASS), `npm run server:check` all pass.** (No palette edits this session → didn't re-run `contrast`.)
+> **GREEN — `npm run build`, `npm test` (ALL PASS), `npm run server:check` all pass.** (No palette edits → didn't re-run `contrast`.)
 
-## Latest — three user asks: (1) drop per-drivetrain divisions from RANKED ONLY (records keep theirs), (2) auto never runs on the server, (3) duo records show BOTH drivetrains
+## Latest — swerve minimum width 13.5" · vector intake spans the chassis width
+
+Two builder/intake tweaks (both `src/sim`+`config`, so they change SERVER behavior too → deploy client+server together).
+
+### Swerve minimum width = 13.5"
+- `config.ts` `SWERVE_MIN_WIDTH = 13.5`. `drivetrain.ts` `widthLimits(intake, drivetrain)` now floors swerve at 13.5" (others `ROBOT_MIN_WIDTH` 10").
+- `spawn.ts` `coerceSpec` REORDERED: resolve intake + drivetrain BEFORE the size clamps (width's floor now depends on drivetrain). `Menu.tsx` slider passes `spec.drivetrain`. Smoke: swerve clamps up to 13.5, non-swerve stays 10.
+
+### Vector intake width = chassis width (NO overhang)
+- `config.ts` `intakeMouth(spec)` helper: VECTOR `mouthHalf = spec.width/2` (mouth spans the full frame); sloped/triangle keep their fixed funnel mouth. Routed ALL per-robot mouth-width reads through it: `robot.ts` (capture), `physics.ts` (ball collision), `render/drawRobot.ts`, `ui/RobotPreview.tsx`. Vector preset `overhang:false` (that flag is doc-only — never read in code; real overhang was `mouthHalf > half`).
+- **Reverses product-decision #10's "chassis may be narrower than the intake" for VECTOR** — the overhang flank-grab is GONE (mouth == frame). Updated the two smoke tests that pinned it (now: mouth = width/2 rule; "captures at the front only, never the flank"; edge/center uses localY 6 since width-14 mouth half is now 7). `CLAUDE.md` #10 not yet reworded.
+
+**DEPLOY:** committed on alpha → `flyctl deploy` (announce first) → Vercel auto-deploys. Client+server MUST match (shared capture physics; a mismatch desyncs multiplayer).
+
+---
+
+## Prev — ranked drivetrain split dropped (records keep theirs) · no server auto · duo shows both drivetrains
 
 ### 1) RANKED (ELO) no longer divided by drivetrain — RECORD boards UNCHANGED
 Scope correction mid-session: the user wanted the drivetrain split gone from **ranked

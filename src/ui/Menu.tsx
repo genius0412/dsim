@@ -91,7 +91,7 @@ export function Menu({ settings, onChange }: Props) {
   // in the same dependency order (intake → size, drivetrain → rpm, drivetrain ×
   // inertia → mass), so the UI and the validator can never disagree
   const { min: minLength, max: maxLength } = lengthLimits(spec.intake);
-  const { min: minWidth, max: maxWidth } = widthLimits(spec.intake);
+  const { min: minWidth, max: maxWidth } = widthLimits(spec.intake, spec.drivetrain);
   const { min: minRpm, max: maxRpm } = rpmLimits(spec.drivetrain);
   const { min: minMass, max: maxMass } = massLimits(spec.drivetrain, spec.flywheelInertia);
   const dp = driveParams(spec);

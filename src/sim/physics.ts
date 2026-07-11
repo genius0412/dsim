@@ -743,8 +743,9 @@ function ballRobotContact(
     return { nx: n.x, ny: n.y, pen, cp: { x: c.x + r.pos.x, y: c.y + r.pos.y } };
   };
 
-  const mh = preset.mouth.mouthHalf;
-  const th = preset.mouth.throatHalf;
+  const mouth = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
+  const mh = mouth.mouthHalf;
+  const th = mouth.throatHalf;
   // The side structure (slopes / rails) is solid at ball height out to the full
   // reach — that's what stops a wide frame being entered off its flank. The CENTER
   // (under the wheels) is OPEN: the wheels ride high in z, so balls pass under them
@@ -778,7 +779,7 @@ function ballRobotContact(
   const ay = Math.abs(local.y);
   const s = local.y >= 0 ? 1 : -1;
 
-  if (preset.mouth.wedge) {
+  if (mouth.wedge) {
     // FUNNEL (sloped/triangle): open mouth in the center, solid side SLOPES that
     // deflect balls in to the throat. No flat front.
     if (ay > half) {
