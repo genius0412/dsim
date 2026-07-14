@@ -114,7 +114,8 @@ export const CHAIN_DIAMOND_R = 38;
  * Positions APPROXIMATE (a ring around the particle zone) pending exact manual dims.
  */
 export const CHAIN_BEAM_HEIGHT = 1; // inches (tube height)
-export const CHAIN_BEAM_MIN_CLIMB = 0.35; // drivetrains below this can't mount a beam
+/** across-beam speed (in/s) at which MOMENTUM lets a robot power over with ~no slowdown */
+export const CHAIN_BEAM_MOMENTUM_REF = 55;
 /** ground-clearance slider (inches). Default just meets a 1" beam (0 margin). */
 export const CHAIN_CLEARANCE_MIN = 0.5;
 export const CHAIN_CLEARANCE_MAX = 3;

@@ -496,7 +496,7 @@ export function Menu({ settings, onChange }: Props) {
               Heavier = more push, slower accel · higher RPM = faster top speed
               {isDecode && ' · more flywheel inertia keeps long shots rapid'}
               {!isDecode &&
-                ' · ground clearance lets you cross the beams (traction wheels climb; omni/x-drive can’t) but raises the center of gravity → sluggish handling'}
+                ' · ground clearance lets your frame clear the beams (a running start powers over; low-traction wheels are just slower) but raises the center of gravity → sluggish handling'}
               . Chassis + intake ≤ {ROBOT_MAX_SIZE}".
             </p>
           </div>

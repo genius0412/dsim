@@ -74,7 +74,7 @@ import {
   POSSESSION_GRACE,
 } from '../src/config';
 import { robotCorners, robotExtents, robotIntersectsRect, wheelContacts } from '../src/sim/physics';
-import { canCrossBeams, cogFactor, crossBeams, CHAIN_BEAMS } from '../src/games/chain/beams';
+import { beamRetain, canCrossBeams, cogFactor, crossBeams, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits } from '../src/sim/drivetrain';
 import { coerceSettings } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
@@ -3720,10 +3720,20 @@ const mkMM = () => {
       drivetrain: dt,
       groundClearance: clr,
     });
-    check('chain beams: x-drive cannot climb a beam', canCrossBeams(mk('xdrive', 3)) === false);
+    // clearance is the ONLY hard gate — every drivetrain crosses if the frame clears it
+    check('chain beams: x-drive WITH clearance can cross', canCrossBeams(mk('xdrive', 1)) === true);
     check('chain beams: tank with clearance crosses', canCrossBeams(mk('tank', 1)) === true);
-    check('chain beams: too little clearance is blocked', canCrossBeams(mk('mecanum', 0.5)) === false);
-    check('chain beams: mecanum with clearance can cross', canCrossBeams(mk('mecanum', 1)) === true);
+    check('chain beams: too little clearance is blocked (frame hits)', canCrossBeams(mk('mecanum', 0.5)) === false);
+    // MOMENTUM makes it easier: a running start keeps far more speed than a standstill
+    check(
+      'chain beams: momentum eases crossing (fast keeps more than standstill)',
+      beamRetain(mk('xdrive', 1), 50) > beamRetain(mk('xdrive', 1), 0) + 0.15,
+    );
+    // mecanum is only a little worse than tank from a standstill (not "immediately bad")
+    check(
+      'chain beams: mecanum standstill is close to tank (not badly penalized)',
+      beamRetain(mk('mecanum', 1), 0) > 0.7 && beamRetain(mk('tank', 1), 0) - beamRetain(mk('mecanum', 1), 0) < 0.2,
+    );
     check(
       'chain beams: raised CoG reduces drive authority',
       cogFactor(mk('tank', 3)) < cogFactor(mk('tank', 0.5)) && cogFactor(mk('tank', 0.5)) === 1,
@@ -3732,9 +3742,8 @@ const mkMM = () => {
     const w = createChainWorld('free', 1, [chainSetup(0, 'blue')]);
     const rob = w.robots[0];
     rob.spec = mk('xdrive', 0.5); // can't cross
-    const beam = CHAIN_BEAMS.find((b) => b.axis === 'y')!;
-    const bc = (beam.rect.y0 + beam.rect.y1) / 2;
-    rob.pos = { x: 0, y: bc };
+    const beam = CHAIN_BEAMS[0];
+    rob.pos = { x: (beam.rect.x0 + beam.rect.x1) / 2, y: (beam.rect.y0 + beam.rect.y1) / 2 };
     rob.vel = { x: 0, y: 0 };
     crossBeams(w);
     check('chain beams: a blocked robot is pushed off the beam', !robotIntersectsRect(rob, beam.rect));
