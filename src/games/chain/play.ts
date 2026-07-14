@@ -34,6 +34,7 @@ import {
   hookPos,
   labAreas,
   ringStands,
+  CHAIN_HOOKS_PER_GOAL,
   type ChainState,
 } from './state';
 
@@ -336,7 +337,7 @@ function interact(
 function catalystAction(chain: ChainState, rob: RobotState): void {
   const mine = chain.catalysts.find((c) => c.carriedBy === rob.id);
   if (mine) {
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < CHAIN_HOOKS_PER_GOAL; i++) {
       const taken = chain.catalysts.some(
         (o) => o.hook && o.hook.alliance === rob.alliance && o.hook.index === i,
       );

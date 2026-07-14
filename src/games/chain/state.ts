@@ -63,9 +63,23 @@ export function accelMouth(a: Alliance): Vec2 {
   return { x: accelSide(a) * CHAIN_HALF_X, y: 0 };
 }
 
-/** the two hook positions on an alliance's accelerator wall (index 0 = +y, 1 = −y) */
+/** FOUR hooks per goal. They sit at TWO top-down positions on the accelerator wall
+ * (y = ±CHAIN_HOOK_Y, the manual's ±688mm); each position has two stacked hooks
+ * (top + bottom) that read as ONE from above. `hookPos` is the shared placement point
+ * (hooks 0,1 at +y ; 2,3 at −y). */
+export const CHAIN_HOOKS_PER_GOAL = 4;
+
 export function hookPos(a: Alliance, index: number): Vec2 {
-  return { x: accelSide(a) * CHAIN_HALF_X, y: (index === 0 ? 1 : -1) * CHAIN_HOOK_Y };
+  const y = index < 2 ? CHAIN_HOOK_Y : -CHAIN_HOOK_Y;
+  return { x: accelSide(a) * CHAIN_HALF_X, y };
+}
+
+/** RENDER position of hook `index` — nudged just INSIDE the accelerator mouth and the
+ * two stacked hooks at a position spread apart, so all four hooks stay individually
+ * visible + countable in the top-down view (they'd overlap into one otherwise). */
+export function hookSlotPos(a: Alliance, index: number): Vec2 {
+  const base = hookPos(a, index);
+  return { x: base.x - accelSide(a) * 4, y: base.y + (index % 2 === 0 ? -3.4 : 3.4) };
 }
 
 /** all four Ring-Stand corner positions */

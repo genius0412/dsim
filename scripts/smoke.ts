@@ -114,7 +114,7 @@ import {
   CHAIN_PARTICLE_SIM,
   CHAIN_PARTICLE_R,
 } from '../src/games/chain/config';
-import { hookPos, labAreas, ringStands } from '../src/games/chain/state';
+import { accelMultiplier, hookPos, labAreas, ringStands } from '../src/games/chain/state';
 
 // the sim now steps a Rapier physics world (robots) — load the WASM before any
 // step() runs. tsx runs this file as ESM, so top-level await is available.
@@ -3689,6 +3689,13 @@ const mkMM = () => {
         if (d < minD) minD = d;
       }
     check('chain: particles never overlap on top of each other', minD >= 2 * CHAIN_PARTICLE_R - 0.25, `minD=${minD.toFixed(2)}`);
+  }
+
+  // FOUR hooks per goal ⇒ all four catalysts seated gives ×5 points/particle
+  {
+    const gw = createChainWorld('match', 42, [chainSetup(0, 'blue')]);
+    for (let i = 0; i < 4; i++) gw.chain!.catalysts[i].hook = { alliance: 'blue', index: i };
+    check('chain: four catalysts on the four hooks ⇒ ×5', accelMultiplier(gw.chain!, 'blue') === 5);
   }
 
   // catalyst BUTTON: pick up a nearby ring, then seat it on a hook (edge-triggered)

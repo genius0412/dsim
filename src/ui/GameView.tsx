@@ -416,7 +416,7 @@ function Hud({ hud }: { hud: HudSnapshot }) {
         <div className="breakdown-row">
           <span>PARTICLES {hud.chain.scored}</span>
           <span>MULT ×{hud.chain.mult}</span>
-          <span>CATALYSTS {hud.chain.catalysts}/2</span>
+          <span>CATALYSTS {hud.chain.catalysts}/4</span>
           {hud.chain.endgame !== 'none' && (
             <span>{hud.chain.endgame === 'ascended' ? 'ASCENDED' : 'PARKED'}</span>
           )}

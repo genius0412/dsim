@@ -1,7 +1,7 @@
 import type { Alliance, Vec2, World } from '../../types';
 import * as C from '../../config';
 import { CHAIN_CATALYST_OD, CHAIN_PARTICLE_R } from './config';
-import { hookPos } from './state';
+import { CHAIN_HOOKS_PER_GOAL, hookSlotPos } from './state';
 
 /**
  * Chain Reaction scoring-elements renderer (drawn after the robots).
@@ -45,43 +45,33 @@ export function drawChainBalls(ctx: CanvasRenderingContext2D, world: World, scre
   const rMid = rOuter - 0.9;
   const up = Math.atan2(screenUp.x, screenUp.y);
 
-  // HOOK SLOTS — draw EACH hook (2 per alliance) individually so it's clear how many
-  // hooks there are and WHICH are occupied (the physical hooks read as one top-down,
-  // so we render explicit slots): empty = hollow dim ring, occupied = filled bright
-  // ring + a small index tag (1/2). Seated catalysts render here (at their hook).
+  // HOOK SLOTS — FOUR hooks per goal, at two top-down positions (each has two stacked
+  // hooks that read as one from above). Draw all four as individually-countable slots
+  // (nudged apart via hookSlotPos): empty = hollow dim ring, occupied = filled bright
+  // donut. So it's clear how many hooks there are and WHICH hold rings.
+  const rSlot = 2.1;
   for (const a of ['red', 'blue'] as Alliance[]) {
-    for (let i = 0; i < 2; i++) {
-      const h = hookPos(a, i);
+    for (let i = 0; i < CHAIN_HOOKS_PER_GOAL; i++) {
+      const h = hookSlotPos(a, i);
       const occupied = (world.chain?.catalysts ?? []).some(
         (c) => c.hook?.alliance === a && c.hook.index === i,
       );
       if (occupied) {
         ctx.fillStyle = CATALYST_SEATED; // filled donut = ring on this hook
         ctx.beginPath();
-        ctx.arc(h.x, h.y, rOuter, 0, Math.PI * 2);
+        ctx.arc(h.x, h.y, rSlot, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = C.COLORS.mat;
         ctx.beginPath();
-        ctx.arc(h.x, h.y, rOuter - 1.6, 0, Math.PI * 2);
+        ctx.arc(h.x, h.y, rSlot - 1.2, 0, Math.PI * 2);
         ctx.fill();
       } else {
-        ctx.lineWidth = 0.8; // hollow dim outline = empty hook slot
-        ctx.strokeStyle = 'rgba(196,181,253,0.5)';
+        ctx.lineWidth = 0.9; // hollow dim outline = empty hook slot
+        ctx.strokeStyle = 'rgba(167,139,250,0.6)';
         ctx.beginPath();
-        ctx.arc(h.x, h.y, rMid, 0, Math.PI * 2);
+        ctx.arc(h.x, h.y, rSlot, 0, Math.PI * 2);
         ctx.stroke();
       }
-      // slot index tag (upright) so two nearby hooks are never mistaken for one
-      ctx.save();
-      ctx.translate(h.x, h.y);
-      ctx.rotate(up);
-      ctx.scale(1, -1);
-      ctx.fillStyle = occupied ? '#ffffff' : 'rgba(196,181,253,0.7)';
-      ctx.font = '700 3px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(String(i + 1), 0, 0);
-      ctx.restore();
     }
   }
 
