@@ -10,6 +10,7 @@ import {
 } from './db/repo';
 import { persistVersusMatch } from './ranked';
 import { recordScore } from '../src/sim/replay';
+import { simModuleFor } from '../src/games/sim';
 import type { MatchOutcome, PersistOutcome } from './room';
 
 /**
@@ -28,6 +29,13 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
   console.log(
     `[persist] match end: ${label} participants=${o.participants.length} authed=${authed.length} dbEnabled=${dbEnabled}`,
   );
+  // UNSCORED games (the Chain Reaction shell) never touch ELO/records/history —
+  // they have no scoring yet, so a 0-0 result would just pollute the boards. The DB
+  // is already keyed for game (via the room's game); scored games persist as before.
+  if (!simModuleFor(o.game).scored) {
+    console.log(`[persist] SKIP — unscored game (${o.game ?? 'decode'})`);
+    return {};
+  }
   if (!dbEnabled) {
     console.log('[persist] SKIP — DATABASE_URL unset (no DB)');
     return {};

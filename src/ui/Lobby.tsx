@@ -161,7 +161,9 @@ export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = 
         spec: settings.spec,
         assists: settings.assists,
       },
-      config,
+      // carry the selected game so the room builds the right world (defaults to
+      // the caller's config game if it pinned one, else the player's setting)
+      { ...config, game: config.game ?? settings.game },
     );
   }
 

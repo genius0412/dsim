@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Room, type Client } from './room';
-import { decodeClientMsg, encodeMsg, DEFAULT_ROOM_CONFIG, type ClientMsg, type ServerMsg } from '../src/net/protocol';
+import { decodeClientMsg, encodeMsg, DEFAULT_ROOM_CONFIG, type ClientMsg, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
 import { verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
@@ -557,11 +557,17 @@ wss.on('connection', (ws: WebSocket) => {
     const code = msg.room.toLowerCase();
     let r = rooms.get(code);
     let created = false;
+    // sanitize the untrusted room game to a known id (unknown ⇒ 'decode'); the room
+    // resolves its sim module from this, and a mismatched joiner is refused below.
+    const cfg: RoomConfig = {
+      ...(msg.config ?? DEFAULT_ROOM_CONFIG),
+      game: msg.config?.game === 'chain' ? 'chain' : 'decode',
+    };
     if (!r) {
       r = new Room(
         code,
         () => rooms.delete(code),
-        msg.config,
+        cfg,
         persistMatch,
         (uid) => userRoom.set(uid, code),
         (uid) => {
@@ -579,8 +585,12 @@ wss.on('connection', (ws: WebSocket) => {
     // mismatched joiner is refused. (A just-created room can't mismatch — its config
     // IS the joiner's.)
     if (!created) {
-      const want = msg.config ?? DEFAULT_ROOM_CONFIG;
-      if (r.config.kind !== want.kind || r.config.record !== want.record) {
+      const want = cfg;
+      if (
+        r.config.kind !== want.kind ||
+        r.config.record !== want.record ||
+        (r.config.game ?? 'decode') !== (want.game ?? 'decode')
+      ) {
         send({ t: 'error', message: 'That code is for a different game mode.' });
         return;
       }
@@ -690,6 +700,8 @@ wss.on('connection', (ws: WebSocket) => {
             accessMs: msg.accessMs ?? 0,
             noWiden: msg.noWiden ?? false,
             caps: Array.isArray(msg.caps) ? msg.caps : [],
+            // segregate the queue by GAME (a CR queuer never pairs into a DECODE room)
+            game: msg.game === 'chain' ? 'chain' : 'decode',
             channel: typeof msg.channel === 'string' ? msg.channel : undefined,
             // segregate the pool by build too (two builds never share a match)
             build: typeof msg.build === 'string' ? msg.build : undefined,

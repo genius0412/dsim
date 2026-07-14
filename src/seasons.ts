@@ -20,9 +20,11 @@ export const LINKS = {
   discord: 'https://discord.gg/YB4tXnx7Pj',
 } as const;
 
+import type { GameId } from './games/types';
+
 export interface Season {
-  /** stable key (used for future save bucketing / URLs) */
-  key: string;
+  /** stable key (used for future save bucketing / URLs) — matches a `GameId` */
+  key: GameId;
   /** short game name, e.g. "DECODE" */
   name: string;
   /** full presenting name, e.g. "DECODE presented by RTX" */
@@ -47,11 +49,25 @@ export const SEASONS: readonly Season[] = [
     blurb: 'Classify artifacts into cross-court goals, match the motif, park on base.',
     playable: true,
   },
+  {
+    key: 'chain',
+    name: 'Chain Reaction',
+    fullName: 'Chain Reaction',
+    program: 'Unofficial FTC · CAD Competition',
+    years: '2026',
+    blurb: 'The 2026 Unofficial FTC CAD-competition game — a new shooter (rules to come).',
+    playable: true,
+  },
 ] as const;
 
-/** the season the sim is currently built for */
+/** the season the sim is currently built for (the first playable game) */
 export const CURRENT_SEASON: Season =
   SEASONS.find((s) => s.playable) ?? SEASONS[0];
+
+/** the season record for a game id (defaults to the first entry, DECODE). */
+export function seasonFor(game: GameId): Season {
+  return SEASONS.find((s) => s.key === game) ?? SEASONS[0];
+}
 
 /**
  * Canonical label for a competitive PERIOD (a leaderboard/records bucket).

@@ -261,12 +261,14 @@ export function GameView({ settings, onExit, session = null, onWatchReplay, sign
         <div className="overlay">
           <div className="overlay-panel">
             <h2>{hud.alliance.toUpperCase()} ALLIANCE</h2>
-            <p>
-              MOTIF{' '}
-              {hud.motif.map((c, i) => (
-                <span key={i} className={`motif-dot ${c}`} />
-              ))}
-            </p>
+            {hud.game === 'decode' && (
+              <p>
+                MOTIF{' '}
+                {hud.motif.map((c, i) => (
+                  <span key={i} className={`motif-dot ${c}`} />
+                ))}
+              </p>
+            )}
             {!window.matchMedia('(pointer: coarse)').matches && (
               <p className="big">
                 Press {keyLabel(settings.bindings.keys.start[0] ?? 'enter')} or{' '}
@@ -347,10 +349,24 @@ function Hud({ hud }: { hud: HudSnapshot }) {
   const endgame = hud.timeLeft <= ENDGAME_START && hud.phase === 'teleop';
   const redScore = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blueScore = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
+  // an UNSCORED game (the Chain Reaction shell) has no scores/motif/hopper/gate — show
+  // minimal chrome: just a timer/phase panel + the driver chips (gamepad/net/park).
+  const minimal = hud.game !== 'decode';
 
   return (
     <div className="hud">
-      {hud.mode === 'match' ? (
+      {minimal ? (
+        <div className="scorebar">
+          <div className={`timer-panel ${urgent ? 'urgent' : endgame ? 'warning' : ''}`}>
+            <span className="timer-phase" role="status">
+              {hud.mode === 'match' ? (endgame ? 'END GAME' : PHASE_LABEL[hud.phase]) : 'FREE DRIVE'}
+            </span>
+            {hud.mode === 'match' && (
+              <span className="timer-time">{hud.phase === 'post' ? '0:00' : fmtTime(hud.timeLeft)}</span>
+            )}
+          </div>
+        </div>
+      ) : hud.mode === 'match' ? (
         <div className="scorebar">
           <div className={`score-panel red ${hud.alliance === 'red' ? 'mine' : ''}`}>
             {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
@@ -389,7 +405,7 @@ function Hud({ hud }: { hud: HudSnapshot }) {
         </div>
       )}
 
-      {hud.mode === 'match' && (
+      {hud.mode === 'match' && !minimal && (
         <div className="breakdown-row">
           {/* artifact COUNTS, not points (points live in the score panels).
               PATTERN shows only BANKED points — it is assessed solely at the
@@ -407,14 +423,18 @@ function Hud({ hud }: { hud: HudSnapshot }) {
       {(!window.matchMedia('(pointer: coarse)').matches) && (
         <div className="status-wrap">
           <div className="robot-status">
-            <div className="hopper">
-              {[0, 1, 2].map((i) => (
-                <span key={i} className={`hopper-pip ${hud.hopper[i] ?? 'empty'}`} />
-              ))}
-            </div>
-            <PowerGauge draw={hud.powerDraw} />
-            {hud.gateOpen && <span className="chip on">GATE OPEN</span>}
-            {hud.mode === 'match' &&
+            {!minimal && (
+              <>
+                <div className="hopper">
+                  {[0, 1, 2].map((i) => (
+                    <span key={i} className={`hopper-pip ${hud.hopper[i] ?? 'empty'}`} />
+                  ))}
+                </div>
+                <PowerGauge draw={hud.powerDraw} />
+                {hud.gateOpen && <span className="chip on">GATE OPEN</span>}
+              </>
+            )}
+            {!minimal && hud.mode === 'match' &&
               (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
                 <span className="chip warn">
                   FOULS {hud.fouls[hud.alliance].minor}m {hud.fouls[hud.alliance].major}M

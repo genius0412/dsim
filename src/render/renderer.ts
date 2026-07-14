@@ -1,10 +1,9 @@
 import type { RobotCommand, World, PathPoint, RobotState } from '../types';
 import { COLORS } from '../config';
 import { Camera } from './camera';
-import { drawField } from './drawField';
 import { drawBalls } from './drawBalls';
 import { drawRobot } from './drawRobot';
-import { drawRampStrips } from './drawGoals';
+import { gameOf } from '../games';
 
 /**
  * The letterbox around the field follows the app theme (the FIELD itself never does).
@@ -33,8 +32,10 @@ export class Renderer {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     this.camera.apply(ctx);
-    drawField(ctx, world);
-    drawRampStrips(ctx, world);
+    // the active game draws its own field + overlays (DECODE: field + ramp strips)
+    const mod = gameOf(world);
+    mod.drawField(ctx, world);
+    mod.drawOverlays?.(ctx, world);
 
     for (const r of world.robots) {
       // Draw auto paths if active for this robot

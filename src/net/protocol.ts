@@ -2,6 +2,7 @@ import type {
   Alliance,
   Artifact,
   AssistConfig,
+  GameId,
   RobotCommand,
   RobotSpec,
   RobotState,
@@ -94,6 +95,9 @@ export interface RoomConfig {
   kind: RoomKind;
   /** set when kind === 'record' */
   record?: RecordKind;
+  /** which game the room plays. Absent ⇒ 'decode' (old clients / back-compat).
+   * The server resolves the game module from this; matchmaking buckets by it. */
+  game?: GameId;
 }
 
 export const DEFAULT_ROOM_CONFIG: RoomConfig = { kind: 'versus' };
@@ -177,7 +181,7 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'startpose'];
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game'];
 
 export type ClientMsg =
   // `authToken` is the Neon Auth JWT; the server verifies it to attribute the
@@ -217,6 +221,9 @@ export type ClientMsg =
       accessMs: number;
       noWiden?: boolean;
       caps?: string[];
+      /** which game to queue for. Absent ⇒ 'decode'. The matchmaker buckets by it
+       * so a Chain-Reaction queuer never pairs into a DECODE authoritative room. */
+      game?: GameId;
       /** release channel (see `join.channel`): alpha queues only pair with alpha */
       channel?: string;
       /** this client's build id (git sha). The matchmaker segregates the queue by
@@ -250,6 +257,9 @@ export type ServerMsg =
       seed: number;
       setups: RobotSetup[];
       yourRobotId: number;
+      /** which game to build the world for. Absent ⇒ 'decode' (old servers); the
+       * client also falls back to the first snapshot's `world.game`. */
+      game?: GameId;
       ranked?: boolean;
       intros?: PlayerIntro[];
       /** the Fly region actually hosting this match (e.g. 'iad'). The client shows
@@ -289,7 +299,7 @@ export type ServerMsg =
   // player readies, or the room CANCELS (an `error`) if not everyone readies by
   // `deadline` (epoch ms). `yourRobotId` = this client's roster slot; `intros`
   // carry per-slot ELO for the opponent/teammate cards.
-  | { t: 'strategyStart'; deadline: number; yourRobotId: number; mode: QueueMode; intros: PlayerIntro[] }
+  | { t: 'strategyStart'; deadline: number; yourRobotId: number; mode: QueueMode; intros: PlayerIntro[]; game?: GameId }
   // a robot left: the server runs it on ZERO from `tick`; snapshots already
   // reflect this, so it is informational (drives the HUD)
   | { t: 'drop'; robotId: number; tick: number }
@@ -423,6 +433,8 @@ export function unslimWorld(
 ): World {
   return {
     ...w,
+    // old servers omit `game`; default it so gameOf/moduleFor resolve to DECODE
+    game: w.game ?? 'decode',
     robots: w.robots.map((r) => backfillRobot({ ...r, spec: specById(r.id) })),
     balls,
   };

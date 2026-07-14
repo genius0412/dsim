@@ -1,4 +1,4 @@
-import type { Artifact, RobotCommand, RobotSpec } from '../types';
+import type { Artifact, GameId, RobotCommand, RobotSpec } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { MatchResultInfo, NetSession, NetStatus, Snapshot } from './session';
 import type { Transport } from './transport';
@@ -52,6 +52,9 @@ const RTT_HISTORY = 120;
  * prediction means the local robot keeps responding meanwhile.
  */
 export class ServerSession implements NetSession {
+  /** which game the match plays (from matchStart; DECODE by default). Mutable so a
+   * host restart can carry a new game, but never written by consumers. */
+  game: GameId;
   readonly localRobotId: number;
   seed: number;
   setups: RobotSetup[];
@@ -96,6 +99,7 @@ export class ServerSession implements NetSession {
       seed: number;
       setups: RobotSetup[];
       yourRobotId: number;
+      game?: GameId;
       ranked?: boolean;
       intros?: PlayerIntro[];
       region?: string;
@@ -103,6 +107,7 @@ export class ServerSession implements NetSession {
     readonly clientId: string,
     readonly room: string,
   ) {
+    this.game = start.game ?? 'decode';
     this.seed = start.seed;
     this.setups = start.setups;
     this.ranked = start.ranked ?? false;
@@ -259,9 +264,10 @@ export class ServerSession implements NetSession {
     } else if (m.t === 'serverNotice') {
       setServerNotice(m.message ? { kind: m.kind, message: m.message, until: m.until } : null);
     } else if (m.t === 'matchStart') {
-      // a host restart: adopt the new seed/setups and rebuild
+      // a host restart: adopt the new seed/setups/game and rebuild
       this.seed = m.seed;
       this.setups = m.setups;
+      if (m.game) this.game = m.game;
       this.ranked = m.ranked ?? false;
       this.intros = m.intros ?? [];
       this.eloResults = [];

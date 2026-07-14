@@ -1,4 +1,4 @@
-import type { RobotCommand, World } from '../types';
+import type { GameId, RobotCommand, World } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { Replay, ReplayResult } from '../sim/replay';
 import type { EloDelta, PlayerIntro, RecordKind, RecordRankInfo, RoomKind } from './protocol';
@@ -65,6 +65,9 @@ export interface NetStatus {
 }
 
 export interface NetSession {
+  /** which game the match plays (from matchStart / the first snapshot; DECODE by
+   * default). The GameController builds its initial predicted world for this game. */
+  readonly game: GameId;
   /** the local player's robot id (assigned by the server at match start) */
   readonly localRobotId: number;
   /** the room code + our clientId + hosting region (ServerSession only) — used to

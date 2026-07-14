@@ -3,6 +3,7 @@ import { persistMatch } from './persist';
 import { getRating, createPendingMatch } from './db/repo';
 import { dbEnabled } from './db/pool';
 import { BALANCE_VERSION } from '../src/config';
+import type { GameId } from '../src/types';
 import { bestHost, type PingInfo } from './regions';
 import type { PendingMatch, PendingRosterEntry } from './matchTypes';
 import { QUEUE_NEED, type LobbyPlayer, type QueueMode, type ServerMsg } from '../src/net/protocol';
@@ -53,6 +54,9 @@ export interface QueueEntry {
   noWiden?: boolean;
   /** protocol capabilities this client build advertised (mixed-version safe) */
   caps?: string[];
+  /** which game this client queued for (part of the bucket key — see bucketKey).
+   * Absent ⇒ 'decode'. */
+  game?: GameId;
   /** release channel ('alpha' | 'stable' | …). The matchmaker ONLY pairs entries
    * of the same channel — alpha and stable run different src/sim, so a shared
    * authoritative match would desync. Absent ⇒ 'stable'. */
@@ -243,9 +247,11 @@ export class Matchmaker {
         alliance: (i < half ? 'red' : 'blue') as PendingRosterEntry['alliance'],
         introElo: await this.introElo(e, mode),
         channel: e.channel,
+        // stash the game in the roster jsonb so the host recovers it (no schema col)
+        game: e.game,
       })),
     );
-    await this.stage!({ code, hostRegion, mode, seed, roster, ranked: true, channel: group[0].channel });
+    await this.stage!({ code, hostRegion, mode, seed, roster, ranked: true, channel: group[0].channel, game: group[0].game });
     for (const e of group) e.send({ t: 'matchAssigned', mode, room: code, hostRegion });
   }
 
@@ -256,7 +262,7 @@ export class Matchmaker {
    * stable per-connection id for the userId→slot mapping. */
   private localStart(mode: QueueMode, group: QueueEntry[]): void {
     const code = `mm-${mode}-${roomSeq++}`;
-    const room = new Room(code, () => this.rooms.delete(room), { kind: 'versus' }, persistMatch);
+    const room = new Room(code, () => this.rooms.delete(room), { kind: 'versus', game: group[0].game }, persistMatch);
     this.rooms.add(room);
     const half = group.length / 2;
     const seed = (this.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
@@ -310,4 +316,8 @@ const toPing = (e: QueueEntry): PingInfo => ({ homeRegion: e.homeRegion, accessM
 /** matchmaking compatibility bucket: two entries may only be paired when this key
  * matches — same release channel AND same client build. Absent build ⇒ '' (old
  * clients fall back to channel-only separation). */
-const bucketKey = (e: QueueEntry): string => `${e.channel ?? 'stable'}|${e.build ?? ''}`;
+// GAME is part of the bucket: a Chain-Reaction queuer and a DECODE queuer run
+// DIFFERENT `step()`s, so they must NEVER share one authoritative room (instant
+// desync). Old clients advertise no game ⇒ 'decode', so they only ever bucket with
+// other DECODE players.
+const bucketKey = (e: QueueEntry): string => `${e.game ?? 'decode'}|${e.channel ?? 'stable'}|${e.build ?? ''}`;

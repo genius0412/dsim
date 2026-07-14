@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { GameSettings } from '../game';
-import type { DrivetrainType } from '../types';
-import { APP_NAME, APP_TAGLINE, CURRENT_SEASON } from '../seasons';
+import type { DrivetrainType, GameId } from '../types';
+import { APP_NAME, APP_TAGLINE, seasonFor } from '../seasons';
+import { registeredGames } from '../games';
 import { fetchGlobalStats, type GlobalStats } from '../net/api';
 import { RAIL_ITEMS } from './NavRail';
 import type { ShellNav } from './AppShell';
@@ -22,13 +23,20 @@ export function HomeMenu({
   settings,
   multiplayer,
   onNav,
+  onGame,
 }: {
   settings: GameSettings;
   /** the game server is configured — gates the live player counters */
   multiplayer: boolean;
   onNav: (n: ShellNav) => void;
+  /** switch the selected game (DECODE / Chain Reaction) */
+  onGame: (g: GameId) => void;
 }) {
   const spec = settings.spec;
+  // only the games whose modules are actually registered are selectable; the
+  // switcher hides itself until there are ≥2 to choose between.
+  const games = registeredGames();
+  const season = seasonFor(settings.game);
 
   // site-wide counters (players + games played), when the server is configured
   const [stats, setStats] = useState<GlobalStats | null>(null);
@@ -46,9 +54,25 @@ export function HomeMenu({
   return (
     <div className="ds-home">
       <p className="ds-eyebrow">
-        {CURRENT_SEASON.fullName} · {APP_TAGLINE}
+        {season.fullName} · {APP_TAGLINE}
       </p>
       <h1 className="ds-home-title">{APP_NAME}</h1>
+
+      {games.length > 1 && (
+        <div className="ds-segs ds-home-games" role="tablist" aria-label="Game">
+          {games.map((g) => (
+            <button
+              key={g.id}
+              role="tab"
+              aria-selected={settings.game === g.id}
+              className={`ds-seg${settings.game === g.id ? ' on' : ''}`}
+              onClick={() => onGame(g.id)}
+            >
+              {seasonFor(g.id).name}
+            </button>
+          ))}
+        </div>
+      )}
 
       <nav className="ds-menu" aria-label="Main">
         {RAIL_ITEMS.map((it, i) => (

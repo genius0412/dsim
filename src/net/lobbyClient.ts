@@ -1,3 +1,4 @@
+import type { GameId } from '../types';
 import type { RobotSetup } from '../sim/spawn';
 import type { Transport } from './transport';
 import { getAuthToken } from '../lib/authClient';
@@ -18,6 +19,8 @@ export interface MatchStart {
   seed: number;
   setups: RobotSetup[];
   yourRobotId: number;
+  /** which game the match plays (DECODE by default) — passed to the ServerSession */
+  game?: GameId;
   /** ranked rooms only: drives the pre-match ELO intro overlay */
   ranked?: boolean;
   intros?: PlayerIntro[];
@@ -96,12 +99,13 @@ export class LobbyClient {
     homeRegion: string,
     accessMs: number,
     noWiden?: boolean,
+    game?: GameId,
   ): void {
     const doQueue = async (): Promise<void> => {
       const authToken = (await getAuthToken()) ?? undefined;
       this.transport.send(
         encodeMsg({
-          t: 'queue', mode, player, authToken, homeRegion, accessMs, noWiden,
+          t: 'queue', mode, player, authToken, homeRegion, accessMs, noWiden, game,
           caps: CLIENT_CAPS, channel: appChannel(), build: appBuild(),
         }),
       );

@@ -444,7 +444,12 @@
   font-weight: 800;
   letter-spacing: -0.02em;
   line-height: 1.05;
-  margin: 2px 0 22px;
+  margin: 2px 0 18px;
+}
+/* game switcher (DECODE / Chain Reaction) — centered under the title */
+.ds-home-games {
+  justify-content: center;
+  margin: -6px 0 22px;
 }
 .ds-menu {
   width: 100%;

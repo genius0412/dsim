@@ -103,7 +103,7 @@ export function RecordRun({
         spec: settings.spec,
         assists: settings.assists,
       },
-      { kind: 'record', record: mode },
+      { kind: 'record', record: mode, game: settings.game },
     );
 
     return () => {

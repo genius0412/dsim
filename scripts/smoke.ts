@@ -42,7 +42,7 @@ import {
   activeStartLegal,
 } from '../src/sim/field';
 import { addClassified, addOverflow, assessMatchEnd } from '../src/sim/scoring';
-import type { Alliance, GameMode, RobotCommand, RobotSpec, World } from '../src/types';
+import type { Alliance, GameId, GameMode, RobotCommand, RobotSpec, World } from '../src/types';
 import {
   SIM_DT,
   GATE_STOP_S,
@@ -100,6 +100,18 @@ import { computeGlicko, glicko2Update, eloMode, RD_PROVISIONAL, type EloParticip
 import type { ServerMsg, QueueMode } from '../src/net/protocol';
 import { dsin, dcos, dtan, datan2 } from '../src/math';
 import { initPhysics } from '../src/sim/physicsEngine';
+import { moduleFor, gameOf } from '../src/games';
+import { decodeColliders } from '../src/games/decode/colliders';
+import { createChainWorld } from '../src/games/chain/spawn';
+import { chainStep } from '../src/games/chain/step';
+import { chainColliders } from '../src/games/chain/colliders';
+import {
+  CHAIN_HALF_X,
+  CHAIN_HALF_Y,
+  CHAIN_ACCEL_DEPTH,
+  CHAIN_ACCEL_HALF_Y,
+  CHAIN_HOOK_Y,
+} from '../src/games/chain/config';
 
 // the sim now steps a Rapier physics world (robots) — load the WASM before any
 // step() runs. tsx runs this file as ESM, so top-level await is available.
@@ -3303,11 +3315,12 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
 const rEntry = (
   id: string,
   homeRegion: string,
-  opts: { accessMs?: number; noWiden?: boolean; channel?: string; build?: string } = {},
+  opts: { accessMs?: number; noWiden?: boolean; channel?: string; build?: string; game?: GameId } = {},
 ): QueueEntry => ({
   id,
   channel: opts.channel,
   build: opts.build,
+  game: opts.game,
   send: () => {},
   player: {
     name: id,
@@ -3401,6 +3414,20 @@ const mkMM = () => {
   mm.enqueue(rEntry('b', 'iad', { build: 'sha_x' }));
   check('build: two same-build players DO pair', mm.queueSizes()['1v1'] === 0);
 }
+// GAME SEGREGATION: a Chain-Reaction queuer and a DECODE queuer run different
+// step()s, so they must NEVER be paired into one authoritative room.
+{
+  const { mm } = mkMM();
+  mm.enqueue(rEntry('a', 'iad', { game: 'chain' }));
+  mm.enqueue(rEntry('b', 'iad', { game: 'decode' }));
+  check('game: a chain and a decode queuer do NOT pair', mm.queueSizes()['1v1'] === 2);
+}
+{
+  const { mm } = mkMM();
+  mm.enqueue(rEntry('a', 'iad', { game: 'chain' }));
+  mm.enqueue(rEntry('b', 'iad', { game: 'chain' }));
+  check('game: two chain queuers DO pair', mm.queueSizes()['1v1'] === 0);
+}
 {
   // old clients that send no build fall back to channel-only separation (still pair)
   const { mm } = mkMM();
@@ -3485,6 +3512,134 @@ const mkMM = () => {
   check('isValidRoomCode rejects the wrong length', !isValidRoomCode('ABC') && !isValidRoomCode('BCDFGHJ'));
   check('isValidRoomCode rejects vowels', !isValidRoomCode('BANANA'));
   check('normalizeRoomCode strips junk + uppercases', normalizeRoomCode(' b2-c3 d4x ') === 'B2C3D4');
+}
+
+// ------------------------------------------------------------ multi-game (Chain Reaction seam) ----
+{
+  // registry integrity + back-compat default
+  check('registry: gameOf({}) defaults to decode', gameOf({}).id === 'decode');
+  check('registry: gameOf(undefined) defaults to decode', gameOf(undefined).id === 'decode');
+  check('registry: moduleFor("chain") resolves the chain module', moduleFor('chain').id === 'chain');
+  check('registry: an unknown game id degrades to decode', moduleFor('nope' as never).id === 'decode');
+  check('chain module is unscored (kept off ELO/record boards)', moduleFor('chain').scored === false);
+
+  // the DECODE collider extraction is intact: 4 walls + per-alliance (face + classifier)
+  check(
+    'decode colliders: 4 walls + 2 goal-face + 2 classifier = 8 statics',
+    decodeColliders.statics.length === 8,
+    `${decodeColliders.statics.length}`,
+  );
+  check('chain colliders: 4 perimeter walls, no dynamic', chainColliders.statics.length === 4 && !chainColliders.dynamic);
+
+  // manual geometry (mm → in ÷25.4): accelerator 697.49752×1393.65mm, hooks ±688.09375mm
+  const near = (a: number, b: number) => Math.abs(a - b) < 1e-3;
+  check('chain accelerator: depth = 27.4605in (697.49752mm)', near(CHAIN_ACCEL_DEPTH, 27.460532), CHAIN_ACCEL_DEPTH.toFixed(4));
+  check('chain accelerator: half-width = 27.4341in (1393.65mm/2)', near(CHAIN_ACCEL_HALF_Y, 27.434055), CHAIN_ACCEL_HALF_Y.toFixed(4));
+  check('chain hook: y = ±27.0903in (688.09375mm)', near(CHAIN_HOOK_Y, 27.090305), CHAIN_HOOK_Y.toFixed(4));
+  // accelerators sit OUTSIDE the ±72 walls (protrude, don't overlap the play area)
+  check('chain accelerator: protrudes past the wall (outer x = 99.46)', near(CHAIN_HALF_X + CHAIN_ACCEL_DEPTH, 99.460532));
+  // hooks fall within the accelerator mouth (|hookY| < accelerator half-width)
+  check('chain hook: within the accelerator-mouth span', CHAIN_HOOK_Y < CHAIN_ACCEL_HALF_Y);
+
+  const chainSetup = (id: number, alliance: Alliance): RobotSetup => ({
+    id,
+    alliance,
+    spec: { ...DEFAULT_SPEC },
+    assists: { ...DEFAULT_ASSISTS },
+    startIndex: id,
+  });
+  const runChain = (world: World, c: RobotCommand, seconds: number): void => {
+    const commands = new Map(world.robots.map((r) => [r.id, c]));
+    const n = Math.round(seconds / SIM_DT);
+    for (let i = 0; i < n; i++) chainStep(world, SIM_DT, commands);
+  };
+
+  // spawn: robots only, inert goals/scores present (so worldHash never throws), in-bounds
+  const cw = createChainWorld('free', 12345, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
+  check('chain spawn: world.game === "chain"', cw.game === 'chain');
+  check('chain spawn: no balls in the shell', cw.balls.length === 0);
+  check('chain spawn: inert goals + scores present (worldHash-safe)', !!cw.goals.red && !!cw.goals.blue && !!cw.match.scores.blue);
+  check(
+    'chain spawn: robots start inside the CR field',
+    cw.robots.every((r) => Math.abs(r.pos.x) < CHAIN_HALF_X && Math.abs(r.pos.y) < CHAIN_HALF_Y),
+  );
+  check('chain spawn: worldHash does not throw', Number.isFinite(worldHash(cw)));
+
+  // drive: a robot moves under a command (freeplay ⇒ robots enabled)
+  const driveW = createChainWorld('free', 7, [chainSetup(0, 'blue')]);
+  const startX = driveW.robots[0].pos.x;
+  const startY = driveW.robots[0].pos.y;
+  runChain(driveW, cmd({ driveX: 1, driveY: 1 }), 1);
+  const moved = Math.hypot(driveW.robots[0].pos.x - startX, driveW.robots[0].pos.y - startY);
+  check('chain drive: the robot actually moves under a command', moved > 2, `moved=${moved.toFixed(1)}in`);
+
+  // wall containment: hammer the field in every direction; the center never leaves
+  const wallW = createChainWorld('free', 9, [chainSetup(0, 'blue')]);
+  let contained = true;
+  const dirs = [
+    { driveX: 1, driveY: 0 },
+    { driveX: -1, driveY: 0 },
+    { driveX: 0, driveY: 1 },
+    { driveX: 0, driveY: -1 },
+  ];
+  for (const d of dirs) {
+    runChain(wallW, cmd(d), 2.5);
+    const r = wallW.robots[0];
+    if (Math.abs(r.pos.x) >= CHAIN_HALF_X || Math.abs(r.pos.y) >= CHAIN_HALF_Y) contained = false;
+  }
+  const wr = wallW.robots[0];
+  check(
+    'chain drive: full-speed wall drive stays contained on the CR field',
+    contained,
+    `pos=(${wr.pos.x.toFixed(1)},${wr.pos.y.toFixed(1)}) half=(${CHAIN_HALF_X},${CHAIN_HALF_Y})`,
+  );
+
+  // determinism: identical seed + inputs ⇒ identical worldHash
+  const a = createChainWorld('match', 4242, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
+  const b = createChainWorld('match', 4242, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
+  runChain(a, cmd({ driveX: 0.7, rotate: 0.3 }), 2);
+  runChain(b, cmd({ driveX: 0.7, rotate: 0.3 }), 2);
+  check('chain determinism: same seed + inputs ⇒ equal worldHash', worldHash(a) === worldHash(b));
+
+  // a server Room configured for Chain Reaction runs its step + advances to 'post'
+  // without throwing, and its matchStart advertises game:'chain'
+  const msgs: ServerMsg[] = [];
+  let crOutcomeGame: string | undefined = 'unset';
+  const crRoom = new Room('smoke-chain', () => {}, { kind: 'versus', game: 'chain' }, (o) => {
+    crOutcomeGame = o.game;
+  });
+  const crClient: Client = {
+    id: 'cc1',
+    send: (m: ServerMsg) => msgs.push(m),
+    player: {
+      clientId: 'cc1',
+      name: 'CR',
+      teamName: 'T',
+      teamNumber: 1,
+      alliance: 'blue',
+      startIndex: 0,
+      ready: true,
+      spec: { ...DEFAULT_SPEC },
+      assists: { ...DEFAULT_ASSISTS },
+    },
+    connected: true,
+    disconnectAt: 0,
+  };
+  crRoom.add(crClient);
+  let threw = false;
+  try {
+    crRoom.onMessage('cc1', { t: 'start' });
+    crRoom.advanceForTest(maxMatchTicks() + 5);
+  } catch {
+    threw = true;
+  }
+  const crStart = msgs.find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
+  check('chain room: starts + advances to post without throwing', !threw);
+  check('chain room: matchStart advertises game:"chain"', crStart?.game === 'chain');
+  // the outcome carries game:'chain' so persistMatch can gate on module.scored
+  // (unscored ⇒ never writes ELO/records — see server/persist.ts)
+  check('chain room: MatchOutcome.game is "chain" (persist gates on it)', crOutcomeGame === 'chain');
+  check('chain: an unscored game is never persisted (module.scored false)', moduleFor('chain').scored === false);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

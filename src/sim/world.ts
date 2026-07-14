@@ -14,6 +14,7 @@ import {
 } from './physics';
 import { rot, approach } from '../math';
 import { solveBalls, solveRobots } from './physicsEngine';
+import { decodeColliders } from '../games/decode/colliders';
 import { classifierRect } from './field';
 import { updateRobot, updateRobotActions } from './robot';
 import { checkGoalEntry, gateColliderPos, updateBasins, updateGates, updateRails } from './goal';
@@ -97,7 +98,7 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
     red: gateColliderPos(world, dt, actualCommands, 'red'),
     blue: gateColliderPos(world, dt, actualCommands, 'blue'),
   };
-  const preVels = solveRobots(world, dt, gateCol);
+  const preVels = solveRobots(world, dt, decodeColliders, gateCol);
   squareUpRobots(world, preVels);
 
   // ---- robots (actions: intake/fire/turret) ------------------------------
@@ -115,7 +116,7 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
   for (const b of world.balls) {
     if (b.state.kind === 'ground') stepGroundBall(b, dt);
   }
-  solveBalls(world, dt);
+  solveBalls(world, dt, decodeColliders);
   // ball↔robot stays bespoke (see solveRobots): the pin stall + outflow-no-shove
   // are deliberately non-physical. Iterated so a robot→ball→(wall/ball) chain
   // converges instead of tunnelling in a single pass.

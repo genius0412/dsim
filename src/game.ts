@@ -2,6 +2,7 @@ import type {
   Alliance,
   ArtifactColor,
   DrivetrainType,
+  GameId,
   GameMode,
   MatchPhase,
   Motif,
@@ -12,8 +13,9 @@ import type {
   GameSettings,
 } from './types';
 import * as C from './config';
-import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
-import { step } from './sim/world';
+import { DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
+import { moduleFor, gameOf } from './games';
+import type { GameModule } from './games';
 import { startMatch } from './sim/match';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
@@ -89,6 +91,9 @@ export interface IntroPlayer {
 }
 
 export interface HudSnapshot {
+  /** which game is being played — drives whether GameView shows the full score
+   * HUD (DECODE) or minimal chrome (Chain Reaction shell) */
+  game: GameId;
   mode: GameMode;
   phase: MatchPhase;
   timeLeft: number;
@@ -165,6 +170,15 @@ export class GameController {
   private prevIntakeAt: Record<number, number> = {};
   private prevGateOpen: Record<Alliance, boolean> = { red: false, blue: false };
 
+  /** which game this controller builds its INITIAL world for (solo: the player's
+   * setting; networked: DECODE for now). Once running, the STEP/DRAW/HUD always
+   * resolve the module from `this.world.game` via `this.mod` — a reconciled server
+   * world carries its own game, so prediction/replay never use the wrong step. */
+  private readonly gameId: GameId;
+  /** the active game module, resolved from the CURRENT world (hot-path safe). */
+  private get mod(): GameModule {
+    return gameOf(this.world);
+  }
   /** the local player's robot id (slot 0 in solo; assigned by the lobby in
    * multiplayer) */
   readonly localRobotId: number;
@@ -207,6 +221,10 @@ export class GameController {
   ) {
     this.ctx = canvas.getContext('2d')!;
     this.session = session;
+    // which game this controller builds its INITIAL world for. A networked
+    // session's game is authoritative (from matchStart); solo uses the setting.
+    // Once running, STEP/DRAW/HUD resolve from this.world.game (this.mod).
+    this.gameId = session ? session.game : settings.game;
     this.localRobotId = session ? session.localRobotId : 0;
     this.audio.soundsEnabled = settings.audio.sounds;
     this.audio.voiceEnabled = settings.audio.voice;
@@ -258,8 +276,9 @@ export class GameController {
     // multiplayer: everyone builds the identical world the host authored and
     // runs a SIM-DRIVEN countdown (transition lives in stepMatch, so it fires
     // on the same tick for every peer — no controller-local start/seed)
+    const build = moduleFor(this.gameId).createWorld;
     if (this.session) {
-      const w = createWorld('match', this.session.seed, this.session.setups, this.settings);
+      const w = build('match', this.session.seed, this.session.setups, this.settings);
       w.match.preCountdown = C.PRE_COUNTDOWN;
       return w;
     }
@@ -294,11 +313,11 @@ export class GameController {
         dummy(3, opp, 1),
       );
     }
-    return createWorld(s.mode, seed, setups, this.settings);
+    return build(s.mode, seed, setups, this.settings);
   }
 
   private onResize = (): void => {
-    this.renderer.camera.configure(this.canvas, this.viewAlliance());
+    this.renderer.camera.configure(this.canvas, this.viewAlliance(), this.mod.bounds);
   };
 
   private handlePhaseAudio(): void {
@@ -521,7 +540,7 @@ export class GameController {
     let steps = 0;
     const commands = new Map<number, RobotCommand>([[this.localRobotId, cmd]]);
     while (this.acc >= C.SIM_DT && steps < C.MAX_STEPS_PER_FRAME) {
-      step(this.world, C.SIM_DT, commands);
+      this.mod.step(this.world, C.SIM_DT, commands);
       this.acc -= C.SIM_DT;
       steps++;
     }
@@ -566,7 +585,7 @@ export class GameController {
       const local = localizeCommand(cmd);
       s.sendInput(tick, cmd);
       this.inputBuf.push({ tick, cmd: local });
-      step(this.world, C.SIM_DT, this.cmdMap(local));
+      this.mod.step(this.world, C.SIM_DT, this.cmdMap(local));
       this.acc -= C.SIM_DT;
       steps++;
     }
@@ -678,7 +697,7 @@ export class GameController {
       this.inputBuf.splice(0, this.inputBuf.length - MAX_PREDICT_LEAD);
     }
     for (const b of this.inputBuf) {
-      step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
+      this.mod.step(this.world, C.SIM_DT, this.cmdMap(b.cmd));
     }
 
     const post = this.world.robots.find((r) => r.id === this.localRobotId);
@@ -817,6 +836,7 @@ export class GameController {
     const opp: Alliance = a === 'blue' ? 'red' : 'blue';
     const goal = w.goals[a];
     return {
+      game: w.game ?? 'decode',
       mode: w.mode,
       phase: w.match.phase,
       timeLeft: Math.max(0, w.match.phaseTimeLeft),

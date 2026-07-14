@@ -107,6 +107,11 @@ export function Menu({ settings, onChange }: Props) {
   };
 
   const spec = settings.spec;
+  // the shooter-specific build controls (intake preset, flywheel inertia, color
+  // sorter) are DECODE concepts — hidden for the Chain Reaction shell, whose real
+  // intakes/config arrive with its rules. The shared chassis controls
+  // (drivetrain/size/mass/rpm) stay for every game.
+  const isDecode = settings.game === 'decode';
   // slider envelopes come from the SAME limit functions coerceSpec clamps with,
   // in the same dependency order (intake → size, drivetrain → rpm, drivetrain ×
   // inertia → mass), so the UI and the validator can never disagree
@@ -409,39 +414,45 @@ export function Menu({ settings, onChange }: Props) {
                   onChange={(e) => setSpec({ driveRpm: Number(e.target.value) })}
                 />
               </label>
-              <label className="ds-field">
-                <span className="cap">
-                  Flywheel inertia <span className="val">{spec.flywheelInertia.toFixed(2)}</span>
-                </span>
-                <input
-                  className="ds-range"
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={spec.flywheelInertia}
-                  style={rangeFill(spec.flywheelInertia, 0, 1)}
-                  // a bigger flywheel weighs more: setSpec raises the mass floor
-                  // and pulls mass up with it so the loadout stays legal
-                  onChange={(e) => setSpec({ flywheelInertia: Number(e.target.value) })}
-                />
-              </label>
-              <button
-                className={`ds-opt mini ${spec.canSort ? 'on' : ''}`}
-                style={{ flex: '1 1 150px' }}
-                onClick={() => setSpec({ canSort: !spec.canSort })}
-              >
-                <span className="ot">Sorter {spec.canSort ? 'ON' : 'OFF'}</span>
-                <span className="od">Fires the color the motif needs</span>
-              </button>
+              {isDecode && (
+                <label className="ds-field">
+                  <span className="cap">
+                    Flywheel inertia <span className="val">{spec.flywheelInertia.toFixed(2)}</span>
+                  </span>
+                  <input
+                    className="ds-range"
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={spec.flywheelInertia}
+                    style={rangeFill(spec.flywheelInertia, 0, 1)}
+                    // a bigger flywheel weighs more: setSpec raises the mass floor
+                    // and pulls mass up with it so the loadout stays legal
+                    onChange={(e) => setSpec({ flywheelInertia: Number(e.target.value) })}
+                  />
+                </label>
+              )}
+              {isDecode && (
+                <button
+                  className={`ds-opt mini ${spec.canSort ? 'on' : ''}`}
+                  style={{ flex: '1 1 150px' }}
+                  onClick={() => setSpec({ canSort: !spec.canSort })}
+                >
+                  <span className="ot">Sorter {spec.canSort ? 'ON' : 'OFF'}</span>
+                  <span className="od">Fires the color the motif needs</span>
+                </button>
+              )}
             </div>
 
             <p className="ds-hint">
-              Heavier = more push, slower accel · higher RPM = faster top speed · more flywheel
-              inertia keeps long shots rapid. Chassis + intake ≤ {ROBOT_MAX_SIZE}".
+              Heavier = more push, slower accel · higher RPM = faster top speed
+              {isDecode && ' · more flywheel inertia keeps long shots rapid'}. Chassis + intake ≤{' '}
+              {ROBOT_MAX_SIZE}".
             </p>
           </div>
 
+          {isDecode && (
           <div className="ds-opts">
             {(Object.keys(INTAKE_LABELS) as IntakeStyle[]).map((i) => (
               <button
@@ -454,6 +465,7 @@ export function Menu({ settings, onChange }: Props) {
               </button>
             ))}
           </div>
+          )}
         </section>
 
         {/* ---------- driver preferences (remembered per drivetrain) ---------- */}

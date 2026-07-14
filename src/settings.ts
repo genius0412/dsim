@@ -17,6 +17,7 @@ const STORAGE_KEY = 'decodesim.settings.v1';
 
 export function defaultSettings(): GameSettings {
   return {
+    game: 'decode',
     mode: 'match',
     alliance: 'blue',
     // active assists = the default spec's drivetrain slot; library = per-drivetrain defaults
@@ -48,6 +49,7 @@ export function coerceSettings(raw: unknown): GameSettings {
   try {
     if (typeof raw !== 'object' || raw === null) return out;
     const s = raw as Record<string, unknown>;
+    if (s.game === 'decode' || s.game === 'chain') out.game = s.game;
     if (s.mode === 'match' || s.mode === 'free') out.mode = s.mode;
     if (s.alliance === 'red' || s.alliance === 'blue') out.alliance = s.alliance;
     // assists + spec share ONE validation path with the server (coerceAssists /

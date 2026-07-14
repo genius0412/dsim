@@ -147,6 +147,9 @@ export function MatchSetup({
   };
 
   const setAlliance = (alliance: Alliance) => set({ alliance });
+  // the start-position editor is built on DECODE's G304 legality + goal geometry —
+  // hidden for the Chain Reaction shell (its start rules arrive with its manual).
+  const isDecode = settings.game === 'decode';
 
   return (
     <section className="ds-panel">
@@ -180,19 +183,26 @@ export function MatchSetup({
 
         <section className="ds-sec">
           <h2>Start position</h2>
-          <StartPositionEditor
-            spec={settings.spec}
-            alliance={settings.alliance}
-            value={settings.startPose}
-            startIndex={settings.startIndex}
-            category={settings.startCat}
-            saved={settings.savedStartPoses}
-            onChange={(startPose) => startPose && set(selectStart(settings, { index: -1, pose: startPose }))}
-            onPickPreset={(i) => set(selectStart(settings, { index: i, pose: null }))}
-            onCategory={(c) => set(switchCategory(settings, c))}
-            onSave={(pose) => set(saveStart(settings, pose))}
-            onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
-          />
+          {isDecode ? (
+            <StartPositionEditor
+              spec={settings.spec}
+              alliance={settings.alliance}
+              value={settings.startPose}
+              startIndex={settings.startIndex}
+              category={settings.startCat}
+              saved={settings.savedStartPoses}
+              onChange={(startPose) => startPose && set(selectStart(settings, { index: -1, pose: startPose }))}
+              onPickPreset={(i) => set(selectStart(settings, { index: i, pose: null }))}
+              onCategory={(c) => set(switchCategory(settings, c))}
+              onSave={(pose) => set(saveStart(settings, pose))}
+              onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
+            />
+          ) : (
+            <p className="ds-hint">
+              Start positions arrive with Chain Reaction’s field rules. For now robots spawn at
+              default poses in their own half.
+            </p>
+          )}
           <div className="ds-opts" style={{ marginTop: 12 }}>
             <button
               className={`ds-opt mini ${settings.practiceDummies ? 'on' : ''}`}

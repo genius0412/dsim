@@ -1,4 +1,6 @@
 import type { ControlBindings } from './input/bindings';
+import type { GameId } from './games/types';
+export type { GameId } from './games/types';
 
 export type Alliance = 'red' | 'blue';
 export type ArtifactColor = 'purple' | 'green';
@@ -315,6 +317,9 @@ export interface StartSel {
 }
 
 export interface GameSettings {
+  /** which game the player has selected (DECODE / Chain Reaction). Drives spawn,
+   * step, render, HUD, the builder, and the room/queue game key. Persists + syncs. */
+  game: GameId;
   mode: GameMode;
   alliance: Alliance;
   spec: RobotSpec;
@@ -364,6 +369,9 @@ export interface GameSettings {
 }
 
 export interface World {
+  /** which game this world simulates. Optional for back-compat: an absent value
+   * (old snapshots/replays) resolves to `'decode'` via `gameOf`/`moduleFor`. */
+  game?: GameId;
   mode: GameMode;
   time: number;
   tick: number;

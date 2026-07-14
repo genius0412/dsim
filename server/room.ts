@@ -1,8 +1,9 @@
 import * as C from '../src/config';
 import { START_POSES } from '../src/config';
 import { activeStartLegal } from '../src/sim/field';
-import { createWorld, coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
-import { step } from '../src/sim/world';
+import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
+import { simModuleFor } from '../src/games/sim';
+import type { GameId } from '../src/types';
 import { physicsReady } from '../src/sim/physicsEngine';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from '../src/sim/replay';
 import type {
@@ -109,6 +110,9 @@ export interface MatchParticipant {
 
 /** everything the persistence layer needs when a match reaches phase 'post' */
 export interface MatchOutcome {
+  /** which game was played. Persistence SKIPS unscored games (CR shell) so they
+   * never touch ELO/records. Absent ⇒ 'decode'. */
+  game?: GameId;
   config: RoomConfig;
   /** true only for matchmade ranked rooms; custom versus rooms persist for the
    * history + replay but do NOT move ELO */
@@ -190,6 +194,14 @@ export class Room {
   private strategyDeadline = 0;
   private strategyTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly slotOf = new Map<string, number>(); // clientId -> roster slot (= robotId)
+
+  /** which game this room runs. Ranked comes from the staged PendingMatch, custom
+   * from the room config; DECODE by default (old clients). Resolves the sim module
+   * (createWorld/step) — a CR room and a DECODE room never share a matchmaking
+   * bucket (server/matchmaking.ts), so a room's game is unambiguous. */
+  private get game(): GameId {
+    return this.pendingMatch?.game ?? this.config.game ?? 'decode';
+  }
 
   constructor(
     readonly code: string,
@@ -370,7 +382,11 @@ export class Room {
         // toggle, spec swap, pose edit), so any state that leaves an illegal pose
         // clears ready. Closes the host-start + ranked auto-start paths against a
         // stale/spoofed ready.
-        if (c.player.ready && !activeStartLegal(c.player.spec, c.player.alliance, c.player.startPose)) {
+        if (
+          c.player.ready &&
+          simModuleFor(this.game).startLegality &&
+          !activeStartLegal(c.player.spec, c.player.alliance, c.player.startPose)
+        ) {
           c.player.ready = false;
         }
         this.broadcastRoster();
@@ -430,14 +446,18 @@ export class Room {
     // block-and-warn rather than let createWorld silently relocate the robot. The
     // ready gate (case 'update') already prevents this in normal flow; this also
     // closes the host-start path, which is NOT gated on all-ready server-side.
-    for (const c of this.clients.values()) {
-      const a: Alliance = record ? 'blue' : c.player.alliance;
-      if (!activeStartLegal(c.player.spec, a, c.player.startPose)) {
-        this.broadcast({
-          t: 'error',
-          message: 'A driver’s start position is invalid for their chassis — fix it to start.',
-        });
-        return;
+    // start-pose legality is a DECODE (G304) concept — only enforce it for a game
+    // that has a start editor (CR has none yet).
+    if (simModuleFor(this.game).startLegality) {
+      for (const c of this.clients.values()) {
+        const a: Alliance = record ? 'blue' : c.player.alliance;
+        if (!activeStartLegal(c.player.spec, a, c.player.startPose)) {
+          this.broadcast({
+            t: 'error',
+            message: 'A driver’s start position is invalid for their chassis — fix it to start.',
+          });
+          return;
+        }
       }
     }
     // record runs are OPPONENT-FREE co-op: every robot on one alliance (blue).
@@ -491,7 +511,7 @@ export class Room {
     // never reaches Room, keeps running auto client-side.
     setups = setups.map((s) => ({ ...s, autoPath: undefined, autoPathEnabled: false }));
     this.phase = 'match';
-    const world = createWorld('match', seed, setups);
+    const world = simModuleFor(this.game).createWorld('match', seed, setups);
     world.match.preCountdown = C.PRE_COUNTDOWN; // sim-driven pre→auto, same as the client
     this.world = world;
     this.pending.clear();
@@ -524,6 +544,7 @@ export class Room {
         seed,
         setups,
         yourRobotId: this.robotOf.get(c.id) ?? 0,
+        game: this.game,
         ranked: this.ranked,
         intros: this.ranked ? this.intros : undefined,
         region: SERVER_REGION || undefined,
@@ -644,6 +665,7 @@ export class Room {
         yourRobotId: this.slotOf.get(c.id) ?? 0,
         mode: p.mode,
         intros: this.intros,
+        game: this.game,
       });
     }
     this.broadcastRoster(); // redacted per-recipient (opponent builds hidden)
@@ -782,7 +804,7 @@ export class Room {
   private stepOnce(): boolean {
     const w = this.world as World;
     this.lastFrame = this.frameCommands(w.tick + 1);
-    step(w, C.SIM_DT, this.lastFrame);
+    simModuleFor(this.game).step(w, C.SIM_DT, this.lastFrame);
     this.recorder?.record(w.tick, this.lastFrame);
     const due = w.tick % SNAPSHOT_INTERVAL === 0;
     // Don't finalize the instant the match ends: balls are still flowing down the
@@ -852,7 +874,7 @@ export class Room {
           assists: d.assists,
         });
       }
-      const ret = this.onResult({ config: this.config, ranked: this.ranked, result, replay, participants });
+      const ret = this.onResult({ game: this.game, config: this.config, ranked: this.ranked, result, replay, participants });
       // resolves once persisted (async DB write): versus → per-driver ELO deltas;
       // record → the run's leaderboard standing. Broadcast so the results screen
       // can reveal the ELO change (versus) or the PB / WR / rank line (record).

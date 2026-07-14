@@ -164,7 +164,7 @@ export function Matchmaking({
       if (!startedRef.current && !assigningRef.current)
         setError('Lost connection to the game server.');
     });
-    lobby.queue(mode, playerInfo(), home?.region ?? '', home?.accessMs ?? 0, noWiden);
+    lobby.queue(mode, playerInfo(), home?.region ?? '', home?.accessMs ?? 0, noWiden, settings.game);
   };
 
   /** a ranked match was assigned: drop the matchmaker socket and open a fresh one to

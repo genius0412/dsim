@@ -1,4 +1,4 @@
-import type { Alliance, AssistConfig, RobotSpec } from '../src/types';
+import type { Alliance, AssistConfig, GameId, RobotSpec } from '../src/types';
 import type { QueueMode } from '../src/net/protocol';
 
 /**
@@ -32,6 +32,10 @@ export interface PendingRosterEntry {
    * groups a single channel). Stored in the roster jsonb so the host region can
    * recover `PendingMatch.channel` without a schema column. */
   channel?: string;
+  /** which game the match plays (all entries share one — bucketed by game). Stored
+   * in the roster jsonb so the host recovers `PendingMatch.game` without a schema
+   * column (same trick as `channel`). Absent ⇒ 'decode'. */
+  game?: GameId;
 }
 
 export interface PendingMatch {
@@ -42,6 +46,9 @@ export interface PendingMatch {
   seed: number;
   roster: PendingRosterEntry[];
   ranked: boolean;
+  /** which game the staged match plays (Absent ⇒ 'decode'). The host resolves the
+   * sim module from it; the matchmaker only ever groups one game (bucketKey). */
+  game?: GameId;
   /** release channel of the paired players ('alpha' | 'stable' | …); the matchmaker
    * only ever groups a single channel. Alpha rooms are not persisted (in-dev). */
   channel?: string;

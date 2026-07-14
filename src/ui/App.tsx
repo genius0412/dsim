@@ -292,6 +292,7 @@ export function App() {
           seed: s.seed,
           setups: s.setups,
           yourRobotId: s.localRobotId,
+          game: s.game,
           ranked: s.ranked,
           intros: s.intros,
           region: s.region,
@@ -360,9 +361,11 @@ export function App() {
   // spawn, the player configured it for a DIFFERENT chassis, so we refuse to start
   // anywhere and send them to fix it rather than relocating their robot silently.
   const guardStart = (go: () => void): void => {
+    // start-pose legality is a DECODE (G304) check; other games have no legality yet
+    const startOk = settings.game !== 'decode' || activeStartLegal(settings.spec, settings.alliance, settings.startPose);
     if (loadActiveGame()) setBlockedByActive(true);
     else if (restartPending) setStartBlocked(true);
-    else if (!activeStartLegal(settings.spec, settings.alliance, settings.startPose)) setBadStart(true);
+    else if (!startOk) setBadStart(true);
     else if (newVersion) setPendingStart(() => go);
     else go();
   };
@@ -482,6 +485,7 @@ export function App() {
           settings={settings}
           multiplayer={multiplayer}
           onNav={(n) => navigate(screenForNav(n))}
+          onGame={(g) => update({ ...settings, game: g })}
         />
       )}
 
