@@ -33,6 +33,8 @@ export interface ChainState {
   particlePoints: Record<Alliance, number>;
   /** endgame status per robot id (park 5 / ascend 20) */
   endgame: Record<number, EndgameState>;
+  /** last catalyst-button state per robot id (for edge-triggered pick/place) */
+  catalystHeld: Record<number, boolean>;
   /** monotonic ball-id allocator (deterministic — no module global). Set past the
    * initial particle ids at spawn; `updateChain` increments it for reject/flight balls. */
   nextBallId: number;
@@ -44,6 +46,7 @@ export function emptyChainState(): ChainState {
     scored: { red: 0, blue: 0 },
     particlePoints: { red: 0, blue: 0 },
     endgame: {},
+    catalystHeld: {},
     nextBallId: 1,
   };
 }

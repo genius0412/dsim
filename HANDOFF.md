@@ -133,7 +133,23 @@ game. Terminology (in `chain/config.ts` header + `CHAIN_PTS`/element consts):
 - **HUD:** CR is scored now — `GameView` shows the red|timer|blue score bar (no motif) +
   a CR breakdown (PARTICLES / MULT ×N / CATALYSTS n/2 / endgame) + chips (HOPPER n / ×mult
   / CATALYST / ASCENDED|PARKED). `HudSnapshot.chain` + `getHud` populate it. CR `ui.showScoreHud=true`.
-- Smoke pins: 300+4 spawn, intake→fire→score, 300 conservation, catalyst ×2, park 5 / ascend 20.
+- **Particles NEVER overlap**: `separateParticles` in `play.ts` — a uniform spatial-hash
+  (cell = 2·radius) position separation pass (`CHAIN_PART_SEP_ITERS`), O(N), scales to 300.
+- **Shot goes INTO the accelerator + is EJECTED back out** (visible): a flight ball flies
+  past the mouth into the box, scores on entry (`scored` flag on `BallState.flight`), keeps
+  flying in, then the auto-score system relaunches the SAME ball back onto the field
+  (`CHAIN_EJECT_*`). Count still conserved (ball reused, no teleport).
+- **Ball storage** is a per-robot builder slider (`RobotSpec.ballStorage`, 1–30, default 8);
+  rapid fire cadence `CHAIN_FIRE_INTERVAL` 0.05s.
+- **Catalyst BUTTON** (not auto): `RobotCommand.catalyst` (bindings key `c` / pad LB, in
+  `ControlsSection`; quantized bit2). Edge-triggered in `updateChain` (`ChainState.catalystHeld`):
+  pick up a nearby free ring / place a carried ring on a hook (or drop). Catalysts STAGED in
+  the lab corners at spawn.
+- **Hook occupancy is drawn per-slot** (`draw.ts`): each of an alliance's 2 hooks renders as
+  its own slot (empty = hollow ring + index tag, occupied = filled bright donut) so it's clear
+  how many hooks there are + which hold rings (they read as one top-down otherwise).
+- Smoke pins: 300+4 spawn, intake→fire→score, 300 conservation, catalyst ×2, park 5 / ascend 20,
+  particles-never-overlap, catalyst-button pick-up+seat.
 - **Default CR assists = auto-intake + auto-fire ON**, so a robot immediately cycles
   (verified in Electron: solo match scored 9 in auto). TUNING knobs in `chain/config.ts`
   (GAMEPLAY block): particle count/friction, hopper cap, intake reach, fire cadence/speed,

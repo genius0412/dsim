@@ -3,9 +3,13 @@ import * as C from '../../config';
 import { dcos, dsin, datan2, hyp, nextRandom, rot } from '../../math';
 import { robotExtents } from '../../sim/physics';
 import {
+  CHAIN_ACCEL_DEPTH,
   CHAIN_ACCEL_HALF_Y,
   CHAIN_ASCEND_R,
   CHAIN_CATALYST_PICK_R,
+  CHAIN_EJECT_SPEED,
+  CHAIN_EJECT_SPREAD,
+  CHAIN_EJECT_VZ,
   CHAIN_FIRE_INTERVAL,
   CHAIN_HALF_X,
   CHAIN_HALF_Y,
@@ -18,13 +22,13 @@ import {
   CHAIN_PARTICLE_R,
   CHAIN_PART_FRICTION,
   CHAIN_PART_REST_SPEED,
+  CHAIN_PART_SEP_ITERS,
   CHAIN_PART_WALL_REST,
   CHAIN_SHOT_SPEED,
   CHAIN_SHOT_VZ,
   CHAIN_ENDGAME_S,
 } from './config';
 import {
-  accelMouth,
   accelMultiplier,
   accelSide,
   hookPos,
@@ -36,11 +40,12 @@ import {
 /**
  * Chain Reaction gameplay step (called from `chainStep` after the robots move).
  *
- * Owns: particle physics (bespoke, no ball↔ball so 300 is cheap), robot plow +
- * intake, the shooter (launch held particles into the alliance ACCELERATOR),
- * accelerator scoring + RECYCLE (a scored particle is rejected back onto the field —
- * count conserved at `CHAIN_PARTICLE_SIM`), CATALYST pick-up/seat-on-hook (multiplier),
- * and endgame park/ascend. Deterministic: reject positions come off `world.rngState`.
+ * Particles: bespoke integrator + a spatial-hash SEPARATION pass so they never
+ * overlap (scales to 300). Shooter: launch held particles into the alliance
+ * ACCELERATOR; a scored particle visibly flies INTO the accelerator, is counted,
+ * then the auto-score system EJECTS it back onto the field (same ball — count stays
+ * conserved at 300). Catalysts: a BUTTON picks up a nearby ring / places a carried
+ * ring on a hook. Endgame park/ascend. Deterministic (commands + world.rngState).
  */
 export function updateChain(
   world: World,
@@ -51,20 +56,26 @@ export function updateChain(
   const chain = world.chain!;
   const r2 = CHAIN_PARTICLE_R;
 
-  // deterministic rng advancing world.rngState (for particle rejects)
   const rand = (): number => {
     const n = nextRandom(world.rngState);
     world.rngState = n.state;
     return n.value;
   };
-  const rejectPos = (): { x: number; y: number } => ({
-    x: (rand() - 0.5) * 2 * (CHAIN_HALF_X - 4),
-    y: (rand() - 0.5) * 2 * (CHAIN_HALF_Y - 4),
-  });
 
-  // ── robots: aim at the accelerator + fire + catalysts ──────────────────────
+  // carried catalysts ride their robot
+  for (const c of chain.catalysts) {
+    if (c.carriedBy === null) continue;
+    const rob = world.robots.find((x) => x.id === c.carriedBy);
+    if (!rob) {
+      c.carriedBy = null;
+      continue;
+    }
+    c.pos = { x: rob.pos.x, y: rob.pos.y };
+  }
+
+  // ── robots: aim, fire, catalyst button ─────────────────────────────────────
   for (const r of world.robots) {
-    const mouth = accelMouth(r.alliance);
+    const mouth = { x: accelSide(r.alliance) * CHAIN_HALF_X, y: 0 };
     r.turretHeading = datan2(mouth.y - r.pos.y, mouth.x - r.pos.x);
     const cmd = cmds.get(r.id);
 
@@ -74,7 +85,7 @@ export function updateChain(
       r.hopper.shift();
       const ang = r.turretHeading;
       world.balls.push({
-        id: nextBallId(world),
+        id: chain.nextBallId++,
         color: 'green',
         state: { kind: 'flight', target: r.alliance },
         pos: { x: r.pos.x + dcos(ang) * 4, y: r.pos.y + dsin(ang) * 4 },
@@ -85,11 +96,15 @@ export function updateChain(
       r.fireReadyAt = world.time + CHAIN_FIRE_INTERVAL;
       r.lastFireAt = world.time;
     }
+
+    // catalyst pick-up / place-down — EDGE-triggered (acts once per press)
+    const held = chain.catalystHeld[r.id] ?? false;
+    const now = enabled && (cmd?.catalyst ?? false);
+    if (now && !held) catalystAction(chain, r);
+    chain.catalystHeld[r.id] = now;
   }
 
-  updateCatalysts(world, chain);
-
-  // ── flight particles: fly, score into the accelerator, or fall to ground ───
+  // ── flight particles: fly INTO the accelerator, score, then eject back out ──
   const survivors: Artifact[] = [];
   for (const b of world.balls) {
     if (b.state.kind !== 'flight') {
@@ -102,37 +117,56 @@ export function updateChain(
     b.pos.y += b.vel.y * dt;
     b.z += b.vz * dt;
     b.vz -= C.GRAVITY * dt;
-    const mouthX = side * CHAIN_HALF_X;
-    const crossed = side < 0 ? b.pos.x <= mouthX : b.pos.x >= mouthX;
-    if (crossed) {
-      if (Math.abs(b.pos.y) <= CHAIN_ACCEL_HALF_Y) {
-        // SCORED — count + points (multiplier at score time), then RECYCLE a ground
-        // particle back onto the field (the accelerator's reject system).
+    const wall = side * CHAIN_HALF_X;
+    const beyond = side < 0 ? b.pos.x <= wall : b.pos.x >= wall;
+
+    if (!b.state.scored) {
+      if (beyond && Math.abs(b.pos.y) <= CHAIN_ACCEL_HALF_Y) {
+        // ENTERED the accelerator → count it; keep flying into the box
         chain.scored[a]++;
         chain.particlePoints[a] += accelMultiplier(chain, a);
-        survivors.push(groundParticle(nextBallId(world), rejectPos()));
+        b.state.scored = true;
+        survivors.push(b);
+      } else if (beyond) {
+        survivors.push(landed(b, { x: wall - side * r2, y: b.pos.y })); // missed the mouth
+      } else if (b.z <= 0) {
+        survivors.push(landed(b, { x: b.pos.x, y: b.pos.y })); // fell short
       } else {
-        // hit the wall outside the mouth ⇒ drops to the floor there
-        survivors.push(landed(b, { x: mouthX - side * r2, y: b.pos.y }));
+        survivors.push(b);
       }
       continue;
     }
-    if (b.z <= 0) {
-      survivors.push(landed(b, { x: b.pos.x, y: b.pos.y }));
-      continue;
+
+    // scored: two sub-phases by velocity direction
+    const outgoing = Math.sign(b.vel.x) === -side;
+    if (!outgoing) {
+      // still flying INTO the box — eject when it lands or reaches the back wall
+      const backWall = side * (CHAIN_HALF_X + CHAIN_ACCEL_DEPTH);
+      const hitBack = side < 0 ? b.pos.x <= backWall : b.pos.x >= backWall;
+      if (b.z <= 0 || hitBack) {
+        if (hitBack) b.pos.x = backWall;
+        b.vel.x = -side * CHAIN_EJECT_SPEED;
+        b.vel.y = (rand() - 0.5) * CHAIN_EJECT_SPREAD;
+        b.vz = CHAIN_EJECT_VZ;
+        b.z = Math.max(b.z, 5);
+      }
+      survivors.push(b);
+    } else {
+      // ejecting back onto the field — land as a ground particle
+      if (b.z <= 0) survivors.push(landed(b, { x: b.pos.x, y: b.pos.y }));
+      else survivors.push(b);
     }
-    survivors.push(b);
   }
   world.balls = survivors;
 
-  // ── ground particles: friction, integrate, robot plow/intake, wall clamp ───
+  // ── ground particles: friction, integrate, robot plow/intake ───────────────
+  const out: Artifact[] = [];
   const ground: Artifact[] = [];
   for (const b of world.balls) {
     if (b.state.kind !== 'ground') {
-      ground.push(b);
+      out.push(b);
       continue;
     }
-    // rolling friction
     const sp = hyp(b.vel.x, b.vel.y);
     if (sp > 0) {
       const ns = sp - CHAIN_PART_FRICTION * dt;
@@ -147,21 +181,23 @@ export function updateChain(
     b.pos.x += b.vel.x * dt;
     b.pos.y += b.vel.y * dt;
 
-    // robot plow / intake
     let absorbed = false;
     for (const rob of world.robots) {
-      const res = interact(b, rob, cmds.get(rob.id), enabled);
-      if (res === 'absorbed') {
+      if (interact(b, rob, cmds.get(rob.id), enabled) === 'absorbed') {
         rob.hopper.push('green');
         rob.lastIntakeAt = world.time;
         absorbed = true;
         break;
       }
     }
-    if (absorbed) continue;
+    if (!absorbed) ground.push(b);
+  }
 
-    // hard wall clamp (inside the perimeter)
-    const lim = CHAIN_HALF_X - r2;
+  // never overlap: spatial-hash separation, then clamp inside the walls
+  separateParticles(ground);
+  const lim = CHAIN_HALF_X - r2;
+  const limY = CHAIN_HALF_Y - r2;
+  for (const b of ground) {
     if (b.pos.x > lim) {
       b.pos.x = lim;
       if (b.vel.x > 0) b.vel.x = -b.vel.x * CHAIN_PART_WALL_REST;
@@ -169,16 +205,16 @@ export function updateChain(
       b.pos.x = -lim;
       if (b.vel.x < 0) b.vel.x = -b.vel.x * CHAIN_PART_WALL_REST;
     }
-    if (b.pos.y > lim) {
-      b.pos.y = lim;
+    if (b.pos.y > limY) {
+      b.pos.y = limY;
       if (b.vel.y > 0) b.vel.y = -b.vel.y * CHAIN_PART_WALL_REST;
-    } else if (b.pos.y < -lim) {
-      b.pos.y = -lim;
+    } else if (b.pos.y < -limY) {
+      b.pos.y = -limY;
       if (b.vel.y < 0) b.vel.y = -b.vel.y * CHAIN_PART_WALL_REST;
     }
-    ground.push(b);
+    out.push(b);
   }
-  world.balls = ground;
+  world.balls = out;
 
   // ── scoring + endgame ──────────────────────────────────────────────────────
   const isEndgame =
@@ -201,15 +237,6 @@ export function updateChain(
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-/** a deterministic next ball id off the chain-state counter (no module global) */
-function nextBallId(world: World): number {
-  return world.chain!.nextBallId++;
-}
-
-function groundParticle(id: number, pos: { x: number; y: number }): Artifact {
-  return { id, color: 'green', state: { kind: 'ground' }, pos, vel: { x: 0, y: 0 }, z: 0, vz: 0 };
-}
-
 /** convert a flight ball to a resting ground particle at `pos` */
 function landed(b: Artifact, pos: { x: number; y: number }): Artifact {
   b.state = { kind: 'ground' };
@@ -218,6 +245,49 @@ function landed(b: Artifact, pos: { x: number; y: number }): Artifact {
   b.z = 0;
   b.vz = 0;
   return b;
+}
+
+/** push overlapping ground particles apart (position-based) using a uniform grid so
+ * 300 particles never rest on top of each other. A few passes settle a pile. */
+function separateParticles(ground: Artifact[]): void {
+  const cell = 2 * CHAIN_PARTICLE_R;
+  const minD = 2 * CHAIN_PARTICLE_R;
+  const minD2 = minD * minD;
+  const key = (cx: number, cy: number): number => (cx + 128) * 512 + (cy + 128);
+  for (let iter = 0; iter < CHAIN_PART_SEP_ITERS; iter++) {
+    const grid = new Map<number, Artifact[]>();
+    for (const b of ground) {
+      const k = key(Math.floor(b.pos.x / cell), Math.floor(b.pos.y / cell));
+      const arr = grid.get(k);
+      if (arr) arr.push(b);
+      else grid.set(k, [b]);
+    }
+    for (const b of ground) {
+      const cx = Math.floor(b.pos.x / cell);
+      const cy = Math.floor(b.pos.y / cell);
+      for (let ox = -1; ox <= 1; ox++) {
+        for (let oy = -1; oy <= 1; oy++) {
+          const arr = grid.get(key(cx + ox, cy + oy));
+          if (!arr) continue;
+          for (const o of arr) {
+            if (o.id <= b.id) continue;
+            const dx = o.pos.x - b.pos.x;
+            const dy = o.pos.y - b.pos.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 >= minD2 || d2 < 1e-9) continue;
+            const d = Math.sqrt(d2);
+            const push = (minD - d) / 2;
+            const nx = dx / d;
+            const ny = dy / d;
+            b.pos.x -= nx * push;
+            b.pos.y -= ny * push;
+            o.pos.x += nx * push;
+            o.pos.y += ny * push;
+          }
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -231,7 +301,6 @@ function interact(
   enabled: boolean,
 ): 'absorbed' | 'none' {
   const e = robotExtents(rob);
-  // particle in the robot's local frame (forward = +x)
   const rel = { x: b.pos.x - rob.pos.x, y: b.pos.y - rob.pos.y };
   const local = rot(rel, -rob.heading);
   const r2 = CHAIN_PARTICLE_R;
@@ -246,18 +315,14 @@ function interact(
   if (intakeActive && rob.hopper.length < cap && frontZone) return 'absorbed';
 
   // plow: push out along the min-penetration axis (robot-local), impart robot vel
-  const penX = e.front + r2 - local.x; // toward +x escape
-  const penXneg = local.x + e.rear + r2; // toward -x escape
+  const penX = e.front + r2 - local.x;
+  const penXneg = local.x + e.rear + r2;
   const penY = e.half + r2 - Math.abs(local.y);
   let nx = 0;
   let ny = 0;
-  const minX = Math.min(penX, penXneg);
-  if (minX < penY) {
-    nx = penX < penXneg ? 1 : -1;
-  } else {
-    ny = local.y >= 0 ? 1 : -1;
-  }
-  const world = rot({ x: nx, y: ny }, rob.heading); // escape normal in world frame
+  if (Math.min(penX, penXneg) < penY) nx = penX < penXneg ? 1 : -1;
+  else ny = local.y >= 0 ? 1 : -1;
+  const world = rot({ x: nx, y: ny }, rob.heading);
   b.pos.x += world.x * 0.6;
   b.pos.y += world.y * 0.6;
   const rv = hyp(rob.vel.x, rob.vel.y);
@@ -266,58 +331,48 @@ function interact(
   return 'none';
 }
 
-/** update carried catalysts (follow the robot, seat on a nearby empty hook) + auto
- * pick up a free catalyst with a robot that isn't already carrying one */
-function updateCatalysts(world: World, chain: ChainState): void {
-  const carrying = new Set<number>();
-  for (const c of chain.catalysts) if (c.carriedBy !== null) carrying.add(c.carriedBy);
-
-  for (const c of chain.catalysts) {
-    if (c.hook) continue; // seated, done
-    if (c.carriedBy !== null) {
-      const rob = world.robots.find((x) => x.id === c.carriedBy);
-      if (!rob) {
-        c.carriedBy = null;
-        continue;
+/** edge action: place a carried ring on a nearby empty hook (else drop it), or pick
+ * up the nearest free ring in range if not carrying one. */
+function catalystAction(chain: ChainState, rob: RobotState): void {
+  const mine = chain.catalysts.find((c) => c.carriedBy === rob.id);
+  if (mine) {
+    for (let i = 0; i < 2; i++) {
+      const taken = chain.catalysts.some(
+        (o) => o.hook && o.hook.alliance === rob.alliance && o.hook.index === i,
+      );
+      if (taken) continue;
+      const h = hookPos(rob.alliance, i);
+      if (hyp(h.x - rob.pos.x, h.y - rob.pos.y) < CHAIN_HOOK_PLACE_R) {
+        mine.hook = { alliance: rob.alliance, index: i };
+        mine.carriedBy = null;
+        return;
       }
-      c.pos = { x: rob.pos.x, y: rob.pos.y };
-      // seat on an empty hook of the carrier's alliance
-      for (let i = 0; i < 2; i++) {
-        const taken = chain.catalysts.some(
-          (o) => o.hook && o.hook.alliance === rob.alliance && o.hook.index === i,
-        );
-        if (taken) continue;
-        const h = hookPos(rob.alliance, i);
-        if (hyp(h.x - rob.pos.x, h.y - rob.pos.y) < CHAIN_HOOK_PLACE_R) {
-          c.hook = { alliance: rob.alliance, index: i };
-          c.carriedBy = null;
-          carrying.delete(rob.id);
-          break;
-        }
-      }
-      continue;
     }
-    // free on the field: a robot not already carrying can pick it up
-    for (const rob of world.robots) {
-      if (carrying.has(rob.id)) continue;
-      if (hyp(c.pos.x - rob.pos.x, c.pos.y - rob.pos.y) < CHAIN_CATALYST_PICK_R) {
-        c.carriedBy = rob.id;
-        carrying.add(rob.id);
-        break;
-      }
+    // no hook in range → drop it here
+    mine.carriedBy = null;
+    mine.pos = { x: rob.pos.x, y: rob.pos.y };
+    return;
+  }
+  let best: (typeof chain.catalysts)[number] | null = null;
+  let bestD = CHAIN_CATALYST_PICK_R;
+  for (const c of chain.catalysts) {
+    if (c.carriedBy !== null || c.hook) continue;
+    const d = hyp(c.pos.x - rob.pos.x, c.pos.y - rob.pos.y);
+    if (d < bestD) {
+      bestD = d;
+      best = c;
     }
   }
+  if (best) best.carriedBy = rob.id;
 }
 
-/** a robot's endgame status: ascended (near a ring stand, slow) > parked (fully in a
+/** a robot's endgame status: ascended (near a ring stand, slow) > parked (center in a
  * lab-area corner) > none */
 function endgameOf(rob: RobotState): 'none' | 'parked' | 'ascended' {
   const slow = hyp(rob.vel.x, rob.vel.y) < 12;
   for (const rs of ringStands()) {
     if (slow && hyp(rs.x - rob.pos.x, rs.y - rob.pos.y) < CHAIN_ASCEND_R) return 'ascended';
   }
-  // parked if the robot's CENTER is within one of its alliance's lab-area squares
-  // (forgiving — the exact "fully contained" rule + real lab geometry come later).
   const cx = rob.pos.x;
   const cy = rob.pos.y;
   for (const lab of labAreas(rob.alliance)) {

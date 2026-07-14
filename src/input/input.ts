@@ -12,6 +12,7 @@ export interface VirtualInput {
   rightDrive: number;
   intake: boolean;
   fire: boolean;
+  catalyst: boolean;
 }
 
 /** merges keyboard + gamepad into one driver command per frame, resolving
@@ -37,6 +38,7 @@ export class InputManager {
     rightDrive: 0,
     intake: false,
     fire: false,
+    catalyst: false,
   };
 
   constructor(private bindings: ControlBindings) {
@@ -96,6 +98,8 @@ export class InputManager {
       rightDrive: clamp(kRight + g.rightY + this.virtualState.rightDrive, -1, 1),
       intake: heldAny(keys.intake) || g.intake || this.virtualState.intake,
       fire: heldAny(keys.fire) || g.fire || this.virtualState.fire,
+      // Chain Reaction ring pick-up/place — held; the sim edge-triggers it
+      catalyst: heldAny(keys.catalyst) || g.catalyst || this.virtualState.catalyst,
     };
     k.endFrame();
     return cmd;

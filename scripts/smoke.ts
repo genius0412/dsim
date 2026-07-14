@@ -112,8 +112,9 @@ import {
   CHAIN_ACCEL_HALF_Y,
   CHAIN_HOOK_Y,
   CHAIN_PARTICLE_SIM,
+  CHAIN_PARTICLE_R,
 } from '../src/games/chain/config';
-import { labAreas, ringStands } from '../src/games/chain/state';
+import { hookPos, labAreas, ringStands } from '../src/games/chain/state';
 
 // the sim now steps a Rapier physics world (robots) — load the WASM before any
 // step() runs. tsx runs this file as ESM, so top-level await is available.
@@ -3672,6 +3673,42 @@ const mkMM = () => {
     rob.vel = { x: 0, y: 0 };
     runChain(gw, cmd({}), 0.1);
     check('chain endgame: ascended a ring stand = 20 pts', gw.chain!.endgame[0] === 'ascended' && gw.match.scores.blue.total >= 20);
+  }
+
+  // particles never overlap (spatial-hash separation)
+  {
+    const w = createChainWorld('match', 3, [chainSetup(0, 'blue')]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 120;
+    runChain(w, cmd({}), 2); // let the separation pass settle the scatter
+    const g = w.balls.filter((b) => b.state.kind === 'ground');
+    let minD = Infinity;
+    for (let i = 0; i < g.length; i++)
+      for (let j = i + 1; j < g.length; j++) {
+        const d = Math.hypot(g[i].pos.x - g[j].pos.x, g[i].pos.y - g[j].pos.y);
+        if (d < minD) minD = d;
+      }
+    check('chain: particles never overlap on top of each other', minD >= 2 * CHAIN_PARTICLE_R - 0.25, `minD=${minD.toFixed(2)}`);
+  }
+
+  // catalyst BUTTON: pick up a nearby ring, then seat it on a hook (edge-triggered)
+  {
+    const w = createChainWorld('match', 5, [chainSetup(0, 'blue')]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 120;
+    const rob = w.robots[0];
+    const free = w.chain!.catalysts.find((c) => c.hook === null)!;
+    free.pos = { x: rob.pos.x + 3, y: rob.pos.y };
+    free.carriedBy = null;
+    const one = (c: RobotCommand): void => chainStep(w, SIM_DT, new Map([[rob.id, c]]));
+    one(cmd({ catalyst: true })); // press → pick up
+    check('chain: catalyst button picks up a nearby ring', w.chain!.catalysts.some((c) => c.carriedBy === rob.id));
+    one(cmd({})); // release
+    const hk = hookPos('blue', 0);
+    rob.pos = { x: hk.x - 6, y: hk.y };
+    rob.vel = { x: 0, y: 0 };
+    one(cmd({ catalyst: true })); // press again → seat on the hook
+    check('chain: catalyst button seats a carried ring on a hook', w.chain!.catalysts.some((c) => c.hook?.alliance === 'blue'));
   }
 
   // a server Room configured for Chain Reaction runs its step + advances to 'post'

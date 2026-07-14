@@ -7,7 +7,6 @@ import {
   CHAIN_DIAMOND_R,
   CHAIN_HALF_X,
   CHAIN_HALF_Y,
-  CHAIN_HOOK_Y,
   CHAIN_RINGSTAND_XY,
 } from './config';
 import { labAreas } from './state';
@@ -91,16 +90,8 @@ export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): vo
   accelerator(-1, C.COLORS.redDim, C.COLORS.red);
   accelerator(1, C.COLORS.blueDim, C.COLORS.blue);
 
-  // HOOKS — on both accelerator walls at y = ±CHAIN_HOOK_Y (hold Catalysts).
-  ctx.strokeStyle = C.COLORS.white;
-  ctx.lineWidth = 1;
-  for (const sx of [-1, 1] as const) {
-    for (const sy of [-1, 1] as const) {
-      ctx.beginPath();
-      ctx.arc(sx * hx, sy * CHAIN_HOOK_Y, 1.6, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-  }
+  // (HOOKS + seated rings are drawn dynamically in drawChainBalls so each hook
+  // slot's occupancy is visible — see draw.ts.)
 
   // LAB AREAS — start/park corner squares, alliance-tinted (red owns x<0 corners,
   // blue x>0). Robots start here and PARK here in endgame.

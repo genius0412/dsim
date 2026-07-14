@@ -124,11 +124,18 @@ export const CHAIN_VIEW_HALF_X = CHAIN_HALF_X + CHAIN_ACCEL_DEPTH; // 99.46"
  * in-hoppers === this, always. */
 export const CHAIN_PARTICLE_SIM = 300;
 
-/** ground-particle physics (bespoke integrator — no ball↔ball, so 300 is cheap) */
+/** ground-particle physics (bespoke integrator + a spatial-hash separation pass so
+ * particles never overlap — see `separateParticles`; scales to 300 cheaply) */
 export const CHAIN_PART_FRICTION = 42; // in/s² rolling decay
 export const CHAIN_PART_REST_SPEED = 1.5; // snap to rest below this
 export const CHAIN_PART_WALL_REST = 0.35; // wall bounce restitution
-export const CHAIN_PART_ACCEL_PULL = 120; // in/s a scored reject is flung back onto the field
+export const CHAIN_PART_SEP_ITERS = 2; // overlap-resolution passes per tick
+
+/** accelerator REJECT: a scored particle enters the accelerator, then the auto-score
+ * system launches it BACK onto the field (visible) — speed + upward arc + spread. */
+export const CHAIN_EJECT_SPEED = 110; // in/s back into the field
+export const CHAIN_EJECT_VZ = 55; // in/s upward arc on the way out
+export const CHAIN_EJECT_SPREAD = 90; // in/s random lateral spread
 
 /** intake: a front capture zone. A ground particle inside it (with hopper room) is
  * absorbed into the robot's hopper. */

@@ -36,7 +36,7 @@ export interface QCommand {
   dx: number; // int8, -127..127  (driveX * 127)
   dy: number; // int8
   rot: number; // int8
-  buttons: number; // uint8 bitfield: bit0 intake, bit1 fire
+  buttons: number; // uint8 bitfield: bit0 intake, bit1 fire, bit2 catalyst
   // TANK drive steers via leftDrive/rightDrive (NOT dx/dy) — these MUST be on the
   // wire or a networked tank robot gets zero drive and sits frozen at spawn. Optional
   // so a packet from an older client still decodes (missing ⇒ 0, the old behavior).
@@ -46,13 +46,14 @@ export interface QCommand {
 
 const BTN_INTAKE = 1;
 const BTN_FIRE = 2;
+const BTN_CATALYST = 4;
 
 export function quantizeCommand(c: RobotCommand): QCommand {
   return {
     dx: Math.round(clamp(c.driveX, -1, 1) * 127),
     dy: Math.round(clamp(c.driveY, -1, 1) * 127),
     rot: Math.round(clamp(c.rotate, -1, 1) * 127),
-    buttons: (c.intake ? BTN_INTAKE : 0) | (c.fire ? BTN_FIRE : 0),
+    buttons: (c.intake ? BTN_INTAKE : 0) | (c.fire ? BTN_FIRE : 0) | (c.catalyst ? BTN_CATALYST : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
     rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
@@ -67,6 +68,7 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     rightDrive: (q.rd ?? 0) / 127,
     intake: (q.buttons & BTN_INTAKE) !== 0,
     fire: (q.buttons & BTN_FIRE) !== 0,
+    catalyst: (q.buttons & BTN_CATALYST) !== 0,
   };
 }
 

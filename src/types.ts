@@ -25,6 +25,9 @@ export interface RobotCommand {
   rightDrive: number; // -1..1, for tank drive (right side)
   intake: boolean;
   fire: boolean;
+  /** Chain Reaction: pick up a nearby ring / place a carried ring on a hook. Edge-
+   * triggered in the sim (acts once per press). Optional (DECODE omits it). */
+  catalyst?: boolean;
 }
 
 /** menu-configured driver assists */
@@ -64,7 +67,10 @@ export interface RobotSpec {
 
 export type BallState =
   | { kind: 'ground' }
-  | { kind: 'flight'; target: Alliance }
+  /** in the air. `target` = the accelerator it was launched at. Chain Reaction:
+   * once it enters that accelerator it is `scored`, then the accelerator's reject
+   * system flings it back onto the field (same ball, still 'flight' until it lands). */
+  | { kind: 'flight'; target: Alliance; scored?: boolean }
   /** jumbling inside the goal's triangular basin, funnelling toward the
    * classifier entrance under gravity */
   | { kind: 'basin'; goal: Alliance }
