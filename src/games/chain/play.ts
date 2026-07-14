@@ -10,7 +10,9 @@ import {
   CHAIN_HALF_X,
   CHAIN_HALF_Y,
   CHAIN_HOOK_PLACE_R,
-  CHAIN_HOPPER_CAP,
+  CHAIN_STORAGE_DEFAULT,
+  CHAIN_STORAGE_MAX,
+  CHAIN_STORAGE_MIN,
   CHAIN_INTAKE_HALF,
   CHAIN_INTAKE_REACH,
   CHAIN_PARTICLE_R,
@@ -238,7 +240,10 @@ function interact(
 
   const intakeActive = enabled && (rob.autoIntake || (cmd?.intake ?? false));
   const frontZone = local.x > e.front - CHAIN_INTAKE_REACH && Math.abs(local.y) < CHAIN_INTAKE_HALF;
-  if (intakeActive && rob.hopper.length < CHAIN_HOPPER_CAP && frontZone) return 'absorbed';
+  const cap = Math.round(
+    Math.min(CHAIN_STORAGE_MAX, Math.max(CHAIN_STORAGE_MIN, rob.spec.ballStorage ?? CHAIN_STORAGE_DEFAULT)),
+  );
+  if (intakeActive && rob.hopper.length < cap && frontZone) return 'absorbed';
 
   // plow: push out along the min-penetration axis (robot-local), impart robot vel
   const penX = e.front + r2 - local.x; // toward +x escape

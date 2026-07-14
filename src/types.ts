@@ -57,6 +57,9 @@ export interface RobotSpec {
   flywheelInertia: number;
   /** robot can pick which hopper color to fire (chases the motif) */
   canSort: boolean;
+  /** Chain Reaction: how many Particles the robot's hopper holds (1–30 slider).
+   * Optional so DECODE specs/old saves omit it (defaulted in coerceSpec). */
+  ballStorage?: number;
 }
 
 export type BallState =

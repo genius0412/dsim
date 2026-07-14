@@ -132,13 +132,21 @@ export const CHAIN_PART_ACCEL_PULL = 120; // in/s a scored reject is flung back 
 
 /** intake: a front capture zone. A ground particle inside it (with hopper room) is
  * absorbed into the robot's hopper. */
-export const CHAIN_HOPPER_CAP = 5;
 export const CHAIN_INTAKE_REACH = 5; // in front of the intake mouth
 export const CHAIN_INTAKE_HALF = 8; // half-width of the capture zone
 
+/**
+ * BALL STORAGE (a per-robot builder slider, `RobotSpec.ballStorage`). Range grounded
+ * in the dimensions: the chassis is up to 24" and a Particle is 3" OD ⇒ 8 balls per
+ * row; a practical multi-row internal magazine tops out around 30. Min 1.
+ */
+export const CHAIN_STORAGE_MIN = 1;
+export const CHAIN_STORAGE_MAX = 30;
+export const CHAIN_STORAGE_DEFAULT = 8;
+
 /** shooter: launch a held particle toward this robot's own accelerator. Auto-aimed
  * at the mouth center, so (like DECODE's shooter) it reliably scores — arcade feel. */
-export const CHAIN_FIRE_INTERVAL = 0.18; // s between shots
+export const CHAIN_FIRE_INTERVAL = 0.05; // s between shots (rapid fire)
 export const CHAIN_SHOT_SPEED = 150; // in/s horizontal toward the mouth
 export const CHAIN_SHOT_VZ = 70; // in/s initial upward (visual arc)
 

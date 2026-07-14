@@ -21,6 +21,7 @@ import type {
   StartPose,
 } from '../types';
 import * as C from '../config';
+import { CHAIN_STORAGE_DEFAULT, CHAIN_STORAGE_MAX, CHAIN_STORAGE_MIN } from '../games/chain/config';
 import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
 import { lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
 import { heldSlotPos } from './physics';
@@ -47,6 +48,7 @@ export const DEFAULT_SPEC: RobotSpec = {
   driveRpm: 500,
   flywheelInertia: 0.4,
   canSort: false,
+  ballStorage: CHAIN_STORAGE_DEFAULT,
 };
 
 // Neutral sim/wire FALLBACK for assists (used by coercion bases, replay, server
@@ -141,6 +143,11 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
   // 4) MASS range from DRIVETRAIN × INERTIA (the floor rises with inertia)
   const mass = massLimits(out.drivetrain, out.flywheelInertia);
   out.massLb = clampFinite(sp.massLb, mass.min, mass.max, base.massLb);
+
+  // Chain Reaction ball storage (1–30); defaulted so DECODE specs/old saves are safe
+  out.ballStorage = Math.round(
+    clampFinite(sp.ballStorage, CHAIN_STORAGE_MIN, CHAIN_STORAGE_MAX, base.ballStorage ?? CHAIN_STORAGE_DEFAULT),
+  );
 
   // identity + flags (no cross-field dependency)
   if (typeof sp.canSort === 'boolean') out.canSort = sp.canSort;

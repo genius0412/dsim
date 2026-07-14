@@ -3559,7 +3559,16 @@ const mkMM = () => {
   // spawn: robots only, inert goals/scores present (so worldHash never throws), in-bounds
   const cw = createChainWorld('free', 12345, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
   check('chain spawn: world.game === "chain"', cw.game === 'chain');
-  check('chain spawn: 300 particles + 4 catalysts scattered', cw.balls.length === CHAIN_PARTICLE_SIM && cw.chain?.catalysts.length === 4);
+  check('chain spawn: 300 particles + 4 catalysts staged (not scattered)', cw.balls.length === CHAIN_PARTICLE_SIM && cw.chain?.catalysts.length === 4);
+  // catalysts start staged in the alliance lab-area corners, never loose on the field
+  {
+    const inLab = cw.chain!.catalysts.every((c) =>
+      [...labAreas('red'), ...labAreas('blue')].some(
+        (l) => c.pos.x >= l.x0 && c.pos.x <= l.x1 && c.pos.y >= l.y0 && c.pos.y <= l.y1,
+      ),
+    );
+    check('chain spawn: catalysts staged in lab areas', inLab);
+  }
   check('chain spawn: inert goals + scores present (worldHash-safe)', !!cw.goals.red && !!cw.goals.blue && !!cw.match.scores.blue);
   check(
     'chain spawn: robots start inside the CR field',

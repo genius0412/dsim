@@ -1,6 +1,7 @@
 import type { GameSettings } from '../types';
 import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
 import { MAX_SAVED_ROBOTS, ROBOT_MAX_SIZE, ROBOT_PRESETS } from '../config';
+import { CHAIN_STORAGE_DEFAULT, CHAIN_STORAGE_MAX, CHAIN_STORAGE_MIN } from '../games/chain/config';
 import { driveParams, lengthLimits, massLimits, rpmLimits, widthLimits } from '../sim/drivetrain';
 import { coerceSpec } from '../sim/spawn';
 import { RobotPreview } from './RobotPreview';
@@ -442,6 +443,23 @@ export function Menu({ settings, onChange }: Props) {
                   <span className="ot">Sorter {spec.canSort ? 'ON' : 'OFF'}</span>
                   <span className="od">Fires the color the motif needs</span>
                 </button>
+              )}
+              {!isDecode && (
+                <label className="ds-field">
+                  <span className="cap">
+                    Ball storage <span className="val">{spec.ballStorage ?? CHAIN_STORAGE_DEFAULT} particles</span>
+                  </span>
+                  <input
+                    className="ds-range"
+                    type="range"
+                    min={CHAIN_STORAGE_MIN}
+                    max={CHAIN_STORAGE_MAX}
+                    step={1}
+                    value={spec.ballStorage ?? CHAIN_STORAGE_DEFAULT}
+                    style={rangeFill(spec.ballStorage ?? CHAIN_STORAGE_DEFAULT, CHAIN_STORAGE_MIN, CHAIN_STORAGE_MAX)}
+                    onChange={(e) => setSpec({ ballStorage: Number(e.target.value) })}
+                  />
+                </label>
               )}
             </div>
 

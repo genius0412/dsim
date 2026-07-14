@@ -19,8 +19,8 @@ import {
   type RobotSetup,
 } from '../../sim/spawn';
 import { emptyScore } from '../../sim/scoring';
-import { CHAIN_HALF_X, CHAIN_HALF_Y, CHAIN_PARTICLE_R, CHAIN_PARTICLE_SIM, CHAIN_CATALYST_COUNT } from './config';
-import { emptyChainState, type ChainCatalyst } from './state';
+import { CHAIN_HALF_X, CHAIN_HALF_Y, CHAIN_PARTICLE_R, CHAIN_PARTICLE_SIM } from './config';
+import { emptyChainState, labAreas, type ChainCatalyst } from './state';
 
 /**
  * Chain Reaction world spawn — a PLAYABLE match.
@@ -138,17 +138,21 @@ export function createChainWorld(
     });
   }
 
-  // catalysts near the center, on the field (free to be picked up)
+  // catalysts STAGED (not scattered): one at the center of each alliance's two
+  // lab-area corners — 2 per alliance (its 2 hooks), grabbed from the lab at start.
   const chain = emptyChainState();
   chain.nextBallId = id; // runtime spawns continue past the initial particle ids
-  for (let i = 0; i < CHAIN_CATALYST_COUNT; i++) {
-    const cat: ChainCatalyst = {
-      id: i,
-      pos: { x: (rand() - 0.5) * 60, y: (rand() - 0.5) * 60 },
-      carriedBy: null,
-      hook: null,
-    };
-    chain.catalysts.push(cat);
+  let cid = 0;
+  for (const a of ['red', 'blue'] as Alliance[]) {
+    for (const lab of labAreas(a)) {
+      const cat: ChainCatalyst = {
+        id: cid++,
+        pos: { x: (lab.x0 + lab.x1) / 2, y: (lab.y0 + lab.y1) / 2 },
+        carriedBy: null,
+        hook: null,
+      };
+      chain.catalysts.push(cat);
+    }
   }
 
   return {

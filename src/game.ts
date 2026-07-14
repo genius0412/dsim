@@ -107,6 +107,8 @@ export interface HudSnapshot {
     endgame: EndgameState;
     /** your robot is carrying a catalyst */
     carrying: boolean;
+    /** your robot's ball-storage capacity (the builder slider) */
+    storage: number;
   };
   mode: GameMode;
   phase: MatchPhase;
@@ -858,6 +860,7 @@ export class GameController {
           catalysts: w.chain.catalysts.filter((c) => c.hook?.alliance === a).length,
           endgame: w.chain.endgame[this.localRobotId] ?? 'none',
           carrying: w.chain.catalysts.some((c) => c.carriedBy === this.localRobotId),
+          storage: r.spec.ballStorage ?? 8,
         }
       : undefined;
     return {
