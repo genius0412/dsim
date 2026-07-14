@@ -3718,6 +3718,40 @@ const mkMM = () => {
     check('chain: catalyst button seats a carried ring on a hook', w.chain!.catalysts.some((c) => c.hook?.alliance === 'blue'));
   }
 
+  // take rings OUT of a goal — your OWN and the OPPONENT's (de-score)
+  {
+    const w = createChainWorld('match', 8, [chainSetup(0, 'blue')]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 120;
+    const rob = w.robots[0]; // blue
+    const cat = w.chain!.catalysts[0];
+    cat.carriedBy = null;
+    // own goal: seat on a blue hook, drive to it, press → removed + carried
+    cat.hook = { alliance: 'blue', index: 0 };
+    const bh = hookPos('blue', 0);
+    rob.pos = { x: bh.x - 6, y: bh.y };
+    rob.vel = { x: 0, y: 0 };
+    chainStep(w, SIM_DT, new Map([[rob.id, cmd({ catalyst: true })]]));
+    check('chain: take a ring OUT of your own goal', cat.hook === null && cat.carriedBy === rob.id);
+  }
+  {
+    const w = createChainWorld('match', 9, [chainSetup(0, 'blue')]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 120;
+    const rob = w.robots[0]; // blue robot at the RED (opponent) goal
+    const cat = w.chain!.catalysts[0];
+    cat.carriedBy = null;
+    cat.hook = { alliance: 'red', index: 0 };
+    const rh = hookPos('red', 0);
+    rob.pos = { x: rh.x + 6, y: rh.y };
+    rob.vel = { x: 0, y: 0 };
+    chainStep(w, SIM_DT, new Map([[rob.id, cmd({ catalyst: true })]]));
+    check(
+      'chain: take a ring OUT of the opponent goal (de-score)',
+      cat.hook === null && cat.carriedBy === rob.id && accelMultiplier(w.chain!, 'red') === 1,
+    );
+  }
+
   // a server Room configured for Chain Reaction runs its step + advances to 'post'
   // without throwing, and its matchStart advertises game:'chain'
   const msgs: ServerMsg[] = [];

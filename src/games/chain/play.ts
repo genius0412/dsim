@@ -354,17 +354,30 @@ function catalystAction(chain: ChainState, rob: RobotState): void {
     mine.pos = { x: rob.pos.x, y: rob.pos.y };
     return;
   }
+  // not carrying → take the nearest reachable ring: a FREE ring on the field, OR a
+  // SEATED ring off a hook — either your OWN goal or the OPPONENT's (de-scoring).
   let best: (typeof chain.catalysts)[number] | null = null;
-  let bestD = CHAIN_CATALYST_PICK_R;
+  let bestD = Infinity;
   for (const c of chain.catalysts) {
-    if (c.carriedBy !== null || c.hook) continue;
-    const d = hyp(c.pos.x - rob.pos.x, c.pos.y - rob.pos.y);
+    if (c.carriedBy !== null) continue;
+    let d: number;
+    if (c.hook) {
+      const h = hookPos(c.hook.alliance, c.hook.index); // reach to the hook (any goal)
+      d = hyp(h.x - rob.pos.x, h.y - rob.pos.y);
+      if (d >= CHAIN_HOOK_PLACE_R) continue;
+    } else {
+      d = hyp(c.pos.x - rob.pos.x, c.pos.y - rob.pos.y);
+      if (d >= CHAIN_CATALYST_PICK_R) continue;
+    }
     if (d < bestD) {
       bestD = d;
       best = c;
     }
   }
-  if (best) best.carriedBy = rob.id;
+  if (best) {
+    best.hook = null; // if it was seated, this removes it from the goal (de-score)
+    best.carriedBy = rob.id;
+  }
 }
 
 /** a robot's endgame status: ascended (near a ring stand, slow) > parked (center in a

@@ -1,7 +1,7 @@
 import type { Alliance, Vec2, World } from '../../types';
 import * as C from '../../config';
 import { CHAIN_CATALYST_OD, CHAIN_PARTICLE_R } from './config';
-import { CHAIN_HOOKS_PER_GOAL, hookSlotPos } from './state';
+import { hookPos } from './state';
 
 /**
  * Chain Reaction scoring-elements renderer (drawn after the robots).
@@ -45,33 +45,26 @@ export function drawChainBalls(ctx: CanvasRenderingContext2D, world: World, scre
   const rMid = rOuter - 0.9;
   const up = Math.atan2(screenUp.x, screenUp.y);
 
-  // HOOK SLOTS — FOUR hooks per goal, at two top-down positions (each has two stacked
-  // hooks that read as one from above). Draw all four as individually-countable slots
-  // (nudged apart via hookSlotPos): empty = hollow dim ring, occupied = filled bright
-  // donut. So it's clear how many hooks there are and WHICH hold rings.
-  const rSlot = 2.1;
+  // HOOK indicators — FOUR hooks per goal at TWO positions (the manual's ±688mm on
+  // the wall). Each position stacks two hooks that read as one top-down, so draw ONE
+  // ring AT the real position and show how many of its two hooks hold a ring by
+  // filling HALVES of the ring: empty half = thin dim arc, seated = thick bright arc.
+  // ⇒ 0 rings = a faint hollow ring, 1 = one bright half, 2 = a full bright ring.
+  const rRing = CHAIN_CATALYST_OD / 2;
+  const seated = (a: Alliance, index: number): boolean =>
+    (world.chain?.catalysts ?? []).some((c) => c.hook?.alliance === a && c.hook.index === index);
+  const halfArc = (cx: number, cy: number, a0: number, a1: number, on: boolean): void => {
+    ctx.beginPath();
+    ctx.arc(cx, cy, rRing, a0 + 0.16, a1 - 0.16);
+    ctx.lineWidth = on ? 2.4 : 0.7;
+    ctx.strokeStyle = on ? CATALYST_SEATED : 'rgba(167,139,250,0.4)';
+    ctx.stroke();
+  };
   for (const a of ['red', 'blue'] as Alliance[]) {
-    for (let i = 0; i < CHAIN_HOOKS_PER_GOAL; i++) {
-      const h = hookSlotPos(a, i);
-      const occupied = (world.chain?.catalysts ?? []).some(
-        (c) => c.hook?.alliance === a && c.hook.index === i,
-      );
-      if (occupied) {
-        ctx.fillStyle = CATALYST_SEATED; // filled donut = ring on this hook
-        ctx.beginPath();
-        ctx.arc(h.x, h.y, rSlot, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = C.COLORS.mat;
-        ctx.beginPath();
-        ctx.arc(h.x, h.y, rSlot - 1.2, 0, Math.PI * 2);
-        ctx.fill();
-      } else {
-        ctx.lineWidth = 0.9; // hollow dim outline = empty hook slot
-        ctx.strokeStyle = 'rgba(167,139,250,0.6)';
-        ctx.beginPath();
-        ctx.arc(h.x, h.y, rSlot, 0, Math.PI * 2);
-        ctx.stroke();
-      }
+    for (let pos = 0; pos < 2; pos++) {
+      const c = hookPos(a, pos * 2); // the position center (on the wall, ±688mm)
+      halfArc(c.x, c.y, 0, Math.PI, seated(a, pos * 2)); // one stacked hook
+      halfArc(c.x, c.y, Math.PI, 2 * Math.PI, seated(a, pos * 2 + 1)); // the other
     }
   }
 
