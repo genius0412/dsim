@@ -1,4 +1,5 @@
 import { drawField } from '../../render/drawField';
+import { drawBalls } from '../../render/drawBalls';
 import { drawRampStrips } from '../../render/drawGoals';
 import type { GameModule } from '../module';
 import { DECODE_SIM } from './sim';
@@ -11,5 +12,6 @@ export const DECODE_MODULE: GameModule = {
   ...DECODE_SIM,
   drawField,
   drawOverlays: drawRampStrips,
+  drawBalls,
   ui: { showScoreHud: true, startEditor: true, intakes: ['sloped', 'vector', 'triangle'] },
 };

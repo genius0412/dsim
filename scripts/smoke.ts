@@ -98,7 +98,7 @@ import { bestHost } from '../server/regions';
 import type { PendingMatch } from '../server/matchTypes';
 import { computeGlicko, glicko2Update, eloMode, RD_PROVISIONAL, type EloParticipant } from '../server/ranked';
 import type { ServerMsg, QueueMode } from '../src/net/protocol';
-import { dsin, dcos, dtan, datan2 } from '../src/math';
+import { dsin, dcos, dtan, datan2, rot } from '../src/math';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { moduleFor, gameOf } from '../src/games';
 import { decodeColliders } from '../src/games/decode/colliders';
@@ -111,7 +111,9 @@ import {
   CHAIN_ACCEL_DEPTH,
   CHAIN_ACCEL_HALF_Y,
   CHAIN_HOOK_Y,
+  CHAIN_PARTICLE_SIM,
 } from '../src/games/chain/config';
+import { labAreas, ringStands } from '../src/games/chain/state';
 
 // the sim now steps a Rapier physics world (robots) — load the WASM before any
 // step() runs. tsx runs this file as ESM, so top-level await is available.
@@ -3557,7 +3559,7 @@ const mkMM = () => {
   // spawn: robots only, inert goals/scores present (so worldHash never throws), in-bounds
   const cw = createChainWorld('free', 12345, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
   check('chain spawn: world.game === "chain"', cw.game === 'chain');
-  check('chain spawn: no balls in the shell', cw.balls.length === 0);
+  check('chain spawn: 300 particles + 4 catalysts scattered', cw.balls.length === CHAIN_PARTICLE_SIM && cw.chain?.catalysts.length === 4);
   check('chain spawn: inert goals + scores present (worldHash-safe)', !!cw.goals.red && !!cw.goals.blue && !!cw.match.scores.blue);
   check(
     'chain spawn: robots start inside the CR field',
@@ -3600,6 +3602,68 @@ const mkMM = () => {
   runChain(a, cmd({ driveX: 0.7, rotate: 0.3 }), 2);
   runChain(b, cmd({ driveX: 0.7, rotate: 0.3 }), 2);
   check('chain determinism: same seed + inputs ⇒ equal worldHash', worldHash(a) === worldHash(b));
+
+  // gameplay: intake → fire → accelerator score, with the 300-particle count CONSERVED
+  {
+    const gw = createChainWorld('match', 555, [chainSetup(0, 'blue')]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = true;
+    rob.autoFire = true;
+    // drop a particle right at the robot's intake mouth so it's captured then fired
+    const e = robotExtents(rob);
+    const m = rot({ x: e.front - 1, y: 0 }, rob.heading);
+    gw.balls[0].state = { kind: 'ground' };
+    gw.balls[0].pos = { x: rob.pos.x + m.x, y: rob.pos.y + m.y };
+    gw.balls[0].vel = { x: 0, y: 0 };
+    const total = (): number => gw.balls.length + gw.robots.reduce((n, r) => n + r.hopper.length, 0);
+    const before = total();
+    runChain(gw, cmd({}), 2);
+    check('chain: a particle is intaked, fired, and scored', gw.chain!.scored.blue >= 1, `scored=${gw.chain!.scored.blue}`);
+    check(
+      'chain: particle count conserved through the recycle',
+      total() === before && before === CHAIN_PARTICLE_SIM,
+      `${total()} vs ${before}`,
+    );
+  }
+
+  // catalyst multiplier: a catalyst seated on a blue hook ⇒ +1 pt per particle
+  {
+    const gw = createChainWorld('match', 99, [chainSetup(0, 'blue')]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    // seat one catalyst on blue hook 0 (multiplier 2), score one particle
+    gw.chain!.catalysts[0].hook = { alliance: 'blue', index: 0 };
+    const rob = gw.robots[0];
+    rob.autoFire = true;
+    rob.hopper.push('green'); // one particle to fire (net +1 handled: we only check points)
+    const before = gw.chain!.particlePoints.blue;
+    runChain(gw, cmd({}), 1);
+    check(
+      'chain: a seated catalyst doubles a scored particle (2 pts)',
+      gw.chain!.particlePoints.blue - before === 2,
+      `+${gw.chain!.particlePoints.blue - before}`,
+    );
+  }
+
+  // endgame: park in a Lab Area (5 pt) / ascend a Ring Stand (20 pt)
+  {
+    const gw = createChainWorld('match', 7, [chainSetup(0, 'blue')]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 8; // inside the last-20s end game
+    const rob = gw.robots[0];
+    const lab = labAreas('blue')[0];
+    rob.pos = { x: (lab.x0 + lab.x1) / 2, y: (lab.y0 + lab.y1) / 2 };
+    rob.vel = { x: 0, y: 0 };
+    runChain(gw, cmd({}), 0.1);
+    check('chain endgame: parked in a lab area = 5 pts', gw.chain!.endgame[0] === 'parked' && gw.match.scores.blue.total >= 5);
+    const rs = ringStands()[3];
+    rob.pos = { x: rs.x, y: rs.y };
+    rob.vel = { x: 0, y: 0 };
+    runChain(gw, cmd({}), 0.1);
+    check('chain endgame: ascended a ring stand = 20 pts', gw.chain!.endgame[0] === 'ascended' && gw.match.scores.blue.total >= 20);
+  }
 
   // a server Room configured for Chain Reaction runs its step + advances to 'post'
   // without throwing, and its matchStart advertises game:'chain'

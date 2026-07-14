@@ -1,5 +1,6 @@
 import type { World } from '../../types';
 import * as C from '../../config';
+import type { Alliance } from '../../types';
 import {
   CHAIN_ACCEL_DEPTH,
   CHAIN_ACCEL_HALF_Y,
@@ -9,6 +10,7 @@ import {
   CHAIN_HOOK_Y,
   CHAIN_RINGSTAND_XY,
 } from './config';
+import { labAreas } from './state';
 
 /**
  * Chain Reaction field renderer (manual §2–4 terminology).
@@ -97,6 +99,17 @@ export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): vo
       ctx.beginPath();
       ctx.arc(sx * hx, sy * CHAIN_HOOK_Y, 1.6, 0, Math.PI * 2);
       ctx.stroke();
+    }
+  }
+
+  // LAB AREAS — start/park corner squares, alliance-tinted (red owns x<0 corners,
+  // blue x>0). Robots start here and PARK here in endgame.
+  for (const a of ['red', 'blue'] as Alliance[]) {
+    const stroke = a === 'red' ? C.COLORS.red : C.COLORS.blue;
+    for (const lab of labAreas(a)) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = C.TAPE_W;
+      ctx.strokeRect(lab.x0, lab.y0, lab.x1 - lab.x0, lab.y1 - lab.y0);
     }
   }
 

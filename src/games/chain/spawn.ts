@@ -1,5 +1,6 @@
 import type {
   Alliance,
+  Artifact,
   GameMode,
   GameSettings,
   GoalState,
@@ -18,17 +19,18 @@ import {
   type RobotSetup,
 } from '../../sim/spawn';
 import { emptyScore } from '../../sim/scoring';
-import { CHAIN_HALF_X } from './config';
+import { CHAIN_HALF_X, CHAIN_HALF_Y, CHAIN_PARTICLE_R, CHAIN_PARTICLE_SIM, CHAIN_CATALYST_COUNT } from './config';
+import { emptyChainState, type ChainCatalyst } from './state';
 
 /**
- * Chain Reaction world spawn — the "empty field shell".
+ * Chain Reaction world spawn — a PLAYABLE match.
  *
- * Robots ONLY: no balls, no goals-with-scoring, no G304 start legality. Robots
- * are placed at simple mirrored poses in their own half and are fully drivable
- * (shared drivetrain + Rapier). The world still carries INERT `goals`, `scores`,
- * `motif`, and `match` because `worldHash` / the HUD / snapshots read those — but
- * nothing in `chainStep` ever mutates them. When Chain Reaction's real rules land,
- * this grows preloads/goals/zones the way DECODE's `createWorld` does.
+ * Robots start in their half; the field is seeded with `CHAIN_PARTICLE_SIM`
+ * PARTICLES (scattered, the manual's pre-match randomization) and
+ * `CHAIN_CATALYST_COUNT` CATALYSTS. CR-specific state (catalysts / scoring /
+ * endgame) rides `world.chain`; the shared `goals`/`scores`/`motif`/`match` are
+ * kept inert-but-present (worldHash/HUD read them). Deterministic: a mulberry32
+ * chain off `seed` places every particle/catalyst.
  */
 
 interface Pose {
@@ -36,8 +38,6 @@ interface Pose {
   heading: number;
 }
 
-/** canonical spawn poses (blue side, +x). Red mirrors across x=0. Distinct poses
- * per alliance member so a 2v2 alliance never overlaps at spawn. */
 const POSES: readonly Pose[] = [
   { pos: { x: 42, y: -18 }, heading: Math.PI },
   { pos: { x: 42, y: 18 }, heading: Math.PI },
@@ -47,13 +47,10 @@ const POSES: readonly Pose[] = [
 
 function chainStartPose(alliance: Alliance, nth: number): Pose {
   const p = POSES[((nth % POSES.length) + POSES.length) % POSES.length];
-  // blue drives from the +x wall (like DECODE); red is the mirror image
   if (alliance === 'blue') return { pos: { ...p.pos }, heading: p.heading };
   return { pos: { x: -p.pos.x, y: p.pos.y }, heading: wrapAngle(Math.PI - p.heading) };
 }
 
-/** an inert goal (no gate/classifier activity in the shell) — shape only, so the
- * shared `World`/`worldHash`/HUD reads never trip on a missing goal. */
 function inertGoal(alliance: Alliance): GoalState {
   return {
     alliance,
@@ -82,7 +79,7 @@ function makeChainRobot(setup: RobotSetup, nth: number): RobotState {
     turretHeading: pose.heading,
     moduleAngles: [0, 0, 0, 0],
     moduleTargets: [0, 0, 0, 0],
-    hopper: [], // no artifacts in the shell
+    hopper: [],
     fieldCentric: assists.fieldCentric,
     aimAssist: assists.aimAssist,
     autoIntake: assists.autoIntake,
@@ -111,23 +108,59 @@ export function createChainWorld(
   setups: RobotSetup[],
   gameSettings?: GameSettings,
 ): World {
-  const rng = nextRandom(seed || 1);
+  let rng = nextRandom(seed || 1);
+  const rand = (): number => {
+    rng = nextRandom(rng.state);
+    return rng.value;
+  };
+
   const robots: RobotState[] = [];
   const allianceCount: Record<Alliance, number> = { red: 0, blue: 0 };
   for (const s of [...setups].sort((p, q) => p.id - q.id)) {
     robots.push(makeChainRobot(s, allianceCount[s.alliance]++));
   }
-  void CHAIN_HALF_X; // (field extents are consumed by the module's colliders/bounds)
+
+  // scatter the particles across the playing area (pre-match randomization)
+  const margin = CHAIN_PARTICLE_R + 2;
+  const spanX = 2 * (CHAIN_HALF_X - margin);
+  const spanY = 2 * (CHAIN_HALF_Y - margin);
+  const balls: Artifact[] = [];
+  let id = 1;
+  for (let i = 0; i < CHAIN_PARTICLE_SIM; i++) {
+    balls.push({
+      id: id++,
+      color: 'green', // rendered white in CR; color unused
+      state: { kind: 'ground' },
+      pos: { x: -CHAIN_HALF_X + margin + rand() * spanX, y: -CHAIN_HALF_Y + margin + rand() * spanY },
+      vel: { x: 0, y: 0 },
+      z: 0,
+      vz: 0,
+    });
+  }
+
+  // catalysts near the center, on the field (free to be picked up)
+  const chain = emptyChainState();
+  chain.nextBallId = id; // runtime spawns continue past the initial particle ids
+  for (let i = 0; i < CHAIN_CATALYST_COUNT; i++) {
+    const cat: ChainCatalyst = {
+      id: i,
+      pos: { x: (rand() - 0.5) * 60, y: (rand() - 0.5) * 60 },
+      carriedBy: null,
+      hook: null,
+    };
+    chain.catalysts.push(cat);
+  }
 
   return {
     game: 'chain',
+    chain,
     mode,
     time: 0,
     tick: 0,
     rngState: rng.state,
-    motif: MOTIFS[0], // inert (no motif gameplay in the shell)
+    motif: MOTIFS[0],
     robots,
-    balls: [],
+    balls,
     goals: { red: inertGoal('red'), blue: inertGoal('blue') },
     humanPlayers: {
       red: { box: [], nextPlaceAt: 0 },

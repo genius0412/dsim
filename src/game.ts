@@ -16,6 +16,7 @@ import * as C from './config';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
 import { moduleFor, gameOf } from './games';
 import type { GameModule } from './games';
+import { accelMultiplier as chainAccelMultiplier, type EndgameState } from './games/chain/state';
 import { startMatch } from './sim/match';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
@@ -91,9 +92,22 @@ export interface IntroPlayer {
 }
 
 export interface HudSnapshot {
-  /** which game is being played — drives whether GameView shows the full score
-   * HUD (DECODE) or minimal chrome (Chain Reaction shell) */
+  /** which game is being played — drives which score HUD GameView renders */
   game: GameId;
+  /** Chain Reaction scoring readout (present only for CR) */
+  chain?: {
+    /** your alliance's particles scored (count) */
+    scored: number;
+    oppScored: number;
+    /** your accelerator's points-per-particle (1 + catalysts on your hooks) */
+    mult: number;
+    /** catalysts your alliance has seated on hooks */
+    catalysts: number;
+    /** your robot's endgame status */
+    endgame: EndgameState;
+    /** your robot is carrying a catalyst */
+    carrying: boolean;
+  };
   mode: GameMode;
   phase: MatchPhase;
   timeLeft: number;
@@ -835,8 +849,20 @@ export class GameController {
     const a = this.viewAlliance();
     const opp: Alliance = a === 'blue' ? 'red' : 'blue';
     const goal = w.goals[a];
+    // Chain Reaction scoring readout (present only for CR worlds)
+    const chain: HudSnapshot['chain'] = w.chain
+      ? {
+          scored: w.chain.scored[a],
+          oppScored: w.chain.scored[opp],
+          mult: chainAccelMultiplier(w.chain, a),
+          catalysts: w.chain.catalysts.filter((c) => c.hook?.alliance === a).length,
+          endgame: w.chain.endgame[this.localRobotId] ?? 'none',
+          carrying: w.chain.catalysts.some((c) => c.carriedBy === this.localRobotId),
+        }
+      : undefined;
     return {
       game: w.game ?? 'decode',
+      chain,
       mode: w.mode,
       phase: w.match.phase,
       timeLeft: Math.max(0, w.match.phaseTimeLeft),

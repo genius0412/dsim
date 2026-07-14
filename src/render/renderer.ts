@@ -1,7 +1,6 @@
 import type { RobotCommand, World, PathPoint, RobotState } from '../types';
 import { COLORS } from '../config';
 import { Camera } from './camera';
-import { drawBalls } from './drawBalls';
 import { drawRobot } from './drawRobot';
 import { gameOf } from '../games';
 
@@ -53,7 +52,7 @@ export class Renderer {
 
     }
     const screenUp = this.camera.screenUpWorld();
-    drawBalls(ctx, world, screenUp);
+    mod.drawBalls(ctx, world, screenUp);
 
     // name/team labels above the OTHER robots (the local driver knows theirs)
     if (world.robots.length > 1) {

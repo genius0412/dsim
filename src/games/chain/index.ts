@@ -1,14 +1,16 @@
 import type { GameModule } from '../module';
 import { CHAIN_SIM } from './sim';
 import { drawChainField } from './drawField';
+import { drawChainBalls } from './draw';
 
 /**
  * Chain Reaction as a full (client) `GameModule` — the DOM-free `CHAIN_SIM` plus
- * the plain-field renderer + a minimal builder/HUD spec (no score bar, no start
- * editor). Real geometry/intakes/rules land in this `src/games/chain/` tree later.
+ * the field + particle/catalyst renderers and its builder/HUD spec. `showScoreHud`
+ * true (CR is scored now); no start editor yet (no G304 model).
  */
 export const CHAIN_MODULE: GameModule = {
   ...CHAIN_SIM,
   drawField: drawChainField,
-  ui: { showScoreHud: false, startEditor: false, intakes: ['sloped'] },
+  drawBalls: drawChainBalls,
+  ui: { showScoreHud: true, startEditor: false, intakes: ['sloped'] },
 };

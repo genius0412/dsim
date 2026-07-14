@@ -113,3 +113,42 @@ export const CHAIN_VIEW_MARGIN = 8;
 /** the outer x half-extent the CAMERA must show so the protruding accelerators are
  * on screen (the WALLS/colliders stay at ±CHAIN_HALF_X — this is view-only). */
 export const CHAIN_VIEW_HALF_X = CHAIN_HALF_X + CHAIN_ACCEL_DEPTH; // 99.46"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GAMEPLAY tuning (the playable model). The manual fixes the ELEMENT sizes/scoring
+// above; these are sim feel/perf knobs chosen for a fun, smooth, deterministic game.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** how many particles the sim actually simulates. The real game has 300; bespoke
+ * (non-Rapier) particle physics scales to it at 60 Hz. Conserved: ground + flight +
+ * in-hoppers === this, always. */
+export const CHAIN_PARTICLE_SIM = 300;
+
+/** ground-particle physics (bespoke integrator — no ball↔ball, so 300 is cheap) */
+export const CHAIN_PART_FRICTION = 42; // in/s² rolling decay
+export const CHAIN_PART_REST_SPEED = 1.5; // snap to rest below this
+export const CHAIN_PART_WALL_REST = 0.35; // wall bounce restitution
+export const CHAIN_PART_ACCEL_PULL = 120; // in/s a scored reject is flung back onto the field
+
+/** intake: a front capture zone. A ground particle inside it (with hopper room) is
+ * absorbed into the robot's hopper. */
+export const CHAIN_HOPPER_CAP = 5;
+export const CHAIN_INTAKE_REACH = 5; // in front of the intake mouth
+export const CHAIN_INTAKE_HALF = 8; // half-width of the capture zone
+
+/** shooter: launch a held particle toward this robot's own accelerator. Auto-aimed
+ * at the mouth center, so (like DECODE's shooter) it reliably scores — arcade feel. */
+export const CHAIN_FIRE_INTERVAL = 0.18; // s between shots
+export const CHAIN_SHOT_SPEED = 150; // in/s horizontal toward the mouth
+export const CHAIN_SHOT_VZ = 70; // in/s initial upward (visual arc)
+
+/** catalysts: auto-pick a nearby free catalyst (if not already carrying one); seat it
+ * on a hook when carried near one. */
+export const CHAIN_CATALYST_PICK_R = 9; // pick-up radius (to robot center)
+export const CHAIN_HOOK_PLACE_R = 12; // seat-on-hook radius (carried catalyst → hook)
+
+/** endgame: park fully inside a Lab-Area corner square (5 pt) / ascend within this
+ * radius of a Ring Stand (20 pt). Lab squares are 24" at each field corner; an
+ * alliance owns the two on its side (red x<0, blue x>0). APPROX — refine with manual. */
+export const CHAIN_LAB = 24; // corner square size (in)
+export const CHAIN_ASCEND_R = 9; // ascend proximity to a ring stand (in)

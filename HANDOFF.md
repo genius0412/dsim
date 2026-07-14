@@ -114,6 +114,31 @@ game. Terminology (in `chain/config.ts` header + `CHAIN_PTS`/element consts):
 - Robots: 18×18×18" start → 24 w × 24 l × 30.5" h max (DIFFERENT from DECODE — not yet
   wired into the CR builder's size limits).
 
+### CR is now PLAYABLE (2026-07-14) — full shooter loop + scoring
+- **`src/games/chain/play.ts` `updateChain`** owns it all: 300 PARTICLES (bespoke
+  integrator — NO Rapier ball↔ball, so 300 is cheap; friction + wall bounce + robot
+  plow/intake), the SHOOTER (auto-aim turret at own accelerator + fire held particles),
+  ACCELERATOR scoring + RECYCLE (scored particle → +pts → reject a fresh ground particle;
+  **count conserved at 300** = ground+flight+hoppers), CATALYSTS (auto-pickup, seat on a
+  hook near the accelerator ⇒ +1 pt/particle), and ENDGAME (park in a lab square = 5,
+  ascend near a ring stand = 20). `world.chain` (`chain/state.ts`) holds catalysts /
+  per-alliance scored+points / per-robot endgame / a deterministic `nextBallId`.
+  Points → `match.scores[a].total`; scored count → `goals[a].classifiedCount` (worldHash).
+- **`chain/spawn.ts`** scatters 300 particles + 4 catalysts off a mulberry32 chain (seed).
+- **`chain/step.ts`** = drive → `solveRobots` → `updateChain` → phase machine.
+- **Render:** `chain/draw.ts` `drawChainBalls` (white particles + flight lift/shadow +
+  purple catalyst rings + ascend/park badges), added as `GameModule.drawBalls` (renderer
+  now dispatches balls per-game; DECODE keeps `render/drawBalls`). Lab-area squares in
+  `chain/drawField.ts`.
+- **HUD:** CR is scored now — `GameView` shows the red|timer|blue score bar (no motif) +
+  a CR breakdown (PARTICLES / MULT ×N / CATALYSTS n/2 / endgame) + chips (HOPPER n / ×mult
+  / CATALYST / ASCENDED|PARKED). `HudSnapshot.chain` + `getHud` populate it. CR `ui.showScoreHud=true`.
+- Smoke pins: 300+4 spawn, intake→fire→score, 300 conservation, catalyst ×2, park 5 / ascend 20.
+- **Default CR assists = auto-intake + auto-fire ON**, so a robot immediately cycles
+  (verified in Electron: solo match scored 9 in auto). TUNING knobs in `chain/config.ts`
+  (GAMEPLAY block): particle count/friction, hopper cap, intake reach, fire cadence/speed,
+  catalyst radii, ascend radius, lab size.
+
 ### Geometry in the CR module now
 - **EXACT (`chain/config.ts`, `mm()`=÷25.4):** ACCELERATORS protrude out each side wall,
   centered y — `CHAIN_ACCEL_DEPTH` 27.4605" × `CHAIN_ACCEL_WIDTH` 54.8681". HOOKS at

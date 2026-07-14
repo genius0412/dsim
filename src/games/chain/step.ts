@@ -4,19 +4,17 @@ import { solveRobots } from '../../sim/physicsEngine';
 import { updateRobot } from '../../sim/robot';
 import { robotsEnabled } from '../../sim/match';
 import { chainColliders } from './colliders';
+import { updateChain } from './play';
 
 /**
- * Chain Reaction step — the "empty field shell" pipeline.
+ * Chain Reaction step — a playable match.
  *
- * Robots + collisions ONLY: drive (shared drivetrain/motor + power model via
- * `updateRobot`) then Rapier position/velocity + wall containment (`solveRobots`),
- * then the phase/timer machine. DELIBERATELY skips DECODE's `updateRobotActions`
- * (intake/fire/turret), balls, goals/gates, penalties, scoring, and the bespoke
- * square-up (which is coupled to DECODE goal/classifier geometry). When Chain
- * Reaction's rules land, this grows the game's own stages.
- *
- * Deterministic: consumes only the given commands + the world's own state, exactly
- * like DECODE's `step`, so client prediction / server authority / replays hold.
+ * Pipeline: resolve driver commands → drive (shared drivetrain/motor) → Rapier
+ * position/velocity + wall containment → CR gameplay (`updateChain`: particles,
+ * intake, shooter, accelerator scoring/recycle, catalysts, endgame) → phase/timer
+ * machine. Deterministic (commands + `world.rngState` only), so client prediction /
+ * server authority / replays hold. DELIBERATELY skips DECODE's updateRobotActions,
+ * goals/gates, penalties, and DECODE scoring — CR owns all of that in `updateChain`.
  */
 
 const ZERO_CMD: RobotCommand = {
@@ -45,14 +43,16 @@ export function chainStep(world: World, dt: number, commands: Map<number, RobotC
   // Rapier owns robot translation/velocity + wall containment on the CR field.
   solveRobots(world, dt, chainColliders);
 
+  // CR gameplay (particles / shooter / scoring / catalysts / endgame)
+  if (world.chain) updateChain(world, dt, actual, enabled);
+
   chainStepMatch(world, dt);
 }
 
 /**
- * The Chain Reaction phase/timer machine — mirrors `sim/match.ts` `stepMatch`
- * MINUS every DECODE scoring assessment (`assessLeave`/`assessAutoPattern`/
- * `assessMatchEnd`), because the shell has no scoring. Advances the countdown and
- * the auto→transition→teleop→post progression so timers/HUD/audio behave.
+ * The Chain Reaction phase/timer machine — 30 s auto, 120 s teleop (last 20 s = end
+ * game), then post. Scoring is continuous in `updateChain`, so this only advances the
+ * countdown + phase progression (no per-phase assessment).
  */
 function chainStepMatch(world: World, dt: number): void {
   const m = world.match;

@@ -349,24 +349,12 @@ function Hud({ hud }: { hud: HudSnapshot }) {
   const endgame = hud.timeLeft <= ENDGAME_START && hud.phase === 'teleop';
   const redScore = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blueScore = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
-  // an UNSCORED game (the Chain Reaction shell) has no scores/motif/hopper/gate — show
-  // minimal chrome: just a timer/phase panel + the driver chips (gamepad/net/park).
-  const minimal = hud.game !== 'decode';
+  // Chain Reaction is scored (its own breakdown); DECODE shows motif + its breakdown.
+  const cr = hud.game === 'chain';
 
   return (
     <div className="hud">
-      {minimal ? (
-        <div className="scorebar">
-          <div className={`timer-panel ${urgent ? 'urgent' : endgame ? 'warning' : ''}`}>
-            <span className="timer-phase" role="status">
-              {hud.mode === 'match' ? (endgame ? 'END GAME' : PHASE_LABEL[hud.phase]) : 'FREE DRIVE'}
-            </span>
-            {hud.mode === 'match' && (
-              <span className="timer-time">{hud.phase === 'post' ? '0:00' : fmtTime(hud.timeLeft)}</span>
-            )}
-          </div>
-        </div>
-      ) : hud.mode === 'match' ? (
+      {hud.mode === 'match' ? (
         <div className="scorebar">
           <div className={`score-panel red ${hud.alliance === 'red' ? 'mine' : ''}`}>
             {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
@@ -381,11 +369,13 @@ function Hud({ hud }: { hud: HudSnapshot }) {
             <span className="timer-time">
               {hud.phase === 'post' ? '0:00' : fmtTime(hud.timeLeft)}
             </span>
-            <span className="timer-motif">
-              {hud.motif.map((c, i) => (
-                <span key={i} className={`motif-dot ${c}`} />
-              ))}
-            </span>
+            {!cr && (
+              <span className="timer-motif">
+                {hud.motif.map((c, i) => (
+                  <span key={i} className={`motif-dot ${c}`} />
+                ))}
+              </span>
+            )}
           </div>
           <div className={`score-panel blue ${hud.alliance === 'blue' ? 'mine' : ''}`}>
             {hud.alliance === 'blue' && <span className="you-tag">YOU</span>}
@@ -396,16 +386,18 @@ function Hud({ hud }: { hud: HudSnapshot }) {
         <div className="scorebar">
           <div className="timer-panel">
             <span className="timer-phase">FREE DRIVE</span>
-            <span className="timer-motif">
-              {hud.motif.map((c, i) => (
-                <span key={i} className={`motif-dot ${c}`} />
-              ))}
-            </span>
+            {!cr && (
+              <span className="timer-motif">
+                {hud.motif.map((c, i) => (
+                  <span key={i} className={`motif-dot ${c}`} />
+                ))}
+              </span>
+            )}
           </div>
         </div>
       )}
 
-      {hud.mode === 'match' && !minimal && (
+      {hud.mode === 'match' && !cr && (
         <div className="breakdown-row">
           {/* artifact COUNTS, not points (points live in the score panels).
               PATTERN shows only BANKED points — it is assessed solely at the
@@ -420,10 +412,21 @@ function Hud({ hud }: { hud: HudSnapshot }) {
         </div>
       )}
 
+      {hud.mode === 'match' && cr && hud.chain && (
+        <div className="breakdown-row">
+          <span>PARTICLES {hud.chain.scored}</span>
+          <span>MULT ×{hud.chain.mult}</span>
+          <span>CATALYSTS {hud.chain.catalysts}/2</span>
+          {hud.chain.endgame !== 'none' && (
+            <span>{hud.chain.endgame === 'ascended' ? 'ASCENDED' : 'PARKED'}</span>
+          )}
+        </div>
+      )}
+
       {(!window.matchMedia('(pointer: coarse)').matches) && (
         <div className="status-wrap">
           <div className="robot-status">
-            {!minimal && (
+            {!cr && (
               <>
                 <div className="hopper">
                   {[0, 1, 2].map((i) => (
@@ -434,7 +437,16 @@ function Hud({ hud }: { hud: HudSnapshot }) {
                 {hud.gateOpen && <span className="chip on">GATE OPEN</span>}
               </>
             )}
-            {!minimal && hud.mode === 'match' &&
+            {cr && hud.chain && (
+              <>
+                <span className="chip">HOPPER {hud.hopper.length}</span>
+                <span className={`chip ${hud.chain.mult > 1 ? 'on' : ''}`}>×{hud.chain.mult}</span>
+                {hud.chain.carrying && <span className="chip on">CATALYST</span>}
+                {hud.chain.endgame === 'ascended' && <span className="chip on">▲ ASCENDED</span>}
+                {hud.chain.endgame === 'parked' && <span className="chip on">■ PARKED</span>}
+              </>
+            )}
+            {!cr && hud.mode === 'match' &&
               (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
                 <span className="chip warn">
                   FOULS {hud.fouls[hud.alliance].minor}m {hud.fouls[hud.alliance].major}M
