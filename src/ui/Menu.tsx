@@ -1,7 +1,14 @@
 import type { GameSettings } from '../types';
 import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
 import { MAX_SAVED_ROBOTS, ROBOT_MAX_SIZE, ROBOT_PRESETS } from '../config';
-import { CHAIN_STORAGE_DEFAULT, CHAIN_STORAGE_MAX, CHAIN_STORAGE_MIN } from '../games/chain/config';
+import {
+  CHAIN_CLEARANCE_DEFAULT,
+  CHAIN_CLEARANCE_MAX,
+  CHAIN_CLEARANCE_MIN,
+  CHAIN_STORAGE_DEFAULT,
+  CHAIN_STORAGE_MAX,
+  CHAIN_STORAGE_MIN,
+} from '../games/chain/config';
 import { driveParams, lengthLimits, massLimits, rpmLimits, widthLimits } from '../sim/drivetrain';
 import { coerceSpec } from '../sim/spawn';
 import { RobotPreview } from './RobotPreview';
@@ -461,12 +468,36 @@ export function Menu({ settings, onChange }: Props) {
                   />
                 </label>
               )}
+              {!isDecode && (
+                <label className="ds-field">
+                  <span className="cap">
+                    Ground clearance{' '}
+                    <span className="val">{(spec.groundClearance ?? CHAIN_CLEARANCE_DEFAULT).toFixed(1)}"</span>
+                  </span>
+                  <input
+                    className="ds-range"
+                    type="range"
+                    min={CHAIN_CLEARANCE_MIN}
+                    max={CHAIN_CLEARANCE_MAX}
+                    step={0.1}
+                    value={spec.groundClearance ?? CHAIN_CLEARANCE_DEFAULT}
+                    style={rangeFill(
+                      spec.groundClearance ?? CHAIN_CLEARANCE_DEFAULT,
+                      CHAIN_CLEARANCE_MIN,
+                      CHAIN_CLEARANCE_MAX,
+                    )}
+                    onChange={(e) => setSpec({ groundClearance: Number(e.target.value) })}
+                  />
+                </label>
+              )}
             </div>
 
             <p className="ds-hint">
               Heavier = more push, slower accel · higher RPM = faster top speed
-              {isDecode && ' · more flywheel inertia keeps long shots rapid'}. Chassis + intake ≤{' '}
-              {ROBOT_MAX_SIZE}".
+              {isDecode && ' · more flywheel inertia keeps long shots rapid'}
+              {!isDecode &&
+                ' · ground clearance lets you cross the beams (traction wheels climb; omni/x-drive can’t) but raises the center of gravity → sluggish handling'}
+              . Chassis + intake ≤ {ROBOT_MAX_SIZE}".
             </p>
           </div>
 

@@ -10,6 +10,7 @@ import {
   CHAIN_RINGSTAND_XY,
 } from './config';
 import { labAreas } from './state';
+import { CHAIN_BEAMS } from './beams';
 
 /**
  * Chain Reaction field renderer (manual §2–4 terminology).
@@ -60,20 +61,16 @@ export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): vo
   ctx.lineTo(R, 0);
   ctx.lineTo(0, -R);
   ctx.stroke();
-  ctx.strokeStyle = C.COLORS.white;
-  ctx.globalAlpha = 0.35;
-  ctx.beginPath();
-  ctx.moveTo(0, -hy);
-  ctx.lineTo(0, hy);
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-  // center marker
-  ctx.strokeStyle = C.COLORS.white;
-  ctx.globalAlpha = 0.5;
-  ctx.beginPath();
-  ctx.arc(0, 0, 3, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.globalAlpha = 1;
+  // BEAMS — four 1"-tall black tubes (difficult terrain). Drawn as raised dark bars
+  // with a highlight edge so they read as a physical obstacle above the mat.
+  for (const beam of CHAIN_BEAMS) {
+    const r = beam.rect;
+    ctx.fillStyle = '#0a0c0f';
+    ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+    ctx.strokeStyle = 'rgba(120,130,140,0.7)';
+    ctx.lineWidth = 0.4;
+    ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+  }
 
   // ACCELERATORS — protrude OUT of each alliance side wall (red left, blue right),
   // centered in y. Filled box + outline, matching the manual.

@@ -73,7 +73,8 @@ import {
   POSSESSION_MOVE_SPEED,
   POSSESSION_GRACE,
 } from '../src/config';
-import { robotCorners, robotExtents, wheelContacts } from '../src/sim/physics';
+import { robotCorners, robotExtents, robotIntersectsRect, wheelContacts } from '../src/sim/physics';
+import { canCrossBeams, cogFactor, crossBeams, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits } from '../src/sim/drivetrain';
 import { coerceSettings } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
@@ -3561,14 +3562,13 @@ const mkMM = () => {
   const cw = createChainWorld('free', 12345, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
   check('chain spawn: world.game === "chain"', cw.game === 'chain');
   check('chain spawn: 300 particles + 4 catalysts staged (not scattered)', cw.balls.length === CHAIN_PARTICLE_SIM && cw.chain?.catalysts.length === 4);
-  // catalysts start staged in the alliance lab-area corners, never loose on the field
+  // catalysts start ON the four ring stands (never loose on the field)
   {
-    const inLab = cw.chain!.catalysts.every((c) =>
-      [...labAreas('red'), ...labAreas('blue')].some(
-        (l) => c.pos.x >= l.x0 && c.pos.x <= l.x1 && c.pos.y >= l.y0 && c.pos.y <= l.y1,
-      ),
+    const stands = ringStands();
+    const onStands = cw.chain!.catalysts.every((c) =>
+      stands.some((s) => Math.hypot(s.x - c.pos.x, s.y - c.pos.y) < 0.01),
     );
-    check('chain spawn: catalysts staged in lab areas', inLab);
+    check('chain spawn: catalysts start on the ring stands', onStands);
   }
   check('chain spawn: inert goals + scores present (worldHash-safe)', !!cw.goals.red && !!cw.goals.blue && !!cw.match.scores.blue);
   check(
@@ -3696,6 +3696,48 @@ const mkMM = () => {
     const gw = createChainWorld('match', 42, [chainSetup(0, 'blue')]);
     for (let i = 0; i < 4; i++) gw.chain!.catalysts[i].hook = { alliance: 'blue', index: i };
     check('chain: four catalysts on the four hooks ⇒ ×5', accelMultiplier(gw.chain!, 'blue') === 5);
+  }
+
+  // a FAR shot still reaches + scores inside the goal (never lands short)
+  {
+    const w = createChainWorld('match', 15, [chainSetup(0, 'blue')]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 120;
+    const rob = w.robots[0];
+    rob.pos = { x: -60, y: 0 }; // far side of the field from the blue accelerator (x=+72)
+    rob.vel = { x: 0, y: 0 };
+    rob.autoFire = true;
+    rob.hopper.push('green');
+    const before = w.chain!.scored.blue;
+    runChain(w, cmd({}), 2);
+    check('chain shot: a far shot still reaches + scores in the goal', w.chain!.scored.blue > before);
+  }
+
+  // BEAMS — clearance + drivetrain gate crossing; raised CoG is sluggish
+  {
+    const mk = (dt: 'tank' | 'mecanum' | 'swerve' | 'xdrive', clr: number) => ({
+      ...DEFAULT_SPEC,
+      drivetrain: dt,
+      groundClearance: clr,
+    });
+    check('chain beams: x-drive cannot climb a beam', canCrossBeams(mk('xdrive', 3)) === false);
+    check('chain beams: tank with clearance crosses', canCrossBeams(mk('tank', 1)) === true);
+    check('chain beams: too little clearance is blocked', canCrossBeams(mk('mecanum', 0.5)) === false);
+    check('chain beams: mecanum with clearance can cross', canCrossBeams(mk('mecanum', 1)) === true);
+    check(
+      'chain beams: raised CoG reduces drive authority',
+      cogFactor(mk('tank', 3)) < cogFactor(mk('tank', 0.5)) && cogFactor(mk('tank', 0.5)) === 1,
+    );
+    // integration: a robot that can't cross is pushed off a beam it sits on
+    const w = createChainWorld('free', 1, [chainSetup(0, 'blue')]);
+    const rob = w.robots[0];
+    rob.spec = mk('xdrive', 0.5); // can't cross
+    const beam = CHAIN_BEAMS.find((b) => b.axis === 'y')!;
+    const bc = (beam.rect.y0 + beam.rect.y1) / 2;
+    rob.pos = { x: 0, y: bc };
+    rob.vel = { x: 0, y: 0 };
+    crossBeams(w);
+    check('chain beams: a blocked robot is pushed off the beam', !robotIntersectsRect(rob, beam.rect));
   }
 
   // catalyst BUTTON: pick up a nearby ring, then seat it on a hook (edge-triggered)

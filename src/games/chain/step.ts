@@ -5,6 +5,7 @@ import { updateRobot } from '../../sim/robot';
 import { robotsEnabled } from '../../sim/match';
 import { chainColliders } from './colliders';
 import { updateChain } from './play';
+import { cogFactor, crossBeams } from './beams';
 
 /**
  * Chain Reaction step — a playable match.
@@ -37,11 +38,27 @@ export function chainStep(world: World, dt: number, commands: Map<number, RobotC
   for (const r of world.robots) {
     const cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
     actual.set(r.id, cmd);
-    updateRobot(world, r, cmd, dt);
+    // raised center of gravity (from ground clearance) makes the drive sluggish:
+    // scale the movement command by the CoG factor before the drivetrain model.
+    const cog = cogFactor(r.spec);
+    const driven =
+      cog < 0.999
+        ? {
+            ...cmd,
+            driveX: cmd.driveX * cog,
+            driveY: cmd.driveY * cog,
+            rotate: cmd.rotate * cog,
+            leftDrive: cmd.leftDrive * cog,
+            rightDrive: cmd.rightDrive * cog,
+          }
+        : cmd;
+    updateRobot(world, r, driven, dt);
   }
 
   // Rapier owns robot translation/velocity + wall containment on the CR field.
   solveRobots(world, dt, chainColliders);
+  // beams (difficult terrain): block robots that can't cross, drag those that can.
+  crossBeams(world);
 
   // CR gameplay (particles / shooter / scoring / catalysts / endgame)
   if (world.chain) updateChain(world, dt, actual, enabled);

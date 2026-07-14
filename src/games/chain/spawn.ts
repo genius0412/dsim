@@ -20,7 +20,7 @@ import {
 } from '../../sim/spawn';
 import { emptyScore } from '../../sim/scoring';
 import { CHAIN_HALF_X, CHAIN_HALF_Y, CHAIN_PARTICLE_R, CHAIN_PARTICLE_SIM } from './config';
-import { emptyChainState, labAreas, type ChainCatalyst } from './state';
+import { emptyChainState, ringStands, type ChainCatalyst } from './state';
 
 /**
  * Chain Reaction world spawn — a PLAYABLE match.
@@ -138,22 +138,13 @@ export function createChainWorld(
     });
   }
 
-  // catalysts STAGED (not scattered): one at the center of each alliance's two
-  // lab-area corners — 2 per alliance (its 2 hooks), grabbed from the lab at start.
+  // catalysts START ON THE RING STANDS — one on each of the four corner ring stands.
   const chain = emptyChainState();
   chain.nextBallId = id; // runtime spawns continue past the initial particle ids
-  let cid = 0;
-  for (const a of ['red', 'blue'] as Alliance[]) {
-    for (const lab of labAreas(a)) {
-      const cat: ChainCatalyst = {
-        id: cid++,
-        pos: { x: (lab.x0 + lab.x1) / 2, y: (lab.y0 + lab.y1) / 2 },
-        carriedBy: null,
-        hook: null,
-      };
-      chain.catalysts.push(cat);
-    }
-  }
+  ringStands().forEach((rs, i) => {
+    const cat: ChainCatalyst = { id: i, pos: { ...rs }, carriedBy: null, hook: null };
+    chain.catalysts.push(cat);
+  });
 
   return {
     game: 'chain',

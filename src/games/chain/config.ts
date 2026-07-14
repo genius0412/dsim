@@ -106,6 +106,22 @@ export const CHAIN_RINGSTAND_XY = CHAIN_HALF_X - CHAIN_RINGSTAND_INSET; // 67"
  */
 export const CHAIN_DIAMOND_R = 38;
 
+/**
+ * BEAMS — four 1"-tall tubes (difficult terrain) around the center. To drive over a
+ * beam a robot needs `groundClearance ≥ CHAIN_BEAM_HEIGHT`, AND its drivetrain must be
+ * able to climb (traction wheels do; omni/x-drive can't). More clearance eases the
+ * crossing but RAISES the center of gravity → a handling penalty (`crossBeams`/CoG).
+ * Positions APPROXIMATE (a ring around the particle zone) pending exact manual dims.
+ */
+export const CHAIN_BEAM_HEIGHT = 1; // inches (tube height)
+export const CHAIN_BEAM_MIN_CLIMB = 0.35; // drivetrains below this can't mount a beam
+/** ground-clearance slider (inches). Default just meets a 1" beam (0 margin). */
+export const CHAIN_CLEARANCE_MIN = 0.5;
+export const CHAIN_CLEARANCE_MAX = 3;
+export const CHAIN_CLEARANCE_DEFAULT = 1;
+/** max fraction of drive authority lost at full clearance (raised center of gravity) */
+export const CHAIN_COG_PENALTY = 0.16;
+
 /** extra fit margin around the field when the camera scales it to the viewport.
  * Small because the camera bounds are widened to include the protruding goals. */
 export const CHAIN_VIEW_MARGIN = 8;
@@ -132,10 +148,11 @@ export const CHAIN_PART_WALL_REST = 0.35; // wall bounce restitution
 export const CHAIN_PART_SEP_ITERS = 2; // overlap-resolution passes per tick
 
 /** accelerator REJECT: a scored particle enters the accelerator, then the auto-score
- * system launches it BACK onto the field (visible) — speed + upward arc + spread. */
-export const CHAIN_EJECT_SPEED = 110; // in/s back into the field
-export const CHAIN_EJECT_VZ = 55; // in/s upward arc on the way out
-export const CHAIN_EJECT_SPREAD = 90; // in/s random lateral spread
+ * system launches it BACK onto the field (visible). Tuned to land further out with
+ * lots of variance — power (±), arc (±), and lateral spread all randomize per ball. */
+export const CHAIN_EJECT_SPEED = 135; // in/s back into the field (base; ×0.75–1.45)
+export const CHAIN_EJECT_VZ = 80; // in/s upward arc on the way out (base; ×0.75–1.45)
+export const CHAIN_EJECT_SPREAD = 150; // in/s random lateral spread
 
 /** intake: a front capture zone. A ground particle inside it (with hopper room) is
  * absorbed into the robot's hopper. */

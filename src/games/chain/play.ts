@@ -1,6 +1,6 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../types';
 import * as C from '../../config';
-import { dcos, dsin, datan2, hyp, nextRandom, rot } from '../../math';
+import { datan2, hyp, nextRandom, rot } from '../../math';
 import { robotExtents } from '../../sim/physics';
 import {
   CHAIN_ACCEL_DEPTH,
@@ -25,7 +25,6 @@ import {
   CHAIN_PART_SEP_ITERS,
   CHAIN_PART_WALL_REST,
   CHAIN_SHOT_SPEED,
-  CHAIN_SHOT_VZ,
   CHAIN_ENDGAME_S,
 } from './config';
 import {
@@ -80,19 +79,28 @@ export function updateChain(
     r.turretHeading = datan2(mouth.y - r.pos.y, mouth.x - r.pos.x);
     const cmd = cmds.get(r.id);
 
-    // fire a held particle toward the accelerator (auto-aimed ⇒ reliably scores)
+    // fire a held particle at the accelerator. SOLVED trajectory: aim exactly at the
+    // mouth center (so it always crosses within the mouth ⇒ scores) and pick the
+    // vertical velocity so the ballistic arc LANDS mid-box — at any distance, near or
+    // far, so a shot never falls short of the goal. (Fixed horizontal speed; the arc
+    // adapts to distance, like a real shooter adjusting power.)
     const wantsFire = enabled && (r.autoFire || (cmd?.fire ?? false));
     if (wantsFire && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
       r.hopper.shift();
-      const ang = r.turretHeading;
+      const distMouth = hyp(mouth.x - r.pos.x, mouth.y - r.pos.y);
+      const dir = { x: (mouth.x - r.pos.x) / distMouth, y: (mouth.y - r.pos.y) / distMouth };
+      const z0 = 8;
+      const land = distMouth + CHAIN_ACCEL_DEPTH * 0.5; // land halfway into the box
+      const t = land / CHAIN_SHOT_SPEED; // flight time at the fixed horizontal speed
+      const vz = 0.5 * C.GRAVITY * t - z0 / t; // solve z(t)=0 for the landing point
       world.balls.push({
         id: chain.nextBallId++,
         color: 'green',
         state: { kind: 'flight', target: r.alliance },
-        pos: { x: r.pos.x + dcos(ang) * 4, y: r.pos.y + dsin(ang) * 4 },
-        vel: { x: dcos(ang) * CHAIN_SHOT_SPEED, y: dsin(ang) * CHAIN_SHOT_SPEED },
-        z: 8,
-        vz: CHAIN_SHOT_VZ,
+        pos: { x: r.pos.x + dir.x * 4, y: r.pos.y + dir.y * 4 },
+        vel: { x: dir.x * CHAIN_SHOT_SPEED, y: dir.y * CHAIN_SHOT_SPEED },
+        z: z0,
+        vz,
       });
       r.fireReadyAt = world.time + CHAIN_FIRE_INTERVAL;
       r.lastFireAt = world.time;
@@ -146,9 +154,12 @@ export function updateChain(
       const hitBack = side < 0 ? b.pos.x <= backWall : b.pos.x >= backWall;
       if (b.z <= 0 || hitBack) {
         if (hitBack) b.pos.x = backWall;
-        b.vel.x = -side * CHAIN_EJECT_SPEED;
+        // REJECT back onto the field — further out + more variance (power, arc, and
+        // lateral spread all vary per ball) so they scatter over a wide area.
+        const spd = CHAIN_EJECT_SPEED * (0.75 + rand() * 0.7);
+        b.vel.x = -side * spd;
         b.vel.y = (rand() - 0.5) * CHAIN_EJECT_SPREAD;
-        b.vz = CHAIN_EJECT_VZ;
+        b.vz = CHAIN_EJECT_VZ * (0.75 + rand() * 0.7);
         b.z = Math.max(b.z, 5);
       }
       survivors.push(b);

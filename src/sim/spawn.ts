@@ -21,7 +21,14 @@ import type {
   StartPose,
 } from '../types';
 import * as C from '../config';
-import { CHAIN_STORAGE_DEFAULT, CHAIN_STORAGE_MAX, CHAIN_STORAGE_MIN } from '../games/chain/config';
+import {
+  CHAIN_CLEARANCE_DEFAULT,
+  CHAIN_CLEARANCE_MAX,
+  CHAIN_CLEARANCE_MIN,
+  CHAIN_STORAGE_DEFAULT,
+  CHAIN_STORAGE_MAX,
+  CHAIN_STORAGE_MIN,
+} from '../games/chain/config';
 import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
 import { lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
 import { heldSlotPos } from './physics';
@@ -49,6 +56,7 @@ export const DEFAULT_SPEC: RobotSpec = {
   flywheelInertia: 0.4,
   canSort: false,
   ballStorage: CHAIN_STORAGE_DEFAULT,
+  groundClearance: CHAIN_CLEARANCE_DEFAULT,
 };
 
 // Neutral sim/wire FALLBACK for assists (used by coercion bases, replay, server
@@ -147,6 +155,13 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
   // Chain Reaction ball storage (1–30); defaulted so DECODE specs/old saves are safe
   out.ballStorage = Math.round(
     clampFinite(sp.ballStorage, CHAIN_STORAGE_MIN, CHAIN_STORAGE_MAX, base.ballStorage ?? CHAIN_STORAGE_DEFAULT),
+  );
+  // Chain Reaction ground clearance (inches) — over-a-beam capability vs raised CoG
+  out.groundClearance = clampFinite(
+    sp.groundClearance,
+    CHAIN_CLEARANCE_MIN,
+    CHAIN_CLEARANCE_MAX,
+    base.groundClearance ?? CHAIN_CLEARANCE_DEFAULT,
   );
 
   // identity + flags (no cross-field dependency)

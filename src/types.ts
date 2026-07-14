@@ -63,6 +63,10 @@ export interface RobotSpec {
   /** Chain Reaction: how many Particles the robot's hopper holds (1–30 slider).
    * Optional so DECODE specs/old saves omit it (defaulted in coerceSpec). */
   ballStorage?: number;
+  /** Chain Reaction: ground clearance in inches (slider). Must be ≥ a beam's height
+   * to drive over it, but more clearance RAISES the center of gravity → sluggish
+   * handling. Optional (defaulted in coerceSpec). */
+  groundClearance?: number;
 }
 
 export type BallState =
