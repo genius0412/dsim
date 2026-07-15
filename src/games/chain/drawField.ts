@@ -45,24 +45,8 @@ export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): vo
   }
   ctx.stroke();
 
-  // PARTICLE ZONE — central diamond (APPROX). Left edges red, right edges blue,
-  // matching the red-left / blue-right alliance split, plus a vertical divider.
-  const R = CHAIN_DIAMOND_R;
-  ctx.lineWidth = C.TAPE_W;
-  ctx.strokeStyle = C.COLORS.red;
-  ctx.beginPath();
-  ctx.moveTo(0, R);
-  ctx.lineTo(-R, 0);
-  ctx.lineTo(0, -R);
-  ctx.stroke();
-  ctx.strokeStyle = C.COLORS.blue;
-  ctx.beginPath();
-  ctx.moveTo(0, R);
-  ctx.lineTo(R, 0);
-  ctx.lineTo(0, -R);
-  ctx.stroke();
-  // BEAMS — four 1"-tall black tubes (difficult terrain). Drawn as raised dark bars
-  // with a highlight edge so they read as a physical obstacle above the mat.
+  // BEAMS — four 1"-tall black tubes (difficult terrain) on the x/y axes, wall→diamond.
+  // Drawn FIRST so the alliance divider tape reads over the vertical beams.
   for (const beam of CHAIN_BEAMS) {
     const r = beam.rect;
     ctx.fillStyle = '#0a0c0f';
@@ -71,6 +55,35 @@ export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): vo
     ctx.lineWidth = 0.4;
     ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
   }
+
+  // ALLIANCE DIVIDER — red (left) / blue (right) boundary down the center that wraps
+  // around the particle-zone diamond (the vertical line splits red|blue at the middle).
+  const R = CHAIN_DIAMOND_R;
+  const d = 0.7; // small offset from x=0 so red + blue read as two lines
+  ctx.lineWidth = C.TAPE_W;
+  const divider = (color: string, s: -1 | 1): void => {
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(s * d, hy);
+    ctx.lineTo(s * d, R);
+    ctx.lineTo(s * R, 0);
+    ctx.lineTo(s * d, -R);
+    ctx.lineTo(s * d, -hy);
+    ctx.stroke();
+  };
+  divider(C.COLORS.red, -1);
+  divider(C.COLORS.blue, 1);
+
+  // PARTICLE ZONE — the central WHITE diamond (tape), drawn over the divider.
+  ctx.strokeStyle = C.COLORS.white;
+  ctx.lineWidth = C.TAPE_W;
+  ctx.beginPath();
+  ctx.moveTo(0, R);
+  ctx.lineTo(-R, 0);
+  ctx.lineTo(0, -R);
+  ctx.lineTo(R, 0);
+  ctx.closePath();
+  ctx.stroke();
 
   // ACCELERATORS — protrude OUT of each alliance side wall (red left, blue right),
   // centered in y. Filled box + outline, matching the manual.
@@ -90,32 +103,37 @@ export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): vo
   // (HOOKS + seated rings are drawn dynamically in drawChainBalls so each hook
   // slot's occupancy is visible — see draw.ts.)
 
-  // LAB AREAS — start/park corner squares, alliance-tinted (red owns x<0 corners,
-  // blue x>0). Robots start here and PARK here in endgame.
+  // LAB AREAS / corners — WHITE tape corner squares (start + park zones).
+  ctx.strokeStyle = C.COLORS.white;
+  ctx.lineWidth = C.TAPE_W;
   for (const a of ['red', 'blue'] as Alliance[]) {
-    const stroke = a === 'red' ? C.COLORS.red : C.COLORS.blue;
     for (const lab of labAreas(a)) {
-      ctx.strokeStyle = stroke;
-      ctx.lineWidth = C.TAPE_W;
       ctx.strokeRect(lab.x0, lab.y0, lab.x1 - lab.x0, lab.y1 - lab.y0);
     }
   }
 
-  // RING STANDS — vertical climb posts near the four corners (APPROX positions).
-  // Drawn as a filled post with a ring collar (the purple-ringed corner objects).
+  // RING STANDS — a vertical square POST rising from a triangular corner base plate
+  // (rings hang around the post — the catalysts are drawn encircling it in draw.ts).
+  const POST = 1.4; // post half-size (top-down square cross-section)
+  const BASE = 12; // triangular base plate leg length
   for (const sx of [-1, 1] as const) {
     for (const sy of [-1, 1] as const) {
       const cx = sx * CHAIN_RINGSTAND_XY;
       const cy = sy * CHAIN_RINGSTAND_XY;
-      ctx.fillStyle = C.COLORS.tile;
+      // triangular base plate tucked into the corner
+      ctx.fillStyle = '#33383e';
       ctx.beginPath();
-      ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+      ctx.moveTo(sx * hx, sy * hy - sy * BASE);
+      ctx.lineTo(sx * hx - sx * BASE, sy * hy);
+      ctx.lineTo(cx, cy);
+      ctx.closePath();
       ctx.fill();
-      ctx.strokeStyle = '#7c3aed'; // catalyst-purple collar
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.arc(cx, cy, 3.4, 0, Math.PI * 2);
-      ctx.stroke();
+      // black square post
+      ctx.fillStyle = '#0a0c0f';
+      ctx.fillRect(cx - POST, cy - POST, 2 * POST, 2 * POST);
+      ctx.strokeStyle = 'rgba(120,130,140,0.7)';
+      ctx.lineWidth = 0.4;
+      ctx.strokeRect(cx - POST, cy - POST, 2 * POST, 2 * POST);
     }
   }
 

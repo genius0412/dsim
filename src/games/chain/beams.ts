@@ -70,24 +70,45 @@ export function canCrossBeams(spec: RobotSpec): boolean {
   return clearanceOf(spec) >= CHAIN_BEAM_HEIGHT;
 }
 
-/** fraction of the across-beam velocity KEPT per tick while on a beam. Grows toward ~1
- * with MOMENTUM (approach speed) — a running start powers over; from a standstill it
- * falls back to the drivetrain's traction (+ a small clearance-margin bonus). */
-export function beamRetain(spec: RobotSpec, acrossSpeed: number): number {
+/**
+ * Fraction of the across-beam velocity KEPT while mounting a beam. MOMENTUM dominates:
+ * a running start (high across-speed) powers over with almost no slowdown; creeping is
+ * where traction matters (traction wheels still climb, mecanum a bit worse, omni slowest
+ * yet still crosses). A raised center of gravity (more clearance) makes it a touch harder.
+ * Applied to velocity BEFORE the physics integration, so it really slows the crossing.
+ */
+export function beamDragFactor(spec: RobotSpec, acrossSpeed: number): number {
   const clr = clearanceOf(spec);
-  const base = clamp(TRACTION[spec.drivetrain] + 0.05 * (clr - CHAIN_BEAM_HEIGHT), 0.5, 0.9);
+  const base = clamp(TRACTION[spec.drivetrain] + 0.05 * (clr - CHAIN_BEAM_HEIGHT), 0.45, 0.9);
   const mom = clamp(Math.abs(acrossSpeed) / CHAIN_BEAM_MOMENTUM_REF, 0, 1);
-  return clamp(base + (1 - base) * mom, 0.5, 0.985);
+  const cogFrac = clamp((clr - CHAIN_CLEARANCE_MIN) / (CHAIN_CLEARANCE_MAX - CHAIN_CLEARANCE_MIN), 0, 1);
+  return clamp((base + (1 - base) * mom) * (1 - 0.12 * cogFrac), 0.4, 0.985);
 }
 
 /**
- * Resolve robots against the beams: block a robot whose frame can't clear a beam (stop
- * its across-beam motion + keep it on its side); otherwise DRAG the across velocity by a
- * momentum-aware `beamRetain`. Runs after `solveRobots` in `chainStep`.
+ * PRE-solve: for a robot on a beam it CAN cross, drag its across-beam velocity so it
+ * physically advances less this tick (momentum/traction/CoG decide how much). Applied
+ * before the Rapier integration so the slowdown persists (the drivetrain model re-sets
+ * velocity every tick, so a post-solve velocity change would be wiped).
  */
-export function crossBeams(world: World): void {
+export function beamDrag(world: World): void {
   for (const r of world.robots) {
-    const cross = canCrossBeams(r.spec);
+    if (!canCrossBeams(r.spec)) continue; // no-clearance robots are hard-blocked instead
+    for (const beam of CHAIN_BEAMS) {
+      if (!robotIntersectsRect(r, beam.rect)) continue;
+      if (beam.axis === 'y') r.vel.y *= beamDragFactor(r.spec, r.vel.y);
+      else r.vel.x *= beamDragFactor(r.spec, r.vel.x);
+    }
+  }
+}
+
+/**
+ * POST-solve: a robot whose frame can't clear a beam is blocked like a wall — keep it on
+ * the side it's on and stop its across-beam motion (it can still drive ALONGSIDE).
+ */
+export function beamBlock(world: World): void {
+  for (const r of world.robots) {
+    if (canCrossBeams(r.spec)) continue;
     const e = robotExtents(r);
     const rad = Math.max(e.half, (e.front + e.rear) / 2) + 0.5;
     for (const beam of CHAIN_BEAMS) {
@@ -96,24 +117,16 @@ export function crossBeams(world: World): void {
         const bc = (beam.rect.y0 + beam.rect.y1) / 2;
         const bh = (beam.rect.y1 - beam.rect.y0) / 2;
         const side = r.pos.y >= bc ? 1 : -1;
-        if (!cross) {
-          const limit = bc + side * (bh + rad);
-          r.pos.y = side > 0 ? Math.max(r.pos.y, limit) : Math.min(r.pos.y, limit);
-          if (side * r.vel.y < 0) r.vel.y = 0; // moving into the beam → stop
-        } else {
-          r.vel.y *= beamRetain(r.spec, r.vel.y);
-        }
+        const limit = bc + side * (bh + rad);
+        r.pos.y = side > 0 ? Math.max(r.pos.y, limit) : Math.min(r.pos.y, limit);
+        if (side * r.vel.y < 0) r.vel.y = 0;
       } else {
         const bc = (beam.rect.x0 + beam.rect.x1) / 2;
         const bw = (beam.rect.x1 - beam.rect.x0) / 2;
         const side = r.pos.x >= bc ? 1 : -1;
-        if (!cross) {
-          const limit = bc + side * (bw + rad);
-          r.pos.x = side > 0 ? Math.max(r.pos.x, limit) : Math.min(r.pos.x, limit);
-          if (side * r.vel.x < 0) r.vel.x = 0;
-        } else {
-          r.vel.x *= beamRetain(r.spec, r.vel.x);
-        }
+        const limit = bc + side * (bw + rad);
+        r.pos.x = side > 0 ? Math.max(r.pos.x, limit) : Math.min(r.pos.x, limit);
+        if (side * r.vel.x < 0) r.vel.x = 0;
       }
     }
   }

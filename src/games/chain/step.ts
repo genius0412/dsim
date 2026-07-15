@@ -5,7 +5,7 @@ import { updateRobot } from '../../sim/robot';
 import { robotsEnabled } from '../../sim/match';
 import { chainColliders } from './colliders';
 import { updateChain } from './play';
-import { cogFactor, crossBeams } from './beams';
+import { beamBlock, beamDrag, cogFactor } from './beams';
 
 /**
  * Chain Reaction step — a playable match.
@@ -55,10 +55,13 @@ export function chainStep(world: World, dt: number, commands: Map<number, RobotC
     updateRobot(world, r, driven, dt);
   }
 
+  // beams (difficult terrain): drag the across-velocity BEFORE the solve so a crossing
+  // robot physically advances less this tick (momentum/traction/CoG decide how much).
+  beamDrag(world);
   // Rapier owns robot translation/velocity + wall containment on the CR field.
   solveRobots(world, dt, chainColliders);
-  // beams (difficult terrain): block robots that can't cross, drag those that can.
-  crossBeams(world);
+  // then hard-block any robot whose frame can't clear a beam (kept on its side).
+  beamBlock(world);
 
   // CR gameplay (particles / shooter / scoring / catalysts / endgame)
   if (world.chain) updateChain(world, dt, actual, enabled);

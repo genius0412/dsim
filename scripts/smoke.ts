@@ -74,7 +74,7 @@ import {
   POSSESSION_GRACE,
 } from '../src/config';
 import { robotCorners, robotExtents, robotIntersectsRect, wheelContacts } from '../src/sim/physics';
-import { beamRetain, canCrossBeams, cogFactor, crossBeams, CHAIN_BEAMS } from '../src/games/chain/beams';
+import { beamBlock, beamDragFactor, canCrossBeams, cogFactor, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits } from '../src/sim/drivetrain';
 import { coerceSettings } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
@@ -3727,26 +3727,27 @@ const mkMM = () => {
     // MOMENTUM makes it easier: a running start keeps far more speed than a standstill
     check(
       'chain beams: momentum eases crossing (fast keeps more than standstill)',
-      beamRetain(mk('xdrive', 1), 50) > beamRetain(mk('xdrive', 1), 0) + 0.15,
+      beamDragFactor(mk('xdrive', 1), 50) > beamDragFactor(mk('xdrive', 1), 0) + 0.15,
     );
     // mecanum is only a little worse than tank from a standstill (not "immediately bad")
     check(
       'chain beams: mecanum standstill is close to tank (not badly penalized)',
-      beamRetain(mk('mecanum', 1), 0) > 0.7 && beamRetain(mk('tank', 1), 0) - beamRetain(mk('mecanum', 1), 0) < 0.2,
+      beamDragFactor(mk('mecanum', 1), 0) > 0.7 &&
+        beamDragFactor(mk('tank', 1), 0) - beamDragFactor(mk('mecanum', 1), 0) < 0.2,
     );
     check(
       'chain beams: raised CoG reduces drive authority',
       cogFactor(mk('tank', 3)) < cogFactor(mk('tank', 0.5)) && cogFactor(mk('tank', 0.5)) === 1,
     );
-    // integration: a robot that can't cross is pushed off a beam it sits on
+    // integration: a robot that can't clear a beam is pushed off it (hard block)
     const w = createChainWorld('free', 1, [chainSetup(0, 'blue')]);
     const rob = w.robots[0];
-    rob.spec = mk('xdrive', 0.5); // can't cross
+    rob.spec = mk('xdrive', 0.5); // clearance < beam height → blocked
     const beam = CHAIN_BEAMS[0];
     rob.pos = { x: (beam.rect.x0 + beam.rect.x1) / 2, y: (beam.rect.y0 + beam.rect.y1) / 2 };
     rob.vel = { x: 0, y: 0 };
-    crossBeams(w);
-    check('chain beams: a blocked robot is pushed off the beam', !robotIntersectsRect(rob, beam.rect));
+    beamBlock(w);
+    check('chain beams: a robot that cannot clear a beam is pushed off it', !robotIntersectsRect(rob, beam.rect));
   }
 
   // catalyst BUTTON: pick up a nearby ring, then seat it on a hook (edge-triggered)
