@@ -103,8 +103,13 @@ export interface HudSnapshot {
     oppScored: number;
     /** your accelerator's points-per-particle (1 + catalysts on your hooks) */
     mult: number;
+    oppMult: number;
     /** catalysts your alliance has seated on hooks */
     catalysts: number;
+    oppCatalysts: number;
+    /** particle POINTS (catalyst multiplier folded in) — for the results breakdown */
+    particlePts: number;
+    oppParticlePts: number;
     /** your robot's endgame status */
     endgame: EndgameState;
     /** your robot is carrying a catalyst */
@@ -861,7 +866,11 @@ export class GameController {
           scored: w.chain.scored[a],
           oppScored: w.chain.scored[opp],
           mult: chainAccelMultiplier(w.chain, a),
+          oppMult: chainAccelMultiplier(w.chain, opp),
           catalysts: w.chain.catalysts.filter((c) => c.hook?.alliance === a).length,
+          oppCatalysts: w.chain.catalysts.filter((c) => c.hook?.alliance === opp).length,
+          particlePts: w.chain.particlePoints[a],
+          oppParticlePts: w.chain.particlePoints[opp],
           endgame: w.chain.endgame[this.localRobotId] ?? 'none',
           carrying: w.chain.catalysts.some((c) => c.carriedBy === this.localRobotId),
           storage: chainHopperCap(r.spec),

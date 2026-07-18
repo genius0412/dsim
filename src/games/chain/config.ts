@@ -207,12 +207,14 @@ export const CHAIN_AIM_GAIN = 4.5; // P-gain turning the robot toward the goal w
 export const CHAIN_LAUNCH_LINE_FRAC = 0.92; // fraction of the chassis width the line spans
 export const CHAIN_LAUNCH_Z0 = 10; // in — launch height (into the tall, over-field opening)
 
-// DRUM: a CONTINUOUS uniform-velocity flywheel across the chassis width, any range. It
-// FEEDS steadily — `CHAIN_DRUM_LANES` Particles every short `CHAIN_DRUM_INTERVAL` while it
-// has ammo + is aligned — so it fires a continuous stream, NOT a "6-then-wait" burst.
+// DRUM: a CONTINUOUS flywheel across the chassis width, any range. It streams SINGLE
+// Particles at a natural cadence — one every `CHAIN_DRUM_INTERVAL` (± jitter) while armed —
+// each from a RANDOM lateral position across the drum, so the pattern FLOWS naturally and is
+// NEVER a rigid uniform line. The launch SPEED is uniform (same-velocity, per the archetype);
+// only the position + timing vary. NOT a "6-then-wait" burst.
 export const CHAIN_DRUM_MAX = 6; // drum CAPACITY (18"/3" = 6 pockets) — the visual slot count
-export const CHAIN_DRUM_LANES = 3; // Particles launched per feed (chassis-wide, a few at once)
-export const CHAIN_DRUM_INTERVAL = 0.13; // s between feeds — short ⇒ a continuous flywheel stream
+export const CHAIN_DRUM_INTERVAL = 0.07; // s between shots (a fast continuous single-ball stream)
+export const CHAIN_DRUM_JITTER = 0.55; // ± fraction of the interval — natural, non-periodic cadence
 export const CHAIN_DRUM_SPEED = 175; // in/s uniform horizontal launch
 
 // DUMPER: whole-hopper catapult, limited (but not point-blank) range, side-var scatter
@@ -221,11 +223,15 @@ export const CHAIN_DUMP_INTERVAL = 0.8; // s recovery between full dumps
 export const CHAIN_DUMP_SPEED = 150; // in/s base horizontal launch
 export const CHAIN_DUMP_SIDE_VAR = 0.16; // ± speed variance across the catapult width (scatter)
 
-// GOAL FUNNEL: a scored Particle bounces/funnels DOWN inside the tall goal for this long
-// before the wall-side launcher (spanning the whole goal width) flings it back onto the field
-export const CHAIN_FUNNEL_S = 0.55; // s dwell inside the goal before re-launch
-export const CHAIN_FUNNEL_FALL = 45; // in/s the Particle settles to the goal floor
-export const CHAIN_FUNNEL_DRIFT = 40; // in/s drift toward the wall-side launcher
+// GOAL INTERIOR: a scored Particle keeps its momentum and BOUNCES around inside the goal box
+// (off the back wall, side walls, and floor with restitution + friction), funneling toward the
+// wall-side launcher, which then flings it back onto the field. NOT an instant eject.
+export const CHAIN_FUNNEL_S = 1.4; // s MAX dwell inside the goal before a forced eject (safety)
+export const CHAIN_FUNNEL_MIN = 0.2; // s MIN dwell — Particles jumble at least this long
+export const CHAIN_GOAL_REST = 0.5; // restitution off the goal's inner walls + floor (bounce)
+export const CHAIN_GOAL_FRICTION = 45; // in/s² horizontal decay as Particles jumble + settle
+export const CHAIN_FUNNEL_DRIFT_ACC = 130; // in/s² drift toward the wall-side launcher
+export const CHAIN_LAUNCHER_MARGIN = 5; // in of the wall (moving fieldward) ⇒ the launcher fires it
 
 // MISSED shot: a Particle that misses the opening is retrieved by a HUMAN and thrown back
 // into the field (FOR NOW — this rule may change) — tossed inward from the wall it hit

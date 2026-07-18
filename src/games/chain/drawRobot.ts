@@ -6,7 +6,6 @@ import {
   CHAIN_DEFAULT_INTAKE,
   CHAIN_DEFAULT_SCORE_MODE,
   chainHopperCap,
-  CHAIN_DRUM_MAX,
   CHAIN_LAUNCH_LINE_FRAC,
 } from './config';
 
@@ -35,6 +34,9 @@ export function drawChainRobot(
   const color = r.alliance === 'blue' ? C.COLORS.blue : C.COLORS.red;
   const loaded = r.hopper.length > 0;
   const mode = r.spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
+  // the intake reads ACTIVE (green) whenever it can still collect — i.e. it's on (auto or the
+  // held command) AND the hopper isn't full — not just when nearly empty.
+  const intaking = (intakeOn || r.autoIntake) && r.hopper.length < chainHopperCap(r.spec);
 
   ctx.save();
   ctx.translate(r.pos.x, r.pos.y);
@@ -50,7 +52,7 @@ export function drawChainRobot(
 
   drawWheels(ctx, r, color);
 
-  drawChainIntake(ctx, r, intakeOn, hl, hw);
+  drawChainIntake(ctx, r, intaking, hl, hw);
 
   // scoring-archetype launcher (chassis-fixed part). Drum + catapult sit just inside the
   // front; the turret is drawn last, in the world frame, so it rotates independently.
@@ -118,27 +120,25 @@ function drawChainIntake(
   }
 }
 
-/** chassis-wide flywheel DRUM: a thick rounded cylinder across the launch-line width,
- * just inside the front, with the drum's slot divisions. Greens when loaded. */
+/** chassis-wide flywheel DRUM: a FULL-WIDTH row of compliant rollers (the flywheels) across
+ * the front — NOT a channelled drum. The rollers spin to intake AND launch. Greens when loaded. */
 function drawDrum(ctx: CanvasRenderingContext2D, hl: number, hw: number, loaded: boolean): void {
-  const half = hw * CHAIN_LAUNCH_LINE_FRAC;
-  const th = 3.4; // drum thickness (along x)
-  const cx = hl - th - 0.6;
+  const half = hw * 0.96; // spans (nearly) the whole chassis width
+  const th = 3.4; // roller-bar depth (along x)
+  const cx = hl - th / 2 - 0.5;
+  // roller housing bar across the full width
   ctx.fillStyle = STEEL_DK;
   ctx.strokeStyle = loaded ? GREEN : IDLE;
   ctx.lineWidth = 0.7;
-  roundRect(ctx, cx - th / 2, -half, th, half * 2, 1.2);
+  roundRect(ctx, cx - th / 2, -half, th, half * 2, 0.8);
   ctx.fill();
   ctx.stroke();
-  // drum slot divisions (the 6 pockets)
-  ctx.strokeStyle = loaded ? 'rgba(34,197,94,0.7)' : 'rgba(150,163,180,0.5)';
-  ctx.lineWidth = 0.5;
-  for (let i = 1; i < CHAIN_DRUM_MAX; i++) {
-    const y = -half + (i * (half * 2)) / CHAIN_DRUM_MAX;
-    ctx.beginPath();
-    ctx.moveTo(cx - th / 2, y);
-    ctx.lineTo(cx + th / 2, y);
-    ctx.stroke();
+  // the compliant flywheel rollers — a row of wheels across the entire width
+  const n = Math.max(5, Math.round((half * 2) / 2.6));
+  ctx.fillStyle = loaded ? GREEN : '#7c8593';
+  for (let i = 0; i < n; i++) {
+    const y = -half + ((i + 0.5) * (half * 2)) / n;
+    ctx.fillRect(cx - th / 2 + 0.5, y - 0.75, th - 1, 1.5);
   }
 }
 

@@ -710,43 +710,61 @@ function Results({
     );
   }
 
+  const cr = hud.game === 'chain';
   const f = hud.fouls; // fouls COMMITTED by each alliance
   const val = (get: (s: ScoreBreakdown) => number): [number, number] => [get(red), get(blue)];
-  const sections: [string, [string, number, number][]][] = [
-    [
-      'AUTONOMOUS',
-      [
-        ['Leave', ...val((s) => s.leave)],
-        ['Classified', ...val((s) => s.autoClassified)],
-        ['Overflow', ...val((s) => s.autoOverflow)],
-        ['Pattern', ...val((s) => s.autoPattern)],
-      ],
-    ],
-    [
-      'DRIVER-CONTROLLED',
-      [
-        ['Classified', ...val((s) => s.teleClassified)],
-        ['Overflow', ...val((s) => s.teleOverflow)],
-        ['Pattern', ...val((s) => s.telePattern)],
-      ],
-    ],
-    [
-      'END OF MATCH',
-      [
-        ['Depot', ...val((s) => s.depot)],
-        ['Base return', ...val((s) => s.base)],
-      ],
-    ],
-    [
-      // penalty POINTS awarded to each alliance (from the OPPONENT's fouls) —
-      // shown as points, not counts, so the breakdown reconciles with each TOTAL
-      'PENALTIES',
-      [
-        ['Minor', f.blue.minor * PTS_FOUL_MINOR, f.red.minor * PTS_FOUL_MINOR],
-        ['Major', f.blue.major * PTS_FOUL_MAJOR, f.red.major * PTS_FOUL_MAJOR],
-      ],
-    ],
-  ];
+
+  // Chain Reaction has its own scoring: Particle points (catalyst multiplier folded in) +
+  // End Game (park 5 / ascend 20). No fouls (CR skips the penalty engine).
+  const crSections = (): [string, [string, number, number][]][] => {
+    const c = hud.chain;
+    if (!c) return [];
+    const isRed = hud.alliance === 'red';
+    const redP = isRed ? c.particlePts : c.oppParticlePts;
+    const blueP = isRed ? c.oppParticlePts : c.particlePts;
+    return [
+      ['SCORING', [['Particles ×mult', redP, blueP]]],
+      ['END GAME', [['Park / Ascend', red.total - redP, blue.total - blueP]]],
+    ];
+  };
+
+  const sections: [string, [string, number, number][]][] = cr
+    ? crSections()
+    : [
+        [
+          'AUTONOMOUS',
+          [
+            ['Leave', ...val((s) => s.leave)],
+            ['Classified', ...val((s) => s.autoClassified)],
+            ['Overflow', ...val((s) => s.autoOverflow)],
+            ['Pattern', ...val((s) => s.autoPattern)],
+          ],
+        ],
+        [
+          'DRIVER-CONTROLLED',
+          [
+            ['Classified', ...val((s) => s.teleClassified)],
+            ['Overflow', ...val((s) => s.teleOverflow)],
+            ['Pattern', ...val((s) => s.telePattern)],
+          ],
+        ],
+        [
+          'END OF MATCH',
+          [
+            ['Depot', ...val((s) => s.depot)],
+            ['Base return', ...val((s) => s.base)],
+          ],
+        ],
+        [
+          // penalty POINTS awarded to each alliance (from the OPPONENT's fouls) —
+          // shown as points, not counts, so the breakdown reconciles with each TOTAL
+          'PENALTIES',
+          [
+            ['Minor', f.blue.minor * PTS_FOUL_MINOR, f.red.minor * PTS_FOUL_MINOR],
+            ['Major', f.blue.major * PTS_FOUL_MAJOR, f.red.major * PTS_FOUL_MAJOR],
+          ],
+        ],
+      ];
 
   return (
     <div className="overlay">
@@ -799,10 +817,18 @@ function Results({
           </tbody>
         </table>
         {ranked && <EloResults rows={eloResults} />}
-        <p className="ds-hint">
-          Penalty points ({PTS_FOUL_MINOR} minor · {PTS_FOUL_MAJOR} major) come from the opponent's
-          fouls and are already in each total.
-        </p>
+        {cr && hud.chain ? (
+          <p className="ds-hint">
+            Each Particle scores 1 pt × (1 + Catalysts on hooks) — RED ×
+            {hud.alliance === 'red' ? hud.chain.mult : hud.chain.oppMult}, BLUE ×
+            {hud.alliance === 'blue' ? hud.chain.mult : hud.chain.oppMult}. End Game: park 5 · ascend 20.
+          </p>
+        ) : (
+          <p className="ds-hint">
+            Penalty points ({PTS_FOUL_MINOR} minor · {PTS_FOUL_MAJOR} major) come from the opponent's
+            fouls and are already in each total.
+          </p>
+        )}
         {matchResult && (
           <p className="ds-hint" style={{ color: 'var(--ds-accent)' }}>
             {matchResult.kind === 'record'

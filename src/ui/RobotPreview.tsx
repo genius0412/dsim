@@ -4,7 +4,6 @@ import {
   CHAIN_INTAKES,
   CHAIN_DEFAULT_INTAKE,
   CHAIN_DEFAULT_SCORE_MODE,
-  CHAIN_DRUM_MAX,
   CHAIN_LAUNCH_LINE_FRAC,
 } from '../games/chain/config';
 
@@ -167,14 +166,17 @@ export function RobotPreview({
 
   // Chain Reaction archetype launcher (front = UP): drum = wide slotted bar; dumper =
   // catapult bucket; turret = ring + barrel.
-  const lineHalf = halfW * CHAIN_LAUNCH_LINE_FRAC;
+  const drumHalf = halfW * 0.96; // full-width flywheel rollers
+  const drumN = Math.max(5, Math.round((drumHalf * 2) / 2.6));
+  const lineHalf = halfW * CHAIN_LAUNCH_LINE_FRAC; // catapult bucket width
   const cLauncherEl =
     cMode === 'drum' ? (
       <g>
-        <rect x={-lineHalf} y={frontY + 0.6} width={lineHalf * 2} height={3.4} rx={1} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
-        {Array.from({ length: CHAIN_DRUM_MAX - 1 }, (_, k) => k + 1).map((i) => {
-          const x = -lineHalf + (i * lineHalf * 2) / CHAIN_DRUM_MAX;
-          return <line key={i} x1={x} y1={frontY + 0.6} x2={x} y2={frontY + 4} stroke={accent} strokeWidth={0.3} opacity={0.6} />;
+        {/* full-width row of compliant flywheel rollers (not channels) */}
+        <rect x={-drumHalf} y={frontY + 0.5} width={drumHalf * 2} height={3.4} rx={0.8} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
+        {Array.from({ length: drumN }, (_, k) => k).map((i) => {
+          const x = -drumHalf + ((i + 0.5) * drumHalf * 2) / drumN;
+          return <rect key={i} x={x - 0.55} y={frontY + 1} width={1.1} height={2.4} rx={0.4} fill={accent} opacity={0.85} />;
         })}
       </g>
     ) : cMode === 'dumper' ? (

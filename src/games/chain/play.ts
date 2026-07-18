@@ -22,16 +22,19 @@ import {
   CHAIN_AIM_GAIN,
   CHAIN_LAUNCH_LINE_FRAC,
   CHAIN_LAUNCH_Z0,
-  CHAIN_DRUM_LANES,
   CHAIN_DRUM_INTERVAL,
+  CHAIN_DRUM_JITTER,
   CHAIN_DRUM_SPEED,
   CHAIN_DUMP_RANGE,
   CHAIN_DUMP_INTERVAL,
   CHAIN_DUMP_SPEED,
   CHAIN_DUMP_SIDE_VAR,
   CHAIN_FUNNEL_S,
-  CHAIN_FUNNEL_FALL,
-  CHAIN_FUNNEL_DRIFT,
+  CHAIN_FUNNEL_MIN,
+  CHAIN_GOAL_REST,
+  CHAIN_GOAL_FRICTION,
+  CHAIN_FUNNEL_DRIFT_ACC,
+  CHAIN_LAUNCHER_MARGIN,
   CHAIN_THROWBACK_SPEED,
   CHAIN_THROWBACK_SPREAD,
   CHAIN_PARTICLE_R,
@@ -117,12 +120,12 @@ export function updateChain(
       const inRange = mode === 'drum' ? true : distMouth <= CHAIN_DUMP_RANGE;
       if (wantsFire && aligned && inRange && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
         if (mode === 'drum') {
-          // flywheel drum: a CONTINUOUS stream — feed a few lanes (UNIFORM velocity) every
-          // short interval, so it keeps firing steadily instead of a 6-then-wait burst.
-          const n = Math.min(CHAIN_DRUM_LANES, r.hopper.length);
-          r.hopper.splice(0, n);
-          launchLine(world, chain, r, n, CHAIN_DRUM_SPEED, 0);
-          r.fireReadyAt = world.time + CHAIN_DRUM_INTERVAL;
+          // flywheel drum: stream ONE particle at a time from a RANDOM lateral position across
+          // the full-width rollers (never a uniform line), at a naturally JITTERED cadence.
+          // Uniform launch SPEED — only the position + timing vary, so the pattern flows.
+          r.hopper.shift();
+          launchAt(world, chain, r, rand() - 0.5, CHAIN_DRUM_SPEED, 0);
+          r.fireReadyAt = world.time + CHAIN_DRUM_INTERVAL * (1 - CHAIN_DRUM_JITTER + rand() * 2 * CHAIN_DRUM_JITTER);
         } else {
           // catapult: fling the WHOLE hopper at once, side-to-side velocity variance
           const n = r.hopper.length;
@@ -162,17 +165,12 @@ export function updateChain(
       b.vz -= C.GRAVITY * dt;
       const beyond = side < 0 ? b.pos.x <= wall : b.pos.x >= wall;
       if (beyond && Math.abs(b.pos.y) <= CHAIN_ACCEL_HALF_Y) {
-        // ENTERED the tall opening → score, then FUNNEL down inside the goal before the
-        // launcher flings it back out (no more instant eject).
+        // ENTERED the tall opening → score. It KEEPS its momentum and bounces around inside
+        // the goal box (below) before the wall-side launcher flings it back out.
         chain.scored[a]++;
         chain.particlePoints[a] += accelMultiplier(chain, a);
         st.scored = true;
         st.funnelT = CHAIN_FUNNEL_S;
-        b.pos.x = wall + side * (CHAIN_PARTICLE_R + 1); // just inside the opening
-        b.vel.x = 0;
-        b.vel.y = 0;
-        b.vz = 0;
-        b.z = Math.max(b.z, 8);
         survivors.push(b);
       } else if (beyond) {
         // missed the opening (hit the perimeter wall) → a human throws it back in
@@ -185,17 +183,50 @@ export function updateChain(
       continue;
     }
 
-    // SCORED. Funnel down inside the goal, then the wall-side launcher (spanning the whole
-    // goal width) flings it back onto the field.
+    // SCORED. Bounce/jumble around inside the goal box (real containment + restitution),
+    // funnel toward the wall-side launcher, then get flung back onto the field.
     if ((st.funnelT ?? 0) > 0) {
       st.funnelT = (st.funnelT ?? 0) - dt;
-      b.z = Math.max(0, b.z - CHAIN_FUNNEL_FALL * dt); // settle to the goal floor
-      b.pos.x = approach(b.pos.x, wall, CHAIN_FUNNEL_DRIFT * dt); // drift to the wall-side launcher
-      if ((st.funnelT ?? 0) <= 0) {
-        // LAUNCH back onto the field from the wall-side launcher, across the goal width
+      b.pos.x += b.vel.x * dt;
+      b.pos.y += b.vel.y * dt;
+      b.z += b.vz * dt;
+      b.vz -= C.GRAVITY * dt;
+      // floor bounce
+      if (b.z <= 0) {
+        b.z = 0;
+        if (b.vz < 0) b.vz = -b.vz * CHAIN_GOAL_REST;
+        if (Math.abs(b.vz) < 12) b.vz = 0;
+      }
+      // back wall of the goal box (the outer face)
+      const backWall = side * (CHAIN_HALF_X + CHAIN_ACCEL_DEPTH);
+      if (side * b.pos.x > side * backWall - CHAIN_PARTICLE_R) {
+        b.pos.x = backWall - side * CHAIN_PARTICLE_R;
+        if (side * b.vel.x > 0) b.vel.x = -b.vel.x * CHAIN_GOAL_REST;
+      }
+      // side walls (goal width in y)
+      if (b.pos.y > CHAIN_ACCEL_HALF_Y - CHAIN_PARTICLE_R) {
+        b.pos.y = CHAIN_ACCEL_HALF_Y - CHAIN_PARTICLE_R;
+        b.vel.y = -Math.abs(b.vel.y) * CHAIN_GOAL_REST;
+      } else if (b.pos.y < -CHAIN_ACCEL_HALF_Y + CHAIN_PARTICLE_R) {
+        b.pos.y = -CHAIN_ACCEL_HALF_Y + CHAIN_PARTICLE_R;
+        b.vel.y = Math.abs(b.vel.y) * CHAIN_GOAL_REST;
+      }
+      // horizontal friction (jumble settles) + a drift toward the wall-side launcher
+      const sp = hyp(b.vel.x, b.vel.y);
+      if (sp > 0) {
+        const ns = Math.max(0, sp - CHAIN_GOAL_FRICTION * dt);
+        b.vel.x *= ns / sp;
+        b.vel.y *= ns / sp;
+      }
+      b.vel.x -= side * CHAIN_FUNNEL_DRIFT_ACC * dt;
+      // funneled back to the wall-side launcher (near the wall, drifting fieldward) after at
+      // least the min dwell — OR the max dwell expired → FLING it back onto the field
+      const elapsed = CHAIN_FUNNEL_S - (st.funnelT ?? 0);
+      const atLauncher = side * (b.pos.x - wall) <= CHAIN_LAUNCHER_MARGIN && side * b.vel.x < 0;
+      if ((atLauncher && elapsed > CHAIN_FUNNEL_MIN) || (st.funnelT ?? 0) <= 0) {
+        st.funnelT = 0;
         const spd = CHAIN_EJECT_SPEED * (0.8 + rand() * 0.5);
         b.pos.x = wall - side * CHAIN_PARTICLE_R;
-        b.pos.y = (rand() - 0.5) * 2 * CHAIN_ACCEL_HALF_Y * 0.85; // spread across the launcher
         b.vel.x = -side * spd;
         b.vel.y = (rand() - 0.5) * CHAIN_EJECT_SPREAD;
         b.vz = CHAIN_EJECT_VZ * (0.8 + rand() * 0.5);
@@ -368,32 +399,45 @@ function launchLine(
   sideVar: number,
 ): void {
   if (count <= 0) return;
+  for (let i = 0; i < count; i++) {
+    launchAt(world, chain, r, count > 1 ? i / (count - 1) - 0.5 : 0, speed, sideVar);
+  }
+}
+
+/** Launch ONE particle toward the goal from lateral fraction `frac` (−0.5..0.5 across the
+ * chassis width). It leaves along the robot's FORWARD heading (aim = the robot facing the
+ * goal); `sideVar` scales the speed by its lateral position (dumper catapult scatter). The
+ * arc is solved so it is still airborne crossing the wall plane (the tall over-field opening). */
+function launchAt(
+  world: World,
+  chain: ChainState,
+  r: RobotState,
+  frac: number,
+  speed: number,
+  sideVar: number,
+): void {
   const side = accelSide(r.alliance);
   const hw = r.spec.width / 2;
   const hl = r.spec.length / 2;
   const fwd = { x: dcos(r.heading), y: dsin(r.heading) };
   const wall = side * CHAIN_HALF_X;
-  for (let i = 0; i < count; i++) {
-    const frac = count > 1 ? i / (count - 1) - 0.5 : 0; // −0.5..0.5 across the width line
-    const w = rot({ x: hl, y: frac * 2 * hw * CHAIN_LAUNCH_LINE_FRAC }, r.heading);
-    const px = r.pos.x + w.x;
-    const py = r.pos.y + w.y;
-    const spd = speed * (1 + sideVar * (frac * 2)); // frac*2 ∈ [−1,1] — catapult side variance
-    const vx = fwd.x * spd;
-    const vy = fwd.y * spd;
-    // arc: solve vz so z(tWall) = z0 (still airborne crossing the wall — a lob into the tall goal)
-    const vhx = Math.max(1, Math.abs(vx));
-    const tWall = Math.max(0.05, Math.abs(wall - px) / vhx);
-    world.balls.push({
-      id: chain.nextBallId++,
-      color: 'green',
-      state: { kind: 'flight', target: r.alliance },
-      pos: { x: px, y: py },
-      vel: { x: vx, y: vy },
-      z: CHAIN_LAUNCH_Z0,
-      vz: 0.5 * C.GRAVITY * tWall,
-    });
-  }
+  const w = rot({ x: hl, y: frac * 2 * hw * CHAIN_LAUNCH_LINE_FRAC }, r.heading);
+  const px = r.pos.x + w.x;
+  const py = r.pos.y + w.y;
+  const spd = speed * (1 + sideVar * (frac * 2)); // frac*2 ∈ [−1,1] — catapult side variance
+  const vx = fwd.x * spd;
+  const vy = fwd.y * spd;
+  const vhx = Math.max(1, Math.abs(vx));
+  const tWall = Math.max(0.05, Math.abs(wall - px) / vhx);
+  world.balls.push({
+    id: chain.nextBallId++,
+    color: 'green',
+    state: { kind: 'flight', target: r.alliance },
+    pos: { x: px, y: py },
+    vel: { x: vx, y: vy },
+    z: CHAIN_LAUNCH_Z0,
+    vz: 0.5 * C.GRAVITY * tWall,
+  });
 }
 
 /** a HUMAN retrieves a missed particle at the wall and throws it back into the field
@@ -408,12 +452,6 @@ function throwBack(b: Artifact, side: -1 | 1, rand: () => number): Artifact {
   b.vel.x = -side * spd;
   b.vel.y = (rand() - 0.5) * CHAIN_THROWBACK_SPREAD;
   return b;
-}
-
-/** move `v` toward `target` by at most `step` */
-function approach(v: number, target: number, step: number): number {
-  if (v < target) return Math.min(v + step, target);
-  return Math.max(v - step, target);
 }
 
 /** convert a flight ball to a resting ground particle at `pos` */

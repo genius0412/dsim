@@ -56,8 +56,10 @@ of particles across the chassis width (`launchLine`, NOT converging on a point).
 Accelerator opening HANGS over the field, so these score from a STAND-OFF distance:
 - **`turret`** (default) — dye-rotor single-shooter: auto-aims + indexes ONE per
   `CHAIN_FIRE_INTERVAL` (0.05 s) from ANYWHERE (`launchToAccel`, solved arc, never short).
-- **`drum`** — chassis-wide flywheel: fires up to `CHAIN_DRUM_MAX` (6 = 18/3) at once, UNIFORM
-  velocity, from ANY range; burst every `CHAIN_DRUM_INTERVAL` (0.55 s, drum re-index).
+- **`drum`** — chassis-wide flywheel firing CONTINUOUSLY: feeds `CHAIN_DRUM_LANES` (3) at
+  UNIFORM velocity every short `CHAIN_DRUM_INTERVAL` (0.13 s) while armed → a steady stream,
+  NOT a 6-then-wait burst. Any range. `CHAIN_DRUM_MAX` (6 = 18/3) is the drum's pocket
+  capacity / visual slot count.
 - **`dumper`** — chassis-wide catapult: flings the WHOLE hopper at once within
   `CHAIN_DUMP_RANGE` (56", a real stand-off, not point-blank); opposite-side balls leave at
   ±`CHAIN_DUMP_SIDE_VAR` speed ⇒ scatter (< 100% accuracy). Recovers `CHAIN_DUMP_INTERVAL` (0.8 s).
@@ -74,11 +76,16 @@ all-rounder) · **funnel** (narrow 55%, 6" reach, precise singles) · **sweeper*
 overhang, 4" bite, max volume). CR intake is a WIDE band (multi-ball per tick).
 
 HOPPER CAPACITY is DERIVED from archetype × size (`chainStorageMax`/`chainHopperCap` in
-chain/config.ts): a bigger chassis footprint holds more, TURRET is smallest (dye rotor +
-shooter take center volume, `CHAIN_STORE_TURRET_MULT` 0.55), DRUM = DUMPER large (1.0). The
-`ballStorage` slider's MAX is dynamic; `coerceSpec` resolves scoreMode BEFORE clamping
-ballStorage to `chainStorageMax`. Plus **groundClearance** (0.5–3"). `flywheelInertia`/
-`canSort`/DECODE intake picker are hidden for CR.
+chain/config.ts), CM-grounded: G01 = unlimited Particles, G02 bounds control to an
+**18×24×18 prism**, G03 lets the robot expand into it — so no fixed count; the MAX is the
+one-layer volume `CHAIN_STORAGE_MAX = 48` (18×24 ÷ 3" grid = 6×8). The formula scales chassis
+footprint / `CHAIN_STORE_AREA_PER_BALL` (6.5 in²/ball — hex packing + G03 deployed-hopper
+expansion past the frame) × an archetype factor: TURRET smallest (0.55, dye rotor + shooter
+take center volume), DRUM = DUMPER large (1.0). The `ballStorage` slider's MAX is dynamic;
+`coerceSpec` resolves scoreMode BEFORE clamping ballStorage to `chainStorageMax`. Plus
+**groundClearance** (0.5–3"). `flywheelInertia`/`canSort`/DECODE intake picker hidden for CR.
+(The `cm.pdf` at repo root is now READABLE — `pdftotext cm.pdf` works; the old corrupt copy
+is replaced.)
 
 ROBOT VISUALS: `GameModule.drawRobot?` hook (renderer.ts: `mod.drawRobot ?? drawRobot`).
 CR's `src/games/chain/drawRobot.ts` shares the chassis + `drawWheels`/`roundRect` (exported

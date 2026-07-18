@@ -3735,8 +3735,8 @@ const mkMM = () => {
     );
   }
 
-  // DRUM fires CONTINUOUSLY — a steady flywheel stream, not a 6-then-wait burst. In 0.5 s a
-  // burst-and-wait would drain one feed (~6); the continuous drum drains several feeds more.
+  // DRUM streams SINGLE particles CONTINUOUSLY — not a 6-then-wait burst. Over 0.5 s it fires
+  // several shots (one at a time), never dumping a whole line at once.
   {
     const s = chainSetup(0, 'blue');
     s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum' };
@@ -3747,12 +3747,15 @@ const mkMM = () => {
     rob.autoIntake = false;
     rob.autoFire = true;
     rob.heading = 0;
-    rob.pos = { x: 0, y: 0 };
+    rob.pos = { x: -30, y: 0 }; // far, so shots don't score+respawn before we count
     rob.hopper = Array(24).fill('green');
     const h0 = rob.hopper.length;
+    // one tick fires at most ONE particle (single-ball, not a line)
+    runChain(gw, cmd({}), SIM_DT);
+    const perTick = h0 - rob.hopper.length;
     runChain(gw, cmd({}), 0.5);
     const drained = h0 - rob.hopper.length;
-    check('chain drum: fires continuously (steady stream, not 6-then-wait)', drained > 8, `drained=${drained} in 0.5s`);
+    check('chain drum: single-ball continuous stream (not a 6-then-wait burst)', perTick === 1 && drained >= 4, `perTick=${perTick} drained=${drained} in ~0.5s`);
   }
 
   // TURN-TO-AIM control: holding fire steers a turretless shooter to face the goal, then it fires
@@ -3803,28 +3806,45 @@ const mkMM = () => {
     );
   }
 
-  // LAUNCH velocities: drum is UNIFORM across the line; dumper has side-to-side VARIANCE
+  // DRUM stream: SAME launch speed every shot, but a NON-UNIFORM lateral PATTERN (random
+  // position across the width) — never a rigid line.
   {
-    const flightVx = (mode: 'drum' | 'dumper'): number[] => {
-      const s = chainSetup(0, 'blue');
-      s.spec = { ...DEFAULT_SPEC, scoreMode: mode };
-      const gw = createChainWorld('match', 806, [s]);
-      gw.match.phase = 'teleop';
-      gw.match.phaseTimeLeft = 120;
-      const rob = gw.robots[0];
-      rob.autoIntake = false;
-      rob.autoFire = true;
-      rob.heading = 0;
-      rob.pos = { x: 30, y: 0 }; // within dump range for the dumper (distMouth 42 < 56)
-      rob.hopper = Array(6).fill('green');
-      runChain(gw, cmd({}), SIM_DT);
-      return gw.balls.filter((b) => b.state.kind === 'flight').map((b) => b.vel.x);
-    };
-    const dv = flightVx('drum'); // one continuous feed (CHAIN_DRUM_LANES particles)
-    const uniform = dv.length >= 2 && Math.max(...dv) - Math.min(...dv) < 1e-6;
-    const pv = flightVx('dumper'); // whole hopper dumped at once
-    const varied = pv.length >= 3 && Math.max(...pv) - Math.min(...pv) > 10;
-    check('chain launch: drum uniform velocity, dumper side-to-side variance', uniform && varied, `drumSpread=${(Math.max(...dv) - Math.min(...dv)).toFixed(2)} dumpSpread=${(Math.max(...pv) - Math.min(...pv)).toFixed(1)}`);
+    const s = chainSetup(0, 'blue');
+    s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum' };
+    const gw = createChainWorld('match', 806, [s]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = false;
+    rob.autoFire = true;
+    rob.heading = 0;
+    rob.pos = { x: -30, y: 0 }; // far, so shots stay airborne while we collect them
+    rob.hopper = Array(24).fill('green');
+    runChain(gw, cmd({}), 0.35);
+    const flight = gw.balls.filter((b) => b.state.kind === 'flight' && !(b.state as { scored?: boolean }).scored);
+    const speeds = flight.map((b) => Math.hypot(b.vel.x, b.vel.y));
+    const ys = flight.map((b) => b.pos.y);
+    const sameSpeed = flight.length >= 3 && Math.max(...speeds) - Math.min(...speeds) < 1e-6;
+    const nonUniform = flight.length >= 3 && Math.max(...ys) - Math.min(...ys) > 4;
+    check('chain drum: uniform SPEED but a non-uniform (varied) launch pattern', sameSpeed && nonUniform, `n=${flight.length} spdSpread=${(Math.max(...speeds) - Math.min(...speeds)).toFixed(3)} ySpread=${(Math.max(...ys) - Math.min(...ys)).toFixed(1)}`);
+  }
+
+  // DUMPER: the whole-hopper catapult has side-to-side velocity VARIANCE (scatter)
+  {
+    const s = chainSetup(0, 'blue');
+    s.spec = { ...DEFAULT_SPEC, scoreMode: 'dumper' };
+    const gw = createChainWorld('match', 816, [s]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = false;
+    rob.autoFire = true;
+    rob.heading = 0;
+    rob.pos = { x: 30, y: 0 }; // within dump range (distMouth 42 < 56)
+    rob.hopper = Array(6).fill('green');
+    runChain(gw, cmd({}), SIM_DT);
+    const pv = gw.balls.filter((b) => b.state.kind === 'flight').map((b) => Math.hypot(b.vel.x, b.vel.y));
+    check('chain dumper: side-to-side launch-velocity variance', pv.length >= 3 && Math.max(...pv) - Math.min(...pv) > 10, `n=${pv.length} spread=${(Math.max(...pv) - Math.min(...pv)).toFixed(1)}`);
   }
 
   // GOAL FUNNEL: a scored particle DWELLS inside the goal (funnels down) before the
@@ -3847,6 +3867,34 @@ const mkMM = () => {
     const b2 = gw.balls.find((b) => b.id === id)!;
     const relaunched = b2.state.kind !== 'flight' || b2.vel.x < 0; // moving back into the field (−x)
     check('chain goal: a scored particle funnels down before re-launch', dwelling && relaunched);
+  }
+
+  // GOAL BOUNCE: scored particles keep momentum and BOUNCE to VARIED positions inside the box —
+  // they do NOT all snap to one x and eject instantly.
+  {
+    const gw = createChainWorld('match', 818, [chainSetup(0, 'blue')]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const ids: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const b = gw.balls[i];
+      b.state = { kind: 'flight', target: 'blue' };
+      b.pos = { x: CHAIN_HALF_X - 3, y: (i - 2) * 6 };
+      b.vel = { x: 120 + i * 40, y: 0 }; // different depths of entry
+      b.z = 10;
+      b.vz = 0;
+      ids.push(b.id);
+    }
+    runChain(gw, cmd({}), 0.12); // a few ticks in — scattered around the box
+    const inBox = gw.balls.filter(
+      (b) => ids.includes(b.id) && b.state.kind === 'flight' && (b.state as { scored?: boolean }).scored,
+    );
+    const xs = inBox.map((b) => b.pos.x);
+    check(
+      'chain goal: scored particles bounce to VARIED x inside the box (not one x, not instant eject)',
+      inBox.length >= 3 && Math.max(...xs) - Math.min(...xs) > 5,
+      `n=${inBox.length} xSpread=${inBox.length ? (Math.max(...xs) - Math.min(...xs)).toFixed(1) : 'na'}`,
+    );
   }
 
   // MISS → HUMAN THROW-BACK: a particle that misses the opening is thrown back INTO the field
