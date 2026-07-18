@@ -161,23 +161,25 @@ export const CHAIN_EJECT_SPREAD = 150; // in/s random lateral spread
  * INTAKE DESIGNS (`RobotSpec.chainIntake`). CR robots collect the 3" Particles with a
  * WIDE under-frame mechanism (unlike DECODE's single-file mouth); the design trades
  * capture WIDTH (how many at once) against forward REACH (precision / picking singles).
- * Each captures every Particle in a band: full-frame-width × `widthFrac` (+`overhang`
- * past the frame for a deployed sweeper), from `backFrac` of the footprint forward to
- * `reach` inches ahead of the front edge. Consumed in `interact` (play.ts).
+ * The capture band is measured off the ACTUAL CHASSIS (length/2 × width/2) so it stays
+ * roughly the size of the robot: width = chassis half-width × `widthFrac` (+`overhang`
+ * inches for the one deployed sweeper), from `backFrac` of the chassis (behind the
+ * front, particles driven partly under) forward to a SMALL `reach` past the front edge.
+ * All in inches on a ~14–18" chassis. Consumed in `interact` (play.ts).
  */
 export interface ChainIntakeGeom {
   widthFrac: number; // capture half-width as a fraction of the chassis half-width
   overhang: number; // extra capture half-width past the frame (deployed intake), inches
-  reach: number; // capture band reaching ahead of the front edge, inches
-  backFrac: number; // fraction of the footprint (from the front) that also captures
+  reach: number; // capture band reaching ahead of the CHASSIS front edge, inches
+  backFrac: number; // fraction of the chassis half-length (from the front) that captures
 }
 export const CHAIN_INTAKES: Record<ChainIntakeStyle, ChainIntakeGeom> = {
-  // full-width surface roller — many at once, moderate reach (the all-rounder)
-  roller: { widthFrac: 1.0, overhang: 0, reach: 6, backFrac: 0.5 },
-  // narrow deployed funnel — long forward reach, fewer at once (precise single picks)
-  funnel: { widthFrac: 0.6, overhang: 0, reach: 13, backFrac: 0.3 },
-  // widest active sweeper — overhangs the frame, deepest gulp, max volume/pass
-  sweeper: { widthFrac: 1.0, overhang: 3, reach: 8, backFrac: 0.65 },
+  // full-width surface roller — grabs the chassis width with a tight front bite (all-rounder)
+  roller: { widthFrac: 1.0, overhang: 0, reach: 3, backFrac: 0.4 },
+  // narrow funnel — a bit more forward reach, fewer at once (precise single picks)
+  funnel: { widthFrac: 0.55, overhang: 0, reach: 6, backFrac: 0.25 },
+  // widest active sweeper — a small overhang past the frame, deepest gulp (max volume/pass)
+  sweeper: { widthFrac: 1.0, overhang: 2, reach: 4, backFrac: 0.55 },
 };
 export const CHAIN_INTAKE_STYLES = ['roller', 'funnel', 'sweeper'] as const;
 export const CHAIN_DEFAULT_INTAKE: ChainIntakeStyle = 'roller';

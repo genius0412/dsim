@@ -358,14 +358,19 @@ function interact(
     Math.min(CHAIN_STORAGE_MAX, Math.max(CHAIN_STORAGE_MIN, rob.spec.ballStorage ?? CHAIN_STORAGE_DEFAULT)),
   );
   // CR intake DESIGN (roller / funnel / sweeper): capture every particle inside the
-  // design's band — half-width `widthFrac`·chassis (+overhang for a deployed sweeper),
-  // from `backFrac` of the footprint forward to `reach` ahead of the frame. One pass
-  // swallows every particle in that band at once (multi-ball throughput).
+  // design's band, measured off the ACTUAL CHASSIS (not the collision OBB, which juts
+  // forward by the DECODE intake reach) so the effective area stays ~robot-sized —
+  // half-width `widthFrac`·chassis (+overhang for a deployed sweeper), from `backFrac`
+  // of the chassis forward to a SMALL `reach` past the front edge. One pass swallows
+  // every particle in that band at once (multi-ball throughput).
   if (intakeActive && rob.hopper.length < cap) {
     const it = CHAIN_INTAKES[rob.spec.chainIntake ?? CHAIN_DEFAULT_INTAKE];
-    const half = e.half * it.widthFrac + it.overhang + r2;
+    const hl = rob.spec.length / 2;
+    const hw = rob.spec.width / 2;
     const captureZone =
-      local.x > -e.rear * it.backFrac && local.x < e.front + r2 + it.reach && Math.abs(local.y) < half;
+      local.x > -hl * it.backFrac &&
+      local.x < hl + it.reach &&
+      Math.abs(local.y) < hw * it.widthFrac + it.overhang;
     if (captureZone) return 'absorbed';
   }
 

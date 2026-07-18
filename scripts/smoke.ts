@@ -3722,7 +3722,10 @@ const mkMM = () => {
       rob.autoFire = false;
       return { gw, rob };
     };
-    const e0 = robotExtents(mk('roller').rob);
+    // capture is measured off the CHASSIS (length/2 × width/2), not the collision OBB
+    const spec0 = mk('roller').rob.spec;
+    const hl = spec0.length / 2;
+    const hw = spec0.width / 2;
     const place = (gw: World, rob: (typeof gw.robots)[number], dx: number, dy: number): number => {
       const p = rot({ x: dx, y: dy }, rob.heading);
       gw.balls[0].state = { kind: 'ground' };
@@ -3731,22 +3734,34 @@ const mkMM = () => {
       return gw.balls[0].id;
     };
     const gone = (gw: World, id: number): boolean => !gw.balls.some((b) => b.id === id);
-    // a particle 10" AHEAD of the front edge: beyond roller reach (6), within funnel reach (13)
+    // a particle 4" ahead of the CHASSIS front: beyond roller reach (3), within funnel reach (6)
     const r1 = mk('roller');
-    const idR = place(r1.gw, r1.rob, e0.front + 10, 0);
+    const idR = place(r1.gw, r1.rob, hl + 4, 0);
     runChain(r1.gw, cmd({}), SIM_DT);
     const f1 = mk('funnel');
-    const idF = place(f1.gw, f1.rob, e0.front + 10, 0);
+    const idF = place(f1.gw, f1.rob, hl + 4, 0);
     runChain(f1.gw, cmd({}), SIM_DT);
     check('chain intake: funnel reaches further forward than the roller', gone(f1.gw, idF) && !gone(r1.gw, idR));
-    // a wide particle at 0.9·half: within the full-width roller, outside the narrow funnel
+    // a wide particle at 0.85·half-width: within the full-width roller, outside the narrow funnel
     const r2 = mk('roller');
-    const idRW = place(r2.gw, r2.rob, e0.front - 1, e0.half * 0.9);
+    const idRW = place(r2.gw, r2.rob, hl - 1, hw * 0.85);
     runChain(r2.gw, cmd({}), SIM_DT);
     const f2 = mk('funnel');
-    const idFW = place(f2.gw, f2.rob, e0.front - 1, e0.half * 0.9);
+    const idFW = place(f2.gw, f2.rob, hl - 1, hw * 0.85);
     runChain(f2.gw, cmd({}), SIM_DT);
     check('chain intake: the wide roller grabs a wide particle the funnel misses', gone(r2.gw, idRW) && !gone(f2.gw, idFW));
+    // ACCURACY: the roller's capture stays ~chassis-sized — a particle 2" outside the
+    // chassis side, or well ahead of the small front bite, is NOT swallowed
+    const rSide = mk('roller');
+    const idSide = place(rSide.gw, rSide.rob, hl - 2, hw + 2);
+    runChain(rSide.gw, cmd({}), SIM_DT);
+    const rFar = mk('roller');
+    const idFar = place(rFar.gw, rFar.rob, hl + 6, 0);
+    runChain(rFar.gw, cmd({}), SIM_DT);
+    check(
+      'chain intake: capture stays ~chassis-sized (no grab past the frame side / far ahead)',
+      !gone(rSide.gw, idSide) && !gone(rFar.gw, idFar),
+    );
   }
 
   // CR presets are legal + STABLE through coerceSpec (so a card applies as a no-op and
