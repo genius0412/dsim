@@ -1,6 +1,7 @@
 import type {
   Alliance,
   ArtifactColor,
+  ChainScoreMode,
   DrivetrainType,
   GameId,
   GameMode,
@@ -109,6 +110,8 @@ export interface HudSnapshot {
     carrying: boolean;
     /** your robot's ball-storage capacity (the builder slider) */
     storage: number;
+    /** your robot's scoring archetype (turret shooter / dumper) */
+    mode: ChainScoreMode;
   };
   mode: GameMode;
   phase: MatchPhase;
@@ -861,6 +864,7 @@ export class GameController {
           endgame: w.chain.endgame[this.localRobotId] ?? 'none',
           carrying: w.chain.catalysts.some((c) => c.carriedBy === this.localRobotId),
           storage: r.spec.ballStorage ?? 8,
+          mode: r.spec.scoreMode ?? 'turret',
         }
       : undefined;
     return {

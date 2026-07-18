@@ -28,6 +28,10 @@ import {
   CHAIN_STORAGE_DEFAULT,
   CHAIN_STORAGE_MAX,
   CHAIN_STORAGE_MIN,
+  CHAIN_DEFAULT_SCORE_MODE,
+  CHAIN_DEFAULT_INTAKE,
+  CHAIN_SCORE_MODES,
+  CHAIN_INTAKE_STYLES,
 } from '../games/chain/config';
 import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
 import { lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
@@ -57,6 +61,8 @@ export const DEFAULT_SPEC: RobotSpec = {
   canSort: false,
   ballStorage: CHAIN_STORAGE_DEFAULT,
   groundClearance: CHAIN_CLEARANCE_DEFAULT,
+  scoreMode: CHAIN_DEFAULT_SCORE_MODE,
+  chainIntake: CHAIN_DEFAULT_INTAKE,
 };
 
 // Neutral sim/wire FALLBACK for assists (used by coercion bases, replay, server
@@ -163,6 +169,13 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
     CHAIN_CLEARANCE_MAX,
     base.groundClearance ?? CHAIN_CLEARANCE_DEFAULT,
   );
+  // Chain Reaction scoring archetype + intake design (enum checks, defaulted)
+  out.scoreMode = (CHAIN_SCORE_MODES as readonly string[]).includes(sp.scoreMode as string)
+    ? (sp.scoreMode as RobotSpec['scoreMode'])
+    : (base.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE);
+  out.chainIntake = (CHAIN_INTAKE_STYLES as readonly string[]).includes(sp.chainIntake as string)
+    ? (sp.chainIntake as RobotSpec['chainIntake'])
+    : (base.chainIntake ?? CHAIN_DEFAULT_INTAKE);
 
   // identity + flags (no cross-field dependency)
   if (typeof sp.canSort === 'boolean') out.canSort = sp.canSort;

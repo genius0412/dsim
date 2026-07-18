@@ -1,5 +1,5 @@
 import type { GameSettings } from '../types';
-import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
+import type { ChainIntakeStyle, ChainScoreMode, DrivetrainType, IntakeStyle, RobotSpec } from '../types';
 import { MAX_SAVED_ROBOTS, ROBOT_MAX_SIZE, ROBOT_PRESETS } from '../config';
 import {
   CHAIN_CLEARANCE_DEFAULT,
@@ -8,6 +8,10 @@ import {
   CHAIN_STORAGE_DEFAULT,
   CHAIN_STORAGE_MAX,
   CHAIN_STORAGE_MIN,
+  CHAIN_SCORE_MODES,
+  CHAIN_INTAKE_STYLES,
+  CHAIN_DEFAULT_SCORE_MODE,
+  CHAIN_DEFAULT_INTAKE,
 } from '../games/chain/config';
 import { driveParams, lengthLimits, massLimits, rpmLimits, widthLimits } from '../sim/drivetrain';
 import { coerceSpec } from '../sim/spawn';
@@ -41,6 +45,26 @@ const INTAKE_BLURBS: Record<IntakeStyle, string> = {
   sloped: 'Face artifacts to scoop them up · eats clumps',
   vector: 'Grabs artifacts you strafe into',
   triangle: 'Long reach, eats clumps · slower transfer',
+};
+
+// Chain Reaction robot config labels/blurbs (CR-only builder controls)
+const CHAIN_MODE_LABELS: Record<ChainScoreMode, string> = {
+  turret: 'Turret shooter',
+  dumper: 'Dumper',
+};
+const CHAIN_MODE_BLURBS: Record<ChainScoreMode, string> = {
+  turret: 'Dye-rotor + turret — shoots particles one-by-one from anywhere',
+  dumper: 'No shooter — dumps the whole hopper at the accelerator (big bursts, no range)',
+};
+const CHAIN_INTAKE_LABELS: Record<ChainIntakeStyle, string> = {
+  roller: 'Roller',
+  funnel: 'Funnel',
+  sweeper: 'Sweeper',
+};
+const CHAIN_INTAKE_BLURBS: Record<ChainIntakeStyle, string> = {
+  roller: 'Full-width surface roller · many at once, all-rounder',
+  funnel: 'Narrow, long forward reach · precise single picks',
+  sweeper: 'Widest, overhangs the frame · max volume per pass',
 };
 
 /** does the current spec exactly match a preset? (value compare) */
@@ -514,6 +538,38 @@ export function Menu({ settings, onChange }: Props) {
               </button>
             ))}
           </div>
+          )}
+
+          {/* Chain Reaction — SCORING ARCHETYPE (turret vs dumper) */}
+          {!isDecode && (
+          <>
+          <h3 className="ds-subh">Scoring archetype</h3>
+          <div className="ds-opts">
+            {CHAIN_SCORE_MODES.map((m) => (
+              <button
+                key={m}
+                className={`ds-opt ${(spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE) === m ? 'on' : ''}`}
+                onClick={() => setSpec({ scoreMode: m })}
+              >
+                <span className="ot">{CHAIN_MODE_LABELS[m]}</span>
+                <span className="od">{CHAIN_MODE_BLURBS[m]}</span>
+              </button>
+            ))}
+          </div>
+          <h3 className="ds-subh">Intake design</h3>
+          <div className="ds-opts">
+            {CHAIN_INTAKE_STYLES.map((i) => (
+              <button
+                key={i}
+                className={`ds-opt ${(spec.chainIntake ?? CHAIN_DEFAULT_INTAKE) === i ? 'on' : ''}`}
+                onClick={() => setSpec({ chainIntake: i })}
+              >
+                <span className="ot">{CHAIN_INTAKE_LABELS[i]}</span>
+                <span className="od">{CHAIN_INTAKE_BLURBS[i]}</span>
+              </button>
+            ))}
+          </div>
+          </>
           )}
         </section>
 

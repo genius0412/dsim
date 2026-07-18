@@ -3664,6 +3664,90 @@ const mkMM = () => {
     );
   }
 
+  // DUMPER archetype: near the accelerator mouth, a dump empties the whole hopper at once
+  {
+    const setup = chainSetup(0, 'blue');
+    setup.spec = { ...DEFAULT_SPEC, scoreMode: 'dumper' };
+    const gw = createChainWorld('match', 801, [setup]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = false; // isolate the dump (don't refill from ambient particles)
+    rob.autoFire = true;
+    rob.pos = { x: CHAIN_HALF_X - 10, y: 0 }; // right at the blue accelerator mouth
+    rob.hopper = ['green', 'green', 'green', 'green', 'green', 'green'];
+    const before = gw.chain!.scored.blue;
+    runChain(gw, cmd({}), 0.5); // let the dumped burst fly into the mouth
+    check(
+      'chain dumper: a dump near the mouth scores the whole hopper at once',
+      gw.chain!.scored.blue - before >= 4,
+      `scored+=${gw.chain!.scored.blue - before}`,
+    );
+  }
+
+  // DUMPER out of range: far from the mouth the dump never fires (no long-range scoring)
+  {
+    const setup = chainSetup(0, 'blue');
+    setup.spec = { ...DEFAULT_SPEC, scoreMode: 'dumper' };
+    const gw = createChainWorld('match', 802, [setup]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = false;
+    rob.autoFire = true;
+    rob.pos = { x: 0, y: 0 }; // field center — far out of dump range
+    rob.hopper = ['green', 'green', 'green', 'green'];
+    const before = gw.chain!.scored.blue;
+    runChain(gw, cmd({}), 0.2);
+    check(
+      'chain dumper: out of range keeps its load (no long-range dump)',
+      rob.hopper.length === 4 && gw.chain!.scored.blue === before,
+      `hopper=${rob.hopper.length} scored+=${gw.chain!.scored.blue - before}`,
+    );
+  }
+
+  // INTAKE DESIGNS: funnel reaches further forward; the wide roller grabs wider
+  {
+    const mk = (style: 'roller' | 'funnel') => {
+      const setup = chainSetup(0, 'blue');
+      setup.spec = { ...DEFAULT_SPEC, chainIntake: style };
+      const gw = createChainWorld('match', 803, [setup]);
+      gw.match.phase = 'teleop';
+      gw.match.phaseTimeLeft = 120;
+      const rob = gw.robots[0];
+      rob.heading = 0;
+      rob.pos = { x: 0, y: 20 };
+      rob.autoIntake = true;
+      rob.autoFire = false;
+      return { gw, rob };
+    };
+    const e0 = robotExtents(mk('roller').rob);
+    const place = (gw: World, rob: (typeof gw.robots)[number], dx: number, dy: number): number => {
+      const p = rot({ x: dx, y: dy }, rob.heading);
+      gw.balls[0].state = { kind: 'ground' };
+      gw.balls[0].pos = { x: rob.pos.x + p.x, y: rob.pos.y + p.y };
+      gw.balls[0].vel = { x: 0, y: 0 };
+      return gw.balls[0].id;
+    };
+    const gone = (gw: World, id: number): boolean => !gw.balls.some((b) => b.id === id);
+    // a particle 10" AHEAD of the front edge: beyond roller reach (6), within funnel reach (13)
+    const r1 = mk('roller');
+    const idR = place(r1.gw, r1.rob, e0.front + 10, 0);
+    runChain(r1.gw, cmd({}), SIM_DT);
+    const f1 = mk('funnel');
+    const idF = place(f1.gw, f1.rob, e0.front + 10, 0);
+    runChain(f1.gw, cmd({}), SIM_DT);
+    check('chain intake: funnel reaches further forward than the roller', gone(f1.gw, idF) && !gone(r1.gw, idR));
+    // a wide particle at 0.9·half: within the full-width roller, outside the narrow funnel
+    const r2 = mk('roller');
+    const idRW = place(r2.gw, r2.rob, e0.front - 1, e0.half * 0.9);
+    runChain(r2.gw, cmd({}), SIM_DT);
+    const f2 = mk('funnel');
+    const idFW = place(f2.gw, f2.rob, e0.front - 1, e0.half * 0.9);
+    runChain(f2.gw, cmd({}), SIM_DT);
+    check('chain intake: the wide roller grabs a wide particle the funnel misses', gone(r2.gw, idRW) && !gone(f2.gw, idFW));
+  }
+
   // catalyst multiplier: a catalyst seated on a blue hook ⇒ +1 pt per particle
   {
     const gw = createChainWorld('match', 99, [chainSetup(0, 'blue')]);

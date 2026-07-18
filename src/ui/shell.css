@@ -1771,6 +1771,17 @@ tr.lb-detail td {
   margin: 0;
 }
 
+/* a lighter in-section subheading (e.g. the CR "Scoring archetype" groups) */
+.ds-subh {
+  font-family: var(--ds-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+  font-weight: 600;
+  margin: 4px 0 -4px;
+}
+
 /* ---- selectable option cards ---------------------------------------- */
 .ds-opts {
   display: grid;

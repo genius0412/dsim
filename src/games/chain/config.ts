@@ -155,11 +155,45 @@ export const CHAIN_EJECT_SPEED = 135; // in/s back into the field (base; ×0.75�
 export const CHAIN_EJECT_VZ = 80; // in/s upward arc on the way out (base; ×0.75–1.45)
 export const CHAIN_EJECT_SPREAD = 150; // in/s random lateral spread
 
-/** intake: CR is a WIDE under-frame roller (unlike DECODE's single-file mouth). The
- * capture band spans the FULL chassis width and reaches a little AHEAD of the frame, so
- * one pass through a cluster swallows MANY particles at once (high throughput). */
-export const CHAIN_INTAKE_REACH = 6; // capture band reaching ahead of the front edge
-export const CHAIN_INTAKE_BACK = 0.5; // fraction of the footprint (from front) that captures
+/**
+ * INTAKE DESIGNS (`RobotSpec.chainIntake`). CR robots collect the 3" Particles with a
+ * WIDE under-frame mechanism (unlike DECODE's single-file mouth); the design trades
+ * capture WIDTH (how many at once) against forward REACH (precision / picking singles).
+ * Each captures every Particle in a band: full-frame-width × `widthFrac` (+`overhang`
+ * past the frame for a deployed sweeper), from `backFrac` of the footprint forward to
+ * `reach` inches ahead of the front edge. Consumed in `interact` (play.ts).
+ */
+export interface ChainIntakeGeom {
+  widthFrac: number; // capture half-width as a fraction of the chassis half-width
+  overhang: number; // extra capture half-width past the frame (deployed intake), inches
+  reach: number; // capture band reaching ahead of the front edge, inches
+  backFrac: number; // fraction of the footprint (from the front) that also captures
+}
+export const CHAIN_INTAKES: Record<import('../../types').ChainIntakeStyle, ChainIntakeGeom> = {
+  // full-width surface roller — many at once, moderate reach (the all-rounder)
+  roller: { widthFrac: 1.0, overhang: 0, reach: 6, backFrac: 0.5 },
+  // narrow deployed funnel — long forward reach, fewer at once (precise single picks)
+  funnel: { widthFrac: 0.6, overhang: 0, reach: 13, backFrac: 0.3 },
+  // widest active sweeper — overhangs the frame, deepest gulp, max volume/pass
+  sweeper: { widthFrac: 1.0, overhang: 3, reach: 8, backFrac: 0.65 },
+};
+export const CHAIN_INTAKE_STYLES = ['roller', 'funnel', 'sweeper'] as const;
+export const CHAIN_DEFAULT_INTAKE: import('../../types').ChainIntakeStyle = 'roller';
+
+/**
+ * SCORING ARCHETYPES (`RobotSpec.scoreMode`) — the robot's expansion/scoring mechanism.
+ *  • turret — indexes + launches ONE Particle per `CHAIN_FIRE_INTERVAL` from anywhere
+ *    (high sustained rate, scores from safety, no travel).
+ *  • dumper — must be within `CHAIN_DUMP_RANGE` of the Accelerator mouth; a dump empties
+ *    the WHOLE hopper at once, then recovers for `CHAIN_DUMP_INTERVAL` (big bursts, but
+ *    you must cycle to the wall — storage capacity + drivetrain speed carry it).
+ */
+export const CHAIN_SCORE_MODES = ['turret', 'dumper'] as const;
+export const CHAIN_DEFAULT_SCORE_MODE: import('../../types').ChainScoreMode = 'turret';
+export const CHAIN_DUMP_RANGE = 22; // in — how close to the mouth a dumper must be
+export const CHAIN_DUMP_INTERVAL = 0.7; // s recovery between full dumps
+export const CHAIN_DUMP_SPEED = 120; // in/s launch of each dumped Particle (short toss)
+export const CHAIN_DUMP_SPREAD = 40; // in/s lateral spread across a dump (fans into the mouth)
 
 /**
  * BALL STORAGE (a per-robot builder slider, `RobotSpec.ballStorage`). Range grounded

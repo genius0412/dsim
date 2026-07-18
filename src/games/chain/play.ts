@@ -17,8 +17,13 @@ import {
   CHAIN_STORAGE_DEFAULT,
   CHAIN_STORAGE_MAX,
   CHAIN_STORAGE_MIN,
-  CHAIN_INTAKE_BACK,
-  CHAIN_INTAKE_REACH,
+  CHAIN_INTAKES,
+  CHAIN_DEFAULT_INTAKE,
+  CHAIN_DEFAULT_SCORE_MODE,
+  CHAIN_DUMP_RANGE,
+  CHAIN_DUMP_INTERVAL,
+  CHAIN_DUMP_SPEED,
+  CHAIN_DUMP_SPREAD,
   CHAIN_PARTICLE_R,
   CHAIN_PART_FRICTION,
   CHAIN_PART_REST_SPEED,
@@ -73,37 +78,38 @@ export function updateChain(
     c.pos = { x: rob.pos.x, y: rob.pos.y };
   }
 
-  // ── robots: aim, fire, catalyst button ─────────────────────────────────────
+  // ── robots: aim, fire/dump, catalyst button ────────────────────────────────
   for (const r of world.robots) {
     const mouth = { x: accelSide(r.alliance) * CHAIN_HALF_X, y: 0 };
-    r.turretHeading = datan2(mouth.y - r.pos.y, mouth.x - r.pos.x);
     const cmd = cmds.get(r.id);
-
-    // fire a held particle at the accelerator. SOLVED trajectory: aim exactly at the
-    // mouth center (so it always crosses within the mouth ⇒ scores) and pick the
-    // vertical velocity so the ballistic arc LANDS mid-box — at any distance, near or
-    // far, so a shot never falls short of the goal. (Fixed horizontal speed; the arc
-    // adapts to distance, like a real shooter adjusting power.)
     const wantsFire = enabled && (r.autoFire || (cmd?.fire ?? false));
-    if (wantsFire && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
-      r.hopper.shift();
-      const distMouth = hyp(mouth.x - r.pos.x, mouth.y - r.pos.y);
-      const dir = { x: (mouth.x - r.pos.x) / distMouth, y: (mouth.y - r.pos.y) / distMouth };
-      const z0 = 8;
-      const land = distMouth + CHAIN_ACCEL_DEPTH * 0.5; // land halfway into the box
-      const t = land / CHAIN_SHOT_SPEED; // flight time at the fixed horizontal speed
-      const vz = 0.5 * C.GRAVITY * t - z0 / t; // solve z(t)=0 for the landing point
-      world.balls.push({
-        id: chain.nextBallId++,
-        color: 'green',
-        state: { kind: 'flight', target: r.alliance },
-        pos: { x: r.pos.x + dir.x * 4, y: r.pos.y + dir.y * 4 },
-        vel: { x: dir.x * CHAIN_SHOT_SPEED, y: dir.y * CHAIN_SHOT_SPEED },
-        z: z0,
-        vz,
-      });
-      r.fireReadyAt = world.time + CHAIN_FIRE_INTERVAL;
-      r.lastFireAt = world.time;
+    const mode = r.spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
+    const distMouth = hyp(mouth.x - r.pos.x, mouth.y - r.pos.y);
+
+    if (mode === 'dumper') {
+      // DUMPER: no turret (barrel points forward). Within range of the mouth, a dump
+      // empties the WHOLE hopper at once in a fanned burst, then recovers.
+      r.turretHeading = r.heading;
+      if (wantsFire && r.hopper.length > 0 && world.time >= r.fireReadyAt && distMouth <= CHAIN_DUMP_RANGE) {
+        const n = r.hopper.length;
+        r.hopper.length = 0;
+        for (let i = 0; i < n; i++) {
+          launchToAccel(world, chain, r, mouth, CHAIN_DUMP_SPEED, (rand() - 0.5) * CHAIN_DUMP_SPREAD);
+        }
+        r.fireReadyAt = world.time + CHAIN_DUMP_INTERVAL;
+        r.lastFireAt = world.time;
+      }
+    } else {
+      // TURRET single-shooter: auto-aim at the mouth center and index ONE particle per
+      // cadence, from ANY range. SOLVED trajectory (aim at center ⇒ always crosses the
+      // mouth; arc adapts to distance so a shot never falls short — see launchToAccel).
+      r.turretHeading = datan2(mouth.y - r.pos.y, mouth.x - r.pos.x);
+      if (wantsFire && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
+        r.hopper.shift();
+        launchToAccel(world, chain, r, mouth, CHAIN_SHOT_SPEED, 0);
+        r.fireReadyAt = world.time + CHAIN_FIRE_INTERVAL;
+        r.lastFireAt = world.time;
+      }
     }
 
     // catalyst pick-up / place-down — EDGE-triggered (acts once per press)
@@ -249,6 +255,36 @@ export function updateChain(
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+/** launch one particle from robot `r` toward its accelerator `mouth` at a fixed
+ * horizontal speed, with an optional lateral velocity (a dump fans several out). Aims
+ * at the mouth center and solves the vertical velocity so the ballistic arc lands
+ * mid-box at ANY distance (so a shot never falls short). Pushes a 'flight' ball. */
+function launchToAccel(
+  world: World,
+  chain: ChainState,
+  r: RobotState,
+  mouth: { x: number; y: number },
+  horizSpeed: number,
+  latVel: number,
+): void {
+  const distMouth = Math.max(1, hyp(mouth.x - r.pos.x, mouth.y - r.pos.y));
+  const dir = { x: (mouth.x - r.pos.x) / distMouth, y: (mouth.y - r.pos.y) / distMouth };
+  const perp = { x: -dir.y, y: dir.x }; // lateral spread axis
+  const z0 = 8;
+  const land = distMouth + CHAIN_ACCEL_DEPTH * 0.5; // land halfway into the box
+  const t = land / horizSpeed;
+  const vz = 0.5 * C.GRAVITY * t - z0 / t; // solve z(t)=0 for the landing point
+  world.balls.push({
+    id: chain.nextBallId++,
+    color: 'green',
+    state: { kind: 'flight', target: r.alliance },
+    pos: { x: r.pos.x + dir.x * 4, y: r.pos.y + dir.y * 4 },
+    vel: { x: dir.x * horizSpeed + perp.x * latVel, y: dir.y * horizSpeed + perp.y * latVel },
+    z: z0,
+    vz,
+  });
+}
+
 /** convert a flight ball to a resting ground particle at `pos` */
 function landed(b: Artifact, pos: { x: number; y: number }): Artifact {
   b.state = { kind: 'ground' };
@@ -321,14 +357,15 @@ function interact(
   const cap = Math.round(
     Math.min(CHAIN_STORAGE_MAX, Math.max(CHAIN_STORAGE_MIN, rob.spec.ballStorage ?? CHAIN_STORAGE_DEFAULT)),
   );
-  // CR = a WIDE roller: capture across the FULL chassis width, from a little AHEAD of the
-  // front edge back through the front portion of the footprint. A single pass over a
-  // cluster swallows every particle in that band at once (multi-ball, high throughput).
+  // CR intake DESIGN (roller / funnel / sweeper): capture every particle inside the
+  // design's band — half-width `widthFrac`·chassis (+overhang for a deployed sweeper),
+  // from `backFrac` of the footprint forward to `reach` ahead of the frame. One pass
+  // swallows every particle in that band at once (multi-ball throughput).
   if (intakeActive && rob.hopper.length < cap) {
+    const it = CHAIN_INTAKES[rob.spec.chainIntake ?? CHAIN_DEFAULT_INTAKE];
+    const half = e.half * it.widthFrac + it.overhang + r2;
     const captureZone =
-      local.x > -e.rear * CHAIN_INTAKE_BACK &&
-      local.x < e.front + r2 + CHAIN_INTAKE_REACH &&
-      Math.abs(local.y) < e.half + r2;
+      local.x > -e.rear * it.backFrac && local.x < e.front + r2 + it.reach && Math.abs(local.y) < half;
     if (captureZone) return 'absorbed';
   }
 

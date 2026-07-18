@@ -67,7 +67,25 @@ export interface RobotSpec {
    * to drive over it, but more clearance RAISES the center of gravity → sluggish
    * handling. Optional (defaulted in coerceSpec). */
   groundClearance?: number;
+  /** Chain Reaction: the SCORING archetype (the robot's expansion mechanism).
+   *  • 'turret' — a dye-rotor + turreted single-shooter: indexes Particles ONE at a
+   *    time and launches them into the Accelerator from ANYWHERE (auto-aimed arc).
+   *  • 'dumper' — no shooter: drive up to the Accelerator mouth and DUMP the whole
+   *    hopper at once (huge burst, but zero range — you must cycle to the wall).
+   * Optional (defaulted in coerceSpec). */
+  scoreMode?: ChainScoreMode;
+  /** Chain Reaction: the intake DESIGN (how it collects Particles).
+   *  • 'roller' — a full-width surface roller: gulps many at once, moderate reach.
+   *  • 'funnel' — a narrow deployed funnel: long forward reach, fewer at once (precise).
+   *  • 'sweeper' — the widest active sweeper: overhangs the frame, max volume/pass.
+   * Optional (defaulted in coerceSpec). */
+  chainIntake?: ChainIntakeStyle;
 }
+
+/** Chain Reaction scoring archetype (see `RobotSpec.scoreMode`). */
+export type ChainScoreMode = 'turret' | 'dumper';
+/** Chain Reaction intake design (see `RobotSpec.chainIntake`). */
+export type ChainIntakeStyle = 'roller' | 'funnel' | 'sweeper';
 
 export type BallState =
   | { kind: 'ground' }
