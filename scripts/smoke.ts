@@ -119,7 +119,7 @@ import {
   chainStorageMax,
   CHAIN_DRUM_SPEED,
 } from '../src/games/chain/config';
-import { accelMultiplier, hookPos, labAreas, ringStands } from '../src/games/chain/state';
+import { accelMultiplier, chainIntakeBand, hookPos, labAreas, ringStands } from '../src/games/chain/state';
 
 // the sim now steps a Rapier physics world (robots) — load the WASM before any
 // step() runs. tsx runs this file as ESM, so top-level await is available.
@@ -3650,11 +3650,12 @@ const mkMM = () => {
     const rob = gw.robots[0];
     rob.autoIntake = true;
     rob.autoFire = false; // isolate intake (don't fire them away this tick)
-    const e = robotExtents(rob);
-    // lay 5 particles spread across the mouth width, just in front of the frame
+    const hl = rob.spec.length / 2;
+    const hw = rob.spec.width / 2;
+    // lay 5 particles spread across the mouth width, right at the front edge
     for (let i = 0; i < 5; i++) {
-      const ly = (i - 2) * (e.half * 0.4);
-      const m = rot({ x: e.front - 0.5, y: ly }, rob.heading);
+      const ly = (i - 2) * (hw * 0.4);
+      const m = rot({ x: hl + 1, y: ly }, rob.heading);
       gw.balls[i].state = { kind: 'ground' };
       gw.balls[i].pos = { x: rob.pos.x + m.x, y: rob.pos.y + m.y };
       gw.balls[i].vel = { x: 0, y: 0 };
@@ -3960,8 +3961,8 @@ const mkMM = () => {
     check('chain miss: a missed particle is thrown back into the field (not scored)', thrownBack, `kind=${b.state.kind} x=${b.pos.x.toFixed(1)} vx=${b.vel.x.toFixed(1)}`);
   }
 
-  // ACTIVE-INTAKE PULL: a stationary robot DRAWS IN a particle that is beyond the static
-  // capture band (this is what raises the intake rate) — one out of pull range is NOT taken.
+  // INTAKE reaches the COLLISION FRONT: a particle right at the intake tip is captured (not
+  // plowed forward) — this is what keeps intaking fast when driving into a cluster.
   {
     const gw = createChainWorld('match', 820, [chainSetup(0, 'blue')]);
     gw.match.phase = 'teleop';
@@ -3971,26 +3972,16 @@ const mkMM = () => {
     rob.autoFire = false;
     rob.heading = 0;
     rob.pos = { x: 0, y: 0 };
-    const hl = rob.spec.length / 2;
-    // ball A: ~4" ahead of the mouth — beyond the roller capture (~hl+3) but within the tight
-    // pull radius → drawn in
+    const band = chainIntakeBand(rob.spec);
+    // a particle right at the intake tip (the collision front) → captured this tick
     gw.balls[0].state = { kind: 'ground' };
-    gw.balls[0].pos = { x: hl + 4, y: 0 };
+    gw.balls[0].pos = { x: rob.pos.x + band.front, y: 0 };
     gw.balls[0].vel = { x: 0, y: 0 };
-    const idNear = gw.balls[0].id;
-    // ball B: well out of the (small) pull range — never taken by a stationary robot
-    gw.balls[1].state = { kind: 'ground' };
-    gw.balls[1].pos = { x: hl + 40, y: 0 };
-    gw.balls[1].vel = { x: 0, y: 0 };
-    const idFar = gw.balls[1].id;
-    const held0 = rob.hopper.length;
-    runChain(gw, cmd({}), 0.7);
-    const gotNear = !gw.balls.some((b) => b.id === idNear); // absorbed
-    const stillFar = gw.balls.some((b) => b.id === idFar);
+    const id = gw.balls[0].id;
+    runChain(gw, cmd({}), SIM_DT);
     check(
-      'chain intake: the pull draws in a particle beyond the capture band (high rate); out-of-range stays',
-      gotNear && stillFar && rob.hopper.length > held0,
-      `gotNear=${gotNear} stillFar=${stillFar} hopper+=${rob.hopper.length - held0}`,
+      'chain intake: captures at the collision front (no plow-forward slowness)',
+      !gw.balls.some((b) => b.id === id),
     );
   }
 
@@ -4046,14 +4037,6 @@ const mkMM = () => {
       return gw.balls[0].id;
     };
     const gone = (gw: World, id: number): boolean => !gw.balls.some((b) => b.id === id);
-    // a particle 4" ahead of the CHASSIS front: beyond roller reach (3), within funnel reach (6)
-    const r1 = mk('roller');
-    const idR = place(r1.gw, r1.rob, hl + 4, 0);
-    runChain(r1.gw, cmd({}), SIM_DT);
-    const f1 = mk('funnel');
-    const idF = place(f1.gw, f1.rob, hl + 4, 0);
-    runChain(f1.gw, cmd({}), SIM_DT);
-    check('chain intake: funnel reaches further forward than the roller', gone(f1.gw, idF) && !gone(r1.gw, idR));
     // a wide particle at 0.85·half-width: within the full-width roller, outside the narrow funnel
     const r2 = mk('roller');
     const idRW = place(r2.gw, r2.rob, hl - 1, hw * 0.85);
@@ -4065,10 +4048,10 @@ const mkMM = () => {
     // ACCURACY: the roller's capture stays ~chassis-sized — a particle 2" outside the
     // chassis side, or well ahead of the small front bite, is NOT swallowed
     const rSide = mk('roller');
-    const idSide = place(rSide.gw, rSide.rob, hl - 2, hw + 2);
+    const idSide = place(rSide.gw, rSide.rob, hl - 1, hw + 2); // 2" past the frame side
     runChain(rSide.gw, cmd({}), SIM_DT);
     const rFar = mk('roller');
-    const idFar = place(rFar.gw, rFar.rob, hl + 6, 0);
+    const idFar = place(rFar.gw, rFar.rob, hl + 8, 0); // well beyond the intake tip
     runChain(rFar.gw, cmd({}), SIM_DT);
     check(
       'chain intake: capture stays ~chassis-sized (no grab past the frame side / far ahead)',

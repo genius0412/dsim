@@ -1,11 +1,11 @@
 import type { RobotSpec } from '../types';
 import { INTAKE_PRESETS, TURRET_OFFSET_FRAC, WHEEL_INSET, intakeMouth } from '../config';
 import {
-  CHAIN_INTAKES,
   CHAIN_DEFAULT_INTAKE,
   CHAIN_DEFAULT_SCORE_MODE,
   CHAIN_LAUNCH_LINE_FRAC,
 } from '../games/chain/config';
+import { chainIntakeBand } from '../games/chain/state';
 
 /** dimension-label type size, in the viewBox's inch units */
 const DIM_FONT = 1.7;
@@ -44,10 +44,10 @@ export function RobotPreview({
   const turretY = -TURRET_OFFSET_FRAC * len;
   const turretR = Math.min(w, len) * 0.2;
 
-  // Chain Reaction geometry (intake design + scoring archetype). Front = UP (−y).
-  const cIt = chain ? CHAIN_INTAKES[spec.chainIntake ?? CHAIN_DEFAULT_INTAKE] : null;
-  const cHalf = cIt ? halfW * cIt.widthFrac + cIt.overhang : 0; // sweeper overhangs the frame
-  const cReach = cIt ? Math.min(cIt.reach, 4) : 0;
+  // Chain Reaction geometry — the SAME intake band the sim captures with. Front = UP (−y).
+  const cBand = chain ? chainIntakeBand(spec) : null;
+  const cHalf = cBand ? cBand.half : 0; // sweeper overhangs the frame
+  const cReach = cBand ? cBand.front - len / 2 : 0; // intake tip past the front edge
   const cTipY = frontY - cReach;
   const cMode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
 
@@ -133,7 +133,7 @@ export function RobotPreview({
 
   // Chain Reaction intake (front = UP): roller/sweeper = full-width bar (sweeper overhangs);
   // funnel = two wedges into a narrow throat.
-  const cIntakeEl = cIt ? (
+  const cIntakeEl = cBand ? (
     spec.chainIntake === 'funnel' ? (
       <g>
         <polygon

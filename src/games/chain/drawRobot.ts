@@ -2,12 +2,11 @@ import type { Artifact, RobotState } from '../../types';
 import * as C from '../../config';
 import { drawWheels, roundRect } from '../../render/drawRobot';
 import {
-  CHAIN_INTAKES,
-  CHAIN_DEFAULT_INTAKE,
   CHAIN_DEFAULT_SCORE_MODE,
   chainHopperCap,
   CHAIN_LAUNCH_LINE_FRAC,
 } from './config';
+import { chainIntakeBand } from './state';
 
 /**
  * Chain Reaction robot sprite (top-down). Shares the chassis + drivetrain wheels with
@@ -86,10 +85,11 @@ function drawChainIntake(
   hl: number,
   hw: number,
 ): void {
-  const it = CHAIN_INTAKES[r.spec.chainIntake ?? CHAIN_DEFAULT_INTAKE];
-  const half = hw * it.widthFrac + it.overhang;
+  // the SAME band `interact` captures with — so the drawn intake IS the grab area
+  const m = chainIntakeBand(r.spec);
+  const half = m.half;
   const x0 = hl; // chassis front edge
-  const x1 = hl + Math.min(it.reach, 4); // roller sits just ahead (visual cap)
+  const x1 = m.front; // the intake tip (collision front)
   const barFill = on ? GREEN_DK : '#333a45';
   const tickFill = on ? GREEN : '#6b7280';
 

@@ -15,10 +15,6 @@ import {
   CHAIN_HALF_Y,
   CHAIN_HOOK_PLACE_R,
   chainHopperCap,
-  CHAIN_INTAKES,
-  CHAIN_INTAKE_PULL_R,
-  CHAIN_INTAKE_PULL,
-  CHAIN_DEFAULT_INTAKE,
   CHAIN_DEFAULT_SCORE_MODE,
   CHAIN_AIM_TOL,
   CHAIN_AIM_GAIN,
@@ -50,6 +46,7 @@ import {
 import {
   accelMultiplier,
   accelSide,
+  chainIntakeBand,
   hookPos,
   labAreas,
   ringStands,
@@ -271,7 +268,7 @@ export function updateChain(
 
     let absorbed = false;
     for (const rob of world.robots) {
-      if (interact(b, rob, cmds.get(rob.id), enabled, dt) === 'absorbed') {
+      if (interact(b, rob, cmds.get(rob.id), enabled) === 'absorbed') {
         rob.hopper.push('green');
         rob.lastIntakeAt = world.time;
         absorbed = true;
@@ -554,48 +551,26 @@ function interact(
   rob: RobotState,
   cmd: RobotCommand | undefined,
   enabled: boolean,
-  dt: number,
 ): 'absorbed' | 'none' {
   const e = robotExtents(rob);
   const rel = { x: b.pos.x - rob.pos.x, y: b.pos.y - rob.pos.y };
   const local = rot(rel, -rob.heading);
   const r2 = CHAIN_PARTICLE_R;
 
+  const inBox = local.x < e.front + r2 && local.x > -e.rear - r2 && Math.abs(local.y) < e.half + r2;
+
   const intakeActive = enabled && (rob.autoIntake || (cmd?.intake ?? false));
   const cap = chainHopperCap(rob.spec);
-  // CR intake DESIGN (roller / funnel / sweeper): capture every particle inside the
-  // design's band, measured off the ACTUAL CHASSIS (not the collision OBB, which juts
-  // forward by the DECODE intake reach) so the effective area stays ~robot-sized —
-  // half-width `widthFrac`·chassis (+overhang for a deployed sweeper), from `backFrac`
-  // of the chassis forward to a SMALL `reach` past the front edge. One pass swallows
-  // every particle in that band at once (multi-ball throughput).
+  // CR intake: capture every particle inside the intake MOUTH (`chainIntakeBand` — the SAME
+  // band the renderer draws, so the grab area is exactly the visible intake). It reaches the
+  // collision front (the intake tip), so a particle at the intake is captured BEFORE the frame
+  // would plow it forward — driving into a cluster collects fast instead of shoving them away.
   if (intakeActive && rob.hopper.length < cap) {
-    const it = CHAIN_INTAKES[rob.spec.chainIntake ?? CHAIN_DEFAULT_INTAKE];
-    const hl = rob.spec.length / 2;
-    const hw = rob.spec.width / 2;
-    const captureZone =
-      local.x > -hl * it.backFrac &&
-      local.x < hl + it.reach &&
-      Math.abs(local.y) < hw * it.widthFrac + it.overhang;
-    if (captureZone) return 'absorbed';
-    // ACTIVE-INTAKE PULL: a running intake draws nearby particles toward its mouth
-    // (front-centre) so they FLOW into the capture band — this is what makes the intake
-    // rate high (a much wider effective collection funnel than the static capture zone,
-    // without enlarging it). Only pulls particles in FRONT of the robot.
-    const dx = hl - local.x; // toward the front-centre mouth
-    const dy = -local.y;
-    const d = Math.hypot(dx, dy);
-    const pullHalf = hw * it.widthFrac + it.overhang + CHAIN_INTAKE_PULL_R;
-    if (local.x > -hl * 0.5 && d < CHAIN_INTAKE_PULL_R && Math.abs(local.y) < pullHalf && d > 1e-3) {
-      const wn = rot({ x: dx / d, y: dy / d }, rob.heading);
-      b.vel.x += wn.x * CHAIN_INTAKE_PULL * dt;
-      b.vel.y += wn.y * CHAIN_INTAKE_PULL * dt;
-      return 'none'; // being drawn in — never plow a particle the intake is grabbing
-    }
+    const m = chainIntakeBand(rob.spec);
+    if (local.x > m.back && local.x < m.front + r2 && Math.abs(local.y) < m.half) return 'absorbed';
   }
 
-  // plow (not intaking, or no room, or particle behind the intake): only inside the footprint
-  const inBox = local.x < e.front + r2 && local.x > -e.rear - r2 && Math.abs(local.y) < e.half + r2;
+  // plow (not intaking, or no room, or particle outside the mouth): only inside the footprint
   if (!inBox) return 'none';
 
   // push out along the min-penetration axis (robot-local), impart robot vel

@@ -160,38 +160,25 @@ export const CHAIN_EJECT_VZ = 80; // in/s upward arc on the way out (base; ×0.7
 export const CHAIN_EJECT_SPREAD = 150; // in/s random lateral spread
 
 /**
- * INTAKE DESIGNS (`RobotSpec.chainIntake`). CR robots collect the 3" Particles with a
- * WIDE under-frame mechanism (unlike DECODE's single-file mouth); the design trades
- * capture WIDTH (how many at once) against forward REACH (precision / picking singles).
- * The capture band is measured off the ACTUAL CHASSIS (length/2 × width/2) so it stays
- * roughly the size of the robot: width = chassis half-width × `widthFrac` (+`overhang`
- * inches for the one deployed sweeper), from `backFrac` of the chassis (behind the
- * front, particles driven partly under) forward to a SMALL `reach` past the front edge.
- * All in inches on a ~14–18" chassis. Consumed in `interact` (play.ts).
+ * INTAKE DESIGNS (`RobotSpec.chainIntake`). The intake MOUTH is at the front of the robot; its
+ * geometry (`chainIntakeBand` in state.ts) is shared by the capture AND the renderer so the
+ * grab area is EXACTLY the drawn intake. The design sets the mouth's half-WIDTH (`widthFrac`·
+ * chassis +`overhang` for the deployed sweeper) and how far BEHIND the front edge it reaches
+ * (`depth`); its forward extent is the collision front (the intake tip). Roller = full width,
+ * funnel = narrow (precise), sweeper = widest (overhangs the frame).
  */
 export interface ChainIntakeGeom {
-  widthFrac: number; // capture half-width as a fraction of the chassis half-width
-  overhang: number; // extra capture half-width past the frame (deployed intake), inches
-  reach: number; // capture band reaching ahead of the CHASSIS front edge, inches
-  backFrac: number; // fraction of the chassis half-length (from the front) that captures
+  widthFrac: number; // mouth half-width as a fraction of the chassis half-width
+  overhang: number; // extra mouth half-width past the frame (deployed intake), inches
+  depth: number; // mouth reaches this far BEHIND the front edge (into the frame), inches
 }
 export const CHAIN_INTAKES: Record<ChainIntakeStyle, ChainIntakeGeom> = {
-  // full-width surface roller — grabs the chassis width with a tight front bite (all-rounder)
-  roller: { widthFrac: 1.0, overhang: 0, reach: 3, backFrac: 0.4 },
-  // narrow funnel — a bit more forward reach, fewer at once (precise single picks)
-  funnel: { widthFrac: 0.55, overhang: 0, reach: 6, backFrac: 0.25 },
-  // widest active sweeper — a small overhang past the frame, deepest gulp (max volume/pass)
-  sweeper: { widthFrac: 1.0, overhang: 2, reach: 4, backFrac: 0.55 },
+  roller: { widthFrac: 1.0, overhang: 0, depth: 2 }, // full-width surface roller (all-rounder)
+  funnel: { widthFrac: 0.55, overhang: 0, depth: 1.5 }, // narrow — precise single picks
+  sweeper: { widthFrac: 1.0, overhang: 2, depth: 2.5 }, // widest, overhangs the frame (max volume)
 };
 export const CHAIN_INTAKE_STYLES = ['roller', 'funnel', 'sweeper'] as const;
 export const CHAIN_DEFAULT_INTAKE: ChainIntakeStyle = 'roller';
-
-/** ACTIVE-INTAKE PULL: a running intake DRAWS nearby ground Particles toward its mouth so
- * they flow into the capture band — a much wider effective collection funnel (⇒ a high intake
- * RATE) without enlarging the static capture zone. Radius from the front-centre mouth + the
- * acceleration applied toward it (in interact, play.ts). */
-export const CHAIN_INTAKE_PULL_R = 5; // in — a TIGHT frame-hugging draw (kept small on purpose)
-export const CHAIN_INTAKE_PULL = 320; // in/s² acceleration pulling particles into the mouth
 
 /**
  * SCORING ARCHETYPES (`RobotSpec.scoreMode`) — the robot's expansion/scoring mechanism.

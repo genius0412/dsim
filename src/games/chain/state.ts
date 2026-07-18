@@ -1,12 +1,34 @@
-import type { Alliance, Vec2 } from '../../types';
+import type { Alliance, RobotSpec, Vec2 } from '../../types';
 import type { Rect } from '../../sim/field';
+import { INTAKE_PRESETS } from '../../config';
 import {
   CHAIN_HALF_X,
   CHAIN_HALF_Y,
   CHAIN_HOOK_Y,
   CHAIN_LAB,
   CHAIN_RINGSTAND_XY,
+  CHAIN_INTAKES,
+  CHAIN_DEFAULT_INTAKE,
 } from './config';
+
+/**
+ * The CR intake MOUTH in the robot-local frame — the ONE source of truth shared by the
+ * capture logic (`interact`) and the renderer (`drawChainIntake`) so the grab area is EXACTLY
+ * the drawn intake. `front` = the collision/OBB front (the intake tip, `robotExtents().front`),
+ * so particles at the intake are captured before they can be plowed forward; `back` a shallow
+ * bite behind the chassis front edge; `half` the design's half-width (widthFrac·chassis
+ * +overhang). All in inches, robot-local (+x = forward).
+ */
+export function chainIntakeBand(spec: RobotSpec): { back: number; front: number; half: number } {
+  const it = CHAIN_INTAKES[spec.chainIntake ?? CHAIN_DEFAULT_INTAKE];
+  const hl = spec.length / 2;
+  const hw = spec.width / 2;
+  return {
+    back: hl - it.depth,
+    front: hl + INTAKE_PRESETS[spec.intake].reach, // = robotExtents().front (the intake tip)
+    half: hw * it.widthFrac + it.overhang,
+  };
+}
 
 /**
  * Chain Reaction runtime state — everything CR-specific lives here on `world.chain`
