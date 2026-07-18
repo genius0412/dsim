@@ -3735,7 +3735,8 @@ const mkMM = () => {
     );
   }
 
-  // DRUM burst cap: at most CHAIN_DRUM_MAX (6) leave per burst
+  // DRUM fires CONTINUOUSLY — a steady flywheel stream, not a 6-then-wait burst. In 0.5 s a
+  // burst-and-wait would drain one feed (~6); the continuous drum drains several feeds more.
   {
     const s = chainSetup(0, 'blue');
     s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum' };
@@ -3747,9 +3748,11 @@ const mkMM = () => {
     rob.autoFire = true;
     rob.heading = 0;
     rob.pos = { x: 0, y: 0 };
-    rob.hopper = Array(8).fill('green');
-    runChain(gw, cmd({}), SIM_DT); // one tick = one burst
-    check('chain drum: a burst fires at most 6 (drum capacity)', rob.hopper.length === 2, `left=${rob.hopper.length}`);
+    rob.hopper = Array(24).fill('green');
+    const h0 = rob.hopper.length;
+    runChain(gw, cmd({}), 0.5);
+    const drained = h0 - rob.hopper.length;
+    check('chain drum: fires continuously (steady stream, not 6-then-wait)', drained > 8, `drained=${drained} in 0.5s`);
   }
 
   // TURN-TO-AIM control: holding fire steers a turretless shooter to face the goal, then it fires
@@ -3817,10 +3820,10 @@ const mkMM = () => {
       runChain(gw, cmd({}), SIM_DT);
       return gw.balls.filter((b) => b.state.kind === 'flight').map((b) => b.vel.x);
     };
-    const dv = flightVx('drum');
-    const uniform = dv.length >= 6 && Math.max(...dv) - Math.min(...dv) < 1e-6;
-    const pv = flightVx('dumper');
-    const varied = pv.length >= 6 && Math.max(...pv) - Math.min(...pv) > 10;
+    const dv = flightVx('drum'); // one continuous feed (CHAIN_DRUM_LANES particles)
+    const uniform = dv.length >= 2 && Math.max(...dv) - Math.min(...dv) < 1e-6;
+    const pv = flightVx('dumper'); // whole hopper dumped at once
+    const varied = pv.length >= 3 && Math.max(...pv) - Math.min(...pv) > 10;
     check('chain launch: drum uniform velocity, dumper side-to-side variance', uniform && varied, `drumSpread=${(Math.max(...dv) - Math.min(...dv)).toFixed(2)} dumpSpread=${(Math.max(...pv) - Math.min(...pv)).toFixed(1)}`);
   }
 

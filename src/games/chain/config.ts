@@ -207,9 +207,12 @@ export const CHAIN_AIM_GAIN = 4.5; // P-gain turning the robot toward the goal w
 export const CHAIN_LAUNCH_LINE_FRAC = 0.92; // fraction of the chassis width the line spans
 export const CHAIN_LAUNCH_Z0 = 10; // in — launch height (into the tall, over-field opening)
 
-// DRUM: uniform-velocity flywheel, up to 6 at once, any range, slower burst cadence
-export const CHAIN_DRUM_MAX = 6; // max Particles per burst (18"/3" = 6 fit the drum)
-export const CHAIN_DRUM_INTERVAL = 0.55; // s between bursts (drum re-index)
+// DRUM: a CONTINUOUS uniform-velocity flywheel across the chassis width, any range. It
+// FEEDS steadily — `CHAIN_DRUM_LANES` Particles every short `CHAIN_DRUM_INTERVAL` while it
+// has ammo + is aligned — so it fires a continuous stream, NOT a "6-then-wait" burst.
+export const CHAIN_DRUM_MAX = 6; // drum CAPACITY (18"/3" = 6 pockets) — the visual slot count
+export const CHAIN_DRUM_LANES = 3; // Particles launched per feed (chassis-wide, a few at once)
+export const CHAIN_DRUM_INTERVAL = 0.13; // s between feeds — short ⇒ a continuous flywheel stream
 export const CHAIN_DRUM_SPEED = 175; // in/s uniform horizontal launch
 
 // DUMPER: whole-hopper catapult, limited (but not point-blank) range, side-var scatter
@@ -230,17 +233,22 @@ export const CHAIN_THROWBACK_SPEED = 72; // in/s inward toss (lands mid-field af
 export const CHAIN_THROWBACK_SPREAD = 45; // in/s lateral spread on the throw-in
 
 /**
- * BALL STORAGE. The MAX hopper capacity is DERIVED from the ARCHETYPE + robot SIZE, not a
- * flat number: a bigger chassis footprint holds more Particles, and a TURRET must give up
- * its center volume to the dye rotor + shooter (smallest hopper), while the DRUM and DUMPER
- * are open-hopper launchers (equal, large — for now). The `ballStorage` slider lets the
- * player pick any capacity UP TO `chainStorageMax(spec)`. `CHAIN_STORAGE_MAX` is the hard
- * ceiling (a full multi-row magazine); `CHAIN_STORAGE_MIN` the floor.
+ * BALL STORAGE. The manual sets NO fixed particle-count limit: G01 lets a Robot Control an
+ * UNLIMITED number of Particles; G02 only bounds them to an 18"×24"×18"-tall CONTROL PRISM
+ * (and G03 lets the Robot EXPAND into that from its 18"×18"×18" start). So the practical MAX
+ * is VOLUME-limited: a single layer of 3"-OD Particles across the 18"×24" control footprint
+ * is 6×8 = 48 (`CHAIN_STORAGE_MAX`). We DERIVE each robot's max from its footprint × an
+ * archetype factor (bigger chassis → more; a TURRET gives up center volume to its dye rotor +
+ * shooter, so it's smallest; the DRUM and DUMPER are open-hopper launchers — equal, large),
+ * clamped to that ceiling. The `ballStorage` slider picks any capacity up to `chainStorageMax`.
  */
 export const CHAIN_STORAGE_MIN = 1;
-export const CHAIN_STORAGE_MAX = 30; // hard ceiling regardless of size
+export const CHAIN_STORAGE_MAX = 48; // G02 control prism: 18"×24" ÷ 3" grid = 6×8 = 48 (one layer)
 export const CHAIN_STORAGE_DEFAULT = 8;
-export const CHAIN_STORE_AREA_PER_BALL = 9; // sq in of chassis footprint per stored Particle
+// effective sq in of chassis footprint per stored Particle — a 3"×3" ball hex-packs at ~8,
+// then G03 EXPANSION (the deployed hopper reaches past the 18"×18" frame into the 18"×24"
+// control prism) lets a full-frame launcher approach the 48 ceiling: ~6.5 in²/ball.
+export const CHAIN_STORE_AREA_PER_BALL = 6.5;
 export const CHAIN_STORE_TURRET_MULT = 0.55; // turret loses center volume to the rotor+shooter
 export const CHAIN_STORE_LAUNCHER_MULT = 1.0; // drum + dumper: open hopper (large, equal)
 
@@ -293,22 +301,22 @@ export const CHAIN_PRESETS: readonly RobotSpec[] = [
     name: 'Sniper', teamName: 'Turret · score from anywhere', teamNumber: 0,
     length: 14.5, width: 17, intake: 'sloped', massLb: 24, drivetrain: 'swerve',
     driveRpm: 500, flywheelInertia: 0.2, canSort: false,
-    ballStorage: 10, groundClearance: 1.8, scoreMode: 'turret', chainIntake: 'funnel',
+    ballStorage: 12, groundClearance: 1.8, scoreMode: 'turret', chainIntake: 'funnel',
   },
   {
-    // volume hauler: dumps a huge load at the wall, widest sweeper, tank push + big
+    // volume hauler: dumps a huge load at the wall, widest sweeper, tank push + MAX
     // storage + high clearance to bulldoze over the beams
     name: 'Hauler', teamName: 'Dumper · haul & unload', teamNumber: 0,
     length: 15, width: 18, intake: 'sloped', massLb: 38, drivetrain: 'tank',
     driveRpm: 340, flywheelInertia: 0.2, canSort: false,
-    ballStorage: 28, groundClearance: 2.2, scoreMode: 'dumper', chainIntake: 'sweeper',
+    ballStorage: 40, groundClearance: 2.2, scoreMode: 'dumper', chainIntake: 'sweeper',
   },
   {
     // the volume shooter: a chassis-wide drum firing 6 at once from anywhere, light mecanum
     name: 'Drummer', teamName: 'Drum · fire 6 at once, any range', teamNumber: 0,
     length: 14.5, width: 17, intake: 'sloped', massLb: 25, drivetrain: 'mecanum',
     driveRpm: 470, flywheelInertia: 0.3, canSort: false,
-    ballStorage: 14, groundClearance: 1.4, scoreMode: 'drum', chainIntake: 'roller',
+    ballStorage: 24, groundClearance: 1.4, scoreMode: 'drum', chainIntake: 'roller',
   },
   {
     // fast wall-runner: a quick x-drive dumper that shuttles particles to its own
@@ -316,6 +324,6 @@ export const CHAIN_PRESETS: readonly RobotSpec[] = [
     name: 'Skimmer', teamName: 'Dumper · fast wall runs', teamNumber: 0,
     length: 14.5, width: 16, intake: 'sloped', massLb: 22, drivetrain: 'xdrive',
     driveRpm: 520, flywheelInertia: 0.1, canSort: false,
-    ballStorage: 20, groundClearance: 1.0, scoreMode: 'dumper', chainIntake: 'roller',
+    ballStorage: 26, groundClearance: 1.0, scoreMode: 'dumper', chainIntake: 'roller',
   },
 ] as const;

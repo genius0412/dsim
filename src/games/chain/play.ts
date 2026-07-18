@@ -22,7 +22,7 @@ import {
   CHAIN_AIM_GAIN,
   CHAIN_LAUNCH_LINE_FRAC,
   CHAIN_LAUNCH_Z0,
-  CHAIN_DRUM_MAX,
+  CHAIN_DRUM_LANES,
   CHAIN_DRUM_INTERVAL,
   CHAIN_DRUM_SPEED,
   CHAIN_DUMP_RANGE,
@@ -117,8 +117,9 @@ export function updateChain(
       const inRange = mode === 'drum' ? true : distMouth <= CHAIN_DUMP_RANGE;
       if (wantsFire && aligned && inRange && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
         if (mode === 'drum') {
-          // flywheel drum: up to 6 at once, UNIFORM velocity, slower burst cadence
-          const n = Math.min(CHAIN_DRUM_MAX, r.hopper.length);
+          // flywheel drum: a CONTINUOUS stream — feed a few lanes (UNIFORM velocity) every
+          // short interval, so it keeps firing steadily instead of a 6-then-wait burst.
+          const n = Math.min(CHAIN_DRUM_LANES, r.hopper.length);
           r.hopper.splice(0, n);
           launchLine(world, chain, r, n, CHAIN_DRUM_SPEED, 0);
           r.fireReadyAt = world.time + CHAIN_DRUM_INTERVAL;
