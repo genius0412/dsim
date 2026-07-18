@@ -37,6 +37,8 @@
  * needed — approximations below are FLAGGED).
  */
 
+import type { ChainIntakeStyle, ChainScoreMode, RobotSpec } from '../../types';
+
 /** millimetres → inches (the sim's world unit) */
 export const mm = (v: number): number => v / 25.4;
 
@@ -169,7 +171,7 @@ export interface ChainIntakeGeom {
   reach: number; // capture band reaching ahead of the front edge, inches
   backFrac: number; // fraction of the footprint (from the front) that also captures
 }
-export const CHAIN_INTAKES: Record<import('../../types').ChainIntakeStyle, ChainIntakeGeom> = {
+export const CHAIN_INTAKES: Record<ChainIntakeStyle, ChainIntakeGeom> = {
   // full-width surface roller — many at once, moderate reach (the all-rounder)
   roller: { widthFrac: 1.0, overhang: 0, reach: 6, backFrac: 0.5 },
   // narrow deployed funnel — long forward reach, fewer at once (precise single picks)
@@ -178,7 +180,7 @@ export const CHAIN_INTAKES: Record<import('../../types').ChainIntakeStyle, Chain
   sweeper: { widthFrac: 1.0, overhang: 3, reach: 8, backFrac: 0.65 },
 };
 export const CHAIN_INTAKE_STYLES = ['roller', 'funnel', 'sweeper'] as const;
-export const CHAIN_DEFAULT_INTAKE: import('../../types').ChainIntakeStyle = 'roller';
+export const CHAIN_DEFAULT_INTAKE: ChainIntakeStyle = 'roller';
 
 /**
  * SCORING ARCHETYPES (`RobotSpec.scoreMode`) — the robot's expansion/scoring mechanism.
@@ -189,7 +191,7 @@ export const CHAIN_DEFAULT_INTAKE: import('../../types').ChainIntakeStyle = 'rol
  *    you must cycle to the wall — storage capacity + drivetrain speed carry it).
  */
 export const CHAIN_SCORE_MODES = ['turret', 'dumper'] as const;
-export const CHAIN_DEFAULT_SCORE_MODE: import('../../types').ChainScoreMode = 'turret';
+export const CHAIN_DEFAULT_SCORE_MODE: ChainScoreMode = 'turret';
 export const CHAIN_DUMP_RANGE = 22; // in — how close to the mouth a dumper must be
 export const CHAIN_DUMP_INTERVAL = 0.7; // s recovery between full dumps
 export const CHAIN_DUMP_SPEED = 120; // in/s launch of each dumped Particle (short toss)
@@ -220,3 +222,45 @@ export const CHAIN_HOOK_PLACE_R = 12; // seat-on-hook radius (carried catalyst �
  * alliance owns the two on its side (red x<0, blue x>0). APPROX — refine with manual. */
 export const CHAIN_LAB = 24; // corner square size (in)
 export const CHAIN_ASCEND_R = 9; // ascend proximity to a ring stand (in)
+
+/**
+ * CHAIN REACTION ROBOT PRESETS — archetype cards for the CR builder (parallel to
+ * DECODE's `ROBOT_PRESETS`). Each is a full, legal `RobotSpec` bundling a scoring
+ * archetype + intake design + a matched drivetrain/mass/rpm/storage/clearance loadout,
+ * so a single click sets a coherent playstyle. All numbers are within the shared
+ * coerceSpec ranges (so applying one is a no-op through the coercer and the card
+ * highlights as selected). `name`/`teamName` describe the archetype (no team number).
+ */
+export const CHAIN_PRESETS: readonly RobotSpec[] = [
+  {
+    // long-range precision: turret shoots from anywhere, funnel picks singles, swerve
+    // + clearance to roam over the beams
+    name: 'Sniper', teamName: 'Turret · score from anywhere', teamNumber: 0,
+    length: 14.5, width: 17, intake: 'sloped', massLb: 24, drivetrain: 'swerve',
+    driveRpm: 500, flywheelInertia: 0.2, canSort: false,
+    ballStorage: 10, groundClearance: 1.8, scoreMode: 'turret', chainIntake: 'funnel',
+  },
+  {
+    // volume hauler: dumps a huge load at the wall, widest sweeper, tank push + big
+    // storage + high clearance to bulldoze over the beams
+    name: 'Hauler', teamName: 'Dumper · haul & unload', teamNumber: 0,
+    length: 15, width: 18, intake: 'sloped', massLb: 38, drivetrain: 'tank',
+    driveRpm: 340, flywheelInertia: 0.2, canSort: false,
+    ballStorage: 28, groundClearance: 2.2, scoreMode: 'dumper', chainIntake: 'sweeper',
+  },
+  {
+    // the all-rounder: turret + full-width roller on a light, precise mecanum base
+    name: 'Cycler', teamName: 'Turret · steady cycler', teamNumber: 0,
+    length: 14.5, width: 17, intake: 'sloped', massLb: 24, drivetrain: 'mecanum',
+    driveRpm: 470, flywheelInertia: 0.3, canSort: false,
+    ballStorage: 12, groundClearance: 1.4, scoreMode: 'turret', chainIntake: 'roller',
+  },
+  {
+    // fast wall-runner: a quick x-drive dumper that shuttles particles to its own
+    // accelerator; low clearance keeps it off the beams (works its own quadrant)
+    name: 'Skimmer', teamName: 'Dumper · fast wall runs', teamNumber: 0,
+    length: 14.5, width: 16, intake: 'sloped', massLb: 22, drivetrain: 'xdrive',
+    driveRpm: 520, flywheelInertia: 0.1, canSort: false,
+    ballStorage: 20, groundClearance: 1.0, scoreMode: 'dumper', chainIntake: 'roller',
+  },
+] as const;

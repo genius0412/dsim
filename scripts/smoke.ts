@@ -114,6 +114,7 @@ import {
   CHAIN_HOOK_Y,
   CHAIN_PARTICLE_SIM,
   CHAIN_PARTICLE_R,
+  CHAIN_PRESETS,
 } from '../src/games/chain/config';
 import { accelMultiplier, hookPos, labAreas, ringStands } from '../src/games/chain/state';
 
@@ -3746,6 +3747,30 @@ const mkMM = () => {
     const idFW = place(f2.gw, f2.rob, e0.front - 1, e0.half * 0.9);
     runChain(f2.gw, cmd({}), SIM_DT);
     check('chain intake: the wide roller grabs a wide particle the funnel misses', gone(r2.gw, idRW) && !gone(f2.gw, idFW));
+  }
+
+  // CR presets are legal + STABLE through coerceSpec (so a card applies as a no-op and
+  // highlights as selected) — every archetype/intake/storage/clearance survives intact
+  {
+    let ok = true;
+    const bad: string[] = [];
+    for (const p of CHAIN_PRESETS) {
+      const c = coerceSpec({ ...p });
+      if (
+        c.massLb !== p.massLb ||
+        c.driveRpm !== p.driveRpm ||
+        c.width !== p.width ||
+        c.length !== p.length ||
+        c.scoreMode !== p.scoreMode ||
+        c.chainIntake !== p.chainIntake ||
+        c.ballStorage !== p.ballStorage ||
+        c.groundClearance !== p.groundClearance
+      ) {
+        ok = false;
+        bad.push(p.name);
+      }
+    }
+    check('chain presets: every CR archetype survives coerceSpec unchanged', ok, bad.join(' '));
   }
 
   // catalyst multiplier: a catalyst seated on a blue hook ⇒ +1 pt per particle

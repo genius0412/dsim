@@ -12,6 +12,7 @@ import {
   CHAIN_INTAKE_STYLES,
   CHAIN_DEFAULT_SCORE_MODE,
   CHAIN_DEFAULT_INTAKE,
+  CHAIN_PRESETS,
 } from '../games/chain/config';
 import { driveParams, lengthLimits, massLimits, rpmLimits, widthLimits } from '../sim/drivetrain';
 import { coerceSpec } from '../sim/spawn';
@@ -80,6 +81,23 @@ function specMatches(a: RobotSpec, b: RobotSpec): boolean {
     a.driveRpm === b.driveRpm &&
     a.flywheelInertia === b.flywheelInertia &&
     a.canSort === b.canSort
+  );
+}
+
+/** Chain Reaction preset match: the shared drivetrain/size/mass/rpm build PLUS the
+ * CR-specific loadout (archetype, intake design, storage, clearance). Flywheel inertia
+ * is ignored (CR doesn't use it). */
+function chainSpecMatches(a: RobotSpec, b: RobotSpec): boolean {
+  return (
+    a.length === b.length &&
+    a.width === b.width &&
+    a.massLb === b.massLb &&
+    a.drivetrain === b.drivetrain &&
+    a.driveRpm === b.driveRpm &&
+    (a.scoreMode ?? 'turret') === (b.scoreMode ?? 'turret') &&
+    (a.chainIntake ?? 'roller') === (b.chainIntake ?? 'roller') &&
+    (a.ballStorage ?? 0) === (b.ballStorage ?? 0) &&
+    (a.groundClearance ?? 0) === (b.groundClearance ?? 0)
   );
 }
 
@@ -152,7 +170,10 @@ export function Menu({ settings, onChange }: Props) {
   const { min: minRpm, max: maxRpm } = rpmLimits(spec.drivetrain);
   const { min: minMass, max: maxMass } = massLimits(spec.drivetrain, spec.flywheelInertia);
   const dp = driveParams(spec);
-  const isCustom = !ROBOT_PRESETS.some((p) => specMatches(spec, p));
+  // the builder shows DECODE robot presets or CR archetype presets per the active game
+  const presets = isDecode ? ROBOT_PRESETS : CHAIN_PRESETS;
+  const presetMatches = isDecode ? specMatches : chainSpecMatches;
+  const isCustom = !presets.some((p) => presetMatches(spec, p));
 
   // ---- the player's SAVED robot library (their own full robots, up to 3) ----
   const savedRobots = settings.savedRobots;
@@ -298,10 +319,10 @@ export function Menu({ settings, onChange }: Props) {
         <section className="ds-sec">
           <h2>Presets</h2>
           <div className="ds-opts">
-            {ROBOT_PRESETS.map((p) => (
+            {presets.map((p) => (
               <button
                 key={p.name}
-                className={`ds-opt ${specMatches(spec, p) ? 'on' : ''}`}
+                className={`ds-opt ${presetMatches(spec, p) ? 'on' : ''}`}
                 onClick={() =>
                   // copy the BUILD only — keep the player's own name/team/number.
                   // applySpec swaps assists to the preset's drivetrain slot (so the
@@ -316,14 +337,28 @@ export function Menu({ settings, onChange }: Props) {
               >
                 <span className="ot">{p.name}</span>
                 <span className="od">
-                  {p.teamNumber} · {p.teamName}
+                  {isDecode ? `${p.teamNumber} · ${p.teamName}` : p.teamName}
                 </span>
-                <span className="om">
-                  {DRIVETRAIN_LABELS[p.drivetrain]} · {p.massLb} lb · {p.driveRpm} RPM ·{' '}
-                  {INTAKE_SHORT[p.intake]} · {p.flywheelInertia} inertia
-                  {p.canSort ? ' · sorts' : ''}
-                </span>
-                <span className="oz">🎯 {optimizedZone(p.flywheelInertia)}</span>
+                {isDecode ? (
+                  <>
+                    <span className="om">
+                      {DRIVETRAIN_LABELS[p.drivetrain]} · {p.massLb} lb · {p.driveRpm} RPM ·{' '}
+                      {INTAKE_SHORT[p.intake]} · {p.flywheelInertia} inertia
+                      {p.canSort ? ' · sorts' : ''}
+                    </span>
+                    <span className="oz">🎯 {optimizedZone(p.flywheelInertia)}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="om">
+                      {DRIVETRAIN_LABELS[p.drivetrain]} · {p.massLb} lb · {p.driveRpm} RPM ·{' '}
+                      {CHAIN_INTAKE_LABELS[p.chainIntake ?? CHAIN_DEFAULT_INTAKE]} · {p.ballStorage} store
+                    </span>
+                    <span className="oz">
+                      🎯 {CHAIN_MODE_LABELS[p.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE]}
+                    </span>
+                  </>
+                )}
               </button>
             ))}
           </div>
