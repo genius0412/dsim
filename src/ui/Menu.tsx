@@ -6,13 +6,13 @@ import {
   CHAIN_CLEARANCE_MAX,
   CHAIN_CLEARANCE_MIN,
   CHAIN_STORAGE_DEFAULT,
-  CHAIN_STORAGE_MAX,
   CHAIN_STORAGE_MIN,
   CHAIN_SCORE_MODES,
   CHAIN_INTAKE_STYLES,
   CHAIN_DEFAULT_SCORE_MODE,
   CHAIN_DEFAULT_INTAKE,
   CHAIN_PRESETS,
+  chainStorageMax,
 } from '../games/chain/config';
 import { driveParams, lengthLimits, massLimits, rpmLimits, widthLimits } from '../sim/drivetrain';
 import { coerceSpec } from '../sim/spawn';
@@ -205,7 +205,7 @@ export function Menu({ settings, onChange }: Props) {
         {/* ---------- robot hero ---------- */}
         <div className="ds-hero">
           <div className="ds-hero-view">
-            <RobotPreview spec={spec} size={160} />
+            <RobotPreview spec={spec} size={160} chain={!isDecode} />
           </div>
           <div className="ds-hero-info">
             <div>
@@ -512,23 +512,27 @@ export function Menu({ settings, onChange }: Props) {
                   <span className="od">Fires the color the motif needs</span>
                 </button>
               )}
-              {!isDecode && (
-                <label className="ds-field">
-                  <span className="cap">
-                    Ball storage <span className="val">{spec.ballStorage ?? CHAIN_STORAGE_DEFAULT} particles</span>
-                  </span>
-                  <input
-                    className="ds-range"
-                    type="range"
-                    min={CHAIN_STORAGE_MIN}
-                    max={CHAIN_STORAGE_MAX}
-                    step={1}
-                    value={spec.ballStorage ?? CHAIN_STORAGE_DEFAULT}
-                    style={rangeFill(spec.ballStorage ?? CHAIN_STORAGE_DEFAULT, CHAIN_STORAGE_MIN, CHAIN_STORAGE_MAX)}
-                    onChange={(e) => setSpec({ ballStorage: Number(e.target.value) })}
-                  />
-                </label>
-              )}
+              {!isDecode && (() => {
+                const storeMax = chainStorageMax(spec);
+                const store = Math.min(spec.ballStorage ?? CHAIN_STORAGE_DEFAULT, storeMax);
+                return (
+                  <label className="ds-field">
+                    <span className="cap">
+                      Ball storage <span className="val">{store} / {storeMax} particles</span>
+                    </span>
+                    <input
+                      className="ds-range"
+                      type="range"
+                      min={CHAIN_STORAGE_MIN}
+                      max={storeMax}
+                      step={1}
+                      value={store}
+                      style={rangeFill(store, CHAIN_STORAGE_MIN, storeMax)}
+                      onChange={(e) => setSpec({ ballStorage: Number(e.target.value) })}
+                    />
+                  </label>
+                );
+              })()}
               {!isDecode && (
                 <label className="ds-field">
                   <span className="cap">

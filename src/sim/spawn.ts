@@ -26,8 +26,8 @@ import {
   CHAIN_CLEARANCE_MAX,
   CHAIN_CLEARANCE_MIN,
   CHAIN_STORAGE_DEFAULT,
-  CHAIN_STORAGE_MAX,
   CHAIN_STORAGE_MIN,
+  chainStorageMax,
   CHAIN_DEFAULT_SCORE_MODE,
   CHAIN_DEFAULT_INTAKE,
   CHAIN_SCORE_MODES,
@@ -158,9 +158,22 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
   const mass = massLimits(out.drivetrain, out.flywheelInertia);
   out.massLb = clampFinite(sp.massLb, mass.min, mass.max, base.massLb);
 
-  // Chain Reaction ball storage (1–30); defaulted so DECODE specs/old saves are safe
+  // Chain Reaction scoring archetype + intake design (enum checks, defaulted). Resolved
+  // BEFORE ball storage: the storage MAX depends on the archetype (+ the size above).
+  out.scoreMode = (CHAIN_SCORE_MODES as readonly string[]).includes(sp.scoreMode as string)
+    ? (sp.scoreMode as RobotSpec['scoreMode'])
+    : (base.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE);
+  out.chainIntake = (CHAIN_INTAKE_STYLES as readonly string[]).includes(sp.chainIntake as string)
+    ? (sp.chainIntake as RobotSpec['chainIntake'])
+    : (base.chainIntake ?? CHAIN_DEFAULT_INTAKE);
+  // Chain Reaction ball storage — clamped to the archetype+size max (chainStorageMax)
   out.ballStorage = Math.round(
-    clampFinite(sp.ballStorage, CHAIN_STORAGE_MIN, CHAIN_STORAGE_MAX, base.ballStorage ?? CHAIN_STORAGE_DEFAULT),
+    clampFinite(
+      sp.ballStorage,
+      CHAIN_STORAGE_MIN,
+      chainStorageMax(out),
+      base.ballStorage ?? CHAIN_STORAGE_DEFAULT,
+    ),
   );
   // Chain Reaction ground clearance (inches) — over-a-beam capability vs raised CoG
   out.groundClearance = clampFinite(
@@ -169,13 +182,6 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
     CHAIN_CLEARANCE_MAX,
     base.groundClearance ?? CHAIN_CLEARANCE_DEFAULT,
   );
-  // Chain Reaction scoring archetype + intake design (enum checks, defaulted)
-  out.scoreMode = (CHAIN_SCORE_MODES as readonly string[]).includes(sp.scoreMode as string)
-    ? (sp.scoreMode as RobotSpec['scoreMode'])
-    : (base.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE);
-  out.chainIntake = (CHAIN_INTAKE_STYLES as readonly string[]).includes(sp.chainIntake as string)
-    ? (sp.chainIntake as RobotSpec['chainIntake'])
-    : (base.chainIntake ?? CHAIN_DEFAULT_INTAKE);
 
   // identity + flags (no cross-field dependency)
   if (typeof sp.canSort === 'boolean') out.canSort = sp.canSort;

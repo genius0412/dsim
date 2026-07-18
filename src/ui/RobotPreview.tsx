@@ -1,5 +1,12 @@
 import type { RobotSpec } from '../types';
 import { INTAKE_PRESETS, TURRET_OFFSET_FRAC, WHEEL_INSET, intakeMouth } from '../config';
+import {
+  CHAIN_INTAKES,
+  CHAIN_DEFAULT_INTAKE,
+  CHAIN_DEFAULT_SCORE_MODE,
+  CHAIN_DRUM_MAX,
+  CHAIN_LAUNCH_LINE_FRAC,
+} from '../games/chain/config';
 
 /** dimension-label type size, in the viewBox's inch units */
 const DIM_FONT = 1.7;
@@ -12,7 +19,15 @@ const DIM_FONT = 1.7;
  * app. Purely presentational; reads nothing but the spec + a few geometry
  * constants (matching the sim's own robotExtents / turret placement rules).
  */
-export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: number }) {
+export function RobotPreview({
+  spec,
+  size = 200,
+  chain = false,
+}: {
+  spec: RobotSpec;
+  size?: number;
+  chain?: boolean;
+}) {
   const w = spec.width;
   const len = spec.length;
   const intake = INTAKE_PRESETS[spec.intake];
@@ -26,10 +41,18 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
   const frontY = -len / 2; // chassis front edge (top) = the throat
   const wedgeTipY = frontY - (reach - 0.5); // wedge/plate front — just behind the roller
   const rollerTipY = frontY - (reach + 0.5); // shaft + wheels ride out just past the wedges
-  const tipY = rollerTipY; // front-most, for the viewBox
   // turret sits behind center of rotation, scaled by chassis length
   const turretY = -TURRET_OFFSET_FRAC * len;
   const turretR = Math.min(w, len) * 0.2;
+
+  // Chain Reaction geometry (intake design + scoring archetype). Front = UP (−y).
+  const cIt = chain ? CHAIN_INTAKES[spec.chainIntake ?? CHAIN_DEFAULT_INTAKE] : null;
+  const cHalf = cIt ? halfW * cIt.widthFrac + cIt.overhang : 0; // sweeper overhangs the frame
+  const cReach = cIt ? Math.min(cIt.reach, 4) : 0;
+  const cTipY = frontY - cReach;
+  const cMode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
+
+  const tipY = chain ? cTipY : rollerTipY; // front-most, for the viewBox
 
   // viewBox spans the widest of chassis/intake plus a margin, kept square-ish.
   // The dimension label is centered and can be WIDER than a narrow chassis, so it
@@ -37,7 +60,7 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
   // robot would otherwise lop the ends off "16.5" wide · 14.5" long".
   const dimLabel = `${w}" wide · ${len}" long`;
   const labelHalf = (dimLabel.length * DIM_FONT * 0.56) / 2; // ~0.56em avg advance
-  const halfSpan = Math.max(w / 2, mouthHalf, labelHalf) + 2.5;
+  const halfSpan = Math.max(w / 2, chain ? cHalf : mouthHalf, labelHalf) + 2.5;
   const top = tipY - 2;
   const bottom = len / 2 + 3.5; // room for the width dimension label
   const vbW = halfSpan * 2;
@@ -109,15 +132,81 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
     );
   }
 
+  // Chain Reaction intake (front = UP): roller/sweeper = full-width bar (sweeper overhangs);
+  // funnel = two wedges into a narrow throat.
+  const cIntakeEl = cIt ? (
+    spec.chainIntake === 'funnel' ? (
+      <g>
+        <polygon
+          points={`${-halfW},${frontY} ${halfW},${frontY} ${cHalf},${cTipY} ${-cHalf},${cTipY}`}
+          fill={accent}
+          opacity={0.28}
+          stroke={accent}
+          strokeWidth={0.35}
+        />
+        <rect x={-cHalf} y={cTipY} width={cHalf * 2} height={1.1} rx={0.4} fill={accent} opacity={0.7} />
+      </g>
+    ) : (
+      <g>
+        <rect x={-cHalf} y={cTipY} width={cHalf * 2} height={frontY - cTipY} fill={accent} opacity={0.4} />
+        {[-3, -2, -1, 0, 1, 2, 3].map((i) => (
+          <rect
+            key={i}
+            x={(i * cHalf) / 3.4 - 0.5}
+            y={cTipY}
+            width={1}
+            height={1.3}
+            rx={0.3}
+            fill={accent}
+            opacity={Math.abs(i) <= 1 ? 0.95 : 0.6}
+          />
+        ))}
+      </g>
+    )
+  ) : null;
+
+  // Chain Reaction archetype launcher (front = UP): drum = wide slotted bar; dumper =
+  // catapult bucket; turret = ring + barrel.
+  const lineHalf = halfW * CHAIN_LAUNCH_LINE_FRAC;
+  const cLauncherEl =
+    cMode === 'drum' ? (
+      <g>
+        <rect x={-lineHalf} y={frontY + 0.6} width={lineHalf * 2} height={3.4} rx={1} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
+        {Array.from({ length: CHAIN_DRUM_MAX - 1 }, (_, k) => k + 1).map((i) => {
+          const x = -lineHalf + (i * lineHalf * 2) / CHAIN_DRUM_MAX;
+          return <line key={i} x1={x} y1={frontY + 0.6} x2={x} y2={frontY + 4} stroke={accent} strokeWidth={0.3} opacity={0.6} />;
+        })}
+      </g>
+    ) : cMode === 'dumper' ? (
+      <g>
+        <polygon
+          points={`${-lineHalf * 0.7},${frontY + 6} ${-lineHalf},${frontY + 1} ${lineHalf},${frontY + 1} ${lineHalf * 0.7},${frontY + 6}`}
+          fill="var(--ds-bg)"
+          stroke={accent}
+          strokeWidth={0.5}
+        />
+        <line x1={-lineHalf} y1={frontY + 1} x2={lineHalf} y2={frontY + 1} stroke={accent} strokeWidth={1} />
+      </g>
+    ) : (
+      <g>
+        <circle cx={0} cy={turretY} r={turretR} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
+        <line x1={0} y1={turretY} x2={0} y2={turretY - turretR - 1.2} stroke={accent} strokeWidth={0.7} strokeLinecap="round" />
+      </g>
+    );
+
   return (
     <svg
       width={size}
       height={(size * vbH) / vbW}
       viewBox={`${-halfSpan} ${top} ${vbW} ${vbH}`}
       role="img"
-      aria-label={`${spec.width} by ${spec.length} inch robot, ${spec.intake} intake`}
+      aria-label={
+        chain
+          ? `${spec.width} by ${spec.length} inch robot, ${spec.chainIntake ?? CHAIN_DEFAULT_INTAKE} intake, ${cMode} scorer`
+          : `${spec.width} by ${spec.length} inch robot, ${spec.intake} intake`
+      }
     >
-      {intakeEl}
+      {chain ? cIntakeEl : intakeEl}
 
       {/* chassis */}
       <rect
@@ -179,22 +268,28 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
         strokeLinejoin="round"
       />
 
-      {/* triangle-intake internal storage hint: two near the mouth (front/up),
-          one deeper (rear/down) */}
-      {spec.intake === 'triangle' && (
-        <polygon
-          points={`${-1.7},${turretY - 0.6} 1.7,${turretY - 0.6} 0,${turretY + 2.4}`}
-          fill="none"
-          stroke={stroke}
-          strokeWidth={0.3}
-          opacity={0.7}
-        />
+      {/* scoring mechanism — CR archetype launcher, or DECODE turret + triangle hint */}
+      {chain ? (
+        cLauncherEl
+      ) : (
+        <>
+          {/* triangle-intake internal storage hint: two near the mouth (front/up),
+              one deeper (rear/down) */}
+          {spec.intake === 'triangle' && (
+            <polygon
+              points={`${-1.7},${turretY - 0.6} 1.7,${turretY - 0.6} 0,${turretY + 2.4}`}
+              fill="none"
+              stroke={stroke}
+              strokeWidth={0.3}
+              opacity={0.7}
+            />
+          )}
+          {/* turret ring + barrel toward front */}
+          <circle cx={0} cy={turretY} r={turretR} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
+          <line x1={0} y1={turretY} x2={0} y2={turretY - turretR - 1.2} stroke={accent} strokeWidth={0.7} strokeLinecap="round" />
+          {spec.canSort && <circle cx={0} cy={turretY} r={turretR * 0.4} fill={accent} opacity={0.8} />}
+        </>
       )}
-
-      {/* turret ring + barrel toward front */}
-      <circle cx={0} cy={turretY} r={turretR} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
-      <line x1={0} y1={turretY} x2={0} y2={turretY - turretR - 1.2} stroke={accent} strokeWidth={0.7} strokeLinecap="round" />
-      {spec.canSort && <circle cx={0} cy={turretY} r={turretR * 0.4} fill={accent} opacity={0.8} />}
 
       {/* width dimension label */}
       <text

@@ -115,6 +115,7 @@ import {
   CHAIN_PARTICLE_SIM,
   CHAIN_PARTICLE_R,
   CHAIN_PRESETS,
+  chainStorageMax,
 } from '../src/games/chain/config';
 import { accelMultiplier, hookPos, labAreas, ringStands } from '../src/games/chain/state';
 
@@ -3921,6 +3922,23 @@ const mkMM = () => {
       }
     }
     check('chain presets: every CR archetype survives coerceSpec unchanged', ok, bad.join(' '));
+  }
+
+  // HOPPER MAX = archetype × size: turret smallest, drum == dumper (large), bigger chassis holds more
+  {
+    const base = coerceSpec({ ...DEFAULT_SPEC, scoreMode: 'turret' }); // valid dims
+    const turretMax = chainStorageMax(base);
+    const drumMax = chainStorageMax({ ...base, scoreMode: 'drum' });
+    const dumperMax = chainStorageMax({ ...base, scoreMode: 'dumper' });
+    const small = chainStorageMax({ ...base, length: 11, width: 11 }); // smaller footprint
+    check(
+      'chain storage: turret max < drum = dumper, and a bigger chassis holds more',
+      turretMax < drumMax && drumMax === dumperMax && small < drumMax,
+      `turret=${turretMax} drum=${drumMax} dumper=${dumperMax} small=${small}`,
+    );
+    // coerceSpec clamps ballStorage down to the archetype+size max
+    const over = coerceSpec({ ...base, ballStorage: 99 });
+    check('chain storage: coerceSpec clamps ballStorage to the archetype max', over.ballStorage === turretMax, `${over.ballStorage} vs ${turretMax}`);
   }
 
   // catalyst multiplier: a catalyst seated on a blue hook ⇒ +1 pt per particle

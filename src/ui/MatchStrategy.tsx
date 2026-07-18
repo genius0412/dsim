@@ -243,7 +243,7 @@ export function MatchStrategy({
               return (
                 <div key={pl.clientId} className={`ds-strat-card ${pl.alliance}`}>
                   <div className="ds-strat-prev">
-                    <RobotPreview spec={spec} size={132} />
+                    <RobotPreview spec={spec} size={132} chain={settings.game === 'chain'} />
                   </div>
                   <div className="ds-strat-meta">
                     <span className="pnm">

@@ -230,13 +230,36 @@ export const CHAIN_THROWBACK_SPEED = 72; // in/s inward toss (lands mid-field af
 export const CHAIN_THROWBACK_SPREAD = 45; // in/s lateral spread on the throw-in
 
 /**
- * BALL STORAGE (a per-robot builder slider, `RobotSpec.ballStorage`). Range grounded
- * in the dimensions: the chassis is up to 24" and a Particle is 3" OD ⇒ 8 balls per
- * row; a practical multi-row internal magazine tops out around 30. Min 1.
+ * BALL STORAGE. The MAX hopper capacity is DERIVED from the ARCHETYPE + robot SIZE, not a
+ * flat number: a bigger chassis footprint holds more Particles, and a TURRET must give up
+ * its center volume to the dye rotor + shooter (smallest hopper), while the DRUM and DUMPER
+ * are open-hopper launchers (equal, large — for now). The `ballStorage` slider lets the
+ * player pick any capacity UP TO `chainStorageMax(spec)`. `CHAIN_STORAGE_MAX` is the hard
+ * ceiling (a full multi-row magazine); `CHAIN_STORAGE_MIN` the floor.
  */
 export const CHAIN_STORAGE_MIN = 1;
-export const CHAIN_STORAGE_MAX = 30;
+export const CHAIN_STORAGE_MAX = 30; // hard ceiling regardless of size
 export const CHAIN_STORAGE_DEFAULT = 8;
+export const CHAIN_STORE_AREA_PER_BALL = 9; // sq in of chassis footprint per stored Particle
+export const CHAIN_STORE_TURRET_MULT = 0.55; // turret loses center volume to the rotor+shooter
+export const CHAIN_STORE_LAUNCHER_MULT = 1.0; // drum + dumper: open hopper (large, equal)
+
+/** the MAX Particles this robot can hold — from its footprint × an archetype factor,
+ * clamped to [MIN, MAX]. Turret is smallest; drum + dumper are equal and large. */
+export function chainStorageMax(spec: RobotSpec): number {
+  const area = spec.length * spec.width;
+  const mode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
+  const mult = mode === 'turret' ? CHAIN_STORE_TURRET_MULT : CHAIN_STORE_LAUNCHER_MULT;
+  const cap = Math.round((area / CHAIN_STORE_AREA_PER_BALL) * mult);
+  return Math.max(CHAIN_STORAGE_MIN, Math.min(CHAIN_STORAGE_MAX, cap));
+}
+
+/** the robot's ACTIVE hopper capacity: its chosen `ballStorage`, clamped to its
+ * archetype+size max. Used by the sim (intake cap), renderer, and HUD. */
+export function chainHopperCap(spec: RobotSpec): number {
+  const want = Math.round(spec.ballStorage ?? CHAIN_STORAGE_DEFAULT);
+  return Math.max(CHAIN_STORAGE_MIN, Math.min(chainStorageMax(spec), want));
+}
 
 /** shooter: launch a held particle toward this robot's own accelerator. Auto-aimed
  * at the mouth center, so (like DECODE's shooter) it reliably scores — arcade feel. */

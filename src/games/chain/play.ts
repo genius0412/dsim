@@ -14,9 +14,7 @@ import {
   CHAIN_HALF_X,
   CHAIN_HALF_Y,
   CHAIN_HOOK_PLACE_R,
-  CHAIN_STORAGE_DEFAULT,
-  CHAIN_STORAGE_MAX,
-  CHAIN_STORAGE_MIN,
+  chainHopperCap,
   CHAIN_INTAKES,
   CHAIN_DEFAULT_INTAKE,
   CHAIN_DEFAULT_SCORE_MODE,
@@ -479,9 +477,7 @@ function interact(
   const r2 = CHAIN_PARTICLE_R;
 
   const intakeActive = enabled && (rob.autoIntake || (cmd?.intake ?? false));
-  const cap = Math.round(
-    Math.min(CHAIN_STORAGE_MAX, Math.max(CHAIN_STORAGE_MIN, rob.spec.ballStorage ?? CHAIN_STORAGE_DEFAULT)),
-  );
+  const cap = chainHopperCap(rob.spec);
   // CR intake DESIGN (roller / funnel / sweeper): capture every particle inside the
   // design's band, measured off the ACTUAL CHASSIS (not the collision OBB, which juts
   // forward by the DECODE intake reach) so the effective area stays ~robot-sized —

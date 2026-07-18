@@ -18,6 +18,7 @@ import { DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
 import { moduleFor, gameOf } from './games';
 import type { GameModule } from './games';
 import { accelMultiplier as chainAccelMultiplier, type EndgameState } from './games/chain/state';
+import { chainHopperCap } from './games/chain/config';
 import { startMatch } from './sim/match';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
@@ -863,7 +864,7 @@ export class GameController {
           catalysts: w.chain.catalysts.filter((c) => c.hook?.alliance === a).length,
           endgame: w.chain.endgame[this.localRobotId] ?? 'none',
           carrying: w.chain.catalysts.some((c) => c.carriedBy === this.localRobotId),
-          storage: r.spec.ballStorage ?? 8,
+          storage: chainHopperCap(r.spec),
           mode: r.spec.scoreMode ?? 'turret',
         }
       : undefined;
