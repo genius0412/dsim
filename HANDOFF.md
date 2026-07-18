@@ -56,19 +56,27 @@ of particles across the chassis width (`launchLine`, NOT converging on a point).
 Accelerator opening HANGS over the field, so these score from a STAND-OFF distance:
 - **`turret`** (default) — dye-rotor single-shooter: auto-aims + indexes ONE per
   `CHAIN_FIRE_INTERVAL` (0.05 s) from ANYWHERE (`launchToAccel`, solved arc, never short).
-- **`drum`** — chassis-wide flywheel firing CONTINUOUSLY: feeds `CHAIN_DRUM_LANES` (3) at
-  UNIFORM velocity every short `CHAIN_DRUM_INTERVAL` (0.13 s) while armed → a steady stream,
-  NOT a 6-then-wait burst. Any range. `CHAIN_DRUM_MAX` (6 = 18/3) is the drum's pocket
-  capacity / visual slot count.
+- **`drum`** — chassis-wide flywheel ROLLERS streaming SINGLE particles CONTINUOUSLY: one
+  every `CHAIN_DRUM_INTERVAL` (0.023 s ≈ 43/s, fast) ± `CHAIN_DRUM_JITTER` from a RANDOM
+  lateral position across the width (`launchAt`) — uniform SPEED, but the pattern is never a
+  uniform line. Any range. Rendered as full-width rollers (NOT a channelled drum).
 - **`dumper`** — chassis-wide catapult: flings the WHOLE hopper at once within
   `CHAIN_DUMP_RANGE` (56", a real stand-off, not point-blank); opposite-side balls leave at
   ±`CHAIN_DUMP_SIDE_VAR` speed ⇒ scatter (< 100% accuracy). Recovers `CHAIN_DUMP_INTERVAL` (0.8 s).
 
-GOAL FUNNEL + THROW-BACK (in `updateChain`'s flight loop): a scored particle now FUNNELS
-down inside the tall goal for `CHAIN_FUNNEL_S` (0.55 s, settles + drifts to the wall-side
-launcher) before being flung back across the goal width — no more instant eject. A particle
-that MISSES the opening is thrown back INTO the field by a human (`throwBack` — tossed inward
-from the wall it hit; FOR NOW, this rule may change).
+GOAL INTERIOR + THROW-BACK (in `updateChain`'s flight loop): a scored particle KEEPS its
+momentum and BOUNCES around inside the goal box (back/side/floor restitution `CHAIN_GOAL_REST`
++ `CHAIN_GOAL_FRICTION`), funneling toward the wall-side launcher (`CHAIN_FUNNEL_DRIFT_ACC`),
+which flings it back onto the field once it's funneled back (near the wall, moving fieldward,
+after `CHAIN_FUNNEL_MIN`) or `CHAIN_FUNNEL_S` max-dwell expires — NOT a snap-to-one-x instant
+eject. A particle that MISSES the opening is thrown back INTO the field by a human
+(`throwBack`; FOR NOW, this rule may change).
+
+ROBOT VISUALS + RESULTS: `drawChainRobot` shows the archetype (turret / full-width flywheel
+ROLLERS / catapult bucket) + intake design + hopper bar; the intake reads green whenever it
+can still collect (`hopper < cap`). The FINAL SCORE screen (both PvP `Results` and solo
+`RecordResults` in GameView.tsx) is CR-aware: Particles ×mult + End Game (no DECODE fouls);
+`hud.chain` carries per-alliance `particlePts`/`oppMult`/`oppCatalysts`.
 
 Three INTAKE DESIGNS (`RobotSpec.chainIntake`, `CHAIN_INTAKES` geometry → `interact`, measured
 off the ACTUAL chassis so the capture stays ~robot-sized): **roller** (full-width, 3" bite,
