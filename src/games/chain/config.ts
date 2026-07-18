@@ -213,7 +213,7 @@ export const CHAIN_LAUNCH_Z0 = 10; // in — launch height (into the tall, over-
 // NEVER a rigid uniform line. The launch SPEED is uniform (same-velocity, per the archetype);
 // only the position + timing vary. NOT a "6-then-wait" burst.
 export const CHAIN_DRUM_MAX = 6; // drum CAPACITY (18"/3" = 6 pockets) — the visual slot count
-export const CHAIN_DRUM_INTERVAL = 0.07; // s between shots (a fast continuous single-ball stream)
+export const CHAIN_DRUM_INTERVAL = 0.023; // s between shots — a FAST continuous stream (~43/s)
 export const CHAIN_DRUM_JITTER = 0.55; // ± fraction of the interval — natural, non-periodic cadence
 export const CHAIN_DRUM_SPEED = 175; // in/s uniform horizontal launch
 

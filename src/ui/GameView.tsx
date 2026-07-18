@@ -932,24 +932,31 @@ function RecordResults({
   onExit: () => void;
   onWatchReplay?: (replay: Replay) => void;
 }) {
+  const cr = hud.game === 'chain';
   const f = hud.fouls[hud.alliance]; // fouls the PLAYER committed
-  const sections: [string, [string, number][]][] = [
-    ['AUTONOMOUS', [
-      ['Leave', mine.leave],
-      ['Classified', mine.autoClassified],
-      ['Overflow', mine.autoOverflow],
-      ['Pattern', mine.autoPattern],
-    ]],
-    ['DRIVER-CONTROLLED', [
-      ['Classified', mine.teleClassified],
-      ['Overflow', mine.teleOverflow],
-      ['Pattern', mine.telePattern],
-    ]],
-    ['END OF MATCH', [
-      ['Depot', mine.depot],
-      ['Base return', mine.base],
-    ]],
-  ];
+  const sections: [string, [string, number][]][] =
+    cr && hud.chain
+      ? [
+          ['SCORING', [['Particles ×mult', hud.chain.particlePts]]],
+          ['END GAME', [['Park / Ascend', mine.total - hud.chain.particlePts]]],
+        ]
+      : [
+          ['AUTONOMOUS', [
+            ['Leave', mine.leave],
+            ['Classified', mine.autoClassified],
+            ['Overflow', mine.autoOverflow],
+            ['Pattern', mine.autoPattern],
+          ]],
+          ['DRIVER-CONTROLLED', [
+            ['Classified', mine.teleClassified],
+            ['Overflow', mine.teleOverflow],
+            ['Pattern', mine.telePattern],
+          ]],
+          ['END OF MATCH', [
+            ['Depot', mine.depot],
+            ['Base return', mine.base],
+          ]],
+        ];
 
   return (
     <div className="overlay">
@@ -976,23 +983,34 @@ function RecordResults({
                     ))}
                   </Fragment>
                 ))}
-                <tr className="section-row"><td colSpan={2}>PENALTIES</td></tr>
-                <tr className="penalty-row">
-                  <td className="cat">
-                    Fouls committed ({f.minor} minor · {f.major} major)
-                  </td>
-                  <td className="bv">{penaltyPts > 0 ? `−${penaltyPts}` : 0}</td>
-                </tr>
+                {!cr && (
+                  <>
+                    <tr className="section-row"><td colSpan={2}>PENALTIES</td></tr>
+                    <tr className="penalty-row">
+                      <td className="cat">
+                        Fouls committed ({f.minor} minor · {f.major} major)
+                      </td>
+                      <td className="bv">{penaltyPts > 0 ? `−${penaltyPts}` : 0}</td>
+                    </tr>
+                  </>
+                )}
                 <tr className="total-row">
-                  <td className="cat">NET SCORE</td>
+                  <td className="cat">{cr ? 'TOTAL' : 'NET SCORE'}</td>
                   <td className="bv">{netScore}</td>
                 </tr>
               </tbody>
             </table>
-            <p className="ds-hint">
-              Your own fouls ({PTS_FOUL_MINOR} pt minor · {PTS_FOUL_MAJOR} pt major) subtract from
-              your score.
-            </p>
+            {cr && hud.chain ? (
+              <p className="ds-hint">
+                Each Particle scores 1 pt × (1 + Catalysts on hooks, ×{hud.chain.mult}). End Game:
+                park 5 · ascend 20.
+              </p>
+            ) : (
+              <p className="ds-hint">
+                Your own fouls ({PTS_FOUL_MINOR} pt minor · {PTS_FOUL_MAJOR} pt major) subtract from
+                your score.
+              </p>
+            )}
             <div className="overlay-buttons">
               {matchResult && onWatchReplay && (
                 <button onClick={() => onWatchReplay(matchResult.replay)}>▶ WATCH REPLAY</button>
