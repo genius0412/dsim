@@ -1,6 +1,6 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../types';
 import * as C from '../../config';
-import { datan2, hyp, nextRandom, rot } from '../../math';
+import { clamp, datan2, dcos, dsin, hyp, nextRandom, rot, wrapAngle } from '../../math';
 import { robotExtents } from '../../sim/physics';
 import {
   CHAIN_ACCEL_DEPTH,
@@ -20,10 +20,22 @@ import {
   CHAIN_INTAKES,
   CHAIN_DEFAULT_INTAKE,
   CHAIN_DEFAULT_SCORE_MODE,
+  CHAIN_AIM_TOL,
+  CHAIN_AIM_GAIN,
+  CHAIN_LAUNCH_LINE_FRAC,
+  CHAIN_LAUNCH_Z0,
+  CHAIN_DRUM_MAX,
+  CHAIN_DRUM_INTERVAL,
+  CHAIN_DRUM_SPEED,
   CHAIN_DUMP_RANGE,
   CHAIN_DUMP_INTERVAL,
   CHAIN_DUMP_SPEED,
-  CHAIN_DUMP_SPREAD,
+  CHAIN_DUMP_SIDE_VAR,
+  CHAIN_FUNNEL_S,
+  CHAIN_FUNNEL_FALL,
+  CHAIN_FUNNEL_DRIFT,
+  CHAIN_THROWBACK_SPEED,
+  CHAIN_THROWBACK_SPREAD,
   CHAIN_PARTICLE_R,
   CHAIN_PART_FRICTION,
   CHAIN_PART_REST_SPEED,
@@ -86,28 +98,39 @@ export function updateChain(
     const mode = r.spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
     const distMouth = hyp(mouth.x - r.pos.x, mouth.y - r.pos.y);
 
-    if (mode === 'dumper') {
-      // DUMPER: no turret (barrel points forward). Within range of the mouth, a dump
-      // empties the WHOLE hopper at once in a fanned burst, then recovers.
-      r.turretHeading = r.heading;
-      if (wantsFire && r.hopper.length > 0 && world.time >= r.fireReadyAt && distMouth <= CHAIN_DUMP_RANGE) {
-        const n = r.hopper.length;
-        r.hopper.length = 0;
-        for (let i = 0; i < n; i++) {
-          launchToAccel(world, chain, r, mouth, CHAIN_DUMP_SPEED, (rand() - 0.5) * CHAIN_DUMP_SPREAD);
-        }
-        r.fireReadyAt = world.time + CHAIN_DUMP_INTERVAL;
-        r.lastFireAt = world.time;
-      }
-    } else {
-      // TURRET single-shooter: auto-aim at the mouth center and index ONE particle per
-      // cadence, from ANY range. SOLVED trajectory (aim at center ⇒ always crosses the
-      // mouth; arc adapts to distance so a shot never falls short — see launchToAccel).
+    if (mode === 'turret') {
+      // TURRET single-shooter: auto-aim the turret at the mouth center and index ONE
+      // particle per cadence, from ANY range. SOLVED trajectory (aim at center ⇒ always
+      // crosses the mouth; arc adapts to distance so a shot never falls short).
       r.turretHeading = datan2(mouth.y - r.pos.y, mouth.x - r.pos.x);
       if (wantsFire && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
         r.hopper.shift();
         launchToAccel(world, chain, r, mouth, CHAIN_SHOT_SPEED, 0);
         r.fireReadyAt = world.time + CHAIN_FIRE_INTERVAL;
+        r.lastFireAt = world.time;
+      }
+    } else {
+      // TURRETLESS (drum / dumper): no turret — the barrel is the chassis, so the robot
+      // AIMS BY TURNING to face the goal (the fire button steers it, see chainAimAssist in
+      // step.ts) and fires a PARALLEL LINE of particles across its width. Only fires once
+      // ALIGNED; drum from any range, dumper only within its (generous) stand-off range.
+      r.turretHeading = r.heading;
+      const aligned = Math.abs(wrapAngle(goalHeading(r.alliance) - r.heading)) <= CHAIN_AIM_TOL;
+      const inRange = mode === 'drum' ? true : distMouth <= CHAIN_DUMP_RANGE;
+      if (wantsFire && aligned && inRange && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
+        if (mode === 'drum') {
+          // flywheel drum: up to 6 at once, UNIFORM velocity, slower burst cadence
+          const n = Math.min(CHAIN_DRUM_MAX, r.hopper.length);
+          r.hopper.splice(0, n);
+          launchLine(world, chain, r, n, CHAIN_DRUM_SPEED, 0);
+          r.fireReadyAt = world.time + CHAIN_DRUM_INTERVAL;
+        } else {
+          // catapult: fling the WHOLE hopper at once, side-to-side velocity variance
+          const n = r.hopper.length;
+          r.hopper.length = 0;
+          launchLine(world, chain, r, n, CHAIN_DUMP_SPEED, CHAIN_DUMP_SIDE_VAR);
+          r.fireReadyAt = world.time + CHAIN_DUMP_INTERVAL;
+        }
         r.lastFireAt = world.time;
       }
     }
@@ -119,58 +142,73 @@ export function updateChain(
     chain.catalystHeld[r.id] = now;
   }
 
-  // ── flight particles: fly INTO the accelerator, score, then eject back out ──
+  // ── flight particles: fly at the goal → score + FUNNEL down → wall-side launcher
+  //    flings them back out; a MISS is thrown back into the field by a human ──────
   const survivors: Artifact[] = [];
   for (const b of world.balls) {
     if (b.state.kind !== 'flight') {
       survivors.push(b);
       continue;
     }
-    const a = b.state.target;
+    const st = b.state;
+    const a = st.target;
     const side = accelSide(a);
-    b.pos.x += b.vel.x * dt;
-    b.pos.y += b.vel.y * dt;
-    b.z += b.vz * dt;
-    b.vz -= C.GRAVITY * dt;
     const wall = side * CHAIN_HALF_X;
-    const beyond = side < 0 ? b.pos.x <= wall : b.pos.x >= wall;
 
-    if (!b.state.scored) {
+    if (!st.scored) {
+      // ballistic flight toward the goal
+      b.pos.x += b.vel.x * dt;
+      b.pos.y += b.vel.y * dt;
+      b.z += b.vz * dt;
+      b.vz -= C.GRAVITY * dt;
+      const beyond = side < 0 ? b.pos.x <= wall : b.pos.x >= wall;
       if (beyond && Math.abs(b.pos.y) <= CHAIN_ACCEL_HALF_Y) {
-        // ENTERED the accelerator → count it; keep flying into the box
+        // ENTERED the tall opening → score, then FUNNEL down inside the goal before the
+        // launcher flings it back out (no more instant eject).
         chain.scored[a]++;
         chain.particlePoints[a] += accelMultiplier(chain, a);
-        b.state.scored = true;
+        st.scored = true;
+        st.funnelT = CHAIN_FUNNEL_S;
+        b.pos.x = wall + side * (CHAIN_PARTICLE_R + 1); // just inside the opening
+        b.vel.x = 0;
+        b.vel.y = 0;
+        b.vz = 0;
+        b.z = Math.max(b.z, 8);
         survivors.push(b);
       } else if (beyond) {
-        survivors.push(landed(b, { x: wall - side * r2, y: b.pos.y })); // missed the mouth
+        // missed the opening (hit the perimeter wall) → a human throws it back in
+        survivors.push(throwBack(b, side, rand));
       } else if (b.z <= 0) {
-        survivors.push(landed(b, { x: b.pos.x, y: b.pos.y })); // fell short
+        survivors.push(landed(b, { x: b.pos.x, y: b.pos.y })); // fell short, into the field
       } else {
         survivors.push(b);
       }
       continue;
     }
 
-    // scored: two sub-phases by velocity direction
-    const outgoing = Math.sign(b.vel.x) === -side;
-    if (!outgoing) {
-      // still flying INTO the box — eject when it lands or reaches the back wall
-      const backWall = side * (CHAIN_HALF_X + CHAIN_ACCEL_DEPTH);
-      const hitBack = side < 0 ? b.pos.x <= backWall : b.pos.x >= backWall;
-      if (b.z <= 0 || hitBack) {
-        if (hitBack) b.pos.x = backWall;
-        // REJECT back onto the field — further out + more variance (power, arc, and
-        // lateral spread all vary per ball) so they scatter over a wide area.
-        const spd = CHAIN_EJECT_SPEED * (0.75 + rand() * 0.7);
+    // SCORED. Funnel down inside the goal, then the wall-side launcher (spanning the whole
+    // goal width) flings it back onto the field.
+    if ((st.funnelT ?? 0) > 0) {
+      st.funnelT = (st.funnelT ?? 0) - dt;
+      b.z = Math.max(0, b.z - CHAIN_FUNNEL_FALL * dt); // settle to the goal floor
+      b.pos.x = approach(b.pos.x, wall, CHAIN_FUNNEL_DRIFT * dt); // drift to the wall-side launcher
+      if ((st.funnelT ?? 0) <= 0) {
+        // LAUNCH back onto the field from the wall-side launcher, across the goal width
+        const spd = CHAIN_EJECT_SPEED * (0.8 + rand() * 0.5);
+        b.pos.x = wall - side * CHAIN_PARTICLE_R;
+        b.pos.y = (rand() - 0.5) * 2 * CHAIN_ACCEL_HALF_Y * 0.85; // spread across the launcher
         b.vel.x = -side * spd;
         b.vel.y = (rand() - 0.5) * CHAIN_EJECT_SPREAD;
-        b.vz = CHAIN_EJECT_VZ * (0.75 + rand() * 0.7);
+        b.vz = CHAIN_EJECT_VZ * (0.8 + rand() * 0.5);
         b.z = Math.max(b.z, 5);
       }
       survivors.push(b);
     } else {
-      // ejecting back onto the field — land as a ground particle
+      // ejecting back onto the field — integrate + land as a ground particle
+      b.pos.x += b.vel.x * dt;
+      b.pos.y += b.vel.y * dt;
+      b.z += b.vz * dt;
+      b.vz -= C.GRAVITY * dt;
       if (b.z <= 0) survivors.push(landed(b, { x: b.pos.x, y: b.pos.y }));
       else survivors.push(b);
     }
@@ -283,6 +321,93 @@ function launchToAccel(
     z: z0,
     vz,
   });
+}
+
+/** the heading a turretless launcher must face to aim at its goal (goal is at ±x, so
+ * face +x = heading 0 for blue, −x = heading π for red). */
+function goalHeading(a: Alliance): number {
+  return accelSide(a) > 0 ? 0 : Math.PI;
+}
+
+/**
+ * TURRETLESS AIM ASSIST (drum / dumper). While the MANUAL fire button is held, steer the
+ * whole robot to face its goal — the fire button turns the robot, THEN it shoots (see the
+ * fire gate in updateChain). Returns a `rotate` command override, or null to leave the
+ * player's rotation alone (turret, or auto-fire, which fires opportunistically without
+ * hijacking the driver's heading). Called from `chainStep` BEFORE the drivetrain model.
+ */
+export function chainAimAssist(r: RobotState, cmd: RobotCommand | undefined, enabled: boolean): number | null {
+  const mode = r.spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
+  if (mode !== 'drum' && mode !== 'dumper') return null;
+  if (!enabled || !(cmd?.fire ?? false)) return null; // only the manual button steers
+  const err = wrapAngle(goalHeading(r.alliance) - r.heading);
+  return clamp(err * CHAIN_AIM_GAIN, -1, 1);
+}
+
+/**
+ * Fire a PARALLEL LINE of `count` particles across the robot's width toward its goal.
+ * The launcher is fixed to the chassis (no turret), so every ball leaves along the robot's
+ * FORWARD heading (aim comes from the robot turning to face the goal) — they travel
+ * parallel, NOT converging on a point. `speed` is the base horizontal launch speed;
+ * `sideVar` (dumper catapult) makes balls stored on opposite sides leave at ± that
+ * fraction of the speed ⇒ scatter. The arc is solved so each is still airborne crossing
+ * the wall plane (the tall over-field opening). Deterministic (no RNG).
+ */
+function launchLine(
+  world: World,
+  chain: ChainState,
+  r: RobotState,
+  count: number,
+  speed: number,
+  sideVar: number,
+): void {
+  if (count <= 0) return;
+  const side = accelSide(r.alliance);
+  const hw = r.spec.width / 2;
+  const hl = r.spec.length / 2;
+  const fwd = { x: dcos(r.heading), y: dsin(r.heading) };
+  const wall = side * CHAIN_HALF_X;
+  for (let i = 0; i < count; i++) {
+    const frac = count > 1 ? i / (count - 1) - 0.5 : 0; // −0.5..0.5 across the width line
+    const w = rot({ x: hl, y: frac * 2 * hw * CHAIN_LAUNCH_LINE_FRAC }, r.heading);
+    const px = r.pos.x + w.x;
+    const py = r.pos.y + w.y;
+    const spd = speed * (1 + sideVar * (frac * 2)); // frac*2 ∈ [−1,1] — catapult side variance
+    const vx = fwd.x * spd;
+    const vy = fwd.y * spd;
+    // arc: solve vz so z(tWall) = z0 (still airborne crossing the wall — a lob into the tall goal)
+    const vhx = Math.max(1, Math.abs(vx));
+    const tWall = Math.max(0.05, Math.abs(wall - px) / vhx);
+    world.balls.push({
+      id: chain.nextBallId++,
+      color: 'green',
+      state: { kind: 'flight', target: r.alliance },
+      pos: { x: px, y: py },
+      vel: { x: vx, y: vy },
+      z: CHAIN_LAUNCH_Z0,
+      vz: 0.5 * C.GRAVITY * tWall,
+    });
+  }
+}
+
+/** a HUMAN retrieves a missed particle at the wall and throws it back into the field
+ * (tossed inward from where it hit; FOR NOW — this rule may change). */
+function throwBack(b: Artifact, side: -1 | 1, rand: () => number): Artifact {
+  b.state = { kind: 'ground' };
+  b.z = 0;
+  b.vz = 0;
+  b.pos.x = side * (CHAIN_HALF_X - CHAIN_PARTICLE_R);
+  b.pos.y = clamp(b.pos.y, -(CHAIN_HALF_Y - CHAIN_PARTICLE_R), CHAIN_HALF_Y - CHAIN_PARTICLE_R);
+  const spd = CHAIN_THROWBACK_SPEED * (0.7 + rand() * 0.6);
+  b.vel.x = -side * spd;
+  b.vel.y = (rand() - 0.5) * CHAIN_THROWBACK_SPREAD;
+  return b;
+}
+
+/** move `v` toward `target` by at most `step` */
+function approach(v: number, target: number, step: number): number {
+  if (v < target) return Math.min(v + step, target);
+  return Math.max(v - step, target);
 }
 
 /** convert a flight ball to a resting ground particle at `pos` */

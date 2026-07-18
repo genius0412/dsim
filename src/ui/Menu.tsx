@@ -51,11 +51,13 @@ const INTAKE_BLURBS: Record<IntakeStyle, string> = {
 // Chain Reaction robot config labels/blurbs (CR-only builder controls)
 const CHAIN_MODE_LABELS: Record<ChainScoreMode, string> = {
   turret: 'Turret shooter',
+  drum: 'Drum shooter',
   dumper: 'Dumper',
 };
 const CHAIN_MODE_BLURBS: Record<ChainScoreMode, string> = {
-  turret: 'Dye-rotor + turret — shoots particles one-by-one from anywhere',
-  dumper: 'No shooter — dumps the whole hopper at the accelerator (big bursts, no range)',
+  turret: 'Dye-rotor + turret — aims itself, shoots one-by-one from anywhere',
+  drum: 'Chassis-wide flywheel — turn to the goal, fire up to 6 at once from anywhere',
+  dumper: 'Chassis-wide catapult — turn to the goal, fling the whole hopper (limited range)',
 };
 const CHAIN_INTAKE_LABELS: Record<ChainIntakeStyle, string> = {
   roller: 'Roller',

@@ -186,18 +186,48 @@ export const CHAIN_DEFAULT_INTAKE: ChainIntakeStyle = 'roller';
 
 /**
  * SCORING ARCHETYPES (`RobotSpec.scoreMode`) — the robot's expansion/scoring mechanism.
- *  • turret — indexes + launches ONE Particle per `CHAIN_FIRE_INTERVAL` from anywhere
- *    (high sustained rate, scores from safety, no travel).
- *  • dumper — must be within `CHAIN_DUMP_RANGE` of the Accelerator mouth; a dump empties
- *    the WHOLE hopper at once, then recovers for `CHAIN_DUMP_INTERVAL` (big bursts, but
- *    you must cycle to the wall — storage capacity + drivetrain speed carry it).
+ * turret aims its own turret; drum + dumper are TURRETLESS chassis-wide launchers, so the
+ * robot AIMS BY TURNING to face the goal (the fire button steers it) and fires a PARALLEL
+ * LINE of Particles across its width. The tall Accelerator opening HANGS over the field, so
+ * these can score from a stand-off distance (not point-blank).
+ *  • turret — indexes + launches ONE Particle per `CHAIN_FIRE_INTERVAL` from anywhere.
+ *  • drum   — a chassis-wide flywheel drum: fires up to `CHAIN_DRUM_MAX` (6 = 18/3) at once
+ *    in a UNIFORM parallel line from ANY range; a burst every `CHAIN_DRUM_INTERVAL` (the
+ *    drum re-indexes — realistically slower than a turret).
+ *  • dumper — a chassis-wide catapult: flings the WHOLE hopper at once from LIMITED range
+ *    (`CHAIN_DUMP_RANGE`); balls stored on opposite sides leave at DIFFERENT speeds
+ *    (`CHAIN_DUMP_SIDE_VAR`) ⇒ real scatter (< 100% accuracy).
  */
-export const CHAIN_SCORE_MODES = ['turret', 'dumper'] as const;
+export const CHAIN_SCORE_MODES = ['turret', 'drum', 'dumper'] as const;
 export const CHAIN_DEFAULT_SCORE_MODE: ChainScoreMode = 'turret';
-export const CHAIN_DUMP_RANGE = 22; // in — how close to the mouth a dumper must be
-export const CHAIN_DUMP_INTERVAL = 0.7; // s recovery between full dumps
-export const CHAIN_DUMP_SPEED = 120; // in/s launch of each dumped Particle (short toss)
-export const CHAIN_DUMP_SPREAD = 40; // in/s lateral spread across a dump (fans into the mouth)
+
+// turretless-launcher aiming (drum + dumper turn the whole robot to face the goal)
+export const CHAIN_AIM_TOL = 0.14; // rad heading error under which a turned shooter fires
+export const CHAIN_AIM_GAIN = 4.5; // P-gain turning the robot toward the goal while firing
+export const CHAIN_LAUNCH_LINE_FRAC = 0.92; // fraction of the chassis width the line spans
+export const CHAIN_LAUNCH_Z0 = 10; // in — launch height (into the tall, over-field opening)
+
+// DRUM: uniform-velocity flywheel, up to 6 at once, any range, slower burst cadence
+export const CHAIN_DRUM_MAX = 6; // max Particles per burst (18"/3" = 6 fit the drum)
+export const CHAIN_DRUM_INTERVAL = 0.55; // s between bursts (drum re-index)
+export const CHAIN_DRUM_SPEED = 175; // in/s uniform horizontal launch
+
+// DUMPER: whole-hopper catapult, limited (but not point-blank) range, side-var scatter
+export const CHAIN_DUMP_RANGE = 56; // in — the tall opening hangs over the field: stand off
+export const CHAIN_DUMP_INTERVAL = 0.8; // s recovery between full dumps
+export const CHAIN_DUMP_SPEED = 150; // in/s base horizontal launch
+export const CHAIN_DUMP_SIDE_VAR = 0.16; // ± speed variance across the catapult width (scatter)
+
+// GOAL FUNNEL: a scored Particle bounces/funnels DOWN inside the tall goal for this long
+// before the wall-side launcher (spanning the whole goal width) flings it back onto the field
+export const CHAIN_FUNNEL_S = 0.55; // s dwell inside the goal before re-launch
+export const CHAIN_FUNNEL_FALL = 45; // in/s the Particle settles to the goal floor
+export const CHAIN_FUNNEL_DRIFT = 40; // in/s drift toward the wall-side launcher
+
+// MISSED shot: a Particle that misses the opening is retrieved by a HUMAN and thrown back
+// into the field (FOR NOW — this rule may change) — tossed inward from the wall it hit
+export const CHAIN_THROWBACK_SPEED = 72; // in/s inward toss (lands mid-field after friction)
+export const CHAIN_THROWBACK_SPREAD = 45; // in/s lateral spread on the throw-in
 
 /**
  * BALL STORAGE (a per-robot builder slider, `RobotSpec.ballStorage`). Range grounded
@@ -251,11 +281,11 @@ export const CHAIN_PRESETS: readonly RobotSpec[] = [
     ballStorage: 28, groundClearance: 2.2, scoreMode: 'dumper', chainIntake: 'sweeper',
   },
   {
-    // the all-rounder: turret + full-width roller on a light, precise mecanum base
-    name: 'Cycler', teamName: 'Turret · steady cycler', teamNumber: 0,
-    length: 14.5, width: 17, intake: 'sloped', massLb: 24, drivetrain: 'mecanum',
+    // the volume shooter: a chassis-wide drum firing 6 at once from anywhere, light mecanum
+    name: 'Drummer', teamName: 'Drum · fire 6 at once, any range', teamNumber: 0,
+    length: 14.5, width: 17, intake: 'sloped', massLb: 25, drivetrain: 'mecanum',
     driveRpm: 470, flywheelInertia: 0.3, canSort: false,
-    ballStorage: 12, groundClearance: 1.4, scoreMode: 'turret', chainIntake: 'roller',
+    ballStorage: 14, groundClearance: 1.4, scoreMode: 'drum', chainIntake: 'roller',
   },
   {
     // fast wall-runner: a quick x-drive dumper that shuttles particles to its own

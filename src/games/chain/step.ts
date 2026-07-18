@@ -4,7 +4,7 @@ import { solveRobots } from '../../sim/physicsEngine';
 import { updateRobot } from '../../sim/robot';
 import { robotsEnabled } from '../../sim/match';
 import { chainColliders } from './colliders';
-import { updateChain } from './play';
+import { updateChain, chainAimAssist } from './play';
 import { beamBlock, beamDrag, cogFactor } from './beams';
 
 /**
@@ -36,7 +36,11 @@ export function chainStep(world: World, dt: number, commands: Map<number, RobotC
   const enabled = robotsEnabled(world);
   const actual = new Map<number, RobotCommand>();
   for (const r of world.robots) {
-    const cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
+    let cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
+    // turretless shooters (drum/dumper) turn the whole robot to face the goal while the
+    // fire button is held — override the rotate command before the drivetrain model.
+    const aim = chainAimAssist(r, cmd, enabled);
+    if (aim !== null) cmd = { ...cmd, rotate: aim };
     actual.set(r.id, cmd);
     // raised center of gravity (from ground clearance) makes the drive sluggish:
     // scale the movement command by the CoG factor before the drivetrain model.

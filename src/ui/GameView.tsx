@@ -439,7 +439,7 @@ function Hud({ hud }: { hud: HudSnapshot }) {
             )}
             {cr && hud.chain && (
               <>
-                <span className="chip">{hud.chain.mode === 'dumper' ? 'DUMPER' : 'TURRET'}</span>
+                <span className="chip">{hud.chain.mode.toUpperCase()}</span>
                 <span className="chip">HOPPER {hud.hopper.length}/{hud.chain.storage}</span>
                 <span className={`chip ${hud.chain.mult > 1 ? 'on' : ''}`}>×{hud.chain.mult}</span>
                 {hud.chain.carrying && <span className="chip on">CATALYST</span>}

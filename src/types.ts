@@ -82,17 +82,23 @@ export interface RobotSpec {
   chainIntake?: ChainIntakeStyle;
 }
 
-/** Chain Reaction scoring archetype (see `RobotSpec.scoreMode`). */
-export type ChainScoreMode = 'turret' | 'dumper';
+/** Chain Reaction scoring archetype (see `RobotSpec.scoreMode`).
+ *  • turret — turreted single-shooter, indexes one at a time, aims itself, any range.
+ *  • drum   — a chassis-wide flywheel drum (no turret): the robot turns to face the goal,
+ *    then fires up to 6 at once in a parallel line from ANY range (uniform velocity).
+ *  • dumper — a chassis-wide catapult (no turret): turns to face the goal, then flings the
+ *    WHOLE hopper at once from LIMITED range (side-to-side velocity variance ⇒ scatter). */
+export type ChainScoreMode = 'turret' | 'drum' | 'dumper';
 /** Chain Reaction intake design (see `RobotSpec.chainIntake`). */
 export type ChainIntakeStyle = 'roller' | 'funnel' | 'sweeper';
 
 export type BallState =
   | { kind: 'ground' }
   /** in the air. `target` = the accelerator it was launched at. Chain Reaction:
-   * once it enters that accelerator it is `scored`, then the accelerator's reject
-   * system flings it back onto the field (same ball, still 'flight' until it lands). */
-  | { kind: 'flight'; target: Alliance; scored?: boolean }
+   * once it enters that accelerator it is `scored`, then FUNNELS down inside the goal
+   * for `funnelT` seconds before the wall-side launcher flings it back onto the field
+   * (same ball, still 'flight' until it lands). */
+  | { kind: 'flight'; target: Alliance; scored?: boolean; funnelT?: number }
   /** jumbling inside the goal's triangular basin, funnelling toward the
    * classifier entrance under gravity */
   | { kind: 'basin'; goal: Alliance }

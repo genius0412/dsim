@@ -3665,46 +3665,181 @@ const mkMM = () => {
     );
   }
 
-  // DUMPER archetype: near the accelerator mouth, a dump empties the whole hopper at once
+  const dumperSetup = (): RobotSetup => {
+    const s = chainSetup(0, 'blue');
+    s.spec = { ...DEFAULT_SPEC, scoreMode: 'dumper' };
+    return s;
+  };
+
+  // DUMPER: aims by facing the goal, then flings the whole hopper — and can shoot from a
+  // STAND-OFF distance (the tall opening hangs over the field), not just point-blank
   {
-    const setup = chainSetup(0, 'blue');
-    setup.spec = { ...DEFAULT_SPEC, scoreMode: 'dumper' };
-    const gw = createChainWorld('match', 801, [setup]);
+    const gw = createChainWorld('match', 801, [dumperSetup()]);
     gw.match.phase = 'teleop';
     gw.match.phaseTimeLeft = 120;
     const rob = gw.robots[0];
     rob.autoIntake = false; // isolate the dump (don't refill from ambient particles)
     rob.autoFire = true;
-    rob.pos = { x: CHAIN_HALF_X - 10, y: 0 }; // right at the blue accelerator mouth
+    rob.heading = 0; // blue faces +x (its goal) — aligned
+    rob.pos = { x: CHAIN_HALF_X - 40, y: 0 }; // 40" back from the wall — a real stand-off
     rob.hopper = ['green', 'green', 'green', 'green', 'green', 'green'];
     const before = gw.chain!.scored.blue;
-    runChain(gw, cmd({}), 0.5); // let the dumped burst fly into the mouth
+    runChain(gw, cmd({}), 0.6); // let the fanned burst fly in
     check(
-      'chain dumper: a dump near the mouth scores the whole hopper at once',
+      'chain dumper: flings the whole hopper from a stand-off distance',
       gw.chain!.scored.blue - before >= 4,
       `scored+=${gw.chain!.scored.blue - before}`,
     );
   }
 
-  // DUMPER out of range: far from the mouth the dump never fires (no long-range scoring)
+  // DUMPER out of range: beyond CHAIN_DUMP_RANGE the dump never fires (limited range)
   {
-    const setup = chainSetup(0, 'blue');
-    setup.spec = { ...DEFAULT_SPEC, scoreMode: 'dumper' };
-    const gw = createChainWorld('match', 802, [setup]);
+    const gw = createChainWorld('match', 802, [dumperSetup()]);
     gw.match.phase = 'teleop';
     gw.match.phaseTimeLeft = 120;
     const rob = gw.robots[0];
     rob.autoIntake = false;
     rob.autoFire = true;
-    rob.pos = { x: 0, y: 0 }; // field center — far out of dump range
+    rob.heading = 0; // aligned — so RANGE is the only thing gating the shot
+    rob.pos = { x: -20, y: 0 }; // ~92" from the blue mouth — well beyond dump range
     rob.hopper = ['green', 'green', 'green', 'green'];
     const before = gw.chain!.scored.blue;
-    runChain(gw, cmd({}), 0.2);
+    runChain(gw, cmd({}), 0.3);
     check(
-      'chain dumper: out of range keeps its load (no long-range dump)',
+      'chain dumper: out of range keeps its load (limited range)',
       rob.hopper.length === 4 && gw.chain!.scored.blue === before,
       `hopper=${rob.hopper.length} scored+=${gw.chain!.scored.blue - before}`,
     );
+  }
+
+  // DRUM shooter: fires up to 6 at once, from ANY range (aligned)
+  {
+    const s = chainSetup(0, 'blue');
+    s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum' };
+    const gw = createChainWorld('match', 803, [s]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = false;
+    rob.autoFire = true;
+    rob.heading = 0;
+    rob.pos = { x: -30, y: 0 }; // >100" from the goal — a drum shoots from anywhere
+    rob.hopper = Array(10).fill('green');
+    const before = gw.chain!.scored.blue;
+    runChain(gw, cmd({}), 1.2);
+    check(
+      'chain drum: scores from long range (any distance)',
+      gw.chain!.scored.blue - before >= 5,
+      `scored+=${gw.chain!.scored.blue - before}`,
+    );
+  }
+
+  // DRUM burst cap: at most CHAIN_DRUM_MAX (6) leave per burst
+  {
+    const s = chainSetup(0, 'blue');
+    s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum' };
+    const gw = createChainWorld('match', 804, [s]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = false;
+    rob.autoFire = true;
+    rob.heading = 0;
+    rob.pos = { x: 0, y: 0 };
+    rob.hopper = Array(8).fill('green');
+    runChain(gw, cmd({}), SIM_DT); // one tick = one burst
+    check('chain drum: a burst fires at most 6 (drum capacity)', rob.hopper.length === 2, `left=${rob.hopper.length}`);
+  }
+
+  // TURN-TO-AIM control: holding fire steers a turretless shooter to face the goal, then it fires
+  {
+    const s = chainSetup(0, 'blue');
+    s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum' };
+    const gw = createChainWorld('match', 805, [s]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = false;
+    rob.autoFire = false; // NOT auto — the manual fire button must do the aiming
+    rob.heading = Math.PI; // facing AWAY from the blue (+x) goal
+    rob.pos = { x: -20, y: 0 };
+    rob.hopper = Array(6).fill('green');
+    const before = gw.chain!.scored.blue;
+    runChain(gw, cmd({ fire: true }), 1.6); // hold fire → turns to the goal, then shoots
+    const aligned = Math.abs(Math.atan2(Math.sin(rob.heading), Math.cos(rob.heading))) < 0.2;
+    check(
+      'chain aim: holding fire turns a drum to face the goal, then it fires',
+      aligned && gw.chain!.scored.blue - before >= 1,
+      `heading=${rob.heading.toFixed(2)} scored+=${gw.chain!.scored.blue - before}`,
+    );
+  }
+
+  // LAUNCH velocities: drum is UNIFORM across the line; dumper has side-to-side VARIANCE
+  {
+    const flightVx = (mode: 'drum' | 'dumper'): number[] => {
+      const s = chainSetup(0, 'blue');
+      s.spec = { ...DEFAULT_SPEC, scoreMode: mode };
+      const gw = createChainWorld('match', 806, [s]);
+      gw.match.phase = 'teleop';
+      gw.match.phaseTimeLeft = 120;
+      const rob = gw.robots[0];
+      rob.autoIntake = false;
+      rob.autoFire = true;
+      rob.heading = 0;
+      rob.pos = { x: 30, y: 0 }; // within dump range for the dumper (distMouth 42 < 56)
+      rob.hopper = Array(6).fill('green');
+      runChain(gw, cmd({}), SIM_DT);
+      return gw.balls.filter((b) => b.state.kind === 'flight').map((b) => b.vel.x);
+    };
+    const dv = flightVx('drum');
+    const uniform = dv.length >= 6 && Math.max(...dv) - Math.min(...dv) < 1e-6;
+    const pv = flightVx('dumper');
+    const varied = pv.length >= 6 && Math.max(...pv) - Math.min(...pv) > 10;
+    check('chain launch: drum uniform velocity, dumper side-to-side variance', uniform && varied, `drumSpread=${(Math.max(...dv) - Math.min(...dv)).toFixed(2)} dumpSpread=${(Math.max(...pv) - Math.min(...pv)).toFixed(1)}`);
+  }
+
+  // GOAL FUNNEL: a scored particle DWELLS inside the goal (funnels down) before the
+  // wall-side launcher flings it back out — it is not ejected instantly
+  {
+    const gw = createChainWorld('match', 807, [chainSetup(0, 'blue')]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    // a flight ball just short of the blue opening, heading in on the centerline
+    gw.balls[0].state = { kind: 'flight', target: 'blue' };
+    gw.balls[0].pos = { x: CHAIN_HALF_X - 3, y: 0 };
+    gw.balls[0].vel = { x: 300, y: 0 };
+    gw.balls[0].z = 10;
+    gw.balls[0].vz = 0;
+    const id = gw.balls[0].id;
+    runChain(gw, cmd({}), SIM_DT); // one tick → crosses the opening + scores
+    const b1 = gw.balls.find((b) => b.id === id)!;
+    const dwelling = b1.state.kind === 'flight' && b1.state.scored === true && (b1.state.funnelT ?? 0) > 0;
+    runChain(gw, cmd({}), 0.7); // past the funnel dwell → launched back onto the field
+    const b2 = gw.balls.find((b) => b.id === id)!;
+    const relaunched = b2.state.kind !== 'flight' || b2.vel.x < 0; // moving back into the field (−x)
+    check('chain goal: a scored particle funnels down before re-launch', dwelling && relaunched);
+  }
+
+  // MISS → HUMAN THROW-BACK: a particle that misses the opening is thrown back INTO the field
+  {
+    const gw = createChainWorld('match', 808, [chainSetup(0, 'blue')]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const before = gw.chain!.scored.blue;
+    gw.balls[0].state = { kind: 'flight', target: 'blue' };
+    gw.balls[0].pos = { x: CHAIN_HALF_X - 3, y: 40 }; // y=40 is OUTSIDE the opening (±27.4)
+    gw.balls[0].vel = { x: 300, y: 0 };
+    gw.balls[0].z = 10;
+    gw.balls[0].vz = 0;
+    const id = gw.balls[0].id;
+    runChain(gw, cmd({}), SIM_DT);
+    const b = gw.balls.find((x) => x.id === id)!;
+    const thrownBack =
+      b.state.kind === 'ground' &&
+      Math.abs(b.pos.x) < CHAIN_HALF_X &&
+      b.vel.x < 0 && // tossed back inward (−x from the +x wall)
+      gw.chain!.scored.blue === before; // a miss never scores
+    check('chain miss: a missed particle is thrown back into the field (not scored)', thrownBack, `kind=${b.state.kind} x=${b.pos.x.toFixed(1)} vx=${b.vel.x.toFixed(1)}`);
   }
 
   // INTAKE DESIGNS: funnel reaches further forward; the wide roller grabs wider
