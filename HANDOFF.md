@@ -73,8 +73,18 @@ off the ACTUAL chassis so the capture stays ~robot-sized): **roller** (full-widt
 all-rounder) · **funnel** (narrow 55%, 6" reach, precise singles) · **sweeper** (widest +2"
 overhang, 4" bite, max volume). CR intake is a WIDE band (multi-ball per tick).
 
-Plus the CR sliders: **ballStorage** (1–30) and **groundClearance** (0.5–3").
-`flywheelInertia`/`canSort`/DECODE intake picker are hidden for CR.
+HOPPER CAPACITY is DERIVED from archetype × size (`chainStorageMax`/`chainHopperCap` in
+chain/config.ts): a bigger chassis footprint holds more, TURRET is smallest (dye rotor +
+shooter take center volume, `CHAIN_STORE_TURRET_MULT` 0.55), DRUM = DUMPER large (1.0). The
+`ballStorage` slider's MAX is dynamic; `coerceSpec` resolves scoreMode BEFORE clamping
+ballStorage to `chainStorageMax`. Plus **groundClearance** (0.5–3"). `flywheelInertia`/
+`canSort`/DECODE intake picker are hidden for CR.
+
+ROBOT VISUALS: `GameModule.drawRobot?` hook (renderer.ts: `mod.drawRobot ?? drawRobot`).
+CR's `src/games/chain/drawRobot.ts` shares the chassis + `drawWheels`/`roundRect` (exported
+from `render/drawRobot.ts`, DECODE byte-identical) and draws the ARCHETYPE launcher (turret
+on top · chassis-wide slotted drum · catapult bucket) + the INTAKE DESIGN + a hopper-fill
+bar. `RobotPreview` has a CR variant behind a `chain` prop (Menu + MatchStrategy pass it).
 
 FOUR CR PRESETS (`CHAIN_PRESETS`, shown in place of DECODE's `ROBOT_PRESETS` when
 `game==='chain'`): **Sniper** (turret/funnel/swerve) · **Drummer** (drum/roller/mecanum) ·
