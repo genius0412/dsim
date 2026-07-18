@@ -102,10 +102,10 @@ export function updateChain(
     const distMouth = hyp(mouth.x - r.pos.x, mouth.y - r.pos.y);
 
     if (mode === 'turret') {
-      // TURRET single-shooter: auto-aim the turret at the mouth center and index ONE
-      // particle per cadence, from ANY range. SOLVED trajectory (aim at center ⇒ always
-      // crosses the mouth; arc adapts to distance so a shot never falls short).
-      r.turretHeading = datan2(mouth.y - r.pos.y, mouth.x - r.pos.x);
+      // TURRET single-shooter: auto-aim + index ONE particle per cadence, from ANY range.
+      // SHOOTING ON THE MOVE: the turret LEADS — it turns to the lead heading so the shot
+      // (muzzle + inherited chassis velocity) still heads at the mouth (a tracking turret).
+      r.turretHeading = leadDir(r.pos, mouth, CHAIN_SHOT_SPEED, r.vel);
       if (wantsFire && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
         r.hopper.shift();
         launchToAccel(world, chain, r, mouth, CHAIN_SHOT_SPEED, 0);
@@ -338,36 +338,66 @@ function launchToAccel(
   latVel: number,
 ): void {
   const distMouth = Math.max(1, hyp(mouth.x - r.pos.x, mouth.y - r.pos.y));
-  const dir = { x: (mouth.x - r.pos.x) / distMouth, y: (mouth.y - r.pos.y) / distMouth };
+  // SHOOTING ON THE MOVE: the TURRET LEADS — it aims the muzzle so that muzzle velocity +
+  // the inherited chassis velocity heads straight at the mouth (a tracking turret compensates
+  // for its own motion). `leadDir` solves that muzzle heading.
+  const leadH = leadDir(r.pos, mouth, horizSpeed, r.vel);
+  const dir = { x: dcos(leadH), y: dsin(leadH) };
   const perp = { x: -dir.y, y: dir.x }; // lateral spread axis
+  // net horizontal velocity = muzzle (along the lead) + inherited chassis velocity → at the mouth
+  const netx = dir.x * horizSpeed + perp.x * latVel + r.vel.x;
+  const nety = dir.y * horizSpeed + perp.y * latVel + r.vel.y;
+  const netSpeed = Math.max(1, hyp(netx, nety));
   const z0 = 8;
   const land = distMouth + CHAIN_ACCEL_DEPTH * 0.5; // land halfway into the box
-  const t = land / horizSpeed;
+  const t = land / netSpeed;
   const vz = 0.5 * C.GRAVITY * t - z0 / t; // solve z(t)=0 for the landing point
+  const toMouth = { x: (mouth.x - r.pos.x) / distMouth, y: (mouth.y - r.pos.y) / distMouth };
   world.balls.push({
     id: chain.nextBallId++,
     color: 'green',
     state: { kind: 'flight', target: r.alliance },
-    pos: { x: r.pos.x + dir.x * 4, y: r.pos.y + dir.y * 4 },
-    vel: { x: dir.x * horizSpeed + perp.x * latVel, y: dir.y * horizSpeed + perp.y * latVel },
+    pos: { x: r.pos.x + toMouth.x * 4, y: r.pos.y + toMouth.y * 4 },
+    vel: { x: netx, y: nety },
     z: z0,
     vz,
   });
 }
 
+/** The muzzle heading (radians) to hit stationary `target` with a projectile of speed `speed`
+ * that ALSO inherits `vel` (the shooter's own velocity) — the classic projectile-lead solve:
+ * pick the muzzle direction so muzzle·speed + vel points from the shooter straight at target. */
+function leadDir(
+  from: { x: number; y: number },
+  target: { x: number; y: number },
+  speed: number,
+  vel: { x: number; y: number },
+): number {
+  const gx = target.x - from.x;
+  const gy = target.y - from.y;
+  const gd = Math.max(1e-6, hyp(gx, gy));
+  const ghx = gx / gd;
+  const ghy = gy / gd; // unit direction to the target
+  const vg = vel.x * ghx + vel.y * ghy; // v · ĝ
+  const v2 = vel.x * vel.x + vel.y * vel.y;
+  const k = vg + Math.sqrt(Math.max(0, vg * vg - v2 + speed * speed)); // net speed along ĝ
+  return datan2(k * ghy - vel.y, k * ghx - vel.x); // muzzle = (k·ĝ − v), normalized by speed
+}
+
 /**
- * The heading a turretless launcher should face to MAXIMIZE particles into the goal: aim
- * the CENTER of its launch line at the goal-opening CENTER, FROM the robot's actual
- * position. So a robot off to the side turns DIAGONALLY to face the goal (not just parallel
- * to the field wall) — the whole parallel swath then lands centered in the opening. (Aiming
- * the center at the opening center centers a symmetric swath, so it's the maximizing target;
- * the exact optimum can drift with extreme angles, but center-of-opening is the heuristic.)
+ * The heading a turretless launcher should face to MAXIMIZE particles into the goal: aim the
+ * launch-line center at the goal-opening CENTER from the robot's position (so an off-axis robot
+ * turns DIAGONALLY toward the goal). SHOOTING ON THE MOVE: it LEADS by turning the whole CHASSIS
+ * — `leadDir` returns the heading where the muzzle (chassis-forward) speed + the inherited
+ * chassis velocity heads straight at the mouth, so a turretless robot can also stay accurate
+ * while moving. A REAR shooter faces its BACK to the goal (+π).
  */
 export function chainGoalAimHeading(r: RobotState): number {
-  const mx = accelSide(r.alliance) * CHAIN_HALF_X; // goal opening center: (±72, 0)
-  const toGoal = datan2(0 - r.pos.y, mx - r.pos.x);
-  // a REAR shooter turns its BACK to the goal, so the chassis faces the opposite way
-  return r.spec.shooterRear ? wrapAngle(toGoal + Math.PI) : toGoal;
+  const mouth = { x: accelSide(r.alliance) * CHAIN_HALF_X, y: 0 }; // opening center (±72, 0)
+  const mode = r.spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
+  const speed = mode === 'dumper' ? CHAIN_DUMP_SPEED : CHAIN_DRUM_SPEED;
+  const lead = leadDir(r.pos, mouth, speed, r.vel);
+  return r.spec.shooterRear ? wrapAngle(lead + Math.PI) : lead;
 }
 
 /**
@@ -431,16 +461,18 @@ function launchAt(
   const px = r.pos.x + w.x;
   const py = r.pos.y + w.y;
   const spd = speed * (1 + sideVar * (frac * 2)); // frac*2 ∈ [−1,1] — catapult side variance
-  const vx = fwd.x * spd;
-  const vy = fwd.y * spd;
-  const vhx = Math.max(1, Math.abs(vx));
+  // shooting on the move: the shot inherits the FULL chassis velocity (turretless is fixed to
+  // the chassis) — the robot compensates by turning its heading (chainGoalAimHeading leads).
+  const netx = fwd.x * spd + r.vel.x;
+  const nety = fwd.y * spd + r.vel.y;
+  const vhx = Math.max(1, Math.abs(netx));
   const tWall = Math.max(0.05, Math.abs(wall - px) / vhx);
   world.balls.push({
     id: chain.nextBallId++,
     color: 'green',
     state: { kind: 'flight', target: r.alliance },
     pos: { x: px, y: py },
-    vel: { x: vx, y: vy },
+    vel: { x: netx, y: nety },
     z: CHAIN_LAUNCH_Z0,
     vz: 0.5 * C.GRAVITY * tWall,
   });
@@ -588,17 +620,25 @@ function interact(
 function catalystAction(chain: ChainState, rob: RobotState): void {
   const mine = chain.catalysts.find((c) => c.carriedBy === rob.id);
   if (mine) {
-    for (let i = 0; i < CHAIN_HOOKS_PER_GOAL; i++) {
-      const taken = chain.catalysts.some(
-        (o) => o.hook && o.hook.alliance === rob.alliance && o.hook.index === i,
-      );
-      if (taken) continue;
-      const h = hookPos(rob.alliance, i);
-      if (hyp(h.x - rob.pos.x, h.y - rob.pos.y) < CHAIN_HOOK_PLACE_R) {
-        mine.hook = { alliance: rob.alliance, index: i };
-        mine.carriedBy = null;
-        return;
+    // seat on the NEAREST reachable empty hook of EITHER goal — your own OR the opponent's
+    let bestHook: { alliance: Alliance; index: number } | null = null;
+    let bestHookD = CHAIN_HOOK_PLACE_R;
+    for (const a of ['red', 'blue'] as Alliance[]) {
+      for (let i = 0; i < CHAIN_HOOKS_PER_GOAL; i++) {
+        const taken = chain.catalysts.some((o) => o.hook && o.hook.alliance === a && o.hook.index === i);
+        if (taken) continue;
+        const h = hookPos(a, i);
+        const d = hyp(h.x - rob.pos.x, h.y - rob.pos.y);
+        if (d < bestHookD) {
+          bestHookD = d;
+          bestHook = { alliance: a, index: i };
+        }
       }
+    }
+    if (bestHook) {
+      mine.hook = bestHook;
+      mine.carriedBy = null;
+      return;
     }
     // no hook in range → drop it here
     mine.carriedBy = null;
@@ -642,15 +682,22 @@ export function chainCatalystPrompt(
 ): { action: 'pickup' | 'place'; target: { x: number; y: number } } | null {
   const mine = chain.catalysts.find((c) => c.carriedBy === rob.id);
   if (mine) {
-    for (let i = 0; i < CHAIN_HOOKS_PER_GOAL; i++) {
-      const taken = chain.catalysts.some(
-        (o) => o.hook && o.hook.alliance === rob.alliance && o.hook.index === i,
-      );
-      if (taken) continue;
-      const h = hookPos(rob.alliance, i);
-      if (hyp(h.x - rob.pos.x, h.y - rob.pos.y) < CHAIN_HOOK_PLACE_R) return { action: 'place', target: h };
+    // an empty hook on EITHER goal (your own or the opponent's) is a valid place target
+    let best: { x: number; y: number } | null = null;
+    let bestD = CHAIN_HOOK_PLACE_R;
+    for (const a of ['red', 'blue'] as Alliance[]) {
+      for (let i = 0; i < CHAIN_HOOKS_PER_GOAL; i++) {
+        const taken = chain.catalysts.some((o) => o.hook && o.hook.alliance === a && o.hook.index === i);
+        if (taken) continue;
+        const h = hookPos(a, i);
+        const d = hyp(h.x - rob.pos.x, h.y - rob.pos.y);
+        if (d < bestD) {
+          bestD = d;
+          best = h;
+        }
+      }
     }
-    return null;
+    return best ? { action: 'place', target: best } : null;
   }
   let best: { action: 'pickup'; target: { x: number; y: number } } | null = null;
   let bestD = Infinity;

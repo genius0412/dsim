@@ -288,6 +288,13 @@ export const CHAIN_FIRE_INTERVAL = 0.05; // s between shots (rapid fire)
 export const CHAIN_SHOT_SPEED = 150; // in/s horizontal toward the mouth
 export const CHAIN_SHOT_VZ = 70; // in/s initial upward (visual arc)
 
+/** SHOOTING ON THE MOVE. A launched Particle inherits the CHASSIS velocity (real physics), so
+ * the shooter must LEAD to compensate — and both archetypes CAN stay accurate while moving,
+ * just via different mechanisms: a TURRET leads by turning its TURRET (turretHeading is offset
+ * so muzzle+chassis velocity heads at the goal); a TURRETLESS drum/dumper leads by turning its
+ * CHASSIS HEADING (`chainGoalAimHeading` returns the lead angle, so the whole robot points off-
+ * goal by the lead). `leadDir` (play.ts) solves the projectile-lead angle. */
+
 /** catalysts: auto-pick a nearby free catalyst (if not already carrying one); seat it
  * on a hook when carried near one. */
 export const CHAIN_CATALYST_PICK_R = 9; // pick-up radius (to robot center)

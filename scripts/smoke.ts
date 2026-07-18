@@ -117,6 +117,7 @@ import {
   CHAIN_PARTICLE_R,
   CHAIN_PRESETS,
   chainStorageMax,
+  CHAIN_DRUM_SPEED,
 } from '../src/games/chain/config';
 import { accelMultiplier, hookPos, labAreas, ringStands } from '../src/games/chain/state';
 
@@ -3807,6 +3808,45 @@ const mkMM = () => {
     );
   }
 
+  // SHOOTING ON THE MOVE (turretless LEAD): a moving drum's chassis-heading LEAD makes the shot
+  // (muzzle along heading + inherited chassis velocity) head straight at the goal.
+  {
+    const s = chainSetup(0, 'blue');
+    s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum' };
+    const gw = createChainWorld('match', 830, [s]);
+    const rob = gw.robots[0];
+    rob.pos = { x: 0, y: 0 };
+    rob.vel = { x: 0, y: 40 }; // strafing across the goal line
+    const aim = chainGoalAimHeading(rob); // leads: not straight at the goal (+x = 0)
+    const netx = Math.cos(aim) * CHAIN_DRUM_SPEED + rob.vel.x;
+    const nety = Math.sin(aim) * CHAIN_DRUM_SPEED + rob.vel.y;
+    check(
+      'chain move-shot: turretless chassis-heading lead cancels the cross velocity (net heads at goal)',
+      Math.abs(aim) > 0.05 && Math.abs(nety) < 0.6 && netx > 0,
+      `aim=${aim.toFixed(3)} net=(${netx.toFixed(1)},${nety.toFixed(2)})`,
+    );
+  }
+
+  // SHOOTING ON THE MOVE (turret LEAD): a strafing turret still scores — the turret leads.
+  {
+    const gw = createChainWorld('match', 831, [chainSetup(0, 'blue')]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = false;
+    rob.autoFire = true;
+    rob.pos = { x: 30, y: 0 };
+    rob.hopper = Array(12).fill('green');
+    const before = gw.chain!.scored.blue;
+    // strafe sideways the whole time (driveY) while auto-firing the turret
+    runChain(gw, cmd({ driveY: 1 }), 1.0);
+    check(
+      'chain move-shot: a strafing turret still scores (turret leads to compensate)',
+      gw.chain!.scored.blue - before >= 3,
+      `scored+=${gw.chain!.scored.blue - before}`,
+    );
+  }
+
   // DRUM stream: SAME launch speed every shot, but a NON-UNIFORM lateral PATTERN (random
   // position across the width) — never a rigid line.
   {
@@ -4207,6 +4247,22 @@ const mkMM = () => {
     rob.vel = { x: 0, y: 0 };
     one(cmd({ catalyst: true })); // press again → seat on the hook
     check('chain: catalyst button seats a carried ring on a hook', w.chain!.catalysts.some((c) => c.hook?.alliance === 'blue'));
+  }
+
+  // PLACE ON THE OPPONENT'S GOAL: a blue robot carrying a ring, next to a RED hook, can seat it there
+  {
+    const w = createChainWorld('match', 7, [chainSetup(0, 'blue')]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 120;
+    const rob = w.robots[0];
+    const ring = w.chain!.catalysts[0];
+    ring.hook = null;
+    ring.carriedBy = rob.id; // carrying
+    const redHook = hookPos('red', 0);
+    rob.pos = { x: redHook.x + 6, y: redHook.y }; // next to the RED (opponent) hook
+    rob.vel = { x: 0, y: 0 };
+    chainStep(w, SIM_DT, new Map([[rob.id, cmd({ catalyst: true })]]));
+    check('chain: a ring can be placed on the OPPONENT goal', w.chain!.catalysts[0].hook?.alliance === 'red');
   }
 
   // RING ACTION PROMPT: chainCatalystPrompt reports pickup/place availability for the HUD hint
