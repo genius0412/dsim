@@ -17,7 +17,7 @@ import {
   CHAIN_STORAGE_DEFAULT,
   CHAIN_STORAGE_MAX,
   CHAIN_STORAGE_MIN,
-  CHAIN_INTAKE_HALF,
+  CHAIN_INTAKE_BACK,
   CHAIN_INTAKE_REACH,
   CHAIN_PARTICLE_R,
   CHAIN_PART_FRICTION,
@@ -316,17 +316,27 @@ function interact(
   const rel = { x: b.pos.x - rob.pos.x, y: b.pos.y - rob.pos.y };
   const local = rot(rel, -rob.heading);
   const r2 = CHAIN_PARTICLE_R;
-  const inBox = local.x < e.front + r2 && local.x > -e.rear - r2 && Math.abs(local.y) < e.half + r2;
-  if (!inBox) return 'none';
 
   const intakeActive = enabled && (rob.autoIntake || (cmd?.intake ?? false));
-  const frontZone = local.x > e.front - CHAIN_INTAKE_REACH && Math.abs(local.y) < CHAIN_INTAKE_HALF;
   const cap = Math.round(
     Math.min(CHAIN_STORAGE_MAX, Math.max(CHAIN_STORAGE_MIN, rob.spec.ballStorage ?? CHAIN_STORAGE_DEFAULT)),
   );
-  if (intakeActive && rob.hopper.length < cap && frontZone) return 'absorbed';
+  // CR = a WIDE roller: capture across the FULL chassis width, from a little AHEAD of the
+  // front edge back through the front portion of the footprint. A single pass over a
+  // cluster swallows every particle in that band at once (multi-ball, high throughput).
+  if (intakeActive && rob.hopper.length < cap) {
+    const captureZone =
+      local.x > -e.rear * CHAIN_INTAKE_BACK &&
+      local.x < e.front + r2 + CHAIN_INTAKE_REACH &&
+      Math.abs(local.y) < e.half + r2;
+    if (captureZone) return 'absorbed';
+  }
 
-  // plow: push out along the min-penetration axis (robot-local), impart robot vel
+  // plow (not intaking, or no room): only for particles actually inside the footprint
+  const inBox = local.x < e.front + r2 && local.x > -e.rear - r2 && Math.abs(local.y) < e.half + r2;
+  if (!inBox) return 'none';
+
+  // push out along the min-penetration axis (robot-local), impart robot vel
   const penX = e.front + r2 - local.x;
   const penXneg = local.x + e.rear + r2;
   const penY = e.half + r2 - Math.abs(local.y);

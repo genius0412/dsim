@@ -34,7 +34,7 @@ import {
  * central particle-zone diamond tape (so the middle diamond stays open). `axis` is a
  * beam's NORMAL (the direction you cross it).
  */
-const BEAM_HALF_W = 1; // top-down half-width of a beam bar (the 1" is its HEIGHT/z)
+export const BEAM_HALF_W = 0.5; // top-down half-width — a 1"-diameter tube reads as a 1"-wide bar
 const R = CHAIN_DIAMOND_R; // beams end at the diamond tape
 
 export const CHAIN_BEAMS: { rect: Rect; axis: 'x' | 'y' }[] = [

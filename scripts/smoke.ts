@@ -3638,6 +3638,32 @@ const mkMM = () => {
     );
   }
 
+  // wide roller: a row of particles across the full chassis width is intaked in ONE tick
+  {
+    const gw = createChainWorld('match', 771, [chainSetup(0, 'blue')]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = true;
+    rob.autoFire = false; // isolate intake (don't fire them away this tick)
+    const e = robotExtents(rob);
+    // lay 5 particles spread across the mouth width, just in front of the frame
+    for (let i = 0; i < 5; i++) {
+      const ly = (i - 2) * (e.half * 0.4);
+      const m = rot({ x: e.front - 0.5, y: ly }, rob.heading);
+      gw.balls[i].state = { kind: 'ground' };
+      gw.balls[i].pos = { x: rob.pos.x + m.x, y: rob.pos.y + m.y };
+      gw.balls[i].vel = { x: 0, y: 0 };
+    }
+    const held0 = rob.hopper.length;
+    runChain(gw, cmd({}), 1);
+    check(
+      'chain intake: a wide row is gulped multiple-at-once in one tick',
+      rob.hopper.length - held0 >= 3,
+      `intaked=${rob.hopper.length - held0}`,
+    );
+  }
+
   // catalyst multiplier: a catalyst seated on a blue hook ⇒ +1 pt per particle
   {
     const gw = createChainWorld('match', 99, [chainSetup(0, 'blue')]);

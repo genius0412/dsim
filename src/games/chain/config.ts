@@ -155,10 +155,11 @@ export const CHAIN_EJECT_SPEED = 135; // in/s back into the field (base; ×0.75�
 export const CHAIN_EJECT_VZ = 80; // in/s upward arc on the way out (base; ×0.75–1.45)
 export const CHAIN_EJECT_SPREAD = 150; // in/s random lateral spread
 
-/** intake: a front capture zone. A ground particle inside it (with hopper room) is
- * absorbed into the robot's hopper. */
-export const CHAIN_INTAKE_REACH = 5; // in front of the intake mouth
-export const CHAIN_INTAKE_HALF = 8; // half-width of the capture zone
+/** intake: CR is a WIDE under-frame roller (unlike DECODE's single-file mouth). The
+ * capture band spans the FULL chassis width and reaches a little AHEAD of the frame, so
+ * one pass through a cluster swallows MANY particles at once (high throughput). */
+export const CHAIN_INTAKE_REACH = 6; // capture band reaching ahead of the front edge
+export const CHAIN_INTAKE_BACK = 0.5; // fraction of the footprint (from front) that captures
 
 /**
  * BALL STORAGE (a per-robot builder slider, `RobotSpec.ballStorage`). Range grounded

@@ -10,7 +10,7 @@ import {
   CHAIN_RINGSTAND_XY,
 } from './config';
 import { labAreas } from './state';
-import { CHAIN_BEAMS } from './beams';
+import { CHAIN_BEAMS, BEAM_HALF_W } from './beams';
 
 /**
  * Chain Reaction field renderer (manual §2–4 terminology).
@@ -56,25 +56,26 @@ export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): vo
     ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
   }
 
-  // ALLIANCE DIVIDER — red (left) / blue (right) boundary down the center that wraps
-  // around the particle-zone diamond (the vertical line splits red|blue at the middle).
+  // ALLIANCE DIVIDER — red (left) / blue (right) tape on the vertical centre line, run
+  // flush OUTSIDE the 1"-wide vertical beam and stopped at the diamond, so it never
+  // overlaps the beam OR the white diamond. Marks the red-half (x<0) / blue-half (x>0)
+  // boundary; the horizontal axis stays dark (beam only).
   const R = CHAIN_DIAMOND_R;
-  const d = 0.7; // small offset from x=0 so red + blue read as two lines
+  const d = BEAM_HALF_W + C.TAPE_W / 2; // tape sits just beyond the beam edge — no overlap
   ctx.lineWidth = C.TAPE_W;
   const divider = (color: string, s: -1 | 1): void => {
     ctx.strokeStyle = color;
     ctx.beginPath();
     ctx.moveTo(s * d, hy);
     ctx.lineTo(s * d, R);
-    ctx.lineTo(s * R, 0);
-    ctx.lineTo(s * d, -R);
+    ctx.moveTo(s * d, -R);
     ctx.lineTo(s * d, -hy);
     ctx.stroke();
   };
   divider(C.COLORS.red, -1);
   divider(C.COLORS.blue, 1);
 
-  // PARTICLE ZONE — the central WHITE diamond (tape), drawn over the divider.
+  // PARTICLE ZONE — the central WHITE diamond (tape).
   ctx.strokeStyle = C.COLORS.white;
   ctx.lineWidth = C.TAPE_W;
   ctx.beginPath();
