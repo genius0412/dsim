@@ -56,26 +56,50 @@ export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): vo
     ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
   }
 
-  // ALLIANCE DIVIDER — red (left) / blue (right) tape on the vertical centre line, run
-  // flush OUTSIDE the 1"-wide vertical beam and stopped at the diamond, so it never
-  // overlaps the beam OR the white diamond. Marks the red-half (x<0) / blue-half (x>0)
-  // boundary; the horizontal axis stays dark (beam only).
+  // ALLIANCE TAPE — red (red half, x<0) / blue (blue half, x>0) 1" tape running ALONGSIDE
+  // every black beam, and a second diamond just OUTSIDE the white one (red on its two left
+  // edges, blue on its two right edges). Marks the red/blue zones against the neutral beams
+  // + particle zone. `d` = tape centre just beyond the 1"-wide beam edge; tape runs from the
+  // wall to the diamond-vertex distance `Rc` (the diamond takes over inside).
   const R = CHAIN_DIAMOND_R;
-  const d = BEAM_HALF_W + C.TAPE_W / 2; // tape sits just beyond the beam edge — no overlap
+  const Rc = R + Math.SQRT2 * C.TAPE_W; // colored diamond: 1" perpendicular OUTSIDE the white
+  const d = BEAM_HALF_W + C.TAPE_W / 2;
   ctx.lineWidth = C.TAPE_W;
-  const divider = (color: string, s: -1 | 1): void => {
+  const seg = (color: string, x0: number, y0: number, x1: number, y1: number): void => {
     ctx.strokeStyle = color;
     ctx.beginPath();
-    ctx.moveTo(s * d, hy);
-    ctx.lineTo(s * d, R);
-    ctx.moveTo(s * d, -R);
-    ctx.lineTo(s * d, -hy);
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
     ctx.stroke();
   };
-  divider(C.COLORS.red, -1);
-  divider(C.COLORS.blue, 1);
+  const red = C.COLORS.red;
+  const blue = C.COLORS.blue;
+  // vertical (y-axis) beams sit ON the x=0 boundary: red on the left, blue on the right
+  seg(red, -d, Rc, -d, hy);
+  seg(blue, d, Rc, d, hy);
+  seg(red, -d, -hy, -d, -Rc);
+  seg(blue, d, -hy, d, -Rc);
+  // horizontal (x-axis) beams: the −x beam is in the red half, the +x beam in the blue half
+  // (tape on BOTH long sides), from the wall to the diamond's side vertex
+  seg(red, -hx, d, -Rc, d);
+  seg(red, -hx, -d, -Rc, -d);
+  seg(blue, hx, d, Rc, d);
+  seg(blue, hx, -d, Rc, -d);
+  // red/blue diamond just OUTSIDE the white — left two edges red, right two edges blue
+  ctx.strokeStyle = red;
+  ctx.beginPath();
+  ctx.moveTo(0, Rc);
+  ctx.lineTo(-Rc, 0);
+  ctx.lineTo(0, -Rc);
+  ctx.stroke();
+  ctx.strokeStyle = blue;
+  ctx.beginPath();
+  ctx.moveTo(0, Rc);
+  ctx.lineTo(Rc, 0);
+  ctx.lineTo(0, -Rc);
+  ctx.stroke();
 
-  // PARTICLE ZONE — the central WHITE diamond (tape).
+  // PARTICLE ZONE — the central WHITE diamond (tape), 48" outer sides.
   ctx.strokeStyle = C.COLORS.white;
   ctx.lineWidth = C.TAPE_W;
   ctx.beginPath();
