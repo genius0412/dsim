@@ -80,6 +80,10 @@ export interface RobotSpec {
    *  • 'sweeper' — the widest active sweeper: overhangs the frame, max volume/pass.
    * Optional (defaulted in coerceSpec). */
   chainIntake?: ChainIntakeStyle;
+  /** Chain Reaction: mount the drum/dumper launcher at the REAR (opposite the front intake)
+   * instead of the front. The robot turns its BACK to the goal to shoot. No effect on a turret
+   * (top-mounted). Optional (defaulted false in coerceSpec). */
+  shooterRear?: boolean;
 }
 
 /** Chain Reaction scoring archetype (see `RobotSpec.scoreMode`).

@@ -442,7 +442,9 @@ function Hud({ hud }: { hud: HudSnapshot }) {
                 <span className="chip">{hud.chain.mode.toUpperCase()}</span>
                 <span className="chip">HOPPER {hud.hopper.length}/{hud.chain.storage}</span>
                 <span className={`chip ${hud.chain.mult > 1 ? 'on' : ''}`}>×{hud.chain.mult}</span>
-                {hud.chain.carrying && <span className="chip on">CATALYST</span>}
+                {hud.chain.carrying && <span className="chip on">◍ CARRYING RING</span>}
+                {hud.chain.ringAction === 'pickup' && <span className="chip prompt">◎ PICK UP RING ▸</span>}
+                {hud.chain.ringAction === 'place' && <span className="chip prompt">◎ PLACE RING ▸</span>}
                 {hud.chain.endgame === 'ascended' && <span className="chip on">▲ ASCENDED</span>}
                 {hud.chain.endgame === 'parked' && <span className="chip on">■ PARKED</span>}
               </>

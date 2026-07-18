@@ -236,6 +236,15 @@ button {
   border-color: var(--ds-warn);
 }
 
+/* an ACTION prompt (Chain Reaction ring pick-up / place is available NOW) — a filled,
+   attention-grabbing call-to-action so it's unmistakable the player can act. */
+.chip.prompt {
+  color: #1a1206;
+  background: var(--ds-gold);
+  border-color: var(--ds-gold);
+  font-weight: 700;
+}
+
 .motif-dot {
   display: inline-block;
   width: 10px;

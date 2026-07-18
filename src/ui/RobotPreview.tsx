@@ -169,25 +169,29 @@ export function RobotPreview({
   const drumHalf = halfW * 0.96; // full-width flywheel rollers
   const drumN = Math.max(5, Math.round((drumHalf * 2) / 2.6));
   const lineHalf = halfW * CHAIN_LAUNCH_LINE_FRAC; // catapult bucket width
+  // the launcher mounts at the FRONT (top, −y) or the REAR (bottom, +y) for a rear-shooter
+  const sMountY = spec.shooterRear ? len / 2 : frontY;
+  const sDir = spec.shooterRear ? -1 : 1; // inward direction from that edge
+  const drumY = Math.min(sMountY + sDir * 0.5, sMountY + sDir * 3.9);
   const cLauncherEl =
     cMode === 'drum' ? (
       <g>
         {/* full-width row of compliant flywheel rollers (not channels) */}
-        <rect x={-drumHalf} y={frontY + 0.5} width={drumHalf * 2} height={3.4} rx={0.8} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
+        <rect x={-drumHalf} y={drumY} width={drumHalf * 2} height={3.4} rx={0.8} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
         {Array.from({ length: drumN }, (_, k) => k).map((i) => {
           const x = -drumHalf + ((i + 0.5) * drumHalf * 2) / drumN;
-          return <rect key={i} x={x - 0.55} y={frontY + 1} width={1.1} height={2.4} rx={0.4} fill={accent} opacity={0.85} />;
+          return <rect key={i} x={x - 0.55} y={drumY + 0.5} width={1.1} height={2.4} rx={0.4} fill={accent} opacity={0.85} />;
         })}
       </g>
     ) : cMode === 'dumper' ? (
       <g>
         <polygon
-          points={`${-lineHalf * 0.7},${frontY + 6} ${-lineHalf},${frontY + 1} ${lineHalf},${frontY + 1} ${lineHalf * 0.7},${frontY + 6}`}
+          points={`${-lineHalf * 0.7},${sMountY + sDir * 6} ${-lineHalf},${sMountY + sDir * 1} ${lineHalf},${sMountY + sDir * 1} ${lineHalf * 0.7},${sMountY + sDir * 6}`}
           fill="var(--ds-bg)"
           stroke={accent}
           strokeWidth={0.5}
         />
-        <line x1={-lineHalf} y1={frontY + 1} x2={lineHalf} y2={frontY + 1} stroke={accent} strokeWidth={1} />
+        <line x1={-lineHalf} y1={sMountY + sDir * 1} x2={lineHalf} y2={sMountY + sDir * 1} stroke={accent} strokeWidth={1} />
       </g>
     ) : (
       <g>

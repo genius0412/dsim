@@ -63,6 +63,7 @@ export const DEFAULT_SPEC: RobotSpec = {
   groundClearance: CHAIN_CLEARANCE_DEFAULT,
   scoreMode: CHAIN_DEFAULT_SCORE_MODE,
   chainIntake: CHAIN_DEFAULT_INTAKE,
+  shooterRear: false,
 };
 
 // Neutral sim/wire FALLBACK for assists (used by coercion bases, replay, server
@@ -166,6 +167,7 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
   out.chainIntake = (CHAIN_INTAKE_STYLES as readonly string[]).includes(sp.chainIntake as string)
     ? (sp.chainIntake as RobotSpec['chainIntake'])
     : (base.chainIntake ?? CHAIN_DEFAULT_INTAKE);
+  out.shooterRear = typeof sp.shooterRear === 'boolean' ? sp.shooterRear : (base.shooterRear ?? false);
   // Chain Reaction ball storage — clamped to the archetype+size max (chainStorageMax)
   out.ballStorage = Math.round(
     clampFinite(

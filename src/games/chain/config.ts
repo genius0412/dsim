@@ -184,6 +184,13 @@ export const CHAIN_INTAKES: Record<ChainIntakeStyle, ChainIntakeGeom> = {
 export const CHAIN_INTAKE_STYLES = ['roller', 'funnel', 'sweeper'] as const;
 export const CHAIN_DEFAULT_INTAKE: ChainIntakeStyle = 'roller';
 
+/** ACTIVE-INTAKE PULL: a running intake DRAWS nearby ground Particles toward its mouth so
+ * they flow into the capture band — a much wider effective collection funnel (⇒ a high intake
+ * RATE) without enlarging the static capture zone. Radius from the front-centre mouth + the
+ * acceleration applied toward it (in interact, play.ts). */
+export const CHAIN_INTAKE_PULL_R = 5; // in — a TIGHT frame-hugging draw (kept small on purpose)
+export const CHAIN_INTAKE_PULL = 320; // in/s² acceleration pulling particles into the mouth
+
 /**
  * SCORING ARCHETYPES (`RobotSpec.scoreMode`) — the robot's expansion/scoring mechanism.
  * turret aims its own turret; drum + dumper are TURRETLESS chassis-wide launchers, so the

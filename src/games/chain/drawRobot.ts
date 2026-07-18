@@ -55,9 +55,11 @@ export function drawChainRobot(
   drawChainIntake(ctx, r, intaking, hl, hw);
 
   // scoring-archetype launcher (chassis-fixed part). Drum + catapult sit just inside the
-  // front; the turret is drawn last, in the world frame, so it rotates independently.
-  if (mode === 'drum') drawDrum(ctx, hl, hw, loaded);
-  else if (mode === 'dumper') drawCatapult(ctx, hl, hw, loaded);
+  // front — or the REAR for a rear-shooter build. The turret is drawn last, in the world
+  // frame, so it rotates independently.
+  const sSign = r.spec.shooterRear ? -1 : 1;
+  if (mode === 'drum') drawDrum(ctx, hl, hw, loaded, sSign);
+  else if (mode === 'dumper') drawCatapult(ctx, hl, hw, loaded, sSign);
 
   drawHopperFill(ctx, r, hw);
 
@@ -122,10 +124,10 @@ function drawChainIntake(
 
 /** chassis-wide flywheel DRUM: a FULL-WIDTH row of compliant rollers (the flywheels) across
  * the front — NOT a channelled drum. The rollers spin to intake AND launch. Greens when loaded. */
-function drawDrum(ctx: CanvasRenderingContext2D, hl: number, hw: number, loaded: boolean): void {
+function drawDrum(ctx: CanvasRenderingContext2D, hl: number, hw: number, loaded: boolean, sSign = 1): void {
   const half = hw * 0.96; // spans (nearly) the whole chassis width
   const th = 3.4; // roller-bar depth (along x)
-  const cx = hl - th / 2 - 0.5;
+  const cx = sSign * (hl - th / 2 - 0.5); // front (+1) or rear (−1) for a rear-shooter
   // roller housing bar across the full width
   ctx.fillStyle = STEEL_DK;
   ctx.strokeStyle = loaded ? GREEN : IDLE;
@@ -144,10 +146,10 @@ function drawDrum(ctx: CanvasRenderingContext2D, hl: number, hw: number, loaded:
 
 /** chassis-wide CATAPULT: a wide bucket/paddle across the front the whole hopper is
  * flung from. Reads as a curved throwing lip. Greens when loaded. */
-function drawCatapult(ctx: CanvasRenderingContext2D, hl: number, hw: number, loaded: boolean): void {
+function drawCatapult(ctx: CanvasRenderingContext2D, hl: number, hw: number, loaded: boolean, sSign = 1): void {
   const half = hw * CHAIN_LAUNCH_LINE_FRAC;
-  const back = hl - 6; // bucket floor
-  const lip = hl - 1; // throwing lip near the front
+  const back = sSign * (hl - 6); // bucket floor (front, or rear for a rear-shooter)
+  const lip = sSign * (hl - 1); // throwing lip near the shooter edge
   ctx.fillStyle = STEEL_DK;
   ctx.strokeStyle = loaded ? GREEN : IDLE;
   ctx.lineWidth = 0.8;

@@ -16,6 +16,8 @@ import {
   CHAIN_HOOK_PLACE_R,
   chainHopperCap,
   CHAIN_INTAKES,
+  CHAIN_INTAKE_PULL_R,
+  CHAIN_INTAKE_PULL,
   CHAIN_DEFAULT_INTAKE,
   CHAIN_DEFAULT_SCORE_MODE,
   CHAIN_AIM_TOL,
@@ -269,7 +271,7 @@ export function updateChain(
 
     let absorbed = false;
     for (const rob of world.robots) {
-      if (interact(b, rob, cmds.get(rob.id), enabled) === 'absorbed') {
+      if (interact(b, rob, cmds.get(rob.id), enabled, dt) === 'absorbed') {
         rob.hopper.push('green');
         rob.lastIntakeAt = world.time;
         absorbed = true;
@@ -363,7 +365,9 @@ function launchToAccel(
  */
 export function chainGoalAimHeading(r: RobotState): number {
   const mx = accelSide(r.alliance) * CHAIN_HALF_X; // goal opening center: (±72, 0)
-  return datan2(0 - r.pos.y, mx - r.pos.x);
+  const toGoal = datan2(0 - r.pos.y, mx - r.pos.x);
+  // a REAR shooter turns its BACK to the goal, so the chassis faces the opposite way
+  return r.spec.shooterRear ? wrapAngle(toGoal + Math.PI) : toGoal;
 }
 
 /**
@@ -419,9 +423,11 @@ function launchAt(
   const side = accelSide(r.alliance);
   const hw = r.spec.width / 2;
   const hl = r.spec.length / 2;
-  const fwd = { x: dcos(r.heading), y: dsin(r.heading) };
+  // a REAR shooter launches from the BACK edge, in the −forward direction
+  const sSign = r.spec.shooterRear ? -1 : 1;
+  const fwd = { x: dcos(r.heading) * sSign, y: dsin(r.heading) * sSign };
   const wall = side * CHAIN_HALF_X;
-  const w = rot({ x: hl, y: frac * 2 * hw * CHAIN_LAUNCH_LINE_FRAC }, r.heading);
+  const w = rot({ x: sSign * hl, y: frac * 2 * hw * CHAIN_LAUNCH_LINE_FRAC }, r.heading);
   const px = r.pos.x + w.x;
   const py = r.pos.y + w.y;
   const spd = speed * (1 + sideVar * (frac * 2)); // frac*2 ∈ [−1,1] — catapult side variance
@@ -516,6 +522,7 @@ function interact(
   rob: RobotState,
   cmd: RobotCommand | undefined,
   enabled: boolean,
+  dt: number,
 ): 'absorbed' | 'none' {
   const e = robotExtents(rob);
   const rel = { x: b.pos.x - rob.pos.x, y: b.pos.y - rob.pos.y };
@@ -539,9 +546,23 @@ function interact(
       local.x < hl + it.reach &&
       Math.abs(local.y) < hw * it.widthFrac + it.overhang;
     if (captureZone) return 'absorbed';
+    // ACTIVE-INTAKE PULL: a running intake draws nearby particles toward its mouth
+    // (front-centre) so they FLOW into the capture band — this is what makes the intake
+    // rate high (a much wider effective collection funnel than the static capture zone,
+    // without enlarging it). Only pulls particles in FRONT of the robot.
+    const dx = hl - local.x; // toward the front-centre mouth
+    const dy = -local.y;
+    const d = Math.hypot(dx, dy);
+    const pullHalf = hw * it.widthFrac + it.overhang + CHAIN_INTAKE_PULL_R;
+    if (local.x > -hl * 0.5 && d < CHAIN_INTAKE_PULL_R && Math.abs(local.y) < pullHalf && d > 1e-3) {
+      const wn = rot({ x: dx / d, y: dy / d }, rob.heading);
+      b.vel.x += wn.x * CHAIN_INTAKE_PULL * dt;
+      b.vel.y += wn.y * CHAIN_INTAKE_PULL * dt;
+      return 'none'; // being drawn in — never plow a particle the intake is grabbing
+    }
   }
 
-  // plow (not intaking, or no room): only for particles actually inside the footprint
+  // plow (not intaking, or no room, or particle behind the intake): only inside the footprint
   const inBox = local.x < e.front + r2 && local.x > -e.rear - r2 && Math.abs(local.y) < e.half + r2;
   if (!inBox) return 'none';
 
@@ -608,6 +629,42 @@ function catalystAction(chain: ChainState, rob: RobotState): void {
     best.hook = null; // if it was seated, this removes it from the goal (de-score)
     best.carriedBy = rob.id;
   }
+}
+
+/**
+ * What catalyst action is AVAILABLE to `rob` right now (for the HUD/render prompt) — mirrors
+ * `catalystAction`'s range checks without mutating: 'place' when carrying a ring near an empty
+ * own hook, 'pickup' when a free/seated ring is reachable, else null. Also returns the target
+ * position so the renderer can highlight it. */
+export function chainCatalystPrompt(
+  chain: ChainState,
+  rob: RobotState,
+): { action: 'pickup' | 'place'; target: { x: number; y: number } } | null {
+  const mine = chain.catalysts.find((c) => c.carriedBy === rob.id);
+  if (mine) {
+    for (let i = 0; i < CHAIN_HOOKS_PER_GOAL; i++) {
+      const taken = chain.catalysts.some(
+        (o) => o.hook && o.hook.alliance === rob.alliance && o.hook.index === i,
+      );
+      if (taken) continue;
+      const h = hookPos(rob.alliance, i);
+      if (hyp(h.x - rob.pos.x, h.y - rob.pos.y) < CHAIN_HOOK_PLACE_R) return { action: 'place', target: h };
+    }
+    return null;
+  }
+  let best: { action: 'pickup'; target: { x: number; y: number } } | null = null;
+  let bestD = Infinity;
+  for (const c of chain.catalysts) {
+    if (c.carriedBy !== null) continue;
+    const target = c.hook ? hookPos(c.hook.alliance, c.hook.index) : c.pos;
+    const range = c.hook ? CHAIN_HOOK_PLACE_R : CHAIN_CATALYST_PICK_R;
+    const d = hyp(target.x - rob.pos.x, target.y - rob.pos.y);
+    if (d < range && d < bestD) {
+      bestD = d;
+      best = { action: 'pickup', target };
+    }
+  }
+  return best;
 }
 
 /** a robot's endgame status: ascended (near a ring stand, slow) > parked (center in a

@@ -105,6 +105,7 @@ import { moduleFor, gameOf } from '../src/games';
 import { decodeColliders } from '../src/games/decode/colliders';
 import { createChainWorld } from '../src/games/chain/spawn';
 import { chainStep } from '../src/games/chain/step';
+import { chainGoalAimHeading } from '../src/games/chain/play';
 import { chainColliders } from '../src/games/chain/colliders';
 import {
   CHAIN_HALF_X,
@@ -3919,6 +3920,65 @@ const mkMM = () => {
     check('chain miss: a missed particle is thrown back into the field (not scored)', thrownBack, `kind=${b.state.kind} x=${b.pos.x.toFixed(1)} vx=${b.vel.x.toFixed(1)}`);
   }
 
+  // ACTIVE-INTAKE PULL: a stationary robot DRAWS IN a particle that is beyond the static
+  // capture band (this is what raises the intake rate) — one out of pull range is NOT taken.
+  {
+    const gw = createChainWorld('match', 820, [chainSetup(0, 'blue')]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = true;
+    rob.autoFire = false;
+    rob.heading = 0;
+    rob.pos = { x: 0, y: 0 };
+    const hl = rob.spec.length / 2;
+    // ball A: ~4" ahead of the mouth — beyond the roller capture (~hl+3) but within the tight
+    // pull radius → drawn in
+    gw.balls[0].state = { kind: 'ground' };
+    gw.balls[0].pos = { x: hl + 4, y: 0 };
+    gw.balls[0].vel = { x: 0, y: 0 };
+    const idNear = gw.balls[0].id;
+    // ball B: well out of the (small) pull range — never taken by a stationary robot
+    gw.balls[1].state = { kind: 'ground' };
+    gw.balls[1].pos = { x: hl + 40, y: 0 };
+    gw.balls[1].vel = { x: 0, y: 0 };
+    const idFar = gw.balls[1].id;
+    const held0 = rob.hopper.length;
+    runChain(gw, cmd({}), 0.7);
+    const gotNear = !gw.balls.some((b) => b.id === idNear); // absorbed
+    const stillFar = gw.balls.some((b) => b.id === idFar);
+    check(
+      'chain intake: the pull draws in a particle beyond the capture band (high rate); out-of-range stays',
+      gotNear && stillFar && rob.hopper.length > held0,
+      `gotNear=${gotNear} stillFar=${stillFar} hopper+=${rob.hopper.length - held0}`,
+    );
+  }
+
+  // REAR SHOOTER: a drum mounted at the BACK turns its back to the goal (aim heading = toGoal+π)
+  // and still scores from range.
+  {
+    const s = chainSetup(0, 'blue');
+    s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum', shooterRear: true };
+    const gw = createChainWorld('match', 821, [s]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = false;
+    rob.autoFire = true;
+    rob.pos = { x: -30, y: 0 };
+    rob.heading = Math.PI; // BACK (+x) faces the blue (+x) goal
+    rob.hopper = Array(10).fill('green');
+    const aim = chainGoalAimHeading(rob);
+    const before = gw.chain!.scored.blue;
+    runChain(gw, cmd({}), 1.0);
+    check(
+      'chain rear-shooter: back faces the goal (aim = toGoal+π) and it scores',
+      Math.abs(Math.atan2(Math.sin(aim - Math.PI), Math.cos(aim - Math.PI))) < 1e-6 &&
+        gw.chain!.scored.blue - before >= 3,
+      `aim=${aim.toFixed(2)} scored+=${gw.chain!.scored.blue - before}`,
+    );
+  }
+
   // INTAKE DESIGNS: funnel reaches further forward; the wide roller grabs wider
   {
     const mk = (style: 'roller' | 'funnel') => {
@@ -4147,6 +4207,29 @@ const mkMM = () => {
     rob.vel = { x: 0, y: 0 };
     one(cmd({ catalyst: true })); // press again → seat on the hook
     check('chain: catalyst button seats a carried ring on a hook', w.chain!.catalysts.some((c) => c.hook?.alliance === 'blue'));
+  }
+
+  // RING ACTION PROMPT: chainCatalystPrompt reports pickup/place availability for the HUD hint
+  {
+    const w = createChainWorld('match', 6, [chainSetup(0, 'blue')]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 120;
+    const rob = w.robots[0];
+    const free = w.chain!.catalysts.find((c) => c.hook === null)!;
+    free.pos = { x: 0, y: 0 };
+    free.carriedBy = null;
+    // far from any ring → no prompt
+    rob.pos = { x: 60, y: 60 };
+    const farNull = chainCatalystPrompt(w.chain!, rob) === null;
+    // next to the free ring → pickup
+    rob.pos = { x: 3, y: 0 };
+    const canPick = chainCatalystPrompt(w.chain!, rob)?.action === 'pickup';
+    // carrying, next to an empty own hook → place
+    free.carriedBy = rob.id;
+    const hk = hookPos('blue', 0);
+    rob.pos = { x: hk.x - 6, y: hk.y };
+    const canPlace = chainCatalystPrompt(w.chain!, rob)?.action === 'place';
+    check('chain ring prompt: reports pickup/place availability (and null when out of range)', farNull && canPick && canPlace, `far=${farNull} pick=${canPick} place=${canPlace}`);
   }
 
   // take rings OUT of a goal — your OWN and the OPPONENT's (de-score)

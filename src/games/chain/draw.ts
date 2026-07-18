@@ -2,6 +2,7 @@ import type { Alliance, Vec2, World } from '../../types';
 import * as C from '../../config';
 import { CHAIN_CATALYST_OD, CHAIN_PARTICLE_R } from './config';
 import { hookPos } from './state';
+import { chainCatalystPrompt } from './play';
 
 /**
  * Chain Reaction scoring-elements renderer (drawn after the robots).
@@ -76,6 +77,34 @@ export function drawChainBalls(ctx: CanvasRenderingContext2D, world: World, scre
     ctx.beginPath();
     ctx.arc(c.pos.x, c.pos.y, rMid, 0, Math.PI * 2);
     ctx.stroke();
+  }
+
+  // RING ACTION HINT: if a robot can pick up / place a ring right now, draw a bright
+  // highlight on the TARGET (the free ring, seated ring, or empty hook) + a link line, so
+  // it's clear an action is available and where.
+  if (world.chain) {
+    for (const r of world.robots) {
+      const p = chainCatalystPrompt(world.chain, r);
+      if (!p) continue;
+      const gold = '#f5c518';
+      // link line from the robot to the target
+      ctx.strokeStyle = 'rgba(245,197,24,0.5)';
+      ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(r.pos.x, r.pos.y);
+      ctx.lineTo(p.target.x, p.target.y);
+      ctx.stroke();
+      // a bright double ring on the target
+      ctx.strokeStyle = gold;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(p.target.x, p.target.y, rOuter + 1.6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 0.7;
+      ctx.beginPath();
+      ctx.arc(p.target.x, p.target.y, rOuter + 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
 
   // endgame badges over robots (ascended = ring stand, parked = lab)

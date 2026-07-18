@@ -19,6 +19,7 @@ import { moduleFor, gameOf } from './games';
 import type { GameModule } from './games';
 import { accelMultiplier as chainAccelMultiplier, type EndgameState } from './games/chain/state';
 import { chainHopperCap } from './games/chain/config';
+import { chainCatalystPrompt } from './games/chain/play';
 import { startMatch } from './sim/match';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
@@ -114,6 +115,8 @@ export interface HudSnapshot {
     endgame: EndgameState;
     /** your robot is carrying a catalyst */
     carrying: boolean;
+    /** a catalyst action is available RIGHT NOW at your position (in range) */
+    ringAction: 'pickup' | 'place' | null;
     /** your robot's ball-storage capacity (the builder slider) */
     storage: number;
     /** your robot's scoring archetype (turret shooter / dumper) */
@@ -873,6 +876,7 @@ export class GameController {
           oppParticlePts: w.chain.particlePoints[opp],
           endgame: w.chain.endgame[this.localRobotId] ?? 'none',
           carrying: w.chain.catalysts.some((c) => c.carriedBy === this.localRobotId),
+          ringAction: chainCatalystPrompt(w.chain, r)?.action ?? null,
           storage: chainHopperCap(r.spec),
           mode: r.spec.scoreMode ?? 'turret',
         }

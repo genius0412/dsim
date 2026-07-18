@@ -98,6 +98,7 @@ function chainSpecMatches(a: RobotSpec, b: RobotSpec): boolean {
     a.driveRpm === b.driveRpm &&
     (a.scoreMode ?? 'turret') === (b.scoreMode ?? 'turret') &&
     (a.chainIntake ?? 'roller') === (b.chainIntake ?? 'roller') &&
+    !!a.shooterRear === !!b.shooterRear &&
     (a.ballStorage ?? 0) === (b.ballStorage ?? 0) &&
     (a.groundClearance ?? 0) === (b.groundClearance ?? 0)
   );
@@ -597,6 +598,20 @@ export function Menu({ settings, onChange }: Props) {
               </button>
             ))}
           </div>
+          {(spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE) !== 'turret' && (
+            <button
+              className={`ds-opt mini ${spec.shooterRear ? 'on' : ''}`}
+              style={{ marginTop: 8 }}
+              onClick={() => setSpec({ shooterRear: !spec.shooterRear })}
+            >
+              <span className="ot">Shooter mount: {spec.shooterRear ? 'REAR' : 'FRONT'}</span>
+              <span className="od">
+                {spec.shooterRear
+                  ? 'Launcher at the back — turns its back to the goal to shoot'
+                  : 'Launcher at the front — turns to face the goal'}
+              </span>
+            </button>
+          )}
           <h3 className="ds-subh">Intake design</h3>
           <div className="ds-opts">
             {CHAIN_INTAKE_STYLES.map((i) => (
