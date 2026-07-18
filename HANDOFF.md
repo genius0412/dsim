@@ -78,10 +78,20 @@ can still collect (`hopper < cap`). The FINAL SCORE screen (both PvP `Results` a
 `RecordResults` in GameView.tsx) is CR-aware: Particles ×mult + End Game (no DECODE fouls);
 `hud.chain` carries per-alliance `particlePts`/`oppMult`/`oppCatalysts`.
 
+A REAR-SHOOTER build (`RobotSpec.shooterRear`, drum/dumper only): the launcher mounts at the
+BACK, so the robot turns its BACK to the goal to shoot (`chainGoalAimHeading` += π, `launchAt`
+from the rear edge). Menu toggle + preview + in-game render all honor it.
+
 Three INTAKE DESIGNS (`RobotSpec.chainIntake`, `CHAIN_INTAKES` geometry → `interact`, measured
 off the ACTUAL chassis so the capture stays ~robot-sized): **roller** (full-width, 3" bite,
 all-rounder) · **funnel** (narrow 55%, 6" reach, precise singles) · **sweeper** (widest +2"
-overhang, 4" bite, max volume). CR intake is a WIDE band (multi-ball per tick).
+overhang, 4" bite, max volume). CR intake is a WIDE band (multi-ball per tick), PLUS a TIGHT
+active-intake PULL (`CHAIN_INTAKE_PULL_R` 5" — deliberately small; draws edge particles into
+the mouth for a higher rate without a large reach).
+
+RING PICK/PLACE INDICATOR: `chainCatalystPrompt(chain, rob)` reports pickup/place availability
++ the target; the HUD shows a gold `chip prompt` (PICK UP / PLACE RING) and `drawChainBalls`
+draws a highlight ring + link line on the target ring/hook.
 
 HOPPER CAPACITY is DERIVED from archetype × size (`chainStorageMax`/`chainHopperCap` in
 chain/config.ts), CM-grounded: G01 = unlimited Particles, G02 bounds control to an
