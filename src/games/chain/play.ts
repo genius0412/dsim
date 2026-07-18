@@ -113,7 +113,7 @@ export function updateChain(
       // step.ts) and fires a PARALLEL LINE of particles across its width. Only fires once
       // ALIGNED; drum from any range, dumper only within its (generous) stand-off range.
       r.turretHeading = r.heading;
-      const aligned = Math.abs(wrapAngle(goalHeading(r.alliance) - r.heading)) <= CHAIN_AIM_TOL;
+      const aligned = Math.abs(wrapAngle(chainGoalAimHeading(r) - r.heading)) <= CHAIN_AIM_TOL;
       const inRange = mode === 'drum' ? true : distMouth <= CHAIN_DUMP_RANGE;
       if (wantsFire && aligned && inRange && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
         if (mode === 'drum') {
@@ -321,24 +321,31 @@ function launchToAccel(
   });
 }
 
-/** the heading a turretless launcher must face to aim at its goal (goal is at ±x, so
- * face +x = heading 0 for blue, −x = heading π for red). */
-function goalHeading(a: Alliance): number {
-  return accelSide(a) > 0 ? 0 : Math.PI;
+/**
+ * The heading a turretless launcher should face to MAXIMIZE particles into the goal: aim
+ * the CENTER of its launch line at the goal-opening CENTER, FROM the robot's actual
+ * position. So a robot off to the side turns DIAGONALLY to face the goal (not just parallel
+ * to the field wall) — the whole parallel swath then lands centered in the opening. (Aiming
+ * the center at the opening center centers a symmetric swath, so it's the maximizing target;
+ * the exact optimum can drift with extreme angles, but center-of-opening is the heuristic.)
+ */
+export function chainGoalAimHeading(r: RobotState): number {
+  const mx = accelSide(r.alliance) * CHAIN_HALF_X; // goal opening center: (±72, 0)
+  return datan2(0 - r.pos.y, mx - r.pos.x);
 }
 
 /**
  * TURRETLESS AIM ASSIST (drum / dumper). While the MANUAL fire button is held, steer the
- * whole robot to face its goal — the fire button turns the robot, THEN it shoots (see the
- * fire gate in updateChain). Returns a `rotate` command override, or null to leave the
- * player's rotation alone (turret, or auto-fire, which fires opportunistically without
+ * whole robot to FACE the goal opening — the fire button turns the robot, THEN it shoots
+ * (see the fire gate in updateChain). Returns a `rotate` command override, or null to leave
+ * the player's rotation alone (turret, or auto-fire, which fires opportunistically without
  * hijacking the driver's heading). Called from `chainStep` BEFORE the drivetrain model.
  */
 export function chainAimAssist(r: RobotState, cmd: RobotCommand | undefined, enabled: boolean): number | null {
   const mode = r.spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
   if (mode !== 'drum' && mode !== 'dumper') return null;
   if (!enabled || !(cmd?.fire ?? false)) return null; // only the manual button steers
-  const err = wrapAngle(goalHeading(r.alliance) - r.heading);
+  const err = wrapAngle(chainGoalAimHeading(r) - r.heading);
   return clamp(err * CHAIN_AIM_GAIN, -1, 1);
 }
 

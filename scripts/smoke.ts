@@ -3775,6 +3775,31 @@ const mkMM = () => {
     );
   }
 
+  // AIM AT THE GOAL CENTER: an OFF-AXIS robot turns DIAGONALLY to face the opening center
+  // (maximizing balls in), NOT parallel to the field wall
+  {
+    const s = chainSetup(0, 'blue');
+    s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum' };
+    const gw = createChainWorld('match', 809, [s]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = false;
+    rob.autoFire = false;
+    rob.heading = Math.PI;
+    rob.pos = { x: 10, y: 40 }; // well off the goal's y=0 axis
+    rob.hopper = Array(6).fill('green');
+    const expected = Math.atan2(0 - rob.pos.y, CHAIN_HALF_X - rob.pos.x); // ≈ −0.57 (diagonal)
+    const before = gw.chain!.scored.blue;
+    runChain(gw, cmd({ fire: true }), 1.8);
+    const err = Math.abs(Math.atan2(Math.sin(rob.heading - expected), Math.cos(rob.heading - expected)));
+    check(
+      'chain aim: off-axis robot faces the goal CENTER (diagonal), not parallel to the wall',
+      err < 0.25 && Math.abs(expected) > 0.3 && gw.chain!.scored.blue - before >= 1,
+      `heading=${rob.heading.toFixed(2)} expected=${expected.toFixed(2)} err=${err.toFixed(2)} scored+=${gw.chain!.scored.blue - before}`,
+    );
+  }
+
   // LAUNCH velocities: drum is UNIFORM across the line; dumper has side-to-side VARIANCE
   {
     const flightVx = (mode: 'drum' | 'dumper'): number[] => {
