@@ -46,31 +46,41 @@ colliders live byte-identically in `src/games/decode/colliders.ts`.
   multiplier, `accelMultiplier`).
 - **Endgame**: park in a lab area (5) / ascend a ring stand (20).
 
-### CR robot configuration (session 2026-07-18 revamp — `RobotSpec` CR-only fields)
+### CR robot configuration (`RobotSpec` CR-only fields; scoring reworked 2026-07-18)
 
-Two SCORING ARCHETYPES (`RobotSpec.scoreMode`, the expansion mechanism):
-- **`turret`** — dye-rotor + turret single-shooter: auto-aims + indexes ONE particle per
-  `CHAIN_FIRE_INTERVAL` (0.05 s) into the accelerator from ANYWHERE (solved ballistic arc,
-  never short). The old CR shooter = this; it's the default.
-- **`dumper`** — no turret: within `CHAIN_DUMP_RANGE` (22") of the mouth, a dump empties
-  the WHOLE hopper at once (fanned burst via `launchToAccel`), then recovers
-  `CHAIN_DUMP_INTERVAL` (0.7 s). Zero range → must cycle to the wall; storage capacity +
-  drivetrain speed carry it.
+THREE SCORING ARCHETYPES (`RobotSpec.scoreMode`) — turret aims its own turret; **drum +
+dumper are TURRETLESS chassis-wide launchers that AIM BY TURNING** (holding fire steers the
+robot to face the goal via `chainAimAssist` in step.ts, then it fires once aligned; autofire
+fires opportunistically without hijacking the heading). Both fire a **parallel straight-line**
+of particles across the chassis width (`launchLine`, NOT converging on a point). The tall
+Accelerator opening HANGS over the field, so these score from a STAND-OFF distance:
+- **`turret`** (default) — dye-rotor single-shooter: auto-aims + indexes ONE per
+  `CHAIN_FIRE_INTERVAL` (0.05 s) from ANYWHERE (`launchToAccel`, solved arc, never short).
+- **`drum`** — chassis-wide flywheel: fires up to `CHAIN_DRUM_MAX` (6 = 18/3) at once, UNIFORM
+  velocity, from ANY range; burst every `CHAIN_DRUM_INTERVAL` (0.55 s, drum re-index).
+- **`dumper`** — chassis-wide catapult: flings the WHOLE hopper at once within
+  `CHAIN_DUMP_RANGE` (56", a real stand-off, not point-blank); opposite-side balls leave at
+  ±`CHAIN_DUMP_SIDE_VAR` speed ⇒ scatter (< 100% accuracy). Recovers `CHAIN_DUMP_INTERVAL` (0.8 s).
 
-Three INTAKE DESIGNS (`RobotSpec.chainIntake`, `CHAIN_INTAKES` geometry → `interact`):
-**roller** (full-width, moderate reach, all-rounder) · **funnel** (narrow, long forward
-reach, precise singles) · **sweeper** (widest + overhang, deepest gulp, max volume). CR
-intake is a WIDE band (captures every particle in it per tick — multi-ball, unlike DECODE's
-single-file mouth).
+GOAL FUNNEL + THROW-BACK (in `updateChain`'s flight loop): a scored particle now FUNNELS
+down inside the tall goal for `CHAIN_FUNNEL_S` (0.55 s, settles + drifts to the wall-side
+launcher) before being flung back across the goal width — no more instant eject. A particle
+that MISSES the opening is thrown back INTO the field by a human (`throwBack` — tossed inward
+from the wall it hit; FOR NOW, this rule may change).
 
-Plus the existing CR sliders: **ballStorage** (1–30) and **groundClearance** (0.5–3").
+Three INTAKE DESIGNS (`RobotSpec.chainIntake`, `CHAIN_INTAKES` geometry → `interact`, measured
+off the ACTUAL chassis so the capture stays ~robot-sized): **roller** (full-width, 3" bite,
+all-rounder) · **funnel** (narrow 55%, 6" reach, precise singles) · **sweeper** (widest +2"
+overhang, 4" bite, max volume). CR intake is a WIDE band (multi-ball per tick).
+
+Plus the CR sliders: **ballStorage** (1–30) and **groundClearance** (0.5–3").
 `flywheelInertia`/`canSort`/DECODE intake picker are hidden for CR.
 
-FOUR CR PRESETS (`CHAIN_PRESETS`, shown in the builder in place of DECODE's `ROBOT_PRESETS`
-when `game==='chain'`): **Sniper** (turret/funnel/swerve, roams beams) · **Hauler**
-(dumper/sweeper/tank, big storage) · **Cycler** (turret/roller/mecanum, balanced) ·
-**Skimmer** (dumper/roller/xdrive, fast wall runs). All coerceSpec-stable so a card
-highlights when active (`chainSpecMatches`). HUD shows a TURRET/DUMPER chip.
+FOUR CR PRESETS (`CHAIN_PRESETS`, shown in place of DECODE's `ROBOT_PRESETS` when
+`game==='chain'`): **Sniper** (turret/funnel/swerve) · **Drummer** (drum/roller/mecanum) ·
+**Hauler** (dumper/sweeper/tank, big storage) · **Skimmer** (dumper/roller/xdrive, fast).
+All coerceSpec-stable so a card highlights when active (`chainSpecMatches`). HUD shows a
+TURRET/DRUM/DUMPER chip.
 
 ## Wiring touchpoints (both games)
 
