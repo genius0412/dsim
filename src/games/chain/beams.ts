@@ -9,7 +9,7 @@ import {
   CHAIN_CLEARANCE_MAX,
   CHAIN_CLEARANCE_MIN,
   CHAIN_COG_PENALTY,
-  CHAIN_DIAMOND_R,
+  CHAIN_BEAM_LEN,
   CHAIN_HALF_X,
   CHAIN_HALF_Y,
 } from './config';
@@ -30,18 +30,17 @@ import {
  *  • The clearance ↔ CoG tradeoff: more clearance eases beam crossing but raises the
  *    center of gravity ⇒ `cogFactor` scales down ALL drive authority (sluggish, tippy).
  *
- * The beams form the +x/−x/+y/−y AXES: each runs from a field wall inward to the
- * central particle-zone diamond tape (so the middle diamond stays open). `axis` is a
- * beam's NORMAL (the direction you cross it).
+ * The beams form the +x/−x/+y/−y AXES: each is 56" long, running IN from a field wall to
+ * `INNER` (16" from centre). `axis` is a beam's NORMAL (the direction you cross it).
  */
-export const BEAM_HALF_W = 0.5; // top-down half-width — a 1"-diameter tube reads as a 1"-wide bar
-const R = CHAIN_DIAMOND_R; // beams end at the diamond tape
+export const BEAM_HALF_W = 0.5; // top-down half-width — a 1"-wide bar
+const INNER = CHAIN_HALF_X - CHAIN_BEAM_LEN; // inner end = 72 − 56 = 16" from centre
 
 export const CHAIN_BEAMS: { rect: Rect; axis: 'x' | 'y' }[] = [
-  { rect: { x0: R, y0: -BEAM_HALF_W, x1: CHAIN_HALF_X, y1: BEAM_HALF_W }, axis: 'y' }, // +x axis
-  { rect: { x0: -CHAIN_HALF_X, y0: -BEAM_HALF_W, x1: -R, y1: BEAM_HALF_W }, axis: 'y' }, // −x axis
-  { rect: { x0: -BEAM_HALF_W, y0: R, x1: BEAM_HALF_W, y1: CHAIN_HALF_Y }, axis: 'x' }, // +y axis
-  { rect: { x0: -BEAM_HALF_W, y0: -CHAIN_HALF_Y, x1: BEAM_HALF_W, y1: -R }, axis: 'x' }, // −y axis
+  { rect: { x0: INNER, y0: -BEAM_HALF_W, x1: CHAIN_HALF_X, y1: BEAM_HALF_W }, axis: 'y' }, // +x axis
+  { rect: { x0: -CHAIN_HALF_X, y0: -BEAM_HALF_W, x1: -INNER, y1: BEAM_HALF_W }, axis: 'y' }, // −x axis
+  { rect: { x0: -BEAM_HALF_W, y0: INNER, x1: BEAM_HALF_W, y1: CHAIN_HALF_Y }, axis: 'x' }, // +y axis
+  { rect: { x0: -BEAM_HALF_W, y0: -CHAIN_HALF_Y, x1: BEAM_HALF_W, y1: -INNER }, axis: 'x' }, // −y axis
 ];
 
 /** standstill "grip" of each drivetrain climbing a bump (0..1) — how much across-speed

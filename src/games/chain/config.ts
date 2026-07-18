@@ -102,20 +102,22 @@ export const CHAIN_RINGSTAND_INSET = 5; // APPROX — "very close to each corner
 export const CHAIN_RINGSTAND_XY = CHAIN_HALF_X - CHAIN_RINGSTAND_INSET; // 67"
 
 /**
- * APPROXIMATE — the central PARTICLE ZONE, a diamond of white tape (rotated square,
- * centered). Measured proportionally off the reference render; REFINE with exact
- * manual dims. `_R` is its half-diagonal in inches.
+ * PARTICLE ZONE — the central diamond of WHITE tape (a rotated square, centered). The
+ * manual gives its OUTER sides as 48" long; all tape is 1" wide. `CHAIN_DIAMOND_R` is the
+ * half-diagonal (centre → vertex) of that outer diamond: side/√2 = 48/√2 ≈ 33.94".
  */
-export const CHAIN_DIAMOND_R = 38;
+export const CHAIN_DIAMOND_SIDE = 48; // outer side length of the diamond (manual)
+export const CHAIN_DIAMOND_R = CHAIN_DIAMOND_SIDE / Math.SQRT2; // ≈ 33.94" (centre → vertex)
 
 /**
- * BEAMS — four 1"-tall tubes (difficult terrain) around the center. To drive over a
- * beam a robot needs `groundClearance ≥ CHAIN_BEAM_HEIGHT`, AND its drivetrain must be
- * able to climb (traction wheels do; omni/x-drive can't). More clearance eases the
- * crossing but RAISES the center of gravity → a handling penalty (`crossBeams`/CoG).
- * Positions APPROXIMATE (a ring around the particle zone) pending exact manual dims.
+ * BEAMS — four 1"-tall × 1"-wide black tubes (difficult terrain) on the x/y axes. The manual
+ * gives them as 56" LONG, running IN from each field wall toward the centre (so the inner end
+ * is `CHAIN_HALF_X − 56 = 16"` from centre — they cross the particle-zone diamond). To drive
+ * over one a robot needs `groundClearance ≥ CHAIN_BEAM_HEIGHT` and momentum; more clearance
+ * eases it but RAISES the centre of gravity (`cogFactor`).
  */
-export const CHAIN_BEAM_HEIGHT = 1; // inches (tube height)
+export const CHAIN_BEAM_LEN = 56; // beam length, inches (manual) — from the wall inward
+export const CHAIN_BEAM_HEIGHT = 1; // inches (tube height/width — 1" all round)
 /** across-beam speed (in/s) at which MOMENTUM lets a robot power over with ~no slowdown */
 export const CHAIN_BEAM_MOMENTUM_REF = 55;
 /** ground-clearance slider (inches). Default just meets a 1" beam (0 margin). */
