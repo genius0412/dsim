@@ -18,10 +18,10 @@ import { CHAIN_BEAMS, BEAM_HALF_W } from './beams';
  * A standard FTC tile field with: the two ACCELERATORS protruding OUT of the side
  * walls (red left, blue right, centered in y); the four HOOKS on the accelerator
  * walls (hold Catalysts); the central PARTICLE ZONE diamond (red-left/blue-right);
- * and the four RING STAND climb posts near the corners. Accelerator + hook geometry
- * is exact (manual values); the Particle-Zone diamond and Ring-Stand positions are
- * APPROXIMATE (see config.ts) pending exact field-zone coordinates. Reuses DECODE's
- * `COLORS` so it themes/reads identically on the dark field.
+ * and the four RING STAND climb posts near the corners. Accelerator + hook geometry, the
+ * PARTICLE-ZONE diamond (48" outer sides), and the BEAMS (56" long, 1" wide) are all EXACT
+ * manual values; Ring-Stand + Lab-Area positions are still approximate (see config.ts).
+ * Reuses DECODE's `COLORS` so it themes/reads identically on the dark field.
  */
 export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): void {
   const hx = CHAIN_HALF_X;
