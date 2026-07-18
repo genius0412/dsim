@@ -91,7 +91,14 @@ the mouth for a higher rate without a large reach).
 
 RING PICK/PLACE INDICATOR: `chainCatalystPrompt(chain, rob)` reports pickup/place availability
 + the target; the HUD shows a gold `chip prompt` (PICK UP / PLACE RING) and `drawChainBalls`
-draws a highlight ring + link line on the target ring/hook.
+draws a highlight ring + link line on the target ring/hook. Rings can be seated on EITHER
+goal's hooks (own OR opponent) — `catalystAction`/`chainCatalystPrompt` scan both alliances.
+
+SHOOTING ON THE MOVE: a launched Particle INHERITS the chassis velocity (real physics) and the
+shooter LEADS to compensate — a TURRET leads by turning its turret (`turretHeading = leadDir`),
+a TURRETLESS drum/dumper leads by turning its CHASSIS heading (`chainGoalAimHeading = leadDir`);
+both stay accurate while moving. `leadDir` (play.ts) solves the projectile-lead angle; launch
+arcs use the NET (muzzle + inherited) velocity.
 
 HOPPER CAPACITY is DERIVED from archetype × size (`chainStorageMax`/`chainHopperCap` in
 chain/config.ts), CM-grounded: G01 = unlimited Particles, G02 bounds control to an
