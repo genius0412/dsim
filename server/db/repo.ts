@@ -366,16 +366,18 @@ export async function getReplay(id: string): Promise<Replay | null> {
   const rows = await q<{
     format: number;
     balance_version: number;
+    game: Game;
     seed: string;
     ticks: number;
     setups: Replay['setups'];
     tracks: Replay['tracks'];
-  }>(`select format, balance_version, seed, ticks, setups, tracks from replays where id = $1`, [id]);
+  }>(`select format, balance_version, game, seed, ticks, setups, tracks from replays where id = $1`, [id]);
   const r = rows[0];
   if (!r) return null;
   return {
     format: r.format,
     balanceVersion: r.balance_version,
+    game: r.game ?? 'decode', // picks the sim module to re-simulate (CR vs DECODE)
     mode: 'match',
     seed: Number(r.seed),
     ticks: r.ticks,

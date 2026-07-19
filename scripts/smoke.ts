@@ -2969,6 +2969,24 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   // referential determinism: a second re-sim is identical
   check('simulateReplay is referentially stable', worldHash(simulateReplay(run.replay)) === v.hash);
 
+  // CHAIN REACTION replays: a CR run must re-simulate through the CR module (createWorld +
+  // chainStep), stamp game:'chain', and reproduce its outcome byte-for-byte (the replay is
+  // watchable + verifiable exactly like a DECODE one).
+  {
+    const crSetups = [
+      { id: 0, alliance: 'blue' as Alliance, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0 },
+    ];
+    const crRun = runRecordMatch(0xc4a1, crSetups, drive, { game: 'chain' });
+    check('CR replay: stamped game "chain"', crRun.replay.game === 'chain');
+    check('CR replay: runs to phase "post"', crRun.world.match.phase === 'post' && crRun.world.game === 'chain');
+    const crV = verifyReplay(crRun.replay);
+    check('CR replay: verifyReplay reproduces the final worldHash', crV.hash === crRun.result.hash, `${crV.hash} vs ${crRun.result.hash}`);
+    check('CR replay: simulateReplay is referentially stable', worldHash(simulateReplay(crRun.replay)) === crV.hash);
+    // a DECODE and a CR replay of the SAME seed diverge (different sim module) — proves the
+    // module is actually chosen from replay.game, not hardcoded.
+    check('CR replay: re-sims via the chain module (differs from a decode re-sim)', crV.hash !== v.hash);
+  }
+
   // DUO (2v0) short run: two command tracks, both re-simulate deterministically
   const duoRun = runRecordMatch(0xd0, duo, drive, { stopTick: 700 });
   check('duo replay has a track per robot', !!duoRun.replay.tracks[0] && !!duoRun.replay.tracks[1]);

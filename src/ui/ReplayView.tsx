@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { fetchReplay } from '../net/api';
 import { ReplayPlayer, REPLAY_FORMAT, type Replay } from '../sim/replay';
+import { moduleFor } from '../games';
 import { Renderer } from '../render/renderer';
 import { rangeFill } from './rangeFill';
 import { SIM_DT, BALANCE_VERSION } from '../config';
@@ -91,8 +92,11 @@ export function ReplayView({
     const rend = renderer.current!;
     const localId = r.setups[0]?.id ?? 0;
     const alliance = r.setups[0]?.alliance ?? 'blue';
+    // CR's field is larger (protruding goals) — configure the camera with the game's
+    // bounds so a CR replay isn't cropped to DECODE's field.
+    const bounds = moduleFor(r.game).bounds;
 
-    const resize = (): void => rend.camera.configure(canvas, alliance);
+    const resize = (): void => rend.camera.configure(canvas, alliance, bounds);
     resize();
     window.addEventListener('resize', resize);
 

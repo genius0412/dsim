@@ -24,9 +24,13 @@ progression (DECODE and CR never share a leaderboard or a period).
   DECODE URLs are byte-identical); `game` threads App→Records→Leaderboard/Stats→CareerView, so
   the boards/career you see follow `settings.game`. (Public `/profile` pages still default to
   DECODE — a per-profile game toggle is a possible follow-up.)
-- Replay PLAYBACK isn't game-tagged yet (`getReplay` returns a DECODE-shaped Replay); CR
-  replays store `game` on the row but re-sim via the default module — fine for boards, a
-  follow-up for watch-CR-replay correctness.
+- **CR replays are now watchable** (done). `Replay.game` added; `ReplayRecorder`/`runRecordMatch`
+  stamp it; `ReplayPlayer`/`simulateReplay` re-sim via `simModuleFor(replay.game)` (createWorld +
+  step), so a CR replay runs through `chainStep`. `getReplay` returns the stored `game`; the
+  server recorder stamps `this.game`. `ReplayView` configures the camera with `moduleFor(r.game).
+  bounds` (CR's larger field) and the Renderer already draws game-aware. Old replays lack `game`
+  ⇒ DECODE (no REPLAY_FORMAT bump). Smoke: CR replay round-trips byte-identical + differs from a
+  same-seed DECODE re-sim.
 
 ## CR vs DECODE multiplayer audit
 

@@ -1,7 +1,7 @@
-import type { Alliance, GameMode, RobotCommand, RobotSpec, World, AutoPathData, StartPose } from '../types';
+import type { Alliance, GameId, GameMode, RobotCommand, RobotSpec, World, AutoPathData, StartPose } from '../types';
 import * as C from '../config';
-import { createWorld, DEFAULT_ASSISTS, type RobotSetup } from './spawn';
-import { step } from './world';
+import { DEFAULT_ASSISTS, type RobotSetup } from './spawn';
+import { simModuleFor } from '../games/sim';
 import {
   dequantizeCommand,
   localizeCommand,
@@ -47,6 +47,9 @@ export interface Replay {
   /** C.BALANCE_VERSION when recorded — a replay only re-sims exactly under its
    * own balance version's sim build (see config.ts BALANCE_VERSION) */
   balanceVersion: number;
+  /** which game this replay is of — picks the sim module to re-simulate it (createWorld
+   * + step). Absent on old replays ⇒ DECODE. */
+  game?: GameId;
   mode: GameMode;
   seed: number;
   setups: RobotSetup[];
@@ -76,6 +79,7 @@ export class ReplayRecorder {
     readonly seed: number,
     readonly setups: RobotSetup[],
     readonly mode: GameMode = 'match',
+    readonly game: GameId = 'decode',
   ) {}
 
   /** record the command map applied at `tick` (1-based, == world.tick after the
@@ -104,6 +108,7 @@ export class ReplayRecorder {
     return {
       format: REPLAY_FORMAT,
       balanceVersion: C.BALANCE_VERSION,
+      game: this.game,
       mode: this.mode,
       seed: this.seed,
       setups: this.setups.map((s) => ({
@@ -128,9 +133,11 @@ export class ReplayPlayer {
   readonly world: World;
   private readonly cursor: Record<number, number> = {}; // robotId -> next entry index
   private readonly current = new Map<number, RobotCommand>();
+  private readonly mod; // CR vs DECODE re-sim module (createWorld/step)
 
   constructor(private readonly replay: Replay) {
-    this.world = createWorld(replay.mode, replay.seed, replay.setups);
+    this.mod = simModuleFor(replay.game);
+    this.world = this.mod.createWorld(replay.mode, replay.seed, replay.setups);
     if (replay.mode === 'match') this.world.match.preCountdown = C.PRE_COUNTDOWN;
     for (const s of this.replay.setups) this.current.set(s.id, { ...ZERO_CMD });
   }
@@ -161,7 +168,7 @@ export class ReplayPlayer {
       }
       this.cursor[s.id] = ei;
     }
-    step(this.world, C.SIM_DT, this.current);
+    this.mod.step(this.world, C.SIM_DT, this.current);
     return true;
   }
 }
@@ -287,12 +294,14 @@ export function runRecordMatch(
   seed: number,
   setups: RobotSetup[],
   src: CommandSource,
-  opts: { mode?: GameMode; stopTick?: number } = {},
+  opts: { mode?: GameMode; stopTick?: number; game?: GameId } = {},
 ): RecordRun {
   const mode = opts.mode ?? 'match';
-  const world = createWorld(mode, seed, setups);
+  const game = opts.game ?? 'decode';
+  const mod = simModuleFor(game);
+  const world = mod.createWorld(mode, seed, setups);
   if (mode === 'match') world.match.preCountdown = C.PRE_COUNTDOWN;
-  const rec = new ReplayRecorder(seed, setups, mode);
+  const rec = new ReplayRecorder(seed, setups, mode, game);
   const cap = opts.stopTick ?? maxMatchTicks();
   while (world.match.phase !== 'post' && world.tick < cap) {
     const tick = world.tick + 1;
@@ -302,7 +311,7 @@ export function runRecordMatch(
       const c = raw.get(s.id);
       local.set(s.id, c ? localizeCommand(c) : { ...ZERO_CMD });
     }
-    step(world, C.SIM_DT, local);
+    mod.step(world, C.SIM_DT, local);
     rec.record(tick, local);
   }
   return { world, replay: rec.finish(), result: worldResult(world) };

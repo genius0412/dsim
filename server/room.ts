@@ -523,8 +523,9 @@ export class Room {
     this.dropped.clear();
     this.prevBalls.clear();
     this.snapPrimed.clear();
-    // start recording the input log; finalized once at phase 'post'
-    this.recorder = new ReplayRecorder(seed, setups, 'match');
+    // start recording the input log; finalized once at phase 'post'. Stamp the game so
+    // the replay re-sims through the right module (CR vs DECODE).
+    this.recorder = new ReplayRecorder(seed, setups, 'match', this.game);
     this.finalized = false;
     this.postSince = null;
     this.departed.clear();
