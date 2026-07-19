@@ -1,6 +1,11 @@
-# HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
+# HANDOFF — 2026-07-19 (Chain Reaction: fire-rate tune + physical turret aim + Front/Side intake) — READ FIRST
 
-## Latest session — physical turret aim + Front/Side intake mount
+## Latest session — fire-rate tune (turret ~10.5 bps / drum ~27 bps)
+
+- Turret `CHAIN_FIRE_INTERVAL` 1/9→1/12 (~8.8→~10.5 bps), drum `CHAIN_DRUM_INTERVAL` 1/41→1/37.5
+  (~30→~27 bps). See "fire rates" below. Build + ~205 smoke + client/server tsc all green.
+
+## Prior session — physical turret aim + Front/Side intake mount
 
 - **Physical turret aim** (user: shots should depend on physical state, not pre-solved). The CR
   turret now SLEWS toward the lead solution at `CHAIN_TURRET_SLEW` (4 rad/s) and `launchToAccel`
@@ -18,15 +23,19 @@
   collider uses `robotExtents`), so both mounts' rollers collide with walls/robots like DECODE.
   `coerceSpec`/`DEFAULT_SPEC` carry `intakeSide`; Menu has the Front/Side buttons.
 
-## fire rates: turret max 9 bps, drum ~30 bps
+## fire rates: turret ~10.5 bps, drum ~27 bps
 
-- **Turret**: `CHAIN_FIRE_INTERVAL = 1/9` (≈0.111 s) — max 9 balls/s (deterministic; ~8.8 observed
-  after 60 Hz quantization, under the 9 cap).
-- **Drum**: `CHAIN_DRUM_INTERVAL = 1/41` — the NOMINAL is set below 1/30 s to counter the
-  throughput lost to 60 Hz tick quantization (a shot fires on the next tick past its due time, so
-  a sub-3-tick interval rounds UP) + the symmetric jitter; the OBSERVED cadence measures ~30
-  balls/s. (User iterated 18 → 23 → 30; jitter is symmetric so the AVERAGE = target, unlike the
-  brief one-sided-cap experiment.) Verified with a throwaway rate-measurement script.
+- **Turret**: `CHAIN_FIRE_INTERVAL = 1/12` → ~10.5 balls/s observed (deterministic). User asked for
+  "like 11 bps, slightly faster". 11 is UNREACHABLE at 60 Hz: the achievable rates near it are 10.0
+  (1/11), **10.5 (1/12)**, and 12.0 (1/13) — the re-anchor-to-actual fire tick rounds a sub-6-tick
+  interval UP, so the values quantize in jumps. 10.5 is the closest to 11 and the "slight" bump from
+  the old ~8.8. (Old was `1/9` → 8.8 bps.)
+- **Drum**: `CHAIN_DRUM_INTERVAL = 1/37.5` → ~27 balls/s observed (user: "dumper slightly slower at
+  ~27" — interpreted as the DRUM, since the actual dumper flings its whole hopper at once with no
+  per-ball bps). The NOMINAL is set below 1/27 s to counter the throughput lost to 60 Hz tick
+  quantization (a shot fires on the next tick past its due time, so a sub-3-tick interval rounds UP)
+  + the symmetric jitter; the OBSERVED cadence measures ~27 balls/s. (Old was `1/41` → ~30 bps.)
+  Both verified empirically with a throwaway rate-measurement script (removed).
 
 ## PER-GAME loadouts (robots + start positions no longer bleed cross-game)
 
