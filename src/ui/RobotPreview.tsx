@@ -131,37 +131,23 @@ export function RobotPreview({
     );
   }
 
-  // Chain Reaction intake (front = UP): roller/sweeper = full-width bar (sweeper overhangs);
-  // funnel = two wedges into a narrow throat.
+  // Chain Reaction intake (front = UP): the full-width sweeper roller bar.
   const cIntakeEl = cBand ? (
-    spec.chainIntake === 'funnel' ? (
-      <g>
-        <polygon
-          points={`${-halfW},${frontY} ${halfW},${frontY} ${cHalf},${cTipY} ${-cHalf},${cTipY}`}
+    <g>
+      <rect x={-cHalf} y={cTipY} width={cHalf * 2} height={frontY - cTipY} fill={accent} opacity={0.4} />
+      {[-3, -2, -1, 0, 1, 2, 3].map((i) => (
+        <rect
+          key={i}
+          x={(i * cHalf) / 3.4 - 0.5}
+          y={cTipY}
+          width={1}
+          height={1.3}
+          rx={0.3}
           fill={accent}
-          opacity={0.28}
-          stroke={accent}
-          strokeWidth={0.35}
+          opacity={Math.abs(i) <= 1 ? 0.95 : 0.6}
         />
-        <rect x={-cHalf} y={cTipY} width={cHalf * 2} height={1.1} rx={0.4} fill={accent} opacity={0.7} />
-      </g>
-    ) : (
-      <g>
-        <rect x={-cHalf} y={cTipY} width={cHalf * 2} height={frontY - cTipY} fill={accent} opacity={0.4} />
-        {[-3, -2, -1, 0, 1, 2, 3].map((i) => (
-          <rect
-            key={i}
-            x={(i * cHalf) / 3.4 - 0.5}
-            y={cTipY}
-            width={1}
-            height={1.3}
-            rx={0.3}
-            fill={accent}
-            opacity={Math.abs(i) <= 1 ? 0.95 : 0.6}
-          />
-        ))}
-      </g>
-    )
+      ))}
+    </g>
   ) : null;
 
   // Chain Reaction archetype launcher (front = UP): drum = wide slotted bar; dumper =

@@ -11,7 +11,7 @@ import { chainIntakeBand } from './state';
 /**
  * Chain Reaction robot sprite (top-down). Shares the chassis + drivetrain wheels with
  * DECODE (drawWheels/roundRect) but draws the CR-specific mechanisms so the build reads
- * at a glance: the INTAKE DESIGN at the front (roller / funnel / sweeper) and the SCORING
+ * at a glance: the full-width sweeper INTAKE at the front and the SCORING
  * ARCHETYPE launcher (turret on top · chassis-wide drum · chassis-wide catapult). A slim
  * hopper-fill bar shows how full it is. Front = robot +x (heading).
  */
@@ -51,7 +51,7 @@ export function drawChainRobot(
 
   drawWheels(ctx, r, color);
 
-  drawChainIntake(ctx, r, intaking, hl, hw);
+  drawChainIntake(ctx, r, intaking, hl);
 
   // scoring-archetype launcher (chassis-fixed part). Drum + catapult sit just inside the
   // front — or the REAR for a rear-shooter build. The turret is drawn last, in the world
@@ -76,14 +76,13 @@ export function drawChainRobot(
   if (mode === 'turret') drawTurret(ctx, r, loaded);
 }
 
-/** CR intake at the front, styled by design: roller = full-width bar, sweeper = wider
- * (overhangs the frame), funnel = two wedges into a narrow center throat. */
+/** CR intake at the front: the full-width sweeper roller — a bar spanning the whole
+ * chassis with a row of compliant-wheel ticks at the tip. Greens while intaking. */
 function drawChainIntake(
   ctx: CanvasRenderingContext2D,
   r: RobotState,
   on: boolean,
   hl: number,
-  hw: number,
 ): void {
   // the SAME band `interact` captures with — so the drawn intake IS the grab area
   const m = chainIntakeBand(r.spec);
@@ -101,25 +100,10 @@ function drawChainIntake(
     }
   };
 
-  if (r.spec.chainIntake === 'funnel') {
-    // two side wedges funnel to a narrow throat + a small roller at the tip
-    ctx.fillStyle = on ? 'rgba(34,197,94,0.45)' : '#2a303c';
-    ctx.beginPath();
-    ctx.moveTo(x0, -hw);
-    ctx.lineTo(x0, hw);
-    ctx.lineTo(x1, half);
-    ctx.lineTo(x1, -half);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = barFill;
-    ctx.fillRect(x1 - 1.4, -half, 1.4, half * 2);
-    rollerTicks(half);
-  } else {
-    // roller / sweeper: a full-width bar (sweeper overhangs the frame sides)
-    ctx.fillStyle = barFill;
-    ctx.fillRect(x0, -half, x1 - x0, half * 2);
-    rollerTicks(half);
-  }
+  // full-width roller bar across the chassis front
+  ctx.fillStyle = barFill;
+  ctx.fillRect(x0, -half, x1 - x0, half * 2);
+  rollerTicks(half);
 }
 
 /** chassis-wide flywheel DRUM: a FULL-WIDTH row of compliant rollers (the flywheels) across

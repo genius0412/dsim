@@ -74,10 +74,8 @@ export interface RobotSpec {
    *    hopper at once (huge burst, but zero range — you must cycle to the wall).
    * Optional (defaulted in coerceSpec). */
   scoreMode?: ChainScoreMode;
-  /** Chain Reaction: the intake DESIGN (how it collects Particles).
-   *  • 'roller' — a full-width surface roller: gulps many at once, moderate reach.
-   *  • 'funnel' — a narrow deployed funnel: long forward reach, fewer at once (precise).
-   *  • 'sweeper' — the widest active sweeper: overhangs the frame, max volume/pass.
+  /** Chain Reaction: the intake DESIGN. For now the only option is the full-width sweeper
+   *  ('sweeper') — a roller spanning the whole chassis width that gulps Particles on contact.
    * Optional (defaulted in coerceSpec). */
   chainIntake?: ChainIntakeStyle;
   /** Chain Reaction: mount the drum/dumper launcher at the REAR (opposite the front intake)
@@ -93,8 +91,9 @@ export interface RobotSpec {
  *  • dumper — a chassis-wide catapult (no turret): turns to face the goal, then flings the
  *    WHOLE hopper at once from LIMITED range (side-to-side velocity variance ⇒ scatter). */
 export type ChainScoreMode = 'turret' | 'drum' | 'dumper';
-/** Chain Reaction intake design (see `RobotSpec.chainIntake`). */
-export type ChainIntakeStyle = 'roller' | 'funnel' | 'sweeper';
+/** Chain Reaction intake design (see `RobotSpec.chainIntake`). Only the full-width sweeper
+ * exists for now; the type is kept open for future designs. */
+export type ChainIntakeStyle = 'sweeper';
 
 export type BallState =
   | { kind: 'ground' }

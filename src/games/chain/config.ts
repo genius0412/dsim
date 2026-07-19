@@ -160,12 +160,12 @@ export const CHAIN_EJECT_VZ = 80; // in/s upward arc on the way out (base; ×0.7
 export const CHAIN_EJECT_SPREAD = 150; // in/s random lateral spread
 
 /**
- * INTAKE DESIGNS (`RobotSpec.chainIntake`). The intake MOUTH is at the front of the robot; its
+ * INTAKE DESIGN (`RobotSpec.chainIntake`). The intake MOUTH is at the front of the robot; its
  * geometry (`chainIntakeBand` in state.ts) is shared by the capture AND the renderer so the
  * grab area is EXACTLY the drawn intake. The design sets the mouth's half-WIDTH (`widthFrac`·
- * chassis +`overhang` for the deployed sweeper) and how far BEHIND the front edge it reaches
- * (`depth`); its forward extent is the collision front (the intake tip). Roller = full width,
- * funnel = narrow (precise), sweeper = widest (overhangs the frame).
+ * chassis +`overhang`) and how far BEHIND the front edge it reaches (`depth`); its forward
+ * extent is the collision front (the intake tip). For now the only design is the SWEEPER —
+ * a roller spanning the FULL chassis width.
  */
 export interface ChainIntakeGeom {
   widthFrac: number; // mouth half-width as a fraction of the chassis half-width
@@ -173,12 +173,10 @@ export interface ChainIntakeGeom {
   depth: number; // mouth reaches this far BEHIND the front edge (into the frame), inches
 }
 export const CHAIN_INTAKES: Record<ChainIntakeStyle, ChainIntakeGeom> = {
-  roller: { widthFrac: 1.0, overhang: 0, depth: 2 }, // full-width surface roller (all-rounder)
-  funnel: { widthFrac: 0.55, overhang: 0, depth: 1.5 }, // narrow — precise single picks
-  sweeper: { widthFrac: 1.0, overhang: 2, depth: 2.5 }, // widest, overhangs the frame (max volume)
+  sweeper: { widthFrac: 1.0, overhang: 0, depth: 2.5 }, // full-width roller (the only design)
 };
-export const CHAIN_INTAKE_STYLES = ['roller', 'funnel', 'sweeper'] as const;
-export const CHAIN_DEFAULT_INTAKE: ChainIntakeStyle = 'roller';
+export const CHAIN_INTAKE_STYLES = ['sweeper'] as const;
+export const CHAIN_DEFAULT_INTAKE: ChainIntakeStyle = 'sweeper';
 
 /**
  * SCORING ARCHETYPES (`RobotSpec.scoreMode`) — the robot's expansion/scoring mechanism.
@@ -313,16 +311,16 @@ export const CHAIN_FOUL_SLOP = 1; // in of bumper slack for the robot-robot cont
  */
 export const CHAIN_PRESETS: readonly RobotSpec[] = [
   {
-    // long-range precision: turret shoots from anywhere, funnel picks singles, swerve
-    // + clearance to roam over the beams
+    // long-range precision: turret shoots from anywhere, swerve + clearance to roam
+    // over the beams
     name: 'Sniper', teamName: 'Turret · score from anywhere', teamNumber: 0,
     length: 14.5, width: 17, intake: 'sloped', massLb: 24, drivetrain: 'swerve',
     driveRpm: 500, flywheelInertia: 0.2, canSort: false,
-    ballStorage: 12, groundClearance: 1.8, scoreMode: 'turret', chainIntake: 'funnel',
+    ballStorage: 12, groundClearance: 1.8, scoreMode: 'turret', chainIntake: 'sweeper',
   },
   {
-    // volume hauler: dumps a huge load at the wall, widest sweeper, tank push + MAX
-    // storage + high clearance to bulldoze over the beams
+    // volume hauler: dumps a huge load at the wall, tank push + MAX storage + high
+    // clearance to bulldoze over the beams
     name: 'Hauler', teamName: 'Dumper · haul & unload', teamNumber: 0,
     length: 15, width: 18, intake: 'sloped', massLb: 38, drivetrain: 'tank',
     driveRpm: 340, flywheelInertia: 0.2, canSort: false,
@@ -333,7 +331,7 @@ export const CHAIN_PRESETS: readonly RobotSpec[] = [
     name: 'Drummer', teamName: 'Drum · fire 6 at once, any range', teamNumber: 0,
     length: 14.5, width: 17, intake: 'sloped', massLb: 25, drivetrain: 'mecanum',
     driveRpm: 470, flywheelInertia: 0.3, canSort: false,
-    ballStorage: 24, groundClearance: 1.4, scoreMode: 'drum', chainIntake: 'roller',
+    ballStorage: 24, groundClearance: 1.4, scoreMode: 'drum', chainIntake: 'sweeper',
   },
   {
     // fast wall-runner: a quick x-drive dumper that shuttles particles to its own
@@ -341,6 +339,6 @@ export const CHAIN_PRESETS: readonly RobotSpec[] = [
     name: 'Skimmer', teamName: 'Dumper · fast wall runs', teamNumber: 0,
     length: 14.5, width: 16, intake: 'sloped', massLb: 22, drivetrain: 'xdrive',
     driveRpm: 520, flywheelInertia: 0.1, canSort: false,
-    ballStorage: 26, groundClearance: 1.0, scoreMode: 'dumper', chainIntake: 'roller',
+    ballStorage: 26, groundClearance: 1.0, scoreMode: 'dumper', chainIntake: 'sweeper',
   },
 ] as const;

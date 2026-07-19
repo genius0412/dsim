@@ -8,7 +8,6 @@ import {
   CHAIN_STORAGE_DEFAULT,
   CHAIN_STORAGE_MIN,
   CHAIN_SCORE_MODES,
-  CHAIN_INTAKE_STYLES,
   CHAIN_DEFAULT_SCORE_MODE,
   CHAIN_DEFAULT_INTAKE,
   CHAIN_PRESETS,
@@ -60,14 +59,10 @@ const CHAIN_MODE_BLURBS: Record<ChainScoreMode, string> = {
   dumper: 'Chassis-wide catapult — turn to the goal, fling the whole hopper (limited range)',
 };
 const CHAIN_INTAKE_LABELS: Record<ChainIntakeStyle, string> = {
-  roller: 'Roller',
-  funnel: 'Funnel',
   sweeper: 'Sweeper',
 };
 const CHAIN_INTAKE_BLURBS: Record<ChainIntakeStyle, string> = {
-  roller: 'Full-width surface roller · many at once, all-rounder',
-  funnel: 'Narrow, long forward reach · precise single picks',
-  sweeper: 'Widest, overhangs the frame · max volume per pass',
+  sweeper: 'Full-width roller · gulps Particles on contact',
 };
 
 /** does the current spec exactly match a preset? (value compare) */
@@ -97,7 +92,7 @@ function chainSpecMatches(a: RobotSpec, b: RobotSpec): boolean {
     a.drivetrain === b.drivetrain &&
     a.driveRpm === b.driveRpm &&
     (a.scoreMode ?? 'turret') === (b.scoreMode ?? 'turret') &&
-    (a.chainIntake ?? 'roller') === (b.chainIntake ?? 'roller') &&
+    (a.chainIntake ?? 'sweeper') === (b.chainIntake ?? 'sweeper') &&
     !!a.shooterRear === !!b.shooterRear &&
     (a.ballStorage ?? 0) === (b.ballStorage ?? 0) &&
     (a.groundClearance ?? 0) === (b.groundClearance ?? 0)
@@ -614,16 +609,10 @@ export function Menu({ settings, onChange }: Props) {
           )}
           <h3 className="ds-subh">Intake design</h3>
           <div className="ds-opts">
-            {CHAIN_INTAKE_STYLES.map((i) => (
-              <button
-                key={i}
-                className={`ds-opt ${(spec.chainIntake ?? CHAIN_DEFAULT_INTAKE) === i ? 'on' : ''}`}
-                onClick={() => setSpec({ chainIntake: i })}
-              >
-                <span className="ot">{CHAIN_INTAKE_LABELS[i]}</span>
-                <span className="od">{CHAIN_INTAKE_BLURBS[i]}</span>
-              </button>
-            ))}
+            <div className="ds-opt on" aria-disabled>
+              <span className="ot">{CHAIN_INTAKE_LABELS.sweeper}</span>
+              <span className="od">{CHAIN_INTAKE_BLURBS.sweeper}</span>
+            </div>
           </div>
           </>
           )}

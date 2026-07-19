@@ -1,4 +1,11 @@
-# HANDOFF — 2026-07-19 (Chain Reaction: penalty engine) — READ FIRST
+# HANDOFF — 2026-07-19 (Chain Reaction: penalty engine + single sweeper intake) — READ FIRST
+
+> **Intake designs collapsed to ONE: `ChainIntakeStyle = 'sweeper'`** (the full-width
+> roller). Removed `'roller'`/`'funnel'` from the type, `CHAIN_INTAKES`, the Menu picker
+> (now a static info row), and the funnel render branches in `drawRobot.ts`/`RobotPreview`.
+> Old saves migrate automatically (coerceSpec falls back to sweeper). CR presets all use
+> sweeper. Kept the type open (`'sweeper'` union of one) for future designs.
+
 
 > **Branch: `chain-reaction` (PRIVATE — do NOT push/deploy until the user says so).**
 > **GREEN — `npm run build` (client tsc+vite), `npm run server:check`

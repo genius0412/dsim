@@ -4011,11 +4011,12 @@ const mkMM = () => {
     );
   }
 
-  // INTAKE DESIGNS: funnel reaches further forward; the wide roller grabs wider
+  // INTAKE: the full-width sweeper — grabs anywhere across the chassis width, but its
+  // capture stays ~chassis-sized (no grab past the frame side / far ahead of the tip)
   {
-    const mk = (style: 'roller' | 'funnel') => {
+    const mk = () => {
       const setup = chainSetup(0, 'blue');
-      setup.spec = { ...DEFAULT_SPEC, chainIntake: style };
+      setup.spec = { ...DEFAULT_SPEC, chainIntake: 'sweeper' };
       const gw = createChainWorld('match', 803, [setup]);
       gw.match.phase = 'teleop';
       gw.match.phaseTimeLeft = 120;
@@ -4027,7 +4028,7 @@ const mkMM = () => {
       return { gw, rob };
     };
     // capture is measured off the CHASSIS (length/2 × width/2), not the collision OBB
-    const spec0 = mk('roller').rob.spec;
+    const spec0 = mk().rob.spec;
     const hl = spec0.length / 2;
     const hw = spec0.width / 2;
     const place = (gw: World, rob: (typeof gw.robots)[number], dx: number, dy: number): number => {
@@ -4038,20 +4039,17 @@ const mkMM = () => {
       return gw.balls[0].id;
     };
     const gone = (gw: World, id: number): boolean => !gw.balls.some((b) => b.id === id);
-    // a wide particle at 0.85·half-width: within the full-width roller, outside the narrow funnel
-    const r2 = mk('roller');
+    // a wide particle at 0.85·half-width: the full-width sweeper swallows it
+    const r2 = mk();
     const idRW = place(r2.gw, r2.rob, hl - 1, hw * 0.85);
     runChain(r2.gw, cmd({}), SIM_DT);
-    const f2 = mk('funnel');
-    const idFW = place(f2.gw, f2.rob, hl - 1, hw * 0.85);
-    runChain(f2.gw, cmd({}), SIM_DT);
-    check('chain intake: the wide roller grabs a wide particle the funnel misses', gone(r2.gw, idRW) && !gone(f2.gw, idFW));
-    // ACCURACY: the roller's capture stays ~chassis-sized — a particle 2" outside the
-    // chassis side, or well ahead of the small front bite, is NOT swallowed
-    const rSide = mk('roller');
+    check('chain intake: the full-width sweeper grabs a wide particle', gone(r2.gw, idRW));
+    // ACCURACY: capture stays ~chassis-sized — a particle 2" outside the chassis side,
+    // or well ahead of the small front bite, is NOT swallowed
+    const rSide = mk();
     const idSide = place(rSide.gw, rSide.rob, hl - 1, hw + 2); // 2" past the frame side
     runChain(rSide.gw, cmd({}), SIM_DT);
-    const rFar = mk('roller');
+    const rFar = mk();
     const idFar = place(rFar.gw, rFar.rob, hl + 8, 0); // well beyond the intake tip
     runChain(rFar.gw, cmd({}), SIM_DT);
     check(
