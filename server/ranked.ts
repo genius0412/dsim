@@ -1,4 +1,4 @@
-import type { Alliance } from '../src/types';
+import type { Alliance, GameId } from '../src/types';
 import type { MatchOutcome, MatchParticipant } from './room';
 import { addMatchParticipant, getRatingFull, saveMatch, upsertRating } from './db/repo';
 
@@ -168,6 +168,7 @@ export async function persistVersusMatch(
   balanceVersion: number,
   replayId: string,
   ranked: boolean,
+  game?: GameId,
 ): Promise<EloOutcome[]> {
   const reds = authed.filter((p) => p.alliance === 'red');
   const blues = authed.filter((p) => p.alliance === 'blue');
@@ -183,17 +184,17 @@ export async function persistVersusMatch(
       parts.push({
         userId: p.userId!,
         alliance: p.alliance,
-        rating: await getRatingFull(p.userId!, mode, balanceVersion),
+        rating: await getRatingFull(p.userId!, mode, balanceVersion, game),
       });
     }
     updates = computeGlicko(parts, outcome.result.score);
     for (const u of updates) {
-      const games = await upsertRating(u.userId, mode, balanceVersion, u.state.rating, u.state.rd, u.state.vol);
+      const games = await upsertRating(u.userId, mode, balanceVersion, u.state.rating, u.state.rd, u.state.vol, game);
       gamesAfter.set(u.userId, games);
     }
   }
 
-  const matchId = await saveMatch(mode, balanceVersion, replayId, ranked);
+  const matchId = await saveMatch(mode, balanceVersion, replayId, ranked, game);
   for (const p of authed) {
     const u = ranked ? updates.find((x) => x.userId === p.userId) : undefined;
     await addMatchParticipant({

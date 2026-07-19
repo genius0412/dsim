@@ -3591,7 +3591,7 @@ const mkMM = () => {
   check('registry: gameOf(undefined) defaults to decode', gameOf(undefined).id === 'decode');
   check('registry: moduleFor("chain") resolves the chain module', moduleFor('chain').id === 'chain');
   check('registry: an unknown game id degrades to decode', moduleFor('nope' as never).id === 'decode');
-  check('chain module is unscored (kept off ELO/record boards)', moduleFor('chain').scored === false);
+  check('chain module is SCORED (ranked + records on, keyed per game)', moduleFor('chain').scored === true);
 
   // the DECODE collider extraction is intact: 4 walls + per-alliance (face + classifier)
   check(
@@ -4552,10 +4552,10 @@ const mkMM = () => {
   const crStart = msgs.find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
   check('chain room: starts + advances to post without throwing', !threw);
   check('chain room: matchStart advertises game:"chain"', crStart?.game === 'chain');
-  // the outcome carries game:'chain' so persistMatch can gate on module.scored
-  // (unscored ⇒ never writes ELO/records — see server/persist.ts)
-  check('chain room: MatchOutcome.game is "chain" (persist gates on it)', crOutcomeGame === 'chain');
-  check('chain: an unscored game is never persisted (module.scored false)', moduleFor('chain').scored === false);
+  // the outcome carries game:'chain' so persistMatch writes to the CR boards (its own
+  // per-game ranked/record period — see server/persist.ts + repo.ts game keying)
+  check('chain room: MatchOutcome.game is "chain" (per-game board keying)', crOutcomeGame === 'chain');
+  check('chain: is scored, so its matches DO persist (to CR boards)', moduleFor('chain').scored === true);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

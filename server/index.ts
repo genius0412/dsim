@@ -217,12 +217,15 @@ const httpServer = createServer((req, res) => {
           res.end(JSON.stringify({ ok: false, error: 'DB disabled' }));
           return;
         }
+        // which game's period to advance — DECODE and Chain Reaction run independent
+        // Act → Season progressions (default DECODE).
+        const adminGame = u.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
         if (u.pathname === '/api/admin/season/start') {
           const name = u.searchParams.get('name') ?? undefined;
           // `act=new` opens a fresh ACT (act++, season resets to 1); otherwise a
           // new season in the current act.
           const bumpAct = u.searchParams.get('act') === 'new';
-          const { season, act, seasonNo } = await startNewSeason(BALANCE_VERSION, name, bumpAct);
+          const { season, act, seasonNo } = await startNewSeason(BALANCE_VERSION, name, bumpAct, adminGame);
           const label = periodLabel({ name, act, seasonNo });
           console.log(
             `[admin] started new ${bumpAct ? 'act' : 'season'}: bv=${season} (${label})`,
@@ -243,7 +246,7 @@ const httpServer = createServer((req, res) => {
         }
         // purge-replays: default to every season BEFORE the live one when unspecified
         const seasonArg = u.searchParams.get('season');
-        const current = await currentSeasonNumber(BALANCE_VERSION);
+        const current = await currentSeasonNumber(BALANCE_VERSION, adminGame);
         let freed = 0;
         if (seasonArg !== null) {
           const s = Number(seasonArg);
@@ -252,9 +255,9 @@ const httpServer = createServer((req, res) => {
             res.end(JSON.stringify({ ok: false, error: 'refusing to purge the live season' }));
             return;
           }
-          freed = await purgeSeasonReplays(s);
+          freed = await purgeSeasonReplays(s, adminGame);
         } else {
-          for (let s = 1; s < current; s++) freed += await purgeSeasonReplays(s);
+          for (let s = 1; s < current; s++) freed += await purgeSeasonReplays(s, adminGame);
         }
         console.log(`[admin] purged ${freed} archived-season replays`);
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
@@ -294,9 +297,10 @@ const httpServer = createServer((req, res) => {
           const mode = u.searchParams.get('mode') === 'duo' ? 'duo' : 'solo';
           const drivetrain = u.searchParams.get('drivetrain') ?? 'overall';
           const limit = Math.min(500, Math.max(1, Number(u.searchParams.get('limit') ?? 100)));
-          const season = await currentSeasonNumber(BALANCE_VERSION);
-          const rows = await adminListRecords({ mode, drivetrain, balanceVersion: season, limit });
-          jsonOut(200, { season, mode, drivetrain, rows });
+          const adminRecGame = u.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+          const season = await currentSeasonNumber(BALANCE_VERSION, adminRecGame);
+          const rows = await adminListRecords({ mode, drivetrain, balanceVersion: season, limit, game: adminRecGame });
+          jsonOut(200, { season, mode, drivetrain, rows, game: adminRecGame });
           return;
         }
         // POST /api/admin/record/delete?id= — remove one run (+ its replay)

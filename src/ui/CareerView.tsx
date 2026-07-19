@@ -51,7 +51,7 @@ export function CareerView({
 
   useEffect(() => {
     let alive = true;
-    fetchSeasons()
+    fetchSeasons(nav.game)
       .then((r) => {
         if (!alive) return;
         setSeasons(r.seasons);
@@ -61,7 +61,7 @@ export function CareerView({
     return () => {
       alive = false;
     };
-  }, []);
+  }, [nav.game]);
 
   useEffect(() => {
     let alive = true;

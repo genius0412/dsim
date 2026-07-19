@@ -1,8 +1,12 @@
 import type { Replay } from '../../src/sim/replay';
-import type { AssistConfig, RobotSpec } from '../../src/types';
+import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
 import { PLACEMENT_GAMES } from '../../src/config';
 import { q } from './pool';
+
+/** every board/period is keyed by game; old callers/rows default to DECODE. */
+type Game = GameId;
+const g = (game?: Game): Game => game ?? 'decode';
 
 /** the robot configuration a record run used (denormalized onto the row) */
 export interface RecordConfig {
@@ -21,28 +25,39 @@ export interface RecordConfig {
  */
 
 // ------------------------------------------------------------- seasons ------
-export async function ensureSeason(balanceVersion: number): Promise<void> {
+// Periods are PER GAME: each game runs its own Act → Season progression, so DECODE
+// and Chain Reaction never share a live season or an act. `game` defaults to DECODE.
+export async function ensureSeason(
+  balanceVersion: number,
+  game?: Game,
+  initialAct = 0,
+): Promise<void> {
   // No baked-in name — the structured "Act X · Season Y" label is derived in
-  // listSeasons. `name` stays null (a fresh row) or whatever custom title an
-  // admin set (on conflict we only re-activate; act is left untouched).
+  // listSeasons. A brand-new game's first row seeds `initialAct` (Chain Reaction
+  // starts at Act 1); on conflict we only re-activate — act is left untouched.
   await q(
-    `insert into seasons (balance_version, active) values ($1, true)
-     on conflict (balance_version) do update set active = true`,
-    [balanceVersion],
+    `insert into seasons (game, balance_version, act, active) values ($1, $2, $3, true)
+     on conflict (game, balance_version) do update set active = true`,
+    [g(game), balanceVersion, initialAct],
   );
-  await q(`update seasons set active = false where balance_version <> $1`, [balanceVersion]);
+  await q(`update seasons set active = false where game = $1 and balance_version <> $2`, [
+    g(game),
+    balanceVersion,
+  ]);
 }
 
 /**
- * The CURRENT season number. Season is the `balance_version` key, but the live
- * season is DB-controlled so an admin can start a fresh season at runtime WITHOUT
- * a code redeploy (`startNewSeason`). It is the greater of the highest season row
- * on record and the code's `BALANCE_VERSION` fallback — so a genuine balance bump
- * (config `BALANCE_VERSION`↑) still rolls the season automatically, and an admin
- * bump (a higher `seasons` row) wins when there's been no balance change.
+ * The CURRENT season number FOR A GAME. Season is the `balance_version` key, but the
+ * live season is DB-controlled so an admin can start a fresh season at runtime WITHOUT
+ * a code redeploy (`startNewSeason`). It is the greater of the highest season row for
+ * this game and the code's `BALANCE_VERSION` fallback — so a genuine balance bump still
+ * rolls the season automatically, and an admin bump wins when there's been no change.
  */
-export async function currentSeasonNumber(fallback: number): Promise<number> {
-  const rows = await q<{ bv: number | null }>(`select max(balance_version) as bv from seasons`);
+export async function currentSeasonNumber(fallback: number, game?: Game): Promise<number> {
+  const rows = await q<{ bv: number | null }>(
+    `select max(balance_version) as bv from seasons where game = $1`,
+    [g(game)],
+  );
   return Math.max(Number(rows[0]?.bv ?? 0), fallback);
 }
 
@@ -63,7 +78,7 @@ export interface SeasonRow {
 
 /** every season that exists (a `seasons` row OR any data stamped with it),
  * newest first, with its act + within-act ordinal and how much data it holds. */
-export async function listSeasons(): Promise<SeasonRow[]> {
+export async function listSeasons(game?: Game): Promise<SeasonRow[]> {
   const rows = await q<{
     season: number;
     act: number;
@@ -75,9 +90,9 @@ export async function listSeasons(): Promise<SeasonRow[]> {
     matches: string;
   }>(
     `with versions as (
-       select balance_version as v from seasons
-       union select balance_version from records
-       union select balance_version from matches
+       select balance_version as v from seasons where game = $1
+       union select balance_version from records where game = $1
+       union select balance_version from matches where game = $1
      ),
      rows as (
        select v.v as season,
@@ -85,15 +100,16 @@ export async function listSeasons(): Promise<SeasonRow[]> {
               s.name as name,
               coalesce(s.active, false) as active,
               s.started_at as started_at,
-              (select count(*) from records r where r.balance_version = v.v) as records,
-              (select count(*) from matches m where m.balance_version = v.v) as matches
+              (select count(*) from records r where r.balance_version = v.v and r.game = $1) as records,
+              (select count(*) from matches m where m.balance_version = v.v and m.game = $1) as matches
        from versions v
-       left join seasons s on s.balance_version = v.v
+       left join seasons s on s.balance_version = v.v and s.game = $1
      )
      select season, act, name, active, started_at, records, matches,
             (row_number() over (partition by act order by season))::int as season_no
      from rows
      order by season desc`,
+    [g(game)],
   );
   // legacy rows carry the old baked-in "Season N" name — treat those as auto
   // (null) so the structured label wins; keep only genuine custom titles.
@@ -120,33 +136,35 @@ export async function startNewSeason(
   fallback: number,
   name?: string,
   bumpAct = false,
+  game?: Game,
 ): Promise<{ season: number; act: number; seasonNo: number }> {
-  const next = (await currentSeasonNumber(fallback)) + 1;
+  const next = (await currentSeasonNumber(fallback, game)) + 1;
   const cur = await q<{ act: number | null }>(
-    `select act from seasons order by balance_version desc limit 1`,
+    `select act from seasons where game = $1 order by balance_version desc limit 1`,
+    [g(game)],
   );
   const act = Number(cur[0]?.act ?? 0) + (bumpAct ? 1 : 0);
   const custom = name && name.trim() ? name.trim() : null;
   await q(
-    `insert into seasons (balance_version, name, act, active) values ($1, $2, $3, true)
-     on conflict (balance_version) do update set name = excluded.name, act = excluded.act, active = true`,
-    [next, custom, act],
+    `insert into seasons (game, balance_version, name, act, active) values ($1, $2, $3, $4, true)
+     on conflict (game, balance_version) do update set name = excluded.name, act = excluded.act, active = true`,
+    [g(game), next, custom, act],
   );
-  await q(`update seasons set active = false where balance_version <> $1`, [next]);
+  await q(`update seasons set active = false where game = $1 and balance_version <> $2`, [g(game), next]);
   const cnt = await q<{ n: number }>(
-    `select count(*)::int as n from seasons where act = $1`,
-    [act],
+    `select count(*)::int as n from seasons where game = $1 and act = $2`,
+    [g(game), act],
   );
   return { season: next, act, seasonNo: Number(cnt[0]?.n ?? 1) };
 }
 
-/** Delete all replays stamped with a given (archived) season. The record/match
+/** Delete all replays stamped with a given (archived) game×season. The record/match
  * rows survive — their `replay_id` FK is `on delete set null`, so leaderboard
  * entries stay visible, they just stop being watchable. Returns the count freed. */
-export async function purgeSeasonReplays(season: number): Promise<number> {
+export async function purgeSeasonReplays(season: number, game?: Game): Promise<number> {
   const rows = await q<{ id: string }>(
-    `delete from replays where balance_version = $1 returning id`,
-    [season],
+    `delete from replays where balance_version = $1 and game = $2 returning id`,
+    [season, g(game)],
   );
   return rows.length;
 }
@@ -327,10 +345,10 @@ export async function saveUserSettings(userId: string, settings: unknown): Promi
 }
 
 // ------------------------------------------------------------- replays ------
-export async function saveReplay(replay: Replay): Promise<string> {
+export async function saveReplay(replay: Replay, game?: Game): Promise<string> {
   const rows = await q<{ id: string }>(
-    `insert into replays (format, balance_version, seed, ticks, setups, tracks)
-     values ($1, $2, $3, $4, $5, $6) returning id`,
+    `insert into replays (format, balance_version, seed, ticks, setups, tracks, game)
+     values ($1, $2, $3, $4, $5, $6, $7) returning id`,
     [
       replay.format,
       replay.balanceVersion,
@@ -338,6 +356,7 @@ export async function saveReplay(replay: Replay): Promise<string> {
       replay.ticks,
       JSON.stringify(replay.setups),
       JSON.stringify(replay.tracks),
+      g(game),
     ],
   );
   return rows[0].id;
@@ -375,12 +394,13 @@ export interface RecordSubmit {
   balanceVersion: number;
   replayId: string;
   config?: RecordConfig;
+  game?: Game;
 }
 
 export async function submitRecord(r: RecordSubmit): Promise<string> {
   const rows = await q<{ id: string }>(
-    `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config)
-     values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
+    `insert into records (user_id, partner_id, mode, drivetrain, score, balance_version, replay_id, config, game)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
     [
       r.userId,
       r.partnerId ?? null,
@@ -390,6 +410,7 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
       r.balanceVersion,
       r.replayId,
       r.config ? JSON.stringify(r.config) : null,
+      g(r.game),
     ],
   );
   return rows[0].id;
@@ -417,8 +438,9 @@ export async function recordLeaderboard(opts: {
   drivetrain?: string;
   balanceVersion: number;
   limit?: number;
+  game?: Game;
 }): Promise<BoardRow[]> {
-  const params: unknown[] = [opts.balanceVersion, opts.mode];
+  const params: unknown[] = [opts.balanceVersion, opts.mode, g(opts.game)];
   let dtFilter = '';
   if (opts.drivetrain && opts.drivetrain !== 'overall') {
     params.push(opts.drivetrain);
@@ -430,7 +452,7 @@ export async function recordLeaderboard(opts: {
        select distinct on (r.user_id)
          r.user_id, r.partner_id, r.score, r.replay_id, r.created_at, r.config
        from records r
-       where r.balance_version = $1 and r.mode = $2 ${dtFilter}
+       where r.balance_version = $1 and r.mode = $2 and r.game = $3 ${dtFilter}
        order by r.user_id, r.score desc, r.created_at asc
      )
      select b.user_id as "userId", p.handle, p.username,
@@ -451,6 +473,7 @@ export async function personalBest(
   mode: 'solo' | 'duo',
   drivetrain: string,
   balanceVersion: number,
+  game?: Game,
 ): Promise<number | null> {
   // 'overall' = the cross-drivetrain board (no drivetrain filter), matching
   // recordLeaderboard — a mixed-drivetrain duo run's PB is over ALL the user's
@@ -458,9 +481,11 @@ export async function personalBest(
   const overall = drivetrain === 'overall';
   const rows = await q<{ score: number | null }>(
     `select max(score) as score from records
-     where user_id = $1 and mode = $2 and balance_version = $3
-       ${overall ? '' : 'and drivetrain = $4'}`,
-    overall ? [userId, mode, balanceVersion] : [userId, mode, balanceVersion, drivetrain],
+     where user_id = $1 and mode = $2 and balance_version = $3 and game = $4
+       ${overall ? '' : 'and drivetrain = $5'}`,
+    overall
+      ? [userId, mode, balanceVersion, g(game)]
+      : [userId, mode, balanceVersion, g(game), drivetrain],
   );
   return rows[0]?.score ?? null;
 }
@@ -475,19 +500,20 @@ export async function recordRank(
   mode: 'solo' | 'duo',
   drivetrain: string,
   balanceVersion: number,
+  game?: Game,
 ): Promise<{ rank: number; total: number }> {
   const overall = drivetrain === 'overall';
   const rows = await q<{ rank: number; total: number }>(
     `with best as (
        select user_id, max(score) as s from records
-       where balance_version = $1 and mode = $2
+       where balance_version = $1 and mode = $2 and game = $5
          ${overall ? '' : 'and drivetrain = $4'}
        group by user_id
      ), me as (select s from best where user_id = $3)
      select
        (select count(*) from best)::int as total,
        (1 + (select count(*) from best where s > (select s from me)))::int as rank`,
-    overall ? [balanceVersion, mode, userId] : [balanceVersion, mode, userId, drivetrain],
+    [balanceVersion, mode, userId, overall ? null : drivetrain, g(game)],
   );
   return { rank: rows[0]?.rank ?? 1, total: rows[0]?.total ?? 1 };
 }
@@ -512,8 +538,9 @@ export async function adminListRecords(opts: {
   drivetrain?: string;
   balanceVersion: number;
   limit?: number;
+  game?: Game;
 }): Promise<AdminRecordRow[]> {
-  const params: unknown[] = [opts.balanceVersion, opts.mode];
+  const params: unknown[] = [opts.balanceVersion, opts.mode, g(opts.game)];
   let dtFilter = '';
   if (opts.drivetrain && opts.drivetrain !== 'overall') {
     params.push(opts.drivetrain);
@@ -525,7 +552,7 @@ export async function adminListRecords(opts: {
        select distinct on (r.user_id)
          r.id, r.user_id, r.score, r.drivetrain, r.replay_id, r.created_at
        from records r
-       where r.balance_version = $1 and r.mode = $2 ${dtFilter}
+       where r.balance_version = $1 and r.mode = $2 and r.game = $3 ${dtFilter}
        order by r.user_id, r.score desc, r.created_at asc
      )
      select b.id as "recordId", b.user_id as "userId", p.handle, b.score,
@@ -611,11 +638,12 @@ export async function getRating(
   userId: string,
   mode: '1v1' | '2v2',
   balanceVersion: number,
+  game?: Game,
 ): Promise<number> {
   const rows = await q<{ rating: number }>(
     `select rating from elo_ratings
-     where user_id = $1 and mode = $2 and balance_version = $3`,
-    [userId, mode, balanceVersion],
+     where user_id = $1 and mode = $2 and balance_version = $3 and game = $4`,
+    [userId, mode, balanceVersion, g(game)],
   );
   return rows[0]?.rating ?? 1000;
 }
@@ -626,11 +654,12 @@ export async function getRatingFull(
   userId: string,
   mode: '1v1' | '2v2',
   balanceVersion: number,
+  game?: Game,
 ): Promise<{ rating: number; rd: number; vol: number }> {
   const rows = await q<{ rating: number; rd: number; vol: number }>(
     `select rating, rd, vol from elo_ratings
-     where user_id = $1 and mode = $2 and balance_version = $3`,
-    [userId, mode, balanceVersion],
+     where user_id = $1 and mode = $2 and balance_version = $3 and game = $4`,
+    [userId, mode, balanceVersion, g(game)],
   );
   const r = rows[0];
   return { rating: r?.rating ?? 1000, rd: r?.rd ?? 350, vol: r?.vol ?? 0.06 };
@@ -646,15 +675,16 @@ export async function upsertRating(
   rating: number,
   rd: number,
   vol: number,
+  game?: Game,
 ): Promise<number> {
   const rows = await q<{ games: number }>(
-    `insert into elo_ratings (user_id, mode, balance_version, rating, rd, vol, games)
-     values ($1, $2, $3, $4, $5, $6, 1)
-     on conflict (user_id, mode, balance_version)
+    `insert into elo_ratings (user_id, mode, balance_version, game, rating, rd, vol, games)
+     values ($1, $2, $3, $4, $5, $6, $7, 1)
+     on conflict (user_id, mode, game, balance_version)
        do update set rating = excluded.rating, rd = excluded.rd, vol = excluded.vol,
                      games = elo_ratings.games + 1, updated_at = now()
      returning games`,
-    [userId, mode, balanceVersion, Math.round(rating), rd, vol],
+    [userId, mode, balanceVersion, g(game), Math.round(rating), rd, vol],
   );
   return rows[0]?.games ?? 1;
 }
@@ -666,14 +696,15 @@ export async function eloLeaderboard(opts: {
   mode: '1v1' | '2v2';
   balanceVersion: number;
   limit?: number;
+  game?: Game;
 }): Promise<{ userId: string; handle: string; username: string | null; rating: number; games: number }[]> {
   return q<{ userId: string; handle: string; username: string | null; rating: number; games: number }>(
     `select e.user_id as "userId", p.handle, p.username, e.rating, e.games
      from elo_ratings e join profiles p on p.user_id = e.user_id
-     where e.balance_version = $1 and e.mode = $2 and e.games >= $4
+     where e.balance_version = $1 and e.mode = $2 and e.game = $5 and e.games >= $4
      order by e.rating desc, e.games desc
      limit $3`,
-    [opts.balanceVersion, opts.mode, opts.limit ?? 100, PLACEMENT_GAMES],
+    [opts.balanceVersion, opts.mode, opts.limit ?? 100, PLACEMENT_GAMES, g(opts.game)],
   );
 }
 
@@ -685,19 +716,20 @@ export async function eloUserStanding(opts: {
   userId: string;
   mode: '1v1' | '2v2';
   balanceVersion: number;
+  game?: Game;
 }): Promise<{ rank: number | null; rating: number; games: number } | null> {
   const rows = await q<{ rating: number; games: number; rnk: string | null }>(
     `with placed as (
        select user_id,
               rank() over (order by rating desc, games desc) as rnk
        from elo_ratings
-       where balance_version = $1 and mode = $2 and games >= $3
+       where balance_version = $1 and mode = $2 and game = $5 and games >= $3
      )
      select e.rating, e.games, p.rnk
      from elo_ratings e
      left join placed p on p.user_id = e.user_id
-     where e.balance_version = $1 and e.mode = $2 and e.user_id = $4`,
-    [opts.balanceVersion, opts.mode, PLACEMENT_GAMES, opts.userId],
+     where e.balance_version = $1 and e.mode = $2 and e.game = $5 and e.user_id = $4`,
+    [opts.balanceVersion, opts.mode, PLACEMENT_GAMES, opts.userId, g(opts.game)],
   );
   const r = rows[0];
   if (!r) return null;
@@ -769,7 +801,12 @@ export interface UserStats {
  * so the client never pulls a full board to find one row. Empty/zero when the
  * player hasn't competed; the DB is disabled ⇒ callers no-op before this.
  */
-export async function getUserStats(userId: string, balanceVersion: number): Promise<UserStats> {
+export async function getUserStats(
+  userId: string,
+  balanceVersion: number,
+  game?: Game,
+): Promise<UserStats> {
+  const gm = g(game);
   const [profile, elo, recPb, recRank, match, recent] = await Promise.all([
     q<{ handle: string; username: string | null }>(
       `select handle, username from profiles where user_id = $1`,
@@ -780,45 +817,45 @@ export async function getUserStats(userId: string, balanceVersion: number): Prom
          select user_id, mode,
                 rank() over (partition by mode order by rating desc, games desc) as rnk
          from elo_ratings
-         where balance_version = $1 and games >= $3
+         where balance_version = $1 and game = $4 and games >= $3
        )
        select e.mode, e.rating, e.games, p.rnk
        from elo_ratings e
        left join placed p on p.user_id = e.user_id and p.mode = e.mode
-       where e.balance_version = $1 and e.user_id = $2`,
-      [balanceVersion, userId, PLACEMENT_GAMES],
+       where e.balance_version = $1 and e.game = $4 and e.user_id = $2`,
+      [balanceVersion, userId, PLACEMENT_GAMES, gm],
     ),
     q<{ mode: 'solo' | 'duo'; score: number; replay_id: string | null }>(
       `select distinct on (mode) mode, score, replay_id
-       from records where user_id = $1 and balance_version = $2
+       from records where user_id = $1 and balance_version = $2 and game = $3
        order by mode, score desc, created_at asc`,
-      [userId, balanceVersion],
+      [userId, balanceVersion, gm],
     ),
     q<{ mode: 'solo' | 'duo'; rnk: string }>(
       `with best as (
          select user_id, mode, max(score) as score
-         from records where balance_version = $1 group by user_id, mode
+         from records where balance_version = $1 and game = $3 group by user_id, mode
        ), ranked as (
          select user_id, mode, rank() over (partition by mode order by score desc) as rnk
          from best
        )
        select mode, rnk from ranked where user_id = $2`,
-      [balanceVersion, userId],
+      [balanceVersion, userId, gm],
     ),
     q<{ played: string; wins: string }>(
       `select count(*) as played, count(*) filter (where mp.won) as wins
        from match_participants mp join matches m on m.id = mp.match_id
-       where mp.user_id = $1 and m.balance_version = $2`,
-      [userId, balanceVersion],
+       where mp.user_id = $1 and m.balance_version = $2 and m.game = $3`,
+      [userId, balanceVersion, gm],
     ),
     q<UserMatchRow>(
       `select mp.match_id as "matchId", m.mode, mp.alliance, mp.score, mp.won,
               mp.rating_before as "ratingBefore", mp.rating_after as "ratingAfter",
               m.created_at as "createdAt"
        from match_participants mp join matches m on m.id = mp.match_id
-       where mp.user_id = $1 and m.balance_version = $2
+       where mp.user_id = $1 and m.balance_version = $2 and m.game = $3
        order by m.created_at desc limit 10`,
-      [userId, balanceVersion],
+      [userId, balanceVersion, gm],
     ),
   ]);
 
@@ -863,10 +900,11 @@ export async function saveMatch(
   balanceVersion: number,
   replayId: string,
   ranked: boolean,
+  game?: Game,
 ): Promise<string> {
   const rows = await q<{ id: string }>(
-    `insert into matches (mode, balance_version, replay_id, ranked) values ($1, $2, $3, $4) returning id`,
-    [mode, balanceVersion, replayId, ranked],
+    `insert into matches (mode, balance_version, replay_id, ranked, game) values ($1, $2, $3, $4, $5) returning id`,
+    [mode, balanceVersion, replayId, ranked, g(game)],
   );
   return rows[0].id;
 }
@@ -939,6 +977,7 @@ export async function userMatchHistory(
     limit?: number;
     type?: string;
     result?: string;
+    game?: Game;
   },
 ): Promise<MatchHistoryPage> {
   const limit = Math.min(100, Math.max(1, opts.limit ?? 25));
@@ -964,13 +1003,13 @@ export async function userMatchHistory(
              mp.score as score, mp.won as won,
              mp.rating_before as elo_before, mp.rating_after as elo_after
       from match_participants mp join matches m on m.id = mp.match_id
-      where mp.user_id = $1 and m.balance_version = $2
+      where mp.user_id = $1 and m.balance_version = $2 and m.game = $3
       union all
       select 'record', r.id::text, r.mode, null::boolean,
              r.drivetrain, r.created_at, r.replay_id::text,
              r.score, null::boolean, null::int, null::int
       from records r
-      where r.user_id = $1 and r.balance_version = $2
+      where r.user_id = $1 and r.balance_version = $2 and r.game = $3
     )`;
 
   const [rows, countRows] = await Promise.all([
@@ -986,15 +1025,17 @@ export async function userMatchHistory(
       won: boolean | null;
       elo_before: number | null;
       elo_after: number | null;
-    }>(`${feed} select * from feed ${where} order by created_at desc limit $3 offset $4`, [
+    }>(`${feed} select * from feed ${where} order by created_at desc limit $4 offset $5`, [
       userId,
       opts.balanceVersion,
+      g(opts.game),
       limit,
       offset,
     ]),
     q<{ n: string }>(`${feed} select count(*)::int as n from feed ${where}`, [
       userId,
       opts.balanceVersion,
+      g(opts.game),
     ]),
   ]);
 

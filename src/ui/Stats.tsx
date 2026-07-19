@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import type { GameId } from '../types';
 import { fetchUserStats, fetchUserMatches, type MatchHistoryOpts } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { authEnabled, authClient } from '../lib/authClient';
@@ -8,6 +9,8 @@ import { ShareButton } from './ShareButton';
 export interface CareerNav {
   onWatch?: (replayId: string) => void;
   onOpenProfile?: (username: string) => void;
+  /** which game's boards to show (DECODE default) — its own periods/records */
+  game?: GameId;
 }
 
 /**
@@ -39,13 +42,14 @@ function StatsSignedIn({ nav }: { nav: CareerNav }) {
   const userId = user?.id;
   const configured = gameServerConfigured();
 
+  const game = nav.game;
   const loadStats = useCallback(
-    (season?: number) => fetchUserStats(userId!, season),
-    [userId],
+    (season?: number) => fetchUserStats(userId!, season, game),
+    [userId, game],
   );
   const fetchPage = useCallback(
-    (opts: MatchHistoryOpts) => fetchUserMatches(userId!, opts),
-    [userId],
+    (opts: MatchHistoryOpts) => fetchUserMatches(userId!, { ...opts, game }),
+    [userId, game],
   );
 
   if (session.isPending) {

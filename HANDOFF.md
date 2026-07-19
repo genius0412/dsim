@@ -1,6 +1,34 @@
 # HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
 
-## Latest session — CR vs DECODE multiplayer audit
+## Latest session — CR ranked & records + per-game periods
+
+Chain Reaction is now RANKED + RECORDED, on its OWN boards and its OWN Act → Season
+progression (DECODE and CR never share a leaderboard or a period).
+- **CR is scored**: `src/games/chain/sim.ts` `scored: true` — CR versus matches persist ELO +
+  history, CR record runs persist to the record board, all keyed by game.
+- **DB migration `0012_game_boards.sql`** (additive, `game` defaults to `'decode'`): adds
+  `game` to `seasons`/`records`/`matches`/`elo_ratings`/`replays`; re-keys the seasons PK to
+  `(game, balance_version)` and the elo PK to `(user_id, mode, game, balance_version)`;
+  game-first board indexes; drops+recreates `record_leaderboard` with `game`. `migrate.ts`
+  runs the whole file as one query, so the `DO $$` PK-swap blocks are safe. **Private branch —
+  the migration has NOT run on the live Fly/Neon DB yet; it applies on next deploy.**
+- **Per-game periods**: `repo.ts` season fns (`ensureSeason`/`currentSeasonNumber`/
+  `listSeasons`/`startNewSeason`/`purgeSeasonReplays`) all take `game`; the live season + acts
+  are resolved per game. **Chain Reaction seeds Act 1 · Season 1** (`ensureSeason(bv, 'chain',
+  1)` in persist.ts + the `/api/seasons` read); DECODE keeps its act-0/beta rows.
+- **Repo/persist/ranked**: every board read/write fn takes `game` (default `'decode'`) —
+  records, ELO, matches, stats, history. `persist.ts`/`ranked.ts` thread `o.game`.
+- **Endpoints**: `/api/records|elo|seasons|user/:id/stats|matches` accept `?game=chain`
+  (default decode); admin `/api/admin/season/start` + `/records` take `?game=`.
+- **Client**: `src/net/api.ts` board fns take `game?` (append `&game=chain` only for CR so
+  DECODE URLs are byte-identical); `game` threads App→Records→Leaderboard/Stats→CareerView, so
+  the boards/career you see follow `settings.game`. (Public `/profile` pages still default to
+  DECODE — a per-profile game toggle is a possible follow-up.)
+- Replay PLAYBACK isn't game-tagged yet (`getReplay` returns a DECODE-shaped Replay); CR
+  replays store `game` on the row but re-sim via the default module — fine for boards, a
+  follow-up for watch-CR-replay correctness.
+
+## CR vs DECODE multiplayer audit
 
 Verified the netcode is game-aware end-to-end and the two games never cross-contaminate:
 - **Server**: `room.ts` resolves `simModuleFor(this.game)` for createWorld/step; the G304

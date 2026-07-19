@@ -16,7 +16,7 @@ import { gameServerConfigured } from '../net/env';
 import { periodLabel } from '../seasons';
 import { PeriodPicker } from './PeriodPicker';
 import { PLACEMENT_GAMES } from '../config';
-import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
+import type { DrivetrainType, GameId, IntakeStyle, RobotSpec } from '../types';
 
 type Kind = 'records' | 'ranked';
 
@@ -158,10 +158,12 @@ function MyStanding({ me }: { me: EloStanding }) {
  */
 export function Leaderboard({
   myUserId,
+  game,
   onWatch,
   onOpenProfile,
 }: {
   myUserId?: string | null;
+  game?: GameId;
   onWatch?: (replayId: string) => void;
   onOpenProfile?: (username: string) => void;
 }) {
@@ -186,7 +188,7 @@ export function Leaderboard({
   useEffect(() => {
     if (!configured) return;
     let alive = true;
-    fetchSeasons()
+    fetchSeasons(game)
       .then((r) => {
         if (!alive) return;
         setSeasons(r.seasons);
@@ -196,7 +198,7 @@ export function Leaderboard({
     return () => {
       alive = false;
     };
-  }, [configured]);
+  }, [configured, game]);
 
   useEffect(() => {
     if (!configured) {
@@ -210,8 +212,8 @@ export function Leaderboard({
     const s = season ?? undefined;
     const req =
       kind === 'records'
-        ? fetchRecords(recMode, board, s).then((r) => ({ rows: r.rows, me: null as EloStanding | null }))
-        : fetchElo(eloMode, s, myUserId);
+        ? fetchRecords(recMode, board, s, game).then((r) => ({ rows: r.rows, me: null as EloStanding | null }))
+        : fetchElo(eloMode, s, myUserId, game);
     req
       .then(({ rows, me }) => {
         if (!alive) return;
@@ -227,7 +229,7 @@ export function Leaderboard({
     return () => {
       alive = false;
     };
-  }, [kind, recMode, eloMode, board, season, configured, myUserId]);
+  }, [kind, recMode, eloMode, board, season, configured, myUserId, game]);
 
   const isRecords = kind === 'records';
   const valueLabel = isRecords ? 'Score' : 'ELO';

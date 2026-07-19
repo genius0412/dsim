@@ -1,7 +1,11 @@
 import type { Replay } from '../sim/replay';
-import type { AssistConfig, RobotSpec } from '../types';
+import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl } from './env';
 import { getAuthToken } from '../lib/authClient';
+
+/** boards + periods are per-game; append `&game=chain` only for CR so DECODE URLs stay
+ * byte-identical (the server defaults a missing game to DECODE). */
+const gameParam = (game?: GameId): string => (game === 'chain' ? '&game=chain' : '');
 
 /**
  * Client for the server's public read APIs (leaderboards + replays). These are
@@ -66,19 +70,21 @@ export function fetchRecords(
   mode: RecordMode,
   drivetrain: Board,
   season?: number,
+  game?: GameId,
 ): Promise<{ rows: RecordRow[] }> {
   const s = season != null ? `&season=${season}` : '';
-  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}`);
+  return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${gameParam(game)}`);
 }
 
 export function fetchElo(
   mode: EloMode,
   season?: number,
   me?: string | null,
+  game?: GameId,
 ): Promise<{ rows: EloRow[]; me: EloStanding | null }> {
   const s = season != null ? `&season=${season}` : '';
   const m = me ? `&me=${encodeURIComponent(me)}` : '';
-  return getJson(`/api/elo?mode=${mode}${s}${m}`);
+  return getJson(`/api/elo?mode=${mode}${s}${m}${gameParam(game)}`);
 }
 
 export interface UserEloStat {
@@ -116,9 +122,12 @@ export interface UserStats {
 
 /** One round-trip: a user's whole competitive profile for the current season
  * (ranks computed server-side — no full board pulled to the client). */
-export function fetchUserStats(userId: string, season?: number): Promise<UserStats> {
-  const s = season != null ? `?season=${season}` : '';
-  return getJson(`/api/user/${encodeURIComponent(userId)}/stats${s}`);
+export function fetchUserStats(userId: string, season?: number, game?: GameId): Promise<UserStats> {
+  const p = new URLSearchParams();
+  if (season != null) p.set('season', String(season));
+  if (game === 'chain') p.set('game', 'chain');
+  const qs = p.toString();
+  return getJson(`/api/user/${encodeURIComponent(userId)}/stats${qs ? `?${qs}` : ''}`);
 }
 
 export interface GlobalStats {
@@ -211,6 +220,7 @@ export interface MatchHistoryOpts {
   limit?: number;
   type?: 'all' | 'ranked' | 'custom' | 'solo' | 'duo';
   result?: 'all' | 'win' | 'loss';
+  game?: GameId;
 }
 function historyQuery(o: MatchHistoryOpts): string {
   const p = new URLSearchParams();
@@ -219,6 +229,7 @@ function historyQuery(o: MatchHistoryOpts): string {
   if (o.limit != null) p.set('limit', String(o.limit));
   if (o.type && o.type !== 'all') p.set('type', o.type);
   if (o.result && o.result !== 'all') p.set('result', o.result);
+  if (o.game === 'chain') p.set('game', 'chain');
   const s = p.toString();
   return s ? `?${s}` : '';
 }
@@ -404,8 +415,8 @@ export interface SeasonInfo {
 }
 
 /** all seasons (newest first) + which one is live, for the board's season picker */
-export function fetchSeasons(): Promise<{ current: number; seasons: SeasonInfo[] }> {
-  return getJson(`/api/seasons`);
+export function fetchSeasons(game?: GameId): Promise<{ current: number; seasons: SeasonInfo[] }> {
+  return getJson(`/api/seasons${game === 'chain' ? '?game=chain' : ''}`);
 }
 
 // ---- admin (authorized server-side by ADMIN_USER_IDS against your auth JWT) ----

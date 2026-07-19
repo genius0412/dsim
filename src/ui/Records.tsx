@@ -1,3 +1,4 @@
+import type { GameId } from '../types';
 import { APP_NAME } from '../seasons';
 import { Leaderboard } from './Leaderboard';
 import { Stats } from './Stats';
@@ -24,12 +25,14 @@ export function Records({
   tab,
   onTab,
   myUserId,
+  game,
   onWatch,
   onOpenProfile,
 }: {
   tab: RecordsTab;
   onTab: (t: RecordsTab) => void;
   myUserId: string | null;
+  game?: GameId;
   onWatch: (replayId: string) => void;
   onOpenProfile: (username: string) => void;
 }) {
@@ -57,9 +60,9 @@ export function Records({
       </nav>
 
       {tab === 'leaderboard' ? (
-        <Leaderboard myUserId={myUserId} onWatch={onWatch} onOpenProfile={onOpenProfile} />
+        <Leaderboard myUserId={myUserId} game={game} onWatch={onWatch} onOpenProfile={onOpenProfile} />
       ) : (
-        <Stats onWatch={onWatch} onOpenProfile={onOpenProfile} />
+        <Stats game={game} onWatch={onWatch} onOpenProfile={onOpenProfile} />
       )}
     </>
   );

@@ -616,6 +616,7 @@ export function App() {
           tab={recordsTab}
           onTab={(t) => navigate('records', { sub: t })}
           myUserId={accountUserId}
+          game={settings.game}
           onWatch={watchReplay}
           onOpenProfile={openProfile}
         />

@@ -29,11 +29,12 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
   console.log(
     `[persist] match end: ${label} participants=${o.participants.length} authed=${authed.length} dbEnabled=${dbEnabled}`,
   );
-  // UNSCORED games (the Chain Reaction shell) never touch ELO/records/history —
-  // they have no scoring yet, so a 0-0 result would just pollute the boards. The DB
-  // is already keyed for game (via the room's game); scored games persist as before.
-  if (!simModuleFor(o.game).scored) {
-    console.log(`[persist] SKIP — unscored game (${o.game ?? 'decode'})`);
+  // UNSCORED games never touch ELO/records/history (a 0-0 result would pollute the
+  // boards). Both DECODE and Chain Reaction are scored; the boards/periods are keyed
+  // PER GAME (`o.game`), so each game's ranked/records stay fully separate.
+  const game = o.game ?? 'decode';
+  if (!simModuleFor(game).scored) {
+    console.log(`[persist] SKIP — unscored game (${game})`);
     return {};
   }
   if (!dbEnabled) {
@@ -48,11 +49,13 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
     // Season = the DB-controlled current season (>= the replay's balance version),
     // so an admin-started season stamps new results without a redeploy. Stamp the
     // replay row with the same season so a season purge can delete it directly.
-    const bv = await currentSeasonNumber(o.replay.balanceVersion);
+    // per-game current season (Chain Reaction seeds Act 1 · Season 1 at boot). CR's
+    // first ever result would still ensure its season here (initial act 1).
+    const bv = await currentSeasonNumber(o.replay.balanceVersion, game);
     o.replay.balanceVersion = bv;
-    await ensureSeason(bv);
+    await ensureSeason(bv, game, game === 'chain' ? 1 : 0);
     for (const p of authed) await ensureProfile(p.userId!, p.handle ?? 'Player');
-    const replayId = await saveReplay(o.replay);
+    const replayId = await saveReplay(o.replay, game);
 
     if (o.config.kind === 'record') {
       const primary = authed[0];
@@ -68,7 +71,7 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
       // NET score: the alliance's earned total minus the penalty points it handed
       // the (empty) opposing alliance — i.e. the fouls the player(s) committed.
       const score = recordScore(o.result, primary.alliance);
-      const prevBest = await personalBest(primary.userId!, mode, drivetrain, bv);
+      const prevBest = await personalBest(primary.userId!, mode, drivetrain, bv, game);
       const id = await submitRecord({
         userId: primary.userId!,
         partnerId: partner?.userId,
@@ -77,11 +80,12 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
         score,
         balanceVersion: bv,
         replayId,
+        game,
         // each driver brings their OWN robot; a duo stores both so the board can
         // show both drivetrains (partner absent ⇒ solo run)
         config: { spec: primary.spec, assists: primary.assists, partnerSpec: partner?.spec },
       });
-      const { rank, total } = await recordRank(primary.userId!, mode, drivetrain, bv);
+      const { rank, total } = await recordRank(primary.userId!, mode, drivetrain, bv, game);
       const info = {
         mode,
         drivetrain,
@@ -96,7 +100,7 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
       );
       return { record: info };
     } else {
-      const elo = await persistVersusMatch(authed, o, bv, replayId, o.ranked);
+      const elo = await persistVersusMatch(authed, o, bv, replayId, o.ranked, game);
       console.log(
         `[persist] WROTE versus match (ranked=${o.ranked}) — ${elo.length} ratings updated` +
           (elo.length === 0 && o.ranked ? ' (not a two-sided match)' : ''),

@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { GameId } from '../src/types';
 import { BALANCE_VERSION } from '../src/config';
 import { dbEnabled } from './db/pool';
 import {
@@ -183,19 +184,23 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return json(200, { ok: true }), true;
     }
 
-    // default board view = the live season (which may be admin-advanced past the
-    // code's BALANCE_VERSION); an explicit ?season= picks an archived one.
+    // which GAME's boards/periods to read — DECODE and Chain Reaction each have their own
+    // ranked/record boards and Act → Season progression (default DECODE for old clients).
+    const game: GameId = url.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+    // default board view = the live season FOR THIS GAME (which may be admin-advanced past
+    // the code's BALANCE_VERSION); an explicit ?season= picks an archived one.
     const seasonParam = url.searchParams.get('season');
     const season =
       seasonParam !== null
         ? Number(seasonParam)
         : dbEnabled
-          ? await currentSeasonNumber(BALANCE_VERSION)
+          ? await currentSeasonNumber(BALANCE_VERSION, game)
           : BALANCE_VERSION;
     const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? 100)));
     // paginated match-history opts (repo clamps limit to [1,100], default 25)
     const historyOpts = {
       balanceVersion: season,
+      game,
       offset: Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0),
       limit: url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined,
       type: url.searchParams.get('type') ?? undefined,
@@ -219,32 +224,33 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
 
     // season list for the leaderboard's season picker; `current` is the live one
     if (url.pathname === '/api/seasons') {
-      const current = dbEnabled ? await currentSeasonNumber(BALANCE_VERSION) : BALANCE_VERSION;
-      if (dbEnabled) await ensureSeason(current); // guarantee the live season shows
-      const seasons = dbEnabled ? await listSeasons() : [];
-      return json(200, { current, seasons }), true;
+      // seed Chain Reaction's first period at Act 1 · Season 1 (DECODE keeps act 0/beta)
+      const current = dbEnabled ? await currentSeasonNumber(BALANCE_VERSION, game) : BALANCE_VERSION;
+      if (dbEnabled) await ensureSeason(current, game, game === 'chain' ? 1 : 0);
+      const seasons = dbEnabled ? await listSeasons(game) : [];
+      return json(200, { current, seasons, game }), true;
     }
 
     if (url.pathname === '/api/records') {
       const mode = url.searchParams.get('mode') === 'duo' ? 'duo' : 'solo';
       const drivetrain = url.searchParams.get('drivetrain') ?? 'overall';
       const rows = dbEnabled
-        ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit })
+        ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game })
         : [];
-      return json(200, { season, mode, drivetrain, rows }), true;
+      return json(200, { season, mode, drivetrain, rows, game }), true;
     }
 
     if (url.pathname === '/api/elo') {
       const mode = url.searchParams.get('mode') === '2v2' ? '2v2' : '1v1';
       const meId = url.searchParams.get('me');
-      const rows = dbEnabled ? await eloLeaderboard({ mode, balanceVersion: season, limit }) : [];
+      const rows = dbEnabled ? await eloLeaderboard({ mode, balanceVersion: season, limit, game }) : [];
       // the viewer's own standing (rank among placed, or games-in-placements),
       // so the board can surface it even when they're off the visible page
       const me =
         dbEnabled && meId
-          ? await eloUserStanding({ userId: meId, mode, balanceVersion: season })
+          ? await eloUserStanding({ userId: meId, mode, balanceVersion: season, game })
           : null;
-      return json(200, { season, mode, rows, me }), true;
+      return json(200, { season, mode, rows, me, game }), true;
     }
 
     // public match history keyed by USERNAME (the profile page's history list)
@@ -263,7 +269,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const username = decodeURIComponent(profStatsMatch[1]).toLowerCase();
       const profile = dbEnabled ? await getProfileByUsername(username) : null;
       if (!profile) return json(404, { error: 'no such user' }), true;
-      const stats = await getUserStats(profile.userId, season);
+      const stats = await getUserStats(profile.userId, season, game);
       return json(200, stats), true;
     }
     const profMatch = url.pathname.match(/^\/api\/profile\/([^/]+)$/);
@@ -284,7 +290,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     const statsMatch = url.pathname.match(/^\/api\/user\/([^/]+)\/stats$/);
     if (statsMatch) {
       const userId = decodeURIComponent(statsMatch[1]);
-      const stats = dbEnabled ? await getUserStats(userId, season) : null;
+      const stats = dbEnabled ? await getUserStats(userId, season, game) : null;
       if (!stats) return json(200, { season, userId, elo: [], records: [], match: { played: 0, wins: 0, losses: 0 }, recent: [], handle: null, username: null }), true;
       return json(200, stats), true;
     }
