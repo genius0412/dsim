@@ -3,6 +3,7 @@ import type { GameId } from '../src/types';
 import { BALANCE_VERSION } from '../src/config';
 import { dbEnabled } from './db/pool';
 import {
+  actForSeason,
   currentSeasonNumber,
   ensureProfile,
   ensureSeason,
@@ -243,14 +244,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     if (url.pathname === '/api/elo') {
       const mode = url.searchParams.get('mode') === '2v2' ? '2v2' : '1v1';
       const meId = url.searchParams.get('me');
-      const rows = dbEnabled ? await eloLeaderboard({ mode, balanceVersion: season, limit, game }) : [];
+      // ELO is per-ACT (persists across seasons within an act) — resolve the requested
+      // season's act; the record board (above) stays per-season.
+      const act = dbEnabled ? await actForSeason(season, game) : 0;
+      const rows = dbEnabled ? await eloLeaderboard({ mode, act, limit, game }) : [];
       // the viewer's own standing (rank among placed, or games-in-placements),
       // so the board can surface it even when they're off the visible page
       const me =
-        dbEnabled && meId
-          ? await eloUserStanding({ userId: meId, mode, balanceVersion: season, game })
-          : null;
-      return json(200, { season, mode, rows, me, game }), true;
+        dbEnabled && meId ? await eloUserStanding({ userId: meId, mode, act, game }) : null;
+      return json(200, { season, act, mode, rows, me, game }), true;
     }
 
     // public match history keyed by USERNAME (the profile page's history list)

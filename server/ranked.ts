@@ -1,6 +1,6 @@
 import type { Alliance, GameId } from '../src/types';
 import type { MatchOutcome, MatchParticipant } from './room';
-import { addMatchParticipant, getRatingFull, saveMatch, upsertRating } from './db/repo';
+import { actForSeason, addMatchParticipant, getRatingFull, saveMatch, upsertRating } from './db/repo';
 
 /**
  * Ranked ratings — Glicko-2 (the chess.com model). Beyond a single Elo number,
@@ -179,17 +179,19 @@ export async function persistVersusMatch(
   let updates: EloBoardUpdate[] = [];
   const gamesAfter = new Map<string, number>(); // userId -> board games after this match
   if (ranked) {
+    // ELO is keyed by ACT (persists across seasons); resolve this season's act once.
+    const act = await actForSeason(balanceVersion, game);
     const parts: EloParticipant[] = [];
     for (const p of authed) {
       parts.push({
         userId: p.userId!,
         alliance: p.alliance,
-        rating: await getRatingFull(p.userId!, mode, balanceVersion, game),
+        rating: await getRatingFull(p.userId!, mode, act, game),
       });
     }
     updates = computeGlicko(parts, outcome.result.score);
     for (const u of updates) {
-      const games = await upsertRating(u.userId, mode, balanceVersion, u.state.rating, u.state.rd, u.state.vol, game);
+      const games = await upsertRating(u.userId, mode, act, u.state.rating, u.state.rd, u.state.vol, game);
       gamesAfter.set(u.userId, games);
     }
   }

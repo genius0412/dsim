@@ -1,6 +1,6 @@
 import { Room, type Client } from './room';
 import { persistMatch } from './persist';
-import { getRating, createPendingMatch } from './db/repo';
+import { actForSeason, currentSeasonNumber, getRating, createPendingMatch } from './db/repo';
 import { dbEnabled } from './db/pool';
 import { BALANCE_VERSION } from '../src/config';
 import type { GameId } from '../src/types';
@@ -218,7 +218,10 @@ export class Matchmaker {
   private async introElo(entry: QueueEntry, mode: QueueMode): Promise<number | null> {
     if (!dbEnabled || !entry.userId) return null;
     try {
-      return await getRating(entry.userId, mode, BALANCE_VERSION);
+      // ELO is keyed by the game's current ACT (persists across seasons in an act).
+      const bv = await currentSeasonNumber(BALANCE_VERSION, entry.game);
+      const act = await actForSeason(bv, entry.game);
+      return await getRating(entry.userId, mode, act, entry.game);
     } catch {
       return null;
     }

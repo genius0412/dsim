@@ -1,6 +1,24 @@
 # HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
 
-## Latest session — CR ranked & records + per-game periods
+## Latest session — ELO wipes on ACT reset, records on SEASON reset
+
+Reset semantics split: a **SEASON reset** (new `balance_version`, same act) starts fresh RECORD
+boards but ELO carries over; ratings wipe **only on an ACT reset** (act++). Implemented by
+keying ELO by ACT instead of season:
+- **`0013_elo_by_act.sql`**: `elo_ratings` gains `act` (backfilled from `seasons`), de-dups
+  colliding rows (keep highest balance_version per act), re-keys PK to
+  `(user_id, mode, game, act)`, DROPS `balance_version`, index → `(game, act, mode, rating)`.
+  Records/matches unchanged (still per-season). **Not deployed** (private branch; runs on next deploy).
+- **repo.ts**: new `actForSeason(bv, game)`; `getRating(Full)`/`upsertRating`/`eloLeaderboard`/
+  `eloUserStanding` now key by `act`; `getUserStats` resolves the season's act for its ELO query
+  (records/matches stay per-season).
+- **ranked.ts** `persistVersusMatch` resolves `actForSeason(bv, game)` once and rates on the act.
+  **matchmaking.ts** `introElo` resolves the current act. **api.ts** `/api/elo` resolves the
+  requested season's act (records endpoint stays per-season); response adds `act`.
+- Net effect: `startNewSeason(bumpAct=false)` → records reset, ELO persists; `bumpAct=true` →
+  both reset (fresh act). No client change needed (the extra `act` field is additive).
+
+## CR ranked & records + per-game periods
 
 Chain Reaction is now RANKED + RECORDED, on its OWN boards and its OWN Act → Season
 progression (DECODE and CR never share a leaderboard or a period).
