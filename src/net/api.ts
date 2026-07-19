@@ -132,8 +132,12 @@ export function fetchUserStats(userId: string, season?: number, game?: GameId): 
 
 export interface GlobalStats {
   users: number;
+  /** total games played — COMBINED across every game (the homepage headline) */
   games: number;
   byCategory: { solo: number; duo: number; '1v1': number; '2v2': number };
+  /** games played PER GAME (DECODE + Chain Reaction tracked separately); the
+   * homepage sums these into `games`. Absent from older servers. */
+  byGame?: Partial<Record<GameId, number>>;
 }
 
 /** site-wide totals for the homepage (players + games played, by category) */

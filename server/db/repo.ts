@@ -751,25 +751,36 @@ export async function eloUserStanding(opts: {
 // -------------------------------------------------------- global stats -----
 export interface GlobalStats {
   users: number;
+  /** total games played — COMBINED across every game (the homepage headline) */
   games: number;
   byCategory: { solo: number; duo: number; '1v1': number; '2v2': number };
+  /** games played PER GAME (DECODE + Chain Reaction tracked separately). The
+   * homepage sums these into `games`; the split is here if a surface wants it. */
+  byGame: Record<Game, number>;
 }
 
 /** site-wide totals for the homepage: registered players + games played, split
  * by category (solo/duo record runs + 1v1/2v2 PvP matches — the server-tracked
- * games). Cheap COUNT/GROUP BY over indexed tables. Zeros when the DB is off. */
+ * games) AND by game (DECODE vs Chain Reaction, recorded separately). The
+ * headline `games` COMBINES every game. Cheap COUNT/GROUP BY over indexed tables. */
 export async function getGlobalStats(): Promise<GlobalStats> {
   const [users, recRows, matchRows] = await Promise.all([
     q<{ n: string }>(`select count(*) as n from profiles`),
-    q<{ mode: string; n: string }>(`select mode, count(*) as n from records group by mode`),
-    q<{ mode: string; n: string }>(`select mode, count(*) as n from matches group by mode`),
+    q<{ game: Game; mode: string; n: string }>(`select game, mode, count(*) as n from records group by game, mode`),
+    q<{ game: Game; mode: string; n: string }>(`select game, mode, count(*) as n from matches group by game, mode`),
   ]);
   const byCategory: GlobalStats['byCategory'] = { solo: 0, duo: 0, '1v1': 0, '2v2': 0 };
+  const byGame: Record<Game, number> = { decode: 0, chain: 0 };
   for (const r of [...recRows, ...matchRows]) {
-    if (r.mode in byCategory) byCategory[r.mode as keyof GlobalStats['byCategory']] = Number(r.n);
+    const n = Number(r.n);
+    // combined-by-category (homepage) — sums across games
+    if (r.mode in byCategory) byCategory[r.mode as keyof GlobalStats['byCategory']] += n;
+    // recorded separately per game
+    const gk = (r.game ?? 'decode') as Game;
+    if (gk in byGame) byGame[gk] += n;
   }
   const games = byCategory.solo + byCategory.duo + byCategory['1v1'] + byCategory['2v2'];
-  return { users: Number(users[0]?.n ?? 0), games, byCategory };
+  return { users: Number(users[0]?.n ?? 0), games, byCategory, byGame };
 }
 
 // ---------------------------------------------------------- per-user stats --

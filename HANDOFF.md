@@ -1,6 +1,15 @@
 # HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
 
-## Latest session — ELO wipes on ACT reset, records on SEASON reset
+## Latest session — global "games played" recorded per game, combined on homepage
+
+`getGlobalStats` (repo.ts) now groups records/matches by `(game, mode)` and returns a new
+`byGame: {decode, chain}` split (games recorded SEPARATELY per game) while the headline `games`
+and `byCategory` COMBINE across games (summed — note the group-by-game change means `byCategory`
+now uses `+=`, not `=`). The homepage (`HomeMenu.tsx`) already renders the combined `stats.games`,
+so it stays a single combined total; the per-game split is available in the API for any surface
+that wants it. Client `GlobalStats.byGame?` is optional (older servers omit it).
+
+## ELO wipes on ACT reset, records on SEASON reset
 
 Reset semantics split: a **SEASON reset** (new `balance_version`, same act) starts fresh RECORD
 boards but ELO carries over; ratings wipe **only on an ACT reset** (act++). Implemented by
