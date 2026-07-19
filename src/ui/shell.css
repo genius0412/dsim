@@ -423,6 +423,230 @@
   color: color-mix(in srgb, var(--ds-accent-soft-ink) 78%, transparent);
 }
 
+/* ---- friends panel ----------------------------------------------------
+   Structural mirror of `.ds-rail`: a flex SIBLING on the right edge of
+   `.ds-body`, never `position: fixed`, for the same reason — `.ds-app` is the
+   only scroll container and a fixed panel would scroll independently of it.
+   Every hover/active state below moves via colour, background, or transform
+   only; nothing gains a border or margin on hover, so `npm run shiftaudit`
+   can't trip on these. */
+.ds-friends {
+  flex: none;
+  width: 268px;
+  align-self: stretch;
+  padding: 18px 14px 40px;
+  border-left: 1px solid var(--ds-line);
+  background: var(--ds-bar);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.ds-friends.collapsed {
+  width: 56px;
+  padding: 14px 8px;
+  align-items: center;
+}
+.fr-toggle {
+  position: relative;
+  font: inherit;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--ds-round);
+  border: 1px solid transparent;
+  background: none;
+  color: var(--ds-ink-dim);
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s;
+}
+.fr-toggle:hover {
+  color: var(--ds-ink);
+  background: var(--ds-panel);
+}
+/* the collapsed rail's only signal that a request is waiting — without it an
+   incoming request is invisible until someone happens to expand the panel */
+.fr-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--ds-round-full);
+  background: var(--ds-accent);
+  color: var(--ds-accent-ink);
+  font-size: 10.5px;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
+}
+.fr-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fr-title {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ds-ink);
+}
+.fr-collapse {
+  margin-left: auto;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--ds-round-sm);
+  background: none;
+  color: var(--ds-mut);
+  cursor: pointer;
+}
+.fr-collapse:hover {
+  color: var(--ds-ink);
+  background: var(--ds-panel);
+}
+.fr-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.fr-status .cap {
+  color: var(--ds-mut);
+  font-weight: 600;
+}
+.fr-status .ds-select {
+  flex: 1;
+  min-width: 0;
+}
+.fr-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.fr-sec-h {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.fr-sec-n {
+  color: var(--ds-ink-dim);
+}
+.fr-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.fr-who {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--ds-round-sm);
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.14s;
+}
+.fr-who.static,
+.fr-who:disabled {
+  cursor: default;
+}
+.fr-who:hover:not(:disabled):not(.static) {
+  background: var(--ds-panel);
+}
+.fr-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ds-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fr-sub {
+  font-size: 11px;
+  color: var(--ds-mut);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fr-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.fr-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ds-ok);
+  flex: none;
+}
+.fr-dot.dnd {
+  background: var(--ds-danger);
+}
+.fr-menu {
+  position: relative;
+}
+.fr-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--ds-round-sm);
+  color: var(--ds-mut);
+  font-weight: 700;
+}
+.fr-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.fr-menu > summary:hover {
+  color: var(--ds-ink);
+  background: var(--ds-panel);
+}
+/* absolutely positioned so opening the menu can't reflow the list behind it */
+.fr-menu-body {
+  position: absolute;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-panel);
+  box-shadow: var(--ds-block-sm);
+}
+.fr-empty,
+.fr-note,
+.fr-error {
+  margin: 2px 0;
+  font-size: 12px;
+  color: var(--ds-mut);
+  line-height: 1.45;
+}
+.fr-error {
+  color: var(--ds-red-ink);
+}
+.fr-note {
+  color: var(--ds-ok-ink);
+}
+
 /* ---- home: the menu IS the navigation --------------------------------- */
 .ds-main-home {
   display: flex;
@@ -1928,6 +2152,110 @@ tr.lb-detail td {
   cursor: not-allowed;
   transform: none;
 }
+/* ---- Contributors page --------------------------------------------------
+   Cards are the .ds-opt idiom (same --ds-panel fill, --ds-line-strong border,
+   --ds-round, --ds-block-sm) but laid out as avatar + body rather than a stacked
+   label, and they are NOT themselves pressable — the name, @username, and the two
+   icon links inside are. Every hover/active state here moves via transform or
+   colour only; nothing gains a border or margin, which would shift siblings and
+   trip `npm run shiftaudit`. */
+.contrib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+.contrib-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  padding: 13px 15px;
+  box-shadow: var(--ds-block-sm);
+}
+.contrib-avatar {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--ds-bg);
+}
+.contrib-avatar.fallback {
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ds-mut);
+}
+.contrib-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+/* name + @username are buttons (they navigate in-app), so they need the button
+   reset — they must read as text, not as controls */
+.contrib-name,
+.contrib-user {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.contrib-name {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--ds-ink);
+}
+.contrib-user {
+  font-family: var(--ds-font-mono);
+  font-size: 11.5px;
+  color: var(--ds-mut);
+}
+.contrib-name.static,
+.contrib-user.static {
+  cursor: default;
+}
+.contrib-name:not(.static):hover,
+.contrib-user:not(.static):hover {
+  color: var(--ds-accent);
+  text-decoration: underline;
+}
+.contrib-icons {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.contrib-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid var(--ds-line-strong);
+  background: transparent;
+  color: var(--ds-mut);
+  transition: transform 0.08s ease, color 0.14s, border-color 0.14s;
+}
+.contrib-icon:hover {
+  color: var(--ds-ink);
+  border-color: var(--ds-ink-dim);
+  transform: translateY(-1px);
+}
+.contrib-icon:active {
+  transform: translateY(0);
+}
+
 .ds-opt .ot {
   font-size: 14.5px;
   font-weight: 700;
@@ -2237,6 +2565,30 @@ input[type='range']:focus-visible {
   .ds-rail-btn .rh,
   .ds-subnav-btn .sh {
     display: none;
+  }
+
+  /* `.ds-body` is a COLUMN here, so the friends panel would otherwise land at
+     the very bottom, below the content. Order it directly under the rail and
+     let it span the width, matching how the rail itself degrades — an expanded
+     panel is a strip above the content rather than a side column. */
+  .ds-rail {
+    order: 1;
+  }
+  .ds-friends {
+    order: 2;
+    width: 100%;
+    align-self: auto;
+    padding: 12px;
+    border-left: 0;
+    border-bottom: 1px solid var(--ds-line);
+  }
+  .ds-friends.collapsed {
+    width: 100%;
+    align-items: flex-start;
+    padding: 8px 12px;
+  }
+  .ds-main {
+    order: 3;
   }
 
   .ds-subnav-layout {

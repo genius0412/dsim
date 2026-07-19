@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
-import { loadSettings, saveSettings, switchGame } from '../settings';
-import { saveAccountSettings, fetchAdminStatus } from '../net/api';
+import { loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
+import { saveAccountSettings, fetchAdminStatus, fetchProfile } from '../net/api';
 import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
 import { Admin } from './Admin';
@@ -21,6 +21,7 @@ import { Matchmaking } from './Matchmaking';
 import { ReplayView } from './ReplayView';
 import { AccountButton } from './AccountButton';
 import { Download } from './Download';
+import { Contributors } from './Contributors';
 import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
@@ -50,6 +51,7 @@ type Screen =
   | 'replay'
   | 'game'
   | 'download'
+  | 'contributors'
   | 'profile'
   | 'account'
   | 'admin';
@@ -110,6 +112,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/play';
     case 'download':
       return '/download';
+    case 'contributors':
+      return '/contributors';
     case 'account':
       return '/account';
     case 'admin':
@@ -153,6 +157,7 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/ranked')) return at('matchmaking');
   if (rest.startsWith('/watch')) return at('watch');
   if (rest.startsWith('/download')) return at('download');
+  if (rest.startsWith('/contributors')) return at('contributors');
   if (rest.startsWith('/account')) return at('account');
   if (rest.startsWith('/admin')) return at('admin');
   // /play (a live game) can't be restored without a session ⇒ home
@@ -297,6 +302,13 @@ export function App() {
 
   // when signed in, mirror settings to the account (debounced) as well as local
   const [accountUserId, setAccountUserId] = useState<string | null>(null);
+  // the account's PUBLIC display name (the mutable `handle` behind leaderboards and
+  // /profile), which is NOT `user.name` — that's the immutable Neon Auth sign-up name.
+  // Lifted here so the header pill and the Profile page read the same source; before
+  // this, the pill showed the stale auth name forever after a rename.
+  // `undefined` = not resolved yet (render nothing rather than flashing the auth name,
+  // which would show the very bug this fixes on every page load); `null` = no handle set.
+  const [handle, setHandle] = useState<string | null | undefined>(undefined);
   // is this account an admin? (server-authorized against ADMIN_USER_IDS) — gates the
   // Admin entry; the server independently enforces every admin action
   const [isAdmin, setIsAdmin] = useState(false);
@@ -328,6 +340,29 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen, adminChecked, isAdmin]);
 
+  // load the account's display handle once per sign-in. Kept out of AccountSync's
+  // effect on purpose: that one is guarded by a module-level `syncedUser` so settings
+  // are fetched at most once per session (it prevents a remount clobbering unsaved
+  // edits), and the handle shouldn't inherit that guard's retry semantics.
+  useEffect(() => {
+    if (!accountUserId) {
+      setHandle(undefined);
+      return;
+    }
+    let cancelled = false;
+    fetchProfile(accountUserId)
+      .then((p) => {
+        if (!cancelled) setHandle(p.handle);
+      })
+      // no game server (or it's asleep) — fall back to the auth name in the pill
+      .catch(() => {
+        if (!cancelled) setHandle(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountUserId]);
+
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // restore the player's preferred server region (from local settings, or synced
@@ -336,7 +371,10 @@ export function App() {
     if (settings.preferredServerId) setSelectedServer(settings.preferredServerId);
   }, [settings.preferredServerId]);
 
-  const update = (s: GameSettings): void => {
+  const update = (next: GameSettings): void => {
+    // keep the legacy audio booleans in step with the volume sliders before this
+    // blob reaches localStorage or the account (old clients read only those two)
+    const s = syncAudioMirrors(next);
     setSettings(s);
     saveSettings(s);
     if (accountUserId) {
@@ -555,7 +593,7 @@ export function App() {
 
   // shell screens
   const right = authEnabled ? (
-    <AccountButton onAccount={() => navigate('account')} />
+    <AccountButton handle={handle} onAccount={() => navigate('account')} />
   ) : (
     <button className="ds-btn" onClick={() => navigate('account')}>
       Settings
@@ -573,13 +611,16 @@ export function App() {
       showAdmin={isAdmin}
       showRail={screen !== 'home'}
       onDownload={() => navigate('download')}
+      onContributors={() => navigate('contributors')}
+      signedIn={signedIn}
+      onOpenProfile={openProfile}
       game={settings.game}
     >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
       {authEnabled && <UsernameGate />}
       {/* patch notes / new-season + new-act reveals — shown once on the menu shell,
           never over a live match (the game screen returns before this) */}
-      <Announcements muted={!settings.audio.sounds} />
+      <Announcements muted={settings.audio.volume.master <= 0} />
 
       {screen === 'home' && (
         <HomeMenu
@@ -762,7 +803,11 @@ export function App() {
       )}
       {screen === 'watch' && <WatchLive onWatch={spectateRoom} onBack={() => navigate('modes')} />}
       {screen === 'download' && isAdmin && <Download />}
-      {screen === 'account' && <Account settings={settings} onChange={update} />}
+      {/* public, unlike Download — no admin gate */}
+      {screen === 'contributors' && <Contributors onOpenProfile={openProfile} />}
+      {screen === 'account' && (
+        <Account settings={settings} onChange={update} onHandleSaved={setHandle} />
+      )}
       {screen === 'admin' && isAdmin && <Admin />}
     </AppShell>
   );

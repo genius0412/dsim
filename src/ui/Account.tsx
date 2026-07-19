@@ -19,16 +19,20 @@ import { APP_NAME } from '../seasons';
 export function Account({
   settings,
   onChange,
+  onHandleSaved,
 }: {
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
+  /** a saved display name, pushed straight back up to App so the header pill
+   * updates on save instead of waiting for the next reload */
+  onHandleSaved?: (handle: string) => void;
 }) {
   return (
     <>
       <p className="ds-eyebrow">{APP_NAME} · Profile</p>
       <h1 className="ds-h1">Profile</h1>
 
-      {authEnabled ? <Identity /> : <IdentityDisabled />}
+      {authEnabled ? <Identity onHandleSaved={onHandleSaved} /> : <IdentityDisabled />}
 
       {multiServer() && (
         <div className="ds-panel" style={{ marginTop: 18 }}>
@@ -67,7 +71,7 @@ export function Account({
   );
 }
 
-function Identity() {
+function Identity({ onHandleSaved }: { onHandleSaved?: (handle: string) => void }) {
   const client = authClient!;
   const session = client.useSession();
   const [open, setOpen] = useState(false);
@@ -90,7 +94,7 @@ function Identity() {
               Sign out
             </button>
           </div>
-          <DisplayName userId={user.id} fallback={user.name ?? 'Player'} />
+          <DisplayName userId={user.id} fallback={user.name ?? 'Player'} onSaved={onHandleSaved} />
           <Username userId={user.id} />
           <div>
             <p className="ds-hint" style={{ margin: '0 0 4px' }}>Account ID</p>
@@ -121,7 +125,15 @@ function Identity() {
 }
 
 /** editable public display name (the leaderboard/profile handle) */
-function DisplayName({ userId, fallback }: { userId: string; fallback: string }) {
+function DisplayName({
+  userId,
+  fallback,
+  onSaved,
+}: {
+  userId: string;
+  fallback: string;
+  onSaved?: (handle: string) => void;
+}) {
   const configured = gameServerConfigured();
   const [name, setName] = useState(fallback);
   const [saved, setSaved] = useState(fallback);
@@ -157,6 +169,7 @@ function DisplayName({ userId, fallback }: { userId: string; fallback: string })
         setSaved(r.handle);
         setName(r.handle);
         setStatus('ok');
+        onSaved?.(r.handle);
       })
       .catch((e: unknown) => {
         setError(e instanceof Error ? e.message : String(e));

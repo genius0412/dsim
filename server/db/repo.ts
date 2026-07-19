@@ -2,7 +2,7 @@ import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
 import { PLACEMENT_GAMES } from '../../src/config';
-import { q } from './pool';
+import { q, tx } from './pool';
 
 /** every board/period is keyed by game; old callers/rows default to DECODE. */
 type Game = GameId;
@@ -1328,4 +1328,323 @@ export async function globalPresence(freshSeconds = 15): Promise<GlobalPresence>
   );
   const a = agg[0] ?? { online: 0, q1: 0, q2: 0 };
   return { online: a.online, signedIn: su[0]?.n ?? 0, queues: { '1v1': a.q1, '2v2': a.q2 } };
+}
+
+// ------------------------------------------------------------- friends ------
+/**
+ * Friends: a MUTUAL-CONSENT relation, plus presence, which is behavioural data
+ * about a real person. Both are enforced here and in the handlers — never in the
+ * client. The properties these functions exist to make structural:
+ *
+ *  - the acting user is ALWAYS the JWT `sub` the handler passes in; nothing here
+ *    takes "who is acting" as data alongside "who to act on";
+ *  - accept/decline/cancel/remove are CONDITIONAL writes scoped to the caller, and
+ *    each returns false when it matched nothing — so naming a request that was
+ *    never sent, or a friendship between two other people, is a 404 rather than a
+ *    silent success;
+ *  - presence is only ever reached THROUGH the caller's own friendship rows, so
+ *    there is no query shape here that can return a non-friend's presence.
+ */
+
+/** a friend counts as online if their heartbeat landed within this window. The
+ * client polls every ~30s, so 45s absorbs one missed beat without flapping. */
+const ONLINE_WINDOW_S = 45;
+
+export type PresenceStatus = 'online' | 'dnd' | 'invisible';
+
+export interface FriendRow {
+  userId: string;
+  handle: string;
+  username: string | null;
+  online: boolean;
+  /** 'dnd' shows a red dot; null = plain. NEVER 'invisible' — that is resolved
+   * server-side into a plain offline row and is not observable by a friend. */
+  status: 'dnd' | null;
+  /** coarse seconds since last seen; null when online, never seen, or invisible.
+   * Deliberately rounded (see `coarsen`) — the UI renders "3h", so second
+   * precision would be a needlessly exact activity log to hand out. */
+  offlineSeconds: number | null;
+}
+
+export interface FriendsPayload {
+  friends: FriendRow[];
+  incoming: PublicProfile[];
+  outgoing: PublicProfile[];
+  blocked: PublicProfile[];
+  status: PresenceStatus | null;
+}
+
+/** round an offline duration to the granularity the UI actually renders */
+function coarsen(sec: number | null): number | null {
+  if (sec === null || !Number.isFinite(sec) || sec < 0) return null;
+  if (sec < 60) return 0; // "just now"
+  if (sec < 3600) return Math.round(sec / 300) * 300; // 5-minute buckets
+  if (sec < 86400) return Math.round(sec / 3600) * 3600; // hourly
+  return Math.round(sec / 86400) * 86400; // daily
+}
+
+/** record that this user is around. Folded into the friends READ (see api.ts)
+ * rather than given its own ping endpoint: the poll that refreshes everyone
+ * else's status already proves the caller is here, and with no user id on the
+ * wire there is nothing to forge. */
+export async function touchPresence(userId: string): Promise<void> {
+  await q(
+    `insert into user_presence (user_id, last_seen_at) values ($1, now())
+     on conflict (user_id) do update set last_seen_at = now()`,
+    [userId],
+  );
+}
+
+export async function setPresenceStatus(
+  userId: string,
+  status: PresenceStatus | null,
+): Promise<void> {
+  await q(
+    `insert into user_presence (user_id, last_seen_at, status) values ($1, now(), $2)
+     on conflict (user_id) do update set last_seen_at = now(), status = $2`,
+    [userId, status],
+  );
+}
+
+/** the caller's whole friends view in one round trip. Every row is reached
+ * through the caller's own friendships/requests/blocks, so this cannot be
+ * coaxed into returning a stranger's presence. */
+export async function listFriends(userId: string): Promise<FriendsPayload> {
+  const friendRows = await q<{
+    user_id: string;
+    handle: string;
+    username: string | null;
+    status: string | null;
+    since: string | null;
+  }>(
+    `with pairs as (
+       select case when user_low = $1 then user_high else user_low end as friend_id
+         from friendships
+        where user_low = $1 or user_high = $1
+     )
+     select p.user_id, p.handle, p.username,
+            case when up.status = 'invisible' then null else up.status end as status,
+            case when up.status = 'invisible' then null
+                 else extract(epoch from (now() - up.last_seen_at)) end as since
+       from pairs
+       join profiles p on p.user_id = pairs.friend_id
+       left join user_presence up on up.user_id = pairs.friend_id
+      order by p.handle`,
+    [userId],
+  );
+
+  const friends: FriendRow[] = friendRows.map((r) => {
+    const since = r.since === null ? null : Number(r.since);
+    const online = since !== null && since <= ONLINE_WINDOW_S;
+    return {
+      userId: r.user_id,
+      handle: r.handle,
+      username: r.username,
+      online,
+      status: r.status === 'dnd' ? 'dnd' : null,
+      offlineSeconds: online ? null : coarsen(since),
+    };
+  });
+
+  const incoming = await q<ProfileCols>(
+    `select p.user_id, p.handle, p.username
+       from friend_requests fr join profiles p on p.user_id = fr.from_user_id
+      where fr.to_user_id = $1 order by fr.created_at desc`,
+    [userId],
+  );
+  const outgoing = await q<ProfileCols>(
+    `select p.user_id, p.handle, p.username
+       from friend_requests fr join profiles p on p.user_id = fr.to_user_id
+      where fr.from_user_id = $1 order by fr.created_at desc`,
+    [userId],
+  );
+  const blocked = await q<ProfileCols>(
+    `select p.user_id, p.handle, p.username
+       from friend_blocks b join profiles p on p.user_id = b.blocked_id
+      where b.blocker_id = $1 order by p.handle`,
+    [userId],
+  );
+  const own = await q<{ status: string | null }>(
+    `select status from user_presence where user_id = $1`,
+    [userId],
+  );
+
+  const st = own[0]?.status;
+  return {
+    friends,
+    incoming: incoming.map(shapeProfile),
+    outgoing: outgoing.map(shapeProfile),
+    blocked: blocked.map(shapeProfile),
+    status: st === 'online' || st === 'dnd' || st === 'invisible' ? st : null,
+  };
+}
+
+/** the exact profile columns every friends query selects — an allowlist, never
+ * `select *`: `profiles` also holds `settings`, and a future column would
+ * otherwise join the payload silently. */
+interface ProfileCols {
+  user_id: string;
+  handle: string;
+  username: string | null;
+}
+const shapeProfile = (r: ProfileCols): PublicProfile => ({
+  userId: r.user_id,
+  handle: r.handle,
+  username: r.username,
+});
+
+export type RequestOutcome = 'sent' | 'accepted' | 'already-friends' | 'blocked' | 'duplicate';
+
+/**
+ * Send a friend request. Returns an outcome instead of throwing so the handler
+ * can map it to a status code.
+ *
+ * If the target has ALREADY sent the caller a request, this accepts it rather
+ * than creating the mirror image — otherwise two people who both press Add end
+ * up with two pending requests and no friendship, each looking at a request
+ * they can't tell is already reciprocated.
+ */
+export async function sendFriendRequest(fromId: string, toId: string): Promise<RequestOutcome> {
+  if (fromId === toId) return 'duplicate';
+  return tx(async (query) => {
+    // a block in EITHER direction stops the request. The handler reports this
+    // the same way as an ordinary failure — telling a sender they were blocked
+    // is itself the signal that lets someone confirm they were blocked.
+    const blocks = await query<{ n: string }>(
+      `select count(*) as n from friend_blocks
+        where (blocker_id = $1 and blocked_id = $2) or (blocker_id = $2 and blocked_id = $1)`,
+      [fromId, toId],
+    );
+    if (Number(blocks[0]?.n ?? 0) > 0) return 'blocked';
+
+    const [low, high] = fromId < toId ? [fromId, toId] : [toId, fromId];
+    const already = await query(`select 1 from friendships where user_low = $1 and user_high = $2`, [
+      low,
+      high,
+    ]);
+    if (already.length > 0) return 'already-friends';
+
+    const reverse = await query(
+      `delete from friend_requests where from_user_id = $1 and to_user_id = $2 returning 1`,
+      [toId, fromId],
+    );
+    if (reverse.length > 0) {
+      await query(
+        `insert into friendships (user_low, user_high) values ($1, $2) on conflict do nothing`,
+        [low, high],
+      );
+      return 'accepted';
+    }
+
+    const ins = await query(
+      `insert into friend_requests (from_user_id, to_user_id) values ($1, $2)
+       on conflict (from_user_id, to_user_id) do nothing returning 1`,
+      [fromId, toId],
+    );
+    return ins.length > 0 ? 'sent' : 'duplicate';
+  });
+}
+
+/**
+ * Accept a pending request. The DELETE *is* the authorization check: it is
+ * scoped to (from = the named sender, to = the CALLER), so it matches only a
+ * request that person actually sent this caller, and the friendship is inserted
+ * only when it matched. A read-then-write here would let a client accept a
+ * request that was never sent and mint a friendship the other party never
+ * agreed to — which then leaks that person's presence. False ⇒ handler 404s.
+ */
+export async function acceptFriendRequest(callerId: string, fromId: string): Promise<boolean> {
+  if (callerId === fromId) return false;
+  return tx(async (query) => {
+    const del = await query(
+      `delete from friend_requests where from_user_id = $1 and to_user_id = $2 returning 1`,
+      [fromId, callerId],
+    );
+    if (del.length === 0) return false;
+    const [low, high] = callerId < fromId ? [callerId, fromId] : [fromId, callerId];
+    await query(
+      `insert into friendships (user_low, user_high) values ($1, $2) on conflict do nothing`,
+      [low, high],
+    );
+    return true;
+  });
+}
+
+/** decline a request sent TO the caller (caller is the `to` side) */
+export async function declineFriendRequest(callerId: string, fromId: string): Promise<boolean> {
+  const del = await q(
+    `delete from friend_requests where from_user_id = $1 and to_user_id = $2 returning 1`,
+    [fromId, callerId],
+  );
+  return del.length > 0;
+}
+
+/** withdraw a request the caller SENT (caller is the `from` side) */
+export async function cancelFriendRequest(callerId: string, toId: string): Promise<boolean> {
+  const del = await q(
+    `delete from friend_requests where from_user_id = $1 and to_user_id = $2 returning 1`,
+    [callerId, toId],
+  );
+  return del.length > 0;
+}
+
+/** unfriend. One side of the pair is bound to the caller, so this can never
+ * delete a friendship between two other people. */
+export async function removeFriend(callerId: string, otherId: string): Promise<boolean> {
+  const [low, high] = callerId < otherId ? [callerId, otherId] : [otherId, callerId];
+  const del = await q(
+    `delete from friendships where user_low = $1 and user_high = $2 returning 1`,
+    [low, high],
+  );
+  return del.length > 0;
+}
+
+/** block someone: record it, then tear down the friendship and any pending
+ * request in BOTH directions. Leaving the friendship in place would keep
+ * leaking presence to the very person just blocked. */
+export async function blockUser(callerId: string, targetId: string): Promise<boolean> {
+  if (callerId === targetId) return false;
+  return tx(async (query) => {
+    await query(
+      `insert into friend_blocks (blocker_id, blocked_id) values ($1, $2) on conflict do nothing`,
+      [callerId, targetId],
+    );
+    const [low, high] = callerId < targetId ? [callerId, targetId] : [targetId, callerId];
+    await query(`delete from friendships where user_low = $1 and user_high = $2`, [low, high]);
+    await query(
+      `delete from friend_requests
+        where (from_user_id = $1 and to_user_id = $2) or (from_user_id = $2 and to_user_id = $1)`,
+      [callerId, targetId],
+    );
+    return true;
+  });
+}
+
+export async function unblockUser(callerId: string, targetId: string): Promise<boolean> {
+  const del = await q(
+    `delete from friend_blocks where blocker_id = $1 and blocked_id = $2 returning 1`,
+    [callerId, targetId],
+  );
+  return del.length > 0;
+}
+
+/**
+ * Public user search for the "add a friend" box. Deliberately NOT `searchProfiles`
+ * (the admin substring-on-handle search): a public substring search over display
+ * names lets anyone enumerate every name on the service. This is a PREFIX match on
+ * the unique `username` — the same public identifier already exposed one at a time
+ * at /api/profile/<username>.
+ */
+export async function searchUsersByUsername(prefix: string, limit = 20): Promise<PublicProfile[]> {
+  // Escape LIKE wildcards before appending `%`. Without this, searching for "%"
+  // or "_" matches every username at once, turning a prefix lookup back into the
+  // full-enumeration endpoint this function exists to avoid.
+  const esc = prefix.replace(/[\\%_]/g, '\\$&');
+  const rows = await q<ProfileCols>(
+    `select user_id, handle, username from profiles
+      where username ilike $1 escape '\\'
+      order by username limit $2`,
+    [esc + '%', Math.min(Math.max(1, limit), 50)],
+  );
+  return rows.map(shapeProfile);
 }

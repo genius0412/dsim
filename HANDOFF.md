@@ -1,4 +1,150 @@
-# HANDOFF — 2026-07-19 (Chain Reaction: UI polish — game-aware footer + game-prefixed URLs) — READ FIRST
+# HANDOFF — 2026-07-19 (friends-list plan: all 4 features written) — READ FIRST
+
+## ⚠️ BLOCKED ON A DEPLOY — read this first
+
+`server/db/migrations/0016_friends.sql` is written but **has NOT been applied**. Per the
+main developer's standing rule, Claude writes the `.sql` and never runs `flyctl deploy`.
+Until someone deploys, the friends endpoints 404 on the live server — which the client
+handles deliberately: `FriendsUnavailableError` renders "Friends aren't available on this
+server yet", never an error boundary. **The client is therefore safe to ship first.**
+
+The migration is purely additive (`create table if not exists` ×4, no drops, no type
+changes) and `migrate()` runs each file in ONE transaction, so **rollback is "deploy the
+previous server"** — the old code simply never touches the new tables.
+
+**Untested against a real database.** Nothing here has run against Postgres; there is no
+local DB in this environment and the migration must not be deployed from here. The SQL is
+reviewed but not executed. Before trusting it, run the two-account security checklist in
+`docs/friends-list-plan.md` §Verification (the `curl` ones — forged accept, cross-user
+remove, `?q=%` wildcard, invisible-in-raw-JSON). Those are exactly the cases the UI won't
+exercise, because the UI is the honest client.
+
+## Latest session — friends list (PR #4)
+
+Branch `friendslist`. **`npm run build`, `npm test`, `npm run server:check`, and
+`npm run contrast` (now 151 checks) are all green.**
+
+- **Migration `0016_friends.sql`** — `friend_requests` (pending only, deleted on
+  resolve), `friendships` (ONE row per unordered pair, `check (user_low < user_high)`, so
+  a friendship can't half-exist), `friend_blocks` (one-way), and `user_presence`.
+  Presence is its OWN skinny table, NOT columns on `profiles`: the ~30s heartbeat would
+  otherwise rewrite the whole `profiles` row (Postgres UPDATE is copy-on-write, including
+  the `settings` jsonb) on the table every leaderboard/profile/match read also hits — and
+  it makes keeping last-seen out of the PUBLIC profile reads structural rather than a
+  discipline one future `select *` breaks.
+- **`server/db/pool.ts` gained `tx()`** — `q()` takes a connection per call, so a
+  sequence of `q()`s is not atomic. Accepting a request is "delete the request AND insert
+  the friendship"; a half-applied version either drops a request nobody honoured or mints
+  a friendship nobody agreed to.
+- **`repo.ts` friends section.** The security properties are structural, not vigilance:
+  accept/decline/cancel/remove are CONDITIONAL writes scoped to the caller and return
+  false on no match (⇒ handler 404s), so **accept is authorised by the DELETE itself** —
+  a client naming a request that was never sent gets a 404, not a friendship. `remove`
+  binds one side of the pair to the caller, so it can't delete two strangers' friendship.
+  `listFriends` reaches presence only THROUGH the caller's own friendship rows, so no
+  query shape here can return a non-friend's presence. **`invisible` is flattened to a
+  plain offline row IN THE SQL** — a server that sent `{online:true,status:'invisible'}`
+  and trusted the component not to render it would leave the truth in a payload any
+  friend can read in devtools. Offline durations are `coarsen`ed to the buckets the UI
+  renders (5min/1h/1d); second precision would be a needlessly exact activity log.
+  `searchUsersByUsername` is a PREFIX match on `username` (not the admin substring search
+  on `handle`, which would let anyone enumerate every display name) and **escapes LIKE
+  wildcards** — `?q=%` would otherwise return the whole table.
+- **`server/api.ts`** — one `/api/friends*` block (Bearer JWT; the subject is ALWAYS the
+  token `sub`, no endpoint takes an actor parameter) + public `GET /api/users/search`.
+  The wire carries **usernames, not user ids**, so a leaked friends list doesn't hand out
+  valid auth-provider `sub` values. **The friends READ doubles as the presence
+  heartbeat** — no `/api/presence/ping`, because the poll that refreshes everyone else's
+  status already proves the caller is here, and with no user id on the wire there is
+  nothing to forge. A block reports the SAME generic failure as any other refusal: a
+  distinct message would let someone confirm they'd been blocked.
+- **Client** — `authedJson` in `net/api.ts` (the existing `getJson` is the *public*
+  reader and sends no Authorization header, so a friends read through it would just 401);
+  `useFriends.ts` owns the poll timer, cache, and optimistic mutations; `FriendsPanel.tsx`
+  + `.ds-friends`/`.fr-*` CSS. **The poll only runs while `document.visibilityState` is
+  visible** — otherwise every abandoned background tab pings a scale-to-zero Fly machine
+  ~2,900×/day AND keeps that player eternally "online" while they're asleep, which is
+  both a cost problem and a wrong answer. 30s open / 120s collapsed.
+- **Panel layout** — a flex sibling in `.ds-body` mirroring `NavRail`, never
+  `position:fixed` (`.ds-app` is the only scroll container). Collapsed by default (a new
+  account has no friends; an expanded panel would be a column of empty state on every
+  screen) with an **incoming-request badge on the collapsed rail** — without it a request
+  is invisible until someone happens to expand, and the feature quietly doesn't work.
+  Force-collapses between 901–1100px, where there's room for the rail and content but not
+  a third column; that's a CONSTRAINT, not a preference, so the stored open/closed choice
+  survives and widening restores it. Below 900px `.ds-body` is already a column, so the
+  panel becomes a full-width strip ordered under the rail.
+- **Status is spelled out in words**, not carried by dot hue alone — a red DND dot and a
+  green online dot are the same dot to a red-green colourblind player.
+- **`scripts/contrast.mjs` gained 16 pairs** (135 → 151) for the panel's `--ds-bar`
+  ground and the Contributors cards. Worth knowing: contrast.mjs audits a HARDCODED pair
+  list, so a green run does NOT imply new CSS was checked — new colour pairs must be added
+  there or the pass is meaningless.
+
+**Still not verified:** `npm run shiftaudit` (Electron loads the script as plain Node in
+this shell — `app` undefined at `shiftaudit.cjs:36`, an environment problem unrelated to
+these changes). The friends rows are new pressables in a new flex column, which is exactly
+the shape of change that audit exists to catch — run it locally. Also untested: the
+resize behaviour across both breakpoints, and the whole friends feature end-to-end.
+
+**Nothing is committed.** `docs/friends-list-plan.md` §Sequencing calls for FOUR separate
+PRs, and PRs #1/#3/#4 all touch `App.tsx`, so the split needs deliberate staging rather
+than one lump commit.
+
+## Previous session — display-name fix, volume sliders, Contributors page
+
+Branch `friendslist`. **Build + `npm test` + `npm run contrast` all green.** These are PRs
+#1–#3 of the four-PR split in `docs/friends-list-plan.md`; **PR #4 (the friends list itself)
+is NOT started** — it needs a DB migration and, per the main developer, Claude generates the
+`.sql` but never runs the deploy.
+
+- **§3 display-name fix** (`App.tsx`, `AccountButton.tsx`, `Account.tsx`). Root cause: the
+  header pill read `user.name` (the immutable Neon Auth sign-up name), the Profile page read
+  the app's mutable `handle` — two sources, never synced. App now owns
+  `handle: string | null | undefined` (fetched once per sign-in via `fetchProfile`) and passes
+  it to `AccountButton`, which prefers it over `user.name`. `undefined` renders `…` rather
+  than the auth name, so a page load doesn't *flash* the very bug being fixed. `Account` takes
+  `onHandleSaved` (→ `Identity` → `DisplayName`), fired after `updateHandle` resolves, so the
+  pill updates on save instead of on reload. Kept OUT of `AccountSync`'s effect deliberately —
+  that one is guarded by a module-level `syncedUser` whose retry semantics shouldn't apply here.
+- **§2 volume sliders** — 4 categories replacing the 2 booleans. `GameSettings.audio` is now
+  `{ volume: {master, game, sfx, voice}, sounds, voice }`. **`sounds`/`voice` are LEGACY MIRRORS,
+  not dead fields**: settings sync per account and one account is shared across client versions,
+  so an old tab / old Electron install still reads only those two booleans. `audioMirrors()`
+  re-derives them in `coerceSettings` (load) and `syncAudioMirrors()` in App's `update()` (the
+  one choke point for edits — a slider drag never passes through coerce). Legacy blobs migrate
+  `sounds:false → master 0`, `voice:false → voice 0`. **Round trip through an old client loses
+  the levels but keeps the mute** — smoke-checked.
+  `MatchAudio` swapped `soundsEnabled`/`voiceEnabled` for `masterVolume/gameVolume/sfxVolume/
+  voiceVolume` + a `gain(category)` helper; WAV cues set `.volume` per *play* (was static at
+  construction) so a slider applies immediately; `tone`/`noiseBurst` scale there since every
+  synthesized effect funnels through them. **`ensureCtx` no longer early-returns when muted** —
+  a browser only starts an AudioContext from a user gesture, so refusing to build one at
+  master 0 meant raising the slider mid-match stayed silent until reload; `startKeepAlive`
+  now warms it. Voice at 0 keeps the old beep fallback exactly.
+  UI: `AudioSection.tsx` `VolumeRow` (`.ds-field`/`.ds-range`/`rangeFill`, step 5), auditions
+  its category on pointer-up/key-up (never `onChange` — a drag would stutter), greys the value
+  when master is 0. **8 new smoke checks** cover the migration in both directions.
+- **§4 Contributors page** — `src/contributors.ts` (hand-maintained roster) +
+  `src/ui/Contributors.tsx` + `.contrib-*` CSS in `shell.css` + route `/contributors` +
+  a footer link beside Download (public — deliberately NOT admin-gated like Download).
+  Display names are fetched live per card via `fetchProfileByUsername`, falling back to a
+  static `fallbackName`, so a rename never staleness the page and a cold/absent game server
+  still renders. **⚠️ The roster is incomplete on purpose**: names + GitHub URLs came from
+  `CONTRIBUTORS.md`, but `discordAvatarUrl` / `discordUrl` / `inGameUsername` are recorded
+  NOWHERE in the repo and must be collected from each person. Every field except
+  `fallbackName` is optional and the card degrades (initials avatar, no icons, non-clickable
+  name), so the file can be completed one contributor at a time.
+
+**Not verified this session:** `npm run shiftaudit` — Electron in this shell loads the script
+as plain Node (`app` is undefined at `shiftaudit.cjs:36`), an environment problem unrelated to
+these changes. Worth running once locally: AudioSection swapped `.ds-opt` buttons for
+`.ds-range` inputs, and Contributors adds new pressables (`.contrib-name`/`.contrib-icon`,
+written to move only via `transform`/colour, never a border or margin).
+
+---
+
+# HANDOFF — 2026-07-19 (Chain Reaction: UI polish — game-aware footer + game-prefixed URLs)
 
 ## Latest session — seamless DECODE/Chain Reaction separation in the UI
 

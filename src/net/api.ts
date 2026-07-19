@@ -594,3 +594,113 @@ export async function adminRenameUser(userId: string, handle: string): Promise<s
   const data = (await res.json().catch(() => ({}))) as { handle?: string };
   return data.handle ?? null;
 }
+
+// ---- friends ---------------------------------------------------------------
+
+/** a friend's presence, as resolved BY THE SERVER. `online` already accounts for
+ * an 'invisible' friend (they arrive as a plain offline row with no last-seen),
+ * so there is no client-side filtering to forget. */
+export interface FriendRow {
+  userId: string;
+  handle: string;
+  username: string | null;
+  online: boolean;
+  /** 'dnd' shows a red dot; null = plain */
+  status: 'dnd' | null;
+  /** coarse seconds since last seen — null when online or never seen. Already
+   * rounded server-side to the buckets the UI renders. */
+  offlineSeconds: number | null;
+}
+
+export type PresenceStatus = 'online' | 'dnd' | 'invisible';
+
+export interface FriendsPayload {
+  friends: FriendRow[];
+  incoming: PublicProfile[];
+  outgoing: PublicProfile[];
+  blocked: PublicProfile[];
+  /** the caller's own self-set status (null = automatic) */
+  status: PresenceStatus | null;
+}
+
+/** thrown when the server is reachable but has no friends API — an older build
+ * than the client (one Fly app serves every client version). The panel renders
+ * an "unavailable" state for this rather than an error. */
+export class FriendsUnavailableError extends Error {
+  constructor() {
+    super('friends unavailable');
+    this.name = 'FriendsUnavailableError';
+  }
+}
+
+/**
+ * Authenticated JSON call. `getJson` above is the PUBLIC reader — it sends no
+ * Authorization header, so a friends read through it would just 401. Everything
+ * here needs the Bearer token, hence the separate helper rather than repeating
+ * the token dance nine times.
+ */
+async function authedJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const base = gameServerHttpUrl();
+  if (!base) throw new FriendsUnavailableError();
+  const token = await getAuthToken();
+  if (!token) throw new Error('Please sign in again.');
+  const res = await fetch(base + path, {
+    ...init,
+    headers: {
+      ...(init?.body ? { 'content-type': 'application/json' } : {}),
+      authorization: `Bearer ${token}`,
+      ...init?.headers,
+    },
+  });
+  // 404 = this server predates the friends API. Distinguished from other errors
+  // so the caller can degrade instead of showing a failure.
+  if (res.status === 404 && !init?.method) throw new FriendsUnavailableError();
+  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `Server returned ${res.status}`);
+  return data as T;
+}
+
+/** the caller's friends, requests and blocks. This request also records the
+ * caller's own presence server-side — there is no separate ping. */
+export function fetchFriends(): Promise<FriendsPayload> {
+  return authedJson<FriendsPayload>('/api/friends');
+}
+
+const friendPost = (path: string, username: string): Promise<{ ok?: boolean; outcome?: string }> =>
+  authedJson(`/api/friends/${path}`, { method: 'POST', body: JSON.stringify({ username }) });
+
+/** send a request. Resolves to 'accepted' when the target had already sent one
+ * to the caller (the server turns that into an immediate friendship). */
+export async function sendFriendRequest(username: string): Promise<'sent' | 'accepted'> {
+  const r = await friendPost('request', username);
+  return r.outcome === 'accepted' ? 'accepted' : 'sent';
+}
+
+export const acceptFriendRequest = (username: string) => friendPost('accept', username);
+export const declineFriendRequest = (username: string) => friendPost('decline', username);
+export const cancelFriendRequest = (username: string) => friendPost('cancel', username);
+export const removeFriend = (username: string) => friendPost('remove', username);
+export const blockUser = (username: string) => friendPost('block', username);
+export const unblockUser = (username: string) => friendPost('unblock', username);
+
+/** set your own presence status (null = automatic) */
+export function setPresenceStatus(status: PresenceStatus | null): Promise<unknown> {
+  return authedJson('/api/friends/status', {
+    method: 'POST',
+    body: JSON.stringify({ status }),
+  });
+}
+
+/** public username-prefix search for the add-a-friend box (min 2 chars) */
+export async function searchUsers(query: string): Promise<PublicProfile[]> {
+  const q = query.trim().toLowerCase();
+  if (q.length < 2) return [];
+  try {
+    const r = await getJson<{ users: PublicProfile[] }>(
+      `/api/users/search?q=${encodeURIComponent(q)}`,
+    );
+    return r.users ?? [];
+  } catch {
+    return []; // server asleep or older than this client — no results, not an error
+  }
+}

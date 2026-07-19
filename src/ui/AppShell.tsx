@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { APP_NAME, seasonFor, LINKS } from '../seasons';
 import type { GameId } from '../games/types';
+import { FriendsPanel } from './FriendsPanel';
 import { Logo } from './Logo';
 import { NavRail } from './NavRail';
 import { usePresence } from './usePresence';
@@ -62,6 +63,9 @@ export function AppShell({
   showAdmin,
   showRail = true,
   onDownload,
+  onContributors,
+  signedIn,
+  onOpenProfile,
   game,
 }: {
   active: ShellNav;
@@ -74,6 +78,12 @@ export function AppShell({
   showRail?: boolean;
   /** Download is a footer destination, not one of the four `ShellNav` tabs */
   onDownload: () => void;
+  /** Contributors, likewise a footer destination (but public, unlike Download) */
+  onContributors: () => void;
+  /** drives the friends panel: signed out it shows a sign-in prompt and never polls */
+  signedIn: boolean;
+  /** click-through from a friend/search row to that player's public profile */
+  onOpenProfile: (username: string) => void;
   /** the selected game — the footer names its season (DECODE / Chain Reaction) */
   game: GameId;
 }) {
@@ -96,6 +106,7 @@ export function AppShell({
         <div className="ds-body">
           <NavRail active={active} onNav={onNav} showAdmin={showAdmin} />
           <main className="ds-main">{children}</main>
+          <FriendsPanel signedIn={signedIn} onOpenProfile={onOpenProfile} />
         </div>
       ) : (
         <main className="ds-main ds-main-home">{children}</main>
@@ -108,6 +119,9 @@ export function AppShell({
         <span className="ds-foot-links">
           <button className="ds-foot-link" onClick={onDownload}>
             Download
+          </button>
+          <button className="ds-foot-link" onClick={onContributors}>
+            Contributors
           </button>
           <a href={LINKS.repo} target="_blank" rel="noreferrer">
             GitHub
