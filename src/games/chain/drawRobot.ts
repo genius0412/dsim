@@ -76,34 +76,43 @@ export function drawChainRobot(
   if (mode === 'turret') drawTurret(ctx, r, loaded);
 }
 
-/** CR intake at the front: the full-width sweeper roller — a bar spanning the whole
- * chassis with a row of compliant-wheel ticks at the tip. Greens while intaking. */
+/** CR intake — the full-width sweeper roller. Mounts on the FRONT (a bar across the chassis
+ * front) or the LEFT+RIGHT edges (two bars along the sides). Greens while intaking. The drawn
+ * bars ARE the grab area (`chainIntakeBand`, shared with `interact`). */
 function drawChainIntake(
   ctx: CanvasRenderingContext2D,
   r: RobotState,
   on: boolean,
   hl: number,
 ): void {
-  // the SAME band `interact` captures with — so the drawn intake IS the grab area
   const m = chainIntakeBand(r.spec);
-  const half = m.half;
-  const x0 = hl; // chassis front edge
-  const x1 = m.front; // the intake tip (collision front)
   const barFill = on ? GREEN_DK : '#333a45';
   const tickFill = on ? GREEN : '#6b7280';
 
-  const rollerTicks = (h: number): void => {
-    const n = Math.max(2, Math.round(h / 2.4));
-    for (let i = -n; i <= n; i++) {
+  if (m.side) {
+    // SIDE rollers along each side edge (±y), spanning the chassis length
+    const n = Math.max(2, Math.round(m.halfLen / 2.4));
+    for (const s of [1, -1] as const) {
+      const y0 = s * m.inner;
+      const y1 = s * m.outer;
+      ctx.fillStyle = barFill;
+      ctx.fillRect(-m.halfLen, Math.min(y0, y1), m.halfLen * 2, Math.abs(y1 - y0));
       ctx.fillStyle = tickFill;
-      ctx.fillRect(x1 - 1.2, (i * h) / (n + 0.5) - 0.65, 1.1, 1.3);
+      for (let i = -n; i <= n; i++) {
+        ctx.fillRect((i * m.halfLen) / (n + 0.5) - 0.65, s * m.outer - s * 1.2 - (s > 0 ? 0 : 1.1), 1.3, 1.1);
+      }
     }
-  };
+    return;
+  }
 
-  // full-width roller bar across the chassis front
+  // FRONT: full-width roller bar across the chassis front, ticks at the tip
+  const half = m.half;
+  const x1 = m.front; // the intake tip (collision front)
   ctx.fillStyle = barFill;
-  ctx.fillRect(x0, -half, x1 - x0, half * 2);
-  rollerTicks(half);
+  ctx.fillRect(hl, -half, x1 - hl, half * 2);
+  const n = Math.max(2, Math.round(half / 2.4));
+  ctx.fillStyle = tickFill;
+  for (let i = -n; i <= n; i++) ctx.fillRect(x1 - 1.2, (i * half) / (n + 0.5) - 0.65, 1.1, 1.3);
 }
 
 /** chassis-wide flywheel DRUM: a FULL-WIDTH row of compliant rollers (the flywheels) across

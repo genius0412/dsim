@@ -66,6 +66,7 @@ export const DEFAULT_SPEC: RobotSpec = {
   groundClearance: CHAIN_CLEARANCE_DEFAULT,
   scoreMode: CHAIN_DEFAULT_SCORE_MODE,
   chainIntake: CHAIN_DEFAULT_INTAKE,
+  intakeSide: false,
   shooterRear: false,
 };
 
@@ -175,7 +176,9 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     ? (sp.chainIntake as RobotSpec['chainIntake'])
     : (base.chainIntake ?? CHAIN_DEFAULT_INTAKE);
   out.shooterRear = typeof sp.shooterRear === 'boolean' ? sp.shooterRear : (base.shooterRear ?? false);
-  // Chain Reaction ball storage — clamped to the archetype+size max (chainStorageMax)
+  out.intakeSide = typeof sp.intakeSide === 'boolean' ? sp.intakeSide : (base.intakeSide ?? false);
+  // Chain Reaction ball storage — clamped to the archetype+size max (chainStorageMax). NOTE: the
+  // side-intake storage penalty depends on out.intakeSide, so it's resolved BEFORE this clamp.
   out.ballStorage = Math.round(
     clampFinite(
       sp.ballStorage,

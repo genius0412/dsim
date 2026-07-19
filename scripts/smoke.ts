@@ -4286,6 +4286,42 @@ const mkMM = () => {
     );
   }
 
+  // SIDE-mount sweeper: grabs from the LEFT/RIGHT edges (not the front), holds fewer, and its
+  // rollers are part of the collision hitbox (wider footprint) — like DECODE's front intake.
+  {
+    const mkSide = (side: boolean) => {
+      const setup = chainSetup(0, 'blue');
+      setup.spec = { ...DEFAULT_SPEC, scoreMode: 'drum', intakeSide: side };
+      const gw = createChainWorld('match', 909, [setup]);
+      gw.match.phase = 'teleop'; gw.match.phaseTimeLeft = 120;
+      const rob = gw.robots[0]; rob.heading = 0; rob.pos = { x: 0, y: 20 }; rob.autoIntake = true; rob.autoFire = false;
+      return { gw, rob };
+    };
+    const hw = DEFAULT_SPEC.width / 2;
+    const place = (gw: World, rob: (typeof gw.robots)[number], dx: number, dy: number): number => {
+      const p = rot({ x: dx, y: dy }, rob.heading);
+      gw.balls[0].state = { kind: 'ground' }; gw.balls[0].pos = { x: rob.pos.x + p.x, y: rob.pos.y + p.y }; gw.balls[0].vel = { x: 0, y: 0 };
+      return gw.balls[0].id;
+    };
+    const gone = (gw: World, id: number): boolean => !gw.balls.some((b) => b.id === id);
+    // a particle beside the RIGHT edge is grabbed by a SIDE intake, ignored by a FRONT one
+    const sd = mkSide(true); const idS = place(sd.gw, sd.rob, 0, -(hw + 1));
+    runChain(sd.gw, cmd({}), SIM_DT);
+    const fr = mkSide(false); const idF = place(fr.gw, fr.rob, 0, -(hw + 1));
+    runChain(fr.gw, cmd({}), SIM_DT);
+    check('chain side-intake: grabs a particle alongside the edge (a front sweeper misses it)', gone(sd.gw, idS) && !gone(fr.gw, idF));
+    // lower storage cap
+    const sideMax = chainStorageMax({ ...DEFAULT_SPEC, scoreMode: 'drum', intakeSide: true });
+    const frontMax = chainStorageMax({ ...DEFAULT_SPEC, scoreMode: 'drum', intakeSide: false });
+    check('chain side-intake: holds fewer than a front sweeper', sideMax < frontMax, `side=${sideMax} front=${frontMax}`);
+    // the intake is part of the collision hitbox: side mount widens the footprint, no front reach
+    const eSide = robotExtents({ ...sd.rob, spec: { ...DEFAULT_SPEC, intakeSide: true } } as typeof sd.rob);
+    const eFront = robotExtents({ ...fr.rob, spec: { ...DEFAULT_SPEC, intakeSide: false } } as typeof fr.rob);
+    check('chain side-intake: rollers extend the collision hitbox sideways (front reach moves to the sides)',
+      eSide.half > DEFAULT_SPEC.width / 2 && Math.abs(eSide.front - DEFAULT_SPEC.length / 2) < 0.01 && eFront.front > DEFAULT_SPEC.length / 2,
+      `sideHalf=${eSide.half.toFixed(1)} sideFront=${eSide.front.toFixed(1)} frontFront=${eFront.front.toFixed(1)}`);
+  }
+
   // CR presets are legal + STABLE through coerceSpec (so a card applies as a no-op and
   // highlights as selected) — every archetype/intake/storage/clearance survives intact
   {

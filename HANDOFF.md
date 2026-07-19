@@ -1,6 +1,24 @@
 # HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
 
-## Latest session — fire rates: turret max 9 bps, drum ~30 bps
+## Latest session — physical turret aim + Front/Side intake mount
+
+- **Physical turret aim** (user: shots should depend on physical state, not pre-solved). The CR
+  turret now SLEWS toward the lead solution at `CHAIN_TURRET_SLEW` (4 rad/s) and `launchToAccel`
+  fires along the ACTUAL `r.turretHeading` + real velocity (no re-solved lead). Steady driving
+  tracks perfectly; a SUDDEN shove (collision) jumps the solution faster than the turret follows,
+  so shots fire along the stale heading and MISS. `makeChainRobot` seeds `turretHeading` aimed at
+  the goal (it slews, so it must start aimed). Smoke: settled/steady = accurate, sudden shove =
+  18.5° error. (Teleporting tests reset `turretHeading` — a real turret tracks continuously.)
+- **Intake MOUNT selector (Front / Side)** — NOT a new style; the same sweeper on the front or
+  the left+right edges (`RobotSpec.intakeSide`, like the shooter Front/Rear). `chainIntakeBand` is
+  a discriminated union (`side:false` front box / `side:true` two side bands); `interact` +
+  `drawChainIntake` + `RobotPreview` handle both. Side mount holds fewer (`CHAIN_STORE_SIDE_MULT`
+  0.6). **The intake is part of the non-ball collision hitbox** (user): `footprintExtents` moves
+  the `INTAKE_PRESETS[intake].reach` from the FRONT to the SIDES for a side mount (the Rapier
+  collider uses `robotExtents`), so both mounts' rollers collide with walls/robots like DECODE.
+  `coerceSpec`/`DEFAULT_SPEC` carry `intakeSide`; Menu has the Front/Side buttons.
+
+## fire rates: turret max 9 bps, drum ~30 bps
 
 - **Turret**: `CHAIN_FIRE_INTERVAL = 1/9` (≈0.111 s) — max 9 balls/s (deterministic; ~8.8 observed
   after 60 Hz quantization, under the 9 cap).

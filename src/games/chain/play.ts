@@ -619,7 +619,14 @@ function interact(
   // would plow it forward — driving into a cluster collects fast instead of shoving them away.
   if (intakeActive && rob.hopper.length < cap) {
     const m = chainIntakeBand(rob.spec);
-    if (local.x > m.back && local.x < m.front + r2 && Math.abs(local.y) < m.half) return 'absorbed';
+    if (m.side) {
+      // SIDE mount: rollers on BOTH side edges — a particle alongside either flank (within the
+      // chassis length, out to `outer`, in past `inner`) is grabbed.
+      const aly = Math.abs(local.y);
+      if (Math.abs(local.x) < m.halfLen && aly > m.inner && aly < m.outer + r2) return 'absorbed';
+    } else if (local.x > m.back && local.x < m.front + r2 && Math.abs(local.y) < m.half) {
+      return 'absorbed';
+    }
   }
 
   // plow (not intaking, or no room, or particle outside the mouth): only inside the footprint

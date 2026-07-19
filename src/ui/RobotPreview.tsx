@@ -46,8 +46,10 @@ export function RobotPreview({
 
   // Chain Reaction geometry — the SAME intake band the sim captures with. Front = UP (−y).
   const cBand = chain ? chainIntakeBand(spec) : null;
-  const cHalf = cBand ? cBand.half : 0; // sweeper overhangs the frame
-  const cReach = cBand ? cBand.front - len / 2 : 0; // intake tip past the front edge
+  const cFront = cBand && !cBand.side ? cBand : null; // front-mount sweeper geometry
+  const cSide = cBand && cBand.side ? cBand : null; // side-mount sweeper geometry
+  const cHalf = cFront ? cFront.half : cSide ? cSide.outer : 0; // half-span for the viewBox
+  const cReach = cFront ? cFront.front - len / 2 : 0; // intake tip past the front edge
   const cTipY = frontY - cReach;
   const cMode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
 
@@ -131,21 +133,21 @@ export function RobotPreview({
     );
   }
 
-  // Chain Reaction intake (front = UP): the full-width sweeper roller bar.
-  const cIntakeEl = cBand ? (
+  // Chain Reaction intake (front = UP). Front-mount = a bar across the top; side-mount = two bars
+  // on the left/right edges (robot ±y → screen ±x, spanning the chassis length).
+  const cIntakeEl = cFront ? (
     <g>
       <rect x={-cHalf} y={cTipY} width={cHalf * 2} height={frontY - cTipY} fill={accent} opacity={0.4} />
       {[-3, -2, -1, 0, 1, 2, 3].map((i) => (
-        <rect
-          key={i}
-          x={(i * cHalf) / 3.4 - 0.5}
-          y={cTipY}
-          width={1}
-          height={1.3}
-          rx={0.3}
-          fill={accent}
-          opacity={Math.abs(i) <= 1 ? 0.95 : 0.6}
-        />
+        <rect key={i} x={(i * cHalf) / 3.4 - 0.5} y={cTipY} width={1} height={1.3} rx={0.3} fill={accent}
+          opacity={Math.abs(i) <= 1 ? 0.95 : 0.6} />
+      ))}
+    </g>
+  ) : cSide ? (
+    <g>
+      {[1, -1].map((s) => (
+        <rect key={s} x={s > 0 ? cSide.inner : -cSide.outer} y={-cSide.halfLen}
+          width={cSide.outer - cSide.inner} height={cSide.halfLen * 2} fill={accent} opacity={0.4} />
       ))}
     </g>
   ) : null;

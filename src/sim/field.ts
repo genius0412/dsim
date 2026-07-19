@@ -283,8 +283,15 @@ export interface StartLegality {
 /** footprint extents in the robot frame (chassis + intake reach). Single source
  * of truth reused by physics.robotExtents and the G304 start validator. */
 export function footprintExtents(spec: RobotSpec): { front: number; rear: number; half: number } {
+  const reach = C.INTAKE_PRESETS[spec.intake].reach;
+  // Chain Reaction SIDE-mount sweeper: the rollers ride on the ±y edges, so the intake extends
+  // the SIDES of the collision hitbox (not the front) — the intake is part of the non-ball
+  // collision footprint, matching DECODE (front-mount intakes extend the front, below).
+  if (spec.intakeSide) {
+    return { front: spec.length / 2, rear: spec.length / 2, half: spec.width / 2 + reach };
+  }
   return {
-    front: spec.length / 2 + C.INTAKE_PRESETS[spec.intake].reach,
+    front: spec.length / 2 + reach,
     rear: spec.length / 2,
     half: spec.width / 2,
   };

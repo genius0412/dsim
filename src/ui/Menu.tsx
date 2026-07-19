@@ -95,6 +95,7 @@ function chainSpecMatches(a: RobotSpec, b: RobotSpec): boolean {
     a.driveRpm === b.driveRpm &&
     (a.scoreMode ?? 'turret') === (b.scoreMode ?? 'turret') &&
     (a.chainIntake ?? 'sweeper') === (b.chainIntake ?? 'sweeper') &&
+    !!a.intakeSide === !!b.intakeSide &&
     !!a.shooterRear === !!b.shooterRear &&
     (a.ballStorage ?? 0) === (b.ballStorage ?? 0) &&
     (a.groundClearance ?? 0) === (b.groundClearance ?? 0)
@@ -465,6 +466,23 @@ export function Menu({ settings, onChange }: Props) {
                     <span className="ot">{CHAIN_INTAKE_LABELS.sweeper}</span>
                     <span className="od">{CHAIN_INTAKE_BLURBS.sweeper}</span>
                   </div>
+                </div>
+                <h3 className="ds-subh">Intake mount</h3>
+                <div className="ds-opts two">
+                  <button
+                    className={`ds-opt ${!spec.intakeSide ? 'on' : ''}`}
+                    onClick={() => setSpec({ intakeSide: false })}
+                  >
+                    <span className="ot">FRONT</span>
+                    <span className="od">Grabs from the front</span>
+                  </button>
+                  <button
+                    className={`ds-opt ${spec.intakeSide ? 'on' : ''}`}
+                    onClick={() => setSpec({ intakeSide: true })}
+                  >
+                    <span className="ot">SIDE</span>
+                    <span className="od">Grabs from the sides · holds fewer</span>
+                  </button>
                 </div>
               </>
             )}

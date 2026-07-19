@@ -78,6 +78,10 @@ export interface RobotSpec {
    *  ('sweeper') — a roller spanning the whole chassis width that gulps Particles on contact.
    * Optional (defaulted in coerceSpec). */
   chainIntake?: ChainIntakeStyle;
+  /** Chain Reaction: mount the sweeper on the LEFT+RIGHT edges instead of the FRONT (a drum can
+   * then intake a stream it drives alongside). Same roller, different position; the open flanks
+   * cost hopper volume ⇒ lower storage cap. Optional (defaulted false in coerceSpec). */
+  intakeSide?: boolean;
   /** Chain Reaction: mount the drum/dumper launcher at the REAR (opposite the front intake)
    * instead of the front. The robot turns its BACK to the goal to shoot. No effect on a turret
    * (top-mounted). Optional (defaulted false in coerceSpec). */

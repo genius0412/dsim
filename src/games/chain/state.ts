@@ -12,18 +12,31 @@ import {
 } from './config';
 
 /**
- * The CR intake MOUTH in the robot-local frame — the ONE source of truth shared by the
- * capture logic (`interact`) and the renderer (`drawChainIntake`) so the grab area is EXACTLY
- * the drawn intake. `front` = the collision/OBB front (the intake tip, `robotExtents().front`),
- * so particles at the intake are captured before they can be plowed forward; `back` a shallow
- * bite behind the chassis front edge; `half` the design's half-width (widthFrac·chassis
- * +overhang). All in inches, robot-local (+x = forward).
+ * The CR intake MOUTH in the robot-local frame — the ONE source of truth shared by the capture
+ * logic (`interact`) and the renderer (`drawChainIntake`) so the grab area IS the drawn intake.
+ * A discriminated union by geometry (all inches, robot-local, +x = forward):
+ *  • FRONT (sweeper): a box at the front. `front` = the collision/OBB tip (`robotExtents().front`,
+ *    so particles are grabbed before being plowed); `back` a shallow bite behind the front edge;
+ *    `half` the mouth half-width (widthFrac·chassis +overhang).
+ *  • SIDE: rollers on BOTH side edges. `halfLen` the fore-aft span (chassis length); `inner` the
+ *    inside capture edge (into the frame) and `outer` how far out past each side (±y) it grabs.
  */
-export function chainIntakeBand(spec: RobotSpec): { back: number; front: number; half: number } {
+export type ChainIntakeBand =
+  | { side: false; back: number; front: number; half: number }
+  | { side: true; halfLen: number; inner: number; outer: number };
+
+export function chainIntakeBand(spec: RobotSpec): ChainIntakeBand {
   const it = CHAIN_INTAKES[spec.chainIntake ?? CHAIN_DEFAULT_INTAKE];
   const hl = spec.length / 2;
   const hw = spec.width / 2;
+  // SIDE mount: the sweeper sits on the left+right edges instead of the front. `outer` uses the
+  // SAME intake reach as the front tip, so the capture band == the collision hitbox side extent
+  // (footprintExtents) — the intake is part of the non-ball collision footprint.
+  if (spec.intakeSide) {
+    return { side: true, halfLen: hl, inner: Math.max(0.5, hw - it.depth), outer: hw + INTAKE_PRESETS[spec.intake].reach };
+  }
   return {
+    side: false,
     back: hl - it.depth,
     front: hl + INTAKE_PRESETS[spec.intake].reach, // = robotExtents().front (the intake tip)
     half: hw * it.widthFrac + it.overhang,
