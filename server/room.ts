@@ -438,7 +438,7 @@ export class Room {
       case 'update': {
         // sanitize the patch against this player's current config: a spoofed
         // spec/size/assist patch is clamped to legal ranges before it applies
-        const patch = sanitizePlayerPatch(msg.patch, c.player);
+        const patch = sanitizePlayerPatch(msg.patch, c.player, this.game);
         // in the ranked strategy window, alliance is server-authoritative (staged by
         // the matchmaker) — a client may re-pick its spec / pose / ready, never its
         // side, or two partners could stack one alliance.

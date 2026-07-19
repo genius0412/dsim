@@ -1,4 +1,5 @@
 import type { LobbyPlayer, PlayerPatch } from './protocol';
+import type { GameId } from '../games/types';
 import { coerceSpec, coerceAssists, coerceAutoPath, coerceStartPose, DEFAULT_SPEC, DEFAULT_ASSISTS } from '../sim/spawn';
 import { START_POSES } from '../config';
 import { clamp } from '../math';
@@ -12,6 +13,14 @@ import { clamp } from '../math';
  * roster (which then feeds `createWorld`). The heavy lifting (spec/assist/auto
  * ranges) is the SAME `coerceSpec`/`coerceAssists`/`coerceAutoPath` the client
  * uses, so a client's own prediction matches what the server spawns.
+ *
+ * `game` MUST be threaded through: some chassis ranges are game-aware (Chain
+ * Reaction runs its own length range, `CHAIN_MIN/MAX_LENGTH`, since its sweeper
+ * doesn't eat into an 18" cube like DECODE's reach-limited intakes). Without it
+ * the server would clamp a CR spec with DECODE's per-intake length range — a
+ * DIFFERENT envelope than the config menu offered — silently resizing a
+ * record-run / ranked robot away from what the player built. Pass the room's /
+ * queue's game so server limits == config-menu limits.
  */
 
 function coerceName(raw: unknown, fallback: string): string {
@@ -26,9 +35,9 @@ function coerceStartIndex(raw: unknown): number {
 
 /** sanitize a full lobby player (join / queue). `clientId` is assigned by the
  * server, never taken from the wire. */
-export function sanitizePlayer(raw: unknown): Omit<LobbyPlayer, 'clientId'> {
+export function sanitizePlayer(raw: unknown, game?: GameId): Omit<LobbyPlayer, 'clientId'> {
   const p = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
-  const spec = coerceSpec(p.spec, DEFAULT_SPEC);
+  const spec = coerceSpec(p.spec, DEFAULT_SPEC, game);
   const autoPath = coerceAutoPath(p.autoPath);
   return {
     name: coerceName(p.name, 'Driver'),
@@ -55,7 +64,7 @@ export function sanitizePlayer(raw: unknown): Omit<LobbyPlayer, 'clientId'> {
  * each coerced to a legal value. A malformed patch yields an empty patch (no-op)
  * rather than corrupting the stored player. `current` is the player's existing
  * spec/assists so a partial spec patch clamps against the right baseline. */
-export function sanitizePlayerPatch(raw: unknown, current: LobbyPlayer): PlayerPatch {
+export function sanitizePlayerPatch(raw: unknown, current: LobbyPlayer, game?: GameId): PlayerPatch {
   if (typeof raw !== 'object' || raw === null) return {};
   const p = raw as Record<string, unknown>;
   const out: PlayerPatch = {};
@@ -68,7 +77,7 @@ export function sanitizePlayerPatch(raw: unknown, current: LobbyPlayer): PlayerP
   if ('ready' in p) out.ready = p.ready === true;
   if ('assists' in p) out.assists = coerceAssists(p.assists, current.assists);
   if ('spec' in p) {
-    const spec = coerceSpec(p.spec, current.spec);
+    const spec = coerceSpec(p.spec, current.spec, game);
     out.spec = spec;
     // keep the top-level team fields consistent with the clamped spec
     out.teamName = spec.teamName;

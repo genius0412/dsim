@@ -664,7 +664,7 @@ wss.on('connection', (ws: WebSocket) => {
       send,
       // NEVER trust the wire spec: sanitize the whole player to legal ranges
       // before it lands on the roster (a spoofed devtools spec is clamped here)
-      player: { ...sanitizePlayer(msg.player), clientId: id },
+      player: { ...sanitizePlayer(msg.player, cfg.game), clientId: id },
       connected: true,
       disconnectAt: 0,
       // protocol capabilities this client build understands (mixed-version safe:
@@ -711,7 +711,7 @@ wss.on('connection', (ws: WebSocket) => {
         r.addSpectator({
           id,
           send,
-          player: { ...sanitizePlayer(undefined), clientId: id },
+          player: { ...sanitizePlayer(undefined, r.config.game), clientId: id },
           connected: true,
           disconnectAt: 0,
           caps: Array.isArray(msg.caps) ? msg.caps : [],
@@ -749,7 +749,7 @@ wss.on('connection', (ws: WebSocket) => {
             id,
             send,
             // sanitize the ranked player's spec/assists too (same clamp as join)
-            player: { ...sanitizePlayer(msg.player), name: u.handle ?? msg.player.name },
+            player: { ...sanitizePlayer(msg.player, msg.game === 'chain' ? 'chain' : 'decode'), name: u.handle ?? msg.player.name },
             userId: u.userId,
             mode: msg.mode,
             // the client's home region (Fly's x-region for its connection) + measured

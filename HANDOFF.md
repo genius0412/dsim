@@ -1,6 +1,36 @@
-# HANDOFF — 2026-07-19 (Chain Reaction: UI polish — game-aware footer + game-prefixed URLs) — READ FIRST
+# HANDOFF — 2026-07-19 (server spec clamp is now GAME-AWARE — CR chassis limits match the config menu) — READ FIRST
 
-## Latest session — seamless DECODE/Chain Reaction separation in the UI
+## Latest session — server-side chassis limits == config-menu limits (CR record runs)
+
+Build + tsc + smoke (`npm test`) + `server:check` all green.
+
+**Bug:** Chain Reaction record runs (and ranked/custom) resized the chassis differently
+from the config menu. CR runs its own length envelope (`CHAIN_MIN_LENGTH`=10 ..
+`CHAIN_MAX_LENGTH`=18); DECODE clamps length to the per-intake range (sloped 13.5–15). The
+config menu (`Menu.tsx`) + the actual CR spawn (`createChainWorld`→`coerceSpec(...,'chain')`)
+were already game-aware — but the SERVER ingress sanitizers weren't: `sanitizePlayer` /
+`sanitizePlayerPatch` in `src/net/sanitize.ts` called `coerceSpec` WITHOUT the `game` arg, so
+a CR robot's length got clamped with DECODE's intake range before it ever reached the
+chain-aware spawn (e.g. length 10 → 13.5). That sanitized spec is what lands on the roster,
+feeds the setups, and gets recorded into the replay.
+
+**Fix:** thread `game` through the server clamp so server limits == config-menu limits:
+- `src/net/sanitize.ts`: `sanitizePlayer(raw, game?)` and `sanitizePlayerPatch(raw, current,
+  game?)` now pass `game` into `coerceSpec`.
+- `server/index.ts`: join → `sanitizePlayer(msg.player, cfg.game)`; spectate →
+  `sanitizePlayer(undefined, r.config.game)`; ranked queue → `sanitizePlayer(msg.player,
+  msg.game==='chain'?'chain':'decode')`.
+- `server/room.ts`: update patch → `sanitizePlayerPatch(msg.patch, c.player, this.game)`.
+- Smoke: 6 new checks in the sanitize block (CR keeps length 10/18; DECODE range still
+  applies with no game arg — regression guard both ways).
+
+Backward-compatible (no protocol change — just widens the accepted CR envelope to match what
+the menu already offers). **Needs a Fly deploy** (`flyctl deploy --remote-only`) to take
+effect on the live server; until then the deployed server keeps the old DECODE clamp for CR.
+
+---
+
+## Prior session — Chain Reaction: UI polish — game-aware footer + game-prefixed URLs
 
 Build + tsc all green. Changes are UI-only (no `src/sim`/`config` touch, so smoke unaffected).
 

@@ -119,6 +119,8 @@ import {
   CHAIN_PRESETS,
   chainStorageMax,
   CHAIN_DRUM_SPEED,
+  CHAIN_MIN_LENGTH,
+  CHAIN_MAX_LENGTH,
 } from '../src/games/chain/config';
 import { accelMultiplier, chainIntakeBand, hookPos, labAreas, ringStands } from '../src/games/chain/state';
 
@@ -1897,6 +1899,26 @@ const setup = (
   check('sanitizePlayer rejects a bogus startRole', sanitizePlayer({ name: 'R', spec: {}, assists: {}, startRole: 'middle' }).startRole === undefined);
   const rolePatch = sanitizePlayerPatch({ startRole: 'close', swapReq: true }, { ...player, clientId: 'x' });
   check('sanitizePlayerPatch passes startRole + swapReq', rolePatch.startRole === 'close' && rolePatch.swapReq === true);
+
+  // GAME-AWARE server clamp: Chain Reaction runs its own chassis length range
+  // (CHAIN_MIN/MAX_LENGTH), wider than DECODE's per-intake range. The server must
+  // clamp with the ROOM's game, or a record-run/ranked CR robot gets silently
+  // resized to a DIFFERENT envelope than the config menu offered.
+  // A length legal in CR (10) but BELOW the sloped-intake DECODE floor (13.5): the
+  // chain-aware clamp keeps it; the game-less (DECODE) clamp would pull it up.
+  const crShort = sanitizePlayer({ name: 'C', alliance: 'blue', spec: { length: CHAIN_MIN_LENGTH, intake: 'sloped' }, assists: {} }, 'chain');
+  check('sanitizePlayer(chain) keeps a CR-legal short chassis', crShort.spec.length === CHAIN_MIN_LENGTH, `${crShort.spec.length}`);
+  check('sanitizePlayer(chain) length matches config-menu range (not DECODE intake range)',
+    crShort.spec.length < INTAKE_PRESETS.sloped.minLength, `${crShort.spec.length} vs decode min ${INTAKE_PRESETS.sloped.minLength}`);
+  // and the CR ceiling (18) is honoured too — DECODE sloped maxes at 15
+  const crLong = sanitizePlayer({ name: 'C', alliance: 'blue', spec: { length: CHAIN_MAX_LENGTH, intake: 'sloped' }, assists: {} }, 'chain');
+  check('sanitizePlayer(chain) keeps a CR-legal long chassis', crLong.spec.length === CHAIN_MAX_LENGTH, `${crLong.spec.length}`);
+  // a spec patch takes the same game-aware clamp
+  const crPatch = sanitizePlayerPatch({ spec: { length: CHAIN_MIN_LENGTH, intake: 'sloped' } }, { ...crShort, clientId: 'x' }, 'chain');
+  check('sanitizePlayerPatch(chain) keeps a CR-legal short chassis', crPatch.spec?.length === CHAIN_MIN_LENGTH, `${crPatch.spec?.length}`);
+  // WITHOUT the game arg the DECODE range still applies (regression guard both ways)
+  const decodeClamp = sanitizePlayer({ name: 'D', alliance: 'blue', spec: { length: CHAIN_MIN_LENGTH, intake: 'sloped' }, assists: {} });
+  check('sanitizePlayer(no game) still clamps to the DECODE intake range', decodeClamp.spec.length >= INTAKE_PRESETS.sloped.minLength, `${decodeClamp.spec.length}`);
 }
 
 // ---- vector intake: WHERE the ball enters decides the swallow time -----------
