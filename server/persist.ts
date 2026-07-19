@@ -47,15 +47,17 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
   }
   try {
     // Season = the DB-controlled current season (>= the replay's balance version),
-    // so an admin-started season stamps new results without a redeploy. Stamp the
-    // replay row with the same season so a season purge can delete it directly.
-    // per-game current season (Chain Reaction seeds Act 1 · Season 1 at boot). CR's
-    // first ever result would still ensure its season here (initial act 1).
+    // so an admin-started season stamps new results without a redeploy. Records +
+    // matches key off it, per-game (Chain Reaction seeds Act 1 · Season 1). The
+    // replay row is ALSO stamped with the season (its `balance_version` column, for
+    // purge-by-season) but keeps its real sim-code version in `sim_version` — the
+    // playback gate compares CODE-vs-CODE, so a season bump must NOT make the replay
+    // read as "recorded on an older version". Hence we do NOT overwrite
+    // o.replay.balanceVersion here; saveReplay takes the season (and game) separately.
     const bv = await currentSeasonNumber(o.replay.balanceVersion, game);
-    o.replay.balanceVersion = bv;
     await ensureSeason(bv, game, game === 'chain' ? 1 : 0);
     for (const p of authed) await ensureProfile(p.userId!, p.handle ?? 'Player');
-    const replayId = await saveReplay(o.replay, game);
+    const replayId = await saveReplay(o.replay, bv, game);
 
     if (o.config.kind === 'record') {
       const primary = authed[0];
