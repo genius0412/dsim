@@ -67,6 +67,41 @@ export function motorStep(v: number, target: number, aStall: number, vFree: numb
   return approach(v, target, aStall * frac * dt);
 }
 
+/**
+ * 2D (translation) version of `motorStep`: advance the velocity VECTOR (vx, vy) toward
+ * (tx, ty) with the accel budget limited in VECTOR MAGNITUDE, not per-axis. Stepping fwd
+ * and strafe independently (two `motorStep` calls) lets the velocity vector grow at √2·accel
+ * on a diagonal — the classic "diagonal is faster" bug (real speed cap is fine, but the
+ * ACCELERATION phase covers more ground diagonally). Capping the isotropic change per tick
+ * fixes it: diagonal accelerates at the same rate as straight. Torque-curve falloff uses the
+ * combined SPEED; braking (the pull opposes current motion) pulls harder. Deterministic. */
+export function motorStepVec(
+  vx: number,
+  vy: number,
+  tx: number,
+  ty: number,
+  aStall: number,
+  vFree: number,
+  dt: number,
+): { x: number; y: number } {
+  const ex = tx - vx;
+  const ey = ty - vy;
+  const eMag = Math.hypot(ex, ey);
+  if (eMag === 0) return { x: vx, y: vy };
+  const speed = Math.hypot(vx, vy);
+  const braking = ex * vx + ey * vy < 0; // the demanded change opposes current motion
+  let frac: number;
+  if (braking) {
+    frac = C.MOTOR_BRAKE_MULT;
+  } else {
+    const s = vFree > 0 ? Math.min(speed / vFree, 1) : 0;
+    frac = Math.max(1 - C.MOTOR_TORQUE_CURVE * s, C.MOTOR_MIN_TORQUE_FRAC);
+  }
+  const budget = aStall * frac * dt;
+  if (eMag <= budget) return { x: tx, y: ty };
+  return { x: vx + (ex / eMag) * budget, y: vy + (ey / eMag) * budget };
+}
+
 /** dev/tuning table: the resulting free speed / strafe / stall accel / push for
  * each drivetrain at the reference RPM+mass. Printed by the smoke suite so a
  * balance edit's effect is visible at a glance. */

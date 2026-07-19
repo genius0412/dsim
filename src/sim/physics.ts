@@ -455,16 +455,17 @@ function pressAlong(preVel: Vec2 | undefined, nx: number, ny: number): number {
  * only rotates a tilted chassis flush against walls / goal faces / classifier
  * structures it is resting on. Detection mirrors constrainRobot; `preVel` gives
  * the drive-in pressure the torque scales with. */
-function squareUpStatics(r: RobotState, preVel: Vec2 | undefined): void {
-  const f = C.FIELD_HALF;
+/** square a tilted chassis flush against the four perimeter walls at ±halfX / ±halfY.
+ * Shared by DECODE (`squareUpStatics`) and Chain Reaction (`squareUpRobotsWalls`) — the
+ * wall-alignment torque that makes a robot driving into a wall settle parallel to it. */
+function squareUpWalls(r: RobotState, preVel: Vec2 | undefined, halfX: number, halfY: number): void {
   const eps = C.CONTACT_TOUCH_EPS;
   const corners = robotCorners(r);
-
   const walls: [number, number, (c: Vec2) => number][] = [
-    [-1, 0, (c) => c.x - f],
-    [1, 0, (c) => -f - c.x],
-    [0, -1, (c) => c.y - f],
-    [0, 1, (c) => -f - c.y],
+    [-1, 0, (c) => c.x - halfX],
+    [1, 0, (c) => -halfX - c.x],
+    [0, -1, (c) => c.y - halfY],
+    [0, 1, (c) => -halfY - c.y],
   ];
   for (const [nx, ny, depthOf] of walls) {
     const contacts: { c: Vec2; d: number }[] = [];
@@ -474,6 +475,12 @@ function squareUpStatics(r: RobotState, preVel: Vec2 | undefined): void {
     }
     if (contacts.length > 0) applyContactTorque(r, nx, ny, pressAlong(preVel, nx, ny), contacts, true);
   }
+}
+
+function squareUpStatics(r: RobotState, preVel: Vec2 | undefined): void {
+  const eps = C.CONTACT_TOUCH_EPS;
+  squareUpWalls(r, preVel, C.FIELD_HALF, C.FIELD_HALF);
+  const corners = robotCorners(r);
 
   for (const a of ALLIANCES) {
     const contacts: { c: Vec2; d: number }[] = [];
@@ -578,6 +585,24 @@ export function squareUpRobots(world: World, preVels: Map<number, Vec2>): void {
     }
   }
   for (const r of world.robots) squareUpStatics(r, preVels.get(r.id));
+}
+
+/** post-Rapier square-up for a game whose only statics are perimeter WALLS (Chain
+ * Reaction). Same robot-robot squaring + `rrContacts` as DECODE, but the static pass
+ * aligns to the four walls at ±halfX/±halfY only — no DECODE goal-face / classifier
+ * geometry. This is what makes a CR robot settle flush when it drives into a wall. */
+export function squareUpRobotsWalls(
+  world: World,
+  preVels: Map<number, Vec2>,
+  halfX: number,
+  halfY: number,
+): void {
+  for (let i = 0; i < world.robots.length; i++) {
+    for (let j = i + 1; j < world.robots.length; j++) {
+      squareUpPair(world.robots[i], world.robots[j], preVels, world.rrContacts);
+    }
+  }
+  for (const r of world.robots) squareUpWalls(r, preVels.get(r.id), halfX, halfY);
 }
 
 // ------------------------------------------------------------ ball steps ----

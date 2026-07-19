@@ -42,7 +42,7 @@ import {
   activeStartLegal,
 } from '../src/sim/field';
 import { addClassified, addOverflow, assessMatchEnd } from '../src/sim/scoring';
-import type { Alliance, GameId, GameMode, RobotCommand, RobotSpec, World } from '../src/types';
+import type { Alliance, DrivetrainType, GameId, GameMode, RobotCommand, RobotSpec, World } from '../src/types';
 import {
   SIM_DT,
   GATE_STOP_S,
@@ -1413,6 +1413,34 @@ const setup = (
   r.fieldCentric = false;
   run(w, cmd({ driveX: 1 }), 0.8); // pure strafe command
   check('tank drivetrain cannot strafe', Math.hypot(r.pos.x, r.pos.y) < 0.5, `moved ${Math.hypot(r.pos.x, r.pos.y).toFixed(2)} in`);
+}
+
+// ---- no DIAGONAL-SPEED bug: moving diagonally is never FASTER than straight -----
+// The classic 2D pitfall: stepping fwd + strafe INDEPENDENTLY lets the velocity vector
+// accelerate at √2·accel on a diagonal. Top speed is capped fine, but the ACCEL PHASE covers
+// more ground diagonally — so this must be measured by DISPLACEMENT from rest, not peak speed.
+// `motorStepVec` caps the accel budget in vector magnitude, so diagonal ≤ straight everywhere.
+{
+  const disp = (drivetrain: DrivetrainType, c: RobotCommand): number => {
+    const w = mkWorld('free', 'blue', 3, { drivetrain });
+    const r = w.robots[0];
+    r.pos = { x: 0, y: 0 };
+    r.heading = 0;
+    r.fieldCentric = false;
+    for (let i = 0; i < 30; i++) step(w, SIM_DT, new Map([[r.id, c]])); // 0.5 s from rest
+    return Math.hypot(r.pos.x, r.pos.y);
+  };
+  for (const dt of ['mecanum', 'swerve', 'xdrive'] as DrivetrainType[]) {
+    const straight = disp(dt, cmd({ driveY: 1 })); // forward
+    const diag = disp(dt, cmd({ driveX: 1, driveY: 1 })); // forward + strafe
+    const ratio = diag / straight;
+    // diagonal must never travel farther than straight in the same time (+ a hair of ε).
+    check(
+      `${dt} drive: diagonal is not faster than straight (no √2 bug)`,
+      ratio <= 1.02,
+      `0.5s disp straight=${straight.toFixed(1)} diagonal=${diag.toFixed(1)} ratio=${ratio.toFixed(3)}`,
+    );
+  }
 }
 
 // ---- mass-weighted shove: the heavier robot yields less ---------------------
@@ -3657,6 +3685,21 @@ const mkMM = () => {
     `pos=(${wr.pos.x.toFixed(1)},${wr.pos.y.toFixed(1)}) half=(${CHAIN_HALF_X},${CHAIN_HALF_Y})`,
   );
 
+  // wall SQUARE-UP: a tilted robot driven into a wall settles flush (like DECODE). CR now
+  // runs the contact-torque pass restricted to its perimeter walls.
+  {
+    const sw = createChainWorld('free', 13, [chainSetup(0, 'blue')]);
+    const rob = sw.robots[0];
+    rob.pos = { x: CHAIN_HALF_X - 12, y: 0 };
+    rob.heading = 0.35; // ~20° tilt off the +x wall
+    runChain(sw, cmd({ driveX: 1 }), 3); // shove toward the +x wall
+    check(
+      'chain drive: driving into a wall squares the robot flush to it',
+      Math.abs(rob.heading) < 0.05,
+      `heading ${rob.heading.toFixed(3)} (want ≈0)`,
+    );
+  }
+
   // determinism: identical seed + inputs ⇒ identical worldHash
   const a = createChainWorld('match', 4242, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
   const b = createChainWorld('match', 4242, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
@@ -4245,6 +4288,13 @@ const mkMM = () => {
     check(
       'chain beams: raised CoG reduces drive authority',
       cogFactor(mk('tank', 3)) < cogFactor(mk('tank', 0.5)) && cogFactor(mk('tank', 0.5)) === 1,
+    );
+    // SWERVE is hit WAY harder by a raised CoG than any other drivetrain (tippy tall modules)
+    check(
+      'chain beams: high-CoG swerve is far more sluggish than tank/mecanum',
+      cogFactor(mk('swerve', 3)) < cogFactor(mk('tank', 3)) - 0.3 &&
+        cogFactor(mk('swerve', 3)) < cogFactor(mk('mecanum', 3)) - 0.3,
+      `swerve=${cogFactor(mk('swerve', 3)).toFixed(2)} tank=${cogFactor(mk('tank', 3)).toFixed(2)} mecanum=${cogFactor(mk('mecanum', 3)).toFixed(2)}`,
     );
     // integration: a robot that can't clear a beam is pushed off it (hard block)
     const w = createChainWorld('free', 1, [chainSetup(0, 'blue')]);

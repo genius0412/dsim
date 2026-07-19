@@ -9,6 +9,7 @@ import {
   CHAIN_CLEARANCE_MAX,
   CHAIN_CLEARANCE_MIN,
   CHAIN_COG_PENALTY,
+  CHAIN_COG_SWERVE_PENALTY,
   CHAIN_BEAM_LEN,
   CHAIN_HALF_X,
   CHAIN_HALF_Y,
@@ -58,10 +59,13 @@ export function clearanceOf(spec: RobotSpec): number {
 }
 
 /** drive-authority factor (≤1) from the raised center of gravity: more clearance ⇒
- * more sluggish. Applied to the drive command in chainStep. */
+ * more sluggish. Applied to the drive command in chainStep. SWERVE is hit MUCH harder
+ * (tall tippy modules) — its own big penalty on a squared curve, so a high-CG swerve is
+ * way more sluggish than any other drivetrain. */
 export function cogFactor(spec: RobotSpec): number {
-  const frac = (clearanceOf(spec) - CHAIN_CLEARANCE_MIN) / (CHAIN_CLEARANCE_MAX - CHAIN_CLEARANCE_MIN);
-  return 1 - CHAIN_COG_PENALTY * clamp(frac, 0, 1);
+  const frac = clamp((clearanceOf(spec) - CHAIN_CLEARANCE_MIN) / (CHAIN_CLEARANCE_MAX - CHAIN_CLEARANCE_MIN), 0, 1);
+  if (spec.drivetrain === 'swerve') return 1 - CHAIN_COG_SWERVE_PENALTY * frac * frac;
+  return 1 - CHAIN_COG_PENALTY * frac;
 }
 
 /** does the robot's frame clear a beam at all? (the only hard gate — clearance). */

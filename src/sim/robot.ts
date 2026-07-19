@@ -2,7 +2,7 @@ import type { Artifact, ArtifactColor, RobotCommand, RobotState, World } from '.
 import * as C from '../config';
 import { approach, rot, wrapAngle, hyp, dsin, dcos, datan2, clamp } from '../math';
 import { classifierRect, flywheelSpinTarget, goalCenter, launchTriangles, viewAngleOf } from './field';
-import { driveParams, motorStep } from './drivetrain';
+import { driveParams, motorStep, motorStepVec } from './drivetrain';
 import { robotIntersectsConvex } from './physics';
 import { robotsEnabled } from './match';
 
@@ -235,9 +235,10 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   // motor torque–speed integration in the robot frame: accel falls off toward the
   // free speed (dp.maxSpeed / dp.maxTurn) like a real DC motor (see motorStep).
   const velRobot = rot(r.vel, -r.heading);
-  velRobot.x = motorStep(velRobot.x, targetFwd, dp.accel, dp.maxSpeed, dt);
-  velRobot.y = motorStep(velRobot.y, targetStrafe, dp.accel, dp.maxSpeed, dt);
-  r.vel = rot(velRobot, r.heading);
+  // translation steps as a VECTOR so the accel budget is isotropic — driving diagonally
+  // accelerates at the same rate as straight (no √2 diagonal-speed advantage).
+  const stepped = motorStepVec(velRobot.x, velRobot.y, targetFwd, targetStrafe, dp.accel, dp.maxSpeed, dt);
+  r.vel = rot(stepped, r.heading);
   r.angVel = motorStep(r.angVel, targetOmega, dp.turnAccel, dp.maxTurn, dt);
 
   // Rapier (solveRobots) integrates POSITION from r.vel and resolves collisions

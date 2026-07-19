@@ -126,6 +126,10 @@ export const CHAIN_CLEARANCE_MAX = 3;
 export const CHAIN_CLEARANCE_DEFAULT = 1;
 /** max fraction of drive authority lost at full clearance (raised center of gravity) */
 export const CHAIN_COG_PENALTY = 0.16;
+/** SWERVE is far more sensitive to a raised CG — the tall modules tip and scrub, so a
+ * high-clearance swerve is WAY more sluggish than any other drivetrain (its own steep
+ * penalty, applied on a squared curve so it bites hard as clearance climbs). */
+export const CHAIN_COG_SWERVE_PENALTY = 0.6;
 
 /** extra fit margin around the field when the camera scales it to the viewport.
  * Small because the camera bounds are widened to include the protruding goals. */

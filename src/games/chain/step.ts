@@ -1,8 +1,10 @@
 import type { RobotCommand, World } from '../../types';
 import * as C from '../../config';
 import { solveRobots } from '../../sim/physicsEngine';
+import { squareUpRobotsWalls } from '../../sim/physics';
 import { updateRobot } from '../../sim/robot';
 import { robotsEnabled } from '../../sim/match';
+import { CHAIN_HALF_X, CHAIN_HALF_Y } from './config';
 import { chainColliders } from './colliders';
 import { updateChain, chainAimAssist } from './play';
 import { updateChainPenalties } from './penalties';
@@ -64,7 +66,10 @@ export function chainStep(world: World, dt: number, commands: Map<number, RobotC
   // robot physically advances less this tick (momentum/traction/CoG decide how much).
   beamDrag(world);
   // Rapier owns robot translation/velocity + wall containment on the CR field.
-  solveRobots(world, dt, chainColliders);
+  const preVels = solveRobots(world, dt, chainColliders);
+  // square a tilted chassis flush against the walls (and other robots) — the same
+  // contact-torque pass DECODE runs, restricted to CR's perimeter walls.
+  squareUpRobotsWalls(world, preVels, CHAIN_HALF_X, CHAIN_HALF_Y);
   // then hard-block any robot whose frame can't clear a beam (kept on its side).
   beamBlock(world);
 

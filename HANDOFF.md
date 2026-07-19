@@ -1,4 +1,29 @@
-# HANDOFF — 2026-07-19 (Chain Reaction: start positions + launcher randomization) — READ FIRST
+# HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
+
+## Latest session — wall square-up in CR + diagonal-speed audit
+
+- **CR robots now square up flush to walls** (they didn't before). DECODE's post-Rapier
+  `squareUpRobots` was never called in `chainStep`. The wall block of `squareUpStatics`
+  (physics.ts) was factored into `squareUpWalls(r, preVel, halfX, halfY)`, and a new export
+  `squareUpRobotsWalls(world, preVels, halfX, halfY)` runs robot-robot squaring + wall-only
+  statics (no DECODE goal-face/classifier geometry, which is phantom in CR). `chainStep` now
+  captures `preVels = solveRobots(...)` and calls it with `CHAIN_HALF_X/Y`.
+- **Diagonal-speed bug FIXED (was real — in the ACCEL phase, not top speed).** TOP speed was
+  already capped fine (`hypot` demand for swerve, L1 for mecanum/xdrive), which is why a
+  peak-speed probe missed it. But `motorStep` was stepping fwd + strafe INDEPENDENTLY, so the
+  velocity VECTOR accelerated at √2·accel on a diagonal → over a 0.5 s drive from rest,
+  diagonal covered **33-37% more ground** for swerve/xdrive (~10% mecanum). Added
+  `motorStepVec` (drivetrain.ts) — caps the accel budget in vector MAGNITUDE, not per-axis;
+  robot.ts uses it for translation (angVel still 1-D `motorStep`). After: diagonal/straight
+  displacement ratio ≤ 1.0 for all drivetrains. Smoke test now measures DISPLACEMENT (not peak
+  speed) so it actually guards the bug. Pure-forward accel/top-speed unchanged (identical to
+  the old path when strafe = 0), so the DECODE `driveSummary` calibration holds.
+- **High-CG swerve is now way more sluggish** (user request). `cogFactor` (CR beams.ts) is
+  drivetrain-aware: swerve uses `CHAIN_COG_SWERVE_PENALTY` (0.6) on a SQUARED clearance curve
+  (tippy tall modules), vs the base `CHAIN_COG_PENALTY` (0.16) linear for everyone else — so a
+  max-clearance swerve drops to ~40% authority vs ~84% for tank/mecanum.
+
+# HANDOFF — 2026-07-19 (Chain Reaction: start positions + launcher randomization)
 
 ## Latest session — start positions, pre-match launcher randomization, fire-rate + spread tuning
 
