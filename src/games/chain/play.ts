@@ -315,7 +315,7 @@ export function updateChain(
       const st = chain.endgame[rob.id];
       eg += st === 'ascended' ? 20 : st === 'parked' ? 5 : 0;
     }
-    world.match.scores[a].total = chain.particlePoints[a] + eg;
+    world.match.scores[a].total = chain.particlePoints[a] + eg + world.match.scores[a].foulPoints;
     world.goals[a].classifiedCount = chain.scored[a]; // surfaces in worldHash
   }
 }

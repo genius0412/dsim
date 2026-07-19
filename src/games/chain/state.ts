@@ -60,6 +60,9 @@ export interface ChainState {
   /** monotonic ball-id allocator (deterministic — no module global). Set past the
    * initial particle ids at spawn; `updateChain` increments it for reject/flight balls. */
   nextBallId: number;
+  /** penalty EDGE state: `${rule}-${offender}-${victim}` keys that were VIOLATING last tick
+   * (so a foul fires once on the false→true edge, and again on re-entry). Plain JSON. */
+  foulEdge: Record<string, boolean>;
 }
 
 export function emptyChainState(): ChainState {
@@ -70,6 +73,7 @@ export function emptyChainState(): ChainState {
     endgame: {},
     catalystHeld: {},
     nextBallId: 1,
+    foulEdge: {},
   };
 }
 

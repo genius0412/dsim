@@ -5,6 +5,7 @@ import { updateRobot } from '../../sim/robot';
 import { robotsEnabled } from '../../sim/match';
 import { chainColliders } from './colliders';
 import { updateChain, chainAimAssist } from './play';
+import { updateChainPenalties } from './penalties';
 import { beamBlock, beamDrag, cogFactor } from './beams';
 
 /**
@@ -66,6 +67,11 @@ export function chainStep(world: World, dt: number, commands: Map<number, RobotC
   solveRobots(world, dt, chainColliders);
   // then hard-block any robot whose frame can't clear a beam (kept on its side).
   beamBlock(world);
+
+  // penalties BEFORE updateChain so a foul awarded this tick folds into the alliance
+  // total updateChain writes (it reads scores[a].foulPoints). Endgame/ascend state read
+  // is last-tick's — one deterministic tick of lag, invisible.
+  if (world.chain) updateChainPenalties(world);
 
   // CR gameplay (particles / shooter / scoring / catalysts / endgame)
   if (world.chain) updateChain(world, dt, actual, enabled);

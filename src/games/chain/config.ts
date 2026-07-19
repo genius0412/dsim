@@ -296,6 +296,14 @@ export const CHAIN_LAB = 24; // corner square size (in)
 export const CHAIN_ASCEND_R = 9; // ascend proximity to a ring stand (in)
 
 /**
+ * PENALTIES (manual §3.3, in `penalties.ts`). Manual severities: G05/G06 are MAJORs. We reuse
+ * the shared `PTS_FOUL_MINOR/MAJOR` point values. G01–G04 (control/expansion/start limits) are
+ * structurally enforced by the sim, G07 (de-scoring) is legal, and G02's plowing, G08's vague
+ * "prolonged restriction", and G09 (accelerator-exit obstruction) are intentionally NOT modeled.
+ */
+export const CHAIN_FOUL_SLOP = 1; // in of bumper slack for the robot-robot contact test
+
+/**
  * CHAIN REACTION ROBOT PRESETS — archetype cards for the CR builder (parallel to
  * DECODE's `ROBOT_PRESETS`). Each is a full, legal `RobotSpec` bundling a scoring
  * archetype + intake design + a matched drivetrain/mass/rpm/storage/clearance loadout,

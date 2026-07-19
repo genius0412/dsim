@@ -72,6 +72,7 @@ import {
   POWER_DRAW_SWERVE,
   POSSESSION_MOVE_SPEED,
   POSSESSION_GRACE,
+  PTS_FOUL_MAJOR,
 } from '../src/config';
 import { robotCorners, robotExtents, robotIntersectsRect, wheelContacts } from '../src/sim/physics';
 import { beamBlock, beamDragFactor, canCrossBeams, cogFactor, CHAIN_BEAMS } from '../src/games/chain/beams';
@@ -105,7 +106,7 @@ import { moduleFor, gameOf } from '../src/games';
 import { decodeColliders } from '../src/games/decode/colliders';
 import { createChainWorld } from '../src/games/chain/spawn';
 import { chainStep } from '../src/games/chain/step';
-import { chainGoalAimHeading } from '../src/games/chain/play';
+import { chainGoalAimHeading, chainCatalystPrompt } from '../src/games/chain/play';
 import { chainColliders } from '../src/games/chain/colliders';
 import {
   CHAIN_HALF_X,
@@ -4303,6 +4304,62 @@ const mkMM = () => {
       'chain: take a ring OUT of the opponent goal (de-score)',
       cat.hook === null && cat.carriedBy === rob.id && accelMultiplier(w.chain!, 'red') === 1,
     );
+  }
+
+  // ── PENALTIES (G05 endgame ascend / G06 auto section) ──
+  // G06: in AUTO, contacting an opponent that is COMPLETELY in its own section → MAJOR
+  // on the aggressor. Blue sits fully in its half (x>0, outside the particle diamond);
+  // red touches it → foul RED.
+  {
+    const w = createChainWorld('match', 20, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
+    w.match.phase = 'auto';
+    w.match.phaseTimeLeft = 20;
+    const blue = w.robots[0];
+    const red = w.robots[1];
+    blue.heading = 0; blue.pos = { x: 45, y: 0 }; blue.vel = { x: 0, y: 0 };
+    red.heading = 0; red.pos = { x: 30, y: 0 }; red.vel = { x: 0, y: 0 };
+    chainStep(w, SIM_DT, new Map());
+    check('chain penalty G06: contacting a section-protected opponent in auto → MAJOR on aggressor',
+      w.match.fouls.red.major === 1 && w.match.fouls.blue.major === 0,
+      `red=${w.match.fouls.red.major} blue=${w.match.fouls.blue.major}`);
+    check('chain penalty G06: victim (blue) gets the foul points', w.match.scores.blue.foulPoints === PTS_FOUL_MAJOR);
+    // edge-triggered: held contact does NOT re-award on the next tick
+    chainStep(w, SIM_DT, new Map());
+    check('chain penalty: EDGE-triggered (held contact fires once)', w.match.fouls.red.major === 1);
+  }
+  // G06 does NOT fire outside auto/teleop (e.g. pre) — same geometry, no foul
+  {
+    const w = createChainWorld('match', 21, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
+    w.match.phase = 'pre';
+    const blue = w.robots[0]; const red = w.robots[1];
+    blue.heading = 0; blue.pos = { x: 45, y: 0 }; blue.vel = { x: 0, y: 0 };
+    red.heading = 0; red.pos = { x: 30, y: 0 }; red.vel = { x: 0, y: 0 };
+    chainStep(w, SIM_DT, new Map());
+    check('chain penalty: no fouls during pre-match', w.match.fouls.red.major === 0);
+  }
+  // G05: in END GAME, contacting an ASCENDING opponent → MAJOR on the aggressor.
+  {
+    const w = createChainWorld('match', 22, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 10; // within the 20 s end game
+    const blue = w.robots[0]; const red = w.robots[1];
+    blue.heading = 0; blue.pos = { x: 0, y: 0 }; blue.vel = { x: 0, y: 0 };
+    red.heading = 0; red.pos = { x: 15, y: 0 }; red.vel = { x: 0, y: 0 };
+    w.chain!.endgame[blue.id] = 'ascended'; // read last-tick by the penalty pass
+    chainStep(w, SIM_DT, new Map());
+    check('chain penalty G05: contacting an ascending opponent in endgame → MAJOR on aggressor',
+      w.match.fouls.red.major === 1, `red=${w.match.fouls.red.major}`);
+  }
+  // foul points fold into the CR alliance TOTAL (particles + endgame + fouls)
+  {
+    const w = createChainWorld('match', 24, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
+    w.match.phase = 'auto';
+    w.match.phaseTimeLeft = 20;
+    const blue = w.robots[0]; const red = w.robots[1];
+    blue.heading = 0; blue.pos = { x: 45, y: 0 }; blue.vel = { x: 0, y: 0 };
+    red.heading = 0; red.pos = { x: 30, y: 0 }; red.vel = { x: 0, y: 0 };
+    chainStep(w, SIM_DT, new Map());
+    check('chain penalty: foul points fold into the alliance total', w.match.scores.blue.total === PTS_FOUL_MAJOR);
   }
 
   // a server Room configured for Chain Reaction runs its step + advances to 'post'

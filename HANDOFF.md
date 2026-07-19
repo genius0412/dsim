@@ -1,11 +1,26 @@
-# HANDOFF — 2026-07-18 (Chain Reaction: playable + archetype config revamp) — READ FIRST
+# HANDOFF — 2026-07-19 (Chain Reaction: penalty engine) — READ FIRST
 
 > **Branch: `chain-reaction` (PRIVATE — do NOT push/deploy until the user says so).**
 > **GREEN — `npm run build` (client tsc+vite), `npm run server:check`
-> (`tsc -p tsconfig.server.json`), and `npm test` (~445 checks) all pass. Verified at
-> the real surface (Electron): the Home game switcher toggles DECODE↔Chain Reaction, the
-> CR builder shows the archetype/intake/preset controls, and the Hauler preset cascades
-> to Tank+Dumper+Sweeper. DECODE is 100% unchanged.**
+> (`tsc -p tsconfig.server.json`), and `npm test` (466 checks) all pass. DECODE is 100%
+> unchanged.**
+
+## Latest session — CR penalty engine (`src/games/chain/penalties.ts`)
+
+`updateChainPenalties(world)` runs in `chainStep` BEFORE `updateChain` (so a foul awarded
+this tick folds into the alliance total `updateChain` writes — it now adds
+`+ scores[a].foulPoints`). CR has no `world.rrContacts`, so the engine does its OWN
+OBB–OBB SAT contact test (`robotsContact`, via `robotCorners` + `CHAIN_FOUL_SLOP`).
+Rules modeled — both MAJOR, awarded to the VICTIM via the shared `awardFoul`,
+EDGE-triggered via `chain.foulEdge` (`${rule}-${offender}-${victim}` keys):
+- **G06** — in AUTO, contacting an opponent COMPLETELY inside its own alliance section
+  (its x-half, excluding the neutral Particle-Zone diamond) → MAJOR on the aggressor.
+- **G05** — in END GAME, contacting an ASCENDING opponent (`chain.endgame[id]==='ascended'`)
+  → MAJOR on the aggressor.
+NOT modeled (deliberate): G02 plowing + G08 "prolonged restriction" (user: hard to do
+well) and **G09 accelerator-exit obstruction (user removed it this session)**. G01–G04 are
+structurally enforced; G07 (de-score) is legal. HUD `hud.chain.foulPts/oppFoulPts` +
+GameView Results now show a CR PENALTIES row (split out of End Game).
 
 ## What this branch is
 

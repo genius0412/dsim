@@ -121,6 +121,9 @@ export interface HudSnapshot {
     storage: number;
     /** your robot's scoring archetype (turret shooter / dumper) */
     mode: ChainScoreMode;
+    /** foul POINTS your alliance has been AWARDED (opponent's violations) */
+    foulPts: number;
+    oppFoulPts: number;
   };
   mode: GameMode;
   phase: MatchPhase;
@@ -879,6 +882,8 @@ export class GameController {
           ringAction: chainCatalystPrompt(w.chain, r)?.action ?? null,
           storage: chainHopperCap(r.spec),
           mode: r.spec.scoreMode ?? 'turret',
+          foulPts: w.match.scores[a].foulPoints,
+          oppFoulPts: w.match.scores[opp].foulPoints,
         }
       : undefined;
     return {

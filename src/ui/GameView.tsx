@@ -717,16 +717,19 @@ function Results({
   const val = (get: (s: ScoreBreakdown) => number): [number, number] => [get(red), get(blue)];
 
   // Chain Reaction has its own scoring: Particle points (catalyst multiplier folded in) +
-  // End Game (park 5 / ascend 20). No fouls (CR skips the penalty engine).
+  // End Game (park 5 / ascend 20) + penalty points awarded from the OPPONENT's fouls.
   const crSections = (): [string, [string, number, number][]][] => {
     const c = hud.chain;
     if (!c) return [];
     const isRed = hud.alliance === 'red';
     const redP = isRed ? c.particlePts : c.oppParticlePts;
     const blueP = isRed ? c.oppParticlePts : c.particlePts;
+    const redF = isRed ? c.foulPts : c.oppFoulPts;
+    const blueF = isRed ? c.oppFoulPts : c.foulPts;
     return [
       ['SCORING', [['Particles ×mult', redP, blueP]]],
-      ['END GAME', [['Park / Ascend', red.total - redP, blue.total - blueP]]],
+      ['END GAME', [['Park / Ascend', red.total - redP - redF, blue.total - blueP - blueF]]],
+      ['PENALTIES', [['Fouls awarded', redF, blueF]]],
     ];
   };
 
@@ -824,6 +827,7 @@ function Results({
             Each Particle scores 1 pt × (1 + Catalysts on hooks) — RED ×
             {hud.alliance === 'red' ? hud.chain.mult : hud.chain.oppMult}, BLUE ×
             {hud.alliance === 'blue' ? hud.chain.mult : hud.chain.oppMult}. End Game: park 5 · ascend 20.
+            Foul points ({PTS_FOUL_MAJOR} per major) come from the opponent's violations.
           </p>
         ) : (
           <p className="ds-hint">
@@ -940,7 +944,7 @@ function RecordResults({
     cr && hud.chain
       ? [
           ['SCORING', [['Particles ×mult', hud.chain.particlePts]]],
-          ['END GAME', [['Park / Ascend', mine.total - hud.chain.particlePts]]],
+          ['END GAME', [['Park / Ascend', mine.total - hud.chain.particlePts - hud.chain.foulPts]]],
         ]
       : [
           ['AUTONOMOUS', [
