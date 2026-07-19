@@ -19,8 +19,15 @@ import {
   type RobotSetup,
 } from '../../sim/spawn';
 import { emptyScore } from '../../sim/scoring';
-import { CHAIN_HALF_X, CHAIN_HALF_Y, CHAIN_PARTICLE_R, CHAIN_PARTICLE_SIM } from './config';
-import { emptyChainState, ringStands, type ChainCatalyst } from './state';
+import {
+  CHAIN_ACCEL_DEPTH,
+  CHAIN_ACCEL_HALF_Y,
+  CHAIN_HALF_X,
+  CHAIN_PARTICLE_R,
+  CHAIN_PARTICLE_SIM,
+  CHAIN_START_POSES,
+} from './config';
+import { accelSide, emptyChainState, ringStands, type ChainCatalyst } from './state';
 
 /**
  * Chain Reaction world spawn — a PLAYABLE match.
@@ -38,15 +45,14 @@ interface Pose {
   heading: number;
 }
 
-const POSES: readonly Pose[] = [
-  { pos: { x: 42, y: -18 }, heading: Math.PI },
-  { pos: { x: 42, y: 18 }, heading: Math.PI },
-  { pos: { x: 24, y: 0 }, heading: Math.PI },
-  { pos: { x: 58, y: 0 }, heading: Math.PI },
-];
-
-function chainStartPose(alliance: Alliance, nth: number): Pose {
-  const p = POSES[((nth % POSES.length) + POSES.length) % POSES.length];
+/**
+ * A CR robot's legal start pose (manual G04 — completely in the Lab Area). The named
+ * `CHAIN_START_POSES` anchors are CANONICAL for BLUE (goalSide +x); RED is the x-mirror.
+ * `index` selects the anchor (the 2-robot alliance defaults to 0/1 → the two Lab corners).
+ */
+function chainStartPose(alliance: Alliance, index: number): Pose {
+  const n = CHAIN_START_POSES.length;
+  const p = CHAIN_START_POSES[((index % n) + n) % n];
   if (alliance === 'blue') return { pos: { ...p.pos }, heading: p.heading };
   return { pos: { x: -p.pos.x, y: p.pos.y }, heading: wrapAngle(Math.PI - p.heading) };
 }
@@ -67,7 +73,10 @@ function inertGoal(alliance: Alliance): GoalState {
 function makeChainRobot(setup: RobotSetup, nth: number): RobotState {
   const spec = coerceSpec(setup.spec, DEFAULT_SPEC);
   const assists = coerceAssists(setup.assists, DEFAULT_ASSISTS);
-  const pose = chainStartPose(setup.alliance, nth);
+  // honour the chosen start (the selector's `startIndex`); default a 2-robot alliance to
+  // its two Lab corners (0/1). Always a legal Lab-Area / Ring-Stand pose (G04).
+  const idx = setup.startIndex ?? nth;
+  const pose = chainStartPose(setup.alliance, idx);
   return {
     id: setup.id,
     alliance: setup.alliance,
@@ -120,18 +129,24 @@ export function createChainWorld(
     robots.push(makeChainRobot(s, allianceCount[s.alliance]++));
   }
 
-  // scatter the particles across the playing area (pre-match randomization)
-  const margin = CHAIN_PARTICLE_R + 2;
-  const spanX = 2 * (CHAIN_HALF_X - margin);
-  const spanY = 2 * (CHAIN_HALF_Y - margin);
+  // STAGE the particles INSIDE the alliance goals (half in each). They are HELD (`staged`)
+  // until the pre-match launcher flings them onto the field to randomize it (see
+  // `prematchRandomize`) — matching the manual's auto-score/reject randomization. Split evenly:
+  // the balls jumble in each goal box (behind the wall, within the accelerator opening in y).
   const balls: Artifact[] = [];
   let id = 1;
+  const redCount = Math.floor(CHAIN_PARTICLE_SIM / 2);
   for (let i = 0; i < CHAIN_PARTICLE_SIM; i++) {
+    const a: Alliance = i < redCount ? 'red' : 'blue';
+    const side = accelSide(a);
+    // scatter inside the goal box: from just behind the wall out to near the back face
+    const depth = CHAIN_PARTICLE_R + rand() * (CHAIN_ACCEL_DEPTH - 2 * CHAIN_PARTICLE_R);
+    const y = (rand() * 2 - 1) * (CHAIN_ACCEL_HALF_Y - CHAIN_PARTICLE_R);
     balls.push({
       id: id++,
       color: 'green', // rendered white in CR; color unused
-      state: { kind: 'ground' },
-      pos: { x: -CHAIN_HALF_X + margin + rand() * spanX, y: -CHAIN_HALF_Y + margin + rand() * spanY },
+      state: { kind: 'flight', target: a, scored: true, staged: true },
+      pos: { x: side * (CHAIN_HALF_X + depth), y },
       vel: { x: 0, y: 0 },
       z: 0,
       vz: 0,

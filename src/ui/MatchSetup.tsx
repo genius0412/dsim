@@ -10,6 +10,7 @@ import type {
 import { MAX_SAVED_AUTOS } from '../config';
 import { StartPositionEditor } from './StartPositionEditor';
 import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
+import { CHAIN_START_POSES } from '../games/chain/config';
 
 /**
  * Match configuration — the pre-game options that belong to the MATCH, not the
@@ -198,10 +199,26 @@ export function MatchSetup({
               onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
             />
           ) : (
-            <p className="ds-hint">
-              Start positions arrive with Chain Reaction’s field rules. For now robots spawn at
-              default poses in their own half.
-            </p>
+            <>
+              <p className="ds-hint">
+                Rule G04 — your robot must start completely in a Lab Area, on the floor or
+                ascended on a Ring Stand. Pick a legal starting spot:
+              </p>
+              <div className="ds-opts two" style={{ marginTop: 8 }}>
+                {CHAIN_START_POSES.map((p, i) => (
+                  <button
+                    key={p.name}
+                    className={`ds-opt ${(settings.startIndex ?? 0) === i ? 'on' : ''}`}
+                    onClick={() => set({ startIndex: i, startPose: null })}
+                  >
+                    <span className="ot">{p.name}</span>
+                    <span className="od">
+                      {p.name.startsWith('RING') ? 'Ascended start (20 pt posts)' : 'On the Lab-Area floor'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
           )}
           <div className="ds-opts" style={{ marginTop: 12 }}>
             <button

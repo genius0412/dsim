@@ -1,4 +1,28 @@
-# HANDOFF — 2026-07-19 (Chain Reaction: penalty engine + single sweeper intake) — READ FIRST
+# HANDOFF — 2026-07-19 (Chain Reaction: start positions + launcher randomization) — READ FIRST
+
+## Latest session — start positions, pre-match launcher randomization, fire-rate + spread tuning
+
+- **START POSITIONS (rule G04 — start completely in the Lab Area).** `CHAIN_START_POSES`
+  in `config.ts` = 4 legal named anchors (2 Lab-corner FLOOR poses + 2 RING-STAND ascended
+  poses), CANONICAL for BLUE (+x), x-mirrored for RED in `spawn.ts` `chainStartPose`.
+  `makeChainRobot` honours `setup.startIndex` (2-robot alliance defaults to 0/1 → the two Lab
+  corners). Selector: `MatchSetup.tsx` (solo config) now shows CR start buttons (was a
+  placeholder) that set `settings.startIndex`. All anchors legal by construction, so G04
+  always holds. (No drag-editor yet; multiplayer Lobby/MatchStrategy still render the DECODE
+  `StartPositionEditor` for CR — a latent follow-up, not wired for CR start editing.)
+- **PRE-MATCH FIELD RANDOMIZATION via the goal launchers** (manual auto-score/reject).
+  `createChainWorld` no longer scatters particles — it STAGES 150 per goal (`state: {kind:
+  'flight', target, scored:true, staged:true}`, positioned in the goal box). New
+  `prematchRandomize` in `play.ts` flings `CHAIN_PRELAUNCH_PER_TICK` (1) per goal per tick
+  onto the field with a randomized arc (~2.5 s to clear both goals). Staged balls are inert
+  (skipped in the flight loop) until launched; count stays conserved at 300 the whole time.
+  `staged?: boolean` added to the flight `BallState` (serializes fine; worldHash unaffected).
+- **Fire-rate tuning:** drum `CHAIN_DRUM_INTERVAL` 0.023→0.0115 (2× faster); turret
+  `CHAIN_FIRE_INTERVAL` 0.05→0.0714 (70% of the old rate).
+- **Eject spread:** `CHAIN_EJECT_SPREAD` 150→80 (narrower width-wise scatter out of the goal;
+  used by BOTH the gameplay recycle eject and the pre-match launcher).
+
+# HANDOFF — 2026-07-19 (Chain Reaction: penalty engine + single sweeper intake)
 
 > **Intake designs collapsed to ONE: `ChainIntakeStyle = 'sweeper'`** (the full-width
 > roller). Removed `'roller'`/`'funnel'` from the type, `CHAIN_INTAKES`, the Menu picker

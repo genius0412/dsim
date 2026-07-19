@@ -157,7 +157,7 @@ export const CHAIN_PART_SEP_ITERS = 2; // overlap-resolution passes per tick
  * lots of variance — power (±), arc (±), and lateral spread all randomize per ball. */
 export const CHAIN_EJECT_SPEED = 135; // in/s back into the field (base; ×0.75–1.45)
 export const CHAIN_EJECT_VZ = 80; // in/s upward arc on the way out (base; ×0.75–1.45)
-export const CHAIN_EJECT_SPREAD = 150; // in/s random lateral spread
+export const CHAIN_EJECT_SPREAD = 80; // in/s random lateral (y) spread — modestly narrow width-wise scatter
 
 /**
  * INTAKE DESIGN (`RobotSpec.chainIntake`). The intake MOUTH is at the front of the robot; its
@@ -207,7 +207,7 @@ export const CHAIN_LAUNCH_Z0 = 10; // in — launch height (into the tall, over-
 // NEVER a rigid uniform line. The launch SPEED is uniform (same-velocity, per the archetype);
 // only the position + timing vary. NOT a "6-then-wait" burst.
 export const CHAIN_DRUM_MAX = 6; // drum CAPACITY (18"/3" = 6 pockets) — the visual slot count
-export const CHAIN_DRUM_INTERVAL = 0.023; // s between shots — a FAST continuous stream (~43/s)
+export const CHAIN_DRUM_INTERVAL = 0.0115; // s between shots — a VERY fast continuous stream (~87/s)
 export const CHAIN_DRUM_JITTER = 0.55; // ± fraction of the interval — natural, non-periodic cadence
 export const CHAIN_DRUM_SPEED = 175; // in/s uniform horizontal launch
 
@@ -271,7 +271,7 @@ export function chainHopperCap(spec: RobotSpec): number {
 
 /** shooter: launch a held particle toward this robot's own accelerator. Auto-aimed
  * at the mouth center, so (like DECODE's shooter) it reliably scores — arcade feel. */
-export const CHAIN_FIRE_INTERVAL = 0.05; // s between shots (rapid fire)
+export const CHAIN_FIRE_INTERVAL = 0.0714; // s between shots — turret runs at 70% of the old rate
 export const CHAIN_SHOT_SPEED = 150; // in/s horizontal toward the mouth
 export const CHAIN_SHOT_VZ = 70; // in/s initial upward (visual arc)
 
@@ -292,6 +292,40 @@ export const CHAIN_HOOK_PLACE_R = 12; // seat-on-hook radius (carried catalyst �
  * alliance owns the two on its side (red x<0, blue x>0). APPROX — refine with manual. */
 export const CHAIN_LAB = 24; // corner square size (in)
 export const CHAIN_ASCEND_R = 9; // ascend proximity to a ring stand (in)
+
+/**
+ * START POSITIONS (manual G04 — "Robots must begin the match completely in the Lab Area",
+ * on the tile floor OR ascended on a Ring Stand). Each alliance owns the TWO Lab corners on
+ * its side; a robot may also START already ascended on either corner Ring Stand. These named
+ * anchors are CANONICAL for BLUE (goalSide +x) and MIRRORED (x→−x) for RED in `chainStartPose`.
+ * All are legal by construction (inside a Lab square / on a Ring Stand) — the selector only
+ * offers legal poses, so G04 always holds. Heading π faces the robot into the field.
+ * A 2-robot alliance takes anchors 0 and 1 (the two distinct Lab corners) by default.
+ */
+export interface ChainStartAnchor {
+  name: string;
+  pos: { x: number; y: number };
+  heading: number;
+}
+const LAB_C = CHAIN_HALF_X - CHAIN_LAB / 2; // 60" — a Lab square's centre coordinate
+export const CHAIN_START_POSES: readonly ChainStartAnchor[] = [
+  { name: 'LAB · TOP', pos: { x: LAB_C, y: LAB_C }, heading: Math.PI },
+  { name: 'LAB · BOTTOM', pos: { x: LAB_C, y: -LAB_C }, heading: Math.PI },
+  { name: 'RING STAND · TOP', pos: { x: CHAIN_RINGSTAND_XY, y: CHAIN_RINGSTAND_XY }, heading: Math.PI },
+  { name: 'RING STAND · BOTTOM', pos: { x: CHAIN_RINGSTAND_XY, y: -CHAIN_RINGSTAND_XY }, heading: Math.PI },
+];
+
+/**
+ * PRE-MATCH FIELD RANDOMIZATION (manual §"auto-score and reject" — the Accelerators launch all
+ * 300 Particles back onto the field to randomize it before the Match). We STAGE half the
+ * Particles inside each alliance goal and the launcher flings them out one-by-one during the
+ * pre-match window: `CHAIN_PRELAUNCH_PER_TICK` Particles leave EACH goal every tick until the
+ * goal is empty (~2.5 s to clear 150 at 60 Hz), scattering across the field. Deterministic
+ * (world RNG picks each launch's target). See `prematchRandomize` in play.ts.
+ */
+export const CHAIN_PRELAUNCH_PER_TICK = 1; // Particles ejected per goal per tick during randomization
+export const CHAIN_PRELAUNCH_SPEED = 150; // in/s base horizontal eject speed (± random)
+export const CHAIN_PRELAUNCH_VZ = 95; // in/s base upward arc on the way out (± random)
 
 /**
  * PENALTIES (manual §3.3, in `penalties.ts`). Manual severities: G05/G06 are MAJORs. We reuse

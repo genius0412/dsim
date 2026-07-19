@@ -100,8 +100,9 @@ export type BallState =
   /** in the air. `target` = the accelerator it was launched at. Chain Reaction:
    * once it enters that accelerator it is `scored`, then FUNNELS down inside the goal
    * for `funnelT` seconds before the wall-side launcher flings it back onto the field
-   * (same ball, still 'flight' until it lands). */
-  | { kind: 'flight'; target: Alliance; scored?: boolean; funnelT?: number }
+   * (same ball, still 'flight' until it lands). `staged` = pre-match: HELD inside the goal
+   * (inert) until the launcher ejects it during field randomization (see prematchRandomize). */
+  | { kind: 'flight'; target: Alliance; scored?: boolean; funnelT?: number; staged?: boolean }
   /** jumbling inside the goal's triangular basin, funnelling toward the
    * classifier entrance under gravity */
   | { kind: 'basin'; goal: Alliance }

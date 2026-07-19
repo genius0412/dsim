@@ -3567,6 +3567,52 @@ const mkMM = () => {
   const cw = createChainWorld('free', 12345, [chainSetup(0, 'blue'), chainSetup(1, 'red')]);
   check('chain spawn: world.game === "chain"', cw.game === 'chain');
   check('chain spawn: 300 particles + 4 catalysts staged (not scattered)', cw.balls.length === CHAIN_PARTICLE_SIM && cw.chain?.catalysts.length === 4);
+  // pre-match: all 300 particles START staged inside the two goals (150 each), NOT on the field
+  {
+    const staged = cw.balls.filter((b) => b.state.kind === 'flight' && (b.state as { staged?: boolean }).staged);
+    const redStaged = staged.filter((b) => b.state.kind === 'flight' && b.state.target === 'red').length;
+    const blueStaged = staged.filter((b) => b.state.kind === 'flight' && b.state.target === 'blue').length;
+    const inGoals = staged.every((b) => Math.abs(b.pos.x) > CHAIN_HALF_X); // behind the alliance wall
+    check(
+      'chain spawn: 300 particles staged in the goals (150 each), none on the field',
+      staged.length === CHAIN_PARTICLE_SIM && redStaged === 150 && blueStaged === 150 && inGoals,
+      `staged=${staged.length} red=${redStaged} blue=${blueStaged} inGoals=${inGoals}`,
+    );
+  }
+  // pre-match randomization: the launchers fling every staged particle onto the field within
+  // a few seconds — count conserved, all end as ground particles inside the field
+  {
+    const rw = createChainWorld('match', 99, [chainSetup(0, 'blue')]);
+    runChain(rw, cmd({}), 4); // ~2.5 s to empty the goals + flight/settle time
+    const anyStaged = rw.balls.some((b) => b.state.kind === 'flight' && (b.state as { staged?: boolean }).staged);
+    const onField = rw.balls.filter((b) => b.state.kind === 'ground').length;
+    check(
+      'chain randomize: goal launchers empty the staged particles onto the field',
+      !anyStaged && rw.balls.length === CHAIN_PARTICLE_SIM && onField > CHAIN_PARTICLE_SIM * 0.9,
+      `staged=${anyStaged} total=${rw.balls.length} ground=${onField}`,
+    );
+  }
+  // START POSITIONS (G04): a robot spawns COMPLETELY in its Lab Area; startIndex picks the anchor
+  {
+    const s0 = chainSetup(0, 'blue');
+    s0.startIndex = 0;
+    const w0 = createChainWorld('match', 1, [s0]);
+    const r0 = w0.robots[0];
+    const inLab = labAreas('blue').some(
+      (L) => r0.pos.x > L.x0 && r0.pos.x < L.x1 && r0.pos.y > L.y0 && r0.pos.y < L.y1,
+    );
+    check('chain start: robot spawns inside its Lab Area (G04)', inLab, `pos=(${r0.pos.x},${r0.pos.y})`);
+    // a different startIndex ⇒ a different (also-legal) pose
+    const s1 = chainSetup(0, 'blue');
+    s1.startIndex = 1;
+    const w1 = createChainWorld('match', 1, [s1]);
+    check('chain start: startIndex selects distinct anchors', w1.robots[0].pos.y !== r0.pos.y);
+    // RED is the x-mirror of BLUE (same anchor, opposite side)
+    const sr = chainSetup(0, 'red');
+    sr.startIndex = 0;
+    const wr = createChainWorld('match', 1, [sr]);
+    check('chain start: red mirrors blue across x', Math.abs(wr.robots[0].pos.x + r0.pos.x) < 0.01 && Math.abs(wr.robots[0].pos.y - r0.pos.y) < 0.01);
+  }
   // catalysts start ON the four ring stands (never loose on the field)
   {
     const stands = ringStands();

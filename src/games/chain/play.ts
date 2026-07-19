@@ -42,6 +42,9 @@ import {
   CHAIN_PART_WALL_REST,
   CHAIN_SHOT_SPEED,
   CHAIN_ENDGAME_S,
+  CHAIN_PRELAUNCH_PER_TICK,
+  CHAIN_PRELAUNCH_SPEED,
+  CHAIN_PRELAUNCH_VZ,
 } from './config';
 import {
   accelMultiplier,
@@ -145,6 +148,9 @@ export function updateChain(
 
   // ── flight particles: fly at the goal → score + FUNNEL down → wall-side launcher
   //    flings them back out; a MISS is thrown back into the field by a human ──────
+  // pre-match: the goal launchers fling STAGED particles onto the field to randomize it
+  prematchRandomize(world, chain, rand);
+
   const survivors: Artifact[] = [];
   for (const b of world.balls) {
     if (b.state.kind !== 'flight') {
@@ -152,6 +158,10 @@ export function updateChain(
       continue;
     }
     const st = b.state;
+    if (st.staged) {
+      survivors.push(b); // held inside the goal until the launcher ejects it
+      continue;
+    }
     const a = st.target;
     const side = accelSide(a);
     const wall = side * CHAIN_HALF_X;
@@ -487,6 +497,34 @@ function throwBack(b: Artifact, side: -1 | 1, rand: () => number): Artifact {
   b.vel.x = -side * spd;
   b.vel.y = (rand() - 0.5) * CHAIN_THROWBACK_SPREAD;
   return b;
+}
+
+/**
+ * PRE-MATCH FIELD RANDOMIZATION (manual auto-score/reject). Each alliance goal holds a stack of
+ * STAGED particles; the wall-side launcher flings `CHAIN_PRELAUNCH_PER_TICK` of them PER GOAL
+ * each tick out onto the field with a randomized ballistic arc (so they scatter across the
+ * playing area), until the goals empty (~2.5 s). The launched ball drops its `staged` flag,
+ * keeps `scored` (never re-counted), and flies out on the existing eject path → lands as a
+ * ground particle. Deterministic (world RNG). Runs every tick; a no-op once all staged.
+ */
+function prematchRandomize(world: World, chain: ChainState, rand: () => number): void {
+  void chain;
+  const left: Record<Alliance, number> = { red: CHAIN_PRELAUNCH_PER_TICK, blue: CHAIN_PRELAUNCH_PER_TICK };
+  for (const b of world.balls) {
+    if (b.state.kind !== 'flight' || !b.state.staged) continue;
+    const a = b.state.target;
+    if (left[a] <= 0) continue;
+    left[a]--;
+    const side = accelSide(a);
+    // launch from the wall-side launcher, just inside the field, out toward the field
+    b.state = { kind: 'flight', target: a, scored: true, funnelT: 0 };
+    b.pos.x = side * (CHAIN_HALF_X - CHAIN_PARTICLE_R);
+    b.pos.y = clamp(b.pos.y, -(CHAIN_ACCEL_HALF_Y - CHAIN_PARTICLE_R), CHAIN_ACCEL_HALF_Y - CHAIN_PARTICLE_R);
+    b.z = 5;
+    b.vel.x = -side * CHAIN_PRELAUNCH_SPEED * (0.55 + rand() * 0.95); // scatter near → far
+    b.vel.y = (rand() - 0.5) * CHAIN_EJECT_SPREAD;
+    b.vz = CHAIN_PRELAUNCH_VZ * (0.7 + rand() * 0.7);
+  }
 }
 
 /** convert a flight ball to a resting ground particle at `pos` */
