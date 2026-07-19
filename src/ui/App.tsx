@@ -232,7 +232,7 @@ export function App() {
   const [session, setSession] = useState<NetSession | null>(null);
   // a just-played replay to watch in-memory (not yet persisted, so no URL id)
   const [replayObj, setReplayObj] = useState<Replay | null>(null);
-  // one-time "Chain Reaction is just for fun" disclaimer (shown the first time CR is
+  // one-time "this simulation isn't realistic" disclaimer (shown the first time CR is
   // the selected game, on this device; dismissal persists in localStorage)
   const [showChainDisclaimer, setShowChainDisclaimer] = useState(false);
 
@@ -625,16 +625,16 @@ export function App() {
           onWatch={() => navigate('watch')}
         />
       )}
-      {/* one-time "just for fun" disclaimer for Chain Reaction */}
+      {/* one-time "this sim isn't realistic" disclaimer for Chain Reaction */}
       {showChainDisclaimer && (
         <div className="overlay">
           <div className="overlay-panel">
-            <h2>Chain Reaction is just for fun</h2>
-            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 400 }}>
-              Chain Reaction is a made-up, unofficial game built purely for driver-practice fun.
-              Its field, scoring, and robot mechanics are <b>not realistic</b> and aren’t based on
-              any real FTC game or hardware. Please don’t use anything here as inspiration or a
-              reference for your real robot design.
+            <h2>About this simulation</h2>
+            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 420 }}>
+              Chain Reaction is a game for the <b>Unofficial FTC Discord’s CAD Competition</b>.
+              This simulator is just a rough, for-fun approximation of it — <b>the simulation is
+              not realistic</b>, so how robots drive, shoot, and score here shouldn’t drive your
+              CAD-competition design decisions. Build for the real game, not for this sim.
             </p>
             <div className="overlay-buttons">
               <button
