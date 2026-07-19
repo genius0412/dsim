@@ -1,6 +1,16 @@
 # HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
 
-## Latest session — wall square-up in CR + diagonal-speed audit
+## Latest session — beams always slow you (even at speed)
+
+- **Beams now slow every drivetrain even at high speed** (was: momentum let mecanum/swerve
+  power over at ~full speed). `beamDragFactor` (CR beams.ts) rebalanced: momentum eases only a
+  LITTLE (`CHAIN_BEAM_MOMENTUM_EASE` 0.45) and the per-tick retain is hard-capped
+  (`CHAIN_BEAM_MAX_RETAIN` 0.95), base cap 0.9. Full-sim high-speed crossing now KEEPS ~tank
+  0.53 / swerve·mecanum·xdrive ~0.32 (was mecanum 1.00, swerve 0.97) — a clear slowdown, still
+  crossable, traction spread preserved (tank best). Smoke: sim-based crossing test asserts a
+  real speed loss; the old "momentum powers over" assertion was flipped.
+
+## Wall square-up in CR + diagonal-speed audit
 
 - **CR robots now square up flush to walls** (they didn't before). DECODE's post-Rapier
   `squareUpRobots` was never called in `chainStep`. The wall block of `squareUpStatics`

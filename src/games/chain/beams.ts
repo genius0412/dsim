@@ -5,6 +5,8 @@ import { clamp } from '../../math';
 import {
   CHAIN_BEAM_HEIGHT,
   CHAIN_BEAM_MOMENTUM_REF,
+  CHAIN_BEAM_MOMENTUM_EASE,
+  CHAIN_BEAM_MAX_RETAIN,
   CHAIN_CLEARANCE_DEFAULT,
   CHAIN_CLEARANCE_MAX,
   CHAIN_CLEARANCE_MIN,
@@ -24,10 +26,10 @@ import {
  *    ALONGSIDE — only the across-beam motion stops). Given clearance, EVERY drivetrain
  *    can cross — nothing is hard-blocked by wheel type.
  *  • Given clearance, the beam DRAGS the across-beam velocity by a `beamRetain` factor.
- *    MOMENTUM dominates: a running start (high across-speed) powers over with almost no
- *    slowdown; creeping from a standstill is where traction matters — traction wheels
- *    (tank/swerve) still climb, mecanum is only a bit worse, omni/x-drive is the slowest
- *    but still gets over. More clearance margin also eases it slightly.
+ *    A beam ALWAYS slows you — even at full speed (the retain is capped below 1), so you can
+ *    no longer power over untouched. Traction decides how much: tank/swerve climb best,
+ *    mecanum a bit worse, omni/x-drive the slowest (but still gets over). A running start
+ *    eases it only a LITTLE, and more clearance margin also eases it slightly.
  *  • The clearance ↔ CoG tradeoff: more clearance eases beam crossing but raises the
  *    center of gravity ⇒ `cogFactor` scales down ALL drive authority (sluggish, tippy).
  *
@@ -74,18 +76,20 @@ export function canCrossBeams(spec: RobotSpec): boolean {
 }
 
 /**
- * Fraction of the across-beam velocity KEPT while mounting a beam. MOMENTUM dominates:
- * a running start (high across-speed) powers over with almost no slowdown; creeping is
- * where traction matters (traction wheels still climb, mecanum a bit worse, omni slowest
- * yet still crosses). A raised center of gravity (more clearance) makes it a touch harder.
- * Applied to velocity BEFORE the physics integration, so it really slows the crossing.
+ * Fraction of the across-beam velocity KEPT while mounting a beam. A beam ALWAYS slows you —
+ * even at full speed (`CHAIN_BEAM_MAX_RETAIN` caps how much you can keep). Traction still
+ * matters (tank/swerve climb best, mecanum a bit worse, omni/x-drive slowest), and a running
+ * start eases it only a LITTLE (`CHAIN_BEAM_MOMENTUM_EASE`) — momentum no longer lets you power
+ * over untouched. A raised center of gravity (more clearance) makes it a touch harder. Applied
+ * to velocity BEFORE the physics integration, so it really slows the crossing.
  */
 export function beamDragFactor(spec: RobotSpec, acrossSpeed: number): number {
   const clr = clearanceOf(spec);
-  const base = clamp(TRACTION[spec.drivetrain] + 0.05 * (clr - CHAIN_BEAM_HEIGHT), 0.45, 0.9);
+  const base = clamp(TRACTION[spec.drivetrain] + 0.05 * (clr - CHAIN_BEAM_HEIGHT), 0.4, 0.9);
   const mom = clamp(Math.abs(acrossSpeed) / CHAIN_BEAM_MOMENTUM_REF, 0, 1);
   const cogFrac = clamp((clr - CHAIN_CLEARANCE_MIN) / (CHAIN_CLEARANCE_MAX - CHAIN_CLEARANCE_MIN), 0, 1);
-  return clamp((base + (1 - base) * mom) * (1 - 0.12 * cogFrac), 0.4, 0.985);
+  const retain = (base + CHAIN_BEAM_MOMENTUM_EASE * (1 - base) * mom) * (1 - 0.12 * cogFrac);
+  return clamp(retain, 0.4, CHAIN_BEAM_MAX_RETAIN);
 }
 
 /**

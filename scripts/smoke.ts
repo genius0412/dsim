@@ -4274,11 +4274,39 @@ const mkMM = () => {
     check('chain beams: x-drive WITH clearance can cross', canCrossBeams(mk('xdrive', 1)) === true);
     check('chain beams: tank with clearance crosses', canCrossBeams(mk('tank', 1)) === true);
     check('chain beams: too little clearance is blocked (frame hits)', canCrossBeams(mk('mecanum', 0.5)) === false);
-    // MOMENTUM makes it easier: a running start keeps far more speed than a standstill
+    // MOMENTUM eases crossing only a LITTLE — a running start keeps SOME more speed than a
+    // standstill, but no longer lets you power over untouched.
     check(
-      'chain beams: momentum eases crossing (fast keeps more than standstill)',
-      beamDragFactor(mk('xdrive', 1), 50) > beamDragFactor(mk('xdrive', 1), 0) + 0.15,
+      'chain beams: momentum eases crossing a little (fast keeps a bit more than standstill)',
+      beamDragFactor(mk('xdrive', 1), 50) > beamDragFactor(mk('xdrive', 1), 0) &&
+        beamDragFactor(mk('xdrive', 1), 50) - beamDragFactor(mk('xdrive', 1), 0) < 0.18,
     );
+    // a BEAM ALWAYS SLOWS YOU — even at very high across-speed the per-tick retain stays
+    // below 1 (capped by CHAIN_BEAM_MAX_RETAIN), so you can't power over untouched.
+    check(
+      'chain beams: per-tick retain is capped below 1 even at high speed',
+      beamDragFactor(mk('mecanum', 1), 300) <= 0.95 && beamDragFactor(mk('tank', 1), 300) <= 0.95,
+      `mecanum=${beamDragFactor(mk('mecanum', 1), 300).toFixed(2)} tank=${beamDragFactor(mk('tank', 1), 300).toFixed(2)}`,
+    );
+    // FULL-SIM crossing: drive a robot at speed across a beam and confirm it loses a real
+    // chunk of speed (the user's ask — beams slow you down even when you're moving fast).
+    {
+      const beamW = createChainWorld('free', 5, [chainSetup(0, 'blue')]);
+      const rb = beamW.robots[0];
+      rb.pos = { x: 44, y: -60 }; rb.heading = Math.PI / 2; rb.fieldCentric = false;
+      let vBefore = 0, vAfter = 0, it = 0;
+      while (rb.pos.y < 14 && it < 800) {
+        chainStep(beamW, SIM_DT, new Map([[rb.id, cmd({ driveY: 1 })]]));
+        it++;
+        if (rb.pos.y < -9) vBefore = Math.abs(rb.vel.y); // approaching, before the beam
+        if (rb.pos.y > 9 && vAfter === 0) vAfter = Math.abs(rb.vel.y); // just cleared the beam
+      }
+      check(
+        'chain beams: driving across a beam at speed loses a real chunk of speed',
+        rb.pos.y >= 14 && vBefore > 40 && vAfter < vBefore * 0.75,
+        `before=${vBefore.toFixed(0)} after=${vAfter.toFixed(0)} keep=${(vAfter / (vBefore || 1)).toFixed(2)}`,
+      );
+    }
     // mecanum is only a little worse than tank from a standstill (not "immediately bad")
     check(
       'chain beams: mecanum standstill is close to tank (not badly penalized)',

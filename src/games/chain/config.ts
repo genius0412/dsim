@@ -118,8 +118,15 @@ export const CHAIN_DIAMOND_R = CHAIN_DIAMOND_SIDE / Math.SQRT2; // ≈ 33.94" (c
  */
 export const CHAIN_BEAM_LEN = 56; // beam length, inches (manual) — from the wall inward
 export const CHAIN_BEAM_HEIGHT = 1; // inches (tube height/width — 1" all round)
-/** across-beam speed (in/s) at which MOMENTUM lets a robot power over with ~no slowdown */
+/** across-beam speed (in/s) at which MOMENTUM gives its full (small) easing */
 export const CHAIN_BEAM_MOMENTUM_REF = 55;
+/** how much a running start eases the climb (fraction of the gap to no-drag). Small — a beam
+ * ALWAYS slows you down, even at high speed; momentum only helps a little (it no longer lets
+ * you power over untouched). */
+export const CHAIN_BEAM_MOMENTUM_EASE = 0.45;
+/** hard ceiling on the per-tick across-speed KEPT on a beam — so even a full-speed crossing
+ * sheds a real chunk of speed (a beam is always a noticeable bump). */
+export const CHAIN_BEAM_MAX_RETAIN = 0.95;
 /** ground-clearance slider (inches). Default just meets a 1" beam (0 margin). */
 export const CHAIN_CLEARANCE_MIN = 0.5;
 export const CHAIN_CLEARANCE_MAX = 3;
