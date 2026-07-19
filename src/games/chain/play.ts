@@ -96,6 +96,7 @@ export function updateChain(
 
   // ── robots: aim, fire/dump, catalyst button ────────────────────────────────
   for (const r of world.robots) {
+    if (r.passive) continue; // inert dummy: no turret slew / fire / catalyst work
     const mouth = { x: accelSide(r.alliance) * CHAIN_HALF_X, y: 0 };
     const cmd = cmds.get(r.id);
     const wantsFire = enabled && (r.autoFire || (cmd?.fire ?? false));

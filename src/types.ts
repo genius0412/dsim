@@ -181,6 +181,12 @@ export interface RobotState {
    * counts as fully returned at match end regardless of where it ends up */
   baseAwarded?: boolean;
 
+  /** an INERT obstacle (a free-drive practice dummy): still collides + drive-brakes
+   * like any robot, but skips ALL per-tick action compute — aim/shot-solve, flywheel
+   * spin, fire, intake, and the CR turret slew — since it never acts. Keeps idle bots
+   * from burning CPU on work they'll never use. Optional (real robots omit it). */
+  passive?: boolean;
+
   // --- Auto Pathing State ---
   autoPathActive: boolean;
   currentPathSegmentIndex: number;

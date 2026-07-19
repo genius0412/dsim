@@ -102,7 +102,9 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
   squareUpRobots(world, preVels);
 
   // ---- robots (actions: intake/fire/turret) ------------------------------
+  // passive dummies never act — skip the aim solve / flywheel / fire / intake work
   for (const r of world.robots) {
+    if (r.passive) continue;
     updateRobotActions(world, r, actualCommands.get(r.id) ?? ZERO_CMD, dt);
   }
 

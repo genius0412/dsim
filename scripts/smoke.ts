@@ -733,6 +733,23 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('red field-centric stick-up drives toward +x (away from red wall)', wr.robots[0].pos.x > 10, `x=${wr.robots[0].pos.x.toFixed(1)}`);
 }
 
+// ---- passive dummy skips ALL action compute (no aim solve / fire / intake) --
+{
+  const w = createWorld('match', 42, [
+    { id: 0, alliance: 'blue', spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, passive: true },
+  ]);
+  startMatch(w);
+  const r = w.robots[0];
+  r.pos = { x: 10, y: 40 }; // same firing spot a NON-passive robot empties its hopper from
+  const hopper0 = r.hopper.length;
+  run(w, cmd({ fire: true, intake: true }), 0.5);
+  check(
+    'passive robot flag propagates + it never acts (fire/intake ignored)',
+    r.passive === true && r.hopper.length === hopper0,
+    `passive=${r.passive} hopper ${hopper0}->${r.hopper.length}`,
+  );
+}
+
 // ---- shooting & visible classification -------------------------------------
 {
   const w = mkWorld('match', 'blue', 42);

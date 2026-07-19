@@ -348,8 +348,11 @@ export class GameController {
         id,
         alliance,
         spec: { ...DEFAULT_SPEC, name: `Dummy ${id}`, teamName: 'Practice', teamNumber: 0 },
-        assists: { ...DEFAULT_ASSISTS, autoIntake: false, autoFire: false },
+        // inert: aim assist OFF (no per-tick shot solve) + passive so the sim skips ALL
+        // their action compute — they only ever exist to be bumped into.
+        assists: { ...DEFAULT_ASSISTS, aimAssist: false, autoIntake: false, autoFire: false },
         startIndex,
+        passive: true,
       });
       setups.push(
         // the partner dummy takes the OTHER preset so it never overlaps the player
