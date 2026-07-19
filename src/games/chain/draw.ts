@@ -28,19 +28,22 @@ export function drawChainBalls(ctx: CanvasRenderingContext2D, world: World, scre
     ctx.fill();
   }
 
-  // particles
+  // particles — all one colour, so batch every circle into a SINGLE path and fill +
+  // stroke ONCE (not ~600 draw calls for 300 particles). `moveTo` before each arc keeps
+  // the subpaths disjoint. Same pixels; a big per-frame win at CR's particle counts.
+  ctx.fillStyle = PARTICLE_FILL;
+  ctx.strokeStyle = PARTICLE_LINE;
   ctx.lineWidth = 0.35;
+  ctx.beginPath();
   for (const b of world.balls) {
     const lift = b.state.kind === 'flight' ? b.z * 0.12 : 0;
     const x = b.pos.x + screenUp.x * lift;
     const y = b.pos.y + screenUp.y * lift;
-    ctx.fillStyle = PARTICLE_FILL;
-    ctx.beginPath();
+    ctx.moveTo(x + CHAIN_PARTICLE_R, y);
     ctx.arc(x, y, CHAIN_PARTICLE_R, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = PARTICLE_LINE;
-    ctx.stroke();
   }
+  ctx.fill();
+  ctx.stroke();
 
   const rOuter = CHAIN_CATALYST_OD / 2;
   const rMid = rOuter - 0.9;
