@@ -28,6 +28,9 @@ import {
   getProfile,
   createAnnouncement,
   deleteAnnouncement,
+  upsertPresence,
+  globalPresence,
+  type GlobalPresence,
 } from './db/repo';
 
 /**
@@ -118,6 +121,21 @@ function readAdminBody(req: import('node:http').IncomingMessage): Promise<string
 // an explicit HTTP server so we can answer GET /health (Fly/Load-balancer probe)
 // while the WebSocket upgrade rides the same port
 const REGION = process.env.FLY_REGION ?? process.env.SERVER_REGION ?? '';
+// stable per-machine id for the shared presence table (unique per Fly machine)
+const MACHINE = process.env.FLY_MACHINE_ID || REGION || 'local';
+
+// GET /api/presence aggregates presence across ALL regions' machines (each machine
+// only knows its own sockets). A tiny cache absorbs a burst of client polls so the
+// aggregate query doesn't hit the DB on every request.
+let presenceCache: { at: number; val: GlobalPresence } | null = null;
+async function aggregatePresence(): Promise<GlobalPresence> {
+  const now = Date.now();
+  if (presenceCache && now - presenceCache.at < 3000) return presenceCache.val;
+  const val = await globalPresence();
+  presenceCache = { at: now, val };
+  return val;
+}
+
 const httpServer = createServer((req, res) => {
   if (req.method === 'GET' && req.url?.startsWith('/health')) {
     // `?region=<code>` lets the client ping a SPECIFIC region (the picker) or read
@@ -442,26 +460,35 @@ const httpServer = createServer((req, res) => {
     return;
   }
   if (req.method === 'GET' && req.url === '/api/presence') {
-    res.writeHead(200, {
-      'content-type': 'application/json',
-      'cache-control': 'no-store',
-      'access-control-allow-origin': '*',
-    });
-    res.end(
-      JSON.stringify({
-        region: REGION,
-        online: onlineCount,
-        signedIn: authedUsers.size,
-        queues: matchmaker.queueSizes(),
-        // include any LIVE admin notice so the client can show the restart banner
-        // (and block starting new games) on EVERY page — even disconnected ones
-        // like Home/solo where no WebSocket delivers `serverNotice`.
-        notice:
-          noticeLive() && currentNotice
-            ? { kind: currentNotice.kind, message: currentNotice.message, until: currentNotice.until }
-            : null,
-      }),
-    );
+    // include any LIVE admin notice so the client can show the restart banner
+    // (and block starting new games) on EVERY page — even disconnected ones
+    // like Home/solo where no WebSocket delivers `serverNotice`.
+    const notice =
+      noticeLive() && currentNotice
+        ? { kind: currentNotice.kind, message: currentNotice.message, until: currentNotice.until }
+        : null;
+    const respond = (online: number, signedIn: number, queues: Record<string, number>): void => {
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'cache-control': 'no-store',
+        'access-control-allow-origin': '*',
+      });
+      res.end(JSON.stringify({ region: REGION, online, signedIn, queues, notice }));
+    };
+    // GLOBAL count: aggregate every region's heartbeat (this machine only sees its
+    // own sockets — anycast routing means the caller often lands on an empty region).
+    // Fall back to this machine's local numbers if the DB read fails.
+    if (dbEnabled) {
+      aggregatePresence().then(
+        (g) => respond(g.online, g.signedIn, g.queues),
+        (e) => {
+          console.error('[presence] aggregate failed, using local:', e);
+          respond(onlineCount, authedUsers.size, matchmaker.queueSizes());
+        },
+      );
+    } else {
+      respond(onlineCount, authedUsers.size, matchmaker.queueSizes());
+    }
     return;
   }
   // public leaderboard / replay read API (GET /api/*)
@@ -804,4 +831,18 @@ if (dbEnabled) {
     cleanupStalePending(60_000).catch((e) => console.error('[server] pending cleanup:', e));
   }, 60_000);
   reaper.unref();
+
+  // PRESENCE HEARTBEAT — publish this machine's live counts so /api/presence can
+  // aggregate a GLOBAL total across regions. A stopped/crashed machine simply stops
+  // beating and its row ages out of the freshness window; a restart with the same
+  // FLY_MACHINE_ID overwrites its own row, so no ghosts accumulate.
+  const beat = (): void => {
+    const qs = matchmaker.queueSizes();
+    upsertPresence(MACHINE, REGION, onlineCount, [...authedUsers.keys()], qs['1v1'], qs['2v2']).catch(
+      (e) => console.error('[presence] heartbeat failed:', e),
+    );
+  };
+  beat();
+  const hb = setInterval(beat, 5_000);
+  hb.unref();
 }

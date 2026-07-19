@@ -1279,3 +1279,53 @@ export async function cleanupStalePending(olderThanMs: number): Promise<number> 
   );
   return rows.length;
 }
+
+// -------------------------------------------------------- presence ----------
+// Cross-machine presence: each region's machine only knows its OWN sockets, so a
+// shared table + aggregate read gives a GLOBAL count (see 0015_presence.sql).
+
+export interface GlobalPresence {
+  online: number;
+  signedIn: number;
+  queues: { '1v1': number; '2v2': number };
+}
+
+/** heartbeat THIS machine's live counts (upsert keyed by machine id). */
+export async function upsertPresence(
+  machine: string,
+  region: string,
+  online: number,
+  authedUserIds: string[],
+  q1v1: number,
+  q2v2: number,
+): Promise<void> {
+  await q(
+    `insert into presence (machine, region, online, authed, q1v1, q2v2, updated_at)
+       values ($1, $2, $3, $4::jsonb, $5, $6, now())
+     on conflict (machine) do update
+       set region = $2, online = $3, authed = $4::jsonb, q1v1 = $5, q2v2 = $6, updated_at = now()`,
+    [machine, region, online, JSON.stringify(authedUserIds), q1v1, q2v2],
+  );
+}
+
+/** aggregate presence over every machine heartbeating within `freshSeconds` (a few
+ * missed beats). Sums sockets + ranked queues; de-dups signed-in users across regions
+ * (a user connected from two regions counts once). */
+export async function globalPresence(freshSeconds = 15): Promise<GlobalPresence> {
+  const win = `${Math.max(1, Math.floor(freshSeconds))} seconds`;
+  const agg = await q<{ online: number; q1: number; q2: number }>(
+    `select coalesce(sum(online), 0)::int as online,
+            coalesce(sum(q1v1), 0)::int as q1,
+            coalesce(sum(q2v2), 0)::int as q2
+       from presence where updated_at > now() - $1::interval`,
+    [win],
+  );
+  const su = await q<{ n: number }>(
+    `select count(distinct uid)::int as n
+       from presence p, jsonb_array_elements_text(p.authed) as uid
+      where p.updated_at > now() - $1::interval`,
+    [win],
+  );
+  const a = agg[0] ?? { online: 0, q1: 0, q2: 0 };
+  return { online: a.online, signedIn: su[0]?.n ?? 0, queues: { '1v1': a.q1, '2v2': a.q2 } };
+}
