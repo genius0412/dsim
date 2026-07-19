@@ -415,6 +415,54 @@ export function Menu({ settings, onChange }: Props) {
               ))}
             </div>
 
+            {/* Chain Reaction — SCORING ARCHETYPE + shooter mount + intake come FIRST: they
+                set the numeric limits (storage cap, etc.) the sliders below are clamped to. */}
+            {!isDecode && (
+              <>
+                <h3 className="ds-subh">Scoring archetype</h3>
+                <div className="ds-opts">
+                  {CHAIN_SCORE_MODES.map((m) => (
+                    <button
+                      key={m}
+                      className={`ds-opt ${(spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE) === m ? 'on' : ''}`}
+                      onClick={() => setSpec({ scoreMode: m })}
+                    >
+                      <span className="ot">{CHAIN_MODE_LABELS[m]}</span>
+                      <span className="od">{CHAIN_MODE_BLURBS[m]}</span>
+                    </button>
+                  ))}
+                </div>
+                {(spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE) !== 'turret' && (
+                  <>
+                    <h3 className="ds-subh">Shooter mount</h3>
+                    <div className="ds-opts two">
+                      <button
+                        className={`ds-opt ${!spec.shooterRear ? 'on' : ''}`}
+                        onClick={() => setSpec({ shooterRear: false })}
+                      >
+                        <span className="ot">FRONT</span>
+                        <span className="od">Launcher at the front — turns to face the goal</span>
+                      </button>
+                      <button
+                        className={`ds-opt ${spec.shooterRear ? 'on' : ''}`}
+                        onClick={() => setSpec({ shooterRear: true })}
+                      >
+                        <span className="ot">REAR</span>
+                        <span className="od">Launcher at the back — turns its back to the goal</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+                <h3 className="ds-subh">Intake design</h3>
+                <div className="ds-opts">
+                  <div className="ds-opt on" aria-disabled>
+                    <span className="ot">{CHAIN_INTAKE_LABELS.sweeper}</span>
+                    <span className="od">{CHAIN_INTAKE_BLURBS.sweeper}</span>
+                  </div>
+                </div>
+              </>
+            )}
+
             <div className="ds-fields">
               <label className="ds-field">
                 <span className="cap">
@@ -577,45 +625,6 @@ export function Menu({ settings, onChange }: Props) {
           </div>
           )}
 
-          {/* Chain Reaction — SCORING ARCHETYPE (turret vs dumper) */}
-          {!isDecode && (
-          <>
-          <h3 className="ds-subh">Scoring archetype</h3>
-          <div className="ds-opts">
-            {CHAIN_SCORE_MODES.map((m) => (
-              <button
-                key={m}
-                className={`ds-opt ${(spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE) === m ? 'on' : ''}`}
-                onClick={() => setSpec({ scoreMode: m })}
-              >
-                <span className="ot">{CHAIN_MODE_LABELS[m]}</span>
-                <span className="od">{CHAIN_MODE_BLURBS[m]}</span>
-              </button>
-            ))}
-          </div>
-          {(spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE) !== 'turret' && (
-            <button
-              className={`ds-opt mini ${spec.shooterRear ? 'on' : ''}`}
-              style={{ marginTop: 8 }}
-              onClick={() => setSpec({ shooterRear: !spec.shooterRear })}
-            >
-              <span className="ot">Shooter mount: {spec.shooterRear ? 'REAR' : 'FRONT'}</span>
-              <span className="od">
-                {spec.shooterRear
-                  ? 'Launcher at the back — turns its back to the goal to shoot'
-                  : 'Launcher at the front — turns to face the goal'}
-              </span>
-            </button>
-          )}
-          <h3 className="ds-subh">Intake design</h3>
-          <div className="ds-opts">
-            <div className="ds-opt on" aria-disabled>
-              <span className="ot">{CHAIN_INTAKE_LABELS.sweeper}</span>
-              <span className="od">{CHAIN_INTAKE_BLURBS.sweeper}</span>
-            </div>
-          </div>
-          </>
-          )}
         </section>
 
         {/* ---------- driver preferences (remembered per drivetrain) ---------- */}
