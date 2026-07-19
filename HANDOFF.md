@@ -1,6 +1,16 @@
 # HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
 
-## Latest session — PER-GAME loadouts (robots + start positions no longer bleed cross-game)
+## Latest session — fire rates: turret max 9 bps, drum ~30 bps
+
+- **Turret**: `CHAIN_FIRE_INTERVAL = 1/9` (≈0.111 s) — max 9 balls/s (deterministic; ~8.8 observed
+  after 60 Hz quantization, under the 9 cap).
+- **Drum**: `CHAIN_DRUM_INTERVAL = 1/41` — the NOMINAL is set below 1/30 s to counter the
+  throughput lost to 60 Hz tick quantization (a shot fires on the next tick past its due time, so
+  a sub-3-tick interval rounds UP) + the symmetric jitter; the OBSERVED cadence measures ~30
+  balls/s. (User iterated 18 → 23 → 30; jitter is symmetric so the AVERAGE = target, unlike the
+  brief one-sided-cap experiment.) Verified with a throwaway rate-measurement script.
+
+## PER-GAME loadouts (robots + start positions no longer bleed cross-game)
 
 - **`GameLoadout`** (types.ts) = {spec, savedRobots, startIndex, startPose, startCat,
   savedStartPoses, startMemory}. `GameSettings.loadouts?: Partial<Record<GameId, GameLoadout>>`

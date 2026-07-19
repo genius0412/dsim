@@ -220,7 +220,11 @@ export const CHAIN_LAUNCH_Z0 = 10; // in — launch height (into the tall, over-
 // NEVER a rigid uniform line. The launch SPEED is uniform (same-velocity, per the archetype);
 // only the position + timing vary. NOT a "6-then-wait" burst.
 export const CHAIN_DRUM_MAX = 6; // drum CAPACITY (18"/3" = 6 pockets) — the visual slot count
-export const CHAIN_DRUM_INTERVAL = 0.0115; // s between shots — a VERY fast continuous stream (~87/s)
+// the drum streams ~30 balls/s. `CHAIN_DRUM_INTERVAL` is the NOMINAL gap; it's set BELOW 1/30 s to
+// counter the throughput lost to 60 Hz tick quantization + the symmetric jitter (each shot fires on
+// the next tick past its due time, which rounds a sub-3-tick interval UP) — so the OBSERVED cadence
+// lands at ~30/s while still varying naturally (measured, not a rigid uniform stream).
+export const CHAIN_DRUM_INTERVAL = 1 / 41; // nominal gap → ~30 balls/s observed
 export const CHAIN_DRUM_JITTER = 0.55; // ± fraction of the interval — natural, non-periodic cadence
 export const CHAIN_DRUM_SPEED = 175; // in/s uniform horizontal launch
 
@@ -290,7 +294,7 @@ export function chainHopperCap(spec: RobotSpec): number {
 
 /** shooter: launch a held particle toward this robot's own accelerator. Auto-aimed
  * at the mouth center, so (like DECODE's shooter) it reliably scores — arcade feel. */
-export const CHAIN_FIRE_INTERVAL = 0.0714; // s between shots — turret runs at 70% of the old rate
+export const CHAIN_FIRE_INTERVAL = 1 / 9; // ≈ 0.1111 s — turret max 9 balls/s (deterministic)
 export const CHAIN_SHOT_SPEED = 150; // in/s horizontal toward the mouth
 export const CHAIN_SHOT_VZ = 70; // in/s initial upward (visual arc)
 

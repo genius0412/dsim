@@ -127,6 +127,8 @@ export function updateChain(
           // Uniform launch SPEED — only the position + timing vary, so the pattern flows.
           r.hopper.shift();
           launchAt(world, chain, r, rand() - 0.5, CHAIN_DRUM_SPEED, 0);
+          // SYMMETRIC jitter around the nominal 1/23 s ⇒ the drum AVERAGES 23 balls/s while the
+          // cadence varies naturally (never a rigid uniform stream).
           r.fireReadyAt = world.time + CHAIN_DRUM_INTERVAL * (1 - CHAIN_DRUM_JITTER + rand() * 2 * CHAIN_DRUM_JITTER);
         } else {
           // catapult: fling the WHOLE hopper at once, side-to-side velocity variance
