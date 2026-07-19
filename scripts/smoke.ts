@@ -3084,6 +3084,49 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
   check('reconnect: reattach on an unknown/gone slot returns null (→ rejoined:false)', room.reattach('ghost', () => {}) === null);
 }
 
+// ---- SPECTATING: a read-only watcher gets the stream, affects nothing -----------
+{
+  const mkDriver = (id: string, alliance: Alliance, sink: ServerMsg[]): Client => ({
+    id,
+    send: (m) => sink.push(m),
+    player: { clientId: id, name: id, teamName: 'Team ' + id, teamNumber: 7, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+  const room = new Room('smoke-spec', () => {}, { kind: 'versus' });
+  const rosterA: ServerMsg[] = [];
+  const rosterB: ServerMsg[] = [];
+  room.add(mkDriver('a', 'red', rosterA));
+  room.add(mkDriver('b', 'blue', rosterB));
+  room.onMessage('a', { t: 'start' });
+  room.advanceForTest(20);
+
+  // a spectator joins mid-match
+  const spec: ServerMsg[] = [];
+  const specClient: Client = { id: 'watch-1', send: (m) => spec.push(m), player: { clientId: 'watch-1', name: 'Watcher', teamName: '', teamNumber: 0, alliance: 'blue', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } }, connected: true, disconnectAt: 0 };
+  room.addSpectator(specClient);
+  const ms = spec.find((m) => m.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
+  check('spectate: the spectator receives matchStart with yourRobotId -1 (no slot)', ms?.yourRobotId === -1);
+  check('spectate: the spectator gets an immediate snapshot', spec.some((m) => m.t === 'snapshot'));
+
+  // it must not appear on the roster (drivers only) nor block a would-be joiner
+  rosterA.length = 0;
+  room.advanceForTest(6); // more live ticks → more snapshots to the spectator
+  const specSnaps = spec.filter((m) => m.t === 'snapshot').length;
+  check('spectate: the watcher keeps receiving the live snapshot stream', specSnaps >= 2, `snaps=${specSnaps}`);
+  const lastRoster = [...rosterB].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+  check('spectate: spectators are NOT on the driver roster', (lastRoster?.players.length ?? 2) === 2);
+
+  // Room.summary() lists the live match for the Watch Live list
+  const sum = room.summary();
+  check('spectate: Room.summary() reports the live match', sum !== null && sum.mode === '1v1' && sum.spectators === 1 && sum.players.length === 2);
+
+  // the spectator leaving is clean and never touches the match
+  room.detach('watch-1');
+  check('spectate: after the watcher leaves, the match summary drops the spectator', (room.summary()?.spectators ?? 1) === 0);
+}
+
 // ---- single live game per user + restart disabled (server enforcement) ------
 {
   const active: string[] = [];

@@ -68,8 +68,12 @@ export interface NetSession {
   /** which game the match plays (from matchStart / the first snapshot; DECODE by
    * default). The GameController builds its initial predicted world for this game. */
   readonly game: GameId;
-  /** the local player's robot id (assigned by the server at match start) */
+  /** the local player's robot id (assigned by the server at match start; -1 when
+   * spectating — there is no local robot) */
   readonly localRobotId: number;
+  /** read-only SPECTATOR session: no local robot, no input sent — the GameController
+   * renders every robot from the authoritative snapshot stream. */
+  readonly spectator?: boolean;
   /** the room code + our clientId + hosting region (ServerSession only) — used to
    * persist an "active game" record so the player can REJOIN this same match later */
   readonly room?: string;

@@ -24,6 +24,7 @@ import {
   type BallDelta,
   type ClientMsg,
   type EloDelta,
+  type LiveRoom,
   type LobbyPlayer,
   type PlayerIntro,
   type QCommand,
@@ -32,7 +33,7 @@ import {
   type ServerMsg,
 } from '../src/net/protocol';
 import { sanitizePlayerPatch } from '../src/net/sanitize';
-import type { EloOutcome } from './ranked';
+import { eloMode, type EloOutcome } from './ranked';
 import type { PendingMatch } from './matchTypes';
 
 /** what the persistence layer resolves to after a finished match: ranked ELO
@@ -134,12 +135,19 @@ export interface MatchOutcome {
  */
 export class Room {
   private readonly clients = new Map<string, Client>();
+  // READ-ONLY watchers: receive every broadcast (roster/matchStart/snapshot/result)
+  // but hold no robot slot and never count toward capacity/roster/persistence.
+  private readonly spectators = new Map<string, Client>();
   private hostId = '';
   // monotonic connection counter: every add/reattach stamps the owning socket with
   // the next value so a stale old socket's close can be recognised and ignored.
   private connSeq = 0;
 
   private world: World | null = null;
+  // the live match's seed + setups (remembered so a spectator joining mid-match, or a
+  // reconnect, can be handed the same `matchStart` the drivers got)
+  private matchSeed = 0;
+  private matchSetups: RobotSetup[] = [];
   private readonly robotOf = new Map<string, number>(); // clientId -> robotId
   // per robot: future inputs keyed by the tick they apply to (consumed in order)
   private readonly pending = new Map<number, Map<number, RobotCommand>>();
@@ -264,9 +272,69 @@ export class Room {
     return this.channel === 'alpha';
   }
 
+  /** add a read-only SPECTATOR. It receives the current `matchStart` (with a sentinel
+   * robot id of -1) + a live snapshot immediately, then every broadcast. Never joins
+   * the roster / capacity / persistence, and its messages are ignored. */
+  addSpectator(client: Client): void {
+    this.spectators.set(client.id, client);
+    client.send({ t: 'welcome', clientId: client.id });
+    if (this.world && this.phase === 'match') {
+      client.send(this.matchStartMsg(-1));
+      this.sendSnapshotTo(client);
+    }
+    this.broadcastRoster();
+  }
+
+  /** the matchStart payload for a client. `yourRobotId` = -1 for a spectator (no slot). */
+  private matchStartMsg(yourRobotId: number): ServerMsg {
+    return {
+      t: 'matchStart',
+      seed: this.matchSeed,
+      setups: this.matchSetups,
+      yourRobotId,
+      game: this.game,
+      ranked: this.ranked,
+      intros: this.ranked ? this.intros : undefined,
+      region: SERVER_REGION || undefined,
+    };
+  }
+
+  /** a one-line summary of a LIVE match for the "Watch Live" list (`GET /api/live`).
+   * Returns null unless a versus match is currently running (record/solo + lobby rooms
+   * are not listed). */
+  summary(): LiveRoom | null {
+    const w = this.world;
+    if (!w || this.phase !== 'match') return null;
+    if (this.config.kind === 'record') return null; // opponent-free runs aren't spectated
+    const players = [...this.clients.values()].map((c) => ({
+      name: c.player.name,
+      teamName: c.player.spec.teamName || undefined,
+      teamNumber: c.player.spec.teamNumber || undefined,
+      alliance: c.player.alliance,
+    }));
+    return {
+      room: this.pendingCode() ?? this.code,
+      game: this.game,
+      mode: eloMode(this.clients.size),
+      phase: w.match.phase,
+      timeLeft: Math.max(0, Math.round(w.match.phaseTimeLeft)),
+      ranked: this.ranked,
+      players,
+      score: { red: w.match.scores.red.total, blue: w.match.scores.blue.total },
+      spectators: this.spectators.size,
+    };
+  }
+
   /** a socket dropped. In the lobby that's an outright leave; mid-match the slot
    * is HELD for the reconnect grace (the robot coasts to ZERO meanwhile). */
   detach(id: string, conn?: number): void {
+    // a spectator socket closing — just drop it (no roster/grace/persistence impact)
+    if (this.spectators.has(id)) {
+      this.spectators.delete(id);
+      this.snapPrimed.delete(id);
+      this.broadcastRoster();
+      return;
+    }
     const c = this.clients.get(id);
     if (!c) return;
     // a STALE socket closing after a newer one already reclaimed this slot (fast
@@ -511,6 +579,8 @@ export class Room {
     // never reaches Room, keeps running auto client-side.
     setups = setups.map((s) => ({ ...s, autoPath: undefined, autoPathEnabled: false }));
     this.phase = 'match';
+    this.matchSeed = seed; // remembered so a spectator joining mid-match gets matchStart
+    this.matchSetups = setups;
     const world = simModuleFor(this.game).createWorld('match', seed, setups);
     world.match.preCountdown = C.PRE_COUNTDOWN; // sim-driven pre→auto, same as the client
     this.world = world;
@@ -539,18 +609,9 @@ export class Room {
       }
     }
 
-    for (const c of this.clients.values()) {
-      c.send({
-        t: 'matchStart',
-        seed,
-        setups,
-        yourRobotId: this.robotOf.get(c.id) ?? 0,
-        game: this.game,
-        ranked: this.ranked,
-        intros: this.ranked ? this.intros : undefined,
-        region: SERVER_REGION || undefined,
-      });
-    }
+    for (const c of this.clients.values()) c.send(this.matchStartMsg(this.robotOf.get(c.id) ?? 0));
+    // spectators already watching a lobby/strategy room get the match start too (yourRobotId -1)
+    for (const c of this.spectators.values()) c.send(this.matchStartMsg(-1));
     this.startLoop();
   }
 
@@ -965,7 +1026,7 @@ export class Room {
     const order = w.balls.map((b) => b.id);
     const slim = slimWorld(w);
     const cmds = this.frameCmds(w);
-    for (const c of this.clients.values()) {
+    const sendTo = (c: Client): void => {
       const primed = this.snapPrimed.has(c.id);
       const balls: BallDelta = { order, upd: primed ? changed : w.balls };
       c.send({
@@ -977,7 +1038,9 @@ export class Room {
         ackInputTick: this.ackTick.get(c.id) ?? 0,
       });
       if (!primed) this.snapPrimed.add(c.id);
-    }
+    };
+    for (const c of this.clients.values()) sendTo(c);
+    for (const s of this.spectators.values()) sendTo(s); // read-only watchers get the same stream
     this.prevBalls = cur;
   }
 
@@ -1002,6 +1065,7 @@ export class Room {
 
   private broadcast(m: ServerMsg): void {
     for (const c of this.clients.values()) c.send(m);
+    for (const s of this.spectators.values()) s.send(m);
   }
 
   private broadcastRoster(): void {

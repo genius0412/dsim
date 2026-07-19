@@ -1,4 +1,5 @@
 import type { Replay } from '../sim/replay';
+import type { LiveRoom } from './protocol';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl } from './env';
 import { getAuthToken } from '../lib/authClient';
@@ -143,6 +144,12 @@ export interface GlobalStats {
 /** site-wide totals for the homepage (players + games played, by category) */
 export function fetchGlobalStats(): Promise<GlobalStats> {
   return getJson(`/api/stats`);
+}
+
+/** every live match currently running (for the "Watch Live" list). Each `room` code
+ * is spectated via `LobbyClient.spectate`. */
+export function fetchLiveRooms(): Promise<{ region: string; rooms: LiveRoom[] }> {
+  return getJson(`/api/live`);
 }
 
 export interface Presence {

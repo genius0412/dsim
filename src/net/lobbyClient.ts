@@ -79,6 +79,16 @@ export class LobbyClient {
     this.transport.onReopen(() => void doJoin());
   }
 
+  /** SPECTATE a live match read-only. (Re)sends on open + reconnect. `matchStart`
+   * arrives with yourRobotId -1 → build a spectator ServerSession from it. */
+  spectate(room: string): void {
+    const doSpectate = (): void => {
+      this.transport.send(encodeMsg({ t: 'spectate', room, caps: CLIENT_CAPS }));
+    };
+    this.transport.onOpen(() => doSpectate());
+    this.transport.onReopen(() => doSpectate());
+  }
+
   /** change our own alliance / start pose / ready / spec */
   update(patch: PlayerPatch): void {
     this.transport.send(encodeMsg({ t: 'update', patch }));

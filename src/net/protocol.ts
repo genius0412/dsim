@@ -203,6 +203,10 @@ export type ClientMsg =
   // reclaim an in-match slot after a transient socket drop (within the grace
   // window) — the server rebinds the robot to the new connection and resyncs
   | { t: 'rejoin'; room: string; clientId: string }
+  // SPECTATE a live match: join a room read-only. The server adds a spectator (no
+  // robot slot, never counted toward capacity/roster/persistence), sends the current
+  // `matchStart`, and streams the same `snapshot`s the drivers get. Input is ignored.
+  | { t: 'spectate'; room: string; caps?: string[] }
   | { t: 'update'; patch: PlayerPatch }
   | { t: 'start' } // host only: build + broadcast the match world
   | { t: 'restart' } // host only: re-author the match with a fresh seed
@@ -241,6 +245,26 @@ export type ClientMsg =
   // latency probe: the server echoes `ts` straight back in a `pong`, so the client
   // measures round-trip time for the connection-quality HUD (no server clock needed)
   | { t: 'ping'; ts: number };
+
+/** a live match summarised for the "Watch Live" list (`GET /api/live`). */
+export interface LiveRoom {
+  /** the room code to spectate (region-coded, e.g. `iad-abc123`) */
+  room: string;
+  game: GameId;
+  /** '1v1' | '2v2' (versus) — record/solo rooms are not listed */
+  mode: string;
+  /** match clock phase ('auto' | 'transition' | 'teleop' | 'post') */
+  phase: string;
+  /** seconds left in the current phase (rounded) */
+  timeLeft: number;
+  ranked: boolean;
+  /** the drivers (name + team + alliance), for the card */
+  players: { name: string; teamName?: string; teamNumber?: number; alliance: 'red' | 'blue' }[];
+  /** live alliance scores (red/blue totals) */
+  score: { red: number; blue: number };
+  /** how many people are already watching */
+  spectators: number;
+}
 
 // ---- server → client --------------------------------------------------------
 

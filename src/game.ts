@@ -213,6 +213,8 @@ export class GameController {
   /** the local player's robot id (slot 0 in solo; assigned by the lobby in
    * multiplayer) */
   readonly localRobotId: number;
+  /** read-only spectator (watching someone else's match): no local robot / input */
+  private readonly spectator: boolean = false;
   /** null in solo; the server-authoritative session in multiplayer */
   private readonly session: NetSession | null;
   /** multiplayer sim-step timer (survives tab backgrounding); 0 = solo */
@@ -257,6 +259,8 @@ export class GameController {
     // Once running, STEP/DRAW/HUD resolve from this.world.game (this.mod).
     this.gameId = session ? session.game : settings.game;
     this.localRobotId = session ? session.localRobotId : 0;
+    // read-only spectator: no local robot, no input — every robot renders from snapshots
+    this.spectator = session?.spectator ?? false;
     this.audio.soundsEnabled = settings.audio.sounds;
     this.audio.voiceEnabled = settings.audio.voice;
     this.input = new InputManager(settings.bindings);
@@ -595,6 +599,24 @@ export class GameController {
       this.bufferSnapshot(snap); // capture authoritative poses BEFORE reconcile mutates them
       this.remoteCmds = snap.cmds; // hold each robot's command to predict it forward
       this.reconcile(snap);
+    }
+
+    // SPECTATOR: no local robot to predict + nothing to send. Advance the world with the
+    // authoritative per-robot commands so balls animate between snapshots; every robot is
+    // then corrected each snapshot + interpolated for display (displayWorld). No inputBuf.
+    if (this.spectator) {
+      if (this.acc > 0.25) this.acc = 0.25;
+      let n = 0;
+      while (this.acc >= C.SIM_DT && n < 30) {
+        if (this.gotSnapshot && this.world.tick - this.lastServerTick >= MAX_PREDICT_LEAD) {
+          this.acc = 0;
+          break;
+        }
+        this.mod.step(this.world, C.SIM_DT, new Map(this.remoteCmds));
+        this.acc -= C.SIM_DT;
+        n++;
+      }
+      return;
     }
 
     // predict a small amount ahead in real time (the local robot stays responsive;

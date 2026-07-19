@@ -429,6 +429,18 @@ const httpServer = createServer((req, res) => {
   }
   // live presence (served here, not in api.ts, because the counts live on this
   // process: the socket registry + the in-memory matchmaker queues)
+  // "Watch Live": every currently-running versus match on THIS host, for the spectator
+  // list. Each entry's `room` code is spectated via the WS `spectate` message.
+  if (req.method === 'GET' && req.url?.startsWith('/api/live')) {
+    const live = [...rooms.values()].map((r) => r.summary()).filter((s) => s !== null);
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'cache-control': 'no-store',
+      'access-control-allow-origin': '*',
+    });
+    res.end(JSON.stringify({ region: REGION, rooms: live }));
+    return;
+  }
   if (req.method === 'GET' && req.url === '/api/presence') {
     res.writeHead(200, {
       'content-type': 'application/json',
@@ -662,6 +674,22 @@ wss.on('connection', (ws: WebSocket) => {
       if (msg.t === 'join') {
         if (room) return; // already in a room on this connection
         void joinRoom(msg).catch((e) => console.error(`[server] join error from ${id}:`, e));
+      } else if (msg.t === 'spectate') {
+        if (room) return;
+        const r = rooms.get(msg.room.toLowerCase());
+        if (!r) {
+          send({ t: 'error', message: 'That match is no longer live.' });
+          return;
+        }
+        r.addSpectator({
+          id,
+          send,
+          player: { ...sanitizePlayer(undefined), clientId: id },
+          connected: true,
+          disconnectAt: 0,
+          caps: Array.isArray(msg.caps) ? msg.caps : [],
+        });
+        room = r; // route this socket's close → r.detach (drops the spectator)
       } else if (msg.t === 'rejoin') {
         if (room) return;
         const r = rooms.get(msg.room.toLowerCase());

@@ -1,6 +1,29 @@
 # HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
 
-## Latest session — archived-season ELO is FROZEN (historical standings)
+## Latest session — SPECTATING (watch live matches)
+
+You can now watch any live match read-only, and there's a "Watch Live" list.
+- **Server** (`room.ts`): `spectators` map separate from `clients`. `addSpectator(c)` sends the
+  current `matchStart` (yourRobotId **-1**) + a snapshot, then every broadcast/snapshot (both
+  `broadcast` + `broadcastSnapshot` now iterate spectators with the same delta-priming).
+  Spectators never count toward capacity/roster/persistence; their control messages are ignored
+  (`onMessage` already returns on unknown ids); `detach` drops them with no grace. `Room.summary()`
+  → `LiveRoom` for the list (live versus matches only). `beginMatch` remembers `matchSeed/Setups`
+  so a mid-match spectator gets matchStart.
+- **`/api/live`** (index.ts, where the `rooms` map lives) lists every live match; the WS
+  `{t:'spectate', room}` message routes to `addSpectator`.
+- **Protocol**: `spectate` ClientMsg + `LiveRoom` type. `NetSession.spectator`; `ServerSession`
+  takes a `spectator` flag (sendInput is a no-op when set). `LobbyClient.spectate(room)`.
+- **GameController**: `spectator` mode — `localRobotId` -1, `stepServer` reconciles + steps the
+  world with the snapshot's per-robot commands (no predict/send); every robot is interpolated by
+  `displayWorld`. Camera from `robots[0]`.
+- **UI**: `WatchLive.tsx` polls `/api/live` (4 s) and lists matches; a card → `App.spectateRoom`
+  opens a spectator `ServerSession` (not saved as a rejoinable "active game"). Reached via a
+  "Watch Live" tile on the mode-select `/watch` route.
+- Smoke: a Room accepts a spectator, streams snapshots to it, keeps it off the roster, `summary()`
+  reports it, and it leaves cleanly — all without touching the match.
+
+## Archived-season ELO is FROZEN (historical standings)
 
 Even though ELO persists across seasons within an act, viewing a PAST season's leaderboard/career
 now shows the rating FROZEN at that season's end (not the moved-on live rating).

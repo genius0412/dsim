@@ -56,6 +56,8 @@ export class ServerSession implements NetSession {
    * host restart can carry a new game, but never written by consumers. */
   game: GameId;
   readonly localRobotId: number;
+  /** read-only spectator session (no local robot; input suppressed) */
+  readonly spectator: boolean;
   seed: number;
   setups: RobotSetup[];
   ranked: boolean;
@@ -106,7 +108,9 @@ export class ServerSession implements NetSession {
     },
     readonly clientId: string,
     readonly room: string,
+    spectator = false,
   ) {
+    this.spectator = spectator;
     this.game = start.game ?? 'decode';
     this.seed = start.seed;
     this.setups = start.setups;
@@ -150,6 +154,7 @@ export class ServerSession implements NetSession {
   }
 
   sendInput(tick: number, cmd: RobotCommand): void {
+    if (this.spectator) return; // a spectator controls nothing
     this.transport.send(encodeMsg({ t: 'input', tick, q: quantizeCommand(cmd) }));
   }
 

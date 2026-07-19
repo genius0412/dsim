@@ -9,6 +9,8 @@ import { Announcements } from './Announcements';
 import { AccountSync } from './AccountSync';
 import { GameView } from './GameView';
 import { Lobby } from './Lobby';
+import { WatchLive } from './WatchLive';
+import { LobbyClient } from '../net/lobbyClient';
 import { AppShell, type ShellNav } from './AppShell';
 import { HomeMenu } from './HomeMenu';
 import { ModeSelect } from './ModeSelect';
@@ -41,6 +43,7 @@ type Screen =
   | 'record'
   | 'duorecord'
   | 'matchmaking'
+  | 'watch'
   | 'replay'
   | 'game'
   | 'download'
@@ -89,6 +92,8 @@ function pathFor(screen: Screen, a: RouteArgs): string {
       return '/duo-record';
     case 'matchmaking':
       return '/ranked';
+    case 'watch':
+      return '/watch';
     case 'replay':
       return a.replayId ? `/replay/${encodeURIComponent(a.replayId)}` : '/replay';
     case 'game':
@@ -130,6 +135,7 @@ function parsePath(pathname: string): { screen: Screen } & RouteArgs {
   if (pathname.startsWith('/duo-record')) return at('duorecord');
   if (pathname.startsWith('/record')) return at('record');
   if (pathname.startsWith('/ranked')) return at('matchmaking');
+  if (pathname.startsWith('/watch')) return at('watch');
   if (pathname.startsWith('/download')) return at('download');
   if (pathname.startsWith('/account')) return at('account');
   if (pathname.startsWith('/admin')) return at('admin');
@@ -146,6 +152,7 @@ function navFor(screen: Screen): ShellNav {
     case 'record':
     case 'duorecord':
     case 'matchmaking':
+    case 'watch':
       return 'play';
     case 'configure':
       return 'configure';
@@ -328,6 +335,25 @@ export function App() {
     const s = new ServerSession(transport, false, ref.start, ref.clientId, ref.room);
     setSession(s);
     navigate('game');
+  };
+
+  /** SPECTATE a live match read-only. Opens a socket to the room, sends `spectate`,
+   * and builds a spectator ServerSession from the `matchStart` the server returns.
+   * Never saved as an "active game" (it isn't yours to rejoin). */
+  const spectateRoom = (code: string): void => {
+    let transport: WebSocketTransport;
+    try {
+      transport = new WebSocketTransport(gameServerUrlWith({ room: code }));
+    } catch {
+      return;
+    }
+    const lobby = new LobbyClient(transport);
+    lobby.on('matchStart', (m) => {
+      const s = new ServerSession(transport, false, m, lobby.clientId, code, true);
+      setSession(s);
+      navigate('game');
+    });
+    lobby.spectate(code);
   };
 
   const exitGame = (): void => {
@@ -515,6 +541,7 @@ export function App() {
           onDuoRecord={() => guardStart(() => navigate('duorecord'))}
           onRanked={() => guardStart(() => navigate('matchmaking'))}
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
+          onWatch={() => navigate('watch')}
         />
       )}
       {/* the start guards live here, not on `modes`, because a start can also be
@@ -628,6 +655,7 @@ export function App() {
           nav={{ onWatch: watchReplay, onOpenProfile: openProfile }}
         />
       )}
+      {screen === 'watch' && <WatchLive onWatch={spectateRoom} />}
       {screen === 'download' && isAdmin && <Download />}
       {screen === 'account' && <Account settings={settings} onChange={update} />}
       {screen === 'admin' && isAdmin && <Admin />}

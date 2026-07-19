@@ -16,6 +16,7 @@ export function ModeSelect({
   onDuoRecord,
   onRanked,
   onCustomRoom,
+  onWatch,
 }: {
   multiplayer: boolean;
   signedIn: boolean;
@@ -28,6 +29,7 @@ export function ModeSelect({
   onDuoRecord: () => void;
   onRanked: () => void;
   onCustomRoom: () => void;
+  onWatch: () => void;
 }) {
   return (
     <>
@@ -125,6 +127,15 @@ export function ModeSelect({
                 <span className="t">Custom Room</span>
                 <span className="d">
                   {multiplayer ? 'Up to 2v2' : 'Needs the game server'}
+                </span>
+              </span>
+            </button>
+            <button className="ds-tile" onClick={onWatch} disabled={!multiplayer}>
+              <span className="k">Live</span>
+              <span>
+                <span className="t">Watch Live</span>
+                <span className="d">
+                  {multiplayer ? 'Spectate matches in progress' : 'Needs the game server'}
                 </span>
               </span>
             </button>
