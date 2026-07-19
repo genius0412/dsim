@@ -10,7 +10,14 @@ import { APP_NAME, seasonFor } from '../seasons';
  * via `onWatch(room.room)` → App opens a spectator session). Empty/looping-friendly:
  * shows a friendly empty state when nobody is playing.
  */
-export function WatchLive({ onWatch }: { onWatch: (roomCode: string) => void }) {
+export function WatchLive({
+  onWatch,
+  onBack,
+}: {
+  onWatch: (roomCode: string) => void;
+  /** return to the mode-select screen */
+  onBack: () => void;
+}) {
   const [rooms, setRooms] = useState<LiveRoom[] | null>(null);
   const [error, setError] = useState('');
   const configured = gameServerConfigured();
@@ -40,6 +47,9 @@ export function WatchLive({ onWatch }: { onWatch: (roomCode: string) => void }) 
 
   return (
     <>
+      <button className="ds-back" onClick={onBack}>
+        ← Back
+      </button>
       <p className="ds-eyebrow">{APP_NAME} · Live</p>
       <h1 className="ds-h1">Watch Live</h1>
 

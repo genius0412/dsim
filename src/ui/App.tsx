@@ -760,7 +760,7 @@ export function App() {
           nav={{ onWatch: watchReplay, onOpenProfile: openProfile }}
         />
       )}
-      {screen === 'watch' && <WatchLive onWatch={spectateRoom} />}
+      {screen === 'watch' && <WatchLive onWatch={spectateRoom} onBack={() => navigate('modes')} />}
       {screen === 'download' && isAdmin && <Download />}
       {screen === 'account' && <Account settings={settings} onChange={update} />}
       {screen === 'admin' && isAdmin && <Admin />}
