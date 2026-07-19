@@ -106,7 +106,7 @@ import { moduleFor, gameOf } from '../src/games';
 import { decodeColliders } from '../src/games/decode/colliders';
 import { createChainWorld } from '../src/games/chain/spawn';
 import { chainStep } from '../src/games/chain/step';
-import { chainGoalAimHeading, chainCatalystPrompt } from '../src/games/chain/play';
+import { chainGoalAimHeading, chainCatalystPrompt, updateChain } from '../src/games/chain/play';
 import { chainColliders } from '../src/games/chain/colliders';
 import {
   CHAIN_HALF_X,
@@ -4040,15 +4040,41 @@ const mkMM = () => {
     rob.autoIntake = false;
     rob.autoFire = true;
     rob.pos = { x: 30, y: 0 };
+    rob.turretHeading = Math.atan2(0 - rob.pos.y, 72 - rob.pos.x); // already tracking (test teleports it)
     rob.hopper = Array(12).fill('green');
     const before = gw.chain!.scored.blue;
     // strafe sideways the whole time (driveY) while auto-firing the turret
-    runChain(gw, cmd({ driveY: 1 }), 1.0);
+    runChain(gw, cmd({ driveY: 1 }), 1.5);
     check(
       'chain move-shot: a strafing turret still scores (turret leads to compensate)',
       gw.chain!.scored.blue - before >= 3,
       `scored+=${gw.chain!.scored.blue - before}`,
     );
+  }
+
+  // PHYSICAL aim: a turret that gets a SUDDEN velocity change (a shove) can't re-aim in time, so
+  // the shot flies along its STALE heading + the new velocity and MISSES — the trajectory depends
+  // on the robot's physical state, not a per-shot re-solved guarantee.
+  {
+    const aimErr = (settledV: number, shockV: number): number => {
+      const gw = createChainWorld('match', 3, [chainSetup(0, 'blue')]);
+      gw.match.phase = 'teleop'; gw.match.phaseTimeLeft = 120; gw.balls = [];
+      const rob = gw.robots[0]; rob.pos = { x: 0, y: 0 };
+      const idle = new Map([[rob.id, cmd({})]]);
+      // settle the turret aim while moving at `settledV` (no fire), holding the velocity
+      for (let i = 0; i < 170; i++) { rob.vel = { x: 0, y: settledV }; updateChain(gw, SIM_DT, idle, true); }
+      // INSTANT velocity shock (like a collision), then fire ONE shot this tick
+      rob.vel = { x: 0, y: shockV }; rob.hopper = ['green'];
+      updateChain(gw, SIM_DT, new Map([[rob.id, cmd({ fire: true })]]), true);
+      const ball = gw.balls.find((b) => b.state.kind === 'flight');
+      if (!ball) return -1;
+      const toGoal = Math.atan2(-rob.pos.y, 72 - rob.pos.x);
+      return Math.abs(Math.atan2(ball.vel.y, ball.vel.x) - toGoal) * 180 / Math.PI;
+    };
+    check('chain aim: a settled/steady turret shoots accurately (net heads at the goal)',
+      aimErr(0, 0) < 2 && aimErr(50, 50) < 3, `still=${aimErr(0, 0).toFixed(1)}° steady=${aimErr(50, 50).toFixed(1)}°`);
+    check('chain aim: a SUDDEN shove throws the shot off (turret can\'t react in time)',
+      aimErr(0, 60) > 10, `shockErr=${aimErr(0, 60).toFixed(1)}°`);
   }
 
   // DRUM stream: SAME launch speed every shot, but a NON-UNIFORM lateral PATTERN (random
@@ -4377,6 +4403,7 @@ const mkMM = () => {
     const rob = w.robots[0];
     rob.pos = { x: -60, y: 0 }; // far side of the field from the blue accelerator (x=+72)
     rob.vel = { x: 0, y: 0 };
+    rob.turretHeading = Math.atan2(0 - rob.pos.y, 72 - rob.pos.x); // aimed (test teleports it)
     rob.autoFire = true;
     rob.hopper.push('green');
     const before = w.chain!.scored.blue;

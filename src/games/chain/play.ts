@@ -16,6 +16,7 @@ import {
   CHAIN_HOOK_PLACE_R,
   chainHopperCap,
   CHAIN_DEFAULT_SCORE_MODE,
+  CHAIN_TURRET_SLEW,
   CHAIN_AIM_TOL,
   CHAIN_AIM_GAIN,
   CHAIN_LAUNCH_LINE_FRAC,
@@ -103,9 +104,13 @@ export function updateChain(
 
     if (mode === 'turret') {
       // TURRET single-shooter: auto-aim + index ONE particle per cadence, from ANY range.
-      // SHOOTING ON THE MOVE: the turret LEADS — it turns to the lead heading so the shot
-      // (muzzle + inherited chassis velocity) still heads at the mouth (a tracking turret).
-      r.turretHeading = leadDir(r.pos, mouth, CHAIN_SHOT_SPEED, r.vel);
+      // SHOOTING ON THE MOVE: the turret leads (aims where muzzle + inherited chassis velocity
+      // heads at the mouth), BUT it SLEWS toward that solution at a finite rate — it can't snap.
+      // Driving steadily, it tracks perfectly; a SUDDEN velocity change (a robot shoves it) makes
+      // the lead solution jump faster than the turret can follow, so shots fired mid-correction
+      // fly along the STALE heading and miss. The launch reads r.turretHeading (physical).
+      const desiredTurret = leadDir(r.pos, mouth, CHAIN_SHOT_SPEED, r.vel);
+      r.turretHeading = slewAngle(r.turretHeading, desiredTurret, CHAIN_TURRET_SLEW * dt);
       if (wantsFire && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
         r.hopper.shift();
         launchToAccel(world, chain, r, mouth, CHAIN_SHOT_SPEED, 0);
@@ -347,30 +352,37 @@ function launchToAccel(
   latVel: number,
 ): void {
   const distMouth = Math.max(1, hyp(mouth.x - r.pos.x, mouth.y - r.pos.y));
-  // SHOOTING ON THE MOVE: the TURRET LEADS — it aims the muzzle so that muzzle velocity +
-  // the inherited chassis velocity heads straight at the mouth (a tracking turret compensates
-  // for its own motion). `leadDir` solves that muzzle heading.
-  const leadH = leadDir(r.pos, mouth, horizSpeed, r.vel);
-  const dir = { x: dcos(leadH), y: dsin(leadH) };
+  // PHYSICAL launch: the ball leaves along the turret's ACTUAL heading (`r.turretHeading`, which
+  // SLEWS toward the lead solution and lags a sudden velocity change — see the turret branch) plus
+  // the inherited chassis velocity. It is NOT re-solved to guarantee a hit — if the turret is
+  // mid-correction (e.g. just got shoved), muzzle·speed + velocity no longer points at the mouth
+  // and the shot MISSES the opening (→ thrown back). Aim is a physical state, not a promise.
+  const dir = { x: dcos(r.turretHeading), y: dsin(r.turretHeading) };
   const perp = { x: -dir.y, y: dir.x }; // lateral spread axis
-  // net horizontal velocity = muzzle (along the lead) + inherited chassis velocity → at the mouth
   const netx = dir.x * horizSpeed + perp.x * latVel + r.vel.x;
   const nety = dir.y * horizSpeed + perp.y * latVel + r.vel.y;
   const netSpeed = Math.max(1, hyp(netx, nety));
   const z0 = 8;
-  const land = distMouth + CHAIN_ACCEL_DEPTH * 0.5; // land halfway into the box
+  const land = distMouth + CHAIN_ACCEL_DEPTH * 0.5; // arc timing: sized to the goal distance
   const t = land / netSpeed;
   const vz = 0.5 * C.GRAVITY * t - z0 / t; // solve z(t)=0 for the landing point
-  const toMouth = { x: (mouth.x - r.pos.x) / distMouth, y: (mouth.y - r.pos.y) / distMouth };
   world.balls.push({
     id: chain.nextBallId++,
     color: 'green',
     state: { kind: 'flight', target: r.alliance },
-    pos: { x: r.pos.x + toMouth.x * 4, y: r.pos.y + toMouth.y * 4 },
+    pos: { x: r.pos.x + dir.x * 4, y: r.pos.y + dir.y * 4 }, // leaves from the barrel tip
     vel: { x: netx, y: nety },
     z: z0,
     vz,
   });
+}
+
+/** rotate `cur` toward `target` by at most `maxStep` radians (shortest way around). Used to
+ * SLEW the turret so it can't instantly snap to a jumped aim solution. */
+function slewAngle(cur: number, target: number, maxStep: number): number {
+  const d = wrapAngle(target - cur);
+  if (Math.abs(d) <= maxStep) return wrapAngle(target);
+  return wrapAngle(cur + Math.sign(d) * maxStep);
 }
 
 /** The muzzle heading (radians) to hit stationary `target` with a projectile of speed `speed`

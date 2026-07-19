@@ -9,7 +9,7 @@ import type {
   World,
 } from '../../types';
 import * as C from '../../config';
-import { nextRandom, wrapAngle } from '../../math';
+import { datan2, nextRandom, wrapAngle } from '../../math';
 import {
   DEFAULT_ASSISTS,
   DEFAULT_SPEC,
@@ -77,6 +77,14 @@ function makeChainRobot(setup: RobotSetup, nth: number): RobotState {
   // its two Lab corners (0/1). Always a legal Lab-Area / Ring-Stand pose (G04).
   const idx = setup.startIndex ?? nth;
   const pose = chainStartPose(setup.alliance, idx);
+  // a TURRET starts already POINTED at its accelerator (it slews at a finite rate — see the
+  // turret branch in play.ts — so it must begin aimed, not have to swing around from the spawn
+  // heading). Turretless launchers keep the chassis heading.
+  const mouthX = accelSide(setup.alliance) * CHAIN_HALF_X;
+  const turretHeading =
+    (spec.scoreMode ?? 'turret') === 'turret'
+      ? datan2(0 - pose.pos.y, mouthX - pose.pos.x)
+      : pose.heading;
   return {
     id: setup.id,
     alliance: setup.alliance,
@@ -85,7 +93,7 @@ function makeChainRobot(setup: RobotSetup, nth: number): RobotState {
     heading: pose.heading,
     vel: { x: 0, y: 0 },
     angVel: 0,
-    turretHeading: pose.heading,
+    turretHeading,
     moduleAngles: [0, 0, 0, 0],
     moduleTargets: [0, 0, 0, 0],
     hopper: [],

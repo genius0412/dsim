@@ -208,6 +208,11 @@ export const CHAIN_DEFAULT_INTAKE: ChainIntakeStyle = 'sweeper';
 export const CHAIN_SCORE_MODES = ['turret', 'drum', 'dumper'] as const;
 export const CHAIN_DEFAULT_SCORE_MODE: ChainScoreMode = 'turret';
 
+/** turret slew rate (rad/s). The turret tracks the lead solution at THIS max rate — it follows
+ * steady driving easily but CANNOT snap to a sudden velocity change (a shove), so shots fired
+ * mid-correction fly along the stale heading and miss (aim is physical, not a guaranteed hit). */
+export const CHAIN_TURRET_SLEW = 4;
+
 // turretless-launcher aiming (drum + dumper turn the whole robot to face the goal)
 export const CHAIN_AIM_TOL = 0.14; // rad heading error under which a turned shooter fires
 export const CHAIN_AIM_GAIN = 4.5; // P-gain turning the robot toward the goal while firing
