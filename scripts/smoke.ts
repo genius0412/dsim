@@ -2710,6 +2710,39 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: 1 })]]);
     oldRebuilt.robots.map((r) => `(${r.pos.x.toFixed(1)},${r.pos.y.toFixed(1)})`).join(' '),
   );
 
+  // CR MULTIPLAYER: a Chain Reaction world's snapshot must round-trip the CR-specific
+  // `chain` state (catalysts / scored / endgame) AND keep game === 'chain', then keep
+  // stepping deterministically on the client (server-authoritative + reconcile).
+  {
+    const crSetup = (id: number, alliance: Alliance): (typeof setups)[number] => ({
+      id,
+      alliance,
+      spec: { ...DEFAULT_SPEC },
+      assists: { ...DEFAULT_ASSISTS },
+      startIndex: id,
+    });
+    const cwmp = createChainWorld('match', 77, [crSetup(0, 'blue'), crSetup(1, 'red')]);
+    cwmp.match.phase = 'teleop';
+    cwmp.match.phaseTimeLeft = 60;
+    const cSpecById = (id: number): RobotSpec => cwmp.robots.find((r) => r.id === id)!.spec;
+    for (let i = 0; i < 40; i++) chainStep(cwmp, SIM_DT, new Map());
+    const cRebuilt = unslimWorld(slimWorld(cwmp), cwmp.balls, cSpecById);
+    check('CR snapshot: game stays "chain" through slim/unslim', cRebuilt.game === 'chain');
+    check(
+      'CR snapshot: the chain state (catalysts/scored) survives serialization',
+      !!cRebuilt.chain &&
+        cRebuilt.chain.catalysts.length === cwmp.chain!.catalysts.length &&
+        cRebuilt.chain.scored.blue === cwmp.chain!.scored.blue,
+    );
+    check('CR snapshot: reassembles to an identical worldHash', worldHash(cRebuilt) === worldHash(cwmp));
+    // the client re-steps the CR world (reconcile replay) without throwing / NaN
+    for (let i = 0; i < 20; i++) chainStep(cRebuilt, SIM_DT, new Map());
+    check(
+      'CR snapshot: stepping the reassembled CR world never NaNs a robot',
+      cRebuilt.robots.every((r) => Number.isFinite(r.pos.x) && Number.isFinite(r.pos.y)),
+    );
+  }
+
   // ball delta: encode changes vs a baseline, apply to the baseline, compare
   const baseline: Artifact[] = w.balls.map((b) => JSON.parse(JSON.stringify(b)));
   const prevJson = new Map(baseline.map((b) => [b.id, JSON.stringify(b)]));

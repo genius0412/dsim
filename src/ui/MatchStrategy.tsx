@@ -3,6 +3,7 @@ import type { GameSettings, RobotSpec } from '../types';
 import { START_POSES } from '../config';
 import { activeStartLegal } from '../sim/field';
 import { StartPositionEditor } from './StartPositionEditor';
+import { ChainStartSelector } from './ChainStartSelector';
 import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
@@ -140,8 +141,10 @@ export function MatchStrategy({
   };
 
   const mySpec = me?.spec ?? settings.spec;
-  // my start pose must be legal for my (possibly just-swapped) chassis to ready up
-  const startLegal = activeStartLegal(mySpec, myAlliance ?? settings.alliance, me?.startPose);
+  // my start pose must be legal for my (possibly just-swapped) chassis to ready up.
+  // CR start anchors are legal by construction (G04) — only DECODE gates on G304.
+  const startLegal =
+    settings.game === 'chain' || activeStartLegal(mySpec, myAlliance ?? settings.alliance, me?.startPose);
 
   // full-builder takeover: reuse the My Robot menu, with a Done button back
   if (building) {
@@ -282,20 +285,27 @@ export function MatchStrategy({
                 onDismiss={dismissSwap}
               />
             )}
-            <StartPositionEditor
-              spec={me.spec}
-              alliance={me.alliance}
-              value={me.startPose}
-              startIndex={me.startIndex}
-              category={startRole ?? settings.startCat}
-              saved={settings.savedStartPoses}
-              lockedCategory={startRole}
-              onChange={(startPose) => startPose && applyStart(selectStart(sCat, { index: -1, pose: startPose }))}
-              onPickPreset={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
-              onCategory={(c) => applyStart(switchCategory(settings, c))}
-              onSave={(pose) => applyStart(saveStart(sCat, pose))}
-              onDeleteSaved={(c, i) => applyStart(deleteSavedStart(sCat, c, i))}
-            />
+            {settings.game === 'chain' ? (
+              <ChainStartSelector
+                startIndex={me.startIndex ?? 0}
+                onPick={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
+              />
+            ) : (
+              <StartPositionEditor
+                spec={me.spec}
+                alliance={me.alliance}
+                value={me.startPose}
+                startIndex={me.startIndex}
+                category={startRole ?? settings.startCat}
+                saved={settings.savedStartPoses}
+                lockedCategory={startRole}
+                onChange={(startPose) => startPose && applyStart(selectStart(sCat, { index: -1, pose: startPose }))}
+                onPickPreset={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
+                onCategory={(c) => applyStart(switchCategory(settings, c))}
+                onSave={(pose) => applyStart(saveStart(sCat, pose))}
+                onDeleteSaved={(c, i) => applyStart(deleteSavedStart(sCat, c, i))}
+              />
+            )}
           </section>
         )}
 

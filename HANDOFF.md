@@ -1,6 +1,31 @@
 # HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
 
-## Latest session — beams always slow you (even at speed)
+## Latest session — CR vs DECODE multiplayer audit
+
+Verified the netcode is game-aware end-to-end and the two games never cross-contaminate:
+- **Server**: `room.ts` resolves `simModuleFor(this.game)` for createWorld/step; the G304
+  start-legality host gate runs only when `simModuleFor(game).startLegality` (DECODE). `game`
+  comes from the staged PendingMatch / RoomConfig.
+- **Matchmaking**: `bucketKey` includes `game` → a CR queuer and a DECODE queuer never pair
+  (smoke: "chain and decode do NOT pair" / "two chain queuers DO pair").
+- **Protocol/snapshots**: `slimWorld` spreads all non-robot/ball fields, so CR's `world.chain`
+  (catalysts/scored/endgame) round-trips; `unslimWorld` defaults `game→'decode'` for old
+  servers. `staged` balls serialize as full Artifacts. New smoke: CR snapshot keeps
+  game='chain', preserves chain state, hash-identical, and re-steps without NaN.
+- **Client**: `game.ts` resolves the module from `this.world.game` (`this.mod`) on the
+  predict/reconcile hot path; `gameId = session ? session.game : settings.game`. `NetSession.game`
+  is carried by ServerSession/lobbyClient.
+- **FIXED — the Lobby / MatchStrategy start editor rendered DECODE geometry for CR.** New
+  shared `ChainStartSelector` (used by MatchSetup, Lobby, MatchStrategy) shows CR's legal
+  lab/ring-stand anchors instead; `startLegal` is forced true for CR (G04 anchors are always
+  legal) so "ready up" isn't blocked by DECODE's G304.
+- **KNOWN/INTENTIONAL**: CR sim module is `scored: false`, so CR multiplayer PLAYS (custom
+  lobby, snapshots, results screen, drop/reconnect) but ranked ELO / records / DB persistence
+  are gated OFF (persistMatch short-circuits unscored games). Flip `src/games/chain/sim.ts`
+  `scored: true` to enable the ranked/records pipeline for CR (verify the results-screen ELO
+  reveal + DB game-keying first).
+
+## Beams always slow you (even at speed)
 
 - **Beams now slow every drivetrain even at high speed** (was: momentum let mecanum/swerve
   power over at ~full speed). `beamDragFactor` (CR beams.ts) rebalanced: momentum eases only a

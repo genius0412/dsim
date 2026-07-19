@@ -10,7 +10,7 @@ import type {
 import { MAX_SAVED_AUTOS } from '../config';
 import { StartPositionEditor } from './StartPositionEditor';
 import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
-import { CHAIN_START_POSES } from '../games/chain/config';
+import { ChainStartSelector } from './ChainStartSelector';
 
 /**
  * Match configuration — the pre-game options that belong to the MATCH, not the
@@ -199,25 +199,10 @@ export function MatchSetup({
               onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
             />
           ) : (
-            <>
-              <p className="ds-hint">
-                Your robot starts in the lab area — on the floor or up on a ring stand.
-              </p>
-              <div className="ds-opts two" style={{ marginTop: 8 }}>
-                {CHAIN_START_POSES.map((p, i) => (
-                  <button
-                    key={p.name}
-                    className={`ds-opt ${(settings.startIndex ?? 0) === i ? 'on' : ''}`}
-                    onClick={() => set({ startIndex: i, startPose: null })}
-                  >
-                    <span className="ot">{p.name}</span>
-                    <span className="od">
-                      {p.name.startsWith('RING') ? 'Start up on the ring stand' : 'Start on the floor'}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </>
+            <ChainStartSelector
+              startIndex={settings.startIndex ?? 0}
+              onPick={(i) => set({ startIndex: i, startPose: null })}
+            />
           )}
           <div className="ds-opts" style={{ marginTop: 12 }}>
             <button
