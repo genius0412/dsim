@@ -243,6 +243,16 @@ export class GameController {
   /** newest authoritative tick reconciled to; prediction is capped MAX_PREDICT_LEAD
    * ticks past it so a snapshot stall can't build an unbounded replay buffer */
   private lastServerTick = 0;
+  /** MULTIPLAYER event feed. `world.events` rides in every snapshot and the server
+   * appends to it without clearing (a monotonic per-match log), so the SAME event
+   * arrives in snapshot after snapshot — and the local predict/reconcile re-runs the
+   * phase machine, re-emitting transition events speculatively. Surfacing `world.events`
+   * directly therefore showed each event ~5× (the `slice(-5)` toast cap). Instead we
+   * track how many authoritative events we've already shown and queue only the NEW tail
+   * from each snapshot (prediction events are ignored). Solo is unaffected (it drains
+   * `world.events` straight, once per frame). */
+  private shownEventCount = 0;
+  private netEvents: string[] = [];
   /** true once the first snapshot has arrived — the lead cap only applies after that
    * (before it, the sim-driven pre-match countdown must predict freely from tick 0) */
   private gotSnapshot = false;
@@ -523,11 +533,14 @@ export class GameController {
     this.handlePhaseAudio();
     this.handleActionAudio();
 
-    for (const e of this.world.events) {
+    // SOLO drains world.events directly; MULTIPLAYER drains netEvents (the de-duped
+    // authoritative tail collected at reconcile), ignoring prediction/replay events.
+    const drain = this.session ? this.netEvents : this.world.events;
+    for (const e of drain) {
       this.toasts.push({ id: ++this.toastId, text: e, at: performance.now() });
     }
     this.toasts = this.toasts.filter((x) => performance.now() - x.at < 2500).slice(-5);
-    this.world.events.length = 0;
+    drain.length = 0;
   }
 
   /** rAF loop: solo advances + renders here; multiplayer only RENDERS (the sim
@@ -727,7 +740,24 @@ export class GameController {
   /** adopt the authoritative world, discard inputs it already reflects, and
    * re-predict forward by replaying the local inputs (and held remote commands)
    * past the snapshot tick */
+  /** queue the authoritative NEW events from a reconciled snapshot (see `netEvents`).
+   * The snapshot's `events` is the full monotonic server log; show only the tail past
+   * what we've already surfaced. On the FIRST snapshot we adopt the history silently
+   * (a mid-match joiner/spectator shouldn't get a burst of past phase banners), and a
+   * shrink means a fresh match/server → resync from zero. */
+  private collectNetEvents(first: boolean): void {
+    const evs = this.world.events;
+    if (evs.length < this.shownEventCount) this.shownEventCount = 0;
+    if (first) {
+      this.shownEventCount = evs.length;
+      return;
+    }
+    for (let i = this.shownEventCount; i < evs.length; i++) this.netEvents.push(evs[i]);
+    this.shownEventCount = evs.length;
+  }
+
   private reconcile(snap: Snapshot): void {
+    const firstSnap = !this.gotSnapshot;
     // VISUAL error smoothing (rubberbanding fix): capture where the LOCAL robot is
     // currently rendered (predicted pos + the decaying offset). After we snap to
     // the authoritative world below, we set `localSmooth` so the RENDERED position
@@ -740,6 +770,7 @@ export class GameController {
     const preH = pre ? pre.heading + this.localSmooth.heading : 0;
 
     this.world = snap.world;
+    this.collectNetEvents(firstSnap); // authoritative events, BEFORE replay re-emits any
     this.lastServerTick = snap.serverTick;
     this.gotSnapshot = true;
     this.inputBuf = this.inputBuf.filter((b) => b.tick > snap.serverTick);
@@ -785,6 +816,8 @@ export class GameController {
     this.remoteCmds = new Map();
     this.lastServerTick = 0;
     this.gotSnapshot = false;
+    this.shownEventCount = 0;
+    this.netEvents = [];
     this.snapBuf = [];
     this.renderTick = 0;
     this.localSmooth = { x: 0, y: 0, heading: 0 };
