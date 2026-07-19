@@ -1,5 +1,51 @@
 import { useState } from 'react';
 import type { InputManager } from '../input/input';
+import type { GameId } from '../types';
+
+/** a thumb action button (bottom-right cluster). `stopPropagation` keeps a press from
+ * ALSO starting the turn joystick (whose touch handler is on the parent overlay). Hold
+ * buttons (intake/shoot) set their flag true on press / false on release; the CR catalyst
+ * command is edge-triggered in the sim, so a tap (true→false) fires exactly one action. */
+function ActionButton({
+  label,
+  glyph,
+  cls,
+  onDown,
+  onUp,
+}: {
+  label: string;
+  glyph: string;
+  cls: string;
+  onDown: () => void;
+  onUp: () => void;
+}) {
+  const [pressed, setPressed] = useState(false);
+  const down = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    setPressed(true);
+    onDown();
+  };
+  const up = (e: React.TouchEvent) => {
+    e.stopPropagation();
+    setPressed(false);
+    onUp();
+  };
+  return (
+    <button
+      type="button"
+      className={`mobile-btn ${cls}${pressed ? ' pressed' : ''}`}
+      onTouchStart={down}
+      onTouchEnd={up}
+      onTouchCancel={up}
+      aria-label={label}
+    >
+      <span className="mb-ico" aria-hidden>
+        {glyph}
+      </span>
+      <span className="mb-lbl">{label}</span>
+    </button>
+  );
+}
 
 interface JoystickProps {
   onValueChange: (value: { x: number; y: number }) => void;
@@ -33,7 +79,14 @@ function Joystick({ label, active, basePos, handlePos }: JoystickProps) {
   );
 }
 
-export function MobileControls({ inputManager }: { inputManager: InputManager }) {
+export function MobileControls({
+  inputManager,
+  game,
+}: {
+  inputManager: InputManager;
+  /** the active game — the catalyst button only applies to Chain Reaction */
+  game?: GameId;
+}) {
   const [leftStick, setLeftStick] = useState({
     active: false,
     basePos: { x: 0, y: 0 },
@@ -151,6 +204,34 @@ export function MobileControls({ inputManager }: { inputManager: InputManager })
         handlePos={rightStick.handlePos}
         onValueChange={() => {}}
       />
+
+      {/* thumb action buttons (bottom-right). The container ignores touches so the
+          gaps between buttons still fall through to the turn joystick. */}
+      <div className="mobile-actions">
+        <ActionButton
+          label="INTAKE"
+          glyph="▼"
+          cls="intake"
+          onDown={() => inputManager.setVirtualInput({ intake: true })}
+          onUp={() => inputManager.setVirtualInput({ intake: false })}
+        />
+        {game === 'chain' && (
+          <ActionButton
+            label="CATALYST"
+            glyph="⬡"
+            cls="catalyst"
+            onDown={() => inputManager.setVirtualInput({ catalyst: true })}
+            onUp={() => inputManager.setVirtualInput({ catalyst: false })}
+          />
+        )}
+        <ActionButton
+          label="SHOOT"
+          glyph="◎"
+          cls="shoot"
+          onDown={() => inputManager.setVirtualInput({ fire: true })}
+          onUp={() => inputManager.setVirtualInput({ fire: false })}
+        />
+      </div>
     </div>
   );
 }

@@ -1370,6 +1370,62 @@ button {
   transition: opacity 0.15s;
 }
 
+/* thumb action buttons (fire / intake / catalyst). Drawn ON the dark field, so they
+   take the fixed --ds-on-field family (never inverted). The container is click-through
+   so only the buttons themselves capture touches. */
+.mobile-actions {
+  position: absolute;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(28px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  pointer-events: none;
+  z-index: 2;
+}
+.mobile-btn {
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  width: 66px;
+  height: 66px;
+  border-radius: 50%;
+  border: 2px solid var(--ds-hud-line);
+  background: rgba(28, 32, 39, 0.62);
+  color: var(--ds-on-field);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  transition: transform 0.06s ease, background 0.1s;
+}
+.mobile-btn .mb-ico {
+  font-size: 22px;
+  line-height: 1;
+}
+.mobile-btn .mb-lbl {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+.mobile-btn.pressed {
+  transform: scale(0.93);
+  background: rgba(28, 32, 39, 0.85);
+}
+/* SHOOT is the primary action — larger + accent-outlined */
+.mobile-btn.shoot {
+  width: 84px;
+  height: 84px;
+  border-color: var(--ds-on-field-accent);
+  color: var(--ds-on-field-accent);
+}
+.mobile-btn.shoot .mb-ico {
+  font-size: 28px;
+}
+
 /* admin server-notice banner (scheduled restart countdown / info) */
 .server-notice {
   position: fixed;
