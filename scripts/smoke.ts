@@ -77,7 +77,7 @@ import {
 import { robotCorners, robotExtents, robotIntersectsRect, wheelContacts } from '../src/sim/physics';
 import { beamBlock, beamDragFactor, canCrossBeams, cogFactor, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits } from '../src/sim/drivetrain';
-import { coerceSettings } from '../src/settings';
+import { coerceSettings, switchGame } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, mergeBindings } from '../src/input/bindings';
 import { quantizeCommand, dequantizeCommand, localizeCommand, slimWorld, unslimWorld } from '../src/net/protocol';
@@ -318,6 +318,25 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   check('coerceSettings defaults startCat/library/memory', def.startCat === 'close' && Array.isArray(def.savedStartPoses.close) && def.startMemory.far.index === 1);
   const capped = coerceSettings({ savedStartPoses: { close: [{ x: 5, y: 6, headingDeg: 0 }, { x: 7, y: 8, headingDeg: 10 }, { x: 9, y: 9, headingDeg: 20 }], far: [{ x: NaN, y: 0, headingDeg: 0 }, 'junk'] } });
   check('coerceSettings caps saved starts per category + drops junk', capped.savedStartPoses.close.length === 2 && capped.savedStartPoses.far.length === 0);
+
+  // PER-GAME loadouts: switching games swaps robot + saved robots + start positions; nothing bleeds
+  {
+    let s = coerceSettings({ game: 'decode' });
+    // build a DECODE loadout: name the robot + save one + pick a start
+    s = { ...s, spec: { ...s.spec, name: 'DecodeBot' }, savedRobots: [{ ...s.spec, name: 'DSaved' }], startIndex: 2 };
+    // switch to CR: the flat fields become CR's (fresh) — DECODE's are archived, not visible
+    s = switchGame(s, 'chain');
+    check('per-game: switching to CR hides DECODE saved robots', s.savedRobots.length === 0 && s.game === 'chain');
+    // build a CR loadout: an 18"-long robot + a CR start anchor (index 3, valid only for CR)
+    s = { ...s, spec: coerceSpec({ ...s.spec, name: 'ChainBot', length: 18 }, undefined, 'chain'), savedRobots: [{ ...s.spec, name: 'CSaved' }], startIndex: 3 };
+    check('per-game: a CR chassis keeps its 18" length + anchor 3', s.spec.length === 18 && s.startIndex === 3);
+    // back to DECODE: our DECODE loadout returns intact (name/saved/start), CR's is archived
+    s = switchGame(s, 'decode');
+    check('per-game: DECODE loadout restored on switch back', s.spec.name === 'DecodeBot' && s.savedRobots[0]?.name === 'DSaved' && s.startIndex === 2);
+    // and CR's 18" build is preserved in the archive (would clamp to ~15 if it lived under DECODE)
+    s = switchGame(s, 'chain');
+    check('per-game: CR loadout (18" build) survives the round-trip', s.spec.name === 'ChainBot' && s.spec.length === 18 && s.startIndex === 3);
+  }
 }
 
 // ---- field markings geometry (manual Section 9) ----------------------------

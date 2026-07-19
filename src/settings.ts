@@ -1,4 +1,4 @@
-import type { GameSettings } from './types';
+import type { GameId, GameLoadout, GameSettings } from './types';
 import {
   DEFAULT_SPEC,
   coerceSpec,
@@ -9,7 +9,12 @@ import {
   defaultAssistsByDrivetrain,
 } from './sim/spawn';
 import { START_POSES, MAX_SAVED_ROBOTS, MAX_SAVED_AUTOS, MAX_SAVED_STARTS } from './config';
+import { CHAIN_START_POSES } from './games/chain/config';
 import type { StartSel, StartPose } from './types';
+
+/** how many named start anchors a game has (for clamping startIndex per game) */
+const startPoseCount = (game: GameId): number =>
+  game === 'chain' ? CHAIN_START_POSES.length : START_POSES.length;
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
 import { clamp } from './math';
 
@@ -38,6 +43,81 @@ export function defaultSettings(): GameSettings {
     autoPathEnabled: false, // Default to auto path disabled
     parkSpeedPct: 30,
     tankControlMode: 'normal',
+  };
+}
+
+// ---- PER-GAME loadouts (robot build + saved robots + start positions) ---------
+
+/** the game-specific slice of the settings (what `switchGame` archives + restores) */
+function pickLoadout(s: GameSettings): GameLoadout {
+  return {
+    spec: s.spec,
+    savedRobots: s.savedRobots,
+    startIndex: s.startIndex,
+    startPose: s.startPose ?? null,
+    startCat: s.startCat,
+    savedStartPoses: s.savedStartPoses,
+    startMemory: s.startMemory,
+  };
+}
+
+/** a fresh loadout for a game: its default robot + empty libraries */
+function defaultLoadout(game: GameId): GameLoadout {
+  const d = defaultSettings();
+  return {
+    spec: coerceSpec(DEFAULT_SPEC, DEFAULT_SPEC, game),
+    savedRobots: [],
+    startIndex: d.startIndex,
+    startPose: null,
+    startCat: d.startCat,
+    savedStartPoses: { close: [], far: [] },
+    startMemory: d.startMemory,
+  };
+}
+
+/** validate an archived loadout (spec + saved robots clamped for THAT game; start fields
+ * light-checked). Written from already-clean data, so this mostly guards a hand-edited store. */
+function coerceLoadout(raw: unknown, game: GameId): GameLoadout {
+  const d = defaultLoadout(game);
+  if (typeof raw !== 'object' || raw === null) return d;
+  const r = raw as Record<string, unknown>;
+  const saves = (x: unknown): StartPose[] =>
+    Array.isArray(x)
+      ? x.map((p) => coerceStartPose(p)).filter((p): p is StartPose => p !== null).slice(0, MAX_SAVED_STARTS)
+      : [];
+  const sp = typeof r.savedStartPoses === 'object' && r.savedStartPoses !== null
+    ? (r.savedStartPoses as Record<string, unknown>)
+    : {};
+  return {
+    spec: r.spec !== undefined ? coerceSpec(r.spec, DEFAULT_SPEC, game) : d.spec,
+    savedRobots: Array.isArray(r.savedRobots)
+      ? r.savedRobots.slice(0, MAX_SAVED_ROBOTS).map((x) => coerceSpec(x, undefined, game))
+      : d.savedRobots,
+    startIndex: typeof r.startIndex === 'number' && Number.isFinite(r.startIndex)
+      ? clamp(Math.round(r.startIndex), 0, startPoseCount(game) - 1)
+      : d.startIndex,
+    startPose: r.startPose == null ? null : coerceStartPose(r.startPose),
+    startCat: r.startCat === 'far' ? 'far' : 'close',
+    savedStartPoses: { close: saves(sp.close), far: saves(sp.far) },
+    startMemory: d.startMemory,
+  };
+}
+
+/** switch the ACTIVE game, swapping the flat robot/start fields to that game's OWN copy
+ * (archiving the game we're leaving first) so saved robots + start positions never bleed
+ * across games. Active assists follow the restored robot's drivetrain slot. */
+export function switchGame(s: GameSettings, game: GameId): GameSettings {
+  if (game === s.game) return s;
+  const loadouts: Partial<Record<GameId, GameLoadout>> = { ...(s.loadouts ?? {}) };
+  loadouts[s.game] = pickLoadout(s); // archive the game we're leaving
+  const restore = loadouts[game] ?? defaultLoadout(game); // restore the one we enter
+  delete loadouts[game]; // it becomes the active (flat) copy, not an archive entry
+  return {
+    ...s,
+    game,
+    loadouts,
+    ...restore,
+    assists: s.assistsByDrivetrain[restore.spec.drivetrain] ?? s.assists,
   };
 }
 
@@ -86,7 +166,7 @@ export function coerceSettings(raw: unknown): GameSettings {
         .slice(0, MAX_SAVED_AUTOS);
     }
     if (typeof s.startIndex === 'number') {
-      out.startIndex = clamp(Math.round(s.startIndex), 0, START_POSES.length - 1);
+      out.startIndex = clamp(Math.round(s.startIndex), 0, startPoseCount(out.game) - 1);
     }
     // custom start pose: structural + field-bounds only here (G304 legality is
     // enforced spec+alliance-aware at spawn via coerceSetup). null ⇒ use preset.
@@ -106,7 +186,7 @@ export function coerceSettings(raw: unknown): GameSettings {
       if (typeof raw !== 'object' || raw === null) return fallback;
       const r = raw as Record<string, unknown>;
       const index = typeof r.index === 'number' && Number.isFinite(r.index)
-        ? clamp(Math.round(r.index), -1, START_POSES.length - 1)
+        ? clamp(Math.round(r.index), -1, startPoseCount(out.game) - 1)
         : fallback.index;
       const pose = r.pose == null ? null : coerceStartPose(r.pose);
       return { index, pose };
@@ -117,6 +197,17 @@ export function coerceSettings(raw: unknown): GameSettings {
         close: coerceSel(m.close, out.startMemory.close),
         far: coerceSel(m.far, out.startMemory.far),
       };
+    }
+    // the NON-active games' archived loadouts (robot + saved robots + start positions), so a
+    // game switch restores that game's own build/library. The active game lives in the flat
+    // fields above and is never kept in the archive.
+    if (typeof s.loadouts === 'object' && s.loadouts !== null) {
+      const lo = s.loadouts as Record<string, unknown>;
+      const archive: Partial<Record<GameId, GameLoadout>> = {};
+      for (const g of ['decode', 'chain'] as GameId[]) {
+        if (g !== out.game && lo[g] !== undefined) archive[g] = coerceLoadout(lo[g], g);
+      }
+      out.loadouts = archive;
     }
     if (typeof s.practiceDummies === 'boolean') out.practiceDummies = s.practiceDummies;
     if (typeof s.audio === 'object' && s.audio !== null) {

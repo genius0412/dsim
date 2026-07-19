@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
-import { loadSettings, saveSettings } from '../settings';
+import { loadSettings, saveSettings, switchGame } from '../settings';
 import { saveAccountSettings, fetchAdminStatus } from '../net/api';
 import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
@@ -511,7 +511,7 @@ export function App() {
           settings={settings}
           multiplayer={multiplayer}
           onNav={(n) => navigate(screenForNav(n))}
-          onGame={(g) => update({ ...settings, game: g })}
+          onGame={(g) => update(switchGame(settings, g))}
         />
       )}
 

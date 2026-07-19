@@ -358,6 +358,20 @@ export interface StartSel {
   pose: StartPose | null;
 }
 
+/** the PER-GAME loadout: robot build + saved-robot library + start position state. DECODE and
+ * Chain Reaction each keep their own — switching games swaps the active fields to that game's
+ * copy so nothing bleeds across (a CR 18"-long build never clamps under DECODE, and each game's
+ * saved robots / start positions stay separate). Archived in `GameSettings.loadouts`. */
+export interface GameLoadout {
+  spec: RobotSpec;
+  savedRobots: RobotSpec[];
+  startIndex: number;
+  startPose?: StartPose | null;
+  startCat: StartCat;
+  savedStartPoses: { close: StartPose[]; far: StartPose[] };
+  startMemory: { close: StartSel; far: StartSel };
+}
+
 export interface GameSettings {
   /** which game the player has selected (DECODE / Chain Reaction). Drives spawn,
    * step, render, HUD, the builder, and the room/queue game key. Persists + syncs. */
@@ -383,6 +397,10 @@ export interface GameSettings {
   savedStartPoses: { close: StartPose[]; far: StartPose[] };
   /** last-used selection in each category, so switching tabs restores your choice */
   startMemory: { close: StartSel; far: StartSel };
+  /** the NON-active games' loadouts (robot + saved robots + start positions), archived so
+   * switching games restores that game's own build/library instead of bleeding across. The
+   * flat fields above are always the ACTIVE game's copy; `switchGame` swaps them. */
+  loadouts?: Partial<Record<GameId, GameLoadout>>;
   practiceDummies: boolean;
   /** the ACTIVE resolved driver assists (what spawns + goes on the wire) */
   assists: AssistConfig;

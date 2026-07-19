@@ -1,6 +1,21 @@
 # HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
 
-## Latest session — mecanum best on beams, CG range 0.3–1.5, CR length to 18
+## Latest session — PER-GAME loadouts (robots + start positions no longer bleed cross-game)
+
+- **`GameLoadout`** (types.ts) = {spec, savedRobots, startIndex, startPose, startCat,
+  savedStartPoses, startMemory}. `GameSettings.loadouts?: Partial<Record<GameId, GameLoadout>>`
+  archives the NON-active games; the flat fields are always the ACTIVE game's copy.
+- **`switchGame(settings, game)`** (settings.ts) archives the current game's loadout and restores
+  the target's (or a fresh `defaultLoadout(game)`), so DECODE and CR each keep their own robot,
+  saved-robot library, and start positions. Active assists follow the restored spec's drivetrain.
+  App's game switcher (`onGame`) now calls it. `coerceSettings` validates the archive
+  (`coerceLoadout`, per-game `coerceSpec`).
+- **Fixed a pre-existing bug**: the flat `startIndex` clamp used DECODE's `START_POSES.length`
+  even for CR, so CR anchor 3 clamped to 2. Now game-aware via `startPoseCount(game)`.
+- Smoke: a DECODE build + saved robot + start survive a CR round-trip; a CR 18"-long build +
+  anchor 3 survive; switching hides the other game's saved robots.
+
+## mecanum best on beams, CG range 0.3–1.5, CR length to 18
 
 - **Mecanum is the BEST beam-crosser** (suspension + low CG); swerve worst. `TRACTION` reordered
   (mecanum .91 / tank .90 / xdrive .89 / swerve .87). Crucially the beam CoG penalty now scales
