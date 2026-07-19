@@ -54,15 +54,15 @@ const CHAIN_MODE_LABELS: Record<ChainScoreMode, string> = {
   dumper: 'Dumper',
 };
 const CHAIN_MODE_BLURBS: Record<ChainScoreMode, string> = {
-  turret: 'Dye-rotor + turret — aims itself, shoots one-by-one from anywhere',
-  drum: 'Chassis-wide flywheel — turn to the goal, fire up to 6 at once from anywhere',
-  dumper: 'Chassis-wide catapult — turn to the goal, fling the whole hopper (limited range)',
+  turret: 'Aims itself and fires one at a time',
+  drum: 'Face the goal and fire a fast stream',
+  dumper: 'Face the goal and dump the whole load up close',
 };
 const CHAIN_INTAKE_LABELS: Record<ChainIntakeStyle, string> = {
   sweeper: 'Sweeper',
 };
 const CHAIN_INTAKE_BLURBS: Record<ChainIntakeStyle, string> = {
-  sweeper: 'Full-width roller · gulps Particles on contact',
+  sweeper: 'A roller across the whole front',
 };
 
 /** does the current spec exactly match a preset? (value compare) */
@@ -441,14 +441,14 @@ export function Menu({ settings, onChange }: Props) {
                         onClick={() => setSpec({ shooterRear: false })}
                       >
                         <span className="ot">FRONT</span>
-                        <span className="od">Launcher at the front — turns to face the goal</span>
+                        <span className="od">Shoots from the front</span>
                       </button>
                       <button
                         className={`ds-opt ${spec.shooterRear ? 'on' : ''}`}
                         onClick={() => setSpec({ shooterRear: true })}
                       >
                         <span className="ot">REAR</span>
-                        <span className="od">Launcher at the back — turns its back to the goal</span>
+                        <span className="od">Shoots from the back</span>
                       </button>
                     </div>
                   </>
@@ -602,10 +602,9 @@ export function Menu({ settings, onChange }: Props) {
             </div>
 
             <p className="ds-hint">
-              Heavier = more push, slower accel · higher RPM = faster top speed
+              Heavier pushes harder but accelerates slower · higher RPM is faster
               {isDecode && ' · more flywheel inertia keeps long shots rapid'}
-              {!isDecode &&
-                ' · ground clearance lets your frame clear the beams (a running start powers over; low-traction wheels are just slower) but raises the center of gravity → sluggish handling'}
+              {!isDecode && ' · more clearance gets over the beams but handles worse'}
               . Chassis + intake ≤ {ROBOT_MAX_SIZE}".
             </p>
           </div>

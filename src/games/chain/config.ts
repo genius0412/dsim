@@ -347,7 +347,7 @@ export const CHAIN_PRESETS: readonly RobotSpec[] = [
   {
     // long-range precision: turret shoots from anywhere, swerve + clearance to roam
     // over the beams
-    name: 'Sniper', teamName: 'Turret · score from anywhere', teamNumber: 0,
+    name: 'Sniper', teamName: 'Turret · scores from anywhere', teamNumber: 0,
     length: 14.5, width: 17, intake: 'sloped', massLb: 24, drivetrain: 'swerve',
     driveRpm: 500, flywheelInertia: 0.2, canSort: false,
     ballStorage: 12, groundClearance: 1.8, scoreMode: 'turret', chainIntake: 'sweeper',
@@ -362,7 +362,7 @@ export const CHAIN_PRESETS: readonly RobotSpec[] = [
   },
   {
     // the volume shooter: a chassis-wide drum firing 6 at once from anywhere, light mecanum
-    name: 'Drummer', teamName: 'Drum · fire 6 at once, any range', teamNumber: 0,
+    name: 'Drummer', teamName: 'Drum · fast stream from anywhere', teamNumber: 0,
     length: 14.5, width: 17, intake: 'sloped', massLb: 25, drivetrain: 'mecanum',
     driveRpm: 470, flywheelInertia: 0.3, canSort: false,
     ballStorage: 24, groundClearance: 1.4, scoreMode: 'drum', chainIntake: 'sweeper',

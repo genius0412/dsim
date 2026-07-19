@@ -201,8 +201,7 @@ export function MatchSetup({
           ) : (
             <>
               <p className="ds-hint">
-                Rule G04 — your robot must start completely in a Lab Area, on the floor or
-                ascended on a Ring Stand. Pick a legal starting spot:
+                Your robot starts in the lab area — on the floor or up on a ring stand.
               </p>
               <div className="ds-opts two" style={{ marginTop: 8 }}>
                 {CHAIN_START_POSES.map((p, i) => (
@@ -213,7 +212,7 @@ export function MatchSetup({
                   >
                     <span className="ot">{p.name}</span>
                     <span className="od">
-                      {p.name.startsWith('RING') ? 'Ascended start (20 pt posts)' : 'On the Lab-Area floor'}
+                      {p.name.startsWith('RING') ? 'Start up on the ring stand' : 'Start on the floor'}
                     </span>
                   </button>
                 ))}
