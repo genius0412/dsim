@@ -77,7 +77,7 @@ import {
 import { robotCorners, robotExtents, robotIntersectsRect, wheelContacts } from '../src/sim/physics';
 import { beamBlock, beamDragFactor, canCrossBeams, cogFactor, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits } from '../src/sim/drivetrain';
-import { coerceSettings, switchGame } from '../src/settings';
+import { coerceSettings, switchGame, syncAudioMirrors } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, mergeBindings } from '../src/input/bindings';
 import { quantizeCommand, dequantizeCommand, localizeCommand, slimWorld, unslimWorld } from '../src/net/protocol';
@@ -1803,6 +1803,36 @@ const setup = (
   check('each saved robot is coerced to a legal spec', lib.savedRobots.every((r) => r.driveRpm >= 200 && r.massLb >= 10));
   check('savedAutos drops invalid entries + caps at MAX_SAVED_AUTOS', lib.savedAutos.length === 4, `${lib.savedAutos.length}`);
   check('defaultSettings starts with empty libraries', coerceSettings({}).savedRobots.length === 0 && coerceSettings({}).savedAutos.length === 0);
+}
+
+// ---- audio volumes: migration off the legacy booleans + the old-client mirrors -
+// Settings sync per ACCOUNT and one account is shared across client versions, so
+// the two legacy switches have to keep meaning what they meant — a mute set on a
+// new build must not come back un-muted on an old tab or an old Electron install.
+{
+  const legacyOff = coerceSettings({ audio: { sounds: false, voice: true } });
+  check('legacy sounds:false migrates to master 0', legacyOff.audio.volume.master === 0, `${legacyOff.audio.volume.master}`);
+  const legacyNoVoice = coerceSettings({ audio: { sounds: true, voice: false } });
+  check('legacy voice:false migrates to voice 0, master untouched', legacyNoVoice.audio.volume.voice === 0 && legacyNoVoice.audio.volume.master === 1);
+
+  const junk = coerceSettings({ audio: { volume: { master: 9, game: -3, sfx: 'x', voice: NaN } } });
+  check('volumes clamp to 0–1 and non-numbers fall back', junk.audio.volume.master === 1 && junk.audio.volume.game === 0 && junk.audio.volume.sfx === 1 && junk.audio.volume.voice === 1, JSON.stringify(junk.audio.volume));
+
+  const muted = coerceSettings({ audio: { volume: { master: 0, game: 1, sfx: 1, voice: 1 } } });
+  check('master 0 derives BOTH legacy mirrors false', !muted.audio.sounds && !muted.audio.voice);
+  const voiceOff = coerceSettings({ audio: { volume: { master: 1, game: 1, sfx: 1, voice: 0 } } });
+  check('voice 0 derives voice mirror false, sounds true', voiceOff.audio.sounds && !voiceOff.audio.voice);
+
+  // a slider drag writes the live object straight to storage, bypassing coerce
+  const d = coerceSettings({});
+  const edited = { ...d, audio: { ...d.audio, volume: { ...d.audio.volume, master: 0 } } };
+  check('syncAudioMirrors re-derives mirrors after a raw edit', !syncAudioMirrors(edited).audio.sounds);
+  check('syncAudioMirrors is a no-op when already in step', syncAudioMirrors(d) === d);
+
+  // the round trip that matters: mute on a new build → an OLD client saves (it
+  // drops `volume` entirely) → back on a new build. Levels are lost; silence is not.
+  const asOldClientSavedIt = { audio: { sounds: false, voice: false } };
+  check('mute survives a round trip through an old client', coerceSettings(asOldClientSavedIt).audio.volume.master === 0);
 }
 
 // ---- untrusted spec sanitization (anti-cheat: spoofed devtools / wire spec) --

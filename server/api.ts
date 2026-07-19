@@ -3,11 +3,23 @@ import type { GameId } from '../src/types';
 import { BALANCE_VERSION } from '../src/config';
 import { dbEnabled } from './db/pool';
 import {
+  acceptFriendRequest,
   actForSeason,
+  blockUser,
+  cancelFriendRequest,
   currentSeasonNumber,
+  declineFriendRequest,
   ensureProfile,
   ensureSeason,
   listAnnouncements,
+  listFriends,
+  removeFriend,
+  searchUsersByUsername,
+  sendFriendRequest,
+  setPresenceStatus,
+  touchPresence,
+  unblockUser,
+  type PresenceStatus,
   eloLeaderboard,
   eloHistoryLeaderboard,
   eloHistoryUserStanding,
@@ -50,6 +62,16 @@ import { verifyAuthToken } from './auth';
  *   GET  /api/user/settings                  — your synced settings (Bearer JWT)
  *   POST /api/user/settings {settings}       — save your settings (Bearer JWT)
  *   GET  /api/replay/<id>
+ *
+ *   GET  /api/friends                        — friends + requests + presence (Bearer JWT)
+ *   POST /api/friends/request  {username}    — send (or auto-accept a reciprocal) request
+ *   POST /api/friends/accept   {username}
+ *   POST /api/friends/decline  {username}
+ *   POST /api/friends/cancel   {username}    — withdraw one you sent
+ *   POST /api/friends/remove   {username}
+ *   POST /api/friends/block    {username} / /api/friends/unblock {username}
+ *   POST /api/friends/status   {status}      — your own online/dnd/invisible
+ *   GET  /api/users/search?q=<prefix>        — public username-PREFIX search
  */
 
 /** Public usernames: lowercase letters + digits only, 4–20 chars. Kept in sync
@@ -79,6 +101,12 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on('end', () => resolve(data));
     req.on('error', reject);
   });
+}
+
+/** the Bearer token from an Authorization header, if it looks like one */
+function bearer(req: IncomingMessage): string | undefined {
+  const auth = req.headers['authorization'];
+  return typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
 }
 
 export async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
@@ -185,6 +213,126 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         await saveUserSettings(user.userId, settings);
       }
       return json(200, { ok: true }), true;
+    }
+
+    // ---- friends ------------------------------------------------------------
+    // Friendship is MUTUAL CONSENT and presence is behavioural data about a real
+    // person, so every rule here is enforced server-side. Two invariants hold
+    // across this whole block:
+    //
+    //  1. The acting user is ALWAYS `user.userId` from the verified JWT. No
+    //     endpoint accepts an actor/userId parameter naming who is acting —
+    //     otherwise anyone could forge another account's presence or consent.
+    //  2. The wire carries USERNAMES, not user ids. `userId` is the auth
+    //     provider's `sub`, which also authorises match writes; keeping it off
+    //     these responses means a leaked friends list doesn't hand out a set of
+    //     valid `sub` values. (/api/profile/<username> returns one today —
+    //     pre-existing, but don't widen it.)
+    //
+    // CORS is `*` here as elsewhere, which stays safe ONLY because auth is a
+    // Bearer token JS must attach explicitly: a wildcard ACAO can't be combined
+    // with credentials, so a hostile page can't make an authed cross-origin call
+    // for a victim. If auth ever moves to a cookie, every route below becomes
+    // CSRF-able and needs SameSite + an origin check the same day.
+    if (url.pathname === '/api/friends' || url.pathname.startsWith('/api/friends/')) {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) {
+        return json(200, { friends: [], incoming: [], outgoing: [], blocked: [], status: null }), true;
+      }
+
+      // the friends READ doubles as the presence heartbeat: the poll that
+      // refreshes everyone else's status already proves the caller is here, so a
+      // separate ping endpoint would double the request rate against a
+      // scale-to-zero machine to say something this request already said.
+      if (req.method === 'GET' && url.pathname === '/api/friends') {
+        await ensureProfile(user.userId, user.handle);
+        await touchPresence(user.userId);
+        return json(200, await listFriends(user.userId)), true;
+      }
+
+      if (req.method !== 'POST') return json(405, { error: 'method not allowed' }), true;
+
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+      } catch {
+        return json(400, { error: 'bad request' }), true;
+      }
+      await ensureProfile(user.userId, user.handle);
+
+      // set your OWN presence status (the only friends POST not naming someone else)
+      if (url.pathname === '/api/friends/status') {
+        const s = body.status;
+        const status: PresenceStatus | null =
+          s === 'online' || s === 'dnd' || s === 'invisible' ? s : null;
+        await setPresenceStatus(user.userId, status);
+        return json(200, { status }), true;
+      }
+
+      // every remaining route names another player by username
+      const username = normalizeUsername(body.username);
+      if (!username) return json(400, { error: 'bad request' }), true;
+      const target = await getProfileByUsername(username);
+      if (!target) return json(404, { error: 'no such user' }), true;
+      if (target.userId === user.userId) {
+        return json(400, { error: "That's you." }), true;
+      }
+      const other = target.userId;
+
+      switch (url.pathname) {
+        case '/api/friends/request': {
+          const outcome = await sendFriendRequest(user.userId, other);
+          // 'blocked' deliberately reports the same generic failure as any other
+          // refusal: a distinct message would let someone confirm they've been
+          // blocked, which is exactly what the block exists to withhold.
+          if (outcome === 'blocked') return json(409, { error: "Couldn't send that request." }), true;
+          if (outcome === 'already-friends') return json(409, { error: 'Already friends.' }), true;
+          if (outcome === 'duplicate') return json(409, { error: 'Request already sent.' }), true;
+          return json(200, { outcome }), true;
+        }
+        case '/api/friends/accept': {
+          const ok = await acceptFriendRequest(user.userId, other);
+          // no pending request from that person ⇒ 404, never a silent success
+          if (!ok) return json(404, { error: 'No pending request from that player.' }), true;
+          return json(200, { ok: true }), true;
+        }
+        case '/api/friends/decline': {
+          const ok = await declineFriendRequest(user.userId, other);
+          if (!ok) return json(404, { error: 'No pending request from that player.' }), true;
+          return json(200, { ok: true }), true;
+        }
+        case '/api/friends/cancel': {
+          const ok = await cancelFriendRequest(user.userId, other);
+          if (!ok) return json(404, { error: 'No pending request to that player.' }), true;
+          return json(200, { ok: true }), true;
+        }
+        case '/api/friends/remove': {
+          const ok = await removeFriend(user.userId, other);
+          if (!ok) return json(404, { error: 'Not friends with that player.' }), true;
+          return json(200, { ok: true }), true;
+        }
+        case '/api/friends/block':
+          await blockUser(user.userId, other);
+          return json(200, { ok: true }), true;
+        case '/api/friends/unblock':
+          await unblockUser(user.userId, other);
+          return json(200, { ok: true }), true;
+        default:
+          return json(404, { error: 'unknown endpoint' }), true;
+      }
+    }
+
+    // ---- public: username-PREFIX search (the "add a friend" box) ------------
+    // Public because it returns only what /api/profile/<username> already does
+    // one at a time. It is a PREFIX match on `username`, never a substring match
+    // on `handle` — the latter would let anyone enumerate every display name.
+    // Presence never appears here; it is friends-only, in /api/friends.
+    if (req.method === 'GET' && url.pathname === '/api/users/search') {
+      const raw = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+      if (raw.length < 2) return json(200, { users: [] }), true;
+      const users = dbEnabled ? await searchUsersByUsername(raw, 20) : [];
+      return json(200, { users }), true;
     }
 
     // which GAME's boards/periods to read — DECODE and Chain Reaction each have their own

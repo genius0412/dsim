@@ -49,7 +49,7 @@ export function defaultSettings(): GameSettings {
     // GATE (index 0, close) + AUDIENCE (index 1, far) are the default per-category picks
     startMemory: { close: { index: 0, pose: null }, far: { index: 1, pose: null } },
     practiceDummies: false,
-    audio: { sounds: true, voice: true },
+    audio: { volume: { master: 1, game: 1, sfx: 1, voice: 1 }, sounds: true, voice: true },
     bindings: cloneBindings(DEFAULT_BINDINGS),
     autoPath: null, // Default to no auto path loaded
     autoPathEnabled: false, // Default to auto path disabled
@@ -145,6 +145,29 @@ export function switchGame(s: GameSettings, game: GameId): GameSettings {
   };
 }
 
+type AudioVolume = GameSettings['audio']['volume'];
+
+/** the legacy ON/OFF pair an older client would read, derived from the levels.
+ * Four categories can't map onto two switches exactly — `sounds` mirrors the old
+ * master switch (is ANY audio audible) and `voice` the old voice-lines toggle. */
+function audioMirrors(av: AudioVolume): { sounds: boolean; voice: boolean } {
+  return {
+    sounds: av.master > 0 && (av.game > 0 || av.sfx > 0 || av.voice > 0),
+    voice: av.master > 0 && av.voice > 0,
+  };
+}
+
+/** Re-derive the legacy mirrors after a settings EDIT. `coerceSettings` does this
+ * on every load, but a slider drag writes the live object straight to localStorage
+ * and the account without passing through coerce — so App's `update()` (the one
+ * choke point feeding both) runs this to keep the persisted blob consistent for
+ * old clients. Returns `s` unchanged when the mirrors already agree. */
+export function syncAudioMirrors(s: GameSettings): GameSettings {
+  const m = audioMirrors(s.audio.volume);
+  if (s.audio.sounds === m.sounds && s.audio.voice === m.voice) return s;
+  return { ...s, audio: { ...s.audio, ...m } };
+}
+
 /** validate an arbitrary settings object field by field — anything stale,
  * missing, or corrupt falls back to its default. Shared by the localStorage
  * load and the per-account (server) load, so both paths sanitize identically. */
@@ -236,9 +259,24 @@ export function coerceSettings(raw: unknown): GameSettings {
     if (typeof s.practiceDummies === 'boolean') out.practiceDummies = s.practiceDummies;
     if (typeof s.audio === 'object' && s.audio !== null) {
       const au = s.audio as Record<string, unknown>;
-      if (typeof au.sounds === 'boolean') out.audio.sounds = au.sounds;
-      if (typeof au.voice === 'boolean') out.audio.voice = au.voice;
+      const vol = au.volume;
+      if (typeof vol === 'object' && vol !== null) {
+        const v = vol as Record<string, unknown>;
+        for (const k of ['master', 'game', 'sfx', 'voice'] as const) {
+          const n = v[k];
+          if (typeof n === 'number' && Number.isFinite(n)) out.audio.volume[k] = clamp(n, 0, 1);
+        }
+      } else {
+        // LEGACY boolean-only shape: a pre-slider save, or a blob that round-tripped
+        // through an old client (which drops `volume` when it saves). Map the two
+        // switches onto levels so nobody's deliberate mute comes back un-muted.
+        if (au.sounds === false) out.audio.volume.master = 0;
+        if (au.voice === false) out.audio.volume.voice = 0;
+      }
     }
+    // re-derive the legacy mirrors from the levels every time, so they can never
+    // drift from the sliders (see the `audio` type for why they still exist)
+    Object.assign(out.audio, audioMirrors(out.audio.volume));
     if (typeof s.parkSpeedPct === 'number') {
       out.parkSpeedPct = clamp(Math.round(s.parkSpeedPct), 0, 100);
     }

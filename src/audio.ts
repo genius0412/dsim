@@ -11,15 +11,28 @@ const FILES: Record<Cue, string> = {
   abort: 'sounds/abort.wav', // foghorn — match reset
 };
 
+/** the WAV cues were mixed hot; this is the fixed trim they've always played at,
+ * now the ceiling the `game` slider scales rather than a static per-element volume */
+const CUE_LEVEL = 0.55;
+
 export class MatchAudio {
   private sounds = new Map<Cue, HTMLAudioElement>();
-  /** master switch: no audio at all when false */
-  soundsEnabled = true;
-  /** announcer voice lines; when off, countdowns fall back to beeps */
-  voiceEnabled = true;
+  /** master level 0–1; scales every category. 0 = no audio at all. */
+  masterVolume = 1;
+  /** the FIRST field-recording WAV cues */
+  gameVolume = 1;
+  /** synthesized shoot/intake/gate tones + the countdown beep */
+  sfxVolume = 1;
+  /** announcer voice lines; at 0, countdowns fall back to beeps */
+  voiceVolume = 1;
 
   private get muted(): boolean {
-    return !this.soundsEnabled;
+    return this.masterVolume <= 0;
+  }
+
+  /** effective level for a category, 0–1 */
+  private gain(category: number): number {
+    return Math.max(0, Math.min(1, this.masterVolume * category));
   }
 
   constructor() {
@@ -27,15 +40,19 @@ export class MatchAudio {
     for (const [cue, file] of Object.entries(FILES) as [Cue, string][]) {
       const a = new Audio(base + file);
       a.preload = 'auto';
-      a.volume = 0.55;
+      a.volume = CUE_LEVEL;
       this.sounds.set(cue, a);
     }
   }
 
   play(cue: Cue): void {
-    if (this.muted) return;
+    const level = this.gain(this.gameVolume);
+    if (level <= 0) return;
     const a = this.sounds.get(cue);
     if (!a) return;
+    // set per PLAY, not once at construction, so a slider move applies to the very
+    // next cue instead of only after a reload
+    a.volume = level * CUE_LEVEL;
     a.currentTime = 0;
     void a.play().catch(() => {
       /* browser blocks audio before first interaction — fine */
@@ -53,6 +70,9 @@ export class MatchAudio {
    * the AudioContext running; it is independent of the Sounds toggle. */
   startKeepAlive(): void {
     if (this.keepAlive) return;
+    // called at match start, i.e. safely inside a user gesture — warm the effects
+    // context here so the SFX sliders work even if the player starts fully muted
+    this.ensureCtx();
     try {
       const ctx = new AudioContext();
       const osc = ctx.createOscillator();
@@ -78,8 +98,11 @@ export class MatchAudio {
     this.keepAlive = null;
   }
 
+  /** Deliberately NOT gated on volume. A browser only lets an AudioContext start
+   * from a user gesture, so refusing to build one while muted would mean raising
+   * the slider mid-match finds no gesture left and stays silent until a reload.
+   * Build it whenever we're asked; silence is enforced at the gain instead. */
   private ensureCtx(): AudioContext | null {
-    if (this.muted) return null;
     try {
       this.ctx ??= new AudioContext();
       return this.ctx;
@@ -98,6 +121,10 @@ export class MatchAudio {
     vol: number,
     delay = 0,
   ): void {
+    // every synthesized effect funnels through tone/noiseBurst, so scaling here is
+    // the only place the SFX level has to be applied
+    const level = this.gain(this.sfxVolume) * vol;
+    if (level <= 0) return;
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const t = ctx.currentTime + delay;
@@ -106,7 +133,7 @@ export class MatchAudio {
     osc.type = type;
     osc.frequency.setValueAtTime(freq0, t);
     if (freq1 !== freq0) osc.frequency.exponentialRampToValueAtTime(freq1, t + dur);
-    gain.gain.setValueAtTime(vol, t);
+    gain.gain.setValueAtTime(level, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
     osc.connect(gain).connect(ctx.destination);
     osc.start(t);
@@ -140,6 +167,8 @@ export class MatchAudio {
     q = 1.2,
     delay = 0,
   ): void {
+    const level = this.gain(this.sfxVolume) * vol;
+    if (level <= 0) return;
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const t = ctx.currentTime + delay;
@@ -151,7 +180,7 @@ export class MatchAudio {
     bp.frequency.setValueAtTime(freq0, t);
     if (freq1 !== freq0) bp.frequency.exponentialRampToValueAtTime(freq1, t + dur);
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(vol, t);
+    gain.gain.setValueAtTime(level, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
     src.connect(bp).connect(gain).connect(ctx.destination);
     src.start(t);
@@ -203,8 +232,11 @@ export class MatchAudio {
    * countdown numbers must land on the visual beat, never queue. */
   say(text: string, interrupt = false): void {
     if (this.muted) return;
+    const level = this.gain(this.voiceVolume);
     try {
-      if (!this.voiceEnabled || !('speechSynthesis' in window)) {
+      // voice at 0 keeps the OLD toggle-off behaviour exactly: countdown numbers
+      // still land on the visual beat, as beeps
+      if (level <= 0 || !('speechSynthesis' in window)) {
         if (interrupt) this.beep();
         return;
       }
@@ -214,7 +246,7 @@ export class MatchAudio {
       if (v) u.voice = v;
       u.rate = 1.1;
       u.pitch = 0.95;
-      u.volume = 0.9;
+      u.volume = level * 0.9;
       window.speechSynthesis.speak(u);
     } catch {
       /* speech unavailable */

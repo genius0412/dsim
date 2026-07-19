@@ -137,6 +137,22 @@ const themedPairs = (t) => {
     ['--ds-ink on --ds-lavender', t('--ds-ink'), t('--ds-lavender'), AA],
     ['--ds-ink on --ds-sky', t('--ds-ink'), t('--ds-sky'), AA],
 
+    // FRIENDS PANEL — its ground is --ds-bar (like the nav rail), not bg/panel,
+    // so these pairs are genuinely new even where the same token is checked above.
+    // The status dots are FILLS carrying no text, hence NON_TEXT: they are only a
+    // secondary cue anyway, since every row spells its status out in words (a red
+    // DND dot and a green online dot are the same dot to a colourblind player).
+    ['--ds-ink on bar (friend name)', t('--ds-ink'), bar, AA],
+    ['--ds-ink-dim on bar (friends toggle)', t('--ds-ink-dim'), bar, AA],
+    ['--ds-red-ink on bar (friends error)', t('--ds-red-ink'), bar, AA],
+    ['--ds-ok-ink on bar (friends note)', t('--ds-ok-ink'), bar, AA],
+    ['--ds-ok dot on bar (1.4.11)', t('--ds-ok'), bar, NON_TEXT],
+    ['--ds-danger dot on bar (1.4.11)', t('--ds-danger'), bar, NON_TEXT],
+
+    // CONTRIBUTORS cards sit on --ds-panel; the icon links go accent on hover
+    ['--ds-accent on panel (contributor icon)', t('--ds-accent'), panel, AA],
+    ['--ds-ink-dim on panel (contributor card)', t('--ds-ink-dim'), panel, AA],
+
     // 1.4.11 — interactive boundaries, measured against the card behind them
     ['--ds-line-strong on panel (1.4.11)', t('--ds-line-strong'), panel, NON_TEXT],
     ['focus ring --ds-accent on bg (1.4.11)', t('--ds-accent'), bg, NON_TEXT],

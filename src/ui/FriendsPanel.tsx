@@ -1,0 +1,401 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { searchUsers, type FriendRow, type PresenceStatus, type PublicProfile } from '../net/api';
+import { useFriends } from './useFriends';
+
+const OPEN_KEY = 'decodesim.friendsPanelOpen';
+
+/**
+ * Between these widths there is room for the left rail and the content, but not
+ * for an expanded friends panel too — so the panel force-collapses to its icon
+ * rail. Below 900px `.ds-body` turns into a column (see shell.css) and the panel
+ * becomes a full-width strip, where being expanded is fine again.
+ *
+ * This is a CONSTRAINT, not a preference: the stored open/closed choice is left
+ * untouched, so widening the window restores whatever the player had. Storing
+ * "open" on a desktop must never produce a panel that eats a laptop screen.
+ */
+const SQUEEZE = '(max-width: 1100px) and (min-width: 901px)';
+
+function useMediaQuery(query: string): boolean {
+  const [match, setMatch] = useState(() =>
+    typeof matchMedia === 'function' ? matchMedia(query).matches : false,
+  );
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return;
+    const mq = matchMedia(query);
+    const on = (): void => setMatch(mq.matches);
+    on();
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, [query]);
+  return match;
+}
+
+/** "just now" / "5m" / "3h" / "2d" — the server already rounds to these buckets,
+ * so this only has to pick a unit. */
+function offlineFor(seconds: number | null): string {
+  if (seconds === null) return 'Offline';
+  if (seconds < 60) return 'Offline · just now';
+  if (seconds < 3600) return `Offline for ${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `Offline for ${Math.round(seconds / 3600)}h`;
+  return `Offline for ${Math.round(seconds / 86400)}d`;
+}
+
+/**
+ * The friends list: a structural twin of `NavRail`, mirrored to the right edge.
+ * A flex sibling inside `.ds-body`, never `position: fixed` — `.ds-app` is the
+ * app's only scroll container, and a fixed panel would scroll independently of it.
+ *
+ * Collapsed by default: a new account has no friends, so an expanded panel would
+ * be a column of empty state on every screen. The incoming-request badge on the
+ * collapsed rail is what earns the expand — without it a request would be
+ * invisible until someone happened to open the panel, and the feature would
+ * quietly not work.
+ */
+export function FriendsPanel({
+  signedIn,
+  onOpenProfile,
+}: {
+  signedIn: boolean;
+  onOpenProfile: (username: string) => void;
+}) {
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(OPEN_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const squeezed = useMediaQuery(SQUEEZE);
+  const expanded = open && !squeezed;
+
+  const toggle = (): void => {
+    const next = !expanded;
+    setOpen(next);
+    try {
+      localStorage.setItem(OPEN_KEY, next ? '1' : '0');
+    } catch {
+      /* private mode — the panel still works, it just won't remember */
+    }
+  };
+
+  const friends = useFriends({ signedIn, collapsed: !expanded });
+  const { incoming, outgoing, friends: list } = friends.data;
+
+  const [online, offline] = useMemo(() => {
+    const on: FriendRow[] = [];
+    const off: FriendRow[] = [];
+    for (const f of list) (f.online ? on : off).push(f);
+    return [on, off];
+  }, [list]);
+
+  if (!expanded) {
+    return (
+      <aside className="ds-friends collapsed" aria-label="Friends">
+        <button
+          className="fr-toggle"
+          onClick={toggle}
+          title={squeezed ? 'Friends (needs a wider window to stay open)' : 'Show friends'}
+          aria-expanded={false}
+        >
+          <PeopleGlyph />
+          {incoming.length > 0 && (
+            <span className="fr-badge" aria-label={`${incoming.length} friend requests`}>
+              {incoming.length}
+            </span>
+          )}
+        </button>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="ds-friends" aria-label="Friends">
+      <div className="fr-head">
+        <span className="fr-title">Friends</span>
+        <button className="fr-collapse" onClick={toggle} aria-expanded title="Hide friends">
+          ✕
+        </button>
+      </div>
+
+      {!signedIn ? (
+        <p className="fr-empty">Sign in to add friends and see who’s online.</p>
+      ) : friends.unavailable ? (
+        // the server predates this client build (one Fly app serves every client
+        // version) — a plain explanation, never an error boundary
+        <p className="fr-empty">Friends aren’t available on this server yet.</p>
+      ) : (
+        <>
+          <StatusPicker value={friends.data.status} onChange={friends.setStatus} />
+
+          {friends.error && <p className="fr-error">{friends.error}</p>}
+
+          {incoming.length > 0 && (
+            <Section title="Requests" count={incoming.length}>
+              {incoming.map((p) => (
+                <Row key={p.userId} p={p} onOpenProfile={onOpenProfile}>
+                  <button
+                    className="ds-btn small primary"
+                    onClick={() => void friends.accept(p.username ?? '')}
+                  >
+                    Accept
+                  </button>
+                  <button
+                    className="ds-btn small ghost"
+                    onClick={() => void friends.decline(p.username ?? '')}
+                  >
+                    Decline
+                  </button>
+                </Row>
+              ))}
+            </Section>
+          )}
+
+          <Section title="Online" count={online.length}>
+            {online.length === 0 ? (
+              <p className="fr-empty">Nobody’s online right now.</p>
+            ) : (
+              online.map((f) => (
+                // the status is spelled out in the sub-line, not carried by the
+                // dot's hue alone: a red DND dot and a green online dot are the
+                // same dot to a red-green colourblind player. The @username stays
+                // reachable via the row's title and the click-through.
+                <Row
+                  key={f.userId}
+                  p={f}
+                  onOpenProfile={onOpenProfile}
+                  sub={f.status === 'dnd' ? 'Do not disturb' : 'Online'}
+                >
+                  <span className={`fr-dot${f.status === 'dnd' ? ' dnd' : ''}`} aria-hidden />
+                  <RowMenu username={f.username} friends={friends} />
+                </Row>
+              ))
+            )}
+          </Section>
+
+          {offline.length > 0 && (
+            <Section title="Offline" count={offline.length}>
+              {offline.map((f) => (
+                <Row key={f.userId} p={f} onOpenProfile={onOpenProfile} sub={offlineFor(f.offlineSeconds)}>
+                  <RowMenu username={f.username} friends={friends} />
+                </Row>
+              ))}
+            </Section>
+          )}
+
+          {outgoing.length > 0 && (
+            <Section title="Sent" count={outgoing.length}>
+              {outgoing.map((p) => (
+                <Row key={p.userId} p={p} onOpenProfile={onOpenProfile}>
+                  <button
+                    className="ds-btn small ghost"
+                    onClick={() => void friends.cancel(p.username ?? '')}
+                  >
+                    Cancel
+                  </button>
+                </Row>
+              ))}
+            </Section>
+          )}
+
+          <AddFriend onAdd={friends.add} known={friends.data} />
+        </>
+      )}
+    </aside>
+  );
+}
+
+function Section({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="fr-section">
+      <h3 className="fr-sec-h">
+        {title} <span className="fr-sec-n">{count}</span>
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+/** handle + @username, both clicking through to the profile — the same shape
+ * `Leaderboard`'s player cell uses, so every friend/request/result row behaves
+ * identically to a name anywhere else in the app. */
+function Row({
+  p,
+  sub,
+  onOpenProfile,
+  children,
+}: {
+  p: PublicProfile | FriendRow;
+  sub?: string;
+  onOpenProfile: (username: string) => void;
+  children?: React.ReactNode;
+}) {
+  const username = p.username;
+  const open = (): void => {
+    if (username) onOpenProfile(username);
+  };
+  return (
+    <div className="fr-row">
+      <button className="fr-who" onClick={open} disabled={!username} title={username ? `View @${username}` : undefined}>
+        <span className="fr-name">{p.handle}</span>
+        <span className="fr-sub">{sub ?? (username ? `@${username}` : '')}</span>
+      </button>
+      <span className="fr-actions">{children}</span>
+    </div>
+  );
+}
+
+/** unfriend / block, tucked behind a details disclosure so a destructive action
+ * is never one stray click away in a dense list */
+function RowMenu({
+  username,
+  friends,
+}: {
+  username: string | null;
+  friends: ReturnType<typeof useFriends>;
+}) {
+  if (!username) return null;
+  return (
+    <details className="fr-menu">
+      <summary aria-label="More">⋯</summary>
+      <div className="fr-menu-body">
+        <button className="ds-btn small ghost" onClick={() => void friends.unfriend(username)}>
+          Unfriend
+        </button>
+        <button className="ds-btn small ghost" onClick={() => void friends.block(username)}>
+          Block
+        </button>
+      </div>
+    </details>
+  );
+}
+
+function StatusPicker({
+  value,
+  onChange,
+}: {
+  value: PresenceStatus | null;
+  onChange: (s: PresenceStatus | null) => Promise<void>;
+}) {
+  return (
+    <label className="fr-status">
+      <span className="cap">Status</span>
+      <select
+        className="ds-select"
+        value={value ?? 'auto'}
+        onChange={(e) => {
+          const v = e.target.value;
+          void onChange(v === 'auto' ? null : (v as PresenceStatus));
+        }}
+      >
+        <option value="auto">Automatic</option>
+        <option value="dnd">Do not disturb</option>
+        <option value="invisible">Invisible</option>
+      </select>
+    </label>
+  );
+}
+
+/**
+ * Username search + send request. Debounced ~250ms and sequence-guarded: every
+ * keystroke would otherwise fire a request at a machine that may be cold-starting,
+ * and a slow early response could overwrite the results for a longer query.
+ */
+function AddFriend({
+  onAdd,
+  known,
+}: {
+  onAdd: (username: string) => Promise<'sent' | 'accepted'>;
+  known: { friends: FriendRow[]; outgoing: PublicProfile[] };
+}) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<PublicProfile[]>([]);
+  const [note, setNote] = useState<string | null>(null);
+  const seq = useRef(0);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setResults([]);
+      return;
+    }
+    const mine = ++seq.current;
+    const t = window.setTimeout(() => {
+      void searchUsers(q).then((users) => {
+        // a stale response from a shorter query must not clobber a newer one
+        if (seq.current === mine) setResults(users);
+      });
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [query]);
+
+  const already = (u: string | null): boolean =>
+    !!u && (known.friends.some((f) => f.username === u) || known.outgoing.some((p) => p.username === u));
+
+  return (
+    <section className="fr-section">
+      <h3 className="fr-sec-h">Add a friend</h3>
+      <input
+        className="ds-input"
+        value={query}
+        placeholder="Search username…"
+        aria-label="Search for a player by username"
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setNote(null);
+        }}
+      />
+      {note && <p className="fr-note">{note}</p>}
+      {results.map((p) => (
+        <div className="fr-row" key={p.userId}>
+          <span className="fr-who static">
+            <span className="fr-name">{p.handle}</span>
+            <span className="fr-sub">@{p.username}</span>
+          </span>
+          <span className="fr-actions">
+            <button
+              className="ds-btn small"
+              disabled={already(p.username)}
+              onClick={() => {
+                const u = p.username;
+                if (!u) return;
+                void onAdd(u)
+                  .then((outcome) =>
+                    setNote(
+                      outcome === 'accepted'
+                        ? `You and ${p.handle} are now friends.`
+                        : `Request sent to ${p.handle}.`,
+                    ),
+                  )
+                  .catch(() => {
+                    /* the hook surfaces the message in friends.error */
+                  });
+              }}
+            >
+              {already(p.username) ? 'Added' : 'Add'}
+            </button>
+          </span>
+        </div>
+      ))}
+      {query.trim().length >= 2 && results.length === 0 && (
+        <p className="fr-empty">No players found.</p>
+      )}
+    </section>
+  );
+}
+
+function PeopleGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+      <path d="M16 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm-8 1a3 3 0 1 0-3-3 3 3 0 0 0 3 3Zm0 2c-2.33 0-7 1.17-7 3.5V20h7v-2.5c0-.98.5-1.86 1.3-2.55A11.6 11.6 0 0 0 8 14Zm8 0c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4Z" />
+    </svg>
+  );
+}

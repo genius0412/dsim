@@ -271,8 +271,10 @@ export class GameController {
     this.localRobotId = session ? session.localRobotId : 0;
     // read-only spectator: no local robot, no input — every robot renders from snapshots
     this.spectator = session?.spectator ?? false;
-    this.audio.soundsEnabled = settings.audio.sounds;
-    this.audio.voiceEnabled = settings.audio.voice;
+    this.audio.masterVolume = settings.audio.volume.master;
+    this.audio.gameVolume = settings.audio.volume.game;
+    this.audio.sfxVolume = settings.audio.volume.sfx;
+    this.audio.voiceVolume = settings.audio.volume.voice;
     this.input = new InputManager(settings.bindings);
 
     // Mobile Mode: enable assists by default if touch-capable

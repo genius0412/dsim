@@ -422,6 +422,16 @@ export interface GameSettings {
   assistsByDrivetrain: Record<DrivetrainType, AssistConfig>;
   bindings: ControlBindings;
   audio: {
+    /** per-category levels, 0–1 — the source of truth. `master` scales the other
+     * three. `game` = the FIRST field-recording WAV cues; `sfx` = the synthesized
+     * shoot/intake/gate tones and the countdown beep; `voice` = announcer speech
+     * (at 0 the countdown falls back to beeps, exactly as the old toggle did). */
+    volume: { master: number; game: number; sfx: number; voice: number };
+    /** LEGACY mirrors, re-derived from `volume` on every coerce — never read these
+     * on the new path. Settings sync per ACCOUNT and one account is shared across
+     * client versions (an old browser tab, an old Electron install), and those
+     * builds only understand these two booleans. Without the mirrors, muting on a
+     * new build would silently un-mute on an old one. */
     sounds: boolean;
     voice: boolean;
   };

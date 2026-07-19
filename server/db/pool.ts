@@ -40,3 +40,37 @@ export async function q<T extends pg.QueryResultRow = pg.QueryResultRow>(
   const res = await pool.query<T>(text, params);
   return res.rows;
 }
+
+/** a scoped query function bound to ONE connection inside a transaction */
+export type Tx = <T extends pg.QueryResultRow = pg.QueryResultRow>(
+  text: string,
+  params?: unknown[],
+) => Promise<T[]>;
+
+/**
+ * Run `fn` inside a transaction on a single pooled connection, committing on
+ * return and rolling back on throw.
+ *
+ * `q()` takes a connection from the pool PER CALL, so a sequence of `q()`s is
+ * not atomic and can even interleave across connections. Anywhere correctness
+ * depends on two statements landing together — accepting a friend request is
+ * "delete the request AND insert the friendship", and a half-applied version
+ * either drops a request that was never honoured or mints a friendship nobody
+ * asked for — the statements must share one connection. That is what this is for.
+ */
+export async function tx<T>(fn: (query: Tx) => Promise<T>): Promise<T> {
+  if (!pool) throw new Error('DB disabled (DATABASE_URL unset)');
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const query: Tx = async (text, params = []) => (await client.query(text, params)).rows;
+    const out = await fn(query);
+    await client.query('commit');
+    return out;
+  } catch (e) {
+    await client.query('rollback').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}

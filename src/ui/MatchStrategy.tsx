@@ -86,8 +86,10 @@ export function MatchStrategy({
   // instance (the game controller isn't up yet here), gated by the Sounds toggle.
   const audioRef = useRef<MatchAudio | null>(null);
   if (audioRef.current === null) audioRef.current = new MatchAudio();
-  audioRef.current.soundsEnabled = settings.audio.sounds;
-  audioRef.current.voiceEnabled = settings.audio.voice;
+  audioRef.current.masterVolume = settings.audio.volume.master;
+  audioRef.current.gameVolume = settings.audio.volume.game;
+  audioRef.current.sfxVolume = settings.audio.volume.sfx;
+  audioRef.current.voiceVolume = settings.audio.volume.voice;
   const lastTickRef = useRef(Infinity);
   useEffect(() => {
     const a = audioRef.current;
