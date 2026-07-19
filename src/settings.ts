@@ -56,7 +56,7 @@ export function coerceSettings(raw: unknown): GameSettings {
     // coerceSpec in sim/spawn): a hand-edited localStorage spec is clamped to the
     // same legal ranges as a spoofed wire spec, so both surfaces agree exactly.
     // Spec is coerced FIRST because its drivetrain decides the active-assist fallback.
-    if (s.spec !== undefined) out.spec = coerceSpec(s.spec, out.spec);
+    if (s.spec !== undefined) out.spec = coerceSpec(s.spec, out.spec, out.game);
     // per-drivetrain assist library: each slot coerced against its own drivetrain default
     const dfltByDt = defaultAssistsByDrivetrain();
     const hadByDt = typeof s.assistsByDrivetrain === 'object' && s.assistsByDrivetrain !== null;
@@ -77,7 +77,7 @@ export function coerceSettings(raw: unknown): GameSettings {
     }
     // saved libraries: validate each entry through the same coercers, cap the count
     if (Array.isArray(s.savedRobots)) {
-      out.savedRobots = s.savedRobots.slice(0, MAX_SAVED_ROBOTS).map((r) => coerceSpec(r));
+      out.savedRobots = s.savedRobots.slice(0, MAX_SAVED_ROBOTS).map((r) => coerceSpec(r, undefined, out.game));
     }
     if (Array.isArray(s.savedAutos)) {
       out.savedAutos = s.savedAutos

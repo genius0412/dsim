@@ -71,7 +71,7 @@ function inertGoal(alliance: Alliance): GoalState {
 }
 
 function makeChainRobot(setup: RobotSetup, nth: number): RobotState {
-  const spec = coerceSpec(setup.spec, DEFAULT_SPEC);
+  const spec = coerceSpec(setup.spec, DEFAULT_SPEC, 'chain');
   const assists = coerceAssists(setup.assists, DEFAULT_ASSISTS);
   // honour the chosen start (the selector's `startIndex`); default a 2-robot alliance to
   // its two Lab corners (0/1). Always a legal Lab-Area / Ring-Stand pose (G04).

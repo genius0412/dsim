@@ -4,6 +4,7 @@ import type {
   ArtifactColor,
   AssistConfig,
   DrivetrainType,
+  GameId,
   GameMode,
   GoalState,
   Motif,
@@ -32,6 +33,8 @@ import {
   CHAIN_DEFAULT_INTAKE,
   CHAIN_SCORE_MODES,
   CHAIN_INTAKE_STYLES,
+  CHAIN_MIN_LENGTH,
+  CHAIN_MAX_LENGTH,
 } from '../games/chain/config';
 import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
 import { lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
@@ -115,7 +118,7 @@ function clampFinite(n: unknown, lo: number, hi: number, fallback: number): numb
  * are clamped to their legal ranges (length per intake preset, mass per
  * drivetrain×inertia, rpm per drivetrain). Never throws; always returns a spec
  * safe to spawn. */
-export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotSpec {
+export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: GameId): RobotSpec {
   const out: RobotSpec = { ...base };
   const sp = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
 
@@ -142,8 +145,12 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC): RobotS
     out.drivetrain = sp.drivetrain;
   }
 
-  // 1) SIZE: length from the intake preset, width floored per drivetrain
-  const len = lengthLimits(out.intake);
+  // 1) SIZE: length from the intake preset, width floored per drivetrain. Chain Reaction runs
+  // its own length range (its sweeper doesn't eat into an 18" cube — see CHAIN_MAX_LENGTH).
+  const len =
+    game === 'chain'
+      ? { min: CHAIN_MIN_LENGTH, max: CHAIN_MAX_LENGTH }
+      : lengthLimits(out.intake);
   const wid = widthLimits(out.intake, out.drivetrain);
   out.length = clampFinite(sp.length, len.min, len.max, base.length);
   out.width = clampFinite(sp.width, wid.min, wid.max, base.width);

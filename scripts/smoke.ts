@@ -4283,6 +4283,11 @@ const mkMM = () => {
     // a big open-hopper launcher can reach ~60 (the raised ceiling)
     const bigDrum = chainStorageMax({ ...base, scoreMode: 'drum', length: 18, width: 18 });
     check('chain storage: a large launcher tops out near the 60 ceiling', bigDrum >= 55 && bigDrum <= 60, `bigDrum=${bigDrum}`);
+    // CR chassis can be up to 18" long (coerceSpec with game 'chain' uses CR's length range,
+    // not the DECODE intake-limited one) — DECODE stays clamped to its intake preset.
+    const crLong = coerceSpec({ ...DEFAULT_SPEC, length: 18 }, undefined, 'chain');
+    const decLong = coerceSpec({ ...DEFAULT_SPEC, length: 18 });
+    check('chain size: a CR chassis can run the full 18" length', crLong.length === 18 && decLong.length < 18, `cr=${crLong.length} decode=${decLong.length}`);
   }
 
   // catalyst multiplier: a catalyst seated on a blue hook ⇒ +1 pt per particle
@@ -4404,15 +4409,16 @@ const mkMM = () => {
         `before=${vBefore.toFixed(0)} after=${vAfter.toFixed(0)} keep=${(vAfter / (vBefore || 1)).toFixed(2)}`,
       );
     }
-    // mecanum is only a little worse than tank from a standstill (not "immediately bad")
+    // MECANUM is the BEST beam-crosser (suspension + low CG) — it keeps more than tank at speed
     check(
-      'chain beams: mecanum standstill is close to tank (not badly penalized)',
-      beamDragFactor(mk('mecanum', 1), 0) > 0.7 &&
-        beamDragFactor(mk('tank', 1), 0) - beamDragFactor(mk('mecanum', 1), 0) < 0.2,
+      'chain beams: mecanum crosses better than swerve (and edges tank)',
+      beamDragFactor(mk('mecanum', 1), 50) > beamDragFactor(mk('swerve', 1), 50) &&
+        beamDragFactor(mk('mecanum', 1), 50) >= beamDragFactor(mk('tank', 1), 50),
     );
+    // clearance floor 0.3" ⇒ best handling (no CoG penalty); more clearance = more sluggish
     check(
       'chain beams: raised CoG reduces drive authority',
-      cogFactor(mk('tank', 3)) < cogFactor(mk('tank', 0.5)) && cogFactor(mk('tank', 0.5)) === 1,
+      cogFactor(mk('tank', 1.5)) < cogFactor(mk('tank', 0.3)) && cogFactor(mk('tank', 0.3)) === 1,
     );
     // SWERVE is hit WAY harder by a raised CoG than any other drivetrain (tippy tall modules)
     check(

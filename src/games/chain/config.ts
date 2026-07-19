@@ -127,9 +127,11 @@ export const CHAIN_BEAM_MOMENTUM_EASE = 0.55;
 /** hard ceiling on the per-tick across-speed KEPT on a beam — so even a full-speed crossing
  * sheds a real chunk of speed (a beam is always a noticeable bump). */
 export const CHAIN_BEAM_MAX_RETAIN = 0.98;
-/** ground-clearance slider (inches). Default just meets a 1" beam (0 margin). */
-export const CHAIN_CLEARANCE_MIN = 0.5;
-export const CHAIN_CLEARANCE_MAX = 3;
+/** ground-clearance slider (inches). Default just meets a 1" beam (0 margin). A robot below
+ * the 1" beam height can't cross beams (blocked); the range spans a low-CG chassis (0.3") up
+ * to a beam-clearing 1.5". */
+export const CHAIN_CLEARANCE_MIN = 0.3;
+export const CHAIN_CLEARANCE_MAX = 1.5;
 export const CHAIN_CLEARANCE_DEFAULT = 1;
 /** max fraction of drive authority lost at full clearance (raised center of gravity) */
 export const CHAIN_COG_PENALTY = 0.16;
@@ -256,6 +258,11 @@ export const CHAIN_THROWBACK_SPREAD = 45; // in/s lateral spread on the throw-in
 export const CHAIN_STORAGE_MIN = 1;
 export const CHAIN_STORAGE_MAX = 60; // ceiling: the control prism packs a bit over one layer
 export const CHAIN_STORAGE_DEFAULT = 8;
+
+/** Chain Reaction chassis LENGTH range (in). Unlike DECODE, CR's intake doesn't eat into an
+ * 18" cube (the sweeper deploys), so a CR chassis can run the full 18" long. */
+export const CHAIN_MIN_LENGTH = 10;
+export const CHAIN_MAX_LENGTH = 18;
 // effective sq in of chassis footprint per stored Particle — a 3"×3" ball hex-packs at ~8,
 // then G03 EXPANSION (the deployed hopper reaches past the 18"×18" frame into the 18"×24"
 // control prism) lets a full-frame launcher approach the ceiling: ~5.4 in²/ball → an 18×18
@@ -362,7 +369,7 @@ export const CHAIN_PRESETS: readonly RobotSpec[] = [
     name: 'Sniper', teamName: 'Turret · scores from anywhere', teamNumber: 0,
     length: 14.5, width: 17, intake: 'sloped', massLb: 24, drivetrain: 'swerve',
     driveRpm: 500, flywheelInertia: 0.2, canSort: false,
-    ballStorage: 12, groundClearance: 1.8, scoreMode: 'turret', chainIntake: 'sweeper',
+    ballStorage: 12, groundClearance: 1.3, scoreMode: 'turret', chainIntake: 'sweeper',
   },
   {
     // volume hauler: dumps a huge load at the wall, tank push + MAX storage + high
@@ -370,7 +377,7 @@ export const CHAIN_PRESETS: readonly RobotSpec[] = [
     name: 'Hauler', teamName: 'Dumper · haul & unload', teamNumber: 0,
     length: 15, width: 18, intake: 'sloped', massLb: 38, drivetrain: 'tank',
     driveRpm: 340, flywheelInertia: 0.2, canSort: false,
-    ballStorage: 40, groundClearance: 2.2, scoreMode: 'dumper', chainIntake: 'sweeper',
+    ballStorage: 40, groundClearance: 1.5, scoreMode: 'dumper', chainIntake: 'sweeper',
   },
   {
     // the volume shooter: a chassis-wide drum firing 6 at once from anywhere, light mecanum

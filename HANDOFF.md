@@ -1,6 +1,22 @@
 # HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
 
-## Latest session — CR storage ceiling 60 + lighter beam drag
+## Latest session — mecanum best on beams, CG range 0.3–1.5, CR length to 18
+
+- **Mecanum is the BEST beam-crosser** (suspension + low CG); swerve worst. `TRACTION` reordered
+  (mecanum .91 / tank .90 / xdrive .89 / swerve .87). Crucially the beam CoG penalty now scales
+  with the clearance **margin above the beam** (`(clr−beamH)/(MAX−beamH)`), not absolute
+  clearance — so a just-clearing chassis (clr≈1) pays NOTHING and the default isn't over-slowed.
+  Crossing keeps ~mecanum .70 / tank .69 / swerve .53 / xdrive .42.
+- **Ground-clearance range → [0.3, 1.5]** (`CHAIN_CLEARANCE_MIN/MAX`). CR presets' clearance
+  lowered under 1.5 (Sniper 1.3, Hauler 1.5). CoG smoke test now checks the 0.3 floor = no penalty.
+- **CR chassis length up to 18"** — `coerceSpec(raw, base, game?)` gained a game param; for
+  `'chain'` it uses `CHAIN_MIN_LENGTH/CHAIN_MAX_LENGTH` (10–18) instead of the DECODE
+  intake-limited range (~15). Threaded from CR spawn ('chain'), the Menu (`settings.game`), and
+  settings.ts (active + saved specs). DECODE is byte-identical (no game arg ⇒ old path). The
+  Menu length slider mirrors it. (Note: cross-game saved robots use the CURRENT game's range —
+  a saved CR-length robot viewed under DECODE would clamp to ~15; acceptable edge.)
+
+## CR storage ceiling 60 + lighter beam drag
 
 - **Storage max raised to 60** (`CHAIN_STORAGE_MAX` 48→60; `CHAIN_STORE_AREA_PER_BALL` 6.5→5.4
   so a full 18×18 open-hopper launcher actually reaches ~60; turret still smaller via its mult).

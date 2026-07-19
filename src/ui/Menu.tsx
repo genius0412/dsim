@@ -11,6 +11,8 @@ import {
   CHAIN_DEFAULT_SCORE_MODE,
   CHAIN_DEFAULT_INTAKE,
   CHAIN_PRESETS,
+  CHAIN_MIN_LENGTH,
+  CHAIN_MAX_LENGTH,
   chainStorageMax,
 } from '../games/chain/config';
 import { driveParams, lengthLimits, massLimits, rpmLimits, widthLimits } from '../sim/drivetrain';
@@ -137,7 +139,7 @@ export function Menu({ settings, onChange }: Props) {
     // it is length-capped on save, not mid-keystroke.
     const merged = { ...settings.spec, ...patch };
     const next: GameSettings['spec'] = {
-      ...coerceSpec(merged),
+      ...coerceSpec(merged, undefined, settings.game),
       name: merged.name,
       teamName: merged.teamName,
     };
@@ -163,7 +165,11 @@ export function Menu({ settings, onChange }: Props) {
   // slider envelopes come from the SAME limit functions coerceSpec clamps with,
   // in the same dependency order (intake → size, drivetrain → rpm, drivetrain ×
   // inertia → mass), so the UI and the validator can never disagree
-  const { min: minLength, max: maxLength } = lengthLimits(spec.intake);
+  // CR runs its own length range (its sweeper doesn't eat into an 18" cube, unlike DECODE's
+  // reach-limited intakes) — mirror coerceSpec's game-aware clamp.
+  const { min: minLength, max: maxLength } = isDecode
+    ? lengthLimits(spec.intake)
+    : { min: CHAIN_MIN_LENGTH, max: CHAIN_MAX_LENGTH };
   const { min: minWidth, max: maxWidth } = widthLimits(spec.intake, spec.drivetrain);
   const { min: minRpm, max: maxRpm } = rpmLimits(spec.drivetrain);
   const { min: minMass, max: maxMass } = massLimits(spec.drivetrain, spec.flywheelInertia);

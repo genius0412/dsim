@@ -46,14 +46,15 @@ export const CHAIN_BEAMS: { rect: Rect; axis: 'x' | 'y' }[] = [
   { rect: { x0: -BEAM_HALF_W, y0: -CHAIN_HALF_Y, x1: BEAM_HALF_W, y1: -INNER }, axis: 'x' }, // −y axis
 ];
 
-/** standstill "grip" of each drivetrain climbing a bump (0..1) — how much across-speed
- * it keeps per tick with NO momentum. Traction (tank/swerve) climb best; mecanum only a
- * little worse; omni/x-drive is the slowest (relies most on momentum) but still crosses. */
+/** how much across-speed a drivetrain keeps per tick climbing a beam (0..1). MECANUM is BEST:
+ * it easily runs compliant/suspension wheels while keeping a LOW center of gravity, so it soaks
+ * up the bump. Tank is close behind (grippy). SWERVE is worst — its tall steering pods ride high
+ * (high CG) and scrub over the tube. X-drive sits between (omni rollers, low CG, but skittish). */
 const TRACTION: Record<DrivetrainType, number> = {
-  tank: 0.96,
-  swerve: 0.94,
-  mecanum: 0.92,
-  xdrive: 0.93,
+  mecanum: 0.91,
+  tank: 0.9,
+  xdrive: 0.89,
+  swerve: 0.87,
 };
 
 export function clearanceOf(spec: RobotSpec): number {
@@ -87,8 +88,11 @@ export function beamDragFactor(spec: RobotSpec, acrossSpeed: number): number {
   const clr = clearanceOf(spec);
   const base = clamp(TRACTION[spec.drivetrain] + 0.05 * (clr - CHAIN_BEAM_HEIGHT), 0.4, 0.98);
   const mom = clamp(Math.abs(acrossSpeed) / CHAIN_BEAM_MOMENTUM_REF, 0, 1);
-  const cogFrac = clamp((clr - CHAIN_CLEARANCE_MIN) / (CHAIN_CLEARANCE_MAX - CHAIN_CLEARANCE_MIN), 0, 1);
-  const retain = (base + CHAIN_BEAM_MOMENTUM_EASE * (1 - base) * mom) * (1 - 0.12 * cogFrac);
+  // beam-crossing CoG penalty scales with how HIGH the robot rides ABOVE the beam (its margin),
+  // not its absolute clearance — a chassis that just clears (clr≈beam height) rides low and pays
+  // nothing; a tall high-clearance one tips more. Keeps the default (clr=1) penalty-free.
+  const margin = clamp((clr - CHAIN_BEAM_HEIGHT) / (CHAIN_CLEARANCE_MAX - CHAIN_BEAM_HEIGHT), 0, 1);
+  const retain = (base + CHAIN_BEAM_MOMENTUM_EASE * (1 - base) * mom) * (1 - 0.1 * margin);
   return clamp(retain, 0.4, CHAIN_BEAM_MAX_RETAIN);
 }
 
