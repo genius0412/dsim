@@ -64,9 +64,11 @@ function assignPadButton(b: ControlBindings, action: PadAction, slot: number, id
 interface Props {
   bindings: ControlBindings;
   onChange: (b: ControlBindings) => void;
+  /** launch Free Drive with the on-screen touch-control layout editor open */
+  onEditTouchControls: () => void;
 }
 
-export function ControlsSection({ bindings, onChange }: Props) {
+export function ControlsSection({ bindings, onChange, onEditTouchControls }: Props) {
   const [capture, setCapture] = useState<Capture | null>(null);
 
   // keyboard capture: next keydown becomes the binding; Escape cancels
@@ -137,6 +139,16 @@ export function ControlsSection({ bindings, onChange }: Props) {
   return (
     <section className="ds-sec">
       <h2>Controls</h2>
+      <div className="ds-bind-block" style={{ marginBottom: 18 }}>
+        <h3>Touch controls</h3>
+        <p className="ds-sub" style={{ margin: '2px 0 10px' }}>
+          On phones/tablets the two joysticks and action buttons are always on screen. Customize
+          where they sit — this opens Free Drive with a drag-to-move editor.
+        </p>
+        <button className="ds-btn" onClick={onEditTouchControls}>
+          Customize touch controls
+        </button>
+      </div>
       <div className="ds-binds">
         <div className="ds-bind-block">
           <h3>Keyboard</h3>

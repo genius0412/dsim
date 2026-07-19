@@ -10,6 +10,7 @@ import { keyLabel, padButtonLabel } from '../input/bindings';
 import { appChannel } from '../net/env';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
+import { DEFAULT_MOBILE_LAYOUT } from '../settings';
 import type { MatchResultInfo, NetSession, NetStatus } from '../net/session';
 import { clearActiveGame } from '../net/activeGame';
 import type { RecordRankInfo } from '../net/protocol';
@@ -166,13 +167,26 @@ interface Props {
   /** whether the player is signed in — drives the record results "sign in to
    * save & rank" prompt vs the live PB / WR / rank line */
   signedIn?: boolean;
+  /** persist a settings change from in-game (currently: the mobile control layout) */
+  onSettingsChange?: (s: GameSettings) => void;
+  /** start in mobile-control-layout EDIT mode (launched from the Controls menu) */
+  editLayout?: boolean;
 }
 
-export function GameView({ settings, onExit, session = null, onWatchReplay, signedIn = false }: Props) {
+export function GameView({
+  settings,
+  onExit,
+  session = null,
+  onWatchReplay,
+  signedIn = false,
+  onSettingsChange,
+  editLayout = false,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controllerRef = useRef<GameController | null>(null);
   const [hud, setHud] = useState<HudSnapshot | null>(null);
   const [intro, setIntro] = useState<IntroPlayer[] | null>(null);
+  const [editingLayout, setEditingLayout] = useState(editLayout);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
@@ -204,6 +218,31 @@ export function GameView({ settings, onExit, session = null, onWatchReplay, sign
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // MOBILE zoom/select guard: iOS Safari ignores `user-scalable=no`, so a two-finger
+  // pinch still zooms and a two-finger touch can pop the text-selection callout. Kill
+  // the iOS `gesture*` events and any multi-touch default while the game is up, plus
+  // the double-tap zoom. (touch-action:none on .game-root covers scroll-zoom.)
+  useEffect(() => {
+    const prevent = (e: Event): void => e.preventDefault();
+    let lastTouchEnd = 0;
+    const onTouchEnd = (e: TouchEvent): void => {
+      const now = Date.now();
+      if (now - lastTouchEnd <= 300) e.preventDefault(); // double-tap zoom
+      lastTouchEnd = now;
+    };
+    // passive:false is required for preventDefault to take effect
+    document.addEventListener('gesturestart', prevent, { passive: false });
+    document.addEventListener('gesturechange', prevent, { passive: false });
+    document.addEventListener('gestureend', prevent, { passive: false });
+    document.addEventListener('touchend', onTouchEnd, { passive: false });
+    return () => {
+      document.removeEventListener('gesturestart', prevent);
+      document.removeEventListener('gesturechange', prevent);
+      document.removeEventListener('gestureend', prevent);
+      document.removeEventListener('touchend', onTouchEnd);
+    };
+  }, []);
+
   return (
     <div className="game-root">
       {/* A screen-reader-playable driving sim is out of scope (see the Phase 6 audit,
@@ -216,7 +255,24 @@ export function GameView({ settings, onExit, session = null, onWatchReplay, sign
         aria-label={`${hud?.game === 'chain' ? 'Chain Reaction' : 'DECODE'} field, top-down view. Match state is announced in the event log.`}
       />
       {window.matchMedia('(pointer: coarse)').matches && controllerRef.current && (
-        <MobileControls inputManager={controllerRef.current.getInputManager()} game={hud?.game} />
+        <MobileControls
+          inputManager={controllerRef.current.getInputManager()}
+          game={hud?.game}
+          layout={settings.mobileLayout}
+          editing={editingLayout}
+          onLayoutChange={(l) => onSettingsChange?.({ ...settings, mobileLayout: l })}
+        />
+      )}
+      {editingLayout && (
+        <div className="mobile-edit-bar">
+          <span className="meb-hint">Drag the sticks &amp; buttons to reposition</span>
+          <button onClick={() => onSettingsChange?.({ ...settings, mobileLayout: DEFAULT_MOBILE_LAYOUT })}>
+            Reset
+          </button>
+          <button className="primary" onClick={() => setEditingLayout(false)}>
+            Done
+          </button>
+        </div>
       )}
       {hud?.net && (hud.net.failed || hud.net.waitingFor === 'server') && (
         <div className="net-overlay">

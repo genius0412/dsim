@@ -36,12 +36,21 @@ button {
   position: relative;
   width: 100%;
   height: 100%;
+  /* MOBILE: the whole game surface is a control pad — no text selection, no
+     long-press callout, no pinch/scroll-zoom, no rubber-band overscroll. Pairs with
+     the viewport meta (user-scalable=no) + the gesturestart guard in GameView. */
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  overscroll-behavior: none;
 }
 
 .game-canvas {
   display: block;
   width: 100%;
   height: 100%;
+  touch-action: none;
 }
 
 .hud {
@@ -1322,35 +1331,54 @@ button {
 
 /* ---------------------------------------------------------- mobile controls ---- */
 
-.mobile-controls {
+/* MOBILE controls are TWO layers: a full-screen touch-capture pad UNDER the HUD (so
+   the top MENU/chips still receive taps), and a visuals+buttons overlay ABOVE the HUD
+   (so the scorebar never occludes the buttons). */
+.mobile-touch {
   position: absolute;
   inset: 0;
-  pointer-events: auto;
+  z-index: 1; /* below the HUD (z-10) so top-left MENU/RESET stay tappable */
   user-select: none;
-  z-index: 1;
+  touch-action: none;
+}
+.mobile-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 12; /* above the scorebar (z-10); children re-enable pointer-events */
+  pointer-events: none;
+  user-select: none;
   touch-action: none;
 }
 
-/* The joystick is drawn ON the field canvas, with only a translucent dark puck behind
-   it — so like the countdown it takes the fixed --ds-on-field family. It previously
-   used the --text/--muted bridge, which the retheme had turned CHARCOAL: a near-black
-   handle on a near-black field. Broken in light mode, and invisible either way. */
+/* Joysticks are drawn ON the field, so they take the fixed --ds-on-field family (never
+   inverted). Always visible at their home; while a finger drives them the base floats to
+   the finger (`.active`). left/top are the CENTRE (positioned via transform). */
 .mobile-joystick-base {
   position: absolute;
-  width: 120px;
-  height: 120px;
-  background: rgba(28, 32, 39, 0.6);
+  transform: translate(-50%, -50%);
+  background: rgba(28, 32, 39, 0.55);
   border: 2px solid var(--ds-hud-line);
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
+  opacity: 0.5;
   touch-action: none;
+  transition: opacity 0.12s ease;
 }
-
+.mobile-joystick-base.active {
+  opacity: 1;
+}
+.mobile-joystick-base.editing {
+  pointer-events: auto;
+  opacity: 0.9;
+  border-style: dashed;
+  border-color: var(--ds-on-field-accent);
+  cursor: grab;
+}
 .mobile-joystick-label {
   position: absolute;
-  top: -20px;
+  top: -18px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 10px;
@@ -1359,37 +1387,21 @@ button {
   color: var(--ds-on-field-dim);
   text-transform: uppercase;
 }
-
 .mobile-joystick-handle {
-  width: 44px;
-  height: 44px;
   background: var(--ds-on-field);
   border-radius: 50%;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
   pointer-events: none;
-  transition: opacity 0.15s;
 }
 
-/* thumb action buttons (fire / intake / catalyst). Drawn ON the dark field, so they
-   take the fixed --ds-on-field family (never inverted). The container is click-through
-   so only the buttons themselves capture touches. */
-.mobile-actions {
-  position: absolute;
-  right: max(18px, env(safe-area-inset-right));
-  bottom: max(28px, env(safe-area-inset-bottom));
-  display: flex;
-  align-items: flex-end;
-  gap: 14px;
-  pointer-events: none;
-  z-index: 2;
-}
+/* thumb action buttons (fire / intake / catalyst). left/top = CENTRE (transform). */
 .mobile-btn {
+  position: absolute;
+  transform: translate(-50%, -50%);
   pointer-events: auto;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
   user-select: none;
-  width: 66px;
-  height: 66px;
   border-radius: 50%;
   border: 2px solid var(--ds-hud-line);
   background: rgba(28, 32, 39, 0.62);
@@ -1400,30 +1412,142 @@ button {
   justify-content: center;
   gap: 1px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
-  transition: transform 0.06s ease, background 0.1s;
+  transition: background 0.1s;
 }
 .mobile-btn .mb-ico {
-  font-size: 22px;
   line-height: 1;
+  font-size: 1.9em;
 }
 .mobile-btn .mb-lbl {
-  font-size: 9.5px;
   font-weight: 800;
   letter-spacing: 0.5px;
+  font-size: 0.82em;
 }
 .mobile-btn.pressed {
-  transform: scale(0.93);
+  transform: translate(-50%, -50%) scale(0.92);
   background: rgba(28, 32, 39, 0.85);
 }
-/* SHOOT is the primary action — larger + accent-outlined */
 .mobile-btn.shoot {
-  width: 84px;
-  height: 84px;
   border-color: var(--ds-on-field-accent);
   color: var(--ds-on-field-accent);
 }
-.mobile-btn.shoot .mb-ico {
-  font-size: 28px;
+.mobile-btn.editing {
+  border-style: dashed;
+  border-color: var(--ds-on-field-accent);
+  cursor: grab;
+}
+
+/* edit-layout bar (mobile control customization) */
+.mobile-edit-bar {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 22;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--ds-round-full);
+  background: rgba(20, 24, 30, 0.92);
+  border: 1px solid var(--ds-hud-line);
+  color: var(--ds-on-field);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+.mobile-edit-bar .meb-hint {
+  font-size: 12px;
+  color: var(--ds-on-field-dim);
+  max-width: 40vw;
+}
+.mobile-edit-bar button {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  padding: 7px 14px;
+  border-radius: var(--ds-round-full);
+  border: 1px solid var(--ds-hud-line);
+  background: transparent;
+  color: var(--ds-on-field);
+  cursor: pointer;
+}
+.mobile-edit-bar button.primary {
+  background: var(--ds-on-field-accent);
+  color: #10241b;
+  border-color: transparent;
+}
+
+/* TOUCH devices: the scoreboard is deliberately compact so the field gets the room,
+   and the top MENU/RESET buttons shrink to free the top for the map. The camera's
+   reserved HUD bands shrink to match (camera.ts, orientation-aware). */
+@media (pointer: coarse), (max-height: 520px) {
+  .scorebar {
+    border-radius: var(--ds-round-md) var(--ds-round-md) 0 0;
+  }
+  .score-panel {
+    min-width: 74px;
+    padding: 4px 12px;
+    gap: 5px;
+  }
+  .score-panel .panel-score {
+    font-size: 22px;
+  }
+  .score-panel .you-tag {
+    font-size: 8px;
+  }
+  .timer-panel {
+    min-width: 108px;
+    padding: 3px 14px;
+  }
+  .timer-panel .timer-time {
+    font-size: 20px;
+  }
+  .timer-panel .timer-phase,
+  .timer-panel .timer-motif {
+    font-size: 8.5px;
+  }
+  .breakdown-row {
+    bottom: 50px;
+  }
+  .breakdown-row span {
+    font-size: 10px;
+    padding: 2px 7px;
+  }
+  /* compact top-left menu/reset so the map can use the top */
+  .game-buttons {
+    top: max(6px, env(safe-area-inset-top));
+    left: max(6px, env(safe-area-inset-left));
+    gap: 6px;
+  }
+  .game-btn {
+    padding: 6px 11px;
+    font-size: 12px;
+  }
+}
+/* LANDSCAPE is height-starved — squeeze the score menu harder + drop the breakdown row
+   nearly onto the scorebar so the map claims the vertical space. */
+@media (orientation: landscape) and (pointer: coarse), (orientation: landscape) and (max-height: 460px) {
+  .score-panel {
+    min-width: 62px;
+    padding: 2px 10px;
+  }
+  .score-panel .panel-score {
+    font-size: 19px;
+  }
+  .timer-panel {
+    min-width: 96px;
+    padding: 2px 12px;
+  }
+  .timer-panel .timer-time {
+    font-size: 17px;
+  }
+  .breakdown-row {
+    bottom: 42px;
+  }
+  .breakdown-row span {
+    font-size: 9px;
+    padding: 1px 6px;
+  }
 }
 
 /* admin server-notice banner (scheduled restart countdown / info) */

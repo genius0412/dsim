@@ -35,11 +35,14 @@ export function Configure({
   onChange,
   section,
   onSection,
+  onEditTouchControls,
 }: {
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
   section: ConfigureSection;
   onSection: (s: ConfigureSection) => void;
+  /** launch Free Drive with the on-screen touch-control layout editor open */
+  onEditTouchControls: () => void;
 }) {
   return (
     <>
@@ -68,6 +71,7 @@ export function Configure({
             <ControlsSection
               bindings={settings.bindings}
               onChange={(bindings) => onChange({ ...settings, bindings })}
+              onEditTouchControls={onEditTouchControls}
             />
           )}
           {section === 'audio' && <AudioSection settings={settings} onChange={onChange} />}
