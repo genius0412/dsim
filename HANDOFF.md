@@ -1,6 +1,22 @@
 # HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
 
-## Latest session — global "games played" recorded per game, combined on homepage
+## Latest session — archived-season ELO is FROZEN (historical standings)
+
+Even though ELO persists across seasons within an act, viewing a PAST season's leaderboard/career
+now shows the rating FROZEN at that season's end (not the moved-on live rating).
+- **`0014_elo_history.sql`**: new `elo_history(user_id, mode, game, balance_version, rating, rd,
+  vol, games)` — a per-SEASON snapshot. Written on every rated match (`upsertEloHistory` in
+  `ranked.ts`, alongside `upsertRating`); while a season is live it tracks the latest rating,
+  once it rolls it stays frozen = the end-of-season state.
+- **Read routing**: the LIVE season reads the per-ACT board (`elo_ratings` — every currently-
+  placed player); an ARCHIVED season reads `elo_history` for that `balance_version`.
+  `api.ts /api/elo` branches on `season >= currentSeason` (adds `historical` to the response);
+  `getUserStats` (career) picks `elo_ratings` (by act) vs `elo_history` (by season) via the same
+  live check. New repo fns: `eloHistoryLeaderboard`, `eloHistoryUserStanding`, `upsertEloHistory`.
+- Pre-existing archived seasons (rolled before this feature) have no snapshot rows ⇒ their ELO
+  board reads empty; every season that rolls from now on is captured. Not deployed (private branch).
+
+## Global "games played" recorded per game, combined on homepage
 
 `getGlobalStats` (repo.ts) now groups records/matches by `(game, mode)` and returns a new
 `byGame: {decode, chain}` split (games recorded SEPARATELY per game) while the headline `games`

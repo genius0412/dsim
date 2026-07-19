@@ -9,6 +9,8 @@ import {
   ensureSeason,
   listAnnouncements,
   eloLeaderboard,
+  eloHistoryLeaderboard,
+  eloHistoryUserStanding,
   eloUserStanding,
   getGlobalStats,
   getProfile,
@@ -244,15 +246,22 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     if (url.pathname === '/api/elo') {
       const mode = url.searchParams.get('mode') === '2v2' ? '2v2' : '1v1';
       const meId = url.searchParams.get('me');
-      // ELO is per-ACT (persists across seasons within an act) — resolve the requested
-      // season's act; the record board (above) stays per-season.
-      const act = dbEnabled ? await actForSeason(season, game) : 0;
-      const rows = dbEnabled ? await eloLeaderboard({ mode, act, limit, game }) : [];
-      // the viewer's own standing (rank among placed, or games-in-placements),
-      // so the board can surface it even when they're off the visible page
-      const me =
-        dbEnabled && meId ? await eloUserStanding({ userId: meId, mode, act, game }) : null;
-      return json(200, { season, act, mode, rows, me, game }), true;
+      // The LIVE season reads the per-ACT board (elo_ratings — every currently-placed player);
+      // an ARCHIVED season reads the per-season SNAPSHOT (elo_history — ratings frozen at that
+      // season's end, so it shows the historical standings, not the moved-on live rating).
+      const current = dbEnabled ? await currentSeasonNumber(BALANCE_VERSION, game) : season;
+      const isLive = season >= current;
+      let rows: Awaited<ReturnType<typeof eloLeaderboard>> = [];
+      let me: Awaited<ReturnType<typeof eloUserStanding>> = null;
+      if (dbEnabled && isLive) {
+        const act = await actForSeason(season, game);
+        rows = await eloLeaderboard({ mode, act, limit, game });
+        me = meId ? await eloUserStanding({ userId: meId, mode, act, game }) : null;
+      } else if (dbEnabled) {
+        rows = await eloHistoryLeaderboard({ mode, balanceVersion: season, limit, game });
+        me = meId ? await eloHistoryUserStanding({ userId: meId, mode, balanceVersion: season, game }) : null;
+      }
+      return json(200, { season, mode, rows, me, game, historical: !isLive }), true;
     }
 
     // public match history keyed by USERNAME (the profile page's history list)

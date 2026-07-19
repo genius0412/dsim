@@ -748,6 +748,73 @@ export async function eloUserStanding(opts: {
   return { rank: r.rnk != null ? Number(r.rnk) : null, rating: r.rating, games: r.games };
 }
 
+// -------- per-season ELO SNAPSHOT (historical, frozen at each season's end) --
+/** Snapshot a player's post-match rating for the SEASON it was played in. While the season is
+ * live this tracks the latest rating; after it rolls it stays frozen = the end-of-season state.
+ * Called alongside `upsertRating` on every rated match. `games` is the act-cumulative count. */
+export async function upsertEloHistory(
+  userId: string,
+  mode: '1v1' | '2v2',
+  balanceVersion: number,
+  rating: number,
+  rd: number,
+  vol: number,
+  games: number,
+  game?: Game,
+): Promise<void> {
+  await q(
+    `insert into elo_history (user_id, mode, game, balance_version, rating, rd, vol, games)
+     values ($1, $2, $3, $4, $5, $6, $7, $8)
+     on conflict (user_id, mode, game, balance_version)
+       do update set rating = excluded.rating, rd = excluded.rd, vol = excluded.vol,
+                     games = excluded.games, updated_at = now()`,
+    [userId, mode, g(game), balanceVersion, Math.round(rating), rd, vol, games],
+  );
+}
+
+/** The historical leaderboard for a PAST season — the ratings frozen at that season's end. Same
+ * shape + placement filter as `eloLeaderboard`, but reads the per-season snapshot. */
+export async function eloHistoryLeaderboard(opts: {
+  mode: '1v1' | '2v2';
+  balanceVersion: number;
+  limit?: number;
+  game?: Game;
+}): Promise<{ userId: string; handle: string; username: string | null; rating: number; games: number }[]> {
+  return q<{ userId: string; handle: string; username: string | null; rating: number; games: number }>(
+    `select h.user_id as "userId", p.handle, p.username, h.rating, h.games
+     from elo_history h join profiles p on p.user_id = h.user_id
+     where h.balance_version = $1 and h.mode = $2 and h.game = $5 and h.games >= $4
+     order by h.rating desc, h.games desc
+     limit $3`,
+    [opts.balanceVersion, opts.mode, opts.limit ?? 100, PLACEMENT_GAMES, g(opts.game)],
+  );
+}
+
+/** A player's own frozen standing in a PAST season (mirrors `eloUserStanding`). */
+export async function eloHistoryUserStanding(opts: {
+  userId: string;
+  mode: '1v1' | '2v2';
+  balanceVersion: number;
+  game?: Game;
+}): Promise<{ rank: number | null; rating: number; games: number } | null> {
+  const rows = await q<{ rating: number; games: number; rnk: string | null }>(
+    `with placed as (
+       select user_id,
+              rank() over (order by rating desc, games desc) as rnk
+       from elo_history
+       where balance_version = $1 and mode = $2 and game = $5 and games >= $3
+     )
+     select h.rating, h.games, p.rnk
+     from elo_history h
+     left join placed p on p.user_id = h.user_id
+     where h.balance_version = $1 and h.mode = $2 and h.game = $5 and h.user_id = $4`,
+    [opts.balanceVersion, opts.mode, PLACEMENT_GAMES, opts.userId, g(opts.game)],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return { rank: r.rnk != null ? Number(r.rnk) : null, rating: r.rating, games: r.games };
+}
+
 // -------------------------------------------------------- global stats -----
 export interface GlobalStats {
   users: number;
@@ -830,8 +897,14 @@ export async function getUserStats(
   game?: Game,
 ): Promise<UserStats> {
   const gm = g(game);
-  // ELO is per-ACT (persists across seasons); records/matches below stay per-season.
+  // ELO for the LIVE season = the per-ACT board (persists across seasons); for an ARCHIVED
+  // season = the per-season SNAPSHOT frozen at that season's end. Records/matches stay per-season.
   const act = await actForSeason(balanceVersion, game);
+  const current = await currentSeasonNumber(balanceVersion, game);
+  const isLive = balanceVersion >= current;
+  const eloTable = isLive ? 'elo_ratings' : 'elo_history';
+  const eloKeyCol = isLive ? 'act' : 'balance_version';
+  const eloKeyVal = isLive ? act : balanceVersion;
   const [profile, elo, recPb, recRank, match, recent] = await Promise.all([
     q<{ handle: string; username: string | null }>(
       `select handle, username from profiles where user_id = $1`,
@@ -841,14 +914,14 @@ export async function getUserStats(
       `with placed as (
          select user_id, mode,
                 rank() over (partition by mode order by rating desc, games desc) as rnk
-         from elo_ratings
-         where act = $1 and game = $4 and games >= $3
+         from ${eloTable}
+         where ${eloKeyCol} = $1 and game = $4 and games >= $3
        )
        select e.mode, e.rating, e.games, p.rnk
-       from elo_ratings e
+       from ${eloTable} e
        left join placed p on p.user_id = e.user_id and p.mode = e.mode
-       where e.act = $1 and e.game = $4 and e.user_id = $2`,
-      [act, userId, PLACEMENT_GAMES, gm],
+       where e.${eloKeyCol} = $1 and e.game = $4 and e.user_id = $2`,
+      [eloKeyVal, userId, PLACEMENT_GAMES, gm],
     ),
     q<{ mode: 'solo' | 'duo'; score: number; replay_id: string | null }>(
       `select distinct on (mode) mode, score, replay_id

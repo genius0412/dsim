@@ -1,6 +1,13 @@
 import type { Alliance, GameId } from '../src/types';
 import type { MatchOutcome, MatchParticipant } from './room';
-import { actForSeason, addMatchParticipant, getRatingFull, saveMatch, upsertRating } from './db/repo';
+import {
+  actForSeason,
+  addMatchParticipant,
+  getRatingFull,
+  saveMatch,
+  upsertEloHistory,
+  upsertRating,
+} from './db/repo';
 
 /**
  * Ranked ratings — Glicko-2 (the chess.com model). Beyond a single Elo number,
@@ -193,6 +200,9 @@ export async function persistVersusMatch(
     for (const u of updates) {
       const games = await upsertRating(u.userId, mode, act, u.state.rating, u.state.rd, u.state.vol, game);
       gamesAfter.set(u.userId, games);
+      // snapshot the post-match rating for THIS SEASON — freezes into the season's final
+      // standings once it rolls (the live act board keeps evolving in elo_ratings).
+      await upsertEloHistory(u.userId, mode, balanceVersion, u.state.rating, u.state.rd, u.state.vol, games, game);
     }
   }
 
