@@ -4280,6 +4280,9 @@ const mkMM = () => {
     // coerceSpec clamps ballStorage down to the archetype+size max
     const over = coerceSpec({ ...base, ballStorage: 99 });
     check('chain storage: coerceSpec clamps ballStorage to the archetype max', over.ballStorage === turretMax, `${over.ballStorage} vs ${turretMax}`);
+    // a big open-hopper launcher can reach ~60 (the raised ceiling)
+    const bigDrum = chainStorageMax({ ...base, scoreMode: 'drum', length: 18, width: 18 });
+    check('chain storage: a large launcher tops out near the 60 ceiling', bigDrum >= 55 && bigDrum <= 60, `bigDrum=${bigDrum}`);
   }
 
   // catalyst multiplier: a catalyst seated on a blue hook ⇒ +1 pt per particle
@@ -4379,7 +4382,7 @@ const mkMM = () => {
     // below 1 (capped by CHAIN_BEAM_MAX_RETAIN), so you can't power over untouched.
     check(
       'chain beams: per-tick retain is capped below 1 even at high speed',
-      beamDragFactor(mk('mecanum', 1), 300) <= 0.95 && beamDragFactor(mk('tank', 1), 300) <= 0.95,
+      beamDragFactor(mk('mecanum', 1), 300) < 0.99 && beamDragFactor(mk('tank', 1), 300) < 0.99,
       `mecanum=${beamDragFactor(mk('mecanum', 1), 300).toFixed(2)} tank=${beamDragFactor(mk('tank', 1), 300).toFixed(2)}`,
     );
     // FULL-SIM crossing: drive a robot at speed across a beam and confirm it loses a real

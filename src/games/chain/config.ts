@@ -123,10 +123,10 @@ export const CHAIN_BEAM_MOMENTUM_REF = 55;
 /** how much a running start eases the climb (fraction of the gap to no-drag). Small — a beam
  * ALWAYS slows you down, even at high speed; momentum only helps a little (it no longer lets
  * you power over untouched). */
-export const CHAIN_BEAM_MOMENTUM_EASE = 0.45;
+export const CHAIN_BEAM_MOMENTUM_EASE = 0.55;
 /** hard ceiling on the per-tick across-speed KEPT on a beam — so even a full-speed crossing
  * sheds a real chunk of speed (a beam is always a noticeable bump). */
-export const CHAIN_BEAM_MAX_RETAIN = 0.95;
+export const CHAIN_BEAM_MAX_RETAIN = 0.98;
 /** ground-clearance slider (inches). Default just meets a 1" beam (0 margin). */
 export const CHAIN_CLEARANCE_MIN = 0.5;
 export const CHAIN_CLEARANCE_MAX = 3;
@@ -254,12 +254,13 @@ export const CHAIN_THROWBACK_SPREAD = 45; // in/s lateral spread on the throw-in
  * clamped to that ceiling. The `ballStorage` slider picks any capacity up to `chainStorageMax`.
  */
 export const CHAIN_STORAGE_MIN = 1;
-export const CHAIN_STORAGE_MAX = 48; // G02 control prism: 18"×24" ÷ 3" grid = 6×8 = 48 (one layer)
+export const CHAIN_STORAGE_MAX = 60; // ceiling: the control prism packs a bit over one layer
 export const CHAIN_STORAGE_DEFAULT = 8;
 // effective sq in of chassis footprint per stored Particle — a 3"×3" ball hex-packs at ~8,
 // then G03 EXPANSION (the deployed hopper reaches past the 18"×18" frame into the 18"×24"
-// control prism) lets a full-frame launcher approach the 48 ceiling: ~6.5 in²/ball.
-export const CHAIN_STORE_AREA_PER_BALL = 6.5;
+// control prism) lets a full-frame launcher approach the ceiling: ~5.4 in²/ball → an 18×18
+// open-hopper launcher tops out near 60.
+export const CHAIN_STORE_AREA_PER_BALL = 5.4;
 export const CHAIN_STORE_TURRET_MULT = 0.55; // turret loses center volume to the rotor+shooter
 export const CHAIN_STORE_LAUNCHER_MULT = 1.0; // drum + dumper: open hopper (large, equal)
 

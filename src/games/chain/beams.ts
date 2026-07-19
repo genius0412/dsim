@@ -50,10 +50,10 @@ export const CHAIN_BEAMS: { rect: Rect; axis: 'x' | 'y' }[] = [
  * it keeps per tick with NO momentum. Traction (tank/swerve) climb best; mecanum only a
  * little worse; omni/x-drive is the slowest (relies most on momentum) but still crosses. */
 const TRACTION: Record<DrivetrainType, number> = {
-  tank: 0.9,
-  swerve: 0.86,
-  mecanum: 0.78,
-  xdrive: 0.66,
+  tank: 0.96,
+  swerve: 0.94,
+  mecanum: 0.92,
+  xdrive: 0.93,
 };
 
 export function clearanceOf(spec: RobotSpec): number {
@@ -85,7 +85,7 @@ export function canCrossBeams(spec: RobotSpec): boolean {
  */
 export function beamDragFactor(spec: RobotSpec, acrossSpeed: number): number {
   const clr = clearanceOf(spec);
-  const base = clamp(TRACTION[spec.drivetrain] + 0.05 * (clr - CHAIN_BEAM_HEIGHT), 0.4, 0.9);
+  const base = clamp(TRACTION[spec.drivetrain] + 0.05 * (clr - CHAIN_BEAM_HEIGHT), 0.4, 0.98);
   const mom = clamp(Math.abs(acrossSpeed) / CHAIN_BEAM_MOMENTUM_REF, 0, 1);
   const cogFrac = clamp((clr - CHAIN_CLEARANCE_MIN) / (CHAIN_CLEARANCE_MAX - CHAIN_CLEARANCE_MIN), 0, 1);
   const retain = (base + CHAIN_BEAM_MOMENTUM_EASE * (1 - base) * mom) * (1 - 0.12 * cogFrac);

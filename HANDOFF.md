@@ -1,6 +1,17 @@
 # HANDOFF — 2026-07-19 (Chain Reaction: wall square-up + drivetrain diagonal audit) — READ FIRST
 
-## Latest session — SPECTATING (watch live matches)
+## Latest session — CR storage ceiling 60 + lighter beam drag
+
+- **Storage max raised to 60** (`CHAIN_STORAGE_MAX` 48→60; `CHAIN_STORE_AREA_PER_BALL` 6.5→5.4
+  so a full 18×18 open-hopper launcher actually reaches ~60; turret still smaller via its mult).
+- **Beams slow you less** (user: "too much"). Raised the per-drivetrain `TRACTION` grips
+  (tank .96 / swerve .94 / mecanum .92 / xdrive .93), base cap → .98, `CHAIN_BEAM_MAX_RETAIN`
+  .95→.98, `CHAIN_BEAM_MOMENTUM_EASE` .45→.55. Full-sim high-speed crossing now KEEPS ~tank .72
+  / swerve .57 / mecanum .58 / xdrive .44 (was ~.53/.32/.32/.34) — still a real slowdown, just
+  not crippling. Smoke's per-tick-retain threshold relaxed to `< 0.99`; storage test asserts a
+  big launcher hits ~60.
+
+## SPECTATING (watch live matches)
 
 You can now watch any live match read-only, and there's a "Watch Live" list.
 - **Server** (`room.ts`): `spectators` map separate from `clients`. `addSpectator(c)` sends the
