@@ -19,7 +19,7 @@ export function AccountButton({ onAccount }: { onAccount?: () => void }) {
     // page, which doesn't require an account. Sign-in sits beside it.
     return (
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <button className="ds-btn ghost" onClick={onAccount} title="Settings — controls & audio">
+        <button className="ds-btn" onClick={onAccount} title="Settings — controls & audio">
           Settings
         </button>
         <button className="ds-btn" onClick={() => setOpen(true)}>Sign in</button>

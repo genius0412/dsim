@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { APP_NAME, CURRENT_SEASON, LINKS } from '../seasons';
+import { APP_NAME, seasonFor, LINKS } from '../seasons';
+import type { GameId } from '../games/types';
 import { Logo } from './Logo';
 import { NavRail } from './NavRail';
 import { usePresence } from './usePresence';
@@ -61,6 +62,7 @@ export function AppShell({
   showAdmin,
   showRail = true,
   onDownload,
+  game,
 }: {
   active: ShellNav;
   onNav: (n: ShellNav) => void;
@@ -72,8 +74,11 @@ export function AppShell({
   showRail?: boolean;
   /** Download is a footer destination, not one of the four `ShellNav` tabs */
   onDownload: () => void;
+  /** the selected game — the footer names its season (DECODE / Chain Reaction) */
+  game: GameId;
 }) {
   const presence = usePresence();
+  const season = seasonFor(game);
   return (
     <div className="ds-app">
       <header className="ds-bar">
@@ -98,7 +103,7 @@ export function AppShell({
 
       <footer className="ds-foot">
         <span className="ds-foot-brand">
-          {APP_NAME} · {CURRENT_SEASON.name} {CURRENT_SEASON.years}
+          {APP_NAME} · {season.name} {season.years}
         </span>
         <span className="ds-foot-links">
           <button className="ds-foot-link" onClick={onDownload}>

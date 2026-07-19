@@ -33,6 +33,9 @@ import { encodeMsg } from '../net/protocol';
 import { activeStartLegal } from '../sim/field';
 import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } from '../net/activeGame';
 import type { Replay } from '../sim/replay';
+import { seasonFor, APP_NAME } from '../seasons';
+import type { GameId } from '../games/types';
+import { chainDisclaimerSeen, markChainDisclaimerSeen } from '../chainDisclaimer';
 
 type Screen =
   | 'home'
@@ -63,19 +66,26 @@ interface RouteArgs {
 const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null };
 
 /**
- * Tiny path router (no dependency). Each screen is a real URL — /modes,
- * /configure/robot, /records/career, /replay/<id>, … — via the History API, so
- * links are shareable and back/forward work. The web build uses an absolute base
- * + a vercel.json SPA rewrite so a deep load/refresh resolves. Under Electron
- * (file://) there is no History to push, so we route by state only
- * (isWebHistory === false).
+ * Tiny path router (no dependency). Each screen is a real URL, and every URL is
+ * PREFIXED by the selected game — /decode/modes, /chain/configure/robot,
+ * /chain/records/career, … — via the History API, so links are shareable, the
+ * game is always visible in the address bar, and back/forward switch both the
+ * screen AND the game. DECODE and Chain Reaction never share a URL. The web build
+ * uses an absolute base + a vercel.json SPA rewrite so a deep load/refresh
+ * resolves. Under Electron (file://) there is no History to push, so we route by
+ * state only (isWebHistory === false).
+ *
+ * Back-compat: an OLD unprefixed link (/modes, /leaderboard) still resolves — the
+ * game falls back to the last-selected game and the URL is canonicalized to
+ * include the prefix on load.
  */
 const isWebHistory = typeof window !== 'undefined' && window.location.protocol !== 'file:';
 
-function pathFor(screen: Screen, a: RouteArgs): string {
+/** the screen part of a path (no game prefix); '' for home. */
+function screenSuffix(screen: Screen, a: RouteArgs): string {
   switch (screen) {
     case 'home':
-      return '/';
+      return '';
     case 'modes':
       return '/modes';
     case 'configure':
@@ -107,40 +117,57 @@ function pathFor(screen: Screen, a: RouteArgs): string {
   }
 }
 
-function parsePath(pathname: string): { screen: Screen } & RouteArgs {
+/** the full path for a screen under a given game — always game-prefixed. */
+function pathFor(screen: Screen, a: RouteArgs, game: GameId): string {
+  return `/${game}${screenSuffix(screen, a)}`;
+}
+
+/** parse the screen (no game prefix) from a game-stripped path. */
+function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   const at = (screen: Screen, extra: Partial<RouteArgs> = {}) => ({
     screen,
     ...NO_ARGS,
     ...extra,
   });
 
-  const replay = pathname.match(/^\/replay\/(.+)$/);
+  const replay = rest.match(/^\/replay\/(.+)$/);
   if (replay) return at('replay', { replayId: decodeURIComponent(replay[1]) });
-  const profile = pathname.match(/^\/profile\/(.+)$/);
+  const profile = rest.match(/^\/profile\/(.+)$/);
   if (profile) return at('profile', { username: decodeURIComponent(profile[1]) });
 
-  const configure = pathname.match(/^\/configure(?:\/([^/]+))?/);
+  const configure = rest.match(/^\/configure(?:\/([^/]+))?/);
   if (configure) return at('configure', { sub: configure[1] ?? 'robot' });
-  const records = pathname.match(/^\/records(?:\/([^/]+))?/);
+  const records = rest.match(/^\/records(?:\/([^/]+))?/);
   if (records) return at('records', { sub: records[1] ?? 'leaderboard' });
 
   // legacy paths kept alive so old links (and anything a player bookmarked
   // before the nav restructure) still resolve to their new home
-  if (pathname.startsWith('/my-robot')) return at('configure', { sub: 'robot' });
-  if (pathname.startsWith('/leaderboard')) return at('records', { sub: 'leaderboard' });
-  if (pathname.startsWith('/stats')) return at('records', { sub: 'career' });
+  if (rest.startsWith('/my-robot')) return at('configure', { sub: 'robot' });
+  if (rest.startsWith('/leaderboard')) return at('records', { sub: 'leaderboard' });
+  if (rest.startsWith('/stats')) return at('records', { sub: 'career' });
 
-  if (pathname.startsWith('/modes')) return at('modes');
-  if (pathname.startsWith('/lobby')) return at('lobby');
-  if (pathname.startsWith('/duo-record')) return at('duorecord');
-  if (pathname.startsWith('/record')) return at('record');
-  if (pathname.startsWith('/ranked')) return at('matchmaking');
-  if (pathname.startsWith('/watch')) return at('watch');
-  if (pathname.startsWith('/download')) return at('download');
-  if (pathname.startsWith('/account')) return at('account');
-  if (pathname.startsWith('/admin')) return at('admin');
+  if (rest.startsWith('/modes')) return at('modes');
+  if (rest.startsWith('/lobby')) return at('lobby');
+  if (rest.startsWith('/duo-record')) return at('duorecord');
+  if (rest.startsWith('/record')) return at('record');
+  if (rest.startsWith('/ranked')) return at('matchmaking');
+  if (rest.startsWith('/watch')) return at('watch');
+  if (rest.startsWith('/download')) return at('download');
+  if (rest.startsWith('/account')) return at('account');
+  if (rest.startsWith('/admin')) return at('admin');
   // /play (a live game) can't be restored without a session ⇒ home
   return at('home');
+}
+
+/**
+ * Parse a full URL into the game + screen. A leading /decode or /chain segment
+ * selects the game; an unprefixed (legacy) path falls back to `fallbackGame`.
+ */
+function parsePath(pathname: string, fallbackGame: GameId): { game: GameId; screen: Screen } & RouteArgs {
+  const gm = pathname.match(/^\/(decode|chain)(?=\/|$)/);
+  const game: GameId = gm ? (gm[1] as GameId) : fallbackGame;
+  const rest = gm ? pathname.slice(gm[0].length) || '/' : pathname;
+  return { game, ...parseScreen(rest) };
 }
 
 /** which rail/menu entry lights up for a given screen */
@@ -186,27 +213,71 @@ function screenForNav(n: ShellNav): Screen {
 }
 
 export function App() {
-  const [settings, setSettings] = useState<GameSettings>(loadSettings);
+  // the URL is game-prefixed, so a deep load/refresh onto /chain/... must select
+  // that game up front (switchGame swaps in its saved loadout) — do it in the
+  // initializer so the very first render is already on the right game.
+  const [settings, setSettings] = useState<GameSettings>(() => {
+    const s = loadSettings();
+    if (isWebHistory) {
+      const g = parsePath(window.location.pathname, s.game).game;
+      if (g !== s.game) return switchGame(s, g);
+    }
+    return s;
+  });
   const start = isWebHistory
-    ? parsePath(window.location.pathname)
-    : { screen: 'home' as Screen, ...NO_ARGS };
+    ? parsePath(window.location.pathname, settings.game)
+    : { screen: 'home' as Screen, game: settings.game, ...NO_ARGS };
   const [screen, setScreen] = useState<Screen>(start.screen);
   const [route, setRoute] = useState<RouteArgs>(start);
   const [session, setSession] = useState<NetSession | null>(null);
   // a just-played replay to watch in-memory (not yet persisted, so no URL id)
   const [replayObj, setReplayObj] = useState<Replay | null>(null);
+  // one-time "Chain Reaction is just for fun" disclaimer (shown the first time CR is
+  // the selected game, on this device; dismissal persists in localStorage)
+  const [showChainDisclaimer, setShowChainDisclaimer] = useState(false);
 
-  // reflect back/forward into state (no push — the URL already changed)
+  // kept current every render so the []-deps effects (popstate) read live settings
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
+  // on first load, persist the possibly-URL-switched game and canonicalize the URL
+  // so an old unprefixed / cross-game link becomes a proper /<game>/... path.
+  useEffect(() => {
+    if (!isWebHistory) return;
+    saveSettings(settingsRef.current);
+    const canonical = pathFor(start.screen, start, settingsRef.current.game);
+    if (window.location.pathname !== canonical) window.history.replaceState(null, '', canonical);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // reflect back/forward into state (no push — the URL already changed). A game
+  // prefix change (…/decode/… ↔ …/chain/…) swaps the game too.
   useEffect(() => {
     if (!isWebHistory) return;
     const onPop = (): void => {
-      const s = parsePath(window.location.pathname);
+      const cur = settingsRef.current;
+      const s = parsePath(window.location.pathname, cur.game);
+      if (s.game !== cur.game) {
+        const ns = switchGame(cur, s.game);
+        setSettings(ns);
+        saveSettings(ns);
+      }
       setScreen(s.screen);
-      setRoute(s);
+      setRoute({ replayId: s.replayId, username: s.username, sub: s.sub });
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
+
+  // the tab title names the selected game so the two games read as separate apps
+  useEffect(() => {
+    if (typeof document !== 'undefined') document.title = `${seasonFor(settings.game).name} · ${APP_NAME}`;
+  }, [settings.game]);
+
+  // surface the one-time Chain Reaction disclaimer the first time CR is selected
+  useEffect(() => {
+    setShowChainDisclaimer(settings.game === 'chain' && !chainDisclaimerSeen());
+  }, [settings.game]);
 
   /** the single way screens change — updates state AND the URL */
   const navigate = (next: Screen, args: Partial<RouteArgs> = {}): void => {
@@ -215,7 +286,7 @@ export function App() {
     setRoute(a);
     if (next !== 'replay') setReplayObj(null); // leaving the viewer drops the in-memory replay
     if (isWebHistory) {
-      const path = pathFor(next, a);
+      const path = pathFor(next, a, settingsRef.current.game);
       if (window.location.pathname !== path) window.history.pushState(null, '', path);
     }
   };
@@ -258,8 +329,6 @@ export function App() {
   }, [screen, adminChecked, isAdmin]);
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const settingsRef = useRef(settings);
-  settingsRef.current = settings;
 
   // restore the player's preferred server region (from local settings, or synced
   // from the account once AccountSync applies it) so every connect uses it
@@ -278,8 +347,13 @@ export function App() {
 
   const onSyncUser = useCallback((id: string | null) => setAccountUserId(id), []);
   const onSyncLoad = useCallback((s: GameSettings) => {
-    setSettings(s);
-    saveSettings(s);
+    // the URL is authoritative for the ACTIVE game — keep the currently-selected
+    // game when the account's saved settings load in, so a /chain deep-link isn't
+    // reverted to whatever game the account last saved.
+    const g = settingsRef.current.game;
+    const next = s.game !== g ? switchGame(s, g) : s;
+    setSettings(next);
+    saveSettings(next);
   }, []);
   const onSyncSeed = useCallback(() => void saveAccountSettings(settingsRef.current), []);
 
@@ -483,7 +557,7 @@ export function App() {
   const right = authEnabled ? (
     <AccountButton onAccount={() => navigate('account')} />
   ) : (
-    <button className="ds-btn ghost" onClick={() => navigate('account')}>
+    <button className="ds-btn" onClick={() => navigate('account')}>
       Settings
     </button>
   );
@@ -499,6 +573,7 @@ export function App() {
       showAdmin={isAdmin}
       showRail={screen !== 'home'}
       onDownload={() => navigate('download')}
+      game={settings.game}
     >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
       {authEnabled && <UsernameGate />}
@@ -511,7 +586,13 @@ export function App() {
           settings={settings}
           multiplayer={multiplayer}
           onNav={(n) => navigate(screenForNav(n))}
-          onGame={(g) => update(switchGame(settings, g))}
+          onGame={(g) => {
+            update(switchGame(settings, g));
+            if (isWebHistory) {
+              const path = pathFor(screen, route, g);
+              if (window.location.pathname !== path) window.history.pushState(null, '', path);
+            }
+          }}
         />
       )}
 
@@ -543,6 +624,30 @@ export function App() {
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onWatch={() => navigate('watch')}
         />
+      )}
+      {/* one-time "just for fun" disclaimer for Chain Reaction */}
+      {showChainDisclaimer && (
+        <div className="overlay">
+          <div className="overlay-panel">
+            <h2>Chain Reaction is just for fun</h2>
+            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 400 }}>
+              Chain Reaction is a made-up, unofficial game built purely for driver-practice fun.
+              Its field, scoring, and robot mechanics are <b>not realistic</b> and aren’t based on
+              any real FTC game or hardware. Please don’t use anything here as inspiration or a
+              reference for your real robot design.
+            </p>
+            <div className="overlay-buttons">
+              <button
+                onClick={() => {
+                  markChainDisclaimerSeen();
+                  setShowChainDisclaimer(false);
+                }}
+              >
+                GOT IT
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {/* the start guards live here, not on `modes`, because a start can also be
           triggered from a lobby/queue screen that this shell doesn't render */}

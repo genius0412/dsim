@@ -1,6 +1,49 @@
-# HANDOFF — 2026-07-19 (Chain Reaction: fire-rate tune + physical turret aim + Front/Side intake) — READ FIRST
+# HANDOFF — 2026-07-19 (Chain Reaction: UI polish — game-aware footer + game-prefixed URLs) — READ FIRST
 
-## Latest session — fire-rate tune (turret ~10.5 bps / drum ~27 bps)
+## Latest session — seamless DECODE/Chain Reaction separation in the UI
+
+Build + tsc all green. Changes are UI-only (no `src/sim`/`config` touch, so smoke unaffected).
+
+- **Footer is now game-aware.** `AppShell` took a static `CURRENT_SEASON` (always DECODE) →
+  now takes a `game: GameId` prop and renders `seasonFor(game)` → "DSIM · Chain Reaction 2026"
+  vs "DSIM · DECODE 2025–26". Wired from `App.tsx` (`game={settings.game}`).
+- **Every URL is now game-prefixed** (user picked "both prefixed"): `/decode/…` and `/chain/…`.
+  All routing lives in `App.tsx`. `pathFor(screen, args, game)` prepends `/${game}` (home =
+  `/decode` / `/chain`); `screenSuffix` is the un-prefixed part. `parsePath(pathname,
+  fallbackGame)` strips a leading `/(decode|chain)` segment (→ the game) then `parseScreen(rest)`
+  (the old body, incl. legacy `/leaderboard`→records etc.). Unprefixed OLD links fall back to the
+  last-selected game and are canonicalized on load (replaceState). The `settings` initializer
+  `switchGame`s to the URL's game up front (so a `/chain/…` deep load spawns CR's loadout on the
+  FIRST render); a mount effect persists it + canonicalizes the URL. `navigate`/`onGame`/popstate
+  all thread `settingsRef.current.game`; popstate + `onSyncLoad` reconcile the game (URL is
+  authoritative for the ACTIVE game — account settings don't revert a deep-linked game).
+  Verified via Electron-over-HTTP (`vite preview`, file:// can't route): `/`→`/decode`, switch→
+  `/chain`, `/chain/records`, deep-load `/chain/configure/robot`, legacy `/leaderboard`→canonical.
+- **document.title** now names the game ("Chain Reaction · DSIM" / "DECODE · DSIM"), effect on
+  `settings.game`. Static `index.html` `<title>` is just the pre-hydration placeholder.
+- **GameView field aria-label** was hardcoded "DECODE field" → now game-aware via `hud?.game`.
+- **Top-right Settings button** now matches Sign in (both `ds-btn`; dropped `ghost`) —
+  `AccountButton.tsx` signed-out branch + `App.tsx` no-auth fallback.
+- **Homepage Discord + GitHub pills** (`HomeMenu.tsx` `.ds-home-links`, styled in `shell.css`):
+  prominent bordered pills with inline brand SVGs, centered under the game switcher above the
+  Play menu. Reuse `LINKS` from `seasons.ts`; the footer links stay as secondary. No new tokens.
+- **One-time Chain Reaction disclaimer** ("just for fun / not realistic / don't use for real
+  robot design"): local-only flag `src/chainDisclaimer.ts` (`decodesim.chainDisclaimer.v1`, like
+  `theme.ts` — NOT in synced `GameSettings`). `App.tsx` effect on `settings.game` sets
+  `showChainDisclaimer = game==='chain' && !seen`; the `.overlay` modal (GOT IT →
+  `markChainDisclaimerSeen`) sits with the other menu guards inside the AppShell block. Verified:
+  shows on first CR select, dismiss persists, never reappears.
+
+### Leaderboard "shows DECODE when CR selected" — NOT a client bug (deploy-gated)
+The client is already fully game-keyed (`api.ts` appends `&game=chain`; `Records`/`Leaderboard`/
+`Stats` thread `settings.game`). You still see DECODE because `.env` points at the LIVE Fly server
+`wss://dohun-sim-decode.fly.dev`, which runs the **undeployed** DECODE-only server + DB — migration
+`0012_game_boards.sql` and the game-keyed queries only exist on this private branch, so the live
+server ignores `?game=chain` and returns DECODE rows. There is NO client-side fix (the rows look
+identical). Resolves when the CR-aware server is deployed (private-branch rule: not until told) or
+by running a local CR server (`npm run server` + a DATABASE_URL). Left untouched per that rule.
+
+## Prior session — fire-rate tune (turret ~10.5 bps / drum ~27 bps)
 
 - Turret `CHAIN_FIRE_INTERVAL` 1/9→1/12 (~8.8→~10.5 bps), drum `CHAIN_DRUM_INTERVAL` 1/41→1/37.5
   (~30→~27 bps). See "fire rates" below. Build + ~205 smoke + client/server tsc all green.

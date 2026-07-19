@@ -213,7 +213,7 @@ export function GameView({ settings, onExit, session = null, onWatchReplay, sign
         ref={canvasRef}
         className="game-canvas"
         role="img"
-        aria-label="DECODE field, top-down view. Match state is announced in the event log."
+        aria-label={`${hud?.game === 'chain' ? 'Chain Reaction' : 'DECODE'} field, top-down view. Match state is announced in the event log.`}
       />
       {window.matchMedia('(pointer: coarse)').matches && controllerRef.current && (
         <MobileControls inputManager={controllerRef.current.getInputManager()} />

@@ -449,7 +449,43 @@
 /* game switcher (DECODE / Chain Reaction) — centered under the title */
 .ds-home-games {
   justify-content: center;
-  margin: -6px 0 22px;
+  margin: -6px 0 18px;
+}
+/* Discord / GitHub — prominent pills near the top of the home menu */
+.ds-home-links {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin: 0 0 22px;
+}
+.ds-home-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: var(--ds-round-full);
+  border: 1px solid var(--ds-line);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-decoration: none;
+  box-shadow: var(--ds-edge-soft);
+  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.15s, color 0.15s;
+}
+.ds-home-link svg {
+  flex: none;
+}
+.ds-home-link:hover {
+  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
+  color: var(--ds-accent);
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--ds-line);
+}
+.ds-home-link:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--ds-line);
 }
 .ds-menu {
   width: 100%;
