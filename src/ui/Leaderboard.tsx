@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import {
   fetchElo,
   fetchRecords,
@@ -16,6 +16,13 @@ import { gameServerConfigured } from '../net/env';
 import { periodLabel } from '../seasons';
 import { PeriodPicker } from './PeriodPicker';
 import { PLACEMENT_GAMES } from '../config';
+import { CHAIN_MODE_LABELS, CHAIN_INTAKE_LABELS } from '../games/chain/labels';
+import {
+  CHAIN_DEFAULT_SCORE_MODE,
+  CHAIN_DEFAULT_INTAKE,
+  CHAIN_STORAGE_DEFAULT,
+  CHAIN_CLEARANCE_DEFAULT,
+} from '../games/chain/config';
 import type { DrivetrainType, GameId, IntakeStyle, RobotSpec } from '../types';
 
 type Kind = 'records' | 'ranked';
@@ -74,8 +81,23 @@ function DriverName({
   return <span className="lb-name-h">{label}</span>;
 }
 
-/** one robot's spec stats (shared by solo + each half of a duo) */
-function RobotSpecSummary({ spec }: { spec: RobotSpec }) {
+/** one robot's spec stats (shared by solo + each half of a duo). Game-aware: a
+ * Chain Reaction robot shows its CR config (archetype / sweeper mount / hopper /
+ * clearance), NOT the DECODE intake-preset + flywheel — those fields are unused in
+ * CR and would read as a "weird" random configuration. */
+function RobotSpecSummary({ spec, game }: { spec: RobotSpec; game?: GameId }) {
+  const isChain = game === 'chain';
+  const stat = (value: ReactNode, label: string, small = false) => (
+    <div className="ds-stat">
+      <span className="sv" style={small ? { fontSize: 14 } : undefined}>{value}</span>
+      <span className="sl">{label}</span>
+    </div>
+  );
+
+  const chainMode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
+  const archetype = CHAIN_MODE_LABELS[chainMode] + (chainMode !== 'turret' && spec.shooterRear ? ' · rear' : '');
+  const sweeper = `${CHAIN_INTAKE_LABELS[spec.chainIntake ?? CHAIN_DEFAULT_INTAKE]} · ${spec.intakeSide ? 'Side' : 'Front'}`;
+
   return (
     <>
       <div className="lb-config-name">
@@ -84,12 +106,23 @@ function RobotSpecSummary({ spec }: { spec: RobotSpec }) {
         {spec.teamName ? ` · ${spec.teamName}` : ''}
       </div>
       <div className="ds-stats">
-        <div className="ds-stat"><span className="sv" style={{ fontSize: 14 }}>{DT_LABEL[spec.drivetrain]}</span><span className="sl">drivetrain</span></div>
-        <div className="ds-stat"><span className="sv">{spec.massLb}</span><span className="sl">lb mass</span></div>
-        <div className="ds-stat"><span className="sv">{spec.driveRpm}</span><span className="sl">drive rpm</span></div>
-        <div className="ds-stat"><span className="sv" style={{ fontSize: 14 }}>{INTAKE_LABEL[spec.intake]}{spec.canSort ? ' +sort' : ''}</span><span className="sl">intake</span></div>
-        <div className="ds-stat"><span className="sv">{spec.flywheelInertia.toFixed(2)}</span><span className="sl">flywheel</span></div>
-        <div className="ds-stat"><span className="sv">{spec.length}×{spec.width}"</span><span className="sl">size</span></div>
+        {stat(DT_LABEL[spec.drivetrain], 'drivetrain', true)}
+        {stat(spec.massLb, 'lb mass')}
+        {stat(spec.driveRpm, 'drive rpm')}
+        {isChain ? (
+          <>
+            {stat(archetype, 'archetype', true)}
+            {stat(sweeper, 'intake', true)}
+            {stat(Math.round(spec.ballStorage ?? CHAIN_STORAGE_DEFAULT), 'hopper')}
+            {stat(`${(spec.groundClearance ?? CHAIN_CLEARANCE_DEFAULT).toFixed(1)}"`, 'clearance')}
+          </>
+        ) : (
+          <>
+            {stat(`${INTAKE_LABEL[spec.intake]}${spec.canSort ? ' +sort' : ''}`, 'intake', true)}
+            {stat(spec.flywheelInertia.toFixed(2), 'flywheel')}
+          </>
+        )}
+        {stat(`${spec.length}×${spec.width}"`, 'size')}
       </div>
     </>
   );
@@ -97,15 +130,15 @@ function RobotSpecSummary({ spec }: { spec: RobotSpec }) {
 
 /** the robot config a record was set with — each driver's spec stats + the
  * owner's assists. A duo shows BOTH robots (drivers bring their own builds). */
-function ConfigSummary({ cfg }: { cfg: RecordConfig }) {
+function ConfigSummary({ cfg, game }: { cfg: RecordConfig; game?: GameId }) {
   const { spec, assists, partnerSpec } = cfg;
   const chip = (label: string, on: boolean) => (
     <span className={`ds-chip ${on ? 'on' : 'off'}`}>{label}</span>
   );
   return (
     <div className="lb-config">
-      <RobotSpecSummary spec={spec} />
-      {partnerSpec && <RobotSpecSummary spec={partnerSpec} />}
+      <RobotSpecSummary spec={spec} game={game} />
+      {partnerSpec && <RobotSpecSummary spec={partnerSpec} game={game} />}
       <div className="lb-config-assists">
         {chip(assists.fieldCentric ? 'Field-centric' : 'Robot-centric', true)}
         {chip('Aim assist', assists.aimAssist)}
@@ -387,7 +420,7 @@ export function Leaderboard({
                     {isRecords && isOpen && cfg && (
                       <tr className="lb-detail">
                         <td colSpan={4}>
-                          <ConfigSummary cfg={cfg} />
+                          <ConfigSummary cfg={cfg} game={game} />
                         </td>
                       </tr>
                     )}

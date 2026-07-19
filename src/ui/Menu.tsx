@@ -15,6 +15,7 @@ import {
   CHAIN_MAX_LENGTH,
   chainStorageMax,
 } from '../games/chain/config';
+import { CHAIN_MODE_LABELS, CHAIN_INTAKE_LABELS } from '../games/chain/labels';
 import { driveParams, lengthLimits, massLimits, rpmLimits, widthLimits } from '../sim/drivetrain';
 import { coerceSpec } from '../sim/spawn';
 import { RobotPreview } from './RobotPreview';
@@ -49,19 +50,13 @@ const INTAKE_BLURBS: Record<IntakeStyle, string> = {
   triangle: 'Long reach, eats clumps · slower transfer',
 };
 
-// Chain Reaction robot config labels/blurbs (CR-only builder controls)
-const CHAIN_MODE_LABELS: Record<ChainScoreMode, string> = {
-  turret: 'Turret shooter',
-  drum: 'Drum shooter',
-  dumper: 'Dumper',
-};
+// Chain Reaction robot config blurbs (CR-only builder controls). The LABELS
+// (CHAIN_MODE_LABELS / CHAIN_INTAKE_LABELS) are shared with the leaderboard config
+// summary via ../games/chain/labels so both name the archetype/intake identically.
 const CHAIN_MODE_BLURBS: Record<ChainScoreMode, string> = {
   turret: 'Aims itself and fires one at a time',
   drum: 'Face the goal and fire a fast stream',
   dumper: 'Face the goal and dump the whole load up close',
-};
-const CHAIN_INTAKE_LABELS: Record<ChainIntakeStyle, string> = {
-  sweeper: 'Sweeper',
 };
 const CHAIN_INTAKE_BLURBS: Record<ChainIntakeStyle, string> = {
   sweeper: 'A roller across the whole front',
