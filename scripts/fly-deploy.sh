@@ -20,7 +20,14 @@ SATELLITE_SIZE=shared-cpu-1x
 SATELLITE_MEMORY=1024 # MB — shared-cpu-1x defaults to 256MB, too tight for Node+tsx+Rapier
 
 echo "==> fly deploy ($APP)"
-fly deploy --remote-only -a "$APP" "$@"
+# NOTE: do NOT let a non-zero deploy skip the re-shrink below. `fly deploy` exits
+# non-zero on transient api.machines.dev flakes (health-check wait timeouts, cancelled
+# requests) even when every machine actually updated — and with `set -e` that aborted
+# the script mid-way, silently leaving the satellites on dedicated vCPUs. Observed
+# 2026-07-20. So capture the status, ALWAYS re-shrink, and re-raise at the end.
+deploy_rc=0
+fly deploy --remote-only -a "$APP" "$@" || deploy_rc=$?
+[ "$deploy_rc" -ne 0 ] && echo "!! fly deploy exited $deploy_rc — re-applying VM sizes anyway, then failing"
 
 echo "==> re-applying per-region VM sizes (satellites -> $SATELLITE_SIZE/${SATELLITE_MEMORY}MB)"
 ids=$(fly machine list -a "$APP" --json | node -e '
@@ -34,5 +41,12 @@ while read -r region id; do
   fly machine update "$id" --vm-size "$SATELLITE_SIZE" --vm-memory "$SATELLITE_MEMORY" -a "$APP" -y >/dev/null
   echo "   $region ($id) -> $SATELLITE_SIZE/${SATELLITE_MEMORY}MB"
 done <<< "$ids"
+
+if [ "$deploy_rc" -ne 0 ]; then
+  echo "!! VM sizes re-applied, but 'fly deploy' had exited $deploy_rc — CHECK THE DEPLOY."
+  echo "   Often a transient API flake with the rollout actually complete; confirm every"
+  echo "   machine shares one IMAGE and is 1/1: fly machine list -a $APP"
+  exit "$deploy_rc"
+fi
 
 echo "==> done. verify: fly machine list -a $APP"
