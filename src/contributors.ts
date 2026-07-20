@@ -43,21 +43,23 @@ export const CONTRIBUTORS: Contributor[] = [
   {
     fallbackName: 'Dohun Kim',
     role: 'Project owner',
+    inGameUsername: 'ace',
     githubUrl: 'https://github.com/genius0412',
-  },
-  {
-    fallbackName: 'Baron',
-    githubUrl: 'https://github.com/BaronClaps',
-  },
-  {
-    fallbackName: 'Shaan Sridhara',
   },
   {
     fallbackName: 'testimonies',
     githubUrl: 'https://github.com/testimonies',
   },
   {
+    fallbackName: 'Baron',
+    inGameUsername: 'Baron',
+    githubUrl: 'https://github.com/BaronClaps',
+  },
+  {
     fallbackName: 'therealkingcob',
     githubUrl: 'https://github.com/therealkingcob',
+  },
+  {
+    fallbackName: 'Shaan Sridhara',
   },
 ];

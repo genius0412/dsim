@@ -76,8 +76,8 @@ The server is a single stateless process (all match state lives in memory). File
 ```bash
 # one-time
 fly launch --no-deploy        # pick a unique app name + region near your players
-# every deploy
-fly deploy
+# every deploy (wrapper: deploys, then re-shrinks the satellite regions)
+./scripts/fly-deploy.sh
 ```
 
 - `fly.toml` exposes port 8080, forces HTTPS (so clients use `wss://`), auto-stops the
@@ -131,7 +131,7 @@ easier to manage than N separate apps and is what the client is built for (regio
 matchmaking + a fair-midpoint host via `fly-replay`; see `docs/netcodeplan.md` Phase 4).
 
 ```bash
-fly deploy --remote-only                       # ship the image
+./scripts/fly-deploy.sh                        # ship the image (NOT a bare `fly deploy` — see VM sizes below)
 fly scale count 1 --region iad -a dohun-sim-decode   # one machine PER region
 fly scale count 1 --region sjc -a dohun-sim-decode
 fly scale count 1 --region lhr -a dohun-sim-decode
@@ -151,13 +151,14 @@ fly secrets set MATCHMAKER_REGION=iad -a dohun-sim-decode   # holds the global r
 - **`fly-replay` routing can only be verified on the deployed app** (the Fly proxy isn't in
   the loop on localhost) — after deploy, confirm a `?region=lhr` connection from the US lands
   on the `lhr` machine (`/api/presence` shows its region).
-- **Per-region VM sizes + the deploy reset (IMPORTANT).** `iad`/`sjc` run `performance-2x`
-  (busy regions + the always-warm matchmaker); `lhr`/`syd`/`nrt` run the cheaper
-  `performance-1x` (still DEDICATED cpu, so no burst-throttle flap). fly.toml has only ONE
-  `[[vm]]`, and **`fly deploy` re-applies it (`performance-2x`) to every machine — resetting
-  the satellites.** So always deploy with **`scripts/fly-deploy.sh`** (deploy + re-shrink the
-  satellites) rather than a bare `fly deploy`. Verify after: `fly machine list -a
-  dohun-sim-decode` should show `lhr/syd/nrt` at `performance-1x:2048MB`.
+- **Per-region VM sizes + the deploy reset (IMPORTANT).** `iad`/`sjc` run `performance-1x`
+  /2048MB (busy regions + the always-warm matchmaker; DEDICATED cpu, so no burst-throttle
+  flap); the far satellites `lhr`/`syd`/`nrt` run the much cheaper `shared-cpu-1x`/1024MB.
+  fly.toml has only ONE `[[vm]]`, and **`fly deploy` re-applies it (`performance-1x`) to
+  every machine — silently UPSIZING the satellites onto dedicated vCPUs.** So always deploy
+  with **`scripts/fly-deploy.sh`** (deploy + re-shrink the satellites) rather than a bare
+  `fly deploy`. Verify after: `fly machine list -a dohun-sim-decode` should show `iad/sjc`
+  at `performance-1x:2048MB` and `lhr/syd/nrt` at `shared-cpu-1x:1024MB`.
 - **Calibrating `INTER_REGION_MS`** (`server/regions.ts`): measure machine-to-machine RTT over
   Fly's 6PN mesh — from each region's machine, TCP-connect to another region's hallpass
   (`<region>.<app>.internal:22`, since the app binds IPv4-only so port 8080 isn't on 6PN) and

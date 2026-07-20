@@ -5,7 +5,7 @@ import { authEnabled, authClient } from '../lib/authClient';
 import { gameServerConfigured, multiServer, selectedServerId } from '../net/env';
 import { fetchProfile, updateHandle, updateUsername } from '../net/api';
 import { AuthPanel } from './AuthPanel';
-import { ServerPicker } from './ServerPicker';
+import { ServerMenu } from './ServerMenu';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
 import { APP_NAME } from '../seasons';
 
@@ -36,10 +36,11 @@ export function Account({
 
       {multiServer() && (
         <div className="ds-panel" style={{ marginTop: 18 }}>
-          {/* ServerPicker renders its own "Server region" header + Refresh, so the
-              panel wrapper deliberately omits a panel-h title (avoids a dupe). */}
+          <div className="ds-panel-h">
+            <span className="ds-panel-title">Server</span>
+          </div>
           <div style={{ padding: 16 }}>
-            <ServerPicker
+            <ServerMenu
               value={settings.preferredServerId ?? selectedServerId()}
               onChange={(id) => onChange({ ...settings, preferredServerId: id })}
             />

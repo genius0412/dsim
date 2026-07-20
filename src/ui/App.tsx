@@ -27,7 +27,8 @@ import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
-import { gameServerConfigured, setSelectedServer, gameServerUrlWith } from '../net/env';
+import { gameServerConfigured, setSelectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
+import { ServerMenu } from './ServerMenu';
 import type { NetSession } from '../net/session';
 import { ServerSession } from '../net/serverSession';
 import { WebSocketTransport } from '../net/transport';
@@ -236,6 +237,8 @@ export function App() {
   const [screen, setScreen] = useState<Screen>(start.screen);
   const [route, setRoute] = useState<RouteArgs>(start);
   const [session, setSession] = useState<NetSession | null>(null);
+  // which flow opened the live session — only 'record' offers an in-game NEW RUN
+  const [sessionKind, setSessionKind] = useState<ActiveGameRef['kind'] | null>(null);
   // a just-played replay to watch in-memory (not yet persisted, so no URL id)
   const [replayObj, setReplayObj] = useState<Replay | null>(null);
   // one-time "this simulation isn't realistic" disclaimer (shown the first time CR is
@@ -448,6 +451,7 @@ export function App() {
       setActiveGame(ref);
     }
     setSession(s);
+    setSessionKind(kind);
     navigate('game');
   };
 
@@ -470,6 +474,7 @@ export function App() {
     transport.onOpen(() => transport.send(encodeMsg({ t: 'rejoin', room: ref.room, clientId: ref.clientId })));
     const s = new ServerSession(transport, false, ref.start, ref.clientId, ref.room);
     setSession(s);
+    setSessionKind(ref.kind);
     navigate('game');
   };
 
@@ -487,6 +492,7 @@ export function App() {
     lobby.on('matchStart', (m) => {
       const s = new ServerSession(transport, false, m, lobby.clientId, code, true);
       setSession(s);
+      setSessionKind(null); // spectating — no run of our own to restart
       navigate('game');
     });
     lobby.spectate(code);
@@ -500,10 +506,28 @@ export function App() {
     navigate('game');
   };
 
+  /** RECORD runs: abandon this run and immediately start a fresh one.
+   *
+   * Deliberately a full teardown + re-entry, NOT an in-place world rebuild. A
+   * record run is hosted on the server, so resetting the world client-side leaves
+   * the server running the old match: snapshots snap the world back, reconcile
+   * replays stale pre-reset inputs, and the robot fights its own prediction —
+   * the stuck/jittery drivetrain this feature was pulled for. Re-entering makes a
+   * NEW room, which is the same path a first run takes and carries no such risk.
+   * RecordRun connects on mount, so this costs one reconnect, not a menu trip.
+   */
+  const restartRun = (): void => {
+    session?.dispose();
+    setSession(null);
+    setSessionKind(null);
+    navigate('record');
+  };
+
   const exitGame = (): void => {
     setEditMobileLayout(false);
     session?.dispose();
     setSession(null);
+    setSessionKind(null);
     // a match that FINISHED (or whose slot is gone) clears its rejoin record in
     // GameView; a mid-match exit keeps it so Home can offer "rejoin your match".
     setActiveGame(loadActiveGame());
@@ -565,6 +589,7 @@ export function App() {
         onExit={exitGame}
         onSettingsChange={update}
         editLayout={editMobileLayout}
+        onRestartRun={sessionKind === 'record' ? restartRun : undefined}
         onWatchReplay={(r) => {
           setReplayObj(r);
           navigate('replay');
@@ -594,7 +619,6 @@ export function App() {
         mode="solo"
         onStart={(s) => beginSession(s, 'record')}
         onCancel={() => navigate('modes')}
-        onPreferServer={(id) => update({ ...settings, preferredServerId: id })}
       />
     );
   }
@@ -635,13 +659,23 @@ export function App() {
     );
   }
 
-  // shell screens
-  const right = authEnabled ? (
-    <AccountButton handle={handle} onAccount={() => navigate('account')} />
-  ) : (
-    <button className="ds-btn" onClick={() => navigate('account')}>
-      Settings
-    </button>
+  // shell screens. The region menu sits in the bar (ahead of the account button)
+  // so switching server is always one click — it used to be reachable only by
+  // going into Account, or via the picker that blocked every record run.
+  const right = (
+    <>
+      <ServerMenu
+        value={settings.preferredServerId ?? selectedServerId()}
+        onChange={(id) => update({ ...settings, preferredServerId: id })}
+      />
+      {authEnabled ? (
+        <AccountButton handle={handle} onAccount={() => navigate('account')} />
+      ) : (
+        <button className="ds-btn" onClick={() => navigate('account')}>
+          Settings
+        </button>
+      )}
+    </>
   );
 
   const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';

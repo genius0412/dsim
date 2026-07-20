@@ -305,6 +305,11 @@ export class Room {
   summary(): LiveRoom | null {
     const w = this.world;
     if (!w || this.phase !== 'match') return null;
+    // `this.phase` is set to 'match' when the match STARTS and is never set back,
+    // so it does not mean "still playing" — a finished room sits in it until the
+    // room is torn down. Without this check "Watch Live" kept listing games that
+    // had already ended (and it is not spectatable: the world is over).
+    if (w.match.phase === 'post') return null;
     if (this.config.kind === 'record') return null; // opponent-free runs aren't spectated
     const players = [...this.clients.values()].map((c) => ({
       name: c.player.name,

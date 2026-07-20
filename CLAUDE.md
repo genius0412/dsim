@@ -558,8 +558,12 @@ diagnosing lag reports. **RECONNECTION (transient drops)**: server holds a dropp
 setups) + delta the balls (send the id ORDER every frame — determinism — but only CHANGED
 ball data); reconnect re-primes with a keyframe. **DEPLOY**: `Dockerfile`+`fly.toml`+
 `docs/deploy.md`, `GET /health`; `ws`+`tsx` are runtime `dependencies`. Deploy protocol
-(SIM/server change): commit on alpha → `flyctl deploy --remote-only` → verify `/health` →
-Vercel auto-deploys clients. **The one Fly app serves EVERY client version** (alpha/beta/
+(SIM/server change): commit on alpha → **`./scripts/fly-deploy.sh`** → verify `/health` →
+Vercel auto-deploys clients. **NEVER deploy with a bare `flyctl deploy`** — fly.toml can
+only express ONE `[[vm]]` size, so a bare deploy re-applies `performance-1x` to EVERY
+machine and silently UPSIZES the cheap satellites (lhr/syd/nrt, `shared-cpu-1x`/1024MB) to
+dedicated vCPUs. The wrapper deploys and then re-shrinks them; verify with
+`fly machine list -a dohun-sim-decode`. **The one Fly app serves EVERY client version** (alpha/beta/
 main all bake the same `VITE_GAME_SERVER_URL`), so protocol changes MUST stay
 backward-compatible — new clients advertise `caps` (`CLIENT_CAPS` in `protocol.ts`) on
 `join`/`queue` and the server feature-gates on them (e.g. the pre-match strategy window

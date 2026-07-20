@@ -1,6 +1,73 @@
-# HANDOFF — 2026-07-20 (ran `/frontend-consistency` on the app → closed 4 contrast failures) — READ FIRST
+# HANDOFF — 2026-07-20 (merged friendslist → main, deployed; fixed a deploy footgun + a migration race) — READ FIRST
 
-## This session (latest) — a11y floor fixed at the root; audits all green
+## This session (latest) — friendslist shipped; deploy protocol corrected; COST PASS
+
+### Cost pass (2026-07-20) — read before touching machine sizes
+
+**The big win was a WAKE LEAK, not machine sizes.** `ServerPicker` called `pingAll`,
+which probes each region via `/health?region=`; the server fly-replays that to the
+target machine and `auto_start_machines` BOOTS it. The picker renders on the record-run
+setup screen, so every player starting a run woke all five regions — and the satellites
+are only cheap while STOPPED. Replaced with the approach `server/regions.ts` already used
+for the matchmaker: probe our own region once, estimate the rest via `accessMs +
+interRegionMs()`, matrix served from the new `GET /api/regions`. Estimated rows render
+with a `~`. **Confirmed working: syd was observed `stopped` afterward** — the first
+auto-stop we'd seen.
+
+**Sizes now:** iad `shared-cpu-4x`/1024MB · every other region `shared-cpu-1x`/1024MB
+(sjc joined the satellites in `scripts/fly-deploy.sh`).
+
+**iad left dedicated CPU — but only after MEASURING** (the fly.toml note records a shared
+CPU flapping before, so this was not done blind):
+- `GET /api/perf` (new, `server/index.ts`) reports EVENT-LOOP LAG percentiles, cores in
+  use, rooms/players, RSS. Lag is the right metric: a throttled machine stalls the loop
+  until `/health` misses its probe and the machine flaps. Note the histogram's ~10ms
+  resolution floor — real lag ≈ reported − 10.
+- Benchmarked the room loop: ~0.02 cores (1 robot) to ~0.03 (2v2), i.e. 33–55 rooms per
+  core. Idle draw 0.01 cores, RSS ~80MB.
+- Conclusion: the old flap was `shared-cpu-1x`, whose baseline ≈ one busy room. Fly's
+  baseline scales with cores, so 4x has multiples of that headroom.
+- **STILL UNVERIFIED UNDER LOAD**: every sample so far was `rooms: 0`. Sample
+  `/api/perf` during real matches. If p99 climbs toward the 16.67ms step budget, go to
+  `shared-cpu-8x` or back to `performance-1x` — throttling is a cliff, not a gradient.
+- Fly enforces a 2048MiB memory floor on `performance-*` sizes; shared sizes don't, which
+  is why RAM could finally drop to 1024 (actual use ~80MB).
+
+## Merge + deploy work
+
+**State: green + deployed.** `npm test` ALL PASS · `npm run build` clean ·
+`npm run contrast` 167 checks pass · `npm run server:check` clean.
+
+**Merged `friendslist` → `main`** — a clean FAST-FORWARD (main had nothing the branch
+lacked), 6 commits / 1852 insertions: friend room invites + profile friend actions
+(`InviteFlyout.tsx`, `ProfileFriendActions.tsx`, `useFriends.ts`, `UserSearchBar.tsx`,
+`Select.tsx`), migration `0017_room_invites.sql` + repo/api wiring, AA contrast fixes,
+and the `/frontend-consistency` skill. Pushed. Server deployed; migration `0017`
+CONFIRMED applied (`[server] database ready` in the boot logs — that line only prints if
+`migrate()` resolved).
+
+**DEPLOY FOOTGUN — I hit it, then fixed the docs (`4ad201d`).** I deployed with a bare
+`flyctl deploy --remote-only` because that is what CLAUDE.md's deploy protocol said. That
+re-applies fly.toml's single `[[vm]]` to EVERY machine and silently UPSIZED the three
+satellites (lhr/syd/nrt) from `shared-cpu-1x`/1024MB to `performance-1x`/2048MB. The user
+caught it. Machines are restored and verified. **Always deploy via
+`./scripts/fly-deploy.sh`** — it re-shrinks the satellites afterward. CLAUDE.md now says
+so, and `docs/deploy.md`'s sizing bullet (which still described the pre-downgrade
+`performance-2x`/`performance-1x` split) is corrected to today's
+`performance-1x` (iad/sjc) / `shared-cpu-1x` (satellites).
+
+**MIGRATION RACE fixed (`server/db/migrate.ts`).** All 5 regional machines call
+`migrate()` at boot simultaneously. On a genuinely new migration two could both see a
+file as pending; the loser hit `schema_migrations`' primary key and threw — and since
+`index.ts:825` treats a migration failure as NON-FATAL, that machine logged "records
+disabled", **skipped its remaining migrations, and kept serving traffic**. Now a
+session-level `pg_advisory_lock` (key `MIGRATE_LOCK_KEY`) serializes the whole scan+apply
+on its own client, released in a `finally` so a failure can't wedge every other machine's
+boot; the insert also got `on conflict do nothing`. Note this failure mode was
+SILENT-BY-DESIGN — `/health` returns `ok` regardless, so a healthy app never proved a
+migration landed. Check the logs for `[server] database ready` vs `migration failed`.
+
+## Previous session — a11y floor fixed at the root; audits all green
 
 Ran the `/frontend-consistency` skill against the built app (10 routes, `vite preview
 --port 4173`). Build green, `npm test` ALL PASS, `npm run contrast` **167 checks** (was
