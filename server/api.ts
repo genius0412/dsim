@@ -76,12 +76,34 @@ import { verifyAuthToken } from './auth';
 
 /** Public usernames: lowercase letters + digits only, 4–20 chars. Kept in sync
  * with the client's validator (src/net/api.ts `USERNAME_RE`) and the DB's unique
- * index. Returns the normalized (trimmed, lowercased) value or null if invalid. */
+ * index. Returns the normalized (trimmed, lowercased) value or null if invalid.
+ *
+ * CLAIM-TIME ONLY. Use `lookupUsername` for a name that identifies an EXISTING
+ * account — see the note there. */
 const USERNAME_RE = /^[a-z0-9]{4,20}$/;
 function normalizeUsername(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const u = raw.trim().toLowerCase();
   return USERNAME_RE.test(u) ? u : null;
+}
+
+/** Normalize a username used as a LOOKUP KEY (naming someone else).
+ *
+ * This deliberately does NOT apply `USERNAME_RE`'s 4-char floor. A claim rule and
+ * a lookup rule are different things: some live accounts hold a username that
+ * predates today's minimum (e.g. a 3-char one), and running their name through
+ * the CLAIM validator rejected it before the DB was ever consulted — so every
+ * /api/friends action naming that player failed with a bare 400 "bad request",
+ * accept included, with no way for either side to clear it. The public
+ * /api/profile/<username> routes always did a plain lowercase-and-look-up, which
+ * is why those pages worked for the same account while friends didn't.
+ *
+ * Bounds only what the DB column could ever hold; the query is parameterized. */
+const USERNAME_LOOKUP_RE = /^[a-z0-9]{1,20}$/;
+function lookupUsername(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const u = raw.trim().toLowerCase();
+  return USERNAME_LOOKUP_RE.test(u) ? u : null;
 }
 
 const CORS = {
@@ -270,9 +292,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         return json(200, { status }), true;
       }
 
-      // every remaining route names another player by username
-      const username = normalizeUsername(body.username);
-      if (!username) return json(400, { error: 'bad request' }), true;
+      // every remaining route names another player by username. This is a LOOKUP,
+      // not a claim — see `lookupUsername` (a claim-time validator here made every
+      // action against a legacy short username fail with an opaque 400).
+      const username = lookupUsername(body.username);
+      if (!username) return json(400, { error: 'No player named.' }), true;
       const target = await getProfileByUsername(username);
       if (!target) return json(404, { error: 'no such user' }), true;
       if (target.userId === user.userId) {
@@ -282,6 +306,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
 
       switch (url.pathname) {
         case '/api/friends/request': {
+          // The recipient accepts by naming the SENDER by username, so a sender
+          // who has none would plant a row nobody can ever act on. The username
+          // gate normally guarantees one; this covers the accounts that slipped
+          // past it (a failed profile fetch there deliberately doesn't trap the
+          // user, which leaves exactly this hole).
+          const me = await getProfile(user.userId);
+          if (!me?.username) return json(400, { error: 'Pick a username first.' }), true;
           const outcome = await sendFriendRequest(user.userId, other);
           // 'blocked' deliberately reports the same generic failure as any other
           // refusal: a distinct message would let someone confirm they've been
