@@ -1,6 +1,80 @@
-# HANDOFF — 2026-07-20 (friends list MERGED into main; server clamp game-aware) — READ FIRST
+# HANDOFF — 2026-07-20 (friends: accept-bug hotfix DEPLOYED + blocked list) — READ FIRST
 
-## This session — MERGED `friendslist` → `main` + deployed to Fly
+## This session — two friends fixes, both on `main` and shipped
+
+Build green: `npm run build`, `npm run server:check`, `npm run contrast` (151). `npm test`
+not re-run — nothing under `src/sim/` or `config.ts` was touched.
+
+### 1. `55432d6` — "Accepting friend request says bad request" (SERVER, deployed to Fly)
+
+**Root cause, confirmed against the production DB, not inferred.** All three pending
+requests were from the account `ace` — a **3-character** username. The friends routes
+validated the *target* name with the **claim-time** validator:
+
+```ts
+const USERNAME_RE = /^[a-z0-9]{4,20}$/;      // 4-char minimum
+const username = normalizeUsername(body.username);
+if (!username) return json(400, { error: 'bad request' }), true;
+```
+
+`'ace'` fails the 4-char floor, so the name was rejected **before the DB was ever
+consulted** — an opaque 400 on accept, decline, block, everything naming that account,
+with no way for either side to clear it. `ace` is the only one of 407 usernames that
+fails today's rule (claimed 2026-07-07, presumably before the minimum was raised).
+
+The diagnostic tell: `/api/profile/ace` worked fine. Those public routes do a plain
+lowercase-and-look-up; only the friends block ran a format check. **A claim rule and a
+lookup rule are different things** — that's the general lesson, and it's why the fix is a
+split rather than a loosened regex:
+
+- `lookupUsername` (`^[a-z0-9]{1,20}$`) bounds a key that names an EXISTING account and
+  lets the DB decide existence. Used by every `/api/friends/*` route.
+- `normalizeUsername` (unchanged, strict) stays where a NEW name is claimed
+  (`/api/user/username`). Do not merge these back together.
+- The 400 body is now `No player named.` rather than `bad request`.
+
+Also closed the adjacent hole: **`/api/friends/request` now requires the SENDER to hold a
+username.** 26 profiles have none; the recipient accepts by naming the sender *by
+username*, so a usernameless sender would plant a row nobody could ever act on. The
+`UsernameGate` normally guarantees one but deliberately doesn't trap users when its
+profile fetch fails — which leaves exactly that hole.
+
+**Deployed**: `flyctl deploy --remote-only`, all 5 machines healthy, `/health` ok.
+Verified post-deploy that `POST /api/friends/accept {"username":"ace"}` now reaches auth
+(401) instead of 400. The authenticated path was NOT exercised — that needs the user's
+token. Those three requests from `ace` should now accept; worth confirming.
+
+### 2. `96728d6` — blocked list + unblock (CLIENT only, Vercel auto-deploys)
+
+Blocking was a one-way door **in the UI only**: `friends.data.blocked` was already
+fetched every poll and `friends.unblock` was already wired to `POST /api/friends/unblock`.
+The panel simply never rendered either. So this was pure presentation — no API, protocol,
+or DB change.
+
+- `FriendsPanel.tsx`: a **Blocked** section (rows + Unblock, plus a line on what a block
+  does), between "Sent" and "Add a friend". Renders only when non-empty and starts
+  **folded** (new `FoldSection`) — blocked players shouldn't hold permanent space in a
+  panel otherwise about people you want to see, but an unblock buried in settings is worse.
+- `FoldSection` is deliberately **not** `.fr-section`: that class is `display: flex`, and a
+  flex `<details>` has a history of leaking its closed content in some engines. Plain block
+  box, column layout on an inner `.fr-fold-body`.
+- `shell.css` `.fr-fold`: summary reuses `.fr-sec-h` typography so a fold reads as a peer
+  of the plain sections; the ▸ marker **rotates in place** rather than reflowing the header
+  (a reflowing marker would move every row below it on open — see `npm run shiftaudit`).
+- Unblock is `disabled` rather than sending `''` for a usernameless row. Unreachable in
+  practice, but that empty-string lookup is the exact shape of the bug in §1.
+
+**NOT visually verified** — the section only renders when you have a block, and that needs
+your account. Production has exactly 1 `friend_blocks` row; if it's yours it'll appear.
+
+### Branch state / next step
+
+`alpha` is strictly behind `main` (fast-forward, safe). **`beta` has one commit that main
+does not**: `54e261d` netcode anti-stutter (snapshot coalescing + prediction lead cap +
+ping graph). Making beta "same as main" would DISCARD it — merge main into beta instead,
+or port that commit onto main first.
+
+## Earlier session — MERGED `friendslist` → `main` + deployed to Fly
 
 The friends list, Contributors page, and audio volume sliders (branch `friendslist`, 3
 commits) were reviewed and **merged into `main`** (merge commit). All green on the merged
