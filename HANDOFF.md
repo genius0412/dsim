@@ -1,6 +1,40 @@
-# HANDOFF — 2026-07-20 (ran `/frontend-consistency` on the app → closed 4 contrast failures) — READ FIRST
+# HANDOFF — 2026-07-20 (merged friendslist → main, deployed; fixed a deploy footgun + a migration race) — READ FIRST
 
-## This session (latest) — a11y floor fixed at the root; audits all green
+## This session (latest) — friendslist shipped; deploy protocol corrected
+
+**State: green + deployed.** `npm test` ALL PASS · `npm run build` clean ·
+`npm run contrast` 167 checks pass · `npm run server:check` clean.
+
+**Merged `friendslist` → `main`** — a clean FAST-FORWARD (main had nothing the branch
+lacked), 6 commits / 1852 insertions: friend room invites + profile friend actions
+(`InviteFlyout.tsx`, `ProfileFriendActions.tsx`, `useFriends.ts`, `UserSearchBar.tsx`,
+`Select.tsx`), migration `0017_room_invites.sql` + repo/api wiring, AA contrast fixes,
+and the `/frontend-consistency` skill. Pushed. Server deployed; migration `0017`
+CONFIRMED applied (`[server] database ready` in the boot logs — that line only prints if
+`migrate()` resolved).
+
+**DEPLOY FOOTGUN — I hit it, then fixed the docs (`4ad201d`).** I deployed with a bare
+`flyctl deploy --remote-only` because that is what CLAUDE.md's deploy protocol said. That
+re-applies fly.toml's single `[[vm]]` to EVERY machine and silently UPSIZED the three
+satellites (lhr/syd/nrt) from `shared-cpu-1x`/1024MB to `performance-1x`/2048MB. The user
+caught it. Machines are restored and verified. **Always deploy via
+`./scripts/fly-deploy.sh`** — it re-shrinks the satellites afterward. CLAUDE.md now says
+so, and `docs/deploy.md`'s sizing bullet (which still described the pre-downgrade
+`performance-2x`/`performance-1x` split) is corrected to today's
+`performance-1x` (iad/sjc) / `shared-cpu-1x` (satellites).
+
+**MIGRATION RACE fixed (`server/db/migrate.ts`).** All 5 regional machines call
+`migrate()` at boot simultaneously. On a genuinely new migration two could both see a
+file as pending; the loser hit `schema_migrations`' primary key and threw — and since
+`index.ts:825` treats a migration failure as NON-FATAL, that machine logged "records
+disabled", **skipped its remaining migrations, and kept serving traffic**. Now a
+session-level `pg_advisory_lock` (key `MIGRATE_LOCK_KEY`) serializes the whole scan+apply
+on its own client, released in a `finally` so a failure can't wedge every other machine's
+boot; the insert also got `on conflict do nothing`. Note this failure mode was
+SILENT-BY-DESIGN — `/health` returns `ok` regardless, so a healthy app never proved a
+migration landed. Check the logs for `[server] database ready` vs `migration failed`.
+
+## Previous session — a11y floor fixed at the root; audits all green
 
 Ran the `/frontend-consistency` skill against the built app (10 routes, `vite preview
 --port 4173`). Build green, `npm test` ALL PASS, `npm run contrast` **167 checks** (was
