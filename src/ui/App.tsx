@@ -24,6 +24,7 @@ import { AccountButton } from './AccountButton';
 import { Download } from './Download';
 import { Contributors } from './Contributors';
 import { Privacy, Terms } from './Legal';
+import { Donate } from './Donate';
 import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
@@ -57,6 +58,7 @@ type Screen =
   | 'contributors'
   | 'privacy'
   | 'terms'
+  | 'donate'
   | 'profile'
   | 'account'
   | 'admin';
@@ -123,6 +125,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/privacy';
     case 'terms':
       return '/terms';
+    case 'donate':
+      return '/donate';
     case 'account':
       return '/account';
     case 'admin':
@@ -169,6 +173,7 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/contributors')) return at('contributors');
   if (rest.startsWith('/privacy')) return at('privacy');
   if (rest.startsWith('/terms')) return at('terms');
+  if (rest.startsWith('/donate')) return at('donate');
   if (rest.startsWith('/account')) return at('account');
   if (rest.startsWith('/admin')) return at('admin');
   // /play (a live game) can't be restored without a session ⇒ home
@@ -701,6 +706,7 @@ export function App() {
       onContributors={() => navigate('contributors')}
       onPrivacy={() => navigate('privacy')}
       onTerms={() => navigate('terms')}
+      onDonate={() => navigate('donate')}
       signedIn={signedIn}
       onOpenProfile={openProfile}
       onJoinInvite={onJoinInvite}
@@ -902,6 +908,7 @@ export function App() {
           AdSense review fetches /privacy directly */}
       {screen === 'privacy' && <Privacy />}
       {screen === 'terms' && <Terms />}
+      {screen === 'donate' && <Donate signedIn={signedIn} />}
       {screen === 'account' && (
         <Account settings={settings} onChange={update} onHandleSaved={setHandle} />
       )}

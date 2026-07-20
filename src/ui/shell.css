@@ -2881,6 +2881,13 @@ input[type='range']:focus-visible {
   box-shadow: var(--ds-edge);
   transition: transform 0.06s ease, box-shadow 0.06s ease, background 0.15s, border-color 0.15s;
 }
+/* Works on an <a> as well as a <button>. An anchor is inline by default, so its
+   16px padding collapses into the neighbouring lines and the pill overlaps the
+   paragraph above it — inline-block gives it its own box. */
+a.ds-cta {
+  display: inline-block;
+  text-decoration: none;
+}
 .ds-cta:hover {
   background: color-mix(in srgb, var(--ds-accent) 88%, white);
   transform: translateY(1px);
@@ -3410,3 +3417,49 @@ button.ds-key:active {
   font: 500 12px/1.3 inherit;
   color: var(--ds-mut);
 }
+
+/* ---- support / donate page --------------------------------------------- */
+/* Perk list inside a panel. Uses --ds-ink-dim like other body copy; the marker
+   is the accent so the list reads as benefits rather than prose. */
+.ds-perks {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--ds-ink-dim);
+  font-size: 14px;
+}
+.ds-perks li {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+.ds-perks li::before {
+  content: '✓';
+  color: var(--ds-accent);
+  font-weight: 800;
+  flex: none;
+}
+
+/* Claim row: the transaction-ID field plus its button. Wraps rather than
+   squashing the input on narrow viewports. */
+.ds-claim-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.ds-claim-row .ds-input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+/* Claim result. --ds-ok-ink / --ds-red-ink rather than the raw fills: both are
+   the text-safe siblings, and this is status text on a panel. */
+.ds-claim-msg {
+  margin-top: 10px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.ds-claim-msg.ok { color: var(--ds-ok-ink); }
+.ds-claim-msg.err { color: var(--ds-red-ink); }

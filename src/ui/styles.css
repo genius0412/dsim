@@ -32,9 +32,81 @@ button {
 
 /* ------------------------------------------------------------- game ---- */
 
+/* Flex row wrapping the field: [ad] [field] [ad]. Exists so `.game-root` can stay
+   the positioning context for every HUD overlay — see the comment in GameView. */
+.game-shell {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  height: 100%;
+}
+
+/* Ad columns flanking the field.
+
+   HIDDEN BY DEFAULT, revealed only by the media query below. Two constraints set
+   that breakpoint, and both must hold:
+
+   1. AdSense requires >=150px of clearance between a content ad unit and a game.
+      The 150px gutter here is the floor — real clearance is larger, because the
+      canvas letterboxes the field inside itself.
+   2. The field must not shrink. `camera.ts` fits with
+      `scale = min(w / spanW, usableH / spanH)`; DECODE's field is square, so the
+      field only starts shrinking once canvas width drops below `usableH`
+      (viewport height minus the 56px/96px HUD bands). With 620px taken by the two
+      columns, the narrowest window that still clears it is ~1280x720:
+      canvas 660px vs usableH 568px.
+
+   `(pointer: fine)` keeps them off touch devices, which use the compact layout and
+   have no space to give. `min-height` catches short landscape tablets that pass
+   the width test but hit the compact path in camera.ts.
+
+   Sizing note: box-sizing is border-box globally, so the flex basis has to INCLUDE
+   the gutter — 310px = a 160px unit + a 150px clearance gutter on the field-facing
+   side only. Two columns therefore take 620px. */
+.game-ad {
+  display: none;
+  flex: 0 0 310px;
+  align-items: center;
+  justify-content: center;
+  /* Must match the canvas letterbox or a seam appears at the column edge.
+     `COLORS.backdrop` / `backdropDark` in config.ts are #f9faf7 / #20262c, which
+     are exactly the light/dark values of --ds-bg — keep the three in sync. */
+  background: var(--ds-bg);
+}
+.game-ad:first-child { padding-right: 150px; }
+.game-ad:last-child { padding-left: 150px; }
+
+/* One ad unit. The box is sized explicitly so a late-arriving creative cannot
+   reflow anything — `npm run shiftaudit` fails on any element moving >0.5px while
+   an interactive element is hovered, and an ad iframe settling mid-audit reads as
+   exactly that. The label is an AdSense requirement: ads must be visually
+   distinguishable from content. */
+.ad-slot {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.ad-slot-label {
+  display: block;
+  font-size: 9.5px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+  margin-bottom: 4px;
+  line-height: 1;
+}
+
+@media (pointer: fine) and (min-width: 1280px) and (min-height: 640px) {
+  .game-ad {
+    display: flex;
+  }
+}
+
 .game-root {
   position: relative;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   height: 100%;
   /* MOBILE: the whole game surface is a control pad — no text selection, no
      long-press callout, no pinch/scroll-zoom, no rubber-band overscroll. Pairs with

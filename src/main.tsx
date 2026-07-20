@@ -5,6 +5,7 @@ import { ServerNoticeBanner } from './ui/ServerNoticeBanner';
 import { NoticePoller } from './ui/NoticePoller';
 import { initPhysics } from './sim/physicsEngine';
 import { initTheme } from './theme';
+import { AdsProvider } from './ads/AdsProvider';
 // Self-hosted (not a CDN <link>): the Electron build runs from file:// with
 // vite `base: './'`, so fingerprinted woff2 must be bundled to resolve offline.
 // Variable cuts, because shell.css asks for weights off the 100 grid (750).
@@ -24,7 +25,11 @@ initTheme();
 initPhysics().then(() => {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      <App />
+      {/* Wraps everything because the game screen renders OUTSIDE the app shell
+          (App returns it early), and that is where the ad columns live. */}
+      <AdsProvider>
+        <App />
+      </AdsProvider>
       <ServerNoticeBanner />
       <NoticePoller />
     </StrictMode>,

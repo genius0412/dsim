@@ -32,6 +32,9 @@ import {
   getReplay,
   getUserSettings,
   getUserStats,
+  getSupporter,
+  claimKofiPayment,
+  recordKofiPayment,
   listSeasons,
   recordLeaderboard,
   saveUserSettings,
@@ -241,6 +244,112 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         await saveUserSettings(user.userId, settings);
       }
       return json(200, { ok: true }), true;
+    }
+
+    // ---- supporter entitlements --------------------------------------------
+    // Read your OWN entitlement. The client uses this only to decide whether to
+    // draw ads and perk UI; every perk that actually matters is enforced
+    // server-side, so a lie here buys nothing.
+    if (url.pathname === '/api/user/entitlements' && req.method === 'GET') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(200, { supporter: false, supporterUntil: null }), true;
+      return json(200, await getSupporter(user.userId)), true;
+    }
+
+    // Claim a Ko-fi payment against this account.
+    //
+    // Ko-fi identifies buyers by the email they paid with, which need not match
+    // the Neon Auth email (and often will not — a student paying through a
+    // parent's PayPal is the common case). Rather than guess, the webhook parks
+    // the payment and the buyer pastes the transaction id Ko-fi showed them.
+    // `claimKofiPayment` does the whole thing in one transaction so two accounts
+    // cannot claim the same payment.
+    if (url.pathname === '/api/user/claim-kofi' && req.method === 'POST') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(503, { error: 'payments unavailable' }), true;
+
+      let txn: unknown;
+      try {
+        txn = JSON.parse(await readBody(req)).transactionId;
+      } catch {
+        return json(400, { error: 'bad request' }), true;
+      }
+      if (typeof txn !== 'string' || !txn.trim()) {
+        return json(400, { error: 'transaction id required' }), true;
+      }
+      await ensureProfile(user.userId, user.handle);
+      const r = await claimKofiPayment(user.userId, txn.trim());
+      if (r.outcome === 'not-found') {
+        return (
+          json(404, {
+            error: "We can't find that transaction. Ko-fi payments can take a minute to arrive — try again shortly.",
+          }),
+          true
+        );
+      }
+      if (r.outcome === 'already-claimed') {
+        return json(409, { error: 'That payment has already been claimed.' }), true;
+      }
+      return json(200, { ok: true, supporterUntil: r.until ?? null }), true;
+    }
+
+    // ---- Ko-fi webhook ------------------------------------------------------
+    // NOT an authenticated route: Ko-fi has no user JWT, so `verifyAuthToken` is
+    // deliberately absent. Authenticity rests entirely on the shared
+    // verification token Ko-fi sends in the payload, compared against
+    // KOFI_VERIFICATION_TOKEN. With that env unset the endpoint is CLOSED rather
+    // than open — an unauthenticated grant path is worse than no grant path.
+    //
+    // Ko-fi posts application/x-www-form-urlencoded with a single `data` field
+    // holding the JSON, which is why this does not just JSON.parse the body.
+    if (url.pathname === '/api/kofi/webhook' && req.method === 'POST') {
+      const secret = process.env.KOFI_VERIFICATION_TOKEN;
+      if (!secret) return json(503, { error: 'not configured' }), true;
+
+      let payload: {
+        verification_token?: string;
+        message_id?: string;
+        type?: string;
+        email?: string;
+        kofi_transaction_id?: string;
+        amount?: string;
+        currency?: string;
+        is_subscription_payment?: boolean;
+      };
+      try {
+        const body = await readBody(req);
+        const raw = new URLSearchParams(body).get('data');
+        payload = JSON.parse(raw ?? body);
+      } catch {
+        return json(400, { error: 'bad request' }), true;
+      }
+
+      // Constant-time-ish compare is overkill for a webhook token, but bail on a
+      // mismatch before touching the DB either way.
+      // Token check comes BEFORE the dbEnabled guard on purpose: an
+      // unauthenticated caller should not be able to probe whether the database
+      // is up, and it keeps the auth decision independent of deploy state.
+      if (payload.verification_token !== secret) {
+        return json(401, { error: 'bad token' }), true;
+      }
+      if (!payload.message_id) return json(400, { error: 'missing message_id' }), true;
+      if (!dbEnabled) return json(503, { error: 'db unavailable' }), true;
+
+      // `fresh` is false when Ko-fi retried an event we already stored — the
+      // insert's primary key is the idempotency guard, so a retry cannot grant a
+      // second month. Always answer 200 so Ko-fi stops retrying.
+      const fresh = await recordKofiPayment({
+        messageId: payload.message_id,
+        kind: payload.type ?? 'Donation',
+        email: payload.email ?? null,
+        transactionId: payload.kofi_transaction_id ?? null,
+        amount: payload.amount ?? null,
+        currency: payload.currency ?? null,
+        isSubscription: !!payload.is_subscription_payment,
+      });
+      return json(200, { ok: true, recorded: fresh }), true;
     }
 
     // ---- friends ------------------------------------------------------------

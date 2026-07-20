@@ -66,6 +66,7 @@ export function AppShell({
   onContributors,
   onPrivacy,
   onTerms,
+  onDonate,
   signedIn,
   onOpenProfile,
   onJoinInvite,
@@ -87,6 +88,8 @@ export function AppShell({
   onPrivacy: () => void;
   /** Terms of use — public, paired with the privacy policy */
   onTerms: () => void;
+  /** Support/donate page — Ko-fi link + the supporter-membership claim flow */
+  onDonate: () => void;
   /** drives the friends panel: signed out it shows a sign-in prompt and never polls */
   signedIn: boolean;
   /** click-through from a friend/search row to that player's public profile */
@@ -131,6 +134,9 @@ export function AppShell({
           </button>
           <button className="ds-foot-link" onClick={onContributors}>
             Contributors
+          </button>
+          <button className="ds-foot-link" onClick={onDonate}>
+            Support
           </button>
           <button className="ds-foot-link" onClick={onPrivacy}>
             Privacy

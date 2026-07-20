@@ -10,6 +10,7 @@ import { keyLabel, padButtonLabel } from '../input/bindings';
 import { appChannel } from '../net/env';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
+import { AdSlot, useAdUnitActive } from './AdSlot';
 import { DEFAULT_MOBILE_LAYOUT } from '../settings';
 import type { MatchResultInfo, NetSession, NetStatus } from '../net/session';
 import { clearActiveGame } from '../net/activeGame';
@@ -193,6 +194,11 @@ export function GameView({
   const [hud, setHud] = useState<HudSnapshot | null>(null);
   const [intro, setIntro] = useState<IntroPlayer[] | null>(null);
   const [editingLayout, setEditingLayout] = useState(editLayout);
+  // gates the flanking ad columns. When false the <aside>s are not rendered at all
+  // (not merely empty), so an unconfigured or supporter build leaves the field
+  // exactly where it was. GameController watches the canvas with a ResizeObserver,
+  // so the camera re-fits the moment this flips.
+  const ads = useAdUnitActive('game');
 
   useEffect(() => {
     const canvas = canvasRef.current!;
@@ -258,7 +264,24 @@ export function GameView({
   }, []);
 
   return (
-    <div className="game-root">
+    /* `.game-shell` is a flex row: ad column | field | ad column. `.game-root` stays
+       the stage and the containing block for every absolutely-positioned overlay
+       (.hud is inset:0, .scorebar is left:50%, .status-wrap is right:12px) — if the
+       ads were siblings of those instead, the scorebar would centre on the window
+       rather than the field and the status chips would land on the right-hand ad.
+
+       The columns cost the field NOTHING. `camera.ts` fits with
+       `min(w / spanW, usableH / spanH)` and DECODE's field is square, so on any
+       landscape desktop the HEIGHT term binds and the horizontal slack is already
+       going unused. The CSS gate below only reveals the columns at widths where
+       that still holds — see the media query in styles.css. */
+    <div className="game-shell">
+      {ads && (
+        <aside className="game-ad" aria-hidden="true">
+          <AdSlot unit="game" />
+        </aside>
+      )}
+      <div className="game-root">
       {/* A screen-reader-playable driving sim is out of scope (see the Phase 6 audit,
           F7). The label at least stops this being an unlabelled interactive region;
           score/timer/gate state is announced by the live regions below. */}
@@ -399,6 +422,12 @@ export function GameView({
           signedIn={signedIn}
           onWatchReplay={onWatchReplay}
         />
+      )}
+      </div>
+      {ads && (
+        <aside className="game-ad" aria-hidden="true">
+          <AdSlot unit="game" />
+        </aside>
       )}
     </div>
   );

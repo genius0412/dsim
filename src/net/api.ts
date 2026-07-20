@@ -742,3 +742,47 @@ export async function searchUsers(query: string): Promise<PublicProfile[]> {
     return []; // server asleep or older than this client — no results, not an error
   }
 }
+
+/** an account's paid entitlements. Extend the shape (never replace it) as tiers grow. */
+export interface Entitlements {
+  /** an active supporter membership — removes ads, unlocks cosmetic perks */
+  supporter: boolean;
+  /** ISO instant the membership lapses, or null if not a supporter */
+  supporterUntil: string | null;
+}
+
+const NO_ENTITLEMENTS: Entitlements = { supporter: false, supporterUntil: null };
+
+/**
+ * The caller's entitlements. NEVER throws — an ad gate that fails loudly would
+ * break the menu for a signed-out player, and a server older than this client
+ * (the one Fly app serves every client version) simply 404s this route. Both
+ * degrade to "not a supporter", which shows ads; the server independently
+ * enforces every perk, so a wrong answer here costs nothing but a few pixels.
+ */
+export async function fetchEntitlements(): Promise<Entitlements> {
+  try {
+    const r = await authedJson<Partial<Entitlements>>('/api/user/entitlements');
+    return { supporter: !!r.supporter, supporterUntil: r.supporterUntil ?? null };
+  } catch {
+    return NO_ENTITLEMENTS;
+  }
+}
+
+/**
+ * Attach a Ko-fi payment to the signed-in account by its transaction id.
+ *
+ * Unlike `fetchEntitlements` this DOES throw — the user is actively waiting on
+ * the result of a payment they made, and silently swallowing "already claimed"
+ * or "not found" would leave them staring at a page that never changes. The
+ * caller shows the message.
+ */
+export async function claimKofiPayment(
+  transactionId: string,
+): Promise<{ ok: boolean; supporterUntil: string | null }> {
+  const r = await authedJson<{ ok?: boolean; supporterUntil?: string | null }>(
+    '/api/user/claim-kofi',
+    { method: 'POST', body: JSON.stringify({ transactionId }) },
+  );
+  return { ok: !!r.ok, supporterUntil: r.supporterUntil ?? null };
+}

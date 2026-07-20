@@ -18,6 +18,10 @@ export const APP_TAGLINE = '2D Driver Practice';
 export const LINKS = {
   repo: 'https://github.com/genius0412/2d-decode-sim',
   discord: 'https://discord.gg/YB4tXnx7Pj',
+  /** Ko-fi page — donations + the supporter membership tier. The Donate screen
+   *  reads it from this one place; the webhook (server/api.ts) is what actually
+   *  grants the tier once a payment is claimed. */
+  kofi: 'https://ko-fi.com/playdsim',
 } as const;
 
 import type { GameId } from './games/types';

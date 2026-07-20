@@ -176,6 +176,9 @@ export class GameController {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly audio = new MatchAudio();
   private raf = 0;
+  /** re-fits the camera when the canvas resizes without the window doing so
+   *  (ad columns mounting/unmounting) — see the constructor */
+  private canvasObserver: ResizeObserver | null = null;
   private lastT = 0;
   private acc = 0;
   private lastCmd: RobotCommand | null = null;
@@ -294,6 +297,16 @@ export class GameController {
     session?.onRestart(() => this.rebuildFromNet());
     this.input.attach();
     window.addEventListener('resize', this.onResize);
+    // The window `resize` event is not enough on its own: the ad columns flanking
+    // the field appear and disappear WITHOUT the window changing size (the supporter
+    // entitlement resolves asynchronously after sign-in, and an ad blocker can
+    // collapse a column at any moment). Either changes the canvas's client width
+    // while the viewport is untouched, and without this observer the camera would
+    // keep its stale fit and render the field stretched until the user resized.
+    if (typeof ResizeObserver === 'function') {
+      this.canvasObserver = new ResizeObserver(() => this.onResize());
+      this.canvasObserver.observe(this.canvas);
+    }
     this.onResize();
     // Multiplayer must keep simulating + producing inputs even when the tab is
     // unfocused (else every peer stalls waiting on it), so drive the sim from a
@@ -1012,5 +1025,6 @@ export class GameController {
     if (this.simTimer) window.clearInterval(this.simTimer);
     this.input.detach();
     window.removeEventListener('resize', this.onResize);
+    this.canvasObserver?.disconnect();
   }
 }

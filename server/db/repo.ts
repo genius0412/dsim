@@ -344,6 +344,125 @@ export async function saveUserSettings(userId: string, settings: unknown): Promi
   ]);
 }
 
+// ---------------------------------------------- supporter entitlements ------
+/**
+ * Supporter membership, backed by Ko-fi. See 0018_supporter.sql for why this is
+ * an expiry INSTANT on `profiles` rather than a boolean or a separate table.
+ *
+ * Every read compares against `now()` IN POSTGRES rather than in Node: the five
+ * regional machines do not share a clock, and a skewed one would otherwise grant
+ * or revoke a membership early.
+ */
+export interface SupporterState {
+  supporter: boolean;
+  supporterUntil: string | null;
+}
+
+const NOT_A_SUPPORTER: SupporterState = { supporter: false, supporterUntil: null };
+
+export async function getSupporter(userId: string): Promise<SupporterState> {
+  const rows = await q<{ until: string | null; active: boolean }>(
+    `select supporter_until as until,
+            (supporter_until is not null and supporter_until > now()) as active
+       from profiles where user_id = $1`,
+    [userId],
+  );
+  if (!rows[0]) return NOT_A_SUPPORTER;
+  return { supporter: !!rows[0].active, supporterUntil: rows[0].until };
+}
+
+/**
+ * Extend a membership by `months`.
+ *
+ * EXTENDS rather than overwrites: `greatest(supporter_until, now())` means a
+ * renewal that arrives before the current period ends stacks on the remaining
+ * time instead of silently truncating it to one month from today. Someone who
+ * pays for a year up front, or whose renewal fires a day early, does not lose
+ * what they already bought.
+ */
+export async function grantSupporter(userId: string, months: number): Promise<string | null> {
+  const rows = await q<{ until: string }>(
+    `update profiles
+        set supporter_until = greatest(coalesce(supporter_until, now()), now())
+                              + ($2 || ' months')::interval,
+            updated_at = now()
+      where user_id = $1
+      returning supporter_until as until`,
+    [userId, String(Math.max(1, Math.floor(months)))],
+  );
+  return rows[0]?.until ?? null;
+}
+
+// ------------------------------------------------------- Ko-fi payments -----
+/**
+ * Record a Ko-fi webhook event. Returns false if we had already seen this
+ * `message_id` — Ko-fi retries delivery, and a repeat must never grant a second
+ * month. The insert itself is the idempotency check (the primary key does the
+ * work), so there is no read-then-write race between the regional machines.
+ */
+export async function recordKofiPayment(p: {
+  messageId: string;
+  kind: string;
+  email: string | null;
+  transactionId: string | null;
+  amount: string | null;
+  currency: string | null;
+  isSubscription: boolean;
+}): Promise<boolean> {
+  const rows = await q<{ message_id: string }>(
+    `insert into kofi_payments
+       (message_id, kind, email, transaction_id, amount, currency, is_subscription)
+     values ($1, $2, $3, $4, $5, $6, $7)
+     on conflict (message_id) do nothing
+     returning message_id`,
+    [p.messageId, p.kind, p.email, p.transactionId, p.amount, p.currency, p.isSubscription],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Attach an unclaimed payment to an account and grant the membership.
+ *
+ * One transaction, and the UPDATE only matches rows where `claimed_by is null`,
+ * so two accounts racing on the same transaction id cannot both win — the loser
+ * updates zero rows and gets 'already-claimed'.
+ */
+export async function claimKofiPayment(
+  userId: string,
+  transactionId: string,
+): Promise<{ outcome: 'ok' | 'not-found' | 'already-claimed'; until?: string | null }> {
+  return tx(async (query) => {
+    const found = await query<{ claimed_by: string | null }>(
+      `select claimed_by from kofi_payments where transaction_id = $1`,
+      [transactionId],
+    );
+    if (!found[0]) return { outcome: 'not-found' as const };
+    if (found[0].claimed_by) return { outcome: 'already-claimed' as const };
+
+    // `returning` is how we detect whether the row was still unclaimed — the Tx
+    // helper hands back rows, not a rowCount, so a bare UPDATE would look the
+    // same whether it matched or not.
+    const claimed = await query<{ message_id: string }>(
+      `update kofi_payments set claimed_by = $1, claimed_at = now()
+        where transaction_id = $2 and claimed_by is null
+        returning message_id`,
+      [userId, transactionId],
+    );
+    if (claimed.length === 0) return { outcome: 'already-claimed' as const };
+
+    const granted = await query<{ until: string }>(
+      `update profiles
+          set supporter_until = greatest(coalesce(supporter_until, now()), now())
+                                + interval '1 month',
+              updated_at = now()
+        where user_id = $1
+        returning supporter_until as until`,
+      [userId],
+    );
+    return { outcome: 'ok' as const, until: granted[0]?.until ?? null };
+  });
+}
+
 // ------------------------------------------------------------- replays ------
 /** Persist a replay. `season` (= currentSeasonNumber) is the SEASON stamp used for
  * purge-by-season; `replay.balanceVersion` is the real sim-code version that
