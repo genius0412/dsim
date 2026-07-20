@@ -46,7 +46,15 @@ primary_region = 'iad'
 # The 2nd core only ever bought GC/JIT headroom off the main thread (the sim loop is
 # single-threaded), so a busy region may jitter slightly more under sustained multi-match
 # load — acceptable for the traffic these see. Bump back to performance-2x if it stutters.
-# The far satellites (lhr/syd/nrt) go MUCH smaller (shared-cpu-1x) in scripts/fly-deploy.sh.
+#
+# COST PASS (2026-07-20): memory STAYS 2048mb — not a choice. Actual usage is far under
+# 1GB, but Fly enforces a 2048MiB FLOOR on performance-* sizes ("Try setting memory to a
+# value >= 2048MiB"), so RAM is not a cost knob here unless we give up the dedicated vCPU
+# — and we won't: dedicated cpu is what stops the 60Hz loop from burning shared burst
+# credits and flapping /health (see above). Don't retry this downgrade; it is rejected.
+# EVERY region except iad now runs shared-cpu-1x/1024MB via scripts/fly-deploy.sh — sjc
+# joined the satellites in the same pass. `fly deploy` re-applies THIS block to every
+# machine, which is why that script must always re-shrink them afterward.
 [[vm]]
   size = 'performance-1x'
   memory = '2048mb'

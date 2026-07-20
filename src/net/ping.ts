@@ -89,12 +89,44 @@ export function pingQuality(ms: number | null): PingQuality {
   return 'poor';
 }
 
-/** ping every server in parallel → { [id]: ms | null } */
-export async function pingAll(servers: GameServer[]): Promise<Record<string, number | null>> {
-  const entries = await Promise.all(
-    servers.map(async (s) => [s.id, await pingServer(s)] as const),
+/**
+ * Estimated RTT to every configured server → { [id]: ms | null }.
+ *
+ * COST-CRITICAL: do NOT go back to measuring each region directly. A per-region
+ * `/health?region=` probe is fly-replayed to that region's machine, and with
+ * `auto_start_machines` that BOOTS it — so a picker that measured all five woke
+ * all five on every visit and kept the satellites from ever staying stopped
+ * (they are only cheap while stopped). Instead: probe our OWN region once (the
+ * machine we'd use anyway) and estimate the others as `accessMs +
+ * interRegionMs(home, r)`, exactly as the matchmaker does server-side. The RTT
+ * matrix comes from `GET /api/regions` so it stays single-sourced in
+ * `server/regions.ts`. Returns null for a region only if the home probe failed.
+ */
+export async function estimateAll(
+  servers: GameServer[],
+  httpBase: string,
+): Promise<{ pings: Record<string, number | null>; homeRegion: string }> {
+  const home = await probeHome(httpBase);
+  if (!home) {
+    return { pings: Object.fromEntries(servers.map((s) => [s.id, null])), homeRegion: '' };
+  }
+  let rtt: Record<string, Record<string, number>> = {};
+  try {
+    const res = await fetch(httpBase + '/api/regions', { cache: 'no-store' });
+    if (res.ok) rtt = (await res.json()).rtt ?? {};
+  } catch {
+    /* no matrix → same-region is still exact, others fall back below */
+  }
+  const pings = Object.fromEntries(
+    servers.map((s) => {
+      if (!s.region || s.region === home.region) return [s.id, home.accessMs];
+      // mirror interRegionMs()'s fallback: an unknown pair gets a large penalty
+      // rather than looking artificially close.
+      const hop = rtt[home.region]?.[s.region] ?? rtt[s.region]?.[home.region] ?? 300;
+      return [s.id, home.accessMs + hop];
+    }),
   );
-  return Object.fromEntries(entries);
+  return { pings, homeRegion: home.region };
 }
 
 /** the id of the reachable server with the lowest ping, or null if all down */

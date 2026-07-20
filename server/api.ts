@@ -42,6 +42,7 @@ import {
   UsernameTakenError,
 } from './db/repo';
 import { verifyAuthToken } from './auth';
+import { DEPLOY_REGIONS, interRegionMs } from './regions';
 
 /**
  * Public read API for the leaderboards + replay viewer (GET), plus ONE
@@ -424,6 +425,22 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     if (url.pathname === '/api/announcements') {
       const rows = dbEnabled ? await listAnnouncements(Math.min(50, limit)) : [];
       return json(200, { announcements: rows }), true;
+    }
+
+    // Region topology for the client's server picker. The picker used to MEASURE
+    // every region by fly-replaying a /health probe to each one — which, with
+    // `auto_start_machines`, BOOTED every idle region on each visit and defeated
+    // auto-stop (the satellites are only cheap while stopped). The matchmaker has
+    // always avoided this (see server/regions.ts): one probe of your OWN region
+    // plus a static RTT matrix estimates the rest. This endpoint hands the client
+    // that same matrix so the picker can do it too — no wakes, one source of truth.
+    if (url.pathname === '/api/regions') {
+      const rtt: Record<string, Record<string, number>> = {};
+      for (const a of DEPLOY_REGIONS) {
+        rtt[a] = {};
+        for (const b of DEPLOY_REGIONS) rtt[a][b] = interRegionMs(a, b);
+      }
+      return json(200, { regions: DEPLOY_REGIONS, rtt }), true;
     }
 
     if (url.pathname === '/api/stats') {

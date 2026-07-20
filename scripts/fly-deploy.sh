@@ -15,7 +15,10 @@
 set -euo pipefail
 
 APP="${FLY_APP:-dohun-sim-decode}"
-SATELLITES=(lhr syd nrt)
+# EVERY region except the always-warm primary (iad) runs the cheap shared size.
+# sjc joined this list 2026-07-20 (cost pass): US West is redundant with iad for
+# the ~75% of games that are solo record runs, and it auto-stops when idle anyway.
+SATELLITES=(sjc lhr syd nrt)
 SATELLITE_SIZE=shared-cpu-1x
 SATELLITE_MEMORY=1024 # MB — shared-cpu-1x defaults to 256MB, too tight for Node+tsx+Rapier
 
