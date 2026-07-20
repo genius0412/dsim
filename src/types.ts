@@ -181,6 +181,12 @@ export interface RobotState {
    * counts as fully returned at match end regardless of where it ends up */
   baseAwarded?: boolean;
 
+  /** an INERT obstacle (a free-drive practice dummy): still collides + drive-brakes
+   * like any robot, but skips ALL per-tick action compute — aim/shot-solve, flywheel
+   * spin, fire, intake, and the CR turret slew — since it never acts. Keeps idle bots
+   * from burning CPU on work they'll never use. Optional (real robots omit it). */
+  passive?: boolean;
+
   // --- Auto Pathing State ---
   autoPathActive: boolean;
   currentPathSegmentIndex: number;
@@ -440,6 +446,26 @@ export interface GameSettings {
   preferredServerId?: string;
   /** tank drive control: 'traditional' (separate sticks) or 'normal' (Arcade-style) */
   tankControlMode: 'traditional' | 'normal';
+  /** on-screen touch-control layout (mobile). Positions are the CENTRE of each
+   * control as a FRACTION of the viewport (x,y in 0..1), so a layout scales across
+   * screen sizes/orientations. LOCAL setting (persists + account-syncs). */
+  mobileLayout: MobileLayout;
+}
+
+/** one on-screen control's centre, as a fraction (0..1) of the viewport. */
+export interface MobilePos {
+  x: number;
+  y: number;
+}
+/** editable positions for the two joysticks + the three action buttons. */
+export interface MobileLayout {
+  drive: MobilePos;
+  turn: MobilePos;
+  shoot: MobilePos;
+  intake: MobilePos;
+  catalyst: MobilePos;
+  /** overall control size multiplier (0.7..1.5). */
+  scale: number;
 }
 
 export interface World {

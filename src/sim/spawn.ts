@@ -310,6 +310,7 @@ export function coerceSetup(s: RobotSetup): RobotSetup {
     startPose,
     autoPath: autoPath ?? undefined,
     autoPathEnabled: autoPath ? s.autoPathEnabled === true : false,
+    passive: s.passive,
   };
 }
 
@@ -327,6 +328,9 @@ export interface RobotSetup {
   // New fields for auto pathing
   autoPath?: AutoPathData;
   autoPathEnabled?: boolean;
+  /** an inert obstacle (practice dummy): skips all per-tick action compute (see
+   * `RobotState.passive`). */
+  passive?: boolean;
 }
 
 /** the off-field human-player box holds ONLY the alliance-area preload set(s) no
@@ -473,6 +477,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       aimAssist: s.assists.aimAssist,
       autoIntake: s.assists.autoIntake,
       autoFire: s.assists.autoFire,
+      passive: s.passive,
       lastFireAt: -10,
       lastIntakeAt: -10,
       fireReadyAt: 0,

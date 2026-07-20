@@ -101,6 +101,7 @@ function makeChainRobot(setup: RobotSetup, nth: number): RobotState {
     aimAssist: assists.aimAssist,
     autoIntake: assists.autoIntake,
     autoFire: assists.autoFire,
+    passive: setup.passive,
     lastFireAt: -10,
     lastIntakeAt: -10,
     fireReadyAt: 0,

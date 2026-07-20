@@ -1,6 +1,27 @@
-# HANDOFF — 2026-07-19 (player-to-player interactions: search, blocked, invites) — READ FIRST
+# HANDOFF — 2026-07-20 (merged `main`'s friends hotfixes into `friendslist`, PR #33) — READ FIRST
 
-## ⚠️ BLOCKED ON A DEPLOY — read this first
+## This session — merged `main` into `friendslist`
+
+`main` shipped two friends fixes (accept-bug hotfix, deployed; blocked-list UI) after
+`friendslist` diverged with its own player-to-player work (search, blocked section, room
+invites, profile actions — commit `e1e99a5`). Merging combined both:
+
+- **`server/api.ts`** — kept `friendslist`'s `/api/friends/invite/dismiss` route, and
+  switched the "every remaining route names another player" username resolution from the
+  claim-time `normalizeUsername` to `main`'s `lookupUsername` (the accept-bug fix — a
+  4-char floor was rejecting legacy short usernames like `ace` before the DB was ever
+  consulted). `normalizeUsername` stays for the actual claim routes.
+- **`src/ui/FriendsPanel.tsx`** — kept `friendslist`'s Invites section + the `waiting`
+  badge (`incoming.length + invites.length`) on the collapsed rail, and took `main`'s
+  always-rendered `FoldSection` Blocked list (was conditionally rendered + un-folded on
+  `friendslist`; `main` changed it to always show, folded, so "have I blocked anyone?" has
+  an answer even when the list is empty).
+- **`HANDOFF.md`** — this rewrite; both sessions' write-ups follow below.
+
+**Not re-verified after the merge** — run `npm run build`, `npm test`, `npm run
+server:check`, and `npm run contrast` before trusting this tree, then the two-account
+security checklist in `docs/friends-list-plan.md` §Verification and a live invite
+send/receive/auto-join pass (both `game: 'decode'` and `game: 'chain'`).
 
 `server/db/migrations/0016_friends.sql` **and** `server/db/migrations/0017_room_invites.sql`
 are written but **have NOT been applied**. Per the main developer's standing rule, Claude
@@ -11,13 +32,120 @@ error boundary. **The client is therefore safe to ship first.** Both migrations 
 additive (`create table if not exists`, no drops/type changes), so rollback is just "deploy
 the previous server".
 
-**Untested against a real database.** Nothing here has run against Postgres in this
-environment. Before trusting it, run the two-account security checklist in
-`docs/friends-list-plan.md` §Verification (forged accept, cross-user remove, `?q=%`
-wildcard, invisible-in-raw-JSON) plus a live invite send/receive/auto-join pass (both
-`game: 'decode'` and `game: 'chain'`) — none of this has run against a live server yet.
+## Prior session (`main`) — two friends fixes, shipped
 
-## Latest session — player-to-player interactions (commit `e1e99a5`)
+Build green: `npm run build`, `npm run server:check`, `npm run contrast` (151). `npm test`
+not re-run — nothing under `src/sim/` or `config.ts` was touched.
+
+### 1. `55432d6` — "Accepting friend request says bad request" (SERVER, deployed to Fly)
+
+**Root cause, confirmed against the production DB, not inferred.** All three pending
+requests were from the account `ace` — a **3-character** username. The friends routes
+validated the *target* name with the **claim-time** validator:
+
+```ts
+const USERNAME_RE = /^[a-z0-9]{4,20}$/;      // 4-char minimum
+const username = normalizeUsername(body.username);
+if (!username) return json(400, { error: 'bad request' }), true;
+```
+
+`'ace'` fails the 4-char floor, so the name was rejected **before the DB was ever
+consulted** — an opaque 400 on accept, decline, block, everything naming that account,
+with no way for either side to clear it. `ace` is the only one of 407 usernames that
+fails today's rule (claimed 2026-07-07, presumably before the minimum was raised).
+
+The diagnostic tell: `/api/profile/ace` worked fine. Those public routes do a plain
+lowercase-and-look-up; only the friends block ran a format check. **A claim rule and a
+lookup rule are different things** — that's the general lesson, and it's why the fix is a
+split rather than a loosened regex:
+
+- `lookupUsername` (`^[a-z0-9]{1,20}$`) bounds a key that names an EXISTING account and
+  lets the DB decide existence. Used by every `/api/friends/*` route.
+- `normalizeUsername` (unchanged, strict) stays where a NEW name is claimed
+  (`/api/user/username`). Do not merge these back together.
+- The 400 body is now `No player named.` rather than `bad request`.
+
+Also closed the adjacent hole: **`/api/friends/request` now requires the SENDER to hold a
+username.** 26 profiles have none; the recipient accepts by naming the sender *by
+username*, so a usernameless sender would plant a row nobody could ever act on. The
+`UsernameGate` normally guarantees one but deliberately doesn't trap users when its
+profile fetch fails — which leaves exactly that hole.
+
+**Deployed**: `flyctl deploy --remote-only`, all 5 machines healthy, `/health` ok.
+Verified post-deploy that `POST /api/friends/accept {"username":"ace"}` now reaches auth
+(401) instead of 400. The authenticated path was NOT exercised — that needs the user's
+token. Those three requests from `ace` should now accept; worth confirming.
+
+### 2. `96728d6` — blocked list + unblock (CLIENT only, Vercel auto-deploys)
+
+Blocking was a one-way door **in the UI only**: `friends.data.blocked` was already
+fetched every poll and `friends.unblock` was already wired to `POST /api/friends/unblock`.
+The panel simply never rendered either. So this was pure presentation — no API, protocol,
+or DB change.
+
+- `FriendsPanel.tsx`: a **Blocked** section (rows + Unblock, plus a line on what a block
+  does), between "Sent" and "Add a friend". Renders only when non-empty and starts
+  **folded** (new `FoldSection`) — blocked players shouldn't hold permanent space in a
+  panel otherwise about people you want to see, but an unblock buried in settings is worse.
+- `FoldSection` is deliberately **not** `.fr-section`: that class is `display: flex`, and a
+  flex `<details>` has a history of leaking its closed content in some engines. Plain block
+  box, column layout on an inner `.fr-fold-body`.
+- `shell.css` `.fr-fold`: summary reuses `.fr-sec-h` typography so a fold reads as a peer
+  of the plain sections; the ▸ marker **rotates in place** rather than reflowing the header
+  (a reflowing marker would move every row below it on open — see `npm run shiftaudit`).
+- Unblock is `disabled` rather than sending `''` for a usernameless row. Unreachable in
+  practice, but that empty-string lookup is the exact shape of the bug in §1.
+
+**NOT visually verified** — the section only renders when you have a block, and that needs
+your account. Production has exactly 1 `friend_blocks` row; if it's yours it'll appear.
+
+### Branch state — `alpha`, `beta`, `main` are now IDENTICAL
+
+Both were reset/fast-forwarded to `main` at `a9fc501`+.
+
+Worth knowing before the next branch sync: `git rev-list --count` showed `beta` as **1
+ahead** of main (`54e261d`, netcode anti-stutter — snapshot coalescing + prediction lead
+cap + ping graph), which looks like unmerged work. **It is not.** That commit's content was
+already ported to main wholesale — `MAX_PREDICT_LEAD 40`, `PING_INTERVAL_MS 300`,
+`INTERP_DELAY_TICKS 5`, `PingGraph`, and `room.ts`'s `stepOnce(): boolean` coalescing are
+all present on main under a different SHA. `git diff main beta` outside `HANDOFF.md` was
+EMPTY.
+
+**The ahead/behind count measures commits, not content.** A cherry-picked or
+re-applied commit stays "ahead" forever. Trying to merge it back produced conflicts and a
+`Duplicate function implementation` on `PingGraph` (tsc caught it — a resolution that only
+removes conflict markers can still be wrong, so always build the merged tree). Diff the
+trees before believing a branch holds unique work.
+
+## Earlier session — MERGED `friendslist` → `main` + deployed to Fly
+
+The friends list, Contributors page, and audio volume sliders (branch `friendslist`, 3
+commits) were reviewed and **merged into `main`** (merge commit). All green on the merged
+tree: `npm test` (smoke), `npm run contrast` (151), `npm run server:check`, `npm run build`.
+
+- **Only conflict was `HANDOFF.md`** (docs) — resolved. Every code file auto-merged
+  cleanly: main's mobile-touch-layout work and friendslist's audio restructure touch
+  disjoint regions of `settings.ts`/`types.ts`/`App.tsx`; `game.ts`/`smoke.ts` likewise.
+- **Pre-merge hardening (collation).** `0016_friends.sql`'s `friendships` CHECK was
+  `(user_low < user_high)` under the column's DB collation, but `repo.ts` builds the
+  ordered pair with JS `<` (UTF-16 byte order on ASCII auth subjects). A libc/ICU DEFAULT
+  collation could order a pair OPPOSITELY → the INSERT violates the CHECK → a pair-dependent
+  500. Fixed the CHECK to compare `collate "C"` (byte order == JS `<` for ASCII), so the
+  pair repo.ts inserts always satisfies it. Surgical (CHECK expression only — PK index and
+  FKs keep the default collation). Also fixed a stale `respondToBlock`→`blockUser` comment.
+- **DEPLOY.** After this merge commit, `flyctl deploy --remote-only` (app
+  `dohun-sim-decode`) ships the server; `migrate()` applies `0016_friends.sql` on boot
+  (additive, `create table if not exists` ×4 + the `user_presence` table — distinct from
+  main's machine-level `presence` table in `0015`), then verify `GET /health`. Vercel
+  auto-deploys the clients from `main`.
+- Review verdict: friends security model is sound (actor is always the JWT `sub`; wire
+  carries usernames not user ids; blocks report generic failures; invisible/offline resolved
+  server-side; LIKE wildcards escaped, prefix-only search; ProfileCols allowlist). Remaining
+  LOW findings are self-healing concurrency edges (reciprocal-request race, block-vs-request
+  race) — accepted, not blocking. Still worth running the two-account curl security checklist
+  in `docs/friends-list-plan.md` §Verification against the live DB now that it's up.
+
+## Prior session (`friendslist`) — player-to-player interactions (commit `e1e99a5`)
 
 Six features, all committed on `friendslist`. **`npm run build`, `npm run server:check`,
 `npm run contrast` (153 checks), and `npm test` all green.**
@@ -179,9 +307,41 @@ written to move only via `transform`/colour, never a border or margin).
 
 ---
 
-# HANDOFF — 2026-07-19 (Chain Reaction: UI polish — game-aware footer + game-prefixed URLs)
+---
 
-## Latest session — seamless DECODE/Chain Reaction separation in the UI
+# HANDOFF — 2026-07-19 (server spec clamp is now GAME-AWARE — CR chassis limits match the config menu)
+
+## Latest session — server-side chassis limits == config-menu limits (CR record runs)
+
+Build + tsc + smoke (`npm test`) + `server:check` all green.
+
+**Bug:** Chain Reaction record runs (and ranked/custom) resized the chassis differently
+from the config menu. CR runs its own length envelope (`CHAIN_MIN_LENGTH`=10 ..
+`CHAIN_MAX_LENGTH`=18); DECODE clamps length to the per-intake range (sloped 13.5–15). The
+config menu (`Menu.tsx`) + the actual CR spawn (`createChainWorld`→`coerceSpec(...,'chain')`)
+were already game-aware — but the SERVER ingress sanitizers weren't: `sanitizePlayer` /
+`sanitizePlayerPatch` in `src/net/sanitize.ts` called `coerceSpec` WITHOUT the `game` arg, so
+a CR robot's length got clamped with DECODE's intake range before it ever reached the
+chain-aware spawn (e.g. length 10 → 13.5). That sanitized spec is what lands on the roster,
+feeds the setups, and gets recorded into the replay.
+
+**Fix:** thread `game` through the server clamp so server limits == config-menu limits:
+- `src/net/sanitize.ts`: `sanitizePlayer(raw, game?)` and `sanitizePlayerPatch(raw, current,
+  game?)` now pass `game` into `coerceSpec`.
+- `server/index.ts`: join → `sanitizePlayer(msg.player, cfg.game)`; spectate →
+  `sanitizePlayer(undefined, r.config.game)`; ranked queue → `sanitizePlayer(msg.player,
+  msg.game==='chain'?'chain':'decode')`.
+- `server/room.ts`: update patch → `sanitizePlayerPatch(msg.patch, c.player, this.game)`.
+- Smoke: 6 new checks in the sanitize block (CR keeps length 10/18; DECODE range still
+  applies with no game arg — regression guard both ways).
+
+Backward-compatible (no protocol change — just widens the accepted CR envelope to match what
+the menu already offers). **Needs a Fly deploy** (`flyctl deploy --remote-only`) to take
+effect on the live server; until then the deployed server keeps the old DECODE clamp for CR.
+
+---
+
+## Prior session — Chain Reaction: UI polish — game-aware footer + game-prefixed URLs
 
 Build + tsc all green. Changes are UI-only (no `src/sim`/`config` touch, so smoke unaffected).
 

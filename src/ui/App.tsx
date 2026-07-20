@@ -241,6 +241,8 @@ export function App() {
   // one-time "this simulation isn't realistic" disclaimer (shown the first time CR is
   // the selected game, on this device; dismissal persists in localStorage)
   const [showChainDisclaimer, setShowChainDisclaimer] = useState(false);
+  // launched from Controls: enter Free Drive with the mobile-layout editor already open
+  const [editMobileLayout, setEditMobileLayout] = useState(false);
 
   // kept current every render so the []-deps effects (popstate) read live settings
   const settingsRef = useRef(settings);
@@ -490,7 +492,16 @@ export function App() {
     lobby.spectate(code);
   };
 
+  /** Controls → "Customize touch controls": drop into Free Drive with the on-screen
+   * layout editor already open, so you position controls on the real field. */
+  const editTouchControls = (): void => {
+    update({ ...settings, mode: 'free' });
+    setEditMobileLayout(true);
+    navigate('game');
+  };
+
   const exitGame = (): void => {
+    setEditMobileLayout(false);
     session?.dispose();
     setSession(null);
     // a match that FINISHED (or whose slot is gone) clears its rejoin record in
@@ -552,6 +563,8 @@ export function App() {
         session={session}
         signedIn={signedIn}
         onExit={exitGame}
+        onSettingsChange={update}
+        editLayout={editMobileLayout}
         onWatchReplay={(r) => {
           setReplayObj(r);
           navigate('replay');
@@ -813,6 +826,7 @@ export function App() {
           onChange={update}
           section={configureSection}
           onSection={(s) => navigate('configure', { sub: s })}
+          onEditTouchControls={editTouchControls}
         />
       )}
 

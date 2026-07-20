@@ -20,6 +20,18 @@ import { clamp } from './math';
 
 const STORAGE_KEY = 'decodesim.settings.v1';
 
+/** default touch-control layout (centres as viewport fractions), tuned for landscape:
+ * drive stick bottom-left, turn stick bottom-right, action buttons clustered on the
+ * right above the turn stick. Editable + persisted per device. */
+export const DEFAULT_MOBILE_LAYOUT: GameSettings['mobileLayout'] = {
+  drive: { x: 0.13, y: 0.74 },
+  turn: { x: 0.87, y: 0.74 },
+  shoot: { x: 0.9, y: 0.44 },
+  intake: { x: 0.74, y: 0.44 },
+  catalyst: { x: 0.82, y: 0.29 },
+  scale: 1,
+};
+
 export function defaultSettings(): GameSettings {
   return {
     game: 'decode',
@@ -43,6 +55,18 @@ export function defaultSettings(): GameSettings {
     autoPathEnabled: false, // Default to auto path disabled
     parkSpeedPct: 30,
     tankControlMode: 'normal',
+    mobileLayout: cloneMobileLayout(DEFAULT_MOBILE_LAYOUT),
+  };
+}
+
+function cloneMobileLayout(l: GameSettings['mobileLayout']): GameSettings['mobileLayout'] {
+  return {
+    drive: { ...l.drive },
+    turn: { ...l.turn },
+    shoot: { ...l.shoot },
+    intake: { ...l.intake },
+    catalyst: { ...l.catalyst },
+    scale: l.scale,
   };
 }
 
@@ -261,6 +285,25 @@ export function coerceSettings(raw: unknown): GameSettings {
     }
     if (s.tankControlMode === 'traditional' || s.tankControlMode === 'normal') {
       out.tankControlMode = s.tankControlMode;
+    }
+    if (typeof s.mobileLayout === 'object' && s.mobileLayout !== null) {
+      const ml = s.mobileLayout as Record<string, unknown>;
+      const pos = (raw: unknown, def: { x: number; y: number }): { x: number; y: number } => {
+        if (typeof raw !== 'object' || raw === null) return { ...def };
+        const p = raw as Record<string, unknown>;
+        return {
+          x: typeof p.x === 'number' ? clamp(p.x, 0, 1) : def.x,
+          y: typeof p.y === 'number' ? clamp(p.y, 0, 1) : def.y,
+        };
+      };
+      out.mobileLayout = {
+        drive: pos(ml.drive, DEFAULT_MOBILE_LAYOUT.drive),
+        turn: pos(ml.turn, DEFAULT_MOBILE_LAYOUT.turn),
+        shoot: pos(ml.shoot, DEFAULT_MOBILE_LAYOUT.shoot),
+        intake: pos(ml.intake, DEFAULT_MOBILE_LAYOUT.intake),
+        catalyst: pos(ml.catalyst, DEFAULT_MOBILE_LAYOUT.catalyst),
+        scale: typeof ml.scale === 'number' ? clamp(ml.scale, 0.7, 1.5) : 1,
+      };
     }
     out.bindings = mergeBindings(s.bindings);
 

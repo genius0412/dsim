@@ -27,13 +27,18 @@ create table if not exists friendships (
   user_high  text not null references profiles(user_id) on delete cascade,
   created_at timestamptz not null default now(),
   primary key (user_low, user_high),
-  check (user_low < user_high)
+  -- COLLATE "C" = byte order, matching the JS `a < b` (UTF-16 code-unit) compare
+  -- repo.ts uses to build (least,greatest). user_ids are ASCII auth subjects, for
+  -- which byte order == JS order — so the pair repo.ts inserts always satisfies
+  -- this. Without it, a libc/ICU DEFAULT collation could order a given pair the
+  -- OPPOSITE way to JS, making the INSERT violate the CHECK: a pair-dependent 500.
+  check (user_low collate "C" < user_high collate "C")
 );
 create index if not exists friendships_high_idx on friendships(user_high);
 
 -- one-way blocks. The blocker stops receiving requests from the blocked user,
 -- and blocking tears down any existing friendship + pending requests in BOTH
--- directions (see respondToBlock in repo.ts). This is the harassment control:
+-- directions (see blockUser in repo.ts). This is the harassment control:
 -- it is enforced server-side inside sendFriendRequest, never client-side.
 create table if not exists friend_blocks (
   blocker_id text not null references profiles(user_id) on delete cascade,

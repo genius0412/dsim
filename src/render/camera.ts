@@ -41,12 +41,24 @@ export class Camera {
     const s = Math.abs(Math.sin(this.viewAngle));
     const spanW = 2 * (c * ex + s * ey);
     const spanH = 2 * (s * ex + c * ey);
-    // fit within the viewport MINUS the HUD bands, and center in that band so
-    // the score bar / chips never cover the field
-    const usableH = Math.max(this.h - HUD_TOP - HUD_BOTTOM, 100);
+    // fit within the viewport MINUS the HUD bands, and center in that band so the
+    // score bar / chips never cover the field. On a TOUCH device the top status chips
+    // are hidden and (in landscape) the scorebar is compact, so reserve much less —
+    // this is what gives the field its room back in landscape (the CSS scorebar shrink
+    // in styles.css is kept in sync with the bottom band here).
+    const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    const landscape = this.w >= this.h;
+    // compact chrome on touch devices OR any short viewport (mobile landscape) — tiny
+    // top band (the compact MENU/RESET just overlaps the field corner) + a small bottom
+    // band matching the compact scorebar. This hands the map its top/vertical space back.
+    // Kept in sync with the CSS media condition in styles.css.
+    const compact = coarse || this.h < 520;
+    const topBand = compact ? 6 : HUD_TOP;
+    const bottomBand = compact ? (landscape ? 44 : 72) : HUD_BOTTOM;
+    const usableH = Math.max(this.h - topBand - bottomBand, 100);
     this.scale = Math.min(this.w / spanW, usableH / spanH);
     this.cx = this.w / 2;
-    this.cy = HUD_TOP + usableH / 2;
+    this.cy = topBand + usableH / 2;
   }
 
   /** set the canvas transform so draw calls use field inches */
