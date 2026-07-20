@@ -47,14 +47,20 @@ primary_region = 'iad'
 # single-threaded), so a busy region may jitter slightly more under sustained multi-match
 # load — acceptable for the traffic these see. Bump back to performance-2x if it stutters.
 #
-# COST PASS (2026-07-20): memory STAYS 2048mb — not a choice. Actual usage is far under
-# 1GB, but Fly enforces a 2048MiB FLOOR on performance-* sizes ("Try setting memory to a
-# value >= 2048MiB"), so RAM is not a cost knob here unless we give up the dedicated vCPU
-# — and we won't: dedicated cpu is what stops the 60Hz loop from burning shared burst
-# credits and flapping /health (see above). Don't retry this downgrade; it is rejected.
-# EVERY region except iad now runs shared-cpu-1x/1024MB via scripts/fly-deploy.sh — sjc
-# joined the satellites in the same pass. `fly deploy` re-applies THIS block to every
-# machine, which is why that script must always re-shrink them afterward.
+# COST PASS (2026-07-20): performance-1x/2048 → shared-cpu-4x/1024 on iad. MEASURED first
+# (that is the only reason this is safe — the note above records a shared CPU flapping):
+#   · one room's 60Hz step costs ~0.02 cores (1 robot) to ~0.03 (2v2) on fast hardware —
+#     ~33-55 concurrent rooms per core. Idle draw is 0.01 cores; RSS is ~80MB.
+#   · so the old flap was shared-cpu-**1x**, whose sustained baseline is a fraction of a
+#     core ≈ ONE busy room. Fly's baseline scales with core count, so 4x has several times
+#     the headroom at a fraction of a dedicated vCPU's price.
+#   · memory could finally drop too: performance-* enforces a 2048MiB floor, shared does not.
+# WATCH IT: `GET /api/perf` reports event-loop lag percentiles. If p99 climbs toward the
+# 16.67ms step budget under real matches, go UP (shared-cpu-8x) or back to performance-1x —
+# a throttled machine does not degrade gracefully, it stalls /health and flaps.
+# EVERY other region runs shared-cpu-1x/1024MB via scripts/fly-deploy.sh — sjc joined the
+# satellites in the same pass. `fly deploy` re-applies THIS block to every machine, which
+# is why that script must always re-shrink them afterward.
 [[vm]]
-  size = 'performance-1x'
-  memory = '2048mb'
+  size = 'shared-cpu-4x'
+  memory = '1024mb'
