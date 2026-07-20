@@ -1,6 +1,39 @@
 # HANDOFF — 2026-07-20 (merged friendslist → main, deployed; fixed a deploy footgun + a migration race) — READ FIRST
 
-## This session (latest) — friendslist shipped; deploy protocol corrected
+## This session (latest) — friendslist shipped; deploy protocol corrected; COST PASS
+
+### Cost pass (2026-07-20) — read before touching machine sizes
+
+**The big win was a WAKE LEAK, not machine sizes.** `ServerPicker` called `pingAll`,
+which probes each region via `/health?region=`; the server fly-replays that to the
+target machine and `auto_start_machines` BOOTS it. The picker renders on the record-run
+setup screen, so every player starting a run woke all five regions — and the satellites
+are only cheap while STOPPED. Replaced with the approach `server/regions.ts` already used
+for the matchmaker: probe our own region once, estimate the rest via `accessMs +
+interRegionMs()`, matrix served from the new `GET /api/regions`. Estimated rows render
+with a `~`. **Confirmed working: syd was observed `stopped` afterward** — the first
+auto-stop we'd seen.
+
+**Sizes now:** iad `shared-cpu-4x`/1024MB · every other region `shared-cpu-1x`/1024MB
+(sjc joined the satellites in `scripts/fly-deploy.sh`).
+
+**iad left dedicated CPU — but only after MEASURING** (the fly.toml note records a shared
+CPU flapping before, so this was not done blind):
+- `GET /api/perf` (new, `server/index.ts`) reports EVENT-LOOP LAG percentiles, cores in
+  use, rooms/players, RSS. Lag is the right metric: a throttled machine stalls the loop
+  until `/health` misses its probe and the machine flaps. Note the histogram's ~10ms
+  resolution floor — real lag ≈ reported − 10.
+- Benchmarked the room loop: ~0.02 cores (1 robot) to ~0.03 (2v2), i.e. 33–55 rooms per
+  core. Idle draw 0.01 cores, RSS ~80MB.
+- Conclusion: the old flap was `shared-cpu-1x`, whose baseline ≈ one busy room. Fly's
+  baseline scales with cores, so 4x has multiples of that headroom.
+- **STILL UNVERIFIED UNDER LOAD**: every sample so far was `rooms: 0`. Sample
+  `/api/perf` during real matches. If p99 climbs toward the 16.67ms step budget, go to
+  `shared-cpu-8x` or back to `performance-1x` — throttling is a cliff, not a gradient.
+- Fly enforces a 2048MiB memory floor on `performance-*` sizes; shared sizes don't, which
+  is why RAM could finally drop to 1024 (actual use ~80MB).
+
+## Merge + deploy work
 
 **State: green + deployed.** `npm test` ALL PASS · `npm run build` clean ·
 `npm run contrast` 167 checks pass · `npm run server:check` clean.
