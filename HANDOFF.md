@@ -1,4 +1,32 @@
-# HANDOFF — 2026-07-20 (merged `main`'s friends hotfixes into `friendslist`, PR #33) — READ FIRST
+# HANDOFF — 2026-07-20 (NEW SKILL: `.claude/skills/frontend-consistency/` — live-DOM design audit + anti-AI-slop guide) — READ FIRST
+
+## This session — frontend-consistency skill (no src/ changes; build state unchanged from below)
+
+Built `/frontend-consistency` (user request via the skill generator): audits any website's
+frontend for design consistency AND guides styling away from the generic "AI look".
+- **`audit.cjs`** (Electron, pattern of `shiftaudit.cjs`): loads URLs, extracts computed
+  styles from the live DOM → typography/color/spacing/radius/shadow token sprawl, per-page
+  button/input/link style CLUSTERS, WCAG contrast on composited backgrounds, a CDP
+  forced-`:focus-visible` probe, heading structure, 375px overflow + touch targets,
+  cross-page drift, screenshots + report.txt/json. Exit 1 on a11y-floor FAILs.
+- **`design-guide.md`**: per-site design contract modeled on the root `DESIGN.md` (Google
+  Stitch output — token frontmatter + prose decisions), researched avoid→replace tables of
+  recognizable AI-generated patterns (impeccable.style/slop, 925studios), fit-to-site
+  principles (thresholds bend to the contract; a11y FAILs don't).
+- Verified end-to-end this session: example.com clean; 3 local routes (`vite preview
+  --port 4173`) → 1 FAIL · 9 WARN with real screenshots.
+- **Hard-won gotchas (in SKILL.md, don't rediscover):** agent shells export
+  `ELECTRON_RUN_AS_NODE=1` (driver self-respawns clean); **electron.exe exits -1 silently
+  given 2+ bare URL args — the `--` separator before URLs is mandatory**; Git Bash
+  intermittently 127s multi-URL electron invocations → invoke from PowerShell.
+- **Real app finding worth fixing (NOT fixed — out of scope):** dark theme
+  `/configure/robot`: option-description text `span.od` `#949e98` on the `.ds-opt.on`
+  green tint `#22463c` = **3.78:1 (needs 4.5)** — 6 spots. `npm run contrast` misses it
+  (that pair isn't in its hardcoded list); add the pair there when fixing. Also: 4
+  `.ds-foot-link`/footer targets are 16px tall (<24px WCAG 2.5.8), and `input.ds-range`
+  renders 22px tall on mobile width.
+
+
 
 ## This session — merged `main` into `friendslist`
 
