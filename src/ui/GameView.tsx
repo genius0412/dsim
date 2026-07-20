@@ -171,6 +171,11 @@ interface Props {
   onSettingsChange?: (s: GameSettings) => void;
   /** start in mobile-control-layout EDIT mode (launched from the Controls menu) */
   editLayout?: boolean;
+  /** solo RECORD runs only: abandon this run and start a fresh one. Tears the
+   * session down and re-enters the record flow rather than rebuilding the world
+   * in place — an in-place reset desyncs against a server that is still running
+   * the old match (that is what made the drivetrain stick/jitter before). */
+  onRestartRun?: () => void;
 }
 
 export function GameView({
@@ -181,6 +186,7 @@ export function GameView({
   signedIn = false,
   onSettingsChange,
   editLayout = false,
+  onRestartRun,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controllerRef = useRef<GameController | null>(null);
@@ -310,6 +316,13 @@ export function GameView({
             title="Restart"
           >
             ⟲ RESET
+          </button>
+        )}
+        {/* a record run is server-hosted, so RESET's local rebuild is unsafe here;
+            this starts a whole fresh run instead (new room, new seed). */}
+        {session && onRestartRun && (
+          <button className="game-btn" onClick={onRestartRun} title="Start a new run">
+            ⟲ NEW RUN
           </button>
         )}
       </div>

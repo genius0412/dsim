@@ -1968,6 +1968,49 @@ tr.lb-detail td {
   border-bottom: 1px solid var(--ds-line);
   background: var(--ds-bar);
 }
+/* live scoreboard over the replay. Mirrors the in-match HUD order (red · clock ·
+   blue) so it reads the same way. It sits on the BAR surface, not the canvas, so
+   --ds-ink/--ds-line are the correct tokens here (not the --ds-on-field set). */
+.ds-replay-score {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--ds-line);
+  background: var(--ds-bar);
+  font-variant-numeric: tabular-nums;
+}
+.ds-replay-score .rs-num {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ds-ink);
+  min-width: 2.5ch;
+  text-align: center;
+}
+.ds-replay-score .rs-side {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+/* -ink siblings: these are TEXT, and the raw fills fail AA as type */
+.ds-replay-score .rs-side.red {
+  color: var(--ds-red-ink);
+}
+.ds-replay-score .rs-side.blue {
+  color: var(--ds-blue-ink);
+}
+.ds-replay-score .rs-mid {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ds-mut);
+  min-width: 5ch;
+  text-align: center;
+}
+.ds-replay-score.final .rs-mid {
+  color: var(--ds-accent);
+}
 .ds-replay-canvas {
   flex: 1;
   width: 100%;

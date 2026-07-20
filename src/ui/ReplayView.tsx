@@ -5,6 +5,7 @@ import { moduleFor } from '../games';
 import { Renderer } from '../render/renderer';
 import { rangeFill } from './rangeFill';
 import { SIM_DT, BALANCE_VERSION } from '../config';
+import type { MatchPhase } from '../types';
 
 /**
  * Replay viewer: fetches a deterministic input-log replay and re-simulates it in
@@ -31,6 +32,10 @@ export function ReplayView({
   const [playing, setPlaying] = useState(true);
   const [tick, setTick] = useState(0);
   const [total, setTotal] = useState(1);
+  // live scoreboard, sampled with the progress readout (never per frame)
+  const [score, setScore] = useState({ red: 0, blue: 0 });
+  const [phase, setPhase] = useState<MatchPhase>('pre');
+  const [timeLeft, setTimeLeft] = useState(0);
 
   const renderer = useRef<Renderer | null>(null);
   const player = useRef<ReplayPlayer | null>(null);
@@ -124,7 +129,7 @@ export function ReplayView({
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
-    const readout = window.setInterval(() => setTick(player.current?.world.tick ?? 0), 100);
+    const readout = window.setInterval(sync, 100);
 
     return () => {
       cancelAnimationFrame(raf);
@@ -132,6 +137,17 @@ export function ReplayView({
       window.removeEventListener('resize', resize);
     };
   }, [status]);
+
+  /** pull tick + scoreboard off the sim in one go, so seeking/restarting can't
+   *  leave the score showing a different moment than the field does. */
+  const sync = (): void => {
+    const w = player.current?.world;
+    if (!w) return;
+    setTick(w.tick);
+    setScore({ red: w.match.scores.red.total, blue: w.match.scores.blue.total });
+    setPhase(w.match.phase);
+    setTimeLeft(Math.max(0, Math.round(w.match.phaseTimeLeft)));
+  };
 
   const setPlay = (v: boolean): void => {
     // replaying from the end restarts
@@ -142,7 +158,7 @@ export function ReplayView({
   const rebuild = (): void => {
     if (!replay.current) return;
     player.current = new ReplayPlayer(replay.current);
-    setTick(0);
+    sync();
   };
   const seek = (target: number): void => {
     const r = replay.current;
@@ -153,10 +169,17 @@ export function ReplayView({
       player.current = p;
     }
     while (p.world.tick < target && !p.done) p.stepOnce();
-    setTick(p.world.tick);
+    sync();
   };
 
   const pct = Math.round((tick / total) * 100);
+  // a record run has one alliance on the field — showing "0" for an opponent that
+  // never existed reads as a shutout, so those get a single score instead.
+  const alliances = new Set((replay.current?.setups ?? []).map((s) => s.alliance));
+  const solo = alliances.size < 2;
+  const soloSide = solo ? ([...alliances][0] ?? 'blue') : null;
+  const done = phase === 'post' || (player.current?.done ?? false);
+  const clock = `${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, '0')}`;
 
   return (
     <div className="ds-replay">
@@ -180,6 +203,25 @@ export function ReplayView({
           {staleVersion !== null ? ` (Season ${staleVersion})` : ''}. Physics and balance have
           changed since, so it can no longer be played back accurately. The score on the
           leaderboard still stands.
+        </div>
+      )}
+      {status === 'ready' && (
+        <div className={`ds-replay-score${done ? ' final' : ''}`}>
+          {solo ? (
+            <>
+              <span className={`rs-side ${soloSide}`}>{soloSide === 'red' ? 'RED' : 'BLUE'}</span>
+              <b className="rs-num">{soloSide === 'red' ? score.red : score.blue}</b>
+            </>
+          ) : (
+            <>
+              <span className="rs-side red">RED</span>
+              <b className="rs-num">{score.red}</b>
+              <span className="rs-mid">{done ? 'FINAL' : clock}</span>
+              <b className="rs-num">{score.blue}</b>
+              <span className="rs-side blue">BLUE</span>
+            </>
+          )}
+          {solo && <span className="rs-mid">{done ? 'FINAL' : clock}</span>}
         </div>
       )}
       <canvas ref={canvasRef} className="ds-replay-canvas" style={{ display: status === 'ready' ? 'block' : 'none' }} />
