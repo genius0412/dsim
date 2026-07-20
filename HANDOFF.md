@@ -1,25 +1,60 @@
-# HANDOFF — 2026-07-19 (friends-list plan: all 4 features written) — READ FIRST
+# HANDOFF — 2026-07-19 (player-to-player interactions: search, blocked, invites) — READ FIRST
 
 ## ⚠️ BLOCKED ON A DEPLOY — read this first
 
-`server/db/migrations/0016_friends.sql` is written but **has NOT been applied**. Per the
-main developer's standing rule, Claude writes the `.sql` and never runs `flyctl deploy`.
-Until someone deploys, the friends endpoints 404 on the live server — which the client
-handles deliberately: `FriendsUnavailableError` renders "Friends aren't available on this
-server yet", never an error boundary. **The client is therefore safe to ship first.**
+`server/db/migrations/0016_friends.sql` **and** `server/db/migrations/0017_room_invites.sql`
+are written but **have NOT been applied**. Per the main developer's standing rule, Claude
+writes the `.sql` and never runs `flyctl deploy`. Until someone deploys, the friends AND
+room-invite endpoints 404 on the live server — which the client handles deliberately:
+`FriendsUnavailableError` renders "Friends aren't available on this server yet", never an
+error boundary. **The client is therefore safe to ship first.** Both migrations are purely
+additive (`create table if not exists`, no drops/type changes), so rollback is just "deploy
+the previous server".
 
-The migration is purely additive (`create table if not exists` ×4, no drops, no type
-changes) and `migrate()` runs each file in ONE transaction, so **rollback is "deploy the
-previous server"** — the old code simply never touches the new tables.
+**Untested against a real database.** Nothing here has run against Postgres in this
+environment. Before trusting it, run the two-account security checklist in
+`docs/friends-list-plan.md` §Verification (forged accept, cross-user remove, `?q=%`
+wildcard, invisible-in-raw-JSON) plus a live invite send/receive/auto-join pass (both
+`game: 'decode'` and `game: 'chain'`) — none of this has run against a live server yet.
 
-**Untested against a real database.** Nothing here has run against Postgres; there is no
-local DB in this environment and the migration must not be deployed from here. The SQL is
-reviewed but not executed. Before trusting it, run the two-account security checklist in
-`docs/friends-list-plan.md` §Verification (the `curl` ones — forged accept, cross-user
-remove, `?q=%` wildcard, invisible-in-raw-JSON). Those are exactly the cases the UI won't
-exercise, because the UI is the honest client.
+## Latest session — player-to-player interactions (commit `e1e99a5`)
 
-## Latest session — friends list (PR #4)
+Six features, all committed on `friendslist`. **`npm run build`, `npm run server:check`,
+`npm run contrast` (153 checks), and `npm test` all green.**
+
+1. **Records search bar** — `UserSearchBar.tsx` (new), debounced public username lookup,
+   sits between the "Records" title and the Leaderboard/Career tabs.
+2. **Friends panel reorder + Blocked section** — order is now Invites → Requests → Online
+   → Offline → Sent → **Blocked** (new — was wired in `useFriends`/server but never
+   rendered) → Add a friend (moved to the very end).
+3. **Nicer Status dropdown** — new `Select.tsx`, a themeable ARIA listbox (button trigger +
+   floating popup, arrow-key nav). Swapped in for the Status picker ONLY — the other 7
+   native `<select>` sites (region pickers, period filters, Admin) are untouched by design.
+4. **Profile friend/block actions** — `ProfileFriendActions.tsx` (new), shown next to
+   Share on any profile that isn't your own; mounts its own `useFriends()` instance.
+5. **Room invites** — new table `room_invites` (`0017_room_invites.sql`, **not deployed**),
+   `POST /api/friends/invite` + `/invite/dismiss` folded into the existing
+   `GET /api/friends` poll (no new poll timer). Sending: an "Invite friends" flyout
+   (`InviteFlyout.tsx`, new) in `Lobby.tsx`'s room header, lists online friends. Receiving:
+   two independent surfaces both reading the same `invites` array — `FriendsPanel`'s new
+   Invites section (works from anywhere via `App.tsx`'s `onJoinInvite` → `pendingAutoJoin`
+   → navigates + auto-joins) and `InviteFlyout` in Lobby's own entry screen (for when
+   you're mid-decision there). **Both paths call the exact same `join(roomCode)`** Lobby
+   already uses for manual code entry — no parallel join logic, so it can't diverge from
+   or interfere with normal joining. The invite payload carries `game`, so a CR invite
+   lands the invitee in `ChainStartSelector`, not DECODE's editor.
+6. Everything touched (`Records`, `FriendsPanel`, `Profile`, `Lobby`, `Select`) is shared,
+   game-agnostic UI — no per-game branching was needed; verified via passing `chain:`-
+   prefixed smoke cases (untouched, since no `src/sim`/`config.ts` file changed).
+
+**Not verified this session** (needs a local DB / two live accounts / an Electron
+session — none available here): `npm run shiftaudit` (reordered friend rows, the new
+Select popover, and the invite chip/flyout are exactly the pressable-layout-change shape
+this audit exists to catch); live two-account invite send/receive/auto-join for both
+games; the friends-system security checklist above. Migrations must be deployed by the
+main developer before any of this works against the live server.
+
+## Previous session — friends list (PR #4)
 
 Branch `friendslist`. **`npm run build`, `npm test`, `npm run server:check`, and
 `npm run contrast` (now 151 checks) are all green.**
