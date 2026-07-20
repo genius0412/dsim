@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { GameId } from '../types';
 import {
   acceptFriendRequest,
   blockUser,
   cancelFriendRequest,
   declineFriendRequest,
+  dismissRoomInvite,
   fetchFriends,
   FriendsUnavailableError,
+  inviteToRoom,
   removeFriend,
   sendFriendRequest,
   setPresenceStatus,
@@ -25,6 +28,7 @@ const EMPTY: FriendsPayload = {
   incoming: [],
   outgoing: [],
   blocked: [],
+  invites: [],
   status: null,
 };
 
@@ -45,6 +49,16 @@ export interface FriendsApi {
   block: (username: string) => Promise<void>;
   unblock: (username: string) => Promise<void>;
   setStatus: (status: PresenceStatus | null) => Promise<void>;
+  /** invite a friend to a room by code (server checks the friendship) */
+  inviteToRoom: (
+    username: string,
+    room: string,
+    game: GameId,
+    kind: 'versus' | 'record',
+    record?: 'solo' | 'duo' | null,
+  ) => Promise<void>;
+  /** dismiss (or consume, on join) an invite addressed to me */
+  dismissInvite: (id: string) => Promise<void>;
 }
 
 /**
@@ -258,6 +272,38 @@ export function useFriends({
     [refresh],
   );
 
+  // no local mutation to apply — nothing in MY OWN data changes by inviting
+  // someone else — but it still surfaces errors + reconciles on the next poll,
+  // same as `add`.
+  const inviteRoom = useCallback(
+    async (
+      username: string,
+      room: string,
+      game: GameId,
+      kind: 'versus' | 'record',
+      record?: 'solo' | 'duo' | null,
+    ): Promise<void> => {
+      setError(null);
+      try {
+        await inviteToRoom(username, room, game, kind, record);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Something went wrong.');
+        throw e;
+      } finally {
+        refresh();
+      }
+    },
+    [refresh],
+  );
+
+  const dismissInvite = useCallback(
+    (id: string) =>
+      mutate((d) => ({ ...d, invites: d.invites.filter((i) => i.id !== id) }), () =>
+        dismissRoomInvite(id),
+      ).then(() => undefined),
+    [mutate],
+  );
+
   return {
     data,
     loading,
@@ -272,5 +318,7 @@ export function useFriends({
     block,
     unblock,
     setStatus,
+    inviteToRoom: inviteRoom,
+    dismissInvite,
   };
 }

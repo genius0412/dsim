@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
-import { saveAccountSettings, fetchAdminStatus, fetchProfile } from '../net/api';
+import { saveAccountSettings, fetchAdminStatus, fetchProfile, type RoomInvite } from '../net/api';
+import type { RoomConfig } from '../net/protocol';
 import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
 import { Admin } from './Admin';
@@ -300,6 +301,20 @@ export function App() {
   const openProfile = (username: string): void => navigate('profile', { username });
   const watchReplay = (replayId: string): void => navigate('replay', { replayId });
 
+  // a friend's room invite, waiting to be auto-joined by the Lobby screen it
+  // navigates to. One-shot: Lobby clears it once its mount effect consumes it
+  // (see `onAutoJoinConsumed`), so a later NORMAL visit to the same screen never
+  // re-triggers the join.
+  const [pendingAutoJoin, setPendingAutoJoin] = useState<{ room: string; config: RoomConfig } | null>(
+    null,
+  );
+  const onJoinInvite = (invite: RoomInvite): void => {
+    const config: RoomConfig = { kind: invite.kind, game: invite.game };
+    if (invite.kind === 'record' && invite.record) config.record = invite.record;
+    setPendingAutoJoin({ room: invite.room, config });
+    navigate(invite.kind === 'record' ? 'duorecord' : 'lobby');
+  };
+
   // when signed in, mirror settings to the account (debounced) as well as local
   const [accountUserId, setAccountUserId] = useState<string | null>(null);
   // the account's PUBLIC display name (the mutable `handle` behind leaderboards and
@@ -309,6 +324,9 @@ export function App() {
   // `undefined` = not resolved yet (render nothing rather than flashing the auth name,
   // which would show the very bug this fixes on every page load); `null` = no handle set.
   const [handle, setHandle] = useState<string | null | undefined>(undefined);
+  // the signed-in account's own username (for Profile to hide friend/block actions
+  // on your own page) — fetched alongside `handle`, same call, just also kept.
+  const [viewerUsername, setViewerUsername] = useState<string | null>(null);
   // is this account an admin? (server-authorized against ADMIN_USER_IDS) — gates the
   // Admin entry; the server independently enforces every admin action
   const [isAdmin, setIsAdmin] = useState(false);
@@ -347,12 +365,16 @@ export function App() {
   useEffect(() => {
     if (!accountUserId) {
       setHandle(undefined);
+      setViewerUsername(null);
       return;
     }
     let cancelled = false;
     fetchProfile(accountUserId)
       .then((p) => {
-        if (!cancelled) setHandle(p.handle);
+        if (!cancelled) {
+          setHandle(p.handle);
+          setViewerUsername(p.username);
+        }
       })
       // no game server (or it's asleep) — fall back to the auth name in the pill
       .catch(() => {
@@ -538,12 +560,17 @@ export function App() {
     );
   }
   if (screen === 'lobby') {
+    const auto = pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin : undefined;
     return (
       <Lobby
         settings={settings}
         onSettingsChange={update}
         onStart={(s) => beginSession(s, 'custom')}
         onCancel={() => navigate('modes')}
+        config={auto?.config}
+        signedIn={signedIn}
+        autoJoin={auto?.room}
+        onAutoJoinConsumed={() => setPendingAutoJoin(null)}
       />
     );
   }
@@ -559,13 +586,17 @@ export function App() {
     );
   }
   if (screen === 'duorecord') {
+    const auto = pendingAutoJoin?.config.kind === 'record' ? pendingAutoJoin : undefined;
     return (
       <Lobby
         settings={settings}
         onSettingsChange={update}
-        config={{ kind: 'record', record: 'duo' }}
+        config={auto?.config ?? { kind: 'record', record: 'duo' }}
         onStart={(s) => beginSession(s, 'record')}
         onCancel={() => navigate('modes')}
+        signedIn={signedIn}
+        autoJoin={auto?.room}
+        onAutoJoinConsumed={() => setPendingAutoJoin(null)}
       />
     );
   }
@@ -614,6 +645,7 @@ export function App() {
       onContributors={() => navigate('contributors')}
       signedIn={signedIn}
       onOpenProfile={openProfile}
+      onJoinInvite={onJoinInvite}
       game={settings.game}
     >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
@@ -798,6 +830,8 @@ export function App() {
       {screen === 'profile' && route.username && (
         <Profile
           username={route.username}
+          signedIn={signedIn}
+          viewerUsername={viewerUsername}
           nav={{ onWatch: watchReplay, onOpenProfile: openProfile }}
         />
       )}

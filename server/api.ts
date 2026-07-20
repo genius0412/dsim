@@ -9,8 +9,10 @@ import {
   cancelFriendRequest,
   currentSeasonNumber,
   declineFriendRequest,
+  dismissRoomInvite,
   ensureProfile,
   ensureSeason,
+  inviteToRoom,
   listAnnouncements,
   listFriends,
   removeFriend,
@@ -71,6 +73,9 @@ import { verifyAuthToken } from './auth';
  *   POST /api/friends/remove   {username}
  *   POST /api/friends/block    {username} / /api/friends/unblock {username}
  *   POST /api/friends/status   {status}      — your own online/dnd/invisible
+ *   POST /api/friends/invite   {username,room,game,kind,record?} — invite a friend
+ *                                               to a room (must be friends)
+ *   POST /api/friends/invite/dismiss {id}    — dismiss/consume an invite sent to you
  *   GET  /api/users/search?q=<prefix>        — public username-PREFIX search
  */
 
@@ -238,7 +243,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const user = await verifyAuthToken(bearer(req));
       if (!user) return json(401, { error: 'sign in required' }), true;
       if (!dbEnabled) {
-        return json(200, { friends: [], incoming: [], outgoing: [], blocked: [], status: null }), true;
+        return json(200, { friends: [], incoming: [], outgoing: [], blocked: [], invites: [], status: null }), true;
       }
 
       // the friends READ doubles as the presence heartbeat: the poll that
@@ -268,6 +273,16 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
           s === 'online' || s === 'dnd' || s === 'invisible' ? s : null;
         await setPresenceStatus(user.userId, status);
         return json(200, { status }), true;
+      }
+
+      // dismiss (or consume, on join) a room invite ADDRESSED TO the caller — not
+      // "names another player", so it doesn't fit the username-resolution block below
+      if (url.pathname === '/api/friends/invite/dismiss') {
+        const id = typeof body.id === 'string' ? body.id : null;
+        if (!id) return json(400, { error: 'bad request' }), true;
+        const ok = await dismissRoomInvite(user.userId, id);
+        if (!ok) return json(404, { error: 'no such invite' }), true;
+        return json(200, { ok: true }), true;
       }
 
       // every remaining route names another player by username
@@ -318,6 +333,20 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         case '/api/friends/unblock':
           await unblockUser(user.userId, other);
           return json(200, { ok: true }), true;
+        // "come join my room" — scoped to an existing friendship (see
+        // inviteToRoom), not a new trust relationship of its own.
+        case '/api/friends/invite': {
+          const room = typeof body.room === 'string' ? body.room.trim() : '';
+          if (!room || room.length > 40 || !/^[a-z0-9-]+$/i.test(room)) {
+            return json(400, { error: 'bad request' }), true;
+          }
+          const game: GameId = body.game === 'chain' ? 'chain' : 'decode';
+          const kind = body.kind === 'record' ? 'record' : 'versus';
+          const record = body.record === 'duo' || body.record === 'solo' ? (body.record as string) : null;
+          const outcome = await inviteToRoom(user.userId, other, room, game, kind, record);
+          if (outcome === 'not-friends') return json(409, { error: 'Not friends with that player.' }), true;
+          return json(200, { ok: true }), true;
+        }
         default:
           return json(404, { error: 'unknown endpoint' }), true;
       }

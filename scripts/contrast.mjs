@@ -113,6 +113,9 @@ const themedPairs = (t) => {
     ['--ds-mut on panel', t('--ds-mut'), panel, AA],
     ['--ds-mut on tile', t('--ds-mut'), tile, AA],
     ['--ds-mut on bar', t('--ds-mut'), bar, AA],
+    // Select.tsx's listbox trigger button: --ds-ink text on the same --ds-tile
+    // "recessed well" .ds-select already used, never explicitly asserted before.
+    ['--ds-ink on tile (listbox button)', t('--ds-ink'), tile, AA],
 
     // semantics that must stay READABLE — these invert
     ['--ds-accent on bg', t('--ds-accent'), bg, AA],

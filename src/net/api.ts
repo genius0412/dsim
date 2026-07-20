@@ -614,11 +614,25 @@ export interface FriendRow {
 
 export type PresenceStatus = 'online' | 'dnd' | 'invisible';
 
+/** a "come join my room" invite from a friend, addressed to the caller. Carries
+ * everything `Lobby`'s `join()`/`config` need to auto-join, same shape as a
+ * manually-typed room code + the room's `RoomConfig`. */
+export interface RoomInvite {
+  id: string;
+  from: PublicProfile;
+  room: string;
+  game: GameId;
+  kind: 'versus' | 'record';
+  record: 'solo' | 'duo' | null;
+  createdAt: string;
+}
+
 export interface FriendsPayload {
   friends: FriendRow[];
   incoming: PublicProfile[];
   outgoing: PublicProfile[];
   blocked: PublicProfile[];
+  invites: RoomInvite[];
   /** the caller's own self-set status (null = automatic) */
   status: PresenceStatus | null;
 }
@@ -688,6 +702,30 @@ export function setPresenceStatus(status: PresenceStatus | null): Promise<unknow
   return authedJson('/api/friends/status', {
     method: 'POST',
     body: JSON.stringify({ status }),
+  });
+}
+
+/** invite a friend to a room by code — must already be friends (server-checked,
+ * same as every other friends mutation). `record` only applies when
+ * `kind === 'record'`. */
+export function inviteToRoom(
+  username: string,
+  room: string,
+  game: GameId,
+  kind: 'versus' | 'record',
+  record?: 'solo' | 'duo' | null,
+): Promise<unknown> {
+  return authedJson('/api/friends/invite', {
+    method: 'POST',
+    body: JSON.stringify({ username, room, game, kind, record: record ?? null }),
+  });
+}
+
+/** dismiss (or consume, on join) an invite addressed to the caller */
+export function dismissRoomInvite(id: string): Promise<unknown> {
+  return authedJson('/api/friends/invite/dismiss', {
+    method: 'POST',
+    body: JSON.stringify({ id }),
   });
 }
 

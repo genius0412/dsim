@@ -2,6 +2,7 @@ import type { GameId } from '../types';
 import { APP_NAME } from '../seasons';
 import { Leaderboard } from './Leaderboard';
 import { Stats } from './Stats';
+import { UserSearchBar } from './UserSearchBar';
 
 export const RECORDS_TABS = ['leaderboard', 'career'] as const;
 export type RecordsTab = (typeof RECORDS_TABS)[number];
@@ -40,6 +41,8 @@ export function Records({
     <>
       <p className="ds-eyebrow">{APP_NAME} · Records</p>
       <h1 className="ds-h1">Records</h1>
+
+      <UserSearchBar onOpenProfile={onOpenProfile} />
 
       {/* These buttons change the URL (/records vs /records/career), so they are
           NAVIGATION, not an ARIA tablist. The old `role="tab"` + `aria-selected` was a

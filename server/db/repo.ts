@@ -1371,6 +1371,7 @@ export interface FriendsPayload {
   incoming: PublicProfile[];
   outgoing: PublicProfile[];
   blocked: PublicProfile[];
+  invites: RoomInvite[];
   status: PresenceStatus | null;
 }
 
@@ -1475,6 +1476,7 @@ export async function listFriends(userId: string): Promise<FriendsPayload> {
     incoming: incoming.map(shapeProfile),
     outgoing: outgoing.map(shapeProfile),
     blocked: blocked.map(shapeProfile),
+    invites: await listRoomInvites(userId),
     status: st === 'online' || st === 'dnd' || st === 'invisible' ? st : null,
   };
 }
@@ -1624,6 +1626,94 @@ export async function unblockUser(callerId: string, targetId: string): Promise<b
   const del = await q(
     `delete from friend_blocks where blocker_id = $1 and blocked_id = $2 returning 1`,
     [callerId, targetId],
+  );
+  return del.length > 0;
+}
+
+// ------------------------------------------------------- room invites -------
+/**
+ * "Come join my room" for a friend, ridden on the same GET /api/friends read as
+ * everything else here (no separate poll — see api.ts's block comment). Ephemeral:
+ * a room outlives an invite by minutes, so expiry is enforced at READ time
+ * (`INVITE_TTL_S`), not by a cron cleanup job.
+ */
+export interface RoomInvite {
+  id: string;
+  from: PublicProfile;
+  room: string;
+  game: Game;
+  kind: string;
+  record: string | null;
+  createdAt: string;
+}
+
+const INVITE_TTL_S = 10 * 60;
+
+export type InviteOutcome = 'sent' | 'not-friends';
+
+/** invite a FRIEND to a room. Scoped to an existing friendship the same way a
+ * friend request itself is scoped to a non-blocked pair — an invite is not a
+ * new trust relationship, so it rides the one that already exists. */
+export async function inviteToRoom(
+  fromId: string,
+  toId: string,
+  room: string,
+  game: Game,
+  kind: string,
+  record: string | null,
+): Promise<InviteOutcome> {
+  const [low, high] = fromId < toId ? [fromId, toId] : [toId, fromId];
+  const friend = await q(
+    `select 1 from friendships where user_low = $1 and user_high = $2`,
+    [low, high],
+  );
+  if (friend.length === 0) return 'not-friends';
+  await q(
+    `insert into room_invites (from_user_id, to_user_id, room, game, kind, record)
+     values ($1, $2, $3, $4, $5, $6)`,
+    [fromId, toId, room, game, kind, record],
+  );
+  return 'sent';
+}
+
+/** invites addressed to `userId`, freshest first, older than the TTL dropped. */
+export async function listRoomInvites(userId: string): Promise<RoomInvite[]> {
+  const rows = await q<{
+    id: string;
+    from_user_id: string;
+    handle: string;
+    username: string | null;
+    room: string;
+    game: string;
+    kind: string;
+    record: string | null;
+    created_at: string;
+  }>(
+    `select ri.id, ri.from_user_id, p.handle, p.username, ri.room, ri.game, ri.kind, ri.record,
+            ri.created_at
+       from room_invites ri
+       join profiles p on p.user_id = ri.from_user_id
+      where ri.to_user_id = $1 and ri.created_at > now() - $2::interval
+      order by ri.created_at desc`,
+    [userId, `${INVITE_TTL_S} seconds`],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    from: { userId: r.from_user_id, handle: r.handle, username: r.username },
+    room: r.room,
+    game: r.game === 'chain' ? 'chain' : 'decode',
+    kind: r.kind,
+    record: r.record,
+    createdAt: r.created_at,
+  }));
+}
+
+/** dismiss (or consume, on join) an invite. Scoped to the RECIPIENT, so a
+ * caller can never clear someone else's invite. */
+export async function dismissRoomInvite(userId: string, id: string): Promise<boolean> {
+  const del = await q(
+    `delete from room_invites where id = $1 and to_user_id = $2 returning 1`,
+    [id, userId],
   );
   return del.length > 0;
 }

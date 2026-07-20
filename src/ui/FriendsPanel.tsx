@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { searchUsers, type FriendRow, type PresenceStatus, type PublicProfile } from '../net/api';
+import {
+  searchUsers,
+  type FriendRow,
+  type PresenceStatus,
+  type PublicProfile,
+  type RoomInvite,
+} from '../net/api';
 import { useFriends } from './useFriends';
+import { Select, type SelectOption } from './Select';
 
 const OPEN_KEY = 'decodesim.friendsPanelOpen';
 
@@ -55,9 +62,12 @@ function offlineFor(seconds: number | null): string {
 export function FriendsPanel({
   signedIn,
   onOpenProfile,
+  onJoinInvite,
 }: {
   signedIn: boolean;
   onOpenProfile: (username: string) => void;
+  /** a friend invited you to a room and you clicked Join */
+  onJoinInvite: (invite: RoomInvite) => void;
 }) {
   const [open, setOpen] = useState(() => {
     try {
@@ -80,7 +90,8 @@ export function FriendsPanel({
   };
 
   const friends = useFriends({ signedIn, collapsed: !expanded });
-  const { incoming, outgoing, friends: list } = friends.data;
+  const { incoming, outgoing, blocked, invites, friends: list } = friends.data;
+  const waiting = incoming.length + invites.length;
 
   const [online, offline] = useMemo(() => {
     const on: FriendRow[] = [];
@@ -99,9 +110,9 @@ export function FriendsPanel({
           aria-expanded={false}
         >
           <PeopleGlyph />
-          {incoming.length > 0 && (
-            <span className="fr-badge" aria-label={`${incoming.length} friend requests`}>
-              {incoming.length}
+          {waiting > 0 && (
+            <span className="fr-badge" aria-label={`${waiting} friend requests and invites`}>
+              {waiting}
             </span>
           )}
         </button>
@@ -129,6 +140,27 @@ export function FriendsPanel({
           <StatusPicker value={friends.data.status} onChange={friends.setStatus} />
 
           {friends.error && <p className="fr-error">{friends.error}</p>}
+
+          {invites.length > 0 && (
+            <Section title="Invites" count={invites.length}>
+              {invites.map((inv) => (
+                <div className="fr-row" key={inv.id}>
+                  <span className="fr-who static">
+                    <span className="fr-name">{inv.from.handle}</span>
+                    <span className="fr-sub">invited you to a room</span>
+                  </span>
+                  <span className="fr-actions">
+                    <button className="ds-btn small primary" onClick={() => onJoinInvite(inv)}>
+                      Join
+                    </button>
+                    <button className="ds-btn small ghost" onClick={() => void friends.dismissInvite(inv.id)}>
+                      Dismiss
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </Section>
+          )}
 
           {incoming.length > 0 && (
             <Section title="Requests" count={incoming.length}>
@@ -197,6 +229,24 @@ export function FriendsPanel({
               ))}
             </Section>
           )}
+
+          <Section title="Blocked" count={blocked.length}>
+            {blocked.length === 0 ? (
+              <p className="fr-empty">You haven’t blocked anyone. Blocked players can’t send you
+                friend requests, and you won’t appear in their friends list.</p>
+            ) : (
+              blocked.map((p) => (
+                <Row key={p.userId} p={p} onOpenProfile={onOpenProfile}>
+                  <button
+                    className="ds-btn small ghost"
+                    onClick={() => p.username && void friends.unblock(p.username)}
+                  >
+                    Unblock
+                  </button>
+                </Row>
+              ))
+            )}
+          </Section>
 
           <AddFriend onAdd={friends.add} known={friends.data} />
         </>
@@ -278,6 +328,13 @@ function RowMenu({
   );
 }
 
+type StatusChoice = 'auto' | PresenceStatus;
+const STATUS_OPTIONS: SelectOption<StatusChoice>[] = [
+  { value: 'auto', label: 'Automatic' },
+  { value: 'dnd', label: 'Do not disturb' },
+  { value: 'invisible', label: 'Invisible' },
+];
+
 function StatusPicker({
   value,
   onChange,
@@ -286,21 +343,15 @@ function StatusPicker({
   onChange: (s: PresenceStatus | null) => Promise<void>;
 }) {
   return (
-    <label className="fr-status">
+    <div className="fr-status">
       <span className="cap">Status</span>
-      <select
-        className="ds-select"
+      <Select
+        ariaLabel="Status"
         value={value ?? 'auto'}
-        onChange={(e) => {
-          const v = e.target.value;
-          void onChange(v === 'auto' ? null : (v as PresenceStatus));
-        }}
-      >
-        <option value="auto">Automatic</option>
-        <option value="dnd">Do not disturb</option>
-        <option value="invisible">Invisible</option>
-      </select>
-    </label>
+        options={STATUS_OPTIONS}
+        onChange={(v) => void onChange(v === 'auto' ? null : v)}
+      />
+    </div>
   );
 }
 

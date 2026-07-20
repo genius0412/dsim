@@ -19,6 +19,7 @@ import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH 
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
+import { InviteFlyout } from './InviteFlyout';
 
 interface Props {
   settings: GameSettings;
@@ -28,6 +29,16 @@ interface Props {
   /** what this room runs. Default: a versus custom room (2v2). Pass a record/duo
    * config to run this same lobby as a 2v0 co-op record run (opponent-free). */
   config?: RoomConfig;
+  /** is SOME account signed in — gates the friend flyout (invites need an
+   * account on both ends) */
+  signedIn?: boolean;
+  /** a room code to join automatically on mount (a friend's invite, clicked
+   * from elsewhere in the app) — calls the exact same `join()` a manual code
+   * entry does, just triggered once at mount instead of by a button click. */
+  autoJoin?: string;
+  /** fired once `autoJoin` has been consumed, so the caller can clear its
+   * one-shot pending state and a later normal visit doesn't re-trigger it */
+  onAutoJoinConsumed?: () => void;
 }
 
 type Phase = 'entry' | 'connecting' | 'room' | 'error';
@@ -40,7 +51,16 @@ type Phase = 'entry' | 'connecting' | 'room' | 'error';
  * presence: the server is the single source of truth for the roster and host, so
  * one client can never stall the others.
  */
-export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = { kind: 'versus' } }: Props) {
+export function Lobby({
+  settings,
+  onSettingsChange,
+  onStart,
+  onCancel,
+  config = { kind: 'versus' },
+  signedIn = false,
+  autoJoin,
+  onAutoJoinConsumed,
+}: Props) {
   const isRecord = config.kind === 'record';
   const capacity = roomCapacity(config);
   const [phase, setPhase] = useState<Phase>('entry');
@@ -169,6 +189,18 @@ export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = 
     );
   }
 
+  // auto-join once on mount if a friend's invite carried a room code — the same
+  // `join()` a manual code entry calls, just triggered without a button click.
+  const autoJoinedRef = useRef(false);
+  useEffect(() => {
+    if (autoJoin && !autoJoinedRef.current) {
+      autoJoinedRef.current = true;
+      join(autoJoin);
+      onAutoJoinConsumed?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoJoin]);
+
   const setAlliance = (alliance: Alliance): void => lobbyRef.current?.update({ alliance });
   const toggleReady = (): void => lobbyRef.current?.update({ ready: !me?.ready });
 
@@ -216,6 +248,8 @@ export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = 
               <Logo size={24} />
               {APP_NAME}
             </span>
+            <span className="ds-head-spacer" />
+            <InviteFlyout signedIn={signedIn} onJoinRoom={join} />
           </div>
           <div className="ds-title">
             <h1>
@@ -326,6 +360,12 @@ export function Lobby({ settings, onSettingsChange, onStart, onCancel, config = 
             <Logo size={24} />
             {APP_NAME}
           </span>
+          <span className="ds-head-spacer" />
+          <InviteFlyout
+            signedIn={signedIn}
+            room={{ code, config: { kind: config.kind, record: config.record, game: config.game ?? settings.game } }}
+            onJoinRoom={join}
+          />
         </div>
         <div className="ds-title">
           <h1>

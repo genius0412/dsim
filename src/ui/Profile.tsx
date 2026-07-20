@@ -9,6 +9,8 @@ import { gameServerConfigured } from '../net/env';
 import { APP_NAME } from '../seasons';
 import { CareerView } from './CareerView';
 import { ShareButton } from './ShareButton';
+import { ProfileFriendActions } from './ProfileFriendActions';
+import { useFriends } from './useFriends';
 import type { CareerNav } from './Stats';
 
 /**
@@ -18,8 +20,26 @@ import type { CareerNav } from './Stats';
  * season shows that player's final standings + matches). A 404 (unknown username)
  * renders a first-class "player not found" state.
  */
-export function Profile({ username, nav = {} }: { username: string; nav?: CareerNav }) {
+export function Profile({
+  username,
+  signedIn = false,
+  viewerUsername = null,
+  nav = {},
+}: {
+  username: string;
+  /** is *some* account signed in right now (any account, not necessarily this
+   * profile's) — gates whether friend/block actions render at all */
+  signedIn?: boolean;
+  /** the signed-in account's own username, so viewing your own profile doesn't
+   * show "Add friend"/"Block" pointed at yourself */
+  viewerUsername?: string | null;
+  nav?: CareerNav;
+}) {
   const configured = gameServerConfigured();
+  // collapsed: true — this is a background poll for one profile visit, not the
+  // rail's live badge, so it can back off to the slower interval
+  const friends = useFriends({ signedIn, collapsed: true });
+  const isOwnProfile = signedIn && viewerUsername != null && viewerUsername === username;
   const loadStats = useCallback(
     (season?: number) => fetchUserStatsByUsername(username, season),
     [username],
@@ -69,7 +89,12 @@ export function Profile({ username, nav = {} }: { username: string; nav?: Career
       fetchPage={fetchPage}
       nameFallback={`@${username}`}
       head={head}
-      headerAction={(stats) => <ShareButton username={stats?.username ?? username} />}
+      headerAction={(stats) => (
+        <>
+          <ShareButton username={stats?.username ?? username} />
+          {!isOwnProfile && signedIn && <ProfileFriendActions username={username} friends={friends} />}
+        </>
+      )}
       nav={nav}
       notFound={notFound}
     />

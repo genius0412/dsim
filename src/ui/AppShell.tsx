@@ -5,7 +5,7 @@ import { FriendsPanel } from './FriendsPanel';
 import { Logo } from './Logo';
 import { NavRail } from './NavRail';
 import { usePresence } from './usePresence';
-import type { Presence } from '../net/api';
+import type { Presence, RoomInvite } from '../net/api';
 
 export type ShellNav = 'home' | 'play' | 'configure' | 'records' | 'profile' | 'admin';
 
@@ -66,6 +66,7 @@ export function AppShell({
   onContributors,
   signedIn,
   onOpenProfile,
+  onJoinInvite,
   game,
 }: {
   active: ShellNav;
@@ -84,6 +85,8 @@ export function AppShell({
   signedIn: boolean;
   /** click-through from a friend/search row to that player's public profile */
   onOpenProfile: (username: string) => void;
+  /** a friend's "Join" click on a room invite, from anywhere the panel is open */
+  onJoinInvite: (invite: RoomInvite) => void;
   /** the selected game — the footer names its season (DECODE / Chain Reaction) */
   game: GameId;
 }) {
@@ -106,7 +109,7 @@ export function AppShell({
         <div className="ds-body">
           <NavRail active={active} onNav={onNav} showAdmin={showAdmin} />
           <main className="ds-main">{children}</main>
-          <FriendsPanel signedIn={signedIn} onOpenProfile={onOpenProfile} />
+          <FriendsPanel signedIn={signedIn} onOpenProfile={onOpenProfile} onJoinInvite={onJoinInvite} />
         </div>
       ) : (
         <main className="ds-main ds-main-home">{children}</main>
