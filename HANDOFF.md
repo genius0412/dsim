@@ -1,4 +1,86 @@
-# HANDOFF — 2026-07-20 (merged friendslist → main, deployed; fixed a deploy footgun + a migration race) — READ FIRST
+# HANDOFF — 2026-07-20 (monetization: ads + privacy policy + Ko-fi supporter tier) — READ FIRST
+
+## This session (latest) — MONETIZATION, on branch `monetization` (pushed, NOT merged)
+
+Build + smoke + contrast (167) + `server:check` all green. Two commits:
+`5fb0288` legal pages, `b556718` ads + supporter tier.
+
+### What shipped
+
+**Legal (`5fb0288`)** — `src/legalText.ts` (privacy policy + terms as template-literal
+strings), `src/ui/Legal.tsx`, routes `/privacy` + `/terms`, footer links. The policy was
+written against the REAL schema (`server/db/migrations/`) and the REAL localStorage keys,
+not from a template — if you add a table or a synced field, update it. Terms set a 13+
+minimum age. **A live privacy policy is a hard prerequisite for the AdSense application.**
+
+**Ads (`b556718`)** — `src/ads/adsense.ts` is the single gate. Ads are OFF unless
+`VITE_ADSENSE_CLIENT` is set, and are never shown in Electron (AdSense forbids app
+wrappers), on touch, or to supporters. `AdsProvider` fails CLOSED — ads stay off until the
+supporter check settles, so a paying supporter never sees a flash of them.
+
+Side columns flank the field in space the renderer already left empty: `camera.ts:59` fits
+with `min(w/spanW, usableH/spanH)` and DECODE's field is SQUARE, so on landscape desktop
+the HEIGHT term binds. **Measured: with both columns in, the field stays bit-identical at
+3.8547 px/in and the HUD still registers to the field, not the window.**
+
+Two non-obvious constraints, both encoded in `styles.css` comments:
+- AdSense requires **>=150px clearance** between an ad and a game. That is why the units
+  are 160px, not the better-earning 300px — only 160 leaves the gutter on a 1366/1440
+  laptop. Columns are 310px (160 + 150 gutter), hidden below 1280px wide.
+- `.game-root` had to STAY the positioning context (every HUD overlay is absolute against
+  it), so a new `.game-shell` flex row wraps it rather than re-parenting 140 lines.
+- `game.ts` gained a **ResizeObserver** on the canvas: the columns appear/disappear
+  without the window resizing (async entitlement, ad blockers) and the camera would
+  otherwise keep a stale fit and render the field stretched.
+
+**Supporter tier (`b556718`)** — `0018_supporter.sql`: `supporter_until` on `profiles`
+(an expiry INSTANT, so no nightly expiry job) plus a `kofi_payments` table. Grants EXTEND
+rather than overwrite, so an early renewal loses nothing. `GET /api/user/entitlements`,
+`POST /api/user/claim-kofi`, `POST /api/kofi/webhook`. Ko-fi page is
+**https://ko-fi.com/playdsim** (`LINKS.kofi` in `src/seasons.ts`).
+
+### Gotchas found this session
+
+- **`npm run shiftaudit` is FLAKY and its exit code is masked.** Three runs of the same
+  code gave 34 / 46 / 3 "problems" (check counts 1062/1054/1126). It reads rects 60ms
+  apart, so a slow frame is a false positive. Worse, `app.on('window-all-closed')` at
+  `scripts/shiftaudit.cjs:230` calls `process.exit(0)` and RACES the real
+  `process.exit(problems === 0 ? 0 : 1)` at :228 — so it reports exit 0 even when it
+  found problems. **Do not treat a green exit as a pass; read the summary line.** Worth
+  fixing (drop the window-all-closed handler, or set a flag before quitting).
+- `.ds-cta` is styled for `<button>`. On an `<a>` it stays inline and its 16px padding
+  overlaps the paragraph above. Fixed with an `a.ds-cta { display:inline-block }` rule.
+- `DSIM_OUT` for shiftaudit must be an EXISTING directory — the script appends to
+  `$DSIM_OUT/shiftaudit.log` without creating it, so a fresh path crashes the run.
+- `.game-ad` background must track `COLORS.backdrop`/`backdropDark` (`#f9faf7`/`#20262c`),
+  which are exactly the light/dark values of `--ds-bg`, or a seam shows at the column edge.
+
+### NEXT STEPS (in order)
+
+1. **Nothing earns until AdSense is approved.** Sequence: merge + deploy so `/privacy` is
+   live → apply to AdSense → wait days-to-weeks → set `VITE_ADSENSE_CLIENT` +
+   `VITE_ADSENSE_SLOT_GAME` on Vercel. The code is dormant until then, so it is safe to
+   merge now.
+2. **Ko-fi setup, before the first payment.** Connect a PayPal **Business** account: a
+   personal one exposes your legal name/email on every supporter's receipt, and Ko-fi
+   binds existing subscriptions to whichever account was connected at signup, so
+   switching later strands them. Skip Ko-fi Gold until membership revenue clears
+   ~$240/mo (0% vs 5% only beats ~$12/mo above that).
+3. Set `KOFI_VERIFICATION_TOKEN` as a Fly secret and point the Ko-fi webhook at
+   `https://dohun-sim-decode.fly.dev/api/kofi/webhook`.
+4. **Phase 4 perks NOT started**: supporter badge (`PublicProfile` in `repo.ts` +
+   `server/index.ts:739` for in-match labels), extra saved starts
+   (`MAX_SAVED_STARTS` is 2 at `config.ts:763`, baked into `coerceSettings` at
+   `settings.ts:110,225` — needs an effective-cap parameter), cosmetic robot colours.
+   Replay retention was deliberately deferred: retention today is per-season bulk purge
+   (`purgeSeasonReplays`), per-user TTL is a new concept with ongoing storage cost.
+5. **The DB paths are UNTESTED** — there is no local Postgres, so the webhook's
+   idempotency (`message_id` PK) and the claim race were verified by reading, not by
+   running. Test them against a real database before announcing the tier.
+
+---
+
+# HANDOFF — 2026-07-20 (merged friendslist → main, deployed; fixed a deploy footgun + a migration race)
 
 ## This session (latest) — friendslist shipped; deploy protocol corrected; COST PASS
 
