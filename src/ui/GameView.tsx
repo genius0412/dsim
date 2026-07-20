@@ -224,6 +224,14 @@ export function GameView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Keep the restart binding pointed at the CURRENT callback. The controller is
+  // built in a mount-only effect, so registering it there would capture a stale
+  // closure; this re-registers whenever the prop changes and clears it (null) when
+  // the screen isn't a record run, leaving the binding inert in a versus match.
+  useEffect(() => {
+    controllerRef.current?.setRestartRequest(onRestartRun ?? null);
+  }, [onRestartRun]);
+
   // MOBILE zoom/select guard: iOS Safari ignores `user-scalable=no`, so a two-finger
   // pinch still zooms and a two-finger touch can pop the text-selection callout. Kill
   // the iOS `gesture*` events and any multi-touch default while the game is up, plus

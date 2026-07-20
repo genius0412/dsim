@@ -227,6 +227,10 @@ export class GameController {
    * correction is eased in (render loop decays it) instead of snapping — hides
    * rubberbanding from jittery snapshots. Never affects `this.world`. */
   private localSmooth = { x: 0, y: 0, heading: 0 };
+  /** set by the UI for a RECORD run: the restart binding asks for a whole new run
+   * (session teardown + fresh room) instead of an in-place rebuild. Null elsewhere,
+   * which is what keeps the binding inert in a versus match. */
+  private restartRequestCb: (() => void) | null = null;
   /** authoritative REMOTE-robot poses per received snapshot, for interpolating them
    * between snapshots. Captured BEFORE reconcile mutates the snapshot world. (Balls
    * are NOT interpolated — see displayWorld.) */
@@ -607,9 +611,17 @@ export class GameController {
    * only our own robot is predicted, remote robots are corrected by snapshots. */
   private stepServer(cmd: RobotCommand): void {
     const s = this.session!;
-    // NOTE: no restart/rematch in multiplayer — a local or host-authored rebuild
+    // NOTE: no IN-PLACE restart in multiplayer — a local or host-authored rebuild
     // desynced everyone (post-restart stuck/jitter). Players return to the lobby to
-    // start a fresh match instead. Restart stays a SOLO-only affordance (stepSolo).
+    // start a fresh match instead.
+    // A record run is the exception: it is single-player, so the restart binding
+    // asks the UI to tear the session down and open a NEW run (a fresh room). We
+    // only forward the request — nothing here rebuilds `this.world`, which is what
+    // made the drivetrain stick against a server still running the old match.
+    if (this.input.restartPressed && this.restartRequestCb) {
+      this.restartRequestCb();
+      return; // the session is going away this frame; don't predict into it
+    }
 
     // reconcile to the freshest server snapshot BEFORE predicting this frame
     const snap = s.takeSnapshot();
@@ -828,6 +840,12 @@ export class GameController {
     this.localSmooth = { x: 0, y: 0, heading: 0 };
     this.seedActionAudio();
     this.toasts = [];
+  }
+
+  /** RECORD runs: route the restart binding to a full new run. Passing null (the
+   * default) leaves it inert, so a versus match can't reach it. */
+  setRestartRequest(cb: (() => void) | null): void {
+    this.restartRequestCb = cb;
   }
 
   /** trigger the pre-match countdown (e.g. from a UI button) */
