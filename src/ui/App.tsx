@@ -27,7 +27,8 @@ import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
-import { gameServerConfigured, setSelectedServer, gameServerUrlWith } from '../net/env';
+import { gameServerConfigured, setSelectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
+import { ServerMenu } from './ServerMenu';
 import type { NetSession } from '../net/session';
 import { ServerSession } from '../net/serverSession';
 import { WebSocketTransport } from '../net/transport';
@@ -594,7 +595,6 @@ export function App() {
         mode="solo"
         onStart={(s) => beginSession(s, 'record')}
         onCancel={() => navigate('modes')}
-        onPreferServer={(id) => update({ ...settings, preferredServerId: id })}
       />
     );
   }
@@ -635,13 +635,23 @@ export function App() {
     );
   }
 
-  // shell screens
-  const right = authEnabled ? (
-    <AccountButton handle={handle} onAccount={() => navigate('account')} />
-  ) : (
-    <button className="ds-btn" onClick={() => navigate('account')}>
-      Settings
-    </button>
+  // shell screens. The region menu sits in the bar (ahead of the account button)
+  // so switching server is always one click — it used to be reachable only by
+  // going into Account, or via the picker that blocked every record run.
+  const right = (
+    <>
+      <ServerMenu
+        value={settings.preferredServerId ?? selectedServerId()}
+        onChange={(id) => update({ ...settings, preferredServerId: id })}
+      />
+      {authEnabled ? (
+        <AccountButton handle={handle} onAccount={() => navigate('account')} />
+      ) : (
+        <button className="ds-btn" onClick={() => navigate('account')}>
+          Settings
+        </button>
+      )}
+    </>
   );
 
   const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';

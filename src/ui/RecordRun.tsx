@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
-import { gameServerUrl, gameServerUrlWith, multiServer, selectedServer, selectedServerId } from '../net/env';
+import { gameServerUrl, gameServerUrlWith, multiServer, selectedServer } from '../net/env';
 import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
 import type { NetSession } from '../net/session';
 import type { RecordKind } from '../net/protocol';
-import { ServerPicker } from './ServerPicker';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
@@ -24,27 +23,22 @@ export function RecordRun({
   mode,
   onStart,
   onCancel,
-  onPreferServer,
 }: {
   settings: GameSettings;
   mode: RecordKind;
   onStart: (s: NetSession) => void;
   onCancel: () => void;
-  /** persist the chosen server id to the account/settings (remember last choice) */
-  onPreferServer?: (id: string) => void;
 }) {
   const [status, setStatus] = useState('Connecting to the record server…');
   const [error, setError] = useState('');
   const startedRef = useRef(false);
-  // show the server (region) picker BEFORE connecting when there's a choice; a
-  // single-server deploy skips straight to connecting (confirmed = true).
-  const [confirmed, setConfirmed] = useState(!multiServer());
-  const [pick, setPick] = useState(selectedServerId());
 
   useEscape(onCancel); // Esc backs out, same as ← Back
 
+  // Connect straight away. The region picker used to gate this screen on EVERY
+  // run, which made a one-time preference into a per-run prompt; it now lives in
+  // the top bar (`ServerMenu`) and the run just uses the current selection.
   useEffect(() => {
-    if (!confirmed) return;
     if (!gameServerUrl()) {
       setError('The game server isn’t configured.');
       return;
@@ -111,7 +105,7 @@ export function RecordRun({
       if (!startedRef.current) lobby.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [confirmed]);
+  }, []);
 
   /** the console scaffold every full-screen setup surface shares (Lobby,
    * Matchmaking, MatchStrategy) — back control + brand mark, then a titled panel. */
@@ -139,30 +133,6 @@ export function RecordRun({
   );
 
   const kind = mode === 'duo' ? 'Duo 2v0' : 'Solo 1v0';
-
-  // pre-run server picker (only when there's more than one region to choose)
-  if (!confirmed && !error) {
-    return page(
-      <>
-        Record <span className="accent">Run</span>
-      </>,
-      `${kind} · pick the region with the lowest ping. We’ll remember your choice.`,
-      <>
-        <ServerPicker
-          value={pick}
-          onChange={(id) => {
-            setPick(id);
-            onPreferServer?.(id);
-          }}
-        />
-        <div className="ds-actions">
-          <button className="ds-cta" onClick={() => setConfirmed(true)}>
-            START RUN ▶
-          </button>
-        </div>
-      </>,
-    );
-  }
 
   if (error) {
     return page(

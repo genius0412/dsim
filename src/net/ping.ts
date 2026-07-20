@@ -1,43 +1,13 @@
-import { httpOf, type GameServer } from './env';
+import { type GameServer } from './env';
 
 /**
- * Pre-connection latency probe for the server picker. Times each server's
- * `/health` endpoint over HTTP so a player can rank regions by ping BEFORE they
- * join a room (the in-match ping/pong in serverSession only exists once a match
- * is live, against one already-chosen server). Requires `/health` to send CORS.
+ * Pre-connection latency: measure OUR region, estimate the others.
+ *
+ * There is deliberately no "probe region X" function here any more. Such a probe
+ * has to be fly-replayed to that region's machine, which BOOTS it (auto_start) —
+ * so the old picker, which measured all five, woke every region on each visit and
+ * kept them from auto-stopping. `probeHome` + `estimateAll` are the whole API.
  */
-
-export type PingQuality = 'good' | 'fair' | 'poor' | 'down';
-
-/** best of a few /health round-trips in ms, or null if unreachable */
-export async function pingServer(
-  s: GameServer,
-  samples = 3,
-  timeoutMs = 3000,
-): Promise<number | null> {
-  // `?region` lets a one-app multi-region deploy (shared base URL) actually measure
-  // THIS region via fly-replay; separate-URL deploys ignore the harmless hint.
-  const url = httpOf(s.url) + '/health' + (s.region ? `?region=${encodeURIComponent(s.region)}` : '');
-  let best: number | null = null;
-  for (let i = 0; i < samples; i++) {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), timeoutMs);
-    const t0 = performance.now();
-    try {
-      const res = await fetch(url, { cache: 'no-store', signal: ctl.signal });
-      if (res.ok) {
-        await res.text().catch(() => {});
-        const rtt = performance.now() - t0;
-        if (best === null || rtt < best) best = rtt;
-      }
-    } catch {
-      /* unreachable / aborted — leave best as-is */
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  return best;
-}
 
 /** the client's own network position, for the ranked matchmaker: which region Fly's
  * Anycast routed us to (the `/health` `x-region` header) + our measured RTT there.
@@ -82,12 +52,6 @@ export async function probeHome(
   return best === null ? null : { region, accessMs: best };
 }
 
-export function pingQuality(ms: number | null): PingQuality {
-  if (ms === null) return 'down';
-  if (ms < 80) return 'good';
-  if (ms < 180) return 'fair';
-  return 'poor';
-}
 
 /**
  * Estimated RTT to every configured server → { [id]: ms | null }.
@@ -129,15 +93,3 @@ export async function estimateAll(
   return { pings, homeRegion: home.region };
 }
 
-/** the id of the reachable server with the lowest ping, or null if all down */
-export function fastestServer(pings: Record<string, number | null>): string | null {
-  let bestId: string | null = null;
-  let bestMs = Infinity;
-  for (const [id, ms] of Object.entries(pings)) {
-    if (ms !== null && ms < bestMs) {
-      bestMs = ms;
-      bestId = id;
-    }
-  }
-  return bestId;
-}

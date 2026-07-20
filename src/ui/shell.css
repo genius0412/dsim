@@ -337,6 +337,30 @@
   gap: 12px;
 }
 
+/* region picker in the top bar: the Select plus its on-demand Ping button read as
+   one control, so they sit tighter than the bar's own 12px rhythm. */
+.ds-server-menu {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* the bar is tight — keep the trigger narrow and let the popup show full labels */
+.ds-server-menu .ds-listbox-btn {
+  font-size: 13px;
+  padding: 4px 10px;
+}
+.ds-server-menu .ds-seg:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* a phone bar has no room for a region control — hide only the BAR copy; the
+   same control in Account must stay reachable on a phone. */
+@media (max-width: 640px) {
+  .ds-bar-right .ds-server-menu {
+    display: none;
+  }
+}
+
 .ds-main {
   flex: 1;
   width: 100%;

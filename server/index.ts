@@ -179,9 +179,15 @@ const httpServer = createServer((req, res) => {
     }
     // CORS so the web client (different origin) can time this for the pre-connect
     // ping picker. Includes the region so a client can confirm which one answered.
+    // `expose-headers` is REQUIRED for that: a cross-origin fetch can only read
+    // CORS-safelisted response headers, so without it `res.headers.get('x-region')`
+    // is null in the browser (curl sees the header fine — CORS is browser-side only).
+    // That silently broke every home-region read: the matchmaker got homeRegion ''
+    // and scored every region as the unknown-pair penalty.
     res.writeHead(200, {
       'content-type': 'text/plain',
       'access-control-allow-origin': '*',
+      'access-control-expose-headers': 'x-region',
       'cache-control': 'no-store',
       ...(REGION ? { 'x-region': REGION } : {}),
     });
