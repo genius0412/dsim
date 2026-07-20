@@ -67,12 +67,23 @@ or DB change.
 **NOT visually verified** — the section only renders when you have a block, and that needs
 your account. Production has exactly 1 `friend_blocks` row; if it's yours it'll appear.
 
-### Branch state / next step
+### Branch state — `alpha`, `beta`, `main` are now IDENTICAL
 
-`alpha` is strictly behind `main` (fast-forward, safe). **`beta` has one commit that main
-does not**: `54e261d` netcode anti-stutter (snapshot coalescing + prediction lead cap +
-ping graph). Making beta "same as main" would DISCARD it — merge main into beta instead,
-or port that commit onto main first.
+Both were reset/fast-forwarded to `main` at `a9fc501`+.
+
+Worth knowing before the next branch sync: `git rev-list --count` showed `beta` as **1
+ahead** of main (`54e261d`, netcode anti-stutter — snapshot coalescing + prediction lead
+cap + ping graph), which looks like unmerged work. **It is not.** That commit's content was
+already ported to main wholesale — `MAX_PREDICT_LEAD 40`, `PING_INTERVAL_MS 300`,
+`INTERP_DELAY_TICKS 5`, `PingGraph`, and `room.ts`'s `stepOnce(): boolean` coalescing are
+all present on main under a different SHA. `git diff main beta` outside `HANDOFF.md` was
+EMPTY.
+
+**The ahead/behind count measures commits, not content.** A cherry-picked or
+re-applied commit stays "ahead" forever. Trying to merge it back produced conflicts and a
+`Duplicate function implementation` on `PingGraph` (tsc caught it — a resolution that only
+removes conflict markers can still be wrong, so always build the merged tree). Diff the
+trees before believing a branch holds unique work.
 
 ## Earlier session — MERGED `friendslist` → `main` + deployed to Fly
 
