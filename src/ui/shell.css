@@ -1106,9 +1106,13 @@
 }
 
 /* ---- Records: "look up a username" ----------------------------------- */
+/* Spans the full content column so it lines up with the `.ds-panel` board below
+   it (which has no max-width of its own). */
 .ds-usersearch {
-  max-width: 360px;
   margin: 0 0 20px;
+}
+.ds-usersearch .ds-input {
+  width: 100%;
 }
 .ds-usersearch-results {
   display: flex;
