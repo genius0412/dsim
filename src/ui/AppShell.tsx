@@ -64,6 +64,8 @@ export function AppShell({
   showRail = true,
   onDownload,
   onContributors,
+  onPrivacy,
+  onTerms,
   signedIn,
   onOpenProfile,
   onJoinInvite,
@@ -81,6 +83,10 @@ export function AppShell({
   onDownload: () => void;
   /** Contributors, likewise a footer destination (but public, unlike Download) */
   onContributors: () => void;
+  /** Privacy policy — public, and a hard prerequisite for the AdSense application */
+  onPrivacy: () => void;
+  /** Terms of use — public, paired with the privacy policy */
+  onTerms: () => void;
   /** drives the friends panel: signed out it shows a sign-in prompt and never polls */
   signedIn: boolean;
   /** click-through from a friend/search row to that player's public profile */
@@ -125,6 +131,12 @@ export function AppShell({
           </button>
           <button className="ds-foot-link" onClick={onContributors}>
             Contributors
+          </button>
+          <button className="ds-foot-link" onClick={onPrivacy}>
+            Privacy
+          </button>
+          <button className="ds-foot-link" onClick={onTerms}>
+            Terms
           </button>
           <a href={LINKS.repo} target="_blank" rel="noreferrer">
             GitHub

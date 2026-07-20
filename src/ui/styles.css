@@ -1813,6 +1813,27 @@ button {
 }
 .md-link { color: var(--ds-accent); text-decoration: underline; text-underline-offset: 2px; }
 .md-link:hover { opacity: 0.85; }
+
+/* ---- long-form legal documents (privacy policy, terms) ------------------ */
+/* The base `.md` type is tuned for short announcement cards and reads far too
+   tight over a multi-screen document, so `.legal-md` enlarges it and caps the
+   measure at ~72 characters. Colour tokens are unchanged — these are the same
+   pairs `npm run contrast` already audits. */
+.ds-legal { padding: 16px; }
+.legal-md {
+  font-size: 14.5px;
+  line-height: 1.65;
+  max-width: 68ch;
+}
+.legal-md .md-p { margin: 10px 0; }
+/* `##` renders as .md-h2 (the renderer downshifts a level so these sit under the
+   page's own .ds-h1) — give it real section weight and space above. */
+.legal-md .md-h2 {
+  font-size: 16.5px;
+  margin: 26px 0 8px;
+}
+.legal-md > :first-child { margin-top: 0; }
+.legal-md .md-list { gap: 6px; margin: 8px 0; }
 .md-hr {
   border: 0;
   border-top: 1px solid var(--ds-line);

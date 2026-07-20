@@ -23,6 +23,7 @@ import { ReplayView } from './ReplayView';
 import { AccountButton } from './AccountButton';
 import { Download } from './Download';
 import { Contributors } from './Contributors';
+import { Privacy, Terms } from './Legal';
 import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
@@ -54,6 +55,8 @@ type Screen =
   | 'game'
   | 'download'
   | 'contributors'
+  | 'privacy'
+  | 'terms'
   | 'profile'
   | 'account'
   | 'admin';
@@ -116,6 +119,10 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/download';
     case 'contributors':
       return '/contributors';
+    case 'privacy':
+      return '/privacy';
+    case 'terms':
+      return '/terms';
     case 'account':
       return '/account';
     case 'admin':
@@ -160,6 +167,8 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/watch')) return at('watch');
   if (rest.startsWith('/download')) return at('download');
   if (rest.startsWith('/contributors')) return at('contributors');
+  if (rest.startsWith('/privacy')) return at('privacy');
+  if (rest.startsWith('/terms')) return at('terms');
   if (rest.startsWith('/account')) return at('account');
   if (rest.startsWith('/admin')) return at('admin');
   // /play (a live game) can't be restored without a session ⇒ home
@@ -690,6 +699,8 @@ export function App() {
       showRail={screen !== 'home'}
       onDownload={() => navigate('download')}
       onContributors={() => navigate('contributors')}
+      onPrivacy={() => navigate('privacy')}
+      onTerms={() => navigate('terms')}
       signedIn={signedIn}
       onOpenProfile={openProfile}
       onJoinInvite={onJoinInvite}
@@ -887,6 +898,10 @@ export function App() {
       {screen === 'download' && isAdmin && <Download />}
       {/* public, unlike Download — no admin gate */}
       {screen === 'contributors' && <Contributors onOpenProfile={openProfile} />}
+      {/* legal pages are public and must stay reachable without an account —
+          AdSense review fetches /privacy directly */}
+      {screen === 'privacy' && <Privacy />}
+      {screen === 'terms' && <Terms />}
       {screen === 'account' && (
         <Account settings={settings} onChange={update} onHandleSaved={setHandle} />
       )}
