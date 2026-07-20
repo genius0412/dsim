@@ -540,6 +540,37 @@
 .fr-sec-n {
   color: var(--ds-ink-dim);
 }
+/* the blocked list — a section header that is also the disclosure control. The
+   summary keeps `.fr-sec-h`'s typography so a fold reads as a peer of the plain
+   sections above it, not as a different kind of thing. */
+.fr-fold > summary {
+  list-style: none;
+  cursor: pointer;
+  border-radius: var(--ds-round-sm);
+}
+.fr-fold > summary::-webkit-details-marker {
+  display: none;
+}
+.fr-fold > summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 12px;
+  /* rotates in place: a marker that reflowed the header would move every row
+     below it on open (see `npm run shiftaudit`) */
+  transition: transform 120ms ease;
+}
+.fr-fold[open] > summary::before {
+  transform: rotate(90deg);
+}
+.fr-fold > summary:hover {
+  color: var(--ds-ink);
+}
+.fr-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 4px;
+}
 .fr-row {
   display: flex;
   align-items: center;

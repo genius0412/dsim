@@ -80,7 +80,7 @@ export function FriendsPanel({
   };
 
   const friends = useFriends({ signedIn, collapsed: !expanded });
-  const { incoming, outgoing, friends: list } = friends.data;
+  const { incoming, outgoing, blocked, friends: list } = friends.data;
 
   const [online, offline] = useMemo(() => {
     const on: FriendRow[] = [];
@@ -198,6 +198,32 @@ export function FriendsPanel({
             </Section>
           )}
 
+          {blocked.length > 0 && (
+            <FoldSection title="Blocked" count={blocked.length}>
+              {blocked.map((p) => (
+                <Row key={p.userId} p={p} onOpenProfile={onOpenProfile}>
+                  <button
+                    className="ds-btn small ghost"
+                    // A blocked row can only exist if you named that account by
+                    // username to block it, so this is unreachable — but sending
+                    // '' would ask the server to look up the empty string, which
+                    // is how `accept` used to fail with an opaque error.
+                    disabled={!p.username}
+                    onClick={() => {
+                      if (p.username) void friends.unblock(p.username);
+                    }}
+                  >
+                    Unblock
+                  </button>
+                </Row>
+              ))}
+              <p className="fr-empty">
+                Blocked players can’t send you friend requests, and you won’t appear in their
+                friends list.
+              </p>
+            </FoldSection>
+          )}
+
           <AddFriend onAdd={friends.add} known={friends.data} />
         </>
       )}
@@ -221,6 +247,35 @@ function Section({
       </h3>
       {children}
     </section>
+  );
+}
+
+/**
+ * A section that starts FOLDED. Used for the blocked list: it's something you go
+ * looking for once in a while, not something to keep in view. Rendering it open
+ * would hand the people you muted permanent real estate in a panel that is
+ * otherwise entirely about people you want to see — while still leaving them
+ * reachable, which an unblock flow buried in a settings page would not.
+ */
+function FoldSection({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count: number;
+  children: React.ReactNode;
+}) {
+  return (
+    // NOT `.fr-section` — that is `display: flex`, and a flex <details> has a
+    // history of leaking its closed content in some engines. Plain block box,
+    // with the column layout on an inner wrapper instead.
+    <details className="fr-fold">
+      <summary className="fr-sec-h">
+        {title} <span className="fr-sec-n">{count}</span>
+      </summary>
+      <div className="fr-fold-body">{children}</div>
+    </details>
   );
 }
 
