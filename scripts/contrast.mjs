@@ -134,6 +134,14 @@ const themedPairs = (t) => {
     ['--ds-accent-soft-ink on --ds-accent-soft', t('--ds-accent-soft-ink'), t('--ds-accent-soft'), AA],
     ['--ds-ink on --ds-accent-soft', t('--ds-ink'), t('--ds-accent-soft'), AA],
 
+    /* SELECTED rows re-ground their SECONDARY text on --ds-accent-soft. The pairs
+       above only ever asserted the PRIMARY ink, so a muted sub-label inherited the
+       value tuned for --ds-panel and quietly missed AA on the selected state — the
+       "readable against the surface" rule applied to the wrong surface. Found by the
+       live-DOM audit (.claude/skills/frontend-consistency), which measures rendered
+       pairs rather than token pairs. */
+    ['--ds-accent-soft-mut on --ds-accent-soft', t('--ds-accent-soft-mut'), t('--ds-accent-soft'), AA],
+
     // pastels are fills that carry --ds-ink; they get tinted-dark siblings in dark mode
     ['--ds-ink on --ds-blush', t('--ds-ink'), t('--ds-blush'), AA],
     ['--ds-ink on --ds-sage', t('--ds-ink'), t('--ds-sage'), AA],
@@ -238,6 +246,18 @@ const serverPairs = (t) => {
     ['Leaderboard .lb-standing-badge', t('--ds-gold-ink'), t('--ds-gold'), AA],
     ['Leaderboard .lb-standing.placing text', t('--ds-warn'), composite(t('--ds-gold'), 0.09, panel), AA],
     ['ds-opt-del hover glyph', t('--ds-red-ink'), panel, AA],
+
+    /* TINTED OPTION ROWS + the start-pose legality banner. Each paints a semantic
+       hue as TYPE on a 12%-tinted panel — exactly the "a colour that is both a FILL
+       and a TEXT colour will fail one of the two" trap called out at the top of
+       shell.css. They now use the `-ink` siblings; these pairs keep them honest.
+       The ground is the same color-mix the CSS composites. */
+    ['.ds-opt.red .ot', t('--ds-red-ink'), panel, AA],
+    ['.ds-opt.blue .ot', t('--ds-blue-ink'), panel, AA],
+    ['.ds-opt.red.on .ot', t('--ds-red-ink'), composite(t('--ds-red'), 0.12, panel), AA],
+    ['.ds-opt.blue.on .ot', t('--ds-blue-ink'), composite(t('--ds-blue'), 0.12, panel), AA],
+    ['.ds-startpos-status.ok', t('--ds-ok-ink'), composite(t('--ds-ok'), 0.12, panel), AA],
+    ['.ds-startpos-status.bad', t('--ds-red-ink'), composite(t('--ds-red'), 0.12, panel), AA],
   ];
 };
 

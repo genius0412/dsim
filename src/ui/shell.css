@@ -49,6 +49,12 @@
   --ds-accent-edge: #24463b;
   --ds-accent-soft: #b5ead7;
   --ds-accent-soft-ink: #1c4f41;
+  /* The MUTED sibling of --ds-accent-soft-ink, for sub-labels on a SELECTED row.
+     --ds-mut is tuned against --ds-panel and lands at 3.78:1 once the row turns
+     mint, so secondary text needs an ink grounded on --ds-accent-soft like the
+     primary one. Replaces a `color-mix(--ds-accent-soft-ink 78%, transparent)`
+     that cleared AA on dark (4.7:1) but not on light (4.2:1). */
+  --ds-accent-soft-mut: #2f6455;
 
   /* ---- secondary + categorical accents (chips, icon containers, terrain) ---- */
   --ds-blush: #fdd9c0;
@@ -198,6 +204,7 @@
   --ds-accent-edge: #3f7f69; /* keycap edge stays darker than its fill in both modes */
   --ds-accent-soft: #22463c; /* a mint-tinted dark, not a pale blob */
   --ds-accent-soft-ink: #8fdcc2;
+  --ds-accent-soft-mut: #7cc0a8; /* muted sibling; see the light block */
   --ds-you: rgba(95, 181, 151, 0.14);
 
   /* Semantics that must stay READABLE invert. --ds-warn's dark value is essentially
@@ -420,7 +427,7 @@
   box-shadow: var(--ds-block-sm);
 }
 .ds-rail-btn.on .rh {
-  color: color-mix(in srgb, var(--ds-accent-soft-ink) 78%, transparent);
+  color: var(--ds-accent-soft-mut);
 }
 
 /* ---- friends panel ----------------------------------------------------
@@ -2426,6 +2433,11 @@ tr.lb-detail td {
   line-height: 1.35;
   color: var(--ds-mut);
 }
+/* the selected row re-grounds on --ds-accent-soft, so its sub-label needs that
+   surface's muted ink — --ds-mut is tuned against --ds-panel (3.78:1 here) */
+.ds-opt.on .od {
+  color: var(--ds-accent-soft-mut);
+}
 .ds-opt .om {
   font-family: var(--ds-font-mono);
   font-size: 11px;
@@ -2451,12 +2463,14 @@ tr.lb-detail td {
 .ds-opt.mini .ot {
   font-size: 13px;
 }
-/* alliance-tinted */
+/* alliance-tinted. The label is 13-15px TYPE, so it takes the `-ink` siblings, not
+   the raw --ds-red/--ds-blue FILLS (4.2:1 / 4.14:1 on --ds-panel). Same rule as
+   `.chip.alliance-*` in styles.css: the hue is reserved semantics, the ink carries it. */
 .ds-opt.red .ot {
-  color: var(--ds-red);
+  color: var(--ds-red-ink);
 }
 .ds-opt.blue .ot {
-  color: var(--ds-blue);
+  color: var(--ds-blue-ink);
 }
 /* alliance selection keeps its OWN tint (red/blue are reserved semantics), so it
    must also undo the soft-mint ink inherited from `.ds-opt.on` */
@@ -3163,13 +3177,15 @@ button.ds-key:active {
   border-radius: 8px;
   border: 1px solid var(--ds-line);
 }
+/* status TEXT takes the `-ink` siblings; --ds-ok/--ds-red are fills (4.04:1 / 4.2:1
+   on the tinted panel). The 12% tint stays — it is the fill doing its own job. */
 .ds-startpos-status.ok {
-  color: var(--ds-ok);
+  color: var(--ds-ok-ink);
   background: color-mix(in srgb, var(--ds-ok) 12%, var(--ds-panel));
   border-color: color-mix(in srgb, var(--ds-ok) 40%, var(--ds-line));
 }
 .ds-startpos-status.bad {
-  color: var(--ds-red);
+  color: var(--ds-red-ink);
   background: color-mix(in srgb, var(--ds-red) 12%, var(--ds-panel));
   border-color: color-mix(in srgb, var(--ds-red) 40%, var(--ds-line));
 }

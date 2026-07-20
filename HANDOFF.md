@@ -1,6 +1,61 @@
-# HANDOFF — 2026-07-20 (NEW SKILL: `.claude/skills/frontend-consistency/` — live-DOM design audit + anti-AI-slop guide) — READ FIRST
+# HANDOFF — 2026-07-20 (ran `/frontend-consistency` on the app → closed 4 contrast failures) — READ FIRST
 
-## This session — frontend-consistency skill (no src/ changes; build state unchanged from below)
+## This session (latest) — a11y floor fixed at the root; audits all green
+
+Ran the `/frontend-consistency` skill against the built app (10 routes, `vite preview
+--port 4173`). Build green, `npm test` ALL PASS, `npm run contrast` **167 checks** (was
+153), `npm run shiftaudit` 932 state changes / 0 shifts, live audit **0 FAIL** (was 3).
+
+**Root cause of all four failures was ONE rule the repo already wrote down** (shell.css
+top-of-file: *"A colour that is both a FILL and a TEXT colour will fail one of the two…
+use its `-ink` sibling"*) — applied at the token definitions but violated at call sites:
+- `.ds-opt.red/.blue .ot` painted raw `--ds-red`/`--ds-blue` as 13–15px type
+  (4.20:1 / 4.14:1 dark, **3.27:1 light**) → now `--ds-red-ink`/`--ds-blue-ink`.
+- `.ds-startpos-status.ok/.bad` painted `--ds-ok`/`--ds-red` as type (4.04:1) → `-ink`
+  siblings. `.bad` was latent (not rendered in the audited state) — fixed anyway.
+- `.ds-opt.on .od` inherited `--ds-mut` (tuned against `--ds-panel`) onto the SELECTED
+  row's `--ds-accent-soft` ground = 3.78:1. This is the previous session's known finding,
+  now CLOSED. Right surface, wrong ink — not a bad value.
+
+**New token `--ds-accent-soft-mut`** (light `#2f6455` 5.11:1 · dark `#7cc0a8` 4.96:1):
+the muted sibling of `--ds-accent-soft-ink`, for sub-labels on a selected row. It also
+**replaced `color-mix(--ds-accent-soft-ink 78%, transparent)`** on `.ds-rail-btn.on .rh`
+— that magic percentage cleared AA on dark (4.70:1) but **NOT on light (4.20:1, 11.5px
+type)**. That one was invisible to the browser audit, which only ever sampled dark.
+
+**Gap this exposed:** `npm run contrast` passed 153/153 while the live DOM failed. It
+asserts TOKEN pairs; these were CALL-SITE pairs (a token composited onto a `color-mix`
+ground it was never tuned for). Added **14 pairs** covering the selected-row grounds, the
+tinted option rows, and the startpos banner, using the existing `composite()` helper.
+Verified the new pairs actually bite by reverting one value → 2/167 FAILED in both themes.
+**When adding a tinted/selected state, add its call-site pair — token coverage ≠ DOM
+coverage.**
+
+### Adjudicated WARNs (24, deliberately NOT "fixed" — read before acting)
+- **near-duplicate colors** — LEGITIMATE. The tonal surface ladder is the documented
+  depth model (`DESIGN.md` "Elevation & Depth"); design-guide §4.2 names it as the worked
+  example of a threshold that bends to the contract.
+- **7–12 button clusters/page** — mostly legitimate named components (`.ds-btn/.ds-cta/
+  .ds-tile/.ds-opt/.ds-key/.ds-seg/.ds-tab/.ds-rail-btn/.ds-mark`), but there is a long
+  tail of single-instance looks worth a pass someday.
+- **19 font sizes vs the contract's 5 roles** — real sprawl, but `10.5px` (8+ call sites)
+  and `9.5px` are de-facto mono micro-label ROLES. The cross-page-drift list is partly an
+  artifact of which 10 routes were audited, not true drift. Fix = codify the real roles in
+  `DESIGN.md`, not find-and-replace.
+- **33% 4px-grid adherence** — the sharpest contract/code divergence: `DESIGN.md` claims
+  an 8px rhythm, but the most-used step is `10px`, then 12/16/8/2/4/18/14/9/22/13/3. Per
+  design-guide §2 you either follow the contract or amend it — **amending `DESIGN.md` to
+  record the real rhythm is the recommendation**; re-spacing a tuned UI is high-risk churn.
+  Left for the user to decide.
+- **touch targets <24px** (`.ds-foot-link` 63×16, `.ds-key` 34×23, `input.ds-range` ×22)
+  — WCAG 2.2 §2.5.8, still open from last session; a WARN, not an audit FAIL.
+
+**Gotcha:** `npm run shiftaudit` inherits `ELECTRON_RUN_AS_NODE=1` from agent shells and
+dies at `app.disableHardwareAcceleration` — `audit.cjs` self-respawns clean but
+`shiftaudit.cjs` has NO such guard. Run it from PowerShell after
+`Remove-Item Env:ELECTRON_RUN_AS_NODE`. Worth porting the guard.
+
+## Previous session — frontend-consistency skill (no src/ changes; build state unchanged from below)
 
 Built `/frontend-consistency` (user request via the skill generator): audits any website's
 frontend for design consistency AND guides styling away from the generic "AI look".
@@ -19,7 +74,7 @@ frontend for design consistency AND guides styling away from the generic "AI loo
   `ELECTRON_RUN_AS_NODE=1` (driver self-respawns clean); **electron.exe exits -1 silently
   given 2+ bare URL args — the `--` separator before URLs is mandatory**; Git Bash
   intermittently 127s multi-URL electron invocations → invoke from PowerShell.
-- **Real app finding worth fixing (NOT fixed — out of scope):** dark theme
+- **Real app finding worth fixing (✅ FIXED in the session above — kept for context):** dark theme
   `/configure/robot`: option-description text `span.od` `#949e98` on the `.ds-opt.on`
   green tint `#22463c` = **3.78:1 (needs 4.5)** — 6 spots. `npm run contrast` misses it
   (that pair isn't in its hardcoded list); add the pair there when fixing. Also: 4
