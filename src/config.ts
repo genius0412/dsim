@@ -57,7 +57,7 @@ export const BALANCE_VERSION = 3; // 2: real-motor drivetrain retune (torque–s
  * shrinks only slowly when opponents are themselves uncertain, so players kept
  * the "?" for dozens of games. RD is still used INTERNALLY by Glicko-2 to size
  * how hard each result swings the rating — it just no longer drives the UI. */
-export const PLACEMENT_GAMES = 10;
+export const PLACEMENT_GAMES = 5;
 
 // -------------------------------------------------------------- scoring ----
 export const PTS_LEAVE = 3;
