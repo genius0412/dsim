@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { Room, type Client } from './room';
 import { decodeClientMsg, encodeMsg, DEFAULT_ROOM_CONFIG, type ClientMsg, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
@@ -121,6 +122,30 @@ function readAdminBody(req: import('node:http').IncomingMessage): Promise<string
 // an explicit HTTP server so we can answer GET /health (Fly/Load-balancer probe)
 // while the WebSocket upgrade rides the same port
 const REGION = process.env.FLY_REGION ?? process.env.SERVER_REGION ?? '';
+
+// ---- perf probe (GET /api/perf) ---------------------------------------------
+// Sizing evidence. The question "can this machine run on a SHARED cpu?" is not
+// answered by average cpu% — the room loop is a FIXED 60Hz step that must finish
+// inside 16.67ms, and Fly throttles a shared machine to a small baseline once its
+// burst credits drain. The symptom is then an event loop that stops turning: the
+// /health probe misses its timeout and the machine flaps unhealthy (see fly.toml).
+// So measure the thing that actually predicts that: EVENT LOOP DELAY, alongside
+// cpu-seconds-per-second (= cores in use) and how many rooms produced that load.
+// Read it repeatedly during real matches before changing any machine's cpu kind.
+const loopDelay = monitorEventLoopDelay({ resolution: 10 });
+loopDelay.enable();
+let cpuMark = process.cpuUsage();
+let cpuMarkAt = process.hrtime.bigint();
+/** cores in use since the previous call — sampling resets the window */
+function coresInUse(): number {
+  const now = process.hrtime.bigint();
+  const d = process.cpuUsage(cpuMark);
+  const elapsedUs = Number(now - cpuMarkAt) / 1000;
+  cpuMark = process.cpuUsage();
+  cpuMarkAt = now;
+  if (elapsedUs <= 0) return 0;
+  return (d.user + d.system) / elapsedUs;
+}
 // stable per-machine id for the shared presence table (unique per Fly machine)
 const MACHINE = process.env.FLY_MACHINE_ID || REGION || 'local';
 
@@ -457,6 +482,38 @@ const httpServer = createServer((req, res) => {
       'access-control-allow-origin': '*',
     });
     res.end(JSON.stringify({ region: REGION, rooms: live }));
+    return;
+  }
+  // machine-sizing evidence for THIS machine (see the perf probe above). Public and
+  // read-only: counts and timings, no player or account data. `?reset=1` zeroes the
+  // lag histogram so a sample can be scoped to one match instead of since boot.
+  if (req.method === 'GET' && req.url?.startsWith('/api/perf')) {
+    const live = [...rooms.values()].map((r) => r.summary()).filter((s) => s !== null);
+    const ms = (n: number): number => Math.round((n / 1e6) * 100) / 100; // ns → ms
+    const body = {
+      region: REGION,
+      machine: MACHINE,
+      uptimeS: Math.round(process.uptime()),
+      cores: Math.round(coresInUse() * 1000) / 1000,
+      rooms: live.length,
+      players: onlineCount,
+      rssMb: Math.round(process.memoryUsage().rss / 1048576),
+      // the decisive numbers: a p99 approaching the 16.67ms step budget means the
+      // loop is already late, and a max past the /health timeout means a flap.
+      loopLagMs: {
+        mean: ms(loopDelay.mean),
+        p50: ms(loopDelay.percentile(50)),
+        p99: ms(loopDelay.percentile(99)),
+        max: ms(loopDelay.max),
+      },
+    };
+    if (new URL(req.url, 'http://x').searchParams.get('reset')) loopDelay.reset();
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'cache-control': 'no-store',
+      'access-control-allow-origin': '*',
+    });
+    res.end(JSON.stringify(body));
     return;
   }
   if (req.method === 'GET' && req.url === '/api/presence') {
