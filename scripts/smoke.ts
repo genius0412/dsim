@@ -75,7 +75,7 @@ import {
   PTS_FOUL_MAJOR,
 } from '../src/config';
 import { robotCorners, robotExtents, robotIntersectsRect, wheelContacts } from '../src/sim/physics';
-import { beamBlock, beamDrag, beamDragFactor, beamStrafeBlock, beamForwardness, canCrossBeams, cogFactor, wheelsOnBeam, CHAIN_BEAMS } from '../src/games/chain/beams';
+import { beamBlock, beamDrag, beamDragFactor, beamStrafeBlock, beamForwardness, beamRide, canCrossBeams, cogFactor, wheelsOnBeam, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits } from '../src/sim/drivetrain';
 import { coerceSettings, switchGame, syncAudioMirrors } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
@@ -4645,6 +4645,22 @@ const mkMM = () => {
       r.vel = { x: 0, y: 50 };
       beamDrag(w, SIM_DT);
       check('chain beams: a forward wheel pair on the ridge is counted and dragged', up >= 1 && r.vel.y < 50, `up=${up} vy=${r.vel.y.toFixed(1)}`);
+    }
+    // TERRAIN RIDE (render/audio read-only): off any beam ⇒ flat (lift 0, onCount 0); a wheel pair
+    // ON a beam ⇒ raised (lift > 0, onCount 2). Drives the beam-height bob + crossing SFX.
+    {
+      const w = createChainWorld('free', 11, [chainSetup(0, 'blue')]);
+      const r = w.robots[0];
+      r.spec = { ...DEFAULT_SPEC, drivetrain: 'mecanum', width: 18, length: 18, groundClearance: 1 };
+      r.pos = { x: 30, y: 40 }; r.heading = 0; // clear of every beam
+      const flat = beamRide(r);
+      r.pos = { x: 44, y: 6.4 }; // one wheel pair sitting on the +x beam line
+      const onBeam = beamRide(r);
+      check(
+        'chain beams: terrain ride is flat off a beam, raised with wheels on it',
+        flat.lift === 0 && flat.onCount === 0 && onBeam.lift > 0 && onBeam.onCount === 2,
+        `flat=${flat.lift.toFixed(2)}/${flat.onCount} onBeam=${onBeam.lift.toFixed(2)}/${onBeam.onCount}`,
+      );
     }
     // more wheels LIFTED ⇒ less forward traction (a high-centered 4-up robot climbs worse than a
     // single wheel on the ridge). Monotonic in wheelsUp (the 3rd `beamDragFactor` arg).

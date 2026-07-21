@@ -8,6 +8,7 @@ export function drawRobot(
   r: RobotState,
   intakeOn: boolean,
   held: Artifact[] = [],
+  _screenUp?: { x: number; y: number }, // DECODE has no raised terrain — ignored (interface parity)
 ): void {
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;

@@ -1,4 +1,4 @@
-import type { DrivetrainType, RobotSpec, RobotState, World } from '../../types';
+import type { DrivetrainType, RobotSpec, RobotState, Vec2, World } from '../../types';
 import type { Rect } from '../../sim/field';
 import { robotExtents, robotIntersectsRect, wheelContacts } from '../../sim/physics';
 import { clamp, dcos, dsin } from '../../math';
@@ -124,6 +124,50 @@ export function wheelsOnBeam(r: RobotState, rect: Rect): number {
     if (w.x >= rect.x0 - R && w.x <= rect.x1 + R && w.y >= rect.y0 - R && w.y <= rect.y1 + R) n++;
   }
   return n;
+}
+
+/** RENDER/AUDIO read-only. A wheel's terrain elevation 0..1: 1 while its contact sits over a beam's
+ * 1" core, easing smoothly to 0 by `CHAIN_BEAM_WHEEL_R` past the edge — so as a wheel rolls across a
+ * beam its z rises then falls (a real up-and-over bump). Max over the four beams. */
+function wheelBeamZ(w: Vec2): number {
+  const R = CHAIN_BEAM_WHEEL_R;
+  let z = 0;
+  for (const beam of CHAIN_BEAMS) {
+    const r = beam.rect;
+    let d: number;
+    if (beam.axis === 'y') {
+      if (w.x < r.x0 - R || w.x > r.x1 + R) continue; // past the beam's end
+      d = Math.abs(w.y - (r.y0 + r.y1) / 2) - (r.y1 - r.y0) / 2; // distance PAST the near edge
+    } else {
+      if (w.y < r.y0 - R || w.y > r.y1 + R) continue;
+      d = Math.abs(w.x - (r.x0 + r.x1) / 2) - (r.x1 - r.x0) / 2;
+    }
+    if (d <= 0) return 1; // over the core — fully up
+    if (d >= R) continue;
+    const t = 1 - d / R; // 1 → 0 across the wheel radius
+    z = Math.max(z, t * t * (3 - 2 * t)); // smoothstep
+  }
+  return z;
+}
+
+/** RENDER/AUDIO read-only terrain ride for a robot: `lift` = mean wheel elevation (0..1, the body
+ * bob), `pitch`/`roll` = front−rear / left−right elevation imbalance (the rock), `onCount` = wheels
+ * currently up on a beam (edge-detected for the crossing SFX). Pure pose geometry — no sim state. */
+export interface BeamRide {
+  lift: number;
+  pitch: number;
+  roll: number;
+  onCount: number;
+}
+export function beamRide(r: RobotState): BeamRide {
+  const wc = wheelContacts(r); // [FL, FR, BR, BL] — 0,1 front · 2,3 rear · 0,3 left · 1,2 right
+  const e = [wheelBeamZ(wc[0]), wheelBeamZ(wc[1]), wheelBeamZ(wc[2]), wheelBeamZ(wc[3])];
+  return {
+    lift: (e[0] + e[1] + e[2] + e[3]) / 4,
+    pitch: (e[0] + e[1] - e[2] - e[3]) / 2,
+    roll: (e[0] + e[3] - e[1] - e[2]) / 2,
+    onCount: e.reduce((n, v) => n + (v > 0.5 ? 1 : 0), 0),
+  };
 }
 
 /**

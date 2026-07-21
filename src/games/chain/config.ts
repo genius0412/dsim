@@ -155,6 +155,14 @@ export const CHAIN_BEAM_GROUND_FLOOR = 0.82; // forward traction kept with wheel
  * ONLY — tank can't strafe, a SWERVE steers its pods into the travel direction (wheels roll over
  * the beam whichever way the chassis points), and an X-DRIVE is 4-fold symmetric. */
 export const CHAIN_BEAM_STRAFE_BLOCK_FWD = 0.5; // below this forwardness a mecanum is walled off the beam
+/** RENDER-ONLY beam "height": the 1" tube is invisibly short top-down, so the renderer EXAGGERATES
+ * its z-thickness to this many world units (drawn as a raised extruded bar via `screenUp`). A robot
+ * whose wheels are on the beam rides UP to this height, with a ground shadow, so you see + feel the
+ * terrain. Cosmetic only — the physics footprint stays the flat 1" `CHAIN_BEAM_HEIGHT`. */
+export const CHAIN_BEAM_RENDER_H = 1.3;
+/** amplitude (world units) of the render-only chassis SHUDDER while a wheel is mid-climb + moving —
+ * the visual "thunk/rumble" of crossing rough terrain. */
+export const CHAIN_BEAM_RUMBLE = 0.7;
 /** max fraction of drive authority lost at full clearance (raised center of gravity) */
 export const CHAIN_COG_PENALTY = 0.16;
 /** SWERVE is far more sensitive to a raised CG — the tall modules tip and scrub, so a

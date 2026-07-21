@@ -47,6 +47,23 @@ is needed for MULTIPLAYER CR to reflect them; solo/local is live on Vercel auto-
    - New smoke: straddle-is-free, forward wheel-pair dragged, wheels-up monotonic traction,
      curb-block clamps the leading wheel to the near face + kills vel, block is mecanum-only &
      strafe-only, full-sim curb stop. ~530 checks green.
+3. **Terrain FEEL — the beams now read + sound like raised terrain top-down** (render + audio only,
+   sim untouched). Threaded `screenUp` (world-space "up") through `GameModule.drawField`/`drawRobot`
+   (computed once in `renderer.ts`; DECODE ignores it).
+   - **Beams drawn raised, IN PLACE** (`drawChainField`): the LIT top face is at the tube's TRUE
+     footprint (a mid-grey plane with a bright edge, over the dark mat) + a thin dark near-wall
+     dropped a hair toward the camera (`−screenUp · CHAIN_BEAM_RENDER_H` 1.3) for z-thickness. NO
+     drop shadow. NOTE the two rejected iterations: (a) extruding the top UP by screenUp read as
+     the beam being "way off its top-down position" — keep the top AT the footprint; (b) a big
+     translucent ground shadow bled out below the alliance tape — removed. Tune contrast, not offset.
+   - **Robot bob + shadow + rumble** (`drawChainRobot` + `beamRide` in beams.ts): `beamRide(r)`
+     (pure `wheelContacts` geometry, no sim state) → `lift` (mean wheel elevation, each wheel's z
+     smoothstepped over the beam), `pitch`/`roll`, `onCount`. The chassis rises `lift·H` toward
+     screenUp with a ground shadow, plus a small time-based shudder (`CHAIN_BEAM_RUMBLE`) while
+     mid-climb + moving. Straddling = no bob (wheels off the ridge). Turret rides the same offset.
+   - **Crossing SFX** (`sfxBeam` in audio.ts + `game.ts handleActionAudio`): a low "thunk" on the
+     rising edge of `beamRide(r).onCount` (a wheel newly mounts a beam), gated on `world.game==='chain'`.
+   - Smoke: `beamRide` flat off a beam / raised (lift>0, onCount 2) on one. Verified live in Electron.
 
 **Next / gotchas:** the drum's ~24 is jitter-averaged (varies tick-to-tick by design); the
 turret's 13 is deterministic. Beam logic keys off `wheelContacts` (4 corner points inset by

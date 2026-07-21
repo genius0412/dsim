@@ -20,6 +20,7 @@ import type { GameModule } from './games';
 import { accelMultiplier as chainAccelMultiplier, type EndgameState } from './games/chain/state';
 import { chainHopperCap } from './games/chain/config';
 import { chainCatalystPrompt } from './games/chain/play';
+import { beamRide } from './games/chain/beams';
 import { startMatch } from './sim/match';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
@@ -200,6 +201,7 @@ export class GameController {
   private prevFireAt: Record<number, number> = {};
   private prevIntakeAt: Record<number, number> = {};
   private prevGateOpen: Record<Alliance, boolean> = { red: false, blue: false };
+  private prevBeamOn: Record<number, number> = {}; // wheels-on-a-beam per robot (CR terrain SFX)
 
   /** which game this controller builds its INITIAL world for (solo: the player's
    * setting; networked: DECODE for now). Once running, the STEP/DRAW/HUD always
@@ -422,9 +424,12 @@ export class GameController {
   private seedActionAudio(): void {
     this.prevFireAt = {};
     this.prevIntakeAt = {};
+    this.prevBeamOn = {};
+    const chain = this.world.game === 'chain';
     for (const r of this.world.robots) {
       this.prevFireAt[r.id] = r.lastFireAt;
       this.prevIntakeAt[r.id] = r.lastIntakeAt;
+      this.prevBeamOn[r.id] = chain ? beamRide(r).onCount : 0;
     }
     this.prevGateOpen = {
       red: this.world.goals.red.gateOpen,
@@ -436,6 +441,7 @@ export class GameController {
    * core stays event-free for these — same pattern as handlePhaseAudio).
    * All robots share the small field, so everyone's actions are audible. */
   private handleActionAudio(): void {
+    const chain = this.world.game === 'chain';
     for (const r of this.world.robots) {
       if (r.lastFireAt !== this.prevFireAt[r.id]) {
         this.prevFireAt[r.id] = r.lastFireAt;
@@ -444,6 +450,12 @@ export class GameController {
       if (r.lastIntakeAt !== this.prevIntakeAt[r.id]) {
         this.prevIntakeAt[r.id] = r.lastIntakeAt;
         this.audio.sfxIntake();
+      }
+      // CR terrain: a "thunk" whenever a wheel newly mounts a beam (rising edge of the count)
+      if (chain) {
+        const on = beamRide(r).onCount;
+        if (on > (this.prevBeamOn[r.id] ?? 0)) this.audio.sfxBeam();
+        this.prevBeamOn[r.id] = on;
       }
     }
     for (const a of ['red', 'blue'] as Alliance[]) {

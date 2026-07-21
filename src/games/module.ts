@@ -7,12 +7,14 @@ import type { GameSimModule, GameUiSpec } from './types';
  * server (no DOM lib) never imports `CanvasRenderingContext2D`.
  */
 export interface GameModule extends GameSimModule {
-  drawField(ctx: CanvasRenderingContext2D, world: World): void;
+  /** `screenUp` is world-space "up" for z-lift — CR raises the beams into extruded tubes. */
+  drawField(ctx: CanvasRenderingContext2D, world: World, screenUp?: Vec2): void;
   /** extra overlays drawn after the field, before robots (DECODE: ramp strips) */
   drawOverlays?(ctx: CanvasRenderingContext2D, world: World): void;
   /** per-robot sprite. DECODE omits it (the shared `drawRobot` is used); CR provides its
-   * own so the archetype launcher + intake design read correctly. */
-  drawRobot?(ctx: CanvasRenderingContext2D, r: RobotState, intakeOn: boolean, held: Artifact[]): void;
+   * own so the archetype launcher + intake design read correctly. `screenUp` lets CR bob the
+   * chassis up onto a beam it's crossing. */
+  drawRobot?(ctx: CanvasRenderingContext2D, r: RobotState, intakeOn: boolean, held: Artifact[], screenUp?: Vec2): void;
   /** scoring-elements renderer, drawn after the robots (DECODE: balls; CR: particles
    * + catalysts + endgame badges). `screenUp` is world-space "up" for z-lift. */
   drawBalls(ctx: CanvasRenderingContext2D, world: World, screenUp: Vec2): void;

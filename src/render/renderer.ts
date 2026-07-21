@@ -31,9 +31,10 @@ export class Renderer {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     this.camera.apply(ctx);
+    const screenUp = this.camera.screenUpWorld(); // world-space "up" for z-lift (raised beams, robot bob)
     // the active game draws its own field + overlays (DECODE: field + ramp strips)
     const mod = gameOf(world);
-    mod.drawField(ctx, world);
+    mod.drawField(ctx, world, screenUp);
     mod.drawOverlays?.(ctx, world);
 
     for (const r of world.robots) {
@@ -46,12 +47,8 @@ export class Renderer {
         (r.id === localRobotId && (lastCommand?.intake ?? false)) ||
         (r.autoIntake && r.hopper.length < 3);
       const held = world.balls.filter((b) => b.state.kind === 'held' && b.state.robot === r.id);
-      (mod.drawRobot ?? drawRobot)(ctx, r, intakeOn, held);
-
-
-
+      (mod.drawRobot ?? drawRobot)(ctx, r, intakeOn, held, screenUp);
     }
-    const screenUp = this.camera.screenUpWorld();
     mod.drawBalls(ctx, world, screenUp);
 
     // name/team labels above the OTHER robots (the local driver knows theirs)

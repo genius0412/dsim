@@ -198,6 +198,12 @@ export class MatchAudio {
     this.tone(150, 330, 0.08, 'sine', 0.22);
   }
 
+  /** wheel thumping over a terrain beam: a dull low "thunk" (knock + short low body) */
+  sfxBeam(): void {
+    this.noiseBurst(520, 150, 0.06, 0.2, 1);
+    this.tone(140, 62, 0.09, 'sine', 0.17);
+  }
+
   /** classifier gate "clack-clunk": latch click, then the flap swinging open */
   sfxGate(): void {
     this.noiseBurst(2600, 2600, 0.03, 0.25, 3);

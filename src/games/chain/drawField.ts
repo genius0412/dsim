@@ -1,9 +1,10 @@
-import type { World } from '../../types';
+import type { Vec2, World } from '../../types';
 import * as C from '../../config';
 import type { Alliance } from '../../types';
 import {
   CHAIN_ACCEL_DEPTH,
   CHAIN_ACCEL_HALF_Y,
+  CHAIN_BEAM_RENDER_H,
   CHAIN_DIAMOND_R,
   CHAIN_HALF_X,
   CHAIN_HALF_Y,
@@ -23,7 +24,7 @@ import { CHAIN_BEAMS, BEAM_HALF_W } from './beams';
  * manual values; Ring-Stand + Lab-Area positions are still approximate (see config.ts).
  * Reuses DECODE's `COLORS` so it themes/reads identically on the dark field.
  */
-export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): void {
+export function drawChainField(ctx: CanvasRenderingContext2D, _world: World, screenUp: Vec2 = { x: 0, y: 1 }): void {
   const hx = CHAIN_HALF_X;
   const hy = CHAIN_HALF_Y;
 
@@ -45,14 +46,39 @@ export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): vo
   }
   ctx.stroke();
 
-  // BEAMS — four 1"-tall black tubes (difficult terrain) on the x/y axes, wall→diamond.
-  // Drawn FIRST so the alliance divider tape reads over the vertical beams.
+  // BEAMS — four 1"-tall tubes (difficult terrain) on the x/y axes, wall→diamond. The LIT TOP FACE
+  // is drawn at the tube's TRUE footprint (it reads exactly where it physically is); a thin dark
+  // near-wall dropped a hair TOWARD the camera (−screenUp) hints the z-thickness. No drop shadow —
+  // the tape runs right alongside, and a shadow just muddied it. Drawn FIRST so the tape reads over.
+  const dx = -screenUp.x * CHAIN_BEAM_RENDER_H; // the near (camera-facing) wall drops this way
+  const dy = -screenUp.y * CHAIN_BEAM_RENDER_H;
   for (const beam of CHAIN_BEAMS) {
     const r = beam.rect;
-    ctx.fillStyle = '#0a0c0f';
+    const top: [number, number][] = [
+      [r.x0, r.y0],
+      [r.x1, r.y0],
+      [r.x1, r.y1],
+      [r.x0, r.y1],
+    ];
+    // near-side walls: each top edge dropped a touch toward the camera — the visible thickness
+    ctx.fillStyle = '#05070b';
+    for (let i = 0; i < 4; i++) {
+      const a = top[i];
+      const b = top[(i + 1) % 4];
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      ctx.lineTo(b[0], b[1]);
+      ctx.lineTo(b[0] + dx, b[1] + dy);
+      ctx.lineTo(a[0] + dx, a[1] + dy);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // top face AT THE TRUE FOOTPRINT — a lit plane above the dark mat, bright edge, so the tube
+    // reads as raised terrain sitting exactly where it is
+    ctx.fillStyle = '#2c333d';
+    ctx.strokeStyle = 'rgba(176,186,198,0.95)';
+    ctx.lineWidth = 0.5;
     ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
-    ctx.strokeStyle = 'rgba(120,130,140,0.7)';
-    ctx.lineWidth = 0.4;
     ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
   }
 

@@ -1,12 +1,18 @@
-import type { Artifact, RobotState } from '../../types';
+import type { Artifact, RobotState, Vec2 } from '../../types';
 import * as C from '../../config';
 import { drawWheels, roundRect } from '../../render/drawRobot';
 import {
   CHAIN_DEFAULT_SCORE_MODE,
   chainHopperCap,
   CHAIN_LAUNCH_LINE_FRAC,
+  CHAIN_BEAM_RENDER_H,
+  CHAIN_BEAM_RUMBLE,
 } from './config';
 import { chainIntakeBand } from './state';
+import { beamRide } from './beams';
+
+/** cosmetic clock for the crossing shudder (render-only, so a wall clock is fine + deterministic-safe) */
+const nowMs = (): number => (typeof performance !== 'undefined' ? performance.now() : 0);
 
 /**
  * Chain Reaction robot sprite (top-down). Shares the chassis + drivetrain wheels with
@@ -27,6 +33,7 @@ export function drawChainRobot(
   r: RobotState,
   intakeOn: boolean,
   _held: Artifact[] = [],
+  screenUp: Vec2 = { x: 0, y: 1 },
 ): void {
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
@@ -37,8 +44,29 @@ export function drawChainRobot(
   // held command) AND the hopper isn't full — not just when nearly empty.
   const intaking = (intakeOn || r.autoIntake) && r.hopper.length < chainHopperCap(r.spec);
 
+  // TERRAIN RIDE: bob the chassis UP onto a beam it's crossing (toward screenUp), with a ground
+  // shadow so the lift reads, plus a shudder while a wheel is mid-climb and the robot is moving.
+  const ride = beamRide(r);
+  const speed = Math.hypot(r.vel.x, r.vel.y);
+  const climbing = ride.lift > 0.02 && ride.lift < 0.98;
+  const rumble = climbing ? Math.sin(nowMs() * 0.05 + r.id * 1.7) * CHAIN_BEAM_RUMBLE * Math.min(1, speed / 20) : 0;
+  const lift = Math.max(0, ride.lift * CHAIN_BEAM_RENDER_H + rumble);
+  const ox = screenUp.x * lift;
+  const oy = screenUp.y * lift;
+
+  // ground shadow at the true footprint (drawn before the lifted body)
+  if (lift > 0.15) {
+    ctx.save();
+    ctx.translate(r.pos.x, r.pos.y);
+    ctx.rotate(r.heading);
+    ctx.fillStyle = `rgba(0,0,0,${(0.3 * Math.min(1, ride.lift * 1.3)).toFixed(3)})`;
+    roundRect(ctx, -hl, -hw, r.spec.length, r.spec.width, 1.6);
+    ctx.fill();
+    ctx.restore();
+  }
+
   ctx.save();
-  ctx.translate(r.pos.x, r.pos.y);
+  ctx.translate(r.pos.x + ox, r.pos.y + oy);
   ctx.rotate(r.heading);
 
   // chassis
@@ -73,7 +101,7 @@ export function drawChainRobot(
 
   ctx.restore();
 
-  if (mode === 'turret') drawTurret(ctx, r, loaded);
+  if (mode === 'turret') drawTurret(ctx, r, loaded, ox, oy);
 }
 
 /** CR intake — the full-width sweeper roller. Mounts on the FRONT (a bar across the chassis
@@ -164,8 +192,9 @@ function drawCatapult(ctx: CanvasRenderingContext2D, hl: number, hw: number, loa
   ctx.stroke();
 }
 
-/** turret on top (world orientation), ring + barrel toward the aim heading. */
-function drawTurret(ctx: CanvasRenderingContext2D, r: RobotState, loaded: boolean): void {
+/** turret on top (world orientation), ring + barrel toward the aim heading. `ox`/`oy` = the
+ * chassis terrain-bob offset so the turret rides up with the body. */
+function drawTurret(ctx: CanvasRenderingContext2D, r: RobotState, loaded: boolean, ox = 0, oy = 0): void {
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
   const off = Math.abs(r.spec.length * C.TURRET_OFFSET_FRAC);
@@ -173,8 +202,8 @@ function drawTurret(ctx: CanvasRenderingContext2D, r: RobotState, loaded: boolea
   const ring = Math.min(4.4, reach);
   // turret sits at the chassis center offset (rear of center), in the robot frame
   const localX = -off;
-  const cx = r.pos.x + Math.cos(r.heading) * localX;
-  const cy = r.pos.y + Math.sin(r.heading) * localX;
+  const cx = r.pos.x + Math.cos(r.heading) * localX + ox;
+  const cy = r.pos.y + Math.sin(r.heading) * localX + oy;
   ctx.save();
   ctx.translate(cx, cy);
   ctx.rotate(r.turretHeading);
