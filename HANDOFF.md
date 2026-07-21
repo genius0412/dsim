@@ -1,4 +1,24 @@
-# HANDOFF — 2026-07-21b (matchmaking reliability: ghost-socket reaper + fair-host fallback) — READ FIRST
+# HANDOFF — 2026-07-21c (Google sign-in in-app-browser guard) — READ FIRST
+
+## This session (latest) — fix Google OAuth `disallowed_useragent` in in-app browsers (client-only)
+
+User hit Google's **`Error 403: disallowed_useragent`** ("Access blocked … Use secure
+browsers") on mobile but not desktop. Cause: opening the sim link from inside a social
+app (LinkedIn/Instagram/…) runs the page in an embedded WEBVIEW, and Google refuses OAuth
+there. Not a Neon Auth misconfig — Google can't be made to allow embedded webviews.
+
+Fix: `src/lib/browserEnv.ts` `isEmbeddedBrowser()` (UA sniff — named in-app tokens +
+Android `wv` + iOS non-Safari WKWebView). In `AuthPanel.tsx`, when embedded the "Continue
+with Google" button is replaced by a hint ("open in Safari/Chrome — or use email above") +
+a **Copy link** button. Email/password sign-in is unaffected and always shown. Conservative:
+a false positive only downgrades the Google button; a false negative just re-shows Google's
+block screen. Client-only → Vercel auto-deploys, no server change. `npm run build` green.
+Possible follow-up: Android `intent://` escape to Chrome; verify the UA heuristic against a
+real LinkedIn in-app browser.
+
+---
+
+# HANDOFF — 2026-07-21b (matchmaking reliability: ghost-socket reaper + fair-host fallback)
 
 ## This session (latest) — two matchmaking bug fixes (server/index.ts only)
 
