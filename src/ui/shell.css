@@ -780,6 +780,16 @@
 .fr-dot.dnd {
   background: var(--ds-danger);
 }
+/* "in a lobby / in a match" — amber, distinct from plain-online green and DND
+   red. The activity is also spelled out in the sub-line (colourblind-safe). */
+.fr-dot.busy {
+  background: var(--ds-warn);
+}
+/* the "play a friend" button on an online row — compact so it fits beside the
+   overflow menu without crowding the name */
+.fr-challenge {
+  white-space: nowrap;
+}
 .fr-menu {
   position: relative;
 }
@@ -859,6 +869,77 @@
   background: var(--ds-panel);
   box-shadow: var(--ds-block-sm);
   text-align: left;
+}
+
+/* ---- friend notifications (friendsContext.tsx FriendToasts) -----------
+   A floating stack of transient cards: a new friend request or an incoming
+   challenge announces itself even with the panel collapsed. Fixed to the
+   bottom-right, above the footer; menu shell only (never over a live match). */
+.fr-toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(320px, calc(100vw - 32px));
+  pointer-events: none; /* the cards re-enable it — clicks pass through the gaps */
+}
+.fr-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--ds-line);
+  border-left: 3px solid var(--ds-accent);
+  border-radius: var(--ds-round);
+  background: var(--ds-panel);
+  box-shadow: var(--ds-block);
+  animation: fr-toast-in 180ms ease;
+}
+@keyframes fr-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.fr-toast-who {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.fr-toast-who:disabled {
+  cursor: default;
+}
+.fr-toast-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ds-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fr-toast-sub {
+  font-size: 11px;
+  color: var(--ds-mut);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- home: the menu IS the navigation --------------------------------- */

@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
-import { saveAccountSettings, fetchAdminStatus, fetchProfile, type RoomInvite } from '../net/api';
+import {
+  saveAccountSettings,
+  fetchAdminStatus,
+  fetchProfile,
+  fetchFriends,
+  type Activity,
+  type RoomInvite,
+} from '../net/api';
+import { FriendsProvider } from './friendsContext';
 import type { RoomConfig } from '../net/protocol';
 import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
@@ -325,6 +333,14 @@ export function App() {
     navigate(invite.kind === 'record' ? 'duorecord' : 'lobby');
   };
 
+  // "Challenge a friend": the invite has already gone out (FriendsProvider) — drop
+  // the challenger into the freshly-created room as host, waiting for them to join.
+  // Same one-shot pendingAutoJoin the invite-recipient path uses.
+  const hostForChallenge = (code: string, game: GameId): void => {
+    setPendingAutoJoin({ room: code, config: { kind: 'versus', game } });
+    navigate('lobby');
+  };
+
   // when signed in, mirror settings to the account (debounced) as well as local
   const [accountUserId, setAccountUserId] = useState<string | null>(null);
   // the account's PUBLIC display name (the mutable `handle` behind leaderboards and
@@ -584,6 +600,24 @@ export function App() {
   // no-auth builds both lock ranked — custom rooms stay open to everyone.
   const signedIn = accountUserId !== null;
 
+  // Rich-presence heartbeat for the FULL-SCREEN surfaces (game / solo record /
+  // ranked queue) that render outside AppShell's FriendsProvider — so friends see
+  // "In a match" instead of the caller silently dropping to offline mid-game. The
+  // shell screens are heartbeated by the provider's own poll; lobby/duo-record by
+  // InviteFlyout. Fire-and-forget: it only records presence, never renders.
+  useEffect(() => {
+    if (!signedIn) return;
+    const full = screen === 'game' || screen === 'record' || screen === 'matchmaking';
+    if (!full) return;
+    const act: Activity = screen === 'matchmaking' ? 'lobby' : 'match';
+    const beat = (): void => {
+      if (document.visibilityState === 'visible') void fetchFriends(act, settingsRef.current.game).catch(() => {});
+    };
+    beat();
+    const iv = window.setInterval(beat, 30_000);
+    return () => window.clearInterval(iv);
+  }, [signedIn, screen]);
+
   // full-screen surfaces (outside the shell)
   if (screen === 'game') {
     return (
@@ -692,20 +726,28 @@ export function App() {
   const recordsTab: RecordsTab = isRecordsTab(route.sub) ? route.sub : 'leaderboard';
 
   return (
-    <AppShell
-      active={navFor(screen)}
-      onNav={(n) => navigate(screenForNav(n))}
-      right={right}
-      showAdmin={isAdmin}
-      showRail={screen !== 'home'}
-      onDownload={() => navigate('download')}
-      onContributors={() => navigate('contributors')}
-      onChangelog={() => navigate('changelogs')}
+    <FriendsProvider
       signedIn={signedIn}
-      onOpenProfile={openProfile}
-      onJoinInvite={onJoinInvite}
+      activity="menu"
       game={settings.game}
+      sound={settings.audio.volume.master > 0}
+      onHostRoom={hostForChallenge}
     >
+      <AppShell
+        active={navFor(screen)}
+        onNav={(n) => navigate(screenForNav(n))}
+        right={right}
+        showAdmin={isAdmin}
+        showRail={screen !== 'home'}
+        onDownload={() => navigate('download')}
+        onContributors={() => navigate('contributors')}
+        onChangelog={() => navigate('changelogs')}
+        signedIn={signedIn}
+        onOpenProfile={openProfile}
+        onJoinInvite={onJoinInvite}
+        myUserId={accountUserId}
+        game={settings.game}
+      >
       {authEnabled && <AccountSync onUser={onSyncUser} onLoad={onSyncLoad} seed={onSyncSeed} />}
       {authEnabled && <UsernameGate />}
       {/* patch notes / new-season + new-act reveals — shown once on the menu shell,
@@ -903,6 +945,7 @@ export function App() {
         <Account settings={settings} onChange={update} onHandleSaved={setHandle} />
       )}
       {screen === 'admin' && isAdmin && <Admin />}
-    </AppShell>
+      </AppShell>
+    </FriendsProvider>
   );
 }

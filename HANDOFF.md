@@ -1,4 +1,77 @@
-# HANDOFF — 2026-07-20 (profile-menu top bar + Changelog page) — READ FIRST
+# HANDOFF — 2026-07-21 (friend system: challenge / rich presence / notifications / recently-played) — READ FIRST
+
+## This session (latest) — chess.com-style friends overhaul
+
+Build (`ELECTRON=1`/web) + strict `tsc` + `npm run server:check` + `npm test` (~unchanged,
+no `src/sim`/`config.ts` touch) + `npm run contrast` (167, unchanged — new CSS reuses audited
+token pairs) ALL GREEN. Boot-verified via the `verify` Electron recipe: shell mounts, FRIENDS
+panel renders, no console errors, no crash (the App render now wraps in a provider — the risky
+bit — and it's clean).
+
+Four features (user asked for all four, "best-value slice" — so real-time is fast adaptive
+polling, NOT a WebSocket rebuild):
+
+1. **Direct Challenge / Play** (the headline — previously you could ONLY invite from inside a
+   lobby). A **Challenge** button on every online, non-DND, non-in-match friend row (`FriendsPanel`),
+   on a friend's **profile** (`ProfileFriendActions`), driven by `FriendsCtx.challenge(username)`:
+   generate a room code (`generateRoomCode`), send a `versus` room invite, then host that room
+   (`onHostRoom` → `App.hostForChallenge` sets `pendingAutoJoin` + navigates to `lobby`). The
+   invited friend gets the normal room invite and Joins into the same code. Reuses the existing
+   invite plumbing end-to-end — NO new invite kind, NO protocol change.
+
+2. **Rich presence** ("In a match · DECODE" / "In a lobby · Chain" / "Online"). New **migration
+   `0018_presence_activity.sql`** adds `activity` + `activity_game` to `user_presence`. The
+   `GET /api/friends` heartbeat now carries `?a=<menu|lobby|match>&g=<decode|chain>` →
+   `touchPresence(userId, activity, game)`; `listFriends` returns `activity`/`game` per online
+   friend (BLANKED for offline/invisible, same as last-seen). Client `FriendRow` gained
+   `activity`/`game`; `presenceLine()`/`canChallenge()` in FriendsPanel render it. Activity is
+   sourced from the CURRENT screen: the provider reports `'menu'` on shell screens; `InviteFlyout`
+   reports `'lobby'`; and a fire-and-forget beat in `App` (game/record/matchmaking screens, 30s)
+   reports `'match'`/`'lobby'` from the full-screen surfaces that render OUTSIDE the provider (so
+   you don't silently drop offline mid-match). Backward-compatible: old server ignores the params,
+   old client just omits them.
+
+3. **Notifications** — `FriendToasts` (bottom-right stack, `friendsContext.tsx`), rendered inside
+   `AppShell` ONLY (menu shell — never over the field, per product decision #5). The provider diffs
+   each poll for NEW incoming requests / invites (primed off the FIRST payload via the new
+   `useFriends().ready` flag, so it never announces the backlog on load) and pushes actionable
+   toasts (request → Accept/✕; challenge → Join/✕). A soft self-contained WebAudio `chime()` gated
+   on master-sound (`sound` prop). Auto-expire oldest every 9s.
+
+4. **Real-time feel (low-lift)** — `useFriends` replaced the fixed 30s/120s `collapsed` cadence
+   with ADAPTIVE polling: `POLL_HOT_MS` 6s when anything's pending (incoming/outgoing/invites),
+   `POLL_IDLE_MS` 20s otherwise; recursive `setTimeout` reschedules off the latest data; catches up
+   on `focus` + `visibilitychange`; still ONLY polls while the tab is visible.
+
+**Plus (mid-session ask): "friend recently-played people".** `RecentlyPlayed` section in
+`FriendsPanel` (client-only, NO server change): `fetchUserMatches(myUserId, {limit:25})` →
+`recentPeople()` flattens `players[]` to distinct non-self usernamed opponents+teammates, freshest
+first, minus anyone already friend/pending/blocked; one-click **Add** (≤6 shown). `myUserId`
+threaded App → AppShell → FriendsPanel.
+
+**Architecture change to know about**: `useFriends` was mounted 3× (panel, profile, invite flyout
+= triple poll where they co-mounted). Now there's ONE shared store — **`FriendsProvider` /
+`useFriendsCtx` in `src/ui/friendsContext.tsx`** — wrapping `AppShell` in `App.tsx`. `FriendsPanel`
+and `Profile`/`ProfileFriendActions` read the ctx. `Lobby`'s `InviteFlyout` DELIBERATELY keeps its
+own `useFriends` (it's a full-screen surface rendered OUTSIDE the provider — that's also what
+heartbeats `'lobby'` presence during a lobby). `useFriendsCtx()` throws outside the provider by
+design.
+
+**DEPLOY NOTE**: this includes a SERVER + DB migration change (`0018`, `server/db/repo.ts`,
+`server/api.ts`). Follow the deploy protocol — commit on the server branch → `./scripts/fly-deploy.sh`
+→ verify `/health` → clients auto-deploy. The migration is additive (`add column if not exists`) and
+the protocol stays backward-compatible (query params optional, new `FriendRow` fields tolerated), so
+old clients keep working against the new server and vice-versa. Not yet deployed/committed as of this
+writing.
+
+Files touched: `server/db/migrations/0018_presence_activity.sql` (new), `server/db/repo.ts`,
+`server/api.ts`, `src/net/api.ts`, `src/ui/useFriends.ts`, `src/ui/friendsContext.tsx` (new),
+`src/ui/FriendsPanel.tsx`, `src/ui/ProfileFriendActions.tsx`, `src/ui/Profile.tsx`,
+`src/ui/InviteFlyout.tsx`, `src/ui/AppShell.tsx`, `src/ui/App.tsx`, `src/ui/shell.css`.
+
+---
+
+# HANDOFF — 2026-07-20 (profile-menu top bar + Changelog page)
 
 ## This session (latest) — top bar consolidated into a profile avatar; footer gets a Changes page
 
