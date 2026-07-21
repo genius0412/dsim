@@ -1,4 +1,41 @@
-# HANDOFF — 2026-07-21c (Google sign-in in-app-browser guard) — READ FIRST
+# HANDOFF — 2026-07-21d (Chain Reaction: fire cadence + mecanum strafe-over-beam) — READ FIRST
+
+## This session (latest) — CR shooter cadence retune + realistic mecanum beam-crossing
+
+Also housekeeping: **alpha fast-forwarded to main** (was 30 behind, no unique commits) and
+pushed — `origin/alpha == origin/main`.
+
+Changes are in `src/games/chain/` (SIM — the server imports the shared sim, so a Fly deploy
+is needed for MULTIPLAYER CR to reflect them; solo/local is live on Vercel auto-deploy).
+`npm run build` + `npm test` (now ~211 checks) both green.
+
+1. **Drum → 24 bps, Turret → 13 bps** (`config.ts`). Drum: `CHAIN_DRUM_INTERVAL` 1/37.5→**1/30**
+   (jittered re-anchor averages ~24, measured 24.5). Turret: `CHAIN_FIRE_INTERVAL` 1/12→**1/13**
+   AND the fire path in `play.ts` now **ACCUMULATES** the interval (`fireReadyAt += INTERVAL`)
+   instead of re-anchoring to `world.time`, so the sub-tick remainder carries and the cadence
+   averages EXACTLY 13.0 bps (a plain re-anchor tick-quantizes to only 12 or 15, never 13). An
+   idle-guard (`if (fireReadyAt < world.time) fireReadyAt = world.time`) prevents a burst
+   catch-up when the hopper empties then refills. Instant first shot preserved.
+2. **Mecanum can't STRAFE over a beam** (`beams.ts` + `config.ts` `CHAIN_BEAM_STRAFE_PENALTY`).
+   `beamDragFactor(spec, acrossSpeed, forwardness)` gains a 3rd arg. `forwardness =
+   |chassis-forward · beam-cross-normal|` (`beamForwardness`, 1 = driving straight across, 0 =
+   pure sideways). For MECANUM ONLY, retain ×= `1 − 0.8·(1 − forwardness)`, dropping a pure
+   strafe crossing to ~0.19 retain (near-impossible) while a straight-over crossing is
+   untouched — a mecanum must POINT AT a beam to cross it. Physical basis: the 45° rollers
+   (small OD) can't climb a 1" tube laterally and suspension travel doesn't help a lateral
+   scrub; the same suspension is exactly why mecanum forward-crossing is BEST-in-class. Tank
+   can't strafe at all; SWERVE steers its pods into the travel direction (wheels always roll
+   over the beam whichever way the chassis points); X-DRIVE is 4-fold symmetric — so none of
+   them get the direction penalty. New smoke: unit (fwd vs strafe retain, other DTs unaffected)
+   + full-sim (a mecanum pointed along a beam can't strafe across it, stays stuck at y≈−4).
+
+**Next / gotchas:** the drum's ~24 is jitter-averaged (varies tick-to-tick by design); the
+turret's 13 is deterministic. If MULTIPLAYER CR shows the old rates, deploy the server
+(`./scripts/fly-deploy.sh`, never a bare `flyctl deploy`).
+
+---
+
+# HANDOFF — 2026-07-21c (Google sign-in in-app-browser guard)
 
 ## This session (latest) — fix Google OAuth `disallowed_useragent` in in-app browsers (client-only)
 

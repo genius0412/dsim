@@ -133,6 +133,19 @@ export const CHAIN_BEAM_MAX_RETAIN = 0.98;
 export const CHAIN_CLEARANCE_MIN = 0.3;
 export const CHAIN_CLEARANCE_MAX = 1.5;
 export const CHAIN_CLEARANCE_DEFAULT = 1;
+/** MECANUM STRAFE-OVER-BEAM penalty. Real mecanum wheels climb a bump they DRIVE straight at
+ * (the full-diameter wheel rolls over it, and the suspension keeps all four loaded — this is
+ * exactly why mecanum has the BEST forward beam TRACTION). But crossing a beam SIDEWAYS is a
+ * different mechanism: the sideways force comes from the small 45° rollers, whose tiny outer
+ * diameter can't roll up a 1" tube — they just scrub and stall against it, and suspension travel
+ * doesn't help a lateral scrub. So a mecanum crossing a beam by STRAFING keeps only a tiny
+ * fraction of its lateral speed (near-impossible), while driving straight over is unaffected.
+ * `forwardness = |heading · crossNormal|` (1 = driving across, 0 = pure strafe across); the
+ * mecanum beam retain is scaled by `1 − CHAIN_BEAM_STRAFE_PENALTY·(1 − forwardness)`. Mecanum
+ * ONLY — tank can't strafe at all, a SWERVE steers its pods into the travel direction (so its
+ * wheels always roll over the beam whichever way the chassis points), and an X-DRIVE is 4-fold
+ * symmetric (every translation is equivalent, no forward/strafe distinction). */
+export const CHAIN_BEAM_STRAFE_PENALTY = 0.8; // ×retain lost at a pure sideways mecanum crossing
 /** max fraction of drive authority lost at full clearance (raised center of gravity) */
 export const CHAIN_COG_PENALTY = 0.16;
 /** SWERVE is far more sensitive to a raised CG — the tall modules tip and scrub, so a
@@ -225,11 +238,11 @@ export const CHAIN_LAUNCH_Z0 = 10; // in — launch height (into the tall, over-
 // NEVER a rigid uniform line. The launch SPEED is uniform (same-velocity, per the archetype);
 // only the position + timing vary. NOT a "6-then-wait" burst.
 export const CHAIN_DRUM_MAX = 6; // drum CAPACITY (18"/3" = 6 pockets) — the visual slot count
-// the drum streams ~27 balls/s. `CHAIN_DRUM_INTERVAL` is the NOMINAL gap; it's set BELOW 1/27 s to
+// the drum streams ~24 balls/s. `CHAIN_DRUM_INTERVAL` is the NOMINAL gap; it's set BELOW 1/24 s to
 // counter the throughput lost to 60 Hz tick quantization + the symmetric jitter (each shot fires on
 // the next tick past its due time, which rounds a sub-3-tick interval UP) — so the OBSERVED cadence
-// lands at ~27/s while still varying naturally (measured, not a rigid uniform stream).
-export const CHAIN_DRUM_INTERVAL = 1 / 37.5; // nominal gap → ~27 balls/s observed
+// lands at ~24/s while still varying naturally (measured, not a rigid uniform stream).
+export const CHAIN_DRUM_INTERVAL = 1 / 30; // nominal gap → ~24 balls/s observed
 export const CHAIN_DRUM_JITTER = 0.55; // ± fraction of the interval — natural, non-periodic cadence
 export const CHAIN_DRUM_SPEED = 175; // in/s uniform horizontal launch
 
@@ -302,8 +315,11 @@ export function chainHopperCap(spec: RobotSpec): number {
 
 /** shooter: launch a held particle toward this robot's own accelerator. Auto-aimed
  * at the mouth center, so (like DECODE's shooter) it reliably scores — arcade feel. */
-export const CHAIN_FIRE_INTERVAL = 1 / 12; // nominal ~0.083 s → ~10.5 balls/s observed (deterministic;
-// 60 Hz quantization + re-anchor-to-actual rounds the sub-6-tick interval UP, so 11 bps lands at 10.5)
+export const CHAIN_FIRE_INTERVAL = 1 / 13; // 13 balls/s. The turret ACCUMULATES this interval
+// (fireReadyAt += CHAIN_FIRE_INTERVAL, play.ts) instead of re-anchoring to world.time, so the
+// sub-tick remainder carries and the long-run cadence averages EXACTLY 13 bps (a deterministic
+// 4/5-tick gap alternation) — a plain re-anchor would tick-quantize to 12 or 15, never 13. An
+// idle-guard (clamp to world.time when the hopper empties) prevents a burst catch-up on resume.
 export const CHAIN_SHOT_SPEED = 150; // in/s horizontal toward the mouth
 export const CHAIN_SHOT_VZ = 70; // in/s initial upward (visual arc)
 

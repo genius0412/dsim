@@ -1,12 +1,13 @@
-import type { DrivetrainType, RobotSpec, World } from '../../types';
+import type { DrivetrainType, RobotSpec, RobotState, World } from '../../types';
 import type { Rect } from '../../sim/field';
 import { robotExtents, robotIntersectsRect } from '../../sim/physics';
-import { clamp } from '../../math';
+import { clamp, dcos, dsin } from '../../math';
 import {
   CHAIN_BEAM_HEIGHT,
   CHAIN_BEAM_MOMENTUM_REF,
   CHAIN_BEAM_MOMENTUM_EASE,
   CHAIN_BEAM_MAX_RETAIN,
+  CHAIN_BEAM_STRAFE_PENALTY,
   CHAIN_CLEARANCE_DEFAULT,
   CHAIN_CLEARANCE_MAX,
   CHAIN_CLEARANCE_MIN,
@@ -83,8 +84,13 @@ export function canCrossBeams(spec: RobotSpec): boolean {
  * start eases it only a LITTLE (`CHAIN_BEAM_MOMENTUM_EASE`) — momentum no longer lets you power
  * over untouched. A raised center of gravity (more clearance) makes it a touch harder. Applied
  * to velocity BEFORE the physics integration, so it really slows the crossing.
+ *
+ * `forwardness` (0..1) = |chassis-forward · beam-cross-normal|: 1 = driving STRAIGHT across,
+ * 0 = crossing PURELY SIDEWAYS. It only bites for MECANUM (see `CHAIN_BEAM_STRAFE_PENALTY`):
+ * a mecanum strafing over a beam keeps almost none of its lateral speed (the 45° rollers can't
+ * climb the tube), while driving straight over is unaffected. Other drivetrains ignore it.
  */
-export function beamDragFactor(spec: RobotSpec, acrossSpeed: number): number {
+export function beamDragFactor(spec: RobotSpec, acrossSpeed: number, forwardness = 1): number {
   const clr = clearanceOf(spec);
   const base = clamp(TRACTION[spec.drivetrain] + 0.05 * (clr - CHAIN_BEAM_HEIGHT), 0.4, 0.98);
   const mom = clamp(Math.abs(acrossSpeed) / CHAIN_BEAM_MOMENTUM_REF, 0, 1);
@@ -92,8 +98,15 @@ export function beamDragFactor(spec: RobotSpec, acrossSpeed: number): number {
   // not its absolute clearance — a chassis that just clears (clr≈beam height) rides low and pays
   // nothing; a tall high-clearance one tips more. Keeps the default (clr=1) penalty-free.
   const margin = clamp((clr - CHAIN_BEAM_HEIGHT) / (CHAIN_CLEARANCE_MAX - CHAIN_BEAM_HEIGHT), 0, 1);
-  const retain = (base + CHAIN_BEAM_MOMENTUM_EASE * (1 - base) * mom) * (1 - 0.1 * margin);
-  return clamp(retain, 0.4, CHAIN_BEAM_MAX_RETAIN);
+  let retain = clamp((base + CHAIN_BEAM_MOMENTUM_EASE * (1 - base) * mom) * (1 - 0.1 * margin), 0.4, CHAIN_BEAM_MAX_RETAIN);
+  // MECANUM only: a sideways crossing (forwardness→0) collapses the retain BELOW the normal 0.4
+  // floor — the rollers scrub and stall against the tube instead of rolling over it. Driving
+  // straight across (fwd→1) is untouched, so a mecanum must POINT AT a beam to cross it, never
+  // strafe over it. Applied after the floor so it can reach near-zero (near-impossible).
+  if (spec.drivetrain === 'mecanum') {
+    retain *= 1 - CHAIN_BEAM_STRAFE_PENALTY * (1 - clamp(forwardness, 0, 1));
+  }
+  return clamp(retain, 0, CHAIN_BEAM_MAX_RETAIN);
 }
 
 /**
@@ -107,10 +120,19 @@ export function beamDrag(world: World): void {
     if (!canCrossBeams(r.spec)) continue; // no-clearance robots are hard-blocked instead
     for (const beam of CHAIN_BEAMS) {
       if (!robotIntersectsRect(r, beam.rect)) continue;
-      if (beam.axis === 'y') r.vel.y *= beamDragFactor(r.spec, r.vel.y);
-      else r.vel.x *= beamDragFactor(r.spec, r.vel.x);
+      // forwardness = |chassis-forward · beam-cross-normal|. A 'y'-axis beam is crossed along
+      // ŷ (normal = (0,1) ⇒ dot = sin heading); an 'x' beam along x̂ (dot = cos heading).
+      const fwd = beamForwardness(r, beam.axis);
+      if (beam.axis === 'y') r.vel.y *= beamDragFactor(r.spec, r.vel.y, fwd);
+      else r.vel.x *= beamDragFactor(r.spec, r.vel.x, fwd);
     }
   }
+}
+
+/** |chassis-forward · beam-cross-normal|: 1 = the robot points STRAIGHT across the beam
+ * (driving over), 0 = it points ALONG the beam (crossing it means strafing sideways). */
+export function beamForwardness(r: RobotState, axis: 'x' | 'y'): number {
+  return Math.abs(axis === 'y' ? dsin(r.heading) : dcos(r.heading));
 }
 
 /**

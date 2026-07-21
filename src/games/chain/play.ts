@@ -115,7 +115,11 @@ export function updateChain(
       if (wantsFire && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
         r.hopper.shift();
         launchToAccel(world, chain, r, mouth, CHAIN_SHOT_SPEED, 0);
-        r.fireReadyAt = world.time + CHAIN_FIRE_INTERVAL;
+        // ACCUMULATE the interval (don't re-anchor to world.time) so the sub-tick remainder
+        // carries and the cadence averages EXACTLY 13 bps; clamp forward when the hopper has
+        // been idle so a resumed burst can't catch up on accumulated debt.
+        r.fireReadyAt += CHAIN_FIRE_INTERVAL;
+        if (r.fireReadyAt < world.time) r.fireReadyAt = world.time;
         r.lastFireAt = world.time;
       }
     } else {
@@ -133,7 +137,7 @@ export function updateChain(
           // Uniform launch SPEED — only the position + timing vary, so the pattern flows.
           r.hopper.shift();
           launchAt(world, chain, r, rand() - 0.5, CHAIN_DRUM_SPEED, 0);
-          // SYMMETRIC jitter around the nominal 1/23 s ⇒ the drum AVERAGES 23 balls/s while the
+          // SYMMETRIC jitter around the nominal interval ⇒ the drum AVERAGES ~24 balls/s while the
           // cadence varies naturally (never a rigid uniform stream).
           r.fireReadyAt = world.time + CHAIN_DRUM_INTERVAL * (1 - CHAIN_DRUM_JITTER + rand() * 2 * CHAIN_DRUM_JITTER);
         } else {

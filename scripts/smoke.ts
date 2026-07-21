@@ -4033,6 +4033,41 @@ const mkMM = () => {
     check('chain drum: single-ball continuous stream (not a 6-then-wait burst)', perTick === 1 && drained >= 4, `perTick=${perTick} drained=${drained} in ~0.5s`);
   }
 
+  // FIRE CADENCE: the DRUM averages ~24 balls/s (jittered around CHAIN_DRUM_INTERVAL).
+  {
+    const s = chainSetup(0, 'blue');
+    s.spec = { ...DEFAULT_SPEC, scoreMode: 'drum' };
+    const gw = createChainWorld('match', 804, [s]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = false; rob.autoFire = true; rob.heading = 0;
+    rob.pos = { x: -30, y: 0 };
+    const T = 6; rob.hopper = Array(24 * T + 60).fill('green'); // never runs dry
+    const h0 = rob.hopper.length;
+    runChain(gw, cmd({}), T);
+    const bps = (h0 - rob.hopper.length) / T;
+    check('chain drum: cadence averages ~24 balls/s', bps >= 22 && bps <= 26, `${bps.toFixed(1)} bps`);
+  }
+
+  // FIRE CADENCE: the TURRET fires EXACTLY ~13 balls/s (fractional-carry averages to 13, where
+  // a plain tick-quantized re-anchor would land on 12 or 15).
+  {
+    const s = chainSetup(0, 'blue');
+    s.spec = { ...DEFAULT_SPEC, scoreMode: 'turret' };
+    const gw = createChainWorld('match', 805, [s]);
+    gw.match.phase = 'teleop';
+    gw.match.phaseTimeLeft = 120;
+    const rob = gw.robots[0];
+    rob.autoIntake = false; rob.autoFire = true;
+    rob.pos = { x: -30, y: 0 };
+    const T = 6; rob.hopper = Array(13 * T + 60).fill('green');
+    const h0 = rob.hopper.length;
+    runChain(gw, cmd({}), T);
+    const bps = (h0 - rob.hopper.length) / T;
+    check('chain turret: cadence averages ~13 balls/s', bps >= 12.5 && bps <= 13.5, `${bps.toFixed(2)} bps`);
+  }
+
   // TURN-TO-AIM control: holding fire steers a turretless shooter to face the goal, then it fires
   {
     const s = chainSetup(0, 'blue');
@@ -4590,6 +4625,46 @@ const mkMM = () => {
       beamDragFactor(mk('mecanum', 1), 50) > beamDragFactor(mk('swerve', 1), 50) &&
         beamDragFactor(mk('mecanum', 1), 50) >= beamDragFactor(mk('tank', 1), 50),
     );
+    // MECANUM STRAFE-OVER-BEAM: driving STRAIGHT across (forwardness 1) is unaffected, but a
+    // PURE SIDEWAYS crossing (forwardness 0) collapses the retain far below the 0.4 floor —
+    // near-impossible (the 45° rollers can't climb the tube laterally).
+    {
+      const mFwd = beamDragFactor(mk('mecanum', 1), 50, 1);
+      const mStrafe = beamDragFactor(mk('mecanum', 1), 50, 0);
+      check(
+        'chain beams: mecanum forward-crossing is unaffected by the strafe rule',
+        mFwd >= 0.4,
+        `fwd=${mFwd.toFixed(2)}`,
+      );
+      check(
+        'chain beams: mecanum STRAFING over a beam keeps almost nothing (near-impossible)',
+        mStrafe < 0.25 && mStrafe < mFwd * 0.5,
+        `strafe=${mStrafe.toFixed(2)} fwd=${mFwd.toFixed(2)}`,
+      );
+    }
+    // the strafe penalty is MECANUM-ONLY — a swerve steers its pods into the travel direction,
+    // so its wheels roll over the beam whichever way the chassis points (no forward/strafe gap).
+    check(
+      'chain beams: swerve/tank/x-drive ignore heading direction (no strafe penalty)',
+      beamDragFactor(mk('swerve', 1), 50, 0) === beamDragFactor(mk('swerve', 1), 50, 1) &&
+        beamDragFactor(mk('tank', 1), 50, 0) === beamDragFactor(mk('tank', 1), 50, 1) &&
+        beamDragFactor(mk('xdrive', 1), 50, 0) === beamDragFactor(mk('xdrive', 1), 50, 1),
+    );
+    // FULL-SIM: a mecanum pointed ALONG a beam and trying to STRAFE across it barely advances —
+    // it stays stuck on the near side, while the same drive as a forward push (below) crosses.
+    {
+      const sw = createChainWorld('free', 6, [chainSetup(0, 'blue')]);
+      const rs = sw.robots[0];
+      rs.spec = mk('mecanum', 1);
+      rs.pos = { x: 44, y: -8 }; rs.heading = 0; rs.fieldCentric = false; // facing +x ALONG the +x-axis beam
+      // robot-centric strafe = −driveX, so driveX:−1 strafes toward +y (across the beam)
+      for (let i = 0; i < 240; i++) chainStep(sw, SIM_DT, new Map([[rs.id, cmd({ driveX: -1 })]]));
+      check(
+        'chain beams: a mecanum CANNOT strafe over a beam (stuck on the near side after 4s)',
+        rs.pos.y < 2,
+        `y=${rs.pos.y.toFixed(1)} (started -8, beam at 0)`,
+      );
+    }
     // clearance floor 0.3" ⇒ best handling (no CoG penalty); more clearance = more sluggish
     check(
       'chain beams: raised CoG reduces drive authority',
