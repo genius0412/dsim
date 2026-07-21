@@ -805,7 +805,7 @@ function Results({
     const blueF = isRed ? c.oppFoulPts : c.foulPts;
     return [
       ['SCORING', [['Particles ×mult', redP, blueP]]],
-      ['END GAME', [['Park / Ascend', red.total - redP - redF, blue.total - blueP - blueF]]],
+      ['RING STAND / PARK', [['Descend / Ascend / Park', red.total - redP - redF, blue.total - blueP - blueF]]],
       ['PENALTIES', [['Fouls awarded', redF, blueF]]],
     ];
   };
@@ -903,7 +903,8 @@ function Results({
           <p className="ds-hint">
             Each Particle scores 1 pt × (1 + Catalysts on hooks) — RED ×
             {hud.alliance === 'red' ? hud.chain.mult : hud.chain.oppMult}, BLUE ×
-            {hud.alliance === 'blue' ? hud.chain.mult : hud.chain.oppMult}. End Game: park 5 · ascend 100.
+            {hud.alliance === 'blue' ? hud.chain.mult : hud.chain.oppMult}. Auto: descend a ring
+            stand 100. End Game: park 5 · ascend 100.
             Foul points ({PTS_FOUL_MAJOR} per major) come from the opponent's violations.
           </p>
         ) : (
@@ -1085,8 +1086,8 @@ function RecordResults({
             </table>
             {cr && hud.chain ? (
               <p className="ds-hint">
-                Each Particle scores 1 pt × (1 + Catalysts on hooks, ×{hud.chain.mult}). End Game:
-                park 5 · ascend 100.
+                Each Particle scores 1 pt × (1 + Catalysts on hooks, ×{hud.chain.mult}). Auto:
+                descend a ring stand 100. End Game: park 5 · ascend 100.
               </p>
             ) : (
               <p className="ds-hint">

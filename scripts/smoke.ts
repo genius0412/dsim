@@ -4477,6 +4477,30 @@ const mkMM = () => {
     check('chain endgame: ascended a ring stand = 100 pts', gw.chain!.endgame[0] === 'ascended' && gw.match.scores.blue.total >= 100);
   }
 
+  // AUTO DESCENT: a robot STAGED on a ring stand (start anchor 2) earns 100 pt when it
+  // comes down off the stand during auto — awarded ONCE, and the points persist after.
+  {
+    const gw = createChainWorld('match', 7, [
+      { id: 0, alliance: 'blue', spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 2 },
+    ]);
+    check('chain descent: staged on a ring stand arms the descent', gw.chain!.descentArmed[0] === true);
+    gw.match.phase = 'auto';
+    gw.match.phaseTimeLeft = 30;
+    runChain(gw, cmd({}), 0.1); // still on the stand → not yet awarded
+    check('chain descent: not awarded while still on the stand', !gw.chain!.descended[0] && gw.match.scores.blue.total < 100);
+    gw.robots[0].pos = { x: 0, y: 0 }; // drive it down off the stand to field centre
+    runChain(gw, cmd({}), 0.1);
+    check('chain descent: coming down off the stand in auto = 100 pts', gw.chain!.descended[0] === true && gw.match.scores.blue.total >= 100);
+    // a robot that did NOT start on a stand is never armed (no free descent)
+    const gw2 = createChainWorld('match', 7, [chainSetup(0, 'blue')]); // start anchor 0 = lab floor
+    check('chain descent: a floor start is NOT armed', !gw2.chain!.descentArmed[0]);
+    gw2.match.phase = 'auto';
+    gw2.match.phaseTimeLeft = 30;
+    gw2.robots[0].pos = { x: 0, y: 0 };
+    runChain(gw2, cmd({}), 0.1);
+    check('chain descent: floor start earns no descent', !gw2.chain!.descended[0]);
+  }
+
   // particles never overlap (spatial-hash separation)
   {
     const w = createChainWorld('match', 3, [chainSetup(0, 'blue')]);

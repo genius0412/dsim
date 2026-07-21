@@ -320,8 +320,10 @@ export const CHAIN_CATALYST_PICK_R = 9; // pick-up radius (to robot center)
 export const CHAIN_HOOK_PLACE_R = 12; // seat-on-hook radius (carried catalyst → hook)
 
 /** endgame: park fully inside a Lab-Area corner square (5 pt) / ascend within this
- * radius of a Ring Stand (20 pt). Lab squares are 24" at each field corner; an
- * alliance owns the two on its side (red x<0, blue x>0). APPROX — refine with manual. */
+ * radius of a Ring Stand (100 pt). The SAME radius decides the AUTO descent: a robot
+ * that STARTS on a stand and leaves this radius during auto scores descent (100 pt).
+ * Lab squares are 24" at each field corner; an alliance owns the two on its side
+ * (red x<0, blue x>0). APPROX — refine with manual. */
 export const CHAIN_LAB = 24; // corner square size (in)
 export const CHAIN_ASCEND_R = 9; // ascend proximity to a ring stand (in)
 
