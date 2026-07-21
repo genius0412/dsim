@@ -66,7 +66,7 @@ export interface ChainState {
   scored: Record<Alliance, number>;
   /** points earned from particles (multiplier folded in AT score time) */
   particlePoints: Record<Alliance, number>;
-  /** endgame status per robot id (park 5 / ascend 20) */
+  /** endgame status per robot id (park 5 / ascend 100) */
   endgame: Record<number, EndgameState>;
   /** last catalyst-button state per robot id (for edge-triggered pick/place) */
   catalystHeld: Record<number, boolean>;

@@ -4459,7 +4459,7 @@ const mkMM = () => {
     );
   }
 
-  // endgame: park in a Lab Area (5 pt) / ascend a Ring Stand (20 pt)
+  // endgame: park in a Lab Area (5 pt) / ascend a Ring Stand (100 pt)
   {
     const gw = createChainWorld('match', 7, [chainSetup(0, 'blue')]);
     gw.match.phase = 'teleop';
@@ -4474,7 +4474,7 @@ const mkMM = () => {
     rob.pos = { x: rs.x, y: rs.y };
     rob.vel = { x: 0, y: 0 };
     runChain(gw, cmd({}), 0.1);
-    check('chain endgame: ascended a ring stand = 20 pts', gw.chain!.endgame[0] === 'ascended' && gw.match.scores.blue.total >= 20);
+    check('chain endgame: ascended a ring stand = 100 pts', gw.chain!.endgame[0] === 'ascended' && gw.match.scores.blue.total >= 100);
   }
 
   // particles never overlap (spatial-hash separation)

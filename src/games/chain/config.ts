@@ -26,7 +26,7 @@
  *  • CATALYST — a 6"-OD purple ring (4 of them). Placed on a HOOK ⇒ +1 pt/particle.
  *  • HOOK — on the accelerator wall (this file's `CHAIN_HOOK_Y`); holds a Catalyst.
  *  • RING STAND — a 22.5" vertical steel pole at the field corners; robots ASCEND
- *    (endgame, 20 pt) / DESCEND (auto, 20 pt) it.
+ *    (endgame, 100 pt) / DESCEND (auto, 100 pt) it.
  *  • LAB AREA — each alliance's start/park zone (leave 5 pt auto / park 5 pt endgame).
  *  • PARTICLE ZONE — the center diamond of white tape (neutral, unprotected).
  *
@@ -76,14 +76,14 @@ export const CHAIN_CATALYST_COUNT = 4;
 
 /**
  * SCORING (manual §3) — for when scoring lands. Particle 1 pt; each Catalyst on a
- * hook adds +1 pt per particle scored in that accelerator; Ring-Stand descend 20 pt
- * (auto) / ascend 20 pt (endgame); Lab-Area leave 5 pt (auto) / park 5 pt (endgame).
+ * hook adds +1 pt per particle scored in that accelerator; Ring-Stand descend 100 pt
+ * (auto) / ascend 100 pt (endgame); Lab-Area leave 5 pt (auto) / park 5 pt (endgame).
  */
 export const CHAIN_PTS = {
   particle: 1,
   catalystPerParticle: 1,
-  ringStandDescend: 20,
-  ringStandAscend: 20,
+  ringStandDescend: 100,
+  ringStandAscend: 100,
   labLeave: 5,
   labPark: 5,
 } as const;

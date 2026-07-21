@@ -794,7 +794,7 @@ function Results({
   const val = (get: (s: ScoreBreakdown) => number): [number, number] => [get(red), get(blue)];
 
   // Chain Reaction has its own scoring: Particle points (catalyst multiplier folded in) +
-  // End Game (park 5 / ascend 20) + penalty points awarded from the OPPONENT's fouls.
+  // End Game (park 5 / ascend 100) + penalty points awarded from the OPPONENT's fouls.
   const crSections = (): [string, [string, number, number][]][] => {
     const c = hud.chain;
     if (!c) return [];
@@ -903,7 +903,7 @@ function Results({
           <p className="ds-hint">
             Each Particle scores 1 pt × (1 + Catalysts on hooks) — RED ×
             {hud.alliance === 'red' ? hud.chain.mult : hud.chain.oppMult}, BLUE ×
-            {hud.alliance === 'blue' ? hud.chain.mult : hud.chain.oppMult}. End Game: park 5 · ascend 20.
+            {hud.alliance === 'blue' ? hud.chain.mult : hud.chain.oppMult}. End Game: park 5 · ascend 100.
             Foul points ({PTS_FOUL_MAJOR} per major) come from the opponent's violations.
           </p>
         ) : (
@@ -1086,7 +1086,7 @@ function RecordResults({
             {cr && hud.chain ? (
               <p className="ds-hint">
                 Each Particle scores 1 pt × (1 + Catalysts on hooks, ×{hud.chain.mult}). End Game:
-                park 5 · ascend 20.
+                park 5 · ascend 100.
               </p>
             ) : (
               <p className="ds-hint">

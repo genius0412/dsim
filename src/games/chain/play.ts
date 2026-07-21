@@ -6,6 +6,7 @@ import {
   CHAIN_ACCEL_DEPTH,
   CHAIN_ACCEL_HALF_Y,
   CHAIN_ASCEND_R,
+  CHAIN_PTS,
   CHAIN_CATALYST_PICK_R,
   CHAIN_EJECT_SPEED,
   CHAIN_EJECT_SPREAD,
@@ -331,7 +332,7 @@ export function updateChain(
     for (const rob of world.robots) {
       if (rob.alliance !== a) continue;
       const st = chain.endgame[rob.id];
-      eg += st === 'ascended' ? 20 : st === 'parked' ? 5 : 0;
+      eg += st === 'ascended' ? CHAIN_PTS.ringStandAscend : st === 'parked' ? CHAIN_PTS.labPark : 0;
     }
     world.match.scores[a].total = chain.particlePoints[a] + eg + world.match.scores[a].foulPoints;
     world.goals[a].classifiedCount = chain.scored[a]; // surfaces in worldHash
