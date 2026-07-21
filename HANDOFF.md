@@ -1,6 +1,50 @@
-# HANDOFF — 2026-07-21c (Google sign-in in-app-browser guard) — READ FIRST
+# HANDOFF — 2026-07-22 ("Play a friend" format picker) — READ FIRST
 
-## This session (latest) — fix Google OAuth `disallowed_useragent` in in-app browsers (client-only)
+## This session (latest) — the deferred "Play a friend" mode-picker (client-only)
+
+Built the "Play a friend" format picker the 2026-07-21 handoff deferred (its TODO +
+feasibility map is below, still accurate). **Client-only — rides entirely on existing
+pipes, NO server/DB/protocol change** (the deployed server already accepts
+`record`/`duo` room invites via `inviteToRoom`), so Vercel auto-deploys. `npm run build`
+green, `npm run contrast` 167 (unchanged — new CSS reuses audited token pairs), menu
+shell boot-verified in Electron (no render crash from the new provider child).
+
+**What it does:** clicking **Challenge** on a friend (panel row, profile, or toast source)
+now opens a modal FORMAT picker instead of instantly hosting a 1v1 versus room. Tiles:
+- **1v1 · Casual** and **2v2 · Team up** → a custom `versus` room (the 1v1-vs-2v2 split is
+  emergent — a versus room admits up to 4; you sort alliances/add drivers in the lobby).
+- **2v0 · Co-op record** → a `record`/`duo` co-op run.
+- **1v1 · Rated** and **2v2 · Ranked** → shown DISABLED ("Soon"): rating is only applied
+  to matchmaker-staged rooms and there's no premade/party concept yet (see feasibility map
+  below — these need server work, deliberately not faked).
+
+**How it's wired:**
+- `src/ui/ChallengePicker.tsx` (NEW) — the modal + `ChallengeFormat` type
+  (`'casual1v1' | 'casual2v2' | 'duorecord'`). Reuses `.ds-modal-backdrop`/`.ds-modal` +
+  `.ds-opt` tiles. Success navigates away (unmounts the modal); only a failed invite lands
+  back with an inline error + re-enabled tiles.
+- `src/ui/friendsContext.tsx` — `challenge` now takes `(username, format)` and maps
+  `duorecord`→`inviteToRoom(...,'record','duo')` else `versus`. New `openChallenge(username)`
+  opens the picker (provider owns `challengeTarget` state + renders `<ChallengePicker>` once,
+  so panel/profile/anywhere just call it). `onHostRoom` gained a `kind: RoomKind` arg.
+- `src/ui/App.tsx` — `hostForChallenge(code, game, kind)` routes `record`→`duorecord`
+  screen, else `lobby` (mirrors `onJoinInvite`'s recipient routing, already correct).
+- `src/ui/FriendsPanel.tsx` / `ProfileFriendActions.tsx` — Challenge buttons call
+  `friends.openChallenge(username)` (was `challenge`); `ChallengeButton` lost its busy state
+  (opening the modal is synchronous now).
+- `src/ui/shell.css` — `.ds-chal*` (modal width, tile list) + `.ds-opt:disabled` neutralised
+  hover + `.oz.soon` muted badge.
+
+**Recipient path was already complete** — a `record` invite's toast/panel "Join" routes to
+`duorecord` via the existing `onJoinInvite`. **Not verified:** live two-account
+send/receive/host for each format (needs live accounts — same limitation as all friends work).
+Left open (needs server work, per the feasibility map): 1v1 rated + 2v2 ranked-with-friend.
+
+---
+
+# HANDOFF — 2026-07-21c (Google sign-in in-app-browser guard)
+
+## This session — fix Google OAuth `disallowed_useragent` in in-app browsers (client-only)
 
 User hit Google's **`Error 403: disallowed_useragent`** ("Access blocked … Use secure
 browsers") on mobile but not desktop. Cause: opening the sim link from inside a social
@@ -60,11 +104,13 @@ server:check + `npm test` green.
 
 # HANDOFF — 2026-07-21 (friend system: challenge / rich presence / notifications / recently-played) — READ FIRST
 
-## TODO (deferred, not started) — "Play a friend" mode-picker menu
+## "Play a friend" mode-picker menu — BUILDABLE SLICE DONE (2026-07-22, see top of file)
 
-User wants a **"Play a friend"** flow where, when challenging a friend, you pick the FORMAT:
-1v1 unrated, 1v1 rated, 2v2 ranked (friend as your teammate), 2v0 duo record, etc. Deferred
-mid-session for something more pressing. Feasibility (mapped this session — see below):
+User wanted a **"Play a friend"** flow where, when challenging a friend, you pick the FORMAT:
+1v1 unrated, 1v1 rated, 2v2 ranked (friend as your teammate), 2v0 duo record, etc. **The
+buildable formats (1v1/2v2 casual + 2v0 duo record) SHIPPED 2026-07-22** (`ChallengePicker.tsx`;
+see the top-of-file handoff). **1v1 rated + 2v2 ranked-with-friend remain OPEN** (shown disabled
+"Soon" in the picker) — they need the server work the feasibility map below describes:
 - **1v1 unrated (custom), 2v2 unrated (friend as teammate), 2v0 duo record** — all buildable
   today with existing pipes. The current `FriendsCtx.challenge` already does 1v1-unrated; duo
   record just needs `inviteToRoom(..., 'record', 'duo')` + route to `duorecord`.

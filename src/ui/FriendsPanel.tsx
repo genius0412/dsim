@@ -225,7 +225,7 @@ export function FriendsPanel({
                     aria-hidden
                   />
                   {canChallenge(f) && f.username && (
-                    <ChallengeButton username={f.username} challenge={friends.challenge} />
+                    <ChallengeButton username={f.username} onChallenge={friends.openChallenge} />
                   )}
                   <RowMenu username={f.username} friends={friends} />
                 </Row>
@@ -476,28 +476,20 @@ function Row({
   );
 }
 
-/** the chess.com "play a friend" affordance: one click sends them a challenge and
- * drops you into the room as host. Shows a brief spinner-ish disabled state while
- * the invite goes out (the click also navigates away, so it's momentary). */
+/** the chess.com "play a friend" affordance: opens the format picker (1v1 / 2v2 /
+ * co-op record). The picker itself sends the invite + hosts the room. */
 function ChallengeButton({
   username,
-  challenge,
+  onChallenge,
 }: {
   username: string;
-  challenge: (username: string) => Promise<void>;
+  onChallenge: (username: string) => void;
 }) {
-  const [busy, setBusy] = useState(false);
   return (
     <button
       className="ds-btn small primary fr-challenge"
-      disabled={busy}
       title={`Challenge @${username} to a match`}
-      onClick={() => {
-        setBusy(true);
-        // navigation happens inside challenge(); on failure re-enable so they can
-        // retry (the hook surfaces the reason in friends.error)
-        void challenge(username).catch(() => setBusy(false));
-      }}
+      onClick={() => onChallenge(username)}
     >
       Challenge
     </button>

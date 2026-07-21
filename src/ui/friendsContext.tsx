@@ -1,9 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { GameId } from '../types';
+import type { RoomKind } from '../net/protocol';
 import type { Activity, PublicProfile, RoomInvite } from '../net/api';
 import { generateRoomCode } from '../net/roomCode';
 import { useFriends, type FriendsApi } from './useFriends';
+import { ChallengePicker, type ChallengeFormat } from './ChallengePicker';
 
 /**
  * ONE shared friends store for the whole menu shell.
@@ -33,8 +35,12 @@ export interface FriendToast {
 }
 
 export interface FriendsCtx extends FriendsApi {
-  /** create a room + invite this friend + host it (they get an invite to join) */
-  challenge: (username: string) => Promise<void>;
+  /** open the "Play a friend" format picker for this friend. The actual
+   * invite+host happens when they pick a format (see `challenge`). */
+  openChallenge: (username: string) => void;
+  /** create a room in the chosen FORMAT + invite this friend + host it (they get
+   * an invite to join). Called by the picker; navigates on success. */
+  challenge: (username: string, format: ChallengeFormat) => Promise<void>;
   /** the game challenges are created for (the caller's selected game) */
   game: GameId;
   toasts: FriendToast[];
@@ -95,19 +101,28 @@ export function FriendsProvider({
   game: GameId;
   /** play the arrival chime (master sound on) */
   sound: boolean;
-  /** host a freshly-created room after a challenge invite is sent */
-  onHostRoom: (code: string, game: GameId) => void;
+  /** host a freshly-created room after a challenge invite is sent. `kind` picks
+   * the destination: `versus` → the custom-match lobby, `record` → the duo record
+   * lobby (a co-op run). */
+  onHostRoom: (code: string, game: GameId, kind: RoomKind) => void;
   children: ReactNode;
 }) {
   const api = useFriends({ signedIn, activity, game });
 
+  // which friend the "Play a friend" picker is open for (null = closed)
+  const [challengeTarget, setChallengeTarget] = useState<string | null>(null);
+  const openChallenge = useCallback((username: string) => setChallengeTarget(username), []);
+
   const challenge = useCallback(
-    async (username: string): Promise<void> => {
+    async (username: string, format: ChallengeFormat): Promise<void> => {
       const code = generateRoomCode();
+      // a co-op record run is a `record`/`duo` room; both casual formats are a
+      // `versus` room (1v1 vs 2v2 is decided by who joins + alliance in the lobby)
+      const record = format === 'duorecord';
       // send FIRST — only host the room if the invite actually went out (a
       // not-friends/blocked failure throws, and we never navigate on it)
-      await api.inviteToRoom(username, code, game, 'versus');
-      onHostRoom(code, game);
+      await api.inviteToRoom(username, code, game, record ? 'record' : 'versus', record ? 'duo' : null);
+      onHostRoom(code, game, record ? 'record' : 'versus');
     },
     [api, game, onHostRoom],
   );
@@ -176,8 +191,19 @@ export function FriendsProvider({
     return () => window.clearTimeout(t);
   }, [toasts]);
 
-  const value: FriendsCtx = { ...api, challenge, game, toasts, dismissToast };
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  const value: FriendsCtx = { ...api, openChallenge, challenge, game, toasts, dismissToast };
+  return (
+    <Ctx.Provider value={value}>
+      {children}
+      {challengeTarget && (
+        <ChallengePicker
+          username={challengeTarget}
+          onPick={(format) => challenge(challengeTarget, format)}
+          onClose={() => setChallengeTarget(null)}
+        />
+      )}
+    </Ctx.Provider>
+  );
 }
 
 /** read the shared friends store. Throws if used outside the provider — callers

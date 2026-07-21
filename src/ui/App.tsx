@@ -10,7 +10,7 @@ import {
   type RoomInvite,
 } from '../net/api';
 import { FriendsProvider } from './friendsContext';
-import type { RoomConfig } from '../net/protocol';
+import type { RoomConfig, RoomKind } from '../net/protocol';
 import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
 import { Admin } from './Admin';
@@ -335,10 +335,17 @@ export function App() {
 
   // "Challenge a friend": the invite has already gone out (FriendsProvider) — drop
   // the challenger into the freshly-created room as host, waiting for them to join.
-  // Same one-shot pendingAutoJoin the invite-recipient path uses.
-  const hostForChallenge = (code: string, game: GameId): void => {
-    setPendingAutoJoin({ room: code, config: { kind: 'versus', game } });
-    navigate('lobby');
+  // Same one-shot pendingAutoJoin the invite-recipient path uses. `kind` picks the
+  // destination: a `record` challenge is a duo co-op run, everything else is a
+  // custom versus match — mirroring `onJoinInvite`'s routing for the recipient.
+  const hostForChallenge = (code: string, game: GameId, kind: RoomKind): void => {
+    if (kind === 'record') {
+      setPendingAutoJoin({ room: code, config: { kind: 'record', record: 'duo', game } });
+      navigate('duorecord');
+    } else {
+      setPendingAutoJoin({ room: code, config: { kind: 'versus', game } });
+      navigate('lobby');
+    }
   };
 
   // when signed in, mirror settings to the account (debounced) as well as local
