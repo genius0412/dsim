@@ -353,12 +353,130 @@
   opacity: 0.6;
   cursor: default;
 }
-/* a phone bar has no room for a region control — hide only the BAR copy; the
-   same control in Account must stay reachable on a phone. */
+/* a phone bar has no room for a PERMANENT region control — hide only the
+   bar's direct copy (the no-auth fallback, `right`'s direct child). The one
+   inside `.ds-profile-pop` (ProfileMenu) costs no bar width until opened, so
+   it stays reachable on a phone; so does the copy in Account. `>` matters
+   here — a plain descendant selector would also hide the popover copy. */
 @media (max-width: 640px) {
-  .ds-bar-right .ds-server-menu {
+  .ds-bar-right > .ds-server-menu {
     display: none;
   }
+}
+
+/* ---- profile menu (ProfileMenu.tsx) -----------------------------------
+   One avatar replaces the old permanent trio of name-chip + sign-out button
+   + bar-level region picker — everything account-shaped lives behind it, so
+   the bar itself never grows past one control no matter how many actions
+   hide in the popover. */
+.ds-profile-root {
+  position: relative;
+}
+.ds-avatar-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 50%;
+  line-height: 0;
+}
+.ds-avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--ds-accent);
+  color: var(--ds-accent-ink);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.ds-avatar.md {
+  width: 40px;
+  height: 40px;
+  font-size: 15px;
+  flex: none;
+}
+.ds-avatar-btn:hover .ds-avatar {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-accent) 35%, transparent);
+}
+.ds-avatar-btn:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+.ds-profile-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  background: var(--ds-panel);
+  box-shadow: var(--ds-block-sm);
+  text-align: left;
+}
+.ds-profile-id {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px;
+  border: none;
+  background: none;
+  border-radius: var(--ds-round-sm);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  width: 100%;
+}
+.ds-profile-id:hover {
+  background: var(--ds-tile);
+}
+.ds-profile-who {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ds-profile-name {
+  font-weight: 700;
+  color: var(--ds-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ds-profile-sub {
+  font-size: 12px;
+  color: var(--ds-mut);
+}
+.ds-profile-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--ds-line);
+}
+.ds-profile-label {
+  font-family: var(--ds-font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.ds-profile-actions {
+  padding-top: 10px;
+  border-top: 1px solid var(--ds-line);
+  display: flex;
+}
+.ds-profile-actions .ds-btn {
+  flex: 1;
 }
 
 .ds-main {
@@ -970,6 +1088,13 @@
 }
 .ds-foot-link:hover {
   color: var(--ds-ink);
+}
+.ds-foot-link.bold {
+  font-weight: 700;
+  color: var(--ds-ink-dim);
+}
+.ds-foot-link.bold:hover {
+  color: var(--ds-accent);
 }
 
 /* ---- footer ---------------------------------------------------------- */
