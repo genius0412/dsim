@@ -1,5 +1,27 @@
 # HANDOFF — 2026-07-21 (friend system: challenge / rich presence / notifications / recently-played) — READ FIRST
 
+## TODO (deferred, not started) — "Play a friend" mode-picker menu
+
+User wants a **"Play a friend"** flow where, when challenging a friend, you pick the FORMAT:
+1v1 unrated, 1v1 rated, 2v2 ranked (friend as your teammate), 2v0 duo record, etc. Deferred
+mid-session for something more pressing. Feasibility (mapped this session — see below):
+- **1v1 unrated (custom), 2v2 unrated (friend as teammate), 2v0 duo record** — all buildable
+  today with existing pipes. The current `FriendsCtx.challenge` already does 1v1-unrated; duo
+  record just needs `inviteToRoom(..., 'record', 'duo')` + route to `duorecord`.
+- **1v1 RATED / 2v2 ranked-with-friend** — NOT possible today. Rating (Glicko) is applied ONLY
+  to matchmaker-staged rooms: `Room.ranked` is set true ONLY in `applyPending()`
+  (`server/room.ts:642-644`), reached ONLY when a `pending_matches` row exists for the code
+  (`server/index.ts:704-707`), which ONLY `Matchmaker.assign` creates (`matchmaking.ts:257`).
+  A code/invite-joined room can NEVER produce a rated result. "1v1 rated with friend" needs a
+  new path to stage a rated PendingMatch for an invited pair; "2v2 ranked-with-friend"
+  additionally needs a PARTY/premade concept in the matchmaker (none exists — it actively
+  dedups same-account and splits alliances blindly by index, `matchmaking.ts:200-202,249-250`).
+- Entry-point idea: a "Play a friend" mode-select tile AND upgrade the per-friend Challenge
+  button into a format picker. `RoomInvite`/`room_invites` would need a `ranked`/mode field to
+  carry the intent (today it carries only room/game/kind/record).
+
+---
+
 ## This session (latest) — chess.com-style friends overhaul
 
 Build (`ELECTRON=1`/web) + strict `tsc` + `npm run server:check` + `npm test` (~unchanged,
