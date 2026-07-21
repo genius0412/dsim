@@ -25,24 +25,36 @@ is needed for MULTIPLAYER CR to reflect them; solo/local is live on Vercel auto-
    - `beamDragFactor(spec, acrossSpeed, forwardness, wheelsUp)` gains `wheelsUp`. Lifted wheels
      lose traction: `grounded = (4−up)/4` scales the FORWARD retain toward `CHAIN_BEAM_GROUND_FLOOR`
      0.82 (all four up = high-centered ⇒ minimal grip; up1/up2/up4 → 0.91/0.87/0.78).
-   - MECANUM strafe collapses PER lifted wheel: `strafe = fwd·(1−CHAIN_BEAM_STRAFE_PENALTY)^up`
-     (0.8) → up1 0.18, up2 0.035. The retain blends fwd↔strafe by `forwardness²`. So a pure
-     sideways crossing (the normal 2-wheel case) is ~0.03 retain — a mecanum literally can't
-     strafe over a beam (full-sim: stuck at y≈−7.4 after 4s), while driving straight over works
-     (loses a real chunk, keep≈0.39). Physical basis: mecanum lateral force is the BALANCED sum
-     of four 45° rollers — lift any wheel and the balance breaks (net spin, not strafe); the
-     full wheel + suspension is exactly why FORWARD crossing is best-in-class.
-   - Direction penalty is MECANUM-ONLY: tank can't strafe, SWERVE steers pods into travel, X-DRIVE
-     is 4-fold symmetric (fwd retain == strafe retain). Both `forwardness` and `wheelsUp` are
-     needed — two mecanums both with up=2 differ only by which DRIVE MODE makes the across motion.
-   - New smoke: straddle-is-free, wheel-pair-counted-and-dragged, wheels-up monotonic traction,
-     per-wheel strafe collapse (+ the earlier unit/full-sim strafe checks). 528 checks green.
+   - MECANUM STRAFE-INTO-BEAM is a CURB, not a drag (revised twice from feedback: a velocity drag
+     let the wheel ooze onto the ridge → "stuck on top"). Two clamps keyed off `strafeCurb(r,beam)`
+     (the beam is a curb only for a strafe-dominant mecanum — `beamForwardness <
+     CHAIN_BEAM_STRAFE_BLOCK_FWD` 0.5 — with a wheel near the ridge and NOT straddling):
+       · PRE-solve **velocity wall** in `beamDrag(world, dt)`: caps the inward speed so the leading
+         wheel stops EXACTLY at the near face this tick — approaches at full speed, no overshoot,
+         no ooze onto the top.
+       · POST-solve safety clamp `beamStrafeBlock` (after `beamBlock` in step.ts): pushes any
+         numerical-slop penetration back to the near face + zeroes inward velocity.
+     The leading wheel rests against the 1" tube, the low frame overhangs it; it never climbs on
+     top and never crosses (full-sim: strafes from y −8, leading wheel parks at the near face).
+     STRADDLE GUARD: `strafeCurb` returns null if a wheel is well on the far side — so a robot
+     PLACED on / driving across a beam (e.g. a launcher parked on the centre beam, which regressed
+     the dumper test once) is never ejected. Physical basis: mecanum's sideways force is the 45°
+     rollers, whose tiny OD can't roll up the tube — exactly driving sideways into a curb.
+   - MECANUM-ONLY: tank can't strafe, SWERVE steers pods into travel (rolls over whichever way it
+     points), X-DRIVE is 4-fold symmetric. `beamDragFactor(spec, acrossSpeed, wheelsUp)` is now
+     forward/climbing-traction only (direction-agnostic); the forwardness heuristic moved into the
+     block's gate (`strafeBlocked`).
+   - New smoke: straddle-is-free, forward wheel-pair dragged, wheels-up monotonic traction,
+     curb-block clamps the leading wheel to the near face + kills vel, block is mecanum-only &
+     strafe-only, full-sim curb stop. ~530 checks green.
 
 **Next / gotchas:** the drum's ~24 is jitter-averaged (varies tick-to-tick by design); the
-turret's 13 is deterministic. Beam drag keys off `wheelContacts` (4 corner points inset by
-`WHEEL_INSET`) — a very NARROW chassis moves its wheels closer to the beam line, changing how
-many count as "up"; tune `CHAIN_BEAM_WHEEL_R` if that ever feels off. If MULTIPLAYER CR shows the
-old behavior, deploy the server (`./scripts/fly-deploy.sh`, never a bare `flyctl deploy`).
+turret's 13 is deterministic. Beam logic keys off `wheelContacts` (4 corner points inset by
+`WHEEL_INSET`) — wheels sit at the chassis CORNERS, so a wheel reaches a beam when the body
+center is ~half-width away (the curb block engages there, not at the center). A very NARROW
+chassis moves wheels closer to the line; tune `CHAIN_BEAM_WHEEL_R` if the "on ridge" band feels
+off. If MULTIPLAYER CR shows the old behavior, deploy the server (`./scripts/fly-deploy.sh`,
+never a bare `flyctl deploy`).
 
 ---
 

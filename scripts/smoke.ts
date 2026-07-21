@@ -75,7 +75,7 @@ import {
   PTS_FOUL_MAJOR,
 } from '../src/config';
 import { robotCorners, robotExtents, robotIntersectsRect, wheelContacts } from '../src/sim/physics';
-import { beamBlock, beamDrag, beamDragFactor, canCrossBeams, cogFactor, wheelsOnBeam, CHAIN_BEAMS } from '../src/games/chain/beams';
+import { beamBlock, beamDrag, beamDragFactor, beamStrafeBlock, beamForwardness, canCrossBeams, cogFactor, wheelsOnBeam, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits } from '../src/sim/drivetrain';
 import { coerceSettings, switchGame, syncAudioMirrors } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
@@ -4625,49 +4625,9 @@ const mkMM = () => {
       beamDragFactor(mk('mecanum', 1), 50) > beamDragFactor(mk('swerve', 1), 50) &&
         beamDragFactor(mk('mecanum', 1), 50) >= beamDragFactor(mk('tank', 1), 50),
     );
-    // MECANUM STRAFE-OVER-BEAM: driving STRAIGHT across (forwardness 1) is unaffected, but a
-    // PURE SIDEWAYS crossing (forwardness 0) collapses the retain far below the 0.4 floor —
-    // near-impossible (the 45° rollers can't climb the tube laterally).
-    {
-      const mFwd = beamDragFactor(mk('mecanum', 1), 50, 1);
-      const mStrafe = beamDragFactor(mk('mecanum', 1), 50, 0);
-      check(
-        'chain beams: mecanum forward-crossing is unaffected by the strafe rule',
-        mFwd >= 0.4,
-        `fwd=${mFwd.toFixed(2)}`,
-      );
-      check(
-        'chain beams: mecanum STRAFING over a beam keeps almost nothing (near-impossible)',
-        mStrafe < 0.25 && mStrafe < mFwd * 0.5,
-        `strafe=${mStrafe.toFixed(2)} fwd=${mFwd.toFixed(2)}`,
-      );
-    }
-    // the strafe penalty is MECANUM-ONLY — a swerve steers its pods into the travel direction,
-    // so its wheels roll over the beam whichever way the chassis points (no forward/strafe gap).
-    check(
-      'chain beams: swerve/tank/x-drive ignore heading direction (no strafe penalty)',
-      beamDragFactor(mk('swerve', 1), 50, 0) === beamDragFactor(mk('swerve', 1), 50, 1) &&
-        beamDragFactor(mk('tank', 1), 50, 0) === beamDragFactor(mk('tank', 1), 50, 1) &&
-        beamDragFactor(mk('xdrive', 1), 50, 0) === beamDragFactor(mk('xdrive', 1), 50, 1),
-    );
-    // FULL-SIM: a mecanum pointed ALONG a beam and trying to STRAFE across it barely advances —
-    // it stays stuck on the near side, while the same drive as a forward push (below) crosses.
-    {
-      const sw = createChainWorld('free', 6, [chainSetup(0, 'blue')]);
-      const rs = sw.robots[0];
-      rs.spec = mk('mecanum', 1);
-      rs.pos = { x: 44, y: -8 }; rs.heading = 0; rs.fieldCentric = false; // facing +x ALONG the +x-axis beam
-      // robot-centric strafe = −driveX, so driveX:−1 strafes toward +y (across the beam)
-      for (let i = 0; i < 240; i++) chainStep(sw, SIM_DT, new Map([[rs.id, cmd({ driveX: -1 })]]));
-      check(
-        'chain beams: a mecanum CANNOT strafe over a beam (stuck on the near side after 4s)',
-        rs.pos.y < 2,
-        `y=${rs.pos.y.toFixed(1)} (started -8, beam at 0)`,
-      );
-    }
-    // PER-WHEEL model: the drag is decided by which of the FOUR wheels are on the 1" ridge, not
-    // by the chassis outline. A robot STRADDLING a beam (tube under the belly, wheels either
-    // side) has NO wheel up and rolls DRAG-FREE — the old OBB-overlap model wrongly slowed it.
+    // PER-WHEEL climbing drag: only wheels actually on the 1" ridge count. STRADDLING a beam
+    // (tube under the belly, wheels either side) has NO wheel up ⇒ DRAG-FREE (old OBB model
+    // wrongly slowed it). A FORWARD drive with a wheel pair on the ridge IS dragged.
     {
       const w = createChainWorld('free', 7, [chainSetup(0, 'blue')]);
       const r = w.robots[0];
@@ -4676,31 +4636,80 @@ const mkMM = () => {
       r.pos = { x: 44, y: 0 }; r.heading = 0; // beam runs under the belly; wheels at y≈±6.4
       check('chain beams: a straddling robot has NO wheel on the ridge', wheelsOnBeam(r, beam.rect) === 0, `up=${wheelsOnBeam(r, beam.rect)}`);
       r.vel = { x: 0, y: 50 };
-      beamDrag(w);
+      beamDrag(w, SIM_DT);
       check('chain beams: straddling a beam is drag-free (no wheel up)', Math.abs(r.vel.y - 50) < 1e-6, `vy=${r.vel.y.toFixed(2)}`);
-      // and a wheel pair ON the ridge IS counted + dragged
-      r.pos = { x: 44, y: 6.4 }; // shift so the +y wheel pair sits on the beam line
+      // FORWARD across (heading +y ⇒ moving in y is a forward drive, not a strafe): a wheel pair
+      // on the ridge IS counted and dragged (the climbing path, not the curb block).
+      r.heading = Math.PI / 2; r.pos = { x: 44, y: 6.4 }; // facing +y (across the beam)
       const up = wheelsOnBeam(r, beam.rect);
       r.vel = { x: 0, y: 50 };
-      beamDrag(w);
-      check('chain beams: a wheel pair on the ridge is counted and dragged', up >= 1 && r.vel.y < 50, `up=${up} vy=${r.vel.y.toFixed(1)}`);
+      beamDrag(w, SIM_DT);
+      check('chain beams: a forward wheel pair on the ridge is counted and dragged', up >= 1 && r.vel.y < 50, `up=${up} vy=${r.vel.y.toFixed(1)}`);
     }
     // more wheels LIFTED ⇒ less forward traction (a high-centered 4-up robot climbs worse than a
-    // single wheel on the ridge). Monotonic in wheelsUp.
+    // single wheel on the ridge). Monotonic in wheelsUp (the 3rd `beamDragFactor` arg).
     check(
       'chain beams: more wheels lifted onto the ridge ⇒ less forward retain',
-      beamDragFactor(mk('mecanum', 1), 50, 1, 1) > beamDragFactor(mk('mecanum', 1), 50, 1, 2) &&
-        beamDragFactor(mk('mecanum', 1), 50, 1, 2) > beamDragFactor(mk('mecanum', 1), 50, 1, 4),
-      `up1=${beamDragFactor(mk('mecanum', 1), 50, 1, 1).toFixed(2)} up2=${beamDragFactor(mk('mecanum', 1), 50, 1, 2).toFixed(2)} up4=${beamDragFactor(mk('mecanum', 1), 50, 1, 4).toFixed(2)}`,
+      beamDragFactor(mk('mecanum', 1), 50, 1) > beamDragFactor(mk('mecanum', 1), 50, 2) &&
+        beamDragFactor(mk('mecanum', 1), 50, 2) > beamDragFactor(mk('mecanum', 1), 50, 4),
+      `up1=${beamDragFactor(mk('mecanum', 1), 50, 1).toFixed(2)} up2=${beamDragFactor(mk('mecanum', 1), 50, 2).toFixed(2)} up4=${beamDragFactor(mk('mecanum', 1), 50, 4).toFixed(2)}`,
     );
-    // the mecanum strafe collapse compounds with each lifted wheel: one wheel already guts it,
-    // a pair (a normal crossing) all but kills it.
+    // MECANUM STRAFE = CURB (beamStrafeBlock), NOT a drag. A mecanum pointing ALONG a beam is
+    // strafe-dominant vs it (forwardness ≈ 0 < the block threshold); pointing ACROSS is not.
     check(
-      'chain beams: mecanum strafe retain collapses per lifted wheel',
-      beamDragFactor(mk('mecanum', 1), 50, 0, 1) < beamDragFactor(mk('mecanum', 1), 50, 1, 1) &&
-        beamDragFactor(mk('mecanum', 1), 50, 0, 2) < beamDragFactor(mk('mecanum', 1), 50, 0, 1),
-      `strafe1=${beamDragFactor(mk('mecanum', 1), 50, 0, 1).toFixed(3)} strafe2=${beamDragFactor(mk('mecanum', 1), 50, 0, 2).toFixed(3)}`,
+      'chain beams: forwardness is ≈0 pointing along a beam, ≈1 pointing across',
+      beamForwardness({ heading: 0 } as never, 'y') < 0.5 &&
+        beamForwardness({ heading: Math.PI / 2 } as never, 'y') > 0.5,
     );
+    // POSITIONAL BLOCK: a mecanum whose LEADING wheel pair has reached the ridge while strafing
+    // (its body center is ~6.4" back — wheels are at the chassis corners) is pushed back so the
+    // leading wheel rests at the near face (never on top), and its into-the-beam velocity dies.
+    {
+      const w = createChainWorld('free', 8, [chainSetup(0, 'blue')]);
+      const r = w.robots[0];
+      r.spec = { ...DEFAULT_SPEC, drivetrain: 'mecanum', width: 18, length: 18, groundClearance: 1 };
+      const beam = CHAIN_BEAMS[0]; // +x beam at y≈0; near face from below at y=−0.5
+      r.pos = { x: 44, y: -6.0 }; r.heading = 0; // leading (+y) wheel pair at y≈0.4 — on the ridge
+      r.vel = { x: 0, y: 40 }; // strafing up INTO the beam
+      const upBefore = wheelsOnBeam(r, beam.rect);
+      beamStrafeBlock(w);
+      const leadY = Math.max(...wheelContacts(r).map((c) => c.y)); // leading wheel after the block
+      check(
+        'chain beams: a strafing mecanum is curb-blocked (leading wheel back to the near face, vel killed)',
+        upBefore >= 1 && leadY <= -0.5 + 1e-6 && r.vel.y === 0 && r.pos.y < -6.0,
+        `up=${upBefore} leadY=${leadY.toFixed(2)} vy=${r.vel.y.toFixed(1)} y=${r.pos.y.toFixed(2)}`,
+      );
+    }
+    // the curb block is MECANUM-ONLY and STRAFE-ONLY: from the SAME pose, a swerve (pods steer
+    // into travel) and a mecanum DRIVING ACROSS (forwardness high) are NOT pushed back.
+    {
+      const w = createChainWorld('free', 9, [chainSetup(0, 'blue')]);
+      const sv = w.robots[0];
+      sv.spec = { ...DEFAULT_SPEC, drivetrain: 'swerve', width: 18, length: 18, groundClearance: 1 };
+      sv.pos = { x: 44, y: -6.0 }; sv.heading = 0; sv.vel = { x: 0, y: 40 };
+      beamStrafeBlock(w);
+      check('chain beams: a swerve is NOT curb-blocked (pods steer into travel)', Math.abs(sv.pos.y - -6.0) < 1e-6 && sv.vel.y === 40, `y=${sv.pos.y.toFixed(2)} vy=${sv.vel.y}`);
+      const mc = w.robots[0];
+      mc.spec = { ...DEFAULT_SPEC, drivetrain: 'mecanum', width: 18, length: 18, groundClearance: 1 };
+      mc.pos = { x: 44, y: -6.0 }; mc.heading = Math.PI / 2; mc.vel = { x: 0, y: 40 }; // facing +y = driving across
+      beamStrafeBlock(w);
+      check('chain beams: a mecanum driving ACROSS is NOT curb-blocked (it climbs over)', Math.abs(mc.pos.y - -6.0) < 1e-6 && mc.vel.y === 40, `y=${mc.pos.y.toFixed(2)} vy=${mc.vel.y}`);
+    }
+    // FULL-SIM: a mecanum pointed ALONG a beam and trying to STRAFE across it hits the curb and
+    // stops on the near side — it never climbs onto the ridge (y stays below the beam's near face).
+    {
+      const sw = createChainWorld('free', 6, [chainSetup(0, 'blue')]);
+      const rs = sw.robots[0];
+      rs.spec = mk('mecanum', 1);
+      rs.pos = { x: 44, y: -8 }; rs.heading = 0; rs.fieldCentric = false; // facing +x ALONG the +x-axis beam
+      // robot-centric strafe = −driveX, so driveX:−1 strafes toward +y (into the beam)
+      for (let i = 0; i < 240; i++) chainStep(sw, SIM_DT, new Map([[rs.id, cmd({ driveX: -1 })]]));
+      check(
+        'chain beams: a mecanum strafing into a beam stops at the near face (never on top)',
+        rs.pos.y < -4,
+        `y=${rs.pos.y.toFixed(2)} (started -8; leading wheel hits the curb ~-6.9, never crosses)`,
+      );
+    }
     // clearance floor 0.3" ⇒ best handling (no CoG penalty); more clearance = more sluggish
     check(
       'chain beams: raised CoG reduces drive authority',

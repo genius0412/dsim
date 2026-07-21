@@ -142,18 +142,19 @@ export const CHAIN_CLEARANCE_DEFAULT = 1;
  * = barely any grip). */
 export const CHAIN_BEAM_WHEEL_R = 2.5; // in — a wheel this close to the beam line is up on the ridge
 export const CHAIN_BEAM_GROUND_FLOOR = 0.82; // forward traction kept with wheels lifted (never 0 — grounded wheels still push)
-/** MECANUM STRAFE-OVER-BEAM penalty (per LIFTED wheel). Real mecanum wheels climb a bump they
- * DRIVE straight at — the full-diameter wheel rolls over it and the suspension keeps all four
- * loaded (exactly why mecanum has the BEST forward beam traction). But STRAFING is a different
- * mechanism: the sideways force is the BALANCED sum of all four 45° rollers, so the instant ANY
- * wheel lifts onto the ridge the balance breaks and the net force becomes spin, not strafe —
- * `strafeRetain = fwdRetain · (1 − CHAIN_BEAM_STRAFE_PENALTY)^wheelsUp`, i.e. one lifted wheel
- * already guts it and a pair (a normal crossing) kills it. The retain then blends fwd↔strafe by
- * `forwardness² = (|heading · crossNormal|)²` (1 = driving across, 0 = pure strafe across). So a
- * mecanum must POINT AT a beam to cross it, never strafe over. Mecanum ONLY — tank can't strafe,
- * a SWERVE steers its pods into the travel direction (wheels always roll over the beam whichever
- * way the chassis points), and an X-DRIVE is 4-fold symmetric (no forward/strafe distinction). */
-export const CHAIN_BEAM_STRAFE_PENALTY = 0.8; // strafe retain lost PER lifted wheel (mecanum)
+/** MECANUM STRAFE-INTO-BEAM is a WALL, not a drag. Real mecanum wheels climb a bump they DRIVE
+ * straight at — the full-diameter wheel rolls over it and the suspension keeps all four loaded
+ * (exactly why mecanum has the BEST forward beam traction). But STRAFING is a different mechanism:
+ * the sideways force is the balanced sum of four 45° rollers, whose tiny outer diameter can't roll
+ * up a 1" tube — so a mecanum strafing sideways into a beam behaves like driving sideways into a
+ * CURB: the wheel butts the near face and STOPS. It does NOT climb on top and it does NOT go over.
+ * `beamStrafeBlock` (a post-solve positional clamp) keeps the wheels off the ridge, resting at the
+ * near face while the low frame overhangs the beam — NO velocity ooze onto the top. It engages
+ * only when the crossing is strafe-dominant: `forwardness = |heading · crossNormal| <
+ * CHAIN_BEAM_STRAFE_BLOCK_FWD` (a straighter push climbs over via `beamDrag` instead). Mecanum
+ * ONLY — tank can't strafe, a SWERVE steers its pods into the travel direction (wheels roll over
+ * the beam whichever way the chassis points), and an X-DRIVE is 4-fold symmetric. */
+export const CHAIN_BEAM_STRAFE_BLOCK_FWD = 0.5; // below this forwardness a mecanum is walled off the beam
 /** max fraction of drive authority lost at full clearance (raised center of gravity) */
 export const CHAIN_COG_PENALTY = 0.16;
 /** SWERVE is far more sensitive to a raised CG — the tall modules tip and scrub, so a

@@ -8,7 +8,7 @@ import { CHAIN_HALF_X, CHAIN_HALF_Y } from './config';
 import { chainColliders } from './colliders';
 import { updateChain, chainAimAssist } from './play';
 import { updateChainPenalties } from './penalties';
-import { beamBlock, beamDrag, cogFactor } from './beams';
+import { beamBlock, beamDrag, beamStrafeBlock, cogFactor } from './beams';
 
 /**
  * Chain Reaction step — a playable match.
@@ -64,7 +64,7 @@ export function chainStep(world: World, dt: number, commands: Map<number, RobotC
 
   // beams (difficult terrain): drag the across-velocity BEFORE the solve so a crossing
   // robot physically advances less this tick (momentum/traction/CoG decide how much).
-  beamDrag(world);
+  beamDrag(world, dt);
   // Rapier owns robot translation/velocity + wall containment on the CR field.
   const preVels = solveRobots(world, dt, chainColliders);
   // square a tilted chassis flush against the walls (and other robots) — the same
@@ -72,6 +72,9 @@ export function chainStep(world: World, dt: number, commands: Map<number, RobotC
   squareUpRobotsWalls(world, preVels, CHAIN_HALF_X, CHAIN_HALF_Y);
   // then hard-block any robot whose frame can't clear a beam (kept on its side).
   beamBlock(world);
+  // and curb-block a mecanum strafing sideways into a beam (can't climb the ridge laterally —
+  // its wheels rest at the near face, the low frame overhangs, no oozing onto the top).
+  beamStrafeBlock(world);
 
   // penalties BEFORE updateChain so a foul awarded this tick folds into the alliance
   // total updateChain writes (it reads scores[a].foulPoints). Endgame/ascend state read

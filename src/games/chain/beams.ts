@@ -7,7 +7,7 @@ import {
   CHAIN_BEAM_MOMENTUM_REF,
   CHAIN_BEAM_MOMENTUM_EASE,
   CHAIN_BEAM_MAX_RETAIN,
-  CHAIN_BEAM_STRAFE_PENALTY,
+  CHAIN_BEAM_STRAFE_BLOCK_FWD,
   CHAIN_BEAM_WHEEL_R,
   CHAIN_BEAM_GROUND_FLOOR,
   CHAIN_CLEARANCE_DEFAULT,
@@ -34,12 +34,13 @@ import {
  *    and a straight crossing is felt as TWO bumps — front axle, then rear. Lifted wheels
  *    lose traction (`grounded = (4 − up)/4`), so more wheels on the ridge = harder, and
  *    all four up (high-centered) = barely any grip.
- *  • Which DRIVE MODE produces the crossing matters too. The across velocity is dragged by
- *    a blend of a FORWARD retain and a STRAFE retain, weighted by `forwardness²` (how much
- *    the chassis points across vs along the beam). Only MECANUM separates them: its sideways
- *    force is the balanced sum of four 45° rollers, so ANY lifted wheel guts the strafe while
- *    the forward push (grounded wheels) still climbs. Tank/swerve/x-drive are direction-
- *    agnostic (fwd retain == strafe retain). So a mecanum must POINT AT a beam to cross it.
+ *  • A mecanum STRAFING sideways into a beam does not climb it at all — its 45° rollers can't
+ *    roll up a 1" tube, so it hits the near face like a CURB and stops (`beamStrafeBlock`, a
+ *    post-solve positional clamp — the wheel rests at the face, the low frame overhangs, NO
+ *    ooze onto the top). That path replaces the climbing drag whenever the crossing is strafe-
+ *    dominant (`beamForwardness < CHAIN_BEAM_STRAFE_BLOCK_FWD`); a straighter push climbs over
+ *    via the drag above. Mecanum ONLY — tank can't strafe, a swerve steers its pods into the
+ *    travel direction, and an x-drive is 4-fold symmetric. So a mecanum must POINT AT a beam.
  *  • The clearance ↔ CoG tradeoff: more clearance eases beam crossing but raises the
  *    center of gravity ⇒ `cogFactor` scales down ALL drive authority (sluggish, tippy).
  *
@@ -87,22 +88,18 @@ export function canCrossBeams(spec: RobotSpec): boolean {
 }
 
 /**
- * Fraction of the across-beam velocity KEPT this tick while wheels are up on a beam. A beam
- * ALWAYS slows you — even at full speed (`CHAIN_BEAM_MAX_RETAIN` caps how much you can keep).
- * Traction matters (tank/swerve climb best, mecanum a bit worse, omni/x-drive slowest), a
- * running start eases it only a LITTLE (`CHAIN_BEAM_MOMENTUM_EASE`), and a raised center of
- * gravity makes it a touch harder. Applied to velocity BEFORE the physics integration.
+ * Fraction of the across-beam velocity KEPT this tick while a robot CLIMBS a beam (drives/
+ * pushes across it). A beam ALWAYS slows you — even at full speed (`CHAIN_BEAM_MAX_RETAIN`
+ * caps how much you can keep). Traction matters (tank/swerve climb best, mecanum a bit worse,
+ * omni/x-drive slowest), a running start eases it only a LITTLE (`CHAIN_BEAM_MOMENTUM_EASE`),
+ * and a raised center of gravity makes it a touch harder. Applied BEFORE the physics integration.
  *
- *  • `wheelsUp` (0..4) = how many wheels are perched on the ridge right now. The lifted wheels
- *    lose traction, so the FORWARD retain scales down toward `CHAIN_BEAM_GROUND_FLOOR` as more
- *    lift (all four = high-centered, minimal grip).
- *  • `forwardness` (0..1) = |chassis-forward · beam-cross-normal|. The across retain blends a
- *    forward and a strafe retain by `forwardness²`. For MECANUM the STRAFE retain collapses per
- *    lifted wheel (`(1 − CHAIN_BEAM_STRAFE_PENALTY)^wheelsUp`) — one wheel guts it, a pair kills
- *    it — because a balanced four-roller contact is what makes a mecanum strafe. Other
- *    drivetrains are direction-agnostic (strafe retain == forward retain).
+ * `wheelsUp` (0..4) = how many wheels are perched on the ridge right now. The lifted wheels lose
+ * traction, so the retain scales down toward `CHAIN_BEAM_GROUND_FLOOR` as more lift (all four =
+ * high-centered, minimal grip). This is direction-agnostic — the special case of a mecanum
+ * STRAFING into a beam is not a drag at all but a hard curb-stop (`beamStrafeBlock`).
  */
-export function beamDragFactor(spec: RobotSpec, acrossSpeed: number, forwardness = 1, wheelsUp = 2): number {
+export function beamDragFactor(spec: RobotSpec, acrossSpeed: number, wheelsUp = 2): number {
   const clr = clearanceOf(spec);
   const base = clamp(TRACTION[spec.drivetrain] + 0.05 * (clr - CHAIN_BEAM_HEIGHT), 0.4, 0.98);
   const mom = clamp(Math.abs(acrossSpeed) / CHAIN_BEAM_MOMENTUM_REF, 0, 1);
@@ -110,20 +107,12 @@ export function beamDragFactor(spec: RobotSpec, acrossSpeed: number, forwardness
   // not its absolute clearance — a chassis that just clears (clr≈beam height) rides low and pays
   // nothing; a tall high-clearance one tips more. Keeps the default (clr=1) penalty-free.
   const margin = clamp((clr - CHAIN_BEAM_HEIGHT) / (CHAIN_CLEARANCE_MAX - CHAIN_BEAM_HEIGHT), 0, 1);
-  // FORWARD / along-drive retain: grounded wheels still push over the bump; lifted wheels cost
-  // traction (fewer grounded ⇒ closer to CHAIN_BEAM_GROUND_FLOOR). Never stalls a straight drive.
+  // grounded wheels still push over the bump; lifted wheels cost traction (fewer grounded ⇒
+  // closer to CHAIN_BEAM_GROUND_FLOOR). Never stalls a straight drive.
   const grounded = clamp((4 - clamp(wheelsUp, 0, 4)) / 4, 0, 1);
   const traction = CHAIN_BEAM_GROUND_FLOOR + (1 - CHAIN_BEAM_GROUND_FLOOR) * grounded;
-  const fwd = clamp((base + CHAIN_BEAM_MOMENTUM_EASE * (1 - base) * mom) * (1 - 0.1 * margin), 0.4, CHAIN_BEAM_MAX_RETAIN) * traction;
-  // STRAFE retain: only MECANUM distinguishes. Any lifted wheel breaks the four-roller balance,
-  // so the sideways force collapses (each lifted wheel compounds it). Reaches near-zero at a
-  // normal 2-wheel crossing ⇒ a mecanum cannot strafe over a beam.
-  let strafe = fwd;
-  if (spec.drivetrain === 'mecanum' && wheelsUp > 0) {
-    strafe = fwd * Math.pow(1 - CHAIN_BEAM_STRAFE_PENALTY, wheelsUp);
-  }
-  const f2 = clamp(forwardness, 0, 1) ** 2;
-  return clamp(f2 * fwd + (1 - f2) * strafe, 0, CHAIN_BEAM_MAX_RETAIN);
+  const retain = clamp((base + CHAIN_BEAM_MOMENTUM_EASE * (1 - base) * mom) * (1 - 0.1 * margin), 0.4, CHAIN_BEAM_MAX_RETAIN) * traction;
+  return clamp(retain, 0, CHAIN_BEAM_MAX_RETAIN);
 }
 
 /** how many of the robot's four wheels are currently perched on this beam's 1" ridge — a wheel
@@ -138,25 +127,38 @@ export function wheelsOnBeam(r: RobotState, rect: Rect): number {
 }
 
 /**
- * PRE-solve: for a robot on a beam it CAN cross, drag its across-beam velocity so it
- * physically advances less this tick (momentum/traction/CoG decide how much). Applied
- * before the Rapier integration so the slowdown persists (the drivetrain model re-sets
- * velocity every tick, so a post-solve velocity change would be wiped).
+ * PRE-solve: slow a robot CLIMBING a beam (drag its across-beam velocity so it advances less
+ * this tick), and WALL a mecanum strafing INTO a beam (clamp its inward velocity so the leading
+ * wheel stops exactly at the near face — never overshoots onto the ridge). Applied before the
+ * Rapier integration so it isn't wiped by the drivetrain re-setting velocity each tick.
  */
-export function beamDrag(world: World): void {
+export function beamDrag(world: World, dt: number): void {
   for (const r of world.robots) {
     if (!canCrossBeams(r.spec)) continue; // no-clearance robots are hard-blocked instead
     for (const beam of CHAIN_BEAMS) {
+      // a mecanum strafing INTO the beam is curb-walled (can't climb the ridge sideways): clamp
+      // the inward velocity so the leading wheel stops at the near face instead of oozing on top.
+      const curb = strafeCurb(r, beam);
+      if (curb) {
+        // max inward speed that still leaves the leading wheel at/above the near face this tick.
+        // `lead` is the leading wheel's signed distance PAST the near face (>0 = still short of it).
+        const allowIn = Math.max(0, curb.lead) / dt; // in/s toward the beam still permitted
+        const vAcross = beam.axis === 'y' ? r.vel.y : r.vel.x;
+        const inward = -curb.side * vAcross; // speed toward the beam (>0 = approaching)
+        if (inward > allowIn) {
+          const capped = -curb.side * allowIn; // clamp the across velocity to the permitted inward speed
+          if (beam.axis === 'y') r.vel.y = capped;
+          else r.vel.x = capped;
+        }
+        continue; // walled, not dragged
+      }
       // PER-WHEEL gate: only drag while a wheel is actually up on the ridge. A robot straddling
       // the beam (all wheels on the floor, tube under the belly) rolls free even though its OBB
       // overlaps — so this is `wheelsOnBeam`, not `robotIntersectsRect`.
       const up = wheelsOnBeam(r, beam.rect);
       if (up === 0) continue;
-      // forwardness = |chassis-forward · beam-cross-normal|. A 'y'-axis beam is crossed along
-      // ŷ (normal = (0,1) ⇒ dot = sin heading); an 'x' beam along x̂ (dot = cos heading).
-      const fwd = beamForwardness(r, beam.axis);
-      if (beam.axis === 'y') r.vel.y *= beamDragFactor(r.spec, r.vel.y, fwd, up);
-      else r.vel.x *= beamDragFactor(r.spec, r.vel.x, fwd, up);
+      if (beam.axis === 'y') r.vel.y *= beamDragFactor(r.spec, r.vel.y, up);
+      else r.vel.x *= beamDragFactor(r.spec, r.vel.x, up);
     }
   }
 }
@@ -165,6 +167,72 @@ export function beamDrag(world: World): void {
  * (driving over), 0 = it points ALONG the beam (crossing it means strafing sideways). */
 export function beamForwardness(r: RobotState, axis: 'x' | 'y'): number {
   return Math.abs(axis === 'y' ? dsin(r.heading) : dcos(r.heading));
+}
+
+/** a MECANUM whose crossing of this axis is strafe-dominant (points along the beam more than
+ * across it) — it can't climb the ridge sideways, so it's curb-blocked, not dragged. */
+function strafeBlocked(r: RobotState, axis: 'x' | 'y'): boolean {
+  return r.spec.drivetrain === 'mecanum' && beamForwardness(r, axis) < CHAIN_BEAM_STRAFE_BLOCK_FWD;
+}
+
+/**
+ * The curb geometry for a mecanum strafing into a beam, or `null` when the beam is not a curb for
+ * this robot right now — it isn't strafe-dominant, no wheel is near the ridge, or the robot is
+ * STRADDLING the beam (a wheel well on the far side ⇒ it's placed on/drove across the tube, not
+ * strafing into it — walling it would eject it, e.g. a launcher parked on the centre beam).
+ *
+ * `side` = the side the body sits on; `lead` = the LEADING wheel's signed distance short of the
+ * near face along the crossing axis (>0 = still approaching, 0 = resting on the face, <0 = it has
+ * crept onto the ridge and must be pushed back).
+ */
+function strafeCurb(r: RobotState, beam: { rect: Rect; axis: 'x' | 'y' }): { side: number; lead: number } | null {
+  if (!strafeBlocked(r, beam.axis)) return null;
+  const R = CHAIN_BEAM_WHEEL_R;
+  const axisY = beam.axis === 'y';
+  const cy = axisY ? (beam.rect.y0 + beam.rect.y1) / 2 : (beam.rect.x0 + beam.rect.x1) / 2;
+  const edge = axisY ? (beam.rect.y1 - beam.rect.y0) / 2 : (beam.rect.x1 - beam.rect.x0) / 2;
+  const bodyCoord = axisY ? r.pos.y : r.pos.x;
+  const side = bodyCoord >= cy ? 1 : -1;
+  let minRel = Infinity; // smallest = the leading wheel (closest to / over the beam)
+  for (const w of wheelContacts(r)) {
+    const alongOK = axisY
+      ? w.x >= beam.rect.x0 - R && w.x <= beam.rect.x1 + R
+      : w.y >= beam.rect.y0 - R && w.y <= beam.rect.y1 + R;
+    if (!alongOK) continue;
+    const cross = axisY ? w.y : w.x;
+    const rel = side * (cross - cy); // + = same side as the body, − = the far side
+    if (rel < -(edge + R)) return null; // a wheel WELL on the far side ⇒ straddling, don't wall
+    if (rel < minRel) minRel = rel;
+  }
+  if (minRel === Infinity) return null; // no wheel within the beam's span
+  // only a curb once the leading wheel is within a wheel-radius of the near face (else it's still
+  // approaching in open floor and needs no clamp).
+  if (minRel > edge + R) return null;
+  return { side, lead: minRel - edge };
+}
+
+/**
+ * POST-solve safety clamp for the strafe curb: if Rapier still nudged a leading wheel onto the
+ * ridge (numerical slop past the pre-solve wall), push it back to the near face and zero the
+ * inward velocity. Runs after the Rapier solve + `beamBlock`. Skips straddling robots (see
+ * `strafeCurb`), so a launcher parked on a beam is never ejected.
+ */
+export function beamStrafeBlock(world: World): void {
+  for (const r of world.robots) {
+    if (!canCrossBeams(r.spec)) continue; // no-clearance frames are already walled by beamBlock
+    for (const beam of CHAIN_BEAMS) {
+      const curb = strafeCurb(r, beam);
+      if (!curb || curb.lead >= 0) continue; // no wheel has crept past the near face
+      const pen = -curb.lead; // how far the leading wheel is onto the ridge
+      if (beam.axis === 'y') {
+        r.pos.y += curb.side * pen;
+        if (curb.side * r.vel.y < 0) r.vel.y = 0;
+      } else {
+        r.pos.x += curb.side * pen;
+        if (curb.side * r.vel.x < 0) r.vel.x = 0;
+      }
+    }
+  }
 }
 
 /**
