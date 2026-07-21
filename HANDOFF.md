@@ -16,6 +16,11 @@ block screen. Client-only → Vercel auto-deploys, no server change. `npm run bu
 Possible follow-up: Android `intent://` escape to Chrome; verify the UA heuristic against a
 real LinkedIn in-app browser.
 
+**Also fixed (Chain Reaction):** the `▲ ASCENDED` / `■ PARKED` endgame badge over robots
+was drawn upside down in match views. `src/games/chain/draw.ts` counter-rotated by `+up`
+(= `+viewAngle`); with ±90° driver views that rotates the glyphs 180°. Changed to `-up` to
+match the DECODE label path (`renderer.ts` rotates `-viewAngle`). Build green.
+
 ---
 
 # HANDOFF — 2026-07-21b (matchmaking reliability: ghost-socket reaper + fair-host fallback)
