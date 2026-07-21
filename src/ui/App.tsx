@@ -20,9 +20,10 @@ import { Records, isRecordsTab, type RecordsTab } from './Records';
 import { RecordRun } from './RecordRun';
 import { Matchmaking } from './Matchmaking';
 import { ReplayView } from './ReplayView';
-import { AccountButton } from './AccountButton';
+import { ProfileMenu } from './ProfileMenu';
 import { Download } from './Download';
 import { Contributors } from './Contributors';
+import { Changelog } from './Changelog';
 import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
@@ -54,6 +55,7 @@ type Screen =
   | 'game'
   | 'download'
   | 'contributors'
+  | 'changelogs'
   | 'profile'
   | 'account'
   | 'admin';
@@ -116,6 +118,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/download';
     case 'contributors':
       return '/contributors';
+    case 'changelogs':
+      return '/changelogs';
     case 'account':
       return '/account';
     case 'admin':
@@ -160,6 +164,7 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/watch')) return at('watch');
   if (rest.startsWith('/download')) return at('download');
   if (rest.startsWith('/contributors')) return at('contributors');
+  if (rest.startsWith('/changelogs')) return at('changelogs');
   if (rest.startsWith('/account')) return at('account');
   if (rest.startsWith('/admin')) return at('admin');
   // /play (a live game) can't be restored without a session ⇒ home
@@ -659,22 +664,27 @@ export function App() {
     );
   }
 
-  // shell screens. The region menu sits in the bar (ahead of the account button)
-  // so switching server is always one click — it used to be reachable only by
-  // going into Account, or via the picker that blocked every record run.
-  const right = (
+  // shell screens. Signed-in builds fold the region menu INTO the profile
+  // avatar's popover (one control, not two) — switching server is still one
+  // click away, just behind the avatar instead of permanently taking up bar
+  // width. Without auth there's no avatar to hang it on, so it stays a bar-level
+  // control next to the plain Settings button, as before.
+  const right = authEnabled ? (
+    <ProfileMenu
+      handle={handle}
+      preferredServerId={settings.preferredServerId ?? selectedServerId()}
+      onChangeServer={(id) => update({ ...settings, preferredServerId: id })}
+      onAccount={() => navigate('account')}
+    />
+  ) : (
     <>
       <ServerMenu
         value={settings.preferredServerId ?? selectedServerId()}
         onChange={(id) => update({ ...settings, preferredServerId: id })}
       />
-      {authEnabled ? (
-        <AccountButton handle={handle} onAccount={() => navigate('account')} />
-      ) : (
-        <button className="ds-btn" onClick={() => navigate('account')}>
-          Settings
-        </button>
-      )}
+      <button className="ds-btn" onClick={() => navigate('account')}>
+        Settings
+      </button>
     </>
   );
 
@@ -690,6 +700,7 @@ export function App() {
       showRail={screen !== 'home'}
       onDownload={() => navigate('download')}
       onContributors={() => navigate('contributors')}
+      onChangelog={() => navigate('changelogs')}
       signedIn={signedIn}
       onOpenProfile={openProfile}
       onJoinInvite={onJoinInvite}
@@ -887,6 +898,7 @@ export function App() {
       {screen === 'download' && isAdmin && <Download />}
       {/* public, unlike Download — no admin gate */}
       {screen === 'contributors' && <Contributors onOpenProfile={openProfile} />}
+      {screen === 'changelogs' && <Changelog />}
       {screen === 'account' && (
         <Account settings={settings} onChange={update} onHandleSaved={setHandle} />
       )}

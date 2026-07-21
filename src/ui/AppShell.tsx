@@ -64,6 +64,7 @@ export function AppShell({
   showRail = true,
   onDownload,
   onContributors,
+  onChangelog,
   signedIn,
   onOpenProfile,
   onJoinInvite,
@@ -81,6 +82,8 @@ export function AppShell({
   onDownload: () => void;
   /** Contributors, likewise a footer destination (but public, unlike Download) */
   onContributors: () => void;
+  /** Changelog, likewise a footer destination (public) — replaces the old bare GitHub link */
+  onChangelog: () => void;
   /** drives the friends panel: signed out it shows a sign-in prompt and never polls */
   signedIn: boolean;
   /** click-through from a friend/search row to that player's public profile */
@@ -126,9 +129,9 @@ export function AppShell({
           <button className="ds-foot-link" onClick={onContributors}>
             Contributors
           </button>
-          <a href={LINKS.repo} target="_blank" rel="noreferrer">
-            GitHub
-          </a>
+          <button className="ds-foot-link bold" onClick={onChangelog}>
+            Changes
+          </button>
           <a href={LINKS.discord} target="_blank" rel="noreferrer">
             Discord
           </a>

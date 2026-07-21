@@ -1,3 +1,54 @@
+# HANDOFF — 2026-07-20 (profile-menu top bar + Changelog page) — READ FIRST
+
+## This session (latest) — top bar consolidated into a profile avatar; footer gets a Changes page
+
+Build + tsc + `npm test` (unaffected — no `src/sim`/`config.ts` touch) + `npm run contrast`
+(167, unchanged count — new avatar/popover colors all reuse already-audited token pairs)
+all green. Verified visually via the `verify` skill's Electron screenshot recipe (see its
+gotcha below — **you must `ELECTRON=1 npm run build`**, not a bare `npm run build`, or the
+file:// load renders a blank white window with no console error, since `base` is `/` and
+the absolute `/assets/...` script 404s under `file://`. Lost real time to this — worth
+fixing the `verify` SKILL.md to say so explicitly).
+
+**Top bar**: the always-visible trio (region `<Select>` + name chip + sign-out button) is
+now ONE avatar circle (`ProfileMenu.tsx`, replaces `AccountButton.tsx`) showing the first 2
+characters of the player's display name/email, uppercased. Click opens a popover
+(`.ds-profile-pop`) with: the account row (→ Account settings), the server region picker +
+on-demand Ping (embeds the existing `ServerMenu.tsx` unmodified, gated on `multiServer()`
+same as before), and Sign out / Sign in. Only used when `authEnabled` — the no-auth build
+keeps the old bar-level `ServerMenu` + plain "Settings" button untouched (there's no user to
+hang an avatar on). **Gotcha fixed while wiring this up**: the mobile media query that hides
+`ServerMenu` on a narrow bar was `.ds-bar-right .ds-server-menu` (descendant) — since the
+popover's copy is ALSO a descendant of `.ds-bar-right`, that rule would have hidden it inside
+the popover too, at any width. Narrowed to `.ds-bar-right > .ds-server-menu` (direct child)
+so it only ever matches the old bar-level fallback copy.
+
+**Footer reorg**: the bare `GitHub` external link is gone from the footer; a `Changes` button
+sits in its place (between Contributors and Discord) and opens a new full page,
+`Changelog.tsx` (`/changelogs` route, wired like Contributors/Download — a footer
+destination, not a `ShellNav` rail tab). It lists every published `Announcement` (patch/
+season/act) newest-first via `fetchAnnouncements(100)` — the SAME feed `Announcements.tsx`'s
+one-time "What's New" modal already reads, just without the seen/unseen filter, so it's a
+permanent browsable history instead of a toast you only see once. Reuses `.ann-item`/
+`.ann-badge`/`.ann-md` (styles.css) — confirmed self-contained, not dependent on the modal's
+`.ann-panel`/`.ann-overlay` ancestors. A "GitHub" button lives in the panel header instead —
+still one click, just not the footer's top billing.
+
+**"Fix dropdowns"** — read as the same request as the top-bar redesign, not a separate bug.
+Went looking for an actual defect first (`Select.tsx`'s ARIA listbox, the native `<select>`
+sites in MatchHistory/PeriodPicker/Lobby/Admin, `grep -i dropdown`) and found nothing broken
+in the code or CLAUDE.md/HANDOFF history. The one clear, evidenced read: this repo had *just*
+gained a top-bar region `<Select>` (commit `8d44ab9`, pulled in at the start of this session —
+local was 12 commits behind `origin/friendslist`), and the user's next two asks were about
+that exact bar. Consolidating it into the profile popover (fewer permanent controls in a
+crowded bar, dropdown still one click away) is the fix under that reading. If a distinct
+dropdown bug turns up later, it's still open — this session didn't find one to close.
+
+**Not committed.** `git status` is clean except the new/changed UI files listed above —
+nothing has been staged or committed this session.
+
+---
+
 # HANDOFF — 2026-07-20 (merged friendslist → main, deployed; fixed a deploy footgun + a migration race) — READ FIRST
 
 ## This session (latest) — friendslist shipped; deploy protocol corrected; COST PASS
