@@ -16,22 +16,33 @@ is needed for MULTIPLAYER CR to reflect them; solo/local is live on Vercel auto-
    averages EXACTLY 13.0 bps (a plain re-anchor tick-quantizes to only 12 or 15, never 13). An
    idle-guard (`if (fireReadyAt < world.time) fireReadyAt = world.time`) prevents a burst
    catch-up when the hopper empties then refills. Instant first shot preserved.
-2. **Mecanum can't STRAFE over a beam** (`beams.ts` + `config.ts` `CHAIN_BEAM_STRAFE_PENALTY`).
-   `beamDragFactor(spec, acrossSpeed, forwardness)` gains a 3rd arg. `forwardness =
-   |chassis-forward · beam-cross-normal|` (`beamForwardness`, 1 = driving straight across, 0 =
-   pure sideways). For MECANUM ONLY, retain ×= `1 − 0.8·(1 − forwardness)`, dropping a pure
-   strafe crossing to ~0.19 retain (near-impossible) while a straight-over crossing is
-   untouched — a mecanum must POINT AT a beam to cross it. Physical basis: the 45° rollers
-   (small OD) can't climb a 1" tube laterally and suspension travel doesn't help a lateral
-   scrub; the same suspension is exactly why mecanum forward-crossing is BEST-in-class. Tank
-   can't strafe at all; SWERVE steers its pods into the travel direction (wheels always roll
-   over the beam whichever way the chassis points); X-DRIVE is 4-fold symmetric — so none of
-   them get the direction penalty. New smoke: unit (fwd vs strafe retain, other DTs unaffected)
-   + full-sim (a mecanum pointed along a beam can't strafe across it, stays stuck at y≈−4).
+2. **Beam crossing is now PER-WHEEL; a mecanum can't STRAFE over a beam** (`beams.ts` +
+   `config.ts` `CHAIN_BEAM_*`). Rewrote the blanket-OBB model into a wheel-by-wheel one:
+   - `wheelsOnBeam(r, rect)` counts how many of the four `wheelContacts` sit on the 1" ridge
+     (within `CHAIN_BEAM_WHEEL_R` 2.5" of the beam line). `beamDrag` now gates on that, NOT
+     `robotIntersectsRect` — so a robot STRADDLING a beam (tube under the belly, all wheels on
+     the floor) rolls DRAG-FREE, and a straight crossing is felt as TWO bumps (front axle, rear).
+   - `beamDragFactor(spec, acrossSpeed, forwardness, wheelsUp)` gains `wheelsUp`. Lifted wheels
+     lose traction: `grounded = (4−up)/4` scales the FORWARD retain toward `CHAIN_BEAM_GROUND_FLOOR`
+     0.82 (all four up = high-centered ⇒ minimal grip; up1/up2/up4 → 0.91/0.87/0.78).
+   - MECANUM strafe collapses PER lifted wheel: `strafe = fwd·(1−CHAIN_BEAM_STRAFE_PENALTY)^up`
+     (0.8) → up1 0.18, up2 0.035. The retain blends fwd↔strafe by `forwardness²`. So a pure
+     sideways crossing (the normal 2-wheel case) is ~0.03 retain — a mecanum literally can't
+     strafe over a beam (full-sim: stuck at y≈−7.4 after 4s), while driving straight over works
+     (loses a real chunk, keep≈0.39). Physical basis: mecanum lateral force is the BALANCED sum
+     of four 45° rollers — lift any wheel and the balance breaks (net spin, not strafe); the
+     full wheel + suspension is exactly why FORWARD crossing is best-in-class.
+   - Direction penalty is MECANUM-ONLY: tank can't strafe, SWERVE steers pods into travel, X-DRIVE
+     is 4-fold symmetric (fwd retain == strafe retain). Both `forwardness` and `wheelsUp` are
+     needed — two mecanums both with up=2 differ only by which DRIVE MODE makes the across motion.
+   - New smoke: straddle-is-free, wheel-pair-counted-and-dragged, wheels-up monotonic traction,
+     per-wheel strafe collapse (+ the earlier unit/full-sim strafe checks). 528 checks green.
 
 **Next / gotchas:** the drum's ~24 is jitter-averaged (varies tick-to-tick by design); the
-turret's 13 is deterministic. If MULTIPLAYER CR shows the old rates, deploy the server
-(`./scripts/fly-deploy.sh`, never a bare `flyctl deploy`).
+turret's 13 is deterministic. Beam drag keys off `wheelContacts` (4 corner points inset by
+`WHEEL_INSET`) — a very NARROW chassis moves its wheels closer to the beam line, changing how
+many count as "up"; tune `CHAIN_BEAM_WHEEL_R` if that ever feels off. If MULTIPLAYER CR shows the
+old behavior, deploy the server (`./scripts/fly-deploy.sh`, never a bare `flyctl deploy`).
 
 ---
 

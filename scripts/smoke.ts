@@ -75,7 +75,7 @@ import {
   PTS_FOUL_MAJOR,
 } from '../src/config';
 import { robotCorners, robotExtents, robotIntersectsRect, wheelContacts } from '../src/sim/physics';
-import { beamBlock, beamDragFactor, canCrossBeams, cogFactor, CHAIN_BEAMS } from '../src/games/chain/beams';
+import { beamBlock, beamDrag, beamDragFactor, canCrossBeams, cogFactor, wheelsOnBeam, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits } from '../src/sim/drivetrain';
 import { coerceSettings, switchGame, syncAudioMirrors } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
@@ -4665,6 +4665,42 @@ const mkMM = () => {
         `y=${rs.pos.y.toFixed(1)} (started -8, beam at 0)`,
       );
     }
+    // PER-WHEEL model: the drag is decided by which of the FOUR wheels are on the 1" ridge, not
+    // by the chassis outline. A robot STRADDLING a beam (tube under the belly, wheels either
+    // side) has NO wheel up and rolls DRAG-FREE — the old OBB-overlap model wrongly slowed it.
+    {
+      const w = createChainWorld('free', 7, [chainSetup(0, 'blue')]);
+      const r = w.robots[0];
+      r.spec = { ...DEFAULT_SPEC, drivetrain: 'mecanum', width: 18, length: 18, groundClearance: 1 };
+      const beam = CHAIN_BEAMS[0]; // +x-axis beam (thin in y, at y≈0)
+      r.pos = { x: 44, y: 0 }; r.heading = 0; // beam runs under the belly; wheels at y≈±6.4
+      check('chain beams: a straddling robot has NO wheel on the ridge', wheelsOnBeam(r, beam.rect) === 0, `up=${wheelsOnBeam(r, beam.rect)}`);
+      r.vel = { x: 0, y: 50 };
+      beamDrag(w);
+      check('chain beams: straddling a beam is drag-free (no wheel up)', Math.abs(r.vel.y - 50) < 1e-6, `vy=${r.vel.y.toFixed(2)}`);
+      // and a wheel pair ON the ridge IS counted + dragged
+      r.pos = { x: 44, y: 6.4 }; // shift so the +y wheel pair sits on the beam line
+      const up = wheelsOnBeam(r, beam.rect);
+      r.vel = { x: 0, y: 50 };
+      beamDrag(w);
+      check('chain beams: a wheel pair on the ridge is counted and dragged', up >= 1 && r.vel.y < 50, `up=${up} vy=${r.vel.y.toFixed(1)}`);
+    }
+    // more wheels LIFTED ⇒ less forward traction (a high-centered 4-up robot climbs worse than a
+    // single wheel on the ridge). Monotonic in wheelsUp.
+    check(
+      'chain beams: more wheels lifted onto the ridge ⇒ less forward retain',
+      beamDragFactor(mk('mecanum', 1), 50, 1, 1) > beamDragFactor(mk('mecanum', 1), 50, 1, 2) &&
+        beamDragFactor(mk('mecanum', 1), 50, 1, 2) > beamDragFactor(mk('mecanum', 1), 50, 1, 4),
+      `up1=${beamDragFactor(mk('mecanum', 1), 50, 1, 1).toFixed(2)} up2=${beamDragFactor(mk('mecanum', 1), 50, 1, 2).toFixed(2)} up4=${beamDragFactor(mk('mecanum', 1), 50, 1, 4).toFixed(2)}`,
+    );
+    // the mecanum strafe collapse compounds with each lifted wheel: one wheel already guts it,
+    // a pair (a normal crossing) all but kills it.
+    check(
+      'chain beams: mecanum strafe retain collapses per lifted wheel',
+      beamDragFactor(mk('mecanum', 1), 50, 0, 1) < beamDragFactor(mk('mecanum', 1), 50, 1, 1) &&
+        beamDragFactor(mk('mecanum', 1), 50, 0, 2) < beamDragFactor(mk('mecanum', 1), 50, 0, 1),
+      `strafe1=${beamDragFactor(mk('mecanum', 1), 50, 0, 1).toFixed(3)} strafe2=${beamDragFactor(mk('mecanum', 1), 50, 0, 2).toFixed(3)}`,
+    );
     // clearance floor 0.3" ⇒ best handling (no CoG penalty); more clearance = more sluggish
     check(
       'chain beams: raised CoG reduces drive authority',

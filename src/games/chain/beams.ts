@@ -1,6 +1,6 @@
 import type { DrivetrainType, RobotSpec, RobotState, World } from '../../types';
 import type { Rect } from '../../sim/field';
-import { robotExtents, robotIntersectsRect } from '../../sim/physics';
+import { robotExtents, robotIntersectsRect, wheelContacts } from '../../sim/physics';
 import { clamp, dcos, dsin } from '../../math';
 import {
   CHAIN_BEAM_HEIGHT,
@@ -8,6 +8,8 @@ import {
   CHAIN_BEAM_MOMENTUM_EASE,
   CHAIN_BEAM_MAX_RETAIN,
   CHAIN_BEAM_STRAFE_PENALTY,
+  CHAIN_BEAM_WHEEL_R,
+  CHAIN_BEAM_GROUND_FLOOR,
   CHAIN_CLEARANCE_DEFAULT,
   CHAIN_CLEARANCE_MAX,
   CHAIN_CLEARANCE_MIN,
@@ -21,16 +23,23 @@ import {
 /**
  * Chain Reaction BEAMS — four 1"-tall tubes of difficult terrain around the center.
  *
- * Crossing model (bespoke, after the Rapier robot solve):
+ * Crossing model (bespoke, PER-WHEEL, after the Rapier robot solve):
  *  • The ONLY hard gate is CLEARANCE: `groundClearance ≥ CHAIN_BEAM_HEIGHT`. If the
  *    frame can't clear the beam it's blocked like a wall (it can still drive
  *    ALONGSIDE — only the across-beam motion stops). Given clearance, EVERY drivetrain
  *    can cross — nothing is hard-blocked by wheel type.
- *  • Given clearance, the beam DRAGS the across-beam velocity by a `beamRetain` factor.
- *    A beam ALWAYS slows you — even at full speed (the retain is capped below 1), so you can
- *    no longer power over untouched. Traction decides how much: tank/swerve climb best,
- *    mecanum a bit worse, omni/x-drive the slowest (but still gets over). A running start
- *    eases it only a LITTLE, and more clearance margin also eases it slightly.
+ *  • The drag is decided WHEEL-BY-WHEEL, not by the chassis outline. A beam only bites
+ *    while one of the robot's FOUR wheels is up on the 1" ridge (`wheelsOnBeam`), so a
+ *    robot STRADDLING a beam (tube under the belly, all wheels on the floor) rolls free,
+ *    and a straight crossing is felt as TWO bumps — front axle, then rear. Lifted wheels
+ *    lose traction (`grounded = (4 − up)/4`), so more wheels on the ridge = harder, and
+ *    all four up (high-centered) = barely any grip.
+ *  • Which DRIVE MODE produces the crossing matters too. The across velocity is dragged by
+ *    a blend of a FORWARD retain and a STRAFE retain, weighted by `forwardness²` (how much
+ *    the chassis points across vs along the beam). Only MECANUM separates them: its sideways
+ *    force is the balanced sum of four 45° rollers, so ANY lifted wheel guts the strafe while
+ *    the forward push (grounded wheels) still climbs. Tank/swerve/x-drive are direction-
+ *    agnostic (fwd retain == strafe retain). So a mecanum must POINT AT a beam to cross it.
  *  • The clearance ↔ CoG tradeoff: more clearance eases beam crossing but raises the
  *    center of gravity ⇒ `cogFactor` scales down ALL drive authority (sluggish, tippy).
  *
@@ -78,19 +87,22 @@ export function canCrossBeams(spec: RobotSpec): boolean {
 }
 
 /**
- * Fraction of the across-beam velocity KEPT while mounting a beam. A beam ALWAYS slows you —
- * even at full speed (`CHAIN_BEAM_MAX_RETAIN` caps how much you can keep). Traction still
- * matters (tank/swerve climb best, mecanum a bit worse, omni/x-drive slowest), and a running
- * start eases it only a LITTLE (`CHAIN_BEAM_MOMENTUM_EASE`) — momentum no longer lets you power
- * over untouched. A raised center of gravity (more clearance) makes it a touch harder. Applied
- * to velocity BEFORE the physics integration, so it really slows the crossing.
+ * Fraction of the across-beam velocity KEPT this tick while wheels are up on a beam. A beam
+ * ALWAYS slows you — even at full speed (`CHAIN_BEAM_MAX_RETAIN` caps how much you can keep).
+ * Traction matters (tank/swerve climb best, mecanum a bit worse, omni/x-drive slowest), a
+ * running start eases it only a LITTLE (`CHAIN_BEAM_MOMENTUM_EASE`), and a raised center of
+ * gravity makes it a touch harder. Applied to velocity BEFORE the physics integration.
  *
- * `forwardness` (0..1) = |chassis-forward · beam-cross-normal|: 1 = driving STRAIGHT across,
- * 0 = crossing PURELY SIDEWAYS. It only bites for MECANUM (see `CHAIN_BEAM_STRAFE_PENALTY`):
- * a mecanum strafing over a beam keeps almost none of its lateral speed (the 45° rollers can't
- * climb the tube), while driving straight over is unaffected. Other drivetrains ignore it.
+ *  • `wheelsUp` (0..4) = how many wheels are perched on the ridge right now. The lifted wheels
+ *    lose traction, so the FORWARD retain scales down toward `CHAIN_BEAM_GROUND_FLOOR` as more
+ *    lift (all four = high-centered, minimal grip).
+ *  • `forwardness` (0..1) = |chassis-forward · beam-cross-normal|. The across retain blends a
+ *    forward and a strafe retain by `forwardness²`. For MECANUM the STRAFE retain collapses per
+ *    lifted wheel (`(1 − CHAIN_BEAM_STRAFE_PENALTY)^wheelsUp`) — one wheel guts it, a pair kills
+ *    it — because a balanced four-roller contact is what makes a mecanum strafe. Other
+ *    drivetrains are direction-agnostic (strafe retain == forward retain).
  */
-export function beamDragFactor(spec: RobotSpec, acrossSpeed: number, forwardness = 1): number {
+export function beamDragFactor(spec: RobotSpec, acrossSpeed: number, forwardness = 1, wheelsUp = 2): number {
   const clr = clearanceOf(spec);
   const base = clamp(TRACTION[spec.drivetrain] + 0.05 * (clr - CHAIN_BEAM_HEIGHT), 0.4, 0.98);
   const mom = clamp(Math.abs(acrossSpeed) / CHAIN_BEAM_MOMENTUM_REF, 0, 1);
@@ -98,15 +110,31 @@ export function beamDragFactor(spec: RobotSpec, acrossSpeed: number, forwardness
   // not its absolute clearance — a chassis that just clears (clr≈beam height) rides low and pays
   // nothing; a tall high-clearance one tips more. Keeps the default (clr=1) penalty-free.
   const margin = clamp((clr - CHAIN_BEAM_HEIGHT) / (CHAIN_CLEARANCE_MAX - CHAIN_BEAM_HEIGHT), 0, 1);
-  let retain = clamp((base + CHAIN_BEAM_MOMENTUM_EASE * (1 - base) * mom) * (1 - 0.1 * margin), 0.4, CHAIN_BEAM_MAX_RETAIN);
-  // MECANUM only: a sideways crossing (forwardness→0) collapses the retain BELOW the normal 0.4
-  // floor — the rollers scrub and stall against the tube instead of rolling over it. Driving
-  // straight across (fwd→1) is untouched, so a mecanum must POINT AT a beam to cross it, never
-  // strafe over it. Applied after the floor so it can reach near-zero (near-impossible).
-  if (spec.drivetrain === 'mecanum') {
-    retain *= 1 - CHAIN_BEAM_STRAFE_PENALTY * (1 - clamp(forwardness, 0, 1));
+  // FORWARD / along-drive retain: grounded wheels still push over the bump; lifted wheels cost
+  // traction (fewer grounded ⇒ closer to CHAIN_BEAM_GROUND_FLOOR). Never stalls a straight drive.
+  const grounded = clamp((4 - clamp(wheelsUp, 0, 4)) / 4, 0, 1);
+  const traction = CHAIN_BEAM_GROUND_FLOOR + (1 - CHAIN_BEAM_GROUND_FLOOR) * grounded;
+  const fwd = clamp((base + CHAIN_BEAM_MOMENTUM_EASE * (1 - base) * mom) * (1 - 0.1 * margin), 0.4, CHAIN_BEAM_MAX_RETAIN) * traction;
+  // STRAFE retain: only MECANUM distinguishes. Any lifted wheel breaks the four-roller balance,
+  // so the sideways force collapses (each lifted wheel compounds it). Reaches near-zero at a
+  // normal 2-wheel crossing ⇒ a mecanum cannot strafe over a beam.
+  let strafe = fwd;
+  if (spec.drivetrain === 'mecanum' && wheelsUp > 0) {
+    strafe = fwd * Math.pow(1 - CHAIN_BEAM_STRAFE_PENALTY, wheelsUp);
   }
-  return clamp(retain, 0, CHAIN_BEAM_MAX_RETAIN);
+  const f2 = clamp(forwardness, 0, 1) ** 2;
+  return clamp(f2 * fwd + (1 - f2) * strafe, 0, CHAIN_BEAM_MAX_RETAIN);
+}
+
+/** how many of the robot's four wheels are currently perched on this beam's 1" ridge — a wheel
+ * whose contact point is within `CHAIN_BEAM_WHEEL_R` of the beam line (the rect grown by R). */
+export function wheelsOnBeam(r: RobotState, rect: Rect): number {
+  const R = CHAIN_BEAM_WHEEL_R;
+  let n = 0;
+  for (const w of wheelContacts(r)) {
+    if (w.x >= rect.x0 - R && w.x <= rect.x1 + R && w.y >= rect.y0 - R && w.y <= rect.y1 + R) n++;
+  }
+  return n;
 }
 
 /**
@@ -119,12 +147,16 @@ export function beamDrag(world: World): void {
   for (const r of world.robots) {
     if (!canCrossBeams(r.spec)) continue; // no-clearance robots are hard-blocked instead
     for (const beam of CHAIN_BEAMS) {
-      if (!robotIntersectsRect(r, beam.rect)) continue;
+      // PER-WHEEL gate: only drag while a wheel is actually up on the ridge. A robot straddling
+      // the beam (all wheels on the floor, tube under the belly) rolls free even though its OBB
+      // overlaps — so this is `wheelsOnBeam`, not `robotIntersectsRect`.
+      const up = wheelsOnBeam(r, beam.rect);
+      if (up === 0) continue;
       // forwardness = |chassis-forward · beam-cross-normal|. A 'y'-axis beam is crossed along
       // ŷ (normal = (0,1) ⇒ dot = sin heading); an 'x' beam along x̂ (dot = cos heading).
       const fwd = beamForwardness(r, beam.axis);
-      if (beam.axis === 'y') r.vel.y *= beamDragFactor(r.spec, r.vel.y, fwd);
-      else r.vel.x *= beamDragFactor(r.spec, r.vel.x, fwd);
+      if (beam.axis === 'y') r.vel.y *= beamDragFactor(r.spec, r.vel.y, fwd, up);
+      else r.vel.x *= beamDragFactor(r.spec, r.vel.x, fwd, up);
     }
   }
 }
