@@ -1,3 +1,38 @@
+# HANDOFF — 2026-07-21b (matchmaking reliability: ghost-socket reaper + fair-host fallback) — READ FIRST
+
+## This session (latest) — two matchmaking bug fixes (server/index.ts only)
+
+User reported: (1) queue "often says 4/4 or 5/4 but the match doesn't start"; (2) "the
+game server is usually one-sided, not meeting in the middle." Diagnosed + fixed both in
+`server/index.ts`. Server-only change — **needs a deploy to take effect** (`fly-deploy.sh`).
+server:check + `npm test` green.
+
+1. **Ghost-socket reaper (fixes "4/4 won't start").** There was NO WS-level keepalive — a
+   half-open TCP connection (laptop sleep, wifi drop, hard-killed tab) never fires `close`
+   until the OS timeout (minutes+). Until then the socket is a GHOST: it stays in the ranked
+   QUEUE (bucket reads "4/4"/"5/4" but a match staged against it never completes) and holds
+   its room slot. Added a `socketAlive` WeakMap + `ws.on('pong')` + a 15s `ws.ping()`/
+   `terminate()` heartbeat interval (bottom of file). A reaped socket fires the normal
+   `close` teardown (`matchmaker.remove` + `room.detach`). Browsers auto-pong at the protocol
+   level, so only genuinely-dead sockets are reaped. (The pre-existing `pong` at the msg
+   handler is an APP-level RTT reply for the NetQuality HUD — unrelated.)
+2. **Server-observed home region (fixes one-sided host).** The client's `homeRegion` comes
+   from a `/health` `x-region` probe (`src/net/ping.ts`); a cold/auto-stopped satellite makes
+   Anycast fall back to the warm primary (or the probe returns `''`), so the server defaulted
+   the player to `REGION` (iad) → minimax `bestHost` hosts every such match at iad → one-sided.
+   Added `replaySrcRegion(req)` which reads Fly's `fly-replay-src` header on the replayed
+   `?mm=1` connection (Anycast lands it on the client's NEAREST region, which replays to the
+   matchmaker → server-authoritative nearest region). Used ONLY as a fallback:
+   `homeRegion: msg.homeRegion || edgeRegion || REGION`, so the working probe path is
+   unchanged. NOTE: unverified against live Fly routing — confirm post-deploy that a
+   non-US player's ranked match now hosts nearer them (`/api/presence` region on the host).
+   Remaining (design, not a bug): cross-region radius WIDENING still takes ~30–40s to reach
+   the 300 ms cap, so a genuinely far full bucket can show "N/N" for a while before it starts;
+   tune `RADIUS_INTERVAL_MS`/`RADIUS_MAX_MS` in `server/matchmaking.ts` if faster (looser)
+   cross-region pairing is wanted.
+
+---
+
 # HANDOFF — 2026-07-21 (friend system: challenge / rich presence / notifications / recently-played) — READ FIRST
 
 ## TODO (deferred, not started) — "Play a friend" mode-picker menu
