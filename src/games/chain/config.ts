@@ -37,7 +37,7 @@
  * needed — approximations below are FLAGGED).
  */
 
-import type { ChainIntakeStyle, ChainScoreMode, RobotSpec } from '../../types';
+import type { ChainIntakeStyle, ChainScoreMode, RobotSpec, StartCat } from '../../types';
 
 /** millimetres → inches (the sim's world unit) */
 export const mm = (v: number): number => v / 25.4;
@@ -348,6 +348,23 @@ export const CHAIN_START_POSES: readonly ChainStartAnchor[] = [
   { name: 'RING STAND · TOP', pos: { x: CHAIN_RINGSTAND_XY, y: CHAIN_RINGSTAND_XY }, heading: Math.PI },
   { name: 'RING STAND · BOTTOM', pos: { x: CHAIN_RINGSTAND_XY, y: -CHAIN_RINGSTAND_XY }, heading: Math.PI },
 ];
+
+/**
+ * CR start ROLES are TOP / BOTTOM (which Lab corner a robot occupies) — NOT DECODE's
+ * CLOSE / FAR. In a 2v2 each alliance member locks one corner so the two robots never
+ * stack; the shared `StartCat` slots carry it (close = TOP corner y≥0, far = BOTTOM
+ * corner y<0), so a locked role limits the selector to that corner's floor + ring-stand
+ * anchors. `chainAnchorCat` classifies an anchor by its y sign; `chainDefaultIndex` is a
+ * role's fallback anchor (its Lab-floor corner); `chainRoleLabel` is the UI label.
+ */
+export const chainAnchorCat = (index: number): StartCat =>
+  (CHAIN_START_POSES[index]?.pos.y ?? 0) >= 0 ? 'close' : 'far';
+export const chainDefaultIndex = (cat: StartCat): number => {
+  const i = CHAIN_START_POSES.findIndex((_, idx) => chainAnchorCat(idx) === cat);
+  return i >= 0 ? i : 0;
+};
+export const chainRoleLabel = (cat: StartCat | undefined): string =>
+  cat === 'close' ? 'TOP' : cat === 'far' ? 'BOTTOM' : '—';
 
 /**
  * PRE-MATCH FIELD RANDOMIZATION (manual §"auto-score and reject" — the Accelerators launch all

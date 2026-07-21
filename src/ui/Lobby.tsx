@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
 import type { Alliance, GameSettings as GS } from '../types';
 import { START_POSES } from '../config';
+import { CHAIN_START_POSES } from '../games/chain/config';
 import { activeStartLegal } from '../sim/field';
 import { StartPositionEditor } from './StartPositionEditor';
 import { ChainStartSelector } from './ChainStartSelector';
@@ -206,7 +207,7 @@ export function Lobby({
 
   // 2v2 ROLE + consent swap: first robot on the alliance = CLOSE, second = FAR;
   // either can propose a swap the other must accept (see useRoleSwap).
-  const rs = useRoleSwap(players, me, (patch) => lobbyRef.current?.update(patch));
+  const rs = useRoleSwap(players, me, (patch) => lobbyRef.current?.update(patch), settings.game);
   const startRole = rs.role;
   const [swapDismissed, dismissSwap] = useDismissable(rs.incoming);
 
@@ -231,7 +232,7 @@ export function Lobby({
   // settings.startCat (what the locked editor writes when you pick one).
   useEffect(() => {
     if (!startRole || !me) return;
-    const activeCat = me.startPose ? settings.startCat : indexCategory(me.startIndex);
+    const activeCat = me.startPose ? settings.startCat : indexCategory(me.startIndex, settings.game);
     if (activeCat !== startRole) applyStart(switchCategory(sCat, startRole));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startRole, me?.startIndex, me?.startPose, settings.startCat]);
@@ -410,7 +411,13 @@ export function Lobby({
                     <span className="ds-chip on">★ HOST</span>
                   )}
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
-                  <span className="ds-chip">{p.startPose ? 'CUSTOM' : (START_POSES[p.startIndex]?.label ?? '—')}</span>
+                  <span className="ds-chip">
+                    {p.startPose
+                      ? 'CUSTOM'
+                      : settings.game === 'chain'
+                        ? (CHAIN_START_POSES[p.startIndex]?.name ?? '—')
+                        : (START_POSES[p.startIndex]?.label ?? '—')}
+                  </span>
                   <span className={`ds-chip ${p.ready ? 'on' : 'off'}`}>
                     {p.ready ? 'READY' : 'NOT READY'}
                   </span>
@@ -450,12 +457,14 @@ export function Lobby({
                 rs={rs}
                 dismissed={swapDismissed}
                 onDismiss={dismissSwap}
+                game={settings.game}
               />
             )}
             {settings.game === 'chain' ? (
               <ChainStartSelector
                 startIndex={me.startIndex ?? 0}
                 onPick={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
+                role={startRole}
               />
             ) : (
               <StartPositionEditor

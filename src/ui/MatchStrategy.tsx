@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GameSettings, RobotSpec } from '../types';
 import { START_POSES } from '../config';
+import { CHAIN_START_POSES } from '../games/chain/config';
 import { activeStartLegal } from '../sim/field';
 import { StartPositionEditor } from './StartPositionEditor';
 import { ChainStartSelector } from './ChainStartSelector';
@@ -107,7 +108,7 @@ export function MatchStrategy({
   const toggleReady = (): void => lobby.update({ ready: !me?.ready });
 
   // 2v2 ROLE + consent swap (shared with Lobby via useRoleSwap)
-  const rs = useRoleSwap(players, me, (patch) => lobby.update(patch));
+  const rs = useRoleSwap(players, me, (patch) => lobby.update(patch), settings.game);
   const startRole = rs.role;
   const [swapDismissed, dismissSwap] = useDismissable(rs.incoming);
   const sCat: GameSettings = { ...settings, startCat: startRole ?? settings.startCat };
@@ -125,7 +126,7 @@ export function MatchStrategy({
   // CLOSE spot (or vice-versa). See the matching effect in Lobby.
   useEffect(() => {
     if (!startRole || !me) return;
-    const activeCat = me.startPose ? settings.startCat : indexCategory(me.startIndex);
+    const activeCat = me.startPose ? settings.startCat : indexCategory(me.startIndex, settings.game);
     if (activeCat !== startRole) applyStart(switchCategory(sCat, startRole));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startRole, me?.startIndex, me?.startPose, settings.startCat]);
@@ -261,7 +262,13 @@ export function MatchStrategy({
                     {buildRow(spec)}
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
                       <span className={`ds-chip ${pl.alliance}`}>{pl.alliance.toUpperCase()}</span>
-                      <span className="ds-chip">{pl.startPose ? 'CUSTOM' : (START_POSES[pl.startIndex]?.label ?? '—')}</span>
+                      <span className="ds-chip">
+                        {pl.startPose
+                          ? 'CUSTOM'
+                          : settings.game === 'chain'
+                            ? (CHAIN_START_POSES[pl.startIndex]?.name ?? '—')
+                            : (START_POSES[pl.startIndex]?.label ?? '—')}
+                      </span>
                       <span className="ds-chip">ELO {eloOf(pl)}</span>
                       <span className={`ds-chip ${pl.ready ? 'on' : 'off'}`}>
                         {pl.ready ? 'READY' : 'NOT READY'}
@@ -285,12 +292,14 @@ export function MatchStrategy({
                 rs={rs}
                 dismissed={swapDismissed}
                 onDismiss={dismissSwap}
+                game={settings.game}
               />
             )}
             {settings.game === 'chain' ? (
               <ChainStartSelector
                 startIndex={me.startIndex ?? 0}
                 onPick={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
+                role={startRole}
               />
             ) : (
               <StartPositionEditor
