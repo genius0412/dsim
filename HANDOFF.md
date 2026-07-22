@@ -1,6 +1,67 @@
-# HANDOFF — 2026-07-22 ("Play a friend" format picker) — READ FIRST
+# HANDOFF — 2026-07-22 (automated name moderation — hosted API) — READ FIRST
 
-## This session (latest) — the deferred "Play a friend" mode-picker (client-only)
+## This session (latest) — automated name moderation via a hosted service
+
+Added automated content moderation for every user-supplied NAME: account username,
+display name (handle), and the robot/team names that reach the public leaderboard +
+the live lobby roster. **Approach = a HOSTED moderation API, not a hand-rolled
+wordlist** (the user explicitly rejected reinventing a blocklist — a first hand-rolled
+`src/moderation/nameFilter.ts` was built and then DELETED; don't resurrect it). Green:
+`npm run server:check`, `npx tsc` (client), `npm test` (added 6 network-free checks →
+now runs them at the end), `npm run build`. **NOT committed, NOT deployed** (user asked).
+
+**Architecture — server is the AUTHORITY, calls are ASYNC (can't run in the sync hot
+path), client only shows a hint:**
+- **`server/moderation.ts` (NEW)** — `moderateName(text) → {allowed, checked}` +
+  `scrubName(raw, fallback)`. Calls a hosted endpoint (default OpenAI's FREE
+  `/v1/moderations`, `omni-moderation-latest`; `{input}`→`{results:[{flagged}]}`).
+  **Env-gated** like `DATABASE_URL`: absent `MODERATION_API_KEY` ⇒ DISABLED, every
+  name allowed, ZERO network (smoke pins this). **FAILS OPEN** on outage/timeout
+  (allows + logs; admin `/admin` forced-rename is the backstop). In-process decision
+  cache (2000, FIFO evict) so the username-availability probe doesn't re-bill.
+  `moderationEnabled` exported. Uses global `fetch` + `AbortSignal.timeout` (Node 22).
+- **Claims (deliberate, low-freq → await + REJECT):** `server/api.ts`
+  `POST /api/user/handle` (display name) and `POST /api/user/username` both `await
+  moderateName` and 400 with a neutral "isn’t allowed" message (never echo the word).
+  `GET /api/username-available` returns `{valid:false, reason:'inappropriate'}` when
+  blocked so the client shows the right hint.
+- **Durable public write (off hot path → scrub):** `server/persist.ts` `scrubSpecNames`
+  runs the record's robot/team `spec.name`/`teamName` (primary + partner) through
+  `scrubName` before the `records.config` write (the leaderboard card).
+- **Live roster (ephemeral, best-effort):** `server/room.ts` `moderatePlayerNames`
+  is a FIRE-AND-FORGET async scrub kicked off from `add()` after the join broadcast —
+  the hosted call must not block the roster. If a name is flagged it resets to the
+  default and re-`broadcastRoster()`s, so opponents don't see a slur team name live.
+  Authed players' `name` is already the moderated handle (index.ts:779); this covers
+  `teamName` + the robot spec names + an anonymous player's chosen name. It does NOT
+  retro-patch an already-started match (setups are captured at matchStart) — the record
+  scrub is the durable guarantee.
+- **Client feedback (no offline check — client has no wordlist):** `src/net/api.ts`
+  `checkUsername` now threads `reason?`; `src/ui/UsernameField.tsx` `useUsernameCheck`
+  gained a `'blocked'` status (message "isn’t allowed", `--ds-danger`, `ok:false` so
+  submit is gated). AuthPanel/UsernameGate/Account all use `ok`, so all are covered.
+  **Display name** feedback is at SAVE time (the server 400's with the message, which
+  `DisplayName`'s existing `status:'error'` branch already renders) — no per-keystroke
+  moderation call. Robot/team names get no live builder hint (scrubbed server-side at
+  persist/join) — a reasonable gap, since adding per-keystroke API calls in the builder
+  would be wasteful; note it if the user wants builder feedback later.
+
+**DEPLOY NOTE (when the user is ready):** this is a SERVER change — needs a Fly deploy
+(`./scripts/fly-deploy.sh`, NEVER a bare `flyctl deploy`) AND the secret
+`fly secrets set MODERATION_API_KEY='sk-…' -a dohun-sim-decode`. **Backward-compatible**:
+until the key is set the filter is a no-op; the `reason` field is additive so old
+clients ignore it. `.env.example` documents `MODERATION_API_KEY` / `_API_URL` / `_MODEL`
+/ `_TIMEOUT_MS`. NOT in the client build (VITE_*) — the key must never ship to browsers.
+No CSS/color changes (reused `--ds-danger`), so `npm run contrast` is unaffected.
+
+**"Drivetrain name" (from the ask) is NOT free text** — it's a fixed enum
+(mecanum/tank/swerve/xdrive), nothing to moderate.
+
+---
+
+# HANDOFF — 2026-07-22 ("Play a friend" format picker)
+
+## Earlier — the deferred "Play a friend" mode-picker (client-only)
 
 Built the "Play a friend" format picker the 2026-07-21 handoff deferred (its TODO +
 feasibility map is below, still accurate). **Client-only — rides entirely on existing

@@ -9,9 +9,22 @@ import {
   submitRecord,
 } from './db/repo';
 import { persistVersusMatch } from './ranked';
+import { scrubName } from './moderation';
 import { recordScore } from '../src/sim/replay';
 import { simModuleFor } from '../src/games/sim';
+import { DEFAULT_SPEC } from '../src/sim/spawn';
+import type { RobotSpec } from '../src/types';
 import type { MatchOutcome, PersistOutcome } from './room';
+
+/** Copy a spec with its public free-text names run through hosted moderation. The
+ *  robot/team name land in `records.config` (a public leaderboard card), so a flagged
+ *  one is replaced with the safe default before it is ever written. No-op (returns the
+ *  same object) when moderation is disabled or the names are already clean. */
+async function scrubSpecNames(spec: RobotSpec): Promise<RobotSpec> {
+  const name = await scrubName(spec.name, DEFAULT_SPEC.name);
+  const teamName = await scrubName(spec.teamName, '');
+  return name === spec.name && teamName === spec.teamName ? spec : { ...spec, name, teamName };
+}
 
 /**
  * Persist a finished match (off the hot path — called at phase 'post'). The
@@ -74,6 +87,9 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
       // the (empty) opposing alliance — i.e. the fouls the player(s) committed.
       const score = recordScore(o.result, primary.alliance);
       const prevBest = await personalBest(primary.userId!, mode, drivetrain, bv, game);
+      // moderate the robot/team names before they land on the public leaderboard card
+      const primarySpec = await scrubSpecNames(primary.spec);
+      const partnerSpec = partner?.spec ? await scrubSpecNames(partner.spec) : undefined;
       const id = await submitRecord({
         userId: primary.userId!,
         partnerId: partner?.userId,
@@ -85,7 +101,7 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
         game,
         // each driver brings their OWN robot; a duo stores both so the board can
         // show both drivetrains (partner absent ⇒ solo run)
-        config: { spec: primary.spec, assists: primary.assists, partnerSpec: partner?.spec },
+        config: { spec: primarySpec, assists: primary.assists, partnerSpec },
       });
       const { rank, total } = await recordRank(primary.userId!, mode, drivetrain, bv, game);
       const info = {
