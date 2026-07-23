@@ -18,33 +18,17 @@ export type ChallengeFormat = 'casual1v1' | 'casual2v2' | 'duorecord';
 interface FormatTile {
   format: ChallengeFormat;
   title: string;
-  desc: string;
 }
 
 const TILES: FormatTile[] = [
-  {
-    format: 'casual1v1',
-    title: '1v1 · Casual',
-    desc: 'A head-to-head practice match against your friend. Unrated.',
-  },
-  {
-    format: 'casual2v2',
-    title: '2v2 · Team up',
-    desc: 'Play on the same alliance — set teams and add drivers in the lobby. Unrated.',
-  },
-  {
-    format: 'duorecord',
-    title: '2v0 · Co-op record',
-    desc: 'Team up for a score-attack record run — no opponent.',
-  },
+  { format: 'casual1v1', title: '1v1 · Casual' },
+  { format: 'casual2v2', title: '2v2 · Team up' },
+  { format: 'duorecord', title: '2v0 · Co-op record' },
 ];
 
 // Formats the current server can't produce (rated invite rooms / premade ranked
 // parties). Listed so the picker reads complete, but disabled.
-const SOON: { title: string; desc: string }[] = [
-  { title: '1v1 · Rated', desc: 'Ranked head-to-head with a friend.' },
-  { title: '2v2 · Ranked', desc: 'Queue ranked together as a team.' },
-];
+const SOON: { title: string }[] = [{ title: '1v1 · Rated' }, { title: '2v2 · Ranked' }];
 
 /**
  * The "Play a friend" format picker (chess.com's "New game" chooser, DECODE-shaped).
@@ -98,13 +82,12 @@ export function ChallengePicker({
               onClick={() => pick(t.format)}
             >
               <span className="ot">{t.title}</span>
-              <span className="od">{busy === t.format ? 'Sending challenge…' : t.desc}</span>
+              {busy === t.format && <span className="od">Sending challenge…</span>}
             </button>
           ))}
           {SOON.map((t) => (
             <button key={t.title} className="ds-opt" disabled title="Coming soon">
               <span className="ot">{t.title}</span>
-              <span className="od">{t.desc}</span>
               <span className="oz soon">Soon</span>
             </button>
           ))}

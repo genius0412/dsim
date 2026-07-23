@@ -235,8 +235,7 @@ export function Matchmaking({
       'Head-to-head rating on a single leaderboard per mode.',
       <>
         <p className="ds-hint">
-          Ranked tracks rating and the leaderboard, so it needs an account. Want to play now? Custom
-          Rooms are open to everyone.
+          Ranked needs an account. Custom Rooms are open to everyone.
         </p>
         <div className="ds-actions">
           <button className="ds-cta" onClick={onSignIn}>
@@ -325,7 +324,6 @@ export function Matchmaking({
         <div className="ds-opts">
           <button className={`ds-opt ${noWiden ? 'on' : ''}`} onClick={() => setNoWiden(!noWiden)}>
             <span className="ot">Only my region {noWiden ? 'ON' : 'OFF'}</span>
-            <span className="od">Never widen the search — lowest ping, may wait longer</span>
           </button>
         </div>
       )}

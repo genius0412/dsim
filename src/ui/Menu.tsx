@@ -668,21 +668,18 @@ export function Menu({ settings, onChange }: Props) {
               onClick={() => setAssist({ aimAssist: !settings.assists.aimAssist })}
             >
               <span className="ot">Aim assist {settings.assists.aimAssist ? 'ON' : 'OFF'}</span>
-              <span className="od">Turret auto-tracks the goal</span>
             </button>
             <button
               className={`ds-opt ${settings.assists.autoIntake ? 'on' : ''}`}
               onClick={() => setAssist({ autoIntake: !settings.assists.autoIntake })}
             >
               <span className="ot">Auto intake {settings.assists.autoIntake ? 'ON' : 'OFF'}</span>
-              <span className="od">Runs when the hopper has room</span>
             </button>
             <button
               className={`ds-opt ${settings.assists.autoFire ? 'on' : ''}`}
               onClick={() => setAssist({ autoFire: !settings.assists.autoFire })}
             >
               <span className="ot">Auto fire {settings.assists.autoFire ? 'ON' : 'OFF'}</span>
-              <span className="od">Fires inside the launch zone</span>
             </button>
           </div>
         </section>

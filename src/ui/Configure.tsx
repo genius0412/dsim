@@ -12,12 +12,12 @@ export function isConfigureSection(s: string | null): s is ConfigureSection {
   return s !== null && (CONFIGURE_SECTIONS as readonly string[]).includes(s);
 }
 
-const LABELS: Record<ConfigureSection, { label: string; hint: string }> = {
-  robot: { label: 'Robot', hint: 'Presets, build, intake' },
-  match: { label: 'Match', hint: 'Alliance, start, autos' },
-  controls: { label: 'Controls', hint: 'Keyboard & gamepad' },
+const LABELS: Record<ConfigureSection, { label: string }> = {
+  robot: { label: 'Robot' },
+  match: { label: 'Match' },
+  controls: { label: 'Controls' },
   // route key stays 'audio' — /configure/audio is deep-linkable and already shipped
-  audio: { label: 'Audio and Visual', hint: 'Sounds, voice & theme' },
+  audio: { label: 'Audio and Visual' },
 };
 
 /**
@@ -59,7 +59,6 @@ export function Configure({
               onClick={() => onSection(s)}
             >
               <span className="sl">{LABELS[s].label}</span>
-              <span className="sh">{LABELS[s].hint}</span>
             </button>
           ))}
         </nav>

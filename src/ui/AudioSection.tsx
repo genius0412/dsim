@@ -50,10 +50,10 @@ function VolumeRow({
   );
 }
 
-const THEMES: { id: ThemePref; title: string; desc: string }[] = [
-  { id: 'system', title: 'System', desc: 'Follow your OS setting' },
-  { id: 'light', title: 'Light', desc: 'Warm off-white floor' },
-  { id: 'dark', title: 'Dark', desc: 'Low-light charcoal' },
+const THEMES: { id: ThemePref; title: string }[] = [
+  { id: 'system', title: 'System' },
+  { id: 'light', title: 'Light' },
+  { id: 'dark', title: 'Dark' },
 ];
 
 /**
@@ -154,7 +154,6 @@ export function AudioSection({
                 onClick={() => pickTheme(t.id)}
               >
                 <span className="ot">{t.title}</span>
-                <span className="od">{t.desc}</span>
               </button>
             ))}
           </div>

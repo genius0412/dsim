@@ -142,8 +142,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls }: Pro
       <div className="ds-bind-block" style={{ marginBottom: 18 }}>
         <h3>Touch controls</h3>
         <p className="ds-sub" style={{ margin: '2px 0 10px' }}>
-          On phones/tablets the two joysticks and action buttons are always on screen. Customize
-          where they sit — this opens Free Drive with a drag-to-move editor.
+          Opens Free Drive with a drag-to-move editor for the on-screen joysticks and buttons.
         </p>
         <button className="ds-btn" onClick={onEditTouchControls}>
           Customize touch controls

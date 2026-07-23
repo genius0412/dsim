@@ -29,7 +29,7 @@ export function Download() {
     <>
       <p className="ds-eyebrow">{APP_NAME} · Desktop</p>
       <h1 className="ds-h1">Download for desktop</h1>
-      <p className="ds-sub">The full offline sim in a native window. Windows, macOS, and Linux.</p>
+      <p className="ds-sub">The full offline sim in a native window.</p>
 
       {/* `.ds-dl` owns the gaps: these cards cast hard offset shadows, and headings are
           the only elements in the design system that carry their own bottom margin. */}

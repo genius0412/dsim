@@ -256,7 +256,6 @@ export function MatchSetup({
             {settings.savedAutos.length < MAX_SAVED_AUTOS && (
               <label className="ds-opt ds-opt-add" style={{ cursor: 'pointer' }}>
                 <span className="ot">＋ Import .pp</span>
-                <span className="od">Add an auto to your library</span>
                 <input type="file" accept=".pp" onChange={handleFileChange} style={{ display: 'none' }} />
               </label>
             )}

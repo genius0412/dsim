@@ -1,11 +1,11 @@
 import type { ShellNav } from './AppShell';
 
 /** the four top-level destinations, in the order they appear on the home menu */
-export const RAIL_ITEMS: ReadonlyArray<{ id: ShellNav; label: string; hint: string }> = [
-  { id: 'play', label: 'Play', hint: 'Pick a game mode' },
-  { id: 'configure', label: 'Configure', hint: 'Robot & match setup' },
-  { id: 'records', label: 'Records', hint: 'Leaderboard & career' },
-  { id: 'profile', label: 'Profile', hint: 'Account & settings' },
+export const RAIL_ITEMS: ReadonlyArray<{ id: ShellNav; label: string }> = [
+  { id: 'play', label: 'Play' },
+  { id: 'configure', label: 'Configure' },
+  { id: 'records', label: 'Records' },
+  { id: 'profile', label: 'Profile' },
 ];
 
 /**
@@ -38,7 +38,6 @@ export function NavRail({
             onClick={() => onNav(it.id)}
           >
             <span className="rl">{it.label}</span>
-            <span className="rh">{it.hint}</span>
           </button>
         ))}
         {showAdmin && (
@@ -48,7 +47,6 @@ export function NavRail({
             onClick={() => onNav('admin')}
           >
             <span className="rl">Admin</span>
-            <span className="rh">Server control</span>
           </button>
         )}
       </div>
