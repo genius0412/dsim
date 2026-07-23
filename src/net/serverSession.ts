@@ -135,9 +135,11 @@ export class ServerSession implements NetSession {
       this.failed = true;
     });
     // probe latency continuously while the match is live (a no-op send when the
-    // socket is down); each pong updates the smoothed RTT for the HUD
+    // socket is down); each pong updates the smoothed RTT for the HUD. Hot-path
+    // lane: a lost ping is simply superseded by the next 300 ms probe — no reason
+    // to head-of-line block the control stream behind it.
     this.pingTimer = setInterval(() => {
-      transport.send(encodeMsg({ t: 'ping', ts: nowMs() }));
+      transport.send(encodeMsg({ t: 'ping', ts: nowMs() }), { reliable: false });
     }, PING_INTERVAL_MS);
   }
 
@@ -155,7 +157,13 @@ export class ServerSession implements NetSession {
 
   sendInput(tick: number, cmd: RobotCommand): void {
     if (this.spectator) return; // a spectator controls nothing
-    this.transport.send(encodeMsg({ t: 'input', tick, q: quantizeCommand(cmd) }));
+    // Hot-path lane: inputs are sent every tick and the server holds-last, so a
+    // dropped input is superseded by the next one within ~16 ms. Sending it
+    // unreliable is exactly what stops one lost/late input from stalling the
+    // whole stream behind it (the head-of-line win we're after).
+    this.transport.send(encodeMsg({ t: 'input', tick, q: quantizeCommand(cmd) }), {
+      reliable: false,
+    });
   }
 
   takeSnapshot(): Snapshot | null {
