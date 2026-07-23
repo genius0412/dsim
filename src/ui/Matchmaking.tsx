@@ -217,9 +217,11 @@ export function Matchmaking({
         <div className="ds-title">
           <h1>{title}</h1>
         </div>
-        <p className="ds-sub" style={{ marginTop: -10 }}>
-          {sub}
-        </p>
+        {sub && (
+          <p className="ds-sub" style={{ marginTop: -10 }}>
+            {sub}
+          </p>
+        )}
         <div className="ds-panelbox">{body}</div>
       </div>
     </div>
@@ -232,7 +234,7 @@ export function Matchmaking({
       <>
         Ranked <span className="accent">Match</span>
       </>,
-      'Head-to-head rating on a single leaderboard per mode.',
+      '',
       <>
         <p className="ds-hint">
           Ranked needs an account. Custom Rooms are open to everyone.
@@ -299,7 +301,7 @@ export function Matchmaking({
     <>
       Ranked <span className="accent">Match</span>
     </>,
-    'Head-to-head rating on a single leaderboard per mode.',
+    '',
     <>
       <div className="ds-opts two">
         <button className={`ds-opt ${mode === '1v1' ? 'on' : ''}`} onClick={() => setMode('1v1')}>

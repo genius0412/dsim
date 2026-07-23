@@ -1502,14 +1502,6 @@
 
 /* the aside in a panel header (e.g. Match setup's "Ranked and Custom set …").
    The rest of the old <details>/<summary> collapse rules went with the panel. */
-.ds-collapse-hint {
-  font-family: var(--ds-font-mono);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ds-mut);
-}
-
 /* ---- panels + tables ------------------------------------------------- */
 .ds-panel {
   border: 1px solid var(--ds-line);

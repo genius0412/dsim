@@ -141,9 +141,6 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls }: Pro
       <h2>Controls</h2>
       <div className="ds-bind-block" style={{ marginBottom: 18 }}>
         <h3>Touch controls</h3>
-        <p className="ds-sub" style={{ margin: '2px 0 10px' }}>
-          Opens Free Drive with a drag-to-move editor for the on-screen joysticks and buttons.
-        </p>
         <button className="ds-btn" onClick={onEditTouchControls}>
           Customize touch controls
         </button>
@@ -296,9 +293,6 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls }: Pro
         <button className="ds-btn" onClick={() => onChange(cloneBindings(DEFAULT_BINDINGS))}>
           RESET TO DEFAULTS
         </button>
-        <p className="ds-hint">
-          Click a binding, then press the new key or button (Esc cancels).
-        </p>
       </div>
     </section>
   );

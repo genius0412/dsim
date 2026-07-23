@@ -551,7 +551,6 @@ export function Menu({ settings, onChange }: Props) {
                   onClick={() => setSpec({ canSort: !spec.canSort })}
                 >
                   <span className="ot">Sorter {spec.canSort ? 'ON' : 'OFF'}</span>
-                  <span className="od">Fires the color the motif needs</span>
                 </button>
               )}
               {!isDecode && (() => {
@@ -599,12 +598,7 @@ export function Menu({ settings, onChange }: Props) {
               )}
             </div>
 
-            <p className="ds-hint">
-              Heavier pushes harder but accelerates slower · higher RPM is faster
-              {isDecode && ' · more flywheel inertia keeps long shots rapid'}
-              {!isDecode && ' · more clearance gets over the beams but handles worse'}
-              . Chassis + intake ≤ {ROBOT_MAX_SIZE}".
-            </p>
+            <p className="ds-hint">Chassis + intake ≤ {ROBOT_MAX_SIZE}".</p>
           </div>
 
           {isDecode && (

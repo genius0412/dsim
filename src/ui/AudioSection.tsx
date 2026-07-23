@@ -132,11 +132,9 @@ export function AudioSection({
             onChange={(voice) => setVolume({ voice })}
             onAudition={() => audio.say('Volume', true)}
           />
-          <p className="ds-hint">
-            {silent
-              ? 'Master is at 0% — everything is silent until you raise it.'
-              : 'Game sounds are the field cues (start, buzzer, endgame warning). Beeping covers the shooter, intake, and gate effects. At 0%, voice lines fall back to countdown beeps.'}
-          </p>
+          {silent && (
+            <p className="ds-hint">Master is at 0% — everything is silent until you raise it.</p>
+          )}
         </div>
       </section>
 
@@ -157,10 +155,6 @@ export function AudioSection({
               </button>
             ))}
           </div>
-          <p className="ds-hint">
-            Theme is stored on this device only — it doesn’t follow your account, and works
-            signed out.
-          </p>
         </div>
       </section>
     </>

@@ -261,11 +261,6 @@ export function Lobby({
               )}
             </h1>
           </div>
-          <p className="ds-sub" style={{ marginTop: -10 }}>
-            {isRecord
-              ? '2v0 co-op score attack · any drivetrains · share a room code.'
-              : 'Up to 2v2 · share a room code.'}
-          </p>
           <div className="ds-panelbox">
             <label className="ds-field">
               <span className="cap">Your name</span>
