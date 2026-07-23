@@ -1418,10 +1418,16 @@
   background: var(--ds-tile);
   color: var(--ds-ink);
   padding: 16px 18px;
-  min-height: 94px;
+  /* Top-aligned, NOT space-between: with the descriptions removed a tile is just a
+     kicker + title (+ an optional disabled-reason). space-between bottom-pinned the
+     title, so a tile with a reason (taller) and one without landed their titles at
+     DIFFERENT heights across a row. Stacking from the top keeps every title on the
+     same line; `min-height` matches the natural kicker+title height so a label-only
+     tile has no dead space, while a row-mate carrying a reason simply grows taller. */
+  min-height: 78px;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: flex-start;
   cursor: pointer;
   font: inherit;
   /* Level-1 card: flat fill, 1px stroke, hard offset block toward the bottom-right
@@ -2540,10 +2546,17 @@ tr.lb-detail td {
 /* Label-only option toggles (those whose helper `.od` line was removed) would
    otherwise sit ~20px shorter than their descriptive siblings, leaving a visible
    dip where a two-line row meets a one-line one. Give them a floor height and
-   center the label so mixed sections keep an even rhythm. */
-.ds-opt:not(:has(.od)) {
+   center the label so mixed sections keep an even rhythm. `.mini` cards (e.g. the
+   drivetrain grid) are deliberately compact and keep their natural chip height. */
+.ds-opt:not(.mini):not(:has(.od)) {
   min-height: 62px;
   justify-content: center;
+}
+/* Drivetrain grid (the only `.ds-opts.four`): now label-only chips — center the
+   label so the four read as an even segmented row instead of top-left labels. */
+.ds-opts.four .ds-opt {
+  justify-content: center;
+  text-align: center;
 }
 /* count badge next to a section title, e.g. "Saved robots 2/3" */
 .ds-count {

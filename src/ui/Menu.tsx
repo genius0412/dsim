@@ -1,5 +1,5 @@
 import type { GameSettings } from '../types';
-import type { ChainIntakeStyle, ChainScoreMode, DrivetrainType, IntakeStyle, RobotSpec } from '../types';
+import type { ChainScoreMode, DrivetrainType, IntakeStyle, RobotSpec } from '../types';
 import { MAX_SAVED_ROBOTS, ROBOT_MAX_SIZE, ROBOT_PRESETS } from '../config';
 import {
   CHAIN_CLEARANCE_DEFAULT,
@@ -22,13 +22,6 @@ import { RobotPreview } from './RobotPreview';
 import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './robotLabels';
 import { rangeFill } from './rangeFill';
 
-const DRIVETRAIN_BLURBS: Record<DrivetrainType, string> = {
-  mecanum: '85% strafe · FTC standard',
-  tank: 'No strafe · best push',
-  swerve: 'Full-speed any direction',
-  xdrive: 'Full-speed strafe',
-};
-
 const INTAKE_LABELS: Record<IntakeStyle, string> = {
   sloped: 'Sloped intake',
   vector: 'Vector wheel intake',
@@ -44,12 +37,6 @@ function optimizedZone(inertia: number): string {
   return 'Long range';
 }
 
-const INTAKE_BLURBS: Record<IntakeStyle, string> = {
-  sloped: 'Face artifacts to scoop them up · eats clumps',
-  vector: 'Grabs artifacts you strafe into',
-  triangle: 'Long reach, eats clumps · slower transfer',
-};
-
 // Chain Reaction robot config blurbs (CR-only builder controls). The LABELS
 // (CHAIN_MODE_LABELS / CHAIN_INTAKE_LABELS) are shared with the leaderboard config
 // summary via ../games/chain/labels so both name the archetype/intake identically.
@@ -57,9 +44,6 @@ const CHAIN_MODE_BLURBS: Record<ChainScoreMode, string> = {
   turret: 'Aims itself and fires one at a time',
   drum: 'Face the goal and fire a fast stream',
   dumper: 'Face the goal and dump the whole load up close',
-};
-const CHAIN_INTAKE_BLURBS: Record<ChainIntakeStyle, string> = {
-  sweeper: 'A roller across the whole front',
 };
 
 /** does the current spec exactly match a preset? (value compare) */
@@ -412,7 +396,6 @@ export function Menu({ settings, onChange }: Props) {
                   onClick={() => setSpec({ drivetrain: d })}
                 >
                   <span className="ot">{DRIVETRAIN_LABELS[d]}</span>
-                  <span className="od">{DRIVETRAIN_BLURBS[d]}</span>
                 </button>
               ))}
             </div>
@@ -457,7 +440,6 @@ export function Menu({ settings, onChange }: Props) {
                 <div className="ds-opts">
                   <div className="ds-opt on" aria-disabled>
                     <span className="ot">{CHAIN_INTAKE_LABELS.sweeper}</span>
-                    <span className="od">{CHAIN_INTAKE_BLURBS.sweeper}</span>
                   </div>
                 </div>
                 <h3 className="ds-subh">Intake mount</h3>
@@ -634,7 +616,6 @@ export function Menu({ settings, onChange }: Props) {
                 onClick={() => selectIntake(i)}
               >
                 <span className="ot">{INTAKE_LABELS[i]}</span>
-                <span className="od">{INTAKE_BLURBS[i]}</span>
               </button>
             ))}
           </div>
