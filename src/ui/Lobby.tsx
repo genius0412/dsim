@@ -331,13 +331,8 @@ export function Lobby({
                 </button>
               )}
             </div>
-            {(isRecord || multiServer()) && (
-              <p className="ds-hint">
-                {isRecord &&
-                  'Matching drivetrains rank on that drivetrain’s board; a MIXED pair counts on the OVERALL board only.'}
-                {isRecord && multiServer() ? ' ' : ''}
-                {multiServer() && 'Both players must pick the same region.'}
-              </p>
+            {multiServer() && (
+              <p className="ds-hint">Both players must pick the same region.</p>
             )}
           </div>
         </div>

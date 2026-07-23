@@ -381,7 +381,6 @@ export function StartPositionEditor({
             </button>
           )}
         </div>
-        <p className="ds-startpos-hint">Must sit on a launch line and touch your goal or a wall (G304).</p>
       </div>
     </div>
   );

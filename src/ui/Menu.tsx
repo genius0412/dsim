@@ -1,6 +1,6 @@
 import type { GameSettings } from '../types';
 import type { ChainScoreMode, DrivetrainType, IntakeStyle, RobotSpec } from '../types';
-import { MAX_SAVED_ROBOTS, ROBOT_MAX_SIZE, ROBOT_PRESETS } from '../config';
+import { MAX_SAVED_ROBOTS, ROBOT_PRESETS } from '../config';
 import {
   CHAIN_CLEARANCE_DEFAULT,
   CHAIN_CLEARANCE_MAX,
@@ -597,8 +597,6 @@ export function Menu({ settings, onChange }: Props) {
                 </label>
               )}
             </div>
-
-            <p className="ds-hint">Chassis + intake ≤ {ROBOT_MAX_SIZE}".</p>
           </div>
 
           {isDecode && (
@@ -698,10 +696,6 @@ export function Menu({ settings, onChange }: Props) {
                 />
               </label>
             </div>
-            <p className="ds-hint">
-              Toggle with P or controller X. Caps drive speed for precise control — endgame only, or
-              anytime in Free Drive.
-            </p>
           </div>
         </section>
       </div>

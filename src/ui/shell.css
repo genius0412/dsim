@@ -561,6 +561,10 @@
   font-size: 15px;
   font-weight: 700;
 }
+.ds-rail-btn .rh {
+  font-size: 11.5px;
+  color: var(--ds-mut);
+}
 .ds-rail-btn:hover {
   color: var(--ds-ink);
   background: var(--ds-panel);
@@ -571,6 +575,9 @@
   border-color: var(--ds-accent);
   color: var(--ds-accent-soft-ink);
   box-shadow: var(--ds-block-sm);
+}
+.ds-rail-btn.on .rh {
+  color: var(--ds-accent-soft-mut);
 }
 
 /* ---- friends panel ----------------------------------------------------
@@ -1034,6 +1041,12 @@
   font-weight: 800;
   letter-spacing: 0.04em;
 }
+.ds-menu-btn .mh {
+  font-family: var(--ds-font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--ds-mut);
+}
 .ds-menu-btn:hover {
   border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
   transform: translateY(1px);
@@ -1048,6 +1061,9 @@
   color: var(--ds-accent-ink);
   border-color: transparent;
   box-shadow: var(--ds-edge);
+}
+.ds-menu-btn.primary .mh {
+  color: color-mix(in srgb, var(--ds-accent-ink) 74%, transparent);
 }
 .ds-menu-btn.primary:hover {
   background: color-mix(in srgb, var(--ds-accent) 88%, white);
@@ -1097,6 +1113,10 @@
   font-size: 14px;
   font-weight: 700;
 }
+.ds-subnav-btn .sh {
+  font-size: 11px;
+  color: var(--ds-mut);
+}
 .ds-subnav-btn:hover {
   background: var(--ds-panel);
   border-color: var(--ds-line);
@@ -1106,6 +1126,9 @@
   background: var(--ds-accent-soft);
   border-color: var(--ds-accent);
   color: var(--ds-accent-soft-ink);
+}
+.ds-subnav-btn.on .sh {
+  color: color-mix(in srgb, var(--ds-accent-soft-ink) 78%, transparent);
 }
 /* Owns the vertical rhythm for whatever section is routed into it. A section may render
    SEVERAL top-level cards (Audio = Audio + Visual), and cards carry a hard 4px offset
@@ -3046,6 +3069,11 @@ input[type='range']:focus-visible {
     flex: none;
     padding: 7px 12px;
   }
+  /* the hint line is the first thing to go when the rail turns horizontal */
+  .ds-rail-btn .rh,
+  .ds-subnav-btn .sh {
+    display: none;
+  }
 
   /* `.ds-body` is a COLUMN here, so the friends panel would otherwise land at
      the very bottom, below the content. Order it directly under the rail and
@@ -3611,12 +3639,6 @@ button.ds-key:active {
 .ds-startpos-presets .ds-opt.mini {
   flex: 1 1 auto;
 }
-.ds-startpos-hint {
-  margin: 0;
-  font: 400 11px/1.4 inherit;
-  color: var(--ds-mut);
-}
-
 /* ---- 2v2 start-role swap bar ---------------------------------------------- */
 .ds-roleswap {
   display: flex;

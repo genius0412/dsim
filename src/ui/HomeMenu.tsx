@@ -97,6 +97,7 @@ export function HomeMenu({
             onClick={() => onNav(it.id)}
           >
             <span className="ml">{it.label}</span>
+            <span className="mh">{it.hint}</span>
           </button>
         ))}
       </nav>
