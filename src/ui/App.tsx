@@ -836,8 +836,7 @@ export function App() {
           <div className="overlay-panel">
             <h2>You’re already in a game</h2>
             <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
-              You can only be in one game at a time. Rejoin the one you’re in, or abandon it to
-              start something new.
+              You can only be in one game at a time.
             </p>
             <div className="overlay-buttons">
               <button
@@ -862,9 +861,8 @@ export function App() {
           <div className="overlay-panel">
             <h2>Start position invalid</h2>
             <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
-              Your saved custom start position isn’t legal for the chassis you’ve got selected —
-              a different-sized robot doesn’t fit where it was placed. Fix the start position (or
-              pick a preset) for this chassis before starting.
+              Your saved start position isn’t legal for the selected chassis. Fix it (or pick a
+              preset) before starting.
             </p>
             <div className="overlay-buttons">
               <button
@@ -887,8 +885,7 @@ export function App() {
           <div className="overlay-panel">
             <h2>Server restarting soon</h2>
             <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
-              A scheduled server update is about to happen, so new games are paused for a moment —
-              you’d only get dropped by the restart. Hang tight; it’ll be back in a minute.
+              A scheduled server update is about to happen, so new games are paused for a moment.
             </p>
             <div className="overlay-buttons">
               <button onClick={() => setStartBlocked(false)}>OK</button>
@@ -901,8 +898,7 @@ export function App() {
           <div className="overlay-panel">
             <h2>Update required</h2>
             <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
-              A newer version of the sim has shipped. Everyone has to be on the same version to
-              play — especially for multiplayer — so refresh to update before starting a run.
+              A newer version has shipped. Refresh to update before starting.
             </p>
             <div className="overlay-buttons">
               <button onClick={() => window.location.reload()}>REFRESH &amp; UPDATE</button>

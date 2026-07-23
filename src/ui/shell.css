@@ -2537,6 +2537,14 @@ tr.lb-detail td {
   box-shadow: var(--ds-block-sm);
   transition: transform 0.08s ease, border-color 0.14s, background 0.14s, box-shadow 0.08s ease;
 }
+/* Label-only option toggles (those whose helper `.od` line was removed) would
+   otherwise sit ~20px shorter than their descriptive siblings, leaving a visible
+   dip where a two-line row meets a one-line one. Give them a floor height and
+   center the label so mixed sections keep an even rhythm. */
+.ds-opt:not(:has(.od)) {
+  min-height: 62px;
+  justify-content: center;
+}
 /* count badge next to a section title, e.g. "Saved robots 2/3" */
 .ds-count {
   font-size: 12px;

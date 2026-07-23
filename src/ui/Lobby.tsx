@@ -298,14 +298,12 @@ export function Lobby({
                 onClick={() => setEntryMode('create')}
               >
                 <span className="ot">Create room</span>
-                <span className="od">Get a code to share</span>
               </button>
               <button
                 className={`ds-opt ${entryMode === 'join' ? 'on' : ''}`}
                 onClick={() => setEntryMode('join')}
               >
                 <span className="ot">Join room</span>
-                <span className="od">Enter a friend’s code</span>
               </button>
             </div>
             {entryMode === 'join' && (
@@ -338,12 +336,14 @@ export function Lobby({
                 </button>
               )}
             </div>
-            <p className="ds-hint">
-              {isRecord
-                ? 'Matching drivetrains rank on that drivetrain’s board; a MIXED pair counts on the OVERALL board only.'
-                : 'Codes are auto-generated — share yours with your friends.'}
-              {multiServer() && ' Both players must pick the same region.'}
-            </p>
+            {(isRecord || multiServer()) && (
+              <p className="ds-hint">
+                {isRecord &&
+                  'Matching drivetrains rank on that drivetrain’s board; a MIXED pair counts on the OVERALL board only.'}
+                {isRecord && multiServer() ? ' ' : ''}
+                {multiServer() && 'Both players must pick the same region.'}
+              </p>
+            )}
           </div>
         </div>
       </div>

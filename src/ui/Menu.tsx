@@ -443,14 +443,12 @@ export function Menu({ settings, onChange }: Props) {
                         onClick={() => setSpec({ shooterRear: false })}
                       >
                         <span className="ot">FRONT</span>
-                        <span className="od">Shoots from the front</span>
                       </button>
                       <button
                         className={`ds-opt ${spec.shooterRear ? 'on' : ''}`}
                         onClick={() => setSpec({ shooterRear: true })}
                       >
                         <span className="ot">REAR</span>
-                        <span className="od">Shoots from the back</span>
                       </button>
                     </div>
                   </>
@@ -469,14 +467,13 @@ export function Menu({ settings, onChange }: Props) {
                     onClick={() => setSpec({ intakeSide: false })}
                   >
                     <span className="ot">FRONT</span>
-                    <span className="od">Grabs from the front</span>
                   </button>
                   <button
                     className={`ds-opt ${spec.intakeSide ? 'on' : ''}`}
                     onClick={() => setSpec({ intakeSide: true })}
                   >
                     <span className="ot">SIDE</span>
-                    <span className="od">Grabs from the sides · holds fewer</span>
+                    <span className="od">Holds fewer</span>
                   </button>
                 </div>
               </>
@@ -648,24 +645,18 @@ export function Menu({ settings, onChange }: Props) {
         {/* ---------- driver preferences (remembered per drivetrain) ---------- */}
         <section className="ds-sec">
           <h2>Drive style</h2>
-          <p className="ds-hint">
-            Saved per drivetrain ({DRIVETRAIN_LABELS[spec.drivetrain]}) — switching drivetrains
-            restores its own settings.
-          </p>
           <div className="ds-opts two">
             <button
               className={`ds-opt ${settings.assists.fieldCentric ? 'on' : ''}`}
               onClick={() => setAssist({ fieldCentric: true })}
             >
               <span className="ot">Field-centric</span>
-              <span className="od">Stick up always drives away from you</span>
             </button>
             <button
               className={`ds-opt ${!settings.assists.fieldCentric ? 'on' : ''}`}
               onClick={() => setAssist({ fieldCentric: false })}
             >
               <span className="ot">Robot-centric</span>
-              <span className="od">Stick up drives toward the robot's front</span>
             </button>
           </div>
           {spec.drivetrain === 'tank' && (

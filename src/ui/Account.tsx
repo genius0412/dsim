@@ -55,9 +55,6 @@ export function Account({
           <span className="ds-panel-title">Reset</span>
         </div>
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start' }}>
-          <p className="ds-hint" style={{ marginBottom: 2 }}>
-            Restore all settings to defaults.
-          </p>
           <button
             className="ds-btn"
             onClick={() => {

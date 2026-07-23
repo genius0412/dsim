@@ -300,16 +300,14 @@ export function Matchmaking({
     <>
       Ranked <span className="accent">Match</span>
     </>,
-    'Head-to-head rating — the winner takes it, on a single leaderboard per mode.',
+    'Head-to-head rating on a single leaderboard per mode.',
     <>
       <div className="ds-opts two">
         <button className={`ds-opt ${mode === '1v1' ? 'on' : ''}`} onClick={() => setMode('1v1')}>
           <span className="ot">1v1</span>
-          <span className="od">One driver each</span>
         </button>
         <button className={`ds-opt ${mode === '2v2' ? 'on' : ''}`} onClick={() => setMode('2v2')}>
           <span className="ot">2v2</span>
-          <span className="od">Two drivers per alliance</span>
         </button>
       </div>
       <p className="ds-hint">

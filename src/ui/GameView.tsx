@@ -899,20 +899,6 @@ function Results({
           </tbody>
         </table>
         {ranked && <EloResults rows={eloResults} />}
-        {cr && hud.chain ? (
-          <p className="ds-hint">
-            Each Particle scores 1 pt × (1 + Catalysts on hooks) — RED ×
-            {hud.alliance === 'red' ? hud.chain.mult : hud.chain.oppMult}, BLUE ×
-            {hud.alliance === 'blue' ? hud.chain.mult : hud.chain.oppMult}. Auto: descend a ring
-            stand 100. End Game: park 5 · ascend 100.
-            Foul points ({PTS_FOUL_MAJOR} per major) come from the opponent's violations.
-          </p>
-        ) : (
-          <p className="ds-hint">
-            Penalty points ({PTS_FOUL_MINOR} minor · {PTS_FOUL_MAJOR} major) come from the opponent's
-            fouls and are already in each total.
-          </p>
-        )}
         {matchResult && (
           <p className="ds-hint" style={{ color: 'var(--ds-accent)' }}>
             {matchResult.kind === 'record'
@@ -1084,17 +1070,6 @@ function RecordResults({
                 </tr>
               </tbody>
             </table>
-            {cr && hud.chain ? (
-              <p className="ds-hint">
-                Each Particle scores 1 pt × (1 + Catalysts on hooks, ×{hud.chain.mult}). Auto:
-                descend a ring stand 100. End Game: park 5 · ascend 100.
-              </p>
-            ) : (
-              <p className="ds-hint">
-                Your own fouls ({PTS_FOUL_MINOR} pt minor · {PTS_FOUL_MAJOR} pt major) subtract from
-                your score.
-              </p>
-            )}
             <div className="overlay-buttons">
               {matchResult && onWatchReplay && (
                 <button onClick={() => onWatchReplay(matchResult.replay)}>▶ WATCH REPLAY</button>

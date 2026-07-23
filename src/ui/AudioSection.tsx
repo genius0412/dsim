@@ -160,8 +160,7 @@ export function AudioSection({
           </div>
           <p className="ds-hint">
             Theme is stored on this device only — it doesn’t follow your account, and works
-            signed out. The field itself always stays dark so alliance and artifact colours read
-            the same in every match.
+            signed out.
           </p>
         </div>
       </section>

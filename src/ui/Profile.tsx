@@ -55,7 +55,7 @@ export function Profile({
       <h1 className="ds-h1">{stats?.handle ?? `@${username}`}</h1>
       <p className="ds-sub">
         {stats?.username ? `@${stats.username} · ` : ''}
-        Public profile — ranked ELO, personal bests, and match history.
+        Public profile
       </p>
     </>
   );
