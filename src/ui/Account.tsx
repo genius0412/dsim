@@ -35,7 +35,9 @@ export function Account({
       {authEnabled ? <Identity onHandleSaved={onHandleSaved} /> : <IdentityDisabled />}
 
       {multiServer() && (
-        <div className="ds-panel" style={{ marginTop: 18 }}>
+        // `ds-panel-open` drops the panel's `overflow: hidden` so the region
+        // dropdown can escape below the card instead of being clipped by it.
+        <div className="ds-panel ds-panel-open" style={{ marginTop: 18 }}>
           <div className="ds-panel-h">
             <span className="ds-panel-title">Server</span>
           </div>

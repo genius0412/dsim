@@ -349,6 +349,14 @@
   font-size: 13px;
   padding: 4px 10px;
 }
+/* the Ping button is a bare `.ds-seg` (intrinsic ~25px tall) sitting next to the
+   32px listbox trigger — match the trigger's height and center its label so the
+   two read as ONE control instead of a short button floating beside a taller one. */
+.ds-server-menu .ds-seg {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+}
 .ds-server-menu .ds-seg:disabled {
   opacity: 0.6;
   cursor: default;
@@ -1526,6 +1534,12 @@
   background: var(--ds-panel);
   overflow: hidden;
   box-shadow: var(--ds-block);
+}
+/* opt-out of the corner-clipping `overflow: hidden` for panels that host a
+   popup (the region-picker listbox) which must extend past the card edge.
+   Safe here because nothing inside reaches the rounded corners with a fill. */
+.ds-panel.ds-panel-open {
+  overflow: visible;
 }
 .ds-panel-h {
   display: flex;
@@ -3051,8 +3065,12 @@ input[type='range']:focus-visible {
   /* `.ds-body` is a COLUMN here, so the friends panel would otherwise land at
      the very bottom, below the content. Order it directly under the rail and
      let it span the width, matching how the rail itself degrades — an expanded
-     panel is a strip above the content rather than a side column. */
-  .ds-rail {
+     panel is a strip above the content rather than a side column.
+     SCOPE the order to `.ds-body`'s children: on home (`showRail={false}`) the
+     content is `.ds-main.ds-main-home`, a DIRECT flex child of `.ds-app`, and an
+     unscoped `.ds-main { order: 3 }` pushed it BELOW the order:0 footer — the
+     footer rendered at the very top of the page on phones. */
+  .ds-body > .ds-rail {
     order: 1;
   }
   .ds-friends {
@@ -3068,7 +3086,7 @@ input[type='range']:focus-visible {
     align-items: flex-start;
     padding: 8px 12px;
   }
-  .ds-main {
+  .ds-body > .ds-main {
     order: 3;
   }
 
