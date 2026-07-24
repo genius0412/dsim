@@ -26,6 +26,11 @@ export function Download() {
   );
 
   const mobile = isMobile();
+  // when we recognise the visitor's desktop OS, feature its PRIMARY build (the
+  // first DESKTOP_BUILDS entry for that OS — Windows Installer / mac dmg / Linux
+  // AppImage) as a one-click card at the top. `builds` still lists everything below.
+  const featured = os && !mobile ? DESKTOP_BUILDS.find((b) => b.os === os) ?? null : null;
+  const osName = featured ? featured.label.split(' · ')[0] : '';
 
   return (
     <>
@@ -63,6 +68,11 @@ export function Download() {
             <span>Installer or portable</span>
             <span>{version ? version : 'latest release'}</span>
           </div>
+          {featured && (
+            <a className="ds-btn primary ds-dl-get" href={featured.url} download>
+              Download for {osName} ↓
+            </a>
+          )}
         </div>
 
         <div className="ds-opts two">{builds.map(card)}</div>

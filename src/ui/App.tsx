@@ -363,33 +363,19 @@ export function App() {
   // is this account an admin? (server-authorized against ADMIN_USER_IDS) — gates the
   // Admin entry; the server independently enforces every admin action
   const [isAdmin, setIsAdmin] = useState(false);
-  // has the admin-status check settled? (so we don't bounce a real admin off an
-  // admin-only deep-link before the async check resolves)
-  const [adminChecked, setAdminChecked] = useState(false);
   useEffect(() => {
     if (!accountUserId) {
       setIsAdmin(false);
-      setAdminChecked(true);
       return;
     }
     let cancelled = false;
-    setAdminChecked(false);
     fetchAdminStatus().then((s) => {
-      if (!cancelled) {
-        setIsAdmin(s.isAdmin);
-        setAdminChecked(true);
-      }
+      if (!cancelled) setIsAdmin(s.isAdmin);
     });
     return () => {
       cancelled = true;
     };
   }, [accountUserId]);
-  // the Download page is admin-only for now — bounce a non-admin who deep-links or
-  // refreshes on /download back home (once the admin check has actually settled)
-  useEffect(() => {
-    if (screen === 'download' && adminChecked && !isAdmin) navigate('home');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, adminChecked, isAdmin]);
 
   // load the account's display handle once per sign-in. Kept out of AccountSync's
   // effect on purpose: that one is guarded by a module-level `syncedUser` so settings
@@ -940,8 +926,7 @@ export function App() {
         />
       )}
       {screen === 'watch' && <WatchLive onWatch={spectateRoom} onBack={() => navigate('modes')} />}
-      {screen === 'download' && isAdmin && <Download />}
-      {/* public, unlike Download — no admin gate */}
+      {screen === 'download' && <Download />}
       {screen === 'contributors' && <Contributors onOpenProfile={openProfile} />}
       {screen === 'changelogs' && <Changelog />}
       {screen === 'account' && (
