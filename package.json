@@ -1,7 +1,7 @@
 {
   "name": "2ddecodesim",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSIM — a 2D top-down driver-practice simulator for the FTC 2025-26 game DECODE.",
   "author": "genius0412",
   "type": "module",
