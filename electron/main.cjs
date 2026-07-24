@@ -1,6 +1,7 @@
-const { app, BrowserWindow, Menu, dialog, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme } = require('electron');
 const path = require('path');
 const https = require('https');
+const fs = require('fs');
 
 const SITE = 'https://www.playdsim.com';
 const LATEST_API = 'https://api.github.com/repos/genius0412/dsim/releases/latest';
@@ -12,6 +13,11 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
     // App icon (dock/taskbar/finder + Linux window) comes from the packaged icon
     // electron-builder generates from build/icon.png; no runtime path needed.
     // tracks --ds-bg in src/ui/shell.css (and THEME_BG in src/theme.ts) — otherwise
@@ -23,12 +29,27 @@ function createWindow() {
   return win;
 }
 
+// ---- auto-check preference (persisted in userData) ----------------------
+const prefPath = () => path.join(app.getPath('userData'), 'update-pref.json');
+function getAutoCheck() {
+  try {
+    return JSON.parse(fs.readFileSync(prefPath(), 'utf8')).autoCheck !== false;
+  } catch {
+    return true; // default ON
+  }
+}
+function setAutoCheck(v) {
+  try {
+    fs.writeFileSync(prefPath(), JSON.stringify({ autoCheck: !!v }));
+  } catch {
+    /* best-effort */
+  }
+}
+
 // ---- update check -------------------------------------------------------
-// A cross-platform MANUAL update: quietly on launch and loudly from the menu we
-// ask GitHub for the latest release tag and compare it to this app's version; if
-// a newer one exists we offer to open the download page. We deliberately do NOT
-// auto-INSTALL: Squirrel.Mac auto-update needs a code-signed app and this build is
-// unsigned (mac.identity:null), so a real installer would fail on macOS. A
+// We compare this app's version to the latest GitHub release tag. Actual install
+// is a one-click trip to the download page — we deliberately do NOT auto-INSTALL:
+// Squirrel.Mac auto-update needs a code-signed app and this build is unsigned, so
 // check-and-notify behaves identically on Windows, macOS, and Linux.
 function cmpSemver(a, b) {
   const pa = String(a).replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
@@ -64,10 +85,18 @@ function fetchLatestTag() {
   });
 }
 
-async function checkForUpdates(interactive) {
-  let latest;
+/** { current, latest, updateAvailable } — or throws on network failure. */
+async function checkLatest() {
+  const current = app.getVersion();
+  const latest = (await fetchLatestTag()).replace(/^v/, '');
+  return { current, latest: latest || null, updateAvailable: !!latest && cmpSemver(latest, current) > 0 };
+}
+
+/** interactive (menu/launch) path: native dialog + optional open-download. */
+async function promptUpdate(interactive) {
+  let r;
   try {
-    latest = await fetchLatestTag();
+    r = await checkLatest();
   } catch {
     if (interactive) {
       dialog.showMessageBox({
@@ -79,12 +108,11 @@ async function checkForUpdates(interactive) {
     }
     return;
   }
-  const current = app.getVersion();
-  if (latest && cmpSemver(latest, current) > 0) {
+  if (r.updateAvailable) {
     const { response } = await dialog.showMessageBox({
       type: 'info',
-      message: `A new version of DSIM is available (${latest.replace(/^v/, '')}).`,
-      detail: `You have ${current}. Open the download page to update?`,
+      message: `A new version of DSIM is available (${r.latest}).`,
+      detail: `You have ${r.current}. Open the download page to update?`,
       buttons: ['Download', 'Later'],
       defaultId: 0,
       cancelId: 1,
@@ -94,15 +122,25 @@ async function checkForUpdates(interactive) {
     dialog.showMessageBox({
       type: 'info',
       message: 'You’re up to date.',
-      detail: `DSIM ${current} is the latest version.`,
+      detail: `DSIM ${r.current} is the latest version.`,
       buttons: ['OK'],
     });
   }
 }
 
+// ---- renderer bridge (see electron/preload.cjs) -------------------------
+ipcMain.handle('dsim:version', () => app.getVersion());
+ipcMain.handle('dsim:check', () => checkLatest()); // in-app UI: returns the result, no dialog
+ipcMain.handle('dsim:getAuto', () => getAutoCheck());
+ipcMain.handle('dsim:setAuto', (_e, v) => {
+  setAutoCheck(v);
+  return getAutoCheck();
+});
+ipcMain.handle('dsim:openDownload', () => shell.openExternal(`${SITE}/download`));
+
 function buildMenu() {
   const isMac = process.platform === 'darwin';
-  const checkItem = { label: 'Check for Updates…', click: () => checkForUpdates(true) };
+  const checkItem = { label: 'Check for Updates…', click: () => promptUpdate(true) };
   const template = [
     ...(isMac
       ? [{ label: app.name, submenu: [{ role: 'about' }, checkItem, { type: 'separator' }, { role: 'quit' }] }]
@@ -125,8 +163,10 @@ function buildMenu() {
 app.whenReady().then(() => {
   buildMenu();
   createWindow();
-  // quiet check shortly after launch (only speaks up if there's a newer version)
-  setTimeout(() => checkForUpdates(false), 3000);
+  // quiet check shortly after launch, only if auto-check is enabled
+  setTimeout(() => {
+    if (getAutoCheck()) promptUpdate(false);
+  }, 3000);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

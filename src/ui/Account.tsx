@@ -5,6 +5,7 @@ import { authEnabled, authClient } from '../lib/authClient';
 import { gameServerConfigured, multiServer, selectedServerId } from '../net/env';
 import { fetchProfile, updateHandle, updateUsername } from '../net/api';
 import { AuthPanel } from './AuthPanel';
+import { DesktopUpdate } from './DesktopUpdate';
 import { ServerMenu } from './ServerMenu';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
 import { APP_NAME } from '../seasons';
@@ -49,6 +50,8 @@ export function Account({
           </div>
         </div>
       )}
+
+      <DesktopUpdate />
 
       <div className="ds-panel" style={{ marginTop: 18 }}>
         <div className="ds-panel-h">
