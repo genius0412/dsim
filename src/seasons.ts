@@ -16,7 +16,7 @@ export const APP_TAGLINE = '2D Driver Practice';
 
 /** external links surfaced in the footer / download page */
 export const LINKS = {
-  repo: 'https://github.com/genius0412/2d-decode-sim',
+  repo: 'https://github.com/genius0412/dsim',
   discord: 'https://discord.gg/YB4tXnx7Pj',
 } as const;
 
