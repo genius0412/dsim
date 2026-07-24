@@ -45,7 +45,7 @@ export function ProfileFriendActions({
   if (isFriend) {
     return (
       <span className="ds-profile-friend-actions">
-        <span className="ds-chip on">✓ Friends</span>
+        <span className="ds-status">✓ Friends</span>
         <button className="ds-btn ghost" disabled={busy} onClick={() => run(() => friends.unfriend(username))}>
           Unfriend
         </button>
