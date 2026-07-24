@@ -50,7 +50,10 @@ export default async function handler(req: Request): Promise<Response> {
   headers.set('content-type', 'application/octet-stream');
   headers.set('content-disposition', `attachment; filename="${asset}"`);
   headers.set('accept-ranges', 'bytes');
-  headers.set('cache-control', 'public, max-age=300');
+  // NEVER cache at the edge. These are large streamed bodies and — critically —
+  // we honour Range: a cached 206 partial served for a different (or full) request
+  // would hand the user a TRUNCATED file. Always stream fresh from the origin.
+  headers.set('cache-control', 'no-store');
   const len = upstream.headers.get('content-length');
   if (len) headers.set('content-length', len);
   const contentRange = upstream.headers.get('content-range');
