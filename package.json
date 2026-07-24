@@ -69,7 +69,7 @@
         "provider": "github",
         "owner": "genius0412",
         "repo": "dsim",
-        "releaseType": "release"
+        "releaseType": "draft"
       }
     ]
   },
