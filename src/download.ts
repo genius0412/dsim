@@ -71,6 +71,17 @@ export const releasesUrl = (): string =>
   (env.VITE_DOWNLOAD_RELEASES_URL as string | undefined) ?? RELEASES_PAGE;
 export const appVersion = (): string | null => (env.VITE_APP_VERSION as string | undefined) ?? null;
 
+/** a phone/tablet — there's no native mobile build, so the Download page steers
+ * these visitors to the browser app + Add-to-Home-Screen instead of a desktop
+ * binary. iPadOS 13+ masquerades as "Macintosh", so also treat a touch-capable
+ * "mac" UA as mobile. */
+export function isMobile(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent.toLowerCase();
+  const iPadOS = /macintosh/.test(ua) && (navigator.maxTouchPoints ?? 0) > 1;
+  return /android|iphone|ipad|ipod|mobile|tablet|silk|kindle/.test(ua) || iPadOS;
+}
+
 /** best-guess the visitor's OS so its build can be featured first */
 export function detectOS(): OS | null {
   if (typeof navigator === 'undefined') return null;
