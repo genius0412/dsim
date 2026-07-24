@@ -25,8 +25,68 @@ function createWindow() {
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#20262c' : '#f9faf7',
     title: 'DSIM',
   });
-  win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+
+  // External links in the app all use target=_blank / window.open — send those to
+  // the user's real browser instead of opening a chrome-less child window. We do
+  // NOT intercept same-window navigations: Google sign-in (signIn.social) is a
+  // full-page redirect to the provider and back, and blocking it would break
+  // in-app auth. Every external <a> uses _blank, so there's nothing else to catch.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  loadApp(win);
   return win;
+}
+
+// Load the LIVE site when online so the desktop app is always the current deploy
+// (the game content updates with every web deploy — no re-download to update), and
+// fall back to the BUNDLED copy when offline (the primary case for a downloaded
+// build). The bundled copy is a full, online-capable build (vite bakes the public
+// game-server + auth config in for ELECTRON=1), so multiplayer works from it too if
+// a network is present — the fallback only really means "solo/offline" when there's
+// genuinely no connection.
+function loadLocal(win) {
+  win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+}
+
+async function loadApp(win) {
+  if (await siteReachable()) {
+    // loadURL rejects if the page fails to load; ERR_ABORTED is a benign
+    // client-side navigation (e.g. the SPA taking over), not a real failure.
+    win.loadURL(SITE).catch((e) => {
+      if (!e || e.code !== 'ERR_ABORTED') loadLocal(win);
+    });
+  } else {
+    loadLocal(win);
+  }
+}
+
+// A short HEAD probe so a truly-offline launch falls back to the bundle FAST
+// instead of waiting out a TCP timeout. Resolves true only on an actual HTTP
+// response from the site (any < 500 status = reachable).
+function siteReachable() {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => {
+      if (!done) {
+        done = true;
+        resolve(v);
+      }
+    };
+    const req = https.request(
+      `${SITE}/version.json`,
+      { method: 'HEAD', timeout: 2500, headers: { 'User-Agent': 'DSIM-desktop' } },
+      (res) => {
+        res.resume();
+        finish(res.statusCode > 0 && res.statusCode < 500);
+      },
+    );
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => finish(false));
+    req.end();
+  });
 }
 
 // ---- auto-check preference (persisted in userData) ----------------------

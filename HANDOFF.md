@@ -1,3 +1,49 @@
+# HANDOFF — 2026-07-25 (desktop = thin shell over the live site + baked env) — READ FIRST
+
+## This session — downloaded app now (a) auto-updates content by loading the live site and (b) can actually play online
+
+Two fixes to the Electron desktop build, no sim/web-UI changes:
+
+1. **Thin-shell load model** (`electron/main.cjs`). `createWindow` no longer `loadFile`s
+   the bundled `dist` unconditionally. New `loadApp(win)`: a fast `siteReachable()` HEAD
+   probe of `https://www.playdsim.com/version.json` (2.5 s timeout, dead host fails in
+   ~11 ms) decides — **online → `loadURL(SITE)`** (the app is always the current Vercel
+   deploy, so game content updates with every web deploy, no re-download), **offline →
+   `loadLocal(win)`** (the bundled copy; the common case for a downloaded build). A
+   `loadURL().catch` (ignoring benign `ERR_ABORTED`) is the safety net → falls back to
+   local if a reachable-but-failing load happens. Added `setWindowOpenHandler` → external
+   browser for `target=_blank`/`window.open` (all the app's external links use `_blank`).
+   **Deliberately NO `will-navigate` guard** — Google `signIn.social` is a full-page
+   redirect to the provider and back; blocking it would break in-app auth.
+
+2. **Baked public env into the desktop bundle** (`vite.config.ts`). The Electron build gets
+   NO Vercel env injection, so the old bundled build shipped with `VITE_GAME_SERVERS`/
+   `VITE_NEON_AUTH_URL` ABSENT → `SERVERS=[]` → multiplayer hidden, auth off (the bug the
+   user hit: "downloaded apps can't play online"). Now, behind an `if (process.env.ELECTRON
+   === '1')` guard, vite sets those two vars (the EXACT public values already in the deployed
+   web bundle — extracted from the live JS; nothing secret) via `process.env.X ??= …` so an
+   explicit override still wins. **The web build (ELECTRON unset) is provably untouched** —
+   hard `if` gate; Vercel keeps supplying its own env. `.env.*` is gitignored so a committed
+   dotenv would never reach CI — hence baking in vite.config, the single source that covers
+   both CI (`release.yml` runs `npm run build` with `ELECTRON=1`) and local `npm run dist`.
+
+**Verified** (real Electron drive, temp drivers deleted): online load → URL
+`https://www.playdsim.com/decode`, `window.dsim` bridge present, real app renders. Offline
+fallback → `file://…/dist/index.html` renders, and its menu shows live **"online · 3 signed
+in"**, **525 PLAYERS / 8,396 GAMES PLAYED**, solo/duo/1v1/2v2 counts — i.e. the bundle now
+reaches the game server + auth. Bundle grep confirms all 5 regions + the neon-auth URL baked
+in. `ELECTRON=1 npm run build` green (tsc strict + vite). No new release cut yet — this ships
+in the next tagged desktop build; existing v0.1.2 web/proxy/update flow unchanged.
+
+**Follow-up (not done):** true auto-INSTALL (electron-updater) still needs code-signing
+(Apple $99/yr is the hard gate; Windows unsigned works with SmartScreen warnings; Linux
+AppImage free). The thin-shell model above makes CONTENT updates instant regardless, so a
+shell rebuild is only needed for Electron/native changes. In-app Google sign-in may still hit
+Google's `disallowed_useragent` block in the Electron webview (email/password unaffected) —
+untested in-app; the existing `isEmbeddedBrowser` guidance applies.
+
+---
+
 # HANDOFF — 2026-07-22 ("Play a friend" format picker) — READ FIRST
 
 ## This session (latest) — the deferred "Play a friend" mode-picker (client-only)
