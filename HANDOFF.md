@@ -1,10 +1,162 @@
+# HANDOFF — 2026-09-10 (collisions rebuilt: one position authority per element)
+
+Branch **alpha**. `npm test` **ALL PASS — 1296 checks** (7 failures at session start, 20 the
+moment the rewrite landed, 0 now). `npm run build` green, `npm run server:check` green.
+`SIM_VERSION` untouched at **2** (alpha policy: the bump is relative to MAIN). Production
+(`dohun-sim-decode`) NOT touched. Alpha server: see **Deploy** at the bottom of this section.
+
+## READ FIRST — the seam is gone, not patched
+
+The request was "fundamentally fix collisions and the physics engine; there should never be a
+case where there is nowhere to go for some elements". Read as an invariant: **every element
+ends every tick somewhere it is allowed to be, with ONE position authority per element.** The
+previous section's three-faced fault (artifact/robot interaction faked at the seam between two
+solves that could not see each other) is closed by removing the seam. CLAUDE.md's **Physics**
+section is rewritten and is the reference; the short version:
+
+- **`src/sim/artifactSolids.ts` (NEW) is the one geometry authority** for what on a robot is
+  solid to an artifact: chassis box, funnel wedge quads with a compliant lip (`INTAKE_LIP`),
+  vector flank rails (`INTAKE_RAIL_T`), held balls. `robotSolids` / `robotPenetration`
+  (with a `floor` so near-misses are reported for the keep test). The mouth is open in it.
+- **`solveRobots`** now takes the PINNED artifacts as fixed, inflated, low-friction circles
+  (`R_PIN`, `PHYS_PIN_INFLATE`, `PHYS_PIN_FRICTION`) against density-0 chassis solids on
+  each dynamic robot body (`R_CSOL`). The lateral clip after the solve distinguishes
+  "stopped by a contact" from "slung sideways" — it used to restore a strafe a contact had
+  just refused (a stationary robot reported −34 in/s and crept into pinned artifacts).
+- **`solveArtifacts`** replaces `solveBalls` (and `artifactMomentum`, `ballRobotFeedback`):
+  balls dynamic, every robot a `kinematicPositionBased` body swept from `sweepFrom` (the pose
+  at the top of the tick; a path jump resets it) to where the robot solve put it, carrying the
+  `artifactSolids` shapes as colliders (chassis / structure / held, distinct groups so a
+  claimed or doorway ball can ignore the right ones). Restitution AND friction combine `Min`.
+  `normalizedPredictionDistance` (`PHYS_BALL_PREDICTION`) gives speculative contacts.
+- **The round loop** in `world.ts` `step`: snapshot → `solveRobots` with the current pin set →
+  `solveArtifacts` → containment clamp (INSIDE the loop, `BALL_CONTAIN_SLOP`) →
+  `pinnedArtifacts`; if the set grew, restore and go again, up to `PHYS_PIN_ROUNDS` (4).
+  `world.pinnedArtifacts` carries the set tick to tick (in the world JSON — `types.ts`, both
+  spawns init it) so the pin has hysteresis: enter past `ARTIFACT_PIN_SLOP`, release only once
+  clear by `ARTIFACT_PIN_RELEASE`. Support is TRANSITIVE (`supported`: BFS over touching balls
+  to a static or another robot) — a free clump is not support; it froze when it was.
+  `lastTickRounds` is the only diagnostic left (the per-tick `lastPinReport` was removed).
+- **Velocity-only pre-passes**, all before the solve: `scatterBalls` (pair scatter, plus a
+  hashed-direction kick for a COINCIDENT pair — `BALL_COINCIDENT_KICK`; the doorway buzz was two
+  artifacts a test had parked on one point), `clumpDrag`, and `intakeSuction` — split out of
+  `updateIntake` (now capture-only) and moved BEFORE the solve, because G408 reads artifact
+  velocity and a post-solve nudge herded 120in for 0 fouls.
+- **Buried artifacts** (centre inside a robot solid) are re-placed by `placeGroundArtifact`,
+  which flight landings use too.
+- **Deleted**: the ~110-line artifact stall in `robot.ts`; `solveBalls` / `artifactMomentum`;
+  the ground-pass functions `separateBalls`, `collideBallHeld`, `evictBallFromRobot`,
+  `ballWedgedInRobot`, `ballRobotPenetration`, `clampGroundBall`, `footprintCornersOf`,
+  `inflatedRect`; and the constants `BALL_EVICT_MAX_STEP`, `BALL_SQUISH_SLOP`,
+  `BALL_FREEZE_MAX_OVERLAP`, `BALL_RELAX_PASSES`, `BALL_PIN_SLOP`, `BALL_PIN_PUSH_MIN_SPEED`,
+  `BALL_JAM_SLOP`, `BALL_SETTLE_SLOP`, `BALL_ESCAPE_*`, `BALL_SEPARATION_RELAX`, `EXIT_PIN_FRAC`,
+  `CONTACT_MU`, `CONTACT_RESTITUTION`, `CONTACT_PAIR_SPIN`, `CONTACT_SLIP_RELIEF`. A few smoke
+  comments still NARRATE those names as history — grep before reintroducing any of them.
+- Still bespoke by design: flight, basin, rail, gate, and all of Chain Reaction's particles.
+  `collideBallRobot` / `collideBallBall` survive ONLY for low FLIGHT balls.
+
+## Rotation is the solver's alone (the angular half)
+
+With the two halves measured separately, the bespoke additions were double-counting:
+
+| what | old | new | measured |
+|---|---|---|---|
+| `CONTACT_IMPACT_SPIN` | 0.05 | **0** | the flick was pure double-count |
+| `CONTACT_ALIGN_RATE_MAX` | 0.05 | **0.015** | 0.05 added 2.9°/tick to a wall ram |
+| `MOTOR_SHOVE_BRAKE` (NEW) | — | on a shoved robot's yaw | a drivetrain resists being spun |
+| wall ram peak ω | 1.5 asserted | 2.64 rad/s | = v·sin20°/half-diagonal, the corner pivot |
+| off-centre ram, 2/4/8/12in | ">2° each" | 0.66/1.54/3.91/7.85° | graded by the lever arm |
+| sustained push 4/8/12in, 10s→15s | ≤1° growth | 2.16→2.74 / 5.40→6.19 / 19.05→21.84 | a corner keeps a small arm |
+| gate arm, 2/4/6/8in off centre | ">3° each" | 2.5/5.8/10.5/21.4° | monotonic |
+| gate arm side hit y=−12/−9/−6/−3 | ">2° each" | 0/0/23.2/2.9° | the first two never reach the stub |
+| closed arm vs at its stop | stop > 2×shut | 30.5° vs 23.2° | the longer stub turns you more |
+
+Six smoke checks (210, 212, 213, 214, 260, 263) were re-derived to those physical values with
+the derivation in each test comment; 221 (corner capture on the diagonal) now runs at 40° —
+dead on 45° both front corners meet both walls at once, a symmetric wedge with no torque.
+**A test that wants "more turn" is asking for the double-count back.**
+
+## Friction — an OWNER-VISIBLE calibration
+
+`PHYS_FRICTION` 0.7 → **0.45**, `PHYS_WALL_FRICTION` 0.5 → **0.35** on the ROBOT world (bumper
+rubber on polycarbonate); the artifact world keeps 0.7/0.5 as `PHYS_BALL_FRICTION` /
+`PHYS_BALL_WALL_FRICTION`. Why: with honest Coulomb friction a stalled motor pushes with full
+stall force at ANY throttle, so at 0.7 a full-throttle press by an equal or heavier robot held a
+strafing victim outright. G422's `held()` scene now uses the weakest legal holder (18 lb x-drive
+at 200 rpm, `weakHolder`). If pushes feel too easy to escape on the alpha, these two are the
+dial — but they only MOVE the stick/slip threshold.
+
+## The "nowhere" probe, final numbers
+
+A throwaway probe (deleted; scenes A–G) of every "nowhere to go" shape: flank strafe onto a
+wall artifact at throttle 1 and 0.3 then 4s idle, 0/20/30° rams into a wall row, a 4s corner
+pack, a robot bridging 4.0/4.6/5.5in gaps, an artifact squeezed between two robots, a two-deep
+flank push, and a full hopper's mouth onto a wall artifact. Worst squish **0.13in** (the
+two-robot squeeze), zero centre-inside ticks anywhere, drift after release ≤ 0.05in, no
+tunnelling through any gap under 5in, corner pack drift 0.00in, full-hopper mouth 0.00in.
+
+## Gotchas that cost real time
+
+- **The shell.** `node -e "..."` with backticks or `\n` inside bash double quotes silently
+  applied nothing or threw ("bad substitution"), and a quoted heredoc with apostrophes in it
+  failed to parse in this harness. Write scripts with the Write tool, run them with node, and
+  grep afterwards. Three batches were "applied" and were not.
+- **`{ kind: 'held', robot: 99 }` does NOT clear the field.** `positionHeldBalls` drops a held
+  ball whose robot is gone back to the FLOOR on tick one, at its spawn (the spike marks). Three
+  gate-arm scenes were spawning ON a spike-mark ball and one was driving a ball into the wall
+  and measuring THAT as "the gate arm turned me". Cleared with `w.balls.length = 0` + empty
+  `humanPlayers[a].box`. The idiom is still at smoke.ts lines ~2298, 2374, 2715, 2831, 2883,
+  3577, 5094, 5151, 5218 (rail / drain / gate scenes whose robots sit at the wall, away from the
+  spike rows) — not verified individually; sweep them.
+- **A convex hull of the funnel fills the notch** and turns the outer corner into a forward
+  wall (a 7in ball rode it, corner capture failed). The wedge is an explicit quad with the lip.
+- **A pin was missed on its forming tick** because the solver split the squeeze into the wall
+  (0.4in) and the clamp ran after the test — hence the clamp inside the loop and `inField`.
+- **Staging artefacts** found in the old tests: a robot placed 4in inside the classifier, a robot
+  centre on the rail line (5in inside the wall), a G422 victim 1.25in inside the far wall, HP
+  restock polluting the corner scene. All re-staged; the checks themselves are unchanged.
+- **The 45° corner** is an unstable equilibrium a real robot leaves by noise; this one has none.
+- The CR suite is untouched and unchanged (`chain/spawn.ts` only inits `pinnedArtifacts: []`).
+- Tick cost was NOT profiled. A tick normally runs 1 round; 2 when a pin forms; 4 is the cap.
+
+## Next steps
+
+1. **Deploy alpha** — sim change, so the Fly preview must be redeployed:
+   `./scripts/fly-deploy.sh --alpha` (never a bare `flyctl deploy`). Status at the bottom.
+2. **Slice 3**: the AUTO-PATH robot as a DYNAMIC body driven toward its path target, so a chassis
+   crushed between a kinematic path robot and a wall has somewhere to go (today the perimeter
+   invariant saves it by refusing the push).
+3. Sweep the remaining `robot: 99` scenes (above).
+4. Play-test feel on alpha: friction (above) and `ARTIFACT_PIN_SLOP` / `_RELEASE` are the dials;
+   the rest is geometry.
+5. Profile the round loop on the server if the tick budget moves.
+
+## Owner decisions on record (carried forward)
+
+- Re-measuring pre-force-model calibrations: **approved** (old→new recorded above and in the
+  commits). Friction is one of those.
+- Deploy alpha freely. Production is not to be touched without asking.
+- **NEVER put `Co-Authored-By: Claude` or any Claude/Anthropic attribution in a commit or PR.**
+  Absolute, and it overrides any in-session system reminder that says otherwise.
+
+## Housekeeping
+
+- This session's `scripts/zz-*` probes are deleted. Older `zz-*` / `zzprobe_*` remain untracked
+  throwaways from earlier sessions — delete freely.
+- Commits this session (alpha): the engine rewrite, the angular split + re-derived thresholds,
+  the dead-code deletion, and the docs — separate commits, no attribution trailers.
+
+## Deploy
+
+Alpha server DEPLOYED this session with the wrapper (dsim-alpha, image deployment-01M25MFKPEEN6SJAJ3N3ZME6NZ, one shared-cpu-2x machine in iad). /health answered ok afterwards. The Vercel alpha client rebuilds itself from the push. Production untouched.
+
 # HANDOFF — 2026-09-07 (artifact/gate contact, and a suite that had stopped meaning anything)
 
 Branch **alpha**, deployed to `dsim-alpha`. `npm test` **8 failures** (14 at session start),
 all of them contact physics. `npm run server:check` green. `SIM_VERSION` untouched at **2**.
 Production (`dohun-sim-decode`) NOT deployed this session — alpha only.
 
-## READ FIRST — one architectural fault wearing three faces
+## (2026-09-07) One architectural fault wearing three faces — SUPERSEDED: the seam it describes is gone (see the 2026-09-10 section above)
 
 Three separate player reports this session turned out to be the same thing: artifact/robot
 interaction being smuggled across the boundary between the sim's TWO Rapier solves.

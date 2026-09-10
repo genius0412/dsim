@@ -141,17 +141,22 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
   reconcile, and replays hold.
 - `dsin`/`dcos`/`datan2` (`math.ts`) exist from the old cross-machine-lockstep era. Under
   server authority they are no longer a *correctness* requirement, but **they stay in
-  `src/sim` until the Rapier ball port lands** — do not rip them out yet.
+  `src/sim`** — CR's 300-particle solve is still bespoke, and `npm test` greps the sim for a
+  bare `Math.sin/cos/random`, so new sim code (the artifact engine's own probes included) uses
+  them. Dropping the discipline is the last item of the Rapier port, not a side job.
 
 ## Physics
 
 - **ROBOT collision is Rapier 2D** (`@dimforge/rapier2d-compat`). `src/sim/physicsEngine.ts`
   `solveRobots()` rebuilds a fresh Rapier world each `step()` (stateless → reconcile/
-  determinism safe, no WASM leak), owns robot translation + velocity (field colliders from
-  the active module + mass-weighted robot-robot + velocity-kill), and writes `pos`/`vel` back
-  into the canonical `RobotState`. The bespoke square-up torque + `rrContacts` stay in
-  `physics.ts`. `RAPIER.init()` is async → **`initPhysics()` must be awaited** in smoke, the
-  server, and `main.tsx` before any step.
+  determinism safe, no WASM leak), owns robot translation, velocity AND ROTATION (field
+  colliders from the active module + mass-weighted robot-robot + velocity-kill), and writes
+  `pos`/`vel`/`heading`/`angVel` back into the canonical `RobotState`. The drive reaches it as
+  a FORCE + TORQUE (`DriveWrench`, built by `updateRobot`), so the angular half of every
+  contact — an off-centre ram, a flank drag, a held pair bearing itself flush — is the
+  solver's own answer from the same normal and friction impulses. The wall SQUARE-UP and
+  `rrContacts` stay in `physics.ts`. `RAPIER.init()` is async → **`initPhysics()` must be
+  awaited** in smoke, the server, and `main.tsx` before any step.
   - **EVERY robot gets a body, including one on an AUTO PATH** — a KINEMATIC one, so it is
     solid to everybody and pushed by nobody while `updatePathTraversal` keeps owning its pose.
     It used to get no body at all, i.e. a 30-second ghost you could drive straight through.
@@ -161,46 +166,29 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
     the soft positional correction acting on whatever is in its way, and that cannot keep up
     with a teleport. The whole STATIC pass is skipped for a path robot, because the gate
     handle writes `vel`/`heading`/`angVel` straight onto the chassis and bypasses `applyAcc`.
-  - **ROTATION IS LOCKED on the bodies, so the solve produces NO angular response** — that is
-    what `squareUpPair` supplies (below), and why an off-centre shove is not something Rapier
-    can be asked for here.
-- **ROBOT-ROBOT CONTACT RESPONSE lives in `squareUpPair`** (`physics.ts`) and has three parts,
-  all scaled by ONE shared number: the pair's **CLOSING velocity** along the contact normal.
-  It was each robot's *absolute* velocity, which is a load reading that does not need the other
-  robot to exist — two robots cruising side by side squared each other up at 0.45 rad/s, and a
-  pair actively separating still got torqued. `contactTorqueDelta`'s "no load, no torque" rule
-  was right; the input was wrong.
-  1. **`rrContacts` is recorded FIRST, on geometric overlap alone** — before any press test.
-     Every protected-zone rule in both games reads it (G424/G425/G426/G427/G402/G422/G408 and
-     CR's G05/G06) and touching an opponent in their zone fouls whether or not anyone is pressing.
-  2. **A settling nudge** (`contactTorqueDelta`, `spinMult` 0) — compliant bumpers flatten a
-     held pair toward flush.
-  3. **A real two-body point impulse**, from which only the **ROTATION** is taken (Rapier already
-     resolved the linear half inelastically; adding it back would bounce apart a pair whose
-     restitution is deliberately 0). Same model `squareUpStatics` uses for the gate handle,
-     extended to a second movable body, with `shoveMass` as the mass and a Coulomb `J_t` — which
-     is what makes a FLANK hit turn you INTO what you caught. A dead-centre hit has no moment arm
-     and no slip, so a square ram stays square without a special case.
-     Scaled by **`CONTACT_PAIR_SPIN`** (0.6), because taking only the rotation leaves out the two
-     things that relieve a SUSTAINED contact in reality — the bumpers slipping, and the turning
-     chassis shoving the other robot aside — so a held pair freezes into one geometry and the
-     torque repeats unrelieved. Unscaled it out-muscled the wheels almost regardless of the push:
-     a pusher 4.5× WEAKER than its victim held it to 103° of a possible 2748, the same as one 6×
-     stronger. The dial is honest about being a dial; a contact that can slip is the real fix.
-     `rotVn` (the ω×r term) belongs ONLY here, clamped to `[0, press]` — it damps a spin, and it
-     must not amplify one, and it must never reach the settling term, where it limit-cycles.
-     **A SLIDING CONTACT ALIGNS NOTHING** (`CONTACT_SLIP_RELIEF`) — this is the "contact that
-     can slip" the paragraph above calls the real fix, and it is what stops a pusher being
-     STEERED BY ITS VICTIM. The settling term turns BOTH chassis flush to the SHARED normal, so
-     when the victim turned, the normal turned and the pusher was turned to keep up: measured, a
-     pusher commanding nothing but straight forward copied its victim's heading at **102-110%**
-     and rode it 72in across the field still touching — "I turn with them and follow them". Real
-     bumpers let go, so the settling `align` is scaled by `1 / (1 + slip / CONTACT_SLIP_RELIEF)`,
-     the slip measured at the contact point WITH ω×r. That discriminates perfectly because the
-     cases are far apart: a genuinely held pair slips **0.0 in/s** and keeps every bit of the
-     settling it always had, an escaping one slips 5-36. Tracking fell 105% → **21%**.
-     ω×r is SAFE here and not in `press` because it enters as a MAGNITUDE that only ATTENUATES
-     — it has no sign to flip and cannot drive the heading, so it cannot limit-cycle.
+  - **ROTATION IS NOT LOCKED, AND NOTHING BESPOKE ADDS YAW ON TOP OF THE SOLVER'S.** It was
+    locked once, and a hand-rolled two-body impulse (`CONTACT_PAIR_SPIN`), a settling nudge and
+    a slip relief put the yaw back; with both running, an off-centre ram spun its victim 26.3°
+    where the solver alone gives 12.6. All of that is gone. Measured with the two halves split
+    (Sept 2026): the impact flick (`CONTACT_IMPACT_SPIN`) was pure double-counting and is
+    ZERO; the settling align is capped at `CONTACT_ALIGN_RATE_MAX` 0.015 rad/tick, under a
+    degree a tick, where the old 0.05 added 2.9°/tick to a wall ram. Rapier's own wall-ram
+    peak (2.6 rad/s at 85 in/s and 20°) is exactly the corner pivot v·sin θ / half-diagonal,
+    and an off-centre robot-robot ram turns the victim 0.7/1.5/3.9/7.9° at 2/4/8/12in off
+    centre — graded by the lever arm, with the victim's yaw motor braking harder while it is
+    being shoved (`MOTOR_SHOVE_BRAKE`), because a drivetrain resists being spun. **The smoke
+    thresholds for these are the solver's physical numbers**; a test that wants "more turn" is
+    asking for the double-count back.
+- **`squareUpPair` (`physics.ts`) RECORDS AND TRANSMITS; IT DOES NOT TURN.** Two things
+  survive there, and neither is a rotation:
+  1. **`rrContacts` is recorded on geometric overlap alone** — before any press test. Every
+     protected-zone rule in both games reads it (G424/G425/G426/G427/G402/G422/G408 and CR's
+     G05/G06) and touching an opponent in their zone fouls whether or not anyone is pressing.
+  2. **The transmitted PUSH** (`ContactAcc.ext`, scaled by the pair's CLOSING velocity along
+     the contact normal — an absolute velocity is a load reading that does not need the other
+     robot to exist), which is how a robot held against a wall by an opponent feels that
+     opponent's load in the STATIC pass. Rapier resolves the contact but does not tell the
+     bespoke wall aligner who is leaning on whom.
 - **THE PAIR PASS ACCUMULATES; IT DOES NOT WRITE** (`ContactAcc`). It used to rotate both chassis
   before the walls / goal faces / classifier / gate arm were asked anything, so those surfaces
   worked out their geometry against a robot an opponent had already turned — the exact
@@ -223,45 +211,78 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
   the robot's own drive, which is the whole story for a robot leaning on a wall by itself and none
   of it for one held there by an opponent — measured, a rammed robot sat at its arrival angle for
   four seconds. `ContactAcc.ext` carries the pair's push into the static pass.
-- **GROUND artifacts are Rapier too** (`solveBalls`): circle bodies against the static field
-  AND each robot's **CHASSIS** (kinematic — the robot pushes artifacts and is never pushed
-  back, which is product decision #7's outflow-no-shove). Flight/basin/rail stay scripted.
-  Key gotcha: the world is in **INCHES** → set `integrationParameters.lengthUnit` (see
-  `PHYS_*` constants).
-  - **A SQUEEZE HAS NO ONE-CONTACT-AT-A-TIME ANSWER.** The chassis is in that solve because
-    it used to be resolved bespoke *after* it: an artifact caught between a bumper and the
-    classifier got two position writes taking turns (3.13in in from the robot pass, 3.70in
-    back out from the static eviction, on an artifact whose velocity was ZERO) and neither
-    pass could see the other. Reordering and interleaving them each bought under 0.2in.
-    Smoke watches the symptom directly ("artifacts do not jitter against the classifier").
-  - **`ballRobotFeedback` runs BEFORE `solveBalls`** and moves nothing — only `r.vel`. A
-    kinematic body cannot be told it is blocked, so a robot still driving at a trapped
-    artifact makes the solver squirt it sideways (34in along a wall). Stall the robot first
-    and there is no squeeze left to answer wrongly. It probes the pin against **this tick's
-    push** (`approach·dt`), NOT a fixed radius: a radius-wide probe calls anything near a
-    wall pinned, and robots stopped driving into things at all — intake capture, the gate
-    drain and the foul counts all collapsed together.
-  - **`clampBallPosToStatics` includes the classifier channel.** It knew only the perimeter
-    walls and goal faces, so an artifact pressed on the channel was never seen as trapped,
-    the robot never stalled, and the eviction fought it forever. Anything solid an artifact
-    can be pinned against belongs in that clamp, or the pin test cannot see it.
-  - **The INTAKE is deliberately NOT in the solve** — its mouth is open by design (#10) and
-    its funnel geometry is per-preset. `collideBallRobot` now resolves only that region.
+- **GROUND ARTIFACTS ARE RAPIER TOO, AND THE TWO SOLVES RUN AS ROUNDS** (`solveArtifacts` +
+  the loop in `world.ts` `step`). The rule the engine was rebuilt to (Sept 2026): **every
+  element ends the tick somewhere it is allowed to be, with ONE position authority per
+  element.** There used to be some forty bespoke position-writing passes taking turns — robot
+  solve, ball solve, chassis eviction, wall clamp, jam freeze, settle freeze, a final
+  relaxation — and every "nowhere to go" report (an artifact squished into a wall, a chassis
+  walked across the field by its own artifact, a pair frozen 2.76in interpenetrated for 92
+  seconds) was two of them disagreeing. Now a robot's position is written by `solveRobots`
+  and nothing else, and a ground artifact's by `solveArtifacts` plus the containment clamp.
+  - **ORDER WITHIN A TICK**: commands/auto-path (recording `sweepFrom`) → ground-ball
+    integration, pair scatter (`scatterBalls`, VELOCITY only), `clumpDrag`, `intakeSuction`
+    (VELOCITY only, and BEFORE the solve — G408 reads artifact velocity, so a post-solve
+    nudge herded 120in for 0 fouls) → drive wrenches → snapshot robots + balls → the ROUND
+    LOOP (`PHYS_PIN_ROUNDS`): `solveRobots` with the currently PINNED artifacts as fixed
+    circles → `solveArtifacts` with every robot a KINEMATIC sweep from `sweepFrom` to where
+    the robot solve put it → containment clamp → `pinnedArtifacts`; if the pin set GREW,
+    restore the snapshot and run the round again. Then `world.pinnedArtifacts` (carried tick
+    to tick in the world JSON, so the pin has hysteresis across ticks), buried eviction +
+    `placeGroundArtifact`, `squareUpRobots`, actions, penalties, flight, goals.
+  - **ONE GEOMETRY AUTHORITY** — `src/sim/artifactSolids.ts` (`robotSolids`,
+    `robotPenetration`) says what on a robot is SOLID to an artifact: the chassis box, the
+    funnel's wedge quads with a compliant lip (`INTAKE_LIP`), the vector preset's flank rails
+    (`INTAKE_RAIL_T`), and the balls it is holding. The artifact solve builds its robot
+    colliders from these, the robot solve builds the same shapes (`R_CSOL`) to meet a pinned
+    artifact (`R_PIN`), and the pin test measures against them, so nothing can disagree about
+    where an artifact may be. The old engine had three descriptions of that surface and they
+    disagreed by a roller radius — exactly the band where artifacts were frozen by one rule
+    and released by another. **The intake MOUTH is open in all three** by design (#10); a
+    convex hull of the funnel filled the notch and turned the outer corner into a forward
+    wall, so the wedge is an explicit quad.
+  - **A PIN IS A ROBOT PROBLEM, NOT AN ARTIFACT PROBLEM.** `pinnedArtifacts` calls an artifact
+    pinned when a robot solid penetrates it AND it is against something that cannot yield —
+    the field (`inField`, measured with `clampBallPosToStatics`, which knows the walls, the
+    goal faces AND the classifier channel), or, transitively through touching artifacts
+    (`supported`), a static or another robot. Entry past `ARTIFACT_PIN_SLOP`, release only
+    once it has come clear by `ARTIFACT_PIN_RELEASE` — without the hysteresis an artifact
+    ratcheted into the wall under a leaning robot — and a free clump is NOT support (it froze
+    solid when it was). The pinned circle is inflated (`PHYS_PIN_INFLATE`) and low-friction
+    (`PHYS_PIN_FRICTION`) so the chassis stops ON it instead of creeping through the solver's
+    allowed error. A robot then stalls on a dead-centre artifact and an off-centre one squirts
+    out of the squeeze, from the geometry, with no pin rule written by hand.
+  - **THE CONTAINMENT CLAMP RUNS INSIDE THE LOOP** (`BALL_CONTAIN_SLOP`), so the pin test sees
+    an artifact where it will actually end the tick; a pin was missed on its forming tick when
+    the solver split the squeeze into the wall and the clamp ran after the test. Anything
+    solid an artifact can be pinned against belongs in `clampBallPosToStatics`, or the pin
+    test cannot see it.
+  - **THE STALL IS HONEST FRICTION, NOT A SCRIPT.** The lateral velocity clip after the robot
+    solve distinguishes STOPPED BY A CONTACT from SLUNG SIDEWAYS — it used to restore the
+    commanded strafe a contact had just refused, creeping a stationary robot into pinned
+    artifacts while reporting −34 in/s. Two artifacts left COINCIDENT (a test parking balls
+    off-field, a spawn on a spawn) get a hashed-direction kick (`BALL_COINCIDENT_KICK`),
+    because the solver has no normal between two circles at one point, and a doorway buzz was
+    exactly that pair. `lastTickRounds` (world.ts) says how many rounds the last tick ran — a
+    test hook, not state.
 - Wall/structure contacts apply **TORQUE** (summed over touching corners) so a tilted robot
-  squares up flush. Torque is PRESSURE-SCALED (`CONTACT_PRESS_GAIN`); a fast angled hit also
-  injects spin (`CONTACT_IMPACT_SPIN`, scaled by torque×speed — it **must** scale with torque;
-  a sign()-only kick once caused a numerical-noise spin-up on dead-center contacts). Flat-face
-  alignment is capped at the REMAINING TILT (`flushErr` in `pushRobotAt`) so the heading never
-  steps past flush and buzzes.
-- **`PHYS_FRICTION` IS NOT THE WALLS.** It is set on the ROBOT and BALL colliders; `statics()`
-  never called `setFriction`, so every wall, goal face, classifier and gate arm ran on Rapier's
-  DEFAULT (0.5) — and since the default combine rule is AVERAGE, robot-on-wall was silently 0.6
-  against robot-on-robot's 0.7, while the constant's own comment claimed it covered walls. Now
-  stated as `PHYS_WALL_FRICTION` at the same value, so nothing moved. Relevant when someone
-  reports "I cannot escape a push": a robot pressed into a wall sticks by COULOMB stick/slip
-  (friction ∝ the normal force, which the victim's own into-wall command adds to), so escape
-  collapses sharply once it presses in — 37in of sideways escape at zero forward, 1.9in at 0.2
-  forward. Lowering wall friction only MOVES that threshold, it does not remove it.
+  squares up flush. Torque is PRESSURE-SCALED (`CONTACT_PRESS_GAIN`); flat-face alignment is
+  capped at the REMAINING TILT (`flushErr` in `pushRobotAt`) so the heading never steps past
+  flush and buzzes, and at `CONTACT_ALIGN_RATE_MAX` so it can only ever ADD a little to the
+  solver's own pivot, never out-turn it. The impact flick is zero — see the rotation note above.
+- **FRICTION IS TWO WORLDS, AND THE ROBOT ONE IS BUMPER-REALISTIC.** `PHYS_FRICTION` 0.45 is
+  the ROBOT collider and `PHYS_WALL_FRICTION` 0.35 the field statics in the robot solve
+  (`statics()` must set it — it once ran on Rapier's default 0.5 while the constant's comment
+  claimed to cover walls); the artifact world keeps `PHYS_BALL_FRICTION` 0.7 and
+  `PHYS_BALL_WALL_FRICTION` 0.5 so artifacts still roll to rest. The robot values came DOWN
+  from 0.7/0.5 with the rewrite, and that is an OWNER-VISIBLE calibration: with honest Coulomb
+  friction a stalled motor pushes with full stall force at any throttle, so at 0.7 a
+  full-throttle press by an equal or heavier robot held a strafing victim outright. Relevant
+  when someone reports "I cannot escape a push": a robot pressed into a wall sticks by COULOMB
+  stick/slip (friction ∝ the normal force, which the victim's own into-wall command adds to),
+  so escape collapses sharply once it presses in. Lowering wall friction only MOVES that
+  threshold, it does not remove it; G422's `held()` smoke scene uses the weakest legal holder
+  for exactly that reason.
 - `robotIntersectsRect` (SAT) exists because thin zones can be fully covered by a robot body
   with no corner inside.
 
@@ -997,11 +1018,11 @@ Scoring happens at that decision moment, so a gate tap that drains in time SAVES
 ball. A pending ball that flows out an open gate untouched classifies at exit.
 
 Stray balls must never enter goal wedges or classifier channels (solid to balls), and no
-collision may ever push a ball outside the field (final wall clamp pass). Balls have "mass"
-feel: robot→ball contact is near-inelastic (`BALL_ROBOT_RESTITUTION`), and a ball PINNED
-between chassis and wall transmits the refused push back onto the robot (`pushRobotAt`) — the
-robot stalls on a dead-center pinned ball while off-center balls squirt out sideways. The pin
-only transmits when the ROBOT drives into it (`BALL_PIN_PUSH_MIN_SPEED`).
+collision may ever push a ball outside the field (the containment clamp inside the round
+loop). Balls have "mass" feel: robot→ball contact is near-inelastic, and a ball PINNED between
+chassis and wall is a FIXED CIRCLE IN THE ROBOT SOLVE (see **Physics**) — the robot stalls on a
+dead-centre pinned ball while off-centre balls squirt out of the squeeze, from the geometry
+rather than from a hand-written pin rule.
 
 ## Gate physics (manual 9.8.3, `updateGates` in goal.ts)
 
@@ -1640,10 +1661,18 @@ owns all of that.
   difference; anything left/right-asymmetric can. See `ROBOT_FRAME` in `RobotPreview.tsx`.
 - The DECODE basin containment normal points INTO the field; push balls back inside with `-n`
   (a sign inversion here once made positions explode to 1e250).
-- **Ball containment invariant**: ground balls get a HARD geometric eviction pass in `world.ts`
-  (walls + goal faces via `clampBallPosToStatics`, AND `collideBallRect` against both
-  classifier rects) because Rapier's soft contacts can't clear a DEEPLY embedded body. **Any
-  new solid a ball can tunnel into needs the same geometric clamp**, not just a collider.
+- **Ball containment invariant**: ground balls get a HARD geometric clamp INSIDE the round
+  loop in `world.ts` (`clampBallPosToStatics`: walls, goal faces AND the classifier channel,
+  past `BALL_CONTAIN_SLOP`), and one whose centre ends up inside a robot solid is re-placed by
+  `placeGroundArtifact`, because Rapier's soft contacts can't clear a DEEPLY embedded body.
+  **Any new solid a ball can tunnel into needs the same geometric clamp**, not just a collider
+  — the pin test reads that clamp to know what an artifact is pressed against.
+- **A ball "held" by a robot that does not exist is on the FLOOR by the end of tick one**
+  (`positionHeldBalls` drops it). Smoke scenes used to park the field's artifacts on
+  `robot: 99` to clear it, and three gate-arm scenes were spawning on spike-mark balls that
+  way. Clear a scene with `w.balls.length = 0` (and empty `humanPlayers[a].box` if the
+  restock matters); the remaining `robot: 99` sites are rail scenes the floor balls cannot
+  reach, listed in HANDOFF.
 - **Electron builds need `ELECTRON=1`** (`vite.config.ts` switches `base` to `./`). A bare
   `npm run build` loaded under `file://` resolves `/assets/*.js` at the filesystem root and
   404s **silently** — a permanently blank white window. Check this before assuming the app
@@ -1693,15 +1722,17 @@ with TOP/BOTTOM roles, and the G05/G06 penalty pair.
 **Netcode** — Phase 0 (server authority + prediction), Phase 1 (30 Hz delta snapshots,
 interpolation, reconnection, connection-quality HUD, Fly deploy), and Phase 3 (accounts,
 Glicko-2 ranked, leaderboards, records, admin, version gate) are LIVE.
-**Phase 2 (Rapier)** — ROBOTS slice done; **BALLS still bespoke**.
+**Phase 2 (Rapier)** — ROBOTS done (rotation unlocked, drive as a wrench); DECODE GROUND
+ARTIFACTS done (the two-solve round loop with pinned artifacts, Sept 2026 — see **Physics**);
+DECODE flight/basin/rail/gate scripted BY DESIGN; **CR PARTICLES still bespoke**.
 
 ## Next up (not started)
 
-1. **Rapier slice 2 — balls/particles.** Port to Rapier bodies/sensors while KEEPING the
-   scripted basin/rail/gate (the contact-time classified-vs-overflow commit must stay exact).
-   ONLY after that: drop the `dsin/dcos/datan2` discipline. (`collideRobots`/`constrainRobot`
-   are already GONE — they were provably dead and the closing-velocity impulse `squareUpPair`
-   now runs superseded the one thing worth keeping from them.)
+1. **Rapier slice 3 — the AUTO-PATH robot as a DYNAMIC body** driven toward its path target,
+   so a chassis crushed between a kinematic path robot and a wall has somewhere to go (today
+   the perimeter invariant is what saves it, and it saves it by refusing the push). Then **CR
+   particles** to Rapier if 300 bodies a tick is affordable, KEEPING the scripted accelerator
+   loop. ONLY after that: drop the `dsin/dcos/datan2` discipline.
 2. **DECODE penalty hitbox audit** — G408 and G422 have now been rewritten against the manual's
    own text; what is left is the ZONE GEOMETRY each of the OTHER rules tests
    (`gateZone`/`gateTapeSegments`, `tunnelStrip`, `allianceArea`, `pinnedAgainstWall` slop, the
