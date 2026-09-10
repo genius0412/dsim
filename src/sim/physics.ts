@@ -1,7 +1,7 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../types';
 import * as C from '../config';
 import { classifierRect, footprintExtents, goalFaceNormal, goalLineValue, viewAngleOf, type Rect } from './field';
-import { dot, rot, clamp, hyp, datan2 } from '../math';
+import { dot, rot, clamp, hyp, datan2, dcos, dsin } from '../math';
 import { activeDrive, driveParams } from './drivetrain';
 
 const ALLIANCES: Alliance[] = ['red', 'blue'];
@@ -50,7 +50,18 @@ export function heldSlotPos(spec: RobotState['spec'], slot: number, side: number
     if (slot <= 0) return { x: hl - 4, y: 0 }; // deep (loaded first)
     return { x: hl + 2, y: (side || -1) * 2.7 };
   }
-  const xs = [hl - 8, hl - 3, hl + 2];
+  /**
+   * A HELD ARTIFACT IS INSIDE THE ROBOT. The line of three ends with the front one's skin AT
+   * the roller line, not past it: a stored artifact is a physical thing now (it is a collider
+   * an incoming artifact piles up on, and a wall meets it), and the old front slot at
+   * `hl + 2` put 1.5in of it beyond the intake tip — a full robot parked tip-on-wall had a
+   * held artifact inside the wall plane, and a pile it shoved was held 4in off its footprint,
+   * out of reach of the G408 contact test. Measured from the tip so every legal length fits
+   * (the rear one stays inside the chassis whenever length + reach ≥ 15in, which every
+   * preset's floor satisfies).
+   */
+  const front = hl + C.INTAKE_PRESETS[spec.intake].reach - C.BALL_RADIUS;
+  const xs = [front - 4 * C.BALL_RADIUS, front - 2 * C.BALL_RADIUS, front];
   return { x: xs[Math.min(Math.max(slot, 0), 2)], y: 0 };
 }
 
@@ -1019,62 +1030,49 @@ export function collideBallBall(a: Artifact, b: Artifact): void {
 }
 
 /**
- * POSITION-ONLY de-overlap of two ground artifacts — a constraint pass, not a collision.
+ * THE OFF-CENTRE KICK OF A CONTACT BETWEEN TWO ARTIFACTS — velocity only.
  *
- * `collideBallBall` also applies an impulse, which is right when two artifacts MEET but
- * wrong as a cleanup pass: by then the overlap was created by something else moving a ball
- * (a robot's bumper, a wall clamp, the channel eviction), and answering that with an
- * impulse injects energy and makes a pinned clump jitter. Here the ONLY job is that no two
- * artifacts occupy the same space.
+ * Two artifacts meeting on a foam tile touch at a point a little off the line between their
+ * centres — the seams, the tile, the spin each is carrying — so real ones scatter where a
+ * solver's perfect spheres would slide past each other in a tidy line. It matters most at
+ * the gate, where the drain leaves straight and the spread has to come from what the
+ * artifacts hit. "Add slightly more randomness to each collision between balls to make them
+ * spread out more."
+ *
+ * Applied ONCE per tick, BEFORE the artifact solve, to a pair that is touching and closing:
+ * equal and opposite so momentum is conserved, in proportion to how hard they meet (a pile
+ * being leaned on barely scatters), and DETERMINISTIC — a hash of the two ids and the tick,
+ * not Math.random, because this runs inside the lockstep sim. It moves nothing: the solve
+ * owns every position.
  */
-export function separateBalls(a: Artifact, b: Artifact, tick = 0, scatter = false): void {
+export function scatterBalls(a: Artifact, b: Artifact, time: number): void {
   const dx = b.pos.x - a.pos.x;
   const dy = b.pos.y - a.pos.y;
   const d2 = dx * dx + dy * dy;
-  const minD = C.BALL_RADIUS * 2;
-  if (d2 >= minD * minD) return;
-  // EXACTLY coincident: two artifacts stacked dead centre have no separating direction to
-  // read off their positions, and returning here is what lets a stack persist forever.
-  // Push them apart along a deterministic axis instead (ids are stable and unique).
-  if (d2 < 1e-9) {
-    const s = a.id < b.id ? 1 : -1;
-    a.pos.x -= s * C.BALL_RADIUS * 0.5;
-    b.pos.x += s * C.BALL_RADIUS * 0.5;
+  const touch = C.BALL_RADIUS * 2 + C.BALL_SCATTER_TOUCH;
+  if (d2 >= touch * touch) return;
+  const t = Math.floor(time * 60);
+  if (d2 < C.BALL_COINCIDENT * C.BALL_COINCIDENT) {
+    // COINCIDENT — no honest normal; kick the pair apart along an axis hashed from the ids
+    // and the tick, equal and opposite, so the next solve has something to separate
+    let h = (a.id * 73856093) ^ (b.id * 19349663) ^ (t * 83492791);
+    h = Math.imul(h ^ (h >>> 15), 2246822507);
+    const ang = ((h >>> 0) / 4294967296) * Math.PI * 2;
+    const kx = dcos(ang) * C.BALL_COINCIDENT_KICK;
+    const ky = dsin(ang) * C.BALL_COINCIDENT_KICK;
+    a.vel.x -= kx;
+    a.vel.y -= ky;
+    b.vel.x += kx;
+    b.vel.y += ky;
     return;
   }
   const d = Math.sqrt(d2);
-  /**
-   * A CONTACT BETWEEN TWO SPHERES IS NEVER PERFECTLY CENTRAL.
-   *
-   * Two artifacts meeting on a foam tile touch at a point that is a little off the line
-   * between their centres — the seams, the tile, the spin each is carrying — so real ones
-   * scatter where these slid past each other in a tidy line. It matters most at the gate,
-   * where the drain now leaves straight (no synthesised fan at the exit) and the spread has
-   * to come from what the artifacts hit: measured, nine draining artifacts finished 3in apart
-   * across the tunnel. "Add slightly more randomness to each collision between balls to make
-   * them spread out more."
-   *
-   * Equal and opposite, so momentum is conserved, and DETERMINISTIC — a hash of the two ids
-   * and the tick, not Math.random, because this runs inside the lockstep sim.
-   */
-   // ...ONCE PER TICK, not once per relaxation pass. The pass runs six times, and six kicks a
-   // tick is not a contact, it is a vibration: measured, two overlapping artifacts flew 13.6in
-   // apart and the pinned-artifact squeeze went from 15 reversals a second to 32.
-  const t = Math.floor(tick * 60);
-  if (!scatter) return separate();
+  const rvn = ((b.vel.x - a.vel.x) * dx + (b.vel.y - a.vel.y) * dy) / d;
+  if (rvn >= 0) return; // not closing
   let h = (a.id * 73856093) ^ (b.id * 19349663) ^ (t * 83492791);
   h = Math.imul(h ^ (h >>> 15), 2246822507);
   h = Math.imul(h ^ (h >>> 13), 3266489909);
-  /**
-   * ...AND IN PROPORTION TO THE HIT. A flat kick applies the same shove to an artifact being
-   * crept onto as to one arriving at 40 in/s, which is not an off-centre contact, it is a
-   * vibration: it shoved artifacts through a 4.6in gap they do not fit through and set the
-   * pinned-artifact squeeze ringing again. The offset scales with how hard the two actually
-   * meet, so a pile being leaned on barely scatters and a drain hitting the pile in front of
-   * the gate scatters properly.
-   */
-  const rvn = ((b.vel.x - a.vel.x) * dx + (b.vel.y - a.vel.y) * dy) / d;
-  const closing = Math.min(Math.abs(rvn), C.BALL_CONTACT_SCATTER / C.BALL_CONTACT_SCATTER_FRAC);
+  const closing = Math.min(-rvn, C.BALL_CONTACT_SCATTER / C.BALL_CONTACT_SCATTER_FRAC);
   const jitter =
     (((h ^ (h >>> 16)) >>> 0) / 4294967296 - 0.5) * closing * C.BALL_CONTACT_SCATTER_FRAC;
   const tanx = -(dy / d) * jitter;
@@ -1083,40 +1081,6 @@ export function separateBalls(a: Artifact, b: Artifact, tick = 0, scatter = fals
   a.vel.y -= tany;
   b.vel.x += tanx;
   b.vel.y += tany;
-  separate();
-  return;
-  function separate(): void {
-  // a FRACTION of the overlap per pass — see BALL_SEPARATION_RELAX
-  const push = ((minD - d) / 2) * C.BALL_SEPARATION_RELAX;
-  const nx = (dx / d) * push;
-  const ny = (dy / d) * push;
-  a.pos.x -= nx;
-  a.pos.y -= ny;
-  b.pos.x += nx;
-  b.pos.y += ny;
-}
-}
-
-/** a HELD ball (stored in a robot's intake) is a solid immovable obstacle to an
- * incoming GROUND ball — so a full intake physically blocks the mouth: no more
- * can be funneled in past the balls already occupying it. Pushes the ground ball
- * only (the held ball is kinematic). */
-export function collideBallHeld(b: Artifact, held: Artifact): void {
-  const dx = b.pos.x - held.pos.x;
-  const dy = b.pos.y - held.pos.y;
-  const d2 = dx * dx + dy * dy;
-  const minD = C.BALL_RADIUS * 2;
-  if (d2 >= minD * minD || d2 < 1e-9) return;
-  const d = Math.sqrt(d2);
-  const nx = dx / d;
-  const ny = dy / d;
-  b.pos.x += nx * (minD - d);
-  b.pos.y += ny * (minD - d);
-  const vn = b.vel.x * nx + b.vel.y * ny;
-  if (vn < 0) {
-    b.vel.x -= nx * vn;
-    b.vel.y -= ny * vn;
-  }
 }
 
 /** push a point out of `rect` inflated by an artifact radius, the shallowest way that does
@@ -1169,7 +1133,8 @@ export function clampBallPosToStatics(p: Vec2): Vec2 {
   for (const a of ALLIANCES) {
     const dist = goalLineValue(out, a); // perpendicular distance behind the face
     const pen = dist + C.BALL_RADIUS;
-    if (pen > 0 && dist < C.BALL_RADIUS * 3) {
+    // from ANY depth: a ground artifact behind a goal face is inside the goal, wherever it is
+    if (pen > 0) {
       const n = goalFaceNormal(a);
       out.x += n.x * pen;
       out.y += n.y * pen;

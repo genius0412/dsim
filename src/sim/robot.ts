@@ -1,9 +1,9 @@
 import type { Artifact, ArtifactColor, RobotCommand, RobotSpec, RobotState, World } from '../types';
 import * as C from '../config';
 import { approach, rot, wrapAngle, hyp, dsin, dcos, datan2, clamp } from '../math';
-import { classifierRect, flywheelSpinTarget, footprintExtents, goalCenter, launchTriangles, viewAngleOf } from './field';
+import { classifierRect, flywheelSpinTarget, goalCenter, launchTriangles, viewAngleOf } from './field';
 import { activeDrive, driveParams, motorStep, motorStepVec, shoveMass } from './drivetrain';
-import { clampBallPosToStatics, robotIntersectsConvex } from './physics';
+import { robotIntersectsConvex } from './physics';
 import { robotsEnabled } from './match';
 
 /** launch is legal when ANY part of the robot is inside a launch zone. Uses a
@@ -478,119 +478,6 @@ export function updateRobot(
     }
   }
   /**
-   * ...AND AN ARTIFACT THAT CANNOT GET OUT OF THE WAY STALLS THE DRIVE.
-   *
-   * The chassis collides with artifacts in the solve now, so a robot pushing one into a wall is
-   * stopped by the contact chain — but ONLY while the artifact is in front of the chassis. The
-   * INTAKE MOUTH is deliberately not a collider (it is open by design, and its funnel geometry
-   * is per-preset), so an artifact that ends up in the mouth is invisible to that chain: the
-   * robot keeps driving until its own intake tip reaches the wall, which leaves less clearance
-   * than an artifact's diameter, and the artifact has nowhere to be except inside the chassis.
-   * Reported as "balls are not colliding with the robot and instead go on top", and measured on
-   * a five-artifact row rammed into the far wall: one buried 2.66in of its 5in diameter into the
-   * front face, at a dead stop, for 219 consecutive ticks.
-   *
-   * This is the rule the sim has always had — "stall the robot first and there is no squeeze
-   * left to answer wrongly" — but as a FORCE rather than a write to `r.vel` behind the solver's
-   * back, which is what made the old version fight a force-based drive. Only the component
-   * pushing INTO the blocked artifact is removed, so the robot can still back off or drive
-   * along the wall, exactly as before.
-   *
-   * An artifact the INTAKE is drawing in is exempt: it is on its way into the hopper, not in
-   * the way. Once the hopper is full there is nothing being acquired and the stall applies.
-   */
-  const push = hyp(fx, fy);
-  if (push > 0) {
-    const px = fx / push;
-    const py = fy / push;
-    const eating = (cmd.intake || r.autoIntake) && r.hopper.length < C.HOPPER_CAPACITY;
-    const ext = footprintExtents(r.spec);
-    for (const b of world.balls) {
-      if (b.state.kind !== 'ground') continue;
-      const rel = { x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y };
-      if (rel.x * px + rel.y * py <= 0) continue; // behind the push; not in the way
-      const l = rot(rel, -r.heading);
-      if (l.x > ext.front + C.BALL_RADIUS || l.x < -ext.rear - C.BALL_RADIUS) continue;
-      if (Math.abs(l.y) > ext.half + C.BALL_RADIUS) continue;
-      if (eating && l.x > 0) continue; // in the mouth and being swallowed
-      // where this tick's push would put it, and whether the field refuses that
-      const probe = { x: b.pos.x + px * C.BALL_RADIUS, y: b.pos.y + py * C.BALL_RADIUS };
-      const clamped = clampBallPosToStatics(probe);
-      const bx = probe.x - clamped.x;
-      const by = probe.y - clamped.y;
-      const blocked = hyp(bx, by);
-      if (blocked <= C.BALL_PIN_SLOP) continue;
-      const nx = bx / blocked;
-      const ny = by / blocked;
-      const into = fx * nx + fy * ny;
-      if (into > 0) {
-        /**
-         * IT REFUSES THE PUSH; IT DOES NOT STEER IT.
-         *
-         * Removing the blocked component as a projection (`f -= n(f·n)`) is the right answer
-         * for a free body sliding on a frictionless wedge, and the wrong one for a DRIVE
-         * force: the motors are making thrust along the robot's own axes, and an artifact
-         * jammed against the classifier cannot convert that thrust into sideways thrust. It
-         * did exactly that — measured on a real match, the lateral force flipped from -567 to
-         * +1158 on the SAME tick, every tick, and the chassis ramped smoothly to 27 in/s of
-         * strafe with the driver holding pure forward and the forward speed pinned at 0.1.
-         *
-         * Worse, it was invisible to the tyres. This runs BEFORE `wantX/wantY` are computed,
-         * so the sideways motion it produced was reported to `solveRobots` as the velocity the
-         * drive ASKED FOR — the per-wheel traction model saw no slip and never opposed it.
-         *
-         * Reported as "as the balls flow out and try to squeeze past the small gap between the
-         * intake corner and the field wall, they actually push the robot away to the side and
-         * let the balls go", four times in one match.
-         *
-         * So the blocked component is still removed — that is the stall, and without it a
-         * pinned artifact buzzes in the doorway (measured: 25 reversals in 2s, peaking at
-         * 235 in/s) — but the LATERAL half of what survives is capped at what the drive was
-         * already asking for. The robot can still be stopped, back off, or drive along the
-         * wall; it simply cannot be handed sideways thrust it never commanded.
-         */
-        const fx0 = fx;
-        const fy0 = fy;
-        fx -= nx * into;
-        fy -= ny * into;
-        // ...and whatever is left may not be MORE sideways thrust than the driver asked for.
-        // Removing the blocked component alone rotates the wrench, and a forward push against
-        // an artifact jammed on the classifier came out as pure strafe.
-        const rc = dcos(r.heading);
-        const rs = dsin(r.heading);
-        const lat = -fx * rs + fy * rc;
-        const lat0 = -fx0 * rs + fy0 * rc;
-        /**
-         * ...AND IT MAY ONLY EVER REDUCE THAT SIDEWAYS FORCE TOWARD ZERO. NEVER REVERSE IT.
-         *
-         * Capping the MAGNITUDE was not enough, and the reason is worth stating: a sign flip
-         * with a smaller magnitude passes a magnitude cap untouched, and a sign flip is exactly
-         * what removing the blocked component does to a wrench. Measured driving into five
-         * artifacts resting on a wall at 20 degrees, the lateral force went -955 -> +161 on the
-         * same tick, every tick, and 161 is less than 955 so nothing clamped it.
-         *
-         * What that -955 IS matters: with a pure forward command it is the drivetrain BRAKING
-         * its own sideways slide. So the stall was taking the robot's attempt to stop sliding
-         * and turning it into a push the other way. The chassis squared up to the wall and then
-         * travelled 29.83in ALONG it while commanding nothing but forward, against 0.98in on
-         * the bare wall — reported as "I'm still getting pushed around by artifacts against the
-         * wall".
-         *
-         * Clamping into the interval between 0 and what the wrench already had makes the stall
-         * strictly subtractive in the one axis where it has no business adding anything.
-         */
-        const want = clamp(lat, Math.min(0, lat0), Math.max(0, lat0));
-        const back = lat - want;
-        if (back !== 0) {
-          fx += rs * back;
-          fy -= rc * back;
-        }
-      }
-      break;
-    }
-  }
-
-  /**
    * WHAT THIS WRENCH ITSELF WILL PRODUCE, in free space — the whole of it, traction included,
    * not just the motor's target. `solveRobots` diffs the solver's answer against these to find
    * what the CONTACTS did, so anything we apply on purpose has to be in here or the model
@@ -845,7 +732,20 @@ function fire(world: World, r: RobotState): void {
  * tip; capture TIMING depends on WHERE across the mouth the ball sits (compliant
  * center fast, vectoring sides slow), and the overhang enables the strafe-in flank
  * grab. A clump feeds faster, and the triangle takes two at a time. */
-export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): void {
+/**
+ * THE INTAKE'S PULL ON THE ARTIFACTS IN ITS MOUTH — a velocity term, applied BEFORE the
+ * artifact solve so the solve can answer it.
+ *
+ * It used to be written in the same pass as the capture, AFTER the solve, and a velocity written
+ * after the solve is a lie until the next one: an artifact the rollers were pulling toward a
+ * throat already plugged by a full hopper carried a 19 in/s sideways velocity all the way across
+ * the field while actually riding the bumper straight ahead at 17. The penalty engine reads
+ * artifact velocity to decide whether a robot is herding (G408's carry), and read that — so a
+ * robot pushing a clump the length of the field with the intake held was billed nothing.
+ * In front of the solve it is simply the speed the artifact is trying to move at, and what it
+ * ACTUALLY does is what the solve leaves behind.
+ */
+export function intakeSuction(world: World, r: RobotState, cmd: RobotCommand): void {
   if (!robotsEnabled(world)) return;
   const running = cmd.intake || r.autoIntake;
   if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
@@ -853,12 +753,9 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   const preset = C.INTAKE_PRESETS[r.spec.intake];
   const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
   const hl = r.spec.length / 2;
-  const half = r.spec.width / 2;
   const tip = hl + preset.reach; // the roller line (balls pass UNDER it)
   const velRobot = rot(r.vel, -r.heading);
-  // ALL intakes capture at the CENTER, directly under the compliant wheels
-  // (funnel throat for sloped/triangle; the vectored-to center for vector)
-  const captureHalf = m.throatHalf;
+  const captureHalf = m.throatHalf; // the funnel throat / the vectored-to centre
 
   // the intake can't reach INTO the classifier: no vacuuming through the ramp wall
   const capWx = r.pos.x + dcos(r.heading) * (hl + C.BALL_RADIUS);
@@ -876,15 +773,29 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   // off-center ball to center; the funnel just seats a ball the slopes delivered.
   const wheelSpan = m.wedge ? m.throatHalf : m.mouthHalf;
 
-  const candidates: { b: Artifact; y: number }[] = [];
   for (const b of world.balls) {
     if (b.state.kind !== 'ground' || b.z > 6) continue;
     const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
 
+    /**
+     * ...AND, ON A FUNNEL PRESET, THE ROLLER ITSELF. Its compliant wheels span the whole mouth
+     * at the roller line (that is what is drawn, and what the opener blocks sit on), so an
+     * artifact touching the roller anywhere across the opening is gripped and pulled in; the
+     * slopes behind it only have to guide. Without this the funnel's outer half was a rigid
+     * plate that an artifact centred on the mouth's edge rode at the robot's own speed:
+     * 7in off-centre took 0.73s to reach the throat against 0.33s.
+     */
+    const onRoller =
+      m.wedge &&
+      local.x > tip - C.BALL_RADIUS - C.INTAKE_CAPTURE_BAND &&
+      Math.abs(local.y) < m.mouthHalf + C.BALL_RADIUS * 0.25; // the mouth, to the same edge the cornered grab uses
+    // ...out to the end of the funnel's compliant lip, which is where an artifact deflected
+    // by the mouth's edge rides: it sits a radius ahead of the lip, past the roller line
+    const ahead = tip + C.BALL_RADIUS + (m.wedge ? C.INTAKE_LIP + C.INTAKE_CAPTURE_BAND : 0);
     const underWheels =
       local.x > hl - C.BALL_RADIUS &&
-      local.x < tip + C.BALL_RADIUS &&
-      Math.abs(local.y) < wheelSpan;
+      local.x < ahead &&
+      (Math.abs(local.y) < wheelSpan || onRoller);
     if (underWheels && m.drawIn > 0) {
       const vLocal = rot(b.vel, -r.heading);
       // FLAT (vector) intake, OFF-CENTER ball struck at high CLOSING speed: the
@@ -912,6 +823,39 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
         }
       }
     }
+  }
+}
+
+export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): void {
+  if (!robotsEnabled(world)) return;
+  const running = cmd.intake || r.autoIntake;
+  if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
+
+  const preset = C.INTAKE_PRESETS[r.spec.intake];
+  const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
+  const hl = r.spec.length / 2;
+  const half = r.spec.width / 2;
+  const tip = hl + preset.reach; // the roller line (balls pass UNDER it)
+  const velRobot = rot(r.vel, -r.heading);
+  // ALL intakes capture at the CENTER, directly under the compliant wheels
+  // (funnel throat for sloped/triangle; the vectored-to center for vector)
+  const captureHalf = m.throatHalf;
+
+  // the intake can't reach INTO the classifier: no vacuuming through the ramp wall
+  const capWx = r.pos.x + dcos(r.heading) * (hl + C.BALL_RADIUS);
+  const capWy = r.pos.y + dsin(r.heading) * (hl + C.BALL_RADIUS);
+  for (const a of ['red', 'blue'] as const) {
+    const rect = classifierRect(a);
+    if (capWx > rect.x0 - 0.5 && capWx < rect.x1 + 0.5 && capWy > rect.y0 && capWy < rect.y1) {
+      return;
+    }
+  }
+
+
+  const candidates: { b: Artifact; y: number }[] = [];
+  for (const b of world.balls) {
+    if (b.state.kind !== 'ground' || b.z > 6) continue;
+    const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
     // capture once the ball reaches the throat, centered under the wheels
     const atThroat =
       local.x > hl - 1 &&

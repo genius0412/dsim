@@ -820,6 +820,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
     },
     events: [],
     rrContacts: [],
+    pinnedArtifacts: [],
     penalties: {
       episodes: {},
       pins: {},

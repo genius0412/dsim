@@ -111,6 +111,7 @@ import {
   BALANCE_VERSION,
   SIM_VERSION,
   INTAKE_PRESETS,
+  INTAKE_LIP,
   INTAKE_CATCH_LENIENCE,
   ROBOT_PRESETS,
   ROBOT_MAX_SIZE,
@@ -2719,7 +2720,10 @@ function queueTenth(w: World): void {
     r.heading = Math.PI / 2;
     r.fieldCentric = false;
     r.hopper = [];
-    const park = { x: exit.x, y: exit.y - tip + over };
+    // FLUSH with the wall, not centred on the rail line: the line is 3in from the wall and a
+    // chassis is 16.5in wide, so parking its centre there put 5in of it inside the wall, and the
+    // solver's ejection torqued the idle robot until its roof swept over the drop point
+    const park = { x: -FIELD_HALF + DEFAULT_SPEC.width / 2 + 0.1, y: exit.y - tip + over };
     for (let i = 0; i < Math.round(10 / SIM_DT); i++) {
       r.pos = { ...park };
       r.vel = { x: 0, y: 0 };
@@ -3867,7 +3871,11 @@ function queueTenth(w: World): void {
   const z = gateZone('blue');
   const turns = [
     idleTurn('gate, never driven', (w) => {
-      w.robots[0].pos = { x: z.x1 + 2, y: GATE_TAPE_Y - 6 };
+      // RESTING on the closed stub's field edge, not placed through it: at z.x1 + 2 the intake
+      // tip sat 4in inside the classifier and the stub, and the 3deg it 'turned' was the
+      // solver walking it back out of two solids by one corner
+      const tip = DEFAULT_SPEC.length / 2 + INTAKE_PRESETS[DEFAULT_SPEC.intake].reach;
+      w.robots[0].pos = { x: gateArmRect('blue').x1 + tip, y: GATE_TAPE_Y - 6 };
       w.robots[0].heading = Math.PI;
     }, false),
     idleTurn('gate, driven then released', (w) => {
@@ -4344,6 +4352,10 @@ function queueTenth(w: World): void {
     const r = w.robots[0];
     r.hopper = [];
     for (const b of w.balls) b.pos = { x: -400, y: -400 };
+    // the audience corner IS the loading zone, and the human player restocks it mid-scene:
+    // three artifacts staged across the diagonal approach, which the robot now stops against
+    // instead of ploughing through. The scene is about the ONE artifact in the corner.
+    for (const a of ['red', 'blue'] as const) w.humanPlayers[a].box.length = 0;
     const ball = w.balls[0];
     const c = FIELD_HALF - BALL_RADIUS;
     ball.state = { kind: 'ground' };
@@ -7269,10 +7281,18 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
 
 /** pin scenario: pinned robot flush against the far wall, pinner just below and
  * driving up into it (heading π/2 so robot-forward = +y). */
+/** make robot 0 the weakest legal build — an 18 lb x-drive at 200 rpm — for scenes where the
+ * victim has to be able to get away (see the strafe-clear pair) */
+function weakHolder(w: World): void {
+  const r = w.robots[0];
+  r.spec = { ...r.spec, drivetrain: 'xdrive', massLb: 18, driveRpm: 200 };
+}
+
 function pinWorld(): World {
   const w = foulWorld();
   for (const r of w.robots) r.heading = Math.PI / 2;
-  w.robots[1].pos = { x: 0, y: 63 }; // pinned red, flush at the far wall
+  // flush at the far wall — the INTAKE tip on it (63 put the footprint 1.25in inside the wall)
+  w.robots[1].pos = { x: 0, y: FIELD_HALF - DEFAULT_SPEC.length / 2 - INTAKE_PRESETS[DEFAULT_SPEC.intake].reach }; // pinned red
   w.robots[0].pos = { x: 0, y: 44 }; // pinner blue, 1" gap, drives up into it
   return w;
 }
@@ -7565,7 +7585,16 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: -1 })]]);
    */
   // victim (heading π/2, so +y is its forward) strafes sideways along the wall; the pinner
   // holds it there. Its own forward is left at 0 — it is trying to leave, not to press in.
-  const cmds = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveX: 1, driveY: 0.3 })]]);
+  /**
+   * ⚠️ THE ESCAPE IS COULOMB FRICTION NOW, not a clip artefact. The wall and the holder's bumper
+   * together hold the victim with (wall + bumper) times the holder's push, against a strafe worth
+   * the victim's own — and a stalled motor pushes with its whole stall force at any throttle. The
+   * old '52in escape from a 42 lb tank' came from the post-solve lateral clip handing the
+   * commanded strafe back after the contact had refused it; a 42 lb tank holds a mecanum on any
+   * wall now (see ). An EQUAL holder can be strafed out of, and the victim
+   * commands ONLY the strafe — its own forward press would add to the friction holding it.
+   */
+  const cmds = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveX: 1 })]]);
   const open = pinWorld();
   runCmds(open, cmds, 3.3);
   const esc = open.robots[1];
@@ -7628,15 +7657,16 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: -1 })]]);
    * stops growing.
    */
   const held = (x0: number): { escaped: number; g422: number } => {
-    const w = createWorld('match', 55, [setup(0, 'blue', { drivetrain: 'tank', massLb: 42 }, 0), setup(1, 'red', {}, 0)]);
+    // the WEAKEST legal holder — see the strafe-clear pair for why it is not the 42 lb tank
+    const w = createWorld('match', 55, [setup(0, 'blue', { drivetrain: 'xdrive', massLb: 18, driveRpm: 200 }, 0), setup(1, 'red', {}, 0)]);
     w.match.phase = 'teleop';
     w.match.phaseTimeLeft = 200;
     for (const r of w.robots) { r.heading = Math.PI / 2; r.vel = { x: 0, y: 0 }; r.fieldCentric = false; }
-    w.robots[1].pos = { x: x0, y: 63 };
+    w.robots[1].pos = { x: x0, y: FIELD_HALF - DEFAULT_SPEC.length / 2 - INTAKE_PRESETS[DEFAULT_SPEC.intake].reach }; // intake tip flush on the wall
     w.robots[0].pos = { x: x0, y: 44 };
     // a TANK pusher is commanded on its SIDE STICKS — given only driveY it does not move at
     // all, which silently turns "held against a wall" into "standing next to a wall"
-    const pc = cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 });
+    const pc = cmd({ driveY: 1 });
     runCmds(w, new Map([[0, pc], [1, cmd({ driveX: 1 })]]), 20);
     // how far the victim's own escape (+x, along the wall it is held against) actually got it,
     // and G422 EVENTS rather than `fouls.blue.minor`, since the corner staging sits in a
@@ -8118,7 +8148,9 @@ function pinScene(
     const t = w.balls[0];
     // forward of BOTH the chassis and the wedge front — the opener's REAR half sits above
     // the wedge, which is floor-level structure and legitimately solid
-    t.pos = { x: Math.max(hl + BALL_RADIUS + 0.05, wedgeFront + 0.3), y: (mo.mouthHalf + hw) / 2 };
+    // ...and CLEAR of the slope's compliant lip by its whole radius: the artifact is a 5in
+    // ball, not a point, and the slope is legitimately solid out to the end of that lip
+    t.pos = { x: tip + INTAKE_LIP + BALL_RADIUS + 0.05, y: (mo.mouthHalf + hw) / 2 };
     const p0 = { ...t.pos };
     for (let i = 0; i < Math.round(1 / SIM_DT); i++) {
       step(w, SIM_DT, new Map([[0, cmd({})]]));
@@ -8521,7 +8553,10 @@ function pinScene(
    * ...BUT THE LINE IS DISPLACEMENT, NOT INTENT, and this is the other side of it. The SAME ram,
    * at the SAME full throttle, against the SAME nine-row: the only thing that differs is whether
    * the row has anywhere to go. Flush on the wall it does not — the check above stands at full
-   * throttle too — and 32in out it does, so the ram drives it the whole way and costs 3 MINORs.
+   * throttle too — and 48in out it does, so the ram drives it the whole way and costs 3 MINORs.
+   * (48, not 32: a rammed row now reads its HONEST velocity, zero once it reaches the wall, so
+   * the confirm window has to elapse on the way there — measured, 0 MINORs at 32in, 3 at 48,
+   * 6 at 64. The old 32 counted the artifacts' phantom jitter against the wall as carry.)
    *
    * ⚠️ THE VARIABLE USED TO BE THE THROTTLE, and it cannot be any more. A row wedged between a
    * bumper and the perimeter is barely displaceable now: measured, a full-throttle ram moves it
@@ -8531,7 +8566,7 @@ function pinScene(
    * own bulldozing carve-out, and the same verdict as the three checks above it.
    */
   const ramAtWall = wallRow(9, ['green', 'green', 'green'], true, 10, 1);
-  const ramWithRoom = wallRow(9, ['green', 'green', 'green'], true, 10, 1, 32);
+  const ramWithRoom = wallRow(9, ['green', 'green', 'green'], true, 10, 1, 48);
   check(
     '...but RAMMING a nine-row at full throttle, scattering it, does foul',
     ramWithRoom > 0,
@@ -8709,7 +8744,9 @@ function pinScene(
   // squirted forty inches by the impact. Placed 30in out, the robot drives the pile the whole
   // way into the wall and leans on it, which is what "shoving one against a wall" describes:
   // 2 MINORs for the journey, none for the leaning (asserted just above).
-  const shoved = clump(6, push, 8, FIELD_HALF - BALL_RADIUS - 35, FIELD_HALF - 60, ['green', 'green', 'green']);
+  // 55in out, not 30: artifacts read their HONEST velocity now, zero once the pile reaches the
+  // wall, so the confirm window has to elapse on the way there (see the ram scene above)
+  const shoved = clump(6, push, 8, FIELD_HALF - BALL_RADIUS - 55, FIELD_HALF - 80, ['green', 'green', 'green']);
   const shovedMove = clumpMoved;
   check(
     '...but shoving one against a wall with a FULL robot does',

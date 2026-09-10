@@ -1397,10 +1397,18 @@ export function updateRails(
            * that as pinned throttled it to 5 of 9 artifacts in 14s, against 9 of 9 at a
            * 0.32s mean gap (the no-robot rate) once the nudge is allowed to do its job.
            */
+          /**
+           * TOUCHING COUNTS. The artifact solve never lets an artifact into a chassis, so one
+           * held against a bumper sits exactly a radius off it — a depth of -R, never deeper.
+           * Testing for 0.8R (i.e. half an inch INSIDE the chassis) meant a blocked artifact
+           * was never pinned, the floor re-armed every tick, the chassis refused it every
+           * tick, and the artifact buzzed in place: 118 reversals in two seconds at 3.5 in/s.
+           */
+          const pinDepth = -(C.BALL_RADIUS + C.EXIT_PIN_TOUCH);
           const pinned = world.robots.some((rb) => {
-            if (pointDepthInChassis(rb, ahead.pos) > -C.BALL_RADIUS * C.EXIT_PIN_FRAC) return true;
+            if (pointDepthInChassis(rb, ahead.pos) > pinDepth) return true;
             const taking = (commands.get(rb.id)?.intake ?? false) || rb.autoIntake;
-            return !taking && pointDepthInRobot(rb, ahead.pos) > -C.BALL_RADIUS * C.EXIT_PIN_FRAC;
+            return !taking && pointDepthInRobot(rb, ahead.pos) > pinDepth;
           });
           if (!pinned) {
             // ...and it is shoved at the speed of the artifact arriving behind it, not at a
