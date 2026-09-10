@@ -1,6 +1,6 @@
-# HANDOFF — 2026-09-10, third session (piles, pins and squeezes)
+# HANDOFF — 2026-09-10, third session (piles, pins and squeezes, gate intaking)
 
-Branch **alpha**. `npm test` **ALL PASS — 1304 checks (two new: the pile and the squeeze; the G408 lean scene and the drain-spread check restated)**. `npm run build` green, `npm run server:check`
+Branch **alpha**. `npm test` **ALL PASS — 1306 checks (four new: the pile, the squeeze, and gate intaking at two standoffs; the G408 lean scene, the drain-spread check and the outflow-shove tolerance restated)**. `npm run build` green, `npm run server:check`
 green. `SIM_VERSION` untouched at **2**. Production not touched. Alpha deploy: see **Deploy**.
 
 ## READ FIRST — the three reports, and what each turned out to be
@@ -56,6 +56,43 @@ green. `SIM_VERSION` untouched at **2**. Production not touched. Alpha deploy: s
 - `clumpDrag` reads the shared `artifactSolids` (`BALL_PUSH_CONTACT`); the per-contact scatter
   kick is gone and the coincident kick cannot stack.
 
+## Gate intaking (the follow-up report)
+
+"When gate intaking, the balls that come down should not be pushing the robot away." Measured
+with the robot's flank on the wall and its mouth over the exit, intake on, the ramp draining: with
+the tip 6in below the exit the drain shoved the robot **0.80in** (peak 6.6 in/s). Cause: every
+arrival that piled against the held artifacts became a pin, and the pinned circle was the full
+inflated ball carrying the ball's velocity — a moving immovable pointed at the robot. Three
+changes, all under one rule, **a pin may undo the robot's own advance and nothing more**:
+
+- the circle is sized against the robot's START pose and all of its solids (`robotPenetration`
+  with nothing skipped — the pin test skips held shapes for the doorway ball and the chassis for a
+  claimed one, and a circle tangent to the wrong shape overlapped the right one): tangent to the
+  nearest solid, plus `PHYS_PIN_INFLATE` only for a robot DRIVING into it (`driveIntent` along the
+  pin normal), capped at the full inflated ball. The inflation is what the soft contact compresses
+  under the drive force — re-tangenting each tick to the compressed pose let a driving robot creep
+  0.14in a tick into the ball and the ball 0.2in into the wall. A robot that drove into a pinned
+  ball is re-solved from where it started and stops at the inflation (no more 0.8in forming-tick
+  overshoot); a robot not driving toward it is not moved;
+- the circle moves only when the robot is DRIVING into the ball (`ARTIFACT_PIN_DRIVE`, 5% of
+  stick along the pin normal — intent, not measured advance: a robot stopped on its pin advances
+  nothing and is still pushing, and reading that as not-pushing killed the squirt), and then only
+  across or away from the robot's CENTRE — the first version clipped along
+  the one contact normal the pin test reported (a held artifact's diagonal), and what was left
+  still ran into the chassis face at 24 in/s.
+- a pinned artifact under a robot that is not pushing it goes back to where it began the tick,
+  at rest: the squeeze between a kinematic chassis and the field has no solver answer (position
+  or velocity), and the smoke jitter scene (an idle robot parked 1.25in onto the human-player
+  column) buzzed at 40 Hz once the robot stopped being shoved off it. Zeroing the velocity alone
+  did not stop it — the position corrections alternate on their own.
+- NOT a velocity clip against the robot the ball touches (tried, removed): projected along a
+  wedge slope's diagonal normal it turned a squeezed ball's compromise velocity into a sideways
+  drift (6.7in along the wall under a stalled robot) and a 40 Hz jitter. The wall clip is
+  axis-aligned and has no such failure.
+
+Result: **0.00in** displaced at either standoff, empty or full hopper; smoke pins it at 0.1in and
+the old outflow-shove check went from a 1.5in tolerance to 0.25.
+
 ## Measurements (the pile probe, deleted)
 
 | scene | before today | now |
@@ -95,7 +132,9 @@ green. `SIM_VERSION` untouched at **2**. Production not touched. Alpha deploy: s
 
 ## Next steps
 
-1. Play-test on alpha: piles, gate intaking with a full hopper, pushing a wall ball at an angle.
+1. Play-test on alpha: piles, gate intaking with an empty and a full hopper (the drain must not
+   move the robot at any standoff), pushing a wall ball at an angle, and parking an idle robot on
+   a column of artifacts (nothing may buzz).
 2. A pile jammed in a FULL funnel against a wall stops the robot (three taken, the rest boxed in
    by the wedge, the wall and each other). That is what a funnel does; if it reads as wrong on the
    alpha, the honest change is in `artifactSolids` (the wedge geometry), not in the pin.
@@ -103,7 +142,7 @@ green. `SIM_VERSION` untouched at **2**. Production not touched. Alpha deploy: s
 
 ## Deploy
 
-Alpha server DEPLOYED with the wrapper after the sim commit (4f9ffd5); /health answered ok. The Vercel alpha client rebuilds from the push. Production untouched.
+Alpha server DEPLOYED with the wrapper after each sim commit — 4f9ffd5 (piles, pins, squeezes) and 32cd777 (gate intaking: a pin may undo the robot's own advance and nothing more); /health answered ok both times. The Vercel alpha client rebuilds from the push. Production untouched.
 
 # HANDOFF — 2026-09-10, second session (artifacts collide like balls)
 

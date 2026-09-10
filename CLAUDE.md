@@ -262,7 +262,21 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
     solve, at the position the artifact began the tick in and carrying the velocity the artifact
     solve gave it, so a ball that cannot move is the wall it always was and a ball squirting out
     of a squeeze along a wall at 100+ in/s is a wall the robot follows into the space it
-    vacates. And **a re-run round restores artifact POSITIONS but keeps their velocities** —
+    vacates. **A pin may undo the robot's OWN advance and nothing more**: the circle is sized
+    against the robot's START pose and every one of its solids — tangent to the nearest solid,
+    plus `PHYS_PIN_INFLATE` only for a robot DRIVING into it (the inflation is what the robot
+    world's soft contact compresses under the drive force; re-tangenting each tick to the
+    compressed pose let a driving robot creep 0.14in a tick), capped at the full inflated ball —
+    and it moves only when that robot is DRIVING into the ball (`ARTIFACT_PIN_DRIVE` of stick
+    along the pin normal — intent, not measured advance: a robot stopped on its pin advances
+    nothing and is still pushing), and then only across or away from the robot's centre. A 0.2 lb
+    artifact rolling down the gate onto a parked intake cannot shove 30 lb of robot; the full
+    inflated moving circle did, 0.8in per drain ("when gate intaking, the balls that come down
+    should not be pushing the robot away"). A pinned artifact under a robot that is NOT pushing it is put back where it began
+    the tick, at rest: squeezed between a kinematic chassis and the field the solver has no
+    answer it can settle on, and a column under an idle robot parked 1.25in onto it jittered
+    0.19in a tick at 40 Hz. And **a re-run round restores artifact POSITIONS but keeps their
+    velocities** —
     restoring the velocity too threw away the squirt the round had just found, the re-solve with
     a stopped robot gave the ball 5 in/s instead, and the robot sat on a creeping ball tick after
     tick ("artifacts act like they are fixed in place"). **An artifact on the field has no
