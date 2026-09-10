@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ComponentType } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
 import {
@@ -11,7 +12,8 @@ import {
 } from '../net/api';
 import { uploadPracticeRun } from '../net/api';
 import { GAME_IDS } from '../games/types';
-import { gameVisible } from '../seasonVisibility';
+import { devRoutesEnabled, gameVisible } from '../seasonVisibility';
+import { moduleFor } from '../games';
 import { FriendsProvider } from './friendsContext';
 import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
@@ -85,7 +87,9 @@ type Screen =
   | 'changelogs'
   | 'profile'
   | 'account'
-  | 'admin';
+  | 'admin'
+  /** a game's own alpha-only dev route (`GameModule.devRoutes`) */
+  | 'dev';
 
 /** everything a route needs beyond the screen itself */
 interface RouteArgs {
@@ -95,8 +99,10 @@ interface RouteArgs {
   username: string | null;
   /** the section/tab of a screen that has them: `/configure/<sub>`, `/records/<sub>` */
   sub: string | null;
+  /** the matched `GameDevRoute.path` for `screen === 'dev'` */
+  dev: string | null;
 }
-const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null };
+const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null, dev: null };
 
 /**
  * Tiny path router (no dependency). Each screen is a real URL, and every URL is
@@ -182,6 +188,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/account';
     case 'admin':
       return '/admin';
+    case 'dev':
+      return a.dev ?? '';
   }
 }
 
@@ -249,7 +257,23 @@ function parsePath(pathname: string, fallbackGame: GameId): { game: GameId; scre
   const prefixed = gm ? (gm[1] as GameId) : null;
   const game: GameId = prefixed && gameVisible(prefixed) ? prefixed : fallbackGame;
   const rest = gm ? pathname.slice(gm[0].length) || '/' : pathname;
+  // a game's own dev route wins over the shared screen table, but only where the
+  // prefix ACTUALLY named that game — an unprefixed legacy path must not pick up
+  // the fallback game's instruments
+  if (prefixed === game && devRouteFor(game, rest)) return { game, ...NO_ARGS, screen: 'dev', dev: rest };
   return { game, ...parseScreen(rest) };
+}
+
+/**
+ * The component for one of `game`'s dev routes, or null.
+ *
+ * The channel gate lives HERE rather than at the render site so a stable build
+ * neither routes to one nor renders one: an unmatched path falls straight through
+ * to `parseScreen`, which sends an unknown path home.
+ */
+function devRouteFor(game: GameId, rest: string): ComponentType | null {
+  if (!devRoutesEnabled()) return null;
+  return moduleFor(game).devRoutes?.find((r) => r.path === rest)?.Component ?? null;
 }
 
 /** which rail/menu entry lights up for a given screen */
@@ -368,7 +392,7 @@ export function App() {
         saveSettings(ns);
       }
       setScreen(s.screen);
-      setRoute({ replayId: s.replayId, username: s.username, sub: s.sub });
+      setRoute({ replayId: s.replayId, username: s.username, sub: s.sub, dev: s.dev });
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -1338,6 +1362,11 @@ export function App() {
         />
       )}
       {screen === 'admin' && isAdmin && <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />}
+      {screen === 'dev' &&
+        (() => {
+          const Dev = devRouteFor(settings.game, route.dev ?? '');
+          return Dev ? <Dev /> : null;
+        })()}
 
       {/* Patch notes / new-season + new-act reveals — shown once on the menu shell,
           never over a live match (the game screen returns before this). Mounted

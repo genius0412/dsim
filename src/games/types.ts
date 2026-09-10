@@ -147,4 +147,19 @@ export interface GameSimModule {
   colliders: FieldColliders;
   createWorld(mode: GameMode, seed: number, setups: RobotSetup[], settings?: GameSettings): World;
   step(world: World, dt: number, commands: Map<number, RobotCommand>): void;
+  /**
+   * This game's own HUD slice, read once per HUD poll and carried on
+   * `HudSnapshot.gameHud`.
+   *
+   * DOM-free and on the SIM module on purpose: it is a projection of world state
+   * for the local robot, nothing more, and putting it here stops `game.ts` growing
+   * a named bag per game (`hud.chain` is exactly that, and it stays — the CR HUD
+   * reads it in a dozen places and rewriting those is not this change).
+   *
+   * Typed `unknown` because only the game's own components consume it: they cast
+   * it back to their own shape at the one place they read it. A typed generic
+   * would have to be threaded through `HudSnapshot`, `GameView`, and every screen
+   * that forwards a snapshot.
+   */
+  hud?(world: World, robotId: number): unknown;
 }

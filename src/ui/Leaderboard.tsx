@@ -14,6 +14,7 @@ import {
 } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { periodLabel } from '../seasons';
+import { moduleFor } from '../games';
 import { PeriodPicker } from './PeriodPicker';
 import { SupporterBadge, type StaffRole } from './SupporterBadge';
 import { PLACEMENT_GAMES } from '../config';
@@ -109,6 +110,9 @@ function DriverName({
  * CR and would read as a "weird" random configuration. */
 function RobotSpecSummary({ spec, game }: { spec: RobotSpec; game?: GameId }) {
   const isChain = game === 'chain';
+  // a game that owns its config sentence (the module's `labels.configSummary`
+  // slot) prints THAT instead of tiles naming fields it may not have
+  const own = moduleFor(game).labels?.configSummary;
   const stat = (value: ReactNode, label: string, small = false) => (
     <div className="ds-stat">
       {/* `small` is the TEXT variant of a stat value (a drivetrain name, an
@@ -137,7 +141,9 @@ function RobotSpecSummary({ spec, game }: { spec: RobotSpec; game?: GameId }) {
         {stat(DT_LABEL[spec.drivetrain], 'drivetrain', true)}
         {stat(spec.massLb, 'lb mass')}
         {stat(spec.driveRpm, 'drive rpm')}
-        {isChain ? (
+        {own ? (
+          stat(own(spec), 'config', true)
+        ) : isChain ? (
           <>
             {stat(archetype, 'archetype', true)}
             {stat(sweeper, 'intake', true)}
