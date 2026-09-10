@@ -691,7 +691,17 @@ export const CONTACT_PRESS_GAIN = 0.4;
  * worst single tick ramming a wall at speed is 2.9 degrees (174 deg/s), which is about what a
  * robot can turn itself, and a 20-degree tilt still comes flush in well under a second.
  */
-export const CONTACT_ALIGN_RATE_MAX = 0.05;
+/**
+ * ...AND LOWER STILL, NOW THAT RAPIER OWNS THE IMPACT. The bodies rotate in the solve, so an
+ * angled ram squares itself up there — measured, every wall ram lands within 0.1° of flush with
+ * this term switched off entirely. What the align is FOR is the case the solver leaves alone:
+ * a chassis LEANING on a face at an angle under a sustained press (a pinned robot, a robot
+ * driven into a corner, Chain Reaction's wall approach), where friction holds the tilt. That
+ * is a slow settle, and at 0.05 rad/tick the term was also adding 2.9° a tick ON TOP of the
+ * solver's own 2.4° during a ram — the "snaps the chassis round" report. 0.015 brings a 20°
+ * lean flush in under half a second and adds under a degree a tick to anything.
+ */
+export const CONTACT_ALIGN_RATE_MAX = 0.015;
 /** spin injected per (contact torque × in/s of impact speed) — a fast angled
  * hit visibly converts momentum into rotation; dead-center hits add nothing */
 /**
@@ -702,15 +712,14 @@ export const CONTACT_ALIGN_RATE_MAX = 0.05;
  * makes a merely firm one feel violent. Halved and more with the align ceiling: ramming a wall
  * at speed peaked at 3.23 rad/s (185 deg/s of free spin) and now peaks at 0.80.
  */
-export const CONTACT_IMPACT_SPIN = 0.05;
 /**
- * Coulomb friction at a POINT contact — bumper against field structure.
- *
- * This is a real material constant, not a dial: it is what decides that catching a post with
- * your flank yaws you INTO it rather than away, because the post drags that side back. Rubber
- * bumper on polycarbonate/aluminium runs about 0.6-0.9.
+ * ZERO: the solver owns the impact. The bodies rotate in the robot solve, so a fast angled hit
+ * converts momentum into rotation there, from the real normal and friction impulses at the real
+ * corner — and adding a flick on top counted the same hit twice (measured 3.5 rad/s against the
+ * solver's own 2.6 on a 20° wall ram at full speed, which is v·sin20°/half-diagonal: the pivot
+ * about the corner). Kept as a named zero so the settling path's shape stays readable.
  */
-export const CONTACT_MU = 0.8;
+export const CONTACT_IMPACT_SPIN = 0;
 /**
  * How close a second separating axis has to be to the least-overlapping one before it counts
  * toward the contact normal, in inches of overlap.

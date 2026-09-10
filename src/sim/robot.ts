@@ -357,7 +357,24 @@ export function updateRobot(
    * stops dead at the target. Same gate, and same reasoning, as `MOTOR_SHOVE_BRAKE`.
    */
   const inertia = chassisInertia(m, r.spec);
-  const wNext = motorStep(r.angVel, targetOmega, dp.turnAccel, dp.maxTurn, dt);
+  /**
+   * ...AND THE SAME SHOVE BRAKE THE TRANSLATION GETS. A robot commanding no turn that is being
+   * SPUN by an opponent's off-centre hit used to brake that spin at the full `MOTOR_BRAKE_MULT`,
+   * which is the motors actively fighting it — 53 rad/s² on the default chassis, enough to kill
+   * any hit's yaw within two ticks. Measured, a 12in-off-centre ram turned its victim 6.5° where
+   * the same contact with the motors merely holding turned it 16.5°. The comment above this
+   * line has always said the yaw is refused by the tyres' grip and not by the motors' torque,
+   * and the translation half already reads `MOTOR_SHOVE_BRAKE` for exactly this case.
+   */
+  const shovedYaw = targetOmega === 0 && world.rrContacts.some((c) => c.a === r.id || c.b === r.id);
+  const wNext = motorStep(
+    r.angVel,
+    targetOmega,
+    dp.turnAccel,
+    dp.maxTurn,
+    dt,
+    shovedYaw ? C.MOTOR_SHOVE_BRAKE : C.MOTOR_BRAKE_MULT,
+  );
   let tau = (inertia * (wNext - r.angVel)) / dt;
 
   /**

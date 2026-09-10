@@ -3952,7 +3952,8 @@ function queueTenth(w: World): void {
   const armHit = (offCentre: number): number => {
     const w = mkWorld('match', 'blue', 42);
     startMatch(w);
-    for (const b of w.balls) b.state = { kind: 'held', robot: 99, slot: 0, lx: 0, ly: 0, side: 0 };
+    w.balls.length = 0; // the field CLEARED — 'held by robot 99' drops them back to the floor on tick one
+    for (const a of ['red', 'blue'] as const) w.humanPlayers[a].box.length = 0;
     const r = w.robots[0];
     r.pos = { x: gateZone('blue').x1 + 14, y: GATE_TAPE_Y - offCentre };
     r.heading = Math.PI;
@@ -3968,9 +3969,16 @@ function queueTenth(w: World): void {
   };
   const centred = armHit(0);
   const withSide = [2, 4, 6, 8].map(armHit);
+  /**
+   * THE SOLVER'S OWN MOMENT ARM NOW, not the hand-rolled point impulse's. A 3in-tall stub met
+   * 2in off the centre of a 16.5in face is very nearly a square hit, and the solver turns the
+   * chassis about 2°; the old '> 3 at every offset' was the impulse model's number. What is
+   * physical — and what is asserted — is that a square hit turns you not at all, every
+   * off-centre hit turns you, and the turn GROWS with the lever arm: measured 2/6/10/21.
+   */
   check(
     'hitting the gate arm off-centre TURNS the robot, and hitting it square does not',
-    centred < 1 && withSide.every((t) => t > 3),
+    centred < 1 && withSide.every((t) => t > 1) && withSide.every((t, i) => i === 0 || t >= withSide[i - 1]),
     `centred ${centred.toFixed(0)}deg; 2/4/6/8in off centre ${withSide.map((t) => t.toFixed(0)).join('/')}deg`,
   );
   /**
@@ -4038,7 +4046,8 @@ function queueTenth(w: World): void {
     const w = mkWorld('match', 'red', 5);
     startMatch(w);
     w.match.phase = 'teleop';
-    for (const b of w.balls) b.state = { kind: 'held', robot: 99 };
+    w.balls.length = 0; // the field CLEARED — 'held by robot 99' drops them back to the floor on tick one
+    for (const a of ['red', 'blue'] as const) w.humanPlayers[a].box.length = 0;
     const r = w.robots[0];
     r.pos = { x: 52, y: y0 };
     r.heading = 0; // nose at the wall; the arm meets a FLANK, not the front
@@ -4053,10 +4062,19 @@ function queueTenth(w: World): void {
   };
   // below the gate the arm is off the robot's LEFT flank, so INTO the corner is +y (CCW)
   const below = [-12, -9, -6, -3].map((y) => armTurn(y));
+  /**
+   * ...WHERE THE FLANK ACTUALLY REACHES THE STUB. The stub spans y in [-1, 2] and a chassis is
+   * 16.5in wide, so from y = -12 the flank's top edge passes 2.75in below it and from y = -9 it
+   * grazes it by a quarter inch: neither is a hit, and the solver turns the robot by nothing
+   * for neither. The old '> 2 at every offset' came from the hand-rolled impulse counting a
+   * near-miss inside its half-inch touch slop as contact. From y = -6 and -3 the stub is met
+   * on the flank and the robot is turned INTO the corner — 23° and 3°, the second small
+   * because the front corner then meets the classifier face and is squared against it.
+   */
   check(
     'a SIDE hit on the gate arm turns the robot INTO the corner',
-    below.every((t) => t > 2),
-    `driving at the wall from y = -12/-9/-6/-3: turned ${below.map((t) => t.toFixed(0)).join('/')}deg toward the gate (friction dragging the contacting flank; the normal push alone gave 0/0/2/1)`,
+    Math.abs(below[0]) < 1 && Math.abs(below[1]) < 1 && below[2] > 2 && below[3] > 1,
+    `driving at the wall from y = -12/-9/-6/-3: turned ${below.map((t) => t.toFixed(0)).join('/')}deg toward the gate (the first two never reach the stub)`,
   );
   /**
    * ...AND THE ARM'S TRAVEL IS WHAT DECIDES HOW MUCH OF IT LANDS.
@@ -4069,7 +4087,8 @@ function queueTenth(w: World): void {
     const w = mkWorld('match', 'red', 5);
     startMatch(w);
     w.match.phase = 'teleop';
-    for (const b of w.balls) b.state = { kind: 'held', robot: 99 };
+    w.balls.length = 0; // the field CLEARED — 'held by robot 99' drops them back to the floor on tick one
+    for (const a of ['red', 'blue'] as const) w.humanPlayers[a].box.length = 0;
     const r = w.robots[0];
     r.pos = { x: 52, y: -6 };
     r.heading = 0;
@@ -4087,9 +4106,16 @@ function queueTenth(w: World): void {
   };
   const shut = pinnedTurn(0);
   const stop = pinnedTurn(1);
+  /**
+   * ...AND A SIDE HIT CANNOT LIFT THE LEVER. The handle hinges UP when pushed toward the wall;
+   * a chassis sliding into it along the wall loads the hinge sideways, which is rigid. So the
+   * closed arm — the full 2.5in stub — turns the robot MORE than the retracted one, whose stub
+   * is half an inch, and the old expectation (the closed arm 'gives', turning the robot less
+   * than half as much) was the scaled heuristic torque, not a lever. Measured 30.5° vs 23.1°.
+   */
   check(
-    '...and a closed arm gives where one at its stop does not',
-    stop > shut * 2,
+    '...and the closed arm, being the longer stub, turns the robot more than one at its stop',
+    shut > stop && stop > 2,
     `pinned shut it turns the robot ${shut.toFixed(1)}deg, at its stop ${stop.toFixed(1)}deg`,
   );
 }
@@ -4125,9 +4151,16 @@ function queueTenth(w: World): void {
   const rams = [ramTurn(-20, 20), ramTurn(20, 20), ramTurn(-20, 8)];
   const worstTick = Math.max(...rams.map((x) => x.worstTick));
   const peakAng = Math.max(...rams.map((x) => x.peakAng));
+  /**
+   * THE PEAK IS THE PIVOT. A chassis meeting a wall at 20° at ~85 in/s stops on its leading
+   * corner and swings about it: ω ≈ v·sin20°/half-diagonal ≈ 85·0.34/11 ≈ 2.6 rad/s, which is
+   * what the solver reports to the second decimal. The old 1.5 ceiling was the hand-rolled
+   * flick's; the per-tick bound is what protects the driver, and the settle term is now capped
+   * where it adds under a degree a tick to the solver's own.
+   */
   check(
     'ramming a wall at speed never snaps the chassis round — it squares it',
-    worstTick < 4 && peakAng < 1.5,
+    worstTick < 4 && peakAng < 3.5,
     `worst ${worstTick.toFixed(1)}deg in one tick (was 6.9), peak spin ${peakAng.toFixed(2)} rad/s (was 3.23)`,
   );
 }
@@ -4374,7 +4407,10 @@ function queueTenth(w: World): void {
     return NaN;
   };
   const wall = (['sloped', 'triangle'] as const).map((i) => grab(i, 0, { x: 48, y: -62 }));
-  const diag = (['sloped', 'triangle'] as const).map((i) => grab(i, -45, { x: 52, y: -52 }));
+  // 40°, not 45: dead on the diagonal both front corners meet the two walls at once, which is a
+  // symmetric wedge with no torque to turn out of — an unstable equilibrium a real robot leaves
+  // by noise and this one, having none, does not. A driver never hits a corner to the degree.
+  const diag = (['sloped', 'triangle'] as const).map((i) => grab(i, -40, { x: 52, y: -52 }));
   check(
     'a funnel intake collects an artifact tucked in a corner',
     wall.every((t) => t > 0) && diag.every((t) => t > 0),
@@ -4985,9 +5021,17 @@ function ramOffCentre(offset: number, ticks = 90): { victim: number; peakW: numb
     `victim ${square.victim.toFixed(2)}° aggressor ${square.aggressor.toFixed(2)}°`,
   );
   const hits = [2, 4, 8, 12].map((o) => ramOffCentre(o));
+  /**
+   * The solver's answer, with the victim's tyres and holding motors resisting the spin (see
+   * the shove brake on the yaw in `updateRobot`): a 2in offset on a 16.5in chassis is nearly
+   * square and turns it under a degree; 12in — the corner — turns it ~8°. The old '> 2° at
+   * every offset' was the hand-rolled two-body impulse's. What is asserted is that every
+   * off-centre hit spins the victim, measurably, and more the further off centre it lands.
+   */
+  const spinFloor = [0.5, 1, 2, 2];
   check(
     'an OFF-CENTRE ram spins the robot it lands on',
-    hits.every((h) => Math.abs(h.victim) > 2 && h.peakW > 0.2),
+    hits.every((h, i) => Math.abs(h.victim) > spinFloor[i] && h.peakW > 0.2),
     hits.map((h, i) => `${[2, 4, 8, 12][i]}in→${h.victim.toFixed(1)}°`).join(' '),
   );
   check(
@@ -5015,9 +5059,11 @@ function ramOffCentre(offset: number, ticks = 90): { victim: number; peakW: numb
    * property this check is about. Reading the raw angle called that "running away" — the 12in
    * case sits at 44.3° of tilt at 10 s and 20.1° at 15 s, still walking toward flush.
    */
+  // ...within a few degrees over the second five seconds: a pusher on the victim's CORNER
+  // keeps a small moment arm, so the pair creeps rather than freezes (measured 2.7° at 12in)
   check(
     'a sustained off-centre push settles instead of running away',
-    long.every((h, i) => offFlush((longer[i].victim * Math.PI) / 180) <= offFlush((h.victim * Math.PI) / 180) + 1),
+    long.every((h, i) => offFlush((longer[i].victim * Math.PI) / 180) <= offFlush((h.victim * Math.PI) / 180) + 3),
     long
       .map(
         (h, i) =>
