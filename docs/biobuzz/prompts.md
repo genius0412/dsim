@@ -2,20 +2,25 @@
 
 Paste each block into its own chat. Worktrees already exist on the requester's machine
 (`git worktree list` from any checkout shows them). Integration (merging lanes → `biobuzz`,
-merging `origin/alpha` → `biobuzz`) stays in the planning chat. Nothing is pushed anywhere
-until the private-repo question is settled.
+merging `origin/alpha` → `biobuzz`) stays in the planning chat, which is the ONLY Fable 5.1
+chat before kickoff. Fable is spent on REVIEW, not on typing: (1) the P0 diff before it merges
+into `biobuzz`, (2) the solver comparison + the human's verdict, (3) the perf-load capacity
+numbers before any server behaviour changes. Escalate a working chat to Fable only if it is
+stuck on one physics behaviour for more than two feedback rounds, or if the kickoff robot
+rules (R105) turn out unusual. Nothing is pushed anywhere until the private-repo question is
+settled.
 
 | chat | model | worktree | branch | start |
 |---|---|---|---|---|
-| P0-core | Fable 5.1 | `C:\Users\saket\Desktop\saket\FTC\Claude Projects\dsim-bb-core` | `biobuzz-core` (off `biobuzz`) | now |
+| P0-core | Opus 5 | `C:\Users\saket\Desktop\saket\FTC\Claude Projects\dsim-bb-core` | `biobuzz-core` (off `biobuzz`) | now |
 | P0-shell | Opus 5 | `…\dsim-bb-shell` | `biobuzz-shell` (off `biobuzz`) | now, in parallel |
-| P0.5-sandbox | Fable 5.1 | `…\dsim-bb-sandbox` | `biobuzz-sandbox` | after core + shell are merged into `biobuzz` |
-| perf-load | Fable 5.1 | `…\dsim-bb-load` | `perf-load` (off `origin/alpha`) | now, independent |
+| P0.5-sandbox | Opus 5 | `…\dsim-bb-sandbox` | `biobuzz-sandbox` | after core + shell are merged into `biobuzz` |
+| perf-load | Opus 5 | `…\dsim-bb-load` | `perf-load` (off `origin/alpha`) | now, independent |
 | Lane A / Lane B | Fable / Opus | `…\dsim-bb-field`, `…\dsim-bb-robot` | `biobuzz-field`, `biobuzz-robot` | kickoff T0 |
 
 ---
 
-## P0-core — Fable 5.1
+## P0-core — Opus 5
 
 You are working in the DSIM repo (2D FTC driver-practice simulator: Vite + React + TS client,
 Node/ws authoritative server, shared deterministic sim). Worktree:
@@ -201,7 +206,7 @@ questions NOW; otherwise work to the end and report.
 
 ---
 
-## P0.5-sandbox — Fable 5.1 (start after core + shell are merged into `biobuzz`)
+## P0.5-sandbox — Opus 5 (start after core + shell are merged into `biobuzz`)
 
 You are working in the DSIM repo, worktree
 `C:\Users\saket\Desktop\saket\FTC\Claude Projects\dsim-bb-sandbox`, branch `biobuzz-sandbox`
@@ -242,7 +247,7 @@ otherwise do step 1 and stop.
 
 ---
 
-## perf-load — Fable 5.1 (independent track, start now)
+## perf-load — Opus 5 (independent track, start now)
 
 You are working in the DSIM repo (2D FTC driver-practice sim: Vite/React client on Vercel,
 Node + `ws` authoritative game server on Fly, Neon Postgres). Worktree:
@@ -292,7 +297,8 @@ Steps:
 3. **Capacity model**: sweep rooms per machine on the local server to find where `/api/perf`
    p99 approaches the 16.67 ms budget and where snapshot jitter degrades; state rooms/core
    and sockets/core for shared-cpu-1x/2x/4x/8x and performance-1x by extrapolation from the
-   measured slope. Write `docs/capacity.md`.
+   measured slope. Write `docs/capacity.md`. **STOP here and report** — the numbers get
+   reviewed before any server behaviour changes.
 4. **Fix the cliffs you find**, in likely order of value; each one a separate commit with a
    before/after number: (a) cold boot — precompile the server (`tsc` → `node dist/…`, or
    `tsx` with a warm build cache) so an auto-started satellite answers in <1 s, and check

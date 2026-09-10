@@ -347,13 +347,16 @@ zones, legal-start test, possession limits. Fix the `BiobuzzState` shape and the
 
 | chat | model | why |
 |---|---|---|
-| P0-core: shared-core generalization (items 1–6, 8) | **Fable 5.1** | touches server, protocol, settings, App routing, Menu/GameView slots; a silent downgrade here is the #1 way a third game half-works |
+| P0-core: shared-core generalization (items 1–6, 8) | Opus 5 | the prompt enumerates every site; the grep proof + smoke checks catch a silent downgrade; the diff is REVIEWED by the Fable integration chat before merge |
 | P0-shell: module scaffold + copy-and-own + smoke-biobuzz + scenes/gallery/shots (items 7, 9, 10) | Opus 5 | mechanical, well-templated by `chain/` and `shiftaudit.cjs` |
-| P0.5-sandbox: pollen physics, two solvers, human tuning loop | **Fable 5.1** | physics is the stated weak spot; the human's time is the scarce input, so the model must make each round count |
-| Lane A field (kickoff) | **Fable 5.1** | geometry measured off manual figures + scoring/penalty rule text + any new physics; the repo's history says these are where misreadings ship for months |
+| P0.5-sandbox: pollen physics, two solvers, human tuning loop | Opus 5 | the human is the judge; Opus turns dials and shoots stills. Escalate to Fable if one behaviour does not converge in two rounds |
+| perf-load: harness, capacity model, then fixes | Opus 5 | measurement is mechanical; the capacity numbers are reviewed by the integration chat BEFORE step 4 (admission control / second-machine routing), which is the design-heavy part |
+| Integration + reviews + merges + `alpha` syncs | **Fable 5.1** | the one Fable chat before kickoff: review gates after P0, after the solver comparison, after the capacity numbers; conflict resolution |
+| Lane A field (kickoff) | **Fable 5.1** | geometry measured off manual figures + scoring/penalty rule text + any new physics; the repo's history says these are where misreadings ship for months. Human's call on the day |
 | Lane B robot (kickoff) | Opus 5 | large but well-patterned (CR archetypes); escalate to Fable for the expansion-rule / footprint / clamp work if R105 is unusual, and for any mechanism with real dynamics |
-| Integration + merges + `alpha` syncs | Fable 5.1 | conflict resolution across both lanes and the monolith |
-| perf-load: capacity model, load harness, server hardening, human latency test plan | **Fable 5.1** | the failure is silent until launch day and involves the one part of the stack contributors cannot redeploy |
+
+Fable is used sparingly before kickoff on purpose: the prompts are already file-level
+plans, so the model that follows them matters less than the review at each merge point.
 
 ## Risks
 
