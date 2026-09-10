@@ -1,3 +1,107 @@
+# HANDOFF — 2026-09-10, second session (artifacts collide like balls)
+
+Branch **alpha**. `npm test` **ALL PASS — 1302 checks (seven new, pinning the artifact contact model)**. `npm run build` green, `npm run server:check`
+green. `SIM_VERSION` untouched at **2**. Production not touched. Alpha deploy: see **Deploy**.
+
+## READ FIRST — two defects in the artifact CONTACT MODEL, neither in any pass
+
+The report: "Artifacts feel like they are stuck to each other or stuck to the wall. They don't
+leave their semi-linear formation they form when they come out of the gate. They don't
+disperse." and "The artifacts do not behave like a 2d collision." Both true, both measured,
+both fixed in the artifact world's contact parameters rather than with a pass. CLAUDE.md's
+**Physics** section carries the reference (ARTIFACTS COLLIDE LIKE BALLS); the short version:
+
+1. **In-plane friction on a rotation-locked circle is a drag that on a real rolling ball would
+   be spin.** Ball bodies are rotation-locked circles in a top-down plane; a tangential friction
+   impulse had nowhere to go but their translation. At `PHYS_BALL_FRICTION` 0.7 / wall 0.5 a
+   glancing hit sent the struck ball off at 3° where the contact normal was at 30°, a 45° wall
+   bounce kept a quarter of its along-wall speed, and 70% of the moving contacts in a gate
+   drain were pairs travelling together. Now 0.05 / 0.05 (ball-ball, ball-wall, ball-bumper).
+2. **Rapier applies NO restitution on a speculative contact.** The artifact world looked 3.5in
+   ahead (`PHYS_BALL_PREDICTION` 0.35 × lengthUnit 10), and Rapier closes a speculative gap as a
+   velocity clip, computing the bounce from whatever approach is left — measured e ≈ 0.14 for
+   a set 0.68 (ball) and 0.14-0.20 for 0.5 (wall), at every speed; stiffer contacts made it
+   worse (0.03); CCD changed nothing. So a ball rear-ending the one ahead merged with it — the
+   train. The look-ahead is Rapier's default now (0.002, bounce measured 0.67 / 0.47) and the
+   CHASSIS carries a contact SKIN (`PHYS_BALL_CHASSIS_SKIN` 0.35in) so a full-speed sweep still
+   catches an artifact before burying it. No skin on the intake (a skin on the wedge narrows the
+   throat and squeezed what was in it: 1.44in burial, a ball ejected at 161 in/s).
+
+Three things had to follow:
+- **The pin needs something behind the artifact** (`pinnedArtifacts`): with real contacts a
+  full-speed ram buries the first ball of a clump for a tick, and the old entry clause pinned
+  any deep overlap with no support — the robot stopped dead on 0.2 lb of foam. Support is now a
+  chain through OTHER artifacts to a static or robot, or the field — and **the field only pins
+  what is pushed INTO it** (`ARTIFACT_PIN_COS` 0.85, ~32° of square; `fieldPushback` gives the
+  direction). A corner catching a ball against a wall pushes it at an angle; a round ball
+  pushed at an angle rolls out along the wall. Reading that as a pin had parked the robot
+  behind a ball it was not touching (the inflated pin circle + the release hysteresis left a
+  dead band: "corner-hit wall ball is nudged aside" measured 0.1in).
+- **`clumpDrag` reads the same `artifactSolids` the solve does, at the skin** — a pushed
+  artifact rides 0.35in off the bumper and the bare-surface contact test never saw it (the
+  clump test read 0/0/0%). The robot solids are built once, before the pre-passes, in
+  `world.ts`.
+- **The per-contact scatter kick is gone** (`scatterBalls` keeps only the coincident-pair kick,
+  which also no longer stacks: a pile of many coincident artifacts used to explode). It was
+  standing in for collisions that did not work; with them honest it made the drain's spread
+  WORSE (axis ratio 0.53 with it, 0.73 without) and kept balls jittering. The owner's ask
+  behind it ("spread out more") is served better by the real collisions.
+
+## Measurements (throwaway probe, deleted)
+
+| scene | before | after |
+|---|---|---|
+| glancing hit, impact parameter R: struck ball's angle off the contact normal | 26° | 3° |
+| same, tangential speed of the struck ball | 9 in/s | 1.3 in/s |
+| 45° wall bounce, (−30, 30) in | (4.0, 8.8) | (13.9, 25.8); ideal (15, 30) |
+| head-on ball-ball restitution at 40 in/s (set 0.68) | 0.14 | 0.67 |
+| ball-wall restitution at 40 in/s (set 0.5) | 0.20 | 0.47 |
+| nine-ball gate drain at 10 s: minor/major axis ratio | 0.01 | 0.73 |
+| …balls touching the wall / touching pairs | 9 / 8 | 4 / 3 |
+| …co-moving contact ticks (moving pairs with matching velocity) | 70% | 33% |
+| …all nine at rest | never | 3.5 s |
+| full-throttle ram into a free 3-clump, slowest speed in the next 0.5 s | 0 (stalled) | 69.6 in/s |
+| 60 in/s artifact squeezed between wall and a parked robot's flank: robot displaced | — | 0.30 in |
+
+Experiment ladder that found the restitution defect (prediction is normalized × lengthUnit 10):
+prediction 0.35 → e 0.14 at every speed; 0.02 → 0.14/0.29/0.68 rising with speed; 0.002 →
+0.77/0.67/0.68 (ball) and 0.42/0.47/0.49 (wall); freq 25 → 120 Hz at 0.35 → 0.03/0.00; CCD on
+→ identical to CCD off. The clip-then-bounce mechanism fits all of it.
+
+## Gotchas
+
+- **`normalizedPredictionDistance` is × lengthUnit.** 0.35 was 3.5 INCHES, not 0.35 — the config
+  comment said so and it still read as small.
+- **The exit drift experiments are chaotic.** `EXIT_DRIFT` 2.5 / 3 / 4 / 5 gave axis ratios
+  0.73 / 0.78 / 0.65 / 0.69 on one seed — no monotone benefit, so it stays at the owner's 2.5.
+  If the wall-hugging is still too much on the alpha, this is the dial (the release lands the
+  artifact immediately; a real drop off the lip would scatter it more).
+- **Balls resting on a wall can carry a micro-velocity** (< 0.01 in/s) from the soft contact's
+  position correction; the pre-solve rest snap cannot see it. Harmless, but "all at rest" in a
+  probe can read as "never" because of it.
+- **The keep clause of the pin is still direction-agnostic** (a pinned artifact stays pinned
+  within `ARTIFACT_PIN_RELEASE` while anything supports it). Entry is directional, so the
+  corner dead-band cannot form, but a pin that formed square and then slid can outlast the
+  geometry by up to half an inch.
+- **The parked-robot shove is 0.30in** at 60 in/s on the flank: the inflated pin circle pushing
+  the robot out of a 0.21in burial. Real bumpers give about that. If it reads as a shove on the
+  alpha, the pin circle would need to be placed tangent to the chassis surface for a robot that
+  did not move into the ball.
+- The suite's `{ kind: 'held', robot: 99 }` idiom (see the earlier section) is still in the
+  rail scenes; none failed.
+
+## Next steps
+
+1. Play-test on alpha: the drain, pushing a clump, gate intaking with a full hopper.
+2. If artifacts read as floating off the bumper, `PHYS_BALL_CHASSIS_SKIN` 0.35 → 0.25 (the
+   catch distance for a full-speed sweep shrinks with it; scene F in the probe measured 0.80in
+   burial with NO skin at 70 in/s).
+3. Slice 3 (auto-path robot as a dynamic body) still not started.
+
+## Deploy
+
+Alpha server DEPLOYED with the wrapper after the sim commit (254d24e); /health answered ok. The Vercel alpha client rebuilds from the push. Production untouched.
+
 # HANDOFF — 2026-09-10 (collisions rebuilt: one position authority per element)
 
 Branch **alpha**. `npm test` **ALL PASS — 1296 checks** (7 failures at session start, 20 the
@@ -5,7 +109,7 @@ moment the rewrite landed, 0 now). `npm run build` green, `npm run server:check`
 `SIM_VERSION` untouched at **2** (alpha policy: the bump is relative to MAIN). Production
 (`dohun-sim-decode`) NOT touched. Alpha server: see **Deploy** at the bottom of this section.
 
-## READ FIRST — the seam is gone, not patched
+## (earlier today) The seam is gone, not patched — still the reference for the engine's shape
 
 The request was "fundamentally fix collisions and the physics engine; there should never be a
 case where there is nowhere to go for some elements". Read as an invariant: **every element
