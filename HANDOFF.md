@@ -1,10 +1,154 @@
+# HANDOFF — 2026-09-10 (BIOBUZZ Phase 0: the shared core is game-agnostic)
+
+Branch **`biobuzz-core`** (worktree `dsim-bb-core`, cut from `biobuzz`, itself cut from
+`origin/alpha`). **NOT pushed and must not be** — the repo is public and the 2026–27 season
+is private until further notice. Nothing was deployed.
+
+`npm run build` / `server:check` / `uiaudit` / `contrast` green. `npm test` is **7 failures,
+the same 7 as the baseline** (`docs/biobuzz/baseline-alpha.md`) plus the new BIOBUZZ suite
+ALL PASS. `SIM_VERSION` and `BALANCE_VERSION` untouched.
+
+## READ FIRST — what this was and what it was not
+
+Phase 0 items 1–8 of `docs/biobuzz-plan.md`: make the shared core GAME-AGNOSTIC so that a
+third game is **a registry entry plus a module directory**, with no two-valued literal left
+anywhere. It is a **REFACTOR** — `decode` and `chain` behaviour is byte-identical, and that
+was the binding constraint on every decision below.
+
+Two things were deliberately NOT done, and both are stated in the code:
+
+- **DECODE's and CR's inline UI branches are untouched.** The new `GameModule` slots are
+  wired in FRONT of them (`mod.X ? <slot> : <existing branch, unchanged>`). Rewriting the
+  two games people are actually playing to route through the slots would put a behaviour
+  change inside a commit whose only job is to make room for a third game.
+- **The never-read `GameUiSpec` (`ui`) is left alone.** Removing it is a separate change and
+  it is not in anybody's way.
+
+Also NOT done, on purpose: `coerceSpec` was not threaded with `game` inside `coerceSetup`.
+The chassis envelope is per-game too, and switching which envelope a DECODE spec is clamped
+against is a behaviour change, not a refactor. Only the start-index clamp moved.
+
+## The baseline gate
+
+`npm test` on `alpha` is not green, so the gate is **"no NEW failures"** against a recorded
+list, not "green". Recorded before any edit in `docs/biobuzz/baseline-alpha.md`: `alpha` SHA
+`3054f59c7518b75ce1ed339618e203bd785a631c`, **1289 PASS / 7 FAILURES**, all seven in
+`src/sim` contact physics, which Phase 0 does not touch:
+
+1. `a robot resting against something does not turn while the driver does nothing`
+2. `...and how far grows with how far off centre you hit it, without ever spinning you round`
+3. `a SIDE hit on the gate arm turns the robot INTO the corner`
+4. `...and a closed arm gives where one at its stop does not`
+5. `ramming a wall at speed never snaps the chassis round — it squares it`
+6. `an OFF-CENTRE ram spins the robot it lands on`
+7. `an artifact pinned in the doorway settles instead of buzzing back and forth`
+
+Re-check with `npm test 2>&1 | grep '^FAIL'`. Any line not in that list fails the gate.
+`node_modules` did not exist in this worktree; `npm install` was run first, and it rewrote
+the lockfile's Rapier range from `^0.19.3` to the exact `0.19.3` already in `package.json`
+(CLAUDE.md requires the exact pin — kept, committed separately as `3fa6a90`).
+
+## What landed, one commit per plan item
+
+| item | commit | what |
+|---|---|---|
+| 0 | `5c5dc45` | `docs/biobuzz/baseline-alpha.md` — the gate |
+| 1 | `72a67de` | `GAME_IDS` / `isGameId` / `coerceGameId`; `GameSimModule.initialAct` + `startPoseCount` |
+| 2 | `fa1379c` | every two-valued game literal replaced by the registry helpers |
+| 3 | `8a68e61` | the start-index clamp is per-game |
+| 4 | `3cf8df2` | `Season.channels` + the pure channel→visibility rule, wired at every enumerating surface |
+| 5 | `f7e4fd7` | the optional UI slots on `GameModule` |
+| 7 | `0c49c02` | the placeholder `src/games/biobuzz/` + all four registrations |
+| 6 | `2bba683` | `scripts/smoke-biobuzz/` and the `npm test` script |
+| 8 | (this commit) | CLAUDE.md + HANDOFF |
+
+Items 6 and 7 are committed in the other order: item 6's suite asserts that every id in
+`GAME_IDS` is registered, so it cannot be green until item 7's module exists.
+
+**"Adding a game" is now written down** — CLAUDE.md's seam section lists the four
+registrations and every slot with its consumer. The four are `GAMES`, `SIM_GAMES`, `SEASONS`
+and `GameId`/`GAME_IDS`, and **all four fail SILENTLY when missed**, which is why they are a
+list rather than a sentence.
+
+## Gotchas, in the order they will bite
+
+- ⚠️ **`SIM_GAMES`' entries are GETTERS, and that is load-bearing.** `src/sim/spawn.ts`
+  imports `simModuleFor` (item 3's clamp) and every game module imports `spawn`, so there is
+  a real import cycle through `src/games/sim.ts`. A cycle is safe only when nothing is read
+  at module-eval time, and `{ decode: DECODE_SIM }` IS such a read — so whether the file
+  worked depended on which module the process loaded first. Entering through `spawn`
+  (`scripts/smoke.ts` does) resolved; entering through a game module (the new
+  `scripts/smoke-biobuzz` does) threw `Cannot access 'DECODE_SIM' before initialization`.
+  Add a new game as a getter too.
+- ⚠️ **`public/robots.txt` and `public/sitemap.xml` are STATIC hand-written files.** They do
+  not read the registry: robots.txt has a per-game `Disallow:` block written out for
+  `/decode/...` and `/chain/...`, and sitemap.xml lists `/`, `/decode`, `/chain` and six
+  `/decode/...` routes. A season flipping to `stable` needs BOTH edited by hand. The new
+  smoke suite pins that per VISIBLE season (and pins that a hidden one is absent from both).
+  The same applies to `index.html`, which hard-codes the home description in three meta tags
+  and the JSON-LD because they ship before any JS runs — that string is now pinned against
+  the registry-built `HOME_DESC`, so a newly public season fails the suite until all of them
+  move together.
+- ⚠️ **The channel read lives in exactly ONE place**, `src/seasonVisibility.ts`. The RULE is
+  pure and lives in `src/seasons.ts` (which the server compiles, via `periodLabel`, so it
+  must stay free of `import.meta.env`) and takes the channel as an argument — the same split
+  `roomJoinRegion` uses, for the same reason: `src/net/env.ts` reads `import.meta.env` at
+  load, so the headless smoke run cannot import it at all, and this rule fails silently.
+  A new UI surface that enumerates games reads `visibleGames()` / `visibleGameIds()`, never
+  `registeredGames()` / `SEASONS`.
+- An **unknown channel string** sees only unrestricted seasons. That is the safe direction:
+  a typo'd `VITE_APP_CHANNEL` hides the private season rather than publishing it.
+- **DECODE's URLs are byte-identical** because `src/net/api.ts` omits the `game` query
+  parameter entirely for DECODE (`needsGameParam`) — DECODE is the server's default for a
+  missing game. Do not "tidy" that into always sending it: an older deployed server and a
+  newer client have to agree.
+- **`devRoutes` are ALPHA-ONLY** (`devRoutesEnabled()`), gated inside `devRouteFor` in
+  `App.tsx` rather than at the render site, so on a stable build the path does not route AND
+  does not render — it falls through to `parseScreen`, which sends an unknown path home.
+- A hidden game's URL prefix **keeps its screen**: `/biobuzz/records` on a stable build lands
+  on the saved game's records, not on home, and the mount effect then canonicalizes the URL.
+- **`GameSettings.savedStartPoses` is still ONE shared list across games** (the CR note in
+  CLAUDE.md). BIOBUZZ inherits that problem; namespacing the setting is the fix when a third
+  game wants a pose library.
+- Game checks go in `scripts/smoke-biobuzz/`, **never appended to `scripts/smoke.ts`** — its
+  PASS/FAIL list is what the baseline gate diffs.
+
+## `src/games/biobuzz/` is a PLACEHOLDER
+
+Three files (`sim.ts`, `index.ts`, `state.ts`), each saying so at the top, and the P0-shell
+chat REPLACES all three. It is an empty 72×72in box with four walls, two start anchors,
+`scored: false`, `startLegality: false`, `initialAct: 2`, `startPoseCount: 2`, and a step
+that runs the shared drivetrain + Rapier solve + wall square-up and nothing else. No
+geometry is invented: the rules land at kickoff on **2026-09-12**, and CR's `APPROX`
+convention says an unflagged guess is worse than an empty field.
+
+`docs/biobuzz-contract.md` is the ownership map (Lane A the field, Lane B the robot, the
+integration chat everything outside `src/games/biobuzz/`). Per that contract, everything
+this session touched outside that directory is **integration-chat property** — a lane that
+needs a change there writes the request into its own handoff file.
+
+## Next steps
+
+1. **Verify the two channel builds by hand.** `VITE_APP_CHANNEL=alpha npm run dev` → BIOBUZZ
+   on the home picker and `/biobuzz` loads; with `stable` → absent, and `/biobuzz` falls back
+   to the saved game. (`npm run dev` reads the channel at build time, so it needs a restart
+   between the two.)
+2. P0-shell replaces `src/games/biobuzz/`; the lanes start against
+   `docs/biobuzz-contract.md`.
+3. Plan item 7 in the plan's own numbering — `scripts/manual.mjs` (download a manual, run
+   `pdftotext -layout`, dump figures) — was NOT part of this brief and is still open. It
+   saves Lane A the first hour on kickoff day.
+4. Nothing here may be pushed until the season is public.
+
+---
+
 # HANDOFF — 2026-09-07 (artifact/gate contact, and a suite that had stopped meaning anything)
 
 Branch **alpha**, deployed to `dsim-alpha`. `npm test` **8 failures** (14 at session start),
 all of them contact physics. `npm run server:check` green. `SIM_VERSION` untouched at **2**.
 Production (`dohun-sim-decode`) NOT deployed this session — alpha only.
 
-## READ FIRST — one architectural fault wearing three faces
+## One architectural fault wearing three faces (was READ FIRST)
 
 Three separate player reports this session turned out to be the same thing: artifact/robot
 interaction being smuggled across the boundary between the sim's TWO Rapier solves.
