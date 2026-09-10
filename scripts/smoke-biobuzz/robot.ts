@@ -13,7 +13,7 @@ import {
   isTurreted,
 } from '../../src/games/biobuzz/mounts';
 import { bbFootprint, bbHopperCap, bbMouths } from '../../src/games/biobuzz/robot';
-import { BB_DEFAULT_SPEC, bbDials, coerceBiobuzzSpec } from '../../src/games/biobuzz/robotConfig';
+import { BB_DEFAULT_SPEC, bbDials } from '../../src/games/biobuzz/robotConfig';
 import { BB_SCENES, bbPollen, bbSceneAt } from '../../src/games/biobuzz/scenes';
 import { bbCoerce, cmd, mkWorld, run, type Check } from './harness';
 
@@ -171,20 +171,14 @@ export function robotChecks(check: Check): void {
      * ...and a TURRET keeps its corner, because a turret aims itself: its mount is where it is
      * BOLTED, not a facing. One fold applied to both archetypes would relocate hardware.
      *
-     * ASSERTED ON `coerceBiobuzzSpec` DIRECTLY, not on the composed `bbCoerce`, and that is a
-     * statement about a KNOWN GAP rather than a convenience. The shared `coerceSpec` has no
-     * `game === 'biobuzz'` arm yet, so for an unrecognised game it RESETS the mechanism fields
-     * (by design — it is what stops a Chain Reaction build leaking into DECODE), which wipes
-     * `frontleft` to the CR default BEFORE this game's coercer ever sees it. So today a corner
-     * turret does not survive `createWorld`: it lands on the front edge.
-     *
-     * That is the shell's one real functional gap and it is core-owned; `docs/biobuzz/
-     * HANDOFF-shell.md` names the two `src/sim/spawn.ts` edits that close it. This check is
-     * written against the function that owns the algebra so it verifies the CONTRACT and keeps
-     * passing unchanged the day the arm lands — at which point it can be re-pointed at
-     * `bbCoerce` by deleting one word.
+     * THIS CHECK FOUND A REAL BUG, and it is worth saying which: run through the shared
+     * `coerceSpec` alone, EVERY mount collapsed to the front — the shared pass resets mounts
+     * for a game it does not recognise, and BIOBUZZ is one until Lane B lands its arm. So every
+     * turretless build spawned with a front drum and every turret bolted to the front, and the
+     * gallery's 26 archetype sheets were 26 copies of two pictures. `bbCoerceSpec` re-arms the
+     * raw mounts between the two passes; see its header.
      */
-    const turret = coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, scoreMode: 'turret', shooterMount: 'frontleft' });
+    const turret = bbCoerce({ ...BB_DEFAULT_SPEC, scoreMode: 'turret', shooterMount: 'frontleft' });
     check('coerce: a TURRET keeps its corner mount', turret.shooterMount === 'frontleft', `mount=${turret.shooterMount}`);
     // The deprecated booleans are what an older peer or server round-trips a spec through, so
     // they have to keep saying what the mount fields say.

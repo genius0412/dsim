@@ -127,6 +127,52 @@ export function fieldChecks(check: Check): void {
     );
   }
 
+  // ── THE START ANCHORS ARE INSIDE THE FIELD ────────────────────────────────
+  /**
+   * A robot spawned at any anchor, in either alliance, must be fully inside `bounds` BEFORE
+   * anything steps.
+   *
+   * The anchors are hand-placed APPROX numbers (there is no published BIOBUZZ start geometry —
+   * `startLegality: false`), and an anchor an inch too far out spawns a robot intersecting the
+   * wall, which Rapier then resolves by shoving it — so the match begins with four robots
+   * sliding. This is the cheapest possible guard on a number a human typed, and it is checked
+   * on the FOOTPRINT, so an anchor that fits a bare chassis but not its sweeper fails here.
+   */
+  {
+    const w = createBiobuzzWorld('match', 4, [
+      setup(0, 'blue', {}, 0),
+      setup(1, 'blue', {}, 1),
+      setup(2, 'red', {}, 0),
+      setup(3, 'red', {}, 1),
+    ]);
+    check('anchors: BIOBUZZ spawns four robots', w.robots.length === 4);
+    for (const r of w.robots) {
+      const b = aabb(r);
+      const slack = Math.min(BB_HALF_X - Math.max(Math.abs(b.x0), Math.abs(b.x1)), BB_HALF_Y - Math.max(Math.abs(b.y0), Math.abs(b.y1)));
+      check(
+        `anchors: robot ${r.id} (${r.alliance}) starts fully inside bounds`,
+        slack >= 0,
+        `slack=${slack.toFixed(2)}"`,
+      );
+    }
+    // The two anchors per alliance exist so an alliance's robots cannot spawn on top of each
+    // other; a mirrored pair that collapsed to one point would pass every other check here.
+    const blue = w.robots.filter((r) => r.alliance === 'blue');
+    check(
+      'anchors: the two anchors of an alliance are distinct',
+      Math.hypot(blue[0].pos.x - blue[1].pos.x, blue[0].pos.y - blue[1].pos.y) > 18,
+      `apart=${Math.hypot(blue[0].pos.x - blue[1].pos.x, blue[0].pos.y - blue[1].pos.y).toFixed(1)}"`,
+    );
+    // RED IS THE X-MIRROR OF BLUE, applied once in `spawn.ts`. Asserted because a second
+    // mirror anywhere else would cancel this one and put both alliances on the same side.
+    const red = w.robots.filter((r) => r.alliance === 'red');
+    check(
+      'anchors: RED is the x-mirror of BLUE',
+      Math.abs(blue[0].pos.x + red[0].pos.x) < 1e-9 && Math.abs(blue[0].pos.y - red[0].pos.y) < 1e-9,
+      `blue=${blue[0].pos.x},${blue[0].pos.y} red=${red[0].pos.x},${red[0].pos.y}`,
+    );
+  }
+
   // ── POLLEN CONSERVATION, UNDER BOTH SOLVERS ───────────────────────────────
   /**
    * A POLLEN MUST NEVER VANISH. That is the invariant the whole `BB_BALL_SOLVER` decision has

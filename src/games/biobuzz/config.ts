@@ -312,15 +312,31 @@ export function bbMountFits(spec: RobotSpec, mount: BbIntakeMount): boolean {
 
 /** a floor of one POLLEN; NOT scaled with the rest. */
 export const BB_STORAGE_MIN = 1;
-/** CEILING. APPROX: roughly two layers of 3" POLLEN across the expansion prism's footprint,
- * which is well short of what the prism's height would geometrically allow because a real
- * hopper spends volume on walls, the feed path and the shooter. */
-export const BB_STORAGE_MAX = 122;
-export const BB_STORAGE_DEFAULT = 16;
+/**
+ * CEILING. APPROX, and RETUNED after looking at it.
+ *
+ * The first pass at these two numbers was carried over from a game whose element is much
+ * smaller, and it made a mid-size dumper hold THIRTY-NINE POLLEN with a ceiling of 122. The
+ * gallery is what showed it: `launch-wall-bounce` dumped a full hopper and drew a single-file
+ * line of pollen along the entire 144" wall, because thirty-nine 3" balls is not a hopper, it
+ * is a third of the field's supply riding inside one robot.
+ *
+ * The model now assumes ONE LAYER: a 3" POLLEN needs ~9 in² of hopper floor (hex packing is
+ * 7.8, and nothing packs perfectly), plus the walls, the feed path and the shooter's own
+ * volume — call it 12 in² apiece. A second layer would need a lift, and the shell has no
+ * mechanism for one. That puts the default 15×17 turret at ~11 POLLEN and an open 18" dumper at
+ * the 24 ceiling, which is the shape of a real FTC hopper.
+ *
+ * STILL A GUESS. Section 7 (the element) and Section 10 (Game Details) both land at Kickoff,
+ * and either could move the diameter — which moves all of this. It is one constant.
+ */
+export const BB_STORAGE_MAX = 24;
+export const BB_STORAGE_DEFAULT = 8;
 
 /** square inches of footprint per stored POLLEN — the derived cap's only size term, so it is
- * the single dial for storage across every archetype, mount and chassis size. APPROX. */
-export const BB_STORE_AREA_PER_BALL = 2.67;
+ * the single dial for storage across every archetype, mount and chassis size. APPROX; see the
+ * note on `BB_STORAGE_MAX` for where 12 comes from. */
+export const BB_STORE_AREA_PER_BALL = 12;
 export const BB_STORE_TURRET_MULT = 0.55; // a turret loses centre volume to the rotor + shooter
 export const BB_STORE_TWIN_MULT = 0.45; // a second shooter assembly eats even more of it
 export const BB_STORE_LAUNCHER_MULT = 1.0; // drum + dumper: open hopper (large, equal)

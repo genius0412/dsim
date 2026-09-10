@@ -146,10 +146,15 @@ function land(b: Artifact, x: number, y: number): void {
  * a pile therefore collects it instead of scattering it, which is the single biggest
  * difference between an intake that feels real and one that feels like a bulldozer.
  *
- * The plow pushes along the MINIMUM-PENETRATION axis in the robot frame and imparts the
- * robot's speed, so a POLLEN squeezed against a wall pops out sideways rather than being
- * dragged through the chassis.
+ * The plow pushes along the MINIMUM-PENETRATION axis in the robot frame, BY THE WHOLE
+ * PENETRATION DEPTH, and imparts the robot's speed — so a POLLEN squeezed against a wall pops
+ * out sideways rather than being dragged through the chassis, at any speed the drivetrain can
+ * reach. See the note at the push itself for why a fixed step was wrong.
  */
+/** the hair past the surface a plowed POLLEN is placed at, so the next tick does not find the
+ * same contact at zero depth. */
+const PLOW_EPS = 0.02;
+
 function interact(
   world: World,
   b: Artifact,
@@ -179,11 +184,31 @@ function interact(
   const penY = e.half + r2 - Math.abs(local.y);
   let nx = 0;
   let ny = 0;
-  if (Math.min(penX, penXneg) < penY) nx = penX < penXneg ? 1 : -1;
-  else ny = local.y >= 0 ? 1 : -1;
+  let depth = 0;
+  if (Math.min(penX, penXneg) < penY) {
+    nx = penX < penXneg ? 1 : -1;
+    depth = Math.min(penX, penXneg);
+  } else {
+    ny = local.y >= 0 ? 1 : -1;
+    depth = penY;
+  }
   const w = rot({ x: nx, y: ny }, rob.heading);
-  b.pos.x += w.x * 0.6;
-  b.pos.y += w.y * 0.6;
+  /**
+   * PUSH BY THE FULL PENETRATION, not by a fixed step.
+   *
+   * This was a flat 0.6" per tick, and that is a speed-dependent bug rather than a soft
+   * contact: a robot at 50 in/s advances 0.83" per tick and one at 80 in/s advances 1.33", so
+   * the frame gained on the POLLEN every tick and eventually contained it — the gallery's
+   * `corner-pile` cell showed pollen centres a full radius INSIDE the chassis, which is a
+   * POLLEN being dragged along inside a robot rather than plowed. Resolving the whole overlap
+   * makes the plow correct at every speed the drivetrain can reach, and it is what the
+   * pollen-vs-pollen separator above already does.
+   *
+   * `EPS` is the hair past the surface that keeps the next tick's `inBox` test from finding the
+   * same contact at exactly zero depth and jittering on it.
+   */
+  b.pos.x += w.x * (depth + PLOW_EPS);
+  b.pos.y += w.y * (depth + PLOW_EPS);
   const rv = hyp(rob.vel.x, rob.vel.y);
   b.vel.x = w.x * rv * 0.9;
   b.vel.y = w.y * rv * 0.9;

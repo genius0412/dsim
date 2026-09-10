@@ -61,6 +61,30 @@ const VIEW_ANGLE = viewAngleOf('blue');
  * across at field scale — the smallest thing that has to be countable in a contact sheet. */
 const CELL_PX = 420;
 
+/**
+ * A sheet is laid out as ONE ROW: the in-match canvas on the left, the three builder previews
+ * beside it.
+ *
+ * Stacked (canvas above previews) the cell came out ~1100px tall, and a screenshot cannot show
+ * that: `capturePage` clips to the window's viewport and a BrowserWindow cannot be taller than
+ * the display it opens on, so the previews — the half of the comparison the sheet exists for —
+ * were sliced off the bottom of every archetype PNG. Side by side the cell is ~460px tall,
+ * which fits any screen a shot run happens on, and it puts the two renderings of the same
+ * geometry next to each other rather than a scroll apart.
+ */
+const SHEET_ROW: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'flex-start' };
+
+/** the sprite half of that row: square, fixed, and never the flexible one — the previews take
+ * the slack, because they are the half that has detail to gain from extra width. */
+const SHEET_CANVAS_STYLE: CSSProperties = {
+  display: 'block',
+  flex: '0 0 auto',
+  width: '380px',
+  maxWidth: '100%',
+  aspectRatio: '1',
+  borderRadius: 'var(--ds-round)',
+};
+
 const CANVAS_STYLE: CSSProperties = {
   display: 'block',
   width: '100%',
@@ -80,9 +104,14 @@ const CANVAS_STYLE: CSSProperties = {
  * `Camera.configure` uses, and for a reason: a cell that framed the field differently from the
  * game would crop or letterbox where the game does not.
  */
-function fitCell(ctx: CanvasRenderingContext2D, px: number): void {
-  const ex = BOUNDS.halfX + BOUNDS.viewMargin;
-  const ey = BOUNDS.halfY + BOUNDS.viewMargin;
+function fitCell(ctx: CanvasRenderingContext2D, px: number, half = 0): void {
+  // `half` frames a SMALLER square window around the field centre (0 = the whole field). An
+  // archetype sheet holds three 15" robots on a 144" field, which at full field scale draws
+  // each of them about 20px across — too small to see whether a drum sits on the right edge,
+  // which is the only thing the sheet is for. Zooming is a CAMERA choice and stays here with
+  // the rest of the layout; every draw call below it is still the module's own renderer.
+  const ex = half > 0 ? half : BOUNDS.halfX + BOUNDS.viewMargin;
+  const ey = half > 0 ? half : BOUNDS.halfY + BOUNDS.viewMargin;
   const c = Math.abs(Math.cos(VIEW_ANGLE));
   const s = Math.abs(Math.sin(VIEW_ANGLE));
   const spanW = 2 * (c * ex + s * ey);
@@ -109,10 +138,10 @@ const SCREEN_UP: Vec2 = rot({ x: 0, y: 1 }, -VIEW_ANGLE);
  * AT the intake rather than under the chassis, and it is the order `Renderer.render` uses. A
  * cell that drew them first would be a different picture of the same world.
  */
-function drawCell(canvas: HTMLCanvasElement, world: World): void {
+function drawCell(canvas: HTMLCanvasElement, world: World, half = 0): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  fitCell(ctx, CELL_PX);
+  fitCell(ctx, CELL_PX, half);
   drawBiobuzzField(ctx, world, SCREEN_UP);
   for (const r of world.robots) {
     // INTAKE STATE FROM THE WORLD, not from a gallery flag: `r.autoIntake` is what the sim
@@ -159,24 +188,60 @@ function SceneCell({ scene, tick, world, onOpen }: { scene: Scene; tick: number;
  * checked against EACH OTHER, and a difference between them is always a real divergence. That
  * comparison is only possible if the two are in the same frame, which is what this is.
  */
+/**
+ * The zoom window an archetype sheet is drawn in, as a half-extent in inches.
+ *
+ * Sized from the scene: the three robots stand 34" apart along y (`SHEET_Y`) and the largest
+ * legal chassis is 17" wide with a 3" sweeper, so ±48" holds all three with a tile of margin.
+ * Deliberately a constant here rather than measured off the world — a window that resized
+ * itself per sheet would draw each archetype at a different scale, and comparing 26 sheets is
+ * the entire point.
+ */
+const SHEET_HALF = 48;
+
+/**
+ * A sheet cell takes the WHOLE GRID ROW.
+ *
+ * Every other cell is one picture and fits a 200px track; a sheet is FOUR pictures — the
+ * in-match canvas plus the three builder previews it has to be compared against — and squeezed
+ * into one track those previews came out about 80px wide, which is smaller than the sprite
+ * they exist to verify. Full width gives each preview a third of the section instead of a
+ * third of a card. It is a `style` rather than a class because `ds-*` has no full-row utility
+ * for a grid child and inventing one would be an edit to a shared stylesheet for a dev route.
+ */
+const SHEET_CELL: CSSProperties = { gridColumn: '1 / -1' };
+
+/** each preview column, capped. Wider than ~280px buys no legibility and only makes the row
+ * taller, which is the one dimension a screenshot cannot spend. */
+const SHEET_PREVIEW: CSSProperties = { maxWidth: '280px', margin: '0 auto' };
+
+/** the previews half of the row: takes the slack, and stays three-up until the row wraps. */
+const SHEET_PREVIEWS: CSSProperties = { flex: '1 1 480px', minWidth: 0 };
+
 function ArchetypeCell({ scene, world, onOpen }: { scene: Scene; world: World; onOpen(): void }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
-    if (ref.current) drawCell(ref.current, world);
+    if (ref.current) drawCell(ref.current, world, SHEET_HALF);
   }, [world]);
   return (
-    <button className="ds-opt" onClick={onOpen} title={scene.title}>
-      <canvas ref={ref} width={CELL_PX} height={CELL_PX} style={CANVAS_STYLE} />
+    <button className="ds-opt" onClick={onOpen} title={scene.title} style={SHEET_CELL}>
       <span className="ot">{scene.id}@0</span>
-      <div className="ds-opts three">
-        {world.robots.map((r) => (
-          <div key={r.id} className="ds-opt mini static">
-            <BiobuzzRobotPreview spec={r.spec} size={120} />
-            <span className="om">
-              {r.spec.length}&quot; × {r.spec.width}&quot;
-            </span>
-          </div>
-        ))}
+      <div style={SHEET_ROW}>
+        <canvas ref={ref} width={CELL_PX} height={CELL_PX} style={SHEET_CANVAS_STYLE} />
+        {/* THE PREVIEWS ARE FLUID, not a fixed 120px. Three fixed-width SVGs overflowed the
+            cell on a narrow grid column and the third one had its own dimension label sliced
+            off — in the sheet whose job is to prove nothing is clipped. `fluid` hands the
+            width to this grid. */}
+        <div className="ds-opts three" style={SHEET_PREVIEWS}>
+          {world.robots.map((r) => (
+            // NO SEPARATE DIMENSION CAPTION: the preview prints `W" wide · L" long` inside its
+            // own viewBox, and a second copy underneath in the other order (L × W) read as a
+            // contradiction in the two shots where the numbers differ.
+            <div key={r.id} className="ds-opt mini static" style={SHEET_PREVIEW}>
+              <BiobuzzRobotPreview spec={r.spec} fluid />
+            </div>
+          ))}
+        </div>
       </div>
     </button>
   );

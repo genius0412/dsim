@@ -51,3 +51,61 @@ Two surfaces:
 Working example from a past session: rebind fire→J, check steal/UNBOUND, reload for
 persistence, ENTER FIELD in Free Drive + Robot-centric, hold J to fire (pips empty),
 press F for the REVERSED chip.
+
+## Contact sheets: `scripts/shots.cjs` (the BIOBUZZ gallery)
+
+A second, cheaper surface than driving the app: a DEV ROUTE that renders many worlds as
+stills, screenshotted in both themes into one contact sheet. Use it whenever a change
+touches a renderer, a sprite, a mount or a piece of ball physics — it is the only way to
+see twenty-six robot builds at once, and reading the PNGs afterwards is the point of it.
+
+```bash
+npm run dev
+npx electron scripts/shots.cjs
+```
+
+Output: `scratch/shots/<short-sha>[-dirty]/<cell>.<theme>.png` plus an `index.html`
+contact sheet (one row per cell, one column per theme). `scratch/` is gitignored, so a
+run never shows up in a commit.
+
+Flags: `--scene a,b` (only those cells), `--theme dark`, `--port <n>` (default 4173, i.e.
+`npm run preview`; pass `5173` for `npm run dev`), `--path <route>` (default
+`/biobuzz/gallery`), `--out <dir>`.
+
+- **`--path` needs `MSYS_NO_PATHCONV=1` in Git Bash.** MSYS rewrites a leading-slash
+  argument into a Windows path, so `--path /biobuzz/gallery` arrives as
+  `C:/Program Files/Git/biobuzz/gallery` and the load fails with `ERR_INVALID_URL`.
+- **Before `devRoutes` is wired**, mount the gallery yourself: a gitignored
+  `scratch/gallery.html` + `scratch/gallery.tsx` that `initTheme()`, awaits
+  `initPhysics()` and renders `<BiobuzzGallery />`, then
+  `npx electron scripts/shots.cjs --port 5173 --path /scratch/gallery.html`.
+- **`capturePage(rect)` CLIPS to the viewport, silently.** A cell taller than the window
+  loses its bottom in the PNG with no error, and the window cannot exceed the display's
+  work area (the OS clamps it) — so cells are laid out to fit a laptop screen. If a
+  screenshot looks cropped, that is this, not a CSS bug.
+- The run FREEZES animations (an injected stylesheet) and forces an explicit theme via
+  `localStorage['decodesim.theme']`, removing it afterwards — so a sheet is comparable
+  between runs and does not leave a theme behind.
+- Exits non-zero when it captured nothing, and says so when the dev route is not mounted.
+
+### What the sheet is for — read these cells
+
+- `settle-60@0` vs `@300` — a NULL TEST. The two must be the SAME picture; if the field
+  drifts, the ball solver is not at rest.
+- `pile-slow/med/fast@30..120` and `corner-pile` — a POLLEN must never end up inside a
+  chassis. This is how the plow's fixed-step push was caught (a robot at 80 in/s gained
+  on the ball every tick and eventually contained it).
+- `intake-line@45..240` — the hopper count in the caption must step up exactly as pollen
+  vanish from the line: the drawn mouths ARE the capture areas.
+- `launch-wall-bounce@20..240` — where pollen leave from, the arc, and the wall bounce.
+- `archetype-<mode>-<mount>@0` — 26 sheets, three chassis sizes each, canvas sprite beside
+  the builder's SVG preview. If two DIFFERENT mounts render the same picture, a coercer is
+  resetting the mount (exactly what a missing `coerceSpec` game arm does).
+
+### Measure, don't squint
+
+A 300px cell will not tell you whether a penetration is 0.1" or 1.5". When a picture looks
+wrong, write a throwaway `scratch/*.ts` and print the number — `npx tsx scratch/x.ts`,
+with `await initPhysics()` at the top and `bbSceneAt(scene, tick)` to rebuild the exact
+world a cell shows. That is what turned "those balls look like they are in the robot" into
+a one-line fix.

@@ -1,9 +1,9 @@
 import type { Alliance, GameMode, RobotCommand, RobotSpec, World } from '../../src/types';
 import { SIM_DT } from '../../src/config';
-import { DEFAULT_ASSISTS, coerceSpec, type RobotSetup } from '../../src/sim/spawn';
+import { DEFAULT_ASSISTS, type RobotSetup } from '../../src/sim/spawn';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
-import { BB_DEFAULT_SPEC, coerceBiobuzzSpec } from '../../src/games/biobuzz/robotConfig';
+import { BB_DEFAULT_SPEC, bbCoerceSpec } from '../../src/games/biobuzz/robotConfig';
 
 /**
  * The BIOBUZZ smoke harness — the `check` function and the fixtures both lane files share.
@@ -76,19 +76,19 @@ export function run(world: World, c: RobotCommand, seconds: number): void {
 }
 
 /**
- * THE FULL COERCION A BIOBUZZ SPEC ACTUALLY GETS TODAY.
+ * THE FULL COERCION A BIOBUZZ SPEC ACTUALLY GETS.
  *
- * `coerceSpec(raw, base, 'biobuzz')` alone is NOT it, and that is the whole point of naming
- * this: the shared coercer has no biobuzz arm yet (Lane B owns it, per the lane contract), so
- * for an unrecognised game it resets the mechanism fields to keep a Chain Reaction build from
- * leaking into DECODE. `createBiobuzzWorld` therefore runs `coerceBiobuzzSpec` immediately
- * after it, and this composition is what every spawn path applies.
+ * `coerceSpec(raw, base, 'biobuzz')` alone is NOT it, and naming that is the point of this
+ * indirection: the shared coercer has no biobuzz arm yet (Lane B owns it, per the lane
+ * contract), so for an unrecognised game it RESETS the mechanism mounts — which is correct for
+ * DECODE and destroys a BIOBUZZ build. `bbCoerceSpec` is the composition every BIOBUZZ spawn
+ * path runs: the shared chokepoint, the raw mounts re-armed, then this game's own arm. Its
+ * header carries the full reasoning.
  *
- * When Lane B lands the real arm, this function becomes
- * `coerceSpec(raw, BB_DEFAULT_SPEC, 'biobuzz')` and every check that uses it keeps passing
- * unchanged — which is exactly how the checks were written, so they verify the CONTRACT rather
- * than today's plumbing.
+ * When Lane B lands the real arm, `bbCoerceSpec` collapses to a single `coerceSpec` call and
+ * every check written against this keeps passing unchanged — which is why the checks are
+ * written against it rather than against today's plumbing.
  */
 export function bbCoerce(raw: unknown): RobotSpec {
-  return coerceBiobuzzSpec(coerceSpec(raw, BB_DEFAULT_SPEC, 'biobuzz'));
+  return bbCoerceSpec(raw);
 }

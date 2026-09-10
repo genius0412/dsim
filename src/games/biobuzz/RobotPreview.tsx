@@ -41,7 +41,22 @@ const DIM_FONT = 1.7;
  *
  * Purely presentational: it reads the spec and nothing else — no world, no clock, no state.
  */
-export function BiobuzzRobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: number }) {
+/**
+ * `fluid` hands the WIDTH to the layout: the svg takes 100% of its container and keeps its own
+ * aspect ratio, instead of being `size` pixels wide. It exists because a fixed-width preview in
+ * a responsive grid either overflows (clipping the dimension label it just measured its viewBox
+ * to fit) or leaves the column half empty, and the gallery's archetype sheets show three of
+ * them per cell at whatever width the grid gives.
+ */
+export function BiobuzzRobotPreview({
+  spec,
+  size = 200,
+  fluid = false,
+}: {
+  spec: RobotSpec;
+  size?: number;
+  fluid?: boolean;
+}) {
   const w = spec.width;
   const len = spec.length;
 
@@ -337,8 +352,11 @@ export function BiobuzzRobotPreview({ spec, size = 200 }: { spec: RobotSpec; siz
 
   return (
     <svg
-      width={size}
-      height={(size * vbH) / vbW}
+      width={fluid ? '100%' : size}
+      height={fluid ? undefined : (size * vbH) / vbW}
+      // a fluid svg needs the intrinsic ratio to keep its height; a sized one already has both
+      preserveAspectRatio="xMidYMid meet"
+      style={fluid ? { display: 'block', aspectRatio: `${vbW} / ${vbH}` } : undefined}
       viewBox={`${-halfSpan} ${top} ${vbW} ${vbH}`}
       role="img"
       aria-label={`${spec.width} by ${spec.length} inch robot, sweeper intake, ${mode} scorer`}

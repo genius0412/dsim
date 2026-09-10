@@ -60,19 +60,45 @@ const ID0 = 1;
  */
 const SHEET_SIZES = [12, 15, 18] as const;
 
-/** where the three sheet robots stand. Far enough apart that no two chassis or sweepers can
- * touch at the largest size, and on the centre line so the sheet reads left-to-right. */
-const SHEET_X = [-42, 0, 42] as const;
+/**
+ * Where the three sheet robots stand: spread along the field's Y axis, on x = 0.
+ *
+ * ALONG Y, NOT X, and that is a fact about the CAMERA rather than about the field. Every cell
+ * is drawn at the blue drive-station view angle, which maps world +x to SCREEN DOWN and world
+ * +y to screen right. Standing them along x — the obvious first choice, and what this was —
+ * stacked the sheet vertically, so the three sizes read top-to-bottom and the eye had to
+ * travel the long way to compare two chassis. Along y they read left-to-right, smallest first,
+ * which is the order `SHEET_SIZES` is written in.
+ *
+ * 34" apart: the largest legal chassis is 17" wide, so there are ~13" of tile between
+ * neighbours and no sweeper can touch the robot beside it — while still keeping all three
+ * inside the zoomed window the gallery draws a sheet in.
+ */
+const SHEET_Y = [-34, 0, 34] as const;
+
+/**
+ * Every sheet robot faces SCREEN UP (heading 180° = world −x = up in the blue view).
+ *
+ * So the canvas sprite and the builder's SVG preview point the same way. The preview draws the
+ * chassis front at the TOP of its viewBox — that is baked into its frame transform — and a
+ * sheet whose sprites faced the other way asked the reader to mentally flip one of the two
+ * pictures they are being shown side by side, which is exactly the comparison the sheet exists
+ * to make easy.
+ */
+const SHEET_HEADING_DEG = 180;
 
 /**
  * One archetype sheet: the same build at three sizes, standing still, facing +x.
  *
  * ── WHY `build` REACHES INTO THE WORLD AFTERWARDS ──────────────────────────
- * It zeroes every robot's `turretHeading`. `makeBiobuzzRobot` aims a fresh turret at the field
- * CENTRE (there being no target to aim at in the shell), so three robots standing at three
- * different x would each spawn with a different turret angle — and the sheet's whole job is
- * that the three cells differ ONLY by chassis size. Setting it here is world CONSTRUCTION,
- * which a scene owns; it is not a step-time mutation, which a `script` is forbidden from doing.
+ * It points every robot's turret STRAIGHT AHEAD. `turretHeading` is a world-frame angle, and
+ * `makeBiobuzzRobot` aims a fresh turret at the field CENTRE (there being no target to aim at
+ * in the shell), so three robots standing at three different places would each spawn with a
+ * different turret angle — and the sheet's whole job is that the three cells differ ONLY by
+ * chassis size. Aligning it to the chassis heading rather than to zero is what keeps a turret
+ * from pointing sideways out of a robot that is facing up the screen. Setting it here is world
+ * CONSTRUCTION, which a scene owns; it is not a step-time mutation, which a `script` is
+ * forbidden from doing.
  */
 function archetypeScene(mode: BbScoreMode, mount: BbMountPos): Scene {
   return {
@@ -92,10 +118,12 @@ function archetypeScene(mode: BbScoreMode, mount: BbMountPos): Scene {
       });
       const world = bbWorld(
         seed,
-        SHEET_SIZES.map((size, i) => bbSetup(i, 'blue', { x: SHEET_X[i], y: 0, headingDeg: 0 }, spec(size))),
+        SHEET_SIZES.map((size, i) =>
+          bbSetup(i, 'blue', { x: 0, y: SHEET_Y[i], headingDeg: SHEET_HEADING_DEG }, spec(size)),
+        ),
         [], // no POLLEN: a sheet is about the robot, and loose balls would obscure the sweeper
       );
-      for (const r of world.robots) r.turretHeading = 0;
+      for (const r of world.robots) r.turretHeading = r.heading;
       return world;
     },
     // ONE STILL, at tick 0. Nothing moves in a sheet, so a second still would be the same

@@ -17,13 +17,12 @@ import {
   MOTIFS,
   coerceAssists,
   coerceAutoPath,
-  coerceSpec,
   coerceStartPose,
   type RobotSetup,
 } from '../../sim/spawn';
 import { emptyScore } from '../../sim/scoring';
 import { BB_HALF_X, BB_HALF_Y, BB_POLLEN_R, BB_POLLEN_SIM, BB_START_POSES } from './config';
-import { BB_DEFAULT_SPEC, coerceBiobuzzSpec } from './robotConfig';
+import { bbCoerceSpec } from './robotConfig';
 import { bbFootprint } from './robot';
 import { emptyBiobuzzState } from './state';
 import { isTurreted, type BbScoreMode } from './mounts';
@@ -75,7 +74,7 @@ interface Pose {
 function coerceBiobuzzSetup(s: RobotSetup): RobotSetup {
   const alliance: Alliance = s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue';
   const autoPath = s.autoPath !== undefined ? coerceAutoPath(s.autoPath) : null;
-  const spec = coerceBiobuzzSpec(coerceSpec(s.spec, BB_DEFAULT_SPEC, 'biobuzz'));
+  const spec = bbCoerceSpec(s.spec);
   return {
     id: s.id, // PRESERVED — it keys the per-tick command map for the whole match
     alliance,

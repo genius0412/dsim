@@ -1,7 +1,7 @@
 import type { RobotSpec } from '../../types';
 import { clamp } from '../../math';
 import { massLimits } from '../../sim/drivetrain';
-import { DEFAULT_SPEC } from '../../sim/spawn';
+import { DEFAULT_SPEC, coerceSpec } from '../../sim/spawn';
 import {
   BB_DEFAULT_SCORE_MODE,
   BB_PRESETS,
@@ -154,6 +154,50 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   delete out.groundClearance;
 
   return out;
+}
+
+/**
+ * THE ONE COERCION A BIOBUZZ SPEC GETS — the shared chokepoint, then this game's arm.
+ *
+ * ── WHY IT CANNOT JUST BE `coerceSpec(raw, base, 'biobuzz')` ───────────────
+ * Because that call DESTROYS the build. `coerceSpec` resets `intakeMount` and `shooterMount`
+ * to the Chain Reaction defaults for any game it does not recognise (`src/sim/spawn.ts`, the
+ * `game !== 'chain'` branch), and it does that for a good reason: those two fields have a
+ * SHARED physics effect — the intake mount moves the collision footprint — so a CR side
+ * sweeper leaking into DECODE would widen a DECODE robot's flanks. With no `biobuzz` arm yet,
+ * BIOBUZZ is one of the games it does not recognise.
+ *
+ * The visible cost was total: every turretless build spawned with a FRONT drum whatever edge
+ * the player picked, and every turret spawned bolted to the front whatever the nine positions
+ * offered — the gallery's 26 archetype sheets rendered as 26 copies of two pictures, which is
+ * how this was found.
+ *
+ * So the raw mount fields are RE-ARMED between the two passes. That is sound rather than a
+ * bypass: `coerceBiobuzzSpec` is the authority on those fields for this game, it enum-checks
+ * them, folds a corner mount off a turretless launcher, re-derives the size envelope from the
+ * intake mount and re-mirrors the legacy booleans. The shared pass is still what bounds
+ * everything else. It stays idempotent because the re-armed values are the coerced ones on any
+ * second pass.
+ *
+ * WHEN LANE B LANDS THE ARM in `coerceSpec`, this function's body becomes the single call
+ * `coerceSpec(raw, base, 'biobuzz')` and every caller keeps working —
+ * `docs/biobuzz/HANDOFF-shell.md` names the edits.
+ */
+export function bbCoerceSpec(raw: unknown, base: RobotSpec = BB_DEFAULT_SPEC): RobotSpec {
+  const shared = coerceSpec(raw, base, 'biobuzz');
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<RobotSpec>;
+  return coerceBiobuzzSpec(
+    {
+      ...shared,
+      // the four spellings of a mount: the two fields and the two legacy booleans older peers
+      // and saves still speak. `coerceBiobuzzSpec` resolves whichever arrived.
+      intakeMount: r.intakeMount ?? shared.intakeMount,
+      intakeSide: r.intakeSide ?? shared.intakeSide,
+      shooterMount: r.shooterMount ?? shared.shooterMount,
+      shooterRear: r.shooterRear ?? shared.shooterRear,
+    },
+    base,
+  );
 }
 
 /**

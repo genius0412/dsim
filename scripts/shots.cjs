@@ -125,9 +125,15 @@ app.whenReady().then(async () => {
 
   // NEVER STEAL FOCUS (see the header): hidden by default, `showInactive()` maps the window
   // without raising it when you want to watch.
+  // 1500x1400, and the height matters even though nothing is shown: `capturePage(rect)` CLIPS
+  // silently to the viewport, so a cell taller than the window loses its bottom in the PNG with
+  // no warning at all. Asking for more than the display's work area does not help either —
+  // Windows and X11 clamp the window — so this is a request, not a guarantee, and a gallery
+  // cell has to be laid out to fit a laptop screen. That is why an archetype sheet puts its
+  // canvas and its previews side by side instead of stacking them.
   const win = new BrowserWindow({
     width: 1500,
-    height: 1000,
+    height: 1400,
     show: false,
     webPreferences: { backgroundThrottling: false },
   });
