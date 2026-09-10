@@ -14,6 +14,7 @@
     "test:mm": "tsx scripts/mmsmoke.ts",
     "contrast": "node scripts/contrast.mjs",
     "shiftaudit": "electron scripts/shiftaudit.cjs",
+    "shots": "electron scripts/shots.cjs",
     "og": "electron scripts/og-image.cjs",
     "server": "tsx watch server/index.ts",
     "server:start": "tsx server/index.ts",
