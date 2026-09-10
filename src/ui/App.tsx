@@ -11,6 +11,7 @@ import {
 } from '../net/api';
 import { uploadPracticeRun } from '../net/api';
 import { GAME_IDS } from '../games/types';
+import { gameVisible } from '../seasonVisibility';
 import { FriendsProvider } from './friendsContext';
 import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
@@ -235,10 +236,18 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
  * Parse a full URL into the game + screen. A leading game segment (/decode,
  * /chain, …) selects the game; an unprefixed (legacy) path falls back to
  * `fallbackGame`.
+ *
+ * A prefix for a game HIDDEN on this release channel falls back to
+ * `fallbackGame` as well, but keeps its SCREEN: the link is a real link and its
+ * `/records` half still means something, so `/biobuzz/records` on a stable build
+ * lands on the saved game's records rather than on home. The URL is then
+ * canonicalized to the fallback game by the mount effect, so the address bar
+ * stops advertising a season this build does not have.
  */
 function parsePath(pathname: string, fallbackGame: GameId): { game: GameId; screen: Screen } & RouteArgs {
   const gm = pathname.match(GAME_PREFIX_RE);
-  const game: GameId = gm ? (gm[1] as GameId) : fallbackGame;
+  const prefixed = gm ? (gm[1] as GameId) : null;
+  const game: GameId = prefixed && gameVisible(prefixed) ? prefixed : fallbackGame;
   const rest = gm ? pathname.slice(gm[0].length) || '/' : pathname;
   return { game, ...parseScreen(rest) };
 }

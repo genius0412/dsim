@@ -32,6 +32,13 @@ export const LINKS = {
 
 import type { GameId } from './games/types';
 
+/**
+ * A client build's RELEASE CHANNEL. The pre-release deployment bakes
+ * `VITE_APP_CHANNEL=alpha`; everything else (including the stable site and the
+ * Electron build) is `stable`. See `appChannel()` in `src/net/env.ts`.
+ */
+export type ReleaseChannel = 'stable' | 'alpha';
+
 export interface Season {
   /** stable key (used for future save bucketing / URLs) — matches a `GameId` */
   key: GameId;
@@ -52,6 +59,17 @@ export interface Season {
   blurb: string;
   /** false ⇒ shown in the picker as "coming soon", not selectable */
   playable: boolean;
+  /**
+   * Which client CHANNELS may SEE this season at all. Absent ⇒ every channel.
+   *
+   * Distinct from `playable`, and the difference matters: `playable: false` is a
+   * PUBLIC "coming soon" row, while a channel restriction hides the season
+   * outright — off the home picker, out of the queue counts, off the SEO
+   * surfaces, and its URL prefix stops resolving (a `/biobuzz/...` link on a
+   * stable build falls back to the saved game). That is what lets an unannounced
+   * season be developed on the alpha deployment of a PUBLIC repo.
+   */
+  channels?: readonly ReleaseChannel[];
 }
 
 export const SEASONS: readonly Season[] = [
@@ -74,6 +92,43 @@ export const SEASONS: readonly Season[] = [
     playable: true,
   },
 ] as const;
+
+/**
+ * Is this season visible on a client built for `channel`?
+ *
+ * The channel→visibility RULE lives here, in a leaf module with no
+ * `import.meta.env` in it, and takes the channel as an ARGUMENT — exactly the
+ * split `roomJoinRegion` uses. `src/net/env.ts` reads `import.meta.env` at module
+ * load, so the headless smoke run cannot import it at all; a rule that could only
+ * be reached through env.ts would be untestable, and this one fails SILENTLY (a
+ * season that is merely absent looks like a season nobody registered).
+ * `src/seasonVisibility.ts` is the thin wrapper that supplies the live channel.
+ *
+ * An unknown channel string sees only the unrestricted seasons, which is the safe
+ * direction: a typo'd `VITE_APP_CHANNEL` hides the unannounced season rather than
+ * publishing it.
+ */
+export function seasonVisibleOn(s: Season, channel: string): boolean {
+  return !s.channels || (s.channels as readonly string[]).includes(channel);
+}
+
+/** the seasons a client on `channel` may see, in registry order. */
+export function visibleSeasonsOn(channel: string): readonly Season[] {
+  return SEASONS.filter((s) => seasonVisibleOn(s, channel));
+}
+
+/** the game ids a client on `channel` may see, in registry order. */
+export function visibleGameIdsOn(channel: string): readonly GameId[] {
+  return visibleSeasonsOn(channel).map((s) => s.key);
+}
+
+/** is this GAME visible on `channel`? An id with no season registered is treated
+ * as visible — the season registry, not this predicate, is where a game is
+ * announced, and a module registered without a season row must not vanish. */
+export function gameVisibleOn(game: GameId, channel: string): boolean {
+  const s = SEASONS.find((x) => x.key === game);
+  return !s || seasonVisibleOn(s, channel);
+}
 
 /**
  * "DECODE presented by RTX" — the game's name plus its presenting sponsor, or
