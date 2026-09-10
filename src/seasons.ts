@@ -91,6 +91,19 @@ export const SEASONS: readonly Season[] = [
     blurb: 'The 2026 Unofficial FTC CAD-competition game - a new shooter (rules to come).',
     playable: true,
   },
+  {
+    // ALPHA-ONLY until the season is announced. The repo is public, so `channels`
+    // is what keeps an unreleased season off the stable site while it is built on
+    // the alpha deployment — see `seasonVisibleOn` below.
+    key: 'biobuzz',
+    name: 'BIOBUZZ',
+    presenter: 'RTX',
+    program: 'FIRST Tech Challenge',
+    years: '2026–27',
+    blurb: 'Rules land at kickoff on 2026-09-12.',
+    playable: true,
+    channels: ['alpha'],
+  },
 ] as const;
 
 /**
