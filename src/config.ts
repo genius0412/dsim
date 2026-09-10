@@ -543,17 +543,6 @@ export const CLASSIFIER_HEIGHT = 16;
  * JAMMED rather than merely in contact. Rapier's soft contacts leave about 0.2in, so this sits
  * clear of that and well under the ~1in of give the squeeze was exploiting.
  */
-/**
- * How much of an artifact-artifact overlap the separation pass takes out per pass.
- *
- * It used to take out ALL of it, which is an overshoot as soon as anything else has a say:
- * against a wall the clamp puts the pair straight back and the two trade positions forever.
- * Correcting a FRACTION per pass converges instead — the passes are already a relaxation
- * loop (BALL_RELAX_PASSES), which is exactly the setting where a full correction rings and a
- * damped one settles. Measured on a robot pressing an artifact into a corner: 15 direction
- * reversals a second at 1.0, none at 0.5.
- */
-export const BALL_SEPARATION_RELAX = 0.5;
 /** peak tangential kick (in/s) a contact between two artifacts gets, equal and opposite. Two
  * spheres never meet dead centre; this is that offset, and it is where the drain's spread comes
  * from now that the exit no longer fans them. Deterministic — see `scatterBalls`. */
@@ -566,10 +555,6 @@ export const BALL_CONTACT_SCATTER_FRAC = 0.25;
  * a contact at all (in) — the solver leaves a resting pair a hair apart, never overlapping */
 export const BALL_SCATTER_TOUCH = 0.1;
 
-export const BALL_ESCAPE_STEP = 0.25; // in, the resolution that search walks at
-
-export const BALL_JAM_SLOP = 0.35;
-
 export const BALL_ROBOT_RESTITUTION = 0.05;
 /** ground-ball mass (lb) for the Rapier ball solve (`solveArtifacts`). Balls only
  * meet other balls (equal mass ⇒ value cancels) and the immovable static field
@@ -580,90 +565,10 @@ export const BALL_ROBOT_RESTITUTION = 0.05;
  * `CoefficientCombineRule.Min`, so ball↔static = min(BALL_BALL_RESTITUTION,
  * BALL_WALL_RESTITUTION) = BALL_WALL_RESTITUTION and ball↔ball = BALL_BALL_REST. */
 export const BALL_MASS = 0.2; // lb
-/** a robot push refused by a wall beyond this distance means the ball is
- * PINNED — the constraint transmits back and stalls the robot */
-export const BALL_PIN_SLOP = 0.05; // in
 
-/**
- * HOW FAR AN ARTIFACT MAY BE INSIDE A CHASSIS BEFORE THE ROBOT IS BACKED OUT OF IT.
- *
- * `solveRobots` decides where the robot ends up and artifacts are not in that solve, so a
- * chassis drives THROUGH one; `solveBalls` runs afterwards and can move the ARTIFACT out of
- * the way, which is the whole answer for a loose artifact and no answer at all for one already
- * against a wall. What is left over is a robot standing where an artifact is.
- *
- * Reported from both ends, and they are one bug: "balls are not colliding with the robot and
- * instead go on top", and "I should not be able to squish into balls; balls have momentum
- * saved when they get stuck and then flow again". Rapier's penetration recovery is
- * proportional to DEPTH, so every inch the chassis is buried is stored as separation velocity
- * the artifact spends the moment it comes free — the squish IS the saved momentum.
- *
- * A real contact's worth, not a tuning dial: being fractionally inside is how a resting
- * contact looks to any solver, and anything past that is the chassis occupying the artifact.
- */
-export const BALL_SQUISH_SLOP = 0.3; // in
-
-/**
- * THE ARTIFACT EVICTION MAY ONLY UNDO THE ROBOT'S OWN ADVANCE. IT MAY NEVER PUSH IT BACK.
- *
- * The eviction exists so a chassis cannot end a tick standing where an artifact is, and it
- * cannot be a free position write: a wall clamp presses an artifact back into the robot, the
- * eviction pushes the robot off it, and the pair take turns until the chassis has been walked
- * across the field. Reported as "I still keep getting slowly pushed back from artifacts & the
- * wall when I'm not putting any power" -- at 0.35in a tick that is 21 in/s of drift on a robot
- * doing nothing.
- *
- * So the correction is bounded by how far the robot MOVED this tick. A robot that drove into
- * an artifact can have that advance taken back, in full, which is what makes the pinch
- * impossible. A robot standing still moved nothing, so nothing is taken back and artifacts
- * cannot shift it at all -- which is the owner's own rule: they do not have the force.
- *
- * This is why the bound is a distance moved and not a rate. A rate cap (0.35in/tick, swept
- * against 0.2 and 0.5) limits how FAST the drift is; it does not stop it being drift.
- */
-export const BALL_EVICT_MAX_STEP = 0.35; // in per tick, on top of the advance rule
-/** the pin only pushes the robot back when the robot itself drives into it
- * faster than this — balls arriving under their own momentum just stop */
-export const BALL_PIN_PUSH_MIN_SPEED = 0.5; // in/s
 /** ball-ball + ball-robot passes per tick, so robot -> ball -> pinned-ball
  * chains converge instead of tunnelling */
 export const BALL_SOLVER_ITERATIONS = 2;
-/**
- * Passes of the FINAL ball-vs-ball relaxation (see the end of the ground-ball solve in
- * world.ts).
- *
- * Rapier separates artifacts EARLY in the tick, but four things move them afterwards: the
- * bespoke robot push, the held-ball block, the classifier eviction and the wall clamp. With
- * nothing separating them again, a robot ramming a clump drives one artifact into another
- * and the overlap survives to the next tick — and while the robot keeps pushing, the next
- * tick never wins either. That is why artifacts visibly stack when rammed, and why they
- * stack at the gate when a robot blocks the outflow.
- *
- * Four passes because the pile is a CHAIN: separating the front pair pushes into the pair
- * behind it, so the correction has to propagate back through the clump within one tick.
- */
-export const BALL_RELAX_PASSES = 6;
-
-/**
- * HOW MUCH ARTIFACT-ON-ARTIFACT OVERLAP A FREEZE MAY PRESERVE.
- *
- * Two passes in this tick deliberately REVERT an artifact to where it began: the wall-pinch
- * jam, and the resting-artifact settle. Both exist to stop the same thing -- separation and
- * the wall clamp taking turns, 33 direction reversals a second in a packed corner -- and both
- * are right about jitter. But a revert restores the position the artifact STARTED the tick
- * in, and if that position was already inside another artifact, the freeze preserves the
- * overlap instead of the jitter. Once two of them are both frozen in an overlapping
- * configuration nothing can ever separate them again.
- *
- * Measured on a real match: a pair 2.24in apart on a 5in diameter -- 2.76in interpenetrated --
- * held for 5534 consecutive ticks, 92 seconds, at the gate outflow mouth. Every tick the ball
- * solve pushed them apart and the freeze put them straight back, to the decimal.
- *
- * So a freeze is refused for an artifact that is deeply inside another one: jitter is the
- * lesser problem, and the separation pass is allowed to finish its work. Shallow overlap --
- * ordinary contact slop, which is what a settled pile looks like -- still freezes.
- */
-export const BALL_FREEZE_MAX_OVERLAP = 0.5; // in
 
 // ------------------------------------------------- robot contact torque ----
 /** per-tick angular correction cap from a single contact group (rad), at rest */
@@ -732,11 +637,6 @@ export const CONTACT_IMPACT_SPIN = 0;
  * feature this is used on.
  */
 export const CONTACT_NORMAL_BLEND = 0.25; // in
-/**
- * Restitution at a point contact. A bumper is there to absorb, so a robot pressing structure
- * does not bounce off it — zero is the honest value and anything above it reads as springy.
- */
-export const CONTACT_RESTITUTION = 0;
 /** touch tolerance (in) for the post-Rapier square-up pass: Rapier resolves
  * translation and leaves a chassis resting AT a face (near-zero penetration),
  * so the bespoke torque nudge treats a contact within this band as touching */
@@ -820,47 +720,6 @@ export const PHYS_MAX_ROBOT_SPEED = 300;
  * when the solver has already given up.
  */
 export const PHYS_CONTAIN_SLOP = 0.75; // in
-/**
- * How much of the robot-robot point impulse's ROTATION reaches the chassis.
- *
- * The impulse in `squareUpPair` is the textbook two-body contact solve, and only its rotation
- * is taken — Rapier owns the linear half, and its bodies are rotation-locked. That split is
- * what makes a shoved robot spin at all, and it also leaves the model without the two things
- * that relieve a SUSTAINED contact in reality: the bumpers slipping, and the rotating chassis
- * shoving the other robot aside. So a held pair settles into a frozen geometry and the torque
- * repeats, unrelieved, every tick.
- *
- * Unscaled that torque out-muscles the wheels outright, and — the part that makes it a defect
- * rather than a hard-but-fair matchup — it does so almost regardless of how hard the push is.
- * Measured at full stick against 2748 degrees of free rotation in five seconds: an x-drive
- * pusher FOUR AND A HALF TIMES weaker than its victim still held it to 103 degrees, the same
- * as a tank six times STRONGER. A torque that ignores how hard it is being applied is not a
- * torque.
- *
- * At 0.6 the weak pusher no longer arrests anybody (820 degrees, i.e. a real fight rather than
- * a handbrake) while an equal or stronger one still pins you, which is the honest outcome for
- * a full-force corner bulldoze. It costs the ram: a near-corner hit spins the victim 17.5
- * degrees rather than 28, still clearly graded by how far off centre you catch them. Raising
- * it back toward 1 restores the ram and brings back the weak-pusher handbrake; the real fix is
- * a contact that can slip, which is a bigger piece of work than this dial.
- */
-export const CONTACT_PAIR_SPIN = 0.6;
-/**
- * How fast a robot-robot contact has to SLIDE before it stops aligning the pair (in/s).
- *
- * The settling term turns both chassis flush to the shared contact normal, which is right for
- * a pair that is held together and wrong the moment one of them leaves: the normal belongs to
- * the pair, so a turning victim dragged its pusher's heading around with it. Measured, a
- * pusher commanding only straight forward copied its victim's heading at 102-110% and followed
- * it 72in across the field — "I turn with them and follow them".
- *
- * Grip is `1 / (1 + slip / this)`, so this is the slip at which the alignment is HALVED. It
- * discriminates cleanly because the two cases are far apart: a genuinely held pair slips 0.0
- * in/s (both leaning, or the victim idle) and keeps every bit of the settling it always had,
- * while a victim strafing or pivoting off the contact slips 5-36. Lower = a contact that lets
- * go sooner. Raise it back toward Infinity to restore the old lock-on.
- */
-export const CONTACT_SLIP_RELIEF = 4;
 /**
  * Friction on the ROBOT and BALL colliders — resists a pinned robot sliding out of a squeeze
  * (the old model squared-and-held; 0 let it squirt).
@@ -2793,31 +2652,3 @@ export const VIEW_MARGIN = 14; // in of world margin around the field when fitti
  * NOT wall-centered (verified from the Section 9 figures). */
 export const ALLIANCE_AREA_ALONG = 96; // in along the wall
 export const ALLIANCE_AREA_DEEP = 54; // in outward from the wall
-
-/**
- * How far a RESTING artifact may be shuffled by the constraint passes before the shuffle is
- * simply refused — the settle threshold.
- *
- * Artifacts packed into a corner cannot all fit without overlap, so the relaxation pass pushes
- * them apart, the wall clamp puts them back, and the pair trade positions forever: measured in
- * the loading-zone corner, 33 direction reversals per second on an artifact with 1.8in of net
- * movement to show for four seconds of it. Neither pass is wrong and neither can win, which is
- * the same shape as the wall-pinch jam rule — an overlap with no valid resolution is not a
- * reason to move something.
- *
- * So an artifact that is at REST, is not being pushed by a robot, and ends the tick within
- * this of where it started, ends it exactly where it started.
- */
-export const BALL_SETTLE_SLOP = 0.2; // in
-
-/**
- * How far an artifact will look ALONG a wall for a way out of a chassis, and at what
- * resolution — see `evictBallFromRobot`.
- *
- * An artifact pinched between a chassis and a wall cannot be pushed out the way it came, so
- * it squirts out sideways instead. The reach is what separates squirting out of a pocket from
- * being carried down a robot's whole flank: a corner's exit is an inch or two away, and a
- * 5in artifact must never make it through a 4.6in gap however long it is pushed. A radius
- * and a half covers every real wedge and nothing else.
- */
-export const BALL_ESCAPE_REACH = BALL_RADIUS * 1.5; // in

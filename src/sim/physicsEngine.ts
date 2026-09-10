@@ -178,7 +178,7 @@ function outsideBy(r: RobotState, bounds: { halfX: number; halfY: number }): Vec
  * Returns each robot's PRE-solve velocity (keyed by id) so the bespoke square-up
  * pass can scale contact torque by how hard the robot was driving in.
  *
- * Robots only — ARTIFACTS are a SEPARATE solve (`solveBalls`), which builds its own chassis
+ * Robots only — ARTIFACTS are a SEPARATE solve (`solveArtifacts`), which builds its own chassis
  * bodies and is where ball↔robot momentum is exchanged in BOTH directions. Two solves rather
  * than one because they want different contact stiffness (a robot can start a step deep
  * inside a wall via its intake reach; an artifact never does) and because the artifact solve
@@ -223,7 +223,7 @@ export function solveRobots(
      * path is authoritative over where it goes, which is a reason not to let physics MOVE it
      * — not a reason to let the world reach through it.
      *
-     * KINEMATIC is exactly that distinction, and it is the same call `solveBalls` makes for
+     * KINEMATIC is exactly that distinction, and it is the same call `solveArtifacts` makes for
      * the chassis: everyone collides with it, nothing pushes it. Its pose for this tick was
      * already written by `updatePathTraversal` before this pass runs, so the body is built
      * where the path put it.

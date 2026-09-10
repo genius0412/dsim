@@ -549,7 +549,7 @@ export function chassisInertia(m: number, spec: RobotSpec): number {
  * ARTIFACTS THE INTAKE HAS ENGAGED — the ones its funnel is actively drawing in.
  *
  * The intake pulls an artifact toward the throat at `local.x = hl`, which IS the chassis
- * front face, so the funnel and the chassis collider in `solveBalls` are reaching for the
+ * front face, so the funnel and the chassis collider in `solveArtifacts` are reaching for the
  * same artifact and pulling opposite ways. Measured against main on an artifact 7in
  * off-centre: the funnel draws it 7.0 -> 4.4 -> 3.9, then the chassis shoves it back out
  * 4.2 -> 4.7 -> 5.3 -> 6.1 -> 6.9 -> 7.8 -> 8.8 before it is finally swallowed. 1.45s
