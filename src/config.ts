@@ -520,6 +520,19 @@ export const BALL_ROLL_FRICTION = 20; // in/s^2 — low enough that classifier
  * to push (the drivetrain meets resistance, accelerates into it slower) */
 export const BALL_PUSH_DRAG = 0.01;
 export const BALL_REST_SPEED = 2; // in/s, snap to rest below this
+/**
+ * The most a ground artifact ever moves at (in/s), applied to what the artifact solve hands
+ * back. A squeeze between a chassis and a wall a few degrees off square asks the ball to travel
+ * many times the robot's own advance to stay clear, and the solver obliges with whatever speed
+ * the constraints demand — 300 in/s and more — which is both faster than a foam ball pops out
+ * of anything and further per tick than the solve's look-ahead (`PHYS_BALL_PREDICTION`), so
+ * the next tick could not see it coming: a 5in artifact went through a 2.7in corner gap. An
+ * inch and a half a tick keeps every contact in view, and nothing on this field moves faster than
+ * a chassis at full speed — a foam ball squeezed out from under one deforms rather than
+ * outrunning it (at 120 a wall pile rammed at full throttle flung artifacts 120in across the
+ * field).
+ */
+export const BALL_MAX_SPEED = 90;
 export const BALL_WALL_RESTITUTION = 0.5;
 export const BALL_BALL_RESTITUTION = 0.68;
 export const BALL_GROUND_RESTITUTION = 0.45; // vertical bounce
@@ -754,9 +767,15 @@ export const PHYS_WALL_FRICTION = 0.35;
  * to each other and to the wall". At 0.05 the same hits leave along the normal, the bounce
  * keeps its tangential speed, and the drain disperses. Rolling resistance with the FLOOR is a
  * separate thing (`BALL_ROLL_FRICTION`) and is untouched.
+ *
+ * ZERO, not small. At 0.05 a ball squeezed between a bumper and a wall a few degrees off square
+ * squirted out along the wall at 165 in/s for one tick and then stopped dead: the solver's
+ * penetration recovery puts an enormous normal impulse into a squeezed contact, and even a
+ * twentieth of that as friction cancelled the whole sideways speed — a friction cone wrapped
+ * round a ball that in reality would ROLL out. A rolling sphere has no in-plane friction cone.
  */
-export const PHYS_BALL_FRICTION = 0.05;
-export const PHYS_BALL_WALL_FRICTION = 0.05;
+export const PHYS_BALL_FRICTION = 0;
+export const PHYS_BALL_WALL_FRICTION = 0;
 /** BALL contact stiffness (Hz) for the ball solve — stiffer than the robot world
  * (12 Hz), which let two grounded balls sit visibly overlapping for many ticks.
  * Tuned to 25: separates a resting overlapping clump within ~0.5s (as clean as a
@@ -782,23 +801,39 @@ export const PHYS_BALL_ALLOWED_ERROR = 0.001;
  *
  * Sized for the fastest closing pair the field has: a chassis at its top speed plus an
  * artifact rolling toward it, comfortably under 3.5in a tick.
- */
-export const PHYS_BALL_PREDICTION = 0.002;
-/**
- * The bumper's contact SKIN in the artifact world (in): the chassis collider catches an artifact
- * this far out and holds it there, as a real contact with the bumper's own restitution.
  *
- * This is what replaced the 3.5in speculative look-ahead as the thing that keeps a full-speed
- * chassis (1.5in a tick) from burying the artifact it meets. A speculative contact caught it
- * just as early, but Rapier resolves a speculative contact as a velocity clip with NO
- * restitution and computes the bounce from whatever approach is left — measured, ball-ball
- * restitution came out 0.14 for a set 0.68 and ball-wall 0.14-0.20 for a set 0.5, at every
- * speed, stiffer contacts making it worse (0.03). So the look-ahead is Rapier's default now
- * and the bounce is honest (0.67 / 0.47 measured), and the chassis carries a skin instead:
- * a third of an inch of bumper compliance, which no one can see on a 5in artifact. The intake
- * carries none — a skin on the wedge narrows the throat and squeezes what is in it.
+ * ⚠️ RAPIER APPLIES NO RESTITUTION ON A SPECULATIVE CONTACT. The gap is closed as a velocity
+ * clip and the bounce is computed from whatever approach is left, so with this look-ahead every
+ * ball-ball and ball-wall hit landed at ~0.14 for a set 0.68 and 0.5 — measured at every speed,
+ * stiffer contacts making it worse (0.03), CCD changing nothing. The look-ahead was dropped to
+ * Rapier's default for a day and the bounce came back exactly, but the contact of a pushed
+ * artifact with the one AHEAD of it then formed a tick late, and a pile pushed by a chassis
+ * became a tick-by-tick chain of burials (0.6in in the chassis, 1.7in ball in ball) that the pin
+ * test had to be taught to ignore — and it could not tell a transient from a trap. So the
+ * look-ahead stays, and the bounce of an IMPACT is computed before the solve, exactly, by
+ * `bounceFirstContacts`: the solver's speculative contacts do what they are good at (a pushed
+ * chain moving in one pass, nothing buried) and never see an impact they would have to bounce.
  */
-export const PHYS_BALL_CHASSIS_SKIN = 0.35;
+export const PHYS_BALL_PREDICTION = 0.35;
+/**
+ * An artifact this close to another (in) is TOUCHING it: their contact is a sustained one the
+ * solver owns, not an impact. `bounceFirstContacts` bounces only pairs further apart than this
+ * that will meet within the tick — a ball being pushed into its neighbour taps it ahead; a ball
+ * resting on its neighbour is pushed with it.
+ */
+export const BALL_FIRST_CONTACT_GAP = 0.05;
+/**
+ * How many ticks ahead `bounceFirstContacts` looks for an impact. More than one, because the
+ * solver's speculative constraint begins clipping a closing pair's approach the tick BEFORE
+ * the surfaces would meet (a soft constraint acts on the predicted gap, not the real one), and
+ * a bounce computed after that clip is a bounce of what is left: 0.49 for a set 0.68. At 1.5
+ * ticks the impulse lands first, at most half a tick's travel early — a third of an inch at
+ * 40 in/s, which nobody can see.
+ */
+export const BALL_FIRST_CONTACT_LOOKAHEAD = 1.5;
+/** how close to a robot solid an artifact counts as being PUSHED by it, for `clumpDrag` (in) —
+ * the speculative contact parks a pushed artifact a hair off the surface, never inside it */
+export const BALL_PUSH_CONTACT = 0.15;
 /**
  * How far into a robot an artifact may end the artifact solve before it is PINNED — the one
  * number the two-solve engine turns on.
@@ -836,15 +871,6 @@ export const PHYS_PIN_ROUNDS = 4;
  * on the circle keeps the pin; a robot that has genuinely backed off drops it.
  */
 export const ARTIFACT_PIN_RELEASE = 0.5; // in
-/**
- * How square a robot has to be pushing an artifact into the field for the field to count as
- * what pins it (cosine of the angle between the push and the field's push back). Square on,
- * a wall stops the artifact and the robot stops on it; a corner catching a ball that sits
- * against a wall pushes it at an angle, and a round ball pushed at an angle rolls along the
- * wall out of the way instead. 0.85 is ~32 degrees: the tolerance a bumper's compliance and
- * the solver's contact normal need, and well inside where a real ball starts to squirt.
- */
-export const ARTIFACT_PIN_COS = 0.85;
 /** how close to a wall, another artifact or a second robot a pinned artifact has to be for
  *  that thing to count as what is holding it there (in). A pin whose support has left is
  *  released even if the robot is still leaning, so the robot can push the artifact again. */

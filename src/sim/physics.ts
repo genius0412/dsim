@@ -997,6 +997,91 @@ export function collideBallBall(a: Artifact, b: Artifact): void {
 }
 
 /**
+ * THE BOUNCE OF AN IMPACT, computed before the artifact solve — velocity only, exact.
+ *
+ * The artifact solve runs on SPECULATIVE contacts (`PHYS_BALL_PREDICTION`, 3.5in): that is what
+ * lets a chassis push a chain of artifacts in one pass without burying the first, and what makes
+ * "still inside a robot after the solve" mean "could not get out of the way". But Rapier applies
+ * NO restitution on a speculative contact — it closes the gap as a velocity clip and bounces
+ * whatever approach is left — so with the look-ahead alone every ball-ball and ball-wall impact
+ * landed at about 0.14 for a set 0.68 / 0.5, and a ball rear-ending the one ahead merged with
+ * it into a train ("they don't disperse"). Dropping the look-ahead brought the bounce back and
+ * the burials with it; this is the honest split.
+ *
+ * An IMPACT is a pair that is not yet touching (`BALL_FIRST_CONTACT_GAP`) and will meet within
+ * this tick under its current velocities: the time of impact is solved exactly for two circles,
+ * the normal is taken where they meet, and the equal-mass restitution impulse is applied along
+ * it. Against the field the predicted position is asked of `clampBallPosToStatics` — the same
+ * geometry authority the containment and the pin test use — and the push-back it returns is the
+ * surface normal. A pair already touching is a SUSTAINED contact (a ball pushed on its
+ * neighbour, a ball leaned on a wall), which never bounces and is the solver's. The solver
+ * then sees a pair that is separating and leaves it alone; its own restitution stays set and
+ * only ever acts on a contact this pass did not see. Frictionless, like the contacts.
+ */
+export function bounceFirstContacts(ground: readonly Artifact[], dt: number): void {
+  const R = C.BALL_RADIUS;
+  const touch = 2 * R;
+  for (let i = 0; i < ground.length; i++) {
+    const a = ground[i];
+    for (let j = i + 1; j < ground.length; j++) {
+      const b = ground[j];
+      const dx = b.pos.x - a.pos.x;
+      const dy = b.pos.y - a.pos.y;
+      const d2 = dx * dx + dy * dy;
+      if (Math.sqrt(d2) - touch <= C.BALL_FIRST_CONTACT_GAP) continue; // touching: sustained
+      const vx = b.vel.x - a.vel.x;
+      const vy = b.vel.y - a.vel.y;
+      const rv = dx * vx + dy * vy;
+      if (rv >= 0) continue; // not closing
+      // |d + v t| = touch  ⇒  v²t² + 2(d·v)t + (d² − touch²) = 0, the earlier root
+      const vv = vx * vx + vy * vy;
+      const disc = rv * rv - vv * (d2 - touch * touch);
+      if (disc < 0) continue; // passes by
+      const t = (-rv - Math.sqrt(disc)) / vv;
+      // NOT "within this tick": the solver's speculative constraint starts clipping the approach
+      // a tick before the surfaces would meet (measured: a pair 0.68in apart closing 0.66in a
+      // tick lost 15% of its approach that tick and bounced at 0.49 for a set 0.68), so the
+      // bounce has to land before the clip ever sees a closing pair
+      if (t > dt * C.BALL_FIRST_CONTACT_LOOKAHEAD) continue;
+      const mx = dx + vx * t;
+      const my = dy + vy * t;
+      const ml = hyp(mx, my) || 1;
+      const nx = mx / ml;
+      const ny = my / ml; // a → b where they meet
+      const vn = vx * nx + vy * ny; // relative normal speed, negative closing
+      if (-vn < C.BALL_REST_SPEED) continue; // a nudge, not an impact
+      const jn = (-(1 + C.BALL_BALL_RESTITUTION) * vn) / 2; // equal masses
+      a.vel.x -= jn * nx;
+      a.vel.y -= jn * ny;
+      b.vel.x += jn * nx;
+      b.vel.y += jn * ny;
+    }
+  }
+  for (const b of ground) {
+    if (b.vel.x === 0 && b.vel.y === 0) continue;
+    // already ON the static it is heading for (a ball a robot is pressing into a wall): that is a
+    // sustained contact, the solver's, and never a bounce
+    const sp = hyp(b.vel.x, b.vel.y);
+    const near = { x: b.pos.x + (b.vel.x / sp) * C.BALL_FIRST_CONTACT_GAP, y: b.pos.y + (b.vel.y / sp) * C.BALL_FIRST_CONTACT_GAP };
+    const nc = clampBallPosToStatics(near);
+    if (nc.x !== near.x || nc.y !== near.y) continue;
+    const px = b.pos.x + b.vel.x * dt * C.BALL_FIRST_CONTACT_LOOKAHEAD;
+    const py = b.pos.y + b.vel.y * dt * C.BALL_FIRST_CONTACT_LOOKAHEAD;
+    const c = clampBallPosToStatics({ x: px, y: py });
+    const ux = c.x - px;
+    const uy = c.y - py;
+    const ul = hyp(ux, uy);
+    if (ul === 0) continue; // clear of the field this tick
+    const nx = ux / ul;
+    const ny = uy / ul; // the surface normal, into the field
+    const vn = b.vel.x * nx + b.vel.y * ny;
+    if (-vn < C.BALL_REST_SPEED) continue; // leaning on it, not hitting it
+    b.vel.x -= (1 + C.BALL_WALL_RESTITUTION) * vn * nx;
+    b.vel.y -= (1 + C.BALL_WALL_RESTITUTION) * vn * ny;
+  }
+}
+
+/**
  * TWO ARTIFACTS ON ONE POINT get kicked apart — velocity only, deterministic (a hash of the
  * ids and the tick, never Math.random), before the artifact solve, which owns every position.
  *
@@ -1287,9 +1372,8 @@ function ballRobotContact(
  * which is a thing a seed velocity is allowed to be.
  */
 export function clumpDrag(b: Artifact, r: RobotState, solids: RobotSolids): void {
-  // the same shapes the solve pushes with, and at the bumper's SKIN: an artifact being pushed
-  // rides `PHYS_BALL_CHASSIS_SKIN` off the chassis, so a test on the bare surface never sees it
-  const q = robotPenetration(r, solids, b.pos, C.BALL_RADIUS, false, false, -C.PHYS_BALL_CHASSIS_SKIN - 0.1);
+  // the same shapes the solve pushes with, within the hair a speculative contact leaves
+  const q = robotPenetration(r, solids, b.pos, C.BALL_RADIUS, false, false, -C.BALL_PUSH_CONTACT);
   if (!q) return;
   const { nx, ny } = q;
   const cp = { x: b.pos.x - nx * C.BALL_RADIUS, y: b.pos.y - ny * C.BALL_RADIUS };

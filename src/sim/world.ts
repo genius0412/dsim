@@ -4,6 +4,7 @@ import {
   clampBallPosToStatics,
   collideBallBall,
   collideBallRect,
+  bounceFirstContacts,
   clumpDrag,
   collideBallRobot,
   landOnIntakeLid,
@@ -15,7 +16,7 @@ import {
   heldSlotPos,
 } from './physics';
 import { rot, approach, hyp } from '../math';
-import { pinnedArtifacts, solveArtifacts, solveRobots, type SweepFrom } from './physicsEngine';
+import { fieldPushback, pinnedArtifacts, solveArtifacts, solveRobots, type PinnedCircle, type SweepFrom } from './physicsEngine';
 import { robotPenetration, robotSolids, type RobotSolids } from './artifactSolids';
 import { decodeColliders } from '../games/decode/colliders';
 import { classifierRect } from './field';
@@ -181,11 +182,13 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
   }
 
   // ---- ground artifacts: the velocity-only pre-passes ----------------------
-  // Rolling friction + rest snap, and the deterministic off-centre scatter of a contact between
-  // two artifacts. Velocities only: the artifact solve below is the ONLY thing that moves a
-  // ground artifact, and these are what it starts from.
+  // Rolling friction + rest snap, the bounce of any impact that will land this tick (the
+  // solver's speculative contacts carry none), and the kick that separates two artifacts on one
+  // point. Velocities only: the artifact solve below is the ONLY thing that moves a ground
+  // artifact, and these are what it starts from.
   const ground = world.balls.filter((b) => b.state.kind === 'ground');
   for (const b of ground) stepGroundBall(b, dt);
+  bounceFirstContacts(ground, dt);
   for (let i = 0; i < ground.length; i++) {
     for (let j = i + 1; j < ground.length; j++) scatterBalls(ground[i], ground[j], world.time);
   }
@@ -276,7 +279,21 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
       if (wasPinned.has(b.id)) pinnedIds.add(b.id);
     }
   }
-  let pinned: Vec2[] = ballsAtStart.filter((s) => pinnedIds.has(s.b.id)).map((s) => ({ x: s.pos.x, y: s.pos.y }));
+  const startOf = new Map(ballsAtStart.map((s) => [s.b.id, s]));
+  // where each pinned artifact began the tick, and the velocity it has: for the seed that is its
+  // resting velocity from last tick; inside the loop it is what this round's artifact solve gave it
+  const circles = (): PinnedCircle[] =>
+    ground
+      .filter((b) => pinnedIds.has(b.id))
+      .map((b) => {
+        const s = startOf.get(b.id)!;
+        // a pinned ball at rest is a FIXED wall: the fraction of an inch a second the solver
+        // leaves on a squeezed ball is not motion, and carried into the circle it walked a
+        // robot stalled square on a wall ball 13 degrees off its heading in two seconds
+        const moving = hyp(b.vel.x, b.vel.y) >= C.BALL_REST_SPEED;
+        return { x: s.pos.x, y: s.pos.y, vx: moving ? b.vel.x : 0, vy: moving ? b.vel.y : 0 };
+      });
+  let pinned: PinnedCircle[] = circles();
   let preVels = new Map<number, Vec2>();
   let buried: ReturnType<typeof pinnedArtifacts>['buried'] = [];
   let finalPinned: number[] = [];
@@ -284,10 +301,16 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
     lastTickRounds = round + 1;
     if (round > 0) {
       restoreRobots(robotsAtStart);
-      for (const s of ballsAtStart) {
-        s.b.pos = { x: s.pos.x, y: s.pos.y };
-        s.b.vel = { x: s.vel.x, y: s.vel.y };
-      }
+      /**
+       * The artifacts go back to where they BEGAN the tick, but keep the VELOCITY the last round
+       * gave them. Restoring the velocity too threw away the one thing the round had found out:
+       * a ball squeezed a few degrees off square between a bumper and a wall squirts out along
+       * the wall at 100+ in/s under the robot's push, and with the robot now stopped on its pin
+       * the re-solve gave it 5-20 in/s instead — so the ball crept, the robot sat on it, and the
+       * next tick did it all again ("artifacts act like they are fixed in place"). The velocity
+       * is what the push did to the ball; the pin only decides how far the ROBOT gets to go.
+       */
+      for (const s of ballsAtStart) s.b.pos = { x: s.pos.x, y: s.pos.y };
     }
     preVels = solveRobots(world, dt, decodeColliders, gateCol, drive, pinned, solids);
     solveArtifacts(world, dt, decodeColliders, claimed, doorway, solids, sweepFrom);
@@ -308,6 +331,24 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
         b.pos.x = c.x;
         b.pos.y = c.y;
       }
+      /**
+       * ...AND AN ARTIFACT ON THE FIELD HAS NO VELOCITY INTO IT. A ball squeezed between a
+       * kinematic chassis and a static wall is between two things the solver cannot move, and
+       * the compromise it leaves is a velocity into the wall — 58 in/s, measured — on a ball
+       * whose position the clamp above has just put back on the wall. Carried into the pinned
+       * circle that velocity told the robot solve the ball was leaving; carried into the next
+       * tick it read as an impact and bounced the ball back off the wall at 29 in/s, and the
+       * robot off the ball. The wall is an invariant for the velocity too: whatever the solve
+       * left pointing into it is removed, and the sideways part — the squirt — is kept.
+       */
+      const u = fieldPushback(b.pos);
+      if (u) {
+        const into = b.vel.x * u.x + b.vel.y * u.y;
+        if (into < 0) {
+          b.vel.x -= into * u.x;
+          b.vel.y -= into * u.y;
+        }
+      }
     }
     const found = pinnedArtifacts(world, claimed, doorway, solids, pinnedIds);
     buried = found.buried;
@@ -319,9 +360,17 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
       grew = true;
     }
     if (!grew) break;
-    // the walls for the next round: the pinned artifacts where they BEGAN the tick, which is
-    // where the artifact solve will find them again once the robot is stopped
-    pinned = ballsAtStart.filter((s) => pinnedIds.has(s.b.id)).map((s) => ({ x: s.pos.x, y: s.pos.y }));
+    /**
+     * The walls for the next round: the pinned artifacts where they BEGAN the tick, MOVING at
+     * the velocity this round's artifact solve gave them. A ball that truly cannot move has
+     * none, and is the fixed wall it always was. A ball squirting out of a squeeze — a few
+     * degrees off square between a bumper and a wall, sliding along the wall at 100+ in/s — is
+     * a wall that gets out of the way during the step, and the robot solve lets the robot
+     * follow it. A fixed circle at either position deadlocked: it stopped the robot dead, the
+     * restore threw the squirt away, and the next tick repeated it, the ball creeping at 5 in/s
+     * under a robot parked on it.
+     */
+    pinned = circles();
   }
   world.pinnedArtifacts = finalPinned;
   /**

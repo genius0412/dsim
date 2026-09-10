@@ -1105,6 +1105,72 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
     );
   }
 
+  // a PILE in open field is swallowed and shoved, not a barrier: an empty robot at full throttle
+  // takes three and keeps its speed through the other five
+  {
+    const w = quiet(11);
+    const r = w.robots[0];
+    r.hopper = [];
+    r.heading = Math.PI / 2;
+    r.pos = { x: 0, y: -30 };
+    const tip = r.spec.length / 2 + INTAKE_PRESETS[r.spec.intake].reach;
+    const pitch = 2 * BALL_RADIUS + 0.05;
+    const rows = [[0], [-0.5, 0.5], [-1, 0, 1], [-1.5, -0.5]];
+    w.balls.length = 8;
+    let k = 0;
+    for (let ri = 0; ri < rows.length; ri++) for (const c of rows[ri]) place(w.balls[k++], c * pitch, -30 + tip + 30 + ri * pitch * 0.866, 0, 0);
+    let contact = -1;
+    let slowest = Infinity;
+    let worstPen = 0;
+    for (let i = 0; i < 90; i++) {
+      step(w, SIM_DT, new Map([[0, cmd({ driveY: 1, intake: true })]]));
+      const held = w.balls.filter((b) => b.state.kind === 'held');
+      const sol = robotSolids(r, held);
+      for (const b of w.balls) {
+        if (b.state.kind !== 'ground') continue;
+        const q = robotPenetration(r, sol, b.pos, BALL_RADIUS, false, false, -0.5);
+        if (!q) continue;
+        if (contact < 0) contact = i;
+        // the CHASSIS box only: a held artifact's collider appears at its slot on the tick of
+        // capture and can overlap the next one in the mouth for a few ticks; that is the capture
+        // animation, not the pile going through the bumper
+        if (q.part === 'chassis' && q.pen > worstPen) worstPen = q.pen;
+      }
+      // the half second after contact: the pile is 62in from the far wall, which the robot reaches
+      // in about 0.8s and legitimately stops at
+      if (contact >= 0 && i < contact + 30) slowest = Math.min(slowest, hyp(r.vel.x, r.vel.y));
+    }
+    const held = w.balls.filter((b) => b.state.kind === 'held').length;
+    check(
+      'an empty robot driving into a pile of eight takes three and shoves the rest without slowing',
+      held === 3 && contact >= 0 && slowest > 60 && worstPen < 0.75,
+      `held ${held}, slowest ${slowest.toFixed(1)} in/s in the 0.5s after contact, deepest chassis burial ${worstPen.toFixed(2)}in (the pile used to be a barrier: 6 in/s, and a claimed artifact went 2.6in through the face)`,
+    );
+  }
+
+  // a wall ball caught by the flat BACK of a chassis a few degrees off square is squeezed out
+  // along the wall and the robot drives on to the wall; it does not park on the ball
+  {
+    const squeezed = (deg: number): { reached: boolean; ballMoved: number } => {
+      const w = quiet(11);
+      const r = w.robots[0];
+      r.hopper = ['green', 'green', 'green'];
+      r.heading = -Math.PI / 2 + (deg * Math.PI) / 180;
+      r.pos = { x: 0, y: FIELD_HALF - BALL_RADIUS - r.spec.length / 2 - 20 };
+      w.balls.length = 1;
+      place(w.balls[0], 0, FIELD_HALF - BALL_RADIUS, 0, 0);
+      run(w, cmd({ driveY: -1 }), 2);
+      return { reached: r.pos.y + r.spec.length / 2 > FIELD_HALF - 0.5, ballMoved: Math.abs(w.balls[0].pos.x) };
+    };
+    const s8 = squeezed(8);
+    const s15 = squeezed(15);
+    check(
+      'a wall ball caught a few degrees off square squirts out and the robot drives on',
+      s8.reached && s15.reached && s8.ballMoved > 5 && s15.ballMoved > 5,
+      `8deg: at the wall ${s8.reached}, ball ${s8.ballMoved.toFixed(0)}in along it; 15deg: ${s15.reached}, ${s15.ballMoved.toFixed(0)}in (a fixed pin circle parked the robot on a ball creeping at 5 in/s)`,
+    );
+  }
+
   // a fast artifact into a PARKED robot does not move the robot — 0.2 lb cannot shove 30 lb
   {
     const moved = (how: 'flank' | 'front'): number => {
@@ -2670,7 +2736,7 @@ function queueTenth(w: World): void {
   const w = mkWorld('match', 'blue', 42);
   startMatch(w);
   w.match.phase = 'teleop';
-  for (const b of w.balls) if (b.state.kind === 'ground') b.pos = { x: 300, y: 300 };
+  w.balls.length = RAMP_SLOTS + 1; // the first ten are re-purposed below, the rest leave the field (an off-field POSITION is clamped back in, onto one point)
   fillBlueRail(w);
   w.robots[0].pos = { x: 0, y: -40 };
   const nine = w.balls.slice(0, RAMP_SLOTS);
@@ -2793,8 +2859,11 @@ function queueTenth(w: World): void {
    * checked: they leave on identical headings and still end up in different places, because
    * each one caroms off whatever stopped before it.
    */
-  const finals = tracked.filter((b) => b.state.kind === 'ground');
+  // ...still on the field: the human player collects from the audience corner, and a collected
+  // artifact is spliced out of the world but stays in `tracked`, frozen where it was
+  const finals = tracked.filter((b) => b.state.kind === 'ground' && w.balls.includes(b));
   const spreadY = Math.max(...finals.map((b) => b.pos.y)) - Math.min(...finals.map((b) => b.pos.y));
+  const spreadX = Math.max(...finals.map((b) => b.pos.x)) - Math.min(...finals.map((b) => b.pos.x));
   // ...and they do NOT end up stacked on one spot: every pair at least a diameter apart is the
   // spread a corridor this narrow can actually show. Lateral room by the wall is a few inches,
   // so it is the DISTANCE each one travels before its own collision stops it that varies.
@@ -2814,9 +2883,14 @@ function queueTenth(w: World): void {
     Math.max(...leans) < 6 &&
       angles.some((d) => d > 0.2) &&
       angles.some((d) => d < -0.2) &&
-      spreadY > 20 &&
+      // a PILE now, not a line: with honest collisions the drain ends two and three abreast in
+      // the corner, so the along-tunnel extent SHRINKS (it was the line's 20in+) while the
+      // across-tunnel extent appears; what the spread has to show is that it fills the corner
+      // in both directions and nobody is stacked
+      spreadY > 12 &&
+      spreadX > 6 &&
       Math.min(...pairs) >= BALL_RADIUS * 2 - 0.5,
-    `headings ${angles.map((d) => d.toFixed(1)).join(',')} — and they finish spread over ${spreadY.toFixed(0)}in of tunnel, closest pair ${Math.min(...pairs).toFixed(1)}in`,
+    `headings ${angles.map((d) => d.toFixed(1)).join(',')} — and they finish spread over ${spreadY.toFixed(0)}in of tunnel and ${spreadX.toFixed(0)}in across it, closest pair ${Math.min(...pairs).toFixed(1)}in`,
   );
 }
 
@@ -4011,7 +4085,7 @@ function queueTenth(w: World): void {
     const w = mkWorld('match', 'blue', 42);
     startMatch(w);
     w.match.phase = 'teleop';
-    for (const b of w.balls) if (b.state.kind === 'ground') b.pos = { x: 300, y: 300 };
+    w.balls.length = RAMP_SLOTS + 1; // the first ten are re-purposed below, the rest leave the field (an off-field POSITION is clamped back in, onto one point)
     fillBlueRail(w);
     const r = w.robots[0];
     const exit = railPos('blue', RAIL_EXIT_S);
@@ -4172,7 +4246,7 @@ function queueTenth(w: World): void {
   const settle = (tiltDeg: number, at: 'wall' | 'gate', dy = 0): number => {
     const w = mkWorld('match', 'blue', 42);
     startMatch(w);
-    for (const b of w.balls) b.pos = { x: 300, y: 300 };
+    w.balls.length = 0; // off-field positions are clamped back INTO the field, onto one point
     const r = w.robots[0];
     const face = at === 'wall' ? Math.PI / 2 : Math.PI;
     if (at === 'wall') r.pos = { x: 0, y: FIELD_HALF - 20 };
@@ -4393,7 +4467,7 @@ function queueTenth(w: World): void {
   const ramTurn = (tiltDeg: number, runup: number): { worstTick: number; peakAng: number } => {
     const w = mkWorld('match', 'blue', 42);
     startMatch(w);
-    for (const b of w.balls) b.pos = { x: 300, y: 300 };
+    w.balls.length = 0; // off-field positions are clamped back INTO the field, onto one point
     const r = w.robots[0];
     r.pos = { x: 0, y: FIELD_HALF - 9 - runup };
     r.heading = Math.PI / 2 + (tiltDeg * Math.PI) / 180;
@@ -5253,6 +5327,7 @@ const offFlush = (h: number) => {
 /** A drives +x into an idle B whose centre is `offset` inches to the side. */
 function ramOffCentre(offset: number, ticks = 90): { victim: number; peakW: number; aggressor: number } {
   const w = createWorld('free', 7, [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 1)]);
+  w.balls.length = 0; // a robot-robot scene: the fifteen seconds of pushing cross the spike marks
   const [a, b] = w.robots;
   a.pos = { x: -30, y: offset }; a.heading = 0; a.vel = { x: 0, y: 0 }; a.angVel = 0; a.fieldCentric = false;
   b.pos = { x: 0, y: 0 }; b.heading = 0; b.vel = { x: 0, y: 0 }; b.angVel = 0; b.fieldCentric = false;
@@ -8660,12 +8735,18 @@ function pinScene(
    * continuing tariff stops. That is also what G408 itself says — its violation line is one
    * assessment, with no continuing clause at all.
    */
-  run(w, cmd({ driveY: 1, intake: true }), 8);
-  const holding = w.match.fouls.blue.minor - before - acquiring;
+  // The ARRIVAL at full throttle scatters what the funnel cannot take: round, frictionless
+  // artifacts outside the throat are squeezed out along the wall, and that push is billed ONCE,
+  // the way the wall-row ram further down is — it moved them. It is over inside a second and a
+  // half. What must not happen is the bill continuing while the robot then sits on the pile.
+  run(w, cmd({ driveY: 1, intake: true }), 1.5);
+  const arrival = w.match.fouls.blue.minor - before - acquiring;
+  run(w, cmd({ driveY: 1, intake: true }), 6.5);
+  const holding = w.match.fouls.blue.minor - before - acquiring - arrival;
   check(
     '...and leaning on it afterwards does NOT keep costing (an arrival is not a journey)',
-    holding === 0,
-    `${holding} further MINORs over the next 8s of holding the same pile on the wall`,
+    holding === 0 && arrival <= 1,
+    `${arrival} MINOR for the arrival's scatter, then ${holding} further over 6.5s of holding the same pile on the wall`,
   );
 }
 
@@ -9738,7 +9819,7 @@ function pinScene(
     const w = mkWorld('match', 'blue', 42);
     startMatch(w);
     w.match.phase = 'teleop';
-    for (const b of w.balls) if (b.state.kind === 'ground') b.pos = { x: 300, y: 300 };
+    w.balls.length = RAMP_SLOTS + 1; // the first ten are re-purposed below, the rest leave the field (an off-field POSITION is clamped back in, onto one point)
     fillBlueRail(w);
     w.robots[0].pos = { x: 0, y: -40 };
     const rider = w.balls[RAMP_SLOTS];
