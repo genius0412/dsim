@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "test": "tsx scripts/smoke.ts",
     "test:mm": "tsx scripts/mmsmoke.ts",
+    "test:bb": "tsx scripts/smoke-biobuzz/index.ts",
     "contrast": "node scripts/contrast.mjs",
     "shiftaudit": "electron scripts/shiftaudit.cjs",
     "shots": "electron scripts/shots.cjs",
