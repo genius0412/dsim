@@ -6,6 +6,7 @@ import {
   collideBallRect,
   bounceFirstContacts,
   clumpDrag,
+  driveIntent,
   collideBallRobot,
   landOnIntakeLid,
   collideBallStatic,
@@ -274,29 +275,107 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
    */
   const wasPinned = new Set(world.pinnedArtifacts ?? []);
   const pinnedIds = new Set<number>();
+  let seedReport: ReturnType<typeof pinnedArtifacts> | null = null;
   if (wasPinned.size > 0) {
-    for (const b of pinnedArtifacts(world, claimed, doorway, solids, wasPinned).pinned) {
+    seedReport = pinnedArtifacts(world, claimed, doorway, solids, wasPinned);
+    for (const b of seedReport.pinned) {
       if (wasPinned.has(b.id)) pinnedIds.add(b.id);
     }
   }
   const startOf = new Map(ballsAtStart.map((s) => [s.b.id, s]));
-  // where each pinned artifact began the tick, and the velocity it has: for the seed that is its
-  // resting velocity from last tick; inside the loop it is what this round's artifact solve gave it
-  const circles = (): PinnedCircle[] =>
+  const robotStartOf = new Map(robotsAtStart.map((s) => [s.r.id, s]));
+  /**
+   * THE PINNED CIRCLES, built from the pin report: where each pinned artifact began the tick, the
+   * velocity it has, and a radius chosen so that A PIN MAY UNDO THE ROBOT'S OWN ADVANCE AND
+   * NOTHING MORE.
+   *
+   * The circle is sized against the robot's START pose and every one of its solids: tangent to
+   * the nearest solid, plus `PHYS_PIN_INFLATE` only for a robot PUSHING it (`pushingPin` — the
+   * drive intent along the pin normal), capped at the full inflated ball. So a robot that drove
+   * into a pinned ball this tick is re-solved from where it started and stops at the inflation
+   * (which keeps it clear of the robot world's own slop), and a robot not driving at the ball is
+   * not pushed at all, however deep a ball buried itself in it. Before this the circle was
+   * always the full inflated ball, and a drain rolling onto a parked intake shoved it 0.8in
+   * ("when gate intaking, the balls that come down should not be pushing the robot away"). The
+   * circle MOVES only when the robot is pushing the ball, and then only across or away from the
+   * robot: the component pointing at the robot's centre is the ball's own motion and is dropped;
+   * what is left is the squirt, and the robot may follow it.
+   *
+   * A pinned ball at rest is a FIXED wall: the fraction of an inch a second the solver leaves on
+   * a squeezed ball is not motion, and carried into the circle it walked a robot stalled square
+   * on a wall ball 13 degrees off its heading in two seconds.
+   */
+  /**
+   * Is the robot PUSHING this pinned artifact — driving into it, by its command, along the
+   * robot→artifact normal? Not "did it advance": a robot stopped on its pin has no advance and
+   * was still driving, and reading that as not-pushing froze the squirt it was driving (the
+   * flat-back squeeze went from 50in along the wall to 5). The drive intent is what a driver
+   * means; a parked intake with the drain arriving on it means nothing, whatever hits it.
+   */
+  const pushingPin = (pin: { r: RobotState; nx: number; ny: number }): boolean => {
+    const intent = driveIntent(pin.r, actualCommands.get(pin.r.id));
+    return intent.x * pin.nx + intent.y * pin.ny > C.ARTIFACT_PIN_DRIVE;
+  };
+  const circles = (pins: ReadonlyMap<number, { r: RobotState; pen: number; nx: number; ny: number }>): PinnedCircle[] =>
     ground
       .filter((b) => pinnedIds.has(b.id))
       .map((b) => {
         const s = startOf.get(b.id)!;
-        // a pinned ball at rest is a FIXED wall: the fraction of an inch a second the solver
-        // leaves on a squeezed ball is not motion, and carried into the circle it walked a
-        // robot stalled square on a wall ball 13 degrees off its heading in two seconds
-        const moving = hyp(b.vel.x, b.vel.y) >= C.BALL_REST_SPEED;
-        return { x: s.pos.x, y: s.pos.y, vx: moving ? b.vel.x : 0, vy: moving ? b.vel.y : 0 };
+        const pin = pins.get(b.id);
+        let vx = 0;
+        let vy = 0;
+        let radius = C.BALL_RADIUS + C.PHYS_PIN_INFLATE;
+        if (pin) {
+          /**
+           * Sized against the robot's START pose and EVERY one of its solids — the pin test
+           * skips the held artifacts for the doorway ball and the chassis for a claimed one, but
+           * the robot solve's colliders skip nothing, and a circle tangent to the wrong shape
+           * overlapped the right one and crept a parked intake back 0.3in over a drain. The
+           * circle is the full inflated ball where the robot has at least the inflation of room
+           * to drive in, and tangent to the nearest solid where it does not: a robot that drove
+           * into a pinned ball this tick is re-solved from where it started and stops at the
+           * inflation (no forming-tick overshoot), and a robot standing still is not moved.
+           */
+          const snap = robotStartOf.get(pin.r.id);
+          const rStart: RobotState = snap ? { ...pin.r, pos: snap.pos, heading: snap.heading } : pin.r;
+          const sol = solids.get(pin.r.id);
+          const q0 = sol ? robotPenetration(rStart, sol, s.pos, C.BALL_RADIUS, false, false, -10) : null;
+          const penStart = q0 ? q0.pen : -Infinity;
+          /**
+           * The inflation belongs to a robot DRIVING into the pin: it is what the robot world's
+           * soft contact compresses under the drive force (0.14in at full throttle), so without
+           * it a tangent circle re-sized each tick to the compressed pose let the robot creep
+           * into the ball 0.14in a tick and the ball 0.2in into the wall. A robot not driving
+           * toward the ball has nothing compressing it and gets the tangent circle: it is never
+           * moved, however the ball arrived.
+           */
+          const pushing = pushingPin(pin);
+          radius = Math.min(C.BALL_RADIUS + C.PHYS_PIN_INFLATE, C.BALL_RADIUS - penStart + (pushing ? C.PHYS_PIN_INFLATE : 0));
+          // ...and it MOVES only when the robot is the one pushing it: a ball's velocity is the
+          // robot's doing only if the robot is driving into it. A parked intake with the drain
+          // arriving on it is not, and a moving circle beside its held artifacts found something
+          // to shove whichever way it was clipped (0.4in over a drain); a fixed circle tangent to
+          // the chassis cannot
+          if (pushing && hyp(b.vel.x, b.vel.y) >= C.BALL_REST_SPEED) {
+            // "into the robot" is toward its CENTRE, not along the one contact normal the pin
+            // test reported: a ball against a HELD artifact at the mouth's edge has a diagonal
+            // normal, and what was left after dropping that component still ran into the
+            // chassis face and shoved a parked intake back at 24 in/s
+            const ox = b.pos.x - pin.r.pos.x;
+            const oy = b.pos.y - pin.r.pos.y;
+            const ol = hyp(ox, oy) || 1;
+            const into = (b.vel.x * ox + b.vel.y * oy) / ol; // < 0: toward the robot
+            vx = b.vel.x - (Math.min(0, into) * ox) / ol;
+            vy = b.vel.y - (Math.min(0, into) * oy) / ol;
+          }
+        }
+        return { x: s.pos.x, y: s.pos.y, vx, vy, r: Math.max(radius, 0.1) };
       });
-  let pinned: PinnedCircle[] = circles();
+  let pinned: PinnedCircle[] = circles(seedReport?.pins ?? new Map());
   let preVels = new Map<number, Vec2>();
   let buried: ReturnType<typeof pinnedArtifacts>['buried'] = [];
   let finalPinned: number[] = [];
+  let lastPins: ReadonlyMap<number, { r: RobotState; pen: number; nx: number; ny: number }> = seedReport?.pins ?? new Map();
   for (let round = 0; round < C.PHYS_PIN_ROUNDS; round++) {
     lastTickRounds = round + 1;
     if (round > 0) {
@@ -349,10 +428,20 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
           b.vel.y -= into * u.y;
         }
       }
+      /**
+       * (Only the field. The same clip against a ROBOT the ball touches was tried and removed: it
+       * projected along the one contact normal the pin test reports, which in a funnel throat is
+       * a wedge slope's diagonal, so a compromise velocity pointing at the robot came out as a
+       * sideways drift — a dead-centre wall ball crept 6.7in along the wall under a stalled robot
+       * and a squeezed artifact jittered at 40 Hz. The solver's compromise on a ball squeezed
+       * against a chassis stays where it is harmless: the pinned circle ignores it unless the
+       * robot is pushing, and the field clip catches the part that would bounce.)
+       */
     }
     const found = pinnedArtifacts(world, claimed, doorway, solids, pinnedIds);
     buried = found.buried;
     finalPinned = found.pinned.map((b) => b.id);
+    lastPins = found.pins;
     let grew = false;
     for (const b of found.pinned) {
       if (pinnedIds.has(b.id)) continue;
@@ -370,9 +459,30 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
      * restore threw the squirt away, and the next tick repeated it, the ball creeping at 5 in/s
      * under a robot parked on it.
      */
-    pinned = circles();
+    pinned = circles(found.pins);
   }
   world.pinnedArtifacts = finalPinned;
+  /**
+   * A PINNED ARTIFACT UNDER A ROBOT THAT IS NOT PUSHING IT IS WHERE IT WAS. Squeezed between a
+   * kinematic chassis and the field the solver has no answer it can settle on — position or
+   * velocity — and what it leaves alternates sign: an artifact under a robot parked 1.25in onto
+   * the human-player column jittered 0.19in a tick, forty reversals a second, for as long as the
+   * robot stood there. Its position goes back to where it began the tick and its velocity to
+   * zero; the robot, which is not driving, is not moved either. A robot pushing the ball is a
+   * different case: its squirt is the robot's doing and the solve's answer stands.
+   */
+  for (const b of ground) {
+    if (!world.pinnedArtifacts.includes(b.id)) continue;
+    const pin = lastPins.get(b.id);
+    if (!pin || pushingPin(pin)) continue;
+    const s = startOf.get(b.id);
+    if (s) {
+      b.pos.x = s.pos.x;
+      b.pos.y = s.pos.y;
+    }
+    b.vel.x = 0;
+    b.vel.y = 0;
+  }
   /**
    * An artifact whose CENTRE ended inside a robot was never a contact — a state transition put
    * it there (a landing, a release) before the solve could see it, and the honest fix is the

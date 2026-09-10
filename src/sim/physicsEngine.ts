@@ -191,6 +191,10 @@ export interface PinnedCircle {
   y: number;
   vx: number;
   vy: number;
+  /** the circle's radius: `BALL_RADIUS + PHYS_PIN_INFLATE` for a ball the robot drove into, less
+   *  for one the robot did not move toward — see `world.ts`, a pin may undo the robot's own
+   *  advance and nothing more */
+  r: number;
 }
 
 export function solveRobots(
@@ -354,6 +358,15 @@ export function solveRobots(
    * IS moving — squirting out of the squeeze along a wall at 100+ in/s — follows it into the
    * space it vacates, slowed only as much as the ball is in its way. Nothing is written by hand.
    *
+   * AND A PIN MAY UNDO THE ROBOT'S OWN ADVANCE, NOTHING MORE. The circle's radius and velocity
+   * are chosen in `world.ts` so that a robot which did not move toward the ball is never pushed
+   * by it: the circle is tangent to the chassis where it stands, and any velocity the ball has
+   * INTO the robot is dropped. A 0.2 lb artifact rolling down the gate onto a parked intake
+   * cannot shove 30 lb of robot, and with the circle carrying the ball's full velocity it did —
+   * 0.8in per drain ("when gate intaking, the balls that come down should not be pushing the
+   * robot away"). A robot that DID drive into a pinned ball still backs out of it, by as much
+   * as it drove in, plus the inflation that keeps it clear of the solver's slop.
+   *
    * It was a FIXED circle, and that was the deadlock behind "artifacts act like they are fixed
    * in place": the fixed circle stopped the robot dead, the round then re-solved the artifacts
    * with a stopped robot, which threw away the very push that was squirting the ball out, and
@@ -369,7 +382,7 @@ export function solveRobots(
         RAPIER.RigidBodyDesc.kinematicVelocityBased().setTranslation(p.x, p.y).setLinvel(p.vx, p.vy),
       );
       rw.createCollider(
-        RAPIER.ColliderDesc.ball(C.BALL_RADIUS + C.PHYS_PIN_INFLATE)
+        RAPIER.ColliderDesc.ball(p.r)
           .setRestitution(0)
           .setFriction(C.PHYS_PIN_FRICTION)
           .setCollisionGroups(R_PIN),
@@ -707,6 +720,9 @@ export interface PinnedReport {
   /** artifacts still inside a robot's solid geometry after the artifact solve — the ones that
    *  could not get out of the way. In id order. */
   pinned: Artifact[];
+  /** for each pinned artifact: the robot deepest into it, how deep, and the direction that
+   *  robot is pushing it (robot → artifact) — what the pinned circle is built from */
+  pins: Map<number, { r: RobotState; pen: number; nx: number; ny: number }>;
   /** artifacts whose CENTRE is inside a robot — not a contact, a misplacement (a state
    *  transition put it there). The caller evicts these once, geometrically. */
   buried: { b: Artifact; r: RobotState; nx: number; ny: number; pen: number }[];
@@ -799,10 +815,11 @@ export function pinnedArtifacts(
    *  pinned on the RELEASE threshold rather than the entry one */
   held: ReadonlySet<number>,
 ): PinnedReport {
-  const out: PinnedReport = { pinned: [], buried: [] };
+  const out: PinnedReport = { pinned: [], pins: new Map(), buried: [] };
   for (const b of world.balls) {
     if (b.state.kind !== 'ground') continue;
     const keep = held.has(b.id);
+    let deepest: { r: RobotState; pen: number; nx: number; ny: number } | null = null;
     // a squeeze the solve could not satisfy is split between the two things squeezing, so
     // what the artifact is still inside of the FIELD counts toward the pin too
     const cl = clampBallPosToStatics(b.pos);
@@ -845,8 +862,12 @@ export function pinnedArtifacts(
        */
       if (q.pen > 0 && q.pen + inField > C.ARTIFACT_PIN_SLOP && (inField > 0 || supported(world, b, r, solids))) isPinned = true;
       else if (keep && q.pen > -C.ARTIFACT_PIN_RELEASE && supported(world, b, r, solids)) isPinned = true;
+      if (!deepest || q.pen > deepest.pen) deepest = { r, pen: q.pen, nx: q.nx, ny: q.ny };
     }
-    if (isPinned) out.pinned.push(b);
+    if (isPinned && deepest) {
+      out.pinned.push(b);
+      out.pins.set(b.id, deepest);
+    }
   }
   return out;
 }

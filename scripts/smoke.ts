@@ -5012,8 +5012,54 @@ function queueTenth(w: World): void {
   const strays = w.balls.filter(
     (b) => b.state.kind === 'ground' && Math.abs(b.pos.x) > FIELD_HALF - BALL_RADIUS + 0.01,
   ).length;
-  check('gate outflow cannot shove the parked robot', moved < 1.5, `moved ${moved.toFixed(2)} in`);
+  // a quarter inch, not an inch and a half: a 0.2 lb artifact cannot move a robot, and the pinned
+  // circle is sized so that it never tries (see `world.ts`, a pin may undo the robot's own advance
+  // and nothing more) — the old tolerance was hiding 0.8in of drain-shove
+  check('gate outflow cannot shove the parked robot', moved < 0.25, `moved ${moved.toFixed(2)} in`);
   check('blocked outflow stays in the field', strays === 0, `${strays} out of bounds`);
+
+  /**
+   * GATE INTAKING. "When gate intaking, the balls that come down should not be pushing the robot
+   * away." The robot parks with its flank on the wall and its mouth over the exit, intake on, and
+   * the drain rolls into it: three are taken and the rest pile against the held ones. Every one
+   * of those arrivals used to end as a pin, and the pinned circle — sized as the full inflated
+   * ball and carrying the ball's velocity — shoved the robot 0.8in over one drain. The circle is
+   * now tangent to a robot that did not move toward the ball and stands still unless that robot
+   * is pushing, so the drain cannot move the robot at all: 0.00in measured, at either standoff.
+   */
+  for (const standoff of [2, 6]) {
+    const w2 = mkWorld('match', 'blue', 42);
+    startMatch(w2);
+    w2.match.phase = 'teleop';
+    for (const a of ['red', 'blue'] as const) {
+      w2.humanPlayers[a].box = ['green', 'green', 'green', 'green', 'green', 'green'];
+      w2.humanPlayers[a].nextPlaceAt = 1e9;
+    }
+    w2.balls.length = RAMP_SLOTS;
+    fillBlueRail(w2);
+    const r2 = w2.robots[0];
+    r2.hopper = [];
+    r2.fieldCentric = false;
+    const exit = railPos('blue', RAIL_EXIT_S);
+    const tip = DEFAULT_SPEC.length / 2 + INTAKE_PRESETS[DEFAULT_SPEC.intake].reach;
+    r2.heading = Math.PI / 2;
+    r2.pos = { x: -FIELD_HALF + r2.spec.width / 2 + 0.1, y: exit.y - tip - standoff };
+    r2.vel = { x: 0, y: 0 };
+    const p0 = { x: r2.pos.x, y: r2.pos.y };
+    let worst = 0;
+    for (let i = 0; i < Math.round(6 / SIM_DT); i++) {
+      w2.goals.blue.gatePos = 1;
+      w2.goals.blue.gateOpen = true;
+      w2.goals.blue.gateLatch = 1;
+      step(w2, SIM_DT, new Map([[0, cmd({ intake: true })]]));
+      worst = Math.max(worst, hyp(r2.pos.x - p0.x, r2.pos.y - p0.y));
+    }
+    check(
+      `gate intaking with the tip ${standoff}in below the exit: the drain does not move the robot`,
+      worst < 0.1 && r2.hopper.length === 3,
+      `displaced ${worst.toFixed(2)}in at most (was 0.80), hopper ${r2.hopper.length}`,
+    );
+  }
 }
 
 // ---- point-blank shots never miss ------------------------------------------------

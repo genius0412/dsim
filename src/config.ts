@@ -871,6 +871,13 @@ export const PHYS_PIN_ROUNDS = 4;
  * on the circle keeps the pin; a robot that has genuinely backed off drops it.
  */
 export const ARTIFACT_PIN_RELEASE = 0.5; // in
+/** how much stick a robot must be commanding toward a pinned artifact (fraction of full, along
+ *  the robot→artifact normal) to count as PUSHING it. Pushing is what lets the pinned circle
+ *  carry the artifact's squirt and earns the circle its inflation; a robot not pushing faces a
+ *  tangent, fixed circle it cannot enter and is never moved by, and the artifact under it stays
+ *  where it is. Intent, not measured advance: a robot stopped on its pin advances nothing and is
+ *  still pushing. */
+export const ARTIFACT_PIN_DRIVE = 0.05;
 /** how close to a wall, another artifact or a second robot a pinned artifact has to be for
  *  that thing to count as what is holding it there (in). A pin whose support has left is
  *  released even if the robot is still leaning, so the robot can push the artifact again. */
