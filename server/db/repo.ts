@@ -3187,7 +3187,7 @@ export interface FriendRow {
   offlineSeconds: number | null;
   /** 'menu' | 'lobby' | 'match' while online; null when offline/invisible/unknown */
   activity: Activity | null;
-  /** which game they're in ('decode' | 'chain') — only meaningful with `activity` */
+  /** which game they're in (a `GameId`) — only meaningful with `activity` */
   game: Game | null;
   /** the room to SPECTATE, set only while a match they are in is actually running
    *  (see `liveRoomsByUser`). Absent otherwise — including in a lobby, and for the
