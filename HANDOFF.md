@@ -1,9 +1,116 @@
+# HANDOFF — 2026-09-10, third session (piles, pins and squeezes)
+
+Branch **alpha**. `npm test` **ALL PASS — 1304 checks (two new: the pile and the squeeze; the G408 lean scene and the drain-spread check restated)**. `npm run build` green, `npm run server:check`
+green. `SIM_VERSION` untouched at **2**. Production not touched. Alpha deploy: see **Deploy**.
+
+## READ FIRST — the three reports, and what each turned out to be
+
+1. "Artifact-chassis overlap still happens." Two real sources. A CLAIMED artifact (one the intake
+   had hold of) dropped the chassis from its collision filter, so a pile behind pushed it 2.6in
+   through the bumper while its capture timer ran; claimed artifacts meet the chassis now, and
+   the chassis lists `A_CLAIMED` in its own filter (a Rapier pair needs both sides). And the
+   default look-ahead the second session left the artifact world on made every ball-ball contact
+   form a tick late, so a pile pushed by a chassis became a chain of burials (0.6in in the
+   chassis, 1.7in ball in ball). The 3.5in speculative look-ahead is BACK, and the bounce Rapier
+   drops on a speculative contact is restored exactly by `bounceFirstContacts` (below).
+2. "Artifacts act like they are fixed in place." The pin. A fixed pin circle stopped the robot
+   dead the moment a squeezed ball was still a fraction inside it, the round re-solve then threw
+   away the squirt the round had just found, and the next tick repeated it — a ball creeping at
+   5 in/s under a robot parked on it. The pinned circle is a KINEMATIC body now, carrying the
+   artifact's velocity (`PinnedCircle`), and a re-run round keeps artifact velocities (positions
+   still restored). A stuck ball is the wall it always was; a sliding one is a wall the robot
+   follows. What remains "fixed" is genuine: a DEAD-SQUARE push of a ball into a wall. At 8° and
+   15° off square the ball squirts out along the wall and the robot drives on, whether it meets
+   the flat back of the chassis (smoke-checked) or a funnel intake with a full hopper.
+3. "Going into a pile, the robot should intake three as the rest are pushed aside; they act
+   like a barrier." The pin test's chain support was direction-blind, so a pile touching a wall
+   anywhere counted as immovable, and the robot stuttered to 6 in/s on it. With one-pass
+   speculative pushes the solve itself decides what could move, and an empty robot at full
+   throttle into a pile of eight now takes three and never drops below 60 in/s.
+
+## The design, as it stands (CLAUDE.md Physics is the reference)
+
+- Artifact contacts are FRICTIONLESS (`PHYS_BALL_FRICTION` 0 / `PHYS_BALL_WALL_FRICTION` 0):
+  at 0.05 the solver's penetration-recovery normal impulse in a squeeze, times a twentieth,
+  cancelled 165 in/s of sideways speed — a friction cone around a ball that would roll.
+- `PHYS_BALL_PREDICTION` 0.35 (3.5in, speculative). `bounceFirstContacts` runs before the solve:
+  a pair not yet touching (`BALL_FIRST_CONTACT_GAP`) that will meet within
+  `BALL_FIRST_CONTACT_LOOKAHEAD` = 1.5 ticks gets the exact equal-mass restitution impulse; the
+  field via `clampBallPosToStatics`. 1.5 because the speculative constraint clips a closing pair
+  the tick before they touch (0.49 for a set 0.68 at one tick). Measured 0.67 / 0.47.
+- No chassis skin (`PHYS_BALL_CHASSIS_SKIN` is gone), no direction cone (`ARTIFACT_PIN_COS`
+  gone), no escaping exemption (`ARTIFACT_PIN_ESCAPE` gone). All three were tried today and each
+  failed a scene the others passed; see the pin comment in `pinnedArtifacts` for the two that
+  were the most tempting.
+- `PinnedCircle` {x, y, vx, vy}: start-of-tick position, the artifact solve's velocity, zeroed
+  under `BALL_REST_SPEED` (the solver's jitter carried into the circle walked a stalled robot 13°
+  in two seconds). `PHYS_PIN_FRICTION` 0.15 stays: this is the ball that could NOT roll.
+- **A ball on the field has no velocity INTO it** (world.ts, beside the containment clamp): the
+  squeeze between a kinematic chassis and a static wall leaves the solver's compromise velocity
+  pointing into the wall (58 in/s measured); kept across rounds it bounced the ball back off the
+  wall at 29 in/s and the robot off the ball. The sideways squirt is kept.
+- `bounceFirstContacts` never bounces a ball already ON the static it heads for (a probe
+  `BALL_FIRST_CONTACT_GAP` along its velocity is clamped): that is a sustained contact.
+- `BALL_MAX_SPEED` 90 in/s (a chassis at full speed) on what the artifact solve hands back: a squeeze can demand 300+,
+  which is faster than the look-ahead per tick — a 5in artifact went through a 2.7in corner gap.
+- `clumpDrag` reads the shared `artifactSolids` (`BALL_PUSH_CONTACT`); the per-contact scatter
+  kick is gone and the coincident kick cannot stack.
+
+## Measurements (the pile probe, deleted)
+
+| scene | before today | now |
+|---|---|---|
+| empty robot, full throttle, pile of 8 in open field: held / slowest in the next 0.8s | 3 / 0 in/s (stall) | 3 / 69.6 in/s |
+| same, worst ball-in-ball overlap | 1.7in | 0.3in |
+| vector intake, same pile: deepest chassis burial | 5.6in (claimed ball through the face) | 0.5-0.7in, at the face, during a capture |
+| pile of 8 against the far wall, square on | stutter 73→6→25→9, yawed 30° | pushes in, jams in the funnel with 3 taken (legit), no yaw |
+| one wall ball, flat back of the chassis 8° / 15° off square | robot parked on it | ball squirts 20-100in along the wall, robot reaches the wall |
+| one wall ball, funnel intake, full hopper, 8° / 15° | parked on it | ball pops out across the wedge, robot reaches the wall |
+| one wall ball, funnel intake, EMPTY hopper, 0 / 8 / 15° | — | taken, every time |
+| holding a pinned wall ball at full throttle: steady overlap | −0.16in | −0.16in |
+
+## Gotchas
+
+- **The G408 lean scene bills the ARRIVAL once now.** A full-throttle ram into a six-pile on the
+  wall swallows three and squeezes the other three out along the wall; that push is a herd and
+  is billed, like the wall-row ram. Holding afterwards still costs nothing (checked over 6.5s).
+  Under the old friction the pile jammed and nothing moved, which is why the check used to see 0.
+- **Never edit a probe with `node -e` in bash when the JS has template literals.** Twice today a
+  patch printed "done" with the console.log arguments stripped out. Write the .mjs with the file
+  tool and run it.
+- **A kinematic circle at rest is not a fixed collider** unless its velocity is exactly zero — the
+  jitter the solver leaves on a squeezed ball moved it.
+- **Keeping velocities across rounds can hand a ball a speed the next tick cannot see**; hence
+  `BALL_MAX_SPEED`.
+- **Off-field ball positions are an invalid staging.** Anything at (300,300) is clamped back into
+  the field onto ONE point and kicked apart every tick; five suite scenes did this and one of them
+  put nine balls in the wall-ram robot's path. They now truncate `w.balls`; the drain scenes keep
+  `RAMP_SLOTS + 1` because they re-purpose those.
+- **The human player collects from the audience corner and splices the ball out of the world**;
+  a scene holding references sees it frozen where it was. The drain-spread check filters on
+  `w.balls.includes(b)` now.
+- **The captured ball's collider appears at its slot on the tick of capture** and can overlap the
+  next artifact in the mouth by ~1in for a few ticks. It reads as the capture animation; the
+  smoke pile check measures the chassis box only for that reason. Worth smoothing some day.
+
+## Next steps
+
+1. Play-test on alpha: piles, gate intaking with a full hopper, pushing a wall ball at an angle.
+2. A pile jammed in a FULL funnel against a wall stops the robot (three taken, the rest boxed in
+   by the wedge, the wall and each other). That is what a funnel does; if it reads as wrong on the
+   alpha, the honest change is in `artifactSolids` (the wedge geometry), not in the pin.
+3. Slice 3 (auto-path robot as a dynamic body) still not started.
+
+## Deploy
+
+Alpha server DEPLOYED with the wrapper after the sim commit (4f9ffd5); /health answered ok. The Vercel alpha client rebuilds from the push. Production untouched.
+
 # HANDOFF — 2026-09-10, second session (artifacts collide like balls)
 
 Branch **alpha**. `npm test` **ALL PASS — 1302 checks (seven new, pinning the artifact contact model)**. `npm run build` green, `npm run server:check`
 green. `SIM_VERSION` untouched at **2**. Production not touched. Alpha deploy: see **Deploy**.
 
-## READ FIRST — two defects in the artifact CONTACT MODEL, neither in any pass
+## (earlier today, second session) Two defects in the artifact CONTACT MODEL — friction and restitution; the look-ahead and skin decisions there are SUPERSEDED by the third session above
 
 The report: "Artifacts feel like they are stuck to each other or stuck to the wall. They don't
 leave their semi-linear formation they form when they come out of the gate. They don't

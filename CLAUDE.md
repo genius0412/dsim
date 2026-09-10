@@ -221,12 +221,12 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
   seconds) was two of them disagreeing. Now a robot's position is written by `solveRobots`
   and nothing else, and a ground artifact's by `solveArtifacts` plus the containment clamp.
   - **ORDER WITHIN A TICK**: commands/auto-path (recording `sweepFrom`) → ground-ball
-    integration, the coincident-pair kick (`scatterBalls`, VELOCITY only; the per-contact
-    scatter kick is gone, see below), `clumpDrag`, `intakeSuction`
+    integration, the bounce of every impact that will land this tick (`bounceFirstContacts`,
+    VELOCITY only — see below), the coincident-pair kick (`scatterBalls`), `clumpDrag`, `intakeSuction`
     (VELOCITY only, and BEFORE the solve — G408 reads artifact velocity, so a post-solve
     nudge herded 120in for 0 fouls) → drive wrenches → snapshot robots + balls → the ROUND
-    LOOP (`PHYS_PIN_ROUNDS`): `solveRobots` with the currently PINNED artifacts as fixed
-    circles → `solveArtifacts` with every robot a KINEMATIC sweep from `sweepFrom` to where
+    LOOP (`PHYS_PIN_ROUNDS`): `solveRobots` with the currently PINNED artifacts as KINEMATIC
+    circles carrying the artifact's own velocity (`PinnedCircle`) → `solveArtifacts` with every robot a KINEMATIC sweep from `sweepFrom` to where
     the robot solve put it → containment clamp → `pinnedArtifacts`; if the pin set GREW,
     restore the snapshot and run the round again. Then `world.pinnedArtifacts` (carried tick
     to tick in the world JSON, so the pin has hysteresis across ticks), buried eviction +
@@ -249,16 +249,39 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
     (`supported`), a static or another robot. Entry past `ARTIFACT_PIN_SLOP`, release only
     once it has come clear by `ARTIFACT_PIN_RELEASE` — without the hysteresis an artifact
     ratcheted into the wall under a leaning robot — and a free clump is NOT support (it froze
-    solid when it was). **The field only pins what is pushed INTO it** (`ARTIFACT_PIN_COS`,
-    ~32° of square): a corner catching a ball that sits against a wall pushes it at an angle,
-    and a round ball pushed at an angle rolls out along the wall — reading that as a pin
-    parked the robot behind a ball it was not touching. And **a free artifact, however deep it
-    sits inside a chassis for a tick, is never pinned**: with real (non-speculative) contacts
-    a full-speed ram buries the first ball of a clump for a tick while the ones behind get
-    their contacts, and a robot that stopped for that was stalled by 0.2 lb of foam. The pinned circle is inflated (`PHYS_PIN_INFLATE`) and low-friction
-    (`PHYS_PIN_FRICTION`) so the chassis stops ON it instead of creeping through the solver's
-    allowed error. A robot then stalls on a dead-centre artifact and an off-centre one squirts
-    out of the squeeze, from the geometry, with no pin rule written by hand.
+    solid when it was). **A free artifact, however deep it sits inside a chassis for a tick,
+    is never pinned** — a full-speed ram can leave the first ball of a clump a fraction inside
+    while the solve is still propagating the push, and a robot that stopped for that was
+    stalled by 0.2 lb of foam. **No direction test and no "escaping" exemption**: both were
+    tried (Sept 2026) and both failed the same way — a heuristic cannot tell a corner hit that
+    would slide a wall ball along from a wall ball boxed in by the wedge and its neighbours
+    (the direction cone let a chassis drive 2.9in into the second), and a jammed pile jiggles
+    above any speed threshold without going anywhere (the exemption let a robot crush one, 3.1in
+    ball in ball). What is left inside a robot with something behind it is pinned, whatever the
+    angle. **The pinned circle MOVES** (`PinnedCircle`): it is a kinematic body in the robot
+    solve, at the position the artifact began the tick in and carrying the velocity the artifact
+    solve gave it, so a ball that cannot move is the wall it always was and a ball squirting out
+    of a squeeze along a wall at 100+ in/s is a wall the robot follows into the space it
+    vacates. And **a re-run round restores artifact POSITIONS but keeps their velocities** —
+    restoring the velocity too threw away the squirt the round had just found, the re-solve with
+    a stopped robot gave the ball 5 in/s instead, and the robot sat on a creeping ball tick after
+    tick ("artifacts act like they are fixed in place"). **An artifact on the field has no
+    velocity INTO it** (the clip beside the containment clamp): a ball squeezed between a
+    kinematic chassis and a static wall is between two things the solver cannot move, and the
+    compromise it leaves is a velocity into the wall (58 in/s measured) on a ball the clamp has
+    just put back on it — carried into the circle it told the robot solve the ball was leaving,
+    carried into the next tick it read as an impact and bounced ball and robot apart. The
+    sideways part, the squirt, is kept; the circle's velocity is zeroed under `BALL_REST_SPEED`
+    (the solver's jitter carried into it walked a stalled robot 13° in two seconds). The circle is inflated
+    (`PHYS_PIN_INFLATE`) so the chassis stops ON it instead of creeping through the solver's
+    allowed error, and keeps a little friction (`PHYS_PIN_FRICTION` 0.15): the artifact contacts
+    are frictionless because a free ball rolls, but this is the ball that could NOT move, and at
+    zero a robot stalled square on a wall ball yawed 12° on numerical asymmetry alone. A robot
+    then stalls on a dead-centre artifact and an off-centre one squirts out of the squeeze, from
+    the geometry, with no pin rule written by hand. Only a DEAD-SQUARE hit on a wall ball stops
+    the robot: at 8° or 15° off square the ball is squeezed out along the wall and the robot
+    drives on, whether it meets the flat back of the chassis or a funnel intake with a full
+    hopper (the ball slides across the wedge and pops out the far side).
   - **THE CONTAINMENT CLAMP RUNS INSIDE THE LOOP** (`BALL_CONTAIN_SLOP`), so the pin test sees
     an artifact where it will actually end the tick; a pin was missed on its forming tick when
     the solver split the squeeze into the wall and the clamp ran after the test. Anything
@@ -280,28 +303,42 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
        would be spin.** At `PHYS_BALL_FRICTION` 0.7 a glancing hit sent the struck ball off at
        3° where the contact normal was at 30°, a 45° wall bounce kept a quarter of its
        along-wall speed, and 70% of the moving contacts in a gate drain were pairs travelling
-       together. Ball-ball, ball-wall and ball-bumper friction are 0.05 now; rolling resistance
-       with the floor (`BALL_ROLL_FRICTION`) is a separate term and unchanged.
+       together. Ball-ball, ball-wall and ball-bumper friction are ZERO now (0.05 still jammed a
+       squeezed ball: the solver's penetration recovery puts an enormous normal impulse into a
+       squeeze, and a twentieth of that as friction cancelled 165 in/s of sideways speed);
+       rolling resistance with the floor (`BALL_ROLL_FRICTION`) is a separate term and unchanged.
     2. **Rapier applies NO restitution on a speculative contact.** The gap is closed as a
        velocity clip and the bounce is computed from whatever approach is left, so with the
        artifact world looking 3.5in ahead every hit landed at ~0.14 for a set 0.68 (ball) and
        0.5 (wall), at every speed, stiffer contacts making it worse (0.03) and CCD changing
        nothing. A ball rear-ending the one ahead merged with it instead of shoving it on —
-       that is the train. `PHYS_BALL_PREDICTION` is Rapier's default now (bounce measured
-       0.67 / 0.47) and the CHASSIS carries a contact SKIN (`PHYS_BALL_CHASSIS_SKIN` 0.35in,
-       bumper compliance) so a full-speed sweep still catches an artifact before burying it.
-       No skin on the intake: a skin on the wedge narrows the throat and squeezes what is in it.
-    Consequences that had to follow: the pin needs something behind the artifact and the field
-    only pins what is pushed into it (above); `clumpDrag` measures contact through the same
-    `artifactSolids` at the skin, or it never saw a pushed artifact riding a third of an inch
-    off the bumper; and the per-contact scatter kick in `scatterBalls` is GONE — it was
+       that is the train. The look-ahead STAYS (it is what lets a chassis push a chain of
+       artifacts in one pass without burying the first, and what makes "still inside after the
+       solve" mean "could not move" — a day at Rapier's default with a bumper skin brought the
+       bounce back and a tick-by-tick chain of burials with it, 0.6in in the chassis and 1.7in
+       ball in ball) and the bounce of an IMPACT is computed BEFORE the solve, exactly, by
+       `bounceFirstContacts`: a pair not yet touching (`BALL_FIRST_CONTACT_GAP`) that will meet
+       within `BALL_FIRST_CONTACT_LOOKAHEAD` ticks gets the equal-mass restitution impulse
+       along the normal where they meet; against the field the predicted position is asked of
+       `clampBallPosToStatics`. 1.5 ticks, not one, because the speculative constraint starts
+       clipping a closing pair the tick BEFORE they touch (0.49 for a set 0.68 at one tick).
+       Touching pairs are sustained contacts and the solver's; the solver's own restitution
+       stays set and acts only on a contact this pass did not see. Measured 0.67 / 0.47.
+    Consequences that had to follow: the pin needs something behind the artifact and moves with
+    it (above); a CLAIMED artifact meets the chassis face like any other (the claim used to drop
+    the chassis from its filter and a pile behind pushed a claimed ball 2.6in through the face
+    while its capture timer ran — and the chassis must list `A_CLAIMED` in ITS filter, or the
+    pair never collides); `clumpDrag` measures contact through the same `artifactSolids`
+    (`BALL_PUSH_CONTACT`); and the per-contact scatter kick in `scatterBalls` is GONE — it was
     standing in for collisions that did not work, and with them honest it made the drain's
     spread WORSE (minor/major axis ratio 0.53 with it, 0.73 without) and kept four balls
     jittering at ten seconds where without it every ball came to rest. The nine-ball drain
     went from a 5in-pitch line on the wall (ratio 0.01, 9 on the wall, 8 touching pairs) to
     ratio 0.73, 4 on the wall, 3 touching. Smoke pins the restitution, the glancing-hit
-    normal, the wall bounce, the drain's spread, a ram into a free clump not stalling, and a
-    parked robot not being shoved by a fast artifact.
+    normal, the wall bounce, the drain's spread (a 2D pile in the corner now, not a line), a
+    ram into a free clump not stalling, a parked robot not being shoved by a fast artifact, an
+    empty robot taking three from a pile of eight and shoving the rest at full speed, and a
+    wall ball caught by the flat back a few degrees off square squirting out.
 - Wall/structure contacts apply **TORQUE** (summed over touching corners) so a tilted robot
   squares up flush. Torque is PRESSURE-SCALED (`CONTACT_PRESS_GAIN`); flat-face alignment is
   capped at the REMAINING TILT (`flushErr` in `pushRobotAt`) so the heading never steps past
@@ -311,9 +348,10 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
   the ROBOT collider and `PHYS_WALL_FRICTION` 0.35 the field statics in the robot solve
   (`statics()` must set it — it once ran on Rapier's default 0.5 while the constant's comment
   claimed to cover walls); the artifact world runs `PHYS_BALL_FRICTION` and
-  `PHYS_BALL_WALL_FRICTION` at 0.05, because in-plane friction on a rotation-locked circle is a
-  drag that on a real rolling ball would be spin (see ARTIFACTS COLLIDE LIKE BALLS above).
-  The robot values came DOWN from 0.7/0.5 with the rewrite, and that is an OWNER-VISIBLE calibration: with honest Coulomb
+  `PHYS_BALL_WALL_FRICTION` at ZERO, because in-plane friction on a rotation-locked circle is a
+  drag that on a real rolling ball would be spin (see ARTIFACTS COLLIDE LIKE BALLS above); only
+  the PINNED circle in the robot solve keeps some (`PHYS_PIN_FRICTION`), being the ball that
+  could not roll. The robot values came DOWN from 0.7/0.5 with the rewrite, and that is an OWNER-VISIBLE calibration: with honest Coulomb
   friction a stalled motor pushes with full stall force at any throttle, so at 0.7 a
   full-throttle press by an equal or heavier robot held a strafing victim outright. Relevant
   when someone reports "I cannot escape a push": a robot pressed into a wall sticks by COULOMB
