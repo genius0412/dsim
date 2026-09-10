@@ -324,11 +324,19 @@ export function App() {
   // initializer so the very first render is already on the right game.
   const [settings, setSettings] = useState<GameSettings>(() => {
     const s = loadSettings();
+    // a SAVED game hidden on this channel is dropped as well, not just a hidden
+    // URL prefix: `coerceSettings` validates `game` as a `GameId` and knows
+    // nothing about channels, so a stored `biobuzz` from an alpha build (the same
+    // origin under Electron, or a preview deploy) would open a stable build
+    // straight onto a season it must not name. Measured before the guard: the
+    // home eyebrow read "BIOBUZZ presented by RTX" and the URL canonicalized to
+    // /biobuzz, on a build whose picker does not list it.
+    const visible = gameVisible(s.game) ? s : switchGame(s, 'decode');
     if (isWebHistory) {
-      const g = parsePath(window.location.pathname, s.game).game;
-      if (g !== s.game) return switchGame(s, g);
+      const g = parsePath(window.location.pathname, visible.game).game;
+      if (g !== visible.game) return switchGame(visible, g);
     }
-    return s;
+    return visible;
   });
   const start = isWebHistory
     ? parsePath(window.location.pathname, settings.game)

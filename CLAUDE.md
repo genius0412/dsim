@@ -175,7 +175,9 @@ the game's own HUD slice, opaque (`unknown`) because only its own components rea
 It is left alone deliberately; do not build on it.
 
 **Tests**: game checks go in `scripts/smoke-biobuzz/` (its own `npm test` process), never
-appended to `scripts/smoke.ts`.
+appended to `scripts/smoke.ts`. ⚠️ `npm test` chains the two with `&&`, so while
+`scripts/smoke.ts` has failures the second suite does not run at all — `npm run test:bb`
+runs it alone.
 
 ---
 

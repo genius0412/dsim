@@ -4,9 +4,17 @@ Branch **`biobuzz-core`** (worktree `dsim-bb-core`, cut from `biobuzz`, itself c
 `origin/alpha`). **NOT pushed and must not be** — the repo is public and the 2026–27 season
 is private until further notice. Nothing was deployed.
 
-`npm run build` / `server:check` / `uiaudit` / `contrast` green. `npm test` is **7 failures,
-the same 7 as the baseline** (`docs/biobuzz/baseline-alpha.md`) plus the new BIOBUZZ suite
-ALL PASS. `SIM_VERSION` and `BALANCE_VERSION` untouched.
+`npm run build` / `server:check` / `uiaudit` / `contrast` green. `npm test` is **1289 PASS
+and 7 FAILURES — the same 7, and the same pass count, as the baseline**
+(`docs/biobuzz/baseline-alpha.md`). The new BIOBUZZ suite is ALL PASS. `SIM_VERSION` and
+`BALANCE_VERSION` untouched.
+
+⚠️ **`npm test` chains with `&&`, so the BIOBUZZ suite does NOT run while those 7 stand.**
+Verified: no `registry integrity` line appears anywhere in an `npm test` log today. The
+chaining is deliberate (a red `npm test` must keep meaning "physics broke"), so
+**`npm run test:bb` runs the second suite on its own** — use it, and remember `npm test`
+alone currently proves nothing about it. It stops being a footgun the day the contact-physics
+seven go green.
 
 ## READ FIRST — what this was and what it was not
 
@@ -107,6 +115,15 @@ list rather than a sentence.
   does not render — it falls through to `parseScreen`, which sends an unknown path home.
 - A hidden game's URL prefix **keeps its screen**: `/biobuzz/records` on a stable build lands
   on the saved game's records, not on home, and the mount effect then canonicalizes the URL.
+- ⚠️ **A hidden game had to be dropped from SAVED SETTINGS too, not just from the URL.**
+  Found in the by-hand channel check: `coerceSettings` validates `game` as a `GameId` and
+  knows nothing about channels, so a stored `biobuzz` (an alpha build on the same origin —
+  Electron, or a preview deploy) opened a STABLE build straight onto the season, eyebrow
+  reading "BIOBUZZ presented by RTX" and the URL canonicalizing to `/biobuzz`, on a build
+  whose picker does not list it. `App.tsx`'s settings initializer now `switchGame`s an
+  invisible saved game back to DECODE. The guard is in the initializer rather than in
+  `coerceSettings` on purpose: `settings.ts` is imported by the headless smoke run, and
+  `seasonVisibility.ts` pulls in `src/net/env.ts`, which cannot be imported there at all.
 - **`GameSettings.savedStartPoses` is still ONE shared list across games** (the CR note in
   CLAUDE.md). BIOBUZZ inherits that problem; namespacing the setting is the fix when a third
   game wants a pose library.
@@ -127,18 +144,32 @@ integration chat everything outside `src/games/biobuzz/`). Per that contract, ev
 this session touched outside that directory is **integration-chat property** — a lane that
 needs a change there writes the request into its own handoff file.
 
+## The channel check, done by hand
+
+Both channels were verified against a real build (`.env.local` + `npm run build` +
+`vite preview`, since `npm run dev` bakes the channel at build time — the file was deleted
+afterwards and is `.gitignore`d anyway):
+
+- **alpha**: BIOBUZZ appears on the home picker; `/biobuzz` loads and selects it (eyebrow
+  "BIOBUZZ presented by RTX"), `/biobuzz/modes` works, and Free Drive renders the shell —
+  the empty 72×72in box with its tile grid and perimeter, one robot on anchor 0 at
+  (48, 36) heading 180°, no console errors.
+- **stable**: BIOBUZZ is absent from the picker, `/biobuzz` canonicalizes to `/decode`, and
+  `/biobuzz/records` lands on `/decode/records` (the screen is kept, the game falls back).
+
+The shell's DRIVE was verified headlessly rather than through the browser (86.4 in/s after
+1 s of full forward from the anchor). Synthetic key events from the automation harness do
+not reach the game at all — DECODE's Free Drive does not move under them either, so that is
+the harness, not the shell.
+
 ## Next steps
 
-1. **Verify the two channel builds by hand.** `VITE_APP_CHANNEL=alpha npm run dev` → BIOBUZZ
-   on the home picker and `/biobuzz` loads; with `stable` → absent, and `/biobuzz` falls back
-   to the saved game. (`npm run dev` reads the channel at build time, so it needs a restart
-   between the two.)
-2. P0-shell replaces `src/games/biobuzz/`; the lanes start against
+1. P0-shell replaces `src/games/biobuzz/`; the lanes start against
    `docs/biobuzz-contract.md`.
-3. Plan item 7 in the plan's own numbering — `scripts/manual.mjs` (download a manual, run
+2. Plan item 7 in the plan's own numbering — `scripts/manual.mjs` (download a manual, run
    `pdftotext -layout`, dump figures) — was NOT part of this brief and is still open. It
    saves Lane A the first hour on kickoff day.
-4. Nothing here may be pushed until the season is public.
+3. Nothing here may be pushed until the season is public.
 
 ---
 
