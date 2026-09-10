@@ -22,6 +22,7 @@ import { Matchmaker } from './matchmaking';
 import { MATCHMAKER_REGION } from './regions';
 import { BALANCE_VERSION } from '../src/config';
 import { periodLabel } from '../src/seasons';
+import { coerceGameId, isGameId } from '../src/games/types';
 import { dbEnabled } from './db/pool';
 import {
   currentSeasonNumber,
@@ -677,7 +678,7 @@ const httpServer = createServer((req, res) => {
         const gq = u.searchParams.get('game');
         const rows = await recentMatches(
           Number(u.searchParams.get('limit')) || 40,
-          gq === 'chain' || gq === 'decode' ? gq : undefined,
+          isGameId(gq) ? gq : undefined,
         );
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ matches: rows }));
@@ -898,7 +899,7 @@ const httpServer = createServer((req, res) => {
         }
         // which game's period to advance — DECODE and Chain Reaction run independent
         // Act → Season progressions (default DECODE).
-        const adminGame = u.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+        const adminGame = coerceGameId(u.searchParams.get('game'));
         if (u.pathname === '/api/admin/season/start') {
           const name = u.searchParams.get('name') ?? undefined;
           // `act=new` opens a fresh ACT (act++, season resets to 1); otherwise a
@@ -980,7 +981,7 @@ const httpServer = createServer((req, res) => {
           const mode = u.searchParams.get('mode') === 'duo' ? 'duo' : 'solo';
           const drivetrain = u.searchParams.get('drivetrain') ?? 'overall';
           const limit = Math.min(500, Math.max(1, Number(u.searchParams.get('limit') ?? 100)));
-          const adminRecGame = u.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+          const adminRecGame = coerceGameId(u.searchParams.get('game'));
           const season = await currentSeasonNumber(BALANCE_VERSION, adminRecGame);
           const rows = await adminListRecords({ mode, drivetrain, balanceVersion: season, limit, game: adminRecGame });
           jsonOut(200, { season, mode, drivetrain, rows, game: adminRecGame });
@@ -1565,7 +1566,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // resolves its sim module from this, and a mismatched joiner is refused below.
     const cfg: RoomConfig = {
       ...(msg.config ?? DEFAULT_ROOM_CONFIG),
-      game: msg.config?.game === 'chain' ? 'chain' : 'decode',
+      game: coerceGameId(msg.config?.game),
     };
     if (!r) {
       r = new Room(
@@ -1840,7 +1841,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             id,
             send,
             // sanitize the ranked player's spec/assists too (same clamp as join)
-            player: { ...sanitizePlayer(msg.player, msg.game === 'chain' ? 'chain' : 'decode'), name: u.handle ?? msg.player.name },
+            player: { ...sanitizePlayer(msg.player, coerceGameId(msg.game)), name: u.handle ?? msg.player.name },
             userId: u.userId,
             mode: msg.mode,
             // the client's home region (Fly's x-region for its connection) + measured
@@ -1855,7 +1856,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             noWiden: msg.noWiden ?? false,
             caps: Array.isArray(msg.caps) ? msg.caps : [],
             // segregate the queue by GAME (a CR queuer never pairs into a DECODE room)
-            game: msg.game === 'chain' ? 'chain' : 'decode',
+            game: coerceGameId(msg.game),
             channel: typeof msg.channel === 'string' ? msg.channel : undefined,
             // segregate the pool by build too (two builds never share a match)
             build: typeof msg.build === 'string' ? msg.build : undefined,

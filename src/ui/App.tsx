@@ -10,6 +10,7 @@ import {
   type RoomInvite,
 } from '../net/api';
 import { uploadPracticeRun } from '../net/api';
+import { GAME_IDS } from '../games/types';
 import { FriendsProvider } from './friendsContext';
 import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
@@ -113,6 +114,14 @@ const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null };
 const isWebHistory = typeof window !== 'undefined' && window.location.protocol !== 'file:';
 
 /**
+ * The `/decode`, `/chain`, … URL prefix, BUILT FROM `GAME_IDS` rather than written
+ * out — it was a hand-typed `(decode|chain)` in two places, so a new game got no
+ * route at all and its deep links silently rendered the saved game's screen.
+ * Every id is a plain lowercase word, so nothing here needs escaping.
+ */
+const GAME_PREFIX_RE = new RegExp(`^/(${GAME_IDS.join('|')})(?=/|$)`);
+
+/**
  * Did this document OPEN on a game-prefixed URL? Captured at module load, before
  * the mount effect canonicalizes `/` to `/decode` in the address bar.
  *
@@ -127,8 +136,7 @@ const isWebHistory = typeof window !== 'undefined' && window.location.protocol !
  * load is right for the only consumer that reads canonicals; in-app navigation
  * back to home just keeps whichever form the tab was opened with.
  */
-const ENTRY_HAS_GAME =
-  isWebHistory && /^\/(decode|chain)(?=\/|$)/.test(window.location.pathname);
+const ENTRY_HAS_GAME = isWebHistory && GAME_PREFIX_RE.test(window.location.pathname);
 
 /** the screen part of a path (no game prefix); '' for home. */
 function screenSuffix(screen: Screen, a: RouteArgs): string {
@@ -224,11 +232,12 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
 }
 
 /**
- * Parse a full URL into the game + screen. A leading /decode or /chain segment
- * selects the game; an unprefixed (legacy) path falls back to `fallbackGame`.
+ * Parse a full URL into the game + screen. A leading game segment (/decode,
+ * /chain, …) selects the game; an unprefixed (legacy) path falls back to
+ * `fallbackGame`.
  */
 function parsePath(pathname: string, fallbackGame: GameId): { game: GameId; screen: Screen } & RouteArgs {
-  const gm = pathname.match(/^\/(decode|chain)(?=\/|$)/);
+  const gm = pathname.match(GAME_PREFIX_RE);
   const game: GameId = gm ? (gm[1] as GameId) : fallbackGame;
   const rest = gm ? pathname.slice(gm[0].length) || '/' : pathname;
   return { game, ...parseScreen(rest) };

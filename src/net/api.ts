@@ -5,9 +5,15 @@ import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl } from './env';
 import { getAuthToken } from '../lib/authClient';
 
-/** boards + periods are per-game; append `&game=chain` only for CR so DECODE URLs stay
- * byte-identical (the server defaults a missing game to DECODE). */
-const gameParam = (game?: GameId): string => (game === 'chain' ? '&game=chain' : '');
+/**
+ * Boards + periods are per-game. DECODE is the server's default for a MISSING
+ * `game`, so it is the one id we leave OUT of the URL — every DECODE request
+ * stays byte-identical to what it was before there was more than one game, and
+ * every other game names itself. `needsGameParam` is the shared predicate so the
+ * four query builders below cannot disagree about which ids are implicit.
+ */
+const needsGameParam = (game?: GameId): boolean => game !== undefined && game !== 'decode';
+const gameParam = (game?: GameId): string => (needsGameParam(game) ? `&game=${game}` : '');
 
 /**
  * Client for the server's public read APIs (leaderboards + replays). These are
@@ -158,7 +164,7 @@ export interface UserStats {
 export function fetchUserStats(userId: string, season?: number, game?: GameId): Promise<UserStats> {
   const p = new URLSearchParams();
   if (season != null) p.set('season', String(season));
-  if (game === 'chain') p.set('game', 'chain');
+  if (needsGameParam(game)) p.set('game', game as GameId);
   const qs = p.toString();
   return getJson(`/api/user/${encodeURIComponent(userId)}/stats${qs ? `?${qs}` : ''}`);
 }
@@ -343,7 +349,7 @@ function historyQuery(o: MatchHistoryOpts): string {
   if (o.limit != null) p.set('limit', String(o.limit));
   if (o.type && o.type !== 'all') p.set('type', o.type);
   if (o.result && o.result !== 'all') p.set('result', o.result);
-  if (o.game === 'chain') p.set('game', 'chain');
+  if (needsGameParam(o.game)) p.set('game', o.game as GameId);
   const s = p.toString();
   return s ? `?${s}` : '';
 }
@@ -593,7 +599,7 @@ export interface SeasonInfo {
 
 /** all seasons (newest first) + which one is live, for the board's season picker */
 export function fetchSeasons(game?: GameId): Promise<{ current: number; seasons: SeasonInfo[] }> {
-  return getJson(`/api/seasons${game === 'chain' ? '?game=chain' : ''}`);
+  return getJson(`/api/seasons${needsGameParam(game) ? `?game=${game}` : ''}`);
 }
 
 // ---- admin (authorized server-side by ADMIN_USER_IDS against your auth JWT) ----
