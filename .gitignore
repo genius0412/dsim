@@ -8,3 +8,4 @@ release/
 !.env.example
 .DS_Store
 .vercel
+scratch/
