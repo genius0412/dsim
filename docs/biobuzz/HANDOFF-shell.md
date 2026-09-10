@@ -164,7 +164,7 @@ your time:
 | gate | result |
 |---|---|
 | `npm run test:bb` (new) | 268 checks, 261 pass, 7 red for the P0-core reason above |
-| `npm test` | 664 pass, **7 failures, all pre-existing** — see below |
+| `npm test` | 1289 pass, **7 failures, all pre-existing** — see below |
 | `npm run build` | **RED, and only for the P0-core reason**: `tsc` reports `Property 'biobuzz' does not exist on type 'World'` (scenes ×2, scenesRobot ×2, step ×2) and `'biobuzz' is not assignable to GameId` (robotConfig, spawn). Eight errors, two facts, both core-owned. `vite build` is never reached because `build` is `tsc && vite build`. Clears on the merge. |
 | `npm run server:check` | PASS |
 | `npm run uiaudit` | PASS. It scans `src/ui` only, so `src/games/biobuzz/*.tsx` is not audited — the gallery uses `ds-*` classes throughout anyway, with three inline `style` objects, each carrying the reason a class could not do it. (The run reports `off-grid-gap` one better than BASELINE, in `src/ui`, which this branch does not touch.) |
