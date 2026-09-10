@@ -164,15 +164,46 @@ your time:
 | gate | result |
 |---|---|
 | `npm run test:bb` (new) | 268 checks, 261 pass, 7 red for the P0-core reason above |
-| `npm test` | no new failures — the run log is in the session transcript |
+| `npm test` | 664 pass, **7 failures, all pre-existing** — see below |
 | `npm run build` | **RED, and only for the P0-core reason**: `tsc` reports `Property 'biobuzz' does not exist on type 'World'` (scenes ×2, scenesRobot ×2, step ×2) and `'biobuzz' is not assignable to GameId` (robotConfig, spawn). Eight errors, two facts, both core-owned. `vite build` is never reached because `build` is `tsc && vite build`. Clears on the merge. |
 | `npm run server:check` | PASS |
 | `npm run uiaudit` | PASS. It scans `src/ui` only, so `src/games/biobuzz/*.tsx` is not audited — the gallery uses `ds-*` classes throughout anyway, with three inline `style` objects, each carrying the reason a class could not do it. (The run reports `off-grid-gap` one better than BASELINE, in `src/ui`, which this branch does not touch.) |
 | `npm run contrast` | PASS — 221 checks across light + dark |
 
-`docs/biobuzz/baseline-alpha.md`, named in the plan's `npm test` gate, **does not exist in this
-repo** — so "no new failures vs the baseline" was checked against the `npm test` run itself
-rather than against a recorded list. Worth creating before the next lane starts.
+### `npm test` — the 7 failures, and why none of them is this branch's
+
+`docs/biobuzz/baseline-alpha.md`, named in the plan's gate, **does not exist in this repo**, so
+there was no recorded list to diff against. The claim is instead proved by the DIFF: outside
+`src/games/biobuzz/` and `scripts/smoke-biobuzz/`, this branch adds
+`scripts/manual.mjs`, `scripts/shots.cjs`, one `.gitignore` line and two `package.json`
+scripts, and modifies **nothing**:
+
+```
+git diff --stat 20e65a4..HEAD -- . ':(exclude)src/games/biobuzz' ':(exclude)scripts/smoke-biobuzz' ':(exclude)docs' ':(exclude).claude'
+ .gitignore         |   1 +
+ package.json       |   2 +
+ scripts/manual.mjs | 199 +
+ scripts/shots.cjs  | 258 +
+```
+
+`scripts/smoke.ts` and every module it imports are untouched, and nothing outside
+`src/games/biobuzz/` imports anything inside it, so this branch cannot move a DECODE or Chain
+Reaction check. The failures are all in one area — chassis ROTATION under contact:
+
+- `a robot resting against something does not turn while the driver does nothing`
+- `...and how far grows with how far off centre you hit it, without ever spinning you round`
+- `a SIDE hit on the gate arm turns the robot INTO the corner`
+- `...and a closed arm gives where one at its stop does not`
+- `ramming a wall at speed never snaps the chassis round — it squares it`
+- `an OFF-CENTRE ram spins the robot it lands on`
+
+...plus one that is not rotation at all: `an artifact pinned in the doorway settles instead of
+buzzing back and forth` (25 reversals in the last 2 s, peak 238 in/s) — a DECODE ball-solver
+jitter, in a doorway BIOBUZZ does not have.
+
+Several carry their own `(was …)` annotations, i.e. they are tracked drift rather than fresh
+breakage. **Someone should write `docs/biobuzz/baseline-alpha.md` from this list** before the
+next lane starts, so the next chat can diff against a file instead of an argument.
 
 ---
 
