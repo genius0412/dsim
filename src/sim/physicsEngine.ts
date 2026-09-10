@@ -629,9 +629,10 @@ export function solveArtifacts(
     body.setNextKinematicRotation(f.heading + wrapAngle(r.heading - f.heading));
     const sol = solids.get(r.id);
     if (!sol) continue;
-    const add = (sh: SolidShape, membership: number, filter: number, friction: number) => {
+    const add = (sh: SolidShape, membership: number, filter: number, friction: number, skin = 0) => {
       const d = solidDesc(sh);
       if (!d) return;
+      if (skin > 0) d.setContactSkin(skin);
       rw.createCollider(
         d.setRestitution(C.BALL_ROBOT_RESTITUTION)
           .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min)
@@ -641,9 +642,21 @@ export function solveArtifacts(
         body,
       );
     };
-    add(sol.chassis, A_CHASSIS, A_LOOSE | A_DOOR, C.PHYS_BALL_FRICTION);
+    /**
+     * THE BUMPER HAS A SKIN — and it is what lets the artifact world look only a hair ahead for
+     * contacts (`PHYS_BALL_PREDICTION`) without a full-speed chassis burying the artifact it
+     * meets. A speculative contact would catch it early too, but Rapier applies NO restitution
+     * on a speculative contact (the gap is closed as a velocity clip, and the bounce is computed
+     * from whatever approach is left), so a world that looked 3.5in ahead had every artifact
+     * hit — ball on ball, ball on wall — landing at a fifth of its set bounce. That is what made
+     * the gate outflow a train that never came apart. A skin is a real contact at a standoff:
+     * it catches the artifact at `PHYS_BALL_CHASSIS_SKIN` and resolves it with the bumper's own
+     * (near-zero) restitution, which is exactly what a compliant bumper does.
+     */
+    add(sol.chassis, A_CHASSIS, A_LOOSE | A_DOOR, C.PHYS_BALL_FRICTION, C.PHYS_BALL_CHASSIS_SKIN);
     // the intake's slopes and rails GUIDE an artifact toward the throat; the rollers are
     // compliant wheels, not a brake, so what slides along them is barely held back
+    // no skin on the intake: a skin on the wedge narrows the throat and squeezes what is in it
     for (const sh of sol.structure) add(sh, A_STRUCT, A_BALLS, C.INTAKE_STRUCT_FRICTION);
     for (const sh of sol.held) add(sh, A_HELD, A_LOOSE | A_CLAIMED, C.INTAKE_STRUCT_FRICTION);
   }
@@ -678,19 +691,39 @@ export interface PinnedReport {
  * front one was called pinned because it touched the one behind it, the robot could push
  * nothing at all (measured: every open-floor herding scene went to zero fouls).
  */
-function supported(world: World, b: Artifact, by: RobotState, solids: ReadonlyMap<number, RobotSolids>): boolean {
+/**
+ * The direction the FIELD pushes an artifact at `p` back into play (unit, into the field), or
+ * null when it is not at a static at all: its own position clamped, or a probe a hair around
+ * it clamped. The direction is what makes a wall pin directional — see `pinnedArtifacts`.
+ */
+function fieldPushback(p: Vec2): Vec2 | null {
   const eps = C.ARTIFACT_PIN_SUPPORT;
-  const nearStatic = (p: Vec2): boolean => {
-    const c = clampBallPosToStatics(p);
-    if (c.x !== p.x || c.y !== p.y) return true;
-    for (let k = 0; k < 8; k++) {
-      const a = (k * Math.PI) / 4;
-      const q = { x: p.x + dcos(a) * eps, y: p.y + dsin(a) * eps };
-      const r = clampBallPosToStatics(q);
-      if (r.x !== q.x || r.y !== q.y) return true;
-    }
-    return false;
+  const back = (from: Vec2, to: Vec2): Vec2 | null => {
+    const d = hyp(to.x - from.x, to.y - from.y);
+    return d > 0 ? { x: (to.x - from.x) / d, y: (to.y - from.y) / d } : null;
   };
+  const c = clampBallPosToStatics(p);
+  if (c.x !== p.x || c.y !== p.y) return back(p, c);
+  for (let k = 0; k < 8; k++) {
+    const a = (k * Math.PI) / 4;
+    const q = { x: p.x + dcos(a) * eps, y: p.y + dsin(a) * eps };
+    const r = clampBallPosToStatics(q);
+    if (r.x !== q.x || r.y !== q.y) return back(q, r);
+  }
+  return null;
+}
+
+function supported(
+  world: World,
+  b: Artifact,
+  by: RobotState,
+  solids: ReadonlyMap<number, RobotSolids>,
+  /** the seed artifact's OWN contact with the field does not count — the caller has already
+   *  judged that one by direction; only a chain through other artifacts, or another robot */
+  throughOthers = false,
+): boolean {
+  const eps = C.ARTIFACT_PIN_SUPPORT;
+  const nearStatic = (p: Vec2): boolean => fieldPushback(p) !== null;
   const nearOtherRobot = (p: Vec2): boolean => {
     for (const r of world.robots) {
       if (r === by) continue;
@@ -708,7 +741,8 @@ function supported(world: World, b: Artifact, by: RobotState, solids: ReadonlyMa
   const touch = 2 * C.BALL_RADIUS + eps;
   while (queue.length > 0) {
     const cur = queue.shift()!;
-    if (nearStatic(cur.pos) || nearOtherRobot(cur.pos)) return true;
+    if ((cur !== b || !throughOthers) && nearStatic(cur.pos)) return true;
+    if (nearOtherRobot(cur.pos)) return true;
     for (const o of world.balls) {
       if (o.state.kind !== 'ground' || seen.has(o.id)) continue;
       if (hyp(o.pos.x - cur.pos.x, o.pos.y - cur.pos.y) < touch) {
@@ -764,7 +798,31 @@ export function pinnedArtifacts(
         out.buried.push({ b, r, nx: q.nx, ny: q.ny, pen: q.pen });
         continue;
       }
-      if (q.pen > 0 && q.pen + inField > C.ARTIFACT_PIN_SLOP) isPinned = true;
+      /**
+       * A PIN NEEDS SOMETHING BEHIND THE ARTIFACT. Being deep inside a chassis is not one:
+       * with real (non-speculative) artifact contacts a full-speed ram buries the first ball of
+       * a clump for a tick or two while the ones behind it get their contacts, and a robot
+       * that stopped for that was stalled by 0.2 lb of foam — "stuck to the balls". So the
+       * entry test asks what the artifact is against: the field (`inField`), or, through
+       * whatever it is touching, a static or another robot (`supported`). A free artifact,
+       * however deep, is the artifact solve's to push out.
+       */
+      /**
+       * ...AND THE FIELD ONLY PINS WHAT IS PUSHED INTO IT. `q.nx/ny` is the direction the
+       * robot is pushing the artifact; `u` is the way the field pushes it back. A flat bumper
+       * driving an artifact square into a wall has the two opposed and the artifact has
+       * nowhere to go. A CORNER catching an artifact that sits against a wall pushes it at an
+       * angle, and a round ball pushed at an angle rolls out along the wall — that is the
+       * squirt, and reading it as a pin parked the robot behind a ball it was not even
+       * touching (the pin circle is inflated, the artifact sat 0.4in off the wedge, and
+       * neither could move: "corner-hit wall ball is nudged aside" measured 0.1in). Within
+       * `ARTIFACT_PIN_COS` of square the field pins it; wider than that only a chain through
+       * OTHER artifacts or another robot does, and otherwise the artifact solve is left to
+       * move it.
+       */
+      const u = fieldPushback(b.pos);
+      const intoField = u !== null && q.nx * u.x + q.ny * u.y < -C.ARTIFACT_PIN_COS;
+      if (q.pen > 0 && q.pen + inField > C.ARTIFACT_PIN_SLOP && (intoField || supported(world, b, r, solids, true))) isPinned = true;
       else if (keep && q.pen > -C.ARTIFACT_PIN_RELEASE && supported(world, b, r, solids)) isPinned = true;
     }
     if (isPinned) out.pinned.push(b);

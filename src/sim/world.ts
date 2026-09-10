@@ -192,8 +192,13 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
   // ...and the ONE robot-side feel term, a damper on the speed a robot arrives at a clump
   // with. It runs BEFORE the drive so the wrench is built on the damped velocity and the
   // tyres never read it as slip — see `clumpDrag`, which also explains why it is kept.
+  // the robot solids are what every artifact pass measures against, so they are built once,
+  // here, and handed to the drag, the pin test and both solves
+  const heldBalls = world.balls.filter((b) => b.state.kind === 'held');
+  const solids = new Map<number, RobotSolids>();
+  for (const r of world.robots) solids.set(r.id, robotSolids(r, heldBalls));
   for (const b of ground) {
-    for (const r of world.robots) if (!r.autoPathActive) clumpDrag(b, r);
+    for (const r of world.robots) if (!r.autoPathActive) clumpDrag(b, r, solids.get(r.id)!);
   }
 
   // ...and the intake's pull on whatever is in its mouth, which the solve then answers
@@ -254,9 +259,6 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
     const d = doorwayArtifact(world, a);
     if (d) doorway.add(d.id);
   }
-  const heldBalls = world.balls.filter((b) => b.state.kind === 'held');
-  const solids = new Map<number, RobotSolids>();
-  for (const r of world.robots) solids.set(r.id, robotSolids(r, heldBalls));
 
   const robotsAtStart = snapshotRobots(world);
   const ballsAtStart = ground.map((b) => ({ b, pos: { x: b.pos.x, y: b.pos.y }, vel: { x: b.vel.x, y: b.vel.y } }));

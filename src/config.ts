@@ -543,17 +543,6 @@ export const CLASSIFIER_HEIGHT = 16;
  * JAMMED rather than merely in contact. Rapier's soft contacts leave about 0.2in, so this sits
  * clear of that and well under the ~1in of give the squeeze was exploiting.
  */
-/** peak tangential kick (in/s) a contact between two artifacts gets, equal and opposite. Two
- * spheres never meet dead centre; this is that offset, and it is where the drain's spread comes
- * from now that the exit no longer fans them. Deterministic — see `scatterBalls`. */
-export const BALL_CONTACT_SCATTER = 4; // in/s, the ceiling on that kick
-/** ...as a fraction of the CLOSING speed. Two artifacts meeting hard glance off each other;
- * two barely touching do not, and treating those the same is a vibration rather than a
- * contact. */
-export const BALL_CONTACT_SCATTER_FRAC = 0.25;
-/** how close two artifacts have to be, beyond touching, for the contact scatter to see them as
- * a contact at all (in) — the solver leaves a resting pair a hair apart, never overlapping */
-export const BALL_SCATTER_TOUCH = 0.1;
 
 export const BALL_ROBOT_RESTITUTION = 0.05;
 /** ground-ball mass (lb) for the Rapier ball solve (`solveArtifacts`). Balls only
@@ -751,11 +740,23 @@ export const PHYS_FRICTION = 0.45;
  *  why it is written down at all, and note the effective robot↔wall value is the AVERAGE of
  *  the two (0.6), not this number. */
 export const PHYS_WALL_FRICTION = 0.35;
-/** friction of the artifact colliders and of the artifact world's robot chassis — the old
- *  values, so nothing about how artifacts slide on a bumper or roll along a wall moved when the
- *  ROBOT friction did. See . */
-export const PHYS_BALL_FRICTION = 0.7;
-export const PHYS_BALL_WALL_FRICTION = 0.5;
+/**
+ * IN-PLANE friction on an artifact — ball on ball, ball on bumper (`PHYS_BALL_FRICTION`) and
+ * ball on the field (`PHYS_BALL_WALL_FRICTION`) — and it is NEARLY ZERO on purpose.
+ *
+ * The artifact bodies are rotation-locked circles in a top-down plane, so a tangential friction
+ * impulse has nowhere to go but the ball's TRANSLATION. On a real rolling sphere it goes into
+ * spin about the vertical axis, which the floor lets go of almost for free: a ball grazing
+ * another ball, or rolling along a wall, or sliding across a bumper face, is spun, not dragged.
+ * At the old 0.7/0.5 a glancing hit sent the struck ball off at 3 degrees where the contact
+ * normal was at 30, a 45-degree wall bounce kept a quarter of its along-wall speed, and 70% of
+ * the moving contacts in a gate drain were pairs travelling together — "artifacts feel stuck
+ * to each other and to the wall". At 0.05 the same hits leave along the normal, the bounce
+ * keeps its tangential speed, and the drain disperses. Rolling resistance with the FLOOR is a
+ * separate thing (`BALL_ROLL_FRICTION`) and is untouched.
+ */
+export const PHYS_BALL_FRICTION = 0.05;
+export const PHYS_BALL_WALL_FRICTION = 0.05;
 /** BALL contact stiffness (Hz) for the ball solve — stiffer than the robot world
  * (12 Hz), which let two grounded balls sit visibly overlapping for many ticks.
  * Tuned to 25: separates a resting overlapping clump within ~0.5s (as clean as a
@@ -782,7 +783,22 @@ export const PHYS_BALL_ALLOWED_ERROR = 0.001;
  * Sized for the fastest closing pair the field has: a chassis at its top speed plus an
  * artifact rolling toward it, comfortably under 3.5in a tick.
  */
-export const PHYS_BALL_PREDICTION = 0.35;
+export const PHYS_BALL_PREDICTION = 0.002;
+/**
+ * The bumper's contact SKIN in the artifact world (in): the chassis collider catches an artifact
+ * this far out and holds it there, as a real contact with the bumper's own restitution.
+ *
+ * This is what replaced the 3.5in speculative look-ahead as the thing that keeps a full-speed
+ * chassis (1.5in a tick) from burying the artifact it meets. A speculative contact caught it
+ * just as early, but Rapier resolves a speculative contact as a velocity clip with NO
+ * restitution and computes the bounce from whatever approach is left — measured, ball-ball
+ * restitution came out 0.14 for a set 0.68 and ball-wall 0.14-0.20 for a set 0.5, at every
+ * speed, stiffer contacts making it worse (0.03). So the look-ahead is Rapier's default now
+ * and the bounce is honest (0.67 / 0.47 measured), and the chassis carries a skin instead:
+ * a third of an inch of bumper compliance, which no one can see on a 5in artifact. The intake
+ * carries none — a skin on the wedge narrows the throat and squeezes what is in it.
+ */
+export const PHYS_BALL_CHASSIS_SKIN = 0.35;
 /**
  * How far into a robot an artifact may end the artifact solve before it is PINNED — the one
  * number the two-solve engine turns on.
@@ -820,6 +836,15 @@ export const PHYS_PIN_ROUNDS = 4;
  * on the circle keeps the pin; a robot that has genuinely backed off drops it.
  */
 export const ARTIFACT_PIN_RELEASE = 0.5; // in
+/**
+ * How square a robot has to be pushing an artifact into the field for the field to count as
+ * what pins it (cosine of the angle between the push and the field's push back). Square on,
+ * a wall stops the artifact and the robot stops on it; a corner catching a ball that sits
+ * against a wall pushes it at an angle, and a round ball pushed at an angle rolls along the
+ * wall out of the way instead. 0.85 is ~32 degrees: the tolerance a bumper's compliance and
+ * the solver's contact normal need, and well inside where a real ball starts to squirt.
+ */
+export const ARTIFACT_PIN_COS = 0.85;
 /** how close to a wall, another artifact or a second robot a pinned artifact has to be for
  *  that thing to count as what is holding it there (in). A pin whose support has left is
  *  released even if the robot is still leaning, so the robot can push the artifact again. */

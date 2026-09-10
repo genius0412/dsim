@@ -2,6 +2,7 @@ import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '
 import * as C from '../config';
 import { classifierRect, footprintExtents, goalFaceNormal, goalLineValue, viewAngleOf, type Rect } from './field';
 import { dot, rot, clamp, hyp, datan2, dcos, dsin } from '../math';
+import { robotPenetration, type RobotSolids } from './artifactSolids';
 import { activeDrive, driveParams } from './drivetrain';
 
 const ALLIANCES: Alliance[] = ['red', 'blue'];
@@ -996,57 +997,43 @@ export function collideBallBall(a: Artifact, b: Artifact): void {
 }
 
 /**
- * THE OFF-CENTRE KICK OF A CONTACT BETWEEN TWO ARTIFACTS — velocity only.
+ * TWO ARTIFACTS ON ONE POINT get kicked apart — velocity only, deterministic (a hash of the
+ * ids and the tick, never Math.random), before the artifact solve, which owns every position.
  *
- * Two artifacts meeting on a foam tile touch at a point a little off the line between their
- * centres — the seams, the tile, the spin each is carrying — so real ones scatter where a
- * solver's perfect spheres would slide past each other in a tidy line. It matters most at
- * the gate, where the drain leaves straight and the spread has to come from what the
- * artifacts hit. "Add slightly more randomness to each collision between balls to make them
- * spread out more."
- *
- * Applied ONCE per tick, BEFORE the artifact solve, to a pair that is touching and closing:
- * equal and opposite so momentum is conserved, in proportion to how hard they meet (a pile
- * being leaned on barely scatters), and DETERMINISTIC — a hash of the two ids and the tick,
- * not Math.random, because this runs inside the lockstep sim. It moves nothing: the solve
- * owns every position.
+ * This used to also carry an off-centre KICK on every closing contact ("add slightly more
+ * randomness to each collision between balls to make them spread out more"), and that kick
+ * was standing in for collisions that did not work: the artifact contacts had 0.7 of in-plane
+ * friction on rotation-locked bodies and a speculative look-ahead that ate the restitution, so
+ * two artifacts meeting slid off together in a line and only a fudge could spread them. With
+ * the contacts honest the kick made things WORSE, measured on the nine-ball gate drain: the
+ * spread's minor-to-major axis ratio was 0.53 with it and 0.73 without, and without it every
+ * artifact came to rest where with it four were still jittering at ten seconds. A round ball
+ * meeting another off-centre scatters by geometry; that is the whole of it now.
  */
 export function scatterBalls(a: Artifact, b: Artifact, time: number): void {
   const dx = b.pos.x - a.pos.x;
   const dy = b.pos.y - a.pos.y;
   const d2 = dx * dx + dy * dy;
-  const touch = C.BALL_RADIUS * 2 + C.BALL_SCATTER_TOUCH;
-  if (d2 >= touch * touch) return;
+  if (d2 >= C.BALL_COINCIDENT * C.BALL_COINCIDENT) return;
+  // COINCIDENT — no honest normal; kick the pair apart along an axis hashed from the ids and
+  // the tick, equal and opposite, so the next solve has something to separate. A ball already
+  // moving at the kick's speed is not kicked again: a pile of many coincident artifacts (a test
+  // parking them all on one point) is every pair kicking every tick, and stacked kicks turned
+  // that into an explosion that crossed the field.
   const t = Math.floor(time * 60);
-  if (d2 < C.BALL_COINCIDENT * C.BALL_COINCIDENT) {
-    // COINCIDENT — no honest normal; kick the pair apart along an axis hashed from the ids
-    // and the tick, equal and opposite, so the next solve has something to separate
-    let h = (a.id * 73856093) ^ (b.id * 19349663) ^ (t * 83492791);
-    h = Math.imul(h ^ (h >>> 15), 2246822507);
-    const ang = ((h >>> 0) / 4294967296) * Math.PI * 2;
-    const kx = dcos(ang) * C.BALL_COINCIDENT_KICK;
-    const ky = dsin(ang) * C.BALL_COINCIDENT_KICK;
-    a.vel.x -= kx;
-    a.vel.y -= ky;
-    b.vel.x += kx;
-    b.vel.y += ky;
-    return;
-  }
-  const d = Math.sqrt(d2);
-  const rvn = ((b.vel.x - a.vel.x) * dx + (b.vel.y - a.vel.y) * dy) / d;
-  if (rvn >= 0) return; // not closing
   let h = (a.id * 73856093) ^ (b.id * 19349663) ^ (t * 83492791);
   h = Math.imul(h ^ (h >>> 15), 2246822507);
-  h = Math.imul(h ^ (h >>> 13), 3266489909);
-  const closing = Math.min(-rvn, C.BALL_CONTACT_SCATTER / C.BALL_CONTACT_SCATTER_FRAC);
-  const jitter =
-    (((h ^ (h >>> 16)) >>> 0) / 4294967296 - 0.5) * closing * C.BALL_CONTACT_SCATTER_FRAC;
-  const tanx = -(dy / d) * jitter;
-  const tany = (dx / d) * jitter;
-  a.vel.x -= tanx;
-  a.vel.y -= tany;
-  b.vel.x += tanx;
-  b.vel.y += tany;
+  const ang = ((h >>> 0) / 4294967296) * Math.PI * 2;
+  const kx = dcos(ang) * C.BALL_COINCIDENT_KICK;
+  const ky = dsin(ang) * C.BALL_COINCIDENT_KICK;
+  if (hyp(a.vel.x, a.vel.y) < C.BALL_COINCIDENT_KICK) {
+    a.vel.x -= kx;
+    a.vel.y -= ky;
+  }
+  if (hyp(b.vel.x, b.vel.y) < C.BALL_COINCIDENT_KICK) {
+    b.vel.x += kx;
+    b.vel.y += ky;
+  }
 }
 
 /** push a point out of `rect` inflated by an artifact radius, the shallowest way that does
@@ -1299,10 +1286,13 @@ function ballRobotContact(
  * this side of the solve. In front of the solve it is simply the speed the robot arrives at,
  * which is a thing a seed velocity is allowed to be.
  */
-export function clumpDrag(b: Artifact, r: RobotState): void {
-  const contact = ballRobotContact(r, b.pos);
-  if (!contact) return;
-  const { nx, ny, cp } = contact;
+export function clumpDrag(b: Artifact, r: RobotState, solids: RobotSolids): void {
+  // the same shapes the solve pushes with, and at the bumper's SKIN: an artifact being pushed
+  // rides `PHYS_BALL_CHASSIS_SKIN` off the chassis, so a test on the bare surface never sees it
+  const q = robotPenetration(r, solids, b.pos, C.BALL_RADIUS, false, false, -C.PHYS_BALL_CHASSIS_SKIN - 0.1);
+  if (!q) return;
+  const { nx, ny } = q;
+  const cp = { x: b.pos.x - nx * C.BALL_RADIUS, y: b.pos.y - ny * C.BALL_RADIUS };
   // the SURFACE's speed into the artifact, not the centre's — a robot turning a corner onto
   // an artifact is closing on it with no translation at all (`robotPointVelocity` carries ω×r)
   const pv = robotPointVelocity(r, cp);
