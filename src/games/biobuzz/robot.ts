@@ -241,7 +241,12 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     const { origin, dir, perp, half } = launchLine(r, edge);
     let fired = 0;
     while (r.fireReadyAt <= world.time && r.hopper.length > 0 && fired < BB_DRUM_MAX) {
-      const t = BB_DRUM_MAX === 1 ? 0 : (fired / (BB_DRUM_MAX - 1)) * 2 - 1;
+      // −1..+1 across the launch line, so the burst comes out as a parallel row rather than
+      // a stack. `span` is typed `number` rather than left as the literal: a `BB_DRUM_MAX` of
+      // 1 is a legal retune and the guard against dividing by its zero span has to survive
+      // TypeScript narrowing the constant to the value it happens to have today.
+      const span: number = BB_DRUM_MAX - 1;
+      const t = span > 0 ? (fired / span) * 2 - 1 : 0;
       releasePollen(
         world,
         r,
