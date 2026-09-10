@@ -26,7 +26,37 @@ import type { IntakeStyle } from '../types';
  *   `bounds`/`colliders`, so a game with a different field size just works.
  */
 
-export type GameId = 'decode' | 'chain';
+export type GameId = 'decode' | 'chain' | 'biobuzz';
+
+/**
+ * EVERY game id, in display order (DECODE first — it is also the fallback).
+ *
+ * This list, not a hand-written literal, is what every "which games are there"
+ * site must read: the route regex, the settings allowlists, the loadout archive
+ * loop, the server's untrusted-`game` coercion. Before it existed those sites
+ * were two-valued ternaries (`x === 'chain' ? 'chain' : 'decode'`), so a THIRD
+ * id silently degraded to DECODE — a player queued for it, got a DECODE room,
+ * and nothing anywhere said so.
+ */
+export const GAME_IDS: readonly GameId[] = ['decode', 'chain', 'biobuzz'] as const;
+
+/** is `x` a known game id? (the allowlist form — use it where an absent/unknown
+ * value must stay absent rather than become DECODE) */
+export function isGameId(x: unknown): x is GameId {
+  return typeof x === 'string' && (GAME_IDS as readonly string[]).includes(x);
+}
+
+/**
+ * Force an untrusted value to a known game id.
+ *
+ * The DOWNGRADE form, and the one the wire/URL/query-string sites want: an
+ * unknown or missing `game` becomes `fallback` (DECODE by default), which is the
+ * repo's single back-compat rule — old worlds, snapshots and replays carry no
+ * `game` field at all, and both module resolvers already answer DECODE for them.
+ */
+export function coerceGameId(x: unknown, fallback: GameId = 'decode'): GameId {
+  return isGameId(x) ? x : fallback;
+}
 
 /** one static cuboid collider, as plain numbers (Rapier-independent). Moved out
  * of physicsEngine.ts so any game module can produce field geometry. */
@@ -92,6 +122,27 @@ export interface GameSimModule {
   /** does this game have start-position LEGALITY (DECODE G304)? The server enforces
    * it only for such games; a game without it (CR shell) skips the legality gate. */
   startLegality: boolean;
+  /**
+   * The competitive ACT this game's very first period opens in (`ensureSeason`).
+   *
+   * DECODE keeps act 0 — the beta/pre-season bucket it actually ran in — and every
+   * later game starts in its own act. It lives on the MODULE because the two callers
+   * (`server/persist.ts` at match end, `/api/seasons` in `server/api.ts`) had it as
+   * `game === 'chain' ? 1 : 0`, which silently seeds a third game into DECODE's beta act.
+   */
+  initialAct: number;
+  /**
+   * How many NAMED start anchors this game offers, i.e. the legal range of a
+   * `startIndex` (`0 .. startPoseCount - 1`).
+   *
+   * The clamps in `coerceStartIndex` (`src/net/sanitize.ts`), `coerceSetup`
+   * (`src/sim/spawn.ts`) and `coerceSettings` all read it. They used DECODE's
+   * `START_POSES.length` (5) for every game, which CR (4) survived only because 4 < 5 —
+   * a game with FEWER anchors than DECODE would accept an out-of-range index off
+   * localStorage or the wire and resolve it to whatever its own spawn does with a
+   * miss.
+   */
+  startPoseCount: number;
   bounds: FieldBounds;
   colliders: FieldColliders;
   createWorld(mode: GameMode, seed: number, setups: RobotSetup[], settings?: GameSettings): World;
