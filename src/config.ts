@@ -128,6 +128,14 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *    · AN UNPOWERED ROBOT NO LONGER BRAKES AGAINST A SHOVE at full stopping authority
  *      (`MOTOR_SHOVE_BRAKE`) — three seconds of full throttle moved an idle equal chassis
  *      15.5in, now 95in.
+ *    · BUMPER FRICTION RETUNED to the owner's call, twice and in that order: 0.45 -> 0.2
+ *      (`a97f03c`), then robot-on-robot alone to 0.15 with `PHYS_WALL_FRICTION` raised
+ *      0.35 -> 0.65 to compensate (`914bc1b`), because Rapier AVERAGES a pair's coefficients
+ *      and one constant is therefore all of robot-robot and half of robot-wall. Robot-wall is
+ *      held at the 0.40 it has always been, which is what keeps the gate arms — they run
+ *      through the same `statics()` helper — turning a robot exactly as before. Listed here
+ *      rather than given its own number for the reason stated above: this is still the one
+ *      unreleased alpha batch, and the entry exists so the batch's contents stay honest.
  */
 export const SIM_VERSION = 2;
 
@@ -773,16 +781,39 @@ export const PHYS_CONTAIN_SLOP = 0.75; // in
  * the pinner's bumper together hold it with (wall + bumper) times the pinner's push, against a
  * strafe worth its own push — and a stalled motor pushes with its whole stall force at any
  * throttle. At 0.7/0.5 an EQUAL robot could never get out (1.3× against 1×), which is not what a
- * fabric-covered bumper on polycarbonate does. Bumper on bumper ~0.45, bumper on wall ~0.35
- * (average 0.4 with the robot's), total 0.85×: an equal pinner can be strafed out of, slowly; a
- * heavier one cannot. The ARTIFACT world keeps its own values ().
+ * fabric-covered bumper on polycarbonate does.
+ *
+ * 0.15 (owner's call, from 0.45): BUMPER ON BUMPER ONLY. Rapier derives a pair's friction from
+ * the two colliders, so this one number sets robot↔robot AND, averaged with the static's,
+ * robot↔wall — they cannot be moved independently from here. So `PHYS_WALL_FRICTION` absorbs
+ * the difference and robot↔wall is held at the 0.40 it has always been. 0.15 is the floor:
+ * at 0.10, with the wall still compensated to 0.40, a heavy tank holding a victim against the
+ * wall bills 2 G422 over 20s instead of 6 and the rule stops being reachable.
+ *
+ * ⚠️ IT DOES NOT CONTROL WHETHER A PUSH CAN BE ESCAPED, which is the thing it reads as. Swept
+ * from 0.45 down to 0.1, a victim cornered against the wall by a heavier robot travelled 14.9,
+ * 15.0, 14.9, 14.9, 14.9in — flat to the tenth of an inch. The hold is the wall geometry and the
+ * pusher's drive force; the bumper coefficient is not in it. What the sweep DOES move is
+ * detection and the gate: at 0.15 a heavy tank holding a victim bills 4 G422 over 20s instead of
+ * 6, and at 0.1 it bills 2 AND the gate arm stops turning a robot that hits it 8in off centre
+ * (21deg to 0 — the bumper slides off the arm instead of being turned by it). 0.2 is the lowest
+ * value that keeps both. The ARTIFACT world keeps its own values ().
  */
-export const PHYS_FRICTION = 0.45;
-/** friction on the STATIC field colliders (walls, goal faces, classifier, gate arms). Set to
- *  Rapier's own default so making it explicit changes nothing; see `PHYS_FRICTION` above for
- *  why it is written down at all, and note the effective robot↔wall value is the AVERAGE of
- *  the two (0.6), not this number. */
-export const PHYS_WALL_FRICTION = 0.35;
+export const PHYS_FRICTION = 0.15;
+/**
+ * Friction on the STATIC field colliders: walls, goal faces, classifier, AND the gate arms
+ * (they go through the same `statics()` helper, which is why dropping the robot's own value
+ * alone stopped the arm turning a robot that hit it off centre — 21deg to 0).
+ *
+ * ⚠️ THIS IS NOT THE WALL'S COEFFICIENT, IT IS A COMPENSATOR. Neither collider names a combine
+ * rule, so Rapier AVERAGES the pair, and the robot's own `PHYS_FRICTION` is therefore half of
+ * robot↔wall as well as all of robot↔robot. To lower bumper-on-bumper without touching
+ * bumper-on-wall, this absorbs the difference: `(PHYS_FRICTION + this) / 2` is held at the
+ * 0.40 robot↔wall has always been, so this reads high on purpose. Move one, recompute the
+ * other. (An earlier comment here claimed 0.6 — that was the average of the old 0.7/0.5 pair
+ * and outlived them — and claimed this was Rapier's own default, which is 0.5, not either.)
+ */
+export const PHYS_WALL_FRICTION = 0.65;
 /**
  * IN-PLANE friction on an artifact — ball on ball, ball on bumper (`PHYS_BALL_FRICTION`) and
  * ball on the field (`PHYS_BALL_WALL_FRICTION`) — and it is NEARLY ZERO on purpose.

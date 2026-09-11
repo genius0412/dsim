@@ -276,7 +276,9 @@ function broadcastAll(m: ServerMsg): number {
   let n = 0;
   for (const ws of wss.clients) {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(payload);
+      // same size rule as every other send — see COMPRESS_THRESHOLD. An admin notice is a
+      // sentence; deflating it costs a threadpool round trip to save nothing.
+      ws.send(payload, { compress: payload.length >= COMPRESS_THRESHOLD });
       n++;
     }
   }
@@ -380,6 +382,69 @@ const MAX_ROOMS = ((): number => {
   }
   return REGION ? 24 : 0;
 })();
+
+/**
+ * SPECTATOR ADMISSION — the cap `MAX_ROOMS` does not provide.
+ *
+ * `MAX_ROOMS` bounds how many matches a machine SIMULATES; nothing bounded how many people
+ * WATCH one. A spectator takes the same 30 Hz snapshot stream a driver takes, and the
+ * `spectate` path reaches it without a room slot, without a room cap (the room already
+ * exists, so the admission check above never runs) and without signing in — so one shared
+ * link was an unbounded fan-out on a machine whose whole capacity model is per-room.
+ * Egress, not compute, is the cliff (docs/capacity.md §5), and audience is pure egress.
+ *
+ * TWO caps because they fail differently. The per-room one is the realistic shape — one
+ * match everybody wants to see — and refusing there costs nobody else anything. The
+ * machine-wide one is what the event loop actually pays, across every room at once.
+ *
+ * The numbers are deliberately generous rather than measured: 24 is a full match's worth of
+ * teams watching one room, and 192 is eight such rooms, which is already more audience than
+ * `MAX_ROOMS` worth of DECODE rooms can produce drivers. They are runaway guards in exactly
+ * the sense `MAX_ROOMS` is (see its note above) — set from what a crowd plausibly looks
+ * like, not from a measured redline, because there is no Linux measurement of spectator cost
+ * to set one from. Both are env-overridable and `0` disables, same convention as MAX_ROOMS.
+ *
+ * ⚠️ A HIDDEN ADMIN OBSERVER COUNTS. `Room.spectatorCount()` is deliberately the total and
+ * not `visibleSpectators()`: the JWT that would identify an admin is verified asynchronously
+ * AFTER attach (so a slow verify never costs them the start of a match), so there is nothing
+ * to exempt them on at admission time — and a cap that could be bypassed by not being
+ * displayed would not be a cap. With these values an admin is only ever refused on a room
+ * that is already carrying two dozen watchers.
+ */
+const spectatorCap = (name: string, dflt: number): number => {
+  const raw = process.env[name];
+  if (raw !== undefined && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n) || Infinity;
+  }
+  return dflt;
+};
+const MAX_SPECTATORS_PER_ROOM = spectatorCap('MAX_SPECTATORS_PER_ROOM', 24);
+const MAX_SPECTATORS = spectatorCap('MAX_SPECTATORS', 192);
+/** attached spectators across every room on this machine (see the caps above) */
+let spectatorTotal = 0;
+
+/**
+ * INBOUND MESSAGE RATE, per socket, per second.
+ *
+ * The future-tick cap bounds what one ROBOT can buffer; nothing bounded how fast a socket
+ * could make this process parse. Every frame costs a `JSON.parse` on the event loop that
+ * runs every room in the region, and the `spectate`/`rejoin`/`report` branches each do real
+ * work, so a single socket spinning messages is a whole-region denial of service that no
+ * per-room guard can see.
+ *
+ * 240/s is 4× what a legitimate client produces: `input` at 60 Hz plus a `ping` a second and
+ * the occasional `update`. A client that exceeds it is dropped-message-throttled rather than
+ * disconnected, because the honest way to exceed it a little is a burst after a stall, and
+ * hanging up on a reconnecting player is a worse outcome than losing a frame of input they
+ * will re-send 16 ms later. A socket past `MSG_RATE_KILL` in one second is not a client with
+ * a hiccup and is closed outright (1008), which runs the normal detach + reconnect grace.
+ *
+ * The window is a plain 1-second bucket, not a sliding one: it is a guard rail, and a
+ * sliding window costs per-message bookkeeping on the hottest path in the process.
+ */
+const MSG_RATE_LIMIT = 240;
+const MSG_RATE_KILL = 2000;
 
 /**
  * GET /api/presence aggregates presence across ALL regions' machines (each machine
@@ -1588,11 +1653,52 @@ httpServer.on('connection', (socket) => socket.setNoDelay(true));
 // no deploy, no code change, no client change (a client that offered the extension simply
 // is not given it, which is the same path every old client already takes). Named as the
 // rollback in docs/launch-load-test.md §3a, so it has to keep working.
-const WS_COMPRESS = process.env.WS_COMPRESS !== '0';
+//
+// ⚠️ THE PARSE IS FORGIVING ON PURPOSE. This is a rollback lever somebody reaches for
+// under load, from a phone, on the worst day the population has ever had — and it used to
+// disable only the exact string `"0"`, so `WS_COMPRESS=false` (the spelling half of the
+// world reaches for first, and the one `fly secrets` examples tend to show) left the
+// extension ON while the operator believed they had turned it off. A switch that silently
+// ignores a reasonable spelling of "off" is worse than no switch, because it costs the
+// minutes spent looking somewhere else.
+const WS_COMPRESS = !/^(0|false|no|off)$/i.test((process.env.WS_COMPRESS ?? '').trim());
+
+/**
+ * Below this many bytes a frame is sent UNCOMPRESSED: deflating a pong, a two-field roster
+ * patch or a `spectators` count costs a zlib round trip on the libuv threadpool for a
+ * saving measured in tens of bytes, and those messages outnumber snapshots.
+ *
+ * Applied per send rather than through ws's own `threshold` option, which does not apply
+ * while context takeover is on — see the note on `perMessageDeflate` below. Skipping a
+ * message is protocol-legal with context takeover (RFC 7692 §7.1: compression is per
+ * message, signalled by RSV1, and an uncompressed message simply contributes nothing to
+ * the shared LZ77 window), so the deflate history stays valid either way.
+ *
+ * The test is on `String#length` — UTF-16 units, not bytes. Our ServerMsg JSON is ASCII
+ * apart from player names, so it under-counts by a few bytes at worst, and a threshold
+ * this coarse does not care.
+ */
+const COMPRESS_THRESHOLD = 1024;
+
+/**
+ * Largest inbound frame this server will read. Past it `ws` closes the connection (1009)
+ * rather than buffering.
+ *
+ * Left at ws's default it is 100 MiB per socket — a single unauthenticated socket could
+ * make the machine hold 100 MiB before anything in this file had a chance to look at the
+ * message, and the machine hosts every room in its region. The clients that exist send
+ * ~100-byte quantized commands at 60 Hz and, once per connection, a `join` carrying a
+ * sanitized `LobbyPlayer` (spec + assists + start pose, low single-digit KB). 64 KiB is
+ * three orders of magnitude above the hot path and roughly an order above the largest
+ * legitimate message, so nothing real is refused; replays and other genuinely large
+ * payloads travel over HTTP, never over this socket.
+ */
+const WS_MAX_PAYLOAD = 64 * 1024;
 
 // noServer: we intercept the upgrade ourselves (below) to do region routing. The
 // extension is negotiated inside `wss.handleUpgrade`, so these options still apply.
 const wss = new WebSocketServer({
+  maxPayload: WS_MAX_PAYLOAD,
   noServer: true,
   perMessageDeflate: WS_COMPRESS ? {
     zlibDeflateOptions: { level: 1, windowBits: 15, memLevel: 8 },
@@ -1604,9 +1710,24 @@ const wss = new WebSocketServer({
     // frame-to-frame win worth an inflate window per socket. Asking the client to reset
     // its context each message bounds what we hold for a direction that is not the cost.
     clientNoContextTakeover: true,
-    // below this, compressing costs more than it saves — pongs, roster patches and the
-    // small control messages skip it. Snapshots (2.3 KB solo, 6.4 KB at 4 robots) do not.
-    threshold: 1024,
+    // ⚠️ INERT IN THIS CONFIGURATION, AND KEPT ONLY BECAUSE IT IS NOT ALWAYS INERT.
+    // `ws` consults `threshold` in exactly one place (`lib/sender.js`, `Sender#send`) and
+    // only when the NEGOTIATED params carry this direction's `*_no_context_takeover`:
+    //
+    //     if (rsv1 && perMessageDeflate && perMessageDeflate.params[
+    //           perMessageDeflate._isServer ? 'server_no_context_takeover'
+    //                                       : 'client_no_context_takeover']) {
+    //       rsv1 = byteLength >= perMessageDeflate._threshold;
+    //     }
+    //
+    // We deliberately run WITH context takeover on our side (`serverNoContextTakeover:
+    // false` — the load-bearing line above), so `server_no_context_takeover` is absent
+    // from the negotiated params and that branch never runs: every outbound frame was
+    // being deflated, pongs and two-field roster patches included. The size test is
+    // therefore applied at the SEND SITE instead (see `COMPRESS_THRESHOLD`), which is
+    // where we know the byte count anyway. This line still matters for a peer that asks
+    // us for no-context-takeover in its own offer, which ws accepts.
+    threshold: COMPRESS_THRESHOLD,
     concurrencyLimit: 20,
   } : false,
 });
@@ -1695,6 +1816,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   // joins/rejoins). Passed to detach on close so a stale socket that a newer
   // reconnect already superseded can't knock the live player offline.
   let conn = 0;
+  /**
+   * This socket has gone away. Read by the ASYNC join path, which runs several awaits
+   * (a staged-match claim, a JWT verify, a maintenance refresh, a supporter lookup)
+   * between claiming a room and adding anyone to it — `ws.on('close')` can land in any of
+   * those gaps, and at that moment `room` is still null, so the close handler's
+   * `room?.detach` does nothing at all. Without this flag the attempt finishes against a
+   * socket nobody is holding. See `joinRoom`.
+   */
+  let closed = false;
+  /** true once this socket is attached as a SPECTATOR, so the global tally can be
+   *  decremented exactly once on close (a spectator never becomes a driver — the
+   *  `spectate` branch is only reachable while `room` is null, and it sets it). */
+  let spectating = false;
   const wasEmpty = onlineCount === 0;
   onlineCount++;
   liveSockets.set(id, { authed: false });
@@ -1716,15 +1850,24 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (sock) sock.authed = true; // no longer a guest row
     authedUsers.set(userId, (authedUsers.get(userId) ?? 0) + 1);
   };
+  // the one place a frame actually reaches the socket. `compress` is decided here rather
+  // than by ws's `threshold` option, which is inert while context takeover is on — see
+  // COMPRESS_THRESHOLD. (With the extension off, ws ignores the flag entirely.)
+  const write = (s: string): void => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(s, { compress: s.length >= COMPRESS_THRESHOLD });
+  };
   const send = (m: ServerMsg): void => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(encodeMsg(m));
+    write(encodeMsg(m));
   };
   // the room encodes a broadcast ONCE and hands every recipient the same string —
   // see `Client.sendRaw` in room.ts for why that matters in a 2v2. This is the only
   // place that knows the string is already a serialized ServerMsg.
   const sendRaw = (s: string): void => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(s);
+    write(s);
   };
+  /** what this socket still owes the kernel. The room reads it to coalesce snapshots for
+   *  a client that has stopped draining — see `Client.backlog` in room.ts. */
+  const backlog = (): number => ws.bufferedAmount;
   // a late joiner during a pending restart still gets the countdown banner
   if (noticeLive() && currentNotice) send(currentNotice);
 
@@ -1775,6 +1918,28 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       rooms.set(code, r);
       created = true;
     }
+    const theRoom = r;
+    /**
+     * GIVE BACK A ROOM THIS ATTEMPT CLAIMED AND NEVER FILLED.
+     *
+     * The registry slot is taken SYNCHRONOUSLY, before any await, so a racing second
+     * joiner finds this room instead of opening a duplicate under the same code. The
+     * joiner itself is only added several awaits later, and every path between the two
+     * has to be able to hand the slot back — otherwise the room is counted against
+     * `MAX_ROOMS` for the lifetime of the process, and a client that opens a socket,
+     * sends `join`, and closes can exhaust the cap 24 times in a second. That is the
+     * whole failure: `ws.on('close')` fires while `room` is still null, so its
+     * `room?.detach` runs nothing, and Room's own `onEmpty` teardown is only ever
+     * reached THROUGH detach.
+     *
+     * `rooms.get(code) === r` because the room we created may already have been deleted
+     * and re-created by a later attempt; `isAbandonable()` because somebody else may
+     * have joined it while we were awaiting, and because a room that has claimed a
+     * STAGED ranked match must reap itself on its own grace instead (see room.ts).
+     */
+    const abandon = (): void => {
+      if (created && rooms.get(code) === theRoom && theRoom.isAbandonable()) rooms.delete(code);
+    };
     // Room codes are KIND-SCOPED: a custom (versus) code must never admit a
     // duo-record joiner, or vice-versa (both mint codes from the same generator, so
     // a shared/typo'd code could otherwise drop you into the wrong game mode — wrong
@@ -1790,7 +1955,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         (r.config.game ?? 'decode') !== (want.game ?? 'decode')
       ) {
         send({ t: 'error', message: 'That code is for a different game mode.' });
-        return;
+        return; // unreachable for a just-created room — its config IS the joiner's
       }
     }
     if (created && dbEnabled) {
@@ -1799,7 +1964,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
     let user: Awaited<ReturnType<typeof verifyAuthToken>> = null;
     if (msg.authToken) user = await verifyAuthToken(msg.authToken).catch(() => null);
-    if (room) return; // a concurrent frame already placed this socket
+    // the socket went away mid-join, or a concurrent frame already placed it — either
+    // way nobody is going to occupy what this attempt claimed
+    if (closed || room) {
+      abandon();
+      return;
+    }
     // MAINTENANCE: refuse new games while the window is biting. Enforced HERE, not
     // only in the client's start guard — the lockdown exists to protect a migration
     // mid-flight, and a guard anyone can skip by holding a stale tab is not one.
@@ -1808,12 +1978,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     await refreshMaintenance();
     if (lockedOut(user?.userId) && !r.stagedFor(user?.userId ?? '')) {
       send({ t: 'error', message: lockoutMessage() });
-      if (created) rooms.delete(code);
+      abandon();
       return;
     }
     if (!r.canJoin()) {
       send({ t: 'error', message: 'Room is full or a match is already in progress.' });
-      if (created) rooms.delete(code); // don't leave an empty just-created room behind
+      abandon(); // don't leave an empty just-created room behind
       return;
     }
     // one live game per user: refuse a second game while one is in progress (they
@@ -1835,7 +2005,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         userRoom.delete(user.userId);
       } else {
         send({ t: 'error', message: 'You already have a game in progress - rejoin or leave it first.' });
-        if (created) rooms.delete(code);
+        abandon();
         return;
       }
     }
@@ -1844,6 +2014,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       id,
       send,
       sendRaw,
+      backlog,
       // NEVER trust the wire spec: sanitize the whole player to legal ranges
       // before it lands on the roster (a spoofed devtools spec is clamped here)
       player: { ...sanitizePlayer(msg.player, cfg.game), clientId: id },
@@ -1871,12 +2042,37 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       }
       markAuthed(user.userId);
     }
+    // LAST GAP: the supporter lookup above is another await, and a socket that went away
+    // inside it would be added to a room that will never hear its close (detach finds no
+    // client and returns before `onEmpty`). Nothing may await between here and `add`.
+    if (closed) {
+      abandon();
+      return;
+    }
     room.add(client);
     conn = client.conn ?? 0; // remember which socket-generation owns our slot
     room.maybeStartRanked(); // no-op unless a staged ranked room is now fully present
   };
 
+  // inbound rate bucket for this socket — see MSG_RATE_LIMIT
+  let msgWindow = 0;
+  let msgCount = 0;
   ws.on('message', (data: unknown) => {
+    // RATE LIMIT FIRST, before `String(data)` and the parse — the point is to not pay for
+    // a flood, and both of those are the cost being defended against.
+    const now = Date.now();
+    if (now - msgWindow >= 1000) {
+      msgWindow = now;
+      msgCount = 0;
+    }
+    msgCount++;
+    if (msgCount > MSG_RATE_LIMIT) {
+      if (msgCount > MSG_RATE_KILL) {
+        console.warn(`[rate] closing ${id}: ${msgCount} messages in one second`);
+        ws.close(1008, 'rate');
+      }
+      return;
+    }
     let msg;
     try {
       msg = decodeClientMsg(String(data));
@@ -1901,10 +2097,25 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           send({ t: 'error', message: 'That match is no longer live.' });
           return;
         }
+        // ADMISSION CONTROL FOR WATCHERS. A spectator costs the same 30 Hz snapshot stream
+        // a driver does and passes none of the checks a driver does — no room cap (the room
+        // already exists), no roster slot, no sign-in — so the two caps are the only thing
+        // between a shared match link and an unbounded broadcast. Per-room first, because
+        // one popular match is the realistic shape; machine-wide as well, because
+        // `MAX_ROOMS` bounds rooms, not audiences, and the sum is what the event loop pays.
+        //
+        // NOT `region_full`: that code tells the client to try a different region, which is
+        // exactly wrong here — the room is on THIS machine and exists nowhere else. This is
+        // the plain-message refusal every client since the first build already renders.
+        if (r.spectatorCount() >= MAX_SPECTATORS_PER_ROOM || spectatorTotal >= MAX_SPECTATORS) {
+          send({ t: 'error', message: 'This match already has as many spectators as it can carry. Try again in a moment.' });
+          return;
+        }
         const spec = {
           id,
           send,
           sendRaw,
+          backlog,
           player: { ...sanitizePlayer(undefined, r.config.game), clientId: id },
           connected: true,
           disconnectAt: 0,
@@ -1924,11 +2135,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             })
             .catch(() => {});
         }
+        spectating = true;
+        spectatorTotal++;
         r.addSpectator(spec);
       } else if (msg.t === 'rejoin') {
         if (room) return;
         const r = rooms.get(msg.room.toLowerCase());
-        const nc = r ? r.reattach(msg.clientId, send) : null;
+        // hand over EVERY sender, not just `send` — see the note in `Room.reattach`
+        const nc = r ? r.reattach(msg.clientId, send, sendRaw, backlog) : null;
         if (r && nc !== null) {
           liveSockets.delete(id);
           id = msg.clientId; // adopt the reclaimed identity on this socket
@@ -2106,7 +2320,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   });
 
   ws.on('close', () => {
+    closed = true; // an in-flight async join must stop and hand its room back
     onlineCount--;
+    if (spectating) {
+      spectating = false;
+      spectatorTotal = Math.max(0, spectatorTotal - 1);
+    }
     liveSockets.delete(id);
     if (authedUserId) {
       const n = (authedUsers.get(authedUserId) ?? 1) - 1;

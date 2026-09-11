@@ -113,11 +113,25 @@ const HOLD_TICKS = 15;
  * not higher, so lateness cannot push against this bound. 120 is 3× the honest maximum —
  * wide enough that no real client is ever refused, small enough that the map is bounded.
  */
-const MAX_INPUT_LEAD_TICKS = 120;
-/** Backstop for the bound above: distinct future ticks held per robot. The lead cap already
- * implies at most `MAX_INPUT_LEAD_TICKS` keys, so reaching this means something is wrong
- * (duplicate ticks cannot — the Map overwrites) and the oldest entries are dropped. */
-const MAX_PENDING_PER_ROBOT = 128;
+export const MAX_INPUT_LEAD_TICKS = 120;
+/**
+ * Distinct future ticks held per robot.
+ *
+ * ⚠️ **THIS CANNOT FIRE TODAY, AND SAYING SO IS THE POINT.** An earlier comment here
+ * called it a backstop "for when something is wrong", which reads as a second, independent
+ * bound. It is not one: `pending` only ever takes keys in `(w.tick, w.tick + 120]` and
+ * `frameCommands` deletes every key the world has reached, so the map holds at most
+ * `MAX_INPUT_LEAD_TICKS` entries — 120 — and a duplicate tick overwrites rather than
+ * grows. 128 is strictly above that, so the eviction below is UNREACHABLE by construction
+ * and `MAX_INPUT_LEAD_TICKS` is the whole of the memory bound.
+ *
+ * It is kept rather than deleted because it is free and it is the thing that would catch
+ * the lead cap being widened, moved, or bypassed by a new buffering path — but a guard
+ * nobody can reach is not evidence of anything, so do not read a passing test here as
+ * proof that eviction works. `npm test` asserts the RELATIONSHIP (`> MAX_INPUT_LEAD_TICKS`)
+ * instead, which is the property that is actually load-bearing.
+ */
+export const MAX_PENDING_PER_ROBOT = 128;
 /** a client whose CONFIRMED snapshot baseline (its piggybacked `ack`) is more than
  * this many ticks behind the live tick is force-resynced with a full keyframe. Wide
  * enough that normal ack round-trip (a few ticks) never trips it — it catches a
@@ -125,6 +139,29 @@ const MAX_PENDING_PER_ROBOT = 128;
  * snapshots) rather than letting it drift on deltas keyed to a baseline it no longer
  * has. ~4 s at 60 Hz. */
 const ACK_STALE_TICKS = 240;
+/**
+ * Outbound backlog (bytes still queued on the socket) past which a client is SKIPPED for
+ * this snapshot instead of being handed another one.
+ *
+ * A snapshot leaves every 2 ticks whether or not the last one was written, and `ws.send`
+ * queues without complaint — so a socket that has stopped draining (a spectator on a phone
+ * that walked into a lift, a driver on a dying link) grows an unbounded queue of worlds
+ * that are already historical by the time they arrive. Nothing in the room could see that,
+ * because the room only ever knows that it CALLED send.
+ *
+ * Skipping is a COALESCE, not a drop, and that is why `snapPrimed` is cleared with it: the
+ * snapshots are DELTAS against the previous broadcast frame, so a client that misses one
+ * cannot apply the next. Unpriming makes the next snapshot it does receive a full keyframe
+ * of the CURRENT world, which is the only frame worth sending to somebody who has fallen
+ * behind anyway. The existing `ACK_STALE_TICKS` resync covers the same failure from the
+ * other side (the client's ack falling behind); this one reacts in one frame instead of 240
+ * ticks, and, unlike that one, it also stops the memory growing while it waits.
+ *
+ * 256 KB is ~40 solo snapshots or ~40 2v2 frames uncompressed — far past any normal write
+ * burst (a healthy socket's `bufferedAmount` is 0 nearly every time it is read) and well
+ * under a figure that would matter per socket at full population.
+ */
+const SNAP_BACKLOG_BYTES = 256 * 1024;
 /** hold a disconnected driver's slot this long for a reconnect before dropping. Long
  * enough to cover a full page reload / navigate-away-and-come-back (the "rejoin your
  * match" flow), not just a transient socket blip. The robot coasts to ZERO meanwhile. */
@@ -160,6 +197,18 @@ export interface Client {
    * string removes the multiplier.
    */
   sendRaw?: (s: string) => void;
+  /**
+   * Bytes this socket has QUEUED but not yet handed to the kernel (`ws.bufferedAmount`).
+   * Optional for the same reason `sendRaw` is: a caller with no socket (every test, and
+   * the headless smoke) supplies only `send`, and the room then treats the backlog as
+   * zero — which is true, because those sends are synchronous array pushes.
+   *
+   * The room reads it in ONE place, `broadcastSnapshot`, because a snapshot is the only
+   * message it produces 30 times a second. A socket that has not drained the last few
+   * snapshots cannot be helped by being handed another one: the newest world is the only
+   * one worth having, so the frames in between are worth less than the memory they cost.
+   */
+  backlog?: () => number;
   player: LobbyPlayer;
   /** false while the socket is dropped (within the reconnect grace) */
   connected: boolean;
@@ -563,6 +612,35 @@ export class Room {
     return n;
   }
 
+  /** EVERY attached spectator, hidden observers included — the admission-control
+   *  figure, as distinct from `visibleSpectators()`, which is the number players are
+   *  shown. A hidden admin is invisible on screen but still costs a snapshot stream,
+   *  and a cap that could not see them would not be a cap. */
+  spectatorCount(): number {
+    return this.spectators.size;
+  }
+
+  /**
+   * Nobody is here and nothing is owed — safe for the connection layer to drop this room
+   * out of the registry.
+   *
+   * It exists for the async join path: the registry slot is claimed SYNCHRONOUSLY (so a
+   * racing second joiner finds the same room instead of creating a duplicate) but the
+   * joiner is only added several `await`s later, and any of the paths in between can
+   * abandon the attempt — including the socket simply closing, which reaches a `room` that
+   * is still null and so runs no teardown at all. Without a guard that room is counted
+   * against `MAX_ROOMS` forever.
+   *
+   * A STAGED ranked room is NOT abandonable even with zero clients: `takePendingMatch`
+   * has already consumed the row from Postgres (atomic delete-returning), so deleting the
+   * room here would strand the other three players, whose own joins would create a fresh
+   * room that can no longer claim the match. It reaps itself instead — `applyPending` arms
+   * `RANKED_JOIN_GRACE_MS`, and `cancelPending` calls `onEmpty()`.
+   */
+  isAbandonable(): boolean {
+    return this.clients.size === 0 && this.spectators.size === 0 && this.pendingMatch === null;
+  }
+
   /**
    * Operator snapshot of who is in this room, for the cross-region presence beat.
    *
@@ -652,10 +730,30 @@ export class Room {
    * (a partitioned TCP connection lingers), and refusing it stranded the player on a
    * "connection lost" screen. The old socket is orphaned (its `send` is replaced) and
    * its later close is ignored via the conn stamp. */
-  reattach(id: string, send: (m: ServerMsg) => void): number | null {
+  reattach(
+    id: string,
+    send: (m: ServerMsg) => void,
+    sendRaw?: (s: string) => void,
+    backlog?: () => number,
+  ): number | null {
     const c = this.clients.get(id);
     if (!c) return null;
     c.send = send;
+    /**
+     * ⚠️ EVERY SENDER ON THIS CLIENT BELONGS TO THE NEW SOCKET, NOT JUST `send`.
+     *
+     * Only `send` used to be replaced here, which was correct for exactly as long as it was
+     * the only one. Since the encode-once change the hot path is `sendRaw`, and the room's
+     * BROADCASTS and SNAPSHOTS go through it — so a reattached client kept a closure over
+     * the socket it had just lost. That closure checks `readyState === OPEN` and therefore
+     * fails SILENTLY: the reconnecting player receives `welcome`, `rejoined` and the one
+     * keyframe `sendSnapshotTo` writes (all `send`) and then nothing ever again, on a socket
+     * that is open and healthy. Assigning `undefined` when a caller supplies none is the
+     * right answer too — the room falls back to `send`, which is what a socketless test
+     * client has always done.
+     */
+    c.sendRaw = sendRaw;
+    c.backlog = backlog;
     c.connected = true;
     c.disconnectAt = 0;
     c.conn = ++this.connSeq; // this socket now owns the slot (stale old close ignored)
@@ -789,7 +887,16 @@ export class Room {
     // every subsequent honest input looking stale, and that robot would stop responding to
     // its own driver. LATE inputs (tick <= w.tick) are legitimate and pass through — the
     // `latest` path exists for them.
-    if (!Number.isInteger(tick)) return;
+    // A TICK IS A COUNT OF SIM STEPS, so the only legal values are safe non-negative
+    // integers. `Number.isInteger` alone admitted two kinds of nonsense: a NEGATIVE tick
+    // (which no world ever reaches, so it can only ever be noise), and an UNSAFE one like
+    // 1e21 (an integer by the language's reckoning, but arithmetic on it stops being
+    // exact, so every comparison below silently stops meaning what it reads as). Neither
+    // is exploitable today — the high-water comparisons happen to ignore a negative, and
+    // the lead cap happens to catch 1e21 whenever a world exists — but both of those are
+    // accidents of order downstream, not decisions, and `latestTick`/`ackTick` are
+    // high-water marks that cannot be lowered once poisoned. Reject at the door instead.
+    if (!Number.isSafeInteger(tick) || tick < 0) return;
     if (this.world && tick - this.world.tick > MAX_INPUT_LEAD_TICKS) return;
     const cmd = dequantizeCommand(q);
     // track the freshest command by tick (even if it's now in the past) — this is
@@ -1275,6 +1382,20 @@ export class Room {
         // `last`/`acc` are reset so the resume does not fast-forward the frozen
         // wall-clock — without that, the catch-up clamp would burn 0.25 s of sim in one
         // turn the moment the first player reconnects.
+        //
+        // ⚠️ SO THE MATCH CLOCK PAUSES; IT DOES NOT JUMP. `phaseTimeLeft` is counted down
+        // by `stepMatch`, i.e. per TICK, and no tick runs while this is frozen — a 45 s
+        // region blip costs the match no game time at all, on purpose (that is the whole
+        // "survivable restart" argument above). Two consequences that are POLICY and not
+        // accidents, stated here because neither is visible from the code:
+        //   · the resume is triggered by ANY ONE driver reconnecting, so in a 2v2 the
+        //     clock restarts for all four the moment the first of them is back, while the
+        //     other three are still inside their reconnect grace;
+        //   · a match therefore takes longer in wall-clock time than its own clock says,
+        //     which anything reading `Date.now()` around a match (the grace timers, the
+        //     post-match settle) does not see.
+        // `checkGrace` deliberately keeps running on the WALL clock through the freeze, so
+        // a player who never comes back is still reaped on schedule.
         if (!this.anyConnected()) {
           last = Date.now();
           acc = 0;
@@ -1718,6 +1839,14 @@ export class Room {
       return body;
     };
     const sendTo = (c: Client): void => {
+      // BACKED UP: this socket has not drained what it already owes. Queueing another
+      // snapshot on top only makes the arrears worse, and a delta keyed to a frame it may
+      // never read is worthless — so skip it and unprime, which turns the next snapshot it
+      // does get into a full keyframe of the world as it is THEN. See SNAP_BACKLOG_BYTES.
+      if (c.backlog && c.backlog() > SNAP_BACKLOG_BYTES) {
+        this.snapPrimed.delete(c.id);
+        return;
+      }
       // A client whose CONFIRMED baseline (its ack) has fallen too far behind can't
       // apply an incremental delta — drop it back to unprimed so it gets a full
       // keyframe and resyncs. Normal ack lag (a few ticks) never trips this.

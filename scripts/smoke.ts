@@ -5,6 +5,11 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as joinPath, resolve as pathResolve, sep as pathSep } from 'node:path';
+import {
+  practiceSaveDecision,
+  PRACTICE_SAVE_MIN_S,
+  PRACTICE_SAVE_MIN_TICKS,
+} from '../src/replaySavePolicy';
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, PLAYER_ASSISTS, coerceAssists, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { drawWheels } from '../src/games/chain/parts';
 import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
@@ -187,7 +192,8 @@ import {
 import { EMPTY_ACTIVITY, averageMatch, playtimeLong, playtimeText } from '../src/playtime';
 import { routeTarget } from '../server/routing';
 import { roomPersists } from '../server/channel';
-import { Room, type Client, type DodgeReport } from '../server/room';
+import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, type Client, type DodgeReport } from '../server/room';
+import type { PendingRosterEntry } from '../server/matchTypes';
 import { maintenanceBiting } from '../server/db/repo';
 import { maintenanceLine } from '../src/ui/MaintenanceBanner';
 import { moderateName, scrubName, moderationEnabled } from '../server/moderation';
@@ -12652,26 +12658,255 @@ function pinScene(
   groom.advanceForTest(60);
   check('input bound: buffered inputs are consumed as the world reaches them', groom.pendingSizeForTest().total === 0);
 
-  // BACKSTOP: even inside the legal window the per-robot map stays capped.
+  // FILLING THE LEGAL WINDOW is the most the buffer can ever hold — and that is the whole
+  // bound. The old check here asserted `max <= 128` after feeding exactly 120 ticks, which
+  // is true of any number at or above 120 and so asserted nothing about the cap.
   const broom = new Room('smoke-input-cap', () => {}, { kind: 'versus' });
   broom.add(mkC('a', 'red'));
   broom.add(mkC('b', 'blue'));
   broom.onMessage('a', { t: 'start' });
   broom.advanceForTest(4);
   const b0 = broom.tickForTest();
-  for (let lead = 1; lead <= 120; lead++) broom.onMessage('a', { t: 'input', tick: b0 + lead, q });
-  check('input bound: the per-robot buffer never exceeds its cap', broom.pendingSizeForTest().max <= 128);
+  for (let lead = 1; lead <= MAX_INPUT_LEAD_TICKS + 40; lead++) broom.onMessage('a', { t: 'input', tick: b0 + lead, q });
+  const filled = broom.pendingSizeForTest();
+  check(
+    'input bound: a full legal window buffers exactly the lead cap, and the ticks past it are refused',
+    filled.max === MAX_INPUT_LEAD_TICKS,
+    `buffered ${filled.max} of ${MAX_INPUT_LEAD_TICKS}`,
+  );
 
-  // a non-integer tick is not a tick — it can never be reached, so it must not buffer
+  /**
+   * ⚠️ THE PER-ROBOT BACKSTOP CANNOT FIRE, AND THAT IS WHAT IS ASSERTED.
+   *
+   * `MAX_PENDING_PER_ROBOT` reads like a second, independent bound. It is not one: the map
+   * only ever takes keys in `(tick, tick + MAX_INPUT_LEAD_TICKS]` and `frameCommands`
+   * deletes everything the world has reached, so the lead cap alone holds it to 120 — the
+   * check above measures exactly that — and an eviction path above 120 is unreachable. A
+   * test that fed it 120 inputs and asserted `<= 128` looked like eviction coverage and was
+   * really a tautology, so what is pinned instead is the RELATIONSHIP: the backstop must
+   * stay strictly above the lead cap, or it would start silently discarding a legitimate
+   * client's buffered inputs (a lead of 41 ticks is normal) and the exact-tick match that
+   * makes prediction smooth would go with them. If a future change lowers the lead cap
+   * below this, the eviction becomes live and needs real coverage written for it.
+   */
+  check(
+    'input bound: the per-robot backstop sits above the lead cap (so the lead cap IS the bound)',
+    MAX_PENDING_PER_ROBOT > MAX_INPUT_LEAD_TICKS,
+    `${MAX_PENDING_PER_ROBOT} vs ${MAX_INPUT_LEAD_TICKS}`,
+  );
+
+  /**
+   * A TICK IS A COUNT OF SIM STEPS. Anything that is not a safe non-negative integer names a
+   * moment no world will ever reach, so none of it may buffer, and — the part that actually
+   * bites — none of it may reach `latestTick`/`ackTick`, which are HIGH-WATER marks that
+   * cannot be lowered again. One input stamped at an unsafe magnitude would leave every
+   * honest input afterwards looking stale and that robot would stop answering its driver.
+   */
   const froom = new Room('smoke-input-frac', () => {}, { kind: 'versus' });
   froom.add(mkC('a', 'red'));
   froom.add(mkC('b', 'blue'));
   froom.onMessage('a', { t: 'start' });
   froom.advanceForTest(4);
   const f0 = froom.tickForTest();
-  froom.onMessage('a', { t: 'input', tick: f0 + 1.5, q });
-  froom.onMessage('a', { t: 'input', tick: Number.NaN, q });
-  check('input bound: a fractional or NaN tick is refused', froom.pendingSizeForTest().total === 0);
+  const junk: number[] = [
+    f0 + 1.5, // fractional
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    -1,
+    -1_000_000,
+    Number.MIN_SAFE_INTEGER,
+    Number.MAX_SAFE_INTEGER, // safe, but astronomically past the lead cap
+    Number.MAX_SAFE_INTEGER + 2, // an "integer" the language can no longer count exactly
+    1e21,
+    -0.0001,
+  ];
+  for (const t of junk) froom.onMessage('a', { t: 'input', tick: t, q });
+  check('input bound: fractional / NaN / infinite / negative / unsafe ticks all buffer nothing', froom.pendingSizeForTest().total === 0);
+
+  // …and, having been refused, none of them poisoned the high-water marks: an ordinary
+  // input right after still lands. This is the half that a "nothing buffered" check misses.
+  const fLead = froom.tickForTest() + 5;
+  froom.onMessage('a', { t: 'input', tick: fLead, q });
+  check(
+    'input bound: a junk tick does not poison the high-water mark — the next honest input still buffers',
+    froom.pendingSizeForTest().total === 1,
+    `buffered ${froom.pendingSizeForTest().total}`,
+  );
+}
+
+// ---- a backed-up socket is COALESCED, not queued ----------------------------
+// A snapshot leaves every 2 ticks whether or not the last one was written, and `ws.send`
+// queues without complaint — so a client that has stopped draining (a spectator on a dying
+// link) grows an unbounded queue of worlds that are historical by the time they arrive. The
+// room now asks each client what it still owes (`Client.backlog`) and skips it, UNPRIMING it
+// so the next snapshot it does get is a full keyframe. Both halves matter: skipping alone
+// would hand it a delta keyed to a frame it never received.
+{
+  const mkS = (id: string, alliance: 'red' | 'blue', backlog: () => number): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+    backlog,
+  });
+  let owed = 0;
+  const got: ServerMsg[] = [];
+  const slow = mkS('slow', 'red', () => owed);
+  slow.send = (m): void => {
+    got.push(m);
+  };
+  const room = new Room('smoke-backlog', () => {}, { kind: 'versus' });
+  room.add(slow);
+  room.add(mkS('fast', 'blue', () => 0));
+  room.onMessage('slow', { t: 'start' });
+  room.advanceForTest(10);
+  const primed = got.filter((m) => m.t === 'snapshot').length;
+  check('backlog: a draining client receives snapshots normally', primed > 0, `${primed} snapshots`);
+
+  // now it stops draining — nothing more may be queued on it
+  owed = 8 * 1024 * 1024;
+  const before = got.length;
+  room.advanceForTest(30);
+  check('backlog: a backed-up client is sent nothing while it owes', got.length === before, `${got.length - before} extra`);
+
+  // and when it drains, what it gets is a FULL KEYFRAME of the world as it is now — not a
+  // delta against a frame it never saw
+  owed = 0;
+  room.advanceForTest(4);
+  const resumed = got.slice(before).find((m) => m.t === 'snapshot') as Extract<ServerMsg, { t: 'snapshot' }> | undefined;
+  check('backlog: the first snapshot after draining is sent', !!resumed);
+  if (resumed) {
+    check(
+      'backlog: …and it is a full keyframe (every ball, not a delta)',
+      resumed.balls.upd.length === resumed.balls.order.length,
+      `${resumed.balls.upd.length} of ${resumed.balls.order.length}`,
+    );
+  }
+}
+
+// ---- a RECONNECT must hand over every sender, not just `send` ---------------
+// `reattach` swapped `send` and nothing else, which was right for exactly as long as `send`
+// was the only sender. The encode-once change made `sendRaw` the hot path — broadcasts AND
+// snapshots — so a reconnected client kept a closure over the socket it had just lost, and
+// that closure fails SILENTLY (it checks `readyState === OPEN`): `welcome`, `rejoined` and
+// one keyframe arrive, then the game goes quiet on a socket that is perfectly healthy.
+{
+  const mkR = (id: string, alliance: 'red' | 'blue'): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+  const dead: string[] = [];
+  const alive: string[] = [];
+  const drop = mkR('rj', 'red');
+  drop.sendRaw = (s): void => {
+    dead.push(s);
+  };
+  const room = new Room('smoke-reattach', () => {}, { kind: 'versus' });
+  room.add(drop);
+  room.add(mkR('other', 'blue'));
+  room.onMessage('rj', { t: 'start' });
+  room.advanceForTest(6);
+  check('reattach: the original socket was receiving raw frames', dead.length > 0, `${dead.length}`);
+
+  // the socket drops mid-match (the slot is held for the grace) and a NEW one rejoins
+  room.detach('rj');
+  const deadAtDrop = dead.length;
+  const nc = room.reattach(
+    'rj',
+    () => {},
+    (s) => alive.push(s),
+    () => 0,
+  );
+  check('reattach: the slot was reclaimed', nc !== null);
+  room.advanceForTest(6);
+  check('reattach: the NEW socket receives the raw snapshot stream', alive.length > 0, `${alive.length}`);
+  check('reattach: the DEAD socket receives nothing further', dead.length === deadAtDrop, `${dead.length - deadAtDrop} leaked`);
+}
+
+// ---- spectator admission is COUNTABLE, and hidden observers count -----------
+// The per-room / machine-wide spectator caps live in server/index.ts (which opens sockets on
+// import and so cannot be loaded here), but the figure they admit against is the room's, and
+// it is the half that could quietly be wrong: `visibleSpectators()` is what PLAYERS are shown
+// and deliberately omits a hidden admin, while a cap must count every attached stream or it
+// could be bypassed by not being displayed.
+{
+  const mkSpec = (id: string): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+  });
+  const room = new Room('smoke-spectators', () => {}, { kind: 'versus' });
+  check('spectators: a fresh room carries none', room.spectatorCount() === 0);
+  room.addSpectator(mkSpec('s1'));
+  room.addSpectator(mkSpec('s2'));
+  room.addSpectator(mkSpec('s3'));
+  room.hideSpectator('s3');
+  check('spectators: the admission count is EVERY attached watcher', room.spectatorCount() === 3, `${room.spectatorCount()}`);
+  check('spectators: the displayed count still hides the hidden observer', room.visibleSpectators() === 2, `${room.visibleSpectators()}`);
+  room.detach('s2');
+  check('spectators: a departing watcher frees its place', room.spectatorCount() === 2, `${room.spectatorCount()}`);
+}
+
+// ---- an empty room a join CLAIMED but never filled can be handed back -------
+// The connection layer claims the registry slot SYNCHRONOUSLY (so a racing joiner finds the
+// same room instead of opening a duplicate) and only adds the joiner several awaits later. A
+// socket that closes in between reaches a `room` that is still null, so nothing tears down —
+// the room was then counted against MAX_ROOMS for the life of the process. `isAbandonable()`
+// is the guard the join path asks, and its one REFUSAL is load-bearing: a room that has
+// already claimed a staged ranked match must reap itself on its own grace instead, because
+// `takePendingMatch` has consumed the row and a re-created room could never claim it again.
+{
+  const mkD = (id: string, alliance: 'red' | 'blue'): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+  const empty = new Room('smoke-abandon', () => {}, { kind: 'versus' });
+  check('abandon: a room nobody ever joined can be dropped', empty.isAbandonable());
+  empty.add(mkD('d1', 'red'));
+  check('abandon: a room with a driver cannot', !empty.isAbandonable());
+
+  const watched = new Room('smoke-abandon-spec', () => {}, { kind: 'versus' });
+  watched.addSpectator({ ...mkD('w1', 'red'), userId: undefined });
+  check('abandon: a room somebody is WATCHING cannot', !watched.isAbandonable());
+
+  const staged = new Room('smoke-abandon-staged', () => {}, { kind: 'versus' });
+  const rosterEntry = (userId: string, alliance: 'red' | 'blue', startIndex: number): PendingRosterEntry => ({
+    userId,
+    name: userId,
+    teamName: 'T',
+    teamNumber: 1,
+    spec: { ...DEFAULT_SPEC },
+    assists: { ...DEFAULT_ASSISTS },
+    startIndex,
+    alliance,
+    introElo: 1500,
+  });
+  staged.applyPending({
+    code: 'smoke-abandon-staged',
+    hostRegion: '',
+    seed: 7,
+    mode: '1v1',
+    ranked: true,
+    game: 'decode',
+    roster: [rosterEntry('ru-a', 'red', 0), rosterEntry('ru-b', 'blue', 1)],
+  });
+  check(
+    'abandon: an EMPTY room holding a staged ranked match must NOT be dropped (the DB row is already spent)',
+    !staged.isAbandonable(),
+  );
 }
 
 // ---- single live game per user + restart disabled (server enforcement) ------
@@ -17050,6 +17285,342 @@ const mkMM = () => {
     check('disabled: moderateName allows any name (checked=false)', off.allowed === true && off.checked === false);
     check('disabled: scrubName passes a name through unchanged', (await scrubName('My Robot', 'x')) === 'My Robot');
   }
+}
+
+// ---- ENCODE-ONCE IS SAFE WITH permessage-deflate NEGOTIATED -----------------
+/**
+ * The room encodes a broadcast ONCE and hands every recipient the same string. With
+ * compression on, each socket has its OWN deflate context (an LZ77 window that SURVIVES
+ * between messages — `serverNoContextTakeover: false` is the whole point of the extension
+ * here), so the same source string is compressed differently per socket and against a
+ * different history. That is exactly the sharing the encode-once change introduced, and no
+ * existing test covered it: the room-level tests use plain `send` callbacks and never
+ * negotiate an extension at all, so they prove the JSON is right and nothing about the wire.
+ *
+ * So this is the only socket test in the suite, and it is here deliberately: the failure it
+ * guards against — one client's stream desynchronising from a shared buffer — is invisible
+ * to every other check and would reach players as a silent disconnect at full population.
+ *
+ * It runs the server's OWN perMessageDeflate options against three real clients, and it
+ * asserts the extension actually negotiated FIRST, because a run where it did not would pass
+ * every other assertion here while testing nothing.
+ *
+ * It also covers the mixed stream the send-site threshold produces (see `COMPRESS_THRESHOLD`
+ * in server/index.ts): small frames go out uncompressed while the window is live, which is
+ * legal per RFC 7692 but is the kind of legal that wants proving on a real decoder.
+ */
+{
+  const { WebSocketServer, WebSocket: WSClient } = await import('ws');
+  const DEFLATE_OPTS = {
+    zlibDeflateOptions: { level: 1, windowBits: 15, memLevel: 8 },
+    serverMaxWindowBits: 15,
+    serverNoContextTakeover: false,
+    clientNoContextTakeover: true,
+    threshold: 1024,
+    concurrencyLimit: 20,
+  };
+  const THRESHOLD = 1024;
+  const N_CLIENTS = 3;
+
+  // a plausible broadcast stream: big repetitive snapshot-shaped frames (which is where the
+  // context window earns its keep) interleaved with the small control messages that now go
+  // out uncompressed
+  const frames: string[] = [];
+  for (let i = 0; i < 40; i++) {
+    if (i % 4 === 0) {
+      frames.push(JSON.stringify({ t: 'pong', ts: 1_700_000_000_000 + i }));
+    } else {
+      frames.push(
+        JSON.stringify({
+          t: 'snapshot',
+          serverTick: i,
+          w: { robots: Array.from({ length: 4 }, (_, r) => ({ id: r, x: r * 11.5 + i * 0.25, y: -r * 7.25 + i * 0.5, h: (i * 0.01) % 6.28, vx: 1.5, vy: -0.5 })) },
+          balls: { order: Array.from({ length: 60 }, (_, b) => b), upd: Array.from({ length: 60 }, (_, b) => ({ id: b, x: b * 2.1 - 60, y: b * 1.7 - 40, k: 'ground' })) },
+        }),
+      );
+    }
+  }
+  const rawBytes = frames.reduce((n, s) => n + Buffer.byteLength(s), 0);
+
+  const wss = new WebSocketServer({ port: 0, perMessageDeflate: DEFLATE_OPTS });
+  /** every socket this block opened, on both ends. ⚠️ `wss.close(cb)` closes the LISTENER and
+   *  then waits for the existing connections to end, so leaving the clients open never calls
+   *  back and the whole suite hangs after its last check — with every check already printed,
+   *  which is exactly how it looks like something else went wrong. */
+  const opened: { terminate: () => void }[] = [];
+  const result = await new Promise<{
+    ok: boolean;
+    why: string;
+    extensions: string[];
+    received: string[][];
+    wire: number;
+  }>((resolve) => {
+    const timer = setTimeout(() => resolve({ ok: false, why: 'timed out', extensions: [], received: [], wire: 0 }), 15_000);
+    wss.on('listening', () => {
+      const addr = wss.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      const received: string[][] = Array.from({ length: N_CLIENTS }, () => []);
+      const extensions: string[] = [];
+      let wire = 0;
+      let done = 0;
+
+      const finish = (ok: boolean, why: string): void => {
+        clearTimeout(timer);
+        resolve({ ok, why, extensions, received, wire });
+      };
+
+      const serverSockets: import('ws').WebSocket[] = [];
+      wss.on('connection', (sock) => {
+        serverSockets.push(sock);
+        opened.push(sock);
+        if (serverSockets.length < N_CLIENTS) return;
+        // EVERY recipient is handed the SAME string object — the encode-once path.
+        for (const s of frames) {
+          const compress = s.length >= THRESHOLD;
+          for (const sock2 of serverSockets) sock2.send(s, { compress });
+        }
+      });
+
+      for (let i = 0; i < N_CLIENTS; i++) {
+        const c = new WSClient(`ws://127.0.0.1:${port}`, { perMessageDeflate: true });
+        opened.push(c);
+        const mine = i;
+        c.on('open', () => {
+          extensions[mine] = c.extensions;
+        });
+        c.on('message', (d) => {
+          received[mine].push(String(d));
+          if (received[mine].length !== frames.length) return;
+          // count what actually crossed the socket for client 0 only — one sample is
+          // enough to tell "the extension is doing something" from "it is not"
+          if (mine === 0) {
+            const sock = (c as unknown as { _socket?: { bytesRead?: number } })._socket;
+            wire = sock?.bytesRead ?? 0;
+          }
+          done++;
+          if (done === N_CLIENTS) finish(true, '');
+        });
+        c.on('error', (e) => finish(false, String(e)));
+      }
+    });
+  });
+
+  check('deflate: the three-client broadcast harness completed', result.ok, result.why);
+  if (result.ok) {
+    const negotiated = result.extensions.filter((e) => (e ?? '').includes('permessage-deflate')).length;
+    check(
+      'deflate: permessage-deflate actually negotiated on every client (or the rest of this block proves nothing)',
+      negotiated === N_CLIENTS,
+      `${negotiated}/${N_CLIENTS}: ${result.extensions.join(' | ')}`,
+    );
+    let mismatch = '';
+    for (let i = 0; i < N_CLIENTS && !mismatch; i++) {
+      if (result.received[i].length !== frames.length) {
+        mismatch = `client ${i} received ${result.received[i].length} of ${frames.length}`;
+        break;
+      }
+      for (let f = 0; f < frames.length; f++) {
+        if (result.received[i][f] !== frames[f]) {
+          mismatch = `client ${i}, frame ${f}`;
+          break;
+        }
+      }
+    }
+    check(
+      'deflate: ONE encoded string sent to three sockets arrives byte-identical on all three',
+      !mismatch,
+      mismatch,
+    );
+    // the last frame of each client must match the last frame sent, which is the check that
+    // a per-socket window drifting out of step would break (an early frame can be right
+    // while the history diverges later)
+    check(
+      'deflate: the LAST frame is intact on every client (a per-socket window never drifted)',
+      result.received.every((r) => r[r.length - 1] === frames[frames.length - 1]),
+    );
+    check(
+      'deflate: the stream really was compressed on the wire (not silently passed through)',
+      result.wire > 0 && result.wire < rawBytes * 0.6,
+      `${result.wire} wire vs ${rawBytes} raw`,
+    );
+  }
+  for (const sock of opened) {
+    try {
+      sock.terminate();
+    } catch {
+      /* already gone */
+    }
+  }
+  await new Promise<void>((r) => wss.close(() => r()));
+}
+
+// ---- practice REPLAY SAVE POLICY (src/replaySavePolicy.ts) ---------------------
+// Practice used to be kept at exactly one moment — the match reaching `post` — so a driver
+// who ran a cycle and hit RESET, or who left the screen, had nothing to show for it. The rule
+// now is: a completed run is always kept, and an ABANDONED one is kept if it carries at least
+// `PRACTICE_SAVE_MIN_S` of DRIVING, which is the floor that stops a start-and-instantly-reset
+// from pushing real runs off the end of a 10-deep list.
+//
+// The decision is a pure function precisely so it can be checked here; `GameController` needs
+// a DOM canvas and cannot be built in this process, so the WIRING is pinned the same way
+// `stepServer`'s failed-session guard is — by reading the real source. Both halves are needed:
+// the policy being right protects nothing if no exit path calls it.
+{
+  const dec = (drivenTicks: number, completed: boolean) =>
+    practiceSaveDecision({ drivenTicks, completed });
+
+  check(
+    'save policy: the floor is 15 s of driving',
+    PRACTICE_SAVE_MIN_S === 15,
+    `${PRACTICE_SAVE_MIN_S}`,
+  );
+  check(
+    'save policy: the tick floor is the second floor at SIM_DT',
+    PRACTICE_SAVE_MIN_TICKS === Math.round(PRACTICE_SAVE_MIN_S / SIM_DT) &&
+      PRACTICE_SAVE_MIN_TICKS === 900,
+    `${PRACTICE_SAVE_MIN_TICKS}`,
+  );
+
+  // a COMPLETED match is kept however short it is — it is a whole run, and the floor exists to
+  // filter accidental starts, which by definition never reach `post`
+  const done = dec(30, true);
+  check(
+    'save policy: a completed run is kept even at half a second',
+    done.keep === true && done.reason === 'completed',
+    `${done.reason}`,
+  );
+
+  // the floor itself is INCLUSIVE, and one tick under it is not
+  const atFloor = dec(PRACTICE_SAVE_MIN_TICKS, false);
+  const underFloor = dec(PRACTICE_SAVE_MIN_TICKS - 1, false);
+  check(
+    'save policy: an abandoned run AT the floor is kept',
+    atFloor.keep === true && atFloor.reason === 'long-enough',
+    `${atFloor.reason}`,
+  );
+  check(
+    'save policy: one tick under the floor is dropped',
+    underFloor.keep === false && underFloor.reason === 'too-short',
+    `${underFloor.reason}`,
+  );
+
+  // the spam case the floor is FOR: start, look away, reset
+  const spam = dec(Math.round(2 / SIM_DT), false);
+  check(
+    'save policy: a 2 s start-and-reset is dropped (the anti-spam case)',
+    spam.keep === false && spam.reason === 'too-short',
+  );
+  // and the case it must NOT eat: one scoring cycle, then reset
+  const cycle = dec(Math.round(22 / SIM_DT), false);
+  check(
+    'save policy: a 22 s cycle abandoned mid-match IS kept',
+    cycle.keep === true && cycle.reason === 'long-enough',
+  );
+
+  // quitting during the 4 s countdown records a log in which nothing ever moved. This is a
+  // DISTINCT reason from too-short, because it is not about length — there is nothing to watch.
+  const quiet = dec(0, false);
+  check(
+    'save policy: nothing driven is dropped as "nothing-driven", not "too-short"',
+    quiet.keep === false && quiet.reason === 'nothing-driven',
+    `${quiet.reason}`,
+  );
+  // This check used to assert the OPPOSITE, and asserting it is what let the bug ship: the
+  // nothing-driven guard sat ahead of the completed branch, so a completed run with no driven
+  // tick was discarded by code whose own documentation promised completed runs are always
+  // kept. A completed match is a whole match; the floor exists to filter accidental STARTS,
+  // and an accidental start never reaches `post`.
+  const doneQuiet = dec(0, true);
+  check(
+    'save policy: a COMPLETED run is kept even with zero driven ticks',
+    doneQuiet.keep === true && doneQuiet.reason === 'completed',
+    `${doneQuiet.reason}`,
+  );
+
+  // it is fed from a counter, but it is the boundary of a module and a NaN must not become a
+  // kept run with a NaN length
+  check(
+    'save policy: a NaN tick count on an ABANDONED run is dropped, not kept',
+    dec(Number.NaN, false).keep === false && dec(Number.NaN, false).reason === 'nothing-driven',
+  );
+  // the ORDER of the two branches, pinned directly — this is the bug that shipped
+  check(
+    'save policy: completed is decided BEFORE the nothing-driven guard',
+    dec(0, true).reason === 'completed' && dec(0, false).reason === 'nothing-driven',
+  );
+  check(
+    'save policy: a negative tick count is dropped, not kept',
+    dec(-500, false).keep === false,
+  );
+
+  // the reported length is what copy and logging read
+  check(
+    'save policy: drivenSeconds is ticks x SIM_DT',
+    Math.abs(dec(1200, false).drivenSeconds - 20) < 1e-9,
+    `${dec(1200, false).drivenSeconds}`,
+  );
+
+  // ---- the WIRING in src/game.ts -----------------------------------------------
+  // GameController cannot be constructed here (it needs a canvas), and every one of these is a
+  // SILENT failure: a missing call loses runs exactly as before, with nothing red anywhere.
+  const gsrc = readFileSync('src/game.ts', 'utf8');
+  const harvestCalls = (gsrc.match(/this\.harvestPracticeRun\(/g) ?? []).length;
+  check(
+    'save policy: game.ts routes all THREE exits through the harvest (post/restart/dispose)',
+    harvestCalls === 3,
+    `${harvestCalls} call sites`,
+  );
+  check(
+    'save policy: the post branch harvests as COMPLETED',
+    gsrc.includes('this.harvestPracticeRun(true)'),
+  );
+
+  // ONE exit point: the recorder may only be finished inside the harvest, or a second call site
+  // is a second policy.
+  const finishCalls = (gsrc.match(/\.finish\(\)/g) ?? []).length;
+  check(
+    'save policy: the recorder is finished in exactly one place',
+    finishCalls === 1,
+    `${finishCalls} finish() calls`,
+  );
+  const harvestBody = gsrc.slice(gsrc.indexOf('private harvestPracticeRun('));
+  check(
+    'save policy: that one place is harvestPracticeRun, and it consults the policy',
+    harvestBody.indexOf('recorder.finish()') > 0 &&
+      harvestBody.indexOf('practiceSaveDecision(') > 0 &&
+      harvestBody.indexOf('practiceSaveDecision(') < harvestBody.indexOf('this.onPracticeRun?.'),
+  );
+
+  // ORDER inside restart(): the harvest scores `this.world`, so it must run while that is still
+  // the world the run happened in. After `makeWorld()` it would score a fresh field.
+  const restartBody = gsrc.slice(gsrc.indexOf('  restart(): void {'));
+  const restartHarvest = restartBody.indexOf('this.harvestPracticeRun(false)');
+  const restartRebuild = restartBody.indexOf('this.world = this.makeWorld()');
+  check(
+    'save policy: restart harvests BEFORE it rebuilds the world',
+    restartHarvest > 0 && restartRebuild > 0 && restartHarvest < restartRebuild,
+    `harvest@${restartHarvest} rebuild@${restartRebuild}`,
+  );
+
+  // dispose used not to touch the recorder at all — that is the silent loss this fixes.
+  const disposeBody = gsrc.slice(gsrc.indexOf('  dispose(): void {'));
+  check(
+    'save policy: dispose harvests the run instead of dropping it',
+    disposeBody.indexOf('this.harvestPracticeRun(false)') > 0,
+  );
+
+  // the counter must measure DRIVING, not recording: `pre` and `transition` are recorded but
+  // undrivable, and counting them would let a 12 s run over the line on the countdown alone.
+  check(
+    'save policy: drivenTicks counts only recorded ticks the robots were enabled on',
+    gsrc.includes('if (this.recorder && robotsEnabled(this.world)) this.drivenTicks++;'),
+  );
+  const resets = (gsrc.match(/this\.drivenTicks = 0;/g) ?? []).length;
+  check(
+    'save policy: drivenTicks is reset on start, on restart and in the harvest',
+    resets === 3,
+    `${resets} resets`,
+  );
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
