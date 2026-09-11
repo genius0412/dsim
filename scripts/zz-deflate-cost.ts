@@ -37,6 +37,7 @@ import {
   type LobbyPlayer,
 } from '../src/net/protocol';
 import { generateRoomCode } from '../src/net/roomCode';
+import * as C from '../src/config';
 import { DEFAULT_SPEC, DEFAULT_ASSISTS } from '../src/sim/spawn';
 import type { Alliance, GameId, RobotCommand } from '../src/types';
 
@@ -54,6 +55,10 @@ const PORT = Number(flag('port', '8791'));
  *  flags. Rates vary by region and an allowance is included, so read the dollars as the
  *  RATIO between the two rows rather than as an invoice. */
 const USD_PER_GB = Number(flag('usdpergb', '0.02'));
+/** Lowest emitted input rate a measurement window may run at before the run is thrown out.
+ *  58 rather than 60 so an ordinary GC pause or a scheduling hitch does not fail a good run,
+ *  while the ~32 Hz a raw `setInterval(1000/60)` produces on Windows can never pass. */
+const DRIVE_HZ_MIN = Number(flag('minhz', '58'));
 
 interface Seat {
   alliance: Alliance;
@@ -315,20 +320,60 @@ async function runShape(url: string, shape: Shape, offer: boolean): Promise<Resu
     throw new Error(`${shape.id}: match never started`);
   }
 
-  // drive at 60 Hz throughout, but open the window SETTLE seconds in, so the keyframe
-  // re-prime and the countdown fall outside it and steady state is what gets priced
-  const t0 = Date.now();
+  // Drive at 60 Hz throughout, but open the window SETTLE seconds in, so the keyframe
+  // re-prime and the countdown fall outside it and steady state is what gets priced.
+  //
+  // ⚠️ THE INTERVAL IS 5ms WITH AN ACCUMULATOR, NOT `setInterval(1000/60)`, AND THAT IS A
+  // WINDOWS FIX — the same one `scripts/loadtest.ts` documents at its own ticker. Windows'
+  // default timer granularity is 15.625ms and Node does not raise it, so a 16.67ms request
+  // rounds UP to two ticks (~31ms) and the probe drives at ~32 Hz while reporting a 60 Hz
+  // room. That silently halves the upstream rate, halves how often the server has a fresh
+  // command to fold into a snapshot, and prices a room nobody is playing. A 5ms request
+  // rounds up to ONE 15.6ms tick, which is above 60 Hz, so the accumulator below can emit a
+  // true 60. On Linux the 5ms is honoured and the accumulator does the same job.
+  //
+  // And it is ASSERTED rather than reported, because this probe exists to produce numbers
+  // somebody will quote in a capacity document: a run that under-drove is not a slightly
+  // soft measurement, it is a measurement of a different thing, and it must not be able to
+  // print a table. Only the ticks inside the MEASUREMENT window are counted — the settle
+  // period is allowed to be ragged while the match starts.
+  let last = Date.now();
+  let acc = 0;
+  let tSec = 0;
+  let emitted = 0;
+  let counting = false;
   const driver = setInterval(() => {
-    const t = (Date.now() - t0) / 1000;
-    for (const p of probes) p.tick(t);
-  }, 1000 / 60);
+    const now = Date.now();
+    acc += (now - last) / 1000;
+    last = now;
+    if (acc > 0.25) acc = 0.25; // never fast-forward more than a quarter second
+    let n = 0;
+    while (acc >= C.SIM_DT && n < 8) {
+      tSec += C.SIM_DT;
+      for (const p of probes) p.tick(tSec);
+      if (counting) emitted++;
+      acc -= C.SIM_DT;
+      n++;
+    }
+  }, 5);
 
   await sleep(SETTLE * 1000);
   for (const p of probes) p.markStart();
   const wStart = Date.now();
+  counting = true;
   await sleep(SECS * 1000);
   const elapsed = (Date.now() - wStart) / 1000;
+  counting = false;
   clearInterval(driver);
+  const hz = emitted / elapsed;
+  if (hz < DRIVE_HZ_MIN) {
+    for (const p of probes) p.close();
+    throw new Error(
+      `${shape.id}: the driver only reached ${hz.toFixed(1)} Hz (need >= ${DRIVE_HZ_MIN}). ` +
+        'The room was under-driven, so these bytes price a quieter match than the one claimed. ' +
+        'Check the platform timer granularity before trusting any earlier run.',
+    );
+  }
 
   const ms = probes.map((p) => p.measure(elapsed));
   const negotiated = probes[0].extensions;
