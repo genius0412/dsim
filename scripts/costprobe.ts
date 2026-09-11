@@ -17,6 +17,13 @@
  *   · bytes/snapshot   — the exact `{t:'snapshot'}` frame the server broadcasts.
  *   · KiB/s per CLIENT — the room sends that frame to each client SEPARATELY, so a 2v2
  *                        room's egress is 4x this. Egress is billed; egress IS the bill.
+ *                        Reported RAW and on the WIRE: `server/index.ts` runs
+ *                        permessage-deflate WITH CONTEXT TAKEOVER, and consecutive 30 Hz
+ *                        snapshots are nearly identical to each other, so the window eats
+ *                        most of the frame. Egress below is priced on the WIRE column.
+ *                        For the wire measured at the TCP layer against the real server
+ *                        (which is the authority; this is a zlib model of it), see
+ *                        `scripts/zz-deflate-cost.ts`.
  *   · replay KiB       — every persisted match writes one replay row (`server/persist.ts`
  *                        calls `saveReplay` unconditionally), so this is Postgres growth
  *                        per match — the one line here that COMPOUNDS day over day.
@@ -27,6 +34,7 @@
  *
  * THE RATES ARE A SNAPSHOT, stamped below. Re-check them before quoting a number.
  */
+import { constants, createDeflateRaw } from 'node:zlib';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { simModuleFor } from '../src/games/sim';
 import { DEFAULT_SPEC, PLAYER_ASSISTS, coerceSpec } from '../src/sim/spawn';
@@ -101,10 +109,44 @@ const SCENARIOS: Scenario[] = [
 interface Measured {
   cores: number;
   snapBytes: number;
-  downPerClient: number; // bytes/s
+  downPerClient: number; // bytes/s, raw JSON
+  wirePerClient: number; // bytes/s, after permessage-deflate
   upPerClient: number; // bytes/s
   replayKib: number;
   elements: number;
+}
+
+/**
+ * What one client's snapshot stream costs ON THE WIRE, modelling the server's
+ * permessage-deflate settings: one deflate context per CONNECTION (context takeover —
+ * `serverNoContextTakeover: false`, the load-bearing line in `server/index.ts`), level 1,
+ * a 15/8 window, and a sync flush at each message boundary, which is what the extension
+ * does per RFC 7692. Frames under the server's `threshold` are sent uncompressed.
+ *
+ * Run AFTER the sim loop, never inside it: zlib runs on the libuv threadpool and
+ * `process.cpuUsage()` counts every thread, so compressing inline would land in the
+ * cores/room figure and overstate what a room's physics costs.
+ */
+const THRESHOLD = 1024; // mirrors perMessageDeflate.threshold in server/index.ts
+async function wireBytes(frames: string[]): Promise<number> {
+  const z = createDeflateRaw({ level: 1, windowBits: 15, memLevel: 8 });
+  let total = 0;
+  z.on('data', (c: Buffer) => {
+    total += c.length;
+  });
+  for (const f of frames) {
+    const buf = Buffer.from(f, 'utf8');
+    if (buf.length < THRESHOLD) {
+      total += buf.length; // below threshold the server sends it uncompressed
+      continue;
+    }
+    z.write(buf);
+    await new Promise<void>((res) => z.flush(constants.Z_SYNC_FLUSH, res));
+    // the extension drops each sync-flush block's trailing 00 00 FF FF before framing it
+    total -= 4;
+  }
+  await new Promise<void>((res) => z.end(() => res()));
+  return total;
 }
 
 /**
@@ -130,7 +172,7 @@ const command = (tick: number, seat: number): RobotCommand => {
   } as RobotCommand;
 };
 
-function measure(s: Scenario): Measured {
+async function measure(s: Scenario): Promise<Measured> {
   const mod = simModuleFor(s.game);
   const setups: RobotSetup[] = [];
   for (let i = 0; i < s.robots; i++) {
@@ -148,6 +190,8 @@ function measure(s: Scenario): Measured {
   const rec = new ReplayRecorder(424242, setups, 'match', s.game);
 
   let baseline: Map<number, Artifact> | null = null;
+  /** every snapshot frame, deflated after the CPU window closes (see `wireBytes`) */
+  const frames: string[] = [];
   let snapBytes = 0;
   let snaps = 0;
   let upBytes = 0;
@@ -162,17 +206,16 @@ function measure(s: Scenario): Measured {
     // SNAPSHOT_INTERVAL is 2 in server/room.ts, i.e. 30Hz
     if (world.tick % 2 === 0) {
       const delta = encodeBallDelta(baseline, world.balls);
-      snapBytes += Buffer.byteLength(
-        JSON.stringify({
-          t: 'snapshot',
-          serverTick: world.tick,
-          w: slimWorld(world),
-          balls: delta,
-          cmds: world.robots.map((r) => quantizeCommand(local.get(r.id) ?? command(world.tick, 0))),
-          ackInputTick: world.tick,
-        }),
-        'utf8',
-      );
+      const frame = JSON.stringify({
+        t: 'snapshot',
+        serverTick: world.tick,
+        w: slimWorld(world),
+        balls: delta,
+        cmds: world.robots.map((r) => quantizeCommand(local.get(r.id) ?? command(world.tick, 0))),
+        ackInputTick: world.tick,
+      });
+      frames.push(frame);
+      snapBytes += Buffer.byteLength(frame, 'utf8');
       snaps++;
       baseline = new Map(world.balls.map((b) => [b.id, b] as const));
     }
@@ -184,10 +227,12 @@ function measure(s: Scenario): Measured {
   }
   const cpu = process.cpuUsage(cpu0);
   const wallS = TICKS * C.SIM_DT;
+  const wire = await wireBytes(frames);
   return {
     cores: (cpu.user + cpu.system) / 1e6 / wallS,
     snapBytes: snapBytes / snaps,
     downPerClient: snapBytes / wallS,
+    wirePerClient: wire / wallS,
     upPerClient: upBytes / wallS,
     replayKib: JSON.stringify(rec.finish()).length / 1024,
     elements: world.balls.length,
@@ -202,20 +247,21 @@ const i = (v: number): string => Math.round(v).toLocaleString('en-US');
 await initPhysics();
 
 console.log(`\nMEASURED — ${TICKS} ticks (${n(TICKS * C.SIM_DT, 0)}s of match) per scenario, this machine\n`);
-console.log('  scenario                    cores/room   B/snap   down/client   up/client     replay');
+console.log('  scenario                    cores/room   B/snap    raw/client   wire/client   up/client    replay');
 const results = new Map<string, Measured>();
 for (const s of SCENARIOS) {
-  const m = measure(s);
+  const m = await measure(s);
   results.set(s.key, m);
   console.log(
     `  ${s.label.padEnd(26)}${n(m.cores, 4).padStart(10)}   ${i(m.snapBytes).padStart(6)}   ` +
-      `${`${n(m.downPerClient / 1024, 1)} KiB/s`.padStart(11)}   ${`${n(m.upPerClient / 1024, 1)} KiB/s`.padStart(9)}   ` +
-      `${`${i(m.replayKib)} KiB`.padStart(8)}`,
+      `${`${n(m.downPerClient / 1024, 1)} KiB/s`.padStart(11)}   ${`${n(m.wirePerClient / 1024, 1)} KiB/s`.padStart(11)}   ` +
+      `${`${n(m.upPerClient / 1024, 1)} KiB/s`.padStart(9)}   ${`${i(m.replayKib)} KiB`.padStart(8)}`,
   );
 }
 console.log(
   `\n  A room sends its frame to EACH client separately, so a 2v2 room's egress is 4x the\n` +
-    `  per-client column. Ground elements at the end: ` +
+    `  WIRE column. RAW is what a new per-tick field costs before the deflate window hides it.\n` +
+    `  Ground elements at the end: ` +
     SCENARIOS.map((s) => `${s.key} ${results.get(s.key)!.elements}`).join(', '),
 );
 
@@ -227,8 +273,9 @@ const nSolo = CCU * SOLO_SHARE;
 const nV2 = CCU * (1 - SOLO_SHARE);
 const rooms = nSolo + nV2 / 4;
 const cores = nSolo * solo.cores + (nV2 / 4) * v2.cores;
-const egressBs = nSolo * solo.downPerClient + nV2 * v2.downPerClient;
+const egressBs = nSolo * solo.wirePerClient + nV2 * v2.wirePerClient;
 const egressGbDay = (egressBs * 86400) / 1e9;
+const rawGbDay = ((nSolo * solo.downPerClient + nV2 * v2.downPerClient) * 86400) / 1e9;
 const vcpu = cores / UTIL;
 
 const flyCompute = vcpu * (RATES.flyVcpuMonth / DAYS_PER_MONTH);
@@ -248,7 +295,10 @@ const peakDay = flyCompute + 0.4 * (flyEgress + neonStorage + vercelDay) + 0.6 *
 console.log(`\nEXTRAPOLATED — ${i(CCU)} concurrent SERVER-CONNECTED players, ${n(SOLO_SHARE * 100, 0)}% in solo record runs\n`);
 console.log(`  rooms          ${i(nSolo)} solo + ${i(nV2 / 4)} 2v2 = ${i(rooms)}`);
 console.log(`  sim load       ${n(cores, 1)} cores -> ${i(vcpu)} dedicated vCPU at ${n(UTIL * 100, 0)}% utilisation`);
-console.log(`  egress         ${n(egressBs / 1e6, 1)} MB/s = ${i(egressGbDay)} GB/day`);
+console.log(
+  `  egress         ${n(egressBs / 1e6, 1)} MB/s = ${i(egressGbDay)} GB/day on the wire ` +
+    `(${i(rawGbDay)} GB/day raw, i.e. deflate is saving $${i((rawGbDay - egressGbDay) * RATES.flyEgressGb)}/day)`,
+);
 console.log(`  matches        ${i(matchesDay)}/day -> ${i(replayGbDay)} GB/day of replay rows\n`);
 console.log(`  Fly compute    $${i(flyCompute)}/day`);
 console.log(`  Fly egress     $${i(flyEgress)}/day`);
@@ -262,7 +312,9 @@ console.log(`  ${'-'.repeat(46)}`);
 console.log(`  TOTAL          $${i(total)}/day, sustained 24h`);
 console.log(`                 $${i(peakDay)}/day if ${i(CCU)} is the PEAK and the day averages 40% of it\n`);
 console.log(
-  `  Egress is ${n(flyEgress / flyCompute, 1)}x compute, because a snapshot is the full world as JSON at\n` +
-    `  30Hz. Halving the snapshot rate, or a binary codec, moves the bill further than any\n` +
-    `  machine size does — re-run this after either.\n`,
+  `  Egress is ${n(flyEgress / flyCompute, 1)}x compute on the wire; uncompressed it would be ` +
+    `${n((rawGbDay * RATES.flyEgressGb) / flyCompute, 1)}x. permessage-deflate\n` +
+    `  (server/index.ts, with context takeover) is what makes this shape affordable — the wire\n` +
+    `  column is a zlib MODEL of it and runs optimistic against the TCP-level measurement in\n` +
+    `  scripts/zz-deflate-cost.ts, which is the authority. Take the raw column as the ceiling.\n`,
 );
