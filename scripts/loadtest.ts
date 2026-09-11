@@ -83,6 +83,7 @@ interface Opts {
   json: string;
   tokens: string[];
   quiet: boolean;
+  idle: boolean;
 }
 
 function parseArgs(argv: string[]): Opts {
@@ -116,6 +117,7 @@ function parseArgs(argv: string[]): Opts {
     json: get('json', '') as string,
     tokens,
     quiet: has('quiet'),
+    idle: has('idle'),
   };
 }
 
@@ -150,7 +152,17 @@ const r2 = (n: number): number => Math.round(n * 100) / 100;
  * real game never sees. Each bot gets its own phase offsets so a room full of them does
  * not move in lockstep (which would also be unrealistically cheap: identical robots
  * collide identically). */
-function driverCommand(seed: number, t: number): RobotCommand {
+const ZERO_DRIVE: RobotCommand = {
+  driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0,
+  intake: false, fire: false, catalyst: false, fling: false, driveMode: false,
+};
+
+function driverCommand(seed: number, t: number, idle: boolean): RobotCommand {
+  // `--idle` parks every robot. It is a CONTROL, not a mode anyone should quote a
+  // capacity from: the difference between this and the driving bot is the cost of the
+  // ball solve, the intake scan, the shot and the possession clocks, i.e. of the game
+  // actually being played. It exists to explain a per-room number measured elsewhere.
+  if (idle) return ZERO_DRIVE;
   const a = seed * 0.7391;
   return {
     driveX: Math.sin(t * 0.9 + a) * 0.8,
@@ -224,6 +236,7 @@ class Bot {
     private readonly config: RoomConfig,
     private readonly player: Omit<LobbyPlayer, 'clientId'>,
     private readonly seed: number,
+    private readonly idle: boolean,
     private readonly authToken?: string,
   ) {}
 
@@ -349,7 +362,7 @@ class Bot {
    *  step the local world with it exactly as `stepServer` does */
   tick(tSec: number): void {
     if (!this.inMatch) return;
-    const cmd = driverCommand(this.seed, tSec);
+    const cmd = driverCommand(this.seed, tSec, this.idle);
     this.sendTick++;
     this.send({
       t: 'input',
@@ -514,7 +527,7 @@ async function main(): Promise<void> {
   const totalSeats = plans.reduce((n, p) => n + p.seats.length, 0);
   log(
     `[loadtest] ${plans.length} rooms / ${totalSeats} clients · shape=${o.shape} game=${o.game} ` +
-      `· ${o.secs}s window · ramp ${o.ramp}s · predict ${o.predict} · ${o.url}`,
+      `· ${o.secs}s window · ramp ${o.ramp}s · predict ${o.predict}${o.idle ? ' · IDLE robots (control run)' : ''} · ${o.url}`,
   );
 
   const bots: Bot[] = [];
@@ -535,6 +548,7 @@ async function main(): Promise<void> {
         p.config,
         makePlayer(`Bot-${seed}`, seat.alliance, seat.startIndex),
         seed,
+        o.idle,
       );
       if (predictLeft > 0 && s === 0) {
         b.enablePrediction();
