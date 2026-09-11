@@ -323,6 +323,49 @@ function coresInUse(): number {
 const MACHINE = process.env.FLY_MACHINE_ID || REGION || 'local';
 
 /**
+ * ADMISSION CONTROL — the maximum number of rooms this machine will HOST.
+ *
+ * There was no limit at all: every `join` for an unknown code created a room, so a
+ * busy region did not degrade, it collapsed — and it collapsed for everyone already
+ * playing on that machine, not just for the arrival that tipped it over. That is the
+ * worst possible failure shape, because the server has no back pressure of its own:
+ * past saturation `Room.startLoop` SHEDS simulation time rather than consuming more
+ * CPU (it caps catch-up at 8 ticks and clamps the accumulator at 0.25 s), so the
+ * machine never looks overloaded on CPU while every match on it stutters. Measured:
+ * `cores` flat at 0.80-0.89 from 8 rooms to 48 while the snapshot gap p50 went 35 ms
+ * to 248 ms (docs/capacity.md §0).
+ *
+ * Refusing the 25th room is a bad experience for one person. Accepting it is a bad
+ * experience for everyone in the other 24.
+ *
+ * ⚠️ THE CAP IS A ROOM COUNT, NOT A LOAD READING, AND THAT IS DELIBERATE FOR NOW.
+ * Event-loop lag is the honest saturation signal and `/api/perf` already reports it,
+ * but `loopDelay` is a since-reset histogram whose percentiles move too slowly to
+ * admit or refuse a single connection on, and `coresInUse()` cannot be called here at
+ * all — it RESETS its sampling window, so polling it would corrupt the figure
+ * `/api/perf` reports. A lag-driven cap is the follow-up once there are real Linux
+ * numbers to calibrate against (see docs/capacity.md §0: none of the latency
+ * thresholds are measurable on the Windows dev box).
+ *
+ * 24 is deliberately well ABOVE the measured redline (~13 driven DECODE rooms per
+ * core, ~10 with margin) rather than at it. This is a runaway guard, not a tuning
+ * knob: set it near the redline and a machine refuses players while it still has
+ * headroom for the many rooms that are parked rather than actively driven, which cost
+ * 0.031 cores instead of 0.075.
+ *
+ * 0 disables the cap. Off by default OFF Fly, because the load harness routinely runs
+ * 48-room sweeps against a local server and a cap would silently truncate them.
+ */
+const MAX_ROOMS = ((): number => {
+  const raw = process.env.MAX_ROOMS;
+  if (raw !== undefined && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  }
+  return REGION ? 24 : 0;
+})();
+
+/**
  * GET /api/presence aggregates presence across ALL regions' machines (each machine
  * only knows its own sockets). This is the most-called endpoint on the site — every
  * open tab polls it every 8s for the online chip and every 20s for the admin-notice
@@ -1283,6 +1326,10 @@ const httpServer = createServer((req, res) => {
       uptimeS: Math.round(process.uptime()),
       cores: Math.round(coresInUse() * 1000) / 1000,
       rooms: live.length,
+      // the admission cap and whether it is currently biting. An operator debugging
+      // "players say the region is full" needs both numbers in one place.
+      maxRooms: MAX_ROOMS,
+      admitting: MAX_ROOMS === 0 || rooms.size < MAX_ROOMS,
       players: onlineCount,
       rssMb: Math.round(process.memoryUsage().rss / 1048576),
       // HEAP, not just RSS. RSS alone cannot distinguish "V8 is holding freed pages it
@@ -1644,6 +1691,22 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       ...(msg.config ?? DEFAULT_ROOM_CONFIG),
       game: msg.config?.game === 'chain' ? 'chain' : 'decode',
     };
+    if (!r && MAX_ROOMS > 0 && rooms.size >= MAX_ROOMS) {
+      // AT CAPACITY. Refuse to HOST anything new; joining a room that already exists
+      // here is always allowed, because that player's partner is already on this
+      // machine and bouncing them would break a room that is under way.
+      //
+      // `code` lets a new client offer another region — the same room code is joinable
+      // elsewhere, so this is a "try over there", not a dead end. `message` stays
+      // self-sufficient for every client that predates the field.
+      console.warn(`[admit] refused room ${code}: at cap (${rooms.size}/${MAX_ROOMS})`);
+      send({
+        t: 'error',
+        code: 'region_full',
+        message: 'This region is busy. Pick a different region and try again.',
+      });
+      return;
+    }
     if (!r) {
       r = new Room(
         code,

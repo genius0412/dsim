@@ -421,10 +421,30 @@ export interface LiveRoom {
 
 // ---- server → client --------------------------------------------------------
 
+/**
+ * Machine-readable reasons for a `t: 'error'`. Only the cases a client can ACT on are
+ * worth a code — everything else stays a plain message. Unknown codes must be treated
+ * as an ordinary error, so this list can grow without a capability gate.
+ */
+export type ErrorCode =
+  /** this machine is at its room cap — the same code can be joined elsewhere, so the
+   *  client should offer a different region rather than just reporting a failure */
+  | 'region_full';
+
 export type ServerMsg =
   | { t: 'welcome'; clientId: string }
   | { t: 'roster'; players: LobbyPlayer[]; hostId: string }
-  | { t: 'error'; message: string }
+  /**
+   * `message` is human-readable and every client since the first build shows it.
+   *
+   * `code` is OPTIONAL and machine-readable, added so the connection HUD can tell
+   * "this region is at capacity, try another" apart from the dozen other things that
+   * produce an error string. Adding an optional field to an existing message is the
+   * cheapest kind of protocol change: an older client destructures `message` and is
+   * completely unaffected, so this needs no `CLIENT_CAPS` gate. Keep it that way —
+   * `message` must stay self-sufficient, never "see code".
+   */
+  | { t: 'error'; message: string; code?: ErrorCode }
   // reply to a 'rejoin': ok ⇒ slot reclaimed (a snapshot follows); !ok ⇒ the
   // grace window lapsed / slot is gone, stop trying
   | { t: 'rejoined'; ok: boolean }
