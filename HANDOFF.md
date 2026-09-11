@@ -1,4 +1,158 @@
+# HANDOFF — 2026-09-11, fourth session (the external review, answered end to end and merged)
+
+Branch **`alpha`**, pushed. Both open feature PRs are **merged into it**: #39 `perf-load-v2`
+and #38 `lan-selfhost`. `npm test` **ALL PASS**, `npm run dbtest` **ALL PASS**,
+`npm run server:check` exit 0, `npm run build` `✓ built in 3.06s` — all four re-run on the
+merged trunk, not inherited from the branches. `SIM_VERSION` stays **2**; `BALANCE_VERSION`
+stays 4. **Nothing deployed.**
+
+## What this session was
+
+An external code review returned ~40 findings across five scopes with the verdict *request
+changes*. Every one was triaged, and the ones that were real were fixed on the branch that owns
+them: perf/server on `perf-load-v2`, LAN/security on `lan-selfhost`, game geometry on `biobuzz`,
+and two on `alpha` directly. Then both server branches were merged here.
+
+**Four findings did not survive contact with the code, and saying so is part of the work.** Each
+was checked against the source before being set aside, and the check is recorded where the code
+is, not only here.
+
+1. *"BIOBUZZ pollen still uses DECODE's 2.5in radius while the renderer draws 1.5in"* — the call
+   already passed `BB_POLLEN_R` to both `robotSolids` and `solveArtifacts`. The review read the
+   defaults in the signatures rather than the call site. A regression test now pins it, because
+   nothing did.
+2. *"Physics changed but `SIM_VERSION` remains 2"* — see below; this is branch policy, written
+   into the constant.
+3. *"Pin/support search can reach O(B³) with 60 pollen"* — `pinnedArtifacts` is imported by
+   `src/sim/world.ts` and by nothing else, so BIOBUZZ never reaches it. Recorded for the owner
+   rather than "fixed".
+4. *"Idle room resumes when one driver reconnects"* — the match clock PAUSES, it does not jump:
+   `phaseTimeLeft` counts down per tick and no tick runs while the room is frozen. The policy is
+   now written down in `startLoop`.
+
+## `SIM_VERSION` is NOT bumped, and that is the documented answer
+
+The review called this blocking. `src/config.ts` answers it at the constant: *"ALPHA HOLDS AT 2
+AND STAYS THERE. Alpha's whole divergence from main is ONE unreleased batch … Bump this again
+only when MAIN moves, or when alpha ships."* Bumping per-change inside one unreleased batch
+churns a number nobody can act on and invalidates alpha replays for nothing.
+
+What WAS missing is the batch's own contents list, which exists so the batch can be read without
+a git log: the owner's two friction commits (`a97f03c` 0.45 → 0.2, then `914bc1b` robot-on-robot
+0.15 with `PHYS_WALL_FRICTION` 0.35 → 0.65 compensating, holding robot↔wall at 0.40) had landed
+without an entry. Added. No constant touched.
+
+## The practice save policy had the bug the review said it had
+
+`practiceSaveDecision` tested the nothing-driven guard BEFORE `completed`, so a run that reached
+`post` with zero driven ticks came back `{keep: false, reason: 'nothing-driven'}` — the exact
+opposite of the module's own docstring. The old order justified itself with "a completed match
+cannot land here", which is an assumption about phase layout, not a guarantee.
+
+The smoke check covering it asserted the BUG (*'nothing driven is dropped even if the caller says
+completed'*), which is how it shipped. It now asserts the contract, and a second check pins the
+branch ORDER directly, so the two cannot be transposed again silently.
+
+## PR #39 — perf/server
+
+Room-leak guard on the async join path (a socket that opened, sent `join` and closed could burn a
+`MAX_ROOMS` slot per second, permanently); spectator caps and a 256 KB snapshot-backlog coalesce
+that also clears `snapPrimed` so the next frame is a keyframe; `WS_COMPRESS` parsed properly;
+inbound `maxPayload` and per-socket rate limits; `Number.isSafeInteger(tick) && tick >= 0`; the
+60 Hz deflate probe actually running at 60 Hz on Windows.
+
+**`threshold: 1024` was doing nothing, and the reason is in `ws`, not in us.** `ws` consults
+`_threshold` only inside a branch gated on the peer's no-context-takeover parameter
+(`node_modules/ws/lib/sender.js:371-383`), and this server runs `serverNoContextTakeover: false`
+deliberately — that line is the whole point of the extension here. The option stays (it is live
+if a peer asks for no-context-takeover) and the real decision moved to `write()`, the one place a
+frame reaches the socket, as `{ compress: s.length >= COMPRESS_THRESHOLD }`. Per-message RSV1 is
+what RFC 7692 allows.
+
+**A regression this PR itself introduced was found while testing it, and is the most user-visible
+thing in the whole session.** `Room.reattach` swapped only `c.send`, not `c.sendRaw`. Since
+`d32a2d7` — the encode-once commit — broadcasts and snapshots go through `sendRaw`, so a
+reconnecting player kept a closure over the socket they had just lost. That closure checks
+`readyState === OPEN`, so it fails SILENTLY: you get `welcome`, `rejoined` and one keyframe, then
+nothing forever, on a socket that looks healthy.
+
+## PR #38 — LAN self-hosting, undrafted and merged
+
+All four High findings fixed, and in three of them the obvious fix was the wrong one:
+
+- **The cloud JWT is stripped at the transport SEND boundary**, not at the two call sites that
+  attach one. Per-call-site is correct until somebody writes a third lobby message using `join`
+  as their example — and nothing would fail. `trustedFor` also asks "is this one of the CLOUD
+  servers this build was configured with", not "is this a LAN address", so an unclassified
+  destination gets the safe answer rather than the convenient one.
+- **`servableFile` canonicalises BOTH sides with `realpath`.** The lexical check proves what a
+  path spells, not where it leads, and `dist/` is built on the host's own laptop. Missing,
+  unreadable, broken-link and escaped all return the same `null`, so a 404 leaks nothing.
+- **`SERVE_CLIENT` without `LAN_MODE` now fails closed** — exit 1, naming the variable. Inferring
+  `LAN_MODE` from `SERVE_CLIENT` was rejected: the dangerous case is exactly the one where
+  somebody thought they were starting an ordinary server, and silently dropping the database out
+  from under a real deployment is a worse surprise than refusing to boot. `pool.ts` reads
+  `LAN_MODE` in its own module body, because ESM evaluates module bodies before any boot sequence
+  could scrub the environment.
+- **`matchId` is a capability, not a result field** — sent to the host socket alone as
+  `matchArchive`; `saveLanRun` scopes idempotency by host and `/api/lan` answers **409** to
+  anyone else, on both the existing-row path and the unique-violation race.
+
+Migration `0033` was amended in place rather than superseded, after confirming it is unreleased:
+`git ls-tree` finds it on `lan-selfhost` only, and on none of `main`, `alpha`, `perf-load-v2` or
+`biobuzz`. The file records that `migrate.ts` tracks by filename with **no checksum**, and says to
+add `0034` instead if it has shipped by the time anyone reads it.
+
+## Merge conflicts, and the one that would have passed silently
+
+Three merges, four conflicts, all of them additive. The one worth knowing about: merging `alpha`
+into `perf-load-v2`, both sides had appended a bare `{ … }` block to the end of `scripts/smoke.ts`.
+Keeping both is right — but the conflict region ended BEFORE this branch's closing brace, so that
+brace sat in shared trailing context and, with both blocks kept, closed the wrong one. The file
+ran off the end of itself (`esbuild`: `Unexpected end of file` at 17245).
+
+That one announced itself. **The one that would not have** is a resolution that silently dropped a
+block — the suite would still print `ALL PASS`. So each merge was verified by counting checks per
+area in the actual run, not by reading the diff. On the final LAN merge: deflate 5, save policy 21,
+archive 3, LAN_MODE 2, credentials 13, static 13, spectator 8, total **1425 PASS / 0 FAIL**.
+
+## State of every branch
+
+| branch | where it is |
+|---|---|
+| `main` | untouched, as always |
+| `alpha` | everything above, pushed. Not deployed. |
+| `perf-load-v2` | merged (#39). Safe to delete. |
+| `lan-selfhost` | merged (#38). Safe to delete. |
+| `biobuzz` | its own review pass, plus `alpha` merged in. Pushed. |
+| `biobuzz-field`, `biobuzz-robot` | fast-forwarded to `biobuzz`; both were pure ancestors. Ready for kickoff. |
+
+## Open — read before deploying or before kickoff
+
+1. **Nothing is deployed.** The server changes need `./scripts/fly-deploy.sh`, never a bare
+   `flyctl deploy` — `fly.toml` carries one `[[vm]]` size and a bare deploy would upsize every
+   satellite.
+2. **The LAN upload half has never run against a live cloud.** `/api/lan` is covered by `dbtest`
+   against PGlite; the 409 ownership path is proven at the repo layer, not end to end with two
+   real accounts. This is the feature's payload, so it is the gap that matters.
+3. **Nothing has been packaged** — `npm run dist` has not run since `server:bundle` was added.
+4. **The launcher's stop/start ordering has unit coverage for `childEnv` only.** Press Stop then
+   Host quickly on a real build before this reaches anyone.
+5. **Spectator caps and `SNAP_BACKLOG_BYTES` are plausible-crowd numbers, not measured ones.** No
+   Linux measurement of spectator cost exists; `docs/capacity.md` says so too.
+6. **Latency and resident memory under compression are still unmeasured on Linux.**
+7. **Six shared-physics observations are waiting for the owner** in
+   `docs/biobuzz/feedback/000-solver-observations.md` (items 10–15), including two found while
+   verifying the review rather than from it: pollen bounce is degraded to an effective `e` of
+   0.015–0.211 against a configured 0.68 because `bounceFirstContacts` is DECODE-only, and pollen
+   share `C.BALL_MASS` with 5" artifacts. **None of them was touched** — the owner owns physics,
+   and the day before kickoff is not when a shared solver changes.
+
+
 # HANDOFF — 2026-09-11 (external review of the Phase 0.5 merge: findings fixed)
+
+> ⚠️ SUPERSEDED ON THE PUSH LINE ONLY by the section above: `biobuzz` IS pushed (`54263eb`),
+> and `biobuzz-field` / `biobuzz-robot` are fast-forwarded to it. Everything else here stands.
 
 Branch **`biobuzz`** (worktree `dsim-biobuzz`), 5 commits on top of `6c31142`. **NOT pushed,
 not deployed, no PR.** `SIM_VERSION` and `BALANCE_VERSION` untouched. No physics constant was
