@@ -16,6 +16,7 @@ import {
 import type { LobbyPlayer } from '../src/net/protocol';
 import { generateRoomCode, isValidRoomCode, normalizeRoomCode } from '../src/net/roomCode';
 import { step } from '../src/sim/world';
+import { robotPenetration, robotSolids } from '../src/sim/artifactSolids';
 import { Keyboard } from '../src/input/keyboard';
 import { updatePenalties } from '../src/sim/penalties';
 import { aimSolution, robotInLaunchZone } from '../src/sim/robot';
@@ -103,6 +104,8 @@ import {
   TUNNEL_STRIP_LEN,
   LOAD_ZONE_SIZE,
   BALL_RADIUS,
+  BALL_BALL_RESTITUTION,
+  BALL_WALL_RESTITUTION,
   CLASSIFIER_W,
   RAIL_WANDER_AMP,
   ROBOT_HEIGHT,
@@ -111,6 +114,7 @@ import {
   BALANCE_VERSION,
   SIM_VERSION,
   INTAKE_PRESETS,
+  INTAKE_LIP,
   INTAKE_CATCH_LENIENCE,
   ROBOT_PRESETS,
   ROBOT_MAX_SIZE,
@@ -794,10 +798,11 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
  * The old hand-written drag SATURATED at three artifacts, because it bled a fixed fraction of
  * the approach speed per CONTACT and a chassis is three artifacts wide — 1 / 3 / 6 / 9
  * artifacts cost 9.9 / 18.5 / 18.6 / 18.7% of settled speed, i.e. flat past the front row.
- * The solve carries the mass BEHIND that row, so the answer now keeps growing: 10.1 / 19.2 /
- * 20.0 / 20.2%. Small, and it should be — a 0.2lb wiffle ball against a 23lb robot — which is
- * why `clumpDrag` survives on top of it as a stated FEEL constant. What is checked here is the
- * ORDERING, which is the part that is physics.
+ * For a while the answer seemed to keep growing past the front row (10.1 / 19.2 / 20.0 /
+ * 20.2%) and that was read as the solve carrying the mass behind it; it was a pin-test bug —
+ * see the check. Small, and it should be — a 0.2lb wiffle ball against a 23lb robot — which
+ * is why `clumpDrag` survives on top of it as a stated FEEL constant. What is checked here is
+ * the ORDERING of the front row, which is the part that is physics.
  */
 {
   const settled = (count: number): number => {
@@ -838,11 +843,23 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   };
   const [v0, v1, v3, v9] = [settled(0), settled(1), settled(3), settled(9)];
   const pct = (v: number) => 100 * (1 - v / v0);
+  /**
+   * ...AND THE ROWS BEHIND COST WHAT A KINEMATIC PUSH CAN FEEL, WHICH IS NOTHING. The growth
+   * this used to assert past the front row (19.2 -> 20.0 -> 20.2%) was not the solve carrying
+   * the mass behind: it was the pin test calling a deeply-overlapped FREE artifact pinned, with
+   * nothing behind it, and stalling the robot for a tick. A free clump is not support (see
+   * `pinnedArtifacts`), so a nine-clump and a three-clump now cost the same front row. Real
+   * physics agrees to within what a driver could feel: nine 0.2 lb balls are 1.8 lb of momentum
+   * once and 1.6 in/s^2 of rolling drag after, against a chassis that accelerates at 350. What
+   * is asserted is the front row: every artifact the bumper meets costs its stated drag, and
+   * three of them cost more than one (measured 9.6 / 28.0 / 28.0 with the bumper skin catching
+   * all three where the bare-surface test used to miss one).
+   */
   check(
-    'a bigger clump is heavier to push, and keeps getting heavier past the front row',
-    pct(v1) > 5 && pct(v3) > pct(v1) && pct(v9) > pct(v3),
+    'a bigger clump is heavier to push, by the row the bumper meets',
+    pct(v1) > 5 && pct(v3) > pct(v1) && pct(v9) >= pct(v3) - 0.5,
     `0/1/3/9 artifacts cost ${[v1, v3, v9].map((v) => pct(v).toFixed(1)).join('/')}% of ` +
-      `${v0.toFixed(1)} in/s (the hand-written drag was flat past 3: 9.9/18.5/18.7)`,
+      `${v0.toFixed(1)} in/s`,
   );
 }
 
@@ -870,6 +887,459 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
     `x ${startX.toFixed(1)} -> ${ball.pos.x.toFixed(1)}`,
   );
   check('robot drove on once the ball escaped', r.pos.y > 52, `y=${r.pos.y.toFixed(1)}`);
+}
+
+// ---- artifacts collide like balls --------------------------------------------------
+/**
+ * "The artifacts do not behave like a 2d collision." "Artifacts feel like they are stuck to
+ * each other or stuck to the wall. They don't leave their semi-linear formation they form
+ * when they come out of the gate. They don't disperse." Two defects, both in the artifact
+ * world's CONTACT MODEL rather than in any pass:
+ *
+ *  · 0.7 of in-plane friction on rotation-locked circles. A tangential impulse that spins a
+ *    real rolling ball had nowhere to go but the ball's translation, so a glancing hit sent
+ *    the struck ball off at 3 degrees where the contact normal was at 30, and a 45-degree
+ *    wall bounce kept a quarter of its along-wall speed. `PHYS_BALL_FRICTION` is 0.05 now.
+ *  · a 3.5in speculative look-ahead. Rapier closes a speculative gap as a velocity clip with
+ *    NO restitution and bounces whatever approach is left, so every ball-ball and ball-wall
+ *    hit landed at about a fifth of its set coefficient (0.14 for 0.68), at every speed, and
+ *    a ball rear-ending the one ahead merged with it instead of shoving it on. The look-ahead
+ *    is Rapier's default now and the chassis carries a contact SKIN instead.
+ *
+ * These pin the physical outcomes directly so neither can quietly come back. Every scene
+ * silences the human player (it collects from the audience corner) and parks the robot away.
+ */
+{
+  const quiet = (seed: number): World => {
+    const w = mkWorld('match', 'blue', seed);
+    startMatch(w);
+    w.match.phase = 'teleop';
+    for (const a of ['red', 'blue'] as const) {
+      w.humanPlayers[a].box = ['green', 'green', 'green', 'green', 'green', 'green'];
+      w.humanPlayers[a].nextPlaceAt = 1e9;
+    }
+    const r = w.robots[0];
+    r.pos = { x: 50, y: 50 };
+    r.heading = 0;
+    r.vel = { x: 0, y: 0 };
+    r.fieldCentric = false;
+    return w;
+  };
+  const place = (b: Artifact, x: number, y: number, vx: number, vy: number) => {
+    b.state = { kind: 'ground' };
+    b.pos = { x, y };
+    b.vel = { x: vx, y: vy };
+    b.z = 0;
+    b.vz = 0;
+  };
+  const spd = (b: Artifact) => hyp(b.vel.x, b.vel.y);
+
+  // restitution, head-on: the relative speed the tick before anything changed, against the
+  // separation three ticks after
+  const headOn = (v: number): { ball: number; wall: number } => {
+    const w = quiet(7);
+    w.balls.length = 2;
+    const [a, b] = w.balls;
+    place(a, 0, -30, v, 0);
+    place(b, 7, -30, 0, 0);
+    let hit = -1;
+    let approach = NaN;
+    let ball = NaN;
+    for (let i = 0; i < 120 && Number.isNaN(ball); i++) {
+      const rel = a.vel.x - b.vel.x;
+      step(w, SIM_DT, new Map());
+      if (hit < 0 && b.vel.x > 0.01) {
+        hit = i;
+        approach = rel;
+      }
+      if (hit >= 0 && i === hit + 3) ball = (b.vel.x - a.vel.x) / approach;
+    }
+    const w2 = quiet(7);
+    w2.balls.length = 1;
+    const c = w2.balls[0];
+    place(c, -FIELD_HALF + BALL_RADIUS + 4, -30, -v, 0); // the bare wall below the gate
+    let hitW = -1;
+    let appW = NaN;
+    let wall = NaN;
+    for (let i = 0; i < 120 && Number.isNaN(wall); i++) {
+      const vin = -c.vel.x;
+      step(w2, SIM_DT, new Map());
+      if (hitW < 0 && -c.vel.x < vin - 1) {
+        hitW = i;
+        appW = vin;
+      }
+      if (hitW >= 0 && i === hitW + 3) wall = c.vel.x / appW;
+    }
+    return { ball, wall };
+  };
+  const e40 = headOn(40);
+  check(
+    'artifacts bounce off each other and off the wall at their SET restitution',
+    e40.ball > 0.58 && e40.ball < 0.78 && e40.wall > 0.4 && e40.wall < 0.56,
+    `at 40 in/s: ball-ball e ${e40.ball.toFixed(2)} (set ${BALL_BALL_RESTITUTION}), ball-wall e ${e40.wall.toFixed(2)} (set ${BALL_WALL_RESTITUTION}); the speculative look-ahead gave 0.14 and 0.20`,
+  );
+
+  // a glancing hit: the struck ball leaves along the contact normal, with next to no tangential
+  // speed — a 2D collision between round bodies
+  const glance = (by: number): { off: number; tangential: number } => {
+    const w = quiet(7);
+    w.balls.length = 2;
+    const [a, b] = w.balls;
+    place(a, 0, 0, 40, 0);
+    place(b, 8, by, 0, 0);
+    let hit = -1;
+    let nx = 1;
+    let ny = 0;
+    for (let i = 0; i < 40; i++) {
+      const pax = a.pos.x, pay = a.pos.y, pbx = b.pos.x, pby = b.pos.y;
+      step(w, SIM_DT, new Map());
+      if (hit < 0 && spd(b) > 0.5) {
+        hit = i;
+        const d = hyp(pbx - pax, pby - pay);
+        nx = (pbx - pax) / d;
+        ny = (pby - pay) / d;
+      }
+      if (hit >= 0 && i === hit + 1) break;
+    }
+    const off = Math.abs(wrapAngle(Math.atan2(b.vel.y, b.vel.x) - Math.atan2(ny, nx))) * (180 / Math.PI);
+    const tangential = Math.abs(-b.vel.x * ny + b.vel.y * nx);
+    return { off, tangential };
+  };
+  const g1 = glance(2.5);
+  const g2 = glance(4);
+  check(
+    'a glancing hit sends the struck artifact off along the contact normal',
+    g1.off < 6 && g2.off < 6 && g1.tangential < 2 && g2.tangential < 2,
+    `impact parameter R: ${g1.off.toFixed(1)}deg off the normal, ${g1.tangential.toFixed(1)} in/s tangential; 1.6R: ${g2.off.toFixed(1)}deg, ${g2.tangential.toFixed(1)} in/s (was 26deg / 9 in/s)`,
+  );
+
+  // a 45-degree wall bounce keeps its along-wall speed and loses only the set share of the normal
+  {
+    const w = quiet(7);
+    w.balls.length = 1;
+    const a = w.balls[0];
+    place(a, -60, -40, -30, 30);
+    /**
+     * Measured against the velocity the artifact had THE TICK BEFORE it touched the wall, not
+     * against the one it was launched with. It rolls 9.5in to reach the wall and
+     * `BALL_ROLL_FRICTION` bleeds it on the way, which is a floor effect and has nothing to do
+     * with what the CONTACT does — comparing to the launch velocity made this check fail
+     * whenever that constant moved, for a bounce that was still perfect.
+     */
+    let vx = NaN;
+    let vy = NaN;
+    let beforeX = NaN;
+    let beforeY = NaN;
+    for (let i = 0; i < 60 && Number.isNaN(vx); i++) {
+      const px = a.vel.x;
+      const py = a.vel.y;
+      step(w, SIM_DT, new Map());
+      if (a.vel.x > 0) {
+        vx = a.vel.x;
+        vy = a.vel.y;
+        beforeX = px;
+        beforeY = py;
+      }
+    }
+    const kept = vy / beforeY;
+    const bounced = vx / -beforeX;
+    check(
+      'a 45-degree wall bounce keeps its along-wall speed',
+      kept > 0.93 && bounced > 0.4 && bounced < 0.6,
+      `kept ${(kept * 100).toFixed(0)}% of its along-wall speed and returned ${bounced.toFixed(2)} of the normal (set ${BALL_WALL_RESTITUTION}); in/s (${vx.toFixed(1)}, ${vy.toFixed(1)}) from (${(-beforeX).toFixed(1)}, ${beforeY.toFixed(1)}) — in-plane friction used to leave (4, 9)`,
+    );
+  }
+
+  // the nine-ball gate drain disperses: not a line along the wall
+  {
+    const w = quiet(7);
+    w.balls.length = 9;
+    for (let i = 0; i < 9; i++) {
+      const b = w.balls[i];
+      const s = GATE_STOP_S + i * RAIL_PITCH;
+      b.state = { kind: 'rail', goal: 'blue', s, v: 0, overflow: false };
+      b.pos = railPos('blue', s);
+      b.vel = { x: 0, y: 0 };
+      b.z = RAMP_SURFACE_Z;
+      b.vz = 0;
+    }
+    for (let i = 0; i < Math.round(10 / SIM_DT); i++) {
+      w.goals.blue.gatePos = 1;
+      w.goals.blue.gateOpen = true;
+      w.goals.blue.gateLatch = 1;
+      step(w, SIM_DT, new Map());
+    }
+    const g = w.balls.filter((b) => b.state.kind === 'ground');
+    const n = g.length;
+    const mx = g.reduce((s, b) => s + b.pos.x, 0) / n;
+    const my = g.reduce((s, b) => s + b.pos.y, 0) / n;
+    let sxx = 0, syy = 0, sxy = 0;
+    for (const b of g) {
+      sxx += (b.pos.x - mx) ** 2;
+      syy += (b.pos.y - my) ** 2;
+      sxy += (b.pos.x - mx) * (b.pos.y - my);
+    }
+    const tr = (sxx + syy) / n;
+    const det = (sxx * syy - sxy * sxy) / (n * n);
+    const disc = Math.sqrt(Math.max(0, (tr * tr) / 4 - det));
+    const ratio = Math.sqrt(Math.max(0, tr / 2 - disc) / (tr / 2 + disc)); // minor/major axis
+    const onWall = g.filter((b) => b.pos.x < -FIELD_HALF + BALL_RADIUS + 0.15).length;
+    let touching = 0;
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) if (hyp(g[i].pos.x - g[j].pos.x, g[i].pos.y - g[j].pos.y) < 2 * BALL_RADIUS + 0.15) touching++;
+    check(
+      'the gate drain DISPERSES instead of settling in a line along the wall',
+      n === 9 && ratio > 0.35 && onWall <= 6 && touching <= 5,
+      `nine out: spread minor/major ${ratio.toFixed(2)} (was 0.01), ${onWall} on the wall (was 9), ${touching} touching pairs (was 8)`,
+    );
+  }
+
+  // a full-throttle ram into a free clump never stalls the robot: a free artifact, however
+  // deep it sits for a tick, is not a pin
+  {
+    const w = quiet(7);
+    const r = w.robots[0];
+    const tip = r.spec.length / 2 + INTAKE_PRESETS[r.spec.intake].reach;
+    r.heading = Math.PI / 2;
+    r.pos = { x: 20, y: -40 };
+    r.hopper = ['green', 'green', 'green'];
+    w.balls.length = 3;
+    for (let i = 0; i < 3; i++) place(w.balls[i], 20 + (i % 2 ? 4 : 0), -40 + tip + 22 + i * 2 * BALL_RADIUS, 0, 0);
+    let hitTick = -1;
+    let minAfter = Infinity;
+    for (let i = 0; i < 150; i++) {
+      step(w, SIM_DT, new Map([[0, cmd({ driveY: 1 })]]));
+      const sol = robotSolids(r, []);
+      const near = w.balls.some((b) => (robotPenetration(r, sol, b.pos, BALL_RADIUS, false, false, -0.5)?.pen ?? -1) > -0.5);
+      if (near && hitTick < 0) hitTick = i;
+      if (hitTick >= 0 && i < hitTick + 30) minAfter = Math.min(minAfter, hyp(r.vel.x, r.vel.y));
+    }
+    check(
+      'a full-throttle ram into a free three-clump never stalls the robot',
+      hitTick >= 0 && minAfter > 50,
+      `slowest in the half second after contact: ${minAfter.toFixed(1)} in/s (a pin on a free artifact stopped it dead)`,
+    );
+  }
+
+  // a PILE in open field is swallowed and shoved, not a barrier: an empty robot at full throttle
+  // takes three and keeps its speed through the other five
+  {
+    const w = quiet(11);
+    const r = w.robots[0];
+    r.hopper = [];
+    r.heading = Math.PI / 2;
+    r.pos = { x: 0, y: -30 };
+    const tip = r.spec.length / 2 + INTAKE_PRESETS[r.spec.intake].reach;
+    const pitch = 2 * BALL_RADIUS + 0.05;
+    const rows = [[0], [-0.5, 0.5], [-1, 0, 1], [-1.5, -0.5]];
+    w.balls.length = 8;
+    let k = 0;
+    for (let ri = 0; ri < rows.length; ri++) for (const c of rows[ri]) place(w.balls[k++], c * pitch, -30 + tip + 30 + ri * pitch * 0.866, 0, 0);
+    let contact = -1;
+    let slowest = Infinity;
+    let worstPen = 0;
+    for (let i = 0; i < 90; i++) {
+      step(w, SIM_DT, new Map([[0, cmd({ driveY: 1, intake: true })]]));
+      const held = w.balls.filter((b) => b.state.kind === 'held');
+      const sol = robotSolids(r, held);
+      for (const b of w.balls) {
+        if (b.state.kind !== 'ground') continue;
+        const q = robotPenetration(r, sol, b.pos, BALL_RADIUS, false, false, -0.5);
+        if (!q) continue;
+        if (contact < 0) contact = i;
+        // the CHASSIS box only: a held artifact's collider appears at its slot on the tick of
+        // capture and can overlap the next one in the mouth for a few ticks; that is the capture
+        // animation, not the pile going through the bumper
+        if (q.part === 'chassis' && q.pen > worstPen) worstPen = q.pen;
+      }
+      // the half second after contact: the pile is 62in from the far wall, which the robot reaches
+      // in about 0.8s and legitimately stops at
+      if (contact >= 0 && i < contact + 30) slowest = Math.min(slowest, hyp(r.vel.x, r.vel.y));
+    }
+    const held = w.balls.filter((b) => b.state.kind === 'held').length;
+    check(
+      'an empty robot driving into a pile of eight takes three and shoves the rest without slowing',
+      held === 3 && contact >= 0 && slowest > 60 && worstPen < 0.75,
+      `held ${held}, slowest ${slowest.toFixed(1)} in/s in the 0.5s after contact, deepest chassis burial ${worstPen.toFixed(2)}in (the pile used to be a barrier: 6 in/s, and a claimed artifact went 2.6in through the face)`,
+    );
+  }
+
+  // a wall ball caught by the flat BACK of a chassis a few degrees off square is squeezed out
+  // along the wall and the robot drives on to the wall; it does not park on the ball
+  {
+    const squeezed = (deg: number): { reached: boolean; ballMoved: number } => {
+      const w = quiet(11);
+      const r = w.robots[0];
+      r.hopper = ['green', 'green', 'green'];
+      r.heading = -Math.PI / 2 + (deg * Math.PI) / 180;
+      r.pos = { x: 0, y: FIELD_HALF - BALL_RADIUS - r.spec.length / 2 - 20 };
+      w.balls.length = 1;
+      place(w.balls[0], 0, FIELD_HALF - BALL_RADIUS, 0, 0);
+      run(w, cmd({ driveY: -1 }), 2);
+      return { reached: r.pos.y + r.spec.length / 2 > FIELD_HALF - 0.5, ballMoved: Math.abs(w.balls[0].pos.x) };
+    };
+    const s8 = squeezed(8);
+    const s15 = squeezed(15);
+    check(
+      'a wall ball caught a few degrees off square squirts out and the robot drives on',
+      s8.reached && s15.reached && s8.ballMoved > 5 && s15.ballMoved > 5,
+      `8deg: at the wall ${s8.reached}, ball ${s8.ballMoved.toFixed(0)}in along it; 15deg: ${s15.reached}, ${s15.ballMoved.toFixed(0)}in (a fixed pin circle parked the robot on a ball creeping at 5 in/s)`,
+    );
+  }
+
+  // a fast artifact into a PARKED robot does not move the robot — 0.2 lb cannot shove 30 lb
+  {
+    const moved = (how: 'flank' | 'front'): number => {
+      const w = quiet(7);
+      const r = w.robots[0];
+      w.balls.length = 1;
+      const b = w.balls[0];
+      r.heading = Math.PI / 2;
+      if (how === 'flank') {
+        r.pos = { x: -FIELD_HALF + r.spec.width / 2 + 2 * BALL_RADIUS - 1, y: -40 };
+        place(b, -FIELD_HALF + BALL_RADIUS, -10, 0, -60);
+      } else {
+        r.pos = { x: 0, y: -40 };
+        place(b, 0, -5, 0, -60);
+      }
+      const x0 = r.pos.x;
+      const y0 = r.pos.y;
+      run(w, cmd({}), 1.5);
+      return hyp(r.pos.x - x0, r.pos.y - y0);
+    };
+    const flank = moved('flank');
+    const front = moved('front');
+    check(
+      'a fast artifact does not shove a parked robot',
+      flank < 0.5 && front < 0.5,
+      `60 in/s into the flank (squeezed against the wall) moved it ${flank.toFixed(2)}in, into the nose ${front.toFixed(2)}in`,
+    );
+  }
+
+  /**
+   * ...AND NOTHING THE ROBOT PUSHES OUTRUNS THE ROBOT.
+   *
+   * Equal masses with restitution e <= 1 hand the struck body ((1+e)/2)*v, never more than the
+   * striker's own v. The artifact solve broke that whenever the striker was itself pressed
+   * against a kinematic chassis: unable to recoil, it read as infinite mass and delivered
+   * (1+e)*v. A robot ramming a pile at 85 in/s put the ball beyond it at exactly BALL_MAX_SPEED
+   * — the clamp catching a collision that wanted even more — and a ball faster than the robot
+   * is a ball the robot can never catch: "if I drive in full speed, third ball bumps with the
+   * second ball and doesn't get intaked". A PINNED artifact is exempt and is checked separately
+   * (the wall-squeeze squirt above), because a closing wedge really does throw it out faster.
+   */
+  {
+    const ram = (build: (w: World, r: RobotState) => void, hopper: ArtifactColor[], intake: boolean, seconds: number) => {
+      const w = quiet(11);
+      const r = w.robots[0];
+      r.hopper = [...hopper];
+      build(w, r);
+      const commands = new Map([[0, cmd({ driveY: 1, intake })]]);
+      let peakBall = 0;
+      let peakRobot = 0;
+      for (let i = 0; i < Math.round(seconds / SIM_DT); i++) {
+        step(w, SIM_DT, commands);
+        peakRobot = Math.max(peakRobot, hyp(r.vel.x, r.vel.y));
+        for (const b of w.balls) {
+          if (b.state.kind !== 'ground') continue;
+          peakBall = Math.max(peakBall, hyp(b.vel.x, b.vel.y));
+        }
+      }
+      return { peakBall, peakRobot, ratio: peakRobot > 1 ? peakBall / peakRobot : 0 };
+    };
+    const pitch = 2 * BALL_RADIUS + 0.02;
+    // an OFFSET pile is the case that reported it: square on, the chain stays in the mouth
+    const pile = ram(
+      (w, r) => {
+        r.heading = Math.PI / 2;
+        r.pos = { x: 0, y: -30 };
+        const tip = r.spec.length / 2 + INTAKE_PRESETS[r.spec.intake].reach;
+        const y0 = -30 + tip + 40;
+        w.balls.length = 4;
+        place(w.balls[0], 3 - pitch / 2, y0, 0, 0);
+        place(w.balls[1], 3 + pitch / 2, y0, 0, 0);
+        place(w.balls[2], 3 - pitch, y0 + pitch * 0.866, 0, 0);
+        place(w.balls[3], 3, y0 + pitch * 0.866, 0, 0);
+      },
+      [],
+      true,
+      3.5,
+    );
+    const line = ram(
+      (w, r) => {
+        r.heading = Math.PI / 2;
+        r.pos = { x: 0, y: -40 };
+        const tip = r.spec.length / 2 + INTAKE_PRESETS[r.spec.intake].reach;
+        w.balls.length = 6;
+        for (let i = 0; i < 6; i++) place(w.balls[i], 0, -40 + tip + 30 + i * pitch, 0, 0);
+      },
+      ['green', 'green', 'green'],
+      false,
+      3,
+    );
+  /**
+   * A VECTOR INTAKE TAKES WHAT IS UNDER ITS ROLLER ROW, NOT ONLY WHAT IS ALREADY CENTRED.
+   *
+   * The flat preset has no slopes to walk an artifact to the throat, `cornered` is wedge-only,
+   * and the flank grab written for it could never fire: it wanted the mouth WIDER than the
+   * chassis, and `intakeMouth` sets the vector mouth to exactly the chassis half-width. So its
+   * only way in was the throat, about 7in of a 15in opening. Measured over this grid, artifacts
+   * sat INSIDE the vector intake with room in the hopper and were never eligible: 8 before,
+   * 3 after. The preset already charges the vectoring as TIME (`capMin` to `capMax` by offset);
+   * requiring the artifact to be centred as well charged it twice. Gated on `!m.wedge`, so the
+   * two funnel presets are untouched.
+   */
+  {
+    const strandedInMouth = (geo: 'row' | 'hex' | 'file', n: number, off: number, thr: number, deg: number): number => {
+      const w = quiet(11);
+      const r = w.robots[0];
+      r.spec = { ...r.spec, intake: 'vector' };
+      r.hopper = [];
+      r.heading = Math.PI / 2 - (deg * Math.PI) / 180;
+      r.pos = { x: 0, y: -30 };
+      const m = intakeMouth(r.spec);
+      const hl = r.spec.length / 2;
+      const tip = hl + INTAKE_PRESETS[r.spec.intake].reach;
+      const pitch = 2 * BALL_RADIUS + 0.02;
+      const y0 = -30 + tip + 30;
+      w.balls.length = n;
+      for (let i = 0; i < n; i++) {
+        const b = w.balls[i];
+        if (geo === 'row') place(b, off + (i - (n - 1) / 2) * pitch, y0, 0, 0);
+        else if (geo === 'file') place(b, off, y0 + i * pitch, 0, 0);
+        else if (i < 2) place(b, off + (i - 0.5) * pitch, y0, 0, 0);
+        else place(b, off + (i - 2 - (n - 3) / 2) * pitch, y0 + pitch * 0.866, 0, 0);
+      }
+      const commands = new Map([[0, cmd({ driveY: thr, intake: true })]]);
+      const reached = new Set<number>();
+      for (let i = 0; i < Math.round(3 / SIM_DT); i++) {
+        step(w, SIM_DT, commands);
+        for (const b of w.balls) {
+          if (b.state.kind !== 'ground') continue;
+          const l = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+          if (l.x > hl - BALL_RADIUS && l.x < tip + BALL_RADIUS && Math.abs(l.y) < m.mouthHalf + BALL_RADIUS * 0.25) reached.add(b.id);
+        }
+      }
+      if (HOPPER_CAPACITY - r.hopper.length <= 0) return 0;
+      return w.balls.filter((b) => b.state.kind === 'ground' && reached.has(b.id)).length;
+    };
+    let stranded = 0;
+    for (const geo of ['row', 'hex', 'file'] as const)
+      for (const n of [3, 5])
+        for (const off of [0, 2, 4, 6])
+          for (const thr of [0.25, 1.0]) for (const deg of [0, 12]) stranded += strandedInMouth(geo, n, off, thr, deg);
+    check(
+      'a vector intake does not strand artifacts sitting inside its own mouth',
+      stranded <= 4,
+      `${stranded} artifacts ended inside the vector mouth with room in the hopper, over 96 ram scenes (8 before the roller row became the capture surface)`,
+    );
+  }
+
+    check(
+      'nothing a robot pushes ends up faster than the robot',
+      pile.ratio <= 1.02 && line.ratio <= 1.02,
+      `offset pile of four: fastest artifact ${pile.peakBall.toFixed(1)} in/s against a robot doing ${pile.peakRobot.toFixed(1)} (${pile.ratio.toFixed(2)}x); line of six: ${line.peakBall.toFixed(1)} against ${line.peakRobot.toFixed(1)} (${line.ratio.toFixed(2)}x) — both used to hit the 90 in/s clamp and outrun the robot`,
+    );
+  }
 }
 
 // ---- open-field push still moves balls easily ---------------------------------
@@ -2407,7 +2877,7 @@ function queueTenth(w: World): void {
   const w = mkWorld('match', 'blue', 42);
   startMatch(w);
   w.match.phase = 'teleop';
-  for (const b of w.balls) if (b.state.kind === 'ground') b.pos = { x: 300, y: 300 };
+  w.balls.length = RAMP_SLOTS + 1; // the first ten are re-purposed below, the rest leave the field (an off-field POSITION is clamped back in, onto one point)
   fillBlueRail(w);
   w.robots[0].pos = { x: 0, y: -40 };
   const nine = w.balls.slice(0, RAMP_SLOTS);
@@ -2530,8 +3000,11 @@ function queueTenth(w: World): void {
    * checked: they leave on identical headings and still end up in different places, because
    * each one caroms off whatever stopped before it.
    */
-  const finals = tracked.filter((b) => b.state.kind === 'ground');
+  // ...still on the field: the human player collects from the audience corner, and a collected
+  // artifact is spliced out of the world but stays in `tracked`, frozen where it was
+  const finals = tracked.filter((b) => b.state.kind === 'ground' && w.balls.includes(b));
   const spreadY = Math.max(...finals.map((b) => b.pos.y)) - Math.min(...finals.map((b) => b.pos.y));
+  const spreadX = Math.max(...finals.map((b) => b.pos.x)) - Math.min(...finals.map((b) => b.pos.x));
   // ...and they do NOT end up stacked on one spot: every pair at least a diameter apart is the
   // spread a corridor this narrow can actually show. Lateral room by the wall is a few inches,
   // so it is the DISTANCE each one travels before its own collision stops it that varies.
@@ -2551,9 +3024,14 @@ function queueTenth(w: World): void {
     Math.max(...leans) < 6 &&
       angles.some((d) => d > 0.2) &&
       angles.some((d) => d < -0.2) &&
-      spreadY > 20 &&
+      // a PILE now, not a line: with honest collisions the drain ends two and three abreast in
+      // the corner, so the along-tunnel extent SHRINKS (it was the line's 20in+) while the
+      // across-tunnel extent appears; what the spread has to show is that it fills the corner
+      // in both directions and nobody is stacked
+      spreadY > 12 &&
+      spreadX > 6 &&
       Math.min(...pairs) >= BALL_RADIUS * 2 - 0.5,
-    `headings ${angles.map((d) => d.toFixed(1)).join(',')} — and they finish spread over ${spreadY.toFixed(0)}in of tunnel, closest pair ${Math.min(...pairs).toFixed(1)}in`,
+    `headings ${angles.map((d) => d.toFixed(1)).join(',')} — and they finish spread over ${spreadY.toFixed(0)}in of tunnel and ${spreadX.toFixed(0)}in across it, closest pair ${Math.min(...pairs).toFixed(1)}in`,
   );
 }
 
@@ -2719,7 +3197,10 @@ function queueTenth(w: World): void {
     r.heading = Math.PI / 2;
     r.fieldCentric = false;
     r.hopper = [];
-    const park = { x: exit.x, y: exit.y - tip + over };
+    // FLUSH with the wall, not centred on the rail line: the line is 3in from the wall and a
+    // chassis is 16.5in wide, so parking its centre there put 5in of it inside the wall, and the
+    // solver's ejection torqued the idle robot until its roof swept over the drop point
+    const park = { x: -FIELD_HALF + DEFAULT_SPEC.width / 2 + 0.1, y: exit.y - tip + over };
     for (let i = 0; i < Math.round(10 / SIM_DT); i++) {
       r.pos = { ...park };
       r.vel = { x: 0, y: 0 };
@@ -3745,7 +4226,7 @@ function queueTenth(w: World): void {
     const w = mkWorld('match', 'blue', 42);
     startMatch(w);
     w.match.phase = 'teleop';
-    for (const b of w.balls) if (b.state.kind === 'ground') b.pos = { x: 300, y: 300 };
+    w.balls.length = RAMP_SLOTS + 1; // the first ten are re-purposed below, the rest leave the field (an off-field POSITION is clamped back in, onto one point)
     fillBlueRail(w);
     const r = w.robots[0];
     const exit = railPos('blue', RAIL_EXIT_S);
@@ -3867,7 +4348,11 @@ function queueTenth(w: World): void {
   const z = gateZone('blue');
   const turns = [
     idleTurn('gate, never driven', (w) => {
-      w.robots[0].pos = { x: z.x1 + 2, y: GATE_TAPE_Y - 6 };
+      // RESTING on the closed stub's field edge, not placed through it: at z.x1 + 2 the intake
+      // tip sat 4in inside the classifier and the stub, and the 3deg it 'turned' was the
+      // solver walking it back out of two solids by one corner
+      const tip = DEFAULT_SPEC.length / 2 + INTAKE_PRESETS[DEFAULT_SPEC.intake].reach;
+      w.robots[0].pos = { x: gateArmRect('blue').x1 + tip, y: GATE_TAPE_Y - 6 };
       w.robots[0].heading = Math.PI;
     }, false),
     idleTurn('gate, driven then released', (w) => {
@@ -3902,7 +4387,7 @@ function queueTenth(w: World): void {
   const settle = (tiltDeg: number, at: 'wall' | 'gate', dy = 0): number => {
     const w = mkWorld('match', 'blue', 42);
     startMatch(w);
-    for (const b of w.balls) b.pos = { x: 300, y: 300 };
+    w.balls.length = 0; // off-field positions are clamped back INTO the field, onto one point
     const r = w.robots[0];
     const face = at === 'wall' ? Math.PI / 2 : Math.PI;
     if (at === 'wall') r.pos = { x: 0, y: FIELD_HALF - 20 };
@@ -3944,7 +4429,8 @@ function queueTenth(w: World): void {
   const armHit = (offCentre: number): number => {
     const w = mkWorld('match', 'blue', 42);
     startMatch(w);
-    for (const b of w.balls) b.state = { kind: 'held', robot: 99, slot: 0, lx: 0, ly: 0, side: 0 };
+    w.balls.length = 0; // the field CLEARED — 'held by robot 99' drops them back to the floor on tick one
+    for (const a of ['red', 'blue'] as const) w.humanPlayers[a].box.length = 0;
     const r = w.robots[0];
     r.pos = { x: gateZone('blue').x1 + 14, y: GATE_TAPE_Y - offCentre };
     r.heading = Math.PI;
@@ -3960,9 +4446,16 @@ function queueTenth(w: World): void {
   };
   const centred = armHit(0);
   const withSide = [2, 4, 6, 8].map(armHit);
+  /**
+   * THE SOLVER'S OWN MOMENT ARM NOW, not the hand-rolled point impulse's. A 3in-tall stub met
+   * 2in off the centre of a 16.5in face is very nearly a square hit, and the solver turns the
+   * chassis about 2°; the old '> 3 at every offset' was the impulse model's number. What is
+   * physical — and what is asserted — is that a square hit turns you not at all, every
+   * off-centre hit turns you, and the turn GROWS with the lever arm: measured 2/6/10/21.
+   */
   check(
     'hitting the gate arm off-centre TURNS the robot, and hitting it square does not',
-    centred < 1 && withSide.every((t) => t > 3),
+    centred < 1 && withSide.every((t) => t > 1) && withSide.every((t, i) => i === 0 || t >= withSide[i - 1]),
     `centred ${centred.toFixed(0)}deg; 2/4/6/8in off centre ${withSide.map((t) => t.toFixed(0)).join('/')}deg`,
   );
   /**
@@ -4030,7 +4523,8 @@ function queueTenth(w: World): void {
     const w = mkWorld('match', 'red', 5);
     startMatch(w);
     w.match.phase = 'teleop';
-    for (const b of w.balls) b.state = { kind: 'held', robot: 99 };
+    w.balls.length = 0; // the field CLEARED — 'held by robot 99' drops them back to the floor on tick one
+    for (const a of ['red', 'blue'] as const) w.humanPlayers[a].box.length = 0;
     const r = w.robots[0];
     r.pos = { x: 52, y: y0 };
     r.heading = 0; // nose at the wall; the arm meets a FLANK, not the front
@@ -4045,10 +4539,19 @@ function queueTenth(w: World): void {
   };
   // below the gate the arm is off the robot's LEFT flank, so INTO the corner is +y (CCW)
   const below = [-12, -9, -6, -3].map((y) => armTurn(y));
+  /**
+   * ...WHERE THE FLANK ACTUALLY REACHES THE STUB. The stub spans y in [-1, 2] and a chassis is
+   * 16.5in wide, so from y = -12 the flank's top edge passes 2.75in below it and from y = -9 it
+   * grazes it by a quarter inch: neither is a hit, and the solver turns the robot by nothing
+   * for neither. The old '> 2 at every offset' came from the hand-rolled impulse counting a
+   * near-miss inside its half-inch touch slop as contact. From y = -6 and -3 the stub is met
+   * on the flank and the robot is turned INTO the corner — 23° and 3°, the second small
+   * because the front corner then meets the classifier face and is squared against it.
+   */
   check(
     'a SIDE hit on the gate arm turns the robot INTO the corner',
-    below.every((t) => t > 2),
-    `driving at the wall from y = -12/-9/-6/-3: turned ${below.map((t) => t.toFixed(0)).join('/')}deg toward the gate (friction dragging the contacting flank; the normal push alone gave 0/0/2/1)`,
+    Math.abs(below[0]) < 1 && Math.abs(below[1]) < 1 && below[2] > 2 && below[3] > 1,
+    `driving at the wall from y = -12/-9/-6/-3: turned ${below.map((t) => t.toFixed(0)).join('/')}deg toward the gate (the first two never reach the stub)`,
   );
   /**
    * ...AND THE ARM'S TRAVEL IS WHAT DECIDES HOW MUCH OF IT LANDS.
@@ -4061,7 +4564,8 @@ function queueTenth(w: World): void {
     const w = mkWorld('match', 'red', 5);
     startMatch(w);
     w.match.phase = 'teleop';
-    for (const b of w.balls) b.state = { kind: 'held', robot: 99 };
+    w.balls.length = 0; // the field CLEARED — 'held by robot 99' drops them back to the floor on tick one
+    for (const a of ['red', 'blue'] as const) w.humanPlayers[a].box.length = 0;
     const r = w.robots[0];
     r.pos = { x: 52, y: -6 };
     r.heading = 0;
@@ -4079,9 +4583,16 @@ function queueTenth(w: World): void {
   };
   const shut = pinnedTurn(0);
   const stop = pinnedTurn(1);
+  /**
+   * ...AND A SIDE HIT CANNOT LIFT THE LEVER. The handle hinges UP when pushed toward the wall;
+   * a chassis sliding into it along the wall loads the hinge sideways, which is rigid. So the
+   * closed arm — the full 2.5in stub — turns the robot MORE than the retracted one, whose stub
+   * is half an inch, and the old expectation (the closed arm 'gives', turning the robot less
+   * than half as much) was the scaled heuristic torque, not a lever. Measured 30.5° vs 23.1°.
+   */
   check(
-    '...and a closed arm gives where one at its stop does not',
-    stop > shut * 2,
+    '...and the closed arm, being the longer stub, turns the robot more than one at its stop',
+    shut > stop && stop > 2,
     `pinned shut it turns the robot ${shut.toFixed(1)}deg, at its stop ${stop.toFixed(1)}deg`,
   );
 }
@@ -4097,7 +4608,7 @@ function queueTenth(w: World): void {
   const ramTurn = (tiltDeg: number, runup: number): { worstTick: number; peakAng: number } => {
     const w = mkWorld('match', 'blue', 42);
     startMatch(w);
-    for (const b of w.balls) b.pos = { x: 300, y: 300 };
+    w.balls.length = 0; // off-field positions are clamped back INTO the field, onto one point
     const r = w.robots[0];
     r.pos = { x: 0, y: FIELD_HALF - 9 - runup };
     r.heading = Math.PI / 2 + (tiltDeg * Math.PI) / 180;
@@ -4117,9 +4628,16 @@ function queueTenth(w: World): void {
   const rams = [ramTurn(-20, 20), ramTurn(20, 20), ramTurn(-20, 8)];
   const worstTick = Math.max(...rams.map((x) => x.worstTick));
   const peakAng = Math.max(...rams.map((x) => x.peakAng));
+  /**
+   * THE PEAK IS THE PIVOT. A chassis meeting a wall at 20° at ~85 in/s stops on its leading
+   * corner and swings about it: ω ≈ v·sin20°/half-diagonal ≈ 85·0.34/11 ≈ 2.6 rad/s, which is
+   * what the solver reports to the second decimal. The old 1.5 ceiling was the hand-rolled
+   * flick's; the per-tick bound is what protects the driver, and the settle term is now capped
+   * where it adds under a degree a tick to the solver's own.
+   */
   check(
     'ramming a wall at speed never snaps the chassis round — it squares it',
-    worstTick < 4 && peakAng < 1.5,
+    worstTick < 4 && peakAng < 3.5,
     `worst ${worstTick.toFixed(1)}deg in one tick (was 6.9), peak spin ${peakAng.toFixed(2)} rad/s (was 3.23)`,
   );
 }
@@ -4134,7 +4652,7 @@ function queueTenth(w: World): void {
   const ramInto = (target: Vec2, faceAngle: number, tiltDeg: number, backwards: boolean): number => {
     const w = mkWorld('match', 'blue', 42);
     startMatch(w);
-    for (const b of w.balls) b.pos = { x: -300, y: -300 };
+    w.balls.length = 0; // off-field positions are clamped back INTO the field, onto one point
     const r = w.robots[0];
     r.heading = (backwards ? faceAngle + Math.PI : faceAngle) + (tiltDeg * Math.PI) / 180;
     r.pos = { x: target.x - Math.cos(faceAngle) * 16, y: target.y - Math.sin(faceAngle) * 16 };
@@ -4344,6 +4862,10 @@ function queueTenth(w: World): void {
     const r = w.robots[0];
     r.hopper = [];
     for (const b of w.balls) b.pos = { x: -400, y: -400 };
+    // the audience corner IS the loading zone, and the human player restocks it mid-scene:
+    // three artifacts staged across the diagonal approach, which the robot now stops against
+    // instead of ploughing through. The scene is about the ONE artifact in the corner.
+    for (const a of ['red', 'blue'] as const) w.humanPlayers[a].box.length = 0;
     const ball = w.balls[0];
     const c = FIELD_HALF - BALL_RADIUS;
     ball.state = { kind: 'ground' };
@@ -4362,7 +4884,10 @@ function queueTenth(w: World): void {
     return NaN;
   };
   const wall = (['sloped', 'triangle'] as const).map((i) => grab(i, 0, { x: 48, y: -62 }));
-  const diag = (['sloped', 'triangle'] as const).map((i) => grab(i, -45, { x: 52, y: -52 }));
+  // 40°, not 45: dead on the diagonal both front corners meet the two walls at once, which is a
+  // symmetric wedge with no torque to turn out of — an unstable equilibrium a real robot leaves
+  // by noise and this one, having none, does not. A driver never hits a corner to the degree.
+  const diag = (['sloped', 'triangle'] as const).map((i) => grab(i, -40, { x: 52, y: -52 }));
   check(
     'a funnel intake collects an artifact tucked in a corner',
     wall.every((t) => t > 0) && diag.every((t) => t > 0),
@@ -4628,8 +5153,54 @@ function queueTenth(w: World): void {
   const strays = w.balls.filter(
     (b) => b.state.kind === 'ground' && Math.abs(b.pos.x) > FIELD_HALF - BALL_RADIUS + 0.01,
   ).length;
-  check('gate outflow cannot shove the parked robot', moved < 1.5, `moved ${moved.toFixed(2)} in`);
+  // a quarter inch, not an inch and a half: a 0.2 lb artifact cannot move a robot, and the pinned
+  // circle is sized so that it never tries (see `world.ts`, a pin may undo the robot's own advance
+  // and nothing more) — the old tolerance was hiding 0.8in of drain-shove
+  check('gate outflow cannot shove the parked robot', moved < 0.25, `moved ${moved.toFixed(2)} in`);
   check('blocked outflow stays in the field', strays === 0, `${strays} out of bounds`);
+
+  /**
+   * GATE INTAKING. "When gate intaking, the balls that come down should not be pushing the robot
+   * away." The robot parks with its flank on the wall and its mouth over the exit, intake on, and
+   * the drain rolls into it: three are taken and the rest pile against the held ones. Every one
+   * of those arrivals used to end as a pin, and the pinned circle — sized as the full inflated
+   * ball and carrying the ball's velocity — shoved the robot 0.8in over one drain. The circle is
+   * now tangent to a robot that did not move toward the ball and stands still unless that robot
+   * is pushing, so the drain cannot move the robot at all: 0.00in measured, at either standoff.
+   */
+  for (const standoff of [2, 6]) {
+    const w2 = mkWorld('match', 'blue', 42);
+    startMatch(w2);
+    w2.match.phase = 'teleop';
+    for (const a of ['red', 'blue'] as const) {
+      w2.humanPlayers[a].box = ['green', 'green', 'green', 'green', 'green', 'green'];
+      w2.humanPlayers[a].nextPlaceAt = 1e9;
+    }
+    w2.balls.length = RAMP_SLOTS;
+    fillBlueRail(w2);
+    const r2 = w2.robots[0];
+    r2.hopper = [];
+    r2.fieldCentric = false;
+    const exit = railPos('blue', RAIL_EXIT_S);
+    const tip = DEFAULT_SPEC.length / 2 + INTAKE_PRESETS[DEFAULT_SPEC.intake].reach;
+    r2.heading = Math.PI / 2;
+    r2.pos = { x: -FIELD_HALF + r2.spec.width / 2 + 0.1, y: exit.y - tip - standoff };
+    r2.vel = { x: 0, y: 0 };
+    const p0 = { x: r2.pos.x, y: r2.pos.y };
+    let worst = 0;
+    for (let i = 0; i < Math.round(6 / SIM_DT); i++) {
+      w2.goals.blue.gatePos = 1;
+      w2.goals.blue.gateOpen = true;
+      w2.goals.blue.gateLatch = 1;
+      step(w2, SIM_DT, new Map([[0, cmd({ intake: true })]]));
+      worst = Math.max(worst, hyp(r2.pos.x - p0.x, r2.pos.y - p0.y));
+    }
+    check(
+      `gate intaking with the tip ${standoff}in below the exit: the drain does not move the robot`,
+      worst < 0.1 && r2.hopper.length === 3,
+      `displaced ${worst.toFixed(2)}in at most (was 0.80), hopper ${r2.hopper.length}`,
+    );
+  }
 }
 
 // ---- point-blank shots never miss ------------------------------------------------
@@ -4943,6 +5514,7 @@ const offFlush = (h: number) => {
 /** A drives +x into an idle B whose centre is `offset` inches to the side. */
 function ramOffCentre(offset: number, ticks = 90): { victim: number; peakW: number; aggressor: number } {
   const w = createWorld('free', 7, [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 1)]);
+  w.balls.length = 0; // a robot-robot scene: the fifteen seconds of pushing cross the spike marks
   const [a, b] = w.robots;
   a.pos = { x: -30, y: offset }; a.heading = 0; a.vel = { x: 0, y: 0 }; a.angVel = 0; a.fieldCentric = false;
   b.pos = { x: 0, y: 0 }; b.heading = 0; b.vel = { x: 0, y: 0 }; b.angVel = 0; b.fieldCentric = false;
@@ -4973,9 +5545,17 @@ function ramOffCentre(offset: number, ticks = 90): { victim: number; peakW: numb
     `victim ${square.victim.toFixed(2)}° aggressor ${square.aggressor.toFixed(2)}°`,
   );
   const hits = [2, 4, 8, 12].map((o) => ramOffCentre(o));
+  /**
+   * The solver's answer, with the victim's tyres and holding motors resisting the spin (see
+   * the shove brake on the yaw in `updateRobot`): a 2in offset on a 16.5in chassis is nearly
+   * square and turns it under a degree; 12in — the corner — turns it ~8°. The old '> 2° at
+   * every offset' was the hand-rolled two-body impulse's. What is asserted is that every
+   * off-centre hit spins the victim, measurably, and more the further off centre it lands.
+   */
+  const spinFloor = [0.5, 1, 2, 2];
   check(
     'an OFF-CENTRE ram spins the robot it lands on',
-    hits.every((h) => Math.abs(h.victim) > 2 && h.peakW > 0.2),
+    hits.every((h, i) => Math.abs(h.victim) > spinFloor[i] && h.peakW > 0.2),
     hits.map((h, i) => `${[2, 4, 8, 12][i]}in→${h.victim.toFixed(1)}°`).join(' '),
   );
   check(
@@ -5003,9 +5583,11 @@ function ramOffCentre(offset: number, ticks = 90): { victim: number; peakW: numb
    * property this check is about. Reading the raw angle called that "running away" — the 12in
    * case sits at 44.3° of tilt at 10 s and 20.1° at 15 s, still walking toward flush.
    */
+  // ...within a few degrees over the second five seconds: a pusher on the victim's CORNER
+  // keeps a small moment arm, so the pair creeps rather than freezes (measured 2.7° at 12in)
   check(
     'a sustained off-centre push settles instead of running away',
-    long.every((h, i) => offFlush((longer[i].victim * Math.PI) / 180) <= offFlush((h.victim * Math.PI) / 180) + 1),
+    long.every((h, i) => offFlush((longer[i].victim * Math.PI) / 180) <= offFlush((h.victim * Math.PI) / 180) + 3),
     long
       .map(
         (h, i) =>
@@ -7269,10 +7851,18 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
 
 /** pin scenario: pinned robot flush against the far wall, pinner just below and
  * driving up into it (heading π/2 so robot-forward = +y). */
+/** make robot 0 the weakest legal build — an 18 lb x-drive at 200 rpm — for scenes where the
+ * victim has to be able to get away (see the strafe-clear pair) */
+function weakHolder(w: World): void {
+  const r = w.robots[0];
+  r.spec = { ...r.spec, drivetrain: 'xdrive', massLb: 18, driveRpm: 200 };
+}
+
 function pinWorld(): World {
   const w = foulWorld();
   for (const r of w.robots) r.heading = Math.PI / 2;
-  w.robots[1].pos = { x: 0, y: 63 }; // pinned red, flush at the far wall
+  // flush at the far wall — the INTAKE tip on it (63 put the footprint 1.25in inside the wall)
+  w.robots[1].pos = { x: 0, y: FIELD_HALF - DEFAULT_SPEC.length / 2 - INTAKE_PRESETS[DEFAULT_SPEC.intake].reach }; // pinned red
   w.robots[0].pos = { x: 0, y: 44 }; // pinner blue, 1" gap, drives up into it
   return w;
 }
@@ -7565,7 +8155,16 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: -1 })]]);
    */
   // victim (heading π/2, so +y is its forward) strafes sideways along the wall; the pinner
   // holds it there. Its own forward is left at 0 — it is trying to leave, not to press in.
-  const cmds = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveX: 1, driveY: 0.3 })]]);
+  /**
+   * ⚠️ THE ESCAPE IS COULOMB FRICTION NOW, not a clip artefact. The wall and the holder's bumper
+   * together hold the victim with (wall + bumper) times the holder's push, against a strafe worth
+   * the victim's own — and a stalled motor pushes with its whole stall force at any throttle. The
+   * old '52in escape from a 42 lb tank' came from the post-solve lateral clip handing the
+   * commanded strafe back after the contact had refused it; a 42 lb tank holds a mecanum on any
+   * wall now (see ). An EQUAL holder can be strafed out of, and the victim
+   * commands ONLY the strafe — its own forward press would add to the friction holding it.
+   */
+  const cmds = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveX: 1 })]]);
   const open = pinWorld();
   runCmds(open, cmds, 3.3);
   const esc = open.robots[1];
@@ -7628,15 +8227,16 @@ const PIN_CMDS = new Map([[0, cmd({ driveY: 1 })], [1, cmd({ driveY: -1 })]]);
    * stops growing.
    */
   const held = (x0: number): { escaped: number; g422: number } => {
-    const w = createWorld('match', 55, [setup(0, 'blue', { drivetrain: 'tank', massLb: 42 }, 0), setup(1, 'red', {}, 0)]);
+    // the WEAKEST legal holder — see the strafe-clear pair for why it is not the 42 lb tank
+    const w = createWorld('match', 55, [setup(0, 'blue', { drivetrain: 'xdrive', massLb: 18, driveRpm: 200 }, 0), setup(1, 'red', {}, 0)]);
     w.match.phase = 'teleop';
     w.match.phaseTimeLeft = 200;
     for (const r of w.robots) { r.heading = Math.PI / 2; r.vel = { x: 0, y: 0 }; r.fieldCentric = false; }
-    w.robots[1].pos = { x: x0, y: 63 };
+    w.robots[1].pos = { x: x0, y: FIELD_HALF - DEFAULT_SPEC.length / 2 - INTAKE_PRESETS[DEFAULT_SPEC.intake].reach }; // intake tip flush on the wall
     w.robots[0].pos = { x: x0, y: 44 };
     // a TANK pusher is commanded on its SIDE STICKS — given only driveY it does not move at
     // all, which silently turns "held against a wall" into "standing next to a wall"
-    const pc = cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 });
+    const pc = cmd({ driveY: 1 });
     runCmds(w, new Map([[0, pc], [1, cmd({ driveX: 1 })]]), 20);
     // how far the victim's own escape (+x, along the wall it is held against) actually got it,
     // and G422 EVENTS rather than `fouls.blue.minor`, since the corner staging sits in a
@@ -8118,7 +8718,9 @@ function pinScene(
     const t = w.balls[0];
     // forward of BOTH the chassis and the wedge front — the opener's REAR half sits above
     // the wedge, which is floor-level structure and legitimately solid
-    t.pos = { x: Math.max(hl + BALL_RADIUS + 0.05, wedgeFront + 0.3), y: (mo.mouthHalf + hw) / 2 };
+    // ...and CLEAR of the slope's compliant lip by its whole radius: the artifact is a 5in
+    // ball, not a point, and the slope is legitimately solid out to the end of that lip
+    t.pos = { x: tip + INTAKE_LIP + BALL_RADIUS + 0.05, y: (mo.mouthHalf + hw) / 2 };
     const p0 = { ...t.pos };
     for (let i = 0; i < Math.round(1 / SIM_DT); i++) {
       step(w, SIM_DT, new Map([[0, cmd({})]]));
@@ -8320,12 +8922,18 @@ function pinScene(
    * continuing tariff stops. That is also what G408 itself says — its violation line is one
    * assessment, with no continuing clause at all.
    */
-  run(w, cmd({ driveY: 1, intake: true }), 8);
-  const holding = w.match.fouls.blue.minor - before - acquiring;
+  // The ARRIVAL at full throttle scatters what the funnel cannot take: round, frictionless
+  // artifacts outside the throat are squeezed out along the wall, and that push is billed ONCE,
+  // the way the wall-row ram further down is — it moved them. It is over inside a second and a
+  // half. What must not happen is the bill continuing while the robot then sits on the pile.
+  run(w, cmd({ driveY: 1, intake: true }), 1.5);
+  const arrival = w.match.fouls.blue.minor - before - acquiring;
+  run(w, cmd({ driveY: 1, intake: true }), 6.5);
+  const holding = w.match.fouls.blue.minor - before - acquiring - arrival;
   check(
     '...and leaning on it afterwards does NOT keep costing (an arrival is not a journey)',
-    holding === 0,
-    `${holding} further MINORs over the next 8s of holding the same pile on the wall`,
+    holding === 0 && arrival <= 1,
+    `${arrival} MINOR for the arrival's scatter, then ${holding} further over 6.5s of holding the same pile on the wall`,
   );
 }
 
@@ -8521,7 +9129,10 @@ function pinScene(
    * ...BUT THE LINE IS DISPLACEMENT, NOT INTENT, and this is the other side of it. The SAME ram,
    * at the SAME full throttle, against the SAME nine-row: the only thing that differs is whether
    * the row has anywhere to go. Flush on the wall it does not — the check above stands at full
-   * throttle too — and 32in out it does, so the ram drives it the whole way and costs 3 MINORs.
+   * throttle too — and 48in out it does, so the ram drives it the whole way and costs 3 MINORs.
+   * (48, not 32: a rammed row now reads its HONEST velocity, zero once it reaches the wall, so
+   * the confirm window has to elapse on the way there — measured, 0 MINORs at 32in, 3 at 48,
+   * 6 at 64. The old 32 counted the artifacts' phantom jitter against the wall as carry.)
    *
    * ⚠️ THE VARIABLE USED TO BE THE THROTTLE, and it cannot be any more. A row wedged between a
    * bumper and the perimeter is barely displaceable now: measured, a full-throttle ram moves it
@@ -8531,7 +9142,7 @@ function pinScene(
    * own bulldozing carve-out, and the same verdict as the three checks above it.
    */
   const ramAtWall = wallRow(9, ['green', 'green', 'green'], true, 10, 1);
-  const ramWithRoom = wallRow(9, ['green', 'green', 'green'], true, 10, 1, 32);
+  const ramWithRoom = wallRow(9, ['green', 'green', 'green'], true, 10, 1, 48);
   check(
     '...but RAMMING a nine-row at full throttle, scattering it, does foul',
     ramWithRoom > 0,
@@ -8709,7 +9320,9 @@ function pinScene(
   // squirted forty inches by the impact. Placed 30in out, the robot drives the pile the whole
   // way into the wall and leans on it, which is what "shoving one against a wall" describes:
   // 2 MINORs for the journey, none for the leaning (asserted just above).
-  const shoved = clump(6, push, 8, FIELD_HALF - BALL_RADIUS - 35, FIELD_HALF - 60, ['green', 'green', 'green']);
+  // 55in out, not 30: artifacts read their HONEST velocity now, zero once the pile reaches the
+  // wall, so the confirm window has to elapse on the way there (see the ram scene above)
+  const shoved = clump(6, push, 8, FIELD_HALF - BALL_RADIUS - 55, FIELD_HALF - 80, ['green', 'green', 'green']);
   const shovedMove = clumpMoved;
   check(
     '...but shoving one against a wall with a FULL robot does',
@@ -9393,7 +10006,7 @@ function pinScene(
     const w = mkWorld('match', 'blue', 42);
     startMatch(w);
     w.match.phase = 'teleop';
-    for (const b of w.balls) if (b.state.kind === 'ground') b.pos = { x: 300, y: 300 };
+    w.balls.length = RAMP_SLOTS + 1; // the first ten are re-purposed below, the rest leave the field (an off-field POSITION is clamped back in, onto one point)
     fillBlueRail(w);
     w.robots[0].pos = { x: 0, y: -40 };
     const rider = w.balls[RAMP_SLOTS];

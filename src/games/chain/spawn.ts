@@ -229,6 +229,7 @@ export function createChainWorld(
     },
     events: [],
     rrContacts: [],
+    pinnedArtifacts: [],
     penalties: {
       episodes: {},
       pins: {},

@@ -1,7 +1,8 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../types';
 import * as C from '../config';
 import { classifierRect, footprintExtents, goalFaceNormal, goalLineValue, viewAngleOf, type Rect } from './field';
-import { dot, rot, clamp, hyp, datan2 } from '../math';
+import { dot, rot, clamp, hyp, datan2, dcos, dsin } from '../math';
+import { robotPenetration, type RobotSolids } from './artifactSolids';
 import { activeDrive, driveParams } from './drivetrain';
 
 const ALLIANCES: Alliance[] = ['red', 'blue'];
@@ -12,29 +13,6 @@ const ALLIANCES: Alliance[] = ['red', 'blue'];
  * the robot, so the footprint extends forward by its reach */
 export function robotExtents(r: RobotState): { front: number; rear: number; half: number } {
   return footprintExtents(r.spec);
-}
-
-/**
- * World-space corners of the robot's FOOTPRINT — the chassis plus whatever the intake sticks
- * out front. `robotCorners` is the CHASSIS only, which is right for anything about the body
- * and wrong for asking what the robot is touching: Rapier collides on the footprint, so a
- * robot pressing a structure with its intake is in contact with it while no chassis corner is
- * anywhere near. Measured against the gate handle: the chassis's front-most corner stopped
- * 0.5in short of the stub the robot was leaning on, so every chassis-corner contact test said
- * "not touching" and no torque was ever applied — "if I push on the gate all the way and keep
- * holding, it should apply torque to the robot but it doesn't".
- */
-export function footprintCornersOf(r: RobotState): Vec2[] {
-  const e = robotExtents(r);
-  return [
-    { x: e.front, y: e.half },
-    { x: e.front, y: -e.half },
-    { x: -e.rear, y: -e.half },
-    { x: -e.rear, y: e.half },
-  ].map((c) => {
-    const w = rot(c, r.heading);
-    return { x: r.pos.x + w.x, y: r.pos.y + w.y };
-  });
 }
 
 /** local (robot-frame) storage position of the held ball at `slot` (slot 0 = oldest,
@@ -50,7 +28,18 @@ export function heldSlotPos(spec: RobotState['spec'], slot: number, side: number
     if (slot <= 0) return { x: hl - 4, y: 0 }; // deep (loaded first)
     return { x: hl + 2, y: (side || -1) * 2.7 };
   }
-  const xs = [hl - 8, hl - 3, hl + 2];
+  /**
+   * A HELD ARTIFACT IS INSIDE THE ROBOT. The line of three ends with the front one's skin AT
+   * the roller line, not past it: a stored artifact is a physical thing now (it is a collider
+   * an incoming artifact piles up on, and a wall meets it), and the old front slot at
+   * `hl + 2` put 1.5in of it beyond the intake tip — a full robot parked tip-on-wall had a
+   * held artifact inside the wall plane, and a pile it shoved was held 4in off its footprint,
+   * out of reach of the G408 contact test. Measured from the tip so every legal length fits
+   * (the rear one stays inside the chassis whenever length + reach ≥ 15in, which every
+   * preset's floor satisfies).
+   */
+  const front = hl + C.INTAKE_PRESETS[spec.intake].reach - C.BALL_RADIUS;
+  const xs = [front - 4 * C.BALL_RADIUS, front - 2 * C.BALL_RADIUS, front];
   return { x: xs[Math.min(Math.max(slot, 0), 2)], y: 0 };
 }
 
@@ -936,17 +925,6 @@ export function stepGroundBall(b: Artifact, dt: number): void {
   }
 }
 
-/** hard field clamp for a ground ball after the Rapier solve: Rapier's soft
- * contacts allow ~0.2in penetration, but the containment invariant (a ball never
- * leaves the field / pokes through a goal face) is tolerance-tight, so snap the
- * position back onto the walls + goal faces. Position only — velocity was already
- * resolved by the solve. */
-export function clampGroundBall(b: Artifact): void {
-  const c = clampBallPosToStatics(b.pos);
-  b.pos.x = c.x;
-  b.pos.y = c.y;
-}
-
 export function stepFlightBall(b: Artifact, dt: number): void {
   b.pos.x += b.vel.x * dt;
   b.pos.y += b.vel.y * dt;
@@ -1019,103 +997,127 @@ export function collideBallBall(a: Artifact, b: Artifact): void {
 }
 
 /**
- * POSITION-ONLY de-overlap of two ground artifacts — a constraint pass, not a collision.
+ * THE BOUNCE OF AN IMPACT, computed before the artifact solve — velocity only, exact.
  *
- * `collideBallBall` also applies an impulse, which is right when two artifacts MEET but
- * wrong as a cleanup pass: by then the overlap was created by something else moving a ball
- * (a robot's bumper, a wall clamp, the channel eviction), and answering that with an
- * impulse injects energy and makes a pinned clump jitter. Here the ONLY job is that no two
- * artifacts occupy the same space.
+ * The artifact solve runs on SPECULATIVE contacts (`PHYS_BALL_PREDICTION`, 3.5in): that is what
+ * lets a chassis push a chain of artifacts in one pass without burying the first, and what makes
+ * "still inside a robot after the solve" mean "could not get out of the way". But Rapier applies
+ * NO restitution on a speculative contact — it closes the gap as a velocity clip and bounces
+ * whatever approach is left — so with the look-ahead alone every ball-ball and ball-wall impact
+ * landed at about 0.14 for a set 0.68 / 0.5, and a ball rear-ending the one ahead merged with
+ * it into a train ("they don't disperse"). Dropping the look-ahead brought the bounce back and
+ * the burials with it; this is the honest split.
+ *
+ * An IMPACT is a pair that is not yet touching (`BALL_FIRST_CONTACT_GAP`) and will meet within
+ * this tick under its current velocities: the time of impact is solved exactly for two circles,
+ * the normal is taken where they meet, and the equal-mass restitution impulse is applied along
+ * it. Against the field the predicted position is asked of `clampBallPosToStatics` — the same
+ * geometry authority the containment and the pin test use — and the push-back it returns is the
+ * surface normal. A pair already touching is a SUSTAINED contact (a ball pushed on its
+ * neighbour, a ball leaned on a wall), which never bounces and is the solver's. The solver
+ * then sees a pair that is separating and leaves it alone; its own restitution stays set and
+ * only ever acts on a contact this pass did not see. Frictionless, like the contacts.
  */
-export function separateBalls(a: Artifact, b: Artifact, tick = 0, scatter = false): void {
+export function bounceFirstContacts(ground: readonly Artifact[], dt: number): void {
+  const R = C.BALL_RADIUS;
+  const touch = 2 * R;
+  for (let i = 0; i < ground.length; i++) {
+    const a = ground[i];
+    for (let j = i + 1; j < ground.length; j++) {
+      const b = ground[j];
+      const dx = b.pos.x - a.pos.x;
+      const dy = b.pos.y - a.pos.y;
+      const d2 = dx * dx + dy * dy;
+      if (Math.sqrt(d2) - touch <= C.BALL_FIRST_CONTACT_GAP) continue; // touching: sustained
+      const vx = b.vel.x - a.vel.x;
+      const vy = b.vel.y - a.vel.y;
+      const rv = dx * vx + dy * vy;
+      if (rv >= 0) continue; // not closing
+      // |d + v t| = touch  ⇒  v²t² + 2(d·v)t + (d² − touch²) = 0, the earlier root
+      const vv = vx * vx + vy * vy;
+      const disc = rv * rv - vv * (d2 - touch * touch);
+      if (disc < 0) continue; // passes by
+      const t = (-rv - Math.sqrt(disc)) / vv;
+      // NOT "within this tick": the solver's speculative constraint starts clipping the approach
+      // a tick before the surfaces would meet (measured: a pair 0.68in apart closing 0.66in a
+      // tick lost 15% of its approach that tick and bounced at 0.49 for a set 0.68), so the
+      // bounce has to land before the clip ever sees a closing pair
+      if (t > dt * C.BALL_FIRST_CONTACT_LOOKAHEAD) continue;
+      const mx = dx + vx * t;
+      const my = dy + vy * t;
+      const ml = hyp(mx, my) || 1;
+      const nx = mx / ml;
+      const ny = my / ml; // a → b where they meet
+      const vn = vx * nx + vy * ny; // relative normal speed, negative closing
+      if (-vn < C.BALL_REST_SPEED) continue; // a nudge, not an impact
+      const jn = (-(1 + C.BALL_BALL_RESTITUTION) * vn) / 2; // equal masses
+      a.vel.x -= jn * nx;
+      a.vel.y -= jn * ny;
+      b.vel.x += jn * nx;
+      b.vel.y += jn * ny;
+    }
+  }
+  for (const b of ground) {
+    if (b.vel.x === 0 && b.vel.y === 0) continue;
+    // already ON the static it is heading for (a ball a robot is pressing into a wall): that is a
+    // sustained contact, the solver's, and never a bounce
+    const sp = hyp(b.vel.x, b.vel.y);
+    const near = { x: b.pos.x + (b.vel.x / sp) * C.BALL_FIRST_CONTACT_GAP, y: b.pos.y + (b.vel.y / sp) * C.BALL_FIRST_CONTACT_GAP };
+    const nc = clampBallPosToStatics(near);
+    if (nc.x !== near.x || nc.y !== near.y) continue;
+    const px = b.pos.x + b.vel.x * dt * C.BALL_FIRST_CONTACT_LOOKAHEAD;
+    const py = b.pos.y + b.vel.y * dt * C.BALL_FIRST_CONTACT_LOOKAHEAD;
+    const c = clampBallPosToStatics({ x: px, y: py });
+    const ux = c.x - px;
+    const uy = c.y - py;
+    const ul = hyp(ux, uy);
+    if (ul === 0) continue; // clear of the field this tick
+    const nx = ux / ul;
+    const ny = uy / ul; // the surface normal, into the field
+    const vn = b.vel.x * nx + b.vel.y * ny;
+    if (-vn < C.BALL_REST_SPEED) continue; // leaning on it, not hitting it
+    b.vel.x -= (1 + C.BALL_WALL_RESTITUTION) * vn * nx;
+    b.vel.y -= (1 + C.BALL_WALL_RESTITUTION) * vn * ny;
+  }
+}
+
+/**
+ * TWO ARTIFACTS ON ONE POINT get kicked apart — velocity only, deterministic (a hash of the
+ * ids and the tick, never Math.random), before the artifact solve, which owns every position.
+ *
+ * This used to also carry an off-centre KICK on every closing contact ("add slightly more
+ * randomness to each collision between balls to make them spread out more"), and that kick
+ * was standing in for collisions that did not work: the artifact contacts had 0.7 of in-plane
+ * friction on rotation-locked bodies and a speculative look-ahead that ate the restitution, so
+ * two artifacts meeting slid off together in a line and only a fudge could spread them. With
+ * the contacts honest the kick made things WORSE, measured on the nine-ball gate drain: the
+ * spread's minor-to-major axis ratio was 0.53 with it and 0.73 without, and without it every
+ * artifact came to rest where with it four were still jittering at ten seconds. A round ball
+ * meeting another off-centre scatters by geometry; that is the whole of it now.
+ */
+export function scatterBalls(a: Artifact, b: Artifact, time: number): void {
   const dx = b.pos.x - a.pos.x;
   const dy = b.pos.y - a.pos.y;
   const d2 = dx * dx + dy * dy;
-  const minD = C.BALL_RADIUS * 2;
-  if (d2 >= minD * minD) return;
-  // EXACTLY coincident: two artifacts stacked dead centre have no separating direction to
-  // read off their positions, and returning here is what lets a stack persist forever.
-  // Push them apart along a deterministic axis instead (ids are stable and unique).
-  if (d2 < 1e-9) {
-    const s = a.id < b.id ? 1 : -1;
-    a.pos.x -= s * C.BALL_RADIUS * 0.5;
-    b.pos.x += s * C.BALL_RADIUS * 0.5;
-    return;
-  }
-  const d = Math.sqrt(d2);
-  /**
-   * A CONTACT BETWEEN TWO SPHERES IS NEVER PERFECTLY CENTRAL.
-   *
-   * Two artifacts meeting on a foam tile touch at a point that is a little off the line
-   * between their centres — the seams, the tile, the spin each is carrying — so real ones
-   * scatter where these slid past each other in a tidy line. It matters most at the gate,
-   * where the drain now leaves straight (no synthesised fan at the exit) and the spread has
-   * to come from what the artifacts hit: measured, nine draining artifacts finished 3in apart
-   * across the tunnel. "Add slightly more randomness to each collision between balls to make
-   * them spread out more."
-   *
-   * Equal and opposite, so momentum is conserved, and DETERMINISTIC — a hash of the two ids
-   * and the tick, not Math.random, because this runs inside the lockstep sim.
-   */
-   // ...ONCE PER TICK, not once per relaxation pass. The pass runs six times, and six kicks a
-   // tick is not a contact, it is a vibration: measured, two overlapping artifacts flew 13.6in
-   // apart and the pinned-artifact squeeze went from 15 reversals a second to 32.
-  const t = Math.floor(tick * 60);
-  if (!scatter) return separate();
+  if (d2 >= C.BALL_COINCIDENT * C.BALL_COINCIDENT) return;
+  // COINCIDENT — no honest normal; kick the pair apart along an axis hashed from the ids and
+  // the tick, equal and opposite, so the next solve has something to separate. A ball already
+  // moving at the kick's speed is not kicked again: a pile of many coincident artifacts (a test
+  // parking them all on one point) is every pair kicking every tick, and stacked kicks turned
+  // that into an explosion that crossed the field.
+  const t = Math.floor(time * 60);
   let h = (a.id * 73856093) ^ (b.id * 19349663) ^ (t * 83492791);
   h = Math.imul(h ^ (h >>> 15), 2246822507);
-  h = Math.imul(h ^ (h >>> 13), 3266489909);
-  /**
-   * ...AND IN PROPORTION TO THE HIT. A flat kick applies the same shove to an artifact being
-   * crept onto as to one arriving at 40 in/s, which is not an off-centre contact, it is a
-   * vibration: it shoved artifacts through a 4.6in gap they do not fit through and set the
-   * pinned-artifact squeeze ringing again. The offset scales with how hard the two actually
-   * meet, so a pile being leaned on barely scatters and a drain hitting the pile in front of
-   * the gate scatters properly.
-   */
-  const rvn = ((b.vel.x - a.vel.x) * dx + (b.vel.y - a.vel.y) * dy) / d;
-  const closing = Math.min(Math.abs(rvn), C.BALL_CONTACT_SCATTER / C.BALL_CONTACT_SCATTER_FRAC);
-  const jitter =
-    (((h ^ (h >>> 16)) >>> 0) / 4294967296 - 0.5) * closing * C.BALL_CONTACT_SCATTER_FRAC;
-  const tanx = -(dy / d) * jitter;
-  const tany = (dx / d) * jitter;
-  a.vel.x -= tanx;
-  a.vel.y -= tany;
-  b.vel.x += tanx;
-  b.vel.y += tany;
-  separate();
-  return;
-  function separate(): void {
-  // a FRACTION of the overlap per pass — see BALL_SEPARATION_RELAX
-  const push = ((minD - d) / 2) * C.BALL_SEPARATION_RELAX;
-  const nx = (dx / d) * push;
-  const ny = (dy / d) * push;
-  a.pos.x -= nx;
-  a.pos.y -= ny;
-  b.pos.x += nx;
-  b.pos.y += ny;
-}
-}
-
-/** a HELD ball (stored in a robot's intake) is a solid immovable obstacle to an
- * incoming GROUND ball — so a full intake physically blocks the mouth: no more
- * can be funneled in past the balls already occupying it. Pushes the ground ball
- * only (the held ball is kinematic). */
-export function collideBallHeld(b: Artifact, held: Artifact): void {
-  const dx = b.pos.x - held.pos.x;
-  const dy = b.pos.y - held.pos.y;
-  const d2 = dx * dx + dy * dy;
-  const minD = C.BALL_RADIUS * 2;
-  if (d2 >= minD * minD || d2 < 1e-9) return;
-  const d = Math.sqrt(d2);
-  const nx = dx / d;
-  const ny = dy / d;
-  b.pos.x += nx * (minD - d);
-  b.pos.y += ny * (minD - d);
-  const vn = b.vel.x * nx + b.vel.y * ny;
-  if (vn < 0) {
-    b.vel.x -= nx * vn;
-    b.vel.y -= ny * vn;
+  const ang = ((h >>> 0) / 4294967296) * Math.PI * 2;
+  const kx = dcos(ang) * C.BALL_COINCIDENT_KICK;
+  const ky = dsin(ang) * C.BALL_COINCIDENT_KICK;
+  if (hyp(a.vel.x, a.vel.y) < C.BALL_COINCIDENT_KICK) {
+    a.vel.x -= kx;
+    a.vel.y -= ky;
+  }
+  if (hyp(b.vel.x, b.vel.y) < C.BALL_COINCIDENT_KICK) {
+    b.vel.x += kx;
+    b.vel.y += ky;
   }
 }
 
@@ -1148,7 +1150,8 @@ function clampOutOfRect(p: Vec2, rect: Rect): Vec2 {
 /**
  * Position-only clamp against the solid field: where a pushed artifact is actually allowed
  * to end up. The difference between the requested and the clamped position is the part of a
- * push the field refused — which is how `ballRobotFeedback` decides an artifact is PINNED.
+ * push the field refused — which is how `pinnedArtifacts` (physicsEngine.ts) measures
+ * `inField`, the part of a squeeze the field is taking, when it decides an artifact is PINNED.
  *
  * THE CLASSIFIER CHANNEL BELONGS IN HERE, and its absence was a real bug. This knew only
  * the perimeter walls and the goal faces, so an artifact pressed against the classifier was
@@ -1159,9 +1162,9 @@ function clampOutOfRect(p: Vec2, rect: Rect): Vec2 {
  * fell to 0.64in), and disabling the ball-ball separation changed nothing.
  *
  * With the channel here, the robot stalls on it exactly as it does on a wall, so nothing is
- * being driven in for the eviction to argue with. It also makes `clampGroundBall` enforce
- * the "artifacts never enter the classifier" invariant directly rather than leaving it all
- * to the eviction pass.
+ * being driven in for the eviction to argue with. It also makes the containment clamp
+ * in `world.ts` enforce the "artifacts never enter the classifier" invariant directly, and
+ * lets the pin test see the channel as something an artifact can be pinned against.
  */
 export function clampBallPosToStatics(p: Vec2): Vec2 {
   const f = C.FIELD_HALF - C.BALL_RADIUS;
@@ -1169,7 +1172,8 @@ export function clampBallPosToStatics(p: Vec2): Vec2 {
   for (const a of ALLIANCES) {
     const dist = goalLineValue(out, a); // perpendicular distance behind the face
     const pen = dist + C.BALL_RADIUS;
-    if (pen > 0 && dist < C.BALL_RADIUS * 3) {
+    // from ANY depth: a ground artifact behind a goal face is inside the goal, wherever it is
+    if (pen > 0) {
       const n = goalFaceNormal(a);
       out.x += n.x * pen;
       out.y += n.y * pen;
@@ -1318,41 +1322,6 @@ function ballRobotContact(
   return penFlank > 0 ? toWorld(0, s, penFlank, local.x, s * half) : null;
 }
 
-/**
- * IS AN ARTIFACT WEDGED IN A ROBOT — the test the jam rule asks, over the whole of the robot
- * that is SOLID to artifacts.
- *
- * The jam rule ("nothing squeezes through a gap it does not fit in") asked
- * `pointDepthInChassis`, on the grounds that the intake's mouth is open by design and an
- * artifact being swallowed is deep inside that box on purpose. The mouth is; the intake is
- * not. Its side rails are solid out to the roller line, and when you are GATE INTAKING the
- * thing nearest the wall is exactly those rails — so artifacts squeezed between an intake
- * and the wall were never covered by the rule and walked straight through: measured, 5in
- * artifacts through gaps of 3.0, 3.5, 4.0 and 4.6in, at every heading. "I'm gate intaking and
- * they get thru the gap."
- *
- * So: the chassis, plus the intake's FLANK, and nothing in between the rollers. Outboard of
- * the frame is not somewhere an artifact can be, whatever else the mouth allows.
- */
-export function ballWedgedInRobot(r: RobotState, p: Vec2): boolean {
-  if (pointDepthInChassis(r, p) + C.BALL_RADIUS > C.BALL_JAM_SLOP) return true;
-  const local = rot({ x: p.x - r.pos.x, y: p.y - r.pos.y }, -r.heading);
-  const hl = r.spec.length / 2;
-  const half = r.spec.width / 2;
-  const tip = hl + C.INTAKE_PRESETS[r.spec.intake].reach;
-  if (local.x <= hl || local.x > tip) return false;
-  // ...and the MOUTH is not the intake. An artifact within the roller span is where an
-  // artifact is supposed to be — freezing those froze every capture, and the drain with them.
-  if (Math.abs(local.y) <= C.intakeMouth(r.spec).mouthHalf) return false;
-  return C.BALL_RADIUS - (Math.abs(local.y) - half) > C.BALL_JAM_SLOP;
-}
-
-/** is `p` inside `rect` grown by `pad` — the test an artifact centre needs, since it is the
- * artifact's SKIN that has to clear a solid, not its centre. */
-function inflatedRect(rect: Rect, pad: number, p: Vec2): boolean {
-  return p.x > rect.x0 - pad && p.x < rect.x1 + pad && p.y > rect.y0 - pad && p.y < rect.y1 + pad;
-}
-
 /** push a ground ball out of a robot chassis, inheriting surface velocity.
  * A ball squeezed between the chassis and a wall is incompressible: the part
  * of the push the wall refuses transmits back onto the ROBOT (positional
@@ -1360,133 +1329,10 @@ function inflatedRect(rect: Rect, pad: number, p: Vec2): boolean {
  * against a pinned ball instead of grinding it through. Off-center balls keep
  * the tangential part of the push and squirt out sideways. */
 /**
- * POSITION-ONLY eviction of an artifact from a robot — the constraint half of
- * `collideBallRobot`, with none of its impulse, pin-feedback or push-drag work.
- *
- * That work is correct once per contact and wrong four times per tick, which is what the
- * final relaxation pass needs: it moves artifacts AFTER the robot solve has run, so it has
- * to be able to answer "is this artifact inside a chassis" without re-running the whole
- * collision response and double-charging the robot for the same shove.
- */
-export function evictBallFromRobot(b: Artifact, r: RobotState): void {
-  const contact = ballRobotContact(r, b.pos);
-  if (!contact) return;
-  const { nx, ny, pen } = contact;
-  const want = { x: b.pos.x + nx * pen, y: b.pos.y + ny * pen };
-  const c = clampBallPosToStatics(want);
-  const rx0 = want.x - c.x;
-  const ry0 = want.y - c.y;
-  /**
-   * A REFUSED PUSH IS REFUSED WHOLE — the leftover tangent is not a consolation prize.
-   *
-   * Taking the part the statics allowed looks like the conservative thing and it is how an
-   * artifact gets WALKED along a wall: the chassis is at an angle, so the push into it has a
-   * component along the wall, the wall keeps refusing the rest, and every tick moves the
-   * artifact a little further down — through gaps it does not fit through. Measured: 4 of a
-   * drain squeezed past a corner with 4.6in of clearance, on 5in artifacts.
-   *
-   * So either the artifact can be separated, or it cannot and stays where it is. When it
-   * cannot, the only real way out is sideways, and that is the search below — which has to
-   * find an actual exit before anything moves.
-   */
-  if (hyp(rx0, ry0) <= C.BALL_SETTLE_SLOP) {
-    b.pos.x = c.x;
-    b.pos.y = c.y;
-  }
-  /**
-   * ...AND WHEN THE PUSH IS REFUSED, IT GOES OUT SIDEWAYS. An artifact between a chassis and
-   * a wall is incompressible: something has to give, and the only direction left is ALONG the
-   * wall.
-   *
-   * Without this the eviction simply loses: the wall clamp puts back whatever the normal push
-   * gained and the artifact ends the tick still buried. Measured, a robot sliding along the
-   * red wall past an artifact resting on it — 2.32in of a 2.5in radius inside the chassis,
-   * with the artifact tracking the robot's own velocity, which is a robot driving THROUGH an
-   * artifact. "Balls go thru the chassis still."
-   *
-   * The robot-stall path does not answer this one and should not: `ballRobotFeedback` stalls
-   * a robot DRIVING INTO a pinned artifact, and a robot sliding PAST one is not driving into
-   * anything — it would have to be stopped by an artifact it is only brushing. A real ball
-   * squirts out of the gap instead, and that is what this does: the step is the part of the
-   * push the statics refused, in whichever direction along the wall clears the chassis sooner,
-   * so it is self-limiting (no refusal, no slide) and it converges over the relaxation passes
-   * rather than teleporting anything.
-   *
-   * DAMPED by the same fraction the artifact-artifact separation uses, and for the same
-   * reason: this runs once per relaxation pass, so a full correction per pass rings where a
-   * partial one converges. A ceiling tied to the robot's own speed was tried on top of that —
-   * the gap does close at the robot's speed, so it reads as the honest bound — and it is
-   * simply too tight to matter: at 0.03in a pass an artifact 2in inside a chassis is still
-   * inside it when the robot has driven away. The damping alone is what keeps this smooth,
-   * and the pile-grinding jitter case is quieter with the ceiling gone than it was before any
-   * of this (3 jump-frames, worst 1.56in, against 16 and 1.84 at the start of the session).
-   */
-  if ((globalThis as any).__noslide) return;
-  const rx = rx0;
-  const ry = ry0;
-  const rl = hyp(rx, ry);
-  if (rl < 1e-6) return; // the statics allowed the whole push — it is out
-  const still = ballRobotContact(r, b.pos);
-  if (!still || still.pen <= C.BALL_SETTLE_SLOP) return;
-  /**
-   * ONLY A CLOSING GAP SQUEEZES ANYTHING OUT.
-   *
-   * The slide is what a wedge does to what is caught in it, and a wedge that is not closing
-   * does nothing at all. Without this the same code walks an artifact THROUGH a standing gap:
-   * artifacts draining down the wall met a parked robot's corner, overlapped it by a hair
-   * under their own momentum, and were then helpfully squirted past it — 4 of them through a
-   * 4.6in opening, which a 5in artifact does not fit through however long it is pushed.
-   *
-   * So the question is whether the CHASSIS is moving into the artifact at this contact, which
-   * is the surface velocity there and not the chassis's translation: the case this exists for
-   * is a robot swinging a corner onto an artifact resting on a wall, and that closes the gap
-   * with no translation whatsoever.
-   */
-  const pv = robotPointVelocity(r, b.pos);
-  if (pv.x * nx + pv.y * ny <= 0) return;
-  const tx = -ry / rl;
-  const ty = rx / rl;
-  /**
-   * WHICH WAY OUT, AND IS THERE ONE AT ALL.
-   *
-   * An artifact squirts out of a wedge it is CAUGHT IN — a corner, a shallow pocket — and the
-   * exit is a couple of inches away. It does not travel the length of a robot's flank: that
-   * is not escaping a gap, it is being carried THROUGH one, and a 5in artifact does not pass
-   * a 4.6in opening no matter how long you push it. So the exit is looked for within
-   * BALL_ESCAPE_REACH and the slide only happens if one is found — which is the difference
-   * between the two cases, since a mid-flank artifact's nearest clear spot is half a robot
-   * away.
-   */
-  let exit = 0;
-  let dirOut = 0;
-  for (let d = C.BALL_ESCAPE_STEP; d <= C.BALL_ESCAPE_REACH && dirOut === 0; d += C.BALL_ESCAPE_STEP) {
-    for (const dir of [1, -1]) {
-      const q = { x: b.pos.x + tx * d * dir, y: b.pos.y + ty * d * dir };
-      const p = clampBallPosToStatics(q);
-      if (hyp(p.x - q.x, p.y - q.y) > C.BALL_SETTLE_SLOP) continue; // the statics refuse it too
-      if (ALLIANCES.some((al) => inflatedRect(classifierRect(al), C.BALL_RADIUS, p))) continue;
-      const hit = ballRobotContact(r, p);
-      if (!hit || hit.pen <= C.BALL_SETTLE_SLOP) {
-        exit = d;
-        dirOut = dir;
-        break;
-      }
-    }
-  }
-  if (dirOut === 0) return; // wedged with nowhere to go — it stays put and stays overlapping
-  const step = Math.min(rl * C.BALL_SEPARATION_RELAX, exit) * dirOut;
-  const q = { x: b.pos.x + tx * step, y: b.pos.y + ty * step };
-  const p = clampBallPosToStatics(q);
-  if (hyp(p.x - q.x, p.y - q.y) > C.BALL_SETTLE_SLOP) return;
-  b.pos.x = p.x;
-  b.pos.y = p.y;
-}
-
-/**
  * ⚠️ A FEEL CONSTANT ON TOP OF THE PHYSICAL ANSWER, NOT PHYSICS. Say so out loud, because
  * everything either side of it in this tick now IS physics.
  *
- * `solveBalls` answers "how much does a clump slow me down" honestly, and the honest answer
+ * `solveArtifacts` answers "how much does a clump slow me down" honestly, and the honest answer
  * is SMALL: `BALL_MASS` is 0.2lb against a `shoveMass` of 15-25, so the emergent steady-state
  * loss measured on 1 / 3 / 6 / 9 artifacts shoved across open floor is 0.4 / 1.1 / 2.2 / 2.8%,
  * where the old hand-written pass gave 9.9 / 18.5 / 18.6 / 18.7%. A real 5in wiffle ball
@@ -1516,7 +1362,7 @@ export function evictBallFromRobot(b: Artifact, r: RobotState): void {
  * stopped overwriting `r.vel` every tick: the chassis wedged 8.2 degrees off its commanded
  * heading and slid diagonally at 24.0 in/s. A damper cannot do that; it has nothing to wedge.
  *
- * ⚠️ IT RUNS BEFORE `solveBalls`, AND THAT IS NOT A LEFTOVER FROM THE OLD ORDER. Placed AFTER
+ * ⚠️ IT RUNS BEFORE `solveArtifacts`, AND THAT IS NOT A LEFTOVER FROM THE OLD ORDER. Placed AFTER
  * the solve it bleeds a velocity the robot has already been MOVED at, so the pose advances
  * and the velocity does not, and the next tick's drive answers the lower velocity with more
  * torque — the chassis creeps into the pile a little further every tick. Measured on the
@@ -1525,10 +1371,12 @@ export function evictBallFromRobot(b: Artifact, r: RobotState): void {
  * this side of the solve. In front of the solve it is simply the speed the robot arrives at,
  * which is a thing a seed velocity is allowed to be.
  */
-export function clumpDrag(b: Artifact, r: RobotState): void {
-  const contact = ballRobotContact(r, b.pos);
-  if (!contact) return;
-  const { nx, ny, cp } = contact;
+export function clumpDrag(b: Artifact, r: RobotState, solids: RobotSolids): void {
+  // the same shapes the solve pushes with, within the hair a speculative contact leaves
+  const q = robotPenetration(r, solids, b.pos, C.BALL_RADIUS, false, false, -C.BALL_PUSH_CONTACT);
+  if (!q) return;
+  const { nx, ny } = q;
+  const cp = { x: b.pos.x - nx * C.BALL_RADIUS, y: b.pos.y - ny * C.BALL_RADIUS };
   // the SURFACE's speed into the artifact, not the centre's — a robot turning a corner onto
   // an artifact is closing on it with no translation at all (`robotPointVelocity` carries ω×r)
   const pv = robotPointVelocity(r, cp);
@@ -1695,7 +1543,7 @@ export function landOnIntakeLid(b: Artifact, r: RobotState, prevZ: number): bool
 /**
  * ARTIFACT-side resolution against the INTAKE only. Its mouth is open by design (product
  * decision #10) and its funnel/slope geometry is per-preset, so Rapier has no collider
- * there. The CHASSIS belongs to Rapier now (see `solveBalls`); resolving it here as well
+ * there. The CHASSIS belongs to Rapier now (see `solveArtifacts`); resolving it here as well
  * was the bug — two position writes per tick, one driving an artifact into the classifier
  * and the next shoving it back out, 4.5in of jitter at zero velocity.
  */
@@ -1742,18 +1590,6 @@ function ballRobotFrontContact(
   if (mm === dl) return toWorld(-1, 0, R + dl, -hl, local.y);
   if (mm === dt) return toWorld(0, 1, R + dt, local.x, half);
   return toWorld(0, -1, R + db, local.x, -half);
-}
-
-/**
- * How deep an artifact centred at `p` is inside anything SOLID on the robot — chassis or the
- * intake's own structure — and zero where the mouth is open to it. This is `ballRobotContact`'s
- * own answer, exposed for the jam rule, which has to know "is this artifact against something
- * that will not let it through" and must not count the open notch, where an artifact being
- * swallowed sits several inches deep on purpose.
- */
-export function ballRobotPenetration(r: RobotState, p: Vec2): number {
-  const c = ballRobotContact(r, p);
-  return c ? c.pen : 0;
 }
 
 export function collideBallRobot(b: Artifact, r: RobotState): void {

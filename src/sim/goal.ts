@@ -1384,9 +1384,9 @@ export function updateRails(
            * Two different situations look identical to a proximity test, and neither a
            * footprint test nor a chassis test separates them on its own — both were tried:
            *
-           *  · the CHASSIS is about to shove it back. `solveBalls` gives a robot exactly one
-           *    collider and it is the chassis, so this is the only thing that can fight the
-           *    nudge. Re-flooring the velocity against it every tick is the doorway buzz:
+           *  · the CHASSIS is about to shove it back. In `solveArtifacts` the robot is a kinematic
+           *    sweep carrying its `artifactSolids` shapes, and the chassis is the one of them
+           *    that can fight the nudge here. Re-flooring the velocity against it every tick is the doorway buzz:
            *    60 reversals in two seconds, peaking at 67 in/s.
            *  · it is sitting in an IDLE intake mouth. Nothing will move it, and shoving it
            *    deeper only starts the same fight against the eviction pass.
@@ -1397,10 +1397,18 @@ export function updateRails(
            * that as pinned throttled it to 5 of 9 artifacts in 14s, against 9 of 9 at a
            * 0.32s mean gap (the no-robot rate) once the nudge is allowed to do its job.
            */
+          /**
+           * TOUCHING COUNTS. The artifact solve never lets an artifact into a chassis, so one
+           * held against a bumper sits exactly a radius off it — a depth of -R, never deeper.
+           * Testing for 0.8R (i.e. half an inch INSIDE the chassis) meant a blocked artifact
+           * was never pinned, the floor re-armed every tick, the chassis refused it every
+           * tick, and the artifact buzzed in place: 118 reversals in two seconds at 3.5 in/s.
+           */
+          const pinDepth = -(C.BALL_RADIUS + C.EXIT_PIN_TOUCH);
           const pinned = world.robots.some((rb) => {
-            if (pointDepthInChassis(rb, ahead.pos) > -C.BALL_RADIUS * C.EXIT_PIN_FRAC) return true;
+            if (pointDepthInChassis(rb, ahead.pos) > pinDepth) return true;
             const taking = (commands.get(rb.id)?.intake ?? false) || rb.autoIntake;
-            return !taking && pointDepthInRobot(rb, ahead.pos) > -C.BALL_RADIUS * C.EXIT_PIN_FRAC;
+            return !taking && pointDepthInRobot(rb, ahead.pos) > pinDepth;
           });
           if (!pinned) {
             // ...and it is shoved at the speed of the artifact arriving behind it, not at a
@@ -1507,7 +1515,7 @@ export function updateRails(
        * artifact last leaned on decides which way it tips off the lip, and that is worth a
        * couple of inches a second either way whether it arrived at 20 or at 40 ("balls come
        * down as a straight line too much, a slight variation please"). The bulk of the spread
-       * still comes from what each one runs into — see the contact scatter in `separateBalls`.
+       * still comes from what each one runs into — see the contact scatter in `scatterBalls`.
        */
       const drift = goalSide(a) * railExitLean(st0.s, b.id, st0.overflow) * C.EXIT_DRIFT;
       /**

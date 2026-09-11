@@ -749,6 +749,12 @@ export interface World {
   /** robot-robot contact pairs registered THIS tick (transient, by robot id,
    * a < b) — consumed by the penalty engine */
   rrContacts: { a: number; b: number }[];
+  /** ground artifacts the collision engine found PINNED at the end of the last tick (ids) —
+   *  ones a robot could not move because a wall, another artifact or another robot was behind
+   *  them. Carried into the next tick so a robot resting on one keeps resting on it, instead of
+   *  re-discovering the pin a hair later every tick. Derived state, plain JSON, in every
+   *  snapshot; absent from an older snapshot ⇒ empty. See . */
+  pinnedArtifacts?: number[];
   /** persistent penalty-engine state (Section 11 fouls) */
   penalties: PenaltyState;
   // Add gameSettings to World interface

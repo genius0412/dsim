@@ -1,28 +1,27 @@
-import type { Alliance, RobotCommand, Vec2, World } from '../types';
+import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../types';
 import * as C from '../config';
 import {
-  clampGroundBall,
+  clampBallPosToStatics,
   collideBallBall,
-  collideBallHeld,
   collideBallRect,
+  bounceFirstContacts,
   clumpDrag,
+  driveIntent,
   collideBallRobot,
   landOnIntakeLid,
-  ballWedgedInRobot,
-  pointDepthInRobot,
   collideBallStatic,
-  separateBalls,
-  evictBallFromRobot,
+  scatterBalls,
   squareUpRobots,
   stepFlightBall,
   stepGroundBall,
   heldSlotPos,
 } from './physics';
 import { rot, approach, hyp } from '../math';
-import { solveBalls, solveRobots } from './physicsEngine';
+import { fieldPushback, pinnedArtifacts, solveArtifacts, solveRobots, type PinnedCircle, type SweepFrom } from './physicsEngine';
+import { robotPenetration, robotSolids, type RobotSolids } from './artifactSolids';
 import { decodeColliders } from '../games/decode/colliders';
 import { classifierRect } from './field';
-import { intakeClaims, updateRobot, updateRobotActions, type DriveWrench } from './robot';
+import { intakeClaims, intakeSuction, updateRobot, updateRobotActions, type DriveWrench } from './robot';
 import { driveParams } from './drivetrain';
 import { checkGoalEntry, doorwayArtifact, gateColliderPos, updateBasins, updateGates, updateRails } from './goal';
 import { updateHumanPlayers } from './humanPlayer';
@@ -41,6 +40,79 @@ const ZERO_CMD: RobotCommand = {
   fire: false,
 };
 
+/** everything the robot solve writes, so a round can be re-run from the same start */
+interface RobotSnapshot {
+  r: RobotState;
+  pos: Vec2;
+  vel: Vec2;
+  heading: number;
+  angVel: number;
+  slipX: number | undefined;
+  slipY: number | undefined;
+  slipW: number | undefined;
+}
+
+function snapshotRobots(world: World): RobotSnapshot[] {
+  return world.robots.map((r) => ({
+    r,
+    pos: { x: r.pos.x, y: r.pos.y },
+    vel: { x: r.vel.x, y: r.vel.y },
+    heading: r.heading,
+    angVel: r.angVel,
+    slipX: r.slipX,
+    slipY: r.slipY,
+    slipW: r.slipW,
+  }));
+}
+
+function restoreRobots(snap: RobotSnapshot[]): void {
+  for (const s of snap) {
+    s.r.pos = { x: s.pos.x, y: s.pos.y };
+    s.r.vel = { x: s.vel.x, y: s.vel.y };
+    s.r.heading = s.heading;
+    s.r.angVel = s.angVel;
+    s.r.slipX = s.slipX;
+    s.r.slipY = s.slipY;
+    s.r.slipW = s.slipW;
+  }
+}
+
+/**
+ * Put a ground artifact somewhere it can be — once, at a STATE TRANSITION.
+ *
+ * The artifact solve is the only thing that moves a ground artifact, and it can only move
+ * one that began the tick outside every solid. A flight artifact that lands inside a chassis
+ * (its arc never asked), or one the rail released where a robot has since arrived, would
+ * otherwise start its ground life with its centre inside a solid, where no contact normal is
+ * honest. So the moment an artifact BECOMES ground it is walked out of any robot and any
+ * static it is inside, along the shortest way out. This is a placement, not a pass: it runs
+ * once per artifact per transition and never on a resting one.
+ */
+export function placeGroundArtifact(world: World, b: Artifact, solids: ReadonlyMap<number, RobotSolids>): void {
+  for (let i = 0; i < 3; i++) {
+    let moved = false;
+    for (const r of world.robots) {
+      const sol = solids.get(r.id);
+      if (!sol) continue;
+      const q = robotPenetration(r, sol, b.pos, C.BALL_RADIUS);
+      if (!q || q.pen <= 0) continue;
+      b.pos.x += q.nx * q.pen;
+      b.pos.y += q.ny * q.pen;
+      moved = true;
+    }
+    const c = clampBallPosToStatics(b.pos);
+    if (c.x !== b.pos.x || c.y !== b.pos.y) {
+      b.pos.x = c.x;
+      b.pos.y = c.y;
+      moved = true;
+    }
+    if (!moved) return;
+  }
+}
+
+/** how many rounds the last tick's two-solve loop ran — a diagnostic for tests, not state */
+export let lastTickRounds = 0;
+
 /** advance the world by one fixed timestep. Deterministic: consumes only the
  * given commands and the world's own seeded PRNG. */
 export function step(world: World, dt: number, commands: Map<number, RobotCommand>): void {
@@ -51,8 +123,11 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
 
   // Create a map for the actual commands being executed by each robot this tick
   const actualCommands = new Map<number, RobotCommand>();
+  // where each robot's motion began this tick — the artifact solve sweeps it from here
+  const sweepFrom = new Map<number, SweepFrom>();
 
   for (const r of world.robots) {
+    sweepFrom.set(r.id, { x: r.pos.x, y: r.pos.y, heading: r.heading });
     let currentCmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
 
     // Auto pathing logic: if active, override driver commands
@@ -84,11 +159,6 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
          * backwards, after which the path robot passed straight through it. With the sweep
          * velocity set, peak penetration is 0.00 in and the bystander is pushed along.
          *
-         * `solveBalls` has always given its kinematic chassis body `r.vel` for the same reason;
-         * the robot solve was the inconsistent one. It is also simply the truth — this robot IS
-         * travelling at that speed, and everything else that reads `vel` (the HUD, shot lead
-         * compensation, the G422 pin test's speed gate) was being told otherwise.
-         *
          * A JUMP IS NOT A SWEEP. `initializePathTraversal` places the chassis on the path's
          * start point, and a sequence can step between segments that do not touch — both are
          * teleports of arbitrary size, and dividing one by `dt` gives thousands of in/s that
@@ -99,14 +169,47 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
          */
         const swept = { x: (r.pos.x - wasAt.x) / dt, y: (r.pos.y - wasAt.y) / dt };
         const walkable = driveParams(r.spec, r.butterflyTank).maxSpeed * 1.5;
-        r.vel = hyp(swept.x, swept.y) <= walkable ? swept : { x: 0, y: 0 };
+        const isSweep = hyp(swept.x, swept.y) <= walkable;
+        r.vel = isSweep ? swept : { x: 0, y: 0 };
         r.angVel = 0;
+        // a jump is not a sweep for the artifact solve either: it starts where the jump ended
+        if (!isSweep) sweepFrom.set(r.id, { x: r.pos.x, y: r.pos.y, heading: r.heading });
       } else {
         // If autoPathActive was true but no path data found in robot, deactivate
         r.autoPathActive = false;
       }
     }
     actualCommands.set(r.id, currentCmd);
+  }
+
+  // ---- ground artifacts: the velocity-only pre-passes ----------------------
+  // Rolling friction + rest snap, the bounce of any impact that will land this tick (the
+  // solver's speculative contacts carry none), and the kick that separates two artifacts on one
+  // point. Velocities only: the artifact solve below is the ONLY thing that moves a ground
+  // artifact, and these are what it starts from.
+  const ground = world.balls.filter((b) => b.state.kind === 'ground');
+  for (const b of ground) stepGroundBall(b, dt);
+  bounceFirstContacts(ground, dt);
+  for (let i = 0; i < ground.length; i++) {
+    for (let j = i + 1; j < ground.length; j++) scatterBalls(ground[i], ground[j], world.time);
+  }
+  // ...and the ONE robot-side feel term, a damper on the speed a robot arrives at a clump
+  // with. It runs BEFORE the drive so the wrench is built on the damped velocity and the
+  // tyres never read it as slip — see `clumpDrag`, which also explains why it is kept.
+  // the robot solids are what every artifact pass measures against, so they are built once,
+  // here, and handed to the drag, the pin test and both solves
+  const heldBalls = world.balls.filter((b) => b.state.kind === 'held');
+  const solids = new Map<number, RobotSolids>();
+  for (const r of world.robots) solids.set(r.id, robotSolids(r, heldBalls));
+  for (const b of ground) {
+    for (const r of world.robots) if (!r.autoPathActive) clumpDrag(b, r, solids.get(r.id)!);
+  }
+
+  // ...and the intake's pull on whatever is in its mouth, which the solve then answers
+  // (see : written after the solve it was a velocity the artifact never had)
+  for (const r of world.robots) {
+    if (r.passive) continue;
+    intakeSuction(world, r, actualCommands.get(r.id) ?? ZERO_CMD);
   }
 
   // ---- robots (movement) -------------------------------------------------
@@ -120,12 +223,6 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
     }
   }
 
-  // robot translation + velocity: resolved by Rapier (walls, goal faces,
-  // classifier channels, mass-weighted robot-robot shoving, velocity-kill). The
-  // bespoke square-up pass then rotates tilted chassis flush and records the
-  // robot-robot contacts (rrContacts) the penalty engine consumes.
-  // This will run for all robots. For autoPathActive robots, since their velocities
-  // were zeroed, they should ideally not move much due to physics, unless pushed.
   // anticipate this tick's gate-arm lift so the handle collider retracts on the SAME
   // tick a robot rams it open (no 1-tick jolt) — updateGates applies the matching lift.
   const gateCol: Record<Alliance, number> = {
@@ -137,11 +234,339 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
   // runs before the pass that records them — so the list has to survive the drive phase and
   // carry last tick's contacts into it. Nothing between the top of `step` and here reads it.
   world.rrContacts.length = 0;
-  // where each robot stood BEFORE the solve moved it — the artifact eviction may undo this
-  // tick's advance and nothing more, so that artifacts can never walk a parked chassis.
-  const prePos = new Map<number, Vec2>();
-  for (const r of world.robots) prePos.set(r.id, { x: r.pos.x, y: r.pos.y });
-  const preVels = solveRobots(world, dt, decodeColliders, gateCol, drive);
+
+  /**
+   * THE TWO SOLVES, AND THE LOOP THAT MAKES THEM ONE.
+   *
+   * The robot solve decides where every robot ends up: walls, the gate handle, other robots,
+   * the drive. Artifacts are not in it. The artifact solve then sweeps each robot from where
+   * it began the tick to where the robot solve put it, as an immovable body, and moves every
+   * artifact that can get out of its way. Whatever is STILL inside a robot afterwards is an
+   * artifact that could not — it is against a wall, a corner, another robot, or a pile that
+   * is — and that is the one thing the robot solve needed to know and did not.
+   *
+   * So the tick is put back to its start and the robot solve is re-run with those artifacts
+   * as walls. The robot stops against them the way it stops against anything else, the
+   * artifact solve runs again on the corrected motion, and if nothing new is pinned the tick
+   * stands. Every element ends the tick somewhere it is allowed to be: the robot cannot
+   * occupy an artifact's space, an artifact cannot occupy a robot's, a wall's, or another
+   * artifact's, and nothing has been written by hand to make it so. There is no configuration
+   * with nowhere to go, because the one body that can yield — the robot — is the one made to.
+   *
+   * Almost every tick runs once. A robot leaning on a pinned artifact re-finds it and runs
+   * twice, which is what `ARTIFACT_PIN_SLOP` explains. The set of pinned artifacts can only
+   * grow within a tick, so the loop converges; `PHYS_PIN_ROUNDS` is a cap, not the count.
+   */
+  const claimed = intakeClaims(world, actualCommands);
+  const doorway = new Set<number>();
+  for (const a of ['red', 'blue'] as const) {
+    const d = doorwayArtifact(world, a);
+    if (d) doorway.add(d.id);
+  }
+
+  const robotsAtStart = snapshotRobots(world);
+  const ballsAtStart = ground.map((b) => ({ b, pos: { x: b.pos.x, y: b.pos.y }, vel: { x: b.vel.x, y: b.vel.y } }));
+  /**
+   * LAST TICK'S PINS SEED THIS TICK'S FIRST ROUND. A robot resting on a pinned artifact rests a
+   * hair outside it (the pinned circle carries the robot world's own slop), so a tick that
+   * started with no pins would let it advance that hair, re-find the pin, and re-solve — every
+   * tick, creeping. The seed is filtered the same way the loop keeps a pin: still resting
+   * against a robot, and still with something behind it. Everything else is re-derived.
+   */
+  const wasPinned = new Set(world.pinnedArtifacts ?? []);
+  const pinnedIds = new Set<number>();
+  let seedReport: ReturnType<typeof pinnedArtifacts> | null = null;
+  if (wasPinned.size > 0) {
+    seedReport = pinnedArtifacts(world, claimed, doorway, solids, wasPinned);
+    for (const b of seedReport.pinned) {
+      if (wasPinned.has(b.id)) pinnedIds.add(b.id);
+    }
+  }
+  const startOf = new Map(ballsAtStart.map((s) => [s.b.id, s]));
+  const robotStartOf = new Map(robotsAtStart.map((s) => [s.r.id, s]));
+  /**
+   * THE PINNED CIRCLES, built from the pin report: where each pinned artifact began the tick, the
+   * velocity it has, and a radius chosen so that A PIN MAY UNDO THE ROBOT'S OWN ADVANCE AND
+   * NOTHING MORE.
+   *
+   * The circle is sized against the robot's START pose and every one of its solids: tangent to
+   * the nearest solid, plus `PHYS_PIN_INFLATE` only for a robot PUSHING it (`pushingPin` — the
+   * drive intent along the pin normal), capped at the full inflated ball. So a robot that drove
+   * into a pinned ball this tick is re-solved from where it started and stops at the inflation
+   * (which keeps it clear of the robot world's own slop), and a robot not driving at the ball is
+   * not pushed at all, however deep a ball buried itself in it. Before this the circle was
+   * always the full inflated ball, and a drain rolling onto a parked intake shoved it 0.8in
+   * ("when gate intaking, the balls that come down should not be pushing the robot away"). The
+   * circle MOVES only when the robot is pushing the ball, and then only across or away from the
+   * robot: the component pointing at the robot's centre is the ball's own motion and is dropped;
+   * what is left is the squirt, and the robot may follow it.
+   *
+   * A pinned ball at rest is a FIXED wall: the fraction of an inch a second the solver leaves on
+   * a squeezed ball is not motion, and carried into the circle it walked a robot stalled square
+   * on a wall ball 13 degrees off its heading in two seconds.
+   */
+  /**
+   * Is the robot PUSHING this pinned artifact — driving into it, by its command, along the
+   * robot→artifact normal? Not "did it advance": a robot stopped on its pin has no advance and
+   * was still driving, and reading that as not-pushing froze the squirt it was driving (the
+   * flat-back squeeze went from 50in along the wall to 5). The drive intent is what a driver
+   * means; a parked intake with the drain arriving on it means nothing, whatever hits it.
+   */
+  const pushingPin = (pin: { r: RobotState; nx: number; ny: number }): boolean => {
+    const intent = driveIntent(pin.r, actualCommands.get(pin.r.id));
+    return intent.x * pin.nx + intent.y * pin.ny > C.ARTIFACT_PIN_DRIVE;
+  };
+  const circles = (pins: ReadonlyMap<number, { r: RobotState; pen: number; nx: number; ny: number }>): PinnedCircle[] =>
+    ground
+      .filter((b) => pinnedIds.has(b.id))
+      .map((b) => {
+        const s = startOf.get(b.id)!;
+        const pin = pins.get(b.id);
+        let vx = 0;
+        let vy = 0;
+        let radius = C.BALL_RADIUS + C.PHYS_PIN_INFLATE;
+        if (pin) {
+          /**
+           * Sized against the robot's START pose and EVERY one of its solids — the pin test
+           * skips the held artifacts for the doorway ball and the chassis for a claimed one, but
+           * the robot solve's colliders skip nothing, and a circle tangent to the wrong shape
+           * overlapped the right one and crept a parked intake back 0.3in over a drain. The
+           * circle is the full inflated ball where the robot has at least the inflation of room
+           * to drive in, and tangent to the nearest solid where it does not: a robot that drove
+           * into a pinned ball this tick is re-solved from where it started and stops at the
+           * inflation (no forming-tick overshoot), and a robot standing still is not moved.
+           */
+          const snap = robotStartOf.get(pin.r.id);
+          const rStart: RobotState = snap ? { ...pin.r, pos: snap.pos, heading: snap.heading } : pin.r;
+          const sol = solids.get(pin.r.id);
+          const q0 = sol ? robotPenetration(rStart, sol, s.pos, C.BALL_RADIUS, false, false, -10) : null;
+          const penStart = q0 ? q0.pen : -Infinity;
+          /**
+           * The inflation belongs to a robot DRIVING into the pin: it is what the robot world's
+           * soft contact compresses under the drive force (0.14in at full throttle), so without
+           * it a tangent circle re-sized each tick to the compressed pose let the robot creep
+           * into the ball 0.14in a tick and the ball 0.2in into the wall. A robot not driving
+           * toward the ball has nothing compressing it and gets the tangent circle: it is never
+           * moved, however the ball arrived.
+           */
+          const pushing = pushingPin(pin);
+          radius = Math.min(C.BALL_RADIUS + C.PHYS_PIN_INFLATE, C.BALL_RADIUS - penStart + (pushing ? C.PHYS_PIN_INFLATE : 0));
+          // ...and it MOVES only when the robot is the one pushing it: a ball's velocity is the
+          // robot's doing only if the robot is driving into it. A parked intake with the drain
+          // arriving on it is not, and a moving circle beside its held artifacts found something
+          // to shove whichever way it was clipped (0.4in over a drain); a fixed circle tangent to
+          // the chassis cannot
+          if (pushing && hyp(b.vel.x, b.vel.y) >= C.BALL_REST_SPEED) {
+            // "into the robot" is toward its CENTRE, not along the one contact normal the pin
+            // test reported: a ball against a HELD artifact at the mouth's edge has a diagonal
+            // normal, and what was left after dropping that component still ran into the
+            // chassis face and shoved a parked intake back at 24 in/s
+            const ox = b.pos.x - pin.r.pos.x;
+            const oy = b.pos.y - pin.r.pos.y;
+            const ol = hyp(ox, oy) || 1;
+            const into = (b.vel.x * ox + b.vel.y * oy) / ol; // < 0: toward the robot
+            vx = b.vel.x - (Math.min(0, into) * ox) / ol;
+            vy = b.vel.y - (Math.min(0, into) * oy) / ol;
+          }
+        }
+        return { x: s.pos.x, y: s.pos.y, vx, vy, r: Math.max(radius, 0.1) };
+      });
+  let pinned: PinnedCircle[] = circles(seedReport?.pins ?? new Map());
+  let preVels = new Map<number, Vec2>();
+  let buried: ReturnType<typeof pinnedArtifacts>['buried'] = [];
+  let finalPinned: number[] = [];
+  let lastPins: ReadonlyMap<number, { r: RobotState; pen: number; nx: number; ny: number }> = seedReport?.pins ?? new Map();
+  for (let round = 0; round < C.PHYS_PIN_ROUNDS; round++) {
+    lastTickRounds = round + 1;
+    if (round > 0) {
+      restoreRobots(robotsAtStart);
+      /**
+       * The artifacts go back to where they BEGAN the tick, but keep the VELOCITY the last round
+       * gave them. Restoring the velocity too threw away the one thing the round had found out:
+       * a ball squeezed a few degrees off square between a bumper and a wall squirts out along
+       * the wall at 100+ in/s under the robot's push, and with the robot now stopped on its pin
+       * the re-solve gave it 5-20 in/s instead — so the ball crept, the robot sat on it, and the
+       * next tick did it all again ("artifacts act like they are fixed in place"). The velocity
+       * is what the push did to the ball; the pin only decides how far the ROBOT gets to go.
+       */
+      for (const s of ballsAtStart) s.b.pos = { x: s.pos.x, y: s.pos.y };
+    }
+    preVels = solveRobots(world, dt, decodeColliders, gateCol, drive, pinned, solids);
+    solveArtifacts(world, dt, decodeColliders, claimed, doorway, solids, sweepFrom);
+    /**
+     * THE FIELD IS AN INVARIANT FOR ARTIFACTS TOO, and it is held HERE, before the pin test —
+     * the same shape as  for robots. The artifact solve holds the perimeter,
+     * the goal faces and the classifier itself to within its resting slop; this only acts past
+     * , which an honest contact never reaches. But a squeeze the solve could
+     * not satisfy is split between BOTH things squeezing — an artifact swept into a wall by a
+     * chassis came out 0.4in into the wall and 0.07in into the chassis, and a pin test that saw
+     * only the chassis side missed it while a clamp run after the test then pushed the whole
+     * 0.47in into the chassis where nothing would look again until next tick. Walking it out of
+     * the field first puts the shortfall where the pin test measures it.
+     */
+    for (const b of ground) {
+      const c = clampBallPosToStatics(b.pos);
+      if (hyp(c.x - b.pos.x, c.y - b.pos.y) > C.BALL_CONTAIN_SLOP) {
+        b.pos.x = c.x;
+        b.pos.y = c.y;
+      }
+      /**
+       * ...AND AN ARTIFACT ON THE FIELD HAS NO VELOCITY INTO IT. A ball squeezed between a
+       * kinematic chassis and a static wall is between two things the solver cannot move, and
+       * the compromise it leaves is a velocity into the wall — 58 in/s, measured — on a ball
+       * whose position the clamp above has just put back on the wall. Carried into the pinned
+       * circle that velocity told the robot solve the ball was leaving; carried into the next
+       * tick it read as an impact and bounced the ball back off the wall at 29 in/s, and the
+       * robot off the ball. The wall is an invariant for the velocity too: whatever the solve
+       * left pointing into it is removed, and the sideways part — the squirt — is kept.
+       */
+      const u = fieldPushback(b.pos);
+      if (u) {
+        const into = b.vel.x * u.x + b.vel.y * u.y;
+        if (into < 0) {
+          b.vel.x -= into * u.x;
+          b.vel.y -= into * u.y;
+        }
+      }
+      /**
+       * (Only the field. The same clip against a ROBOT the ball touches was tried and removed: it
+       * projected along the one contact normal the pin test reports, which in a funnel throat is
+       * a wedge slope's diagonal, so a compromise velocity pointing at the robot came out as a
+       * sideways drift — a dead-centre wall ball crept 6.7in along the wall under a stalled robot
+       * and a squeezed artifact jittered at 40 Hz. The solver's compromise on a ball squeezed
+       * against a chassis stays where it is harmless: the pinned circle ignores it unless the
+       * robot is pushing, and the field clip catches the part that would bounce.)
+       */
+    }
+    const found = pinnedArtifacts(world, claimed, doorway, solids, pinnedIds);
+    buried = found.buried;
+    finalPinned = found.pinned.map((b) => b.id);
+    lastPins = found.pins;
+    let grew = false;
+    for (const b of found.pinned) {
+      if (pinnedIds.has(b.id)) continue;
+      pinnedIds.add(b.id);
+      grew = true;
+    }
+    if (!grew) break;
+    /**
+     * The walls for the next round: the pinned artifacts where they BEGAN the tick, MOVING at
+     * the velocity this round's artifact solve gave them. A ball that truly cannot move has
+     * none, and is the fixed wall it always was. A ball squirting out of a squeeze — a few
+     * degrees off square between a bumper and a wall, sliding along the wall at 100+ in/s — is
+     * a wall that gets out of the way during the step, and the robot solve lets the robot
+     * follow it. A fixed circle at either position deadlocked: it stopped the robot dead, the
+     * restore threw the squirt away, and the next tick repeated it, the ball creeping at 5 in/s
+     * under a robot parked on it.
+     */
+    pinned = circles(found.pins);
+  }
+  world.pinnedArtifacts = finalPinned;
+  /**
+   * A PINNED ARTIFACT UNDER A ROBOT THAT IS NOT PUSHING IT IS WHERE IT WAS. Squeezed between a
+   * kinematic chassis and the field the solver has no answer it can settle on — position or
+   * velocity — and what it leaves alternates sign: an artifact under a robot parked 1.25in onto
+   * the human-player column jittered 0.19in a tick, forty reversals a second, for as long as the
+   * robot stood there. Its position goes back to where it began the tick and its velocity to
+   * zero; the robot, which is not driving, is not moved either. A robot pushing the ball is a
+   * different case: its squirt is the robot's doing and the solve's answer stands.
+   */
+  for (const b of ground) {
+    if (!world.pinnedArtifacts.includes(b.id)) continue;
+    const pin = lastPins.get(b.id);
+    if (!pin || pushingPin(pin)) continue;
+    const s = startOf.get(b.id);
+    if (s) {
+      b.pos.x = s.pos.x;
+      b.pos.y = s.pos.y;
+    }
+    b.vel.x = 0;
+    b.vel.y = 0;
+  }
+
+  /**
+   * A STRUCK ARTIFACT MAY NOT LEAVE FASTER THAN WHATEVER DROVE IT.
+   *
+   * Two EQUAL masses with restitution e <= 1 give the struck body ((1+e)/2)*v, which is never
+   * more than the striker's own v. The solve breaks that when the striker is an artifact pressed
+   * against a KINEMATIC chassis and re-driven every tick: it cannot recoil, so the solver reads
+   * it as infinite mass and delivers (1+e)*v instead. Measured, a robot ramming a pile at 85 in/s
+   * sent the ball beyond it at exactly `BALL_MAX_SPEED` — the clamp catching a collision that
+   * wanted to give it still more — and a ball faster than the robot can never be caught again:
+   * "if I drive in full speed, third ball bumps with the second ball and doesn't get intaked".
+   *
+   * So the round's answer is bounded by what could physically have driven it: the artifact's own
+   * speed at the START of the tick, the start speed of everything in its contact CLUMP, and the
+   * speed of any robot touching that clump. A clump rather than one hop because a chassis pushes
+   * a chain in a single pass by design — capping a ball on its neighbour's start speed alone
+   * froze the back of a pile for a tick and reintroduced the burial the look-ahead exists to
+   * prevent. Every velocity pre-pass (`bounceFirstContacts`, `scatterBalls`, `clumpDrag`,
+   * `intakeSuction`) runs BEFORE the snapshot, so their impulses are already in the bound and
+   * only what the SOLVER added past it is clipped.
+   *
+   * A PINNED artifact is exempt. A ball squeezed a few degrees off square between a bumper and a
+   * wall has to travel 1/tan(theta) times the robot's own advance just to stay clear of the
+   * closing wedge — that is the geometry, not an error — and holding it to the robot's speed
+   * shuts the wedge and parks the robot on the ball, which is the failure the pin work removed.
+   */
+  {
+    const look = C.PHYS_BALL_PREDICTION * C.PHYS_LENGTH_UNIT;
+    const touch = 2 * C.BALL_RADIUS + look;
+    const parent = ballsAtStart.map((_, i) => i);
+    const find = (i: number): number => {
+      let k = i;
+      while (parent[k] !== k) {
+        parent[k] = parent[parent[k]];
+        k = parent[k];
+      }
+      return k;
+    };
+    for (let i = 0; i < ballsAtStart.length; i++) {
+      for (let j = i + 1; j < ballsAtStart.length; j++) {
+        const a = ballsAtStart[i];
+        const c = ballsAtStart[j];
+        if (hyp(a.pos.x - c.pos.x, a.pos.y - c.pos.y) > touch) continue;
+        const ra = find(i);
+        const rb = find(j);
+        if (ra !== rb) parent[ra] = rb;
+      }
+    }
+    const capOf = new Map<number, number>();
+    const raise = (root: number, v: number) => capOf.set(root, Math.max(capOf.get(root) ?? 0, v));
+    for (let i = 0; i < ballsAtStart.length; i++) {
+      const s = ballsAtStart[i];
+      raise(find(i), hyp(s.vel.x, s.vel.y));
+      for (const r of world.robots) {
+        const sol = solids.get(r.id);
+        if (!sol) continue;
+        if (!robotPenetration(r, sol, s.pos, C.BALL_RADIUS, false, false, -look)) continue;
+        raise(find(i), hyp(r.vel.x, r.vel.y));
+      }
+    }
+    for (let i = 0; i < ballsAtStart.length; i++) {
+      const b = ballsAtStart[i].b;
+      if (b.state.kind !== 'ground') continue;
+      if (world.pinnedArtifacts.includes(b.id)) continue;
+      const cap = capOf.get(find(i)) ?? 0;
+      const now = hyp(b.vel.x, b.vel.y);
+      if (now <= cap || now <= C.BALL_REST_SPEED) continue;
+      const k = cap / now;
+      b.vel.x *= k;
+      b.vel.y *= k;
+    }
+  }
+  /**
+   * An artifact whose CENTRE ended inside a robot was never a contact — a state transition put
+   * it there (a landing, a release) before the solve could see it, and the honest fix is the
+   * placement rule, applied late: out along the nearest way, then back inside the field.
+   */
+  for (const q of buried) {
+    q.b.pos.x += q.nx * q.pen;
+    q.b.pos.y += q.ny * q.pen;
+    placeGroundArtifact(world, q.b, solids);
+  }
+  // The bespoke square-up pass rotates tilted chassis flush and records the robot-robot
+  // contacts (rrContacts) the penalty engine consumes.
   squareUpRobots(world, preVels);
 
   // ---- robots (actions: intake/fire/turret) ------------------------------
@@ -153,272 +578,6 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
 
   // ---- penalties: rrContacts + final robot poses are settled for this tick -
   updatePenalties(world, dt, actualCommands);
-
-  // ---- balls ---------------------------------------------------------------
-  // GROUND balls: rolling friction (velocity only) → Rapier solve (ball↔ball,
-  // ball↔wall, ball↔goal-face, ball↔classifier, ball↔CHASSIS both ways) → the bespoke
-  // intake-mouth pass → hard field clamp.
-  // WHERE EACH GROUND ARTIFACT STARTED THE TICK — the classifier eviction needs it, so it
-  // can walk an artifact back along the path it took instead of shoving it out the nearest
-  // face by depth+radius. One Vec2 per ground artifact.
-  const ballFrom = new Map<number, Vec2>();
-  // ...and where EVERY artifact started, whatever state it was in. The jam rule below needs a
-  // previous position for an artifact the ramp releases mid-tick too: that artifact is not yet
-  // `ground` here, so it would have no entry in `ballFrom` and would spend its first ground
-  // tick — the one where it is right on top of a robot working the gate — unprotected.
-  const wasPos = new Map<number, Vec2>();
-  for (const b of world.balls) {
-    wasPos.set(b.id, { x: b.pos.x, y: b.pos.y });
-    if (b.state.kind !== 'ground') continue;
-    ballFrom.set(b.id, { x: b.pos.x, y: b.pos.y });
-    stepGroundBall(b, dt);
-  }
-  /**
-   * THE ROBOT-SIDE FEEDBACK IS THE SOLVE NOW — there is no separate pass before it.
-   *
-   * There was: `ballRobotFeedback` wrote `r.vel` by hand, stalling the robot when an artifact
-   * was pinned against a static and bleeding momentum when it was not, because the chassis
-   * body in the solve was KINEMATIC and could not be told it was blocked. It had to run
-   * FIRST, so the solver was handed a robot that had already stopped and had no squeeze left
-   * to answer wrongly.
-   *
-   * The chassis is DYNAMIC now (see `solveBalls`), so the artifact is a real body between it
-   * and the wall and both contacts are satisfied in the same step. Writing the velocity by
-   * hand became actively wrong when the drive stopped writing `r.vel` every tick: the write
-   * persisted instead of being overwritten, and the robot wedged 8.2 degrees off its heading
-   * and slid diagonally at 24.0 in/s through the artifact it was supposed to be stuck behind.
-   */
-  // ...and the ONE piece of the old pass that survives it: a small velocity damper so a clump
-  // READS as something you are shifting. Explicitly a FEEL constant on top of the physical
-  // answer — see `clumpDrag`, which also documents why it has to run HERE and not after.
-  for (const b of world.balls) {
-    if (b.state.kind !== 'ground') continue;
-    for (const r of world.robots) if (!r.autoPathActive) clumpDrag(b, r);
-  }
-  solveBalls(world, dt, decodeColliders, intakeClaims(world, actualCommands), prePos);
-  // the INTAKE MOUTH stays bespoke (see `solveBalls`): the mouth is open by design and its
-  // funnel geometry is per-preset. Iterated so a robot→ball→(wall/ball) chain converges
-  // instead of tunnelling in a single pass.
-  /**
-   * THE ARTIFACT IN A GATE'S DOORWAY IS BEING EXPELLED — the artifacts a robot is CARRYING
-   * step aside for it. The CHASSIS never does: excluding an expelled artifact from the robot
-   * passes as well as the held ones let it travel straight THROUGH a robot.
-   *
-   * `updateRails` floors its outward velocity at the end of the tick; the bespoke robot
-   * passes undo that at the start of the next, to the third decimal. The stalemate only
-   * bites once the hopper FILLS: while the intake is swallowing, the doorway clears itself,
-   * but a full robot has three held artifacts physically sitting in its mouth and
-   * `collideBallHeld` shoves the doorway artifact straight back into the gate.
-   *
-   * Measured gate-intaking a full ramp at the reported pose: 9/9 out with the hopper kept
-   * clear, 4/9 and a dead stop once it fills — "the release rate is slower than normal when
-   * gate intaking". At the stall the gate is open, the robot is NOT blocking the mouth
-   * (mouth.s = -Infinity) and an artifact is sitting ready at s = -4.00; the only false
-   * condition is the doorway.
-   *
-   * Scoped to the ONE artifact per goal actually in the doorway, so the intake's slopes and
-   * the held-artifact stack keep working normally for everything else.
-   */
-  const expelling = new Set<number>();
-  for (const a of ['red', 'blue'] as const) {
-    const d = doorwayArtifact(world, a);
-    if (d) expelling.add(d.id);
-  }
-  const heldBalls = world.balls.filter((b) => b.state.kind === 'held');
-  for (let pass = 0; pass < C.BALL_SOLVER_ITERATIONS; pass++) {
-    for (const b of world.balls) {
-      if (b.state.kind !== 'ground') continue;
-      // The CHASSIS is always solid — excluding an expelled artifact from this let it pass
-      // straight through a robot. Only the artifacts a robot is CARRYING step aside for it.
-      for (const r of world.robots) collideBallRobot(b, r);
-      // held balls physically occupy the intake — incoming balls pile up on them
-      if (!expelling.has(b.id)) for (const h of heldBalls) collideBallHeld(b, h);
-    }
-  }
-  // hard field clamp: Rapier's soft contacts (and the bespoke ball↔robot push)
-  // can leave a ~0.2in penetration, so snap ground balls back inside the walls /
-  // goal faces (containment is tolerance-tight). ALSO geometrically evict from the
-  // classifier channel: Rapier's contact solver can't clear a DEEPLY embedded ball
-  // (a flight ball that landed inside the channel becomes 'ground' before the
-  // flight-phase eviction runs, then stays meshed + ungrabbable — the robot's OBB
-  // can't reach into the channel). collideBallRect pushes it out the field side,
-  // the only valid exit, exactly like the wall/goal clamp. Tunnel-exit balls become
-  // 'ground' at the channel's bottom edge already moving out, so they're unaffected.
-  const ground = world.balls.filter((b) => b.state.kind === 'ground');
-  for (const b of ground) {
-    const from = ballFrom.get(b.id);
-    collideBallRect(b, classifierRect('red'), C.BALL_WALL_RESTITUTION, from);
-    collideBallRect(b, classifierRect('blue'), C.BALL_WALL_RESTITUTION, from);
-    clampGroundBall(b);
-  }
-
-  /**
-   * FINAL RELAXATION — de-overlap the artifacts LAST, after everything that can move them.
-   *
-   * Rapier separates artifacts early in the tick, but FOUR things move them afterwards: the
-   * bespoke robot push, the held-ball block, the classifier eviction and the wall clamp.
-   * Nothing separated them again, so a robot ramming a clump drove one artifact into another
-   * and the overlap survived the tick — and while the robot keeps pushing, the next tick
-   * never wins either. That is the stacking, both when ramming a pile and when a robot parks
-   * over the gate outflow: in both the artifacts are held in overlap by something that acts
-   * after the solver that was supposed to keep them apart.
-   *
-   * Position-only, and INTERLEAVED with the static clamps: separating two artifacts can push
-   * one into a wall or back into the channel, so each pass re-clamps rather than trusting a
-   * single ordering. The pair loop is over a stable array in id order, so it stays
-   * deterministic for lockstep/replays.
-   */
-  for (let pass = 0; pass < C.BALL_RELAX_PASSES; pass++) {
-    for (let i = 0; i < ground.length; i++) {
-      for (let j = i + 1; j < ground.length; j++) separateBalls(ground[i], ground[j], world.time, pass === 0);
-    }
-    for (const b of ground) {
-      // ROBOTS ARE PART OF THE WORLD THIS PASS HAS TO RESPECT. Separation moves artifacts
-      // after `collideBallRobot` has already run, so without re-evicting here the pass can
-      // push one INTO a robot and nothing takes it back out — and since the next tick's
-      // robot pass runs BEFORE this one, a pressed clump walks artifacts straight through a
-      // chassis. Measured before this line: 2.77in of penetration on a 2.5in radius.
-      for (const r of world.robots) evictBallFromRobot(b, r);
-      if (!expelling.has(b.id)) for (const h of heldBalls) collideBallHeld(b, h);
-      const from = ballFrom.get(b.id);
-      collideBallRect(b, classifierRect('red'), C.BALL_WALL_RESTITUTION, from);
-      collideBallRect(b, classifierRect('blue'), C.BALL_WALL_RESTITUTION, from);
-      clampGroundBall(b);
-    }
-  }
-
-  /**
-   * NOTHING SQUEEZES THROUGH A GAP IT DOES NOT FIT IN.
-   *
-   * Every mover in this tick resolves ONE constraint and hands the result to the next, and the
-   * last word belongs to the wall clamp. So for an artifact pinched between a chassis and the
-   * field wall the sequence is: eviction pushes it out of the robot, the clamp refuses that
-   * push and puts it straight back, and it ends the tick still overlapping — not stopped, just
-   * overlapping — and the flow carries it on through. Measured: a 5in artifact passing a 4.0in
-   * gap between a robot's corner and the wall while gate intaking.
-   *
-   * Neither constraint can fix this alone, because each one is individually satisfied; what is
-   * wrong is that the artifact MOVED while it was unable to fit. So that is what is checked,
-   * and the rule is the honest one for a jam: a wall pinch has no valid resolution, so the
-   * artifact does not advance. It stays where it began the tick — still stuck, still touching,
-   * and `ballRobotFeedback` still stalls the robot against it — so a jam reads as a jam rather
-   * than as a squeeze. Reverting rather than inventing a position keeps it deterministic, and
-   * it can never appear anywhere it has not already been.
-   *
-   * This does NOT stop a robot shoving an artifact around in the open, because out there the
-   * artifact separates and ends the tick under BALL_JAM_SLOP, so it never reaches this rule at
-   * all. The rule only bites when separation is impossible.
-   *
-   * Two narrower versions were tried and neither held. Refusing the move only when the artifact
-   * had been CLEAR at the start of the tick disabled itself exactly when it was needed: in real
-   * play the robot is driving, so it advances onto the artifact and the artifact is already
-   * overlapping when the next tick begins. Keeping the separating (normal) part of the motion
-   * and dropping only the tangential slide failed too — the wall clamp immediately puts the
-   * tangential motion back, because sliding along the wall is precisely how the clamp resolves
-   * being pushed into it.
-   *
-   * The chassis AND the intake's solid FLANK — see `ballWedgedInRobot`. The MOUTH is open to
-   * artifacts by design and an artifact being swallowed is deep inside that box on purpose,
-   * but the rails beside it are structure, and they are what is next to the wall when someone
-   * is gate intaking. Asking only about the chassis let artifacts walk between an intake and
-   * the wall through gaps they do not fit in.
-   */
-  for (const b of ground) {
-    const was = wasPos.get(b.id);
-    if (!was) continue;
-    let jammed = false;
-    for (const r of world.robots) {
-      if (ballWedgedInRobot(r, b.pos)) jammed = true;
-    }
-    if (!jammed) continue;
-    b.pos.x = was.x;
-    b.pos.y = was.y;
-    /**
-     * ...BUT A JAM IS NOT A LICENCE TO SIT INSIDE ANOTHER ARTIFACT.
-     *
-     * The revert restores where this artifact STARTED the tick, and if that was already inside
-     * another one the freeze preserves the overlap rather than the jitter it exists for. Once
-     * both are frozen that way nothing separates them again: measured on a real match, a pair
-     * 2.76in interpenetrated on a 5in diameter, held for 5534 consecutive ticks -- 92 seconds
-     * -- at the gate outflow, the ball solve pushing them apart and this putting them back to
-     * the decimal every tick.
-     *
-     * Refusing the revert outright is the wrong repair: not advancing is the ANTI-TUNNEL half
-     * of this rule, and dropping it walks artifacts through gaps they do not fit (measured, a
-     * 5in artifact through 4.3in). So the artifact keeps its old position and is then pushed
-     * off whatever it is inside, along the line between the two. It gains no ground down the
-     * flow; it just stops sharing space.
-     */
-    for (const o of ground) {
-      if (o.id === b.id) continue;
-      if (Math.abs((o.z ?? 0) - (b.z ?? 0)) > C.BALL_RADIUS) continue;
-      const ddx = b.pos.x - o.pos.x;
-      const ddy = b.pos.y - o.pos.y;
-      const dd = hyp(ddx, ddy);
-      const ov = C.BALL_RADIUS * 2 - dd;
-      if (ov <= C.BALL_FREEZE_MAX_OVERLAP || dd < 1e-6) continue;
-      const push = ov - C.BALL_FREEZE_MAX_OVERLAP;
-      b.pos.x += (ddx / dd) * push;
-      b.pos.y += (ddy / dd) * push;
-    }
-    clampGroundBall(b);
-    /**
-     * ...AND THE WAY OUT OF ANOTHER ARTIFACT IS NOT THROUGH A ROBOT.
-     *
-     * The push above is a position write like any other in this tick, so it can put the
-     * artifact somewhere it does not fit -- and the one place that matters is inside a
-     * chassis, because this rule runs after the robot eviction and nothing takes it back out.
-     * Measured without this line: a 5in artifact through a 4.3in gap between a robot corner
-     * and the wall, which is precisely the tunnelling the jam exists to prevent.
-     *
-     * So the push is attempted and then CHECKED. Where it lands clear, the overlap is broken;
-     * where it would land in a robot there is no valid resolution at all, and the artifact
-     * keeps the frozen position -- still overlapping, still stuck, which is what a jam looks
-     * like. It just stops being the DEFAULT outcome.
-     */
-    for (const r of world.robots) {
-      if (!ballWedgedInRobot(r, b.pos)) continue;
-      b.pos.x = was.x;
-      b.pos.y = was.y;
-      clampGroundBall(b);
-      break;
-    }
-  }
-
-
-  /**
-   * A RESTING ARTIFACT DOES NOT SHUFFLE.
-   *
-   * The passes above each resolve one constraint and hand the result on, and where they
-   * genuinely cannot all be satisfied — artifacts packed into a corner, which cannot fit
-   * without overlap — the last two take turns: separation pushes a pair apart, the wall clamp
-   * puts them back, and they trade positions for the rest of the match. Measured in the
-   * loading-zone corner: 33 direction reversals per second, 1.8in of net movement over four
-   * seconds. That is the jitter.
-   *
-   * The rule is the one the wall-pinch jam already uses: an overlap with no valid resolution
-   * is not a reason to move anything. So an artifact that is at REST, is not being pushed by
-   * a robot, and ends the tick within BALL_SETTLE_SLOP of where it started, ends it exactly
-   * where it started. Reverting rather than inventing a position keeps it deterministic and it
-   * can never appear anywhere it has not already been.
-   *
-   * The robot exclusion is load-bearing: an artifact being evicted by an arriving chassis is
-   * at rest too, and refusing THAT would let a robot drive through it.
-   */
-  for (const b of ground) {
-    const was = wasPos.get(b.id);
-    if (!was) continue;
-    if (hyp(b.vel.x, b.vel.y) > C.BALL_REST_SPEED) continue; // actually rolling — leave it alone
-    const moved = hyp(b.pos.x - was.x, b.pos.y - was.y);
-    if (moved === 0 || moved > C.BALL_SETTLE_SLOP) continue;
-    let nearRobot = false;
-    for (const r of world.robots) {
-      if (pointDepthInRobot(r, b.pos) > -C.BALL_RADIUS) nearRobot = true;
-    }
-    if (nearRobot) continue;
-    b.pos.x = was.x;
-    b.pos.y = was.y;
-  }
 
   // ---- balls: FLIGHT (ground balls resolved above) -------------------------
   // Flight stays bespoke: ballistic arc + z axis (Rapier 2D has no z), goal-face
@@ -443,6 +602,8 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
       if (b.vz < 20) {
         b.vz = 0;
         b.state = { kind: 'ground' };
+        // it lands where its arc ended — unless that is inside something (see the placement)
+        placeGroundArtifact(world, b, solids);
       }
     }
   }
