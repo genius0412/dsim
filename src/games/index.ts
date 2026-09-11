@@ -2,6 +2,7 @@ import type { GameId } from './types';
 import type { GameModule } from './module';
 import { DECODE_MODULE } from './decode';
 import { CHAIN_MODULE } from './chain';
+import { BIOBUZZ_MODULE } from './biobuzz';
 
 export type { GameId, StaticSpec, FieldBounds, FieldColliders, GameUiSpec, GameSimModule } from './types';
 export type { GameModule } from './module';
@@ -19,6 +20,7 @@ export type { GameModule } from './module';
 export const GAMES: Partial<Record<GameId, GameModule>> = {
   decode: DECODE_MODULE,
   chain: CHAIN_MODULE,
+  biobuzz: BIOBUZZ_MODULE,
 };
 
 /** the module for a game id, defaulting to DECODE (undefined / unknown / old). */

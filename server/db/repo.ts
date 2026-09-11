@@ -2,6 +2,7 @@ import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
 import { PLACEMENT_GAMES } from '../../src/config';
+import { coerceGameId, GAME_IDS } from '../../src/games/types';
 import {
   STANDING_MAX, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH, clampScore, type StandingVerdict,
 } from '../../src/standing';
@@ -1525,7 +1526,7 @@ export async function lastRankedBoard(
   if (!r) return null;
   return {
     mode: r.mode === '2v2' ? '2v2' : '1v1',
-    game: (r.game === 'chain' ? 'chain' : 'decode') as Game,
+    game: coerceGameId(r.game) as Game,
     act: Number(r.act ?? 0),
   };
 }
@@ -2152,7 +2153,9 @@ export async function getGlobalStats(): Promise<GlobalStats> {
     q<{ game: Game; mode: string; n: string }>(`select game, mode, count(*) as n from matches group by game, mode`),
   ]);
   const byCategory: GlobalStats['byCategory'] = { solo: 0, duo: 0, '1v1': 0, '2v2': 0 };
-  const byGame: Record<Game, number> = { decode: 0, chain: 0 };
+  // seeded from GAME_IDS so a new game reports 0 rather than being absent from
+  // the map (and so this stops being a place a new game has to be added)
+  const byGame = Object.fromEntries(GAME_IDS.map((g) => [g, 0])) as Record<Game, number>;
   for (const r of [...recRows, ...matchRows]) {
     const n = Number(r.n);
     // combined-by-category (homepage) — sums across games
@@ -3184,7 +3187,7 @@ export interface FriendRow {
   offlineSeconds: number | null;
   /** 'menu' | 'lobby' | 'match' while online; null when offline/invisible/unknown */
   activity: Activity | null;
-  /** which game they're in ('decode' | 'chain') — only meaningful with `activity` */
+  /** which game they're in (a `GameId`) — only meaningful with `activity` */
   game: Game | null;
   /** the room to SPECTATE, set only while a match they are in is actually running
    *  (see `liveRoomsByUser`). Absent otherwise — including in a lobby, and for the
@@ -3393,7 +3396,7 @@ export async function listFriends(userId: string): Promise<FriendsPayload> {
       status: r.status === 'dnd' ? 'dnd' : null,
       offlineSeconds: online ? null : coarsen(since),
       activity,
-      game: activity ? (r.activity_game === 'chain' ? 'chain' : 'decode') : null,
+      game: activity ? coerceGameId(r.activity_game) : null,
       // `online` gates this so an invisible friend is never watchable: invisibility
       // nulls their last-seen, which is what `online` is computed from.
       watch: online ? watchable.get(r.user_id) : undefined,
@@ -3466,7 +3469,7 @@ const shapeInvite = (r: InviteCols): RoomInvite => ({
     role: asRole(r.role),
   },
   room: r.room,
-  game: r.game === 'chain' ? 'chain' : 'decode',
+  game: coerceGameId(r.game),
   kind: r.kind,
   record: r.record,
   format: r.format,
@@ -3491,7 +3494,7 @@ const shapeSent = (r: SentCols): SentInvite => ({
     role: asRole(r.role),
   },
   room: r.room,
-  game: r.game === 'chain' ? 'chain' : 'decode',
+  game: coerceGameId(r.game),
   kind: r.kind,
   record: r.record,
   format: r.format,

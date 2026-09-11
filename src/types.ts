@@ -1,6 +1,7 @@
 import type { ControlBindings } from './input/bindings';
 import type { GameId } from './games/types';
 import type { ChainState } from './games/chain/state';
+import type { BiobuzzState } from './games/biobuzz/state';
 export type { GameId } from './games/types';
 
 export type Alliance = 'red' | 'blue';
@@ -734,6 +735,9 @@ export interface World {
   /** Chain Reaction runtime state (catalysts / scoring / endgame). Present only
    * when `game === 'chain'`; DECODE worlds omit it. */
   chain?: ChainState;
+  /** BIOBUZZ runtime state. Present only when `game === 'biobuzz'`; the other
+   * games omit it. (Empty for now — the season's rules land at kickoff.) */
+  biobuzz?: BiobuzzState;
   mode: GameMode;
   time: number;
   tick: number;

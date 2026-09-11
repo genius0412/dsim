@@ -1,5 +1,5 @@
 import type { GameSimModule } from '../types';
-import { CHAIN_HALF_Y, CHAIN_VIEW_HALF_X, CHAIN_VIEW_MARGIN } from './config';
+import { CHAIN_HALF_Y, CHAIN_START_POSES, CHAIN_VIEW_HALF_X, CHAIN_VIEW_MARGIN } from './config';
 import { chainColliders } from './colliders';
 import { createChainWorld } from './spawn';
 import { chainStep } from './step';
@@ -14,6 +14,8 @@ export const CHAIN_SIM: GameSimModule = {
   id: 'chain',
   scored: true,
   startLegality: false,
+  initialAct: 1, // CR's periods start at Act 1 · Season 1 (DECODE keeps act 0)
+  startPoseCount: CHAIN_START_POSES.length,
   // camera bounds include the protruding goals (walls/colliders stay at ±72)
   bounds: { halfX: CHAIN_VIEW_HALF_X, halfY: CHAIN_HALF_Y, viewMargin: CHAIN_VIEW_MARGIN },
   colliders: chainColliders,

@@ -5,6 +5,7 @@ import { START_POSES } from '../config';
 import { CHAIN_START_POSES } from '../games/chain/config';
 import { StartPositionEditor } from './StartPositionEditor';
 import { ChainStartEditor } from './ChainStartEditor';
+import { moduleFor } from '../games';
 import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory, startSelectionLegal } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
@@ -654,7 +655,29 @@ export function Lobby({
                 game={settings.game}
               />
             )}
-            {settings.game === 'chain' ? (
+            {moduleFor(settings.game).startEditor ? (
+              // a game's OWN editor, through the module slot. The two inline
+              // branches below are DECODE's and CR's, unchanged.
+              (() => {
+                const StartEd = moduleFor(settings.game).startEditor!;
+                return (
+                  <StartEd
+                    spec={me.spec}
+                    alliance={me.alliance}
+                    value={me.startPose}
+                    startIndex={me.startIndex ?? 0}
+                    category={startRole ?? settings.startCat}
+                    saved={settings.savedStartPoses}
+                    lockedCategory={startRole}
+                    onChange={(startPose) => startPose && applyStart(selectStart(sCat, { index: -1, pose: startPose }))}
+                    onPickPreset={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
+                    onCategory={(c) => applyStart(switchCategory(settings, c))}
+                    onSave={(pose) => applyStart(saveStart(sCat, pose))}
+                    onDeleteSaved={(c, i) => applyStart(deleteSavedStart(sCat, c, i))}
+                  />
+                );
+              })()
+            ) : settings.game === 'chain' ? (
               <ChainStartEditor
                 spec={me.spec}
                 alliance={me.alliance}

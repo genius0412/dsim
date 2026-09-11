@@ -15,7 +15,19 @@
  */
 
 import type { GameId } from './games/types';
-import { APP_BLURB, fullNameOf, seasonFor } from './seasons';
+import { APP_BLURB, fullNameOf, seasonFor, visibleSeasonsOn } from './seasons';
+
+/**
+ * The seasons a SEARCH ENGINE may be told about — the ones visible on the STABLE
+ * channel, whatever channel this build happens to be.
+ *
+ * Deliberately not the live channel: only the stable site is indexed, `index.html`
+ * ships one hard-coded copy of the home description for the crawlers that don't run
+ * JS, and the two have to say the same thing. An alpha build describing an
+ * unannounced season here would put its name in a shareable link preview.
+ */
+const INDEXABLE = visibleSeasonsOn('stable');
+const indexable = (game: GameId): boolean => INDEXABLE.some((s) => s.key === game);
 
 /** the deployed origin — canonical/og:url must be absolute for scrapers */
 export const SITE_URL = 'https://www.playdsim.com';
@@ -23,7 +35,17 @@ export const SITE_URL = 'https://www.playdsim.com';
 const HOME_TITLE = 'DSIM: Online 2D FTC Driving Simulator';
 // the on-page sentence plus what you can do here. Descriptions are what shows
 // under the link in a search result — say what the page IS, don't sell it.
-const HOME_DESC = `${APP_BLURB} Build a robot, drive DECODE or Chain Reaction, and play solo or ranked.`;
+// "DECODE or Chain Reaction" — named from the registry, so a hidden season cannot
+// leak into the description and a NEW public season is not forgotten here. ⚠️ The
+// same sentence is hard-coded in `index.html` (three tags + the JSON-LD) and in the
+// web manifest, because those ship before any JS runs — `npm test` pins this string
+// against the registry so a season flipping to `stable` fails the suite until all of
+// them are updated together.
+const gameList = (names: readonly string[]): string =>
+  names.length <= 1
+    ? (names[0] ?? '')
+    : `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}`;
+export const HOME_DESC = `${APP_BLURB} Build a robot, drive ${gameList(INDEXABLE.map((s) => s.name))}, and play solo or ranked.`;
 
 /** title + description for a route, keyed by the App's `Screen` union. */
 interface RouteMeta {
@@ -117,8 +139,11 @@ export function applyRouteMeta(
   const s = seasonFor(game);
   const season = s.name;
   const meta = ROUTE_META[screen];
-  // home reached on a game-prefixed URL is that GAME's landing page
-  const gameHome = screen === 'home' && entryHasGame;
+  // home reached on a game-prefixed URL is that GAME's landing page — unless the
+  // game is not one the public site has (an alpha-only season): a self-canonical
+  // landing page is a request to INDEX it, which is the one thing a hidden season
+  // must not get.
+  const gameHome = screen === 'home' && entryHasGame && indexable(game);
   // screens with no entry (live game, lobby, queue, replay, account, admin) are
   // transient app surfaces — robots.txt keeps them out of the index; just keep
   // the tab honest and leave the home description in place.

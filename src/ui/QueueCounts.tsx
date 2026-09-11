@@ -3,9 +3,7 @@ import type { Presence } from '../net/api';
 import type { GameId } from '../types';
 import { queuedModes, queuedGames, queuesFor, anyoneQueued } from './queueDepth';
 import { SEASONS } from '../seasons';
-
-/** the games a queue count can be shown for, in display order */
-const GAME_IDS: readonly GameId[] = SEASONS.map((s) => s.key);
+import { visibleGameIds } from '../seasonVisibility';
 const GAME_LABEL: Record<string, string> = Object.fromEntries(SEASONS.map((s) => [s.key, s.name]));
 
 /**
@@ -79,7 +77,9 @@ export function QueueCounts({
   const scope = game ?? ctxGame;
 
   if (allGames) {
-    const byGame = queuedGames(p, GAME_IDS);
+    // only the games THIS build shows — a season hidden on this channel must not
+    // surface through a queue count either
+    const byGame = queuedGames(p, visibleGameIds());
     if (byGame.length === 0) return null;
     return (
       <span className={`ds-qcount ${className}`.trim()} aria-label="players waiting in ranked">

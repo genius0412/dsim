@@ -1,5 +1,6 @@
 import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
 import type { GameId } from '../games/types';
+import { moduleFor } from '../games';
 import { CHAIN_MODE_LABELS } from '../games/chain/labels';
 import { CHAIN_DEFAULT_SCORE_MODE } from '../games/chain/config';
 
@@ -28,6 +29,10 @@ export const INTAKE_SHORT: Record<IntakeStyle, string> = {
  * copies of one sentence drift the way any two drawings of one object do.
  */
 export function buildSummary(spec: RobotSpec, game: GameId): string {
+  // a game may own this sentence outright (the module's `labels.configSummary`
+  // slot); the two branches below are DECODE's and CR's, unchanged
+  const own = moduleFor(game).labels?.configSummary;
+  if (own) return own(spec);
   const parts =
     game === 'chain'
       ? [

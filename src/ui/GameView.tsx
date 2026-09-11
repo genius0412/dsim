@@ -19,6 +19,7 @@ import { ScoreReportDialog } from './ScoreReportDialog';
 import type { RecordRankInfo } from '../net/protocol';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { CHAIN_MODE_LABELS } from '../games/chain/labels';
+import { moduleFor } from '../games';
 import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
 
 /** top-right connection-quality readout (multiplayer only): a coloured signal dot
@@ -364,6 +365,7 @@ export function GameView({
           autoIntake={hud?.autoIntake ?? false}
           autoFire={hud?.autoFire ?? false}
           hasFling={hud?.catalystFling ?? false}
+          gameHud={hud?.gameHud}
           onLayoutChange={(l) => onSettingsChange?.({ ...settings, mobileLayout: l })}
         />
       )}
@@ -564,12 +566,35 @@ const PHASE_LABEL: Record<string, string> = {
 /** styled after the FTC live scoring audience display: red panel | timer | blue panel */
 function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean }) {
   const [pingGraph, setPingGraph] = useState(false);
+  // MODULE UI SLOTS. Neither current game fills either, so both branches below are
+  // the ones that were already there.
+  const GameScoreBar = moduleFor(hud.game).scoreBar;
+  const GameChips = moduleFor(hud.game).hudChips;
   const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
   const endgame = hud.timeLeft <= ENDGAME_START && hud.phase === 'teleop';
   const redScore = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blueScore = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
   // Chain Reaction is scored (its own breakdown); DECODE shows motif + its breakdown.
   const cr = hud.game === 'chain';
+
+  if (GameScoreBar) {
+    // a game that owns its whole bottom bar replaces it wholesale — the shared bar
+    // is red | timer | blue, which is not a given for every game
+    return (
+      <div className="hud">
+        <GameScoreBar hud={hud} />
+        {showEventLog && (
+          <div className="eventlog" aria-live="polite">
+            {hud.toasts.map((t) => (
+              <div key={t.id} className="eventlog-line">
+                {t.text}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="hud">
@@ -645,6 +670,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
       {(!window.matchMedia('(pointer: coarse)').matches) && (
         <div className="status-wrap">
           <div className="robot-status">
+            {GameChips && <GameChips hud={hud} />}
             {!cr && (
               <>
                 <div className="hopper">
@@ -1045,7 +1071,20 @@ function Results({
     ];
   };
 
-  const sections: [string, [string, number, number][]][] = cr
+  // a game's OWN breakdown, through the module slot. Its rows are
+  // alliance-RELATIVE ([label, mine, opp]) — this screen prints red | blue.
+  const own = moduleFor(hud.game).resultsRows;
+  const ownSections = (): [string, [string, number, number][]][] =>
+    (own?.(hud) ?? []).map(([title, rows]) => [
+      title,
+      rows.map(([label, mine2, opp2]) =>
+        hud.alliance === 'red' ? [label, mine2, opp2] : [label, opp2, mine2],
+      ) as [string, number, number][],
+    ]);
+
+  const sections: [string, [string, number, number][]][] = own
+    ? ownSections()
+    : cr
     ? crSections()
     : [
         [
@@ -1325,8 +1364,15 @@ function RecordResults({
 }) {
   const cr = hud.game === 'chain';
   const f = hud.fouls[hud.alliance]; // fouls the PLAYER committed
-  const sections: [string, [string, number][]][] =
-    cr && hud.chain
+  // the game's own breakdown, through the module slot. A solo run has no opponent,
+  // so only the "mine" half of each row is printed.
+  const own = moduleFor(hud.game).resultsRows;
+  const sections: [string, [string, number][]][] = own
+    ? (own(hud) ?? []).map(([title, rows]) => [
+        title,
+        rows.map(([label, val]) => [label, val] as [string, number]),
+      ])
+    : cr && hud.chain
       ? [
           ['SCORING', [['Particles ×mult', hud.chain.particlePts]]],
           ['END GAME', [['Park / Ascend', mine.total - hud.chain.particlePts - hud.chain.foulPts]]],

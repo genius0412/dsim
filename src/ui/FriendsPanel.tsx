@@ -14,11 +14,13 @@ import { challengeLine, formatLabel } from './challenge';
 import { Select, type SelectOption } from './Select';
 import { SupporterBadge } from './SupporterBadge';
 import type { GameId } from '../games/types';
+import { seasonFor } from '../seasons';
 import type { RoomKind } from '../net/protocol';
 
-/** compact game name for an activity line ("In a match · DECODE") */
-function gameShort(game: 'decode' | 'chain' | null): string {
-  return game === 'chain' ? 'Chain Reaction' : game === 'decode' ? 'DECODE' : '';
+/** compact game name for an activity line ("In a match · DECODE") — the season
+ * registry is the one place a game's display name lives. */
+function gameShort(game: GameId | null): string {
+  return game ? seasonFor(game).name : '';
 }
 
 /** the chess.com-style activity line for an ONLINE friend: what they're doing,

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ComponentType } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
 import {
@@ -10,6 +11,9 @@ import {
   type RoomInvite,
 } from '../net/api';
 import { uploadPracticeRun } from '../net/api';
+import { GAME_IDS } from '../games/types';
+import { devRoutesEnabled, gameVisible } from '../seasonVisibility';
+import { moduleFor } from '../games';
 import { FriendsProvider } from './friendsContext';
 import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
@@ -83,7 +87,9 @@ type Screen =
   | 'changelogs'
   | 'profile'
   | 'account'
-  | 'admin';
+  | 'admin'
+  /** a game's own alpha-only dev route (`GameModule.devRoutes`) */
+  | 'dev';
 
 /** everything a route needs beyond the screen itself */
 interface RouteArgs {
@@ -93,8 +99,10 @@ interface RouteArgs {
   username: string | null;
   /** the section/tab of a screen that has them: `/configure/<sub>`, `/records/<sub>` */
   sub: string | null;
+  /** the matched `GameDevRoute.path` for `screen === 'dev'` */
+  dev: string | null;
 }
-const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null };
+const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null, dev: null };
 
 /**
  * Tiny path router (no dependency). Each screen is a real URL, and every URL is
@@ -113,6 +121,14 @@ const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null };
 const isWebHistory = typeof window !== 'undefined' && window.location.protocol !== 'file:';
 
 /**
+ * The `/decode`, `/chain`, … URL prefix, BUILT FROM `GAME_IDS` rather than written
+ * out — it was a hand-typed `(decode|chain)` in two places, so a new game got no
+ * route at all and its deep links silently rendered the saved game's screen.
+ * Every id is a plain lowercase word, so nothing here needs escaping.
+ */
+const GAME_PREFIX_RE = new RegExp(`^/(${GAME_IDS.join('|')})(?=/|$)`);
+
+/**
  * Did this document OPEN on a game-prefixed URL? Captured at module load, before
  * the mount effect canonicalizes `/` to `/decode` in the address bar.
  *
@@ -127,8 +143,7 @@ const isWebHistory = typeof window !== 'undefined' && window.location.protocol !
  * load is right for the only consumer that reads canonicals; in-app navigation
  * back to home just keeps whichever form the tab was opened with.
  */
-const ENTRY_HAS_GAME =
-  isWebHistory && /^\/(decode|chain)(?=\/|$)/.test(window.location.pathname);
+const ENTRY_HAS_GAME = isWebHistory && GAME_PREFIX_RE.test(window.location.pathname);
 
 /** the screen part of a path (no game prefix); '' for home. */
 function screenSuffix(screen: Screen, a: RouteArgs): string {
@@ -173,6 +188,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/account';
     case 'admin':
       return '/admin';
+    case 'dev':
+      return a.dev ?? '';
   }
 }
 
@@ -224,14 +241,39 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
 }
 
 /**
- * Parse a full URL into the game + screen. A leading /decode or /chain segment
- * selects the game; an unprefixed (legacy) path falls back to `fallbackGame`.
+ * Parse a full URL into the game + screen. A leading game segment (/decode,
+ * /chain, …) selects the game; an unprefixed (legacy) path falls back to
+ * `fallbackGame`.
+ *
+ * A prefix for a game HIDDEN on this release channel falls back to
+ * `fallbackGame` as well, but keeps its SCREEN: the link is a real link and its
+ * `/records` half still means something, so `/biobuzz/records` on a stable build
+ * lands on the saved game's records rather than on home. The URL is then
+ * canonicalized to the fallback game by the mount effect, so the address bar
+ * stops advertising a season this build does not have.
  */
 function parsePath(pathname: string, fallbackGame: GameId): { game: GameId; screen: Screen } & RouteArgs {
-  const gm = pathname.match(/^\/(decode|chain)(?=\/|$)/);
-  const game: GameId = gm ? (gm[1] as GameId) : fallbackGame;
+  const gm = pathname.match(GAME_PREFIX_RE);
+  const prefixed = gm ? (gm[1] as GameId) : null;
+  const game: GameId = prefixed && gameVisible(prefixed) ? prefixed : fallbackGame;
   const rest = gm ? pathname.slice(gm[0].length) || '/' : pathname;
+  // a game's own dev route wins over the shared screen table, but only where the
+  // prefix ACTUALLY named that game — an unprefixed legacy path must not pick up
+  // the fallback game's instruments
+  if (prefixed === game && devRouteFor(game, rest)) return { game, ...NO_ARGS, screen: 'dev', dev: rest };
   return { game, ...parseScreen(rest) };
+}
+
+/**
+ * The component for one of `game`'s dev routes, or null.
+ *
+ * The channel gate lives HERE rather than at the render site so a stable build
+ * neither routes to one nor renders one: an unmatched path falls straight through
+ * to `parseScreen`, which sends an unknown path home.
+ */
+function devRouteFor(game: GameId, rest: string): ComponentType | null {
+  if (!devRoutesEnabled()) return null;
+  return moduleFor(game).devRoutes?.find((r) => r.path === rest)?.Component ?? null;
 }
 
 /** which rail/menu entry lights up for a given screen */
@@ -282,11 +324,19 @@ export function App() {
   // initializer so the very first render is already on the right game.
   const [settings, setSettings] = useState<GameSettings>(() => {
     const s = loadSettings();
+    // a SAVED game hidden on this channel is dropped as well, not just a hidden
+    // URL prefix: `coerceSettings` validates `game` as a `GameId` and knows
+    // nothing about channels, so a stored `biobuzz` from an alpha build (the same
+    // origin under Electron, or a preview deploy) would open a stable build
+    // straight onto a season it must not name. Measured before the guard: the
+    // home eyebrow read "BIOBUZZ presented by RTX" and the URL canonicalized to
+    // /biobuzz, on a build whose picker does not list it.
+    const visible = gameVisible(s.game) ? s : switchGame(s, 'decode');
     if (isWebHistory) {
-      const g = parsePath(window.location.pathname, s.game).game;
-      if (g !== s.game) return switchGame(s, g);
+      const g = parsePath(window.location.pathname, visible.game).game;
+      if (g !== visible.game) return switchGame(visible, g);
     }
-    return s;
+    return visible;
   });
   const start = isWebHistory
     ? parsePath(window.location.pathname, settings.game)
@@ -350,7 +400,7 @@ export function App() {
         saveSettings(ns);
       }
       setScreen(s.screen);
-      setRoute({ replayId: s.replayId, username: s.username, sub: s.sub });
+      setRoute({ replayId: s.replayId, username: s.username, sub: s.sub, dev: s.dev });
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -1320,6 +1370,11 @@ export function App() {
         />
       )}
       {screen === 'admin' && isAdmin && <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />}
+      {screen === 'dev' &&
+        (() => {
+          const Dev = devRouteFor(settings.game, route.dev ?? '');
+          return Dev ? <Dev /> : null;
+        })()}
 
       {/* Patch notes / new-season + new-act reveals — shown once on the menu shell,
           never over a live match (the game screen returns before this). Mounted

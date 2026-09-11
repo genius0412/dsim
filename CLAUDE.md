@@ -6,6 +6,7 @@
 |----|------|--------|
 | `decode` | **DECODE presented by RTX** (FTC 2025–26) | full match, scored, ranked |
 | `chain` | **Chain Reaction** (2026 Unofficial-FTC CAD competition) | full match, scored, ranked |
+| `biobuzz` | **BIOBUZZ presented by RTX** (FTC 2026–27) | PLACEHOLDER shell, alpha channel only, unscored |
 
 Vite + React + TypeScript, Canvas 2D. The CLIENT bundle is React + **Rapier 2D**
 (`@dimforge/rapier2d-compat`, wasm) and nothing else; the rest of `dependencies`
@@ -125,6 +126,58 @@ docs/              decode-reference.md (field sources), netcodeplan.md (roadmap)
 feel, robot-robot shove, match phases, HUD chrome, netcode) it belongs in the shared core;
 if it names a game element (artifact, gate, particle, catalyst, beam) it belongs in
 `src/games/<id>/`.
+
+## Adding a game
+
+Everything below the four registrations is OPTIONAL — a game that fills nothing behaves
+exactly like a game written before the slots existed. **Nothing outside
+`src/games/<id>/` should need editing.** If it does, that is a seam bug: generalize the
+shared file instead of adding a third arm to a two-valued branch.
+
+**FOUR registrations, and all four are silent when missed:**
+1. `src/games/index.ts` — `GAMES` (the CLIENT module: renderers + UI slots).
+2. `src/games/sim.ts` — `SIM_GAMES` (the SERVER-SAFE module). Missing here and the
+   authoritative server runs your players a DECODE room without saying so.
+   ⚠️ Add it as a **GETTER**, like the three already there — there is an import cycle
+   through this file (`src/sim/spawn.ts` needs `simModuleFor` for the start-index clamp)
+   and a plain `id: MODULE` entry is a module-eval-time read, which is exactly what a
+   cycle cannot survive.
+3. `src/seasons.ts` — the `SEASONS` entry (name/presenter/program/years/blurb,
+   `playable`, and `channels` if it must stay off the stable site).
+4. `src/games/types.ts` — the id in `GameId` **and** in `GAME_IDS`. Every "which games
+   are there" site reads `GAME_IDS` / `isGameId` / `coerceGameId`; a hand-written
+   two-valued literal anywhere is a bug (`npm test`'s biobuzz suite greps for the
+   consequences).
+
+Plus `World.<id>?: <Id>State` in `src/types.ts` for the game's own plain-JSON bag, and
+`GameSimModule`'s `initialAct` (its first ranked period's act — distinct per game) and
+`startPoseCount` (the legal range of a `startIndex`; every clamp reads it).
+
+**The OPTIONAL UI slots** (`GameModule`, `src/games/module.ts`) — each wired at its
+consumer as `mod.X ? <slot> : <the existing branch, unchanged>`, so DECODE's and CR's
+inline branches stay untouched:
+
+| slot | consumer |
+|---|---|
+| `Builder` | `Menu.tsx` (the Customize section) |
+| `Preview` | `Menu.tsx` + `MatchStrategy.tsx` (the robot schematic) |
+| `startEditor` | `MatchSetup.tsx` / `Lobby.tsx` / `MatchStrategy.tsx` |
+| `hudChips`, `scoreBar` | `GameView.tsx` (the `.robot-status` row / the whole bottom bar) |
+| `resultsRows` | `GameView.tsx` — both the versus results and `RecordResults`. Rows are ALLIANCE-RELATIVE (`[label, mine, opp]`) |
+| `mobileButtons` | `MobileControls.tsx`. A new key needs a `GameSettings.mobileLayout` entry, and a genuinely new action needs a protocol bit |
+| `labels.configSummary` | `robotLabels.ts` + `Leaderboard.tsx` |
+| `devRoutes` | `App.tsx` routing — **alpha channel only** (`devRoutesEnabled()`) |
+
+and, on the DOM-free side, `GameSimModule.hud?(world, robotId)` → `HudSnapshot.gameHud`:
+the game's own HUD slice, opaque (`unknown`) because only its own components read it.
+
+`GameUiSpec` (`ui`) is an earlier attempt at the same idea and has never had a reader.
+It is left alone deliberately; do not build on it.
+
+**Tests**: game checks go in `scripts/smoke-biobuzz/` (its own `npm test` process), never
+appended to `scripts/smoke.ts`. ⚠️ `npm test` chains the two with `&&`, so while
+`scripts/smoke.ts` has failures the second suite does not run at all — `npm run test:bb`
+runs it alone.
 
 ---
 
@@ -1738,6 +1791,36 @@ resolve commands → `chainAimAssist` rotate override → CoG scaling → shared
 accelerator score/recycle, catalysts, endgame) → `updateChainPenalties` → phase/timer machine.
 It DELIBERATELY skips DECODE's `updateRobotActions`, goals/gates, penalties, and scoring — CR
 owns all of that.
+
+---
+
+# GAME: BIOBUZZ (`biobuzz`)
+
+The FTC 2026–27 season. **Rules land at kickoff on 2026-09-12**, so what is in the repo
+today is a PLACEHOLDER: an empty 12 ft square with four walls and drivable robots,
+`scored: false`, `startLegality: false`, two start anchors. `src/games/biobuzz/{sim,index,
+state}.ts` say so at the top and the P0-shell chat replaces all three.
+
+**It is ALPHA-ONLY** (`channels: ['alpha']` in `SEASONS`). The repo is public and the
+season is private until further notice: on a stable build it is absent from the home
+picker and the queue counts, invisible to the SEO surfaces, and its URL prefix falls back
+to the saved game. Nothing about it may be pushed to a public branch or deployed to the
+stable site.
+
+**Read `docs/biobuzz-contract.md` FIRST** — it is the lane contract: who owns which file
+(Lane A the field, Lane B the robot, the integration chat everything outside
+`src/games/biobuzz/`), the `elements.ts` interface between them, and the workflow.
+`docs/biobuzz-plan.md` is the why; `docs/biobuzz-reference.md` will be the manual
+distilled, written on kickoff day.
+
+Everything BIOBUZZ lives in `src/games/biobuzz/`. Nothing BIOBUZZ goes into `src/sim/` or
+`src/config.ts` — the same rule Chain Reaction follows. Game state is plain JSON on
+`world.biobuzz`, and the sim half obeys the shared determinism rule (no DOM, no clock, no
+`Math.random`, no `Date`).
+
+⚠️ **Do not invent geometry before the manual.** CR flags values approximated from
+description as `APPROX` and that convention carries over; an unflagged guess is worse than
+an empty field.
 
 ---
 

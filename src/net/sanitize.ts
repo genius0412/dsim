@@ -2,9 +2,9 @@ import type { LobbyPlayer, PlayerPatch } from './protocol';
 import type { Replay } from '../sim/replay';
 import { REPLAY_FORMAT, maxMatchTicks, trackStride } from '../sim/replay';
 import { coerceSetup, type RobotSetup } from '../sim/spawn';
-import type { GameId } from '../games/types';
+import { isGameId, type GameId } from '../games/types';
+import { simModuleFor } from '../games/sim';
 import { coerceSpec, coerceAssists, coerceAutoPath, coerceStartPose, DEFAULT_SPEC, DEFAULT_ASSISTS } from '../sim/spawn';
-import { START_POSES } from '../config';
 import { clamp } from '../math';
 
 /**
@@ -30,9 +30,18 @@ function coerceName(raw: unknown, fallback: string): string {
   return typeof raw === 'string' && raw.trim() ? raw.slice(0, 24) : fallback;
 }
 
-function coerceStartIndex(raw: unknown): number {
+/**
+ * A named-start-anchor index, clamped to THIS GAME's anchor count.
+ *
+ * It clamped to DECODE's `START_POSES.length` (5) for every game, which CR (4
+ * anchors) survives only because 4 < 5 — a game with fewer anchors than DECODE
+ * would take an out-of-range index straight off the wire. Exported so smoke can
+ * pin the per-game range; `simModuleFor` falls back to DECODE for an unknown id,
+ * exactly like every other resolver.
+ */
+export function coerceStartIndex(raw: unknown, game?: GameId): number {
   return typeof raw === 'number' && Number.isFinite(raw)
-    ? clamp(Math.round(raw), 0, START_POSES.length - 1)
+    ? clamp(Math.round(raw), 0, simModuleFor(game).startPoseCount - 1)
     : 0;
 }
 
@@ -49,7 +58,7 @@ export function sanitizePlayer(raw: unknown, game?: GameId): Omit<LobbyPlayer, '
     teamName: spec.teamName,
     teamNumber: spec.teamNumber,
     alliance: p.alliance === 'red' || p.alliance === 'blue' ? p.alliance : 'blue',
-    startIndex: coerceStartIndex(p.startIndex),
+    startIndex: coerceStartIndex(p.startIndex, game),
     // structural + field-bounds only; G304 legality is snapped spec/alliance-aware
     // by createWorld → coerceSetup, the spawn chokepoint.
     startPose: p.startPose == null ? null : coerceStartPose(p.startPose),
@@ -73,7 +82,7 @@ export function sanitizePlayerPatch(raw: unknown, current: LobbyPlayer, game?: G
   const out: PlayerPatch = {};
   if ('name' in p) out.name = coerceName(p.name, current.name);
   if ('alliance' in p && (p.alliance === 'red' || p.alliance === 'blue')) out.alliance = p.alliance;
-  if ('startIndex' in p) out.startIndex = coerceStartIndex(p.startIndex);
+  if ('startIndex' in p) out.startIndex = coerceStartIndex(p.startIndex, game);
   if ('startPose' in p) out.startPose = p.startPose == null ? null : coerceStartPose(p.startPose);
   if ('startRole' in p) out.startRole = p.startRole === 'close' || p.startRole === 'far' ? p.startRole : undefined;
   if ('swapReq' in p) out.swapReq = p.swapReq === true;
@@ -139,6 +148,11 @@ export function sanitizeReplay(raw: unknown, game?: GameId): Replay | null {
   const ticks = typeof r.ticks === 'number' && Number.isFinite(r.ticks) ? Math.round(r.ticks) : 0;
   if (ticks < 1 || ticks > maxMatchTicks() + 1) return null;
 
+  // WHICH GAME this container claims, resolved BEFORE the setups are coerced: the
+  // setup coercion is game-aware (chassis ranges, and the start-anchor count), so a CR
+  // replay sanitized against DECODE's envelope comes back as a different robot.
+  const replayGame: GameId = isGameId(r.game) ? r.game : (game ?? 'decode');
+
   if (!Array.isArray(r.setups) || r.setups.length < 1 || r.setups.length > 4) return null;
   const setups: RobotSetup[] = [];
   const seen = new Set<number>();
@@ -150,7 +164,7 @@ export function sanitizeReplay(raw: unknown, game?: GameId): Replay | null {
     seen.add(id);
     // the SAME coercion `createWorld` runs, so a stored setup can never spawn a robot the
     // builder would not have offered
-    setups.push(coerceSetup({ ...(raws as RobotSetup), id: Math.round(id) }));
+    setups.push(coerceSetup({ ...(raws as RobotSetup), id: Math.round(id) }, replayGame));
   }
 
   // tracks: flat number arrays keyed by a robot id that exists in `setups`, each a whole
@@ -177,7 +191,7 @@ export function sanitizeReplay(raw: unknown, game?: GameId): Replay | null {
         ? Math.round(r.balanceVersion)
         : 0,
     sim: typeof r.sim === 'number' && Number.isFinite(r.sim) ? Math.round(r.sim) : undefined,
-    game: r.game === 'chain' || r.game === 'decode' ? r.game : (game ?? 'decode'),
+    game: replayGame,
     mode: r.mode,
     seed,
     ticks,

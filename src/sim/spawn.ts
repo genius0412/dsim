@@ -22,6 +22,14 @@ import type {
   StartPose,
 } from '../types';
 import * as C from '../config';
+/**
+ * The start-anchor COUNT is per game, so the spawn chokepoint has to ask the
+ * registry for it. This is a genuine import CYCLE (`games/sim` → `decode/sim` →
+ * here) and it is safe only because nothing is read at module-eval time:
+ * `simModuleFor` is a hoisted function declaration and `coerceSetup` calls it at
+ * runtime. Do not move a registry read to this file's top level.
+ */
+import { simModuleFor } from '../games/sim';
 import {
   CHAIN_CLEARANCE_DEFAULT,
   CHAIN_CLEARANCE_MAX,
@@ -546,7 +554,7 @@ export function coerceStartPose(raw: unknown): StartPose | null {
   };
 }
 
-export function coerceSetup(s: RobotSetup): RobotSetup {
+export function coerceSetup(s: RobotSetup, game?: GameId): RobotSetup {
   const autoPath = s.autoPath !== undefined ? coerceAutoPath(s.autoPath) : null;
   const alliance = s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue';
   const spec = coerceSpec(s.spec);
@@ -563,8 +571,10 @@ export function coerceSetup(s: RobotSetup): RobotSetup {
     alliance,
     spec,
     assists: coerceAssists(s.assists),
+    // the anchor count is PER GAME (DECODE 5, CR 4) — see `coerceStartIndex`. An
+    // absent/unknown game resolves to DECODE, like every other module lookup.
     startIndex: Number.isFinite(s.startIndex)
-      ? clamp(Math.round(s.startIndex), 0, C.START_POSES.length - 1)
+      ? clamp(Math.round(s.startIndex), 0, simModuleFor(game).startPoseCount - 1)
       : 0,
     startPose,
     autoPath: autoPath ?? undefined,
@@ -711,7 +721,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
   // localStorage, wire message, DB-staged ranked match), force every robot to a
   // legal, spawn-safe config here. Deterministic + idempotent, so live play and
   // replay re-runs agree. See coerceSetup / coerceSpec above.
-  for (const s of [...setups].map(coerceSetup).sort((p, q) => p.id - q.id)) {
+  for (const s of [...setups].map((st) => coerceSetup(st, 'decode')).sort((p, q) => p.id - q.id)) {
     const pose = startPose(s.alliance, s.startIndex, s.startPose, s.spec);
     const nth = allianceCount[s.alliance]++;
 

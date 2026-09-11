@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { GameSettings } from '../game';
 import type { DrivetrainType, GameId } from '../types';
 import { APP_BLURB, APP_NAME, APP_TAGLINE, LINKS, seasonFor } from '../seasons';
-import { registeredGames } from '../games';
+import { visibleGames } from '../seasonVisibility';
 import { fetchGlobalStats, type GlobalStats } from '../net/api';
 import { RAIL_ITEMS } from './NavRail';
 import { QueueCounts } from './QueueCounts';
@@ -40,9 +40,10 @@ export function HomeMenu({
   onGame: (g: GameId) => void;
 }) {
   const spec = settings.spec;
-  // only the games whose modules are actually registered are selectable; the
-  // switcher hides itself until there are ≥2 to choose between.
-  const games = registeredGames();
+  // only the games whose modules are registered AND whose season is visible on
+  // this release channel are selectable; the switcher hides itself until there are
+  // ≥2 to choose between.
+  const games = visibleGames();
   const season = seasonFor(settings.game);
 
   // site-wide counters (players + games played), when the server is configured
