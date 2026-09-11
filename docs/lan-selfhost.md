@@ -95,6 +95,44 @@ appear on the board.
 It is also self-policing where it is displayed: the replay viewer **re-simulates the input
 log**, so a score that disagrees with its own replay contradicts itself on screen.
 
+### How the rules are ENFORCED, and where
+
+The first build put the whole policy in `electron/lanHost.cjs`: the launcher blanked
+`DATABASE_URL` and the secrets before spawning the child, and that was all that stood between a
+self-hosted match and the production database. `dist-server/lan.mjs` is an ordinary Node bundle
+anybody can run by hand, so that was a guarantee about ONE way of starting the server.
+
+**`LAN_MODE=1` moves it into the process** (`server/lanMode.ts`). In LAN mode:
+
+- `server/db/pool.ts` refuses to build a pool even with `DATABASE_URL` set, so every
+  persistence call no-ops exactly as it does with no DSN at all. It is checked in that module's
+  own body, not in the boot sequence, because the pool is built the moment anything imports it.
+- `server/auth.ts` never verifies a token. A LAN server cannot learn who anybody is even if a
+  client sends one.
+- `ADMIN_USER_IDS`, `OWNER_USER_ID`, `ADMIN_SECRET` and the Ko-fi token are deleted from
+  `process.env` at boot, before `server/index.ts` reads them into constants.
+
+**`SERVE_CLIENT` without `LAN_MODE` refuses to start.** Serving the client is the one thing only
+a self-hosted server does, so the two are one decision. Failing closed beats inferring
+`LAN_MODE` from `SERVE_CLIENT`: the dangerous configuration is exactly the one where somebody
+believed they were starting an ordinary server, and a process that quietly dropped the database
+out from under a real deployment would be a worse surprise than one that will not boot. The
+desktop launcher sets both, and passes an ALLOWLISTED environment rather than the parent's with
+holes punched in it — so the next cloud secret anybody adds is not inherited on the day it
+is introduced.
+
+### The guest never hands the host a credential
+
+`LobbyClient` attaches the Neon Auth JWT to `join` and `spectate`, and `Lobby.tsx` is the one
+connect site that follows a LAN address. So a guest joining a classmate's laptop was handing it
+a bearer credential for their real cloud account.
+
+The strip is at the **transport send boundary** (`WebSocketTransport.send` +
+`src/net/credentials.ts`), not at the two call sites: a rule enforced per call site grows a hole
+every time somebody adds a message. The allowlist runs in the safe direction — credentials go
+to a CONFIGURED CLOUD SERVER and nothing else — so a destination nobody has classified yet gets
+the safe answer rather than the convenient one. `LAN_MODE` is the server half of the same rule.
+
 ### Rules this imposes
 
 1. **A LAN match may never write `records`, `ranked_*`, ELO, or any `record_leaderboard`
@@ -123,7 +161,16 @@ What it keeps, because these were right for reasons that still apply:
 
 - **`matchId` is still the key**, because the *host's own* upload is still offered more than
   once — a timeout that actually succeeded, a reinstall, two tabs. `lan_runs.match_id` is
-  `UNIQUE` and the first write wins, so a retry is free. `npm run dbtest` covers it.
+  `UNIQUE`, the first write by THAT HOST wins, so a retry is free. `npm run dbtest` covers it.
+- ⚠️ **THE ID IS A CAPABILITY AND GOES TO THE HOST ALONE.** It used to ride `matchResult`,
+  which is a broadcast, so every driver and every spectator got it — and the cloud has no way
+  to know who really hosted a self-hosted match, so all it can check is that the uploader signed
+  in and named an id. Whoever posted first took the row under their own account, and the real
+  host's upload was answered with somebody else's match and marked done on the device. It is its
+  own message now (`matchArchive`), sent to the host's socket immediately before the result, and
+  the idempotence is scoped by host: a non-owner claiming a filed id gets **409**, not a silent
+  win. Two protections against two different mistakes — the capability stops the claim, the
+  ownership check makes a leaked one fail out loud.
 - **Device first, account second.** A venue's connection is bad at exactly the wrong moment, so
   the run is stored locally and uploaded from a backlog, reusing the shape `practiceRuns.ts`
   already has. The host being required to be signed in does not mean required to be online at

@@ -1,3 +1,80 @@
+# HANDOFF — 2026-09-11, third session (LAN self-hosting: the security review)
+
+Branch **`lan-selfhost`**, still stacked on `perf-load-v2`. Eight new commits, `cdad8a8`
+… `61373cf` and this one. `npm test` **ALL PASS**, `npm run dbtest` **ALL PASS**,
+`server:check` and `build` clean. `SIM_VERSION` and `BALANCE_VERSION` untouched, no physics
+touched. **Nothing pushed, nothing deployed, no PR opened.**
+
+## READ FIRST — an external security review of this branch, and what it changed
+
+Eight findings, four of them HIGH and gating the PR leaving draft. **All eight were verified
+against the real code first and all eight were real**; none was a false positive. All eight are
+fixed on this branch. In review order:
+
+1. **A guest was sending its cloud JWT to the LAN host.** `LobbyClient` attaches the Neon Auth
+   token to `join` and `spectate` unconditionally and `Lobby.tsx` is the one connect site that
+   follows a LAN address, so joining a classmate's laptop handed that laptop a bearer
+   credential for the guest's real account. Stripped at the **transport send boundary**
+   (`src/net/credentials.ts` + `WebSocketTransport.send`), never at the call sites — a rule
+   enforced per call site grows a hole every time somebody adds a message. The allowlist asks
+   "is this a CONFIGURED CLOUD SERVER", so an unclassified destination defaults safe.
+2. **The static path check was lexical and followed links.** It proved what a path spells out
+   to, not where it leads, and the root is a `dist/` on somebody's laptop. `servableFile`
+   canonicalises BOTH sides with `realpath` and `send` opens the resolved path. A miss and an
+   escape return the same thing on purpose.
+3. **The "unofficial, no cloud DB" policy lived only in the Electron launcher.**
+   `dist-server/lan.mjs` is an ordinary Node bundle anybody can run by hand, so it was a
+   guarantee about ONE way of starting the server. `server/lanMode.ts` moves it in-process.
+4. **Any player or spectator could claim the host's archive row.** `matchId` rode the
+   `matchResult` BROADCAST, and the cloud cannot tell who hosted a LAN match, so the first
+   poster took the row and the real host's upload was answered with a stranger's match. The id
+   is now a capability (`matchArchive`, host socket only) and the ownership check answers a
+   non-owner with **409**.
+5. `/api/lan`'s body cap rejected but kept buffering. Now destroys the request; plus per-user
+   rate and in-flight concurrency limits.
+6. The spawned server inherited the parent environment minus a denylist. Now an allowlist.
+7. Stop/start could race the old child's shutdown. `stop()` now settles on real exit and
+   `start()` awaits it.
+8. `lan_runs.match_id` was freeform text and `game` was unconstrained. Both are CHECK
+   constraints now, amended INTO 0033 — see the caveat below.
+
+## The three decisions somebody will want to re-litigate
+
+- ⚠️ **`SERVE_CLIENT` WITHOUT `LAN_MODE` REFUSES TO BOOT** (exit 1, naming the variable).
+  Serving the client is the one thing only a self-hosted server does, so the pair is one
+  decision. Inferring `LAN_MODE` from `SERVE_CLIENT` was rejected: the dangerous configuration
+  is the one where somebody believed they were starting an ordinary server, and a process that
+  quietly dropped the database out from under a real deployment is a worse surprise than one
+  that will not start. Documented in `.env.example` and `docs/lan-selfhost.md`.
+- **`LAN_MODE` is read in `pool.ts` and `auth.ts` THEMSELVES**, not applied by the boot-time
+  scrub alone. ESM evaluates a module body before the importing module's first statement, so a
+  pool built at import time would be built before any boot sequence could stop it. A policy
+  that depends on import order is not a policy. `enforceLanPolicy()` still runs before
+  `server/index.ts` reads `ADMIN_USER_IDS`/`OWNER_USER_ID` into consts; do not move it down.
+- **A 409 retires the upload locally** (`markLanRefused`). `pendingLanUploads` drains in order
+  and stops on the first failure, so a permanently-refused item would park the whole backlog.
+  The match stays on the device and in the host's list; only the backlog stops offering it.
+
+## Caveats and what is NOT proven
+
+- ⚠️ **MIGRATION 0033 WAS AMENDED IN PLACE.** That is safe only because it has never run
+  anywhere: it exists on `lan-selfhost` alone and is absent from `main`, `alpha` and
+  `perf-load-v2`, checked with `git ls-tree` at the time. `server/db/migrate.ts` tracks applied
+  migrations by FILENAME with no checksum, so a machine that already ran the old 0033 keeps the
+  unconstrained table silently. **If this has shipped by the time you read it, add an 0034.**
+- **The desktop launcher changes are covered by unit checks, not by a real Host press.**
+  `childEnv` is asserted directly in `npm test`; the stop/start ordering is reasoned and
+  reviewed but NOT exercised against a real Electron child. Press Stop then Host quickly on a
+  real build before this ships.
+- **The 409 path is proven at the repo layer** (`npm run dbtest`), not end to end against a
+  live cloud server with two accounts.
+- `npm run test:mm`, `uiaudit` and `contrast` were not re-run this session — nothing here
+  touches the matchmaker, a stylesheet or a colour token.
+- ⚠️ **`npm test` teed through a redirect truncated its own log twice on this machine**
+  (the run completed, the tail of the output did not reach the file). If a gate log ends
+  without `ALL PASS`, check the process exit before believing a failure: the canonical run here
+  was `npx tsx scripts/smoke.ts` piped to `tee`, which printed `ALL PASS`.
+
 # HANDOFF — 2026-09-11, second session (LAN self-hosting, end to end)
 
 Branch **`lan-selfhost`**, stacked on `perf-load-v2` (which is stacked on `alpha`). Nine
@@ -5,7 +82,7 @@ commits, `42a6751` … `d00a4b1`. `npm test` **ALL PASS**, `test:mm` 58, `dbtest
 `server:check`, `build`, `uiaudit` (at baseline) and `contrast` (221) all green. `SIM_VERSION`
 untouched. **Nothing pushed, nothing deployed.**
 
-## READ FIRST — what this is, and the one thing that decides its whole shape
+## What this is, and the one thing that decides its whole shape
 
 A team can host a DSIM game server on their own laptop and everyone on the same network plays
 on it, with **no terminal and no Node install** — the desktop app spawns the server itself.

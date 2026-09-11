@@ -978,12 +978,16 @@ async function main(): Promise<void> {
       { name: 'Ana', teamName: 'Horizon', teamNumber: 36596, alliance: 'red', drivetrain: 'tank' },
       { name: 'Bo', teamName: 'Horizon', teamNumber: 36596, alliance: 'blue', drivetrain: 'mecanum' },
     ];
+    /** a match id of the shape the hosting server actually mints, which the table now requires */
+    const mid = (n: number): string =>
+      `0000${n.toString(16).padStart(4, '0')}-0000-4000-8000-000000000000`;
+    const MATCH_A = mid(1);
 
-    const one = await repo.saveLanRun('lan-host', 'match-aaa', container(1, 9000), { red: 120, blue: 98 }, roster, SEASON, 'decode');
+    const one = await repo.saveLanRun('lan-host', MATCH_A, container(1, 9000), { red: 120, blue: 98 }, roster, SEASON, 'decode');
     check('lan: a hosted match comes back with its replay', !!one.replayId && one.score.red === 120);
     check('lan: the roster round-trips as names, not ids', one.participants.length === 2 && one.participants[0].name === 'Ana');
     const listed = await repo.listLanRuns('lan-host', 'decode');
-    check('lan: ...and is listed for the HOST', listed.length === 1 && listed[0].matchId === 'match-aaa');
+    check('lan: ...and is listed for the HOST', listed.length === 1 && listed[0].matchId === MATCH_A);
     check(
       'lan: the stored replay is an ordinary one the viewer can already read',
       (await repo.getReplay(one.replayId!))?.sim === 2,
@@ -1000,7 +1004,7 @@ async function main(): Promise<void> {
     // IDEMPOTENCE. The same match offered twice is ONE row — this is what makes a retry safe,
     // and it is the difference between a flaky venue connection and a duplicated history.
     const replaysBefore = await db.query(`select count(*)::int as n from replays`);
-    const again = await repo.saveLanRun('lan-host', 'match-aaa', container(99, 50), { red: 1, blue: 2 }, roster, SEASON, 'decode');
+    const again = await repo.saveLanRun('lan-host', MATCH_A, container(99, 50), { red: 1, blue: 2 }, roster, SEASON, 'decode');
     check('lan: re-uploading the same matchId returns the SAME row', again.id === one.id);
     check('lan: ...and does not overwrite the first report', again.score.red === 120);
     const afterRetry = await repo.listLanRuns('lan-host', 'decode');
@@ -1016,19 +1020,75 @@ async function main(): Promise<void> {
       `${nBefore} -> ${nAfter}`,
     );
 
-    // A SECOND HOST CANNOT CLAIM A MATCH THAT IS ALREADY STORED. `match_id` is unique across
-    // the table, not per account, so the first upload owns it.
-    const stolen = await repo.saveLanRun('lan-host2', 'match-aaa', container(7, 60), { red: 999, blue: 0 }, roster, SEASON, 'decode');
-    check('lan: another account re-uploading the same matchId gets the existing row', stolen.id === one.id);
+    /**
+     * A SECOND ACCOUNT CANNOT CLAIM A MATCH SOMEBODY ELSE FILED, AND IS TOLD SO.
+     *
+     * It used to be handed the existing row with a 200. That reads like idempotence and is
+     * not: the id was BROADCAST to the whole room with the match result, so any player or
+     * spectator could file the host's match under their own account, and the real host's
+     * upload was then answered with a stranger's row and marked done on the device. The id is
+     * a host-only capability now (`matchArchive`), and the idempotence is scoped by host, so
+     * this is a refusal `/api/lan` turns into a 409 rather than a silent win.
+     */
+    let claimed: string | null = null;
+    try {
+      await repo.saveLanRun('lan-host2', MATCH_A, container(7, 60), { red: 999, blue: 0 }, roster, SEASON, 'decode');
+      claimed = 'accepted';
+    } catch (err) {
+      claimed = err instanceof repo.LanRunOwnedByAnother ? 'refused' : `wrong error: ${String(err)}`;
+    }
+    check('lan: another account claiming a filed matchId is REFUSED, not quietly answered', claimed === 'refused', String(claimed));
     check('lan: ...and it still belongs to the original host', (await repo.listLanRuns('lan-host2', 'decode')).length === 0);
+    check(
+      'lan: ...and the original host still owns the row it filed',
+      (await repo.listLanRuns('lan-host', 'decode'))[0]?.hostUserId === 'lan-host',
+    );
+    // the refused claim must not leave its replay behind either
+    const afterClaim = await db.query(`select count(*)::int as n from replays`);
+    check(
+      'lan: ...and the refused claim leaks no orphaned replay',
+      (afterClaim.rows[0] as { n: number }).n === nAfter,
+    );
+
+    /**
+     * THE SHAPE OF `match_id` IS A TABLE CONSTRAINT, not only an API check.
+     *
+     * The API refuses anything that is not a lowercase UUID, and that is a property of one
+     * code path. This is a property of the table: the identity column is the one value the
+     * uploader chooses, and freeform text there is an invitation to squat on it, to pad it,
+     * or to store a megabyte of anything under it. Same for `game`, which arrives on a query
+     * string and whose wrong values fail by silently listing nothing.
+     */
+    let badId = 'accepted';
+    try {
+      await db.query(
+        `insert into lan_runs (match_id, host_user_id, game, balance_version, score, participants)
+         values ('not-a-uuid', 'lan-host', 'decode', $1, '{}'::jsonb, '[]'::jsonb)`,
+        [SEASON],
+      );
+    } catch {
+      badId = 'refused';
+    }
+    check('lan: the TABLE refuses a match_id that is not a minted uuid', badId === 'refused');
+    let badGame = 'accepted';
+    try {
+      await db.query(
+        `insert into lan_runs (match_id, host_user_id, game, balance_version, score, participants)
+         values ($2, 'lan-host', 'quidditch', $1, '{}'::jsonb, '[]'::jsonb)`,
+        [SEASON, mid(9999)],
+      );
+    } catch {
+      badGame = 'refused';
+    }
+    check('lan: ...and a game that does not exist', badGame === 'refused');
 
     // PRUNE: the cap holds and pruned runs take their replays with them.
     for (let i = 2; i <= repo.LAN_KEEP + 3; i++) {
-      await repo.saveLanRun('lan-host', `match-${i}`, container(i, 100 + i), { red: i, blue: 0 }, roster, SEASON, 'decode');
+      await repo.saveLanRun('lan-host', mid(i), container(i, 100 + i), { red: i, blue: 0 }, roster, SEASON, 'decode');
     }
     const capped = await repo.listLanRuns('lan-host', 'decode');
     check('lan: a host keeps only LAN_KEEP matches, newest first', capped.length === repo.LAN_KEEP, `${capped.length} kept`);
-    check('lan: the OLDEST went, not the newest', !capped.some((r) => r.matchId === 'match-aaa'));
+    check('lan: the OLDEST went, not the newest', !capped.some((r) => r.matchId === MATCH_A));
     check(
       'lan: a pruned match took its replay with it (no orphaned logs)',
       (await repo.getReplay(one.replayId!)) === null,
