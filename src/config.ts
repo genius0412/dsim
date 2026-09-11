@@ -516,29 +516,35 @@ export const BALL_RADIUS = 2.5; // 5 in diameter
  * ROLLING RESISTANCE WITH THE FLOOR (in/s^2), and the thing that decides how far a shoved
  * artifact travels.
  *
- * A robot driving a line of artifacts pushes them at its own speed, and the one at the end
- * of the chain is handed `(1 + BALL_BALL_RESTITUTION) / 2` of that — measured 67 in/s off a
- * robot doing 81, which is the textbook equal-mass answer and not an error anywhere in the
- * solve. At 20 that coasts 112in across a 144in field, so anything the robot punted and did
- * not immediately chase reached the far wall: \"the third one bounces out far away, hits the
- * other field wall, comes back and gets grabbed\". At 32 the same punt stops in 61-68in rather than 112in, most of the way inside
- * the floor it has. Nothing about the collision changed; the artifact just stops like foam
- * on tile instead of like a ball bearing.
+ * A robot driving a line of artifacts pushes them at its own speed, and the one at the end of
+ * the chain is handed `(1 + BALL_BALL_RESTITUTION) / 2` of that — measured 67 in/s off a robot
+ * doing 81, which is the textbook equal-mass answer and not an error anywhere in the solve. So
+ * how far it then travels is the ONLY thing this behaviour depends on, and at 20 it coasted
+ * 112in across a 144in field: "the third one bounces out far away, hits the other field wall,
+ * comes back and gets grabbed".
  *
- * 0.083g, against 0.052g at 20. A foam ball on field tile is roughly 0.05-0.15g, so this
- * sits mid-range where 20 sat at the very bottom. The clump push-drag (`BALL_PUSH_DRAG`)
- * still carries the harder-to-push feel, and the gate drain still reaches the human-player
- * corner: 7 of 9 get there, against ALL NINE at 20 — this constant's comment always claimed
- * "~4-5 of 9", so 20 had drifted well past its own stated intent.
+ * MEASURED CURVE — the punt (a line of three with 71in of floor past it, driver lets go after
+ * two) against the gate drain reaching the human-player corner:
  *
- * 40 WAS TRIED AND REJECTED. It contains the punt completely (49-66in, never the wall) and
- * puts exactly the documented 4 of 9 in the corner, but a pile leaned on a wall can no longer
- * squirt free, so it creeps and G408 re-bills it — 2 extra MINORs over 6.5s of just holding,
- * which is the reported "I get penalties when I'm pushing forward against two balls against
- * the wall". It also let a line of six hand an artifact 1.11x the pushing robot's own speed.
- * 32 keeps both of those clean.
+ *     in/s^2 |  g     | punt runs | touches the far wall | drain to the corner
+ *        20  | 0.052  |  67-68in  |      5 of 6          |      9 of 9
+ *        28  | 0.073  |     68in  |      3 of 3          |      8 of 9
+ *        32  | 0.083  |  61-68in  |      4 of 6          |      7 of 9
+ *        40  | 0.104  |  49-66in  |      0 of 6          |      4 of 9
+ *
+ * 40 is the only value that contains the punt, and it also restores the "~4-5 of 9" this
+ * comment always claimed the drain did. It was REJECTED anyway: a pile leaned on a wall can no
+ * longer squirt free, so it creeps and G408 re-bills it (2 extra MINORs over 6.5s of just
+ * holding, the reported "I get penalties when I'm pushing forward against two balls against the
+ * wall"), and a line of six handed an artifact 1.11x the pushing robot's own speed.
+ *
+ * 28 is an owner setting: 0.073g against 0.052g at 20, still inside the 0.05-0.15g a foam ball
+ * on field tile plausibly has, and it keeps the drain nearly intact. It does NOT contain the
+ * punt — that needs 40 and the penalty cost above. 32 is the middle if the punt matters more.
+ *
+ * The clump push-drag (`BALL_PUSH_DRAG`) still carries the harder-to-push feel.
  */
-export const BALL_ROLL_FRICTION = 32;
+export const BALL_ROLL_FRICTION = 28;
 /** fraction of the robot's into-the-ball speed bled off per ball contact each
  * solver pass — small per ball, but a big CLUMP is cumulatively a little heavier
  * to push (the drivetrain meets resistance, accelerates into it slower) */
