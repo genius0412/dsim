@@ -466,6 +466,15 @@ export function fieldChecks(check: Check): void {
    * machine, which is a check that flakes rather than a budget. The minimum is the estimate
    * least contaminated by whatever else the machine was doing, and best-of-three brought the
    * spread to 1.25-1.63x.
+   *
+   * THE WINDOWS ARE INTERLEAVED (cr, bb, cr, bb, cr, bb), and that is not cosmetic. Run as
+   * three CR windows and then three BIOBUZZ windows, the two sides are measured at DIFFERENT
+   * MOMENTS, so anything that loads the machine for a few seconds lands on one side only and
+   * the ratio reports the load rather than the code. Measured: on a box that was also running
+   * an Electron gallery capture, that layout read 1.77x (bb=1.249ms, cr=0.707ms — both sides
+   * inflated, BIOBUZZ's fresh-Rapier-world-per-tick inflated harder) against the same code
+   * that reads 1.37-1.51x idle. Alternating puts every burst of contention across both sides,
+   * which is the whole reason this check is a RATIO in the first place.
    */
   {
     const bbSetups = [setup(0, 'blue'), setup(1, 'blue', {}, 1), setup(2, 'red'), setup(3, 'red', {}, 1)];
@@ -480,21 +489,25 @@ export function fieldChecks(check: Check): void {
     const drive = cmd({ driveY: 1, rotate: 0.3, intake: true, fire: true });
     const cmds = new Map([0, 1, 2, 3].map((id) => [id, drive] as const));
 
-    const time = (build: () => World, step: (w: World, dt: number, c: Map<number, RobotCommand>) => void): number => {
-      const warm = build();
-      for (let i = 0; i < 300; i++) step(warm, C.SIM_DT, cmds as Map<number, RobotCommand>);
-      let best = Infinity;
-      for (let k = 0; k < 3; k++) {
-        const w = build();
-        const t0 = performance.now();
-        const n = 600;
-        for (let i = 0; i < n; i++) step(w, C.SIM_DT, cmds as Map<number, RobotCommand>);
-        best = Math.min(best, (performance.now() - t0) / n);
-      }
-      return best;
+    type Side = { build: () => World; step: (w: World, dt: number, c: Map<number, RobotCommand>) => void; best: number };
+    const warm = (side: Side): void => {
+      const w = side.build();
+      for (let i = 0; i < 300; i++) side.step(w, C.SIM_DT, cmds as Map<number, RobotCommand>);
     };
-    const cr = time(() => createChainWorld('match', 5, crSetups), chainStep);
-    const bb = time(() => createBiobuzzWorld('match', 5, bbSetups), biobuzzStep);
+    const window_ = (side: Side): void => {
+      const w = side.build();
+      const n = 600;
+      const t0 = performance.now();
+      for (let i = 0; i < n; i++) side.step(w, C.SIM_DT, cmds as Map<number, RobotCommand>);
+      side.best = Math.min(side.best, (performance.now() - t0) / n);
+    };
+    const sides: Side[] = [
+      { build: () => createChainWorld('match', 5, crSetups), step: chainStep, best: Infinity },
+      { build: () => createBiobuzzWorld('match', 5, bbSetups), step: biobuzzStep, best: Infinity },
+    ];
+    for (const side of sides) warm(side);
+    for (let k = 0; k < 3; k++) for (const side of sides) window_(side);
+    const [{ best: cr }, { best: bb }] = sides;
     check(
       `perf: a 2v2 BIOBUZZ step costs <= ${STEP_BUDGET}x a 2v2 Chain Reaction step`,
       bb <= cr * STEP_BUDGET,
@@ -677,19 +690,21 @@ export function roomChecks(check: Check): void {
   {
     const WARM = 300;
     const N = 600;
-    const timeRoom = (code: string, game: 'biobuzz' | 'chain', spec: RobotSpec): number => {
-      started(`${code}-warm`, game, spec).room.advanceForTest(WARM);
-      let best = Infinity;
-      for (let k = 0; k < 3; k++) {
-        const timed = started(`${code}-${k}`, game, spec).room;
-        const t0 = performance.now();
-        timed.advanceForTest(N);
-        best = Math.min(best, (performance.now() - t0) / N);
-      }
-      return best;
+    type RoomSide = { code: string; game: 'biobuzz' | 'chain'; spec: RobotSpec; best: number };
+    const roomWindow = (side: RoomSide, k: number): void => {
+      const timed = started(`${side.code}-${k}`, side.game, side.spec).room;
+      const t0 = performance.now();
+      timed.advanceForTest(N);
+      side.best = Math.min(side.best, (performance.now() - t0) / N);
     };
-    const cr = timeRoom('smoke-perf-cr', 'chain', DEFAULT_SPEC);
-    const bb = timeRoom('smoke-perf-bb', 'biobuzz', BB_DEFAULT_SPEC);
+    const sides: RoomSide[] = [
+      { code: 'smoke-perf-cr', game: 'chain', spec: DEFAULT_SPEC, best: Infinity },
+      { code: 'smoke-perf-bb', game: 'biobuzz', spec: BB_DEFAULT_SPEC, best: Infinity },
+    ];
+    for (const side of sides) started(`${side.code}-warm`, side.game, side.spec).room.advanceForTest(WARM);
+    // INTERLEAVED, for the reason spelled out on the world-step check above.
+    for (let k = 0; k < 3; k++) for (const side of sides) roomWindow(side, k);
+    const [{ best: cr }, { best: bb }] = sides;
     check(
       `perf: a 2v2 BIOBUZZ ROOM tick costs <= ${ROOM_BUDGET}x a 2v2 Chain Reaction room tick`,
       bb <= cr * ROOM_BUDGET,
