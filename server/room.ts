@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import * as C from '../src/config';
 import { START_POSES } from '../src/config';
 import { activeStartLegal } from '../src/sim/field';
@@ -284,6 +285,12 @@ export class Room {
   // recording: captures the input log for this match; finalized once at phase 'post'
   private recorder: ReplayRecorder | null = null;
   private finalized = false;
+  /**
+   * This match's globally unique id, minted at `finalizeMatch` and sent with the
+   * result. Null until then, and re-minted by a rematch — a rematch is a different
+   * match. See `ServerMsg` 'matchResult' for what it is for.
+   */
+  private matchId: string | null = null;
   // world.time at which phase 'post' began, to hold the settle window before
   // finalizing (null until the match ends)
   private postSince: number | null = null;
@@ -1376,7 +1383,21 @@ export class Room {
     const w = this.world;
     const replay: Replay = this.recorder.finish();
     const result = worldResult(w);
-    this.broadcast({ t: 'matchResult', kind: this.config.kind, record: this.config.record, result, replay });
+    // MINT THE MATCH ID HERE, at the one moment a match becomes a thing that happened.
+    // Every recipient of this broadcast gets the same id, which is what lets a
+    // self-hosted match be uploaded by a client without the cloud having to guess
+    // whether two uploads are one match or two (docs/lan-selfhost.md). Minted at
+    // finalize rather than at start because a match nobody finishes is never
+    // uploaded, and a rematch is a different match.
+    this.matchId = randomUUID();
+    this.broadcast({
+      t: 'matchResult',
+      kind: this.config.kind,
+      record: this.config.record,
+      result,
+      replay,
+      matchId: this.matchId,
+    });
     // hand the authoritative outcome to the persistence layer (off the hot path).
     // ALPHA (in-development) rooms are NEVER persisted: the results screen + replay
     // still work from the broadcast above, but no leaderboard/ELO/record DB write

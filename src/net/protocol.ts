@@ -554,6 +554,20 @@ export type ServerMsg =
       record?: RecordKind;
       result: ReplayResult;
       replay: Replay;
+      /**
+       * A globally unique id for THIS match, minted by whichever server ran it.
+       *
+       * It exists for the self-hosted case (`docs/lan-selfhost.md`): a LAN match is
+       * uploaded to the cloud by a client rather than written by the server that ran
+       * it, and without a stable id the cloud cannot tell a re-upload from a second
+       * match. It is `UNIQUE` in `lan_runs`, so the upload is an upsert and a retry
+       * after a flaky connection is free.
+       *
+       * OPTIONAL, because an older server does not send one and one app serves every
+       * client version. A client that needs it must handle its absence — today that
+       * means the upload is skipped rather than sent unkeyed.
+       */
+      matchId?: string;
     }
   // ranked only: each driver's overall-ELO change, sent shortly after matchResult
   // once the match is scored + persisted (async DB write). Drives the results

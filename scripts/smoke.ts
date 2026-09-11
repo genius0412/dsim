@@ -11962,6 +11962,13 @@ function pinScene(
   check('server Room emits a matchResult at match end', !!res);
   if (res && res.t === 'matchResult') {
     check('matchResult tagged kind=record / solo', res.kind === 'record' && res.record === 'solo');
+    // THE MATCH ID. A self-hosted match is uploaded by a client rather than written
+    // by the server that ran it, so the cloud needs a key that says "this is the same
+    // match" to tell a retry from a second game (docs/lan-selfhost.md).
+    check('matchResult carries a matchId', typeof res.matchId === 'string' && (res.matchId?.length ?? 0) > 0);
+    check('the matchId is a UUID, so two servers can never mint the same one',
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(res.matchId ?? ''),
+      res.matchId);
     check(
       'record forces the run onto blue (opponent-free, red player → blue robot)',
       res.result.score.blue > 0 && res.result.score.red === 0,
