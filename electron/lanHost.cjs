@@ -13,11 +13,25 @@
  * had Node installed — which is every machine this feature is for. Spawning `node` would
  * work on a developer's laptop and fail silently on a team's.
  *
- * THE CHILD GETS A DELIBERATELY EMPTY ENVIRONMENT for anything account-shaped. No
- * `DATABASE_URL`, no auth secrets: a LAN server runs the GAME and nothing else, every match
- * on it is unofficial, and the results reach an account only by being uploaded from the
- * host's own client to the cloud (see docs/lan-selfhost.md). A LAN server that could write
- * to the real database would be a server whose operator could write anything they liked.
+ * THE CHILD GETS AN ALLOWLISTED ENVIRONMENT, not the parent's with a few holes punched in
+ * it. A LAN server runs the GAME and nothing else; results reach an account only by being
+ * uploaded from the host's own client to the cloud (see docs/lan-selfhost.md), and a LAN
+ * server that could write to the real database would be a server whose operator could write
+ * anything they liked. The earlier version spread `...process.env` and then blanked the four
+ * secrets that existed at the time, which is a list somebody has to MAINTAIN: the next cloud
+ * secret anybody adds is inherited by every self-hosted server on the day it is introduced,
+ * silently, and the person adding it has no reason to look in this file. So the direction is
+ * inverted — nothing is passed unless it is named here, and the names are the ones a Node
+ * process needs to run at all plus the two that configure the host.
+ *
+ * ⚠️ **`LAN_MODE=1` IS THE LOAD-BEARING ONE, AND IT IS NOT A HINT.** The server enforces
+ * the whole unofficial-and-no-database policy on ITSELF from that variable
+ * (`server/lanMode.ts`): it refuses to build a database pool, refuses to verify anybody's
+ * credentials, and drops the admin environment, whatever this launcher did or did not put in
+ * the child's environment. That matters because `dist-server/lan.mjs` is an ordinary Node
+ * bundle anybody can run by hand, with no launcher in the picture — a guarantee that lives
+ * only here is a guarantee about ONE way of starting the server. This launcher's job is to
+ * set the flag; the server's job is to mean it.
  */
 
 const { spawn } = require('node:child_process');
@@ -30,6 +44,18 @@ const DEFAULT_PORT = 8787;
 
 /** the running child, or null. One host per app — a second would fight for the port. */
 let child = null;
+/**
+ * A stop that has issued its kill and is waiting for the process to actually go.
+ *
+ * ⚠️ **`child = null` IS NOT `the port is free`.** `kill()` delivers a signal and returns;
+ * the OS process lives on for as long as it takes to unwind, and it is still holding
+ * 0.0.0.0:8787 the whole time. The panel's own Stop / Start buttons are two clicks a second
+ * apart, and changing the port is literally stop-then-start — so the previous version's
+ * window between them was not theoretical, and what came out of it was the WORST failure this
+ * screen has: EADDRINUSE, reported as 'another copy of DSIM may already be hosting', about a
+ * server the app itself had just stopped. So a stop is a PROMISE, and a start waits on it.
+ */
+let stopping = null;
 let current = { port: 0, startedAt: 0 };
 /** the last few lines the server printed, so a failure can say something specific */
 let log = [];
@@ -137,6 +163,37 @@ function status() {
 }
 
 /**
+ * The ONLY variables the parent may hand down.
+ *
+ * Nothing about DSIM is in here, deliberately — these are the ones a Node process needs to
+ * find its own libraries, its temp directory and the user's home on the three platforms. A
+ * cloud secret cannot be inherited by being forgotten, because inheritance is not the default.
+ */
+const PASSTHROUGH = [
+  'PATH', 'Path', 'SystemRoot', 'SystemDrive', 'windir', 'COMSPEC', 'PATHEXT',
+  'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA',
+  'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'LANG', 'LC_ALL', 'TZ',
+];
+
+/** the child's whole environment: the allowlist above, plus what makes it a LAN server */
+function childEnv(client, port) {
+  const env = {};
+  for (const k of PASSTHROUGH) if (process.env[k] !== undefined) env[k] = process.env[k];
+  // turn Electron's own binary into a plain Node runtime — this is what makes hosting work
+  // on a machine that has never had Node installed, which is every machine this is for
+  env.ELECTRON_RUN_AS_NODE = '1';
+  env.PORT = String(port);
+  // the server enforces the unofficial / no-database policy on ITSELF from this; see the
+  // header of this file and `server/lanMode.ts`
+  env.LAN_MODE = '1';
+  // serve the client on the same origin as the socket — the whole point; see
+  // `server/static.ts` for why a guest cannot reach this box any other way. The server
+  // REFUSES TO START on this without LAN_MODE, so the pair is checked from both sides.
+  env.SERVE_CLIENT = client;
+  return env;
+}
+
+/**
  * Start hosting. Resolves to `status()` on success, or `{ error }` with something specific
  * enough to act on.
  *
@@ -148,6 +205,9 @@ function status() {
  * likely failure and is worth saying out loud.
  */
 async function start(app, opts = {}) {
+  // a restart is stop-then-start, and the stopped server does not release the port the instant
+  // it is asked to. Wait for it, or spawn straight into our own EADDRINUSE.
+  if (stopping) await stopping;
   if (child) return status();
   const port = Number(opts.port) || DEFAULT_PORT;
   const script = serverScript(app);
@@ -156,24 +216,7 @@ async function start(app, opts = {}) {
 
   try {
     child = spawn(process.execPath, [script], {
-      env: {
-        ...process.env,
-        // turn Electron's own binary into a plain Node runtime
-        ELECTRON_RUN_AS_NODE: '1',
-        PORT: String(port),
-        // serve the client on the same origin as the socket — the whole point; see
-        // `server/static.ts` for why a guest cannot reach this box any other way
-        SERVE_CLIENT: client,
-        // a LAN server keeps NOTHING. Blanked explicitly rather than merely absent, so a
-        // developer running the app with a real .env in their environment cannot host a
-        // match straight into the production database.
-        DATABASE_URL: '',
-        ADMIN_USER_IDS: '',
-        ADMIN_SECRET: '',
-        KOFI_VERIFICATION_TOKEN: '',
-        FLY_REGION: '',
-        FLY_MACHINE_ID: '',
-      },
+      env: childEnv(client, port),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -186,9 +229,12 @@ async function start(app, opts = {}) {
   child.stdout.on('data', remember);
   child.stderr.on('data', remember);
   let exited = null;
+  const mine = child;
   child.on('exit', (code) => {
     exited = code;
-    child = null;
+    // only clear the slot if it is still OURS: a stop that has already replaced it, or a
+    // start that followed one, must not be un-done by a late exit from the old process
+    if (child === mine) child = null;
   });
 
   // up to ~8s: Rapier's wasm is the slow part of a cold start
@@ -199,7 +245,7 @@ async function start(app, opts = {}) {
     if (await probe(port)) return status();
     await new Promise((r) => setTimeout(r, 200));
   }
-  stop();
+  await stop();
   return { error: 'The server started but never answered. Check that nothing else is using this port.' };
 }
 
@@ -214,16 +260,48 @@ function lastProblem(code) {
     : `The server stopped before it finished starting (exit code ${code}).`;
 }
 
-/** stop hosting. Safe to call when nothing is running — quit paths call it unconditionally. */
+/**
+ * Stop hosting, and do not resolve until the process is GONE.
+ *
+ * Safe to call when nothing is running — the quit paths call it unconditionally, and they
+ * do not await it, which is fine: the kill is issued before the first await, so quitting is as
+ * prompt as it was. What awaiting buys is the RESTART, which cannot spawn onto a port the
+ * previous server has not let go of yet (see `stopping`).
+ *
+ * A child that ignores the polite signal is escalated. `kill()` is SIGTERM on POSIX and a
+ * hard terminate on Windows, so the escalation is mostly for the case where the server is
+ * wedged inside Rapier's wasm init; without it a stuck child would park this promise forever
+ * and the panel's Start button would never come back.
+ */
 function stop() {
-  if (!child) return status();
-  try {
-    child.kill();
-  } catch {
-    /* already gone */
-  }
-  child = null;
-  return status();
+  if (stopping) return stopping;
+  if (!child) return Promise.resolve(status());
+  const dying = child;
+  child = null; // the slot is free for a start to WAIT on, not for one to use
+  stopping = new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(hard);
+      stopping = null;
+      resolve(status());
+    };
+    const hard = setTimeout(() => {
+      try {
+        dying.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+      // and if even that does not land, stop waiting rather than wedging the panel
+      setTimeout(done, 1000).unref?.();
+    }, 3000);
+    hard.unref?.();
+    dying.once('exit', done);
+    try {
+      dying.kill();
+    } catch {
+      done(); // never started, or already reaped
+    }
+  });
+  return stopping;
 }
 
-module.exports = { start, stop, status, lanAddresses, DEFAULT_PORT };
+module.exports = { start, stop, status, lanAddresses, childEnv, DEFAULT_PORT };
