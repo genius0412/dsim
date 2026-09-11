@@ -279,8 +279,26 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
     velocities** —
     restoring the velocity too threw away the squirt the round had just found, the re-solve with
     a stopped robot gave the ball 5 in/s instead, and the robot sat on a creeping ball tick after
-    tick ("artifacts act like they are fixed in place"). **An artifact on the field has no
-    velocity INTO it** (the clip beside the containment clamp): a ball squeezed between a
+    tick ("artifacts act like they are fixed in place"). **NOTHING A ROBOT PUSHES ENDS UP
+    FASTER THAN THE ROBOT** (the clump speed cap after the loop): two equal masses with
+    restitution `e <= 1` hand the struck body `((1+e)/2)*v`, never more than the striker's own
+    `v`, and the solve broke that whenever the striker was an artifact pressed against a
+    KINEMATIC chassis — unable to recoil, it read as infinite mass and delivered `(1+e)*v`. A
+    full-speed ram put the artifact beyond the pushed one at exactly `BALL_MAX_SPEED` against a
+    robot doing 85, and a ball faster than the robot is one it can never catch ("if I drive in
+    full speed, third ball bumps with the second ball and doesn't get intaked"). So a ground
+    artifact's speed is bounded by what could have driven it: its own start-of-tick speed, the
+    start speed of everything in its start-of-tick contact CLUMP, and the speed of any robot
+    touching that clump. A clump and not one hop, because a chassis pushes a chain in ONE pass
+    by design and a one-hop cap froze the back of a pile for a tick. Every velocity pre-pass
+    runs BEFORE the snapshot, so `bounceFirstContacts`, `scatterBalls`, `clumpDrag` and
+    `intakeSuction` are already inside the bound and only the SOLVER's excess is clipped; the
+    bisection is unambiguous that the excess is the solver's restitution on a SUSTAINED contact
+    and NOT the pre-solve bounce (disabling `bounceFirstContacts` changes nothing, zeroing the
+    artifact collider's restitution fixes it). A PINNED artifact is EXEMPT — a wedge a few
+    degrees off square has to throw it `1/tan(theta)` times the robot's own advance just to keep
+    it clear, and capping that shuts the wedge and parks the robot on the ball. **An artifact on
+    the field has no velocity INTO it** (the clip beside the containment clamp): a ball squeezed between a
     kinematic chassis and a static wall is between two things the solver cannot move, and the
     compromise it leaves is a velocity into the wall (58 in/s measured) on a ball the clamp has
     just put back on it — carried into the circle it told the robot solve the ball was leaving,

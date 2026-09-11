@@ -1,3 +1,82 @@
+# HANDOFF — 2026-09-10, fourth session (a struck artifact may not outrun the robot)
+
+Branch **alpha**. `npm test` **ALL PASS — 1307 checks (one new: nothing a robot pushes ends up faster than the robot)**. `npm run build` green, `npm run server:check` green.
+`SIM_VERSION` untouched at **2**. Production not touched. Alpha deployed at `49d0926`; /health ok.
+
+## READ FIRST — the report, and what it was
+
+"If I drive in full speed, third ball bumps with the second ball and doesn't get intaked." It is
+a real physics violation, not intake tuning.
+
+Two equal masses with restitution `e <= 1` hand the struck body `((1+e)/2)*v`, never more than
+the striker's own `v`. The artifact solve broke that whenever the striker was itself pressed
+against a KINEMATIC chassis and re-driven every tick: unable to recoil, it read as infinite mass
+and the solver delivered `(1+e)*v`. Measured on a full-speed ram into an offset pile of four, the
+artifact beyond the pushed one left at exactly **90 in/s** — `BALL_MAX_SPEED` clamping a
+collision that wanted more — against a robot doing **85**. A line of six was **90 against 75**. A
+ball faster than the robot can never be caught again, which is the whole report.
+
+**The fix** (world.ts, after the round loop): a ground artifact's speed is bounded by what could
+physically have driven it — its own start-of-tick speed, the start speed of everything in its
+start-of-tick contact CLUMP, and the speed of any robot touching that clump. Measured after,
+both scenes sit at exactly **1.00x** the robot's own speed.
+
+- a CLUMP, not one hop. A chassis pushes a chain in a single pass by design; capping a ball on
+  its immediate neighbour's start speed alone freezes the back of a pile for a tick and brings
+  back the burial the speculative look-ahead exists to prevent.
+- every velocity pre-pass runs BEFORE the snapshot, so `bounceFirstContacts`, `scatterBalls`,
+  `clumpDrag` and `intakeSuction` are already inside the bound. Only the solver's excess is cut.
+- a PINNED artifact is EXEMPT. A wedge a few degrees off square must throw the ball `1/tan(theta)`
+  times the robot's own advance to keep it clear of the closing gap; holding it to the robot's
+  speed shuts the wedge and parks the robot on the ball, which is the failure the pin work fixed.
+- `BALL_BALL_RESTITUTION` is UNCHANGED at 0.68 and still measures 0.67. Lowering it also fixes
+  the symptom and was rejected: it is what makes a drain disperse instead of the artifacts
+  travelling as merged pairs, and it turns out to have almost no other test coverage (dropping it
+  breaks exactly one check, and that check is tautological — it asserts the constant).
+
+## Bisection that pinned the cause, so it is not re-done
+
+| change | third capture restored | what it proves |
+|---|---|---|
+| disable `bounceFirstContacts`, restitution left at 0.68 | no | the pre-solve first-contact bounce is NOT the culprit |
+| artifact collider restitution -> 0, bounce pass kept | yes | it IS the solver's restitution on a SUSTAINED contact |
+| `BALL_BALL_RESTITUTION` -> 0 or 0.3 | yes | same mechanism from the constant end; rejected above |
+| `BALL_MAX_SPEED` -> 40 | yes | only by putting the ceiling under drive speed; a symptom fix |
+| `PHYS_BALL_FRICTION` -> 0.3 | yes | by bleeding drift; breaks 4 checks incl. the gate drain |
+| `clumpInterval` 0.04 -> 0.02, `capMax` 0.09 -> 0.05 | no | byte-identical. The intake cadence is NOT involved |
+
+## Two things found in passing, NOT yet fixed
+
+- **`sideTouch` can never fire.** The flank grab in `updateIntake` (robot.ts) requires
+  `m.mouthHalf > width/2 + 0.5`, and no legal robot satisfies it: `intakeMouth` sets the VECTOR
+  preset's `mouthHalf` to exactly `width/2`, and sloped/triangle have a fixed 7in mouth against a
+  minimum half-width of 7.25. It is documented as the vector preset's flank capture and it is
+  unreachable code.
+- **`INTAKE_STRUCT_FRICTION` (0.05) is zero in effect.** The robot solids in `solveArtifacts` set
+  the `Min` friction combine rule, `Min` outranks the ball collider's default `Average`, and
+  `min(0, 0.05) = 0`. The intake wedges and the held artifacts are frictionless to a ground
+  artifact. Verified directly against Rapier, along with the matching fact that the field statics
+  name NO rule, so `PHYS_BALL_WALL_FRICTION` would combine by AVERAGE and be **halved** if it
+  were ever raised from 0.
+
+## Wall friction was tried and is not the lever (for "artifacts move too quickly")
+
+Raising `PHYS_BALL_WALL_FRICTION` makes a wedge self-lock below `atan(mu_effective)`, and that
+landed to the degree at every value tried (nominal 0.1 through 1.0, effective half of each). Two
+expected costs did NOT appear: the wall bounce is untouched at every value (impacts are bounced
+by the pre-solve pass, which is normal-only, so the constant reaches sustained contact and
+nothing else), and the drain still disperses (spread ratio 0.59-0.69 against a 0.63 baseline).
+But every value breaks a check, and which one flips partway up: below ~0.35 it is G408
+over-possession re-billing (a leaned-on pile cannot squirt free, so it creeps and keeps re-arming
+the carry distance); from 0.35 up it is the wall-squeeze squirt (at 8 degrees the robot stops
+reaching the wall). That flip is not tunable — a ball that does not fly out and a robot that
+drives through are the same event, and friction only moves the angle at which the choice flips.
+
+## Deploy
+
+Alpha server DEPLOYED with the wrapper after `49d0926`; /health answered ok. The Vercel alpha
+client rebuilds from the push. Production untouched.
+
 # HANDOFF — 2026-09-10, third session (piles, pins and squeezes, gate intaking)
 
 Branch **alpha**. `npm test` **ALL PASS — 1306 checks (four new: the pile, the squeeze, and gate intaking at two standoffs; the G408 lean scene, the drain-spread check and the outflow-shove tolerance restated)**. `npm run build` green, `npm run server:check`
