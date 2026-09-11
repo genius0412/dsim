@@ -516,29 +516,35 @@ export const BALL_RADIUS = 2.5; // 5 in diameter
  * ROLLING RESISTANCE WITH THE FLOOR (in/s^2), and the thing that decides how far a shoved
  * artifact travels.
  *
- * A robot driving a line of artifacts pushes them at its own speed, and the one at the end
- * of the chain is handed `(1 + BALL_BALL_RESTITUTION) / 2` of that — measured 67 in/s off a
- * robot doing 81, which is the textbook equal-mass answer and not an error anywhere in the
- * solve. At 20 that coasts 112in across a 144in field, so anything the robot punted and did
- * not immediately chase reached the far wall: \"the third one bounces out far away, hits the
- * other field wall, comes back and gets grabbed\". At 32 the same punt stops in 61-68in rather than 112in, most of the way inside
- * the floor it has. Nothing about the collision changed; the artifact just stops like foam
- * on tile instead of like a ball bearing.
+ * A robot driving a line of artifacts pushes them at its own speed, and the one at the end of
+ * the chain is handed `(1 + BALL_BALL_RESTITUTION) / 2` of that — measured 67 in/s off a robot
+ * doing 81, which is the textbook equal-mass answer and not an error anywhere in the solve. So
+ * how far it then travels is the ONLY thing this behaviour depends on, and at 20 it coasted
+ * 112in across a 144in field: "the third one bounces out far away, hits the other field wall,
+ * comes back and gets grabbed".
  *
- * 0.083g, against 0.052g at 20. A foam ball on field tile is roughly 0.05-0.15g, so this
- * sits mid-range where 20 sat at the very bottom. The clump push-drag (`BALL_PUSH_DRAG`)
- * still carries the harder-to-push feel, and the gate drain still reaches the human-player
- * corner: 7 of 9 get there, against ALL NINE at 20 — this constant's comment always claimed
- * "~4-5 of 9", so 20 had drifted well past its own stated intent.
+ * MEASURED CURVE — the punt (a line of three with 71in of floor past it, driver lets go after
+ * two) against the gate drain reaching the human-player corner:
  *
- * 40 WAS TRIED AND REJECTED. It contains the punt completely (49-66in, never the wall) and
- * puts exactly the documented 4 of 9 in the corner, but a pile leaned on a wall can no longer
- * squirt free, so it creeps and G408 re-bills it — 2 extra MINORs over 6.5s of just holding,
- * which is the reported "I get penalties when I'm pushing forward against two balls against
- * the wall". It also let a line of six hand an artifact 1.11x the pushing robot's own speed.
- * 32 keeps both of those clean.
+ *     in/s^2 |  g     | punt runs | touches the far wall | drain to the corner
+ *        20  | 0.052  |  67-68in  |      5 of 6          |      9 of 9
+ *        28  | 0.073  |     68in  |      3 of 3          |      8 of 9
+ *        32  | 0.083  |  61-68in  |      4 of 6          |      7 of 9
+ *        40  | 0.104  |  49-66in  |      0 of 6          |      4 of 9
+ *
+ * 40 is the only value that contains the punt, and it also restores the "~4-5 of 9" this
+ * comment always claimed the drain did. It was REJECTED anyway: a pile leaned on a wall can no
+ * longer squirt free, so it creeps and G408 re-bills it (2 extra MINORs over 6.5s of just
+ * holding, the reported "I get penalties when I'm pushing forward against two balls against the
+ * wall"), and a line of six handed an artifact 1.11x the pushing robot's own speed.
+ *
+ * 28 is an owner setting: 0.073g against 0.052g at 20, still inside the 0.05-0.15g a foam ball
+ * on field tile plausibly has, and it keeps the drain nearly intact. It does NOT contain the
+ * punt — that needs 40 and the penalty cost above. 32 is the middle if the punt matters more.
+ *
+ * The clump push-drag (`BALL_PUSH_DRAG`) still carries the harder-to-push feel.
  */
-export const BALL_ROLL_FRICTION = 32;
+export const BALL_ROLL_FRICTION = 28;
 /** fraction of the robot's into-the-ball speed bled off per ball contact each
  * solver pass — small per ball, but a big CLUMP is cumulatively a little heavier
  * to push (the drivetrain meets resistance, accelerates into it slower) */
@@ -767,16 +773,39 @@ export const PHYS_CONTAIN_SLOP = 0.75; // in
  * the pinner's bumper together hold it with (wall + bumper) times the pinner's push, against a
  * strafe worth its own push — and a stalled motor pushes with its whole stall force at any
  * throttle. At 0.7/0.5 an EQUAL robot could never get out (1.3× against 1×), which is not what a
- * fabric-covered bumper on polycarbonate does. Bumper on bumper ~0.45, bumper on wall ~0.35
- * (average 0.4 with the robot's), total 0.85×: an equal pinner can be strafed out of, slowly; a
- * heavier one cannot. The ARTIFACT world keeps its own values ().
+ * fabric-covered bumper on polycarbonate does.
+ *
+ * 0.15 (owner's call, from 0.45): BUMPER ON BUMPER ONLY. Rapier derives a pair's friction from
+ * the two colliders, so this one number sets robot↔robot AND, averaged with the static's,
+ * robot↔wall — they cannot be moved independently from here. So `PHYS_WALL_FRICTION` absorbs
+ * the difference and robot↔wall is held at the 0.40 it has always been. 0.15 is the floor:
+ * at 0.10, with the wall still compensated to 0.40, a heavy tank holding a victim against the
+ * wall bills 2 G422 over 20s instead of 6 and the rule stops being reachable.
+ *
+ * ⚠️ IT DOES NOT CONTROL WHETHER A PUSH CAN BE ESCAPED, which is the thing it reads as. Swept
+ * from 0.45 down to 0.1, a victim cornered against the wall by a heavier robot travelled 14.9,
+ * 15.0, 14.9, 14.9, 14.9in — flat to the tenth of an inch. The hold is the wall geometry and the
+ * pusher's drive force; the bumper coefficient is not in it. What the sweep DOES move is
+ * detection and the gate: at 0.15 a heavy tank holding a victim bills 4 G422 over 20s instead of
+ * 6, and at 0.1 it bills 2 AND the gate arm stops turning a robot that hits it 8in off centre
+ * (21deg to 0 — the bumper slides off the arm instead of being turned by it). 0.2 is the lowest
+ * value that keeps both. The ARTIFACT world keeps its own values ().
  */
-export const PHYS_FRICTION = 0.45;
-/** friction on the STATIC field colliders (walls, goal faces, classifier, gate arms). Set to
- *  Rapier's own default so making it explicit changes nothing; see `PHYS_FRICTION` above for
- *  why it is written down at all, and note the effective robot↔wall value is the AVERAGE of
- *  the two (0.6), not this number. */
-export const PHYS_WALL_FRICTION = 0.35;
+export const PHYS_FRICTION = 0.15;
+/**
+ * Friction on the STATIC field colliders: walls, goal faces, classifier, AND the gate arms
+ * (they go through the same `statics()` helper, which is why dropping the robot's own value
+ * alone stopped the arm turning a robot that hit it off centre — 21deg to 0).
+ *
+ * ⚠️ THIS IS NOT THE WALL'S COEFFICIENT, IT IS A COMPENSATOR. Neither collider names a combine
+ * rule, so Rapier AVERAGES the pair, and the robot's own `PHYS_FRICTION` is therefore half of
+ * robot↔wall as well as all of robot↔robot. To lower bumper-on-bumper without touching
+ * bumper-on-wall, this absorbs the difference: `(PHYS_FRICTION + this) / 2` is held at the
+ * 0.40 robot↔wall has always been, so this reads high on purpose. Move one, recompute the
+ * other. (An earlier comment here claimed 0.6 — that was the average of the old 0.7/0.5 pair
+ * and outlived them — and claimed this was Rapier's own default, which is 0.5, not either.)
+ */
+export const PHYS_WALL_FRICTION = 0.65;
 /**
  * IN-PLANE friction on an artifact — ball on ball, ball on bumper (`PHYS_BALL_FRICTION`) and
  * ball on the field (`PHYS_BALL_WALL_FRICTION`) — and it is NEARLY ZERO on purpose.

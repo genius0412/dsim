@@ -1436,10 +1436,87 @@ const httpServer = createServer((req, res) => {
 // the small HTTP (health/API) responses too.
 httpServer.on('connection', (socket) => socket.setNoDelay(true));
 
-// perMessageDeflate off: compression buffers/among-frames context adds latency +
-// memory for our tiny JSON frames and buys little on already-delta'd snapshots.
-// noServer: we intercept the upgrade ourselves (below) to do region routing.
-const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+// COMPRESSION IS ON, AND WHAT MAKES IT PAY IS THE WINDOW SURVIVING BETWEEN
+// MESSAGES. This was `perMessageDeflate: false` for a long time, on the reasoning
+// that "compression buffers/among-frames context adds latency + memory for our tiny
+// JSON frames and buys little on already-delta'd snapshots". The latency and memory
+// halves of that are real costs and are priced below; the last clause is simply
+// wrong for this workload, and load testing measured how wrong (`docs/capacity.md`
+// §6, over 300 REAL consecutive snapshot frames):
+//
+//   as sent today          6,424 B   (DECODE, 4 robots)
+//   stateless deflate L1   1,724 B   (-73%)  — each message compressed alone
+//   context takeover L1      446 B   (-93%)  — the window remembers the last frames
+//
+// A delta snapshot is already delta'd against the client's ACK, but CONSECUTIVE
+// snapshots are still nearly identical to EACH OTHER: 30 Hz means a robot has moved
+// a fraction of an inch, and the ball id ORDER is re-sent every frame by design
+// (determinism). Frame-to-frame redundancy is exactly the structure a deflate window
+// exploits and exactly the structure a per-message compressor throws away — hence the
+// 73% vs 93% split above, and hence `serverNoContextTakeover: false` being the single
+// load-bearing line in this block. Setting it true keeps the memory cost and gives up
+// most of the saving.
+//
+// WHY THIS IS WORTH CPU AND MEMORY: the ceiling we actually hit first is BANDWIDTH,
+// not compute. At the 1,000-concurrent target the uncompressed wire is ~440 GB/hour,
+// which spends the entire daily infrastructure budget on egress for a single 3-hour
+// peak before any compute is paid for (§5). Compression is the only lever that closes
+// that gap without an architecture change.
+//
+// WHY THE WINDOW IS 15/8 AND NOT THE 13/6 §6 RECOMMENDED. §6 picked 13/6 (64 KB/socket)
+// as the knee, priced against holding 63 MB of windows at 1,000 SOCKETS ON ONE MACHINE —
+// and §3 of the same document proves that machine cannot exist. Node is single-threaded,
+// one process is one core, and a core carries ~13 driven rooms; a machine therefore holds
+// tens of sockets, not a thousand. At 20 sockets, 15/8 costs 5 MB and 13/6 costs 1.3 MB,
+// so the memory axis the knee was chosen on is not a real constraint in any reachable
+// topology. Measured end to end (`scripts/zz-deflate-cost.ts`), the difference is large:
+//
+//                       13/6              15/8
+//   decode-solo   15.2 KB/s (-83%)   12.5 KB/s (-88%)
+//   decode-1v1    38.3 KB/s (-80%)   26.0 KB/s (-86%)
+//   decode-2v2    91.1 KB/s (-67%)   48.9 KB/s (-83%)
+//   chain-solo    90.8 KB/s (-78%)   68.8 KB/s (-82%)
+//
+// Note how 13/6 DEGRADED AS THE ROOM GOT BUSIER, down to -67% on a 2v2. That is the knee
+// argument turned around: a 2v2 frame is bigger, so 64 KB holds fewer consecutive frames
+// and less of the redundancy is in reach. A room with four robots is the expensive one, so
+// losing the ratio exactly there is the worst place to save 192 KB. `level: 1` stays,
+// because the gain comes from the window and not from searching harder within a frame.
+//
+// ⚠️ THIS NEEDS NO `CLIENT_CAPS` GATE AND IS NOT A PROTOCOL CHANGE. permessage-deflate
+// is a WebSocket extension negotiated per connection in the HTTP upgrade (RFC 7692), so
+// a client that does not offer it is not given it and keeps receiving byte-for-byte what
+// it receives today. Backward compatibility is structural, which matters here because
+// ONE Fly app serves every client version.
+//
+// ⚠️ THE LATENCY HALF OF THE ORIGINAL COMMENT IS STILL UNVERIFIED ON LINUX. Two things
+// to watch, both of which a Windows dev box cannot measure: whether the added per-message
+// time shows up in the SNAPSHOT GAP (jitter is the choppiness signal players feel, not
+// mean RTT), and whether the windows plus ws's own send buffers stay inside the machine
+// at full population. Node runs permessage-deflate's zlib on the libuv THREADPOOL rather
+// than the event loop, so the cost should land beside the room loop rather than inside it
+// — that is the thing most worth confirming, because §6 priced it as if it were on-loop.
+//
+// noServer: we intercept the upgrade ourselves (below) to do region routing. The
+// extension is negotiated inside `wss.handleUpgrade`, so these options still apply.
+const wss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: {
+    zlibDeflateOptions: { level: 1, windowBits: 15, memLevel: 8 },
+    // advertised to the peer AND used for our deflate window; keep the two equal
+    serverMaxWindowBits: 15,
+    // THE LOAD-BEARING LINE — see above. False = the window survives between messages.
+    serverNoContextTakeover: false,
+    // the UPSTREAM direction is quantized RobotCommands, ~100 B, and carries no
+    // frame-to-frame win worth an inflate window per socket. Asking the client to reset
+    // its context each message bounds what we hold for a direction that is not the cost.
+    clientNoContextTakeover: true,
+    // below this, compressing costs more than it saves — pongs, roster patches and the
+    // small control messages skip it. Snapshots (2.3 KB solo, 6.4 KB at 4 robots) do not.
+    threshold: 1024,
+    concurrencyLimit: 20,
+  },
+});
 
 // WS-level liveness. A half-open TCP connection (laptop lid closed, wifi dropped,
 // a tab hard-killed) does NOT fire 'close' until the OS keepalive eventually times

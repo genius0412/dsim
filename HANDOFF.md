@@ -1,3 +1,84 @@
+# HANDOFF — 2026-09-11 (integration: `biobuzz-sandbox` + `origin/alpha` merged in)
+
+Branch **`biobuzz`** (worktree `dsim-biobuzz`) = previous `biobuzz` + `biobuzz-sandbox` +
+`origin/alpha` @ `914bc1b`. **PUSHED to origin** (the branch is public by decision 1; the
+SEASON stays private behind `channels: ['alpha']`). **Nothing deployed** — the deflate change
+that came in with alpha is a SERVER change and is inert until the owner runs
+`./scripts/fly-deploy.sh`. `SIM_VERSION` and `BALANCE_VERSION` untouched by the merge itself;
+alpha's own commits moved three friction constants (below).
+
+## READ FIRST — state
+
+Everything is green, on the merged tree, in this worktree.
+
+| gate | result |
+|---|---|
+| `npm test` | exit 0 · **1694 `PASS` lines, 0 `FAIL`** — suite 1 `ALL PASS`, suite 2 `366 CHECKS, ALL PASS` |
+| `npm run build` | `✓ built in 3.83s` (chunk-size warning only) |
+| `npm run server:check` | green, exit 0 |
+| `npm run test:mm` | `✓ matchmaker: 58 checks passed` |
+
+`biobuzz-field` and `biobuzz-robot` were fast-forwarded to this tip and pushed, so both lanes
+start kickoff on the same code. `biobuzz-shell` and `biobuzz-core` were already fully merged
+(behind `biobuzz` with a zero-file diff) and can be retired.
+
+## What came in from `biobuzz-sandbox` (7 commits)
+
+Phase 0.5: **BIOBUZZ owns no ground-ball integrator.** `solveArtifacts`/`robotSolids` took a
+trailing artifact-radius parameter — DECODE passes nothing and is byte-identical — the
+`BB_BALL_SOLVER` switch and `separatePollen` are gone, and POLLEN ride the owner's shared solve
+at `BB_POLLEN_R`. The pollen checks were rewritten for the one solver rather than deleted
+(349 → 366). `docs/biobuzz/feedback/000-solver-observations.md` is the owner-facing write-up;
+its "For the owner" list has three items that change how BIOBUZZ plays and none of them is
+fixable inside `src/games/biobuzz/`.
+
+## What came in from `origin/alpha` (9 commits)
+
+- **permessage-deflate is ON** (`e287c0e` + `41e346d`) at `windowBits` 15 / `memLevel` 8 with
+  `serverNoContextTakeover: false`, which is the load-bearing line. Measured on the WIRE, not
+  on the app payload: −88% solo, −86% 1v1, −83% 2v2. It is negotiated per connection in the
+  HTTP upgrade, so it is NOT a protocol change and needs no `CLIENT_CAPS` gate — a client that
+  does not offer it gets today's exact bytes. `WS_COMPRESS=0` is NOT on this branch; that kill
+  switch lives on `perf-load-v2` and has not landed on alpha yet.
+- **Three friction constants moved**, all the owner's: rolling friction 28 (`84162e1`), robot
+  bumper 0.45 → 0.2 (`a97f03c`), then bumper-on-bumper 0.15 with bumper-on-wall left at 0.40
+  (`914bc1b`). Both suites are green against them here.
+- **`npm run costprobe`** (`scripts/costprobe.ts`) — prices a room off the real `step()` and
+  the real `slimWorld`/`encodeBallDelta` codec. ⚠️ It measures the PAYLOAD, so it cannot see
+  permessage-deflate. `scripts/zz-deflate-cost.ts` is the one that counts TCP `bytesRead` and
+  is the authoritative probe for anything compression-related.
+- **The practice replay save policy** (`src/replaySavePolicy.ts`, `605857d`). Game-agnostic —
+  it lives in `GameController`, so BIOBUZZ practice runs are covered the moment the season is
+  playable. A completed run is always kept; an ABANDONED one is kept if it carries at least
+  `PRACTICE_SAVE_MIN_S` (15) of DRIVING, counted as ticks where `robotsEnabled` so the
+  pre-match countdown cannot pad it. Leaving the game screen used to lose the run silently.
+
+## Merge resolutions — two conflicts, both docs
+
+1. **`docs/biobuzz-plan.md` Decisions.** The sandbox branch's warning that copy-and-own has an
+   exception (ground pollen physics is not copied and not owned) is KEPT, attached to decision
+   3. Its restatement of decision 4 is dropped: it ended "nothing is pushed or deployed until
+   decision 1 resolves", and decision 1 was resolved by the owner on 2026-09-10. The kept
+   decision 4 also says more — the owner owns PHYSICS, and gallery observations go to him as
+   HANDOFF notes, never as BIOBUZZ-local constant tweaks.
+2. **`HANDOFF.md`.** Two branches each prepending a dated section is not a disagreement. Both
+   are kept, newest first.
+
+## Next
+
+1. **The owner deploys.** The measured egress saving is real and currently unrealised, and a
+   season kickoff is exactly when concurrency spikes. `./scripts/fly-deploy.sh`, never a bare
+   `flyctl deploy` — `fly.toml` carries one `[[vm]]` size and a bare deploy upsizes every
+   satellite.
+2. **Kickoff, 2026-09-12 12:00 ET.** Both lanes start here. `docs/biobuzz-contract.md` is the
+   lane contract; `docs/biobuzz-reference.md` gets written on kickoff day from the manual.
+3. ⚠️ **`BB_POLLEN_RADIUS` does not exist** — the constant is `BB_POLLEN_R`. The plan and the
+   prompts use the longer name; the code uses the real one.
+4. Still unowned and not on this branch: the `Room.onInput` unbounded future-tick buffer (a
+   latent DoS). A fix exists on `perf-load-v2`, which is the perf chat's to land.
+
+---
+
 # HANDOFF — 2026-09-11 (BIOBUZZ Phase 0.5: pollen on the shared artifact solver)
 
 Branch **`biobuzz-sandbox`** (worktree `dsim-bb-sandbox`), off `biobuzz`. **NOT pushed, nothing
@@ -127,7 +208,10 @@ Always read the port `vite preview` prints and pass `--port` explicitly.
    Phase 0.5 is now marked done and points at the observations file.
 3. **`BB_POLLEN_RADIUS` does not exist** — the constant is `BB_POLLEN_R`. The plan and prompts
    use the longer name; the code and docs use the real one.
-4. ⚠️ **THIS BRANCH IS ONE COMMIT BEHIND `biobuzz`, AND THE MISSING COMMIT CONTRADICTS THE
+4. ✅ **RESOLVED by the integration merge at the top of this file** (2026-09-11): the commit
+   was merged, Decisions item 1 and this header are reconciled, and `biobuzz` is pushed. The
+   original note, kept because its reasoning still explains the resolution:
+   ⚠️ **THIS BRANCH WAS ONE COMMIT BEHIND `biobuzz`, AND THE MISSING COMMIT CONTRADICTED THE
    HEADER ABOVE.** `biobuzz` has `63fffd9` "docs(biobuzz): the branch is public and physics
    belongs to the owner" (2026-09-10, owner-revised), which says `biobuzz` and the lane branches
    DO push to `origin` with the season hidden behind `channels: ['alpha']` — where
@@ -509,6 +593,82 @@ the harness, not the shell.
    `pdftotext -layout`, dump figures) — was NOT part of this brief and is still open. It
    saves Lane A the first hour on kickoff day.
 3. Nothing here may be pushed until the season is public.
+# HANDOFF — 2026-09-11 (permessage-deflate is ON, and the wire is measured)
+
+Branch **alpha**, commits `e287c0e` + `41e346d`. `npm test` **ALL PASS**, `npm run build` green,
+`npm run server:check` green. `SIM_VERSION` untouched. **Production not touched and NOT DEPLOYED
+— this is a server change and it needs `./scripts/fly-deploy.sh` to take effect.**
+
+## READ FIRST — what changed and what is still unproven
+
+`server/index.ts` no longer sets `perMessageDeflate: false`. WebSocket compression is on, with
+context takeover kept (`serverNoContextTakeover: false`, the load-bearing line) and a 15/8 window.
+Requested by the owner after the load investigation; the reasoning and the numbers are in both
+commit messages and in the block comment at the `WebSocketServer` construction.
+
+**It is not a protocol change and needs no `CLIENT_CAPS` gate.** The extension is negotiated per
+connection in the HTTP upgrade (RFC 7692), so a client that does not offer it keeps receiving
+byte-for-byte what it receives today. Verified against the running server: offering yields
+`permessage-deflate; client_no_context_takeover; server_max_window_bits=15`, not offering yields
+no extension header at all. That is what makes this safe to deploy while one Fly app serves every
+client version.
+
+### Measured, end to end, per client downstream at steady state
+
+| shape | today | with deflate | saving |
+|---|---|---|---|
+| decode-solo | 100.5 KB/s | 12.5 KB/s | -88% |
+| decode-1v1 | 184.7 KB/s | 26.0 KB/s | -86% |
+| decode-2v2 | 283.2 KB/s | 48.9 KB/s | -83% |
+| chain-solo | 387.8 KB/s | 68.8 KB/s | -82% |
+
+Weighted on the stated 6/8 solo, 1/8 1v1, 1/8 2v2 split, 1,000 concurrent goes from 647 GB/hour
+to 99, i.e. a 3-hour peak from **$38.80 to $5.94** at an ASSUMED $0.02/GB.
+
+### Two corrections to `docs/capacity.md` (which lives on `perf-load`, not here)
+
+1. **§5 understated today's egress by ~40%.** It modelled 125 KB/s per client weighted; the wire
+   measures 175. So the uncompressed 3-hour peak is $39, not $26, and the compressed $3.17 row is
+   not reachable at any window size measured here.
+2. **§6's 13/6 knee was priced against a machine that cannot exist.** It costed 1,000 sockets at
+   250 MB of zlib windows, while §3 of the same document proves one process is one core and a core
+   carries ~13 rooms. At 20 sockets the choice is 5 MB against 1.3 MB. 13/6 measured -67% on a
+   2v2 — the saving DEGRADED as the room got busier, because a bigger frame does not fit a 64 KB
+   window twice — so the knee was trading the ratio away in the most expensive room to save
+   192 KB. Hence 15/8.
+
+### `scripts/zz-deflate-cost.ts` is the new probe, and why it had to exist
+
+`scripts/loadtest.ts` (on `perf-load`) counts bytes in its `message` handler, and ws hands that
+handler the DECOMPRESSED payload — its figure is identical compressed or not, and it says so
+itself. Right for "how big is a snapshot", useless for "what does egress cost". The probe counts
+TCP `bytesRead` off the socket, runs each shape twice varying only whether the client offers the
+extension, and asserts the extension really was negotiated on one run and absent on the other.
+It spawns the real server itself: `npx tsx scripts/zz-deflate-cost.ts`.
+
+### STILL UNVERIFIED — all of it about latency, none of it measurable on Windows
+
+- **Does the added per-message time show in the SNAPSHOT GAP?** Jitter is the choppiness signal
+  players feel, not mean RTT, and this is exactly what the original `perMessageDeflate: false`
+  comment was worried about. Needs a Linux run.
+- **Resident memory at full population.** 15/8 is 256 KB of window per socket plus ws's own send
+  buffers. Bounded by CPU (tens of sockets per machine), but unmeasured on a real machine.
+- **Where the CPU lands.** Node runs permessage-deflate's zlib on the libuv THREADPOOL, not the
+  event loop, so the cost should sit beside the room loop rather than inside it. `capacity.md` §6
+  priced it as if it were on-loop (~+5% on a solo room). This is the assumption most worth
+  checking, because if it holds, compression is cheaper than §6 claimed as well as less effective.
+
+### Next steps
+
+1. Deploy (`./scripts/fly-deploy.sh`, owner only), then re-run the probe against the deployed
+   server with `--url` and compare the snapshot gap to a pre-deploy baseline.
+2. `docs/capacity.md` §5/§6 need the two corrections above folded in. That file is on `perf-load`
+   and is that chat's to edit.
+3. **Unrelated and still open, from `capacity.md` §7: `Room.onInput` buffers future-tick inputs in
+   a per-robot map pruned only once the world reaches that tick, so a client stamping huge tick
+   numbers grows server memory without bound.** A latent DoS, flagged there as the one item that
+   should not wait on the capacity review. A fix exists UNCOMMITTED in the `perf-load` worktree
+   (`MAX_INPUT_LEAD_TICKS`), owned by that chat — it is not on alpha.
 
 ---
 

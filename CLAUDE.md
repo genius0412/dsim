@@ -68,6 +68,16 @@ reverse-chronological log; prepend a new dated section and demote the old "READ 
   `on`/`primary` state classes on every interactive element across 10 routes + the live HUD,
   in BOTH themes, and asserts nothing outside that element's own subtree moves. Pressables must
   move via `transform`/`box-shadow`, never a border or margin that appears on hover.
+- `npm run costprobe` — **hosting cost probe** (`scripts/costprobe.ts`, no deps, ~20s). Measures
+  what ONE ROOM costs — cores/room, bytes per 30 Hz snapshot, KiB/s per client, and the replay
+  row each match writes — for BOTH games, solo and 2v2, off the real `step()` and the real
+  `slimWorld`/`encodeBallDelta` codec, then extrapolates to a concurrency
+  (`-- --ccu=2000 --solo=0.75 --util=0.65`). Run it when someone asks what N players would
+  cost, before resizing a Fly VM, and **after any change that adds a per-tick `RobotState` or
+  `World` field** — a one-line field ships 30 times a second to every client in the room, and
+  EGRESS, not compute, is ~90% of this bill. It is a measurement, not a test: nothing fails,
+  and the published rates it prices against are stamped at the top of the file, so re-check
+  them before quoting a number.
 - `npm run server` / `server:start` — the authoritative game server locally.
 - `npm run electron` / `npm run dist` — desktop shell / installers (`release/`).
   **Desktop builds MUST be built with `ELECTRON=1`** (relative asset base — see Gotchas).

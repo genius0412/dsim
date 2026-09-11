@@ -24,6 +24,7 @@ import { chainCatalystPrompt } from './games/chain/play';
 import { beamRide } from './games/chain/beams';
 import { robotsEnabled } from './sim/match';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from './sim/replay';
+import { practiceSaveDecision } from './replaySavePolicy';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
 import { Renderer } from './render/renderer';
@@ -255,6 +256,17 @@ export class GameController {
   /** records the solo practice run in flight; null when not recording (free drive, or
    *  multiplayer, where the SERVER owns the recording) */
   private recorder: ReplayRecorder | null = null;
+  /**
+   * Ticks of the run in flight on which the robots were actually ENABLED — the length
+   * `src/replaySavePolicy.ts` judges an abandoned run by.
+   *
+   * Not the recorder's own tick count, and not wall time. The recorder opens at tick 0 of the
+   * rebuilt world, `PRE_COUNTDOWN` seconds before anybody may move, so recorded ticks would
+   * credit a run for a countdown nobody drove through; wall time would credit it for a paused
+   * tab. `ReplayRecorder.ticks` is private and stays that way — what the policy wants is not
+   * how long the log is, it is how long the driver drove.
+   */
+  private drivenTicks = 0;
   /** the finished solo practice run, once the match reaches `post` */
   private practice: { replay: Replay; result: ReplayResult } | null = null;
   /** fired once when a solo practice run finishes, so the app can save + upload it */
@@ -482,11 +494,10 @@ export class GameController {
         // THE MATCH ENDING IS THE END OF THE RECORDING. Solo practice reaches `post` on its
         // own (a real 2:30 match), so there is no session boundary to invent and the replay is
         // bounded by the match itself — the same size as a record run's.
-        if (this.recorder) {
-          this.practice = { replay: this.recorder.finish(), result: worldResult(this.world) };
-          this.recorder = null;
-          this.onPracticeRun?.(this.practice.replay, this.practice.result);
-        }
+        // It goes through the SAME policy call as every abandoned exit, even though a completed
+        // run is always kept: the point of `replaySavePolicy` is that ONE function answers
+        // "is this run worth keeping", and a path that decides for itself is a second answer.
+        this.harvestPracticeRun(true);
         this.audio.play('end');
         // record the moment the match ended so the results screen can hold its
         // score reveal until the whoosh lands (both use MATCH_RESULT_REVEAL_MS)
@@ -767,6 +778,10 @@ export class GameController {
     while (this.acc >= C.SIM_DT && steps < C.MAX_STEPS_PER_FRAME) {
       this.mod.step(this.world, C.SIM_DT, commands);
       this.recorder?.record(this.world.tick, commands);
+      // counted HERE, beside the record call, because it must measure exactly the ticks that
+      // went into the log — and only the ones the sim let the robot move on (`pre` and
+      // `transition` are recorded but undrivable).
+      if (this.recorder && robotsEnabled(this.world)) this.drivenTicks++;
       this.acc -= C.SIM_DT;
       steps++;
     }
@@ -1093,6 +1108,7 @@ export class GameController {
     this.practice = null;
     // free drive never reaches `pre`, so this is a solo PRACTICE match by construction
     this.recorder = new ReplayRecorder(this.soloSeed, this.soloSetups, 'match', this.gameId);
+    this.drivenTicks = 0;
     this.lastBeepAt = -1;
   }
 
@@ -1102,15 +1118,21 @@ export class GameController {
     if (this.world.match.phase === 'auto' || this.world.match.phase === 'teleop') {
       this.audio.play('abort');
     }
+    // BEFORE the rebuild, both because the run is scored against the world it happened in and
+    // because `makeWorld` is the moment it becomes unrecoverable.
+    this.harvestPracticeRun(false);
     this.world = this.makeWorld();
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
     this.matchOverAt = null;
     this.hudCountdown = null;
-    // a RESTART abandons the run in flight — an unfinished match is not a replay of anything,
-    // and the next `startMatch` opens a fresh recorder on the rebuilt world
+    // `harvestPracticeRun` above has already closed the recorder and either kept the run or
+    // dropped it; these clear whatever it left, so the next `startMatch` opens a fresh recorder
+    // on the rebuilt world. A RESTART is still not a replay of a MATCH — it is now a replay of
+    // the DRIVING, which is what a practice replay was always for (see `replaySavePolicy`).
     this.recorder = null;
     this.practice = null;
+    this.drivenTicks = 0;
     this.frontFlipped = false;
     this.parked = false;
     this.seedActionAudio();
@@ -1274,8 +1296,46 @@ export class GameController {
     };
   }
 
+  /**
+   * CLOSE THE RUN IN FLIGHT AND KEEP IT IF `replaySavePolicy` SAYS SO.
+   *
+   * The one place a practice recording ends. Every exit from a solo run routes here — the match
+   * reaching `post`, a RESET/REMATCH, and leaving the screen — so the question "was that worth
+   * keeping" is answered once, by a module with no DOM and no controller state, instead of
+   * being re-decided at each call site. That is the replay save policy this was asked for.
+   *
+   * `completed` is not a synonym for "keep": it is the FACT the policy is handed, and the
+   * policy decides. Today a completed run is always kept and an abandoned one needs
+   * `PRACTICE_SAVE_MIN_S` of driving; changing either is one line there and none here.
+   *
+   * `this.practice` is set ONLY for a completed run, because that is what `getPracticeRun()`
+   * feeds the RESULTS SCREEN, and an abandoned run has no results screen to appear on — the
+   * caller either rebuilds the world immediately or is unmounting. The SAVE happens through
+   * `onPracticeRun` either way, and that is the path that writes the device and queues the
+   * upload.
+   */
+  private harvestPracticeRun(completed: boolean): void {
+    const recorder = this.recorder;
+    if (!recorder) return;
+    // closed before the branch: kept or not, the run is over, and a recorder left open would
+    // keep appending to a run whose world is about to be thrown away.
+    this.recorder = null;
+    const replay = recorder.finish();
+    const decision = practiceSaveDecision({ drivenTicks: this.drivenTicks, completed });
+    this.drivenTicks = 0;
+    if (!decision.keep) return;
+    const kept = { replay, result: worldResult(this.world) };
+    if (completed) this.practice = kept;
+    this.onPracticeRun?.(kept.replay, kept.result);
+  }
+
   dispose(): void {
     this.disposed = true;
+    // LEAVING THE SCREEN USED TO LOSE THE RUN SILENTLY — `dispose` never touched the recorder
+    // at all, so a driver who practised for a minute and hit MENU had nothing to show for it.
+    // Safe during an unmount: `onPracticeRun` writes localStorage and queues an upload, and
+    // sets no React state (see `keepPracticeRun` in `src/ui/App.tsx`).
+    this.harvestPracticeRun(false);
     this.audio.stopSpeech();
     this.audio.stopKeepAlive();
     cancelAnimationFrame(this.raf);
