@@ -175,9 +175,13 @@ the game's own HUD slice, opaque (`unknown`) because only its own components rea
 It is left alone deliberately; do not build on it.
 
 **Tests**: game checks go in `scripts/smoke-biobuzz/` (its own `npm test` process), never
-appended to `scripts/smoke.ts`. ⚠️ `npm test` chains the two with `&&`, so while
-`scripts/smoke.ts` has failures the second suite does not run at all — `npm run test:bb`
-runs it alone.
+appended to `scripts/smoke.ts`. `npm test` chains the two with `&&` — deliberately, so a red
+`npm test` keeps meaning "the physics broke" — and both suites are green, so it runs both and
+must print `ALL PASS` twice. ⚠️ The corollary: **while the first suite is red the second
+does not run at all**, and for the whole of BIOBUZZ Phase 0 (7 accepted contact-physics
+failures) that meant `npm test` proved nothing about the second one. `npm run test:bb` runs it
+alone — the fast loop inside `src/games/biobuzz/`, and the way to check it when the first
+suite is red for an unrelated reason. `docs/biobuzz/baseline-alpha.md` is the gate.
 
 ---
 

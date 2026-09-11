@@ -5,16 +5,19 @@ Branch **`biobuzz-core`** (worktree `dsim-bb-core`, cut from `biobuzz`, itself c
 is private until further notice. Nothing was deployed.
 
 `npm run build` / `server:check` / `uiaudit` / `contrast` green. `npm test` is **1289 PASS
-and 7 FAILURES — the same 7, and the same pass count, as the baseline**
-(`docs/biobuzz/baseline-alpha.md`). The new BIOBUZZ suite is ALL PASS. `SIM_VERSION` and
-`BALANCE_VERSION` untouched.
+and 7 FAILURES — the same 7, and the same pass count, as the baseline** as of this section's
+date. The new BIOBUZZ suite is ALL PASS. `SIM_VERSION` and `BALANCE_VERSION` untouched.
 
-⚠️ **`npm test` chains with `&&`, so the BIOBUZZ suite does NOT run while those 7 stand.**
-Verified: no `registry integrity` line appears anywhere in an `npm test` log today. The
-chaining is deliberate (a red `npm test` must keep meaning "physics broke"), so
-**`npm run test:bb` runs the second suite on its own** — use it, and remember `npm test`
-alone currently proves nothing about it. It stops being a footgun the day the contact-physics
-seven go green.
+⚠️ **SUPERSEDED — that is no longer true.** `alpha` has since fixed all seven
+(the artifact-collision rewrite), so the gate is now simply **green** and `npm test`'s `&&`
+chain REACHES the BIOBUZZ suite: one command proves both. See the integration section at the
+top of this file and the rewritten `docs/biobuzz/baseline-alpha.md`. What was true on
+2026-09-09 and is worth keeping: the chaining is deliberate (a red `npm test` must keep
+meaning "physics broke"), and while the seven stood the second suite never ran under
+`npm test` at all — no `registry integrity` line appeared in any `npm test` log that day.
+**`npm run test:bb` stays**, now as a convenience rather than as the only way: it is the fast
+loop while working inside `src/games/biobuzz/`, and the way to run the BIOBUZZ suite when the
+first one is red for an unrelated reason.
 
 ## READ FIRST — what this was and what it was not
 
