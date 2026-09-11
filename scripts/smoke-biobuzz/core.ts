@@ -27,12 +27,18 @@ import {
   visibleSeasonsOn,
 } from '../../src/seasons';
 import { HOME_DESC } from '../../src/seo';
-import { check, section } from './harness';
+import type { Check } from './harness';
+
+/** a section heading in the log — the suite is read as a transcript, like smoke.ts */
+function section(title: string): void {
+  console.log(`
+---- ${title} ${'-'.repeat(Math.max(0, 70 - title.length))}`);
+}
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const readRepo = (p: string): string => readFileSync(join(root, p), 'utf8');
 
-export function coreChecks(): void {
+export function coreChecks(check: Check): void {
   // ---- registry integrity, for EVERY id ------------------------------------
   // Both registries are typed PARTIAL and both resolvers fall back to DECODE, so
   // an unregistered id is a SILENT downgrade: a player picks the game, gets a
