@@ -1,7 +1,8 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../types';
 import * as C from '../../config';
 import { clamp, hyp, rot, wrapAngle } from '../../math';
-import { solveBalls } from '../../sim/physicsEngine';
+import { solveArtifacts, type SweepFrom } from '../../sim/physicsEngine';
+import { robotSolids, type RobotSolids } from '../../sim/artifactSolids';
 import {
   BB_AIM_GAIN,
   BB_AIM_TOL,
@@ -40,16 +41,29 @@ import { rectContains, type BiobuzzState } from './state';
  *    wall clamp with restitution. Cheap enough for hundreds of elements, and exactly
  *    deterministic because it is arithmetic in a fixed order.
  *
- *  • `'rapier'` — DECODE's model (`solveBalls`), where each ground POLLEN is a real Rapier
- *    body that sees every static the field declares plus robot feedback.
+ *  • `'rapier'` — DECODE's model (`solveArtifacts`), where each ground POLLEN is a real Rapier
+ *    body that sees every static the field declares plus every robot's artifact-solid
+ *    geometry (`robotSolids`), with each chassis an IMMOVABLE SWEEP from its pose at the start
+ *    of the tick to where the robot solve left it. It is driven here exactly as
+ *    `src/sim/world.ts` drives it — the only differences are this game's `colliders` and the
+ *    two sets DECODE needs and BIOBUZZ does not:
+ *      · `claimed` is EMPTY. It names the artifacts an intake has hold of but has not yet
+ *        taken, which is a state BIOBUZZ does not have: `interact()` either captures a POLLEN
+ *        outright this tick (`capturePollen` → `state.kind === 'held'`) or plows it, so there
+ *        is never a ground pollen mid-capture to exempt.
+ *      · `doorway` is EMPTY. It names the artifact a gate is expelling, and BIOBUZZ has no
+ *        gates.
  *
- * A KNOWN GAP IN THE RAPIER ARM, FOUND WHILE BUILDING IT — write this down, it is the whole
- * point of doing both: `solveBalls` hard-codes `C.BALL_RADIUS` (2.5", DECODE's 5" artifact)
- * and DECODE's own containment helpers. A 3" POLLEN therefore simulates as a 5" ball under
- * that arm — it conserves count and stays in bounds (this file re-clamps to the BIOBUZZ walls
+ * A KNOWN GAP IN THE RAPIER ARM, FOUND WHILE BUILDING IT AND STILL OPEN AFTER THE MERGE —
+ * write this down, it is the whole point of doing both: `solveArtifacts` HARD-CODES
+ * `C.BALL_RADIUS` (2.5", DECODE's 5" artifact) for the ball collider, its speed cap and the
+ * `robotSolids` held-artifact circles, and uses DECODE's own containment helper for the field
+ * pushback. A 1.5"-radius POLLEN therefore simulates as a 2.5"-radius ball under that arm —
+ * it conserves count and stays in bounds (this file re-clamps to the BIOBUZZ walls
  * afterwards), but it separates at the wrong diameter, so a pile settles looser than it is
- * drawn. Choosing `'rapier'` for real means parameterizing the ball radius in
- * `src/sim/physicsEngine.ts`, which is shared code neither lane owns. That is a P0.5 decision
+ * drawn. Choosing `'rapier'` for real means parameterizing the artifact radius in
+ * `src/sim/physicsEngine.ts` + `src/sim/artifactSolids.ts`, which is shared code this lane
+ * does not own and must not edit (`docs/biobuzz-contract.md` §1). That is a P0.5 decision
  * with a shared-core cost attached, and it is better known now than at Kickoff.
  */
 
@@ -235,6 +249,9 @@ export function updateBiobuzz(
   dt: number,
   cmds: Map<number, RobotCommand>,
   enabled: boolean,
+  /** each robot's pose at the START of this tick (`step.ts`, stage 0) — the Rapier arm sweeps
+   *  the chassis from there. Absent ⇒ no sweep, which is what a direct caller gets. */
+  from?: ReadonlyMap<number, SweepFrom>,
   solver: BbBallSolver = BB_BALL_SOLVER,
 ): void {
   const bb = world.biobuzz as BiobuzzState | undefined;
@@ -309,10 +326,22 @@ export function updateBiobuzz(
   if (solver === 'bespoke') {
     separatePollen(ground);
   } else {
-    // Rapier owns the integration AND the separation in this arm, so the loop above did not
-    // move anything. It reads `world.balls` itself and only touches ground pollen, which is
-    // why it runs after the capture pass rather than before it.
-    solveBalls(world, dt, biobuzzColliders);
+    /**
+     * Rapier owns the integration AND the separation in this arm, so the loop above did not
+     * move anything. It reads `world.balls` itself and only touches ground pollen, which is
+     * why it runs after the capture pass rather than before it.
+     *
+     * Driven the way `src/sim/world.ts` drives it: the robot solids are built ONCE from the
+     * held pollen (a full hopper is a physical plug in the mouth), the two DECODE-only
+     * exemption sets are empty (see this file's header), and each chassis is swept from the
+     * pose `step.ts` captured before the drivetrain ran to where the robot solve put it. With
+     * no `from` — a caller that steps `updateBiobuzz` directly without the surrounding step —
+     * `solveArtifacts` falls back to the END pose per robot, i.e. no sweep.
+     */
+    const heldBalls = world.balls.filter((b) => b.state.kind === 'held');
+    const solids = new Map<number, RobotSolids>();
+    for (const rob of world.robots) solids.set(rob.id, robotSolids(rob, heldBalls));
+    solveArtifacts(world, dt, biobuzzColliders, NO_IDS, NO_IDS, solids, from ?? NO_SWEEP);
   }
   for (const b of ground) clampPollenToWalls(b);
 
@@ -378,6 +407,12 @@ export function bbAimAssist(
   if (Math.abs(err) < BB_AIM_TOL) return 0; // lined up — hold still rather than hunt
   return clamp(err * BB_AIM_GAIN, -1, 1);
 }
+
+/** the two DECODE-only exemption sets `solveArtifacts` takes, empty for BIOBUZZ and shared
+ * rather than re-allocated per tick. See this file's header for why each is empty. */
+const NO_IDS: ReadonlySet<number> = new Set<number>();
+/** no sweep origin: `solveArtifacts` falls back to each robot's END pose. */
+const NO_SWEEP: ReadonlyMap<number, SweepFrom> = new Map<number, SweepFrom>();
 
 /** a zero command, for a robot with no driver this tick (a dummy, a dropped peer). Frozen so
  * a mechanism that mutated it could not silently affect the next robot. */

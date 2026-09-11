@@ -1,6 +1,6 @@
 import type { RobotCommand, World } from '../../types';
 import * as C from '../../config';
-import { solveRobots } from '../../sim/physicsEngine';
+import { solveRobots, type SweepFrom } from '../../sim/physicsEngine';
 import { squareUpRobotsWalls } from '../../sim/physics';
 import { updateRobot, type DriveWrench } from '../../sim/robot';
 import { robotsEnabled } from '../../sim/match';
@@ -17,6 +17,11 @@ import { updateBiobuzzPenalties } from './penalties';
  * elements API (`bbLaunch`, called from `updateBiobuzz`), never by inserting a stage here.
  * The numbered stages, and why each sits where it does:
  *
+ *   0. SWEEP ORIGIN       — every robot's pose BEFORE anything moves it, handed to the
+ *                           gameplay stage. The Rapier pollen solver sweeps each chassis from
+ *                           there to where (5) left it, so it has to be captured before (3)
+ *                           and (5) — `src/sim/world.ts` captures `sweepFrom` at exactly the
+ *                           same point, for exactly the same reason.
  *   1. RESOLVE COMMANDS   — a disabled robot (pre-match, transition, post) gets ZERO_CMD
  *                           rather than its driver's stick, so a held button cannot act
  *                           across a phase boundary.
@@ -73,6 +78,12 @@ export function biobuzzStep(world: World, dt: number, commands: Map<number, Robo
   // input, so the intake/fire state the mechanisms see is the state the drivetrain saw.
   const actual = new Map<number, RobotCommand>();
   const drive = new Map<number, DriveWrench>();
+  // 0. WHERE EACH ROBOT'S MOTION BEGAN THIS TICK. Captured before the drivetrain and the
+  // solve, because by the time gameplay runs `r.pos` is where the robot ENDED — and the
+  // Rapier pollen arm needs both poses to sweep the chassis between them instead of
+  // spawning it already overlapping whatever it drove into.
+  const from = new Map<number, SweepFrom>();
+  for (const r of world.robots) from.set(r.id, { x: r.pos.x, y: r.pos.y, heading: r.heading });
   for (const r of world.robots) {
     let cmd = enabled ? (commands.get(r.id) ?? ZERO_CMD) : ZERO_CMD;
     // 2. AIM HOOK — turretless launchers turn the whole robot to face their target while the
@@ -96,7 +107,7 @@ export function biobuzzStep(world: World, dt: number, commands: Map<number, Robo
   // 7. penalties, then 8. gameplay — both guarded on the state bag, because a snapshot from
   // a build that predates this game arrives without it.
   if (world.biobuzz) updateBiobuzzPenalties(world);
-  if (world.biobuzz) updateBiobuzz(world, dt, actual, enabled);
+  if (world.biobuzz) updateBiobuzz(world, dt, actual, enabled, from);
 
   // 9.
   biobuzzStepMatch(world, dt);

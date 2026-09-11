@@ -198,12 +198,16 @@ export function fieldChecks(check: Check): void {
     const n0 = w.balls.length;
     const cmds = new Map<number, RobotCommand>([[rob.id, cmd({ driveY: 1, intake: false })]]);
     for (let i = 0; i < 600; i++) {
-      // 40 in/s straight across the field, by hand
+      // 40 in/s straight across the field, by hand. The sweep ORIGIN is captured before the
+      // pose is written, exactly as `step.ts` stage 0 does it — without it the Rapier arm
+      // gets no `from`, falls back to the end pose, and the chassis is spawned already
+      // overlapping whatever it drove into (the "balls go on top of the robot" failure).
+      const from = new Map([[rob.id, { x: rob.pos.x, y: rob.pos.y, heading: rob.heading }]]);
       rob.pos = { x: rob.pos.x + 40 * C.SIM_DT, y: 0 };
       rob.vel = { x: 40, y: 0 };
       w.tick++;
       w.time += C.SIM_DT;
-      updateBiobuzz(w, C.SIM_DT, cmds, true, solver);
+      updateBiobuzz(w, C.SIM_DT, cmds, true, from, solver);
     }
     check(
       `pollen [${solver}]: count conserved over 600 ticks of a robot sweeping the field`,
