@@ -1088,6 +1088,8 @@ export interface LanParticipant {
 export interface LanRunRow {
   id: string;
   matchId: string;
+  /** the account that filed this match. Read by the ownership check in `saveLanRun`. */
+  hostUserId: string;
   game: Game;
   score: { red: number; blue: number };
   participants: LanParticipant[];
@@ -1099,7 +1101,8 @@ export interface LanRunRow {
  * Store one self-hosted match under the HOST's account, or return the row that is already
  * there. Prunes the host's oldest past `LAN_KEEP`.
  *
- * IDEMPOTENT ON `match_id`, and that is the whole point of the id existing. The uploader is a
+ * IDEMPOTENT ON `match_id` FOR THE ACCOUNT THAT FILED IT, and that is the whole point of the
+ * id existing. The uploader is a
  * client draining a backlog over whatever connection a venue has, so the same match WILL be
  * offered twice — after a timeout that actually succeeded, after a reinstall, after two
  * tabs. `match_id` is UNIQUE, the existing row wins, and a second upload is a no-op rather
@@ -1110,6 +1113,21 @@ export interface LanRunRow {
  * from `record_leaderboard`, so nothing written here can move a board, a PB, a rank or an ELO.
  * Do not add a read path from here into any of those.
  */
+/**
+ * Somebody tried to file a match id that ALREADY BELONGS TO ANOTHER ACCOUNT.
+ *
+ * Its own error type, rather than a null return, because the two failures the caller has to
+ * tell apart are "already yours, here it is" (idempotent, a 200 with the existing row) and
+ * "already somebody else's" (a 409), and an absent row means neither. `/api/lan` turns this
+ * into the 409; nothing else catches it.
+ */
+export class LanRunOwnedByAnother extends Error {
+  constructor(readonly matchId: string) {
+    super(`lan run ${matchId} was filed by another host`);
+    this.name = 'LanRunOwnedByAnother';
+  }
+}
+
 export async function saveLanRun(
   hostUserId: string,
   matchId: string,
@@ -1123,7 +1141,17 @@ export async function saveLanRun(
   // replay row we had already created with nothing pointing at it — the same missing
   // back-reference that makes the prune and the account-delete paths delete replays by hand.
   const already = await existingLanRun(matchId);
-  if (already) return already;
+  if (already) {
+    // IDEMPOTENT FOR THE OWNER, REFUSED FOR EVERYONE ELSE. Scoping the idempotence by host is
+    // the whole difference between a retry and a theft: the check used to be on `match_id`
+    // alone, so a second account posting the same id was handed the first account's row back
+    // with a 200 — the claim quietly succeeded from the client's point of view, and the real
+    // host's later upload was answered with somebody else's match. The id itself is a
+    // capability now (it goes only to the host's socket; see `src/net/protocol.ts`), and this
+    // is the check at the table that makes a leaked one fail loudly instead of silently.
+    if (already.hostUserId !== hostUserId) throw new LanRunOwnedByAnother(matchId);
+    return already;
+  }
 
   const replayId = await saveReplay(replay, season, game);
   const rows = await q<{ id: string; created_at: string }>(
@@ -1140,6 +1168,9 @@ export async function saveLanRun(
   if (!rows[0]) {
     await q(`delete from replays where id = $1`, [replayId]);
     const winner = await existingLanRun(matchId);
+    // ...and the winner of that race is subject to the same ownership rule as a row that was
+    // already there when we started: two of the HOST's devices is a retry, two accounts is not.
+    if (winner && winner.hostUserId !== hostUserId) throw new LanRunOwnedByAnother(matchId);
     if (winner) return winner;
     throw new Error(`lan run ${matchId} neither inserted nor found`);
   }
@@ -1160,21 +1191,22 @@ export async function saveLanRun(
   const ids = stale.map((r) => r.replay_id).filter((x): x is string => !!x);
   if (ids.length) await q(`delete from replays where id = any($1::uuid[])`, [ids]);
 
-  return { id: rows[0].id, matchId, game: g(game), score, participants, replayId, createdAt: rows[0].created_at };
+  return { id: rows[0].id, matchId, hostUserId, game: g(game), score, participants, replayId, createdAt: rows[0].created_at };
 }
 
-/** the row for a match id, whoever hosted it. Used to make the upload idempotent. */
+/** the row for a match id, WHOEVER hosted it — the caller compares `hostUserId` itself. */
 async function existingLanRun(matchId: string): Promise<LanRunRow | null> {
   const rows = await q<{
     id: string;
     match_id: string;
+    host_user_id: string;
     game: Game;
     score: { red: number; blue: number };
     participants: LanParticipant[];
     replay_id: string | null;
     created_at: string;
   }>(
-    `select id, match_id, game, score, participants, replay_id, created_at
+    `select id, match_id, host_user_id, game, score, participants, replay_id, created_at
        from lan_runs where match_id = $1`,
     [matchId],
   );
@@ -1183,6 +1215,7 @@ async function existingLanRun(matchId: string): Promise<LanRunRow | null> {
   return {
     id: r.id,
     matchId: r.match_id,
+    hostUserId: r.host_user_id,
     game: r.game,
     score: r.score,
     participants: r.participants,
@@ -1216,6 +1249,7 @@ export async function listLanRuns(
   return rows.map((r) => ({
     id: r.id,
     matchId: r.match_id,
+    hostUserId, // every row this query can return is this host's own, by the WHERE above
     game: r.game,
     score: r.score,
     participants: r.participants,
