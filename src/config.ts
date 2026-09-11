@@ -128,6 +128,14 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *    · AN UNPOWERED ROBOT NO LONGER BRAKES AGAINST A SHOVE at full stopping authority
  *      (`MOTOR_SHOVE_BRAKE`) — three seconds of full throttle moved an idle equal chassis
  *      15.5in, now 95in.
+ *    · BUMPER FRICTION RETUNED to the owner's call, twice and in that order: 0.45 -> 0.2
+ *      (`a97f03c`), then robot-on-robot alone to 0.15 with `PHYS_WALL_FRICTION` raised
+ *      0.35 -> 0.65 to compensate (`914bc1b`), because Rapier AVERAGES a pair's coefficients
+ *      and one constant is therefore all of robot-robot and half of robot-wall. Robot-wall is
+ *      held at the 0.40 it has always been, which is what keeps the gate arms — they run
+ *      through the same `statics()` helper — turning a robot exactly as before. Listed here
+ *      rather than given its own number for the reason stated above: this is still the one
+ *      unreleased alpha batch, and the entry exists so the batch's contents stay honest.
  */
 export const SIM_VERSION = 2;
 

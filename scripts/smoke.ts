@@ -16595,16 +16595,28 @@ const mkMM = () => {
     quiet.keep === false && quiet.reason === 'nothing-driven',
     `${quiet.reason}`,
   );
+  // This check used to assert the OPPOSITE, and asserting it is what let the bug ship: the
+  // nothing-driven guard sat ahead of the completed branch, so a completed run with no driven
+  // tick was discarded by code whose own documentation promised completed runs are always
+  // kept. A completed match is a whole match; the floor exists to filter accidental STARTS,
+  // and an accidental start never reaches `post`.
+  const doneQuiet = dec(0, true);
   check(
-    'save policy: nothing driven is dropped even if the caller says completed',
-    dec(0, true).keep === false,
+    'save policy: a COMPLETED run is kept even with zero driven ticks',
+    doneQuiet.keep === true && doneQuiet.reason === 'completed',
+    `${doneQuiet.reason}`,
   );
 
   // it is fed from a counter, but it is the boundary of a module and a NaN must not become a
   // kept run with a NaN length
   check(
-    'save policy: a NaN tick count is dropped, not kept',
+    'save policy: a NaN tick count on an ABANDONED run is dropped, not kept',
     dec(Number.NaN, false).keep === false && dec(Number.NaN, false).reason === 'nothing-driven',
+  );
+  // the ORDER of the two branches, pinned directly — this is the bug that shipped
+  check(
+    'save policy: completed is decided BEFORE the nothing-driven guard',
+    dec(0, true).reason === 'completed' && dec(0, false).reason === 'nothing-driven',
   );
   check(
     'save policy: a negative tick count is dropped, not kept',

@@ -49,13 +49,13 @@ export const PRACTICE_SAVE_MIN_TICKS = Math.round(PRACTICE_SAVE_MIN_S / SIM_DT);
  * kept" needs to know which one it is looking at.
  */
 export type PracticeSaveReason =
-  /** the match reached `post` — a whole run, kept regardless of length */
+  /** the match reached `post` — a whole run, kept regardless of length OR of driving */
   | 'completed'
   /** abandoned, but past the floor */
   | 'long-enough'
   /** abandoned before the floor */
   | 'too-short'
-  /** the robots were never released, so there is nothing in the log to watch */
+  /** ABANDONED with the robots never released, so there is nothing in the log to watch */
   | 'nothing-driven';
 
 export interface PracticeSaveInput {
@@ -75,10 +75,18 @@ export interface PracticeSaveDecision {
 export function practiceSaveDecision(input: PracticeSaveInput): PracticeSaveDecision {
   const drivenTicks = Number.isFinite(input.drivenTicks) ? Math.max(0, Math.floor(input.drivenTicks)) : 0;
   const drivenSeconds = drivenTicks * SIM_DT;
-  // FIRST, because it is the one case that is not about length: quitting during the countdown
-  // records a log in which nothing ever moved, and a completed match cannot land here.
-  if (drivenTicks <= 0) return { keep: false, reason: 'nothing-driven', drivenSeconds };
+  // COMPLETED IS TESTED FIRST, and the order is the rule rather than an optimisation: a run
+  // that reached `post` is a whole match and is kept, full stop. The previous order put the
+  // nothing-driven guard ahead of it on the reasoning that "a completed match cannot land
+  // here" — which is an ASSUMPTION about phase layout, not a guarantee, and it contradicted
+  // this module's own stated contract. A game whose phases release the robots differently, or
+  // a match completed with the robot never enabled, would have been silently discarded by a
+  // branch whose documentation promised the opposite.
   if (input.completed) return { keep: true, reason: 'completed', drivenSeconds };
+  // Below here the run was ABANDONED, so length is the whole question. Quitting during the
+  // countdown records a log in which nothing ever moved: not short, but empty, which is why it
+  // carries its own reason rather than being folded into `too-short`.
+  if (drivenTicks <= 0) return { keep: false, reason: 'nothing-driven', drivenSeconds };
   if (drivenTicks >= PRACTICE_SAVE_MIN_TICKS) return { keep: true, reason: 'long-enough', drivenSeconds };
   return { keep: false, reason: 'too-short', drivenSeconds };
 }
