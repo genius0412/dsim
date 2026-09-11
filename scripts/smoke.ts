@@ -3,7 +3,7 @@
  * opens the gate, and checks scoring math. Run with: npx tsx scripts/smoke.ts
  */
 import { readdirSync, readFileSync } from 'node:fs';
-import { join as joinPath } from 'node:path';
+import { join as joinPath, resolve as pathResolve, sep as pathSep } from 'node:path';
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, PLAYER_ASSISTS, coerceAssists, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { drawWheels } from '../src/games/chain/parts';
 import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
@@ -11,6 +11,7 @@ import { derivedRole, savedStartCap } from '../src/ui/startPositions';
 import { queuedModes, queuedGames, queuesFor, anyoneQueued, widenHint } from '../src/ui/queueDepth';
 import { roomJoinRegion } from '../src/net/roomRegion';
 import { parseLanAddress, mixedContentBlock, isPrivateHost } from '../src/net/lanAddress';
+import { filePath as staticFilePath } from '../server/static';
 import {
   parkQueue, takeQueue, dropQueue, updateQueue, peekQueue, subscribeQueue, elapsedLabel, elapsedSeconds,
 } from '../src/ui/queueKeeper';
@@ -6955,6 +6956,43 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     check(
       'mixed content: a file:// page (the desktop shell offline) is not blocked either',
       mixedContentBlock(lan, 'file:') === null,
+    );
+  }
+
+  // ---- LAN: a host's server hands out files, so it must not hand out ANY file
+  /**
+   * THE ONE SECURITY BOUNDARY IN `server/static.ts`.
+   *
+   * A LAN host runs this process on their own laptop, on a venue network full of machines
+   * they do not control, and it answers GETs with the contents of files. Everything that
+   * keeps that from being a file server for the whole disk is one containment check, so it
+   * is pinned here rather than only reachable through a socket.
+   *
+   * Note WHERE the escapes are neutralised: `new URL()` removes dot-segments before we ever
+   * see the path, `decodeURIComponent` then exposes any that were percent-hidden, and
+   * `normalize` on an ABSOLUTE path discards leading `..` rather than climbing. The check on
+   * the RESOLVED path is what makes that chain safe to rely on instead of clever.
+   */
+  {
+    const root = pathResolve('serve-root');
+    const inside = (url: string): boolean => {
+      const f = staticFilePath(root, url);
+      return !!f && (f === root || f.startsWith(root + pathSep));
+    };
+
+    check('static: an ordinary file resolves inside the root', inside('/index.html'));
+    check('static: a nested asset resolves inside the root', inside('/assets/index-abc123.js'));
+    check(
+      'static: every shape of ../ stays inside the root',
+      ['/../package.json', '/%2e%2e%2fpackage.json', '/a/%2e%2e/%2e%2e/package.json',
+       '/a/../../../package.json', '/..%2f..%2fpackage.json', '/assets/..%5c..%5cpackage.json',
+      ].every(inside),
+    );
+    check('static: a NUL in the path is refused outright', staticFilePath(root, '/%00') === null);
+    check('static: malformed percent-encoding is refused, not guessed', staticFilePath(root, '/%zz') === null);
+    check(
+      'static: a SIBLING directory sharing the prefix is not inside it — the separator is load-bearing',
+      !staticFilePath(root + '-evil', '/secret')?.startsWith(root + pathSep),
     );
   }
 

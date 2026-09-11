@@ -18,6 +18,7 @@ import { lockRemaining, tierOf,
 } from '../src/standing';
 import { isReportReason, REPORT_DETAIL_MAX } from '../src/report';
 import { handleApi } from './api';
+import { serveClient, servingClient } from './static';
 import { Matchmaker } from './matchmaking';
 import { MATCHMAKER_REGION } from './regions';
 import { BALANCE_VERSION } from '../src/config';
@@ -1467,6 +1468,28 @@ const httpServer = createServer((req, res) => {
       if (!res.headersSent) res.writeHead(500);
       res.end();
     });
+    return;
+  }
+  /**
+   * THE BUILT CLIENT, for a self-hosted LAN server only (`SERVE_CLIENT=/path/to/dist`).
+   *
+   * LAST, deliberately: `/health`, `/api/admin/*` and `/api/*` are all dispatched above, so
+   * nothing real can be shadowed by a file that happens to share a name. Off by default,
+   * which is what keeps the Fly deployment — which has a CDN in front of it — from ever
+   * serving a bundled copy of its own. See `server/static.ts`.
+   */
+  if (servingClient()) {
+    void serveClient(req, res)
+      .then((handled) => {
+        if (handled) return;
+        res.writeHead(404, { 'content-type': 'text/plain' });
+        res.end('not found');
+      })
+      .catch((e) => {
+        console.error('[static] handler crash:', e);
+        if (!res.headersSent) res.writeHead(500);
+        res.end();
+      });
     return;
   }
   res.writeHead(426, { 'content-type': 'text/plain' });
