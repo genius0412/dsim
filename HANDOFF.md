@@ -1,3 +1,69 @@
+# HANDOFF — 2026-09-11 (external review of the Phase 0.5 merge: findings fixed)
+
+Branch **`biobuzz`** (worktree `dsim-biobuzz`), 5 commits on top of `6c31142`. **NOT pushed,
+not deployed, no PR.** `SIM_VERSION` and `BALANCE_VERSION` untouched. No physics constant was
+added, moved or changed, shared or BIOBUZZ.
+
+## READ FIRST — state
+
+| gate | result |
+|---|---|
+| `npm test` | exit 0 · **1733 `PASS` lines, 0 `FAIL`** — suite 1 `ALL PASS` (**1328 checks, the same list as before**), suite 2 `405 CHECKS, ALL PASS` (was 366) |
+| `npm run build` | `✓ built in 4.12s` (chunk-size warning only) |
+| `npm run server:check` | green, exit 0 |
+| `npx tsc --noEmit` | clean |
+
+**DECODE is byte-identical, and the argument is mechanical.** The only SHARED files this pass
+touched are `src/games/types.ts` — two `import type` lines and one OPTIONAL interface member,
+all three erased at runtime — and `src/sim/spawn.ts`, which is a comment-only change.
+`src/sim/artifactSolids.ts`, `src/sim/world.ts`, `src/sim/physicsEngine.ts` and `src/config.ts`
+are not touched at all. Suite 1's check count is unchanged at 1328 and the whole 405 of suite 2
+is BIOBUZZ's own file set.
+
+## The eight review findings, and what each one actually was
+
+1. **Pollen solved at DECODE's radius — NOT A BUG.** `play.ts` already passed `BB_POLLEN_R` to
+   both `robotSolids` and `solveArtifacts`; the reviewer read the DEFAULT parameter
+   (`C.BALL_RADIUS`) in the signature and not the call. Every call site was grepped. The
+   regression test asked for was added anyway, because nothing pinned it: a solved contact rests
+   at 2.990" and a pushed pollen sits 1.354" off the face, both the 3" element the renderer draws.
+2. **`robotSolids` builds DECODE's funnel — CONFIRMED, fixed** (`14b61a6`). New optional
+   `GameSimModule.artifactSolids` slot; BIOBUZZ fills it with `bbRobotSolids`, derived FROM
+   `bbMouths` so the drawn mouth and the solid mouth cannot drift. DECODE and CR leave it empty.
+3. **Custom start poses validated on the CENTRE only — CONFIRMED, fixed** (`a807e68`).
+   `bbFitPose` fits the ROTATED FOOTPRINT inside the perimeter AFTER the alliance mirror, and
+   slides rather than rejects. Custom poses stay ENABLED. Anchors go through it too (a no-op).
+4. **The tick-start sweep fell back to the END pose — CONFIRMED, fixed** (`14b61a6`). The
+   parameter is required; `NO_SWEEP` is gone. Cost of the old fallback, now measured: 0.588"
+   of penetration swept against **7.872"** unswept.
+5. **BIOBUZZ coercion runs after the CR pass — CONFIRMED as a fact, NOT fixed, documented**
+   (`bdbe4e8`). Reordering would re-add the CR fields the arm exists to strip. The real hazard
+   is different and is now written at both ends: the arm receives `out`, not raw `sp`, so the
+   first `bb*` field will need carrying across at the call site.
+6. **Containment observed after the local clamp — CONFIRMED, fixed** (`a6ee66d`). Escape is now
+   measured BETWEEN the solve and the clamp, pollen restored each tick, with a 2.5" budget.
+7. **Coverage gaps — CONFIRMED, fixed** (`a6ee66d`). Per-mount solids, the seam itself, radius
+   propagation end to end, pollen mass and restitution as an ENVELOPE, the real sweep path.
+8. **Perf compared independent minima — CONFIRMED, fixed** (`a6ee66d`). Paired per-round ratios
+   with a median, list printed.
+
+The four owner items (wall clamp vs the FLIGHT-ONLY comment, heading not read back from Rapier,
+array-order iteration, O(B³) pin search) went to `docs/biobuzz/feedback/000-solver-observations.md`
+as items 10–13 with two of the four readings CORRECTED, plus two new ones found while verifying:
+14 (pollen barely bounce — `bounceFirstContacts` is DECODE-only, effective e 0.015–0.211 against
+a configured 0.68) and 15 (the clamp hides 0.999"/1.744" per tick; a pollen and an artifact are
+the same mass).
+
+## What a kickoff session should know
+
+- `bbRobotSolids` is the shape a POLLEN meets, and it is deliberately thin: chassis box, two side
+  plates per mounted edge, mouth OPEN. When the manual lands and the real intake is known, that
+  function is the one place to change — the renderer and the solver both read `bbMouths`.
+- The suite now pins BIOBUZZ physics as ENVELOPES (`0 <= e <= C.BALL_BALL_RESTITUTION`, escape
+  `<= 2.5"`), not as values, precisely so the owner can close observations 14 and 15 without
+  turning this suite red.
+- `npm run test:bb` is still the inner loop (2 s). Nothing here goes in `scripts/smoke.ts`.
+
 # HANDOFF — 2026-09-11 (integration: `biobuzz-sandbox` + `origin/alpha` merged in)
 
 Branch **`biobuzz`** (worktree `dsim-biobuzz`) = previous `biobuzz` + `biobuzz-sandbox` +
@@ -7,7 +73,7 @@ that came in with alpha is a SERVER change and is inert until the owner runs
 `./scripts/fly-deploy.sh`. `SIM_VERSION` and `BALANCE_VERSION` untouched by the merge itself;
 alpha's own commits moved three friction constants (below).
 
-## READ FIRST — state
+## State at 2026-09-11 (integration; was READ FIRST)
 
 Everything is green, on the merged tree, in this worktree.
 
