@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { LAN_MODE } from '../lanMode';
 
 /**
  * Postgres (Neon) connection pool. The Fly game server is a long-lived process,
@@ -31,7 +32,18 @@ import pg from 'pg';
  *     normally released its sockets before Neon pulls them, so a suspend rarely
  *     surfaces as an error - the next query just pays a ~500ms wake.
  */
-const url = process.env.DATABASE_URL;
+/**
+ * The DSN, or nothing at all on a LAN server.
+ *
+ * ⚠️ **`LAN_MODE` WINS OVER A CONFIGURED `DATABASE_URL`, ALWAYS.** A self-hosted server is a
+ * machine its operator controls (docs/lan-selfhost.md), so a connection from one to the real
+ * database would be a connection the cloud has no reason to trust holding write access to
+ * every board. The refusal is HERE, in the module body, rather than in the boot sequence that
+ * calls `enforceLanPolicy()`: this file's body runs the moment anything imports it, which is
+ * before `server/index.ts` executes a single statement of its own, so a check that ran later
+ * would already have built the pool. See `server/lanMode.ts`.
+ */
+const url = LAN_MODE ? undefined : process.env.DATABASE_URL;
 
 /**
  * The bits of `pg.Pool` the repo actually uses.
@@ -71,7 +83,9 @@ export let pool: DbPool | null = url
 
 if (!dbEnabled) {
   console.warn(
-    '[db] DATABASE_URL unset — records/leaderboards/ELO disabled (play still works)',
+    LAN_MODE
+      ? '[db] LAN_MODE=1 — no database on a self-hosted server, whatever DATABASE_URL says'
+      : '[db] DATABASE_URL unset — records/leaderboards/ELO disabled (play still works)',
   );
 }
 
@@ -83,6 +97,13 @@ if (pool instanceof pg.Pool) pool.on('error', (e) => console.error('[db] idle cl
  * time any test could. `let` + ESM live bindings mean importers see the swap.
  */
 export function setPoolForTests(p: DbPool | null): void {
+  // ...and not even a test may hand a LAN server a database. `scripts/dbtest.ts` never sets
+  // LAN_MODE, so this costs it nothing; what it buys is that "LAN_MODE ⇒ no pool" is true of
+  // the process rather than true of one assignment at the top of this file.
+  if (LAN_MODE) {
+    console.warn('[db] setPoolForTests ignored — LAN_MODE=1');
+    return;
+  }
   pool = p;
   dbEnabled = !!p;
 }

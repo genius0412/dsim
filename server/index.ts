@@ -12,6 +12,7 @@ import { migrate } from './db/migrate';
 import { persistMatch, persistDodges } from './persist';
 import { routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
+import { LAN_MODE, enforceLanPolicy } from './lanMode';
 import { chargeStanding, rankedLock } from './standing';
 import { lockRemaining, tierOf,
   STANDING_MAX,
@@ -83,6 +84,20 @@ import {
  * client with VITE_GAME_SERVER_URL=ws://localhost:8787. Deploy: see docs/deploy.md
  * (Fly.io). A plain GET /health returns 200 for the platform health check.
  */
+
+/**
+ * SELF-HOSTED (LAN) POLICY, DECIDED BEFORE ANYTHING READS THE ENVIRONMENT.
+ *
+ * `LAN_MODE=1` makes this process a LAN server in its own right rather than by virtue of how
+ * it was launched: no database, no credentials, no admin surface. `SERVE_CLIENT` without it
+ * refuses to boot. Both rules and the reasoning behind them are in `server/lanMode.ts`.
+ *
+ * It runs HERE, above the module constants below, because `ADMIN_USER_IDS` and `OWNER_USER_ID`
+ * are read into `const`s a couple of hundred lines down and a scrub after that would scrub
+ * nothing. `DATABASE_URL` and the JWKS are not on this clock at all — `db/pool.ts` and
+ * `auth.ts` read `LAN_MODE` in their own module bodies, which run before this statement does.
+ */
+enforceLanPolicy();
 
 const PORT = Number(process.env.PORT ?? 8787);
 const rooms = new Map<string, Room>();
@@ -2130,7 +2145,9 @@ console.log(
     process.env.DATABASE_URL
       ? (process.env.DATABASE_URL.match(/@([^/?]+)/)?.[1] ?? 'set')
       : 'none'
-  }${isAlphaServer() ? ' (alpha results PERSIST here)' : ''}`,
+  }${LAN_MODE ? ' lan=1 (self-hosted: nothing here persists)' : ''}${
+    isAlphaServer() ? ' (alpha results PERSIST here)' : ''
+  }`,
 );
 });
 initPhysics()
