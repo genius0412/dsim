@@ -1019,19 +1019,34 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
     w.balls.length = 1;
     const a = w.balls[0];
     place(a, -60, -40, -30, 30);
+    /**
+     * Measured against the velocity the artifact had THE TICK BEFORE it touched the wall, not
+     * against the one it was launched with. It rolls 9.5in to reach the wall and
+     * `BALL_ROLL_FRICTION` bleeds it on the way, which is a floor effect and has nothing to do
+     * with what the CONTACT does — comparing to the launch velocity made this check fail
+     * whenever that constant moved, for a bounce that was still perfect.
+     */
     let vx = NaN;
     let vy = NaN;
+    let beforeX = NaN;
+    let beforeY = NaN;
     for (let i = 0; i < 60 && Number.isNaN(vx); i++) {
+      const px = a.vel.x;
+      const py = a.vel.y;
       step(w, SIM_DT, new Map());
       if (a.vel.x > 0) {
         vx = a.vel.x;
         vy = a.vel.y;
+        beforeX = px;
+        beforeY = py;
       }
     }
+    const kept = vy / beforeY;
+    const bounced = vx / -beforeX;
     check(
       'a 45-degree wall bounce keeps its along-wall speed',
-      vy > 22 && vx > 10 && vx < 18,
-      `v after (${vx.toFixed(1)}, ${vy.toFixed(1)}) for (-30, 30) in; ideal (15, 30), the old friction gave (4, 9)`,
+      kept > 0.93 && bounced > 0.4 && bounced < 0.6,
+      `kept ${(kept * 100).toFixed(0)}% of its along-wall speed and returned ${bounced.toFixed(2)} of the normal (set ${BALL_WALL_RESTITUTION}); in/s (${vx.toFixed(1)}, ${vy.toFixed(1)}) from (${(-beforeX).toFixed(1)}, ${beforeY.toFixed(1)}) — in-plane friction used to leave (4, 9)`,
     );
   }
 
