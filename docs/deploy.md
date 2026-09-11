@@ -310,12 +310,26 @@ is closest to how the 13.3 figure was measured. Re-measure with
 
 **`MAX_ROOMS`** (env) caps how many rooms a machine will host; past it, new rooms are refused with
 `region_full` and the client offers another region. Default **24** on Fly, unlimited off it.
-24 is deliberately above the redline — it is a runaway guard, not a tuning knob. `MAX_ROOMS=0`
-disables it.
+24 is deliberately above the redline (~13 driven rooms/core, 8–10 with margin — see the table
+above and `docs/capacity.md` §2/§4) — it is a **runaway guard, not a measured safe-load
+admission and not a tuning knob**: most rooms are parked rather than driven, and a cap set at the
+redline would refuse players while the machine still had headroom. The constant's comment in
+`server/index.ts` says the same; if you change one, change the other. `MAX_ROOMS=0` disables it.
+
+**`MAX_SPECTATORS_PER_ROOM`** (24) and **`MAX_SPECTATORS`** (192) cap watchers per room and per
+machine. `MAX_ROOMS` bounds how many matches a machine *simulates* and nothing bounded how many
+people *watch* one — a spectator takes the same 30 Hz snapshot stream a driver does and reaches
+it without a room slot or a sign-in. Past either cap the `spectate` is refused with a plain
+message (deliberately **not** `region_full`: the room exists only on this machine, so "try
+another region" would be wrong advice). Same class of number as `MAX_ROOMS` — a runaway guard.
+`0` on either disables that cap. A hidden admin observer counts against them.
 
 **`WS_COMPRESS=0`** disables snapshot compression (permessage-deflate, context takeover at
-windowBits 13 / memLevel 6). On by default; worth ~80% of outbound bytes and ~64 KB of memory per
-socket. This is the rollback if the snapshot gap regresses.
+**windowBits 15 / memLevel 8** — the 13/6 an earlier version of this line quoted was superseded;
+see the correction in `docs/capacity.md` §6). On by default; worth ~80% of outbound bytes and
+~64 KB of memory per socket. This is the rollback if the snapshot gap regresses. `false`, `no`
+and `off` work too, in any case — it is a lever somebody reaches for under load and it used to
+accept only the literal string `0`.
 
 **`DB_POOL_MAX`** is 5 per machine. ⚠️ Past ~20 machines that is 100+ **direct** Neon connections;
 switch to Neon's pooled (`-pooler`) connection string before going wide. Connections are free in
