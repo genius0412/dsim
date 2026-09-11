@@ -14,6 +14,7 @@ import {
   type PlayerPatch,
   type QueueMode,
   type RoomConfig,
+  type ErrorCode,
 } from './protocol';
 
 export interface MatchStart {
@@ -46,7 +47,10 @@ type Handlers = {
   /** ranked pre-match strategy window opened: switch to the strategy screen. Live
    * changes ride the existing `update`/`roster`; a `matchStart` follows on ready. */
   strategyStart: (deadline: number, yourRobotId: number, mode: QueueMode, intros: PlayerIntro[]) => void;
-  error: (message: string) => void;
+  /** `code` is present only for the reasons a client can ACT on (today: `region_full`).
+   *  Absent for everything else, and absent entirely from older servers, so a handler
+   *  must stay correct reading `message` alone. */
+  error: (message: string, code?: ErrorCode) => void;
   /** a staged RANKED pairing was cancelled and this is what it cost. Arrives just BEFORE
    *  the `error` that tears the screen down, so the UI can show the reason alongside it. */
   dodgeVerdict: (yours: DodgeVerdict | null, others: DodgeVerdict[]) => void;
@@ -175,7 +179,7 @@ export class LobbyClient {
     } else if (m.t === 'strategyStart') {
       this.handlers.strategyStart?.(m.deadline, m.yourRobotId, m.mode, m.intros);
     } else if (m.t === 'error') {
-      this.handlers.error?.(m.message);
+      this.handlers.error?.(m.message, m.code);
     } else if (m.t === 'dodgeVerdict') {
       this.handlers.dodgeVerdict?.(m.yours, m.others);
     } else if (m.t === 'standingLock') {

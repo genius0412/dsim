@@ -186,7 +186,8 @@ import {
 import { EMPTY_ACTIVITY, averageMatch, playtimeLong, playtimeText } from '../src/playtime';
 import { routeTarget } from '../server/routing';
 import { roomPersists } from '../server/channel';
-import { Room, type Client, type DodgeReport } from '../server/room';
+import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, type Client, type DodgeReport } from '../server/room';
+import type { PendingRosterEntry } from '../server/matchTypes';
 import { maintenanceBiting } from '../server/db/repo';
 import { maintenanceLine } from '../src/ui/MaintenanceBanner';
 import { moderateName, scrubName, moderationEnabled } from '../server/moderation';
@@ -11373,6 +11374,72 @@ function pinScene(
   }
 }
 
+// ---- ONE ENCODE PER BROADCAST, and the per-client tail spliced on -----------
+// The room stringifies a snapshot's shared body once and appends each recipient's
+// own `ackInputTick`, because encoding used to be per RECIPIENT and a 2v2 is four
+// of them plus spectators. That is a hand-assembled JSON tail, so what it produces
+// has to be pinned against the object path it replaced: same fields, same values,
+// differing in exactly the one number it is allowed to differ in.
+{
+  const raw: Record<string, string[]> = { r1: [], r2: [] };
+  const obj: Record<string, ServerMsg[]> = { r1: [], r2: [], o1: [] };
+  const mkRaw = (id: string): Client => ({
+    id,
+    send: (m) => obj[id].push(m),
+    sendRaw: (s) => raw[id].push(s),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: id === 'r1' ? 'blue' : 'red', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  // o1 has NO sendRaw — the object path every test and the headless smoke take
+  const mkObj = (id: string): Client => ({
+    id,
+    send: (m) => obj[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 1, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  const room = new Room('smoke-encode', () => {}, { kind: 'versus' });
+  room.add(mkRaw('r1'));
+  room.add(mkRaw('r2'));
+  room.add(mkObj('o1'));
+  room.onMessage('r1', { t: 'start' });
+  // distinct input ticks per client, so `ackInputTick` is genuinely different for each
+  room.advanceForTest(20);
+  room.onMessage('r1', { t: 'input', tick: 5, q: [0, 0, 0, 0, 0, 0, 0] as unknown as never });
+  room.onMessage('r2', { t: 'input', tick: 9, q: [0, 0, 0, 0, 0, 0, 0] as unknown as never });
+  room.advanceForTest(10);
+
+  // every BROADCAST now goes out pre-encoded, not just snapshots, so filter
+  const parsed = (a: string[]) => a.map((s) => JSON.parse(s) as ServerMsg);
+  const onlySnaps = (a: string[]) =>
+    parsed(a).filter((m) => m.t === 'snapshot') as Extract<ServerMsg, { t: 'snapshot' }>[];
+  const snaps1 = onlySnaps(raw.r1);
+  const snaps2 = onlySnaps(raw.r2);
+  const objSnaps = (obj.o1.filter((m) => m.t === 'snapshot') as Extract<ServerMsg, { t: 'snapshot' }>[]);
+
+  check('spliced snapshot: the raw path produced parseable JSON',
+    snaps1.length > 0 && parsed(raw.r1).every((m) => typeof m.t === 'string'));
+  check('spliced snapshot: a client WITHOUT sendRaw still gets objects (tests, headless smoke)',
+    objSnaps.length === snaps1.length && objSnaps.length > 0,
+    `obj ${objSnaps.length} vs raw ${snaps1.length}`);
+
+  // the same frame, three recipients: everything but ackInputTick must be identical,
+  // and ackInputTick must be each client's own
+  const n = Math.min(snaps1.length, snaps2.length, objSnaps.length) - 1;
+  const a = snaps1[n], b = snaps2[n], c = objSnaps[n];
+  const strip = (m: Extract<ServerMsg, { t: 'snapshot' }>) => JSON.stringify({ ...m, ackInputTick: 0 });
+  check('spliced snapshot: the SHARED body is identical for every recipient',
+    strip(a) === strip(b) && strip(a) === strip(c));
+  check('spliced snapshot: the raw path equals the object path field for field',
+    JSON.stringify(a) === JSON.stringify({ ...c, ackInputTick: a.ackInputTick }));
+  check('spliced snapshot: ackInputTick is per-client, not shared',
+    a.ackInputTick !== b.ackInputTick, `r1=${a.ackInputTick} r2=${b.ackInputTick}`);
+  check('spliced snapshot: serverTick survived the splice as a number',
+    Number.isInteger(a.serverTick) && a.serverTick > 0);
+  check('spliced snapshot: the ball delta survived the splice',
+    Array.isArray(a.balls.order) && Array.isArray(a.balls.upd));
+  room.stop();
+}
+
 // ---- predict/reconcile parity ----------------------------------------------
 // The client replaces its world with a server snapshot at `serverTick`, then
 // replays the local inputs it had buffered PAST that tick (remote robots default
@@ -11887,7 +11954,14 @@ function pinScene(
   // pre-load a fire+intake command for every tick so the run scores real points
   const cap = maxMatchTicks();
   const fire = quantizeCommand({ driveX: 0, driveY: 0, rotate: 0, intake: true, fire: true });
-  for (let t = 1; t <= cap; t++) room.onMessage('host-1', { t: 'input', tick: t, q: fire });
+  // Fed in BOUNDED WINDOWS, the way a real client feeds: an input is only buffered
+  // within `MAX_INPUT_LEAD_TICKS` of the live tick (see the input-bound checks below),
+  // so a whole match pre-loaded against a world still at tick 0 is refused as the
+  // memory attack it resembles. 100 < 120, so every input here still lands.
+  for (let base = 1; base <= cap; base += 100) {
+    for (let t = base; t < base + 100 && t <= cap; t++) room.onMessage('host-1', { t: 'input', tick: t, q: fire });
+    room.advanceForTest(100);
+  }
   room.advanceForTest(cap + 5);
 
   const res = msgs.find((m) => m.t === 'matchResult');
@@ -11934,9 +12008,13 @@ function pinScene(
   // two DIFFERENT time-varying streams, so the robots genuinely interact rather
   // than sitting on their start poses running identical inputs
   const vcap = maxMatchTicks();
-  for (let t = 1; t <= vcap; t++) {
-    room.onMessage('va', { t: 'input', tick: t, q: quantizeCommand({ driveX: dsin(t / 37), driveY: dcos(t / 53), rotate: dsin(t / 91), intake: true, fire: t % 7 === 0 }) });
-    room.onMessage('vb', { t: 'input', tick: t, q: quantizeCommand({ driveX: dcos(t / 41), driveY: dsin(t / 29), rotate: dcos(t / 67), intake: t % 3 !== 0, fire: t % 11 === 0 }) });
+  // bounded windows, as above — a pre-loaded match exceeds `MAX_INPUT_LEAD_TICKS`
+  for (let base = 1; base <= vcap; base += 100) {
+    for (let t = base; t < base + 100 && t <= vcap; t++) {
+      room.onMessage('va', { t: 'input', tick: t, q: quantizeCommand({ driveX: dsin(t / 37), driveY: dcos(t / 53), rotate: dsin(t / 91), intake: true, fire: t % 7 === 0 }) });
+      room.onMessage('vb', { t: 'input', tick: t, q: quantizeCommand({ driveX: dcos(t / 41), driveY: dsin(t / 29), rotate: dcos(t / 67), intake: t % 3 !== 0, fire: t % 11 === 0 }) });
+    }
+    room.advanceForTest(100);
   }
   room.advanceForTest(vcap + 400);
   const vres = msgs.find((m) => m.t === 'matchResult');
@@ -12119,8 +12197,12 @@ function pinScene(
   // 'a' is WEDGED — it keeps acking tick 0 forever; 'b' acks the latest each round.
   for (let round = 0; round < 22; round++) {
     const t = lastSnap(bMsgs)?.serverTick ?? 0;
-    room.onMessage('a', { t: 'input', tick: 10_000 + round, q, ack: 0 });
-    room.onMessage('b', { t: 'input', tick: 10_000 + round, q, ack: t });
+    // a realistic one-tick lead: an input further ahead than `MAX_INPUT_LEAD_TICKS` is
+    // refused outright, so a fabricated far-future tick would exercise the ack channel
+    // with traffic that never actually lands
+    const lead = room.tickForTest() + 1;
+    room.onMessage('a', { t: 'input', tick: lead, q, ack: 0 });
+    room.onMessage('b', { t: 'input', tick: lead, q, ack: t });
     room.advanceForTest(30);
   }
   const recent = (arr: ServerMsg[], n: number): Extract<ServerMsg, { t: 'snapshot' }>[] =>
@@ -12139,11 +12221,312 @@ function pinScene(
   room2.advanceForTest(4);
   cMsgs.length = 0;
   for (let round = 0; round < 22; round++) {
-    room2.onMessage('a', { t: 'input', tick: 20_000 + round, q }); // NO ack field (old client)
+    room2.onMessage('a', { t: 'input', tick: room2.tickForTest() + 1, q }); // NO ack field (old client)
     room2.advanceForTest(30);
   }
   const legacyDeltas = recent(cMsgs, 5).some((s) => s.balls.upd.length < s.balls.order.length);
   check('ack channel: an ack-less legacy client is never force-keyframed', legacyDeltas);
+}
+
+// ---- future-tick input buffer is BOUNDED (memory-exhaustion guard) ----------
+// `pending` is keyed by the exact tick an input applies to, and `frameCommands` only
+// ever deletes keys the world has REACHED. A tick the world will never reach is
+// therefore never collected, so an unbounded lead let a client grow server memory at
+// will — 60 inputs a second, each with a fresh key. Found by load testing; see
+// `docs/capacity.md` §7. The bound has to hold WITHOUT refusing a real client, whose
+// own `MAX_PREDICT_LEAD` keeps it ~41 ticks ahead at most.
+{
+  const mkC = (id: string, alliance: 'red' | 'blue'): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+  const q = quantizeCommand(cmd({}));
+
+  // ATTACK: 3,000 inputs, each stamped a tick further into a future that never arrives.
+  const eroom = new Room('smoke-input-bound', () => {}, { kind: 'versus' });
+  eroom.add(mkC('a', 'red'));
+  eroom.add(mkC('b', 'blue'));
+  eroom.onMessage('a', { t: 'start' });
+  eroom.advanceForTest(4);
+  for (let i = 0; i < 3000; i++) eroom.onMessage('a', { t: 'input', tick: 1_000_000 + i, q });
+  const evil = eroom.pendingSizeForTest();
+  check('input bound: absurd future ticks buffer nothing at all', evil.total === 0, `buffered ${evil.total}`);
+
+  // ATTACK 2: ticks just past the bound, which is where an off-by-one would show.
+  const t0 = eroom.tickForTest();
+  for (let i = 0; i < 500; i++) eroom.onMessage('a', { t: 'input', tick: t0 + 121 + i, q });
+  check('input bound: one tick past the cap is refused', eroom.pendingSizeForTest().total === 0);
+
+  // LEGITIMATE: a real client leads by at most ~41 ticks. Every one must be kept, or
+  // on-time clients lose the exact-tick match that makes prediction smooth.
+  const groom = new Room('smoke-input-legit', () => {}, { kind: 'versus' });
+  groom.add(mkC('a', 'red'));
+  groom.add(mkC('b', 'blue'));
+  groom.onMessage('a', { t: 'start' });
+  groom.advanceForTest(4);
+  const g0 = groom.tickForTest();
+  for (let lead = 1; lead <= 41; lead++) groom.onMessage('a', { t: 'input', tick: g0 + lead, q });
+  const good = groom.pendingSizeForTest();
+  check('input bound: a real client’s 41-tick lead is fully buffered', good.total === 41, `buffered ${good.total}`);
+
+  // and the buffer DRAINS as the world reaches those ticks (the bound must not
+  // substitute for the existing prune, only backstop it)
+  groom.advanceForTest(60);
+  check('input bound: buffered inputs are consumed as the world reaches them', groom.pendingSizeForTest().total === 0);
+
+  // FILLING THE LEGAL WINDOW is the most the buffer can ever hold — and that is the whole
+  // bound. The old check here asserted `max <= 128` after feeding exactly 120 ticks, which
+  // is true of any number at or above 120 and so asserted nothing about the cap.
+  const broom = new Room('smoke-input-cap', () => {}, { kind: 'versus' });
+  broom.add(mkC('a', 'red'));
+  broom.add(mkC('b', 'blue'));
+  broom.onMessage('a', { t: 'start' });
+  broom.advanceForTest(4);
+  const b0 = broom.tickForTest();
+  for (let lead = 1; lead <= MAX_INPUT_LEAD_TICKS + 40; lead++) broom.onMessage('a', { t: 'input', tick: b0 + lead, q });
+  const filled = broom.pendingSizeForTest();
+  check(
+    'input bound: a full legal window buffers exactly the lead cap, and the ticks past it are refused',
+    filled.max === MAX_INPUT_LEAD_TICKS,
+    `buffered ${filled.max} of ${MAX_INPUT_LEAD_TICKS}`,
+  );
+
+  /**
+   * ⚠️ THE PER-ROBOT BACKSTOP CANNOT FIRE, AND THAT IS WHAT IS ASSERTED.
+   *
+   * `MAX_PENDING_PER_ROBOT` reads like a second, independent bound. It is not one: the map
+   * only ever takes keys in `(tick, tick + MAX_INPUT_LEAD_TICKS]` and `frameCommands`
+   * deletes everything the world has reached, so the lead cap alone holds it to 120 — the
+   * check above measures exactly that — and an eviction path above 120 is unreachable. A
+   * test that fed it 120 inputs and asserted `<= 128` looked like eviction coverage and was
+   * really a tautology, so what is pinned instead is the RELATIONSHIP: the backstop must
+   * stay strictly above the lead cap, or it would start silently discarding a legitimate
+   * client's buffered inputs (a lead of 41 ticks is normal) and the exact-tick match that
+   * makes prediction smooth would go with them. If a future change lowers the lead cap
+   * below this, the eviction becomes live and needs real coverage written for it.
+   */
+  check(
+    'input bound: the per-robot backstop sits above the lead cap (so the lead cap IS the bound)',
+    MAX_PENDING_PER_ROBOT > MAX_INPUT_LEAD_TICKS,
+    `${MAX_PENDING_PER_ROBOT} vs ${MAX_INPUT_LEAD_TICKS}`,
+  );
+
+  /**
+   * A TICK IS A COUNT OF SIM STEPS. Anything that is not a safe non-negative integer names a
+   * moment no world will ever reach, so none of it may buffer, and — the part that actually
+   * bites — none of it may reach `latestTick`/`ackTick`, which are HIGH-WATER marks that
+   * cannot be lowered again. One input stamped at an unsafe magnitude would leave every
+   * honest input afterwards looking stale and that robot would stop answering its driver.
+   */
+  const froom = new Room('smoke-input-frac', () => {}, { kind: 'versus' });
+  froom.add(mkC('a', 'red'));
+  froom.add(mkC('b', 'blue'));
+  froom.onMessage('a', { t: 'start' });
+  froom.advanceForTest(4);
+  const f0 = froom.tickForTest();
+  const junk: number[] = [
+    f0 + 1.5, // fractional
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    -1,
+    -1_000_000,
+    Number.MIN_SAFE_INTEGER,
+    Number.MAX_SAFE_INTEGER, // safe, but astronomically past the lead cap
+    Number.MAX_SAFE_INTEGER + 2, // an "integer" the language can no longer count exactly
+    1e21,
+    -0.0001,
+  ];
+  for (const t of junk) froom.onMessage('a', { t: 'input', tick: t, q });
+  check('input bound: fractional / NaN / infinite / negative / unsafe ticks all buffer nothing', froom.pendingSizeForTest().total === 0);
+
+  // …and, having been refused, none of them poisoned the high-water marks: an ordinary
+  // input right after still lands. This is the half that a "nothing buffered" check misses.
+  const fLead = froom.tickForTest() + 5;
+  froom.onMessage('a', { t: 'input', tick: fLead, q });
+  check(
+    'input bound: a junk tick does not poison the high-water mark — the next honest input still buffers',
+    froom.pendingSizeForTest().total === 1,
+    `buffered ${froom.pendingSizeForTest().total}`,
+  );
+}
+
+// ---- a backed-up socket is COALESCED, not queued ----------------------------
+// A snapshot leaves every 2 ticks whether or not the last one was written, and `ws.send`
+// queues without complaint — so a client that has stopped draining (a spectator on a dying
+// link) grows an unbounded queue of worlds that are historical by the time they arrive. The
+// room now asks each client what it still owes (`Client.backlog`) and skips it, UNPRIMING it
+// so the next snapshot it does get is a full keyframe. Both halves matter: skipping alone
+// would hand it a delta keyed to a frame it never received.
+{
+  const mkS = (id: string, alliance: 'red' | 'blue', backlog: () => number): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+    backlog,
+  });
+  let owed = 0;
+  const got: ServerMsg[] = [];
+  const slow = mkS('slow', 'red', () => owed);
+  slow.send = (m): void => {
+    got.push(m);
+  };
+  const room = new Room('smoke-backlog', () => {}, { kind: 'versus' });
+  room.add(slow);
+  room.add(mkS('fast', 'blue', () => 0));
+  room.onMessage('slow', { t: 'start' });
+  room.advanceForTest(10);
+  const primed = got.filter((m) => m.t === 'snapshot').length;
+  check('backlog: a draining client receives snapshots normally', primed > 0, `${primed} snapshots`);
+
+  // now it stops draining — nothing more may be queued on it
+  owed = 8 * 1024 * 1024;
+  const before = got.length;
+  room.advanceForTest(30);
+  check('backlog: a backed-up client is sent nothing while it owes', got.length === before, `${got.length - before} extra`);
+
+  // and when it drains, what it gets is a FULL KEYFRAME of the world as it is now — not a
+  // delta against a frame it never saw
+  owed = 0;
+  room.advanceForTest(4);
+  const resumed = got.slice(before).find((m) => m.t === 'snapshot') as Extract<ServerMsg, { t: 'snapshot' }> | undefined;
+  check('backlog: the first snapshot after draining is sent', !!resumed);
+  if (resumed) {
+    check(
+      'backlog: …and it is a full keyframe (every ball, not a delta)',
+      resumed.balls.upd.length === resumed.balls.order.length,
+      `${resumed.balls.upd.length} of ${resumed.balls.order.length}`,
+    );
+  }
+}
+
+// ---- a RECONNECT must hand over every sender, not just `send` ---------------
+// `reattach` swapped `send` and nothing else, which was right for exactly as long as `send`
+// was the only sender. The encode-once change made `sendRaw` the hot path — broadcasts AND
+// snapshots — so a reconnected client kept a closure over the socket it had just lost, and
+// that closure fails SILENTLY (it checks `readyState === OPEN`): `welcome`, `rejoined` and
+// one keyframe arrive, then the game goes quiet on a socket that is perfectly healthy.
+{
+  const mkR = (id: string, alliance: 'red' | 'blue'): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+  const dead: string[] = [];
+  const alive: string[] = [];
+  const drop = mkR('rj', 'red');
+  drop.sendRaw = (s): void => {
+    dead.push(s);
+  };
+  const room = new Room('smoke-reattach', () => {}, { kind: 'versus' });
+  room.add(drop);
+  room.add(mkR('other', 'blue'));
+  room.onMessage('rj', { t: 'start' });
+  room.advanceForTest(6);
+  check('reattach: the original socket was receiving raw frames', dead.length > 0, `${dead.length}`);
+
+  // the socket drops mid-match (the slot is held for the grace) and a NEW one rejoins
+  room.detach('rj');
+  const deadAtDrop = dead.length;
+  const nc = room.reattach(
+    'rj',
+    () => {},
+    (s) => alive.push(s),
+    () => 0,
+  );
+  check('reattach: the slot was reclaimed', nc !== null);
+  room.advanceForTest(6);
+  check('reattach: the NEW socket receives the raw snapshot stream', alive.length > 0, `${alive.length}`);
+  check('reattach: the DEAD socket receives nothing further', dead.length === deadAtDrop, `${dead.length - deadAtDrop} leaked`);
+}
+
+// ---- spectator admission is COUNTABLE, and hidden observers count -----------
+// The per-room / machine-wide spectator caps live in server/index.ts (which opens sockets on
+// import and so cannot be loaded here), but the figure they admit against is the room's, and
+// it is the half that could quietly be wrong: `visibleSpectators()` is what PLAYERS are shown
+// and deliberately omits a hidden admin, while a cap must count every attached stream or it
+// could be bypassed by not being displayed.
+{
+  const mkSpec = (id: string): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'red', startIndex: 0, ready: false, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+  });
+  const room = new Room('smoke-spectators', () => {}, { kind: 'versus' });
+  check('spectators: a fresh room carries none', room.spectatorCount() === 0);
+  room.addSpectator(mkSpec('s1'));
+  room.addSpectator(mkSpec('s2'));
+  room.addSpectator(mkSpec('s3'));
+  room.hideSpectator('s3');
+  check('spectators: the admission count is EVERY attached watcher', room.spectatorCount() === 3, `${room.spectatorCount()}`);
+  check('spectators: the displayed count still hides the hidden observer', room.visibleSpectators() === 2, `${room.visibleSpectators()}`);
+  room.detach('s2');
+  check('spectators: a departing watcher frees its place', room.spectatorCount() === 2, `${room.spectatorCount()}`);
+}
+
+// ---- an empty room a join CLAIMED but never filled can be handed back -------
+// The connection layer claims the registry slot SYNCHRONOUSLY (so a racing joiner finds the
+// same room instead of opening a duplicate) and only adds the joiner several awaits later. A
+// socket that closes in between reaches a `room` that is still null, so nothing tears down —
+// the room was then counted against MAX_ROOMS for the life of the process. `isAbandonable()`
+// is the guard the join path asks, and its one REFUSAL is load-bearing: a room that has
+// already claimed a staged ranked match must reap itself on its own grace instead, because
+// `takePendingMatch` has consumed the row and a re-created room could never claim it again.
+{
+  const mkD = (id: string, alliance: 'red' | 'blue'): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+  const empty = new Room('smoke-abandon', () => {}, { kind: 'versus' });
+  check('abandon: a room nobody ever joined can be dropped', empty.isAbandonable());
+  empty.add(mkD('d1', 'red'));
+  check('abandon: a room with a driver cannot', !empty.isAbandonable());
+
+  const watched = new Room('smoke-abandon-spec', () => {}, { kind: 'versus' });
+  watched.addSpectator({ ...mkD('w1', 'red'), userId: undefined });
+  check('abandon: a room somebody is WATCHING cannot', !watched.isAbandonable());
+
+  const staged = new Room('smoke-abandon-staged', () => {}, { kind: 'versus' });
+  const rosterEntry = (userId: string, alliance: 'red' | 'blue', startIndex: number): PendingRosterEntry => ({
+    userId,
+    name: userId,
+    teamName: 'T',
+    teamNumber: 1,
+    spec: { ...DEFAULT_SPEC },
+    assists: { ...DEFAULT_ASSISTS },
+    startIndex,
+    alliance,
+    introElo: 1500,
+  });
+  staged.applyPending({
+    code: 'smoke-abandon-staged',
+    hostRegion: '',
+    seed: 7,
+    mode: '1v1',
+    ranked: true,
+    game: 'decode',
+    roster: [rosterEntry('ru-a', 'red', 0), rosterEntry('ru-b', 'blue', 1)],
+  });
+  check(
+    'abandon: an EMPTY room holding a staged ranked match must NOT be dropped (the DB row is already spent)',
+    !staged.isAbandonable(),
+  );
 }
 
 // ---- single live game per user + restart disabled (server enforcement) ------
@@ -16522,6 +16905,173 @@ const mkMM = () => {
     check('disabled: moderateName allows any name (checked=false)', off.allowed === true && off.checked === false);
     check('disabled: scrubName passes a name through unchanged', (await scrubName('My Robot', 'x')) === 'My Robot');
   }
+}
+
+// ---- ENCODE-ONCE IS SAFE WITH permessage-deflate NEGOTIATED -----------------
+/**
+ * The room encodes a broadcast ONCE and hands every recipient the same string. With
+ * compression on, each socket has its OWN deflate context (an LZ77 window that SURVIVES
+ * between messages — `serverNoContextTakeover: false` is the whole point of the extension
+ * here), so the same source string is compressed differently per socket and against a
+ * different history. That is exactly the sharing the encode-once change introduced, and no
+ * existing test covered it: the room-level tests use plain `send` callbacks and never
+ * negotiate an extension at all, so they prove the JSON is right and nothing about the wire.
+ *
+ * So this is the only socket test in the suite, and it is here deliberately: the failure it
+ * guards against — one client's stream desynchronising from a shared buffer — is invisible
+ * to every other check and would reach players as a silent disconnect at full population.
+ *
+ * It runs the server's OWN perMessageDeflate options against three real clients, and it
+ * asserts the extension actually negotiated FIRST, because a run where it did not would pass
+ * every other assertion here while testing nothing.
+ *
+ * It also covers the mixed stream the send-site threshold produces (see `COMPRESS_THRESHOLD`
+ * in server/index.ts): small frames go out uncompressed while the window is live, which is
+ * legal per RFC 7692 but is the kind of legal that wants proving on a real decoder.
+ */
+{
+  const { WebSocketServer, WebSocket: WSClient } = await import('ws');
+  const DEFLATE_OPTS = {
+    zlibDeflateOptions: { level: 1, windowBits: 15, memLevel: 8 },
+    serverMaxWindowBits: 15,
+    serverNoContextTakeover: false,
+    clientNoContextTakeover: true,
+    threshold: 1024,
+    concurrencyLimit: 20,
+  };
+  const THRESHOLD = 1024;
+  const N_CLIENTS = 3;
+
+  // a plausible broadcast stream: big repetitive snapshot-shaped frames (which is where the
+  // context window earns its keep) interleaved with the small control messages that now go
+  // out uncompressed
+  const frames: string[] = [];
+  for (let i = 0; i < 40; i++) {
+    if (i % 4 === 0) {
+      frames.push(JSON.stringify({ t: 'pong', ts: 1_700_000_000_000 + i }));
+    } else {
+      frames.push(
+        JSON.stringify({
+          t: 'snapshot',
+          serverTick: i,
+          w: { robots: Array.from({ length: 4 }, (_, r) => ({ id: r, x: r * 11.5 + i * 0.25, y: -r * 7.25 + i * 0.5, h: (i * 0.01) % 6.28, vx: 1.5, vy: -0.5 })) },
+          balls: { order: Array.from({ length: 60 }, (_, b) => b), upd: Array.from({ length: 60 }, (_, b) => ({ id: b, x: b * 2.1 - 60, y: b * 1.7 - 40, k: 'ground' })) },
+        }),
+      );
+    }
+  }
+  const rawBytes = frames.reduce((n, s) => n + Buffer.byteLength(s), 0);
+
+  const wss = new WebSocketServer({ port: 0, perMessageDeflate: DEFLATE_OPTS });
+  /** every socket this block opened, on both ends. ⚠️ `wss.close(cb)` closes the LISTENER and
+   *  then waits for the existing connections to end, so leaving the clients open never calls
+   *  back and the whole suite hangs after its last check — with every check already printed,
+   *  which is exactly how it looks like something else went wrong. */
+  const opened: { terminate: () => void }[] = [];
+  const result = await new Promise<{
+    ok: boolean;
+    why: string;
+    extensions: string[];
+    received: string[][];
+    wire: number;
+  }>((resolve) => {
+    const timer = setTimeout(() => resolve({ ok: false, why: 'timed out', extensions: [], received: [], wire: 0 }), 15_000);
+    wss.on('listening', () => {
+      const addr = wss.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      const received: string[][] = Array.from({ length: N_CLIENTS }, () => []);
+      const extensions: string[] = [];
+      let wire = 0;
+      let done = 0;
+
+      const finish = (ok: boolean, why: string): void => {
+        clearTimeout(timer);
+        resolve({ ok, why, extensions, received, wire });
+      };
+
+      const serverSockets: import('ws').WebSocket[] = [];
+      wss.on('connection', (sock) => {
+        serverSockets.push(sock);
+        opened.push(sock);
+        if (serverSockets.length < N_CLIENTS) return;
+        // EVERY recipient is handed the SAME string object — the encode-once path.
+        for (const s of frames) {
+          const compress = s.length >= THRESHOLD;
+          for (const sock2 of serverSockets) sock2.send(s, { compress });
+        }
+      });
+
+      for (let i = 0; i < N_CLIENTS; i++) {
+        const c = new WSClient(`ws://127.0.0.1:${port}`, { perMessageDeflate: true });
+        opened.push(c);
+        const mine = i;
+        c.on('open', () => {
+          extensions[mine] = c.extensions;
+        });
+        c.on('message', (d) => {
+          received[mine].push(String(d));
+          if (received[mine].length !== frames.length) return;
+          // count what actually crossed the socket for client 0 only — one sample is
+          // enough to tell "the extension is doing something" from "it is not"
+          if (mine === 0) {
+            const sock = (c as unknown as { _socket?: { bytesRead?: number } })._socket;
+            wire = sock?.bytesRead ?? 0;
+          }
+          done++;
+          if (done === N_CLIENTS) finish(true, '');
+        });
+        c.on('error', (e) => finish(false, String(e)));
+      }
+    });
+  });
+
+  check('deflate: the three-client broadcast harness completed', result.ok, result.why);
+  if (result.ok) {
+    const negotiated = result.extensions.filter((e) => (e ?? '').includes('permessage-deflate')).length;
+    check(
+      'deflate: permessage-deflate actually negotiated on every client (or the rest of this block proves nothing)',
+      negotiated === N_CLIENTS,
+      `${negotiated}/${N_CLIENTS}: ${result.extensions.join(' | ')}`,
+    );
+    let mismatch = '';
+    for (let i = 0; i < N_CLIENTS && !mismatch; i++) {
+      if (result.received[i].length !== frames.length) {
+        mismatch = `client ${i} received ${result.received[i].length} of ${frames.length}`;
+        break;
+      }
+      for (let f = 0; f < frames.length; f++) {
+        if (result.received[i][f] !== frames[f]) {
+          mismatch = `client ${i}, frame ${f}`;
+          break;
+        }
+      }
+    }
+    check(
+      'deflate: ONE encoded string sent to three sockets arrives byte-identical on all three',
+      !mismatch,
+      mismatch,
+    );
+    // the last frame of each client must match the last frame sent, which is the check that
+    // a per-socket window drifting out of step would break (an early frame can be right
+    // while the history diverges later)
+    check(
+      'deflate: the LAST frame is intact on every client (a per-socket window never drifted)',
+      result.received.every((r) => r[r.length - 1] === frames[frames.length - 1]),
+    );
+    check(
+      'deflate: the stream really was compressed on the wire (not silently passed through)',
+      result.wire > 0 && result.wire < rawBytes * 0.6,
+      `${result.wire} wire vs ${rawBytes} raw`,
+    );
+  }
+  for (const sock of opened) {
+    try {
+      sock.terminate();
+    } catch {
+      /* already gone */
+    }
+  }
+  await new Promise<void>((r) => wss.close(() => r()));
 }
 
 // ---- practice REPLAY SAVE POLICY (src/replaySavePolicy.ts) ---------------------
