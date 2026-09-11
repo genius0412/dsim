@@ -90,7 +90,16 @@ Key numbers (all in `src/config.ts`):
   apart (`GATE_TAPE_W`), starting at the classifier edge (x = ±66) and running into the
   field, centered on the gate (`gateTapeSegments` → line pairs, drawn). The gate-opening
   INTERACTION rect (`gateZone`, 10×5) is larger and intentionally not drawn — feel over
-  strict tape geometry.
+  strict tape geometry. **G424 tests `gateZoneTape`, the 2.75×10 strip between the lines,
+  NOT `gateZone`** — a foul is not a feel knob, and the two rects differ in both axes.
+- **ZONE OCCUPANCY — every zone is an "infinitely tall volume"** (Section 9 + glossary:
+  GATE 2.75×10, SECRET TUNNEL 46.5×6.125, LOADING 23×23, BASE 18×18), and the rules that
+  use them (G424/G425/G426/G427) ask whether a ROBOT "is in" one. So occupancy is OVERLAP
+  against the robot's top-down silhouette — intake reach included — not a corner/centre
+  containment test. `robotInZone` in penalties.ts is the single predicate.
+  The one deliberate exception is the BASE award: "fully returned to BASE" is defined by
+  SUPPORT ("must only be supported … by the TILE in the BASE ZONE"), which is why parking
+  counts `wheelContacts` while G427 counts the footprint. The manual draws that line itself.
 - Secret tunnel floor strip beneath each channel belongs to the OPPOSING alliance
   (it is on their wall), `TUNNEL_STRIP_LEN` = 46.5 in from the gate toward the
   audience, `TUNNEL_W` = 6.125 in wide (its own constant, drawn with a colored outline);

@@ -42,6 +42,7 @@ import { pointDepthInChassis } from '../src/sim/physics';
 import {
   inLaunchZone,
   gateZone,
+  gateZoneTape,
   gateArmRect,
   startPose,
   goalCenter,
@@ -118,6 +119,8 @@ import {
   BALL_BALL_RESTITUTION,
   BALL_WALL_RESTITUTION,
   CLASSIFIER_W,
+  GATE_TAPE_W,
+  GATE_TAPE_LEN,
   RAIL_WANDER_AMP,
   ROBOT_HEIGHT,
   HP_INITIAL_STOCK,
@@ -8055,6 +8058,7 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   // Scenario 1: blue is in its OWN gate zone AND in red's (opponent's) tunnel,
   // red is in its own tunnel -> ONLY a secret-tunnel foul (on blue), no gate foul.
   const w = foulWorld();
+  for (const r of w.robots) r.heading = 0; // pin the footprint: forward = +x
   w.robots[0].pos = { x: -68, y: -3 };  // blue: overlaps gate zone + red's tunnel
   w.robots[1].pos = { x: -68, y: -6 };  // red: in its own tunnel
   w.rrContacts = [{ a: 0, b: 1 }];
@@ -8067,9 +8071,14 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
 
   // Scenario 2: blue is in its OWN gate zone but NOT in red's tunnel, red is in
   // its own tunnel -> ONLY a gate foul (on red), no secret-tunnel foul.
+  // "Clear of the tunnel" has to mean clear of it: the gate zone runs 10in INTO
+  // the field from the classifier edge, so a robot clear of the 6.125in tunnel
+  // strip stands at the INNER end of it. At x=-64 the chassis still reached the
+  // wall and overlapped the strip — the corner test just could not see that.
   const w2 = foulWorld();
-  w2.robots[0].pos = { x: -64, y: 0 };  // blue: in its gate zone, clear of the tunnel
-  w2.robots[1].pos = { x: -68, y: -10 }; // red: in its own tunnel
+  for (const r of w2.robots) r.heading = 0; // pin the footprint: forward = +x
+  w2.robots[0].pos = { x: -55, y: 0 };  // blue: in its gate zone, clear of the tunnel
+  w2.robots[1].pos = { x: -68, y: -12 }; // red: in its own tunnel
   w2.rrContacts = [{ a: 0, b: 1 }];
   updatePenalties(w2, 1 / 60, new Map());
   check(
@@ -8130,6 +8139,101 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   check(
     'base contact BEFORE endgame is not a G427 foul',
     w2.match.scores.blue.foulPoints === 0 && !w2.robots[0].baseAwarded,
+  );
+}
+
+// ---- ZONE HITBOXES: the rules test the manual's zone, and test it as OVERLAP -
+// Two separate claims, both about geometry rather than about which rule fires:
+//   (a) G424's rect is the RULEBOOK's GATE ZONE (2.75x10 between the tape lines),
+//       not the deliberately-generous rect that decides whether a robot can WORK
+//       the gate. Those are different shapes in BOTH axes.
+//   (b) "a ROBOT is in a ZONE" means any part of it is. Every DECODE zone is an
+//       "infinitely tall volume" (Section 9), so the test is overlap against the
+//       top-down silhouette — not "a corner or the center is inside", which is
+//       strictly weaker and misses a body lying across a zone.
+{
+  const tape = gateZoneTape('blue');
+  const interact = gateZone('blue');
+  check(
+    'GATE ZONE is the manual 2.75in x 10in strip',
+    Math.abs((tape.y1 - tape.y0) - GATE_TAPE_W) < 1e-9 &&
+      Math.abs((tape.x1 - tape.x0) - GATE_TAPE_LEN) < 1e-9,
+    `w=${(tape.y1 - tape.y0).toFixed(3)} len=${(tape.x1 - tape.x0).toFixed(3)}`,
+  );
+  // sideRect normalizes x0<x1, so the wall-ward end is whichever has the larger |x|
+  const tapeOuter = Math.max(Math.abs(tape.x0), Math.abs(tape.x1));
+  check(
+    'GATE ZONE starts at the CLASSIFIER edge and runs INTO the field (like its tape)',
+    Math.abs(tapeOuter - (FIELD_HALF - CLASSIFIER_W)) < 1e-9,
+    `outer=${tapeOuter} classifierEdge=${FIELD_HALF - CLASSIFIER_W}`,
+  );
+  check(
+    'the rulebook gate zone and the gate INTERACTION rect are different rects',
+    tape.x0 !== interact.x0 || tape.x1 !== interact.x1 || tape.y0 !== interact.y0 || tape.y1 !== interact.y1,
+  );
+
+  // (a) the outer 6in of the real zone: inside the tape, OUTSIDE the interaction
+  // rect. This contact was not a foul at all before.
+  const w = foulWorld();
+  for (const r of w.robots) r.heading = 0;
+  w.robots[0].pos = { x: -55, y: 0 }; // blue at the INNER end of its own gate zone
+  w.robots[1].pos = { x: -50, y: 0 }; // red, clear of the zone itself
+  w.rrContacts = [{ a: 0, b: 1 }];
+  updatePenalties(w, 1 / 60, new Map());
+  check(
+    'contact at the field-side end of the GATE ZONE is a G424 (the interaction rect never reached it)',
+    w.match.fouls.red.minor === 1 && !inRect(w.robots[0].pos, gateZone('blue')),
+    `redMinor=${w.match.fouls.red.minor}`,
+  );
+
+  // ...and the other direction: the interaction rect is 5in wide against the
+  // zone's 2.75in, so a robot cleanly outside the tape is NOT a G424.
+  const w2 = foulWorld();
+  for (const r of w2.robots) r.heading = 0;
+  // Sit the whole footprint clear of the 2.75in band but still inside the
+  // interaction rect's 5in y-span and its x-span. It has to be on the GOAL side
+  // of the gate: the other side of the band is the SECRET TUNNEL, and a robot
+  // there is correctly a G425 — which would pass this check for the wrong reason.
+  w2.robots[0].pos = { x: -64, y: 10.5 };
+  w2.robots[1].pos = { x: -50, y: 10.5 };
+  w2.rrContacts = [{ a: 0, b: 1 }];
+  updatePenalties(w2, 1 / 60, new Map());
+  check(
+    'contact beside the gate but OUTSIDE the 2.75in zone is not a G424',
+    w2.match.fouls.red.minor === 0 && w2.match.fouls.blue.minor === 0,
+    `redMinor=${w2.match.fouls.red.minor} blueMinor=${w2.match.fouls.blue.minor}`,
+  );
+
+  // (b) the overlap case, on the BASE ZONE: a robot lying across the zone's
+  // corner with every corner outside it and its center outside it too. The body
+  // is demonstrably in the zone; the old corner/center test said it was not.
+  const w3 = foulWorld(15); // endgame
+  const bz = baseZone('blue');
+  w3.robots[0].heading = Math.PI / 4;
+  w3.robots[0].pos = { x: bz.x0 - 2, y: bz.y1 + 2 };
+  w3.robots[1].heading = 0;
+  w3.robots[1].pos = { x: 0, y: 0 };
+  const noCornerIn = !robotCorners(w3.robots[0]).some((c) => inRect(c, bz));
+  const centerOut = !inRect(w3.robots[0].pos, bz);
+  w3.rrContacts = [{ a: 0, b: 1 }];
+  updatePenalties(w3, 1 / 60, new Map());
+  check(
+    'a robot covering a zone with NO corner inside and its center outside is still IN the zone (G427)',
+    noCornerIn && centerOut && w3.match.fouls.red.major === 1,
+    `noCornerIn=${noCornerIn} centerOut=${centerOut} redMajor=${w3.match.fouls.red.major}`,
+  );
+  // and the same robot, moved clear, is not in it — the test is overlap, not "near"
+  const w4 = foulWorld(15);
+  w4.robots[0].heading = Math.PI / 4;
+  w4.robots[0].pos = { x: bz.x0 - 16, y: bz.y1 + 16 };
+  w4.robots[1].heading = 0;
+  w4.robots[1].pos = { x: 0, y: 0 };
+  w4.rrContacts = [{ a: 0, b: 1 }];
+  updatePenalties(w4, 1 / 60, new Map());
+  check(
+    'overlap is still a real test — a robot clear of the base zone draws no G427',
+    w4.match.fouls.red.major === 0,
+    `redMajor=${w4.match.fouls.red.major}`,
   );
 }
 
