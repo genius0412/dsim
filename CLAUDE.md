@@ -1854,7 +1854,8 @@ take a trailing optional artifact RADIUS defaulting to `C.BALL_RADIUS`, so BIOBU
 byte-identical. The SHAPES a pollen meets are this game's own — `bbRobotSolids` (`robot.ts`),
 wired through the `GameSimModule.artifactSolids` slot — because the shared `robotSolids` builds
 DECODE's front funnel and a BIOBUZZ sweeper is a roller bar on whichever edge `intakeMount`
-names. That is GEOMETRY, which Lane B owns; it is not a physics constant, and none is added. `play.ts` therefore has no ground integrator, no separation pass and no
+names. That is GEOMETRY, which Lane B owns; it is not a physics constant, and none is added.
+`play.ts` therefore has no ground integrator, no separation pass and no
 eviction pass; it calls the shared solve, the shared rolling-friction pass (`stepGroundBall`,
 which is the only thing that brings a pollen to rest — the solve has no gravity and no floor),
 and a containment clamp, and `interact()` only CAPTURES. BIOBUZZ owns NO ground-pollen physics
