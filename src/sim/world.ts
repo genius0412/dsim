@@ -483,6 +483,78 @@ export function step(world: World, dt: number, commands: Map<number, RobotComman
     b.vel.x = 0;
     b.vel.y = 0;
   }
+
+  /**
+   * A STRUCK ARTIFACT MAY NOT LEAVE FASTER THAN WHATEVER DROVE IT.
+   *
+   * Two EQUAL masses with restitution e <= 1 give the struck body ((1+e)/2)*v, which is never
+   * more than the striker's own v. The solve breaks that when the striker is an artifact pressed
+   * against a KINEMATIC chassis and re-driven every tick: it cannot recoil, so the solver reads
+   * it as infinite mass and delivers (1+e)*v instead. Measured, a robot ramming a pile at 85 in/s
+   * sent the ball beyond it at exactly `BALL_MAX_SPEED` — the clamp catching a collision that
+   * wanted to give it still more — and a ball faster than the robot can never be caught again:
+   * "if I drive in full speed, third ball bumps with the second ball and doesn't get intaked".
+   *
+   * So the round's answer is bounded by what could physically have driven it: the artifact's own
+   * speed at the START of the tick, the start speed of everything in its contact CLUMP, and the
+   * speed of any robot touching that clump. A clump rather than one hop because a chassis pushes
+   * a chain in a single pass by design — capping a ball on its neighbour's start speed alone
+   * froze the back of a pile for a tick and reintroduced the burial the look-ahead exists to
+   * prevent. Every velocity pre-pass (`bounceFirstContacts`, `scatterBalls`, `clumpDrag`,
+   * `intakeSuction`) runs BEFORE the snapshot, so their impulses are already in the bound and
+   * only what the SOLVER added past it is clipped.
+   *
+   * A PINNED artifact is exempt. A ball squeezed a few degrees off square between a bumper and a
+   * wall has to travel 1/tan(theta) times the robot's own advance just to stay clear of the
+   * closing wedge — that is the geometry, not an error — and holding it to the robot's speed
+   * shuts the wedge and parks the robot on the ball, which is the failure the pin work removed.
+   */
+  {
+    const look = C.PHYS_BALL_PREDICTION * C.PHYS_LENGTH_UNIT;
+    const touch = 2 * C.BALL_RADIUS + look;
+    const parent = ballsAtStart.map((_, i) => i);
+    const find = (i: number): number => {
+      let k = i;
+      while (parent[k] !== k) {
+        parent[k] = parent[parent[k]];
+        k = parent[k];
+      }
+      return k;
+    };
+    for (let i = 0; i < ballsAtStart.length; i++) {
+      for (let j = i + 1; j < ballsAtStart.length; j++) {
+        const a = ballsAtStart[i];
+        const c = ballsAtStart[j];
+        if (hyp(a.pos.x - c.pos.x, a.pos.y - c.pos.y) > touch) continue;
+        const ra = find(i);
+        const rb = find(j);
+        if (ra !== rb) parent[ra] = rb;
+      }
+    }
+    const capOf = new Map<number, number>();
+    const raise = (root: number, v: number) => capOf.set(root, Math.max(capOf.get(root) ?? 0, v));
+    for (let i = 0; i < ballsAtStart.length; i++) {
+      const s = ballsAtStart[i];
+      raise(find(i), hyp(s.vel.x, s.vel.y));
+      for (const r of world.robots) {
+        const sol = solids.get(r.id);
+        if (!sol) continue;
+        if (!robotPenetration(r, sol, s.pos, C.BALL_RADIUS, false, false, -look)) continue;
+        raise(find(i), hyp(r.vel.x, r.vel.y));
+      }
+    }
+    for (let i = 0; i < ballsAtStart.length; i++) {
+      const b = ballsAtStart[i].b;
+      if (b.state.kind !== 'ground') continue;
+      if (world.pinnedArtifacts.includes(b.id)) continue;
+      const cap = capOf.get(find(i)) ?? 0;
+      const now = hyp(b.vel.x, b.vel.y);
+      if (now <= cap || now <= C.BALL_REST_SPEED) continue;
+      const k = cap / now;
+      b.vel.x *= k;
+      b.vel.y *= k;
+    }
+  }
   /**
    * An artifact whose CENTRE ended inside a robot was never a contact — a state transition put
    * it there (a landing, a release) before the solve could see it, and the honest fix is the

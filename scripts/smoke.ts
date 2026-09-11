@@ -1199,6 +1199,74 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
       `60 in/s into the flank (squeezed against the wall) moved it ${flank.toFixed(2)}in, into the nose ${front.toFixed(2)}in`,
     );
   }
+
+  /**
+   * ...AND NOTHING THE ROBOT PUSHES OUTRUNS THE ROBOT.
+   *
+   * Equal masses with restitution e <= 1 hand the struck body ((1+e)/2)*v, never more than the
+   * striker's own v. The artifact solve broke that whenever the striker was itself pressed
+   * against a kinematic chassis: unable to recoil, it read as infinite mass and delivered
+   * (1+e)*v. A robot ramming a pile at 85 in/s put the ball beyond it at exactly BALL_MAX_SPEED
+   * — the clamp catching a collision that wanted even more — and a ball faster than the robot
+   * is a ball the robot can never catch: "if I drive in full speed, third ball bumps with the
+   * second ball and doesn't get intaked". A PINNED artifact is exempt and is checked separately
+   * (the wall-squeeze squirt above), because a closing wedge really does throw it out faster.
+   */
+  {
+    const ram = (build: (w: World, r: RobotState) => void, hopper: ArtifactColor[], intake: boolean, seconds: number) => {
+      const w = quiet(11);
+      const r = w.robots[0];
+      r.hopper = [...hopper];
+      build(w, r);
+      const commands = new Map([[0, cmd({ driveY: 1, intake })]]);
+      let peakBall = 0;
+      let peakRobot = 0;
+      for (let i = 0; i < Math.round(seconds / SIM_DT); i++) {
+        step(w, SIM_DT, commands);
+        peakRobot = Math.max(peakRobot, hyp(r.vel.x, r.vel.y));
+        for (const b of w.balls) {
+          if (b.state.kind !== 'ground') continue;
+          peakBall = Math.max(peakBall, hyp(b.vel.x, b.vel.y));
+        }
+      }
+      return { peakBall, peakRobot, ratio: peakRobot > 1 ? peakBall / peakRobot : 0 };
+    };
+    const pitch = 2 * BALL_RADIUS + 0.02;
+    // an OFFSET pile is the case that reported it: square on, the chain stays in the mouth
+    const pile = ram(
+      (w, r) => {
+        r.heading = Math.PI / 2;
+        r.pos = { x: 0, y: -30 };
+        const tip = r.spec.length / 2 + INTAKE_PRESETS[r.spec.intake].reach;
+        const y0 = -30 + tip + 40;
+        w.balls.length = 4;
+        place(w.balls[0], 3 - pitch / 2, y0, 0, 0);
+        place(w.balls[1], 3 + pitch / 2, y0, 0, 0);
+        place(w.balls[2], 3 - pitch, y0 + pitch * 0.866, 0, 0);
+        place(w.balls[3], 3, y0 + pitch * 0.866, 0, 0);
+      },
+      [],
+      true,
+      3.5,
+    );
+    const line = ram(
+      (w, r) => {
+        r.heading = Math.PI / 2;
+        r.pos = { x: 0, y: -40 };
+        const tip = r.spec.length / 2 + INTAKE_PRESETS[r.spec.intake].reach;
+        w.balls.length = 6;
+        for (let i = 0; i < 6; i++) place(w.balls[i], 0, -40 + tip + 30 + i * pitch, 0, 0);
+      },
+      ['green', 'green', 'green'],
+      false,
+      3,
+    );
+    check(
+      'nothing a robot pushes ends up faster than the robot',
+      pile.ratio <= 1.02 && line.ratio <= 1.02,
+      `offset pile of four: fastest artifact ${pile.peakBall.toFixed(1)} in/s against a robot doing ${pile.peakRobot.toFixed(1)} (${pile.ratio.toFixed(2)}x); line of six: ${line.peakBall.toFixed(1)} against ${line.peakRobot.toFixed(1)} (${line.ratio.toFixed(2)}x) — both used to hit the 90 in/s clamp and outrun the robot`,
+    );
+  }
 }
 
 // ---- open-field push still moves balls easily ---------------------------------
