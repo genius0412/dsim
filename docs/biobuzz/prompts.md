@@ -238,6 +238,15 @@ it is the work I most need to see with my own eyes. I am your test driver. The l
    the pollen constants saying they are signed off and that Lane A adds element behaviour
    on top and never retunes the base.
 
+Two facts from the integration you must build into step 1: (a) the `'rapier'` arm calls the
+shared `solveArtifacts`, which HARD-CODES DECODE's 2.5 in artifact radius for the collider, the
+speed cap and the held-artifact circles — POLLEN is 1.5 in, so that arm settles a pile looser
+than it is drawn; if the human picks `rapier`, the follow-up is parameterizing that radius in
+`src/sim/physicsEngine.ts` (a shared-core change — write it up in HANDOFF for the integration
+chat, do not make it yourself). (b) `scripts/shots.cjs` defaults to port 4173 and a STALE
+`vite preview` from another worktree may already own it — check `netstat -ano | findstr 4173`
+first and pass the port `vite preview` actually reports, or you will photograph the wrong bundle.
+
 Things I already know I care about: a pile must not explode or interpenetrate when a
 robot drives through it at full speed; a ball pinned dead-centre against a wall must stall
 the robot rather than tunnel; off-centre pinned balls squirt sideways; a corner pile must
