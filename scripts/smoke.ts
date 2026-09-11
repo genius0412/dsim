@@ -6976,6 +6976,40 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
   }
 
+  // ---- LAN: THE SCREEN CAN BE LEFT ----------------------------------------------
+  /**
+   * Reported from a real session: the LAN screen had no way back. You reach it, you are
+   * looking at a text field asking for someone else's IP address, and the only exit is the
+   * left rail — which is not where anyone looks after typing into a field.
+   *
+   * The cause was a belief written into a comment. `LanPanel` deliberately is not a
+   * `ds-console` (it renders inside `AppShell`, which already draws the top bar and rail),
+   * and the comment justified that by saying a console would put 'a second Back underneath
+   * the first'. There is no first: `AppShell` has no back control at all, and its own
+   * docstring hands that job to the screen. `WatchLive`, the other screen of exactly this
+   * shape, takes an `onBack` — so the shape was never the problem, the assumption was.
+   *
+   * Pinned by reading the source, the same way the practice-save wiring is: this screen
+   * needs a DOM to render and cannot be built in this process, and a check that the exit
+   * EXISTS is worth more than no check at all.
+   */
+  {
+    const lan = readFileSync('src/ui/LanPanel.tsx', 'utf8');
+    const app = readFileSync('src/ui/App.tsx', 'utf8');
+    check('lan screen: renders a .ds-back control', /className="ds-back"/.test(lan));
+    check(
+      'lan screen: Esc is the same exit as the button, not a second one',
+      lan.includes('useEscape(onBack)') && lan.includes("from './useEscape'"),
+    );
+    check(
+      'lan screen: App.tsx actually passes onBack (a prop nothing supplies is not an exit)',
+      /<LanPanel[\s\S]{0,400}?onBack=\{/.test(app),
+    );
+    check(
+      'lan screen: the stale claim that AppShell carries a Back is gone from the comment',
+      !lan.includes('a second Back underneath the first'),
+    );
+  }
   // ---- LAN: a host's server hands out files, so it must not hand out ANY file
   /**
    * THE ONE SECURITY BOUNDARY IN `server/static.ts`.
