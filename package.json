@@ -23,7 +23,8 @@
     "electron": "electron .",
     "dist": "set ELECTRON=1&& npm run build && electron-builder --win",
     "dbtest": "tsx scripts/dbtest.ts",
-    "uiaudit": "node scripts/uiaudit.mjs"
+    "uiaudit": "node scripts/uiaudit.mjs",
+    "costprobe": "tsx scripts/costprobe.ts"
   },
   "build": {
     "appId": "com.decodesim.app",
