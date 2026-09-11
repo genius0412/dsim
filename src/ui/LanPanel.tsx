@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { APP_NAME } from '../seasons';
 import { desktop, type LanHostStatus } from '../desktop';
+import { useEscape } from './useEscape';
 import { appBuild, clearLanServer, lanActive, lanServerUrl, setLanServer } from '../net/env';
 import { LAN_DEFAULT_PORT, mixedContentBlock, parseLanAddress } from '../net/lanAddress';
 
@@ -27,13 +28,17 @@ import { LAN_DEFAULT_PORT, mixedContentBlock, parseLanAddress } from '../net/lan
 export function LanPanel({
   signedIn,
   onConnected,
+  onBack,
 }: {
   /** hosting requires an account: the match data has to land somewhere */
   signedIn: boolean;
   /** connected to a LAN server — take the player to the room screen */
   onConnected: () => void;
+  /** leave the LAN screen without connecting to anything — see the note on `.ds-back` below */
+  onBack: () => void;
 }) {
   const bridge = desktop();
+  useEscape(onBack);
   const [host, setHost] = useState<LanHostStatus | null>(null);
   const [hostBusy, setHostBusy] = useState(false);
   const [hostErr, setHostErr] = useState('');
@@ -172,10 +177,20 @@ export function LanPanel({
 
   // A SHELL PAGE, the same shape as `ModeSelect` beside it — an eyebrow, a heading and
   // sections. NOT a `ds-console`: this screen renders inside `AppShell`, which already
-  // carries the top bar and the left rail, and a console in there draws a second header and
-  // a second Back underneath the first.
+  // carries the top bar and the left rail, so a console in here would draw a second header.
+  //
+  // ⚠️ IT STILL NEEDS ITS OWN BACK. An earlier version of this comment said the shell's own
+  // Back made one here a duplicate — it does not: `AppShell` renders a top bar and a rail and
+  // NO back control at all, and its docstring hands that responsibility to the screen ("own
+  // their own back/Esc semantics"). `WatchLive`, the other screen of this shape, takes an
+  // `onBack` for exactly this reason. Without one the only way off this page was the left
+  // rail, which is not where anyone looks after typing an address into a field — reported from
+  // a real session, on the join step.
   return (
     <>
+      <button className="ds-back" onClick={onBack}>
+        ← Back
+      </button>
       <p className="ds-eyebrow">{APP_NAME} · LAN</p>
       <h1 className="ds-h1">LAN play</h1>
 

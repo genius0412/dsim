@@ -1484,7 +1484,11 @@ export function App() {
           match is — a code-joined room, on a different server. Nothing about the room
           flow changes; only `gameServerUrl()` now answers with the host's machine. */}
       {screen === 'lan' && (
-        <LanPanel signedIn={signedIn} onConnected={() => guardStart(() => navigate('lobby'))} />
+        <LanPanel
+          signedIn={signedIn}
+          onConnected={() => guardStart(() => navigate('lobby'))}
+          onBack={() => navigate('modes')}
+        />
       )}
       {screen === 'download' && <Download />}
       {screen === 'contributors' && <Contributors onOpenProfile={openProfile} />}
