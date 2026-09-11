@@ -9,3 +9,6 @@ release/
 .DS_Store
 .vercel
 scratch/
+
+# load-harness output (scripts/loadtest.ts --json); sweeps are evidence, not source
+.loadtest-out/

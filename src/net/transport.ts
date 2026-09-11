@@ -34,6 +34,9 @@
  * callback. Keeping receive unified is what makes the lane hint a pure send-side
  * addition with zero consumer churn.
  */
+import { gameServers } from './env';
+import { stripCredentials, trustedFor } from './credentials';
+
 export interface Transport {
   /** Send a frame. `opts.reliable` (default true) is the lane hint — see the
    * LANES note above. Backends free to ignore it (WebSocketTransport does). */
@@ -73,6 +76,16 @@ const RECONNECT_JITTER_MS = 400;
 const CONNECT_TIMEOUT_MS = 8000;
 
 export class WebSocketTransport implements Transport {
+  /**
+   * May this socket carry account credentials?
+   *
+   * ⚠️ **DECIDED FROM THE URL, ONCE, IN THE CONSTRUCTOR — NOT PASSED IN BY THE CALLER.**
+   * `Lobby.tsx` is the one connect site that follows a LAN address (`roomServerUrl()`), so it
+   * would be the one that had to remember, and a security property that depends on a caller
+   * remembering is a security property with a half-life. The socket knows where it is going,
+   * and that is the whole of what the decision needs. See `src/net/credentials.ts`.
+   */
+  private readonly trusted: boolean;
   private ws: WebSocket | null = null;
   private messageCb: ((data: string) => void) | null = null;
   private openCb: (() => void) | null = null;
@@ -87,6 +100,7 @@ export class WebSocketTransport implements Transport {
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly url: string) {
+    this.trusted = trustedFor(url, gameServers().map((s) => s.url));
     this.connect();
   }
 
@@ -163,7 +177,12 @@ export class WebSocketTransport implements Transport {
    * stream, so both lanes ride it reliably. Accepting the arg keeps the seam
    * identical to the WebTransport backend (which WILL honour it). */
   send(data: string, _opts?: { reliable?: boolean }): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(data);
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    // THE CREDENTIAL BOUNDARY. Nothing bound for a server the cloud has not vouched for
+    // carries the player's account token, whatever built the frame — a LAN server is
+    // somebody's laptop, and a JWT handed to it is a JWT its operator has. On the hot path
+    // (`input`, every tick) this costs one `indexOf` that fails; see `stripCredentials`.
+    this.ws.send(this.trusted ? data : stripCredentials(data));
   }
 
   onMessage(cb: (data: string) => void): void {

@@ -7,7 +7,7 @@ import {
   type EloResultRow,
 } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
-import { appChannel } from '../net/env';
+import { appChannel, lanActive } from '../net/env';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
 import { AdSlot, ResultsAd, useAdUnitActive } from './AdSlot';
@@ -528,6 +528,7 @@ export function GameView({
             session?.sendScoreReport ? (detail) => session.sendScoreReport?.(detail) : undefined
           }
           matchResult={controllerRef.current?.getMatchResult() ?? null}
+          lanHost={!!session?.isHost()}
           practiceRun={controllerRef.current?.getPracticeRun() ?? null}
           recordResult={controllerRef.current?.getRecordResult() ?? null}
           signedIn={signedIn}
@@ -955,6 +956,7 @@ function Results({
   practiceRun,
   recordResult,
   signedIn,
+  lanHost,
   onWatchReplay,
   reportable,
   onReport,
@@ -987,6 +989,9 @@ function Results({
    * lands (or forever if anonymous) */
   recordResult: RecordRankInfo | null;
   signedIn: boolean;
+  /** on a LAN match, is THIS client the one hosting it? — decides which of the two LAN
+   *  lines the results screen shows, since only the host keeps the match */
+  lanHost?: boolean;
   onWatchReplay?: (replay: Replay) => void;
   /** the OTHER drivers in this match, reportable by robot id (empty in solo) */
   reportable?: { robotId: number; name: string }[];
@@ -1182,9 +1187,19 @@ function Results({
         {ranked && <EloResults rows={eloResults} />}
         {matchResult && (
           <p className="ds-hint ok">
-            {matchResult.kind === 'record'
-              ? '✓ Recorded - sign in to save it to the leaderboard.'
-              : '✓ Match recorded.'}
+            {/* A LAN MATCH WAS NOT RECORDED BY THE SERVER THAT RAN IT, and "✓ Match recorded."
+                is simply false there — a LAN box has no database. What actually happened
+                depends on which end of the room you are, so it says which: the HOST keeps it
+                (and their account gets it once they are online), and a guest keeps nothing. */}
+            {lanActive()
+              ? lanHost
+                ? signedIn
+                  ? '✓ Unofficial match — kept on this computer, and saved to your account when you’re online.'
+                  : '✓ Unofficial match — kept on this computer. Sign in to save it to your account.'
+                : '✓ Unofficial match. The host keeps the replay.'
+              : matchResult.kind === 'record'
+                ? '✓ Recorded - sign in to save it to the leaderboard.'
+                : '✓ Match recorded.'}
           </p>
         )}
         {/* A practice run says what it IS. It was not on a leaderboard and never will be —

@@ -12,12 +12,12 @@ import { RoleSwapBar } from './RoleSwapBar';
 import { SupporterBadge } from './SupporterBadge';
 import { Menu } from './Menu';
 import { DRIVETRAIN_LABELS, buildSummary } from './robotLabels';
-import { gameServerUrl, gameServerUrlWith, gameServers, multiServer, selectedServer } from '../net/env';
+import { gameServers, lanActive, multiServer, roomServerUrl, roomServerUrlWith, selectedServer } from '../net/env';
 import { roomJoinRegion } from '../net/roomRegion';
 import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
-import { roomCapacity, type LobbyPlayer, type RoomConfig } from '../net/protocol';
+import { roomCapacity, type LobbyPlayer, type RoomConfig, type ErrorCode } from '../net/protocol';
 import type { NetSession } from '../net/session';
 import { useServerNotice } from '../net/notice';
 import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
@@ -154,6 +154,9 @@ export function Lobby({
   const restartPending =
     !!notice && notice.kind === 'restart' && (notice.until === undefined || notice.until > Date.now());
   const [error, setError] = useState('');
+  /** machine-readable reason for `error`, when the server gave one. Only `region_full`
+   *  today, and it is the one failure the player can fix from this screen. */
+  const [errorCode, setErrorCode] = useState<ErrorCode | undefined>(undefined);
   // the full builder, opened from the room over the top of it (see below)
   const [building, setBuilding] = useState(false);
 
@@ -231,7 +234,7 @@ export function Lobby({
   function join(roomCode: string, hostRegion?: string | null): void {
     if (!roomCode) return;
     setCode(roomCode);
-    if (!gameServerUrl()) {
+    if (!roomServerUrl()) {
       setError('Multiplayer needs the game server.');
       setPhase('error');
       return;
@@ -243,7 +246,10 @@ export function Lobby({
       setRegion(hostRegion);
       setRegionLocked(true);
     }
-    const url = multiServer() && useRegion ? gameServerUrlWith({ region: useRegion }) : gameServerUrl();
+    // ROOMS are the one thing that may be hosted on a LAN box, so this is the one
+    // connect site that follows a LAN connection (`roomServerUrl`, not `gameServerUrl`).
+    // A region hint means nothing to a single machine with no proxy, and is harmless.
+    const url = multiServer() && useRegion ? roomServerUrlWith({ region: useRegion }) : roomServerUrl();
     let transport: WebSocketTransport;
     try {
       transport = new WebSocketTransport(url);
@@ -262,9 +268,16 @@ export function Lobby({
       setPhase((p) => (p === 'connecting' ? 'room' : p));
     });
     lobby.on('matchStart', handleStart);
-    lobby.on('error', (msg) => {
+    lobby.on('error', (msg, code) => {
       setError(msg);
+      setErrorCode(code);
       setPhase('error');
+      // THE REGION IS FULL, NOT BROKEN. This is the one error with a specific action
+      // attached — the same code is hostable somewhere else — so the picker has to be
+      // reachable to take it. Joining via a host region LOCKS the picker (both players
+      // must land on one machine), and leaving it locked here would show someone an
+      // instruction they cannot follow.
+      if (code === 'region_full') setRegionLocked(false);
     });
     lobby.on('closed', () => {
       if (!startedRef.current) {
@@ -418,6 +431,16 @@ export function Lobby({
             </h1>
           </div>
           <div className="ds-panelbox">
+            {/* THE ROOM LOOKS IDENTICAL EITHER WAY, so this screen has to say which it is.
+                It is the last point before a socket is opened, and the consequence — the
+                match will not be rated and will not reach a board — is the sort of thing
+                that has to be said before, not discovered after. */}
+            {lanActive() && (
+              <p className="ds-hint warn">
+                This room will be hosted on the LAN server you’re connected to. Matches there
+                are unofficial — not rated, and never on a leaderboard.
+              </p>
+            )}
             <label className="ds-field">
               <span className="cap">Your name</span>
               <input
@@ -430,7 +453,10 @@ export function Lobby({
                 maxLength={20}
               />
             </label>
-            {multiServer() && (
+            {/* no region picker on a LAN server: there is one machine, and offering a
+                choice of where to put the room would be offering a choice that does not
+                exist. */}
+            {multiServer() && !lanActive() && (
               <label className="ds-field">
                 <span className="cap">Region</span>
                 <select
@@ -474,7 +500,21 @@ export function Lobby({
                 />
               </label>
             )}
-            {phase === 'error' && <p className="ds-form-err">⚠ {error}</p>}
+            {phase === 'error' && (
+              <>
+                <p className="ds-form-err">⚠ {error}</p>
+                {/* A FULL REGION IS NOT A FAILED CONNECTION, and saying so is the whole
+                    point of the code: the room is fine, this machine is just at its
+                    cap, and the fix is one control up the page. Without this the player
+                    reads the same red line they get for a dead server and gives up. */}
+                {errorCode === 'region_full' && (
+                  <p className="ds-hint warn">
+                    Nothing is wrong with your connection. Choose another region above,
+                    then try again — whoever you are playing with needs to pick the same one.
+                  </p>
+                )}
+              </>
+            )}
             <div className="ds-actions">
               {entryMode === 'create' ? (
                 <button className="ds-cta" disabled={phase === 'connecting'} onClick={createRoom}>

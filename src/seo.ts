@@ -71,6 +71,11 @@ const ROUTE_META: Record<string, RouteMeta> = {
     description:
       'DSIM leaderboards, personal bests, world records and career stats, by mode and drivetrain.',
   },
+  lan: {
+    title: 'LAN play',
+    description:
+      'Host a DSIM game on your own computer and play over one network. LAN matches are unofficial — not rated and never on a leaderboard.',
+  },
   download: {
     title: 'Download the desktop app',
     description: 'DSIM for Windows, macOS and Linux.',

@@ -421,10 +421,30 @@ export interface LiveRoom {
 
 // ---- server → client --------------------------------------------------------
 
+/**
+ * Machine-readable reasons for a `t: 'error'`. Only the cases a client can ACT on are
+ * worth a code — everything else stays a plain message. Unknown codes must be treated
+ * as an ordinary error, so this list can grow without a capability gate.
+ */
+export type ErrorCode =
+  /** this machine is at its room cap — the same code can be joined elsewhere, so the
+   *  client should offer a different region rather than just reporting a failure */
+  | 'region_full';
+
 export type ServerMsg =
   | { t: 'welcome'; clientId: string }
   | { t: 'roster'; players: LobbyPlayer[]; hostId: string }
-  | { t: 'error'; message: string }
+  /**
+   * `message` is human-readable and every client since the first build shows it.
+   *
+   * `code` is OPTIONAL and machine-readable, added so the connection HUD can tell
+   * "this region is at capacity, try another" apart from the dozen other things that
+   * produce an error string. Adding an optional field to an existing message is the
+   * cheapest kind of protocol change: an older client destructures `message` and is
+   * completely unaffected, so this needs no `CLIENT_CAPS` gate. Keep it that way —
+   * `message` must stay self-sufficient, never "see code".
+   */
+  | { t: 'error'; message: string; code?: ErrorCode }
   // reply to a 'rejoin': ok ⇒ slot reclaimed (a snapshot follows); !ok ⇒ the
   // grace window lapsed / slot is gone, stop trying
   | { t: 'rejoined'; ok: boolean }
@@ -535,6 +555,31 @@ export type ServerMsg =
       result: ReplayResult;
       replay: Replay;
     }
+  /**
+   * THE MATCH ID, TO THE HOST ALONE. Sent immediately BEFORE the `matchResult` broadcast, on
+   * the host's socket only, and to nobody else in the room.
+   *
+   * It is a globally unique id for the match just finished, minted by whichever server ran it,
+   * and it exists for the self-hosted case (`docs/lan-selfhost.md`): a LAN match is uploaded to
+   * the cloud by a CLIENT rather than written by the server that ran it, and without a stable
+   * id the cloud cannot tell a re-upload from a second match. It is `UNIQUE` in `lan_runs`, so
+   * the upload is idempotent and a retry after a flaky connection is free.
+   *
+   * ⚠️ **IT USED TO RIDE `matchResult`, WHICH IS A BROADCAST, AND THAT WAS THE BUG.** The
+   * cloud has no way to know who really hosted a self-hosted match — it was not there. All it
+   * can check is that the uploader signed in and named a match id. So possession of the id IS
+   * the right to file the match, and broadcasting it handed that right to all four drivers and
+   * every spectator: whoever posted first took the row, under THEIR account, and the actual
+   * host's upload was then answered with somebody else's match. Sending it to one socket is
+   * what makes "the host uploads" a fact about the protocol rather than a convention the
+   * clients are trusted to keep.
+   *
+   * It arrives BEFORE `matchResult` on the same ordered socket, so the session has it in hand
+   * by the time the result callback runs. The cloud checks ownership as well (`/api/lan`
+   * answers 409 to anyone claiming a match another host already filed), because a capability
+   * on the wire and a check at the table are protections against different mistakes.
+   */
+  | { t: 'matchArchive'; matchId: string }
   // ranked only: each driver's overall-ELO change, sent shortly after matchResult
   // once the match is scored + persisted (async DB write). Drives the results
   // screen's ELO reveal. Absent for custom/anonymous/DB-off matches.

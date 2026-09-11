@@ -2636,3 +2636,89 @@ input.admin-months {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* ---- LAN play (src/ui/LanPanel.tsx, src/ui/LanBanner.tsx) ------------------
+   Reuses the console/panelbox anatomy; only three things here have no existing
+   equivalent. See docs/lan-selfhost.md. */
+
+/* the one-line "what is happening right now" statement at the top of a panel */
+.ds-lan-state {
+  margin: 0;
+  font-size: var(--ds-t-lg);
+  color: var(--ds-ink);
+}
+
+.ds-lan-urls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+/* THE JOIN URL IS READ OUT LOUD ACROSS A ROOM, so it is the largest type on the
+   screen and it is monospace: someone is copying it character by character off a
+   laptop propped on a table, and 1/l and 0/O have to be distinguishable. The whole
+   row is the copy button — a separate icon beside a long string is a smaller target
+   for the same action. */
+.ds-lan-url {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-3);
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round);
+  background: var(--ds-tile);
+  color: var(--ds-ink);
+  cursor: pointer;
+  text-align: left;
+}
+.ds-lan-url.primary {
+  border-color: var(--ds-accent);
+}
+.ds-lan-url:hover {
+  background: var(--ds-panel);
+}
+.ds-lan-url > .u {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xl);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ds-lan-url > .c {
+  flex: none;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+
+/* The persistent unofficial-match strip. Same anatomy as `.ds-maint` and it reuses
+   that wrapper's inset, but its own block: this is a STATE of the app, not a warning
+   about one, and folding it into the maintenance selector would make one of them
+   wrong the next time the other is restyled. */
+.ds-lan-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--ds-sky-ink);
+  border-radius: var(--ds-round-md);
+  background: var(--ds-tile);
+  color: var(--ds-ink);
+  font-size: var(--ds-t-md);
+  font-weight: 600;
+}
+.ds-lan-leave {
+  margin-left: auto;
+  flex: none;
+  padding: 4px 8px;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round-sm);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.ds-lan-leave:hover {
+  border-color: var(--ds-ink);
+}
