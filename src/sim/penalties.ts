@@ -4,7 +4,7 @@ import {
   baseZone,
   classifierRect,
   gateArmRect,
-  gateZone,
+  gateZoneTape,
   goalLineValue,
   loadZone,
   other,
@@ -70,10 +70,30 @@ import { hyp, rot } from '../math';
  * (G402.B).
  */
 
-/** a robot "occupies" a zone if any wheel-corner or its center is inside it */
-function robotInRect(r: RobotState, rect: Rect): boolean {
-  if (inRect(r.pos, rect)) return true;
-  return robotCorners(r).some((c) => inRect(c, rect));
+/**
+ * A ROBOT IS "IN" A ZONE IF ANY PART OF IT IS — ONE PREDICATE, EVERY ZONE RULE.
+ *
+ * Every DECODE zone is defined in Section 9 and the glossary as an "infinitely tall volume"
+ * (GATE 2.75x10, SECRET TUNNEL 46.5x6.125, LOADING 23x23, BASE 18x18), and the rules that use
+ * them all ask whether a ROBOT "is in" one. So the test is plain OVERLAP between that volume's
+ * footprint and the robot's TOP-DOWN SILHOUETTE — the collision OBB, intake reach included,
+ * since an overhang is as much inside an infinitely tall volume as a wheel is.
+ *
+ * It was a corner/center containment test, which is not the same thing and is strictly weaker:
+ * a robot whose BODY covers part of a zone while its four corners straddle it and its center
+ * sits outside was not in the zone. That is not exotic — it is a BASE ZONE corner poking into
+ * the middle of a robot's edge, or a robot lying across the tunnel strip, which is narrower
+ * (6.125in) than any legal robot. G424 already used the SAT test for exactly this reason; the
+ * other three rules read the same word in the same manual and now answer it the same way.
+ *
+ * Don't confuse this with BASE PARKING SCORING, which is deliberately NOT this test: a ROBOT
+ * "returned to BASE" is defined by SUPPORT ("must only be supported ... by the TILE in the
+ * BASE ZONE"), so that one counts wheel ground-contact points and belongs in scoring.ts.
+ * G427 protects the ZONE, the BASE award measures what the TILE holds up; the manual draws
+ * that line itself, and so do we.
+ */
+function robotInZone(r: RobotState, rect: Rect): boolean {
+  return robotIntersectsRect(r, rect);
 }
 
 const ALLIANCES: Alliance[] = ['red', 'blue'];
@@ -195,24 +215,26 @@ export function updatePenalties(
       const oppBot = oBot === ra ? rb : ra; // its opponent (other(O))
 
       // G424 GATE ZONE is off limits — protect the OWNER's access to their own
-      // gate (SAT test: the body can cover the thin gate zone with no corner
-      // inside). Exception G424.A: the owner's robot in its own gate zone AND in
-      // the opponent's secret tunnel (tunnelStrip(O) is other(O)'s tunnel) is not
-      // protected here — G425 governs instead, so skip the gate foul.
-      const oInGate = robotIntersectsRect(oBot, gateZone(O));
-      const oppInGate = robotIntersectsRect(oppBot, gateZone(O));
+      // gate. The rect is `gateZoneTape`, the 2.75x10 strip between the tape lines:
+      // `gateZone()` is the generous rect that decides whether a robot can WORK the
+      // gate, and a foul is not a feel knob. Exception G424.A: the owner's robot in
+      // its own gate zone AND in the opponent's secret tunnel (tunnelStrip(O) is
+      // other(O)'s tunnel) is not protected here — G425 governs instead, so skip the
+      // gate foul.
+      const oInGate = robotInZone(oBot, gateZoneTape(O));
+      const oppInGate = robotInZone(oppBot, gateZoneTape(O));
       if (oInGate || oppInGate) {
-        const exception = oInGate && robotInRect(oBot, tunnelStrip(O));
+        const exception = oInGate && robotInZone(oBot, tunnelStrip(O));
         if (!exception) fire(`G424:${pairKey}`, opp, 'minor', 'G424 contact in the gate zone');
       }
 
       // G426 LOADING ZONE protection — owner's own loading zone.
-      if (robotInRect(ra, loadZone(O)) || robotInRect(rb, loadZone(O))) {
+      if (robotInZone(ra, loadZone(O)) || robotInZone(rb, loadZone(O))) {
         fire(`G426:${pairKey}`, opp, 'minor', 'G426 contact in the loading zone');
       }
 
       // G427 BASE ZONE protection (endgame) — + credit the owner a full return.
-      if (endgame && (robotInRect(ra, baseZone(O)) || robotInRect(rb, baseZone(O)))) {
+      if (endgame && (robotInZone(ra, baseZone(O)) || robotInZone(rb, baseZone(O)))) {
         oBot.baseAwarded = true;
         fire(`G427:${pairKey}`, opp, 'major', 'G427 contact in the base zone');
       }
@@ -221,7 +243,7 @@ export function updatePenalties(
       // other(O); the INTRUDER/offender is alliance O. Fires only when the
       // intruder itself is in the strip (an owner defending its own tunnel is not
       // a foul), which is also what makes G424/G425 mutually exclusive above.
-      if (robotInRect(oBot, tunnelStrip(O))) {
+      if (robotInZone(oBot, tunnelStrip(O))) {
         fire(`G425:${pairKey}`, O, 'minor', 'G425 contact in the secret tunnel');
       }
     }
@@ -725,7 +747,7 @@ function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: 
    *
    * Carrying one OUT is therefore control again, correctly, and always was.
    */
-  if (robotInRect(r, home)) {
+  if (robotInZone(r, home)) {
     for (const b of loose) {
       // unconditionally, NOT just the ones already held: the artifact the robot has not got a
       // grip on yet still has to be excused, or the CHAIN reaches it through one that is and

@@ -129,6 +129,38 @@ export function gateZone(a: Alliance): Rect {
 }
 
 /**
+ * THE RULEBOOK'S GATE ZONE — the 2.75in x 10in strip BETWEEN the two tape lines, which is
+ * what G424 protects. `gateZone()` above is a different thing wearing a similar name: the
+ * deliberately generous INTERACTION rect that decides whether a robot can work the gate.
+ *
+ * They are not interchangeable and G424 used the wrong one. The interaction rect is 10x5
+ * measured from the WALL (x 62..72, y -2..3); the real zone is 2.75 wide, centered on the
+ * gate, and starts at the CLASSIFIER EDGE (x 56..66) — the same anchor `gateTapeSegments`
+ * draws from. They share about 4in of the zone's 10in length, so the foul was being assessed
+ * over a band nearly twice too wide, 6in of it inside the classifier channel (structure, not
+ * floor), while the outer 6in of the actual zone fouled nothing at all.
+ *
+ * Section 9: "a 2.75 in. wide by 10 in. long infinitely tall volume bounded by 2 parallel
+ * 10 in. long ALLIANCE colored tape segments adjacent to each GATE. The GATE ZONE includes
+ * the tape lines" — so the strip is measured line-OUTSIDE to line-OUTSIDE, which is what the
+ * segments' own spacing gives.
+ *
+ * Derived from GATE_TAPE_*, NOT from GATE_ZONE: narrowing GATE_ZONE itself would silently
+ * move `tunnelStrip` (it anchors its far end on GATE_ZONE.y0) and GATE_TAPE_Y with it.
+ */
+export function gateZoneTape(a: Alliance): Rect {
+  const g = goalSide(a);
+  const h = C.GATE_TAPE_W / 2;
+  return sideRect(
+    g,
+    C.FIELD_HALF - C.CLASSIFIER_W,
+    C.FIELD_HALF - C.CLASSIFIER_W - C.GATE_TAPE_LEN,
+    C.GATE_TAPE_Y - h,
+    C.GATE_TAPE_Y + h,
+  );
+}
+
+/**
  * THE GATE HANDLE'S PHYSICAL FOOTPRINT at a given open fraction — the stub a robot actually
  * pushes on, and the ONE place its geometry lives.
  *

@@ -136,6 +136,17 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *      through the same `statics()` helper — turning a robot exactly as before. Listed here
  *      rather than given its own number for the reason stated above: this is still the one
  *      unreleased alpha batch, and the entry exists so the batch's contents stay honest.
+ *    · ZONE FOUL HITBOXES corrected against Section 9, on two independent counts. G424 was
+ *      testing `gateZone()`, the generous rect that decides whether a robot can WORK the gate,
+ *      instead of the GATE ZONE the rule protects — 10x5 from the wall against the manual's
+ *      2.75x10 from the classifier edge, two rects sharing about 4in of the zone's 10in
+ *      length, so the foul ran 6in into the classifier channel and not at all over the outer
+ *      6in of the real zone (`gateZoneTape`). And G425/G426/G427 asked whether a CORNER or the
+ *      CENTRE was inside their zone, where every DECODE zone is an "infinitely tall volume"
+ *      and the rules ask whether a ROBOT "is in" one — so the test is overlap against the
+ *      top-down silhouette, which is what G424 alone already did. Both moved which contacts
+ *      draw fouls, hence this entry; BASE PARKING is untouched and still counts wheel support,
+ *      because that award is defined by what the TILE holds up, not by occupancy.
  */
 export const SIM_VERSION = 2;
 

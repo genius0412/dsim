@@ -1,3 +1,97 @@
+# HANDOFF — 2026-09-11, fifth session (the zone fouls test the zone the manual defines)
+
+Branch **alpha**, rebased onto `6d4dd25` (this session pulled `06dd5bd`; PRs #38 and #39
+merged upstream while it ran). `npm test` **ALL PASS** (1336 checks, 8 new), `npm run build`
+green, `npm run server:check` green. `SIM_VERSION` stays **2** — recorded in that version's
+batch list, per the block's own rule that alpha holds at 2 while its divergence from main is
+one unreleased batch. **Alpha server DEPLOYED** (see Deploy).
+
+## READ FIRST — what moved, and the one judgement call inside it
+
+The owner's hypothesis was that the gate / secret-tunnel / loading-zone fouls were measuring
+the WHEELBASE rather than the robot's top-down outline. Checked against the real manual —
+the archived DECODE book at `ftc-resources.firstinspires.org/ftc/archive/2026/game/manual`
+(note: the live `/ftc/game/manual` URL now serves the **2026-27 BIOBUZZ V0 pre-season**
+manual, which has no game section — do not grab that one by reflex again).
+
+**The premise was right and the code was already doing it.** Every DECODE zone is defined in
+Section 9 and the glossary as an *"infinitely tall volume"* (GATE 2.75x10, SECRET TUNNEL
+46.5x6.125, LOADING 23x23, BASE 18x18) and each rule asks whether a ROBOT "is in" one, so
+occupancy is the top-down silhouette. `penalties.ts` already tested `robotCorners` →
+`footprintExtents`, i.e. chassis + intake. No penalty has ever read `wheelContacts`. The
+misleading part was the helper's own doc comment, which claimed "any wheel-corner or its
+center" — it never was the wheelbase.
+
+**But the audit that question forced turned up two real defects**, and those are what landed:
+
+1. **G424 was not testing the GATE ZONE.** It used `gateZone()`, the deliberately generous
+   rect that decides whether a robot can WORK the gate — 10x5 measured from the WALL
+   (x 62..72, y -2..3). The rulebook zone is 2.75 wide and starts at the CLASSIFIER EDGE
+   (x 56..66), the same anchor `gateTapeSegments` draws from. They share about 4in of the
+   zone's 10in length: the foul ran 6in into the classifier CHANNEL (structure, not floor)
+   and did not cover the outer 6in of the real zone at all. New `gateZoneTape()` in field.ts
+   is the rule's rect; `gateZone()` keeps its job unchanged.
+2. **Three of the four rules asked a weaker question than "is in".** `robotInRect` was
+   "center inside OR one of four corners inside", which is not overlap: a robot whose BODY
+   lies across a zone with its corners straddling it reads as outside. G424 alone already
+   used the SAT test, for exactly the reason CLAUDE.md records. Now all of them do, through
+   one predicate, `robotInZone`.
+
+**The judgement call**: the rename also moved G408's LOADING-ZONE carve-out onto the same
+predicate. That is the same "in the LOADING ZONE" wording so one predicate is right, but note
+the direction — it makes that carve-out slightly MORE generous (more robots count as in there
+collecting a restock, so more artifacts are excused). Smoke is green on it. If it should keep
+the stricter containment test, that is a deliberate revert of one call site, not of the rule.
+
+**Explicitly NOT changed: BASE PARKING still counts `wheelContacts`**, and must. The manual
+defines that award by SUPPORT — "A ROBOT fully returned to BASE must only be supported ... by
+the TILE in the BASE ZONE" — not by occupancy. G427 protects the ZONE (footprint), the BASE
+award measures what the TILE holds up (wheels). The manual draws that line itself; the
+asymmetry is correct and there are already checks on it around smoke.ts:5324.
+
+### Tests
+
+8 new checks: the zone's 2.75x10 dimensions, its classifier-edge anchor, that the two gate
+rects are distinct, that contact at the field-side end of the real zone NOW fouls (the
+interaction rect never reached it), that contact beside the gate outside the 2.75in band does
+NOT, and the overlap case asserted explicitly — `noCornerIn=true centerOut=true` with the
+G427 firing, which is precisely the configuration the old predicate returned false for.
+
+Two EXISTING fixtures were corrected rather than the code, and the reason matters: the
+G424xG425 scenario-2 pose described as "clear of the tunnel" had a chassis reaching past the
+wall and genuinely overlapping the strip — the corner test simply could not see it. It moved
+to the inner end of the gate zone, and both scenarios now PIN the headings, because those
+poses are only meaningful with a fixed footprint orientation.
+
+Gotcha for the next person writing one of these: `sideRect` normalizes x0<x1, so for BLUE
+(goalSide -1) the WALL-ward end of a zone rect is `x0`, not `x1`. One new assertion was
+written the other way round and failed on the first run. And a pose "beside the gate" has to
+be on the GOAL side of the tape band — the other side is the SECRET TUNNEL, where the robot
+correctly draws a G425 and would pass a G424-absence check for the wrong reason.
+
+### One environment note, not a code problem
+
+A confirmation `npm test` hung at 96% CPU for 12+ minutes on a tree whose only uncommitted
+delta was block comments. Killed it; a clean re-run on the identical tree was ALL PASS. Put
+it down to contention from several concurrent `npm test` invocations. If it recurs on a
+single run, it is real and worth chasing — it was not reproducible here.
+
+## Deploy
+
+Alpha server DEPLOYED with the wrapper (`./scripts/fly-deploy.sh --alpha`) at the start of
+this session, after pulling `06dd5bd` — `dsim-alpha`, image
+`deployment-01M28HWY6Y0PYAJHMRQA5NQ5HZ`, one `shared-cpu-2x` machine in iad, checks 1/1;
+`/health` answered `ok`. **That deploy PREDATES the penalty fix in this section**, so the
+alpha server is running the old zone hitboxes — redeploy with the same wrapper to pick these
+up, since fouls are computed server-side. Production (`dohun-sim-decode`) NOT touched.
+
+**`flyctl` cannot read its own stored credentials on this box.** `flyctl auth whoami` says
+"no access token available" although `~/.fly/config.yml` holds a valid token; passing that
+same value through `FLY_API_TOKEN` authenticates fine, which is how the deploy ran. Either
+re-run `flyctl auth login` or export the token before the wrapper.
+
+---
+
 # HANDOFF — 2026-09-11, fourth session (the external review, answered end to end and merged)
 
 Branch **`alpha`**, pushed. Both open feature PRs are **merged into it**: #39 `perf-load-v2`
