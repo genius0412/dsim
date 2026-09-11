@@ -371,16 +371,18 @@ export function roomChecks(check: Check): void {
     disconnectAt: 0,
   });
 
-  /** a started 2v2 room for `game`, plus the message log of its first seat. */
+  /** a started room for `game` (2v2 unless `seats` says otherwise), plus the message log of
+   *  its first seat. */
   const started = (
     code: string,
     game: 'biobuzz' | 'chain',
     spec: RobotSpec,
     onOutcome?: (game: string | undefined) => void,
+    seats = roster(),
   ): { room: Room; msgs: ServerMsg[] } => {
     const msgs: ServerMsg[] = [];
     const room = new Room(code, () => {}, { kind: 'versus', game }, (o) => onOutcome?.(o.game));
-    for (const seat of roster()) room.add(mkClient(seat, spec, seat.id === 'bb-b1' ? msgs : []));
+    for (const seat of seats) room.add(mkClient(seat, spec, seat.id === 'bb-b1' ? msgs : []));
     room.onMessage('bb-b1', { t: 'start' });
     return { room, msgs };
   };
@@ -441,6 +443,39 @@ export function roomChecks(check: Check): void {
     'room: the SERVER-SAFE registry declares BIOBUZZ unscored, so persistMatch skips it',
     simModuleFor('biobuzz').scored === false,
   );
+
+  // -- THE START-POSE DE-CONFLICT LOOP READS THIS GAME'S ANCHOR COUNT ------------
+  /**
+   * FOUR ROBOTS ON ONE ALLIANCE, every one of them asking for anchor 0.
+   *
+   * `Room` de-conflicts start poses per alliance by walking the index forward until it finds
+   * an unused one, stopping after a full cycle so an over-full alliance reuses a pose rather
+   * than spinning the tick loop forever. That walk used DECODE's five anchors for every game,
+   * so a BIOBUZZ alliance of four was handed 0, 1, 2 and 3 against TWO anchors: indices 2 and
+   * 3 do not exist in this game and resolve to whatever its spawn does with a miss. It now
+   * reads `simModuleFor(this.game).startPoseCount`.
+   *
+   * Four on ONE alliance and all at index 0 is what makes the check bite: a 2v2 at 0/1/0/1
+   * never walks the index at all, which is why the full-match check above passed throughout.
+   * With the bug: 0, 1, 2, 3. Without it: 0, 1, 0, 0 (the cycle gives up and reuses).
+   */
+  {
+    const seats = (['bb-b1', 'bb-b2', 'bb-b3', 'bb-b4'] as const).map((id) => ({
+      id,
+      alliance: 'blue' as const,
+      startIndex: 0,
+    }));
+    const n = simModuleFor('biobuzz').startPoseCount;
+    const { msgs: m4 } = started('smoke-bb-anchors', 'biobuzz', BB_DEFAULT_SPEC, undefined, [...seats]);
+    const st = m4.find((x) => x.t === 'matchStart') as Extract<ServerMsg, { t: 'matchStart' }> | undefined;
+    const idx = (st?.setups ?? []).map((x) => x.startIndex ?? 0);
+    check(
+      `room: a 4-robot BIOBUZZ alliance is only ever assigned anchors 0..${n - 1}`,
+      idx.length === 4 && idx.every((v) => Number.isInteger(v) && v >= 0 && v < n),
+      `startPoseCount=${n} assigned=[${idx.join(', ')}]`,
+    );
+  }
+
 
   // ── PERFORMANCE, ROOM AGAINST ROOM, IN THE SAME RUN ───────────────────────
   /**
