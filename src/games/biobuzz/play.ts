@@ -1,24 +1,20 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../types';
 import * as C from '../../config';
-import { clamp, hyp, rot, wrapAngle } from '../../math';
+import { clamp, rot, wrapAngle } from '../../math';
 import { solveArtifacts, type SweepFrom } from '../../sim/physicsEngine';
+import { stepGroundBall } from '../../sim/physics';
 import { robotSolids, type RobotSolids } from '../../sim/artifactSolids';
 import {
   BB_AIM_GAIN,
   BB_AIM_TOL,
-  BB_BALL_SOLVER,
   BB_HALF_X,
   BB_HALF_Y,
-  BB_POLLEN_FRICTION,
   BB_POLLEN_R,
-  BB_POLLEN_REST_SPEED,
-  BB_POLLEN_SEP_ITERS,
   BB_POLLEN_WALL_REST,
-  type BbBallSolver,
 } from './config';
 import { biobuzzColliders } from './colliders';
 import { capturePollen, scoreTargets } from './elements';
-import { bbAimHeading, bbFootprint, bbLaunch, bbMouths } from './robot';
+import { bbAimHeading, bbLaunch, bbMouths } from './robot';
 import { rectContains, type BiobuzzState } from './state';
 
 /**
@@ -30,46 +26,71 @@ import { rectContains, type BiobuzzState } from './state';
  * right before anything is built on top of it, is a POLLEN model that CONSERVES COUNT and
  * NEVER LEAKS OUT OF THE FIELD under every input a driver can produce.
  *
- * ── THE TWO SOLVERS ────────────────────────────────────────────────────────
- * `BB_BALL_SOLVER` picks between the two ball models DSIM already has, and BOTH ARMS ARE
- * BUILT because the choice needs a fact the manual has not published yet (does BIOBUZZ have
- * field structure POLLEN must roll over or rest on?). Phase 0.5 picks; this file makes the
- * comparison possible by keeping everything except the solve identical between them.
+ * ── THERE IS ONE SOLVER, AND IT IS NOT IN THIS FILE ────────────────────────
+ * GROUND POLLEN are solved by the SHARED artifact solve, `solveArtifacts`
+ * (`src/sim/physicsEngine.ts`), with `BB_POLLEN_R` as the radius. Each ground POLLEN is a real
+ * Rapier body that sees every static this game's `colliders` declares plus every robot's
+ * artifact-solid geometry (`robotSolids`, built at the same radius), with each chassis an
+ * IMMOVABLE SWEEP from its pose at the start of the tick to where the robot solve left it.
  *
- *  • `'bespoke'` — CR's model, copied and owned. A friction/rest-speed integrator, a
- *    spatial-hash separation pass so POLLEN never rest inside one another, and an explicit
- *    wall clamp with restitution. Cheap enough for hundreds of elements, and exactly
- *    deterministic because it is arithmetic in a fixed order.
+ * NOTHING IN THIS DIRECTORY INTEGRATES, SEPARATES, CLAMPS OR EVICTS A GROUND POLLEN, and that
+ * is a decision rather than an omission. The repo OWNER owns artifact physics and reworked it
+ * on `alpha` around one rule: **every element ends the tick somewhere it is allowed to be, with
+ * ONE POSITION AUTHORITY per element.** Some forty bespoke position-writing passes used to take
+ * turns in DECODE, and every "the balls go on top of the robot" report was two of them
+ * disagreeing. A second ball integrator living here would be exactly that failure, imported
+ * into a new game on purpose — and it would also have to be re-derived every time the owner
+ * moves the shared solve, which he is doing. So BIOBUZZ passes a RADIUS and nothing else.
  *
- *  • `'rapier'` — DECODE's model (`solveArtifacts`), where each ground POLLEN is a real Rapier
- *    body that sees every static the field declares plus every robot's artifact-solid
- *    geometry (`robotSolids`), with each chassis an IMMOVABLE SWEEP from its pose at the start
- *    of the tick to where the robot solve left it. It is driven here exactly as
- *    `src/sim/world.ts` drives it — the only differences are this game's `colliders` and the
- *    two sets DECODE needs and BIOBUZZ does not:
- *      · `claimed` is EMPTY. It names the artifacts an intake has hold of but has not yet
- *        taken, which is a state BIOBUZZ does not have: `interact()` either captures a POLLEN
- *        outright this tick (`capturePollen` → `state.kind === 'held'`) or plows it, so there
- *        is never a ground pollen mid-capture to exempt.
- *      · `doorway` is EMPTY. It names the artifact a gate is expelling, and BIOBUZZ has no
- *        gates.
+ * There used to be a `BB_BALL_SOLVER` switch with a second, bespoke arm here (CR's
+ * friction/rest-speed integrator, a spatial-hash separation pass, an explicit wall clamp with
+ * restitution) built so Phase 0.5 could compare the two. It is GONE, and the comparison it
+ * was for is not the question any more: the question was "which model feels like pollen", and
+ * the answer to "who owns ball physics" settles it first. `docs/biobuzz-plan.md` Phase 0.5 and
+ * `docs/biobuzz/feedback/000-solver-observations.md` record what the shared solver actually
+ * does with a 1.5" element.
  *
- * A KNOWN GAP IN THE RAPIER ARM, FOUND WHILE BUILDING IT AND STILL OPEN AFTER THE MERGE —
- * write this down, it is the whole point of doing both: `solveArtifacts` HARD-CODES
- * `C.BALL_RADIUS` (2.5", DECODE's 5" artifact) for the ball collider, its speed cap and the
- * `robotSolids` held-artifact circles, and uses DECODE's own containment helper for the field
- * pushback. A 1.5"-radius POLLEN therefore simulates as a 2.5"-radius ball under that arm —
- * it conserves count and stays in bounds (this file re-clamps to the BIOBUZZ walls
- * afterwards), but it separates at the wrong diameter, so a pile settles looser than it is
- * drawn. Choosing `'rapier'` for real means parameterizing the artifact radius in
- * `src/sim/physicsEngine.ts` + `src/sim/artifactSolids.ts`, which is shared code this lane
- * does not own and must not edit (`docs/biobuzz-contract.md` §1). That is a P0.5 decision
- * with a shared-core cost attached, and it is better known now than at Kickoff.
+ * The two DECODE-only exemption sets `solveArtifacts` takes are EMPTY here, and both are facts
+ * about this game rather than stubs:
+ *   · `claimed` names the artifacts an intake has hold of but has not yet taken. BIOBUZZ has
+ *     no such state: `interact()` either captures a POLLEN outright this tick
+ *     (`capturePollen` → `state.kind === 'held'`) or leaves it to the solver.
+ *   · `doorway` names the artifact a gate is expelling, and BIOBUZZ has no gates.
+ *
+ * TWO THINGS ARE STILL THIS FILE'S. FLIGHT pollen, because the shared solve only looks at
+ * ground elements — the ballistic step below is the only writer of a flying POLLEN's position
+ * and competes with nothing. And the PERIMETER INVARIANT for ground pollen
+ * (`clampPollenToWalls`), because the solve does not hold it: measured, removing that pass put
+ * a POLLEN 2.02" through the wall in `wall-row-sweep`. DECODE holds the same invariant the same
+ * way, inside its round loop. See that function's own note.
  */
 
-/** the ONE place a POLLEN is put back inside the field. Both solvers end here, so containment
- * is a property of this file rather than of whichever solve ran. Returns nothing — it edits
- * in place, like every other integrator step. */
+/**
+ * THE CONTAINMENT INVARIANT — put a POLLEN back inside the perimeter, bouncing it off the wall
+ * it reached.
+ *
+ * THE SOLVE DOES NOT HOLD THE PERIMETER FOR ARTIFACTS ON ITS OWN, and that was MEASURED here
+ * rather than assumed: with this pass removed, `wall-row-sweep` put a POLLEN **2.02" past the
+ * wall plane** (tick 105) and `pile-fast` 1.52", on a 1.5" element. DECODE holds the same
+ * invariant the same way — `src/sim/world.ts` runs `clampBallPosToStatics` on every ground
+ * artifact INSIDE its round loop — so a containment clamp is part of the sanctioned design,
+ * not a competing authority: the solve decides where an artifact goes and this only acts where
+ * the solve had no answer to give.
+ *
+ * WHY THE SOLVE CANNOT WIN THAT SQUEEZE, and it is worth writing down because it is not the
+ * radius: BIOBUZZ does not run the PIN half of DECODE's round loop (`pinnedArtifacts` →
+ * `PinnedCircle` → re-run `solveRobots`). Nothing tells the robot solve that a POLLEN against
+ * a wall is a wall, so the chassis drives on through the space the POLLEN is in and the POLLEN
+ * has nowhere to be. That is the first item in `docs/biobuzz/feedback/000-solver-observations.md`
+ * "For the owner", and it is NOT fixed here — porting the round loop is shared-physics work.
+ *
+ * ⚠️ THE BOUNCE TERM IS A KNOWN DISAGREEMENT WITH THE SHARED SOLVE, also for the owner. DECODE
+ * does not reverse the velocity at its clamp, it REMOVES the component pointing into the wall
+ * (`fieldPushback` beside the clamp in `world.ts`), having measured that a reversal reads as an
+ * impact on the next tick and bounces artifact and robot apart. This reverses it, scaled by
+ * `BB_POLLEN_WALL_REST`. It is left exactly as it was because re-deriving it here would be a
+ * BIOBUZZ copy of shared physics, which is the thing this file just stopped doing.
+ */
 function clampPollenToWalls(b: Artifact): void {
   const lim = BB_HALF_X - BB_POLLEN_R;
   const limY = BB_HALF_Y - BB_POLLEN_R;
@@ -89,59 +110,6 @@ function clampPollenToWalls(b: Artifact): void {
   }
 }
 
-/**
- * Push overlapping ground POLLEN apart, position-based, over a uniform grid.
- *
- * A pile of 3" balls that are allowed to rest inside one another looks like fewer balls than
- * there are, and then explodes when something touches it. Two passes settle a pile without
- * the cost of a real constraint solver.
- *
- * DETERMINISM: the `o.id <= b.id` skip is not an optimization, it is what makes the pass
- * ORDER-INDEPENDENT — each unordered pair is resolved exactly once, from the lower id, so the
- * result does not depend on the grid's bucket iteration order. Without it the same seed can
- * produce two different piles and the world hash diverges between a client and the server.
- */
-function separatePollen(ground: Artifact[]): void {
-  const cell = 2 * BB_POLLEN_R;
-  const minD = 2 * BB_POLLEN_R;
-  const minD2 = minD * minD;
-  const key = (cx: number, cy: number): number => (cx + 128) * 512 + (cy + 128);
-  for (let iter = 0; iter < BB_POLLEN_SEP_ITERS; iter++) {
-    const grid = new Map<number, Artifact[]>();
-    for (const b of ground) {
-      const k = key(Math.floor(b.pos.x / cell), Math.floor(b.pos.y / cell));
-      const arr = grid.get(k);
-      if (arr) arr.push(b);
-      else grid.set(k, [b]);
-    }
-    for (const b of ground) {
-      const cx = Math.floor(b.pos.x / cell);
-      const cy = Math.floor(b.pos.y / cell);
-      for (let ox = -1; ox <= 1; ox++) {
-        for (let oy = -1; oy <= 1; oy++) {
-          const arr = grid.get(key(cx + ox, cy + oy));
-          if (!arr) continue;
-          for (const o of arr) {
-            if (o.id <= b.id) continue;
-            const dx = o.pos.x - b.pos.x;
-            const dy = o.pos.y - b.pos.y;
-            const d2 = dx * dx + dy * dy;
-            if (d2 >= minD2 || d2 < 1e-9) continue;
-            const d = Math.sqrt(d2);
-            const push = (minD - d) / 2;
-            const nx = dx / d;
-            const ny = dy / d;
-            b.pos.x -= nx * push;
-            b.pos.y -= ny * push;
-            o.pos.x += nx * push;
-            o.pos.y += ny * push;
-          }
-        }
-      }
-    }
-  }
-}
-
 /** put a POLLEN back on the tile at `pos`, dead stopped. The single landing path, so a lob, a
  * dump and an eviction all come to rest the same way. */
 function land(b: Artifact, x: number, y: number): void {
@@ -153,22 +121,23 @@ function land(b: Artifact, x: number, y: number): void {
 }
 
 /**
- * Resolve one ground POLLEN against one robot: collect it, or PLOW it out of the chassis.
+ * Resolve one ground POLLEN against one robot: CAPTURE IT, OR LEAVE IT ALONE.
  *
- * Order matters and is the reason the mouth reaches inside the frame: capture is tested FIRST,
- * so a POLLEN at the roller is collected before the frame would shove it forward. Driving into
- * a pile therefore collects it instead of scattering it, which is the single biggest
- * difference between an intake that feels real and one that feels like a bulldozer.
+ * Capture and nothing else. There used to be a PLOW branch here — if the POLLEN was inside the
+ * footprint and not collected, this pushed it out along the minimum-penetration axis by the
+ * whole penetration depth and gave it the robot's speed. That was a SECOND POSITION WRITER for
+ * a ground pollen, fighting the shared solve for the same element on the same tick, which is
+ * the one thing the artifact rework on `alpha` forbids. It is gone. The chassis, the intake
+ * structure and the held pollen are all colliders in `solveArtifacts` (via `robotSolids`), so
+ * everything the plow was reaching for — a pollen shoved ahead of a driving frame, a pollen
+ * squeezed against a wall popping out sideways — is the solve's own answer, computed from the
+ * chassis sweep rather than from a normal guessed off a box.
  *
- * The plow pushes along the MINIMUM-PENETRATION axis in the robot frame, BY THE WHOLE
- * PENETRATION DEPTH, and imparts the robot's speed — so a POLLEN squeezed against a wall pops
- * out sideways rather than being dragged through the chassis, at any speed the drivetrain can
- * reach. See the note at the push itself for why a fixed step was wrong.
+ * A POLLEN AT THE ROLLER IS STILL COLLECTED BEFORE THE FRAME REACHES IT, because this runs
+ * BEFORE the solve in `updateBiobuzz`'s stage order. Driving into a pile collects it instead of
+ * scattering it, which is the single biggest difference between an intake that feels real and
+ * one that feels like a bulldozer.
  */
-/** the hair past the surface a plowed POLLEN is placed at, so the next tick does not find the
- * same contact at zero depth. */
-const PLOW_EPS = 0.02;
-
 function interact(
   world: World,
   b: Artifact,
@@ -176,56 +145,15 @@ function interact(
   cmd: RobotCommand | undefined,
   enabled: boolean,
 ): 'collected' | 'none' {
-  const e = bbFootprint(rob.spec);
-  const local = rot({ x: b.pos.x - rob.pos.x, y: b.pos.y - rob.pos.y }, -rob.heading);
-  const r2 = BB_POLLEN_R;
-
   const intakeActive = enabled && (rob.autoIntake || (cmd?.intake ?? false));
-  if (intakeActive) {
-    // ANY mounted edge grabs: one mouth for front/back, two for `side` (both flanks) and
-    // `frontback` (both ends). `capturePollen` is what enforces the hopper cap, so a full
-    // robot falls through to the plow below rather than silently eating nothing.
-    for (const m of bbMouths(rob.spec)) {
-      if (rectContains(m, local.x, local.y, r2) && capturePollen(world, rob, b)) return 'collected';
-    }
+  if (!intakeActive) return 'none';
+  const local = rot({ x: b.pos.x - rob.pos.x, y: b.pos.y - rob.pos.y }, -rob.heading);
+  // ANY mounted edge grabs: one mouth for front/back, two for `side` (both flanks) and
+  // `frontback` (both ends). `capturePollen` is what enforces the hopper cap, so a full robot
+  // simply leaves the POLLEN on the floor for the solve to push around.
+  for (const m of bbMouths(rob.spec)) {
+    if (rectContains(m, local.x, local.y, BB_POLLEN_R) && capturePollen(world, rob, b)) return 'collected';
   }
-
-  const inBox = local.x < e.front + r2 && local.x > -e.rear - r2 && Math.abs(local.y) < e.half + r2;
-  if (!inBox) return 'none';
-
-  const penX = e.front + r2 - local.x;
-  const penXneg = local.x + e.rear + r2;
-  const penY = e.half + r2 - Math.abs(local.y);
-  let nx = 0;
-  let ny = 0;
-  let depth = 0;
-  if (Math.min(penX, penXneg) < penY) {
-    nx = penX < penXneg ? 1 : -1;
-    depth = Math.min(penX, penXneg);
-  } else {
-    ny = local.y >= 0 ? 1 : -1;
-    depth = penY;
-  }
-  const w = rot({ x: nx, y: ny }, rob.heading);
-  /**
-   * PUSH BY THE FULL PENETRATION, not by a fixed step.
-   *
-   * This was a flat 0.6" per tick, and that is a speed-dependent bug rather than a soft
-   * contact: a robot at 50 in/s advances 0.83" per tick and one at 80 in/s advances 1.33", so
-   * the frame gained on the POLLEN every tick and eventually contained it — the gallery's
-   * `corner-pile` cell showed pollen centres a full radius INSIDE the chassis, which is a
-   * POLLEN being dragged along inside a robot rather than plowed. Resolving the whole overlap
-   * makes the plow correct at every speed the drivetrain can reach, and it is what the
-   * pollen-vs-pollen separator above already does.
-   *
-   * `EPS` is the hair past the surface that keeps the next tick's `inBox` test from finding the
-   * same contact at exactly zero depth and jittering on it.
-   */
-  b.pos.x += w.x * (depth + PLOW_EPS);
-  b.pos.y += w.y * (depth + PLOW_EPS);
-  const rv = hyp(rob.vel.x, rob.vel.y);
-  b.vel.x = w.x * rv * 0.9;
-  b.vel.y = w.y * rv * 0.9;
   return 'none';
 }
 
@@ -235,8 +163,11 @@ function interact(
  * ORDER IS THE CONTRACT (and `step.ts` documents the pipeline this sits inside):
  *   1. HELD pollen ride their robot — position only, no physics.
  *   2. FLIGHT pollen integrate ballistically and LAND.
- *   3. GROUND pollen meet the robots (collect or plow).
- *   4. the chosen SOLVER runs, then everything is clamped inside the walls.
+ *   3. GROUND pollen: the shared rolling-friction/rest-snap pass (`stepGroundBall`, velocity
+ *      only), then the robots — CAPTURE only, nothing is moved here.
+ *   4. the SHARED artifact solve runs, at `BB_POLLEN_R` — the ONE position authority for a
+ *      ground pollen: no integration, no separation pass and no eviction. Then the perimeter
+ *      invariant, which the solve does not hold on its own (see `clampPollenToWalls`).
  *   5. LAUNCHERS fire, which is what creates tick-N+1's flight pollen.
  *   6. the score/endgame pass — a no-op in the shell, kept so its shape is fixed.
  *
@@ -249,10 +180,9 @@ export function updateBiobuzz(
   dt: number,
   cmds: Map<number, RobotCommand>,
   enabled: boolean,
-  /** each robot's pose at the START of this tick (`step.ts`, stage 0) — the Rapier arm sweeps
-   *  the chassis from there. Absent ⇒ no sweep, which is what a direct caller gets. */
+  /** each robot's pose at the START of this tick (`step.ts`, stage 0) — the artifact solve
+   *  sweeps the chassis from there. Absent ⇒ no sweep, which is what a direct caller gets. */
   from?: ReadonlyMap<number, SweepFrom>,
-  solver: BbBallSolver = BB_BALL_SOLVER,
 ): void {
   const bb = world.biobuzz as BiobuzzState | undefined;
   if (!bb) return; // an old snapshot from before this game existed; nothing to do
@@ -290,60 +220,64 @@ export function updateBiobuzz(
     if (b.z <= 0) land(b, b.pos.x, b.pos.y);
   }
 
-  // ── 3. GROUND: friction, integrate, meet the robots ────────────────────────
-  const ground: Artifact[] = [];
+  // ── 3. GROUND: roll, then meet the robots ─────────────────────────────────
+  /**
+   * ROLLING RESISTANCE AND THE REST SNAP ARE THE SHARED CORE'S — `stepGroundBall`
+   * (`src/sim/physics.ts`), the same call `src/sim/world.ts` makes at the same point in the
+   * tick, with the same `BALL_ROLL_FRICTION` / `BALL_REST_SPEED`. It is VELOCITY ONLY and moves
+   * nothing, so it is not a second position authority: it sets the speed the solve below starts
+   * from, which is exactly the contract its own comment states.
+   *
+   * It is NOT optional and it is NOT cosmetic. `solveArtifacts` runs in a plane with no
+   * gravity, so there is no floor contact for Rapier to bleed speed through — a POLLEN it has
+   * pushed keeps that speed forever. Measured with this call missing: five seconds after the
+   * robot stopped, `pile-slow`'s pile was still travelling at 18.98 in/s and `wall-row-sweep`'s
+   * row at 19.54, and nothing in any scene ever came to rest.
+   *
+   * BIOBUZZ's own `BB_POLLEN_FRICTION` (42) and `BB_POLLEN_REST_SPEED` (1.5) are deleted rather
+   * than passed in. The shared numbers (32 / 2) are tuned for a 5" artifact and a 3" POLLEN may
+   * well want different ones — but that is a shared-constant question for the repo owner, and a
+   * BIOBUZZ copy of them is the two-descriptions-of-one-contact bug in another costume. See
+   * `docs/biobuzz/feedback/000-solver-observations.md`.
+   */
+  for (const b of world.balls) if (b.state.kind === 'ground') stepGroundBall(b, dt);
+
+  // CAPTURE. Nothing here moves a POLLEN — stage 4 is the one position authority, and this runs
+  // first so a POLLEN at the roller is taken before the frame reaches it.
   for (const b of world.balls) {
     if (b.state.kind !== 'ground') continue;
-    if (solver === 'bespoke') {
-      // rolling decay, with a REST SPEED below which a POLLEN simply stops. Without the
-      // snap-to-rest a ball creeps forever at 0.01 in/s, which is both a visual jitter and a
-      // separation pass that never converges.
-      const sp = hyp(b.vel.x, b.vel.y);
-      if (sp > 0) {
-        const ns = sp - BB_POLLEN_FRICTION * dt;
-        if (ns <= BB_POLLEN_REST_SPEED) {
-          b.vel.x = 0;
-          b.vel.y = 0;
-        } else {
-          b.vel.x *= ns / sp;
-          b.vel.y *= ns / sp;
-        }
-      }
-      b.pos.x += b.vel.x * dt;
-      b.pos.y += b.vel.y * dt;
-    }
-    let collected = false;
     for (const rob of world.robots) {
-      if (interact(world, b, rob, cmds.get(rob.id), enabled) === 'collected') {
-        collected = true;
-        break;
-      }
+      if (interact(world, b, rob, cmds.get(rob.id), enabled) === 'collected') break;
     }
-    if (!collected) ground.push(b);
   }
 
-  // ── 4. SOLVE + CONTAIN ────────────────────────────────────────────────────
-  if (solver === 'bespoke') {
-    separatePollen(ground);
-  } else {
-    /**
-     * Rapier owns the integration AND the separation in this arm, so the loop above did not
-     * move anything. It reads `world.balls` itself and only touches ground pollen, which is
-     * why it runs after the capture pass rather than before it.
-     *
-     * Driven the way `src/sim/world.ts` drives it: the robot solids are built ONCE from the
-     * held pollen (a full hopper is a physical plug in the mouth), the two DECODE-only
-     * exemption sets are empty (see this file's header), and each chassis is swept from the
-     * pose `step.ts` captured before the drivetrain ran to where the robot solve put it. With
-     * no `from` — a caller that steps `updateBiobuzz` directly without the surrounding step —
-     * `solveArtifacts` falls back to the END pose per robot, i.e. no sweep.
-     */
-    const heldBalls = world.balls.filter((b) => b.state.kind === 'held');
-    const solids = new Map<number, RobotSolids>();
-    for (const rob of world.robots) solids.set(rob.id, robotSolids(rob, heldBalls));
-    solveArtifacts(world, dt, biobuzzColliders, NO_IDS, NO_IDS, solids, from ?? NO_SWEEP);
-  }
-  for (const b of ground) clampPollenToWalls(b);
+  // ── 4. SOLVE ──────────────────────────────────────────────────────────────
+  /**
+   * THE SHARED ARTIFACT SOLVE, AT THE POLLEN RADIUS, AND IT IS THE ONLY WRITER OF A GROUND
+   * POLLEN'S POSITION. No integrator above it, no separation pass and no eviction after it: the
+   * perimeter, every robot's chassis, its intake structure and the pollen it is holding are all
+   * colliders in this one solve, so there is nothing left to take turns with. The only pass
+   * after it is the perimeter invariant, which it does not hold on its own.
+   *
+   * It reads `world.balls` itself and only touches GROUND pollen, which is why it runs after
+   * the capture pass rather than before it — a POLLEN taken this tick is already `held` and is
+   * out of the solve by the time it runs.
+   *
+   * Driven the way `src/sim/world.ts` drives it: the robot solids are built ONCE from the held
+   * pollen at `BB_POLLEN_R` (a full hopper is a physical plug in the mouth, and the plug has to
+   * be the size of a POLLEN), the two DECODE-only exemption sets are empty (see this file's
+   * header), and each chassis is swept from the pose `step.ts` captured before the drivetrain
+   * ran to where the robot solve put it. With no `from` — a caller that steps `updateBiobuzz`
+   * directly without the surrounding step — `solveArtifacts` falls back to the END pose per
+   * robot, i.e. no sweep, and a chassis then spawns already overlapping whatever it drove into.
+   */
+  const heldBalls = world.balls.filter((b) => b.state.kind === 'held');
+  const solids = new Map<number, RobotSolids>();
+  for (const rob of world.robots) solids.set(rob.id, robotSolids(rob, heldBalls, BB_POLLEN_R));
+  solveArtifacts(world, dt, biobuzzColliders, NO_IDS, NO_IDS, solids, from ?? NO_SWEEP, BB_POLLEN_R);
+  // ...then the perimeter invariant, which the solve does not hold on its own — see
+  // `clampPollenToWalls`, where the measured penetration without this is written down.
+  for (const b of world.balls) if (b.state.kind === 'ground') clampPollenToWalls(b);
 
   // ── 5. LAUNCH ─────────────────────────────────────────────────────────────
   for (const rob of world.robots) {

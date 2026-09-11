@@ -240,9 +240,10 @@ export function bbWorld(seed: number, setups: RobotSetup[], pollen?: Artifact[])
 }
 
 /** one POLLEN at rest on the floor. Ids are assigned by the caller and must be unique and
- * STABLE within a scene: `separatePollen` breaks ties by id, so renumbering a pile changes the
- * physics, and a scene whose ids depend on iteration order is a scene that hashes differently
- * for no visible reason. */
+ * STABLE within a scene: the shared artifact solve creates one Rapier body per pollen in
+ * `world.balls` order and Rapier's contact resolution depends on collider creation order, so
+ * renumbering a pile changes the physics, and a scene whose ids depend on iteration order is a
+ * scene that hashes differently for no visible reason. */
 export function bbPollen(id: number, x: number, y: number): Artifact {
   return { id, color: 'green', state: { kind: 'ground' }, pos: { x, y }, vel: { x: 0, y: 0 }, z: 0, vz: 0 };
 }

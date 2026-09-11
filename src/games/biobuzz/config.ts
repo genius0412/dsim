@@ -85,44 +85,31 @@ export const BB_VIEW_HALF_X = BB_HALF_X;
 export const BB_POLLEN_R = 3 / 2;
 
 /** how many POLLEN the shell scatters. APPROX: 60 is a placeholder chosen to LOOK like a
- * field worth driving on and to be cheap under both solvers, not a manual count. It is also
+ * field worth driving on and to be cheap in the shared solve, not a manual count. It is also
  * deliberately far below CR's 300 so the shell's step cost has headroom for whatever Section
  * 10 actually asks for. */
 export const BB_POLLEN_SIM = 60;
 
 /**
- * GROUND POLLEN PHYSICS — the bespoke integrator's constants.
+ * GROUND POLLEN PHYSICS IS NOT CONFIGURED HERE, AND THERE IS NOTHING TO PUT BACK.
  *
- * Copied from CR's particle model, which was tuned against 3" wiffle balls on FTC tile at
- * 60 Hz, and a 3" POLLEN on the same tile is the same problem. APPROX only in the sense that
- * the element itself is: if Kickoff makes POLLEN heavier, larger or squishier, these move.
+ * A ground POLLEN is solved by the SHARED artifact solve (`solveArtifacts`), which BIOBUZZ
+ * calls with `BB_POLLEN_R` and nothing else. Friction, restitution, rest speed, contact
+ * stiffness and the speed cap are all the shared solve's constants in `src/config.ts`
+ * (`PHYS_BALL_*`, `BALL_*`), they are the repo OWNER's to tune, and BIOBUZZ must not shadow
+ * them — a second set of numbers describing the same contact is the same bug as a second
+ * integrator. See `docs/biobuzz/feedback/000-solver-observations.md` for what the shared solve
+ * does with a 1.5" element, and `play.ts`'s header for why it is the only one.
+ *
+ * Four constants used to live here (`BB_POLLEN_FRICTION`, `_REST_SPEED`, `_SEP_ITERS` and the
+ * wall restitution), copied from CR's particle model for the bespoke arm that is now deleted.
+ * Only the wall restitution survives, because FLIGHT pollen are still this game's own:
  */
-export const BB_POLLEN_FRICTION = 42; // in/s² rolling decay
-export const BB_POLLEN_REST_SPEED = 1.5; // snap to rest below this
-export const BB_POLLEN_WALL_REST = 0.35; // wall bounce restitution
-export const BB_POLLEN_SEP_ITERS = 2; // overlap-resolution passes per tick
 
-/**
- * WHICH BALL SOLVER RUNS — the Phase 0.5 experiment, wired as a switch rather than a fork.
- *
- * DSIM has two working ball models and they were built for different games:
- *  • `'bespoke'` — CR's model. A friction/rest-speed integrator plus a spatial-hash
- *    separation pass, with an explicit wall clamp. Cheap enough for 300 balls, perfectly
- *    deterministic, and it has no concept of a ball resting ON something.
- *  • `'rapier'` — DECODE's model. The balls are real Rapier bodies (`solveBalls`), so they
- *    collide with every static the field declares and with robot feedback, at a real cost
- *    per ball.
- *
- * BOTH ARMS ARE BUILT AND BOTH ARE TESTED (`scripts/smoke-biobuzz/field.ts` runs pollen
- * conservation and containment under each). The pick is P0.5's, and it depends on a fact we
- * do not have yet: whether Section 9 gives BIOBUZZ field structure that POLLEN must rest on
- * or roll through. If it does, `'rapier'` wins by default; if the field is flat, `'bespoke'`
- * is several times cheaper for the same visible behaviour.
- *
- * A switch, not a build flag, so a scene can be rendered under both and compared.
- */
-export type BbBallSolver = 'bespoke' | 'rapier';
-export const BB_BALL_SOLVER: BbBallSolver = 'bespoke';
+/** how much of its speed a POLLEN keeps when a LOB hits a wall. FLIGHT ONLY — a ground pollen's
+ * wall bounce is the shared solve's `BALL_WALL_RESTITUTION`. APPROX: a guess about a 3" foam
+ * ball, and only a picture judges it (`launch-wall-bounce` in the gallery). */
+export const BB_POLLEN_WALL_REST = 0.35;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MATCH — the shell reuses the shared phase durations (`src/config.ts`), because auto /
