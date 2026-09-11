@@ -648,6 +648,13 @@ export class Room {
 
   /** finalize any disconnected driver whose grace has lapsed: drop its robot to
    * ZERO for good (broadcast) and free the slot */
+  /** is ANY client currently holding a live socket? A room where every slot is held by a
+   *  dropped client is a ghost — see the freeze in `startLoop`. */
+  private anyConnected(): boolean {
+    for (const c of this.clients.values()) if (c.connected) return true;
+    return false;
+  }
+
   private checkGrace(): void {
     // hot path: this runs every tick (60 Hz). Disconnects are rare, so avoid the
     // array-spread allocation + Date.now() unless a slot is actually being held.
@@ -1227,6 +1234,29 @@ export class Room {
       try {
         this.checkGrace(); // finalize any driver whose reconnect grace has lapsed
         if (this.clients.size === 0) return; // room emptied (loop already stopped)
+        // GHOST ROOM: every driver has dropped but none has been gone long enough for
+        // `checkGrace` to reap them, so the slots are still held and the room keeps
+        // stepping Rapier at 60 Hz for nobody. Measured under load: 19 rooms burning
+        // 0.906 cores with 0 players (docs/capacity.md §7).
+        //
+        // Freezing loses NOTHING, which is the part worth knowing before changing it: a
+        // match nobody returns to is never finalized at all — when the last grace lapses
+        // `checkGrace` calls `onEmpty()` and the room is deleted, with no `finalizeMatch`
+        // on that path. So these ticks can only ever be thrown away.
+        //
+        // And when somebody DOES come back, resuming where they left is the better
+        // outcome anyway. It is what makes a whole-region restart survivable: today both
+        // sides of a ranked match return to a world that ran 45 s without either of them,
+        // which is unplayable and effectively a double forfeit.
+        //
+        // `last`/`acc` are reset so the resume does not fast-forward the frozen
+        // wall-clock — without that, the catch-up clamp would burn 0.25 s of sim in one
+        // turn the moment the first player reconnects.
+        if (!this.anyConnected()) {
+          last = Date.now();
+          acc = 0;
+          return;
+        }
         const now = Date.now();
         acc += (now - last) / 1000;
         last = now;
