@@ -1520,8 +1520,6 @@ export function intakeMouth(spec: { intake: keyof typeof INTAKE_PRESETS; width: 
   return spec.intake === 'vector' ? { ...m, mouthHalf: spec.width / 2 } : m;
 }
 
-/** flank capture engages only when actually strafing toward the ball */
-export const INTAKE_SIDE_MIN_STRAFE = 8; // in/s
 /** forward speed above which a FLAT (vector) intake driven into a CLUMP scatters
  * it instead of vectoring it in: the non-compliant wheels + impact force push the
  * pile away. Below this a controlled approach still intakes normally. Wedge

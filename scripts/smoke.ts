@@ -1261,6 +1261,64 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
       false,
       3,
     );
+  /**
+   * A VECTOR INTAKE TAKES WHAT IS UNDER ITS ROLLER ROW, NOT ONLY WHAT IS ALREADY CENTRED.
+   *
+   * The flat preset has no slopes to walk an artifact to the throat, `cornered` is wedge-only,
+   * and the flank grab written for it could never fire: it wanted the mouth WIDER than the
+   * chassis, and `intakeMouth` sets the vector mouth to exactly the chassis half-width. So its
+   * only way in was the throat, about 7in of a 15in opening. Measured over this grid, artifacts
+   * sat INSIDE the vector intake with room in the hopper and were never eligible: 8 before,
+   * 3 after. The preset already charges the vectoring as TIME (`capMin` to `capMax` by offset);
+   * requiring the artifact to be centred as well charged it twice. Gated on `!m.wedge`, so the
+   * two funnel presets are untouched.
+   */
+  {
+    const strandedInMouth = (geo: 'row' | 'hex' | 'file', n: number, off: number, thr: number, deg: number): number => {
+      const w = quiet(11);
+      const r = w.robots[0];
+      r.spec = { ...r.spec, intake: 'vector' };
+      r.hopper = [];
+      r.heading = Math.PI / 2 - (deg * Math.PI) / 180;
+      r.pos = { x: 0, y: -30 };
+      const m = intakeMouth(r.spec);
+      const hl = r.spec.length / 2;
+      const tip = hl + INTAKE_PRESETS[r.spec.intake].reach;
+      const pitch = 2 * BALL_RADIUS + 0.02;
+      const y0 = -30 + tip + 30;
+      w.balls.length = n;
+      for (let i = 0; i < n; i++) {
+        const b = w.balls[i];
+        if (geo === 'row') place(b, off + (i - (n - 1) / 2) * pitch, y0, 0, 0);
+        else if (geo === 'file') place(b, off, y0 + i * pitch, 0, 0);
+        else if (i < 2) place(b, off + (i - 0.5) * pitch, y0, 0, 0);
+        else place(b, off + (i - 2 - (n - 3) / 2) * pitch, y0 + pitch * 0.866, 0, 0);
+      }
+      const commands = new Map([[0, cmd({ driveY: thr, intake: true })]]);
+      const reached = new Set<number>();
+      for (let i = 0; i < Math.round(3 / SIM_DT); i++) {
+        step(w, SIM_DT, commands);
+        for (const b of w.balls) {
+          if (b.state.kind !== 'ground') continue;
+          const l = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+          if (l.x > hl - BALL_RADIUS && l.x < tip + BALL_RADIUS && Math.abs(l.y) < m.mouthHalf + BALL_RADIUS * 0.25) reached.add(b.id);
+        }
+      }
+      if (HOPPER_CAPACITY - r.hopper.length <= 0) return 0;
+      return w.balls.filter((b) => b.state.kind === 'ground' && reached.has(b.id)).length;
+    };
+    let stranded = 0;
+    for (const geo of ['row', 'hex', 'file'] as const)
+      for (const n of [3, 5])
+        for (const off of [0, 2, 4, 6])
+          for (const thr of [0.25, 1.0]) for (const deg of [0, 12]) stranded += strandedInMouth(geo, n, off, thr, deg);
+    check(
+      'a vector intake does not strand artifacts sitting inside its own mouth',
+      stranded <= 4,
+      `${stranded} artifacts ended inside the vector mouth with room in the hopper, over 96 ram scenes (8 before the roller row became the capture surface)`,
+    );
+  }
+
     check(
       'nothing a robot pushes ends up faster than the robot',
       pile.ratio <= 1.02 && line.ratio <= 1.02,

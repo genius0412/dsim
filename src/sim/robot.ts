@@ -851,7 +851,6 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   const preset = C.INTAKE_PRESETS[r.spec.intake];
   const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
   const hl = r.spec.length / 2;
-  const half = r.spec.width / 2;
   const tip = hl + preset.reach; // the roller line (balls pass UNDER it)
   const velRobot = rot(r.vel, -r.heading);
   // ALL intakes capture at the CENTER, directly under the compliant wheels
@@ -905,16 +904,44 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
       // corner artifact sits 6.5in off centre because the chassis half-width is what stops
       // the robot getting any closer to the wall. Inside the mouth is inside the funnel.
       Math.abs(local.y) < m.mouthHalf + C.BALL_RADIUS * 0.25;
-    // flank grab: only where the wheels OVERHANG a narrower chassis (vector)
-    const sideTouch =
-      m.mouthHalf > half + 0.5 &&
-      local.x > hl - 2 &&
+    /**
+     * ...OR IT IS UNDER THE VECTOR ROLLER ROW, WHICH IS THE WHOLE MOUTH.
+     *
+     * A FLAT preset has no slopes to walk an artifact to the throat, no `cornered` grab (that
+     * one is wedge-only), and the flank grab this replaces could never fire on any legal robot:
+     * it asked for `mouthHalf > half + 0.5`, and `intakeMouth` sets the vector mouth to EXACTLY
+     * the chassis half-width. So the only way in was `atThroat`, a window about 7in of a 15in
+     * opening, reached only by the suction walking the artifact across — which in a clump it
+     * often never manages. Measured over 504 ram scenes, 46 artifacts sat INSIDE the vector
+     * intake and were never eligible, against 0 for either wedge preset.
+     *
+     * The preset's own model is that the wheel row spans the whole mouth and VECTORS an
+     * off-centre artifact to the centre, paying for it in TIME: `capMin` at the centre rising
+     * to `capMax` at the edge. That cost is charged below by `t`. Requiring the artifact to
+     * ALREADY be centred charged it twice — once as a delay and once as a precondition — and
+     * only the delay was ever intended. So the roller row grabs where it lies and the timing
+     * does the vectoring, which leaves vector the slowest of the three by exactly the margin
+     * `capMin`/`capMax`/`clumpInterval` already give it. No suction, mouth or interval constant
+     * moves, and the branch is gated on `!m.wedge`, so sloped and triangle are untouched.
+     */
+    const vBall = rot(b.vel, -r.heading);
+    // ...but NOT one the flat plate is meant to scatter. An off-centre artifact struck at
+    // speed by a non-compliant front gets no suction (`sideImpact` in `intakeSuction`); it
+    // would be perverse to swallow the very artifact the preset is defined by bouncing away,
+    // so the grab uses the same test and declines it.
+    const rammed =
+      Math.abs(local.y) > captureHalf &&
+      velRobot.x > 0 &&
+      velRobot.x - vBall.x > C.INTAKE_RAM_SPEED;
+    const onRollerRow =
+      !m.wedge &&
+      !rammed &&
+      local.x > hl - 1 &&
       local.x < tip + C.BALL_RADIUS &&
-      Math.abs(local.y) > half - 0.5 &&
-      Math.abs(local.y) < half + C.BALL_RADIUS + 0.6 &&
-      velRobot.y * Math.sign(local.y) > C.INTAKE_SIDE_MIN_STRAFE;
-    // a cornered grab reports its true off-centre distance, so the timing lands at capMax
-    if (atThroat || sideTouch || cornered) candidates.push({ b, y: Math.abs(local.y) });
+      Math.abs(local.y) < m.mouthHalf + C.BALL_RADIUS * 0.25;
+    // a cornered or roller-row grab reports its true off-centre distance, so the timing lands
+    // at capMax
+    if (atThroat || onRollerRow || cornered) candidates.push({ b, y: Math.abs(local.y) });
   }
   if (candidates.length === 0) return;
 
