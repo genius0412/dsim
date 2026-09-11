@@ -132,10 +132,12 @@ What it keeps, because these were right for reasons that still apply:
   server collecting each player's Neon Auth JWT and forwarding them — means handing player
   tokens to a box the cloud has no reason to trust. That stays rejected.
 
-⚠️ **The upload must go to the CLOUD, not to the server you are playing on.** When a LAN
-connection is active, `gameServerUrl()` points at the host's laptop; every read API and the
-upload must keep resolving to the configured official server. These have to be two different
-accessors, or the first LAN match posts itself to a box with no database and vanishes.
+⚠️ **The upload must go to the CLOUD, not to the server you are playing on.** A LAN box has
+no database — it is started with a blank `DATABASE_URL` on purpose — so a match posted back to
+it vanishes. The accessors are therefore split by SCOPE rather than by connection state:
+`roomServerUrl*()` follows the LAN socket and `Lobby.tsx` is its only caller, while
+`gameServerUrl()`/`gameServerHttpUrl()` stay the cloud throughout a LAN match. See "What the
+split actually is" under **Order of work** for what went wrong the first time.
 
 ## Schema — BUILT (migration 0033)
 
@@ -189,10 +191,48 @@ re-solved.
 
 1. ~~`matchId` minted at `finalizeMatch` and carried in `matchResult`.~~ **DONE** — `42a6751`.
 2. ~~Migration + `lan_runs` repo functions + `dbtest`.~~ **DONE** — `9bf2cf7`.
-3. `POST /api/lan` + the client upload module and its backlog drain. **The cloud-vs-LAN URL
-   split in `env.ts` is the load-bearing part**, and it is where this most easily goes wrong.
-4. Static client serving on the game server, behind an env var.
-5. Electron: spawn the server, host panel, join URL, reachability check.
-6. The banner, the https/ws diagnosis, and `npm run uiaudit` green.
+3. ~~`POST /api/lan` + the client upload module and its backlog drain.~~ **DONE** —
+   `f2e227c` (the API and the URL split), and the drain is wired in step 6's commit.
+   **The cloud-vs-LAN URL split in `env.ts` was the load-bearing part**, and it went
+   wrong exactly where this said it would — see "What the split actually is" below.
+4. ~~Static client serving on the game server, behind an env var.~~ **DONE** — `43b5982`.
+5. ~~Electron: spawn the server, host panel, join URL, reachability check.~~ **DONE** —
+   `1c6645d` (the main process) and `19a1cfd` (the panel).
+6. ~~The banner, the https/ws diagnosis, and `npm run uiaudit` green.~~ **DONE** — `19a1cfd`.
 
-Steps 3 and 4 are independent of each other and of the UI.
+### What the split actually is
+
+The first version of `env.ts` made `gameServerUrl()` return `lanUrl || cloud`, which is the
+obvious reading of "the client is connected to a LAN server" and is wrong in a way nothing
+would have reported: RANKED, RECORDS and SPECTATE all read that accessor, so a player with a
+LAN address stored would have queued for a rated match against a laptop in the same room.
+
+So there are two families and the rule is flat:
+
+- **`roomServerUrl()` / `roomServerUrlWith()` / `roomServerConfigured()`** follow a LAN
+  connection. `src/ui/Lobby.tsx` is their ONLY caller — a custom room is the one thing that
+  may be hosted on somebody's laptop.
+- **`gameServerUrl()` / `gameServerHttpUrl()`** are ALWAYS the cloud, including while a LAN
+  match is being played. `uploadLanRun` depends on this: the match is posted to the cloud
+  from a client sitting on a LAN socket.
+
+### Three more decisions this took
+
+- **Origin adoption** (`src/net/lanAdopt.ts`). A guest is told "open
+  `http://192.168.1.5:8787`", and that address IS the server, so asking them to type it into
+  a panel afterwards is asking them to repeat themselves. The client probes its OWN origin:
+  `http:` only, private host only, `/health` must answer `ok` within 2s. The probe is what
+  separates a LAN host from `npm run dev` on `localhost:5173`.
+- **The build-skew warning** (`checkSkew` in `LanPanel`). The desktop shell loads the LIVE
+  site when it can, while the server it starts serves the `dist/` that shipped in the
+  installer — so the host can be running a different build from every guest, and a
+  CODE-JOINED room has no build segregation to catch it. It is a warning with a one-click
+  fix (play through `http://localhost:<port>`), not a block: the two are usually identical,
+  and the check needs the server up to answer at all.
+- **The host keeps the match, not every client** (`keepLanRun` in `App.tsx`). Three
+  conditions, each load-bearing: `lanActive()` (a cloud match is written by the server that
+  ran it), `isHost()` (the owner's "whoever is hosting the match from the computer" — one
+  uploader, so there is no dedup problem), and a present `matchId` (an older LAN server
+  mints none, and an unkeyed row would re-upload as a new match on every retry).
+
+Steps 3 and 4 were independent of each other and of the UI.

@@ -73,6 +73,8 @@ export class ServerSession implements NetSession {
   /** record run's leaderboard standing, arrives shortly after matchResult */
   private recordResult: RecordRankInfo | null = null;
   private restartCb: (() => void) | null = null;
+  /** fired once per `matchResult` — see `onMatchResult` */
+  private resultCb: ((info: MatchResultInfo) => void) | null = null;
   private connected = true;
   /** reconnection budget exhausted — the server likely restarted; prompt a refresh */
   private failed = false;
@@ -168,6 +170,12 @@ export class ServerSession implements NetSession {
 
   onRestart(cb: () => void): void {
     this.restartCb = cb;
+  }
+
+  /** REPLACES, like every other `on*` here — the app re-registers whenever the callback's
+   *  closure changes, and two live handlers would double-keep the match. */
+  onMatchResult(cb: (info: MatchResultInfo) => void): void {
+    this.resultCb = cb;
   }
 
   /** report another driver in this match. The server maps `robotId` onto an account from
@@ -319,7 +327,14 @@ export class ServerSession implements NetSession {
     } else if (m.t === 'rematch') {
       this.rematch = { votes: m.votes, need: m.need, mine: m.you };
     } else if (m.t === 'matchResult') {
-      this.matchResult = { kind: m.kind, record: m.record, result: m.result, replay: m.replay };
+      this.matchResult = {
+        kind: m.kind,
+        record: m.record,
+        result: m.result,
+        replay: m.replay,
+        matchId: m.matchId,
+      };
+      this.resultCb?.(this.matchResult);
     } else if (m.t === 'eloResult') {
       this.eloResults = m.results;
     } else if (m.t === 'recordResult') {

@@ -9,7 +9,7 @@ import {
   type Activity,
   type RoomInvite,
 } from '../net/api';
-import { uploadPracticeRun } from '../net/api';
+import { uploadPracticeRun, uploadLanRun, type LanParticipant } from '../net/api';
 import { FriendsProvider } from './friendsContext';
 import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
@@ -45,9 +45,9 @@ import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
-import { gameServerConfigured, setSelectedServer, selectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
+import { gameServerConfigured, lanActive, setSelectedServer, selectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
 import { ServerMenu } from './ServerMenu';
-import type { NetSession } from '../net/session';
+import type { MatchResultInfo, NetSession } from '../net/session';
 import { ServerSession } from '../net/serverSession';
 import { WebSocketTransport } from '../net/transport';
 import { encodeMsg } from '../net/protocol';
@@ -59,6 +59,12 @@ import {
   pendingPracticeUploads,
   loadPracticeReplay,
 } from '../net/practiceRuns';
+import {
+  saveLanRunLocal,
+  markLanUploaded,
+  pendingLanUploads,
+  loadLanReplay,
+} from '../net/lanRuns';
 import { applyRouteMeta } from '../seo';
 import type { GameId } from '../games/types';
 import { chainDisclaimerSeen, markChainDisclaimerSeen } from '../chainDisclaimer';
@@ -464,6 +470,8 @@ export function App() {
   const signedInRef = useRef(false);
   /** one flush at a time — a sign-in and a finished run can land together */
   const flushingPractice = useRef(false);
+  /** the same guard for the LAN backlog, which drains on exactly the same two triggers */
+  const flushingLan = useRef(false);
   // the account's PUBLIC display name (the mutable `handle` behind leaderboards and
   // /profile), which is NOT `user.name` — that's the immutable Neon Auth sign-up name.
   // Lifted here so the header pill and the Profile page read the same source; before
@@ -736,6 +744,85 @@ export function App() {
     }
   };
 
+  /**
+   * A SELF-HOSTED (LAN) MATCH FINISHED — keep it, if this device is the one hosting.
+   *
+   * The owner's rule for this feature is "whoever is hosting the match from the computer",
+   * and this is where it is enforced: exactly ONE client in a LAN room keeps and uploads the
+   * match. There is no dedup to do on the cloud side because there is only ever one uploader.
+   *
+   * ⚠️ **A LAN SERVER WRITES NOTHING.** It runs with a blank `DATABASE_URL` by construction
+   * (`electron/lanHost.cjs`), so if this client does not keep the match, nothing anywhere
+   * does. Device first and account second, exactly like practice — and for a sharper reason:
+   * a venue's wifi is at its worst at the final whistle, on a network with forty phones on
+   * it, and the host is required to be SIGNED IN but not to be ONLINE.
+   *
+   * THREE CONDITIONS, and each one is load-bearing:
+   *   - `lanActive()` — a cloud match is written by the server that ran it; keeping a second
+   *     copy here would upload an unofficial duplicate of an OFFICIAL match.
+   *   - `isHost()` — the one-uploader rule above. A guest and a spectator keep nothing.
+   *   - `matchId` — an older LAN server mints none (it is optional on the wire, because one
+   *     app serves every client version), and an unkeyed row would be re-uploaded as a NEW
+   *     match on every retry. Skipping is the safe half of that trade.
+   */
+  const keepLanRun = (info: MatchResultInfo, sess: NetSession): void => {
+    if (!lanActive() || !sess.isHost() || !info.matchId) return;
+    // NAMES, not account ids. The people in a LAN room are mostly not signed in on this
+    // server — it has no accounts at all — so the roster is what the match itself carries.
+    // The cloud re-sanitizes every field of this; see `server/api.ts`.
+    const participants: LanParticipant[] = sess.setups.map((su) => ({
+      name: su.spec.name || `Driver ${su.id}`,
+      teamName: su.spec.teamName || undefined,
+      teamNumber: su.spec.teamNumber || undefined,
+      alliance: su.alliance,
+      drivetrain: su.spec.drivetrain,
+    }));
+    saveLanRunLocal(info.matchId, info.replay, info.result.score, participants);
+    // Same as practice: never upload THIS match directly — drain the backlog, which contains
+    // it. One path to the cloud means a failure is retried by the next flush.
+    void flushLanRuns();
+  };
+
+  /**
+   * Send every self-hosted match the account does not yet have.
+   *
+   * The twin of `flushPracticeRuns`, down to stopping on the first failure — see its note for
+   * why sequential. The failure modes are if anything more routine here: a LAN match is played
+   * in a gym, and the whole point of the feature is that it works when the internet does not.
+   */
+  const flushLanRuns = async (): Promise<void> => {
+    if (!signedInRef.current || flushingLan.current) return;
+    flushingLan.current = true;
+    try {
+      for (const meta of pendingLanUploads()) {
+        const replay = loadLanReplay(meta.id);
+        if (!replay) continue; // body evicted by the local cap — nothing left to send
+        const run = await uploadLanRun(meta.matchId, replay, meta.score, meta.participants, meta.game);
+        if (!run) break;
+        markLanUploaded(meta.id, run.id);
+      }
+    } finally {
+      flushingLan.current = false;
+    }
+  };
+
+  /**
+   * Hand the live session its end-of-match callback.
+   *
+   * ONE registration point for every way a session is made — a lobby room, a record run, a
+   * matchmaker assignment, a spectate — which is the reason it lives here rather than beside
+   * each `new ServerSession`. `onMatchResult` REPLACES, so re-running this is free.
+   *
+   * Keyed on the SESSION alone, deliberately: everything the callback reads is either a module
+   * function (`lanActive`, the `lanRuns` store) or a ref (`signedInRef`), so there is no
+   * render-scoped value to go stale — unlike `onPracticeRun`, which closes over `signedIn`.
+   */
+  useEffect(() => {
+    if (!session) return;
+    session.onMatchResult?.((info) => keepLanRun(info, session));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
   /** RECORD runs: abandon this run and immediately start a fresh one.
    *
    * Deliberately a full teardown + re-entry, NOT an in-place world rebuild. A
@@ -898,7 +985,12 @@ export function App() {
    */
   useEffect(() => {
     signedInRef.current = signedIn;
-    if (signedIn) void flushPracticeRuns();
+    if (signedIn) {
+      void flushPracticeRuns();
+      // the LAN backlog drains on exactly the same trigger, and for a sharper version of the
+      // same reason: a host who signed in after the scrimmage still owns those matches
+      void flushLanRuns();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signedIn]);
 

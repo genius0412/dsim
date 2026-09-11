@@ -9,6 +9,14 @@ export interface MatchResultInfo {
   record?: RecordKind;
   result: ReplayResult;
   replay: Replay;
+  /**
+   * The server-minted id for this match, when the server that ran it mints one.
+   *
+   * ABSENT from an older server (see the protocol note on `matchResult`), and the only
+   * consumer — the LAN upload — skips the match rather than inventing one: an unkeyed row
+   * would be re-uploaded as a new match on every retry.
+   */
+  matchId?: string;
 }
 
 /**
@@ -116,6 +124,15 @@ export interface NetSession {
   /** the server's end-of-match result (score + recorded replay), or null before
    * phase 'post' — drives the Results screen's "recorded / watch replay" */
   getMatchResult(): MatchResultInfo | null;
+  /**
+   * Be told the moment the server's result lands, rather than polling for it.
+   *
+   * The results SCREEN polls `getMatchResult` and is right to — it is rendering. This is for
+   * the one thing that must happen exactly once per match and cannot be re-derived from a
+   * render: keeping a self-hosted match on the host's device (`keepLanRun` in App). Optional,
+   * so a solo run (no session at all) and an older session both simply never fire it.
+   */
+  onMatchResult?(cb: (info: MatchResultInfo) => void): void;
   /** a record run's leaderboard standing (PB / WR / rank), or null until the
    * server's `recordResult` lands after persistence — record runs only */
   getRecordResult?(): RecordRankInfo | null;
