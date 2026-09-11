@@ -1543,11 +1543,20 @@ httpServer.on('connection', (socket) => socket.setNoDelay(true));
 // than the event loop, so the cost should land beside the room loop rather than inside it
 // — that is the thing most worth confirming, because §6 priced it as if it were on-loop.
 //
+// THE KILL SWITCH IS `WS_COMPRESS=0`, and it exists because the latency half of this is
+// the one thing that could not be measured before shipping. Everything above is a wire
+// WIN; the risk is entirely on the other axis, and it lands on the day the population is
+// largest. Turning the extension off is a restart of the machines with one env var set —
+// no deploy, no code change, no client change (a client that offered the extension simply
+// is not given it, which is the same path every old client already takes). Named as the
+// rollback in docs/launch-load-test.md §3a, so it has to keep working.
+const WS_COMPRESS = process.env.WS_COMPRESS !== '0';
+
 // noServer: we intercept the upgrade ourselves (below) to do region routing. The
 // extension is negotiated inside `wss.handleUpgrade`, so these options still apply.
 const wss = new WebSocketServer({
   noServer: true,
-  perMessageDeflate: {
+  perMessageDeflate: WS_COMPRESS ? {
     zlibDeflateOptions: { level: 1, windowBits: 15, memLevel: 8 },
     // advertised to the peer AND used for our deflate window; keep the two equal
     serverMaxWindowBits: 15,
@@ -1561,7 +1570,7 @@ const wss = new WebSocketServer({
     // small control messages skip it. Snapshots (2.3 KB solo, 6.4 KB at 4 robots) do not.
     threshold: 1024,
     concurrencyLimit: 20,
-  },
+  } : false,
 });
 
 // WS-level liveness. A half-open TCP connection (laptop lid closed, wifi dropped,
