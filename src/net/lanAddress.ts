@@ -105,7 +105,14 @@ export function parseLanAddress(raw: string): { ok: true; value: LanAddress } | 
       port = Number(hostPort.slice(i + 1));
     }
   }
-  if (!host || /\s/.test(host)) return { ok: false, error: 'malformed' };
+  // SHAPE BEFORE POLICY. `isPrivateHost` answers false for a public address AND for a
+  // string that is not a host at all, and the two need different things said to them: one
+  // person typed a real server we decline to reach, the other made a typo. Without this
+  // test, `!!!` was reported as "that isn't an address on this network".
+  const shaped = bracket
+    ? /^\[[0-9a-fA-F:.]+\]$/.test(host)
+    : /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/.test(host);
+  if (!shaped) return { ok: false, error: 'malformed' };
   if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: 'malformed' };
   if (!isPrivateHost(host)) return { ok: false, error: 'not-private' };
 

@@ -10,6 +10,7 @@ import { Logo } from './Logo';
 import { NavRail } from './NavRail';
 import { usePresence } from './usePresence';
 import { MaintenanceBanner } from './MaintenanceBanner';
+import { LanBanner } from './LanBanner';
 import { PresenceProvider, QueueCounts } from './QueueCounts';
 import type { Presence, RoomInvite } from '../net/api';
 
@@ -127,6 +128,13 @@ export function AppShell({
           connection — which is exactly where somebody stands when they are about to
           start the thing we need them not to start. */}
       <MaintenanceBanner presence={presence} />
+      {/* "LAN — unofficial, not ranked", whenever this device is pointed at a self-hosted
+          server. On the SHELL screens specifically, which is where the misunderstanding
+          would actually happen: somebody looking at a leaderboard and wondering why the
+          match they just played is not on it. The room screens replace this shell outright
+          and say it their own way (`.ds-room-layout` is a 100dvh flex box — a strip above
+          it would push the room off the bottom of the viewport). */}
+      <LanBanner />
 
       {showRail ? (
         <div className="ds-body">

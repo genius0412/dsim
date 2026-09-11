@@ -11,7 +11,7 @@ import { RoleSwapBar } from './RoleSwapBar';
 import { SupporterBadge } from './SupporterBadge';
 import { Menu } from './Menu';
 import { DRIVETRAIN_LABELS, buildSummary } from './robotLabels';
-import { gameServerUrl, gameServerUrlWith, gameServers, multiServer, selectedServer } from '../net/env';
+import { gameServers, lanActive, multiServer, roomServerUrl, roomServerUrlWith, selectedServer } from '../net/env';
 import { roomJoinRegion } from '../net/roomRegion';
 import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
@@ -233,7 +233,7 @@ export function Lobby({
   function join(roomCode: string, hostRegion?: string | null): void {
     if (!roomCode) return;
     setCode(roomCode);
-    if (!gameServerUrl()) {
+    if (!roomServerUrl()) {
       setError('Multiplayer needs the game server.');
       setPhase('error');
       return;
@@ -245,7 +245,10 @@ export function Lobby({
       setRegion(hostRegion);
       setRegionLocked(true);
     }
-    const url = multiServer() && useRegion ? gameServerUrlWith({ region: useRegion }) : gameServerUrl();
+    // ROOMS are the one thing that may be hosted on a LAN box, so this is the one
+    // connect site that follows a LAN connection (`roomServerUrl`, not `gameServerUrl`).
+    // A region hint means nothing to a single machine with no proxy, and is harmless.
+    const url = multiServer() && useRegion ? roomServerUrlWith({ region: useRegion }) : roomServerUrl();
     let transport: WebSocketTransport;
     try {
       transport = new WebSocketTransport(url);
@@ -427,6 +430,16 @@ export function Lobby({
             </h1>
           </div>
           <div className="ds-panelbox">
+            {/* THE ROOM LOOKS IDENTICAL EITHER WAY, so this screen has to say which it is.
+                It is the last point before a socket is opened, and the consequence — the
+                match will not be rated and will not reach a board — is the sort of thing
+                that has to be said before, not discovered after. */}
+            {lanActive() && (
+              <p className="ds-hint warn">
+                This room will be hosted on the LAN server you’re connected to. Matches there
+                are unofficial — not rated, and never on a leaderboard.
+              </p>
+            )}
             <label className="ds-field">
               <span className="cap">Your name</span>
               <input
@@ -439,7 +452,10 @@ export function Lobby({
                 maxLength={20}
               />
             </label>
-            {multiServer() && (
+            {/* no region picker on a LAN server: there is one machine, and offering a
+                choice of where to put the room would be offering a choice that does not
+                exist. */}
+            {multiServer() && !lanActive() && (
               <label className="ds-field">
                 <span className="cap">Region</span>
                 <select

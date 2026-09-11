@@ -25,6 +25,7 @@ import { LobbyClient } from '../net/lobbyClient';
 import { AppShell, type ShellNav } from './AppShell';
 import { HomeMenu } from './HomeMenu';
 import { ModeSelect } from './ModeSelect';
+import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
 import { Records, isRecordsTab, type RecordsTab } from './Records';
 import { RecordRun } from './RecordRun';
@@ -73,6 +74,7 @@ type Screen =
   | 'duorecord'
   | 'matchmaking'
   | 'watch'
+  | 'lan'
   | 'replay'
   | 'game'
   | 'download'
@@ -153,6 +155,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/ranked';
     case 'watch':
       return '/watch';
+    case 'lan':
+      return '/lan';
     case 'replay':
       return a.replayId ? `/replay/${encodeURIComponent(a.replayId)}` : '/replay';
     case 'game':
@@ -211,6 +215,7 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/record')) return at('record');
   if (rest.startsWith('/ranked')) return at('matchmaking');
   if (rest.startsWith('/watch')) return at('watch');
+  if (rest.startsWith('/lan')) return at('lan');
   if (rest.startsWith('/download')) return at('download');
   if (rest.startsWith('/contributors')) return at('contributors');
   if (rest.startsWith('/privacy')) return at('privacy');
@@ -244,6 +249,7 @@ function navFor(screen: Screen): ShellNav {
     case 'duorecord':
     case 'matchmaking':
     case 'watch':
+    case 'lan':
       return 'play';
     case 'configure':
       return 'configure';
@@ -1150,6 +1156,7 @@ export function App() {
           onRanked={() => guardStart(() => navigate('matchmaking'))}
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onWatch={() => navigate('watch')}
+          onLan={() => navigate('lan')}
         />
       )}
       {/* one-time "this sim isn't realistic" disclaimer for Chain Reaction */}
@@ -1303,6 +1310,12 @@ export function App() {
         />
       )}
       {screen === 'watch' && <WatchLive onWatch={spectateRoom} onBack={() => navigate('modes')} />}
+      {/* LAN. `onConnected` goes to the CUSTOM ROOM screen, because that is what a LAN
+          match is — a code-joined room, on a different server. Nothing about the room
+          flow changes; only `gameServerUrl()` now answers with the host's machine. */}
+      {screen === 'lan' && (
+        <LanPanel signedIn={signedIn} onConnected={() => guardStart(() => navigate('lobby'))} />
+      )}
       {screen === 'download' && <Download />}
       {screen === 'contributors' && <Contributors onOpenProfile={openProfile} />}
       {/* legal pages are public and must stay reachable without an account —

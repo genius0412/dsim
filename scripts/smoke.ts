@@ -6932,6 +6932,10 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       err('8.8.8.8') === 'not-private' && err('example.com') === 'not-private',
     );
     check('lan addr: nothing typed is `empty`, not a crash', err('') === 'empty' && err('   ') === 'empty');
+    check(
+      'lan addr: a TYPO is malformed, not "not on this network" — they are different problems',
+      err('!!!') === 'malformed' && err('192.168.1.5 extra') === 'malformed',
+    );
     check('lan addr: a port outside 1..65535 is malformed', err('192.168.1.5:70000') === 'malformed');
     check(
       'lan addr: a bracketed IPv6 with a port splits on the RIGHT colon',

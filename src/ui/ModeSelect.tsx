@@ -9,6 +9,7 @@ import { QueueCounts } from './QueueCounts';
 export function ModeSelect({
   multiplayer,
   signedIn,
+  onLan,
   activeGame,
   onRejoin,
   onFreeDrive,
@@ -31,6 +32,8 @@ export function ModeSelect({
   onRanked: () => void;
   onCustomRoom: () => void;
   onWatch: () => void;
+  /** host or join a game on this network (docs/lan-selfhost.md) */
+  onLan: () => void;
 }) {
   return (
     <>
@@ -107,6 +110,24 @@ export function ModeSelect({
             <span>
               <span className="t">Duo Record</span>
               {!multiplayer && <span className="d">Needs the game server</span>}
+            </span>
+          </button>
+        </div>
+      </section>
+
+      {/* LAN — the only mode that needs NEITHER the internet nor an account to play.
+          It sits above Custom because at a competition venue it is the one that works:
+          the wifi is saturated, the cloud is far away, and the whole team is on one
+          network. Never disabled on `multiplayer` — not needing our servers is the
+          entire point. */}
+      <section className="ds-tileset">
+        <p className="ds-tileset-label">LAN · same network</p>
+        <div className="ds-tiles">
+          <button className="ds-tile" onClick={onLan}>
+            <span className="k">LAN</span>
+            <span>
+              <span className="t">Host or Join</span>
+              <span className="d">Unofficial — not rated</span>
             </span>
           </button>
         </div>
