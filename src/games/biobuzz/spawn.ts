@@ -11,7 +11,7 @@ import type {
   World,
 } from '../../types';
 import * as C from '../../config';
-import { clamp, datan2, nextRandom, rot, wrapAngle } from '../../math';
+import { clamp, datan2, dcos, dsin, nextRandom, rot, wrapAngle } from '../../math';
 import {
   DEFAULT_ASSISTS,
   MOTIFS,
@@ -91,6 +91,58 @@ function coerceBiobuzzSetup(s: RobotSetup): RobotSetup {
 }
 
 /**
+ * THE FOOTPRINT FITS INSIDE THE FIELD — the containment invariant a start pose has to satisfy,
+ * enforced on the FINAL pose (after the alliance mirror) by sliding the chassis in.
+ *
+ * A custom pose used to be validated on its CENTRE ALONE: `coerceStartPose` (`src/sim/
+ * spawn.ts`) clamps `x`/`y` to ±`FIELD_HALF` and nothing else, so a pose at the corner spawned
+ * a robot with half its frame — and all of its sweeper — through the wall. BIOBUZZ has no
+ * published start legality (`startLegality: false`), so there is no G304 analogue to snap to
+ * the way `coerceSetup` does for DECODE; what there IS, and what does not need a manual, is
+ * that a robot must begin the match inside the field. Rapier will not fix it either: the
+ * perimeter invariant in `solveRobots` clamps GROWTH past the wall and deliberately leaves a
+ * body that was ALREADY outside alone, so an out-of-bounds spawn simply stays out of bounds.
+ *
+ * The FOOTPRINT, not the chassis box, for the same reason `footprintExtents` is what the
+ * solver collides on: the sweeper is a physical part of the robot and `bbFootprint` grows the
+ * box by its reach on whichever edge(s) it is mounted. And the ROTATED footprint, measured as
+ * the axis-aligned box the turned rectangle actually occupies — a robot at 45° reaches further
+ * toward a wall than its half-length.
+ *
+ * It SLIDES rather than rejects: a translation is the smallest repair that keeps the driver's
+ * chosen heading and their intent (a pose against the wall stays against the wall), and the
+ * AABB translates exactly with the centre, so the fix is a single subtraction with no search.
+ * A footprint too large for the field at all cannot be made to fit, so it is centred on that
+ * axis — unreachable today (the size envelope is an 18in cube on a 144in field) and it must
+ * not silently produce an inverted clamp.
+ *
+ * Applied to the ANCHORS too, deliberately: they are hand-placed `APPROX` numbers, and this is
+ * a no-op for them (`npm run test:bb` asserts every anchor's footprint is already inside) but
+ * it means there is no spawn path left that can place a robot through a wall. Deterministic
+ * and idempotent — `f(f(x)) === f(x)`, so it cannot walk a pose across repeated coercion.
+ */
+function bbFitPose(spec: RobotSpec, pose: Pose): Pose {
+  const e = bbFootprint(spec);
+  const c = dcos(pose.heading);
+  const s = dsin(pose.heading);
+  // the footprint's own centre — offset from the robot's origin whenever the sweeper makes it
+  // asymmetric fore-and-aft (a front-only mount), and it rotates with the chassis
+  const half = (e.front + e.rear) / 2;
+  const off = (e.front - e.rear) / 2;
+  const cx = pose.pos.x + off * c;
+  const cy = pose.pos.y + off * s;
+  // the axis-aligned half-extents of the rotated rectangle
+  const ax = Math.abs(half * c) + Math.abs(e.half * s);
+  const ay = Math.abs(half * s) + Math.abs(e.half * c);
+  const limX = Math.max(0, BB_HALF_X - ax);
+  const limY = Math.max(0, BB_HALF_Y - ay);
+  return {
+    pos: { x: pose.pos.x + (clamp(cx, -limX, limX) - cx), y: pose.pos.y + (clamp(cy, -limY, limY) - cy) },
+    heading: pose.heading,
+  };
+}
+
+/**
  * A robot's start pose. The named `BB_START_POSES` anchors are CANONICAL for BLUE; RED is the
  * x-mirror, and the mirror is applied HERE and nowhere else so no other file has to know which
  * alliance is which side.
@@ -102,10 +154,11 @@ function coerceBiobuzzSetup(s: RobotSetup): RobotSetup {
  *
  * A CUSTOM pose wins over the anchor index (the same contract DECODE uses) and is stored in
  * the canonical blue frame, so it is mirrored on the same path. It is NOT snapped legal,
- * because there is no legality to snap to — `coerceStartPose` has already field-clamped it,
- * which is the only guarantee available and the only one this game claims.
+ * because there is no legality to snap to — but it IS fitted inside the perimeter
+ * (`bbFitPose`), AFTER the mirror, because "the whole robot starts on the field" is an
+ * invariant no manual is needed for and `coerceStartPose`'s centre clamp does not give it.
  */
-function bbStartPose(alliance: Alliance, index: number, custom?: StartPose | null): Pose {
+function bbStartPose(spec: RobotSpec, alliance: Alliance, index: number, custom?: StartPose | null): Pose {
   const base: Pose = custom
     ? { pos: { x: custom.x, y: custom.y }, heading: (custom.headingDeg * Math.PI) / 180 }
     : (() => {
@@ -113,8 +166,11 @@ function bbStartPose(alliance: Alliance, index: number, custom?: StartPose | nul
         const p = BB_START_POSES[((index % n) + n) % n];
         return { pos: { ...p.pos }, heading: p.heading };
       })();
-  if (alliance === 'blue') return { pos: { ...base.pos }, heading: base.heading };
-  return { pos: { x: -base.pos.x, y: base.pos.y }, heading: wrapAngle(Math.PI - base.heading) };
+  const actual: Pose =
+    alliance === 'blue'
+      ? { pos: { ...base.pos }, heading: base.heading }
+      : { pos: { x: -base.pos.x, y: base.pos.y }, heading: wrapAngle(Math.PI - base.heading) };
+  return bbFitPose(spec, actual);
 }
 
 /** the shared goal state, present and INERT. BIOBUZZ has no goal — Section 9 lands at
@@ -138,7 +194,7 @@ function makeBiobuzzRobot(setup: RobotSetup, nth: number): RobotState {
   const assists = setup.assists;
   // honour the chosen start (the selector's `startIndex`); default a 2-robot alliance to its
   // two anchors, so the pair never stacks
-  const pose = bbStartPose(setup.alliance, setup.startIndex ?? nth, setup.startPose);
+  const pose = bbStartPose(spec, setup.alliance, setup.startIndex ?? nth, setup.startPose);
   // A TURRET starts ALREADY POINTED. It slews at a finite rate (`BB_TURRET_SLEW`), so a
   // turreted robot that spawned on the chassis heading would spend the first second of auto
   // swinging round. There is no target to point AT yet, so it points at the field CENTRE —
