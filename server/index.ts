@@ -1462,11 +1462,25 @@ httpServer.on('connection', (socket) => socket.setNoDelay(true));
 // peak before any compute is paid for (§5). Compression is the only lever that closes
 // that gap without an architecture change.
 //
-// WHY 13/6 AND NOT zlib's 15/8 DEFAULT: the window is per-socket memory, and 13/6 is
-// the measured knee — 64 KB/socket for -88%, where the default spends 256 KB for
-// -93% and 12/5 collapses to -73% because a 32 KB window can no longer hold a couple
-// of 6.4 KB frames, which is the redundancy being exploited. `level: 1` because the
-// gain here comes from the window, not from searching harder within a frame.
+// WHY THE WINDOW IS 15/8 AND NOT THE 13/6 §6 RECOMMENDED. §6 picked 13/6 (64 KB/socket)
+// as the knee, priced against holding 63 MB of windows at 1,000 SOCKETS ON ONE MACHINE —
+// and §3 of the same document proves that machine cannot exist. Node is single-threaded,
+// one process is one core, and a core carries ~13 driven rooms; a machine therefore holds
+// tens of sockets, not a thousand. At 20 sockets, 15/8 costs 5 MB and 13/6 costs 1.3 MB,
+// so the memory axis the knee was chosen on is not a real constraint in any reachable
+// topology. Measured end to end (`scripts/zz-deflate-cost.ts`), the difference is large:
+//
+//                       13/6              15/8
+//   decode-solo   15.2 KB/s (-83%)   12.5 KB/s (-88%)
+//   decode-1v1    38.3 KB/s (-80%)   26.0 KB/s (-86%)
+//   decode-2v2    91.1 KB/s (-67%)   48.9 KB/s (-83%)
+//   chain-solo    90.8 KB/s (-78%)   68.8 KB/s (-82%)
+//
+// Note how 13/6 DEGRADED AS THE ROOM GOT BUSIER, down to -67% on a 2v2. That is the knee
+// argument turned around: a 2v2 frame is bigger, so 64 KB holds fewer consecutive frames
+// and less of the redundancy is in reach. A room with four robots is the expensive one, so
+// losing the ratio exactly there is the worst place to save 192 KB. `level: 1` stays,
+// because the gain comes from the window and not from searching harder within a frame.
 //
 // ⚠️ THIS NEEDS NO `CLIENT_CAPS` GATE AND IS NOT A PROTOCOL CHANGE. permessage-deflate
 // is a WebSocket extension negotiated per connection in the HTTP upgrade (RFC 7692), so
@@ -1487,9 +1501,9 @@ httpServer.on('connection', (socket) => socket.setNoDelay(true));
 const wss = new WebSocketServer({
   noServer: true,
   perMessageDeflate: {
-    zlibDeflateOptions: { level: 1, windowBits: 13, memLevel: 6 },
+    zlibDeflateOptions: { level: 1, windowBits: 15, memLevel: 8 },
     // advertised to the peer AND used for our deflate window; keep the two equal
-    serverMaxWindowBits: 13,
+    serverMaxWindowBits: 15,
     // THE LOAD-BEARING LINE — see above. False = the window survives between messages.
     serverNoContextTakeover: false,
     // the UPSTREAM direction is quantized RobotCommands, ~100 B, and carries no
