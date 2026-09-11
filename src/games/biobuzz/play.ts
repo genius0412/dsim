@@ -2,6 +2,7 @@ import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../
 import * as C from '../../config';
 import { clamp, rot, wrapAngle } from '../../math';
 import { solveArtifacts, type SweepFrom } from '../../sim/physicsEngine';
+import { simModuleFor } from '../sim';
 import { stepGroundBall } from '../../sim/physics';
 import { robotSolids, type RobotSolids } from '../../sim/artifactSolids';
 import {
@@ -180,9 +181,20 @@ export function updateBiobuzz(
   dt: number,
   cmds: Map<number, RobotCommand>,
   enabled: boolean,
-  /** each robot's pose at the START of this tick (`step.ts`, stage 0) — the artifact solve
-   *  sweeps the chassis from there. Absent ⇒ no sweep, which is what a direct caller gets. */
-  from?: ReadonlyMap<number, SweepFrom>,
+  /**
+   * Each robot's pose at the START of this tick (`step.ts`, stage 0) — the artifact solve
+   * sweeps the chassis from there to where the robot solve left it.
+   *
+   * REQUIRED, and it used to be optional with a fall back to the END pose. A missing sweep is
+   * not a degraded mode, it is a WRONG one that still runs: the chassis is placed in the solve
+   * already overlapping whatever it drove into, and the only thing acting on the POLLEN inside
+   * it is soft penetration recovery — which is the "the balls go on top of the robot" failure
+   * the sweep exists to prevent. A silent fallback made that a plausible-looking tick instead
+   * of a compile error, so it is a compile error now: every caller (`step.ts`, and every smoke
+   * loop that drives this directly) captures stage 0 the way `src/sim/world.ts` does, or it
+   * does not build. A caller with genuinely nothing to sweep passes an EMPTY map and says so.
+   */
+  from: ReadonlyMap<number, SweepFrom>,
 ): void {
   const bb = world.biobuzz as BiobuzzState | undefined;
   if (!bb) return; // an old snapshot from before this game existed; nothing to do
@@ -267,14 +279,28 @@ export function updateBiobuzz(
    * pollen at `BB_POLLEN_R` (a full hopper is a physical plug in the mouth, and the plug has to
    * be the size of a POLLEN), the two DECODE-only exemption sets are empty (see this file's
    * header), and each chassis is swept from the pose `step.ts` captured before the drivetrain
-   * ran to where the robot solve put it. With no `from` — a caller that steps `updateBiobuzz`
-   * directly without the surrounding step — `solveArtifacts` falls back to the END pose per
-   * robot, i.e. no sweep, and a chassis then spawns already overlapping whatever it drove into.
+   * ran to where the robot solve put it (`from`, which is REQUIRED — see the parameter).
+   *
+   * THE SOLIDS COME FROM THE GAME, NOT FROM DECODE. `GameSimModule.artifactSolids` is the seam
+   * (`src/games/types.ts`), read here the way every optional slot is read — the module's if it
+   * has one, the shared `robotSolids` unchanged if it does not. BIOBUZZ fills it with
+   * `bbRobotSolids`, because the shared geometry is DECODE's front funnel and a BIOBUZZ sweeper
+   * is a roller bar on whichever edge `intakeMount` names: run through the shared shapes, a
+   * back-sweeper robot met its POLLEN through wedges it does not have while the edge its roller
+   * is on had nothing solid at all. DECODE and CR leave the slot empty and are untouched.
    */
   const heldBalls = world.balls.filter((b) => b.state.kind === 'held');
+  const mod = simModuleFor(world.game);
   const solids = new Map<number, RobotSolids>();
-  for (const rob of world.robots) solids.set(rob.id, robotSolids(rob, heldBalls, BB_POLLEN_R));
-  solveArtifacts(world, dt, biobuzzColliders, NO_IDS, NO_IDS, solids, from ?? NO_SWEEP, BB_POLLEN_R);
+  for (const rob of world.robots) {
+    solids.set(
+      rob.id,
+      mod.artifactSolids
+        ? mod.artifactSolids(rob, heldBalls, BB_POLLEN_R)
+        : robotSolids(rob, heldBalls, BB_POLLEN_R),
+    );
+  }
+  solveArtifacts(world, dt, biobuzzColliders, NO_IDS, NO_IDS, solids, from, BB_POLLEN_R);
   // ...then the perimeter invariant, which the solve does not hold on its own — see
   // `clampPollenToWalls`, where the measured penetration without this is written down.
   for (const b of world.balls) if (b.state.kind === 'ground') clampPollenToWalls(b);
@@ -345,8 +371,6 @@ export function bbAimAssist(
 /** the two DECODE-only exemption sets `solveArtifacts` takes, empty for BIOBUZZ and shared
  * rather than re-allocated per tick. See this file's header for why each is empty. */
 const NO_IDS: ReadonlySet<number> = new Set<number>();
-/** no sweep origin: `solveArtifacts` falls back to each robot's END pose. */
-const NO_SWEEP: ReadonlyMap<number, SweepFrom> = new Map<number, SweepFrom>();
 
 /** a zero command, for a robot with no driver this tick (a dummy, a dropped peer). Frozen so
  * a mechanism that mutated it could not silently affect the next robot. */

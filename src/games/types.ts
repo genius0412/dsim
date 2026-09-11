@@ -1,5 +1,6 @@
-import type { GameMode, GameSettings, RobotCommand, World } from '../types';
+import type { Artifact, GameMode, GameSettings, RobotCommand, RobotState, World } from '../types';
 import type { RobotSetup } from '../sim/spawn';
+import type { RobotSolids } from '../sim/artifactSolids';
 import type { IntakeStyle } from '../types';
 
 /**
@@ -162,4 +163,29 @@ export interface GameSimModule {
    * that forwards a snapshot.
    */
   hud?(world: World, robotId: number): unknown;
+  /**
+   * WHAT ON THIS GAME'S ROBOT IS SOLID TO A GROUND ARTIFACT — the game-owned override of
+   * `robotSolids` (`src/sim/artifactSolids.ts`).
+   *
+   * ABSENT ⇒ the shared `robotSolids`, which is DECODE's hardware: the chassis box plus the
+   * funnel WEDGES of `INTAKE_PRESETS` (sloped / triangle) or the vector preset's flank RAILS,
+   * always on the FRONT. DECODE and Chain Reaction leave this empty and their consumers
+   * (`src/sim/world.ts`) are untouched, so DECODE's solve is byte-identical.
+   *
+   * It exists because a second game's intake is not DECODE's intake. BIOBUZZ's sweeper is a
+   * roller bar that can be mounted on any edge (`intakeMount`: front / back / side /
+   * frontback), so with the shared geometry a BIOBUZZ robot met its POLLEN through a DECODE
+   * funnel bolted to its front — wedges where the frame is open, and nothing at all on the
+   * edge the sweeper is actually on. The mount already moves the collision footprint
+   * (`footprintExtents`) and the capture rects (`bbMouths`); this is the third reader of the
+   * same mount, and the last one that was still assuming DECODE.
+   *
+   * `radius` is the game's own ground-element radius, the one its caller also hands
+   * `solveArtifacts` — the held-element circles are the plug in the robot's own mouth and two
+   * radii in one solve is the disagreement `artifactSolids.ts` exists to prevent.
+   *
+   * ONE GEOMETRY AUTHORITY still holds: whatever a game returns here is what its artifact
+   * solve collides on, what its pin test would measure against, and what its sprite must draw.
+   */
+  artifactSolids?(r: RobotState, heldBalls: readonly Artifact[], radius: number): RobotSolids;
 }

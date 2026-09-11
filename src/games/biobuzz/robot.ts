@@ -1,5 +1,6 @@
-import type { RobotCommand, RobotSpec, RobotState, Vec2, World } from '../../types';
-import { INTAKE_PRESETS } from '../../config';
+import type { Artifact, RobotCommand, RobotSpec, RobotState, Vec2, World } from '../../types';
+import { INTAKE_PRESETS, INTAKE_RAIL_T } from '../../config';
+import type { RobotSolids, SolidShape } from '../../sim/artifactSolids';
 import { datan2, dcos, dsin, rot, wrapAngle } from '../../math';
 import {
   BB_DEFAULT_INTAKE,
@@ -11,6 +12,7 @@ import {
   BB_INTAKES,
   BB_LAUNCH_LINE_FRAC,
   BB_LAUNCH_Z0,
+  BB_POLLEN_R,
   BB_TWIN_FIRE_MULT,
   bbHopperCap,
 } from './config';
@@ -110,6 +112,75 @@ export function bbFootprint(spec: RobotSpec): { front: number; rear: number; hal
     rear: spec.length / 2 + (rear ? reach : 0),
     half: spec.width / 2 + (mount === 'side' ? reach : 0),
   };
+}
+
+/**
+ * WHAT ON A BIOBUZZ ROBOT IS SOLID TO A GROUND POLLEN — this game's `GameSimModule.
+ * artifactSolids`, and the fourth reader of the ONE mount.
+ *
+ * The shared `robotSolids` (`src/sim/artifactSolids.ts`) describes DECODE'S HARDWARE: a
+ * chassis box plus either the funnel wedges of the sloped/triangle presets or the vector
+ * preset's flank rails, always on the FRONT, because in DECODE the intake is always on the
+ * front and `INTAKE_PRESETS` is the whole catalogue. A BIOBUZZ robot is a chassis with a
+ * SWEEPER BAR on whichever edge(s) `intakeMount` names, so run through the shared geometry it
+ * collided with pollen through a funnel it does not have, bolted to an edge its roller is not
+ * on — a back sweeper had wedges at the front and open air where the roller is.
+ *
+ * WHAT IS ACTUALLY SOLID, and nothing beyond it, because the season has no manual yet:
+ *  · the CHASSIS box `[-hl, hl] × [-hw, hw]`, always;
+ *  · per mounted edge, the sweeper's two SIDE PLATES — thin rails along the lateral edges of
+ *    that edge's MOUTH (`bbMouths`, so the drawn mouth and the solid agree), spanning only the
+ *    OUTBOARD band between the frame and the roller line. Thickness is the shared
+ *    `INTAKE_RAIL_T`: the same plate DECODE's vector preset has, reused rather than invented,
+ *    since a BIOBUZZ number here would be a guess with no figure behind it;
+ *  · the POLLEN it is carrying, as circles at their storage slots — a full hopper is a
+ *    physical plug in the mouth, which is why the radius is the caller's and not DECODE's.
+ *
+ * THE MOUTH ITSELF IS OPEN, exactly as DECODE's is (product decision #10): a sweeper roller
+ * rides above pollen height and a POLLEN rolls in under it to the frame. That is also what
+ * makes `interact()`'s capture-before-the-frame-arrives honest — a solid mouth would plow
+ * what the roller is supposed to pick up.
+ *
+ * NOT A PHYSICS CONSTANT IN SIGHT, per `docs/biobuzz-contract.md`: this is hardware geometry
+ * (Lane B's, §4), the same class as `bbMouths` and `bbFootprint`. Friction, restitution and
+ * mass still belong to the shared solve.
+ */
+export function bbRobotSolids(
+  r: RobotState,
+  heldBalls: readonly Artifact[],
+  radius: number = BB_POLLEN_R,
+): RobotSolids {
+  const hl = r.spec.length / 2;
+  const hw = r.spec.width / 2;
+  const reach = INTAKE_PRESETS[r.spec.intake].reach;
+  // never thicker than the frame it is bolted to — a degenerate or inverted box is a collider
+  // Rapier cannot hull
+  const t = Math.max(1e-3, Math.min(INTAKE_RAIL_T, hw / 2, hl / 2));
+  const structure: SolidShape[] = [];
+  if (reach > 1e-6) {
+    for (const m of bbMouths(r.spec)) {
+      if (m.edge === 'front' || m.edge === 'back') {
+        // the band from the frame out to the roller line, on this end
+        const cx = (m.edge === 'front' ? 1 : -1) * (hl + reach / 2);
+        for (const s of [1, -1]) {
+          const outer = s > 0 ? m.y1 : m.y0; // the mouth's own lateral edge
+          structure.push({ kind: 'box', cx, cy: outer - (s * t) / 2, hx: reach / 2, hy: t / 2 });
+        }
+      } else {
+        const cy = (m.edge === 'left' ? 1 : -1) * (hw + reach / 2);
+        for (const s of [1, -1]) {
+          const outer = s > 0 ? m.x1 : m.x0; // ±hl, the ends of a flank mouth
+          structure.push({ kind: 'box', cx: outer - (s * t) / 2, cy, hx: t / 2, hy: reach / 2 });
+        }
+      }
+    }
+  }
+  const held: SolidShape[] = [];
+  for (const b of heldBalls) {
+    if (b.state.kind !== 'held' || b.state.robot !== r.id) continue;
+    held.push({ kind: 'circle', cx: b.state.lx, cy: b.state.ly, r: radius });
+  }
+  return { chassis: { kind: 'box', cx: 0, cy: 0, hx: hl, hy: hw }, structure, held };
 }
 
 /** the robot's active hopper capacity in POLLEN. Re-exported under the contract name; the

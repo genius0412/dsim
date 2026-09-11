@@ -2,6 +2,7 @@ import type { GameSimModule } from '../types';
 import { BB_HALF_X, BB_HALF_Y, BB_START_POSE_COUNT, BB_VIEW_MARGIN } from './config';
 import { biobuzzColliders } from './colliders';
 import { biobuzzHud } from './hudRobot';
+import { bbRobotSolids } from './robot';
 import { createBiobuzzWorld } from './spawn';
 import { biobuzzStep } from './step';
 
@@ -49,4 +50,8 @@ export const BIOBUZZ_SIM: GameSimModule = {
   // `{ field: { scored }, robot: { hopper, cap, mode } | null }` — the contract's §5 slice.
   // DOM-free, because the authoritative server computes it for its clients too.
   hud: biobuzzHud,
+  // THIS GAME'S OWN ARTIFACT-SOLID GEOMETRY. Absent on DECODE and CR, which get the shared
+  // `robotSolids` unchanged; filled here because a BIOBUZZ sweeper is a roller bar on any
+  // edge and DECODE's front funnel is not a description of it. See `bbRobotSolids`.
+  artifactSolids: bbRobotSolids,
 };

@@ -144,7 +144,17 @@ export function bbFootprint(spec: RobotSpec): { front: number; rear: number; hal
 export function bbHopperCap(spec: RobotSpec): number;
 export function bbAimHeading(r: RobotState, target: ScoreTarget): number | null; // turretless aim
 export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled: boolean): void;
+export function bbRobotSolids(r: RobotState, held: readonly Artifact[], radius?: number): RobotSolids;
 ```
+
+`bbRobotSolids` is what a ground POLLEN actually collides with, wired to the sim module through
+the `GameSimModule.artifactSolids` slot and read by `play.ts` stage 4. It is GEOMETRY, not
+physics: the chassis box, the sweeper's side plates on the mounted edge(s) (derived from
+`bbMouths`, so the drawn mouth and the solid cannot drift), and the held POLLEN as circles at
+the pollen radius. Without it the game ran on the shared `robotSolids`, which is DECODE's front
+funnel — wedges a BIOBUZZ robot does not have, on an edge its roller is not on. The prohibition
+in §1 is unaffected: no ground-pollen physics CONSTANT lives here, and the solve is still the
+shared one.
 
 The drawn mouths ARE the capture areas: `drawRobot.ts`, `RobotPreview.tsx`, and `play.ts`
 all read `bbMouths`. Never a second geometry.

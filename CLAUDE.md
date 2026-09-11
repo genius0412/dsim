@@ -179,7 +179,11 @@ inline branches stay untouched:
 | `devRoutes` | `App.tsx` routing — **alpha channel only** (`devRoutesEnabled()`) |
 
 and, on the DOM-free side, `GameSimModule.hud?(world, robotId)` → `HudSnapshot.gameHud`:
-the game's own HUD slice, opaque (`unknown`) because only its own components read it.
+the game's own HUD slice, opaque (`unknown`) because only its own components read it — plus
+`GameSimModule.artifactSolids?(r, held, radius)`, the game's own answer to "what on this robot
+is SOLID to a ground element". Absent ⇒ the shared `robotSolids`, i.e. DECODE's front funnel;
+BIOBUZZ fills it because its sweeper is a roller bar on whichever edge `intakeMount` names, and
+DECODE/CR leave it empty so `src/sim/world.ts` is untouched.
 
 `GameUiSpec` (`ui`) is an earlier attempt at the same idea and has never had a reader.
 It is left alone deliberately; do not build on it.
@@ -308,7 +312,12 @@ suite is red for an unrelated reason. `docs/biobuzz/baseline-alpha.md` is the ga
     disagreed by a roller radius — exactly the band where artifacts were frozen by one rule
     and released by another. **The intake MOUTH is open in all three** by design (#10); a
     convex hull of the funnel filled the notch and turned the outer corner into a forward
-    wall, so the wedge is an explicit quad.
+    wall, so the wedge is an explicit quad. **A GAME MAY SUPPLY ITS OWN SHAPES**
+    (`GameSimModule.artifactSolids`, see the seam section) — the authority is still ONE per
+    game, it just is not always DECODE's: `robotSolids` describes DECODE's hardware, and a game
+    whose intake is not a front funnel (BIOBUZZ's edge-mounted sweeper) returns its own chassis
+    + plates + held-element circles instead. An absent slot is the shared function, so DECODE
+    and CR are byte-identical.
   - **A PIN IS A ROBOT PROBLEM, NOT AN ARTIFACT PROBLEM.** `pinnedArtifacts` calls an artifact
     pinned when a robot solid penetrates it AND it is against something that cannot yield —
     the field (`inField`, measured with `clampBallPosToStatics`, which knows the walls, the
@@ -1842,7 +1851,10 @@ A ground pollen's position is written by `solveArtifacts` and by nothing else �
 POSITION AUTHORITY rule DECODE's artifacts were rebuilt to. `solveArtifacts` and `robotSolids`
 take a trailing optional artifact RADIUS defaulting to `C.BALL_RADIUS`, so BIOBUZZ passes 1.5"
 (a 3" pollen) where DECODE passes its default 2.5" and every DECODE call site stays
-byte-identical. `play.ts` therefore has no ground integrator, no separation pass and no
+byte-identical. The SHAPES a pollen meets are this game's own — `bbRobotSolids` (`robot.ts`),
+wired through the `GameSimModule.artifactSolids` slot — because the shared `robotSolids` builds
+DECODE's front funnel and a BIOBUZZ sweeper is a roller bar on whichever edge `intakeMount`
+names. That is GEOMETRY, which Lane B owns; it is not a physics constant, and none is added. `play.ts` therefore has no ground integrator, no separation pass and no
 eviction pass; it calls the shared solve, the shared rolling-friction pass (`stepGroundBall`,
 which is the only thing that brings a pollen to rest — the solve has no gravity and no floor),
 and a containment clamp, and `interact()` only CAPTURES. BIOBUZZ owns NO ground-pollen physics
