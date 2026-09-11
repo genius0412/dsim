@@ -96,6 +96,26 @@ const SNAPSHOT_INTERVAL = 2;
 /** how many ticks to keep re-applying a robot's last command when its next input
  * hasn't arrived (absorbs jitter without freezing); past this it coasts to ZERO */
 const HOLD_TICKS = 15;
+/**
+ * How far AHEAD of the live tick a buffered input may be stamped.
+ *
+ * ⚠️ THIS IS A MEMORY BOUND, NOT A GAMEPLAY TUNABLE. `pending` is keyed by the exact tick an
+ * input applies to and `frameCommands` only ever deletes keys `<= tick`, so a key the world
+ * will never reach is never collected — a client stamping ever-larger ticks at 60 Hz grew the
+ * map without limit, and nothing in the room could see it. Found by load testing (see
+ * `docs/capacity.md` §7).
+ *
+ * The value comes from the CLIENT'S OWN CONTRACT: `game.ts` caps prediction at
+ * `MAX_PREDICT_LEAD` (40) ticks past the newest authoritative tick and sends `world.tick + 1`,
+ * so a legitimate input is never more than ~41 ticks ahead. A stale client sends LOWER ticks,
+ * not higher, so lateness cannot push against this bound. 120 is 3× the honest maximum —
+ * wide enough that no real client is ever refused, small enough that the map is bounded.
+ */
+const MAX_INPUT_LEAD_TICKS = 120;
+/** Backstop for the bound above: distinct future ticks held per robot. The lead cap already
+ * implies at most `MAX_INPUT_LEAD_TICKS` keys, so reaching this means something is wrong
+ * (duplicate ticks cannot — the Map overwrites) and the oldest entries are dropped. */
+const MAX_PENDING_PER_ROBOT = 128;
 /** a client whose CONFIRMED snapshot baseline (its piggybacked `ack`) is more than
  * this many ticks behind the live tick is force-resynced with a full keyframe. Wide
  * enough that normal ack round-trip (a few ticks) never trips it — it catches a
@@ -734,6 +754,13 @@ export class Room {
     if (typeof ack === 'number' && ack > (this.snapAck.get(id) ?? -1)) this.snapAck.set(id, ack);
     const rid = this.robotOf.get(id);
     if (rid === undefined || this.dropped.has(rid)) return;
+    // REFUSE AN IMPOSSIBLE FUTURE TICK OUTRIGHT. Rejected here rather than at the buffer
+    // below because `latestTick` is a high-water mark: one input stamped 1e9 would leave
+    // every subsequent honest input looking stale, and that robot would stop responding to
+    // its own driver. LATE inputs (tick <= w.tick) are legitimate and pass through — the
+    // `latest` path exists for them.
+    if (!Number.isInteger(tick)) return;
+    if (this.world && tick - this.world.tick > MAX_INPUT_LEAD_TICKS) return;
     const cmd = dequantizeCommand(q);
     // track the freshest command by tick (even if it's now in the past) — this is
     // what a late input still contributes, so the robot keeps moving
@@ -743,15 +770,24 @@ export class Room {
     }
     if (this.world) this.lastRecvTick.set(rid, this.world.tick); // liveness
     // ALSO buffer FUTURE inputs by exact tick — an on-time client's robot then
-    // matches its own prediction exactly (smooth); a late one falls back to latest
+    // matches its own prediction exactly (smooth); a late one falls back to latest.
+    // Only while a world exists: `startMatch` clears `pending`, so anything buffered
+    // before then is discarded regardless, and buffering against no reference tick is
+    // the one case `MAX_INPUT_LEAD_TICKS` could not bound.
     const w = this.world;
-    if (!w || tick > w.tick) {
+    if (w && tick > w.tick && tick - w.tick <= MAX_INPUT_LEAD_TICKS) {
       let buf = this.pending.get(rid);
       if (!buf) {
         buf = new Map();
         this.pending.set(rid, buf);
       }
       buf.set(tick, cmd);
+      // backstop — drop oldest-first so the freshest prediction is what survives
+      if (buf.size > MAX_PENDING_PER_ROBOT) {
+        for (const t of [...buf.keys()].sort((a, b) => a - b).slice(0, buf.size - MAX_PENDING_PER_ROBOT)) {
+          buf.delete(t);
+        }
+      }
     }
     if (tick > (this.ackTick.get(id) ?? -1)) this.ackTick.set(id, tick);
   }
@@ -1511,6 +1547,24 @@ export class Room {
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
       if (this.stepOnce()) this.broadcastSnapshot();
     }
+  }
+
+  /** TEST SEAM: how many future inputs are buffered, in total and for the worst robot.
+   * `pending` growth is invisible from outside the room — it costs memory and nothing
+   * else — so the bound on it can only be asserted through a seam like this. */
+  pendingSizeForTest(): { total: number; max: number } {
+    let total = 0;
+    let max = 0;
+    for (const buf of this.pending.values()) {
+      total += buf.size;
+      if (buf.size > max) max = buf.size;
+    }
+    return { total, max };
+  }
+
+  /** TEST SEAM: the live tick, for asserting what counts as a legal input lead. */
+  tickForTest(): number {
+    return this.world?.tick ?? -1;
   }
 
   /** the command each robot runs at `tick`: its buffered input for that EXACT tick

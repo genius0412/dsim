@@ -11882,7 +11882,14 @@ function pinScene(
   // pre-load a fire+intake command for every tick so the run scores real points
   const cap = maxMatchTicks();
   const fire = quantizeCommand({ driveX: 0, driveY: 0, rotate: 0, intake: true, fire: true });
-  for (let t = 1; t <= cap; t++) room.onMessage('host-1', { t: 'input', tick: t, q: fire });
+  // Fed in BOUNDED WINDOWS, the way a real client feeds: an input is only buffered
+  // within `MAX_INPUT_LEAD_TICKS` of the live tick (see the input-bound checks below),
+  // so a whole match pre-loaded against a world still at tick 0 is refused as the
+  // memory attack it resembles. 100 < 120, so every input here still lands.
+  for (let base = 1; base <= cap; base += 100) {
+    for (let t = base; t < base + 100 && t <= cap; t++) room.onMessage('host-1', { t: 'input', tick: t, q: fire });
+    room.advanceForTest(100);
+  }
   room.advanceForTest(cap + 5);
 
   const res = msgs.find((m) => m.t === 'matchResult');
@@ -11929,9 +11936,13 @@ function pinScene(
   // two DIFFERENT time-varying streams, so the robots genuinely interact rather
   // than sitting on their start poses running identical inputs
   const vcap = maxMatchTicks();
-  for (let t = 1; t <= vcap; t++) {
-    room.onMessage('va', { t: 'input', tick: t, q: quantizeCommand({ driveX: dsin(t / 37), driveY: dcos(t / 53), rotate: dsin(t / 91), intake: true, fire: t % 7 === 0 }) });
-    room.onMessage('vb', { t: 'input', tick: t, q: quantizeCommand({ driveX: dcos(t / 41), driveY: dsin(t / 29), rotate: dcos(t / 67), intake: t % 3 !== 0, fire: t % 11 === 0 }) });
+  // bounded windows, as above — a pre-loaded match exceeds `MAX_INPUT_LEAD_TICKS`
+  for (let base = 1; base <= vcap; base += 100) {
+    for (let t = base; t < base + 100 && t <= vcap; t++) {
+      room.onMessage('va', { t: 'input', tick: t, q: quantizeCommand({ driveX: dsin(t / 37), driveY: dcos(t / 53), rotate: dsin(t / 91), intake: true, fire: t % 7 === 0 }) });
+      room.onMessage('vb', { t: 'input', tick: t, q: quantizeCommand({ driveX: dcos(t / 41), driveY: dsin(t / 29), rotate: dcos(t / 67), intake: t % 3 !== 0, fire: t % 11 === 0 }) });
+    }
+    room.advanceForTest(100);
   }
   room.advanceForTest(vcap + 400);
   const vres = msgs.find((m) => m.t === 'matchResult');
@@ -12114,8 +12125,12 @@ function pinScene(
   // 'a' is WEDGED — it keeps acking tick 0 forever; 'b' acks the latest each round.
   for (let round = 0; round < 22; round++) {
     const t = lastSnap(bMsgs)?.serverTick ?? 0;
-    room.onMessage('a', { t: 'input', tick: 10_000 + round, q, ack: 0 });
-    room.onMessage('b', { t: 'input', tick: 10_000 + round, q, ack: t });
+    // a realistic one-tick lead: an input further ahead than `MAX_INPUT_LEAD_TICKS` is
+    // refused outright, so a fabricated far-future tick would exercise the ack channel
+    // with traffic that never actually lands
+    const lead = room.tickForTest() + 1;
+    room.onMessage('a', { t: 'input', tick: lead, q, ack: 0 });
+    room.onMessage('b', { t: 'input', tick: lead, q, ack: t });
     room.advanceForTest(30);
   }
   const recent = (arr: ServerMsg[], n: number): Extract<ServerMsg, { t: 'snapshot' }>[] =>
@@ -12134,11 +12149,83 @@ function pinScene(
   room2.advanceForTest(4);
   cMsgs.length = 0;
   for (let round = 0; round < 22; round++) {
-    room2.onMessage('a', { t: 'input', tick: 20_000 + round, q }); // NO ack field (old client)
+    room2.onMessage('a', { t: 'input', tick: room2.tickForTest() + 1, q }); // NO ack field (old client)
     room2.advanceForTest(30);
   }
   const legacyDeltas = recent(cMsgs, 5).some((s) => s.balls.upd.length < s.balls.order.length);
   check('ack channel: an ack-less legacy client is never force-keyframed', legacyDeltas);
+}
+
+// ---- future-tick input buffer is BOUNDED (memory-exhaustion guard) ----------
+// `pending` is keyed by the exact tick an input applies to, and `frameCommands` only
+// ever deletes keys the world has REACHED. A tick the world will never reach is
+// therefore never collected, so an unbounded lead let a client grow server memory at
+// will — 60 inputs a second, each with a fresh key. Found by load testing; see
+// `docs/capacity.md` §7. The bound has to hold WITHOUT refusing a real client, whose
+// own `MAX_PREDICT_LEAD` keeps it ~41 ticks ahead at most.
+{
+  const mkC = (id: string, alliance: 'red' | 'blue'): Client => ({
+    id,
+    send: () => {},
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+  });
+  const q = quantizeCommand(cmd({}));
+
+  // ATTACK: 3,000 inputs, each stamped a tick further into a future that never arrives.
+  const eroom = new Room('smoke-input-bound', () => {}, { kind: 'versus' });
+  eroom.add(mkC('a', 'red'));
+  eroom.add(mkC('b', 'blue'));
+  eroom.onMessage('a', { t: 'start' });
+  eroom.advanceForTest(4);
+  for (let i = 0; i < 3000; i++) eroom.onMessage('a', { t: 'input', tick: 1_000_000 + i, q });
+  const evil = eroom.pendingSizeForTest();
+  check('input bound: absurd future ticks buffer nothing at all', evil.total === 0, `buffered ${evil.total}`);
+
+  // ATTACK 2: ticks just past the bound, which is where an off-by-one would show.
+  const t0 = eroom.tickForTest();
+  for (let i = 0; i < 500; i++) eroom.onMessage('a', { t: 'input', tick: t0 + 121 + i, q });
+  check('input bound: one tick past the cap is refused', eroom.pendingSizeForTest().total === 0);
+
+  // LEGITIMATE: a real client leads by at most ~41 ticks. Every one must be kept, or
+  // on-time clients lose the exact-tick match that makes prediction smooth.
+  const groom = new Room('smoke-input-legit', () => {}, { kind: 'versus' });
+  groom.add(mkC('a', 'red'));
+  groom.add(mkC('b', 'blue'));
+  groom.onMessage('a', { t: 'start' });
+  groom.advanceForTest(4);
+  const g0 = groom.tickForTest();
+  for (let lead = 1; lead <= 41; lead++) groom.onMessage('a', { t: 'input', tick: g0 + lead, q });
+  const good = groom.pendingSizeForTest();
+  check('input bound: a real client’s 41-tick lead is fully buffered', good.total === 41, `buffered ${good.total}`);
+
+  // and the buffer DRAINS as the world reaches those ticks (the bound must not
+  // substitute for the existing prune, only backstop it)
+  groom.advanceForTest(60);
+  check('input bound: buffered inputs are consumed as the world reaches them', groom.pendingSizeForTest().total === 0);
+
+  // BACKSTOP: even inside the legal window the per-robot map stays capped.
+  const broom = new Room('smoke-input-cap', () => {}, { kind: 'versus' });
+  broom.add(mkC('a', 'red'));
+  broom.add(mkC('b', 'blue'));
+  broom.onMessage('a', { t: 'start' });
+  broom.advanceForTest(4);
+  const b0 = broom.tickForTest();
+  for (let lead = 1; lead <= 120; lead++) broom.onMessage('a', { t: 'input', tick: b0 + lead, q });
+  check('input bound: the per-robot buffer never exceeds its cap', broom.pendingSizeForTest().max <= 128);
+
+  // a non-integer tick is not a tick — it can never be reached, so it must not buffer
+  const froom = new Room('smoke-input-frac', () => {}, { kind: 'versus' });
+  froom.add(mkC('a', 'red'));
+  froom.add(mkC('b', 'blue'));
+  froom.onMessage('a', { t: 'start' });
+  froom.advanceForTest(4);
+  const f0 = froom.tickForTest();
+  froom.onMessage('a', { t: 'input', tick: f0 + 1.5, q });
+  froom.onMessage('a', { t: 'input', tick: Number.NaN, q });
+  check('input bound: a fractional or NaN tick is refused', froom.pendingSizeForTest().total === 0);
 }
 
 // ---- single live game per user + restart disabled (server enforcement) ------
