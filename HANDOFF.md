@@ -1,3 +1,82 @@
+# HANDOFF — 2026-09-11 (permessage-deflate is ON, and the wire is measured)
+
+Branch **alpha**, commits `e287c0e` + `41e346d`. `npm test` **ALL PASS**, `npm run build` green,
+`npm run server:check` green. `SIM_VERSION` untouched. **Production not touched and NOT DEPLOYED
+— this is a server change and it needs `./scripts/fly-deploy.sh` to take effect.**
+
+## READ FIRST — what changed and what is still unproven
+
+`server/index.ts` no longer sets `perMessageDeflate: false`. WebSocket compression is on, with
+context takeover kept (`serverNoContextTakeover: false`, the load-bearing line) and a 15/8 window.
+Requested by the owner after the load investigation; the reasoning and the numbers are in both
+commit messages and in the block comment at the `WebSocketServer` construction.
+
+**It is not a protocol change and needs no `CLIENT_CAPS` gate.** The extension is negotiated per
+connection in the HTTP upgrade (RFC 7692), so a client that does not offer it keeps receiving
+byte-for-byte what it receives today. Verified against the running server: offering yields
+`permessage-deflate; client_no_context_takeover; server_max_window_bits=15`, not offering yields
+no extension header at all. That is what makes this safe to deploy while one Fly app serves every
+client version.
+
+### Measured, end to end, per client downstream at steady state
+
+| shape | today | with deflate | saving |
+|---|---|---|---|
+| decode-solo | 100.5 KB/s | 12.5 KB/s | -88% |
+| decode-1v1 | 184.7 KB/s | 26.0 KB/s | -86% |
+| decode-2v2 | 283.2 KB/s | 48.9 KB/s | -83% |
+| chain-solo | 387.8 KB/s | 68.8 KB/s | -82% |
+
+Weighted on the stated 6/8 solo, 1/8 1v1, 1/8 2v2 split, 1,000 concurrent goes from 647 GB/hour
+to 99, i.e. a 3-hour peak from **$38.80 to $5.94** at an ASSUMED $0.02/GB.
+
+### Two corrections to `docs/capacity.md` (which lives on `perf-load`, not here)
+
+1. **§5 understated today's egress by ~40%.** It modelled 125 KB/s per client weighted; the wire
+   measures 175. So the uncompressed 3-hour peak is $39, not $26, and the compressed $3.17 row is
+   not reachable at any window size measured here.
+2. **§6's 13/6 knee was priced against a machine that cannot exist.** It costed 1,000 sockets at
+   250 MB of zlib windows, while §3 of the same document proves one process is one core and a core
+   carries ~13 rooms. At 20 sockets the choice is 5 MB against 1.3 MB. 13/6 measured -67% on a
+   2v2 — the saving DEGRADED as the room got busier, because a bigger frame does not fit a 64 KB
+   window twice — so the knee was trading the ratio away in the most expensive room to save
+   192 KB. Hence 15/8.
+
+### `scripts/zz-deflate-cost.ts` is the new probe, and why it had to exist
+
+`scripts/loadtest.ts` (on `perf-load`) counts bytes in its `message` handler, and ws hands that
+handler the DECOMPRESSED payload — its figure is identical compressed or not, and it says so
+itself. Right for "how big is a snapshot", useless for "what does egress cost". The probe counts
+TCP `bytesRead` off the socket, runs each shape twice varying only whether the client offers the
+extension, and asserts the extension really was negotiated on one run and absent on the other.
+It spawns the real server itself: `npx tsx scripts/zz-deflate-cost.ts`.
+
+### STILL UNVERIFIED — all of it about latency, none of it measurable on Windows
+
+- **Does the added per-message time show in the SNAPSHOT GAP?** Jitter is the choppiness signal
+  players feel, not mean RTT, and this is exactly what the original `perMessageDeflate: false`
+  comment was worried about. Needs a Linux run.
+- **Resident memory at full population.** 15/8 is 256 KB of window per socket plus ws's own send
+  buffers. Bounded by CPU (tens of sockets per machine), but unmeasured on a real machine.
+- **Where the CPU lands.** Node runs permessage-deflate's zlib on the libuv THREADPOOL, not the
+  event loop, so the cost should sit beside the room loop rather than inside it. `capacity.md` §6
+  priced it as if it were on-loop (~+5% on a solo room). This is the assumption most worth
+  checking, because if it holds, compression is cheaper than §6 claimed as well as less effective.
+
+### Next steps
+
+1. Deploy (`./scripts/fly-deploy.sh`, owner only), then re-run the probe against the deployed
+   server with `--url` and compare the snapshot gap to a pre-deploy baseline.
+2. `docs/capacity.md` §5/§6 need the two corrections above folded in. That file is on `perf-load`
+   and is that chat's to edit.
+3. **Unrelated and still open, from `capacity.md` §7: `Room.onInput` buffers future-tick inputs in
+   a per-robot map pruned only once the world reaches that tick, so a client stamping huge tick
+   numbers grows server memory without bound.** A latent DoS, flagged there as the one item that
+   should not wait on the capacity review. A fix exists UNCOMMITTED in the `perf-load` worktree
+   (`MAX_INPUT_LEAD_TICKS`), owned by that chat — it is not on alpha.
+
+---
+
 # HANDOFF — 2026-09-10, fourth session (a struck artifact may not outrun the robot)
 
 Branch **alpha**. `npm test` **ALL PASS — 1307 checks (one new: nothing a robot pushes ends up faster than the robot)**. `npm run build` green, `npm run server:check` green.
