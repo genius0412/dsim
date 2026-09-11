@@ -1,7 +1,7 @@
 # HANDOFF — 2026-09-11, second session (LAN self-hosting, end to end)
 
-Branch **`lan-selfhost`**, stacked on `perf-load-v2` (which is stacked on `alpha`). Eight
-commits, `42a6751` … `c4b0e90`. `npm test` **ALL PASS**, `test:mm` 58, `dbtest` ALL PASS,
+Branch **`lan-selfhost`**, stacked on `perf-load-v2` (which is stacked on `alpha`). Nine
+commits, `42a6751` … `d00a4b1`. `npm test` **ALL PASS**, `test:mm` 58, `dbtest` ALL PASS,
 `server:check`, `build`, `uiaudit` (at baseline) and `contrast` (221) all green. `SIM_VERSION`
 untouched. **Nothing pushed, nothing deployed.**
 
@@ -49,6 +49,7 @@ carries a ⚠️ header block saying so. **Do not add a third LAN-following acce
 | `1c6645d` | `electron/lanHost.cjs` — the desktop app spawns the server itself |
 | `19a1cfd` | the LAN screen, the banner, origin adoption, the build-skew warning |
 | `c4b0e90` | `keepLanRun`/`flushLanRuns` — the host keeps the match; results-screen copy |
+| `d00a4b1` | `LanReplays` — the host's own list, on Career beside the practice one |
 
 ## Things that are easy to get wrong here
 
@@ -101,9 +102,6 @@ carries a ⚠️ header block saying so. **Do not add a third LAN-following acce
   against PGlite and `uploadLanRun` is covered by nothing — it needs a signed-in host on a
   LAN server with the real game server reachable. That is the last gap, and it is the
   feature's payload.
-- **The host's own list of LAN matches has no screen.** `listLocalLanRuns` and `fetchLanRuns`
-  both exist and neither is rendered; a host can see the match on the results screen and then
-  never again. Career is the obvious home, beside practice runs.
 - **Nothing has been packaged.** `npm run dist` has not been run since `server:bundle` was
   added, so the asar copy-out path in `serverScript` is reasoned-about, not observed.
 - **No reachability check on the HOST's firewall.** The panel says which addresses exist; it
