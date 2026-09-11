@@ -81,6 +81,14 @@ export const BB_DEFAULT_SPEC: RobotSpec = { ...DEFAULT_SPEC, ...BB_PRESETS[0] };
  *   2. SIZE                     → per-mount envelope (`bbSizeLimits`)
  *   3. MASS                     → drivetrain × inertia × the archetype's mechanism floor
  *   4. HOPPER                   → footprint × archetype × mount (`bbStorageMax`)
+ *
+ * ⚠️ `raw` HERE IS NOT THE USER'S INPUT — it is what `coerceSpec` has already made of it, and
+ * that function builds its output from the base spec plus the fields it reads off the input BY
+ * NAME. So the first BIOBUZZ-only `bb*` field added to `RobotSpec` will not arrive here on its
+ * own: it has to be carried across at the call site (`src/sim/spawn.ts`, at the `game ===
+ * 'biobuzz'` arm, where the same warning is written out in full). A field that is clamped
+ * beautifully here and never delivered is indistinguishable from a builder that forgets the
+ * setting.
  */
 export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_SPEC): RobotSpec {
   const out: RobotSpec = { ...raw };

@@ -466,7 +466,21 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
    *
    * It also STRIPS the Chain Reaction fields a BIOBUZZ robot has no mechanism for (the
    * catalyst, the catapult, the ground clearance), which is why it has to run after the blocks
-   * above write them.
+   * above write them. Moving it ahead of the CR blocks would put those fields BACK on the spec
+   * after the strip, so a BIOBUZZ robot would carry a catalyst mount again — the ordering is
+   * load-bearing in both directions.
+   *
+   * ⚠️ WHAT "LAST" DOES NOT MEAN, and the trap for the first `bb*` spec field: this arm is
+   * handed `out`, not the RAW input. `out` starts as a copy of `base` and gains only the fields
+   * the passes above explicitly read off `sp`, so a value that no shared pass knows about is
+   * already gone by the time the game coercer runs — it would silently fall back to the base
+   * spec's value on every load, every wire ingress and every `createWorld`, which reads as "the
+   * builder keeps forgetting my setting". The fix, when a BIOBUZZ-only field lands, is to carry
+   * it across HERE (copy it onto `out`, or hand `coerceBiobuzzSpec` the raw `sp` as a second
+   * input) — NOT to move the arm earlier, for the two order reasons above. Chain Reaction has
+   * the same shape and does not hit it only because every CR field is read off `sp` by name in
+   * this function. `docs/biobuzz-contract.md` §4 is where a new field is registered; add the
+   * carry-across in the same change.
    */
   if (game === 'biobuzz') return coerceBiobuzzSpec(out, base);
   return out;
