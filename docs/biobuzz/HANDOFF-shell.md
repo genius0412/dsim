@@ -5,7 +5,9 @@ Branch `biobuzz-shell` (cut from `biobuzz`, cut from `origin/alpha`). Nothing pu
 What this is: a playable, **unscored** BIOBUZZ game module in `src/games/biobuzz/`, built by
 copy-and-own from Chain Reaction, plus the tooling and the visual-feedback rig around it —
 plan items 1, 2, 4, 5, 6, 7. Item 3 (the real `sim.ts` / `index.ts` replacing P0-core's
-placeholders) is **not done, and cannot be**: see [Blocked on P0-core](#blocked-on-p0-core).
+placeholders) was **not done, and could not be, on this branch** — it landed on `biobuzz` in
+the integration session instead, along with all three requests for core. See
+[Blocked on P0-core — RESOLVED](#blocked-on-p0-core--resolved), kept for the reasoning.
 
 Every guessed number in `config.ts` carries an `APPROX` comment. Nothing here asserts a score,
 a zone or an element count, because Sections 7–11 of the V0 manual are Kickoff placeholders.
@@ -31,31 +33,55 @@ was asked to document) and this file.
 
 ---
 
-## Blocked on P0-core
+## Blocked on P0-core — RESOLVED
 
-`src/games/types.ts:29` is still `export type GameId = 'decode' | 'chain'`, `World` has no
+⚠️ **This whole section is HISTORY.** It was written on `biobuzz-shell`, before the merge; every
+item below was cleared in the integration session on `biobuzz` (2026-09-10, commits
+`76cff4a`..`9a51bb7` — see the root `HANDOFF.md`'s top section). It is kept because the
+REASONING is still the argument for the shape the seam ended up with, not because anything here
+is still blocking. Each item now carries its resolution.
+
+`src/games/types.ts:29` was still `export type GameId = 'decode' | 'chain'`, `World` has no
 `biobuzz` field, and there are no `Builder` / `devRoutes` / `labels` / `hud` / `initialAct` /
 `startPoseCount` slots. The `biobuzz` branch is still at `20e65a4` (docs only).
 
 Consequences, all of them mechanical to clear:
 
-1. **`tsc` reports exactly two facts, repeatedly.** `Property 'biobuzz' does not exist on type
+1. **RESOLVED** — `npx tsc --noEmit -p .` is clean on `biobuzz`, and so are `npm run build` and
+   `npm run server:check`. *(Originally:)* **`tsc` reports exactly two facts, repeatedly.** `Property 'biobuzz' does not exist on type
    'World'` (hud, penalties, play, scenes, scenesRobot, step) and `'biobuzz' is not assignable
    to GameId` (spawn ×2, plus the smoke suite's comparisons). Nothing else. That was kept as
    the signal: any THIRD kind of error is mine.
-2. **Item 3 is deferred on purpose.** An object literal typed `GameSimModule` today would
+2. **RESOLVED in `894be27`** — the real `sim.ts` / `index.ts` landed with every slot filled;
+   the one correction to the prescription below is the route path, which is `'/gallery/*'`
+   (matched against the GAME-STRIPPED remainder, with wildcard support added to `devRouteFor`),
+   not `'/biobuzz/gallery'`. *(Originally:)* **Item 3 is deferred on purpose.** An object literal typed `GameSimModule` today would
    produce excess-property errors for `initialAct` and `startPoseCount`, which would bury the
    signal above. The module's real `sim.ts` / `index.ts` should be written immediately after
    `git merge biobuzz`, resolving conflicts in favour of the real module:
    `scored: false`, `startLegality: false`, `initialAct: 2`, `startPoseCount: 2`, every UI slot
    filled, `devRoutes: [{ path: '/biobuzz/gallery', Component: BiobuzzGallery }]`.
-3. **7 of the 268 smoke checks are red, all for this reason.** `moduleFor('biobuzz')` falls
+3. **RESOLVED** — the BIOBUZZ suite is `349 CHECKS, ALL PASS` under `npm test` itself, the
+   registry and snapshot-tag checks now measure BIOBUZZ, and the room-perf ratio is a real
+   BIOBUZZ-vs-Chain measurement. *(Originally:)* **7 of the 268 smoke checks are red, all for
+   this reason.** `moduleFor('biobuzz')` falls
    back to DECODE, so the four registry checks, the snapshot game tag, the server-registry
    `scored` check and the room-perf ratio (which is comparing a DECODE room to a Chain Reaction
    room) are measuring the wrong game. They go green on the merge — the room-perf one is the
    only one worth re-reading afterwards, since it will then be a real measurement.
 
-### Three requests for core
+### Three requests for core — two done, one still owed
+
+- **DONE (`9729702`)** — `catalystRail` is optional; absent means 0, the three Chain Reaction
+  readers take `?? 0`, and biobuzz `spawn.ts` no longer writes it. (The feared NaN in the hash
+  was never reachable: `worldHash` does not read the field.)
+- **DONE (`9729702`)** — `coerceSpec(spec, base, 'biobuzz')` is the single call; the clamps live
+  in the leaf `src/games/biobuzz/coerce.ts`, BIOBUZZ is exempt from the `game !== 'chain'` mount
+  reset, and DECODE/Chain clamping is byte-identical.
+- **STILL OWED** — the `GameController` world-injection seam was deliberately skipped (a seam
+  with no caller), and is written up as a request in the root `HANDOFF.md`.
+
+*(The original three, for the reasoning:)*
 
 - **`RobotState.catalystRail` should be optional.** BIOBUZZ has no catalyst, but the shared
   `RobotState` requires the field (`worldHash` and the snapshot diff both read it), so
@@ -205,15 +231,24 @@ Several carry their own `(was …)` annotations, i.e. they are tracked drift rat
 breakage. **Someone should write `docs/biobuzz/baseline-alpha.md` from this list** before the
 next lane starts, so the next chat can diff against a file instead of an argument.
 
+⚠️ **SUPERSEDED.** That file exists now, and it records a **GREEN** gate: `alpha` fixed all
+seven with the artifact-collision rewrite, so there is no accepted-failure list any more and any
+`FAIL` line is a regression. This whole Gates table is the `biobuzz-shell` measurement; the
+integration run on `biobuzz` is `npm test` exit 0, 1657 `PASS`, 0 `FAIL`, with `build`,
+`server:check`, `uiaudit`, `contrast` and `test:mm` all green.
+
 ---
 
 ## Known gaps, deliberate
 
-- **`solveBalls` uses `C.BALL_RADIUS` (2.5") for a 3" POLLEN.** The Rapier arm of the ball
-  solver is shared and takes its radius from the DECODE constant, so the `rapier` solver
-  separates pollen at the wrong size. The bespoke arm (the default, `BB_BALL_SOLVER`) uses
-  `BB_POLLEN_R`. Both arms are built and both conserve POLLEN over 600 ticks, which is what the
-  smoke asserts; making `solveBalls` take a radius is a core-owned one-liner.
+- **The shared solver uses `C.BALL_RADIUS` (2.5") for a 1.5"-radius POLLEN.** Still true, and
+  still the one gap: `solveBalls` is GONE on `alpha` and the `rapier` arm now calls
+  `solveArtifacts` (integration item 1), which hard-codes the same DECODE constant for the
+  artifact collider, the speed cap AND `robotSolids`' held-artifact circles. The bespoke arm
+  (the default) uses `BB_POLLEN_R`. Both arms conserve POLLEN and keep it in bounds, which is
+  what the smoke asserts; parameterizing the radius is a core-owned change to
+  `src/sim/physicsEngine.ts` + `src/sim/artifactSolids.ts` and is the **P0.5
+  solver-comparison caveat** in the root `HANDOFF.md`.
 - **`coerceBiobuzzSetup` replaces the shared `coerceSetup` rather than calling it.** The shared
   one clamps `startIndex` to DECODE's 5 anchors and repairs a custom pose with DECODE's G304
   geometry; BIOBUZZ has two anchors and `startLegality: false`. Everything `coerceSetup` does
