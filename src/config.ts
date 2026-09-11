@@ -775,8 +775,12 @@ export const PHYS_CONTAIN_SLOP = 0.75; // in
  * throttle. At 0.7/0.5 an EQUAL robot could never get out (1.3× against 1×), which is not what a
  * fabric-covered bumper on polycarbonate does.
  *
- * 0.2 (owner's call, from 0.45). Bumper on bumper 0.2, bumper on wall 0.275 (the AVERAGE of this
- * with `PHYS_WALL_FRICTION`, since neither collider names a combine rule).
+ * 0.15 (owner's call, from 0.45): BUMPER ON BUMPER ONLY. Rapier derives a pair's friction from
+ * the two colliders, so this one number sets robot↔robot AND, averaged with the static's,
+ * robot↔wall — they cannot be moved independently from here. So `PHYS_WALL_FRICTION` absorbs
+ * the difference and robot↔wall is held at the 0.40 it has always been. 0.15 is the floor:
+ * at 0.10, with the wall still compensated to 0.40, a heavy tank holding a victim against the
+ * wall bills 2 G422 over 20s instead of 6 and the rule stops being reachable.
  *
  * ⚠️ IT DOES NOT CONTROL WHETHER A PUSH CAN BE ESCAPED, which is the thing it reads as. Swept
  * from 0.45 down to 0.1, a victim cornered against the wall by a heavier robot travelled 14.9,
@@ -787,13 +791,21 @@ export const PHYS_CONTAIN_SLOP = 0.75; // in
  * (21deg to 0 — the bumper slides off the arm instead of being turned by it). 0.2 is the lowest
  * value that keeps both. The ARTIFACT world keeps its own values ().
  */
-export const PHYS_FRICTION = 0.2;
-/** friction on the STATIC field colliders (walls, goal faces, classifier, gate arms). Stated
- *  rather than inherited — `statics()` once ran on Rapier's default 0.5 while the constant's
- *  comment claimed to cover walls. Neither side names a combine rule, so Rapier AVERAGES: the
- *  effective robot↔wall value is 0.275, not this number and not the 0.6 an earlier comment
- *  here claimed (that was the average of the old 0.7/0.5 pair and outlived them). */
-export const PHYS_WALL_FRICTION = 0.35;
+export const PHYS_FRICTION = 0.15;
+/**
+ * Friction on the STATIC field colliders: walls, goal faces, classifier, AND the gate arms
+ * (they go through the same `statics()` helper, which is why dropping the robot's own value
+ * alone stopped the arm turning a robot that hit it off centre — 21deg to 0).
+ *
+ * ⚠️ THIS IS NOT THE WALL'S COEFFICIENT, IT IS A COMPENSATOR. Neither collider names a combine
+ * rule, so Rapier AVERAGES the pair, and the robot's own `PHYS_FRICTION` is therefore half of
+ * robot↔wall as well as all of robot↔robot. To lower bumper-on-bumper without touching
+ * bumper-on-wall, this absorbs the difference: `(PHYS_FRICTION + this) / 2` is held at the
+ * 0.40 robot↔wall has always been, so this reads high on purpose. Move one, recompute the
+ * other. (An earlier comment here claimed 0.6 — that was the average of the old 0.7/0.5 pair
+ * and outlived them — and claimed this was Rapier's own default, which is 0.5, not either.)
+ */
+export const PHYS_WALL_FRICTION = 0.65;
 /**
  * IN-PLANE friction on an artifact — ball on ball, ball on bumper (`PHYS_BALL_FRICTION`) and
  * ball on the field (`PHYS_BALL_WALL_FRICTION`) — and it is NEARLY ZERO on purpose.
