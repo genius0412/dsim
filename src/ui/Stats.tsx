@@ -8,6 +8,7 @@ import { CareerView } from './CareerView';
 import { ShareButton } from './ShareButton';
 import { StandingCard } from './StandingCard';
 import { PracticeReplays } from './PracticeReplays';
+import { LanReplays } from './LanReplays';
 
 export interface CareerNav {
   onWatch?: (replayId: string) => void;
@@ -37,6 +38,7 @@ export function Stats(nav: CareerNav = {}) {
           </div>
         </div>
         <PracticeReplays signedIn={false} game={nav.game} onWatchLocal={nav.onWatchLocal} />
+        <LanReplays signedIn={false} game={nav.game} onWatchLocal={nav.onWatchLocal} />
       </>
     );
   }
@@ -85,6 +87,7 @@ function StatsSignedIn({ nav }: { nav: CareerNav }) {
           </div>
         </div>
         <PracticeReplays signedIn={false} game={nav.game} onWatchLocal={nav.onWatchLocal} />
+        <LanReplays signedIn={false} game={nav.game} onWatchLocal={nav.onWatchLocal} />
       </>
     );
   }
@@ -100,6 +103,7 @@ function StatsSignedIn({ nav }: { nav: CareerNav }) {
         </div>
         {/* the local half needs no server either */}
         <PracticeReplays signedIn={false} game={nav.game} onWatchLocal={nav.onWatchLocal} />
+        <LanReplays signedIn={false} game={nav.game} onWatchLocal={nav.onWatchLocal} />
       </>
     );
   }
@@ -119,6 +123,13 @@ function StatsSignedIn({ nav }: { nav: CareerNav }) {
           {/* SELF-ONLY, same reasoning as StandingCard above: practice runs are offline and
               unverified, and on a public profile they would read as competitive history. */}
           <PracticeReplays
+            signedIn
+            game={nav.game}
+            onWatchId={nav.onWatch}
+            onWatchLocal={nav.onWatchLocal}
+          />
+          {/* renders NOTHING unless this account has hosted something — see its header */}
+          <LanReplays
             signedIn
             game={nav.game}
             onWatchId={nav.onWatch}
