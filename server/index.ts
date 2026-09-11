@@ -12,12 +12,14 @@ import { migrate } from './db/migrate';
 import { persistMatch, persistDodges } from './persist';
 import { routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
+import { LAN_MODE, enforceLanPolicy } from './lanMode';
 import { chargeStanding, rankedLock } from './standing';
 import { lockRemaining, tierOf,
   STANDING_MAX,
 } from '../src/standing';
 import { isReportReason, REPORT_DETAIL_MAX } from '../src/report';
 import { handleApi } from './api';
+import { serveClient, servingClient } from './static';
 import { Matchmaker } from './matchmaking';
 import { MATCHMAKER_REGION } from './regions';
 import { BALANCE_VERSION } from '../src/config';
@@ -82,6 +84,20 @@ import {
  * client with VITE_GAME_SERVER_URL=ws://localhost:8787. Deploy: see docs/deploy.md
  * (Fly.io). A plain GET /health returns 200 for the platform health check.
  */
+
+/**
+ * SELF-HOSTED (LAN) POLICY, DECIDED BEFORE ANYTHING READS THE ENVIRONMENT.
+ *
+ * `LAN_MODE=1` makes this process a LAN server in its own right rather than by virtue of how
+ * it was launched: no database, no credentials, no admin surface. `SERVE_CLIENT` without it
+ * refuses to boot. Both rules and the reasoning behind them are in `server/lanMode.ts`.
+ *
+ * It runs HERE, above the module constants below, because `ADMIN_USER_IDS` and `OWNER_USER_ID`
+ * are read into `const`s a couple of hundred lines down and a scrub after that would scrub
+ * nothing. `DATABASE_URL` and the JWKS are not on this clock at all — `db/pool.ts` and
+ * `auth.ts` read `LAN_MODE` in their own module bodies, which run before this statement does.
+ */
+enforceLanPolicy();
 
 const PORT = Number(process.env.PORT ?? 8787);
 const rooms = new Map<string, Room>();
@@ -1534,6 +1550,28 @@ const httpServer = createServer((req, res) => {
     });
     return;
   }
+  /**
+   * THE BUILT CLIENT, for a self-hosted LAN server only (`SERVE_CLIENT=/path/to/dist`).
+   *
+   * LAST, deliberately: `/health`, `/api/admin/*` and `/api/*` are all dispatched above, so
+   * nothing real can be shadowed by a file that happens to share a name. Off by default,
+   * which is what keeps the Fly deployment — which has a CDN in front of it — from ever
+   * serving a bundled copy of its own. See `server/static.ts`.
+   */
+  if (servingClient()) {
+    void serveClient(req, res)
+      .then((handled) => {
+        if (handled) return;
+        res.writeHead(404, { 'content-type': 'text/plain' });
+        res.end('not found');
+      })
+      .catch((e) => {
+        console.error('[static] handler crash:', e);
+        if (!res.headersSent) res.writeHead(500);
+        res.end();
+      });
+    return;
+  }
   res.writeHead(426, { 'content-type': 'text/plain' });
   res.end('WebSocket only');
 });
@@ -2326,7 +2364,9 @@ console.log(
     process.env.DATABASE_URL
       ? (process.env.DATABASE_URL.match(/@([^/?]+)/)?.[1] ?? 'set')
       : 'none'
-  }${isAlphaServer() ? ' (alpha results PERSIST here)' : ''}`,
+  }${LAN_MODE ? ' lan=1 (self-hosted: nothing here persists)' : ''}${
+    isAlphaServer() ? ' (alpha results PERSIST here)' : ''
+  }`,
 );
 });
 initPhysics()

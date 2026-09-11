@@ -1066,6 +1066,198 @@ export async function listPracticeRuns(
   }));
 }
 
+// ------------------------------------------------- self-hosted LAN runs ----
+/**
+ * How many self-hosted matches an account keeps as the HOST. Oldest pruned on insert.
+ *
+ * Higher than `PRACTICE_KEEP` on purpose: a team scrimmaging at a venue plays matches back to
+ * back all afternoon, and unlike practice runs each one has several people in it who may want
+ * to look at it. Still one number, still a storage decision rather than a code change.
+ */
+export const LAN_KEEP = 40;
+
+/** who the hosting server says was in the match. NAMES ONLY — see the migration. */
+export interface LanParticipant {
+  name: string;
+  teamName?: string;
+  teamNumber?: number;
+  alliance: 'red' | 'blue';
+  drivetrain?: string;
+}
+
+export interface LanRunRow {
+  id: string;
+  matchId: string;
+  /** the account that filed this match. Read by the ownership check in `saveLanRun`. */
+  hostUserId: string;
+  game: Game;
+  score: { red: number; blue: number };
+  participants: LanParticipant[];
+  replayId: string | null;
+  createdAt: string;
+}
+
+/**
+ * Store one self-hosted match under the HOST's account, or return the row that is already
+ * there. Prunes the host's oldest past `LAN_KEEP`.
+ *
+ * IDEMPOTENT ON `match_id` FOR THE ACCOUNT THAT FILED IT, and that is the whole point of the
+ * id existing. The uploader is a
+ * client draining a backlog over whatever connection a venue has, so the same match WILL be
+ * offered twice — after a timeout that actually succeeded, after a reinstall, after two
+ * tabs. `match_id` is UNIQUE, the existing row wins, and a second upload is a no-op rather
+ * than a duplicate match in somebody's history.
+ *
+ * THE SCORE IS REPORTED BY A SERVER THE CLOUD DOES NOT TRUST, deliberately and permanently.
+ * It is safe for the same structural reason `savePracticeRun` is: `lan_runs` is not reachable
+ * from `record_leaderboard`, so nothing written here can move a board, a PB, a rank or an ELO.
+ * Do not add a read path from here into any of those.
+ */
+/**
+ * Somebody tried to file a match id that ALREADY BELONGS TO ANOTHER ACCOUNT.
+ *
+ * Its own error type, rather than a null return, because the two failures the caller has to
+ * tell apart are "already yours, here it is" (idempotent, a 200 with the existing row) and
+ * "already somebody else's" (a 409), and an absent row means neither. `/api/lan` turns this
+ * into the 409; nothing else catches it.
+ */
+export class LanRunOwnedByAnother extends Error {
+  constructor(readonly matchId: string) {
+    super(`lan run ${matchId} was filed by another host`);
+    this.name = 'LanRunOwnedByAnother';
+  }
+}
+
+export async function saveLanRun(
+  hostUserId: string,
+  matchId: string,
+  replay: Replay,
+  score: { red: number; blue: number },
+  participants: LanParticipant[],
+  season: number,
+  game?: Game,
+): Promise<LanRunRow> {
+  // CHECK BEFORE WRITING THE REPLAY, not after. `on conflict do nothing` would leave the
+  // replay row we had already created with nothing pointing at it — the same missing
+  // back-reference that makes the prune and the account-delete paths delete replays by hand.
+  const already = await existingLanRun(matchId);
+  if (already) {
+    // IDEMPOTENT FOR THE OWNER, REFUSED FOR EVERYONE ELSE. Scoping the idempotence by host is
+    // the whole difference between a retry and a theft: the check used to be on `match_id`
+    // alone, so a second account posting the same id was handed the first account's row back
+    // with a 200 — the claim quietly succeeded from the client's point of view, and the real
+    // host's later upload was answered with somebody else's match. The id itself is a
+    // capability now (it goes only to the host's socket; see `src/net/protocol.ts`), and this
+    // is the check at the table that makes a leaked one fail loudly instead of silently.
+    if (already.hostUserId !== hostUserId) throw new LanRunOwnedByAnother(matchId);
+    return already;
+  }
+
+  const replayId = await saveReplay(replay, season, game);
+  const rows = await q<{ id: string; created_at: string }>(
+    `insert into lan_runs (match_id, host_user_id, game, balance_version, score, participants, replay_id)
+     values ($1, $2, $3, $4, $5, $6, $7)
+     on conflict (match_id) do nothing
+     returning id, created_at`,
+    [matchId, hostUserId, g(game), season, JSON.stringify(score), JSON.stringify(participants), replayId],
+  );
+
+  // lost a race with a concurrent upload of the SAME match — two of the host's own devices,
+  // or a retry that overlapped its own first attempt. Drop the replay this call made, because
+  // the row that won is pointing at a different one, and answer with the winner.
+  if (!rows[0]) {
+    await q(`delete from replays where id = $1`, [replayId]);
+    const winner = await existingLanRun(matchId);
+    // ...and the winner of that race is subject to the same ownership rule as a row that was
+    // already there when we started: two of the HOST's devices is a retry, two accounts is not.
+    if (winner && winner.hostUserId !== hostUserId) throw new LanRunOwnedByAnother(matchId);
+    if (winner) return winner;
+    throw new Error(`lan run ${matchId} neither inserted nor found`);
+  }
+
+  // PRUNE, and delete the pruned runs' replays with them — a replay has no back-reference to
+  // the run that owns it, so dropping the row alone leaks the log.
+  const stale = await q<{ replay_id: string | null }>(
+    `delete from lan_runs
+      where id in (
+        select id from lan_runs
+         where host_user_id = $1 and game = $2
+         order by created_at desc
+         offset $3
+      )
+      returning replay_id`,
+    [hostUserId, g(game), LAN_KEEP],
+  );
+  const ids = stale.map((r) => r.replay_id).filter((x): x is string => !!x);
+  if (ids.length) await q(`delete from replays where id = any($1::uuid[])`, [ids]);
+
+  return { id: rows[0].id, matchId, hostUserId, game: g(game), score, participants, replayId, createdAt: rows[0].created_at };
+}
+
+/** the row for a match id, WHOEVER hosted it — the caller compares `hostUserId` itself. */
+async function existingLanRun(matchId: string): Promise<LanRunRow | null> {
+  const rows = await q<{
+    id: string;
+    match_id: string;
+    host_user_id: string;
+    game: Game;
+    score: { red: number; blue: number };
+    participants: LanParticipant[];
+    replay_id: string | null;
+    created_at: string;
+  }>(
+    `select id, match_id, host_user_id, game, score, participants, replay_id, created_at
+       from lan_runs where match_id = $1`,
+    [matchId],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    id: r.id,
+    matchId: r.match_id,
+    hostUserId: r.host_user_id,
+    game: r.game,
+    score: r.score,
+    participants: r.participants,
+    replayId: r.replay_id,
+    createdAt: r.created_at,
+  };
+}
+
+/** a host's own self-hosted matches, newest first. Owner-only — see the API route. */
+export async function listLanRuns(
+  hostUserId: string,
+  game?: Game,
+  limit = LAN_KEEP,
+): Promise<LanRunRow[]> {
+  const rows = await q<{
+    id: string;
+    match_id: string;
+    game: Game;
+    score: { red: number; blue: number };
+    participants: LanParticipant[];
+    replay_id: string | null;
+    created_at: string;
+  }>(
+    `select id, match_id, game, score, participants, replay_id, created_at
+       from lan_runs
+      where host_user_id = $1 and game = $2
+      order by created_at desc
+      limit $3`,
+    [hostUserId, g(game), Math.min(LAN_KEEP, Math.max(1, limit))],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    matchId: r.match_id,
+    hostUserId, // every row this query can return is this host's own, by the WHERE above
+    game: r.game,
+    score: r.score,
+    participants: r.participants,
+    replayId: r.replay_id,
+    createdAt: r.created_at,
+  }));
+}
+
 // --------------------------------------------------- record-chasing board ---
 export interface RecordSubmit {
   userId: string;
@@ -1349,14 +1541,18 @@ export async function deleteAccount(userId: string): Promise<boolean> {
 
     // replays first — see the note above about the missing back-reference. PRACTICE runs are
     // in this list for the same reason: `practice_runs` cascades away with the profile, which
-    // would strand the logs it pointed at.
+    // would strand the logs it pointed at. So does `lan_runs`, keyed on the HOST who uploaded
+    // it — a self-hosted match belongs to whoever ran it, and leaves with them.
     await query(
       `delete from replays
         where id in (select replay_id from records
                       where user_id = $1 and replay_id is not null
                      union all
                      select replay_id from practice_runs
-                      where user_id = $1 and replay_id is not null)`,
+                      where user_id = $1 and replay_id is not null
+                     union all
+                     select replay_id from lan_runs
+                      where host_user_id = $1 and replay_id is not null)`,
       [userId],
     );
     await query(`delete from elo_history where user_id = $1`, [userId]);

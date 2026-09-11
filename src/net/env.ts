@@ -10,7 +10,24 @@
  * still works and becomes a one-entry list. The SELECTED server (module state,
  * restored from the account preference) is what every connect site uses via
  * `gameServerUrl()` / `gameServerHttpUrl()`.
+ *
+ * ⚠️ **A LAN SERVER IS REACHED THROUGH `roomServerUrl*()` AND NOTHING ELSE.** A
+ * self-hosted server (docs/lan-selfhost.md) runs the GAME and nothing else — no database,
+ * no accounts, no leaderboard, no matchmaker. So the override is scoped to the ONE thing a
+ * LAN box can actually do, which is host a code-joined room:
+ *   - `roomServerUrl()` / `roomServerUrlWith()` → the LAN box when one is connected. Used
+ *     by the custom-room Lobby, and only there.
+ *   - `gameServerUrl()` / `gameServerUrlWith()` → ALWAYS the cloud. Ranked, record runs
+ *     and spectating are cloud concepts that cannot exist on a laptop; pointing them at one
+ *     would queue a signed-in player for a rated match on a machine with no way to rate it.
+ *   - `gameServerHttpUrl()` → ALWAYS the cloud. Every read API and the `/api/lan` upload
+ *     go there, or the first self-hosted match posts itself somewhere with nowhere to put
+ *     it and vanishes.
+ * `lanServerHttpUrl()` is the one accessor that deliberately names the LAN box over HTTP,
+ * for its health probe.
  */
+
+import { parseLanAddress } from './lanAddress';
 
 export interface GameServer {
   /** stable id used to persist the player's preference */
@@ -48,6 +65,70 @@ function parseServers(): GameServer[] {
 
 const SERVERS = parseServers();
 let selectedId = SERVERS[0]?.id ?? '';
+
+/**
+ * THE LAN SERVER THIS DEVICE IS CONNECTED TO, if any. '' ⇒ playing on the cloud.
+ *
+ * Its own localStorage key, NOT `GameSettings` — settings sync to Postgres per account,
+ * and a LAN address is a property of WHERE YOU ARE, not of who you are. Signing in on a
+ * laptop at home must not drag a venue's `192.168.x.x` along with it. Same reasoning as the
+ * theme preference, which lives outside settings for exactly this.
+ *
+ * Module state with a localStorage mirror rather than state in a component: the address is
+ * read by `gameServerUrl()`, which every connect site calls, and those calls happen far from
+ * whatever screen set it.
+ */
+const LAN_KEY = 'decodesim.lanServer.v1';
+
+let lanUrl = (() => {
+  try {
+    const raw = localStorage.getItem(LAN_KEY);
+    // re-validate on the way out: the key is hand-editable, and a build that tightened the
+    // rules must not keep honouring an address it would now refuse
+    const hit = raw ? parseLanAddress(raw) : null;
+    return hit && hit.ok ? hit.value.url : '';
+  } catch {
+    return ''; // storage off / private window — LAN simply starts disconnected
+  }
+})();
+
+/** the LAN server's ws:// URL, or '' when not connected to one */
+export const lanServerUrl = (): string => lanUrl;
+
+/** whether this device is playing on a self-hosted server rather than the cloud. Read by
+ *  the "LAN — unofficial, not ranked" banner and by everything that must not offer a
+ *  ranked action while it is true. */
+export const lanActive = (): boolean => !!lanUrl;
+
+/** the LAN server over HTTP — its health probe and the client it serves. The ONE accessor
+ *  that points at the LAN box over HTTP; `gameServerHttpUrl()` never does. */
+export const lanServerHttpUrl = (): string => httpOf(lanUrl);
+
+/**
+ * Connect this device to a self-hosted server. Returns the parsed address, or the reason it
+ * was refused — the caller shows that reason; it must never silently keep the old one.
+ */
+export function setLanServer(raw: string): ReturnType<typeof parseLanAddress> {
+  const hit = parseLanAddress(raw);
+  if (!hit.ok) return hit;
+  lanUrl = hit.value.url;
+  try {
+    localStorage.setItem(LAN_KEY, lanUrl);
+  } catch {
+    /* not persisted; the connection still works for this session */
+  }
+  return hit;
+}
+
+/** go back to the cloud. */
+export function clearLanServer(): void {
+  lanUrl = '';
+  try {
+    localStorage.removeItem(LAN_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
 /**
  * RELEASE CHANNEL of THIS client build (baked from `VITE_APP_CHANNEL`; default
@@ -89,7 +170,13 @@ export const isKnownRegion = (code: string): boolean => code in REGION_LABELS;
 /** all configured servers (regions); empty ⇒ multiplayer/records disabled */
 export const gameServers = (): GameServer[] => SERVERS;
 
+/** is the CLOUD configured? Gates ranked, records, spectating and the live counters —
+ *  everything that needs the database. A LAN connection deliberately does NOT count. */
 export const gameServerConfigured = (): boolean => SERVERS.length > 0;
+
+/** is there anywhere to open a ROOM? Either the cloud or a LAN server will do — a client
+ *  served by a LAN host may have been built with no cloud URL baked in at all. */
+export const roomServerConfigured = (): boolean => SERVERS.length > 0 || !!lanUrl;
 
 /** whether the player actually has a CHOICE of server (≥2 configured) */
 export const multiServer = (): boolean => SERVERS.length > 1;
@@ -104,6 +191,8 @@ export function setSelectedServer(id: string): void {
   if (SERVERS.some((s) => s.id === id)) selectedId = id;
 }
 
+/** the selected CLOUD region's WebSocket URL. Never the LAN server — see the ⚠️ at the
+ *  top of this file, and use `roomServerUrl()` if a LAN box is a legitimate destination. */
 export const gameServerUrl = (): string => selectedServer()?.url ?? '';
 
 /**
@@ -122,8 +211,37 @@ export function gameServerUrlWith(params: Record<string, string>): string {
   return qs ? `${base}?${qs}` : base;
 }
 
-/** the selected server over HTTP(S) for the read APIs (leaderboards, replays,
- * health/ping): ws://→http://, wss://→https:// */
+/**
+ * Where a ROOM is opened — the LAN server when one is connected, else the cloud.
+ *
+ * The ONLY accessor that follows a LAN connection, and the narrowness is the point: a
+ * code-joined room is the one thing a server with no database can host completely. It is
+ * used by `Lobby` and by nothing else.
+ *
+ * The fly-replay routing hints are passed through unchanged and are simply ignored by a LAN
+ * server, which has one machine and no proxy in front of it — the same way they are
+ * harmless on a single-region cloud deploy.
+ */
+export const roomServerUrl = (): string => lanUrl || selectedServer()?.url || '';
+
+export function roomServerUrlWith(params: Record<string, string>): string {
+  const base = roomServerUrl();
+  if (!base) return base;
+  const qs = new URLSearchParams(params).toString();
+  return qs ? `${base}?${qs}` : base;
+}
+
+/**
+ * The CLOUD server over HTTP(S) for the read APIs (leaderboards, replays, health/ping) and
+ * for the LAN upload: ws://→http://, wss://→https://
+ *
+ * ⚠️ **This must NEVER follow `lanUrl`.** It is deliberately written against
+ * `selectedServer()` and not against `gameServerUrl()`, because everything reached through
+ * it needs the database — the account, the boards, the replay archive and `POST /api/lan`
+ * itself. A LAN box has none of those, so a version of this that followed the socket would
+ * point a signed-in player's whole account at a laptop, and the first self-hosted match
+ * would be uploaded into a void.
+ */
 export const gameServerHttpUrl = (): string => httpOf(selectedServer()?.url);
 
 /** ws(s):// → http(s):// for any server's url */

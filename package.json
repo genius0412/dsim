@@ -18,10 +18,11 @@
     "server": "tsx watch server/index.ts",
     "server:start": "tsx server/index.ts",
     "server:build": "esbuild server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist-server/index.js",
+    "server:bundle": "esbuild server/index.ts --bundle --platform=node --format=esm --outfile=dist-server/lan.mjs --external:bufferutil --external:utf-8-validate --external:pg-native --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
     "server:prod": "node dist-server/index.js",
     "server:check": "tsc -p tsconfig.server.json",
     "electron": "electron .",
-    "dist": "set ELECTRON=1&& npm run build && electron-builder --win",
+    "dist": "set ELECTRON=1&& npm run build && npm run server:bundle && electron-builder --win",
     "dbtest": "tsx scripts/dbtest.ts",
     "loadtest": "tsx scripts/loadtest.ts",
     "uiaudit": "node scripts/uiaudit.mjs",
@@ -32,6 +33,7 @@
     "productName": "DSIM",
     "files": [
       "dist/**/*",
+      "dist-server/lan.mjs",
       "electron/**/*",
       "!node_modules/**/*"
     ],

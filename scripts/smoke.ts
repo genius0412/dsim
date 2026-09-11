@@ -2,19 +2,25 @@
  * Headless smoke test of the sim core: drives, shoots (incl. on the move),
  * opens the gate, and checks scoring math. Run with: npx tsx scripts/smoke.ts
  */
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath, resolve as pathResolve, sep as pathSep } from 'node:path';
 import {
   practiceSaveDecision,
   PRACTICE_SAVE_MIN_S,
   PRACTICE_SAVE_MIN_TICKS,
 } from '../src/replaySavePolicy';
-import { join as joinPath } from 'node:path';
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, PLAYER_ASSISTS, coerceAssists, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { drawWheels } from '../src/games/chain/parts';
 import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
 import { derivedRole, savedStartCap } from '../src/ui/startPositions';
 import { queuedModes, queuedGames, queuesFor, anyoneQueued, widenHint } from '../src/ui/queueDepth';
 import { roomJoinRegion } from '../src/net/roomRegion';
+import { parseLanAddress, mixedContentBlock, isPrivateHost } from '../src/net/lanAddress';
+import { filePath as staticFilePath, servableFile, servingClient } from '../server/static';
+import { enforceLanPolicy } from '../server/lanMode';
+import { stripCredentials, trustedFor, wsOrigin } from '../src/net/credentials';
+import { childEnv as lanChildEnv } from '../electron/lanHost.cjs';
 import {
   parkQueue, takeQueue, dropQueue, updateQueue, peekQueue, subscribeQueue, elapsedLabel, elapsedSeconds,
 } from '../src/ui/queueKeeper';
@@ -6885,6 +6891,330 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
   }
 
+  // ---- LAN: what address may be joined, and from which page --------------
+  /**
+   * AN https PAGE CANNOT OPEN A ws:// SOCKET, AND IT FAILS SILENTLY.
+   *
+   * This is the constraint the whole self-hosted feature is shaped around
+   * (docs/lan-selfhost.md), and it is the kind that has to be tested rather than reasoned
+   * about: a browser refuses the connection as mixed content with nothing but a console
+   * line — no event, no error the app can catch, and no retry that will ever succeed. A
+   * player is told "couldn't connect" forever. `localhost` is exempt (it is a
+   * "potentially trustworthy" origin), which is why the HOST can play from the live site
+   * while a guest on the same network cannot.
+   *
+   * The parser is pinned here too, because the input is a person typing an IP address off
+   * a projector and the host allowlist is a SECURITY boundary: what it fails to recognise
+   * it must refuse, never allow.
+   */
+  {
+    const ok = (raw: string) => {
+      const r = parseLanAddress(raw);
+      return r.ok ? r.value : null;
+    };
+    const err = (raw: string) => {
+      const r = parseLanAddress(raw);
+      return r.ok ? null : r.error;
+    };
+
+    check('lan addr: a bare IP takes the default port', ok('192.168.1.5')?.url === 'ws://192.168.1.5:8787');
+    check('lan addr: an explicit port wins', ok('192.168.1.5:9000')?.url === 'ws://192.168.1.5:9000');
+    check(
+      'lan addr: what a person actually pastes — a scheme, a path, stray spaces',
+      ok('  http://192.168.1.5:8787/  ')?.url === 'ws://192.168.1.5:8787',
+    );
+    check(
+      'lan addr: the http twin is the SAME origin (it serves the client and the health probe)',
+      ok('10.0.0.4')?.httpUrl === 'http://10.0.0.4:8787',
+    );
+    check(
+      'lan addr: an https URL still answers ws:// (a LAN box has no certificate)',
+      ok('https://192.168.1.5')?.url === 'ws://192.168.1.5:8787',
+    );
+    check('lan addr: every RFC1918 block is private', [
+      '10.0.0.1', '172.16.0.1', '172.31.255.254', '192.168.0.1', '169.254.10.2', '127.0.0.1',
+    ].every(isPrivateHost));
+    check('lan addr: 172.15 and 172.32 are OUTSIDE the private block', !isPrivateHost('172.15.0.1') && !isPrivateHost('172.32.0.1'));
+    check('lan addr: mDNS and loopback names are private', ['localhost', 'scoring.local', 'host.lan'].every(isPrivateHost));
+    check('lan addr: IPv6 unique-local and link-local are private', isPrivateHost('fd00::1') && isPrivateHost('[fe80::1]'));
+    check(
+      'lan addr: a PUBLIC address is refused — v1 is scoped to the network you are on',
+      err('8.8.8.8') === 'not-private' && err('example.com') === 'not-private',
+    );
+    check('lan addr: nothing typed is `empty`, not a crash', err('') === 'empty' && err('   ') === 'empty');
+    check(
+      'lan addr: a TYPO is malformed, not "not on this network" — they are different problems',
+      err('!!!') === 'malformed' && err('192.168.1.5 extra') === 'malformed',
+    );
+    check('lan addr: a port outside 1..65535 is malformed', err('192.168.1.5:70000') === 'malformed');
+    check(
+      'lan addr: a bracketed IPv6 with a port splits on the RIGHT colon',
+      ok('[fd00::1]:9000')?.host === '[fd00::1]' && ok('[fd00::1]:9000')?.port === 9000,
+    );
+
+    // THE MIXED-CONTENT RULE ITSELF
+    const lan = ok('192.168.1.5')!;
+    const local = ok('localhost')!;
+    check(
+      'mixed content: an https page CANNOT reach a LAN box — and is told which URL to open',
+      mixedContentBlock(lan, 'https:') === 'http://192.168.1.5:8787',
+    );
+    check(
+      'mixed content: localhost is exempt, which is what lets the HOST play from the live site',
+      mixedContentBlock(local, 'https:') === null,
+    );
+    check(
+      'mixed content: a page the LAN host served (http) may open any of it',
+      mixedContentBlock(lan, 'http:') === null && mixedContentBlock(local, 'http:') === null,
+    );
+    check(
+      'mixed content: a file:// page (the desktop shell offline) is not blocked either',
+      mixedContentBlock(lan, 'file:') === null,
+    );
+  }
+
+  // ---- LAN: a host's server hands out files, so it must not hand out ANY file
+  /**
+   * THE ONE SECURITY BOUNDARY IN `server/static.ts`.
+   *
+   * A LAN host runs this process on their own laptop, on a venue network full of machines
+   * they do not control, and it answers GETs with the contents of files. Everything that
+   * keeps that from being a file server for the whole disk is one containment check, so it
+   * is pinned here rather than only reachable through a socket.
+   *
+   * Note WHERE the escapes are neutralised: `new URL()` removes dot-segments before we ever
+   * see the path, `decodeURIComponent` then exposes any that were percent-hidden, and
+   * `normalize` on an ABSOLUTE path discards leading `..` rather than climbing. The check on
+   * the RESOLVED path is what makes that chain safe to rely on instead of clever.
+   */
+  {
+    const root = pathResolve('serve-root');
+    const inside = (url: string): boolean => {
+      const f = staticFilePath(root, url);
+      return !!f && (f === root || f.startsWith(root + pathSep));
+    };
+
+    check('static: an ordinary file resolves inside the root', inside('/index.html'));
+    check('static: a nested asset resolves inside the root', inside('/assets/index-abc123.js'));
+    check(
+      'static: every shape of ../ stays inside the root',
+      ['/../package.json', '/%2e%2e%2fpackage.json', '/a/%2e%2e/%2e%2e/package.json',
+       '/a/../../../package.json', '/..%2f..%2fpackage.json', '/assets/..%5c..%5cpackage.json',
+      ].every(inside),
+    );
+    check('static: a NUL in the path is refused outright', staticFilePath(root, '/%00') === null);
+    check('static: malformed percent-encoding is refused, not guessed', staticFilePath(root, '/%zz') === null);
+    check(
+      'static: a SIBLING directory sharing the prefix is not inside it — the separator is load-bearing',
+      !staticFilePath(root + '-evil', '/secret')?.startsWith(root + pathSep),
+    );
+  }
+
+  // ---- LAN: a link inside the served dist/ is not a way out of it
+  /**
+   * THE TEXT CHECK ABOVE IS NOT THE FILESYSTEM, AND THIS IS THE DIFFERENCE.
+   *
+   * `filePath` proves a requested path SPELLS OUT to somewhere under the root. A link inside
+   * the root spells out fine and leads wherever its target says, and `dist/` is a directory
+   * built on the host's own laptop. So the served path is resolved with `realpath` on BOTH
+   * sides and the containment test is made on the two canonical strings (`servableFile`).
+   *
+   * Exercised against a REAL link on disk rather than a stubbed `realpath`: the whole finding
+   * was that a plausible-looking check did not do what it reads as doing, and a test that
+   * mocked the filesystem away would have agreed with it. A junction, because an
+   * unprivileged process on Windows may not create a symlink but may create one of those.
+   */
+  {
+    const tmp = mkdtempSync(joinPath(tmpdir(), 'dsim-static-'));
+    const root = joinPath(tmp, 'dist');
+    const outside = joinPath(tmp, 'secrets');
+    mkdirSync(root);
+    mkdirSync(outside);
+    writeFileSync(joinPath(root, 'index.html'), '<!doctype html>');
+    writeFileSync(joinPath(outside, 'id_rsa'), 'PRIVATE KEY');
+    let linked = true;
+    try {
+      symlinkSync(outside, joinPath(root, 'escape'), 'junction');
+    } catch {
+      linked = false; // no permission here; the checks below are skipped rather than faked
+    }
+
+    check(
+      'static: an ordinary file inside the root is servable',
+      (await servableFile(root, joinPath(root, 'index.html'))) !== null,
+    );
+    check(
+      'static: a path that does not exist is simply not servable',
+      (await servableFile(root, joinPath(root, 'nope.js'))) === null,
+    );
+    check(
+      'static: a file plainly outside the root is not servable',
+      (await servableFile(root, joinPath(outside, 'id_rsa'))) === null,
+    );
+    if (linked) {
+      const through = joinPath(root, 'escape', 'id_rsa');
+      // the lexical check is HAPPY with this path — which is exactly the finding
+      check(
+        'static: ...and the lexical check alone would have served it',
+        staticFilePath(root, '/escape/id_rsa') === through,
+      );
+      check(
+        'static: a junction inside dist/ does NOT hand a LAN peer the files behind it',
+        (await servableFile(root, through)) === null,
+      );
+      check(
+        'static: an escape and a miss are indistinguishable (nothing to probe with)',
+        (await servableFile(root, through)) === (await servableFile(root, joinPath(root, 'nope.js'))),
+      );
+    }
+    rmSync(tmp, { recursive: true, force: true });
+  }
+
+  // ---- LAN: serving the client is gated on LAN_MODE, and fails closed without it
+  /**
+   * `SERVE_CLIENT` names a built client; `LAN_MODE` says this process is somebody's laptop.
+   * The two used to be independent, so the same binary with `SERVE_CLIENT` and a real
+   * `DATABASE_URL` was a self-hosted server holding a connection to the production database.
+   * Now the pair is ONE decision, checked on both sides: the module serves nothing without
+   * `LAN_MODE`, and the boot refuses outright.
+   *
+   * `npm test` runs with neither variable set, which is why `enforceLanPolicy` takes its exit
+   * and its mode as arguments (see its note).
+   */
+  {
+    const hadServe = process.env.SERVE_CLIENT;
+    process.env.SERVE_CLIENT = pathResolve('dist');
+    check(
+      'lan mode: SERVE_CLIENT alone serves NOTHING — the module reads the PAIR',
+      servingClient() === false,
+    );
+    let exited = 0;
+    enforceLanPolicy(((code: number) => {
+      exited = code;
+    }) as (code: number) => never, false);
+    check('lan mode: ...and SERVE_CLIENT without LAN_MODE refuses to boot (fails closed)', exited === 1);
+
+    const hadDsn = process.env.DATABASE_URL;
+    const hadSecret = process.env.ADMIN_SECRET;
+    process.env.DATABASE_URL = 'postgres://user:pw@prod.example/db';
+    process.env.ADMIN_SECRET = 'hunter2';
+    let exited2 = 0;
+    const dropped = enforceLanPolicy(((code: number) => {
+      exited2 = code;
+    }) as (code: number) => never, true);
+    check('lan mode: LAN_MODE=1 alongside SERVE_CLIENT boots', exited2 === 0);
+    check(
+      'lan mode: ...and a real DATABASE_URL in the environment is DROPPED, not honoured',
+      dropped.includes('DATABASE_URL') && process.env.DATABASE_URL === undefined,
+    );
+    check(
+      'lan mode: ...along with the admin secret (a LAN server has no admin surface)',
+      dropped.includes('ADMIN_SECRET') && process.env.ADMIN_SECRET === undefined,
+    );
+    if (hadServe === undefined) delete process.env.SERVE_CLIENT;
+    else process.env.SERVE_CLIENT = hadServe;
+    if (hadDsn !== undefined) process.env.DATABASE_URL = hadDsn;
+    if (hadSecret !== undefined) process.env.ADMIN_SECRET = hadSecret;
+  }
+
+  // ---- LAN: the child server's environment is an ALLOWLIST
+  /**
+   * The launcher used to spread `...process.env` and then blank the four secrets that existed
+   * when it was written — a list somebody has to remember to extend, on the day they add
+   * a secret, in a file they have no reason to open. Inverted: nothing is inherited unless it
+   * is named.
+   */
+  {
+    const hadDsn = process.env.DATABASE_URL;
+    const hadKofi = process.env.KOFI_VERIFICATION_TOKEN;
+    process.env.DATABASE_URL = 'postgres://user:pw@prod.example/db';
+    process.env.KOFI_VERIFICATION_TOKEN = 'tok';
+    const env = lanChildEnv('/tmp/dist', 8787) as Record<string, string | undefined>;
+    check('lan host: the child is told it is a LAN server', env.LAN_MODE === '1');
+    check('lan host: ...and is pointed at the built client', env.SERVE_CLIENT === '/tmp/dist');
+    check('lan host: ...and runs Electron as plain Node', env.ELECTRON_RUN_AS_NODE === '1');
+    check(
+      'lan host: a real DATABASE_URL in the parent is NOT inherited by the child',
+      env.DATABASE_URL === undefined,
+    );
+    check(
+      'lan host: ...nor a secret nobody thought to blank (an allowlist, not a denylist)',
+      env.KOFI_VERIFICATION_TOKEN === undefined,
+    );
+    if (hadDsn === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = hadDsn;
+    if (hadKofi === undefined) delete process.env.KOFI_VERIFICATION_TOKEN;
+    else process.env.KOFI_VERIFICATION_TOKEN = hadKofi;
+  }
+
+  // ---- LAN: a cloud credential never leaves for a server the cloud does not vouch for
+  /**
+   * ⚠️ A LAN SERVER IS SOMEBODY'S LAPTOP. A guest joining one was handing it the Neon Auth
+   * JWT for their real cloud account, because `LobbyClient.join` attaches it unconditionally
+   * and the custom-room lobby is the one connect site that follows a LAN address.
+   *
+   * The fix is at the SEND boundary, and the allowlist runs in the safe direction: credentials
+   * go to a CONFIGURED CLOUD SERVER, and everything else — a LAN box, a typo, some third
+   * kind of destination nobody has classified yet — gets the frame with the token removed.
+   */
+  {
+    const cloud = ['wss://game.playdsim.com', 'wss://lhr.playdsim.com'];
+    check(
+      'credentials: the configured cloud server is trusted with the account token',
+      trustedFor('wss://game.playdsim.com', cloud),
+    );
+    check(
+      'credentials: ...including with the fly-replay routing hints appended',
+      trustedFor('wss://lhr.playdsim.com?room=iad-abc123', cloud),
+    );
+    check(
+      'credentials: a LAN box is NOT trusted — this is the whole finding',
+      !trustedFor('ws://192.168.1.5:8787', cloud),
+    );
+    check(
+      'credentials: a look-alike host is not the cloud either',
+      !trustedFor('wss://game.playdsim.com.evil.test', cloud),
+    );
+    check(
+      'credentials: nothing configured — a client served BY a LAN host — trusts nobody',
+      !trustedFor('ws://192.168.1.5:8787', []),
+    );
+    check('credentials: garbage is untrusted, not parsed generously', !trustedFor('!!!', cloud));
+    check(
+      'credentials: ws:// origins compare by scheme+host, never as the opaque "null"',
+      wsOrigin('ws://192.168.1.5:8787/x?y=1') === 'ws://192.168.1.5:8787' &&
+        wsOrigin('ws://192.168.1.5:8787') !== wsOrigin('ws://192.168.1.6:8787'),
+    );
+
+    const joinFrame = JSON.stringify({ t: 'join', room: 'abc123', authToken: 'eyJ.SECRET.jwt', caps: ['x'] });
+    const stripped = JSON.parse(stripCredentials(joinFrame)) as Record<string, unknown>;
+    check('credentials: the JWT is removed from a join bound for a LAN box', !('authToken' in stripped));
+    check(
+      'credentials: ...and nothing else about the message changes',
+      stripped.t === 'join' && stripped.room === 'abc123' && !stripCredentials(joinFrame).includes('SECRET'),
+    );
+    const spectateFrame = JSON.stringify({ t: 'spectate', room: 'abc123', authToken: 'eyJ.SECRET.jwt' });
+    check(
+      'credentials: spectate is stripped too — the rule is the transport, not the call site',
+      !stripCredentials(spectateFrame).includes('SECRET'),
+    );
+    const queueFrame = JSON.stringify({ t: 'queue', mode: '1v1', authToken: 'eyJ.a.b', party: 'challenge-token' });
+    check(
+      'credentials: a CHALLENGE token is data, not a credential, and survives',
+      stripCredentials(queueFrame).includes('challenge-token') &&
+        !stripCredentials(queueFrame).includes('eyJ.a.b'),
+    );
+    const inputFrame = JSON.stringify({ t: 'input', tick: 91, cmd: [1, 0, 0] });
+    check(
+      'credentials: the hot path is returned untouched (one failed indexOf, no JSON round-trip)',
+      stripCredentials(inputFrame) === inputFrame,
+    );
+    check(
+      'credentials: a non-JSON frame is passed through, not swallowed',
+      stripCredentials('not json') === 'not json',
+    );
+  }
+
   // ---- background ranked queue: the keeper store -------------------------
   // The store is what makes a queue survive leaving the screen, so its contract is
   // worth pinning: parking makes it visible, taking hands it back exactly once, a
@@ -11968,6 +12298,29 @@ function pinScene(
   check('server Room emits a matchResult at match end', !!res);
   if (res && res.t === 'matchResult') {
     check('matchResult tagged kind=record / solo', res.kind === 'record' && res.record === 'solo');
+    /**
+     * THE MATCH ID IS A CAPABILITY, AND IT IS NOT PART OF THE RESULT.
+     *
+     * A self-hosted match is uploaded by a CLIENT rather than written by the server that ran
+     * it, so the cloud needs a key that tells a retry from a second game
+     * (docs/lan-selfhost.md) — and it has no way to know who really hosted a LAN match, so
+     * that key is also the only thing standing between the host's row and anybody else who
+     * saw it. It used to ride `matchResult`, which is a BROADCAST: every driver and every
+     * spectator in the room got it. Now it is its own message to the host's socket alone.
+     */
+    check('matchResult does NOT carry the matchId (it is broadcast to the whole room)',
+      (res as { matchId?: string }).matchId === undefined);
+    const arch = msgs.find((m) => m.t === 'matchArchive');
+    check('the host is sent a matchArchive instead', !!arch);
+    check('the matchId is a UUID, so two servers can never mint the same one',
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+        arch && arch.t === 'matchArchive' ? arch.matchId : '',
+      ),
+      arch && arch.t === 'matchArchive' ? arch.matchId : 'none');
+    check(
+      'the capability arrives BEFORE the result on the same ordered socket',
+      msgs.findIndex((m) => m.t === 'matchArchive') < msgs.findIndex((m) => m.t === 'matchResult'),
+    );
     check(
       'record forces the run onto blue (opponent-free, red player → blue robot)',
       res.result.score.blue > 0 && res.result.score.red === 0,
@@ -11991,9 +12344,15 @@ function pinScene(
 // logged at the wrong tick) would actually show up.
 {
   const msgs: ServerMsg[] = [];
+  // per-socket sinks as well as the shared log: "only the host got it" cannot be asserted
+  // against one array every client pushes into
+  const sinks: Record<string, ServerMsg[]> = { va: [], vb: [] };
   const mkVs = (id: string, alliance: Alliance): Client => ({
     id,
-    send: (m) => msgs.push(m),
+    send: (m) => {
+      msgs.push(m);
+      sinks[id].push(m);
+    },
     player: {
       clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance,
       startIndex: alliance === 'red' ? 0 : 1, ready: true,
@@ -12032,6 +12391,27 @@ function pinScene(
       vres.result.score.red > 0 && vres.result.score.blue > 0,
       JSON.stringify(vres.result.score));
   }
+  /**
+   * ⚠️ THE ARCHIVE CAPABILITY GOES TO THE HOST AND TO NOBODY ELSE.
+   *
+   * This is the half the solo room structurally cannot check: with one client in the room,
+   * "sent to the host" and "broadcast" look identical. Here `vb` is an opponent on the other
+   * alliance — on a LAN server, somebody else's laptop — and it must not learn the id that
+   * files the match. `/api/lan` answering 409 to a non-owner is the second layer; this is the
+   * first, and the only one that keeps the id off the wire at all.
+   */
+  check(
+    'archive: the HOST is sent the match id',
+    sinks.va.some((m) => m.t === 'matchArchive'),
+  );
+  check(
+    'archive: the OPPONENT is not — the id is a capability, not a result field',
+    !sinks.vb.some((m) => m.t === 'matchArchive'),
+  );
+  check(
+    'archive: ...and both of them do get the result',
+    sinks.va.some((m) => m.t === 'matchResult') && sinks.vb.some((m) => m.t === 'matchResult'),
+  );
 }
 
 // ---- mid-match reconnect race: fast rejoin before the dropped socket is reaped -

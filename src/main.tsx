@@ -9,6 +9,7 @@ import { AdsProvider } from './ads/AdsProvider';
 import { loadCmp } from './ads/adsense';
 import { Analytics } from '@vercel/analytics/react';
 import { analyticsEnabled } from './analytics';
+import { adoptLanFromOrigin } from './net/lanAdopt';
 // Self-hosted (not a CDN <link>): the Electron build runs from file:// with
 // vite `base: './'`, so fingerprinted woff2 must be bundled to resolve offline.
 // Variable cuts, because shell.css asks for weights off the 100 grid (750).
@@ -31,7 +32,12 @@ loadCmp();
 // Init the Rapier physics WASM (shared src/sim) before the first sim step. It
 // inlines its WASM as base64 (no separate asset), so this is a fast local
 // decode — block the initial render on it so no GameController steps early.
-initPhysics().then(() => {
+// If this page was served BY a LAN host, play on that host. Runs alongside the physics
+// init rather than after it, so a guest at a venue never waits on it; it resolves in
+// milliseconds on a LAN and is skipped outright on https. See src/net/lanAdopt.ts.
+const lanReady = adoptLanFromOrigin().catch(() => false);
+
+Promise.all([initPhysics(), lanReady]).then(() => {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       {/* Wraps everything because the game screen renders OUTSIDE the app shell

@@ -2,6 +2,7 @@ const { app, BrowserWindow, Menu, dialog, shell, ipcMain, nativeTheme } = requir
 const path = require('path');
 const https = require('https');
 const fs = require('fs');
+const lanHost = require('./lanHost.cjs');
 
 const SITE = 'https://www.playdsim.com';
 const LATEST_API = 'https://api.github.com/repos/genius0412/dsim/releases/latest';
@@ -198,6 +199,18 @@ ipcMain.handle('dsim:setAuto', (_e, v) => {
 });
 ipcMain.handle('dsim:openDownload', () => shell.openExternal(`${SITE}/download`));
 
+/**
+ * HOSTING A LAN GAME. See `electron/lanHost.cjs`.
+ *
+ * Three calls and no more: the renderer asks to start, to stop, or for the current state.
+ * Everything about WHERE the server lives, how it is run and what environment it gets stays
+ * in the main process, because none of it is the renderer's business and some of it
+ * (blanking `DATABASE_URL`) is a rule rather than a detail.
+ */
+ipcMain.handle('dsim:lanStart', (_e, opts) => lanHost.start(app, opts || {}));
+ipcMain.handle('dsim:lanStop', () => lanHost.stop());
+ipcMain.handle('dsim:lanStatus', () => lanHost.status());
+
 function buildMenu() {
   const isMac = process.platform === 'darwin';
   const checkItem = { label: 'Check for Updates…', click: () => promptUpdate(true) };
@@ -231,6 +244,17 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+/**
+ * THE HOSTED SERVER DIES WITH THE APP, always.
+ *
+ * A child process outliving its parent would hold port 8787 with nothing on screen
+ * explaining why the next attempt to host fails — and on Windows it would keep answering a
+ * venue's network from an app the host believes they closed. `before-quit` covers the
+ * ordinary exit and `quit` covers the paths that skip it.
+ */
+app.on('before-quit', () => lanHost.stop());
+app.on('quit', () => lanHost.stop());
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

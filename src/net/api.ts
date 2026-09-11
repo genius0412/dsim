@@ -513,6 +513,96 @@ export async function fetchPracticeRuns(game?: GameId): Promise<PracticeRun[] | 
   }
 }
 
+// ---- self-hosted (LAN) matches, own account only ---------------------------
+
+/** one driver in a self-hosted match, by NAME. See migration 0033 for why there are no
+ *  user ids here: the reporting server is untrusted, and attributing a match to an account
+ *  on its say-so is an impersonation primitive. */
+export interface LanParticipant {
+  name: string;
+  teamName?: string;
+  teamNumber?: number;
+  alliance: 'red' | 'blue';
+  drivetrain?: string;
+}
+
+/** one self-hosted match as the cloud stores it */
+export interface LanRun {
+  id: string;
+  matchId: string;
+  game: GameId;
+  score: { red: number; blue: number };
+  participants: LanParticipant[];
+  replayId: string | null;
+  createdAt: string;
+}
+
+/**
+ * Send a finished SELF-HOSTED match to the cloud, under the HOST's account.
+ *
+ * ⚠️ **This goes to `gameServerHttpUrl()`, which is the CLOUD even while
+ * `gameServerUrl()` points at the LAN box.** The whole point is that the match was played
+ * on a laptop with no database; posting it back there would drop it on the floor. See the
+ * note at the top of `env.ts`.
+ *
+ * Everything in the body is data the cloud does not trust — the score came off a server
+ * whose operator could have patched it — and that is survivable only because of where it
+ * lands: `lan_runs` is not reachable from `record_leaderboard`, so nothing here can move a
+ * board, a PB, a rank or an ELO.
+ *
+ * THREE OUTCOMES, and the third is the one worth naming. `null` is a failure worth RETRYING
+ * — an offline venue, a 503 from a busy server — and the match is already on the device
+ * (`src/net/lanRuns.ts`), so it costs a retry rather than the match. `'refused'` is a failure
+ * that will never succeed: the cloud answered 409 (another account already filed this match
+ * id) or 400 (this body is not one it will take). Retrying either forever would park the
+ * backlog on an item that can never drain and block every match behind it, so the caller
+ * retires it locally instead.
+ */
+export async function uploadLanRun(
+  matchId: string,
+  replay: Replay,
+  score: { red: number; blue: number },
+  participants: LanParticipant[],
+  game?: GameId,
+): Promise<LanRun | 'refused' | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/lan?game=${game ?? 'decode'}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ matchId, replay, score, participants }),
+    });
+    // 409: the match belongs to another host. 400: this body will never be accepted. Both are
+    // permanent verdicts about THIS item; everything else (401 mid-token-refresh, 429, 503,
+    // a gateway) is the connection or the moment, and deserves another go later.
+    if (res.status === 409 || res.status === 400) return 'refused';
+    if (!res.ok) return null;
+    return ((await res.json()) as { run: LanRun }).run ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** the signed-in account's own self-hosted matches, newest first. Null when signed out or
+ *  the cloud is unreachable — the caller falls back to what this device has. */
+export async function fetchLanRuns(game?: GameId): Promise<LanRun[] | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/lan?game=${game ?? 'decode'}`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { runs: LanRun[] }).runs ?? [];
+  } catch {
+    return null;
+  }
+}
+
 // ---- announcements (patch notes / new season / new act) --------------------
 
 export type AnnouncementKind = 'patch' | 'season' | 'act';

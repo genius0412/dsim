@@ -76,9 +76,18 @@ export class LobbyClient {
     this.handlers[event] = cb;
   }
 
-  /** join (or create) a room; (re)sends on open AND on any reconnect. `config`
-   * (set only by the room CREATOR) picks versus vs. record-chasing. Attaches the
-   * Neon Auth JWT (if signed in) so the server attributes the run. */
+  /**
+   * Join (or create) a room; (re)sends on open AND on any reconnect. `config` (set only by the
+   * room CREATOR) picks versus vs. record-chasing. Attaches the Neon Auth JWT (if signed in) so
+   * the server attributes the run.
+   *
+   * ⚠️ **THE TOKEN IS ATTACHED HERE AND MAY BE REMOVED AGAIN ON THE WAY OUT.** A room is the
+   * one thing that can be hosted on somebody's laptop (`roomServerUrl()` in `env.ts`), and a
+   * cloud credential handed to a LAN server is a cloud credential its operator has. So the
+   * transport strips it from every frame bound for a server the cloud has not vouched for —
+   * see `src/net/credentials.ts` for why that check lives at the send boundary rather than at
+   * this call site and the two others like it. Do NOT re-derive the rule here.
+   */
   join(room: string, player: Omit<LobbyPlayer, 'clientId'>, config?: RoomConfig): void {
     const doJoin = async (): Promise<void> => {
       const authToken = (await getAuthToken()) ?? undefined;
@@ -99,6 +108,9 @@ export class LobbyClient {
       // Room.hideSpectator). For everyone else it changes nothing at all, so it is
       // attached unconditionally rather than gated on the client believing it is
       // an admin, which would just be a claim the server has to re-check anyway.
+      // As on `join`, the transport removes it again if this socket is not going to a
+      // server the cloud vouches for (`src/net/credentials.ts`). A LAN server has no
+      // admins to recognise, so nothing is lost by its absence there.
       const authToken = (await getAuthToken()) ?? undefined;
       this.transport.send(encodeMsg({ t: 'spectate', room, caps: CLIENT_CAPS, authToken }));
     };

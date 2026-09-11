@@ -4,7 +4,7 @@ import { BALANCE_VERSION, SIM_DT } from '../src/config';
 import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
 import { CHALLENGE_FORMATS } from '../src/net/protocol';
 import { sanitizeReplay } from '../src/net/sanitize';
-import { moderateName } from './moderation';
+import { moderateName, scrubName } from './moderation';
 import { dbEnabled } from './db/pool';
 import {
   acceptFriendRequest,
@@ -20,6 +20,10 @@ import {
   ensureProfile,
   listPracticeRuns,
   savePracticeRun,
+  listLanRuns,
+  saveLanRun,
+  LanRunOwnedByAnother,
+  type LanParticipant,
   ensureSeason,
   inviteToRoom,
   listAnnouncements,
@@ -135,22 +139,186 @@ const CORS = {
   'access-control-max-age': '600',
 };
 
-function readBody(req: IncomingMessage): Promise<string> {
+/**
+ * Read a request body, up to `limit` bytes, and STOP at the limit.
+ *
+ * ⚠️ **REJECTING THE PROMISE DOES NOT STOP THE STREAM.** The previous version called
+ * `reject()` on the first chunk that crossed the cap and then went on appending every
+ * subsequent chunk to the same string, for as long as the sender cared to keep writing. So the
+ * cap bounded what the handler would ACCEPT and bounded nothing at all about what the process
+ * would HOLD: a single client could push a request body of any size it liked into the heap of
+ * a server that had already refused it, and a handful of them in parallel is an out-of-memory
+ * on a machine whose whole job is to be up.
+ *
+ * So the over-limit path detaches the listeners, drops the bytes it has, and destroys the
+ * request. Destroying is what tells the sender to stop rather than merely ignoring them, and
+ * the promise settles EXACTLY once either way (`settled`), because a destroy raises `error`
+ * and a double-settle would otherwise be the norm rather than the exception.
+ */
+function readBody(req: IncomingMessage, limit = 512 * 1024): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', (c) => {
+    let settled = false;
+    const done = (err: Error | null, body = ''): void => {
+      if (settled) return;
+      settled = true;
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('error', onError);
+      req.off('aborted', onAborted);
+      if (err) reject(err);
+      else resolve(body);
+    };
+    const onData = (c: Buffer | string): void => {
       data += c;
-      if (data.length > 512 * 1024) reject(new Error('body too large')); // 512KB cap (settings can carry an auto-path)
-    });
-    req.on('end', () => resolve(data));
-    req.on('error', reject);
+      if (data.length <= limit) return;
+      data = ''; // let it go before anything else; the request is over
+      done(new Error('body too large'));
+      req.destroy();
+    };
+    const onEnd = (): void => done(null, data);
+    const onError = (e: Error): void => done(e);
+    const onAborted = (): void => done(new Error('request aborted'));
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
+    req.on('aborted', onAborted);
   });
+}
+
+/**
+ * THROTTLE FOR `/api/lan`, because it is the one authenticated route that accepts a REPLAY.
+ *
+ * Everything else here reads a board or writes a field; this one parses a tens-of-KB JSON
+ * container, re-validates it through `sanitizeReplay`, moderates every name in the roster
+ * (a hosted HTTP call per name) and then writes two rows. A signed-in account looping it is
+ * not a leaderboard problem — `lan_runs` cannot reach a board — it is a COST and AVAILABILITY
+ * problem: CPU on a machine that is also running match loops, and Neon compute that bills by
+ * the wall-clock minute it is kept awake.
+ *
+ * Two limits, because they answer different questions. The per-account window answers "how
+ * often may one person file matches" and is generous against the real workload: a venue plays
+ * a match every few minutes and the backlog drains one at a time. The in-flight cap answers
+ * "how much of this may be happening at once", across everybody, and is what keeps a burst
+ * from turning into memory × concurrency.
+ *
+ * Deliberately per-ACCOUNT and not per-IP: the route is authenticated before it is reached, a
+ * whole venue shares one NAT address, and rate-limiting the venue because one host is chatty
+ * would break the feature for the room.
+ */
+const LAN_WINDOW_MS = 60_000;
+const LAN_MAX_PER_WINDOW = 30;
+const LAN_MAX_IN_FLIGHT = 4;
+let lanInFlight = 0;
+const lanRate = new Map<string, { n: number; until: number }>();
+
+function lanRateOk(userId: string): boolean {
+  const now = Date.now();
+  // sweep on the way past, so an idle server does not keep a map of everyone who ever posted.
+  // Cheap: this route is rate-limited, so the map cannot be large enough for this to matter.
+  if (lanRate.size > 1000) for (const [k, v] of lanRate) if (v.until <= now) lanRate.delete(k);
+  const hit = lanRate.get(userId);
+  if (!hit || hit.until <= now) {
+    lanRate.set(userId, { n: 1, until: now + LAN_WINDOW_MS });
+    return true;
+  }
+  hit.n++;
+  return hit.n <= LAN_MAX_PER_WINDOW;
 }
 
 /** the Bearer token from an Authorization header, if it looks like one */
 function bearer(req: IncomingMessage): string | undefined {
   const auth = req.headers['authorization'];
   return typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+}
+
+/**
+ * The body half of `POST /api/lan`, lifted out so the route can wrap it in the in-flight cap
+ * without the `finally` swallowing the shape of the handler.
+ *
+ * Everything here is UNTRUSTED input from a client that played on a server the cloud has no
+ * reason to believe: the id is shape-checked, the replay goes through `sanitizeReplay`, the
+ * score is clamped and every name in the roster is moderated.
+ */
+async function saveLanUpload(
+  req: IncomingMessage,
+  json: (code: number, body: unknown) => void,
+  user: { userId: string; handle: string },
+  game: GameId,
+): Promise<boolean> {
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+  } catch {
+    return json(400, { error: 'bad request' }), true;
+  }
+
+  // the match id is the row's identity and its idempotence key, so it has to be a
+  // plausible id and not an arbitrary string a client can use to squat on the table
+  const matchId = typeof body.matchId === 'string' ? body.matchId.trim() : '';
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(matchId)) {
+    return json(400, { error: 'missing or malformed matchId' }), true;
+  }
+
+  const replay = sanitizeReplay(body.replay, game);
+  if (!replay) return json(400, { error: 'not a playable replay' }), true;
+
+  const clamp = (v: unknown): number =>
+    Math.max(0, Math.min(9999, Math.round(typeof v === 'number' && Number.isFinite(v) ? v : 0)));
+  const rawScore = (body.score ?? {}) as Record<string, unknown>;
+  const score = { red: clamp(rawScore.red), blue: clamp(rawScore.blue) };
+
+  // THE ROSTER IS DISPLAY TEXT AND NOTHING ELSE. It is rendered beside the match in the
+  // host's own archive, so it goes through the same name moderation every other
+  // user-supplied name does, and it carries no user ids — see the migration for why
+  // attributing a LAN match to an account on this server's say-so is not on the table.
+  const rawRoster = Array.isArray(body.participants) ? body.participants.slice(0, 8) : [];
+  const participants: LanParticipant[] = [];
+  for (const raw of rawRoster) {
+    if (!raw || typeof raw !== 'object') continue;
+    const p = raw as Record<string, unknown>;
+    const teamNumber = typeof p.teamNumber === 'number' && Number.isFinite(p.teamNumber)
+      ? Math.max(0, Math.min(999999, Math.round(p.teamNumber)))
+      : undefined;
+    participants.push({
+      name: await scrubName(typeof p.name === 'string' ? p.name : '', 'Player'),
+      teamName: typeof p.teamName === 'string'
+        ? await scrubName(p.teamName, 'Team')
+        : undefined,
+      teamNumber,
+      alliance: p.alliance === 'blue' ? 'blue' : 'red',
+      drivetrain: typeof p.drivetrain === 'string' ? p.drivetrain.slice(0, 24) : undefined,
+    });
+  }
+
+  await ensureProfile(user.userId, user.handle);
+  const season = await currentSeasonNumber(BALANCE_VERSION, replay.game as GameId);
+  try {
+    const run = await saveLanRun(
+      user.userId,
+      matchId,
+      replay,
+      score,
+      participants,
+      season,
+      replay.game as GameId,
+    );
+    return json(200, { run }), true;
+  } catch (e) {
+    /**
+     * SOMEBODY ELSE ALREADY FILED THIS MATCH. 409, said out loud, rather than the silent 200
+     * the old code gave: the id used to be broadcast to the whole room with the result, so any
+     * player or spectator could file the host's match under their own account, and the host's
+     * own upload was then answered with a stranger's row and marked as done. The id is a
+     * host-only capability now (`matchArchive`), so reaching this is either a leaked one or a
+     * genuine collision — and either way the uploader has to be told it did not get the match
+     * rather than left believing it did.
+     */
+    if (e instanceof LanRunOwnedByAnother) {
+      return json(409, { error: 'that match was already saved by the host who ran it' }), true;
+    }
+    throw e;
+  }
 }
 
 export async function handleApi(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
@@ -357,6 +525,56 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         (e: unknown) => console.error('[api] practice activity write failed:', e),
       );
       return json(200, { run }), true;
+    }
+
+    /**
+     * SELF-HOSTED / LAN MATCHES — the host's own archive of games their server ran.
+     *
+     * Authenticated as the HOST, deliberately, and that single fact is what keeps this
+     * endpoint from needing to trust the LAN server at all. The alternative considered was
+     * having the LAN server upload on everyone's behalf, which would mean collecting each
+     * player's auth token and handing it to a machine the cloud has no reason to trust. Here
+     * the only credential involved is the host's own, used by the host's own client.
+     *
+     * Everything in the body is UNTRUSTED, including the score, because the server that
+     * produced it is one its operator could have patched. That is survivable only because of
+     * where the row can go: `lan_runs` is not reachable from `record_leaderboard`, so nothing
+     * posted here can move a board, a PB, a rank or an ELO. See migration 0033.
+     *
+     * ⚠️ NO `addActivity` CALL, unlike `/api/practice`. A practice run is at least bounded by
+     * the poster's own sim; a LAN match is bounded by nothing, so crediting games-played from
+     * one would make that counter forgeable by anybody willing to run a script against this
+     * endpoint. The data-collection goal is served by the replay itself, which is the thing
+     * that was actually asked for.
+     */
+    if (url.pathname === '/api/lan' && (req.method === 'GET' || req.method === 'POST')) {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(503, { error: 'saving LAN matches needs the database' }), true;
+      if (!lanRateOk(user.userId)) {
+        return json(429, { error: 'too many LAN uploads — try again in a minute' }), true;
+      }
+      const game: GameId = url.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+
+      if (req.method === 'GET') {
+        return json(200, { runs: await listLanRuns(user.userId, game) }), true;
+      }
+
+      // the in-flight cap covers the POST only: it is the one that holds a replay in memory
+      // while it parses, sanitizes and moderates it. Refused with 503 + Retry-After rather
+      // than 429, because this is the SERVER being busy and not this account being greedy, and
+      // the backlog drain should come back for it rather than give up on the match.
+      if (lanInFlight >= LAN_MAX_IN_FLIGHT) {
+        res.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store', 'retry-after': '5', ...CORS });
+        res.end(JSON.stringify({ error: 'busy — try again shortly' }));
+        return true;
+      }
+      lanInFlight++;
+      try {
+        return await saveLanUpload(req, json, user, game);
+      } finally {
+        lanInFlight--;
+      }
     }
 
     // Price + tier facts for a SIGNED-OUT visitor. Same numbers, no auth, no DB —
