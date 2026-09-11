@@ -84,7 +84,15 @@ interface Opts {
   tokens: string[];
   quiet: boolean;
   idle: boolean;
+  nocompress: boolean;
 }
+
+/** Whether bots OFFER permessage-deflate. A browser always does, so this defaults on;
+ * `--nocompress` is the control arm. For a clean before/after on the WIRE alone, prefer
+ * `scripts/zz-deflate-cost.ts`, which spawns its own server, runs each shape twice, and
+ * asserts the extension really was negotiated on one run and absent on the other. This
+ * flag exists so a full LOAD run can also be priced, not to replace that probe. */
+let COMPRESS = true;
 
 function parseArgs(argv: string[]): Opts {
   const get = (k: string, d?: string): string | undefined => {
@@ -118,6 +126,7 @@ function parseArgs(argv: string[]): Opts {
     tokens,
     quiet: has('quiet'),
     idle: has('idle'),
+    nocompress: has('nocompress'),
   };
 }
 
@@ -183,6 +192,11 @@ interface ClientStats {
   rtts: number[];
   reconcile: number[];
   bytesIn: number;
+  /** TRUE WIRE BYTES off the TCP socket, which is the only number that can see
+   *  permessage-deflate: ws hands 'message' the DECOMPRESSED payload, so    *  is identical compressed or not. Captured as a baseline at steady-state and
+   *  differenced at the end (net.Socket.bytesRead is cumulative per connection). */
+  wireBase: number;
+  wireIn: number;
   msgsIn: number;
   snapshots: number;
   disconnects: number;
@@ -197,6 +211,8 @@ class Bot {
     rtts: [],
     reconcile: [],
     bytesIn: 0,
+    wireBase: 0,
+    wireIn: 0,
     msgsIn: 0,
     snapshots: 0,
     disconnects: 0,
@@ -240,13 +256,23 @@ class Bot {
     private readonly authToken?: string,
   ) {}
 
+  /** cumulative TCP bytes received on this connection, including WS framing and
+   *  whatever compression did or did not do. 0 before the socket exists. */
+  wireBytes(): number {
+    const sock = (this.ws as unknown as { _socket?: { bytesRead?: number } } | null)?._socket;
+    return sock?.bytesRead ?? 0;
+  }
+
   enablePrediction(): void {
     this.predicting = true;
   }
 
   open(): Promise<void> {
     return new Promise((resolve) => {
-      const ws = new WebSocket(this.url);
+      // Offer permessage-deflate exactly as a BROWSER does — a browser always offers it,
+      // so a harness that did not would measure a wire the real client never sees. ws's
+      // client defaults to NOT offering it.
+      const ws = new WebSocket(this.url, { perMessageDeflate: COMPRESS });
       this.ws = ws;
       ws.on('open', () => {
         this.send({
@@ -498,6 +524,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 async function main(): Promise<void> {
   const o = parseArgs(process.argv.slice(2));
+  COMPRESS = !o.nocompress;
   const log = (s: string): void => {
     if (!o.quiet) console.log(s);
   };
@@ -605,6 +632,8 @@ async function main(): Promise<void> {
     b.stats.bytesIn = 0;
     b.stats.msgsIn = 0;
     b.stats.snapshots = 0;
+    b.stats.wireBase = b.wireBytes();
+    b.stats.wireIn = 0;
   }
 
   // ONE ticker for every bot, with an accumulator — not a timer per client. N independent
@@ -648,6 +677,8 @@ async function main(): Promise<void> {
   clearInterval(pinger);
   const elapsed = (Date.now() - t0) / 1000;
   const perfAfter = await perf(o.http);
+  // read the socket counters BEFORE closing — `_socket` is gone after that
+  for (const b of bots) b.stats.wireIn = Math.max(0, b.wireBytes() - b.stats.wireBase);
   for (const b of bots) b.close();
   await sleep(300);
 
@@ -657,6 +688,7 @@ async function main(): Promise<void> {
   const allRec = bots.flatMap((b) => b.stats.reconcile);
   const perClientJitter = bots.map((b) => jitterOf(b.stats.snapGaps)).filter((x) => x > 0);
   const bytesPerClientPerSec = bots.map((b) => b.stats.bytesIn / elapsed);
+  const wirePerClientPerSec = bots.map((b) => b.stats.wireIn / elapsed);
   const drops = bots.reduce((n, b) => n + b.stats.disconnects, 0);
   const errs = new Map<string, number>();
   for (const b of bots) for (const e of b.stats.errors) errs.set(e, (errs.get(e) ?? 0) + 1);
@@ -683,6 +715,18 @@ async function main(): Promise<void> {
       p99: Math.round(pct(bytesPerClientPerSec, 99)),
     },
     totalKbPerSec: r2(bytesPerClientPerSec.reduce((a, b) => a + b, 0) / 1024),
+    // WIRE bytes: what actually crossed the socket, which is what Fly bills and the
+    // only figure permessage-deflate moves. `bytesPerClientPerSec` above is the
+    // DECOMPRESSED payload and is identical with compression on or off.
+    compressionOffered: COMPRESS,
+    wireBytesPerClientPerSec: {
+      mean: Math.round(mean(wirePerClientPerSec)),
+      p99: Math.round(pct(wirePerClientPerSec, 99)),
+    },
+    wireTotalKbPerSec: r2(wirePerClientPerSec.reduce((a, b) => a + b, 0) / 1024),
+    wireRatio: r2(
+      mean(wirePerClientPerSec) > 0 ? mean(wirePerClientPerSec) / mean(bytesPerClientPerSec) : 0,
+    ),
     disconnects: drops,
     // HARNESS SELF-CHECK: did this process actually pace 60 Hz? `inputHz` well under 60
     // means the harness under-loaded the server and the capacity number is optimistic.
@@ -710,6 +754,13 @@ async function main(): Promise<void> {
   console.log(line('RTT p50/p99', `${summary.rttMs.p50} / ${summary.rttMs.p99} ms`));
   console.log(line('reconcile p50/p99', `${summary.reconcileIn.p50} / ${summary.reconcileIn.p99} in   (${summary.reconcileIn.samples} samples)`));
   console.log(line('bytes/s per client', `${summary.bytesPerClientPerSec.mean} mean, ${summary.bytesPerClientPerSec.p99} p99`));
+  console.log(
+    line(
+      'WIRE bytes/s per client',
+      `${summary.wireBytesPerClientPerSec.mean} mean · ${Math.round(summary.wireRatio * 100)}% of payload` +
+        ` · ${COMPRESS ? 'compression offered' : 'NO compression (--nocompress)'}`,
+    ),
+  );
   console.log(line('total downstream', `${summary.totalKbPerSec} KB/s`));
   console.log(line('disconnects', String(drops)));
   console.log(line('harness input rate', `${summary.harness.inputHz} Hz (target 60 — below it the server was under-loaded)`));
