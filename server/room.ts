@@ -286,9 +286,9 @@ export class Room {
   private recorder: ReplayRecorder | null = null;
   private finalized = false;
   /**
-   * This match's globally unique id, minted at `finalizeMatch` and sent with the
-   * result. Null until then, and re-minted by a rematch — a rematch is a different
-   * match. See `ServerMsg` 'matchResult' for what it is for.
+   * This match's globally unique id, minted at `finalizeMatch` and sent to THE HOST ALONE.
+   * Null until then, and re-minted by a rematch — a rematch is a different match. See
+   * `ServerMsg` 'matchArchive' for what it is for and why only the host gets it.
    */
   private matchId: string | null = null;
   // world.time at which phase 'post' began, to hold the settle window before
@@ -1390,13 +1390,19 @@ export class Room {
     // finalize rather than at start because a match nobody finishes is never
     // uploaded, and a rematch is a different match.
     this.matchId = randomUUID();
+    // THE ID GOES TO THE HOST, THE RESULT GOES TO THE ROOM. Possession of the match id is the
+    // right to file this match in the cloud archive (the cloud cannot verify who hosted a
+    // self-hosted match — it was not there), so broadcasting it handed that right to every
+    // driver and every spectator and let whoever uploaded first take the row under their own
+    // account. Sent FIRST, on the same ordered socket, so the host has it before the result it
+    // belongs to. See the 'matchArchive' note in `src/net/protocol.ts`.
+    this.clients.get(this.hostId)?.send({ t: 'matchArchive', matchId: this.matchId });
     this.broadcast({
       t: 'matchResult',
       kind: this.config.kind,
       record: this.config.record,
       result,
       replay,
-      matchId: this.matchId,
     });
     // hand the authoritative outcome to the persistence layer (off the hot path).
     // ALPHA (in-development) rooms are NEVER persisted: the results screen + replay

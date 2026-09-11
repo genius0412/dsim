@@ -10,11 +10,14 @@ export interface MatchResultInfo {
   result: ReplayResult;
   replay: Replay;
   /**
-   * The server-minted id for this match, when the server that ran it mints one.
+   * The server-minted id for this match, present for THE HOST ONLY.
    *
-   * ABSENT from an older server (see the protocol note on `matchResult`), and the only
-   * consumer — the LAN upload — skips the match rather than inventing one: an unkeyed row
-   * would be re-uploaded as a new match on every retry.
+   * It reaches this client as `matchArchive`, a message the room sends to the host's socket
+   * and to nobody else (see the protocol note for why possession of the id is the right to
+   * file the match). So it is absent for every guest and spectator by design, and absent from
+   * an older server that mints none. The only consumer — the LAN upload — skips the match
+   * rather than inventing one: an unkeyed row would be re-uploaded as a new match on every
+   * retry.
    */
   matchId?: string;
 }

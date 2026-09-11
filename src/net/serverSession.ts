@@ -69,6 +69,16 @@ export class ServerSession implements NetSession {
   eloResults: EloDelta[] = [];
 
   private snapshot: Snapshot | null = null;
+  /**
+   * The archive capability for the match in progress, or null.
+   *
+   * Arrives as `matchArchive` on THIS socket only, and only if this client is the room's host
+   * — it is what lets the host file the match with the cloud, and it is deliberately not
+   * broadcast (see the protocol note). Held here rather than passed straight to the result
+   * callback because it arrives a frame EARLIER than the result it describes: the server sends
+   * it first precisely so it is already in hand when `matchResult` lands.
+   */
+  private archiveMatchId: string | null = null;
   private matchResult: MatchResultInfo | null = null;
   /** record run's leaderboard standing, arrives shortly after matchResult */
   private recordResult: RecordRankInfo | null = null;
@@ -326,13 +336,16 @@ export class ServerSession implements NetSession {
       this.spectators = m.n;
     } else if (m.t === 'rematch') {
       this.rematch = { votes: m.votes, need: m.need, mine: m.you };
+    } else if (m.t === 'matchArchive') {
+      this.archiveMatchId = m.matchId;
     } else if (m.t === 'matchResult') {
       this.matchResult = {
         kind: m.kind,
         record: m.record,
         result: m.result,
         replay: m.replay,
-        matchId: m.matchId,
+        // present only for the host, and only from a server that mints one
+        matchId: this.archiveMatchId ?? undefined,
       };
       this.resultCb?.(this.matchResult);
     } else if (m.t === 'eloResult') {
@@ -353,6 +366,9 @@ export class ServerSession implements NetSession {
       this.eloResults = [];
       this.snapshot = null;
       this.matchResult = null;
+      // a rematch is a DIFFERENT match and the server mints it a new id; carrying the old
+      // capability forward would file the new match under the previous one's row
+      this.archiveMatchId = null;
       this.recordResult = null;
       this.baseBalls.clear();
       this.appliedTick = -1; // fresh world starts at tick 0; don't reject its snapshots

@@ -62,6 +62,7 @@ import {
 import {
   saveLanRunLocal,
   markLanUploaded,
+  markLanRefused,
   pendingLanUploads,
   loadLanReplay,
 } from '../net/lanRuns';
@@ -761,9 +762,11 @@ export function App() {
    *   - `lanActive()` — a cloud match is written by the server that ran it; keeping a second
    *     copy here would upload an unofficial duplicate of an OFFICIAL match.
    *   - `isHost()` — the one-uploader rule above. A guest and a spectator keep nothing.
-   *   - `matchId` — an older LAN server mints none (it is optional on the wire, because one
-   *     app serves every client version), and an unkeyed row would be re-uploaded as a NEW
-   *     match on every retry. Skipping is the safe half of that trade.
+   *   - `matchId` — the archive capability, which the room sends to the HOST'S SOCKET ALONE
+   *     (`matchArchive`; see the protocol note). A guest never has one, so this condition now
+   *     enforces the one-uploader rule a second time and from the server's side rather than
+   *     this client's. An older LAN server mints none either, and an unkeyed row would be
+   *     re-uploaded as a NEW match on every retry — skipping is the safe half of that trade.
    */
   const keepLanRun = (info: MatchResultInfo, sess: NetSession): void => {
     if (!lanActive() || !sess.isHost() || !info.matchId) return;
@@ -798,6 +801,14 @@ export function App() {
         const replay = loadLanReplay(meta.id);
         if (!replay) continue; // body evicted by the local cap — nothing left to send
         const run = await uploadLanRun(meta.matchId, replay, meta.score, meta.participants, meta.game);
+        // 'refused' is a VERDICT about this match, not about the connection: the cloud already
+        // holds this match id under another account, or will never take this body. Retire it
+        // and carry on — stopping here would park the whole backlog behind an item that can
+        // never drain, and every match played after it would stay on the device forever.
+        if (run === 'refused') {
+          markLanRefused(meta.id);
+          continue;
+        }
         if (!run) break;
         markLanUploaded(meta.id, run.id);
       }

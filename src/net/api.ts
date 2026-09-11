@@ -550,8 +550,13 @@ export interface LanRun {
  * lands: `lan_runs` is not reachable from `record_leaderboard`, so nothing here can move a
  * board, a PB, a rank or an ELO.
  *
- * Returns null on any failure. The match is already on the device by then
- * (`src/net/lanRuns.ts`), so a failure costs a retry, not the match.
+ * THREE OUTCOMES, and the third is the one worth naming. `null` is a failure worth RETRYING
+ * — an offline venue, a 503 from a busy server — and the match is already on the device
+ * (`src/net/lanRuns.ts`), so it costs a retry rather than the match. `'refused'` is a failure
+ * that will never succeed: the cloud answered 409 (another account already filed this match
+ * id) or 400 (this body is not one it will take). Retrying either forever would park the
+ * backlog on an item that can never drain and block every match behind it, so the caller
+ * retires it locally instead.
  */
 export async function uploadLanRun(
   matchId: string,
@@ -559,7 +564,7 @@ export async function uploadLanRun(
   score: { red: number; blue: number },
   participants: LanParticipant[],
   game?: GameId,
-): Promise<LanRun | null> {
+): Promise<LanRun | 'refused' | null> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return null;
@@ -569,6 +574,10 @@ export async function uploadLanRun(
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: JSON.stringify({ matchId, replay, score, participants }),
     });
+    // 409: the match belongs to another host. 400: this body will never be accepted. Both are
+    // permanent verdicts about THIS item; everything else (401 mid-token-refresh, 429, 503,
+    // a gateway) is the connection or the moment, and deserves another go later.
+    if (res.status === 409 || res.status === 400) return 'refused';
     if (!res.ok) return null;
     return ((await res.json()) as { run: LanRun }).run ?? null;
   } catch {

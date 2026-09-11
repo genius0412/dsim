@@ -57,6 +57,10 @@ export interface LanRunMeta {
   sim: number;
   /** the cloud's id once this match has been uploaded; absent ⇒ local only */
   remoteId?: string;
+  /** the cloud refused this match PERMANENTLY (409 — another account filed the same match id
+   *  — or 400). Kept on the device and shown in the host's list; simply never offered to the
+   *  backlog again, because retrying it would block every match queued behind it. */
+  refused?: boolean;
 }
 
 const readIndex = (): LanRunMeta[] => {
@@ -179,7 +183,7 @@ export function saveLanRunLocal(
  */
 export function pendingLanUploads(): LanRunMeta[] {
   return readIndex()
-    .filter((m) => !m.remoteId)
+    .filter((m) => !m.remoteId && !m.refused)
     .sort((a, b) => a.at - b.at);
 }
 
@@ -189,5 +193,24 @@ export function markLanUploaded(id: string, remoteId: string): void {
   const hit = index.find((m) => m.id === id);
   if (!hit) return;
   hit.remoteId = remoteId;
+  writeIndex(index);
+}
+
+/**
+ * Retire a match the cloud will never take — today, a 409 saying another account already
+ * filed this match id, or a 400 saying the body is not acceptable.
+ *
+ * The match STAYS ON THE DEVICE and stays in the host's local list; only the backlog stops
+ * offering it. That is the point: `pendingLanUploads` is drained in order and stops on the
+ * first failure (a venue's connection fails for every request at once, so carrying on is the
+ * wrong instinct), which means one permanently-refused item would sit at the head of the queue
+ * and block every later match from ever uploading. Dropping the replay instead would throw
+ * away the only copy of a match on the say-so of one HTTP status.
+ */
+export function markLanRefused(id: string): void {
+  const index = readIndex();
+  const hit = index.find((m) => m.id === id);
+  if (!hit) return;
+  hit.refused = true;
   writeIndex(index);
 }
