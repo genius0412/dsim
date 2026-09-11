@@ -1,10 +1,142 @@
+# HANDOFF — 2026-09-11 (BIOBUZZ Phase 0.5: pollen on the shared artifact solver)
+
+Branch **`biobuzz-sandbox`** (worktree `dsim-bb-sandbox`), off `biobuzz`. **NOT pushed, nothing
+deployed** — the repo is public and the 2026–27 season is private until further notice.
+`SIM_VERSION` and `BALANCE_VERSION` untouched. No physics constant, shared or BIOBUZZ, was
+changed by this session.
+
+## READ FIRST — state
+
+**Everything is green. BIOBUZZ has one ball solver and it is the owner's.**
+
+| gate | result |
+|---|---|
+| `npm test` | exit 0 · **1674 `PASS` lines, 0 `FAIL`** — suite 1 (`scripts/smoke.ts`) `ALL PASS`, suite 2 (`scripts/smoke-biobuzz/index.ts`) `366 CHECKS, ALL PASS` (was 349) |
+| DECODE alone | `1308 PASS / 0 FAIL`, `ALL PASS` — **identical check-name list to the pre-item-1 baseline** (see the byte-identity proof below) |
+| `npm run test:mm` | `✓ matchmaker: 58 checks passed` |
+| `npm run build` | `✓ built in 7.74s` · `dist/assets/index-k3qkyn3n.js 2,411.50 kB` (chunk-size warning only) |
+| `npm run server:check` | green (no output) |
+| `npm run uiaudit` | `ALL RULES AT OR UNDER BASELINE` (inline-spacing 29/29, off-grid-gap 165/165, the three hard rules 0/0) |
+| `npm run contrast` | `ALL PASS — 221 contrast checks across light + dark` |
+| `npx tsc --noEmit -p .` | `TypeScript: No errors found` |
+| gallery contact sheet | 140 PNGs, 70 cells × 2 themes, `scratch/shots/2b622f7-dirty/` — **all 70 light cells distinct** (they were not before, see the runner gotcha) |
+
+## What changed, and why it is small
+
+The owner's artifact rework made `solveArtifacts` the **ONE POSITION AUTHORITY** for every
+ground artifact. BIOBUZZ had grown a second one — a `BB_BALL_SOLVER` switch with a bespoke arm
+(CR's ground integrator copied, plus `separatePollen`) beside a `'rapier'` arm. That is exactly
+the defect the rework exists to end, so the bespoke arm is gone and POLLEN ride the shared
+solve. BIOBUZZ's entire contribution to pollen physics is now a **number**.
+
+| item | commit | |
+|---|---|---|
+| 1 | `fb71b1c` | `refactor(sim): solveArtifacts and robotSolids take the artifact radius` |
+| 2 | `2591786` | `refactor(biobuzz): one solver — POLLEN ride the shared artifact solve` |
+| 3 | `2b622f7` | `test(biobuzz): the pollen checks are rewritten for the one solver, not deleted` |
+| 4 | `8e0b20f` | `docs(biobuzz): gallery observations for pollen on the shared solver` (+ the `shots.cjs` fix) |
+| — | `5b5bbce` | `test(biobuzz): interleave the perf windows so the ratio measures code, not load` (found by the gate run) |
+| 5 | *(this one)* | the docs pass + this handoff |
+
+1. **The radius is ADDITIVE.** `solveArtifacts(...)` and `robotSolids(r, heldBalls)` gained a
+   trailing `radius: number = C.BALL_RADIUS`, used where they read `C.BALL_RADIUS` to build the
+   artifact collider and the held-ball circles. **Every DECODE call site passes nothing.**
+   `pinnedArtifacts`/`supported` (physicsEngine.ts ~781/790/844) deliberately still read
+   `C.BALL_RADIUS` outright, because BIOBUZZ does not call them — parameterizing an unreachable
+   path would be a change with no reader.
+2. **`play.ts` has no ball integrator.** `separatePollen` deleted, the copied ground integrator
+   deleted, the `BB_BALL_SOLVER` switch and `BB_POLLEN_FRICTION` / `BB_POLLEN_REST_SPEED` /
+   `BB_POLLEN_SEP_ITERS` deleted from `config.ts`. `interact()` lost its PLOW branch and only
+   CAPTURES. What runs now, in order: the shared `stepGroundBall` rolling pass → capture →
+   `solveArtifacts(world, dt, biobuzzColliders, NO_IDS, NO_IDS, solids, from, BB_POLLEN_R)` with
+   `robotSolids(rob, heldBalls, BB_POLLEN_R)` → `clampPollenToWalls`. `step.ts`'s pre-solve
+   ordering (start-of-tick pose for `from`) is unchanged.
+3. **Two things the bespoke arm did that the shared solve does not**, both resolved without
+   re-implementing anything:
+   - **Bringing a pollen to rest.** The solve runs in a plane with no gravity and no floor, so
+     nothing stops a rolling pollen. Measured, a plowed pile was still travelling at
+     **18.98 in/s five seconds after the robot stopped**. Fixed by calling the ALREADY-SHARED,
+     already-exported `stepGroundBall` (`src/sim/physics.ts`, velocity-only rolling friction +
+     rest snap) — not by porting BIOBUZZ's deleted 42 / 1.5 constants. `settle [*]: the pile is
+     actually AT REST` is the check that fails if this is ever dropped again.
+   - **Keeping a pollen in the field.** `clampPollenToWalls` was going to be deleted as
+     redundant; it is not. Measured with it removed, a pollen went **2.02" past the wall plane**
+     (`wall-row-sweep`, tick 105) and 1.52" (`pile-fast`), because BIOBUZZ runs no pin/round
+     loop (owner note 1). Kept unchanged, re-documented as THE CONTAINMENT INVARIANT with those
+     numbers, and asserted on **every tick** of seven scenes.
+   Nothing else was missing: wall restitution for a GROUND pollen and a speed cap both exist on
+   the shared side (`BB_POLLEN_WALL_REST` is FLIGHT-only; the cap is `C.BALL_MAX_SPEED`, which
+   is an owner question rather than a gap — see note 3).
+4. **Smoke was rewritten, not deleted.** The checks that read the dead switch now read the one
+   solver: count conserved over 600 ticks of a sweeping robot; every pollen inside `bounds` on
+   EVERY tick of `pile-slow/med/fast`, `wall-row-sweep`, `corner-pile`, `squeeze-2robots`,
+   `settle-60` (through `bbSceneStills`, the one stepping path, so these check the run the
+   gallery draws); no two RESTING pollen overlapping past 0.1"; the pile actually at rest; a
+   full-throttle robot never posting the `pin-wall` pollen through the wall on any of 300 ticks;
+   every scene hashing deterministically. 349 → 366 checks.
+
+## The DECODE byte-identity proof
+
+Item 1's claim is that DECODE is unchanged. The suite is **not bit-reproducible run to run**,
+so "identical output" had to be defined before it could be proved: `server/room.ts:836` seeds a
+Room with `(Date.now() ^ (Math.random() * 0xffffffff)) >>> 0`, so the five `Room`-driven replay
+checks print different hashes and scores on every run **with no code change at all** — two runs
+of the same code differ on four of those lines.
+
+So the proof is: **the check-NAME lists are identical** (detail suffix after ` — ` stripped),
+1308 `PASS` / 0 `FAIL` on both sides, and every line-level difference is one of those five
+Room-seeded lines. Artifacts are in the session scratchpad (`smoke-before.txt`,
+`smoke-after1.txt`, `smoke-after1b.txt`, `smoke-final.txt`); re-derive with
+`grep '^PASS' f | sed 's/ — .*$//'` and `diff`.
+
+## ⚠️ THE GALLERY RUNNER WAS PHOTOGRAPHING THE WRONG CELLS
+
+`scripts/shots.cjs` slept a flat 120 ms after `scrollIntoView` before `capturePage`. That held
+for a 12-cell filtered run and **failed silently on the full 70**: the files named
+`wall-row-sweep@60`, `@150` and `@300` came out **byte-identical to the `pile-fast@30`, `@60`
+and `@120` CELLS** — four cells of compositor lag on a hidden BrowserWindow — while
+`pile-slow`, four cells earlier, was correct. Every PNG was a plausible BIOBUZZ scene, so
+nothing looked broken; it was caught only because two files that should have differed had the
+same md5 and the captions inside them named a third scene.
+
+Fixed in `8e0b20f`: wait for two `requestAnimationFrame`s, then capture twice and discard the
+first (`capturePage` itself pumps a frame). Verified by re-running: zero duplicates across all
+70 light cells, and the full run now matches a filtered run byte for byte.
+
+**Any feedback dump written against a contact sheet from before `8e0b20f` may be describing the
+wrong cell.** Re-shoot before trusting one.
+
+## ⚠️ THE PREVIEW PORT GOTCHA, HIT AGAIN
+
+`npx vite preview` moved itself to **4174** because a sibling worktree's preview held 4173, and
+`shots.cjs` defaults to 4173 — so the default invocation would have photographed *another
+branch's build*. Confirmed rather than assumed: `netstat -ano | findstr 4173` showed PID 18408
+listening, and the two ports served different bundles (`curl -s localhost:4173/ | grep index-`
+gave `index-DTDXycuZ.js`, 4174 gave `index-CHgC59C_.js`, which is what `dist/` actually held).
+Always read the port `vite preview` prints and pass `--port` explicitly.
+
+## Next steps
+
+1. **The owner reads `docs/biobuzz/feedback/000-solver-observations.md`** — specifically the
+   "For the owner" list. The three that change how BIOBUZZ plays are: no pin/round loop
+   (a chassis drives through pollen it presses on a wall), a persistent ~2.1" overlap under a
+   pressing chassis that does not relax when the robot stops, and a struck pollen reaching
+   `C.BALL_MAX_SPEED` (90) while the robot that hit it is slower. All three are shared-physics
+   decisions; none is fixable inside `src/games/biobuzz/`.
+2. **Nothing in this sprint is a rules decision.** Kickoff is 2026-09-12; `docs/biobuzz-plan.md`
+   Phase 0.5 is now marked done and points at the observations file.
+3. **`BB_POLLEN_RADIUS` does not exist** — the constant is `BB_POLLEN_R`. The plan and prompts
+   use the longer name; the code and docs use the real one.
+
+---
+
 # HANDOFF — 2026-09-10 (BIOBUZZ: core + shell merged into biobuzz)
 
 Branch **`biobuzz`** (worktree `dsim-biobuzz`), = `origin/alpha` + `biobuzz-core` + `biobuzz-shell`,
 now integrated. **NOT pushed, nothing deployed** — the repo is public and the 2026–27 season is
 private until further notice. `SIM_VERSION` and `BALANCE_VERSION` untouched.
 
-## READ FIRST — state
+## State at 2026-09-10 (was READ FIRST)
 
 **Everything is green, and `npm test` now means both suites.**
 

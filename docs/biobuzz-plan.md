@@ -78,6 +78,12 @@ or `App.tsx` during the sprint.
    `GameId`, its own `SEASONS` entry, its own boards/periods, its own game directory.
    (CR was a CAD-competition game, but DSIM treats it as a full season; BIOBUZZ is the
    same shape with the official manual behind it.)
+   ⚠️ **REVISED 2026-09-11, and the exception is the important part: GROUND POLLEN PHYSICS
+   IS NOT COPIED AND NOT OWNED.** Copy-and-own is right for the drivetrain feel, the intake,
+   the hopper and the step order; it is wrong for the ball solve, because the owner's artifact
+   rework made `solveArtifacts` the ONE position authority for every ground artifact and a
+   copied integrator would be a second one. POLLEN ride the shared solve at `BB_POLLEN_R`.
+   See *Phase 0.5*.
 4. **Owner (`@genius0412`) is aware.** Server changes still ship only through his
    `scripts/fly-deploy.sh`; nothing is pushed or deployed until decision 1 resolves.
 5. **Lanes undecided; both contributors have push rights** (owner + requester). The
@@ -233,32 +239,47 @@ Acceptance for Phase 0: `npm run build`, `npm run server:check`, `npm run uiaudi
 `/biobuzz` loads in the dev server with the channel set to `alpha` and a robot drives
 into pollen; `scripts/shots.cjs` produces a gallery contact sheet the human has looked at.
 
-### Phase 0.5 — pollen physics sandbox (before kickoff, human in the loop)
+### Phase 0.5 — pollen on the shared solver (DONE, 2026-09-11)
 
-The one thing about BIOBUZZ known for certain is the element: 3 in balls, rolling, piling
-against walls and in corners, intaken several at a time. Robot↔pollen and pollen↔pollen
-behaviour can therefore be **tuned before the rules exist**, and it is exactly the work
-Claude is worst at unsupervised. So it gets its own chat (Fable 5.1), on the shell, with the
-human playing:
+This phase was planned as a two-solver bake-off with a human turning dials. It did not need
+to be, and the reason is worth keeping: **the owner owns physics, and BIOBUZZ passes a radius
+and nothing else.**
 
-1. **Pick the integrator.** Two candidates already in the repo: CR's bespoke ground
-   integrator + spatial-hash separation (300 balls cheaply, robot pushes balls but a
-   pinned ball does not push back), and DECODE's Rapier `solveBalls` (robot chassis is a
-   kinematic body in the ball solve, `ballRobotFeedback` stalls a robot on a pinned ball,
-   geometric eviction clamps). Build BOTH behind a `BB_BALL_SOLVER` switch in the shell,
-   run the same scenes through each, and put the stills side by side in the gallery.
-   The human decides which feels like pollen; the loser is deleted the same day.
-2. **Scenes** (`scenesField.ts`, physics set): drive into a loose pile at 3 speeds; sweep a
-   wall row; corner pile squeeze; pin one ball against the wall and keep driving; two
-   robots squeeze a ball; intake a line at speed; dump/launch into a wall and watch the
-   bounce; 60 balls settling from a scatter (they must never overlap or jitter).
-3. **Tuning loop**: human plays `/biobuzz/gallery/<scene>` in the dev server or Electron,
-   writes a feedback dump, Claude adjusts constants in `config.ts` (all `APPROX`), reruns
-   `shots.cjs`, and reports which cells changed. Every accepted behaviour gets a smoke
-   check (containment, conservation, no-overlap, stall-on-pin, settle time).
-4. **Exit**: the human signs off the physics set in a dump titled `signoff`. After that
-   the pollen constants are frozen for kickoff day; Lane A may only add element-specific
-   behaviour on top (a pollen that scores, a pollen that is held), never retune the base.
+While this plan was being written the owner was rebuilding artifact physics on `alpha` to one
+rule — *every element ends the tick somewhere it is allowed to be, with ONE position authority
+per element* — and `solveArtifacts` became that authority for every ground artifact. A second
+ball integrator living in `src/games/biobuzz/` would have been a second position authority for
+the same class of object, which is precisely the failure the rework exists to end. So there is
+no `BB_BALL_SOLVER` switch, no bespoke BIOBUZZ ground integrator, and no separation pass:
+
+- `solveArtifacts` and `robotSolids` take a trailing optional **artifact radius**, defaulting
+  to `C.BALL_RADIUS`, so every DECODE call site is byte-identical and BIOBUZZ passes
+  `BB_POLLEN_R` (1.5", a 3" pollen) instead of 2.5".
+- `play.ts` contains **no ball integrator**. It calls the shared solve, the shared
+  rolling-friction pass (`stepGroundBall`), and a containment clamp, and `interact()` only
+  CAPTURES — it no longer writes pollen positions.
+- BIOBUZZ owns **no ground-pollen physics constants**. `BB_POLLEN_WALL_REST` survives for
+  FLIGHT only. Tuning a pollen means tuning a shared artifact, which is the owner's call.
+
+What is left of the original phase is the part that was always the valuable half: the SCENES
+and the LOOKING. The physics scene set is built (`scenesField.ts` / `scenesRobot.ts`: three
+pile speeds, a wall row sweep, a corner squeeze, a pin against the wall, two robots squeezing
+one pollen, an intake line, a dumper at a wall, 60 pollen settling), every scene is hashed
+deterministically in `npm run test:bb`, and the perimeter is asserted on EVERY tick of every
+physics scene rather than at the end.
+
+**The gallery has been read and written up: `docs/biobuzz/feedback/000-solver-observations.md`.**
+One paragraph per scene on what the shared solve does with a 1.5" pollen, and a "For the owner"
+list of everything that looks physically wrong or DECODE-specific — the missing pin/round loop,
+a persistent 2.1" overlap under a pressing chassis, a struck pollen reaching `C.BALL_MAX_SPEED`
+while the robot that hit it is slower, and the 5"-artifact rolling constants. Nothing on that
+list was fixed here; fixing any of it is a shared-physics change and therefore the owner's.
+
+**Exit:** there is no `signoff` dump to write, because there are no BIOBUZZ pollen constants to
+freeze. What replaces it is a standing rule, recorded in `docs/biobuzz-contract.md` §1 and in
+`CLAUDE.md`: Lane A may add element-specific behaviour on top (a pollen that scores, a pollen
+that is held) and may NOT add a ball integrator, a separation pass, or a pollen physics
+constant.
 
 ### Kickoff day (Phase 1, lanes in parallel)
 
@@ -349,7 +370,7 @@ zones, legal-start test, possession limits. Fix the `BiobuzzState` shape and the
 |---|---|---|
 | P0-core: shared-core generalization (items 1–6, 8) | Opus 5 | the prompt enumerates every site; the grep proof + smoke checks catch a silent downgrade; the diff is REVIEWED by the Fable integration chat before merge |
 | P0-shell: module scaffold + copy-and-own + smoke-biobuzz + scenes/gallery/shots (items 7, 9, 10) | Opus 5 | mechanical, well-templated by `chain/` and `shiftaudit.cjs` |
-| P0.5-sandbox: pollen physics, two solvers, human tuning loop | Opus 5 | the human is the judge; Opus turns dials and shoots stills. Escalate to Fable if one behaviour does not converge in two rounds |
+| ~~P0.5-sandbox: pollen physics, two solvers, human tuning loop~~ — DONE, and there was no bake-off: POLLEN ride the shared `solveArtifacts` at `BB_POLLEN_R`, so there are no dials to turn. What remains of this row is reading the gallery and writing observations UP to the owner (`docs/biobuzz/feedback/000-solver-observations.md`) | Opus 5 | the human is still the judge, but of the SHARED solver; a pollen behaviour that looks wrong is an owner question, not a BIOBUZZ edit |
 | perf-load: harness, capacity model, then fixes | Opus 5 | measurement is mechanical; the capacity numbers are reviewed by the integration chat BEFORE step 4 (admission control / second-machine routing), which is the design-heavy part |
 | Integration + reviews + merges + `alpha` syncs | **Fable 5.1** | the one Fable chat before kickoff: review gates after P0, after the solver comparison, after the capacity numbers; conflict resolution |
 | Lane A field (kickoff) | **Fable 5.1** | geometry measured off manual figures + scoring/penalty rule text + any new physics; the repo's history says these are where misreadings ship for months. Human's call on the day |
@@ -363,17 +384,26 @@ plans, so the model that follows them matters less than the review at each merge
 - **Local-only means one machine is the repo.** Until decision 1 resolves, the `biobuzz`
   branch exists on the requester's disk only. Mitigation: `git bundle` to the owner after
   every integration merge; the bundle is the backup.
-- **`alpha` is mid-physics-rework** (drive as force, artifact contact). The shared
-  `updateRobot`/`solveRobots` path both games step through may move under us; the
-  `step.ts` pipeline copies CR's call order so a shared fix lands in one place per game.
-  Merge `origin/alpha` every session.
+- **`alpha` is mid-physics-rework** (drive as force, artifact contact), and BIOBUZZ now
+  rides that rework rather than sitting beside it. The shared `updateRobot`/`solveRobots`/
+  `solveArtifacts` path both games step through may move under us; `step.ts` copies CR's call
+  order so a shared fix lands in one place per game. That is a deliberate trade: a change to
+  the artifact solve changes how POLLEN behave, with no BIOBUZZ constant to absorb it, which
+  is the price of not owning a second integrator. Merge `origin/alpha` every session and
+  re-run `npm run test:bb` — the per-tick containment and settle checks are what catch it.
 - **The gallery becomes the product.** A dev route with its own renderer path drifts from
   the real game view. Mitigation: the gallery draws through the SAME module functions
   (`drawField`/`drawRobot`/`drawBalls`) the match uses and the "click to run" cell is the
   ordinary game view; there is no gallery-only drawing code.
 - **Launch-day load.** Estimated >10× the previous peak. Tracked in `perf-load`; the risk
   to BIOBUZZ specifically is that the shell's per-tick cost is higher than CR's. Smoke
-  measures a 2v2 BIOBUZZ room's step time and fails if it exceeds CR's by more than 20%.
+  measures both halves of that, best-of-three windows in the same run: the WORLD STEP against
+  `STEP_BUDGET` and a whole SERVER ROOM tick against `ROOM_BUDGET`. The step budget is **1.8×**
+  and not the 1.2× this plan assumed — riding the shared Rapier artifact solve instead of a
+  bespoke integrator measured 1.25–1.63× (≈0.47 ms for a 2v2, under 3% of a frame), and the
+  budget carries that measurement in a comment. The ROOM budget stays **1.2×** and measures
+  0.75–0.99×, because a room tick also pays for a snapshot and CR's 300 particles make that
+  side much fatter than BIOBUZZ's 60 pollen.
 - **The manual may change robot rules** (R105) in a way the flat `RobotSpec` + shared
   `footprintExtents` (which reads DECODE's `INTAKE_PRESETS[spec.intake].reach` for every
   game) fights. B's first task is to read that rule; the contract doc lists the escape
