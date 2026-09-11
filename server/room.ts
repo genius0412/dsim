@@ -18,6 +18,7 @@ import type {
 } from '../src/types';
 import {
   dequantizeCommand,
+  encodeMsg,
   quantizeCommand,
   slimWorld,
   roomCapacity,
@@ -143,6 +144,21 @@ const SERVER_REGION: string = process.env.FLY_REGION ?? process.env.SERVER_REGIO
 export interface Client {
   id: string;
   send: (m: ServerMsg) => void;
+  /**
+   * Send an ALREADY-SERIALIZED message. Optional: a caller that has no socket
+   * (every test, and the headless smoke) supplies only `send`, and the room falls
+   * back to it.
+   *
+   * It exists because the room's hot path is a BROADCAST, and encoding is per
+   * RECIPIENT. `ws.send(encodeMsg(m))` inside each client's own closure means a
+   * 2v2 snapshot — the biggest message the server produces — is stringified FOUR
+   * times, once per driver, plus once per spectator, all from the same object.
+   * The profile puts protocol encoding at 3.2% of a solo-room machine; that term
+   * is linear in the audience while the simulation term is not, so the expensive
+   * room is exactly where it is worst. Encoding once and handing everyone the same
+   * string removes the multiplier.
+   */
+  sendRaw?: (s: string) => void;
   player: LobbyPlayer;
   /** false while the socket is dropped (within the reconnect grace) */
   connected: boolean;
@@ -1649,6 +1665,31 @@ export class Room {
     const order = w.balls.map((b) => b.id);
     const slim = slimWorld(w);
     const cmds = this.frameCmds(w);
+    // THE SHARED PREFIX. Everything above this line is identical for every recipient;
+    // the ONLY per-client fields in a snapshot are `ackInputTick` (that client's own
+    // input acknowledgement) and, for a client that is not yet primed, the full ball
+    // list instead of the delta. So the expensive part is stringified at most twice —
+    // once for primed recipients, once for unprimed — and each client's own tail is
+    // appended as a few characters. In a 2v2 with spectators that is the difference
+    // between one encode and six of the largest message the server sends.
+    //
+    // Priming is a first-frame condition: after a recipient's first snapshot it stays
+    // primed until its ack goes stale, so in steady state `unprimed` is never built.
+    const prefix: { primed: string | null; unprimed: string | null } = { primed: null, unprimed: null };
+    const bodyFor = (primed: boolean): string => {
+      const cached = primed ? prefix.primed : prefix.unprimed;
+      if (cached !== null) return cached;
+      const balls: BallDelta = { order, upd: primed ? changed : w.balls };
+      // JSON.stringify rather than encodeMsg: this is deliberately a PARTIAL snapshot,
+      // missing the one required field each recipient supplies for itself.
+      const whole = JSON.stringify({ t: 'snapshot', serverTick: w.tick, w: slim, balls, cmds });
+      // drop the closing brace so the per-client tail can be appended. `whole` always
+      // has at least one key, so it is never the degenerate `{}`.
+      const body = whole.slice(0, -1);
+      if (primed) prefix.primed = body;
+      else prefix.unprimed = body;
+      return body;
+    };
     const sendTo = (c: Client): void => {
       // A client whose CONFIRMED baseline (its ack) has fallen too far behind can't
       // apply an incremental delta — drop it back to unprimed so it gets a full
@@ -1656,15 +1697,13 @@ export class Room {
       const ack = this.snapAck.get(c.id);
       if (ack !== undefined && w.tick - ack > ACK_STALE_TICKS) this.snapPrimed.delete(c.id);
       const primed = this.snapPrimed.has(c.id);
-      const balls: BallDelta = { order, upd: primed ? changed : w.balls };
-      c.send({
-        t: 'snapshot',
-        serverTick: w.tick,
-        w: slim,
-        balls,
-        cmds,
-        ackInputTick: this.ackTick.get(c.id) ?? 0,
-      });
+      const ackInputTick = this.ackTick.get(c.id) ?? 0;
+      if (c.sendRaw) {
+        c.sendRaw(`${bodyFor(primed)},"ackInputTick":${ackInputTick}}`);
+      } else {
+        const balls: BallDelta = { order, upd: primed ? changed : w.balls };
+        c.send({ t: 'snapshot', serverTick: w.tick, w: slim, balls, cmds, ackInputTick });
+      }
       if (!primed) this.snapPrimed.add(c.id);
     };
     for (const c of this.clients.values()) sendTo(c);
@@ -1692,8 +1731,17 @@ export class Room {
   }
 
   private broadcast(m: ServerMsg): void {
-    for (const c of this.clients.values()) c.send(m);
-    for (const s of this.spectators.values()) s.send(m);
+    // encode ONCE for the whole audience — see `Client.sendRaw`. Lazily, because a
+    // room whose every recipient is a plain `send` (tests, headless smoke) should not
+    // pay for a string nobody reads.
+    let raw: string | null = null;
+    const to = (c: Client): void => {
+      if (!c.sendRaw) return c.send(m);
+      if (raw === null) raw = encodeMsg(m);
+      c.sendRaw(raw);
+    };
+    for (const c of this.clients.values()) to(c);
+    for (const s of this.spectators.values()) to(s);
   }
 
   private broadcastRoster(): void {

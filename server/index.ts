@@ -1681,6 +1681,12 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   const send = (m: ServerMsg): void => {
     if (ws.readyState === WebSocket.OPEN) ws.send(encodeMsg(m));
   };
+  // the room encodes a broadcast ONCE and hands every recipient the same string —
+  // see `Client.sendRaw` in room.ts for why that matters in a 2v2. This is the only
+  // place that knows the string is already a serialized ServerMsg.
+  const sendRaw = (s: string): void => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(s);
+  };
   // a late joiner during a pending restart still gets the countdown banner
   if (noticeLive() && currentNotice) send(currentNotice);
 
@@ -1799,6 +1805,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const client: Client = {
       id,
       send,
+      sendRaw,
       // NEVER trust the wire spec: sanitize the whole player to legal ranges
       // before it lands on the roster (a spoofed devtools spec is clamped here)
       player: { ...sanitizePlayer(msg.player, cfg.game), clientId: id },
@@ -1859,6 +1866,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         const spec = {
           id,
           send,
+          sendRaw,
           player: { ...sanitizePlayer(undefined, r.config.game), clientId: id },
           connected: true,
           disconnectAt: 0,

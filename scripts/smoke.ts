@@ -11368,6 +11368,72 @@ function pinScene(
   }
 }
 
+// ---- ONE ENCODE PER BROADCAST, and the per-client tail spliced on -----------
+// The room stringifies a snapshot's shared body once and appends each recipient's
+// own `ackInputTick`, because encoding used to be per RECIPIENT and a 2v2 is four
+// of them plus spectators. That is a hand-assembled JSON tail, so what it produces
+// has to be pinned against the object path it replaced: same fields, same values,
+// differing in exactly the one number it is allowed to differ in.
+{
+  const raw: Record<string, string[]> = { r1: [], r2: [] };
+  const obj: Record<string, ServerMsg[]> = { r1: [], r2: [], o1: [] };
+  const mkRaw = (id: string): Client => ({
+    id,
+    send: (m) => obj[id].push(m),
+    sendRaw: (s) => raw[id].push(s),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: id === 'r1' ? 'blue' : 'red', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  // o1 has NO sendRaw — the object path every test and the headless smoke take
+  const mkObj = (id: string): Client => ({
+    id,
+    send: (m) => obj[id].push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 1, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  const room = new Room('smoke-encode', () => {}, { kind: 'versus' });
+  room.add(mkRaw('r1'));
+  room.add(mkRaw('r2'));
+  room.add(mkObj('o1'));
+  room.onMessage('r1', { t: 'start' });
+  // distinct input ticks per client, so `ackInputTick` is genuinely different for each
+  room.advanceForTest(20);
+  room.onMessage('r1', { t: 'input', tick: 5, q: [0, 0, 0, 0, 0, 0, 0] as unknown as never });
+  room.onMessage('r2', { t: 'input', tick: 9, q: [0, 0, 0, 0, 0, 0, 0] as unknown as never });
+  room.advanceForTest(10);
+
+  // every BROADCAST now goes out pre-encoded, not just snapshots, so filter
+  const parsed = (a: string[]) => a.map((s) => JSON.parse(s) as ServerMsg);
+  const onlySnaps = (a: string[]) =>
+    parsed(a).filter((m) => m.t === 'snapshot') as Extract<ServerMsg, { t: 'snapshot' }>[];
+  const snaps1 = onlySnaps(raw.r1);
+  const snaps2 = onlySnaps(raw.r2);
+  const objSnaps = (obj.o1.filter((m) => m.t === 'snapshot') as Extract<ServerMsg, { t: 'snapshot' }>[]);
+
+  check('spliced snapshot: the raw path produced parseable JSON',
+    snaps1.length > 0 && parsed(raw.r1).every((m) => typeof m.t === 'string'));
+  check('spliced snapshot: a client WITHOUT sendRaw still gets objects (tests, headless smoke)',
+    objSnaps.length === snaps1.length && objSnaps.length > 0,
+    `obj ${objSnaps.length} vs raw ${snaps1.length}`);
+
+  // the same frame, three recipients: everything but ackInputTick must be identical,
+  // and ackInputTick must be each client's own
+  const n = Math.min(snaps1.length, snaps2.length, objSnaps.length) - 1;
+  const a = snaps1[n], b = snaps2[n], c = objSnaps[n];
+  const strip = (m: Extract<ServerMsg, { t: 'snapshot' }>) => JSON.stringify({ ...m, ackInputTick: 0 });
+  check('spliced snapshot: the SHARED body is identical for every recipient',
+    strip(a) === strip(b) && strip(a) === strip(c));
+  check('spliced snapshot: the raw path equals the object path field for field',
+    JSON.stringify(a) === JSON.stringify({ ...c, ackInputTick: a.ackInputTick }));
+  check('spliced snapshot: ackInputTick is per-client, not shared',
+    a.ackInputTick !== b.ackInputTick, `r1=${a.ackInputTick} r2=${b.ackInputTick}`);
+  check('spliced snapshot: serverTick survived the splice as a number',
+    Number.isInteger(a.serverTick) && a.serverTick > 0);
+  check('spliced snapshot: the ball delta survived the splice',
+    Array.isArray(a.balls.order) && Array.isArray(a.balls.upd));
+  room.stop();
+}
+
 // ---- predict/reconcile parity ----------------------------------------------
 // The client replaces its world with a server snapshot at `serverTick`, then
 // replays the local inputs it had buffered PAST that tick (remote robots default
