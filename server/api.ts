@@ -4,7 +4,7 @@ import { BALANCE_VERSION, SIM_DT } from '../src/config';
 import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
 import { CHALLENGE_FORMATS } from '../src/net/protocol';
 import { sanitizeReplay } from '../src/net/sanitize';
-import { moderateName } from './moderation';
+import { moderateName, scrubName } from './moderation';
 import { dbEnabled } from './db/pool';
 import {
   acceptFriendRequest,
@@ -20,6 +20,9 @@ import {
   ensureProfile,
   listPracticeRuns,
   savePracticeRun,
+  listLanRuns,
+  saveLanRun,
+  type LanParticipant,
   ensureSeason,
   inviteToRoom,
   listAnnouncements,
@@ -355,6 +358,95 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
        */
       await addActivity([user.userId], replay.ticks * SIM_DT, replay.game as GameId).catch(
         (e: unknown) => console.error('[api] practice activity write failed:', e),
+      );
+      return json(200, { run }), true;
+    }
+
+    /**
+     * SELF-HOSTED / LAN MATCHES — the host's own archive of games their server ran.
+     *
+     * Authenticated as the HOST, deliberately, and that single fact is what keeps this
+     * endpoint from needing to trust the LAN server at all. The alternative considered was
+     * having the LAN server upload on everyone's behalf, which would mean collecting each
+     * player's auth token and handing it to a machine the cloud has no reason to trust. Here
+     * the only credential involved is the host's own, used by the host's own client.
+     *
+     * Everything in the body is UNTRUSTED, including the score, because the server that
+     * produced it is one its operator could have patched. That is survivable only because of
+     * where the row can go: `lan_runs` is not reachable from `record_leaderboard`, so nothing
+     * posted here can move a board, a PB, a rank or an ELO. See migration 0033.
+     *
+     * ⚠️ NO `addActivity` CALL, unlike `/api/practice`. A practice run is at least bounded by
+     * the poster's own sim; a LAN match is bounded by nothing, so crediting games-played from
+     * one would make that counter forgeable by anybody willing to run a script against this
+     * endpoint. The data-collection goal is served by the replay itself, which is the thing
+     * that was actually asked for.
+     */
+    if (url.pathname === '/api/lan' && (req.method === 'GET' || req.method === 'POST')) {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(503, { error: 'saving LAN matches needs the database' }), true;
+      const game: GameId = url.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+
+      if (req.method === 'GET') {
+        return json(200, { runs: await listLanRuns(user.userId, game) }), true;
+      }
+
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+      } catch {
+        return json(400, { error: 'bad request' }), true;
+      }
+
+      // the match id is the row's identity and its idempotence key, so it has to be a
+      // plausible id and not an arbitrary string a client can use to squat on the table
+      const matchId = typeof body.matchId === 'string' ? body.matchId.trim() : '';
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(matchId)) {
+        return json(400, { error: 'missing or malformed matchId' }), true;
+      }
+
+      const replay = sanitizeReplay(body.replay, game);
+      if (!replay) return json(400, { error: 'not a playable replay' }), true;
+
+      const clamp = (v: unknown): number =>
+        Math.max(0, Math.min(9999, Math.round(typeof v === 'number' && Number.isFinite(v) ? v : 0)));
+      const rawScore = (body.score ?? {}) as Record<string, unknown>;
+      const score = { red: clamp(rawScore.red), blue: clamp(rawScore.blue) };
+
+      // THE ROSTER IS DISPLAY TEXT AND NOTHING ELSE. It is rendered beside the match in the
+      // host's own archive, so it goes through the same name moderation every other
+      // user-supplied name does, and it carries no user ids — see the migration for why
+      // attributing a LAN match to an account on this server's say-so is not on the table.
+      const rawRoster = Array.isArray(body.participants) ? body.participants.slice(0, 8) : [];
+      const participants: LanParticipant[] = [];
+      for (const raw of rawRoster) {
+        if (!raw || typeof raw !== 'object') continue;
+        const p = raw as Record<string, unknown>;
+        const teamNumber = typeof p.teamNumber === 'number' && Number.isFinite(p.teamNumber)
+          ? Math.max(0, Math.min(999999, Math.round(p.teamNumber)))
+          : undefined;
+        participants.push({
+          name: await scrubName(typeof p.name === 'string' ? p.name : '', 'Player'),
+          teamName: typeof p.teamName === 'string'
+            ? await scrubName(p.teamName, 'Team')
+            : undefined,
+          teamNumber,
+          alliance: p.alliance === 'blue' ? 'blue' : 'red',
+          drivetrain: typeof p.drivetrain === 'string' ? p.drivetrain.slice(0, 24) : undefined,
+        });
+      }
+
+      await ensureProfile(user.userId, user.handle);
+      const season = await currentSeasonNumber(BALANCE_VERSION, replay.game as GameId);
+      const run = await saveLanRun(
+        user.userId,
+        matchId,
+        replay,
+        score,
+        participants,
+        season,
+        replay.game as GameId,
       );
       return json(200, { run }), true;
     }

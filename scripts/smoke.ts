@@ -10,6 +10,7 @@ import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
 import { derivedRole, savedStartCap } from '../src/ui/startPositions';
 import { queuedModes, queuedGames, queuesFor, anyoneQueued, widenHint } from '../src/ui/queueDepth';
 import { roomJoinRegion } from '../src/net/roomRegion';
+import { parseLanAddress, mixedContentBlock, isPrivateHost } from '../src/net/lanAddress';
 import {
   parkQueue, takeQueue, dropQueue, updateQueue, peekQueue, subscribeQueue, elapsedLabel, elapsedSeconds,
 } from '../src/ui/queueKeeper';
@@ -6876,6 +6877,84 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     check(
       'join region: the host wins even when we have no pick of our own',
       roomJoinRegion('syd', '') === 'syd',
+    );
+  }
+
+  // ---- LAN: what address may be joined, and from which page --------------
+  /**
+   * AN https PAGE CANNOT OPEN A ws:// SOCKET, AND IT FAILS SILENTLY.
+   *
+   * This is the constraint the whole self-hosted feature is shaped around
+   * (docs/lan-selfhost.md), and it is the kind that has to be tested rather than reasoned
+   * about: a browser refuses the connection as mixed content with nothing but a console
+   * line — no event, no error the app can catch, and no retry that will ever succeed. A
+   * player is told "couldn't connect" forever. `localhost` is exempt (it is a
+   * "potentially trustworthy" origin), which is why the HOST can play from the live site
+   * while a guest on the same network cannot.
+   *
+   * The parser is pinned here too, because the input is a person typing an IP address off
+   * a projector and the host allowlist is a SECURITY boundary: what it fails to recognise
+   * it must refuse, never allow.
+   */
+  {
+    const ok = (raw: string) => {
+      const r = parseLanAddress(raw);
+      return r.ok ? r.value : null;
+    };
+    const err = (raw: string) => {
+      const r = parseLanAddress(raw);
+      return r.ok ? null : r.error;
+    };
+
+    check('lan addr: a bare IP takes the default port', ok('192.168.1.5')?.url === 'ws://192.168.1.5:8787');
+    check('lan addr: an explicit port wins', ok('192.168.1.5:9000')?.url === 'ws://192.168.1.5:9000');
+    check(
+      'lan addr: what a person actually pastes — a scheme, a path, stray spaces',
+      ok('  http://192.168.1.5:8787/  ')?.url === 'ws://192.168.1.5:8787',
+    );
+    check(
+      'lan addr: the http twin is the SAME origin (it serves the client and the health probe)',
+      ok('10.0.0.4')?.httpUrl === 'http://10.0.0.4:8787',
+    );
+    check(
+      'lan addr: an https URL still answers ws:// (a LAN box has no certificate)',
+      ok('https://192.168.1.5')?.url === 'ws://192.168.1.5:8787',
+    );
+    check('lan addr: every RFC1918 block is private', [
+      '10.0.0.1', '172.16.0.1', '172.31.255.254', '192.168.0.1', '169.254.10.2', '127.0.0.1',
+    ].every(isPrivateHost));
+    check('lan addr: 172.15 and 172.32 are OUTSIDE the private block', !isPrivateHost('172.15.0.1') && !isPrivateHost('172.32.0.1'));
+    check('lan addr: mDNS and loopback names are private', ['localhost', 'scoring.local', 'host.lan'].every(isPrivateHost));
+    check('lan addr: IPv6 unique-local and link-local are private', isPrivateHost('fd00::1') && isPrivateHost('[fe80::1]'));
+    check(
+      'lan addr: a PUBLIC address is refused — v1 is scoped to the network you are on',
+      err('8.8.8.8') === 'not-private' && err('example.com') === 'not-private',
+    );
+    check('lan addr: nothing typed is `empty`, not a crash', err('') === 'empty' && err('   ') === 'empty');
+    check('lan addr: a port outside 1..65535 is malformed', err('192.168.1.5:70000') === 'malformed');
+    check(
+      'lan addr: a bracketed IPv6 with a port splits on the RIGHT colon',
+      ok('[fd00::1]:9000')?.host === '[fd00::1]' && ok('[fd00::1]:9000')?.port === 9000,
+    );
+
+    // THE MIXED-CONTENT RULE ITSELF
+    const lan = ok('192.168.1.5')!;
+    const local = ok('localhost')!;
+    check(
+      'mixed content: an https page CANNOT reach a LAN box — and is told which URL to open',
+      mixedContentBlock(lan, 'https:') === 'http://192.168.1.5:8787',
+    );
+    check(
+      'mixed content: localhost is exempt, which is what lets the HOST play from the live site',
+      mixedContentBlock(local, 'https:') === null,
+    );
+    check(
+      'mixed content: a page the LAN host served (http) may open any of it',
+      mixedContentBlock(lan, 'http:') === null && mixedContentBlock(local, 'http:') === null,
+    );
+    check(
+      'mixed content: a file:// page (the desktop shell offline) is not blocked either',
+      mixedContentBlock(lan, 'file:') === null,
     );
   }
 
