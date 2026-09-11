@@ -12,7 +12,9 @@ import {
   BB_SHOOTER_EDGES,
   isTurreted,
 } from '../../src/games/biobuzz/mounts';
-import { bbFootprint, bbHopperCap, bbMouths } from '../../src/games/biobuzz/robot';
+import { bbFootprint, bbHopperCap, bbMouths, bbRobotSolids } from '../../src/games/biobuzz/robot';
+import { robotPenetration, robotSolids } from '../../src/sim/artifactSolids';
+import { simModuleFor } from '../../src/games/sim';
 import { BB_DEFAULT_SPEC, bbDials } from '../../src/games/biobuzz/robotConfig';
 import { BB_SCENES, bbPollen, bbSceneAt } from '../../src/games/biobuzz/scenes';
 import { bbCoerce, cmd, mkWorld, run, type Check } from './harness';
@@ -307,6 +309,136 @@ export function robotChecks(check: Check): void {
           Math.abs(m.y1) <= f.half + 1e-9,
       ),
       `footprint front=${f.front} rear=${f.rear} half=${f.half}`,
+    );
+  }
+
+  // ── WHAT IS SOLID TO A POLLEN IS THIS GAME'S HARDWARE, ON THIS GAME'S EDGES ─
+  /**
+   * `bbRobotSolids` is what the artifact solve collides POLLEN against, and it exists because
+   * the shared `robotSolids` describes DECODE: a chassis plus the FRONT funnel wedges (sloped /
+   * triangle) or the vector preset's front rails, whatever mount the spec carries. Run through
+   * that, a BIOBUZZ robot met its POLLEN through hardware it does not have, on an edge its
+   * sweeper is not on — a `back` build had solid wedges across its front and nothing at all
+   * behind it, where the roller actually is.
+   *
+   * Asserted as GEOMETRY, per mount, because that is the thing that was wrong: the set of edges
+   * carrying something solid outside the frame must be exactly the set of edges the sweeper is
+   * mounted on, two side plates each. `bbMouths` supplies the same rects the sprite draws, so
+   * the solid and the drawn mouth cannot drift apart.
+   */
+  for (const intakeMount of BB_INTAKE_MOUNTS) {
+    const world = mkWorld('free', 3, { intakeMount });
+    const r = world.robots[0];
+    r.pos = { x: 0, y: 0 };
+    r.heading = 0;
+    const hl = r.spec.length / 2;
+    const hw = r.spec.width / 2;
+    const reach = C.INTAKE_PRESETS[r.spec.intake].reach;
+    const sol = bbRobotSolids(r, [], BB_POLLEN_R);
+    const mounted = new Set(bbMouths(r.spec).map((m) => m.edge));
+
+    const chassis = sol.chassis;
+    check(
+      `solids [${intakeMount}]: the chassis solid IS the chassis box`,
+      chassis.kind === 'box' &&
+        Math.abs(chassis.hx - hl) < 1e-9 &&
+        Math.abs(chassis.hy - hw) < 1e-9 &&
+        chassis.cx === 0 &&
+        chassis.cy === 0,
+    );
+
+    // which edge each structure box sits outside of — a plate is outboard of the frame by
+    // construction, so its centre alone names its edge
+    const edgeOf = (sh: { kind: string; cx?: number; cy?: number }): string => {
+      const cx = sh.cx ?? 0;
+      const cy = sh.cy ?? 0;
+      if (cx > hl) return 'front';
+      if (cx < -hl) return 'back';
+      if (cy > hw) return 'left';
+      if (cy < -hw) return 'right';
+      return 'inside-the-frame';
+    };
+    const edges = sol.structure.map((sh) => edgeOf(sh as { kind: string; cx?: number; cy?: number }));
+    check(
+      `solids [${intakeMount}]: two sweeper side plates per mounted edge, and none anywhere else`,
+      sol.structure.length === mounted.size * 2 &&
+        edges.every((e) => mounted.has(e as 'front' | 'back' | 'left' | 'right')) &&
+        [...mounted].every((e) => edges.filter((x) => x === e).length === 2),
+      `mounted=[${[...mounted].join(',')}] plates on [${edges.join(',')}]`,
+    );
+
+    // THE MOUTH IS OPEN — a POLLEN at the middle of the roller band touches nothing, which is
+    // what lets `interact()` capture it before the frame arrives. A funnel wedge here (the old
+    // shared geometry) would report a penetration.
+    let openOk = true;
+    let plateOk = true;
+    for (const m of bbMouths(r.spec)) {
+      const mid =
+        m.edge === 'front'
+          ? { x: hl + reach - 0.1, y: 0 }
+          : m.edge === 'back'
+            ? { x: -hl - reach + 0.1, y: 0 }
+            : m.edge === 'left'
+              ? { x: 0, y: hw + reach - 0.1 }
+              : { x: 0, y: -hw - reach + 0.1 };
+      if (robotPenetration(r, sol, mid, BB_POLLEN_R)) openOk = false;
+    }
+    // ...and the SIDE PLATE is solid: a POLLEN centred on one is inside the robot
+    for (const sh of sol.structure) {
+      const b = sh as { cx: number; cy: number };
+      if (!robotPenetration(r, sol, { x: b.cx, y: b.cy }, BB_POLLEN_R)) plateOk = false;
+    }
+    check(`solids [${intakeMount}]: the sweeper MOUTH is open to a POLLEN`, openOk);
+    check(`solids [${intakeMount}]: the sweeper SIDE PLATES are solid to a POLLEN`, plateOk);
+
+    // THE HELD PLUG IS POLLEN-SIZED. A hopper full of DECODE-radius circles is a plug an inch
+    // too fat in every direction, and it is the one place the radius reaches the geometry.
+    r.spec.ballStorage = Math.max(1, r.spec.ballStorage ?? 1);
+    const held = [bbPollen(900, 0, 0)];
+    held[0].state = { kind: 'held', robot: r.id, lx: 0, ly: 0 };
+    const withHeld = bbRobotSolids(r, held, BB_POLLEN_R);
+    const plug = withHeld.held[0] as { kind: string; r: number } | undefined;
+    check(
+      `solids [${intakeMount}]: a HELD pollen plugs the mouth at the POLLEN radius, not DECODE's`,
+      withHeld.held.length === 1 && plug?.kind === 'circle' && plug.r === BB_POLLEN_R,
+      `r=${plug?.r} want ${BB_POLLEN_R} (DECODE ${C.BALL_RADIUS})`,
+    );
+  }
+
+  // ── THE SEAM IS WIRED, AND IT IS NOT THE SHARED GEOMETRY ──────────────────
+  /**
+   * `GameSimModule.artifactSolids` (`src/games/types.ts`) is the optional slot a game fills to
+   * supply its own artifact-solid geometry; absent, a consumer uses the shared `robotSolids`.
+   * BIOBUZZ fills it, and `play.ts` reads it — so this checks BOTH halves, because a slot that
+   * is declared and never read is how the whole class of seam bug survives: everything compiles,
+   * the game just silently plays DECODE's shape.
+   *
+   * The second half is what makes the first half worth anything: on a mount DECODE cannot have,
+   * the two geometries must actually DIFFER. If they ever agree here, either the seam stopped
+   * being read or the shared geometry grew a BIOBUZZ arm, and both are worth failing over.
+   */
+  {
+    const mod = simModuleFor('biobuzz');
+    check('seam: BIOBUZZ fills GameSimModule.artifactSolids', typeof mod.artifactSolids === 'function');
+    const world = mkWorld('free', 3, { intakeMount: 'back' });
+    const r = world.robots[0];
+    r.pos = { x: 0, y: 0 };
+    r.heading = 0;
+    const mine = mod.artifactSolids?.(r, [], BB_POLLEN_R);
+    const shared = robotSolids(r, [], BB_POLLEN_R);
+    check(
+      'seam: the module slot returns BIOBUZZ geometry',
+      JSON.stringify(mine) === JSON.stringify(bbRobotSolids(r, [], BB_POLLEN_R)),
+    );
+    check(
+      "seam: a BACK sweeper's solids are NOT DECODE's front funnel",
+      JSON.stringify(mine?.structure) !== JSON.stringify(shared.structure),
+      `bb=${mine?.structure.length} shapes, shared=${shared.structure.length}`,
+    );
+    check(
+      'seam: DECODE and Chain Reaction leave the slot empty (the shared geometry is untouched)',
+      simModuleFor('decode').artifactSolids === undefined &&
+        simModuleFor('chain').artifactSolids === undefined,
     );
   }
 

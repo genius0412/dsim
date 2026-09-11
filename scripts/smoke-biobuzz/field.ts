@@ -13,7 +13,11 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { updateBiobuzz } from '../../src/games/biobuzz/play';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
-import { BB_IDLE, BB_SCENES, bbSceneAt, bbSceneStills, type Scene } from '../../src/games/biobuzz/scenes';
+import { BB_IDLE, BB_SCENES, bbPollen, bbSceneAt, bbSceneStills, type Scene } from '../../src/games/biobuzz/scenes';
+import { bbRobotSolids } from '../../src/games/biobuzz/robot';
+import { robotPenetration } from '../../src/sim/artifactSolids';
+import { solveArtifacts, type SweepFrom } from '../../src/sim/physicsEngine';
+import { stepGroundBall } from '../../src/sim/physics';
 import { maxMatchTicks } from '../../src/sim/replay';
 import type { ServerMsg } from '../../src/net/protocol';
 import { Room, type Client } from '../../server/room';
@@ -46,9 +50,9 @@ const WALL_EPS = 0.5;
  * The plan wrote 1.2x, against a BIOBUZZ that ran CR's own bespoke ground integrator plus a
  * spatial-hash separation pass. POLLEN now ride the SHARED artifact solve, which builds a fresh
  * Rapier world every tick with one body per ground pollen plus every robot's artifact solids -
- * real physics where there used to be arithmetic. Measured best-of-three on this machine, the
- * ratio is 1.25-1.63x (median ~1.34) where it used to sit under 1.2, and the absolute cost is
- * ~0.47 ms for a 2v2, i.e. under 3% of a 16.7 ms frame.
+ * real physics where there used to be arithmetic. Measured as the median of five PAIRED rounds
+ * on this machine, the ratio is ~1.3-1.5x where it used to sit under 1.2, and the absolute cost
+ * is ~0.47 ms for a 2v2, i.e. under 3% of a 16.7 ms frame.
  *
  * 1.8 is that measurement plus room for a loaded CI box, and it is still a real budget: a
  * BIOBUZZ step that had genuinely doubled would fail. The ROOM check below deliberately keeps
@@ -60,6 +64,17 @@ const STEP_BUDGET = 1.8;
 /** the same budget for a whole SERVER room tick (`roomChecks`). See that check for why it
  * kept 1.2x where the step budget had to move. */
 const ROOM_BUDGET = 1.2;
+
+/**
+ * How many PAIRED rounds a perf check runs. Five is the smallest odd count whose median still
+ * survives two bad rounds, which is the failure this is built around: a laptop that thermally
+ * throttles, or a gallery capture running in another process, contaminates a CONTIGUOUS stretch
+ * of wall clock rather than a random sample.
+ */
+const PERF_ROUNDS = 5;
+
+/** the middle value of a sample (the upper of the two for an even count — these are odd). */
+const median = (xs: number[]): number => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 
 /** the robot's axis-aligned half-extents at its current heading — the same measure the
  * solver's containment invariant is stated in (footprint INCLUDING intake reach, not the bare
@@ -99,6 +114,15 @@ const WALL_SLOP = 0.25;
  * is the solver's resting slop, and the threshold is meaningful rather than generous: the same
  * measure reads 2.13" on a row being pressed into a wall (see the settle block). */
 const OVERLAP_SLOP = 0.1;
+
+/** the two DECODE-only exemption sets `solveArtifacts` takes — empty for BIOBUZZ, exactly as
+ * `play.ts` passes them, so a check that drives the solve directly drives the same solve. */
+const NO_IDS: ReadonlySet<number> = new Set<number>();
+
+/** an EMPTY sweep map: every robot's start pose is its end pose, i.e. NO sweep at all. What a
+ * caller with nothing to sweep now has to ask for explicitly, since `updateBiobuzz`'s `from` is
+ * required — a scene with no robot, or the deliberately blind arm of the sweep check. */
+const NO_SWEEP: ReadonlyMap<number, SweepFrom> = new Map<number, SweepFrom>();
 
 /** a copy of `scene` whose stills are EVERY tick up to its last, so `bbSceneStills` - the ONE
  * stepping path - hands back the whole run in a single forward pass. Stepping a scene by hand
@@ -394,6 +418,250 @@ export function fieldChecks(check: Check): void {
     );
   }
 
+  // -- THE SOLVE RUNS AT THE POLLEN'S OWN SIZE, MEASURED ON CONTACT ---------
+  /**
+   * THE RADIUS IS A PARAMETER AND EVERY CALLER HAS TO PASS IT — asserted on the distance the
+   * SOLVER actually settles a contact at, not on the constant existing.
+   *
+   * `solveArtifacts` and `robotSolids` / `bbRobotSolids` all default to `C.BALL_RADIUS` (2.5",
+   * DECODE's artifact) so that every DECODE call site stays byte-identical. The failure mode
+   * that buys is silent and total: a caller that forgets the argument runs 3" POLLEN through
+   * the solver as 5" balls, they collide at nearly twice the size they are DRAWN at (`draw.ts`
+   * draws `BB_POLLEN_R`), and every picture still looks like pollen because the renderer is the
+   * half that is right. Nothing else in this suite could see it.
+   *
+   * Two contacts, because there are two places the radius enters: the POLLEN's own collider
+   * (pollen to pollen) and the robot solids it is measured against (pollen to chassis). Both
+   * numbers are the SOLVE's, read after it has settled, so a wrong radius misses by a whole
+   * inch on a 1.5" element.
+   */
+  {
+    check(
+      'radius: BIOBUZZ and DECODE really are different sizes (so the two checks below mean something)',
+      BB_POLLEN_R !== C.BALL_RADIUS,
+      `pollen ${BB_POLLEN_R}" vs artifact ${C.BALL_RADIUS}"`,
+    );
+
+    // (a) POLLEN against POLLEN. Two overlapping pollen, no robot: the solve pushes them apart
+    // to exactly touching and the shared rolling pass stops them there.
+    const w = createBiobuzzWorld('free', 3, []);
+    w.robots.length = 0;
+    w.balls.length = 0;
+    w.balls.push(bbPollen(1, -0.5, 0), bbPollen(2, 0.5, 0));
+    for (let i = 0; i < 240; i++) updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+    const d = Math.hypot(w.balls[0].pos.x - w.balls[1].pos.x, w.balls[0].pos.y - w.balls[1].pos.y);
+    check(
+      'radius: two settled pollen rest one POLLEN diameter apart, not one artifact diameter',
+      Math.abs(d - 2 * BB_POLLEN_R) <= 0.1,
+      `${d.toFixed(3)}" apart; pollen ${(2 * BB_POLLEN_R).toFixed(2)}", artifact ${(2 * C.BALL_RADIUS).toFixed(2)}"`,
+    );
+
+    // (b) POLLEN against CHASSIS, through the whole pipeline: a robot walking a pollen ahead of
+    // it holds it a POLLEN RADIUS off its front face, less the solver's own soft penetration.
+    const w2 = mkWorld('free', 3);
+    const r = w2.robots[0];
+    r.pos = { x: -40, y: 0 };
+    r.heading = 0;
+    r.vel = { x: 0, y: 0 };
+    w2.balls.length = 0;
+    w2.balls.push(bbPollen(1, -20, 0));
+    const push = new Map([[r.id, cmd({ driveY: 0.35 })]]);
+    let ahead = 0;
+    for (let i = 0; i < 420; i++) {
+      biobuzzStep(w2, C.SIM_DT, push);
+      const b = w2.balls[0];
+      ahead =
+        (b.pos.x - r.pos.x) * Math.cos(r.heading) +
+        (b.pos.y - r.pos.y) * Math.sin(r.heading) -
+        r.spec.length / 2;
+    }
+    check(
+      'radius: a pushed pollen rides one POLLEN RADIUS off the chassis face',
+      Math.abs(ahead - BB_POLLEN_R) <= 0.35,
+      `${ahead.toFixed(3)}" ahead of the face; pollen R=${BB_POLLEN_R}", artifact R=${C.BALL_RADIUS}"`,
+    );
+  }
+
+  // -- WHAT THE SOLVE ITSELF DOES ABOUT THE PERIMETER, WITH NO CLAMP OVER IT -
+  /**
+   * EVERY OTHER CONTAINMENT CHECK IN THIS FILE READS THE WORLD AFTER `clampPollenToWalls` HAS
+   * RUN, so all of them measure the CLAMP and none of them can see the solve. That is a real
+   * blind spot rather than a theoretical one: the clamp is unconditional, so the shared solve
+   * could regress from "a hair of resting penetration" to "posts a pollen through the wall
+   * every tick" and this suite would stay green at 0.000" everywhere.
+   *
+   * So this runs the stages `play.ts` stage 3+4 runs — the shared rolling pass, this game's own
+   * robot solids, `solveArtifacts` at `BB_POLLEN_R` — on a chassis sweeping a row of pollen
+   * ALONG a wall (the `wall-row-sweep` geometry, the hard case), and measures the escape BEFORE
+   * putting anything back. The pollen ARE put back after the measurement, so every tick starts
+   * legal and the number is the solve's own PER-TICK escape rather than a compounding drift.
+   *
+   * Measured when this was written: 1.00" at 40 in/s, 1.74" at 80 in/s, on a 1.5" pollen. That
+   * is the clamp carrying real weight, exactly as owner note 1 describes — BIOBUZZ runs no
+   * pin/round loop, so nothing tells the robot solve that a wall pollen is a wall and the
+   * chassis occupies the space it is in. The budget is a CEILING on that, not a target: it goes
+   * red if the solve starts losing pollen outright, and it does not pretend the solve holds the
+   * perimeter on its own, because it does not.
+   */
+  {
+    const SOLVE_ESCAPE_BUDGET = 2.5; // in — measured worst 1.74" at 80 in/s, see above
+    for (const speed of [40, 80]) {
+      const w = createBiobuzzWorld('free', 5, [setup(0, 'blue')]);
+      const r = w.robots[0];
+      w.balls.length = 0;
+      for (let i = 0; i < 14; i++) {
+        w.balls.push(bbPollen(100 + i, -40 + (i * 80) / 13, BB_HALF_Y - BB_POLLEN_R));
+      }
+      r.heading = 0;
+      r.pos = { x: -52, y: BB_HALF_Y - 10 };
+      r.vel = { x: speed, y: 0 };
+      let worst = 0;
+      let worstAt = -1;
+      let lost = false;
+      for (let i = 0; i < 300; i++) {
+        const from: ReadonlyMap<number, SweepFrom> = new Map([
+          [r.id, { x: r.pos.x, y: r.pos.y, heading: r.heading }],
+        ]);
+        r.pos = { x: r.pos.x + speed * C.SIM_DT, y: r.pos.y };
+        for (const b of w.balls) if (b.state.kind === 'ground') stepGroundBall(b, C.SIM_DT);
+        const solids = new Map([[r.id, bbRobotSolids(r, [], BB_POLLEN_R)]]);
+        solveArtifacts(w, C.SIM_DT, biobuzzColliders, NO_IDS, NO_IDS, solids, from, BB_POLLEN_R);
+        for (const b of w.balls) {
+          const out = outBy(b);
+          if (out > worst) {
+            worst = out;
+            worstAt = i;
+          }
+          if (!Number.isFinite(b.pos.x) || !Number.isFinite(b.pos.y)) lost = true;
+        }
+        // ...and only NOW put them back, so the next tick starts from a legal state
+        for (const b of w.balls) {
+          b.pos.x = Math.max(-(BB_HALF_X - BB_POLLEN_R), Math.min(BB_HALF_X - BB_POLLEN_R, b.pos.x));
+          b.pos.y = Math.max(-(BB_HALF_Y - BB_POLLEN_R), Math.min(BB_HALF_Y - BB_POLLEN_R, b.pos.y));
+        }
+      }
+      check(
+        `solve-only containment [${speed} in/s]: the SOLVE's own per-tick escape stays under ${SOLVE_ESCAPE_BUDGET}"`,
+        worst <= SOLVE_ESCAPE_BUDGET && !lost,
+        `worst ${worst.toFixed(3)}" past the wall plane at tick ${worstAt}${lost ? ' — and a pollen went non-finite' : ''}`,
+      );
+    }
+  }
+
+  // -- WHAT A POLLEN WEIGHS AND HOW IT BOUNCES, MEASURED THROUGH THE SOLVE ---
+  /**
+   * The radius is the only thing BIOBUZZ passes into the shared solve. MASS (`C.BALL_MASS`),
+   * ball-ball RESTITUTION (`C.BALL_BALL_RESTITUTION`) and the speed cap (`C.BALL_MAX_SPEED`)
+   * are DECODE's numbers applied to a 3" element, by design — this game owns no ground-pollen
+   * physics constant — so they are pinned here as BEHAVIOUR rather than left unmeasured,
+   * because "the pollen model changed" should be a failing check and not a report.
+   *
+   * EQUAL MASS is read off the SPEED SUM. Two equal masses in a head-on contact hand over
+   * `(1±e)/2` of the approach each, so the two speeds after impact SUM to the approach speed
+   * whatever the restitution is; an unequal pair does not. One measurement, and it proves the
+   * mass is shared without depending on the bounce.
+   *
+   * The BOUNCE is bounded rather than pinned to a value, deliberately: BIOBUZZ does not run
+   * DECODE's `bounceFirstContacts` pre-pass (it lives in `src/sim/world.ts`), so what a POLLEN
+   * actually gets is the speculative contact's restitution, well under the configured
+   * `C.BALL_BALL_RESTITUTION` — measured 0.02 to 0.21 against a set 0.68. That gap is an owner
+   * item (`docs/biobuzz/feedback/000-solver-observations.md`), so what is asserted is the
+   * physical envelope: never negative, never more than the coefficient the config asks for. It
+   * stays true if the owner closes the gap, and fails if a pollen starts gaining energy.
+   */
+  for (const v0 of [50, 70, 90]) {
+    const w = createBiobuzzWorld('free', 3, []);
+    w.robots.length = 0;
+    w.balls.length = 0;
+    const striker = bbPollen(1, -12, 0);
+    striker.vel = { x: v0, y: 0 };
+    w.balls.push(striker, bbPollen(2, 0, 0));
+    let approach = v0;
+    let after: [number, number] = [0, 0];
+    let hit = false;
+    for (let i = 0; i < 90; i++) {
+      const pre = w.balls[0].vel.x;
+      updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+      if (!hit && w.balls[1].vel.x > 0.01) {
+        hit = true;
+        approach = pre;
+        after = [w.balls[0].vel.x, w.balls[1].vel.x];
+      }
+    }
+    const sum = (after[0] + after[1]) / approach;
+    const e = (after[1] - after[0]) / approach;
+    check(
+      `pollen physics [${v0} in/s]: the pair really is EQUAL MASS (the two speeds sum to the approach)`,
+      hit && Math.abs(sum - 1) <= 0.1,
+      `approach ${approach.toFixed(2)} -> ${after[0].toFixed(2)} + ${after[1].toFixed(2)} = ${(sum * 100).toFixed(1)}%`,
+    );
+    check(
+      `pollen physics [${v0} in/s]: the bounce is inside the physical envelope (0 <= e <= ${C.BALL_BALL_RESTITUTION})`,
+      hit && e >= -0.02 && e <= C.BALL_BALL_RESTITUTION + 0.05,
+      `effective e=${e.toFixed(3)} against a configured ${C.BALL_BALL_RESTITUTION} — no bounceFirstContacts here, see the owner notes`,
+    );
+    check(
+      `pollen physics [${v0} in/s]: the struck pollen never outruns what struck it`,
+      hit && after[1] <= approach + 0.5 && after[1] <= C.BALL_MAX_SPEED,
+      `struck ${after[1].toFixed(2)} in/s off an approach of ${approach.toFixed(2)}`,
+    );
+  }
+
+  // -- THE TICK-START SWEEP IS THE REAL ONE, AND IT IS WHAT KEEPS POLLEN OUT -
+  /**
+   * `updateBiobuzz` takes each robot's pose from BEFORE the drivetrain ran (`step.ts` stage 0)
+   * and the solve sweeps the chassis from there to where the robot solve left it. That argument
+   * is REQUIRED; it used to be optional and fall back to the END pose, which is a chassis placed
+   * in the solve already overlapping whatever it drove into, with nothing but soft penetration
+   * recovery acting on the POLLEN inside it.
+   *
+   * Measured rather than trusted: the same run twice, once through the REAL `biobuzzStep`
+   * (which captures stage 0) and once with an EMPTY sweep map — what a caller that skips it now
+   * has to ask for explicitly — scored on how deep a POLLEN ever gets into the robot. The swept
+   * run has to be strictly better, or the sweep is not doing the job the required argument
+   * exists for.
+   */
+  {
+    const worstPen = (swept: boolean): number => {
+      const w = mkWorld('free', 21);
+      const r = w.robots[0];
+      r.heading = 0;
+      r.pos = { x: -50, y: 0 };
+      r.vel = { x: 0, y: 0 };
+      w.balls.length = 0;
+      for (let i = 0; i < 8; i++) w.balls.push(bbPollen(200 + i, -20 + i * 3.1, 0));
+      const drive = new Map([[r.id, cmd({ driveY: 1 })]]);
+      let worst = 0;
+      for (let i = 0; i < 240; i++) {
+        if (swept) {
+          biobuzzStep(w, C.SIM_DT, drive);
+        } else {
+          // the same tick WITHOUT stage 0: the robot is moved, then gameplay is told nothing
+          // about where it came from
+          w.tick++;
+          w.time += C.SIM_DT;
+          r.pos = { x: r.pos.x + 60 * C.SIM_DT, y: r.pos.y };
+          r.vel = { x: 60, y: 0 };
+          updateBiobuzz(w, C.SIM_DT, drive, true, NO_SWEEP);
+        }
+        const sol = bbRobotSolids(r, [], BB_POLLEN_R);
+        for (const b of w.balls) {
+          if (b.state.kind !== 'ground') continue;
+          const q = robotPenetration(r, sol, b.pos, BB_POLLEN_R);
+          if (q && q.pen > worst) worst = q.pen;
+        }
+      }
+      return worst;
+    };
+    const swept = worstPen(true);
+    const blind = worstPen(false);
+    check(
+      'sweep: the real tick-start pose keeps pollen further out of the chassis than no sweep at all',
+      swept < blind,
+      `swept ${swept.toFixed(3)}" deep against ${blind.toFixed(3)}" unswept`,
+    );
+  }
+
   // ── DETERMINISM ───────────────────────────────────────────────────────────
   // Same seed, same setups, same commands ⇒ the same world, bit for bit as `worldHash` reads
   // it. This is THE check the multiplayer lockstep and every replay depend on, and a scatter
@@ -461,20 +729,23 @@ export function fieldChecks(check: Check): void {
    *
    * Both sides get a warm-up before the timed windows so the comparison is not "interpreted
    * BIOBUZZ vs JIT-compiled CR", which is a ~3x artefact and was the first version of this
-   * check. Each side then takes the BEST of three windows rather than one long one: with a
-   * single 1200-step window the same code measured anywhere between 1.12x and 2.30x on this
-   * machine, which is a check that flakes rather than a budget. The minimum is the estimate
-   * least contaminated by whatever else the machine was doing, and best-of-three brought the
-   * spread to 1.25-1.63x.
+   * check.
    *
-   * THE WINDOWS ARE INTERLEAVED (cr, bb, cr, bb, cr, bb), and that is not cosmetic. Run as
-   * three CR windows and then three BIOBUZZ windows, the two sides are measured at DIFFERENT
-   * MOMENTS, so anything that loads the machine for a few seconds lands on one side only and
-   * the ratio reports the load rather than the code. Measured: on a box that was also running
-   * an Electron gallery capture, that layout read 1.77x (bb=1.249ms, cr=0.707ms — both sides
-   * inflated, BIOBUZZ's fresh-Rapier-world-per-tick inflated harder) against the same code
-   * that reads 1.37-1.51x idle. Alternating puts every burst of contention across both sides,
-   * which is the whole reason this check is a RATIO in the first place.
+   * THE ROUNDS ARE PAIRED AND THE ANSWER IS A MEDIAN OF RATIOS. Each round times CR and then
+   * BIOBUZZ back to back and divides THOSE TWO NUMBERS; the check reads the median of the
+   * per-round ratios. It used to take each side's own BEST window and divide the two minima,
+   * which is a ratio of two measurements that never happened together: the CR minimum could
+   * come from a quiet round and the BIOBUZZ minimum from a loaded one (or the reverse, which is
+   * worse — it flatters BIOBUZZ and the budget stops binding). A paired ratio cancels whatever
+   * the machine was doing during THAT round, which is the only reason a ratio is being measured
+   * at all, and the median throws away a round that went bad on both sides together.
+   *
+   * The pairing is also what makes the alternation matter. Run as N CR windows and then N
+   * BIOBUZZ windows the two sides are measured at different MOMENTS, so a few seconds of load
+   * lands on one side only: measured, on a box also running an Electron gallery capture, that
+   * layout read 1.77x (bb=1.249ms, cr=0.707ms — both inflated, BIOBUZZ's
+   * fresh-Rapier-world-per-tick inflated harder) against the same code that reads 1.37-1.51x
+   * idle.
    */
   {
     const bbSetups = [setup(0, 'blue'), setup(1, 'blue', {}, 1), setup(2, 'red'), setup(3, 'red', {}, 1)];
@@ -489,29 +760,38 @@ export function fieldChecks(check: Check): void {
     const drive = cmd({ driveY: 1, rotate: 0.3, intake: true, fire: true });
     const cmds = new Map([0, 1, 2, 3].map((id) => [id, drive] as const));
 
-    type Side = { build: () => World; step: (w: World, dt: number, c: Map<number, RobotCommand>) => void; best: number };
+    type Side = { build: () => World; step: (w: World, dt: number, c: Map<number, RobotCommand>) => void };
     const warm = (side: Side): void => {
       const w = side.build();
       for (let i = 0; i < 300; i++) side.step(w, C.SIM_DT, cmds as Map<number, RobotCommand>);
     };
-    const window_ = (side: Side): void => {
+    /** one timed window, in ms per step */
+    const window_ = (side: Side): number => {
       const w = side.build();
       const n = 600;
       const t0 = performance.now();
       for (let i = 0; i < n; i++) side.step(w, C.SIM_DT, cmds as Map<number, RobotCommand>);
-      side.best = Math.min(side.best, (performance.now() - t0) / n);
+      return (performance.now() - t0) / n;
     };
     const sides: Side[] = [
-      { build: () => createChainWorld('match', 5, crSetups), step: chainStep, best: Infinity },
-      { build: () => createBiobuzzWorld('match', 5, bbSetups), step: biobuzzStep, best: Infinity },
+      { build: () => createChainWorld('match', 5, crSetups), step: chainStep },
+      { build: () => createBiobuzzWorld('match', 5, bbSetups), step: biobuzzStep },
     ];
     for (const side of sides) warm(side);
-    for (let k = 0; k < 3; k++) for (const side of sides) window_(side);
-    const [{ best: cr }, { best: bb }] = sides;
+    const rounds: { cr: number; bb: number; ratio: number }[] = [];
+    for (let k = 0; k < PERF_ROUNDS; k++) {
+      // BACK TO BACK, both sides inside one round, and the ratio taken from THAT ROUND's two
+      // numbers — see the block comment.
+      const cr = window_(sides[0]);
+      const bb = window_(sides[1]);
+      rounds.push({ cr, bb, ratio: bb / cr });
+    }
+    const ratio = median(rounds.map((x) => x.ratio));
     check(
       `perf: a 2v2 BIOBUZZ step costs <= ${STEP_BUDGET}x a 2v2 Chain Reaction step`,
-      bb <= cr * STEP_BUDGET,
-      `bb=${bb.toFixed(3)}ms cr=${cr.toFixed(3)}ms ratio=${(bb / cr).toFixed(2)}`,
+      ratio <= STEP_BUDGET,
+      `median paired ratio=${ratio.toFixed(2)} of [${rounds.map((x) => x.ratio.toFixed(2)).join(', ')}] ` +
+        `· bb median ${median(rounds.map((x) => x.bb)).toFixed(3)}ms · cr median ${median(rounds.map((x) => x.cr)).toFixed(3)}ms`,
     );
   }
 }
@@ -680,9 +960,9 @@ export function roomChecks(check: Check): void {
    * RE-READ after the pollen solver changed, like the step check, and it kept 1.2x where the
    * step check had to move: a room tick pays for a snapshot too, and CR's 300 particles make
    * that side much fatter than BIOBUZZ's 60 pollen, so the shared solve's extra cost
-   * disappears into it. Measured 0.75x and 0.99x on two runs - which is exactly why it now
-   * takes the BEST of three windows per side, like the step check: a single window put the
-   * same code within noise of the threshold.
+   * disappears into it. Measured 0.75x and 0.99x on two runs - which is exactly why it takes
+   * several rounds, PAIRED, and reads their median: a single window put the same code within
+   * noise of the threshold.
    *
    * Both rooms are built and warmed inside this block so the comparison is same-run,
    * same-process, same-JIT state, for the reason spelled out on the world-step check.
@@ -690,25 +970,35 @@ export function roomChecks(check: Check): void {
   {
     const WARM = 300;
     const N = 600;
-    type RoomSide = { code: string; game: 'biobuzz' | 'chain'; spec: RobotSpec; best: number };
-    const roomWindow = (side: RoomSide, k: number): void => {
+    type RoomSide = { code: string; game: 'biobuzz' | 'chain'; spec: RobotSpec };
+    /** one timed window, in ms per room tick */
+    const roomWindow = (side: RoomSide, k: number): number => {
       const timed = started(`${side.code}-${k}`, side.game, side.spec).room;
       const t0 = performance.now();
       timed.advanceForTest(N);
-      side.best = Math.min(side.best, (performance.now() - t0) / N);
+      return (performance.now() - t0) / N;
     };
     const sides: RoomSide[] = [
-      { code: 'smoke-perf-cr', game: 'chain', spec: DEFAULT_SPEC, best: Infinity },
-      { code: 'smoke-perf-bb', game: 'biobuzz', spec: BB_DEFAULT_SPEC, best: Infinity },
+      { code: 'smoke-perf-cr', game: 'chain', spec: DEFAULT_SPEC },
+      { code: 'smoke-perf-bb', game: 'biobuzz', spec: BB_DEFAULT_SPEC },
     ];
     for (const side of sides) started(`${side.code}-warm`, side.game, side.spec).room.advanceForTest(WARM);
-    // INTERLEAVED, for the reason spelled out on the world-step check above.
-    for (let k = 0; k < 3; k++) for (const side of sides) roomWindow(side, k);
-    const [{ best: cr }, { best: bb }] = sides;
+    // PAIRED, for the reason spelled out on the world-step check: both sides in one round, the
+    // ratio from that round's own two numbers, the median over rounds. Three rounds here where
+    // the step check takes five — a room window builds and steps two whole rooms, so the rounds
+    // are expensive, and the pairing is what was doing the work anyway.
+    const rounds: { cr: number; bb: number; ratio: number }[] = [];
+    for (let k = 0; k < 3; k++) {
+      const cr = roomWindow(sides[0], k);
+      const bb = roomWindow(sides[1], k);
+      rounds.push({ cr, bb, ratio: bb / cr });
+    }
+    const ratio = median(rounds.map((x) => x.ratio));
     check(
       `perf: a 2v2 BIOBUZZ ROOM tick costs <= ${ROOM_BUDGET}x a 2v2 Chain Reaction room tick`,
-      bb <= cr * ROOM_BUDGET,
-      `bb=${bb.toFixed(3)}ms cr=${cr.toFixed(3)}ms ratio=${(bb / cr).toFixed(2)}`,
+      ratio <= ROOM_BUDGET,
+      `median paired ratio=${ratio.toFixed(2)} of [${rounds.map((x) => x.ratio.toFixed(2)).join(', ')}] ` +
+        `· bb median ${median(rounds.map((x) => x.bb)).toFixed(3)}ms · cr median ${median(rounds.map((x) => x.cr)).toFixed(3)}ms`,
     );
   }
 }
