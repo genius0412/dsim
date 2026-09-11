@@ -1,53 +1,69 @@
-import type { Vec2, World } from '../../types';
-import * as C from '../../config';
 import type { GameModule } from '../module';
+import { BiobuzzGallery } from './Gallery';
+import { BiobuzzRobotPreview } from './RobotPreview';
+import {
+  BiobuzzBuilderSlot,
+  BiobuzzHudChips,
+  BiobuzzScoreBar,
+  biobuzzResultsRows,
+} from './HudSlots';
+import { drawBiobuzzBalls } from './draw';
+import { drawBiobuzzField } from './drawField';
+import { drawBiobuzzRobot } from './drawRobot';
+import { bbConfigSummary } from './labels';
 import { BIOBUZZ_SIM } from './sim';
 
 /**
- * BIOBUZZ as a full (client) `GameModule`.
+ * BIOBUZZ as a full (CLIENT) `GameModule` — the DOM-free `BIOBUZZ_SIM` plus every
+ * browser-owned slot: the three renderers, the builder, the robot schematic, the two live-HUD
+ * slots, the results breakdown, the config summary and the scene gallery's dev route.
  *
- * ⚠️ PLACEHOLDER — the P0-shell chat replaces this file. The renderers below are
- * the minimum that makes an empty field legible on screen (mat, tile grid,
- * perimeter) so `/biobuzz` opens on an alpha build and the shared camera can be
- * seen to fit the bounds. `drawRobot` is omitted on purpose: the SHARED
- * `drawRobot` is used, which is right for a game whose mechanisms do not exist
- * yet. No UI slots are filled, so every consumer keeps its existing branch.
+ * FILLING the slots rather than threading `game === 'biobuzz'` through the shared screens is
+ * the whole point of them, and `src/games/module.ts` carries the argument: before they
+ * existed, `Menu.tsx` alone had ~16 `isDecode` gates and a third game had to be hand-threaded
+ * into every one, in files two other people edit at the same time. DECODE's and CR's inline
+ * branches stay untouched — each consumer wires a slot as
+ * `mod.X ? <the slot> : <the existing branch, unchanged>`.
+ *
+ * WHAT IS DELIBERATELY NOT FILLED, each an absence rather than an omission:
+ *  • `drawOverlays` — the slot draws between the field and the robots (DECODE's ramp strips).
+ *    BIOBUZZ has no published structure to underlay: Section 9 (ARENA) is a Kickoff
+ *    placeholder, so the field is four walls and a tile grid. A no-op costs a call per frame
+ *    and tells the next reader there is something to see. It lands with the geometry.
+ *  • `mobileButtons` — the shell's only two actions are intake and fire and both already have
+ *    a button in the shared pad. A genuinely new BIOBUZZ action needs a `GameSettings
+ *    .mobileLayout` key and a protocol bit too, which is a cross-lane request, not a slot.
+ *  • `startEditor` — `startLegality: false`: there is no legality to edit against, and the two
+ *    anchors are picked from the shared preset list.
  */
-
-const BB_HALF = BIOBUZZ_SIM.colliders.bounds.halfX;
-
-function drawBiobuzzField(ctx: CanvasRenderingContext2D, _world: World, _screenUp?: Vec2): void {
-  // mat + tile grid, reusing DECODE's palette so it themes identically on the
-  // dark field (the canvas ground does not theme — see CLAUDE.md's category 3)
-  ctx.fillStyle = C.COLORS.mat;
-  ctx.fillRect(-BB_HALF, -BB_HALF, 2 * BB_HALF, 2 * BB_HALF);
-  ctx.strokeStyle = C.COLORS.tile;
-  ctx.lineWidth = 0.6;
-  ctx.beginPath();
-  for (let x = -BB_HALF; x <= BB_HALF + 0.01; x += C.TILE) {
-    ctx.moveTo(x, -BB_HALF);
-    ctx.lineTo(x, BB_HALF);
-  }
-  for (let y = -BB_HALF; y <= BB_HALF + 0.01; y += C.TILE) {
-    ctx.moveTo(-BB_HALF, y);
-    ctx.lineTo(BB_HALF, y);
-  }
-  ctx.stroke();
-  // the perimeter itself — the board is separated from the dark floor by this
-  // outline alone, so it is not decoration (CLAUDE.md, theming)
-  ctx.strokeStyle = C.COLORS.wall;
-  ctx.lineWidth = 1.4;
-  ctx.strokeRect(-BB_HALF, -BB_HALF, 2 * BB_HALF, 2 * BB_HALF);
-}
-
-/** nothing to draw: the placeholder field has no scoring elements */
-function drawBiobuzzBalls(_ctx: CanvasRenderingContext2D, _world: World, _screenUp: Vec2): void {}
-
 export const BIOBUZZ_MODULE: GameModule = {
   ...BIOBUZZ_SIM,
+  // ---- renderers. The scene gallery draws through these same three functions, which is what
+  // makes a gallery cell evidence about the real game screen rather than about a second
+  // drawing kept in sync by hand.
   drawField: drawBiobuzzField,
+  drawRobot: drawBiobuzzRobot,
   drawBalls: drawBiobuzzBalls,
-  // no score HUD (nothing is scored), no start editor (no legality model), and
-  // the shared sloped intake so the builder has something valid to offer
-  ui: { showScoreHud: false, startEditor: false, intakes: ['sloped'] },
+  // ---- UI slots ----
+  Builder: BiobuzzBuilderSlot,
+  Preview: BiobuzzRobotPreview,
+  hudChips: BiobuzzHudChips,
+  scoreBar: BiobuzzScoreBar,
+  resultsRows: biobuzzResultsRows,
+  labels: { configSummary: bbConfigSummary },
+  /**
+   * THE SCENE GALLERY, alpha-only — `devRoutesEnabled()` gates it inside `devRouteFor`, so a
+   * stable build neither routes to it nor renders it.
+   *
+   * `/gallery/*`, not `/gallery`: every grid cell links to `/biobuzz/gallery/<scene>` for the
+   * drivable view of one scene, and `devRouteFor` matches a route's `path` against the
+   * game-stripped remainder of the URL. A bare `/gallery` entry would drop every sub-path
+   * through to `parseScreen`, which sends an unknown path home — so the trailing `/*` is what
+   * makes a pasted scene link actually open. Seventy scenes is not seventy route entries.
+   */
+  devRoutes: [{ path: '/gallery/*', Component: BiobuzzGallery }],
+  // no score HUD (nothing is scored) and no start editor (no legality model). `intakes` is the
+  // SHARED preset list, which is what the shared builder would offer; BIOBUZZ's own sweeper
+  // dials live in `Builder` and the slot above is what actually renders.
+  ui: { showScoreHud: false, startEditor: false, intakes: ['sloped', 'vector'] },
 };

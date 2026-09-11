@@ -270,10 +270,27 @@ function parsePath(pathname: string, fallbackGame: GameId): { game: GameId; scre
  * The channel gate lives HERE rather than at the render site so a stable build
  * neither routes to one nor renders one: an unmatched path falls straight through
  * to `parseScreen`, which sends an unknown path home.
+ *
+ * A route path ending in `/*` matches its base AND everything under it, so one
+ * entry covers an instrument that routes its own sub-paths. BIOBUZZ's scene
+ * gallery is exactly that: 70 scenes, each with its own `/gallery/<id>` URL that
+ * the grid links to and a feedback dump pastes, reached through ONE route rather
+ * than through 70 entries the scene registry would have to stay in step with.
+ * The route's own component reads the remainder off `window.location`.
  */
 function devRouteFor(game: GameId, rest: string): ComponentType | null {
   if (!devRoutesEnabled()) return null;
-  return moduleFor(game).devRoutes?.find((r) => r.path === rest)?.Component ?? null;
+  const routes = moduleFor(game).devRoutes;
+  if (!routes) return null;
+  for (const r of routes) {
+    if (r.path.endsWith('/*')) {
+      const base = r.path.slice(0, -2);
+      if (rest === base || rest.startsWith(`${base}/`)) return r.Component;
+    } else if (r.path === rest) {
+      return r.Component;
+    }
+  }
+  return null;
 }
 
 /** which rail/menu entry lights up for a given screen */

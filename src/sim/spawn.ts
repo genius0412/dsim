@@ -56,7 +56,6 @@ import {
 import {
   CHAIN_DEFAULT_INTAKE_MOUNT,
   CHAIN_DEFAULT_SHOOTER_MOUNT,
-  CHAIN_DEFAULT_TURRET_POS,
   CHAIN_CATALYST_MOUNTS,
   CHAIN_RAIL_MOUNTS,
   intakeMountOf,
@@ -81,36 +80,15 @@ export const MOTIFS: Motif[] = [
   ['purple', 'purple', 'green'], // 23: PPG
 ];
 
-// A new player starts on the TW BUILD (Turtle Walkers' archetype) but with a
-// generic identity they fill in themselves — a preset is a build, not a name.
-export const DEFAULT_SPEC: RobotSpec = {
-  name: 'My Robot',
-  teamName: '',
-  teamNumber: 0,
-  length: 14.5,
-  width: 16.5,
-  intake: 'sloped',
-  massLb: 23.5,
-  drivetrain: 'mecanum',
-  driveRpm: 500,
-  flywheelInertia: 0.4,
-  canSort: false,
-  ballStorage: CHAIN_STORAGE_DEFAULT,
-  groundClearance: CHAIN_CLEARANCE_DEFAULT,
-  scoreMode: CHAIN_DEFAULT_SCORE_MODE,
-  chainIntake: CHAIN_DEFAULT_INTAKE,
-  intakeMount: CHAIN_DEFAULT_INTAKE_MOUNT,
-  shooterMount: CHAIN_DEFAULT_TURRET_POS, // DEFAULT_SPEC is a TURRET, so this is a position
-  catalystType: CHAIN_DEFAULT_CATALYST,
-  catalystMount: CHAIN_DEFAULT_CATALYST_MOUNT,
-  catapultRange: CHAIN_CATAPULT_RANGE_DEFAULT,
-  catapultYaw: CHAIN_CATAPULT_YAW_DEFAULT,
-  // deprecated mirrors of the two mounts above (kept in sync by coerceSpec)
-  intakeSide: false,
-  shooterRear: false,
-  // driver assists ride the ROBOT (both games) — all ON by default. See PLAYER_ASSISTS.
-  assists: { fieldCentric: true, aimAssist: true, autoIntake: true, autoFire: true },
-};
+/**
+ * The DEFAULT spec now LIVES IN A LEAF (`./specDefaults`) and is re-exported here, so every
+ * existing importer is unchanged. It had to move: a game module reads it at MODULE-EVAL time
+ * (BIOBUZZ's `BB_DEFAULT_SPEC` is a top-level spread of it), and this file is inside the
+ * registry import cycle, so the read landed in `DEFAULT_SPEC`'s TDZ and threw at import.
+ * `specDefaults.ts`'s header has the whole story. Do not move it back.
+ */
+import { DEFAULT_SPEC } from './specDefaults';
+export { DEFAULT_SPEC };
 
 // Neutral sim/wire FALLBACK for assists (used by coercion bases, replay, server
 // fill-robots, dummies, and smoke). Deliberately NOT the same as the player's

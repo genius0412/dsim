@@ -20,6 +20,7 @@ import type { RecordRankInfo } from '../net/protocol';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { CHAIN_MODE_LABELS } from '../games/chain/labels';
 import { moduleFor } from '../games';
+import { seasonFor } from '../seasons';
 import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
 
 /** top-right connection-quality readout (multiplayer only): a coloured signal dot
@@ -354,7 +355,7 @@ export function GameView({
         ref={canvasRef}
         className="game-canvas"
         role="img"
-        aria-label={`${hud?.game === 'chain' ? 'Chain Reaction' : 'DECODE'} field, top-down view. Match state is announced in the event log.`}
+        aria-label={`${seasonFor(hud?.game ?? 'decode').name} field, top-down view. Match state is announced in the event log.`}
       />
       {window.matchMedia('(pointer: coarse)').matches && controllerRef.current && (
         <MobileControls
@@ -576,29 +577,27 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
   const blueScore = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
   // Chain Reaction is scored (its own breakdown); DECODE shows motif + its breakdown.
   const cr = hud.game === 'chain';
-
-  if (GameScoreBar) {
-    // a game that owns its whole bottom bar replaces it wholesale — the shared bar
-    // is red | timer | blue, which is not a given for every game
-    return (
-      <div className="hud">
-        <GameScoreBar hud={hud} />
-        {showEventLog && (
-          <div className="eventlog" aria-live="polite">
-            {hud.toasts.map((t) => (
-              <div key={t.id} className="eventlog-line">
-                {t.text}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
+  /**
+   * ...and DECODE is DECODE, named POSITIVELY.
+   *
+   * The motif dots, the CLASSIFIED / OVERFLOW / PATTERN / RAMP row and the hopper
+   * pips + power gauge + gate chip are DECODE's elements, and they were gated on
+   * `!cr` — "every game that is not Chain Reaction", which was the same set as
+   * DECODE right up until there was a third game, and then silently put DECODE's
+   * chrome on it. Byte-identical for both games that existed: `!cr` and `dec` agree
+   * on `decode` (true) and on `chain` (false).
+   */
+  const dec = hud.game === 'decode';
 
   return (
     <div className="hud">
-      {hud.mode === 'match' ? (
+      {/* A game that owns its whole bottom bar replaces it wholesale — the shared bar is
+          red | timer | blue with a motif, which is not a given for every game. It replaces
+          only the BAR: the chip row below is shared chrome (net, gamepad, cards, spectators)
+          that every game wants, and a game's own chips go into it through `hudChips`. */}
+      {GameScoreBar ? (
+        <GameScoreBar hud={hud} />
+      ) : hud.mode === 'match' ? (
         <div className="scorebar">
           <div className={`score-panel red ${hud.alliance === 'red' ? 'mine' : ''}`}>
             {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
@@ -613,7 +612,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
             <span className="timer-time">
               {hud.phase === 'post' ? '0:00' : fmtTime(hud.timeLeft)}
             </span>
-            {!cr && (
+            {dec && (
               <span className="timer-motif">
                 {hud.motif.map((c, i) => (
                   <span key={i} className={`motif-dot ${c}`} />
@@ -630,7 +629,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
         <div className="scorebar">
           <div className="timer-panel">
             <span className="timer-phase">FREE DRIVE</span>
-            {!cr && (
+            {dec && (
               <span className="timer-motif">
                 {hud.motif.map((c, i) => (
                   <span key={i} className={`motif-dot ${c}`} />
@@ -641,7 +640,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
         </div>
       )}
 
-      {hud.mode === 'match' && !cr && (
+      {hud.mode === 'match' && dec && (
         <div className="breakdown-row">
           {/* artifact COUNTS, not points (points live in the score panels).
               PATTERN shows only BANKED points — it is assessed solely at the
@@ -671,7 +670,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
         <div className="status-wrap">
           <div className="robot-status">
             {GameChips && <GameChips hud={hud} />}
-            {!cr && (
+            {dec && (
               <>
                 <div className="hopper">
                   {[0, 1, 2].map((i) => (
@@ -697,7 +696,7 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
                 {hud.chain.endgame === 'parked' && <span className="chip on">■ PARKED</span>}
               </>
             )}
-            {!cr && hud.mode === 'match' &&
+            {dec && hud.mode === 'match' &&
               (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
                 <span className="chip warn">
                   FOULS {hud.fouls[hud.alliance].minor} MIN · {hud.fouls[hud.alliance].major} MAJ
@@ -1420,7 +1419,11 @@ function RecordResults({
                     ))}
                   </Fragment>
                 ))}
-                {!cr && (
+                {/* PENALTIES belongs to whoever owns the breakdown: a game with its own
+                    `resultsRows` puts its penalty row in `sections`, and printing this one
+                    too would show the heading twice. `!own` is `!cr` for both games that
+                    existed - neither filled the slot. */}
+                {!own && (
                   <>
                     <tr className="section-row"><td colSpan={2}>PENALTIES</td></tr>
                     <tr className="penalty-row">

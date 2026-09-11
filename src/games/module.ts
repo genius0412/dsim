@@ -190,7 +190,14 @@ export interface StartEditorProps {
 
 /** one alpha-only dev route mounted under this game's URL prefix */
 export interface GameDevRoute {
-  /** the path UNDER the game prefix, leading slash included: `/gallery` */
+  /**
+   * The path UNDER the game prefix, leading slash included: `/gallery`.
+   *
+   * A trailing `/*` matches the base AND every path beneath it (`/gallery/*` takes
+   * `/gallery` and `/gallery/pile-fast`), for an instrument that routes its own
+   * sub-paths — the component reads the remainder off `window.location` itself.
+   * `devRouteFor` in `App.tsx` is the matcher.
+   */
   path: string;
   Component: ComponentType;
 }

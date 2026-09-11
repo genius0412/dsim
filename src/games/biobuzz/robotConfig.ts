@@ -1,7 +1,17 @@
 import type { RobotSpec } from '../../types';
 import { clamp } from '../../math';
 import { massLimits } from '../../sim/drivetrain';
-import { DEFAULT_SPEC, coerceSpec } from '../../sim/spawn';
+import { coerceSpec } from '../../sim/spawn';
+/**
+ * `DEFAULT_SPEC` comes from the LEAF, not from `../../sim/spawn`, and that is load-bearing:
+ * `BB_DEFAULT_SPEC` below is a top-level spread of it, i.e. a MODULE-EVAL-TIME read, and this
+ * file is evaluated from inside the registry import cycle (`games/sim` → `biobuzz/sim` →
+ * `biobuzz/spawn` → here) while `sim/spawn.ts` is still mid-evaluation. Reading it through
+ * `sim/spawn` threw `Cannot access 'DEFAULT_SPEC' before initialization` at import time the
+ * moment the real BIOBUZZ module replaced the placeholder. `coerceSpec` above is safe from the
+ * same file because it is only ever CALLED, at runtime. See `src/sim/specDefaults.ts`.
+ */
+import { DEFAULT_SPEC } from '../../sim/specDefaults';
 import {
   BB_DEFAULT_SCORE_MODE,
   BB_PRESETS,
