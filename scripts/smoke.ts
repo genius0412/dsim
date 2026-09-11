@@ -3,6 +3,11 @@
  * opens the gate, and checks scoring math. Run with: npx tsx scripts/smoke.ts
  */
 import { readdirSync, readFileSync } from 'node:fs';
+import {
+  practiceSaveDecision,
+  PRACTICE_SAVE_MIN_S,
+  PRACTICE_SAVE_MIN_TICKS,
+} from '../src/replaySavePolicy';
 import { join as joinPath } from 'node:path';
 import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, PLAYER_ASSISTS, coerceAssists, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { drawWheels } from '../src/games/chain/parts';
@@ -16517,6 +16522,163 @@ const mkMM = () => {
     check('disabled: moderateName allows any name (checked=false)', off.allowed === true && off.checked === false);
     check('disabled: scrubName passes a name through unchanged', (await scrubName('My Robot', 'x')) === 'My Robot');
   }
+}
+
+// ---- practice REPLAY SAVE POLICY (src/replaySavePolicy.ts) ---------------------
+// Practice used to be kept at exactly one moment — the match reaching `post` — so a driver
+// who ran a cycle and hit RESET, or who left the screen, had nothing to show for it. The rule
+// now is: a completed run is always kept, and an ABANDONED one is kept if it carries at least
+// `PRACTICE_SAVE_MIN_S` of DRIVING, which is the floor that stops a start-and-instantly-reset
+// from pushing real runs off the end of a 10-deep list.
+//
+// The decision is a pure function precisely so it can be checked here; `GameController` needs
+// a DOM canvas and cannot be built in this process, so the WIRING is pinned the same way
+// `stepServer`'s failed-session guard is — by reading the real source. Both halves are needed:
+// the policy being right protects nothing if no exit path calls it.
+{
+  const dec = (drivenTicks: number, completed: boolean) =>
+    practiceSaveDecision({ drivenTicks, completed });
+
+  check(
+    'save policy: the floor is 15 s of driving',
+    PRACTICE_SAVE_MIN_S === 15,
+    `${PRACTICE_SAVE_MIN_S}`,
+  );
+  check(
+    'save policy: the tick floor is the second floor at SIM_DT',
+    PRACTICE_SAVE_MIN_TICKS === Math.round(PRACTICE_SAVE_MIN_S / SIM_DT) &&
+      PRACTICE_SAVE_MIN_TICKS === 900,
+    `${PRACTICE_SAVE_MIN_TICKS}`,
+  );
+
+  // a COMPLETED match is kept however short it is — it is a whole run, and the floor exists to
+  // filter accidental starts, which by definition never reach `post`
+  const done = dec(30, true);
+  check(
+    'save policy: a completed run is kept even at half a second',
+    done.keep === true && done.reason === 'completed',
+    `${done.reason}`,
+  );
+
+  // the floor itself is INCLUSIVE, and one tick under it is not
+  const atFloor = dec(PRACTICE_SAVE_MIN_TICKS, false);
+  const underFloor = dec(PRACTICE_SAVE_MIN_TICKS - 1, false);
+  check(
+    'save policy: an abandoned run AT the floor is kept',
+    atFloor.keep === true && atFloor.reason === 'long-enough',
+    `${atFloor.reason}`,
+  );
+  check(
+    'save policy: one tick under the floor is dropped',
+    underFloor.keep === false && underFloor.reason === 'too-short',
+    `${underFloor.reason}`,
+  );
+
+  // the spam case the floor is FOR: start, look away, reset
+  const spam = dec(Math.round(2 / SIM_DT), false);
+  check(
+    'save policy: a 2 s start-and-reset is dropped (the anti-spam case)',
+    spam.keep === false && spam.reason === 'too-short',
+  );
+  // and the case it must NOT eat: one scoring cycle, then reset
+  const cycle = dec(Math.round(22 / SIM_DT), false);
+  check(
+    'save policy: a 22 s cycle abandoned mid-match IS kept',
+    cycle.keep === true && cycle.reason === 'long-enough',
+  );
+
+  // quitting during the 4 s countdown records a log in which nothing ever moved. This is a
+  // DISTINCT reason from too-short, because it is not about length — there is nothing to watch.
+  const quiet = dec(0, false);
+  check(
+    'save policy: nothing driven is dropped as "nothing-driven", not "too-short"',
+    quiet.keep === false && quiet.reason === 'nothing-driven',
+    `${quiet.reason}`,
+  );
+  check(
+    'save policy: nothing driven is dropped even if the caller says completed',
+    dec(0, true).keep === false,
+  );
+
+  // it is fed from a counter, but it is the boundary of a module and a NaN must not become a
+  // kept run with a NaN length
+  check(
+    'save policy: a NaN tick count is dropped, not kept',
+    dec(Number.NaN, false).keep === false && dec(Number.NaN, false).reason === 'nothing-driven',
+  );
+  check(
+    'save policy: a negative tick count is dropped, not kept',
+    dec(-500, false).keep === false,
+  );
+
+  // the reported length is what copy and logging read
+  check(
+    'save policy: drivenSeconds is ticks x SIM_DT',
+    Math.abs(dec(1200, false).drivenSeconds - 20) < 1e-9,
+    `${dec(1200, false).drivenSeconds}`,
+  );
+
+  // ---- the WIRING in src/game.ts -----------------------------------------------
+  // GameController cannot be constructed here (it needs a canvas), and every one of these is a
+  // SILENT failure: a missing call loses runs exactly as before, with nothing red anywhere.
+  const gsrc = readFileSync('src/game.ts', 'utf8');
+  const harvestCalls = (gsrc.match(/this\.harvestPracticeRun\(/g) ?? []).length;
+  check(
+    'save policy: game.ts routes all THREE exits through the harvest (post/restart/dispose)',
+    harvestCalls === 3,
+    `${harvestCalls} call sites`,
+  );
+  check(
+    'save policy: the post branch harvests as COMPLETED',
+    gsrc.includes('this.harvestPracticeRun(true)'),
+  );
+
+  // ONE exit point: the recorder may only be finished inside the harvest, or a second call site
+  // is a second policy.
+  const finishCalls = (gsrc.match(/\.finish\(\)/g) ?? []).length;
+  check(
+    'save policy: the recorder is finished in exactly one place',
+    finishCalls === 1,
+    `${finishCalls} finish() calls`,
+  );
+  const harvestBody = gsrc.slice(gsrc.indexOf('private harvestPracticeRun('));
+  check(
+    'save policy: that one place is harvestPracticeRun, and it consults the policy',
+    harvestBody.indexOf('recorder.finish()') > 0 &&
+      harvestBody.indexOf('practiceSaveDecision(') > 0 &&
+      harvestBody.indexOf('practiceSaveDecision(') < harvestBody.indexOf('this.onPracticeRun?.'),
+  );
+
+  // ORDER inside restart(): the harvest scores `this.world`, so it must run while that is still
+  // the world the run happened in. After `makeWorld()` it would score a fresh field.
+  const restartBody = gsrc.slice(gsrc.indexOf('  restart(): void {'));
+  const restartHarvest = restartBody.indexOf('this.harvestPracticeRun(false)');
+  const restartRebuild = restartBody.indexOf('this.world = this.makeWorld()');
+  check(
+    'save policy: restart harvests BEFORE it rebuilds the world',
+    restartHarvest > 0 && restartRebuild > 0 && restartHarvest < restartRebuild,
+    `harvest@${restartHarvest} rebuild@${restartRebuild}`,
+  );
+
+  // dispose used not to touch the recorder at all — that is the silent loss this fixes.
+  const disposeBody = gsrc.slice(gsrc.indexOf('  dispose(): void {'));
+  check(
+    'save policy: dispose harvests the run instead of dropping it',
+    disposeBody.indexOf('this.harvestPracticeRun(false)') > 0,
+  );
+
+  // the counter must measure DRIVING, not recording: `pre` and `transition` are recorded but
+  // undrivable, and counting them would let a 12 s run over the line on the countdown alone.
+  check(
+    'save policy: drivenTicks counts only recorded ticks the robots were enabled on',
+    gsrc.includes('if (this.recorder && robotsEnabled(this.world)) this.drivenTicks++;'),
+  );
+  const resets = (gsrc.match(/this\.drivenTicks = 0;/g) ?? []).length;
+  check(
+    'save policy: drivenTicks is reset on start, on restart and in the harvest',
+    resets === 3,
+    `${resets} resets`,
+  );
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
