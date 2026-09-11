@@ -127,6 +127,19 @@ Always read the port `vite preview` prints and pass `--port` explicitly.
    Phase 0.5 is now marked done and points at the observations file.
 3. **`BB_POLLEN_RADIUS` does not exist** — the constant is `BB_POLLEN_R`. The plan and prompts
    use the longer name; the code and docs use the real one.
+4. ⚠️ **THIS BRANCH IS ONE COMMIT BEHIND `biobuzz`, AND THE MISSING COMMIT CONTRADICTS THE
+   HEADER ABOVE.** `biobuzz` has `63fffd9` "docs(biobuzz): the branch is public and physics
+   belongs to the owner" (2026-09-10, owner-revised), which says `biobuzz` and the lane branches
+   DO push to `origin` with the season hidden behind `channels: ['alpha']` — where
+   `docs/biobuzz-plan.md` Decisions item 1 on this branch still says LOCAL ONLY, and the header
+   of this section says "NOT pushed". Both are true of THIS session (the brief said push
+   nothing, and nothing was pushed), and neither is the current policy.
+   It was left unmerged deliberately: syncing branches was not in this session's brief, and
+   `63fffd9` edits `docs/biobuzz-plan.md`, which item 5 also rewrote, so the merge needs a human
+   to resolve the Decisions/Phase-0.5 overlap rather than a guess. Merge it before the next
+   session and reconcile Decisions item 1 and this header. Its OTHER half — "BIOBUZZ does not
+   own a ball integrator, POLLEN rides the shared `solveArtifacts`" — is exactly what this
+   session implemented, so the two branches agree on the substance.
 
 ---
 
