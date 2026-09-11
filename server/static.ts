@@ -1,7 +1,8 @@
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { join, normalize, resolve, sep, extname } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { LAN_MODE } from './lanMode';
 
 /**
  * SERVING THE GAME CLIENT FROM THE GAME SERVER — the LAN host's half of the feature.
@@ -27,7 +28,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
  */
 
 /**
- * `SERVE_CLIENT=/path/to/dist` turns it on. Absent ⇒ this module answers nothing.
+ * `SERVE_CLIENT=/path/to/dist` turns it on, AND ONLY TOGETHER WITH `LAN_MODE=1`.
+ *
+ * Serving the client is the one thing only a self-hosted server does, and a self-hosted
+ * server must not be able to reach the cloud database — so the two are ONE decision rather
+ * than two that happen to agree. `server/index.ts` refuses to BOOT on `SERVE_CLIENT` without
+ * `LAN_MODE` (see `server/lanMode.ts` for why failing closed beats inferring the mode); this
+ * second reading of the pair is what makes "a server serving the client is a LAN server" true
+ * of the MODULE, for any caller that reaches `serveClient` without going through that boot.
  *
  * Read PER CALL, not once at module load. It is one `resolve()` of a short string against a
  * request that is about to touch the disk anyway, and reading it at load time made the module
@@ -35,7 +43,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
  * a test that sets the variable before importing sets it too late. A server whose only
  * security-relevant function is a path-containment check has to be testable.
  */
-const root = (): string => (process.env.SERVE_CLIENT ? resolve(process.env.SERVE_CLIENT) : '');
+const root = (): string =>
+  LAN_MODE && process.env.SERVE_CLIENT ? resolve(process.env.SERVE_CLIENT) : '';
 
 export const servingClient = (): boolean => !!root();
 
@@ -71,13 +80,17 @@ const MIME: Record<string, string> = {
  * the one security-relevant function in the file and it must not be reachable only through
  * a socket.
  *
- * ⚠️ **THE CONTAINMENT CHECK IS THE SECURITY BOUNDARY OF THIS FILE.** This process is
- * running on somebody's laptop, on a network of strangers at a competition venue, and every
+ * ⚠️ **THIS IS THE LEXICAL HALF OF THE SECURITY BOUNDARY, NOT ALL OF IT.** This process
+ * runs on somebody's laptop, on a network of strangers at a competition venue, and every
  * request comes from a machine its operator does not control. `..` is decoded from the
  * percent-encoding before `normalize` sees it, so the check is made on the RESOLVED path
  * against `ROOT + sep` — never on the URL text, which can say `%2e%2e%2f` and a dozen other
  * things. A prefix test without the separator would also let `/dist-evil` past a ROOT of
  * `/dist`.
+ *
+ * What it CANNOT do is follow a link: a name that spells out to inside `ROOT` can still lead
+ * outside it. `servableFile` below is the other half and the authoritative one, and nothing
+ * is served without it.
  */
 export function filePath(ROOT: string, url: string): string | null {
   let pathname: string;
@@ -88,7 +101,47 @@ export function filePath(ROOT: string, url: string): string | null {
   }
   if (pathname.includes('\0')) return null;
   const full = resolve(join(ROOT, normalize(pathname)));
-  return full === ROOT || full.startsWith(ROOT + sep) ? full : null;
+  return contained(ROOT, full) ? full : null;
+}
+
+/** `p` is `ROOT` itself or something under it. The separator is load-bearing: without it a
+ *  ROOT of `/dist` would contain `/dist-evil`. */
+export const contained = (ROOT: string, p: string): boolean =>
+  p === ROOT || p.startsWith(ROOT + sep);
+
+/**
+ * The CANONICAL path of a file this server is willing to serve, or null.
+ *
+ * ⚠️ **`filePath` IS A TEXT CHECK, AND TEXT IS NOT THE FILESYSTEM.** It proves that the
+ * path a client asked for SPELLS OUT to somewhere under `ROOT`. It proves nothing about where
+ * that name LEADS. A symlink — or, on Windows, a junction — anywhere inside the served
+ * `dist/` points wherever its target says, and `dist/` is a directory produced by a build on
+ * the host's own laptop, which a `postinstall`, a stray `ln -s` or a packaging step is free to
+ * have put one in. The lexical check passes such a path, `createReadStream` follows it, and a
+ * LAN peer on a venue network reads the host's `~/.ssh` through a game server.
+ *
+ * So the authority is `realpath`, on BOTH sides: the candidate is resolved through every link
+ * in it, the root is resolved the same way — a root can itself be reached through a link
+ * (`/var` on macOS is one), and comparing a canonical child against an uncanonical parent
+ * would refuse every legitimate file — and the containment test is made on the two canonical
+ * strings.
+ *
+ * **A MISS AND AN ESCAPE ANSWER IDENTICALLY.** Both return null, and the caller treats both as
+ * "not a file here" and falls through to the SPA entry. So a probe cannot tell `/nope` from
+ * `/a-link-to-something-real-outside`: both get the same `index.html`, and nothing about what
+ * exists on the host's disk leaks from the difference.
+ *
+ * The read then uses the RESOLVED path rather than the requested one. Its last component is by
+ * definition not a link, so the open cannot be re-pointed by a link swapped in after the check
+ * — the narrow TOCTOU a "check the name, then open the name" version still has.
+ */
+export async function servableFile(ROOT: string, candidate: string): Promise<string | null> {
+  try {
+    const [rootReal, fileReal] = await Promise.all([realpath(ROOT), realpath(candidate)]);
+    return contained(rootReal, fileReal) ? fileReal : null;
+  } catch {
+    return null; // missing, unreadable, or a broken link — indistinguishable on purpose
+  }
 }
 
 /**
@@ -108,22 +161,28 @@ function cacheFor(path: string): string {
 
 const send = async (
   res: ServerResponse,
+  ROOT: string,
   path: string,
   headOnly: boolean,
   status = 200,
 ): Promise<boolean> => {
+  // EVERY candidate is re-checked against the CANONICAL root here, the two fallbacks below
+  // included: `dist/index.html` is as capable of being a link out as anything else, and a
+  // check applied to only the first candidate is a check with two ways around it.
+  const real = await servableFile(ROOT, path);
+  if (!real) return false;
   let size: number;
   try {
-    const info = await stat(path);
+    const info = await stat(real);
     if (!info.isFile()) return false;
     size = info.size;
   } catch {
     return false;
   }
   res.writeHead(status, {
-    'content-type': MIME[extname(path).toLowerCase()] ?? 'application/octet-stream',
+    'content-type': MIME[extname(real).toLowerCase()] ?? 'application/octet-stream',
     'content-length': size,
-    'cache-control': cacheFor(path),
+    'cache-control': cacheFor(real),
     // the client this serves is a LAN one and talks only to this origin; no page on another
     // origin has any business embedding it, and a host's laptop is not a CDN
     'x-content-type-options': 'nosniff',
@@ -132,7 +191,7 @@ const send = async (
     res.end();
     return true;
   }
-  createReadStream(path).pipe(res);
+  createReadStream(real).pipe(res);
   return true;
 };
 
@@ -160,9 +219,9 @@ export async function serveClient(req: IncomingMessage, res: ServerResponse): Pr
     return true;
   }
 
-  if (await send(res, path, headOnly)) return true;
+  if (await send(res, ROOT, path, headOnly)) return true;
   // a directory or a nonexistent path: try its index, then the SPA entry
-  if (await send(res, join(path, 'index.html'), headOnly)) return true;
-  if (await send(res, join(ROOT, 'index.html'), headOnly)) return true;
+  if (await send(res, ROOT, join(path, 'index.html'), headOnly)) return true;
+  if (await send(res, ROOT, join(ROOT, 'index.html'), headOnly)) return true;
   return false; // SERVE_CLIENT points somewhere that is not a built client
 }
