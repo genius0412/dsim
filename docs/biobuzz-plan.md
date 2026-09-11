@@ -61,15 +61,12 @@ or `App.tsx` during the sprint.
 
 ## Decisions (settled 2026-09-09)
 
-1. **Where the work lives: LOCAL ONLY for now.** Commit freely on the `biobuzz` branch
-   and its lane branches; **push nothing** until the two contributors settle where the
-   private copy goes. Background: GitHub cannot make a branch private inside a public
-   repo, and Vercel builds a preview for every branch of a connected repo, so a `biobuzz`
-   branch pushed to `genius0412/dsim` is readable by anyone and gets a public preview
-   URL. The likely landing is an owner-created private repo; the alternative is the
-   public repo with the season hidden on the stable channel (this plan builds that flag
-   either way). Until then, the second contributor gets the work as a bundle
-   (`git bundle create biobuzz.bundle alpha..biobuzz`) or a patch series.
+1. **Where the work lives: the PUBLIC `biobuzz` branch on `genius0412/dsim`** (revised
+   2026-09-10 with the owner). The code is visible; the season is not — `channels:
+   ['alpha']` keeps BIOBUZZ off every stable build, and the Vercel preview for the branch
+   builds with the stable channel unless someone sets `VITE_APP_CHANNEL=alpha` on it.
+   Lane branches (`biobuzz-field`, `biobuzz-robot`) push too, so both contributors can
+   pull each other's work. Nothing is deployed to Fly until the owner runs the wrapper.
 2. **Base = `alpha`.** Test gate = "no new failures vs the `alpha` baseline" while
    `alpha` itself is red. **`alpha` keeps moving until kickoff**: the integration chat
    merges `origin/alpha` into `biobuzz` at the start of every session (see *Workflow*).
@@ -78,8 +75,12 @@ or `App.tsx` during the sprint.
    `GameId`, its own `SEASONS` entry, its own boards/periods, its own game directory.
    (CR was a CAD-competition game, but DSIM treats it as a full season; BIOBUZZ is the
    same shape with the official manual behind it.)
-4. **Owner (`@genius0412`) is aware.** Server changes still ship only through his
-   `scripts/fly-deploy.sh`; nothing is pushed or deployed until decision 1 resolves.
+4. **Owner (`@genius0412`) is aware and owns PHYSICS.** He is actively reworking artifact
+   contact on `alpha` (one Rapier solve, one position authority, clump speed bound, pins
+   and squeezes — see alpha's HANDOFF). BIOBUZZ therefore does **not** own a ball
+   integrator: POLLEN rides the shared `solveArtifacts` with the radius parameterized, and
+   every physics observation from the gallery goes to him as a HANDOFF note, never as a
+   BIOBUZZ-local constant tweak. Server changes ship only through his `fly-deploy.sh`.
 5. **Lanes undecided; both contributors have push rights** (owner + requester). The
    contract is written so either person can take either lane.
 
@@ -321,8 +322,8 @@ zones, legal-start test, possession limits. Fix the `BiobuzzState` shape and the
   **`biobuzz-robot`**, each in its own **git worktree** (repo convention: never work from
   the primary checkout when others share it). Merge `biobuzz` into the lane at least
   daily; the integration chat merges the lane back when green.
-- **Nothing is pushed** until decision 1 resolves. Local commits only, on every branch.
-  Worktrees on this machine: `dsim-biobuzz` (branch `biobuzz`, integration), one
+- `biobuzz` and the lane branches are pushed to `origin`; `git pull --ff-only` before
+  every session. Worktrees on this machine: `dsim-biobuzz` (branch `biobuzz`, integration), one
   `dsim-bb-<name>` per chat (`core`, `shell`, `sandbox`, `field`, `robot`, `load`).
 - **`alpha` sync**: `git merge origin/alpha` into `biobuzz` (MERGE, never rebase — the
   branch is shared by several worktrees and a rebase orphans them), done by the

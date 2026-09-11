@@ -7,8 +7,10 @@ chat before kickoff. Fable is spent on REVIEW, not on typing: (1) the P0 diff be
 into `biobuzz`, (2) the solver comparison + the human's verdict, (3) the perf-load capacity
 numbers before any server behaviour changes. Escalate a working chat to Fable only if it is
 stuck on one physics behaviour for more than two feedback rounds, or if the kickoff robot
-rules (R105) turn out unusual. Nothing is pushed anywhere until the private-repo question is
-settled.
+rules (R105) turn out unusual. The `biobuzz` branch is PUBLIC on `origin` (agreed with the
+owner 2026-09-10); the season stays hidden by `channels: ['alpha']`. Lane branches push to
+`origin` too. **Physics belongs to the owner** — POLLEN rides the shared `solveArtifacts`;
+no chat tunes a ball constant, it writes the observation into HANDOFF for him.
 
 | chat | model | worktree | branch | start |
 |---|---|---|---|---|
@@ -27,8 +29,7 @@ Node/ws authoritative server, shared deterministic sim). Worktree:
 `C:\Users\saket\Desktop\saket\FTC\Claude Projects\dsim-bb-core`, branch `biobuzz-core`,
 which was cut from `biobuzz` (itself cut from `origin/alpha`). Work ONLY in that worktree;
 never touch `alpha`, `main`, or another worktree. Commit after each numbered item
-(Conventional Commits). Do not push anything — the repo is public and this season is
-private until further notice.
+(Conventional Commits). Push only your own branch (`git push -u origin biobuzz-core`).
 
 Read first, in order: `CLAUDE.md` (all of it — it is the contract), the top section of
 `HANDOFF.md`, `docs/biobuzz-plan.md`, `docs/biobuzz-contract.md`, then
@@ -114,7 +115,7 @@ anything blocking NOW, before starting; otherwise work to the end and report.
 You are working in the DSIM repo, worktree
 `C:\Users\saket\Desktop\saket\FTC\Claude Projects\dsim-bb-shell`, branch `biobuzz-shell`
 (cut from `biobuzz`, which is cut from `origin/alpha`). Work only there; never touch
-`alpha`/`main`/other worktrees; commit per item; push nothing (private season, public repo).
+`alpha`/`main`/other worktrees; commit per item; push only your own branch.
 
 Read first: `CLAUDE.md` (all), `docs/biobuzz-plan.md`, `docs/biobuzz-contract.md`, then
 EVERY file in `src/games/chain/` (the worked example of a second game), `scripts/shiftaudit.cjs`
@@ -210,7 +211,7 @@ questions NOW; otherwise work to the end and report.
 
 You are working in the DSIM repo, worktree
 `C:\Users\saket\Desktop\saket\FTC\Claude Projects\dsim-bb-sandbox`, branch `biobuzz-sandbox`
-off `biobuzz`. Push nothing. Read `CLAUDE.md` (Shared core → Physics, and both GAME
+off `biobuzz`. Push only your own branch. Read `CLAUDE.md` (Shared core → Physics, and both GAME
 sections' ball/particle parts), `docs/biobuzz-plan.md` §Phase 0.5, `docs/biobuzz-contract.md`,
 `src/games/biobuzz/{config,play,elements,scenesField}.ts`, `src/sim/physicsEngine.ts`
 (`solveBalls`, `ballRobotFeedback`, `clampBallPosToStatics`), `src/games/chain/play.ts`
