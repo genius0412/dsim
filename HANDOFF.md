@@ -1,3 +1,117 @@
+# HANDOFF — 2026-09-11, second session (LAN self-hosting, end to end)
+
+Branch **`lan-selfhost`**, stacked on `perf-load-v2` (which is stacked on `alpha`). Eight
+commits, `42a6751` … `c4b0e90`. `npm test` **ALL PASS**, `test:mm` 58, `dbtest` ALL PASS,
+`server:check`, `build`, `uiaudit` (at baseline) and `contrast` (221) all green. `SIM_VERSION`
+untouched. **Nothing pushed, nothing deployed.**
+
+## READ FIRST — what this is, and the one thing that decides its whole shape
+
+A team can host a DSIM game server on their own laptop and everyone on the same network plays
+on it, with **no terminal and no Node install** — the desktop app spawns the server itself.
+The design and every decision behind it is `docs/lan-selfhost.md`; read that before touching
+any of this.
+
+⚠️ **AN `https` PAGE CANNOT OPEN A `ws://` SOCKET.** The browser drops it as mixed content
+with no catchable error, so a guest who types a LAN address into `playdsim.com` watches it
+fail forever with nothing to go on. `localhost` is exempt. That single fact is why the LAN
+host SERVES THE CLIENT on the same origin as the socket (`server/static.ts`, `SERVE_CLIENT`),
+why the join instruction is a URL on a projector rather than a field in a panel, and why
+`mixedContentBlock` diagnoses the case BEFORE storing an address instead of letting the
+connection hang.
+
+## The trust boundary, which is the part to not break
+
+A LAN server is somebody's laptop and its operator can patch it. `lan_runs` (migration 0033)
+is its own table and `record_leaderboard` is a view over `records`, so **nothing written from
+a LAN match is reachable from any board, PB, rank or ELO query** — by construction, not by
+convention. Same pattern as `practice_runs` (0032). `/api/lan` also deliberately omits
+`addActivity`, so a LAN match does not even credit games-played.
+
+The second half is the URL split, and it is where this went wrong once already:
+
+- **`roomServerUrl()` / `roomServerUrlWith()` / `roomServerConfigured()`** follow a LAN
+  connection. `src/ui/Lobby.tsx` is their ONLY caller.
+- **`gameServerUrl()` / `gameServerHttpUrl()`** are ALWAYS the cloud, including mid-LAN-match.
+
+The first draft had `gameServerUrl()` return `lanUrl || cloud`, which is the obvious reading
+and silently pointed RANKED, RECORDS and SPECTATE at a laptop in the same room. `env.ts`
+carries a ⚠️ header block saying so. **Do not add a third LAN-following accessor.**
+
+## What is committed
+
+| commit | what |
+|---|---|
+| `42a6751` | `matchId` minted at `finalizeMatch`, carried on `matchResult` (optional on the wire) |
+| `9bf2cf7` | migration 0033 `lan_runs` + repo functions + `dbtest` coverage |
+| `f2e227c` | `POST`/`GET /api/lan`, `uploadLanRun`/`fetchLanRuns`, and the cloud-vs-LAN URL split |
+| `43b5982` | `server/static.ts` — the game server can serve the client, off unless `SERVE_CLIENT` |
+| `1c6645d` | `electron/lanHost.cjs` — the desktop app spawns the server itself |
+| `19a1cfd` | the LAN screen, the banner, origin adoption, the build-skew warning |
+| `c4b0e90` | `keepLanRun`/`flushLanRuns` — the host keeps the match; results-screen copy |
+
+## Things that are easy to get wrong here
+
+- **`ELECTRON_RUN_AS_NODE=1` is what makes hosting work on a machine with no Node.** It turns
+  `process.execPath` into a plain Node runtime. Spawning `node` would work on a developer's
+  laptop and fail silently on a team's.
+- **The desktop server bundle is FULLY BUNDLED**, unlike the Fly one (`--packages=external`):
+  a packaged Electron app has no `node_modules` to resolve from. It needs the `createRequire`
+  ESM banner in `package.json`'s `server:bundle`.
+- **A bundle cannot be spawned from inside `app.asar`**, so `serverScript` copies it out to
+  `userData` — and RE-copies when the sizes differ, which is what makes an app update take
+  effect instead of the host running last version's server all season.
+- **The child's environment is blanked, not merely empty**: `DATABASE_URL`, `ADMIN_SECRET` and
+  the rest are set to `''` explicitly, so a developer with a real `.env` in their environment
+  cannot host a match straight into production.
+- **`server/static.ts` reads `SERVE_CLIENT` PER CALL.** Reading it at module load made the
+  module untestable — an ES import hoists above a test that sets the variable first — and the
+  one security-relevant function in it, `filePath(ROOT, url)`, is exported with the root as an
+  ARGUMENT for exactly that reason. The containment check is on the RESOLVED path against
+  `ROOT + sep`, never on the URL text. Pinned in smoke against `/../`, `%2e%2e%2f`, `..%5c`,
+  nested, `%00` and `%zz`.
+- **`parseLanAddress` checks SHAPE BEFORE POLICY.** `isPrivateHost` answers false for a public
+  address and for garbage alike, so `!!!` used to be reported as "not on this network".
+- **`adoptLanFromOrigin` is a PROBE, not an assumption.** `npm run dev` on `localhost:5173`
+  passes every other test it applies; `/health` answering `ok` is what separates them.
+- **Build skew is the hazard specific to this feature.** The desktop shell loads the LIVE site
+  while the server it starts serves the `dist/` from the installer, and a CODE-JOINED room has
+  no build segregation to catch the mismatch. `checkSkew` warns and offers the one-click fix
+  (play through `http://localhost:<port>`). It is a warning, not a block — see the panel.
+
+## Verified, and how
+
+- The server bundle boots with no database (`[server] channel=stable db=none`), answers
+  `/health`, and serves `/` as `text/html`.
+- The Electron host lifecycle, headlessly with a stubbed `app`: address enumeration (Wi-Fi
+  private first, Tailscale `100.x` after), start→health, `db=none` with a real DSN in the
+  environment, an idempotent second start, a clean stop.
+- **The whole guest path in a real browser against a real LAN server**: origin adoption stored
+  `ws://127.0.0.1:8787`, the banner rendered, the SPA fallback served `/decode/lobby`, and
+  CREATE ROOM produced a real room over the LAN WebSocket.
+- **A full 9,892-tick DECODE match played through to the final whistle**, whose result landed
+  on the host's device as a `lanruns` row carrying the server-minted UUID, the real score, the
+  roster and a complete replay container — with no `remoteId`, correct for a signed-out run
+  with the backlog holding. It fired while the tab was BACKGROUNDED and the render loop was
+  throttled to a stop, because `onMatchResult` rides the socket rather than rAF.
+
+## What is NOT done
+
+- **The upload half has never run against a live cloud.** `/api/lan` is covered by `dbtest`
+  against PGlite and `uploadLanRun` is covered by nothing — it needs a signed-in host on a
+  LAN server with the real game server reachable. That is the last gap, and it is the
+  feature's payload.
+- **The host's own list of LAN matches has no screen.** `listLocalLanRuns` and `fetchLanRuns`
+  both exist and neither is rendered; a host can see the match on the results screen and then
+  never again. Career is the obvious home, beside practice runs.
+- **Nothing has been packaged.** `npm run dist` has not been run since `server:bundle` was
+  added, so the asar copy-out path in `serverScript` is reasoned-about, not observed.
+- **No reachability check on the HOST's firewall.** The panel says which addresses exist; it
+  does not say whether anything outside the machine can reach them, and a Windows firewall
+  prompt on first host is the single most likely support issue.
+- The dated `perf-load-v2` section is still missing from this file — it was lost to an
+  `--ours` conflict resolution and belongs in the `dsim-bb-load` worktree, not this one.
+
 # HANDOFF — 2026-09-11 (permessage-deflate is ON, and the wire is measured)
 
 Branch **alpha**, commits `e287c0e` + `41e346d`. `npm test` **ALL PASS**, `npm run build` green,
