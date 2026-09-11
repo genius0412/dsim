@@ -173,4 +173,88 @@ Each item names the cell or the number that shows it. None of these were touched
    the repo is **`BB_POLLEN_R`** (`src/games/biobuzz/config.ts`), and that is what the code and
    this file use.
 
+### Added 2026-09-11 by the external-review pass (`biobuzz`)
+
+Six more, from a code review of the Phase 0.5 merge. Each was VERIFIED against the code before
+being written down — two of the reviewer's readings needed correcting and the correction is part
+of the item. None of them was touched: every one is shared physics, and three of them are things
+the shared pipeline does for DECODE and does not do for BIOBUZZ.
+
+10. **The ground-pollen wall clamp contradicts its own constant's comment.** `BB_POLLEN_WALL_REST`
+    (0.35) is documented at its definition as *"FLIGHT ONLY — a ground pollen's wall bounce is the
+    shared solve's `BALL_WALL_RESTITUTION`"* (`src/games/biobuzz/config.ts`), and
+    `clampPollenToWalls` applies it to GROUND pollen as well — it is called on every ground pollen
+    after the solve (`play.ts`, stage 4) and reverses the into-wall component scaled by it. So a
+    ground pollen's wall bounce is BIOBUZZ's number after all, and the file that says otherwise is
+    two doors away. This is item 4 seen from the other end: 4 says the clamp REVERSES where DECODE
+    CLIPS, this says the coefficient it reverses with is one this game is not supposed to own.
+    Both are the same fix and the fix is yours, because moving ground containment into the shared
+    pipeline is a shared-solver change. Left exactly as it was.
+
+11. **A robot's canonical heading is not the orientation Rapier solved.** `solveRobots` writes
+    `r.pos` from `body.translation()` — the contact-CORRECTED pose — and then writes
+    `r.heading = wrapAngle(r.heading + r.angVel * dt)`, integrating from the solved angular
+    velocity instead of reading `body.rotation()` (`src/sim/physicsEngine.ts`). Verified, and the
+    reviewer's framing needs one correction: **it is deliberate and the reason is written down** —
+    `body.rotation()` carries Rapier's positional penetration correction, which quietly turned an
+    idle robot 7.2° with `angvel` reading 0.0000. So this is a tradeoff, not an oversight. What it
+    costs is that position and heading come from two different authorities for one body: any yaw
+    that exists only as a positional correction (a deep overlap being pushed apart at an angle,
+    a corner contact resolved by rotation rather than by impulse) moves the robot and does not
+    turn it. BIOBUZZ sees it wherever a chassis ends a tick overlapped, which after item 1 is
+    "any chassis pressing pollen on a wall".
+
+12. **The solves iterate ARRAY ORDER, not stable ids.** `solveArtifacts` creates ball bodies by
+    walking `world.balls` (filtered to ground) and robot bodies by walking `world.robots`
+    (`physicsEngine.ts`), and the file itself notes that "Rapier resolution depends on"
+    collider creation order. `world.ts` and `play.ts` both hand it the arrays as they stand. It is
+    DETERMINISTIC — the array order is world state, it rides the snapshot, and the wire sends the
+    ball id order every frame for exactly this reason — so this is not a divergence report. It is
+    that the physical answer depends on a list order nothing owns: a pollen removed from the
+    middle (a capture) renumbers every later body's creation index, so the tick a robot intakes
+    one pollen from a pile is a tick where the rest of the pile is solved in a different order
+    than it would otherwise have been. Sorting by id at body-creation time would cost one sort per
+    tick and make the solve's answer a function of the STATE rather than of the container.
+
+13. **The pin/support search is O(B³)-shaped — and BIOBUZZ never reaches it.** `supported()`
+    (`physicsEngine.ts`) is a BFS over touching artifacts that uses `queue.shift()` (O(n) on a JS
+    array) and rescans every ground ball for neighbours at each dequeue, so one call is O(B²) with
+    no spatial index and no memo; `pinnedArtifacts` calls it per artifact per robot, giving
+    O(B³·R) in the worst case where the whole field is one touching clump. But the reviewer's
+    premise — "with 60 pollen" — does not hold: `pinnedArtifacts` is called only from
+    `src/sim/world.ts`, i.e. **DECODE only**, and BIOBUZZ runs no pin or round loop at all (item
+    1). So `BB_POLLEN_SIM = 60` pays none of this today. It matters the day you take item 1's
+    first option and expose the round loop to a game module: 60 pollen in one wall-length clump is
+    where that cost lands, and it lands 60× harder than DECODE's smaller artifact set. Worth
+    fixing BEFORE the round loop moves, not after.
+
+14. **BIOBUZZ pollen barely bounce off each other, because the impact bounce is a DECODE-only
+    pre-pass.** New, measured this session. `bounceFirstContacts` — the pass that exists precisely
+    because "Rapier applies NO restitution on a speculative contact" — is called only from
+    `src/sim/world.ts`, so BIOBUZZ gets the degraded speculative bounce and nothing else.
+    Measured through the real BIOBUZZ pipeline, one pollen into a resting one, effective
+    restitution: **0.211 at a 44.9 in/s approach, 0.015 at 66.7, 0.176 at 87.2** — against a
+    configured `C.BALL_BALL_RESTITUTION` of **0.68**, and against DECODE's own measured 0.67 with
+    the pre-pass. That is the TRAIN the DECODE rework named ("a ball rear-ending the one ahead
+    merged with it instead of shoving it on"), alive in BIOBUZZ. It is the likeliest single
+    explanation for `launch-wall-bounce`'s nine pollen staying in a dead-straight touching row,
+    which this file previously put down to symmetry. `scatterBalls` (the coincident-pair kick) is
+    DECODE-only for the same reason. Both are in `world.ts`, so both are yours.
+    Now pinned by smoke as an ENVELOPE (`0 <= e <= C.BALL_BALL_RESTITUTION`), not as a value, so
+    closing this gap will not turn the suite red.
+
+15. **The clamp is hiding more than item 1 said, and the number is now measured per tick.** Item 1
+    quotes 2.02" from removing `clampPollenToWalls` for a whole run. Measured this session with
+    the pollen put BACK after each measurement — so the number is the solve's own per-tick escape
+    rather than a compounding drift — a chassis sweeping a 14-pollen row along a wall puts a
+    pollen **0.999" past the wall plane at 40 in/s and 1.744" at 80 in/s**, on a 1.5" element. Run
+    with no clamp at all for 300 ticks the same scene reaches **7.1" and 9.6"**. Also new: a pollen
+    and an artifact are the SAME MASS — the shared `C.BALL_MASS` (0.2 lb), verified through the
+    solve by the two speeds after a head-on impact summing to the approach speed within 1% — so a
+    3" pollen weighs what a 5" artifact does, which belongs beside item 6's rolling constants.
+    `scripts/smoke-biobuzz/field.ts` now measures the solve's escape directly, before and without
+    the clamp, with a 2.5" ceiling; every other containment check in that file reads the world
+    after the clamp and therefore could never have seen any of this.
+
+
 ## Response
