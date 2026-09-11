@@ -30,6 +30,14 @@ import * as C from '../config';
  * runtime. Do not move a registry read to this file's top level.
  */
 import { simModuleFor } from '../games/sim';
+/**
+ * The BIOBUZZ arm of `coerceSpec`, from a LEAF module. It holds this game's own clamps (the
+ * size envelope per intake mount, the archetype mass floor, the hopper ceiling) so that no
+ * BIOBUZZ number lives in `src/sim/` — the same split Chain Reaction's arm uses, and the repo
+ * rule in `docs/biobuzz-contract.md`. It must stay a leaf: it is a DEPENDENCY of this file, so
+ * an import there that reached back here would be a cycle around the shared chokepoint.
+ */
+import { coerceBiobuzzSpec } from '../games/biobuzz/coerce';
 import {
   CHAIN_CLEARANCE_DEFAULT,
   CHAIN_CLEARANCE_MAX,
@@ -305,15 +313,24 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   // that changes archetype later can never keep a mount that archetype cannot have.
   if (!isTurreted(out.scoreMode)) out.shooterMount = shooterEdgeOf({ shooterMount: out.shooterMount });
 
-  // MOUNTS ARE CHAIN-ONLY. They are the one CR field with a SHARED physics effect — the intake
-  // mount moves the collision footprint (`footprintExtents`), so a CR build's side sweeper
-  // leaking into DECODE would widen its flanks and delete its front intake reach. The builder
-  // only offers mounts for CR and `switchGame` keeps a per-game spec, but a spec can still
-  // arrive from a hand-edited store, a pre-loadouts save, or an untrusted client whose build
-  // doesn't match the room's game — so normalize here, the chokepoint every one of those passes.
-  // Only when the game is EXPLICITLY known and non-chain: `game` is optional on several call
-  // paths, and treating "unspecified" as DECODE would silently wipe a real CR build.
-  if (game !== undefined && game !== 'chain') {
+  // MOUNTS BELONG TO THE GAMES THAT HAVE THEM. They are the one CR field with a SHARED
+  // physics effect — the intake mount moves the collision footprint (`footprintExtents`), so a
+  // CR build's side sweeper leaking into DECODE would widen its flanks and delete its front
+  // intake reach. The builder only offers mounts for the games that use them and `switchGame`
+  // keeps a per-game spec, but a spec can still arrive from a hand-edited store, a pre-loadouts
+  // save, or an untrusted client whose build doesn't match the room's game — so normalize here,
+  // the chokepoint every one of those passes.
+  // Only when the game is EXPLICITLY known and does not use the fields: `game` is optional on
+  // several call paths, and treating "unspecified" as DECODE would silently wipe a real build.
+  //
+  // BIOBUZZ IS EXEMPT because it rides these same two fields (see `games/biobuzz/mounts.ts`:
+  // reusing them rather than minting `bb*` twins is what lets the shared footprint reader work
+  // for it), and its own arm below is the authority on them — it enum-checks both against this
+  // game's lists, folds a corner mount off a turretless launcher, re-derives the size envelope
+  // from the intake mount and re-mirrors the legacy booleans. Wiping them here instead spawned
+  // every turretless build with a front drum whatever edge was picked and bolted every turret
+  // to the front whatever the nine positions offered.
+  if (game !== undefined && game !== 'chain' && game !== 'biobuzz') {
     out.intakeMount = CHAIN_DEFAULT_INTAKE_MOUNT;
     out.shooterMount = CHAIN_DEFAULT_SHOOTER_MOUNT;
   }
@@ -433,6 +450,25 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   if (typeof sp.name === 'string' && sp.name.trim()) out.name = sp.name.slice(0, 24);
   if (typeof sp.teamName === 'string') out.teamName = sp.teamName.slice(0, 48);
   out.teamNumber = Math.round(clampFinite(sp.teamNumber, 0, 99999, base.teamNumber));
+
+  /**
+   * THE BIOBUZZ ARM, LAST — this game's own clamps, over a spec every shared pass above has
+   * already bounded.
+   *
+   * Last rather than interleaved, because the two halves clamp DIFFERENT things and the second
+   * depends on the first: the shared pass fixes the intake preset, the drivetrain, the rpm and
+   * the inertia, and BIOBUZZ's size envelope, mass floor and hopper ceiling are all derived
+   * from those plus the mounts resolved just above. Interleaving would mean resolving a range
+   * from a field that is not final yet, which is exactly what breaks IDEMPOTENCY — and
+   * `coerceSpec` running at several layers (settings load, server ingress, `createWorld`) is
+   * what makes idempotency load-bearing rather than tidy. The BIOBUZZ smoke suite asserts
+   * `f(f(x)) === f(x)` over a hostile input matrix and over all 26 shipped builds.
+   *
+   * It also STRIPS the Chain Reaction fields a BIOBUZZ robot has no mechanism for (the
+   * catalyst, the catapult, the ground clearance), which is why it has to run after the blocks
+   * above write them.
+   */
+  if (game === 'biobuzz') return coerceBiobuzzSpec(out, base);
   return out;
 }
 

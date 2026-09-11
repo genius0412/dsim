@@ -155,12 +155,11 @@ function makeBiobuzzRobot(setup: RobotSetup, nth: number): RobotState {
     vel: { x: 0, y: 0 },
     angVel: 0,
     turretHeading,
-    // INERT-BUT-PRESENT, like `world.goals` and `world.motif`. `catalystRail` is Chain
-    // Reaction's rail-carriage position and BIOBUZZ has no catalyst, but the shared
-    // `RobotState` requires the field — `worldHash` and the snapshot diff both read it — so it
-    // is zeroed rather than omitted. P0-core making it optional is the real fix; until then a
-    // missing field is a type error at best and a NaN in the hash at worst.
-    catalystRail: 0,
+    // `catalystRail` is DELIBERATELY ABSENT. It is Chain Reaction's rail-carriage position
+    // and BIOBUZZ has no catalyst; it used to be written as an INERT-BUT-PRESENT 0 only
+    // because the shared `RobotState` required it. It is optional now, absent reads as 0
+    // everywhere, and a BIOBUZZ robot no longer carries a field describing hardware it does
+    // not have.
     moduleAngles: [0, 0, 0, 0],
     moduleTargets: [0, 0, 0, 0],
     // BUTTERFLY starts on its MECANUM set — a robot that begins holonomic can always drop

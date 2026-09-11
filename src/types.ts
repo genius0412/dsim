@@ -314,8 +314,16 @@ export interface RobotState {
    * −1 .. +1 across the mounted side (0 = centred). Runtime state, not a build choice — the
    * carriage traverses toward whatever the claw is working at, at a finite rate
    * (`CHAIN_RAIL_RATE`), which is the point of buying a rail instead of a fixed turret.
-   * Every other catalyst type leaves it at 0. */
-  catalystRail: number;
+   * Every other catalyst type leaves it at 0.
+   *
+   * OPTIONAL, and ABSENT means 0 — every reader spells that `?? 0`. It is a Chain Reaction
+   * mechanism, and requiring it made every other game write `catalystRail: 0` with an
+   * INERT-BUT-PRESENT comment to satisfy the type, which is a field describing hardware the
+   * robot does not have. Nothing shared reads it: `worldHash` mixes pose + turret only, and
+   * the snapshot codec spreads the robot and back-fills a different list, so a missing value
+   * cannot poison a hash or NaN a sim. CR's own `spawn.ts` still writes it at 0 — for that
+   * game it is real state and the absent case is only an old snapshot. */
+  catalystRail?: number;
   /** BUTTERFLY drivetrain: is the TRACTION (tank) set the one on the ground right now?
    * false ⇒ the mecanum set is down (the spawn default). RUNTIME state, not a build
    * choice — the driver drops the other set mid-match with the `driveMode` command, and

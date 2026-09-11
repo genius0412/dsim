@@ -3,7 +3,8 @@ import { SIM_DT } from '../../src/config';
 import { DEFAULT_ASSISTS, type RobotSetup } from '../../src/sim/spawn';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
-import { BB_DEFAULT_SPEC, bbCoerceSpec } from '../../src/games/biobuzz/robotConfig';
+import { coerceSpec } from '../../src/sim/spawn';
+import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 
 /**
  * The BIOBUZZ smoke harness — the `check` function and the fixtures both lane files share.
@@ -76,19 +77,15 @@ export function run(world: World, c: RobotCommand, seconds: number): void {
 }
 
 /**
- * THE FULL COERCION A BIOBUZZ SPEC ACTUALLY GETS.
+ * THE FULL COERCION A BIOBUZZ SPEC ACTUALLY GETS — the shared chokepoint, and nothing else.
  *
- * `coerceSpec(raw, base, 'biobuzz')` alone is NOT it, and naming that is the point of this
- * indirection: the shared coercer has no biobuzz arm yet (Lane B owns it, per the lane
- * contract), so for an unrecognised game it RESETS the mechanism mounts — which is correct for
- * DECODE and destroys a BIOBUZZ build. `bbCoerceSpec` is the composition every BIOBUZZ spawn
- * path runs: the shared chokepoint, the raw mounts re-armed, then this game's own arm. Its
- * header carries the full reasoning.
- *
- * When Lane B lands the real arm, `bbCoerceSpec` collapses to a single `coerceSpec` call and
- * every check written against this keeps passing unchanged — which is why the checks are
- * written against it rather than against today's plumbing.
+ * It used to be `bbCoerceSpec`, a composition with a repair in the middle: the shared pass,
+ * the raw mounts RE-ARMED, then this game's own pass, because `coerceSpec` had no biobuzz arm
+ * and therefore wiped the two mechanism mount fields. The arm has landed
+ * (`src/sim/spawn.ts`), so this is the single call it was always going to become — and every
+ * check written against it kept passing unchanged, which is why they were written against
+ * "the coercion a spec gets" rather than against the plumbing of the day.
  */
 export function bbCoerce(raw: unknown): RobotSpec {
-  return bbCoerceSpec(raw);
+  return coerceSpec(raw, BB_DEFAULT_SPEC, 'biobuzz');
 }
