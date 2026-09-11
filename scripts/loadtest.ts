@@ -44,6 +44,7 @@
 import { WebSocket } from 'ws';
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import {
   quantizeCommand,
   dequantizeCommand,
@@ -567,6 +568,18 @@ async function main(): Promise<void> {
   const started = bots.filter((b) => b.stats.matchStartAt > 0).length;
   log(`[loadtest] ${started}/${bots.length} clients in a match; measuring for ${o.secs}s …`);
 
+  // HARNESS EVENT-LOOP LAG — the check that makes every other number admissible.
+  //
+  // This process parses every snapshot for every bot and sends every input. If ITS loop
+  // falls behind, it drains the sockets late, the server's send buffers back up, and the
+  // measured "server is slow" is really "the measuring instrument is slow" — a mistake that
+  // looks exactly like a server cliff and would put a wrong number in docs/capacity.md.
+  // Same histogram and same 1ms resolution as the server's own probe, so the two are
+  // directly comparable: a run whose harness lag is in the server's league proves nothing
+  // and must be re-run with the load split across more harness processes.
+  const harnessLag = monitorEventLoopDelay({ resolution: 1 });
+  harnessLag.enable();
+
   const perfBefore = await perf(o.http, true); // zero the lag histogram: scope it to THIS window
   const t0 = Date.now();
   // clear the arrival-gap history collected during the ramp — those gaps include the
@@ -664,6 +677,11 @@ async function main(): Promise<void> {
       ticksEmitted,
       inputHz: r2(ticksEmitted / elapsed),
       predictingClients: o.predict,
+      loopLagMs: {
+        p50: r2(harnessLag.percentile(50) / 1e6),
+        p99: r2(harnessLag.percentile(99) / 1e6),
+        max: r2(harnessLag.max / 1e6),
+      },
     },
     errors: [...errs.entries()].map(([message, n]) => ({ message, n })),
     perfBefore,
@@ -681,6 +699,13 @@ async function main(): Promise<void> {
   console.log(line('total downstream', `${summary.totalKbPerSec} KB/s`));
   console.log(line('disconnects', String(drops)));
   console.log(line('harness input rate', `${summary.harness.inputHz} Hz (target 60 — below it the server was under-loaded)`));
+  console.log(
+    line(
+      'harness loop lag',
+      `p50 ${summary.harness.loopLagMs.p50} p99 ${summary.harness.loopLagMs.p99} max ${summary.harness.loopLagMs.max} ms` +
+        `  (if this is in the server's league, the HARNESS is the bottleneck — split the load)`,
+    ),
+  );
   if (summary.errors.length) {
     for (const e of summary.errors) console.log(line('server error', `${e.n}× ${e.message}`));
   }
