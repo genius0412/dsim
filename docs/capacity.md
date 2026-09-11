@@ -228,6 +228,22 @@ region and some allowance is included*):
 before any compute.** Compression is what makes the stated budget reachable, and it is the
 highest-value change in this whole investigation.
 
+> ⚠️ **CORRECTION (2026-09-11) — the rows above are a LOWER BOUND, twice over.**
+>
+> **The payload figure was ~40% light.** 125 KB/s per client weighted is what the message bodies
+> model; the WIRE measures **175 KB/s** (`scripts/zz-deflate-cost.ts`, which counts TCP
+> `bytesRead` rather than the decompressed payload `ws` hands a `message` handler). So 1,000
+> concurrent is **647 GB/hour uncompressed, not 440**, and the uncompressed 3-hour peak is
+> **$39, not $26**. With the deflate that actually shipped it is **99 GB/hour** and the peak is
+> **$5.94** — the $3.17 row above is not reachable at any window size measured.
+>
+> **The $0.02/GB rate is also low.** The owner has since priced this against the real plan and
+> reports ~$661/day egress sustained at 1,000 concurrent uncompressed against ~$66/day with the
+> deflate, plus ~$70/day and ~$66/day compute respectively. That implies an effective rate
+> roughly **2× the $0.02/GB assumed here**. The *shape* of the finding survives — compression is
+> what makes the target affordable, by about 10× on the dominant line item — but **no dollar
+> figure in this section should be quoted without the real rate.**
+
 ---
 
 ## 6. The compression finding
@@ -260,8 +276,34 @@ Context takeover costs one zlib window per socket, so window size is the 1,000-s
 frames, the frame-to-frame redundancy is lost, and the ratio collapses to roughly what stateless
 deflate gives for more memory and more CPU.
 
+> ⚠️ **CORRECTION (2026-09-11) — 13/6 WAS THE WRONG PICK, AND THIS TABLE IS WHY.**
+> The right-hand column prices 1,000 sockets **on one machine**, and §3 of this same document
+> proves that machine cannot exist: one process is one core and a core carries ~13 driven rooms,
+> so a machine holds tens of sockets, not a thousand. At 20 sockets the real choice is **5 MB
+> against 1.3 MB** — the memory axis the knee was chosen on is not a constraint in any reachable
+> topology, and the knee argument was trading away the ratio to save 192 KB.
+>
+> Worse, the saving at 13/6 **degrades as the room gets busier**, because a bigger frame fits in
+> a 64 KB window fewer times — exactly backwards, since the 4-robot room is the expensive one.
+> Measured end to end, per client downstream:
+>
+> | shape | today | 13/6 | 15/8 |
+> |---|---|---|---|
+> | decode-solo | 100.5 KB/s | 15.2 (−83%) | **12.5 (−88%)** |
+> | decode-1v1 | 184.7 KB/s | 38.3 (−80%) | **26.0 (−86%)** |
+> | decode-2v2 | 283.2 KB/s | 91.1 (−67%) | **48.9 (−83%)** |
+> | chain-solo | 387.8 KB/s | 90.8 (−78%) | **68.8 (−82%)** |
+>
+> **What shipped is 15/8**, on `alpha` in `e287c0e` + `41e346d`, with `level: 1` kept because the
+> gain comes from the window rather than from searching harder inside one frame. `WS_COMPRESS=0`
+> turns it off without a deploy.
+
 CPU price at 13/6: ~123 µs/msg × 30 msg/s = **3.7 ms/s ≈ 0.004 cores per socket**, i.e. about
-**+5% CPU on a solo room** in exchange for **−88% bytes**. Against §5 that is an excellent trade,
+**+5% CPU on a solo room** in exchange for **−88% bytes**. ⚠️ That +5% is priced as if zlib ran on
+the event loop. It does not — `ws` drives deflate through its ASYNC stream API, so the work lands
+on the libuv threadpool beside the room loop rather than inside it. The real on-loop cost is lower
+than this line claims, and `UV_THREADPOOL_SIZE` (default 4, per process) is the thing to watch
+instead. Against §5 that is an excellent trade,
 and §3 says we have bandwidth pressure long before we have CPU headroom to spare — so it should be
 weighed knowingly, not waved through.
 
@@ -284,7 +326,8 @@ machine's memory at full population.
 | 1 | **Ghost rooms.** After all drivers vanish mid-match a room keeps its 60 Hz loop for `RECONNECT_GRACE_MS` (45 s). Measured `/api/perf` showing **19 rooms and 0.906 cores with 0 players.** | **FIXED** `3490f4c` — 12 ghost rooms went 0.556–0.769 → 0.000–0.042 cores |
 | 2 | **`Room.onInput` grows without bound.** Future-tick inputs are buffered in a per-robot `pending` map pruned only once the world reaches that tick, so a client stamping huge tick numbers grows server memory indefinitely. | **FIXED** `d0ba653` — `MAX_INPUT_LEAD_TICKS`, 6 smoke checks |
 | 3 | **No admission control whatsoever.** Every `join` for an unknown code created a room. A busy region did not degrade, it collapsed, and it collapsed for everyone already on the machine. | **FIXED** `a8bf161` — `MAX_ROOMS` (24 on Fly), `region_full` |
-| 4 | **Snapshots sent uncompressed.** `perMessageDeflate: false`. | **FIXED** `202120c` — −80% on the wire |
+| 4 | **Snapshots sent uncompressed.** `perMessageDeflate: false`. | **FIXED on `alpha`** `e287c0e` + `41e346d` — 15/8, −82% to −88% end to end. The 13/6 this document recommended was superseded; see the correction in §6 |
+| 4b | **Snapshot encoding was O(AUDIENCE).** Each client's own `send` closure ran `ws.send(encodeMsg(m))`, so one 2v2 frame was stringified four times from the same object, plus once per spectator. | **FIXED** `d32a2d7` — `Client.sendRaw`; at 4 recipients 0.37% → 0.09% of a core per room, at 32 recipients 3.79% → 0.14% |
 | 5 | **Presence heartbeat is O(N).** Every 5 s each machine upserts `operatorSnapshot()` (a row per player *and* per guest) plus `localLive()` (every room summary) into Postgres. | **partly mitigated** — its payload scales with *per-machine* population, which `MAX_ROOMS` now bounds |
 | 6 | **`DB_POOL_MAX` is 5 per machine.** At the ~70–90 machines §5 implies, that is ~450 *direct* Neon connections, which exceeds a small compute's limit. | real, unfixed — use Neon's pooled (`-pooler`) string |
 | 7 | **`bestHost` is latency-only.** `server/regions.ts` picks a region by minimax latency with **no load awareness**, so the nearest region is chosen no matter how saturated it is. With `MAX_ROOMS` in place a full region now refuses cleanly instead of collapsing, but the matchmaker still *aims* at it. | real, unfixed |
@@ -328,19 +371,26 @@ Sections 0–8 above are the **measurement** pass and are unchanged from the ste
 fixes that followed it are recorded in §7 with their before/after numbers; the live verification
 plan for them is `docs/launch-load-test.md`.
 
-**The measured wire saving landed slightly better than the bench predicted**: §6's bench said
-−88% for a 4-robot frame at 13/6, and the end-to-end run measured **84,573 → 16,915 wire bytes/s
-per client (−80%)** across 8 solo rooms, where frames are smaller and TCP/WS framing is included.
-Both numbers are right; the end-to-end one is the one to quote.
+**On the wire numbers, quote the END-TO-END ones and quote them from §6's correction.** Three
+different measurements of the same thing exist and they are easy to mix up: this document's
+isolated bench (−88% for a 4-robot frame at 13/6), this branch's load run (84,573 → 16,915 wire
+bytes/s per client, −80%, across 8 solo rooms at 13/6), and the dedicated probe that decided what
+shipped (`scripts/zz-deflate-cost.ts`, −82% to −88% at 15/8, per shape). **The last one is
+authoritative** — it counts TCP bytes, runs each shape twice varying only whether the client offers
+the extension, and asserts the extension really was negotiated on one run and absent on the other.
 
 The three things that most need a decision:
 
-1. **Is 1,000 concurrent a real target?** At today's architecture it needs ~70–90 machines (§5).
-   That is not a tuning problem and no amount of VM sizing reaches it.
-2. **permessage-deflate at 13/6** (§6) — biggest single win available, backward-compatible by
-   construction, needs a Linux latency check first.
+1. **~~Is 1,000 concurrent a real target?~~ ANSWERED: yes.** So the 70–90 machines in §5 became the
+   question rather than the answer, and it has its own document now — **`docs/scaling-multicore.md`**.
+   Short version: one process is one core, but `Room` already talks only through callbacks, so
+   running the simulation in `worker_threads` should take a machine from ~13 rooms to ~100 and the
+   fleet from 70–90 machines to single digits. No routing change, every singleton stays a singleton.
+2. **~~permessage-deflate~~ SHIPPED on `alpha`** at 15/8 — see §6's correction. Still needs the
+   Linux latency check; `WS_COMPRESS=0` is the rollback.
 3. **LAN/self-host** (§8) — the only lever that reduces the server population rather than serving it
-   more efficiently.
+   more efficiently. **Approved to pursue**; the owner has answered the three open questions in
+   `docs/lan-selfhost.md`.
 
-Everything in §7 is worth fixing regardless of which way 1–3 go. **#2 is a security issue and should
-not wait on the capacity review.**
+Everything in §7 is worth fixing regardless of which way 1–3 go. **#2 in that table is a security
+issue and did not wait on the capacity review.**

@@ -102,8 +102,10 @@ npx tsx scripts/loadtest.ts --rooms 8 --shape solo --secs 60 --url wss://dsim-al
 npx tsx scripts/loadtest.ts --rooms 8 --shape solo --secs 60 --url wss://dsim-alpha.fly.dev
 ```
 
-- **Expect** `WIRE bytes/s per client` to fall to roughly **15–20% of payload**. Locally: 84,573 →
-  16,915 B/s, −80%.
+- **Expect** `WIRE bytes/s per client` to fall to roughly **12–18% of payload**. What shipped is a
+  15/8 window (`alpha`, `e287c0e` + `41e346d`), measured per shape by `scripts/zz-deflate-cost.ts`:
+  solo −88%, 1v1 −86%, 2v2 −83%, chain-solo −82%. That probe is the authoritative before/after; the
+  harness flag below prices a full LOAD run rather than replacing it.
 - **The thing to actually watch is the snapshot gap and jitter**, not the bytes. If p50 drifts off
   33 ms or jitter rises against the `--nocompress` arm, the original `perMessageDeflate: false`
   comment was right and `WS_COMPRESS=0` turns it off.
