@@ -18,14 +18,14 @@ JSON on `world.biobuzz`.
 | `src/games/biobuzz/state.ts` | **A** | `BiobuzzState` + `emptyBiobuzzState()` + field geometry helpers |
 | `src/games/biobuzz/colliders.ts` | **A** | `statics`, `bounds`, optional `dynamic` |
 | `src/games/biobuzz/spawn.ts` | **A** | `createBiobuzzWorld`; pollen layout; start anchors; calls B's `coerceSpec(…, 'biobuzz')` — never re-clamps a spec |
-| `src/games/biobuzz/play.ts` | **A** | pollen lifecycle, scoring, match assessment |
+| `src/games/biobuzz/play.ts` | **A** | pollen lifecycle, scoring, match assessment. **NO BALL INTEGRATOR** — see the note under this table |
 | `src/games/biobuzz/elements.ts` | **A** | **the contract surface** (§3). Signatures frozen after the T0+2h sync |
 | `src/games/biobuzz/penalties.ts` | **A** | |
 | `src/games/biobuzz/drawField.ts`, `draw.ts` | **A** | |
 | `src/games/biobuzz/StartEditor.tsx` | **A** | only if the game has start legality |
 | `src/games/biobuzz/hud.ts` | **A** | field half of the HUD slice (§5) |
 | `scripts/smoke-biobuzz/field.ts` | **A** | |
-| `src/games/biobuzz/scenesField.ts` | **A** | gallery scenes: field, elements, pollen physics set (frozen after the Phase 0.5 sign-off) |
+| `src/games/biobuzz/scenesField.ts` | **A** | gallery scenes: field, elements, pollen physics set (Phase 0.5 is done; the physics set is built and hashed, and there is no constants sign-off to wait for) |
 | `docs/biobuzz-reference.md`, `docs/biobuzz/HANDOFF-field.md` | **A** | |
 | `src/games/biobuzz/robot.ts` | **B** | archetype geometry: `bbMouths`, `bbLaunchers`, `bbFootprint`, `bbHopperCap` (§4) |
 | `src/games/biobuzz/mounts.ts` | **B** | LEAF module — imports only `../../types` (the footprint reader in `src/sim/field.ts` may need it, and anything heavier cycles) |
@@ -51,6 +51,38 @@ JSON on `world.biobuzz`.
 The one sanctioned cross-lane edit: a new `RobotCommand` button needs a protocol bitfield
 bit (`BTN_*` in `src/net/protocol.ts`) and a `localizeCommand` line. B writes the request in
 `HANDOFF-robot.md`; the integration chat lands it the same day.
+
+### ⚠️ `play.ts` CONTAINS NO BALL INTEGRATOR, AND LANE A MAY NOT ADD ONE
+
+A owns the pollen LIFECYCLE — when a pollen is captured, held, released, launched, scored,
+what state it is in and what that is worth. A does **not** own where a ground pollen IS.
+
+Ground pollen positions are written by the shared `solveArtifacts` (`src/sim/physicsEngine.ts`)
+and by nothing else, because the owner's artifact rework made that function the ONE position
+authority for every ground artifact in the repo. BIOBUZZ's whole contribution to it is a
+NUMBER: `solveArtifacts(…, BB_POLLEN_R)` and `robotSolids(rob, heldBalls, BB_POLLEN_R)`, a 1.5"
+radius where DECODE passes its default 2.5". `play.ts` additionally runs the shared
+rolling-friction pass (`stepGroundBall`) and a containment clamp, and `interact()` only
+CAPTURES — it writes no pollen position.
+
+So, concretely, Lane A may not add to `src/games/biobuzz/`:
+
+- a ground-ball integrator, however small (a position write per tick IS one);
+- a separation / de-overlap / relaxation pass;
+- an eviction or un-stick pass that moves a pollen out of a chassis;
+- a ground-pollen physics CONSTANT — friction, restitution, rest speed, separation iterations.
+  `BB_POLLEN_WALL_REST` survives for FLIGHT only, and `BB_POLLEN_R` is a size, not a dial.
+
+A second writer for the same element is the exact defect the shared rework exists to end, and
+it reappears as "the pollen jitters", "the robot gets walked across the field by a pollen", or
+"the pile freezes solid" — symptoms that look like physics and are actually two passes taking
+turns. `npm run test:bb` guards the consequences: the perimeter is asserted on EVERY tick of
+every physics scene, counts are conserved, and a settled pile must reach zero overlap AND zero
+speed (that last one fails if the shared rolling pass is ever dropped).
+
+If a pollen behaviour looks physically wrong, it is an **owner question about shared physics**,
+not a BIOBUZZ edit. Write it into `docs/biobuzz/feedback/` naming the gallery cell that shows
+it; `000-solver-observations.md` is the first such dump and lists what is already known.
 
 ## 2. World state (A owns the shape, B reads it)
 

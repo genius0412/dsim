@@ -180,9 +180,25 @@ app.whenReady().then(async () => {
     for (const cell of want) {
       const rect = await js(RECT(cell.i));
       if (!rect) continue;
-      // A settle after scrolling: `scrollIntoView` is instant, but the capture reads the
-      // COMPOSITED frame, and that is one paint behind the scroll.
-      await sleep(120);
+      /**
+       * WAIT FOR A PRESENTED FRAME, do not sleep a guessed interval.
+       *
+       * `scrollIntoView` is instant but `capturePage` reads the COMPOSITED frame, which is at
+       * least one paint behind the scroll — and on a hidden window the compositor falls further
+       * behind the longer the run goes. A flat `sleep(120)` held for a 12-cell run and FAILED
+       * SILENTLY on the full 70: measured on this gallery, the files named `wall-row-sweep@60`,
+       * `@150` and `@300` came out byte-identical to the `pile-fast@30`, `@60` and `@120` CELLS
+       * — four cells of lag — while `pile-slow`, four cells earlier, was correct. Nothing errors
+       * and every PNG looks like a plausible BIOBUZZ scene, so the whole point of the gallery
+       * (read a picture, attribute what you see to a named scene) was quietly broken.
+       *
+       * So: two `requestAnimationFrame`s to get the scrolled layout PAINTED, then two captures
+       * with the first DISCARDED. `capturePage` itself pumps a frame, so the second one is
+       * taken against a compositor that has already presented the state the first asked for.
+       */
+      await js('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))');
+      await sleep(60);
+      await win.webContents.capturePage(rect);
       const img = await win.webContents.capturePage(rect);
       const file = `${safe(cell.name)}.${theme}.png`;
       fs.writeFileSync(path.join(OUT, file), img.toPNG());

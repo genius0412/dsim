@@ -1,0 +1,176 @@
+# 000 — what the shared artifact solver does with 1.5" pollen
+
+Written by Claude, 2026-09-11, against `2b622f7` plus the working tree of Phase 0.5.
+This file is the reverse of the usual dump: nobody asked a question, the gallery was read and
+written down. It exists because POLLEN now ride `solveArtifacts` (the owner's artifact solve)
+at `BB_POLLEN_R` = 1.5" instead of a bespoke BIOBUZZ integrator, and somebody has to say out
+loud what that looks like before the season's rules land on top of it.
+
+**Nothing here was tuned.** No shared constant and no BIOBUZZ constant was changed to make a
+picture look better. Where a behaviour looks wrong it is written down, with the cell that shows
+it, in **For the owner** at the bottom.
+
+Evidence: `scratch/shots/<sha>/` (`npx electron scripts/shots.cjs --port <port>`), 70 cells ×
+2 themes, plus numbers from a throwaway probe that walked every physics scene tick by tick.
+Cells are named by their gallery caption, as the README asks.
+
+## How to read the numbers
+
+A pollen is **3.00" across** (`BB_POLLEN_R` 1.5, vs DECODE's artifact at `C.BALL_RADIUS` 2.5).
+So "2.1" of overlap" means two pollen sitting inside one another by two thirds of a diameter —
+their centres are 0.9" apart. "Out by 0.00"" means the pollen's skin never crossed a wall plane
+on any tick of the run, which is the one hard invariant these scenes assert.
+
+| scene | pollen | worst out | worst overlap (tick) | fastest pollen (robot then) |
+|---|---|---|---|---|
+| `pile-slow` | 12 | 0.000" | 0.359" (0) | 25.5 in/s (17.6) |
+| `pile-med` | 12 | 0.000" | 0.359" (0) | 56.0 in/s (44.0) |
+| `pile-fast` | 12 | 0.000" | **2.527" (103)** | **90.0 in/s (70.4)** |
+| `wall-row-sweep` | 14 | 0.000" | **2.144" (210)** | **90.0 in/s (73.3)** |
+| `corner-pile` | 16 | 0.000" | 1.230" (84) | 54.7 in/s (35.2) |
+| `pin-wall` | 1 | 0.000" | — | 3.9 in/s (53.2) |
+| `squeeze-2robots` | 1 | 0.000" | — | 26.1 in/s (30.8) |
+| `settle-60` | 60 | 0.000" | 0.000" | 0.0 in/s |
+| `intake-line` | 10 | 0.000" | 0.000" | 40.5 in/s (39.6) |
+| `launch-wall-bounce` | 9 | 0.000" | 0.249" (19) | 5.5 in/s (idle) |
+
+The 0.359" in the two slow pile scenes is the SCENE's own starting lattice, at tick 0, before
+anything has moved — `bbPile` lays its rows a third of an inch tight and the solve relaxes it.
+
+## Scene by scene
+
+**`pile-slow` (12 pollen, 20 in/s).** The best-looking cell in the set. At `@30` the lattice is
+untouched and the robot is still closing. By `@120` the block has become a rounded heap sitting
+on the front bumper — hexagonally packed, twelve clearly separate circles, symmetric about the
+chassis centreline, wider than it is deep. Two or three of the bottom row press about a fifth of
+a radius into the bumper strip and none of them is inside the blue chassis outline. Left alone
+for four more seconds the heap relaxes to **zero overlap and zero speed**. This is what the
+shared solve does when it is not being asked to do the impossible, and it looks like foam balls.
+
+**`pile-med` (12 pollen, 50 in/s).** Same heap, flatter and wider, and now the front row is
+genuinely **inside the chassis** — several pollen are drawn over the front rail, inside the blue
+box by roughly half a radius, at `pile-med@120`. The robot is carrying them rather than pushing
+them. It also still relaxes completely once the robot stops (overlap 0.000", at rest), so the
+burial is a dynamic artefact of being driven into, not a state the pile gets stuck in.
+
+**`pile-fast` (12 pollen, 80 in/s).** This is where it breaks down. At `@30` the bottom row is
+already inside the front rail. By `@120` the robot has plowed the whole pile the length of the
+field into the far wall and is holding it there; two pollen escaped sideways and are sitting out
+near the wall on their own. Worst overlap during the run is **2.53"** of a 3.00" diameter, and
+**four seconds after the robot goes idle it is still 2.15", jiggling at 2.6 in/s** — the pile
+does not come apart. A pollen also reaches exactly **90.0 in/s while the robot is doing 70.4**,
+i.e. it is clipped by `C.BALL_MAX_SPEED` and by nothing else.
+
+**`wall-row-sweep` (14 pollen).** Fourteen pollen resting along the right wall, robot sweeping
+down the line. At `@60` the row is a dead-straight column with every pollen's skin on the wall
+plane and the robot arriving at the top of it, yawed about 10° by the contact, its bottom-right
+corner on the first pollen. At `@300` the robot has finished in the corner with **five pollen
+sitting inside its own footprint**, pressed against the wall, while six others are strung out
+along the bottom wall where they squirted clear. Worst overlap **2.14"**, still **2.13" three
+seconds after the robot stops**. Another **90.0 in/s pollen against a 73.3 in/s robot**. No
+pollen ever leaves the field — but see owner note 1 for what is holding it in.
+
+**`corner-pile` (16 pollen).** The mildest of the pressing scenes. The robot goes in at 45° and
+packs sixteen pollen into the corner in a rough hex pack that reads correctly — distinct circles,
+no line artefacts, the outer ones resting on both walls. One pollen squirts around the chassis's
+rear-left corner and stays there, half inside the footprint, from `@120` through `@240`. Worst
+overlap 1.23" while pressing, relaxing to 0.88" three seconds after the robot stops: better than
+the wall row, still not resolved.
+
+**`pin-wall` (1 pollen).** One pollen, one wall, full throttle, five seconds. The scene's own
+comment says this cell is where a human decides which lie BIOBUZZ tells, so: **it tells CR's.**
+By tick 45 the robot has driven in until the pollen is roughly **half inside the front bumper**,
+its centre near the wall plane, and that state is pixel-for-pixel identical at tick 300. The
+robot does not stall on it, the pollen is not ejected, nothing creeps, nothing jitters, and the
+pollen's own speed never exceeds 3.9 in/s. It is a stable, quiet, physically wrong equilibrium.
+
+**`squeeze-2robots` (1 pollen).** The good news cell. Two robots converge on one pollen and it
+**squirts out of the squeeze** — at `@90` it is clear of both chassis, sitting just off the gap,
+and both robots have been yawed a few degrees by the contact. By `@180` the robots have backed
+away and the pollen is at rest in open floor. No crush, no deletion, no 100 in/s escape (26.1
+in/s peak). This is the geometry doing the right thing with no rule written for it.
+
+**`settle-60` (60 pollen, no robot).** Sixty pollen scattered across the field and left alone.
+`@0` and `@300` are the same picture: no drift, no crystallisation, no creep toward the walls,
+no pair overlapping, every pollen dead still. Five seconds of 60-body solve costs nothing
+visible. This is the cell that proves the shared rolling-friction pass (`stepGroundBall`) is
+actually running — the solve has no gravity and no floor, so without it nothing would ever stop.
+
+**`intake-line` (10 pollen).** A running sweeper driven up a line of ten. At `@45` three are in
+the hopper and the remaining seven are still a perfectly straight, evenly spaced line — capture
+lifts them one at a time without disturbing the queue, which is what you want. At `@240` the
+hopper is full at 9/9 and the tenth pollen is jammed between the front bumper and the wall,
+uncollectable, exactly the `pin-wall` equilibrium reached by accident. Count conserved at 10.
+
+**`launch-wall-bounce` (9 pollen, dumper).** A full hopper flung at a wall from 20". The nine
+pollen leave together, bounce, and come to rest as a **dead-straight, evenly spaced, touching
+row** behind the robot — and it is the same row at `@45`, `@90` and `@240`. It never spreads.
+That is not obviously a solver bug: all nine leave on parallel paths at the same speed, and with
+ball-ball friction at zero and no randomness in the ground solve there is nothing to break the
+symmetry, so a row in is a row out. But it is the same PICTURE as the DECODE drain complaint
+("they don't leave the line they form coming out of the gate"), so it is on the owner list.
+
+## For the owner
+
+Each item names the cell or the number that shows it. None of these were touched.
+
+1. **BIOBUZZ has no pin and no round loop, and `clampPollenToWalls` is the only thing hiding
+   it.** DECODE's `pinnedArtifacts` → `PinnedCircle` → re-run-`solveRobots` sequence lives in
+   `src/sim/world.ts`, which is DECODE-only, so nothing ever tells the BIOBUZZ robot solve that
+   a wall pollen is a wall. The consequence is `pin-wall@300` and `wall-row-sweep@300`: the
+   chassis simply occupies the space the pollen is in. Measured with the containment clamp
+   REMOVED, a pollen went **2.02" past the wall plane** (`wall-row-sweep`, tick 105) and 1.52"
+   (`pile-fast`). With the clamp the table above reads 0.000" everywhere, so the invariant holds
+   — but it holds by putting the pollen back, not by the robot being stopped. The two real
+   options are both yours: expose the pin/round machinery to a game module, or accept that a
+   BIOBUZZ chassis drives through pollen it is pressing on a wall.
+2. **Persistent overlap under a pressing chassis, which does not relax.** `pile-fast` 2.53"
+   during and **2.15" four seconds after the robot stops**; `wall-row-sweep` 2.14" → 2.13";
+   `corner-pile` 1.23" → 0.88". A pollen resting two thirds of a diameter inside another is a
+   pile that reads as fewer balls than it has, and it is still jiggling at 1.4–2.6 in/s. The
+   scenes where nothing presses (`pile-slow`, `pile-med`, `settle-60`) all reach exactly 0.000",
+   so this is specifically the squeeze the solve has no answer for. Smoke asserts the settled
+   cases and deliberately does NOT assert this one away.
+3. **A struck pollen outruns the robot that struck it, and the only cap it gets is DECODE's.**
+   `pile-fast` tick 87: pollen at **90.00 in/s, robot at 70.36**. `wall-row-sweep` tick 96:
+   **90.00 in/s against 73.26**. 90.00 is `C.BALL_MAX_SPEED` exactly, so the pollen is not
+   finding its own limit, it is hitting a ceiling tuned for a 5" artifact. The clump speed cap
+   that fixed precisely this for DECODE ("if I drive in full speed, third ball bumps with the
+   second ball and doesn't get intaked") is in `world.ts` and unreachable from a game module.
+   A pollen a robot can never catch is the same bug at 1.5".
+4. **`clampPollenToWalls` reverses velocity where DECODE removes only the into-wall
+   component.** BIOBUZZ's clamp bounces (`BB_POLLEN_WALL_REST` 0.35, which is otherwise a
+   FLIGHT constant); DECODE's `fieldPushback` clips the component into the wall and keeps the
+   squirt. Left exactly as it was, flagged because the two games now disagree about the same
+   contact and one of them is wrong.
+5. **`INTAKE_STRUCT_FRICTION` (0.05) is zero in effect**, in both games. `physicsEngine.ts:707`
+   and `:708` give the intake structure and the held balls that friction, but the ball collider
+   combines with `Average` while these use `Min`, and `Min` wins — so an intake wedge and a held
+   pollen are frictionless to a ground pollen. Not BIOBUZZ-specific; already noted in HANDOFF
+   for the alpha session and repeated here because BIOBUZZ inherits it.
+6. **The shared rolling constants are 5"-artifact numbers.** `C.BALL_ROLL_FRICTION` 32 and
+   `C.BALL_REST_SPEED` 2 are what a pollen now rolls on, where the deleted BIOBUZZ arm used 42
+   and 1.5. Deliberately not shadowed — BIOBUZZ owns no physics constants — but a 3" ball
+   rolling on a 5" ball's friction is an owner call, and `settle-60` is where a change would
+   show first.
+7. **Step cost moved, and the smoke budget moved with it.** A 2v2 BIOBUZZ step went from under
+   1.2× a 2v2 CR step to a measured **1.25–1.63× (median ≈ 1.34, best-of-three)**, because the
+   solve now builds a real Rapier world every tick where the bespoke arm did arithmetic. In
+   absolute terms that is ≈0.47 ms for a 2v2, under 3% of a frame. `STEP_BUDGET` is 1.8 with the
+   measurement written on it; the ROOM budget stayed 1.2 and measures 0.75–0.99×, because a room
+   tick also pays for a snapshot and CR's 300 particles make that side much fatter.
+8. **The gallery runner was photographing the wrong cells, and the pictures looked fine.**
+   Not physics, but it is the tool this file is made of, so it belongs here. `scripts/shots.cjs`
+   slept a flat 120 ms after `scrollIntoView` before `capturePage`. That held for a 12-cell run
+   and failed silently on the full 70: the files named `wall-row-sweep@60`, `@150` and `@300`
+   came out **byte-identical to the `pile-fast@30`, `@60` and `@120` cells** — four cells of
+   compositor lag — while `pile-slow`, four cells earlier, was correct. Every PNG was a plausible
+   BIOBUZZ scene, so nothing looked broken. Fixed in this commit by waiting for two
+   `requestAnimationFrame`s and discarding the first capture; re-run, all 70 light cells are now
+   distinct and the full run matches a filtered run byte for byte. **Any feedback dump written
+   against a contact sheet from before this fix may be describing the wrong cell.**
+9. **Naming:** the plan and the brief both call the radius `BB_POLLEN_RADIUS`. The constant in
+   the repo is **`BB_POLLEN_R`** (`src/games/biobuzz/config.ts`), and that is what the code and
+   this file use.
+
+## Response

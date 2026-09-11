@@ -33,12 +33,13 @@ import { BB_DEFAULT_SPEC } from './robotConfig';
  * one deliberately random scene is `settle-60`, and it is random precisely because it is
  * checking the scatter itself.
  *
- * ── SIDE-BY-SIDE SOLVERS ───────────────────────────────────────────────────
- * `BB_BALL_SOLVER` (in `config.ts`) picks between CR's bespoke ground integrator and DECODE's
- * Rapier `solveBalls`. Every scene here runs under whichever is selected, so flipping the
- * switch and re-running `shots.cjs` produces the same cells under the other model and the
- * human compares two contact sheets. That is the P0.5 decision procedure, and it is why the
- * scenes are written against the module's public step rather than against either solver.
+ * ── ONE SOLVER, AND THESE SCENES ARE THE EVIDENCE ABOUT IT ─────────────────
+ * There was a `BB_BALL_SOLVER` switch these scenes were meant to be shot under twice, once per
+ * ball model, for a human to compare. That is settled: ground POLLEN ride the SHARED artifact
+ * solve at `BB_POLLEN_R` and BIOBUZZ owns no ball physics at all (see `play.ts`'s header).
+ * What the scenes are for now is EVIDENCE about what that solve does with a 1.5" element —
+ * `docs/biobuzz/feedback/000-solver-observations.md` is written from them, cell by cell — which
+ * is also why they are written against the module's public step rather than against a solver.
  */
 
 /** POLLEN ids start at 1, never 0: `emptyBiobuzzState().nextBallId` starts there too, so a

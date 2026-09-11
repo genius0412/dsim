@@ -1826,6 +1826,23 @@ Everything BIOBUZZ lives in `src/games/biobuzz/`. Nothing BIOBUZZ goes into `src
 description as `APPROX` and that convention carries over; an unflagged guess is worse than
 an empty field.
 
+⚠️ **POLLEN PHYSICS IS THE SHARED ARTIFACT SOLVER WITH `BB_POLLEN_RADIUS`; NOTHING IN
+THIS DIRECTORY INTEGRATES OR SEPARATES BALLS.** (The constant is spelled `BB_POLLEN_R`.)
+A ground pollen's position is written by `solveArtifacts` and by nothing else — the same ONE
+POSITION AUTHORITY rule DECODE's artifacts were rebuilt to. `solveArtifacts` and `robotSolids`
+take a trailing optional artifact RADIUS defaulting to `C.BALL_RADIUS`, so BIOBUZZ passes 1.5"
+(a 3" pollen) where DECODE passes its default 2.5" and every DECODE call site stays
+byte-identical. `play.ts` therefore has no ground integrator, no separation pass and no
+eviction pass; it calls the shared solve, the shared rolling-friction pass (`stepGroundBall`,
+which is the only thing that brings a pollen to rest — the solve has no gravity and no floor),
+and a containment clamp, and `interact()` only CAPTURES. BIOBUZZ owns NO ground-pollen physics
+constant: `BB_POLLEN_WALL_REST` is FLIGHT-only and `BB_POLLEN_R` is a size, not a dial. So a
+pollen behaviour that looks wrong is a question about SHARED physics — write it into
+`docs/biobuzz/feedback/` naming the gallery cell, do not fix it here.
+`docs/biobuzz/feedback/000-solver-observations.md` is the standing list (no pin/round loop in
+BIOBUZZ, a persistent 2.1" overlap under a pressing chassis, a struck pollen reaching
+`C.BALL_MAX_SPEED` while the robot that hit it is slower, 5"-artifact rolling constants).
+
 ---
 
 # Gotchas
