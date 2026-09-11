@@ -281,12 +281,16 @@ machine's memory at full population.
 
 | # | finding | status |
 |---|---|---|
-| 1 | **Ghost rooms.** After all drivers vanish mid-match a room keeps its 60 Hz loop for `RECONNECT_GRACE_MS` (45 s). Measured `/api/perf` showing **19 rooms and 0.906 cores with 0 players.** | real, unfixed |
-| 2 | **`Room.onInput` grows without bound.** Future-tick inputs are buffered in a per-robot `pending` map pruned only once the world reaches that tick, so a client stamping huge tick numbers grows server memory indefinitely. | **latent DoS**, unfixed |
-| 3 | **Presence heartbeat is O(N).** Every 5 s each machine upserts `operatorSnapshot()` (a row per player *and* per guest) plus `localLive()` (every room summary) into Postgres. Payload grows with population; Neon bills by query time. | real, unfixed |
-| 4 | **`bestHost` is latency-only.** `server/regions.ts` picks a region by minimax latency with **no load awareness**, so the nearest region is chosen no matter how saturated it is. | real, unfixed |
-| 5 | **Cold boot is already fixed.** The brief's "~7 s cold boot because the server runs through `tsx`" is stale — the `Dockerfile` already esbuild-bundles to `dist-server/index.js` and runs plain `node`. | **premise no longer true** |
-| 6 | **`fly.toml`'s cores/room is the parked figure** (§1). | **premise misleading** |
+| 1 | **Ghost rooms.** After all drivers vanish mid-match a room keeps its 60 Hz loop for `RECONNECT_GRACE_MS` (45 s). Measured `/api/perf` showing **19 rooms and 0.906 cores with 0 players.** | **FIXED** `3490f4c` — 12 ghost rooms went 0.556–0.769 → 0.000–0.042 cores |
+| 2 | **`Room.onInput` grows without bound.** Future-tick inputs are buffered in a per-robot `pending` map pruned only once the world reaches that tick, so a client stamping huge tick numbers grows server memory indefinitely. | **FIXED** `d0ba653` — `MAX_INPUT_LEAD_TICKS`, 6 smoke checks |
+| 3 | **No admission control whatsoever.** Every `join` for an unknown code created a room. A busy region did not degrade, it collapsed, and it collapsed for everyone already on the machine. | **FIXED** `a8bf161` — `MAX_ROOMS` (24 on Fly), `region_full` |
+| 4 | **Snapshots sent uncompressed.** `perMessageDeflate: false`. | **FIXED** `202120c` — −80% on the wire |
+| 5 | **Presence heartbeat is O(N).** Every 5 s each machine upserts `operatorSnapshot()` (a row per player *and* per guest) plus `localLive()` (every room summary) into Postgres. | **partly mitigated** — its payload scales with *per-machine* population, which `MAX_ROOMS` now bounds |
+| 6 | **`DB_POOL_MAX` is 5 per machine.** At the ~70–90 machines §5 implies, that is ~450 *direct* Neon connections, which exceeds a small compute's limit. | real, unfixed — use Neon's pooled (`-pooler`) string |
+| 7 | **`bestHost` is latency-only.** `server/regions.ts` picks a region by minimax latency with **no load awareness**, so the nearest region is chosen no matter how saturated it is. With `MAX_ROOMS` in place a full region now refuses cleanly instead of collapsing, but the matchmaker still *aims* at it. | real, unfixed |
+| 8 | **Cold boot is already fixed.** The brief's "~7 s cold boot because the server runs through `tsx`" is stale — the `Dockerfile` already esbuild-bundles to `dist-server/index.js` and runs plain `node`. | **premise no longer true** |
+| 9 | **`fly.toml`'s cores/room is the parked figure** (§1). | **premise misleading** |
+| 10 | **Reconnect storms and the version gate are already safe.** `transport.ts` adds a random extra delay to every retry so a room does not march back in lockstep, and the forced refresh fires only when a player *starts a run*. | **no change needed** |
 
 ---
 
@@ -320,8 +324,14 @@ behind it.
 
 ## 9. Status
 
-Steps 1–3 of the load brief are complete. **No server behaviour has been changed**, which is what
-step 3 requires: these numbers get reviewed before anything in `server/` moves.
+Sections 0–8 above are the **measurement** pass and are unchanged from the step-3 review. The
+fixes that followed it are recorded in §7 with their before/after numbers; the live verification
+plan for them is `docs/launch-load-test.md`.
+
+**The measured wire saving landed slightly better than the bench predicted**: §6's bench said
+−88% for a 4-robot frame at 13/6, and the end-to-end run measured **84,573 → 16,915 wire bytes/s
+per client (−80%)** across 8 solo rooms, where frames are smaller and TCP/WS framing is included.
+Both numbers are right; the end-to-end one is the one to quote.
 
 The three things that most need a decision:
 
