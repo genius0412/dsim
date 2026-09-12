@@ -117,9 +117,49 @@ For this codebase, three things are always in that category:
 ### Say what changed, not that work happened
 
 "Improved gate physics" tells a driver nothing. "A tap on the gate is worth four to nine
-artifacts depending on how the column is packed, instead of a fixed dose" tells them how to
-play. Give the number wherever there is one — this project measures everything, so there
-usually is.
+artifacts, depending on how tightly the ramp is packed" tells them how to play.
+
+### ⚠️ Write for the driver, not for the maintainer
+
+**This is the rule that is hardest to hold, because a note assembled from the commit log
+inherits the commit log's register.** Both failure modes were shipped in the first draft of
+this file's own worked example and had to be rewritten.
+
+**Too specific** is the more insidious one, because it *feels* like the good kind of
+precision. "A 250 rpm minimum-weight mecanum no longer out-pushes a 42 lb 435 rpm tank" is
+a true, measured sentence that a player cannot use: nobody chooses a build by reciting
+three numbers at it. "Larger 72 mm rollers" is a part number. "The turret's cadence carries
+its remainder so the rate is not tick-quantised" is a maintenance note wearing a hat.
+
+So the test for a number is **not** "did we measure it" — it is:
+
+> **Would a player change what they build, or what they do with the sticks, because of
+> this number?**
+
+Four-to-nine artifacts on a gate tap passes: it tells you when to tap and when to hold.
+Fifteen seconds before a practice run is kept passes. "Nearly double the reach on a compact
+build" passes, because it is a reason to build small. Roller diameters, RPM-and-pound
+triplets, tick rates and internal frame counts all fail. Cut them; the commit message is
+where they already live.
+
+**Too vague** is the mirror image, and it usually means internal vocabulary got translated
+into something that sounds like English but names nothing: "account standing on its own
+axis", "the catch area is at the roller nip", "honest corner geometry", "the strafe curb is
+a slop clamp", "connection quality reports honestly". If you would not say it out loud to
+somebody at a competition, it does not go in.
+
+**The reliable fix for both is to write the consequence.** Not what the code now does, but
+what the player will now do — *lining up matters now*, *let go of the intake before you
+commit to a shove*, *do not park on the outflow*. If a bullet cannot be turned into advice
+or into something they will visibly notice, it probably belongs in **Elsewhere** as one flat
+line, or nowhere.
+
+### Never make a player read the word "artifact" as jargon
+
+They know the game's own nouns — artifact, particle, catalyst, classifier, gate. Those are
+free. Everything the *codebase* invented is not: solver, tick, frame, authority, gate, flag,
+pin, clamp, constant. Some of those are English words too, which is exactly why they slip
+through.
 
 ### The house copy rules apply, and CLAUDE.md owns them
 
