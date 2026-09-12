@@ -344,14 +344,6 @@ export function GameView({
         </aside>
       )}
       <div className="game-root">
-        {/* THE IN-GAMEPLAY PLACEMENT, touch half. A coarse pointer renders no
-            `.status-row` (see below), so there the mark owns the top-right corner
-            by itself; with a fine pointer it rides that row instead of floating
-            above it. Outside `.hud` (which is pointer-events:none) so it can be
-            clicked, and outside the `ads` gate entirely — see the note at the top
-            of Sponsor.tsx. It renders on a phone, in the Electron build, and for
-            supporters, all three of which the ad path deliberately skips. */}
-        {window.matchMedia('(pointer: coarse)').matches && <SponsorGameChip floating />}
       {perf && frames && (
         <div className="perf-readout" role="status">
           {frames.fps.toFixed(0)} fps · p50 {frames.p50.toFixed(1)}ms · p95{' '}
@@ -417,6 +409,12 @@ export function GameView({
       )}
       {hud && <Hud hud={hud} showEventLog={settings.showEventLog} />}
       <div className="game-buttons">
+        {/* THE IN-GAMEPLAY PLACEMENT. On this line because `.game-buttons` is the
+            one top-corner cluster every layout renders — the status chips opposite
+            are fine-pointer only. Outside the `ads` gate entirely: see the note at
+            the top of Sponsor.tsx. It renders on a phone, in the Electron build,
+            and for supporters, all three of which the ad path deliberately skips. */}
+        <SponsorGameChip />
         <button className="game-btn" onClick={onExit} title="Menu (Esc)">
           ◄ MENU
         </button>
@@ -775,7 +773,6 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
               )}
               {hud.net?.desync && <span className="chip off">⚠ DESYNC</span>}
             </div>
-            <SponsorGameChip />
           </div>
           {hud.net && pingGraph && <PingGraph net={hud.net} />}
         </div>

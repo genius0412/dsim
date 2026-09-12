@@ -2724,16 +2724,15 @@ input.admin-months {
 }
 
 /* ------------------------------------------ the in-gameplay sponsor chip ---- */
-/* The presenting sponsor, over the field. See src/ui/Sponsor.tsx for WHY it is
-   not an ad unit: `AdSlot` renders nothing on touch, nothing under Electron and
-   nothing for a supporter, which between them is the phone, the desktop app and
-   the most engaged players on the service. This path has none of those gates.
+/* The presenting sponsor, on the MENU / RESET line at the top left. See
+   src/ui/Sponsor.tsx for WHY it is not an ad unit: `AdSlot` renders nothing on
+   touch, nothing under Electron and nothing for a supporter, which between them is
+   the phone, the desktop app and the most engaged players on the service. This
+   path has none of those gates.
 
-   A SIBLING OF THE CANVAS, not a child of `.hud` — `.hud` is `pointer-events:
-   none` so the canvas keeps the drag, and this is the one overlay that has to be
-   clickable. z-index 15 puts it over the HUD (10) and under the countdown (30)
-   and the reconnect overlay (40): a sponsor mark must never sit on top of a modal
-   telling somebody their match is disconnecting. */
+   INSIDE `.hud`, which is `pointer-events: none` so the canvas keeps the drag —
+   so, like `.game-btn` next to it, this re-enables them on itself. It is one of
+   the two things in that corner meant to be clicked. */
 .sponsor-chip {
   display: inline-flex;
   align-items: center;
@@ -2759,29 +2758,13 @@ input.admin-months {
    plus its own padding and border, and `.status-wrap` needs that plus one gap.
    Written as a calc so changing the padding above moves the chips with it; a
    hard-coded 46 is a number that gets edited in one place of the two. */
-/* THE STATUS LINE. The mark sits to the RIGHT of the status card, so the two
-   right-align as one cluster in the corner instead of stacking, and the card no
-   longer has to be pushed down to make room. `wrap` is the narrow-window
-   fallback: the card is a `nowrap` row that can grow long (every chip a match
-   wants to show), and a mark shoved off the left edge is worse than one on a
-   second line. */
+/* the status cluster's own line. It holds only `.robot-status` now that the
+   sponsor sits in the opposite corner, and stays a row so anything else added to
+   that line right-aligns with it rather than stacking above it. */
 .status-row {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: var(--ds-s-2);
-}
-
-/* THE TOUCH LAYOUT HAS NO `.status-row` AT ALL — GameView renders the whole status
-   cluster only for a fine pointer — so there the mark is positioned into the
-   corner itself. It keeps its full size: it is the only in-gameplay placement a
-   phone player ever sees. */
-.sponsor-chip.floating {
-  position: absolute;
-  /* max(), so a landscape notch pushes it in — the same expression `.status-wrap`
-     uses, since the two share this corner */
-  top: max(12px, env(safe-area-inset-top));
-  right: max(12px, env(safe-area-inset-right));
-  z-index: 15;
 }

@@ -150,28 +150,29 @@ export function SponsorDownloadMark() {
 }
 
 /**
- * IN-GAMEPLAY — the top-right corner, over the field.
+ * IN-GAMEPLAY — the top-LEFT corner, on the MENU / RESET line.
  *
  * IT THEMES WITH THE CHIP, not with the field — see the note on `SponsorLogo`.
  *
- * TWO PLACES, ONE OF THEM AT A TIME, because the corner has two layouts:
- *  - a fine pointer gets the status row (`.status-row`), and the mark rides it as
- *    a sibling of `.robot-status` — the same line as the rest of the HUD chrome,
- *    which is where it belongs: stacked above, it read as a floating badge and had
- *    to push the whole chip cluster down to make room.
- *  - a TOUCH layout renders no status row at all (see `GameView`), so there the
- *    mark is `floating` and owns the corner itself. It is the only in-gameplay
- *    placement a phone player ever sees, so it cannot be conditional on a row that
- *    is not there.
+ * It rides `.game-buttons`, which is the one top-corner cluster the game screen
+ * renders in EVERY layout — the status chips on the right are a fine-pointer
+ * cluster only, so a mark living there was absent on the touch layout unless a
+ * second floating copy existed to cover it. One render, every device.
  *
- * Either way it is rendered OUTSIDE `.hud`, which is `pointer-events: none` so the
- * canvas keeps the mouse — this is the one overlay on the game screen that has to
- * be clickable, and re-enabling pointer events on a child of a decorative layer is
- * how a HUD element ends up eating drags meant for the field.
+ * `.game-buttons` sits inside `.hud`, which is `pointer-events: none` so the canvas
+ * keeps the drag; `.sponsor-chip` re-enables them on itself exactly like `.game-btn`
+ * beside it, because this is one of the two things up there meant to be clicked.
+ *
+ * IT CARRIES THE WORDS, like every other placement. "Presented by" is the claim
+ * that was bought; a bare logo in a corner of a game screen is decoration.
  */
-export function SponsorGameChip({ floating = false }: { floating?: boolean }) {
+export function SponsorGameChip() {
   if (!sponsorActive()) return null;
-  // h=24 against the chip row's 12px type: the mark is the tallest thing in the
-  // row and reads as the presenter rather than as one more status pill.
-  return <SponsorMark placement="game" h={24} className={`sponsor-chip${floating ? ' floating' : ''}`} />;
+  // h=24 against the row's 12px type: the mark is the tallest thing on the line
+  // and reads as the presenter rather than as one more button.
+  return (
+    <SponsorMark placement="game" h={24} className="sponsor-chip">
+      <span className="sponsor-pre">{SPONSOR.presents}</span>
+    </SponsorMark>
+  );
 }
