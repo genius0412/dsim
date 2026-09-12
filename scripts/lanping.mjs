@@ -81,8 +81,27 @@ async function probe(url) {
   });
 }
 
+/**
+ * Wake the machine before timing it.
+ *
+ * Fly auto-stops an idle machine, and a cold start can outlast the probe's 12s — which then
+ * reports "rendezvous not in this build" about a deployment that has it. That false negative
+ * is the worst answer this script can give, because it is indistinguishable from the real
+ * one it exists to detect. `/health` is the cheapest thing that wakes it and it is the one
+ * route on this server that is not a WebSocket upgrade.
+ */
+async function warm(url) {
+  const http = url.replace(/^ws/, 'http').replace(/[/]+$/, '');
+  try {
+    await fetch(`${http}/health`, { signal: AbortSignal.timeout(45_000) });
+  } catch {
+    /* unreachable or no /health — let the probe itself report what that means */
+  }
+}
+
 let bad = 0;
 for (const t of targets) {
+  await warm(t);
   const { ok, text } = await probe(t);
   if (!ok) bad++;
   console.log(`${t}\n  ${ok ? '→' : '!!'} ${text}`);
