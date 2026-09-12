@@ -79,6 +79,112 @@ sat waiting for each other.
    still unproven. A match hosted this way stays in the device backlog and drains later.
 3. The `lan:probe` covers one guest. A 2v2 (three guests on one host) is the next thing worth
    measuring, and the health readout is where a throttled host would show up.
+# HANDOFF — 2026-09-12 (SHIPPED: alpha is in production, and both games are on Act 2 · Season 1)
+
+**Production is live on `4d2917f`.** The alpha→main promotion, the prod server deploy, both act
+rolls and both patch notes are all done. `origin/main` and `origin/alpha` are converged apart
+from work landed on alpha after the merge point.
+
+## What is live
+
+| | |
+|---|---|
+| `origin/main` | `4d2917f` (merge of alpha into main) |
+| client | `https://www.playdsim.com`, `/version.json` → `{"build":"4d2917f"}` |
+| game server | `dohun-sim-decode`, `/health` ok, 8 machines, satellites back on `shared-cpu-1x`/512MB |
+| DECODE season | **7** — act 2, season 1, active, 0 records / 0 matches |
+| Chain season | **5** — act 2, season 1, active, 0 records / 0 matches |
+| `BALANCE_VERSION` | 4 · `SIM_VERSION` 2 · `REPLAY_FORMAT` 2 |
+
+Announcements published: two `act` reveals (auto, from the season roll) and two `patch` notes,
+`DECODE · Act 2` (`ae1de1d5`) and `Chain Reaction · Act 2` (`04270719`).
+
+## Order it was done in, and why
+
+1. All seven gates on the promotion branch (smoke, build, server:check, dbtest, contrast,
+   uiaudit, test:mm) — all green.
+2. Prod config asserted before anything shipped: none of `LAN_UPLOADS`, `LAN_SIGNALLING`,
+   `VITE_LAN_ENABLED` in `fly.toml`; `DEPLOY_REGIONS` still all 8; `SATELLITES` still all 7.
+3. Restart notice broadcast, then `scripts/fly-deploy.sh` from the promotion worktree.
+   **SERVER FIRST, client second**, so the authoritative sim is never older than the clients
+   predicting against it.
+4. `git push origin promote-alpha-to-main:main` → Vercel.
+5. Both acts rolled, then verified.
+6. Both patch notes published, then verified (stored UTF-8 confirmed by unicode-escape, not by
+   eye — a Windows console renders `·` as `Â·` and that is the console, not the data).
+
+⚠️ **The owner cut the 300 s warning to zero mid-deploy** ("DEPLOY NOW"). The announce curl had
+already fired, so players did get the banner, just without the wait. 17 were online when the
+window opened; 6 after. If that ordering matters next time, the wait is the second argument to
+`announce-deploy.sh`.
+
+⚠️ **AND IT DEPLOYED TWICE, because `pkill -f` DOES NOT KILL A BACKGROUNDED SCRIPT HERE.**
+`announce-deploy.sh` had been started in the background with the 300 s wait. When the wait was
+cancelled, `pkill -f "announce-deploy.sh"` and `pkill -f "sleep 300"` both reported success and
+neither matched anything: on Git Bash the process does not carry that command line. So the
+manual `fly-deploy.sh` ran immediately, and then the background job woke five minutes later and
+deployed the identical image AGAIN, restarting every machine a second time. No data harm — the
+act rolls and the announcements are DB rows and survived — but players reconnected twice, and
+the second restart landed AFTER the post-deploy verification, so everything had to be
+re-verified afterwards (it was, and it was correct).
+
+**Use the harness's own task-stop for a backgrounded command, never `pkill -f`.** And do not
+background a script whose whole purpose is a timed wait you might want to cancel: fire the
+announce with `curl` and run `fly-deploy.sh` separately, which is the shape that is actually
+controllable.
+
+## What changed for players
+
+`BALANCE_VERSION` 3 → 4 retires every replay recorded before this build; the records themselves
+are untouched, because the server stores the score it computed and never re-derives it. The ACT
+reset (not merely a season reset) also wipes ranked ratings — see `0013_elo_by_act`, which is the
+distinction the patch notes are careful about.
+
+## LAN is in production and CLOSED, by three independent fail-closed gates
+
+LAN shipped in the merge but is reachable nowhere:
+
+- `VITE_LAN_ENABLED` — client. Hides the Play tile, `/lan` (the route does not even parse), the
+  banner, and the Career rows.
+- `LAN_UPLOADS` — server. `/api/lan` is not mounted; it 404s.
+- `LAN_SIGNALLING` — server. The WebRTC rendezvous is closed, so no tab-hosted rooms.
+
+All three are set in `fly.alpha.toml` and deliberately absent from `fly.toml`. Turning LAN on for
+production means setting all three, on the Vercel project AND the Fly app.
+
+## Also shipped in this promotion
+
+- **X-drive wheels are a diamond, not an X**, at ordinary wheel size, in both games and in both
+  builder previews. They were drawn radially, which is a machine that could translate and never
+  yaw.
+- **`/api/admin/maintenance` now accepts `ADMIN_SECRET`**, like the four routes that already did.
+  ⚠️ It could NOT be used for this deploy, because the prod server did not have the code yet;
+  it is available from the next one, which makes the whole sequence scriptable.
+- **An artifact is not a foam ball.** The claim had spread from a comment into CLAUDE.md,
+  HANDOFF, two `physicsEngine` comments and the patch-notes guide. Fixed where it was flavour.
+
+## Open, and worth a decision
+
+1. ⚠️ **`src/config.ts` still justifies two constants against a foam ball**:
+   `BALL_ROLL_FRICTION` 28 ("still inside the 0.05–0.15g a foam ball on field tile plausibly
+   has") and the restitution pair ("a light foam-ball value is kept for physical honesty").
+   Those are calibration rationale, not wording. If an artifact is a hollow plastic shell rather
+   than foam, both constants were tuned against the wrong reference and want re-checking. Left
+   deliberately untouched so the question stays visible.
+2. **`docs/patch-notes.md` is the guide**, written and then corrected three times from owner
+   review in one session: write for an FTC team and do not simplify their vocabulary; no em
+   dashes at all; the AI sentence shapes to avoid; never invent a physical description of a game
+   element.
+3. **Moderation is inert.** `MODERATION_API_KEY` is set on both Fly apps and the key
+   authenticates, but the OpenAI account has no credits, so every call 429s and the filter fails
+   open. Nothing is broken; the guardrail simply is not armed.
+4. **`src/ui/styles.css` design drift** (~20 off-scale radii, ~50 literal colours) against
+   `DESIGN.md`. Pre-existing, partially migrated already (`e633a92`), and deliberately not
+   touched during a release. Best done as its own ratchet pass, like `uiaudit`.
+5. `Room.onInput` still buffers future-tick inputs unboundedly (capacity.md §7). A fix exists
+   uncommitted on the `perf-load` worktree and is NOT in this release.
+
+---
 
 # HANDOFF — 2026-09-12 (hosting a LAN match from a browser tab: no download, no terminal)
 

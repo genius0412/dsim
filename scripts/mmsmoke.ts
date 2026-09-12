@@ -425,6 +425,41 @@ const namesOf = (m: PendingMatch | undefined): string =>
   const last = seen.filter((m) => m.t === 'queued').pop();
   check('queued: a challenge reports 1/2, not the open depth', last?.t === 'queued' && last.size === 1, JSON.stringify(last));
 }
+{
+  // THE OPEN-POOL HALF of the same rule, which had no check at all — only the closed
+  // party above did. `broadcastStatus` counts per BUCKET (game|channel|build), and the
+  // count a waiter is shown decides whether the UI reads "waiting" or "nearly ready",
+  // so a count that leaked across builds would promise a match that pairing can never
+  // make. Two builds queued together: each must be told 1, never 2. This is also the
+  // guard on the count-once rewrite of that method — the shape it replaced computed
+  // the same number per recipient, so an off-by-one there would be silent.
+  const seen: Record<string, ServerMsg[]> = { b1: [], b2: [], b1b: [] };
+  await pair([
+    entry('b1', '1v1', { build: 'build-one', send: (m) => seen.b1.push(m) }),
+    entry('b2', '1v1', { build: 'build-two', send: (m) => seen.b2.push(m) }),
+  ]);
+  const sizeOf = (k: string): number | undefined => {
+    const m = seen[k].filter((x) => x.t === 'queued').pop();
+    return m?.t === 'queued' ? m.size : undefined;
+  };
+  check('queued: the depth is the waiter’s OWN build bucket, not the whole queue',
+    sizeOf('b1') === 1 && sizeOf('b2') === 1, `b1=${sizeOf('b1')} b2=${sizeOf('b2')}`);
+}
+{
+  // and two waiters that DO share a bucket must both be told 2 — the other direction of
+  // the same count, so a bucket key that over-separated would be caught too
+  const seen: Record<string, ServerMsg[]> = { s1: [], s2: [] };
+  await pair([
+    entry('s1', '2v2', { build: 'same', send: (m) => seen.s1.push(m) }),
+    entry('s2', '2v2', { build: 'same', send: (m) => seen.s2.push(m) }),
+  ]);
+  const sizeOf = (k: string): number | undefined => {
+    const m = seen[k].filter((x) => x.t === 'queued').pop();
+    return m?.t === 'queued' ? m.size : undefined;
+  };
+  check('queued: waiters sharing a bucket are both told the shared depth',
+    sizeOf('s1') === 2 && sizeOf('s2') === 2, `s1=${sizeOf('s1')} s2=${sizeOf('s2')}`);
+}
 
 // ---- report ----------------------------------------------------------------
 if (failures.length) {
