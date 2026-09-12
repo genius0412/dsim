@@ -34,3 +34,21 @@
 - **Wanted from the shared core**: a per-artifact radius — NECTAR is staged and drawn at
   `BB_NECTAR_R` but `solveArtifacts` takes one radius for the array, so it collides at POLLEN
   size. Same ask as the entry above (`field-plan.md` §6 request 1).
+
+## 2026-09-12 · the state bag is filled · `a1613d9`
+
+- **Cells to look at**: `staging@0` — the two up-CELLS now read `3` and all four FLOWERS badge
+  `4`, because `drawField.ts` is reading state that staging finally writes.
+- **Files**: `spawn.ts` (`stageBiobuzz` fills `flowers[i].stack`, `hives[a].contents`,
+  `nectarStock[a]`; `cellNectar` reads `hives[a].up`), `elements.ts` (the `hives` cast is gone),
+  `scripts/smoke-biobuzz/field.ts`. Field lane **143 checks, all pass**.
+- **The bag is DERIVED from `world.balls`**, not written alongside it: the array stays the
+  conservation authority and disagreement is unrepresentable at staging. Ten checks assert it
+  both ways anyway — a runtime writer can still drift, and the capture path, the tip machine
+  and G418.B retrieval all land on this state next.
+- **ONE-LINE FOLLOW-UP, NOT MINE**: `bbWorld` in `scenes.ts` replaces `world.balls` wholesale
+  after staging, so a scene with a POLLEN override keeps the staged bag — which is why
+  `under-hive@0` draws four FLOWERS badged `4` under a `0 pollen` caption. `spawn.ts` now
+  exports `bbIndexElements(world)` for it; the fix is calling it after `world.balls = pollen`.
+- **Still wanted from the shared core**: the per-artifact radius. NECTAR is staged, drawn and
+  now indexed at `BB_NECTAR_R`, and still collides at POLLEN size.
