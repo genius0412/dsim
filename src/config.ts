@@ -88,6 +88,12 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *      against a surface by an opponent feels that load; an auto-path robot is solid instead
  *      of intangible; pair and static responses are summed before either is written; and
  *      contacts are stiffer (PHYS_CONTACT_FREQ 8 -> 12);
+ *    · THE DECODE INTAKE GRABS AT THE ROLLER NIP, and reaches only what has LANDED on it:
+ *      one fore-aft band about `intakeAxleX` derived from the roller's own geometry replaces
+ *      three hand-written x-ranges (`intakeNip`/`INTAKE_TREAD_FRAC`), `intakeSuction`'s reach
+ *      is the landing bound `tip + BALL_RADIUS − INTAKE_CATCH_LENIENCE` instead of
+ *      `tip + BALL_RADIUS` (+ the wedge lip), the swallow cadence is 1-2 ticks with `drawIn`
+ *      up by half, and `intakeClaims`' lateral covers the suction's own outer band;
  *    · G422 PINNING rewritten against the rule's own clauses — "preventing the movement"
  *      requires the pinner to be IN THE WAY of where the victim is trying to go, "attempting
  *      to move" reads side-drive so a tank can be pinned at all, the count ends only on
@@ -1359,8 +1365,6 @@ export const POWER_DRAW_MAX = 0.2; // cap ⇒ at most ~20% slower
 export const FLY_SPIN_NEAR = 40; // in to goal: flywheel spin 0
 export const FLY_SPIN_FAR = 170; // in to goal: flywheel spin 1
 
-/** capture tolerance beyond the ball radius, each way (tight — no vacuuming
- * balls from a distance; a ball must actually reach the compliant wheels) */
 /**
  * How close to the field boundary an artifact counts as PINNED against it, on top of its own
  * radius — the case a funnel intake cannot centre and takes anyway. See `updateIntake`.
@@ -1405,15 +1409,32 @@ export const CHASSIS_OUTLINE = 0.5; // in, its outline width — half what it wa
 
 export const ROBOT_TOP_SHED = 6; // in/s outward while it rides the top
 export const INTAKE_CAPTURE_BAND = 0.5;
-/** how fast a HELD ball slides between storage slots (in/s), in the robot frame —
- * so the triangle's front ball visibly slides aside to make room for a 3rd */
-export const HELD_SLIDE_SPEED = 45;
-/** the intake ROLLER (axle + compliant wheels) sticks out this far past the
- * ball-colliding wedges. The roller is a physical hitbox for ROBOTS/WALLS (the
- * full `reach`, via robotExtents), but it rides HIGH in z so BALLS pass under it
- * and never collide with it — only the recessed wedges deflect balls. So the
- * ball hitbox is `reach − INTAKE_WHEEL_STICKOUT` deep. */
-export const INTAKE_WHEEL_STICKOUT = 1.3;
+/**
+ * How fast a HELD artifact travels to its storage slot (in/s), IN THE ROBOT FRAME.
+ *
+ * ⚠️ IT MUST EXCEED THE FASTEST LEGAL CHASSIS, AND THAT IS A PHYSICS REQUIREMENT, NOT A
+ * COSMETIC ONE. A held artifact is SOLID to ground artifacts (`robotSolids.held`), and it is
+ * still out in FRONT of the chassis face for as long as it takes to slide in. At 45 the slide
+ * lost that race: a robot driving at 85 in/s carried the artifact it had just swallowed
+ * FORWARD through the world at 85 − 45 = 40 in/s, straight into the next artifact in the line,
+ * which — still touching the one behind it — chained the impulse on. Reported as "the third
+ * ball is still being deflected too far... the first and second balls get intaked so quickly
+ * that they don't transfer any momentum to the next ball", which is what a real robot does.
+ *
+ * Measured on a touching file of three at full throttle, sloped: at 45 the first artifact went
+ * in clean and then balls two and three BOTH left at 73 in/s on the same tick, two ticks after
+ * the capture, and were shoved 32in downfield. At 120 nothing moves at all — peak speed 0.0 on
+ * every artifact — and the file goes in at ticks 39 / 43 / 47. The battering ram was the
+ * artifact the intake had just taken.
+ *
+ * Real hardware does not have this problem because the rollers are turning far faster at the
+ * surface than the chassis can drive: what is grabbed is INSIDE the robot immediately, and
+ * cannot reach back out to hit the next artifact in the line. 150 is above the fastest legal
+ * build (`driveParams().maxSpeed` peaks at 129.5 in/s — tank, 600 rpm, 20 lb) with margin, so
+ * a held artifact NEVER advances in the world frame on any chassis. Smoke asserts that
+ * relation over the whole legal envelope rather than trusting this number.
+ */
+export const HELD_SLIDE_SPEED = 150;
 /** Intake presets model the REAL mechanism, not a touch-and-wait hitbox.
  * TOP LEVEL (feeds robotExtents → the Rapier robot-robot/wall collider, length
  * clamps, drawing):
@@ -1428,15 +1449,26 @@ export const INTAKE_WHEEL_STICKOUT = 1.3;
  *               wheels — NO flat front wall (sloped/triangle). false = a flat
  *               front, wheels span the whole mouth (vector).
  *   mouthHalf   half-width of the opening at the tip
- *   throatHalf  half-width of the compliant-wheel CAPTURE zone: at the chassis
- *               front for a funnel (balls funnel to center there), = the full
- *               mouth for a flat front (vector captures across the tip)
+ *   throatHalf  the funnel's THROAT half-width. It is NOT "the capture zone" any more —
+ *               the fore-aft grab is `intakeNip` about `intakeAxleX`, shared by all three
+ *               capture branches, and every LATERAL bound below is unchanged by that.
+ *               throatHalf is now exactly four things: `atThroat`'s lateral bound, the
+ *               `cornered` funnel's inner width, the `rammed`/`sideImpact` off-centre
+ *               threshold, and the denominator of the capMin->capMax ramp.
  *   drawIn      suction speed (in/s) the running intake pulls a ball in the
  *               mouth toward the throat (0 = flat front, wheels grab in place)
  *   capMin/capMax  swallow interval as the capture point goes CENTER→EDGE
- *               (vector: compliant center fast, vectoring sides slow)
- *   clumpInterval  swallow cadence while 2+ balls sit at the mouth
- *   dual        capture TWO balls per cycle from a clump (triangle's 2 front slots) */
+ *               (vector: compliant center fast, vectoring sides slow). On the half-tick
+ *               grid — see the INTAKE_PRESETS header.
+ *   clumpInterval  swallow cadence while 2+ balls sit at the mouth (WEDGE presets only;
+ *               `interval` never reads it on a flat front)
+ *   dual        capture TWO balls per cycle from a clump (triangle's 2 front slots)
+ *
+ * RESOLVED NIP, which is chassis-INDEPENDENT (both terms are per-preset constants):
+ *   72mm roller (sloped, triangle)  back 1.517  front 1.800  ⇒ forward limit tip + 0.383
+ *   48mm roller (vector)            back 1.157  front 1.346  ⇒ forward limit tip + 0.401
+ * and the rest point the band must contain, `BALL_RADIUS − reach + intakeRollerDia/2` from
+ * the axle:  sloped +0.917 · vector −0.055 · triangle −1.083. See INTAKE_TREAD_FRAC. */
 /**
  * INTAKE ROLLER diameters, in mm to match how they are actually bought. The funnel presets
  * run a big 72mm compliant roller; the vector's wheel row is a smaller 48mm.
@@ -1476,6 +1508,72 @@ export const INTAKE_ROLLER_W = 1.3; // in, each roller's width along the beam
 export const intakeRollerDia = (spec: { intake: keyof typeof INTAKE_ROLLER_MM }): number =>
   INTAKE_ROLLER_MM[spec.intake] / 25.4;
 /**
+ * THE ROLLER AXLE in robot-frame x — ONE authority, read by the sim, the renderer and the
+ * artifact solids.
+ *
+ * It was computed independently in three places (`drawRobot`'s `wedgeTip`/`axis`,
+ * `artifactSolids`' `wedgeFront`) and the geometry the intake GRABS on is now derived from
+ * it, so a fourth copy is how the drawn wheel and the capture zone drift apart. The `max(hl)`
+ * mirrors `artifactSolids` — a roller bigger than twice the reach would otherwise put the
+ * axle inside the chassis.
+ */
+export const intakeAxleX = (spec: { intake: keyof typeof INTAKE_PRESETS; length: number }): number => {
+  const hl = spec.length / 2;
+  return Math.max(hl, hl + INTAKE_PRESETS[spec.intake].reach - intakeRollerDia(spec) / 2);
+};
+/**
+ * HOW FAR THE COMPLIANT TREAD REACHES PAST ITS OWN CIRCLE, as a fraction of the roller RADIUS
+ * — the ONE free parameter in the grab. Everything else falls out of it, `BALL_RADIUS` and
+ * the roller diameter.
+ *
+ * THE DERIVATION, which is already in this file and was simply never used by the capture
+ * code. `intakeLidZ` puts the roller's underside at exactly `2 * BALL_RADIUS` — the APEX of
+ * an artifact sitting on the floor — because that is the clearance an artifact needs to pass
+ * under it. So the axle is at `z = 2R + Rr`, a floored artifact's centre at `z = R`, their
+ * vertical separation is exactly `S = R + Rr`, and a RIGID roller grazes that artifact at
+ * exactly ONE point: directly under the axle. Every inch of grab there is, is tread flex.
+ * With the tread reaching `c` past its nominal circle, contact holds while
+ *
+ *     hypot(dx, S) <= S + c    <=>    |dx| <= sqrt(c * (2S + c))
+ *
+ * which is `intakeNip` below. That is the user's own description of the mechanism — "the ball
+ * should be directly below or very slightly in front of the centre of the wheel" — rendered
+ * as arithmetic instead of as two hand-picked distances, and it is why the 72mm funnel roller
+ * grabs over a longer band than the vector's 48mm one without anyone asserting that it should.
+ *
+ * ⚠️ THERE IS A FLOOR, AND IT IS ~0.135. A free ground artifact's centre can never get behind
+ * `hl + BALL_RADIUS`: the chassis is a live collider against a CLAIMED artifact
+ * (`physicsEngine.ts`, which captures "AT the face (`hl + R`, touching)"), and `intakeSuction`
+ * pulls toward `(hl, 0)`, so anything the intake has hold of comes to rest with its skin flush
+ * on the chassis front face. That rest point is `BALL_RADIUS − reach + intakeRollerDia/2` from
+ * the axle — chassis-INDEPENDENT — i.e. +0.917 (sloped), −0.055 (vector), −1.083 (triangle).
+ * The band MUST contain it or that preset captures NOTHING. Below ~0.135 `nip.back` drops
+ * under 1.083 and TRIANGLE stops intaking altogether. Smoke pins this with the numbers named.
+ *
+ * Raising it widens the band as a SQUARE ROOT, so it is a gentle dial: 0.20 gives the 72mm
+ * roller back 1.517 / front 1.800 and the 48mm one back 1.157 / front 1.346.
+ */
+export const INTAKE_TREAD_FRAC = 0.2;
+/**
+ * THE NIP: how far BEHIND and IN FRONT of the axle an artifact's centre may be and still be
+ * under the compliant wheel. See `INTAKE_TREAD_FRAC` for where the square root comes from.
+ *
+ * `front = back + c`: ahead of the nip the loaded tread lobe flexes forward into the
+ * approaching artifact, behind it the tread is unloading. That asymmetry IS the "very
+ * slightly in front" half of the request, and it is one term rather than a fudge factor.
+ *
+ * Pure arithmetic and one sqrt — no trig — so the `src/sim` dsin/dcos/datan2 discipline is
+ * untouched.
+ */
+export const intakeNip = (
+  spec: { intake: keyof typeof INTAKE_PRESETS; length: number },
+): { back: number; front: number } => {
+  const Rr = intakeRollerDia(spec) / 2;
+  const c = INTAKE_TREAD_FRAC * Rr;
+  const back = Math.sqrt(c * (2 * (BALL_RADIUS + Rr) + c));
+  return { back, front: back + c };
+};
+/**
  * THE INTAKE HAS A ROOF, and it is the same fact the mouth geometry already rests on.
  *
  * `ballRobotContact` leaves the centre of the mouth OPEN at ball height on the grounds that
@@ -1513,6 +1611,29 @@ export const INTAKE_LID_THROW = 24; // in/s
  * collision box was solid there. This is the part that was missing from the picture, and
  * `npm test` asserts it lands exactly on the footprint corner rather than near it.
  */
+/**
+ * THE SWALLOW CADENCE IS 1-2 TICKS NOW, AND THE GRAB HAPPENS AT THE ROLLER NIP.
+ *
+ * The two halves of one change ("make the intaking speed extremely fast, but decrease the
+ * effective intaking area"). The AREA is `intakeNip` about `intakeAxleX` — one fore-aft band
+ * shared by all three capture branches, derived from the roller's own geometry — and the
+ * SPEED is `capMin`/`capMax`/`clumpInterval` below, which are now measured in ticks rather
+ * than in tenths of a second.
+ *
+ * ⚠️ EVERY INTERVAL SITS ON THE HALF-TICK GRID `(n − 0.5) / 60`, never on an exact multiple
+ * of `SIM_DT`. The gate is `world.time − r.lastIntakeAt < interval` and `world.time` is
+ * ACCUMULATED by `+= dt`, so an interval set exactly to `k * SIM_DT` is a float coin toss
+ * that would resolve differently on either side of a rounding boundary. Free to avoid, and
+ * invisible if you don't.
+ *
+ * ⚠️ `drawIn` HAD TO RISE WITH THEM, and this is the fact that makes the whole tuning work:
+ * the wedge presets are TRAVEL-limited, not interval-limited. The measured back-to-back
+ * swallow gap on sloped was 0.133 s against a `clumpInterval` of 0.04 — which is exactly why
+ * the 2026-09-10 bisection found `clumpInterval` 0.04 -> 0.02 with `capMax` 0.09 -> 0.05
+ * BYTE-IDENTICAL. Cutting the interval alone delivers nothing at all; what a queued artifact
+ * pays is one ball diameter of travel to reach the seat. The ordering (vector < sloped <
+ * triangle) and the ratios between them are preserved.
+ */
 export const INTAKE_PRESETS = {
   /** SLOPED: two side slopes funnel artifacts into the compliant wheels at the
    * throat — no flat front. maxLength = 18 − reach (the roller counts toward the
@@ -1520,8 +1641,8 @@ export const INTAKE_PRESETS = {
   sloped: {
     reach: 3, overhang: false, minLength: 13.5, maxLength: 15, minWidth: 14.5, fireInterval: 0.08, fireCap: 0,
     mouth: {
-      wedge: true, mouthHalf: 7, throatHalf: 3, drawIn: 26,
-      capMin: 0.05, capMax: 0.09, clumpInterval: 0.04, dual: false,
+      wedge: true, mouthHalf: 7, throatHalf: 3, drawIn: 40,
+      capMin: 0.00833, capMax: 0.05833, clumpInterval: 0.00833, dual: false,
     },
   },
   /** VECTOR WHEEL: flat front (no side slopes), the roller spans the whole mouth.
@@ -1537,13 +1658,19 @@ export const INTAKE_PRESETS = {
       // it in, so edge entries take longer — the vectoring time. `mouthHalf` here is
       // a fallback; the live value is the robot's half-width (see `intakeMouth`).
       //
-      // drawIn 18 -> 21 ("make vector intake vector slightly faster"): the vectoring
-      // time is the distance to the throat over this speed, so an edge entry at 8in
-      // off-centre falls 0.30s -> 0.25s and the centre is untouched at 0.02s. It stays
-      // the SLOWEST of the three by a distance (sloped 26, triangle 46) — vectoring an
-      // off-centre ball across a flat plate is what this preset trades away.
-      wedge: false, mouthHalf: 8.5, throatHalf: 3, drawIn: 21,
-      capMin: 0.08, capMax: 0.14, clumpInterval: 0.12, dual: false,
+      // THE SLOWEST OF THE THREE, and the only one that actually PAYS its centre->edge
+      // ramp: 2 ticks at the centre against sloped's and triangle's 1, 8 ticks at the
+      // edge, and NO clump bonus (`interval` takes `clumpInterval` only on a wedge, so
+      // the field here is dead and is kept equal to `capMax` for consistency). A wedge's
+      // funnel delivers everything to |y| ~ 0, so a wedge only ever pays `capMax` on a
+      // `cornered` grab; `onRollerRow` is the one branch that grabs genuinely off-centre,
+      // which is why the 4x spread is visible here and nowhere else.
+      //
+      // drawIn 21 -> 32 with the nip: vectoring an off-centre ball across a flat plate is
+      // what this preset trades away, and the band it has to be vectored INTO is now
+      // 2.5in deep rather than the whole 7in mouth.
+      wedge: false, mouthHalf: 8.5, throatHalf: 3, drawIn: 32,
+      capMin: 0.025, capMax: 0.125, clumpInterval: 0.125, dual: false,
     },
   },
   /** TRIANGLE: named for the triangular ball storage (2 near the mouth, 1 deep).
@@ -1558,6 +1685,12 @@ export const INTAKE_PRESETS = {
       // suction (drawIn) snaps balls to the throat and it swallows quickest. The
       // tradeoff is TRANSFER (fireCap), not the grab — those stay untouched.
       //
+      // Same 1-tick centre as sloped, but a shallower edge penalty (3 ticks against 4)
+      // and `dual` still takes TWO per cycle from a clump: 120 artifacts/s off a pile
+      // against sloped's 60. It fills a 3-slot hopper in two ticks and still shoots
+      // slowest — `fireInterval`/`fireCap` below are the SHOOTER and are untouched by
+      // the intake work; they share no state with `lastIntakeAt`.
+      //
       // "Make triangle intake transfer slightly faster." The CAP was not what was slow:
       // measured, the gap between shots was 0.133s against a cap of 0.12, so the cap
       // never bound at all and lowering it alone changed nothing (7.50/s either way).
@@ -1566,8 +1699,8 @@ export const INTAKE_PRESETS = {
       // result and remains the thing that stops this preset being the fastest shooter.
       // It is still the only preset with a cap, and still slower than sloped's 0.08 —
       // the triangle grabs best and shoots slowest, by a little less than before.
-      wedge: true, mouthHalf: 7, throatHalf: 3.5, drawIn: 46,
-      capMin: 0.04, capMax: 0.07, clumpInterval: 0.035, dual: true,
+      wedge: true, mouthHalf: 7, throatHalf: 3.5, drawIn: 70,
+      capMin: 0.00833, capMax: 0.04167, clumpInterval: 0.00833, dual: true,
     },
   },
 } as const;

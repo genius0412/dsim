@@ -295,6 +295,13 @@ capped at roughly one core no matter how many vCPUs the machine has. Going `shar
 `shared-cpu-8x` buys almost nothing. The levers that work are more *processes* (see below) or
 cheaper rooms.
 
+**The audit behind "more processes" is `docs/scaling-multicore.md`**, and it is where this
+question actually gets answered rather than only warned about: ~75% of a busy server is
+simulation that can leave the socket thread, `Room` already talks exclusively through callbacks,
+and the recommendation is `worker_threads` behind a `SIM_WORKERS` variable defaulting to 0.
+**Nothing of it is built** — `SIM_WORKERS` and `worker_threads` appear nowhere in the source — so
+until it is, the row above is the honest ceiling and a bigger VM is still the wrong purchase.
+
 | size | est. driven DECODE rooms, with margin |
 |---|---|
 | `shared-cpu-1x` | 3–5 |
