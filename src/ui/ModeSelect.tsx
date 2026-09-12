@@ -1,5 +1,6 @@
 import { APP_NAME } from '../seasons';
 import { QueueCounts } from './QueueCounts';
+import { LAN_ENABLED } from '../net/env';
 
 /**
  * Game-mode select — reached from PLAY. These are the tiles that used to live on
@@ -119,19 +120,26 @@ export function ModeSelect({
           It sits above Custom because at a competition venue it is the one that works:
           the wifi is saturated, the cloud is far away, and the whole team is on one
           network. Never disabled on `multiplayer` — not needing our servers is the
-          entire point. */}
-      <section className="ds-tileset">
-        <p className="ds-tileset-label">LAN · same network</p>
-        <div className="ds-tiles">
-          <button className="ds-tile" onClick={onLan}>
-            <span className="k">LAN</span>
-            <span>
-              <span className="t">Host or Join</span>
-              <span className="d">Unofficial — not rated</span>
-            </span>
-          </button>
-        </div>
-      </section>
+          entire point.
+
+          Hidden entirely where `LAN_ENABLED` is off, rather than shown disabled: a
+          greyed tile advertises a mode this build will not play, and the reason it is
+          off is that the feature is being held back, not that the player is missing a
+          prerequisite. Disabled states are for the latter. */}
+      {LAN_ENABLED && (
+        <section className="ds-tileset">
+          <p className="ds-tileset-label">LAN · same network</p>
+          <div className="ds-tiles">
+            <button className="ds-tile" onClick={onLan}>
+              <span className="k">LAN</span>
+              <span>
+                <span className="t">Host or Join</span>
+                <span className="d">Unofficial — not rated</span>
+              </span>
+            </button>
+          </div>
+        </section>
+      )}
 
       {/* Custom room — last, per its niche use */}
       <section className="ds-tileset">

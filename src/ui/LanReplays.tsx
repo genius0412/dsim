@@ -11,6 +11,7 @@ import {
 } from '../net/lanRuns';
 import { SIM_DT } from '../config';
 import { fmtDay } from './fmtDate';
+import { LAN_ENABLED } from '../net/env';
 
 /**
  * SELF-HOSTED (LAN) MATCHES — the ones you hosted, on your own Career page.
@@ -84,19 +85,32 @@ function mergeRuns(remote: LanRun[], local: LanRunMeta[]): Row[] {
   return rows.sort((a, b) => b.at - a.at);
 }
 
-export function LanReplays({
-  signedIn,
-  game,
-  onWatchId,
-  onWatchLocal,
-}: {
+interface LanReplaysProps {
   signedIn: boolean;
   game?: GameId;
   /** watch a match the ACCOUNT holds — the ordinary replay route, by id */
   onWatchId?: (replayId: string) => void;
   /** watch a match only this DEVICE holds — the log is handed over directly */
   onWatchLocal?: (replay: Replay) => void;
-}) {
+}
+
+/**
+ * The LAN gate, kept in ONE place rather than at the call sites: Career alone renders this
+ * four times, and a fifth added later would silently miss a check spread across them.
+ *
+ * It is a WRAPPER, not an early return inside the panel, because the panel's first statement
+ * would otherwise be a conditional `return null` standing in front of its hooks. `LAN_ENABLED`
+ * is a build constant, so the hook count could never actually change between renders and it
+ * would have worked — but "this is fine because the condition is secretly constant" is a
+ * footgun to leave lying in a component, and it stops being true the moment somebody makes the
+ * flag dynamic. Rendering a child conditionally has no such caveat.
+ */
+export function LanReplays(props: LanReplaysProps) {
+  if (!LAN_ENABLED) return null;
+  return <LanReplaysPanel {...props} />;
+}
+
+function LanReplaysPanel({ signedIn, game, onWatchId, onWatchLocal }: LanReplaysProps) {
   const [remote, setRemote] = useState<LanRun[]>([]);
   const [local, setLocal] = useState<LanRunMeta[]>([]);
 

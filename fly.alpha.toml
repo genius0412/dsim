@@ -33,6 +33,12 @@ primary_region = 'iad'
   # what makes this deployment persist alpha results to its own database (server/channel.ts).
   # NOT a secret — it changes behaviour, not access.
   SERVER_CHANNEL = 'alpha'
+  # accept self-hosted (LAN) matches filed by their host — server/lanUploads.ts. Set HERE and
+  # deliberately NOT in fly.toml: LAN is finished but is being held back from production for
+  # now, and the gate fails closed, so the prod app simply does not mount `/api/lan`. The
+  # CLIENT half is VITE_LAN_ENABLED on the matching Vercel project; a LAN environment needs
+  # both, and preview is the only one that has either.
+  LAN_UPLOADS = '1'
 
 [http_service]
   internal_port = 8080

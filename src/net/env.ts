@@ -268,3 +268,27 @@ export const httpOf = (wsUrl: string | undefined): string =>
  */
 export const SUPPORT_ENABLED =
   (import.meta.env.VITE_SUPPORT_ENABLED as string | undefined)?.trim() === '1';
+
+/**
+ * Is SELF-HOSTED LAN PLAY shown to this build?
+ *
+ * OFF by default, which is the whole point: LAN is complete and shipping on alpha, but it
+ * is deliberately held back from the production client for now. Same shape as
+ * `SUPPORT_ENABLED` above, for the same reason — a finished feature whose exposure is a
+ * product decision rather than a code one, so the switch is an env var and not a branch.
+ *
+ * ⚠️ **THIS IS THE CLIENT HALF OF A TWO-HALF GATE, AND IT IS THE COSMETIC HALF.** It hides
+ * the entry points (the Play screen's LAN tile, the `/lan` panel, the top-of-page banner,
+ * and the LAN rows in Career) and nothing else. What stops a client that ignores it is the
+ * SERVER half: `LAN_UPLOADS` in `server/lanUploads.ts`, which decides whether `/api/lan`
+ * exists at all on a given deployment. Turning LAN on for an environment means setting
+ * BOTH — the client flag on that Vercel project and the server flag on the Fly app it
+ * talks to. Neither alone is enough, and that is on purpose: a hidden button is not a
+ * closed door, and an open door nobody can see is still open.
+ *
+ * `LAN_MODE` (server/lanMode.ts) is a THIRD, unrelated thing — it is what somebody's own
+ * laptop sets to become a LAN server. It has never been set on a cloud deployment and is
+ * not affected by any of this.
+ */
+export const LAN_ENABLED =
+  (import.meta.env.VITE_LAN_ENABLED as string | undefined)?.trim() === '1';
