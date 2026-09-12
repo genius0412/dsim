@@ -93,8 +93,10 @@ solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
 - **The threshold is MEASURED and settled** (owner, 2026-09-12). The staged cell holds 3 NECTAR,
   so the first tip of a match costs **3 POLLEN**. Only the empty-cell row (0 NECTAR) is still
   `APPROX` at 8.
-- Render: two hives as top-down cell outlines; the up-cell drawn bright with its content count
-  (yellow/red/blue pips), the down-cell dimmed; a short swing animation on `tipping`.
+- Render: two hives as top-down cell outlines; the up-cell drawn bright, the down-cell dimmed;
+  a short swing animation on `tipping`. **The up-cell readout is PER TYPE** — POLLEN, RED
+  NECTAR and BLUE NECTAR counted separately (any alliance may launch into any cell, and the
+  tip table is indexed by the NECTAR count), not one total.
 
 ### 2.2 FLOWER (flower.ts)
 
@@ -111,7 +113,12 @@ solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
   the unit tests.
 - **G410**: a nectar entering a flower with > 60 s of TELEOP left ⇒ MAJOR (20) per nectar to the
   opponent; the element still scores (§10.5.2 says so explicitly).
-- Render: ring on the wall + a stacked-pips badge; owner colour on the ring.
+- Render: ring on the wall, owner colour on the ring, and **the stack itself drawn OUTSIDE the
+  perimeter beside its flower** — one disc per element in its own colour, in stack order,
+  running ALONG that wall with the BOTTOM of the stack nearest the flower. A count badge does
+  not say what a driver needs: which colour is at the bottom (the 5-point bonus, and whether a
+  NECTAR has locked retrieval) and which is on top (ownership). The badge it replaces was read
+  as an unexplained second circle.
 
 ### 2.3 GARDEN, LEAVE, PARK
 
@@ -133,6 +140,14 @@ appears in the LOADING ZONE against the wall ~1.5 s later (APPROX), placed as a 
 with a small RNG jitter; at ≤ 60 s all remaining stock enters, one per ~1 s. Preloads of a
 no-show robot go to the LZ centre. `humanPlayers[a].box` stays inert (it is `ArtifactColor[]`
 and DECODE-shaped); the stock lives on `world.biobuzz`.
+
+### 2.5 What the field draws in a MATCH
+
+Owner ruling (2026-09-12): **no tile axis letters or numbers in the game** — A–F / 1–6 are a
+gallery aid and stay behind `world.biobuzz.labels`, which only `field-labelled` sets. The same
+goes for AprilTag ids: useful in a still that is checked against the manual, noise in a match.
+What a driver sees on the field itself is state — the hives' per-type counts, the flower stacks
+outside the wall, the tape, the structure — and nothing that is merely a coordinate.
 
 ## 3. Match flow (step.ts)
 
