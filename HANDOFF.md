@@ -991,7 +991,7 @@ both fixed in the artifact world's contact parameters rather than with a pass. C
 Three things had to follow:
 - **The pin needs something behind the artifact** (`pinnedArtifacts`): with real contacts a
   full-speed ram buries the first ball of a clump for a tick, and the old entry clause pinned
-  any deep overlap with no support — the robot stopped dead on 0.2 lb of foam. Support is now a
+  any deep overlap with no support — the robot stopped dead on 0.2 lb of artifact. Support is now a
   chain through OTHER artifacts to a static or robot, or the field — and **the field only pins
   what is pushed INTO it** (`ARTIFACT_PIN_COS` 0.85, ~32° of square; `fieldPushback` gives the
   direction). A corner catching a ball against a wall pushes it at an angle; a round ball
