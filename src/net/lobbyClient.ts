@@ -88,11 +88,11 @@ export class LobbyClient {
    * see `src/net/credentials.ts` for why that check lives at the send boundary rather than at
    * this call site and the two others like it. Do NOT re-derive the rule here.
    */
-  join(room: string, player: Omit<LobbyPlayer, 'clientId'>, config?: RoomConfig): void {
+  join(room: string, player: Omit<LobbyPlayer, 'clientId'>, config?: RoomConfig, group?: string): void {
     const doJoin = async (): Promise<void> => {
       const authToken = (await getAuthToken()) ?? undefined;
       this.transport.send(
-        encodeMsg({ t: 'join', room, player, config, authToken, caps: CLIENT_CAPS, channel: appChannel() }),
+        encodeMsg({ t: 'join', room, player, config, authToken, caps: CLIENT_CAPS, channel: appChannel(), group }),
       );
     };
     this.transport.onOpen(() => void doJoin());

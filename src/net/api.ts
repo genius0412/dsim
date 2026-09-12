@@ -4,6 +4,7 @@ import type { ReportedUser, ReportRow } from '../report';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl, setLanFromServer } from './env';
 import { getAuthToken } from '../lib/authClient';
+import { DISCORD_REGION } from './discordActivity';
 
 /**
  * Boards + periods are per-game. DECODE is the server's default for a MISSING
@@ -189,6 +190,35 @@ export function fetchGlobalStats(): Promise<GlobalStats> {
  * deliberately absent — they are reached by code (`fetchLiveRoom`). */
 export function fetchLiveRooms(): Promise<{ region: string; rooms: LiveRoom[] }> {
   return getJson(`/api/live`);
+}
+
+/** one open, joinable lobby in a Discord Activity group (see `fetchLobbies`) */
+export interface DiscordLobby {
+  code: string;
+  players: number;
+  capacity: number;
+  kind: 'versus' | 'record';
+  game: GameId;
+}
+
+/**
+ * OPEN lobbies for a Discord Activity, scoped by its `group` (the activity instance
+ * id). Powers the in-activity lobby browser so more than one game can run at once.
+ * Empty for an unknown/empty group — this never lists the global custom-room set.
+ * In-activity `getJson` rides the same `/gs` proxy origin as every other read.
+ */
+export async function fetchLobbies(group: string): Promise<DiscordLobby[]> {
+  if (!group) return [];
+  try {
+    // PIN to the fixed activity region (same as the socket): the read is anycast,
+    // so without it an EU player would hit the EU machine and never see the US
+    // player's room. The server fly-replays this GET to DISCORD_REGION.
+    const q = `group=${encodeURIComponent(group)}&region=${encodeURIComponent(DISCORD_REGION)}`;
+    const r = await getJson<{ lobbies: DiscordLobby[] }>(`/api/lobbies?${q}`);
+    return r.lobbies ?? [];
+  } catch {
+    return []; // unreachable server / no lobbies read the same to the browser
+  }
 }
 
 /**

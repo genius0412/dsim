@@ -37,6 +37,7 @@ import {
   type QCommand,
   type RecordRankInfo,
   type RoomConfig,
+  type RoomKind,
   type ServerMsg,
 } from '../src/net/protocol';
 import { sanitizePlayerPatch } from '../src/net/sanitize';
@@ -455,6 +456,11 @@ export class Room {
     this.activeUserIds.clear();
   }
 
+  /** optional grouping tag (the Discord Activity instance id) so the Discord lobby
+   * browser can list only the rooms from one activity. Set once by the creator in
+   * `joinRoom`; '' = ungrouped (every web/LAN room). */
+  group = '';
+
   /** true if a fresh driver can still join (room not full, not mid-match, and not
    * already locked into the pre-match strategy window) */
   canJoin(): boolean {
@@ -463,6 +469,21 @@ export class Room {
       this.world === null &&
       this.phase !== 'strategy'
     );
+  }
+
+  /** A joinable-lobby view for the Discord lobby browser. Non-null ONLY while this
+   * room is an open lobby (accepting drivers, not started) — so the browser lists
+   * exactly the rooms a new arrival could walk into. Deliberately minimal: no player
+   * names (a lobby list is public within an activity; the roster is seen on join). */
+  lobbySummary(): { code: string; players: number; capacity: number; kind: RoomKind; game: GameId } | null {
+    if (!this.canJoin()) return null;
+    return {
+      code: this.code,
+      players: this.clients.size,
+      capacity: roomCapacity(this.config),
+      kind: this.config.kind,
+      game: this.config.game ?? 'decode',
+    };
   }
 
   /** authoritative sim tick (0 before the match starts) */

@@ -282,6 +282,10 @@ export type ClientMsg =
       /** this client build's release channel ('alpha' | 'stable' | …). Absent ⇒
        * 'stable'. Alpha rooms are segregated + never persisted (see server). */
       channel?: string;
+      /** optional grouping tag (the Discord Activity instance id) so the Discord
+       * lobby browser can list only the rooms from one activity. Set by the room
+       * CREATOR; ignored on an existing room. Absent ⇒ ungrouped. */
+      group?: string;
     }
   // reclaim an in-match slot after a transient socket drop (within the grace
   // window) — the server rebinds the robot to the new connection and resyncs

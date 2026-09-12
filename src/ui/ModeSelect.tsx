@@ -20,9 +20,14 @@ export function ModeSelect({
   onRanked,
   onCustomRoom,
   onWatch,
+  compete = true,
 }: {
   multiplayer: boolean;
   signedIn: boolean;
+  /** show the "Compete · online" tileset (ranked + records). Off inside a Discord
+   * Activity, which has no account (auth is CSP-blocked in the embed) and is meant
+   * as a drop-in casual lobby — so ranked/records would only show as dead tiles. */
+  compete?: boolean;
   /** a multiplayer game this browser is mid-way through (offer to rejoin it), or null */
   activeGame: { kind: 'ranked' | 'custom' | 'record' } | null;
   onRejoin: () => void;
@@ -72,6 +77,7 @@ export function ModeSelect({
       </section>
 
       {/* Online — ranked + score-attack records (need the game server / sign-in) */}
+      {compete && (
       <section className="ds-tileset">
         <p className="ds-tileset-label">Compete · online</p>
         <div className="ds-tiles">
@@ -116,6 +122,7 @@ export function ModeSelect({
           </button>
         </div>
       </section>
+      )}
 
       {/* LAN — the only mode that needs NEITHER the internet nor an account to play.
           It sits above Custom because at a competition venue it is the one that works:

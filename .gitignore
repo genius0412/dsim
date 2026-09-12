@@ -10,6 +10,9 @@ release/
 .vercel
 scratch/
 
+# JetBrains IDE project files (per-developer, not shared)
+.idea/
+
 # load-harness output (scripts/loadtest.ts --json); sweeps are evidence, not source
 .loadtest-out/
 
