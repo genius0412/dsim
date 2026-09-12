@@ -11381,6 +11381,59 @@ function pinScene(
       w.match.fouls.blue.minor === 0,
       `blueMinor=${w.match.fouls.blue.minor}`,
     );
+
+    /**
+     * ⚠️ AN EXEMPTION MUST NOT BECOME EXTRA REACH — the shipped-replay bug.
+     *
+     * `dsim-decode-s4-v2` billed 26 G408 MINORs and a yellow card, all of them from this: a
+     * PARKED robot standing in its own loading zone, hopper full, with ZERO established holds
+     * on anything, was charged with controlling TWELVE artifacts. The loading-zone carve-out
+     * adds every in-zone artifact to `excused`, `excused` used to SEED the transitive chain,
+     * and the chain then flooded the human player's restock cluster — so one artifact the
+     * robot merely stood beside conducted control to everything piled behind it.
+     *
+     * Two invariants pin it: the chain may only start from something the robot is TOUCHING,
+     * and a loading-zone-excused artifact does not conduct at all (the mouth exemption still
+     * does — the rollers owning one artifact cannot repeal the pile pressed on the robot
+     * through it). A stationary robot controls nothing it has not taken anywhere.
+     */
+    {
+      const w3 = foulWorld();
+      const r3 = w3.robots[0];
+      const lz3 = loadZone(r3.alliance);
+      const cx = (lz3.x0 + lz3.x1) / 2;
+      const cy = (lz3.y0 + lz3.y1) / 2;
+      r3.pos = { x: cx, y: cy };
+      r3.heading = 0;
+      r3.hopper = ['green', 'green', 'green'];
+      r3.vel = { x: 0, y: 0 }; // PARKED. Not herding, not pushing, not moving at all.
+      // one artifact against the robot, then a contiguous line of ten running out of the zone
+      for (let i = 0; i < 11; i++) {
+        w3.balls.push({
+          id: 9800 + i,
+          color: 'purple',
+          state: { kind: 'ground' },
+          pos: { x: cx + 9 + i * 5.1, y: cy },
+          vel: { x: 0, y: 0 },
+          z: 0,
+          vz: 0,
+        });
+      }
+      for (let i = 0; i < 600; i++) {
+        w3.time = i / 60;
+        updatePenalties(w3, 1 / 60, new Map());
+      }
+      check(
+        'a PARKED robot in its own loading zone is not charged for the pile beside it (G408)',
+        w3.match.fouls.blue.minor === 0 && w3.match.fouls.blue.major === 0,
+        `blueMinor=${w3.match.fouls.blue.minor} blueMajor=${w3.match.fouls.blue.major} — an exemption must not become reach`,
+      );
+      check(
+        '...and it draws no excessive-control CARD either',
+        !w3.penalties.carded[r3.id],
+        `carded=${!!w3.penalties.carded[r3.id]}`,
+      );
+    }
   }
 
   // CROSSING A LITTERED FIELD is the case G408 explicitly excuses — "BULLDOZING (inadvertent

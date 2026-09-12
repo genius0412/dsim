@@ -560,6 +560,15 @@ function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: 
   const loose = world.balls.filter((b) => b.state.kind === 'ground');
 
   const held = new Set<number>();
+  /**
+   * Artifacts the robot is PHYSICALLY TOUCHING this tick, established hold or not.
+   *
+   * This is what the transitive chain is allowed to start from. See the chain below: an
+   * EXCUSED artifact may conduct, but only one the robot is actually against — otherwise an
+   * exemption, whose whole job is to REMOVE liability, silently hands the chain a seed and
+   * adds REACH instead.
+   */
+  const touching = new Set<number>();
   for (const b of loose) {
     const key = `${r.id}:${b.id}`;
     const cp = closestPointOnRobot(r, b.pos);
@@ -593,6 +602,7 @@ function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: 
       }
       continue;
     }
+    touching.add(b.id);
     const loc = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
     const anchor = pen.ballAnchor[key];
     const carried = (pen.ballCarry ??= {});
@@ -685,6 +695,17 @@ function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: 
    */
   const excused = new Set<number>();
   /**
+   * Of the excused, the ones that may still CARRY the chain.
+   *
+   * The two carve-outs below do not mean the same thing, and treating them alike is what let a
+   * PARKED robot be charged for a pile it was merely standing next to. The MOUTH exemption says
+   * “the rollers already own this one”, so the pile pressed against the robot THROUGH it is
+   * still the robot’s doing and must keep counting. The LOADING-ZONE carve-out says the
+   * opposite: “you are allowed to be among these” — letting it conduct re-imposes exactly the
+   * liability the carve-out exists to remove, one artifact further along.
+   */
+  const conducts = new Set<number>();
+  /**
    * ...AND IT COVERS WHAT THE ROLLERS ARE ACTUALLY TAKING, WHICH IS ONE ARTIFACT (two for a
    * triangle's twin slots) — NOT the whole hopper.
    *
@@ -729,6 +750,7 @@ function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: 
       if (room <= 0) break;
       held.delete(m.id);
       excused.add(m.id);
+      conducts.add(m.id); // the rollers own it; the pile behind is still pressed on the robot
       room--;
     }
   }
@@ -756,6 +778,9 @@ function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: 
       // straight back in as a chain member off the two beside it.
       if (inRect(b.pos, home)) {
         held.delete(b.id);
+        // NOT added to `conducts` — see its declaration. A robot standing in its own loading
+        // zone is not controlling the human player’s restock cluster through the one artifact
+        // it happens to be against.
         excused.add(b.id);
       }
     }
@@ -776,7 +801,22 @@ function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: 
    * you are CHARGED for; it cannot repeal the physical fact that the pile behind is pressed
    * against the robot through the artifact in the mouth.
    */
-  const reached = new Set([...held, ...excused]);
+  /**
+   * ⚠️ **THE CHAIN MAY ONLY BE SEEDED BY SOMETHING THE ROBOT IS ACTUALLY TOUCHING.**
+   *
+   * Measured on the shipped 2v2 replay `dsim-decode-s4-v2`: a blue robot PARKED in its own
+   * loading zone, hopper full, with ZERO established holds on anything, was credited with
+   * controlling TWELVE artifacts. One artifact lay in the zone, the carve-out excused it,
+   * `excused` seeded this flood-fill, and the chain then ran through the human player’s
+   * restock cluster — so every artifact piled behind one the robot merely stood beside
+   * counted. That single tick billed NINE MINORs and a yellow card, and the mechanism
+   * accounts for all 26 G408 MINORs in that match across nine bursts, predicted exactly.
+   *
+   * A robot that has not touched an artifact is not controlling it, whatever is piled next to
+   * it. Seeds are therefore what is HELD, plus the CONDUCTING excused ones it is against.
+   */
+  const reached = new Set(held);
+  for (const id of conducts) if (touching.has(id)) reached.add(id);
   for (let grew = true; grew; ) {
     grew = false;
     for (const b of loose) {
