@@ -11,6 +11,8 @@ import { appChannel, lanActive } from '../net/env';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
 import { AdSlot, ResultsAd, useAdUnitActive } from './AdSlot';
+import { SponsorGameChip } from './Sponsor';
+import { sponsorActive } from '../sponsor';
 import { DEFAULT_MOBILE_LAYOUT } from '../settings';
 import type { MatchResultInfo, NetSession, NetStatus } from '../net/session';
 import { clearActiveGame } from '../net/activeGame';
@@ -341,7 +343,16 @@ export function GameView({
           <AdSlot unit="game" />
         </aside>
       )}
-      <div className="game-root">
+      {/* `has-sponsor` moves the status chips down by exactly the sponsor chip's
+          height (see `--ds-sponsor-h` in styles.css). Both clusters are anchored to
+          the same top-right corner, and the offset has to come from the chip's own
+          size rather than from a number typed in two places and then edited in one. */}
+      <div className={`game-root${sponsorActive() ? ' has-sponsor' : ''}`}>
+        {/* THE IN-GAMEPLAY PLACEMENT. Outside `.hud` (which is pointer-events:none)
+            so it can be clicked, and outside the `ads` gate entirely — see the note
+            at the top of Sponsor.tsx. It renders on a phone, in the Electron build,
+            and for supporters, all three of which the ad path deliberately skips. */}
+        <SponsorGameChip />
       {perf && frames && (
         <div className="perf-readout" role="status">
           {frames.fps.toFixed(0)} fps · p50 {frames.p50.toFixed(1)}ms · p95{' '}

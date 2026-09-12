@@ -1,3 +1,68 @@
+# HANDOFF — 2026-09-12, sponsor session (DSIM presented by Offset Robotics)
+
+Branch **biobuzz**, on top of `139f727`. Everything below is UNCOMMITTED work in this
+worktree at the time of writing, then committed on `biobuzz-sponsor`. `npm test` **ALL PASS**
++ **447 CHECKS, ALL PASS**, `npm run build` green, `npm run server:check` green,
+`npm run uiaudit` AT OR UNDER BASELINE, `npm run contrast` ALL PASS (221).
+
+## READ FIRST — the app now carries a presenting sponsor
+
+Offset Robotics (<https://offsetrobotics.com>) sponsors the APP for the BIOBUZZ season.
+`docs/sponsor.md` is the operational half of the deal and CLAUDE.md has the rules section;
+this entry is only what a next session needs to know that those two do not say.
+
+**The archetype preset the sponsor asked for was deliberately NOT built** — the owner's call,
+because the BIOBUZZ manual does not exist yet and a box-tube preset would be invented
+geometry. Everything else they asked for is in.
+
+### What was built
+
+- `src/sponsor.ts` (term, link, footprint) + `src/ui/Sponsor.tsx` (every placement) +
+  `src/ui/sponsorAssets.ts` (the artwork imports, split so the headless suite can import
+  `sponsor.ts`).
+- Placements: home menu, shell footer, download page, the in-game top-right chip, the
+  Electron splash (`electron/splash.html`, new, plus the `showSplash`/`closeSplash` handover
+  in `main.cjs`), the loading screen line in `index.html`, and the mark BURNED INTO exported
+  replay video (`replayOverlay.ts` + the `loadSponsorMark()` await in `ReplayView`).
+- Analytics: `sponsor_shown`, `sponsor_click`, `player_joined`.
+- `scripts/smoke-biobuzz/sponsor.ts`, wired as the `SPONSOR` lane.
+
+### Gotchas a next session will hit
+
+- **The in-game chip must never be routed through `src/ads/`** — that is contract text, not
+  taste, and the smoke lane greps for it. See CLAUDE.md.
+- **`--ds-hud` INVERTS.** The first cut of the chip forced the dark artwork on the theory
+  that "the field is hardcoded dark"; in light theme a HUD card is WHITE, so that would have
+  been light ink on white. The chip takes the ordinary swap; only the replay burn-in (whose
+  plate is painted dark at every theme) always takes the dark cut.
+- **`replayOverlay.ts` imports the artwork DYNAMICALLY**, inside `loadSponsorMark()`. It is
+  imported by `scripts/smoke.ts` for `hudLabels`, under `tsx` with no bundler, and a
+  top-level image import crashes the whole suite with `ERR_UNKNOWN_FILE_EXTENSION`.
+- **Artwork naming collides with itself.** Offset ships `OffsetLogoLight.png` (a BLACK
+  wordmark — named by surface) and calls that same file "the dark logo" (named by ink). The
+  repo spells them `on-light` / `on-dark` and a replacement is placed BY LOOKING AT THE
+  PIXELS.
+- **Four artwork files, not two** — the Electron pair is duplicated because a `file://` page
+  cannot resolve a Vite hash.
+
+### Not verified, and not verifiable from here
+
+- **The replay burn-in has not been seen in an actual exported file.** The wiring, the
+  pre-decode ordering and the text fallback are smoke-checked, and the overlay was not
+  exercised through a real capture. Record one match export and look at the top-right corner.
+- **The Electron splash has not been run** (`npm run electron`). Same class: the file, the
+  window and the handover are checked statically.
+- **The Discord logo is not a repo change.** Somebody has to put it on the server.
+
+### Left for the owner
+
+- Vercel Analytics has to be ON in the deploy (`VITE_ANALYTICS=1`) or the monthly report
+  has no numbers to read.
+- The term in `src/sponsor.ts` is `2026-09-12` → `2027-09-12`. Change it if the signed dates
+  differ.
+
+---
+
 # HANDOFF — 2026-09-11, fifth session (the zone fouls test the zone the manual defines)
 
 Branch **alpha**, rebased onto `6d4dd25` (this session pulled `06dd5bd`; PRs #38 and #39
@@ -6,7 +71,7 @@ green, `npm run server:check` green. `SIM_VERSION` stays **2** — recorded in t
 batch list, per the block's own rule that alpha holds at 2 while its divergence from main is
 one unreleased batch. **Alpha server DEPLOYED** (see Deploy).
 
-## READ FIRST — what moved, and the one judgement call inside it
+## What moved, and the one judgement call inside it (2026-09-11)
 
 The owner's hypothesis was that the gate / secret-tunnel / loading-zone fouls were measuring
 the WHEELBASE rather than the robot's top-down outline. Checked against the real manual —

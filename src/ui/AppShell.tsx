@@ -8,6 +8,7 @@ import { FriendsPanel } from './FriendsPanel';
 import { FriendToasts } from './friendsContext';
 import { Logo } from './Logo';
 import { NavRail } from './NavRail';
+import { SponsorFooterMark } from './Sponsor';
 import { usePresence } from './usePresence';
 import { MaintenanceBanner } from './MaintenanceBanner';
 import { LanBanner } from './LanBanner';
@@ -171,6 +172,10 @@ export function AppShell({
       <footer className="ds-foot">
         <span className="ds-foot-brand">
           {APP_NAME} · {season.name} {season.years}
+          {/* the app's presenting sponsor, on EVERY shell screen. The home menu
+              announces it; this is the standing credit that makes "presented by"
+              a property of the product rather than of its landing page. */}
+          <SponsorFooterMark />
         </span>
         <span className="ds-foot-links">
           <button className="ds-foot-link" onClick={onDownload}>

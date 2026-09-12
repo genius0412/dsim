@@ -3,6 +3,7 @@ import { authClient } from '../lib/authClient';
 import { gameServerConfigured } from '../net/env';
 import { fetchProfile, updateUsername } from '../net/api';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
+import { trackEvent } from '../analytics';
 
 /** derive a reasonable default username from an auth name / email local-part */
 function suggest(seed: string | undefined): string {
@@ -58,7 +59,27 @@ export function UsernameGate() {
     setBusy(true);
     setErr('');
     updateUsername(check.normalized)
-      .then(() => setNeeds(false))
+      .then(() => {
+        /**
+         * "NEW PLAYERS", for the sponsor's monthly report — fired HERE because
+         * this gate is the last step of signing up and the only client-side moment
+         * that means "an account that did not exist now does". A sign-in cannot
+         * say it (it fires on every return visit) and the server's `profiles`
+         * insert is not somewhere the analytics runs.
+         *
+         * NO PROPERTIES, deliberately: not the username, not the account id, not
+         * the provider. The number wanted is a COUNT, and an id attached to it
+         * would be the exact thing `src/analytics.ts` forbids.
+         *
+         * ⚠️ IT SLIGHTLY OVER-COUNTS, once. This gate also catches LEGACY accounts
+         * that predate usernames, so each of those bills as a join the first time
+         * its owner comes back. That is a one-off tail, not a recurring bias, and
+         * `docs/sponsor.md` says so where the number is reported — a footnote is
+         * cheaper than a second signal that would need a server change to carry.
+         */
+        trackEvent('player_joined');
+        setNeeds(false);
+      })
       .catch((e2: unknown) => {
         setErr(e2 instanceof Error ? e2.message : String(e2));
         setBusy(false);

@@ -2722,3 +2722,62 @@ input.admin-months {
 .ds-lan-leave:hover {
   border-color: var(--ds-ink);
 }
+
+/* ------------------------------------------ the in-gameplay sponsor chip ---- */
+/* The presenting sponsor, over the field. See src/ui/Sponsor.tsx for WHY it is
+   not an ad unit: `AdSlot` renders nothing on touch, nothing under Electron and
+   nothing for a supporter, which between them is the phone, the desktop app and
+   the most engaged players on the service. This path has none of those gates.
+
+   A SIBLING OF THE CANVAS, not a child of `.hud` — `.hud` is `pointer-events:
+   none` so the canvas keeps the drag, and this is the one overlay that has to be
+   clickable. z-index 15 puts it over the HUD (10) and under the countdown (30)
+   and the reconnect overlay (40): a sponsor mark must never sit on top of a modal
+   telling somebody their match is disconnecting. */
+.sponsor-chip {
+  position: absolute;
+  top: 12px;
+  /* max(), so a landscape notch pushes it in — the same expression `.status-wrap`
+     uses, since the two share this corner */
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 15;
+  display: inline-flex;
+  align-items: center;
+  padding: var(--ds-s-1) var(--ds-s-2);
+  border-radius: var(--ds-round-full);
+  background: var(--ds-hud);
+  border: 1px solid var(--ds-hud-line);
+  pointer-events: auto;
+  transition: border-color 0.15s, opacity 0.15s;
+}
+.sponsor-chip:hover {
+  border-color: var(--ds-accent);
+}
+.sponsor-chip:active {
+  opacity: 0.7;
+}
+.sponsor-chip:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+/* THE OFFSET THE STATUS CHIPS DROP BY, derived rather than typed twice. The chip
+   is the logo (16px — the `h` prop in `SponsorGameChip`; keep the two in step)
+   plus its own padding and border, and `.status-wrap` needs that plus one gap.
+   Written as a calc so changing the padding above moves the chips with it; a
+   hard-coded 46 is a number that gets edited in one place of the two. */
+.game-root.has-sponsor {
+  --ds-sponsor-h: calc(16px + var(--ds-s-1) * 2 + 2px);
+}
+.game-root.has-sponsor .status-wrap {
+  top: calc(12px + var(--ds-sponsor-h) + var(--ds-s-2));
+}
+
+@media (pointer: coarse), (max-height: 520px) {
+  /* the touch layout has NO `.status-wrap` at all (GameView renders it only for
+     a fine pointer), so the chip owns this corner outright and only has to clear
+     the notch. It keeps its full size: it is the only in-gameplay placement a
+     phone player ever sees. */
+  .sponsor-chip {
+    top: max(6px, env(safe-area-inset-top));
+  }
+}

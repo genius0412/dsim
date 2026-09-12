@@ -175,6 +175,25 @@
         letter-spacing: -0.02em;
         line-height: 1.05;
       }
+      /* the app's presenting sponsor. TEXT, not the artwork: the logo files are
+         bundled through Vite and come out fingerprinted, so this markup — which
+         ships before any JS runs and is also what a crawler reads — has no stable
+         path to point at, and an absolute `/sponsors/…` would 404 under the
+         Electron build's `file://` base. The rendered home menu draws the real
+         mark a beat later (src/ui/Sponsor.tsx). */
+      #seo-home .sh-presents {
+        margin: 0 0 14px;
+        font-family: 'Space Grotesk Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--sh-mut);
+      }
+      #seo-home .sh-presents a {
+        color: var(--sh-ink);
+        text-decoration: none;
+      }
       #seo-home .sh-lead {
         margin: 0 0 22px;
         max-width: 460px;
@@ -254,6 +273,14 @@
       <div id="seo-home">
         <p class="sh-eyebrow">FIRST Tech Challenge · 2D Driver Practice</p>
         <h1>DSIM</h1>
+        <!-- THIS IS THE LOADING SCREEN. React clears #root on mount, so everything
+             here is what a visitor looks at while the bundle parses and the Rapier
+             WASM decodes (main.tsx blocks the first render on both) — and what a
+             non-JS client sees forever. The presenting sponsor belongs on it for
+             exactly that reason. Keep it in step with `SponsorPresents`. -->
+        <p class="sh-presents">
+          Presented by <a href="https://offsetrobotics.com" rel="noreferrer">Offset Robotics</a>
+        </p>
         <p class="sh-lead">An online 2D driving simulator for FIRST Tech Challenge.</p>
         <!-- The two games, as real links. Each is its own indexable page with its
              own title and description (see applyRouteMeta), and these are the only

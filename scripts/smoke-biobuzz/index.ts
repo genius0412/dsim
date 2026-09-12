@@ -2,6 +2,7 @@ import { initPhysics } from '../../src/sim/physicsEngine';
 import { fieldChecks, roomChecks } from './field';
 import { robotChecks } from './robot';
 import { coreChecks } from './core';
+import { sponsorChecks } from './sponsor';
 import type { Check } from './harness';
 
 /**
@@ -49,6 +50,8 @@ lane('CORE', coreChecks);
 lane('FIELD', fieldChecks);
 lane('SERVER', roomChecks);
 lane('ROBOT', robotChecks);
+// app-level, not a game lane — see the header of sponsor.ts for why it rides this suite
+lane('SPONSOR', sponsorChecks);
 
 console.log(failures === 0 ? `\n${ran} CHECKS, ALL PASS` : `\n${failures} FAILURES of ${ran} checks`);
 process.exit(failures === 0 ? 0 : 1);
