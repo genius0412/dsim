@@ -258,9 +258,18 @@ function bbSnapStart(spec: RobotSpec, alliance: Alliance, pose: Pose): Pose {
  * one definition of "the other alliance's version of this".
  *
  * A CUSTOM pose wins over the anchor index (the same contract DECODE uses) and is stored in
- * the canonical blue frame, so it is mirrored on the same path. It is then SNAPPED to G304
- * (`bbSnapStart`) and fitted inside the perimeter (`bbFitPose`), in that order — the snap can
- * only move a pose along its own wall, so the fit that follows is a no-op confirming it.
+ * the canonical blue frame, so it is mirrored on the same path.
+ *
+ * ONLY THE ANCHORS ARE SNAPPED TO G304. `bbSnapStart` exists because `BB_START_POSES` are
+ * hand-placed pre-V1 `APPROX` numbers that sit inside the LOADING ZONE band; a CUSTOM pose is
+ * a deliberate placement — a scene author's, a driver's, a replay's — and a spawner that
+ * dragged it to the nearest wall would make "put the robot under the HIVE" or "put the robot
+ * 18 in off a FRAME leg" impossible to express. DECODE does not do it either (`coerceStartPose`
+ * clamps to the field and nothing more), and BIOBUZZ publishes `startLegality: false`, so
+ * nothing here claims to enforce G304 on a pose someone asked for by name.
+ *
+ * Both paths are still fitted inside the perimeter (`bbFitPose`) — containment is not a rule
+ * from the manual, it is what makes the pose representable at all.
  */
 function bbStartPose(spec: RobotSpec, alliance: Alliance, index: number, custom?: StartPose | null): Pose {
   const base: Pose = custom
@@ -272,7 +281,7 @@ function bbStartPose(spec: RobotSpec, alliance: Alliance, index: number, custom?
       })();
   const m = alliance === 'blue' ? { ...base.pos, heading: base.heading } : bbMirror({ ...base.pos, heading: base.heading });
   const actual: Pose = { pos: { x: m.x, y: m.y }, heading: wrapAngle(m.heading ?? base.heading) };
-  return bbFitPose(spec, bbSnapStart(spec, alliance, actual));
+  return bbFitPose(spec, custom ? actual : bbSnapStart(spec, alliance, actual));
 }
 
 /** the shared goal state, present and INERT. BIOBUZZ has no goal — Section 9 lands at

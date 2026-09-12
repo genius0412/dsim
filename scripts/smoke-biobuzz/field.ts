@@ -269,6 +269,40 @@ export function fieldChecks(check: Check): void {
     );
   }
 
+  // -- A CUSTOM START POSE IS HONOURED ---------------------------------------
+  /**
+   * A CUSTOM POSE IS NOT SNAPPED TO A WALL. `bbSnapStart` drags the two hand-placed anchors
+   * out of the LOADING ZONE band and onto their own side wall, and it must run on THOSE and
+   * nothing else: a custom pose is a deliberate placement, and a spawner that repaired it
+   * would make "put the robot under the HIVE" or "put the robot 18 in off a FRAME leg"
+   * inexpressible -- exactly the two gallery scenes that exist to show those cases.
+   *
+   * The regression it guards is invisible in every other check here (the anchors still land
+   * against their walls, staging still conserves) and is loud in a screenshot: a scene asking
+   * for the field centre renders a robot parked on the perimeter. Asserted at the CENTRE,
+   * which is the furthest a pose can be from any wall, so a snap of any strength fails it.
+   */
+  {
+    const w = createBiobuzzWorld('match', 5, [
+      { ...setup(0, 'blue'), startPose: { x: 0, y: 0, headingDeg: 180 } },
+      { ...setup(1, 'red'), startPose: { x: 30, y: 12, headingDeg: 0 } },
+    ]);
+    const r0 = w.robots[0];
+    check(
+      'start pose: a custom pose at the field centre stays at the field centre',
+      Math.hypot(r0.pos.x, r0.pos.y) < 1e-9,
+      `pos=${r0.pos.x.toFixed(3)},${r0.pos.y.toFixed(3)}`,
+    );
+    // RED's custom pose goes through the SAME point mirror as its anchors -- one definition of
+    // "the other alliance's version of this" -- so it lands at the negation, unsnapped.
+    const r1 = w.robots[1];
+    check(
+      'start pose: a RED custom pose is point-mirrored, not snapped',
+      Math.abs(r1.pos.x + 30) < 1e-9 && Math.abs(r1.pos.y + 12) < 1e-9,
+      `pos=${r1.pos.x.toFixed(3)},${r1.pos.y.toFixed(3)}`,
+    );
+  }
+
   // -- POLLEN CONSERVATION ---------------------------------------------------
   /**
    * A POLLEN MUST NEVER VANISH - the invariant every other pollen check is judged under.
