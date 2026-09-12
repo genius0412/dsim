@@ -7010,6 +7010,114 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       !lan.includes('a second Back underneath the first'),
     );
   }
+  // ---- LAN: THE HOST HALF IS ON THE PAGE, AND THE COMMANDS ARE REAL -------------
+  /**
+   * Two separate failures, both of which shipped, both silent:
+   *
+   * 1. THE WHOLE HOST HALF WAS HIDDEN BEHIND `bridge?.lan`, so a player on the web saw a
+   *    screen titled "LAN play" whose only control asked for somebody ELSE'S address. The
+   *    reasonable reading of that is "hosting is broken", and a page that cannot host has to
+   *    say so and say what to do instead — a browser tab cannot open a listening socket and
+   *    no amount of DSIM code changes that (`docs/lan-selfhost.md` shows the working).
+   * 2. EVERY COPY BUTTON ON THIS PAGE WAS A NO-OP on the page it matters most on. The
+   *    Clipboard API needs a SECURE CONTEXT; a guest is served from `http://192.168.x.x`,
+   *    which is neither https nor `localhost`, so `navigator.clipboard` is `undefined`
+   *    there — measured in a browser on a real LAN server, not inferred. With the optional
+   *    chain the whole call evaporated and nothing reported anything.
+   *
+   * Read as source, like the back-button checks above: this screen needs a DOM. The commands
+   * are pinned because a stale instruction is worse than none — somebody follows it.
+   */
+  {
+    const lan = readFileSync('src/ui/LanPanel.tsx', 'utf8');
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      scripts?: Record<string, string>;
+      bin?: Record<string, string>;
+    };
+    const launcher = readFileSync('scripts/lan.mjs', 'utf8');
+    const css = readFileSync('src/ui/styles.css', 'utf8');
+
+    // the label sits OUTSIDE the bridge guard now; inside it, the web build shows no host half
+    const hostLabel = lan.indexOf('Host · this computer');
+    const bridgeGuard = lan.indexOf('{bridge?.lan && (');
+    check(
+      'lan guide: the Host heading renders without the desktop bridge',
+      hostLabel > 0 && bridgeGuard > 0 && hostLabel < bridgeGuard,
+    );
+    check(
+      'lan guide: the page states that a browser tab cannot be a server',
+      /can’t be a server/.test(lan),
+    );
+    check(
+      'lan guide: the page says guests install nothing (the half people assume wrong)',
+      /guests install nothing/i.test(lan),
+    );
+
+    // the four commands, and that the clone URL is not a second copy of the repo address
+    check(
+      'lan guide: the clone command is built from LINKS.repo, not a hardcoded URL',
+      lan.includes('git clone ${LINKS.repo}') && /import \{ APP_NAME, LINKS \}/.test(lan),
+    );
+    check(
+      'lan guide: the printed command is the one package.json actually defines',
+      lan.includes("cmd: 'npm run lan'") && pkg.scripts?.lan === 'node scripts/lan.mjs',
+    );
+    check(
+      'lan guide: `npm ci` (the lockfile is committed; a host is not resolving versions)',
+      lan.includes("cmd: 'npm ci'"),
+    );
+    check('lan guide: a dsim-lan bin exists, so a one-liner stays possible later',
+      pkg.bin?.['dsim-lan'] === 'scripts/lan.mjs');
+
+    // the styles the steps use must EXIST — an invented class renders as unstyled text
+    check(
+      'lan guide: .ds-lan-steps and .ds-lan-url.compact are defined in the stylesheet',
+      css.includes('.ds-lan-steps') && css.includes('.ds-lan-url.compact'),
+    );
+
+    // ---- the launcher itself
+    check(
+      'lan launcher: sets LAN_MODE and SERVE_CLIENT together (the server refuses one alone)',
+      /LAN_MODE: '1'/.test(launcher) && /SERVE_CLIENT: DIST/.test(launcher),
+    );
+    // The file's own header EXPLAINS why `shell: true` is avoided, so a bare search finds
+    // the explanation and passes whatever the code does. Strip comments first.
+    const launcherCode = launcher
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('//'))
+      .join('\n');
+    check(
+      'lan launcher: spawns with NO shell, which is what makes it cross-platform',
+      !/shell:\s*true/.test(launcherCode) && launcher.includes("stdio: 'inherit'"),
+    );
+    check(
+      'lan launcher: calls npm.cmd on win32 (a bare `npm` is not found without a shell)',
+      /npm\.cmd/.test(launcher) && /win32/.test(launcher),
+    );
+    check(
+      'lan launcher: prints private addresses first, same ordering as electron/lanHost.cjs',
+      // The launcher classifies with REGEX LITERALS, so its source spells the dots escaped —
+      // `String.raw` is how that is searched for without a second layer of escaping here.
+      launcher.includes(String.raw`/^192\.168\./`) &&
+        launcher.includes(String.raw`/^10\./`) &&
+        launcher.includes('Number(y.private) - Number(x.private)'),
+    );
+
+    // ---- the clipboard fallback
+    check(
+      'lan copy: there is an execCommand fallback for the non-secure LAN origin',
+      lan.includes("document.execCommand('copy')"),
+    );
+    check(
+      'lan copy: the old unguarded `navigator.clipboard?.writeText(` no-op is gone',
+      !/void navigator\.clipboard\?\.writeText/.test(lan),
+    );
+    check(
+      'lan copy: a rejected clipboard promise still tries the fallback',
+      /\.then\([\s\S]{0,400}?copyFallback\(text\)/.test(lan),
+    );
+  }
   // ---- LAN: a host's server hands out files, so it must not hand out ANY file
   /**
    * THE ONE SECURITY BOUNDARY IN `server/static.ts`.
