@@ -792,3 +792,23 @@ Two more items after your four:
 2. Launching into the OPPONENT's up-cell: no rule bans it and it would score THEM a TIP. Allow in the sim?
 3. G410 names NECTAR only: POLLEN may enter a FLOWER before 1:00 and just earns nothing until an owner exists. Confirm.
 4. G407 caps CONTROL at 4 with a VERBAL WARNING (MAJOR + YELLOW only if STRATEGIC). The sim's structural hopper cap of 4 (field-plan §4.3) plus G304.G's four staged POLLEN means the first floor ball touched is the fifth CONTROLLED element. Keep the hard cap, or model the warning?
+
+### Rulings 2026-09-12 late (owner) — filed in field-plan §2.1, §4.3, §7, §8
+
+1. PARK: own LOADING ZONE only (already what `bbParkedNow` does; settled).
+2. Opponent's up-cell: an element launched by the other alliance does NOT enter — a miss, lands as ground. Not penalised.
+3. G410 binds NECTAR only (already what penalties.ts does; settled).
+4. G407 is a WARNING, not a cap: the hopper is bounded by the volume law alone; CONTROL of a 5th element is a log line + HUD chip, no points, no MAJOR.
+
+### A5a item 7 — refuse the opponent's cell (ruling 2)
+
+`play.ts` hive capture: take only if the element's LAUNCHING alliance is the hive's owner (read whatever the flight state carries about its launcher; if it carries nothing, add `by: Alliance` to the flight variant and set it in `releasePollen`/launch — plain JSON, survives slimWorld). A refused shot stays a flight element and lands as ground. `elements.ts` `scoreTargets(world, a)` drops the opponent cell from the list (Lane B's `bbPickTarget` already skips it). Smoke: same shot from a red robot into blue's up-cell is refused; from a blue robot it is taken.
+
+### A5b items 4–5 (rulings 3–4)
+
+4. G407 as a WARNING: on the exported CONTROL count (hopper + herded) exceeding 4, `fire()` a 'warning' severity (add it to `bbAwardFoul`'s severity union if absent — 0 points, event line `G407 CONTROL of 5+ elements`, a `warnings` count in the HUD slice for a chip). No MAJOR, no card. Edge-triggered, re-fires on re-entry. Remove the §4.3 "MAJOR + YELLOW at 6+" branch if you wrote it. Smoke: 5 controlled warns once, 4 never, back to 4 and up again warns again.
+5. Nothing to do for G410 (it already bills NECTAR only); add one smoke line proving a POLLEN entering a FLOWER at 2:00 bills nothing.
+
+### Lane B — relay 2 (paste into the robot chat)
+
+Owner ruling: G407 is a warning, not a cap. Delete `BB_STORAGE_MAX = 4` as the RULE ceiling in config.ts and let `bbStorageMax(spec)` (the volume law) bound the hopper dial; `BB_STORAGE_DEFAULT` stays 4. Fix the config.ts comments that call 4 the rule. Smoke: the biggest legal chassis can hold more than 4; the default still spawns with 4. The rules lane bills the warning; you only lift the cap. alpha is f01f924+.
