@@ -56,10 +56,30 @@ Frame: two triangular metal structures joined at the apex by a crossbar, on moun
 under the tiles. **49.46 in wide (x) × 38.95 in deep (y)** at the base, which is its widest
 point; pivot axes **43.95 in** above the tiles (§9.6.1). A BIOBUZZ logo panel on each side.
 
+- **THE SEE-SAW IS ONE RIGID BAR AT 30°, SO BOTH CELLS FORESHORTEN EQUALLY IN PLAN.** The two
+  cells sit on one assembly through the pivot; one end is high and one is low, but both are at
+  30° from horizontal, so a top-down view projects both by `cos 30° = 0.866`. Only `z` tells
+  them apart. Measured (owner CAD, 2026-09-12): the cell outer face is **21 in from the pivot**
+  in 3-D, and the cell is a **rectangular prism 12 in deep**. Projected:
+
+  | along the hive axis, from the pivot | true (in) | **plan (× cos 30°)** |
+  |---|---|---|
+  | cell outer face | 21.46 | **18.58** |
+  | cell centre | 15.44 | **13.37** |
+  | cell inner face | 9.42 | **8.16** |
+  | cell depth | 12.04 | **10.43** |
+  | assembly end to end | 42.91 | **37.16** |
+
+  The 20-in opening WIDTH is perpendicular to the tilt axis and is NOT foreshortened, so a
+  cell's plan footprint — the launch accept window — is **20 wide × 10.43 deep**, centred 13.37
+  from the pivot. (The manual's 18.84 is the gap between the two cells' INNER faces, 2 × 9.42;
+  it is not the centre spacing.)
 - **HIVE centre to centre 25.5 in** (Fig 9-10) → red pivot x = −12.75, blue pivot x = +12.75
   (`APPROX` that the pair is centred on the field — Fig 9-2 shows it so).
-- Frame legs stand at **x = ±24.73**, feet at y ≈ ±19.5 (Fig 9-8; `APPROX` — the base bars run
-  along y at each x extreme, leg extrusion ~1.5 in). The space under the hives is drivable:
+- Frame base bars: **bent sheet metal, effective 1 in thick, with one edge ON the tile seam at
+  x = ±24 and the other 1 in OUTWARD** (owner CAD, 2026-09-12) — so a bar occupies x ∈ [24, 25]
+  and x ∈ [−25, −24]. Feet at y ≈ ±19.4 (Fig 9-8 gives a 38.95-in frame depth; the CAD measure
+  reads 38.80). The space under the hives is drivable:
   bottom of a HIVE is 25.5 in above the tiles (Fig 9-10) and G409 assumes robots drive under it.
 - Each HIVE = 2 CELLS (same colour) on a connecting bar, rotating on the pivot; **bi-stable**,
   one CELL up at a time. Cells **18.84 in apart**, each **12.04 in deep**, assembly **42.91 in**
@@ -87,13 +107,19 @@ Four, attached to the perimeter wall, one per wall, on the tile seam one tile of
 
 | flower | wall | centre (sim) | nearest alliance |
 |---|---|---|---|
-| F1 | left (x = −72) | (−72 + d, **−24**) | red |
-| F2 | rear (y = +72) | (**−24**, +72 − d) | red side of the rear wall |
-| F3 | right (x = +72) | (+72 − d, **+24**) | blue |
-| F4 | audience (y = −72) | (**+24**, −72 + d) | blue side of the audience wall |
+| F1 | left (x = −72) | (**−69.46**, **−24**) | red |
+| F2 | rear (y = +72) | (**−24**, **+69.46**) | red side of the rear wall |
+| F3 | right (x = +72) | (**+69.46**, **+24**) | blue |
+| F4 | audience (y = −72) | (**+24**, **−69.46**) | blue side of the audience wall |
 
-`d` = stand-off of the ring centre from the wall — `APPROX` 3.0 in (Fig 9-12 shows 2.40 from the
-ring centre to the wall-side flat plus the mounting extrusion).
+Measured (owner CAD, 2026-09-12): the ring centre is **2.54 in** from the wall face, and each
+flower sits **exactly on the centreline of the tile seam** — x or y = ±24.000, not offset to one
+side.
+
+**The footprint is a RECTANGLE, not a circle**: the face parallel to the wall is **4.9 in** from
+it and the flower is **~6 in wide** along the wall. So the solid a robot meets is a 6 × 4.9 in
+box flush against the wall, with the 4.0-in ring opening inside it 2.54 in off the wall — not
+the `APPROX` 2.6-in disc the first pass assumed.
 
 Geometry: top ring opening **4.0 in dia** at **21.5 in** above tiles; backstop **1.25 in** tall
 on the field side of the top ring; retrieval opening at the bottom **3.55 in tall × 3.57 in
@@ -238,13 +264,15 @@ never go in the repo.
 
 ## 8. APPROX to settle on a real field (09-14)
 
-- FLOWER stand-off `d` from the wall (~3.0) and footprint (~5-in rounded square) — tape measure.
-- FLOWER seam position: exactly on the ±24 seam, or offset? Which side of the seam?
-- LOADING ZONE tape: inside edge at x = ±61? Which side of the row-4 / row-5 seams?
-- HIVE frame: leg x (±24.73 from Fig 9-8) and foot y extent (±19.5), bar thickness (~1.5).
+Most of this list was settled by owner CAD measurement on 2026-09-12 and folded into the
+sections above: flower stand-off 2.54 · flower footprint a 6 × 4.9 rectangle · flower exactly on
+the seam centreline · frame bar 1 in thick with one edge on the ±24 seam, extending outward ·
+cell outer face 21 from the pivot, prism 12 deep, both cells foreshortened by cos 30° in plan.
+What is still open:
+
+- LOADING ZONE tape: inside edge at x = ±61, and which side of the row-4 / row-5 seams the tape
+  sits on. `APPROX` ±0.5 in, cosmetic.
 - HIVE pair centred on the field? Pivot x = ±12.75 assumed from "25.5 centre to centre".
-- Up-CELL opening horizontal footprint (accept rect ~20 × 12) and its projected centre
-  (~13.4 from the pivot along y).
 - **Tip load**: weigh one POLLEN and one NECTAR; count POLLEN lobbed into a staged cell
   (3 nectar already in it) until it tips. Repeat with the cell empty.
 - Element rolling behaviour: does a NECTAR roll like a POLLEN on the soft tiles (owner note).
