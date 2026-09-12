@@ -161,6 +161,13 @@ So:
 - There is **no default remote.** Unconfigured, every entry point is a no-op or an
   explanation. A default that publishes is a default that publishes somewhere wrong on
   somebody's machine, once — and a public push is public the moment it lands.
+- **The board is a PERSONAL repository (`featurescript/dsim-coord`), not an organisation
+  one, and that is deliberate.** An org repo inherits the org's
+  `default_repository_permission`; on `Horizon-36596` that is `read`, so creating the board
+  there silently gave all eight members live access to what three people were building. The
+  fix is not to lower the org default — that would change access for every Horizon
+  repository as a side effect of a coordination board. A personal repo has exactly the
+  collaborators it is given. **Do not move this into an organisation.**
 
 **What this does not protect against**, stated plainly so nobody is surprised:
 
