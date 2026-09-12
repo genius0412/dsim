@@ -393,6 +393,51 @@ async function main(): Promise<void> {
     eloHist.find((r) => r.userId === 'badge-own')?.role === 'owner',
   );
 
+  // ---- getSkill / actFor — the reads a SKILL-BASED matchmaker pairs on ------
+  // `getRating`'s `?? 1000` cannot tell "never played this board" from "played to
+  // exactly 1000", and the placement flag is games-based — so the matcher needs
+  // `games` in the same row, which neither existing read selects.
+  {
+    const placed = await repo.getSkill('badge-own', '1v1', act, 'decode');
+    check('skill: a played board returns the real rating', placed.rating === 1600, String(placed.rating));
+    check('skill: ...and the games count that decides placement', placed.games === 5, String(placed.games));
+    check('skill: 5 games is PLACED', placed.placed === true);
+
+    // the ambiguity the matcher must not fall into: an ACCOUNT WITH NO ROW reads
+    // 1000, and that must surface as UNPLACED so a matcher declines to gate on it
+    const unknown = await repo.getSkill('badge-nobody', '1v1', act, 'decode');
+    check('skill: an unplayed board defaults to 1000', unknown.rating === 1000, String(unknown.rating));
+    check('skill: ...but reports UNPLACED, so 1000 is never mistaken for a real rating',
+      unknown.placed === false && unknown.games === 0);
+
+    // a partially-placed player is the case that breaks a rating-only read
+    await repo.ensureProfile('badge-new', 'Newbie');
+    for (let i = 0; i < 2; i++) await repo.upsertRating('badge-new', '1v1', act, 1000, 300, 0.06, 'decode');
+    const partial = await repo.getSkill('badge-new', '1v1', act, 'decode');
+    check('skill: 2 games is still UNPLACED', partial.placed === false && partial.games === 2, String(partial.games));
+
+    // the board key is (mode, game, act) — a rating must not leak across any of them
+    const otherMode = await repo.getSkill('badge-own', '2v2', act, 'decode');
+    check('skill: a 1v1 rating does not leak into the 2v2 board', otherMode.placed === false);
+    const otherGame = await repo.getSkill('badge-own', '1v1', act, 'chain');
+    check('skill: ...nor across games', otherGame.placed === false);
+
+    // actFor collapses currentSeasonNumber + actForSeason and MEMOIZES them: reading a
+    // rating was three sequential round trips, which is fine once per staged match and
+    // not fine once per JOIN
+    repo.clearActCache();
+    const a1 = await repo.actFor('decode');
+    check('actFor: resolves the same act as the two-query path', a1 === act, `${a1} vs ${act}`);
+    const a2 = await repo.actFor('decode');
+    check('actFor: a second call is served from the memo', a2 === a1);
+    // and the memo is per-GAME, or a Chain queuer would be priced on DECODE's act
+    const aChain = await repo.actFor('chain');
+    check('actFor: the memo is keyed per game', typeof aChain === 'number');
+    // the TTL is what lets an admin roll an act without a redeploy
+    const aStale = await repo.actFor('decode', Date.now() + 120_000);
+    check('actFor: past the TTL it re-reads rather than serving a stale act', aStale === act);
+  }
+
   // RECORDS — the primary name already had a badge; the DUO PARTNER did not,
   // and a duo row prints two names.
   await repo.submitRecord({
