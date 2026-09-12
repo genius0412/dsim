@@ -130,6 +130,18 @@ export interface BbHiveState {
   contents: number[];
   tips: number;
   tipping: number;
+  /**
+   * HAS THE SWING IN PROGRESS ALREADY DROPPED ITS LOAD?
+   *
+   * The spill and the TIP are two moments of ONE swing: the tray empties as the bar passes
+   * LEVEL (`BB_TIP_RELEASE_S`) and the 20 points land two seconds later when it SETTLES
+   * (§10.5.1 — the damper has to make contact). `tipping` alone cannot tell those apart,
+   * because a bar with 2 s left has either just emptied or is about to, depending on nothing
+   * the rest of the state records — so without this latch a re-entrant step spills the same
+   * contents twice, which is a duplicate in `world.balls` and the end of the conservation
+   * invariant. `false` whenever `tipping` is 0, and reset at the end of every swing.
+   */
+  released: boolean;
 }
 
 /**
@@ -142,6 +154,26 @@ export interface BbHiveState {
  */
 export interface BbFlowerState {
   stack: number[];
+  /** which FLOWER this is — `BB_FLOWERS[i].id`, i.e. `F1`…`F4`.
+   *
+   * REDUNDANT WITH THE INDEX, AND CARRIED ANYWAY, because the state is the thing that reaches
+   * the wire, a snapshot and the rules lane, and an array position is not a name. A row that
+   * says which flower it is can be logged, asserted against and read in a HUD slice without
+   * the reader also holding `BB_FLOWERS` in the right order. */
+  id: string;
+  /**
+   * NECTAR HELD AT THIS FLOWER THAT HAS NOT YET ENTERED PLAY, and the count still owed to it.
+   *
+   * ⚠️ DRAFT, AND DELIBERATELY UNWRITTEN BY THE SIM. They are the A4 state contract's two
+   * per-flower fields (`docs/biobuzz/prompts.md`, "A4 split"), so the rules lane can compile
+   * against them from the first commit. Nothing in the manual as distilled so far
+   * (`field-plan.md` §2.2) describes a FLOWER dispensing NECTAR — the only supply rule found
+   * is the HUMAN PLAYER's (§2.4, G426), which is per ALLIANCE and lives on `nectarStock` /
+   * `nectarDue` below. Both stay 0 until the manual says what a flower's own stock is; writing
+   * a guessed drip into them would be the invented-geometry failure the contract forbids.
+   */
+  stock: number;
+  nectarDue: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -222,6 +254,19 @@ export interface BiobuzzState {
    * be owed an entry it has no stock for, and at ≤ 60 s the remaining stock enters regardless
    * of what is due (§2.4 of the field plan). DRAFT. */
   nectarDue: Record<Alliance, number>;
+  /**
+   * SECONDS UNTIL THIS ALLIANCE'S HUMAN PLAYER PUTS THE NEXT NECTAR ON THE TILES.
+   *
+   * A human player is not instant: a TIP earns an entry (G426) and the nectar appears in the
+   * LOADING ZONE a beat later, and in the ≤ 60 s dump the remaining stock arrives one at a
+   * time rather than as a pile on one tile. That beat is what this counts down.
+   *
+   * It is STATE rather than a derived value because it is a clock, and the one clock rule this
+   * repo has is that a clock lives on the world (`world.time`, this) and never in a module
+   * global — a global would be shared by every world in the process, so a replay and a live
+   * match in the same tab would take turns draining it. 0 means "ready now".
+   */
+  nectarTimer: Record<Alliance, number>;
   /** per robot id: did it LEAVE (stop contacting the perimeter) by the end of AUTO? Latched at
    * that instant and never recomputed, because the achievement is assessed once (Table 10-2)
    * and a robot that drives back to the wall in TELEOP keeps its 3. DRAFT. */
@@ -262,14 +307,20 @@ export function emptyBiobuzzState(): BiobuzzState {
     // red's south CELL up and blue's north (§10.3.1, Fig 10-2). Contents stay empty — the
     // three NECTAR in each up-cell are `spawn.ts`'s to place.
     hives: {
-      red: { up: 'south', contents: [], tips: 0, tipping: 0 },
-      blue: { up: 'north', contents: [], tips: 0, tipping: 0 },
+      red: { up: 'south', contents: [], tips: 0, tipping: 0, released: false },
+      blue: { up: 'north', contents: [], tips: 0, tipping: 0, released: false },
     },
     // four literals rather than a `map`, so the tuple type holds and so the four stacks are
     // four distinct arrays — a `fill()` of one object would alias every flower to one stack.
-    flowers: [{ stack: [] }, { stack: [] }, { stack: [] }, { stack: [] }],
+    flowers: [
+      { id: 'F1', stack: [], stock: 0, nectarDue: 0 },
+      { id: 'F2', stack: [], stock: 0, nectarDue: 0 },
+      { id: 'F3', stack: [], stock: 0, nectarDue: 0 },
+      { id: 'F4', stack: [], stock: 0, nectarDue: 0 },
+    ],
     nectarStock: { red: 0, blue: 0 },
     nectarDue: { red: 0, blue: 0 },
+    nectarTimer: { red: 0, blue: 0 },
     leave: {},
     parkAuto: {},
     parkTele: {},
