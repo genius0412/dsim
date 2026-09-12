@@ -127,3 +127,26 @@
   exports `bbIndexElements(world)` for it; the fix is calling it after `world.balls = pollen`.
 - **Still wanted from the shared core**: the per-artifact radius. NECTAR is staged, drawn and
   now indexed at `BB_NECTAR_R`, and still collides at POLLEN size.
+
+## 2026-09-12 · every target says which way it opens, and the anchors are legal
+
+- **Base is `alpha` now**, not `biobuzz` — merged clean, nothing of mine conflicted (it was all
+  already in alpha). Field lane **185 checks, all pass**; `npx tsc --noEmit` clean.
+- **`ScoreTarget.mouth?: Vec2`** (`state.ts`) — unit vector OUT of the opening, filled in
+  `scoreTargets`. Up-CELL: away from the HIVE pivot, so the same sign as the cell's own `pos.y`
+  and correct through a TIP rather than hard-coded per alliance. FLOWERS: into the field —
+  F1 `(1,0)`, F2 `(0,-1)`, F3 `(-1,0)`, F4 `(0,1)`. Optional because a target that is a plain
+  volume has no such direction; absence means "no constraint", never a default direction.
+- **`BB_START_POSES` moved out of the LOADING ZONE band** (`config.ts`): `(60, ±36)` →
+  `(61.5, 36)` and `(61.5, −60)`. The old BOTTOM anchor sat inside `BB_LZ.blue` and both
+  stopped 2 in short of the wall, so `spawn.ts` repaired them on every spawn — the anchor a
+  builder places, the anchor the selector labels TOP/BOTTOM, and the pose the robot got were
+  three different things. Spawning now moves them **0.010 in**, which is `WALL_SEAT`, the
+  float-tangency guard. `bbSnapStart` stays: the seating is spec-dependent.
+- **Checks**: each up-CELL mouth points away from its pivot, asserted STAGED and TIPPED; every
+  mouth is a unit vector; each FLOWER's mouth steps away from the wall it stands against; each
+  anchor spawns within 0.05 in of where it is written and is legal on the RAW anchor (own side,
+  wall contact inside `START_TOUCH_TOL`, clear of its own zone) rather than on the repaired pose.
+- **TWO COPIES OF ONE TABLE, still**: `drawField.ts` has a private `FIELD_SIDE` identical to the
+  `FLOWER_MOUTH` map in `elements.ts`. Four entries, two chances to disagree about which way
+  `rear` is — they should collapse to one exported constant. `drawField.ts` is not this lane's.
