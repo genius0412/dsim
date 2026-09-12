@@ -1,4 +1,4 @@
-import type { Artifact, RobotCommand, RobotSpec, World } from '../../src/types';
+import type { Alliance, Artifact, RobotCommand, RobotSpec, World } from '../../src/types';
 import * as C from '../../src/config';
 import { worldHash } from '../../src/net/checksum';
 import { slimWorld, unslimWorld } from '../../src/net/protocol';
@@ -12,6 +12,7 @@ import {
   BB_FLOWERS,
   BB_GARDEN,
   BB_HALF_X,
+  BB_HIVE_CELL_DY,
   BB_HALF_Y,
   BB_LZ,
   BB_NECTAR_COUNT,
@@ -22,7 +23,7 @@ import {
   type BbRect,
 } from '../../src/games/biobuzz/config';
 import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
-import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
+import { createBiobuzzWorld, stageBiobuzz } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { updateBiobuzz } from '../../src/games/biobuzz/play';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
@@ -1132,6 +1133,118 @@ export function fieldChecks(check: Check): void {
         `staging [${a} human player]: ${STOCK_NECTAR} NECTAR in hand, all ${a}-coloured`,
         hand.length === STOCK_NECTAR && hand.every((b) => b.color === a),
         `n=${hand.length} colours=[${[...new Set(hand.map((b) => b.color))].join(',')}]`,
+      );
+    }
+  }
+
+  // -- THE STATE BAG AGREES WITH world.balls --------------------------------
+  /**
+   * `flowers[i].stack`, `hives[a].contents` and `nectarStock[a]` are a SECOND VIEW of
+   * `world.balls`, and this is the check that keeps them one thing.
+   *
+   * They exist for speed and for ORDER: `drawField.ts` reads a FLOWER's depth and a CELL's
+   * count every frame, and both FLOWER scoring rules are about which NECTAR is top-most and
+   * which is bottom-most (S10.5.2). None of that is derivable from the array cheaply, and all
+   * of it is wrong the instant the two disagree -- a FLOWER that DRAWS 4 deep and CONSERVES 3
+   * is invisible to every other check here, because conservation only ever counts the array.
+   *
+   * BOTH DIRECTIONS. An id in a stack must be a ball with that exact `el` tag, and a ball with
+   * an `el` tag must be in that stack -- a one-way check passes a staging that simply forgot
+   * to list the fourth POLLEN. ORDER too, since "bottom-most" is a scoring rule: the stack is
+   * asserted to be the ball ids sorted by `slot`, not merely to hold the right set.
+   *
+   * RUN AFTER 300 TICKS as well as at t = 0. Nothing writes these fields at runtime yet, so
+   * the second pass is trivially true today -- which is the point of writing it today. The
+   * capture path, the tip machine and G418.B retrieval all land on this state next, and the
+   * check that catches a bad writer has to exist BEFORE the writer does.
+   */
+  {
+    const w = createBiobuzzWorld('match', 11, [
+      setup(0, 'blue', {}, 0),
+      setup(1, 'red', {}, 0),
+    ]);
+    const audit = (when: string): void => {
+      const bb = w.biobuzz!;
+      const byId = new Map(w.balls.map((b) => [b.id, b]));
+      // FORWARD: every listed id is a ball, and it is tagged for the thing that lists it.
+      const listed: number[] = [];
+      const bad: string[] = [];
+      const view = (tag: string, ids: readonly number[]): void => {
+        for (const id of ids) {
+          listed.push(id);
+          const b = byId.get(id);
+          if (!b) bad.push(`${tag}:${id} is not a ball`);
+          else if (b.state.kind !== 'element' || b.state.el !== tag) {
+            bad.push(`${tag}:${id} is ${b.state.kind === 'element' ? b.state.el : b.state.kind}`);
+          }
+        }
+      };
+      bb.flowers.forEach((f, i) => view(`flower:${i}`, f.stack));
+      for (const a of ['red', 'blue'] as const) view(`hive:${a}`, bb.hives[a].contents);
+      check(
+        `state view [${when}]: every id in a FLOWER stack or a CELL is a ball with that el tag`,
+        bad.length === 0,
+        bad.length ? bad.join(' · ') : `${listed.length} ids`,
+      );
+      // REVERSE: every element-state ball is listed exactly once, by the thing it names.
+      const elements = w.balls.filter((b) => b.state.kind === 'element');
+      const seen = new Set(listed);
+      const missing = elements.filter((b) => !seen.has(b.id));
+      check(
+        `state view [${when}]: every element-state ball is listed exactly once`,
+        missing.length === 0 && listed.length === elements.length && seen.size === listed.length,
+        `${elements.length} element balls · ${listed.length} listed · ${missing.length} unlisted`,
+      );
+      // ORDER: the stack is the ids sorted by slot, which is what "bottom-most" means.
+      const slotOf = (id: number): number => {
+        const b = byId.get(id);
+        return b && b.state.kind === 'element' ? b.state.slot : -1;
+      };
+      const ordered = (ids: readonly number[]): boolean =>
+        ids.every((id, k) => k === 0 || slotOf(ids[k - 1]) <= slotOf(id));
+      check(
+        `state view [${when}]: every stack runs bottom to top by slot`,
+        bb.flowers.every((f) => ordered(f.stack)) &&
+          (['red', 'blue'] as const).every((a) => ordered(bb.hives[a].contents)),
+        bb.flowers.map((f) => `[${f.stack.map(slotOf).join('')}]`).join(''),
+      );
+      // THE COUNT: nectarStock is the stock balls, not a number typed next to them.
+      const stockOf = (a: Alliance): number =>
+        w.balls.filter((b) => b.state.kind === 'stock' && b.state.alliance === a).length;
+      check(
+        `state view [${when}]: nectarStock is the count of stock balls`,
+        bb.nectarStock.red === stockOf('red') && bb.nectarStock.blue === stockOf('blue'),
+        `state ${bb.nectarStock.red}/${bb.nectarStock.blue} · balls ${stockOf('red')}/${stockOf('blue')}`,
+      );
+    };
+    audit('staged');
+    w.match.phase = 'auto';
+    for (let t = 0; t < 300; t++) biobuzzStep(w, C.SIM_DT, new Map());
+    audit('300 ticks');
+  }
+
+  // -- THE UP-CELL COMES FROM THE STATE, NOT THE CONSTANT --------------------
+  /**
+   * Staging reads `hives[a].up` rather than `BB_HIVE_UP_STAGED`. At t = 0 the two agree by
+   * construction (`emptyBiobuzzState` builds the staged tilt), so the only way to tell them
+   * apart is to stage a world whose hives have ALREADY been tipped -- which is what a restored
+   * snapshot or a mid-match scene is. Against the constant, the three NECTAR would go into the
+   * cell facing the FLOOR.
+   */
+  {
+    const PER_CELL = 3;
+    const w = createBiobuzzWorld('match', 12, [setup(0, 'blue', {}, 0)]);
+    const bb = w.biobuzz!;
+    bb.hives.red.up = 'north';
+    bb.hives.blue.up = 'south';
+    stageBiobuzz(w);
+    for (const a of ['red', 'blue'] as const) {
+      const want = bb.hives[a].up === 'south' ? -BB_HIVE_CELL_DY : BB_HIVE_CELL_DY;
+      const got = bb.hives[a].contents.map((id) => w.balls.find((b) => b.id === id)!.pos.y);
+      check(
+        `state view: re-staging a TIPPED ${a} HIVE fills the cell that is UP`,
+        got.length === PER_CELL && got.every((y) => Math.abs(y - want) < 1e-9),
+        `up=${bb.hives[a].up} want y=${want.toFixed(1)} got=[${got.map((y) => y.toFixed(1)).join(',')}]`,
       );
     }
   }

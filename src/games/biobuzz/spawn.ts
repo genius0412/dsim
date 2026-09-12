@@ -29,7 +29,6 @@ import {
   BB_HALF_Y,
   BB_HIVE_CELL_DY,
   BB_HIVE_OPEN_Z,
-  BB_HIVE_UP_STAGED,
   BB_HIVE_X,
   BB_LZ,
   BB_NECTAR_R,
@@ -40,7 +39,7 @@ import {
 import { capturePollen } from './elements';
 import { bbCoerceSpec } from './robotConfig';
 import { bbFootprint } from './robot';
-import { emptyBiobuzzState } from './state';
+import { emptyBiobuzzState, type BiobuzzState } from './state';
 import { isTurreted, type BbScoreMode } from './mounts';
 
 /**
@@ -548,22 +547,28 @@ function preloads(world: World, startId: number): Artifact[] {
 
 /**
  * NECTAR IN THE CELLS — three of each alliance's colour in that alliance's UPWARD-FACING
- * CELL (§10.3.1), which at staging is the one `BB_HIVE_UP_STAGED` names: each HIVE is tilted
- * so the CELL pointing at a FLOWER is DOWN, putting red's south cell and blue's north up.
+ * CELL (§10.3.1): each HIVE is tilted so the CELL pointing at a FLOWER is DOWN, putting red's
+ * south cell and blue's north up.
+ *
+ * WHICH CELL IS UP COMES FROM THE STATE, `hives[a].up`, not from `BB_HIVE_UP_STAGED`. The
+ * constant is the STAGED pose and `emptyBiobuzzState` already builds the hives in it, so at
+ * t = 0 the two agree — but the state is what a TIP moves, and the constant is not. Staging a
+ * world whose hives had been tipped (a scene, a restored snapshot) against the constant would
+ * put the three NECTAR in the cell facing the floor.
  *
  * The CELL centre is `BB_HIVE_CELL_DY` from the pivot along y, on whichever side is up, and
  * the pivots sit at x = −/+`BB_HIVE_X` (Fig 9-10, centre to centre 25.5). The three are laid
- * across the cell one NECTAR diameter apart; z is the mid-height of the opening. None of that
- * is read by anything yet — an `element` ball is neither solved nor drawn — so it is a
- * sensible place rather than a measured seat.
+ * across the cell one NECTAR diameter apart; z is the mid-height of the opening. Neither is a
+ * measured seat — an `element` ball is neither solved nor drawn as a loose ball — but the
+ * count and the ORDER are read, by `hives[a].contents`.
  */
-function cellNectar(startId: number): Artifact[] {
+function cellNectar(startId: number, hives: BiobuzzState['hives']): Artifact[] {
   const out: Artifact[] = [];
   let id = startId;
   const z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
   for (const a of ['red', 'blue'] as const) {
     const x0 = a === 'red' ? -BB_HIVE_X : BB_HIVE_X;
-    const y = BB_HIVE_UP_STAGED[a] === 'south' ? -BB_HIVE_CELL_DY : BB_HIVE_CELL_DY;
+    const y = hives[a].up === 'south' ? -BB_HIVE_CELL_DY : BB_HIVE_CELL_DY;
     for (let slot = 0; slot < NECTAR_PER_CELL; slot++) {
       const x = x0 + (slot - (NECTAR_PER_CELL - 1) / 2) * BB_NECTAR_R * 2;
       out.push(element(id++, a, BB_NECTAR_R, { x, y }, { kind: 'element', el: `hive:${a}`, slot }, z));
@@ -597,6 +602,25 @@ function stockNectar(startId: number): Artifact[] {
 }
 
 /**
+ * THE STATE BAG IS A VIEW OF `world.balls`, and this is the one place that builds it.
+ *
+ * `flowers[i].stack` and `hives[a].contents` hold BALL IDS and `nectarStock[a]` is a COUNT, so
+ * every one of them is a second way of saying something `world.balls` already says. They exist
+ * because the renderer and the scorer ask questions the array answers slowly: `drawField.ts`
+ * wants a FLOWER's depth and a CELL's count every frame, and both scoring rules for a FLOWER
+ * are about the ORDER of its stack (§10.5.2 — the owner is the top-most NECTAR, the bonus is
+ * the bottom-most), which a set of positions cannot express.
+ *
+ * DERIVED, NOT WRITTEN ALONGSIDE. The alternative — each builder appending its own ids as it
+ * goes — is one edit away from a stack that lists a ball the array does not have, and the
+ * failure is silent: a FLOWER that draws 4 deep and conserves 3. Reading the ids back off the
+ * finished array makes disagreement unrepresentable at staging, and `field.ts` asserts the
+ * same equality afterwards so a RUNTIME writer cannot drift either.
+ *
+ * BOTTOM TO TOP, by `slot` rather than by array order. The builders happen to emit ascending
+ * slots, but "bottom-most" is a scoring rule and it should not rest on the order a loop
+ * happened to push in.
+ *
  * Stage the whole field onto `world`. Called once by `createBiobuzzWorld`, after the robots
  * exist (the preloads need them) and before anything steps.
  *
@@ -618,12 +642,71 @@ export function stageBiobuzz(world: World): void {
   staged.push(...take(gardenLine(id, 'red')));
   staged.push(...take(gardenLine(id, 'blue')));
   staged.push(...take(preloads(world, id)));
-  staged.push(...take(cellNectar(id)));
+  staged.push(...take(cellNectar(id, bb ? bb.hives : emptyBiobuzzState().hives)));
   staged.push(...take(stockNectar(id)));
 
   world.balls = staged;
   // continue the id sequence past the staged set, so a runtime spawn can never alias one
   if (bb) bb.nextBallId = id;
+  if (bb) bbIndexElements(world);
+}
+
+/**
+ * Read `flowers[i].stack`, `hives[a].contents` and `nectarStock[a]` back off `world.balls`.
+ *
+ * EXPORTED because `world.balls` has a second writer: `bbWorld` in `scenes.ts` replaces the
+ * whole array with a scene's own POLLEN layout after staging has run, and a state bag left
+ * over from the staged set then describes elements the world no longer has — which is exactly
+ * what a gallery cell captioned `0 pollen` under four FLOWERS badged `4` is showing. Anything
+ * that assigns `world.balls` wholesale should call this straight afterwards. `scenes.ts` is
+ * not this lane's file; see `docs/biobuzz/HANDOFF-field.md` for the one-line follow-up.
+ *
+ * Every field is REBUILT rather than appended to: staging is not incremental, and a world
+ * staged twice (a scene rebuilding, a smoke fixture) would otherwise carry both passes' ids.
+ *
+ * An `el` tag naming a FLOWER or HIVE that does not exist is DROPPED rather than thrown on.
+ * The tags are `string`s on `BallState`, so an out-of-range index is a type-legal value this
+ * function can be handed; taking it would push an id into a stack nothing renders, and
+ * throwing would take a whole world down over one mislabelled ball.
+ */
+export function bbIndexElements(world: World): void {
+  const bb = world.biobuzz;
+  if (!bb) return;
+  indexInto(bb, world.balls);
+}
+
+function indexInto(bb: BiobuzzState, staged: readonly Artifact[]): void {
+  for (const f of bb.flowers) f.stack = [];
+  for (const a of ['red', 'blue'] as const) {
+    bb.hives[a].contents = [];
+    bb.nectarStock[a] = 0;
+  }
+
+  // slot is carried alongside the id so the sort below is by the STACK's own order
+  const byFlower: { id: number; slot: number }[][] = [[], [], [], []];
+  const byHive: Record<Alliance, { id: number; slot: number }[]> = { red: [], blue: [] };
+
+  for (const b of staged) {
+    if (b.state.kind === 'stock') {
+      bb.nectarStock[b.state.alliance] += 1;
+      continue;
+    }
+    if (b.state.kind !== 'element') continue;
+    const { el, slot } = b.state;
+    if (el.startsWith('flower:')) {
+      const i = Number(el.slice(7));
+      if (Number.isInteger(i) && i >= 0 && i < byFlower.length) byFlower[i].push({ id: b.id, slot });
+    } else if (el === 'hive:red' || el === 'hive:blue') {
+      byHive[el === 'hive:red' ? 'red' : 'blue'].push({ id: b.id, slot });
+    }
+  }
+
+  const ids = (xs: { id: number; slot: number }[]): number[] =>
+    xs.sort((p, q) => p.slot - q.slot || p.id - q.id).map((x) => x.id);
+  byFlower.forEach((xs, i) => {
+    bb.flowers[i].stack = ids(xs);
+  });
+  for (const a of ['red', 'blue'] as const) bb.hives[a].contents = ids(byHive[a]);
 }
 
 export function createBiobuzzWorld(

@@ -12,7 +12,7 @@ import {
   BB_POLLEN_R,
   bbHopperCap,
 } from './config';
-import { rectContains, type LocalRect, type ScoreTarget, type Vec3 } from './state';
+import { rectContains, type BbCellSide, type LocalRect, type ScoreTarget, type Vec3 } from './state';
 
 /**
  * BIOBUZZ ELEMENTS — the contract surface Lane A exports to Lane B
@@ -165,18 +165,15 @@ const CELL_AIM_Z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
  */
 const CELL_ACCEPT_R = 8;
 
-/** the CELL of `a`'s HIVE that currently faces UP.
+/** the CELL of `a`'s HIVE that currently faces UP — `world.biobuzz.hives[a].up`, the state the
+ * tip machine will drive, so aim follows a real TIP the day tipping lands with no edit here.
  *
- * BRIDGE, and deliberately a cast: the tip machine will keep this on
- * `world.biobuzz.hives[a].up`, but `BiobuzzState` has no `hives` member yet, and `state.ts`
- * is not this commit's to edit. Reading it optionally means the day that field lands, aim
- * follows a real TIP with no edit here; until then every HIVE is in its STAGED pose
- * (`BB_HIVE_UP_STAGED`, §10.3.1 Fig 10-2), which is exactly where the field is at t = 0.
- * Delete the cast when `hives` exists. */
-function upCell(world: World, a: Alliance): 'north' | 'south' {
-  const hives = (world.biobuzz as { hives?: Record<Alliance, { up: 'north' | 'south' }> } | undefined)
-    ?.hives;
-  return hives?.[a]?.up ?? BB_HIVE_UP_STAGED[a];
+ * `world.biobuzz` is optional on `World` (it is absent in a DECODE or Chain Reaction world),
+ * and the STAGED pose is the fallback for that one case rather than a `!`: a missing bag means
+ * the caller is not in a BIOBUZZ match at all, and the field's own t = 0 tilt (§10.3.1
+ * Fig 10-2) is the only honest answer to "which cell is up" when there is no match to ask. */
+function upCell(world: World, a: Alliance): BbCellSide {
+  return world.biobuzz?.hives[a].up ?? BB_HIVE_UP_STAGED[a];
 }
 
 /**
