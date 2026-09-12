@@ -1,13 +1,17 @@
 import type { Artifact, ArtifactColor, RobotCommand } from '../../types';
+import * as C from '../../config';
 import {
+  BB_FLOWER_UNLOCK_S,
   BB_FLOWERS,
   BB_HALF_X,
   BB_HALF_Y,
   BB_HIVE_CELL_DY,
   BB_HIVE_UP_STAGED,
   BB_HIVE_X,
+  BB_LZ,
   BB_NECTAR_R,
   BB_POLLEN_R,
+  bbLoadingZoneSpot,
 } from './config';
 import { BB_FRAME_BAR_IN } from './config';
 import {
@@ -489,5 +493,214 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
       return world;
     },
     stills: [0],
+  },
+
+  {
+    id: 'hive-tip',
+    title: 'One TIP, across the 4-second swing — loaded, level, settled',
+    lane: 'field',
+    /**
+     * THE SWING, IN THREE FRAMES: t = 0 (loaded and about to go), t = 2 s (LEVEL — the tray
+     * empties here) and t = 4 s (SETTLED — the damper meets the frame and the 20 lands).
+     *
+     * The three stills are the three moments §10.5.1 and field-plan §2.1 distinguish, and they
+     * are distinguished because they happen at different times: a CELL empties as the bar
+     * passes level (`BB_TIP_RELEASE_S`), and the POINTS arrive two seconds later when it stops
+     * (§10.5.1 needs the damper in contact). Anything that collapses them — scoring at the
+     * start of the swing, or spilling at the end — reads as one event in the code and as two
+     * on a real field.
+     *
+     * WHAT TO LOOK AT:
+     *   1. t = 0 — RED's SOUTH cell is up and FILLED, holding 3 NECTAR + 3 POLLEN. That is the
+     *      staged row of the measured table (`BB_TIP_POLLEN[3] === 3`), so this is exactly the
+     *      load that tips a match's first HIVE, and the cross-fade has not started.
+     *   2. t = 2 s — the two cells are half faded into each other and the contents have LEFT:
+     *      they draw as ordinary GROUND balls under the structure, on top of the dashed
+     *      outline, not as discs inside a box (`hive-ground` is the dedicated cell for that
+     *      distinction).
+     *   3. t = 4 s — the NORTH cell is up, filled and EMPTY; `tips` is 1.
+     *   4. BLUE's hive, untouched in all three, is the control: both cells the same length,
+     *      because the see-saw is one rigid bar at 30° and a plan view foreshortens both ends
+     *      equally (reference §2.2).
+     *
+     * ⚠️ THE SWING IS ADVANCED BY `play.ts`, WHICH IS LANE A4a's FILE AND IS NOT WIRED YET.
+     * `hiveStep` is written, pure and checked directly by `scripts/smoke-biobuzz/rules.ts`, but
+     * nothing calls it per tick until A4a lands its gameplay pass — so until that merge these
+     * three stills render the SAME frame. The scene is built against the finished behaviour on
+     * purpose: the cell that proves the wire is the one that has to exist before the wire, or
+     * the wire lands with nothing looking at it. Named in `docs/biobuzz/HANDOFF-field.md`.
+     */
+    build: (seed) => {
+      const world = bbWorld(seed, [], []);
+      const bb = world.biobuzz;
+      if (!bb) return world;
+      // the staged references point at elements `bbWorld` replaced out of `world.balls` — see
+      // `hive-ground` for the aliasing this prevents.
+      bb.flowers.forEach((f) => {
+        f.stack = [];
+      });
+      bb.hives.blue.contents = [];
+      const up = BB_HIVE_UP_STAGED.red;
+      const cy = (up === 'north' ? 1 : -1) * BB_HIVE_CELL_DY;
+      // 3 NECTAR + 3 POLLEN: the STAGED row of the measured tip table (reference §4.1), i.e.
+      // the load a first TIP of a real match actually costs.
+      const load: ArtifactColor[] = ['red', 'red', 'red', 'yellow', 'yellow', 'yellow'];
+      world.balls = load.map((color, slot) => ({
+        id: PARKED_ID0 + slot,
+        color,
+        r: color === 'yellow' ? BB_POLLEN_R : BB_NECTAR_R,
+        state: { kind: 'element' as const, el: 'hive:red', slot },
+        pos: { x: -BB_HIVE_X, y: cy },
+        vel: { x: 0, y: 0 },
+        z: 0,
+        vz: 0,
+      }));
+      bb.hives.red.contents = world.balls.map((b) => b.id);
+      bb.nextBallId = PARKED_ID0 + load.length;
+      return world;
+    },
+    // 0 · 2 s · 4 s at the shared 60 Hz tick — the load, the level, the settle.
+    stills: [0, 120, 240],
+  },
+
+  {
+    id: 'park-examples',
+    title: 'PARK — deep in, one corner over the tape, and clear of it (Fig 10-7)',
+    lane: 'field',
+    /**
+     * WHAT COUNTS AS "AT LEAST PARTIALLY IN THE LOADING ZONE" (Table 10-2, Fig 10-7).
+     *
+     * The LOADING ZONE is 24 in along the wall and only ~11 in DEEP, which is narrower than an
+     * 18-in robot — so "fully inside" is not a pose that exists, and the achievement has to be
+     * an overlap test rather than a containment one. That is the whole reason this cell is
+     * three robots and not one.
+     *
+     * The four poses, and what each one proves:
+     *   1. RED deep against the wall, half its footprint over the tape — PARKED, and the
+     *      obvious case.
+     *   2. RED rotated 45° with ONE CORNER across the tape line and its centre well outside —
+     *      PARKED. `bbParkedNow` is an OBB-vs-rect intersection, so this passes; a
+     *      centre-in-rect test would refuse it, and refusing it is the bug this pose catches.
+     *   3. BLUE clear of the tape by 2.5 in — NOT parked. The near miss, so the cell shows the
+     *      boundary rather than just the two extremes.
+     *   4. BLUE deep in BLUE's own zone, diagonally opposite.
+     *
+     * ⚠️ THE TWO NEAR-MISS/DEEP PAIRS ARE SPLIT ACROSS THE TWO ZONES BECAUSE THREE ROBOTS DO
+     * NOT FIT IN ONE. The LOADING ZONE is 11 in deep × 24 in along the wall and the footprint
+     * is 21 × 17 (`robotExtents` — the sweeper reaches past each end of the chassis), so two
+     * robots fill it and a third has to interpenetrate one of them. Two per corner also makes
+     * the POINT symmetry visible rather than asserted: the layout is 180° about the origin,
+     * not mirrored (reference §2.1) — red's zone is on the left wall at y > 0 and blue's on
+     * the right wall at y < 0 — so the two pairs are the SAME two canonical poses, and an
+     * x-mirror of that is internally consistent and wrong.
+     *
+     * PARK requires the robot's OWN zone (owner ruling, field-plan §8). That is a boolean, so
+     * it is asserted in `scripts/smoke-biobuzz/rules.ts` rather than drawn here — a blue robot
+     * parked in red's corner would be a picture that looks like a mistake either way round.
+     *
+     * ⚠️ A `bbSetup` POSE IS CANONICAL (the BLUE frame), NOT where the robot ends up. The spawn
+     * mirrors a RED one through the origin — (x, y, θ) → (−x, −y, θ + 180°) — so red's two
+     * poses below read as blue's. The actual poses are robot 0 (−61, 22, 0°), robot 1
+     * (−48, 47, 45°), robot 2 (48, −47, 0°), robot 3 (61, −22, 180°).
+     *
+     * The phase is set to TELEOP so the world is a coherent mid-match one and the live PARK
+     * predicate is the one being scored (`score.ts` reads the live value during teleop and the
+     * latch afterwards).
+     */
+    build: (seed) => {
+      const world = bbWorld(
+        seed,
+        [
+          bbSetup(0, 'red', { x: 61, y: -22, headingDeg: 180 }),
+          bbSetup(1, 'red', { x: 48, y: -47, headingDeg: 225 }),
+          bbSetup(2, 'blue', { x: 48, y: -47, headingDeg: 0 }),
+          bbSetup(3, 'blue', { x: 61, y: -22, headingDeg: 180 }),
+        ],
+        [],
+      );
+      const bb = world.biobuzz;
+      if (bb) {
+        bb.flowers.forEach((f) => {
+          f.stack = [];
+        });
+        bb.hives.red.contents = [];
+        bb.hives.blue.contents = [];
+      }
+      world.match.phase = 'teleop';
+      world.match.phaseTimeLeft = C.TELEOP_DURATION;
+      return world;
+    },
+    stills: [0],
+  },
+
+  {
+    id: 'nectar-entry',
+    title: 'NECTAR entering from the LOADING ZONES, at the 1:00 cue',
+    lane: 'field',
+    /**
+     * WHERE A HUMAN PLAYER'S NECTAR ARRIVES, AND WHEN IT IS ALLOWED TO.
+     *
+     * G426/G427: NECTAR enters through the alliance's OWN LOADING ZONE, contacting the tile
+     * first — one per own-HIVE TIP, and all remaining stock at ≤ 60 s. `bbLoadingZoneSpot`
+     * (config) is the one definition of that point: the centre of the zone, pulled one element
+     * RADIUS off the side wall so a circle solved at its centre is TOUCHING the wall rather
+     * than buried in it.
+     *
+     * WHAT TO LOOK AT:
+     *   1. The red NECTAR sits against the LEFT wall at y > 0, inside red's tape; the blue one
+     *      against the RIGHT wall at y < 0. Point symmetry again — this is the second cell
+     *      that catches an x-mirror, and it catches it in the one place a driver would notice
+     *      first, because it is where their own elements appear.
+     *   2. Both are drawn at NECTAR size (3.6 in), visibly larger than the POLLEN beside them.
+     *      A nectar simulated at the POLLEN radius is a known, flagged approximation
+     *      (field-plan §6 request 1) — this cell is where the SIZE difference is checked, and
+     *      the spacing between the two elements is what would give away a wrong radius.
+     *   3. The two POLLEN in each zone are what a robot would be collecting there; they are in
+     *      the picture so the zone reads as a place with traffic rather than as a swatch.
+     *
+     * THE CLOCK: the scene starts at 61 s of TELEOP left, one second before the cue, so
+     * stepping it crosses the G410 boundary — `FLOWER OWNERSHIP UNLOCKED` fires at tick 60 and
+     * `bbNectarLocked` flips there. The second still is after the crossing, and the elements
+     * have settled against the wall by then, so the two frames differ in the picture as well as
+     * in the rule. `scripts/smoke-biobuzz/rules.ts` asserts the cue tick off this same scene.
+     */
+    build: (seed) => {
+      const world = bbWorld(seed, [], []);
+      const bb = world.biobuzz;
+      if (!bb) return world;
+      bb.flowers.forEach((f) => {
+        f.stack = [];
+      });
+      bb.hives.red.contents = [];
+      bb.hives.blue.contents = [];
+      const balls: Artifact[] = [];
+      for (const a of ['red', 'blue'] as const) {
+        const spot = bbLoadingZoneSpot(a, BB_NECTAR_R);
+        balls.push({
+          id: PARKED_ID0 + balls.length,
+          color: a,
+          r: BB_NECTAR_R,
+          state: { kind: 'ground' },
+          pos: { x: spot.x, y: spot.y },
+          vel: { x: 0, y: 0 },
+          z: 0,
+          vz: 0,
+        });
+        // two POLLEN a few inches further into the field, along the zone's own length
+        const lz = BB_LZ[a];
+        for (const dy of [-7, 7]) {
+          balls.push(bbPollen(PARKED_ID0 + balls.length, (lz.x0 + lz.x1) / 2, spot.y + dy));
+        }
+      }
+      world.balls = balls;
+      bb.nextBallId = PARKED_ID0 + balls.length;
+      bb.nectarStock.red = 4;
+      bb.nectarStock.blue = 4;
+      world.match.phase = 'teleop';
+      // one second before the cue, so stepping the scene crosses it
+      world.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S + 1;
+      return world;
+    },
+    stills: [0, 120],
   },
 ];

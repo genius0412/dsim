@@ -2235,10 +2235,29 @@ export function roomChecks(check: Check): void {
   // presence is the proof the match ran the clock out and ended instead of stalling.
   const res = msgs.find((m) => m.t === 'matchResult') as Extract<ServerMsg, { t: 'matchResult' }> | undefined;
   check('room: the BIOBUZZ match reaches post and broadcasts matchResult', !!res);
+  /**
+   * A MATCH NOBODY DROVE SCORES THE STAGED LAYOUT, AND BOTH ALLIANCES SCORE THE SAME.
+   *
+   * This check asserted 0-0 while the shell was unscored; `score.ts` landed and the setup
+   * itself is now worth points, because Table 10-2 counts what is IN the up-CELL and what is
+   * in the GARDEN and the spawn stages both. So the assertion moved from "nothing scores" to
+   * the two things that are still load-bearing here:
+   *
+   *  • EQUAL. The layout is point-symmetric, so four idle robots must leave the two alliances
+   *    on the same number. An x-MIRRORED garden or loading zone is internally consistent and
+   *    wrong (reference §2.1), and this is the cheapest place that difference shows up.
+   *  • THE STAGED VALUE, derived from the tariff rather than typed: 3 elements in the up-CELL
+   *    and 4 POLLEN in the GARDEN. A hard-coded 10 would pin the staging from the server lane,
+   *    which is not this file's business; the arithmetic is.
+   *
+   * The score being live does NOT make the game persist — `simModuleFor('biobuzz').scored` is
+   * checked below and is what `persistMatch` reads.
+   */
+  const staged = 3 * BB_PTS.cell + 4 * BB_PTS.garden;
   check(
-    'room: the finished BIOBUZZ match scored nothing (an unscored shell must stay 0-0)',
-    res?.result.score.blue === 0 && res?.result.score.red === 0,
-    `blue=${res?.result.score.blue} red=${res?.result.score.red}`,
+    'room: a BIOBUZZ match nobody drove scores the staged layout, equally for both alliances',
+    res?.result.score.blue === staged && res?.result.score.red === staged,
+    `blue=${res?.result.score.blue} red=${res?.result.score.red} staged=${staged}`,
   );
   // The outcome still has to be GAME-TAGGED even though nothing is written: it is what
   // `persistMatch` reads to decide to skip, and an absent `game` defaults to DECODE — which
