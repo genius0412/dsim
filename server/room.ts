@@ -1482,7 +1482,8 @@ export class Room {
         !!c &&
         (Math.abs(c.driveX) > 0.05 || Math.abs(c.driveY) > 0.05 || Math.abs(c.rotate) > 0.05 ||
           Math.abs(c.leftDrive) > 0.05 || Math.abs(c.rightDrive) > 0.05 ||
-          c.intake || c.fire || !!c.catalyst || !!c.fling || !!c.driveMode);
+          c.intake || c.fire || !!c.catalyst || !!c.fling || !!c.driveMode ||
+          !!c.bbLift || !!c.bbPlace);
       if (moving) this.driveTicks.set(r.id, (this.driveTicks.get(r.id) ?? 0) + 1);
       // AWAY is measured from the socket, not from the sticks: a driver whose client is
       // gone is a different thing from one who is present and idle, and only the first is

@@ -34,6 +34,7 @@ import {
   BB_NECTAR_R,
   BB_POLLEN_R,
   BB_START_POSES,
+  bbLoadingZoneSpot,
   bbMirror,
 } from './config';
 import { capturePollen } from './elements';
@@ -477,13 +478,6 @@ function gardenLine(startId: number, a: Alliance): Artifact[] {
   return out;
 }
 
-/** the point at the centre of `a`'s LOADING ZONE, pulled one POLLEN RADIUS off the wall the
- * zone backs onto — where a no-show robot's preloads and the human player's NECTAR live. */
-function loadingZoneSpot(a: Alliance): Vec2 {
-  const z = BB_LZ[a];
-  const y = (z.y0 + z.y1) / 2;
-  return { x: a === 'red' ? -BB_HALF_X + BB_POLLEN_R : BB_HALF_X - BB_POLLEN_R, y };
-}
 
 /**
  * PRELOADS — four POLLEN per ROBOT, through the real capture path.
@@ -512,7 +506,7 @@ function preloads(world: World, startId: number): Artifact[] {
       const r = mine[n];
       if (!r) {
         // no-show: its four go to the LOADING ZONE centre, spaced along the zone's long axis
-        const spot = loadingZoneSpot(a);
+        const spot = bbLoadingZoneSpot(a);
         for (let k = 0; k < PRELOAD_PER_ROBOT; k++) {
           const y = spot.y + (k - (PRELOAD_PER_ROBOT - 1) / 2) * POLLEN_D;
           out.push(element(id++, POLLEN_COLOR, BB_POLLEN_R, { x: spot.x, y }, { kind: 'ground' }));
@@ -593,7 +587,9 @@ function stockNectar(startId: number): Artifact[] {
   const out: Artifact[] = [];
   let id = startId;
   for (const a of ['red', 'blue'] as const) {
-    const spot = loadingZoneSpot(a);
+    // at the NECTAR radius, not the POLLEN one: this is where `play.ts` puts the element down
+    // when the human player enters it, and "no teleport" is only true if the two agree.
+    const spot = bbLoadingZoneSpot(a, BB_NECTAR_R);
     for (let k = 0; k < NECTAR_STOCK; k++) {
       out.push(element(id++, a, BB_NECTAR_R, spot, { kind: 'stock', alliance: a }));
     }

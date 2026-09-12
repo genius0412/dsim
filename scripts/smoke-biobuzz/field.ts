@@ -54,6 +54,7 @@ import {
 import { nextRandom } from '../../src/math';
 import {
   BB_FLOWER_D,
+  BB_FLOWER_UNLOCK_S,
   BB_GARDEN,
   BB_LZ,
   BB_NECTAR_COUNT,
@@ -66,7 +67,7 @@ import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games
 import { createBiobuzzWorld, stageBiobuzz } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { scoreTargets } from '../../src/games/biobuzz/elements';
-import { updateBiobuzz } from '../../src/games/biobuzz/play';
+import { BB_NECTAR_DUMP_S, BB_NECTAR_ENTRY_S, updateBiobuzz } from '../../src/games/biobuzz/play';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
 import { BB_IDLE, BB_SCENES, bbPollen, bbSceneAt, bbSceneStills, type Scene } from '../../src/games/biobuzz/scenes';
 import { bbRobotSolids } from '../../src/games/biobuzz/robot';
@@ -1643,6 +1644,378 @@ export function fieldChecks(check: Check): void {
     check(`scene [${scene.id}@${last}]: hashes deterministically`, h1 === h2, `${h1} vs ${h2}`);
   }
 
+  // -- THE FIELD IS LIVE: A REAL TIP, THROUGH THE REAL PIPELINE --------------
+  /**
+   * Everything above tests a PURE function. This drives `updateBiobuzz` itself, tick by tick,
+   * and watches one HIVE go all the way round: three POLLEN launched into the up-CELL, the
+   * swing starting on the tick the load completes, the contents leaving the tray as it passes
+   * LEVEL, and the TIP landing two seconds later with the cells swapped.
+   *
+   * It is the check the pure ones cannot make: `hiveStep` is correct in isolation and still
+   * useless if `play.ts` calls it before the capture stage, drops the spilled ids on the floor
+   * as a count rather than as the ELEMENTS they are, or lets the swing run while the cell is
+   * still accepting. Every one of those is a conservation bug, and conservation is asserted
+   * here on EVERY TICK rather than at the end — a leak that cancels a duplicate is invisible
+   * to an end-state count, and a bucket-by-bucket per-tick partition is what catches it.
+   */
+  {
+    const w = createBiobuzzWorld('match', 7, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+    const bb = w.biobuzz!;
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 120;
+    const TOTAL = w.balls.length;
+    const A: Alliance = 'red';
+    const upAt0 = bb.hives[A].up;
+    const cellAt0 = hiveCellPos(A, upAt0);
+    const zMid = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
+    const sign = hiveApproachSign(upAt0); // +1 for a south-up cell: it takes vy > 0
+
+    // THE LOAD. The staged cell already holds 3 NECTAR (10.3.1), and `BB_TIP_POLLEN[3]` is 3,
+    // so three POLLEN is exactly the row that tips it — the threshold is READ from the table
+    // rather than typed, so a revised table revises the scene instead of breaking it.
+    const NEED = BB_TIP_POLLEN[3];
+    const shots = w.balls
+      .filter((b) => b.state.kind === 'ground' && b.color !== 'red' && b.color !== 'blue')
+      .slice(0, NEED);
+    for (const b of shots) {
+      b.state = { kind: 'flight', target: A };
+      b.pos = { x: cellAt0.x, y: cellAt0.y - sign * 2 };
+      b.vel = { x: 0, y: sign * 24 };
+      b.z = zMid + 1;
+      b.vz = -18;
+    }
+
+    // THE PARTITION. Every ball is in exactly one of five states, and the five have to add up
+    // to the array they are drawn from — on every tick, not at the end.
+    const buckets = (): Record<string, number> => {
+      const n: Record<string, number> = { ground: 0, flight: 0, held: 0, element: 0, stock: 0, other: 0 };
+      for (const b of w.balls) n[b.state.kind in n ? b.state.kind : 'other']++;
+      return n;
+    };
+    const inCells = (): number => bb.hives.red.contents.length + bb.hives.blue.contents.length;
+    const inFlowers = (): number => bb.flowers.reduce((s, f) => s + f.stack.length, 0);
+
+    let leak = '';
+    let loadedAt = -1;
+    let swingAt = -1;
+    let spillAt = -1;
+    let tipAt = -1;
+    let spilledGround = 0;
+    let contentsAtRelease: number[] = [];
+    // measured ON THE SPILL TICK: these are ground elements from that moment on, so the shared
+    // solve and the rolling-friction pass have them by the end of the very next tick and the
+    // velocity they LEFT THE TRAY with is gone. Reading it at the end of the scene would assert
+    // that a spilled element comes to rest, which it should, and nothing about the spill.
+    let spillVel: { v: number; out: boolean }[] = [];
+    const TICKS = Math.round((BB_TIP_SWING_S + BB_NECTAR_ENTRY_S + 0.5) / C.SIM_DT);
+    for (let t = 0; t < TICKS; t++) {
+      const before = [...bb.hives[A].contents];
+      updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+      const n = buckets();
+      const sum = n.ground + n.flight + n.held + n.element + n.stock;
+      if (!leak) {
+        if (sum !== TOTAL || n.other !== 0 || w.balls.length !== TOTAL) {
+          leak = `tick ${t}: ${JSON.stringify(n)} sums to ${sum}, array ${w.balls.length}, expected ${TOTAL}`;
+        } else if (n.element !== inCells() + inFlowers()) {
+          leak = `tick ${t}: ${n.element} element-state balls but ${inCells()} in cells + ${inFlowers()} in flowers`;
+        }
+      }
+      if (loadedAt < 0 && bb.hives[A].contents.length === before.length + NEED) loadedAt = t;
+      if (swingAt < 0 && bb.hives[A].tipping > 0) swingAt = t;
+      if (spillAt < 0 && before.length > 0 && bb.hives[A].contents.length === 0) {
+        spillAt = t;
+        contentsAtRelease = before;
+        const back = before.map((id) => w.balls.find((x) => x.id === id));
+        spilledGround = back.filter((b) => !!b && b.state.kind === 'ground').length;
+        spillVel = back
+          .filter((b): b is Artifact => !!b)
+          .map((b) => ({ v: Math.hypot(b.vel.x, b.vel.y), out: b.vel.y * sign < 0 }));
+      }
+      if (tipAt < 0 && bb.hives[A].tips > 0) tipAt = t;
+    }
+
+    check(
+      'live: three POLLEN launched INBOARD over the opening are taken by the up-CELL',
+      loadedAt === 0,
+      loadedAt === 0
+        ? `captured on the first tick; the cell holds ${NEED} POLLEN over the 3 staged NECTAR`
+        : `loaded at tick ${loadedAt} (expected 0); contents ${bb.hives[A].contents.length}`,
+    );
+    check(
+      'live: element conservation holds on EVERY tick — ground + flight + held + element + stock',
+      leak === '',
+      leak || `${TICKS} ticks, ${TOTAL} elements, five buckets, no tick off by one`,
+    );
+    // The swing starts on the SAME tick the load completes: stage 3 runs after the capture
+    // stage, on purpose, so the element that fills the cell tips it on arrival.
+    check(
+      'live: the swing starts on the tick the load completes, not the tick after',
+      swingAt === loadedAt && swingAt === 0,
+      `loaded at ${loadedAt}, swinging at ${swingAt}`,
+    );
+    // RELEASE AT LEVEL, i.e. half way: `BB_TIP_RELEASE_S` of a `BB_TIP_SWING_S` swing REMAIN,
+    // so the spill lands after SWING - RELEASE seconds. One tick of slack, because the swing
+    // is started partway through the tick that triggers it.
+    const wantSpill = Math.round((BB_TIP_SWING_S - BB_TIP_RELEASE_S) / C.SIM_DT);
+    check(
+      `live: the tray empties as it passes LEVEL, ~${(BB_TIP_SWING_S - BB_TIP_RELEASE_S).toFixed(1)}s into the swing`,
+      spillAt >= 0 && Math.abs(spillAt - wantSpill) <= 1,
+      `spilled at tick ${spillAt} (expected ~${wantSpill})`,
+    );
+    check(
+      'live: the release puts EXACTLY the contents back on the tiles, as GROUND elements',
+      contentsAtRelease.length === NEED + 3 && spilledGround === contentsAtRelease.length,
+      `${contentsAtRelease.length} in the cell (expected ${NEED + 3}) → ${spilledGround} on the ground`,
+    );
+    // ...AND THEY ARE MOVING. A spill that arrives at rest piles under the down cell; the whole
+    // point of `spillPoses` is that the elements leave over the open OUTER end with outboard
+    // speed and roll clear of the structure (G409).
+    {
+      const vmax = Math.hypot(BB_SPILL_SPEED[1], BB_SPILL_LATERAL);
+      const moving = spillVel;
+      check(
+        'live: spilled elements carry the spill velocity, OUTBOARD and inside BB_SPILL_SPEED',
+        moving.length > 0 &&
+          moving.every((m) => m.v >= BB_SPILL_SPEED[0] - 1 && m.v <= vmax + 1 && m.out),
+        `speeds ${moving.map((m) => m.v.toFixed(1)).join(', ')} in/s (range ${BB_SPILL_SPEED[0]}..${vmax.toFixed(1)})` +
+          ` · all outboard ${moving.every((m) => m.out)}`,
+      );
+    }
+    const wantTip = Math.round(BB_TIP_SWING_S / C.SIM_DT);
+    check(
+      `live: the TIP completes after BB_TIP_SWING_S (${BB_TIP_SWING_S}s) and flips the up cell`,
+      tipAt >= 0 && Math.abs(tipAt - wantTip) <= 1 && bb.hives[A].up !== upAt0 && bb.hives[A].tips === 1,
+      `tipped at tick ${tipAt} (expected ~${wantTip}) · up ${upAt0} → ${bb.hives[A].up} · tips ${bb.hives[A].tips}`,
+    );
+    // `released` is the latch that makes the spill happen ONCE. Back to false at the settle, or
+    // the next swing would empty the tray the instant it started.
+    check(
+      'live: `released` latches through the swing and resets at the settle',
+      bb.hives[A].released === false && bb.hives[A].tipping === 0,
+      `released=${bb.hives[A].released} tipping=${bb.hives[A].tipping}`,
+    );
+    // THE ENTITLEMENT THE TIP EARNS (G426) — this lane's half of the human player.
+    check(
+      'live: a completed TIP earns one NECTAR entry, and the human player makes it',
+      bb.nectarStock[A] === 4 && bb.nectarDue[A] === 0,
+      `stock ${bb.nectarStock[A]} (5 at setup, 4 after one entry) · still due ${bb.nectarDue[A]}`,
+    );
+    {
+      const entered = w.balls.filter(
+        (b) => b.state.kind === 'ground' && b.color === A && Math.abs(b.pos.x) > BB_HALF_X - 24,
+      );
+      check(
+        'live: the entered NECTAR is a GROUND element in its own LOADING ZONE, not a new ball',
+        entered.length >= 1 && w.balls.length === TOTAL,
+        `${entered.length} red NECTAR near the red wall · ${w.balls.length} balls (was ${TOTAL})`,
+      );
+    }
+  }
+
+  // -- THE HUMAN PLAYER: A DRIP, THEN THE 1:00 DUMP -------------------------
+  /**
+   * G426 gives an alliance ONE NECTAR entry per completed TIP and, at the 1:00 cue, everything
+   * still in its hands. Those are two ENTITLEMENTS running through one clock, and the check is
+   * that the second does not become a teleport: five NECTAR appear one at a time over about
+   * five seconds, never as a pile on one tile on one tick.
+   *
+   * NOTHING IS SPAWNED. The five exist from setup as `stock` balls (`spawn.ts`) already sitting
+   * on their entry spot, so an entry is a STATE FLIP and the array length never changes — which
+   * is the whole reason conservation is a count over one array.
+   */
+  {
+    const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+    const bb = w.biobuzz!;
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S; // exactly at the cue
+    const TOTAL = w.balls.length;
+    const STOCK0 = bb.nectarStock.red;
+    const onGround = (a: Alliance): number =>
+      w.balls.filter((b) => {
+        const z = BB_LZ[a];
+        return (
+          b.state.kind === 'ground' &&
+          b.color === a &&
+          b.pos.x >= z.x0 && b.pos.x <= z.x1 && b.pos.y >= z.y0 && b.pos.y <= z.y1
+        );
+      }).length;
+    let maxPerTick = 0;
+    let prev = onGround('red');
+    const N = Math.round((STOCK0 * BB_NECTAR_DUMP_S + 1) / C.SIM_DT);
+    for (let t = 0; t < N; t++) {
+      updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+      const now = onGround('red');
+      maxPerTick = Math.max(maxPerTick, now - prev);
+      prev = now;
+    }
+    check(
+      'human player: the 1:00 cue empties the alliance stock, ONE NECTAR AT A TIME',
+      bb.nectarStock.red === 0 && maxPerTick === 1 && onGround('red') === STOCK0 && w.balls.length === TOTAL,
+      `stock ${STOCK0} → ${bb.nectarStock.red} · ${onGround('red')} in the LOADING ZONE · ` +
+        `most entered on one tick: ${maxPerTick} · balls ${w.balls.length} (was ${TOTAL})`,
+    );
+    // …and the beat is real: five entries at `BB_NECTAR_DUMP_S` apart cannot be done in one.
+    check(
+      'human player: the entries are spread over the dump, not delivered on one tick',
+      N * C.SIM_DT >= STOCK0 * BB_NECTAR_DUMP_S,
+      `${STOCK0} entries at ${BB_NECTAR_DUMP_S}s apart over ${(N * C.SIM_DT).toFixed(1)}s`,
+    );
+    // NOTHING ENTERS WHILE THE FIELD IS FROZEN — `enabled` false is the transition and the
+    // period after the buzzer, which is exactly when G426 forbids a human player reaching in.
+    {
+      const f = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0)]);
+      const fb = f.biobuzz!;
+      f.match.phase = 'teleop';
+      f.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S;
+      for (let t = 0; t < 600; t++) updateBiobuzz(f, C.SIM_DT, new Map(), false, NO_SWEEP);
+      check(
+        'human player: nothing enters while the field is frozen (enabled === false)',
+        fb.nectarStock.red === STOCK0 && fb.nectarStock.blue === STOCK0,
+        `stock ${fb.nectarStock.red}/${fb.nectarStock.blue} after 10s disabled (was ${STOCK0} each)`,
+      );
+    }
+  }
+
+  // -- THE OPEN FACE IS ONE FACE: A SHOT FROM THE CLOSED SIDE IS A MISS ------
+  /**
+   * The ruling (field-plan 2.1) is that a CELL is open at its OUTER end ONLY, so the two shots
+   * below differ in NOTHING but the sign of `vy` — same point, same height, same descent — and
+   * exactly one of them scores. A miss is not a foul (G417.H): the element keeps flying and
+   * lands on the tiles, which is what the second half asserts.
+   */
+  {
+    const shoot = (toward: 1 | -1): { took: boolean; kind: string; balls: number } => {
+      const w = createBiobuzzWorld('match', 11, [setup(0, 'red', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 120;
+      const A: Alliance = 'red';
+      const up = bb.hives[A].up;
+      const cell = hiveCellPos(A, up);
+      const s = hiveApproachSign(up) * toward; // toward=+1 inboard, -1 through the closed back
+      const before = bb.hives[A].contents.length;
+      const b = w.balls.find((x) => x.state.kind === 'ground')!;
+      b.state = { kind: 'flight', target: A };
+      b.pos = { x: cell.x, y: cell.y - s * 2 };
+      b.vel = { x: 0, y: s * 24 };
+      b.z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2 + 1;
+      b.vz = -18;
+      updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+      return { took: bb.hives[A].contents.length > before, kind: b.state.kind, balls: w.balls.length };
+    };
+    const inbound = shoot(1);
+    const closed = shoot(-1);
+    check(
+      'live: a shot travelling TOWARD THE PIVOT is accepted by the up-CELL',
+      inbound.took && inbound.kind === 'element',
+      `took=${inbound.took} state=${inbound.kind}`,
+    );
+    check(
+      'live: the same shot from the CLOSED side is rejected and stays a live element',
+      !closed.took && closed.kind === 'flight' && closed.balls === inbound.balls,
+      `took=${closed.took} state=${closed.kind} — a miss keeps flying (G417.H), it is not consumed`,
+    );
+  }
+
+  // -- THE AIM LIST AND THE CAPTURE TEST DESCRIBE THE SAME OPENING -----------
+  /**
+   * `play.ts` captures by walking `scoreTargets()`, and `hiveAccepts` decides whether a CELL
+   * took the shot. Those are two descriptions of one face — `ScoreTarget.mouth` is the outward
+   * normal, `hiveApproachSign` is the direction an element must TRAVEL to get in — and they
+   * are opposite by construction. Nothing at run time notices if they stop being opposite:
+   * Lane B would aim at a cell the field then refuses, which reads as "my shots do not score"
+   * and is invisible to every pure test on either side.
+   */
+  {
+    const w = createBiobuzzWorld('match', 3, [setup(0, 'red', {}, 0)]);
+    const bb = w.biobuzz!;
+    const bad: string[] = [];
+    for (const a of ['red', 'blue'] as const) {
+      for (const up of ['north', 'south'] as const) {
+        bb.hives[a].up = up;
+        const t = scoreTargets(w, a).find((x) => x.id === `hive:${a}`)!;
+        const m = t.mouth!;
+        if (m.x !== 0 || m.y !== -hiveApproachSign(up)) {
+          bad.push(`${a}/${up}: mouth (${m.x},${m.y}) vs approach ${hiveApproachSign(up)}`);
+        }
+        const c = hiveCellPos(a, up);
+        if (Math.abs(t.pos.x - c.x) > 1e-9 || Math.abs(t.pos.y - c.y) > 1e-9) {
+          bad.push(`${a}/${up}: target at (${t.pos.x},${t.pos.y}) vs cell (${c.x},${c.y})`);
+        }
+      }
+    }
+    check(
+      'live: ScoreTarget.mouth is the exact opposite of hiveApproachSign, on both hives',
+      bad.length === 0,
+      bad.length
+        ? bad.join(' · ')
+        : 'four cases: an element enters AGAINST the mouth normal, and the target sits on the up cell',
+    );
+  }
+
+  // -- THE TIP TABLE IS A TABLE ---------------------------------------------
+  /**
+   * `BB_TIP_POLLEN` is MEASURED, indexed by the NECTAR already in the cell, and nothing
+   * interpolates it — a see-saw is torque and packing, not weight. Pinned as literal values
+   * because the row IS the rule: an interpolation that happened to pass through two of these
+   * points would still be a mass model, which the owner ruled out (config.ts, 2026-09-12).
+   */
+  {
+    const want = [8, 7, 6, 3, 1, 0];
+    check(
+      'hive: BB_TIP_POLLEN is the measured table [8,7,6,3,1,0], unchanged',
+      BB_TIP_POLLEN.length === want.length && want.every((v, i) => BB_TIP_POLLEN[i] === v),
+      `[${BB_TIP_POLLEN.join(',')}]`,
+    );
+    const bad: string[] = [];
+    for (let nectar = 0; nectar < want.length; nectar++) {
+      const need = want[nectar];
+      if (need > 0 && hiveWillTip({ pollen: need - 1, nectar })) bad.push(`${nectar}n + ${need - 1}p tipped`);
+      if (!hiveWillTip({ pollen: need, nectar })) bad.push(`${nectar}n + ${need}p did NOT tip`);
+    }
+    // past the end of the table the LAST row holds, which is 0 pollen: five nectar are enough
+    // on their own, and so are six.
+    if (!hiveWillTip({ pollen: 0, nectar: want.length })) bad.push('past the table, 0p did not tip');
+    check(
+      'hive: every row tips at its own threshold and not one element below it',
+      bad.length === 0,
+      bad.length
+        ? bad.join(' · ')
+        : `${want.length} rows, each at need-1 and need, plus the past-the-end row`,
+    );
+  }
+
+  // -- `released` SURVIVES THE WIRE -----------------------------------------
+  /**
+   * A HIVE mid-swing is the one state where `released` carries information nothing else does,
+   * and a snapshot reaches a client as JSON. Lose the field there and the arriving peer spills
+   * a tray that has already emptied — the same elements a second time, which is a duplicate in
+   * `world.balls` and the end of the conservation invariant asserted above.
+   *
+   * BOTH trips are checked, because they can fail separately: `JSON.parse(JSON.stringify(x))`
+   * is what a replay and `localStorage` do, and `slimWorld`/`unslimWorld` is what the socket
+   * does — the second one REBUILDS the world rather than copying it.
+   */
+  {
+    const w = createBiobuzzWorld('match', 5, [setup(0, 'red', {}, 0)]);
+    const bb = w.biobuzz!;
+    bb.hives.red = { up: 'south', contents: [], tips: 2, tipping: 1.5, released: true };
+    bb.hives.blue = { up: 'north', contents: [], tips: 0, tipping: 0, released: false };
+    const plain = JSON.parse(JSON.stringify(w.biobuzz)) as typeof bb;
+    const specOf = (id: number): RobotSpec => w.robots.find((r) => r.id === id)!.spec;
+    const wire = unslimWorld(JSON.parse(JSON.stringify(slimWorld(w))), w.balls, specOf).biobuzz!;
+    check(
+      '`released` survives a JSON round-trip and the snapshot codec, on both hives',
+      plain.hives.red.released === true &&
+        plain.hives.blue.released === false &&
+        wire.hives.red.released === true &&
+        wire.hives.blue.released === false &&
+        wire.hives.red.tipping === 1.5,
+      `json red=${plain.hives.red.released}/blue=${plain.hives.blue.released} · ` +
+        `wire red=${wire.hives.red.released}/blue=${wire.hives.blue.released} tipping=${wire.hives.red.tipping}`,
+    );
+  }
+
   // -- PERFORMANCE BUDGET ---------------------------------------------------
   /**
    * A 2v2 BIOBUZZ world must not cost more than `STEP_BUDGET` x a 2v2 Chain Reaction world per
@@ -2235,10 +2608,29 @@ export function roomChecks(check: Check): void {
   // presence is the proof the match ran the clock out and ended instead of stalling.
   const res = msgs.find((m) => m.t === 'matchResult') as Extract<ServerMsg, { t: 'matchResult' }> | undefined;
   check('room: the BIOBUZZ match reaches post and broadcasts matchResult', !!res);
+  /**
+   * A MATCH NOBODY DROVE SCORES THE STAGED LAYOUT, AND BOTH ALLIANCES SCORE THE SAME.
+   *
+   * This check asserted 0-0 while the shell was unscored; `score.ts` landed and the setup
+   * itself is now worth points, because Table 10-2 counts what is IN the up-CELL and what is
+   * in the GARDEN and the spawn stages both. So the assertion moved from "nothing scores" to
+   * the two things that are still load-bearing here:
+   *
+   *  • EQUAL. The layout is point-symmetric, so four idle robots must leave the two alliances
+   *    on the same number. An x-MIRRORED garden or loading zone is internally consistent and
+   *    wrong (reference §2.1), and this is the cheapest place that difference shows up.
+   *  • THE STAGED VALUE, derived from the tariff rather than typed: 3 elements in the up-CELL
+   *    and 4 POLLEN in the GARDEN. A hard-coded 10 would pin the staging from the server lane,
+   *    which is not this file's business; the arithmetic is.
+   *
+   * The score being live does NOT make the game persist — `simModuleFor('biobuzz').scored` is
+   * checked below and is what `persistMatch` reads.
+   */
+  const staged = 3 * BB_PTS.cell + 4 * BB_PTS.garden;
   check(
-    'room: the finished BIOBUZZ match scored nothing (an unscored shell must stay 0-0)',
-    res?.result.score.blue === 0 && res?.result.score.red === 0,
-    `blue=${res?.result.score.blue} red=${res?.result.score.red}`,
+    'room: a BIOBUZZ match nobody drove scores the staged layout, equally for both alliances',
+    res?.result.score.blue === staged && res?.result.score.red === staged,
+    `blue=${res?.result.score.blue} red=${res?.result.score.red} staged=${staged}`,
   );
   // The outcome still has to be GAME-TAGGED even though nothing is written: it is what
   // `persistMatch` reads to decide to skip, and an absent `game` defaults to DECODE — which

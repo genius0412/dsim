@@ -37,7 +37,7 @@
  * empty field, because it would look finished.
  */
 
-import type { Alliance, AssistConfig, RobotSpec, StartCat } from '../../types';
+import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2 } from '../../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
 import { wrapAngle } from '../../math';
 import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
@@ -119,6 +119,22 @@ export const BB_LZ: Record<Alliance, BbRect> = {
   red: { x0: -72, x1: -61, y0: 24, y1: 48 }, // APPROX: Fig 9-2/9-3 — ±0.5 in on the tape edge
   blue: { x0: 61, x1: 72, y0: -48, y1: -24 }, // point symmetry, Fig 9-2
 };
+
+/**
+ * WHERE AN ELEMENT ENTERS THE FIELD FROM A HUMAN PLAYER'S HAND — the centre of `a`'s LOADING
+ * ZONE, pulled `r` off the side wall the zone backs onto.
+ *
+ * ONE definition, because three callers need the same point and they must not drift: staging
+ * puts a no-show robot's preloads there (§10.3.4), the human player enters NECTAR there all
+ * match (G426/G427, `play.ts`), and the smoke lane asserts both. `r` is the entering element's
+ * RADIUS: "contacting the wall" is a body touching it, which for a circle solved at its centre
+ * means a centre one radius clear — put the centre ON the wall line and the solve's first job
+ * is to eject it.
+ */
+export function bbLoadingZoneSpot(a: Alliance, r: number = BB_POLLEN_R): Vec2 {
+  const z = BB_LZ[a];
+  return { x: a === 'red' ? -BB_HALF_X + r : BB_HALF_X - r, y: (z.y0 + z.y1) / 2 };
+}
 
 /**
  * GARDEN — a ~23 × 2 in strip in the alliance's own corner, "defined by the outside edge of
@@ -529,6 +545,23 @@ export const BB_TURRET_PITCH_SLEW = 1.6;
  * vertical (the feed path is in the way). APPROX both ends. */
 export const BB_TURRET_PITCH_MIN = 0;
 export const BB_TURRET_PITCH_MAX = 80 * BB_DEG;
+
+/**
+ * A TURRET'S TOP MUZZLE SPEED (in/s) — the flywheel's ceiling, and the reason a turret's range
+ * is a number rather than an infinity.
+ *
+ * A turret solves its own arc (`bbTurretSolution`), so unless the speed is bounded somewhere it
+ * reaches every opening on the field from everywhere and the pitch envelope becomes decoration.
+ * SIZED SO IT IS NOT NORMALLY WHAT BITES: the longest legal shot at a HIVE is a robot in the
+ * far corner (~66, 66) firing at the opposite up-CELL — d = 111.8 in, dh = 47.6 in above a
+ * turret muzzle, which the minimum-speed solution takes at **255.5 in/s**. 260 clears that with
+ * a little margin, so today the thing that makes a turret miss is the SLEW (aim is a physical
+ * state) and not the range. A target further or higher than the HIVE would fall short, which is
+ * a miss the driver can see and drive out of rather than a silent skip.
+ *
+ * APPROX, like every launcher number here — see the risks in `docs/biobuzz/plan-mechanisms.md`.
+ */
+export const BB_TURRET_SPEED_MAX = 260;
 
 /** the launcher's plate channel, in inches — `GAP` is the clear width between the two plates
  * a POLLEN passes between, `OVERHANG` how far they reach past the flywheel. GAP is

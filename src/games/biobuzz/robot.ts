@@ -43,6 +43,7 @@ import {
   BB_TURRET_PITCH_MIN,
   BB_TURRET_PITCH_SLEW,
   BB_TURRET_SLEW,
+  BB_TURRET_SPEED_MAX,
 } from './config';
 import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 
@@ -59,12 +60,18 @@ import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
  * derived the intake band from the spec independently, and they disagreed by an inch, so
  * balls were swallowed from outside the visible roller. One geometry, three readers.
  *
- * SHELL SCOPE. There is no target to aim at: Sections 9 and 10 of the V0 manual are Kickoff
- * placeholders, so `scoreTargets()` returns `[]` and `bbAimHeading` has nothing to solve
- * against. What IS real here is the mechanism geometry — mouths, footprint, hopper, launch
- * origins and the four archetypes' firing behaviour — because that is robot hardware and R102
- * pins the envelope it lives in. A launch therefore LOBS into the field rather than at
- * anything, which is exactly what an unscored shell should do.
+ * THERE IS A TARGET NOW. This header used to say there was not — that Sections 9 and 10 were
+ * Kickoff placeholders, `scoreTargets()` returned `[]`, and a launch therefore LOBBED into the
+ * field rather than at anything. Lane A has filled the field in, and `ScoreTarget` carries a
+ * `mouth`, so the aim path in this file is live code rather than a written-ahead shape: a
+ * turret SOLVES (`bbTurretSolution`), SLEWS onto the solution on both axes (`bbSlewTurret`) and
+ * fires the matched speed/elevation pair; a turretless launcher turns its whole chassis
+ * (`bbAimHeading`) and lives with the hood it was built with.
+ *
+ * SCORING is still Lane A's and still absent — `play.ts`'s score pass writes zeroes and the
+ * module declares `scored: false` — so a POLLEN that arrives dead centre in a CELL today counts
+ * for nothing. Aiming and scoring are separate landings on purpose: this half is robot
+ * hardware, and R102 pins the envelope it lives in.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -215,9 +222,8 @@ export { bbHopperCap };
  * the edge's own outward angle. Get that subtraction wrong and a broadside launcher aims 90°
  * off, which is exactly the class of bug the single `EDGE_*` table exists to prevent.
  *
- * SHELL: `scoreTargets()` is empty, so nothing in the shell calls this with a real target.
- * It is written and exported now because Lane A's aim-assist hook is a call to it, and a
- * function that shows up after its caller is a refactor instead of a fill-in.
+ * The caller is `bbAimAssist` (`play.ts`), which picks the target with `bbPickTarget` and
+ * applies the result as a rotate override while the fire button is held.
  */
 export function bbAimHeading(r: RobotState, target: ScoreTarget): number | null {
   const mode = (r.spec.scoreMode ?? BB_DEFAULT_SCORE_MODE) as BbScoreMode;
@@ -283,7 +289,28 @@ function launchLine(r: RobotState, edge: BbEdge): { origin: Vec2; dir: Vec2; per
  * about the input rather than the physics. Lane B can add jitter behind the same world RNG
  * the scatter uses once the scenes are green without it.
  */
-export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled: boolean): void {
+export function bbLaunch(
+  world: World,
+  r: RobotState,
+  cmd: RobotCommand,
+  enabled: boolean,
+  /**
+   * A TURRET'S SOLVED MUZZLE SPEED for the target it is currently tracking (`bbTurretSolution`
+   * `.speed`), or `undefined` when there is nothing to track.
+   *
+   * PASSED IN RATHER THAN SOLVED HERE for two reasons, and both matter. It would be a CYCLE to
+   * solve it here — choosing the target needs `scoreTargets`, which lives in Lane A's
+   * `elements.ts`, and `play.ts` already imports this file. And it would be WIRE COST to carry
+   * it on `RobotState`: a per-tick field ships 30 times a second to every client in the room,
+   * and this number is only ever read one stage after it is computed, in the same tick.
+   *
+   * A TURRETLESS launcher ignores it completely — a hood is fixed hardware at a fixed speed,
+   * which is the trade the archetype is sold on. `undefined` falls back to `BB_DRUM_SPEED`, so
+   * a turret with no target still fires (at its stale elevation, into nothing in particular),
+   * exactly as it did before it could aim.
+   */
+  muzzle?: number,
+): void {
   // A BUILD WITH NO LAUNCHER CANNOT FIRE, and that is now a real build rather than an
   // impossible one — Studica's published StarterBot is a drivetrain and an intake. Returning
   // before the idle guard is deliberate: there is no cadence clock to hold for hardware that
@@ -372,7 +399,11 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     return;
   }
 
-  // TURRET / TWIN TURRET: from the ring, along the turret's own heading.
+  // TURRET / TWIN TURRET: from the ring, along the turret's own heading, at the speed its arc
+  // solution asked for. Speed and elevation travel TOGETHER — `bbSolveShot` returns a matched
+  // pair and the angle is only right at its speed — so a turret that has slewed onto a distant
+  // CELL also spun up for it, and one still swinging fires the stale pair and misses.
+  const speed = muzzle ?? BB_DRUM_SPEED;
   const interval = mode === 'twinturret' ? BB_FIRE_INTERVAL / BB_TWIN_FIRE_MULT : BB_FIRE_INTERVAL;
   let fired = 0;
   while (r.fireReadyAt <= world.time && r.hopper.length > 0 && fired < BB_DRUM_MAX) {
@@ -381,7 +412,7 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     releasePollen(
       world,
       r,
-      { x: dcos(h) * BB_DRUM_SPEED * vh, y: dsin(h) * BB_DRUM_SPEED * vh, z: BB_DRUM_SPEED * vv },
+      { x: dcos(h) * speed * vh, y: dsin(h) * speed * vh, z: speed * vv },
       undefined,
       o,
     );
@@ -435,21 +466,57 @@ export function bbMuzzleZ(spec: RobotSpec): number {
 }
 
 /**
- * The ELEVATION a turret must be at to put a POLLEN into `target`, in degrees, or `null` when
- * this build has no turret to elevate.
+ * THE WHOLE TURRET SOLUTION — yaw, elevation and muzzle speed — to put a POLLEN into `target`,
+ * or `null` when this build has no turret to aim.
+ *
+ * ⚠️ **ALL THREE, TOGETHER, BECAUSE THE ARC IS ONE ANSWER AND NOT THREE.** `bbSolveShot`
+ * returns a MATCHED (speed, angle) pair — it is the minimum-speed trajectory, so the angle is
+ * only correct at that speed. Taking the angle and firing it at some other fixed speed is not
+ * an approximation of the solution, it is a different shot: a CELL 47 in above the muzzle at
+ * 40 in of range wants 206 in/s at 70°, and the same 70° at `BB_DRUM_SPEED`'s 175 falls short
+ * of the HIVE entirely. `docs/biobuzz/plan-mechanisms.md` names this — "the §3 aim signature
+ * must gain speed+angle" — and this is that signature.
  *
  * ⚠️ THE HIVE OPENING IS A BAND, NOT A POINT — 53.5 to 65.6 in — so there is a RANGE of
- * elevations that score and this returns the one aimed at its middle. That is deliberate for
- * now (the middle is the most forgiving of a moving chassis) but it is the signature most
- * likely to want revisiting: a min/max acceptable pitch would let a robot take the flatter,
- * faster solution when it has one.
+ * solutions that score and this aims at its middle. Deliberate for now (the middle is the most
+ * forgiving of a moving chassis) but it is the part most likely to want revisiting: a
+ * min/max acceptable pitch would let a robot take the flatter, faster solution when it has one.
+ *
+ * ANGLES ARE RADIANS, like everything in the sim that is not the hood (see `BB_DEG`). The
+ * pitch is clamped into the barrel's real envelope, so a solution the hardware cannot reach
+ * comes back as the nearest one it can — which then MISSES, honestly, rather than being
+ * reported as unreachable and silently skipped.
+ */
+export function bbTurretSolution(
+  r: RobotState,
+  target: ScoreTarget,
+): { yaw: number; pitch: number; speed: number } | null {
+  if (!bbIsTurreted(bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG))) return null;
+  // FROM THE MUZZLE, NOT THE CHASSIS CENTRE — the same reason `bbTurretOrigin` exists: solving
+  // an arc from the centre while firing from an offset ring leaves a systematic miss that
+  // grows with the offset.
+  const o = bbTurretOrigin(r);
+  const dx = target.pos.x - o.x;
+  const dy = target.pos.y - o.y;
+  const sol = bbSolveShot(hyp(dx, dy), target.z - bbMuzzleZ(r.spec));
+  return {
+    yaw: datan2(dy, dx),
+    pitch: clamp(sol.angle, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX),
+    // A FLYWHEEL HAS A TOP SPEED. Uncapped, a turret reaches every opening on the field from
+    // everywhere and the only thing that could ever make it miss is the slew — which makes
+    // RANGE a free parameter and the pitch envelope decorative. `BB_TURRET_SPEED_MAX` is sized
+    // so the cap is NOT normally what bites (see its comment); a shot that needs more than it
+    // leaves slow and falls short, which is a miss the driver can see and drive out of.
+    speed: Math.min(sol.speed, BB_TURRET_SPEED_MAX),
+  };
+}
+
+/**
+ * The ELEVATION a turret must be at to put a POLLEN into `target`, in RADIANS, or `null` when
+ * this build has no turret to elevate. The pitch half of `bbTurretSolution`.
  */
 export function bbAimPitch(r: RobotState, target: ScoreTarget): number | null {
-  if (!bbIsTurreted(bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG))) return null;
-  const o = bbTurretOrigin(r);
-  const d = hyp(target.pos.x - o.x, target.pos.y - o.y);
-  const sol = bbSolveShot(d, target.z - bbMuzzleZ(r.spec));
-  return clamp(sol.angle, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+  return bbTurretSolution(r, target)?.pitch ?? null;
 }
 
 /**

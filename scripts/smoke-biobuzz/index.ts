@@ -1,5 +1,6 @@
 import { initPhysics } from '../../src/sim/physicsEngine';
 import { fieldChecks, roomChecks } from './field';
+import { rulesChecks } from './rules';
 import { robotChecks } from './robot';
 import { coreChecks } from './core';
 import { sponsorChecks } from './sponsor';
@@ -8,15 +9,16 @@ import type { Check } from './harness';
 /**
  * THE BIOBUZZ SMOKE ENTRY POINT. Run with: `npx tsx scripts/smoke-biobuzz/index.ts`
  *
- * Four lanes, one process, one exit code. `field.ts` owns the field, the wire, the server and
- * the performance budget; `robot.ts` owns the specs and the mechanisms; `core.ts` owns the
- * registry seam. The split is what lets both lanes add checks without touching one file, and
- * the shared `check` counter is what lets the whole thing be a single `npm run test:bb`.
+ * Five lanes, one process, one exit code. `field.ts` owns the field, the wire, the server and
+ * the performance budget; `rules.ts` owns Table 10-2, Section 11 and the HUD slice;
+ * `robot.ts` owns the specs and the mechanisms; `core.ts` owns the registry seam. The split is
+ * what lets each lane add checks without touching one file, and the shared `check` counter is
+ * what lets the whole thing be a single `npm run test:bb`.
  *
  * ── RUNNING LESS THAN ALL OF IT ────────────────────────────────────────────
  *   npx tsx scripts/smoke-biobuzz/index.ts --list
- *   npx tsx scripts/smoke-biobuzz/index.ts --lane field
- *   npx tsx scripts/smoke-biobuzz/index.ts --lane field,core
+ *   npx tsx scripts/smoke-biobuzz/index.ts --lane rules
+ *   npx tsx scripts/smoke-biobuzz/index.ts --lane rules,core
  *   npx tsx scripts/smoke-biobuzz/index.ts --grep pollen
  *
  * The whole suite is a physics run, so it costs real seconds and the cost is not evenly
@@ -53,6 +55,10 @@ import type { Check } from './harness';
 const LANES: { name: string; fn: (c: Check) => void }[] = [
   { name: 'CORE', fn: coreChecks },
   { name: 'FIELD', fn: fieldChecks },
+  // Table 10-2 scoring, the Section 11 fouls, the 1:00 cue, the HUD slice. Its own lane
+  // because a RULES failure and a PHYSICS failure are different mornings, and because two
+  // people add checks to `field.ts` and `rules.ts` at the same time.
+  { name: 'RULES', fn: rulesChecks },
   { name: 'SERVER', fn: roomChecks },
   { name: 'ROBOT', fn: robotChecks },
   // app-level, not a game lane — see the header of sponsor.ts for why it rides this suite

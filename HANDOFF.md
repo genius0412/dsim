@@ -1,28 +1,80 @@
-> **2026-09-12e — worktree `claude/nice-morse-09b59a`, off `biobuzz-robot` @ e2b1882: the
-> SAVED-ROBOT line now reads the `labels.configSummary` slot.** Two files, `src/ui/Menu.tsx` and
-> `scripts/smoke-biobuzz/core.ts`. `npm test` ALL PASS twice (661 in the BIOBUZZ suite), `npm run
-> build` clean, `npm run uiaudit` at baseline. DECODE’s and CR’s inline arms are byte-identical.
-> ⚠️ **This worktree does NOT contain the main checkout’s uncommitted work** — D:\Projects\dsim
-> has ~18 modified files in flight, including the `GameModule.statTiles` slot and the builder
-> hero’s stat-tile fix. The hero tiles are therefore STILL a two-valued `isDecode` branch here,
-> and are deliberately untouched. On merge the Menu.tsx hunks are disjoint; the two new
-> `core.ts` sections land adjacent and will want one trivial conflict resolution.
+> **2026-09-12e — the SAVED-ROBOT line reads the `labels.configSummary` slot.** The third
+> site of the seam bug the preset LIST and the hero STAT TILES had, and the last one in
+> `Menu.tsx`: the `.om` detail line under each saved robot was `isDecode ? … : …`, an `else`
+> rather than a default, so a BIOBUZZ slot was described in Chain Reaction’s words off
+> `scoreMode` — the lossy legacy mirror — printing a launcher-less build as a turret and
+> never mentioning the lift. No new slot: BIOBUZZ already filled `labels.configSummary` and
+> `buildSummary` already read it. DECODE’s and CR’s inline arms are byte-identical.
+> Audited the rest of the file with it: the PRESET card body has no equivalent gap (its slot
+> test is the same slot that picks the list — now pinned), and every other `isDecode` is
+> either non-printing or inside the `Builder ? … : (…)` else-branch BIOBUZZ never renders.
+> Its smoke section sits directly after the stat-tiles one in `scripts/smoke-biobuzz/core.ts`
+> and pins the WIRING at the source — a correct `bbConfigSummary` no screen reads is
+> invisible to any check that calls it directly. Merged with alpha (both sections kept);
+> `npm test` ALL PASS twice, `npm run build` clean, `npm run uiaudit` at baseline.
 
-# HANDOFF — 2026-09-12c (matchmaker: a live region bug, then skill-based pairing)
+# HANDOFF — 2026-09-12d (the sync-engine review, verified and rewritten)
 
 > **2026-09-12d — alpha IS deployed, and LAN no longer needs a Vercel edit.** The alpha Fly app
 > now runs the rendezvous (verified by protocol, not by `/health`, which answers the literal
 > string `ok` and cannot tell you which build is running). The client gate moved from the
 > build-time `VITE_LAN_ENABLED` to the server's `lan` capability, because the two halves were
 > held by different people and had silently drifted apart. Cost: +6.1 KB brotli, measured.
+> Branch **alpha**, 7 commits, all pushed. `npm test` **ALL PASS**, `npm run dbtest` **ALL PASS**,
+> `npm run server:check` clean, `npm run test:mm` **184 checks** (was 58 at the last handoff).
 
-Branch **alpha**, 7 commits, all pushed. `npm test` **ALL PASS**, `npm run dbtest` **ALL PASS**,
-`npm run server:check` clean, `npm run test:mm` **184 checks** (was 58 at the last handoff).
+Branch **alpha**, **no code changes since the above** — one doc rewritten. `npm run test:mm`
+184 checks re-run and green; nothing else re-run, nothing to deploy.
 
-⚠️ **NOT DEPLOYED. All of this is server-side and does nothing until `./scripts/fly-deploy.sh`
-runs** — never a bare `flyctl deploy`.
+## `docs/multiplayer-sync-engine-review.md` was audited and is now 494 lines, was 985
 
-## READ FIRST — `ord` was not in the region table, and it is your US Central
+Every claim a RECOMMENDATION rests on was re-read at HEAD `593ac86` and at the review's own
+`8cd4d61`. The measurement half holds and is kept verbatim — it is the only place the corrected
+wire rates, the 32.0 µs/artifact figure and the per-room memory table exist. What changed:
+
+- **Finding #9 (`onBehaviour` never wired) was FALSE, and was false when written.** It is now a
+  struck-through row that says so. `server/matchmaking.ts` passes `persistBehaviour` as the 8th
+  `Room` argument and did at `8cd4d61` (line 363 then, 621 now); the first pass read only the
+  custom-room construction in `index.ts`, and those rooms never set `Room.ranked`, which
+  `reportBehaviour` guards on. **Nothing to fix — do not "wire" it.** It carried the ✔ that
+  marks an adversarially-verified row, so that mark is worth less than it looks.
+- **The client-side ball aliasing (was #11, now #5) is promoted and SEQUENCED FIRST.**
+  `applyBallDelta` returns the objects it stores, `ServerSession` keeps them as `baseBalls`, and
+  the controller steps them — so a ball absent from `upd` is never corrected. The review's own
+  safety case for 3 dp rounding ("the client re-anchors every snapshot") is only true for balls
+  the server re-sends, which is exactly what rounding shrinks. **Clone in `applyBallDelta`
+  before rounding anything.**
+- **The 3 dp safety argument was leaning on the wrong prop.** `worldHash` quantizing at 1e-3
+  proves replay COMPARISON is blind below it, not that `step()` is. Accumulated clocks read
+  against `world.time` (`fireReadyAt`) would round independently of it. §5 now carries a
+  `TIME_KEYS` exemption in the replacer — one `Set`, no measurable cost.
+- **The fleet numbers were stale.** `DEPLOY_REGIONS` is 6 since `ade7d60`, so the ceiling is
+  **144 rooms, 11.3× short**, not 120/13.5×. And `MAX_ROOMS` already reads `process.env`, so the
+  per-machine cap is `-e MAX_ROOMS=N` in `fly-deploy.sh`'s satellite loop, not new code.
+  `gru`/`jnb` are +2 regions for the price of a memory resize.
+- **`autoPath` (was #3, now #6) is not the amplifier it was billed as** — `Room.beginMatch`
+  strips it from every setup — but `coerceAutoPath` is still unbounded and also guards settings
+  load and the practice-run upload into `replays`. Bound the coercer, then delete the wire field.
+- **#5 overstated "no retention at all"**: `purgeSeasonReplays` is an existing per-season lever.
+  The `matches.replay_id` gap in `deleteAccount` is real and stays Critical.
+- **The Rapier 48× figure is a property of the rebuild-per-round design**, which is deliberate
+  for reconcile safety. Said out loud now, so nobody re-measures against a persistent world and
+  concludes the review was wrong.
+- Also: `#13` is sharper (`sanitizeReplay` DOES take a `game` and simply never passes it on),
+  `world.events` has 15 push sites not 11, `#16`/`spectateRoom` dropped to Low (a spectator gets
+  "no such room", not a second lobby), citations are by SYMBOL because every line number in
+  `room.ts`/`index.ts`/`protocol.ts` drifted with the LAN work, `costprobe`'s baseline is `:220`
+  and `worldHash` is in `src/net/`.
+
+Cut: the end-to-end ASCII path diagram (it duplicates `multiplayer-architecture.md`) and the
+template phases that concluded "does not apply" — folded into one §4 table. The six findings
+had been restated in six places; they are stated once, and the plan and dev spec are what is
+left.
+
+**Nothing here is deployed or deployable — it is a document.** The work it describes starts at
+Stage 0 (`costprobe.ts:220`, one line) and Stage 1 item 3 (`applyBallDelta`, one line).
+
+## `ord` was not in the region table, and it is your US Central
 
 The worst thing found this session, and it was live. `DEPLOY_REGIONS` listed five regions while
 EIGHT machines were running (iad ord sjc lhr syd nrt gru jnb). `interRegionMs` answers a

@@ -55,6 +55,11 @@ const BTN_CATALYST = 4;
 // predicted/replayed step) is concerned.
 const BTN_FLING = 8;
 const BTN_DRIVEMODE = 16;
+// BIOBUZZ mechanisms. `bbLift` is HELD (raise the carriage while down), `bbPlace` is an EDGE
+// (place a POLLEN into a FLOWER). Neither is an analog axis, deliberately — so no
+// `REPLAY_FORMAT` bump and no `trackStride` change is needed for either.
+const BTN_BBLIFT = 32;
+const BTN_BBPLACE = 64;
 
 export function quantizeCommand(c: RobotCommand): QCommand {
   return {
@@ -66,7 +71,9 @@ export function quantizeCommand(c: RobotCommand): QCommand {
       (c.fire ? BTN_FIRE : 0) |
       (c.catalyst ? BTN_CATALYST : 0) |
       (c.fling ? BTN_FLING : 0) |
-      (c.driveMode ? BTN_DRIVEMODE : 0),
+      (c.driveMode ? BTN_DRIVEMODE : 0) |
+      (c.bbLift ? BTN_BBLIFT : 0) |
+      (c.bbPlace ? BTN_BBPLACE : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
     rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
@@ -84,6 +91,8 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     catalyst: (q.buttons & BTN_CATALYST) !== 0,
     fling: (q.buttons & BTN_FLING) !== 0,
     driveMode: (q.buttons & BTN_DRIVEMODE) !== 0,
+    bbLift: (q.buttons & BTN_BBLIFT) !== 0,
+    bbPlace: (q.buttons & BTN_BBPLACE) !== 0,
   };
 }
 

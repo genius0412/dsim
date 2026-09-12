@@ -14,6 +14,8 @@ export interface VirtualInput {
   fire: boolean;
   catalyst: boolean;
   fling: boolean;
+  bbLift: boolean;
+  bbPlace: boolean;
   driveMode: boolean;
 }
 
@@ -42,6 +44,8 @@ export class InputManager {
     fire: false,
     catalyst: false,
     fling: false,
+    bbLift: false,
+    bbPlace: false,
     driveMode: false,
   };
 
@@ -106,6 +110,12 @@ export class InputManager {
       catalyst: heldAny(keys.catalyst) || g.catalyst || this.virtualState.catalyst,
       // CATAPULT throw — held; the sim edge-triggers it (same contract as `catalyst`)
       fling: heldAny(keys.fling) || g.fling || this.virtualState.fling,
+      // BIOBUZZ vertical slide — genuinely held: the carriage rises while the button is down
+      // and drives back to stowed when it is released.
+      bbLift: heldAny(keys.bbLift) || g.bbLift || this.virtualState.bbLift,
+      // BIOBUZZ place-into-a-FLOWER — held here even though the sim acts once per press, the
+      // same contract as `catalyst` and `fling` (see `driveMode` below for why).
+      bbPlace: heldAny(keys.bbPlace) || g.bbPlace || this.virtualState.bbPlace,
       // BUTTERFLY wheel-set swap — also passed HELD, edge-triggered in the sim. Doing the
       // edge sim-side (not here) keeps it deterministic under prediction + reconcile:
       // a replayed input can't double-toggle the way a client-side edge flag would.

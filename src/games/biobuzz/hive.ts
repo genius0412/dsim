@@ -18,8 +18,8 @@ import type { BbElementKind } from './flower';
  * until the load overcomes the damper; the bar swings, the contents fall out as it passes
  * level, and the other CELL arrives up.
  *
- * Nothing here reads or writes `World`. A HIVE is `BbHiveState` (`state.ts`) plus one flag;
- * functions take it and return a NEW one. The colour lookup belongs to the caller, and so does
+ * Nothing here reads or writes `World`. A HIVE is exactly `BbHiveState` (`state.ts`);
+ * functions take one and return a NEW one. The colour lookup belongs to the caller, and so does
  * the RNG — `spillPoses` takes a `() => number` so `play.ts` can hand it the world's mulberry32
  * and a smoke check can hand it a counter.
  */
@@ -27,21 +27,16 @@ import type { BbElementKind } from './flower';
 export type { BbCellSide };
 
 /**
- * A HIVE, plus whether the swing in progress has already dropped its contents.
+ * A HIVE — now exactly `BbHiveState`, and this is a RE-EXPORT rather than an interface.
  *
- * `released` is the only field `BbHiveState` does not carry yet, and it exists because the
- * spill and the TIP happen at DIFFERENT moments of one swing (see `hiveStep`): without it a
- * caller cannot tell a bar still carrying its load from one that has already emptied, and a
- * re-entrant step would spill twice. Optional here so a plain `BbHiveState` off `world.biobuzz`
- * still typechecks as an INPUT; every hive this module returns sets it.
- *
- * REQUEST to `state.ts` (Lane A, at the wiring pass): add `released: boolean` to `BbHiveState`
- * and `released: false` to both hives in `emptyBiobuzzState()`, then this interface collapses
- * to a re-export.
+ * It used to widen the state's shape with an optional `released`, because the spill and the
+ * TIP happen at DIFFERENT moments of one swing (see `hiveStep`) and `state.ts` did not carry
+ * the latch that tells a bar still holding its load from one that has already emptied. The
+ * field landed at the wiring pass, so the widening is gone: there is ONE hive shape, the
+ * state's, and a hive read off `world.biobuzz` and a hive this module returns are the same
+ * type. The alias stays so every existing caller and check keeps its name.
  */
-export interface HiveState extends BbHiveState {
-  released?: boolean;
-}
+export type HiveState = BbHiveState;
 
 /**
  * Duration of the swing from one stable state to the other, seconds.
@@ -174,7 +169,7 @@ export interface HiveStepResult {
 export function hiveStep(hive: HiveState, dt: number, kindOf: (id: number) => BbElementKind): HiveStepResult {
   if (hive.tipping > 0) {
     const left = hive.tipping - dt;
-    const released = hive.released ?? false;
+    const released = hive.released;
     if (left > 0) {
       const releasing = !released && left <= BB_TIP_RELEASE_S;
       return {
@@ -203,7 +198,7 @@ export function hiveStep(hive: HiveState, dt: number, kindOf: (id: number) => Bb
       spilled: [],
     };
   }
-  return { hive: { ...hive, contents: [...hive.contents], released: hive.released ?? false }, tipped: false, spilled: [] };
+  return { hive: { ...hive, contents: [...hive.contents] }, tipped: false, spilled: [] };
 }
 
 /** OUTBOARD speed range of a spilled element (in/s) and its lateral spread. APPROX: the tray

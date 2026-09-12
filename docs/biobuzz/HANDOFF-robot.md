@@ -4,7 +4,186 @@ Reverse-chronological. Prepend a new dated section; demote the old "READ FIRST".
 
 ---
 
-## READ FIRST — 2026-09-12, later: modular mechanisms, and a turret that actually aims
+## READ FIRST — 2026-09-12, evening: the mechanisms are WIRED, and the turret aims
+
+**State: green.** `npm test` both suites ALL PASS (**665 checks**, up from 601), `npm run
+build`, `npm run server:check`, `npm run uiaudit` at baseline, `npm run contrast` 221 pass,
+`npm run costprobe` runs BIOBUZZ for the first time.
+
+⚠️ **THE PREVIOUS SESSION’S WORK IS NOW COMMITTED** as `b25c85f` (it was sitting uncommitted in
+the working tree). `origin/alpha` is merged in on top, cleanly — that is what brought Lane A’s
+field and `ScoreTarget.mouth`.
+
+### ⚠️⚠️ TWO MECHANISMS WERE WRITTEN AND NEITHER WAS EVER CALLED
+
+This is the headline, it happened TWICE, and the second one I had personally declared fixed in
+the section below this one.
+
+| function | only callers before today | what that meant in a match |
+|---|---|---|
+| `bbSlewTurret` | none at all | every turret frozen at the bearing `spawn.ts` gave it (FIELD CENTRE), firing at **0° elevation** — flat, into the tile |
+| `bbStepLift` | two checks in `scripts/smoke-biobuzz/robot.ts` | the carriage never left the deck. `drawRobot` has always drawn the mast from `r.bbLiftZ ?? 0`, and that `?? 0` was the whole story |
+
+Both are now called from a new **stage 4b** in `updateBiobuzz` (`play.ts`), after the solve and
+before the launch.
+
+**THE LESSON, and it is why this is at the top:** a mechanism is not wired because its function
+exists and its tests pass. `bbStepLift` had *two passing tests*. They called it DIRECTLY, so
+they were green on code no match could reach. A direct-call test cannot tell “this function
+works” from “this function runs”, and only the second was broken.
+
+`scripts/smoke-biobuzz/robot.ts` now has a `wired:` block that drives the **world** — `run(w,
+cmd({ bbLift: true }), 2.0)` through the real `biobuzzStep` — and asserts the mechanism MOVED.
+**If you add a third mechanism, that is the check that matters.**
+
+### Aiming, now that there is something to aim at
+
+`scoreTargets()` returns real targets, so the aim path stopped being written-ahead shape and
+became live code. Lane A’s message: *the shooting-side gate is field-owned, so B only needs to
+aim at `mouth`.*
+
+**`bbPickTarget` (`play.ts`) is new and it is the whole selection policy.** Two filters, both of
+which only became *reachable* when `scoreTargets()` stopped returning `[]`:
+
+1. ⚠️ **THE OPPONENT’S CELL MUST NOT BE AIMED AT.** It is on the list deliberately (a legal shot
+   that scores nothing). The old code picked **nearest by raw distance**, and the geometry makes
+   that fatal rather than academic: the two HIVES are **25.5 in apart** across field centre and
+   their up-CELLS are staged tipped **opposite** ways, so a robot below centre has the
+   opponent’s opening as its nearest AND its own as closed. Unfiltered, the aim assist held the
+   robot pointed at the enemy HIVE and fed it, on the driver’s own fire button. Smoke proves the
+   filter is non-vacuous by checking raw-nearest WOULD have picked it (it does, at 100+ poses on
+   a grid sweep).
+2. **A target is only a target from its open side** (`mouth`, a half-space test). An absent
+   `mouth` is “no constraint”, never a default direction.
+
+Whether a shot SCORES is still Lane A’s gate; this is only where a launcher POINTS.
+
+**`bbTurretSolution` returns yaw + pitch + speed together** — the signature
+`plan-mechanisms.md` said the §3 aim API had to grow. ⚠️ **`bbSolveShot` returns a MATCHED
+(speed, angle) pair**, and the launch was flying the angle at a fixed `BB_DRUM_SPEED`. That is
+not an approximation of the solution, it is a different shot. `bbAimPitch` is now a thin wrapper
+(its doc also claimed “in degrees” and it always returned radians).
+
+**`BB_TURRET_SPEED_MAX` = 260 in/s** (new, APPROX). Sized off the longest legal HIVE shot — far
+corner (~66, 66) to the opposite up-CELL, d = 111.8 in, dh = 47.6 in, which the minimum-speed
+solution takes at **255.5 in/s**. So today the thing that makes a turret miss is the SLEW, not
+the range. Without a cap the turret reaches everything from everywhere and the pitch envelope is
+decoration.
+
+Measured end-to-end through the real pipeline:
+
+| pose | target | range | speed | pitch | acquire | arrives |
+|---|---|---|---|---|---|---|
+| near own hive | `hive:blue` | 18.1 in | 194.9 in/s | 79.6° | 0.85 s | 59.5 in vs 59.5 in |
+| far corner | `flower:3` | 37.2 in | 136.0 in/s | 52.2° | 0.55 s | 21.5 in vs 21.5 in |
+| mid field | `hive:blue` | 29.5 in | 199.9 in/s | 74.1° | 0.78 s | 59.5 in vs 59.5 in |
+
+Acquisition is 0.55–0.85 s and is **pitch-bound**, which is the axis deliberately made slower.
+
+### ⚠️ NO TURRETLESS BUILD CAN REACH THE HIVE, AT ANY HOOD ANGLE
+
+Nobody wrote this rule; it falls out of `BB_DRUM_SPEED` 175 against `BB_HIVE_OPEN_Z` 53.5. Best
+apex over the whole 10–70° hood range is **23.0 in**, and even fired **straight up** it is
+49.7 in — under the cell’s lower lip. A turretless launcher clears a FLOWER (21.5 in) and
+nothing else.
+
+That is a clean archetype split (turret → HIVE, turretless → FLOWERS) and it may well be the
+right game. **It is now pinned in smoke** so that the day someone retunes the launch speed, this
+is a decision somebody makes rather than a balance change nobody noticed. If the split is NOT
+intended, the dial is `BB_DRUM_SPEED`.
+
+### The stat chips no longer advertise Chain Reaction
+
+The bug the section below left open (a BIOBUZZ builder showing a **“Claw arm · CATALYST”** chip,
+off a `catalystType` the spec does not even carry) is fixed with a new **`GameModule.statTiles`
+slot** — a sibling of `labels`, not an extension of it, because `labels.configSummary` is a
+*sentence* for other screens and this is the builder hero’s *tile grid*. DECODE’s and CR’s inline
+arms are byte-identical; the diff removes only the ternary head.
+
+All four loadouts read correctly (`Drum shooter / launcher / FRONT · 40° hood`, `No lift / lift`,
+…). Both tiles always render: an absent mechanism is a fact about the robot, and a dropped tile
+is indistinguishable from a page that failed to draw one. Smoke sweeps the four loadouts + the
+default + all four StarterBots for FOREIGN vocabulary, banning CR’s and DECODE’s words
+**including every value read out of `CHAIN_CATALYST_LABELS` itself**, so a rename there cannot
+void the check.
+
+### `bbLift` / `bbPlace` reach a real keyboard
+
+The cross-lane request from the section below is **landed**, and it needed more than the two
+protocol bits it asked for:
+
+- `src/net/protocol.ts` — `BTN_BBLIFT` 32 / `BTN_BBPLACE` 64, quantize + dequantize.
+- `src/input/{bindings,gamepad,input}.ts` + `ControlsSection.tsx` — the actions, defaults and
+  rebinding rows. **`x` = raise slide (held), `z` = place.** Pad: RS (11) and D-UP (12), the only
+  free indices; RS takes the held action because it is the one free button a thumb can press
+  without letting go of a stick.
+- ⚠️ **`server/room.ts` `countParticipation` — FIXED, AND IT NEEDS A DEPLOY.** The “was a person
+  driving” test enumerates command buttons by hand, so a BIOBUZZ driver working only the lift and
+  place read as **idle** and lost participation credit. Server change: `./scripts/fly-deploy.sh`.
+- ⚠️ **THE REPLAY BUTTON FIELD IS NEARLY FULL.** `src/sim/replay.ts` packs `q.buttons & 0xff`.
+  Bits 32 and 64 ride through fine; **bit 128 is the last one that fits**, so a ninth button needs
+  a `REPLAY_FORMAT` bump.
+
+⚠️ **`bbPlace` IS WIRED END TO END AND STILL DOES NOTHING**, because its consumer is Lane A’s
+`actOnElement`, which is still `return false`. Key → command → protocol → sim, terminating in a
+stub. That is deliberate, and the day placement lands nothing else needs doing — but it IS a live
+rebindable control with no effect, so decide whether that ships.
+
+### costprobe knows about BIOBUZZ now
+
+`scripts/costprobe.ts` grew `biobuzz-solo` and `biobuzz-2v2`, off the real `step()` and the real
+codec, plus a **per-tick `RobotState` field** table that re-serializes the same frames with named
+keys deleted (one variable, no confound). DECODE/CR columns verified byte-identical to the
+pre-change script.
+
+| scenario | B/snap | wire/client | cores/room |
+|---|---|---|---|
+| DECODE 2v2 | 10,862 | 35.4 KiB/s | 0.038 |
+| CR 2v2 | 8,195 | 27.7 KiB/s | 0.023 |
+| **BIOBUZZ 2v2** | **6,654** | **32.0 KiB/s** | 0.026 |
+
+**BIOBUZZ is the cheapest of the three**, with 56 pollen against CR’s ~300. `bbTurretPitch` +
+`bbLiftZ` together cost **+218 B/snap in a 2v2 (3.3% of the frame), +1.79 KiB/s per client**.
+BIOBUZZ is deliberately NOT in the extrapolation block (`scored: false`, alpha-only ⇒ no
+population to extrapolate from). The probe measured `bbLiftZ` at **0 B — “declared but NEVER
+WRITTEN”**, which is how the dead-lift bug above was found.
+
+### ⚠️ CROSS-LANE EDITS MADE HERE — revert these if the call was wrong
+
+`docs/biobuzz-contract.md` §1 assigns these elsewhere. Each was edited because the feature is
+unreachable without it, and each follows the precedent the `presets` slot set:
+
+| file | owner | why |
+|---|---|---|
+| `src/net/protocol.ts` | integration | **explicitly sanctioned** — “a new `RobotCommand` button needs a `BTN_*` bit and a `localizeCommand` line” |
+| `src/games/biobuzz/play.ts` | **A** | stage 4b + `bbPickTarget`. `bbAimAssist` already lived here, so the aim hook has precedent |
+| `src/games/biobuzz/config.ts` | **A** | `BB_TURRET_SPEED_MAX`, beside the launcher constants (`BB_TURRET_SLEW`, `BB_DRUM_SPEED`, `BB_HOOD_*`) already there |
+| `src/games/module.ts`, `src/ui/Menu.tsx` | integration | the `statTiles` slot + its consumer |
+| `server/room.ts` | integration | the participation fix above |
+
+### Still owed
+
+- **A gallery re-shoot**, now doubly owed: the 35° hood default changed every firing scene, and a
+  turret that actually slews changes every archetype sheet. A new `turret-acquire` scene is
+  registered for exactly this — it parks a BLUE robot at (−10, −25), where the opponent’s CELL is
+  the nearest opening, so a regressed alliance filter is visible without measuring anything.
+- **`npm run shiftaudit`** — still not run for the new Builder blocks. Needs a build + `npx vite
+  preview --port 4173`.
+- **The saved-robots list has the SAME bug the stat chips had.** `Menu.tsx`’s `.om` detail line is
+  another `isDecode ? … : …`, so a saved BIOBUZZ robot is described with `CHAIN_INTAKE_LABELS` /
+  `CHAIN_MODE_LABELS` — a launcher-less build prints as a turret it does not have. It needs **no
+  new slot**: `labels.configSummary` exists, BIOBUZZ fills it, `robotLabels.buildSummary` consumes
+  it. Spawned as `task_04c4397a`.
+- **Mobile**: neither new action is reachable on touch. Needs a `GameModule.mobileButtons` entry
+  and a `GameSettings.mobileLayout` key.
+- **`src/ui/styles.css`** throws 65 `impeccable` design-hook findings. It is the LEGACY in-match
+  HUD that predates `DESIGN.md` and is re-tinted through an alias bridge `shell.css` documents;
+  the repo’s real UI gate is `docs/ui-standard.md` + the `uiaudit` ratchet, which is green.
+  Untouched all session. Owner’s call whether to scope it out of design review or migrate it.
+
+---
+
+## 2026-09-12, later: modular mechanisms, and a turret that actually aims
 
 **State: green.** `npm test` both suites ALL PASS (**601 checks**, up from 568), `npm run
 build`, `server:check`, `uiaudit` at baseline, `contrast` 221 pass. Verified live at
