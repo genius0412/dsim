@@ -241,6 +241,39 @@ this machine the game SERVER, stepping the room, reached by address. `npm run la
 only the introducer. Both set `LAN_MODE=1`, so neither can reach a database, verify a
 credential or hold an admin key.
 
+## Which flag turns the LAN screen on
+
+**The server does.** A deployment advertises `lan` in `caps` on `GET /api/presence` whenever
+`LAN_SIGNALLING` or `LAN_UPLOADS` is set (`presenceCaps`, `server/index.ts`), and the client
+lights its entry points from that (`lanEnabled()`, `src/net/env.ts`). Turning LAN on for an
+environment is therefore ONE step — deploy the game server with those flags — and the Vercel
+project needs no change at all.
+
+It used to take two, and the second one was the problem. `VITE_LAN_ENABLED` is baked in at
+BUILD time, so flipping it meant an env edit plus a cache-free redeploy on Vercel, held by a
+different person than the Fly deploy. The halves drifted exactly as you would expect: alpha
+spent days running a deployed, switched-on rendezvous that no client build could see, serving
+healthy 200s the whole time. The cosmetic half now READS the authoritative half, so the two
+cannot disagree.
+
+Three properties worth keeping if this is ever touched:
+
+- **It costs no request.** The value rides `fetchPresence`, the single funnel every presence
+  read already goes through — the shell polls it on every screen. Do not "just fetch it once
+  at startup"; that adds a request to every cold load. A smoke check enforces the single
+  feeder.
+- **The flip is one-way within a page.** A later failed poll cannot take the screen away
+  mid-session, which is the difference between a feature gate and a flicker.
+- **`VITE_LAN_ENABLED` still forces it on** and is still what the Electron build and
+  `npm run lan:tab` use, because those may point at a server that answers nothing.
+- **It stays the COSMETIC half.** `LAN_UPLOADS` and `LAN_SIGNALLING` are what close doors.
+  A client that ignores all of this learns nothing it could not already have tried, and
+  production — which sets neither — advertises nothing and stays dark.
+
+Cost of no longer being able to tree-shake the LAN screen out of a build that has it off:
+**+6.1 KB brotli** on the entry bundle, +0.95% (2,368,266 → 2,396,905 raw; 656,737 → 662,959
+brotli). Measured, not estimated, by building both ways.
+
 Two things it has to get right, because both fail as a LAN screen with no panel on it:
 
 - **`VITE_LAN_ENABLED` and `VITE_GAME_SERVER_URL` are baked in at BUILD time**, so a `dist/`

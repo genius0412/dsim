@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react';
 import { cmpEnabled, showConsentSettings } from '../ads/adsense';
 import { APP_NAME, seasonFor, LINKS } from '../seasons';
-import { LAN_ENABLED, SUPPORT_ENABLED } from '../net/env';
+import { SUPPORT_ENABLED } from '../net/env';
+import { useLanEnabled } from './useLanEnabled';
 import type { GameId } from '../games/types';
 import { MenuAd } from './AdSlot';
 import { FriendsPanel } from './FriendsPanel';
@@ -94,6 +95,7 @@ export function AppShell({
   /** the selected game — the footer names its season (DECODE / Chain Reaction) */
   game: GameId;
 }) {
+  const lanOn = useLanEnabled();
   const presence = usePresence();
   const season = seasonFor(game);
   return (
@@ -134,7 +136,7 @@ export function AppShell({
           match they just played is not on it. The room screens replace this shell outright
           and say it their own way (`.ds-room-layout` is a 100dvh flex box — a strip above
           it would push the room off the bottom of the viewport). */}
-      {LAN_ENABLED && <LanBanner />}
+      {lanOn && <LanBanner />}
 
       {showRail ? (
         <div className="ds-body">

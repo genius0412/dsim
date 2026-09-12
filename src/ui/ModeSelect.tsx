@@ -1,6 +1,6 @@
 import { APP_NAME } from '../seasons';
 import { QueueCounts } from './QueueCounts';
-import { LAN_ENABLED } from '../net/env';
+import { useLanEnabled } from './useLanEnabled';
 
 /**
  * Game-mode select — reached from PLAY. These are the tiles that used to live on
@@ -36,6 +36,7 @@ export function ModeSelect({
   /** host or join a game on this network (docs/lan-selfhost.md) */
   onLan: () => void;
 }) {
+  const lanOn = useLanEnabled();
   return (
     <>
       <p className="ds-eyebrow">{APP_NAME} · Play</p>
@@ -126,7 +127,7 @@ export function ModeSelect({
           greyed tile advertises a mode this build will not play, and the reason it is
           off is that the feature is being held back, not that the player is missing a
           prerequisite. Disabled states are for the latter. */}
-      {LAN_ENABLED && (
+      {lanOn && (
         <section className="ds-tileset">
           <p className="ds-tileset-label">LAN · same network</p>
           <div className="ds-tiles">

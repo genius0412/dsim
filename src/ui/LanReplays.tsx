@@ -11,7 +11,7 @@ import {
 } from '../net/lanRuns';
 import { SIM_DT } from '../config';
 import { fmtDay } from './fmtDate';
-import { LAN_ENABLED } from '../net/env';
+import { useLanEnabled } from './useLanEnabled';
 
 /**
  * SELF-HOSTED (LAN) MATCHES — the ones you hosted, on your own Career page.
@@ -99,14 +99,16 @@ interface LanReplaysProps {
  * four times, and a fifth added later would silently miss a check spread across them.
  *
  * It is a WRAPPER, not an early return inside the panel, because the panel's first statement
- * would otherwise be a conditional `return null` standing in front of its hooks. `LAN_ENABLED`
- * is a build constant, so the hook count could never actually change between renders and it
- * would have worked — but "this is fine because the condition is secretly constant" is a
- * footgun to leave lying in a component, and it stops being true the moment somebody makes the
- * flag dynamic. Rendering a child conditionally has no such caveat.
+ * would otherwise be a conditional `return null` standing in front of its hooks. That used to
+ * be defensive — `LAN_ENABLED` was a build constant, so the hook count could never actually
+ * change between renders — and the comment here warned it would stop being true the moment
+ * somebody made the flag dynamic. Somebody did: the flag is now `useLanEnabled()`, which
+ * flips false→true when the server answers. The wrapper is what keeps that legal, since the
+ * panel's own hooks are never mounted behind the guard.
  */
 export function LanReplays(props: LanReplaysProps) {
-  if (!LAN_ENABLED) return null;
+  const lanOn = useLanEnabled();
+  if (!lanOn) return null;
   return <LanReplaysPanel {...props} />;
 }
 

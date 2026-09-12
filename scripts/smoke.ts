@@ -7373,6 +7373,53 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
         'lan anon: a server that introduces nobody advertises nothing',
         /LAN_SIGNALLING && LAN_ANON_HOSTS \?[\s\S]{0,20}?'lanAnon'/.test(idxBare),
       );
+      /* THE CLIENT GATE IS READ FROM THE SERVER, NOT FROM THE BUILD.
+
+         `VITE_LAN_ENABLED` is baked in at build time, so every flip of it was a Vercel env
+         edit plus a cache-free redeploy - held by a different person than the Fly deploy on
+         this project, and the two duly came apart: alpha served a deployed, switched-on
+         rendezvous that no client build could see. The cosmetic half now reads the
+         authoritative one, so the two cannot disagree.
+
+         THE COST MUST STAY ZERO. It is fed from `fetchPresence`, the single funnel every
+         presence read already passes through (the shell polls it on every screen), and NOT
+         from a fetch of its own. Checked here because "just fetch it once at startup" is the
+         obvious refactor and it would add a request to every cold load. */
+      const envSrc = readFileSync('src/net/env.ts', 'utf8');
+      const apiSrc = readFileSync('src/net/api.ts', 'utf8');
+      const appSrc = readFileSync('src/ui/App.tsx', 'utf8');
+      check(
+        'lan runtime: the server advertises whether it offers LAN at all',
+        /LAN_SIGNALLING \|\| LAN_UPLOADS [?][^]{0,20}?'lan'/.test(idxBare),
+      );
+      check(
+        'lan runtime: the client ORs the build flag with what the server said',
+        /LAN_BUILD_ENABLED \|\| lanFromServer/.test(envSrc) &&
+          /export function lanEnabled\(\): boolean/.test(envSrc),
+      );
+      check(
+        'lan runtime: and it rides a response the app already fetches - no extra request',
+        /export function fetchPresence[^]{0,700}?setLanFromServer\(/.test(apiSrc) &&
+          /* exactly ONE feeder, and it is that one. A second call site would mean a second
+             place deciding this, and the obvious second place is a fetch of its own. */
+          (apiSrc.match(/setLanFromServer\(/g) ?? []).length === 1,
+      );
+      check(
+        'lan runtime: the flip is one-way, so a failed poll cannot take the screen away',
+        /if \(!on \|\| lanFromServer\) return;/.test(envSrc),
+      );
+      check(
+        'lan runtime: a direct /lan link re-resolves once the answer lands',
+        /dispatchEvent\(new PopStateEvent\('popstate'\)\)/.test(envSrc) &&
+          /if \(lanEnabled\(\) && rest\.startsWith\('[/]lan'\)\)/.test(appSrc),
+      );
+      check(
+        'lan runtime: components subscribe rather than sampling it once at mount',
+        /useSyncExternalStore\(subscribeLanEnabled, lanEnabled, lanEnabled\)/.test(
+          readFileSync('src/ui/useLanEnabled.ts', 'utf8'),
+        ) && !/LAN_ENABLED/.test(appSrc),
+      );
+
       check(
         'lan anon: the synthetic id is never mistaken for a verified one',
         /if \(u\) markAuthed\(u\.userId\);/.test(idxBare) && !/markAuthed\(u!/.test(idxBare),

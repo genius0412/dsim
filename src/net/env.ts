@@ -290,5 +290,64 @@ export const SUPPORT_ENABLED =
  * laptop sets to become a LAN server. It has never been set on a cloud deployment and is
  * not affected by any of this.
  */
-export const LAN_ENABLED =
+const LAN_BUILD_ENABLED =
   (import.meta.env.VITE_LAN_ENABLED as string | undefined)?.trim() === '1';
+
+/**
+ * THE RUNTIME HALF OF THE SAME SWITCH, and the reason this is no longer a plain const.
+ *
+ * `VITE_LAN_ENABLED` is baked in at BUILD time, so flipping it means editing a Vercel
+ * project and redeploying it cache-free. On this project that is not a click: nobody on
+ * the dev side has Vercel access, so every flip is a written hand-off to the owner and a
+ * blocking round trip through somebody who is not in the conversation. The FLY half needs
+ * none of that.
+ *
+ * So the server now says whether it offers LAN, as the `lan` capability on `/api/presence`
+ * (server/index.ts `presenceCaps`), and this value is the OR of the two. Setting
+ * `LAN_SIGNALLING`/`LAN_UPLOADS` on a Fly app is now sufficient to light the client up
+ * against that app, and the build flag remains as an override for a client that wants the
+ * screen regardless — the Electron build, and `npm run lan:tab`, which talks to a server
+ * that may answer nothing at all.
+ *
+ * It costs NO extra request. `serverCaps()` is a one-shot, page-lifetime-cached read that
+ * this app already performs for `party` and `lanAnon`; this rides the same response.
+ *
+ * ⚠️ STILL THE COSMETIC HALF. Everything the old comment said holds: this hides entry
+ * points, `LAN_UPLOADS` and `LAN_SIGNALLING` are what close doors, and a client that
+ * ignores this learns nothing it could not already try. Reading the cosmetic half FROM the
+ * authoritative half is if anything tighter than guessing it from the build, because the
+ * two can no longer disagree — which is exactly how alpha spent days with a deployed
+ * rendezvous and no way to see it.
+ */
+let lanFromServer = false;
+const lanSubs = new Set<() => void>();
+
+/** LAN entry points on, by build flag OR by what the server just said. */
+export function lanEnabled(): boolean {
+  return LAN_BUILD_ENABLED || lanFromServer;
+}
+
+/**
+ * Record what the server answered. Idempotent, and ONE-WAY within a page: caps are read
+ * once and cached for the page's lifetime, so this flips false→true at most once and never
+ * back. `serverCaps()` calls it; nothing else should.
+ *
+ * The `popstate` is not decoration. `parseScreen` refuses to resolve `/lan` while LAN is
+ * off, and it is a plain function, not a hook — so somebody who opens a `/lan` link
+ * directly has already been routed home by the time this answer lands. Re-announcing the
+ * location makes the route resolve again, now that it can.
+ */
+export function setLanFromServer(on: boolean): void {
+  if (!on || lanFromServer) return;
+  lanFromServer = true;
+  for (const cb of lanSubs) cb();
+  if (typeof window !== 'undefined') window.dispatchEvent(new PopStateEvent('popstate'));
+}
+
+/** subscribe to the flip (see `useLanEnabled`). */
+export function subscribeLanEnabled(cb: () => void): () => void {
+  lanSubs.add(cb);
+  return () => {
+    lanSubs.delete(cb);
+  };
+}
