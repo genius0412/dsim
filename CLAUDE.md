@@ -453,7 +453,12 @@ modeled motor is the **MATRIX / goBILDA 5000-series 12VDC** brushed motor (5800 
   forward kinematics of the pods for the achieved chassis motion. **Balancing weakness is
   WOBBLE, not weight** (a heavy-swerve nerf was tried and reverted): each module's control
   loop is imperfect (`SWERVE_WOBBLE_AMP`/`_FREQ`, INDEPENDENT phase per pod) → real path
-  drift + yaw wobble driving straight. X-drive renders as a proper X (omnis at ±45°).
+  drift + yaw wobble driving straight. **X-drive renders as a DIAMOND, not an X**: the omnis
+  are at ±45° but lie ACROSS their corners, not along the diagonals. Both renderers had them
+  radial — every wheel aimed at the centre, which is a machine with no moment arm and so no
+  yaw at all — and that is what read as an X. Fixed in BOTH `src/render/drawRobot.ts` (which
+  DECODE's builder preview also uses, since it renders a real `RobotState`) and
+  `src/games/chain/parts.ts`; CR's builder preview was already correct. Keep the two in step.
 - **NICHES:** tank raw power/no-strafe · swerve strongest-but-imprecise · mecanum
   light/instant/precise but weaker · x-drive deliberately-weak novelty.
 - **PUSHING POWER IS A FORCE, and the collider mass is DERIVED from it** (`drivetrain.ts`):

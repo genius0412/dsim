@@ -9,7 +9,6 @@
 import type { RobotState } from '../../types';
 import * as C from '../../config';
 import { roundRect, strokeInside } from '../../render/drawRobot';
-import { hyp } from '../../math';
 
 /**
  * The CHASSIS — an FTC frame seen from above. Deliberately PLAIN: extruded aluminium rails
@@ -78,7 +77,8 @@ export function drawChassisBody(
  * Draw a robot's DRIVETRAIN wheels in the chassis-local frame (already translated +
  * rotated to the robot). CHAIN REACTION ONLY — DECODE draws its own wheels inside its frozen
  * sprite. Mecanum/tank point forward, SWERVE pods steer to `moduleAngles`, X-drive omnis sit
- * at ±45° (an X), and butterfly shows the set that is currently on the floor.
+ * at ±45° ACROSS their corners (a diamond, not an X), and butterfly shows the set that is
+ * currently on the floor.
  */
 export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: string): void {
   const hl = r.spec.length / 2;
@@ -206,11 +206,15 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
       ctx.restore();
     });
   } else if (r.spec.drivetrain === 'xdrive') {
-    // omni wheels canted 45°, opposite corners on the same diagonal → an X. Long +
-    // lighter so the X clearly reads; the diagonals nearly meet at the center.
-    const reach = hyp(wx, wy);
+    // Omni wheels canted 45°, each one lying ACROSS its corner rather than along it, so the
+    // four of them read as the four sides of a DIAMOND. Same fix, same reasoning as DECODE's
+    // `drawWheels` (src/render/drawRobot.ts) — they were drawn RADIALLY, pointing at the
+    // centre, which is a machine that could translate but never yaw, and which read as an X
+    // through the middle. Keep the two renderers in step: CR and DECODE share the drivetrain.
+    // Same size as every other wheel here too — an omni is not a bigger wheel, and the old
+    // `reach * 1.15` stretch existed only to make the X read.
     for (const [px, py] of corners)
-      drawWheel(px, py, px * py >= 0 ? Math.PI / 4 : -Math.PI / 4, 'omni', Math.min(reach * 1.15, 7.5), 2.0, '#2b333e');
+      drawWheel(px, py, px * py >= 0 ? -Math.PI / 4 : Math.PI / 4, 'omni', 4.4, 2.2, '#2b333e');
   } else if (r.spec.drivetrain === 'butterfly') {
     // BUTTERFLY: draw the set that is actually DOWN, and show the other one STOWED. The
     // deployed wheels are full-size and lit; the stowed set is a thin dim bar tucked just
