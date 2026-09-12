@@ -1,10 +1,147 @@
+# HANDOFF — 2026-09-12 (hosting a LAN match from a browser tab: no download, no terminal)
+
+Branch **alpha**, merged from `lan-webrtc`. `npm test` **ALL PASS**, `npm run build` green,
+`npm run server:check` green, `npx tsc --noEmit` clean, `npm run uiaudit` at baseline,
+`npm run test:mm` 58 checks. Pushed as `a3ff8f4`.
+
+## READ FIRST — the server has NOT been deployed, and that is the only thing left
+
+```
+./scripts/fly-deploy.sh --alpha
+```
+
+That deploys the PREVIEW app (`dsim-alpha`, from `fly.alpha.toml`), which is where
+`LAN_UPLOADS` and the new `LAN_SIGNALLING` are set. **flyctl is not installed on this
+machine**, which is why the session stopped here. Never a bare `flyctl deploy`, and never
+prod for this — `fly.toml` deliberately sets neither flag.
+
+Until it runs, the alpha server has no `server/lanSignal.ts` and no `LAN_SIGNALLING`, so a
+tab cannot claim a room code and **two machines have never done this**. Hosting claims its
+code through the CLOUD rendezvous and verifies an auth token there, so the first real
+host-and-guest test is necessarily a post-deploy one. After the deploy: check `/health`,
+confirm the alpha Vercel project sets `VITE_LAN_ENABLED` (a hidden button and an open route
+are each half a gate), then host from one machine, read the six-character code out, join from
+a second, play a match, and check it lands in Career.
+
+## What landed
+
+`docs/lan-webrtc.md` is complete — all five steps. A browser tab now runs the authoritative
+room and is reached over a WebRTC DataChannel, so hosting a LAN match needs no download, no
+terminal and no Node. That is the whole point: the machine this feature is for is a school
+Chromebook, and both previous host paths asked for `git clone` and `npm ci`.
+
+- **`src/lan/hostWorker.ts`** — the room, in a dedicated Worker. Imports the same
+  `server/room.ts` the cloud runs. **No persistence callbacks are passed**, so a tab-hosted
+  match structurally cannot write a leaderboard row, move ELO or touch standing.
+- **`src/lan/hostRuntime.ts`** — the page half: signalling socket, one `RTCPeerConnection` per
+  guest, the host's own seat through a `LoopbackTransport`, the wake lock. The host is an
+  ordinary client of its own room; no client code branches on being the host.
+- **`src/net/lanPeer.ts` / `src/net/lanSignalClient.ts`** — two lanes (ordered control,
+  unordered `maxRetransmits: 0` hot) and the offer/answer/ICE dance, `iceServers: []`.
+- **`server/lanSignal.ts`** — the rendezvous. Routing comes from the registry, never from the
+  message; it never parses a payload.
+- **`src/lan/hosting.ts`** — see the first bug below.
+
+## The two bugs found after the feature already "worked"
+
+**1. Nothing kept a tab-hosted match.** `App.tsx`'s `keepLanRun` gated on `lanActive()`, which
+is the flag for a LAN room reached by ADDRESS. A WebRTC room sets no LAN server, so that
+condition was false, every condition after it went unevaluated, and — with the Worker room
+deliberately persisting nothing — the match existed nowhere. Silently: no error, no warning,
+nothing missing on screen, just nothing in your history the next morning.
+
+`src/lan/hosting.ts` is the missing predicate, in its own LEAF module for the same reason
+`roomRegion.ts` is one: the rule fails with no symptom, so it has to be testable headlessly.
+Smoke walks `src/` and asserts exactly ONE screen can raise the flag — a second raiser would
+file a match twice.
+
+**2. The rendezvous was a third door into production.** The owner's standing call is that LAN
+ships nowhere near prod, held there by `VITE_LAN_ENABLED` (hides the entry points) and
+`LAN_UPLOADS` (decides whether `/api/lan` is mounted at all). Neither covers INTRODUCING two
+browsers to each other: that touches no database, which is exactly why the upload flag is
+scoped away from it. Deployed as it was, prod would have mounted no upload route and still let
+anyone host a LAN match. Now **`LAN_SIGNALLING`** in `server/lanUploads.ts` — same shape,
+fails closed, its own variable rather than folded into the other, and it does NOT read
+`SERVER_CHANNEL` (a release channel is not a feature switch; alpha is where this is being
+tested, not what makes it allowed). Verified at runtime in both states against a locally
+booted server: closed → all three signalling messages answered `closed` with nothing
+registered; open → the real logic runs (`auth` for an anonymous host, `nohost` for an
+unhosted code, `nopeer` for an unknown peer).
+
+## Offline matches now reach the account on their own
+
+The LAN upload backlog (`saveLanRunLocal` → `pendingLanUploads` → `uploadLanRun`) already
+existed but drained only on a sign-in or at the END of a LATER match. Self-hosted play exists
+for venues the internet does not reach, so the match that most needs uploading is the one
+played with no connection at all — a host who played a scrimmage in a gym and opened the
+laptop at home had to play ANOTHER match before the first one uploaded. It now also drains on
+the `window` `online` event, alongside the practice backlog.
+
+That signal is coarse (it reports a network interface, not reachability — a captive portal
+fools it), so it is an EXTRA trigger and never the only one. Both flushes are sequential and
+stop on the first failure, leaving the backlog intact.
+
+## §6 was right, and the first measurement of it was wrong
+
+Timer throttling decides the architecture, so it was measured rather than assumed. Page thread
+vs dedicated Worker, same hidden tab, 7 minutes:
+
+| elapsed, hidden | page thread | Worker |
+|---|---|---|
+| 0–30 s | 59.1 → 59.7 Hz | 58.5 Hz |
+| 30–45 s | **3.6 Hz** | 58.9 Hz |
+| 45 s – 5 min | **1.1–2.4 Hz** | 50.4–62.3 Hz |
+| 5–6 min | **0.017 Hz** (one wake per minute) | 60.9 Hz |
+| whole run | — | **60.08 Hz**, 25,236 ticks / 420.0 s |
+
+⚠️ **A SHORT SAMPLE INVERTS THE CONCLUSION.** The first attempt was a 5-second A/B and
+reported the page thread AHEAD (304 ticks vs 277) — that entire window sits inside the
+un-throttled grace period. Anything under about a minute hidden is measuring the wrong regime.
+**The loop cannot move back to the page thread**; that is not thread hygiene, it is the
+feature working or not.
+
+## Verified live, not only by source shape
+
+Smoke here is mostly source-shape (`lan signal:` / `lan rtc:` / `lan host:` / `lan tab:` /
+`lan keep:` / `lan gate:`) because Node has no `Worker`, no `RTCPeerConnection` and no DOM. So
+these were run in a real browser instead:
+
+- `Room` + Rapier WASM booting inside a Worker → `ready` at **230 ms**.
+- A full match stepping there: `matchStart`, then **29.4 Hz** snapshots over 5 s (design rate
+  30 Hz), **every one on the hot lane**, `welcome`/`roster` on control. Health `tickHz`
+  48.7 → 62.4, drift **11 ms → 2 ms**.
+- A real `RTCPeerConnection` handshake, both ends in one page through a faked rendezvous: both
+  lanes open in 2.5 s, and the succeeded candidate pair is a **`host` candidate over udp** —
+  direct, no relay, which is what `iceServers: []` is for. Lane routing correct (`join` →
+  control, `{reliable:false}` → hot), both delivered.
+
+## Smaller things in the same pass
+
+- `.ds-panelbox + .ds-panelbox` / `.ds-panel + .ds-panel` get a 16px gap. `--ds-block` is a 4px
+  offset shadow and the cards carry no margin of their own, so two stacked cards had the upper
+  one's shadow painting onto the lower's border — the same defect stacked LABELS had, and the
+  LAN page now stacks cards twice.
+- The terminal-host block no longer claims "a browser tab can't be a server": it said that
+  directly underneath a panel where a tab is hosting. It is re-framed as the **no-internet-at-
+  all** path, which is the true distinction — the tab path needs a rendezvous and about a
+  second of internet, and a gym with none is a real place. A smoke check pinned the old
+  sentence; it now pins the new distinction instead.
+- ⚠️ One smoke regex matched a literal `\n` between two source lines and so passed on the LF
+  worktree and failed on the CRLF one. Use `\s*` in source-shape checks — this repo has
+  worktrees checked out both ways.
+- ⚠️ **Strip comments before a grep-style source assertion.** Hit for the third time: the
+  `lan gate:` check for "does not key off the release channel" was `!/SERVER_CHANNEL/`, and it
+  matched the PROSE explaining why the channel is the wrong key.
+
+---
+
 # HANDOFF — 2026-09-11, sixth session (the intake grabs at the roller, and reaches only what has landed on it)
 
 Branch **alpha**, rebased onto `71e4316`. `npm test` **ALL PASS — 1451 checks (16 new)**. `npm run build` green,
 `npm run server:check` green. `SIM_VERSION` stays **2**, recorded in that version's batch
 list per the block's own alpha rule. **NOT YET DEPLOYED** — see Deploy.
 
-## READ FIRST — the request, and the trap in the middle of it
+## The request, and the trap in the middle of it
 
 > "Make the intaking speed extremely fast, but decrease the effective intaking area. Like I
 > said before, the intake is a circular compliant wheel spinning. This means that the ball
