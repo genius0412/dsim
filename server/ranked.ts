@@ -1,4 +1,5 @@
 import type { Alliance, GameId } from '../src/types';
+import { eloMode } from './eloMode';
 import type { MatchOutcome, MatchParticipant } from './room';
 import {
   actForSeason,
@@ -157,10 +158,10 @@ export function computeGlicko(
   return updates;
 }
 
-/** infer the ranked mode from the roster size */
-export function eloMode(count: number): '1v1' | '2v2' {
-  return count >= 4 ? '2v2' : '1v1';
-}
+/* `eloMode` now lives in `./eloMode` so `server/room.ts` can have it without importing
+   `./db/repo` (and therefore `pg`) — see that file. Imported (this module uses it too) and
+   re-exported, so every existing caller is unchanged. */
+export { eloMode };
 
 /** Persist a finished VERSUS match + its participants (for the match history and
  * replay). Requires both alliances present (≥2 authed players). When `ranked`, it

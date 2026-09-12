@@ -13,6 +13,7 @@ import { persistMatch, persistDodges } from './persist';
 import { routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
+import { LanSignalling } from './lanSignal';
 import { chargeStanding, rankedLock } from './standing';
 import { lockRemaining, tierOf,
   STANDING_MAX,
@@ -101,6 +102,35 @@ enforceLanPolicy();
 
 const PORT = Number(process.env.PORT ?? 8787);
 const rooms = new Map<string, Room>();
+/**
+ * LAN rendezvous, kept deliberately apart from `rooms`.
+ *
+ * A LAN match has no `Room` on this server — the authoritative room runs in the host's tab
+ * and this process only introduces the peers (`server/lanSignal.ts`). Sharing the `rooms` map
+ * would mean every consumer of it (the reaper, `/api/live`, the matchmaker, admission control)
+ * having to learn about a room with no simulation, no clients and no results. The codes are
+ * checked against each other so a player can never be told two different things by one code;
+ * nothing else is shared.
+ */
+const lanSignals = new LanSignalling();
+
+/**
+ * What a refused signalling request says, in one place.
+ *
+ * These are read by a player, not by a developer: "that code isn't hosting" is something they
+ * retype, so it must not arrive as a stack-shaped `error` that tears the lobby down. The
+ * refusal reasons are the protocol's; the sentences are here so the wire stays terse.
+ */
+const LAN_REFUSALS: Record<'badcode' | 'taken' | 'busy' | 'auth' | 'nohost' | 'full' | 'toobig' | 'nopeer', string> = {
+  badcode: "That isn't a valid room code.",
+  taken: 'That code is already in use — try another.',
+  busy: 'This server is holding as many LAN rooms as it can right now. Try again shortly.',
+  auth: 'Sign in to host a LAN game — the match is saved to your account afterwards.',
+  nohost: "Nobody is hosting that code. Check it with the host and try again.",
+  full: 'That LAN room is full.',
+  toobig: 'That connection request was too large.',
+  nopeer: 'That player is no longer connected.',
+};
 
 // Has this machine staged a ranked match whose row might still be sitting in
 // `pending_matches`? Arms the reaper below; see the note on its interval for why
@@ -1868,6 +1898,52 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   /** what this socket still owes the kernel. The room reads it to coalesce snapshots for
    *  a client that has stopped draining — see `Client.backlog` in room.ts. */
   const backlog = (): number => ws.bufferedAmount;
+
+  /**
+   * This socket's identity FOR SIGNALLING, and the reason it is not `id`.
+   *
+   * `id` is reassigned when a client reclaims an in-match slot (`rejoin`), which is correct
+   * for a room — the point is to inherit the old identity — but it would silently strand a
+   * LAN registration under a key nobody holds any more. Signalling is a lobby-time activity
+   * that outlives nothing, so it gets a stamp that never moves.
+   */
+  const signalId: string = id;
+  const signalSocket = { id: signalId, send };
+
+  /**
+   * The four LAN signalling messages. Kept off the room dispatch chain below because none of
+   * them touches a room: a LAN host has no `Room` here, and a guest signalling for one is not
+   * joining anything on this server.
+   */
+  const handleLanSignal = async (m: ClientMsg): Promise<void> => {
+    if (m.t === 'lanHost') {
+      // hosting requires an account — see `LanSignalling.claim`
+      const u = await verifyAuthToken(m.authToken).catch(() => null);
+      if (closed) return;
+      const res = lanSignals.claim(signalSocket, m.code, u?.userId, (c) => rooms.has(c));
+      if (res.ok) {
+        markAuthed(u!.userId);
+        send({ t: 'lanHosting', code: res.code, hostId: signalId });
+      } else {
+        send({ t: 'lanError', reason: res.reason, message: LAN_REFUSALS[res.reason] });
+      }
+      return;
+    }
+    if (m.t === 'lanStopHosting') {
+      lanSignals.release(signalId);
+      return;
+    }
+    if (m.t === 'lanJoin') {
+      const res = lanSignals.join(signalSocket, m.code);
+      if (res.ok) send({ t: 'lanJoined', code: res.code, hostId: lanSignals.hostIdFor(res.code) ?? '' });
+      else send({ t: 'lanError', reason: res.reason, message: LAN_REFUSALS[res.reason] });
+      return;
+    }
+    if (m.t === 'lanSignal') {
+      const res = lanSignals.relay(signalSocket, m.peer, m.data);
+      if (!res.ok) send({ t: 'lanError', reason: res.reason, message: LAN_REFUSALS[res.reason] });
+    }
+  };
   // a late joiner during a pending restart still gets the countdown banner
   if (noticeLive() && currentNotice) send(currentNotice);
 
@@ -2085,6 +2161,10 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         // latency probe — echo the client's timestamp straight back so it can
         // measure RTT for the connection-quality HUD (answered in lobby OR match)
         send({ t: 'pong', ts: msg.ts });
+        return;
+      }
+      if (msg.t === 'lanHost' || msg.t === 'lanStopHosting' || msg.t === 'lanJoin' || msg.t === 'lanSignal') {
+        void handleLanSignal(msg).catch((e) => console.error(`[server] lan signal error from ${id}:`, e));
         return;
       }
       if (msg.t === 'join') {
@@ -2333,6 +2413,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       else authedUsers.set(authedUserId, n);
     }
     matchmaker.remove(id); // drop from any ranked queue
+    lanSignals.release(signalId); // a LAN host going away takes its room's guests with it
     // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect. `conn` lets the room
     // ignore this close if a newer socket already reclaimed the slot (fast reconnect).
     room?.detach(id, conn);

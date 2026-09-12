@@ -19,6 +19,7 @@ import { roomJoinRegion } from '../src/net/roomRegion';
 import { parseLanAddress, mixedContentBlock, isPrivateHost } from '../src/net/lanAddress';
 import { filePath as staticFilePath, servableFile, servingClient } from '../server/static';
 import { enforceLanPolicy } from '../server/lanMode';
+import { LanSignalling, MAX_SIGNAL_BYTES, MAX_PEERS_PER_HOST } from '../server/lanSignal';
 import { stripCredentials, trustedFor, wsOrigin } from '../src/net/credentials';
 import { childEnv as lanChildEnv } from '../electron/lanHost.cjs';
 import {
@@ -7134,6 +7135,204 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       /\.then\([\s\S]{0,400}?copyFallback\(text\)/.test(lan),
     );
   }
+
+  // ---- LAN over WebRTC: the signalling rendezvous (docs/lan-webrtc.md)
+  /**
+   * THE CLOUD'S ENTIRE INVOLVEMENT IN A MATCH IT DOES NOT RUN, so the rules it enforces are
+   * the only rules there are. Exercised as a state machine rather than grepped, because every
+   * one of these is a routing decision: who may reach whom, and what happens to the people
+   * left behind when a host's tab closes.
+   */
+  {
+    type SentMsg = { t: string; [k: string]: unknown };
+    const sent: { to: string; msg: SentMsg }[] = [];
+    const sock = (id: string) => ({ id, send: (msg: SentMsg) => void sent.push({ to: id, msg }) });
+    const none = () => false; // no cloud room holds any code, unless a test says so
+    const took = (to: string, t: string) => sent.some((e) => e.to === to && e.msg.t === t);
+    const lastTo = (to: string) => [...sent].reverse().find((e) => e.to === to)?.msg;
+    const CODE = 'BCDFGH';
+
+    // ---- hosting requires an account
+    {
+      const sig = new LanSignalling();
+      const anon = sig.claim(sock('h1'), CODE, undefined, none);
+      check(
+        'lan signal: an anonymous socket cannot host (the host is who uploads the match)',
+        anon.ok === false && anon.reason === 'auth',
+      );
+      check('lan signal: a refused claim registers nothing', sig.size === 0);
+    }
+
+    // ---- claim, join, relay, both ways
+    {
+      const sig = new LanSignalling();
+      sent.length = 0;
+      const host = sock('h1');
+      const guest = sock('g1');
+      const claimed = sig.claim(host, CODE.toLowerCase(), 'user-1', none);
+      check('lan signal: a signed-in socket claims a code', claimed.ok === true);
+      check(
+        'lan signal: the code is normalized, so `bcdfgh` and `BCDFGH` are one room',
+        claimed.ok === true && claimed.code === CODE && sig.hostIdFor('bcdfgh') === 'h1',
+      );
+      const joined = sig.join(guest, CODE);
+      check('lan signal: a guest is introduced to the host', joined.ok === true);
+      check('lan signal: the HOST is told a peer arrived', took('h1', 'lanPeer'));
+      check('lan signal: the room counts its guest', sig.peerCount(CODE) === 1);
+
+      sent.length = 0;
+      const up = sig.relay(guest, 'h1', '{"sdp":"offer"}');
+      check('lan signal: a guest reaches its host', up.ok === true && took('h1', 'lanSignal'));
+      const got = lastTo('h1') as { data?: string; peer?: string } | undefined;
+      check(
+        'lan signal: the forwarded blob is verbatim and names its sender',
+        got?.data === '{"sdp":"offer"}' && got?.peer === 'g1',
+      );
+      sent.length = 0;
+      const down = sig.relay(host, 'g1', '{"sdp":"answer"}');
+      check('lan signal: a host reaches its guest', down.ok === true && took('g1', 'lanSignal'));
+    }
+
+    // ---- the routing rules: a rendezvous is not a message bus
+    {
+      const sig = new LanSignalling();
+      sent.length = 0;
+      const host = sock('h1');
+      const guest = sock('g1');
+      sig.claim(host, CODE, 'user-1', none);
+      sig.join(guest, CODE);
+
+      const fromNowhere = sig.relay(sock('s1'), 'h1', 'x');
+      check(
+        'lan signal: a socket in no room cannot signal anybody',
+        fromNowhere.ok === false && fromNowhere.reason === 'nopeer',
+      );
+      const sideways = sig.relay(guest, 'g2', 'x');
+      check(
+        'lan signal: a guest may only ever address its own host, never another guest',
+        sideways.ok === false && sideways.reason === 'nopeer',
+      );
+      const strayHost = sig.relay(host, 'g2', 'x');
+      check(
+        'lan signal: a host cannot address a peer it was never introduced to',
+        strayHost.ok === false && strayHost.reason === 'nopeer',
+      );
+    }
+
+    // ---- bounds
+    {
+      const sig = new LanSignalling();
+      const host = sock('h1');
+      const guest = sock('g1');
+      sig.claim(host, CODE, 'user-1', none);
+      sig.join(guest, CODE);
+      const big = sig.relay(guest, 'h1', 'x'.repeat(MAX_SIGNAL_BYTES + 1));
+      check(
+        'lan signal: an oversized blob is refused, so this never becomes a relay',
+        big.ok === false && big.reason === 'toobig',
+      );
+      const atCap = sig.relay(guest, 'h1', 'x'.repeat(MAX_SIGNAL_BYTES));
+      check('lan signal: exactly at the cap is still allowed', atCap.ok === true);
+
+      for (let i = 0; i < MAX_PEERS_PER_HOST + 2; i++) sig.join(sock(`p${i}`), CODE);
+      check(
+        'lan signal: a host stops collecting guests at the cap',
+        sig.peerCount(CODE) === MAX_PEERS_PER_HOST,
+      );
+    }
+
+    // ---- code collisions with real cloud rooms
+    {
+      const sig = new LanSignalling();
+      const taken = sig.claim(sock('h1'), CODE, 'user-1', (c) => c === CODE);
+      check(
+        'lan signal: a code a CLOUD room already holds cannot also be a LAN code',
+        taken.ok === false && taken.reason === 'taken',
+      );
+      const sig2 = new LanSignalling();
+      sig2.claim(sock('h1'), CODE, 'user-1', none);
+      const second = sig2.claim(sock('h2'), CODE, 'user-2', none);
+      check('lan signal: two hosts cannot hold one code', second.ok === false && second.reason === 'taken');
+      const bad = sig2.claim(sock('h3'), 'AEIOU!', 'user-3', none);
+      check('lan signal: a malformed code is refused', bad.ok === false && bad.reason === 'badcode');
+      const nobody = sig2.join(sock('g9'), 'ZZZZZZ');
+      check('lan signal: joining a code nobody hosts says so', nobody.ok === false && nobody.reason === 'nohost');
+    }
+
+    // ---- teardown: the failure mode netcodeplan.md exists to stop producing
+    {
+      const sig = new LanSignalling();
+      sent.length = 0;
+      sig.claim(sock('h1'), CODE, 'user-1', none);
+      sig.join(sock('g1'), CODE);
+      sig.join(sock('g2'), CODE);
+      sent.length = 0;
+      sig.release('h1');
+      check(
+        'lan signal: a host leaving tells EVERY guest the room is gone',
+        took('g1', 'lanPeerGone') && took('g2', 'lanPeerGone'),
+      );
+      check('lan signal: and the code is free again', sig.size === 0 && sig.hostIdFor(CODE) === undefined);
+      const reclaimed = sig.claim(sock('h2'), CODE, 'user-2', none);
+      check('lan signal: so somebody else can host it', reclaimed.ok === true);
+    }
+    {
+      const sig = new LanSignalling();
+      sent.length = 0;
+      sig.claim(sock('h1'), CODE, 'user-1', none);
+      sig.join(sock('g1'), CODE);
+      sent.length = 0;
+      sig.release('g1');
+      check('lan signal: a guest leaving tells the host', took('h1', 'lanPeerGone'));
+      check('lan signal: and the room stays open', sig.peerCount(CODE) === 0 && sig.size === 1);
+    }
+
+    // ---- the server wires all of it up
+    {
+      const idx = readFileSync('server/index.ts', 'utf8');
+      const flat = idx.replace(/\n\s*/g, ' ');
+      check(
+        'lan signal: the server releases the registration on socket close',
+        idx.includes('lanSignals.release(signalId)'),
+      );
+      check(
+        'lan signal: signalling uses a stamp that a `rejoin` cannot reassign',
+        idx.includes('const signalId: string = id;') && !idx.includes('lanSignals.release(id)'),
+      );
+      check(
+        'lan signal: a LAN code is checked against live CLOUD rooms',
+        /lanSignals\.claim\([\s\S]{0,160}?rooms\.has\(/.test(flat),
+      );
+      check(
+        'lan signal: hosting verifies the token server-side rather than trusting a claim',
+        idx.includes('verifyAuthToken(m.authToken)'),
+      );
+    }
+
+    // ---- the room itself is browser-portable, which is what makes hosting in a tab possible
+    {
+      const roomSrc = readFileSync('server/room.ts', 'utf8');
+      check(
+        'lan host: server/room.ts has no `node:` import left (it is bundled for a tab)',
+        !/from 'node:/.test(roomSrc),
+      );
+      check(
+        'lan host: the room takes eloMode from the db-free module, not from ranked.ts',
+        roomSrc.includes("from './eloMode'") && !/import \{[^}]*eloMode[^}]*\} from '\.\/ranked'/.test(roomSrc),
+      );
+      check(
+        'lan host: ranked.ts still exports eloMode, so existing callers are unchanged',
+        readFileSync('server/ranked.ts', 'utf8').includes('export { eloMode }'),
+      );
+      for (const f of ['server/channel.ts', 'server/moderation.ts']) {
+        check(
+          `lan host: ${f} reads env through runtimeEnv (a tab has no \`process\`)`,
+          !/process\.env/.test(readFileSync(f, 'utf8')),
+        );
+      }
+    }
+  }
+
   // ---- LAN: a host's server hands out files, so it must not hand out ANY file
   /**
    * THE ONE SECURITY BOUNDARY IN `server/static.ts`.

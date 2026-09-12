@@ -1,4 +1,8 @@
-import { randomUUID } from 'node:crypto';
+/* `crypto.randomUUID` rather than `node:crypto`'s, because this module is bundled for a
+   BROWSER as well — the LAN host runs the room in a tab (`docs/lan-webrtc.md`) and a `node:`
+   specifier is unresolvable there. The Web Crypto name is the same function and is available
+   on Node 19+ and in every browser DSIM supports. */
+const randomUUID = (): string => crypto.randomUUID();
 import * as C from '../src/config';
 import { START_POSES } from '../src/config';
 import { activeStartLegal } from '../src/sim/field';
@@ -39,7 +43,11 @@ import { sanitizePlayerPatch } from '../src/net/sanitize';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
 import { judgeParticipation } from '../src/standing';
 import { roomPersists } from './channel';
-import { eloMode, type EloOutcome } from './ranked';
+import { eloMode } from './eloMode';
+/* TYPE-ONLY, and it has to stay that way: `./ranked` imports `./db/repo`, which imports `pg`.
+   A value import here would drag a Postgres driver into the browser bundle — see
+   `server/eloMode.ts` and `docs/lan-webrtc.md` §5. */
+import type { EloOutcome } from './ranked';
 import type { PendingMatch } from './matchTypes';
 
 /** what the room hands the DB layer when a staged ranked pairing dies. The room knows WHO

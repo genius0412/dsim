@@ -1,3 +1,5 @@
+import { envVar } from './runtimeEnv';
+
 /**
  * WHICH DEPLOYMENT THIS SERVER IS — stable (production) or alpha (the preview).
  *
@@ -17,7 +19,7 @@
  * protects production if an alpha client ever reaches the stable server — which it can,
  * since a browser tab can point anywhere.
  */
-export const SERVER_CHANNEL: string = (process.env.SERVER_CHANNEL ?? 'stable').trim() || 'stable';
+export const SERVER_CHANNEL: string = (envVar('SERVER_CHANNEL') ?? 'stable').trim() || 'stable';
 
 /** is this the alpha (preview) deployment? */
 export const isAlphaServer = (): boolean => SERVER_CHANNEL === 'alpha';

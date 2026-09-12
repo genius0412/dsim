@@ -47,7 +47,11 @@ function isInappropriate(code: string): boolean {
 /** uniform random index in [0, n) using crypto when available (rejection
  * sampling to avoid modulo bias); falls back to Math.random */
 function randIndex(n: number): number {
-  const g = typeof globalThis !== 'undefined' ? (globalThis.crypto as Crypto | undefined) : undefined;
+  /* Structurally typed rather than `as Crypto`, because this module is now read by the SERVER
+     typecheck too (`server/lanSignal.ts` validates codes) and `tsconfig.server.json` has no DOM
+     lib — `Crypto` is a name that does not exist there. The one method used is named directly,
+     which is the honest description of what this needs anyway. */
+  const g = (globalThis as { crypto?: { getRandomValues?: (a: Uint8Array) => void } }).crypto;
   if (g?.getRandomValues) {
     const max = Math.floor(256 / n) * n; // largest multiple of n ≤ 256
     const buf = new Uint8Array(1);
