@@ -1,4 +1,4 @@
-import type { Artifact, RobotCommand, RobotSpec, World } from '../../src/types';
+import type { Alliance, Artifact, RobotCommand, RobotSpec, World } from '../../src/types';
 import * as C from '../../src/config';
 import { worldHash } from '../../src/net/checksum';
 import { slimWorld, unslimWorld } from '../../src/net/protocol';
@@ -7,7 +7,49 @@ import { simModuleFor } from '../../src/games/sim';
 import { createChainWorld } from '../../src/games/chain/spawn';
 import { chainStep } from '../../src/games/chain/step';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
-import { BB_HALF_X, BB_HALF_Y, BB_POLLEN_R, BB_POLLEN_SIM } from '../../src/games/biobuzz/config';
+import {
+  BB_CELL_OPEN,
+  BB_FLOWERS,
+  BB_FLOWER_TOP_Z,
+  BB_HALF_X,
+  BB_HALF_Y,
+  BB_HIVE_BOTTOM_Z,
+  BB_HIVE_CELL_DY,
+  BB_HIVE_OPEN_Z,
+  BB_HIVE_UP_STAGED,
+  BB_NECTAR_R,
+  BB_POLLEN_R,
+  BB_POLLEN_SIM,
+  BB_PTS,
+} from '../../src/games/biobuzz/config';
+import {
+  BB_FLOWER_FLOOR_Z,
+  BB_FLOWER_VOL_Z,
+  bbElementRadius,
+  flowerAccepts,
+  flowerCapacity,
+  flowerFits,
+  flowerRetrieve,
+  flowerScore,
+  flowerStackZ,
+  type BbElementKind,
+} from '../../src/games/biobuzz/flower';
+import {
+  BB_HIVE_ACCEPT_MARGIN,
+  BB_NECTAR_MASS,
+  BB_TIP_LOAD,
+  BB_TIP_SWING_S,
+  bbElementMass,
+  hiveAccepts,
+  hiveCellPos,
+  hivePivot,
+  hiveLoad,
+  hiveStep,
+  otherSide,
+  spillPoses,
+  type HiveState,
+} from '../../src/games/biobuzz/hive';
+import { nextRandom } from '../../src/math';
 import { BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
@@ -793,6 +835,322 @@ export function fieldChecks(check: Check): void {
       `median paired ratio=${ratio.toFixed(2)} of [${rounds.map((x) => x.ratio.toFixed(2)).join(', ')}] ` +
         `· bb median ${median(rounds.map((x) => x.bb)).toFixed(3)}ms · cr median ${median(rounds.map((x) => x.cr)).toFixed(3)}ms`,
     );
+  }
+
+  // ── HIVE: the tip, PURE (`hive.ts`, field-plan §2.1) ──────────────────────
+  /**
+   * `hiveStep` is the one place a HIVE decides to tip, and it is a pure function of the state
+   * and a mass lookup, so it is checked here directly, with no world. Everything the manual
+   * does not print is APPROX (`BB_TIP_LOAD`, `BB_NECTAR_MASS`, the swing time), and these do
+   * not assert those numbers — they assert the RELATIONS the game needs of them: a staged cell
+   * (3 nectar, §10.3.1) is stable, one pollen short of the threshold does nothing, the
+   * threshold starts a swing that takes the swing time to settle, and what tipped is exactly
+   * what spills, under the cell that is now down. A retuned threshold on 09-14 leaves every one
+   * of these true.
+   */
+  {
+    const dt = C.SIM_DT;
+    const massOf = (kinds: Map<number, BbElementKind>) => (id: number): number => bbElementMass(kinds.get(id) ?? 'pollen');
+    const settled = (contents: number[]): HiveState => ({ up: 'south', contents, tips: 0, tipping: 0 });
+
+    // 1. the STAGED load: 3 nectar, stable for as long as anyone waits
+    {
+      const kinds = new Map<number, BbElementKind>([[1, 'red'], [2, 'red'], [3, 'red']]);
+      const load = hiveLoad([1, 2, 3], massOf(kinds));
+      let h = settled([1, 2, 3]);
+      let everTipped = false;
+      let everSwung = false;
+      for (let i = 0; i < 180; i++) {
+        const r = hiveStep(h, dt, massOf(kinds));
+        h = r.hive;
+        if (r.tipped) everTipped = true;
+        if (h.tipping !== 0) everSwung = true;
+      }
+      check(
+        'hive: staged load (3 nectar) is below the tip threshold',
+        load < BB_TIP_LOAD && !everTipped && !everSwung && h.contents.length === 3 && h.tips === 0,
+        `load ${load.toFixed(2)} (3 × ${BB_NECTAR_MASS}) vs threshold ${BB_TIP_LOAD}; 3 s of steps: tipped=${everTipped} swung=${everSwung}`,
+      );
+    }
+
+    // 2. one pollen SHORT of the threshold: 3 nectar + 1 pollen = 5.95, nothing starts
+    {
+      const kinds = new Map<number, BbElementKind>([[1, 'red'], [2, 'red'], [3, 'red'], [4, 'pollen']]);
+      const load = hiveLoad([1, 2, 3, 4], massOf(kinds));
+      const r = hiveStep(settled([1, 2, 3, 4]), dt, massOf(kinds));
+      check(
+        'hive: load one pollen below the threshold does not start a swing',
+        load < BB_TIP_LOAD && r.hive.tipping === 0 && !r.tipped && r.spilled.length === 0,
+        `load ${load.toFixed(2)} vs ${BB_TIP_LOAD}; tipping=${r.hive.tipping} tipped=${r.tipped}`,
+      );
+    }
+
+    // 3. AT the threshold: 6 pollen. The swing STARTS on this step and nothing has tipped yet.
+    const six = [11, 12, 13, 14, 15, 16];
+    const sixKinds = new Map<number, BbElementKind>(six.map((id) => [id, 'pollen'] as const));
+    {
+      const load = hiveLoad(six, massOf(sixKinds));
+      const r = hiveStep(settled([...six]), dt, massOf(sixKinds));
+      check(
+        'hive: load at exactly the threshold starts the swing',
+        load >= BB_TIP_LOAD && r.hive.tipping > 0 && !r.tipped && r.hive.contents.join() === six.join() && r.hive.tips === 0,
+        `load ${load} >= ${BB_TIP_LOAD}; tipping=${r.hive.tipping.toFixed(3)} tipped=${r.tipped} contents=[${r.hive.contents.join(',')}]`,
+      );
+    }
+
+    // 4 + 5. step until it tips: the swing lasts BB_TIP_SWING_S, the up cell flips, and what
+    // spills is exactly what was in it.
+    {
+      let h = settled([...six]);
+      let swingSteps = 0;
+      let tipped = false;
+      let spilled: number[] = [];
+      for (let i = 0; i < 600 && !tipped; i++) {
+        const swinging = h.tipping > 0;
+        const r = hiveStep(h, dt, massOf(sixKinds));
+        if (swinging) swingSteps++;
+        h = r.hive;
+        tipped = r.tipped;
+        spilled = r.spilled;
+      }
+      const elapsed = swingSteps * dt;
+      check(
+        'hive: the swing settles after BB_TIP_SWING_S and flips the up cell',
+        tipped && Math.abs(elapsed - BB_TIP_SWING_S) <= dt + 1e-9 && h.up === 'north' && h.tips === 1 && h.contents.length === 0 && h.tipping === 0,
+        `tipped=${tipped} after ${swingSteps} swing steps = ${elapsed.toFixed(4)} s (swing ${BB_TIP_SWING_S}); up=${h.up} tips=${h.tips} contents=[${h.contents.join(',')}] tipping=${h.tipping}`,
+      );
+      check(
+        'hive: spilled ids == the contents that tipped it',
+        spilled.length === six.length && [...spilled].sort((a, b) => a - b).join() === [...six].sort((a, b) => a - b).join(),
+        `spilled=[${spilled.join(',')}] expected=[${six.join(',')}]`,
+      );
+    }
+
+    // 6. spill poses: `count` of them, all under the cell that is now DOWN, at the hive bottom.
+    // Both alliances, because the pivot x and the staged up-cell both flip with the alliance.
+    for (const a of ['red', 'blue'] as const) {
+      let rngState = a === 'red' ? 7 : 8;
+      const rng = (): number => {
+        const r = nextRandom(rngState);
+        rngState = r.state;
+        return r.value;
+      };
+      // a settled post-tip hive for this alliance: staged up cell has just gone DOWN
+      const post: HiveState = { up: otherSide(BB_HIVE_UP_STAGED[a]), contents: [], tips: 1, tipping: 0 };
+      const down = otherSide(post.up);
+      const sign = down === 'north' ? 1 : -1;
+      const pivot = hivePivot(a);
+      const count = 6;
+      const poses = spillPoses(post, a, count, rng);
+      const eps = 1e-6;
+      const bad = poses.filter(
+        (p) =>
+          Math.abs(p.x - pivot.x) > BB_CELL_OPEN.w / 2 + eps ||
+          Math.sign(p.y) !== sign ||
+          Math.abs(p.y) < BB_HIVE_CELL_DY - eps ||
+          Math.abs(p.y) > BB_HIVE_CELL_DY + BB_CELL_OPEN.d + eps ||
+          p.z !== BB_HIVE_BOTTOM_Z,
+      );
+      check(
+        `hive [${a}]: spill poses count == spilled count and lie under the now-down cell`,
+        poses.length === count && bad.length === 0,
+        `${poses.length}/${count} poses, ${bad.length} outside; down=${down} pivot x=${pivot.x}; ` +
+          `x ${Math.min(...poses.map((p) => p.x)).toFixed(2)}..${Math.max(...poses.map((p) => p.x)).toFixed(2)} ` +
+          `y ${Math.min(...poses.map((p) => p.y)).toFixed(2)}..${Math.max(...poses.map((p) => p.y)).toFixed(2)} ` +
+          `z ${[...new Set(poses.map((p) => p.z))].join('/')}`,
+      );
+    }
+
+    // 7. the ACCEPT test: inside the up cell's opening and descending, and nothing else
+    {
+      const a: Alliance = 'red';
+      const h = settled([]); // up: south
+      const up = hiveCellPos(a, 'south');
+      const downPos = hiveCellPos(a, 'north');
+      const zMid = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
+      const cases: [string, boolean, boolean][] = [
+        ['centre of the up cell, descending', hiveAccepts(h, a, up, zMid, -10), true],
+        ['within the margin above the opening top', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[1] + BB_HIVE_ACCEPT_MARGIN / 2, -10), true],
+        ['ASCENDING through the same point', hiveAccepts(h, a, up, zMid, +10), false],
+        ['off the footprint across the hive (dx = w/2 + 1)', hiveAccepts(h, a, { x: up.x + BB_CELL_OPEN.w / 2 + 1, y: up.y }, zMid, -10), false],
+        ['off the footprint along the hive (dy = d/2 + 1)', hiveAccepts(h, a, { x: up.x, y: up.y + BB_CELL_OPEN.d / 2 + 1 }, zMid, -10), false],
+        ['the DOWN cell', hiveAccepts(h, a, downPos, zMid, -10), false],
+        ['above the margin', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[1] + BB_HIVE_ACCEPT_MARGIN + 1, -10), false],
+        ['below the opening bottom', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[0] - 1, -10), false],
+        ['mid-swing', hiveAccepts({ ...h, tipping: BB_TIP_SWING_S / 2 }, a, up, zMid, -10), false],
+      ];
+      const wrong = cases.filter(([, got, want]) => got !== want);
+      check(
+        'hive: accepts a descending element inside the up-cell opening; rejects outside/ascending/down cell/mid-swing',
+        wrong.length === 0,
+        wrong.length ? `wrong: ${wrong.map(([n, got]) => `${n} → ${got}`).join('; ')}` : `${cases.length} cases as expected; up cell at (${up.x}, ${up.y}), z ${BB_HIVE_OPEN_Z[0]}..${BB_HIVE_OPEN_Z[1]}+${BB_HIVE_ACCEPT_MARGIN}`,
+      );
+    }
+
+    // 8. purity: the input is not written, on the step that SETTLES (the one that clears
+    // contents and flips `up` on the output).
+    {
+      const input: HiveState = { up: 'south', contents: [...six], tips: 0, tipping: dt / 2 };
+      const before = JSON.stringify(input);
+      const r = hiveStep(input, dt, massOf(sixKinds));
+      const after = JSON.stringify(input);
+      check(
+        'hive: hiveStep does not mutate its input',
+        before === after && r.tipped && r.hive !== input && r.hive.contents !== input.contents,
+        `input ${before === after ? 'unchanged' : `CHANGED: ${before} → ${after}`}; output tipped=${r.tipped} up=${r.hive.up}`,
+      );
+    }
+  }
+
+  // ── FLOWER: Fig 10-5 A–H, TABLE-DRIVEN (`flower.ts`, §10.5.2) ─────────────
+  /**
+   * The manual's figure is not in the repo, so the eight cases are RECONSTRUCTED from the
+   * §10.5.2 rule text and named A–H here; the labels are ours, not read off Fig 10-5. Each
+   * expected value is derived BY HAND from the rules (owner = top-most nectar in the volume,
+   * `BB_PTS.owned` per element in the volume, bonus = bottom-most nectar in the volume) and the
+   * stack geometry (`flowerStackZ`: floor 0.43, pollen r 1.4, nectar r 1.8, volume from 3.98),
+   * and written as a NUMBER, so a change to `flowerScore` that happens to agree with itself
+   * still has to agree with the arithmetic.
+   *
+   * The geometry that decides the interesting cases: a bottom POLLEN's top is 3.23, BELOW the
+   * volume floor at 3.98, so it does NOT score; a bottom NECTAR's top is 4.03, so it does
+   * (partially). That is the manual's "on the tiles under the lower ring does not count" and
+   * the reason A has 3 in volume of 4 and C has 4 of 4.
+   */
+  {
+    type Row = {
+      id: string;
+      what: string;
+      stack: BbElementKind[];
+      owner: Alliance | null;
+      ownerPts: number;
+      bonus: Alliance | null;
+      inVolume: number;
+    };
+    const P: BbElementKind = 'pollen';
+    const R: BbElementKind = 'red';
+    const B: BbElementKind = 'blue';
+    const O = BB_PTS.owned;
+    const rows: Row[] = [
+      // zs 1.83 / 4.63 / 7.43 / 10.23 — the bottom pollen tops out at 3.23 < 3.98
+      { id: 'A', what: '4 pollen, no nectar', stack: [P, P, P, P], owner: null, ownerPts: 0, bonus: null, inVolume: 3 },
+      // zs 1.83 / 4.63 / 7.43 / nectar 10.63 — 2 pollen + nectar in
+      { id: 'B', what: '3 pollen + red nectar on top', stack: [P, P, P, R], owner: 'red', ownerPts: 3 * O, bonus: 'red', inVolume: 3 },
+      // nectar 2.23 (top 4.03, partially in) / 5.43 / 8.23 / 11.03 — all 4 in
+      { id: 'C', what: 'red nectar at the bottom, 3 pollen above', stack: [R, P, P, P], owner: 'red', ownerPts: 4 * O, bonus: 'red', inVolume: 4 },
+      // 2.23 / 5.43 / 8.23 / nectar 11.43 — owner is the TOP nectar, bonus the BOTTOM one
+      { id: 'D', what: 'red nectar bottom, blue nectar top, pollen between', stack: [R, P, P, B], owner: 'blue', ownerPts: 4 * O, bonus: 'red', inVolume: 4 },
+      // 2.23 / 5.83 / 9.43 — three nectars, alternating
+      { id: 'E', what: 'blue, red, blue nectars', stack: [B, R, B], owner: 'blue', ownerPts: 3 * O, bonus: 'blue', inVolume: 3 },
+      { id: 'F', what: 'empty', stack: [], owner: null, ownerPts: 0, bonus: null, inVolume: 0 },
+      // 7 pollen (top 20.03) + nectar centred 21.83: ABOVE the top ring but its underside is
+      // below it, so it is partially inside and counts (the backstop case). 6 pollen + nectar in.
+      { id: 'G', what: '7 pollen + red nectar held on the backstop', stack: [P, P, P, P, P, P, P, R], owner: 'red', ownerPts: 7 * O, bonus: 'red', inVolume: 7 },
+      // pollen 1.83 (out) / nectar 5.03 (in: underside 3.23 < 3.98, so PARTIALLY, not fully) —
+      // the owner's points count only the in-volume elements, so the bottom pollen earns nothing
+      { id: 'H', what: 'pollen bottom, blue nectar second', stack: [P, B], owner: 'blue', ownerPts: 1 * O, bonus: 'blue', inVolume: 1 },
+    ];
+    for (const row of rows) {
+      const kinds = new Map<number, BbElementKind>(row.stack.map((k, i) => [100 + i, k] as const));
+      const kindOf = (id: number): BbElementKind => kinds.get(id) ?? 'pollen';
+      const stack = [...kinds.keys()];
+      const zs = flowerStackZ(stack, kindOf);
+      const s = flowerScore(stack, kindOf);
+      const bonusPts = row.bonus ? BB_PTS.bottomNectar : 0;
+      check(
+        `flower [${row.id}]: ${row.what} → owner ${row.owner ?? 'none'} ${row.ownerPts}, bonus ${row.bonus ?? 'none'}, ${row.inVolume} in volume`,
+        s.owner === row.owner && s.ownerPts === row.ownerPts && s.bonusAlliance === row.bonus && s.bonusPts === bonusPts && s.inVolume === row.inVolume,
+        `got owner=${s.owner} pts=${s.ownerPts} bonus=${s.bonusAlliance}/${s.bonusPts} inVolume=${s.inVolume} · zs=[${zs.map((z) => z.toFixed(2)).join(', ')}] volume ${BB_FLOWER_VOL_Z[0]}..${BB_FLOWER_VOL_Z[1]}`,
+      );
+    }
+
+    // G's other half: CAPACITY. The stack can take the backstop nectar and then nothing more.
+    {
+      const seven = new Map<number, BbElementKind>(Array.from({ length: 7 }, (_, i) => [200 + i, P] as const));
+      const kindOf = (id: number): BbElementKind => seven.get(id) ?? 'red';
+      const stack = [...seven.keys()];
+      const fitsNectar = flowerFits(stack, kindOf, BB_NECTAR_R);
+      const withNectar = [...stack, 299];
+      const fitsAfter = flowerFits(withNectar, kindOf, BB_POLLEN_R);
+      const eight = Array.from({ length: 8 }, (_, i) => 300 + i);
+      const fitsEight = flowerFits(eight, () => P, BB_POLLEN_R);
+      const topOf = (st: number[], k: (id: number) => BbElementKind): number => {
+        const zs = flowerStackZ(st, k);
+        return zs.length ? zs[zs.length - 1] + bbElementRadius(k(st[st.length - 1])) : BB_FLOWER_FLOOR_Z;
+      };
+      check(
+        'flower [G]: a nectar still fits on 7 pollen, nothing fits on top of it, and 8 pollen is full',
+        fitsNectar && !fitsAfter && !fitsEight,
+        `7 pollen top ${topOf(stack, kindOf).toFixed(2)} → nectar fits=${fitsNectar}; +nectar top ${topOf(withNectar, kindOf).toFixed(2)} → fits=${fitsAfter}; 8 pollen top ${topOf(eight, () => P).toFixed(2)} → fits=${fitsEight}; TOP_Z ${BB_FLOWER_TOP_Z}`,
+      );
+    }
+
+    // 9. RETRIEVAL pops the bottom element only when it is POLLEN (G418.B)
+    {
+      const kinds = new Map<number, BbElementKind>([[1, P], [2, R]]);
+      const kindOf = (id: number): BbElementKind => kinds.get(id) ?? 'pollen';
+      const a = flowerRetrieve([1, 2], kindOf);
+      const b = flowerRetrieve([2, 1], kindOf);
+      const c = flowerRetrieve([], kindOf);
+      check(
+        'flower: retrieve pops the bottom POLLEN only',
+        a.id === 1 && a.stack.join() === '2' && b.id === null && b.stack.join() === '2,1' && c.id === null && c.stack.length === 0,
+        `[pollen,nectar] → id ${a.id} stack [${a.stack}]; [nectar,pollen] → id ${b.id} stack [${b.stack}]; [] → id ${c.id}`,
+      );
+    }
+
+    // 10. CAPACITY by height. floor 0.43, top ring 21.5: pollen (2.8) — the 8th's top lands at
+    // 22.83, so 8; nectar (3.6) — the 6th's top at 22.03, so 6. And `flowerFits` agrees with
+    // `flowerCapacity` when an empty flower is filled one pollen at a time.
+    {
+      const capP = flowerCapacity(BB_POLLEN_R);
+      const capN = flowerCapacity(BB_NECTAR_R);
+      const stack: number[] = [];
+      let placed = 0;
+      while (flowerFits(stack, () => P, BB_POLLEN_R) && placed < 50) {
+        stack.push(400 + placed);
+        placed++;
+      }
+      check(
+        'flower: capacity by height',
+        capP === 8 && capN === 6 && placed === capP,
+        `pollen ${capP} (expect 8), nectar ${capN} (expect 6); filled one pollen at a time: ${placed}`,
+      );
+    }
+
+    // 11. TOP entry only: over the ring, descending; not ascending, not off-centre, not the side
+    {
+      const f = { x: BB_FLOWERS[0].x, y: BB_FLOWERS[0].y };
+      const above = BB_FLOWER_TOP_Z + 1;
+      const cases: [string, boolean, boolean][] = [
+        ['centre, z TOP+1, descending', flowerAccepts(f, f, above, -20, BB_POLLEN_R), true],
+        ['same point, vz = 0', flowerAccepts(f, f, above, 0, BB_POLLEN_R), false],
+        ['same point, ascending', flowerAccepts(f, f, above, +20, BB_POLLEN_R), false],
+        ['2.5 in off centre', flowerAccepts(f, { x: f.x + 2.5, y: f.y }, above, -20, BB_POLLEN_R), false],
+        ['z = 5 (the side of the tube)', flowerAccepts(f, f, 5, -20, BB_POLLEN_R), false],
+      ];
+      const wrong = cases.filter(([, got, want]) => got !== want);
+      check(
+        'flower: top entry only',
+        wrong.length === 0,
+        wrong.length ? `wrong: ${wrong.map(([n, got]) => `${n} → ${got}`).join('; ')}` : `${cases.length} cases as expected at ${BB_FLOWERS[0].id} (${f.x}, ${f.y}), TOP_Z ${BB_FLOWER_TOP_Z}`,
+      );
+    }
+
+    // 12. purity
+    {
+      const kinds = new Map<number, BbElementKind>([[1, P], [2, R], [3, P]]);
+      const kindOf = (id: number): BbElementKind => kinds.get(id) ?? 'pollen';
+      const stack = [1, 2, 3];
+      const before = stack.join();
+      const r = flowerRetrieve(stack, kindOf);
+      flowerScore(stack, kindOf);
+      check(
+        'flower: flowerRetrieve/flowerScore do not mutate the input stack',
+        stack.join() === before && r.stack !== stack,
+        `stack [${stack}] (was [${before}]); retrieve returned ${r.stack === stack ? 'the SAME array' : 'a new array'}`,
+      );
+    }
   }
 }
 
