@@ -29,7 +29,12 @@ import {
   bbParkedNow,
   bbScoreWorld,
 } from '../../src/games/biobuzz/score';
-import { BB_FRAME_RAM_SPEED, bbNectarLocked, updateBiobuzzPenalties } from '../../src/games/biobuzz/penalties';
+import {
+  BB_CONTROL_LIMIT,
+  BB_FRAME_RAM_SPEED,
+  bbNectarLocked,
+  updateBiobuzzPenalties,
+} from '../../src/games/biobuzz/penalties';
 import { biobuzzFieldHud } from '../../src/games/biobuzz/hud';
 import { bbScene, bbSceneAt } from '../../src/games/biobuzz/scenes';
 import { cmd, setup, type Check } from './harness';
@@ -465,6 +470,24 @@ function penaltyChecks(check: Check): void {
     intoFlower(w, 0, ['yellow', 'yellow']);
     check('G410: POLLEN may enter a FLOWER at any time', bill(w, 5).major.red === 0);
 
+    /**
+     * ...AND THE SAME AT 2:00, WHICH IS THE OWNER'S RULING 3 WRITTEN AS A CHECK.
+     *
+     * G410 names NECTAR and only NECTAR, so POLLEN may enter a FLOWER at any point in the
+     * match and simply earns nothing until a NECTAR gives that flower an owner (§10.5.2). The
+     * line above proves it one second inside the lock; this one proves it a full minute
+     * earlier, where a rule that had quietly generalised to "no SCORING ELEMENT before 1:00"
+     * would be indistinguishable from a correct one.
+     */
+    w.match.phaseTimeLeft = 120; // 2:00 of TELEOP left — deep inside the lock
+    check('G410: entry is still LOCKED at 2:00', bbNectarLocked(w));
+    intoFlower(w, 2, ['yellow', 'yellow', 'yellow']);
+    const pollenAt2 = bill(w, 10);
+    check('G410: POLLEN entering a FLOWER at 2:00 bills NOTHING (ruling 3 — NECTAR only)',
+      pollenAt2.major.red === 0 && pollenAt2.major.blue === 0 && pollenAt2.pts.blue === 0,
+      `${pollenAt2.major.red}/${pollenAt2.major.blue}`);
+    w.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S + 1; // back to where the rest of the block runs
+
     // now a RED nectar, held for several ticks
     intoFlower(w, 0, ['red']);
     const one = bill(w, 10);
@@ -531,6 +554,60 @@ function penaltyChecks(check: Check): void {
     place(t, 0, 20, 0);
     place(t, 1, 32, 0);
     check('G402: crossing in TELEOP is legal', bill(t, 30).major.red === 0);
+  }
+
+  // ── G407: CONTROL of a fifth element — a WARNING, and only a warning ──────
+  /**
+   * Owner ruling 2026-09-12 (field-plan §4.3): G407 is a WARNING, not a cap. Table 10-4's base
+   * sanction is a VERBAL WARNING, with MAJOR + YELLOW only if STRATEGIC, and the sim does not
+   * guess at intent — so the tariff here is an event line, a HUD count, and zero points.
+   *
+   * The hopper is set DIRECTLY. `bbHopperCap` still clamps a driven robot to 4 until Lane B
+   * lifts `BB_STORAGE_MAX` (relay 2), so a driven fixture could not reach five at all today —
+   * and a rules check should fail when the RULE is wrong, not when another lane's dial has not
+   * moved yet.
+   */
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    const r = w.robots[0];
+    const warnings = () => w.events.filter((e) => e.includes('G407')).length;
+
+    // FOUR is the legal number and never warns, however long it is held
+    r.hopper = ['yellow', 'yellow', 'yellow', 'yellow'];
+    const legal = bill(w, 30);
+    check('G407: CONTROL of exactly 4 never warns', warnings() === 0, String(warnings()));
+    check('G407: ...and a legal robot starts FULL (G304.G stages 4)', r.hopper.length === BB_CONTROL_LIMIT);
+
+    // FIVE warns ONCE, however long it is held
+    r.hopper = ['yellow', 'yellow', 'yellow', 'yellow', 'yellow'];
+    const over = bill(w, 30);
+    check('G407: CONTROL of 5 warns ONCE, not once per tick', warnings() === 1, String(warnings()));
+    check('G407: the warning names the rule and the count',
+      w.events.some((e) => e === 'WARNING - RED (G407 CONTROL of 5+ elements)'),
+      w.events.filter((e) => e.includes('G407')).join(' | '));
+
+    // ...and it is a WARNING: no points, no MAJOR, no MINOR, either way
+    check('G407: no points move', over.pts.red === 0 && over.pts.blue === 0,
+      `${over.pts.red}/${over.pts.blue}`);
+    check('G407: no MAJOR and no MINOR — it is not a foul',
+      over.major.red === 0 && over.minor.red === 0 && over.major.blue === 0 && over.minor.blue === 0);
+    check('G407: and the foul tally is untouched', legal.major.red === 0 && over.major.red === 0);
+
+    // back to 4 and up again: a SECOND instance is a SECOND warning (§10.6, per instance)
+    r.hopper = ['yellow', 'yellow', 'yellow', 'yellow'];
+    const back = bill(w, 10);
+    check('G407: dropping back to 4 warns nothing', warnings() === 1, String(warnings()));
+    r.hopper = ['yellow', 'yellow', 'yellow', 'yellow', 'yellow'];
+    bill(w, 10);
+    check('G407: climbing to 5 AGAIN warns again', warnings() === 2, String(warnings()));
+    check('G407: still no points after two warnings', back.pts.blue === 0 && w.match.scores.blue.foulPoints === 0);
+
+    // the HUD chip — a sanction worth no points is invisible without it
+    const hud = biobuzzFieldHud(w);
+    check('HUD: the G407 warning count reaches the slice', hud.warnings.red === 2, String(hud.warnings.red));
+    check('HUD: and it is per ALLIANCE — blue drew none', hud.warnings.blue === 0, String(hud.warnings.blue));
   }
 
   // ── G417: ramming the HIVE frame — STRATEGIC, so a MAJOR on the FIRST hit ─

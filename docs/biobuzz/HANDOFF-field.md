@@ -1,5 +1,85 @@
 # HANDOFF — Lane A (field)
 
+## 2026-09-12 · rules lane (A5b items 4–5) · G407 is a WARNING · `biobuzz-rules`
+
+Gates: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane rules` **159/159** (was 145,
++14) · `npm run test:bb` **882/882**. Based on `origin/alpha` `e5d866d`, merged for the late
+owner rulings.
+
+A5b items 1–3 landed in `0ad9bc7`; the addendum's two corrections in `5204d39`. This is items
+4–5, which are rulings 3 and 4 from the 2026-09-12 late set.
+
+### Item 4 — G407 as a WARNING (ruling 4)
+
+**The rule was listed in `penalties.ts` as "STRUCTURAL — `bbHopperCap` is 4, so a robot cannot
+hold a fifth". The ruling retires that.** Table 10-4 gives G407 a VERBAL WARNING with MAJOR +
+YELLOW only if STRATEGIC, and a hopper the sim refuses to fill is not what the rule says.
+
+- **`bbAwardFoul` gained a third severity, `'warning'`**: no points, no tally, one event line
+  `WARNING - RED (G407 CONTROL of 5+ elements)`. It goes through that function rather than a
+  bare `events.push` so every sanction in this game reads the same way in a toast and a replay.
+- **Edge-triggered per ROBOT**, so five held for a minute is ONE warning and five → four → five
+  is TWO (§10.6, per instance).
+- **No STRATEGIC branch, unlike G417**, and that is deliberate. G417's strategic test is
+  measurable (example A is a high-speed ram and the sim has a closing speed); G407's examples
+  are about intent, which the sim cannot read. There was no "MAJOR + YELLOW at 6+" branch to
+  remove — this lane had never modelled G407 at all.
+- **The tally rides `world.penalties.controlInstances`**, the shared per-robot instance count
+  that already means exactly this in DECODE. Same argument as the pin clocks, and still no
+  `state.ts` edit. Unlike the pin clocks it is **not** cleared at a phase boundary: a clock is
+  live state, a tally is history, and the chip counts the match.
+- **`biobuzzFieldHud` gained `warnings: Record<Alliance, number>`.** A sanction worth no points
+  is invisible on a scoreboard, so the chip IS the sanction. Additive; `HudSlots.tsx` untouched
+  (A5c's).
+- **`BB_CONTROL_LIMIT = 4` is exported from `penalties.ts`**, not added to `config.ts` (Lane
+  B's file). It is the RULE's four; `config.ts`'s `BB_STORAGE_MAX` is the DIAL's four, and
+  after relay 2 they are different things that were the same digit by accident.
+
+### ⚠️ Two gaps in item 4, both real, neither guessed at
+
+1. **THE BRIEF'S PREMISE IS NOT TRUE ON THIS BASE: `controlledArtifacts` IS NOT EXPORTED.** The
+   item says "on the exported CONTROL count (hopper + herded)". `src/sim/penalties.ts` exports
+   exactly two things — `updatePenalties` and `isPinning` — and `controlledArtifacts` is not
+   one of them. So **`bbControlled` counts the HOPPER and only the hopper today.** The herded
+   half of CONTROL is not reachable from this lane.
+
+   Building a second herding test here would mean duplicating ~150 lines of genuine judgement
+   (DECODE's per-(robot, artifact) hold clock, its drain, its transitive contact chain, its
+   re-station rule), and a hand-rolled "touching and moving" stand-in fires on every robot that
+   drives through the staged scatter. A fabricated warning teaches a driver a habit the real
+   rule does not punish — and this rule's entire output IS the teaching, since it moves no
+   points. **REQUEST, a §6 request-5 sibling: export `controlledArtifacts`.** The day it lands,
+   `bbControlled`'s body becomes a call to it and nothing else in this file changes.
+
+2. **THE RULE IS CORRECT BUT DORMANT UNTIL LANE B LIFTS THE CAP.** `bbHopperCap` still clamps
+   every hopper to `BB_STORAGE_MAX` = 4, so a hopper-only count cannot exceed the limit in a
+   driven match. That split is the brief's own (relay 2: "the rules lane bills the warning; you
+   only lift the cap"), and the smoke drives the rule directly — hopper set by hand — so it is
+   proven either way and fires the moment `config.ts` changes.
+
+### Item 5 — G410 binds NECTAR only (ruling 3)
+
+Nothing to do in the engine; it already read the element's kind and skipped `pollen`. One check
+added, at **2:00** rather than one second inside the lock: a rule that had quietly generalised
+to "no SCORING ELEMENT before 1:00" is indistinguishable from a correct one when the only
+evidence is taken at 1:01.
+
+### Rulings 1 and 2 — not this lane's
+
+Ruling 1 (PARK is the own LOADING ZONE) is already what `bbParkedNow` does and the ruling says
+so. Ruling 2 (an element launched by the other alliance does not enter a hive's cell) is A5a
+item 7 — `play.ts` and `elements.ts`, Lane A4a's files, not touched here.
+
+### Still open from the A5b sections below
+
+`isPinning`'s private `pinnedAgainstWall` probe hard-codes DECODE's goal wedges and classifier
+channels as solids and cannot see the HIVE frame bars, so a pin in one of those corner regions
+goes unbilled. Shared-core request, under-billing rather than inventing a foul.
+
+The **YELLOW CARD is still not modelled anywhere in BIOBUZZ** (G414/G415/G417/G418/G419/G420
+all card). Game-wide decision for the master, unchanged by this commit — G407 was the one rule
+where the ruling made the card moot.
+
 ## 2026-09-12 · rules lane (A5b addendum) · the distilled manual corrects two rules · `biobuzz-rules`
 
 Gates: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane rules` **145/145** (was 141,

@@ -36,18 +36,22 @@ import { bbKindOf } from './score';
  *
  * ── WHAT IS ENFORCED, AND WHAT IS DELIBERATELY NOT ──────────────────────────
  * HERE: **G410** (NECTAR into a FLOWER before the 1:00 cue), **G402** (AUTO interference
- * across the field's halves), **G417** (ramming the HIVE frame) and **G421** (PINNING).
+ * across the field's halves), **G417** (ramming the HIVE frame), **G421** (PINNING) and
+ * **G407** (CONTROL of more than 4 SCORING ELEMENTS — a WARNING, not a foul).
  *
  * G421 IS THE ONE RULE HERE THAT IS NOT EDGE-TRIGGERED, and it is not an exception to the
  * paragraph above — it is the ONLY rule in Section 11 that carries a per-3-seconds clause
  * (manual-distilled §3.2), so it counts in SECONDS rather than in instances and owns a
  * per-ordered-pair accumulator instead of a key in `foulEdge`. See `bbUpdatePins`.
  *
+ * G407 USED TO BE LISTED BELOW AS "STRUCTURAL", and the owner's ruling (field-plan §4.3)
+ * retired that: **G407 is a WARNING, not a cap.** Table 10-4 gives it a VERBAL WARNING, with
+ * MAJOR + YELLOW only if STRATEGIC, and a hopper the sim simply refuses to fill past four is
+ * not what the rule says. The hopper is now bounded by the volume law alone (Lane B's
+ * `bbStorageMax`), and controlling a fifth element costs a log line and a HUD chip: no points,
+ * no MAJOR, no card. See `bbControlled` for what this can and cannot yet count.
+ *
  * NOT HERE, each for a stated reason rather than an oversight:
- *  • **G407** CONTROL ≤ 4 is STRUCTURAL — `bbHopperCap` is 4, so a robot cannot hold a fifth.
- *    The manual's other half, HERDING loose elements, needs a CONTROL test the sim has no
- *    honest version of (contact plus "moving with the robot" is a guess about intent), and a
- *    fabricated foul teaches a driver a habit the real rule may not punish.
  *  • **G405 / G409 / G411 / G418 / G426 / G427** are structural (nothing leaves the field, the
  *    sim's human player obeys its own timing) or referee judgement a 2D sim cannot see.
  *
@@ -64,6 +68,15 @@ import { bbKindOf } from './score';
  * lane edit (field-plan §6 request 4) — so this mirrors it, points come from `BB_PTS`, and the
  * day the owner lands `foulPoints` on the module this collapses back to a one-line call.
  *
+ * ── AND A THIRD SEVERITY THE SHARED FUNCTION DOES NOT HAVE: `warning` ───────
+ * Table 10-4's base sanction for most of Section 11 is a **VERBAL WARNING**, with the FOUL
+ * reserved for the STRATEGIC case — and after the owner's G407 ruling (field-plan §4.3) this
+ * game has a rule whose ONLY sanction is that warning. A warning moves **no points** and bumps
+ * **no tally**: it is an event line and nothing else, which is exactly what a referee saying
+ * "four, blue" across the field is. It is modelled here rather than as a bare
+ * `world.events.push` at the call site so that every sanction in this game goes through one
+ * function and reads the same way in a toast and a replay.
+ *
  * Everything else matches the shared function exactly, because the chrome reads it: the points
  * go to the VICTIM (the alliance that did not commit it), the offender's committed-foul tally
  * bumps for the HUD, and the event text is the same shape so a toast reads identically in both
@@ -73,9 +86,15 @@ import { bbKindOf } from './score';
 export function bbAwardFoul(
   world: World,
   offender: Alliance,
-  severity: 'minor' | 'major',
+  severity: 'minor' | 'major' | 'warning',
   rule: string,
 ): void {
+  // A WARNING IS NOT A FOUL. No points, no tally — it leaves the score exactly where it was,
+  // which is the whole difference between the owner's G407 ruling and the cap it replaced.
+  if (severity === 'warning') {
+    world.events.push(`WARNING - ${offender.toUpperCase()} (${rule})`);
+    return;
+  }
   const victim: Alliance = offender === 'red' ? 'blue' : 'red';
   const pts = severity === 'major' ? BB_PTS.foulMajor : BB_PTS.foulMinor;
   world.match.scores[victim].foulPoints += pts;
@@ -85,6 +104,49 @@ export function bbAwardFoul(
   world.events.push(
     `${severity === 'major' ? 'MAJOR' : 'MINOR'} FOUL - ${victim.toUpperCase()} +${pts} (${rule})`,
   );
+}
+
+/**
+ * G407's OWN NUMBER: "A ROBOT may not CONTROL more than 4 SCORING ELEMENTS."
+ *
+ * It lives here rather than in `config.ts` because it is a RULE and this is the rules file —
+ * and because `config.ts`'s `BB_STORAGE_MAX` is a different thing wearing the same digit. That
+ * one is the HOPPER DIAL's ceiling, it is Lane B's, and after the owner's ruling it is being
+ * lifted so the volume law alone bounds the hardware (field-plan §4.3, Lane B relay 2). The
+ * rule's 4 and the dial's 4 were the same number by accident; they are now separate on
+ * purpose, and this is the one Section 11 is about.
+ */
+export const BB_CONTROL_LIMIT = 4;
+
+/**
+ * HOW MANY SCORING ELEMENTS THIS ROBOT IS CONTROLLING (G407).
+ *
+ * ⚠️ **TODAY THIS IS THE HOPPER AND ONLY THE HOPPER, AND THAT IS A KNOWN SHORTFALL.** The
+ * glossary's CONTROL covers HERDING too — pushing a clump of loose elements around the field
+ * is controlling them — and the A5b brief asked for "the exported CONTROL count (hopper +
+ * herded)". **`controlledArtifacts` is NOT exported from `src/sim/penalties.ts`**; only
+ * `updatePenalties` and `isPinning` are. So the herded half is not reachable from this lane.
+ *
+ * The honest thing is to count what can be counted EXACTLY and ask for the rest, which is
+ * precisely how G421 got its detector. Writing a second herding test here would mean
+ * duplicating ~150 lines of real judgement — DECODE's per-(robot, artifact) hold clock, its
+ * drain, its transitive contact chain and its re-station rule — and a hand-rolled "touching
+ * and moving" stand-in fires on every robot that drives through the staged scatter. A
+ * fabricated warning teaches a driver a habit the real rule does not punish, and this rule's
+ * entire output IS the teaching: it moves no points.
+ *
+ * **REQUEST for the shared core, a field-plan §6 request-5 sibling: export
+ * `controlledArtifacts`.** The day it lands, this function's body becomes a call to it and
+ * nothing else in this file changes.
+ *
+ * ⚠️ SECOND, SEPARATE GAP: until Lane B lifts `BB_STORAGE_MAX` (relay 2), `bbHopperCap` clamps
+ * every hopper to 4, so a hopper-only count can never exceed the limit in a driven match and
+ * this rule is correct-but-dormant. The rules lane bills the warning, Lane B lifts the cap —
+ * the split is the brief's, and the smoke below drives the rule directly so it is proven
+ * either way.
+ */
+function bbControlled(r: RobotState): number {
+  return r.hopper.length;
 }
 
 /**
@@ -174,6 +236,46 @@ export function updateBiobuzzPenalties(
         fire(`g410-${id}`, k, 'major', 'G410 NECTAR in a FLOWER before 1:00');
       }
     }
+  }
+
+  // ── G407 — CONTROL of more than 4 SCORING ELEMENTS. A WARNING. ────────────
+  /**
+   * "A ROBOT may not CONTROL more than 4 SCORING ELEMENTS." Violation: **VERBAL WARNING**;
+   * MAJOR FOUL and YELLOW CARD only if STRATEGIC (Table 10-4). Owner ruling 2026-09-12,
+   * field-plan §4.3: **the sim models the warning and nothing else** — no points, no MAJOR,
+   * no card, and no structural cap standing in for the rule.
+   *
+   * ── WHY THERE IS NO "STRATEGIC" BRANCH HERE, UNLIKE G417 ──────────────────
+   * G417's strategic test is a MEASURABLE one — example A is "ramming at high-speed" and the
+   * sim has a closing speed. G407's strategic examples are about INTENT (hoarding to deny the
+   * opponent, carrying a wall of elements for advantage) and the sim has no honest reading of
+   * intent. So the base sanction is the only one modelled, and the deliberate consequence is
+   * that BIOBUZZ never turns over-control into points. That is the safe direction for a
+   * warning whose entire purpose is to TEACH: an invented MAJOR teaches the wrong lesson
+   * twice, once on the scoreboard and once in the habit.
+   *
+   * ── EDGE-TRIGGERED, AND THE COUNT IS A PER-MATCH TALLY ────────────────────
+   * The key is per ROBOT, so a robot that climbs to five, drops back to four and climbs again
+   * warns TWICE — two separate instances of the violation, which is what §10.6 means by "each
+   * instance". Holding five for a minute is ONE warning, because the edge memory says the
+   * condition never went away.
+   *
+   * The tally rides `world.penalties.controlInstances` — the SHARED `PenaltyState`, already
+   * `Record<robotId, number>`, already initialised on a BIOBUZZ world and already meaning
+   * exactly this in DECODE ("how many stretches of over-control this match"). Same argument as
+   * the pin clocks: a second copy on the state bag would be a `state.ts` edit to store what the
+   * world already stores. Unlike the pin clocks it is NOT cleared at a phase boundary — a
+   * clock is live state and a tally is history, and the HUD chip counts the match.
+   */
+  for (const r of world.robots) {
+    if (r.passive) continue;
+    if (bbControlled(r) <= BB_CONTROL_LIMIT) continue;
+    const key = `g407-${r.id}`;
+    if (!bb.foulEdge[key]) {
+      world.penalties.controlInstances[r.id] = (world.penalties.controlInstances[r.id] ?? 0) + 1;
+      bbAwardFoul(world, r.alliance, 'warning', `G407 CONTROL of ${BB_CONTROL_LIMIT + 1}+ elements`);
+    }
+    seen[key] = true;
   }
 
   // ── G417 — meddling with the HIVE: ramming a frame bar. STRATEGIC. ────────

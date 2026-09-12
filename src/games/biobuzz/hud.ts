@@ -39,6 +39,8 @@ import { bbKindIndex, bbScoreWorld, type BbAllianceScore, type BbRankPoints } fr
  *    rows read one object rather than re-deriving the table.
  *  • `pins` — G421. A PIN bills a MAJOR 20 every three seconds and the clock runs in a
  *    referee's head, so `nextIn` is the only warning either driver gets.
+ *  • `warnings` — G407. The owner's ruling makes over-CONTROL a warning worth no points, and a
+ *    sanction with no points is invisible on a scoreboard: the chip IS the sanction.
  *
  * BACK-COMPAT: every field is defaulted, never asserted. A snapshot from a build that predates
  * this game arrives without `world.biobuzz`, and a HUD is the last place that should throw.
@@ -109,6 +111,15 @@ export interface BiobuzzFieldHud {
   nectarIn: number | null;
   /** every PIN counting right now (G421), pinner-then-victim ordered. Usually empty. */
   pins: BbPinHud[];
+  /**
+   * G407 WARNINGS this alliance has drawn this MATCH — CONTROL of a fifth SCORING ELEMENT.
+   *
+   * A COUNT rather than a flag because the rule counts instances: climbing to five, dropping
+   * back and climbing again is two warnings. Worth nothing on the scoreboard by design (the
+   * owner's ruling makes G407 a warning, not a foul), which is exactly why it needs a chip —
+   * a sanction with no points is invisible unless the HUD says it happened.
+   */
+  warnings: Record<Alliance, number>;
 }
 
 /** an empty slice — the shape a pre-BIOBUZZ snapshot gets, with every count at 0. */
@@ -155,7 +166,27 @@ function emptyHud(): BiobuzzFieldHud {
     nectarLocked: true,
     nectarIn: null,
     pins: [],
+    warnings: { red: 0, blue: 0 },
   };
+}
+
+/**
+ * G407 warnings per ALLIANCE, summed from the penalty engine's per-robot tally.
+ *
+ * `world.penalties.controlInstances` for the same reason `pins` reads `world.penalties.pins`:
+ * the shared `PenaltyState` already carries a per-robot instance count, already rides every
+ * snapshot, and a BIOBUZZ copy on the state bag would be a `state.ts` edit to store what the
+ * world already stores. Defaulted at every step — a snapshot from a build that predates this
+ * arrives without it, and a HUD is the last place that should throw.
+ */
+function controlWarnings(world: World): Record<Alliance, number> {
+  const out: Record<Alliance, number> = { red: 0, blue: 0 };
+  const counts = world.penalties?.controlInstances ?? {};
+  for (const r of world.robots) {
+    if (r.passive) continue;
+    out[r.alliance] += counts[r.id] ?? 0;
+  }
+  return out;
 }
 
 /**
@@ -233,5 +264,6 @@ export function biobuzzFieldHud(world: World): BiobuzzFieldHud {
   out.nectarIn =
     world.match.phase === 'teleop' ? Math.max(0, world.match.phaseTimeLeft - BB_FLOWER_UNLOCK_S) : null;
   out.pins = livePins(world);
+  out.warnings = controlWarnings(world);
   return out;
 }
