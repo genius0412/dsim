@@ -24,6 +24,7 @@ import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
 import { copyText } from './clipboard';
+import { DISCORD_REGION } from '../net/discordActivity';
 import type { RoomInvite } from '../net/api';
 import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
 
@@ -262,8 +263,12 @@ export function Lobby({
       return;
     }
     setPhase('connecting');
-    // route both players to the same region so a shared code lands on one machine
-    const useRegion = roomJoinRegion(hostRegion, region);
+    // route both players to the same region so a shared code lands on one machine.
+    // In a Discord Activity, PIN to one fixed region regardless of who is nearest:
+    // the `/gs` proxy is anycast, so without this two participants of the same
+    // activity in different regions would open two rooms under one code and never
+    // meet (see DISCORD_REGION). Otherwise follow the host's region (custom rooms).
+    const useRegion = group ? DISCORD_REGION : roomJoinRegion(hostRegion, region);
     if (hostRegion) {
       setRegion(hostRegion);
       setRegionLocked(true);
@@ -271,7 +276,8 @@ export function Lobby({
     // ROOMS are the one thing that may be hosted on a LAN box, so this is the one
     // connect site that follows a LAN connection (`roomServerUrl`, not `gameServerUrl`).
     // A region hint means nothing to a single machine with no proxy, and is harmless.
-    const url = multiServer() && useRegion ? roomServerUrlWith({ region: useRegion }) : roomServerUrl();
+    const url =
+      useRegion && (group || multiServer()) ? roomServerUrlWith({ region: useRegion }) : roomServerUrl();
     let transport: WebSocketTransport;
     try {
       transport = new WebSocketTransport(url);

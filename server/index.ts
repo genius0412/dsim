@@ -1406,6 +1406,20 @@ const httpServer = createServer((req, res) => {
    */
   if (req.method === 'GET' && req.url?.startsWith('/api/lobbies')) {
     const u = new URL(req.url, 'http://x');
+    // Region PIN (see the Discord client's DISCORD_REGION): all of an activity's
+    // rooms live on one machine, so the listing must be READ from that same machine
+    // or an anycast-nearest read returns a different region's (empty) set. On Fly we
+    // fly-replay this GET to the requested region; locally (REGION='') we answer here.
+    const want = u.searchParams.get('region');
+    if (REGION && want && want !== REGION && !req.headers['fly-replay-src']) {
+      res.writeHead(200, {
+        'fly-replay': `region=${want}`,
+        'access-control-allow-origin': '*',
+        'cache-control': 'no-store',
+      });
+      res.end();
+      return;
+    }
     const group = (u.searchParams.get('group') ?? '').replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64);
     const lobbies = group
       ? [...rooms.values()]

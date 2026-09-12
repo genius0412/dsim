@@ -4,6 +4,7 @@ import type { ReportedUser, ReportRow } from '../report';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl } from './env';
 import { getAuthToken } from '../lib/authClient';
+import { DISCORD_REGION } from './discordActivity';
 
 /** boards + periods are per-game; append `&game=chain` only for CR so DECODE URLs stay
  * byte-identical (the server defaults a missing game to DECODE). */
@@ -203,7 +204,11 @@ export interface DiscordLobby {
 export async function fetchLobbies(group: string): Promise<DiscordLobby[]> {
   if (!group) return [];
   try {
-    const r = await getJson<{ lobbies: DiscordLobby[] }>(`/api/lobbies?group=${encodeURIComponent(group)}`);
+    // PIN to the fixed activity region (same as the socket): the read is anycast,
+    // so without it an EU player would hit the EU machine and never see the US
+    // player's room. The server fly-replays this GET to DISCORD_REGION.
+    const q = `group=${encodeURIComponent(group)}&region=${encodeURIComponent(DISCORD_REGION)}`;
+    const r = await getJson<{ lobbies: DiscordLobby[] }>(`/api/lobbies?${q}`);
     return r.lobbies ?? [];
   } catch {
     return []; // unreachable server / no lobbies read the same to the browser

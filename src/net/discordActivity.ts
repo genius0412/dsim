@@ -45,6 +45,19 @@ export function discordInstanceId(): string {
   return new URLSearchParams(window.location.search).get('instance_id') ?? '';
 }
 
+/**
+ * Every Discord Activity room is pinned to ONE Fly region, so participants who
+ * launched the same activity from different parts of the world converge on one
+ * machine. The `/gs` proxy is anycast: without a fixed region, Fly would land each
+ * player on their NEAREST machine, splitting both the socket (two rooms, same code)
+ * AND the lobby listing (an EU player never sees a US player's room) by geography —
+ * the exact "usable by anyone anywhere" failure. `iad` (US East) is the always-warm
+ * matchmaker region (min_machines_running=1), so it is never cold. Harmless on a
+ * single-region or LAN server, which ignores the hint. Change this one value to move
+ * where activity games are hosted.
+ */
+export const DISCORD_REGION = 'iad';
+
 /** the sanitized activity group tag (Discord instance id → the server's room `group`),
  * using the SAME character clamp the server applies, so the tag written on `join` and
  * the `group` the lobby browser queries always resolve to one value. '' outside an
