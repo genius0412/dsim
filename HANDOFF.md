@@ -37,6 +37,21 @@ already fired, so players did get the banner, just without the wait. 17 were onl
 window opened; 6 after. If that ordering matters next time, the wait is the second argument to
 `announce-deploy.sh`.
 
+⚠️ **AND IT DEPLOYED TWICE, because `pkill -f` DOES NOT KILL A BACKGROUNDED SCRIPT HERE.**
+`announce-deploy.sh` had been started in the background with the 300 s wait. When the wait was
+cancelled, `pkill -f "announce-deploy.sh"` and `pkill -f "sleep 300"` both reported success and
+neither matched anything: on Git Bash the process does not carry that command line. So the
+manual `fly-deploy.sh` ran immediately, and then the background job woke five minutes later and
+deployed the identical image AGAIN, restarting every machine a second time. No data harm — the
+act rolls and the announcements are DB rows and survived — but players reconnected twice, and
+the second restart landed AFTER the post-deploy verification, so everything had to be
+re-verified afterwards (it was, and it was correct).
+
+**Use the harness's own task-stop for a backgrounded command, never `pkill -f`.** And do not
+background a script whose whole purpose is a timed wait you might want to cancel: fire the
+announce with `curl` and run `fly-deploy.sh` separately, which is the shape that is actually
+controllable.
+
 ## What changed for players
 
 `BALANCE_VERSION` 3 → 4 retires every replay recorded before this build; the records themselves
