@@ -14,3 +14,4 @@ scratch/
 .loadtest-out/
 
 .coord.json
+.coord.retired.json

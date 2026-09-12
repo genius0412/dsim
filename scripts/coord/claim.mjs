@@ -20,12 +20,14 @@
  */
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { ROOT, explainUnconfigured, fetchBoard, loadConfig, readClaims, writeFileToBranch } from './lib.mjs';
+import { existsSync } from 'node:fs';
+import { RETIRED_PATH, ROOT, explainUnconfigured, fetchBoard, loadConfig, readClaims, writeFileToBranch } from './lib.mjs';
 
 const cfg = loadConfig();
 if (!cfg) {
-  console.error(explainUnconfigured());
-  process.exit(1);
+  const retired = existsSync(RETIRED_PATH);
+  console[retired ? 'log' : 'error'](explainUnconfigured());
+  process.exit(retired ? 0 : 1);
 }
 
 const argv = process.argv.slice(2);

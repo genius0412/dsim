@@ -12,7 +12,8 @@
  * Hiding them would turn "I do not know" into a confident wrong answer, which is the failure
  * mode a coordination tool can least afford.
  */
-import { STALE_MIN, ageMin, claimPaths, collisions, explainUnconfigured, fetchBoard, loadConfig, readClaims } from './lib.mjs';
+import { RETIRED_PATH, STALE_MIN, ageMin, claimPaths, collisions, explainUnconfigured, fetchBoard, loadConfig, readClaims } from './lib.mjs';
+import { existsSync } from 'node:fs';
 
 const C = process.stdout.isTTY
   ? { red: '\x1b[31m', yel: '\x1b[33m', dim: '\x1b[2m', bold: '\x1b[1m', off: '\x1b[0m' }
@@ -20,8 +21,12 @@ const C = process.stdout.isTTY
 
 const cfg = loadConfig();
 if (!cfg) {
-  console.error(explainUnconfigured());
-  process.exit(1);
+  // A RETIRED board is not a misconfiguration and must not read as one: the owner switched the
+  // system off, everything is working as intended, and there is nothing for anybody to fix.
+  // Exit 0 so it cannot be mistaken for a failure by anything reading the status.
+  const retired = existsSync(RETIRED_PATH);
+  console[retired ? 'log' : 'error'](explainUnconfigured());
+  process.exit(retired ? 0 : 1);
 }
 
 fetchBoard();

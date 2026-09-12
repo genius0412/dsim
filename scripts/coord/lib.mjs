@@ -31,19 +31,25 @@
  * claim files and nothing else — none of dsim's history follows them over.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const CONFIG_PATH = join(ROOT, '.coord.json');
+/** where the config goes when the board is retired — visible, restorable, and not `.coord.json`,
+ * which is the only filename anything here looks for. */
+export const RETIRED_PATH = join(ROOT, '.coord.retired.json');
 export const BRANCH = 'board';
 export const REMOTE = 'coord';
 
 /** a claim older than this is shown as STALE — see the note in board.mjs on why it is shown
  * rather than deleted. */
 export const STALE_MIN = 90;
+
+/** consecutive runs that must see the board as gone before the tooling disarms itself. */
+export const RETIRE_STRIKES = 2;
 
 /**
  * The directory for this checkout's private git state — where the rate-limit and
@@ -63,16 +69,22 @@ export function gitDir() {
 
 /** Run git, return trimmed stdout. `ok: false` turns a non-zero exit into `null` instead of
  * a throw — used for the many "does this ref exist yet" questions where absence is normal. */
-export function git(args, { input, ok = true, cwd = ROOT, env } = {}) {
+export function git(args, { input, ok = true, cwd = ROOT, env, raw = false } = {}) {
   try {
-    return execFileSync('git', args, {
+    const out = execFileSync('git', args, {
       cwd,
       input,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
       env: env ? { ...process.env, ...env } : process.env,
       windowsHide: true,
-    }).trim();
+    });
+    // `raw` exists for --porcelain, whose FIRST TWO COLUMNS ARE SIGNIFICANT AND MAY BE BLANK.
+    // Trimming ate the leading space of the first line of `git status --porcelain`, so a
+    // fixed-width parse took one character off the first path — `.gitignore` was published as
+    // `gitignore`, which then matches nothing and silently cannot collide. Every other caller
+    // wants a trimmed single value, so trimming stays the default.
+    return raw ? out : out.trim();
   } catch (e) {
     if (ok) return null;
     throw e;
@@ -135,16 +147,73 @@ export function githubSlug(remote) {
 export function assertPrivate(remote) {
   const slugged = githubSlug(remote);
   if (!slugged) {
-    return { ok: false, why: `not a GitHub remote, so its visibility cannot be checked: ${remote}` };
+    return { ok: false, reason: 'notgithub', why: `not a GitHub remote, so its visibility cannot be checked: ${remote}` };
   }
   const out = ghJson(['repo', 'view', slugged, '--json', 'isPrivate,visibility']);
   if (!out) {
-    return { ok: false, why: `could not ask GitHub whether ${slugged} is private (is \`gh\` installed and signed in?)` };
+    // TWO VERY DIFFERENT SITUATIONS LOOK IDENTICAL HERE, and conflating them is what would
+    // make this thing outstay its welcome. `gh` failing on THIS machine (not installed, not
+    // signed in, no network) means "I cannot tell" — refuse, keep everything, try next turn.
+    // `gh` working fine while the BOARD specifically cannot be resolved means the board is
+    // gone or this account's access to it was removed — which is the owner switching the
+    // whole system off, and the only correct response is to stand down. So ask `gh` a
+    // question that does not involve the board before deciding which one this is.
+    if (!ghWorks()) {
+      return { ok: false, reason: 'unverifiable', why: `could not ask GitHub whether ${slugged} is private (is \`gh\` installed and signed in?)` };
+    }
+    return { ok: false, reason: 'retired', why: `${slugged} no longer exists, or this account's access to it has been removed` };
   }
   if (out.isPrivate !== true) {
-    return { ok: false, why: `${slugged} is ${String(out.visibility || 'not private').toUpperCase()} — the board must not be published to a repository anyone can read` };
+    return { ok: false, reason: 'public', why: `${slugged} is ${String(out.visibility || 'not private').toUpperCase()} — the board must not be published to a repository anyone can read` };
   }
-  return { ok: true, slug: slugged };
+  return { ok: true, reason: 'ok', slug: slugged };
+}
+
+/** does `gh` work AT ALL on this machine, independently of the board? The answer is what
+ * separates "the board is gone" from "I cannot see anything right now". */
+function ghWorks() {
+  return ghJson(['api', 'user', '--jq', '{login:.login}']) !== null;
+}
+
+/**
+ * STAND DOWN. The board is over: the repository was deleted or this account was removed from
+ * it, which is how the owner turns the system off for everybody at once without having to
+ * reach three machines.
+ *
+ * The config is RENAMED rather than deleted — a person should be able to see what happened and
+ * put it back — and renaming is enough, because every entry point keys on `.coord.json`
+ * existing. After this the hook is a no-op on every future turn, with no further network
+ * calls, until somebody deliberately restores the file.
+ */
+export function retire(why) {
+  const stamp = new Date().toISOString();
+  try {
+    if (existsSync(CONFIG_PATH)) renameSync(CONFIG_PATH, RETIRED_PATH);
+  } catch { /* if the rename fails the next run simply tries again */ }
+  try {
+    writeFileSync(join(gitDir(), 'coord-retired'), `${stamp} ${why}
+`);
+  } catch { /* a breadcrumb is a nicety; never fail a turn over it */ }
+  try {
+    git(['remote', 'remove', REMOTE]);
+    git(['update-ref', '-d', `refs/remotes/${REMOTE}/${BRANCH}`]);
+  } catch { /* likewise */ }
+  for (const f of ['coord-tick', 'coord-last', 'coord-retire', 'coord-refused']) {
+    try { rmSync(join(gitDir(), f), { force: true }); } catch { /* likewise */ }
+  }
+  return { stamp, why };
+}
+
+/** how many consecutive runs have now seen the board as gone. A single 404 is not proof —
+ * a blip should not tear down three people's setup — so the disarm needs it twice. */
+export function retireStrikes(add) {
+  const f = join(gitDir(), 'coord-retire');
+  let n = 0;
+  try { n = Number(readFileSync(f, 'utf8').trim()) || 0; } catch { /* first strike */ }
+  if (!add) { try { rmSync(f, { force: true }); } catch { /* nothing to clear */ } return 0; }
+  n += 1;
+  try { writeFileSync(f, String(n)); } catch { /* an un-writable stamp just means no memory */ }
+  return n;
 }
 
 function ghJson(args) {
@@ -282,17 +351,33 @@ export function localState() {
   const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']) || '(detached)';
   const head = git(['rev-parse', '--short', 'HEAD']) || '';
   const headSubject = git(['log', '-1', '--format=%s']) || '';
-  const porcelain = git(['status', '--porcelain']) || '';
+  const porcelain = git(['status', '--porcelain'], { raw: true }) || '';
   const dirty = porcelain
     .split('\n')
-    .map((l) => l.slice(3).trim())
+    // Two status columns, one space, then the path — MATCHED, never sliced at a fixed width,
+    // so a blank status column cannot shift the path by a character.
+    .map((l) => /^..\s(.*)$/.exec(l))
     .filter(Boolean)
-    .map((p) => p.split(' -> ').pop().replace(/^"|"$/g, ''))
+    .map((m) => m[1].split(' -> ').pop().replace(/^"|"$/g, '').trim())
+    .filter(Boolean)
     .slice(0, 40);
   return { branch, head, headSubject, dirty, at: new Date().toISOString() };
 }
 
 export function explainUnconfigured() {
+  if (existsSync(RETIRED_PATH)) {
+    let when = '';
+    try { when = readFileSync(join(gitDir(), 'coord-retired'), 'utf8').trim(); } catch { /* fine */ }
+    return [
+      'The coordination board has been RETIRED — the board repository is gone, or this',
+      'account no longer has access to it. Nothing is published any more and nothing here',
+      'needs doing; work normally.',
+      ...(when ? ['', `  ${when}`] : []),
+      '',
+      `The old config was kept at ${RETIRED_PATH}. Renaming it back to .coord.json is all it`,
+      'takes to start again, if the board comes back.',
+    ].join('\n');
+  }
   return [
     'The coordination board is not configured in this checkout.',
     '',
