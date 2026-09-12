@@ -386,3 +386,197 @@ mounts → ranges/presets → mechanism scenes (each archetype captures; each re
 the `BTN_*` request in your handoff, do not edit `protocol.ts`. A mechanism with real
 dynamics (an arm that swings, a flywheel that stores energy): stop and say so — it moves to
 the Fable lane. Never edit files owned by Lane A or by integration.
+
+---
+
+# Field assembly — 2026-09-12 afternoon (manual V1 read, plan in `docs/biobuzz/field-plan.md`)
+
+Goal of this wave: **something visual, fast.** Three Lane-A chats on disjoint files, one
+integration step first, one relay line for Lane B. Facts come from `docs/biobuzz-reference.md`;
+design from `docs/biobuzz/field-plan.md`; both land on `biobuzz` in step 0. Every chat:
+subagents for reconnaissance and for parallel file edits, main thread for the shape decisions
+and for the shot + Read. Run `npm run test:bb -- --lane field` only, never the full `npm test`,
+until the last commit of the chat.
+
+| step | chat | model | files | starts |
+|---|---|---|---|---|
+| 0 | integration (master chat) | Fable 5.1 | `docs/*`, `src/types.ts` | done 2026-09-12 (eccf132, 424746a, types commit) |
+| A1 | field-art | Opus 5 | `config.ts` (field block), `state.ts`, `drawField.ts`, `scenesField.ts` (`field-labelled` only) | after step 0 |
+| A2 | solids + staging | Opus 5 | `colliders.ts`, `spawn.ts`, `elements.ts` (staging), `draw.ts`, `smoke-biobuzz/field.ts`, new scenes appended to `scenesField.ts` | after A1's first commit (constants) |
+| A3 | hive + flower behaviour | Fable 5.1 (Opus if limits are tight) | `hive.ts`, `flower.ts`, `play.ts` stage 6, `step.ts`, `hud.ts`, `penalties.ts` G410 | after the `field-labelled` verdict |
+| B | Lane B relay | (paste into the robot chat) | — | now |
+
+## Step 0 — integration (this chat)
+
+Commit `docs/biobuzz-reference.md` + `docs/biobuzz/field-plan.md` on `biobuzz`. In
+`src/types.ts`: `ArtifactColor` gains `'yellow' | 'red' | 'blue'`; `Artifact.r?: number`
+(unused by the shared solve until the owner takes it — flagged in HANDOFF); `Artifact.state`
+gains `{ kind: 'element'; el: string; slot: number }`. `src/sim/**` is the owner's: the foul
+tariff (BIOBUZZ MAJOR 20, DECODE 15) is NOT changed there — Lane A writes `bbAwardFoul` in
+`penalties.ts` mirroring `awardFoul` with 5/20 into the BIOBUZZ score, and the per-artifact
+radius in `solveArtifacts` / `robotSolids` goes to the owner via
+`docs/biobuzz/feedback/000-solver-observations.md` (below the `## Response` marker).
+
+## A1 — field-art (Opus 5)
+
+You are Lane A of BIOBUZZ in the DSIM repo, worktree
+`C:\Users\saket\Desktop\saket\FTC\Claude Projects\dsim-bb-field`, branch `biobuzz-field`.
+First `git merge biobuzz`; the only expected conflict is `docs/biobuzz-reference.md` — take
+the `biobuzz` side for every factual section (`git checkout --theirs docs/biobuzz-reference.md`),
+then re-add from the scaffold (`git show HEAD:docs/biobuzz-reference.md`) its manual-intake
+pipeline / cross-checks section — `scripts/manual-render.py`, `manual-figures.mjs`, the
+AprilTag mirror check — under `## 9. Intake pipeline`. V1 numbers win everywhere else. Read `CLAUDE.md`, `docs/biobuzz-contract.md` (you are Lane A), `docs/biobuzz-reference.md`
+§2 (geometry) and `docs/biobuzz/field-plan.md` §1 (constants list). You edit ONLY
+`src/games/biobuzz/{config,state,drawField,scenesField}.ts`; everything else is another chat's.
+Never touch `src/sim/`, `src/config.ts`, `src/types.ts`, or Lane B's robot files.
+
+Job: make the BIOBUZZ field LOOK like the manual, today. Order:
+
+1. (15 min, then COMMIT AND PUSH — another chat is waiting on it) Constants in `config.ts`
+   under a `// ---- FIELD GEOMETRY (manual V1)` block, exactly the names in field-plan §1:
+   `BB_POLLEN_R = 1.4` (retire the 1.5 APPROX), `BB_NECTAR_R = 1.8`, `BB_POLLEN_COUNT = 40`,
+   `BB_NECTAR_COUNT = 8`, `BB_LZ` and `BB_GARDEN` (per-alliance plain `{x0,x1,y0,y1}` in
+   world inches), `BB_HIVE_X = 12.75`, `BB_HIVE_CELL_DY = 13.4`, `BB_HIVE_OPEN_Z = [53.5, 65.6]`,
+   `BB_HIVE_BOTTOM_Z = 25.5`, `BB_CELL_OPEN = {w: 20, d: 12}`, `BB_FRAME_X = 24.73`,
+   `BB_FRAME_Y = 19.5`, `BB_FRAME_BAR = 1.5`, `BB_FLOWER_D = 3.0`, `BB_FLOWERS` (four centres,
+   table in reference §2.3), `BB_FLOWER_TOP_Z = 21.5`, `BB_FLOWER_OPEN_R = 2.0`,
+   `BB_FLOWER_FOOT_R = 2.6`, `BB_FLOWER_UNLOCK_S = 60`, the points table `BB_PTS`, RP
+   thresholds. Every derived number carries `// APPROX: <figure>` exactly as the reference
+   tags it. Add `bbMirror(p)` = point mirror (`-x, -y`, heading + PI) next to the existing
+   x-mirror helper with a one-line comment: the layout is point-symmetric, not mirrored.
+   Commit: `feat(biobuzz): field geometry constants from manual V1`. Push.
+2. `state.ts`: add to `BiobuzzState` the shapes in field-plan §2 (`hives`, `flowers`,
+   `nectarStock`, `nectarDue`, `leave`, `parkAuto`, `parkTele`) with `emptyBiobuzzState()`
+   filling them (staged: red up = 'south', blue up = 'north', contents empty — spawn fills
+   them in another chat). Plain JSON only.
+3. `drawField.ts`: mat + grid stay. Add, in this z-order: red / electric-blue tape rectangles
+   for both LOADING ZONES (1-in tape, low-alpha fill) and both GARDENS (2-in strip); the HIVE
+   frame as two base bars at `x = ±BB_FRAME_X` plus a dashed crossbar hint at the apex (reads
+   as overhead); the two HIVES top-down — each a 42.91 × ~14 rounded rect along y at
+   `x = ±BB_HIVE_X`, split into two cells, the UP cell bright in alliance colour with its
+   content count from `world.biobuzz.hives[a].contents.length`, the DOWN cell dimmed and
+   foreshortened (its projection is shorter at 30°); the four AprilTag id groups as tiny text
+   on each cell (`30–33` etc., reference §2.2); the four FLOWERS as a ring (r 2.0) inside a
+   foot (r 2.6) on the wall at their seam, with a stack badge from
+   `world.biobuzz.flowers[i].stack.length`. Labels: `RED LZ`, `BLUE LZ`, `RED GARDEN`,
+   `BLUE GARDEN`, `F1…F4`, `RED HIVE`, `BLUE HIVE`, tile letters A–F / 1–6 along the edges —
+   only when the scene asks for labels (the existing `field-labelled` flag). Colours: the
+   theme tokens the DECODE field uses; fixed colours only for tape.
+4. `scenesField.ts`: update `field-labelled` (no robots, staged state); every other scene id
+   untouched. Run the shots recipe from `.claude/skills/verify/SKILL.md`:
+   `node scripts/shots.cjs --scene field-empty,field-labelled` (Git Bash: `MSYS_NO_PATHCONV=1`),
+   Read the PNGs yourself, fix, repeat until: zones in the right corners (red LZ far-left
+   wall at y > 0, red garden audience-left corner), flowers on the ±24 seams, hives centred,
+   no label overlaps. Then `npm run test:bb -- --lane field`, `npm run build`, commit
+   `feat(biobuzz): draw the field — zones, hive structure, flowers`, push.
+
+Subagents: one `Explore` at the start to map how `src/render/drawField.ts` (DECODE) draws
+tape / labels and what scene flags `scenesField.ts` has (file:line only); one
+`general-purpose` to write `drawField.ts` from your constants while you do `state.ts`; the
+shot + Read is yours. Do not run the full smoke suite; do not start the dev server —
+shots.cjs runs `vite preview` on 4173 itself (if 4173 is taken another worktree owns it, use
+`--port 4174`). Five-line `docs/biobuzz/HANDOFF-field.md` entry: sha, which cells to look at,
+what is APPROX in the drawing. STOP after the push and say "look at field-labelled".
+
+## A2 — solids + staging (Opus 5) — start when A1 has pushed its constants commit
+
+You are Lane A of BIOBUZZ in the DSIM repo. Make a worktree from any dsim checkout:
+`git worktree add "C:\Users\saket\Desktop\saket\FTC\Claude Projects\dsim-bb-field2" -b biobuzz-field-staging biobuzz-field`
+— work there, push only `biobuzz-field-staging`. Read `CLAUDE.md`,
+`docs/biobuzz-contract.md` (Lane A), `docs/biobuzz-reference.md` §2–§3,
+`docs/biobuzz/field-plan.md` §1–§2, and `src/games/biobuzz/config.ts` (the constants exist —
+never redefine one). You edit ONLY `src/games/biobuzz/{colliders,spawn,elements,draw}.ts`,
+`scripts/smoke-biobuzz/field.ts`, and APPEND new scenes to `scenesField.ts` (never edit an
+existing scene — another chat owns `field-labelled`). Pollen physics is the shared
+`solveArtifacts`; you never write an integrator, separation, eviction or ball constant.
+
+Job: every element on the field where the manual stages it, and the field made solid.
+
+1. `colliders.ts`: add to `statics` the two frame base bars (rects at `x = ±BB_FRAME_X`,
+   `y ∈ [−BB_FRAME_Y, BB_FRAME_Y]`, thickness `BB_FRAME_BAR`) and the four flower feet
+   (circle `BB_FLOWER_FOOT_R` at each `BB_FLOWERS` centre — whichever `StaticSpec` shape the
+   shared colliders support; if only rects exist, a rect of the same footprint, commented
+   APPROX). Bounds unchanged. Export `BB_SOLID_COUNT`.
+2. `spawn.ts`: replace `scatterPollen` with `stageBiobuzz(world)` per reference §3: 4 pollen
+   in each flower (`world.biobuzz.flowers[i].stack` = their ids; the balls stay in
+   `world.balls` with `state: {kind: 'element', el: 'flower:0', slot}`, `pos` at the flower
+   centre, `z` by slot); 4 pollen per garden in a line from the alliance corner along the
+   wall (ground, touching the wall, one diameter apart); 4 preloads per robot through the
+   existing capture path (cap 4; overflow on the tiles touching the robot; a missing robot's
+   4 at its LZ centre against the wall); 3 nectar of each colour in that alliance's UP cell
+   (`state {kind: 'element', el: 'hive:red', slot}`, `pos` at the cell centre); `nectarStock`
+   5 each. Nectar `color: 'red' | 'blue'`, `r: BB_NECTAR_R`; pollen `color: 'yellow'`,
+   `r: BB_POLLEN_R` (the field draws `r`; the solver still runs every ball at `BB_POLLEN_R` —
+   write that as APPROX in the handoff, it is the owner's item). Start anchors: replace the
+   x-mirror with `bbMirror` (point symmetry); two default anchors touching the wall, on the
+   alliance side, outside the LZ, per G304 (reference §3).
+3. `draw.ts`: colour per `b.color` (yellow / red / blue — keep the batched path, three
+   batches), radius `b.r ?? BB_POLLEN_R`; `state.kind === 'element'` balls are NOT drawn here
+   (the field draws cell counts and flower badges).
+4. `smoke-biobuzz/field.ts`: zones point-symmetric; flowers at ±24 on their walls; frame
+   bars inside the walls; staging counts 16 + 8 + 16 pollen, 6 nectar in cells + 10 in stock;
+   conservation of 40 + 16 across floor / hopper / flight / element / stock after 600 ticks of
+   two robots driving; a robot placed on each new solid is pushed off (mirror the `pin-wall`
+   recipe). Scenes appended: `staging` (staged, robots at anchors, labels off), `under-hive`
+   (robot between the frame bars — proves it drives through), `frame-push` (robot into a
+   frame bar, 60 ticks).
+5. `node scripts/shots.cjs --scene staging,under-hive,frame-push --port 4174`, Read, fix.
+   `npm run test:bb -- --lane field`, `npm run build`, one commit per numbered item, push,
+   one HANDOFF-field.md entry, STOP and say "look at staging".
+
+Subagents: `Explore` once for `StaticSpec` shapes + how DECODE's spawn stages its artifacts
+(file:line only); one `general-purpose` for the smoke checks while you write `spawn.ts`.
+
+## A3 — hive + flower behaviour (Fable 5.1) — start after the `field-labelled` verdict
+
+You are Lane A of BIOBUZZ in the DSIM repo, worktree
+`C:\Users\saket\Desktop\saket\FTC\Claude Projects\dsim-bb-field`, branch `biobuzz-field`
+(merge `biobuzz-field-staging` first if it has landed). Read `CLAUDE.md`,
+`docs/biobuzz-contract.md`, `docs/biobuzz-reference.md` §4–§5, `docs/biobuzz/field-plan.md`
+§2.1–§2.4, §3, §4 item 1, and the current `src/games/biobuzz/{play,step,elements,state}.ts`.
+You edit `src/games/biobuzz/{hive,flower,play,step,hud,penalties,elements}.ts`, `sim.ts`
+ONLY to flip `scored: true` (say so in the handoff), and append scenes + smoke checks.
+
+Job: the field scores. In order, one commit each, `--lane field` after each:
+
+1. `hive.ts` — capture into the up cell (accept rect `BB_CELL_OPEN` at `z` within
+   `BB_HIVE_OPEN_Z` + margin, descending); `BB_TIP_LOAD` APPROX = 6 pollen-equivalents,
+   `BB_NECTAR_MASS = 1.65` APPROX, `tipping` swing 0.8 s APPROX; on settle: flip `up`,
+   `tips++`, +20 (auto if before teleop start), spill old contents as ground balls under the
+   now-down cell via the shared flight / land step (world RNG), `nectarDue[a]++`. Any
+   alliance may launch into any up cell; contents credit the hive's alliance.
+2. `flower.ts` — stack model, capacity by height, entry via the top only, `actOnElement(…,
+   'retrieve')` pops the bottom POLLEN only, live owner + bottom-nectar bonus, Fig 10-5 A–H as
+   a table-driven smoke check.
+3. `play.ts` stage 6 — points: tips; cell contents (live, banked at end); flower owner +
+   bonus; garden 1 / element (circle ∩ strip); LEAVE / PARK latched at end of AUTO / end of
+   MATCH (PARK in OWN LZ — assumption, flagged); RP rows (SWARM ≥ 16, POLLINATOR 1 ≥ 4 tips,
+   POLLINATOR 2 ≥ 7). `scoreTargets` returns own up cell, opponent up cell, four flower tops.
+4. Human player: one nectar into the own LZ ~1.5 s after each own tip, all remaining at
+   ≤ 60 s staggered 1 s (APPROX both), through the existing `humanPlayers` timer if it fits,
+   else on `world.biobuzz`.
+5. `step.ts` — the 1:00 cue (`FLOWER OWNERSHIP UNLOCKED` event + HUD chip), end-of-AUTO and
+   end-of-MATCH assessment hooks. `penalties.ts` — G410 only (MAJOR 20 per nectar into a
+   flower before 1:00 left; the element still scores), via your own `bbAwardFoul` (5/20 — never
+   edit `src/sim/scoring.ts`).
+   `hud.ts` — tips, up-cell counts, flower owners, lock chip.
+6. Scenes: `hive-tip` (stills across the swing), `flower-stacks` (A–H), `park-examples`
+   (Fig 10-7's three), `nectar-entry`. Shots, Read, HANDOFF entry, push, STOP.
+
+Subagents: `Explore` for how DECODE banks end-of-match points and fires `events`; one
+`general-purpose` for the A–H table + smoke while you write `hive.ts`. Physics you are
+tempted to tune (spill scatter, swing time) is APPROX and goes in the handoff, not into a
+constant hunt.
+
+## B — Lane B relay (paste into the robot chat, one message)
+
+Manual V1 facts that change your dials (source `docs/biobuzz-reference.md` §6 on
+`biobuzz`): **hopper ceiling is 4** (G407 CONTROL ≤ 4) — `BB_STORAGE_MAX` 4, default 4,
+preloads fill it. **R105 expansion 18 × 24 × 29 in**, one horizontal axis only — `BB_PRISM`
+24 stands, the other axis stays 18. Two launch targets with real heights: HIVE up-cell
+opening **53.5–65.6 in** (a lob), FLOWER top **21.5 in**, 4.0-in hole (a placement). New
+action: **retrieve** a POLLEN from a FLOWER's bottom opening (3.55 in tall) —
+`actOnElement(world, r, 'retrieve')`, mouth facing the wall. NECTAR is a second element,
+3.6 in vs 2.8, `color: 'red' | 'blue'` with `Artifact.r` — the intake must handle it and
+must **refuse the opponent's** (G408). `ArtifactColor` now has `yellow | red | blue`
+(step 0 on `biobuzz`). Merge `biobuzz` before your next commit.
