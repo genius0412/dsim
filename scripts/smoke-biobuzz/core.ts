@@ -27,7 +27,12 @@ import {
   visibleSeasonsOn,
 } from '../../src/seasons';
 import { HOME_DESC } from '../../src/seo';
-import type { Check } from './harness';
+import { CHAIN_CATALYST_LABELS } from '../../src/games/chain/labels';
+import { BB_HOOD_DEFAULT_DEG } from '../../src/games/biobuzz/config';
+import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
+import { bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
+import type { BbMechSpec } from '../../src/games/biobuzz/mechs';
+import { bbCoerce, type Check } from './harness';
 
 /** a section heading in the log — the suite is read as a transcript, like smoke.ts */
 function section(title: string): void {
@@ -166,6 +171,110 @@ export function coreChecks(check: Check): void {
   );
   // an id with no season is visible (nothing restricts it) rather than throwing
   check('gameVisibleOn is true for an id with no season', gameVisibleOn('nope' as GameId, 'stable'));
+
+  // ---- the builder hero's per-game stat tiles (the `statTiles` slot) -------
+  // THE SAME SEAM BUG THE PRESET LIST HAD, at a second site. `Menu.tsx` picks the
+  // hero's mechanism tiles with `mod.statTiles ? <slot> : isDecode ? <intake> :
+  // <scoring + catalyst>`. That tail is an `else`, not a default, so a game filling
+  // neither branch is not shown "no per-game tile" — it is shown CHAIN REACTION's,
+  // which is how BIOBUZZ came to advertise a "Claw arm · CATALYST" chip off
+  // `spec.catalystType`, a field `coerceBiobuzzSpec` DELETES. It rendered a plausible
+  // tile the whole time, which is why nothing reported it.
+  section('builder stat tiles (the per-game hero summary)');
+  const bbTiles = moduleFor('biobuzz').statTiles;
+  check('biobuzz FILLS the statTiles slot', typeof bbTiles === 'function');
+  // the two shipped games keep their inline branches: filling the slot for them would
+  // put a behaviour change inside a commit whose only job is making room for a third.
+  check('decode does NOT fill it (its inline branch stays the live path)', !moduleFor('decode').statTiles);
+  check('chain does NOT fill it (its inline branch stays the live path)', !moduleFor('chain').statTiles);
+
+  /** one tile as the hero renders it: value, caption, and the optional second caption. */
+  const fmt = (t: { value: string; label: string; sub?: string }): string =>
+    `${t.value} / ${t.label}${t.sub ? ` / ${t.sub}` : ''}`;
+  const tilesFor = (raw: unknown): string[] => (bbTiles ? bbTiles(bbCoerce(raw)).map(fmt) : []);
+
+  // ALL FOUR LOADOUTS. `bbMech` is two independently-optional slots, so a build may carry a
+  // launcher, a lift, both or neither — and an ABSENT mechanism has to SAY so rather than
+  // vanish, or the reader cannot tell a launcher-less robot (Studica's StarterBot) from a
+  // tile the page failed to draw. Pinned as the exact user-visible text.
+  const LOADOUTS: { name: string; mech: BbMechSpec; want: string[] }[] = [
+    {
+      name: 'launcher + lift',
+      mech: {
+        launcher: { kind: 'drum', mount: 'front', hoodDeg: 40 },
+        lift: { kind: 'vslide', mount: 'back', maxZ: 24 },
+      },
+      want: ['Drum shooter / launcher / FRONT · 40° hood', 'Vertical slide / lift / BACK · 24" high'],
+    },
+    {
+      name: 'launcher only',
+      mech: {
+        launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG },
+        lift: null,
+      },
+      // a TURRET solves its own elevation per shot, so it has no hood to report
+      want: ['Turret shooter / launcher / CENTER', 'No lift / lift'],
+    },
+    {
+      name: 'lift only',
+      mech: { launcher: null, lift: { kind: 'vslide', mount: 'center', maxZ: 29 } },
+      want: ['No launcher / launcher', 'Vertical slide / lift / CENTER · 29" high'],
+    },
+    {
+      name: 'neither (a drivetrain and a sweeper — a real, legal build)',
+      mech: { launcher: null, lift: null },
+      want: ['No launcher / launcher', 'No lift / lift'],
+    },
+  ];
+  for (const l of LOADOUTS) {
+    const raw = { ...BB_DEFAULT_SPEC, bbMech: l.mech };
+    // NOT VACUOUS: assert the COERCED spec still carries the loadout being described. A
+    // coercer that nulled the launcher would make "No launcher" pass for the wrong reason —
+    // and `src/sim/spawn.ts` writes `scoreMode` unconditionally, so a launcher-less build is
+    // exactly the one at risk of growing a phantom turret on the way through.
+    const spec = bbCoerce(raw);
+    check(
+      `${l.name}: the coerced spec really carries that loadout`,
+      (bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG) !== null) === (l.mech.launcher !== null) &&
+        (bbLiftOf(spec) !== null) === (l.mech.lift !== null),
+    );
+    const got = tilesFor(raw);
+    check(`stat tiles — ${l.name}`, got.join(' | ') === l.want.join(' | '), got.join(' | '));
+  }
+
+  // NO FOREIGN VOCABULARY, anywhere in what a BIOBUZZ builder prints. CATALYST is Chain
+  // Reaction's word and ARTIFACT is DECODE's; this game's elements are POLLEN and NECTAR.
+  // The CR catalyst labels are taken from CR's own map rather than retyped, so a rename
+  // there cannot quietly make this check stop covering the string it was written for.
+  // (The four ARCHETYPE names are deliberately shared between the two games — see
+  // `bbLauncherOf` — so they are not, and cannot be, part of this list.)
+  const FOREIGN = [
+    ...Object.values(CHAIN_CATALYST_LABELS),
+    'catalyst',
+    'particle',
+    'ring stand',
+    'accelerator',
+    'artifact',
+    'sorter',
+    'motif',
+    'classifier',
+  ].map((s) => s.toLowerCase());
+  const everyBuild = [
+    ...LOADOUTS.map((l) => ({ ...BB_DEFAULT_SPEC, bbMech: l.mech })),
+    BB_DEFAULT_SPEC,
+    ...(moduleFor('biobuzz').presets?.list ?? []),
+  ];
+  const printed = everyBuild.flatMap(tilesFor).join(' | ').toLowerCase();
+  for (const word of FOREIGN) {
+    check(`biobuzz stat tiles never say "${word}"`, !printed.includes(word));
+  }
+  // and the CAPTIONS are this game's own mechanisms, not the CHAIN arm's two
+  const captions = new Set(everyBuild.flatMap((s) => (bbTiles ? bbTiles(bbCoerce(s)).map((t) => t.label) : [])));
+  check(
+    'the captions are launcher + lift (not CR’s scoring + catalyst)',
+    captions.size === 2 && captions.has('launcher') && captions.has('lift'),
+    [...captions].join(', '),
+  );
 
   // ---- the STATIC crawler files -------------------------------------------
   // `public/robots.txt` and `public/sitemap.xml` are hand-written and do NOT read

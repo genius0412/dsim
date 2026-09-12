@@ -11,7 +11,7 @@
  * estimate is MEASURED here, off the real `step()` and the real slim + ball-delta codec
  * `Room.broadcastSnapshot` sends through, and re-measured whenever someone asks.
  *
- * WHAT IT MEASURES, per scenario (DECODE and Chain Reaction, solo + 2v2):
+ * WHAT IT MEASURES, per scenario (DECODE, Chain Reaction and BIOBUZZ, solo + 2v2):
  *   · cores/room       — cpu-seconds per second of match. This is the figure fly.toml's
  *                        sizing block is written against; take it before resizing a VM.
  *   · bytes/snapshot   — the exact `{t:'snapshot'}` frame the server broadcasts.
@@ -28,6 +28,15 @@
  *                        calls `saveReplay` unconditionally), so this is Postgres growth
  *                        per match — the one line here that COMPOUNDS day over day.
  *
+ * PLUS, for a scenario that asks for it (`Scenario.fields`), WHAT A NAMED PER-TICK
+ * `RobotState` FIELD COSTS — the one number the header above says moves without anyone
+ * thinking about the bill. It is measured by re-serializing THE SAME frames with those
+ * keys deleted, so it is a difference of one variable and carries none of the confound a
+ * separate "robot without the mechanism" scenario would (a robot with no launcher also
+ * launches nothing, so its ball delta is a different thing too). BIOBUZZ's `bbTurretPitch`
+ * and `bbLiftZ` are priced that way; DECODE and CR name no fields and their frames are
+ * byte-identical to what this script measured before the knob existed.
+ *
  * WHAT IT IS NOT: a benchmark of Fly's hardware. cores/room is measured on whatever box
  * runs this, so treat the extrapolation as ±30% and confirm against `GET /api/perf`
  * (event-loop lag) on a real machine before sizing anything.
@@ -37,11 +46,20 @@
 import { constants, createDeflateRaw } from 'node:zlib';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { simModuleFor } from '../src/games/sim';
-import { DEFAULT_SPEC, PLAYER_ASSISTS, coerceSpec } from '../src/sim/spawn';
+// `RobotSetup` lives beside the coercer, not in `src/types` — it was imported from there below
+// and only ever used behind an `as` cast, so nothing failed and `tsx` (which strips types
+// without checking) never looked.
+import { DEFAULT_SPEC, PLAYER_ASSISTS, coerceSpec, type RobotSetup } from '../src/sim/spawn';
 import { ReplayRecorder, maxMatchTicks } from '../src/sim/replay';
 import { slimWorld, encodeBallDelta, quantizeCommand, localizeCommand } from '../src/net/protocol';
 import * as C from '../src/config';
-import type { Artifact, GameId, RobotCommand, RobotSetup, World } from '../src/types';
+// BIOBUZZ's own leaf modules. `coerce.ts` is a dependency of the shared `coerceSpec` and
+// imports nothing that reaches back to it, so pulling it (and the constants it already reads)
+// into a dev script costs nothing and drags in no DOM. Nothing here is bundled for a client —
+// BIOBUZZ is alpha-only and this script is not a product surface.
+import { BB_DEFAULT_SPEC } from '../src/games/biobuzz/coerce';
+import { BB_HOOD_DEFAULT_DEG, BB_LIFT_MAX_Z } from '../src/games/biobuzz/config';
+import type { Artifact, GameId, RobotCommand, RobotSpec, World } from '../src/types';
 
 // ---- published rates (checked 2026-09-11) -----------------------------------
 const RATES = {
@@ -98,12 +116,92 @@ interface Scenario {
   game: GameId;
   robots: number;
   label: string;
+  /**
+   * The BUILD this scenario prices, BEFORE coercion. Absent ⇒ the shared `DEFAULT_SPEC`, which
+   * is what DECODE and Chain Reaction have always been measured on. It exists for BIOBUZZ,
+   * where the mechanism LOADOUT is what decides how many per-tick fields a robot ships.
+   */
+  spec?: RobotSpec;
+  /**
+   * Extra command bits this game's mechanisms read, merged over the shared busy-robot command.
+   * Absent ⇒ nothing is merged, so DECODE's and CR's frames stay byte-identical to what this
+   * script measured before the knob existed — which matters, because a new button bit widens
+   * `QCommand.buttons` and would show up as a phantom regression on games that never press it.
+   */
+  bits?: (tick: number, seat: number) => Partial<RobotCommand>;
+  /**
+   * PER-TICK `RobotState` FIELDS TO PRICE SEPARATELY, by key. Each snapshot is re-serialized
+   * with these deleted and the difference is reported, raw and on the wire — the honest answer
+   * to "what did that one-line field cost", which is the question this whole script exists for.
+   * A key nothing writes yet costs 0, and that zero is a measurement too: it says the field is
+   * declared but never reaches a client.
+   */
+  fields?: readonly string[];
 }
+
+/**
+ * A FULLY-EQUIPPED BIOBUZZ ROBOT — a turret AND a vertical extension slide, which is the
+ * EXPENSIVE case and therefore the one worth pricing.
+ *
+ * Both mechanisms write a per-tick `RobotState` field (`bbTurretPitch` from `bbSlewTurret`,
+ * `bbLiftZ` from `bbStepLift`), and a field on a robot ships in full on every 30 Hz snapshot to
+ * every client in the room — robots are not delta'd, only balls are. A build with neither
+ * mechanism is cheaper on the wire and is not what this measurement is for; `fields` below
+ * prices the difference exactly, off these same frames, rather than by running a second robot.
+ *
+ * Built on `BB_DEFAULT_SPEC` (the Sniper demo — already a turret) with the loadout stated
+ * explicitly rather than left to `bbLauncherOf`'s migration path, and run through the one
+ * coercion chokepoint in `measure` like every other spec here. The lift takes `BB_LIFT_MAX_Z`,
+ * R105's height cap: the tallest legal carriage is the one a player builds.
+ */
+const BB_EQUIPPED: RobotSpec = {
+  ...BB_DEFAULT_SPEC,
+  bbMech: {
+    launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG },
+    lift: { kind: 'vslide', mount: 'back', maxZ: BB_LIFT_MAX_Z },
+  },
+};
+
+/** the two per-tick fields a BIOBUZZ mechanism adds to every robot in every snapshot */
+const BB_MECH_FIELDS = ['bbTurretPitch', 'bbLiftZ'] as const;
+
+/**
+ * BIOBUZZ command bits. `bbLift` is a HELD level (raise while down), so it is worked on a duty
+ * cycle rather than pressed once — a carriage parked at either stop writes a CONSTANT `bbLiftZ`,
+ * which the deflate window then hides almost entirely and which would price the field as
+ * cheaper than it is. `bbPlace` is an edge and is pressed at the top of each raise.
+ */
+const bbBits = (tick: number): Partial<RobotCommand> => ({
+  bbLift: tick % 240 < 120,
+  bbPlace: tick % 240 === 118,
+});
+
 const SCENARIOS: Scenario[] = [
   { key: 'decode-solo', game: 'decode', robots: 1, label: 'DECODE solo record run' },
   { key: 'decode-2v2', game: 'decode', robots: 4, label: 'DECODE 2v2 versus' },
   { key: 'chain-solo', game: 'chain', robots: 1, label: 'Chain Reaction solo' },
   { key: 'chain-2v2', game: 'chain', robots: 4, label: 'Chain Reaction 2v2' },
+  // BIOBUZZ is `scored: false` and alpha-only, so it reaches no leaderboard and is NOT in the
+  // extrapolation below — but a room of it costs exactly what a room of anything else costs,
+  // and it is the game currently growing per-tick fields.
+  {
+    key: 'biobuzz-solo',
+    game: 'biobuzz',
+    robots: 1,
+    label: 'BIOBUZZ solo (turret+lift)',
+    spec: BB_EQUIPPED,
+    bits: bbBits,
+    fields: BB_MECH_FIELDS,
+  },
+  {
+    key: 'biobuzz-2v2',
+    game: 'biobuzz',
+    robots: 4,
+    label: 'BIOBUZZ 2v2 (turret+lift)',
+    spec: BB_EQUIPPED,
+    bits: bbBits,
+    fields: BB_MECH_FIELDS,
+  },
 ];
 
 interface Measured {
@@ -114,6 +212,13 @@ interface Measured {
   upPerClient: number; // bytes/s
   replayKib: number;
   elements: number;
+  /** bytes/snapshot attributable to `Scenario.fields`, raw JSON. 0 when none were named. */
+  fieldBytes: number;
+  /** bytes/s per client attributable to `Scenario.fields`, after permessage-deflate */
+  fieldWire: number;
+  /** the named fields that were actually PRESENT on a robot at the end of the run. A field
+   * nothing writes is absent here, which is why the report prints this rather than `fields`. */
+  fieldsSeen: string[];
 }
 
 /**
@@ -155,7 +260,7 @@ async function wireBytes(frames: string[]): Promise<number> {
  * contacts resolving), because an idle room costs neither the CPU nor the bytes that decide
  * the bill. `PLAYER_ASSISTS.fieldCentric` is true, so the drive vector is field-frame.
  */
-const command = (tick: number, seat: number): RobotCommand => {
+const command = (tick: number, seat: number, s?: Scenario): RobotCommand => {
   const p = tick / 60 + seat * 1.7;
   return {
     driveX: Math.sin(p * 0.9),
@@ -169,17 +274,26 @@ const command = (tick: number, seat: number): RobotCommand => {
     rd: 0,
     catalyst: tick % 300 < 30,
     fling: false,
+    // a game's own mechanism buttons, and NOTHING for a scenario that declares none — see
+    // `Scenario.bits` for why that matters to the two older games' numbers.
+    ...s?.bits?.(tick, seat),
   } as RobotCommand;
 };
 
 async function measure(s: Scenario): Promise<Measured> {
   const mod = simModuleFor(s.game);
+  // ONE coercion chokepoint, for every scenario's build alike — a spec that reached the sim
+  // without it would not be a spec the server could ever be sent, so the bytes would be a
+  // measurement of something that cannot happen.
+  const base = s.spec ?? DEFAULT_SPEC;
   const setups: RobotSetup[] = [];
   for (let i = 0; i < s.robots; i++) {
     setups.push({
       id: i + 1,
       alliance: i % 2 === 0 ? 'red' : 'blue',
-      spec: coerceSpec({ ...DEFAULT_SPEC }, DEFAULT_SPEC, s.game),
+      // a FRESH object per robot, as it always was: nothing downstream should mutate a spec,
+      // but four setups sharing one is a class of aliasing bug a measurement must not invent.
+      spec: coerceSpec({ ...base }, base, s.game),
       assists: { ...PLAYER_ASSISTS },
       startIndex: Math.floor(i / 2),
       human: true,
@@ -192,7 +306,13 @@ async function measure(s: Scenario): Promise<Measured> {
   let baseline: Map<number, Artifact> | null = null;
   /** every snapshot frame, deflated after the CPU window closes (see `wireBytes`) */
   const frames: string[] = [];
+  /** the SAME frames with `s.fields` deleted off each robot — the counterfactual stream. Empty
+   * (and never built) when the scenario names no fields, so nothing changes for DECODE/CR. */
+  const bare: string[] = [];
+  const priced = s.fields ?? [];
+  const fieldsSeen = new Set<string>();
   let snapBytes = 0;
+  let bareBytes = 0;
   let snaps = 0;
   let upBytes = 0;
   const cpu0 = process.cpuUsage();
@@ -200,34 +320,55 @@ async function measure(s: Scenario): Promise<Measured> {
     const local = new Map<number, RobotCommand>();
     // localizeCommand: exactly what the server decodes off the wire, so the sim consumes
     // the QUANTIZED value here too (the same reason solo practice localizes — replay.ts)
-    for (const [seat, st] of setups.entries()) local.set(st.id, localizeCommand(command(world.tick + 1, seat)));
+    for (const [seat, st] of setups.entries()) local.set(st.id, localizeCommand(command(world.tick + 1, seat, s)));
     mod.step(world, C.SIM_DT, local);
     rec.record(world.tick, local);
     // SNAPSHOT_INTERVAL is 2 in server/room.ts, i.e. 30Hz
     if (world.tick % 2 === 0) {
       const delta = encodeBallDelta(baseline, world.balls);
-      const frame = JSON.stringify({
+      // held separately from the stringify so the field pricing below can re-serialize the
+      // EXACT same object with two keys removed — a difference of one variable, not of a scene
+      const slim = slimWorld(world);
+      const payload = {
         t: 'snapshot',
         serverTick: world.tick,
-        w: slimWorld(world),
+        w: slim,
         balls: delta,
-        cmds: world.robots.map((r) => quantizeCommand(local.get(r.id) ?? command(world.tick, 0))),
+        cmds: world.robots.map((r) => quantizeCommand(local.get(r.id) ?? command(world.tick, 0, s))),
         ackInputTick: world.tick,
-      });
+      };
+      const frame = JSON.stringify(payload);
       frames.push(frame);
       snapBytes += Buffer.byteLength(frame, 'utf8');
       snaps++;
+      if (priced.length) {
+        // `slimWorld` already copied each robot (`stripSpec` spreads it), so deleting here
+        // cannot touch the live world. Do it AFTER the real frame is serialized.
+        for (const r of slim.robots) {
+          const bag = r as unknown as Record<string, unknown>;
+          for (const f of priced) {
+            if (bag[f] !== undefined) fieldsSeen.add(f);
+            delete bag[f];
+          }
+        }
+        const stripped = JSON.stringify(payload);
+        bare.push(stripped);
+        bareBytes += Buffer.byteLength(stripped, 'utf8');
+      }
       baseline = new Map(world.balls.map((b) => [b.id, b] as const));
     }
     // each client sends its own command every tick
     upBytes += Buffer.byteLength(
-      JSON.stringify({ t: 'input', tick: world.tick, cmd: quantizeCommand(command(world.tick, 0)) }),
+      JSON.stringify({ t: 'input', tick: world.tick, cmd: quantizeCommand(command(world.tick, 0, s)) }),
       'utf8',
     );
   }
   const cpu = process.cpuUsage(cpu0);
   const wallS = TICKS * C.SIM_DT;
   const wire = await wireBytes(frames);
+  // a SECOND full-stream deflate, from a fresh context, so the two are comparable: the field's
+  // wire cost is what the window could NOT hide, and that is only visible across whole streams.
+  const bareWire = bare.length ? await wireBytes(bare) : wire;
   return {
     cores: (cpu.user + cpu.system) / 1e6 / wallS,
     snapBytes: snapBytes / snaps,
@@ -236,6 +377,9 @@ async function measure(s: Scenario): Promise<Measured> {
     upPerClient: upBytes / wallS,
     replayKib: JSON.stringify(rec.finish()).length / 1024,
     elements: world.balls.length,
+    fieldBytes: priced.length ? (snapBytes - bareBytes) / snaps : 0,
+    fieldWire: (wire - bareWire) / wallS,
+    fieldsSeen: priced.filter((f) => fieldsSeen.has(f)),
   };
 }
 
@@ -265,8 +409,39 @@ console.log(
     SCENARIOS.map((s) => `${s.key} ${results.get(s.key)!.elements}`).join(', '),
 );
 
+// ---- what a named per-tick RobotState field costs ---------------------------
+// Printed only for the scenarios that asked. This is the one number the header calls out as
+// moving without anyone noticing: robots are NOT delta'd (only balls are), so every field on
+// every robot ships in full, 30 times a second, to every client in the room.
+const pricedScenarios = SCENARIOS.filter((s) => (s.fields?.length ?? 0) > 0);
+if (pricedScenarios.length) {
+  console.log(`\nPER-TICK ROBOTSTATE FIELDS — the same frames, re-serialized without them\n`);
+  for (const s of pricedScenarios) {
+    const m = results.get(s.key)!;
+    const missing = (s.fields ?? []).filter((f) => !m.fieldsSeen.includes(f));
+    const share = m.snapBytes > 0 ? (m.fieldBytes / m.snapBytes) * 100 : 0;
+    console.log(
+      `  ${s.label.padEnd(26)}${`+${i(m.fieldBytes)} B/snap`.padStart(13)} (${n(share, 1)}% of the frame), ` +
+        `${`+${n(m.fieldWire / 1024, 2)} KiB/s`.padStart(13)} per client on the wire`,
+    );
+    console.log(
+      `  ${' '.repeat(26)}  written: ${m.fieldsSeen.join(', ') || '(none)'}` +
+        (missing.length ? `   ·   declared but NEVER WRITTEN: ${missing.join(', ')}` : ''),
+    );
+  }
+  console.log(
+    `\n  A field listed as declared-but-never-written costs nothing today because nothing in the\n` +
+      `  step pipeline sets it — that is a fact about the sim, not about the wire, and it starts\n` +
+      `  costing the moment something does. Multiply the wire figure by the room's client count\n` +
+      `  (4 in a 2v2) for the room's share of egress.`,
+  );
+}
+
 // Extrapolated on DECODE, the default scored game. Chain Reaction's columns are printed
 // above for comparison — its 300 particles make it the pessimistic case for bandwidth.
+// BIOBUZZ is deliberately NOT extrapolated: it is `scored: false` and alpha-channel only, so
+// there is no population of it to extrapolate FROM. Its per-room columns are the useful half
+// and they are printed above; when it becomes a playable season, give it a share here.
 const solo = results.get('decode-solo')!;
 const v2 = results.get('decode-2v2')!;
 const nSolo = CCU * SOLO_SHARE;

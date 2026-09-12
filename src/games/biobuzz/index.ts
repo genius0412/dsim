@@ -10,7 +10,7 @@ import {
 import { drawBiobuzzBalls } from './draw';
 import { drawBiobuzzField } from './drawField';
 import { drawBiobuzzRobot } from './drawRobot';
-import { bbConfigSummary } from './labels';
+import { bbConfigSummary, bbStatTiles } from './labels';
 import { BB_PRESET_LIST, BB_REAL_PRESETS, bbPresetLines, bbSpecMatches } from './presets';
 import { BIOBUZZ_SIM } from './sim';
 
@@ -52,6 +52,13 @@ export const BIOBUZZ_MODULE: GameModule = {
   scoreBar: BiobuzzScoreBar,
   resultsRows: biobuzzResultsRows,
   labels: { configSummary: bbConfigSummary },
+  /**
+   * THE BUILDER HERO'S PER-GAME TILES. The second instance of the preset bug, and the same
+   * shape of fix: the hero picked its mechanism tiles with `isDecode ? … : …`, so BIOBUZZ fell
+   * into the CHAIN arm and showed a **CATALYST** — Chain Reaction's mechanism, off a field
+   * `coerceBiobuzzSpec` deletes. This says launcher and lift, which is what a BIOBUZZ robot has.
+   */
+  statTiles: bbStatTiles,
   /**
    * THE PRESET CARDS. Filling this slot is what makes `BB_PRESETS` reachable at all: the
    * builder's `Presets` section chose its list with `isDecode ? ROBOT_PRESETS : CHAIN_PRESETS`,

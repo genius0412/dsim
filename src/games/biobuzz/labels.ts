@@ -1,4 +1,8 @@
 import type { RobotSpec } from '../../types';
+// TYPE-ONLY, and it has to stay that way: `../module` is reached from `games/index.ts`, so a
+// VALUE import here would close the registry cycle `presets.ts` already hit once at boot
+// (`Cannot access 'BB_PRESET_LIST' before initialization`). `import type` is erased.
+import type { GameStatTile } from '../module';
 import { BB_HOOD_DEFAULT_DEG, type BbIntakeStyle } from './config';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
@@ -7,7 +11,14 @@ import {
   type BbScoreMode,
   bbIntakeMountOf,
 } from './mounts';
-import { type BbLauncherSpec, type BbLiftKind, bbLauncherOf, bbLiftOf } from './mechs';
+import {
+  type BbLauncherSpec,
+  type BbLiftKind,
+  type BbLiftSpec,
+  bbIsTurreted,
+  bbLauncherOf,
+  bbLiftOf,
+} from './mechs';
 
 /**
  * Shared display labels for BIOBUZZ robot-config choices.
@@ -85,6 +96,16 @@ export const BB_LIFT_KIND_BLURBS: Record<BbLiftKind, string> = {
   vslide: 'Places into a FLOWER · the HIVE stays out of reach',
 };
 
+/** THE LIFT SLOT'S ABSENT CASE, the twin of `BB_LAUNCHER_NONE_LABEL` and written for the same
+ * reason: a build with no lift has to SAY so. Every StarterBot ships without one, so this is
+ * the common reading, not the edge case. */
+export const BB_LIFT_NONE_LABEL = 'No lift';
+
+/** the label for a resolved LIFT slot, including the NONE case — `bbLauncherLabel`'s twin. */
+export function bbLiftLabel(lift: BbLiftSpec | null): string {
+  return lift ? BB_LIFT_KIND_LABELS[lift.kind] : BB_LIFT_NONE_LABEL;
+}
+
 export const BB_INTAKE_LABELS: Record<BbIntakeStyle, string> = {
   sweeper: 'Sweeper',
 };
@@ -152,4 +173,56 @@ export function bbConfigSummary(spec: RobotSpec): string {
   // POLLEN, never "balls" — the user-visible word for this game's scoring element.
   parts.push(`${spec.ballStorage ?? 0} pollen`);
   return parts.join(' · ');
+}
+
+/**
+ * The BUILDER HERO's per-game stat tiles — `GameModule.statTiles`.
+ *
+ * ── WHAT THIS REPLACES ──────────────────────────────────────────────────────
+ * `Menu.tsx` chose the hero's per-game tiles with `isDecode ? <intake> : <scoring +
+ * catalyst>`, so BIOBUZZ did not fall through to "no per-game tile" — it fell into the CHAIN
+ * arm and advertised a **CATALYST**, which is Chain Reaction's mechanism and a word that must
+ * never appear in this game. It was reading `spec.catalystType`, a field `coerceBiobuzzSpec`
+ * DELETES, so the tile printed Chain Reaction's DEFAULT catalyst label for a field the spec
+ * does not have. Same failure as the preset cards: not a missing feature, a confident wrong one.
+ *
+ * ── TWO TILES, ALWAYS BOTH ──────────────────────────────────────────────────
+ * The loadout is two independently-optional slots (`RobotSpec.bbMech`), so there are four real
+ * builds — launcher, lift, both, neither — and an ABSENT mechanism is a fact about the robot
+ * rather than a tile to hide. Studica's published StarterBot is a drivetrain and a sweeper and
+ * nothing else (`presets.ts`); a hero that simply drops the tile leaves the reader unable to
+ * tell "this robot has no launcher" from "this build of the page forgot to draw one" — which
+ * is precisely the class of bug this function exists to end. So both tiles always render and
+ * `bbLauncherLabel` / `bbLiftLabel` name the empty slot out loud.
+ *
+ * Read through the MECHANISM RESOLVERS, never the flat mirrors: `spec.scoreMode` is written
+ * unconditionally by `src/sim/spawn.ts` and defaults to a turret, so a launcher-less build
+ * still carries one and a tile reading it would grow the phantom turret `mechs.ts` is written
+ * against.
+ *
+ * The SUB line carries what the value has no room for and only what the mechanism actually
+ * has: a turret aims itself, so its mount is just where it is bolted, while a turretless
+ * launcher fires over a fixed edge at a fixed HOOD — a real dial the builder offers, and the
+ * one number that changes where its POLLEN lands.
+ */
+export function bbStatTiles(spec: RobotSpec): readonly GameStatTile[] {
+  const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+  const lift = bbLiftOf(spec);
+  return [
+    {
+      value: bbLauncherLabel(launcher),
+      label: 'launcher',
+      sub: launcher
+        ? bbIsTurreted(launcher)
+          ? BB_MOUNT_POS_LABELS[launcher.mount]
+          : `${BB_MOUNT_POS_LABELS[launcher.mount]} · ${launcher.hoodDeg}° hood`
+        : undefined,
+    },
+    {
+      value: bbLiftLabel(lift),
+      label: 'lift',
+      // the builder's own dial for this is captioned "Height", so the tile says height too.
+      sub: lift ? `${BB_MOUNT_POS_LABELS[lift.mount]} · ${lift.maxZ}" high` : undefined,
+    },
+  ];
 }

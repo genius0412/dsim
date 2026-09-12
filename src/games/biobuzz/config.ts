@@ -530,6 +530,23 @@ export const BB_TURRET_PITCH_SLEW = 1.6;
 export const BB_TURRET_PITCH_MIN = 0;
 export const BB_TURRET_PITCH_MAX = 80 * BB_DEG;
 
+/**
+ * A TURRET'S TOP MUZZLE SPEED (in/s) — the flywheel's ceiling, and the reason a turret's range
+ * is a number rather than an infinity.
+ *
+ * A turret solves its own arc (`bbTurretSolution`), so unless the speed is bounded somewhere it
+ * reaches every opening on the field from everywhere and the pitch envelope becomes decoration.
+ * SIZED SO IT IS NOT NORMALLY WHAT BITES: the longest legal shot at a HIVE is a robot in the
+ * far corner (~66, 66) firing at the opposite up-CELL — d = 111.8 in, dh = 47.6 in above a
+ * turret muzzle, which the minimum-speed solution takes at **255.5 in/s**. 260 clears that with
+ * a little margin, so today the thing that makes a turret miss is the SLEW (aim is a physical
+ * state) and not the range. A target further or higher than the HIVE would fall short, which is
+ * a miss the driver can see and drive out of rather than a silent skip.
+ *
+ * APPROX, like every launcher number here — see the risks in `docs/biobuzz/plan-mechanisms.md`.
+ */
+export const BB_TURRET_SPEED_MAX = 260;
+
 /** the launcher's plate channel, in inches — `GAP` is the clear width between the two plates
  * a POLLEN passes between, `OVERHANG` how far they reach past the flywheel. GAP is
  * `BB_POLLEN_R * 2` plus a working clearance, which is why it tracks the element size rather

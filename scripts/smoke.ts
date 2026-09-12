@@ -178,7 +178,7 @@ import { beamBlock, beamDrag, beamDragFactor, beamStrafeBlock, beamForwardness, 
 import { butterflyTankRpmLimits, driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits, pushForce, shoveMass } from '../src/sim/drivetrain';
 import { coerceSettings, defaultSettings, switchGame, syncAudioMirrors } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
-import { DEFAULT_BINDINGS, mergeBindings } from '../src/input/bindings';
+import { DEFAULT_BINDINGS, KEY_ACTIONS, PAD_ACTIONS, mergeBindings } from '../src/input/bindings';
 import { quantizeCommand, dequantizeCommand, localizeCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
@@ -5412,6 +5412,94 @@ function queueTenth(w: World): void {
       merged.pad.buttons.intake[0] === 6,
     JSON.stringify({ fire: merged.keys.fire, up: merged.keys.driveUp, stick: merged.pad.driveStick }),
   );
+
+  // A SETTINGS BLOB STORED BEFORE AN ACTION EXISTED MUST STILL LOAD. `mergeBindings` starts
+  // from the defaults and only overwrites what it validates, so an action the blob has never
+  // heard of keeps its default instead of arriving UNBOUND — which is the difference between
+  // a returning player finding the new button on the map and finding nothing there.
+  const stale = mergeBindings({ keys: { fire: ['j'] }, pad: { buttons: { fire: [2] } } });
+  const dropped = [
+    ...KEY_ACTIONS.filter(
+      (a) => a !== 'fire' && JSON.stringify(stale.keys[a]) !== JSON.stringify(DEFAULT_BINDINGS.keys[a]),
+    ),
+    ...PAD_ACTIONS.filter(
+      (a) =>
+        a !== 'fire' &&
+        JSON.stringify(stale.pad.buttons[a]) !== JSON.stringify(DEFAULT_BINDINGS.pad.buttons[a]),
+    ),
+  ];
+  check(
+    'mergeBindings: an action missing from a stored blob keeps its default',
+    dropped.length === 0,
+    dropped.join(', '),
+  );
+
+  // EVERY COMMAND BUTTON MUST BE REACHABLE FROM A REAL KEYBOARD AND GAMEPAD. `bbLift` and
+  // `bbPlace` shipped with a protocol bit AND a sim consumer and no binding at all, so
+  // nothing but smoke could ever press them — the failure is silent from every side, since
+  // the command field is optional and reads as false. The action names ARE the command field
+  // names, so the two lists compare directly.
+  const buttons: (keyof RobotCommand)[] = [
+    'intake',
+    'fire',
+    'catalyst',
+    'fling',
+    'bbLift',
+    'bbPlace',
+    'driveMode',
+  ];
+  const unreachable = buttons.filter(
+    (b) => !(KEY_ACTIONS as string[]).includes(b) || !(PAD_ACTIONS as string[]).includes(b),
+  );
+  check(
+    'bindings: every command button has both a key action and a pad action',
+    unreachable.length === 0,
+    `unreachable: ${unreachable.join(', ') || 'none'}`,
+  );
+
+  // A default that is MISSING or SHARED is the same silent failure from the other side: an
+  // action with no key cannot be pressed at all, and one sharing a key fires two things on
+  // one press.
+  const noKey = KEY_ACTIONS.filter((a) => DEFAULT_BINDINGS.keys[a].length === 0);
+  const noPad = PAD_ACTIONS.filter((a) => DEFAULT_BINDINGS.pad.buttons[a].length === 0);
+  check(
+    'bindings: every action has a default key and a default pad button',
+    noKey.length === 0 && noPad.length === 0,
+    `keys: ${noKey.join(',') || 'none'} pad: ${noPad.join(',') || 'none'}`,
+  );
+  const keyOwner = new Map<string, string>();
+  const dupKeys: string[] = [];
+  for (const a of KEY_ACTIONS) {
+    for (const k of DEFAULT_BINDINGS.keys[a]) {
+      if (keyOwner.has(k)) dupKeys.push(`${k} (${keyOwner.get(k)} + ${a})`);
+      else keyOwner.set(k, a);
+    }
+  }
+  const padOwner = new Map<number, string>();
+  const dupPad: string[] = [];
+  for (const a of PAD_ACTIONS) {
+    for (const i of DEFAULT_BINDINGS.pad.buttons[a]) {
+      if (padOwner.has(i)) dupPad.push(`${i} (${padOwner.get(i)} + ${a})`);
+      else padOwner.set(i, a);
+    }
+  }
+  check(
+    'bindings: no default key or pad button is bound to two actions',
+    dupKeys.length === 0 && dupPad.length === 0,
+    `${dupKeys.join(' ')} ${dupPad.join(' ')}`.trim(),
+  );
+  // Escape is reserved for menu / cancel and is never bindable.
+  check('bindings: escape is never a default key', !keyOwner.has('escape'));
+  // `input.ts` reads arrowup / arrowdown DIRECTLY for the tank right side, so a default bound
+  // to either would drive half a tank chassis as a side effect of pressing it.
+  check(
+    'bindings: no default key collides with the tank arrowup/arrowdown mapping',
+    !keyOwner.has('arrowup') && !keyOwner.has('arrowdown'),
+  );
+  // Standard-mapping pads report 17 buttons; anything past that is a pad-specific extra no
+  // ordinary controller has, so a default there is a button most people cannot press.
+  const offPad = [...padOwner.keys()].filter((i) => i > 16);
+  check('bindings: every default pad button is a standard-mapping index', offPad.length === 0, offPad.join(','));
 }
 
 // ============================================================================
@@ -12402,7 +12490,7 @@ function pinScene(
   // step) unless it is added to the mask — which is exactly what happened to `fling` and
   // `driveMode`. This asserts each one round-trips, so the next one can't regress quietly.
   {
-    const btns: (keyof RobotCommand)[] = ['intake', 'fire', 'catalyst', 'fling', 'driveMode'];
+    const btns: (keyof RobotCommand)[] = ['intake', 'fire', 'catalyst', 'fling', 'driveMode', 'bbLift', 'bbPlace'];
     const lost = btns.filter((b) => {
       const rt = dequantizeCommand(quantizeCommand(cmd({ [b]: true } as Partial<RobotCommand>)));
       return rt[b] !== true;
@@ -12412,7 +12500,8 @@ function pinScene(
     const only = dequantizeCommand(quantizeCommand(cmd({ fling: true })));
     check(
       'wire: button bits are independent (fling does not imply catalyst/fire)',
-      only.fling === true && !only.catalyst && !only.fire && !only.intake && !only.driveMode,
+      only.fling === true && !only.catalyst && !only.fire && !only.intake && !only.driveMode &&
+        !only.bbLift && !only.bbPlace,
     );
   }
 

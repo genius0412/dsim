@@ -13,13 +13,26 @@ export type KeyAction =
   | 'fire'
   | 'catalyst'
   | 'fling'
+  | 'bbLift'
+  | 'bbPlace'
   | 'driveMode'
   | 'flipFront'
   | 'park'
   | 'start'
   | 'restart';
 
-export type PadAction = 'fire' | 'intake' | 'catalyst' | 'fling' | 'driveMode' | 'flipFront' | 'park' | 'start' | 'restart';
+export type PadAction =
+  | 'fire'
+  | 'intake'
+  | 'catalyst'
+  | 'fling'
+  | 'bbLift'
+  | 'bbPlace'
+  | 'driveMode'
+  | 'flipFront'
+  | 'park'
+  | 'start'
+  | 'restart';
 
 export interface PadBindings {
   /** which stick translates the robot — the other stick's X axis turns */
@@ -53,6 +66,8 @@ export const KEY_ACTIONS: KeyAction[] = [
   'fire',
   'catalyst',
   'fling',
+  'bbLift',
+  'bbPlace',
   'driveMode',
   'flipFront',
   'park',
@@ -60,7 +75,19 @@ export const KEY_ACTIONS: KeyAction[] = [
   'restart',
 ];
 
-export const PAD_ACTIONS: PadAction[] = ['fire', 'intake', 'catalyst', 'fling', 'driveMode', 'flipFront', 'park', 'start', 'restart'];
+export const PAD_ACTIONS: PadAction[] = [
+  'fire',
+  'intake',
+  'catalyst',
+  'fling',
+  'bbLift',
+  'bbPlace',
+  'driveMode',
+  'flipFront',
+  'park',
+  'start',
+  'restart',
+];
 
 export const DEFAULT_BINDINGS: ControlBindings = {
   keys: {
@@ -76,6 +103,13 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     // CATAPULT throw (launcher catalyst mechanism) — its OWN button, so it is never
     // ambiguous with the claw's grab/place on the same press.
     fling: ['v'],
+    // BIOBUZZ vertical slide: HELD to raise the carriage, released to bring it back down.
+    // 'x' and 'z' extend the bottom-row mechanism cluster (c / v / b) leftward, so every
+    // mechanism button sits on one row under the drive hand; both were free on the default
+    // map, and 'x' is the nearer of the two because it is the one held for long stretches.
+    bbLift: ['x'],
+    // BIOBUZZ: place the held POLLEN into a FLOWER.
+    bbPlace: ['z'],
     // BUTTERFLY: drop the other wheel set. 'b' for butterfly; free on the default map.
     driveMode: ['b'],
     flipFront: ['f'],
@@ -90,6 +124,13 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       intake: [6, 1], // LT or B
       catalyst: [4], // LB
       fling: [10], // L3 (left stick click)
+      // RS — the last free stick click, and the one free button a thumb can press without
+      // leaving a stick, which is what a HELD action needs while the robot is driving.
+      bbLift: [11],
+      // D-UP — a FLOWER is placed above the deck, and the d-pad costs the drive thumb its
+      // stick, which a MOMENTARY press can afford where the lift above could not. Every
+      // trigger, bumper and face button was already taken.
+      bbPlace: [12],
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
       park: [2], // X

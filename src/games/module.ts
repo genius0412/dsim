@@ -102,6 +102,33 @@ export interface GameModule extends GameSimModule {
     configSummary(spec: RobotSpec): string;
   };
   /**
+   * The PER-GAME tiles in the builder hero's stat grid — the summary of what
+   * MECHANISMS this build carries, beside the shared speed / mass / drivetrain tiles.
+   *
+   * ── WHY THIS IS A SLOT, AND A SIBLING OF `labels` RATHER THAN A MEMBER OF IT ──
+   * `Menu.tsx` picked these tiles with `isDecode ? <intake tile> : <scoring + catalyst
+   * tiles>` — the same two-valued shape `presets` was built to replace, and with the
+   * same result: a third game did not fall back to "no per-game tile", it fell into the
+   * CHAIN arm. BIOBUZZ therefore advertised a "Claw arm · CATALYST" chip, a Chain
+   * Reaction mechanism, off a field (`catalystType`) its own coercer DELETES — so the
+   * tile was printing `CHAIN_CATALYST_LABELS[CHAIN_DEFAULT_CATALYST]`, a default label
+   * for a field the spec does not have. Confident, populated, and about another game.
+   *
+   * It is a SIBLING of `labels` because the slot table is a map from slot to CONSUMER,
+   * and these have different ones: `labels.configSummary` is a SENTENCE for screens that
+   * are not the builder (`robotLabels.buildSummary` → the leaderboard, the lobby roster,
+   * the strategy card), while this is the builder hero's own tile grid and its shape is
+   * structured, not a line. Folding a tile list into a bag named `labels` would turn that
+   * bag into a catch-all with two unrelated readers, which is the point at which a slot
+   * stops saying where it is rendered. A game that wants both still writes them off ONE
+   * vocabulary module, which is what keeps the two from describing a robot differently.
+   *
+   * Returns DATA, not markup, for the reason `presets.lines` and `resultsRows` do: the
+   * `.ds-stat` tile (and its CSS) has one owner, and a game contributing a tile cannot
+   * drift it.
+   */
+  statTiles?(spec: RobotSpec): readonly GameStatTile[];
+  /**
    * The game's PRESET ROBOTS — the cards the builder's `Presets` section offers.
    *
    * ── WHY THIS IS A SLOT ──────────────────────────────────────────────────
@@ -163,6 +190,24 @@ export interface GamePreviewProps {
 /** props for the live-HUD slots (`hudChips`, `scoreBar`) */
 export interface GameHudProps {
   hud: HudSnapshot;
+}
+
+/**
+ * One tile in the builder hero's stat grid (`GameModule.statTiles`).
+ *
+ * `label` and `sub` are written in SENTENCE CASE and rendered uppercase by `.ds-stat .sl`
+ * — the caption is a category, not a heading, so the CSS owns the casing and a caller
+ * that shouted its own would be the only one on the row that did.
+ */
+export interface GameStatTile {
+  /** the tile's value. A WORD here rather than a number — the consumer renders it with
+   * the repo's `.sv.sm` bare-word modifier, same as the drivetrain tile beside it. */
+  value: string;
+  /** the caption under the value ("launcher"). */
+  label: string;
+  /** an optional SECOND caption line, for a fact the value has no room for: where the
+   * mechanism is mounted, what it is dialled to. Absent renders nothing. */
+  sub?: string;
 }
 
 /** one results-screen section: a heading and its rows, each `[label, mine, opp]`. */

@@ -4,7 +4,7 @@ import { worldHash } from '../../src/net/checksum';
 import { defaultSettings, switchGame } from '../../src/settings';
 import { DEFAULT_SPEC } from '../../src/sim/spawn';
 import { BB_FIRE_INTERVAL, BB_POLLEN_R } from '../../src/games/biobuzz/config';
-import { capturePollen, pollenIn, releasePollen } from '../../src/games/biobuzz/elements';
+import { capturePollen, pollenIn, releasePollen, scoreTargets } from '../../src/games/biobuzz/elements';
 import {
   BB_INTAKE_MOUNTS,
   BB_MOUNT_POSITIONS,
@@ -20,7 +20,10 @@ import {
   bbLiftSeated,
   bbSolveShot,
   bbStepLift,
+  bbTurretOrigin,
+  bbTurretSolution,
 } from '../../src/games/biobuzz/robot';
+import { bbPickTarget } from '../../src/games/biobuzz/play';
 import { bbIsTurreted, bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
 import {
   BB_DEG,
@@ -32,6 +35,10 @@ import {
   BB_LIFT_MIN_Z,
   BB_R105_HEIGHT_CAP,
   BB_TURRET_PITCH_MAX,
+  BB_DRUM_SPEED,
+  BB_HOOD_MAX_DEG,
+  BB_HOOD_MIN_DEG,
+  BB_TURRET_SPEED_MAX,
 } from '../../src/games/biobuzz/config';
 import {
   BB_PRESET_LIST,
@@ -376,6 +383,159 @@ export function robotChecks(check: Check): void {
     r.spec = bbCoerce({ ...r.spec, bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null } });
     check('aim: ...and a TURRET does', bbAimPitch(r, target) !== null);
     check('aim: isTurreted agrees with the resolved launcher', bbIsTurreted(bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG)));
+  }
+
+  // ── TARGET SELECTION: THE OPPONENT'S CELL, AND THE CLOSED SIDE ────────────
+  // Both filters only became reachable when Lane A filled `scoreTargets()` in — while it
+  // returned `[]` the selection could not be wrong because it never ran. These are property
+  // checks over a grid rather than hand-picked coordinates, so they keep meaning something
+  // when the HIVE or the FLOWERS move.
+  {
+    const w = mkWorld('free', 41);
+    const r = w.robots[0]; // blue
+    let picked = 0;
+    let oppWouldHaveWon = 0; // non-vacuity: how often raw nearest WOULD have been the opponent's
+    let badAlliance = 0;
+    let badMouth = 0;
+    for (let x = -66; x <= 66; x += 6) {
+      for (let y = -66; y <= 66; y += 6) {
+        r.pos = { x, y };
+        // what nearest-by-distance ALONE would have chosen — the code that shipped before this
+        const all = scoreTargets(w, r.alliance);
+        let raw = all[0];
+        let rawD = Infinity;
+        for (const t of all) {
+          const d = (t.pos.x - x) ** 2 + (t.pos.y - y) ** 2;
+          if (d < rawD) {
+            rawD = d;
+            raw = t;
+          }
+        }
+        if (raw.alliance !== null && raw.alliance !== r.alliance) oppWouldHaveWon++;
+
+        const got = bbPickTarget(w, r);
+        if (!got) continue;
+        picked++;
+        if (got.alliance !== null && got.alliance !== r.alliance) badAlliance++;
+        if (got.mouth && -(got.pos.x - x) * got.mouth.x + -(got.pos.y - y) * got.mouth.y <= 0) badMouth++;
+      }
+    }
+    check('aim: a target is picked from essentially everywhere on the field', picked > 400, `picked=${picked}`);
+    check(
+      'aim: the OPPONENT’s CELL is never aimed at — it is a legal shot that scores nothing',
+      badAlliance === 0,
+      `${badAlliance} of ${picked} picks were the opponent’s`,
+    );
+    check(
+      'aim: ...and that filter is not vacuous — raw nearest WOULD have picked it',
+      oppWouldHaveWon > 100,
+      `nearest-by-distance alone chose the opponent’s opening at ${oppWouldHaveWon} poses`,
+    );
+    check(
+      'aim: a target is only ever picked from the side its MOUTH opens toward',
+      badMouth === 0,
+      `${badMouth} of ${picked} picks were from the closed side`,
+    );
+  }
+
+  // ── THE TURRET ACTUALLY SLEWS, AND ITS ARC ACTUALLY ARRIVES ──────────────
+  // `bbSlewTurret` shipped with NO CALLER: `turretHeading` was written once by `spawn.ts` and
+  // `bbTurretPitch` by nothing at all, so every turret was frozen at its spawn bearing firing
+  // flat. These pin the stage that fixes it.
+  {
+    const w = mkWorld('free', 43);
+    const r = w.robots[0];
+    r.spec = bbCoerce({ ...r.spec, bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null } });
+    r.pos = { x: 40, y: -50 };
+    const yaw0 = r.turretHeading;
+    const pitch0 = r.bbTurretPitch ?? 0;
+    run(w, cmd({}), 1.5);
+    const target = bbPickTarget(w, r)!;
+    const sol = bbTurretSolution(r, target)!;
+    check('turret: the yaw axis moves off its spawn bearing', Math.abs(r.turretHeading - yaw0) > 1e-3, `${yaw0.toFixed(3)} -> ${r.turretHeading.toFixed(3)} rad`);
+    check('turret: it settles ON the solution', Math.abs(r.turretHeading - sol.yaw) < 0.02, `yaw=${r.turretHeading.toFixed(3)} want=${sol.yaw.toFixed(3)}`);
+    check('turret: the PITCH axis is driven too, and off zero', (r.bbTurretPitch ?? 0) > 0.05 && Math.abs((r.bbTurretPitch ?? 0) - pitch0) > 1e-3, `pitch=${((r.bbTurretPitch ?? 0) / BB_DEG).toFixed(1)}deg`);
+    check('turret: pitch stays inside the barrel envelope', (r.bbTurretPitch ?? 0) <= BB_TURRET_PITCH_MAX + 1e-9);
+
+    // THE ARC ARRIVES. Speed and angle are a MATCHED pair out of `bbSolveShot`, so firing the
+    // pair at the target's range must land at the target's height — this is the check that
+    // would have caught the angle being flown at some other fixed speed.
+    const o = bbTurretOrigin(r);
+    const d = Math.hypot(target.pos.x - o.x, target.pos.y - o.y);
+    const vh = sol.speed * Math.cos(sol.pitch);
+    const t = d / vh;
+    const rise = sol.speed * Math.sin(sol.pitch) * t - 0.5 * C.GRAVITY * t * t;
+    const want = target.z - (BB_LAUNCH_Z0 + 2); // turret muzzle sits 2in above the deck launch height
+    check('turret: the solved (speed, angle) pair lands at the target HEIGHT', Math.abs(rise - want) < 0.5, `rise=${rise.toFixed(2)}in want=${want.toFixed(2)}in at d=${d.toFixed(1)}in`);
+    check('turret: the solved speed is inside the flywheel ceiling', sol.speed <= BB_TURRET_SPEED_MAX + 1e-9, `speed=${sol.speed.toFixed(1)}in/s`);
+  }
+
+  // ── THE MECHANISMS ARE WIRED INTO THE TICK, NOT MERELY WRITTEN ───────────
+  /**
+   * ⚠️ THE CHECK THAT WAS MISSING, AND IT COST BOTH MECHANISMS.
+   *
+   * `bbSlewTurret` and `bbStepLift` each shipped with their ONLY callers in this file — the
+   * lift checks above drive `bbStepLift(r, cmd, dt)` directly — so both were green on code that
+   * no match could reach. In an actual match the turret was frozen at the bearing `spawn.ts`
+   * gave it, firing at 0° elevation, and the lift never left the deck.
+   *
+   * So these drive the WORLD. `run()` steps the real `biobuzzStep` pipeline with a command
+   * held on robot 0, exactly as a driver would, and asserts the mechanism MOVED. A direct-call
+   * test cannot distinguish "this function works" from "this function runs", and the second is
+   * the thing that was broken.
+   */
+  {
+    const w = mkWorld('free', 47);
+    const r = w.robots[0];
+    r.spec = bbCoerce({
+      ...r.spec,
+      bbMech: {
+        launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG },
+        lift: { kind: 'vslide', mount: 'back', maxZ: BB_LIFT_MAX_Z },
+      },
+    });
+    const yaw0 = r.turretHeading;
+    run(w, cmd({ bbLift: true }), 2.0);
+    check(
+      'wired: STEPPING THE WORLD raises the lift — `bbStepLift` has a caller in the pipeline',
+      (r.bbLiftZ ?? 0) > 1,
+      `bbLiftZ=${(r.bbLiftZ ?? 0).toFixed(2)}in after 2s of a held button`,
+    );
+    check(
+      'wired: STEPPING THE WORLD slews the turret — `bbSlewTurret` has a caller in the pipeline',
+      Math.abs(r.turretHeading - yaw0) > 1e-3 && (r.bbTurretPitch ?? 0) > 0.05,
+      `yaw ${yaw0.toFixed(3)}->${r.turretHeading.toFixed(3)} rad, pitch=${((r.bbTurretPitch ?? 0) / BB_DEG).toFixed(1)}deg`,
+    );
+    // ...and RELEASING it brings the carriage back down, through the pipeline too.
+    run(w, cmd({ bbLift: false }), 2.0);
+    check(
+      'wired: releasing the button stows it again, through the same pipeline',
+      (r.bbLiftZ ?? 0) < 0.01,
+      `bbLiftZ=${r.bbLiftZ}`,
+    );
+  }
+
+  // ── RECORDED: A TURRETLESS LAUNCHER CANNOT REACH THE HIVE, AT ANY HOOD ────
+  // Not a rule anyone wrote — it falls out of `BB_DRUM_SPEED` against `BB_HIVE_OPEN_Z`, and it
+  // is a real archetype split (turretless scores FLOWERS; the HIVE is the turret's). Pinned so
+  // that if someone retunes the launch speed, the day this stops being true is a decision
+  // somebody makes rather than a balance change nobody noticed.
+  {
+    let bestApex = 0;
+    for (let deg = BB_HOOD_MIN_DEG; deg <= BB_HOOD_MAX_DEG; deg++) {
+      const apex = BB_LAUNCH_Z0 + (BB_DRUM_SPEED * Math.sin(deg * BB_DEG)) ** 2 / (2 * C.GRAVITY);
+      if (apex > bestApex) bestApex = apex;
+    }
+    check(
+      'launch: no TURRETLESS hood angle reaches the HIVE — the FLOWERS are its targets',
+      bestApex < BB_HIVE_OPEN_Z[0],
+      `best apex ${bestApex.toFixed(1)}in over the whole hood range vs a cell lip at ${BB_HIVE_OPEN_Z[0]}in`,
+    );
+    check(
+      'launch: ...but it DOES clear a FLOWER top ring',
+      bestApex > BB_FLOWER_TOP_Z,
+      `best apex ${bestApex.toFixed(1)}in vs a flower top at ${BB_FLOWER_TOP_Z}in`,
+    );
   }
 
   // ── COERCION: THE ENUMS FOLD, AND THE LEGACY MIRRORS AGREE ────────────────

@@ -214,5 +214,60 @@ export const BB_ROBOT_SCENES: readonly Scene[] = [
     stills: [0, 20, 45, 90, 240],
   },
 
+  {
+    id: 'turret-acquire',
+    title: 'A turret swings past the nearer OPPONENT HIVE and settles on a FLOWER it can score',
+    lane: 'robot',
+    /**
+     * THE STAGE THAT WAS DESCRIBED IN THREE COMMENTS AND NEVER BUILT, as a picture.
+     *
+     * `bbSlewTurret` shipped with NO CALLER: `spawn.ts` wrote `turretHeading` once, pointed at
+     * FIELD CENTRE, and nothing moved it again; `bbTurretPitch` was written by nothing at all,
+     * so every turret in the game fired at 0° elevation — flat, into the tile. The turret was a
+     * drawn cosmetic. This scene exists so that is never again something only a test knows.
+     *
+     * Three things are being looked at, and the spawn bearing is what makes all three legible:
+     *  • THE YAW SWEEP. The robot spawns aimed at field centre, which is nobody's target, so
+     *    the first stills show the barrel visibly off its mark and walking onto the HIVE. A
+     *    turret frozen at spawn — the bug — is a barrel that never moves across the whole strip.
+     *  • THE PITCH AXIS, which is the slower of the two (`BB_TURRET_PITCH_SLEW` against
+     *    `BB_TURRET_SLEW`) and deliberately so: a barrel re-elevating instantly between a
+     *    21.5" FLOWER and a 59.5" CELL would make the two targets feel identical. Top-down,
+     *    elevation reads as the barrel FORESHORTENING, so the stills should show it shorten.
+     *  • WHICH TARGET IT CHOSE, which is the whole reason for this pose. The BLUE robot sits at
+     *    (−10, −25), and from there the NEAREST opening on the field is the RED up-CELL — the
+     *    two HIVES are only 25.5" apart across the centreline, and the two up-CELLS are staged
+     *    tipped OPPOSITE ways, so blue's own cell (mouth +y) is closed to a robot down here
+     *    while red's (mouth −y) is wide open to it. Nearest-by-distance alone picks the
+     *    opponent's HIVE and feeds it on the driver's own fire button. `bbPickTarget` skips it
+     *    on `alliance` and takes `flower:3` instead.
+     *
+     *    That makes the regression legible WITHOUT MEASURING ANYTHING: the opponent's CELL lies
+     *    up and to the LEFT (bearing ≈ 103°) and the FLOWER down and to the RIGHT (≈ −53°). A
+     *    barrel that settles pointing up-left is the alliance filter having gone.
+     *
+     * IT DOES NOT FIRE. The hopper is left empty on purpose: this scene is about where the
+     * barrel POINTS, and a stream of POLLEN crossing the frame is the one thing that would
+     * make a still of a barrel angle hard to read. `launch-wall-bounce` is the firing scene.
+     */
+    build: (seed): World =>
+      bbWorld(
+        seed,
+        [
+          bbSetup(0, 'blue', { x: -10, y: -25, headingDeg: 0 }, {
+            scoreMode: 'turret',
+            shooterMount: 'center',
+            intakeMount: 'front',
+          }),
+        ],
+        [],
+      ),
+    // NO COMMAND AT ALL. The turret tracks whether or not the robots are enabled — it is not
+    // driver control — so an empty script is the honest input here, and a barrel that only
+    // moves once something is pressed would be a bug this scene shows for free.
+    script: () => ({ 0: bbCmd({}) }),
+    stills: [0, 8, 20, 45, 120],
+  },
+
   ...ARCHETYPE_SHEETS,
 ];

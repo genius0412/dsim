@@ -15,8 +15,8 @@ import {
 } from './config';
 import { biobuzzColliders } from './colliders';
 import { capturePollen, scoreTargets } from './elements';
-import { bbAimHeading, bbLaunch, bbMouths } from './robot';
-import { rectContains, type BiobuzzState } from './state';
+import { bbAimHeading, bbLaunch, bbMouths, bbSlewTurret, bbStepLift, bbTurretSolution } from './robot';
+import { rectContains, type BiobuzzState, type ScoreTarget } from './state';
 
 /**
  * BIOBUZZ GAMEPLAY TICK — POLLEN physics and the intake/launch loop.
@@ -305,10 +305,60 @@ export function updateBiobuzz(
   // `clampPollenToWalls`, where the measured penetration without this is written down.
   for (const b of world.balls) if (b.state.kind === 'ground') clampPollenToWalls(b);
 
+  // ── 4b. MECHANISMS: THE TURRET AIMS, THE LIFT MOVES ───────────────────────
+  // BOTH OF THESE WERE WRITTEN AND NEITHER WAS EVER CALLED. `bbSlewTurret` and `bbStepLift`
+  // each shipped with their only callers in the smoke suite, so in an actual match the turret
+  // was frozen at the bearing `spawn.ts` gave it, firing at 0° elevation, and the lift never
+  // left the deck — `drawRobot` has always drawn the mast from `r.bbLiftZ ?? 0`, and that `?? 0`
+  // was the whole story. Two mechanisms that existed as hardware, geometry, build dials, a
+  // sprite and a test, and did nothing on the field.
+  //
+  // ⚠️ THE LESSON, SINCE IT IS NOW TWICE: a mechanism is not wired because its function exists
+  // and its tests pass. The tests drove both of these DIRECTLY, so they were green on code no
+  // match could reach. If you add a third, the check that matters is that stepping the WORLD
+  // moves it.
+  // A TURRET SLEWS, AND UNTIL NOW IT DID NOT. `bbSlewTurret` existed with no caller at all:
+  // `turretHeading` was written once by `spawn.ts` (pointed at field centre), `bbTurretPitch`
+  // was never written by anything, and so every turret in the game was frozen at its spawn
+  // bearing firing at 0° elevation — flat, into the floor. This is the stage that was
+  // described in three comments and never built.
+  //
+  // BEFORE THE LAUNCH AND AFTER THE SOLVE, both deliberately. After the solve because the
+  // turret should aim from where the chassis ENDED the tick, not where it began; before the
+  // launch because a turret that has slewed this tick should fire on this tick's bearing.
+  //
+  // The solved speed rides a LOCAL map to stage 5 rather than a field on `RobotState`: it is
+  // read one stage after it is written, in the same tick, and a per-tick `RobotState` field is
+  // wire cost on every snapshot to every client (see `bbLaunch`'s `muzzle`).
+  // A TURRET TRACKS WHETHER OR NOT THE ROBOTS ARE ENABLED, and that is the point rather than
+  // an oversight. `robotsEnabled` gates DRIVER CONTROL — drive, intake, fire — and a turret
+  // auto-tracking is none of those; `bbLaunch` still refuses to fire while disabled. Tracking
+  // through `pre` is what finally makes good on the intent `bbLaunch` has always claimed, that
+  // "a turreted robot spawns already pointed rather than spending auto swinging round": spawn
+  // aims it at FIELD CENTRE, which is nobody's target, so gating the slew on `enabled` would
+  // have it start every match by swinging off that bearing on the first live tick.
+  const muzzle = new Map<number, number>();
+  for (const rob of world.robots) {
+    if (rob.passive) continue; // a practice dummy has no mechanisms to run
+    const target = bbPickTarget(world, rob);
+    const sol = target ? bbTurretSolution(rob, target) : null;
+    // `null` on either axis means "hold where you are" — a turret with nothing in reach stops
+    // rather than drifting, and a turretless build has no turret for this to move at all
+    // (`bbTurretSolution` returns null for one, so both axes come through as null).
+    bbSlewTurret(rob, sol?.yaw ?? null, sol?.pitch ?? null, dt);
+    if (sol) muzzle.set(rob.id, sol.speed);
+
+    // THE LIFT IS DRIVER CONTROL, so unlike the turret it DOES gate on `enabled`: a held
+    // button raises the carriage and releasing it lets the carriage back down, which is the
+    // model `bbStepLift` implements. Handing it a zero command while the robots are disabled
+    // therefore stows it, which is the right answer for a carriage nobody is holding up.
+    bbStepLift(rob, enabled ? (cmds.get(rob.id) ?? ZERO_CMD) : ZERO_CMD, dt);
+  }
+
   // ── 5. LAUNCH ─────────────────────────────────────────────────────────────
   for (const rob of world.robots) {
     if (rob.passive) continue; // a practice dummy has no mechanisms to run
-    bbLaunch(world, rob, cmds.get(rob.id) ?? ZERO_CMD, enabled);
+    bbLaunch(world, rob, cmds.get(rob.id) ?? ZERO_CMD, enabled, muzzle.get(rob.id));
   }
 
   // ── 6. SCORE + ENDGAME ────────────────────────────────────────────────────
@@ -326,6 +376,59 @@ export function updateBiobuzz(
 }
 
 /**
+ * THE TARGET A ROBOT IS ACTUALLY TRYING TO SCORE IN, or `null` when there is not one.
+ *
+ * `scoreTargets()` reports every opening on the field, INCLUDING ones this robot should not
+ * shoot at, and it is this function's job — not the field's — to say which of them is worth
+ * turning toward. Two filters, and both of them only became reachable when Lane A filled
+ * `scoreTargets()` in: while it returned `[]` the selection below could not be wrong because
+ * it never ran.
+ *
+ * ⚠️ **THE OPPONENT'S CELL IS ON THE LIST AND MUST NOT BE AIMED AT.** Lane A puts it there
+ * deliberately — it is a legal shot that simply scores nothing, and `alliance` is set on both
+ * cells precisely "so a launcher can tell them apart and skip the one that wastes a POLLEN".
+ * Nearest-by-distance does NOT tell them apart, and the geometry makes that fatal rather than
+ * academic: the two HIVES sit at x = ∓`BB_HIVE_X`, **25.5 in apart** across field centre, so
+ * a robot anywhere on the far side of the centreline is NEARER the opponent's opening than its
+ * own. Unfiltered, the aim assist would hold the robot pointed at the opponent's HIVE and
+ * feed it, on the driver's own fire button, for as long as the button was held.
+ *
+ * ⚠️ **A TARGET IS ONLY A TARGET FROM ITS OPEN SIDE** (`ScoreTarget.mouth`). Every BIOBUZZ
+ * target is a hole in something solid and `pos` alone does not say which side of that solid is
+ * the open one: a FLOWER is a column standing against the perimeter, so from behind it the
+ * "target" is the wall, and an up-CELL opens back along the axis its see-saw was tipped. An
+ * arc solved from the closed side arrives through the floor of the cell or through the
+ * perimeter — a shot that cannot be taken on a real field. The test is the half-space: the
+ * robot must lie on the side `mouth` points to.
+ *
+ * WHETHER A SHOT SCORES IS NOT DECIDED HERE. Lane A owns the acceptance gate, including the
+ * approach-side half of it; this is only about where a launcher POINTS, so the test is the
+ * plain half-space rather than a second, competing copy of that gate. An ABSENT `mouth` is
+ * "no constraint" and never a default direction — a plain volume (a zone, a basket open at the
+ * top) has no approach side to report, and guessing one is the bug the field exists to stop.
+ */
+export function bbPickTarget(world: World, r: RobotState): ScoreTarget | null {
+  let best: ScoreTarget | null = null;
+  let bestD = Infinity;
+  for (const t of scoreTargets(world, r.alliance)) {
+    // a target owned by the OTHER alliance scores nothing; neutral (`null`, the FLOWERS) and
+    // our own both count.
+    if (t.alliance !== null && t.alliance !== r.alliance) continue;
+    const dx = t.pos.x - r.pos.x;
+    const dy = t.pos.y - r.pos.y;
+    // ON THE OPEN SIDE? `mouth` points OUT of the opening, so the vector from the target TO
+    // the robot must agree with it. (dx,dy) points target-ward, hence the negation.
+    if (t.mouth && -dx * t.mouth.x + -dy * t.mouth.y <= 0) continue;
+    const d = dx * dx + dy * dy; // squared — no sqrt needed for a comparison
+    if (d < bestD) {
+      bestD = d;
+      best = t;
+    }
+  }
+  return best;
+}
+
+/**
  * THE AIM HOOK — the rotate override a turretless launcher gets while its fire button is held,
  * or `null` to leave the driver's rotate command alone.
  *
@@ -334,10 +437,10 @@ export function updateBiobuzz(
  * 2). A turret aims itself and never gets an override — steering the chassis for a turret
  * would fight the driver for no benefit.
  *
- * SHELL: ALWAYS NULL, because `scoreTargets()` is empty. The path is written and wired anyway
- * — a P-controller on the heading error, dead-banded by `BB_AIM_TOL` so a robot already lined
- * up does not oscillate — because the alternative is that the first target Section 9 publishes
- * needs a new stage in the pipeline rather than a return value here.
+ * A P-controller on the heading error, dead-banded by `BB_AIM_TOL` so a robot already lined up
+ * does not oscillate. Returning `null` when `bbPickTarget` finds nothing is the right answer
+ * and not a failure: a robot with no scorable opening on its open side has nothing to be
+ * steered toward, and the driver keeps their own rotate command.
  */
 export function bbAimAssist(
   world: World,
@@ -346,21 +449,8 @@ export function bbAimAssist(
   enabled: boolean,
 ): number | null {
   if (!enabled || !cmd.fire || !r.aimAssist) return null;
-  const targets = scoreTargets(world, r.alliance);
-  if (targets.length === 0) return null;
-  // nearest target: with one goal this is trivially it, and with several it is the one a
-  // driver holding fire means. Chosen by squared distance — no sqrt needed for a comparison.
-  let best = targets[0];
-  let bestD = Infinity;
-  for (const t of targets) {
-    const dx = t.pos.x - r.pos.x;
-    const dy = t.pos.y - r.pos.y;
-    const d = dx * dx + dy * dy;
-    if (d < bestD) {
-      bestD = d;
-      best = t;
-    }
-  }
+  const best = bbPickTarget(world, r);
+  if (!best) return null;
   const want = bbAimHeading(r, best);
   if (want === null) return null; // turreted: the turret does this
   const err = wrapAngle(want - r.heading);

@@ -298,6 +298,11 @@ export function Menu({ settings, onChange }: Props) {
   // how many leading cards are real robots rather than archetype demos, so the section can
   // rule off between them. 0 ⇒ no divider (every current non-slot game is one or the other).
   const realPresets = gamePresets?.realCount ?? 0;
+  // The hero's PER-GAME stat tiles, same slot shape and for the same reason: the two-valued
+  // branch below is an `else`, so a third game was shown Chain Reaction's CATALYST tile — off
+  // `spec.catalystType`, which a BIOBUZZ spec does not even carry. An empty array is a game
+  // deliberately contributing no tile, so the test is on the SLOT, not on the length.
+  const gameStatTiles = mod.statTiles?.(spec);
   const isCustom = !presets.some((p) => presetMatches(spec, p));
 
   // ---- the player's SAVED robot library (their own full robots, up to 3) ----
@@ -386,12 +391,24 @@ export function Menu({ settings, onChange }: Props) {
                 </span>
                 <span className="sl">drivetrain</span>
               </div>
-              {/* The one PER-GAME tile. It used to print DECODE's intake style for both
+              {/* The PER-GAME tiles. They used to print DECODE's intake style for both
                   games, so a Chain Reaction robot claimed a "Sloped" intake — a DECODE
                   part it does not have. CR has a single intake design, so naming it says
                   nothing; the SCORING ARCHETYPE is that game's defining build choice and
-                  is otherwise absent from this summary. */}
-              {isDecode ? (
+                  is otherwise absent from this summary.
+                  A game may now own these outright through the `statTiles` slot; the two
+                  branches below are DECODE's and CR's, unchanged. */}
+              {gameStatTiles ? (
+                // the game writes its own tiles — it is the only thing that knows which of
+                // its mechanisms is worth a tile and what an EMPTY slot should say
+                gameStatTiles.map((t) => (
+                  <div className="ds-stat" key={t.label}>
+                    <span className="sv sm">{t.value}</span>
+                    <span className="sl">{t.label}</span>
+                    {t.sub ? <span className="sl">{t.sub}</span> : null}
+                  </div>
+                ))
+              ) : isDecode ? (
                 <div className="ds-stat">
                   <span className="sv sm">
                     {INTAKE_SHORT[spec.intake]}
