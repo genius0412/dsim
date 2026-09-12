@@ -121,17 +121,29 @@ node scripts/manual.mjs
 node scripts/manual-figures.mjs
 ```
 
+```bash
+python scripts/manual-render.py --pages 60-75 --dpi 300
+```
+
 The first downloads the PDF and its text and prints the section-to-page table; the second
-extracts the embedded images to `scratch/manual/figures/` with an `index.md`. Both write to
-`scratch/`, which is gitignored — the PDF and its figures are FIRST's, and the citations here
-are what belong in the repo.
+extracts the embedded images to `scratch/manual/figures/` with an `index.md`; the third
+rasterises whole PAGES to `scratch/manual/pages/`. All three write to `scratch/`, which is
+gitignored — the PDF and its figures are FIRST's, and the citations here are what belong in
+the repo.
 
 ⚠️ **A FIGURE THAT EXTRACTS NOTHING IS VECTOR LINE ART, NOT A MISSING FIGURE.** The extractor
 pulls embedded image XObjects; a drawing authored as paths is not one, and no flag will make
 it appear. If a page visibly shows a field drawing and produces no file, that is the expected
-result, and the fallback is a high-zoom screenshot of the page, measured exactly the same way
-— record it in the log as `screenshot` in place of a page-object filename, with the zoom
-level, since the in/px ratio is then specific to that capture and not to the PDF.
+result and `manual-render.py` is the answer — it renders the page at a stated DPI, so the
+page-space scale is known before a pixel is counted (at D dpi a PDF point is exactly D/72 px)
+and the only unknown left is the drawing's own scale, which one stated dimension fixes.
+Record it in the log as `page N render @ 300dpi` in place of a page-object filename, because
+the in/px ratio then belongs to the render and not to the PDF.
+
+That script is the one piece of this pipeline that is **Python and optional** (`pip install
+pymupdf`). Everything else is Node stdlib so a fresh clone can run it; rasterising a PDF is
+the one job with no stdlib answer, and vendoring a renderer to avoid the dependency is a
+worse trade than a script that says it is optional.
 
 ## Where this came from (for future verification)
 
@@ -141,6 +153,8 @@ level, since the in/px ratio is then specific to that capture and not to the PDF
   glossary, whose two columns interleave otherwise.
 - Figures: `scripts/manual-figures.mjs` (Node stdlib — `pdfimages` is not on this machine,
   and the header of that file explains why writing one was cheaper than installing one).
+- Pages: `scripts/manual-render.py` (optional, PyMuPDF) for vector drawings, which the figure
+  extractor cannot reach. Verified end to end against V0 p.61 at 200 dpi.
 - V0 baseline read for this scaffold: `BIOBUZZ_Competition_Manual_V0.pdf`, 93 pages, Sections
   8-11 all placeholders (pp. 60-63), Section 16 Glossary p. 92, 19 extractable figures, none
   of which are field drawings.
