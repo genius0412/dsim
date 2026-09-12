@@ -23,6 +23,7 @@ import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH 
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
+import { copyText } from './clipboard';
 import type { RoomInvite } from '../net/api';
 import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
 
@@ -65,6 +66,9 @@ interface Props {
    * Passed from App (captured stably at page load); NOT re-derived here, because
    * SPA navigation strips the `?instance_id=` query the localhost detection reads. */
   discordActivity?: boolean;
+  /** the Discord Activity group (instance id) to tag a created room with, so it
+   * appears in this activity's lobby browser. '' / undefined ⇒ untagged. */
+  group?: string;
 }
 
 type Phase = 'entry' | 'connecting' | 'room' | 'error';
@@ -128,6 +132,7 @@ export function Lobby({
   autoJoinRegion,
   onAutoJoinConsumed,
   discordActivity = false,
+  group = '',
 }: Props) {
   const isRecord = config.kind === 'record';
   const capacity = roomCapacity(config);
@@ -320,6 +325,10 @@ export function Lobby({
       // carry the selected game so the room builds the right world (defaults to
       // the caller's config game if it pinned one, else the player's setting)
       { ...config, game: config.game ?? settings.game },
+      // tag the room with the Discord Activity group (if any) so it shows in this
+      // activity's lobby browser. The server only applies it when CREATING the room;
+      // an existing room keeps its creator's group.
+      group || undefined,
     );
   }
 
@@ -664,9 +673,11 @@ export function Lobby({
           <button
             className="ds-chip"
             onClick={() => {
-              void navigator.clipboard?.writeText(code);
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 1500);
+              void copyText(code).then((ok) => {
+                if (!ok) return; // blocked (e.g. a locked-down embed) — the code is still shown in the title
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1500);
+              });
             }}
           >
             {copied ? '✓ Copied' : '⧉ Copy code'}

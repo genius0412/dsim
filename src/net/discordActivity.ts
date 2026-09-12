@@ -45,6 +45,14 @@ export function discordInstanceId(): string {
   return new URLSearchParams(window.location.search).get('instance_id') ?? '';
 }
 
+/** the sanitized activity group tag (Discord instance id → the server's room `group`),
+ * using the SAME character clamp the server applies, so the tag written on `join` and
+ * the `group` the lobby browser queries always resolve to one value. '' outside an
+ * activity. */
+export function discordGroup(): string {
+  return discordInstanceId().replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64);
+}
+
 /** FNV-1a 32-bit — tiny, deterministic, good enough to spread instance ids */
 function fnv1a(s: string): number {
   let h = 0x811c9dc5;

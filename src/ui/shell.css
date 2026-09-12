@@ -1185,6 +1185,51 @@
   color: var(--ds-blurple-ink);
 }
 
+/* Discord lobby browser — the list of open rooms in one activity. */
+.ds-lobbies {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ds-lobby-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--ds-round-lg, 12px);
+  border: 1px solid var(--ds-line);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 0.06s ease, border-color 0.15s;
+}
+.ds-lobby-row:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
+  transform: translateY(1px);
+}
+.ds-lobby-row:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.ds-lobby-row .ll-code {
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+}
+.ds-lobby-row .ll-count {
+  color: var(--ds-mut);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.ds-lobby-row .ll-go {
+  margin-left: auto;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ds-accent);
+}
+
 /* Lobby "You" section (Discord-only): driver-name + robot-name inputs, two columns
    that stack on a narrow (Discord activity) viewport. */
 .ds-idedit {

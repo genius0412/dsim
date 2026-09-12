@@ -1393,6 +1393,34 @@ const httpServer = createServer((req, res) => {
     }
     return;
   }
+  /**
+   * GET /api/lobbies?group=<id> — OPEN lobbies for a Discord Activity.
+   *
+   * The Discord lobby browser lists the rooms of ONE activity so more than four
+   * players can split into several games cleanly. Scoped strictly by `group` (the
+   * activity instance id, set by each room's creator): a request without a group,
+   * or for a group with no rooms, gets an empty list — this never exposes the
+   * global custom-room set (those are private-by-code, deliberately absent from
+   * every public list). LOCAL rooms only: Discord's `/gs` mapping targets a single
+   * region, so an activity's rooms all live on one machine.
+   */
+  if (req.method === 'GET' && req.url?.startsWith('/api/lobbies')) {
+    const u = new URL(req.url, 'http://x');
+    const group = (u.searchParams.get('group') ?? '').replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64);
+    const lobbies = group
+      ? [...rooms.values()]
+          .filter((r) => r.group === group)
+          .map((r) => r.lobbySummary())
+          .filter((s): s is NonNullable<ReturnType<Room['lobbySummary']>> => s !== null)
+      : [];
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'cache-control': 'no-store',
+      'access-control-allow-origin': '*',
+    });
+    res.end(JSON.stringify({ region: REGION, lobbies }));
+    return;
+  }
   // machine-sizing evidence for THIS machine (see the perf probe above). Public and
   // read-only: counts and timings, no player or account data. `?reset=1` zeroes the
   // lag histogram so a sample can be scoped to one match instead of since boot.
@@ -1915,6 +1943,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         },
         persistDodges,
       );
+      // tag a freshly-created room with the creator's group (the Discord Activity
+      // instance) so the lobby browser can list this activity's rooms. Sanitized:
+      // the id is untrusted, so clamp to a bounded, safe token. Only set on
+      // creation — a joiner never changes an existing room's group.
+      if (typeof msg.group === 'string') {
+        r.group = msg.group.replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64);
+      }
       rooms.set(code, r);
       created = true;
     }

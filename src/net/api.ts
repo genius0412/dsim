@@ -185,6 +185,31 @@ export function fetchLiveRooms(): Promise<{ region: string; rooms: LiveRoom[] }>
   return getJson(`/api/live`);
 }
 
+/** one open, joinable lobby in a Discord Activity group (see `fetchLobbies`) */
+export interface DiscordLobby {
+  code: string;
+  players: number;
+  capacity: number;
+  kind: 'versus' | 'record';
+  game: GameId;
+}
+
+/**
+ * OPEN lobbies for a Discord Activity, scoped by its `group` (the activity instance
+ * id). Powers the in-activity lobby browser so more than one game can run at once.
+ * Empty for an unknown/empty group — this never lists the global custom-room set.
+ * In-activity `getJson` rides the same `/gs` proxy origin as every other read.
+ */
+export async function fetchLobbies(group: string): Promise<DiscordLobby[]> {
+  if (!group) return [];
+  try {
+    const r = await getJson<{ lobbies: DiscordLobby[] }>(`/api/lobbies?group=${encodeURIComponent(group)}`);
+    return r.lobbies ?? [];
+  } catch {
+    return []; // unreachable server / no lobbies read the same to the browser
+  }
+}
+
 /**
  * Look up ONE live match by its room code — used to spectate a custom game, and to
  * find the region hosting a friend's match.

@@ -27,10 +27,12 @@ import { HomeMenu } from './HomeMenu';
 import {
   inDiscordActivity,
   discordInstanceId,
+  discordGroup,
   roomCodeForInstance,
   watchDiscordParticipants,
   type DiscordParticipant,
 } from '../net/discordActivity';
+import { DiscordLobbyList } from './DiscordLobbyList';
 import { ModeSelect } from './ModeSelect';
 import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
@@ -84,6 +86,7 @@ type Screen =
   | 'configure'
   | 'records'
   | 'lobby'
+  | 'discordlobbies'
   | 'record'
   | 'duorecord'
   | 'matchmaking'
@@ -161,6 +164,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return a.username ? `/profile/${encodeURIComponent(a.username)}` : '/records';
     case 'lobby':
       return '/lobby';
+    case 'discordlobbies':
+      return '/discord-lobbies';
     case 'record':
       return '/record';
     case 'duorecord':
@@ -259,6 +264,7 @@ function navFor(screen: Screen): ShellNav {
     case 'modes':
     case 'game':
     case 'lobby':
+    case 'discordlobbies':
     case 'record':
     case 'duorecord':
     case 'matchmaking':
@@ -412,24 +418,30 @@ export function App() {
     { room: string; config: RoomConfig; region?: string } | null
   >(null);
 
-  // DISCORD ACTIVITY: every participant of one activity launch derives the SAME
-  // room code from Discord's instance_id, so the home page offers a "Join Discord
-  // Lobby" button (with the activity participants' avatars via the Embedded App
-  // SDK) instead of code entry — the first click creates the room, later clicks
-  // join it. Config is pinned (versus/decode): the server refuses a config-
-  // mismatched joiner, so a per-player game pick would split the party. Captured
-  // once at mount (before SPA navigation strips the ?instance_id= query).
-  const discordRoom = useMemo(() => {
-    const instance = discordInstanceId();
-    return inDiscordActivity() && instance ? roomCodeForInstance(instance) : '';
-  }, []);
+  // DISCORD ACTIVITY: the home page offers a "Join Discord Lobby" button (with the
+  // activity participants' avatars via the Embedded App SDK) that opens a LOBBY
+  // BROWSER scoped to this activity — so more than one game can run at once instead
+  // of everyone piling into a single four-seat room. `discordGroupId` (the sanitized
+  // instance id) is the room GROUP the server lists by; `discordMainCode` is the
+  // deterministic "main lobby" code so simultaneous first-joiners still converge on
+  // one room. Config is pinned (versus/decode): the server refuses a config-
+  // mismatched joiner. All captured once at mount (before SPA navigation strips the
+  // ?instance_id= query).
+  const discordGroupId = useMemo(() => (inDiscordActivity() ? discordGroup() : ''), []);
+  const discordMainCode = useMemo(
+    () => (discordGroupId ? roomCodeForInstance(discordInstanceId()) : ''),
+    [discordGroupId],
+  );
   const [discordPeople, setDiscordPeople] = useState<DiscordParticipant[]>([]);
   useEffect(() => {
-    if (!discordRoom) return;
+    if (!discordGroupId) return;
     return watchDiscordParticipants(setDiscordPeople);
-  }, [discordRoom]);
-  const joinDiscordLobby = (): void => {
-    setPendingAutoJoin({ room: discordRoom, config: { kind: 'versus', game: 'decode' } });
+  }, [discordGroupId]);
+  const joinDiscordLobby = (): void => navigate('discordlobbies');
+  /** enter a specific Discord room (from the browser) — join-or-create, tagged with
+   * the activity group so it shows in everyone else's lobby browser. */
+  const enterDiscordRoom = (code: string): void => {
+    setPendingAutoJoin({ room: code, config: { kind: 'versus', game: 'decode' } });
     navigate('lobby');
   };
   // a RATED challenge waiting to be queued under its party token. Same one-shot
@@ -1107,6 +1119,16 @@ export function App() {
       />
     );
   }
+  if (screen === 'discordlobbies') {
+    return (
+      <DiscordLobbyList
+        group={discordGroupId}
+        mainCode={discordMainCode}
+        onEnter={enterDiscordRoom}
+        onBack={() => navigate('home')}
+      />
+    );
+  }
   if (screen === 'lobby') {
     const auto = pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin : undefined;
     return roomScreen(
@@ -1125,7 +1147,8 @@ export function App() {
         autoJoin={auto?.room}
         autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
-        discordActivity={!!discordRoom}
+        discordActivity={!!discordGroupId}
+        group={discordGroupId}
       />
     );
   }
@@ -1157,7 +1180,8 @@ export function App() {
         autoJoin={auto?.room}
         autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
-        discordActivity={!!discordRoom}
+        discordActivity={!!discordGroupId}
+        group={discordGroupId}
       />
     );
   }
@@ -1251,7 +1275,7 @@ export function App() {
         <HomeMenu
           settings={settings}
           multiplayer={multiplayer}
-          discord={discordRoom ? { people: discordPeople, onJoin: joinDiscordLobby } : null}
+          discord={discordGroupId ? { people: discordPeople, onJoin: joinDiscordLobby } : null}
           onNav={(n) => navigate(screenForNav(n))}
           onGame={(g) => {
             update(switchGame(settings, g));
@@ -1291,7 +1315,7 @@ export function App() {
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onWatch={() => navigate('watch')}
           onLan={() => navigate('lan')}
-          compete={!discordRoom}
+          compete={!discordGroupId}
         />
       )}
       {/* one-time "this sim isn't realistic" disclaimer for Chain Reaction */}
