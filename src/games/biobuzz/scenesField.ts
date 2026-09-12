@@ -130,10 +130,16 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
      *   3. The HIVE pair centred, red at −x, blue at +x, and the STAGED tilt: red's SOUTH cell
      *      up, blue's NORTH cell up (§10.3.1, Fig 10-2). BOTH cells are drawn the SAME SIZE —
      *      the see-saw is one rigid bar at 30°, so a plan view foreshortens both ends equally
-     *      (reference §2.2) and only brightness and the counts say which is up.
-     *   4. The AprilTag id groups against Figs 9-15…9-17. A published tag id is the one thing
+     *      (reference §2.2). UP is the FILLED box; DOWN is the dashed outline.
+     *   4. The OPEN FACE of each cell: the thin short edge is the opening and the heavy one is
+     *      the closed back, and the opening always faces AWAY from the pivot. A launch that
+     *      arrives from the pivot side bounces off the back (`hiveAccepts`), so an open face
+     *      drawn at the wrong end is a scoring rule drawn wrong.
+     *   5. The AprilTag id groups against Figs 9-15…9-17. A published tag id is the one thing
      *      here that pins the drawing to the real field.
-     *   5. The two READOUTS, which is why this cell holds elements at all — see `build`.
+     *   6. The two READOUTS, which is why this cell holds elements at all — see `build`. Both
+     *      are balls, never text: the cell's contents are a row of discs against its open edge
+     *      and a flower's are its stack outside the wall.
      */
     build: (seed) => {
       /**
@@ -156,7 +162,7 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
         balls.push({
           id,
           color,
-          r: color === 'green' ? BB_POLLEN_R : BB_NECTAR_R,
+          r: color === 'yellow' ? BB_POLLEN_R : BB_NECTAR_R,
           state: { kind: 'element', el: where, slot },
           pos: { x, y },
           vel: { x: 0, y: 0 },
@@ -189,12 +195,12 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
          *    is the pair of cases the stack order exists to tell apart;
          *  • F4 holds SIX, a full flower, which is the length `BB_VIEW_MARGIN` has to clear.
          */
-        bb.hives.red.contents = inCell('red', ['red', 'red', 'red', 'green', 'green']);
-        bb.hives.blue.contents = inCell('blue', ['blue', 'red', 'green', 'green', 'green', 'green']);
-        bb.flowers[0].stack = inFlower(0, ['green', 'green', 'green', 'green']);
-        bb.flowers[1].stack = inFlower(1, ['green', 'green', 'blue']);
-        bb.flowers[2].stack = inFlower(2, ['red', 'green', 'green', 'green']);
-        bb.flowers[3].stack = inFlower(3, ['green', 'green', 'green', 'green', 'green', 'blue']);
+        bb.hives.red.contents = inCell('red', ['red', 'red', 'red', 'yellow', 'yellow']);
+        bb.hives.blue.contents = inCell('blue', ['blue', 'red', 'yellow', 'yellow', 'yellow', 'yellow']);
+        bb.flowers[0].stack = inFlower(0, ['yellow', 'yellow', 'yellow', 'yellow']);
+        bb.flowers[1].stack = inFlower(1, ['yellow', 'yellow', 'blue']);
+        bb.flowers[2].stack = inFlower(2, ['red', 'yellow', 'yellow', 'yellow']);
+        bb.flowers[3].stack = inFlower(3, ['yellow', 'yellow', 'yellow', 'yellow', 'yellow', 'blue']);
       }
       return world;
     },
@@ -421,5 +427,67 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
       ),
     script: () => ({ 0: bbCmd({ driveY: bbThrottle(BB_DEFAULT_SPEC, 35) }) }),
     stills: [0, 30, 60],
+  },
+
+  {
+    id: 'hive-ground',
+    title: 'A spill on the tiles under a DOWN cell — floor, not cell contents',
+    lane: 'field',
+    /**
+     * THE ONE THING THE DOWN CELL'S OUTLINE HAS TO SURVIVE.
+     *
+     * A CELL that tips dumps its load out of the open face and the elements land on the tiles
+     * UNDER it, 25.5 in below (field-plan §2.1). Top-down those two things — three balls in
+     * the cell and three balls on the floor beneath it — are the same three circles in the
+     * same place, and a driver has to be able to tell them apart at a glance, because one set
+     * is worth 2 points each at rest and the other is worth nothing until somebody picks it
+     * up. So the DOWN cell is a dashed OUTLINE with no fill, `draw.ts` paints ground elements
+     * after the field, and what a reader should see here is three ordinary ground balls lying
+     * ON TOP of an outline — not three discs tucked inside a box.
+     *
+     * The state is a HIVE that has just TIPPED and nothing else: red's north cell came down,
+     * `tips` is 1, its load is on the floor where it fell, and the south cell that came up is
+     * EMPTY. No labels, no robots, no other elements — the only two things in the picture are
+     * the ones being compared.
+     */
+    build: (seed) => {
+      const cy = BB_HIVE_CELL_DY; // red's NORTH cell is the DOWN one at staging (§10.3.1)
+      // Scattered rather than in a tidy row, and NOT touching: a spill lands where it lands,
+      // and three balls in a line under a cell is the one arrangement that could be mistaken
+      // for a contents row drawn in the wrong place.
+      const world = bbWorld(
+        seed,
+        [],
+        [
+          bbPollen(PARKED_ID0, -BB_HIVE_X - 5.2, cy + 1.4),
+          bbPollen(PARKED_ID0 + 1, -BB_HIVE_X, cy - 1.1),
+          bbPollen(PARKED_ID0 + 2, -BB_HIVE_X + 5.0, cy + 0.9),
+        ],
+      );
+      const bb = world.biobuzz;
+      if (bb) {
+        /**
+         * ⚠️ CLEAR THE STAGED ELEMENT REFERENCES, because `bbWorld` does not.
+         *
+         * `createBiobuzzWorld` runs `stageBiobuzz`, which puts ids into every FLOWER stack and
+         * both up-CELLS; `bbWorld` then REPLACES `world.balls` with the scene's own array and
+         * leaves those ids behind, pointing at elements that no longer exist. The readouts are
+         * a join, so a dangling id normally draws nothing and the omission is invisible — but
+         * `bbPollen` numbers from 1 and so does the staging, so three floor pollen ALIASED
+         * F1's staged stack and the scene rendered them hanging outside the perimeter beside a
+         * flower instead of on the tiles where it put them. High ids avoid the collision;
+         * clearing the references is what actually makes the picture true, and it is what this
+         * cell means by "nothing else in it".
+         */
+        bb.flowers.forEach((f) => {
+          f.stack = [];
+        });
+        bb.hives.red.contents = [];
+        bb.hives.blue.contents = [];
+        bb.hives.red.tips = 1;
+      }
+      return world;
+    },
+    stills: [0],
   },
 ];

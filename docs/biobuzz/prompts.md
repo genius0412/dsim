@@ -643,3 +643,88 @@ browser pane, send ONE file per deliverable. Keep it simple: one file, few tabs.
 (a) robot-scale reference on the plan view, (b) side-by-side "shot from open side vs closed
 side" animation, (c) flower stack fill/retrieve animation. Reply terse.
 ```
+
+## A4 — field wiring (Lane A, after the 2026-09-12 merges)
+
+You are Lane A (field) for BIOBUZZ in worktree `dsim-bb-field`, branch `biobuzz-field`.
+
+BRANCH SWITCH: the shared base is `alpha`. `biobuzz` was merged into `alpha` and deleted on origin. Start with:
+
+    git fetch && git merge --no-edit origin/alpha
+
+`alpha` (3dcf90f) already holds A1 field art + rulings, A2 statics/staging/scoreTargets/`mouth`, A3 hive/flower + rulings, all merged and green (tsc clean, field lane 189/189). Read `docs/biobuzz-contract.md`, `docs/biobuzz/HANDOFF-field.md`, `docs/biobuzz/field-plan.md` (§2.1 open face / 4 s swing / release at level, §2.5 no letters or digits, §7 shooting side) and `docs/biobuzz-reference.md` before editing.
+
+Goal: make the field LIVE. State, tick, scoring, release. Field files only: `src/games/biobuzz/{state,play,step,hud,elements,scenesField}.ts` and `scripts/smoke-biobuzz/field.ts`. Do not touch `robot.ts` or any Lane B file. Everything on `world.biobuzz` stays plain JSON; sim code has no DOM, clock, `Math.random` or `Date`.
+
+1. `state.ts`: `BbHiveState` gains `released: boolean` (A3 asked for it). `emptyBiobuzzState()` seeds per-alliance `hives` (`upCell`, `contents`, tip timer, `released`), per-flower `flowers` (`stock`, `nectarDue`), `nectarStock`, `nectarDue`.
+2. `play.ts`: capture through `ScoreTarget.mouth` + `hiveAccepts(hive, alliance, pos, z, vel)`, so a shot enters only while travelling toward the pivot; `hiveStep` runs the 4 s swing (`BB_TIP_SWING_S`), releases at `BB_TIP_RELEASE_S`, spawns `spillPoses` as ground balls with their velocity, then sets `released`; scoring for hive contents, garden, LEAVE and PARK; human-player restock; flower nectar drip. No ground-ball physics here, the shared solver owns it.
+3. `step.ts`: the 1:00 nectar cue. Phase machine otherwise untouched.
+4. Penalties: G410 through `bbAwardFoul`, edge-triggered, no cooldown timers.
+5. `hud.ts`: the `gameHud` slice with hive counts and tip state.
+6. `elements.ts`: delete the `upCell` cast now that state carries it.
+7. `scripts/smoke-biobuzz/field.ts`: a live-match scene (the hive tips at t, release spawns exactly the contents as ground balls), element conservation on every tick (ground + flight + held + in cells + staged = the field total), a shot from the closed side rejected and one toward the pivot accepted, `released` surviving a JSON round-trip, tip table `[8,7,6,3,1,0]` lookups.
+8. Scenes in `scenesField.ts`: `hive-tip` (t = 0, 2, 4 s), `park-examples`, `nectar-entry`.
+
+Gates: `npx tsc --noEmit -p .`, `npm run test:bb -- --lane field`, then `npm run test:bb`. Gallery shots need `VITE_APP_CHANNEL=alpha npx vite --port 4176 --strictPort` and `MSYS_NO_PATHCONV=1 npx electron scripts/shots.cjs --scene <ids> --port 4176 --path /biobuzz/gallery --theme light --out scratch/shots/gate`. Read the shots. No letters or digits drawn on the field outside the labelled scene.
+
+Land: `git fetch && git merge --no-edit origin/alpha` again, push `biobuzz-field`, prepend a dated section to `docs/biobuzz/HANDOFF-field.md`, and report the commit hash plus the check count. No Claude attribution in commits.
+
+## A4 split (2026-09-12 evening) — A4a hive live · A4b rules/score · M manual distillation
+
+A4 above is split into two code lanes and one docs lane so they run at once. File ownership is
+exclusive; a lane that needs a file it does not own asks the master chat.
+
+### Shared state contract (both code lanes write against this; A4a owns the file)
+
+```ts
+// src/games/biobuzz/state.ts — additions
+export interface BbHiveState { /* A3's fields, plus */ released: boolean; }
+export interface BbFlowerState { id: string; stock: number; nectarDue: number }
+export interface BiobuzzState {
+  hives: Record<Alliance, BbHiveState>;
+  flowers: BbFlowerState[];
+  nectarStock: Record<Alliance, number>;
+  nectarDue: Record<Alliance, number>;
+  // existing fields unchanged
+}
+export function emptyBiobuzzState(): BiobuzzState
+```
+
+### A4a — hive live (existing Lane A chat, worktree `dsim-bb-field`, branch `biobuzz-field`)
+
+Same preamble as A4 (base is `alpha`; `git fetch && git merge --no-edit origin/alpha` first).
+Own: `state.ts`, `play.ts`, `elements.ts`, `scripts/smoke-biobuzz/field.ts`.
+FIRST COMMIT within 10 minutes: the state contract above in `state.ts` + `emptyBiobuzzState()`, pushed to `biobuzz-field`, so A4b can merge it.
+Then: capture through `ScoreTarget.mouth` + `hiveAccepts`; `hiveStep` (4 s swing, release at `BB_TIP_RELEASE_S`, `spillPoses` → ground balls with velocity, set `released`); human-player restock; flower nectar drip; delete the `upCell` cast. No ground-ball physics.
+Smoke in `field.ts`: live tip scene, conservation every tick, closed-side shot rejected / toward-pivot accepted, JSON round-trip of `released`.
+Gates and landing as in A4. Do NOT edit `step.ts`, `hud.ts`, `penalties.ts`, `scenesField.ts`.
+
+### A4b — rules, score, HUD (NEW chat, worktree `dsim-bb-rules`, branch `biobuzz-rules`)
+
+Setup (run once, from the `dsim-biobuzz` folder's parent):
+
+    git -C dsim-biobuzz worktree add ../dsim-bb-rules -b biobuzz-rules origin/alpha && cd dsim-bb-rules && npm ci
+
+You are Lane A-rules for BIOBUZZ. Base is `alpha`. Read `docs/biobuzz-contract.md`, `docs/biobuzz/field-plan.md`, `docs/biobuzz-reference.md`, `docs/biobuzz/prompts.md` (the A4 split section: the state contract is there).
+Own: `penalties.ts`, `hud.ts`, `step.ts`, `scenesField.ts`, and a NEW smoke lane `scripts/smoke-biobuzz/rules.ts` registered in `index.ts` as `--lane rules`.
+Write against the state contract. When `origin/biobuzz-field` shows a `state.ts` commit, `git fetch && git merge --no-edit origin/biobuzz-field`. Until then, code that reads the new fields may be stubbed behind `world.biobuzz.hives?.` and must still typecheck against A3's state.
+Do: scoring per the manual table (hive contents by cell state, garden, LEAVE, PARK) in `step.ts` or a new `score.ts`, recomputed every tick like CR; G410 and the other runtime contact rules through `bbAwardFoul`, edge-triggered, no cooldowns; the 1:00 nectar cue; the `gameHud` slice (hive counts, tip state, nectar stock); scenes `hive-tip` (t = 0, 2, 4 s), `park-examples`, `nectar-entry`. No letters or digits on the field outside the labelled scene.
+Smoke (`rules.ts`): every scoring line asserted with a hand-computed total; each foul fires once on the edge and again on re-entry; endgame cue at the right tick.
+Gates: `npx tsc --noEmit -p .`, `npm run test:bb -- --lane rules`, `npm run test:bb`, gallery shots (port 4177) read at hi-res.
+Land: merge `origin/alpha` again, push `biobuzz-rules`, add a dated section to `docs/biobuzz/HANDOFF-field.md` under "rules lane", report commit + check count. No Claude attribution.
+
+### M — manual distillation (NEW docs-only chat, worktree `dsim-bb-docs`, branch `biobuzz-docs`)
+
+Setup once, in a terminal from the `Claude Projects` folder, then open the new chat in `dsim-bb-docs`:
+
+    git -C dsim-biobuzz worktree add ../dsim-bb-docs -b biobuzz-docs origin/alpha
+
+Prompt (give it the PDF path; it runs unattended from there):
+
+You are the BIOBUZZ manual lane, worktree dsim-bb-docs, branch biobuzz-docs, base alpha. The full Competition Manual PDF is at <PATH>. Work from the PDF only, no guessing.
+1. Copy it to scratch/manual.pdf (scratch/ is gitignored; the PDF and every page image stay uncommitted, always).
+2. Text: `pdftotext -layout scratch/manual.pdf scratch/manual.txt` and, for the glossary section only, `pdftotext scratch/manual.pdf scratch/manual-flat.txt` (the two-column glossary interleaves under -layout). Read the text in sections with sed -n; do not paste the whole file into context.
+3. Figures: `python -c "import fitz;d=fitz.open('scratch/manual.pdf');[d[i].get_pixmap(dpi=110).save(f'scratch/figs/p{i+1:03}.png') for i in range(len(d))]"` after mkdir scratch/figs, then Read only the pages the text says carry a field figure or a dimension drawing. Measure nothing by eye that the text states; where a number comes only from a drawing, say so and mark APPROX.
+4. Write ONE file, docs/biobuzz/manual-distilled.md, with the section's rule id and PDF page for every line: scoring table (each line, points, when assessed); penalty list (id, MINOR or MAJOR, trigger, any per-3-seconds clause); match timing (auto, teleop, endgame, the nectar cue); LEAVE, PARK and garden definitions with the exact boundary words; human-player rules; start rules; R105 expansion limits; glossary entries for POLLEN, NECTAR, HIVE, CELL, FLOWER, GARDEN, LOADING ZONE and every other capitalised term the field or robot lanes use. Quote verbatim where a number or boundary word matters. End with "Open questions for the owner".
+5. Compare against docs/biobuzz-reference.md and docs/biobuzz/field-plan.md and list every disagreement in a final "Conflicts with current docs" section; do not edit those two files.
+6. Commit only manual-distilled.md, push biobuzz-docs, report the commit and the conflict count. No Claude attribution.

@@ -21,6 +21,7 @@ import {
   BB_POLLEN_R,
   BB_POLLEN_SIM,
   BB_PTS,
+  BB_TIP_POLLEN,
 } from '../../src/games/biobuzz/config';
 import {
   BB_FLOWER_FLOOR_Z,
@@ -36,16 +37,17 @@ import {
 } from '../../src/games/biobuzz/flower';
 import {
   BB_HIVE_ACCEPT_MARGIN,
-  BB_NECTAR_MASS,
-  BB_TIP_LOAD,
+  BB_SPILL_LATERAL,
+  BB_SPILL_SPEED,
+  BB_TIP_RELEASE_S,
   BB_TIP_SWING_S,
-  bbElementMass,
   hiveAccepts,
+  hiveApproachSign,
   hiveCellPos,
   hivePivot,
   hiveLoad,
   hiveStep,
-  otherSide,
+  hiveWillTip,
   spillPoses,
   type HiveState,
 } from '../../src/games/biobuzz/hive';
@@ -56,12 +58,14 @@ import {
   BB_LZ,
   BB_NECTAR_COUNT,
   BB_POLLEN_COUNT,
+  BB_START_POSES,
   bbMirror,
   type BbRect,
 } from '../../src/games/biobuzz/config';
 import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
 import { createBiobuzzWorld, stageBiobuzz } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
+import { scoreTargets } from '../../src/games/biobuzz/elements';
 import { updateBiobuzz } from '../../src/games/biobuzz/play';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
 import { BB_IDLE, BB_SCENES, bbPollen, bbSceneAt, bbSceneStills, type Scene } from '../../src/games/biobuzz/scenes';
@@ -339,6 +343,121 @@ export function fieldChecks(check: Check): void {
       Math.abs(r1.pos.x + 30) < 1e-9 && Math.abs(r1.pos.y + 12) < 1e-9,
       `pos=${r1.pos.x.toFixed(3)},${r1.pos.y.toFixed(3)}`,
     );
+  }
+
+  // -- THE ANCHORS ARE LEGAL AS WRITTEN -------------------------------------
+  /**
+   * `BB_START_POSES` SATISFIES G304 WITHOUT REPAIR.
+   *
+   * `bbSnapStart` was carrying these: the old pair stopped 2 in short of the wall and the
+   * BOTTOM one sat inside `BB_LZ.blue`, so the anchor a builder places, the anchor the
+   * selector labels TOP/BOTTOM, and the pose the robot got were three different things. The
+   * repair still exists -- the seating is spec-dependent and a deep sweeper still needs it --
+   * but it must now have nothing to move.
+   *
+   * MEASURED AS DISPLACEMENT, not as "is the result legal": the spawned pose was already legal
+   * before this change, which is exactly why the bad anchors survived so long. What is asserted
+   * is that spawning MOVED the anchor by less than `WALL_SEAT` and a hair -- the 0.01 in
+   * float-tangency seat is the only correction left, and any real repair is orders above it.
+   */
+  {
+    const SEAT_TOL = 0.05; // WALL_SEAT is 0.01; anything larger is a genuine repair
+    const w = createBiobuzzWorld('match', 13, [
+      setup(0, 'blue', {}, 0),
+      setup(1, 'blue', {}, 1),
+      setup(2, 'red', {}, 0),
+      setup(3, 'red', {}, 1),
+    ]);
+    const e = bbFootprint(BB_DEFAULT_SPEC);
+    const half = (e.front + e.rear) / 2;
+    for (const r of w.robots) {
+      const i = r.id % BB_START_POSES.length;
+      const raw = BB_START_POSES[i].pos;
+      // RED is the POINT mirror, the same one `spawn.ts` applies -- an x-mirror here would
+      // "pass" against a red robot standing at blue's y.
+      const want = r.alliance === 'blue' ? raw : { x: -raw.x, y: -raw.y };
+      const moved = Math.hypot(r.pos.x - want.x, r.pos.y - want.y);
+      check(
+        `anchors: ${r.alliance} anchor ${i} spawns where it is written, unsnapped`,
+        moved < SEAT_TOL,
+        `moved=${moved.toFixed(3)}" want=(${want.x},${want.y}) got=(${r.pos.x.toFixed(2)},${r.pos.y.toFixed(2)})`,
+      );
+      // AND IT IS LEGAL: touching its own side wall, and clear of its own LOADING ZONE. Both
+      // are read off the RAW anchor, not off the spawned pose, so the check cannot be
+      // satisfied by the repair it exists to make unnecessary.
+      const b = {
+        x0: want.x - half, x1: want.x + half,
+        y0: want.y - e.half, y1: want.y + e.half,
+      };
+      const gap = BB_HALF_X - Math.max(Math.abs(b.x0), Math.abs(b.x1));
+      const z = BB_LZ[r.alliance];
+      const inLz = b.x1 > z.x0 && b.x0 < z.x1 && b.y1 > z.y0 && b.y0 < z.y1;
+      const ownSide = r.alliance === 'red' ? b.x1 < 0 : b.x0 > 0;
+      check(
+        `anchors: ${r.alliance} anchor ${i} contacts its own wall, on its own side, outside its LOADING ZONE`,
+        gap >= 0 && gap <= C.START_TOUCH_TOL && !inLz && ownSide,
+        `wall gap=${gap.toFixed(2)}" (tol ${C.START_TOUCH_TOL}) · inLZ=${inLz} · ownSide=${ownSide}`,
+      );
+    }
+  }
+
+  // -- EVERY SCORE TARGET SAYS WHICH WAY IT OPENS ---------------------------
+  /**
+   * `ScoreTarget.mouth` IS A UNIT VECTOR OUT OF THE OPENING, and every BIOBUZZ target has one.
+   *
+   * `pos` alone does not say which side of a solid thing is the open side. A CELL is a box on
+   * a see-saw and a FLOWER is a column against the perimeter; an arc solved to `pos` from the
+   * wrong side arrives through the cell floor or through the wall -- a shot that scores in the
+   * sim and cannot be taken on a real field. Lane B aims at these, so the direction is part of
+   * the contract rather than something an aimer re-derives from geometry it should not know.
+   *
+   * THE CELL'S MOUTH IS ASSERTED AGAINST ITS OWN PIVOT rather than against a literal: the up
+   * CELL is offset from the HIVE pivot along y and opens AWAY from it, so `mouth` must have
+   * the SAME SIGN as `pos.y` for that hive. That is one statement that stays true through a
+   * TIP, where a hard-coded (0, -1) for red would silently become wrong.
+   */
+  {
+    const w = createBiobuzzWorld('match', 14, [setup(0, 'blue', {}, 0)]);
+    const bb = w.biobuzz!;
+    for (const tilt of ['staged', 'tipped'] as const) {
+      if (tilt === 'tipped') {
+        bb.hives.red.up = 'north';
+        bb.hives.blue.up = 'south';
+      }
+      const ts = scoreTargets(w, 'red');
+      check(
+        `targets [${tilt}]: two CELLS and four FLOWERS, every one with a mouth`,
+        ts.length === 2 + BB_FLOWERS.length && ts.every((t) => t.mouth !== undefined),
+        `${ts.length} targets · ${ts.filter((t) => t.mouth).length} with mouth`,
+      );
+      check(
+        `targets [${tilt}]: every mouth is a unit vector`,
+        ts.every((t) => Math.abs(Math.hypot(t.mouth!.x, t.mouth!.y) - 1) < 1e-9),
+        ts.map((t) => `${t.id}=(${t.mouth!.x},${t.mouth!.y})`).join(' '),
+      );
+      for (const a of ['red', 'blue'] as const) {
+        const t = ts.find((x) => x.id === `hive:${a}`)!;
+        check(
+          `targets [${tilt}]: the ${a} up-CELL opens AWAY from its pivot`,
+          t.mouth!.x === 0 && Math.sign(t.mouth!.y) === Math.sign(t.pos.y) && t.pos.y !== 0,
+          `up=${bb.hives[a].up} pos.y=${t.pos.y.toFixed(1)} mouth=(${t.mouth!.x},${t.mouth!.y})`,
+        );
+      }
+    }
+    // A FLOWER OPENS INTO THE FIELD: step one inch along the mouth and you are further from
+    // the wall the flower stands against than the flower itself is.
+    const ts = scoreTargets(w, 'red');
+    BB_FLOWERS.forEach((f, i) => {
+      const t = ts.find((x) => x.id === `flower:${i}`)!;
+      const wallDist = (p: { x: number; y: number }): number =>
+        Math.min(BB_HALF_X - Math.abs(p.x), BB_HALF_Y - Math.abs(p.y));
+      const stepped = { x: f.x + t.mouth!.x, y: f.y + t.mouth!.y };
+      check(
+        `targets: FLOWER ${f.id} (${f.wall} wall) opens INTO the field`,
+        wallDist(stepped) > wallDist(f) + 0.5 && t.alliance === null,
+        `mouth=(${t.mouth!.x},${t.mouth!.y}) wallDist ${wallDist(f).toFixed(1)} -> ${wallDist(stepped).toFixed(1)}`,
+      );
+    });
   }
 
   // -- POLLEN CONSERVATION ---------------------------------------------------
@@ -1605,94 +1724,153 @@ export function fieldChecks(check: Check): void {
   // ── HIVE: the tip, PURE (`hive.ts`, field-plan §2.1) ──────────────────────
   /**
    * `hiveStep` is the one place a HIVE decides to tip, and it is a pure function of the state
-   * and a mass lookup, so it is checked here directly, with no world. Everything the manual
-   * does not print is APPROX (`BB_TIP_LOAD`, `BB_NECTAR_MASS`, the swing time), and these do
-   * not assert those numbers — they assert the RELATIONS the game needs of them: a staged cell
-   * (3 nectar, §10.3.1) is stable, one pollen short of the threshold does nothing, the
-   * threshold starts a swing that takes the swing time to settle, and what tipped is exactly
-   * what spills, under the cell that is now down. A retuned threshold on 09-14 leaves every one
-   * of these true.
+   * and a colour lookup, so it is checked here directly, with no world.
+   *
+   * THE THRESHOLD IS A MEASURED TABLE, NOT A MASS (`BB_TIP_POLLEN`, config.ts): a cell tips at
+   * `pollen >= BB_TIP_POLLEN[min(nectar, 5)]`, and nothing interpolates it. The staged row is
+   * the one that decides how a match opens — 3 NECTAR are in the cell at setup (§10.3.1), so
+   * the first TIP costs 3 POLLEN.
+   *
+   * THE SWING HAS THREE MOMENTS AND THESE CHECKS KEEP THEM APART, because the gameplay
+   * consequence lives in the gap: the load starts the swing, the contents fall out as the bar
+   * passes LEVEL (`BB_TIP_RELEASE_S`), and the 20 points land two seconds later when it
+   * SETTLES. A check that only looked at the endpoints would pass with the spill welded to the
+   * score, which is the behaviour the ruling exists to prevent.
    */
   {
     const dt = C.SIM_DT;
-    const massOf = (kinds: Map<number, BbElementKind>) => (id: number): number => bbElementMass(kinds.get(id) ?? 'pollen');
+    const kindOf = (kinds: Map<number, BbElementKind>) => (id: number): BbElementKind => kinds.get(id) ?? 'pollen';
     const settled = (contents: number[]): HiveState => ({ up: 'south', contents, tips: 0, tipping: 0 });
+    /** n nectar then p pollen, with ids that say which is which */
+    const mix = (nectar: number, pollen: number): { ids: number[]; kinds: Map<number, BbElementKind> } => {
+      const kinds = new Map<number, BbElementKind>();
+      const ids: number[] = [];
+      for (let i = 0; i < nectar; i++) {
+        kinds.set(100 + i, 'red');
+        ids.push(100 + i);
+      }
+      for (let i = 0; i < pollen; i++) {
+        kinds.set(200 + i, 'pollen');
+        ids.push(200 + i);
+      }
+      return { ids, kinds };
+    };
 
-    // 1. the STAGED load: 3 nectar, stable for as long as anyone waits
+    // 1. THE MEASURED TABLE IS THE RULE, every row of it. One short of the row does not tip;
+    // the row itself does. This is the check that fails if anyone reintroduces a mass model.
     {
-      const kinds = new Map<number, BbElementKind>([[1, 'red'], [2, 'red'], [3, 'red']]);
-      const load = hiveLoad([1, 2, 3], massOf(kinds));
-      let h = settled([1, 2, 3]);
+      const wrong: string[] = [];
+      for (let n = 0; n < BB_TIP_POLLEN.length; n++) {
+        const need = BB_TIP_POLLEN[n];
+        const at = mix(n, need);
+        if (!hiveWillTip(hiveLoad(at.ids, kindOf(at.kinds)))) wrong.push(`${n}n+${need}p should tip`);
+        if (need > 0) {
+          const under = mix(n, need - 1);
+          if (hiveWillTip(hiveLoad(under.ids, kindOf(under.kinds)))) wrong.push(`${n}n+${need - 1}p should not tip`);
+        }
+      }
+      check(
+        'hive: the tip threshold is BB_TIP_POLLEN, row by row (no mass model)',
+        wrong.length === 0,
+        wrong.length ? wrong.join('; ') : `${BB_TIP_POLLEN.length} rows: [${BB_TIP_POLLEN.join(', ')}] pollen at 0..${BB_TIP_POLLEN.length - 1} nectar`,
+      );
+    }
+
+    // 2. the STAGED cell: 3 nectar and nothing else, stable for as long as anyone waits.
+    {
+      const staged = mix(3, 0);
+      let h = settled([...staged.ids]);
       let everTipped = false;
       let everSwung = false;
-      for (let i = 0; i < 180; i++) {
-        const r = hiveStep(h, dt, massOf(kinds));
+      for (let i = 0; i < 300; i++) {
+        const r = hiveStep(h, dt, kindOf(staged.kinds));
         h = r.hive;
         if (r.tipped) everTipped = true;
         if (h.tipping !== 0) everSwung = true;
       }
       check(
-        'hive: staged load (3 nectar) is below the tip threshold',
-        load < BB_TIP_LOAD && !everTipped && !everSwung && h.contents.length === 3 && h.tips === 0,
-        `load ${load.toFixed(2)} (3 × ${BB_NECTAR_MASS}) vs threshold ${BB_TIP_LOAD}; 3 s of steps: tipped=${everTipped} swung=${everSwung}`,
+        'hive: the staged cell (3 nectar, no pollen) is stable',
+        !everTipped && !everSwung && h.contents.length === 3 && h.tips === 0,
+        `3 nectar needs ${BB_TIP_POLLEN[3]} pollen; 5 s of steps: tipped=${everTipped} swung=${everSwung} contents=${h.contents.length}`,
       );
     }
 
-    // 2. one pollen SHORT of the threshold: 3 nectar + 1 pollen = 5.95, nothing starts
+    // 3. one pollen SHORT of the staged row: 3 nectar + 2 pollen, nothing starts.
     {
-      const kinds = new Map<number, BbElementKind>([[1, 'red'], [2, 'red'], [3, 'red'], [4, 'pollen']]);
-      const load = hiveLoad([1, 2, 3, 4], massOf(kinds));
-      const r = hiveStep(settled([1, 2, 3, 4]), dt, massOf(kinds));
+      const short = mix(3, BB_TIP_POLLEN[3] - 1);
+      const r = hiveStep(settled([...short.ids]), dt, kindOf(short.kinds));
       check(
-        'hive: load one pollen below the threshold does not start a swing',
-        load < BB_TIP_LOAD && r.hive.tipping === 0 && !r.tipped && r.spilled.length === 0,
-        `load ${load.toFixed(2)} vs ${BB_TIP_LOAD}; tipping=${r.hive.tipping} tipped=${r.tipped}`,
+        'hive: one pollen below the staged row does not start a swing',
+        r.hive.tipping === 0 && !r.tipped && r.spilled.length === 0,
+        `3n+${BB_TIP_POLLEN[3] - 1}p vs a row of ${BB_TIP_POLLEN[3]}; tipping=${r.hive.tipping} tipped=${r.tipped}`,
       );
     }
 
-    // 3. AT the threshold: 6 pollen. The swing STARTS on this step and nothing has tipped yet.
-    const six = [11, 12, 13, 14, 15, 16];
-    const sixKinds = new Map<number, BbElementKind>(six.map((id) => [id, 'pollen'] as const));
+    // 4. AT the staged row: 3 nectar + 3 pollen. The swing STARTS on this step, nothing has
+    // tipped, and the contents are still IN the cell — they do not leave until level.
+    const staged = mix(3, BB_TIP_POLLEN[3]);
     {
-      const load = hiveLoad(six, massOf(sixKinds));
-      const r = hiveStep(settled([...six]), dt, massOf(sixKinds));
+      const r = hiveStep(settled([...staged.ids]), dt, kindOf(staged.kinds));
       check(
-        'hive: load at exactly the threshold starts the swing',
-        load >= BB_TIP_LOAD && r.hive.tipping > 0 && !r.tipped && r.hive.contents.join() === six.join() && r.hive.tips === 0,
-        `load ${load} >= ${BB_TIP_LOAD}; tipping=${r.hive.tipping.toFixed(3)} tipped=${r.tipped} contents=[${r.hive.contents.join(',')}]`,
+        'hive: the staged row starts the swing, and nothing has left the cell yet',
+        r.hive.tipping > 0 && !r.tipped && r.spilled.length === 0 && r.hive.contents.join() === staged.ids.join(),
+        `3n+${BB_TIP_POLLEN[3]}p; tipping=${r.hive.tipping.toFixed(3)} (swing ${BB_TIP_SWING_S}) tipped=${r.tipped} contents=${r.hive.contents.length}`,
       );
     }
 
-    // 4 + 5. step until it tips: the swing lasts BB_TIP_SWING_S, the up cell flips, and what
-    // spills is exactly what was in it.
+    // 5 + 6 + 7. RUN THE WHOLE SWING and record WHEN each thing happens. The release must come
+    // first, at the half way point, and the points must come at the end.
     {
-      let h = settled([...six]);
+      let h = settled([...staged.ids]);
       let swingSteps = 0;
-      let tipped = false;
+      let releaseStep = -1;
+      let settleStep = -1;
       let spilled: number[] = [];
-      for (let i = 0; i < 600 && !tipped; i++) {
+      let contentsAtRelease = -1;
+      let spillEvents = 0;
+      for (let i = 0; i < 1200 && settleStep < 0; i++) {
         const swinging = h.tipping > 0;
-        const r = hiveStep(h, dt, massOf(sixKinds));
+        const r = hiveStep(h, dt, kindOf(staged.kinds));
         if (swinging) swingSteps++;
         h = r.hive;
-        tipped = r.tipped;
-        spilled = r.spilled;
+        if (r.spilled.length > 0) {
+          spillEvents++;
+          if (releaseStep < 0) {
+            releaseStep = swingSteps;
+            spilled = r.spilled;
+            contentsAtRelease = h.contents.length;
+          }
+        }
+        if (r.tipped) settleStep = swingSteps;
       }
-      const elapsed = swingSteps * dt;
+      const releaseAt = releaseStep * dt;
+      const settleAt = settleStep * dt;
+      check(
+        'hive: the contents RELEASE at level, before the TIP settles',
+        releaseStep > 0 &&
+          settleStep > releaseStep &&
+          Math.abs(releaseAt - (BB_TIP_SWING_S - BB_TIP_RELEASE_S)) <= dt + 1e-9 &&
+          contentsAtRelease === 0 &&
+          spillEvents === 1,
+        `release at ${releaseAt.toFixed(4)} s (expect ${(BB_TIP_SWING_S - BB_TIP_RELEASE_S).toFixed(4)}), settle at ${settleAt.toFixed(4)} s ` +
+          `(swing ${BB_TIP_SWING_S}); cell empty at release=${contentsAtRelease === 0}; spill events=${spillEvents}`,
+      );
       check(
         'hive: the swing settles after BB_TIP_SWING_S and flips the up cell',
-        tipped && Math.abs(elapsed - BB_TIP_SWING_S) <= dt + 1e-9 && h.up === 'north' && h.tips === 1 && h.contents.length === 0 && h.tipping === 0,
-        `tipped=${tipped} after ${swingSteps} swing steps = ${elapsed.toFixed(4)} s (swing ${BB_TIP_SWING_S}); up=${h.up} tips=${h.tips} contents=[${h.contents.join(',')}] tipping=${h.tipping}`,
+        settleStep > 0 && Math.abs(settleAt - BB_TIP_SWING_S) <= dt + 1e-9 && h.up === 'north' && h.tips === 1 && h.contents.length === 0 && h.tipping === 0,
+        `tipped after ${settleStep} swing steps = ${settleAt.toFixed(4)} s (swing ${BB_TIP_SWING_S}); up=${h.up} tips=${h.tips} contents=[${h.contents.join(',')}] tipping=${h.tipping}`,
       );
       check(
         'hive: spilled ids == the contents that tipped it',
-        spilled.length === six.length && [...spilled].sort((a, b) => a - b).join() === [...six].sort((a, b) => a - b).join(),
-        `spilled=[${spilled.join(',')}] expected=[${six.join(',')}]`,
+        spilled.length === staged.ids.length && [...spilled].sort((a, b) => a - b).join() === [...staged.ids].sort((a, b) => a - b).join(),
+        `spilled=[${spilled.join(',')}] expected=[${staged.ids.join(',')}]`,
       );
     }
 
-    // 6. spill poses: `count` of them, all under the cell that is now DOWN, at the hive bottom.
-    // Both alliances, because the pivot x and the staged up-cell both flip with the alliance.
+    // 8. spill poses: `count` of them, under the cell that is emptying, at the hive bottom, each
+    // carrying an OUTBOARD velocity. Both alliances, because the pivot x and the staged up-cell
+    // both flip with the alliance — and the hive handed in is MID-SWING, which is when the
+    // release actually happens.
     for (const a of ['red', 'blue'] as const) {
       let rngState = a === 'red' ? 7 : 8;
       const rng = (): number => {
@@ -1700,69 +1878,101 @@ export function fieldChecks(check: Check): void {
         rngState = r.state;
         return r.value;
       };
-      // a settled post-tip hive for this alliance: staged up cell has just gone DOWN
-      const post: HiveState = { up: otherSide(BB_HIVE_UP_STAGED[a]), contents: [], tips: 1, tipping: 0 };
-      const down = otherSide(post.up);
-      const sign = down === 'north' ? 1 : -1;
+      // the staged cell, half way through its swing: still `up`, already emptying
+      const emptying = BB_HIVE_UP_STAGED[a];
+      const mid: HiveState = { up: emptying, contents: [], tips: 0, tipping: BB_TIP_RELEASE_S, released: true };
+      const sign = emptying === 'north' ? 1 : -1;
       const pivot = hivePivot(a);
       const count = 6;
-      const poses = spillPoses(post, a, count, rng);
+      const poses = spillPoses(mid, a, count, rng);
       const eps = 1e-6;
-      const bad = poses.filter(
+      const badPos = poses.filter(
         (p) =>
-          Math.abs(p.x - pivot.x) > BB_CELL_OPEN.w / 2 + eps ||
-          Math.sign(p.y) !== sign ||
-          Math.abs(p.y) < BB_HIVE_CELL_DY - eps ||
-          Math.abs(p.y) > BB_HIVE_CELL_DY + BB_CELL_OPEN.d + eps ||
-          p.z !== BB_HIVE_BOTTOM_Z,
+          Math.abs(p.pos.x - pivot.x) > BB_CELL_OPEN.w / 2 + eps ||
+          Math.sign(p.pos.y) !== sign ||
+          Math.abs(p.pos.y) < BB_HIVE_CELL_DY - eps ||
+          Math.abs(p.pos.y) > BB_HIVE_CELL_DY + BB_CELL_OPEN.d + eps ||
+          p.pos.z !== BB_HIVE_BOTTOM_Z,
+      );
+      const badVel = poses.filter(
+        (p) =>
+          Math.sign(p.vel.y) !== sign ||
+          Math.abs(p.vel.y) < BB_SPILL_SPEED[0] - eps ||
+          Math.abs(p.vel.y) > BB_SPILL_SPEED[1] + eps ||
+          Math.abs(p.vel.x) > BB_SPILL_LATERAL + eps ||
+          p.vel.z !== 0,
       );
       check(
-        `hive [${a}]: spill poses count == spilled count and lie under the now-down cell`,
-        poses.length === count && bad.length === 0,
-        `${poses.length}/${count} poses, ${bad.length} outside; down=${down} pivot x=${pivot.x}; ` +
-          `x ${Math.min(...poses.map((p) => p.x)).toFixed(2)}..${Math.max(...poses.map((p) => p.x)).toFixed(2)} ` +
-          `y ${Math.min(...poses.map((p) => p.y)).toFixed(2)}..${Math.max(...poses.map((p) => p.y)).toFixed(2)} ` +
-          `z ${[...new Set(poses.map((p) => p.z))].join('/')}`,
+        `hive [${a}]: spill poses land under the emptying cell and leave it OUTBOARD`,
+        poses.length === count && badPos.length === 0 && badVel.length === 0,
+        `${poses.length}/${count} poses, ${badPos.length} misplaced, ${badVel.length} wrong velocity; emptying=${emptying} pivot x=${pivot.x}; ` +
+          `pos x ${Math.min(...poses.map((p) => p.pos.x)).toFixed(2)}..${Math.max(...poses.map((p) => p.pos.x)).toFixed(2)} ` +
+          `y ${Math.min(...poses.map((p) => p.pos.y)).toFixed(2)}..${Math.max(...poses.map((p) => p.pos.y)).toFixed(2)} ` +
+          `z ${[...new Set(poses.map((p) => p.pos.z))].join('/')} · ` +
+          `vel y ${Math.min(...poses.map((p) => p.vel.y)).toFixed(1)}..${Math.max(...poses.map((p) => p.vel.y)).toFixed(1)} ` +
+          `x ${Math.min(...poses.map((p) => p.vel.x)).toFixed(1)}..${Math.max(...poses.map((p) => p.vel.x)).toFixed(1)}`,
       );
     }
 
-    // 7. the ACCEPT test: inside the up cell's opening and descending, and nothing else
+    // 9. the ACCEPT test: through the OPEN OUTER END, descending, inside the footprint — and
+    // nothing else. The wrong-side case is the one the ruling added: a shot crossing the same
+    // rectangle OUTBOUND is arriving through the cell's closed back wall.
     {
       const a: Alliance = 'red';
-      const h = settled([]); // up: south
+      const h = settled([]); // up: south, so the way in is travelling +y, toward the pivot
       const up = hiveCellPos(a, 'south');
       const downPos = hiveCellPos(a, 'north');
       const zMid = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
+      const inbound = { x: 0, y: 30, z: -10 };
+      const outbound = { x: 0, y: -30, z: -10 };
       const cases: [string, boolean, boolean][] = [
-        ['centre of the up cell, descending', hiveAccepts(h, a, up, zMid, -10), true],
-        ['within the margin above the opening top', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[1] + BB_HIVE_ACCEPT_MARGIN / 2, -10), true],
-        ['ASCENDING through the same point', hiveAccepts(h, a, up, zMid, +10), false],
-        ['off the footprint across the hive (dx = w/2 + 1)', hiveAccepts(h, a, { x: up.x + BB_CELL_OPEN.w / 2 + 1, y: up.y }, zMid, -10), false],
-        ['off the footprint along the hive (dy = d/2 + 1)', hiveAccepts(h, a, { x: up.x, y: up.y + BB_CELL_OPEN.d / 2 + 1 }, zMid, -10), false],
-        ['the DOWN cell', hiveAccepts(h, a, downPos, zMid, -10), false],
-        ['above the margin', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[1] + BB_HIVE_ACCEPT_MARGIN + 1, -10), false],
-        ['below the opening bottom', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[0] - 1, -10), false],
-        ['mid-swing', hiveAccepts({ ...h, tipping: BB_TIP_SWING_S / 2 }, a, up, zMid, -10), false],
+        ['centre of the up cell, descending INBOARD', hiveAccepts(h, a, up, zMid, inbound), true],
+        ['within the margin above the opening top', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[1] + BB_HIVE_ACCEPT_MARGIN / 2, inbound), true],
+        ['WRONG SIDE: same point, travelling outboard', hiveAccepts(h, a, up, zMid, outbound), false],
+        ['WRONG SIDE: no along-axis velocity at all', hiveAccepts(h, a, up, zMid, { x: 30, y: 0, z: -10 }), false],
+        ['ASCENDING through the same point', hiveAccepts(h, a, up, zMid, { ...inbound, z: +10 }), false],
+        ['off the footprint across the hive (dx = w/2 + 1)', hiveAccepts(h, a, { x: up.x + BB_CELL_OPEN.w / 2 + 1, y: up.y }, zMid, inbound), false],
+        ['off the footprint along the hive (dy = d/2 + 1)', hiveAccepts(h, a, { x: up.x, y: up.y + BB_CELL_OPEN.d / 2 + 1 }, zMid, inbound), false],
+        ['the DOWN cell', hiveAccepts(h, a, downPos, zMid, inbound), false],
+        ['above the margin', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[1] + BB_HIVE_ACCEPT_MARGIN + 1, inbound), false],
+        ['below the opening bottom', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[0] - 1, inbound), false],
+        ['mid-swing', hiveAccepts({ ...h, tipping: BB_TIP_SWING_S / 2 }, a, up, zMid, inbound), false],
       ];
       const wrong = cases.filter(([, got, want]) => got !== want);
       check(
-        'hive: accepts a descending element inside the up-cell opening; rejects outside/ascending/down cell/mid-swing',
+        'hive: accepts only a descending INBOARD element inside the up-cell opening',
         wrong.length === 0,
-        wrong.length ? `wrong: ${wrong.map(([n, got]) => `${n} → ${got}`).join('; ')}` : `${cases.length} cases as expected; up cell at (${up.x}, ${up.y}), z ${BB_HIVE_OPEN_Z[0]}..${BB_HIVE_OPEN_Z[1]}+${BB_HIVE_ACCEPT_MARGIN}`,
+        wrong.length
+          ? `wrong: ${wrong.map(([n, got]) => `${n} → ${got}`).join('; ')}`
+          : `${cases.length} cases as expected; up cell at (${up.x}, ${up.y}) takes vy ${hiveApproachSign('south') > 0 ? '> 0' : '< 0'}, z ${BB_HIVE_OPEN_Z[0]}..${BB_HIVE_OPEN_Z[1]}+${BB_HIVE_ACCEPT_MARGIN}`,
+      );
+      // the north-up hive is the mirror, and getting this backwards is silent
+      check(
+        'hive: the approach side follows the up cell',
+        hiveApproachSign('south') === 1 &&
+          hiveApproachSign('north') === -1 &&
+          hiveAccepts({ ...h, up: 'north' }, a, downPos, zMid, outbound) &&
+          !hiveAccepts({ ...h, up: 'north' }, a, downPos, zMid, inbound),
+        `south takes vy>0, north takes vy<0`,
       );
     }
 
-    // 8. purity: the input is not written, on the step that SETTLES (the one that clears
-    // contents and flips `up` on the output).
+    // 10. purity, on the two steps that CHANGE something: the release (which empties the
+    // contents on the output) and the settle (which flips `up`).
     {
-      const input: HiveState = { up: 'south', contents: [...six], tips: 0, tipping: dt / 2 };
-      const before = JSON.stringify(input);
-      const r = hiveStep(input, dt, massOf(sixKinds));
-      const after = JSON.stringify(input);
+      const cases: [string, HiveState][] = [
+        ['release', { up: 'south', contents: [...staged.ids], tips: 0, tipping: BB_TIP_RELEASE_S + dt / 2, released: false }],
+        ['settle', { up: 'south', contents: [], tips: 0, tipping: dt / 2, released: true }],
+      ];
+      const bad = cases.filter(([, input]) => {
+        const before = JSON.stringify(input);
+        const r = hiveStep(input, dt, kindOf(staged.kinds));
+        return JSON.stringify(input) !== before || r.hive === input || r.hive.contents === input.contents;
+      });
       check(
         'hive: hiveStep does not mutate its input',
-        before === after && r.tipped && r.hive !== input && r.hive.contents !== input.contents,
-        `input ${before === after ? 'unchanged' : `CHANGED: ${before} → ${after}`}; output tipped=${r.tipped} up=${r.hive.up}`,
+        bad.length === 0,
+        bad.length ? `mutated on: ${bad.map(([n]) => n).join(', ')}` : 'release and settle both left the input untouched and returned fresh arrays',
       );
     }
   }

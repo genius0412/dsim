@@ -769,26 +769,42 @@ export interface BbStartAnchor {
 }
 
 /**
- * The named start anchors — CANONICAL for BLUE (goal side +x); RED is the x-mirror, applied
- * once in `spawn.ts` so no other file mirrors anything.
+ * The named start anchors — CANONICAL for BLUE (goal side +x); RED is the POINT mirror
+ * (`bbMirror`), applied once in `spawn.ts` so no other file mirrors anything.
  *
  * TWO anchors, because a BIOBUZZ alliance is two robots and each locks one so they cannot
  * stack. There is no third or fourth because there is no known reason for one: CR's extra
  * pair existed to put a robot on a Ring Stand, and BIOBUZZ has no such structure published.
  *
- * APPROX — ALL OF IT. Section 9 (ARENA) is the page that says where a robot may start, and it
- * lands at Kickoff. These sit a robot half-length off the +x wall at y = ±36 (the quarter
- * points of that wall), facing the field centre, which is the layout every FTC start zone has
- * had and is far enough from the perimeter that a 17" chassis at any heading is inside the
- * field. `startLegality` is FALSE for this game, so these are a convenience, not a rule the
- * server enforces — which is exactly the right posture until the rule exists.
+ * THEY ARE LEGAL AS WRITTEN, which they were not. G304 asks for three things a pose can
+ * satisfy on its own — own side, CONTACTING the perimeter wall, NOT in a LOADING ZONE — and
+ * the old pair satisfied one: at (60, ±36) the chassis stopped 2 in short of the wall, and the
+ * BOTTOM one sat squarely in blue's LOADING ZONE (`BB_LZ.blue`, y ∈ [−48, −24]). `spawn.ts`
+ * repaired both every single spawn, which worked and hid the problem: the anchor a builder
+ * sees, the anchor the selector labels TOP/BOTTOM, and the pose the robot actually got were
+ * three different things. An anchor that needs repairing is a wrong anchor.
+ *
+ *   x = 61.5   the +x wall at 72 less a default chassis half-extent of 10.5, so the footprint
+ *              CONTACTS the wall rather than hovering off it. Spec-dependent by nature — a
+ *              deeper sweeper reaches further — so `bbSnapStart` still runs and still owns the
+ *              exact seating; it now has nothing to move, not merely less to move.
+ *   y = +36    unchanged. The quarter point of the wall, clear of blue's zone and of the
+ *              GARDEN strip at y ≈ 71.
+ *   y = −60    was −36, inside the zone. Below it now, with 3.5 in of clearance at both ends
+ *              (the footprint spans −68.5 … −51.5 against a zone edge at −48 and a wall at −72)
+ *              and 96 in between the two anchors, so two robots cannot reach each other.
+ *
+ * STILL APPROX. Section 9 (ARENA) is the page that says where a robot may actually start and
+ * it lands at Kickoff; `startLegality` is FALSE for this game, so these are a convenience
+ * rather than a rule the server enforces. What changed is that the convenience is now
+ * self-consistent.
  *
  * ORDER IS LOAD-BEARING: a 2-robot alliance defaults to anchors 0 and 1, so index 0 must be
  * the TOP (y ≥ 0) anchor and index 1 the BOTTOM one.
  */
 export const BB_START_POSES: readonly BbStartAnchor[] = [
-  { name: 'START · TOP', pos: { x: 60, y: 36 }, heading: Math.PI },
-  { name: 'START · BOTTOM', pos: { x: 60, y: -36 }, heading: Math.PI },
+  { name: 'START · TOP', pos: { x: 61.5, y: 36 }, heading: Math.PI },
+  { name: 'START · BOTTOM', pos: { x: 61.5, y: -60 }, heading: Math.PI },
 ];
 
 /** how many start anchors this game offers — read by the shared per-game start-index clamp

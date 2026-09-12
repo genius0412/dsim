@@ -192,18 +192,45 @@ function upCell(world: World, a: Alliance): BbCellSide {
  * tilt — Fig 9-9/9-10), and the pivots are at x = -/+`BB_HIVE_X` for red/blue (Fig 9-10,
  * centre to centre 25.5).
  */
+/**
+ * WHICH WAY A FLOWER'S MOUTH FACES — out of the wall it stands against, into the field.
+ *
+ * The FLOWER is a column on the perimeter, so its open top is reachable from one half-space
+ * only: the field side. The wall side is the wall.
+ *
+ * ⚠️ `drawField.ts` holds a private `FIELD_SIDE` with exactly this table, for placing badges
+ * where the perimeter will not clip them. Two copies of a four-entry map is two chances to
+ * disagree about which way `rear` is; they should collapse into one exported constant, and
+ * `drawField.ts` is not this lane's file — see `docs/biobuzz/HANDOFF-field.md`.
+ */
+const FLOWER_MOUTH: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
+  left: { x: 1, y: 0 }, // F1 stands on −x, opens toward +x
+  rear: { x: 0, y: -1 }, // F2 stands on +y, opens toward −y
+  right: { x: -1, y: 0 }, // F3 stands on +x, opens toward −x
+  audience: { x: 0, y: 1 }, // F4 stands on −y, opens toward +y
+};
+
 export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
   const opp: Alliance = a === 'red' ? 'blue' : 'red';
-  const cell = (owner: Alliance): ScoreTarget => ({
-    id: `hive:${owner}`,
-    alliance: owner,
-    pos: {
-      x: owner === 'red' ? -BB_HIVE_X : BB_HIVE_X,
-      y: upCell(world, owner) === 'south' ? -BB_HIVE_CELL_DY : BB_HIVE_CELL_DY,
-    },
-    z: CELL_AIM_Z,
-    r: CELL_ACCEPT_R,
-  });
+  // THE CELL'S MOUTH IS ITS TILT DIRECTION. Both CELLS sit on the same pivot, offset along y
+  // by ±`BB_HIVE_CELL_DY`, and the one facing UP opens AWAY from that pivot — the see-saw has
+  // lifted its far end, so the opening looks back down the +y or −y the cell was raised along.
+  // It is the SAME sign as the cell's own offset, which is why this reads off `upCell` once
+  // and uses it for both the position and the direction: they cannot disagree.
+  const cell = (owner: Alliance): ScoreTarget => {
+    const s = upCell(world, owner) === 'south' ? -1 : 1;
+    return {
+      id: `hive:${owner}`,
+      alliance: owner,
+      pos: {
+        x: owner === 'red' ? -BB_HIVE_X : BB_HIVE_X,
+        y: s * BB_HIVE_CELL_DY,
+      },
+      z: CELL_AIM_Z,
+      r: CELL_ACCEPT_R,
+      mouth: { x: 0, y: s },
+    };
+  };
   return [
     cell(a),
     cell(opp),
@@ -213,6 +240,7 @@ export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
       pos: { x: f.x, y: f.y },
       z: BB_FLOWER_TOP_Z,
       r: BB_FLOWER_OPEN_R,
+      mouth: { ...FLOWER_MOUTH[f.wall] },
     })),
   ];
 }

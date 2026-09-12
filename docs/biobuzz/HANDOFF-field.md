@@ -1,8 +1,66 @@
 # HANDOFF — Lane A (field)
 
+## 2026-09-12 · no letters on the field · `PENDING`
+
+- **Cells to look at**: `field-labelled@0` and the new **`hive-ground@0`**. Both at 1600px via
+  `scratch/hires.cjs --scene <id>` (gitignored throwaway); `--labels 0` renders a labelled
+  scene with the caption flag off, which is what a driver sees.
+- **Files**: `drawField.ts` (the cell render), `scenesField.ts` (`field-labelled` + the new
+  `hive-ground`), `scenes.ts` (one-line colour fix, below).
+- **What changed** (field-plan §2.1 render / §2.5):
+  1. **No letters or digits anywhere for elements.** The per-type tally (`3n 2p`) is gone. An
+     up-CELL's contents are **one row of element-scale discs hugging the cell's OUTER (open)
+     edge**, inside the box, oldest at the −x end, colour = type. When the row runs longer than
+     the 20-in width the PITCH closes up and the discs overlap while the RADII stay true —
+     shrinking them instead would make a NECTAR and a POLLEN the same size, which is the one
+     distinction the row carries.
+  2. **UP is a filled box, DOWN is a dashed outline with no fill.** The down cell hangs 25.5 in
+     up and robots drive under it, so it is not a surface; the outline also lets the floor show
+     through it.
+  3. **The open face is marked by WEIGHT** — outer short edge thin, pivot-side edge heavy. That
+     is a scoring rule in the picture: `hiveAccepts` only takes a shot arriving TOWARD the
+     pivot, so an open face drawn at the wrong end is the rule drawn wrong. Neither mark fades
+     with the swing: the box is open at the same end whichever way it points.
+  4. **`tipping` is a cross-fade**, fill ↔ outline, over the swing. The denominator is
+     **imported from `hive.ts`**, not copied — a renderer with its own copy of the swing length
+     is a fade that ends at a different instant from the flip it is animating.
+  5. `draw.ts` skipping `element`-state balls was **already landed** by biobuzz-field-staging
+     (`isLoose`), so the double-draw in the last handoff is closed. Nothing needed here.
+- **The up-cell fill is a 45% wash, not solid** (`CELL_FILL_A`). At full saturation a RED
+  NECTAR in the RED cell was red on red and read as an empty ring — and the NECTAR count is
+  what the tip table is indexed by, so it is the one thing in there that must not disappear.
+  The heavy pivot-edge mark needed the same room.
+- ⚠️ **Fixed in `scenes.ts`: `bbPollen` emitted `'green'`.** POLLEN is `'yellow'` (§9.8,
+  `POLLEN_COLOR` in `spawn.ts`) and `draw.ts` batches only yellow/red/blue, so **every scene
+  built from `bbPollen` was drawing no balls at all** — the whole POLLEN PHYSICS SET
+  (`pile-*`, `corner-pile`, `wall-row-sweep`, `pin-wall`, `squeeze-2robots`, `settle-60`)
+  rendered an empty field. A ball that is never drawn looks exactly like a scene that placed
+  none, which is why it survived a green suite.
+- ⚠️ **For biobuzz-field-staging — `bbWorld` leaves DANGLING element ids.**
+  `createBiobuzzWorld` runs `stageBiobuzz`, which writes ids into every FLOWER stack and both
+  up-CELLS; `bbWorld(seed, setups, pollen)` then REPLACES `world.balls` and leaves those ids
+  pointing at elements that no longer exist. The readouts are a join, so it is normally
+  invisible — but `bbPollen` numbers from 1 and so does the staging, so `hive-ground`'s three
+  floor pollen ALIASED F1's staged stack and rendered outside the perimeter beside a flower.
+  Worked around in the scene (it clears the references); the helper is yours.
+- ⚠️ **For biobuzz-field-staging — `BB_TIP_SWING_S` is 0.8 in `hive.ts`, but the ruling is 4 s**
+  (field-plan §2.1, owner 2026-09-12). `drawField.ts` imports your constant rather than
+  carrying its own, so the cross-fade is correct whatever the value is — but the swing itself
+  is five times too fast, and the contents spill at the halfway point of it.
+- **Still APPROX**: the hive pair being centred on the field, the LOADING ZONE tape edge
+  (±0.5 in, cosmetic), and `BB_TIP_POLLEN[0]` (an empty cell was never measured).
+
 > **BRANCH CHANGE (2026-09-12):** the shared base is **`alpha`**. `biobuzz` was merged into
 > `alpha` and deleted on origin. Wherever this file says branch `biobuzz`, read `alpha`: merge
 > `alpha` before you commit, land into `alpha`, `alpha` deploys.
+
+## 2026-09-12 · the four HIVE rulings, on an `alpha` base · `biobuzz-field-hive`
+
+- **Files**: `hive.ts` (rewritten), `scripts/smoke-biobuzz/field.ts` (the `hive:` block). `flower.ts` unchanged. Nothing wired — `play.ts`, `step.ts`, `state.ts`, `config.ts` untouched. Field lane **168 checks, all pass**; `npm run build` green.
+- **The rulings (field-plan §2.1), all four in**: swing `BB_TIP_SWING_S = 4.0` (a decision, not APPROX); `hiveAccepts` now takes a `vel: Vec3` and gates on APPROACH — the CELL is open at its outer end only, so `vel.y` must point at the pivot (`hiveApproachSign`: up=south takes vy > 0, up=north vy < 0); contents RELEASE at level (`BB_TIP_RELEASE_S` = swing/2) with a `released` latch, so `spilled` arrives two seconds BEFORE `tipped` and the 20 points; `spillPoses` returns `{pos, vel}` with vel outboard `BB_SPILL_SPEED` 40–60 in/s and `BB_SPILL_LATERAL` ±12 across, `vel.z` 0.
+- ⚠️ **`BB_TIP_LOAD` and `BB_NECTAR_MASS` ARE GONE, superseded by the merge.** `config.ts` now carries the owner's MEASURED `BB_TIP_POLLEN` table, and the config comment is explicit that a see-saw is torque and packing, not weight — no linear mass model fits the measured rows. `hiveLoad` counts `{pollen, nectar}` and `hiveWillTip` is the table lookup; smoke asserts every row and its one-short neighbour, so reintroducing a mass model fails loudly. Consequence worth knowing: the staged cell (3 nectar) tips at **3 pollen**, reachable in AUTO.
+- **REQUEST to `state.ts`** (Lane A's own file, deliberately not edited here): add `released: boolean` to `BbHiveState` and `released: false` to both hives in `emptyBiobuzzState()`. Until then `hive.ts` declares `HiveState extends BbHiveState` with `released` OPTIONAL, so a plain state hive still typechecks as an input; every hive the module returns sets it. With the field in `state.ts` that interface collapses to a re-export.
+- **Still APPROX**: `BB_HIVE_ACCEPT_MARGIN` 2 in, the spill speed and lateral spread, and — in `flower.ts` — `BB_FLOWER_VOL_Z` [3.98, 21.5], `BB_FLOWER_FLOOR_Z` 0.43, `BB_FLOWER_ENTRY_MARGIN` 3 in. `BB_TIP_RELEASE_S` = swing/2 assumes a constant angular rate, which a damped swing is not; the error moves WHEN the spill lands, never whether it does. Fig 10-5 A–H are still RECONSTRUCTED from the §10.5.2 rule text, not read off the figure.
 
 ## 2026-09-12 · owner CAD + the six drawing rulings · `d6c0430`
 
@@ -127,3 +185,26 @@
   exports `bbIndexElements(world)` for it; the fix is calling it after `world.balls = pollen`.
 - **Still wanted from the shared core**: the per-artifact radius. NECTAR is staged, drawn and
   now indexed at `BB_NECTAR_R`, and still collides at POLLEN size.
+
+## 2026-09-12 · every target says which way it opens, and the anchors are legal
+
+- **Base is `alpha` now**, not `biobuzz` — merged clean, nothing of mine conflicted (it was all
+  already in alpha). Field lane **185 checks, all pass**; `npx tsc --noEmit` clean.
+- **`ScoreTarget.mouth?: Vec2`** (`state.ts`) — unit vector OUT of the opening, filled in
+  `scoreTargets`. Up-CELL: away from the HIVE pivot, so the same sign as the cell's own `pos.y`
+  and correct through a TIP rather than hard-coded per alliance. FLOWERS: into the field —
+  F1 `(1,0)`, F2 `(0,-1)`, F3 `(-1,0)`, F4 `(0,1)`. Optional because a target that is a plain
+  volume has no such direction; absence means "no constraint", never a default direction.
+- **`BB_START_POSES` moved out of the LOADING ZONE band** (`config.ts`): `(60, ±36)` →
+  `(61.5, 36)` and `(61.5, −60)`. The old BOTTOM anchor sat inside `BB_LZ.blue` and both
+  stopped 2 in short of the wall, so `spawn.ts` repaired them on every spawn — the anchor a
+  builder places, the anchor the selector labels TOP/BOTTOM, and the pose the robot got were
+  three different things. Spawning now moves them **0.010 in**, which is `WALL_SEAT`, the
+  float-tangency guard. `bbSnapStart` stays: the seating is spec-dependent.
+- **Checks**: each up-CELL mouth points away from its pivot, asserted STAGED and TIPPED; every
+  mouth is a unit vector; each FLOWER's mouth steps away from the wall it stands against; each
+  anchor spawns within 0.05 in of where it is written and is legal on the RAW anchor (own side,
+  wall contact inside `START_TOUCH_TOL`, clear of its own zone) rather than on the repaired pose.
+- **TWO COPIES OF ONE TABLE, still**: `drawField.ts` has a private `FIELD_SIDE` identical to the
+  `FLOWER_MOUTH` map in `elements.ts`. Four entries, two chances to disagree about which way
+  `rear` is — they should collapse to one exported constant. `drawField.ts` is not this lane's.
