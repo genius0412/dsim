@@ -5,7 +5,6 @@
 const randomUUID = (): string => crypto.randomUUID();
 import { envVar } from './runtimeEnv';
 import * as C from '../src/config';
-import { START_POSES } from '../src/config';
 import { activeStartLegal } from '../src/sim/field';
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { simModuleFor } from '../src/games/sim';
@@ -995,18 +994,26 @@ export class Room {
     // build setups from the current roster; keep start poses distinct per alliance
     const roster = [...this.clients.values()];
     const used: Record<Alliance, Set<number>> = { red: new Set(), blue: new Set() };
+    const anchors = simModuleFor(this.game).startPoseCount;
     const setups: RobotSetup[] = [];
     this.robotOf.clear();
     roster.forEach((c, i) => {
       const alliance: Alliance = record ? 'blue' : c.player.alliance;
       let si = c.player.startIndex ?? 0;
       // find an unused pose, but stop after a full cycle: with more robots on one
-      // alliance than there are START_POSES (ROOM_CAPACITY 4 > 3 poses — e.g. a
+      // alliance than there are ANCHORS (ROOM_CAPACITY 4 > BIOBUZZ's 2 — e.g. a
       // custom 4-on-one room), every pose is taken and an unbounded `while` would
       // spin forever, hanging the tick loop / health probe until Fly kills the box.
       // Reuse a pose instead (the physics solver pushes the overlap apart).
-      for (let n = 0; n < START_POSES.length && used[alliance].has(si); n++) {
-        si = (si + 1) % START_POSES.length;
+      //
+      // THE COUNT IS THIS ROOM'S GAME'S, not DECODE's five. It used to read the DECODE
+      // anchor list directly, which for a game with FEWER anchors hands out an index that
+      // game cannot resolve: a 4-robot BIOBUZZ alliance got 0/1/2/3 against TWO anchors, and
+      // 2 and 3 then fell to whatever its spawn does with a miss. `startPoseCount` is on the
+      // module precisely so every clamp reads one number (`coerceStartIndex`, `coerceSetup`
+      // and `coerceSettings` already do). Read once per call: a registry lookup, not a field.
+      for (let n = 0; n < anchors && used[alliance].has(si); n++) {
+        si = (si + 1) % anchors;
       }
       used[alliance].add(si);
       setups.push({
@@ -1290,13 +1297,15 @@ export class Room {
     }
     // roster index = robotId; keep start poses distinct per alliance as an AFK fallback
     const used: Record<Alliance, Set<number>> = { red: new Set(), blue: new Set() };
+    const anchors = simModuleFor(this.game).startPoseCount;
     const setups: RobotSetup[] = [];
     this.robotOf.clear();
     p.roster.forEach((r, i) => {
       const c = byUser.get(r.userId as string) as Client;
       let si = c.player.startIndex ?? 0;
-      for (let n = 0; n < START_POSES.length && used[r.alliance].has(si); n++) {
-        si = (si + 1) % START_POSES.length;
+      // this room's game's anchor count, not DECODE's five - see the same loop above
+      for (let n = 0; n < anchors && used[r.alliance].has(si); n++) {
+        si = (si + 1) % anchors;
       }
       used[r.alliance].add(si);
       setups.push({

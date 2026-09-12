@@ -59,6 +59,7 @@ import {
 import { coerceSpec, coerceAssists, PLAYER_ASSISTS } from '../sim/spawn';
 import { RobotPreview } from './RobotPreview';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
+import { moduleFor } from '../games';
 import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './robotLabels';
 import { rangeFill } from './rangeFill';
 
@@ -251,6 +252,12 @@ export function Menu({ settings, onChange }: Props) {
   // intakes/config arrive with its rules. The shared chassis controls
   // (drivetrain/size/mass/rpm) stay for every game.
   const isDecode = settings.game === 'decode';
+  // MODULE UI SLOTS. A game that fills one of these gets its own panel/schematic
+  // instead of an `isDecode` arm; both current games fill neither, so every branch
+  // below is exactly the one that was there before the slots existed.
+  const mod = moduleFor(settings.game);
+  const Preview = mod.Preview;
+  const Builder = mod.Builder;
   // slider envelopes come from the SAME limit functions coerceSpec clamps with,
   // in the same dependency order (intake → size, drivetrain → rpm, drivetrain ×
   // inertia → mass), so the UI and the validator can never disagree
@@ -321,7 +328,9 @@ export function Menu({ settings, onChange }: Props) {
             {/* TWO components, not one with a `chain` flag: DECODE's schematic is
                 main's, untouched, and Chain Reaction's is its own — so work on one
                 game's mechanisms can never change how the other's robot looks. */}
-            {isDecode ? (
+            {Preview ? (
+              <Preview spec={spec} size={160} />
+            ) : isDecode ? (
               <RobotPreview spec={spec} size={160} />
             ) : (
               <ChainRobotPreview spec={spec} size={160} />
@@ -535,6 +544,14 @@ export function Menu({ settings, onChange }: Props) {
         </section>
 
         {/* ---------- builder ---------- */}
+        {Builder ? (
+          <section className="ds-sec">
+            <h2>Customize</h2>
+            <div className="ds-panelbox">
+              <Builder spec={spec} onChange={setSpec} game={settings.game} />
+            </div>
+          </section>
+        ) : (
         <section className="ds-sec">
           <h2>Customize</h2>
           <div className="ds-panelbox">
@@ -1022,6 +1039,7 @@ export function Menu({ settings, onChange }: Props) {
             </div>
           </div>
         </section>
+        )}
 
         {/* ---------- driver preferences (remembered per drivetrain) ---------- */}
         <section className="ds-sec">

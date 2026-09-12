@@ -12,6 +12,7 @@ import { MAX_SAVED_AUTOS } from '../config';
 import { StartPositionEditor } from './StartPositionEditor';
 import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
 import { ChainStartEditor } from './ChainStartEditor';
+import { moduleFor } from '../games';
 
 /**
  * Match configuration — the pre-game options that belong to the MATCH, not the
@@ -159,6 +160,9 @@ export function MatchSetup({
   // the start-position editor is built on DECODE's G304 legality + goal geometry —
   // hidden for the Chain Reaction shell (its start rules arrive with its manual).
   const isDecode = settings.game === 'decode';
+  // a game that brings its own start editor supplies it through the module slot;
+  // absent ⇒ the two inline branches below (DECODE's and CR's), unchanged
+  const StartEd = moduleFor(settings.game).startEditor;
 
   return (
     <section className="ds-panel">
@@ -187,7 +191,21 @@ export function MatchSetup({
 
         <section className="ds-sec">
           <h2>Start position</h2>
-          {isDecode ? (
+          {StartEd ? (
+            <StartEd
+              spec={settings.spec}
+              alliance={settings.alliance}
+              value={settings.startPose}
+              startIndex={settings.startIndex ?? 0}
+              category={settings.startCat}
+              saved={settings.savedStartPoses}
+              onChange={(startPose) => startPose && set(selectStart(settings, { index: -1, pose: startPose }))}
+              onPickPreset={(i) => set(selectStart(settings, { index: i, pose: null }))}
+              onCategory={(c) => set(switchCategory(settings, c))}
+              onSave={(pose) => set(saveStart(settings, pose))}
+              onDeleteSaved={(c, i) => set(deleteSavedStart(settings, c, i))}
+            />
+          ) : isDecode ? (
             <StartPositionEditor
               spec={settings.spec}
               alliance={settings.alliance}

@@ -16,7 +16,6 @@ FAR, it reads as UNPAIRABLE until the radius saturates six seconds later, and ne
 
 ```
 bestHost(two players both in ord) = { hostRegion: iad, cost: 310, spread: 300 }   # ceiling is 90
-```
 
 Two people in Chicago could not be matched to each other for six seconds, then played in
 Virginia. In the 2000-concurrent population sim this alone moved peak queue depth 35 -> 4 and
@@ -102,11 +101,9 @@ new `npm run lan:probe` **15/15 ALL PASS**, five runs in a row.
 
 Two commands, two machines (or two windows):
 
-```
 npm run lan:tab      # builds the client with LAN on + a private-IP rendezvous, then serves it
 npm run lan:probe    # drives two REAL browser windows through the whole feature
 npx electron scripts/lanprobe.cjs --guests 3   # the same, as a FULL 2v2 room
-```
 
 The probe takes a match from START HOSTING to a clock ticking down on the GUEST's HUD:
 handshake → room code → guest joins by code → both seated → ready up → START MATCH → snapshots
@@ -295,9 +292,7 @@ Branch **alpha**, merged from `lan-webrtc`. `npm test` **ALL PASS**, `npm run bu
 
 ## The server has NOT been deployed, and that is the only thing left
 
-```
 ./scripts/fly-deploy.sh --alpha
-```
 
 That deploys the PREVIEW app (`dsim-alpha`, from `fly.alpha.toml`), which is where
 `LAN_UPLOADS` and the new `LAN_SIGNALLING` are set. **flyctl is not installed on this
@@ -421,6 +416,68 @@ these were run in a real browser instead:
 - ⚠️ **Strip comments before a grep-style source assertion.** Hit for the third time: the
   `lan gate:` check for "does not key off the release channel" was `!/SERVER_CHANNEL/`, and it
   matched the PROSE explaining why the channel is the wrong key.
+# HANDOFF — 2026-09-12, sponsor session (DSIM presented by Offset Robotics)
+
+Branch **biobuzz**, on top of `139f727`. Everything below is UNCOMMITTED work in this
+worktree at the time of writing, then committed on `biobuzz-sponsor`. `npm test` **ALL PASS**
++ **447 CHECKS, ALL PASS**, `npm run build` green, `npm run server:check` green,
+`npm run uiaudit` AT OR UNDER BASELINE, `npm run contrast` ALL PASS (221).
+
+## READ FIRST — the app now carries a presenting sponsor
+
+Offset Robotics (<https://offsetrobotics.com>) sponsors the APP for the BIOBUZZ season.
+`docs/sponsor.md` is the operational half of the deal and CLAUDE.md has the rules section;
+this entry is only what a next session needs to know that those two do not say.
+
+**The archetype preset the sponsor asked for was deliberately NOT built** — the owner's call,
+because the BIOBUZZ manual does not exist yet and a box-tube preset would be invented
+geometry. Everything else they asked for is in.
+
+### What was built
+
+- `src/sponsor.ts` (term, link, footprint) + `src/ui/Sponsor.tsx` (every placement) +
+  `src/ui/sponsorAssets.ts` (the artwork imports, split so the headless suite can import
+  `sponsor.ts`).
+- Placements: home menu, shell footer, download page, the in-game top-right chip, the
+  Electron splash (`electron/splash.html`, new, plus the `showSplash`/`closeSplash` handover
+  in `main.cjs`), the loading screen line in `index.html`, and the mark BURNED INTO exported
+  replay video (`replayOverlay.ts` + the `loadSponsorMark()` await in `ReplayView`).
+- Analytics: `sponsor_shown`, `sponsor_click`, `player_joined`.
+- `scripts/smoke-biobuzz/sponsor.ts`, wired as the `SPONSOR` lane.
+
+### Gotchas a next session will hit
+
+- **The in-game chip must never be routed through `src/ads/`** — that is contract text, not
+  taste, and the smoke lane greps for it. See CLAUDE.md.
+- **`--ds-hud` INVERTS.** The first cut of the chip forced the dark artwork on the theory
+  that "the field is hardcoded dark"; in light theme a HUD card is WHITE, so that would have
+  been light ink on white. The chip takes the ordinary swap; only the replay burn-in (whose
+  plate is painted dark at every theme) always takes the dark cut.
+- **`replayOverlay.ts` imports the artwork DYNAMICALLY**, inside `loadSponsorMark()`. It is
+  imported by `scripts/smoke.ts` for `hudLabels`, under `tsx` with no bundler, and a
+  top-level image import crashes the whole suite with `ERR_UNKNOWN_FILE_EXTENSION`.
+- **Artwork naming collides with itself.** Offset ships `OffsetLogoLight.png` (a BLACK
+  wordmark — named by surface) and calls that same file "the dark logo" (named by ink). The
+  repo spells them `on-light` / `on-dark` and a replacement is placed BY LOOKING AT THE
+  PIXELS.
+- **Four artwork files, not two** — the Electron pair is duplicated because a `file://` page
+  cannot resolve a Vite hash.
+
+### Not verified, and not verifiable from here
+
+- **The replay burn-in has not been seen in an actual exported file.** The wiring, the
+  pre-decode ordering and the text fallback are smoke-checked, and the overlay was not
+  exercised through a real capture. Record one match export and look at the top-right corner.
+- **The Electron splash has not been run** (`npm run electron`). Same class: the file, the
+  window and the handover are checked statically.
+- **The Discord logo is not a repo change.** Somebody has to put it on the server.
+
+### Left for the owner
+
+- Vercel Analytics has to be ON in the deploy (`VITE_ANALYTICS=1`) or the monthly report
+  has no numbers to read.
+- The term in `src/sponsor.ts` is `2026-09-12` → `2027-09-12`. Change it if the signed dates
+  differ.
 
 ---
 
@@ -656,7 +713,7 @@ green, `npm run server:check` green. `SIM_VERSION` stays **2** — recorded in t
 batch list, per the block's own rule that alpha holds at 2 while its divergence from main is
 one unreleased batch. **Alpha server DEPLOYED** (see Deploy).
 
-## READ FIRST — what moved, and the one judgement call inside it
+## What moved, and the one judgement call inside it (2026-09-11)
 
 The owner's hypothesis was that the gate / secret-tunnel / loading-zone fouls were measuring
 the WHEELBASE rather than the robot's top-down outline. Checked against the real manual —
@@ -892,6 +949,671 @@ archive 3, LAN_MODE 2, credentials 13, static 13, spectator 8, total **1425 PASS
    share `C.BALL_MASS` with 5" artifacts. **None of them was touched** — the owner owns physics,
    and the day before kickoff is not when a shared solver changes.
 
+
+# HANDOFF — 2026-09-11 (external review of the Phase 0.5 merge: findings fixed)
+
+> ⚠️ SUPERSEDED ON THE PUSH LINE ONLY by the section above: `biobuzz` IS pushed (`54263eb`),
+> and `biobuzz-field` / `biobuzz-robot` are fast-forwarded to it. Everything else here stands.
+
+Branch **`biobuzz`** (worktree `dsim-biobuzz`), 5 commits on top of `6c31142`. **NOT pushed,
+not deployed, no PR.** `SIM_VERSION` and `BALANCE_VERSION` untouched. No physics constant was
+added, moved or changed, shared or BIOBUZZ.
+
+## READ FIRST — state
+
+| gate | result |
+|---|---|
+| `npm test` | exit 0 · **1733 `PASS` lines, 0 `FAIL`** — suite 1 `ALL PASS` (**1328 checks, the same list as before**), suite 2 `405 CHECKS, ALL PASS` (was 366) |
+| `npm run build` | `✓ built in 4.12s` (chunk-size warning only) |
+| `npm run server:check` | green, exit 0 |
+| `npx tsc --noEmit` | clean |
+
+**DECODE is byte-identical, and the argument is mechanical.** The only SHARED files this pass
+touched are `src/games/types.ts` — two `import type` lines and one OPTIONAL interface member,
+all three erased at runtime — and `src/sim/spawn.ts`, which is a comment-only change.
+`src/sim/artifactSolids.ts`, `src/sim/world.ts`, `src/sim/physicsEngine.ts` and `src/config.ts`
+are not touched at all. Suite 1's check count is unchanged at 1328 and the whole 405 of suite 2
+is BIOBUZZ's own file set.
+
+## The eight review findings, and what each one actually was
+
+1. **Pollen solved at DECODE's radius — NOT A BUG.** `play.ts` already passed `BB_POLLEN_R` to
+   both `robotSolids` and `solveArtifacts`; the reviewer read the DEFAULT parameter
+   (`C.BALL_RADIUS`) in the signature and not the call. Every call site was grepped. The
+   regression test asked for was added anyway, because nothing pinned it: a solved contact rests
+   at 2.990" and a pushed pollen sits 1.354" off the face, both the 3" element the renderer draws.
+2. **`robotSolids` builds DECODE's funnel — CONFIRMED, fixed** (`14b61a6`). New optional
+   `GameSimModule.artifactSolids` slot; BIOBUZZ fills it with `bbRobotSolids`, derived FROM
+   `bbMouths` so the drawn mouth and the solid mouth cannot drift. DECODE and CR leave it empty.
+3. **Custom start poses validated on the CENTRE only — CONFIRMED, fixed** (`a807e68`).
+   `bbFitPose` fits the ROTATED FOOTPRINT inside the perimeter AFTER the alliance mirror, and
+   slides rather than rejects. Custom poses stay ENABLED. Anchors go through it too (a no-op).
+4. **The tick-start sweep fell back to the END pose — CONFIRMED, fixed** (`14b61a6`). The
+   parameter is required; `NO_SWEEP` is gone. Cost of the old fallback, now measured: 0.588"
+   of penetration swept against **7.872"** unswept.
+5. **BIOBUZZ coercion runs after the CR pass — CONFIRMED as a fact, NOT fixed, documented**
+   (`bdbe4e8`). Reordering would re-add the CR fields the arm exists to strip. The real hazard
+   is different and is now written at both ends: the arm receives `out`, not raw `sp`, so the
+   first `bb*` field will need carrying across at the call site.
+6. **Containment observed after the local clamp — CONFIRMED, fixed** (`a6ee66d`). Escape is now
+   measured BETWEEN the solve and the clamp, pollen restored each tick, with a 2.5" budget.
+7. **Coverage gaps — CONFIRMED, fixed** (`a6ee66d`). Per-mount solids, the seam itself, radius
+   propagation end to end, pollen mass and restitution as an ENVELOPE, the real sweep path.
+8. **Perf compared independent minima — CONFIRMED, fixed** (`a6ee66d`). Paired per-round ratios
+   with a median, list printed.
+
+The four owner items (wall clamp vs the FLIGHT-ONLY comment, heading not read back from Rapier,
+array-order iteration, O(B³) pin search) went to `docs/biobuzz/feedback/000-solver-observations.md`
+as items 10–13 with two of the four readings CORRECTED, plus two new ones found while verifying:
+14 (pollen barely bounce — `bounceFirstContacts` is DECODE-only, effective e 0.015–0.211 against
+a configured 0.68) and 15 (the clamp hides 0.999"/1.744" per tick; a pollen and an artifact are
+the same mass).
+
+## What a kickoff session should know
+
+- `bbRobotSolids` is the shape a POLLEN meets, and it is deliberately thin: chassis box, two side
+  plates per mounted edge, mouth OPEN. When the manual lands and the real intake is known, that
+  function is the one place to change — the renderer and the solver both read `bbMouths`.
+- The suite now pins BIOBUZZ physics as ENVELOPES (`0 <= e <= C.BALL_BALL_RESTITUTION`, escape
+  `<= 2.5"`), not as values, precisely so the owner can close observations 14 and 15 without
+  turning this suite red.
+- `npm run test:bb` is still the inner loop (2 s). Nothing here goes in `scripts/smoke.ts`.
+
+# HANDOFF — 2026-09-11 (integration: `biobuzz-sandbox` + `origin/alpha` merged in)
+
+Branch **`biobuzz`** (worktree `dsim-biobuzz`) = previous `biobuzz` + `biobuzz-sandbox` +
+`origin/alpha` @ `914bc1b`. **PUSHED to origin** (the branch is public by decision 1; the
+SEASON stays private behind `channels: ['alpha']`). **Nothing deployed** — the deflate change
+that came in with alpha is a SERVER change and is inert until the owner runs
+`./scripts/fly-deploy.sh`. `SIM_VERSION` and `BALANCE_VERSION` untouched by the merge itself;
+alpha's own commits moved three friction constants (below).
+
+## State at 2026-09-11 (integration; was READ FIRST)
+
+Everything is green, on the merged tree, in this worktree.
+
+| gate | result |
+|---|---|
+| `npm test` | exit 0 · **1694 `PASS` lines, 0 `FAIL`** — suite 1 `ALL PASS`, suite 2 `366 CHECKS, ALL PASS` |
+| `npm run build` | `✓ built in 3.83s` (chunk-size warning only) |
+| `npm run server:check` | green, exit 0 |
+| `npm run test:mm` | `✓ matchmaker: 58 checks passed` |
+
+`biobuzz-field` and `biobuzz-robot` were fast-forwarded to this tip and pushed, so both lanes
+start kickoff on the same code. `biobuzz-shell` and `biobuzz-core` were already fully merged
+(behind `biobuzz` with a zero-file diff) and can be retired.
+
+## What came in from `biobuzz-sandbox` (7 commits)
+
+Phase 0.5: **BIOBUZZ owns no ground-ball integrator.** `solveArtifacts`/`robotSolids` took a
+trailing artifact-radius parameter — DECODE passes nothing and is byte-identical — the
+`BB_BALL_SOLVER` switch and `separatePollen` are gone, and POLLEN ride the owner's shared solve
+at `BB_POLLEN_R`. The pollen checks were rewritten for the one solver rather than deleted
+(349 → 366). `docs/biobuzz/feedback/000-solver-observations.md` is the owner-facing write-up;
+its "For the owner" list has three items that change how BIOBUZZ plays and none of them is
+fixable inside `src/games/biobuzz/`.
+
+## What came in from `origin/alpha` (9 commits)
+
+- **permessage-deflate is ON** (`e287c0e` + `41e346d`) at `windowBits` 15 / `memLevel` 8 with
+  `serverNoContextTakeover: false`, which is the load-bearing line. Measured on the WIRE, not
+  on the app payload: −88% solo, −86% 1v1, −83% 2v2. It is negotiated per connection in the
+  HTTP upgrade, so it is NOT a protocol change and needs no `CLIENT_CAPS` gate — a client that
+  does not offer it gets today's exact bytes. `WS_COMPRESS=0` is NOT on this branch; that kill
+  switch lives on `perf-load-v2` and has not landed on alpha yet.
+- **Three friction constants moved**, all the owner's: rolling friction 28 (`84162e1`), robot
+  bumper 0.45 → 0.2 (`a97f03c`), then bumper-on-bumper 0.15 with bumper-on-wall left at 0.40
+  (`914bc1b`). Both suites are green against them here.
+- **`npm run costprobe`** (`scripts/costprobe.ts`) — prices a room off the real `step()` and
+  the real `slimWorld`/`encodeBallDelta` codec. ⚠️ It measures the PAYLOAD, so it cannot see
+  permessage-deflate. `scripts/zz-deflate-cost.ts` is the one that counts TCP `bytesRead` and
+  is the authoritative probe for anything compression-related.
+- **The practice replay save policy** (`src/replaySavePolicy.ts`, `605857d`). Game-agnostic —
+  it lives in `GameController`, so BIOBUZZ practice runs are covered the moment the season is
+  playable. A completed run is always kept; an ABANDONED one is kept if it carries at least
+  `PRACTICE_SAVE_MIN_S` (15) of DRIVING, counted as ticks where `robotsEnabled` so the
+  pre-match countdown cannot pad it. Leaving the game screen used to lose the run silently.
+
+## Merge resolutions — two conflicts, both docs
+
+1. **`docs/biobuzz-plan.md` Decisions.** The sandbox branch's warning that copy-and-own has an
+   exception (ground pollen physics is not copied and not owned) is KEPT, attached to decision
+   3. Its restatement of decision 4 is dropped: it ended "nothing is pushed or deployed until
+   decision 1 resolves", and decision 1 was resolved by the owner on 2026-09-10. The kept
+   decision 4 also says more — the owner owns PHYSICS, and gallery observations go to him as
+   HANDOFF notes, never as BIOBUZZ-local constant tweaks.
+2. **`HANDOFF.md`.** Two branches each prepending a dated section is not a disagreement. Both
+   are kept, newest first.
+
+## Next
+
+1. **The owner deploys.** The measured egress saving is real and currently unrealised, and a
+   season kickoff is exactly when concurrency spikes. `./scripts/fly-deploy.sh`, never a bare
+   `flyctl deploy` — `fly.toml` carries one `[[vm]]` size and a bare deploy upsizes every
+   satellite.
+2. **Kickoff, 2026-09-12 12:00 ET.** Both lanes start here. `docs/biobuzz-contract.md` is the
+   lane contract; `docs/biobuzz-reference.md` gets written on kickoff day from the manual.
+3. ⚠️ **`BB_POLLEN_RADIUS` does not exist** — the constant is `BB_POLLEN_R`. The plan and the
+   prompts use the longer name; the code uses the real one.
+4. Still unowned and not on this branch: the `Room.onInput` unbounded future-tick buffer (a
+   latent DoS). A fix exists on `perf-load-v2`, which is the perf chat's to land.
+
+---
+
+# HANDOFF — 2026-09-11 (BIOBUZZ Phase 0.5: pollen on the shared artifact solver)
+
+Branch **`biobuzz-sandbox`** (worktree `dsim-bb-sandbox`), off `biobuzz`. **NOT pushed, nothing
+deployed** — the repo is public and the 2026–27 season is private until further notice.
+`SIM_VERSION` and `BALANCE_VERSION` untouched. No physics constant, shared or BIOBUZZ, was
+changed by this session.
+
+## READ FIRST — state
+
+**Everything is green. BIOBUZZ has one ball solver and it is the owner's.**
+
+| gate | result |
+|---|---|
+| `npm test` | exit 0 · **1674 `PASS` lines, 0 `FAIL`** — suite 1 (`scripts/smoke.ts`) `ALL PASS`, suite 2 (`scripts/smoke-biobuzz/index.ts`) `366 CHECKS, ALL PASS` (was 349) |
+| DECODE alone | `1308 PASS / 0 FAIL`, `ALL PASS` — **identical check-name list to the pre-item-1 baseline** (see the byte-identity proof below) |
+| `npm run test:mm` | `✓ matchmaker: 58 checks passed` |
+| `npm run build` | `✓ built in 7.74s` · `dist/assets/index-k3qkyn3n.js 2,411.50 kB` (chunk-size warning only) |
+| `npm run server:check` | green (no output) |
+| `npm run uiaudit` | `ALL RULES AT OR UNDER BASELINE` (inline-spacing 29/29, off-grid-gap 165/165, the three hard rules 0/0) |
+| `npm run contrast` | `ALL PASS — 221 contrast checks across light + dark` |
+| `npx tsc --noEmit -p .` | `TypeScript: No errors found` |
+| gallery contact sheet | 140 PNGs, 70 cells × 2 themes, `scratch/shots/2b622f7-dirty/` — **all 70 light cells distinct** (they were not before, see the runner gotcha) |
+
+## What changed, and why it is small
+
+The owner's artifact rework made `solveArtifacts` the **ONE POSITION AUTHORITY** for every
+ground artifact. BIOBUZZ had grown a second one — a `BB_BALL_SOLVER` switch with a bespoke arm
+(CR's ground integrator copied, plus `separatePollen`) beside a `'rapier'` arm. That is exactly
+the defect the rework exists to end, so the bespoke arm is gone and POLLEN ride the shared
+solve. BIOBUZZ's entire contribution to pollen physics is now a **number**.
+
+| item | commit | |
+|---|---|---|
+| 1 | `fb71b1c` | `refactor(sim): solveArtifacts and robotSolids take the artifact radius` |
+| 2 | `2591786` | `refactor(biobuzz): one solver — POLLEN ride the shared artifact solve` |
+| 3 | `2b622f7` | `test(biobuzz): the pollen checks are rewritten for the one solver, not deleted` |
+| 4 | `8e0b20f` | `docs(biobuzz): gallery observations for pollen on the shared solver` (+ the `shots.cjs` fix) |
+| — | `5b5bbce` | `test(biobuzz): interleave the perf windows so the ratio measures code, not load` (found by the gate run) |
+| 5 | *(this one)* | the docs pass + this handoff |
+
+1. **The radius is ADDITIVE.** `solveArtifacts(...)` and `robotSolids(r, heldBalls)` gained a
+   trailing `radius: number = C.BALL_RADIUS`, used where they read `C.BALL_RADIUS` to build the
+   artifact collider and the held-ball circles. **Every DECODE call site passes nothing.**
+   `pinnedArtifacts`/`supported` (physicsEngine.ts ~781/790/844) deliberately still read
+   `C.BALL_RADIUS` outright, because BIOBUZZ does not call them — parameterizing an unreachable
+   path would be a change with no reader.
+2. **`play.ts` has no ball integrator.** `separatePollen` deleted, the copied ground integrator
+   deleted, the `BB_BALL_SOLVER` switch and `BB_POLLEN_FRICTION` / `BB_POLLEN_REST_SPEED` /
+   `BB_POLLEN_SEP_ITERS` deleted from `config.ts`. `interact()` lost its PLOW branch and only
+   CAPTURES. What runs now, in order: the shared `stepGroundBall` rolling pass → capture →
+   `solveArtifacts(world, dt, biobuzzColliders, NO_IDS, NO_IDS, solids, from, BB_POLLEN_R)` with
+   `robotSolids(rob, heldBalls, BB_POLLEN_R)` → `clampPollenToWalls`. `step.ts`'s pre-solve
+   ordering (start-of-tick pose for `from`) is unchanged.
+3. **Two things the bespoke arm did that the shared solve does not**, both resolved without
+   re-implementing anything:
+   - **Bringing a pollen to rest.** The solve runs in a plane with no gravity and no floor, so
+     nothing stops a rolling pollen. Measured, a plowed pile was still travelling at
+     **18.98 in/s five seconds after the robot stopped**. Fixed by calling the ALREADY-SHARED,
+     already-exported `stepGroundBall` (`src/sim/physics.ts`, velocity-only rolling friction +
+     rest snap) — not by porting BIOBUZZ's deleted 42 / 1.5 constants. `settle [*]: the pile is
+     actually AT REST` is the check that fails if this is ever dropped again.
+   - **Keeping a pollen in the field.** `clampPollenToWalls` was going to be deleted as
+     redundant; it is not. Measured with it removed, a pollen went **2.02" past the wall plane**
+     (`wall-row-sweep`, tick 105) and 1.52" (`pile-fast`), because BIOBUZZ runs no pin/round
+     loop (owner note 1). Kept unchanged, re-documented as THE CONTAINMENT INVARIANT with those
+     numbers, and asserted on **every tick** of seven scenes.
+   Nothing else was missing: wall restitution for a GROUND pollen and a speed cap both exist on
+   the shared side (`BB_POLLEN_WALL_REST` is FLIGHT-only; the cap is `C.BALL_MAX_SPEED`, which
+   is an owner question rather than a gap — see note 3).
+4. **Smoke was rewritten, not deleted.** The checks that read the dead switch now read the one
+   solver: count conserved over 600 ticks of a sweeping robot; every pollen inside `bounds` on
+   EVERY tick of `pile-slow/med/fast`, `wall-row-sweep`, `corner-pile`, `squeeze-2robots`,
+   `settle-60` (through `bbSceneStills`, the one stepping path, so these check the run the
+   gallery draws); no two RESTING pollen overlapping past 0.1"; the pile actually at rest; a
+   full-throttle robot never posting the `pin-wall` pollen through the wall on any of 300 ticks;
+   every scene hashing deterministically. 349 → 366 checks.
+
+## The DECODE byte-identity proof
+
+Item 1's claim is that DECODE is unchanged. The suite is **not bit-reproducible run to run**,
+so "identical output" had to be defined before it could be proved: `server/room.ts:836` seeds a
+Room with `(Date.now() ^ (Math.random() * 0xffffffff)) >>> 0`, so the five `Room`-driven replay
+checks print different hashes and scores on every run **with no code change at all** — two runs
+of the same code differ on four of those lines.
+
+So the proof is: **the check-NAME lists are identical** (detail suffix after ` — ` stripped),
+1308 `PASS` / 0 `FAIL` on both sides, and every line-level difference is one of those five
+Room-seeded lines. Artifacts are in the session scratchpad (`smoke-before.txt`,
+`smoke-after1.txt`, `smoke-after1b.txt`, `smoke-final.txt`); re-derive with
+`grep '^PASS' f | sed 's/ — .*$//'` and `diff`.
+
+## ⚠️ THE GALLERY RUNNER WAS PHOTOGRAPHING THE WRONG CELLS
+
+`scripts/shots.cjs` slept a flat 120 ms after `scrollIntoView` before `capturePage`. That held
+for a 12-cell filtered run and **failed silently on the full 70**: the files named
+`wall-row-sweep@60`, `@150` and `@300` came out **byte-identical to the `pile-fast@30`, `@60`
+and `@120` CELLS** — four cells of compositor lag on a hidden BrowserWindow — while
+`pile-slow`, four cells earlier, was correct. Every PNG was a plausible BIOBUZZ scene, so
+nothing looked broken; it was caught only because two files that should have differed had the
+same md5 and the captions inside them named a third scene.
+
+Fixed in `8e0b20f`: wait for two `requestAnimationFrame`s, then capture twice and discard the
+first (`capturePage` itself pumps a frame). Verified by re-running: zero duplicates across all
+70 light cells, and the full run now matches a filtered run byte for byte.
+
+**Any feedback dump written against a contact sheet from before `8e0b20f` may be describing the
+wrong cell.** Re-shoot before trusting one.
+
+## ⚠️ THE PREVIEW PORT GOTCHA, HIT AGAIN
+
+`npx vite preview` moved itself to **4174** because a sibling worktree's preview held 4173, and
+`shots.cjs` defaults to 4173 — so the default invocation would have photographed *another
+branch's build*. Confirmed rather than assumed: `netstat -ano | findstr 4173` showed PID 18408
+listening, and the two ports served different bundles (`curl -s localhost:4173/ | grep index-`
+gave `index-DTDXycuZ.js`, 4174 gave `index-CHgC59C_.js`, which is what `dist/` actually held).
+Always read the port `vite preview` prints and pass `--port` explicitly.
+
+## Next steps
+
+1. **The owner reads `docs/biobuzz/feedback/000-solver-observations.md`** — specifically the
+   "For the owner" list. The three that change how BIOBUZZ plays are: no pin/round loop
+   (a chassis drives through pollen it presses on a wall), a persistent ~2.1" overlap under a
+   pressing chassis that does not relax when the robot stops, and a struck pollen reaching
+   `C.BALL_MAX_SPEED` (90) while the robot that hit it is slower. All three are shared-physics
+   decisions; none is fixable inside `src/games/biobuzz/`.
+2. **Nothing in this sprint is a rules decision.** Kickoff is 2026-09-12; `docs/biobuzz-plan.md`
+   Phase 0.5 is now marked done and points at the observations file.
+3. **`BB_POLLEN_RADIUS` does not exist** — the constant is `BB_POLLEN_R`. The plan and prompts
+   use the longer name; the code and docs use the real one.
+4. ✅ **RESOLVED by the integration merge at the top of this file** (2026-09-11): the commit
+   was merged, Decisions item 1 and this header are reconciled, and `biobuzz` is pushed. The
+   original note, kept because its reasoning still explains the resolution:
+   ⚠️ **THIS BRANCH WAS ONE COMMIT BEHIND `biobuzz`, AND THE MISSING COMMIT CONTRADICTED THE
+   HEADER ABOVE.** `biobuzz` has `63fffd9` "docs(biobuzz): the branch is public and physics
+   belongs to the owner" (2026-09-10, owner-revised), which says `biobuzz` and the lane branches
+   DO push to `origin` with the season hidden behind `channels: ['alpha']` — where
+   `docs/biobuzz-plan.md` Decisions item 1 on this branch still says LOCAL ONLY, and the header
+   of this section says "NOT pushed". Both are true of THIS session (the brief said push
+   nothing, and nothing was pushed), and neither is the current policy.
+   It was left unmerged deliberately: syncing branches was not in this session's brief, and
+   `63fffd9` edits `docs/biobuzz-plan.md`, which item 5 also rewrote, so the merge needs a human
+   to resolve the Decisions/Phase-0.5 overlap rather than a guess. Merge it before the next
+   session and reconcile Decisions item 1 and this header. Its OTHER half — "BIOBUZZ does not
+   own a ball integrator, POLLEN rides the shared `solveArtifacts`" — is exactly what this
+   session implemented, so the two branches agree on the substance.
+
+---
+
+# HANDOFF — 2026-09-10 (BIOBUZZ: core + shell merged into biobuzz)
+
+Branch **`biobuzz`** (worktree `dsim-biobuzz`), = `origin/alpha` + `biobuzz-core` + `biobuzz-shell`,
+now integrated. **NOT pushed, nothing deployed** — the repo is public and the 2026–27 season is
+private until further notice. `SIM_VERSION` and `BALANCE_VERSION` untouched.
+
+## State at 2026-09-10 (was READ FIRST)
+
+**Everything is green, and `npm test` now means both suites.**
+
+| gate | result |
+|---|---|
+| `npm test` | exit 0 · **1657 `PASS` lines, 0 `FAIL`** — suite 1 (`scripts/smoke.ts`) `ALL PASS`, suite 2 (`scripts/smoke-biobuzz/index.ts`) `349 CHECKS, ALL PASS` |
+| `npm run test:mm` | `✓ matchmaker: 58 checks passed` |
+| `npm run build` | green (2,413.22 kB bundle, chunk-size warning only) |
+| `npm run server:check` | green (no output) |
+| `npm run uiaudit` | `ALL RULES AT OR UNDER BASELINE` (inline-spacing 29/29, off-grid-gap 165/165, the three hard rules 0/0) |
+| `npm run contrast` | `ALL PASS — 221 contrast checks across light + dark` |
+| `npx tsc --noEmit -p .` | clean |
+| gallery contact sheet | 140 PNGs, 70 cells × 2 themes, `scratch/shots/9a51bb7/` |
+
+The one error the merge left (`play.ts` importing the deleted `solveBalls`) is gone, and
+`docs/biobuzz/baseline-alpha.md` is rewritten: there is no accepted-failure list any more, so
+**any `FAIL` line is a regression**.
+
+## What the seven items did
+
+| item | commit | |
+|---|---|---|
+| 1 | `76cff4a` | `fix(biobuzz): the rapier pollen arm calls solveArtifacts, swept from the tick's start pose` |
+| 2 | `894be27` | `feat(biobuzz): the real game module replaces P0-core's placeholder` |
+| 3 | `9729702` | `refactor(core): the shell's three requests — optional catalystRail, a real biobuzz coerceSpec arm` |
+| 4 | `fe71d8e` | `fix(server): the start-pose de-conflict loop reads the room's game's anchor count` |
+| 5 | `9a51bb7` | `docs: the npm test gate is GREEN, and it now runs both suites` |
+| 6 | — | gates + the visual check. **No commit: nothing was visibly wrong.** Evidence is this section. |
+| 7 | *(this one)* | the handoff |
+
+1. **`BB_BALL_SOLVER`'s `'rapier'` arm calls `solveArtifacts`.** `claimed` and `doorway` are
+   both EMPTY sets, and that is a fact about this game rather than a stub: BIOBUZZ's `interact()`
+   either captures a pollen outright (straight to `held`) or plows it, so there is no
+   mid-capture ground pollen for a claim to name and no gate to expel one. `solids` is
+   `robotSolids(rob, heldBalls)` per robot, and `from` is each robot's pose at the START of the
+   tick, captured in `step.ts` as stage 0 of the pipeline exactly the way `world.ts` records
+   `sweepFrom` — a kinematic robot swept from where it actually was, not from where the drive
+   left it. Both arms still conserve pollen count and keep every pollen in `bounds` (asserted).
+2. **The real `GameSimModule` / `GameModule`.** `sim.ts` is `scored: false`,
+   `startLegality: false`, `initialAct: 2`, `startPoseCount: BB_START_POSE_COUNT` (2),
+   `createWorld: createBiobuzzWorld`, `step: biobuzzStep`, `hud: biobuzzHud`; `index.ts` fills
+   the three renderers, `Builder`, `Preview`, `hudChips`, `scoreBar`, `resultsRows`,
+   `labels.configSummary` and `devRoutes`. `state.ts` is the shell's, unchanged, and
+   `World.biobuzz?: BiobuzzState` imports from it.
+3. The shell's three requests — (a) `RobotState.catalystRail` is optional, (b) `coerceSpec` has a
+   real `game === 'biobuzz'` arm, (c) the `GameController` seam is NOT built; see the written
+   request below.
+4. **`server/room.ts` reads the room's own anchor count.** Both de-conflict loops (the lobby
+   assign at ~line 799 and the match-start pass at ~line 1102) take
+   `simModuleFor(this.game).startPoseCount` instead of `START_POSES.length`; the
+   `START_POSES` import is gone. The BIOBUZZ smoke suite asserts a 4-robot alliance is only ever
+   handed anchors `0..startPoseCount-1` — observed `startPoseCount=2 assigned=[0, 1, 0, 0]`.
+5. `docs/biobuzz/baseline-alpha.md` rewritten around a GREEN gate; `HANDOFF.md`'s and
+   `CLAUDE.md`'s `&&`-chaining paragraphs corrected (the chaining is still deliberate, and
+   `test:bb` stays as the fast loop).
+
+## ⚠️ THE SOLVER-COMPARISON CAVEAT — `solveArtifacts` hard-codes `C.BALL_RADIUS`
+
+`solveArtifacts` builds its artifact collider, its speed cap and `robotSolids`' held-artifact
+circles at **`C.BALL_RADIUS` (2.5", DECODE's artifact)**. **BIOBUZZ POLLEN is 1.5"**
+(`BB_POLLEN_R`). So the `'rapier'` arm of `BB_BALL_SOLVER` separates pollen at the wrong
+diameter: count is conserved and nothing leaves `bounds` (both asserted), but a pile settles
+looser than it is drawn, and a held-pollen circle is a DECODE artifact.
+
+This was left alone deliberately — fixing it costs a change to `src/sim/physicsEngine.ts` +
+`src/sim/artifactSolids.ts`, i.e. shared core that no BIOBUZZ lane owns, and the default arm
+(`'bespoke'`, which uses `BB_POLLEN_R`) is unaffected. It is the **P0.5 solver-comparison
+caveat**: whoever compares the two solvers has to parameterize the radius first, or the
+comparison is measuring the radius rather than the solver. Documented in `play.ts`'s header and
+in `docs/biobuzz/baseline-alpha.md`.
+
+## The written request core still owes the shell — a world seam on `GameController`
+
+The third of the shell's three requests, **deliberately NOT built** (item 3c). `GameController`
+builds its own world from `moduleFor(gameId).createWorld` with no injection point, so the
+gallery's drivable cell (`LiveScene` in `Gallery.tsx`) runs the shared `Renderer` + shared
+`InputManager` over a scene world it steps itself, and prints the module's `hud()` slice as
+text where the real HUD would be.
+
+Why it was skipped rather than added: the constructor change is small, but it has **no caller**
+in this branch and cannot get one cheaply. `LiveScene` is frozen after Phase 0, and making it
+the real game screen means mounting the canvas, the audio, the rAF loop and the global input
+handlers inside a dev-route cell — a real piece of work, and a seam with no consumer is worse
+than a written request, because the next reader cannot tell whether it is load-bearing.
+
+**The request, for whoever does it:** accept an optional prepared `World` (or a
+`createWorld` override) on `GameController`'s options, take that path instead of
+`moduleFor(...).createWorld` when present, and leave `session: null` behaviour otherwise
+bit-identical — `game.ts`'s solo path is the one thing a replay depends on. Then port
+`LiveScene` onto it and the gallery's scene cells become the real game screen on a scene world,
+which is what the cell was always for.
+
+## What the gallery shots showed (item 6)
+
+`scratch/shots/9a51bb7/` — clean tree, so no `-dirty` suffix. Recipe: `VITE_APP_CHANNEL=alpha
+npm run build`, `npx vite preview`, then
+`env -u ELECTRON_RUN_AS_NODE npx electron scripts/shots.cjs --port <port>`. Cells READ as
+images, and what was seen:
+
+- **`field-empty@0`** (light) — four walls, the tile grid, the centre cross. `0 pollen · no robot`.
+- **`spawn-default@0`** (light AND dark) — 60 pollen scattered, four robots in the four corners,
+  `0/9 held`. No pollen inside a chassis. Both themes correct: the mat keeps its light outline
+  in dark, the card chrome inverts, the caption stays legible.
+- **`pile-fast@30`** (light) — 12 pollen bunched at the intake mouth of a driving robot, none
+  behind the sweeper line, none inside the frame.
+- **`corner-pile@120`** (light) — 16 pollen wedged in the bottom-right corner with the robot on
+  them; the pile is 2D, not a line along the wall.
+- **`archetype-drum-right@0`** (light) — three chassis sizes, drum column on the robot's RIGHT in
+  the in-match canvas AND in all three builder previews. The mount and the sprite agree.
+- **`archetype-turret-backleft@0`** (light AND dark) — turret ring at back-left in both
+  renderers at all three sizes. Dark is correct too.
+- **`settle-60@300`** (light) — 60 pollen at rest, spread across the field, nothing overlapping,
+  nothing against a wall in a line.
+- **`pile-slow@30`** (dark, re-shot) — the 3×4 grid still tidy in front of the intake.
+
+**Nothing was fixed, because nothing was wrong** — and note that the two bugs a shot run found
+last time (the plow gaining on a pollen, every launcher mount collapsing to the front) both stay
+fixed through the real `coerceSpec` arm: the 26 archetype sheets are 26 different pictures.
+
+Pollen containment was checked numerically rather than by eye as well: a small PNG reader over
+`wall-row-sweep@60`, `corner-pile@240`, `pin-wall@300` and `settle-60@300` found **zero** pollen
+pixels outside the mat box (±1px for antialiasing at the wall).
+
+**Pollen physics was NOT retuned** — that is the next chat's job, and the solver caveat above is
+the first thing it has to decide about.
+
+## Gotchas this session earned
+
+- ⚠️ **The dev route needs the ALPHA channel AT BUILD TIME.** `devRoutesEnabled()` is
+  `appChannel() === 'alpha'` and `appChannel()` reads `import.meta.env.VITE_APP_CHANNEL`, which
+  Vite BAKES IN. A plain `npm run build` therefore serves a preview where `/biobuzz/gallery`
+  falls through to `parseScreen` and goes home, and `shots.cjs` reports the route is not
+  mounted. Build with **`VITE_APP_CHANNEL=alpha npm run build`** for a shot run.
+- ⚠️ **`devRoutes` paths are matched against the GAME-STRIPPED remainder**, so BIOBUZZ's gallery
+  is `'/gallery/*'`, NOT `'/biobuzz/gallery'`. `devRouteFor` in `src/ui/App.tsx` now honours a
+  trailing `/*` (`rest === base || rest.startsWith(base + '/')`), which is what makes a pasted
+  `/biobuzz/gallery/<scene>` link open the scene instead of the home screen. Seventy scenes is
+  not seventy route entries.
+- ⚠️ **`npx vite preview --port 4173` SILENTLY MOVES TO 4174** if another worktree's preview
+  already holds 4173 — it prints `Port 4173 is in use, trying another one...` and serves
+  anyway. `shots.cjs` defaults to 4173, so a run against a stale sibling build looks like a
+  successful run of the wrong code. Check the log line and pass `--port` to match.
+- ⚠️ **`shots.cjs` can capture ONE cell at the wrong scroll offset.** Two dark shots
+  (`pile-slow@30`, `pile-slow@60`) came back framed on `field-empty` / `field-labelled` — a
+  scroll/layout race inside `capturePage(rect)`, which clips silently. Re-running with
+  `--scene pile-slow --theme dark` produced correct frames, so it is a runner flake, not a
+  render bug. **If a cell looks like a neighbour, re-shoot it before believing it.**
+- **`tsconfig.json` is `"include": ["src"]`** — `npx tsc --noEmit -p .` does NOT cover
+  `scripts/` or `server/`. A broken `updateBiobuzz(...)` call in `scripts/smoke-biobuzz/field.ts`
+  passed tsc and only showed up under `npx tsx`. Server is `npm run server:check`; the scripts
+  are covered only by running them.
+- ⚠️ **`DEFAULT_SPEC` now lives in the LEAF `src/sim/specDefaults.ts`** and `src/sim/spawn.ts`
+  re-exports it, so every `import { DEFAULT_SPEC } from './spawn'` is unchanged. It had to move:
+  BIOBUZZ's real module put a MODULE-EVAL-TIME read of it inside the registry import cycle
+  (`games/sim` → `biobuzz/sim` → `biobuzz/spawn` → the coercer's top-level
+  `{ ...DEFAULT_SPEC, ...BB_PRESETS[0] }`), and ES modules evaluate dependencies before the
+  importer's body, so it read `DEFAULT_SPEC` in its TDZ: a hard
+  `ReferenceError: Cannot access 'DEFAULT_SPEC' before initialization` at import time. The
+  placeholder module never reached a file with a top-level read, which is why the cycle looked
+  safe. **Keep `specDefaults.ts` a leaf** — an import there that reaches `spawn.ts`,
+  `physicsEngine.ts` or a game module puts the cycle back.
+- **`src/games/biobuzz/coerce.ts` is a leaf for the same reason** (`../../types`, `../../math`,
+  `../../sim/drivetrain`, `../../sim/specDefaults`, `./config`, `./mounts` and nothing else).
+  `robotConfig.ts` is now just `bbCoerceSpec` = `coerceSpec(raw, base, 'biobuzz')` plus
+  `bbDials`, and `scripts/smoke-biobuzz/harness.ts`'s `bbCoerce` is that same one call.
+- **`catalystRail` absent means 0.** `worldHash` (`src/net/checksum.ts`) mixes only
+  tick/rngState/robot pose+turret/ball pos+z/scores/goal counts, and `backfillRobot`
+  (`src/net/protocol.ts`) re-seeds a different field list, so the shell's stated fear (a NaN in
+  the hash) was not reachable. Only the three Chain Reaction readers needed `?? 0` —
+  `chain/play.ts`, `chain/state.ts`, `chain/drawRobot.ts`.
+- **Giving a game a `scoreBar` used to hide its `hudChips`.** `GameView.tsx` had an
+  `if (GameScoreBar) return ...` early return that dropped the whole `.status-wrap`; and its
+  DECODE-specific chrome (motif dots, the four-way breakdown, the hopper strip) was gated on
+  `!cr`, which put DECODE's furniture on BIOBUZZ. Both are now `hud.game === 'decode'` / a
+  ternary around the bar. DECODE and Chain Reaction render byte-identically — the whole main
+  suite stayed at 1308 PASS / 0 FAIL across items 2, 3 and 4.
+- **`drawOverlays` is deliberately absent** from `BIOBUZZ_MODULE`, unlike the other slots. The
+  slot draws between the field and the robots (DECODE's ramp strips) and BIOBUZZ has no
+  published structure to underlay — Section 9 (ARENA) is a Kickoff placeholder. A no-op costs a
+  call per frame and tells the next reader there is something to see. It lands with the geometry.
+  `mobileButtons` and `startEditor` are absent for the reasons written in `index.ts`.
+
+---
+
+# HANDOFF — 2026-09-10 (BIOBUZZ Phase 0: the shared core is game-agnostic)
+
+Branch **`biobuzz-core`** (worktree `dsim-bb-core`, cut from `biobuzz`, itself cut from
+`origin/alpha`). **NOT pushed and must not be** — the repo is public and the 2026–27 season
+is private until further notice. Nothing was deployed.
+
+`npm run build` / `server:check` / `uiaudit` / `contrast` green. `npm test` is **1289 PASS
+and 7 FAILURES — the same 7, and the same pass count, as the baseline** as of this section's
+date. The new BIOBUZZ suite is ALL PASS. `SIM_VERSION` and `BALANCE_VERSION` untouched.
+
+⚠️ **SUPERSEDED — that is no longer true.** `alpha` has since fixed all seven
+(the artifact-collision rewrite), so the gate is now simply **green** and `npm test`'s `&&`
+chain REACHES the BIOBUZZ suite: one command proves both. See the integration section at the
+top of this file and the rewritten `docs/biobuzz/baseline-alpha.md`. What was true on
+2026-09-09 and is worth keeping: the chaining is deliberate (a red `npm test` must keep
+meaning "physics broke"), and while the seven stood the second suite never ran under
+`npm test` at all — no `registry integrity` line appeared in any `npm test` log that day.
+**`npm run test:bb` stays**, now as a convenience rather than as the only way: it is the fast
+loop while working inside `src/games/biobuzz/`, and the way to run the BIOBUZZ suite when the
+first one is red for an unrelated reason.
+
+## What that Phase-0 refactor was and what it was not
+
+Phase 0 items 1–8 of `docs/biobuzz-plan.md`: make the shared core GAME-AGNOSTIC so that a
+third game is **a registry entry plus a module directory**, with no two-valued literal left
+anywhere. It is a **REFACTOR** — `decode` and `chain` behaviour is byte-identical, and that
+was the binding constraint on every decision below.
+
+Two things were deliberately NOT done, and both are stated in the code:
+
+- **DECODE's and CR's inline UI branches are untouched.** The new `GameModule` slots are
+  wired in FRONT of them (`mod.X ? <slot> : <existing branch, unchanged>`). Rewriting the
+  two games people are actually playing to route through the slots would put a behaviour
+  change inside a commit whose only job is to make room for a third game.
+- **The never-read `GameUiSpec` (`ui`) is left alone.** Removing it is a separate change and
+  it is not in anybody's way.
+
+Also NOT done, on purpose: `coerceSpec` was not threaded with `game` inside `coerceSetup`.
+The chassis envelope is per-game too, and switching which envelope a DECODE spec is clamped
+against is a behaviour change, not a refactor. Only the start-index clamp moved.
+
+## The baseline gate
+
+`npm test` on `alpha` is not green, so the gate is **"no NEW failures"** against a recorded
+list, not "green". Recorded before any edit in `docs/biobuzz/baseline-alpha.md`: `alpha` SHA
+`3054f59c7518b75ce1ed339618e203bd785a631c`, **1289 PASS / 7 FAILURES**, all seven in
+`src/sim` contact physics, which Phase 0 does not touch:
+
+1. `a robot resting against something does not turn while the driver does nothing`
+2. `...and how far grows with how far off centre you hit it, without ever spinning you round`
+3. `a SIDE hit on the gate arm turns the robot INTO the corner`
+4. `...and a closed arm gives where one at its stop does not`
+5. `ramming a wall at speed never snaps the chassis round — it squares it`
+6. `an OFF-CENTRE ram spins the robot it lands on`
+7. `an artifact pinned in the doorway settles instead of buzzing back and forth`
+
+Re-check with `npm test 2>&1 | grep '^FAIL'`. Any line not in that list fails the gate.
+`node_modules` did not exist in this worktree; `npm install` was run first, and it rewrote
+the lockfile's Rapier range from `^0.19.3` to the exact `0.19.3` already in `package.json`
+(CLAUDE.md requires the exact pin — kept, committed separately as `3fa6a90`).
+
+## What landed, one commit per plan item
+
+| item | commit | what |
+|---|---|---|
+| 0 | `5c5dc45` | `docs/biobuzz/baseline-alpha.md` — the gate |
+| 1 | `72a67de` | `GAME_IDS` / `isGameId` / `coerceGameId`; `GameSimModule.initialAct` + `startPoseCount` |
+| 2 | `fa1379c` | every two-valued game literal replaced by the registry helpers |
+| 3 | `8a68e61` | the start-index clamp is per-game |
+| 4 | `3cf8df2` | `Season.channels` + the pure channel→visibility rule, wired at every enumerating surface |
+| 5 | `f7e4fd7` | the optional UI slots on `GameModule` |
+| 7 | `0c49c02` | the placeholder `src/games/biobuzz/` + all four registrations |
+| 6 | `2bba683` | `scripts/smoke-biobuzz/` and the `npm test` script |
+| 8 | (this commit) | CLAUDE.md + HANDOFF |
+
+Items 6 and 7 are committed in the other order: item 6's suite asserts that every id in
+`GAME_IDS` is registered, so it cannot be green until item 7's module exists.
+
+**"Adding a game" is now written down** — CLAUDE.md's seam section lists the four
+registrations and every slot with its consumer. The four are `GAMES`, `SIM_GAMES`, `SEASONS`
+and `GameId`/`GAME_IDS`, and **all four fail SILENTLY when missed**, which is why they are a
+list rather than a sentence.
+
+## Gotchas, in the order they will bite
+
+- ⚠️ **`SIM_GAMES`' entries are GETTERS, and that is load-bearing.** `src/sim/spawn.ts`
+  imports `simModuleFor` (item 3's clamp) and every game module imports `spawn`, so there is
+  a real import cycle through `src/games/sim.ts`. A cycle is safe only when nothing is read
+  at module-eval time, and `{ decode: DECODE_SIM }` IS such a read — so whether the file
+  worked depended on which module the process loaded first. Entering through `spawn`
+  (`scripts/smoke.ts` does) resolved; entering through a game module (the new
+  `scripts/smoke-biobuzz` does) threw `Cannot access 'DECODE_SIM' before initialization`.
+  Add a new game as a getter too.
+- ⚠️ **`public/robots.txt` and `public/sitemap.xml` are STATIC hand-written files.** They do
+  not read the registry: robots.txt has a per-game `Disallow:` block written out for
+  `/decode/...` and `/chain/...`, and sitemap.xml lists `/`, `/decode`, `/chain` and six
+  `/decode/...` routes. A season flipping to `stable` needs BOTH edited by hand. The new
+  smoke suite pins that per VISIBLE season (and pins that a hidden one is absent from both).
+  The same applies to `index.html`, which hard-codes the home description in three meta tags
+  and the JSON-LD because they ship before any JS runs — that string is now pinned against
+  the registry-built `HOME_DESC`, so a newly public season fails the suite until all of them
+  move together.
+- ⚠️ **The channel read lives in exactly ONE place**, `src/seasonVisibility.ts`. The RULE is
+  pure and lives in `src/seasons.ts` (which the server compiles, via `periodLabel`, so it
+  must stay free of `import.meta.env`) and takes the channel as an argument — the same split
+  `roomJoinRegion` uses, for the same reason: `src/net/env.ts` reads `import.meta.env` at
+  load, so the headless smoke run cannot import it at all, and this rule fails silently.
+  A new UI surface that enumerates games reads `visibleGames()` / `visibleGameIds()`, never
+  `registeredGames()` / `SEASONS`.
+- An **unknown channel string** sees only unrestricted seasons. That is the safe direction:
+  a typo'd `VITE_APP_CHANNEL` hides the private season rather than publishing it.
+- **DECODE's URLs are byte-identical** because `src/net/api.ts` omits the `game` query
+  parameter entirely for DECODE (`needsGameParam`) — DECODE is the server's default for a
+  missing game. Do not "tidy" that into always sending it: an older deployed server and a
+  newer client have to agree.
+- **`devRoutes` are ALPHA-ONLY** (`devRoutesEnabled()`), gated inside `devRouteFor` in
+  `App.tsx` rather than at the render site, so on a stable build the path does not route AND
+  does not render — it falls through to `parseScreen`, which sends an unknown path home.
+- A hidden game's URL prefix **keeps its screen**: `/biobuzz/records` on a stable build lands
+  on the saved game's records, not on home, and the mount effect then canonicalizes the URL.
+- ⚠️ **A hidden game had to be dropped from SAVED SETTINGS too, not just from the URL.**
+  Found in the by-hand channel check: `coerceSettings` validates `game` as a `GameId` and
+  knows nothing about channels, so a stored `biobuzz` (an alpha build on the same origin —
+  Electron, or a preview deploy) opened a STABLE build straight onto the season, eyebrow
+  reading "BIOBUZZ presented by RTX" and the URL canonicalizing to `/biobuzz`, on a build
+  whose picker does not list it. `App.tsx`'s settings initializer now `switchGame`s an
+  invisible saved game back to DECODE. The guard is in the initializer rather than in
+  `coerceSettings` on purpose: `settings.ts` is imported by the headless smoke run, and
+  `seasonVisibility.ts` pulls in `src/net/env.ts`, which cannot be imported there at all.
+- **`GameSettings.savedStartPoses` is still ONE shared list across games** (the CR note in
+  CLAUDE.md). BIOBUZZ inherits that problem; namespacing the setting is the fix when a third
+  game wants a pose library.
+- Game checks go in `scripts/smoke-biobuzz/`, **never appended to `scripts/smoke.ts`** — its
+  PASS/FAIL list is what the baseline gate diffs.
+
+## `src/games/biobuzz/` is a PLACEHOLDER
+
+Three files (`sim.ts`, `index.ts`, `state.ts`), each saying so at the top, and the P0-shell
+chat REPLACES all three. It is an empty 72×72in box with four walls, two start anchors,
+`scored: false`, `startLegality: false`, `initialAct: 2`, `startPoseCount: 2`, and a step
+that runs the shared drivetrain + Rapier solve + wall square-up and nothing else. No
+geometry is invented: the rules land at kickoff on **2026-09-12**, and CR's `APPROX`
+convention says an unflagged guess is worse than an empty field.
+
+`docs/biobuzz-contract.md` is the ownership map (Lane A the field, Lane B the robot, the
+integration chat everything outside `src/games/biobuzz/`). Per that contract, everything
+this session touched outside that directory is **integration-chat property** — a lane that
+needs a change there writes the request into its own handoff file.
+
+## The channel check, done by hand
+
+Both channels were verified against a real build (`.env.local` + `npm run build` +
+`vite preview`, since `npm run dev` bakes the channel at build time — the file was deleted
+afterwards and is `.gitignore`d anyway):
+
+- **alpha**: BIOBUZZ appears on the home picker; `/biobuzz` loads and selects it (eyebrow
+  "BIOBUZZ presented by RTX"), `/biobuzz/modes` works, and Free Drive renders the shell —
+  the empty 72×72in box with its tile grid and perimeter, one robot on anchor 0 at
+  (48, 36) heading 180°, no console errors.
+- **stable**: BIOBUZZ is absent from the picker, `/biobuzz` canonicalizes to `/decode`, and
+  `/biobuzz/records` lands on `/decode/records` (the screen is kept, the game falls back).
+
+The shell's DRIVE was verified headlessly rather than through the browser (86.4 in/s after
+1 s of full forward from the anchor). Synthetic key events from the automation harness do
+not reach the game at all — DECODE's Free Drive does not move under them either, so that is
+the harness, not the shell.
+
+## Next steps
+
+1. P0-shell replaces `src/games/biobuzz/`; the lanes start against
+   `docs/biobuzz-contract.md`.
+2. Plan item 7 in the plan's own numbering — `scripts/manual.mjs` (download a manual, run
+   `pdftotext -layout`, dump figures) — was NOT part of this brief and is still open. It
+   saves Lane A the first hour on kickoff day.
+3. Nothing here may be pushed until the season is public.
 # HANDOFF — 2026-09-11, third session (LAN self-hosting: the security review)
 
 Branch **`lan-selfhost`**, still stacked on `perf-load-v2`. Eight new commits, `cdad8a8`

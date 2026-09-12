@@ -11,6 +11,7 @@ import type { LobbyClient } from '../net/lobbyClient';
 import type { LobbyPlayer, PlayerIntro, QueueMode } from '../net/protocol';
 import { RobotPreview } from './RobotPreview';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
+import { moduleFor } from '../games';
 import { DRIVETRAIN_LABELS, buildSummary } from './robotLabels';
 import { Menu } from './Menu';
 import { MatchAudio } from '../audio';
@@ -183,6 +184,9 @@ export function MatchStrategy({
     );
   }
 
+  // module UI slots — absent ⇒ the inline DECODE/CR branches below, unchanged
+  const Preview = moduleFor(settings.game).Preview;
+  const StartEd = moduleFor(settings.game).startEditor;
   const buildRow = (spec: RobotSpec): JSX.Element => (
     <span className="ptm">{buildSummary(spec, settings.game)}</span>
   );
@@ -248,7 +252,9 @@ export function MatchStrategy({
               return (
                 <div key={pl.clientId} className={`ds-strat-card ${pl.alliance}`}>
                   <div className="ds-strat-prev">
-                    {settings.game === 'chain' ? (
+                    {Preview ? (
+                      <Preview spec={spec} size={132} />
+                    ) : settings.game === 'chain' ? (
                       <ChainRobotPreview spec={spec} size={132} />
                     ) : (
                       <RobotPreview spec={spec} size={132} />
@@ -298,7 +304,22 @@ export function MatchStrategy({
                 game={settings.game}
               />
             )}
-            {settings.game === 'chain' ? (
+            {StartEd ? (
+              <StartEd
+                spec={me.spec}
+                alliance={me.alliance}
+                value={me.startPose}
+                startIndex={me.startIndex ?? 0}
+                category={startRole ?? settings.startCat}
+                saved={settings.savedStartPoses}
+                lockedCategory={startRole}
+                onChange={(startPose) => startPose && applyStart(selectStart(sCat, { index: -1, pose: startPose }))}
+                onPickPreset={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
+                onCategory={(c) => applyStart(switchCategory(settings, c))}
+                onSave={(pose) => applyStart(saveStart(sCat, pose))}
+                onDeleteSaved={(c, i) => applyStart(deleteSavedStart(sCat, c, i))}
+              />
+            ) : settings.game === 'chain' ? (
               <ChainStartEditor
                 spec={me.spec}
                 alliance={me.alliance}

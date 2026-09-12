@@ -22,6 +22,22 @@ import type {
   StartPose,
 } from '../types';
 import * as C from '../config';
+/**
+ * The start-anchor COUNT is per game, so the spawn chokepoint has to ask the
+ * registry for it. This is a genuine import CYCLE (`games/sim` → `decode/sim` →
+ * here) and it is safe only because nothing is read at module-eval time:
+ * `simModuleFor` is a hoisted function declaration and `coerceSetup` calls it at
+ * runtime. Do not move a registry read to this file's top level.
+ */
+import { simModuleFor } from '../games/sim';
+/**
+ * The BIOBUZZ arm of `coerceSpec`, from a LEAF module. It holds this game's own clamps (the
+ * size envelope per intake mount, the archetype mass floor, the hopper ceiling) so that no
+ * BIOBUZZ number lives in `src/sim/` — the same split Chain Reaction's arm uses, and the repo
+ * rule in `docs/biobuzz-contract.md`. It must stay a leaf: it is a DEPENDENCY of this file, so
+ * an import there that reached back here would be a cycle around the shared chokepoint.
+ */
+import { coerceBiobuzzSpec } from '../games/biobuzz/coerce';
 import {
   CHAIN_CLEARANCE_DEFAULT,
   CHAIN_CLEARANCE_MAX,
@@ -48,7 +64,6 @@ import {
 import {
   CHAIN_DEFAULT_INTAKE_MOUNT,
   CHAIN_DEFAULT_SHOOTER_MOUNT,
-  CHAIN_DEFAULT_TURRET_POS,
   CHAIN_CATALYST_MOUNTS,
   CHAIN_RAIL_MOUNTS,
   intakeMountOf,
@@ -73,36 +88,15 @@ export const MOTIFS: Motif[] = [
   ['purple', 'purple', 'green'], // 23: PPG
 ];
 
-// A new player starts on the TW BUILD (Turtle Walkers' archetype) but with a
-// generic identity they fill in themselves — a preset is a build, not a name.
-export const DEFAULT_SPEC: RobotSpec = {
-  name: 'My Robot',
-  teamName: '',
-  teamNumber: 0,
-  length: 14.5,
-  width: 16.5,
-  intake: 'sloped',
-  massLb: 23.5,
-  drivetrain: 'mecanum',
-  driveRpm: 500,
-  flywheelInertia: 0.4,
-  canSort: false,
-  ballStorage: CHAIN_STORAGE_DEFAULT,
-  groundClearance: CHAIN_CLEARANCE_DEFAULT,
-  scoreMode: CHAIN_DEFAULT_SCORE_MODE,
-  chainIntake: CHAIN_DEFAULT_INTAKE,
-  intakeMount: CHAIN_DEFAULT_INTAKE_MOUNT,
-  shooterMount: CHAIN_DEFAULT_TURRET_POS, // DEFAULT_SPEC is a TURRET, so this is a position
-  catalystType: CHAIN_DEFAULT_CATALYST,
-  catalystMount: CHAIN_DEFAULT_CATALYST_MOUNT,
-  catapultRange: CHAIN_CATAPULT_RANGE_DEFAULT,
-  catapultYaw: CHAIN_CATAPULT_YAW_DEFAULT,
-  // deprecated mirrors of the two mounts above (kept in sync by coerceSpec)
-  intakeSide: false,
-  shooterRear: false,
-  // driver assists ride the ROBOT (both games) — all ON by default. See PLAYER_ASSISTS.
-  assists: { fieldCentric: true, aimAssist: true, autoIntake: true, autoFire: true },
-};
+/**
+ * The DEFAULT spec now LIVES IN A LEAF (`./specDefaults`) and is re-exported here, so every
+ * existing importer is unchanged. It had to move: a game module reads it at MODULE-EVAL time
+ * (BIOBUZZ's `BB_DEFAULT_SPEC` is a top-level spread of it), and this file is inside the
+ * registry import cycle, so the read landed in `DEFAULT_SPEC`'s TDZ and threw at import.
+ * `specDefaults.ts`'s header has the whole story. Do not move it back.
+ */
+import { DEFAULT_SPEC } from './specDefaults';
+export { DEFAULT_SPEC };
 
 // Neutral sim/wire FALLBACK for assists (used by coercion bases, replay, server
 // fill-robots, dummies, and smoke). Deliberately NOT the same as the player's
@@ -319,15 +313,24 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   // that changes archetype later can never keep a mount that archetype cannot have.
   if (!isTurreted(out.scoreMode)) out.shooterMount = shooterEdgeOf({ shooterMount: out.shooterMount });
 
-  // MOUNTS ARE CHAIN-ONLY. They are the one CR field with a SHARED physics effect — the intake
-  // mount moves the collision footprint (`footprintExtents`), so a CR build's side sweeper
-  // leaking into DECODE would widen its flanks and delete its front intake reach. The builder
-  // only offers mounts for CR and `switchGame` keeps a per-game spec, but a spec can still
-  // arrive from a hand-edited store, a pre-loadouts save, or an untrusted client whose build
-  // doesn't match the room's game — so normalize here, the chokepoint every one of those passes.
-  // Only when the game is EXPLICITLY known and non-chain: `game` is optional on several call
-  // paths, and treating "unspecified" as DECODE would silently wipe a real CR build.
-  if (game !== undefined && game !== 'chain') {
+  // MOUNTS BELONG TO THE GAMES THAT HAVE THEM. They are the one CR field with a SHARED
+  // physics effect — the intake mount moves the collision footprint (`footprintExtents`), so a
+  // CR build's side sweeper leaking into DECODE would widen its flanks and delete its front
+  // intake reach. The builder only offers mounts for the games that use them and `switchGame`
+  // keeps a per-game spec, but a spec can still arrive from a hand-edited store, a pre-loadouts
+  // save, or an untrusted client whose build doesn't match the room's game — so normalize here,
+  // the chokepoint every one of those passes.
+  // Only when the game is EXPLICITLY known and does not use the fields: `game` is optional on
+  // several call paths, and treating "unspecified" as DECODE would silently wipe a real build.
+  //
+  // BIOBUZZ IS EXEMPT because it rides these same two fields (see `games/biobuzz/mounts.ts`:
+  // reusing them rather than minting `bb*` twins is what lets the shared footprint reader work
+  // for it), and its own arm below is the authority on them — it enum-checks both against this
+  // game's lists, folds a corner mount off a turretless launcher, re-derives the size envelope
+  // from the intake mount and re-mirrors the legacy booleans. Wiping them here instead spawned
+  // every turretless build with a front drum whatever edge was picked and bolted every turret
+  // to the front whatever the nine positions offered.
+  if (game !== undefined && game !== 'chain' && game !== 'biobuzz') {
     out.intakeMount = CHAIN_DEFAULT_INTAKE_MOUNT;
     out.shooterMount = CHAIN_DEFAULT_SHOOTER_MOUNT;
   }
@@ -447,6 +450,39 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   if (typeof sp.name === 'string' && sp.name.trim()) out.name = sp.name.slice(0, 24);
   if (typeof sp.teamName === 'string') out.teamName = sp.teamName.slice(0, 48);
   out.teamNumber = Math.round(clampFinite(sp.teamNumber, 0, 99999, base.teamNumber));
+
+  /**
+   * THE BIOBUZZ ARM, LAST — this game's own clamps, over a spec every shared pass above has
+   * already bounded.
+   *
+   * Last rather than interleaved, because the two halves clamp DIFFERENT things and the second
+   * depends on the first: the shared pass fixes the intake preset, the drivetrain, the rpm and
+   * the inertia, and BIOBUZZ's size envelope, mass floor and hopper ceiling are all derived
+   * from those plus the mounts resolved just above. Interleaving would mean resolving a range
+   * from a field that is not final yet, which is exactly what breaks IDEMPOTENCY — and
+   * `coerceSpec` running at several layers (settings load, server ingress, `createWorld`) is
+   * what makes idempotency load-bearing rather than tidy. The BIOBUZZ smoke suite asserts
+   * `f(f(x)) === f(x)` over a hostile input matrix and over all 26 shipped builds.
+   *
+   * It also STRIPS the Chain Reaction fields a BIOBUZZ robot has no mechanism for (the
+   * catalyst, the catapult, the ground clearance), which is why it has to run after the blocks
+   * above write them. Moving it ahead of the CR blocks would put those fields BACK on the spec
+   * after the strip, so a BIOBUZZ robot would carry a catalyst mount again — the ordering is
+   * load-bearing in both directions.
+   *
+   * ⚠️ WHAT "LAST" DOES NOT MEAN, and the trap for the first `bb*` spec field: this arm is
+   * handed `out`, not the RAW input. `out` starts as a copy of `base` and gains only the fields
+   * the passes above explicitly read off `sp`, so a value that no shared pass knows about is
+   * already gone by the time the game coercer runs — it would silently fall back to the base
+   * spec's value on every load, every wire ingress and every `createWorld`, which reads as "the
+   * builder keeps forgetting my setting". The fix, when a BIOBUZZ-only field lands, is to carry
+   * it across HERE (copy it onto `out`, or hand `coerceBiobuzzSpec` the raw `sp` as a second
+   * input) — NOT to move the arm earlier, for the two order reasons above. Chain Reaction has
+   * the same shape and does not hit it only because every CR field is read off `sp` by name in
+   * this function. `docs/biobuzz-contract.md` §4 is where a new field is registered; add the
+   * carry-across in the same change.
+   */
+  if (game === 'biobuzz') return coerceBiobuzzSpec(out, base);
   return out;
 }
 
@@ -546,7 +582,7 @@ export function coerceStartPose(raw: unknown): StartPose | null {
   };
 }
 
-export function coerceSetup(s: RobotSetup): RobotSetup {
+export function coerceSetup(s: RobotSetup, game?: GameId): RobotSetup {
   const autoPath = s.autoPath !== undefined ? coerceAutoPath(s.autoPath) : null;
   const alliance = s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue';
   const spec = coerceSpec(s.spec);
@@ -563,8 +599,10 @@ export function coerceSetup(s: RobotSetup): RobotSetup {
     alliance,
     spec,
     assists: coerceAssists(s.assists),
+    // the anchor count is PER GAME (DECODE 5, CR 4) — see `coerceStartIndex`. An
+    // absent/unknown game resolves to DECODE, like every other module lookup.
     startIndex: Number.isFinite(s.startIndex)
-      ? clamp(Math.round(s.startIndex), 0, C.START_POSES.length - 1)
+      ? clamp(Math.round(s.startIndex), 0, simModuleFor(game).startPoseCount - 1)
       : 0,
     startPose,
     autoPath: autoPath ?? undefined,
@@ -711,7 +749,7 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
   // localStorage, wire message, DB-staged ranked match), force every robot to a
   // legal, spawn-safe config here. Deterministic + idempotent, so live play and
   // replay re-runs agree. See coerceSetup / coerceSpec above.
-  for (const s of [...setups].map(coerceSetup).sort((p, q) => p.id - q.id)) {
+  for (const s of [...setups].map((st) => coerceSetup(st, 'decode')).sort((p, q) => p.id - q.id)) {
     const pose = startPose(s.alliance, s.startIndex, s.startPose, s.spec);
     const nth = allianceCount[s.alliance]++;
 

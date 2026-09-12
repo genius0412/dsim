@@ -13,6 +13,13 @@
  * server — would mean building session attribution, bot filtering, and a
  * dashboard, all of which are solved problems.
  *
+ * IT IS ALSO THE SPONSOR REPORT. The presenting sponsor is owed monthly numbers —
+ * clicks, sessions, new players — and they are what the deal renews on. Those come
+ * from the `sponsor_*` / `player_joined` events below plus Vercel's own session
+ * counts, i.e. from the measurement that already exists, rather than from a bespoke
+ * events table that would have to be built, deployed, and then trusted. See
+ * `docs/sponsor.md` for which filter produces which line of the report.
+ *
  * PRIVACY RULE FOR EVERY EVENT BELOW: names and ids never leave the app. The
  * properties here are counts and enum-ish strings, never a user id, username,
  * email, or Ko-fi transaction id. An analytics payload is the easiest place in a
@@ -37,7 +44,14 @@ export type AnalyticsEvent =
   | 'support_claim_ok' // a claim succeeded
   | 'support_claim_fail' // a claim was rejected (see `reason`)
   | 'ads_shown' // an ad unit actually rendered
-  | 'account_deleted';
+  | 'account_deleted'
+  // ---- presenting sponsor (src/sponsor.ts) -------------------------------
+  // These three ARE the monthly attribution report. `docs/sponsor.md` names the
+  // dashboard filter that turns each into a number, so the report is read off
+  // the same events the app fires rather than assembled by hand.
+  | 'sponsor_shown' // a sponsor placement rendered (`placement`) — the denominator
+  | 'sponsor_click' // somebody clicked through to the sponsor (`placement`)
+  | 'player_joined'; // a NEW account finished signing up — "new players"
 
 export function trackEvent(
   event: AnalyticsEvent,

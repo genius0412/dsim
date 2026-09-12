@@ -6,6 +6,7 @@
 |----|------|--------|
 | `decode` | **DECODE presented by RTX** (FTC 2025–26) | full match, scored, ranked |
 | `chain` | **Chain Reaction** (2026 Unofficial-FTC CAD competition) | full match, scored, ranked |
+| `biobuzz` | **BIOBUZZ presented by RTX** (FTC 2026–27) | PLACEHOLDER shell, alpha channel only, unscored |
 
 Vite + React + TypeScript, Canvas 2D. The CLIENT bundle is React + **Rapier 2D**
 (`@dimforge/rapier2d-compat`, wasm) and nothing else; the rest of `dependencies`
@@ -172,6 +173,66 @@ feel, robot-robot shove, match phases, HUD chrome, netcode) it belongs in the sh
 if it names a game element (artifact, gate, particle, catalyst, beam) it belongs in
 `src/games/<id>/`.
 
+## Adding a game
+
+Everything below the four registrations is OPTIONAL — a game that fills nothing behaves
+exactly like a game written before the slots existed. **Nothing outside
+`src/games/<id>/` should need editing.** If it does, that is a seam bug: generalize the
+shared file instead of adding a third arm to a two-valued branch.
+
+**FOUR registrations, and all four are silent when missed:**
+1. `src/games/index.ts` — `GAMES` (the CLIENT module: renderers + UI slots).
+2. `src/games/sim.ts` — `SIM_GAMES` (the SERVER-SAFE module). Missing here and the
+   authoritative server runs your players a DECODE room without saying so.
+   ⚠️ Add it as a **GETTER**, like the three already there — there is an import cycle
+   through this file (`src/sim/spawn.ts` needs `simModuleFor` for the start-index clamp)
+   and a plain `id: MODULE` entry is a module-eval-time read, which is exactly what a
+   cycle cannot survive.
+3. `src/seasons.ts` — the `SEASONS` entry (name/presenter/program/years/blurb,
+   `playable`, and `channels` if it must stay off the stable site).
+4. `src/games/types.ts` — the id in `GameId` **and** in `GAME_IDS`. Every "which games
+   are there" site reads `GAME_IDS` / `isGameId` / `coerceGameId`; a hand-written
+   two-valued literal anywhere is a bug (`npm test`'s biobuzz suite greps for the
+   consequences).
+
+Plus `World.<id>?: <Id>State` in `src/types.ts` for the game's own plain-JSON bag, and
+`GameSimModule`'s `initialAct` (its first ranked period's act — distinct per game) and
+`startPoseCount` (the legal range of a `startIndex`; every clamp reads it).
+
+**The OPTIONAL UI slots** (`GameModule`, `src/games/module.ts`) — each wired at its
+consumer as `mod.X ? <slot> : <the existing branch, unchanged>`, so DECODE's and CR's
+inline branches stay untouched:
+
+| slot | consumer |
+|---|---|
+| `Builder` | `Menu.tsx` (the Customize section) |
+| `Preview` | `Menu.tsx` + `MatchStrategy.tsx` (the robot schematic) |
+| `startEditor` | `MatchSetup.tsx` / `Lobby.tsx` / `MatchStrategy.tsx` |
+| `hudChips`, `scoreBar` | `GameView.tsx` (the `.robot-status` row / the whole bottom bar) |
+| `resultsRows` | `GameView.tsx` — both the versus results and `RecordResults`. Rows are ALLIANCE-RELATIVE (`[label, mine, opp]`) |
+| `mobileButtons` | `MobileControls.tsx`. A new key needs a `GameSettings.mobileLayout` entry, and a genuinely new action needs a protocol bit |
+| `labels.configSummary` | `robotLabels.ts` + `Leaderboard.tsx` |
+| `devRoutes` | `App.tsx` routing — **alpha channel only** (`devRoutesEnabled()`) |
+
+and, on the DOM-free side, `GameSimModule.hud?(world, robotId)` → `HudSnapshot.gameHud`:
+the game's own HUD slice, opaque (`unknown`) because only its own components read it — plus
+`GameSimModule.artifactSolids?(r, held, radius)`, the game's own answer to "what on this robot
+is SOLID to a ground element". Absent ⇒ the shared `robotSolids`, i.e. DECODE's front funnel;
+BIOBUZZ fills it because its sweeper is a roller bar on whichever edge `intakeMount` names, and
+DECODE/CR leave it empty so `src/sim/world.ts` is untouched.
+
+`GameUiSpec` (`ui`) is an earlier attempt at the same idea and has never had a reader.
+It is left alone deliberately; do not build on it.
+
+**Tests**: game checks go in `scripts/smoke-biobuzz/` (its own `npm test` process), never
+appended to `scripts/smoke.ts`. `npm test` chains the two with `&&` — deliberately, so a red
+`npm test` keeps meaning "the physics broke" — and both suites are green, so it runs both and
+must print `ALL PASS` twice. ⚠️ The corollary: **while the first suite is red the second
+does not run at all**, and for the whole of BIOBUZZ Phase 0 (7 accepted contact-physics
+failures) that meant `npm test` proved nothing about the second one. `npm run test:bb` runs it
+alone — the fast loop inside `src/games/biobuzz/`, and the way to check it when the first
+suite is red for an unrelated reason. `docs/biobuzz/baseline-alpha.md` is the gate.
+
 ---
 
 # Shared core (both games)
@@ -287,7 +348,12 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
     disagreed by a roller radius — exactly the band where artifacts were frozen by one rule
     and released by another. **The intake MOUTH is open in all three** by design (#10); a
     convex hull of the funnel filled the notch and turned the outer corner into a forward
-    wall, so the wedge is an explicit quad.
+    wall, so the wedge is an explicit quad. **A GAME MAY SUPPLY ITS OWN SHAPES**
+    (`GameSimModule.artifactSolids`, see the seam section) — the authority is still ONE per
+    game, it just is not always DECODE's: `robotSolids` describes DECODE's hardware, and a game
+    whose intake is not a front funnel (BIOBUZZ's edge-mounted sweeper) returns its own chassis
+    + plates + held-element circles instead. An absent slot is the shared function, so DECODE
+    and CR are byte-identical.
   - **A PIN IS A ROBOT PROBLEM, NOT AN ARTIFACT PROBLEM.** `pinnedArtifacts` calls an artifact
     pinned when a robot solid penetrates it AND it is against something that cannot yield —
     the field (`inField`, measured with `clampBallPosToStatics`, which knows the walls, the
@@ -1089,6 +1155,56 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
 
 ---
 
+## Presenting sponsor (branch `biobuzz`) — DSIM presented by Offset Robotics
+
+A LAUNCH + SEASON sponsorship of the APP, sold for the BIOBUZZ season with exclusivity.
+**`docs/sponsor.md` is the contract's operational half** — the placement inventory, the
+artwork swap, the kill switch, and the monthly attribution recipe. Read it before touching
+any of this.
+
+- **`src/sponsor.ts` is the single source of truth** (name, URL, artwork footprint, term)
+  and is DOM-free, so the headless smoke suite imports it. `src/ui/Sponsor.tsx` is the ONE
+  component that builds the link and fires the events — nothing else may. `sponsorAssets.ts`
+  is split off it because an image import would choke the `tsx` suite.
+- ⚠️ **`Season.presenter` IS A DIFFERENT FACT.** That is FIRST's sponsor of the GAME (DECODE
+  presented by RTX), not ours and not for sale. Both lines are true on the home menu at once;
+  never fold one into the other.
+- ⚠️ **THE IN-GAMEPLAY CHIP IS NOT AN AD, AND MUST NEVER BE ROUTED THROUGH `src/ads/`.** That
+  gate renders nothing on touch, nothing under Electron and nothing for a supporter — i.e.
+  it would be invisible on every phone, in the desktop app, and to the most engaged players
+  on the service. "Rendered independently of the ad system" is written into the deal, so
+  `Sponsor.tsx` imports nothing from `src/ads/` and `GameView.tsx` renders `<SponsorGameChip
+  />` outside the `ads &&` branch. Both are smoke-checked, because re-routing it is a
+  one-line refactor.
+- **Six placements**, each with its own `utm_medium` so the report can break them down:
+  `home`, `footer`, `game`, `download`, `splash` (`electron/splash.html`, shown by
+  `showSplash()` in `main.cjs` and handed over on `ready-to-show`), and `replay` — the mark
+  BURNED INTO every exported video (`drawSponsorMark` in `replayOverlay.ts`). ⚠️ The capture
+  `draw` callback is SYNCHRONOUS, so `ReplayView` must `await loadSponsorMark()` BEFORE
+  `recordFast`, and the burn-in falls back to the wordmark in text if the image never decodes
+   — a clip missing the placement is a breach, an ugly one is not.
+  The LOADING SCREEN is `#seo-home` in `index.html` and carries the line as TEXT: the bundled
+  artwork is fingerprinted and an absolute path 404s under Electron's `file://`.
+  The DISCORD server logo is not a repo change at all.
+- **The term is a window** (`SPONSOR.term`, `until` EXCLUSIVE) and an unparseable date fails
+  toward SHOWING the mark — a wrong clock must not void a placement somebody paid for.
+  `VITE_SPONSOR=0` is the kill switch, exact-string matched for the same reason.
+- **Artwork is FOUR files** (`src/assets/sponsors/offset-on-*.png` + `electron/sponsor-on-*.png`,
+  the Electron pair duplicated because a `file://` page cannot resolve a Vite hash). The names
+  say which SURFACE, not which ink — the sponsor calls the black cut "the dark logo" and the
+  site calls it `OffsetLogoLight.png`, so place a new file by looking at the pixels. Sizes are
+  declared in `SPONSOR.logoW/logoH` and every placement reserves its box from that ratio
+  before the image loads (`shiftaudit`); the smoke lane reads all four PNG headers.
+- **The report is Vercel Analytics, nothing else** — `sponsor_shown` (the denominator),
+  `sponsor_click` (per placement), Vercel's own sessions, and `player_joined` (fired in
+  `UsernameGate`, the last step of signing up; it over-counts legacy accounts ONCE and
+  `docs/sponsor.md` footnotes it). No DB migration, no server change, no identifiers.
+- **Tests**: the `SPONSOR` lane of `scripts/smoke-biobuzz/` (`npm run test:bb`). Everything it
+  covers is a contracted obligation that FAILS SILENTLY — a placement that stops rendering, a
+  link that loses its UTM tag, a term that does not cover the season it was sold for.
+
+---
+
 # GAME: DECODE (`decode`)
 
 DECODE's rules live in **`src/sim/`** and **`src/config.ts`** (they predate the seam and were
@@ -1859,6 +1975,57 @@ resolve commands → `chainAimAssist` rotate override → CoG scaling → shared
 accelerator score/recycle, catalysts, endgame) → `updateChainPenalties` → phase/timer machine.
 It DELIBERATELY skips DECODE's `updateRobotActions`, goals/gates, penalties, and scoring — CR
 owns all of that.
+
+---
+
+# GAME: BIOBUZZ (`biobuzz`)
+
+The FTC 2026–27 season. **Rules land at kickoff on 2026-09-12**, so what is in the repo
+today is a PLACEHOLDER: an empty 12 ft square with four walls and drivable robots,
+`scored: false`, `startLegality: false`, two start anchors. `src/games/biobuzz/{sim,index,
+state}.ts` say so at the top and the P0-shell chat replaces all three.
+
+**It is ALPHA-ONLY** (`channels: ['alpha']` in `SEASONS`). The repo is public and the
+season is private until further notice: on a stable build it is absent from the home
+picker and the queue counts, invisible to the SEO surfaces, and its URL prefix falls back
+to the saved game. Nothing about it may be pushed to a public branch or deployed to the
+stable site.
+
+**Read `docs/biobuzz-contract.md` FIRST** — it is the lane contract: who owns which file
+(Lane A the field, Lane B the robot, the integration chat everything outside
+`src/games/biobuzz/`), the `elements.ts` interface between them, and the workflow.
+`docs/biobuzz-plan.md` is the why; `docs/biobuzz-reference.md` will be the manual
+distilled, written on kickoff day.
+
+Everything BIOBUZZ lives in `src/games/biobuzz/`. Nothing BIOBUZZ goes into `src/sim/` or
+`src/config.ts` — the same rule Chain Reaction follows. Game state is plain JSON on
+`world.biobuzz`, and the sim half obeys the shared determinism rule (no DOM, no clock, no
+`Math.random`, no `Date`).
+
+⚠️ **Do not invent geometry before the manual.** CR flags values approximated from
+description as `APPROX` and that convention carries over; an unflagged guess is worse than
+an empty field.
+
+⚠️ **POLLEN PHYSICS IS THE SHARED ARTIFACT SOLVER WITH `BB_POLLEN_RADIUS`; NOTHING IN
+THIS DIRECTORY INTEGRATES OR SEPARATES BALLS.** (The constant is spelled `BB_POLLEN_R`.)
+A ground pollen's position is written by `solveArtifacts` and by nothing else — the same ONE
+POSITION AUTHORITY rule DECODE's artifacts were rebuilt to. `solveArtifacts` and `robotSolids`
+take a trailing optional artifact RADIUS defaulting to `C.BALL_RADIUS`, so BIOBUZZ passes 1.5"
+(a 3" pollen) where DECODE passes its default 2.5" and every DECODE call site stays
+byte-identical. The SHAPES a pollen meets are this game's own — `bbRobotSolids` (`robot.ts`),
+wired through the `GameSimModule.artifactSolids` slot — because the shared `robotSolids` builds
+DECODE's front funnel and a BIOBUZZ sweeper is a roller bar on whichever edge `intakeMount`
+names. That is GEOMETRY, which Lane B owns; it is not a physics constant, and none is added.
+`play.ts` therefore has no ground integrator, no separation pass and no
+eviction pass; it calls the shared solve, the shared rolling-friction pass (`stepGroundBall`,
+which is the only thing that brings a pollen to rest — the solve has no gravity and no floor),
+and a containment clamp, and `interact()` only CAPTURES. BIOBUZZ owns NO ground-pollen physics
+constant: `BB_POLLEN_WALL_REST` is FLIGHT-only and `BB_POLLEN_R` is a size, not a dial. So a
+pollen behaviour that looks wrong is a question about SHARED physics — write it into
+`docs/biobuzz/feedback/` naming the gallery cell, do not fix it here.
+`docs/biobuzz/feedback/000-solver-observations.md` is the standing list (no pin/round loop in
+BIOBUZZ, a persistent 2.1" overlap under a pressing chassis, a struck pollen reaching
+`C.BALL_MAX_SPEED` while the robot that hit it is slower, 5"-artifact rolling constants).
 
 ---
 

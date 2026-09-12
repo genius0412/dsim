@@ -771,7 +771,7 @@ function drawCatalystMech(ctx: CanvasRenderingContext2D, r: RobotState, world?: 
      */
     const railed = (r.spec.catalystType ?? CHAIN_DEFAULT_CATALYST) === 'rail';
     const railHalf = railed ? catalystRailHalf(r.spec) : 0;
-    const slide = railHalf * r.catalystRail; // along the edge, in the mount's local +y
+    const slide = railHalf * (r.catalystRail ?? 0); // along the edge, in the mount's local +y
     if (railed && railHalf > 0) {
       ctx.strokeStyle = '#6b7480';
       ctx.lineWidth = 0.42;

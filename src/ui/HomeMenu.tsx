@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react';
 import type { GameSettings } from '../game';
 import type { DrivetrainType, GameId } from '../types';
 import { APP_BLURB, APP_NAME, APP_TAGLINE, LINKS, seasonFor } from '../seasons';
-import { registeredGames } from '../games';
+import { visibleGames } from '../seasonVisibility';
 import { fetchGlobalStats, type GlobalStats } from '../net/api';
 import { RAIL_ITEMS } from './NavRail';
 import { QueueCounts } from './QueueCounts';
+import { SponsorPresents } from './Sponsor';
 import type { ShellNav } from './AppShell';
 
 const DRIVETRAIN_LABELS: Record<DrivetrainType, string> = {
@@ -40,9 +41,10 @@ export function HomeMenu({
   onGame: (g: GameId) => void;
 }) {
   const spec = settings.spec;
-  // only the games whose modules are actually registered are selectable; the
-  // switcher hides itself until there are ≥2 to choose between.
-  const games = registeredGames();
+  // only the games whose modules are registered AND whose season is visible on
+  // this release channel are selectable; the switcher hides itself until there are
+  // ≥2 to choose between.
+  const games = visibleGames();
   const season = seasonFor(settings.game);
 
   // site-wide counters (players + games played), when the server is configured
@@ -75,6 +77,12 @@ export function HomeMenu({
         {APP_TAGLINE}
       </p>
       <h1 className="ds-home-title">{APP_NAME}</h1>
+
+      {/* The APP's presenting sponsor, directly under the app's name — which is the
+          only place it can sit without being read as a claim about the SEASON. The
+          eyebrow above already says who presents the GAME (RTX presents BIOBUZZ;
+          that is FIRST's, not ours to sell), and the two are different facts. */}
+      <SponsorPresents />
 
       <p className="ds-home-lead">{APP_BLURB}</p>
 

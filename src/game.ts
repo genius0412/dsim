@@ -111,6 +111,16 @@ export interface HudSnapshot {
   pose: { x: number; y: number; heading: number; gatePos: number } | null;
   /** which game is being played — drives which score HUD GameView renders */
   game: GameId;
+  /**
+   * The ACTIVE game module's own HUD slice (`GameSimModule.hud`), or undefined for
+   * a game that doesn't supply one.
+   *
+   * `unknown` on purpose: it is opaque to every shared screen and is cast back to
+   * its own shape by the game's own components (the `hudChips` / `scoreBar` /
+   * `resultsRows` slots). `chain` below is the pre-slot version of the same idea
+   * and stays as it is — the CR HUD reads it in a dozen places.
+   */
+  gameHud?: unknown;
   /** Chain Reaction scoring readout (present only for CR) */
   chain?: {
     /** your alliance's particles scored (count) */
@@ -1233,8 +1243,10 @@ export class GameController {
           oppFoulPts: w.match.scores[opp].foulPoints,
         }
       : undefined;
+    const mod = gameOf(w);
     return {
       game: w.game ?? 'decode',
+      gameHud: mod.hud?.(w, this.localRobotId),
       chain,
       mode: w.mode,
       phase: w.match.phase,

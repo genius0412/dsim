@@ -1,5 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { GameId } from '../src/types';
+import { coerceGameId, isGameId } from '../src/games/types';
+import { simModuleFor } from '../src/games/sim';
 import { BALANCE_VERSION, SIM_DT } from '../src/config';
 import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
 import { CHALLENGE_FORMATS } from '../src/net/protocol';
@@ -486,7 +488,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const user = await verifyAuthToken(bearer(req));
       if (!user) return json(401, { error: 'sign in required' }), true;
       if (!dbEnabled) return json(503, { error: 'practice replays need the database' }), true;
-      const game: GameId = url.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+      const game: GameId = coerceGameId(url.searchParams.get('game'));
 
       if (req.method === 'GET') {
         return json(200, { runs: await listPracticeRuns(user.userId, game) }), true;
@@ -815,7 +817,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         const a = url.searchParams.get('a');
         const activity: Activity | null = a === 'menu' || a === 'lobby' || a === 'match' ? a : null;
         const g = url.searchParams.get('g');
-        const activityGame: GameId | null = g === 'chain' ? 'chain' : g === 'decode' ? 'decode' : null;
+        const activityGame: GameId | null = isGameId(g) ? g : null;
         await ensureProfile(user.userId, user.handle);
         await touchPresence(user.userId, activity, activityGame);
         return json(200, await listFriends(user.userId)), true;
@@ -926,7 +928,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
           if (!room || room.length > 40 || !/^[a-z0-9-]+$/i.test(room)) {
             return json(400, { error: 'bad request' }), true;
           }
-          const game: GameId = body.game === 'chain' ? 'chain' : 'decode';
+          const game: GameId = coerceGameId(body.game);
           const kind = body.kind === 'record' ? 'record' : 'versus';
           const record = body.record === 'duo' || body.record === 'solo' ? (body.record as string) : null;
           // The format is what the challenge OFFERED, and for the rated formats it
@@ -969,7 +971,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
 
     // which GAME's boards/periods to read — DECODE and Chain Reaction each have their own
     // ranked/record boards and Act → Season progression (default DECODE for old clients).
-    const game: GameId = url.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+    const game: GameId = coerceGameId(url.searchParams.get('game'));
     // default board view = the live season FOR THIS GAME (which may be admin-advanced past
     // the code's BALANCE_VERSION); an explicit ?season= picks an archived one.
     const seasonParam = url.searchParams.get('season');
@@ -1023,9 +1025,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
 
     // season list for the leaderboard's season picker; `current` is the live one
     if (url.pathname === '/api/seasons') {
-      // seed Chain Reaction's first period at Act 1 · Season 1 (DECODE keeps act 0/beta)
+      // each game's first period opens in its OWN act (DECODE keeps act 0/beta) — the
+      // module owns that number, so a third game does not land in DECODE's bucket
       const current = dbEnabled ? await currentSeasonNumber(BALANCE_VERSION, game) : BALANCE_VERSION;
-      if (dbEnabled) await ensureSeason(current, game, game === 'chain' ? 1 : 0);
+      if (dbEnabled) await ensureSeason(current, game, simModuleFor(game).initialAct);
       const seasons = dbEnabled ? await listSeasons(game) : [];
       return json(200, { current, seasons, game }), true;
     }

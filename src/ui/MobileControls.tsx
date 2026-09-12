@@ -1,6 +1,8 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import type { InputManager } from '../input/input';
 import type { GameId, MobileLayout, MobilePos } from '../types';
+import type { MobileActionField } from '../games/module';
+import { moduleFor } from '../games';
 
 // base radii (px, BEFORE the layout scale) — the visible ring + the handle travel.
 const JOY_R = 58;
@@ -138,6 +140,7 @@ export function MobileControls({
   autoIntake = false,
   autoFire = false,
   hasFling = false,
+  gameHud,
   onLayoutChange,
 }: {
   inputManager: InputManager;
@@ -149,6 +152,9 @@ export function MobileControls({
   autoFire?: boolean;
   /** Chain Reaction: this build's catalyst has a CATAPULT, so the THROW button applies */
   hasFling?: boolean;
+  /** the active game's own HUD slice (`HudSnapshot.gameHud`) — what a module's
+   * `mobileButtons[].present` reads to decide whether this build has the mechanism */
+  gameHud?: unknown;
   /** editable touch-control layout (centres as viewport fractions) */
   layout: MobileLayout;
   /** edit mode: drag controls to reposition instead of driving */
@@ -296,15 +302,31 @@ export function MobileControls({
     glyph: string;
     cls: string;
     primary: boolean;
-    field: 'intake' | 'fire' | 'catalyst' | 'fling';
+    field: MobileActionField;
     absent?: boolean;
     auto?: boolean;
   }
+  /**
+   * A game's OWN extra buttons, through the module slot. They are APPENDED to the
+   * two shared ones (intake + shoot) rather than replacing the list: those two
+   * exist in every game the sim has had, and the CR pair below stay as the inline
+   * entries they already were.
+   */
+  const modBtns: ActionSpec[] = (moduleFor(game).mobileButtons ?? []).map((b) => ({
+    name: b.name,
+    label: b.label,
+    glyph: b.glyph,
+    cls: b.cls,
+    primary: b.primary,
+    field: b.field,
+    absent: b.present ? !b.present(gameHud) : false,
+  }));
   const buttons: ActionSpec[] = ([
     { name: 'intake', label: 'INTAKE', glyph: '▼', cls: 'intake', primary: false, field: 'intake', auto: autoIntake },
     { name: 'catalyst', label: 'CATALYST', glyph: '⬡', cls: 'catalyst', primary: false, field: 'catalyst', absent: !chain },
     { name: 'fling', label: 'THROW', glyph: '⤴', cls: 'fling', primary: false, field: 'fling', absent: !chain || !hasFling },
     { name: 'shoot', label: 'SHOOT', glyph: '◎', cls: 'shoot', primary: true, field: 'fire', auto: autoFire },
+    ...modBtns,
   ] as ActionSpec[]).filter((b) => !b.absent && (editing || !b.auto));
 
   return (

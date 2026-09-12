@@ -615,6 +615,19 @@ export function solveArtifacts(
   doorway: ReadonlySet<number>,
   solids: ReadonlyMap<number, RobotSolids>,
   from: ReadonlyMap<number, SweepFrom>,
+  /**
+   * the GROUND-ARTIFACT radius this solve is for, in inches. A parameter rather than
+   * `C.BALL_RADIUS` outright because the solve is the shared one and the element is not:
+   * BIOBUZZ's POLLEN is 1.5in where DECODE's artifact is 2.5in, and a solve run at the wrong
+   * radius separates a pile at the wrong diameter. DECODE passes nothing and gets
+   * `C.BALL_RADIUS`, so every DECODE call site is byte-identical.
+   *
+   * It must be the SAME radius the caller built `solids` with (`robotSolids`' own trailing
+   * argument) — the held-artifact circles are the plug in the robot's own mouth, and two
+   * radii in one solve is two descriptions of one element, which is the disagreement
+   * `artifactSolids.ts` exists to prevent.
+   */
+  radius: number = C.BALL_RADIUS,
 ): void {
   const groundBalls = world.balls.filter((b) => b.state.kind === 'ground');
   if (groundBalls.length === 0) return;
@@ -650,7 +663,7 @@ export function solveArtifacts(
      */
     const filter = A_BALLS | A_FIELD | A_STRUCT | A_CHASSIS | (isDoor ? 0 : A_HELD);
     rw.createCollider(
-      RAPIER.ColliderDesc.ball(C.BALL_RADIUS)
+      RAPIER.ColliderDesc.ball(radius)
         .setMass(C.BALL_MASS)
         .setRestitution(C.BALL_BALL_RESTITUTION)
         .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min)
