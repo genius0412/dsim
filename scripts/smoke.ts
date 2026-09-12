@@ -7556,7 +7556,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     // ---- the hand-off to the lobby
     check(
       'lan tab: a pending room is TAKEN, not read, so a remount cannot adopt a stale link',
-      /export function takePendingLanRoom/.test(pend) && /pending = null;\n  return p;/.test(pend),
+      /export function takePendingLanRoom/.test(pend) && /pending = null;\s*return p;/.test(pend),
     );
     check(
       'lan tab: the lobby adopts that transport instead of dialling a URL',
