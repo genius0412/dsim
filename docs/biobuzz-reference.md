@@ -283,3 +283,36 @@ What is still open:
 - Spill kinematics: how fast contents leave the open face as the bar passes level (`APPROX`
   40–60 in/s outboard), and how far they roll on the tiles.
 - Element rolling behaviour: does a NECTAR roll like a POLLEN on the soft tiles (owner note).
+
+## 9. Intake pipeline
+
+How the numbers above got out of the PDF, and what to re-run when V2 lands.
+
+- **Manual PDF**: `https://ftc-resources.firstinspires.org/ftc/game/manual-NN`, fetched by
+  `scripts/manual.mjs`. WebFetch's own PDF extractor returns binary garbage on these.
+- **Text**: `pdftotext -layout` for prose; `pdftotext` WITHOUT `-layout` for the Section 16
+  glossary, whose two columns interleave otherwise.
+- **Raster figures**: `scripts/manual-figures.mjs` (Node stdlib — `pdfimages` is not on this
+  machine, and the header of that file explains why writing one was cheaper than installing
+  one). It finds image objects only; it finds nothing on the field drawings.
+- **Vector drawings**: `scripts/manual-render.py` (PyMuPDF) —
+  `python scripts/manual-render.py --pages 63-99 --dpi 300`, output to `scratch/manual/pages/`
+  (gitignored). Every field figure in Section 9 is vector paths, so this is the only way to
+  measure them. Verified end to end against V0 p.61 at 200 dpi. **Manual page images never go
+  in the repo.**
+- **Scale**: at D dpi a PDF point is D/72 px; one stated dimension (the 144-in field) fixes
+  the drawing scale for every other measurement on that page.
+
+### Cross-checks worth doing once
+
+- **AprilTag mirror test.** Take one published BIOBUZZ AprilTag or HIVE coordinate in the FTC
+  field frame and confirm it lands on the side this document says it does. DECODE's red goal
+  tag at FTC (−58.37, 55.64, 29.5) resolving to the far-RIGHT corner is what proved that field
+  was not mirrored, and a mirrored field is the error that survives every internal consistency
+  check. BIOBUZZ is point-symmetric rather than mirrored (§2), so this check is worth MORE
+  here, not less: an x-mirror of a point-symmetric layout is internally consistent and wrong.
+- **Two dimensions per drawing.** Measure a second known length on the same page and confirm
+  the scale factor agrees before trusting anything derived from the first.
+- **Prose against figure.** Where the manual states a dimension in words AND draws it, measure
+  anyway. DECODE's 26.5" goal face and 18.3" goal depth came off the figures because the prose
+  did not carry them.

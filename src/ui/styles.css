@@ -2690,6 +2690,31 @@ input.admin-months {
   color: var(--ds-mut);
 }
 
+/* THE HOST COMMANDS. Numbered, because they are typed in order and a host who pastes the
+   fourth one first gets an error about a directory rather than about DSIM. The rows reuse
+   `.ds-lan-url` — same affordance, the whole row copies — with `.compact` dropping the type
+   from projector size to reading size: a join URL is read across a room, a command is read
+   off the screen in front of you. */
+.ds-lan-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+  margin: 0;
+  padding: 0 0 0 var(--ds-s-5);
+}
+.ds-lan-steps > li > .s {
+  display: block;
+  margin-bottom: var(--ds-s-1);
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.ds-lan-url.compact {
+  padding: var(--ds-s-2);
+}
+.ds-lan-url.compact > .u {
+  font-size: var(--ds-t-md);
+  font-weight: 500;
+}
 /* The persistent unofficial-match strip. Same anatomy as `.ds-maint` and it reuses
    that wrapper's inset, but its own block: this is a STATE of the app, not a warning
    about one, and folding it into the maintenance selector would make one of them

@@ -12,3 +12,6 @@ scratch/
 
 # load-harness output (scripts/loadtest.ts --json); sweeps are evidence, not source
 .loadtest-out/
+
+.coord.json
+.coord.retired.json

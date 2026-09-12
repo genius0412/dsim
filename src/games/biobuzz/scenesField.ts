@@ -1,5 +1,14 @@
-import type { Artifact, RobotCommand } from '../../types';
-import { BB_HALF_X, BB_HALF_Y, BB_POLLEN_R } from './config';
+import type { Artifact, ArtifactColor, RobotCommand } from '../../types';
+import {
+  BB_FLOWERS,
+  BB_HALF_X,
+  BB_HALF_Y,
+  BB_HIVE_CELL_DY,
+  BB_HIVE_UP_STAGED,
+  BB_HIVE_X,
+  BB_NECTAR_R,
+  BB_POLLEN_R,
+} from './config';
 import {
   bbCmd,
   bbPile,
@@ -45,6 +54,11 @@ import { BB_DEFAULT_SPEC } from './robotConfig';
 /** POLLEN ids start at 1, never 0: `emptyBiobuzzState().nextBallId` starts there too, so a
  * scene laying out ids from 1 keeps a launched pollen from aliasing a floor one. */
 const ID0 = 1;
+
+/** ids for elements PARKED inside a field element (`field-labelled`). Far above any floor
+ * layout in this file so the two can never collide, and so a parked id is recognisable as one
+ * in a state dump. */
+const PARKED_ID0 = 900;
 
 /** how far a POLLEN's centre sits from a wall when it is resting against it. */
 const AT_WALL_X = BB_HALF_X - BB_POLLEN_R;
@@ -94,44 +108,94 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
 
   {
     id: 'field-labelled',
-    title: 'Field with a 24" pollen ruler on both axes and all four start anchors filled',
+    title: 'The manual field — zones, hive structure, flowers, tags and callouts',
     lane: 'field',
     /**
-     * THE SCALE REFERENCE.
+     * THE FIELD, AS THE MANUAL DRAWS IT. The cell a human checks the geometry on.
      *
-     * There is nothing to LABEL yet — Sections 9 and 10 are Kickoff placeholders, so BIOBUZZ
-     * has no zones, no goals and no scoring elements to name. What this cell is for instead is
-     * checking that the drawn field and the sim's coordinates are the same field: POLLEN sit at
-     * exact 24" multiples along both axes, so they must land on the drawn tile seams, and one
-     * sits hard against each wall and in each corner, so the perimeter must touch them. If the
-     * ruler drifts off the seams, the renderer's scale disagrees with the sim's inches.
+     * Section 9 landed, so this cell stopped being a scale reference and became the field. It
+     * is deliberately EMPTY of robots and of floor POLLEN: everything visible is drawn from a
+     * constant in `config.ts`, so anything that looks wrong here is a wrong number rather than
+     * a scene that placed something oddly. The old 24" pollen ruler is gone because the drawing
+     * now carries its own — the tile letters run along the walls and the four FLOWERS sit on
+     * the ±24 seams, so a renderer whose scale disagrees with the sim's inches shows it in the
+     * geometry itself instead of in a row of balls laid over it.
      *
-     * The four robots are here for the same reason: `BB_START_POSES` is canonical for BLUE and
-     * RED is the x-mirror, and this is the cell that shows the mirror is a reflection (both
-     * alliances face inward) rather than a translation (red facing out of the field).
-     *
-     * When Kickoff lands, the ACTUAL labelled field replaces this — through the module's
-     * renderers, like everything else. There is no gallery-only drawing code, so the callouts
-     * for a real zone will be a real overlay the game can draw.
+     * WHAT TO LOOK AT, in the order the layout is easy to get wrong:
+     *   1. RED LZ on the LEFT wall at y > 0, and RED GARDEN in the audience-LEFT corner. The
+     *      layout is point-symmetric, not mirrored (`bbMirror`), and an x-mirror of it is
+     *      internally consistent and wrong — this cell is the only thing that catches it.
+     *   2. The four FLOWERS on the ±24 tile seams, one per wall, point-symmetric.
+     *   3. The HIVE pair centred, red at −x, blue at +x, and the STAGED tilt: red's SOUTH cell
+     *      up, blue's NORTH cell up (§10.3.1, Fig 10-2). BOTH cells are drawn the SAME SIZE —
+     *      the see-saw is one rigid bar at 30°, so a plan view foreshortens both ends equally
+     *      (reference §2.2) and only brightness and the counts say which is up.
+     *   4. The AprilTag id groups against Figs 9-15…9-17. A published tag id is the one thing
+     *      here that pins the drawing to the real field.
+     *   5. The two READOUTS, which is why this cell holds elements at all — see `build`.
      */
     build: (seed) => {
-      const ruler: Artifact[] = [];
-      let id = ID0;
-      for (const v of [-48, -24, 24, 48]) {
-        ruler.push(bbPollen(id++, v, 0)); // along x
-        ruler.push(bbPollen(id++, 0, v)); // along y
+      /**
+       * WHY THIS CELL CARRIES ELEMENTS, AND WHY THEY ARE REAL ONES.
+       *
+       * The two readouts are COLOUR readouts: the per-type counts in an up-CELL and the stack
+       * drawn beside each FLOWER. Both are a JOIN — `bb.hives[a].contents` and
+       * `bb.flowers[i].stack` hold IDS and the elements themselves live in `world.balls` in
+       * the `element` state, one array, so conservation is one count (`state.ts`). A bare id
+       * with nothing behind it therefore draws NOTHING, by design, and an earlier pass of this
+       * scene that listed ids alone rendered two empty readouts.
+       *
+       * So the contents here are `Artifact`s. `pos` is the FIELD ELEMENT they are parked in: a
+       * parked element is not solved and has no position of its own, so the value is only ever
+       * somewhere to point at.
+       */
+      const balls: Artifact[] = [];
+      const el = (color: ArtifactColor, where: string, slot: number, x: number, y: number): number => {
+        const id = PARKED_ID0 + balls.length;
+        balls.push({
+          id,
+          color,
+          r: color === 'green' ? BB_POLLEN_R : BB_NECTAR_R,
+          state: { kind: 'element', el: where, slot },
+          pos: { x, y },
+          vel: { x: 0, y: 0 },
+          z: 0,
+          vz: 0,
+        });
+        return id;
+      };
+      const inCell = (a: 'red' | 'blue', colors: ArtifactColor[]): number[] => {
+        const x = a === 'red' ? -BB_HIVE_X : BB_HIVE_X;
+        const y = (BB_HIVE_UP_STAGED[a] === 'north' ? 1 : -1) * BB_HIVE_CELL_DY;
+        return colors.map((c, i) => el(c, `hive:${a}`, i, x, y));
+      };
+      const inFlower = (i: number, colors: ArtifactColor[]): number[] =>
+        colors.map((c, slot) => el(c, `flower:${BB_FLOWERS[i].id}`, slot, BB_FLOWERS[i].x, BB_FLOWERS[i].y));
+
+      const world = bbWorld(seed, [], balls);
+      const bb = world.biobuzz;
+      if (bb) {
+        bb.labels = true;
+        /**
+         * A MID-MATCH SPREAD, NOT THE STAGED FIELD — `spawn.ts` owns staging, this cell owns
+         * the DRAWING, so the contents are chosen to make each readout say something a reader
+         * can CHECK against a rule rather than to be legal at t=0:
+         *  • red's up-CELL is 3 NECTAR + 2 POLLEN, one POLLEN short of a TIP
+         *    (`BB_TIP_POLLEN[3]` is 3) — exactly the split a single total would hide;
+         *  • blue's holds a RED nectar, because any alliance may LAUNCH into any cell;
+         *  • F2 carries a NECTAR on TOP (blue OWNS it) and F3 one at the BOTTOM (red's 5-point
+         *    bonus, and retrieval locked — a 3.6 NECTAR does not fit the 3.55 opening), which
+         *    is the pair of cases the stack order exists to tell apart;
+         *  • F4 holds SIX, a full flower, which is the length `BB_VIEW_MARGIN` has to clear.
+         */
+        bb.hives.red.contents = inCell('red', ['red', 'red', 'red', 'green', 'green']);
+        bb.hives.blue.contents = inCell('blue', ['blue', 'red', 'green', 'green', 'green', 'green']);
+        bb.flowers[0].stack = inFlower(0, ['green', 'green', 'green', 'green']);
+        bb.flowers[1].stack = inFlower(1, ['green', 'green', 'blue']);
+        bb.flowers[2].stack = inFlower(2, ['red', 'green', 'green', 'green']);
+        bb.flowers[3].stack = inFlower(3, ['green', 'green', 'green', 'green', 'green', 'blue']);
       }
-      // the walls and the corners: four mid-wall and four corner POLLEN, at rest
-      for (const s of [1, -1]) {
-        ruler.push(bbPollen(id++, s * AT_WALL_X, 0));
-        ruler.push(bbPollen(id++, 0, s * AT_WALL_Y));
-      }
-      for (const sx of [1, -1]) for (const sy of [1, -1]) ruler.push(bbPollen(id++, sx * AT_WALL_X, sy * AT_WALL_Y));
-      return bbWorld(
-        seed,
-        [bbSetup(0, 'blue', 0), bbSetup(1, 'blue', 1), bbSetup(2, 'red', 0), bbSetup(3, 'red', 1)],
-        ruler,
-      );
+      return world;
     },
     stills: [0],
   },

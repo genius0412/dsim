@@ -87,6 +87,48 @@ export function rectContains(rect: LocalRect, lx: number, ly: number, pad = 0): 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// FIELD ELEMENT STATE — DRAFT until the T0+2h sync
+//
+// The shapes below are `docs/biobuzz/field-plan.md` §2, and they exist so the RENDERER and
+// the smoke lane have something real to read on kickoff day. Nothing WRITES them yet: staging
+// (`spawn.ts`) and the lifecycle (`hive.ts` / `flower.ts`) land in a later pass, so a fresh
+// state is a correctly SHAPED empty field, not a staged one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** which end of a HIVE is the one facing UP. `north` is y > 0 (the rear, opposite the
+ * audience), `south` is y < 0. A HIVE is bi-stable, so this is a two-member union rather than
+ * an angle: the tilt is only ever one of two poses, and `tipping` covers the swing between. */
+export type BbCellSide = 'north' | 'south';
+
+/**
+ * One HIVE. Both CELLS belong to one alliance and only one of them faces up at a time.
+ *
+ * `contents` holds BALL IDS, not elements: the elements themselves stay in `world.balls` so
+ * conservation is a count over ONE array (field-plan §6 request 2). `tips` is the achievement
+ * counter the POLLINATOR RPs read. `tipping` is SECONDS LEFT in the swing, 0 when settled —
+ * a duration rather than a boolean because the TIP is worth points at the END of the swing
+ * (§10.5.1: the damper has to make contact), and a boolean cannot say how far in it is.
+ */
+export interface BbHiveState {
+  up: BbCellSide;
+  contents: number[];
+  tips: number;
+  tipping: number;
+}
+
+/**
+ * One FLOWER, as a STACK bottom → top of ball ids.
+ *
+ * A stack rather than a set because both scoring rules are about ORDER: the owner is the
+ * alliance of the TOP-most nectar and the bonus goes to the BOTTOM-most one (§10.5.2), and
+ * retrieval (G418.B) pops the bottom element only. An unordered collection would make both of
+ * those a search over positions the sim does not track.
+ */
+export interface BbFlowerState {
+  stack: number[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // THE STATE BAG
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -142,6 +184,46 @@ export interface BiobuzzState {
    * and nothing else.
    */
   foulEdge: Record<string, boolean>;
+  /**
+   * THE TWO HIVES, keyed by the alliance whose CELLS they are. DRAFT (field-plan §2).
+   *
+   * `emptyBiobuzzState` builds them in the STAGED pose — red's south CELL up, blue's north
+   * (§10.3.1, Fig 10-2) — because that pose is a property of the FIELD, not of a match: an
+   * unstaged hive has no legal state to be in. The three NECTAR that start in each up-cell are
+   * staging, so `contents` is empty here and `spawn.ts` fills it.
+   */
+  hives: Record<Alliance, BbHiveState>;
+  /** the four FLOWERS, in `BB_FLOWERS` order (F1…F4). A fixed-length tuple because there are
+   * exactly four and the index IS the id everywhere else — a variable-length array would let
+   * a bug produce a fifth flower that renders and scores. DRAFT. */
+  flowers: [BbFlowerState, BbFlowerState, BbFlowerState, BbFlowerState];
+  /** NECTAR still in the ALLIANCE AREA, in the human player's hands. 5 per alliance at setup
+   * (§10.3.1) — written by `spawn.ts`, 0 here. Counted, not id'd: an element in a human's hand
+   * is not on the field, so it is not in `world.balls` until the human enters it. DRAFT. */
+  nectarStock: Record<Alliance, number>;
+  /** NECTAR the alliance has EARNED the right to enter but has not entered yet — one per TIP
+   * (G426). Separate from `nectarStock` because the two run out independently: an alliance can
+   * be owed an entry it has no stock for, and at ≤ 60 s the remaining stock enters regardless
+   * of what is due (§2.4 of the field plan). DRAFT. */
+  nectarDue: Record<Alliance, number>;
+  /** per robot id: did it LEAVE (stop contacting the perimeter) by the end of AUTO? Latched at
+   * that instant and never recomputed, because the achievement is assessed once (Table 10-2)
+   * and a robot that drives back to the wall in TELEOP keeps its 3. DRAFT. */
+  leave: Record<number, boolean>;
+  /** per robot id: PARK at end of AUTO / end of MATCH, the two separate 5-point assessments.
+   * Two maps rather than one because they are two achievements that can disagree. DRAFT. */
+  parkAuto: Record<number, boolean>;
+  parkTele: Record<number, boolean>;
+  /**
+   * GALLERY-ONLY RENDER FLAG: draw the zone / flower / hive / tile-letter captions.
+   *
+   * It rides the state bag because `drawField(ctx, world, screenUp)` is the shared slot's
+   * whole signature — the renderer has no other channel — and `scenesField.ts` is the only
+   * thing that sets it, on the `field-labelled` cell. The SIM never reads or writes it, and a
+   * real match leaves it undefined, which is why it is optional rather than a `false` default:
+   * an absent key is the honest way to say "no scene asked for this".
+   */
+  labels?: boolean;
 }
 
 /**
@@ -160,5 +242,20 @@ export function emptyBiobuzzState(): BiobuzzState {
     held: {},
     nextBallId: 1,
     foulEdge: {},
+    // STAGED, not zeroed: a HIVE has no "no tilt" state, and the manual's staged pose puts
+    // red's south CELL up and blue's north (§10.3.1, Fig 10-2). Contents stay empty — the
+    // three NECTAR in each up-cell are `spawn.ts`'s to place.
+    hives: {
+      red: { up: 'south', contents: [], tips: 0, tipping: 0 },
+      blue: { up: 'north', contents: [], tips: 0, tipping: 0 },
+    },
+    // four literals rather than a `map`, so the tuple type holds and so the four stacks are
+    // four distinct arrays — a `fill()` of one object would alias every flower to one stack.
+    flowers: [{ stack: [] }, { stack: [] }, { stack: [] }, { stack: [] }],
+    nectarStock: { red: 0, blue: 0 },
+    nectarDue: { red: 0, blue: 0 },
+    leave: {},
+    parkAuto: {},
+    parkTele: {},
   };
 }

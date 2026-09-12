@@ -63,6 +63,230 @@ geometry. Everything else they asked for is in.
 
 ---
 
+# HANDOFF — 2026-09-11, sixth session (the intake grabs at the roller, and reaches only what has landed on it)
+
+Branch **alpha**, rebased onto `71e4316`. `npm test` **ALL PASS — 1451 checks (16 new)**. `npm run build` green,
+`npm run server:check` green. `SIM_VERSION` stays **2**, recorded in that version's batch
+list per the block's own alpha rule. **NOT YET DEPLOYED** — see Deploy.
+
+## READ FIRST — the request, and the trap in the middle of it
+
+> "Make the intaking speed extremely fast, but decrease the effective intaking area. Like I
+> said before, the intake is a circular compliant wheel spinning. This means that the ball
+> that I am intaking should be directly below or very slightly in front of the center of the
+> wheel for it to be properly intook. Right now, the range is way too big."
+
+⚠️ **THE GRAB IS NOT THE RANGE, AND DOING ONLY THE GRAB LOOKS LIKE A FIX AND ISN'T.** The
+obvious change — shrink the three capture windows to a band about the roller axle — was made
+first, and measured afterwards it moved NOTHING the player can see: on a stationary robot
+every preset still captured out to `tip + BALL_RADIUS`, because `intakeSuction` reaches that
+far and walks anything touching the intake into the band in 1-4 ticks, and with `drawIn`
+raised it walked it there FASTER than before. Both halves were needed. If this is revisited,
+measure the effective envelope (a sweep of parked artifacts, stationary robot, intake held),
+not the predicate.
+
+## 1. The grab: one band, derived from the roller
+
+`intakeNip(spec)` about `intakeAxleX(spec)` (config.ts) is now the whole fore-aft test, shared
+by all three branches (`atThroat` · `cornered` · `onRollerRow`); they differ only in their
+LATERAL bounds and their gates, which is where their identity actually lives.
+
+The derivation was already in the file and the capture code had never read it. `intakeLidZ`
+puts the roller's underside at exactly `2·BALL_RADIUS` — the APEX of an artifact on the floor
+— so the axle is at `z = 2R + Rr`, the vertical separation from a floored artifact's centre is
+exactly `S = R + Rr`, and **a rigid roller grazes it at ONE point, directly under the axle.**
+Every inch of grab is tread flex: `|dx| <= sqrt(c·(2S + c))` with `c = INTAKE_TREAD_FRAC·Rr`,
+and `front = back + c` because ahead of the nip the loaded lobe flexes into the approaching
+artifact. That is the owner's sentence as arithmetic, and it is why the 72mm funnel roller
+grabs over a longer band than the vector's 48mm one without anyone asserting that it should.
+
+| roller | back | front | forward limit |
+|---|---|---|---|
+| 72mm (sloped, triangle) | 1.517 | 1.800 | `tip + 0.383` |
+| 48mm (vector) | 1.157 | 1.346 | `tip + 0.401` |
+
+Every branch used to end at `tip + BALL_RADIUS` — an artifact's SKIN merely touching the
+roller's FRONT FACE, centre a full radius out in front of the wheel — and start at `hl − 1`,
+which on a triangle is 3.5in INSIDE the chassis. Triangle's `atThroat` ended 0.58in BEHIND its
+own axle, so that preset never grabbed at its roller at all.
+
+⚠️ **`INTAKE_TREAD_FRAC` HAS A FLOOR AT ~0.135 AND BELOW IT TRIANGLE STOPS INTAKING.** A free
+ground artifact's centre can never get behind `hl + BALL_RADIUS` — the chassis is a LIVE
+collider against a CLAIMED artifact (physicsEngine.ts; the claim's only surviving effect is
+`skipChassis` in `pinnedArtifacts`) and `intakeSuction` pulls toward `(hl, 0)` — so everything
+the intake has hold of rests with its skin flush on the front face. That seat is
+`BALL_RADIUS − reach + intakeRollerDia/2` from the axle, CHASSIS-INDEPENDENT: **+0.917 sloped ·
+−0.055 vector · −1.083 triangle**, and the band must CONTAIN it. Measured settle 9.759 / 9.757
+/ 9.016 against an `hl + R` of 9.750 / 9.750 / 9.000, to five decimals over 40 ticks at both
+throttles. Smoke names those numbers.
+
+**The suction target stays `(hl, 0)` and must not move to the axle** — inert on sloped (axle
+1.58in behind the face) and vector (0.055in ahead, inside the 0.3in dead zone), and on TRIANGLE
+the axle is 1.08in in FRONT of the seat, so it would push a seated artifact out of the throat.
+
+## 2. The range: the reach is the LANDING rule's own bound
+
+`intakeSuction`'s `ahead` went from `tip + BALL_RADIUS` (+ `INTAKE_LIP + INTAKE_CAPTURE_BAND`
+on a wedge, which put it PAST `overIntakeRoof`) to **`tip + BALL_RADIUS − INTAKE_CATCH_LENIENCE`**
+— the furthest out an artifact can legally BE on the intake, since that constant is how much
+of itself one may overlap the roller face and still count as having landed. Measured
+effective centreline capture, stationary robot:
+
+| preset | before | after the nip alone | after the reach trim |
+|---|---|---|---|
+| sloped | `tip + 3.60` | `tip + 2.50` | **`tip + 1.25`** |
+| vector | `tip + 2.50` | `tip + 2.50` | **`tip + 1.25`** |
+| triangle | `tip + 3.60` | `tip + 2.50` | **`tip + 1.25`** |
+
+At `tip + 1.25` the artifact's skin is 1.2in BEHIND the roller's front face — overlapping the
+wheel. Capture is 1-2 ticks across the whole range. The drop rule and the suction had to agree
+for gate-drain intaking to work at all and previously agreed only by accident, with 1.2in of
+unexplained slack; they are one expression now.
+
+## 3. The speed
+
+Intervals are on the half-tick grid `(n − 0.5)/60`, never an exact multiple of `SIM_DT` — the
+gate compares against an ACCUMULATED `world.time`, so a tick-boundary interval is a float coin
+toss. sloped 1t centre / 4t edge / 1t clump · triangle 1t / 3t / 1t + `dual` · vector 2t / 8t
+and no clump bonus. Ticks to fill a 3-hopper off the seat: triangle 4 · sloped 7 · vector 16.
+
+⚠️ **`drawIn` had to rise with them (26→40, 21→32, 46→70)**: the wedge presets are
+TRAVEL-limited, not interval-limited. The measured back-to-back gap on sloped was 0.133s
+against a `clumpInterval` of 0.04, which is exactly why the 2026-09-10 bisection found
+`clumpInterval` 0.04→0.02 with `capMax` 0.09→0.05 BYTE-IDENTICAL.
+
+## 4. THE THIRD BALL — found, and it was the ball you had already intaken
+
+The intake work above does NOT fix it, and correctly so: `49d0926` bisected the symptom to a
+restitution violation and `4c4ab27` to `BALL_ROLL_FRICTION`, and `4c4ab27` recorded that this
+exact experiment was already inert — *"moving the capture window out to the rollers, and then
+widening it across the whole mouth, changed the numbers by nothing at all."* All true. The
+cause was somewhere none of those passes looked.
+
+Owner: *"the first and second balls get intaked so quickly that they don't transfer any
+momentum to the next ball in a vertical straight line intaking test"* — which is what real,
+well-designed fast robots do.
+
+Measured, sloped, touching file (5.02in pitch), full throttle:
+
+```
+t38  ball1 x11.73 v0        ball2 x16.75 v0     ball3 x21.77 v0
+t39  ball1 CAPTURED         ball2 x15.56 v0     ball3 x20.58 v0   held#1 @x9.23  d(b2)=6.33
+t40                         ball2 x14.36 v0     ball3 x19.38 v0   held#1 @x8.48  d(b2)=5.88
+t41                         ball2 ---- v73      ball3 ---- v73    held#1 @x7.73  d(b2)=5.71
+```
+
+Ball 1 goes in without ever moving — exactly as the owner says it should. Then two ticks later
+balls 2 and 3 leave TOGETHER at 73 in/s, with ball 2 sitting 3.9in clear of the roller tip and
+`robotPenetration` reporting no contact with the chassis at all.
+
+**The striker is ball 1.** A held artifact is SOLID to ground artifacts (`robotSolids.held`) and
+is still in FRONT of the chassis face while it slides to its slot. `HELD_SLIDE_SPEED` was 45
+against a robot driving 85, so in the WORLD frame the swallowed artifact was still advancing at
+40 in/s. It closed on ball 2 (through the artifact world's look-ahead, at 0.71in of clearance —
+which is why `robotPenetration` saw nothing) and ball 2, still touching ball 3, chained it on.
+
+**Fix: `HELD_SLIDE_SPEED` 45 → 150**, above the fastest legal chassis (`driveParams().maxSpeed`
+peaks at ~121-130 in/s depending on the coerced envelope), so a held artifact can never advance
+through the world on any build. After:
+
+| preset | captured @ | worst shove | peak artifact speed |
+|---|---|---|---|
+| sloped | 39 / 43 / 47 | **0.0in** | **0 in/s** |
+| vector | 39 / 43 / 47 | **0.0in** | **0 in/s** |
+| triangle | 39 / 43 / 49 | 1.1in | 74 in/s, re-caught in 2 ticks — see 4b |
+
+## 4b. …and then TRIANGLE's storage slots, which were the last thing still clipping
+
+Triangle was the one preset still knocking the third artifact away (74 in/s, 1.1in of shove)
+after the slide fix, because it parks its front row 2in PROUD of the chassis face — riding out
+near the mouth at chassis speed, where it meets the next artifact before the intake can. Owner:
+*"For triangle intake, let's hold the balls like 2 inches further into the chassis."*
+
+`heldSlotPos` (physics.ts): front row `hl + 2` → **`hl`**, deep `hl − 4` → **`hl − 6`**. Its
+front skin now sits at `hl + BALL_RADIUS`, 2.5in inside the roller line.
+
+⚠️ **BOTH slots move, not just the front row.** The front row alone closes the deep-to-front
+spacing to `hypot(4, 2.7) = 4.83in`, under the 5in sum of radii, and draws the stored artifacts
+overlapping each other. The deep one still clears the chassis rear by 3.0in at the 11in length
+floor.
+
+**Triangle was simply never moved off `hl + 2`** — the other two presets were corrected long
+ago, for a related reason recorded right below it in `heldSlotPos`: a held artifact parked proud
+of the chassis face sits inside the wall plane when the robot is tip-on to a wall, and holds a
+shoved pile 4in off its own footprint, out of reach of the G408 contact test. Triangle carried
+that defect too.
+
+After: **every preset takes a touching file of three 3/3 at ticks 39 / 43 / 47 with peak
+artifact speed 0 in/s and 0.0in of shove**, at both 5.02in and 8in pitch. The file-of-three
+check's triangle exemption is gone and its bounds are now `shove < 1in` and `peak < 5 in/s` for
+all three.
+
+Smoke asserts the RELATION rather than the number — `HELD_SLIDE_SPEED > max
+driveParams().maxSpeed` swept over every drivetrain × rpm × mass × intake — so raising the rpm
+ceiling later fires the check instead of resurrecting the bug. The file-of-three check now
+asserts peak speed and shove, not just the 3/3 count; the old 45in bound would have passed the
+broken behaviour.
+
+⚠️ **The capture instant is NOT observable from outside a tick**, and two checks were written
+wrong before this was understood: within one `step` the order is suction (a velocity) → the
+solve (which moves the artifact) → `updateIntake` (which tests the nip), so a PRE-step reading
+is up to `drawIn * SIM_DT` too far out and a POST-step reading is `HELD_SLIDE_SPEED * SIM_DT`
+too far in. The check allows exactly that slack and says so.
+
+## 5. Four checks moved, and one of them is a GAMEPLAY change, not a test detail
+
+- **`pushing a clump across open floor fouls even with the intake held` re-baselined (5,6) →
+  (6,8).** G408's carry test is net distance ALONG the push direction, and with a shorter reach
+  the artifacts the robot has not swallowed are no longer held on the bumper — they squirt
+  sideways, covering no ground where the robot is driving them. Swept at 0.2 throttle:
+  `3:0 4:0 5:0 6:1 7:0 8:2 9:6`. **A 5-clump herd used to bill a MINOR and now costs nothing.**
+  That is the rule working as it was rewritten to ("running into things is free and taking them
+  somewhere is not"), but it does mean ploughing a small pile with the intake held is free now.
+  Flagged to the owner. ⚠️ Do NOT rescue it by slowing the intake or widening the reach.
+- **`a vector intake does not strand artifacts…`** — its probe DEFINED stranded as the old
+  capture window written out by hand, so it measured the diff rather than the defect. Rewritten
+  as the behaviour: still inside the SUCTION region at scene end with hopper room. 8 before the
+  roller row, 3 after, **0 now**.
+- **`vector intake swallows a CENTER ball faster than an EDGE ball`** parked its ball at
+  `tip + 2`, now outside the reach — both ends read the 120-tick cap and the check was
+  comparing two misses. Scene moved inside the reach; the ratio assertion is unchanged.
+- **`an artifact at the edge of the mouth is swallowed promptly`** 0.33s → 0.53s (budget 0.5 →
+  0.65). A shorter reach means the funnel engages later on a full-throttle approach. Its
+  companion `pushedOut < 7.5` — the one that actually detects the chassis/funnel oscillation —
+  is unmoved, so the thing it guards is intact.
+
+## 6. Also done in passing
+
+- **`INTAKE_WHEEL_STICKOUT` DELETED.** Grep-verified dead (zero readers), and its doc comment
+  stated a competing and wrong model of this exact geometry ("the ball hitbox is
+  `reach − INTAKE_WHEEL_STICKOUT` deep", matching none of the three presets' real `wedgeFront`).
+  It had to go WITH this change, not later.
+- **ONE AXLE AUTHORITY.** `drawRobot`'s `wedgeTip`/`axis` and `artifactSolids`' `wedgeFront`
+  both call `intakeAxleX` now instead of recomputing it. No visual change (identical value on
+  every legal chassis); smoke asserts the agreement at both chassis extremes.
+- **`intakeClaims`' lateral widened** to `mouthHalf + BALL_RADIUS*0.25`, matching the suction's
+  own outer band — it was a bare `mouthHalf`, so an artifact at exactly 7.0in off a mouthHalf-7
+  sloped was being sucked while the chassis was still allowed to fight it.
+- **`overIntakeRoof`'s comment corrected.** It claimed to cover "exactly what the intake can
+  CAPTURE from", which was already loose and is now false — it is the HARDWARE footprint, and
+  is deliberately wider than the grab. `goal.ts`'s outflow test reads it for that reason.
+- ⚠️ `capture ⊆ suction` is NOT an invariant and asserting it was wrong: `onRollerRow` grabs a
+  flat preset's artifact WHERE IT LIES, wider than the suction pulls. Both sit inside the CLAIM,
+  and that is what smoke asserts.
+
+## Deploy — NOT DONE
+
+`updateIntake` / `intakeSuction` / `intakeClaims` are in `src/sim/`, which the Fly app runs
+authoritatively for lobby, matchmaking, ranked AND record runs; only Free Drive runs the client
+bundle's sim. **An un-deployed change here looks like it did nothing in every mode the owner is
+likely to test in** — HANDOFF records that confusion costing half a session. Run
+`./scripts/fly-deploy.sh` (NEVER a bare `flyctl deploy` — fly.toml carries one `[[vm]]` size
+and a bare deploy silently upsizes every satellite), then verify `/health` and
+`fly machine list -a dohun-sim-decode`.
+
+---
+
 # HANDOFF — 2026-09-11, fifth session (the zone fouls test the zone the manual defines)
 
 Branch **alpha**, rebased onto `6d4dd25` (this session pulled `06dd5bd`; PRs #38 and #39

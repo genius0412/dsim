@@ -37,8 +37,9 @@
  * empty field, because it would look finished.
  */
 
-import type { AssistConfig, RobotSpec, StartCat } from '../../types';
+import type { Alliance, AssistConfig, RobotSpec, StartCat } from '../../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
+import { wrapAngle } from '../../math';
 import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
@@ -67,8 +68,13 @@ export const BB_HALF_Y = 72;
 export const BB_WALL_T = 10;
 
 /** camera fit margin (in) — breathing room around the field so the walls are not flush with
- * the viewport edge. */
-export const BB_VIEW_MARGIN = 8;
+ * the viewport edge.
+ *
+ * WIDENED from 8 for the FLOWER STACK READOUT: a flower's contents are drawn OUTSIDE the
+ * perimeter beside it (`drawField.ts`), one disc per element, and a NECTAR is 3.6 in across.
+ * The margin has to clear one disc plus the tile ruler that also lives out there, or the
+ * readout is cropped by the viewport on the two walls that carry both. */
+export const BB_VIEW_MARGIN = 12;
 
 /** the outer x half-extent the CAMERA must show. Equal to the wall for now: BIOBUZZ has no
  * known structure protruding outside the perimeter (CR's accelerators did, which is why the
@@ -77,12 +83,275 @@ export const BB_VIEW_MARGIN = 8;
 export const BB_VIEW_HALF_X = BB_HALF_X;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ---- FIELD GEOMETRY (manual V1)
+//
+// Everything below comes off the Kickoff Competition Manual V1 (2026-09-12), distilled in
+// `docs/biobuzz-reference.md` §2 with the figure number for each value. A constant whose
+// value the manual PRINTS carries the section or figure it came from; a constant DERIVED
+// from a drawing carries `// APPROX: <figure>` in exactly the words the reference tags it
+// with, because `grep APPROX src/games/biobuzz/config.ts` is the 09-14 tape-measure list.
+//
+// THE LAYOUT IS POINT-SYMMETRIC (180° about the origin), NOT MIRRORED. Red's LOADING ZONE is
+// at y > 0 on the left wall and its GARDEN is the audience-left corner; blue's are the
+// diagonal opposites. See `bbMirror` under START ANCHORS. Reflecting this field in x instead
+// of rotating it produces a layout that is internally consistent and wrong.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** an axis-aligned field region, in world inches. `x0 < x1` and `y0 < y1` always. */
+export interface BbRect {
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+}
+
+/**
+ * LOADING ZONE — ~23 wide × 11 deep against the side wall, bounded by tape and the wall, tape
+ * included (§9.3, Fig 9-2 p65 / Fig 9-3 p66). The width is set by the TILE seams at rows 4
+ * and 5; the zone belongs to the alliance whose ALLIANCE AREA it adjoins.
+ *
+ * RED IS AT y > 0. That is the half of the field an x-mirror gets wrong.
+ */
+export const BB_LZ: Record<Alliance, BbRect> = {
+  red: { x0: -72, x1: -61, y0: 24, y1: 48 }, // APPROX: Fig 9-2/9-3 — ±0.5 in on the tape edge
+  blue: { x0: 61, x1: 72, y0: -48, y1: -24 }, // point symmetry, Fig 9-2
+};
+
+/**
+ * GARDEN — a ~23 × 2 in strip in the alliance's own corner, "defined by the outside edge of
+ * tape", two 1-in tapes (§9.3, §10.5.3, Fig 9-2/9-3). Red's runs along the AUDIENCE wall from
+ * the red corner; blue's along the REAR wall from the blue corner. Not protected (G411 note).
+ */
+export const BB_GARDEN: Record<Alliance, BbRect> = {
+  red: { x0: -72, x1: -49, y0: -72, y1: -70 }, // APPROX: Fig 9-2/9-3 — strip depth off the drawing
+  blue: { x0: 49, x1: 72, y0: 70, y1: 72 }, // point symmetry, Fig 9-2
+};
+
+/** tape widths (in): 1-in gaffer for the LOADING ZONE bound, a 2-in strip for the GARDEN
+ * (§9.3). Red / electric-blue — the one thing on this field that is NOT a theme token,
+ * because the tape colour is what tells a driver whose zone it is. */
+export const BB_TAPE_1 = 1;
+export const BB_TAPE_2 = 2;
+
+// ── HIVE STRUCTURE (§9.6, Figs 9-7…9-11, pp69–73) ────────────────────────────
+
+/** pivot x of each HIVE (in): the pair is 25.5 in centre to centre (Fig 9-10), red at −x.
+ * APPROX: Fig 9-2 — that the PAIR is centred on the field, which the plan view shows. */
+export const BB_HIVE_X = 12.75;
+
+/** horizontal projection (in) of a CELL centre from its pivot, along the HIVE axis (y) —
+ * 15.44 · cos 30°. MEASURED (owner CAD, 2026-09-12; `docs/biobuzz-reference.md` §2.2). */
+export const BB_HIVE_CELL_DY = 13.37;
+
+/** a CELL's depth along the HIVE axis IN PLAN (in) — the 12.04-in prism projected, 12.04 ·
+ * cos 30°. MEASURED (owner CAD, 2026-09-12; reference §2.2). */
+export const BB_HIVE_CELL_LEN = 10.43;
+
+/** the up-CELL opening's bottom and top above the tiles (in) — Fig 9-10. This is the window a
+ * LAUNCH has to arrive through, and what `releasePollen` solves its arc against. */
+export const BB_HIVE_OPEN_Z: readonly [number, number] = [53.5, 65.6];
+
+/** bottom of the DOWN hive above the tiles (in) — Fig 9-10. The space under the structure is
+ * drivable, which G409 assumes; the 2D sim simply puts no collider there. */
+export const BB_HIVE_BOTTOM_Z = 25.5;
+
+/** the up-CELL's ACCEPT FOOTPRINT (in): `w` across the HIVE, `d` along it.
+ *
+ * MEASURED (reference §2.2). The 20-in opening WIDTH is perpendicular to the tilt axis, so it
+ * is NOT foreshortened; the DEPTH is, and is `BB_HIVE_CELL_LEN` — the same 10.43 the cell is
+ * drawn at, because the launch window and the cell footprint are the same rectangle. */
+export const BB_CELL_OPEN = { w: 20, d: BB_HIVE_CELL_LEN };
+
+/**
+ * the CELL assembly end to end IN PLAN, along y (in) — 42.91 true · cos 30°. MEASURED
+ * (reference §2.2).
+ *
+ * BOTH ENDS FORESHORTEN. The two CELLS ride ONE RIGID BAR at 30°, so a top-down view projects
+ * the whole assembly by the same cosine and only `z` separates the up cell from the down one.
+ * Drawing the up cell at full length and the down cell short says the bar bends, and it makes
+ * the hive 42.91 long in a view where nothing on it is.
+ */
+export const BB_HIVE_LEN = 37.16;
+
+/** the CELL assembly across, along x (in) — the 20-in opening width, which is PERPENDICULAR to
+ * the tilt axis and so is not foreshortened (reference §2.2). */
+export const BB_HIVE_W = 20;
+
+/**
+ * frame BASE BAR, inner and outer x (in) — MEASURED (owner CAD, 2026-09-12; reference §2.2):
+ * bent sheet metal, effective 1 in thick, with its INNER edge ON the ±24 tile seam and the
+ * other edge 1 in OUTWARD. So a bar occupies x ∈ [24, 25] and x ∈ [−25, −24].
+ *
+ * Two edges rather than a centre and a thickness because the edge on the seam is the measured
+ * fact: a centre-plus-width pair rounds the seam away, and the seam is what a driver lines up
+ * against. The COLLIDER is `colliders.ts` (biobuzz-field-staging); these are the numbers it
+ * and the drawing share.
+ */
+export const BB_FRAME_BAR_IN = 24;
+export const BB_FRAME_BAR_OUT = 25;
+
+/** frame foot half-extent along y (in) — MEASURED 19.4 (reference §2.2; Fig 9-8 prints a
+ * 38.95-in frame depth and the CAD measures 38.80). */
+export const BB_FRAME_Y = 19.4;
+
+/**
+ * APRILTAG ID GROUPS — four 36h11 tags on the bottom face of every CELL (§9.9, Figs 9-15…9-17,
+ * pp74–77). Keyed by the CELL's side of the pivot: `north` is y > 0 (the REAR, opposite the
+ * audience), `south` is y < 0 (the AUDIENCE side).
+ *
+ * Drawn on the field on purpose. A published tag id is the ONE thing that pins this layout to
+ * the real one, so a still that prints them can be checked against the manual without opening
+ * it — the mirror test in `docs/biobuzz-reference.md` §9.
+ */
+export const BB_HIVE_TAGS: Record<Alliance, { north: readonly number[]; south: readonly number[] }> = {
+  red: { north: [30, 31, 32, 33], south: [34, 35, 36, 37] },
+  blue: { north: [42, 43, 44, 45], south: [38, 39, 40, 41] },
+};
+
+/** which CELL faces UP at staging (§10.3.1, Fig 10-2 p83): each HIVE is tilted so the cell
+ * that points at a FLOWER is DOWN, which puts red's south cell and blue's north cell up. */
+export const BB_HIVE_UP_STAGED: Record<Alliance, 'north' | 'south'> = { red: 'south', blue: 'north' };
+
+// ── FLOWERS (§9.7, Fig 9-12, pp72–73) ────────────────────────────────────────
+
+/** stand-off of a FLOWER's ring centre from its WALL FACE (in). MEASURED (owner CAD,
+ * 2026-09-12; reference §2.3) — it was `APPROX` 3.0 off Fig 9-12. */
+export const BB_FLOWER_D = 2.54;
+
+/**
+ * The four FLOWERS, one per perimeter wall, on the tile seam one tile off centre.
+ *
+ * MEASURED (owner CAD, 2026-09-12; reference §2.3): each one sits EXACTLY on the centreline of
+ * its tile seam — ±24.000, not offset to one side of it — and its ring centre is BB_FLOWER_D
+ * off the wall face. `nearest` is the alliance whose half of the wall it sits on, NOT
+ * ownership: a FLOWER is owned at run time by whoever holds the top-most NECTAR (§10.5.2).
+ */
+export const BB_FLOWERS: readonly {
+  id: string;
+  wall: 'left' | 'rear' | 'right' | 'audience';
+  x: number;
+  y: number;
+  nearest: Alliance;
+}[] = [
+  { id: 'F1', wall: 'left', x: -72 + BB_FLOWER_D, y: -24, nearest: 'red' },
+  { id: 'F2', wall: 'rear', x: -24, y: 72 - BB_FLOWER_D, nearest: 'red' },
+  { id: 'F3', wall: 'right', x: 72 - BB_FLOWER_D, y: 24, nearest: 'blue' },
+  { id: 'F4', wall: 'audience', x: 24, y: -72 + BB_FLOWER_D, nearest: 'blue' },
+];
+
+/** top ring height above the tiles (in) — Fig 9-12. The z a deposit arc solves for. */
+export const BB_FLOWER_TOP_Z = 21.5;
+
+/** top ring opening RADIUS (in) — 4.0 in diameter, Fig 9-12. A 2.8 POLLEN and a 3.6 NECTAR both
+ * pass it; only the POLLEN passes the 3.55 retrieval opening at the bottom (G418). */
+export const BB_FLOWER_OPEN_R = 2.0;
+
+/**
+ * the FLOWER's FOOTPRINT on the tiles (in) — `along` the wall by `deep` into the field, flush
+ * against the wall face. MEASURED (owner CAD, 2026-09-12; reference §2.3).
+ *
+ * A RECTANGLE, NOT A DISC. The first pass read Fig 9-12's ring plate as an `APPROX` 2.6-in
+ * circle; the solid a robot actually meets is a 6 × 4.9 box with the 4.0-in ring opening
+ * inside it, BB_FLOWER_D off the wall. The difference matters at both ends — it is wider along
+ * the wall than a 2.6 disc (a robot running the wall hits it sooner) and shallower into the
+ * field (it protrudes 4.9, not 5.2, and its corners are square).
+ *
+ * The COLLIDER is `colliders.ts` (biobuzz-field-staging); this is the number it and the
+ * drawing share.
+ */
+export const BB_FLOWER_FOOT = { along: 6, deep: 4.9 };
+
+/**
+ * THE HIVE TIP TABLE — MEASURED on a real HIVE (owner, 2026-09-12), not published in the
+ * manual. Indexed by the number of NECTAR in the up-CELL; the value is how many POLLEN also
+ * have to be in it for the CELL to tip. A cell tips when
+ * `pollen >= BB_TIP_POLLEN[Math.min(nectar, 5)]`.
+ *
+ * **IT IS A TABLE, NOT A MASS, AND NOTHING INTERPOLATES IT.** No single linear weighting fits
+ * the measured rows: 1n+7p and 2n+6p together make a NECTAR worth one POLLEN, and 3n+3p then
+ * contradicts that outright. A seesaw is torque and packing, not weight. The rows are monotone
+ * (more of either element still tips), so the comparison above is the whole rule.
+ *
+ * The STAGED row is the one that decides how a match opens: a CELL is staged with 3 NECTAR
+ * (§10.3.1), so the first TIP costs **3 POLLEN** and is reachable in AUTO.
+ *
+ * Only index 0 is a guess. APPROX: an empty cell was not measured — 8 extrapolates the 7/6
+ * trend at the top of the table.
+ *
+ * See `docs/biobuzz-reference.md` §4.1.
+ */
+export const BB_TIP_POLLEN: readonly number[] = [8, 7, 6, 3, 1, 0];
+
+/** seconds of TELEOP remaining at which NECTAR may legally enter a FLOWER (G410). Before this
+ * cue it is a MAJOR per nectar to the opponent — and the element still scores (§10.5.2). */
+export const BB_FLOWER_UNLOCK_S = 60;
+
+// ── SCORING (§10.5, Table 10-2 p91; fouls Table 10-4 p92) ────────────────────
+
+/**
+ * The points table, verbatim from Table 10-2. Everything the sim awards reads a member of this
+ * object rather than a literal, so a V2 revision to the table is one edit here.
+ *
+ * MAJOR IS 20, not DECODE's 15. A shared `awardFoul` that assumes 15 bills this game wrong —
+ * see `docs/biobuzz/field-plan.md` §6 request 4.
+ */
+export const BB_PTS = {
+  /** no longer contacting the perimeter wall at the end of AUTO */
+  leave: 3,
+  /** at least partially in a LOADING ZONE, assessed at end of AUTO */
+  parkAuto: 5,
+  /** …and assessed again at the end of the MATCH */
+  parkTele: 5,
+  /** one HIVE TIP, whenever it completes (AUTO if it completes before TELEOP starts) */
+  tip: 20,
+  /** each element left in an upward-facing CELL, at rest after the match */
+  cell: 2,
+  /** bottom-most NECTAR of your colour in a FLOWER, per flower */
+  bottomNectar: 5,
+  /** each element in a FLOWER you OWN, whoever placed it */
+  owned: 2,
+  /** each element at least partially in a GARDEN, credited to the GARDEN's colour */
+  garden: 1,
+  /** Table 10-4 */
+  foulMinor: 5,
+  foulMajor: 20,
+};
+
+/** RANKING POINTS (Tables 10-2/10-3). These thresholds are the "all other events" set;
+ * regionals and Championship are TBA in V1. SWARM at 16 is exactly both robots LEAVE and both
+ * PARK in AUTO, which is why it is a threshold and not a checklist. */
+export const BB_RP = {
+  /** LEAVE + PARK points needed for the SWARM RP */
+  swarm: 16,
+  /** TIPS needed for POLLINATOR 1 */
+  pollinator1: 4,
+  /** TIPS needed for POLLINATOR 2 */
+  pollinator2: 7,
+  win: 3,
+  tie: 1,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POLLEN — the scoring element
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** POLLEN radius (in). APPROX: a 3" OD ball, i.e. the size a wiffle-ball scoring element has
- * been in DECODE (5" artifacts aside) and Chain Reaction. Section 10 fixes this at Kickoff. */
-export const BB_POLLEN_R = 3 / 2;
+/** POLLEN radius (in) — 2.8 in diameter, §9.8 (AndyMark am-5851). NOT approximate: the
+ * Kickoff manual prints the size, and it retires the 1.5" pre-season guess this constant
+ * carried while Section 9 was a placeholder page. */
+export const BB_POLLEN_R = 1.4;
+
+/** NECTAR radius (in) — 3.6 in diameter, §9.8 (am-5852). The second element size, and the
+ * reason the shared solve needs a per-artifact radius: today a nectar is SIMULATED at
+ * `BB_POLLEN_R` (see `docs/biobuzz/field-plan.md` §6 request 1) and only drawn at this one. */
+export const BB_NECTAR_R = 1.8;
+
+/** how many POLLEN are on the field at staging — §10.3.1: 16 in the four FLOWERS, 4 in each
+ * GARDEN, 16 preloaded. Manual count, not a placeholder. */
+export const BB_POLLEN_COUNT = 40;
+
+/** NECTAR PER ALLIANCE — §9.8: 8 red + 8 blue. Of each alliance's 8, three are staged in its
+ * up-CELL and five start in the ALLIANCE AREA as human-player stock (§10.3.1). */
+export const BB_NECTAR_COUNT = 8;
 
 /** how many POLLEN the shell scatters. APPROX: 60 is a placeholder chosen to LOOK like a
  * field worth driving on and to be cheap in the shared solve, not a manual count. It is also
@@ -428,6 +697,31 @@ export const bbDefaultIndex = (cat: StartCat): number => {
 };
 export const bbRoleLabel = (cat: StartCat | undefined): string =>
   cat === 'close' ? 'TOP' : cat === 'far' ? 'BOTTOM' : '-';
+
+/** a field point, optionally with a heading (radians). What `bbMirror` maps. */
+export interface BbPoint {
+  x: number;
+  y: number;
+  heading?: number;
+}
+
+/**
+ * THE POINT MIRROR: `(x, y) → (−x, −y)`, `heading → heading + π`.
+ *
+ * The BIOBUZZ layout is POINT-SYMMETRIC (180° about the origin), NOT mirrored — red's LOADING
+ * ZONE is at y > 0 and its GARDEN is the audience-left corner, and blue's are the DIAGONAL
+ * opposites (`docs/biobuzz-reference.md` §2.1). The x-mirror a few lines up is a REFLECTION,
+ * which is the right transform for a start anchor on a symmetric wall and the wrong one for
+ * every zone on this field: reflecting a point-symmetric layout produces something internally
+ * consistent and wrong, and no check inside the sim can tell the difference.
+ *
+ * Both live here on purpose, next to each other, so the choice is made by picking a function.
+ */
+export function bbMirror(p: BbPoint): BbPoint {
+  return p.heading === undefined
+    ? { x: -p.x, y: -p.y }
+    : { x: -p.x, y: -p.y, heading: wrapAngle(p.heading + Math.PI) };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PENALTIES

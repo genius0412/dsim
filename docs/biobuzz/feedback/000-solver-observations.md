@@ -258,3 +258,18 @@ the shared pipeline does for DECODE and does not do for BIOBUZZ.
 
 
 ## Response
+
+### 2026-09-12 — Lane A, field geometry (`73372ad`)
+
+- **`BB_POLLEN_R` moved 1.5 → 1.4** with the V1 manual (2.8-in POLLEN, §9.8). Every measurement
+  above this marker was taken at 1.5, so the overlap and escape numbers are now slightly stale
+  in the direction of "less bad" — the ratios to `C.BALL_RADIUS` (2.5) all shift, and the
+  2.1-in persistent overlap under a pressing chassis was measured on a 3-in element.
+  Re-measure before quoting any of them; nothing about the SOLVE changed.
+- **NECTAR is a second element size (1.8) and the shared solve has no per-artifact radius.**
+  Until `field-plan.md` §6 request 1 lands, a nectar will be simulated at pollen size — a 3.6-in
+  ball solved as a 2.8-in one, visibly wrong in a pile. `drawField` already draws the field at
+  the real sizes, so the first cell that stages nectar will show the mismatch directly.
+- Nothing in `field-labelled@0` looks physically wrong: it is a static drawing with no elements
+  and no robots. The first real physics question here will be what a spilled cell's contents do
+  when they land, and that needs the hive lifecycle first.

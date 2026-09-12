@@ -29,6 +29,42 @@ state (is the build green?), what was finished, exact next steps, and gotchas. R
 session start if it exists — it may describe uncommitted mid-refactor state. HANDOFF is a
 reverse-chronological log; prepend a new dated section and demote the old "READ FIRST".
 
+## Parallel sessions — the coordination board
+
+**This section applies only while `.coord.json` exists in the repo root. If it does not, skip
+everything here and work normally — that is the ordinary state of this repo.**
+
+Three people work this repo in parallel from separate Claude sessions on separate machines,
+and the expensive failure is two of them building the same thing from different chats. The
+board is one claim per person — what they are touching, **by path** — on a branch in a
+separate PRIVATE repository. `docs/biobuzz/COORDINATION.md` is the protocol.
+
+While it is configured:
+
+- **Run `npm run coord` and read it before starting any new piece of work**, and before
+  opening a file you did not expect to touch. If somebody else has claimed a path you are
+  about to edit, **say so to the user before touching it.** Never silently work around a
+  collision — the whole point is that it gets discussed.
+- **Claim by path when the user says what you are working on**, and re-claim when the work
+  moves: `npm run coord:claim -- "<what>" <path> [path…]`. Claim a directory when the work is
+  a directory. `-- --clear` when the piece is finished.
+- **Never put anything from the conversation into a claim label.** The automatic half of the
+  payload is built only from `git` output and cannot leak a chat; the label is the one field
+  a human types, so it is the one field that could.
+- **A publish failing is not yours to fix.** The Stop hook publishes in a detached child and
+  exits 0 by design. Do not chase it mid-task, and do not report it as a problem with the
+  work.
+- The board is a note, not a lock. It cannot stop anyone editing anything. **Git is the
+  truth**; the board is only intent.
+
+**THE SYSTEM HAS AN OFF SWITCH AND IT IS THE REPOSITORY ITSELF.** When the board repository
+is deleted, or this account is removed from it, the publisher confirms it over two runs and
+then RETIRES: `.coord.json` is renamed to `.coord.retired.json`, the `coord` remote is
+removed, and every command here becomes a silent no-op. Nothing needs uninstalling and no
+session needs telling. If you find `.coord.retired.json` and no `.coord.json`, the board is
+over — **ignore this whole section and contribute normally.** Do not rename it back or
+re-run `coord:setup` to "fix" it; that is the owner's call, not a fault to repair.
+
 ## Commands
 
 - `npm run dev` — dev server (localhost:5173)
@@ -1337,16 +1373,86 @@ handle (`GATE_ARM_SHORT`) pokes OUT into the gate zone (what a robot pushes) and
   wheels drawn as a row of small rects — never circles; chassis 11.5–14.5"), **Triangle**
   (TRIANGULAR internal storage — hopper pips draw in a triangle; longest reach, slower
   transfer). Internal keys sloped/vector/triangle ('compact'/'extended' migrate in settings).
-- **CAPTURE MODEL**: each preset carries a `mouth` sub-object (`mouthHalf`, `wheelHalf`,
-  `wedge`/`wedgeWidth`/`funnel`, `capMin`/`capMax`, `clumpInterval`, `dual`). A ball is captured
-  on the wheel line at the tip of reach; non-overhang presets clamp the mouth inside the frame
-  so a full-width chassis geometrically forbids side intake. **Timing depends on WHERE the ball
-  enters**: `single = capMin + (capMax−capMin)·(|localY|/wheelHalf)`. **Wedges FUNNEL** off-center
-  balls toward the centerline via a lateral VELOCITY nudge only, never a position write — it
-  runs before the ball solve so Rapier owns penetration. **Triangle takes TWO per cycle**
-  (`dual`). Flank capture (`sideTouch`) exists only where the vector's wheel span overhangs a
-  narrower chassis, comparing SPANS not penetration. NOTE: `halfWidth`/`perBall`/`clumpPerBall`
-  were REMOVED — grep before reintroducing.
+- **CAPTURE MODEL**: each preset carries a `mouth` sub-object (`mouthHalf`, `throatHalf`,
+  `wedge`, `drawIn`, `capMin`/`capMax`, `clumpInterval`, `dual`). Non-overhang presets clamp the
+  mouth inside the frame so a full-width chassis geometrically forbids side intake. **Wedges
+  FUNNEL** off-center balls toward the centerline via a lateral VELOCITY nudge only, never a
+  position write — it runs before the ball solve so Rapier owns penetration. **Triangle takes
+  TWO per cycle** (`dual`). NOTE: `halfWidth`/`perBall`/`clumpPerBall`/`wheelHalf`/`wedgeWidth`/
+  `funnel` and the unreachable `sideTouch` flank grab were REMOVED — grep before reintroducing.
+- ⚠️ **A HELD ARTIFACT MUST NEVER ADVANCE THROUGH THE WORLD — `HELD_SLIDE_SPEED` BEATS THE
+  FASTEST LEGAL CHASSIS.** This is the actual cause of "the third ball is still being deflected
+  too far", after two earlier bisections (restitution, then roll friction) had correctly ruled
+  out the physics and the capture window. A held artifact is SOLID to ground artifacts
+  (`robotSolids.held`) and is still out in FRONT of the chassis face while it slides to its
+  slot, so at 45 in/s against a robot driving 85 the sim carried **the artifact the intake had
+  just swallowed** forward through the world at 40 in/s, into the next artifact in the line —
+  which, still touching the one behind it, chained the impulse straight on. Measured on a
+  touching file of three at full throttle: the first went in clean and never moved, then balls
+  two and three BOTH left at 73 in/s on the same tick, two ticks after the capture, and were
+  shoved 32in downfield. At 150 the whole file goes in at ticks 39 / 43 / 47 with **peak
+  artifact speed 0.0** on sloped and vector. Real hardware has no such problem because the
+  rollers turn far faster at the surface than the chassis drives: what is grabbed is INSIDE the
+  robot at once and cannot reach back out. Smoke asserts the RELATION (`HELD_SLIDE_SPEED >
+  max driveParams().maxSpeed` over the whole legal envelope), not the number, so raising the
+  rpm ceiling later fires the check instead of resurrecting the bug.
+- ⚠️ **A HELD ARTIFACT'S SLOT IS INSIDE THE ROBOT, NEVER PROUD OF THE CHASSIS FACE**
+  (`heldSlotPos`, physics.ts). Sloped and vector put the front one's SKIN at the roller line;
+  TRIANGLE sat 2in further out at `hl + 2` until it was moved to `hl` (deep `hl − 4` → `hl − 6`
+  with it), which is what made it the last preset still clipping the third artifact in a line
+  — 74 in/s, against 0 for the other two — after the slide fix above. A slot proud of the face
+  also puts a held artifact inside the WALL plane when the robot is tip-on to a wall, and holds
+  a shoved pile 4in off its own footprint, out of reach of G408's contact test. ⚠️ Move BOTH
+  triangle slots together or the deep-to-front spacing closes to 4.83in, under the 5in sum of
+  radii, and the stored artifacts draw overlapping.
+- **THE GRAB IS THE ROLLER NIP, AND IT IS ONE BAND FOR ALL THREE CAPTURE BRANCHES.**
+  `intakeNip(spec)` about `intakeAxleX(spec)` (`config.ts`) is the whole fore-aft test; the
+  branches (`atThroat` · `cornered` · `onRollerRow`) differ only in their LATERAL bound and
+  their gates, which is where their identity actually lives. It comes out of geometry this
+  file already asserted and the capture code never read: `intakeLidZ` puts the roller's
+  underside at exactly `2·BALL_RADIUS`, the APEX of an artifact on the floor, so the axle is at
+  `z = 2R + Rr`, the vertical separation from a floored artifact's centre is exactly
+  `S = R + Rr`, and **a RIGID roller grazes it at ONE point — directly under the axle.** Every
+  inch of grab is tread flex: with the tread reaching `c = INTAKE_TREAD_FRAC · Rr` past its
+  circle, `|dx| <= sqrt(c·(2S + c))`, and `front = back + c` because ahead of the nip the
+  loaded lobe flexes into the approaching artifact. Resolved: 72mm roller back 1.517 / front
+  1.800, 48mm back 1.157 / front 1.346 — forward limit `tip + 0.38`, where the old branches all
+  reached `tip + BALL_RADIUS`, i.e. the artifact's SKIN merely touching the roller's FRONT FACE
+  with its centre a full radius out in front of the wheel. Reported as "the intake is a
+  circular compliant wheel spinning… the ball should be directly below or very slightly in
+  front of the center of the wheel… right now the range is way too big". Triangle's `atThroat`
+  had ended 0.58in BEHIND its own axle, so that preset never grabbed at its wheel at all.
+  - ⚠️ **`INTAKE_TREAD_FRAC` HAS A FLOOR AT ~0.135 AND BELOW IT TRIANGLE STOPS INTAKING.** A
+    free ground artifact's centre can never get behind `hl + BALL_RADIUS` — the chassis is a
+    LIVE collider against a CLAIMED artifact (`physicsEngine.ts`; the claim's only surviving
+    effect is `skipChassis` in `pinnedArtifacts`) and `intakeSuction` pulls toward `(hl, 0)` —
+    so everything the intake has hold of comes to rest with its skin flush on the front face.
+    That seat is `BALL_RADIUS − reach + intakeRollerDia/2` from the axle, CHASSIS-INDEPENDENT:
+    **+0.917 sloped · −0.055 vector · −1.083 triangle**, and the band must CONTAIN it. Measured
+    settle 9.759 / 9.757 / 9.016 against an `hl + R` of 9.750 / 9.750 / 9.000, to five decimals
+    over 40 ticks at both throttles. Smoke names the numbers.
+  - **THE SUCTION TARGET STAYS `(hl, 0)` AND MUST NOT MOVE TO THE AXLE.** It is inert on sloped
+    (the axle is 1.58in behind the face) and on vector (0.055in ahead, inside the 0.3in dead
+    zone), and on TRIANGLE the axle is 1.08in in FRONT of the seat — it would push a seated
+    artifact out of the throat. An intake that shoves artifacts away from itself.
+  - **Timing depends on WHERE the ball enters**: `single = capMin + (capMax−capMin)·clamp(
+    |localY|/throatHalf, 0, 1)`. ⚠️ **That denominator stays `throatHalf`** — the laterals did
+    not move, `throatHalf + BALL_RADIUS·0.25` is exactly `atThroat`'s own bound, and the two
+    WIDE branches deliberately clamp to 1 and pay `capMax`. Re-normalising it onto the wheel row
+    makes `capMax` unreachable and silently deletes vector's centre-fast/edges-slow identity.
+  - **THE SWALLOW IS 1–2 TICKS**, on the half-tick grid `(n − 0.5)/60` because the gate reads an
+    ACCUMULATED `world.time` (an interval on a tick boundary is a float coin toss): sloped 1t
+    centre / 4t edge / 1t clump · triangle 1t / 3t / 1t + `dual` (120 artifacts/s off a pile) ·
+    vector 2t / 8t and NO clump bonus. ⚠️ **`drawIn` had to rise with them (40/32/70)** because
+    the wedge presets are TRAVEL-limited, not interval-limited — the measured back-to-back gap
+    on sloped was 0.133 s against a `clumpInterval` of 0.04, which is exactly why the 2026-09-10
+    bisection found `clumpInterval` 0.04→0.02 with `capMax` 0.09→0.05 BYTE-IDENTICAL.
+  - **The invariant is `capture ⊆ suction ⊆ claim`** (smoke, both chassis extremes of all three
+    presets). `intakeClaims`' x geometry deliberately did NOT shrink with the grab: the nip is
+    where an artifact is SWALLOWED, the claim is which artifacts the intake has HOLD of, and one
+    crossing the mouth toward the seat must not be chassis-pinnable for not yet being under the
+    wheel. `intakeSuction`'s `ahead` is now exactly `overIntakeRoof`'s front edge (`tip +
+    BALL_RADIUS`), which matters because `drawIn` is above `INTAKE_LID_THROW` on every preset.
 - BASE PARKING counts only the four WHEEL ground-contact points (`wheelContacts`, inset
   `WHEEL_INSET`): intake/turret overhang neither earns nor spoils credit. The turret never
   protrudes (`TURRET_OFFSET_FRAC`). The chassis may be NARROWER than the intake
@@ -2031,6 +2137,20 @@ DECODE flight/basin/rail/gate scripted BY DESIGN; **CR PARTICLES still bespoke**
 3. **Chain Reaction manual refinement** — replace the `APPROX` constants (ring-stand inset,
    Lab-Area size/geometry, exact zone coordinates) with measured manual values. This is the
    last real gap in CR; everything else there is feature-complete.
-4. Deferred: WebTransport (needs TLS-deploy validation + an ACK-keyed delta), full-reload
+4. **Multi-core — DESIGNED, NOT BUILT (`docs/scaling-multicore.md`).** One server process is
+   capped at about one core, because Node runs JavaScript on one thread; a 16-vCPU machine runs
+   the same single thread as a 1-vCPU one, which is why the VM sweep found `shared-cpu-1x`
+   through `8x` barely differ. Profiled, **~75% of a busy server is simulation that can leave
+   the socket thread and ~6% is socket work that cannot**, and `server/room.ts` imports no `ws`
+   and no `pg` — every way out of a room is already a callback — so the seam a worker needs
+   exists. Recommended: `worker_threads` behind **`SIM_WORKERS`, default 0**, taking a machine
+   from ~13 driven rooms to ~100 and 1,000 concurrent from 70–90 machines to single digits.
+   ⚠️ **`UV_THREADPOOL_SIZE` must be raised with it** — `permessage-deflate` runs zlib on the
+   libuv threadpool, that pool is PER PROCESS and defaults to 4, and left alone it becomes the
+   new bottleneck and presents as LATENCY rather than as CPU. Sequence: Linux baseline first,
+   then `SIM_WORKERS=1` (slower than none, on purpose — it prices the hop in isolation), then
+   sweep 2/4/8. **Until a prototype exists, do not buy multi-core hardware for DSIM: nothing
+   in the repo uses a second core.** `grep SIM_WORKERS` finds nothing today.
+5. Deferred: WebTransport (needs TLS-deploy validation + an ACK-keyed delta), full-reload
    reconnect, obelisk AprilTag visuals, DECODE deferred fouls (G408 possession>3 / plowing),
    matchmaking polish, replay UI, leaderboard tiers.
