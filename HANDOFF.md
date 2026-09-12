@@ -1,4 +1,98 @@
-# HANDOFF — 2026-09-12b (a tab-hosted LAN match, proven end to end between two real peers)
+# HANDOFF — 2026-09-12c (matchmaker: a live region bug, then skill-based pairing)
+
+Branch **alpha**, 7 commits, all pushed. `npm test` **ALL PASS**, `npm run dbtest` **ALL PASS**,
+`npm run server:check` clean, `npm run test:mm` **184 checks** (was 58 at the last handoff).
+
+⚠️ **NOT DEPLOYED. All of this is server-side and does nothing until `./scripts/fly-deploy.sh`
+runs** — never a bare `flyctl deploy`.
+
+## READ FIRST — `ord` was not in the region table, and it is your US Central
+
+The worst thing found this session, and it was live. `DEPLOY_REGIONS` listed five regions while
+EIGHT machines were running (iad ord sjc lhr syd nrt gru jnb). `interRegionMs` answers a
+RADIUS_MAX-sized 300 for any region it has no row for — so a missing region does not read as
+FAR, it reads as UNPAIRABLE until the radius saturates six seconds later, and never at all for a
+`noWiden` player. Measured before the fix:
+
+```
+bestHost(two players both in ord) = { hostRegion: iad, cost: 310, spread: 300 }   # ceiling is 90
+```
+
+Two people in Chicago could not be matched to each other for six seconds, then played in
+Virginia. In the 2000-concurrent population sim this alone moved peak queue depth 35 -> 4 and
+wait p99 10s -> 3s.
+
+`ord` is now deployed and hostable. `gru`/`jnb` got RTT rows but stay OUT of `DEPLOY_REGIONS`
+deliberately: both run at 512MB, under the 1024 the deploy script says Node+Rapier needs. **Size
+them, then move them in.** Their rows alone fix their players — far beats unpairable.
+
+⚠️ **The ord/gru/jnb distances are ESTIMATED, not measured.** The other five were taken
+machine-to-machine over Fly's 6PN mesh. Re-measure on a deploy that can reach it.
+
+**The test for this had to be written twice.** Iterating `DEPLOY_REGIONS` cannot catch a region
+missing from it — the loop just runs one fewer time, and a mutation run confirmed it passed
+unchanged. The fleet is now declared in `scripts/fly-deploy.sh` (`FLEET_REGIONS`) and mmsmoke
+asserts the code agrees. **Add a region to both files in the same change.**
+
+## Skill-based pairing is in
+
+Pairing was latency-only since it shipped; Glicko-2 was computed after every match and never
+consulted before one. Now: latency PRIMARY, skill as a second gate plus a tiebreak, never a
+partition.
+
+- Band opens at ±200 rating points, 500 at 3s, **unbounded at 6s** — same clock as the radius,
+  saturating at the same instant, so neither gate can outlive the other and anti-starvation is a
+  theorem rather than a hope.
+- **Unrated means DO NOT GATE**, never "assume 1000". DB off, dev box, fresh act, or inside
+  placement games all degrade to exactly the latency-only pairing that shipped before.
+- Closed parties (friend challenges) are never gated — structurally outside the branch.
+- 2v2 alliances are evened after the group is chosen, never splitting a premade.
+
+Measured, 2000 concurrent (`scripts/zz-mm-quality.ts`): spread p90 **439 -> 322**, p99 636 -> 516,
+for two seconds at p99 wait. The median was already fine by luck (the pool clusters at the 1000
+default); the tail was the harm.
+
+⚠️ **`SKILL_BASE` is the dial that binds. `SKILL_OPEN_STEPS` does not** — swept, moving it 2->4
+changes no percentile of anything, because the queue drains long before six seconds. Do not tune
+it against today's numbers.
+
+## Performance
+
+- `broadcastStatus` re-scanned the whole queue PER RECIPIENT, building `bucketKey` strings on
+  both sides inside the inner term. 134.80ms -> 0.53ms at depth 1000; 46% off the whole join.
+- `bestHost` is skipped for a trial whose members all share a deployed region (spread is
+  provably 0 there). Profiled: bestHost is **76%** of a candidate's cost, allocations only 9% —
+  a rewrite aimed at the allocations would have been aimed at the wrong tenth.
+- Reading one rating was THREE sequential queries; `actFor` memoizes the act per game. And
+  `introElo` now reads the stamp instead of re-querying, which removed **12 sequential queries**
+  sitting between "match found" and the match appearing in a 2v2.
+
+⚠️ **I oversold the original problem.** The 278ms-at-depth-1000 join needs ~1000 mutually
+incompatible entries, which is a benchmark shape. At 2000 concurrent the queue self-drains to
+depth ~35. It still matters, because narrowing the eligible pool deepens the queue fast (1/30 of
+the pool -> depth 125) and a skill window is exactly such a narrowing.
+
+## Tools left behind
+
+- `scripts/zz-mm-fuzz.ts` — differential fuzz, 20,000 randomised queues, compares staged output
+  INCLUDING roster order (it drives `allianceOrder` and the red/blue split). `--save` writes the
+  baseline. **Mutation-check it before trusting it**: reverting nearest-first diverges 663/20,000.
+- `scripts/zz-mm-quality.ts` — population sim: wait times and per-match rating spread.
+- `scripts/zz-mm-marginal.ts`, `zz-mm-breakdown.ts` — join cost, and where in the join it goes.
+
+## Next
+
+1. **Deploy it.** None of the above is live.
+2. `balanceAlliances` and the skill gate have never seen two real accounts. Both docs already
+   note the matchmaker is unvalidated end to end; this did not change that.
+3. The staleness guard from the design (skip `tick()` while the legality relation is provably
+   frozen) is NOT done. It does not bind at today's depth — measured 0.02 ms/s — but is worth it
+   before the population grows.
+4. Capacity work proper: `docs/scaling-multicore.md` is written against 8 regions; at 2000
+   concurrent in THREE US regions, multi-core alone caps around 400 CCU and machine-granular
+   routing (`fly-replay: instance=`) becomes the blocking item, not an amendment.
+
+## HANDOFF — 2026-09-12b (a tab-hosted LAN match, proven end to end between two real peers)
 
 Branch **alpha**. `npm test` **ALL PASS**, `npm run build` green, `npm run server:check` green,
 `npx tsc --noEmit` clean, `npm run uiaudit` at baseline, `npm run test:mm` 58 checks, and the
