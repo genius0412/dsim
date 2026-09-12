@@ -37,7 +37,7 @@ BB_CELL_OPEN = 20 × 12 (accept footprint, APPROX from 20×14×12)  // Fig 9-11
 BB_FRAME legs x = ±24.73, y ±19.5, bar ~1.5 in (APPROX)      // Fig 9-8
 BB_FLOWERS: (-72+d,-24) (-24,72-d) (72-d,24) (24,-72+d), d = 3.0 APPROX  // Fig 9-2/9-4 pixels
 BB_FLOWER_TOP_Z = 21.5, BB_FLOWER_OPEN_R = 2.0, BB_FLOWER_VOL_Z = [3.98, 21.5] APPROX // Fig 9-12
-BB_TIP_LOAD = ? pollen-equivalents, BB_NECTAR_MASS = 1.65 pollen APPROX   // NOT PUBLISHED
+BB_TIP_POLLEN = [8, 7, 6, 3, 1, 0]   // MEASURED (ref §4.1); index = NECTAR in cell; [0] APPROX
 BB_FLOWER_UNLOCK_S = 60                                       // G410
 PTS: leave 3, park 5/5, tip 20, cell 2, bottom-nectar 5, owned 2, garden 1; RP 16 / 4 / 7
 ```
@@ -82,17 +82,21 @@ solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
   in [53.5, 65.6 + margin] and descending → `contents.push(id)`, state `element`. Anything else
   hitting the cell box (outside faces, the down cell) bounces off the structure and falls
   (G417.H says missing is not a foul).
-- **Tip**: when `Σ mass(contents) ≥ BB_TIP_LOAD`, start `tipping` (APPROX 0.8 s swing). At the
+- **Tip**: when `pollen >= BB_TIP_POLLEN[min(nectar, 5)]` — the MEASURED table in
+  `docs/biobuzz-reference.md` §4.1, `[8 APPROX, 7, 6, 3, 1, 0]` indexed by the NECTAR count in
+  the cell — start `tipping` (APPROX 0.8 s swing). No mass model: no linear weighting fits the
+  measured rows. At the
   end of the swing: `up` flips, `tips++`, +20 to the hive's alliance (AUTO if `phase !== teleop`
   yet — §10.5.B), the old contents **spill**: re-spawned as ground artifacts under the now-down
   cell (x ≈ pivot, y ≈ ∓(13.4 + 6), z from 25.5, world-RNG scatter, landing through the shared
   flight step), `nectarDue[a]++`. Contents of the new up-cell: empty.
-- **Threshold is the one number physics decides and the manual does not print.** The staged
-  hive holds 3 nectar and is stable, so `BB_TIP_LOAD > 3 × nectar`. Ship a guess (e.g. 6 pollen-
-  equivalents) flagged `APPROX`, and **measure on 09-14** when the set arrives: weigh a pollen and
-  a nectar, count pollen to tip a staged cell.
-- Render: two hives as top-down cell outlines; the up-cell drawn bright with its content count
-  (yellow/red/blue pips), the down-cell dimmed; a short swing animation on `tipping`.
+- **The threshold is MEASURED and settled** (owner, 2026-09-12). The staged cell holds 3 NECTAR,
+  so the first tip of a match costs **3 POLLEN**. Only the empty-cell row (0 NECTAR) is still
+  `APPROX` at 8.
+- Render: two hives as top-down cell outlines; the up-cell drawn bright, the down-cell dimmed;
+  a short swing animation on `tipping`. **The up-cell readout is PER TYPE** — POLLEN, RED
+  NECTAR and BLUE NECTAR counted separately (any alliance may launch into any cell, and the
+  tip table is indexed by the NECTAR count), not one total.
 
 ### 2.2 FLOWER (flower.ts)
 
@@ -109,10 +113,17 @@ solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
   the unit tests.
 - **G410**: a nectar entering a flower with > 60 s of TELEOP left ⇒ MAJOR (20) per nectar to the
   opponent; the element still scores (§10.5.2 says so explicitly).
-- Render: ring on the wall + a stacked-pips badge; owner colour on the ring.
+- Render: ring on the wall, owner colour on the ring, and **the stack itself drawn OUTSIDE the
+  perimeter beside its flower** — one disc per element in its own colour, in stack order,
+  running ALONG that wall with the BOTTOM of the stack nearest the flower. A count badge does
+  not say what a driver needs: which colour is at the bottom (the 5-point bonus, and whether a
+  NECTAR has locked retrieval) and which is on top (ownership). The badge it replaces was read
+  as an unexplained second circle.
 
 ### 2.3 GARDEN, LEAVE, PARK
 
+- Garden and LOADING ZONE tape are TAPE, not structure: nothing collides with them, anything
+  drives or rolls over them, and they are drawn as tape lines rather than filled bars.
 - Garden: every tick, count ground elements whose circle overlaps the strip; 1 each to the
   garden's colour. Displayed live, **banked at match end** like DECODE's pattern points
   (assessed at rest, §10.5.E). Same for cell contents (§10.5.C).
@@ -129,6 +140,14 @@ appears in the LOADING ZONE against the wall ~1.5 s later (APPROX), placed as a 
 with a small RNG jitter; at ≤ 60 s all remaining stock enters, one per ~1 s. Preloads of a
 no-show robot go to the LZ centre. `humanPlayers[a].box` stays inert (it is `ArtifactColor[]`
 and DECODE-shaped); the stock lives on `world.biobuzz`.
+
+### 2.5 What the field draws in a MATCH
+
+Owner ruling (2026-09-12): **no tile axis letters or numbers in the game** — A–F / 1–6 are a
+gallery aid and stay behind `world.biobuzz.labels`, which only `field-labelled` sets. The same
+goes for AprilTag ids: useful in a still that is checked against the manual, noise in a match.
+What a driver sees on the field itself is state — the hives' per-type counts, the flower stacks
+outside the wall, the tape, the structure — and nothing that is merely a coordinate.
 
 ## 3. Match flow (step.ts)
 
@@ -207,9 +226,8 @@ None of these block kickoff-day geometry (§1) or staging; 1–3 block the eleme
 
 ## 8. Open questions (for the Q&A on 09-28, or a real field on 09-14)
 
-- Tip load (pollen count / element masses). The single biggest unknown; everything else is
-  geometry.
-- Does PARK require the **own** LOADING ZONE? (Assumed yes.)
+- Tip load with an EMPTY cell (0 NECTAR). Every other row is measured — see reference §4.1.
+- PARK requires the **OWN** LOADING ZONE — SETTLED (owner, 2026-09-12), matching Fig 10-7.
 - Flower stand-off from the wall and exact footprint (CAD ref 10-4 when the field CAD is out).
 - Exact tape placement of the LZ (which side of the seam) — ±0.5 in, cosmetic.
 - Whether a pollen launched into the OPPONENT's up-cell is ever penalised (text: no).
