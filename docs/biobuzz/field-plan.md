@@ -87,19 +87,36 @@ solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
   in [53.5, 65.6 + margin] and descending → `contents.push(id)`, state `element`. Anything else
   hitting the cell box (outside faces, the down cell) bounces off the structure and falls
   (G417.H says missing is not a foul).
+- **Open face** (owner ruling 2026-09-12): a CELL is a 20 × 14 × 12 prism open at its OUTER end
+  only — the end away from the pivot. A shot enters only if it arrives travelling TOWARD the
+  pivot along the hive axis (red, up = south: `vy > 0`; blue, up = north: `vy < 0`).
+  `hiveAccepts` gates on the sign of the along-axis velocity as well as on footprint and z;
+  from the pivot side a shot meets the closed back and bounces. This is a FIELD gate (Lane A).
+  `ScoreTarget` grows an optional `mouth: Vec2` (unit vector OUT of the opening) so a launcher
+  can tell it is on the wrong side, but the field, not the robot, is the authority.
 - **Tip**: when `pollen >= BB_TIP_POLLEN[min(nectar, 5)]` — the MEASURED table in
   `docs/biobuzz-reference.md` §4.1, `[8 APPROX, 7, 6, 3, 1, 0]` indexed by the NECTAR count in
-  the cell — start `tipping` (APPROX 0.8 s swing). No mass model: no linear weighting fits the
+  the cell — start `tipping` — **the swing takes 4 s** stable to stable (owner ruling 2026-09-12,
+  `BB_TIP_SWING_S = 4`); the hive accepts nothing mid-swing. No mass model: no linear weighting fits the
   measured rows. At the
   end of the swing: `up` flips, `tips++`, +20 to the hive's alliance (AUTO if `phase !== teleop`
-  yet — §10.5.B), the old contents **spill**: re-spawned as ground artifacts under the now-down
-  cell (x ≈ pivot, y ≈ ∓(13.4 + 6), z from 25.5, world-RNG scatter, landing through the shared
-  flight step), `nectarDue[a]++`. Contents of the new up-cell: empty.
+  yet — §10.5.B), the old contents **spill**: they leave when the bar passes LEVEL (~2 s in), out
+  of the open face, so they re-enter as flight artifacts under the going-down cell (x across the
+  20-in mouth, y at the cell's outer edge, z from 25.5) with an OUTBOARD velocity along the hive
+  axis — APPROX 40–60 in/s plus ±12 lateral, world-RNG — then land and roll on the shared
+  solver. The tip itself (points, `up` flip) still scores at settle. `nectarDue[a]++`. Contents
+  of the new up-cell: empty.
 - **The threshold is MEASURED and settled** (owner, 2026-09-12). The staged cell holds 3 NECTAR,
   so the first tip of a match costs **3 POLLEN**. Only the empty-cell row (0 NECTAR) is still
   `APPROX` at 8.
-- Render: two hives as top-down cell outlines; the up-cell drawn bright, the down-cell dimmed;
-  a short swing animation on `tipping`. ⚠️ **BOTH cells foreshorten equally** — the see-saw is
+- Render (owner rulings 2026-09-12): the **up cell is a filled box**; its contents are **one row
+  of element-scale discs hugging the cell's OUTER (open) edge**, inside the box, oldest at one
+  end — colour is the type, **no letters or digits anywhere** (no `N`, no counts). The **down
+  cell is a dashed outline only**, no fill — it hangs 25.5 in overhead and robots drive under
+  it. Balls on the tiles under either cell draw as ordinary GROUND balls (dark ring) on top of
+  the outline, so a spill reads as floor, not as cell contents. The open face is marked: outer
+  short edge thin, pivot-side edge heavy. `tipping` is a 4 s cross-fade, fill → outline and
+  outline → fill. ⚠️ **BOTH cells foreshorten equally** — the see-saw is
   one rigid bar at 30°, so a plan view projects both ends by cos 30° and only `z` separates
   them; drawing the up cell full length and the down cell short is wrong. **The up-cell readout
   is PER TYPE** — POLLEN, RED
@@ -154,8 +171,10 @@ and DECODE-shaped); the stock lives on `world.biobuzz`.
 Owner ruling (2026-09-12): **no tile axis letters or numbers in the game** — A–F / 1–6 are a
 gallery aid and stay behind `world.biobuzz.labels`, which only `field-labelled` sets. The same
 goes for AprilTag ids: useful in a still that is checked against the manual, noise in a match.
-What a driver sees on the field itself is state — the hives' per-type counts, the flower stacks
-outside the wall, the tape, the structure — and nothing that is merely a coordinate.
+What a driver sees on the field itself is state — the hives' contents as a row of balls, the
+flower stacks outside the wall, the tape, the structure — and nothing that is merely a
+coordinate. **No letters or digits for element types or counts either** (owner, 2026-09-12): a
+ball is drawn as a ball, in its colour, wherever it is.
 
 ## 3. Match flow (step.ts)
 
@@ -231,6 +250,11 @@ None of these block kickoff-day geometry (§1) or staging; 1–3 block the eleme
   mouth facing the wall, 3.55 in tall.
 - Nectar is a second element the intake must handle (bigger) and must **refuse when it is the
   opponent's** (G408).
+- **Shooting side** (owner, 2026-09-12): a CELL is open at its OUTER end only, so the field
+  accepts a lob only when it arrives travelling toward the pivot (§2.1). A robot on the pivot
+  side of the up cell cannot score into it from there. `ScoreTarget.mouth` (unit vector out of
+  the opening) is there for the launcher to refuse, warn, or aim around; the gate lives in the
+  field either way.
 
 ## 8. Open questions (for the Q&A on 09-28, or a real field on 09-14)
 

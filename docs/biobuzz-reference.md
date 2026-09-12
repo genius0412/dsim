@@ -91,6 +91,12 @@ point; pivot axes **43.95 in** above the tiles (§9.6.1). A BIOBUZZ logo panel o
   (`APPROX`, derived).
 - CELL opening ≈ **20 wide × 14 tall × 12 deep** (§9.6.2, Fig 9-11; interior height 7.61 to the
   roof break).
+- **The CELL is open at its OUTER end only** (owner ruling 2026-09-12): the 20 × 14 opening of
+  Fig 9-11 is the face perpendicular to the bar at the end away from the pivot. Up, it faces
+  up-and-outboard, so a LAUNCH must arrive travelling toward the pivot; down, it faces
+  down-and-outboard, which is where a TIP spills its contents (outboard of the down cell).
+- **Swing time ≈ 4 s** stable to stable (owner ruling 2026-09-12). Contents leave as the bar
+  passes level; the TIP scores when the damper meets the frame.
 - A **damper** on each HIVE contacts the frame in a stable state (Fig 9-9, Fig 10-3).
 - **AprilTag cluster** (4 tags, 36h11, 3.25 in) on the bottom face of every CELL, bottom edge
   toward field centre (§9.9, Figs 9-15…9-17, pp74–77). IDs: red CELL rear (opposite audience)
@@ -273,6 +279,7 @@ What is still open:
 - LOADING ZONE tape: inside edge at x = ±61, and which side of the row-4 / row-5 seams the tape
   sits on. `APPROX` ±0.5 in, cosmetic.
 - HIVE pair centred on the field? Pivot x = ±12.75 assumed from "25.5 centre to centre".
-- **Tip load**: weigh one POLLEN and one NECTAR; count POLLEN lobbed into a staged cell
-  (3 nectar already in it) until it tips. Repeat with the cell empty.
+- **Tip load with an EMPTY cell** — the one row of §4.1 not measured (`APPROX` 8 POLLEN).
+- Spill kinematics: how fast contents leave the open face as the bar passes level (`APPROX`
+  40–60 in/s outboard), and how far they roll on the tiles.
 - Element rolling behaviour: does a NECTAR roll like a POLLEN on the soft tiles (owner note).

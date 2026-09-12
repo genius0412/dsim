@@ -580,3 +580,62 @@ action: **retrieve** a POLLEN from a FLOWER's bottom opening (3.55 in tall) —
 3.6 in vs 2.8, `color: 'red' | 'blue'` with `Artifact.r` — the intake must handle it and
 must **refuse the opponent's** (G408). `ArtifactColor` now has `yellow | red | blue`
 (step 0 on `biobuzz`). Merge `biobuzz` before your next commit.
+
+
+## Rulings 3 — 2026-09-12 afternoon (owner, via master)
+
+Source of truth: `docs/biobuzz/field-plan.md` §2.1 / §2.5 / §7 and `docs/biobuzz-reference.md` §2.2
+on `biobuzz`. Merge `biobuzz` first.
+
+### A1 — field-art
+
+```
+Merge biobuzz. Rulings (field-plan §2.1 render, §2.5): 1) NO letters or digits on the field for
+elements — no N, no counts, no tally text. Up-cell contents = one row of element-scale discs
+hugging the cell's OUTER (open) edge, inside the box, oldest at one end; colour is the type.
+2) Down cell = dashed outline only, no fill (overhead at 25.5 in). Ground balls under either
+cell draw as normal ground balls (dark ring) on top of the outline. 3) Open face marked: outer
+short edge thin, pivot-side edge heavy. 4) `tipping` render = 4 s cross-fade fill→outline /
+outline→fill, using BB_TIP_SWING_S when A3's constant lands (4 until then). Shots:
+field-labelled + new `hive-ground` cell (down cell with 3 balls under it, no labels). Handoff,
+push, STOP.
+```
+
+### A2 — solids + staging
+
+```
+Merge biobuzz. Ruling (field-plan §2.1 open face): `ScoreTarget` in state.ts gains optional
+`mouth?: Vec2` — unit vector pointing OUT of the opening. Cells: south cell (0,-1), north cell
+(0,+1), both alliances. Flowers point into the field: F1 (+1,0), F2 (0,-1), F3 (-1,0), F4 (0,+1).
+Fill it in `scoreTargets`. Cell accept r stays 8 until rect. Smoke check: each up-cell mouth
+points away from its pivot. Handoff, push, STOP.
+```
+
+### A3 — hive + flower behaviour
+
+```
+Merge biobuzz. Rulings (field-plan §2.1): 1) BB_TIP_SWING_S = 4.0 (owner). 2) `hiveAccepts`
+also gates on approach — the cell is open at its OUTER end only, so the along-axis velocity
+must point toward the pivot (up=south → vy > 0; up=north → vy < 0). Add a vel param.
+3) Contents RELEASE when the bar passes level (~SWING/2): `hiveStep` returns `spilled` at
+that edge (a `released` flag on HiveState), while `tipped`/points still fire at settle.
+4) `spillPoses` returns `{pos, vel}`: z = BB_HIVE_BOTTOM_Z, vel outboard along the axis
+40–60 in/s APPROX, ±12 lateral, from the rng. Smoke: wrong-side shot rejected; release
+precedes settle; every spill vel points outboard. Handoff, push, STOP.
+```
+
+### V — visuals chat (standalone, no repo writes)
+
+```
+You own BIOBUZZ visuals only — throwaway HTML/canvas pages, never repo code. Start from
+scratchpad file `biobuzz-field.html` (3 panels: plan view, side-view see-saw, top-down tip +
+scatter) — the master chat will paste its path. Facts: docs/biobuzz-reference.md and
+docs/biobuzz/field-plan.md on branch `biobuzz` (worktree dsim-biobuzz, read-only for you).
+Rules: no letters/digits for elements — balls are balls; up cell filled, contents row on the
+outer (open) edge; down cell dashed outline; ground balls dark ring; tip swing 4 s, release at
+level, spill outboard; shots enter only travelling toward the pivot. Tip table
+[8,7,6,3,1,0] by nectar count. Serve over http (python -m http.server), verify in the
+browser pane, send ONE file per deliverable. Keep it simple: one file, few tabs. Next asks:
+(a) robot-scale reference on the plan view, (b) side-by-side "shot from open side vs closed
+side" animation, (c) flower stack fill/retrieve animation. Reply terse.
+```
