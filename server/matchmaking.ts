@@ -1,8 +1,7 @@
 import { Room, type Client } from './room';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
-import { actForSeason, currentSeasonNumber, getRating, createPendingMatch } from './db/repo';
+import { actFor, getRating, getSkill, createPendingMatch } from './db/repo';
 import { dbEnabled } from './db/pool';
-import { BALANCE_VERSION } from '../src/config';
 import type { GameId } from '../src/types';
 import { bestHost, type PingInfo } from './regions';
 import type { PendingMatch, PendingRosterEntry } from './matchTypes';
@@ -114,6 +113,28 @@ export interface QueueEntry {
   enqueuedAt: number;
   /** extra manual widen steps from `expandSearch` */
   expandBumps: number;
+  /**
+   * This player's rating on the board this queue pairs for, STAMPED BY THE SERVER.
+   *
+   * `undefined` means "not known yet", and that is a real and ordinary state, not an
+   * error: the read is fired off the join path and lands a moment later, so an entry
+   * can sit in the queue briefly with no rating. It costs nothing — `tick()` re-attempts
+   * pairing every second, so the stamp is picked up on the next pass.
+   *
+   * NEVER READ FROM THE WIRE. The queue message carries no rating field and must not
+   * gain one: a client-declared ladder position is an exploit primitive, the same reason
+   * `LobbyPlayer.supporter` and `.role` are server-authored.
+   */
+  rating?: number;
+  /**
+   * Whether `rating` is a PLAYED rating rather than the 1000 default.
+   *
+   * The default is ambiguous — an account with no row on this board reads exactly the
+   * same as one that played to 1000 — so this is what a skill gate keys on. False means
+   * UNKNOWN SKILL, which must mean "do not gate": an unplaced player has no rating to
+   * match on and still has to get a game.
+   */
+  placed?: boolean;
   /** DEV FALLBACK only: told which local Room this connection landed in */
   onRoom?: (room: Room) => void;
 }
@@ -122,11 +143,28 @@ export interface QueueEntry {
  * Postgres; tests inject a recorder. */
 export type StageFn = (m: PendingMatch) => Promise<void>;
 
+/**
+ * Where a player's rating comes from. Production reads Postgres; tests inject a table.
+ *
+ * Injectable for the same reason `stage` is: `npm run test:mm` runs with no database
+ * and no sockets, and skill-based pairing is otherwise only exercisable against a live
+ * Neon instance with real accounts. Returning null is the FAIL-OPEN answer — DB off,
+ * signed out, or a read that threw — and must leave the entry unrated rather than
+ * defaulting it, so a database that cannot answer never gates anyone out of a match.
+ */
+export type RatingFn = (
+  userId: string,
+  mode: QueueMode,
+  game: GameId | undefined,
+) => Promise<{ rating: number; placed: boolean } | null>;
+
 export interface MatchmakerDeps {
   /** injectable clock (tests control widening); when set, the auto-widen timer is off */
   now?: () => number;
   /** override the staging step (default: Postgres pending_matches when dbEnabled) */
   stage?: StageFn;
+  /** override the rating read (default: Postgres elo_ratings when dbEnabled) */
+  rating?: RatingFn;
 }
 
 let roomSeq = 0;
@@ -137,6 +175,7 @@ export class Matchmaker {
   private readonly rooms = new Set<Room>();
   private readonly now: () => number;
   private readonly stage?: StageFn;
+  private readonly rating?: RatingFn;
   private readonly timer: ReturnType<typeof setInterval> | null;
 
   constructor(deps: MatchmakerDeps = {}) {
@@ -144,6 +183,21 @@ export class Matchmaker {
     // default staging: write to Postgres so the host machine can claim it. Absent
     // (no injected stage AND no DB) ⇒ localStart fallback.
     this.stage = deps.stage ?? (dbEnabled ? (m) => createPendingMatch(m) : undefined);
+    // default rating source: the act's elo_ratings row. Absent when the DB is off, which
+    // leaves every entry unrated and pairing exactly as latency-only as it is today.
+    this.rating =
+      deps.rating ??
+      (dbEnabled
+        ? async (userId, mode, game) => {
+            try {
+              const act = await actFor(game);
+              const s = await getSkill(userId, mode, act, game);
+              return { rating: s.rating, placed: s.placed };
+            } catch {
+              return null; // fail open — see RatingFn
+            }
+          }
+        : undefined);
     // auto-widen: re-attempt matches as ceilings grow. Disabled when a clock is
     // injected (deterministic tests drive matching via enqueue/expand/tick).
     this.timer = deps.now ? null : setInterval(() => this.tick(), 1000);
@@ -162,8 +216,43 @@ export class Matchmaker {
     entry.enqueuedAt = this.now();
     entry.expandBumps = entry.expandBumps ?? 0;
     this.queues[entry.mode].push(entry);
+    this.stampRating(entry);
     this.tryMatch(entry.mode);
     this.broadcastStatus(entry.mode);
+  }
+
+  /**
+   * Resolve this entry's rating and stamp it on, WITHOUT holding up the join.
+   *
+   * Deliberately not awaited. The queue press already runs three chained async steps
+   * before it gets here (verify the token, read standing, verify a party token), and a
+   * fourth in series would be felt on the one thing a player is watching. It does not
+   * need to be in series: `tick()` re-attempts pairing every second, so an entry whose
+   * rating lands 200ms late is simply not skill-gated for one pass and loses nothing.
+   *
+   * The entry is re-found by id before stamping rather than captured, because a player
+   * can leave, or re-queue under a new connection, while the read is in flight — and
+   * writing a rating onto an object that is no longer in the queue would at best do
+   * nothing and at worst resurrect a stale entry's identity onto a fresh one.
+   */
+  private stampRating(entry: QueueEntry): void {
+    const read = this.rating;
+    if (!read || !entry.userId) return;
+    const { id, mode, game, userId } = entry;
+    void read(userId, mode, game)
+      .then((s) => {
+        if (!s) return; // unknown skill — leave unrated, which means "do not gate"
+        const live = this.queues[mode].find((e) => e.id === id);
+        if (!live || live.userId !== userId) return; // left, or re-queued since
+        live.rating = s.rating;
+        live.placed = s.placed;
+        // a rating that lands between ticks should not wait up to a second for the
+        // next one — this entry may now have a partner it could not be matched to
+        this.tryMatch(mode);
+      })
+      .catch(() => {
+        /* fail open: an unrated entry pairs on latency alone */
+      });
   }
 
   remove(id: string): void {
@@ -306,15 +395,25 @@ export class Matchmaker {
     return groupUnits(this.queues[mode]);
   }
 
-  /** current overall ELO for a driver's intro card (best-effort; null on DB-off /
-   * signed-out / read failure — the intro just shows "Unranked") */
+  /**
+   * Current overall ELO for a driver's intro card (best-effort; null on DB-off /
+   * signed-out / read failure — the intro just shows "Unranked").
+   *
+   * PREFERS THE STAMP the entry already carries. This is awaited once per roster entry
+   * inside `assign`, between pairing and `matchAssigned`, and it used to resolve the act
+   * and read the rating every time — three sequential queries per player, so TWELVE for
+   * a 2v2, all of them on the wait between "match found" and the match appearing. The
+   * same number is now read once at enqueue, so in the ordinary case this is free.
+   *
+   * The query stays as the fallback, because the stamp is genuinely absent sometimes:
+   * a rating read that failed, or a group paired in the moment before it landed.
+   */
   private async introElo(entry: QueueEntry, mode: QueueMode): Promise<number | null> {
+    if (entry.rating !== undefined) return entry.rating;
     if (!dbEnabled || !entry.userId) return null;
     try {
       // ELO is keyed by the game's current ACT (persists across seasons in an act).
-      const bv = await currentSeasonNumber(BALANCE_VERSION, entry.game);
-      const act = await actForSeason(bv, entry.game);
-      return await getRating(entry.userId, mode, act, entry.game);
+      return await getRating(entry.userId, mode, await actFor(entry.game), entry.game);
     } catch {
       return null;
     }
