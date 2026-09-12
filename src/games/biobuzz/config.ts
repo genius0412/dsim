@@ -68,8 +68,13 @@ export const BB_HALF_Y = 72;
 export const BB_WALL_T = 10;
 
 /** camera fit margin (in) — breathing room around the field so the walls are not flush with
- * the viewport edge. */
-export const BB_VIEW_MARGIN = 8;
+ * the viewport edge.
+ *
+ * WIDENED from 8 for the FLOWER STACK READOUT: a flower's contents are drawn OUTSIDE the
+ * perimeter beside it (`drawField.ts`), one disc per element, and a NECTAR is 3.6 in across.
+ * The margin has to clear one disc plus the tile ruler that also lives out there, or the
+ * readout is cropped by the viewport on the two walls that carry both. */
+export const BB_VIEW_MARGIN = 12;
 
 /** the outer x half-extent the CAMERA must show. Equal to the wall for now: BIOBUZZ has no
  * known structure protruding outside the perimeter (CR's accelerators did, which is why the
@@ -134,9 +139,13 @@ export const BB_TAPE_2 = 2;
  * APPROX: Fig 9-2 — that the PAIR is centred on the field, which the plan view shows. */
 export const BB_HIVE_X = 12.75;
 
-/** horizontal projection (in) of a CELL centre from its pivot, along the HIVE axis (y).
- * APPROX: Fig 9-9/9-10 — 15.4 · cos 30°, the cell half-span foreshortened by the 30° tilt. */
-export const BB_HIVE_CELL_DY = 13.4;
+/** horizontal projection (in) of a CELL centre from its pivot, along the HIVE axis (y) —
+ * 15.44 · cos 30°. MEASURED (owner CAD, 2026-09-12; `docs/biobuzz-reference.md` §2.2). */
+export const BB_HIVE_CELL_DY = 13.37;
+
+/** a CELL's depth along the HIVE axis IN PLAN (in) — the 12.04-in prism projected, 12.04 ·
+ * cos 30°. MEASURED (owner CAD, 2026-09-12; reference §2.2). */
+export const BB_HIVE_CELL_LEN = 10.43;
 
 /** the up-CELL opening's bottom and top above the tiles (in) — Fig 9-10. This is the window a
  * LAUNCH has to arrive through, and what `releasePollen` solves its arc against. */
@@ -147,27 +156,43 @@ export const BB_HIVE_OPEN_Z: readonly [number, number] = [53.5, 65.6];
 export const BB_HIVE_BOTTOM_Z = 25.5;
 
 /** the up-CELL's ACCEPT FOOTPRINT (in): `w` across the HIVE, `d` along it.
- * APPROX: Fig 9-11 — the opening is 20 wide × 14 tall × 12 deep, and a top-down capture test
- * uses the two horizontal numbers of that box. */
-export const BB_CELL_OPEN = { w: 20, d: 12 };
+ *
+ * MEASURED (reference §2.2). The 20-in opening WIDTH is perpendicular to the tilt axis, so it
+ * is NOT foreshortened; the DEPTH is, and is `BB_HIVE_CELL_LEN` — the same 10.43 the cell is
+ * drawn at, because the launch window and the cell footprint are the same rectangle. */
+export const BB_CELL_OPEN = { w: 20, d: BB_HIVE_CELL_LEN };
 
-/** the CELL assembly end to end, along y (in) — Fig 9-9: two cells 18.84 apart, each 12.04
- * deep. The length of the rounded rect one HIVE is drawn as. */
-export const BB_HIVE_LEN = 42.91;
+/**
+ * the CELL assembly end to end IN PLAN, along y (in) — 42.91 true · cos 30°. MEASURED
+ * (reference §2.2).
+ *
+ * BOTH ENDS FORESHORTEN. The two CELLS ride ONE RIGID BAR at 30°, so a top-down view projects
+ * the whole assembly by the same cosine and only `z` separates the up cell from the down one.
+ * Drawing the up cell at full length and the down cell short says the bar bends, and it makes
+ * the hive 42.91 long in a view where nothing on it is.
+ */
+export const BB_HIVE_LEN = 37.16;
 
-/** the CELL assembly across, along x (in).
- * APPROX: Fig 9-9/9-11 — the 20-in opening plus its shell, read as ~14 in the plan view once
- * the 30° tilt foreshortens it. */
-export const BB_HIVE_W = 14;
+/** the CELL assembly across, along x (in) — the 20-in opening width, which is PERPENDICULAR to
+ * the tilt axis and so is not foreshortened (reference §2.2). */
+export const BB_HIVE_W = 20;
 
-/** frame leg x (in) — Fig 9-8. The base bars run along y at each x extreme. */
-export const BB_FRAME_X = 24.73;
+/**
+ * frame BASE BAR, inner and outer x (in) — MEASURED (owner CAD, 2026-09-12; reference §2.2):
+ * bent sheet metal, effective 1 in thick, with its INNER edge ON the ±24 tile seam and the
+ * other edge 1 in OUTWARD. So a bar occupies x ∈ [24, 25] and x ∈ [−25, −24].
+ *
+ * Two edges rather than a centre and a thickness because the edge on the seam is the measured
+ * fact: a centre-plus-width pair rounds the seam away, and the seam is what a driver lines up
+ * against. The COLLIDER is `colliders.ts` (biobuzz-field-staging); these are the numbers it
+ * and the drawing share.
+ */
+export const BB_FRAME_BAR_IN = 24;
+export const BB_FRAME_BAR_OUT = 25;
 
-/** frame foot half-extent along y (in). APPROX: Fig 9-8 — feet at y ≈ ±19.5. */
-export const BB_FRAME_Y = 19.5;
-
-/** frame extrusion thickness (in). APPROX: Fig 9-8 — leg extrusion ~1.5 in. */
-export const BB_FRAME_BAR = 1.5;
+/** frame foot half-extent along y (in) — MEASURED 19.4 (reference §2.2; Fig 9-8 prints a
+ * 38.95-in frame depth and the CAD measures 38.80). */
+export const BB_FRAME_Y = 19.4;
 
 /**
  * APRILTAG ID GROUPS — four 36h11 tags on the bottom face of every CELL (§9.9, Figs 9-15…9-17,
@@ -189,17 +214,17 @@ export const BB_HIVE_UP_STAGED: Record<Alliance, 'north' | 'south'> = { red: 'so
 
 // ── FLOWERS (§9.7, Fig 9-12, pp72–73) ────────────────────────────────────────
 
-/** stand-off of a FLOWER's ring centre from its wall (in).
- * APPROX: Fig 9-12 — 2.40 from the ring centre to the wall-side flat, plus the mounting
- * extrusion. On the 09-14 tape-measure list. */
-export const BB_FLOWER_D = 3.0;
+/** stand-off of a FLOWER's ring centre from its WALL FACE (in). MEASURED (owner CAD,
+ * 2026-09-12; reference §2.3) — it was `APPROX` 3.0 off Fig 9-12. */
+export const BB_FLOWER_D = 2.54;
 
 /**
  * The four FLOWERS, one per perimeter wall, on the tile seam one tile off centre.
  *
- * APPROX: Fig 9-2 / 9-4 pixel measurement — the seam positions read ±24 ± 1 in, and the set is
- * point-symmetric. `nearest` is the alliance whose half of the wall it sits on, NOT ownership:
- * a FLOWER is owned at run time by whoever holds the top-most NECTAR in it (§10.5.2).
+ * MEASURED (owner CAD, 2026-09-12; reference §2.3): each one sits EXACTLY on the centreline of
+ * its tile seam — ±24.000, not offset to one side of it — and its ring centre is BB_FLOWER_D
+ * off the wall face. `nearest` is the alliance whose half of the wall it sits on, NOT
+ * ownership: a FLOWER is owned at run time by whoever holds the top-most NECTAR (§10.5.2).
  */
 export const BB_FLOWERS: readonly {
   id: string;
@@ -221,10 +246,41 @@ export const BB_FLOWER_TOP_Z = 21.5;
  * pass it; only the POLLEN passes the 3.55 retrieval opening at the bottom (G418). */
 export const BB_FLOWER_OPEN_R = 2.0;
 
-/** the FLOWER's footprint radius on the tiles (in) — the collider, and the foot it is drawn on.
- * APPROX: Fig 9-12 — top ring plate half-widths 2.40 / 1.89 / 1.94 read as a ~5 in rounded
- * square, taken here as a circle. */
-export const BB_FLOWER_FOOT_R = 2.6;
+/**
+ * the FLOWER's FOOTPRINT on the tiles (in) — `along` the wall by `deep` into the field, flush
+ * against the wall face. MEASURED (owner CAD, 2026-09-12; reference §2.3).
+ *
+ * A RECTANGLE, NOT A DISC. The first pass read Fig 9-12's ring plate as an `APPROX` 2.6-in
+ * circle; the solid a robot actually meets is a 6 × 4.9 box with the 4.0-in ring opening
+ * inside it, BB_FLOWER_D off the wall. The difference matters at both ends — it is wider along
+ * the wall than a 2.6 disc (a robot running the wall hits it sooner) and shallower into the
+ * field (it protrudes 4.9, not 5.2, and its corners are square).
+ *
+ * The COLLIDER is `colliders.ts` (biobuzz-field-staging); this is the number it and the
+ * drawing share.
+ */
+export const BB_FLOWER_FOOT = { along: 6, deep: 4.9 };
+
+/**
+ * THE HIVE TIP TABLE — MEASURED on a real HIVE (owner, 2026-09-12), not published in the
+ * manual. Indexed by the number of NECTAR in the up-CELL; the value is how many POLLEN also
+ * have to be in it for the CELL to tip. A cell tips when
+ * `pollen >= BB_TIP_POLLEN[Math.min(nectar, 5)]`.
+ *
+ * **IT IS A TABLE, NOT A MASS, AND NOTHING INTERPOLATES IT.** No single linear weighting fits
+ * the measured rows: 1n+7p and 2n+6p together make a NECTAR worth one POLLEN, and 3n+3p then
+ * contradicts that outright. A seesaw is torque and packing, not weight. The rows are monotone
+ * (more of either element still tips), so the comparison above is the whole rule.
+ *
+ * The STAGED row is the one that decides how a match opens: a CELL is staged with 3 NECTAR
+ * (§10.3.1), so the first TIP costs **3 POLLEN** and is reachable in AUTO.
+ *
+ * Only index 0 is a guess. APPROX: an empty cell was not measured — 8 extrapolates the 7/6
+ * trend at the top of the table.
+ *
+ * See `docs/biobuzz-reference.md` §4.1.
+ */
+export const BB_TIP_POLLEN: readonly number[] = [8, 7, 6, 3, 1, 0];
 
 /** seconds of TELEOP remaining at which NECTAR may legally enter a FLOWER (G410). Before this
  * cue it is a MAJOR per nectar to the opponent — and the element still scores (§10.5.2). */
