@@ -4,10 +4,11 @@ import { solveRobots, type SweepFrom } from '../../sim/physicsEngine';
 import { squareUpRobotsWalls } from '../../sim/physics';
 import { updateRobot, type DriveWrench } from '../../sim/robot';
 import { robotsEnabled } from '../../sim/match';
-import { BB_HALF_X, BB_HALF_Y } from './config';
+import { BB_FLOWER_UNLOCK_S, BB_HALF_X, BB_HALF_Y } from './config';
 import { biobuzzColliders } from './colliders';
 import { bbAimAssist, updateBiobuzz } from './play';
 import { updateBiobuzzPenalties } from './penalties';
+import { bbApplyScore, bbLeftNow, bbParkedNow, bbScoreWorld } from './score';
 
 /**
  * BIOBUZZ step — a playable, unscored match.
@@ -44,14 +45,21 @@ import { updateBiobuzzPenalties } from './penalties';
  *                           one deterministic tick of lag, and invisible.
  *   8. GAMEPLAY           — `updateBiobuzz`: pollen physics, intake, launch. (See its own
  *                           header for the order INSIDE it.)
- *   9. PHASE MACHINE      — the countdown and phase progression, last, so every stage above
- *                           ran under one consistent phase.
+ *   9. PHASE MACHINE      — the countdown and phase progression. It also fires the two
+ *                           ASSESSMENT INSTANTS (Table 10-2): LEAVE and AUTO PARK latch as
+ *                           AUTO ends, TELEOP PARK as the MATCH ends. They live here because
+ *                           an instant is a phase boundary and nowhere else in the pipeline
+ *                           knows one is happening.
+ *  10. SCORE             — `bbScoreWorld` + `bbApplyScore`, recomputed from scratch every
+ *                           tick (Chain Reaction's pattern, and `score.ts` argues it). LAST,
+ *                           so it sees this tick's gameplay, this tick's fouls AND this tick's
+ *                           latches — a TIP that completes on the buzzer tick still scores.
  *
  * DELIBERATELY ABSENT, and each for a reason rather than an oversight: DECODE's
- * `updateRobotActions`, goals and gates (BIOBUZZ has no known field mechanism); DECODE's
- * scoring (`scored: false`); and Chain Reaction's beam terrain and centre-of-gravity scaling
- * (a BIOBUZZ robot has no `groundClearance` dial, because there is no published terrain for
- * one to matter on — see `robotConfig.ts`, which strips the field).
+ * `updateRobotActions`, goals and gates (BIOBUZZ has no known field mechanism), and Chain
+ * Reaction's beam terrain and centre-of-gravity scaling (a BIOBUZZ robot has no
+ * `groundClearance` dial, because there is no published terrain for one to matter on — see
+ * `robotConfig.ts`, which strips the field).
  *
  * DETERMINISM: this reads only the commands and `world.rngState`. No clock, no DOM, no
  * `Math.random`. That is what lets client prediction, server authority and replay agree.
@@ -111,6 +119,38 @@ export function biobuzzStep(world: World, dt: number, commands: Map<number, Robo
 
   // 9.
   biobuzzStepMatch(world, dt);
+
+  // 10. THE SCORE, from scratch, every tick. See `score.ts` for why it is recomputed rather
+  // than accumulated, and why it runs after the phase machine rather than before it.
+  if (world.biobuzz) bbApplyScore(world, bbScoreWorld(world));
+}
+
+/**
+ * LATCH one assessment instant (Table 10-2) — which achievements are true RIGHT NOW, frozen.
+ *
+ * LEAVE and PARK are the only lines in the table assessed at a MOMENT rather than continuously
+ * ("end of AUTO", "end of MATCH"), and a robot that drives back to the wall afterwards keeps
+ * its points. So the truth of each predicate is recorded here and `score.ts` reads the record
+ * from then on. The predicates themselves are `score.ts`'s, called rather than re-spelled: the
+ * provisional value a driver watches during AUTO and the value that ends up on the results
+ * screen have to be the same test, or the score changes at the buzzer for no visible reason.
+ *
+ * `passive` robots — free-drive practice dummies — are skipped. They have no alliance in any
+ * meaningful sense and latching them would put 3 points on whichever colour they were spawned
+ * as.
+ */
+function bbAssess(world: World, at: 'auto' | 'match'): void {
+  const bb = world.biobuzz;
+  if (!bb) return;
+  for (const r of world.robots) {
+    if (r.passive) continue;
+    if (at === 'auto') {
+      bb.leave[r.id] = bbLeftNow(r);
+      bb.parkAuto[r.id] = bbParkedNow(r);
+    } else {
+      bb.parkTele[r.id] = bbParkedNow(r);
+    }
+  }
 }
 
 /**
@@ -121,8 +161,20 @@ export function biobuzzStep(world: World, dt: number, commands: Map<number, Robo
  * (Section 13), which IS published in the V0 manual and is unchanged from DECODE. If Kickoff
  * moves them, they move for every game at once, which is what a shared constant is for.
  *
- * Scoring is continuous in `updateBiobuzz`, so this only advances the countdown and the phase
- * progression — there is no per-phase assessment to run.
+ * BIOBUZZ adds two things to the shared shape, and both are cues in the manual's own sense:
+ *
+ *  • **THE 1:00 NECTAR CUE** (§10.4, Table 9-1 p79, G410). FLOWER ownership unlocks with 60 s
+ *    of TELEOP left: before it, a NECTAR entering a FLOWER is a MAJOR per nectar. It is
+ *    announced on the field by an audio cue, so the sim announces it as an EVENT — the same
+ *    channel the phase changes use, which is what puts it in the toast row and in a replay.
+ *  • **THE TWO ASSESSMENT INSTANTS** — LEAVE and AUTO PARK at the end of AUTO, TELEOP PARK at
+ *    the end of the MATCH (`bbAssess`).
+ *
+ * The cue is detected as a CROSSING of the countdown rather than from a stored flag: the
+ * threshold is above `phaseTimeLeft` before the decrement and at or below it after, which is
+ * true on exactly one tick and needs nothing remembered. A flag would be a third thing that
+ * can disagree with the clock, and the clock is already authoritative for the rule itself
+ * (`bbNectarLocked` reads `phaseTimeLeft`, not the flag).
  */
 function biobuzzStepMatch(world: World, dt: number): void {
   const m = world.match;
@@ -138,11 +190,21 @@ function biobuzzStepMatch(world: World, dt: number): void {
     return;
   }
   if (m.phase === 'freeplay' || m.phase === 'post') return;
+  const before = m.phaseTimeLeft;
   m.phaseTimeLeft -= dt;
+  // the 1:00 cue: the one tick the countdown crosses the unlock threshold. `before >` and
+  // `after <=` bracket it, so it fires exactly once and never on a tick that merely sits at
+  // the boundary.
+  if (m.phase === 'teleop' && before > BB_FLOWER_UNLOCK_S && m.phaseTimeLeft <= BB_FLOWER_UNLOCK_S) {
+    world.events.push('FLOWER OWNERSHIP UNLOCKED');
+  }
   if (m.phaseTimeLeft > 0) return;
   switch (m.phase) {
     case 'auto':
       for (const r of world.robots) r.autoPathActive = false;
+      // LEAVE and AUTO PARK, assessed at this instant and latched (Table 10-2). Before the
+      // phase flips, so the predicates see the field as it was when the buzzer went.
+      bbAssess(world, 'auto');
       m.phase = 'transition';
       m.phaseTimeLeft = C.TRANSITION_DURATION;
       world.events.push('AUTO COMPLETE');
@@ -153,6 +215,8 @@ function biobuzzStepMatch(world: World, dt: number): void {
       world.events.push('TELEOP');
       break;
     case 'teleop':
+      // TELEOP PARK, the second of the two assessments. Same instant rule as AUTO's.
+      bbAssess(world, 'match');
       m.phase = 'post';
       m.phaseTimeLeft = 0;
       world.events.push('MATCH COMPLETE');

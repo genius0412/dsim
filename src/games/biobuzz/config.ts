@@ -37,7 +37,7 @@
  * empty field, because it would look finished.
  */
 
-import type { Alliance, AssistConfig, RobotSpec, StartCat } from '../../types';
+import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2 } from '../../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
 import { wrapAngle } from '../../math';
 import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
@@ -119,6 +119,22 @@ export const BB_LZ: Record<Alliance, BbRect> = {
   red: { x0: -72, x1: -61, y0: 24, y1: 48 }, // APPROX: Fig 9-2/9-3 — ±0.5 in on the tape edge
   blue: { x0: 61, x1: 72, y0: -48, y1: -24 }, // point symmetry, Fig 9-2
 };
+
+/**
+ * WHERE AN ELEMENT ENTERS THE FIELD FROM A HUMAN PLAYER'S HAND — the centre of `a`'s LOADING
+ * ZONE, pulled `r` off the side wall the zone backs onto.
+ *
+ * ONE definition, because three callers need the same point and they must not drift: staging
+ * puts a no-show robot's preloads there (§10.3.4), the human player enters NECTAR there all
+ * match (G426/G427, `play.ts`), and the smoke lane asserts both. `r` is the entering element's
+ * RADIUS: "contacting the wall" is a body touching it, which for a circle solved at its centre
+ * means a centre one radius clear — put the centre ON the wall line and the solve's first job
+ * is to eject it.
+ */
+export function bbLoadingZoneSpot(a: Alliance, r: number = BB_POLLEN_R): Vec2 {
+  const z = BB_LZ[a];
+  return { x: a === 'red' ? -BB_HALF_X + r : BB_HALF_X - r, y: (z.y0 + z.y1) / 2 };
+}
 
 /**
  * GARDEN — a ~23 × 2 in strip in the alliance's own corner, "defined by the outside edge of
