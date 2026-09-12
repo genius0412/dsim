@@ -236,11 +236,24 @@ try {
 } catch {
   Warn "/health did not answer: $($_.Exception.Message)"
 }
-try {
-  $ver = (Invoke-WebRequest -Uri "https://$App.fly.dev/version.json" -UseBasicParsing -TimeoutSec 30).Content.Trim()
-  Write-Host "    /version.json -> $ver"
-} catch {
-  Warn "/version.json did not answer: $($_.Exception.Message)"
+# A 200 on /health only says a process is up. It answers the literal string "ok" and this
+# server has no version route, so it cannot tell you WHICH build is running - which is
+# exactly how alpha sat serving healthy 200s from an image that predated the rendezvous
+# entirely. /version.json is a VERCEL route, not one of this server's; asking Fly for it
+# returns 426 Upgrade Required, because every path here except /health wants a WebSocket
+# upgrade. So check the feature by speaking its own protocol instead.
+$node = Get-Command node -ErrorAction SilentlyContinue
+if ($node) {
+  $ping = Invoke-Native $node.Source @('scripts/lanping.mjs', "wss://$App.fly.dev")
+  Write-Host $ping.Text.Trim()
+  if ($ping.Code -ne 0) {
+    Warn 'the rendezvous did NOT answer - this build may not contain it. Re-check before handing the URL to anyone.'
+  } else {
+    Say 'the LAN rendezvous is live on this server'
+  }
+} else {
+  Warn 'node not found - skipped the rendezvous check. Run it yourself:'
+  Write-Host "    node scripts/lanping.mjs wss://$App.fly.dev" -ForegroundColor White
 }
 
 Write-Host ''
