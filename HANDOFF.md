@@ -1,3 +1,13 @@
+> **2026-09-12e — worktree `claude/nice-morse-09b59a`, off `biobuzz-robot` @ e2b1882: the
+> SAVED-ROBOT line now reads the `labels.configSummary` slot.** Two files, `src/ui/Menu.tsx` and
+> `scripts/smoke-biobuzz/core.ts`. `npm test` ALL PASS twice (661 in the BIOBUZZ suite), `npm run
+> build` clean, `npm run uiaudit` at baseline. DECODE’s and CR’s inline arms are byte-identical.
+> ⚠️ **This worktree does NOT contain the main checkout’s uncommitted work** — D:\Projects\dsim
+> has ~18 modified files in flight, including the `GameModule.statTiles` slot and the builder
+> hero’s stat-tile fix. The hero tiles are therefore STILL a two-valued `isDecode` branch here,
+> and are deliberately untouched. On merge the Menu.tsx hunks are disjoint; the two new
+> `core.ts` sections land adjacent and will want one trivial conflict resolution.
+
 # HANDOFF — 2026-09-12c (matchmaker: a live region bug, then skill-based pairing)
 
 > **2026-09-12d — alpha IS deployed, and LAN no longer needs a Vercel edit.** The alpha Fly app
