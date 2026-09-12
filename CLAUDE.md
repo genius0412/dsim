@@ -1243,9 +1243,16 @@ handle (`GATE_ARM_SHORT`) pokes OUT into the gate zone (what a robot pushes) and
   rollers turn far faster at the surface than the chassis drives: what is grabbed is INSIDE the
   robot at once and cannot reach back out. Smoke asserts the RELATION (`HELD_SLIDE_SPEED >
   max driveParams().maxSpeed` over the whole legal envelope), not the number, so raising the
-  rpm ceiling later fires the check instead of resurrecting the bug. TRIANGLE still clips the
-  next artifact briefly — it parks two held artifacts NEAR THE MOUTH by design, so they ride at
-  chassis speed — but it re-catches within a couple of ticks (1.1in of shove against 32).
+  rpm ceiling later fires the check instead of resurrecting the bug.
+- ⚠️ **A HELD ARTIFACT'S SLOT IS INSIDE THE ROBOT, NEVER PROUD OF THE CHASSIS FACE**
+  (`heldSlotPos`, physics.ts). Sloped and vector put the front one's SKIN at the roller line;
+  TRIANGLE sat 2in further out at `hl + 2` until it was moved to `hl` (deep `hl − 4` → `hl − 6`
+  with it), which is what made it the last preset still clipping the third artifact in a line
+  — 74 in/s, against 0 for the other two — after the slide fix above. A slot proud of the face
+  also puts a held artifact inside the WALL plane when the robot is tip-on to a wall, and holds
+  a shoved pile 4in off its own footprint, out of reach of G408's contact test. ⚠️ Move BOTH
+  triangle slots together or the deep-to-front spacing closes to 4.83in, under the 5in sum of
+  radii, and the stored artifacts draw overlapping.
 - **THE GRAB IS THE ROLLER NIP, AND IT IS ONE BAND FOR ALL THREE CAPTURE BRANCHES.**
   `intakeNip(spec)` about `intakeAxleX(spec)` (`config.ts`) is the whole fore-aft test; the
   branches (`atThroat` · `cornered` · `onRollerRow`) differ only in their LATERAL bound and

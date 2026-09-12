@@ -8012,11 +8012,10 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     });
     check(
       'nip: a touching file of THREE goes in 3/3 without the file being punted down the field',
-      rows.every((x) => x.took === 3 && x.shove < 3) &&
-        rows.filter((x) => x.intake !== 'triangle').every((x) => x.peak < 5),
+      rows.every((x) => x.took === 3 && x.shove < 1 && x.peak < 5),
       rows.map((x) => `${x.intake} ${x.took}/3, worst shove ${x.shove.toFixed(1)}in, peak artifact speed ${x.peak.toFixed(0)} in/s`).join(' · ') +
-        ' — at HELD_SLIDE_SPEED 45 the second and third left together at 73 in/s and were shoved 32in.' +
-        ' TRIANGLE is exempt from the speed bound and only from that: it parks two held artifacts NEAR THE MOUTH by design, so they ride at chassis speed and can clip the next one — but it re-catches it within a couple of ticks, which is what the shove bound checks',
+        ' — at HELD_SLIDE_SPEED 45 the second and third left together at 73 in/s and were shoved 32in,' +
+        ' and triangle still clipped the third at 74 in/s until its storage slots moved 2in further into the chassis (heldSlotPos). No preset moves an artifact at all now.',
     );
   }
 

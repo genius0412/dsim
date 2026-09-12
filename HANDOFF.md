@@ -1,6 +1,6 @@
 # HANDOFF — 2026-09-11, sixth session (the intake grabs at the roller, and reaches only what has landed on it)
 
-Branch **alpha**, rebased onto `71e4316`. `npm test` **ALL PASS — 1450 checks (14 new)**. `npm run build` green,
+Branch **alpha**, rebased onto `71e4316`. `npm test` **ALL PASS — 1451 checks (16 new)**. `npm run build` green,
 `npm run server:check` green. `SIM_VERSION` stays **2**, recorded in that version's batch
 list per the block's own alpha rule. **NOT YET DEPLOYED** — see Deploy.
 
@@ -129,11 +129,33 @@ through the world on any build. After:
 |---|---|---|---|
 | sloped | 39 / 43 / 47 | **0.0in** | **0 in/s** |
 | vector | 39 / 43 / 47 | **0.0in** | **0 in/s** |
-| triangle | 39 / 43 / 49 | 1.1in | 74 in/s, re-caught in 2 ticks |
+| triangle | 39 / 43 / 49 | 1.1in | 74 in/s, re-caught in 2 ticks — see 4b |
 
-Triangle is exempt from the speed bound and only that: it parks two held artifacts NEAR THE
-MOUTH by design, so they ride at chassis speed and can clip the next one. Its shove went 33.6in
-→ 1.1in. If that ever needs to be zero, the lever is where its hopper slots sit, not the slide.
+## 4b. …and then TRIANGLE's storage slots, which were the last thing still clipping
+
+Triangle was the one preset still knocking the third artifact away (74 in/s, 1.1in of shove)
+after the slide fix, because it parks its front row 2in PROUD of the chassis face — riding out
+near the mouth at chassis speed, where it meets the next artifact before the intake can. Owner:
+*"For triangle intake, let's hold the balls like 2 inches further into the chassis."*
+
+`heldSlotPos` (physics.ts): front row `hl + 2` → **`hl`**, deep `hl − 4` → **`hl − 6`**. Its
+front skin now sits at `hl + BALL_RADIUS`, 2.5in inside the roller line.
+
+⚠️ **BOTH slots move, not just the front row.** The front row alone closes the deep-to-front
+spacing to `hypot(4, 2.7) = 4.83in`, under the 5in sum of radii, and draws the stored artifacts
+overlapping each other. The deep one still clears the chassis rear by 3.0in at the 11in length
+floor.
+
+**Triangle was simply never moved off `hl + 2`** — the other two presets were corrected long
+ago, for a related reason recorded right below it in `heldSlotPos`: a held artifact parked proud
+of the chassis face sits inside the wall plane when the robot is tip-on to a wall, and holds a
+shoved pile 4in off its own footprint, out of reach of the G408 contact test. Triangle carried
+that defect too.
+
+After: **every preset takes a touching file of three 3/3 at ticks 39 / 43 / 47 with peak
+artifact speed 0 in/s and 0.0in of shove**, at both 5.02in and 8in pitch. The file-of-three
+check's triangle exemption is gone and its bounds are now `shove < 1in` and `peak < 5 in/s` for
+all three.
 
 Smoke asserts the RELATION rather than the number — `HELD_SLIDE_SPEED > max
 driveParams().maxSpeed` swept over every drivetrain × rpm × mass × intake — so raising the rpm
