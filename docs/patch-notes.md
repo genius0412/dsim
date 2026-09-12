@@ -193,9 +193,13 @@ every one below was written into a real draft of these notes and had to be pulle
 - **"X is a real Y."** *Pushing is a real force* → **"Pushing is calculated using forces."*
   Say the mechanism. "Real" is doing emphasis, not information, and it implies the old one
   was fake.
-- **"like the X they are" / "as the X they form."** *Artifacts collide like the foam balls
-  they are* → **"Artifacts collide like foam balls."** *Wheels render as the diamond they
-  form* → **"Wheels render as a diamond."**
+- **"like the X they are" / "as the X they form."** *Wheels render as the diamond they form*
+  → **"Wheels render as a diamond."**
+- ⚠️ **Never invent a physical description of a game element.** A draft said *artifacts
+  collide like the foam balls they are*, which is two mistakes: the construction above, and
+  a material nobody had checked. The Competition Manual is the only authority on what a game
+  piece is made of, and a simile is almost never worth the risk — say what it DOES
+  ("artifacts bounce, deflect and scatter") and the sentence is both safer and more useful.
 - **"X reads as X."** *Terrain reads as terrain* → say what the player sees: **"The robot
   lifts, casts a shadow and thumps."**
 - **"A is A"** restatements. *A pile pushes as a pile* → **"You can push a whole pile."**

@@ -262,7 +262,7 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
     solid when it was). **A free artifact, however deep it sits inside a chassis for a tick,
     is never pinned** — a full-speed ram can leave the first ball of a clump a fraction inside
     while the solve is still propagating the push, and a robot that stopped for that was
-    stalled by 0.2 lb of foam. **No direction test and no "escaping" exemption**: both were
+    stalled by 0.2 lb of artifact. **No direction test and no "escaping" exemption**: both were
     tried (Sept 2026) and both failed the same way — a heuristic cannot tell a corner hit that
     would slide a wall ball along from a wall ball boxed in by the wedge and its neighbours
     (the direction cone let a chassis drive 2.9in into the second), and a jammed pile jiggles

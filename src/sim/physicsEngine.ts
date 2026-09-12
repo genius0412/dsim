@@ -705,7 +705,7 @@ export function solveArtifacts(
     // capped: a squeeze between a chassis and a wall can hand a ball any speed the constraints
     // demand (a wedge a few degrees open asks for many times the robot's own advance), and a
     // ball moving more than the look-ahead in a tick is one the next tick cannot see coming —
-    // a 5in artifact went through a 2.7in corner gap that way. A foam ball popping out of a
+    // a 5in artifact went through a 2.7in corner gap that way. An artifact popping out of a
     // squeeze does not exceed this in reality either.
     const speed = hyp(v.x, v.y);
     const k = speed > C.BALL_MAX_SPEED ? C.BALL_MAX_SPEED / speed : 1;
@@ -838,7 +838,7 @@ export function pinnedArtifacts(
        * A PIN NEEDS SOMETHING BEHIND THE ARTIFACT. Being deep inside a chassis is not one on
        * its own: a full-speed ram can leave the first ball of a clump a fraction inside for a
        * tick while the solve is still propagating the push, and a robot that stopped for that
-       * was stalled by 0.2 lb of foam — "stuck to the balls". So the entry test asks what the
+       * was stalled by 0.2 lb of artifact — "stuck to the balls". So the entry test asks what the
        * artifact is against: the field (`inField`), or, through whatever it is touching, a
        * static or another robot (`supported`). A free artifact, however deep, is the artifact
        * solve's to push out.
