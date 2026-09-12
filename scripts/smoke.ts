@@ -7313,6 +7313,46 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
         'lan signal: hosting verifies the token server-side rather than trusting a claim',
         idx.includes('verifyAuthToken(m.authToken)'),
       );
+
+      // ---- THE THIRD DOOR (docs/lan-webrtc.md; the owner's call is that LAN ships nowhere
+      // near production). `LAN_UPLOADS` closes the route to production DATA. The rendezvous
+      // touches no data, so that flag does not cover it — and an open rendezvous is an open
+      // door whatever the upload route does. Every check here is about failing CLOSED.
+      const gate = readFileSync('server/lanUploads.ts', 'utf8');
+      const flyProd = readFileSync('fly.toml', 'utf8');
+      const flyAlpha = readFileSync('fly.alpha.toml', 'utf8');
+
+      check(
+        'lan gate: the rendezvous has its own switch, not a re-read of the upload flag',
+        /export const LAN_SIGNALLING = process\.env\.LAN_SIGNALLING/.test(gate),
+      );
+      check(
+        'lan gate: it fails CLOSED — absent or anything but "1" means shut',
+        /LAN_SIGNALLING\?\.trim\(\) === '1'/.test(gate),
+      );
+      /* Both flags' PROSE explains at length why the release channel is the wrong key, so a
+         bare search finds the explanation and passes whatever the code does — the same trap
+         the lan launcher and signal-client checks fell into. Strip comments first. */
+      check(
+        'lan gate: it does NOT key off the release channel (two different questions)',
+        !/SERVER_CHANNEL/.test(gate.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')),
+      );
+      check(
+        'lan gate: the refusal happens BEFORE any branch, so nothing is registered or forwarded',
+        /if \(!LAN_SIGNALLING\) \{[\s\S]{0,200}?return;\s*\}[\s\S]{0,80}?if \(m\.t === 'lanHost'\)/.test(idx),
+      );
+      check(
+        'lan gate: a closed server ANSWERS rather than hanging the client to its timeout',
+        /reason: 'closed'/.test(idx),
+      );
+      check(
+        'lan gate: alpha opens it; production does not mention it at all',
+        /LAN_SIGNALLING = '1'/.test(flyAlpha) && !/LAN_SIGNALLING/.test(flyProd),
+      );
+      check(
+        'lan gate: and production still opens neither door',
+        !/LAN_UPLOADS/.test(flyProd),
+      );
     }
 
   // ---- LAN over WebRTC: the data path (docs/lan-webrtc.md step 3)

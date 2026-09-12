@@ -626,7 +626,14 @@ export type ServerMsg =
   /* a signalling request was refused. SEPARATE FROM `error` on purpose: `error` is rendered
    * as a lobby-level failure that tears the screen down, and "that code isn't hosting" is a
    * thing the player retypes rather than a thing that ends their session. */
-  | { t: 'lanError'; reason: 'badcode' | 'taken' | 'busy' | 'auth' | 'nohost' | 'full' | 'toobig' | 'nopeer'; message: string };
+  /* `closed` is the deployment saying the rendezvous is not switched on here at all
+     (server/lanUploads.ts `LAN_SIGNALLING`), which is a different thing from every other
+     reason in this union: the others are about this request, that one is about the server. */
+  | {
+      t: 'lanError';
+      reason: 'badcode' | 'taken' | 'busy' | 'auth' | 'nohost' | 'full' | 'toobig' | 'nopeer' | 'closed';
+      message: string;
+    };
 
 /** a finished record run's leaderboard standing (its mode×drivetrain×season
  * bucket). `score` is the NET score (earned − own penalties). */

@@ -13,6 +13,7 @@ import { persistMatch, persistDodges } from './persist';
 import { routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
+import { LAN_SIGNALLING } from './lanUploads';
 import { LanSignalling } from './lanSignal';
 import { chargeStanding, rankedLock } from './standing';
 import { lockRemaining, tierOf,
@@ -121,7 +122,11 @@ const lanSignals = new LanSignalling();
  * retype, so it must not arrive as a stack-shaped `error` that tears the lobby down. The
  * refusal reasons are the protocol's; the sentences are here so the wire stays terse.
  */
-const LAN_REFUSALS: Record<'badcode' | 'taken' | 'busy' | 'auth' | 'nohost' | 'full' | 'toobig' | 'nopeer', string> = {
+const LAN_REFUSALS: Record<
+  'badcode' | 'taken' | 'busy' | 'auth' | 'nohost' | 'full' | 'toobig' | 'nopeer' | 'closed',
+  string
+> = {
+  closed: 'Hosting in a browser tab is not switched on for this server yet.',
   badcode: "That isn't a valid room code.",
   taken: 'That code is already in use — try another.',
   busy: 'This server is holding as many LAN rooms as it can right now. Try again shortly.',
@@ -1916,6 +1921,15 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
    * joining anything on this server.
    */
   const handleLanSignal = async (m: ClientMsg): Promise<void> => {
+    /* THE GATE, BEFORE ANYTHING ELSE IS LOOKED AT. A deployment with the rendezvous closed
+       must not register a code, remember a peer, or forward a byte — so this sits ahead of
+       every branch rather than inside `claim`, which would still have parsed and bookkept.
+       It ANSWERS rather than ignoring: silence would hang the client until its 10s request
+       timeout and read as a broken server, and a player is owed the actual reason. */
+    if (!LAN_SIGNALLING) {
+      send({ t: 'lanError', reason: 'closed', message: LAN_REFUSALS.closed });
+      return;
+    }
     if (m.t === 'lanHost') {
       // hosting requires an account — see `LanSignalling.claim`
       const u = await verifyAuthToken(m.authToken).catch(() => null);

@@ -39,6 +39,13 @@ primary_region = 'iad'
   # CLIENT half is VITE_LAN_ENABLED on the matching Vercel project; a LAN environment needs
   # both, and preview is the only one that has either.
   LAN_UPLOADS = '1'
+  # introduce two browsers to each other so one can host the room in a TAB
+  # (docs/lan-webrtc.md, server/lanUploads.ts `LAN_SIGNALLING`). A THIRD door, and it needs
+  # its own switch: LAN_UPLOADS closes the route by which a LAN match reaches production
+  # DATA, and the rendezvous touches no data at all — so that flag does not cover it, and an
+  # ungated rendezvous would have opened tab hosting in production while LAN is held back.
+  # Set here for the same reason as the line above, and deliberately NOT in fly.toml.
+  LAN_SIGNALLING = '1'
 
 [http_service]
   internal_port = 8080
