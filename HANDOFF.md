@@ -24,20 +24,29 @@ so the boards stay exactly as they are and the entries simply stop having a play
 This is the documented, intended meaning of a balance bump (config.ts says so at the constant),
 not a bug. It is listed here because it is the most visible thing a player will notice.
 
-### 2. Chain Reaction's season ROLLS; DECODE's does not
+### 2. BOTH games are rolled to ACT 2 · SEASON 1 — and that RESETS RANKED ELO
 
-`currentSeasonNumber` is `max(highest season row, BALANCE_VERSION)`, so a balance bump rolls the
-season only when the code fallback overtakes the admin's number. Live, from `/api/seasons`:
+Owner's call for this release. The live periods are DECODE **Act 1 · Season 2** (internal
+`balance_version` key 6) and Chain Reaction **Act 1 · Season 1** (key 3); neither game has an
+act 2 yet, so `act=new` lands both on Act 2 · Season 1 exactly.
 
-| game | live season | after `BALANCE_VERSION` 4 | |
-|---|---|---|---|
-| decode | 6 (7386 records, 2907 matches) | `max(6,4)` = **6** | unchanged |
-| chain | 3 (1153 records, 93 matches) | `max(3,4)` = **4** | **ROLLS — CR's boards start empty** |
+⚠️ **AN ACT RESET WIPES RANKED RATINGS; A SEASON RESET DOES NOT.** Migration `0013_elo_by_act`
+re-keyed `elo_ratings` from the season to the ACT and states the rule outright: a new season in
+the same act wipes only the RECORD boards and ratings carry over, while ratings are wiped ONLY on
+an act reset. So this release returns every player in both games to 1000 / RD 350 and puts them
+back through placements. Past standings are NOT lost — `elo_history` snapshots each season's
+end-of-period rating and the archived boards read from there — but the live ladder starts empty.
+That is the single biggest player-facing consequence of this deploy; it is deliberate, and it is
+not practically reversible.
 
-CR's season 3 stays fully queryable and archived; it is a new competitive period, not a deletion.
-If that is not wanted on the same day as everything else, the lever is `startNewSeason` /
-the seasons table, not the constant — but there is no way to ship `BALANCE_VERSION` 4 and leave
-CR on 3.
+This also SUPERSEDES the auto-roll that `BALANCE_VERSION` 4 would have caused on its own
+(`currentSeasonNumber` is `max(season rows, BALANCE_VERSION)`, so CR's key 3 would have been
+overtaken by 4 while DECODE's 6 would not). Rolling both by hand makes that moot.
+
+Resulting internal keys, run AFTER the deploy so the new act contains only matches played on the
+new balance: DECODE `max(6,4)+1` = **7**, Chain `max(3,4)+1` = **5**. Both display as
+Act 2 · Season 1. The endpoint auto-publishes a cinematic “A NEW ACT BEGINS” announcement unless
+`announce=0` is passed.
 
 ### 3. Nine migrations run against the live database at boot
 
@@ -124,7 +133,12 @@ it in, as the ratchet asks.
 4. Verify: `curl https://dohun-sim-decode.fly.dev/health`, then
    `fly machine list -a dohun-sim-decode` — every machine on ONE image, 1/1, and the satellites
    back on `shared-cpu-1x` (the wrapper re-shrinks them; a bare deploy would have upsized all 7).
-5. Confirm `/api/seasons?game=chain` reads `current: 4` and DECODE still reads `6`.
+5. **Roll both games to Act 2 · Season 1**, back to back, right after the deploy (see §2 — this
+   resets ranked ELO for both):
+   `curl -fsS -G -X POST "$HOST/api/admin/season/start" --data-urlencode "game=decode" --data-urlencode "act=new" --data-urlencode "secret=$ADMIN_SECRET"`
+   then the same with `game=chain`. Add `--data-urlencode "announce=0"` for a silent roll.
+6. Confirm both boards read the new period: `/api/seasons?game=decode` → `current: 7`,
+   act 2 / seasonNo 1; `/api/seasons?game=chain` → `current: 5`, act 2 / seasonNo 1.
 
 ### Not blocking, but worth deciding
 
@@ -133,6 +147,11 @@ it in, as the ratchet asks.
   exactly as today. Nothing breaks; the feature is simply inert until
   `fly secrets set MODERATION_API_KEY='sk-…' -a dohun-sim-decode`. The admin console's forced
   rename stays the human backstop either way.
+  The key is an **OpenAI platform API key** (platform.openai.com → API keys): `server/moderation.ts`
+  defaults to `POST https://api.openai.com/v1/moderations` with `omni-moderation-latest`, sends
+  `{model, input}` and reads `results[0].flagged`. It falls back to `OPENAI_API_KEY` if that is
+  set instead. Any provider speaking the same shape works via `MODERATION_API_URL` /
+  `MODERATION_MODEL`. SERVER-SIDE ONLY — never a `VITE_*` var, or the key ships to browsers.
 - **`SERVER_CHANNEL` is correctly ABSENT from `fly.toml`**, so production keeps `stable`
   behaviour. Only `fly.alpha.toml` sets `alpha`. Nothing to change.
 - The three items the deflate session left unproven (snapshot-gap jitter under compression,
