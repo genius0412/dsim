@@ -245,7 +245,11 @@ export function bbWorld(seed: number, setups: RobotSetup[], pollen?: Artifact[])
  * renumbering a pile changes the physics, and a scene whose ids depend on iteration order is a
  * scene that hashes differently for no visible reason. */
 export function bbPollen(id: number, x: number, y: number): Artifact {
-  return { id, color: 'green', state: { kind: 'ground' }, pos: { x, y }, vel: { x: 0, y: 0 }, z: 0, vz: 0 };
+  // YELLOW, not DECODE's green. POLLEN carry the season's own colour (reference 9.8, and
+  // `POLLEN_COLOR` in `spawn.ts`), and `draw.ts` batches the three BIOBUZZ inks — so a scene
+  // laying out `green` balls rendered NOTHING at all: the colour is not in the batch order,
+  // and a ball that is never drawn looks exactly like a scene that placed none.
+  return { id, color: 'yellow', state: { kind: 'ground' }, pos: { x, y }, vel: { x: 0, y: 0 }, z: 0, vz: 0 };
 }
 
 /**
