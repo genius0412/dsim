@@ -2735,12 +2735,6 @@ input.admin-months {
    and the reconnect overlay (40): a sponsor mark must never sit on top of a modal
    telling somebody their match is disconnecting. */
 .sponsor-chip {
-  position: absolute;
-  top: 12px;
-  /* max(), so a landscape notch pushes it in — the same expression `.status-wrap`
-     uses, since the two share this corner */
-  right: max(12px, env(safe-area-inset-right));
-  z-index: 15;
   display: inline-flex;
   align-items: center;
   padding: var(--ds-s-1) var(--ds-s-2);
@@ -2765,19 +2759,29 @@ input.admin-months {
    plus its own padding and border, and `.status-wrap` needs that plus one gap.
    Written as a calc so changing the padding above moves the chips with it; a
    hard-coded 46 is a number that gets edited in one place of the two. */
-.game-root.has-sponsor {
-  --ds-sponsor-h: calc(16px + var(--ds-s-1) * 2 + 2px);
-}
-.game-root.has-sponsor .status-wrap {
-  top: calc(12px + var(--ds-sponsor-h) + var(--ds-s-2));
+/* THE STATUS LINE. The mark sits to the RIGHT of the status card, so the two
+   right-align as one cluster in the corner instead of stacking, and the card no
+   longer has to be pushed down to make room. `wrap` is the narrow-window
+   fallback: the card is a `nowrap` row that can grow long (every chip a match
+   wants to show), and a mark shoved off the left edge is worse than one on a
+   second line. */
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
 }
 
-@media (pointer: coarse), (max-height: 520px) {
-  /* the touch layout has NO `.status-wrap` at all (GameView renders it only for
-     a fine pointer), so the chip owns this corner outright and only has to clear
-     the notch. It keeps its full size: it is the only in-gameplay placement a
-     phone player ever sees. */
-  .sponsor-chip {
-    top: max(6px, env(safe-area-inset-top));
-  }
+/* THE TOUCH LAYOUT HAS NO `.status-row` AT ALL — GameView renders the whole status
+   cluster only for a fine pointer — so there the mark is positioned into the
+   corner itself. It keeps its full size: it is the only in-gameplay placement a
+   phone player ever sees. */
+.sponsor-chip.floating {
+  position: absolute;
+  /* max(), so a landscape notch pushes it in — the same expression `.status-wrap`
+     uses, since the two share this corner */
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 15;
 }

@@ -30,9 +30,9 @@ Do not fold one into the other.
 
 | placement id | where | component | artwork |
 |---|---|---|---|
-| `home` | home menu, under the title | `SponsorPresents` | logo, h=20 |
+| `home` | home menu, under the title | `SponsorPresents` | logo, h=32 |
 | `footer` | the shell footer, every page | `SponsorFooterMark` | logo, h=14 |
-| `game` | top-right chip on the live field | `SponsorGameChip` | logo, h=16 |
+| `game` | the live field's top-right status line | `SponsorGameChip` | logo, h=24 |
 | `download` | the download page | `SponsorDownloadMark` | logo, h=28 |
 | `splash` | the Electron splash window | `electron/splash.html` | logo, 158×40 |
 | `replay` | burned into every exported MP4/WebM | `src/ui/replayOverlay.ts` | logo, h=20 |
@@ -54,8 +54,14 @@ app, and to the most engaged players on the service — which is exactly what th
 excludes ("rendered independently of the ad system … same placement, separate code path").
 
 `Sponsor.tsx` therefore imports nothing from `src/ads/`, and `GameView.tsx` renders
-`<SponsorGameChip />` outside the `ads &&` branch. Both are smoke-checked by regex, because
+`<SponsorGameChip />` outside the `ads &&` branch. Both are smoke-checked, because
 re-routing it through the ad gate is a one-line refactor away.
+
+The mark renders in TWO places on that screen, one at a time. A fine pointer gets the HUD's
+status line (`.status-row`) and the mark rides it beside `.robot-status`, on the same line.
+A TOUCH layout renders no status line at all, so there it takes the `floating` variant and
+owns the corner itself — it is the only in-gameplay placement a phone player ever sees, and
+it cannot be conditional on a row that is not rendered.
 
 ## The term, and the kill switch
 

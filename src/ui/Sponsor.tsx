@@ -110,7 +110,11 @@ export function SponsorPresents() {
   if (!sponsorActive()) return null;
   return (
     <p className="ds-home-presents">
-      <SponsorMark placement="home" h={20} className="sponsor-mark">
+      {/* h=32: the home lockup is the announcement, and at 20 it read as a
+          footnote under a 64px title. The label beside it stays small on purpose —
+          what a reader should come away with is the sponsor's mark, not the words
+          "presented by". */}
+      <SponsorMark placement="home" h={32} className="sponsor-mark">
         <span className="sponsor-pre">{SPONSOR.presents}</span>
       </SponsorMark>
     </p>
@@ -146,17 +150,28 @@ export function SponsorDownloadMark() {
 }
 
 /**
- * IN-GAMEPLAY — the top-right corner chip, over the field.
+ * IN-GAMEPLAY — the top-right corner, over the field.
  *
  * IT THEMES WITH THE CHIP, not with the field — see the note on `SponsorLogo`.
  *
- * Rendered OUTSIDE `.hud`, which is `pointer-events: none` so the canvas keeps the
- * mouse — this is the one overlay on the game screen that has to be clickable, and
- * re-enabling pointer events on a child of a decorative layer is how a HUD element
- * ends up eating drags meant for the field. It is a sibling of the canvas inside
- * `.game-root` instead, which is already the positioning context for every overlay.
+ * TWO PLACES, ONE OF THEM AT A TIME, because the corner has two layouts:
+ *  - a fine pointer gets the status row (`.status-row`), and the mark rides it as
+ *    a sibling of `.robot-status` — the same line as the rest of the HUD chrome,
+ *    which is where it belongs: stacked above, it read as a floating badge and had
+ *    to push the whole chip cluster down to make room.
+ *  - a TOUCH layout renders no status row at all (see `GameView`), so there the
+ *    mark is `floating` and owns the corner itself. It is the only in-gameplay
+ *    placement a phone player ever sees, so it cannot be conditional on a row that
+ *    is not there.
+ *
+ * Either way it is rendered OUTSIDE `.hud`, which is `pointer-events: none` so the
+ * canvas keeps the mouse — this is the one overlay on the game screen that has to
+ * be clickable, and re-enabling pointer events on a child of a decorative layer is
+ * how a HUD element ends up eating drags meant for the field.
  */
-export function SponsorGameChip() {
+export function SponsorGameChip({ floating = false }: { floating?: boolean }) {
   if (!sponsorActive()) return null;
-  return <SponsorMark placement="game" h={16} className="sponsor-chip" />;
+  // h=24 against the chip row's 12px type: the mark is the tallest thing in the
+  // row and reads as the presenter rather than as one more status pill.
+  return <SponsorMark placement="game" h={24} className={`sponsor-chip${floating ? ' floating' : ''}`} />;
 }
