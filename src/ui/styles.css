@@ -2736,6 +2736,14 @@ input.admin-months {
 .sponsor-chip {
   display: inline-flex;
   align-items: center;
+  /* IT IS AN ANCHOR ON A SCREEN WITH NO LINK STYLING. Everywhere else the mark
+     lives inside `.sponsor-mark` (shell.css), which sets these; here the chip is
+     its own rule, and without them the browser's default `a` painted "PRESENTED
+     BY" underlined link-blue over the field. `--ds-ink-dim` is what `.game-btn`
+     next to it uses, so the line reads as one row. */
+  gap: var(--ds-s-2);
+  color: var(--ds-ink-dim);
+  text-decoration: none;
   padding: var(--ds-s-1) var(--ds-s-2);
   border-radius: var(--ds-round-full);
   background: var(--ds-hud);

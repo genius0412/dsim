@@ -409,12 +409,6 @@ export function GameView({
       )}
       {hud && <Hud hud={hud} showEventLog={settings.showEventLog} />}
       <div className="game-buttons">
-        {/* THE IN-GAMEPLAY PLACEMENT. On this line because `.game-buttons` is the
-            one top-corner cluster every layout renders — the status chips opposite
-            are fine-pointer only. Outside the `ads` gate entirely: see the note at
-            the top of Sponsor.tsx. It renders on a phone, in the Electron build,
-            and for supporters, all three of which the ad path deliberately skips. */}
-        <SponsorGameChip />
         <button className="game-btn" onClick={onExit} title="Menu (Esc)">
           ◄ MENU
         </button>
@@ -453,6 +447,17 @@ export function GameView({
             ⟲ NEW RUN
           </button>
         )}
+        {/* THE IN-GAMEPLAY PLACEMENT, LAST on this line — after RESET, and after
+            REMATCH / NEW RUN in a multiplayer or record run. The controls are what
+            a driver reaches for mid-match, so they keep the corner; the mark reads
+            as the line's credit rather than as the first button.
+
+            On this line at all because `.game-buttons` is the one top-corner cluster
+            every layout renders — the status chips opposite are fine-pointer only.
+            Outside the `ads` gate entirely: see the note at the top of Sponsor.tsx.
+            It renders on a phone, in the Electron build, and for supporters, all
+            three of which the ad path deliberately skips. */}
+        <SponsorGameChip />
       </div>
       {hud?.phase === 'pre' && hud.countdown === null && !session && (
         <div className="overlay">
