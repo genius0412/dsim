@@ -13,7 +13,7 @@ import { persistMatch, persistDodges } from './persist';
 import { routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
-import { LAN_SIGNALLING } from './lanUploads';
+import { LAN_SIGNALLING, LAN_UPLOADS } from './lanUploads';
 import { LanSignalling } from './lanSignal';
 import { chargeStanding, rankedLock } from './standing';
 import { lockRemaining, tierOf,
@@ -156,7 +156,23 @@ const LAN_ANON_HOSTS = !authConfigured;
  * It is not in `SERVER_CAPS` itself because that list is a shared constant in `protocol.ts`,
  * where `process.env` does not belong — the client imports that module.
  */
-const presenceCaps: string[] = [...SERVER_CAPS, ...(LAN_SIGNALLING && LAN_ANON_HOSTS ? ['lanAnon'] : [])];
+const presenceCaps: string[] = [
+  ...SERVER_CAPS,
+  /* `lan` SAYS THIS DEPLOYMENT OFFERS LAN AT ALL, and it is what lights the client's entry
+     points — the Play tile, `/lan`, the banner, the Career rows. It exists because the
+     client half used to be `VITE_LAN_ENABLED`, baked in at BUILD time, so switching LAN on
+     for an environment meant a Vercel env edit and a cache-free redeploy IN ADDITION to
+     this deploy. Those are held by different people here, and the two promptly disagreed:
+     alpha ran a deployed, switched-on rendezvous that no client could see. Advertising it
+     costs nothing — this response is already polled — and the cosmetic half can no longer
+     drift from the authoritative one, because it is now READ FROM it.
+
+     Either half counts. `LAN_SIGNALLING` alone is a complete feature (host in a tab, play,
+     keep the replay on the device); `LAN_UPLOADS` alone is the older self-hosted path. A
+     deployment with neither says nothing and the client stays dark, which is production. */
+  ...(LAN_SIGNALLING || LAN_UPLOADS ? ['lan'] : []),
+  ...(LAN_SIGNALLING && LAN_ANON_HOSTS ? ['lanAnon'] : []),
+];
 
 /**
  * What a refused signalling request says, in one place.

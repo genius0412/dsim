@@ -2,7 +2,7 @@ import type { Replay } from '../sim/replay';
 import type { LiveRoom, StaffRole } from './protocol';
 import type { ReportedUser, ReportRow } from '../report';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
-import { gameServerHttpUrl } from './env';
+import { gameServerHttpUrl, setLanFromServer } from './env';
 import { getAuthToken } from '../lib/authClient';
 
 /**
@@ -277,7 +277,15 @@ export function serverCaps(): Promise<string[]> {
  * one - ranked queue depth - and leave it off for the ambient chip.
  */
 export function fetchPresence(full = false): Promise<Presence> {
-  return getJson(`/api/presence${full ? '?full=1' : ''}`);
+  return getJson<Presence>(`/api/presence${full ? '?full=1' : ''}`).then((p) => {
+    /* THE LAN ENTRY POINTS ARE LIT FROM HERE, not from the build (src/net/env.ts
+       `setLanFromServer`). It goes in `fetchPresence` rather than in `serverCaps` because
+       this is the single funnel every presence read passes through - `usePresence` polls it
+       from the shell on every screen, so the answer lands during the first poll the app was
+       already making. Nothing anywhere fetches anything extra for this. */
+    setLanFromServer(Array.isArray(p.caps) && p.caps.includes('lan'));
+    return p;
+  });
 }
 
 export interface PublicProfile extends BadgeFields {

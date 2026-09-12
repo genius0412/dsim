@@ -50,7 +50,8 @@ import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
-import { LAN_ENABLED, gameServerConfigured, lanActive, setSelectedServer, selectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
+import { useLanEnabled } from './useLanEnabled';
+import { lanEnabled, gameServerConfigured, lanActive, setSelectedServer, selectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
 import { ServerMenu } from './ServerMenu';
 import type { MatchResultInfo, NetSession } from '../net/session';
 import { ServerSession } from '../net/serverSession';
@@ -243,7 +244,7 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   // Unresolvable where LAN is held back, so `/lan` falls through to home rather than
   // rendering an empty screen under a "LAN play" title (`src/seo.ts` still carries that
   // entry, correctly — it comes back the moment the flag does).
-  if (LAN_ENABLED && rest.startsWith('/lan')) return at('lan');
+  if (lanEnabled() && rest.startsWith('/lan')) return at('lan');
   if (rest.startsWith('/download')) return at('download');
   if (rest.startsWith('/contributors')) return at('contributors');
   if (rest.startsWith('/privacy')) return at('privacy');
@@ -353,6 +354,11 @@ function screenForNav(n: ShellNav): Screen {
 }
 
 export function App() {
+  /* Whether the LAN entry points exist at all. Not a build constant any more: the
+     server advertises it, so this flips once the shell's first presence poll lands
+     (src/net/env.ts). `parseScreen` reads the same value through `lanEnabled()`,
+     which is not a component and cannot hold a hook. */
+  const lanOn = useLanEnabled();
   // the URL is game-prefixed, so a deep load/refresh onto /chain/... must select
   // that game up front (switchGame swaps in its saved loadout) — do it in the
   // initializer so the very first render is already on the right game.
@@ -1520,7 +1526,7 @@ export function App() {
           flag is off, so nothing should reach this — but `navigate('lan')` is still a
           callable function, and a screen that renders a whole feature is worth guarding at
           the point of render too. */}
-      {LAN_ENABLED && screen === 'lan' && (
+      {lanOn && screen === 'lan' && (
         <LanPanel
           signedIn={signedIn}
           onConnected={(code) =>

@@ -1,5 +1,11 @@
 # HANDOFF — 2026-09-12c (matchmaker: a live region bug, then skill-based pairing)
 
+> **2026-09-12d — alpha IS deployed, and LAN no longer needs a Vercel edit.** The alpha Fly app
+> now runs the rendezvous (verified by protocol, not by `/health`, which answers the literal
+> string `ok` and cannot tell you which build is running). The client gate moved from the
+> build-time `VITE_LAN_ENABLED` to the server's `lan` capability, because the two halves were
+> held by different people and had silently drifted apart. Cost: +6.1 KB brotli, measured.
+
 Branch **alpha**, 7 commits, all pushed. `npm test` **ALL PASS**, `npm run dbtest` **ALL PASS**,
 `npm run server:check` clean, `npm run test:mm` **184 checks** (was 58 at the last handoff).
 
@@ -164,8 +170,14 @@ sat waiting for each other.
 
 ### Still to do, in order
 
-1. **Deploy** — `./scripts/fly-deploy.sh --alpha` (flyctl is not installed on this machine), then
-   `/health`, then confirm `VITE_LAN_ENABLED` on the alpha Vercel project.
+1. ~~**Deploy**~~ **DONE 2026-09-12.** `dsim-alpha` is deployed and the rendezvous answers:
+   `node scripts/lanping.mjs wss://dsim-alpha.fly.dev` → `lanError auth`, i.e. switched on and
+   asking hosts to sign in. Production still correctly answers `lanError closed`.
+   **No Vercel step any more** — the client lights its own LAN entry points when the server
+   advertises `lan` on `/api/presence`, so `LAN_SIGNALLING`/`LAN_UPLOADS` on the Fly app is the
+   whole switch (see "Which flag turns the LAN screen on" in `docs/lan-webrtc.md`). From
+   Windows, `scripts/deploy-alpha.ps1` wraps the deploy: it installs flyctl, handles
+   `fly auth login`, and probes the rendezvous afterwards.
 2. **The first two-machine signed-in test THROUGH THE CLOUD.** Everything above ran with the
    rendezvous local and nobody signed in, so the auth handshake and the upload are the two legs
    still unproven. A match hosted this way stays in the device backlog and drains later.
