@@ -643,3 +643,28 @@ browser pane, send ONE file per deliverable. Keep it simple: one file, few tabs.
 (a) robot-scale reference on the plan view, (b) side-by-side "shot from open side vs closed
 side" animation, (c) flower stack fill/retrieve animation. Reply terse.
 ```
+
+## A4 — field wiring (Lane A, after the 2026-09-12 merges)
+
+You are Lane A (field) for BIOBUZZ in worktree `dsim-bb-field`, branch `biobuzz-field`.
+
+BRANCH SWITCH: the shared base is `alpha`. `biobuzz` was merged into `alpha` and deleted on origin. Start with:
+
+    git fetch && git merge --no-edit origin/alpha
+
+`alpha` (3dcf90f) already holds A1 field art + rulings, A2 statics/staging/scoreTargets/`mouth`, A3 hive/flower + rulings, all merged and green (tsc clean, field lane 189/189). Read `docs/biobuzz-contract.md`, `docs/biobuzz/HANDOFF-field.md`, `docs/biobuzz/field-plan.md` (§2.1 open face / 4 s swing / release at level, §2.5 no letters or digits, §7 shooting side) and `docs/biobuzz-reference.md` before editing.
+
+Goal: make the field LIVE. State, tick, scoring, release. Field files only: `src/games/biobuzz/{state,play,step,hud,elements,scenesField}.ts` and `scripts/smoke-biobuzz/field.ts`. Do not touch `robot.ts` or any Lane B file. Everything on `world.biobuzz` stays plain JSON; sim code has no DOM, clock, `Math.random` or `Date`.
+
+1. `state.ts`: `BbHiveState` gains `released: boolean` (A3 asked for it). `emptyBiobuzzState()` seeds per-alliance `hives` (`upCell`, `contents`, tip timer, `released`), per-flower `flowers` (`stock`, `nectarDue`), `nectarStock`, `nectarDue`.
+2. `play.ts`: capture through `ScoreTarget.mouth` + `hiveAccepts(hive, alliance, pos, z, vel)`, so a shot enters only while travelling toward the pivot; `hiveStep` runs the 4 s swing (`BB_TIP_SWING_S`), releases at `BB_TIP_RELEASE_S`, spawns `spillPoses` as ground balls with their velocity, then sets `released`; scoring for hive contents, garden, LEAVE and PARK; human-player restock; flower nectar drip. No ground-ball physics here, the shared solver owns it.
+3. `step.ts`: the 1:00 nectar cue. Phase machine otherwise untouched.
+4. Penalties: G410 through `bbAwardFoul`, edge-triggered, no cooldown timers.
+5. `hud.ts`: the `gameHud` slice with hive counts and tip state.
+6. `elements.ts`: delete the `upCell` cast now that state carries it.
+7. `scripts/smoke-biobuzz/field.ts`: a live-match scene (the hive tips at t, release spawns exactly the contents as ground balls), element conservation on every tick (ground + flight + held + in cells + staged = the field total), a shot from the closed side rejected and one toward the pivot accepted, `released` surviving a JSON round-trip, tip table `[8,7,6,3,1,0]` lookups.
+8. Scenes in `scenesField.ts`: `hive-tip` (t = 0, 2, 4 s), `park-examples`, `nectar-entry`.
+
+Gates: `npx tsc --noEmit -p .`, `npm run test:bb -- --lane field`, then `npm run test:bb`. Gallery shots need `VITE_APP_CHANNEL=alpha npx vite --port 4176 --strictPort` and `MSYS_NO_PATHCONV=1 npx electron scripts/shots.cjs --scene <ids> --port 4176 --path /biobuzz/gallery --theme light --out scratch/shots/gate`. Read the shots. No letters or digits drawn on the field outside the labelled scene.
+
+Land: `git fetch && git merge --no-edit origin/alpha` again, push `biobuzz-field`, prepend a dated section to `docs/biobuzz/HANDOFF-field.md`, and report the commit hash plus the check count. No Claude attribution in commits.
