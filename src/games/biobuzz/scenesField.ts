@@ -9,6 +9,7 @@ import {
   BB_NECTAR_R,
   BB_POLLEN_R,
 } from './config';
+import { BB_FRAME_BAR_IN } from './config';
 import {
   bbCmd,
   bbPile,
@@ -339,5 +340,86 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
     build: (seed) => bbWorld(seed, []),
     script: () => ({}),
     stills: [0, 30, 120, 300],
+  },
+
+  // ── THE V1 FIELD ──────────────────────────────────────────────────────────
+
+  {
+    id: 'staging',
+    title: 'The staged field: 40 POLLEN and 16 NECTAR in their Fig 10-2 places',
+    lane: 'field',
+    /**
+     * THE CELL THE WHOLE FIELD LANE IS CHECKED AGAINST — the real spawn, four robots, nothing
+     * swapped out. `bbWorld` is given no POLLEN argument, so `stageBiobuzz` runs untouched and
+     * this is literally what a match begins as.
+     *
+     * What to look at, in the order the manual describes it (§10.3.1, Fig 10-2):
+     *  • the two GARDEN rows, four POLLEN each, against the audience wall from the red corner
+     *    and against the rear wall from the blue corner — DIAGONALLY opposite, not reflected.
+     *  • the four robots, each backed against its own alliance's side wall and clear of its
+     *    own LOADING ZONE, red's pair the 180 degree rotation of blue's.
+     *  • what is NOT drawn: the 16 POLLEN in the FLOWER stacks, the 6 NECTAR in the up-CELLs
+     *    and the 10 in the human players' hands are all in `world.balls` and all in states the
+     *    ball renderer skips, so an element drawn loose ON a flower or a hive is a bug in
+     *    `draw.ts`, and 40 loose yellow circles here would mean the stacks never formed.
+     */
+    build: (seed) =>
+      bbWorld(seed, [
+        bbSetup(0, 'blue', 0),
+        bbSetup(1, 'blue', 1),
+        bbSetup(2, 'red', 0),
+        bbSetup(3, 'red', 1),
+      ]),
+    script: () => ({}),
+    stills: [0],
+  },
+
+  {
+    id: 'under-hive',
+    title: 'A robot parked between the HIVE frame bars, where G409 says it may drive',
+    lane: 'field',
+    /**
+     * THE SPACE UNDER THE HIVES IS DRIVABLE AND MUST STAY THAT WAY.
+     *
+     * The frame's base bars are the only part of the HIVE Structure on the tiles; everything
+     * else is 25.5 in up (Fig 9-10) and G409 assumes robots pass underneath. So a robot at the
+     * origin is BETWEEN the two bars, touching neither, and must sit there perfectly still
+     * under a null command.
+     *
+     * The failure this catches is a frame collider drawn too wide or placed at the wrong x:
+     * the robot would begin the scene intersecting a bar and be shoved sideways, and the still
+     * at tick 120 would not match the one at tick 0. It is the `settle-60` argument applied to
+     * the new geometry — a null test is the only kind that can prove an absence.
+     */
+    build: (seed) => bbWorld(seed, [bbSetup(0, 'blue', { x: 0, y: 0, headingDeg: 180 })], []),
+    script: () => ({}),
+    stills: [0, 120],
+  },
+
+  {
+    id: 'frame-push',
+    title: 'Driving a robot into a HIVE frame base bar for one second',
+    lane: 'field',
+    /**
+     * THE BAR IS SOLID, and this is the cell that says so.
+     *
+     * The robot starts a little inside the +x bar and drives straight at it for 60 ticks. The
+     * bar is 1.5 in of extrusion — thin enough that a fast body could tunnel through it in one
+     * 1/60 s step if the solve ever stopped sweeping — so what the last still has to show is a
+     * robot STOPPED against the bar, on the near side of it, and not a robot standing in the
+     * middle of the HIVE Structure.
+     *
+     * Deliberately the modest 35 in/s of the other contact scenes rather than a full-throttle
+     * run: at this speed a correct solve stops the robot dead, so any penetration in the
+     * picture is geometry or sweeping, not a legitimately hard hit.
+     */
+    build: (seed) =>
+      bbWorld(
+        seed,
+        [bbSetup(0, 'blue', { x: BB_FRAME_BAR_IN - 18, y: 0, headingDeg: 0 })],
+        [],
+      ),
+    script: () => ({ 0: bbCmd({ driveY: bbThrottle(BB_DEFAULT_SPEC, 35) }) }),
+    stills: [0, 30, 60],
   },
 ];

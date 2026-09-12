@@ -1,7 +1,18 @@
 import type { Alliance, Artifact, RobotSpec, RobotState, StartPose, Vec2, World } from '../../types';
 import { rot } from '../../math';
-import { BB_LAUNCH_Z0, BB_POLLEN_R, bbHopperCap } from './config';
-import { rectContains, type LocalRect, type ScoreTarget, type Vec3 } from './state';
+import {
+  BB_FLOWER_OPEN_R,
+  BB_FLOWER_TOP_Z,
+  BB_FLOWERS,
+  BB_HIVE_CELL_DY,
+  BB_HIVE_OPEN_Z,
+  BB_HIVE_UP_STAGED,
+  BB_HIVE_X,
+  BB_LAUNCH_Z0,
+  BB_POLLEN_R,
+  bbHopperCap,
+} from './config';
+import { rectContains, type BbCellSide, type LocalRect, type ScoreTarget, type Vec3 } from './state';
 
 /**
  * BIOBUZZ ELEMENTS — the contract surface Lane A exports to Lane B
@@ -76,9 +87,10 @@ export function capturePollen(world: World, r: RobotState, ball: Artifact): bool
   ball.vel = { x: 0, y: 0 };
   ball.z = 0;
   ball.vz = 0;
-  // colour is cosmetic in BIOBUZZ — POLLEN are one kind — but the field is required by the
-  // shared `Artifact` type and read by the shared hopper HUD, so it is written consistently.
-  r.hopper.push('green');
+  // POLLEN are YELLOW (§9.8). `r.hopper` is the colour array the shared hopper HUD renders,
+  // so it has to carry the element's real colour rather than a placeholder — a hopper full of
+  // DECODE green under a BIOBUZZ robot is the kind of wrong that only shows up in a screenshot.
+  r.hopper.push(ball.color);
   r.lastIntakeAt = world.time;
   return true;
 }
@@ -139,19 +151,70 @@ export function releasePollen(
 // STUBS — the manual has not published the rules these answer
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** the mid-height of the up-CELL opening (in) — Fig 9-10 gives the opening as a band from
+ * 53.5 to 65.6, and an arc solves for one number. */
+const CELL_AIM_Z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
+
 /**
- * Every place `a` can score POLLEN. EMPTY, and correctly so.
+ * ACCEPTING RADIUS of a CELL opening (in).
  *
- * Section 9 (ARENA) and Section 10 (Game Details) both land at Kickoff, so there is no goal,
- * hive, basket or zone to name, no position to put one at and no radius to accept into.
- * Returning `[]` propagates cleanly: `bbAimHeading` is never called, the aim assist has
- * nothing to steer toward, and the HUD's scored count stays 0 — which is the truthful state
- * of a game with `scored: false`.
+ * APPROX: the opening is a 20 x 12 rect (`BB_CELL_OPEN`, Fig 9-11), and `ScoreTarget` carries
+ * one radius. 8 is the inscribed-ish compromise — under the 10 half-width so a shot at the
+ * radius limit is still over the opening, over the 6 half-depth so the target is not
+ * artificially harder than the real mouth. Replace with the rect when `ScoreTarget` grows one.
+ */
+const CELL_ACCEPT_R = 8;
+
+/** the CELL of `a`'s HIVE that currently faces UP — `world.biobuzz.hives[a].up`, the state the
+ * tip machine will drive, so aim follows a real TIP the day tipping lands with no edit here.
+ *
+ * `world.biobuzz` is optional on `World` (it is absent in a DECODE or Chain Reaction world),
+ * and the STAGED pose is the fallback for that one case rather than a `!`: a missing bag means
+ * the caller is not in a BIOBUZZ match at all, and the field's own t = 0 tilt (§10.3.1
+ * Fig 10-2) is the only honest answer to "which cell is up" when there is no match to ask. */
+function upCell(world: World, a: Alliance): BbCellSide {
+  return world.biobuzz?.hives[a].up ?? BB_HIVE_UP_STAGED[a];
+}
+
+/**
+ * Every place `a` can aim POLLEN, nearest-in-value first: its OWN up-CELL, the opponent's
+ * up-CELL, then the four FLOWER tops.
+ *
+ * The opponent's CELL is in the list because it is a LEGAL shot that simply scores nothing —
+ * `alliance` is set on both cells so a launcher can tell them apart and skip the one that
+ * wastes a POLLEN, rather than the field pretending the opening is not there. The FLOWERS are
+ * `alliance: null`: a FLOWER is owned at run time by whoever holds the top-most NECTAR in it
+ * (§10.5.2), so it belongs to nobody at aim time.
+ *
+ * STATIC GEOMETRY ONLY. Positions come from the constants and from which CELL is up; nothing
+ * here runs the tip, counts contents or decides whether a shot went in. A CELL centre sits
+ * `BB_HIVE_CELL_DY` from its pivot along y (15.4 along the assembly, foreshortened by the 30°
+ * tilt — Fig 9-9/9-10), and the pivots are at x = -/+`BB_HIVE_X` for red/blue (Fig 9-10,
+ * centre to centre 25.5).
  */
 export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
-  void world;
-  void a;
-  return [];
+  const opp: Alliance = a === 'red' ? 'blue' : 'red';
+  const cell = (owner: Alliance): ScoreTarget => ({
+    id: `hive:${owner}`,
+    alliance: owner,
+    pos: {
+      x: owner === 'red' ? -BB_HIVE_X : BB_HIVE_X,
+      y: upCell(world, owner) === 'south' ? -BB_HIVE_CELL_DY : BB_HIVE_CELL_DY,
+    },
+    z: CELL_AIM_Z,
+    r: CELL_ACCEPT_R,
+  });
+  return [
+    cell(a),
+    cell(opp),
+    ...BB_FLOWERS.map((f, i) => ({
+      id: `flower:${i}`,
+      alliance: null,
+      pos: { x: f.x, y: f.y },
+      z: BB_FLOWER_TOP_Z,
+      r: BB_FLOWER_OPEN_R,
+    })),
+  ];
 }
 
 /**
