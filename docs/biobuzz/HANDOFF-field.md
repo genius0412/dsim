@@ -1,5 +1,55 @@
 # HANDOFF — Lane A (field)
 
+## 2026-09-12 · no letters on the field · `PENDING`
+
+- **Cells to look at**: `field-labelled@0` and the new **`hive-ground@0`**. Both at 1600px via
+  `scratch/hires.cjs --scene <id>` (gitignored throwaway); `--labels 0` renders a labelled
+  scene with the caption flag off, which is what a driver sees.
+- **Files**: `drawField.ts` (the cell render), `scenesField.ts` (`field-labelled` + the new
+  `hive-ground`), `scenes.ts` (one-line colour fix, below).
+- **What changed** (field-plan §2.1 render / §2.5):
+  1. **No letters or digits anywhere for elements.** The per-type tally (`3n 2p`) is gone. An
+     up-CELL's contents are **one row of element-scale discs hugging the cell's OUTER (open)
+     edge**, inside the box, oldest at the −x end, colour = type. When the row runs longer than
+     the 20-in width the PITCH closes up and the discs overlap while the RADII stay true —
+     shrinking them instead would make a NECTAR and a POLLEN the same size, which is the one
+     distinction the row carries.
+  2. **UP is a filled box, DOWN is a dashed outline with no fill.** The down cell hangs 25.5 in
+     up and robots drive under it, so it is not a surface; the outline also lets the floor show
+     through it.
+  3. **The open face is marked by WEIGHT** — outer short edge thin, pivot-side edge heavy. That
+     is a scoring rule in the picture: `hiveAccepts` only takes a shot arriving TOWARD the
+     pivot, so an open face drawn at the wrong end is the rule drawn wrong. Neither mark fades
+     with the swing: the box is open at the same end whichever way it points.
+  4. **`tipping` is a cross-fade**, fill ↔ outline, over the swing. The denominator is
+     **imported from `hive.ts`**, not copied — a renderer with its own copy of the swing length
+     is a fade that ends at a different instant from the flip it is animating.
+  5. `draw.ts` skipping `element`-state balls was **already landed** by biobuzz-field-staging
+     (`isLoose`), so the double-draw in the last handoff is closed. Nothing needed here.
+- **The up-cell fill is a 45% wash, not solid** (`CELL_FILL_A`). At full saturation a RED
+  NECTAR in the RED cell was red on red and read as an empty ring — and the NECTAR count is
+  what the tip table is indexed by, so it is the one thing in there that must not disappear.
+  The heavy pivot-edge mark needed the same room.
+- ⚠️ **Fixed in `scenes.ts`: `bbPollen` emitted `'green'`.** POLLEN is `'yellow'` (§9.8,
+  `POLLEN_COLOR` in `spawn.ts`) and `draw.ts` batches only yellow/red/blue, so **every scene
+  built from `bbPollen` was drawing no balls at all** — the whole POLLEN PHYSICS SET
+  (`pile-*`, `corner-pile`, `wall-row-sweep`, `pin-wall`, `squeeze-2robots`, `settle-60`)
+  rendered an empty field. A ball that is never drawn looks exactly like a scene that placed
+  none, which is why it survived a green suite.
+- ⚠️ **For biobuzz-field-staging — `bbWorld` leaves DANGLING element ids.**
+  `createBiobuzzWorld` runs `stageBiobuzz`, which writes ids into every FLOWER stack and both
+  up-CELLS; `bbWorld(seed, setups, pollen)` then REPLACES `world.balls` and leaves those ids
+  pointing at elements that no longer exist. The readouts are a join, so it is normally
+  invisible — but `bbPollen` numbers from 1 and so does the staging, so `hive-ground`'s three
+  floor pollen ALIASED F1's staged stack and rendered outside the perimeter beside a flower.
+  Worked around in the scene (it clears the references); the helper is yours.
+- ⚠️ **For biobuzz-field-staging — `BB_TIP_SWING_S` is 0.8 in `hive.ts`, but the ruling is 4 s**
+  (field-plan §2.1, owner 2026-09-12). `drawField.ts` imports your constant rather than
+  carrying its own, so the cross-fade is correct whatever the value is — but the swing itself
+  is five times too fast, and the contents spill at the halfway point of it.
+- **Still APPROX**: the hive pair being centred on the field, the LOADING ZONE tape edge
+  (±0.5 in, cosmetic), and `BB_TIP_POLLEN[0]` (an empty cell was never measured).
+
 > **BRANCH CHANGE (2026-09-12):** the shared base is **`alpha`**. `biobuzz` was merged into
 > `alpha` and deleted on origin. Wherever this file says branch `biobuzz`, read `alpha`: merge
 > `alpha` before you commit, land into `alpha`, `alpha` deploys.
