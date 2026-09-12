@@ -182,6 +182,39 @@ So:
 
 ---
 
+## Turning it off
+
+**The off switch is the repository itself.** Delete `featurescript/dsim-coord`, or remove
+somebody from it, and their tooling stands itself down — nobody has to uninstall anything and
+no session has to be told.
+
+What happens on their machine, without anyone doing anything:
+
+1. The next publish finds the board unresolvable and says so, but **does not act on one
+   observation** — a single 404 is not proof, and a blip must not tear down three people's
+   setup.
+2. The run after that retires it: `.coord.json` is renamed to `.coord.retired.json`, the
+   `coord` remote is removed, and the stamps are cleared.
+3. From then on every entry point is a silent no-op that makes no network calls, because all
+   of them key on `.coord.json` existing. `npm run coord` explains what happened and exits 0
+   — a retired board is not a misconfiguration and must not read as one.
+
+`CLAUDE.md`'s **Parallel sessions** section is scoped the same way: it applies only while
+`.coord.json` exists, and it says outright that a retired board means ignore it and
+contribute normally.
+
+**Deleted is told apart from "cannot tell", and that distinction is the whole mechanism.**
+`gh` failing on this machine — not installed, not signed in, no network — means *I cannot
+see*, which refuses and changes nothing. `gh` working fine while the BOARD specifically
+cannot be resolved means *the board is gone*, which retires. `assertPrivate` asks `gh` a
+question that does not involve the board (`gh api user`) before deciding which it is, so an
+offline laptop never disarms itself and a deleted repository always does.
+
+To restart later: rename `.coord.retired.json` back to `.coord.json`. That is deliberately a
+human action — a session that found it retired must not "fix" it.
+
+---
+
 ## Files
 
 | path | what it is |
@@ -193,6 +226,9 @@ So:
 | `scripts/coord/board.mjs` | `npm run coord` — render it |
 | `scripts/coord/claim.mjs` | `npm run coord:claim` — declare paths |
 | `.coord.json` | per-machine config. **Gitignored.** |
+| `.coord.retired.json` | what `.coord.json` becomes when the board is retired. Gitignored. |
 
 The `Stop` hook is wired in `.claude/settings.local.json`, guarded as
-`[ ! -f … ] || node …`, so a checkout without these scripts is unaffected.
+`[ ! -f … ] || node …`, so a checkout without these scripts is unaffected. The behaviour every
+session follows is the **Parallel sessions** section of `CLAUDE.md`; `docs/biobuzz/coordination-prompt.md`
+is the one-time onboarding note for a teammate.

@@ -23,8 +23,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import {
-  assertPrivate, ensureRemote, explainUnconfigured, fetchBoard, gitDir, loadConfig, localState,
-  readClaims, writeFileToBranch,
+  RETIRE_STRIKES, RETIRED_PATH, assertPrivate, ensureRemote, explainUnconfigured, fetchBoard,
+  gitDir, loadConfig, localState, readClaims, retire, retireStrikes, writeFileToBranch,
 } from './lib.mjs';
 
 const verbose = process.argv.includes('--verbose');
@@ -38,6 +38,27 @@ if (!cfg) {
 }
 
 const priv = assertPrivate(cfg.remote);
+
+// THE KILL SWITCH. Deleting the board repository, or removing somebody from it, is how the
+// owner turns this off for everyone without having to reach three machines — so a board that
+// has gone away must make the tooling disarm ITSELF rather than refuse forever. Two
+// consecutive runs, because one 404 is not proof and a blip must not tear down three people's
+// setup; `assertPrivate` has already established that `gh` works on this machine, so this is
+// not a network wobble. Afterwards `.coord.json` no longer exists, every entry point is a
+// silent no-op, and nothing here makes another network call.
+if (priv.reason === 'retired') {
+  const n = retireStrikes(true);
+  if (n < RETIRE_STRIKES) {
+    fail(`[coord] ${priv.why} — confirming on the next run before standing down.`);
+    process.exit(verbose ? 2 : 0);
+  }
+  const { stamp } = retire(priv.why);
+  log(`[coord] THE BOARD IS RETIRED — ${priv.why}`);
+  log(`[coord] Stood down at ${stamp}. Config kept at ${RETIRED_PATH}; nothing publishes now.`);
+  process.exit(0);
+}
+retireStrikes(false); // any other answer means the board is reachable; forget earlier strikes.
+
 if (!priv.ok) {
   // Refuse on every path, but leave a breadcrumb where a person will find it — a hook that
   // silently does nothing forever is indistinguishable from a hook that is working.
