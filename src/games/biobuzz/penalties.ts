@@ -39,10 +39,9 @@ import { bbKindOf } from './score';
  * across the field's halves), **G417** (ramming the HIVE frame) and **G421** (PINNING).
  *
  * G421 IS THE ONE RULE HERE THAT IS NOT EDGE-TRIGGERED, and it is not an exception to the
- * paragraph above — it is a rule the manual itself counts in SECONDS rather than in
- * instances. "PIN ≤ 3 s ... MAJOR + MAJOR per further 3 s" (reference §5, Table 10-4) is a
- * tariff on elapsed time, so it owns a per-ordered-pair second-accumulator instead of a key
- * in `foulEdge`. See `bbUpdatePins`.
+ * paragraph above — it is the ONLY rule in Section 11 that carries a per-3-seconds clause
+ * (manual-distilled §3.2), so it counts in SECONDS rather than in instances and owns a
+ * per-ordered-pair accumulator instead of a key in `foulEdge`. See `bbUpdatePins`.
  *
  * NOT HERE, each for a stated reason rather than an oversight:
  *  • **G407** CONTROL ≤ 4 is STRUCTURAL — `bbHopperCap` is 4, so a robot cannot hold a fifth.
@@ -177,17 +176,39 @@ export function updateBiobuzzPenalties(
     }
   }
 
-  // ── G417 — meddling with the HIVE: ramming a frame bar. ───────────────────
+  // ── G417 — meddling with the HIVE: ramming a frame bar. STRATEGIC. ────────
   /**
-   * "Don't ram the frame." A robot in contact with one of the two frame base bars while
-   * CLOSING on it faster than `BB_FRAME_RAM_SPEED` (§5, `APPROX`).
+   * "ROBOTS may not manipulate the motion of the HIVE in any way other than by LAUNCHING
+   * SCORING ELEMENTS into an upward-facing CELL." Violation: **VERBAL WARNING. MAJOR FOUL and
+   * YELLOW CARD per MATCH, if STRATEGIC** (manual-distilled §11.4.4, Table 10-4, pp111–112).
    *
-   * VERBAL FIRST, MAJOR IF REPEATED (Table 10-4's example B, field-plan §4.4). The first
-   * instance is an EVENT LINE and no points — which is what a verbal warning is — and every
-   * later instance by the same robot is a MAJOR. "Repeated" is per ROBOT per MATCH, so the
-   * warning latch rides `bb.held[robot]`, the state bag's per-robot flag map, and survives the
-   * edge trigger clearing between contacts (that map is what makes a new rule's flag a key
-   * rather than a state-type edit — see `state.ts`).
+   * ── THE ESCALATION IS "STRATEGIC", NOT "REPEATED", AND THAT IS A REAL FIX ──
+   * This rule used to read VERBAL-first / MAJOR-on-a-repeat, from `field-plan.md` §4.4. The
+   * distilled manual settles it (§11 item 4): **REPEATED is not the trigger.** It is example F
+   * of six listed indicators that an action is LIKELY STRATEGIC, and reading it as the
+   * condition drops **example A — "ramming into the HIVE frame at high-speed" — which is
+   * STRATEGIC on a single hit.** A robot that runs the frame down once, hard, was getting a
+   * free warning for the one interaction the rule names first.
+   *
+   * So `BB_FRAME_RAM_SPEED` IS THIS SIM'S STRATEGIC TEST, and that is the honest mapping: the
+   * manual's likely-NOT-STRATEGIC list is headed by "accidentally bumping the frame while
+   * attempting to pick up POLLEN", which is exactly a low-speed contact. Below the threshold
+   * the sim says nothing at all — a brush that could not cause or impede a TIP is not a
+   * violation of the blanket sentence in the first place. At or above it, the contact is the
+   * high-speed ram of example A and the STRATEGIC line applies on the FIRST instance.
+   *
+   * ── "PER MATCH", WHICH IS WHY THE LATCH SURVIVED THE REWRITE ──────────────
+   * Table 10-4 says "MAJOR FOUL and YELLOW CARD **per MATCH**", and it says it in deliberate
+   * contrast with G416 two rows above ("MAJOR FOUL **per instance**, if STRATEGIC"). So a robot
+   * pays ONCE however many times it rams, and the latch that used to hold "already warned" now
+   * holds "already billed". It rides `bb.held[robot]`, the state bag's per-robot flag map, so
+   * it survives the edge trigger clearing between contacts — that map is what makes a new
+   * rule's flag a key rather than a state-type edit (see `state.ts`).
+   *
+   * ⚠️ THE YELLOW CARD IS NOT MODELLED. BIOBUZZ has no card machinery at all — `bbAwardFoul`
+   * awards points and nothing else, and a card carries DQ consequences through scoring and the
+   * results screen that no BIOBUZZ lane has built. The FOUL is the half that changes a score,
+   * so the foul is the half that is here; the card is named in the handoff as an open item.
    *
    * The speed test is CLOSING speed against the bar's own normal, not the robot's speed: a
    * robot driving fast ALONG the structure is not ramming it, and a slow deliberate shove
@@ -201,11 +222,9 @@ export function updateBiobuzzPenalties(
     const key = `g417-${r.id}`;
     if (!bb.foulEdge[key]) {
       const flags = (bb.held[r.id] ??= {});
-      if (flags.g417warned) {
-        bbAwardFoul(world, r.alliance, 'major', 'G417 repeatedly ramming the HIVE frame');
-      } else {
-        flags.g417warned = true;
-        world.events.push(`VERBAL - ${r.alliance.toUpperCase()} (G417 ramming the HIVE frame)`);
+      if (!flags.g417billed) {
+        flags.g417billed = true;
+        bbAwardFoul(world, r.alliance, 'major', 'G417 STRATEGIC ramming of the HIVE frame');
       }
     }
     seen[key] = true;
@@ -247,8 +266,9 @@ export function updateBiobuzzPenalties(
 }
 
 /**
- * G421 — "PIN ≤ 3 s (2-ft / 3-s release, pause/resume). Violation: MAJOR FOUL, and an
- * additional MAJOR FOUL for every further 3 seconds" (reference §5, Table 10-4).
+ * G421 — "A ROBOT may not PIN an opponent's ROBOT for more than 3 seconds." Violation: **MAJOR
+ * FOUL per instance and an additional MAJOR FOUL for every 3 seconds in which the situation is
+ * not corrected** (manual-distilled §3.1 Table 10-4, §3.3 / 11.4.5 p114, verbatim).
  *
  * ── THE DETECTOR IS DECODE'S, ON PURPOSE ────────────────────────────────────
  * `isPinning` is `src/sim/penalties.ts`'s, now exported (field-plan §6 request 5). The rule
@@ -258,21 +278,44 @@ export function updateBiobuzzPenalties(
  * would drift, and then two games would disagree about what a pin is while quoting one
  * definition.
  *
- * Criteria A/B/C, and every one of them is the rule's own:
- *   A. the pair gets `PIN_ESCAPE_DIST` (24 in = the 2 ft) apart for more than `PIN_END_S`;
- *   B. EITHER robot gets that far from where the pin initiated, for more than `PIN_END_S`;
- *   C. the PINNING robot is itself being PINNED — a mutual hold is nobody's foul.
+ * Criteria A/B/C, quoted from p114 and every one of them the rule's own:
+ *   A. "the ROBOTS have separated by at least 2 ft. ... for more than 3 seconds" —
+ *      `PIN_ESCAPE_DIST` is 24 in and `PIN_END_S` is 3;
+ *   B. "either ROBOT has moved 2 ft. from where the PIN initiated for more than 3 seconds";
+ *   C. "the PINNING ROBOT gets PINNED" — a mutual hold is nobody's foul.
  * A and B END the pin. Anything else that merely interrupts it — the pinner easing off, the
- * victim squirming a foot — PAUSES the count and does not reset it. That is the rule's own
- * "pause/resume", and it is the whole difference between a pin you can shrug off and one you
- * cannot: without it a pinner wipes a 2.9-second count by backing away for a tenth of a
- * second, and starts again from zero, forever, for free.
+ * victim squirming a foot — PAUSES the count and does not reset it. The manual spends two
+ * whole paragraphs on that ("the PIN count pauses ... at which point the PIN count is
+ * resumed", once for A and once for B), and it is the whole difference between a pin you can
+ * shrug off and one you cannot: without it a pinner wipes a 2.9-second count by backing away
+ * for a tenth of a second, and starts again from zero, forever, for free.
+ *
+ * ── ⚠️ THERE IS NO "ATTEMPTING TO MOVE" CLAUSE, AND THAT IS THE POINT ────────
+ * DECODE's G422 reads "...and the opponent ROBOT is attempting to move". **G421 DOES NOT
+ * CONTAIN THAT CLAUSE** (manual-distilled §3.3 and §10 item 13): the test is "preventing the
+ * movement of an opponent ROBOT by contact" and nothing more, and the glossary's PIN/PINNING
+ * entry on p171 is the same sentence.
+ *
+ * So a BIOBUZZ robot is PINNED whether or not it struggles, and `isPinning`'s idle-victim
+ * branch — the one its own comment flags as ⚠️ a deviation from DECODE, kept because a driver
+ * who is held stops mashing the stick — **is the LITERAL rule here.** Under DECODE it is a
+ * judgement call the sim makes on a referee's behalf; under BIOBUZZ it is what the manual
+ * says. Do NOT add a struggle test: it would under-call BIOBUZZ pins, and it would be reading
+ * DECODE's wording into a rule that dropped it.
  *
  * ── THE TARIFF IS THE ONLY THING THAT CHANGES ───────────────────────────────
  * DECODE bills a MINOR at 3 s and a MINOR every 3 s after. BIOBUZZ bills a **MAJOR**, and a
  * MAJOR every 3 s after (Table 10-4) — so nine seconds of pinning is 60 points, not 15. It
  * goes through `bbAwardFoul` for the same reason every other rule in this file does: the
  * shared `awardFoul` reads `C.PTS_FOUL_MAJOR`, which is DECODE's 15.
+ *
+ * Table 10-6 (p95) prints the arithmetic and the loop below reproduces it exactly: "Upon
+ * violation, a MAJOR FOUL is assessed ... and for each 3 seconds within that time, an
+ * additional MAJOR FOUL ... A ROBOT in violation of this type of rule for 15 seconds is
+ * assessed a total of 6 MAJOR FOULS." The violation OPENS at 3 s of pinning, so 15 s of being
+ * in violation is 18 s of pinning, and `floor(18 / 3)` is 6 — one on entry plus one for each
+ * of the five further intervals, 120 points. There is **no CARD escalation inside G421**
+ * (§3.3), only the running tariff, so nothing here cards anybody.
  *
  * ── TWO HONEST DEVIATIONS, BOTH WORTH READING ───────────────────────────────
  * 1. **CONTACT IS THIS FILE'S OBB TEST, NOT `world.rrContacts`.** DECODE feeds `isPinning` the
@@ -400,9 +443,10 @@ function bbUpdatePins(world: World, dt: number, commands: Map<number, RobotComma
       if (escapeSpeed >= PIN_STUCK_SPEED) continue; // getting away under its own power
 
       st.seconds += dt;
-      // MAJOR at 3 s, and another every 3 s the situation is not corrected. A `while` rather
-      // than an `if` because a coarse `dt` can cross two thresholds in one tick, and a pin is
-      // not cheaper for having been stepped at 10 Hz.
+      // MAJOR at 3 s, and another every 3 s the situation is not corrected — Table 10-6's
+      // "6 MAJOR FOULS for 15 seconds in violation", which is 18 s of pinning and `floor(18/3)`.
+      // A `while` rather than an `if` because a coarse `dt` can cross two thresholds in one
+      // tick, and a pin is not cheaper for having been stepped at 10 Hz.
       while (st.seconds >= PIN_SECONDS * (st.billed + 1)) {
         st.billed += 1;
         bbAwardFoul(world, pinner.alliance, 'major', 'G421 PINNING');

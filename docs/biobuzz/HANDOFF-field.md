@@ -1,5 +1,82 @@
 # HANDOFF — Lane A (field)
 
+## 2026-09-12 · rules lane (A5b addendum) · the distilled manual corrects two rules · `biobuzz-rules`
+
+Gates: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane rules` **145/145** (was 141,
++4 net after the G417 checks were rewritten) · `npm run test:bb` **868/868**. Based on
+`origin/alpha` `f01f924`, merged for `docs/biobuzz/manual-distilled.md`.
+
+**`docs/biobuzz/manual-distilled.md` is now the rules source of record for this file, not
+`docs/biobuzz-reference.md`.** The reference's §5 row for G421 is a summary and its own §10
+item 13 records what that summary dropped. Every rule citation in `penalties.ts` now points at
+the distilled manual's section and page.
+
+### 1. G421 has NO "attempting to move" clause — and that changes nothing in the code
+
+The verbatim rule (p114, distilled §3.3) is "preventing the movement of an opponent ROBOT by
+contact, either direct or transitive" and stops there; the glossary's PIN/PINNING entry on p171
+is the same sentence. DECODE's G422 adds "...and the opponent ROBOT is attempting to move".
+**G421 does not.**
+
+`isPinning`'s idle-victim branch — the one its own comment marks ⚠️ as a DEVIATION from DECODE,
+kept on the grounds that a driver who is held stops mashing the stick — **is therefore the
+LITERAL rule under BIOBUZZ.** Under DECODE it is a judgement the sim makes on a referee's
+behalf; here it is what the manual says. No code changed; the doc comment and the smoke label
+now say so out loud, and both say **do not add a struggle test** — it would under-call every
+real BIOBUZZ pin.
+
+### 2. G417's escalation is STRATEGIC, not REPEATED — the code was wrong and is fixed
+
+`field-plan.md` §4.4 read "VERBAL first, MAJOR + YELLOW if REPEATED" and this file implemented
+it. Distilled §11 item 4: **REPEATED is not the trigger.** It is example F of six indicators
+that an action is likely STRATEGIC, and using it as the condition drops **example A — "ramming
+into the HIVE frame at high-speed" — which is STRATEGIC on a single hit.** A robot that ran the
+frame down once, hard, was getting a free warning for the one interaction the rule names first.
+
+What changed:
+
+- **`BB_FRAME_RAM_SPEED` is now explicitly this sim's STRATEGIC test.** Above it, the contact
+  is example A's high-speed ram and the MAJOR lands on the FIRST instance. Below it, nothing —
+  which is the manual's own likely-NOT-STRATEGIC list, headed by "accidentally bumping the
+  frame while attempting to pick up POLLEN". The threshold itself is unchanged and still
+  `APPROX`, still on the 09-14 field-test list.
+- **The tariff is PER MATCH, not per instance.** Table 10-4 says "MAJOR FOUL and YELLOW CARD
+  **per MATCH**, if STRATEGIC", in deliberate contrast with G416 two rows above ("MAJOR FOUL
+  **per instance**, if STRATEGIC"). So a robot pays once however many times it rams. The latch
+  that used to hold "already warned" now holds "already billed" — `bb.held[r.id].g417billed`,
+  same per-robot flag map, still no `state.ts` edit.
+- **There is no longer a VERBAL event line for G417.** The verbal was the first half of an
+  escalation that does not exist. A below-threshold brush is not a violation of the blanket
+  sentence at all ("any other interaction ... that causes or could cause or impede a TIP"), so
+  the sim says nothing rather than warning about it.
+- ⚠️ **The YELLOW CARD is NOT modelled.** BIOBUZZ has no card machinery: `bbAwardFoul` moves
+  points and nothing else, and a card carries DQ consequences through scoring and the results
+  screen that no Lane A file has built. The FOUL is the half that changes a score, so the foul
+  is the half that is here. **Open item for the master** — G414/G415/G417/G418/G419/G420 all
+  card, so this is a game-wide decision, not a G417 one.
+
+The master owns the `field-plan.md` §4.4 correction; this branch did not touch that file.
+
+### 3. Table 10-6 fixes the pin tariff arithmetic, and the loop already matched it
+
+"A ROBOT in violation of this type of rule for 15 seconds is assessed a total of 6 MAJOR FOULS"
+(p95, distilled §3.2). The violation OPENS at 3 s of pinning, so 15 s of being in violation is
+**18 s of pinning ⇒ 6 MAJOR ⇒ 120 points**: one on entry plus one for each of the five further
+intervals. `floor(18 / 3)` is 6, so `bbUpdatePins`'s existing `while` loop reproduces it
+exactly — but that was luck until it was checked, so it is now checked, longhand, against the
+manual's own integer. A loop that billed on entry AND at 3 s would read 7; one that waited for
+each interval to complete would read 5.
+
+Also confirmed and now asserted: **G421 has no CARD escalation** (§3.3), only the running
+tariff.
+
+### Unchanged from the A5b section below
+
+Items 1–8 of it all still stand, and item 1 is still the open one: `isPinning`'s private
+`pinnedAgainstWall` probe hard-codes DECODE's goal wedges and classifier channels as solids and
+cannot see the HIVE frame bars, so a pin in one of those corner regions goes unbilled. Still a
+shared-core request, still under-billing rather than inventing a foul.
+
 ## 2026-09-12 · rules lane (A5b) · G421 PINNING is LIVE · `biobuzz-rules`
 
 Gates: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane rules` **141/141** (was 115,

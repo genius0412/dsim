@@ -533,7 +533,18 @@ function penaltyChecks(check: Check): void {
     check('G402: crossing in TELEOP is legal', bill(t, 30).major.red === 0);
   }
 
-  // ── G417: ramming the HIVE frame — VERBAL first, MAJOR if REPEATED ────────
+  // ── G417: ramming the HIVE frame — STRATEGIC, so a MAJOR on the FIRST hit ─
+  /**
+   * The escalation condition is STRATEGIC, **not** REPEATED (manual-distilled §11 item 4).
+   * "Ramming into the HIVE frame at high-speed" is example A of what is likely STRATEGIC, and
+   * it is strategic on a SINGLE hit — so `BB_FRAME_RAM_SPEED` is this sim's strategic test and
+   * there is no free first warning above it. REPEATED is example F, one indicator among six,
+   * and reading it as the trigger is what dropped example A.
+   *
+   * "MAJOR FOUL and YELLOW CARD **per MATCH**" (Table 10-4), in deliberate contrast with
+   * G416's "per instance" two rows above — so the tariff is paid ONCE however many times the
+   * robot rams. The YELLOW CARD is not modelled; BIOBUZZ has no card machinery.
+   */
   {
     const w = bare([{ id: 0, alliance: 'blue' }]);
     w.match.phase = 'teleop';
@@ -543,18 +554,21 @@ function penaltyChecks(check: Check): void {
     place(w, 0, 24 - 8, 0);
     r.vel = { x: -(BB_FRAME_RAM_SPEED + 10), y: 0 };
     const first = bill(w, 20);
-    check('G417: the FIRST ram is a VERBAL — no points', first.major.blue === 0 && first.pts.red === 0);
-    check('G417: the verbal is on the event feed',
-      w.events.some((e) => e.includes('G417')),
+    check('G417: the FIRST high-speed ram is STRATEGIC — a MAJOR, not a free warning',
+      first.major.blue === 1, String(first.major.blue));
+    check(`G417: red is +${BB_PTS.foulMajor}`, first.pts.red === BB_PTS.foulMajor, String(first.pts.red));
+    check('G417: and it names itself STRATEGIC on the event feed',
+      w.events.some((e) => e.includes('G417') && e.includes('STRATEGIC')),
       w.events.filter((e) => e.includes('G417')).join(' | '));
 
-    // back off, then ram again
+    // back off, then ram again — the tariff is PER MATCH, so it is not paid twice
     r.vel = { x: 0, y: 0 };
     bill(w, 5);
     r.vel = { x: -(BB_FRAME_RAM_SPEED + 10), y: 0 };
     const second = bill(w, 20);
-    check('G417: a REPEAT is a MAJOR', second.major.blue === 1, String(second.major.blue));
-    check(`G417: red is +${BB_PTS.foulMajor}`, second.pts.red === BB_PTS.foulMajor, String(second.pts.red));
+    check('G417: a SECOND ram bills nothing more — the tariff is per MATCH',
+      second.major.blue === 1, String(second.major.blue));
+    check('G417: so red is still +20 and not +40', second.pts.red === BB_PTS.foulMajor, String(second.pts.red));
 
     // driving ALONG the structure at the same speed is not ramming
     const q = bare([{ id: 0, alliance: 'blue' }]);
@@ -563,9 +577,11 @@ function penaltyChecks(check: Check): void {
     place(q, 0, 24 - 8, 0);
     q.robots[0].vel = { x: 0, y: BB_FRAME_RAM_SPEED + 40 };
     check('G417: driving ALONG a frame bar is not ramming', bill(q, 20).major.blue === 0);
-    // and a gentle nudge is not either
+    // ...and a gentle nudge is the manual's own likely-NOT-STRATEGIC case ("accidentally
+    // bumping the frame while attempting to pick up POLLEN"), so it is not a foul either
     q.robots[0].vel = { x: -(BB_FRAME_RAM_SPEED - 10), y: 0 };
-    check('G417: contact below the ram threshold is not a foul', bill(q, 20).major.blue === 0);
+    check('G417: contact below the ram threshold is not STRATEGIC, and not a foul',
+      bill(q, 20).major.blue === 0);
   }
 
   // ── the edge memory is CLEARED outside the played periods ─────────────────
@@ -612,10 +628,16 @@ function pinChecks(check: Check): void {
    * x = 24 − 10.5 = 13.5. The pinner is 20.5 in away — overlapping by half an inch, the way
    * two robots in a shove actually are — and driving into it.
    *
-   * The victim gives NO COMMAND, and that is the case the rule turns on: "the opponent ROBOT
-   * is attempting to move" reads, to a referee, as one robot holding another, and a driver who
-   * is held stops mashing the stick. `isPinning` says so in full. A detector that required a
-   * struggling victim would bill nothing here, which is the failure this check exists for.
+   * ⚠️ THE VICTIM GIVES NO COMMAND, AND UNDER G421 THAT IS THE LITERAL RULE — not a lenient
+   * reading of it. DECODE's G422 ends "...and the opponent ROBOT is attempting to move";
+   * **G421 does not contain that clause** (manual-distilled §3.3, verbatim p114, and §10
+   * item 13). The test is "preventing the movement of an opponent ROBOT by contact" and
+   * nothing more, so a BIOBUZZ robot is PINNED whether or not it struggles.
+   *
+   * `isPinning`'s idle-victim branch — which its own comment marks ⚠️ as a DEVIATION, because
+   * under DECODE it is — is therefore exactly right here. A detector with a struggle test
+   * would bill nothing in this fixture and would under-call every real BIOBUZZ pin, which is
+   * the failure this check exists for. Do not add one.
    */
   const frame = (): World => {
     const w = bare([
@@ -636,17 +658,43 @@ function pinChecks(check: Check): void {
     check('G421: under three seconds of PINNING bills nothing', under.major.red === 0, String(under.major.red));
 
     const first = bill(w, ticks(0.4), press); // 3.3 s
-    check('G421: a robot holding an idle victim against the frame bills at 3 s',
+    check('G421: an IDLE victim held against the frame bills — G421 has no struggle test',
       first.major.red === 1, String(first.major.red));
     check("G421: it is a MAJOR, not DECODE's MINOR", first.minor.red === 0, String(first.minor.red));
     check(`G421: the points go to the VICTIM's alliance, +${BB_PTS.foulMajor}`,
       first.pts.blue === BB_PTS.foulMajor, String(first.pts.blue));
     check('G421: the victim is billed nothing', first.major.blue === 0 && first.pts.red === 0);
 
-    // "...and an additional MAJOR FOUL for every further 3 seconds" (reference §5)
+    // "...and an additional MAJOR FOUL for every 3 seconds in which the situation is not
+    // corrected" (manual-distilled §3.1, Table 10-4)
     const second = bill(w, ticks(3.0), press); // 6.3 s
     check('G421: another MAJOR for every further 3 s', second.major.red === 2, String(second.major.red));
     check('G421: two majors are 40 to blue', second.pts.blue === 2 * BB_PTS.foulMajor, String(second.pts.blue));
+  }
+
+  /**
+   * TABLE 10-6's OWN WORKED EXAMPLE, WHICH IS THE ONLY ARITHMETIC CHECK THAT PROVES THE LOOP.
+   *
+   * "Upon violation, a MAJOR FOUL is assessed against the violating ALLIANCE and the REFEREE
+   * begins to count ... for each 3 seconds within that time, an additional MAJOR FOUL is
+   * assessed. A ROBOT in violation of this type of rule for 15 seconds is assessed a total of
+   * 6 MAJOR FOULS" (p95, manual-distilled §3.2).
+   *
+   * The violation OPENS at 3 s of pinning — "may not PIN for more than 3 seconds" — so 15 s of
+   * being IN VIOLATION is 18 s of pinning: one MAJOR on entry plus one for each of the five
+   * further intervals. **6 MAJOR = 120 points**, which is a fifth of a plausible match score
+   * and worth an integer rather than a shrug. Written out longhand here because the numbers
+   * are the manual's, not the implementation's: a loop that billed on entry AND at 3 s would
+   * read 7 here, and one that waited for the interval to complete would read 5.
+   */
+  {
+    const w = frame();
+    const long = bill(w, ticks(18.1), press);
+    check('G421: 18 s of pinning = 15 s in violation = 6 MAJOR (Table 10-6)',
+      long.major.red === 6, String(long.major.red));
+    check('G421: ...which is 120 points to the victim', long.pts.blue === 120, String(long.pts.blue));
+    check('G421: and no CARD — G421 has no card escalation, only the running tariff',
+      Object.keys(w.penalties.carded).length === 0);
   }
 
   /**
