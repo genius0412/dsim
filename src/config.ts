@@ -1409,9 +1409,32 @@ export const CHASSIS_OUTLINE = 0.5; // in, its outline width — half what it wa
 
 export const ROBOT_TOP_SHED = 6; // in/s outward while it rides the top
 export const INTAKE_CAPTURE_BAND = 0.5;
-/** how fast a HELD ball slides between storage slots (in/s), in the robot frame —
- * so the triangle's front ball visibly slides aside to make room for a 3rd */
-export const HELD_SLIDE_SPEED = 45;
+/**
+ * How fast a HELD artifact travels to its storage slot (in/s), IN THE ROBOT FRAME.
+ *
+ * ⚠️ IT MUST EXCEED THE FASTEST LEGAL CHASSIS, AND THAT IS A PHYSICS REQUIREMENT, NOT A
+ * COSMETIC ONE. A held artifact is SOLID to ground artifacts (`robotSolids.held`), and it is
+ * still out in FRONT of the chassis face for as long as it takes to slide in. At 45 the slide
+ * lost that race: a robot driving at 85 in/s carried the artifact it had just swallowed
+ * FORWARD through the world at 85 − 45 = 40 in/s, straight into the next artifact in the line,
+ * which — still touching the one behind it — chained the impulse on. Reported as "the third
+ * ball is still being deflected too far... the first and second balls get intaked so quickly
+ * that they don't transfer any momentum to the next ball", which is what a real robot does.
+ *
+ * Measured on a touching file of three at full throttle, sloped: at 45 the first artifact went
+ * in clean and then balls two and three BOTH left at 73 in/s on the same tick, two ticks after
+ * the capture, and were shoved 32in downfield. At 120 nothing moves at all — peak speed 0.0 on
+ * every artifact — and the file goes in at ticks 39 / 43 / 47. The battering ram was the
+ * artifact the intake had just taken.
+ *
+ * Real hardware does not have this problem because the rollers are turning far faster at the
+ * surface than the chassis can drive: what is grabbed is INSIDE the robot immediately, and
+ * cannot reach back out to hit the next artifact in the line. 150 is above the fastest legal
+ * build (`driveParams().maxSpeed` peaks at 129.5 in/s — tank, 600 rpm, 20 lb) with margin, so
+ * a held artifact NEVER advances in the world frame on any chassis. Smoke asserts that
+ * relation over the whole legal envelope rather than trusting this number.
+ */
+export const HELD_SLIDE_SPEED = 150;
 /** Intake presets model the REAL mechanism, not a touch-and-wait hitbox.
  * TOP LEVEL (feeds robotExtents → the Rapier robot-robot/wall collider, length
  * clamps, drawing):

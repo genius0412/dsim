@@ -132,6 +132,7 @@ import {
   SIM_VERSION,
   INTAKE_PRESETS,
   INTAKE_LIP,
+  HELD_SLIDE_SPEED,
   INTAKE_CAPTURE_BAND,
   INTAKE_CATCH_LENIENCE,
   ROBOT_PRESETS,
@@ -7025,6 +7026,114 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       !lan.includes('a second Back underneath the first'),
     );
   }
+  // ---- LAN: THE HOST HALF IS ON THE PAGE, AND THE COMMANDS ARE REAL -------------
+  /**
+   * Two separate failures, both of which shipped, both silent:
+   *
+   * 1. THE WHOLE HOST HALF WAS HIDDEN BEHIND `bridge?.lan`, so a player on the web saw a
+   *    screen titled "LAN play" whose only control asked for somebody ELSE'S address. The
+   *    reasonable reading of that is "hosting is broken", and a page that cannot host has to
+   *    say so and say what to do instead — a browser tab cannot open a listening socket and
+   *    no amount of DSIM code changes that (`docs/lan-selfhost.md` shows the working).
+   * 2. EVERY COPY BUTTON ON THIS PAGE WAS A NO-OP on the page it matters most on. The
+   *    Clipboard API needs a SECURE CONTEXT; a guest is served from `http://192.168.x.x`,
+   *    which is neither https nor `localhost`, so `navigator.clipboard` is `undefined`
+   *    there — measured in a browser on a real LAN server, not inferred. With the optional
+   *    chain the whole call evaporated and nothing reported anything.
+   *
+   * Read as source, like the back-button checks above: this screen needs a DOM. The commands
+   * are pinned because a stale instruction is worse than none — somebody follows it.
+   */
+  {
+    const lan = readFileSync('src/ui/LanPanel.tsx', 'utf8');
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      scripts?: Record<string, string>;
+      bin?: Record<string, string>;
+    };
+    const launcher = readFileSync('scripts/lan.mjs', 'utf8');
+    const css = readFileSync('src/ui/styles.css', 'utf8');
+
+    // the label sits OUTSIDE the bridge guard now; inside it, the web build shows no host half
+    const hostLabel = lan.indexOf('Host · this computer');
+    const bridgeGuard = lan.indexOf('{bridge?.lan && (');
+    check(
+      'lan guide: the Host heading renders without the desktop bridge',
+      hostLabel > 0 && bridgeGuard > 0 && hostLabel < bridgeGuard,
+    );
+    check(
+      'lan guide: the page states that a browser tab cannot be a server',
+      /can’t be a server/.test(lan),
+    );
+    check(
+      'lan guide: the page says guests install nothing (the half people assume wrong)',
+      /guests install nothing/i.test(lan),
+    );
+
+    // the four commands, and that the clone URL is not a second copy of the repo address
+    check(
+      'lan guide: the clone command is built from LINKS.repo, not a hardcoded URL',
+      lan.includes('git clone ${LINKS.repo}') && /import \{ APP_NAME, LINKS \}/.test(lan),
+    );
+    check(
+      'lan guide: the printed command is the one package.json actually defines',
+      lan.includes("cmd: 'npm run lan'") && pkg.scripts?.lan === 'node scripts/lan.mjs',
+    );
+    check(
+      'lan guide: `npm ci` (the lockfile is committed; a host is not resolving versions)',
+      lan.includes("cmd: 'npm ci'"),
+    );
+    check('lan guide: a dsim-lan bin exists, so a one-liner stays possible later',
+      pkg.bin?.['dsim-lan'] === 'scripts/lan.mjs');
+
+    // the styles the steps use must EXIST — an invented class renders as unstyled text
+    check(
+      'lan guide: .ds-lan-steps and .ds-lan-url.compact are defined in the stylesheet',
+      css.includes('.ds-lan-steps') && css.includes('.ds-lan-url.compact'),
+    );
+
+    // ---- the launcher itself
+    check(
+      'lan launcher: sets LAN_MODE and SERVE_CLIENT together (the server refuses one alone)',
+      /LAN_MODE: '1'/.test(launcher) && /SERVE_CLIENT: DIST/.test(launcher),
+    );
+    // The file's own header EXPLAINS why `shell: true` is avoided, so a bare search finds
+    // the explanation and passes whatever the code does. Strip comments first.
+    const launcherCode = launcher
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('//'))
+      .join('\n');
+    check(
+      'lan launcher: spawns with NO shell, which is what makes it cross-platform',
+      !/shell:\s*true/.test(launcherCode) && launcher.includes("stdio: 'inherit'"),
+    );
+    check(
+      'lan launcher: calls npm.cmd on win32 (a bare `npm` is not found without a shell)',
+      /npm\.cmd/.test(launcher) && /win32/.test(launcher),
+    );
+    check(
+      'lan launcher: prints private addresses first, same ordering as electron/lanHost.cjs',
+      // The launcher classifies with REGEX LITERALS, so its source spells the dots escaped —
+      // `String.raw` is how that is searched for without a second layer of escaping here.
+      launcher.includes(String.raw`/^192\.168\./`) &&
+        launcher.includes(String.raw`/^10\./`) &&
+        launcher.includes('Number(y.private) - Number(x.private)'),
+    );
+
+    // ---- the clipboard fallback
+    check(
+      'lan copy: there is an execCommand fallback for the non-secure LAN origin',
+      lan.includes("document.execCommand('copy')"),
+    );
+    check(
+      'lan copy: the old unguarded `navigator.clipboard?.writeText(` no-op is gone',
+      !/void navigator\.clipboard\?\.writeText/.test(lan),
+    );
+    check(
+      'lan copy: a rejected clipboard promise still tries the fallback',
+      /\.then\([\s\S]{0,400}?copyFallback\(text\)/.test(lan),
+    );
+  }
   // ---- LAN: a host's server hands out files, so it must not hand out ANY file
   /**
    * THE ONE SECURITY BOUNDARY IN `server/static.ts`.
@@ -7704,20 +7813,37 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       const tip = hl + INTAKE_PRESETS[intake].reach;
       const axle = intakeAxleX(sp);
       const nip = intakeNip(sp);
+      const m = intakeMouth(sp);
       const { w, r, local } = nipScene(intake, [[tip + 1, 0]]);
       const b = w.balls[0];
       let at = NaN;
+      // ⚠️ read the PRE-step position. `positionHeldBalls` slides a held artifact toward its
+      // slot at HELD_SLIDE_SPEED inside the very tick it is captured, so a post-step reading
+      // reports where the slide left it (2.5in further in at 150 in/s), not where the intake
+      // took it. The robot is stationary here, so the pre-step reading is exact.
       for (let i = 0; i < Math.round(3 / SIM_DT) && Number.isNaN(at); i++) {
+        const before = b.state.kind === 'ground' ? local(b).x : NaN;
         step(w, SIM_DT, new Map([[0, cmd({ intake: true })]]));
-        if (b.state.kind === 'held') at = local(b).x; // the tick it was taken, post-step
+        if (b.state.kind === 'held') at = before;
       }
       const d = at - axle;
-      return { intake, at, d, ok: d > -nip.back - 1e-6 && d < nip.front + 1e-6, took: r.hopper.length === 1 };
+      /**
+       * ⚠️ THE CAPTURE INSTANT IS NOT OBSERVABLE FROM OUTSIDE A TICK, so the bound allows for
+       * one tick of travel. Within a single `step` the order is suction (a velocity) → the
+       * solve (which moves the artifact) → `updateIntake` (which tests the nip), so the
+       * PRE-step reading is up to `drawIn * SIM_DT` further out than the position the
+       * predicate actually saw, and the POST-step reading is further IN by a full
+       * `HELD_SLIDE_SPEED * SIM_DT` because the artifact is already sliding to its slot.
+       * Neither is the capture point; the pre-step reading plus the suction's own travel is
+       * the honest ceiling.
+       */
+      const slack = m.drawIn * SIM_DT;
+      return { intake, at, d, slack, ok: d > -nip.back - 1e-6 && d < nip.front + slack + 1e-6, took: r.hopper.length === 1 };
     });
     check(
       'nip: an artifact is swallowed AT the roller, not from a radius in front of it',
       rows.every((x) => x.took && x.ok),
-      rows.map((x) => `${x.intake} took it ${x.d >= 0 ? '+' : ''}${x.d.toFixed(2)}in from its axle`).join(' · ') +
+      rows.map((x) => `${x.intake} took it ${x.d >= 0 ? '+' : ''}${x.d.toFixed(2)}in from its axle (band +${intakeNip(specOf(x.intake)).front.toFixed(2)}, plus ${x.slack.toFixed(2)}in of suction travel inside the capture tick)`).join(' · ') +
         ' — triangle used to swallow 1.08in BEHIND its own roller, its window never reaching it',
     );
   }
@@ -7819,6 +7945,40 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
   }
 
+  // ---- A HELD ARTIFACT MAY NEVER ADVANCE THROUGH THE WORLD -----------------
+  /**
+   * THE FIX FOR "the third ball is still being deflected too far", as an invariant rather than
+   * a number. A held artifact is SOLID to ground artifacts and is still out in FRONT of the
+   * chassis face while it slides to its slot, so if the slide is slower than the chassis the
+   * robot carries the artifact it has just swallowed FORWARD through the world and into the
+   * next one in the line — which, still touching the one behind it, chains the impulse on.
+   * Measured at HELD_SLIDE_SPEED 45 on a touching file at full throttle: the first artifact
+   * went in clean and balls two and three BOTH left at 73 in/s two ticks later, shoved 32in.
+   *
+   * So the slide must beat the FASTEST LEGAL CHASSIS, not the default one — the margin at 85
+   * in/s says nothing about a 600 rpm tank.
+   */
+  {
+    let top = 0;
+    let at = '';
+    for (const drivetrain of ['tank', 'mecanum', 'swerve', 'xdrive', 'butterfly'] as const)
+      for (const driveRpm of [200, 300, 435, 500, 600])
+        for (const massLb of [20, 30, 42])
+          for (const intake of PRESETS) {
+            const sp = coerceSpec({ ...DEFAULT_SPEC, drivetrain, driveRpm, massLb, intake });
+            const v = driveParams(sp).maxSpeed;
+            if (v > top) {
+              top = v;
+              at = `${drivetrain} ${sp.driveRpm}rpm ${sp.massLb}lb`;
+            }
+          }
+    check(
+      'nip: a held artifact is pulled in faster than any legal chassis can drive',
+      HELD_SLIDE_SPEED > top,
+      `HELD_SLIDE_SPEED ${HELD_SLIDE_SPEED} against a top speed of ${top.toFixed(1)} in/s (${at}) — at 45 the robot carried the artifact it had just swallowed forward at 40 in/s into the next one in the line`,
+    );
+  }
+
   // ---- THE STRAIGHT-LINE FILE OF THREE, at full throttle -------------------
   /**
    * The shape of the standing report ("if I drive in full speed, third ball bumps with the
@@ -7837,21 +7997,26 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       // and an index-keyed baseline reads `undefined` for a fresh artifact — silently NaN.
       const y0 = new Map(w.balls.map((b) => [b.id, b.pos.y]));
       let shove = 0;
+      let peak = 0;
       for (let i = 0; i < Math.round(4 / SIM_DT); i++) {
         step(w, SIM_DT, new Map([[0, cmd({ driveY: 1, intake: true })]]));
         for (const b of w.balls) {
           const start = y0.get(b.id);
           if (start === undefined || b.state.kind !== 'ground') continue;
           shove = Math.max(shove, b.pos.y - start); // how far up-field the file was driven
+          peak = Math.max(peak, hyp(b.vel.x, b.vel.y)); // ...and how hard it was struck
         }
         if (r.hopper.length >= 3) break;
       }
-      return { intake, took: r.hopper.length, shove };
+      return { intake, took: r.hopper.length, shove, peak };
     });
     check(
-      'nip: a touching file of THREE is taken 3/3 at full throttle, without the file being shoved across the field',
-      rows.every((x) => x.took === 3 && x.shove < 45),
-      rows.map((x) => `${x.intake} ${x.took}/3, worst shove ${x.shove.toFixed(1)}in`).join(' · '),
+      'nip: a touching file of THREE goes in 3/3 without the file being punted down the field',
+      rows.every((x) => x.took === 3 && x.shove < 3) &&
+        rows.filter((x) => x.intake !== 'triangle').every((x) => x.peak < 5),
+      rows.map((x) => `${x.intake} ${x.took}/3, worst shove ${x.shove.toFixed(1)}in, peak artifact speed ${x.peak.toFixed(0)} in/s`).join(' · ') +
+        ' — at HELD_SLIDE_SPEED 45 the second and third left together at 73 in/s and were shoved 32in.' +
+        ' TRIANGLE is exempt from the speed bound and only from that: it parks two held artifacts NEAR THE MOUTH by design, so they ride at chassis speed and can clip the next one — but it re-catches it within a couple of ticks, which is what the shove bound checks',
     );
   }
 

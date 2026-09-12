@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { APP_NAME } from '../seasons';
+import { APP_NAME, LINKS } from '../seasons';
 import { desktop, type LanHostStatus } from '../desktop';
 import { useEscape } from './useEscape';
 import { appBuild, clearLanServer, lanActive, lanServerUrl, setLanServer } from '../net/env';
@@ -25,6 +25,24 @@ import { LAN_DEFAULT_PORT, mixedContentBlock, parseLanAddress } from '../net/lan
  *    browser instead. `localhost` is exempt, which is why the host themselves can play from
  *    the live site.
  */
+/**
+ * THE FOUR COMMANDS, in the order a person types them.
+ *
+ * `git clone` rather than `npx github:...`, which would be one line instead of four. The
+ * one-liner needs this package to carry a `prepare` script so npm builds it after cloning,
+ * and `prepare` ALSO runs on every ordinary `npm install` — so every contributor would pay a
+ * full client build on every install to save a host three lines once. The `bin` entry
+ * (`dsim-lan`) exists so the one-liner can be added later if that trade ever changes.
+ *
+ * `npm ci` rather than `npm install`: the lockfile is committed, and a host is not trying to
+ * resolve new versions, they are trying to run the thing.
+ */
+const HOST_STEPS = [
+  { what: 'Get the code', cmd: `git clone ${LINKS.repo}` },
+  { what: 'Go into it', cmd: 'cd dsim' },
+  { what: 'Install once', cmd: 'npm ci' },
+  { what: 'Host', cmd: 'npm run lan' },
+] as const;
 export function LanPanel({
   signedIn,
   onConnected,
@@ -123,14 +141,58 @@ export function LanPanel({
     });
   };
 
+  /**
+   * ⚠️ `navigator.clipboard` DOES NOT EXIST ON THE PAGE THIS SCREEN MATTERS MOST ON.
+   *
+   * The Clipboard API is gated on a SECURE CONTEXT. A LAN guest is served from
+   * `http://192.168.x.x:8787`, which is plain http and not `localhost`, so it is not secure and
+   * `navigator.clipboard` is `undefined` there — measured, not assumed. The optional chain meant
+   * the whole call evaporated and every copy button on this page was a button that did nothing,
+   * silently, with no error to notice. It is exactly the wrong page for that: the join URL and
+   * the host commands are the two things anyone comes here to copy.
+   *
+   * So there is a fallback, and it is the old `execCommand('copy')` one. It is deprecated and it
+   * is also the only thing that works without a secure context, which is the situation. The
+   * textarea is off-screen rather than `display:none` because a hidden element cannot be
+   * selected, and `readOnly` keeps a mobile keyboard from opening over the page.
+   *
+   * The host's own window is on `localhost`, which IS exempt and secure, so the modern path is
+   * the normal one and this is the guest's path.
+   */
+  const flash = (text: string): void => {
+    setCopied(text);
+    window.setTimeout(() => alive.current && setCopied(''), 1600);
+  };
+  const copyFallback = (text: string): boolean => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  };
   const copy = (text: string): void => {
-    void navigator.clipboard?.writeText(text).then(
-      () => {
-        setCopied(text);
-        window.setTimeout(() => alive.current && setCopied(''), 1600);
-      },
-      () => setCopied(''),
-    );
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(text).then(
+        () => flash(text),
+        // a rejection here is usually "the document is not focused" rather than "not allowed",
+        // and the fallback copes with both — so try it before giving up.
+        () => {
+          if (copyFallback(text)) flash(text);
+          else setCopied('');
+        },
+      );
+      return;
+    }
+    if (copyFallback(text)) flash(text);
   };
 
   /**
@@ -217,10 +279,10 @@ export function LanPanel({
         </div>
       )}
 
-      {/* ---- HOST (desktop only: a web page cannot start a server) ---- */}
+      {/* ---- HOST ---- */}
+      <p className="ds-tileset-label">Host · this computer</p>
       {bridge?.lan && (
         <>
-          <p className="ds-tileset-label">Host · this computer</p>
           <div className="ds-panelbox">
             {!running && (
               <>
@@ -313,6 +375,58 @@ export function LanPanel({
           </div>
         </>
       )}
+
+      {/* ---- HOST WITHOUT THE APP ------------------------------------------------------
+          Why this is on the page AT ALL, and why it is not apologetic about the terminal:
+
+          A browser tab cannot be a server. Not "does not yet" — there is no web API that
+          opens a listening socket, so no amount of DSIM code makes this button work. Before
+          this block existed the whole host half was hidden behind `bridge?.lan`, which meant
+          a player on the web saw a page titled "LAN play" whose only control asked for
+          somebody ELSE's address. That reads as "hosting is missing", and the first question
+          it produced was exactly the right one: where do I find my address?
+
+          So the page now answers it in the two places it can be answered, and says plainly
+          why there is no third. `docs/lan-selfhost.md` carries the long version, including
+          the one design (WebRTC) that could remove the terminal later.
+
+          GUESTS ARE UNAFFECTED and that is worth saying out loud here, because it is the
+          part people assume wrong: only the HOST needs any of this. -------------------- */}
+      <div className="ds-panelbox">
+        <p className="ds-lan-state">
+          {bridge?.lan ? 'Or host from a terminal' : 'Hosting needs one command'}
+        </p>
+        <p className="ds-hint">
+          A browser tab can’t be a server — no web page can open the kind of connection other
+          computers dial into, so this has to run outside the tab. The steps are the same on
+          macOS, Windows and Linux. You need Node.js (nodejs.org) and Git (git-scm.com); if you
+          already write code on this machine you almost certainly have both.
+        </p>
+        <ol className="ds-lan-steps">
+          {HOST_STEPS.map((step) => (
+            <li key={step.cmd}>
+              <span className="s">{step.what}</span>
+              <button
+                className="ds-lan-url compact"
+                onClick={() => copy(step.cmd)}
+                title="Copy"
+              >
+                <span className="u">{step.cmd}</span>
+                <span className="c">{copied === step.cmd ? 'Copied' : 'Copy'}</span>
+              </button>
+            </li>
+          ))}
+        </ol>
+        <p className="ds-hint">
+          It prints the addresses to put on a projector, and keeps hosting until you press
+          Ctrl-C. The first run builds the app once, so give it a minute.
+        </p>
+        <p className="ds-hint">
+          <b>Your guests install nothing.</b> They open the address you read out, in whatever
+          browser is already on their laptop. Only the host needs the command above — or the
+          desktop app, which does the same thing with a button.
+        </p>
+      </div>
 
       {/* ---- JOIN ---- */}
       <p className="ds-tileset-label">Join · someone else’s computer</p>

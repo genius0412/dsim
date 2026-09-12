@@ -90,14 +90,62 @@ TRAVEL-limited, not interval-limited. The measured back-to-back gap on sloped wa
 against a `clumpInterval` of 0.04, which is exactly why the 2026-09-10 bisection found
 `clumpInterval` 0.04→0.02 with `capMax` 0.09→0.05 BYTE-IDENTICAL.
 
-## 4. This does NOT fix the third ball, and nothing here claims to
+## 4. THE THIRD BALL — found, and it was the ball you had already intaken
 
-`49d0926` bisected that to a restitution violation and `4c4ab27` to `BALL_ROLL_FRICTION`, and
-the latter recorded that this exact experiment was already run and inert: *"moving the capture
-window out to the rollers, and then widening it across the whole mouth, changed the numbers by
-nothing at all."* The third artifact is struck 8.4in beyond the roller line at 0.832x the
-robot's speed while the robot is not touching it. Smoke now pins the straight-line file of
-three at 3/3 with a shove ceiling, so a future change to this area cannot quietly make it worse.
+The intake work above does NOT fix it, and correctly so: `49d0926` bisected the symptom to a
+restitution violation and `4c4ab27` to `BALL_ROLL_FRICTION`, and `4c4ab27` recorded that this
+exact experiment was already inert — *"moving the capture window out to the rollers, and then
+widening it across the whole mouth, changed the numbers by nothing at all."* All true. The
+cause was somewhere none of those passes looked.
+
+Owner: *"the first and second balls get intaked so quickly that they don't transfer any
+momentum to the next ball in a vertical straight line intaking test"* — which is what real,
+well-designed fast robots do.
+
+Measured, sloped, touching file (5.02in pitch), full throttle:
+
+```
+t38  ball1 x11.73 v0        ball2 x16.75 v0     ball3 x21.77 v0
+t39  ball1 CAPTURED         ball2 x15.56 v0     ball3 x20.58 v0   held#1 @x9.23  d(b2)=6.33
+t40                         ball2 x14.36 v0     ball3 x19.38 v0   held#1 @x8.48  d(b2)=5.88
+t41                         ball2 ---- v73      ball3 ---- v73    held#1 @x7.73  d(b2)=5.71
+```
+
+Ball 1 goes in without ever moving — exactly as the owner says it should. Then two ticks later
+balls 2 and 3 leave TOGETHER at 73 in/s, with ball 2 sitting 3.9in clear of the roller tip and
+`robotPenetration` reporting no contact with the chassis at all.
+
+**The striker is ball 1.** A held artifact is SOLID to ground artifacts (`robotSolids.held`) and
+is still in FRONT of the chassis face while it slides to its slot. `HELD_SLIDE_SPEED` was 45
+against a robot driving 85, so in the WORLD frame the swallowed artifact was still advancing at
+40 in/s. It closed on ball 2 (through the artifact world's look-ahead, at 0.71in of clearance —
+which is why `robotPenetration` saw nothing) and ball 2, still touching ball 3, chained it on.
+
+**Fix: `HELD_SLIDE_SPEED` 45 → 150**, above the fastest legal chassis (`driveParams().maxSpeed`
+peaks at ~121-130 in/s depending on the coerced envelope), so a held artifact can never advance
+through the world on any build. After:
+
+| preset | captured @ | worst shove | peak artifact speed |
+|---|---|---|---|
+| sloped | 39 / 43 / 47 | **0.0in** | **0 in/s** |
+| vector | 39 / 43 / 47 | **0.0in** | **0 in/s** |
+| triangle | 39 / 43 / 49 | 1.1in | 74 in/s, re-caught in 2 ticks |
+
+Triangle is exempt from the speed bound and only that: it parks two held artifacts NEAR THE
+MOUTH by design, so they ride at chassis speed and can clip the next one. Its shove went 33.6in
+→ 1.1in. If that ever needs to be zero, the lever is where its hopper slots sit, not the slide.
+
+Smoke asserts the RELATION rather than the number — `HELD_SLIDE_SPEED > max
+driveParams().maxSpeed` swept over every drivetrain × rpm × mass × intake — so raising the rpm
+ceiling later fires the check instead of resurrecting the bug. The file-of-three check now
+asserts peak speed and shove, not just the 3/3 count; the old 45in bound would have passed the
+broken behaviour.
+
+⚠️ **The capture instant is NOT observable from outside a tick**, and two checks were written
+wrong before this was understood: within one `step` the order is suction (a velocity) → the
+solve (which moves the artifact) → `updateIntake` (which tests the nip), so a PRE-step reading
+is up to `drawIn * SIM_DT` too far out and a POST-step reading is `HELD_SLIDE_SPEED * SIM_DT`
+too far in. The check allows exactly that slack and says so.
 
 ## 5. Four checks moved, and one of them is a GAMEPLAY change, not a test detail
 
