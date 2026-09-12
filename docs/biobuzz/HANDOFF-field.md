@@ -54,6 +54,14 @@
 > `alpha` and deleted on origin. Wherever this file says branch `biobuzz`, read `alpha`: merge
 > `alpha` before you commit, land into `alpha`, `alpha` deploys.
 
+## 2026-09-12 · the four HIVE rulings, on an `alpha` base · `biobuzz-field-hive`
+
+- **Files**: `hive.ts` (rewritten), `scripts/smoke-biobuzz/field.ts` (the `hive:` block). `flower.ts` unchanged. Nothing wired — `play.ts`, `step.ts`, `state.ts`, `config.ts` untouched. Field lane **168 checks, all pass**; `npm run build` green.
+- **The rulings (field-plan §2.1), all four in**: swing `BB_TIP_SWING_S = 4.0` (a decision, not APPROX); `hiveAccepts` now takes a `vel: Vec3` and gates on APPROACH — the CELL is open at its outer end only, so `vel.y` must point at the pivot (`hiveApproachSign`: up=south takes vy > 0, up=north vy < 0); contents RELEASE at level (`BB_TIP_RELEASE_S` = swing/2) with a `released` latch, so `spilled` arrives two seconds BEFORE `tipped` and the 20 points; `spillPoses` returns `{pos, vel}` with vel outboard `BB_SPILL_SPEED` 40–60 in/s and `BB_SPILL_LATERAL` ±12 across, `vel.z` 0.
+- ⚠️ **`BB_TIP_LOAD` and `BB_NECTAR_MASS` ARE GONE, superseded by the merge.** `config.ts` now carries the owner's MEASURED `BB_TIP_POLLEN` table, and the config comment is explicit that a see-saw is torque and packing, not weight — no linear mass model fits the measured rows. `hiveLoad` counts `{pollen, nectar}` and `hiveWillTip` is the table lookup; smoke asserts every row and its one-short neighbour, so reintroducing a mass model fails loudly. Consequence worth knowing: the staged cell (3 nectar) tips at **3 pollen**, reachable in AUTO.
+- **REQUEST to `state.ts`** (Lane A's own file, deliberately not edited here): add `released: boolean` to `BbHiveState` and `released: false` to both hives in `emptyBiobuzzState()`. Until then `hive.ts` declares `HiveState extends BbHiveState` with `released` OPTIONAL, so a plain state hive still typechecks as an input; every hive the module returns sets it. With the field in `state.ts` that interface collapses to a re-export.
+- **Still APPROX**: `BB_HIVE_ACCEPT_MARGIN` 2 in, the spill speed and lateral spread, and — in `flower.ts` — `BB_FLOWER_VOL_Z` [3.98, 21.5], `BB_FLOWER_FLOOR_Z` 0.43, `BB_FLOWER_ENTRY_MARGIN` 3 in. `BB_TIP_RELEASE_S` = swing/2 assumes a constant angular rate, which a damped swing is not; the error moves WHEN the spill lands, never whether it does. Fig 10-5 A–H are still RECONSTRUCTED from the §10.5.2 rule text, not read off the figure.
+
 ## 2026-09-12 · owner CAD + the six drawing rulings · `d6c0430`
 
 - **Cells to look at**: `field-labelled@0` (annotated) and the SAME cell rendered with the
