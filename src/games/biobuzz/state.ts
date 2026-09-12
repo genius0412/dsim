@@ -70,6 +70,22 @@ export interface ScoreTarget {
   pos: Vec2;
   z: number;
   r: number;
+  /**
+   * THE WAY THE OPENING FACES — a UNIT vector in world xy, pointing OUT of the mouth.
+   *
+   * Every BIOBUZZ target is a hole in something solid, and `pos` alone does not say which side
+   * of that something is the open one. A CELL's opening faces along the HIVE's tilt axis, away
+   * from the pivot; a FLOWER's faces into the field, away from the wall it stands against. An
+   * arc solved to `pos` from the wrong side arrives through the floor of the cell or through
+   * the perimeter, which is a shot that scores in the sim and cannot be taken on a real field.
+   *
+   * OPTIONAL because it is a property of the target's GEOMETRY, and a target that is a plain
+   * volume (a zone, a basket open at the top) has no such direction to report. A consumer that
+   * does not care about approach side ignores it; one that does treats its absence as "no
+   * constraint" rather than as a default direction — there is no sensible default, and
+   * guessing one is the bug this field exists to prevent.
+   */
+  mouth?: Vec2;
 }
 
 /** is robot-local point (`lx`,`ly`) inside `rect`?

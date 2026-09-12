@@ -56,12 +56,14 @@ import {
   BB_LZ,
   BB_NECTAR_COUNT,
   BB_POLLEN_COUNT,
+  BB_START_POSES,
   bbMirror,
   type BbRect,
 } from '../../src/games/biobuzz/config';
 import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
 import { createBiobuzzWorld, stageBiobuzz } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
+import { scoreTargets } from '../../src/games/biobuzz/elements';
 import { updateBiobuzz } from '../../src/games/biobuzz/play';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
 import { BB_IDLE, BB_SCENES, bbPollen, bbSceneAt, bbSceneStills, type Scene } from '../../src/games/biobuzz/scenes';
@@ -339,6 +341,121 @@ export function fieldChecks(check: Check): void {
       Math.abs(r1.pos.x + 30) < 1e-9 && Math.abs(r1.pos.y + 12) < 1e-9,
       `pos=${r1.pos.x.toFixed(3)},${r1.pos.y.toFixed(3)}`,
     );
+  }
+
+  // -- THE ANCHORS ARE LEGAL AS WRITTEN -------------------------------------
+  /**
+   * `BB_START_POSES` SATISFIES G304 WITHOUT REPAIR.
+   *
+   * `bbSnapStart` was carrying these: the old pair stopped 2 in short of the wall and the
+   * BOTTOM one sat inside `BB_LZ.blue`, so the anchor a builder places, the anchor the
+   * selector labels TOP/BOTTOM, and the pose the robot got were three different things. The
+   * repair still exists -- the seating is spec-dependent and a deep sweeper still needs it --
+   * but it must now have nothing to move.
+   *
+   * MEASURED AS DISPLACEMENT, not as "is the result legal": the spawned pose was already legal
+   * before this change, which is exactly why the bad anchors survived so long. What is asserted
+   * is that spawning MOVED the anchor by less than `WALL_SEAT` and a hair -- the 0.01 in
+   * float-tangency seat is the only correction left, and any real repair is orders above it.
+   */
+  {
+    const SEAT_TOL = 0.05; // WALL_SEAT is 0.01; anything larger is a genuine repair
+    const w = createBiobuzzWorld('match', 13, [
+      setup(0, 'blue', {}, 0),
+      setup(1, 'blue', {}, 1),
+      setup(2, 'red', {}, 0),
+      setup(3, 'red', {}, 1),
+    ]);
+    const e = bbFootprint(BB_DEFAULT_SPEC);
+    const half = (e.front + e.rear) / 2;
+    for (const r of w.robots) {
+      const i = r.id % BB_START_POSES.length;
+      const raw = BB_START_POSES[i].pos;
+      // RED is the POINT mirror, the same one `spawn.ts` applies -- an x-mirror here would
+      // "pass" against a red robot standing at blue's y.
+      const want = r.alliance === 'blue' ? raw : { x: -raw.x, y: -raw.y };
+      const moved = Math.hypot(r.pos.x - want.x, r.pos.y - want.y);
+      check(
+        `anchors: ${r.alliance} anchor ${i} spawns where it is written, unsnapped`,
+        moved < SEAT_TOL,
+        `moved=${moved.toFixed(3)}" want=(${want.x},${want.y}) got=(${r.pos.x.toFixed(2)},${r.pos.y.toFixed(2)})`,
+      );
+      // AND IT IS LEGAL: touching its own side wall, and clear of its own LOADING ZONE. Both
+      // are read off the RAW anchor, not off the spawned pose, so the check cannot be
+      // satisfied by the repair it exists to make unnecessary.
+      const b = {
+        x0: want.x - half, x1: want.x + half,
+        y0: want.y - e.half, y1: want.y + e.half,
+      };
+      const gap = BB_HALF_X - Math.max(Math.abs(b.x0), Math.abs(b.x1));
+      const z = BB_LZ[r.alliance];
+      const inLz = b.x1 > z.x0 && b.x0 < z.x1 && b.y1 > z.y0 && b.y0 < z.y1;
+      const ownSide = r.alliance === 'red' ? b.x1 < 0 : b.x0 > 0;
+      check(
+        `anchors: ${r.alliance} anchor ${i} contacts its own wall, on its own side, outside its LOADING ZONE`,
+        gap >= 0 && gap <= C.START_TOUCH_TOL && !inLz && ownSide,
+        `wall gap=${gap.toFixed(2)}" (tol ${C.START_TOUCH_TOL}) · inLZ=${inLz} · ownSide=${ownSide}`,
+      );
+    }
+  }
+
+  // -- EVERY SCORE TARGET SAYS WHICH WAY IT OPENS ---------------------------
+  /**
+   * `ScoreTarget.mouth` IS A UNIT VECTOR OUT OF THE OPENING, and every BIOBUZZ target has one.
+   *
+   * `pos` alone does not say which side of a solid thing is the open side. A CELL is a box on
+   * a see-saw and a FLOWER is a column against the perimeter; an arc solved to `pos` from the
+   * wrong side arrives through the cell floor or through the wall -- a shot that scores in the
+   * sim and cannot be taken on a real field. Lane B aims at these, so the direction is part of
+   * the contract rather than something an aimer re-derives from geometry it should not know.
+   *
+   * THE CELL'S MOUTH IS ASSERTED AGAINST ITS OWN PIVOT rather than against a literal: the up
+   * CELL is offset from the HIVE pivot along y and opens AWAY from it, so `mouth` must have
+   * the SAME SIGN as `pos.y` for that hive. That is one statement that stays true through a
+   * TIP, where a hard-coded (0, -1) for red would silently become wrong.
+   */
+  {
+    const w = createBiobuzzWorld('match', 14, [setup(0, 'blue', {}, 0)]);
+    const bb = w.biobuzz!;
+    for (const tilt of ['staged', 'tipped'] as const) {
+      if (tilt === 'tipped') {
+        bb.hives.red.up = 'north';
+        bb.hives.blue.up = 'south';
+      }
+      const ts = scoreTargets(w, 'red');
+      check(
+        `targets [${tilt}]: two CELLS and four FLOWERS, every one with a mouth`,
+        ts.length === 2 + BB_FLOWERS.length && ts.every((t) => t.mouth !== undefined),
+        `${ts.length} targets · ${ts.filter((t) => t.mouth).length} with mouth`,
+      );
+      check(
+        `targets [${tilt}]: every mouth is a unit vector`,
+        ts.every((t) => Math.abs(Math.hypot(t.mouth!.x, t.mouth!.y) - 1) < 1e-9),
+        ts.map((t) => `${t.id}=(${t.mouth!.x},${t.mouth!.y})`).join(' '),
+      );
+      for (const a of ['red', 'blue'] as const) {
+        const t = ts.find((x) => x.id === `hive:${a}`)!;
+        check(
+          `targets [${tilt}]: the ${a} up-CELL opens AWAY from its pivot`,
+          t.mouth!.x === 0 && Math.sign(t.mouth!.y) === Math.sign(t.pos.y) && t.pos.y !== 0,
+          `up=${bb.hives[a].up} pos.y=${t.pos.y.toFixed(1)} mouth=(${t.mouth!.x},${t.mouth!.y})`,
+        );
+      }
+    }
+    // A FLOWER OPENS INTO THE FIELD: step one inch along the mouth and you are further from
+    // the wall the flower stands against than the flower itself is.
+    const ts = scoreTargets(w, 'red');
+    BB_FLOWERS.forEach((f, i) => {
+      const t = ts.find((x) => x.id === `flower:${i}`)!;
+      const wallDist = (p: { x: number; y: number }): number =>
+        Math.min(BB_HALF_X - Math.abs(p.x), BB_HALF_Y - Math.abs(p.y));
+      const stepped = { x: f.x + t.mouth!.x, y: f.y + t.mouth!.y };
+      check(
+        `targets: FLOWER ${f.id} (${f.wall} wall) opens INTO the field`,
+        wallDist(stepped) > wallDist(f) + 0.5 && t.alliance === null,
+        `mouth=(${t.mouth!.x},${t.mouth!.y}) wallDist ${wallDist(f).toFixed(1)} -> ${wallDist(stepped).toFixed(1)}`,
+      );
+    });
   }
 
   // -- POLLEN CONSERVATION ---------------------------------------------------
