@@ -52,3 +52,16 @@
   elements behind them (drawing input); `spawn.ts` places the real ones in a later pass.
 - **Wanted from the shared core**: a per-artifact radius, so NECTAR is not simulated at POLLEN
   size (`docs/biobuzz/field-plan.md` §6 request 1).
+
+
+---
+
+## (hive lane, merged)
+
+## 2026-09-12 — hive/flower logic ready for wiring (`biobuzz-field-hive`)
+
+- **Landed**: `src/games/biobuzz/hive.ts` (hiveAccepts / hiveLoad / hiveStep / spillPoses, pure, rng as a parameter) and `flower.ts` (stack model, flowerFits/flowerCapacity, flowerAccepts top-only, flowerRetrieve pollen-only, flowerScore per §10.5.2), plus `hive:` / `flower:` checks in `scripts/smoke-biobuzz/field.ts`. Nothing wired: `play.ts`, `step.ts`, `state.ts`, `config.ts` untouched — wiring waits for the field-labelled verdict and the T0+2h sync.
+- **APPROX, local to `hive.ts` until `config.ts` carries them**: `BB_TIP_LOAD` 6 pollen-equivalents (bounded below by the stable staged pose, 3 nectar ≈ 4.95), `BB_NECTAR_MASS` 1.65, `BB_TIP_SWING_S` 0.8 s, `BB_HIVE_ACCEPT_MARGIN` 2 in. Measure tip load and both masses on 09-14, then move the four consts into `config.ts` and delete them here (one import line each).
+- **APPROX, local to `flower.ts`**: `BB_FLOWER_VOL_Z` [3.98, 21.5] (field-plan §1 name, not yet in config), `BB_FLOWER_FLOOR_Z` 0.43 (lower-ring top, where the bottom element rests), `BB_FLOWER_ENTRY_MARGIN` 3 in. Consequence worth a real-field check: a bottom POLLEN (top at 3.23) sits wholly in the retrieval opening and does NOT score; a bottom NECTAR (top at 4.03) is partially in by 0.05 in and does. Capacity by height: 8 pollen or 6 nectar.
+- **Fig 10-5 A–H are RECONSTRUCTED from the §10.5.2 rule text**, not read off the figure (the manual is not in the repo). The table in `field.ts` encodes owner / owner points / bonus per case from the rules; re-label against the real figure when someone has the PDF open.
+- **State shapes** `HiveState` / `FlowerState` are declared locally (field-plan §2); when `state.ts` gains `hives` / `flowers`, import from there and delete the local declarations. `BbElementKind` (`'pollen' | Alliance`) lives in `flower.ts` and is what `kindOf` / `massOf` callbacks in `play.ts` will resolve from the artifact.
