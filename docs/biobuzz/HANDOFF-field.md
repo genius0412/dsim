@@ -1,6 +1,6 @@
 # HANDOFF — Lane A (field)
 
-## 2026-09-12 · owner CAD + the six drawing rulings · `PENDING`
+## 2026-09-12 · owner CAD + the six drawing rulings · `d6c0430`
 
 - **Cells to look at**: `field-labelled@0` (annotated) and the SAME cell rendered with the
   caption flag off, which is what a driver sees. `scratch/hires.cjs --scene field-labelled
