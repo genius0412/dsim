@@ -728,3 +728,48 @@ You are the BIOBUZZ manual lane, worktree dsim-bb-docs, branch biobuzz-docs, bas
 4. Write ONE file, docs/biobuzz/manual-distilled.md, with the section's rule id and PDF page for every line: scoring table (each line, points, when assessed); penalty list (id, MINOR or MAJOR, trigger, any per-3-seconds clause); match timing (auto, teleop, endgame, the nectar cue); LEAVE, PARK and garden definitions with the exact boundary words; human-player rules; start rules; R105 expansion limits; glossary entries for POLLEN, NECTAR, HIVE, CELL, FLOWER, GARDEN, LOADING ZONE and every other capitalised term the field or robot lanes use. Quote verbatim where a number or boundary word matters. End with "Open questions for the owner".
 5. Compare against docs/biobuzz-reference.md and docs/biobuzz/field-plan.md and list every disagreement in a final "Conflicts with current docs" section; do not edit those two files.
 6. Commit only manual-distilled.md, push biobuzz-docs, report the commit and the conflict count. No Claude attribution.
+
+## Round 5 (2026-09-12 night) — after `alpha` `26b5c0d`
+
+State: `alpha` carries A4a (field live), A4b (score.ts, Section 11 rules, 1:00 cue, HUD slice),
+Lane B (launcher + lift wired, turret aims at `mouth`), `scored: true`, `isPinning` exported from
+`src/sim/penalties.ts`. 802/802, tsc clean. Three Lane A chats run in parallel; each merges
+`origin/alpha` first and lands into `alpha` through the master. Owner questions open: per-flower
+nectar (ANSWERED: none — human player only, G426), turretless cannot reach the HIVE (Lane B
+handoff), `BB_FRAME_RAM_SPEED`, `BB_TIP_POLLEN[0]`.
+
+### A5a — field follow-ups (existing field chat, `dsim-bb-field`, `biobuzz-field`)
+
+Merge origin/alpha (26b5c0d) first; it carries your 7f67fa0 plus the rules lane and Lane B. Then four items, your files only (state.ts, play.ts, elements.ts, spawn.ts, drawField.ts, scenesField.ts, field.ts smoke):
+1. The per-FLOWER stock question is answered by docs/biobuzz-reference.md §2.4 and G426: NECTAR enters the field only through the HUMAN PLAYER (one per own-HIVE TIP, or all remaining at ≤ 60 s). There is no per-flower supply. Delete `stock` and `nectarDue` from `BbFlowerState` and `emptyBiobuzzState()`; the per-ALLIANCE `nectarStock`/`nectarDue`/`nectarTimer` stay. grep hud.ts and score.ts first; if either reads the per-flower fields, tell the master instead of editing them.
+2. `bbWorld(seed, setups, pollen)` leaves dangling element ids in every FLOWER stack and both up-CELLs after it replaces `world.balls`. Make it clear the ids it invalidates (or restage after the replace). Add the smoke check: every id in a stack or a cell resolves to a ball.
+3. `drawField.ts` still carries a private `FIELD_SIDE` duplicating `elements.ts`'s `FLOWER_MOUTH`. Import the one in elements.ts and delete the copy.
+4. The 4 s spill: at t = 4 s seven elements spread about 20 in wide and one reached the perimeter (hive-tip@240 at 1600px). Do not tune; write what you measure (spread, farthest element, rest time) into docs/biobuzz/feedback/ as the owner's spill-kinematics question.
+Gates: `npx tsc --noEmit -p .`, `npm run test:bb -- --lane field`, full `npm run test:bb`, shots of `hive-tip` at tick 0/120/240 and `hive-ground`. Prepend HANDOFF-field.md, push biobuzz-field, report the commit. No Claude attribution.
+
+### A5b — G421 pinning (existing rules chat, `dsim-bb-rules`, `biobuzz-rules`)
+
+Merge origin/alpha (26b5c0d) first: `isPinning` is now exported from src/sim/penalties.ts (field-plan §6 request 5). Your files only (penalties.ts, step.ts, hud.ts, score.ts, scenesField.ts, rules.ts smoke).
+1. Model G421 PINNING in penalties.ts on the exported `isPinning`, exactly as DECODE's G422 uses it (same criteria A/B/C, the count pauses and resumes). Points and the per-3-seconds clause come from docs/biobuzz-reference.md; if the reference does not carry G421's text, stop and say so — the manual lane's docs/biobuzz/manual-distilled.md is the source, not a guess. Bill through `bbAwardFoul`; edge discipline as the other rules.
+2. Smoke: a robot holding an idle victim against the frame bills, an equal-chassis mutual shove mid-field bills nothing, the count survives a 0.7 s ease-off. Use the FOOTPRINT (21 × 17 default) for every pose, as your handoff warns.
+3. Leave HudSlots.tsx alone; a separate chat (A5c) owns it from now on. Your `biobuzzFieldHud` slice is its input; if it needs a field, it will ask through the master.
+Gates: tsc, `npm run test:bb -- --lane rules`, full `npm run test:bb`. Prepend your HANDOFF-field.md section, push biobuzz-rules, report the commit. No Claude attribution.
+
+### A5c — the HUD (NEW chat, worktree `dsim-bb-hud`, branch `biobuzz-hud`)
+
+Setup once, from the `Claude Projects` folder:
+
+    git -C dsim-biobuzz worktree add ../dsim-bb-hud -b biobuzz-hud origin/alpha
+
+Prompt:
+
+You are the BIOBUZZ HUD lane, worktree dsim-bb-hud, branch biobuzz-hud, base alpha (merge origin/alpha before every commit; land into alpha through the master). Read CLAUDE.md "The OPTIONAL UI slots", docs/ui-standard.md and docs/biobuzz-contract.md. You own exactly src/games/biobuzz/HudSlots.tsx and the HUD copy in src/games/biobuzz/Gallery.tsx; you read src/games/biobuzz/hud.ts (`BiobuzzFieldHud`: `score[a]: BbAllianceScore`, `rp[a]`, `cells[a]: BbCellHud` with `needed`/`tipping`/`tipProgress`/`up`, `flowerOwners`, `flowerDepth`, `nectarStock`, `nectarDue`, `nectarLocked`, `nectarIn`) and never edit it; ask the master for a field you lack.
+1. `BiobuzzScoreBar`: red | phase + clock | blue, each side the alliance total plus the up-CELL line "N MORE TO TIP" (`cells[a].needed`, a number, never a word) and a TIPPING state while `tipping > 0`. NECTAR LOCKED chip until `nectarLocked` clears.
+2. `BiobuzzHudChips` (driver's alliance only): own cell needed/tipping, nectar stock and due, the G410 lock. Uppercase chips like the FTC display; no dashes; no helper text.
+3. `biobuzzResultsRows`: every Table 10-2 row from `BbAllianceScore` as alliance-relative `[label, mine, opp]` — LEAVE, PARK (auto), PARK (teleop), TIPS, CELL contents, OWNED FLOWER elements, BOTTOM NECTAR bonus, GARDEN, FOULS, TOTAL — then the three RP flags. Counts and points both where the row has both.
+4. Verify in the browser: `VITE_APP_CHANNEL=alpha npx vite --port 4179 --strictPort`, open /biobuzz, play a solo practice match for 30 s, screenshot the bar, the chips and the results screen in light and dark. Then `npm run uiaudit` (ratchet must not go up) and `npm run contrast` if you touched a token (you should not need to).
+Gates: tsc, full `npm run test:bb`, uiaudit. Commit, push biobuzz-hud, report the commit with the screenshots' paths. No Claude attribution.
+
+### Lane B — relay (paste into the robot chat, one message)
+
+alpha is 26b5c0d: scored:true (persistMatch writes BIOBUZZ per game, alpha-only), `isPinning` exported, your saved-robot config-summary fix is in. Still owed from your handoff: the gallery re-shoot with `turret-acquire`, `npm run shiftaudit`, and mobile buttons for bbLift/bbPlace (`GameModule.mobileButtons` + a `GameSettings.mobileLayout` key; you are cleared to edit those two integration files, same precedent as `statTiles`). Owner question relayed: the turret/turretless split (no turretless build reaches the HIVE) — keep `BB_DRUM_SPEED` until he answers.
