@@ -1,164 +1,244 @@
-# HANDOFF — 2026-09-12 (alpha deployed; the promotion to main is staged and verified, NOT pushed)
+# HANDOFF — 2026-09-12 (SHIPPED: alpha is in production, and both games are on Act 2 · Season 1)
 
-Branch **promote-alpha-to-main** (`a5f6f67`), a real two-parent merge of `origin/main` (37f390f)
-and `origin/alpha` (4981a0c). **Every gate green on the merged tree**: `npm test` ALL PASS (1476),
-`npm run build`, `npm run server:check`, `npm run dbtest` ALL PASS, `npm run contrast` 221,
-`npm run uiaudit` at baseline, `npm run test:mm` 58. **NOTHING IS PUSHED.** `origin/main` is
-untouched and the production Fly app has not been redeployed.
+**Production is live on `4d2917f`.** The alpha→main promotion, the prod server deploy, both act
+rolls and both patch notes are all done. `origin/main` and `origin/alpha` are converged apart
+from work landed on alpha after the merge point.
 
-The alpha preview WAS deployed this session: `./scripts/fly-deploy.sh --alpha` →
-`dsim-alpha` machine `87e003b021d278` in iad, `/health` `ok`, 1/1 checks.
+## What is live
 
-## READ FIRST — what the promotion does to production, on the day it lands
+| | |
+|---|---|
+| `origin/main` | `4d2917f` (merge of alpha into main) |
+| client | `https://www.playdsim.com`, `/version.json` → `{"build":"4d2917f"}` |
+| game server | `dohun-sim-decode`, `/health` ok, 8 machines, satellites back on `shared-cpu-1x`/512MB |
+| DECODE season | **7** — act 2, season 1, active, 0 records / 0 matches |
+| Chain season | **5** — act 2, season 1, active, 0 records / 0 matches |
+| `BALANCE_VERSION` | 4 · `SIM_VERSION` 2 · `REPLAY_FORMAT` 2 |
 
-Three consequences, all measured rather than reasoned about, two of them one-way.
+Announcements published: two `act` reveals (auto, from the season roll) and two `patch` notes,
+`DECODE · Act 2` (`ae1de1d5`) and `Chain Reaction · Act 2` (`04270719`).
 
-### 1. Every replay currently on the production board stops being watchable
+## Order it was done in, and why
 
-`BALANCE_VERSION` goes **3 → 4**, and a balance mismatch is a refusal under any version of the
-gate. Verified by running the real `replayRefusal` against prod-shaped containers: a `bv3/sim1`
-row and a pre-0031 `bv3/sim undefined` row both come back **`balance`**. The records themselves
-are untouched — the server stored the score it computed at the time and never re-derives it —
-so the boards stay exactly as they are and the entries simply stop having a playable link.
+1. All seven gates on the promotion branch (smoke, build, server:check, dbtest, contrast,
+   uiaudit, test:mm) — all green.
+2. Prod config asserted before anything shipped: none of `LAN_UPLOADS`, `LAN_SIGNALLING`,
+   `VITE_LAN_ENABLED` in `fly.toml`; `DEPLOY_REGIONS` still all 8; `SATELLITES` still all 7.
+3. Restart notice broadcast, then `scripts/fly-deploy.sh` from the promotion worktree.
+   **SERVER FIRST, client second**, so the authoritative sim is never older than the clients
+   predicting against it.
+4. `git push origin promote-alpha-to-main:main` → Vercel.
+5. Both acts rolled, then verified.
+6. Both patch notes published, then verified (stored UTF-8 confirmed by unicode-escape, not by
+   eye — a Windows console renders `·` as `Â·` and that is the console, not the data).
 
-This is the documented, intended meaning of a balance bump (config.ts says so at the constant),
-not a bug. It is listed here because it is the most visible thing a player will notice.
+⚠️ **The owner cut the 300 s warning to zero mid-deploy** ("DEPLOY NOW"). The announce curl had
+already fired, so players did get the banner, just without the wait. 17 were online when the
+window opened; 6 after. If that ordering matters next time, the wait is the second argument to
+`announce-deploy.sh`.
 
-### 2. BOTH games are rolled to ACT 2 · SEASON 1 — and that RESETS RANKED ELO
+⚠️ **AND IT DEPLOYED TWICE, because `pkill -f` DOES NOT KILL A BACKGROUNDED SCRIPT HERE.**
+`announce-deploy.sh` had been started in the background with the 300 s wait. When the wait was
+cancelled, `pkill -f "announce-deploy.sh"` and `pkill -f "sleep 300"` both reported success and
+neither matched anything: on Git Bash the process does not carry that command line. So the
+manual `fly-deploy.sh` ran immediately, and then the background job woke five minutes later and
+deployed the identical image AGAIN, restarting every machine a second time. No data harm — the
+act rolls and the announcements are DB rows and survived — but players reconnected twice, and
+the second restart landed AFTER the post-deploy verification, so everything had to be
+re-verified afterwards (it was, and it was correct).
 
-Owner's call for this release. The live periods are DECODE **Act 1 · Season 2** (internal
-`balance_version` key 6) and Chain Reaction **Act 1 · Season 1** (key 3); neither game has an
-act 2 yet, so `act=new` lands both on Act 2 · Season 1 exactly.
+**Use the harness's own task-stop for a backgrounded command, never `pkill -f`.** And do not
+background a script whose whole purpose is a timed wait you might want to cancel: fire the
+announce with `curl` and run `fly-deploy.sh` separately, which is the shape that is actually
+controllable.
 
-⚠️ **AN ACT RESET WIPES RANKED RATINGS; A SEASON RESET DOES NOT.** Migration `0013_elo_by_act`
-re-keyed `elo_ratings` from the season to the ACT and states the rule outright: a new season in
-the same act wipes only the RECORD boards and ratings carry over, while ratings are wiped ONLY on
-an act reset. So this release returns every player in both games to 1000 / RD 350 and puts them
-back through placements. Past standings are NOT lost — `elo_history` snapshots each season's
-end-of-period rating and the archived boards read from there — but the live ladder starts empty.
-That is the single biggest player-facing consequence of this deploy; it is deliberate, and it is
-not practically reversible.
+## What changed for players
 
-This also SUPERSEDES the auto-roll that `BALANCE_VERSION` 4 would have caused on its own
-(`currentSeasonNumber` is `max(season rows, BALANCE_VERSION)`, so CR's key 3 would have been
-overtaken by 4 while DECODE's 6 would not). Rolling both by hand makes that moot.
+`BALANCE_VERSION` 3 → 4 retires every replay recorded before this build; the records themselves
+are untouched, because the server stores the score it computed and never re-derives it. The ACT
+reset (not merely a season reset) also wipes ranked ratings — see `0013_elo_by_act`, which is the
+distinction the patch notes are careful about.
 
-Resulting internal keys, run AFTER the deploy so the new act contains only matches played on the
-new balance: DECODE `max(6,4)+1` = **7**, Chain `max(3,4)+1` = **5**. Both display as
-Act 2 · Season 1. The endpoint auto-publishes a cinematic “A NEW ACT BEGINS” announcement unless
-`announce=0` is passed.
+## LAN is in production and CLOSED, by three independent fail-closed gates
 
-### 3. Nine migrations run against the live database at boot
+LAN shipped in the merge but is reachable nowhere:
 
-0025–0033 (`ranked_dodges`, `player_reports`, `account_standing`, `user_activity`,
-`invite_region`, `score_reports`, `replay_behaviour_version`, `practice_runs`, `lan_runs`).
-Audited: **zero destructive statements** — everything is `create table if not exists`,
-`create index if not exists`, and two `alter table … add column if not exists`. `migrate()` runs
-them from `server/index.ts` on start, so the deploy applies them; nothing to run by hand.
+- `VITE_LAN_ENABLED` — client. Hides the Play tile, `/lan` (the route does not even parse), the
+  banner, and the Career rows.
+- `LAN_UPLOADS` — server. `/api/lan` is not mounted; it 404s.
+- `LAN_SIGNALLING` — server. The WebRTC rendezvous is closed, so no tab-hosted rooms.
 
-## main's seven commits are KEPT, not flattened
+All three are set in `fly.alpha.toml` and deliberately absent from `fly.toml`. Turning LAN on for
+production means setting all three, on the Vercel project AND the Fly app.
 
-This was the first thing checked, because promoting alpha naively would have REGRESSED
-production. `origin/main` carried seven commits alpha never had, and three of them are infra:
+## Also shipped in this promotion
 
-- **`server/regions.ts`** — alpha knows five regions, main eight. The merged tree keeps
-  `['iad','ord','sjc','lhr','gru','jnb','syd','nrt']` and the estimated RTT rows with them.
-- **`scripts/fly-deploy.sh`** — satellites `(ord sjc lhr gru jnb syd nrt)`, not alpha's four.
-- **`fly.toml`** VM block, `src/net/env.ts` region entries, `.env.example`'s 8-region line.
-- The **Felix D** contributor rename (was `testimonies`) across four files.
+- **X-drive wheels are a diamond, not an X**, at ordinary wheel size, in both games and in both
+  builder previews. They were drawn radially, which is a machine that could translate and never
+  yaw.
+- **`/api/admin/maintenance` now accepts `ADMIN_SECRET`**, like the four routes that already did.
+  ⚠️ It could NOT be used for this deploy, because the prod server did not have the code yet;
+  it is available from the next one, which makes the whole sequence scriptable.
+- **An artifact is not a foam ball.** The claim had spread from a comment into CLAUDE.md,
+  HANDOFF, two `physicsEngine` comments and the patch-notes guide. Fixed where it was flavour.
 
-All of these auto-merged; the merged tree was checked for each one explicitly rather than assumed.
+## Open, and worth a decision
 
-## The one real policy collision: the replay gate
+1. ⚠️ **`src/config.ts` still justifies two constants against a foam ball**:
+   `BALL_ROLL_FRICTION` 28 ("still inside the 0.05–0.15g a foam ball on field tile plausibly
+   has") and the restitution pair ("a light foam-ball value is kept for physical honesty").
+   Those are calibration rationale, not wording. If an artifact is a hollow plastic shell rather
+   than foam, both constants were tuned against the wrong reference and want re-checking. Left
+   deliberately untouched so the question stays visible.
+2. **`docs/patch-notes.md` is the guide**, written and then corrected three times from owner
+   review in one session: write for an FTC team and do not simplify their vocabulary; no em
+   dashes at all; the AI sentence shapes to avoid; never invent a physical description of a game
+   element.
+3. **Moderation is inert.** `MODERATION_API_KEY` is set on both Fly apps and the key
+   authenticates, but the OpenAI account has no credits, so every call 429s and the filter fails
+   open. Nothing is broken; the guardrail simply is not armed.
+4. **`src/ui/styles.css` design drift** (~20 off-scale radii, ~50 literal colours) against
+   `DESIGN.md`. Pre-existing, partially migrated already (`e633a92`), and deliberately not
+   touched during a release. Best done as its own ratchet pass, like `uiaudit`.
+5. `Room.onInput` still buffers future-tick inputs unboundedly (capacity.md §7). A fix exists
+   uncommitted on the `perf-load` worktree and is NOT in this release.
 
-Alpha's `replayRefusal` refused any `SIM_VERSION` mismatch. main's `ca4f9b1` had deliberately
-REVERSED exactly that ("My mistake, and a bad one") after the strict gate took every replay of a
-live season off the board over a float-level determinism fix. Owner's ruling this session:
+---
 
-> "SIM Version mismatch should be allowed to be replayed and downloaded but should have a note
-> saying that it may mismatch."
+# HANDOFF — 2026-09-12 (hosting a LAN match from a browser tab: no download, no terminal)
 
-So the two are synthesized rather than one being picked:
+Branch **alpha**, merged from `lan-webrtc`. `npm test` **ALL PASS**, `npm run build` green,
+`npm run server:check` green, `npx tsc --noEmit` clean, `npm run uiaudit` at baseline,
+`npm run test:mm` 58 checks. Pushed as `a3ff8f4`.
 
-- **`replayRefusal` stays the ONE authority** and keeps its five-way messaging.
-- **`replayFidelity`** sorts those five into `ok` / `drift` / `stale`. `behaviour` and
-  `unstamped` are a DRIFT; `future`, `balance` and `tank` are fatal.
-- **`replayPlayable` now means "not stale"**, so a drifting replay plays AND both exports stay
-  offered on it. That is the point of the ruling: the video export is the one form that outlives
-  the sim, so the moment a replay starts to drift is when saving it matters most.
-- The viewer's note names which of the two drift reasons it is (`DRIFT_TEXT`), because "we know
-  the sim changed" and "we have no idea what it ran" are different admissions.
+## READ FIRST — the server has NOT been deployed, and that is the only thing left
 
-⚠️ **THE TEST ORDER IS LOAD-BEARING.** `tank` now runs BEFORE the sim test. Every format-1
-replay also predates the current `SIM_VERSION`, so asked in the old order a format-1 tank log
-would report as a mere drift and PLAY, showing a robot sitting still. Smoke pins the ordering.
+```
+./scripts/fly-deploy.sh --alpha
+```
 
-main's `replayPlayability` was DELETED rather than kept beside `replayRefusal` — two descriptions
-of one rule is the failure this repo keeps re-learning, and its `format !==` was stricter than
-`replayRefusal`'s `format >`, refusing older containers it can actually read.
+That deploys the PREVIEW app (`dsim-alpha`, from `fly.alpha.toml`), which is where
+`LAN_UPLOADS` and the new `LAN_SIGNALLING` are set. **flyctl is not installed on this
+machine**, which is why the session stopped here. Never a bare `flyctl deploy`, and never
+prod for this — `fly.toml` deliberately sets neither flag.
 
-## Four silent reverts that rode in on main's auto-merged hunks
+Until it runs, the alpha server has no `server/lanSignal.ts` and no `LAN_SIGNALLING`, so a
+tab cannot claim a room code and **two machines have never done this**. Hosting claims its
+code through the CLOUD rendezvous and verifies an auth token there, so the first real
+host-and-guest test is necessarily a post-deploy one. After the deploy: check `/health`,
+confirm the alpha Vercel project sets `VITE_LAN_ENABLED` (a hidden button and an open route
+are each half a gate), then host from one machine, read the six-character code out, join from
+a second, play a match, and check it lands in Career.
 
-Each contradicted a decision alpha had written down and explained, and each would have shipped
-without a conflict marker. Worth knowing the class exists, because a 411-commit merge is where it
-happens:
+## What landed
 
-1. **A duplicate "Changes" footer button** — alpha's block and main's both landed.
-2. **`.ds-foot-link bold`** re-added, against alpha's own comment ("NO `.bold`. These eight are
-   peer destinations").
-3. **ControlsSection had Touch and Reset TWICE**, main's copy carrying `RESET TO DEFAULTS` in ALL
-   CAPS on a `ds-btn` (the copy rules allow ALL CAPS in exactly four places; this is not one).
-4. **Privacy's `sub` heading removed**, which alpha had deliberately kept ("Privacy's 'how to get
-   rid of it' does [carry something the heading cannot]; Terms' did not").
+`docs/lan-webrtc.md` is complete — all five steps. A browser tab now runs the authoritative
+room and is reached over a WebRTC DataChannel, so hosting a LAN match needs no download, no
+terminal and no Node. That is the whole point: the machine this feature is for is a school
+Chromebook, and both previous host paths asked for `git clone` and `npm ci`.
 
-Plus one genuine defect neither branch could see alone: `legalText.ts` said "Privacy & **C**ookie
-**S**ettings" while the footer button rendered "Privacy & cookie settings". The privacy policy
-names that link verbatim, so the two must match; both are sentence case now.
+- **`src/lan/hostWorker.ts`** — the room, in a dedicated Worker. Imports the same
+  `server/room.ts` the cloud runs. **No persistence callbacks are passed**, so a tab-hosted
+  match structurally cannot write a leaderboard row, move ELO or touch standing.
+- **`src/lan/hostRuntime.ts`** — the page half: signalling socket, one `RTCPeerConnection` per
+  guest, the host's own seat through a `LoopbackTransport`, the wake lock. The host is an
+  ordinary client of its own room; no client code branches on being the host.
+- **`src/net/lanPeer.ts` / `src/net/lanSignalClient.ts`** — two lanes (ordered control,
+  unordered `maxRetransmits: 0` hot) and the offer/answer/ICE dance, `iceServers: []`.
+- **`server/lanSignal.ts`** — the rendezvous. Routing comes from the registry, never from the
+  message; it never parses a payload.
+- **`src/lan/hosting.ts`** — see the first bug below.
 
-`src/ui/HomeMenu.tsx` KEPT main's change (`{' · '}` → `<br />`) — alpha never touched that line,
-so it is main's newer deliberate choice, not a revert. Flagged only because it is the one
-cosmetic main-over-alpha call in the merge.
+## The two bugs found after the feature already "worked"
 
-`uiaudit` off-grid-gap went 165 → **164** on the merged tree and the baseline is lowered to lock
-it in, as the ratchet asks.
+**1. Nothing kept a tab-hosted match.** `App.tsx`'s `keepLanRun` gated on `lanActive()`, which
+is the flag for a LAN room reached by ADDRESS. A WebRTC room sets no LAN server, so that
+condition was false, every condition after it went unevaluated, and — with the Worker room
+deliberately persisting nothing — the match existed nowhere. Silently: no error, no warning,
+nothing missing on screen, just nothing in your history the next morning.
 
-## Deploy checklist — in this order
+`src/lan/hosting.ts` is the missing predicate, in its own LEAF module for the same reason
+`roomRegion.ts` is one: the rule fails with no symptom, so it has to be testable headlessly.
+Smoke walks `src/` and asserts exactly ONE screen can raise the flag — a second raiser would
+file a match twice.
 
-1. **Review** `promote-alpha-to-main` (`git diff origin/alpha...promote-alpha-to-main` is only
-   17 files — that diff IS main's whole contribution plus the gate rework).
-2. `git push origin promote-alpha-to-main:main` — **Vercel auto-deploys the client from main.**
-3. **`ADMIN_SECRET=… scripts/announce-deploy.sh "…" 300`** for the server. Do NOT use
-   `fly-deploy.sh` bare on production: players get no warning, and the announce script calls the
-   wrapper itself after the window. (`ADMIN_SECRET` is already set on `dohun-sim-decode`.)
-4. Verify: `curl https://dohun-sim-decode.fly.dev/health`, then
-   `fly machine list -a dohun-sim-decode` — every machine on ONE image, 1/1, and the satellites
-   back on `shared-cpu-1x` (the wrapper re-shrinks them; a bare deploy would have upsized all 7).
-5. **Roll both games to Act 2 · Season 1**, back to back, right after the deploy (see §2 — this
-   resets ranked ELO for both):
-   `curl -fsS -G -X POST "$HOST/api/admin/season/start" --data-urlencode "game=decode" --data-urlencode "act=new" --data-urlencode "secret=$ADMIN_SECRET"`
-   then the same with `game=chain`. Add `--data-urlencode "announce=0"` for a silent roll.
-6. Confirm both boards read the new period: `/api/seasons?game=decode` → `current: 7`,
-   act 2 / seasonNo 1; `/api/seasons?game=chain` → `current: 5`, act 2 / seasonNo 1.
+**2. The rendezvous was a third door into production.** The owner's standing call is that LAN
+ships nowhere near prod, held there by `VITE_LAN_ENABLED` (hides the entry points) and
+`LAN_UPLOADS` (decides whether `/api/lan` is mounted at all). Neither covers INTRODUCING two
+browsers to each other: that touches no database, which is exactly why the upload flag is
+scoped away from it. Deployed as it was, prod would have mounted no upload route and still let
+anyone host a LAN match. Now **`LAN_SIGNALLING`** in `server/lanUploads.ts` — same shape,
+fails closed, its own variable rather than folded into the other, and it does NOT read
+`SERVER_CHANNEL` (a release channel is not a feature switch; alpha is where this is being
+tested, not what makes it allowed). Verified at runtime in both states against a locally
+booted server: closed → all three signalling messages answered `closed` with nothing
+registered; open → the real logic runs (`auth` for an anonymous host, `nohost` for an
+unhosted code, `nopeer` for an unknown peer).
 
-### Not blocking, but worth deciding
+## Offline matches now reach the account on their own
 
-- **`MODERATION_API_KEY` is NOT set on production.** Alpha ships server-side name moderation and
-  it FAILS OPEN — without the key every username, display name and robot/team name is allowed,
-  exactly as today. Nothing breaks; the feature is simply inert until
-  `fly secrets set MODERATION_API_KEY='sk-…' -a dohun-sim-decode`. The admin console's forced
-  rename stays the human backstop either way.
-  The key is an **OpenAI platform API key** (platform.openai.com → API keys): `server/moderation.ts`
-  defaults to `POST https://api.openai.com/v1/moderations` with `omni-moderation-latest`, sends
-  `{model, input}` and reads `results[0].flagged`. It falls back to `OPENAI_API_KEY` if that is
-  set instead. Any provider speaking the same shape works via `MODERATION_API_URL` /
-  `MODERATION_MODEL`. SERVER-SIDE ONLY — never a `VITE_*` var, or the key ships to browsers.
-- **`SERVER_CHANNEL` is correctly ABSENT from `fly.toml`**, so production keeps `stable`
-  behaviour. Only `fly.alpha.toml` sets `alpha`. Nothing to change.
-- The three items the deflate session left unproven (snapshot-gap jitter under compression,
-  resident memory at full population, where the zlib CPU lands) are still unmeasured on Linux and
-  are now riding into production with this deploy.
-- **`Room.onInput` still buffers future-tick inputs unboundedly** (capacity.md §7) — a latent DoS.
-  The fix exists uncommitted in the `perf-load` worktree and is NOT on alpha or in this merge.
+The LAN upload backlog (`saveLanRunLocal` → `pendingLanUploads` → `uploadLanRun`) already
+existed but drained only on a sign-in or at the END of a LATER match. Self-hosted play exists
+for venues the internet does not reach, so the match that most needs uploading is the one
+played with no connection at all — a host who played a scrimmage in a gym and opened the
+laptop at home had to play ANOTHER match before the first one uploaded. It now also drains on
+the `window` `online` event, alongside the practice backlog.
+
+That signal is coarse (it reports a network interface, not reachability — a captive portal
+fools it), so it is an EXTRA trigger and never the only one. Both flushes are sequential and
+stop on the first failure, leaving the backlog intact.
+
+## §6 was right, and the first measurement of it was wrong
+
+Timer throttling decides the architecture, so it was measured rather than assumed. Page thread
+vs dedicated Worker, same hidden tab, 7 minutes:
+
+| elapsed, hidden | page thread | Worker |
+|---|---|---|
+| 0–30 s | 59.1 → 59.7 Hz | 58.5 Hz |
+| 30–45 s | **3.6 Hz** | 58.9 Hz |
+| 45 s – 5 min | **1.1–2.4 Hz** | 50.4–62.3 Hz |
+| 5–6 min | **0.017 Hz** (one wake per minute) | 60.9 Hz |
+| whole run | — | **60.08 Hz**, 25,236 ticks / 420.0 s |
+
+⚠️ **A SHORT SAMPLE INVERTS THE CONCLUSION.** The first attempt was a 5-second A/B and
+reported the page thread AHEAD (304 ticks vs 277) — that entire window sits inside the
+un-throttled grace period. Anything under about a minute hidden is measuring the wrong regime.
+**The loop cannot move back to the page thread**; that is not thread hygiene, it is the
+feature working or not.
+
+## Verified live, not only by source shape
+
+Smoke here is mostly source-shape (`lan signal:` / `lan rtc:` / `lan host:` / `lan tab:` /
+`lan keep:` / `lan gate:`) because Node has no `Worker`, no `RTCPeerConnection` and no DOM. So
+these were run in a real browser instead:
+
+- `Room` + Rapier WASM booting inside a Worker → `ready` at **230 ms**.
+- A full match stepping there: `matchStart`, then **29.4 Hz** snapshots over 5 s (design rate
+  30 Hz), **every one on the hot lane**, `welcome`/`roster` on control. Health `tickHz`
+  48.7 → 62.4, drift **11 ms → 2 ms**.
+- A real `RTCPeerConnection` handshake, both ends in one page through a faked rendezvous: both
+  lanes open in 2.5 s, and the succeeded candidate pair is a **`host` candidate over udp** —
+  direct, no relay, which is what `iceServers: []` is for. Lane routing correct (`join` →
+  control, `{reliable:false}` → hot), both delivered.
+
+## Smaller things in the same pass
+
+- `.ds-panelbox + .ds-panelbox` / `.ds-panel + .ds-panel` get a 16px gap. `--ds-block` is a 4px
+  offset shadow and the cards carry no margin of their own, so two stacked cards had the upper
+  one's shadow painting onto the lower's border — the same defect stacked LABELS had, and the
+  LAN page now stacks cards twice.
+- The terminal-host block no longer claims "a browser tab can't be a server": it said that
+  directly underneath a panel where a tab is hosting. It is re-framed as the **no-internet-at-
+  all** path, which is the true distinction — the tab path needs a rendezvous and about a
+  second of internet, and a gym with none is a real place. A smoke check pinned the old
+  sentence; it now pins the new distinction instead.
+- ⚠️ One smoke regex matched a literal `\n` between two source lines and so passed on the LF
+  worktree and failed on the CRLF one. Use `\s*` in source-shape checks — this repo has
+  worktrees checked out both ways.
+- ⚠️ **Strip comments before a grep-style source assertion.** Hit for the third time: the
+  `lan gate:` check for "does not key off the release channel" was `!/SERVER_CHANNEL/`, and it
+  matched the PROSE explaining why the channel is the wrong key.
 
 ---
 
@@ -168,7 +248,7 @@ Branch **alpha**, rebased onto `71e4316`. `npm test` **ALL PASS — 1451 checks 
 `npm run server:check` green. `SIM_VERSION` stays **2**, recorded in that version's batch
 list per the block's own alpha rule. **NOT YET DEPLOYED** — see Deploy.
 
-## READ FIRST — the request, and the trap in the middle of it
+## The request, and the trap in the middle of it
 
 > "Make the intaking speed extremely fast, but decrease the effective intaking area. Like I
 > said before, the intake is a circular compliant wheel spinning. This means that the ball
