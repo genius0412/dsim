@@ -1,4 +1,4 @@
-import type { Alliance, Artifact, ArtifactColor, World } from '../../src/types';
+import type { Alliance, Artifact, ArtifactColor, RobotCommand, World } from '../../src/types';
 import { SIM_DT } from '../../src/config';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
@@ -32,7 +32,7 @@ import {
 import { BB_FRAME_RAM_SPEED, bbNectarLocked, updateBiobuzzPenalties } from '../../src/games/biobuzz/penalties';
 import { biobuzzFieldHud } from '../../src/games/biobuzz/hud';
 import { bbScene, bbSceneAt } from '../../src/games/biobuzz/scenes';
-import { setup, type Check } from './harness';
+import { cmd, setup, type Check } from './harness';
 
 /**
  * THE RULES LANE — Table 10-2 scoring, the Section 11 fouls, the 1:00 cue and the HUD slice.
@@ -404,13 +404,47 @@ function scoringChecks(check: Check): void {
 // SECTION 11 — EVERY FOUL, ON ITS EDGE
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** run the penalty engine for `n` ticks without moving anything, and report what it billed. */
-function bill(world: World, n = 1): { major: Record<Alliance, number>; pts: Record<Alliance, number> } {
-  for (let i = 0; i < n; i++) updateBiobuzzPenalties(world);
+/** no commands at all — the driverless default every non-pin check runs on. */
+const NO_CMD = new Map<number, RobotCommand>();
+
+/**
+ * Run the penalty engine for `n` ticks without moving anything, and report what it billed.
+ *
+ * `dt` is a REAL `SIM_DT` rather than a stand-in, because G421 is billed in SECONDS: a tick
+ * here is a sixtieth of a second of pinning and the check arithmetic counts on it. `held` is
+ * the command map — the pin detector asks whether the pinner is driving into its victim, and
+ * a driverless world can never produce a pin.
+ */
+function bill(
+  world: World,
+  n = 1,
+  held: Map<number, RobotCommand> = NO_CMD,
+): { major: Record<Alliance, number>; minor: Record<Alliance, number>; pts: Record<Alliance, number> } {
+  for (let i = 0; i < n; i++) updateBiobuzzPenalties(world, SIM_DT, held);
   return {
     major: { red: world.match.fouls.red.major, blue: world.match.fouls.blue.major },
+    minor: { red: world.match.fouls.red.minor, blue: world.match.fouls.blue.minor },
     pts: { red: world.match.scores.red.foulPoints, blue: world.match.scores.blue.foulPoints },
   };
+}
+
+/** whole ticks of `s` seconds, which is the only unit the pin clock advances in. */
+function ticks(s: number): number {
+  return Math.round(s / SIM_DT);
+}
+
+/**
+ * A command that drives a default BIOBUZZ robot along world +x (`dir` = 1) or −x (−1).
+ *
+ * Both the mecanum and the tank decode are filled, and they agree: `driveIntent` reads
+ * `{x: driveY, y: −driveX}` rotated by the heading for a holonomic build and `(left+right)/2`
+ * for a tank one, so at heading 0 either decode gives `{x: dir, y: 0}`. Writing one and not
+ * the other would make this fixture depend on which drivetrain `BB_DEFAULT_SPEC` happens to
+ * carry — and `attemptDir` exists precisely because a tank robot that fills neither was once
+ * unable to be pinned at all.
+ */
+function driveX(dir: 1 | -1): RobotCommand {
+  return cmd({ driveY: dir, leftDrive: dir, rightDrive: dir });
 }
 
 function penaltyChecks(check: Check): void {
@@ -555,6 +589,185 @@ function penaltyChecks(check: Check): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// G421 — PINNING, WHICH IS BILLED IN SECONDS AND NOT ON AN EDGE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ⚠️ EVERY POSE BELOW IS MEASURED ON THE FOOTPRINT, 21 × 17, NOT THE 15 × 17 CHASSIS.
+ * `robotExtents` adds a sweeper's reach to each end, so at heading 0 a robot reaches 10.5 in
+ * along x and two of them are in contact whenever their centres are within ~21 in. Poses
+ * written against the chassis put the robots a clear four inches apart and the rule simply
+ * never fires — which reads exactly like a broken detector.
+ *
+ * The pin fixture is deliberately NOT a driven match. `isPinning` asks who is PRESSING and
+ * the accumulator measures how far the victim actually got, so a hand-built world with static
+ * poses is the only way to hold "pressed, going nowhere" for an exact number of seconds. What
+ * a real chassis does when shoved is the physics lane's question, not this one's.
+ */
+function pinChecks(check: Check): void {
+  /**
+   * ONE PINNER, ONE IDLE VICTIM, HELD AGAINST THE HIVE FRAME.
+   *
+   * The +x frame bar's inner edge is on the x = +24 seam, so a victim flat against it sits at
+   * x = 24 − 10.5 = 13.5. The pinner is 20.5 in away — overlapping by half an inch, the way
+   * two robots in a shove actually are — and driving into it.
+   *
+   * The victim gives NO COMMAND, and that is the case the rule turns on: "the opponent ROBOT
+   * is attempting to move" reads, to a referee, as one robot holding another, and a driver who
+   * is held stops mashing the stick. `isPinning` says so in full. A detector that required a
+   * struggling victim would bill nothing here, which is the failure this check exists for.
+   */
+  const frame = (): World => {
+    const w = bare([
+      { id: 0, alliance: 'red' },
+      { id: 1, alliance: 'blue' },
+    ]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    place(w, 1, 24 - 10.5, 0); // blue, flat against the +x HIVE frame bar
+    place(w, 0, 24 - 10.5 - 20.5, 0); // red, pressing into it
+    return w;
+  };
+  const press = new Map<number, RobotCommand>([[0, driveX(1)]]);
+
+  {
+    const w = frame();
+    const under = bill(w, ticks(2.9), press);
+    check('G421: under three seconds of PINNING bills nothing', under.major.red === 0, String(under.major.red));
+
+    const first = bill(w, ticks(0.4), press); // 3.3 s
+    check('G421: a robot holding an idle victim against the frame bills at 3 s',
+      first.major.red === 1, String(first.major.red));
+    check("G421: it is a MAJOR, not DECODE's MINOR", first.minor.red === 0, String(first.minor.red));
+    check(`G421: the points go to the VICTIM's alliance, +${BB_PTS.foulMajor}`,
+      first.pts.blue === BB_PTS.foulMajor, String(first.pts.blue));
+    check('G421: the victim is billed nothing', first.major.blue === 0 && first.pts.red === 0);
+
+    // "...and an additional MAJOR FOUL for every further 3 seconds" (reference §5)
+    const second = bill(w, ticks(3.0), press); // 6.3 s
+    check('G421: another MAJOR for every further 3 s', second.major.red === 2, String(second.major.red));
+    check('G421: two majors are 40 to blue', second.pts.blue === 2 * BB_PTS.foulMajor, String(second.pts.blue));
+  }
+
+  /**
+   * THE MUTUAL SHOVE — criterion C, and the reason a pin detector needs one.
+   *
+   * Two EQUAL chassis meeting head-on in open field. Both satisfy every clause of the rule
+   * against the other — contact, pressing in, going nowhere — so both are "pinning", and a
+   * stalemate that is nobody's fault must not bill BOTH alliances 20 points every three
+   * seconds. "The PINNING ROBOT gets PINNED" ends it: the pair is thrown out entirely.
+   *
+   * Mid-field on purpose. `isPinning` breaks the symmetry of a shove with a SOLID at one
+   * robot's back, and the middle of the field is where there is nothing to break it with.
+   */
+  {
+    const w = bare([
+      { id: 0, alliance: 'red' },
+      { id: 1, alliance: 'blue' },
+    ]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    place(w, 0, -10, 0);
+    place(w, 1, 10, 0);
+    const both = new Map<number, RobotCommand>([
+      [0, driveX(1)],
+      [1, driveX(-1)],
+    ]);
+    const shove = bill(w, ticks(10), both);
+    check('G421: an equal-chassis mutual shove mid-field bills NOTHING',
+      shove.major.red === 0 && shove.major.blue === 0, `${shove.major.red}/${shove.major.blue}`);
+    check('G421: and no points move either way', shove.pts.red === 0 && shove.pts.blue === 0);
+    check('G421: a mutual hold keeps no accumulator at all',
+      Object.keys(w.penalties.pins).length === 0, Object.keys(w.penalties.pins).join(','));
+  }
+
+  /**
+   * THE COUNT PAUSES AND RESUMES — the clause the whole rule turns on.
+   *
+   * 2.5 s of pinning, then the pinner EASES OFF for 0.7 s, then 0.6 s more. The two pressing
+   * stretches total 3.1 s, so the tariff lands exactly once. If a lapse RESET the count, the
+   * 0.6 s stretch would bill nothing and a pinner could hold a victim all match for free by
+   * blinking every three seconds. If a lapse ENDED the pin, the same thing.
+   *
+   * 0.7 s is well inside `PIN_END_S`, which is the point: A and B are distances held for MORE
+   * THAN THREE SECONDS and nothing shorter than that ends anything.
+   */
+  {
+    const w = frame();
+    const held = bill(w, ticks(2.5), press);
+    check('G421: 2.5 s of pinning is still under the tariff', held.major.red === 0, String(held.major.red));
+
+    const off = bill(w, ticks(0.7)); // no command — the pinner stops pressing
+    check('G421: easing off for 0.7 s bills nothing', off.major.red === 0, String(off.major.red));
+    const paused = biobuzzFieldHud(w).pins;
+    check('G421: the PIN is still on the books through the ease-off', paused.length === 1, String(paused.length));
+    check('G421: and its count PAUSED rather than resetting — ~2.5 s, not 0',
+      paused.length === 1 && Math.abs(paused[0].seconds - 2.5) < 0.05,
+      paused.length === 1 ? paused[0].seconds.toFixed(3) : 'no pin');
+
+    const resumed = bill(w, ticks(0.6), press); // 2.5 + 0.6 = 3.1 s of actual pinning
+    check('G421: the count RESUMES — 2.5 s + 0.6 s crosses the tariff', resumed.major.red === 1, String(resumed.major.red));
+  }
+
+  /**
+   * ...AND CRITERION A REALLY DOES END IT, which is what makes the pause above a pause rather
+   * than a detector that never lets go. The victim is moved a clear 2 ft away and left there
+   * for more than `PIN_END_S`; the accumulator is dropped, and a fresh press starts from zero.
+   */
+  {
+    const w = frame();
+    bill(w, ticks(2.5), press);
+    place(w, 1, 24 - 10.5 + 30, 0); // 30 in away — past PIN_ESCAPE_DIST (24)
+    const away = bill(w, ticks(3.5), press);
+    check('G421: 2 ft of daylight for more than 3 s bills nothing', away.major.red === 0, String(away.major.red));
+    check('G421: ...and ENDS the pin — the accumulator is gone',
+      Object.keys(w.penalties.pins).length === 0, Object.keys(w.penalties.pins).join(','));
+    place(w, 1, 24 - 10.5, 0); // back into the hold
+    const restart = bill(w, ticks(2.5), press);
+    check('G421: a pin that ENDED restarts from zero, not from 2.5 s', restart.major.red === 0, String(restart.major.red));
+  }
+
+  /**
+   * THE PIN CLOCKS ARE FORGOTTEN OUTSIDE THE PLAYED PERIODS, the same way `foulEdge` is.
+   *
+   * Robots are DISABLED through the transition, so a pin that was live at the AUTO buzzer is
+   * not being held across the freeze — and carrying 2.9 s of it into TELEOP would bill a MAJOR
+   * on the first tick of a period in which nothing had happened yet. DECODE's own engine does
+   * NOT clear these; this one does, and this check is what says so out loud.
+   */
+  {
+    const w = frame();
+    bill(w, ticks(2.5), press);
+    check('G421: a live pin is on the books during TELEOP', Object.keys(w.penalties.pins).length === 1);
+    w.match.phase = 'transition';
+    bill(w, 1, press);
+    check('G421: the pin clocks are cleared outside the played periods',
+      Object.keys(w.penalties.pins).length === 0, Object.keys(w.penalties.pins).join(','));
+    w.match.phase = 'teleop';
+    const resumed = bill(w, ticks(2.5), press);
+    check('G421: so the same hold starts over when play resumes', resumed.major.red === 0, String(resumed.major.red));
+  }
+
+  /** the HUD slice — `nextIn` is the only warning either driver gets. */
+  {
+    const w = frame();
+    check('HUD: no pins on a quiet field', biobuzzFieldHud(w).pins.length === 0);
+    bill(w, ticks(1.0), press);
+    const [pin] = biobuzzFieldHud(w).pins;
+    check('HUD: a live PIN names the pinner and the victim', !!pin && pin.pinner === 0 && pin.pinned === 1,
+      pin ? `${pin.pinner}→${pin.pinned}` : 'none');
+    check('HUD: nextIn counts down to the MAJOR — ~2 s left after 1 s of pinning',
+      !!pin && Math.abs(pin.nextIn - 2) < 0.05, pin ? pin.nextIn.toFixed(3) : 'none');
+    check('HUD: nothing billed yet', !!pin && pin.billed === 0);
+    bill(w, ticks(2.5), press); // 3.5 s total
+    const [after] = biobuzzFieldHud(w).pins;
+    check('HUD: after the tariff lands, billed is 1 and nextIn restarts',
+      !!after && after.billed === 1 && after.nextIn > 2.4 && after.nextIn <= 3,
+      after ? `${after.billed}/${after.nextIn.toFixed(3)}` : 'none');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // THE 1:00 CUE, AND THE ASSESSMENT INSTANTS
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -694,6 +907,7 @@ function sceneChecks(check: Check): void {
 export function rulesChecks(check: Check): void {
   scoringChecks(check);
   penaltyChecks(check);
+  pinChecks(check);
   cueChecks(check);
   sceneChecks(check);
 }

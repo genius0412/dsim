@@ -1,5 +1,84 @@
 # HANDOFF — Lane A (field)
 
+## 2026-09-12 · rules lane (A5b) · G421 PINNING is LIVE · `biobuzz-rules`
+
+Gates: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane rules` **141/141** (was 115,
++26) · `npm run test:bb` **864/864**. Based on `origin/alpha` `a318bce`, merged first for the
+`isPinning` export.
+
+Files changed: `penalties.ts`, `step.ts`, `hud.ts`, this doc. `score.ts` and `scenesField.ts`
+are this lane's and were NOT touched — G421 bills through `world.match.scores[a].foulPoints`,
+which `score.ts` already reads, and a pin has nothing to draw on a field that draws no text.
+
+### What landed
+
+**G421 is modelled on DECODE's exported `isPinning`, not on a second detector.** Request 5 of
+field-plan §6 is what made this possible, and the rule BIOBUZZ prints is DECODE's G422 with
+one thing changed — the tariff. So criteria A/B/C are CALLED:
+
+- **A** the pair gets 24 in (the rule's 2 ft, `PIN_ESCAPE_DIST`) apart for more than 3 s;
+- **B** either robot gets that far from where the pin initiated, for more than 3 s;
+- **C** the pinning robot is itself being pinned — a mutual hold is nobody's foul.
+
+A and B **END** a pin. Everything else that interrupts it — the pinner easing off, the victim
+squirming a foot — **PAUSES** the count and does not reset it. That is the manual's own
+"pause/resume" and it is the entire rule: without it a pinner wipes a 2.9-second count by
+letting go for a tenth of a second, forever, for free.
+
+**The tariff is the only divergence: MAJOR 20, and another MAJOR every further 3 s** (reference
+§5, Table 10-4 — DECODE bills a MINOR). Billed through `bbAwardFoul`, like every other rule in
+the file, because the shared `awardFoul` reads `C.PTS_FOUL_MAJOR` = 15.
+
+**The clocks live in `world.penalties.pins` / `.pinFouls`** — the SHARED `PenaltyState`, which
+already exists on a BIOBUZZ world (`spawn.ts` initialises it), is already plain JSON on every
+snapshot, and already has exactly this shape. No `state.ts` edit: a second BIOBUZZ-flavoured
+copy would be a state-type change to store what the world already stores.
+
+### What the next person has to know
+
+1. ⚠️ **`isPinning`'s INTERNAL SOLID PROBE IS STILL DECODE'S FIELD, AND THIS IS A REQUEST.**
+   The private `pinnedAgainstWall` helper hard-codes DECODE's **goal wedges** and **classifier
+   channels** as solids next to the perimeter. BIOBUZZ has neither, and its own solids — the
+   two HIVE FRAME BARS — are invisible to it. The perimeter half is correct (both fields are
+   144 in, `C.FIELD_HALF` equals `BB_HALF_X`), so the damage is confined to the four corner
+   regions DECODE puts a goal in: a victim held there reads as "cornered against a solid,
+   therefore escaping rather than pinning" and **the pin goes unbilled**. That direction is the
+   safe one — it under-bills and never invents a foul — but it is wrong, and the fix is shared
+   core: **`pinnedAgainstWall` wants the game's own solid list passed in** (a field-plan §6
+   request-5 follow-on, same shape as the request that unblocked this one). Until then a pin in
+   a BIOBUZZ corner is free.
+2. **Contact is `robotsContact` (this file's OBB test with `BB_FOUL_SLOP`), not
+   `world.rrContacts`.** DECODE feeds the solver's contact record. Using both would leave one
+   file with two disagreeing definitions of contact, and the rules smoke — which drives
+   hand-built worlds with no solver behind them — could not reach the rule at all.
+3. **`updateBiobuzzPenalties` now takes `(world, dt, commands)`.** A pin is billed in seconds
+   and asks whether the pinner is DRIVING INTO its victim, so both were unavoidable. `step.ts`
+   passes the APPLIED commands (post aim-override) at stage 7, which is after the Rapier solve
+   — load-bearing, because the pin clock measures how far the victim actually got this tick.
+4. **The pin clocks are CLEARED outside the played periods, and DECODE's are not.** Robots are
+   disabled through the transition, so a pin live at the AUTO buzzer is not being held across
+   the freeze; carrying 2.9 s of it into TELEOP bills a MAJOR on the first tick of a period in
+   which nothing had happened. This is the same reasoning `src/sim/penalties.ts` applies to
+   G408's clocks four lines below the guard it returns from — **DECODE arguably has this bug**,
+   and it is the owner's file, so it is reported here rather than patched.
+5. **`biobuzzFieldHud` gained `pins: BbPinHud[]`** — `{pinner, pinned, seconds, billed,
+   nextIn}`, sorted by pinner then victim. `nextIn` is the number that matters: the clock runs
+   in a referee's head and costs 20 points every three seconds, so it is how long the pinner
+   has to let go and how long the victim has to keep trying. **ADDITIVE** — every existing read
+   still works. Per the A5 split, `HudSlots.tsx` is A5c's from now on and was not touched; if
+   that chat needs another field it should ask through the master rather than reach in here.
+6. **`bbEscapeDir` is a five-line local copy** of `src/sim/penalties.ts`'s private `escapeDir`.
+   Copied rather than requested because it is a normalisation with no rule in it; the thing
+   that encodes JUDGEMENT (`isPinning`) is imported. A duplicated judgement is a liability, a
+   duplicated unit vector is not worth a round trip.
+7. **Every pin fixture is measured on the FOOTPRINT, 21 × 17.** Same warning as item 9 of the
+   A4b section below and it bit again: a victim flat against the +x frame bar sits at
+   x = 13.5 (24 − 10.5), and a pinner written against the 15-in chassis lands four inches clear
+   with the rule never firing — which reads exactly like a broken detector.
+8. **26 new checks, and three of them are negative controls.** The mutual shove (criterion C),
+   the 2-ft release (criterion A ends it, and a re-press restarts from zero) and the transition
+   clear. A pin detector that simply said "yes" would pass the positive checks alone.
+
 ## 2026-09-12 · A4a: the field is LIVE · `GREEN`
 
 Gates: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane field` **208/208** ·

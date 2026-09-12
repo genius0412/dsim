@@ -1,6 +1,8 @@
-import type { Alliance, RobotState, Vec2, World } from '../../types';
+import type { Alliance, RobotCommand, RobotState, Vec2, World } from '../../types';
 import { hyp } from '../../math';
+import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../config';
 import { robotCorners } from '../../sim/physics';
+import { isPinning } from '../../sim/penalties';
 import {
   BB_FLOWER_UNLOCK_S,
   BB_FOUL_SLOP,
@@ -34,17 +36,19 @@ import { bbKindOf } from './score';
  *
  * ── WHAT IS ENFORCED, AND WHAT IS DELIBERATELY NOT ──────────────────────────
  * HERE: **G410** (NECTAR into a FLOWER before the 1:00 cue), **G402** (AUTO interference
- * across the field's halves) and **G417** (ramming the HIVE frame).
+ * across the field's halves), **G417** (ramming the HIVE frame) and **G421** (PINNING).
+ *
+ * G421 IS THE ONE RULE HERE THAT IS NOT EDGE-TRIGGERED, and it is not an exception to the
+ * paragraph above — it is a rule the manual itself counts in SECONDS rather than in
+ * instances. "PIN ≤ 3 s ... MAJOR + MAJOR per further 3 s" (reference §5, Table 10-4) is a
+ * tariff on elapsed time, so it owns a per-ordered-pair second-accumulator instead of a key
+ * in `foulEdge`. See `bbUpdatePins`.
  *
  * NOT HERE, each for a stated reason rather than an oversight:
  *  • **G407** CONTROL ≤ 4 is STRUCTURAL — `bbHopperCap` is 4, so a robot cannot hold a fifth.
  *    The manual's other half, HERDING loose elements, needs a CONTROL test the sim has no
  *    honest version of (contact plus "moving with the robot" is a guess about intent), and a
  *    fabricated foul teaches a driver a habit the real rule may not punish.
- *  • **G421** PIN needs DECODE's `isPinning` (criteria A/B/C with its pause/resume), which is
- *    `private` to `src/sim/penalties.ts`. Extracting it is shared-core work — field-plan §6
- *    request 5 — and a second, BIOBUZZ-flavoured pin detector is exactly the duplicate the
- *    request exists to avoid.
  *  • **G405 / G409 / G411 / G418 / G426 / G427** are structural (nothing leaves the field, the
  *    sim's human player obeys its own timing) or referee judgement a 2D sim cannot see.
  *
@@ -101,7 +105,11 @@ export function bbNectarLocked(world: World): boolean {
   return !(m.phase === 'teleop' && m.phaseTimeLeft <= BB_FLOWER_UNLOCK_S);
 }
 
-export function updateBiobuzzPenalties(world: World): void {
+export function updateBiobuzzPenalties(
+  world: World,
+  dt: number,
+  commands: Map<number, RobotCommand>,
+): void {
   const bb = world.biobuzz;
   if (!bb) return;
   const phase = world.match.phase;
@@ -112,6 +120,16 @@ export function updateBiobuzzPenalties(world: World): void {
     // is CLEARED rather than kept: a condition that was true at the buzzer must not count as
     // "already fired" when play resumes, or the first real instance of it goes unbilled.
     bb.foulEdge = {};
+    /**
+     * ...and the PIN CLOCKS go with it, which is a DELIBERATE DIVERGENCE from DECODE: its
+     * `updatePenalties` returns from this same guard without touching `pen.pins`, so a pin
+     * live at the AUTO buzzer resumes at the TELEOP one with 2.9 s already on it and bills a
+     * MAJOR on the first tick of TELEOP for a hold that happened across the freeze. Robots are
+     * DISABLED through the transition — nothing that happens in it is anybody's foul — and
+     * this file's own rule is that the memory is forgotten outside the played periods. The
+     * same reasoning DECODE applies to G408's clocks four lines further down, applied here.
+     */
+    world.penalties.pins = {};
     return;
   }
 
@@ -223,6 +241,194 @@ export function updateBiobuzzPenalties(world: World): void {
   }
 
   bb.foulEdge = seen;
+
+  // ── G421 — PINNING. Seconds, not an edge: its own accumulator, below. ─────
+  bbUpdatePins(world, dt, commands);
+}
+
+/**
+ * G421 — "PIN ≤ 3 s (2-ft / 3-s release, pause/resume). Violation: MAJOR FOUL, and an
+ * additional MAJOR FOUL for every further 3 seconds" (reference §5, Table 10-4).
+ *
+ * ── THE DETECTOR IS DECODE'S, ON PURPOSE ────────────────────────────────────
+ * `isPinning` is `src/sim/penalties.ts`'s, now exported (field-plan §6 request 5). The rule
+ * BIOBUZZ prints is DECODE's G422 with a different tariff — same PIN, same 2-ft / 3-s release,
+ * same pause-and-resume — so the criteria are CALLED rather than re-spelled here. A second,
+ * BIOBUZZ-flavoured pin detector is exactly the duplicate the request existed to avoid: it
+ * would drift, and then two games would disagree about what a pin is while quoting one
+ * definition.
+ *
+ * Criteria A/B/C, and every one of them is the rule's own:
+ *   A. the pair gets `PIN_ESCAPE_DIST` (24 in = the 2 ft) apart for more than `PIN_END_S`;
+ *   B. EITHER robot gets that far from where the pin initiated, for more than `PIN_END_S`;
+ *   C. the PINNING robot is itself being PINNED — a mutual hold is nobody's foul.
+ * A and B END the pin. Anything else that merely interrupts it — the pinner easing off, the
+ * victim squirming a foot — PAUSES the count and does not reset it. That is the rule's own
+ * "pause/resume", and it is the whole difference between a pin you can shrug off and one you
+ * cannot: without it a pinner wipes a 2.9-second count by backing away for a tenth of a
+ * second, and starts again from zero, forever, for free.
+ *
+ * ── THE TARIFF IS THE ONLY THING THAT CHANGES ───────────────────────────────
+ * DECODE bills a MINOR at 3 s and a MINOR every 3 s after. BIOBUZZ bills a **MAJOR**, and a
+ * MAJOR every 3 s after (Table 10-4) — so nine seconds of pinning is 60 points, not 15. It
+ * goes through `bbAwardFoul` for the same reason every other rule in this file does: the
+ * shared `awardFoul` reads `C.PTS_FOUL_MAJOR`, which is DECODE's 15.
+ *
+ * ── TWO HONEST DEVIATIONS, BOTH WORTH READING ───────────────────────────────
+ * 1. **CONTACT IS THIS FILE'S OBB TEST, NOT `world.rrContacts`.** DECODE feeds `isPinning` the
+ *    solver's contact record. This file already answers "are these two robots touching?" for
+ *    G402 with `robotsContact`, which carries `BB_FOUL_SLOP` because two chassis are in
+ *    contact well before their idealised rectangles share a point. Using both would mean one
+ *    file with two disagreeing definitions of contact — and the rules smoke, which drives
+ *    hand-built worlds with no solver behind them, could not reach the rule at all.
+ * 2. ⚠️ **`isPinning`'s INTERNAL SOLID PROBE IS DECODE'S FIELD.** Its `pinnedAgainstWall`
+ *    helper is private and hard-codes DECODE's GOAL WEDGES and CLASSIFIER CHANNELS as solids
+ *    alongside the perimeter. BIOBUZZ has neither, and its own solids — the two HIVE FRAME
+ *    BARS — are invisible to it. The perimeter half is right (both fields are 144 in, and
+ *    `C.FIELD_HALF` equals `BB_HALF_X`), so this only bites in the four corner regions DECODE
+ *    puts a goal in: a victim held there reads as "cornered against a solid, therefore
+ *    escaping rather than pinning", and the pin goes UNBILLED. That is the conservative
+ *    direction — it under-bills, it never invents a foul — and it is a REQUEST for the shared
+ *    core rather than a lane edit: `pinnedAgainstWall` wants the game's own solid list passed
+ *    in (field-plan §6, a request-5 follow-on). Until then a pin in a BIOBUZZ corner is free,
+ *    and a pin against a HIVE frame bar is billed on the pinner's press alone.
+ */
+function bbUpdatePins(world: World, dt: number, commands: Map<number, RobotCommand>): void {
+  const pen = world.penalties;
+
+  /**
+   * EVERY ORDERED OPPOSING PAIR'S VERDICT FIRST, because criterion C is about BOTH of them:
+   * whether A is pinning B cannot be settled until it is known whether B is pinning A.
+   *
+   * `passive` robots — free-drive practice dummies — are skipped on both sides, the same way
+   * G417 and `bbAssess` skip them. They have no alliance in any meaningful sense, and billing
+   * a MAJOR to whichever colour a dummy happened to be spawned as is a foul awarded to nobody.
+   */
+  const verdict = new Map<string, boolean>();
+  for (const pinner of world.robots) {
+    if (pinner.passive) continue;
+    for (const pinned of world.robots) {
+      if (pinned.passive || pinner.id === pinned.id || pinner.alliance === pinned.alliance) continue;
+      verdict.set(
+        `${pinner.id}-${pinned.id}`,
+        isPinning(
+          pinner,
+          pinned,
+          robotsContact(pinner, pinned),
+          commands.get(pinned.id),
+          commands.get(pinner.id),
+        ),
+      );
+    }
+  }
+
+  // A pair that no longer exists (a robot left the match) can never be visited again, so its
+  // accumulator would ride every snapshot for the rest of the match. `verdict` holds every
+  // LIVE ordered pair — including the ones reading `false`, which is what keeps a PAUSED pin's
+  // clock alive — so anything outside it is stale by construction.
+  for (const key of Object.keys(pen.pins)) if (!verdict.has(key)) delete pen.pins[key];
+
+  for (const pinner of world.robots) {
+    if (pinner.passive) continue;
+    for (const pinned of world.robots) {
+      if (pinned.passive || pinner.id === pinned.id || pinner.alliance === pinned.alliance) continue;
+      const key = `${pinner.id}-${pinned.id}`;
+      const held = verdict.get(key) === true;
+      /** criterion C: "the PINNING ROBOT gets PINNED" — a mutual hold is nobody's foul */
+      const mutual = held && verdict.get(`${pinned.id}-${pinner.id}`) === true;
+
+      let st = pen.pins[key];
+      if (!st) {
+        if (!held || mutual) continue;
+        // WHERE BOTH ROBOTS WERE WHEN THE PIN INITIATED — criterion B measures against these,
+        // and `px`/`py` is last tick's victim pose, which the escape measurement differences.
+        st = {
+          seconds: 0,
+          ox: pinned.pos.x,
+          oy: pinned.pos.y,
+          pox: pinner.pos.x,
+          poy: pinner.pos.y,
+          px: pinned.pos.x,
+          py: pinned.pos.y,
+          billed: 0,
+          sepFor: 0,
+          awayFor: 0,
+        };
+        pen.pins[key] = st;
+      }
+
+      if (mutual) {
+        delete pen.pins[key]; // C
+        continue;
+      }
+
+      // A and B, the ONLY two things that END a pin. Both are distances HELD for more than
+      // three seconds; a momentary one PAUSES the count instead (see below).
+      const apart = hyp(pinned.pos.x - pinner.pos.x, pinned.pos.y - pinner.pos.y) >= PIN_ESCAPE_DIST;
+      const movedPinned = hyp(pinned.pos.x - st.ox, pinned.pos.y - st.oy) >= PIN_ESCAPE_DIST;
+      const movedPinner = hyp(pinner.pos.x - st.pox, pinner.pos.y - st.poy) >= PIN_ESCAPE_DIST;
+      st.sepFor = apart ? st.sepFor + dt : 0;
+      // "...until the PIN ends or until BOTH ROBOTS move back within 2 ft"
+      st.awayFor = movedPinned || movedPinner ? st.awayFor + dt : 0;
+      if (st.sepFor > PIN_END_S || st.awayFor > PIN_END_S) {
+        delete pen.pins[key];
+        continue;
+      }
+
+      // last tick's victim pose, captured BEFORE it is overwritten. It advances on PAUSED
+      // ticks too, or the first tick after a pause reads a whole pause's worth of travel as
+      // one tick of escape and cancels the pin.
+      const prevX = st.px;
+      const prevY = st.py;
+      st.px = pinned.pos.x;
+      st.py = pinned.pos.y;
+      if (apart || movedPinned || movedPinner || !held) continue; // PAUSED, not ended
+
+      /**
+       * "...preventing the movement..." MEASURED rather than assumed: progress away from the
+       * pinner, taken from the actual post-solve position delta, so it holds whether or not a
+       * blocked robot's velocity was zeroed. Along the ESCAPE direction rather than as raw
+       * speed — a victim bulldozed sideways along a wall is moving quickly and is no less
+       * pinned. `PIN_STUCK_SPEED` is the sim's own number; the rule leaves it to a referee.
+       *
+       * Penalties run at `step.ts` stage 7, AFTER the Rapier solve, so `pinned.pos` is where
+       * the robot actually ended this tick — which is what makes this a measurement rather
+       * than a reading of intent.
+       */
+      const e = bbEscapeDir(pinner, pinned);
+      const escapeSpeed = e ? ((pinned.pos.x - prevX) * e.x + (pinned.pos.y - prevY) * e.y) / dt : 0;
+      if (escapeSpeed >= PIN_STUCK_SPEED) continue; // getting away under its own power
+
+      st.seconds += dt;
+      // MAJOR at 3 s, and another every 3 s the situation is not corrected. A `while` rather
+      // than an `if` because a coarse `dt` can cross two thresholds in one tick, and a pin is
+      // not cheaper for having been stepped at 10 Hz.
+      while (st.seconds >= PIN_SECONDS * (st.billed + 1)) {
+        st.billed += 1;
+        bbAwardFoul(world, pinner.alliance, 'major', 'G421 PINNING');
+        pen.pinFouls[pinner.id] = (pen.pinFouls[pinner.id] ?? 0) + 1;
+      }
+    }
+  }
+}
+
+/**
+ * The ESCAPE direction for a pin: the unit vector from the pinner to the victim, i.e. the way
+ * the victim would have to go to get out. Null when the two are coincident, where "away" is
+ * undefined.
+ *
+ * A five-line local copy of `src/sim/penalties.ts`'s `escapeDir`, which is private there. It
+ * is copied rather than requested because it is arithmetic with no rule in it — the same
+ * vector any of three files would write — while `isPinning`, which encodes the actual
+ * criteria, is imported. A duplicated JUDGEMENT is a liability; a duplicated normalisation is
+ * not worth a shared-core round trip.
+ */
+function bbEscapeDir(pinner: RobotState, pinned: RobotState): Vec2 | null {
+  const dx = pinned.pos.x - pinner.pos.x;
+  const dy = pinned.pos.y - pinner.pos.y;
+  const d = hyp(dx, dy);
+  if (d < 1e-3) return null;
+  return { x: dx / d, y: dy / d };
 }
 
 /**

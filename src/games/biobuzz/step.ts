@@ -43,6 +43,12 @@ import { bbApplyScore, bbLeftNow, bbParkedNow, bbScoreWorld } from './score';
  *   7. PENALTIES          — BEFORE gameplay, so a foul awarded this tick folds into the
  *                           alliance total that (8) writes. It reads last tick's game state:
  *                           one deterministic tick of lag, and invisible.
+ *                           AFTER (5) and (6) rather than before them, which G421 PINNING
+ *                           makes load-bearing: the pin clock measures how far the victim
+ *                           ACTUALLY got this tick, so it has to read the post-solve pose. It
+ *                           takes `dt` and the APPLIED commands for the same rule — a pin is
+ *                           billed in seconds, and "is the pinner driving into its victim?"
+ *                           has to be the question the drivetrain answered in (3).
  *   8. GAMEPLAY           — `updateBiobuzz`: pollen physics, intake, launch. (See its own
  *                           header for the order INSIDE it.)
  *   9. PHASE MACHINE      — the countdown and phase progression. It also fires the two
@@ -114,7 +120,7 @@ export function biobuzzStep(world: World, dt: number, commands: Map<number, Robo
 
   // 7. penalties, then 8. gameplay — both guarded on the state bag, because a snapshot from
   // a build that predates this game arrives without it.
-  if (world.biobuzz) updateBiobuzzPenalties(world);
+  if (world.biobuzz) updateBiobuzzPenalties(world, dt, actual);
   if (world.biobuzz) updateBiobuzz(world, dt, actual, enabled, from);
 
   // 9.
