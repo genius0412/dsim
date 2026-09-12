@@ -60,6 +60,11 @@ interface Props {
   /** fired once `autoJoin` has been consumed, so the caller can clear its
    * one-shot pending state and a later normal visit doesn't re-trigger it */
   onAutoJoinConsumed?: () => void;
+  /** running as a Discord Activity — surfaces the in-room name / robot-name editor
+   * (the activity auto-join skips the entry screen that normally collects them).
+   * Passed from App (captured stably at page load); NOT re-derived here, because
+   * SPA navigation strips the `?instance_id=` query the localhost detection reads. */
+  discordActivity?: boolean;
 }
 
 type Phase = 'entry' | 'connecting' | 'room' | 'error';
@@ -122,6 +127,7 @@ export function Lobby({
   autoJoin,
   autoJoinRegion,
   onAutoJoinConsumed,
+  discordActivity = false,
 }: Props) {
   const isRecord = config.kind === 'record';
   const capacity = roomCapacity(config);
@@ -162,11 +168,23 @@ export function Lobby({
   const lobbyRef = useRef<LobbyClient | null>(null);
   const startedRef = useRef(false);
   const nameEditedRef = useRef(false);
+  // which room code the auto-join effect below has already fired for (value-keyed,
+  // not a one-shot boolean, so accepting a DIFFERENT invite while mounted rejoins).
+  // Reset in the teardown cleanup — see the auto-join effect for why.
+  const autoJoinedRef = useRef<string | null>(null);
 
   // tear down on unmount unless a match started (which hands the socket onward)
   useEffect(() => {
     return () => {
       if (!startedRef.current) lobbyRef.current?.dispose();
+      // The socket is gone, so the guard must clear too: React StrictMode (dev)
+      // mount→unmount→remounts this screen, disposing the mid-handshake socket
+      // here, and the remount's auto-join must be free to reconnect (a stuck
+      // guard left the lobby on "connecting" forever — WS close 1006). Resetting
+      // HERE, paired with disposal, means a same-room re-invite while STILL
+      // mounted (no unmount, socket alive) keeps its value-keyed guard and is
+      // correctly swallowed instead of orphaning the live socket.
+      autoJoinedRef.current = null;
     };
   }, []);
 
@@ -305,13 +323,15 @@ export function Lobby({
     );
   }
 
-  // Auto-join when a friend's invite carried a room code — the same `join()` a manual code
-  // entry calls, just triggered without a button click, and carrying the host's region.
+  // Auto-join when a friend's invite / Discord Activity carried a room code — the same
+  // `join()` a manual code entry calls, just triggered without a button click, and carrying
+  // the host's region.
   //
   // Keyed on the CODE, not a one-shot boolean. This screen stays mounted while you accept a
   // second invite from its own flyout, and a `useRef(false)` that was already true swallowed
-  // that accept entirely: the click did nothing at all.
-  const autoJoinedRef = useRef<string | null>(null);
+  // that accept entirely: the click did nothing at all. The guard is reset only when the
+  // socket is torn down (the teardown effect above), so a StrictMode remount reconnects but
+  // a same-room re-invite while still mounted stays swallowed.
   useEffect(() => {
     if (autoJoin && autoJoinedRef.current !== autoJoin) {
       autoJoinedRef.current = autoJoin;
@@ -323,6 +343,37 @@ export function Lobby({
 
   const setAlliance = (alliance: Alliance): void => lobbyRef.current?.update({ alliance });
   const toggleReady = (): void => lobbyRef.current?.update({ ready: !me?.ready });
+
+  // Discord-only in-room identity editing: the driver name + robot name are chosen
+  // on the entry screen, but an activity auto-join skips it — so let them be edited
+  // here too. Local state drives the inputs (no cursor jank from roster round-trips);
+  // a short debounce echoes an `update` patch the server sanitizes + re-broadcasts.
+  // Echo-only (not persisted to `settings`): this is a per-match name, not a change
+  // to the saved robot. Fallbacks match the server's coercion defaults.
+  const [robotName, setRobotName] = useState(settings.spec.name);
+  const nameTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const robotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const editName = (next: string): void => {
+    nameEditedRef.current = true; // don't let a late displayName adopt clobber it
+    setName(next);
+    if (nameTimer.current) clearTimeout(nameTimer.current);
+    nameTimer.current = setTimeout(() => lobbyRef.current?.update({ name: next.trim() || 'Player' }), 300);
+  };
+  const editRobotName = (next: string): void => {
+    setRobotName(next);
+    if (robotTimer.current) clearTimeout(robotTimer.current);
+    robotTimer.current = setTimeout(() => {
+      const base = me?.spec ?? settings.spec;
+      lobbyRef.current?.update({ spec: { ...base, name: next.trim() || 'My Robot' } });
+    }, 300);
+  };
+  useEffect(
+    () => () => {
+      if (nameTimer.current) clearTimeout(nameTimer.current);
+      if (robotTimer.current) clearTimeout(robotTimer.current);
+    },
+    [],
+  );
 
   /**
    * RE-PICK, in a custom room exactly as in the ranked strategy window.
@@ -660,6 +711,38 @@ export function Lobby({
             })}
           </div>
         </section>
+
+        {/* In-room identity editing is DISCORD-ONLY: an activity auto-join skips the
+            entry screen's name field (leaving you "Player" / "My Robot"), so it's
+            surfaced here. On web/Electron the entry screen already collects both, so
+            this stays hidden to avoid a redundant editor. */}
+        {discordActivity && (
+          <section className="ds-sec">
+            <h2>You</h2>
+            <div className="ds-idedit">
+              <label className="ds-field">
+                <span className="cap">Your name</span>
+                <input
+                  className="ds-input"
+                  value={name}
+                  onChange={(e) => editName(e.target.value)}
+                  maxLength={24}
+                  placeholder="Player"
+                />
+              </label>
+              <label className="ds-field">
+                <span className="cap">Robot name</span>
+                <input
+                  className="ds-input"
+                  value={robotName}
+                  onChange={(e) => editRobotName(e.target.value)}
+                  maxLength={24}
+                  placeholder="My Robot"
+                />
+              </label>
+            </div>
+          </section>
+        )}
 
         {!isRecord && (
           <section className="ds-sec">

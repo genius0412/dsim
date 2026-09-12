@@ -276,6 +276,7 @@ const serverPairs = (t) => {
     ['UsernameField hint / taken', t('--ds-danger'), panel, AA],
     ['Account id <code>', t('--ds-mut'), panel, AA],
     ['Leaderboard .lb-standing-badge', t('--ds-gold-ink'), t('--ds-gold'), AA],
+    ['HomeMenu .ds-discord-join (blurple fill, fixed ink)', t('--ds-blurple-ink'), t('--ds-blurple'), AA],
     // The supporter badge is a FILL with fixed ink for exactly this reason: it
     // renders on the leaderboard panel, the lobby roster tile, AND a profile
     // header, and no single coloured-text value clears AA on all three grounds.

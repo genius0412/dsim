@@ -26,6 +26,7 @@ import {
 } from '../src/ui/queueKeeper';
 import type { LobbyPlayer } from '../src/net/protocol';
 import { generateRoomCode, isValidRoomCode, normalizeRoomCode } from '../src/net/roomCode';
+import { roomCodeForInstance } from '../src/net/discordActivity';
 import { step } from '../src/sim/world';
 import { robotPenetration, robotSolids } from '../src/sim/artifactSolids';
 import { Keyboard } from '../src/input/keyboard';
@@ -14064,6 +14065,23 @@ const mkMM = () => {
   check('isValidRoomCode rejects the wrong length', !isValidRoomCode('ABC') && !isValidRoomCode('BCDFGHJ'));
   check('isValidRoomCode rejects vowels', !isValidRoomCode('BANANA'));
   check('normalizeRoomCode strips junk + uppercases', normalizeRoomCode(' b2-c3 d4x ') === 'B2C3D4');
+
+  // Discord Activity rooms: every participant derives the SAME code from the shared
+  // instance_id (that determinism IS the no-code-entry join), and different instances
+  // get different rooms.
+  let allDet = true;
+  let allInstValid = true;
+  const instSeen = new Set<string>();
+  for (let i = 0; i < 500; i++) {
+    const id = `uuid-${i}-${i * 7919}`;
+    const c = roomCodeForInstance(id);
+    if (c !== roomCodeForInstance(id)) allDet = false;
+    if (!isValidRoomCode(c)) allInstValid = false;
+    instSeen.add(c);
+  }
+  check('discord activity: roomCodeForInstance is deterministic', allDet);
+  check('discord activity: instance codes are always valid room codes', allInstValid);
+  check('discord activity: distinct instances spread to distinct rooms', instSeen.size > 490, `${instSeen.size}/500`);
 }
 
 // ------------------------------------------------------------ multi-game (Chain Reaction seam) ----

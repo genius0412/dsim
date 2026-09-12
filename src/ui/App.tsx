@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
 import {
@@ -24,6 +24,13 @@ import { WatchLive } from './WatchLive';
 import { LobbyClient } from '../net/lobbyClient';
 import { AppShell, type ShellNav } from './AppShell';
 import { HomeMenu } from './HomeMenu';
+import {
+  inDiscordActivity,
+  discordInstanceId,
+  roomCodeForInstance,
+  watchDiscordParticipants,
+  type DiscordParticipant,
+} from '../net/discordActivity';
 import { ModeSelect } from './ModeSelect';
 import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
@@ -404,6 +411,27 @@ export function App() {
   const [pendingAutoJoin, setPendingAutoJoin] = useState<
     { room: string; config: RoomConfig; region?: string } | null
   >(null);
+
+  // DISCORD ACTIVITY: every participant of one activity launch derives the SAME
+  // room code from Discord's instance_id, so the home page offers a "Join Discord
+  // Lobby" button (with the activity participants' avatars via the Embedded App
+  // SDK) instead of code entry — the first click creates the room, later clicks
+  // join it. Config is pinned (versus/decode): the server refuses a config-
+  // mismatched joiner, so a per-player game pick would split the party. Captured
+  // once at mount (before SPA navigation strips the ?instance_id= query).
+  const discordRoom = useMemo(() => {
+    const instance = discordInstanceId();
+    return inDiscordActivity() && instance ? roomCodeForInstance(instance) : '';
+  }, []);
+  const [discordPeople, setDiscordPeople] = useState<DiscordParticipant[]>([]);
+  useEffect(() => {
+    if (!discordRoom) return;
+    return watchDiscordParticipants(setDiscordPeople);
+  }, [discordRoom]);
+  const joinDiscordLobby = (): void => {
+    setPendingAutoJoin({ room: discordRoom, config: { kind: 'versus', game: 'decode' } });
+    navigate('lobby');
+  };
   // a RATED challenge waiting to be queued under its party token. Same one-shot
   // shape as pendingAutoJoin and for the same reason: the Matchmaking screen
   // consumes it on mount, so a later ordinary visit to /ranked is an ordinary
@@ -1097,6 +1125,7 @@ export function App() {
         autoJoin={auto?.room}
         autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
+        discordActivity={!!discordRoom}
       />
     );
   }
@@ -1128,6 +1157,7 @@ export function App() {
         autoJoin={auto?.room}
         autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
+        discordActivity={!!discordRoom}
       />
     );
   }
@@ -1221,6 +1251,7 @@ export function App() {
         <HomeMenu
           settings={settings}
           multiplayer={multiplayer}
+          discord={discordRoom ? { people: discordPeople, onJoin: joinDiscordLobby } : null}
           onNav={(n) => navigate(screenForNav(n))}
           onGame={(g) => {
             update(switchGame(settings, g));
@@ -1260,6 +1291,7 @@ export function App() {
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onWatch={() => navigate('watch')}
           onLan={() => navigate('lan')}
+          compete={!discordRoom}
         />
       )}
       {/* one-time "this sim isn't realistic" disclaimer for Chain Reaction */}

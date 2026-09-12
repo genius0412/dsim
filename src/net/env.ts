@@ -28,6 +28,7 @@
  */
 
 import { parseLanAddress } from './lanAddress';
+import { discordGameServerUrl } from './discordActivity';
 
 export interface GameServer {
   /** stable id used to persist the player's preference */
@@ -41,6 +42,13 @@ export interface GameServer {
 }
 
 function parseServers(): GameServer[] {
+  // Inside a Discord Activity the proxy CSP blocks every outside host, so the
+  // baked-in server URLs are unreachable — the ONLY route to the game server is
+  // the activity's `/gs` URL mapping on the page's own host. Override the whole
+  // list (no region picker in-activity; the mapping is the region). This feeds
+  // roomServerUrl()/gameServerUrl() alike via selectedServer().
+  const discordUrl = discordGameServerUrl();
+  if (discordUrl) return [{ id: 'discord', label: 'Discord', region: '', url: discordUrl }];
   const raw = import.meta.env.VITE_GAME_SERVERS as string | undefined;
   if (raw) {
     try {

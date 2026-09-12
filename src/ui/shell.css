@@ -136,6 +136,12 @@
   --ds-gold: #f5a623;
   --ds-gold-ink: #04222a;
 
+  /* Discord blurple — a FILL with fixed white ink (4.86:1), so it does NOT invert
+     (same category as the alliance chips). Used only by the in-activity
+     "Join Discord Lobby" button. */
+  --ds-blurple: #5865f2;
+  --ds-blurple-ink: #ffffff;
+
   /* CAUTION, distinct from the mint accent. The legacy `--amber` carried BOTH
      meanings; on light they must not collapse (a warning that looks like the
      brand accent reads as decoration). Burnt amber clears 4.5:1 on the floor. */
@@ -1120,6 +1126,78 @@
   gap: 10px;
   margin: 0 0 var(--ds-s-5);
 }
+/* "Join Discord Lobby" — only rendered inside a Discord Activity, as the FIRST
+   item in the home content flow. It was `position: fixed` top-left, but on the
+   Discord mobile/iPad apps the native activity header overlays the top-left
+   corner and hid it (desktop has no such overlay). In-flow it is reliably
+   visible on every device. Blurple FILL with fixed white ink (category 2 —
+   never inverts); hover/active move via transform/shadow only (shiftaudit). */
+.ds-discord-join {
+  align-self: center;
+  margin-bottom: var(--ds-s-5);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: var(--ds-round-full);
+  border: 1px solid color-mix(in srgb, var(--ds-blurple) 70%, #000);
+  background: var(--ds-blurple);
+  color: var(--ds-blurple-ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  box-shadow: var(--ds-edge-soft);
+  transition: transform 0.06s ease, box-shadow 0.06s ease;
+}
+.ds-discord-join svg {
+  flex: none;
+}
+.ds-discord-join:hover {
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 color-mix(in srgb, var(--ds-blurple) 55%, #000);
+}
+.ds-discord-join:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--ds-line);
+}
+.dj-avs {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+}
+.dj-av {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--ds-blurple);
+  background: var(--ds-panel);
+  margin-left: -7px;
+}
+.dj-av:first-child {
+  margin-left: 0;
+}
+.dj-more {
+  margin-left: 4px;
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--ds-blurple-ink);
+}
+
+/* Lobby "You" section (Discord-only): driver-name + robot-name inputs, two columns
+   that stack on a narrow (Discord activity) viewport. */
+.ds-idedit {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 460px) {
+  .ds-idedit {
+    grid-template-columns: 1fr;
+  }
+}
+
 .ds-home-link {
   display: inline-flex;
   align-items: center;
