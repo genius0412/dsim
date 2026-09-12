@@ -132,6 +132,7 @@ import {
   SIM_VERSION,
   INTAKE_PRESETS,
   INTAKE_LIP,
+  HELD_SLIDE_SPEED,
   INTAKE_CAPTURE_BAND,
   INTAKE_CATCH_LENIENCE,
   ROBOT_PRESETS,
@@ -7704,20 +7705,37 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       const tip = hl + INTAKE_PRESETS[intake].reach;
       const axle = intakeAxleX(sp);
       const nip = intakeNip(sp);
+      const m = intakeMouth(sp);
       const { w, r, local } = nipScene(intake, [[tip + 1, 0]]);
       const b = w.balls[0];
       let at = NaN;
+      // ⚠️ read the PRE-step position. `positionHeldBalls` slides a held artifact toward its
+      // slot at HELD_SLIDE_SPEED inside the very tick it is captured, so a post-step reading
+      // reports where the slide left it (2.5in further in at 150 in/s), not where the intake
+      // took it. The robot is stationary here, so the pre-step reading is exact.
       for (let i = 0; i < Math.round(3 / SIM_DT) && Number.isNaN(at); i++) {
+        const before = b.state.kind === 'ground' ? local(b).x : NaN;
         step(w, SIM_DT, new Map([[0, cmd({ intake: true })]]));
-        if (b.state.kind === 'held') at = local(b).x; // the tick it was taken, post-step
+        if (b.state.kind === 'held') at = before;
       }
       const d = at - axle;
-      return { intake, at, d, ok: d > -nip.back - 1e-6 && d < nip.front + 1e-6, took: r.hopper.length === 1 };
+      /**
+       * ⚠️ THE CAPTURE INSTANT IS NOT OBSERVABLE FROM OUTSIDE A TICK, so the bound allows for
+       * one tick of travel. Within a single `step` the order is suction (a velocity) → the
+       * solve (which moves the artifact) → `updateIntake` (which tests the nip), so the
+       * PRE-step reading is up to `drawIn * SIM_DT` further out than the position the
+       * predicate actually saw, and the POST-step reading is further IN by a full
+       * `HELD_SLIDE_SPEED * SIM_DT` because the artifact is already sliding to its slot.
+       * Neither is the capture point; the pre-step reading plus the suction's own travel is
+       * the honest ceiling.
+       */
+      const slack = m.drawIn * SIM_DT;
+      return { intake, at, d, slack, ok: d > -nip.back - 1e-6 && d < nip.front + slack + 1e-6, took: r.hopper.length === 1 };
     });
     check(
       'nip: an artifact is swallowed AT the roller, not from a radius in front of it',
       rows.every((x) => x.took && x.ok),
-      rows.map((x) => `${x.intake} took it ${x.d >= 0 ? '+' : ''}${x.d.toFixed(2)}in from its axle`).join(' · ') +
+      rows.map((x) => `${x.intake} took it ${x.d >= 0 ? '+' : ''}${x.d.toFixed(2)}in from its axle (band +${intakeNip(specOf(x.intake)).front.toFixed(2)}, plus ${x.slack.toFixed(2)}in of suction travel inside the capture tick)`).join(' · ') +
         ' — triangle used to swallow 1.08in BEHIND its own roller, its window never reaching it',
     );
   }
@@ -7819,6 +7837,40 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
   }
 
+  // ---- A HELD ARTIFACT MAY NEVER ADVANCE THROUGH THE WORLD -----------------
+  /**
+   * THE FIX FOR "the third ball is still being deflected too far", as an invariant rather than
+   * a number. A held artifact is SOLID to ground artifacts and is still out in FRONT of the
+   * chassis face while it slides to its slot, so if the slide is slower than the chassis the
+   * robot carries the artifact it has just swallowed FORWARD through the world and into the
+   * next one in the line — which, still touching the one behind it, chains the impulse on.
+   * Measured at HELD_SLIDE_SPEED 45 on a touching file at full throttle: the first artifact
+   * went in clean and balls two and three BOTH left at 73 in/s two ticks later, shoved 32in.
+   *
+   * So the slide must beat the FASTEST LEGAL CHASSIS, not the default one — the margin at 85
+   * in/s says nothing about a 600 rpm tank.
+   */
+  {
+    let top = 0;
+    let at = '';
+    for (const drivetrain of ['tank', 'mecanum', 'swerve', 'xdrive', 'butterfly'] as const)
+      for (const driveRpm of [200, 300, 435, 500, 600])
+        for (const massLb of [20, 30, 42])
+          for (const intake of PRESETS) {
+            const sp = coerceSpec({ ...DEFAULT_SPEC, drivetrain, driveRpm, massLb, intake });
+            const v = driveParams(sp).maxSpeed;
+            if (v > top) {
+              top = v;
+              at = `${drivetrain} ${sp.driveRpm}rpm ${sp.massLb}lb`;
+            }
+          }
+    check(
+      'nip: a held artifact is pulled in faster than any legal chassis can drive',
+      HELD_SLIDE_SPEED > top,
+      `HELD_SLIDE_SPEED ${HELD_SLIDE_SPEED} against a top speed of ${top.toFixed(1)} in/s (${at}) — at 45 the robot carried the artifact it had just swallowed forward at 40 in/s into the next one in the line`,
+    );
+  }
+
   // ---- THE STRAIGHT-LINE FILE OF THREE, at full throttle -------------------
   /**
    * The shape of the standing report ("if I drive in full speed, third ball bumps with the
@@ -7837,21 +7889,26 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       // and an index-keyed baseline reads `undefined` for a fresh artifact — silently NaN.
       const y0 = new Map(w.balls.map((b) => [b.id, b.pos.y]));
       let shove = 0;
+      let peak = 0;
       for (let i = 0; i < Math.round(4 / SIM_DT); i++) {
         step(w, SIM_DT, new Map([[0, cmd({ driveY: 1, intake: true })]]));
         for (const b of w.balls) {
           const start = y0.get(b.id);
           if (start === undefined || b.state.kind !== 'ground') continue;
           shove = Math.max(shove, b.pos.y - start); // how far up-field the file was driven
+          peak = Math.max(peak, hyp(b.vel.x, b.vel.y)); // ...and how hard it was struck
         }
         if (r.hopper.length >= 3) break;
       }
-      return { intake, took: r.hopper.length, shove };
+      return { intake, took: r.hopper.length, shove, peak };
     });
     check(
-      'nip: a touching file of THREE is taken 3/3 at full throttle, without the file being shoved across the field',
-      rows.every((x) => x.took === 3 && x.shove < 45),
-      rows.map((x) => `${x.intake} ${x.took}/3, worst shove ${x.shove.toFixed(1)}in`).join(' · '),
+      'nip: a touching file of THREE goes in 3/3 without the file being punted down the field',
+      rows.every((x) => x.took === 3 && x.shove < 3) &&
+        rows.filter((x) => x.intake !== 'triangle').every((x) => x.peak < 5),
+      rows.map((x) => `${x.intake} ${x.took}/3, worst shove ${x.shove.toFixed(1)}in, peak artifact speed ${x.peak.toFixed(0)} in/s`).join(' · ') +
+        ' — at HELD_SLIDE_SPEED 45 the second and third left together at 73 in/s and were shoved 32in.' +
+        ' TRIANGLE is exempt from the speed bound and only from that: it parks two held artifacts NEAR THE MOUTH by design, so they ride at chassis speed and can clip the next one — but it re-catches it within a couple of ticks, which is what the shove bound checks',
     );
   }
 

@@ -1228,6 +1228,24 @@ handle (`GATE_ARM_SHORT`) pokes OUT into the gate zone (what a robot pushes) and
   position write — it runs before the ball solve so Rapier owns penetration. **Triangle takes
   TWO per cycle** (`dual`). NOTE: `halfWidth`/`perBall`/`clumpPerBall`/`wheelHalf`/`wedgeWidth`/
   `funnel` and the unreachable `sideTouch` flank grab were REMOVED — grep before reintroducing.
+- ⚠️ **A HELD ARTIFACT MUST NEVER ADVANCE THROUGH THE WORLD — `HELD_SLIDE_SPEED` BEATS THE
+  FASTEST LEGAL CHASSIS.** This is the actual cause of "the third ball is still being deflected
+  too far", after two earlier bisections (restitution, then roll friction) had correctly ruled
+  out the physics and the capture window. A held artifact is SOLID to ground artifacts
+  (`robotSolids.held`) and is still out in FRONT of the chassis face while it slides to its
+  slot, so at 45 in/s against a robot driving 85 the sim carried **the artifact the intake had
+  just swallowed** forward through the world at 40 in/s, into the next artifact in the line —
+  which, still touching the one behind it, chained the impulse straight on. Measured on a
+  touching file of three at full throttle: the first went in clean and never moved, then balls
+  two and three BOTH left at 73 in/s on the same tick, two ticks after the capture, and were
+  shoved 32in downfield. At 150 the whole file goes in at ticks 39 / 43 / 47 with **peak
+  artifact speed 0.0** on sloped and vector. Real hardware has no such problem because the
+  rollers turn far faster at the surface than the chassis drives: what is grabbed is INSIDE the
+  robot at once and cannot reach back out. Smoke asserts the RELATION (`HELD_SLIDE_SPEED >
+  max driveParams().maxSpeed` over the whole legal envelope), not the number, so raising the
+  rpm ceiling later fires the check instead of resurrecting the bug. TRIANGLE still clips the
+  next artifact briefly — it parks two held artifacts NEAR THE MOUTH by design, so they ride at
+  chassis speed — but it re-catches within a couple of ticks (1.1in of shove against 32).
 - **THE GRAB IS THE ROLLER NIP, AND IT IS ONE BAND FOR ALL THREE CAPTURE BRANCHES.**
   `intakeNip(spec)` about `intakeAxleX(spec)` (`config.ts`) is the whole fore-aft test; the
   branches (`atThroat` · `cornered` · `onRollerRow`) differ only in their LATERAL bound and
