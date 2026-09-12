@@ -1,24 +1,18 @@
-import type { DrivetrainType, IntakeStyle, RobotSpec } from '../types';
+import type { RobotSpec } from '../types';
 import type { GameId } from '../games/types';
 import { moduleFor } from '../games';
 import { CHAIN_MODE_LABELS } from '../games/chain/labels';
 import { CHAIN_DEFAULT_SCORE_MODE } from '../games/chain/config';
+import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './labelData';
 
-/** Short human labels for robot-build enums, shared across the My Robot builder
- * (Menu) and the pre-match strategy screen (MatchStrategy) so the two never drift. */
-export const DRIVETRAIN_LABELS: Record<DrivetrainType, string> = {
-  mecanum: 'Mecanum',
-  tank: 'Tank',
-  swerve: 'Swerve',
-  xdrive: 'X-drive',
-  butterfly: 'Butterfly',
-};
-
-export const INTAKE_SHORT: Record<IntakeStyle, string> = {
-  sloped: 'Sloped',
-  vector: 'Vector',
-  triangle: 'Triangle',
-};
+/**
+ * The two label maps moved to the LEAF `./labelData` and are RE-EXPORTED here, so every
+ * existing importer of this module is unchanged. They had to move: this file imports
+ * `moduleFor`, so anything importing it pulls in every game module — and a game module that
+ * wants to label a drivetrain on its own preset card would close that loop at evaluation
+ * time. See the header of `./labelData`.
+ */
+export { DRIVETRAIN_LABELS, INTAKE_SHORT };
 
 /**
  * ONE LINE describing a build, in the terms that game actually has: DECODE names

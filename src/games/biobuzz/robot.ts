@@ -1,7 +1,8 @@
 import type { Artifact, RobotCommand, RobotSpec, RobotState, Vec2, World } from '../../types';
 import { INTAKE_PRESETS, INTAKE_RAIL_T } from '../../config';
 import type { RobotSolids, SolidShape } from '../../sim/artifactSolids';
-import { datan2, dcos, dsin, rot, wrapAngle } from '../../math';
+import { clamp, datan2, dcos, dsin, hyp, rot, wrapAngle } from '../../math';
+import { GRAVITY } from '../../config';
 import {
   BB_DEFAULT_INTAKE,
   BB_DEFAULT_SCORE_MODE,
@@ -31,6 +32,19 @@ import {
 } from './mounts';
 import { releasePollen } from './elements';
 import type { LocalRect, ScoreTarget } from './state';
+import {
+  BB_DEG,
+  BB_HOOD_DEFAULT_DEG,
+  BB_LIFT_DECK_Z,
+  BB_LIFT_RATE,
+  BB_LIFT_SEAT_TOL,
+  BB_LIFT_STOW_EPS,
+  BB_TURRET_PITCH_MAX,
+  BB_TURRET_PITCH_MIN,
+  BB_TURRET_PITCH_SLEW,
+  BB_TURRET_SLEW,
+} from './config';
+import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 
 /**
  * BIOBUZZ ROBOT GEOMETRY — the Lane B contract surface (`docs/biobuzz-contract.md` §4).
@@ -270,7 +284,13 @@ function launchLine(r: RobotState, edge: BbEdge): { origin: Vec2; dir: Vec2; per
  * the scatter uses once the scenes are green without it.
  */
 export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled: boolean): void {
-  const mode = (r.spec.scoreMode ?? BB_DEFAULT_SCORE_MODE) as BbScoreMode;
+  // A BUILD WITH NO LAUNCHER CANNOT FIRE, and that is now a real build rather than an
+  // impossible one — Studica's published StarterBot is a drivetrain and an intake. Returning
+  // before the idle guard is deliberate: there is no cadence clock to hold for hardware that
+  // does not exist.
+  const launcher = bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG);
+  if (!launcher) return;
+  const mode = launcher.kind;
   const want = enabled && (cmd.fire || (r.autoFire && r.hopper.length >= bbHopperCap(r.spec)));
   if (!want || r.hopper.length === 0) {
     // IDLE GUARD: hold the cadence clock at "now" while there is nothing to fire, so a robot
@@ -278,6 +298,26 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     if (r.fireReadyAt < world.time) r.fireReadyAt = world.time;
     return;
   }
+
+  /**
+   * THE LAUNCH VELOCITY, DECOMPOSED BY ELEVATION — and the end of a units bug.
+   *
+   * Every launch used to hand `releasePollen` a velocity whose `z` was `BB_LAUNCH_Z0`, a
+   * constant documented as a launch HEIGHT in inches. So every POLLEN left at 10 in/s upward
+   * and apexed 0.13 in: there was no arc in this game at all, and a launcher could not have
+   * reached an elevated CELL if one had existed. The height is now used only as a height (by
+   * `elements.ts`, which always did) and the vertical speed comes from an ANGLE.
+   *
+   * A TURRET uses the elevation it has actually slewed to, so a shot fired mid-correction
+   * leaves on the wrong arc exactly as one fired mid-yaw leaves on the wrong bearing — the
+   * pitch axis is a physical state, not a promise. A TURRETLESS launcher uses its built HOOD,
+   * which is fixed hardware and the reason the hood is a build dial.
+   */
+  // RADIANS. `bbTurretPitch` is already one (it is the pitch twin of `turretHeading`); the
+  // hood is the one angle stored in degrees, so it converts here at the boundary — see BB_DEG.
+  const elev = bbIsTurreted(launcher) ? (r.bbTurretPitch ?? 0) : launcher.hoodDeg * BB_DEG;
+  const vh = dcos(elev); // horizontal fraction of the launch speed
+  const vv = dsin(elev); // vertical fraction
 
   if (mode === 'dumper') {
     // THE WHOLE HOPPER, in one fan across the firing edge. Fired back-to-front so the POLLEN
@@ -294,9 +334,9 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
         world,
         r,
         {
-          x: dir.x * speed + perp.x * t * 12,
-          y: dir.y * speed + perp.y * t * 12,
-          z: BB_LAUNCH_Z0,
+          x: dir.x * speed * vh + perp.x * t * 12,
+          y: dir.y * speed * vh + perp.y * t * 12,
+          z: speed * vv,
         },
         undefined,
         { x: origin.x + perp.x * t * half, y: origin.y + perp.y * t * half },
@@ -321,7 +361,7 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
       releasePollen(
         world,
         r,
-        { x: dir.x * BB_DRUM_SPEED, y: dir.y * BB_DRUM_SPEED, z: BB_LAUNCH_Z0 },
+        { x: dir.x * BB_DRUM_SPEED * vh, y: dir.y * BB_DRUM_SPEED * vh, z: BB_DRUM_SPEED * vv },
         undefined,
         { x: origin.x + perp.x * t * half, y: origin.y + perp.y * t * half },
       );
@@ -341,7 +381,7 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     releasePollen(
       world,
       r,
-      { x: dcos(h) * BB_DRUM_SPEED, y: dsin(h) * BB_DRUM_SPEED, z: BB_LAUNCH_Z0 },
+      { x: dcos(h) * BB_DRUM_SPEED * vh, y: dsin(h) * BB_DRUM_SPEED * vh, z: BB_DRUM_SPEED * vv },
       undefined,
       o,
     );
@@ -349,4 +389,135 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
     fired++;
   }
   if (fired > 0) r.lastFireAt = world.time;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE ARC — solving a launch against a target that has a HEIGHT
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The minimum-speed ballistic solution to a target `d` inches away and `dh` inches ABOVE the
+ * muzzle. Returns the launch speed and the elevation, both of which a launcher then has to be
+ * able to produce.
+ *
+ * ── WHY THIS IS NOT `src/sim/robot.ts`'s `solveShot` ────────────────────────
+ * DECODE's solver is the same mathematics and a good one — always solvable, smooth in
+ * distance, no clamp singularity — but its height difference is a CONSTANT
+ * (`GOAL_OPENING_Z - LAUNCH_HEIGHT`), because DECODE has exactly one goal. BIOBUZZ has two
+ * target heights that differ by nearly 3x: a FLOWER's top ring at 21.5 in and a HIVE up-CELL
+ * opening at 53.5-65.6 in. A solver with a baked-in `dh` can only ever be right about one of
+ * them. So `dh` is a parameter, and that single change is what the whole pitch axis rests on.
+ *
+ * It lives HERE rather than being generalised in `src/sim/` because nothing BIOBUZZ may go
+ * into the shared tree (the same rule Chain Reaction follows). The duplication is four lines
+ * of arithmetic and the alternative is a BIOBUZZ concept in DECODE's file.
+ *
+ *   v_min^2 = g * (dh + sqrt(d^2 + dh^2)),   angle = atan2(dh + sqrt(d^2 + dh^2), d)
+ *
+ * The elevation sweeps toward vertical as `d` goes to zero (a near-straight lob into something
+ * directly overhead) and toward 45 deg far out, which is the physically right shape and is why
+ * a solution exists at every distance instead of running out at close range.
+ */
+export function bbSolveShot(d: number, dh: number): { speed: number; angle: number } {
+  const dd = Math.max(d, 0.5);
+  const reach = hyp(dd, dh);
+  return { speed: Math.sqrt(GRAVITY * (dh + reach)), angle: datan2(dh + reach, dd) };
+}
+
+/** how high above the tiles this build's muzzle sits (in).
+ *
+ * A TURRET rides on top of the deck and a turretless launcher fires over a chassis edge, so
+ * they are not the same height — and the difference matters to the arc, because `dh` is
+ * measured from the MUZZLE and not from the floor. APPROX both. */
+export function bbMuzzleZ(spec: RobotSpec): number {
+  return bbIsTurreted(bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG)) ? BB_LAUNCH_Z0 + 2 : BB_LAUNCH_Z0;
+}
+
+/**
+ * The ELEVATION a turret must be at to put a POLLEN into `target`, in degrees, or `null` when
+ * this build has no turret to elevate.
+ *
+ * ⚠️ THE HIVE OPENING IS A BAND, NOT A POINT — 53.5 to 65.6 in — so there is a RANGE of
+ * elevations that score and this returns the one aimed at its middle. That is deliberate for
+ * now (the middle is the most forgiving of a moving chassis) but it is the signature most
+ * likely to want revisiting: a min/max acceptable pitch would let a robot take the flatter,
+ * faster solution when it has one.
+ */
+export function bbAimPitch(r: RobotState, target: ScoreTarget): number | null {
+  if (!bbIsTurreted(bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG))) return null;
+  const o = bbTurretOrigin(r);
+  const d = hyp(target.pos.x - o.x, target.pos.y - o.y);
+  const sol = bbSolveShot(d, target.z - bbMuzzleZ(r.spec));
+  return clamp(sol.angle, BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+}
+
+/**
+ * Ease the turret's yaw and pitch toward a solution, one tick's worth.
+ *
+ * BOTH AXES SLEW, and neither snaps. `BB_TURRET_SLEW` existed as a constant with no consumer
+ * — the turret was written up as slewing and was in fact frozen at whatever `spawn` pointed it
+ * at — so this is the loop that was described but never built. Pitch is deliberately the
+ * slower axis: elevation carries the barrel's weight where yaw turns a ring, and a turret that
+ * re-elevated instantly between a 21.5 in FLOWER and a 59 in CELL would make the two targets
+ * feel identical, which is the one thing the axis exists to prevent.
+ */
+export function bbSlewTurret(r: RobotState, wantYaw: number | null, wantPitch: number | null, dt: number): void {
+  if (wantYaw !== null) {
+    const err = wrapAngle(wantYaw - r.turretHeading);
+    const step = BB_TURRET_SLEW * dt; // rad/s * s — both sides of the clamp are radians
+    r.turretHeading = wrapAngle(r.turretHeading + clamp(err, -step, step));
+  }
+  if (wantPitch !== null) {
+    const now = r.bbTurretPitch ?? 0;
+    const step = BB_TURRET_PITCH_SLEW * dt;
+    r.bbTurretPitch = clamp(now + clamp(wantPitch - now, -step, step), BB_TURRET_PITCH_MIN, BB_TURRET_PITCH_MAX);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE VERTICAL EXTENSION SLIDE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** where the carriage is right now (in above the tiles), stowed height included. A build with
+ * no lift reads as the deck, so a caller never has to special-case its absence. */
+export function bbLiftHeight(r: RobotState): number {
+  return bbLiftOf(r.spec) ? BB_LIFT_DECK_Z + (r.bbLiftZ ?? 0) : BB_LIFT_DECK_Z;
+}
+
+/** is the carriage stowed? The sprite and the HUD both ask, and a shared epsilon is what stops
+ * them disagreeing by a hundredth of an inch about whether the mast is down. */
+export function bbLiftStowed(r: RobotState): boolean {
+  return (r.bbLiftZ ?? 0) <= BB_LIFT_STOW_EPS;
+}
+
+/**
+ * Drive the carriage for one tick: HELD raises, released lowers, and it stops at its own
+ * `maxZ`.
+ *
+ * A LEVEL rather than an edge trigger, because a slide is a position you hold it at and not a
+ * deed that completes — the same reason `intake` is a level. Travel is finite
+ * (`BB_LIFT_RATE`), so the height is a physical state like the turret's angles rather than a
+ * teleport, and a driver who wants to place has to commit the time.
+ */
+export function bbStepLift(r: RobotState, cmd: RobotCommand, dt: number): void {
+  const lift = bbLiftOf(r.spec);
+  if (!lift) return;
+  const now = r.bbLiftZ ?? 0;
+  const want = cmd.bbLift ? lift.maxZ - BB_LIFT_DECK_Z : 0;
+  const step = BB_LIFT_RATE * dt;
+  r.bbLiftZ = clamp(now + clamp(want - now, -step, step), 0, Math.max(0, lift.maxZ - BB_LIFT_DECK_Z));
+}
+
+/**
+ * Is the carriage lined up with `target` well enough to place into it?
+ *
+ * HEIGHT ONLY — the horizontal question is the caller's, because "am I next to the FLOWER" is
+ * a reach test the game owns and "is my carriage at ring height" is the mechanism's. R105 is
+ * what makes this ever fail interestingly: a 29 in robot can reach a 21.5 in FLOWER ring and
+ * can NEVER reach a 53.5 in HIVE CELL, so a lift aimed at a HIVE returns false at every
+ * height, from the arithmetic rather than from a rule written by hand.
+ */
+export function bbLiftSeated(r: RobotState, target: ScoreTarget): boolean {
+  return Math.abs(bbLiftHeight(r) - target.z) <= BB_LIFT_SEAT_TOL;
 }

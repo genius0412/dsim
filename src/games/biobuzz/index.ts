@@ -11,6 +11,7 @@ import { drawBiobuzzBalls } from './draw';
 import { drawBiobuzzField } from './drawField';
 import { drawBiobuzzRobot } from './drawRobot';
 import { bbConfigSummary } from './labels';
+import { BB_PRESET_LIST, BB_REAL_PRESETS, bbPresetLines, bbSpecMatches } from './presets';
 import { BIOBUZZ_SIM } from './sim';
 
 /**
@@ -51,6 +52,19 @@ export const BIOBUZZ_MODULE: GameModule = {
   scoreBar: BiobuzzScoreBar,
   resultsRows: biobuzzResultsRows,
   labels: { configSummary: bbConfigSummary },
+  /**
+   * THE PRESET CARDS. Filling this slot is what makes `BB_PRESETS` reachable at all: the
+   * builder's `Presets` section chose its list with `isDecode ? ROBOT_PRESETS : CHAIN_PRESETS`,
+   * so BIOBUZZ did not fall through to "no presets" — it fell into the CHAIN arm and offered
+   * Chain Reaction's nine robots, described in Chain Reaction's words, while this game's own
+   * four were reachable only as `BB_PRESETS[0]` inside `BB_DEFAULT_SPEC`.
+   */
+  presets: {
+    list: BB_PRESET_LIST,
+    matches: bbSpecMatches,
+    lines: bbPresetLines,
+    realCount: BB_REAL_PRESETS,
+  },
   /**
    * THE SCENE GALLERY, alpha-only — `devRoutesEnabled()` gates it inside `devRouteFor`, so a
    * stable build neither routes to it nor renders it.

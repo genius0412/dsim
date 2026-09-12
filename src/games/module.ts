@@ -102,6 +102,40 @@ export interface GameModule extends GameSimModule {
     configSummary(spec: RobotSpec): string;
   };
   /**
+   * The game's PRESET ROBOTS — the cards the builder's `Presets` section offers.
+   *
+   * ── WHY THIS IS A SLOT ──────────────────────────────────────────────────
+   * `Menu.tsx` picked the list with `isDecode ? ROBOT_PRESETS : CHAIN_PRESETS`, and the
+   * card BODY under each name with a second two-valued branch. A third game therefore
+   * did not fall back to "no presets" — it fell into the CHAIN arm and was offered
+   * Chain Reaction's robots, described in Chain Reaction's words. Not a missing feature:
+   * a wrong one, and invisible, because the section still rendered nine plausible cards.
+   *
+   * A game fills this and gets its own list, its own match test and its own card body;
+   * a game that does not is routed through the unchanged branch exactly as before.
+   *
+   * `matches` is a BUILD comparison and deliberately not a deep equality: the player's
+   * name / team / number are theirs and are copied across when a card is applied, so a
+   * card must still read as selected afterwards. Each game supplies its own because
+   * each game's build is a different set of fields — DECODE ignores the mount fields,
+   * Chain Reaction ignores flywheel inertia.
+   */
+  presets?: {
+    /** the shipped builds, in display order. */
+    list: readonly RobotSpec[];
+    /** does `spec` carry this preset's BUILD? Identity fields are excluded — see above. */
+    matches(spec: RobotSpec, preset: RobotSpec): boolean;
+    /** the detail lines under the preset's name. `meta` is the build; `zone` is the
+     * one-line "what it is for", rendered with the same emphasis DECODE gives its
+     * optimised-range line. Absent `zone` simply renders nothing. */
+    lines(preset: RobotSpec): { meta: string; zone?: string };
+    /** how many LEADING entries are real, documented robots rather than archetype
+     * demos. The builder rules off after them so a player can tell "this is a real
+     * team's robot" from "this is what a drum shooter feels like". Absent ⇒ all demos.
+     * Mirrors Chain Reaction's `CHAIN_REAL_PRESETS`. */
+    realCount?: number;
+  };
+  /**
    * DEV-ONLY routes this game mounts under `/<id>/...` (the BIOBUZZ scene gallery).
    *
    * Rendered only on the ALPHA channel: they are development instruments, they draw

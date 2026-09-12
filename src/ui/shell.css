@@ -3225,6 +3225,18 @@ tr.lb-detail td {
   min-height: 62px;
   justify-content: center;
 }
+/* A preset card for a REAL, documented robot (a manufacturer StarterBot, a real team's
+   build) as opposed to an archetype demo. The two kinds answer different questions — "what
+   did that team actually bring" vs "what does a drum shooter feel like" — and a player
+   choosing between them deserves to know which is which.
+
+   An inset left edge rather than a divider between the groups, because `.ds-opts` is an
+   auto-fit grid: any rule drawn "between card 4 and card 5" is wrong at every column count
+   but one. Inset (not `border-left`) so the card's own 1px border stays unbroken and the
+   mark cannot be mistaken for a selection state — `.on` owns that. */
+.ds-opt.real {
+  box-shadow: var(--ds-block-sm), inset 3px 0 0 color-mix(in srgb, var(--ds-accent) 55%, transparent);
+}
 /* Drivetrain grid (the only `.ds-opts.four`): now label-only chips — center the
    label so the four read as an even segmented row instead of top-left labels. */
 .ds-opts.four .ds-opt {

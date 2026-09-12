@@ -482,7 +482,19 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
    * this function. `docs/biobuzz-contract.md` §4 is where a new field is registered; add the
    * carry-across in the same change.
    */
-  if (game === 'biobuzz') return coerceBiobuzzSpec(out, base);
+  if (game === 'biobuzz') {
+    // THE CARRY-ACROSS the ⚠️ block above describes, and `bbMech` is the first field to need
+    // it. Nothing in the shared passes reads it by name, so without this line it is already
+    // gone by the time the game coercer runs and every mechanism loadout would silently revert
+    // to the base spec's on every load, every wire ingress and every `createWorld`.
+    //
+    // Copied onto `out` UNVALIDATED on purpose: this is a transport step, and
+    // `coerceBiobuzzSpec` is the one place allowed to decide what a legal loadout is. It also
+    // must NOT default — `undefined` and `{ launcher: null }` mean different things to that
+    // function (a legacy spec to migrate vs. a robot with genuinely no launcher).
+    out.bbMech = sp.bbMech as RobotSpec['bbMech'];
+    return coerceBiobuzzSpec(out, base);
+  }
   return out;
 }
 

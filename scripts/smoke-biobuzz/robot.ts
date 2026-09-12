@@ -13,6 +13,32 @@ import {
   isTurreted,
 } from '../../src/games/biobuzz/mounts';
 import { bbFootprint, bbHopperCap, bbMouths, bbRobotSolids } from '../../src/games/biobuzz/robot';
+import { bbConfigSummary } from '../../src/games/biobuzz/labels';
+import {
+  bbAimPitch,
+  bbLiftHeight,
+  bbLiftSeated,
+  bbSolveShot,
+  bbStepLift,
+} from '../../src/games/biobuzz/robot';
+import { bbIsTurreted, bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
+import {
+  BB_DEG,
+  BB_FLOWER_TOP_Z,
+  BB_HIVE_OPEN_Z,
+  BB_HOOD_DEFAULT_DEG,
+  BB_LAUNCH_Z0,
+  BB_LIFT_MAX_Z,
+  BB_LIFT_MIN_Z,
+  BB_R105_HEIGHT_CAP,
+  BB_TURRET_PITCH_MAX,
+} from '../../src/games/biobuzz/config';
+import {
+  BB_PRESET_LIST,
+  BB_REAL_PRESETS,
+  BB_STARTER_BOTS,
+  bbSpecMatches,
+} from '../../src/games/biobuzz/presets';
 import { robotPenetration, robotSolids } from '../../src/sim/artifactSolids';
 import { simModuleFor } from '../../src/games/sim';
 import { BB_DEFAULT_SPEC, bbDials } from '../../src/games/biobuzz/robotConfig';
@@ -150,6 +176,206 @@ export function robotChecks(check: Check): void {
         within(s.ballStorage ?? -1, d.storage),
       `L=${s.length} W=${s.width} m=${s.massLb} hop=${s.ballStorage}`,
     );
+  }
+
+  // ── THE PRESET CARDS ──────────────────────────────────────────────────────
+  /**
+   * A PRESET MUST BE A COERCER NO-OP. This is the load-bearing property of the whole preset
+   * feature and the reason mass and storage are derived rather than typed: the builder marks a
+   * card selected by asking `bbSpecMatches(spec, card)`, and the spec it asks about has been
+   * through `coerceSpec`. So a card carrying any value the coercer would move is a card that
+   * can never read as selected — the player clicks it, the robot changes, and nothing lights
+   * up. Silent, and indistinguishable from a broken click handler.
+   *
+   * Checked per card rather than in bulk so a failure names the robot that drifted.
+   */
+  for (const p of BB_PRESET_LIST) {
+    const coerced = bbCoerce(p);
+    check(`preset [${p.name}]: survives the coercer unchanged`, specKey(p) === specKey(coerced));
+    check(
+      `preset [${p.name}]: still reads as SELECTED after coercion`,
+      bbSpecMatches(coerced, p),
+      bbConfigSummary(coerced),
+    );
+    check(
+      `preset [${p.name}]: every dial sits inside the range the builder offers`,
+      within(p.length, bbDials(p).length) &&
+        within(p.width, bbDials(p).width) &&
+        within(p.massLb, bbDials(p).mass) &&
+        within(p.ballStorage ?? -1, bbDials(p).storage),
+      `L=${p.length} W=${p.width} m=${p.massLb} hop=${p.ballStorage}`,
+    );
+  }
+  /**
+   * Card names are React keys AND the only thing distinguishing two cards on screen, so a
+   * duplicate is both a render warning and a genuinely ambiguous picker.
+   */
+  {
+    const names = BB_PRESET_LIST.map((p) => p.name);
+    check(
+      'presets: every card name is unique',
+      new Set(names).size === names.length,
+      names.join(', '),
+    );
+  }
+  /**
+   * G407 caps CONTROL at FOUR SCORING ELEMENTS, and every published StarterBot is built to it.
+   * The archetype DEMOS deliberately take their derived maximum instead — they exist to show
+   * what an archetype's hopper can be — so this is asserted over the real robots only.
+   *
+   * Asserted as `<=`, not `===`: the rule is a ceiling. If a manufacturer's post-kickoff
+   * revision carries fewer, that is a new fact and not a regression.
+   */
+  for (const p of BB_STARTER_BOTS) {
+    check(
+      `starterbot [${p.name}]: hopper honours G407's 4-element cap`,
+      (p.ballStorage ?? 0) <= 4 && (p.ballStorage ?? 0) >= 1,
+      `hopper=${p.ballStorage}`,
+    );
+  }
+  /**
+   * The real robots come FIRST and `realCount` says how many, because the builder marks
+   * exactly the leading `realCount` cards as real. An off-by-one here mislabels an invented
+   * archetype demo as a manufacturer's robot, which is the one error this feature must not
+   * make: the whole point of the divider is telling a player what is documented.
+   */
+  {
+    check(
+      'presets: realCount matches the StarterBot count',
+      BB_REAL_PRESETS === BB_STARTER_BOTS.length,
+      `${BB_REAL_PRESETS} vs ${BB_STARTER_BOTS.length}`,
+    );
+    check(
+      'presets: the real robots are the leading entries',
+      BB_PRESET_LIST.slice(0, BB_REAL_PRESETS).every((p, i) => p.name === BB_STARTER_BOTS[i].name),
+      BB_PRESET_LIST.slice(0, BB_REAL_PRESETS).map((p) => p.name).join(', '),
+    );
+  }
+
+  // ── MECHANISM COMPOSITION ─────────────────────────────────────────────────
+  /**
+   * THE PHANTOM TURRET — the single check this whole feature is shaped around.
+   *
+   * `coerceSpec` writes `out.scoreMode` unconditionally and defaults it to a turret, so any
+   * design that spells "this robot has no launcher" as an absent `scoreMode` grows one back on
+   * the next pass. A launcher-less build is REAL (Studica's published StarterBot is a
+   * drivetrain and an intake), so `launcher: null` has to survive coercion — and survive it
+   * TWICE, because the coercer runs at settings load, at wire ingress and again at
+   * `createWorld`.
+   */
+  {
+    const none = bbCoerce({ ...BB_DEFAULT_SPEC, bbMech: { launcher: null, lift: null } });
+    check('mech: a launcher-less build survives coercion', bbLauncherOf(none, BB_HOOD_DEFAULT_DEG) === null);
+    const twice = bbCoerce(none);
+    check(
+      'mech: ...and survives it AGAIN (no phantom turret on the second pass)',
+      bbLauncherOf(twice, BB_HOOD_DEFAULT_DEG) === null,
+      `scoreMode=${twice.scoreMode}`,
+    );
+    check('mech: a launcher-less build is a coercion fixed point', specKey(none) === specKey(twice));
+  }
+  /**
+   * MIGRATION. Every spec that exists today has no container and DID have a launcher, because
+   * `scoreMode` was mandatory. Absence must therefore read as "migrate me", never as "none" —
+   * the other half of the distinction above.
+   */
+  for (const mode of BB_SCORE_MODES) {
+    const legacy = bbCoerce({ ...BB_DEFAULT_SPEC, bbMech: undefined, scoreMode: mode });
+    const l = bbLauncherOf(legacy, BB_HOOD_DEFAULT_DEG);
+    check(`mech: a legacy ${mode} spec migrates to a real launcher`, l !== null && l.kind === mode, `got ${l?.kind}`);
+  }
+  /**
+   * THE CONTAINER IS AUTHORITATIVE. A caller that patches only `bbMech` must win; the flat
+   * `scoreMode` mirrors it afterwards. This inverted once — the flat field was the source of
+   * truth and a container-only edit was silently reverted, with nothing failing.
+   */
+  {
+    const patched = bbCoerce({
+      ...BB_DEFAULT_SPEC,
+      scoreMode: 'turret',
+      bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null },
+    });
+    check('mech: the container wins over the flat scoreMode', bbLauncherOf(patched, BB_HOOD_DEFAULT_DEG)?.kind === 'dumper');
+    check('mech: ...and the flat field is MIRRORED from it, for older peers', patched.scoreMode === 'dumper', `scoreMode=${patched.scoreMode}`);
+  }
+  /**
+   * THE CLASH. A lift and a launcher both bolt ABOVE the deck, so unlike the sweeper they can
+   * genuinely want the same cell — the first live use of `occupiedCells`/`mountsClash`. The
+   * launcher wins and the lift folds around it, and the fold has to be IDEMPOTENT or the
+   * coercer stops being one.
+   */
+  {
+    const clash = bbCoerce({
+      ...BB_DEFAULT_SPEC,
+      bbMech: {
+        launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG },
+        lift: { kind: 'vslide', mount: 'center', maxZ: BB_LIFT_MAX_Z },
+      },
+    });
+    const lift = bbLiftOf(clash);
+    check('mech: a lift clashing with the launcher is relocated, not dropped', lift !== null && lift.mount !== 'center', `lift@${lift?.mount}`);
+    check('mech: ...and the launcher keeps the cell it asked for', bbLauncherOf(clash, BB_HOOD_DEFAULT_DEG)?.mount === 'center');
+    check('mech: ...and the relocation is a fixed point', specKey(clash) === specKey(bbCoerce(clash)));
+  }
+  /** the lift's height dial is clamped to the R105 envelope at BOTH ends. */
+  {
+    const tall = bbCoerce({ ...BB_DEFAULT_SPEC, bbMech: { launcher: null, lift: { kind: 'vslide', mount: 'center', maxZ: 999 } } });
+    const short = bbCoerce({ ...BB_DEFAULT_SPEC, bbMech: { launcher: null, lift: { kind: 'vslide', mount: 'center', maxZ: -5 } } });
+    check('mech: a lift taller than R105 is clamped to it', (bbLiftOf(tall)?.maxZ ?? 0) <= BB_R105_HEIGHT_CAP, `maxZ=${bbLiftOf(tall)?.maxZ}`);
+    check('mech: a lift shorter than the floor is raised to it', (bbLiftOf(short)?.maxZ ?? 0) >= BB_LIFT_MIN_Z, `maxZ=${bbLiftOf(short)?.maxZ}`);
+  }
+  /**
+   * THE ARC REACHES BOTH REAL TARGETS, and R105 is why there have to be two mechanisms.
+   *
+   * These assert REACHABILITY and the ORDERING between the two targets, never a speed or an
+   * angle as a number — every constant behind them is `APPROX` and an assertion against a
+   * guess fails the day the guess is replaced, for a reason nobody can act on.
+   */
+  {
+    const cellZ = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
+    for (const d of [24, 48, 72, 96]) {
+      const flower = bbSolveShot(d, BB_FLOWER_TOP_Z - BB_LAUNCH_Z0);
+      const hive = bbSolveShot(d, cellZ - BB_LAUNCH_Z0);
+      check(`arc @${d}in: a solution exists for both targets`, Number.isFinite(flower.speed) && Number.isFinite(hive.speed));
+      check(
+        `arc @${d}in: both elevations are inside the turret envelope`,
+        flower.angle <= BB_TURRET_PITCH_MAX && hive.angle <= BB_TURRET_PITCH_MAX,
+        `flower ${(flower.angle / BB_DEG).toFixed(1)}deg hive ${(hive.angle / BB_DEG).toFixed(1)}deg`,
+      );
+      check(`arc @${d}in: the HIGHER target needs the steeper, faster shot`, hive.angle > flower.angle && hive.speed > flower.speed);
+    }
+  }
+  /**
+   * A LIFT CAN REACH A FLOWER AND CAN NEVER REACH A HIVE CELL. This is the whole reason the
+   * two mechanisms are different rather than two flavours of one, and it falls out of R105's
+   * 29in cap versus the two published opening heights — no rule is written by hand for it.
+   */
+  {
+    const w = mkWorld('free', 29);
+    const r = w.robots[0];
+    r.spec = bbCoerce({ ...r.spec, bbMech: { launcher: null, lift: { kind: 'vslide', mount: 'center', maxZ: BB_LIFT_MAX_Z } } });
+    for (let i = 0; i < 240; i++) bbStepLift(r, cmd({ bbLift: true }), C.SIM_DT);
+    const top = bbLiftHeight(r);
+    check('lift: holding the button tops the carriage out at its build height', Math.abs(top - BB_LIFT_MAX_Z) < 0.5, `top=${top.toFixed(2)}in`);
+    check('lift: a fully raised carriage never exceeds R105', top <= BB_R105_HEIGHT_CAP + 1e-6, `top=${top.toFixed(2)}in`);
+    check(
+      'lift: it can NEVER seat at a HIVE CELL, from R105 alone',
+      !bbLiftSeated(r, { id: 'h', alliance: 'red', pos: { x: 0, y: 0 }, z: BB_HIVE_OPEN_Z[0], r: 6 }),
+      `carriage tops at ${top.toFixed(1)}in vs a cell opening at ${BB_HIVE_OPEN_Z[0]}in`,
+    );
+    for (let i = 0; i < 240; i++) bbStepLift(r, cmd({ bbLift: false }), C.SIM_DT);
+    check('lift: releasing stows it again', (r.bbLiftZ ?? 0) < 0.01, `z=${r.bbLiftZ}`);
+  }
+  /** a turretless build has no pitch axis to solve, and says so rather than guessing one. */
+  {
+    const w = mkWorld('free', 29);
+    const r = w.robots[0];
+    const target = { id: 'f', alliance: null, pos: { x: 40, y: 0 }, z: BB_FLOWER_TOP_Z, r: 2 } as const;
+    r.spec = bbCoerce({ ...r.spec, bbMech: { launcher: { kind: 'drum', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null } });
+    check('aim: a TURRETLESS build returns no pitch solution', bbAimPitch(r, target) === null);
+    r.spec = bbCoerce({ ...r.spec, bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null } });
+    check('aim: ...and a TURRET does', bbAimPitch(r, target) !== null);
+    check('aim: isTurreted agrees with the resolved launcher', bbIsTurreted(bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG)));
   }
 
   // ── COERCION: THE ENUMS FOLD, AND THE LEGACY MIRRORS AGREE ────────────────

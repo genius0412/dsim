@@ -2,7 +2,16 @@ import type { RobotSpec } from '../../types';
 import { massLimits } from '../../sim/drivetrain';
 import { coerceSpec } from '../../sim/spawn';
 import { BB_DEFAULT_SPEC } from './coerce';
-import { BB_STORAGE_MIN, bbMassFloorBump, bbSizeLimits, bbStorageMax } from './config';
+import {
+  BB_HOOD_MAX_DEG,
+  BB_HOOD_MIN_DEG,
+  BB_LIFT_MAX_Z,
+  BB_LIFT_MIN_Z,
+  BB_STORAGE_MIN,
+  bbMassFloorBump,
+  bbSizeLimits,
+  bbStorageMax,
+} from './config';
 
 /**
  * BIOBUZZ robot DIALS — the defaults and the sanitizing clamps.
@@ -61,12 +70,23 @@ export function bbCoerceSpec(raw: unknown, base: RobotSpec = BB_DEFAULT_SPEC): R
  * Derived from the same functions the coercer uses rather than from parallel constants — a
  * slider whose bounds came from anywhere else is a slider that can offer a value the
  * chokepoint then clamps, which reads to the player as the control snapping back.
+ *
+ * `lift` and `hood` are the odd two out: `coerceBbMech` (`./coerce.ts`) clamps
+ * `BbLiftSpec.maxZ` and `BbLauncherSpec.hoodDeg` against the bare constants
+ * `BB_LIFT_MIN_Z`/`BB_LIFT_MAX_Z` and `BB_HOOD_MIN_DEG`/`BB_HOOD_MAX_DEG` — neither range
+ * depends on the chassis the way size/mass/storage do, so there is no per-spec function to
+ * call through. Routing them through this same object anyway (rather than importing the
+ * constants straight into `Builder.tsx`) keeps the promise in one place: every BIOBUZZ slider
+ * bound lives here, so a future mechanism that DOES make one of these spec-dependent is a
+ * change to this function and not a hunt through the builder for a stray import.
  */
 export function bbDials(spec: RobotSpec): {
   length: { min: number; max: number };
   width: { min: number; max: number };
   mass: { min: number; max: number };
   storage: { min: number; max: number };
+  lift: { min: number; max: number };
+  hood: { min: number; max: number };
 } {
   const size = bbSizeLimits(spec);
   const mass = massLimits(spec.drivetrain, spec.flywheelInertia, bbMassFloorBump(spec));
@@ -75,5 +95,7 @@ export function bbDials(spec: RobotSpec): {
     width: { min: size.minWidth, max: Math.max(size.minWidth, size.maxWidth) },
     mass,
     storage: { min: BB_STORAGE_MIN, max: bbStorageMax(spec) },
+    lift: { min: BB_LIFT_MIN_Z, max: BB_LIFT_MAX_Z },
+    hood: { min: BB_HOOD_MIN_DEG, max: BB_HOOD_MAX_DEG },
   };
 }

@@ -47,6 +47,9 @@ import {
   type BbScoreMode,
   bbIntakeMountOf,
 } from './mounts';
+// `mechs.ts` is a LEAF over `types` + `mounts`, so this import adds no cycle — the same reason
+// `mounts.ts` itself is safe to import here.
+import { bbLauncherOf, bbLiftOf } from './mechs';
 
 /** millimetres → inches (the sim's world unit). The manual dimensions arrive in mm, so this
  * is the conversion every element constant is written THROUGH rather than pre-multiplied,
@@ -444,10 +447,88 @@ export const BB_AIM_GAIN = 4.5;
  * under 1 so the outermost POLLEN of a burst is not born exactly on the frame line. APPROX. */
 export const BB_LAUNCH_LINE_FRAC = 0.92;
 
-/** launch height (in) — how high off the tile a POLLEN leaves the mechanism. APPROX and
- * PLACEHOLDER: without Section 9 there is no target height to arc into, so `releasePollen`
- * lobs with whatever velocity the caller hands it and this is only the z it starts at. */
+/** launch height (in) — how high off the tile a POLLEN leaves the mechanism.
+ *
+ * ⚠️ THIS IS A HEIGHT, AND IT WAS ALSO BEING USED AS A VERTICAL VELOCITY. Every launch path in
+ * `robot.ts` used to pass it as the `z` of the velocity `Vec3` handed to `releasePollen`, as
+ * well as `elements.ts` using it (correctly) as `held.z`. So every POLLEN left at 10 in/s
+ * upward and apexed 0.13 in: there was effectively no arc in this game. The velocity use is
+ * gone — a launch's vertical speed is now solved from the target's height (`bbSolveShot`) or
+ * set by the hood angle — and this is a height and only a height. The name is left alone
+ * because renaming it touches Lane A's `elements.ts`; that is a separate cross-lane change. */
 export const BB_LAUNCH_Z0 = 10;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROBOT — mechanism composition (launcher elevation, the lift)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * R105's whole-robot height ceiling (in) — the ONE number both above-deck mechanisms clamp
+ * against. NOT `APPROX`: "18 in x 24 in x 29 in tall when fully expanded", Section 12.
+ *
+ * It is what makes the two mechanisms structurally different rather than stylistically:
+ * a FLOWER's top ring is 21.5 in and therefore reachable by a carriage, while the HIVE's
+ * up-CELL opening starts at 53.5 in and can only ever be LAUNCHED into. Neither of those is a
+ * rule written by hand anywhere — they both fall out of comparing a height against this.
+ */
+export const BB_R105_HEIGHT_CAP = 29;
+
+/** how high above the tiles a stowed carriage sits (in) — the deck the slide is bolted to.
+ * APPROX: a chassis rail plus the carriage plate. */
+export const BB_LIFT_DECK_Z = 3;
+/** the shortest slide worth building (in). Below the FLOWER's own lower ring it could not
+ * place anything, so the floor is the ring plus a little. APPROX. */
+export const BB_LIFT_MIN_Z = 12;
+/** the tallest a slide may be built (in) — R105, less nothing: the carriage IS the top of the
+ * robot at full extension, which is exactly the dimension R105 measures. */
+export const BB_LIFT_MAX_Z = BB_R105_HEIGHT_CAP;
+/** carriage travel rate (in/s). APPROX: a geared slide is deliberate, not instant — the same
+ * "physical state, not a promise" treatment the turret's yaw gets. */
+export const BB_LIFT_RATE = 26;
+/** how close to stowed counts as stowed (in), for the sprite and the HUD. APPROX. */
+export const BB_LIFT_STOW_EPS = 0.4;
+/** how close the carriage must be to a target's height to place into it (in). APPROX — it is
+ * the vertical slop of a real claw, and a placement should not need the pixel. */
+export const BB_LIFT_SEAT_TOL = 2.0;
+/** minimum seconds between two placements. APPROX: one carriage, one element at a time. */
+export const BB_PLACE_INTERVAL = 0.45;
+/** extra lb on the chassis mass FLOOR for carrying a slide. APPROX. */
+export const BB_LIFT_MASS_FLOOR = 2.0;
+
+/** the hood elevation a TURRETLESS launcher is built at, in DEGREES above level, and the range
+ * the builder offers. A fixed hood is real hardware: AndyMark's StarterBot manual sells its
+ * adjustment as a tuning axis ("Hood End: moving the last standoff affects the release
+ * angle"). APPROX — 35 deg is a plausible mid-range launcher, nothing more.
+ *
+ * ⚠️ CHANGING THE DEFAULT RE-HASHES EVERY SCENE IN WHICH A LAUNCHER FIRES, because the flight
+ * path changes. That is intended here (the near-flat lob it replaces was the units bug above,
+ * not a design), but it is why this landing owes a gallery re-shoot under contract §7. */
+export const BB_HOOD_DEFAULT_DEG = 35;
+export const BB_HOOD_MIN_DEG = 10;
+export const BB_HOOD_MAX_DEG = 70;
+
+/**
+ * ⚠️ THE HOOD IS THE ONLY ANGLE IN THIS GAME MEASURED IN DEGREES, AND ONLY ON THE SPEC.
+ *
+ * The sim is radians throughout — `dsin`/`dcos`/`datan2` are DETERMINISTIC trig, not DEGREE
+ * trig (the `d` has burned people), `BB_TURRET_SLEW` is rad/s and `BB_AIM_TOL` is rad. But a
+ * hood angle is a number a player reads off a slider, and "35°" is what that player means;
+ * Chain Reaction makes the same call for `catapultYaw` ("in DEGREES relative to chassis
+ * forward"). So it is stored in degrees and converted HERE, once, at the boundary — never
+ * passed to a trig function raw.
+ */
+export const BB_DEG = Math.PI / 180;
+
+/** how fast a TURRET's pitch axis slews, in RADIANS per second (~92 deg/s). APPROX, and deliberately
+ * slower than the yaw slew: elevation carries the barrel's weight where yaw turns a ring, and
+ * a turret that re-elevates instantly between a 21.5 in FLOWER and a 59 in CELL would make the
+ * two targets feel identical, which is the one thing the pitch axis exists to prevent. */
+export const BB_TURRET_PITCH_SLEW = 1.6;
+/** the pitch envelope a turret can actually reach, in RADIANS — level to ~80 deg. A barrel
+ * cannot depress below level (it would fire into the robot's own deck) and cannot go fully
+ * vertical (the feed path is in the way). APPROX both ends. */
+export const BB_TURRET_PITCH_MIN = 0;
+export const BB_TURRET_PITCH_MAX = 80 * BB_DEG;
 
 /** the launcher's plate channel, in inches — `GAP` is the clear width between the two plates
  * a POLLEN passes between, `OVERHANG` how far they reach past the flywheel. GAP is
@@ -569,25 +650,35 @@ export function bbMountFits(spec: RobotSpec, mount: BbIntakeMount): boolean {
 /** a floor of one POLLEN; NOT scaled with the rest. */
 export const BB_STORAGE_MIN = 1;
 /**
- * CEILING. APPROX, and RETUNED after looking at it.
+ * CEILING — **G407, and therefore NOT `APPROX` any more.**
  *
- * The first pass at these two numbers was carried over from a game whose element is much
- * smaller, and it made a mid-size dumper hold THIRTY-NINE POLLEN with a ceiling of 122. The
- * gallery is what showed it: `launch-wall-bounce` dumped a full hopper and drew a single-file
- * line of pollen along the entire 144" wall, because thirty-nine 3" balls is not a hopper, it
- * is a third of the field's supply riding inside one robot.
+ * "A ROBOT may not CONTROL more than 4 SCORING ELEMENTS." A hopper holding five is a robot
+ * controlling five, so four is the rule's own number and not a judgement about volume. The
+ * staging rule agrees from the other side: §10.3.1 pre-loads exactly 4 POLLEN per ROBOT, so a
+ * legal robot starts FULL. Both manufacturer StarterBots that advertise a capacity at all say
+ * "up to four POLLEN".
  *
- * The model now assumes ONE LAYER: a 3" POLLEN needs ~9 in² of hopper floor (hex packing is
- * 7.8, and nothing packs perfectly), plus the walls, the feed path and the shooter's own
- * volume — call it 12 in² apiece. A second layer would need a lift, and the shell has no
- * mechanism for one. That puts the default 15×17 turret at ~11 POLLEN and an open 18" dumper at
- * the 24 ceiling, which is the shape of a real FTC hopper.
+ * ── WHAT THIS REPLACED, AND WHY THE VOLUME LAW SURVIVES BELOW IT ────────────
+ * These were 24 and 8, derived from a one-layer packing model (~12 in² of hopper floor per
+ * 3" POLLEN) that put a 15×17 turret at ~11 and an open 18" dumper at 24. That model was a
+ * good answer to "how much would physically fit", which turns out not to be the question the
+ * game asks — Lane A read it off the manual and flagged it (`docs/biobuzz/field-plan.md` §7).
  *
- * STILL A GUESS. Section 7 (the element) and Section 10 (Game Details) both land at Kickoff,
- * and either could move the diameter — which moves all of this. It is one constant.
+ * `bbStorageMax` still runs the volume law and the archetype/mount multipliers, and they are
+ * still the honest description of the hardware; the rule simply binds first for every chassis
+ * anyone can build. Keeping both layers means the archetype differences are still WRITTEN DOWN
+ * rather than deleted, and the day a rule change or a different game lifts the cap they come
+ * back on their own. It also keeps one true statement true: the number a robot may hold is the
+ * SMALLER of what fits and what is legal.
+ *
+ * ⚠️ CONSEQUENCE: the storage slider is now a 1–4 dial and every archetype reaches the same
+ * ceiling, so hopper size is no longer a way to tell two builds apart. Cadence, range and
+ * cycle time are. Any blurb that sold an archetype on "biggest hopper" is now false — see
+ * `BB_MODE_BLURBS` and the demo preset comments.
  */
-export const BB_STORAGE_MAX = 24;
-export const BB_STORAGE_DEFAULT = 8;
+export const BB_STORAGE_MAX = 4;
+/** a legal robot starts FULL: §10.3.1 stages exactly 4 pre-loaded POLLEN per ROBOT. */
+export const BB_STORAGE_DEFAULT = 4;
 
 /** square inches of footprint per stored POLLEN — the derived cap's only size term, so it is
  * the single dial for storage across every archetype, mount and chassis size. APPROX; see the
@@ -611,14 +702,23 @@ export function bbMountStoreMult(mount: BbIntakeMount): number {
 }
 
 /** the MAX POLLEN this robot can hold — footprint × an archetype factor × the intake-mount
- * factor, clamped to [MIN, MAX]. */
+ * factor, clamped to [MIN, MAX].
+ *
+ * The volume law below describes the HARDWARE and `BB_STORAGE_MAX` is the RULE (G407, 4). For
+ * every chassis in the legal size envelope the volume answer is larger, so the rule is what
+ * actually binds and this returns 4 — see the note on `BB_STORAGE_MAX` for why both layers are
+ * kept rather than deleting the one that no longer decides anything. */
 export function bbStorageMax(spec: RobotSpec): number {
   const area = spec.length * spec.width;
-  const mode = (spec.scoreMode ?? BB_DEFAULT_SCORE_MODE) as BbScoreMode;
+  // Through the RESOLVER, not `spec.scoreMode`: a launcher-less build still carries a mirrored
+  // archetype for older peers, and charging it that archetype's volume cost would bill Studica
+  // for a shooter assembly it does not have. No launcher ⇒ the open-hopper multiplier, because
+  // that is exactly what a chassis with nothing bolted above the deck is.
+  const kind = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG)?.kind;
   const mult =
-    (mode === 'turret'
+    (kind === 'turret'
       ? BB_STORE_TURRET_MULT
-      : mode === 'twinturret'
+      : kind === 'twinturret'
         ? BB_STORE_TWIN_MULT
         : BB_STORE_LAUNCHER_MULT) * bbMountStoreMult(bbIntakeMountOf(spec));
   const cap = Math.round((area / BB_STORE_AREA_PER_BALL) * mult);
@@ -644,7 +744,18 @@ export function bbHopperCap(spec: RobotSpec): number {
  * priced into the base chassis. Threaded into `massLimits` by the coercer and by the
  * builder's mass slider, so the floor the UI offers is the floor the sim enforces. */
 export function bbMassFloorBump(spec: RobotSpec): number {
-  return (spec.scoreMode ?? BB_DEFAULT_SCORE_MODE) === 'twinturret' ? BB_TWIN_MASS_FLOOR : 0;
+  const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+  // A SECOND FLYWHEEL ASSEMBLY, and now A MAST — both are hardware bolted to the chassis, and
+  // both were previously invisible to the mass model. `BB_LIFT_MASS_FLOOR` existed as a
+  // constant with no reader, which is the same shape of bug `BB_TURRET_SLEW` was: a number
+  // documenting an intention nothing implemented.
+  //
+  // Read through `bbLauncherOf` rather than off `spec.scoreMode`, because a launcher-less
+  // build carries a mirrored archetype it does not actually have — pricing that would charge
+  // Studica's StarterBot for a twin turret it was never built with.
+  const twin = launcher?.kind === 'twinturret' ? BB_TWIN_MASS_FLOOR : 0;
+  const lift = bbLiftOf(spec) ? BB_LIFT_MASS_FLOOR : 0;
+  return twin + lift;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -768,7 +879,8 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
   {
     // long-range precision: a turret aims itself, so the chassis never has to face anything —
     // which is exactly the build that can afford FRONT+BACK sweepers and collect while
-    // driving in either direction. It pays ~25% of the hopper for that.
+    // driving in either direction. Under G407's 4-element cap that costs it nothing at all
+    // any more — the storage multipliers still describe the hardware, but the rule binds first.
     name: 'Sniper', teamName: 'Turret · shoots and collects any direction', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 24, drivetrain: 'swerve',
     driveRpm: 500, flywheelInertia: 0.2, canSort: false,
@@ -778,8 +890,9 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
   },
   {
     // volume hauler: a REAR dumper makes the whole cycle one straight line — drive forward to
-    // fill the hopper, reverse into range, unload. No turning around at either end, and two
-    // end mounts on opposite edges cost NO storage, so it keeps the biggest hopper in the set.
+    // fill the hopper, reverse into range, unload. No turning around at either end. It used to
+    // be sold on keeping the biggest hopper in the set; G407 caps every build at 4, so what it
+    // actually offers now is the cycle SHAPE — a straight line, no turns.
     name: 'Hauler', teamName: 'Dumper · fill forward, reverse and unload', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 38, drivetrain: 'tank',
     driveRpm: 340, flywheelInertia: 0.2, canSort: false,
@@ -790,7 +903,8 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
   {
     // the volume shooter: SIDE sweepers turn a mecanum's strafe into the collection tool —
     // slide sideways along a line of POLLEN and hoover it up with the flank rollers, then face
-    // the target and stream. Open flanks are the harshest storage cost, and the smallest
+    // the target and stream. Open flanks are the harshest storage cost on paper (G407 caps
+    // every build at 4 regardless), and the smallest
     // chassis in the set keeps the strafe quick.
     name: 'Drummer', teamName: 'Drum · strafe-collect, stream from anywhere', teamNumber: 0,
     length: 15, width: 15, intake: 'sloped', massLb: 25, drivetrain: 'mecanum',

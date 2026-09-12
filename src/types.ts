@@ -2,6 +2,7 @@ import type { ControlBindings } from './input/bindings';
 import type { GameId } from './games/types';
 import type { ChainState } from './games/chain/state';
 import type { BiobuzzState } from './games/biobuzz/state';
+import type { BbMechSpec } from './games/biobuzz/mechs';
 export type { GameId } from './games/types';
 
 export type Alliance = 'red' | 'blue';
@@ -31,6 +32,22 @@ export interface RobotCommand {
   /** Chain Reaction: pick up a nearby ring / place a carried ring on a hook. Edge-
    * triggered in the sim (acts once per press). Optional (DECODE omits it). */
   catalyst?: boolean;
+  /** BIOBUZZ, vertical extension slide: HELD to drive the carriage up, released to drive it
+   * back down. A LEVEL like `intake`, not an edge-trigger like `catalyst` — a slide is a
+   * position you hold it at, not a deed that completes. Optional; absent reads as stowed.
+   *
+   * Deliberately a BUTTON and not an analog axis: an axis would need a `REPLAY_FORMAT` bump
+   * and a `trackStride` change (`src/sim/replay.ts`), where a hold-to-raise level needs only a
+   * protocol bit. */
+  bbLift?: boolean;
+  /** BIOBUZZ: PLACE the held element into whatever the raised carriage is lined up with.
+   * Edge-triggered.
+   *
+   * ITS OWN BUTTON rather than reusing `fire` while the slide is up. Overloading fire would
+   * make the robot silently change what it does as the carriage crosses a height threshold —
+   * a mode, with no on-screen transition, and the design most likely to come back from
+   * playtesting. One extra protocol bit is the cheaper half of that trade. */
+  bbPlace?: boolean;
   /** Chain Reaction, LAUNCHER catalyst: THROW the carried ring downfield from the catapult.
    * Its own button so it is never ambiguous with the claw's grab/place. Edge-triggered in
    * the sim. Optional (old clients/replays omit it). */
@@ -158,6 +175,23 @@ export interface RobotSpec {
   /** @deprecated superseded by `shooterMount` (same mirroring contract as `intakeSide`).
    * Never read it directly; use `shooterMountOf`. */
   shooterRear?: boolean;
+  /**
+   * BIOBUZZ: the robot's MECHANISM LOADOUT — a launcher, a vertical extension slide, either,
+   * both, or neither. See `src/games/biobuzz/mechs.ts` for the vocabulary and the mount-clash
+   * rule; `coerceBiobuzzSpec` validates and mounts it.
+   *
+   * ⚠️ IT IS A CONTAINER, AND THE CONTAINER IS LOAD-BEARING. `bbMech === undefined` means "a
+   * spec written before mechanisms were composable — migrate it from `scoreMode`", while
+   * `bbMech.launcher === null` means "this robot genuinely has no launcher" (Studica's
+   * StarterBot). Two sibling optional fields could not tell those apart, and the shared pass in
+   * `coerceSpec` WRITES `out.scoreMode` unconditionally — so a launcher-less build spelled as
+   * an absent `scoreMode` would grow a phantom turret on the next coercion.
+   *
+   * `scoreMode` / `shooterMount` above stay real, primary fields for CHAIN REACTION and become
+   * MIRRORS for BIOBUZZ, kept in step by the coercer so a spec routed through an older peer or
+   * server (which drops fields it does not know) returns as the nearest hardware it can name.
+   */
+  bbMech?: BbMechSpec;
 }
 
 /** Chain Reaction scoring archetype (see `RobotSpec.scoreMode`).
@@ -308,6 +342,23 @@ export interface RobotState {
   slipW?: number;
   angVel: number;
   turretHeading: number; // field frame
+  /**
+   * BIOBUZZ turreted launcher: the ELEVATION angle in DEGREES above level — the pitch twin of
+   * `turretHeading`, and the axis that lets one launcher reach both a 21.5in FLOWER ring and a
+   * 53.5-65.6in HIVE CELL. Eased toward the arc solution at a finite rate, exactly as the yaw
+   * is: an actuator, not a promise.
+   *
+   * Optional, and an absent value reads as 0 (level) everywhere — the same convention
+   * `catalystRail` uses, so a DECODE or Chain Reaction robot, or a BIOBUZZ build with no
+   * launcher, never writes it and never pays for it on the wire.
+   */
+  bbTurretPitch?: number;
+  /**
+   * BIOBUZZ vertical extension slide: the carriage's CURRENT height above the tiles, in
+   * inches, 0 (stowed) .. the build's own `maxZ`. Eased toward whatever the lift buttons ask
+   * for at `BB_LIFT_RATE`. Optional; absent reads as 0.
+   */
+  bbLiftZ?: number;
   /** SWERVE per-module steer angles (robot frame, rad), one per wheel in the
    * corner order [FL, FR, BL, BR] (matching drawRobot's wheels). Each module has
    * its OWN imperfect steering loop, so their small INDEPENDENT angle errors don't

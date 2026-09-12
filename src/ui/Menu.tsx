@@ -287,9 +287,17 @@ export function Menu({ settings, onChange }: Props) {
     isDecode ? 0 : chainMassFloorBump(spec),
   );
   const dp = driveParams(spec);
-  // the builder shows DECODE robot presets or CR archetype presets per the active game
-  const presets = isDecode ? ROBOT_PRESETS : CHAIN_PRESETS;
-  const presetMatches = isDecode ? specMatches : chainSpecMatches;
+  // The builder shows DECODE robot presets or CR archetype presets per the active game —
+  // unless the game FILLS THE SLOT, which is the only way a third game gets its own. The
+  // two-valued form below is not a safe default for a game that fills neither branch: it is
+  // an `else`, so BIOBUZZ was being offered Chain Reaction's robots under Chain Reaction's
+  // labels. `mod.presets ? <slot> : <existing branch, unchanged>` — see `games/module.ts`.
+  const gamePresets = mod.presets;
+  const presets = gamePresets ? gamePresets.list : isDecode ? ROBOT_PRESETS : CHAIN_PRESETS;
+  const presetMatches = gamePresets ? gamePresets.matches : isDecode ? specMatches : chainSpecMatches;
+  // how many leading cards are real robots rather than archetype demos, so the section can
+  // rule off between them. 0 ⇒ no divider (every current non-slot game is one or the other).
+  const realPresets = gamePresets?.realCount ?? 0;
   const isCustom = !presets.some((p) => presetMatches(spec, p));
 
   // ---- the player's SAVED robot library (their own full robots, up to 3) ----
@@ -493,10 +501,16 @@ export function Menu({ settings, onChange }: Props) {
         <section className="ds-sec">
           <h2>Presets</h2>
           <div className="ds-opts">
-            {presets.map((p) => (
+            {presets.map((p, i) => (
               <button
                 key={p.name}
-                className={`ds-opt ${presetMatches(spec, p) ? 'on' : ''}`}
+                // `.real` marks a documented, real-world robot. Marking the CARDS rather than
+                // ruling a line between the two groups is what survives `.ds-opts` being an
+                // auto-fit grid: a divider "after the fourth card" lands mid-row the moment
+                // the grid reflows to three or five columns, but a per-card mark never lies.
+                className={`ds-opt ${presetMatches(spec, p) ? 'on' : ''} ${
+                  i < realPresets ? 'real' : ''
+                }`}
                 onClick={() =>
                   // copy the BUILD only — keep the player's own name/team/number.
                   // applySpec swaps assists to the preset's drivetrain slot (so the
@@ -511,9 +525,21 @@ export function Menu({ settings, onChange }: Props) {
               >
                 <span className="ot">{p.name}</span>
                 <span className="od">
-                  {isDecode ? `${p.teamNumber} · ${p.teamName}` : p.teamName}
+                  {gamePresets || !isDecode ? p.teamName : `${p.teamNumber} · ${p.teamName}`}
                 </span>
-                {isDecode ? (
+                {gamePresets ? (
+                  // the game writes its own card body — it is the only thing that knows
+                  // which of its fields are worth a line
+                  (() => {
+                    const { meta, zone } = gamePresets.lines(p);
+                    return (
+                      <>
+                        <span className="om">{meta}</span>
+                        {zone ? <span className="oz">{zone}</span> : null}
+                      </>
+                    );
+                  })()
+                ) : isDecode ? (
                   <>
                     <span className="om">
                       {DRIVETRAIN_LABELS[p.drivetrain]} · {p.massLb} lb · {p.driveRpm} rpm ·{' '}

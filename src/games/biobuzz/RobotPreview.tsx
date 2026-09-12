@@ -1,22 +1,16 @@
 import type { RobotSpec } from '../../types';
 import { WHEEL_INSET } from '../../config';
 import {
-  BB_DEFAULT_SCORE_MODE,
+  BB_HOOD_DEFAULT_DEG,
   BB_LAUNCH_LINE_FRAC,
   BB_LAUNCH_PLATE_GAP,
   BB_LAUNCH_PLATE_OVERHANG,
   BB_POLLEN_R,
   BB_TWIN_BARREL_OFFSET,
 } from './config';
-import {
-  EDGE_ANGLE,
-  bbMouthFrame,
-  bbShooterEdgeOf,
-  edgeGeom,
-  turretLocal,
-  turretRadius,
-  type BbScoreMode,
-} from './mounts';
+import { bbLauncherOf, bbLiftOf } from './mechs';
+import { BB_LIFT_MAST_R, bbLiftMastLocal } from './parts';
+import { EDGE_ANGLE, bbMouthFrame, bbShooterEdgeOf, edgeGeom, turretLocal, turretRadius } from './mounts';
 import { bbFootprint, bbMouths } from './robot';
 
 /** dimension-label type size, in the viewBox's inch units */
@@ -70,7 +64,14 @@ export function BiobuzzRobotPreview({
   const half = ext.half; // ±y half-span (grown by a flank mount)
   const tipY = -ext.front; // front-most in SCREEN y (robot +x → screen −y), for the viewBox
   const rearY = ext.rear; // rear-most in SCREEN y
-  const mode = (spec.scoreMode ?? BB_DEFAULT_SCORE_MODE) as BbScoreMode;
+  // THE MECHANISM LOADOUT (`docs/biobuzz/plan-mechanisms.md`) — a build may carry a LAUNCHER, a
+  // LIFT, both, or neither. `bbLauncherOf`/`bbLiftOf` (`mechs.ts`) are the one place that reads
+  // `spec.bbMech`, safe to call on the RAW spec this live builder preview is handed (the same
+  // reason `footprintExtents` calls `bbLauncherOf` rather than reading `spec.scoreMode` cold):
+  // a launcher-less build (Studica's StarterBot) must draw NOTHING here, and `scoreMode` alone
+  // cannot say that — the shared coercer defaults it on every spec, launcher or not.
+  const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+  const lift = bbLiftOf(spec);
 
   // viewBox spans the widest of chassis/intake plus a margin, kept square-ish. The dimension
   // label is centred and can be WIDER than a narrow chassis, so it has to be measured in too —
@@ -177,11 +178,20 @@ export function BiobuzzRobotPreview({
   // firing edge and use the mount POSITION instead). Drum/dumper are authored along robot +x
   // and rotated onto their mounted edge, so a left/right mount spans the chassis LENGTH —
   // matching how `bbLaunch` spreads the shot.
-  const sEdge = bbShooterEdgeOf(spec); // drum/dumper fire over a SIDE, never a corner
-  const sGeom = edgeGeom(spec, sEdge);
+  //
+  // Geometry is keyed off `launcher`'s OWN resolved mount when this build has one, rather than
+  // `spec.shooterMount` read cold: on a live, not-yet-coerced builder spec the two can disagree
+  // (`bbLauncherOf` is `mechs.ts`'s one migration/validation authority for the field), and
+  // falling back to `spec` itself when there is no launcher costs nothing — every value below
+  // goes unused the moment `launcherEl` resolves to `null`.
+  const mountSpec = launcher
+    ? { ...spec, shooterMount: launcher.mount, shooterRear: launcher.mount === 'back' }
+    : spec;
+  const sEdge = bbShooterEdgeOf(mountSpec); // drum/dumper fire over a SIDE, never a corner
+  const sGeom = edgeGeom(mountSpec, sEdge);
   // where a TURRET is bolted (it aims itself, so its mount is a position, not a facing)
-  const tOrigin = turretLocal(spec); // the SAME point the sim launches from
-  const tR = turretRadius(spec); // ...and the same ring size
+  const tOrigin = turretLocal(mountSpec); // the SAME point the sim launches from
+  const tR = turretRadius(mountSpec); // ...and the same ring size
   const teeth = Math.max(14, Math.round(tR * 6)); // slew-ring teeth, as in the sprite
   // THE DRUM is ONE CYLINDER across (almost) the whole mounted edge on a single shaft — not a
   // row of separate wheels, which is a different machine. Bearing blocks at both ends, and
@@ -193,8 +203,12 @@ export function BiobuzzRobotPreview({
   const lineHalf = sGeom.span * BB_LAUNCH_LINE_FRAC; // dumper tray width
   const dumpPivot = sGeom.dist - 7.4;
   const dumpLip = sGeom.dist - 0.9;
-  const launcherEl =
-    mode === 'drum' ? (
+  // `launcher === null` (a real, shipping launcher-less build — Studica's StarterBot publishes
+  // none) draws NOTHING here: no ring, no plates, no barrel. That absence is the point, not a
+  // fallback — see the file header.
+  const launcherEl = !launcher
+    ? null
+    : launcher.kind === 'drum' ? (
       <g transform={`${ROBOT_FRAME} rotate(${deg(EDGE_ANGLE[sEdge])})`}>
         {/* the HOOD a POLLEN is pinched against, behind the barrel */}
         <rect
@@ -246,7 +260,7 @@ export function BiobuzzRobotPreview({
           </g>
         ))}
       </g>
-    ) : mode === 'dumper' ? (
+    ) : launcher.kind === 'dumper' ? (
       // a TRAY on a pivot: the shaft it swings about, two throwing arms, and the release lip
       <g transform={`${ROBOT_FRAME} rotate(${deg(EDGE_ANGLE[sEdge])})`}>
         <polygon
@@ -303,7 +317,7 @@ export function BiobuzzRobotPreview({
             `BB_LAUNCH_PLATE_GAP` wide because a 3" POLLEN has to fit down it. A TWIN draws both
             channels at the offsets the sim launches from. The preview shows the turret stowed
             forward, so the head points UP. */}
-        {(mode === 'twinturret' ? [BB_TWIN_BARREL_OFFSET, -BB_TWIN_BARREL_OFFSET] : [0]).map((o) => {
+        {(launcher.kind === 'twinturret' ? [BB_TWIN_BARREL_OFFSET, -BB_TWIN_BARREL_OFFSET] : [0]).map((o) => {
           const gap = BB_LAUNCH_PLATE_GAP;
           const plate = 0.42;
           // CENTRED on the ring: a POLLEN is fed up the hole in the MIDDLE of the turret, so
@@ -350,6 +364,52 @@ export function BiobuzzRobotPreview({
       </g>
     );
 
+  /**
+   * THE LIFT — a vertical extension slide's mast, in SVG. A build with `lift !== null` gets a
+   * bolted COLLAR at `bbLiftMastLocal` (`parts.ts`, the SAME shared point the in-match sprite
+   * draws its mast at) plus a small STOWED carriage marker. Stowed, and only ever stowed: this
+   * preview reads a `RobotSpec`, not a `RobotState`, so there is no `bbLiftZ` to grow the
+   * carriage from — that live reading is the in-match sprite's job (`drawRobot.ts`). Authored in
+   * SCREEN space, exactly like the turret above, because `bbLiftMastLocal`'s point is a ROBOT
+   * frame offset that has to be hand-mapped the same way: `ROBOT_FRAME` sends robot (x,y) to
+   * screen (−y,−x).
+   */
+  const liftEl = !lift
+    ? null
+    : (() => {
+        const local = bbLiftMastLocal(spec, lift.mount);
+        const mastR = BB_LIFT_MAST_R;
+        return (
+          <g transform={`translate(${-local.y},${-local.x})`}>
+            <rect
+              x={-mastR}
+              y={-mastR}
+              width={mastR * 2}
+              height={mastR * 2}
+              rx={mastR * 0.3}
+              fill="var(--ds-bg)"
+              stroke={stroke}
+              strokeWidth={0.3}
+            />
+            {[1, -1].flatMap((sx) =>
+              [1, -1].map((sy) => (
+                <circle key={`${sx}_${sy}`} cx={sx * (mastR - 0.4)} cy={sy * (mastR - 0.4)} r={0.22} fill={stroke} />
+              )),
+            )}
+            {/* the carriage, STOWED — see the note above on why this preview never grows it */}
+            <rect
+              x={-mastR * 0.28}
+              y={-mastR * 0.28}
+              width={mastR * 0.56}
+              height={mastR * 0.56}
+              rx={mastR * 0.1}
+              fill={stroke}
+              opacity={0.5}
+            />
+          </g>
+        );
+      })();
+
   return (
     <svg
       width={fluid ? '100%' : size}
@@ -359,7 +419,9 @@ export function BiobuzzRobotPreview({
       style={fluid ? { display: 'block', aspectRatio: `${vbW} / ${vbH}` } : undefined}
       viewBox={`${-halfSpan} ${top} ${vbW} ${vbH}`}
       role="img"
-      aria-label={`${spec.width} by ${spec.length} inch robot, sweeper intake, ${mode} scorer`}
+      aria-label={`${spec.width} by ${spec.length} inch robot, sweeper intake${
+        launcher ? `, ${launcher.kind} scorer` : ', no launcher'
+      }${lift ? ', vertical lift' : ''}`}
     >
       {intakeEl}
 
@@ -491,8 +553,13 @@ export function BiobuzzRobotPreview({
       />
 
       {/* scoring mechanism — the BIOBUZZ archetype launcher. Drawn LAST so a top-mounted
-          turret sits over the deck it is bolted to, exactly as the sprite draws it. */}
+          turret sits over the deck it is bolted to, exactly as the sprite draws it. `null` for
+          a real launcher-less build. */}
       {launcherEl}
+
+      {/* the LIFT mast, if this build has one — independent of the launcher slot above, so a
+          build can show both, either, or neither. */}
+      {liftEl}
 
       {/* dimension label */}
       <text

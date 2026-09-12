@@ -13,8 +13,27 @@ import {
   bbStorageMax,
 } from './config';
 import {
+  BB_HOOD_DEFAULT_DEG,
+  BB_HOOD_MAX_DEG,
+  BB_HOOD_MIN_DEG,
+  BB_LIFT_MAX_Z,
+  BB_LIFT_MIN_Z,
+} from './config';
+import {
+  BB_LIFT_KINDS,
+  type BbLauncherSpec,
+  type BbLiftSpec,
+  type BbMechSpec,
+  bbLauncherBlocker,
+  bbLauncherOf,
+  bbLiftOf,
+  bbResolveLiftMount,
+} from './mechs';
+import {
   BB_DEFAULT_INTAKE_MOUNT,
   BB_DEFAULT_SHOOTER_MOUNT,
+  BB_DEFAULT_TURRET_POS,
+  type BbMountPos,
   BB_INTAKE_MOUNTS,
   BB_MOUNT_POSITIONS,
   BB_SCORE_MODES,
@@ -146,10 +165,23 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
     clampFinite(out.ballStorage, BB_STORAGE_MIN, bbStorageMax(out), base.ballStorage ?? BB_STORAGE_DEFAULT),
   );
 
+  // 5) THE MECHANISM LOADOUT. Runs after the archetype/mount folds above, because the
+  // launcher slot MIRRORS them both ways and a half-folded mount would round-trip wrong.
+  out.bbMech = coerceBbMech(raw, out);
+
   // CR-ONLY FIELDS ARE STRIPPED, not carried. A spec that was a Chain Reaction build before
   // the player switched game arrives here with a catalyst mechanism and a ground clearance
   // BIOBUZZ has no mechanism for; leaving them on the spec means the wire, the snapshot and
   // the builder's summary all describe hardware this robot does not have.
+  //
+  // `chainIntake` belongs to that list and was missing from it, which made it the ONE CR field
+  // every BIOBUZZ spec carried. It is not inherited from an old build either — `coerceSpec`
+  // WRITES it on the way through (`src/sim/spawn.ts`, the shared pass above this arm), so a
+  // spec built from scratch for this game picked it up too. BIOBUZZ has its own intake enum
+  // (`BB_INTAKE_STYLES`) and reads this one nowhere. Found by the preset checks: a card
+  // defined as its own coerced form could never be a fixed point of the FULL chokepoint while
+  // one field was still being added after it.
+  delete out.chainIntake;
   delete out.catalystType;
   delete out.catalystMount;
   delete out.catalystSwing;
@@ -160,3 +192,101 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   return out;
 }
 
+
+
+/**
+ * THE MECHANISM LOADOUT, normalized — the body of step 5.
+ *
+ * ── THE ONE THING THIS FUNCTION EXISTS TO GET RIGHT ─────────────────────────
+ * `undefined` and `{ launcher: null }` mean different things and must keep meaning different
+ * things. A spec with no container predates composable mechanisms, so it HAS a launcher and
+ * that launcher is migrated out of `scoreMode` / `shooterMount`. A spec that explicitly says
+ * `launcher: null` is a real launcher-less build (Studica's StarterBot) and must survive as
+ * one. Collapsing the two is the phantom-turret bug: the shared pass in `src/sim/spawn.ts`
+ * writes `out.scoreMode` unconditionally, so anything that reads "no launcher" off an absent
+ * `scoreMode` grows a turret on the very next pass.
+ *
+ * ⚠️ `raw` HERE IS THE CARRIED-ACROSS INPUT, not `out`. `coerceSpec` builds its output from the
+ * base spec plus the fields it reads off the input BY NAME, so `bbMech` only reaches this
+ * function because `src/sim/spawn.ts`'s biobuzz arm copies it over first. If that line is ever
+ * removed this silently falls back to the base spec's loadout on every load — see the ⚠️ block
+ * at `spawn.ts:473`.
+ *
+ * IDEMPOTENT: every branch resolves to a value that re-resolves to itself. The lift's mount is
+ * the subtle one — `bbResolveLiftMount` is a pure function of (want, blockers), and running it
+ * on its own output returns the same cell because that cell is by construction free.
+ */
+function coerceBbMech(raw: RobotSpec, out: RobotSpec): BbMechSpec {
+  // LAUNCHER. `bbLauncherOf` migrates a spec that has no container yet; everything after it is
+  // validation of whatever came back.
+  //
+  // ⚠️ THE CONTAINER IS AUTHORITATIVE, AND THE FLAT FIELDS MIRROR IT — not the other way round.
+  // This read used to take `kind`/`mount` off `out.scoreMode`/`out.shooterMount` (already
+  // folded in steps 1a/1c), which quietly made the FLAT fields the source of truth: a caller
+  // that patched only `bbMech` — the obvious thing to do, and what the builder tried first —
+  // had its edit overwritten by the old archetype on the very next coercion, with nothing
+  // failing. That is the container's whole purpose inverted. So the container is folded on its
+  // OWN values here and mirrored OUT below, and `scoreMode`/`shooterMount` are what an older
+  // peer reads rather than what this game reads.
+  const src = bbLauncherOf(raw, BB_HOOD_DEFAULT_DEG);
+  let launcher: BbLauncherSpec | null = null;
+  if (src) {
+    // Same two folds steps 1a/1c apply to the flat fields, applied to the container's values:
+    // an unknown archetype falls back, and a TURRETLESS launcher cannot sit on a corner or the
+    // centre because its launch LINE has to span a whole side.
+    const kind = ((BB_SCORE_MODES as readonly string[]).includes(src.kind as string)
+      ? src.kind
+      : BB_DEFAULT_SCORE_MODE) as BbScoreMode;
+    let mount = ((BB_MOUNT_POSITIONS as readonly string[]).includes(src.mount as string)
+      ? src.mount
+      : BB_DEFAULT_SHOOTER_MOUNT) as BbMountPos;
+    if (!isTurreted(kind)) mount = bbShooterEdgeOf({ shooterMount: mount });
+    launcher = {
+      kind,
+      mount,
+      hoodDeg: clampFinite(src.hoodDeg, BB_HOOD_MIN_DEG, BB_HOOD_MAX_DEG, BB_HOOD_DEFAULT_DEG),
+    };
+  }
+
+  // LIFT. No legacy path — nothing in this repo has ever modelled one, so an absent container
+  // means no lift rather than a lift to migrate.
+  const wantLift = bbLiftOf(raw);
+  let lift: BbLiftSpec | null = null;
+  if (wantLift) {
+    const kind = (BB_LIFT_KINDS as readonly string[]).includes(wantLift.kind as string)
+      ? wantLift.kind
+      : BB_LIFT_KINDS[0];
+    // The mast folds around the launcher rather than the other way round: the launcher has the
+    // harder constraint (a turretless one needs a whole edge) and it is the mechanism a legacy
+    // spec already had, so gaining a lift never relocates hardware the player already placed.
+    const mount = bbResolveLiftMount(
+      (BB_MOUNT_POSITIONS as readonly string[]).includes(wantLift.mount as string)
+        ? wantLift.mount
+        : BB_DEFAULT_TURRET_POS,
+      bbLauncherBlocker(launcher),
+    );
+    // `null` is "there is no free cell on this chassis" — a real answer for a build whose
+    // turretless launcher spans an edge and whose remaining cells are taken. Dropping the lift
+    // is the honest repair; silently stacking it on the launcher is not.
+    if (mount) {
+      lift = { kind: kind as BbLiftSpec['kind'], mount, maxZ: clampFinite(wantLift.maxZ, BB_LIFT_MIN_Z, BB_LIFT_MAX_Z, BB_LIFT_MAX_Z) };
+    }
+  }
+
+  // MIRROR THE CONTAINER BACK ONTO THE FLAT FIELDS. They are what an older peer or server
+  // reads — it drops `bbMech` entirely, so without this a spec that round-trips through one
+  // comes back describing a different robot.
+  //
+  // A LAUNCHER-LESS BUILD IS THE LOSSY CASE, and knowingly so: there is no flat value that
+  // says "no launcher", so `scoreMode` keeps whatever it had and an old peer sees a launcher
+  // this robot does not have. An omission would be better than a phantom, but the flat schema
+  // cannot express one — it is a rollout-window cost for a build class that could not exist at
+  // all before today, and it belongs in the release note rather than in a workaround here.
+  if (launcher) {
+    out.scoreMode = launcher.kind;
+    out.shooterMount = launcher.mount;
+    out.shooterRear = launcher.mount === 'back';
+  }
+
+  return { launcher, lift };
+}
