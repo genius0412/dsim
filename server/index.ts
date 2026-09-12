@@ -978,7 +978,16 @@ const httpServer = createServer((req, res) => {
        * the difference between scheduled maintenance and an outage.
        */
       if (u.pathname === '/api/admin/maintenance') {
-        if (!isAdmin) {
+        // ADMIN_SECRET is accepted here, like the restart notice, the season roll and the
+        // announcement routes. A deploy is scripted end to end (scripts/announce-deploy.sh),
+        // and the one lever that could not be driven from a script was the one that takes
+        // players OUT of harm's way before it starts — so the window had to be opened by
+        // hand in a browser while everything around it was automated. Same secret, same
+        // exposure as the four routes that already take it, and strictly less dangerous
+        // than the one that restarts the server.
+        const secretOk =
+          !!process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
+        if (!isAdmin && !secretOk) {
           res.writeHead(403, cors);
           res.end('forbidden');
           return;
