@@ -516,8 +516,11 @@ export function ChainRobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?
           ]);
         }
         if (spec.drivetrain === 'xdrive') {
-          const long = Math.min(Math.hypot(wx, wy) * 1.1, 7.2);
-          return corners.map(([x, y]) => wheelRect(x, y, x * y >= 0 ? 45 : -45, 2.0, long, '#2b333e'));
+          // ±45° ACROSS each corner — the four wheels are the sides of a DIAMOND, matching the
+          // in-game renderers. At the SAME size as every other drivetrain here: these used to
+          // be stretched to `hypot(wx, wy) * 1.1`, more than twice `wheelH`, which read as four
+          // bars rather than four wheels. An omni is not a bigger wheel.
+          return corners.map(([x, y]) => wheelRect(x, y, x * y >= 0 ? 45 : -45, wheelW, wheelH, '#2b333e'));
         }
         // MECANUM (and BUTTERFLY, which shows its mecanum set — the half it spawns on):
         // rollers at 45°, ALTERNATING by diagonal so they read as an X. Same rule as the
