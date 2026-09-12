@@ -1,6 +1,6 @@
-import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../types';
+import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../../types';
 import * as C from '../../config';
-import { clamp, rot, wrapAngle } from '../../math';
+import { clamp, nextRandom, rot, wrapAngle } from '../../math';
 import { solveArtifacts, type SweepFrom } from '../../sim/physicsEngine';
 import { simModuleFor } from '../sim';
 import { stepGroundBall } from '../../sim/physics';
@@ -8,15 +8,28 @@ import { robotSolids, type RobotSolids } from '../../sim/artifactSolids';
 import {
   BB_AIM_GAIN,
   BB_AIM_TOL,
+  BB_FLOWERS,
+  BB_FLOWER_UNLOCK_S,
   BB_HALF_X,
   BB_HALF_Y,
+  BB_HIVE_OPEN_Z,
+  BB_NECTAR_R,
   BB_POLLEN_R,
   BB_POLLEN_WALL_REST,
+  bbLoadingZoneSpot,
 } from './config';
 import { biobuzzColliders } from './colliders';
 import { capturePollen, scoreTargets } from './elements';
+import {
+  bbElementRadius,
+  flowerAccepts,
+  flowerFits,
+  flowerStackZ,
+  type BbElementKind,
+} from './flower';
+import { hiveAccepts, hiveCellPos, hiveStep, spillPoses } from './hive';
 import { bbAimHeading, bbLaunch, bbMouths } from './robot';
-import { rectContains, type BiobuzzState } from './state';
+import { rectContains, type BiobuzzState, type ScoreTarget } from './state';
 
 /**
  * BIOBUZZ GAMEPLAY TICK — POLLEN physics and the intake/launch loop.
@@ -158,23 +171,125 @@ function interact(
   return 'none';
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE ELEMENT LOOKUPS — what an element IS, and where the parked ones live
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What an element is FOR SCORING, read off the one field that always carries it: its COLOUR.
+ *
+ * POLLEN are yellow and NECTAR are their alliance's colour (§9.8), so the ball array alone
+ * answers "is this a NECTAR, and whose" — no parallel map, and nothing to fall out of step
+ * when an element changes state. `Artifact.color` is on the wire and in every snapshot, which
+ * is exactly what a lookup used by the tip table and by FLOWER ownership has to be.
+ */
+export function bbKindOf(b: Artifact): BbElementKind {
+  return b.color === 'red' || b.color === 'blue' ? b.color : 'pollen';
+}
+
+/** the same lookup by ID, for the pure modules (`hiveLoad`, `flowerScore`) that hold ids.
+ * An id the world does not have reads as POLLEN rather than throwing: a dangling id in a
+ * stack draws nothing and must not take a match down. */
+function kindById(byId: ReadonlyMap<number, Artifact>): (id: number) => BbElementKind {
+  return (id) => {
+    const b = byId.get(id);
+    return b ? bbKindOf(b) : 'pollen';
+  };
+}
+
+/** the two alliances, in a stable order, shared rather than re-allocated per tick. Red first
+ * everywhere in this file so a hive loop, a spill and a human-player entry are ordered the same
+ * way — the RNG is drawn inside one of those loops, so the order IS part of determinism. */
+const ALLIANCES: readonly Alliance[] = ['red', 'blue'];
+
+/**
+ * `ScoreTarget.id` → what that target IS, built once at module load off `scoreTargets`' own
+ * naming (`hive:<alliance>`, `flower:<index>`).
+ *
+ * Parsing the id with a `slice` and a `Number` is what `bbIndexElements` does and it is how
+ * `flower:F1` became un-indexable in a scene — a string convention nobody owns. These two maps
+ * are the convention, written once, so a capture that walks the target list resolves a target
+ * to a hive or a flower by lookup rather than by string surgery.
+ */
+const HIVE_OF: ReadonlyMap<string, Alliance> = new Map(ALLIANCES.map((a) => [`hive:${a}`, a]));
+const FLOWER_OF: ReadonlyMap<string, number> = new Map(BB_FLOWERS.map((_f, i) => [`flower:${i}`, i]));
+
+/** mid-height of the CELL opening (in) — where a parked element is drawn to sit. A parked
+ * element is not solved and has no position of its own; this is somewhere to point at. */
+const CELL_MID_Z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
+
+/**
+ * Park one element INSIDE a field element: out of the ball physics, into `el`'s order, and
+ * still in `world.balls` so the count is conserved in one array (`state.ts`).
+ *
+ * The order list is the caller's (`hives[a].contents` or `flowers[i].stack`) and the `slot`
+ * written on the ball is its index in it, so `bbIndexElements` can rebuild the list from the
+ * array alone and the two views cannot drift.
+ */
+function park(b: Artifact, el: string, order: number[], pos: Vec2, z: number): void {
+  b.state = { kind: 'element', el, slot: order.length };
+  order.push(b.id);
+  b.pos = { x: pos.x, y: pos.y };
+  b.vel = { x: 0, y: 0 };
+  b.z = z;
+  b.vz = 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE HUMAN PLAYER (field-plan §2.4, G426/G427)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How long after a TIP the human player's NECTAR reaches the tiles, and how fast the ≤ 60 s
+ * dump runs, in seconds. APPROX, and local here rather than in `config.ts` for the same
+ * reason `flower.ts`'s are: the manual sets the ENTITLEMENT (one per TIP, all remaining at
+ * ≤ 60 s — G426) and says nothing about the hands. Moving them into `config.ts` is a one-line
+ * import change when a real field says what a human player actually takes.
+ */
+export const BB_NECTAR_ENTRY_S = 1.5; // APPROX
+export const BB_NECTAR_DUMP_S = 1.0; // APPROX
+
+/** one draw from the WORLD's seeded chain, advancing it. Every randomised thing in this file
+ * goes through here — the spill scatter and the human player's jitter — so "the rng was drawn
+ * N times this tick, in this order" is one readable fact rather than two inline closures that
+ * can be reordered without anyone noticing the replay changed. */
+function nextRandomValue(world: World): number {
+  const n = nextRandom(world.rngState);
+  world.rngState = n.state;
+  return n.value;
+}
+
+/** how far off the LOADING ZONE spot an entered NECTAR is placed, in inches, each way. A human
+ * putting five elements on the same tile does not stack them. APPROX. */
+const NECTAR_ENTRY_JITTER = 4.0; // APPROX
+
 /**
  * The BIOBUZZ gameplay tick.
  *
  * ORDER IS THE CONTRACT (and `step.ts` documents the pipeline this sits inside):
  *   1. HELD pollen ride their robot — position only, no physics.
- *   2. FLIGHT pollen integrate ballistically and LAND.
- *   3. GROUND pollen: the shared rolling-friction/rest-snap pass (`stepGroundBall`, velocity
+ *   2. FLIGHT elements integrate ballistically, then are offered to the up-CELLS and the
+ *      FLOWERS, and LAND if neither took them.
+ *   3. the HIVES step: a loaded cell starts its swing, a swing passing LEVEL spills its
+ *      contents back onto the field as GROUND elements carrying the spill velocity, and a
+ *      settled swing completes its TIP. AFTER the flight stage, so the element that completes
+ *      a load tips the cell on the tick it arrives rather than on the next one.
+ *   4. GROUND pollen: the shared rolling-friction/rest-snap pass (`stepGroundBall`, velocity
  *      only), then the robots — CAPTURE only, nothing is moved here.
- *   4. the SHARED artifact solve runs, at `BB_POLLEN_R` — the ONE position authority for a
+ *   5. the SHARED artifact solve runs, at `BB_POLLEN_R` — the ONE position authority for a
  *      ground pollen: no integration, no separation pass and no eviction. Then the perimeter
  *      invariant, which the solve does not hold on its own (see `clampPollenToWalls`).
- *   5. LAUNCHERS fire, which is what creates tick-N+1's flight pollen.
- *   6. the score/endgame pass — a no-op in the shell, kept so its shape is fixed.
+ *   6. LAUNCHERS fire, which is what creates tick-N+1's flight pollen.
+ *   7. the HUMAN PLAYERS enter what they are owed (G426), as ground elements in their own
+ *      LOADING ZONE.
+ *   8. the endgame reset and the score FLOOR — the Table 10-2 rows themselves belong to the
+ *      RULES lane and land after this file runs; stage 8 only clears the slate they add to.
  *
- * Launching LAST is deliberate: a POLLEN released this tick should not be integrated,
- * collected and re-collected within the same tick, and firing at the end gives it exactly one
- * clean tick of flight before anything looks at it.
+ * Launching LAST (of the mechanisms) is deliberate: a POLLEN released this tick should not be
+ * integrated, collected and re-collected within the same tick, and firing at the end gives it
+ * exactly one clean tick of flight before anything looks at it. The human player enters after
+ * it for the same reason — an element put on the tiles this tick meets the solve next tick,
+ * never a robot that has already driven.
  */
 export function updateBiobuzz(
   world: World,
@@ -201,6 +316,16 @@ export function updateBiobuzz(
 
   const byId = new Map<number, RobotState>();
   for (const r of world.robots) byId.set(r.id, r);
+  // the element lookup every rule below shares: built ONCE per tick, off the array that IS the
+  // conservation authority, so the tip table, the FLOWER owner and the smoke lane all read the
+  // same answer to "what is element 37".
+  const ballById = new Map<number, Artifact>();
+  for (const b of world.balls) ballById.set(b.id, b);
+  const kindOf = kindById(ballById);
+  // EVERY target on the field, once per tick. `scoreTargets` lists both up-CELLS and all four
+  // FLOWERS whichever alliance asks, so one call covers the whole field; the argument only
+  // orders the list (own cell first), and capture does not care about the order.
+  const targets: ScoreTarget[] = scoreTargets(world, 'red');
 
   // ── 1. HELD: ride the robot ────────────────────────────────────────────────
   // A held POLLEN stays in `world.balls` (see `capturePollen`) so the count is conserved in
@@ -220,7 +345,19 @@ export function updateBiobuzz(
     b.pos = { x: rob.pos.x + off.x, y: rob.pos.y + off.y };
   }
 
-  // ── 2. FLIGHT: ballistic, then land ────────────────────────────────────────
+  // ── 2. FLIGHT: ballistic, then the targets, then land ─────────────────────
+  /**
+   * THE TARGETS ARE TESTED AFTER THE INTEGRATION AND BEFORE THE LANDING, and that ordering is
+   * the whole of "did it go in". A shot is offered to the geometry at the position and
+   * velocity it actually has this tick — descending, over the opening — which is what
+   * `hiveAccepts` and `flowerAccepts` are written against. Testing before the step would ask
+   * about last tick's arc; testing after the landing would mean an element that reached the
+   * CELL at 59 in had already been put on the floor.
+   *
+   * A miss is NOT a foul and not special-cased: an element that meets the structure anywhere
+   * else simply keeps flying and lands on the tiles (G417.H), which is also what the open-face
+   * gate in `hiveAccepts` produces for a shot taken from the pivot side.
+   */
   for (const b of world.balls) {
     if (b.state.kind !== 'flight') continue;
     b.pos.x += b.vel.x * dt;
@@ -229,10 +366,109 @@ export function updateBiobuzz(
     b.vz -= C.GRAVITY * dt;
     // a POLLEN thrown at the wall lands against it rather than through it
     clampPollenToWalls(b);
+    const vel = { x: b.vel.x, y: b.vel.y, z: b.vz };
+
+    /**
+     * CAPTURE RUNS OFF `scoreTargets()`, WHICH IS THE ONE GEOMETRY AUTHORITY FOR A TARGET.
+     *
+     * Lane B aims at that list, the gallery draws from the same constants, and now the
+     * capture test walks it too — so "where the opening is" and "what counts as going in"
+     * cannot drift apart. A target this list does not carry is one nothing can score in.
+     *
+     * `mouth` is the target's OUTWARD normal (`state.ts`), and it is the approach-side
+     * constraint for a CELL: the up-cell is open at its OUTER end only (field-plan §2.1), so
+     * the only way in is a shot arriving over that lip and running down the tray toward the
+     * pivot. `hiveAccepts` says the same thing through `hiveApproachSign`, and the smoke lane
+     * pins the two together (`field.ts`) rather than letting them be two descriptions of one
+     * face that can drift.
+     * A FLOWER's mouth is NOT a velocity gate — its opening is the TOP, and `mouth` there says
+     * which half-space the column is reachable from — so the flower branch leaves the travel
+     * direction entirely to `flowerAccepts` (top entry, descending).
+     */
+    let took = false;
+    for (const t of targets) {
+      const owner = HIVE_OF.get(t.id);
+      if (owner) {
+        const hive = bb.hives[owner];
+        if (!hiveAccepts(hive, owner, b.pos, b.z, vel)) continue;
+        park(b, t.id, hive.contents, hiveCellPos(owner, hive.up), CELL_MID_Z);
+        took = true;
+        break;
+      }
+      const i = FLOWER_OF.get(t.id);
+      if (i === undefined) continue;
+      const kind = bbKindOf(b);
+      const r = bbElementRadius(kind);
+      // `flowerAccepts` is the geometry (top entry, descending) and `flowerFits` the capacity,
+      // checked separately so a FULL flower rejects for a reason rather than by failing to
+      // look like a flower.
+      if (!flowerAccepts(t.pos, b.pos, b.z, b.vz, r)) continue;
+      const stack = bb.flowers[i].stack;
+      if (!flowerFits(stack, kindOf, r)) continue;
+      // the z the element comes to rest at: on top of everything already in the tube.
+      const zs = flowerStackZ([...stack, b.id], kindOf);
+      park(b, t.id, stack, t.pos, zs[zs.length - 1]);
+      took = true;
+      break;
+    }
+    if (took) continue;
+
     if (b.z <= 0) land(b, b.pos.x, b.pos.y);
   }
 
-  // ── 3. GROUND: roll, then meet the robots ─────────────────────────────────
+  // ── 3. THE HIVES ──────────────────────────────────────────────────────────
+  /**
+   * The swing, the spill and the TIP — three moments of one see-saw, and `hive.ts` keeps them
+   * apart (see `hiveStep`). This is the only thing that writes `hives[a]`, and it is where a
+   * spilled element re-enters the world.
+   *
+   * A SPILLED ELEMENT COMES BACK AS A GROUND ARTIFACT CARRYING THE SPILL VELOCITY. It leaves
+   * the tray over the cell's open outer end and lands just outboard of the cell centre, and it
+   * arrives ALREADY MOVING (`BB_SPILL_SPEED` outboard, `BB_SPILL_LATERAL` across), so it rolls
+   * out from under its own structure the way the manual describes — G409: it "hits the TILE
+   * floor before it is collected" — rather than sitting in a pile under the down cell.
+   *
+   * GROUND AND NOT FLIGHT, which is a decision about WHO OWNS IT from here: a ground element
+   * belongs to `solveArtifacts` from the very next stage of this same tick, so a spill that
+   * lands on a robot, on another element or against the structure is resolved by the one
+   * position authority instead of by the ballistic step above. `spillPoses` reports the tray
+   * height (`BB_HIVE_BOTTOM_Z`) as its `pos.z` and the drop is not simulated: nothing in this
+   * game scores or fouls on an element's height between the tray and the tiles, and a 25-inch
+   * fall the solve cannot see is a second position authority for a third of a second.
+   *
+   * The RNG is the world's seeded chain, drawn four times per spilled element in
+   * `spillPoses`' own order, which is what makes a spill identical on every peer and in every
+   * replay.
+   */
+  for (const a of ALLIANCES) {
+    const res = hiveStep(bb.hives[a], dt, kindOf);
+    if (res.spilled.length > 0) {
+      const poses = spillPoses(bb.hives[a], a, res.spilled.length, () => nextRandomValue(world));
+      res.spilled.forEach((id, i) => {
+        const ball = ballById.get(id);
+        if (!ball) return; // a dangling id: nothing to put back, and nothing to break over
+        const p = poses[i];
+        ball.state = { kind: 'ground' };
+        ball.pos = { x: p.pos.x, y: p.pos.y };
+        ball.vel = { x: p.vel.x, y: p.vel.y };
+        ball.z = 0;
+        ball.vz = 0;
+      });
+      world.events.push(`${a.toUpperCase()} HIVE SPILLS ${res.spilled.length}`);
+    }
+    bb.hives[a] = res.hive;
+    if (res.tipped) {
+      // NO POINTS ARE ADDED HERE. The TIP is worth 20 (Table 10-2) and the score pass counts
+      // them off `hives[a].tips`, recomputed from the world every tick like CR's — so a
+      // replayed or reconciled tick cannot bank a tip twice. Scoring is the RULES lane's file
+      // (`docs/biobuzz/prompts.md`, "A4 split"); what happens HERE is the entitlement the tip
+      // earns, which is the human player's and therefore this lane's: one NECTAR entry.
+      bb.nectarDue[a] += 1;
+      world.events.push(`${a.toUpperCase()} HIVE TIP`);
+    }
+  }
+
+  // ── 4. GROUND: roll, then meet the robots ─────────────────────────────────
   /**
    * ROLLING RESISTANCE AND THE REST SNAP ARE THE SHARED CORE'S — `stepGroundBall`
    * (`src/sim/physics.ts`), the same call `src/sim/world.ts` makes at the same point in the
@@ -263,7 +499,7 @@ export function updateBiobuzz(
     }
   }
 
-  // ── 4. SOLVE ──────────────────────────────────────────────────────────────
+  // ── 5. SOLVE ──────────────────────────────────────────────────────────────
   /**
    * THE SHARED ARTIFACT SOLVE, AT THE POLLEN RADIUS, AND IT IS THE ONLY WRITER OF A GROUND
    * POLLEN'S POSITION. No integrator above it, no separation pass and no eviction after it: the
@@ -305,20 +541,101 @@ export function updateBiobuzz(
   // `clampPollenToWalls`, where the measured penetration without this is written down.
   for (const b of world.balls) if (b.state.kind === 'ground') clampPollenToWalls(b);
 
-  // ── 5. LAUNCH ─────────────────────────────────────────────────────────────
+  // ── 6. LAUNCH ─────────────────────────────────────────────────────────────
   for (const rob of world.robots) {
     if (rob.passive) continue; // a practice dummy has no mechanisms to run
     bbLaunch(world, rob, cmds.get(rob.id) ?? ZERO_CMD, enabled);
   }
 
-  // ── 6. SCORE + ENDGAME ────────────────────────────────────────────────────
-  // A NO-OP, on purpose. `scoreTargets()` is empty and `scored: false`, so nothing can be
-  // scored and no match of this game reaches a leaderboard. The pass exists — and writes the
-  // zeroes explicitly — so that the shape Lane A fills in is already wired to the HUD, the
-  // results rows and `worldHash`, and so a stale non-zero value from a snapshot of some
-  // future version cannot survive into a shell world.
+  // ── 7. THE HUMAN PLAYERS ──────────────────────────────────────────────────
+  /**
+   * NECTAR ENTERS THE FIELD FROM A PAIR OF HANDS, NOT FROM A SPAWNER (field-plan §2.4, G426).
+   *
+   * Each alliance sets up with five NECTAR in its ALLIANCE AREA (`nectarStock`, staged by
+   * `spawn.ts` as `state.kind === 'stock'` balls that are already sitting on their entry spot).
+   * Two things let one of them onto the tiles:
+   *   · a completed TIP earns ONE entry (`nectarDue`, incremented in stage 3), and
+   *   · at the 1:00 cue everything still in hand goes in, one at a time.
+   * They compose rather than compete: the dump simply means the alliance is owed whatever it
+   * still holds, so both paths run through the same counter and the same clock.
+   *
+   * ENTRY IS A STATE FLIP, NEVER A SPAWN. The element already exists in `world.balls` — that
+   * is what makes conservation a count over ONE array across the whole match (`state.ts`), and
+   * it is why an entered NECTAR does not need an id: `stock` → `ground` is the entry.
+   *
+   * THE BEAT IS A CLOCK ON THE WORLD (`nectarTimer`), not an `every N ticks` test on
+   * `world.time`: a modulus on an accumulated float is a coin toss at the tick boundary, and a
+   * countdown reconciles and replays correctly because it IS state. The jitter is the world's
+   * seeded chain, drawn twice per entry, so five NECTAR entering a LOADING ZONE make a small
+   * scatter rather than a stack of five discs on one tile — and the same scatter on every peer.
+   *
+   * NOTHING ENTERS WHILE THE FIELD IS FROZEN. `enabled` is the shared "robots may run" flag,
+   * which is false in `pre`, in the auto→teleop transition and after the buzzer; a human player
+   * reaching over the wall during the transition is exactly what G426 forbids.
+   */
+  if (enabled) {
+    const teleop = world.match.phase === 'teleop';
+    for (const a of ALLIANCES) {
+      if (bb.nectarStock[a] <= 0) {
+        bb.nectarDue[a] = 0; // owed an entry with nothing left to enter: the debt is void
+        bb.nectarTimer[a] = 0;
+        continue;
+      }
+      // THE 1:00 CUE. Past it the alliance is owed everything it still holds — it is not a
+      // faster drip, it is a larger entitlement, which is why it writes `nectarDue` rather
+      // than shortening the beat. `BB_FLOWER_UNLOCK_S` is the same 60 s G410 unlocks the
+      // FLOWERS at; one cue, read in one place.
+      const dumping = teleop && world.match.phaseTimeLeft <= BB_FLOWER_UNLOCK_S;
+      if (dumping && bb.nectarDue[a] < bb.nectarStock[a]) bb.nectarDue[a] = bb.nectarStock[a];
+      if (bb.nectarDue[a] <= 0) {
+        bb.nectarTimer[a] = 0; // nothing owed — the next entry starts its beat when it is earned
+        continue;
+      }
+      if (bb.nectarTimer[a] <= 0) bb.nectarTimer[a] = dumping ? BB_NECTAR_DUMP_S : BB_NECTAR_ENTRY_S;
+      bb.nectarTimer[a] -= dt;
+      if (bb.nectarTimer[a] > 0) continue;
+
+      // OLDEST FIRST, by id. `world.balls` order is stable but is not a promise; the id is,
+      // and the human player's five are staged consecutively (`spawn.ts`), so the lowest id
+      // still in hand is the one that has been waiting longest.
+      let next: Artifact | null = null;
+      for (const ball of world.balls) {
+        if (ball.state.kind !== 'stock' || ball.state.alliance !== a) continue;
+        if (!next || ball.id < next.id) next = ball;
+      }
+      if (!next) {
+        // the counter and the array disagree — trust the ARRAY, which is the conservation
+        // authority, and stop claiming a stock that is not there.
+        bb.nectarStock[a] = 0;
+        bb.nectarDue[a] = 0;
+        bb.nectarTimer[a] = 0;
+        continue;
+      }
+      const spot = bbLoadingZoneSpot(a, BB_NECTAR_R);
+      const jx = (nextRandomValue(world) * 2 - 1) * NECTAR_ENTRY_JITTER;
+      const jy = (nextRandomValue(world) * 2 - 1) * NECTAR_ENTRY_JITTER;
+      land(next, spot.x + jx, spot.y + jy);
+      bb.nectarStock[a] -= 1;
+      bb.nectarDue[a] -= 1;
+      bb.nectarTimer[a] = 0;
+      world.events.push(`${a.toUpperCase()} NECTAR ENTERS`);
+    }
+  }
+
+  // ── 8. SCORE + ENDGAME ────────────────────────────────────────────────────
+  /**
+   * THE FLOOR, NOT THE SCORE. Every Table 10-2 row — TIPS, CELL contents, the FLOWERS, the
+   * GARDEN, LEAVE and PARK — is the RULES lane's, recomputed from the world in its own file
+   * (`docs/biobuzz/prompts.md`, "A4 split"); this lane's job ended at putting the elements
+   * where the score pass can count them.
+   *
+   * What stays here is the ZEROING, and it is not a stub: it runs BEFORE that pass every tick,
+   * so the score pass only ever ADDS to a clean slate and a stale non-zero from a snapshot,
+   * a reconcile or an older build cannot survive into a live world. Remove it and a score
+   * becomes a running total that never comes down when the field does.
+   */
   for (const rob of world.robots) bb.endgame[rob.id] = 'none';
-  for (const a of ['red', 'blue'] as Alliance[]) {
+  for (const a of ALLIANCES) {
     bb.scored[a] = 0;
     bb.points[a] = 0;
     world.match.scores[a].total = world.match.scores[a].foulPoints;

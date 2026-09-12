@@ -1,5 +1,147 @@
 # HANDOFF — Lane A (field)
 
+## 2026-09-12 · A4a: the field is LIVE · `GREEN`
+
+Gates: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane field` **208/208** ·
+`npm run test:bb` **580/580** · gallery shots read at `scratch/shots/gate`
+(`staging@0`, `hive-ground@0`, `under-hive@0/@120`, `field-labelled@0` — no letters or digits
+drawn on the field outside the labelled cell).
+
+### THE SPLIT — read this before touching anything below
+
+A4 was split into two code lanes (`docs/biobuzz/prompts.md`, "A4 split"). **This lane owns
+`state.ts`, `play.ts`, `elements.ts` and `scripts/smoke-biobuzz/field.ts` and NOTHING ELSE.**
+`penalties.ts`, `hud.ts`, `step.ts`, `scenesField.ts` and the new `scripts/smoke-biobuzz/rules.ts`
+belong to the RULES lane (`biobuzz-rules`).
+
+Three things this lane therefore did NOT do, and they are not omissions:
+
+- **No scoring.** Not one Table 10-2 row — TIPS, CELL contents, FLOWERS, GARDEN, LEAVE, PARK.
+  `play.ts` stage 8 still zeroes `scored` / `points` / `match.scores[a].total` every tick, and
+  that ZEROING is deliberate and should STAY: it runs before the rules lane's score pass, so
+  that pass only ever adds to a clean slate and a stale total from a snapshot or a reconcile
+  cannot survive. Remove it and a score becomes a running total that never comes down.
+- **No fouls.** G410 (a NECTAR into a FLOWER before the 1:00 cue) was written here and then
+  taken back out, because it bills through `bbAwardFoul` and `penalties.ts` is not this lane's
+  file. The place it goes is the `flight → element` transition in `play.ts` stage 2 — which is
+  edge-triggered BY CONSTRUCTION, with no latch and no cooldown, because an element enters a
+  FLOWER exactly once and a parked element is not in flight any more. `bb.foulEdge` must NOT be
+  used for it: `updateBiobuzzPenalties` overwrites that map every tick.
+- **No scenes.** `hive-tip`, `park-examples` and `nectar-entry` are `scenesField.ts`.
+
+### Two commits
+
+1. **`2db7a05` — the shared state contract**, landed first and alone so the rules lane could
+   merge it and compile against it.
+2. **this one** — the live field.
+
+### What the state contract carries
+
+- `BbHiveState.released: boolean` — A3 asked for it. The spill and the TIP are two moments of
+  ONE swing: the tray empties as the bar passes LEVEL (`BB_TIP_RELEASE_S`) and the points land
+  two seconds later when it SETTLES. `tipping` alone cannot tell a bar that has already emptied
+  from one about to, so without the latch a re-entrant step spills the same contents twice —
+  duplicate ids in `world.balls`, and the end of conservation. `HiveState` in `hive.ts` is now
+  `export type HiveState = BbHiveState`; there is one hive shape again.
+- `BbFlowerState` gains `id`, `stock`, `nectarDue`. `id` is `BB_FLOWERS[i].id` carried on the
+  row, because an array position is not a name once the state is on the wire.
+  ⚠️ **`stock` and `nectarDue` are DRAFT and deliberately stay 0.** They are the contract's two
+  per-flower fields, so the rules lane compiles — but nothing distilled from the manual so far
+  describes a FLOWER dispensing NECTAR. The only supply rule found is the HUMAN PLAYER's
+  (field-plan §2.4, G426), which is per ALLIANCE and already has `nectarStock` / `nectarDue` on
+  the bag. **Question for the owner / the manual lane: is there a per-FLOWER nectar supply, or
+  did "flower nectar drip" mean the human player's entries?** Writing a guessed drip into them
+  would be the invented-geometry failure the contract forbids.
+- `nectarTimer: Record<Alliance, number>` — seconds until the human player puts the next NECTAR
+  down. A clock on the world, never a module global: a global is shared by every world in the
+  process, so a replay and a live match in the same tab would take turns draining it.
+- `bbLoadingZoneSpot(a, r)` moved from `spawn.ts` to `config.ts`, unchanged. The staged spot and
+  the entry spot are the same point; a second copy of that arithmetic is how they drift apart.
+
+### What `play.ts` now does — the eight stages, in order
+
+1. HELD elements ride their robot.
+2. FLIGHT integrates, then **capture runs off `scoreTargets()`**, then it lands.
+3. THE HIVES step.
+4. GROUND: the shared `stepGroundBall` (velocity only), then capture.
+5. the SHARED artifact solve, then the perimeter invariant.
+6. LAUNCH.
+7. THE HUMAN PLAYERS.
+8. the endgame reset and the score FLOOR (see the split, above).
+
+- **Capture walks the `scoreTargets()` list.** Lane B aims at that list and the gallery draws
+  from the same constants, so "where the opening is" and "what counts as going in" cannot drift
+  apart. `HIVE_OF` / `FLOWER_OF` in `play.ts` are the `hive:<alliance>` / `flower:<index>` id
+  convention written down once, instead of a `slice` and a `Number` at each reader — which is
+  exactly how `flower:F1` became un-indexable in a scene.
+  `ScoreTarget.mouth` is the approach-side constraint for a CELL (the up-cell is open at its
+  OUTER end only, field-plan §2.1) and is NOT a velocity gate for a FLOWER, whose opening is the
+  top — the flower branch leaves travel direction entirely to `flowerAccepts`. A smoke check
+  pins `mouth === -hiveApproachSign(up)` on both hives in both tilts, because nothing at run
+  time notices if those two descriptions of one face stop agreeing: Lane B would aim at a cell
+  the field then refuses, which reads as "my shots do not score".
+- **A SPILLED ELEMENT COMES BACK AS A GROUND ARTIFACT carrying the spill velocity**, measured at
+  41–57 in/s outboard in the smoke scene. Ground and not flight is a decision about who owns it:
+  a ground element belongs to `solveArtifacts` from the very next stage of the same tick, so a
+  spill landing on a robot or against the structure is resolved by the ONE position authority.
+  `spillPoses` reports the tray height as its `pos.z` and the 25-inch drop is not simulated —
+  nothing scores or fouls on an element's height between the tray and the tiles, and a fall the
+  solve cannot see is a second position authority for a third of a second.
+  ⚠️ This is a CHANGE from the shape A3 left: it used to be a flight artifact starting at
+  `BB_HIVE_BOTTOM_Z`. Both prompts asked for ground.
+- **The human player (stage 7, G426).** A completed TIP earns ONE entry (`nectarDue`, written in
+  stage 3); at the 1:00 cue the alliance is owed everything it still holds — a larger
+  entitlement, not a faster drip, which is why the dump writes `nectarDue` rather than
+  shortening the beat. Entry is a STATE FLIP (`stock` → `ground`) on a ball that has existed
+  since setup, never a spawn, which is what keeps conservation a count over one array. Oldest id
+  first. Nothing enters while `enabled` is false — the transition and the period after the
+  buzzer are exactly when a human player may not reach in.
+  `BB_NECTAR_ENTRY_S` (1.5) and `BB_NECTAR_DUMP_S` (1.0) are **APPROX** and local to `play.ts`:
+  the manual sets the entitlement and says nothing about the hands. Moving them to `config.ts`
+  is a one-line import change when a real field says what a human player actually takes.
+- `nextRandomValue(world)` is the single RNG draw in the file — the spill scatter and the entry
+  jitter both go through it, so "the rng was drawn N times this tick, in this order" is one
+  readable fact rather than two inline closures.
+
+### `elements.ts`
+
+The `upCell` cast is **already gone** — it reads `world.biobuzz?.hives[a].up ?? BB_HIVE_UP_STAGED[a]`,
+which is the state with an honest fallback for a world that is not a BIOBUZZ match. Nothing to do.
+`scoreTargets()` is real (both up-CELLS + the four FLOWER tops, each with its `mouth`) and is now
+the capture authority as well as the aim list. `actOnElement` is still a stub: FLOWER retrieval
+(G418.B, field-plan §2.2) is the obvious next thing to put in it and was out of this lane's brief.
+
+### New checks in `scripts/smoke-biobuzz/field.ts` (+19, 189 → 208)
+
+- **a live tip through the real pipeline**: three POLLEN launched INBOARD are taken on the first
+  tick; the swing starts on the tick the load completes (stage 3 runs after capture, on purpose);
+  the tray empties at tick 121 of a 240-tick swing, i.e. at LEVEL; the release puts back EXACTLY
+  the six ids that were in the cell, as ground elements, all outboard and inside `BB_SPILL_SPEED`;
+  the TIP lands at tick 241 with the cells swapped and `released` back to false.
+- **conservation on EVERY tick**, as a five-bucket partition (ground + flight + held + element +
+  stock = 56) with `element` cross-checked against the cells and the flowers. Per-tick and not
+  end-state, because a leak that cancels a duplicate is invisible to a final count.
+- **the closed side**: two shots differing in nothing but the sign of `vy`; the inboard one is
+  taken, the other stays a live flight element (a miss is not a foul, G417.H).
+- **`mouth` vs `hiveApproachSign`** on both hives in both tilts.
+- **`BB_TIP_POLLEN` pinned literally** as `[8,7,6,3,1,0]`, plus every row tested at `need − 1`
+  and `need` and the past-the-end row.
+- **`released` survives both round-trips** — `JSON.parse(JSON.stringify(…))` (replay,
+  localStorage) and `slimWorld` / `unslimWorld` (the socket, which REBUILDS the world).
+- **the human player**: the 1:00 cue empties the stock ONE at a time over five seconds with the
+  array length unchanged, and nothing enters while the field is frozen.
+
+### Still open
+
+- The per-FLOWER `stock` / `nectarDue` question above.
+- `bbWorld` still leaves dangling element ids (A3's note, unchanged) — `play.ts` tolerates them:
+  a dangling id in a spill is skipped rather than thrown over, and `kindById` reads an unknown id
+  as POLLEN, because a stale id must not take a match down.
+- `drawField.ts` still holds a private `FIELD_SIDE` duplicating `elements.ts`'s `FLOWER_MOUTH`
+  (A3's note). Neither file is this lane's.
+- `sim.ts` still says `scored: false` and `HudSlots.tsx` still reads `BiobuzzFieldHud.scored`.
+  Both are integration-chat files; the flag flips when the rules lane's scoring lands.
+
 ## 2026-09-12 · no letters on the field · `PENDING`
 
 - **Cells to look at**: `field-labelled@0` and the new **`hive-ground@0`**. Both at 1600px via
