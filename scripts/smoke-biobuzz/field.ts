@@ -7,7 +7,11 @@ import { simModuleFor } from '../../src/games/sim';
 import { createChainWorld } from '../../src/games/chain/spawn';
 import { chainStep } from '../../src/games/chain/step';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
-import { BB_HALF_X, BB_HALF_Y, BB_POLLEN_R, BB_POLLEN_SIM } from '../../src/games/biobuzz/config';
+import { BB_HALF_X, BB_HALF_Y, BB_POLLEN_R } from '../../src/games/biobuzz/config';
+
+/** every element the staged field holds: 40 POLLEN + 16 NECTAR (Fig 10-2). The number the
+ * conservation checks are written against, so a staging change that leaks one fails here. */
+const BB_STAGED_TOTAL = 56;
 import { BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
@@ -236,13 +240,19 @@ export function fieldChecks(check: Check): void {
       Math.hypot(blue[0].pos.x - blue[1].pos.x, blue[0].pos.y - blue[1].pos.y) > 18,
       `apart=${Math.hypot(blue[0].pos.x - blue[1].pos.x, blue[0].pos.y - blue[1].pos.y).toFixed(1)}"`,
     );
-    // RED IS THE X-MIRROR OF BLUE, applied once in `spawn.ts`. Asserted because a second
+    // RED IS THE POINT MIRROR OF BLUE, applied once in `spawn.ts`. Asserted because a second
     // mirror anywhere else would cancel this one and put both alliances on the same side.
+    //
+    // POINT, not x-reflection, and this check is the one that pins it: BIOBUZZ's layout is
+    // symmetric under a 180 degree ROTATION (S9.3), so red's LOADING ZONE is on the far half
+    // of the left wall rather than at blue's y. An x-mirror spawns red at the right side of
+    // the field and the wrong end of it, beside a zone that is not its own -- a bug that
+    // looks entirely plausible in a screenshot, which is why it is asserted numerically.
     const red = w.robots.filter((r) => r.alliance === 'red');
     check(
-      'anchors: RED is the x-mirror of BLUE',
-      Math.abs(blue[0].pos.x + red[0].pos.x) < 1e-9 && Math.abs(blue[0].pos.y - red[0].pos.y) < 1e-9,
-      `blue=${blue[0].pos.x},${blue[0].pos.y} red=${red[0].pos.x},${red[0].pos.y}`,
+      'anchors: RED is the POINT mirror of BLUE (x AND y negated, not just x)',
+      Math.abs(blue[0].pos.x + red[0].pos.x) < 1e-9 && Math.abs(blue[0].pos.y + red[0].pos.y) < 1e-9,
+      `blue=${blue[0].pos.x.toFixed(3)},${blue[0].pos.y.toFixed(3)} red=${red[0].pos.x.toFixed(3)},${red[0].pos.y.toFixed(3)}`,
     );
   }
 
@@ -285,7 +295,7 @@ export function fieldChecks(check: Check): void {
     }
     check(
       'pollen: count conserved over 600 ticks of a robot sweeping the field',
-      w.balls.length === n0 && n0 === BB_POLLEN_SIM,
+      w.balls.length === n0 && n0 === BB_STAGED_TOTAL,
       `${n0} -> ${w.balls.length}`,
     );
     check(

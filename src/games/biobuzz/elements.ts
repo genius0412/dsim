@@ -87,9 +87,10 @@ export function capturePollen(world: World, r: RobotState, ball: Artifact): bool
   ball.vel = { x: 0, y: 0 };
   ball.z = 0;
   ball.vz = 0;
-  // colour is cosmetic in BIOBUZZ — POLLEN are one kind — but the field is required by the
-  // shared `Artifact` type and read by the shared hopper HUD, so it is written consistently.
-  r.hopper.push('green');
+  // POLLEN are YELLOW (§9.8). `r.hopper` is the colour array the shared hopper HUD renders,
+  // so it has to carry the element's real colour rather than a placeholder — a hopper full of
+  // DECODE green under a BIOBUZZ robot is the kind of wrong that only shows up in a screenshot.
+  r.hopper.push(ball.color);
   r.lastIntakeAt = world.time;
   return true;
 }

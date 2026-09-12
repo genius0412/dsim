@@ -21,7 +21,23 @@ import {
   type RobotSetup,
 } from '../../sim/spawn';
 import { emptyScore } from '../../sim/scoring';
-import { BB_HALF_X, BB_HALF_Y, BB_POLLEN_R, BB_POLLEN_SIM, BB_START_POSES } from './config';
+import {
+  BB_FLOWER_TOP_Z,
+  BB_FLOWERS,
+  BB_GARDEN,
+  BB_HALF_X,
+  BB_HALF_Y,
+  BB_HIVE_CELL_DY,
+  BB_HIVE_OPEN_Z,
+  BB_HIVE_UP_STAGED,
+  BB_HIVE_X,
+  BB_LZ,
+  BB_NECTAR_R,
+  BB_POLLEN_R,
+  BB_START_POSES,
+  bbMirror,
+} from './config';
+import { capturePollen } from './elements';
 import { bbCoerceSpec } from './robotConfig';
 import { bbFootprint } from './robot';
 import { emptyBiobuzzState } from './state';
@@ -30,15 +46,17 @@ import { isTurreted, type BbScoreMode } from './mounts';
 /**
  * BIOBUZZ world spawn — a PLAYABLE, UNSCORED match.
  *
- * Robots start at their alliance's two anchors; the field is seeded with `BB_POLLEN_SIM`
- * placeholder POLLEN in a deterministic scatter. BIOBUZZ state rides `world.biobuzz`, and the
- * shared `goals`/`scores`/`motif`/`match` are kept INERT-BUT-PRESENT because `worldHash`, the
+ * Robots start at their alliance's two anchors; the field is STAGED to Fig 10-2 by
+ * `stageBiobuzz`. BIOBUZZ state rides `world.biobuzz`, and the shared
+ * `goals`/`scores`/`motif`/`match` are kept INERT-BUT-PRESENT because `worldHash`, the
  * snapshot diff and the HUD all read them and a missing field is a crash rather than a zero.
  *
- * DETERMINISM. A mulberry32 chain off `seed` places every POLLEN, and the advanced state is
- * stored back on `world.rngState` so the match continues the same chain. Nothing here reads a
- * clock, the DOM or `Math.random`: same seed, same world, on the client and on the server,
- * which is what makes a replay and a multiplayer match agree.
+ * DETERMINISM. The staging layout is FIXED — every element's place comes from the manual's
+ * figures and the constants, not from a draw — so the world is identical for every seed, and
+ * the mulberry32 chain off `seed` is advanced once and stored back on `world.rngState` for
+ * the match to continue. Nothing here reads a clock, the DOM or `Math.random`: same seed,
+ * same world, on the client and on the server, which is what makes a replay and a
+ * multiplayer match agree.
  */
 
 interface Pose {
@@ -142,21 +160,107 @@ function bbFitPose(spec: RobotSpec, pose: Pose): Pose {
   };
 }
 
+/** how far inside the perimeter a start pose is seated (in). See `bbSnapStart` step 1. */
+const WALL_SEAT = 0.01;
+
+/** the rotated footprint of `spec` at `heading`, as the axis-aligned half-extents `ax`/`ay`
+ * plus `off`, the fore-and-aft offset from the robot's origin to the footprint's own centre
+ * (non-zero whenever a front-only sweeper makes the chassis asymmetric). Shared by the fit,
+ * the wall snap and the LOADING ZONE slide so all three measure the same rectangle. */
+function bbExtents(spec: RobotSpec, heading: number): { ax: number; ay: number; off: number } {
+  const e = bbFootprint(spec);
+  const c = dcos(heading);
+  const sn = dsin(heading);
+  const half = (e.front + e.rear) / 2;
+  return {
+    ax: Math.abs(half * c) + Math.abs(e.half * sn),
+    ay: Math.abs(half * sn) + Math.abs(e.half * c),
+    off: (e.front - e.rear) / 2,
+  };
+}
+
+/**
+ * SNAP A POSE TO G304 — the three start conditions this file can actually enforce.
+ *
+ * G304 says a ROBOT starts fully on its own side, CONTACTING the perimeter wall, and NOT in a
+ * LOADING ZONE. (It says more — starting configuration, motionless, contacting exactly 4
+ * POLLEN — but those are the spec's and the staging's job, not the pose's.) The anchors in
+ * `BB_START_POSES` are hand-placed `APPROX` numbers from before the V1 ARENA published, so
+ * rather than trusting them this derives the legal pose from the RULE:
+ *
+ * 1. BACK TO THE WALL. The alliance's own side wall — −x for red, +x for blue — with the
+ *    footprint touching it exactly. "Touching" is the fit clamp's own limit, so a pose that
+ *    was already against the wall does not move.
+ * 2. OUT OF THE LOADING ZONE. If the footprint still overlaps the alliance's own zone, it
+ *    slides ALONG the wall (in y) to the nearer clear side. Sliding rather than rejecting
+ *    keeps the anchor's intent — the robot stays against its wall, where the driver put it.
+ *    Both directions are considered and only the ones that still fit inside the field are
+ *    kept; the tie (an anchor dead-centre in the zone, which is exactly where the pre-V1
+ *    anchors sit) breaks toward the FIELD CENTRE, so the choice is deterministic and both
+ *    alliances resolve it the same way under the point mirror.
+ *
+ * The zone test is the footprint's AABB against the zone rect, which is conservative: a
+ * rotated chassis whose corner only just clears is still pushed out. A start pose that is
+ * arguably legal and looks illegal is worse than one that is plainly legal.
+ */
+function bbSnapStart(spec: RobotSpec, alliance: Alliance, pose: Pose): Pose {
+  const { ax, ay, off } = bbExtents(spec, pose.heading);
+  const c = dcos(pose.heading);
+  const sn = dsin(pose.heading);
+
+  // 1. against the alliance's own side wall, less a hair.
+  //
+  // A body cannot be both EXACTLY tangent to the wall and provably inside it: the tangent
+  // pose is one float comparison away from "spawned intersecting the perimeter", and which
+  // way it falls depends on whether the reader recomputed the rotated half-extent with the
+  // same trig this did. `WALL_SEAT` is a hundredth of an inch — two orders of magnitude below
+  // anything measurable and far under the shared `START_TOUCH_TOL` (1.25 in) that the sim
+  // assesses wall CONTACT with, so the robot is still touching by every rule that reads it
+  // while being unambiguously inside the field by every rule that reads THAT.
+  const side = alliance === 'red' ? -1 : 1;
+  const cx = side * Math.max(0, BB_HALF_X - ax - WALL_SEAT);
+
+  // 2. clear of the alliance's own LOADING ZONE
+  const z = BB_LZ[alliance];
+  const limY = Math.max(0, BB_HALF_Y - ay);
+  let cy = clamp(pose.pos.y + off * sn, -limY, limY);
+  const overlaps = (y: number): boolean =>
+    cx + ax > z.x0 && cx - ax < z.x1 && y + ay > z.y0 && y - ay < z.y1;
+  if (overlaps(cy)) {
+    // clear the edge by the shared START_TOUCH_TOL rather than landing exactly tangent to it.
+    // Snapping to the boundary makes "is the robot in the zone" a comparison of two floats
+    // that are equal by construction, and every reader of it — this file, the smoke check,
+    // a future G304 assessor — would be free to disagree in the last bit.
+    const candidates = [z.y1 + ay + C.START_TOUCH_TOL, z.y0 - ay - C.START_TOUCH_TOL]
+      .map((y) => clamp(y, -limY, limY))
+      .filter((y) => !overlaps(y))
+      .sort((p, q) => Math.abs(p - cy) - Math.abs(q - cy) || Math.abs(p) - Math.abs(q));
+    // a footprint that cannot clear the zone anywhere on this wall keeps its clamped y: the
+    // fallback is unreachable on a 144 in field with an 18 in cube, and silently returning a
+    // pose outside the perimeter would be worse than returning a legal-ish one inside it
+    if (candidates.length) cy = candidates[0];
+  }
+
+  return { pos: { x: cx - off * c, y: cy - off * sn }, heading: pose.heading };
+}
+
 /**
  * A robot's start pose. The named `BB_START_POSES` anchors are CANONICAL for BLUE; RED is the
- * x-mirror, and the mirror is applied HERE and nowhere else so no other file has to know which
- * alliance is which side.
+ * POINT MIRROR of them, and the mirror is applied HERE and nowhere else so no other file has
+ * to know which alliance is which side.
  *
- * The mirror is `x → −x` with `heading → π − heading`, which is a reflection rather than a
- * rotation: reflecting the position without reflecting the heading would leave the red robot
- * facing out of the field. Wrapped, because `π − heading` leaves the range for a heading
- * already past π/2 and an unwrapped heading breaks every angle comparison downstream.
+ * THE MIRROR IS `bbMirror` — a 180° ROTATION about the origin (`x → −x`, `y → −y`,
+ * `heading → heading + π`), not the x-reflection this used to do. BIOBUZZ's layout is
+ * point-symmetric (§9.3): red's LOADING ZONE is on the far half of the left wall and blue's
+ * is the diagonal opposite, so reflecting in x alone puts a red robot beside BLUE's zone at
+ * blue's y — the right side of the field, the wrong end of it. Every other mirrored thing on
+ * this field (zones, gardens, garden lines) goes through the same helper, which is the point:
+ * one definition of "the other alliance's version of this".
  *
  * A CUSTOM pose wins over the anchor index (the same contract DECODE uses) and is stored in
- * the canonical blue frame, so it is mirrored on the same path. It is NOT snapped legal,
- * because there is no legality to snap to — but it IS fitted inside the perimeter
- * (`bbFitPose`), AFTER the mirror, because "the whole robot starts on the field" is an
- * invariant no manual is needed for and `coerceStartPose`'s centre clamp does not give it.
+ * the canonical blue frame, so it is mirrored on the same path. It is then SNAPPED to G304
+ * (`bbSnapStart`) and fitted inside the perimeter (`bbFitPose`), in that order — the snap can
+ * only move a pose along its own wall, so the fit that follows is a no-op confirming it.
  */
 function bbStartPose(spec: RobotSpec, alliance: Alliance, index: number, custom?: StartPose | null): Pose {
   const base: Pose = custom
@@ -166,11 +270,9 @@ function bbStartPose(spec: RobotSpec, alliance: Alliance, index: number, custom?
         const p = BB_START_POSES[((index % n) + n) % n];
         return { pos: { ...p.pos }, heading: p.heading };
       })();
-  const actual: Pose =
-    alliance === 'blue'
-      ? { pos: { ...base.pos }, heading: base.heading }
-      : { pos: { x: -base.pos.x, y: base.pos.y }, heading: wrapAngle(Math.PI - base.heading) };
-  return bbFitPose(spec, actual);
+  const m = alliance === 'blue' ? { ...base.pos, heading: base.heading } : bbMirror({ ...base.pos, heading: base.heading });
+  const actual: Pose = { pos: { x: m.x, y: m.y }, heading: wrapAngle(m.heading ?? base.heading) };
+  return bbFitPose(spec, bbSnapStart(spec, alliance, actual));
 }
 
 /** the shared goal state, present and INERT. BIOBUZZ has no goal — Section 9 lands at
@@ -248,80 +350,271 @@ function makeBiobuzzRobot(setup: RobotSetup, nth: number): RobotState {
 }
 
 /**
- * THE POLLEN SCATTER — `BB_POLLEN_SIM` placeholder POLLEN across the tile.
+ * THE STAGED FIELD (§10.3.1, Fig 10-2 p83; §10.3.4 p85) — all 56 scoring elements.
  *
- * PLACEHOLDER, and it says so: Section 10 (Game Details) is what decides how many POLLEN
- * there are and where they start, and it lands at Kickoff. What this scatter has to be RIGHT
- * about is everything else — that it is deterministic, that no two POLLEN start inside one
- * another, and that none starts inside a robot.
+ * 40 POLLEN: 4 stacked in each of the four FLOWERS (16), 4 in each GARDEN (8), 4 pre-loaded
+ * per ROBOT (16). 16 NECTAR: 3 in each alliance's upward-facing CELL (6), 5 per alliance in
+ * the human player's hands (10). Nothing is drawn from the RNG — every position is a figure
+ * or a constant, so the staged field is the same for every seed.
  *
- * REJECTION SAMPLING with a bounded attempt count. Each candidate is drawn from the world RNG
- * and rejected if it overlaps a placed POLLEN or any robot's footprint; after `TRIES` attempts
- * the last candidate is accepted anyway. Accepting is better than looping forever OR than
- * reducing the count: the separation pass on tick one settles a residual overlap in two
- * iterations, whereas an unbounded loop is a hang and a short scatter would make the count
- * depend on the seed — and the count is the thing smoke asserts is conserved.
+ * ONE ARRAY, FIVE STATES. Every element lives in `world.balls` for its whole life and moves
+ * between `ground`, `held`, `flight`, `element` (parked inside a FLOWER stack or a HIVE CELL)
+ * and `stock` (in a human player's hands, off-field). That is the invariant the rest of the
+ * game is built on: `world.balls.length` is constant at 56 from staging to the buzzer, so
+ * "did an element leak" is one comparison rather than a sum over a ball array, two hoppers,
+ * four flower stacks and a pair of cells.
  *
- * The attempt COUNT varies with the seed, which is fine and is not a determinism hole: the
- * draws happen in a fixed order for a given seed, so the same seed always produces the same
- * scatter and the same final `rngState`.
+ * WHICH MEANS THERE IS NO SEPARATE STACK ARRAY. A FLOWER's contents are exactly the balls
+ * whose `state.el` is `flower:<i>`, ordered by `slot`; a CELL's are the ones with
+ * `hive:<alliance>`. Deriving the stack from the balls rather than mirroring it into
+ * `BiobuzzState` means the two can never disagree — the failure mode where a pollen is in a
+ * flower's id list and also rolling around on the tiles simply has nowhere to live.
+ *
+ * POINT SYMMETRY, NOT REFLECTION. Blue's half of the layout is `bbMirror` of red's — a 180°
+ * rotation about the origin (§9.3) — so it is written once per alliance and mirrored, never
+ * typed twice. An x-reflection would put red's GARDEN on the wrong wall.
  */
-function scatterPollen(rand: () => number, robots: RobotState[], startId: number): Artifact[] {
-  const out: Artifact[] = [];
-  // keep POLLEN off the wall by a full diameter: one resting against the wall is inside the
-  // clamp's dead zone, so it can never be pushed out of a pile and reads as stuck
-  const margin = BB_POLLEN_R * 2;
-  const lim = BB_HALF_X - margin;
-  const limY = BB_HALF_Y - margin;
-  const minD = BB_POLLEN_R * 2;
-  const minD2 = minD * minD;
-  const TRIES = 30;
 
+/** POLLEN are yellow and NECTAR carries its alliance colour (§9.8). */
+const POLLEN_COLOR = 'yellow' as const;
+
+/** how many POLLEN each ROBOT starts holding (§10.3.4, and G407 caps CONTROL at 4). */
+const PRELOAD_PER_ROBOT = 4;
+
+/** ROBOTS per alliance the staging budgets POLLEN for. The preload count has to be a
+ * CONSTANT of the field rather than a function of who turned up: 40 POLLEN are on the field
+ * whether or not both robots showed, and a no-show's four go to its LOADING ZONE. */
+const ROBOTS_PER_ALLIANCE = 2;
+
+/** POLLEN per FLOWER and NECTAR per CELL at staging (Fig 10-2). */
+const POLLEN_PER_FLOWER = 4;
+const NECTAR_PER_CELL = 3;
+
+/** NECTAR per alliance in the human player's hands at setup (§10.3.1). */
+const NECTAR_STOCK = 5;
+
+/** one POLLEN diameter — the spacing of every staged line of POLLEN. */
+const POLLEN_D = BB_POLLEN_R * 2;
+
+/** make one element. Radius is carried PER BALL (`Artifact.r`) because BIOBUZZ has two sizes
+ * on the floor and the renderer has to tell them apart; the shared solve still runs one
+ * radius per call (owner item — see `docs/biobuzz/HANDOFF-field.md`). */
+function element(
+  id: number,
+  color: Artifact['color'],
+  r: number,
+  pos: Vec2,
+  state: Artifact['state'],
+  z = 0,
+): Artifact {
+  return { id, color, r, state, pos: { ...pos }, vel: { x: 0, y: 0 }, z, vz: 0 };
+}
+
+/**
+ * The four POLLEN stacked in FLOWER `i`, bottom (`slot` 0) to top.
+ *
+ * APPROX — STACK HEIGHT: the stack is placed DOWNWARD from the top ring (`BB_FLOWER_TOP_Z`)
+ * one diameter at a time, because that is the only published height in the FLOWER's column
+ * that this file has a constant for. The manual's scoring volume starts at the middle ring
+ * (~3.98 in, `BB_FLOWER_VOL_Z` in the field plan) and a real staged stack rests on it, so the
+ * four z values here are one rigid stack in the right ORDER at roughly the right heights
+ * rather than measured seats. Nothing reads them yet: an `element` ball is not solved and not
+ * drawn as a loose ball. Re-seat them from the bottom when `BB_FLOWER_VOL_Z` lands in config.
+ */
+function flowerStack(startId: number): Artifact[] {
+  const out: Artifact[] = [];
   let id = startId;
-  for (let i = 0; i < BB_POLLEN_SIM; i++) {
-    let x = 0;
-    let y = 0;
-    for (let t = 0; t < TRIES; t++) {
-      x = (rand() * 2 - 1) * lim;
-      y = (rand() * 2 - 1) * limY;
-      let clash = false;
-      for (const o of out) {
-        const dx = o.pos.x - x;
-        const dy = o.pos.y - y;
-        if (dx * dx + dy * dy < minD2) {
-          clash = true;
-          break;
-        }
-      }
-      if (!clash) {
-        for (const r of robots) {
-          const e = bbFootprint(r.spec);
-          const local = rot({ x: x - r.pos.x, y: y - r.pos.y }, -r.heading);
-          if (
-            local.x < e.front + BB_POLLEN_R &&
-            local.x > -e.rear - BB_POLLEN_R &&
-            Math.abs(local.y) < e.half + BB_POLLEN_R
-          ) {
-            clash = true;
-            break;
-          }
-        }
-      }
-      if (!clash) break;
+  BB_FLOWERS.forEach((f, i) => {
+    for (let slot = 0; slot < POLLEN_PER_FLOWER; slot++) {
+      const z = BB_FLOWER_TOP_Z - (POLLEN_PER_FLOWER - 1 - slot) * POLLEN_D;
+      out.push(
+        element(
+          id++,
+          POLLEN_COLOR,
+          BB_POLLEN_R,
+          { x: f.x, y: f.y },
+          { kind: 'element', el: `flower:${i}`, slot },
+          z,
+        ),
+      );
     }
-    out.push({
-      id: id++,
-      // colour is cosmetic in BIOBUZZ — POLLEN are one kind — but the shared `Artifact` type
-      // requires it and the renderer reads it, so every POLLEN gets the same value.
-      color: 'green',
-      state: { kind: 'ground' },
-      pos: { x, y },
-      vel: { x: 0, y: 0 },
-      z: 0,
-      vz: 0,
-    });
+  });
+  return out;
+}
+
+/**
+ * The four GARDEN POLLEN for one alliance: "in a line starting in the corner closest to the
+ * ALLIANCE AREA and contacting the audience or rear perimeter wall" (§10.3.1).
+ *
+ * Red's GARDEN runs along the AUDIENCE wall from the red (−x) corner, so the line starts at
+ * the corner end of the strip and steps inward by one POLLEN diameter. Both coordinates are
+ * pulled one POLLEN RADIUS off the walls they touch: "contacting the wall" in the manual is a
+ * body touching it, which for a circle solved at its centre means a centre one radius clear.
+ * A centre placed ON the tape line would start the match one radius inside a wall collider,
+ * and the solve's first job would be to eject it.
+ */
+function gardenLine(startId: number, a: Alliance): Artifact[] {
+  const out: Artifact[] = [];
+  let id = startId;
+  const g = BB_GARDEN.red;
+  for (let k = 0; k < 4; k++) {
+    // RED is the canonical half: the strip runs along the AUDIENCE wall from the red corner,
+    // so the line starts at the corner end of `BB_GARDEN.red` and steps inward by a diameter.
+    // BLUE is the point mirror of it, which lands on the rear wall running back toward the
+    // blue corner — the same rule, never a second set of numbers.
+    const base = { x: g.x0 + BB_POLLEN_R + k * POLLEN_D, y: g.y0 + BB_POLLEN_R };
+    const p = a === 'red' ? base : bbMirror(base);
+    out.push(element(id++, POLLEN_COLOR, BB_POLLEN_R, { x: p.x, y: p.y }, { kind: 'ground' }));
   }
   return out;
+}
+
+/** the point at the centre of `a`'s LOADING ZONE, pulled one POLLEN RADIUS off the wall the
+ * zone backs onto — where a no-show robot's preloads and the human player's NECTAR live. */
+function loadingZoneSpot(a: Alliance): Vec2 {
+  const z = BB_LZ[a];
+  const y = (z.y0 + z.y1) / 2;
+  return { x: a === 'red' ? -BB_HALF_X + BB_POLLEN_R : BB_HALF_X - BB_POLLEN_R, y };
+}
+
+/**
+ * PRELOADS — four POLLEN per ROBOT, through the real capture path.
+ *
+ * `capturePollen` is called rather than a `held` state being written here, so a preload is
+ * subject to exactly the rule a mid-match intake is: it refuses once the hopper is full. That
+ * matters because the hopper cap is a Lane B DIAL, and G407 caps CONTROL at 4 — a robot built
+ * with a smaller hopper cannot legally hold four, and the manual's answer (§10.3.4, G304.G)
+ * is that a preload may be "in or ON" the robot. So the overflow goes on the TILES TOUCHING
+ * the robot, in front of the mouth, which is both legal and what a team actually does.
+ *
+ * A MISSING ROBOT still costs its alliance four POLLEN: they go to the centre of its LOADING
+ * ZONE against the wall, in a line (§10.3.4). The field has 40 POLLEN in a 1v1 and in a 2v2,
+ * which is what keeps conservation a constant rather than a function of the lineup.
+ *
+ * `capturePollen` reads `world.balls` only through the ball handed to it, but it is the REAL
+ * entry point and may grow a lookup, so each preload is pushed onto `world.balls` before it
+ * is captured and the array is handed back to the caller intact.
+ */
+function preloads(world: World, startId: number): Artifact[] {
+  const out: Artifact[] = [];
+  let id = startId;
+  for (const a of ['red', 'blue'] as const) {
+    const mine = world.robots.filter((r) => r.alliance === a).sort((p, q) => p.id - q.id);
+    for (let n = 0; n < ROBOTS_PER_ALLIANCE; n++) {
+      const r = mine[n];
+      if (!r) {
+        // no-show: its four go to the LOADING ZONE centre, spaced along the zone's long axis
+        const spot = loadingZoneSpot(a);
+        for (let k = 0; k < PRELOAD_PER_ROBOT; k++) {
+          const y = spot.y + (k - (PRELOAD_PER_ROBOT - 1) / 2) * POLLEN_D;
+          out.push(element(id++, POLLEN_COLOR, BB_POLLEN_R, { x: spot.x, y }, { kind: 'ground' }));
+        }
+        continue;
+      }
+      const e = bbFootprint(r.spec);
+      for (let k = 0; k < PRELOAD_PER_ROBOT; k++) {
+        // born on the tiles at the robot's own centre, then captured — the same two steps a
+        // POLLEN driven over goes through, so nothing here can produce a hopper the intake
+        // could not have produced itself
+        const ball = element(
+          id++,
+          POLLEN_COLOR,
+          BB_POLLEN_R,
+          { x: r.pos.x, y: r.pos.y },
+          { kind: 'ground' },
+        );
+        out.push(ball);
+        world.balls.push(ball);
+        if (capturePollen(world, r, ball)) continue;
+        // hopper full: park it on the tiles against the front face, spread across the mouth
+        const lx = e.front + BB_POLLEN_R;
+        const ly = (k - (PRELOAD_PER_ROBOT - 1) / 2) * POLLEN_D;
+        const w = rot({ x: lx, y: ly }, r.heading);
+        ball.pos = { x: r.pos.x + w.x, y: r.pos.y + w.y };
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * NECTAR IN THE CELLS — three of each alliance's colour in that alliance's UPWARD-FACING
+ * CELL (§10.3.1), which at staging is the one `BB_HIVE_UP_STAGED` names: each HIVE is tilted
+ * so the CELL pointing at a FLOWER is DOWN, putting red's south cell and blue's north up.
+ *
+ * The CELL centre is `BB_HIVE_CELL_DY` from the pivot along y, on whichever side is up, and
+ * the pivots sit at x = −/+`BB_HIVE_X` (Fig 9-10, centre to centre 25.5). The three are laid
+ * across the cell one NECTAR diameter apart; z is the mid-height of the opening. None of that
+ * is read by anything yet — an `element` ball is neither solved nor drawn — so it is a
+ * sensible place rather than a measured seat.
+ */
+function cellNectar(startId: number): Artifact[] {
+  const out: Artifact[] = [];
+  let id = startId;
+  const z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
+  for (const a of ['red', 'blue'] as const) {
+    const x0 = a === 'red' ? -BB_HIVE_X : BB_HIVE_X;
+    const y = BB_HIVE_UP_STAGED[a] === 'south' ? -BB_HIVE_CELL_DY : BB_HIVE_CELL_DY;
+    for (let slot = 0; slot < NECTAR_PER_CELL; slot++) {
+      const x = x0 + (slot - (NECTAR_PER_CELL - 1) / 2) * BB_NECTAR_R * 2;
+      out.push(element(id++, a, BB_NECTAR_R, { x, y }, { kind: 'element', el: `hive:${a}`, slot }, z));
+    }
+  }
+  return out;
+}
+
+/**
+ * THE HUMAN PLAYERS' NECTAR — five per alliance, `state: 'stock'`, OFF-FIELD (§10.3.1).
+ *
+ * `stock` is a real ball state rather than a counter on `BiobuzzState` for the same reason
+ * everything else is a ball: it keeps the count in ONE array. A nectar entered by a human
+ * player during the match is then a state change on an existing ball, not a spawn — so the
+ * conservation check cannot be satisfied by a leak in one bucket and a creation in another.
+ *
+ * `pos` is the LOADING ZONE spot it will enter at. Nothing reads it while the ball is
+ * `stock` (an off-field ball is not solved and not drawn), but a position that is already
+ * where the element appears means entry is a state flip with no teleport.
+ */
+function stockNectar(startId: number): Artifact[] {
+  const out: Artifact[] = [];
+  let id = startId;
+  for (const a of ['red', 'blue'] as const) {
+    const spot = loadingZoneSpot(a);
+    for (let k = 0; k < NECTAR_STOCK; k++) {
+      out.push(element(id++, a, BB_NECTAR_R, spot, { kind: 'stock', alliance: a }));
+    }
+  }
+  return out;
+}
+
+/**
+ * Stage the whole field onto `world`. Called once by `createBiobuzzWorld`, after the robots
+ * exist (the preloads need them) and before anything steps.
+ *
+ * ORDER IS PART OF THE CONTRACT: flowers, gardens, preloads, cell nectar, stock nectar. Ball
+ * ids are handed out in that sequence, so the id of any given staged element is stable across
+ * builds and a hash captured today still means something tomorrow.
+ */
+export function stageBiobuzz(world: World): void {
+  const bb = world.biobuzz;
+  let id = bb ? bb.nextBallId : 1;
+  const take = (batch: Artifact[]): Artifact[] => {
+    id += batch.length;
+    return batch;
+  };
+
+  world.balls = [];
+  const staged: Artifact[] = [];
+  staged.push(...take(flowerStack(id)));
+  staged.push(...take(gardenLine(id, 'red')));
+  staged.push(...take(gardenLine(id, 'blue')));
+  staged.push(...take(preloads(world, id)));
+  staged.push(...take(cellNectar(id)));
+  staged.push(...take(stockNectar(id)));
+
+  world.balls = staged;
+  // continue the id sequence past the staged set, so a runtime spawn can never alias one
+  if (bb) bb.nextBallId = id;
 }
 
 export function createBiobuzzWorld(
@@ -330,11 +623,10 @@ export function createBiobuzzWorld(
   setups: RobotSetup[],
   gameSettings?: GameSettings,
 ): World {
-  let rng = nextRandom(seed || 1);
-  const rand = (): number => {
-    rng = nextRandom(rng.state);
-    return rng.value;
-  };
+  // The staged layout takes no draws (every position is a figure or a constant), but the
+  // chain is still advanced once and stored on the world so the MATCH continues a seeded
+  // stream — a spill, a human-player jitter or anything else added later inherits it.
+  const rng = nextRandom(seed || 1);
 
   // SORTED BY ID before spawning. The setups arrive from a Map or a wire array whose order is
   // not guaranteed, and the spawn order decides the order of RNG draws — so an unsorted list
@@ -347,11 +639,8 @@ export function createBiobuzzWorld(
   }
 
   const biobuzz = emptyBiobuzzState();
-  const balls = scatterPollen(rand, robots, biobuzz.nextBallId);
-  // continue the id sequence past the initial scatter, so a runtime spawn can never alias one
-  biobuzz.nextBallId = balls.length ? balls[balls.length - 1].id + 1 : biobuzz.nextBallId;
 
-  return {
+  const world: World = {
     game: 'biobuzz',
     biobuzz,
     mode,
@@ -360,7 +649,7 @@ export function createBiobuzzWorld(
     rngState: rng.state,
     motif: MOTIFS[0], // inert: BIOBUZZ has no motif, but the HUD and the hash read the field
     robots,
-    balls,
+    balls: [],
     goals: { red: inertGoal('red'), blue: inertGoal('blue') },
     humanPlayers: {
       red: { box: [], nextPlaceAt: 0 },
@@ -392,4 +681,9 @@ export function createBiobuzzWorld(
     },
     gameSettings,
   };
+
+  // STAGED LAST, and onto the finished world: the preloads run through `capturePollen`, which
+  // takes a `World` — so the field cannot be laid out until there is one to lay it out on.
+  stageBiobuzz(world);
+  return world;
 }
