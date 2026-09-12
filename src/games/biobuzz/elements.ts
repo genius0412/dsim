@@ -1,6 +1,17 @@
 import type { Alliance, Artifact, RobotSpec, RobotState, StartPose, Vec2, World } from '../../types';
 import { rot } from '../../math';
-import { BB_LAUNCH_Z0, BB_POLLEN_R, bbHopperCap } from './config';
+import {
+  BB_FLOWER_OPEN_R,
+  BB_FLOWER_TOP_Z,
+  BB_FLOWERS,
+  BB_HIVE_CELL_DY,
+  BB_HIVE_OPEN_Z,
+  BB_HIVE_UP_STAGED,
+  BB_HIVE_X,
+  BB_LAUNCH_Z0,
+  BB_POLLEN_R,
+  bbHopperCap,
+} from './config';
 import { rectContains, type LocalRect, type ScoreTarget, type Vec3 } from './state';
 
 /**
@@ -139,19 +150,73 @@ export function releasePollen(
 // STUBS — the manual has not published the rules these answer
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** the mid-height of the up-CELL opening (in) — Fig 9-10 gives the opening as a band from
+ * 53.5 to 65.6, and an arc solves for one number. */
+const CELL_AIM_Z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
+
 /**
- * Every place `a` can score POLLEN. EMPTY, and correctly so.
+ * ACCEPTING RADIUS of a CELL opening (in).
  *
- * Section 9 (ARENA) and Section 10 (Game Details) both land at Kickoff, so there is no goal,
- * hive, basket or zone to name, no position to put one at and no radius to accept into.
- * Returning `[]` propagates cleanly: `bbAimHeading` is never called, the aim assist has
- * nothing to steer toward, and the HUD's scored count stays 0 — which is the truthful state
- * of a game with `scored: false`.
+ * APPROX: the opening is a 20 x 12 rect (`BB_CELL_OPEN`, Fig 9-11), and `ScoreTarget` carries
+ * one radius. 8 is the inscribed-ish compromise — under the 10 half-width so a shot at the
+ * radius limit is still over the opening, over the 6 half-depth so the target is not
+ * artificially harder than the real mouth. Replace with the rect when `ScoreTarget` grows one.
+ */
+const CELL_ACCEPT_R = 8;
+
+/** the CELL of `a`'s HIVE that currently faces UP.
+ *
+ * BRIDGE, and deliberately a cast: the tip machine will keep this on
+ * `world.biobuzz.hives[a].up`, but `BiobuzzState` has no `hives` member yet, and `state.ts`
+ * is not this commit's to edit. Reading it optionally means the day that field lands, aim
+ * follows a real TIP with no edit here; until then every HIVE is in its STAGED pose
+ * (`BB_HIVE_UP_STAGED`, §10.3.1 Fig 10-2), which is exactly where the field is at t = 0.
+ * Delete the cast when `hives` exists. */
+function upCell(world: World, a: Alliance): 'north' | 'south' {
+  const hives = (world.biobuzz as { hives?: Record<Alliance, { up: 'north' | 'south' }> } | undefined)
+    ?.hives;
+  return hives?.[a]?.up ?? BB_HIVE_UP_STAGED[a];
+}
+
+/**
+ * Every place `a` can aim POLLEN, nearest-in-value first: its OWN up-CELL, the opponent's
+ * up-CELL, then the four FLOWER tops.
+ *
+ * The opponent's CELL is in the list because it is a LEGAL shot that simply scores nothing —
+ * `alliance` is set on both cells so a launcher can tell them apart and skip the one that
+ * wastes a POLLEN, rather than the field pretending the opening is not there. The FLOWERS are
+ * `alliance: null`: a FLOWER is owned at run time by whoever holds the top-most NECTAR in it
+ * (§10.5.2), so it belongs to nobody at aim time.
+ *
+ * STATIC GEOMETRY ONLY. Positions come from the constants and from which CELL is up; nothing
+ * here runs the tip, counts contents or decides whether a shot went in. A CELL centre sits
+ * `BB_HIVE_CELL_DY` from its pivot along y (15.4 along the assembly, foreshortened by the 30°
+ * tilt — Fig 9-9/9-10), and the pivots are at x = -/+`BB_HIVE_X` for red/blue (Fig 9-10,
+ * centre to centre 25.5).
  */
 export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
-  void world;
-  void a;
-  return [];
+  const opp: Alliance = a === 'red' ? 'blue' : 'red';
+  const cell = (owner: Alliance): ScoreTarget => ({
+    id: `hive:${owner}`,
+    alliance: owner,
+    pos: {
+      x: owner === 'red' ? -BB_HIVE_X : BB_HIVE_X,
+      y: upCell(world, owner) === 'south' ? -BB_HIVE_CELL_DY : BB_HIVE_CELL_DY,
+    },
+    z: CELL_AIM_Z,
+    r: CELL_ACCEPT_R,
+  });
+  return [
+    cell(a),
+    cell(opp),
+    ...BB_FLOWERS.map((f, i) => ({
+      id: `flower:${i}`,
+      alliance: null,
+      pos: { x: f.x, y: f.y },
+      z: BB_FLOWER_TOP_Z,
+      r: BB_FLOWER_OPEN_R,
+    })),
+  ];
 }
 
 /**
