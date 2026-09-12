@@ -615,6 +615,57 @@ const namesOf = (m: PendingMatch | undefined): string =>
   }
 }
 
+// ---- the two pairing rules the tests did NOT cover --------------------------
+// Both of these were found by mutation: reverting `spread < pick.spread` to first-fit,
+// and replacing `Math.min(...trial.map(ceilingOf))` with the anchor's own ceiling, each
+// passed all 160 checks. They are the two rules any rewrite of findMatch has to
+// re-derive, so they are pinned here BEFORE the pairing core is touched.
+{
+  // NEAREST-FIRST: among legal candidates the matchmaker takes the one with the
+  // SMALLEST resulting spread, not the first one in the queue. Anchor in iad; syd is
+  // 148 away (best host sjc), nrt is 109 (best host sjc). syd is queued FIRST, so
+  // first-fit takes syd and nearest-first takes nrt.
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({ now: () => t, stage: async (m) => { staged.push(m); } });
+  mm.enqueue(entry('anchor', '1v1', { homeRegion: 'iad' }));
+  mm.enqueue(entry('far', '1v1', { homeRegion: 'syd' }));
+  mm.enqueue(entry('near', '1v1', { homeRegion: 'nrt' }));
+  await new Promise((r) => setTimeout(r, 0));
+  check('nearest-first: nothing is legal at the opening ceiling', staged.length === 0, `${staged.length}`);
+  t = 20_000; // past RADIUS_MAX: every candidate is now legal, so the CHOICE is visible
+  mm.tick();
+  await new Promise((r) => setTimeout(r, 0));
+  check('nearest-first: a match is made once the radius has opened', staged.length === 1, `${staged.length}`);
+  check('nearest-first: it takes the CLOSEST candidate, not the first queued',
+    namesOf(staged[0]) === 'anchor,near', namesOf(staged[0]));
+  check('nearest-first: and hosts on the fair midpoint for that pair',
+    staged[0]?.hostRegion === 'sjc', staged[0]?.hostRegion);
+}
+{
+  // GROUP-MINIMUM CEILING: the radius a trial group is held to is the SMALLEST of its
+  // members, so one freshly-arrived player caps a group of veterans. Three iad players
+  // who have waited past saturation (ceiling 300) plus one syd player who just arrived
+  // (ceiling 90). The syd pairing costs 148, which the anchor alone would allow and the
+  // group minimum must refuse.
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({ now: () => t, stage: async (m) => { staged.push(m); } });
+  mm.enqueue(entry('v1', '2v2', { homeRegion: 'iad' }));
+  mm.enqueue(entry('v2', '2v2', { homeRegion: 'iad' }));
+  mm.enqueue(entry('v3', '2v2', { homeRegion: 'iad' }));
+  t = 20_000; // the three veterans are now saturated at RADIUS_MAX
+  mm.enqueue(entry('fresh', '2v2', { homeRegion: 'syd' })); // stamped enqueuedAt = 20000
+  await new Promise((r) => setTimeout(r, 0));
+  check('group ceiling: a fresh arrival caps the whole group, so no match forms',
+    staged.length === 0, `${staged.length} staged: ${namesOf(staged[0])}`);
+  t = 40_000; // now the fresh player has saturated too and the group is legal
+  mm.tick();
+  await new Promise((r) => setTimeout(r, 0));
+  check('group ceiling: ...and the match forms once THEY have waited, not before',
+    staged.length === 1 && namesOf(staged[0]) === 'fresh,v1,v2,v3', namesOf(staged[0]));
+}
+
 // ---- report ----------------------------------------------------------------
 if (failures.length) {
   console.error(`\n✗ matchmaker: ${failures.length} failed, ${passed} passed\n`);
