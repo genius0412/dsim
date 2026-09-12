@@ -19,6 +19,8 @@
 import { Matchmaker, groupUnits, allianceOrder, type MatchmakerDeps, type QueueEntry } from '../server/matchmaking';
 import type { PendingMatch } from '../server/matchTypes';
 import type { QueueMode, ServerMsg } from '../src/net/protocol';
+import { DEPLOY_REGIONS, bestHost, interRegionMs } from '../server/regions';
+import { readFileSync } from 'node:fs';
 
 let passed = 0;
 const failures: string[] = [];
@@ -544,6 +546,73 @@ const namesOf = (m: PendingMatch | undefined): string =>
   // working: an absent stamp must read as "Unranked", never as a fabricated 1000.
   check('rating: an unstamped player falls back rather than inventing a rating',
     elos.length === 2 && elos.includes(null), JSON.stringify(elos));
+}
+
+// ---- the fleet and the code must name the same regions ----------------------
+// THE CHECK THAT ACTUALLY BITES. Iterating over DEPLOY_REGIONS cannot catch a region
+// MISSING from it — the loop just runs one fewer time — and that is the direction the
+// bug came from. So the fleet is declared in scripts/fly-deploy.sh and asserted here.
+// Neither file can see `fly machine list`, but the deploy script is what creates the
+// machines, so it is the closest thing to the truth that lives in the repo.
+{
+  const sh = readFileSync(new URL('./fly-deploy.sh', import.meta.url), 'utf8');
+  const m = /^FLEET_REGIONS=\(([^)]*)\)/m.exec(sh);
+  const fleet = (m?.[1] ?? '').trim().split(/\s+/).filter(Boolean);
+  check('fleet: fly-deploy.sh declares the region list', fleet.length >= 5, fleet.join(','));
+  for (const r of fleet) {
+    // every machine we run must at least have a latency row, or its players are
+    // unpairable rather than merely far
+    check(`fleet: ${r} has an RTT row (else its players cannot be matched at all)`,
+      interRegionMs(r, 'iad') < 300 || r === 'iad', `${r}->iad = ${interRegionMs(r, 'iad')}`);
+  }
+  // and every region the matchmaker may HOST in must be a region we actually run
+  for (const r of DEPLOY_REGIONS) {
+    check(`fleet: DEPLOY_REGIONS.${r} has a machine in the fleet`, fleet.includes(r), fleet.join(','));
+  }
+}
+
+// ---- region topology: the table the whole radius gate is computed from -------
+// This is a SILENT-FAILURE class and it had already fired. `interRegionMs` answers a
+// RADIUS_MAX-sized penalty for any region it has no row for, so a deployed region
+// missing from the table does not read as "far" — it reads as UNPAIRABLE until the
+// radius saturates six seconds later, and never at all for a `noWiden` player. `ord`
+// had a live machine and no row: two players in the same city measured spread 300
+// against an opening ceiling of 90, and their match hosted in another region.
+{
+  for (const a of DEPLOY_REGIONS) {
+    check(`regions: ${a} has a zero diagonal`, interRegionMs(a, a) === 0, String(interRegionMs(a, a)));
+    for (const b of DEPLOY_REGIONS) {
+      if (a === b) continue;
+      const ab = interRegionMs(a, b);
+      const ba = interRegionMs(b, a);
+      check(`regions: ${a}<->${b} is symmetric`, ab === ba, `${ab} vs ${ba}`);
+      // the fallback is RADIUS_MAX_MS-sized; a real row is always well under it
+      check(`regions: ${a}<->${b} has a REAL row, not the unknown-region penalty`,
+        ab > 0 && ab < 300, String(ab));
+    }
+  }
+}
+{
+  // the property that actually matters, asserted for EVERY deployed region rather
+  // than for the one that broke: two players who landed in the same region must be
+  // hostable there at zero spread, so they pair on the opening ceiling
+  for (const r of DEPLOY_REGIONS) {
+    const h = bestHost([{ homeRegion: r, accessMs: 10 }, { homeRegion: r, accessMs: 10 }]);
+    check(`regions: two players in ${r} host in ${r} at spread 0`,
+      h.hostRegion === r && h.spread === 0, JSON.stringify(h));
+  }
+}
+{
+  // and end to end through the matchmaker, at t=0, with the radius at its tightest —
+  // including the noWiden case, which is the one that never recovers
+  for (const r of DEPLOY_REGIONS) {
+    const { staged } = await pair([
+      entry(`${r}1`, '1v1', { homeRegion: r, noWiden: true }),
+      entry(`${r}2`, '1v1', { homeRegion: r, noWiden: true }),
+    ]);
+    check(`regions: two region-locked players in ${r} pair immediately`,
+      staged.length === 1, `${staged.length} staged`);
+  }
 }
 
 // ---- report ----------------------------------------------------------------

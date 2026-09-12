@@ -54,9 +54,28 @@ if [ "$ALPHA" -eq 1 ]; then
 fi
 
 APP="${FLY_APP:-dohun-sim-decode}"
+
+# THE FLEET, DECLARED. This line is the in-repo source of truth for which regions run
+# a machine, and `npm run test:mm` asserts that server/regions.ts agrees with it.
+#
+# It exists because the two drifted and the failure was silent: `ord`, `gru` and `jnb`
+# all had live machines while `DEPLOY_REGIONS` still listed five regions, and
+# `interRegionMs` answers a RADIUS_MAX-sized penalty for any region it has no row for.
+# So a player whose Anycast landing region was missing did not read as "far" — they read
+# as unpairable until the search radius saturated six seconds later, and never at all if
+# they had asked to stay region-local. Two players in the same city could not be matched
+# to each other. Nothing logs when this happens.
+#
+# ADD A REGION HERE AND IN server/regions.ts (both DEPLOY_REGIONS and the RTT table) IN
+# THE SAME CHANGE. The test fails if this list names a region the code does not know.
+FLEET_REGIONS=(iad ord sjc lhr syd nrt gru jnb)
+
 # EVERY region except the always-warm primary (iad) runs the cheap shared size.
 # sjc joined this list 2026-07-20 (cost pass): US West is redundant with iad for
 # the ~75% of games that are solo record runs, and it auto-stops when idle anyway.
+# ⚠️ ord/gru/jnb are deliberately NOT here yet: they sit at 512MB, under the 1024 this
+# script's own note says Node+Rapier needs, and adding them to the re-shrink would
+# silently change their memory. Size them deliberately, then move them in.
 SATELLITES=(sjc lhr syd nrt)
 SATELLITE_SIZE=shared-cpu-1x
 SATELLITE_MEMORY=1024 # MB — shared-cpu-1x defaults to 256MB, too tight for Node+tsx+Rapier

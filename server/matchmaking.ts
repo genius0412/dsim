@@ -569,7 +569,7 @@ export class Matchmaker {
     // `x.party` is compared with `===` below, so undefined has to stay its own key
     // rather than collapsing into the string one — a closed party with no token must
     // keep counting exactly the entries that also have none.
-    const partyKey = (e: QueueEntry): string => (e.party === undefined ? ' none' : `t${e.party}`);
+    const partyKey = (e: QueueEntry): string => (e.party === undefined ? '\0none' : `t${e.party}`);
     for (const x of this.queues[mode]) {
       const pk = partyKey(x);
       byParty.set(pk, (byParty.get(pk) ?? 0) + 1);
