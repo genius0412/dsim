@@ -153,6 +153,7 @@ import {
   WHEEL_DIAMETER_MM,
   BASE_DRIVE_ACCEL,
   POWER_DRAW_SWERVE,
+  POSSESSION_HERD_SPEED,
   POSSESSION_PUSH_MIN,
   POSSESSION_CONFIRM,
   POSSESSION_GRACE,
@@ -9237,12 +9238,12 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   r.pos = { x: 0, y: -8 };
   r.heading = 0;
   r.hopper = ['green', 'green', 'green']; // full hopper = 3 stored (at the limit)
-  r.vel = { x: POSSESSION_PUSH_MIN + 5, y: 0 }; // driving = herding
+  r.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 }; // driving = herding
   // a loose ground ball being BULLDOZED: touching, ahead along the direction of
   // travel, and carried along at the robot's own speed -> 4 controlled, over the limit
-  w.balls.push({ id: 9001, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: POSSESSION_PUSH_MIN + 5, y: 0 }, z: 0, vz: 0 });
+  w.balls.push({ id: 9001, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: POSSESSION_HERD_SPEED + 5, y: 0 }, z: 0, vz: 0 });
   // hold the over-possession just past the grace window
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w.time = i / 60;
     updatePenalties(w, 1 / 60, new Map());
   }
@@ -9260,7 +9261,7 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   r2.hopper = ['green', 'green', 'green'];
   r2.vel = { x: 0, y: 0 }; // stationary
   w2.balls.push({ id: 9002, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w2.time = i / 60;
     updatePenalties(w2, 1 / 60, new Map());
   }
@@ -9275,8 +9276,8 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   const r3 = w3.robots[0];
   r3.pos = { x: 0, y: -8 };
   r3.hopper = ['green', 'green', 'green'];
-  r3.vel = { x: POSSESSION_PUSH_MIN + 5, y: 0 };
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  r3.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 };
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w3.time = i / 60;
     updatePenalties(w3, 1 / 60, new Map());
   }
@@ -9292,8 +9293,8 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   r4.pos = { x: 0, y: -8 };
   r4.heading = 0;
   r4.hopper = ['green', 'green', 'green'];
-  r4.vel = { x: POSSESSION_PUSH_MIN + 5, y: 0 };
-  w4.balls.push({ id: 9003, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: POSSESSION_PUSH_MIN + 5, y: 0 }, z: 0, vz: 0 });
+  r4.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 };
+  w4.balls.push({ id: 9003, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: POSSESSION_HERD_SPEED + 5, y: 0 }, z: 0, vz: 0 });
   for (let i = 0; i < Math.floor((POSSESSION_GRACE / 2) / (1 / 60)); i++) { // well under confirm+grace
     w4.time = i / 60;
     updatePenalties(w4, 1 / 60, new Map());
@@ -10834,7 +10835,11 @@ function pinScene(
    * happened to be against a wall. Slowing the drive and giving it room to run is what makes it
    * an actual push across open floor.
    */
-  const herd = () => cmd({ driveY: 0.2, intake: true });
+  // Full throttle, not 0.2. Herding requires a HERDING SPEED now
+  // (`POSSESSION_HERD_SPEED`), and a 0.2 nudge is exactly the case the owner ruled should be
+  // free. The scenario's point is unchanged: a clump driven across OPEN FLOOR, with room to
+  // run, still fouls even with the intake held.
+  const herd = () => cmd({ driveY: 1, intake: true });
   const HERD: [number, number] = [-55, -67]; // clump near the bottom wall, robot behind it
   /**
    * RE-BASELINED FROM (5, 6) TO (6, 8) when the intake's reach was cut to the landing bound,
@@ -11233,7 +11238,7 @@ function pinScene(
   // the robot, so a fixture that pins both in place and only calls updatePenalties would show
   // a permanently stationed artifact and assert the opposite of what it means to.
   w.balls.push({ id: 9101, color: 'purple', state: { kind: 'ground' }, pos: { x: 12, y: 0 }, vel: { x: 0, y: 60 }, z: 0, vz: 0 });
-  runCmds(w, new Map([[0, cmd({ driveY: 1 })]]), acquireSecs(POSSESSION_PUSH_MIN + 5) + 0.5);
+  runCmds(w, new Map([[0, cmd({ driveY: 1 })]]), acquireSecs(POSSESSION_HERD_SPEED + 5) + 0.5);
   check(
     'a ball squirting sideways off the bumper is not plowed (no G408)',
     w.match.fouls.blue.minor === 0,
@@ -11270,10 +11275,10 @@ function pinScene(
   r3.pos = { x: 0, y: -8 };
   r3.heading = 0; // facing +x...
   r3.hopper = ['green', 'green', 'green'];
-  r3.vel = { x: -(POSSESSION_PUSH_MIN + 5), y: 0 }; // ...but DRIVING in reverse, toward −x
+  r3.vel = { x: -(POSSESSION_HERD_SPEED + 5), y: 0 }; // ...but DRIVING in reverse, toward −x
   // the ball is behind the chassis and ahead along the direction of travel, carried along
-  w3.balls.push({ id: 9103, color: 'purple', state: { kind: 'ground' }, pos: { x: -2, y: 0 }, vel: { x: -(POSSESSION_PUSH_MIN + 5), y: 0 }, z: 0, vz: 0 });
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  w3.balls.push({ id: 9103, color: 'purple', state: { kind: 'ground' }, pos: { x: -2, y: 0 }, vel: { x: -(POSSESSION_HERD_SPEED + 5), y: 0 }, z: 0, vz: 0 });
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w3.time = i / 60;
     updatePenalties(w3, 1 / 60, new Map());
   }
@@ -11294,7 +11299,7 @@ function pinScene(
   r4.pos = { x: 0, y: -8 };
   r4.heading = 0;
   r4.hopper = ['green', 'green', 'green']; // 3 stored = at the limit
-  const push = POSSESSION_PUSH_MIN + 5;
+  const push = POSSESSION_HERD_SPEED + 5;
   r4.vel = { x: push, y: 0 };
   // a CHAIN of four: only the first touches the bumper, the rest touch each other
   for (let i = 0; i < 4; i++) {
@@ -11308,7 +11313,7 @@ function pinScene(
       vz: 0,
     });
   }
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w4.time = i / 60;
     updatePenalties(w4, 1 / 60, new Map());
   }
@@ -11417,12 +11422,28 @@ function pinScene(
       `blueMinor=${spun.match.fouls.blue.minor}`,
     );
 
-    // ...and CREEPING one downfield is too. Speed is not what the rule turns on.
+    /**
+     * ⚠️ ...BUT CREEPING ONE DOWNFIELD IS FREE NOW, AND THAT IS A DELIBERATE TRADE.
+     *
+     * This check asserted the opposite, because the engine used to turn on DISTANCE alone and
+     * a slow-herd window was a known exploit. `POSSESSION_HERD_SPEED` reopens that window on
+     * purpose: measured, the engine had NO leniency gradient at all — a 6-row nudged at 0.08
+     * throttle drew the same 6 MINORs and the same yellow card as a full-throttle ram, and a
+     * SINGLE loose artifact drew 3. A rule that cannot tell a feather touch from a bulldoze is
+     * not one anybody can play around.
+     *
+     * Owner's ruling on the trade: “If a pile is crept downfield at 5 in/s, then it doesn't
+     * really matter. It is slow anyway. It's a valid tradeoff.” The exploit it grants is
+     * bounded by its own slowness — 5 in/s is 2.4 s per artifact diameter, and a robot doing
+     * that is not taking the field away from anybody.
+     *
+     * Flip this back and lower `POSSESSION_HERD_SPEED` together, never one alone.
+     */
     const crept = hoard(4, (r) => { r.vel = { x: 5, y: 0 }; });
     check(
-      'a pile CREPT downfield at 5 in/s is possessed (no slow-herd window)',
-      crept.match.fouls.blue.minor > 0,
-      `blueMinor=${crept.match.fouls.blue.minor}`,
+      'a pile CREPT downfield at 5 in/s is NOT possessed (the leniency trade)',
+      crept.match.fouls.blue.minor === 0,
+      `blueMinor=${crept.match.fouls.blue.minor} — below POSSESSION_HERD_SPEED=${POSSESSION_HERD_SPEED}`,
     );
 
     /**
@@ -11456,7 +11477,7 @@ function pinScene(
      * TRAPPING rule that reached the same place by asking whether the FIELD was holding the
      * artifacts, which fouled a robot for merely standing near a wall.
      */
-    const heldOn = hoard(4, (r) => { r.vel = { x: 20, y: 0 }; });
+    const heldOn = hoard(4, (r) => { r.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 }; });
     const before = heldOn.match.fouls.blue.minor;
     heldOn.robots[0].vel = { x: 0, y: 0 };
     heldOn.robots[0].angVel = 0;
@@ -11596,7 +11617,7 @@ function pinScene(
       r2.pos = { x: 20, y: (lz2.y0 + lz2.y1) / 2 };
       r2.heading = 0;
       r2.hopper = ['green', 'green', 'green'];
-      r2.vel = { x: 20, y: 0 };
+      r2.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 };
       for (let i = 0; i < 5; i++) {
         w2.balls.push({ id: 9950 + i, color: 'purple', state: { kind: 'ground' }, pos: { x: 32.9 + i * 5.1, y: r2.pos.y }, vel: { x: 20, y: 0 }, z: 0, vz: 0 });
       }

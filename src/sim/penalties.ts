@@ -669,8 +669,17 @@ function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: 
      * as "I still get penalties when I'm pushing forward against two balls against the wall...
      * it counts as me moving them even tho its basically staying in place."
      */
-    if (carry >= C.POSSESSION_CARRY_DIST && along > C.POSSESSION_MOVE_MIN) t += dt;
-    else if (along <= C.POSSESSION_MOVE_MIN) t = Math.max(0, t - dt * C.POSSESSION_LEAK);
+    /**
+     * ...AND THE ROBOT HAS TO HAVE BEEN BULLDOZING WHEN THEY WENT (`POSSESSION_HERD_SPEED`).
+     *
+     * The distance test says the artifacts travelled; this says the robot was pushing hard
+     * enough for that to be herding rather than working through a pile. Both are required, so
+     * this only ever makes the rule kinder. Without it there was no gradient at all: every
+     * throttle from a feather touch to a full ram drew the same 6 MINORs and the same card.
+     */
+    const herding = !!push && push.speed >= C.POSSESSION_HERD_SPEED;
+    if (herding && carry >= C.POSSESSION_CARRY_DIST && along > C.POSSESSION_MOVE_MIN) t += dt;
+    else if (!herding || along <= C.POSSESSION_MOVE_MIN) t = Math.max(0, t - dt * C.POSSESSION_LEAK);
     pen.ballHold[key] = t;
     // ...and once it is established it LATCHES: "pushes a SCORING ELEMENT TO A DESIRED
     // LOCATION" does not stop being true when the robot stops shoving.
