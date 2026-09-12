@@ -31,3 +31,31 @@ console.log(
     ? '[lan] LAN_UPLOADS=1 — /api/lan is mounted; self-hosted matches can be filed here'
     : '[lan] LAN_UPLOADS unset — /api/lan is NOT mounted (self-hosted matches are not accepted)',
 );
+
+/**
+ * DOES THIS DEPLOYMENT INTRODUCE LAN PEERS TO EACH OTHER? — the THIRD door.
+ *
+ * `LAN_UPLOADS` above closes the route by which a LAN match reaches production DATA. It does
+ * not close the route by which a LAN match reaches production at all, because tab hosting
+ * (`docs/lan-webrtc.md`) added one: a rendezvous that hands two browsers each other's SDP so
+ * they can run a room between themselves. Nothing about that touches the database — which is
+ * exactly why the upload gate does not cover it, and why leaving it ungated would have opened
+ * LAN hosting in production while the owner's call was that LAN ships nowhere near it.
+ *
+ * A hidden button is not a closed door; neither is a closed upload route with an open
+ * rendezvous beside it. So: same shape as the flag above, same fail-closed default, same
+ * reasoning about not reading `SERVER_CHANNEL`.
+ *
+ * SEPARATE from `LAN_UPLOADS` rather than folded into it, for the reason that module already
+ * gives: these are two questions. An environment could sensibly accept uploads from the
+ * desktop/terminal LAN path while not introducing browser peers — that is precisely what
+ * withdrawing tab hosting alone would look like — and one variable would leave it nowhere to
+ * say so.
+ */
+export const LAN_SIGNALLING = process.env.LAN_SIGNALLING?.trim() === '1';
+
+console.log(
+  LAN_SIGNALLING
+    ? '[lan] LAN_SIGNALLING=1 — browsers may claim a code and be introduced to each other'
+    : '[lan] LAN_SIGNALLING unset — LAN rendezvous is CLOSED (no tab-hosted rooms here)',
+);

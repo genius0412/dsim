@@ -1,3 +1,4 @@
+import { envVar } from './runtimeEnv';
 /**
  * Hosted content moderation for user-supplied NAMES: account username, display name,
  * and the robot / team names embedded in a persisted leaderboard record. The server
@@ -26,10 +27,10 @@
  * in-process so a repeated username-availability probe never re-bills the API.
  */
 
-const API_KEY = process.env.MODERATION_API_KEY ?? process.env.OPENAI_API_KEY ?? '';
-const API_URL = process.env.MODERATION_API_URL ?? 'https://api.openai.com/v1/moderations';
-const MODEL = process.env.MODERATION_MODEL ?? 'omni-moderation-latest';
-const TIMEOUT_MS = Number(process.env.MODERATION_TIMEOUT_MS ?? 4000);
+const API_KEY = envVar('MODERATION_API_KEY') ?? envVar('OPENAI_API_KEY') ?? '';
+const API_URL = envVar('MODERATION_API_URL') ?? 'https://api.openai.com/v1/moderations';
+const MODEL = envVar('MODERATION_MODEL') ?? 'omni-moderation-latest';
+const TIMEOUT_MS = Number(envVar('MODERATION_TIMEOUT_MS') ?? 4000);
 
 /** true when a moderation service is configured; when false everything is allowed */
 export const moderationEnabled = API_KEY.length > 0;

@@ -10,6 +10,7 @@ import {
   type RoomInvite,
 } from '../net/api';
 import { uploadPracticeRun, uploadLanRun, type LanParticipant } from '../net/api';
+import { tabHosting } from '../lan/hosting';
 import { FriendsProvider } from './friendsContext';
 import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
@@ -762,8 +763,13 @@ export function App() {
    * it, and the host is required to be SIGNED IN but not to be ONLINE.
    *
    * THREE CONDITIONS, and each one is load-bearing:
-   *   - `lanActive()` — a cloud match is written by the server that ran it; keeping a second
-   *     copy here would upload an unofficial duplicate of an OFFICIAL match.
+   *   - `lanActive() || tabHosting()` — the two ways a match can be self-hosted, and BOTH have
+   *     to be listed or the newer one silently keeps nothing. `lanActive()` is a room reached
+   *     by ADDRESS (the desktop app, `npm run lan`); `tabHosting()` is a room this very tab is
+   *     running over WebRTC (`docs/lan-webrtc.md`), which sets no LAN server because there is
+   *     no address to set. Neither is true of a CLOUD match, which is written by the server
+   *     that ran it — keeping a second copy here would file an unofficial duplicate of an
+   *     OFFICIAL match.
    *   - `isHost()` — the one-uploader rule above. A guest and a spectator keep nothing.
    *   - `matchId` — the archive capability, which the room sends to the HOST'S SOCKET ALONE
    *     (`matchArchive`; see the protocol note). A guest never has one, so this condition now
@@ -772,7 +778,7 @@ export function App() {
    *     re-uploaded as a NEW match on every retry — skipping is the safe half of that trade.
    */
   const keepLanRun = (info: MatchResultInfo, sess: NetSession): void => {
-    if (!lanActive() || !sess.isHost() || !info.matchId) return;
+    if ((!lanActive() && !tabHosting()) || !sess.isHost() || !info.matchId) return;
     // NAMES, not account ids. The people in a LAN room are mostly not signed in on this
     // server — it has no accounts at all — so the roster is what the match itself carries.
     // The cloud re-sanitizes every field of this; see `server/api.ts`.
@@ -1007,6 +1013,30 @@ export function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signedIn]);
+
+  /**
+   * AND AGAIN THE MOMENT THE NETWORK COMES BACK.
+   *
+   * The whole premise of self-hosted play is that it works where the internet does not, so the
+   * match that most needs uploading is the one played with no connection at all — and until
+   * this existed the backlog moved only on a sign-in or on the END of a LATER match. A host who
+   * played a scrimmage in a gym, closed the laptop, and opened it at home on wifi had to play
+   * another match before last night's went anywhere.
+   *
+   * ⚠️ `online` is a COARSE signal: it fires when the machine gets a network interface, which
+   * is not the same as being able to reach the cloud (a captive portal is the obvious case). So
+   * this is an EXTRA trigger and never the only one — both flushes stop on the first failure
+   * and leave the backlog intact, so a wrong guess costs one request.
+   */
+  useEffect(() => {
+    const onOnline = (): void => {
+      void flushPracticeRuns();
+      void flushLanRuns();
+    };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Rich-presence heartbeat for the FULL-SCREEN surfaces (game / solo record /
   // ranked queue) that render outside AppShell's FriendsProvider — so friends see
