@@ -45,7 +45,7 @@ import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
-import { gameServerConfigured, lanActive, setSelectedServer, selectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
+import { LAN_ENABLED, gameServerConfigured, lanActive, setSelectedServer, selectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
 import { ServerMenu } from './ServerMenu';
 import type { MatchResultInfo, NetSession } from '../net/session';
 import { ServerSession } from '../net/serverSession';
@@ -222,7 +222,10 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/record')) return at('record');
   if (rest.startsWith('/ranked')) return at('matchmaking');
   if (rest.startsWith('/watch')) return at('watch');
-  if (rest.startsWith('/lan')) return at('lan');
+  // Unresolvable where LAN is held back, so `/lan` falls through to home rather than
+  // rendering an empty screen under a "LAN play" title (`src/seo.ts` still carries that
+  // entry, correctly — it comes back the moment the flag does).
+  if (LAN_ENABLED && rest.startsWith('/lan')) return at('lan');
   if (rest.startsWith('/download')) return at('download');
   if (rest.startsWith('/contributors')) return at('contributors');
   if (rest.startsWith('/privacy')) return at('privacy');
@@ -1416,7 +1419,11 @@ export function App() {
       {/* LAN. `onConnected` goes to the CUSTOM ROOM screen, because that is what a LAN
           match is — a code-joined room, on a different server. Nothing about the room
           flow changes; only `gameServerUrl()` now answers with the host's machine. */}
-      {screen === 'lan' && (
+      {/* Belt and braces. The Play tile is hidden and `/lan` no longer parses where the
+          flag is off, so nothing should reach this — but `navigate('lan')` is still a
+          callable function, and a screen that renders a whole feature is worth guarding at
+          the point of render too. */}
+      {LAN_ENABLED && screen === 'lan' && (
         <LanPanel
           signedIn={signedIn}
           onConnected={() => guardStart(() => navigate('lobby'))}

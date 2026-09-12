@@ -5,6 +5,7 @@ import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
 import { CHALLENGE_FORMATS } from '../src/net/protocol';
 import { sanitizeReplay } from '../src/net/sanitize';
 import { moderateName, scrubName } from './moderation';
+import { LAN_UPLOADS } from './lanUploads';
 import { dbEnabled } from './db/pool';
 import {
   acceptFriendRequest,
@@ -547,7 +548,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
      * endpoint. The data-collection goal is served by the replay itself, which is the thing
      * that was actually asked for.
      */
-    if (url.pathname === '/api/lan' && (req.method === 'GET' || req.method === 'POST')) {
+    // NOT MOUNTED unless this deployment accepts LAN matches (server/lanUploads.ts). Falling
+    // through rather than returning a 503 is deliberate: an environment holding LAN back
+    // should look like one where the feature does not exist, not like one where it is
+    // temporarily broken. The route 404s with everything else the router does not know.
+    if (LAN_UPLOADS && url.pathname === '/api/lan' && (req.method === 'GET' || req.method === 'POST')) {
       const user = await verifyAuthToken(bearer(req));
       if (!user) return json(401, { error: 'sign in required' }), true;
       if (!dbEnabled) return json(503, { error: 'saving LAN matches needs the database' }), true;
