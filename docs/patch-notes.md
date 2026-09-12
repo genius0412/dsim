@@ -119,47 +119,59 @@ For this codebase, three things are always in that category:
 "Improved gate physics" tells a driver nothing. "A tap on the gate is worth four to nine
 artifacts, depending on how tightly the ramp is packed" tells them how to play.
 
-### ⚠️ Write for the driver, not for the maintainer
+### ⚠️ The reader is an FTC team. Do not write down to them.
 
-**This is the rule that is hardest to hold, because a note assembled from the commit log
-inherits the commit log's register.** Both failure modes were shipped in the first draft of
-this file's own worked example and had to be rewritten.
+**"Written for players" does NOT mean simplified.** This was got wrong once already and the
+notes had to be redone: "weight and gearing" for *mass and drive RPM*, "running your intake
+costs you push" for *power draw reduces pushing power*, "pushing artifacts somewhere" for
+*G408*. Every one of those is longer, vaguer and less useful than the term it replaced.
 
-**Too specific** is the more insidious one, because it *feels* like the good kind of
-precision. "A 250 rpm minimum-weight mecanum no longer out-pushes a 42 lb 435 rpm tank" is
-a true, measured sentence that a player cannot use: nobody chooses a build by reciting
-three numbers at it. "Larger 72 mm rollers" is a part number. "The turret's cadence carries
-its remainder so the rate is not tick-quantised" is a maintenance note wearing a hat.
+The people reading this design drivetrains, argue about gear ratios and read the
+Competition Manual. **Technical vocabulary is the most efficient and most respectful way to
+tell them what changed.** Use it exactly:
 
-So the test for a number is **not** "did we measure it" — it is:
+- **mass**, not weight. **Drive RPM**, not gearing. **Power draw**, not "current things cost".
+- **Flywheel inertia**, **traction limit**, **restitution**, **yaw**, **indexer**, **cone**,
+  **reach** — all fair game, all precise.
+- **Rule numbers.** G408, G422, G02/G03, G04. A driver knows what G408 is; "the possession
+  rule" makes them work out which one you mean.
+- The game's own nouns are obviously free: artifact, particle, catalyst, classifier, gate,
+  Lab Area, ring stand, accelerator.
 
-> **Would a player change what they build, or what they do with the sticks, because of
-> this number?**
+### What to cut instead
 
-Four-to-nine artifacts on a gate tap passes: it tells you when to tap and when to hold.
-Fifteen seconds before a practice run is kept passes. "Nearly double the reach on a compact
-build" passes, because it is a reason to build small. Roller diameters, RPM-and-pound
-triplets, tick rates and internal frame counts all fail. Cut them; the commit message is
-where they already live.
+The axis to cut along is not "technical", it is **usable**. Two things fail that test, and
+neither is a domain term.
 
-**Too vague** is the mirror image, and it usually means internal vocabulary got translated
-into something that sounds like English but names nothing: "account standing on its own
-axis", "the catch area is at the roller nip", "honest corner geometry", "the strafe curb is
-a slop clamp", "connection quality reports honestly". If you would not say it out loud to
-somebody at a competition, it does not go in.
+**Implementation vocabulary** — words this *codebase* invented, which name nothing to
+somebody outside it: solver, tick, frame, authority, slop clamp, position authority, round
+loop, constant. Some are ordinary English, which is exactly why they slip through. "The
+strafe curb is a slop clamp", "account standing on its own axis", "the catch area is at the
+roller nip" all read as English and say nothing.
 
-**The reliable fix for both is to write the consequence.** Not what the code now does, but
-what the player will now do — *lining up matters now*, *let go of the intake before you
-commit to a shove*, *do not park on the outflow*. If a bullet cannot be turned into advice
-or into something they will visibly notice, it probably belongs in **Elsewhere** as one flat
-line, or nowhere.
+**Spec dumps that inform no decision.** The test for a number is not "did we measure it":
 
-### Never make a player read the word "artifact" as jargon
+> **Would a player change what they build, or what they do with the sticks, because of this
+> number?**
 
-They know the game's own nouns — artifact, particle, catalyst, classifier, gate. Those are
-free. Everything the *codebase* invented is not: solver, tick, frame, authority, gate, flag,
-pin, clamp, constant. Some of those are English words too, which is exactly why they slip
-through.
+Four-to-nine artifacts on a gate tap passes — it tells you when to tap and when to hold.
+Fifteen seconds before a practice run is kept passes. "Roughly 17 in of reach on a compact
+robot against 9 in on a maxed-out one" passes: it is a reason to build small. Roller
+diameters in millimetres, a tick rate, an internal frame count and "the cadence carries its
+remainder so the rate is not tick-quantised" all fail. Cut those; the commit message already
+has them.
+
+Note the difference between the two halves of that: *a 250 RPM minimum-mass mecanum used to
+out-push a maxed tank* is a fine sentence, because it shows the size of a bug that has been
+fixed. The same fact written as three specs in a row — `250 rpm`, `42 lb`, `435 rpm` — is
+not, because nobody picks a build by reciting numbers at it. Same measurement, different
+job.
+
+**Where both failure modes resolve is the consequence.** Not what the code now does, but
+what the player now does: *lining up matters now*, *drop the intake before you commit to a
+push*, *do not park on the outflow*, *build small if you want to play the arm*. A bullet
+that cannot be turned into advice or into something visibly different belongs in
+**Elsewhere** as one flat line, or nowhere.
 
 ### The house copy rules apply, and CLAUDE.md owns them
 
