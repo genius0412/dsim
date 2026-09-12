@@ -1909,6 +1909,20 @@ DECODE flight/basin/rail/gate scripted BY DESIGN; **CR PARTICLES still bespoke**
 3. **Chain Reaction manual refinement** — replace the `APPROX` constants (ring-stand inset,
    Lab-Area size/geometry, exact zone coordinates) with measured manual values. This is the
    last real gap in CR; everything else there is feature-complete.
-4. Deferred: WebTransport (needs TLS-deploy validation + an ACK-keyed delta), full-reload
+4. **Multi-core — DESIGNED, NOT BUILT (`docs/scaling-multicore.md`).** One server process is
+   capped at about one core, because Node runs JavaScript on one thread; a 16-vCPU machine runs
+   the same single thread as a 1-vCPU one, which is why the VM sweep found `shared-cpu-1x`
+   through `8x` barely differ. Profiled, **~75% of a busy server is simulation that can leave
+   the socket thread and ~6% is socket work that cannot**, and `server/room.ts` imports no `ws`
+   and no `pg` — every way out of a room is already a callback — so the seam a worker needs
+   exists. Recommended: `worker_threads` behind **`SIM_WORKERS`, default 0**, taking a machine
+   from ~13 driven rooms to ~100 and 1,000 concurrent from 70–90 machines to single digits.
+   ⚠️ **`UV_THREADPOOL_SIZE` must be raised with it** — `permessage-deflate` runs zlib on the
+   libuv threadpool, that pool is PER PROCESS and defaults to 4, and left alone it becomes the
+   new bottleneck and presents as LATENCY rather than as CPU. Sequence: Linux baseline first,
+   then `SIM_WORKERS=1` (slower than none, on purpose — it prices the hop in isolation), then
+   sweep 2/4/8. **Until a prototype exists, do not buy multi-core hardware for DSIM: nothing
+   in the repo uses a second core.** `grep SIM_WORKERS` finds nothing today.
+5. Deferred: WebTransport (needs TLS-deploy validation + an ACK-keyed delta), full-reload
    reconnect, obelisk AprilTag visuals, DECODE deferred fouls (G408 possession>3 / plowing),
    matchmaking polish, replay UI, leaderboard tiers.
