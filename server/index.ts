@@ -41,7 +41,6 @@ import {
   searchProfiles,
   setHandle,
   getProfile,
-  getSupporter,
   grantSupporter,
   revokeSupporter,
   refundKofiPayment,
@@ -2190,17 +2189,27 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     };
     if (user) {
       client.userId = user.userId;
+      // THE DISPLAY NAME IS `profiles.handle`, NEVER `user.handle`. The latter is the
+      // JWT `name` claim — i.e. whatever the account was called at the identity provider
+      // ("syun gin" off a Google sign-up) — and its ONLY legitimate job is SEEDING the
+      // profile row on first insert (`ensureProfile`). Renaming yourself in Profile
+      // settings writes the column and never touches the token, so trusting the claim
+      // put the stale provider name on the roster of every lobby while the friends list
+      // beside it (which joins `profiles`) showed the real one. `profiles.handle` is also
+      // the MODERATED value — `POST /api/user/handle` length-bounds it and runs
+      // `moderateName` — which is the property `room.ts` already assumes of this field.
       client.player.name = user.handle;
-      // Supporter badge, resolved once at join rather than per broadcast. A lapse
-      // mid-match therefore keeps the badge until the next join, which is the
-      // right trade: the alternative is a database read on every roster frame.
+      // ONE READ FOR NAME + BADGES, resolved once at join rather than per broadcast. A
+      // lapse mid-match therefore keeps the badge until the next join, which is the right
+      // trade: the alternative is a database read on every roster frame. `getProfile`
+      // carries the handle, the supporter predicate and the staff role, so this is the
+      // same single query the supporter lookup already cost.
       // Never fatal — a DB hiccup costs a badge, not a join.
       if (dbEnabled) {
-        const ent = await getSupporter(user.userId).catch(() => null);
-        if (ent?.supporter) client.player.supporter = true;
-        // staff badge rides the same read — `getSupporter` already returns the
-        // role, so this costs nothing extra
-        if (ent?.role) client.player.role = ent.role;
+        const p = await getProfile(user.userId).catch(() => null);
+        if (p?.handle) client.player.name = p.handle;
+        if (p?.supporter) client.player.supporter = true;
+        if (p?.role) client.player.role = p.role;
       }
       markAuthed(user.userId);
     }
@@ -2403,7 +2412,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           }
           markAuthed(u.userId);
           const enqueueNow = (): void => {
-          void verifyParty(u.userId, msg).then((party) => {
+          void verifyParty(u.userId, msg).then(async (party) => {
             if (party === 'bad-token') {
               // Never silently fall back to the OPEN queue here. The player asked
               // to play one specific person; quietly matching them against a
@@ -2411,11 +2420,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
               send({ t: 'error', message: 'That challenge expired - send a new one.' });
               return;
             }
+            // Same rule as the join path above: the roster name is `profiles.handle`,
+            // not the JWT `name` claim. It matters more here, because the ranked client
+            // does not even send a real one — `Matchmaking.tsx` sends the ROBOT's
+            // `teamName` — so this read is the only thing that can name the player.
+            const prof = dbEnabled ? await getProfile(u.userId).catch(() => null) : null;
             matchmaker.enqueue({
             id,
             send,
             // sanitize the ranked player's spec/assists too (same clamp as join)
-            player: { ...sanitizePlayer(msg.player, coerceGameId(msg.game)), name: u.handle ?? msg.player.name },
+            player: {
+              ...sanitizePlayer(msg.player, coerceGameId(msg.game)),
+              name: prof?.handle || u.handle || msg.player.name,
+            },
             userId: u.userId,
             mode: msg.mode,
             // the client's home region (Fly's x-region for its connection) + measured
