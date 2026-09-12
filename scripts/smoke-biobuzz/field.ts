@@ -157,9 +157,12 @@ export function fieldChecks(check: Check): void {
     check('field: no dynamic colliders (BIOBUZZ has no known moving geometry)', biobuzzColliders.dynamic === undefined);
     // Every wall's INNER FACE must sit exactly on the bound it is the wall for. A wall placed
     // a hair inside shrinks the field silently; a hair outside leaves a gap a pollen rests in.
-    const faces = biobuzzColliders.statics.map((w) =>
-      w.hx < w.hy ? Math.abs(w.tx) - w.hx : Math.abs(w.ty) - w.hy,
-    );
+    // Only the first `BB_WALL_COUNT` statics are walls — the HIVE frame bars and the FLOWER
+    // feet follow them in the array and are INSIDE the field on purpose, so measuring their
+    // faces against the bound would be measuring the wrong thing.
+    const faces = biobuzzColliders.statics
+      .slice(0, BB_WALL_COUNT)
+      .map((w) => (w.hx < w.hy ? Math.abs(w.tx) - w.hx : Math.abs(w.ty) - w.hy));
     check(
       'field: every wall inner face sits exactly on the field bound',
       faces.every((f, i) => Math.abs(f - (i < 2 ? BB_HALF_X : BB_HALF_Y)) < 1e-9),
@@ -458,13 +461,18 @@ export function fieldChecks(check: Check): void {
 
     // (b) POLLEN against CHASSIS, through the whole pipeline: a robot walking a pollen ahead of
     // it holds it a POLLEN RADIUS off its front face, less the solver's own soft penetration.
+    // The lane is y = 40 rather than the field centreline: the HIVE frame's base bars stand at
+    // x = +/-BB_FRAME_X spanning y in [-BB_FRAME_Y, BB_FRAME_Y], so a push along y = 0 now ends
+    // against a bar a third of the way across and measures a jam instead of a carry. At y = 40
+    // the robot clears the bars and the FLOWER feet and runs all the way to the +x wall, which
+    // is what this check wants: a pollen pinned between a chassis face and something immovable.
     const w2 = mkWorld('free', 3);
     const r = w2.robots[0];
-    r.pos = { x: -40, y: 0 };
+    r.pos = { x: -40, y: 40 };
     r.heading = 0;
     r.vel = { x: 0, y: 0 };
     w2.balls.length = 0;
-    w2.balls.push(bbPollen(1, -20, 0));
+    w2.balls.push(bbPollen(1, -20, 40));
     const push = new Map([[r.id, cmd({ driveY: 0.35 })]]);
     let ahead = 0;
     for (let i = 0; i < 420; i++) {
