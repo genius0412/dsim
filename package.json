@@ -11,6 +11,8 @@
   },
   "scripts": {
     "lan": "node scripts/lan.mjs",
+    "lan:tab": "node scripts/lantab.mjs",
+    "lan:probe": "electron scripts/lanprobe.cjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",

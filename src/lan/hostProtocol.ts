@@ -14,6 +14,18 @@
  */
 import type { LobbyPlayer, RoomConfig } from '../net/protocol';
 
+/**
+ * The host's own seat id. Not a signalling peer id — it never crosses a network.
+ *
+ * It lives HERE rather than beside the runtime that uses it because the Worker needs it too:
+ * the room reserves this id as its host the moment it is built, so the person who started the
+ * room is its host even though they take their seat LAST. (They do: a host reads the code out,
+ * guests join while they are still on the LAN screen, and `Room.add` hands the crown to the
+ * first client through the door — which was a guest. Measured between two tabs: the host
+ * arrived at its own room to be told it was waiting for the host to start.)
+ */
+export const HOST_SEAT = 'host-local';
+
 /** page → worker */
 export type HostIn =
   /** start a room. Sent once, before anything else. */
@@ -31,6 +43,16 @@ export type HostIn =
 export type HostOut =
   /** the room is built and physics is up; the host may start admitting peers */
   | { k: 'ready' }
+  /**
+   * The room could not be built, and hosting is over before it began.
+   *
+   * ⚠️ **THIS EXISTS BECAUSE THE FAILURE IT REPORTS IS OTHERWISE COMPLETELY SILENT.** The
+   * Worker's `open` handler is async (Rapier's wasm has to load), so anything that goes wrong
+   * in it becomes an unhandled REJECTION — which does not fire the Worker's `error` event,
+   * does not reach the page, and leaves a host looking at a room code for a room that does
+   * not exist while every guest that connects waits forever for a `welcome`.
+   */
+  | { k: 'failed'; reason: string }
   /** deliver this already-encoded frame to one player */
   | { k: 'send'; id: string; raw: string; reliable: boolean }
   /** the room emptied and stopped */

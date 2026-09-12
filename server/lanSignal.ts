@@ -95,6 +95,11 @@ export class LanSignalling {
    * (`POST /api/lan`) and an anonymous host is a match whose data has nowhere to land — which
    * defeats the reason LAN matches are allowed to exist at all.
    *
+   * The ONE exception is decided by the caller and never here: a server with no auth configured
+   * cannot verify anybody, so it hands in a synthetic id rather than asking for an account that
+   * cannot exist on it (`LAN_ANON_HOSTS` in `server/index.ts`). This registry stays pure — it
+   * refuses an absent id, always — so the exception has exactly one site and is greppable.
+   *
    * `codeInUse` lets the caller refuse a code that a CLOUD room already holds. The two
    * namespaces are separate maps but they are the same six characters to a player, and a code
    * that means two different rooms is the worst possible thing to put on a projector.

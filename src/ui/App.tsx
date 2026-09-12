@@ -1456,7 +1456,18 @@ export function App() {
       {LAN_ENABLED && screen === 'lan' && (
         <LanPanel
           signedIn={signedIn}
-          onConnected={() => guardStart(() => navigate('lobby'))}
+          onConnected={(code) =>
+            guardStart(() => {
+              /* A WEBRTC ROOM IS ALREADY OPEN BY THE TIME WE GET HERE, so the lobby must
+                 JOIN it rather than offer a create/join form. Without this the player lands
+                 on the entry screen and has to type the code a second time — and the
+                 transport waiting in `pending.ts` would then be adopted by whatever they
+                 typed, which need not be the room it is connected to. Same one-shot
+                 `pendingAutoJoin` an accepted invite uses; the Lobby clears it on consume. */
+              if (code) setPendingAutoJoin({ room: code, config: { kind: 'versus', game: settings.game } });
+              navigate('lobby');
+            })
+          }
           onBack={() => navigate('modes')}
         />
       )}

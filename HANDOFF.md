@@ -1,10 +1,92 @@
+# HANDOFF — 2026-09-12b (a tab-hosted LAN match, proven end to end between two real peers)
+
+Branch **alpha**. `npm test` **ALL PASS**, `npm run build` green, `npm run server:check` green,
+`npx tsc --noEmit` clean, `npm run uiaudit` at baseline, `npm run test:mm` 58 checks, and the
+new `npm run lan:probe` **15/15 ALL PASS**, five runs in a row.
+
+## READ FIRST — LAN in a tab now actually works, locally, with no terminal on the guest side
+
+Two commands, two machines (or two windows):
+
+```
+npm run lan:tab      # builds the client with LAN on + a private-IP rendezvous, then serves it
+npm run lan:probe    # drives two REAL browser windows through the whole feature
+```
+
+The probe takes a match from START HOSTING to a clock ticking down on the GUEST's HUD:
+handshake → room code → guest joins by code → both seated → ready up → START MATCH → snapshots
+crossing the DataChannel at 30 Hz. That last leg is the honest measurement, because the guest
+simulates nothing authoritative: a clock that moves on the guest's screen is a clock being
+stepped in the host's Worker and delivered over WebRTC.
+
+### Four bugs it found that `npm test` structurally could not
+
+Every one is ORDERING BETWEEN TWO CONTEXTS. Source shape cannot see any of them, and neither
+can a single-page harness — which is exactly why the feature measured "done" while both screens
+sat waiting for each other.
+
+1. **The host tore down the link that had just succeeded.** `joinLanRoom` closes its rendezvous
+   socket the moment both channels open, so the server reports that guest GONE seconds after it
+   arrived. Fixed in two places, because the report can land on either side of the moment the
+   link is stored: `acceptLanGuest` disarms its `peerGone` rejection once channels exist
+   (`channelsSeen`), and `hostRuntime` keeps any link that is still open — the DataChannel is
+   the authority for a guest being present, the rendezvous only ever knew about the
+   introduction.
+2. **A DataChannel buffers nothing for a listener that attaches later**, and `join` is the first
+   frame of the protocol, sent the instant the channel opens. `bufferEarly`/`takeEarly` in
+   `lanPeer.ts` buffers from the moment the channel objects exist; the handover is ONE
+   synchronous block (take, attach, replay) on both ends. Measured `early=0` on the runs after
+   bug 3 was fixed — the race is real but narrow, and the buffer is what makes it not matter.
+3. **⚠️ `open` is a STATE on a LAN transport, not an event.** This was the one that actually
+   held everything up. `LobbyClient.join` sends its `join` frame from `onOpen` and from nowhere
+   else — correct for a `WebSocketTransport`, which is handed over still dialling, and wrong for
+   both LAN transports: the WebRTC handshake finished on the LAN screen, and the loopback opened
+   when the Worker said the room was ready, so by the time the lobby adopts either and registers
+   anything, the event has already happened. Both `DataChannelTransport.onOpen` and
+   `LoopbackTransport.onOpen` now latch and fire immediately if already open.
+4. **Going to the room stopped the room.** The LAN screen's unmount cleanup calls
+   `tabHost.stop()` — right for a host wandering off, fatal on the host's own way INTO the
+   match, which unmounts the same component. A handed-off room is parked in the new
+   `src/lan/hostKeeper.ts` (the trick `queueKeeper.ts` uses for a live ranked queue) and the
+   cleanup reads a `handedOff` flag; coming back to the LAN screen adopts it again and
+   re-points its events, so the host still has a Stop hosting button.
+
+### Three decisions that came out of the same session
+
+- **`LanHost.start()` does not resolve until the room exists.** It resolved on the rendezvous
+  CLAIM, so a code was published for a room that might never have been built — and a Worker
+  that fails to load is completely silent (`open` is async because Rapier's wasm loads there, so
+  a failure is an unhandled rejection, not an `error` event). The Worker now posts
+  `{k:'failed'}`, the page listens for `error`/`messageerror`, and `ROOM_BOOT_TIMEOUT_MS` makes
+  the wait terminate in the cases neither covers.
+- **The room RESERVES its host seat** (`Room.reserveHost`, called from the Worker with
+  `HOST_SEAT`). `Room.add` gives the crown to the first client through the door, which is right
+  everywhere the cloud runs; tab hosting inverts it — the host reads the code out while guests
+  join and takes its own seat LAST, so the crown went to a guest and the host arrived at its own
+  room to be told it was waiting for the host to start. Reserving only ever claims an EMPTY
+  slot, and nothing in the cloud path calls it.
+- **The room can end.** A guest leaving arrives as a closed DataChannel; the HOST leaving is a
+  `close()` on a transport with no network under it, so `LoopbackTransport` now tells the runtime
+  and the seat is dropped. A room that goes `empty` stops hosting, instead of a parked Worker
+  stepping an empty room for the rest of the tab's life.
+
+### Still to do, in order
+
+1. **Deploy** — `./scripts/fly-deploy.sh --alpha` (flyctl is not installed on this machine), then
+   `/health`, then confirm `VITE_LAN_ENABLED` on the alpha Vercel project.
+2. **The first two-machine signed-in test THROUGH THE CLOUD.** Everything above ran with the
+   rendezvous local and nobody signed in, so the auth handshake and the upload are the two legs
+   still unproven. A match hosted this way stays in the device backlog and drains later.
+3. The `lan:probe` covers one guest. A 2v2 (three guests on one host) is the next thing worth
+   measuring, and the health readout is where a throttled host would show up.
+
 # HANDOFF — 2026-09-12 (hosting a LAN match from a browser tab: no download, no terminal)
 
 Branch **alpha**, merged from `lan-webrtc`. `npm test` **ALL PASS**, `npm run build` green,
 `npm run server:check` green, `npx tsc --noEmit` clean, `npm run uiaudit` at baseline,
 `npm run test:mm` 58 checks. Pushed as `a3ff8f4`.
 
-## READ FIRST — the server has NOT been deployed, and that is the only thing left
+## The server has NOT been deployed, and that is the only thing left
 
 ```
 ./scripts/fly-deploy.sh --alpha

@@ -471,6 +471,22 @@ export class Room {
     return this.world?.tick ?? 0;
   }
 
+  /**
+   * Name this room's HOST before anybody has joined.
+   *
+   * `add` gives the crown to the first client through the door, which is right for every room
+   * the cloud runs — the person who made it is the person who dialled first. A LAN room hosted
+   * in a browser tab inverts that: the room exists the moment its host clicks START HOSTING,
+   * the host then reads the code out and joins LAST, and the crown had gone to a guest. So the
+   * tab-hosted room reserves the seat its host will arrive on (`HOST_SEAT`, `hostWorker.ts`).
+   *
+   * Reserving only ever CLAIMS AN EMPTY SLOT — it cannot take the room off somebody who
+   * already holds it — and nothing in the cloud path calls it.
+   */
+  reserveHost(id: string): void {
+    if (!this.hostId) this.hostId = id;
+  }
+
   add(client: Client): void {
     // the first client to land defines the room's release channel (custom/record
     // rooms are single-channel by construction — the matchmaker segregates ranked)

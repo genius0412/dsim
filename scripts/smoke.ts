@@ -7020,7 +7020,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'lan screen: App.tsx actually passes onBack (a prop nothing supplies is not an exit)',
-      /<LanPanel[\s\S]{0,400}?onBack=\{/.test(app),
+      /<LanPanel[\s\S]{0,900}?onBack=\{/.test(app),
     );
     check(
       'lan screen: the stale claim that AppShell carries a Back is gone from the comment',
@@ -7353,6 +7353,73 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
         'lan gate: and production still opens neither door',
         !/LAN_UPLOADS/.test(flyProd),
       );
+
+      /* ---- HOSTING SIGNED OUT, on the ONE server that cannot ask for an account.
+         `claim` requires a user id and keeps requiring it (the behavioural check above still
+         runs). The exception is at the call site and is DERIVED from whether this process can
+         verify anybody at all, so a deployment WITH accounts cannot be talked into it by an
+         environment variable — which is the configuration that must stay unreachable. */
+      const idxBare = idx.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/.*$/gm, ' ');
+      check(
+        'lan anon: signed-out hosting is DERIVED from the auth config, not declared',
+        /const LAN_ANON_HOSTS = !authConfigured;/.test(idxBare),
+      );
+      check(
+        'lan anon: there is no environment variable that could turn it on elsewhere',
+        !/process\.env\.LAN_ANON/.test(idxBare) && !/process\.env\[?'?LAN_ANON/.test(idxBare),
+      );
+      check(
+        'lan anon: a server that introduces nobody advertises nothing',
+        /LAN_SIGNALLING && LAN_ANON_HOSTS \?[\s\S]{0,20}?'lanAnon'/.test(idxBare),
+      );
+      check(
+        'lan anon: the synthetic id is never mistaken for a verified one',
+        /if \(u\) markAuthed\(u\.userId\);/.test(idxBare) && !/markAuthed\(u!/.test(idxBare),
+      );
+
+      /* The CLIENT half. A disabled button with "sign in first" under it, on a server where
+         signing in is impossible, is a dead end rather than a gate — but it must DEFAULT to
+         that, because the capability read is async and a button appearing under a cursor
+         already moving is worse than one that arrives a beat late. */
+      const panel = readFileSync('src/ui/LanPanel.tsx', 'utf8');
+      check(
+        'lan anon: the panel asks the SERVER whether hosting needs an account',
+        /serverCaps\(\)[\s\S]{0,120}?includes\('lanAnon'\)/.test(panel),
+      );
+      check(
+        'lan anon: it starts refused, so the strict copy is what shows early',
+        /const \[anonHostOk, setAnonHostOk\] = useState\(false\);/.test(panel) &&
+          /const mayTabHost = signedIn \|\| anonHostOk;/.test(panel),
+      );
+      check(
+        'lan anon: and the button is gated on that, not on being signed in',
+        /disabled=\{!mayTabHost \|\| tabBusy\}/.test(panel) &&
+          !/disabled=\{!signedIn \|\| tabBusy\}/.test(panel),
+      );
+
+      /* ---- the local rendezvous launcher (scripts/lantab.mjs). It exists so tab hosting can
+         be tested between two machines with nothing deployed. The two traps it has to avoid
+         both present as a LAN screen with no panel on it: baking `localhost` into a client a
+         GUEST will run, and re-using a `dist/` that was built without the LAN flag. */
+      const tab = readFileSync('scripts/lantab.mjs', 'utf8');
+      check(
+        'lan local: it opens the rendezvous and keeps the no-database policy',
+        /LAN_SIGNALLING: '1'/.test(tab) && /LAN_MODE: '1'/.test(tab) && /SERVE_CLIENT: DIST/.test(tab),
+      );
+      check(
+        'lan local: the client is built with LAN on and dialled at a LAN address',
+        /VITE_LAN_ENABLED: '1'/.test(tab) &&
+          /VITE_GAME_SERVER_URL: signalUrl/.test(tab) &&
+          /const signalUrl = `ws:\/\/\$\{host\}:\$\{port\}`/.test(tab),
+      );
+      check(
+        'lan local: a build stamped for a different address is rebuilt, not reused',
+        /stamped !== signalUrl/.test(tab) && /writeFileSync\(STAMP/.test(tab),
+      );
+      check(
+        'lan local: npm exposes it',
+        /"lan:tab": "node scripts\/lantab\.mjs"/.test(readFileSync('package.json', 'utf8')),
+      );
     }
 
   // ---- LAN over WebRTC: the data path (docs/lan-webrtc.md step 3)
@@ -7409,6 +7476,48 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     check(
       'lan rtc: ICE candidates that arrive before the answer are queued, not thrown away',
       /pending\.push\(frame\.candidate\)/.test(peer) && /pending\.splice\(0\)/.test(peer),
+    );
+
+    /* ⚠️ A GUEST LEAVING THE RENDEZVOUS IS NOT A GUEST LEAVING, and after a successful join it
+       is the NORMAL case: `joinLanRoom` closes its signalling socket the instant both channels
+       open, so the server reports that guest gone moments after the link comes up. Honouring
+       it tore down the connection that had just succeeded — the guest was told it had lost the
+       game server while the host went back to "waiting for players". Two halves, because the
+       report can land on either side of the moment the link is stored. */
+    check(
+      'lan rtc: a rendezvous departure stops counting once the guest’s channels exist',
+      /channelsSeen = true/.test(peer) && /peer === guestId && !channelsSeen/.test(peer),
+    );
+    /* ⚠️ A DATACHANNEL BUFFERS NOTHING FOR A LISTENER THAT ATTACHES LATER, and the very first
+       frame of the protocol is sent the instant the channel opens — a guest's `join` goes out
+       before `acceptLanGuest` has resolved and `admit` has stored the link. Measured between
+       two tabs: the link came up, the host counted the guest, and both sides then sat there
+       forever, because `join` had been dispatched into a channel nobody was listening to and
+       `welcome` was therefore never sent. Both ends buffer from the moment the channels exist,
+       and the handover is SYNCHRONOUS: an event is dispatched as a task, so nothing can arrive
+       between two adjacent statements, and splitting them across ticks re-opens the hole. */
+    check(
+      'lan rtc: the first frame is not lost to a listener that attaches a microtask later',
+      /function bufferEarly\(/.test(peer) && /takeEarly\(\)/.test(peer),
+    );
+    check(
+      'lan rtc: the handover is one synchronous block — take, attach, then replay',
+      /const early = link\.takeEarly\(\);\s*\n\s*link\.control\.addEventListener\('message'/.test(peer) &&
+        /const early = link\.takeEarly\(\);[\s\S]{0,260}?for \(const raw of early\)/.test(
+          readFileSync('src/lan/hostRuntime.ts', 'utf8'),
+        ),
+    );
+    check(
+      'lan rtc: and the transport holds frames until its owner registers a callback',
+      /else this\.pending\.push\(e\.data\);/.test(peer) &&
+        /for \(const d of this\.pending\.splice\(0\)\) cb\(d\);/.test(peer),
+    );
+
+    check(
+      'lan rtc: and the host keeps a link that is already open (the DataChannel is authority)',
+      /readyState === 'open' \|\| link\.hot\.readyState === 'open'\)\) return;/.test(
+        readFileSync('src/lan/hostRuntime.ts', 'utf8'),
+      ),
     );
 
     /* The file's own header EXPLAINS why `lanServerUrl` is the wrong thing here, so a bare
@@ -7548,9 +7657,114 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       'lan tab: the wake lock is best-effort — an unavailable one must not block hosting',
       /nav\.wakeLock\?\.request\('screen'\)/.test(hr) && /catch \{/.test(hr),
     );
+    /**
+     * ⚠️ **A HOST LEAVING THE LAN SCREEN TO GO AND PLAY IS NOT A HOST ABANDONING THE ROOM**,
+     * and the cleanup could not tell the difference. The room lives in this tab, so wandering
+     * off with it running would strand every guest on a room nobody is stepping — that is what
+     * the cleanup is for. But the host's own route into the match unmounts this component too,
+     * so clicking GO TO THE ROOM terminated the Worker on the way: the host arrived at a lobby
+     * waiting on a room that no longer existed, with the guest already sitting in it. A handed
+     * -off room is PARKED instead (`hostKeeper.ts`, the same trick `queueKeeper.ts` uses to
+     * keep a ranked queue alive across a screen), and the flag is what the cleanup reads.
+     */
+    const keeper = readFileSync('src/lan/hostKeeper.ts', 'utf8');
+    // the `lan rtc` block above has its own handle on this file; that one is out of scope here
+    const peerSrc = readFileSync('src/net/lanPeer.ts', 'utf8');
     check(
-      'lan tab: leaving the LAN screen stops hosting, so no guest is stranded on a dead room',
-      /useEffect\(\(\) => \(\) => tabHost\?\.stop\(\), \[tabHost\]\)/.test(lp),
+      'lan tab: abandoning the LAN screen still stops hosting, so no guest is stranded',
+      /if \(!handedOff\.current\) tabHost\?\.stop\(\);/.test(lp),
+    );
+    check(
+      'lan tab: but going to the room PARKS it, so the host does not kill its own room',
+      /handedOff\.current = true;\s*\n\s*keepHostedRoom\(tabHost\);/.test(lp),
+    );
+    check(
+      'lan tab: coming back adopts the parked room and re-points its events at this screen',
+      /const kept = takeHostedRoom\(\);/.test(lp) && /kept\.setEvents\(\{/.test(lp),
+    );
+    check(
+      'lan tab: parking never silently replaces a live room with another',
+      /if \(held && held !== host\) held\.stop\(\);/.test(keeper),
+    );
+
+    /**
+     * ⚠️ **OPEN IS A STATE ON A LAN TRANSPORT, NOT AN EVENT.** `LobbyClient.join` sends its
+     * `join` frame from `onOpen` and from nowhere else — right for a `WebSocketTransport`,
+     * which is handed over still dialling. Both LAN transports are the opposite: the WebRTC
+     * handshake finished on the LAN screen and the loopback opened when the Worker said the
+     * room was ready, so by the time the lobby adopts either and registers anything, the one
+     * event it is waiting for has already happened. Measured between two tabs: the link came
+     * up, the host counted the guest, and BOTH sides sat on CONNECTING forever, each waiting
+     * for a `join` the other had never been asked to send.
+     */
+    check(
+      'lan tab: the guest transport fires `open` immediately if it is already open',
+      /if \(this\.opened && !this\.disposed\) cb\(\);/.test(peerSrc),
+    );
+    check(
+      'lan tab: and the host loopback does the same (the room is up long before the lobby)',
+      /if \(this\.opened && !this\.closed\) cb\(\);/.test(hr),
+    );
+
+    /**
+     * ⚠️ **A WORKER THAT FAILS TO BUILD ITS ROOM IS COMPLETELY SILENT.** The `open` handler is
+     * async (it loads Rapier's wasm), so anything that goes wrong in it is an unhandled
+     * rejection: no `error` event, nothing on the page, `room` simply stays null and every
+     * frame after it is dropped. Meanwhile the rendezvous claim had already succeeded, so the
+     * host was reading out a code for a room that did not exist. Three separate holes, because
+     * a load failure, a synchronous throw and an async rejection surface differently.
+     */
+    check(
+      'lan tab: the Worker reports a room it could not build instead of going quiet',
+      /k: 'failed'/.test(hw) && /\(e: unknown\) => post\(\{ k: 'failed'/.test(hw),
+    );
+    check(
+      'lan tab: and the page watches the Worker itself for the failures it cannot report',
+      /worker\.addEventListener\('error'/.test(hr) && /worker\.addEventListener\('messageerror'/.test(hr),
+    );
+    check(
+      'lan tab: start() does not hand back a code until the room actually exists',
+      /await roomReady;/.test(hr) && /ROOM_BOOT_TIMEOUT_MS/.test(hr),
+    );
+
+    /**
+     * ⚠️ **THE ROOM HAS TO BE ABLE TO END.** A parked host has no UI attached, so nothing is
+     * watching it: a guest leaving arrives as a closed DataChannel, but the HOST leaving is a
+     * `close()` on a transport with no network under it, and without a callback the room keeps
+     * a seat for somebody who is gone, never empties, and a Worker steps an empty room for the
+     * rest of the tab's life.
+     */
+    check(
+      'lan tab: the host letting go of its loopback drops its seat from the room',
+      /toWorker\(\{ k: 'drop', id: HOST_SEAT \}\)/.test(hr),
+    );
+    check(
+      'lan tab: and a room that empties stops hosting rather than stepping forever',
+      /if \(m\.k === 'empty'\) \{\s*\n\s*this\.stop\(/.test(hr),
+    );
+
+    /**
+     * ⚠️ **THE TAB THAT RUNS THE ROOM IS ITS HOST, EVEN THOUGH IT JOINS LAST.** `Room.add`
+     * gives the crown to the first client through the door, which is right everywhere the
+     * cloud runs. Tab hosting inverts the order: the room exists the moment somebody clicks
+     * START HOSTING, they then read the code out while guests join, and they take their own
+     * seat afterwards — so the crown went to a guest and the host arrived at its own room to
+     * be told it was waiting for the host to start.
+     */
+    check(
+      'lan tab: the room reserves its host seat before any guest can take it',
+      /room\.reserveHost\(HOST_SEAT\)/.test(hw),
+    );
+    check(
+      'lan tab: and reserving only ever claims an EMPTY seat, never takes the room off anyone',
+      /reserveHost\(id: string\): void \{\s*\n\s*if \(!this\.hostId\) this\.hostId = id;/.test(
+        readFileSync('server/room.ts', 'utf8'),
+      ),
+    );
+    check(
+      'lan tab: HOST_SEAT lives in the module both threads share, so they cannot disagree',
+      /export const HOST_SEAT = 'host-local';/.test(readFileSync('src/lan/hostProtocol.ts', 'utf8')) &&
+        !/export const HOST_SEAT = /.test(hr),
     );
 
     // ---- the hand-off to the lobby
@@ -7583,9 +7797,14 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
 
     // ---- what the person on the screen is told
+    /* Hosting still requires an account wherever there is one to have — the host is who
+       uploads the match. The `mayTabHost` spelling is not a loosening of that: `anonHostOk`
+       is false until a server SAYS it has no accounts (`lanAnon`), and only a server that
+       cannot verify anybody ever says so. See the `lan anon:` checks. */
     check(
       'lan tab: hosting requires an account, since the practice data is saved to one',
-      /disabled=\{!signedIn \|\| tabBusy\}/.test(lp),
+      /disabled=\{!mayTabHost \|\| tabBusy\}/.test(lp) &&
+        /const mayTabHost = signedIn \|\| anonHostOk;/.test(lp),
     );
     check(
       'lan tab: the copy states the one internet dependency up front',
@@ -7606,6 +7825,20 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
      */
     const app = readFileSync('src/ui/App.tsx', 'utf8');
     const hosting = readFileSync('src/lan/hosting.ts', 'utf8');
+
+    /* THE HANDSHAKE ALREADY CHOSE THE ROOM. Landing on the lobby's create-or-join form after
+       it would make the player type the code a SECOND time — and the live transport waiting
+       in `pending.ts` would then be adopted by whatever they typed, which need not be the room
+       it is connected to. Both WebRTC paths therefore carry the code out; the two ADDRESS
+       paths deliberately do not, because reaching a LAN server is not picking a room on it. */
+    check(
+      'lan tab: arriving at the room screen JOINS the code, rather than asking for it again',
+      /onConnected\(tabCode\)/.test(lp) && /onConnected\(r\.code\)/.test(lp),
+    );
+    check(
+      'lan tab: and the app turns that into the same one-shot auto-join an invite uses',
+      /setPendingAutoJoin\(\{ room: code, config: \{ kind: 'versus'/.test(app),
+    );
 
     check(
       'lan keep: a tab-hosted match is kept, not only an address-reached LAN match',
