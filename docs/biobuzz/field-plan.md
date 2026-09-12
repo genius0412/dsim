@@ -30,19 +30,24 @@ BB_POLLEN_R  = 1.4      // 2.8 in, §9.8 (was 1.5 APPROX)
 BB_NECTAR_R  = 1.8      // 3.6 in, §9.8
 BB_LZ  red: x[-72,-61] y[24,48]   blue: point-mirror        // Fig 9-2/9-3, seams; tape APPROX
 BB_GARDEN red: x[-72,-49] y[-72,-70]  blue: point-mirror     // Fig 9-2/9-3
-BB_HIVE_X = ±12.75 (pivot), axis along y                     // Fig 9-10 "center to center 25.5"
-BB_HIVE_CELL_DY = 13.4  (APPROX: 15.4·cos30)                 // Fig 9-9/9-10
-BB_HIVE_OPEN_Z = [53.5, 65.6], BB_HIVE_BOTTOM_Z = 25.5       // Fig 9-10
-BB_CELL_OPEN = 20 × 12 (accept footprint, APPROX from 20×14×12)  // Fig 9-11
-BB_FRAME legs x = ±24.73, y ±19.5, bar ~1.5 in (APPROX)      // Fig 9-8
-BB_FLOWERS: (-72+d,-24) (-24,72-d) (72-d,24) (24,-72+d), d = 3.0 APPROX  // Fig 9-2/9-4 pixels
+BB_HIVE_X = ±12.75 (pivot), axis along y                    // Fig 9-10 "center to center 25.5"
+BB_HIVE_CELL_DY  = 13.37  // 15.44*cos30 — cell centre, PLAN        (measured, reference 2.2)
+BB_HIVE_CELL_LEN = 10.43  // 12.04*cos30 — cell depth, PLAN
+BB_HIVE_LEN      = 37.16  // 42.91*cos30 — assembly end to end, PLAN (NOT 42.91)
+BB_CELL_OPEN = { w: 20, d: BB_HIVE_CELL_LEN }  // accept window; the width is not foreshortened
+BB_HIVE_OPEN_Z = [53.5, 65.6], BB_HIVE_BOTTOM_Z = 25.5      // Fig 9-10
+BB_FRAME_BAR_IN = 24, BB_FRAME_BAR_OUT = 25, BB_FRAME_Y = 19.4  // measured: 1-in bar, inner edge on the seam
+BB_FLOWERS: (-69.46,-24) (-24,69.46) (69.46,24) (24,-69.46)     // measured: 2.54 off the wall, on the seam centreline
+BB_FLOWER_FOOT = { along: 6, deep: 4.9 }  // RECTANGLE flush to the wall, measured
 BB_FLOWER_TOP_Z = 21.5, BB_FLOWER_OPEN_R = 2.0, BB_FLOWER_VOL_Z = [3.98, 21.5] APPROX // Fig 9-12
 BB_TIP_POLLEN = [8, 7, 6, 3, 1, 0]   // MEASURED (ref §4.1); index = NECTAR in cell; [0] APPROX
 BB_FLOWER_UNLOCK_S = 60                                       // G410
 PTS: leave 3, park 5/5, tip 20, cell 2, bottom-nectar 5, owned 2, garden 1; RP 16 / 4 / 7
 ```
 
-Colliders: four walls (kept) + two frame base bars + four flower footprints (circles r≈2.6).
+Colliders: four walls (kept) + two frame base bars (1 in thick, inner edge on the ±24 seam,
+extending outward) + four flower footprints (6 × 4.9 in RECTANGLES flush to their wall — not
+circles).
 `clampBallPosToStatics`-style containment for the new solids is the shared solve's job — the
 field only declares `StaticSpec`s. Bounds/camera unchanged (everything is inside the walls).
 
@@ -94,7 +99,10 @@ solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
   so the first tip of a match costs **3 POLLEN**. Only the empty-cell row (0 NECTAR) is still
   `APPROX` at 8.
 - Render: two hives as top-down cell outlines; the up-cell drawn bright, the down-cell dimmed;
-  a short swing animation on `tipping`. **The up-cell readout is PER TYPE** — POLLEN, RED
+  a short swing animation on `tipping`. ⚠️ **BOTH cells foreshorten equally** — the see-saw is
+  one rigid bar at 30°, so a plan view projects both ends by cos 30° and only `z` separates
+  them; drawing the up cell full length and the down cell short is wrong. **The up-cell readout
+  is PER TYPE** — POLLEN, RED
   NECTAR and BLUE NECTAR counted separately (any alliance may launch into any cell, and the
   tip table is indexed by the NECTAR count), not one total.
 
