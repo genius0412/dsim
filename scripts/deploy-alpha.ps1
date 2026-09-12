@@ -116,20 +116,45 @@ $env:PATH = "$FlyDir;$env:PATH"
 # `fly auth login` opens fly.io in your browser. You sign in there (GitHub SSO, since your
 # access is linked to GitHub) and flyctl stores the token in ~/.fly/config.yml. This script
 # does not handle the password, the token, or anything else.
-$who = & $Fly auth whoami 2>&1 | Out-String
-if ($LASTEXITCODE -ne 0) {
-  Say 'not signed in to Fly - opening your browser to sign in'
-  & $Fly auth login
-  if ($LASTEXITCODE -ne 0) { Die 'fly auth login failed or was cancelled.' }
-  $who = & $Fly auth whoami 2>&1 | Out-String
-  if ($LASTEXITCODE -ne 0) { Die 'still not signed in after login.' }
+#
+# NOTE: Windows PowerShell 5.1 turns `2>&1` on a NATIVE exe into a TERMINATING
+# NativeCommandError the moment that exe writes anything to stderr - whatever its exit code
+# is, and before $LASTEXITCODE can be tested. Under $ErrorActionPreference='Stop' that killed
+# this script on `fly auth whoami` printing "no access token available", which is not a
+# failure at all: it is the not-signed-in answer this check exists to detect, and the branch
+# it should have taken was the one that runs `fly auth login`. So every native call goes
+# through this helper, which drops the preference for the duration and hands back an exit
+# code to test explicitly.
+function Invoke-Native {
+  param([string]$Exe, [string[]]$Arguments, [switch]$Interactive)
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    if ($Interactive) {
+      # A browser login and a deploy both need their output to reach the terminal live, so
+      # these are not captured - which also means there is no redirection to go wrong.
+      & $Exe @Arguments
+      return [pscustomobject]@{ Code = $LASTEXITCODE; Text = '' }
+    }
+    $text = (& $Exe @Arguments 2>&1 | Out-String)
+    return [pscustomobject]@{ Code = $LASTEXITCODE; Text = $text }
+  } finally { $ErrorActionPreference = $prev }
 }
-Say "signed in as: $($who.Trim())"
+
+$auth = Invoke-Native $Fly @('auth', 'whoami')
+if ($auth.Code -ne 0) {
+  Say 'not signed in to Fly - opening your browser to sign in'
+  $login = Invoke-Native $Fly @('auth', 'login') -Interactive
+  if ($login.Code -ne 0) { Die 'fly auth login failed or was cancelled.' }
+  $auth = Invoke-Native $Fly @('auth', 'whoami')
+  if ($auth.Code -ne 0) { Die "still not signed in after login: $($auth.Text.Trim())" }
+}
+Say "signed in as: $($auth.Text.Trim())"
 
 # Being signed in is not the same as having access to THIS app. Check before building.
-& $Fly status -a $App 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
-  Die "signed in, but '$App' is not reachable from this account. Confirm you were added to the org that owns it."
+$st = Invoke-Native $Fly @('status', '-a', $App)
+if ($st.Code -ne 0) {
+  Die "signed in, but '$App' is not reachable from this account - confirm you were added to the org that owns it.`n$($st.Text.Trim())"
 }
 
 # --- 5. confirm ------------------------------------------------------------------------
@@ -145,9 +170,8 @@ if (-not $Yes) {
 
 # --- 6. the actual deploy --------------------------------------------------------------
 Say 'running scripts/fly-deploy.sh --alpha'
-& $Bash './scripts/fly-deploy.sh' '--alpha'
-$rc = $LASTEXITCODE
-if ($rc -ne 0) { Die "deploy exited $rc - check it with: fly machine list -a $App" }
+$dep = Invoke-Native $Bash @('./scripts/fly-deploy.sh', '--alpha') -Interactive
+if ($dep.Code -ne 0) { Die "deploy exited $($dep.Code) - check it with: fly machine list -a $App" }
 
 # --- 7. proof --------------------------------------------------------------------------
 # A green deploy is not proof the thing you deployed FOR is live, so check the two facts
