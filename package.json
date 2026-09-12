@@ -11,6 +11,9 @@
   },
   "scripts": {
     "lan": "node scripts/lan.mjs",
+    "coord": "node scripts/coord/board.mjs",
+    "coord:claim": "node scripts/coord/claim.mjs",
+    "coord:setup": "node scripts/coord/setup.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
