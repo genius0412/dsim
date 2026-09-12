@@ -16,7 +16,7 @@
  * `npm test` stays the SIM smoke check (a red `npm test` must keep meaning
  * "physics broke"), so this is its own script.
  */
-import { Matchmaker, groupUnits, allianceOrder, type QueueEntry } from '../server/matchmaking';
+import { Matchmaker, groupUnits, allianceOrder, type MatchmakerDeps, type QueueEntry } from '../server/matchmaking';
 import type { PendingMatch } from '../server/matchTypes';
 import type { QueueMode, ServerMsg } from '../src/net/protocol';
 
@@ -53,6 +53,7 @@ function entry(id: string, mode: QueueMode, opts: Partial<QueueEntry> = {}): Que
  */
 async function pair(
   entries: QueueEntry[],
+  deps: Partial<MatchmakerDeps> = {},
 ): Promise<{ mm: Matchmaker; staged: PendingMatch[] }> {
   const staged: PendingMatch[] = [];
   const mm = new Matchmaker({
@@ -62,6 +63,7 @@ async function pair(
     stage: async (m) => {
       staged.push(m);
     },
+    ...deps,
   });
   for (const e of entries) mm.enqueue(e);
   await new Promise((r) => setTimeout(r, 0));
@@ -459,6 +461,89 @@ const namesOf = (m: PendingMatch | undefined): string =>
   };
   check('queued: waiters sharing a bucket are both told the shared depth',
     sizeOf('s1') === 2 && sizeOf('s2') === 2, `s1=${sizeOf('s1')} s2=${sizeOf('s2')}`);
+}
+
+// ---- the SERVER-STAMPED rating ---------------------------------------------
+// Pairing on skill needs a rating ON the entry, and where it comes from is the whole
+// security story: the queue message carries no rating field and must never gain one.
+// These pin the stamp's lifecycle, which is the part that can fail quietly.
+{
+  const asked: string[] = [];
+  const { mm } = await pair([entry('r1', '1v1', { userId: 'u-r1' })], {
+    rating: async (userId) => {
+      asked.push(userId);
+      return { rating: 1420, placed: true };
+    },
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  const e = mm.queuedPlayers(0).find((x) => x.userId === 'u-r1');
+  check('rating: the queue was asked for the entry’s rating', asked.includes('u-r1'), asked.join(','));
+  check('rating: ...and the entry is still queued while it resolves', !!e);
+}
+{
+  // FAIL OPEN. A rating source that returns null — DB off, signed out, a read that
+  // threw — must leave the entry unrated and matchable, never gate it out. A database
+  // that cannot answer must not lock everyone out of ranked.
+  const { staged } = await pair(
+    [entry('f1', '1v1', { userId: 'u-f1' }), entry('f2', '1v1', { userId: 'u-f2' })],
+    { rating: async () => null },
+  );
+  check('rating: a null read still pairs (fail open, not a gate)', staged.length === 1, String(staged.length));
+}
+{
+  // a rating source that THROWS is the same situation and must not reject into the
+  // queue press — an unhandled rejection there would take the matchmaker down
+  const { staged } = await pair(
+    [entry('t1', '1v1', { userId: 'u-t1' }), entry('t2', '1v1', { userId: 'u-t2' })],
+    { rating: async () => { throw new Error('neon is asleep'); } },
+  );
+  check('rating: a THROWING read still pairs and never rejects into the join', staged.length === 1, String(staged.length));
+}
+{
+  // the stamp must not resurrect an entry that has since left. The read is fired
+  // off the join path, so a player can leave, or re-queue under a new connection id,
+  // while it is in flight — writing onto the old object would at best do nothing and
+  // at worst carry a departed identity onto a fresh entry.
+  let release: (() => void) | null = null;
+  const gate = new Promise<void>((r) => { release = r; });
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({
+    now: () => 0,
+    stage: async (m) => { staged.push(m); },
+    rating: async () => { await gate; return { rating: 1700, placed: true }; },
+  });
+  mm.enqueue(entry('gone', '1v1', { userId: 'u-gone' }));
+  mm.remove('gone');
+  release?.();
+  await new Promise((r) => setTimeout(r, 0));
+  check('rating: a stamp landing after the player left does not re-add them',
+    mm.queuedPlayers(0).every((x) => x.userId !== 'u-gone'));
+}
+{
+  // THE STAMP LANDS AFTER THE JOIN, ON PURPOSE, and that is visible here: two players
+  // who enqueue back-to-back pair SYNCHRONOUSLY inside the second `enqueue`, before
+  // either rating read has resolved. Correct — an empty queue has nobody to choose
+  // between, so there is nothing for a rating to improve — but it means a test of the
+  // stamp has to let the first read land before the second player arrives, which is
+  // also what a real queue looks like.
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({
+    now: () => 0,
+    stage: async (m) => { staged.push(m); },
+    rating: async (userId) => ({ rating: userId === 'u-i1' ? 1234 : 1567, placed: true }),
+  });
+  mm.enqueue(entry('i1', '1v1', { userId: 'u-i1' }));
+  await new Promise((r) => setTimeout(r, 0)); // the first player's rating lands
+  mm.enqueue(entry('i2', '1v1', { userId: 'u-i2' }));
+  await new Promise((r) => setTimeout(r, 0));
+  const elos = (staged[0]?.roster ?? []).map((r) => r.introElo);
+  check('rating: the intro card is served from the stamp, not a fresh query',
+    elos.includes(1234), JSON.stringify(elos));
+  // and the SECOND player, who paired before their own read resolved, falls through to
+  // the DB path — null here, because this harness has no database. That is the fallback
+  // working: an absent stamp must read as "Unranked", never as a fabricated 1000.
+  check('rating: an unstamped player falls back rather than inventing a rating',
+    elos.length === 2 && elos.includes(null), JSON.stringify(elos));
 }
 
 // ---- report ----------------------------------------------------------------
