@@ -1,5 +1,9 @@
 # HANDOFF — Lane A (field)
 
+> **BRANCH CHANGE (2026-09-12):** the shared base is **`alpha`**. `biobuzz` was merged into
+> `alpha` and deleted on origin. Wherever this file says branch `biobuzz`, read `alpha`: merge
+> `alpha` before you commit, land into `alpha`, `alpha` deploys.
+
 ## 2026-09-12 · owner CAD + the six drawing rulings · `d6c0430`
 
 - **Cells to look at**: `field-labelled@0` (annotated) and the SAME cell rendered with the

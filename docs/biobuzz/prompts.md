@@ -1,5 +1,9 @@
 # BIOBUZZ chat prompts (plan approved 2026-09-09)
 
+> **BRANCH CHANGE (2026-09-12):** the shared base is **`alpha`**. `biobuzz` was merged into
+> `alpha` and deleted on origin. Wherever this file says branch `biobuzz`, read `alpha`: merge
+> `alpha` before you commit, land into `alpha`, `alpha` deploys.
+
 Paste each block into its own chat. Worktrees already exist on the requester's machine
 (`git worktree list` from any checkout shows them). Integration (merging lanes → `biobuzz`,
 merging `origin/alpha` → `biobuzz`) stays in the planning chat, which is the ONLY Fable 5.1

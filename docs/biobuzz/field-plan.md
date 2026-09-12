@@ -1,5 +1,9 @@
 # BIOBUZZ field plan (Lane A) — PROPOSAL, 2026-09-12
 
+> **BRANCH CHANGE (2026-09-12):** the shared base is **`alpha`**. `biobuzz` was merged into
+> `alpha` and deleted on origin. Wherever this file says branch `biobuzz`, read `alpha`: merge
+> `alpha` before you commit, land into `alpha`, `alpha` deploys.
+
 Companion to `docs/biobuzz-reference.md` (the facts) and `docs/biobuzz-contract.md` (who edits
 what). This is the build order for `src/games/biobuzz/` on the field side, what it needs from
 the shared core, and what is still a guess. Nothing here is built yet.

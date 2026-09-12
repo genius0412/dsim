@@ -1,5 +1,9 @@
 # BIOBUZZ — the lane contract (READ FIRST if you are building the game)
 
+> **BRANCH CHANGE (2026-09-12):** the shared base is **`alpha`**. `biobuzz` was merged into
+> `alpha` and deleted on origin. Wherever this file says branch `biobuzz`, read `alpha`: merge
+> `alpha` before you commit, land into `alpha`, `alpha` deploys.
+
 Two people build this game in parallel. **Lane A owns the FIELD; Lane B owns the ROBOT.**
 This file is the interface between them and the list of who may edit what. If a rule here
 is wrong, change it here first, then change the code. Companion: `biobuzz-plan.md`
