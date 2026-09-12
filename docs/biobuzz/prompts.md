@@ -715,8 +715,16 @@ Land: merge `origin/alpha` again, push `biobuzz-rules`, add a dated section to `
 
 ### M — manual distillation (NEW docs-only chat, worktree `dsim-bb-docs`, branch `biobuzz-docs`)
 
+Setup once, in a terminal from the `Claude Projects` folder, then open the new chat in `dsim-bb-docs`:
+
     git -C dsim-biobuzz worktree add ../dsim-bb-docs -b biobuzz-docs origin/alpha
 
-You write ONE file: `docs/biobuzz/manual-distilled.md`. Never commit manual page images; the user pastes pages into chat. Base is `alpha`.
-Produce, with rule ids and the page each came from: the scoring table (every line, points, when assessed); the penalty list (rule id, MINOR/MAJOR, trigger, any per-3-seconds clause); match timing (auto/teleop/endgame, the nectar cue); LEAVE/PARK/garden definitions with the exact geometry words; human-player rules (where, when, how many); start rules; R105 expansion limits; glossary entries for every capitalised term the field or robot lanes use (POLLEN, NECTAR, HIVE, CELL, FLOWER, GARDEN, LOADING ZONE). Quote the rule text verbatim where a number or a boundary word matters; mark anything inferred as APPROX. Finish with an "Open questions for the owner" list.
-Push `biobuzz-docs` and report. No Claude attribution.
+Prompt (give it the PDF path; it runs unattended from there):
+
+You are the BIOBUZZ manual lane, worktree dsim-bb-docs, branch biobuzz-docs, base alpha. The full Competition Manual PDF is at <PATH>. Work from the PDF only, no guessing.
+1. Copy it to scratch/manual.pdf (scratch/ is gitignored; the PDF and every page image stay uncommitted, always).
+2. Text: `pdftotext -layout scratch/manual.pdf scratch/manual.txt` and, for the glossary section only, `pdftotext scratch/manual.pdf scratch/manual-flat.txt` (the two-column glossary interleaves under -layout). Read the text in sections with sed -n; do not paste the whole file into context.
+3. Figures: `python -c "import fitz;d=fitz.open('scratch/manual.pdf');[d[i].get_pixmap(dpi=110).save(f'scratch/figs/p{i+1:03}.png') for i in range(len(d))]"` after mkdir scratch/figs, then Read only the pages the text says carry a field figure or a dimension drawing. Measure nothing by eye that the text states; where a number comes only from a drawing, say so and mark APPROX.
+4. Write ONE file, docs/biobuzz/manual-distilled.md, with the section's rule id and PDF page for every line: scoring table (each line, points, when assessed); penalty list (id, MINOR or MAJOR, trigger, any per-3-seconds clause); match timing (auto, teleop, endgame, the nectar cue); LEAVE, PARK and garden definitions with the exact boundary words; human-player rules; start rules; R105 expansion limits; glossary entries for POLLEN, NECTAR, HIVE, CELL, FLOWER, GARDEN, LOADING ZONE and every other capitalised term the field or robot lanes use. Quote verbatim where a number or boundary word matters. End with "Open questions for the owner".
+5. Compare against docs/biobuzz-reference.md and docs/biobuzz/field-plan.md and list every disagreement in a final "Conflicts with current docs" section; do not edit those two files.
+6. Commit only manual-distilled.md, push biobuzz-docs, report the commit and the conflict count. No Claude attribution.
