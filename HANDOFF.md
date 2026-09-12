@@ -1,3 +1,148 @@
+# HANDOFF — 2026-09-12 (alpha deployed; the promotion to main is staged and verified, NOT pushed)
+
+Branch **promote-alpha-to-main** (`a5f6f67`), a real two-parent merge of `origin/main` (37f390f)
+and `origin/alpha` (4981a0c). **Every gate green on the merged tree**: `npm test` ALL PASS (1476),
+`npm run build`, `npm run server:check`, `npm run dbtest` ALL PASS, `npm run contrast` 221,
+`npm run uiaudit` at baseline, `npm run test:mm` 58. **NOTHING IS PUSHED.** `origin/main` is
+untouched and the production Fly app has not been redeployed.
+
+The alpha preview WAS deployed this session: `./scripts/fly-deploy.sh --alpha` →
+`dsim-alpha` machine `87e003b021d278` in iad, `/health` `ok`, 1/1 checks.
+
+## READ FIRST — what the promotion does to production, on the day it lands
+
+Three consequences, all measured rather than reasoned about, two of them one-way.
+
+### 1. Every replay currently on the production board stops being watchable
+
+`BALANCE_VERSION` goes **3 → 4**, and a balance mismatch is a refusal under any version of the
+gate. Verified by running the real `replayRefusal` against prod-shaped containers: a `bv3/sim1`
+row and a pre-0031 `bv3/sim undefined` row both come back **`balance`**. The records themselves
+are untouched — the server stored the score it computed at the time and never re-derives it —
+so the boards stay exactly as they are and the entries simply stop having a playable link.
+
+This is the documented, intended meaning of a balance bump (config.ts says so at the constant),
+not a bug. It is listed here because it is the most visible thing a player will notice.
+
+### 2. Chain Reaction's season ROLLS; DECODE's does not
+
+`currentSeasonNumber` is `max(highest season row, BALANCE_VERSION)`, so a balance bump rolls the
+season only when the code fallback overtakes the admin's number. Live, from `/api/seasons`:
+
+| game | live season | after `BALANCE_VERSION` 4 | |
+|---|---|---|---|
+| decode | 6 (7386 records, 2907 matches) | `max(6,4)` = **6** | unchanged |
+| chain | 3 (1153 records, 93 matches) | `max(3,4)` = **4** | **ROLLS — CR's boards start empty** |
+
+CR's season 3 stays fully queryable and archived; it is a new competitive period, not a deletion.
+If that is not wanted on the same day as everything else, the lever is `startNewSeason` /
+the seasons table, not the constant — but there is no way to ship `BALANCE_VERSION` 4 and leave
+CR on 3.
+
+### 3. Nine migrations run against the live database at boot
+
+0025–0033 (`ranked_dodges`, `player_reports`, `account_standing`, `user_activity`,
+`invite_region`, `score_reports`, `replay_behaviour_version`, `practice_runs`, `lan_runs`).
+Audited: **zero destructive statements** — everything is `create table if not exists`,
+`create index if not exists`, and two `alter table … add column if not exists`. `migrate()` runs
+them from `server/index.ts` on start, so the deploy applies them; nothing to run by hand.
+
+## main's seven commits are KEPT, not flattened
+
+This was the first thing checked, because promoting alpha naively would have REGRESSED
+production. `origin/main` carried seven commits alpha never had, and three of them are infra:
+
+- **`server/regions.ts`** — alpha knows five regions, main eight. The merged tree keeps
+  `['iad','ord','sjc','lhr','gru','jnb','syd','nrt']` and the estimated RTT rows with them.
+- **`scripts/fly-deploy.sh`** — satellites `(ord sjc lhr gru jnb syd nrt)`, not alpha's four.
+- **`fly.toml`** VM block, `src/net/env.ts` region entries, `.env.example`'s 8-region line.
+- The **Felix D** contributor rename (was `testimonies`) across four files.
+
+All of these auto-merged; the merged tree was checked for each one explicitly rather than assumed.
+
+## The one real policy collision: the replay gate
+
+Alpha's `replayRefusal` refused any `SIM_VERSION` mismatch. main's `ca4f9b1` had deliberately
+REVERSED exactly that ("My mistake, and a bad one") after the strict gate took every replay of a
+live season off the board over a float-level determinism fix. Owner's ruling this session:
+
+> "SIM Version mismatch should be allowed to be replayed and downloaded but should have a note
+> saying that it may mismatch."
+
+So the two are synthesized rather than one being picked:
+
+- **`replayRefusal` stays the ONE authority** and keeps its five-way messaging.
+- **`replayFidelity`** sorts those five into `ok` / `drift` / `stale`. `behaviour` and
+  `unstamped` are a DRIFT; `future`, `balance` and `tank` are fatal.
+- **`replayPlayable` now means "not stale"**, so a drifting replay plays AND both exports stay
+  offered on it. That is the point of the ruling: the video export is the one form that outlives
+  the sim, so the moment a replay starts to drift is when saving it matters most.
+- The viewer's note names which of the two drift reasons it is (`DRIFT_TEXT`), because "we know
+  the sim changed" and "we have no idea what it ran" are different admissions.
+
+⚠️ **THE TEST ORDER IS LOAD-BEARING.** `tank` now runs BEFORE the sim test. Every format-1
+replay also predates the current `SIM_VERSION`, so asked in the old order a format-1 tank log
+would report as a mere drift and PLAY, showing a robot sitting still. Smoke pins the ordering.
+
+main's `replayPlayability` was DELETED rather than kept beside `replayRefusal` — two descriptions
+of one rule is the failure this repo keeps re-learning, and its `format !==` was stricter than
+`replayRefusal`'s `format >`, refusing older containers it can actually read.
+
+## Four silent reverts that rode in on main's auto-merged hunks
+
+Each contradicted a decision alpha had written down and explained, and each would have shipped
+without a conflict marker. Worth knowing the class exists, because a 411-commit merge is where it
+happens:
+
+1. **A duplicate "Changes" footer button** — alpha's block and main's both landed.
+2. **`.ds-foot-link bold`** re-added, against alpha's own comment ("NO `.bold`. These eight are
+   peer destinations").
+3. **ControlsSection had Touch and Reset TWICE**, main's copy carrying `RESET TO DEFAULTS` in ALL
+   CAPS on a `ds-btn` (the copy rules allow ALL CAPS in exactly four places; this is not one).
+4. **Privacy's `sub` heading removed**, which alpha had deliberately kept ("Privacy's 'how to get
+   rid of it' does [carry something the heading cannot]; Terms' did not").
+
+Plus one genuine defect neither branch could see alone: `legalText.ts` said "Privacy & **C**ookie
+**S**ettings" while the footer button rendered "Privacy & cookie settings". The privacy policy
+names that link verbatim, so the two must match; both are sentence case now.
+
+`src/ui/HomeMenu.tsx` KEPT main's change (`{' · '}` → `<br />`) — alpha never touched that line,
+so it is main's newer deliberate choice, not a revert. Flagged only because it is the one
+cosmetic main-over-alpha call in the merge.
+
+`uiaudit` off-grid-gap went 165 → **164** on the merged tree and the baseline is lowered to lock
+it in, as the ratchet asks.
+
+## Deploy checklist — in this order
+
+1. **Review** `promote-alpha-to-main` (`git diff origin/alpha...promote-alpha-to-main` is only
+   17 files — that diff IS main's whole contribution plus the gate rework).
+2. `git push origin promote-alpha-to-main:main` — **Vercel auto-deploys the client from main.**
+3. **`ADMIN_SECRET=… scripts/announce-deploy.sh "…" 300`** for the server. Do NOT use
+   `fly-deploy.sh` bare on production: players get no warning, and the announce script calls the
+   wrapper itself after the window. (`ADMIN_SECRET` is already set on `dohun-sim-decode`.)
+4. Verify: `curl https://dohun-sim-decode.fly.dev/health`, then
+   `fly machine list -a dohun-sim-decode` — every machine on ONE image, 1/1, and the satellites
+   back on `shared-cpu-1x` (the wrapper re-shrinks them; a bare deploy would have upsized all 7).
+5. Confirm `/api/seasons?game=chain` reads `current: 4` and DECODE still reads `6`.
+
+### Not blocking, but worth deciding
+
+- **`MODERATION_API_KEY` is NOT set on production.** Alpha ships server-side name moderation and
+  it FAILS OPEN — without the key every username, display name and robot/team name is allowed,
+  exactly as today. Nothing breaks; the feature is simply inert until
+  `fly secrets set MODERATION_API_KEY='sk-…' -a dohun-sim-decode`. The admin console's forced
+  rename stays the human backstop either way.
+- **`SERVER_CHANNEL` is correctly ABSENT from `fly.toml`**, so production keeps `stable`
+  behaviour. Only `fly.alpha.toml` sets `alpha`. Nothing to change.
+- The three items the deflate session left unproven (snapshot-gap jitter under compression,
+  resident memory at full population, where the zlib CPU lands) are still unmeasured on Linux and
+  are now riding into production with this deploy.
+- **`Room.onInput` still buffers future-tick inputs unboundedly** (capacity.md §7) — a latent DoS.
+  The fix exists uncommitted in the `perf-load` worktree and is NOT on alpha or in this merge.
+
+---
+
 # HANDOFF — 2026-09-11, sixth session (the intake grabs at the roller, and reaches only what has landed on it)
 
 Branch **alpha**, rebased onto `71e4316`. `npm test` **ALL PASS — 1451 checks (16 new)**. `npm run build` green,
