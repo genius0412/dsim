@@ -6,6 +6,108 @@ together by one env var, `VITE_GAME_SERVER_URL`.
 
 ---
 
+## The ALPHA preview server (a second Fly app)
+
+The `alpha` branch's Vercel deployment talks to its **own** game server and its **own**
+database, so preview features can be tested for real instead of being walled off.
+
+**Why a separate app rather than another region.** One app served every client version, and
+an in-development build had to be quarantined inside it: the matchmaker keeps alpha entries
+in their own pool, and alpha results were *never written to the database*. That second rule
+is what made the preview only half-usable — standing, dodge penalties, reports, playtime and
+ranked all exist BY writing to Postgres, so on the shared server they silently no-op and
+there is nothing to look at. With its own app and its own database, the alpha server
+persists normally (`SERVER_CHANNEL=alpha`, see `server/channel.ts`) and production cannot
+see any of it, because it is not connected to that database.
+
+The client-channel segregation stays regardless — a browser tab can point anywhere, so the
+stable server still refuses to persist an alpha build's results.
+
+### One-time setup
+
+**1. Create the app** (name must match `fly.alpha.toml`'s `app =`):
+```bash
+fly apps create dsim-alpha
+```
+
+> ONE MACHINE, always. `./scripts/fly-deploy.sh --alpha` passes `--ha=false` because Fly's
+> default launches a second machine for high availability — and for this server that is not
+> redundancy, it is a SPLIT. Rooms live in the process's memory and the routing hints resolve
+> to a REGION, not a machine, so two machines in one region put two players in two different
+> rooms with the same code. If you ever see two machines in `fly machine list`, destroy one.
+
+**2. Make a Neon branch for it.** In the Neon console → your project → **Branches** →
+**New branch** off `main`, name it `alpha`. Copy its pooled connection string. A branch is
+copy-on-write, so this costs approximately nothing and starts as a snapshot of production —
+which is what you want: real profiles to test standing and reports against.
+
+**3. Set the secrets** (the same ones production has, with the alpha database):
+```bash
+fly secrets set -a dsim-alpha \
+  DATABASE_URL='postgresql://…the ALPHA branch…' \
+  NEON_AUTH_URL='…same as production…' \
+  ADMIN_USER_IDS='…your uuid…' \
+  ADMIN_SECRET='…any long random string…'
+```
+Double-check `DATABASE_URL` before the first deploy: it is the one setting that decides
+whether alpha writes land in the preview or in production. Migrations run at boot, so the
+alpha branch self-migrates on the first start.
+
+**4. Deploy:**
+```bash
+./scripts/fly-deploy.sh --alpha
+```
+Then verify: `curl https://dsim-alpha.fly.dev/health`
+
+**5. Point the alpha site at it.** In Vercel → Project → **Settings → Environment
+Variables**, scoped to the **Preview** environment (or the `alpha` branch specifically):
+
+| Variable | Value |
+| --- | --- |
+| `VITE_GAME_SERVER_URL` | `wss://dsim-alpha.fly.dev` |
+| `VITE_GAME_SERVERS` | `[{"id":"alpha","label":"Alpha preview","region":"iad","url":"wss://dsim-alpha.fly.dev"}]` |
+| `VITE_APP_CHANNEL` | `alpha` |
+
+Scope them to the **`alpha` git branch** (`vercel env add NAME preview alpha`), not to Preview
+as a whole — Preview covers every branch, and production must keep pointing at production.
+
+`VITE_GAME_SERVERS` is the one that is easy to miss: it is the multi-region list, and
+`src/net/env.ts` reads it FIRST — a `VITE_GAME_SERVER_URL` set beside it is ignored. Setting
+only the single URL leaves the preview talking to the production servers.
+
+These are baked in at build time, so redeploy the branch after changing them.
+
+### Deploying afterwards
+
+```bash
+./scripts/fly-deploy.sh --alpha     # preview  (fly.alpha.toml, one region)
+./scripts/fly-deploy.sh             # production (fly.toml, re-shrinks satellites)
+```
+Never a bare `fly deploy` for either: without `-c` it reads `fly.toml`, which would deploy
+the production config under whichever app name it was given.
+
+### What is different about it
+
+| | production | alpha preview |
+| --- | --- | --- |
+| regions | iad + sjc/lhr/syd/nrt | iad only |
+| always-warm machine | yes (the matchmaker) | no — idles to zero, wakes on connect |
+| VM | shared-cpu-4x (iad) | shared-cpu-2x |
+| database | production Neon | the `alpha` Neon branch |
+| alpha results persist | never | yes |
+
+Cost is close to zero while nobody is testing: the machine stops when idle and Fly bills
+only the rootfs.
+
+### Protocol compatibility still matters, just less
+
+Two apps means the preview no longer has to prove its protocol changes against production
+traffic. But `main` and `alpha` still share a database *schema lineage* and the same client
+code paths, so keep new fields additive and keep feature-gating on `caps` — a merge to main
+should not need a coordinated redeploy.
+
+---
+
 ## Beginner quickstart — Fly.io game server (≈10 min)
 
 Fly is CLI-driven; its **website** handles the account, billing, and dashboards, and a
@@ -180,6 +282,111 @@ fly secrets set MATCHMAKER_REGION=iad -a dohun-sim-decode   # holds the global r
 Any host that runs a container works (Railway, Render, a VPS with `npm ci --omit=dev &&
 npm run server:start`); Fly is just the documented path. The only requirements are a
 public TLS endpoint and a persistent process.
+
+### Sizing — how many rooms fit on a machine
+
+Measured 2026-09-10; full method and caveats in `docs/capacity.md`.
+
+| | cores/room | rooms/core |
+|---|---|---|
+| DECODE, robots actively driven | **0.075** | **13.3** |
+| DECODE, robots parked | 0.031 | 32.4 |
+| Chain Reaction, driven | ~0.040 | ~25 |
+
+⚠️ **The "~0.02–0.03 cores each" figure in `fly.toml`'s comments is the PARKED number.** It
+matches an idle control run almost exactly and is ~2.4× cheaper than a room with people actually
+driving in it. **Size on 0.075.**
+
+⚠️ **A BIGGER VM DOES NOT BUY PROPORTIONALLY MORE ROOMS.** Node is single-threaded: the room
+loop, snapshot encoding and socket writes all run on one event loop, so one server process is
+capped at roughly one core no matter how many vCPUs the machine has. Going `shared-cpu-4x` →
+`shared-cpu-8x` buys almost nothing. The levers that work are more *processes* (see below) or
+cheaper rooms.
+
+**The audit behind "more processes" is `docs/scaling-multicore.md`**, and it is where this
+question actually gets answered rather than only warned about: ~75% of a busy server is
+simulation that can leave the socket thread, `Room` already talks exclusively through callbacks,
+and the recommendation is `worker_threads` behind a `SIM_WORKERS` variable defaulting to 0.
+**Nothing of it is built** — `SIM_WORKERS` and `worker_threads` appear nowhere in the source — so
+until it is, the row above is the honest ceiling and a bigger VM is still the wrong purchase.
+
+| size | est. driven DECODE rooms, with margin |
+|---|---|
+| `shared-cpu-1x` | 3–5 |
+| `shared-cpu-2x` | 4–6 |
+| `shared-cpu-4x` | 5–8 |
+| `shared-cpu-8x` | 5–8 |
+| `performance-1x` | 8–10 |
+
+The shared-cpu rows are extrapolations and were **not** verified against a real Fly machine —
+treat them as an ordering, not as values. `performance-1x` is the most trustworthy row because it
+is closest to how the 13.3 figure was measured. Re-measure with
+`./scripts/loadsweep.sh` per `docs/launch-load-test.md` §2 and replace this table with real numbers.
+
+**`MAX_ROOMS`** (env) caps how many rooms a machine will host; past it, new rooms are refused with
+`region_full` and the client offers another region. Default **24** on Fly, unlimited off it.
+24 is deliberately above the redline (~13 driven rooms/core, 8–10 with margin — see the table
+above and `docs/capacity.md` §2/§4) — it is a **runaway guard, not a measured safe-load
+admission and not a tuning knob**: most rooms are parked rather than driven, and a cap set at the
+redline would refuse players while the machine still had headroom. The constant's comment in
+`server/index.ts` says the same; if you change one, change the other. `MAX_ROOMS=0` disables it.
+
+**`MAX_SPECTATORS_PER_ROOM`** (24) and **`MAX_SPECTATORS`** (192) cap watchers per room and per
+machine. `MAX_ROOMS` bounds how many matches a machine *simulates* and nothing bounded how many
+people *watch* one — a spectator takes the same 30 Hz snapshot stream a driver does and reaches
+it without a room slot or a sign-in. Past either cap the `spectate` is refused with a plain
+message (deliberately **not** `region_full`: the room exists only on this machine, so "try
+another region" would be wrong advice). Same class of number as `MAX_ROOMS` — a runaway guard.
+`0` on either disables that cap. A hidden admin observer counts against them.
+
+**`WS_COMPRESS=0`** disables snapshot compression (permessage-deflate, context takeover at
+**windowBits 15 / memLevel 8** — the 13/6 an earlier version of this line quoted was superseded;
+see the correction in `docs/capacity.md` §6). On by default; worth ~80% of outbound bytes and
+~64 KB of memory per socket. This is the rollback if the snapshot gap regresses. `false`, `no`
+and `off` work too, in any case — it is a lever somebody reaches for under load and it used to
+accept only the literal string `0`.
+
+**`DB_POOL_MAX`** is 5 per machine. ⚠️ Past ~20 machines that is 100+ **direct** Neon connections;
+switch to Neon's pooled (`-pooler`) connection string before going wide. Connections are free in
+Neon's billing model — query *time* is what costs — so this is a limit question, not a cost one.
+
+### Can a region run TWO machines? (designed, not built)
+
+Not today, and the reason is worth stating precisely because it looks like a config change and
+is not.
+
+`fly-replay` targets a **region**: `server/index.ts` answers an upgrade with
+`'fly-replay': 'region=<r>'` and Fly's proxy picks *any* machine there. Room codes resolve only
+as far as a region — `routeTarget` reads `<region>-<code>` or an explicit `?region=` — so with two
+machines in one region, two players sharing a code can land on different machines, each opening
+an empty room with the same code. That failure is **silent on both screens**: a lobby of one, no
+error anywhere. It is exactly the bug `roomJoinRegion` exists to prevent, reappearing one level
+down.
+
+So one machine per region is load-bearing, and `MAX_ROOMS` is what turns "the region is
+oversubscribed" from a collapse into a refusal.
+
+**What would make a second machine safe** is resolving a code to a *machine* rather than a region,
+and then replaying to it precisely. Fly's `fly-replay` accepts `instance=<machine_id>` as well as
+`region=`, so the routing half already exists. The missing half is a shared code → machine
+registry — and that **also already exists**: the presence heartbeat upserts
+`(MACHINE, REGION, localLive())` every 5 s, where `localLive()` is every room on that machine.
+
+Sketch, in the order it would have to be built:
+
+1. Resolve a bare or region-coded room code against the presence table at upgrade time; if it
+   names a machine that is not this one, answer `fly-replay: instance=<id>`.
+2. **Beat immediately on room creation.** A room registered only on the next 5 s heartbeat is
+   invisible to a second joiner who arrives sooner, which reintroduces the split-lobby bug in a
+   narrower window. `beatNow` is already wired for exactly this kind of call.
+3. Decide what happens when the lookup misses (room genuinely new, or presence is stale). Falling
+   back to "host it here" is what happens today and is what causes the split; falling back to a
+   deterministic machine-of-the-region is safer.
+4. Only then raise the machine count, and only in one region first.
+
+⚠️ Do not raise `min_machines_running` above 1 per region as a way to add capacity — it adds
+machines that room codes cannot reach correctly. It is a *warmth* control (avoiding cold boot),
+not a *capacity* control.
 
 ## 2. Client → Vercel
 

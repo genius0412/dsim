@@ -1,6 +1,7 @@
 import { type ReactNode } from 'react';
 import { type UserStats } from '../net/api';
 import { SupporterBadge } from './SupporterBadge';
+import { averageMatch, playtimeLong, playtimeText } from '../playtime';
 
 /**
  * The competitive-stats panel shared by "My Stats" (own account) and the public
@@ -66,7 +67,33 @@ export function CareerPanel({
       )}
 
       {status === 'ok' && stats && (
-        <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div className="ds-panel-body stack">
+          {/* PLAYTIME + GAMES PLAYED. Lifetime, not season-scoped like the tiles below —
+              "how much have I played" is a question about the account, and an answer that
+              reset every season would be meaningless exactly when it got interesting. Hidden
+              entirely on a server that doesn't track it yet, rather than printing zeros. */}
+          {stats.activity && (
+            <div className="ds-stats">
+              <div className="ds-stat">
+                <span className="sv">{stats.activity.games}</span>
+                <span className="sl">GAMES PLAYED</span>
+                <span className="sl" title={playtimeLong({ games: stats.activity.allGames, seconds: stats.activity.allSeconds })}>
+                  {stats.activity.allGames !== stats.activity.games
+                    ? `${stats.activity.allGames} across all games`
+                    : 'all time'}
+                </span>
+              </div>
+              <div className="ds-stat">
+                <span className="sv">{playtimeText(stats.activity.seconds)}</span>
+                <span className="sl">PLAYTIME</span>
+                <span className="sl">
+                  {stats.activity.games > 0
+                    ? `~${playtimeText(averageMatch({ games: stats.activity.games, seconds: stats.activity.seconds }))} a match`
+                    : ''}
+                </span>
+              </div>
+            </div>
+          )}
           <div className="ds-stats">
             <div className="ds-stat">
               <span className="sv">{elo1?.rating ?? 1000}</span>
@@ -97,15 +124,21 @@ export function CareerPanel({
                 {stats.match.wins}–{stats.match.losses}
               </span>
               <span className="sl">Ranked W–L</span>
-              <span className="sl">{winPct != null ? `${winPct}% win` : 'no matches'}</span>
+              <span className="sl">{winPct != null ? `${winPct}% win` : ''}</span>
             </div>
           </div>
+        </div>
+      )}
 
-          {stats.match.played === 0 && solo?.best == null && duo?.best == null && (
-            <p className="ds-hint">
-              {archived ? 'No games were played this period.' : 'No games played yet this period.'}
-            </p>
-          )}
+      {/* the panel's EMPTY state, in the same anatomy as the five other lists on
+          these screens (`.ds-empty` + a `.big` headline) rather than as a stray
+          hint paragraph. A sibling of the body, not a child of it, so it is inset
+          by its own padding instead of by the body's as well. */}
+      {status === 'ok' && stats && stats.match.played === 0 && solo?.best == null && duo?.best == null && (
+        <div className="ds-empty">
+          <div className="big">
+            {archived ? 'No games were played this period' : 'No games played yet this period'}
+          </div>
         </div>
       )}
     </div>

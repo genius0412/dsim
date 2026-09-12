@@ -1,5 +1,6 @@
 import type { Artifact, RobotState } from '../types';
 import * as C from '../config';
+import { footprintExtents } from '../sim/field';
 import { turretWorldPos } from '../sim/robot';
 import { rot } from '../math';
 
@@ -8,10 +9,25 @@ export function drawRobot(
   r: RobotState,
   intakeOn: boolean,
   held: Artifact[] = [],
+  // INTERFACE PARITY ONLY, both ignored. The shared renderer calls whichever game's sprite
+  // is registered and passes the raised-terrain context Chain Reaction needs; DECODE has no
+  // raised terrain and its sprite is frozen to what `main` draws, so these are accepted and
+  // dropped rather than changing a single pixel here.
+  _screenUp?: { x: number; y: number },
+  _world?: unknown,
+  /**
+   * PREVIEW ONLY: paint the outline this colour instead of the alliance's.
+   *
+   * The builder's hero used to be a hand-drawn SVG schematic, which is how it drifted
+   * away from the robot you actually drive. It renders THIS sprite now, and a preview
+   * has no alliance — it is your robot, not a red or blue one. Optional and unset on
+   * the field, so nothing about match rendering changes.
+   */
+  outline?: string,
 ): void {
   const hl = r.spec.length / 2;
   const hw = r.spec.width / 2;
-  const color = r.alliance === 'blue' ? C.COLORS.blue : C.COLORS.red;
+  const color = outline ?? (r.alliance === 'blue' ? C.COLORS.blue : C.COLORS.red);
   // The alliance lives in `color` (the OUTLINE). `fill` is the supporter cosmetic
   // and can never change which alliance a robot reads as.
   const fill = C.chassisFill(r.spec.chassisColor);
@@ -20,13 +36,34 @@ export function drawRobot(
   ctx.translate(r.pos.x, r.pos.y);
   ctx.rotate(r.heading);
 
+  /**
+   * THE SPRITE CANNOT EXCEED THE COLLISION BOX. Anything drawn here is clipped to it.
+   *
+   * Insetting the chassis outline fixed the one edge that was obvious and left every other
+   * stroke on the boundary spilling half its width: the GATE OPENER tabs run out to the
+   * chassis edge and were stroked at 0.8 (0.4in past it), the rollers' front face IS the
+   * intake's reach and was stroked at 0.4 (0.2in past it). Reported as "the gate opener
+   * outline seems to be protruding out too. check everything else."
+   *
+   * Checking everything else once is worth less than making it impossible, so the body is
+   * drawn inside a clip at `footprintExtents` — the exact box `robotExtents` collides with.
+   * Every stroke on the boundary becomes an inside stroke automatically, including ones added
+   * later. Held artifacts and the turret are drawn AFTER it: an artifact halfway into the
+   * mouth really is half outside the frame, and the turret is sized against the chassis in
+   * the world frame.
+   */
+  const fx = footprintExtents(r.spec);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(-fx.rear, -fx.half, fx.rear + fx.front, fx.half * 2);
+  ctx.clip();
+
   // chassis
   ctx.fillStyle = fill;
   ctx.strokeStyle = color;
-  ctx.lineWidth = 1;
-  roundRect(ctx, -hl, -hw, r.spec.length, r.spec.width, 1.6);
+  const body = () => roundRect(ctx, -hl, -hw, r.spec.length, r.spec.width, C.CHASSIS_CORNER);
+  body();
   ctx.fill();
-  ctx.stroke();
 
   drawWheels(ctx, r, color);
 
@@ -37,25 +74,63 @@ export function drawRobot(
   const preset = C.INTAKE_PRESETS[r.spec.intake];
   const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
   const rw = m.mouthHalf;
-  const wedgeTip = hl + preset.reach - 0.5; // wedge/plate front — just behind the roller
-  const rollerTip = hl + preset.reach + 0.5; // shaft + wheels ride out just past the wedges
+  // The roller's FRONT FACE is the intake's reach, so it matches `footprintExtents` exactly
+  // and a bigger diameter grows BACKWARD into the mouth rather than past the collision box.
+  const dia = C.intakeRollerDia(r.spec);
+  const rollerTip = hl + preset.reach;
+  const rollerBack = rollerTip - dia;
+  const wedgeTip = C.intakeAxleX(r.spec); // wedges meet the roller at its axle — one authority
   const mouthOn = intakeOn ? 'rgba(34,197,94,0.85)' : '#2a303c';
+  /**
+   * The roller is DISCRETE WHEELS ON A SHAFT, not a solid bar. Drawing it as one filled
+   * rectangle the width of the mouth worked while it was 1in deep, but at 72mm it covers
+   * the whole reach and buries the funnel — the slopes ARE the identity of these presets.
+   * Wheels with gaps let the slopes read through, which is also what the real thing looks
+   * like from above.
+   */
   const drawRoller = () => {
-    ctx.fillStyle = intakeOn ? '#166534' : '#333a45';
-    ctx.fillRect(wedgeTip, -rw, rollerTip - wedgeTip, rw * 2);
-    for (let i = -3; i <= 3; i++) {
-      const center = Math.abs(i) <= 1;
-      ctx.fillStyle = center ? (intakeOn ? '#22c55e' : '#6b7280') : intakeOn ? '#15803d' : '#4b5563';
-      ctx.fillRect(rollerTip - 1.5, (i * rw) / 3.4 - 0.8, 1.3, 1.6);
+    const axis = wedgeTip; // the axle; same authority the wedges and the capture nip read
+    // beam across the mouth
+    ctx.fillStyle = intakeOn ? '#166534' : '#475569';
+    ctx.fillRect(axis - 0.28, -rw, 0.56, rw * 2);
+    // GATE OPENER: a THIN tab on each beam end out to the chassis edge. Solid to robots,
+    // walls and the gate lever (footprintExtents); artifacts pass UNDER it.
+    if (hw > rw + 0.05) {
+      for (const sg of [1, -1] as const) {
+        const y0 = sg === 1 ? rw : -hw;
+        ctx.fillStyle = intakeOn ? '#14532d' : '#334155';
+        ctx.fillRect(axis - C.INTAKE_OPENER_THICK / 2, y0, C.INTAKE_OPENER_THICK, hw - rw);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 0.8;
+        ctx.strokeRect(axis - C.INTAKE_OPENER_THICK / 2, y0, C.INTAKE_OPENER_THICK, hw - rw);
+      }
+    }
+    // ROLLERS along the WHOLE beam, out to the openers that cap its ends. `wheelSpan` in
+    // robot.ts is the SUCTION region, not the hardware — drawing to it left a few rollers
+    // in the middle and bare beam either side.
+    const n = Math.max(1, Math.round(rw / C.INTAKE_ROLLER_PITCH));
+    const halfW = C.INTAKE_ROLLER_W / 2;
+    ctx.strokeStyle = intakeOn ? '#15803d' : '#94a3b8';
+    ctx.lineWidth = 0.4;
+    for (let i = -n; i <= n; i++) {
+      const cy = (i * rw) / (n + 0.35);
+      if (Math.abs(cy) + halfW > rw + 0.01) continue; // never past the beam ends
+      const center = Math.abs(i) <= Math.max(1, n / 3);
+      ctx.fillStyle = center ? (intakeOn ? '#22c55e' : '#6b7280') : intakeOn ? '#15803d' : '#5b6472';
+      ctx.beginPath();
+      ctx.roundRect(rollerBack, cy - halfW, dia, C.INTAKE_ROLLER_W, 0.45);
+      ctx.fill();
+      ctx.stroke();
     }
   };
   if (m.wedge) {
     const th = m.throatHalf;
     // funnel mouth: opening at the (recessed) wedge line, narrowing to the throat
+    // the mouth opening: wide at the roller axle, narrowing to the throat
     ctx.fillStyle = mouthOn;
     ctx.beginPath();
-    ctx.moveTo(wedgeTip, -hw);
-    ctx.lineTo(wedgeTip, hw);
+    ctx.moveTo(wedgeTip, -rw);
+    ctx.lineTo(wedgeTip, rw);
     ctx.lineTo(hl, th);
     ctx.lineTo(hl, -th);
     ctx.closePath();
@@ -65,14 +140,22 @@ export function drawRobot(
     ctx.fillStyle = fill;
     ctx.strokeStyle = color;
     ctx.lineWidth = 1;
-    for (const s of [1, -1] as const) {
-      ctx.beginPath();
-      ctx.moveTo(hl, s * hw);
-      ctx.lineTo(wedgeTip, s * hw);
-      ctx.lineTo(hl, s * th);
-      ctx.closePath();
+    // wedge body per side: outer edge forward to the axle, then a LONG slope from the
+    // mouth edge back in to the throat. Running the slope to the mouth edge (rw) rather
+    // than straight to the chassis corner is what makes it read as a funnel at all.
+    for (const sg of [1, -1] as const) {
+      // ...and its outline stays INSIDE it, because the wedge's outer edge IS the footprint's
+      const wedge = () => {
+        ctx.beginPath();
+        ctx.moveTo(hl, sg * hw);
+        ctx.lineTo(wedgeTip, sg * hw);
+        ctx.lineTo(wedgeTip, sg * rw);
+        ctx.lineTo(hl, sg * th);
+        ctx.closePath();
+      };
+      wedge();
       ctx.fill();
-      ctx.stroke();
+      strokeInside(ctx, wedge, C.CHASSIS_OUTLINE);
     }
     drawRoller();
   } else {
@@ -90,6 +173,20 @@ export function drawRobot(
   ctx.lineTo(hl - 5.4, -2.2);
   ctx.closePath();
   ctx.fill();
+
+  /**
+   * THE SILHOUETTE LINE GOES ON LAST, over everything that reaches the edge.
+   *
+   * It used to be stroked with the chassis, before the intake. Inside-stroking moved it a
+   * half-width INBOARD, so anything drawn out to the true edge — the gate-opener tabs at the
+   * ends of the roller beam are exactly that — filled the sliver outside it and read as
+   * poking through the outline: "the gate opener outline seems to be protruding out too".
+   * Drawn last it is the boundary of the whole object, which is what an outline is.
+   */
+  ctx.strokeStyle = color;
+  strokeInside(ctx, body, C.CHASSIS_OUTLINE);
+
+  ctx.restore(); // ...end of the footprint clip
 
   // held artifacts — the actual PHYSICAL balls (they slide within the intake),
   // drawn HERE in the robot's local frame so they sit BELOW the turret/shooter.
@@ -200,6 +297,29 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
   } else {
     for (const [px, py] of corners) drawWheel(px, py, 0);
   }
+}
+
+/**
+ * Stroke a path so the line lies ENTIRELY INSIDE it.
+ *
+ * A canvas stroke straddles the path — half its width falls outside — so a chassis drawn at
+ * its true length x width renders half a line wider on every side than the box it collides
+ * with, and the outline reads as not being part of the robot. Clipping to the path and
+ * stroking at double width puts the whole line inside: the drawn silhouette is exactly the
+ * collision footprint, and nothing about where the wheels or mechanisms sit changes.
+ */
+export function strokeInside(
+  ctx: CanvasRenderingContext2D,
+  path: () => void,
+  width: number,
+): void {
+  ctx.save();
+  path();
+  ctx.clip();
+  ctx.lineWidth = width * 2;
+  path();
+  ctx.stroke();
+  ctx.restore();
 }
 
 export function roundRect(

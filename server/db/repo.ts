@@ -2,6 +2,9 @@ import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
 import { PLACEMENT_GAMES } from '../../src/config';
+import {
+  STANDING_MAX, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH, clampScore, type StandingVerdict,
+} from '../../src/standing';
 import { q, tx } from './pool';
 
 /** every board/period is keyed by game; old callers/rows default to DECODE. */
@@ -900,12 +903,16 @@ export async function refundKofiPayment(transactionId: string): Promise<boolean>
  * this replay belongs to (DECODE vs Chain Reaction). */
 export async function saveReplay(replay: Replay, season: number, game?: Game): Promise<string> {
   const rows = await q<{ id: string }>(
-    `insert into replays (format, balance_version, sim_version, seed, ticks, setups, tracks, game)
-     values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
+    `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
     [
       replay.format,
       season, // balance_version = SEASON (purge key + index, see 0004)
       replay.balanceVersion, // sim_version = the sim-code version that recorded it
+      // ...and behaviour_version = SIM_VERSION, the one the playback gate actually compares.
+      // Without it `getReplay` could not set `Replay.sim`, an absent `sim` reads as 0, and
+      // EVERY stored replay was refused as stale on every build (see migration 0031).
+      replay.sim ?? null,
       replay.seed,
       replay.ticks,
       JSON.stringify(replay.setups),
@@ -921,13 +928,15 @@ export async function getReplay(id: string): Promise<Replay | null> {
     format: number;
     balance_version: number;
     sim_version: number | null;
+    behaviour_version: number | null;
     game: Game;
     seed: string;
     ticks: number;
     setups: Replay['setups'];
     tracks: Replay['tracks'];
   }>(
-    `select format, balance_version, sim_version, game, seed, ticks, setups, tracks from replays where id = $1`,
+    `select format, balance_version, sim_version, behaviour_version, game, seed, ticks, setups, tracks
+       from replays where id = $1`,
     [id],
   );
   const r = rows[0];
@@ -937,6 +946,12 @@ export async function getReplay(id: string): Promise<Replay | null> {
     // the gate re-sims: it needs the CODE version. Fall back to balance_version for
     // any legacy row the sim_version backfill somehow missed.
     balanceVersion: r.sim_version ?? r.balance_version,
+    // LEFT UNDEFINED when the column is null, which is what a row recorded before 0031 is:
+    // the behaviour it ran is genuinely unknown. It is still REFUSED — `replayRefusal` reads
+    // an absent stamp as version 0 like it always has — but it comes back as `unstamped`
+    // rather than `behaviour`, so the viewer says "recorded before we tracked this" instead of
+    // naming a version the recorder never claimed. Undefined, not 0, is what carries that.
+    sim: r.behaviour_version ?? undefined,
     game: r.game ?? 'decode', // picks the sim module to re-simulate (CR vs DECODE)
     mode: 'match',
     seed: Number(r.seed),
@@ -944,6 +959,303 @@ export async function getReplay(id: string): Promise<Replay | null> {
     setups: r.setups,
     tracks: r.tracks,
   };
+}
+
+// ------------------------------------------------- solo practice runs -------
+/**
+ * How many practice runs an account keeps. Oldest are pruned on insert.
+ *
+ * Solo practice is the primary OFFLINE mode, so these arrive at whatever rate somebody
+ * practises — unbounded, unlike matches, which cost a queue and an opponent. Ten is about a
+ * session's worth to look back through and bounds the cost per account at a few hundred KB.
+ * It is one number on purpose: raising it is a storage decision, not a code change.
+ */
+export const PRACTICE_KEEP = 10;
+
+export interface PracticeRunRow {
+  id: string;
+  game: Game;
+  score: number;
+  ticks: number;
+  replayId: string | null;
+  createdAt: string;
+}
+
+/**
+ * Store one offline practice run for a player and prune their oldest past `PRACTICE_KEEP`.
+ *
+ * THE SCORE HERE IS CLIENT-REPORTED and that is not a bug to fix later — solo practice runs on
+ * the local sim with no server in the loop, so there is nothing authoritative to check it
+ * against. It is safe because of where it can go: `practice_runs` is not reachable from
+ * `record_leaderboard`, which is a view over `records`, so no board, PB, rank or ELO figure
+ * can be moved by anything written here. It is shown only on the owner's own Career list.
+ *
+ * The replay row is the SAME shape every other replay uses, so the viewer, the version gate
+ * and the season purge all work on it unchanged (the purge deletes from `replays` by season,
+ * and `replay_id` is `on delete set null`, so a purged run degrades exactly like a record).
+ */
+export async function savePracticeRun(
+  userId: string,
+  replay: Replay,
+  score: number,
+  season: number,
+  game?: Game,
+): Promise<PracticeRunRow> {
+  const replayId = await saveReplay(replay, season, game);
+  const rows = await q<{ id: string; created_at: string }>(
+    `insert into practice_runs (user_id, game, balance_version, score, ticks, replay_id)
+     values ($1, $2, $3, $4, $5, $6) returning id, created_at`,
+    [userId, g(game), season, Math.max(0, Math.round(score)), replay.ticks, replayId],
+  );
+
+  // PRUNE, and delete the pruned runs' replays with them. A replay has no back-reference to
+  // the run that owns it, so dropping the row alone would leak the log — the same trap the
+  // account-deletion path documents.
+  const stale = await q<{ replay_id: string | null }>(
+    `delete from practice_runs
+      where id in (
+        select id from practice_runs
+         where user_id = $1 and game = $2
+         order by created_at desc
+         offset $3
+      )
+      returning replay_id`,
+    [userId, g(game), PRACTICE_KEEP],
+  );
+  const ids = stale.map((r) => r.replay_id).filter((x): x is string => !!x);
+  if (ids.length) await q(`delete from replays where id = any($1::uuid[])`, [ids]);
+
+  return {
+    id: rows[0].id,
+    game: g(game),
+    score,
+    ticks: replay.ticks,
+    replayId,
+    createdAt: rows[0].created_at,
+  };
+}
+
+/** a player's own practice runs, newest first. Owner-only — see the API route. */
+export async function listPracticeRuns(
+  userId: string,
+  game?: Game,
+  limit = PRACTICE_KEEP,
+): Promise<PracticeRunRow[]> {
+  const rows = await q<{
+    id: string;
+    game: Game;
+    score: number;
+    ticks: number;
+    replay_id: string | null;
+    created_at: string;
+  }>(
+    `select id, game, score, ticks, replay_id, created_at
+       from practice_runs
+      where user_id = $1 and game = $2
+      order by created_at desc
+      limit $3`,
+    [userId, g(game), Math.min(PRACTICE_KEEP, Math.max(1, limit))],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    game: r.game,
+    score: r.score,
+    ticks: r.ticks,
+    replayId: r.replay_id,
+    createdAt: r.created_at,
+  }));
+}
+
+// ------------------------------------------------- self-hosted LAN runs ----
+/**
+ * How many self-hosted matches an account keeps as the HOST. Oldest pruned on insert.
+ *
+ * Higher than `PRACTICE_KEEP` on purpose: a team scrimmaging at a venue plays matches back to
+ * back all afternoon, and unlike practice runs each one has several people in it who may want
+ * to look at it. Still one number, still a storage decision rather than a code change.
+ */
+export const LAN_KEEP = 40;
+
+/** who the hosting server says was in the match. NAMES ONLY — see the migration. */
+export interface LanParticipant {
+  name: string;
+  teamName?: string;
+  teamNumber?: number;
+  alliance: 'red' | 'blue';
+  drivetrain?: string;
+}
+
+export interface LanRunRow {
+  id: string;
+  matchId: string;
+  /** the account that filed this match. Read by the ownership check in `saveLanRun`. */
+  hostUserId: string;
+  game: Game;
+  score: { red: number; blue: number };
+  participants: LanParticipant[];
+  replayId: string | null;
+  createdAt: string;
+}
+
+/**
+ * Store one self-hosted match under the HOST's account, or return the row that is already
+ * there. Prunes the host's oldest past `LAN_KEEP`.
+ *
+ * IDEMPOTENT ON `match_id` FOR THE ACCOUNT THAT FILED IT, and that is the whole point of the
+ * id existing. The uploader is a
+ * client draining a backlog over whatever connection a venue has, so the same match WILL be
+ * offered twice — after a timeout that actually succeeded, after a reinstall, after two
+ * tabs. `match_id` is UNIQUE, the existing row wins, and a second upload is a no-op rather
+ * than a duplicate match in somebody's history.
+ *
+ * THE SCORE IS REPORTED BY A SERVER THE CLOUD DOES NOT TRUST, deliberately and permanently.
+ * It is safe for the same structural reason `savePracticeRun` is: `lan_runs` is not reachable
+ * from `record_leaderboard`, so nothing written here can move a board, a PB, a rank or an ELO.
+ * Do not add a read path from here into any of those.
+ */
+/**
+ * Somebody tried to file a match id that ALREADY BELONGS TO ANOTHER ACCOUNT.
+ *
+ * Its own error type, rather than a null return, because the two failures the caller has to
+ * tell apart are "already yours, here it is" (idempotent, a 200 with the existing row) and
+ * "already somebody else's" (a 409), and an absent row means neither. `/api/lan` turns this
+ * into the 409; nothing else catches it.
+ */
+export class LanRunOwnedByAnother extends Error {
+  constructor(readonly matchId: string) {
+    super(`lan run ${matchId} was filed by another host`);
+    this.name = 'LanRunOwnedByAnother';
+  }
+}
+
+export async function saveLanRun(
+  hostUserId: string,
+  matchId: string,
+  replay: Replay,
+  score: { red: number; blue: number },
+  participants: LanParticipant[],
+  season: number,
+  game?: Game,
+): Promise<LanRunRow> {
+  // CHECK BEFORE WRITING THE REPLAY, not after. `on conflict do nothing` would leave the
+  // replay row we had already created with nothing pointing at it — the same missing
+  // back-reference that makes the prune and the account-delete paths delete replays by hand.
+  const already = await existingLanRun(matchId);
+  if (already) {
+    // IDEMPOTENT FOR THE OWNER, REFUSED FOR EVERYONE ELSE. Scoping the idempotence by host is
+    // the whole difference between a retry and a theft: the check used to be on `match_id`
+    // alone, so a second account posting the same id was handed the first account's row back
+    // with a 200 — the claim quietly succeeded from the client's point of view, and the real
+    // host's later upload was answered with somebody else's match. The id itself is a
+    // capability now (it goes only to the host's socket; see `src/net/protocol.ts`), and this
+    // is the check at the table that makes a leaked one fail loudly instead of silently.
+    if (already.hostUserId !== hostUserId) throw new LanRunOwnedByAnother(matchId);
+    return already;
+  }
+
+  const replayId = await saveReplay(replay, season, game);
+  const rows = await q<{ id: string; created_at: string }>(
+    `insert into lan_runs (match_id, host_user_id, game, balance_version, score, participants, replay_id)
+     values ($1, $2, $3, $4, $5, $6, $7)
+     on conflict (match_id) do nothing
+     returning id, created_at`,
+    [matchId, hostUserId, g(game), season, JSON.stringify(score), JSON.stringify(participants), replayId],
+  );
+
+  // lost a race with a concurrent upload of the SAME match — two of the host's own devices,
+  // or a retry that overlapped its own first attempt. Drop the replay this call made, because
+  // the row that won is pointing at a different one, and answer with the winner.
+  if (!rows[0]) {
+    await q(`delete from replays where id = $1`, [replayId]);
+    const winner = await existingLanRun(matchId);
+    // ...and the winner of that race is subject to the same ownership rule as a row that was
+    // already there when we started: two of the HOST's devices is a retry, two accounts is not.
+    if (winner && winner.hostUserId !== hostUserId) throw new LanRunOwnedByAnother(matchId);
+    if (winner) return winner;
+    throw new Error(`lan run ${matchId} neither inserted nor found`);
+  }
+
+  // PRUNE, and delete the pruned runs' replays with them — a replay has no back-reference to
+  // the run that owns it, so dropping the row alone leaks the log.
+  const stale = await q<{ replay_id: string | null }>(
+    `delete from lan_runs
+      where id in (
+        select id from lan_runs
+         where host_user_id = $1 and game = $2
+         order by created_at desc
+         offset $3
+      )
+      returning replay_id`,
+    [hostUserId, g(game), LAN_KEEP],
+  );
+  const ids = stale.map((r) => r.replay_id).filter((x): x is string => !!x);
+  if (ids.length) await q(`delete from replays where id = any($1::uuid[])`, [ids]);
+
+  return { id: rows[0].id, matchId, hostUserId, game: g(game), score, participants, replayId, createdAt: rows[0].created_at };
+}
+
+/** the row for a match id, WHOEVER hosted it — the caller compares `hostUserId` itself. */
+async function existingLanRun(matchId: string): Promise<LanRunRow | null> {
+  const rows = await q<{
+    id: string;
+    match_id: string;
+    host_user_id: string;
+    game: Game;
+    score: { red: number; blue: number };
+    participants: LanParticipant[];
+    replay_id: string | null;
+    created_at: string;
+  }>(
+    `select id, match_id, host_user_id, game, score, participants, replay_id, created_at
+       from lan_runs where match_id = $1`,
+    [matchId],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    id: r.id,
+    matchId: r.match_id,
+    hostUserId: r.host_user_id,
+    game: r.game,
+    score: r.score,
+    participants: r.participants,
+    replayId: r.replay_id,
+    createdAt: r.created_at,
+  };
+}
+
+/** a host's own self-hosted matches, newest first. Owner-only — see the API route. */
+export async function listLanRuns(
+  hostUserId: string,
+  game?: Game,
+  limit = LAN_KEEP,
+): Promise<LanRunRow[]> {
+  const rows = await q<{
+    id: string;
+    match_id: string;
+    game: Game;
+    score: { red: number; blue: number };
+    participants: LanParticipant[];
+    replay_id: string | null;
+    created_at: string;
+  }>(
+    `select id, match_id, game, score, participants, replay_id, created_at
+       from lan_runs
+      where host_user_id = $1 and game = $2
+      order by created_at desc
+      limit $3`,
+    [hostUserId, g(game), Math.min(LAN_KEEP, Math.max(1, limit))],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    matchId: r.match_id,
+    hostUserId, // every row this query can return is this host's own, by the WHERE above
+    game: r.game,
+    score: r.score,
+    participants: r.participants,
+    replayId: r.replay_id,
+    createdAt: r.created_at,
+  }));
 }
 
 // --------------------------------------------------- record-chasing board ---
@@ -1227,11 +1539,20 @@ export async function deleteAccount(userId: string): Promise<boolean> {
     );
     if (!exists[0]) return false;
 
-    // replays first — see the note above about the missing back-reference
+    // replays first — see the note above about the missing back-reference. PRACTICE runs are
+    // in this list for the same reason: `practice_runs` cascades away with the profile, which
+    // would strand the logs it pointed at. So does `lan_runs`, keyed on the HOST who uploaded
+    // it — a self-hosted match belongs to whoever ran it, and leaves with them.
     await query(
       `delete from replays
         where id in (select replay_id from records
-                      where user_id = $1 and replay_id is not null)`,
+                      where user_id = $1 and replay_id is not null
+                     union all
+                     select replay_id from practice_runs
+                      where user_id = $1 and replay_id is not null
+                     union all
+                     select replay_id from lan_runs
+                      where host_user_id = $1 and replay_id is not null)`,
       [userId],
     );
     await query(`delete from elo_history where user_id = $1`, [userId]);
@@ -1336,6 +1657,543 @@ export async function upsertRating(
     [userId, mode, act, g(game), Math.round(rating), rd, vol],
   );
   return rows[0]?.games ?? 1;
+}
+
+/**
+ * Charge RATING for a behaviour offence — the LAST rung of the standing escalation, and the
+ * only place behaviour is ever allowed to touch the skill number (see src/standing.ts: it is
+ * zero above Probation).
+ *
+ * Deliberately NOT `upsertRating`, for two reasons that both matter:
+ *
+ *  - `games` is NOT incremented. Abandoning a match is not playing one; counting it would
+ *    let a player finish placements — or shrink toward "established" — by quitting.
+ *  - `rd` and `vol` are NOT touched. Rating deviation states how well we know someone's
+ *    SKILL, and none of this says anything about that. Shrinking RD would mean misbehaving
+ *    made the system MORE confident in you, which is backwards; growing it would hand the
+ *    offender bigger swings to climb back with, which rewards the behaviour.
+ *
+ * The rating is floored, so a run of charges cannot print an absurd number. Returns what was
+ * actually stored — at the floor that differs from the nominal charge, and the player should
+ * be told the truth rather than the sticker price.
+ */
+export async function chargeRatingForBehaviour(
+  userId: string,
+  mode: '1v1' | '2v2',
+  act: number,
+  charge: number,
+  floor: number,
+  game?: Game,
+): Promise<{ before: number; after: number }> {
+  const cur = await getRatingFull(userId, mode, act, game);
+  const before = Math.round(cur.rating);
+  const after = Math.max(floor, before - Math.max(0, Math.round(charge)));
+  if (after === before) return { before, after };
+  // upsert WITHOUT touching games/rd/vol (see above). A player with no rating row on this
+  // board yet gets one seeded at the charged value, games still 0.
+  await q(
+    `insert into elo_ratings (user_id, mode, act, game, rating, rd, vol, games)
+     values ($1, $2, $3, $4, $5, $6, $7, 0)
+     on conflict (user_id, mode, game, act)
+       do update set rating = excluded.rating, updated_at = now()`,
+    [userId, mode, act, g(game), after, cur.rd, cur.vol],
+  );
+  return { before, after };
+}
+
+/**
+ * The ranked board this player most recently played on.
+ *
+ * Used when a behaviour charge has no board of its own — a moderator upholding reports days
+ * after the fact. Charging their most recent board puts the penalty where the player will
+ * actually see it, instead of on a game/mode they may never open. Null ⇒ they have no ranked
+ * history at all, and the charge is dropped rather than invented.
+ */
+export async function lastRankedBoard(
+  userId: string,
+): Promise<{ mode: '1v1' | '2v2'; game: Game; act: number } | null> {
+  const rows = await q<{ mode: string; game: string; act: number }>(
+    `select mode, game, act from elo_ratings
+      where user_id = $1 order by updated_at desc limit 1`,
+    [userId],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    mode: r.mode === '2v2' ? '2v2' : '1v1',
+    game: (r.game === 'chain' ? 'chain' : 'decode') as Game,
+    act: Number(r.act ?? 0),
+  };
+}
+
+// ----------------------------------------------------- account standing ------
+
+export interface StandingSnapshot {
+  score: number;
+  /** epoch ms the ranked queue reopens, or null */
+  restrictedUntil: number | null;
+}
+
+const snap = (r: { score: number; restricted_until: string | null } | undefined): StandingSnapshot => ({
+  score: clampScore(Number(r?.score ?? STANDING_MAX)),
+  restrictedUntil: r?.restricted_until ? new Date(r.restricted_until).getTime() : null,
+});
+
+/**
+ * This account's standing, with TIME HEALING applied on read.
+ *
+ * The heal is lazy rather than a scheduled job, and it advances `healed_at` by the same
+ * whole days it credits — in ONE statement, so two concurrent reads cannot both credit the
+ * same day. A cron would be a second thing to deploy and a second thing to be wrong about a
+ * player's number.
+ *
+ * Creates the row on first sight: a player with no row has never offended, which is exactly
+ * a full score, and seeding it here means every later write is a plain update.
+ */
+export async function getStanding(userId: string): Promise<StandingSnapshot> {
+  return tx(async (query) => {
+    await query(
+      `insert into account_standing (user_id) values ($1) on conflict (user_id) do nothing`,
+      [userId],
+    );
+    const healedRows = await query<{ score: number; restricted_until: string | null }>(
+      `update account_standing
+          set score = least($2::int, score + (floor(extract(epoch from (now() - healed_at)) / 86400)::int * $3::int)),
+              healed_at = healed_at + (floor(extract(epoch from (now() - healed_at)) / 86400) || ' days')::interval,
+              updated_at = now()
+        where user_id = $1
+          and score < $2::int
+          and now() - healed_at >= interval '1 day'
+        returning score, restricted_until`,
+      [userId, STANDING_MAX, HEAL_PER_DAY],
+    );
+    if (healedRows.length) return snap(healedRows[0]);
+    const rows = await query<{ score: number; restricted_until: string | null }>(
+      `select score, restricted_until from account_standing where user_id = $1`,
+      [userId],
+    );
+    return snap(rows[0]);
+  });
+}
+
+/** standings for a set of accounts, for the moderation queue. Missing rows are simply
+ *  absent — the caller reads that as a full score rather than paying for a write. */
+export async function standingsFor(userIds: string[]): Promise<Record<string, StandingSnapshot>> {
+  if (!userIds.length) return {};
+  const rows = await q<{ user_id: string; score: number; restricted_until: string | null }>(
+    `select user_id, score, restricted_until from account_standing where user_id = any($1::text[])`,
+    [userIds],
+  );
+  const out: Record<string, StandingSnapshot> = {};
+  for (const r of rows) out[r.user_id] = snap(r);
+  return out;
+}
+
+/** How many offences of ONE kind this player has inside the escalation window. Counted by
+ *  TIME alone — not per season or per board — so a season boundary cannot forgive a pattern
+ *  mid-window, and switching between the 1v1 and 2v2 queues does not reset it. */
+export async function recentStandingCount(userId: string, kind: string, hours: number): Promise<number> {
+  const rows = await q<{ n: number }>(
+    `select count(*)::int as n from standing_events
+      where user_id = $1 and kind = $2 and at > now() - $3::interval`,
+    [userId, kind, `${Math.max(1, Math.floor(hours))} hours`],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * Commit one offence: the new score and lock, plus a LEDGER row.
+ *
+ * Both in one transaction because they are one fact. A score that moved with no event to
+ * explain it is exactly the thing that makes a penalty system feel arbitrary, and it is the
+ * first thing a player asks a moderator about.
+ *
+ * `healed_at` is reset to now: healing measures time since the last offence, so an offence
+ * has to restart that clock or a player could bank idle days and spend them immediately.
+ */
+export async function writeStandingEvent(
+  userId: string,
+  v: StandingVerdict,
+  ctx: { game?: Game; mode?: string; roomCode?: string } = {},
+): Promise<void> {
+  await tx(async (query) => {
+    await query(
+      `insert into account_standing (user_id, score, restricted_until, healed_at, updated_at)
+       values ($1, $2, $3, now(), now())
+       on conflict (user_id) do update
+         set score = excluded.score,
+             restricted_until = greatest(
+               coalesce(account_standing.restricted_until, to_timestamp(0)),
+               coalesce(excluded.restricted_until, to_timestamp(0))
+             ),
+             healed_at = now(),
+             updated_at = now()`,
+      [userId, v.scoreAfter, v.restrictedUntil ? new Date(v.restrictedUntil).toISOString() : null],
+    );
+    await query(
+      `insert into standing_events (user_id, kind, points, score_after, cooldown_min, rating_charge, game, mode, room_code)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [userId, v.kind, v.points, v.scoreAfter, v.cooldownMin, v.ratingCharge,
+       ctx.game ? g(ctx.game) : null, ctx.mode ?? null, ctx.roomCode ?? null],
+    );
+  });
+}
+
+/**
+ * Credit a completed, clean ranked match.
+ *
+ * Only touches rows that EXIST and are below the maximum: a player who has never offended
+ * needs no row, and creating one for every finished match would write a table's worth of
+ * "100" for nothing. The restriction clock is untouched — serving a cooldown and playing
+ * your way back are separate things, and a match played before the lock lands should not
+ * shorten it.
+ */
+export async function healStandingForCleanMatch(userIds: string[]): Promise<void> {
+  if (!userIds.length) return;
+  await q(
+    `update account_standing
+        set score = least($2::int, score + $3::int), updated_at = now()
+      where user_id = any($1::text[]) and score < $2::int`,
+    [userIds, STANDING_MAX, HEAL_PER_CLEAN_MATCH],
+  );
+}
+
+/** the ledger for one player, newest first — the player's own "why" and the moderator's
+ *  history in the same shape */
+export async function listStandingEvents(userId: string, limit = 20): Promise<StandingEventRow[]> {
+  const rows = await q<{
+    id: string; kind: string; points: number; score_after: number;
+    cooldown_min: number; rating_charge: number; game: string | null; at: string;
+  }>(
+    `select id, kind, points, score_after, cooldown_min, rating_charge, game, at
+       from standing_events where user_id = $1 order by at desc limit $2`,
+    [userId, Math.min(100, Math.max(1, Math.floor(limit)))],
+  );
+  return rows.map((r) => ({
+    id: String(r.id),
+    kind: r.kind,
+    points: Number(r.points),
+    scoreAfter: Number(r.score_after),
+    cooldownMin: Number(r.cooldown_min),
+    ratingCharge: Number(r.rating_charge),
+    game: r.game,
+    at: r.at,
+  }));
+}
+
+export interface StandingEventRow {
+  id: string;
+  kind: string;
+  points: number;
+  scoreAfter: number;
+  cooldownMin: number;
+  ratingCharge: number;
+  game: string | null;
+  at: string;
+}
+
+// -------------------------------------------------------- score reports ------
+
+export interface ScoreReportRow {
+  id: string;
+  matchId: string | null;
+  roomCode: string;
+  game: string;
+  detail: string;
+  status: string;
+  smite: number;
+  createdAt: string;
+  reporterId: string;
+  reporterHandle: string;
+  reporterUsername: string | null;
+  /** how many claims this reporter has EVER filed, and how many were rejected — the pattern
+   * a moderator needs before deciding whether a claim is a mistake or a habit */
+  reporterFiled: number;
+  reporterRejected: number;
+}
+
+/**
+ * File a misscore claim. False when this reporter already has one on this match — the unique
+ * index, surfaced as a no-op, because a second look at the same result is the same claim.
+ */
+export async function submitScoreReport(r: {
+  reporterId: string;
+  matchId?: string | number | null;
+  roomCode?: string;
+  game?: Game;
+  detail: string;
+}): Promise<boolean> {
+  const rows = await q<{ id: string }>(
+    `insert into score_reports (reporter_id, match_id, room_code, game, detail)
+     values ($1, $2, $3, $4, $5)
+     on conflict do nothing
+     returning id::text as id`,
+    [r.reporterId, r.matchId ? String(r.matchId) : null, r.roomCode ?? '', g(r.game ?? 'decode'), r.detail],
+  );
+  return rows.length > 0;
+}
+
+/** the moderation queue: newest first, with the reporter's own history alongside each row. */
+export async function listScoreReports(opts: { status?: string; limit?: number } = {}): Promise<ScoreReportRow[]> {
+  const limit = Math.min(200, Math.max(1, Math.floor(opts.limit ?? 50)));
+  const rows = await q<{
+    id: string; match_id: string | null; room_code: string; game: string; detail: string;
+    status: string; smite: number; created_at: string; reporter_id: string;
+    handle: string; username: string | null; filed: string; rejected: string;
+  }>(
+    `select sr.id::text as id, sr.match_id::text as match_id, sr.room_code, sr.game, sr.detail,
+            sr.status, sr.smite, sr.created_at, sr.reporter_id, p.handle, p.username,
+            (select count(*) from score_reports x where x.reporter_id = sr.reporter_id) as filed,
+            (select count(*) from score_reports x
+              where x.reporter_id = sr.reporter_id and x.status = 'rejected') as rejected
+       from score_reports sr
+       join profiles p on p.user_id = sr.reporter_id
+      where ($1::text is null or sr.status = $1::text)
+      order by sr.created_at desc
+      limit $2`,
+    [opts.status ?? null, limit],
+  );
+  return rows.map((x) => ({
+    id: x.id,
+    matchId: x.match_id,
+    roomCode: x.room_code,
+    game: x.game,
+    detail: x.detail,
+    status: x.status,
+    smite: Number(x.smite ?? 0),
+    createdAt: x.created_at,
+    reporterId: x.reporter_id,
+    reporterHandle: x.handle,
+    reporterUsername: x.username,
+    reporterFiled: Number(x.filed ?? 0),
+    reporterRejected: Number(x.rejected ?? 0),
+  }));
+}
+
+/**
+ * Resolve one claim: `upheld` or `rejected`, and record the smite that went with it.
+ *
+ * The STANDING charge itself is not written here. It goes through `writeStandingEvent` like
+ * every other offence, so a smite appears in the same ledger the player already reads and is
+ * subject to the same tier and cooldown machinery — a punishment invented in its own table
+ * would be one the player is never shown and no other code path knows about.
+ *
+ * Returns the reporter's id so the caller can charge them, and null if the row is already
+ * resolved (two moderators, one queue).
+ */
+export async function resolveScoreReport(
+  id: string,
+  status: 'upheld' | 'rejected',
+  adminId: string,
+  smite = 0,
+): Promise<{ reporterId: string; roomCode: string; game: string } | null> {
+  const rows = await q<{ reporter_id: string; room_code: string; game: string }>(
+    `update score_reports
+        set status = $2, reviewed_by = $3, reviewed_at = now(), smite = $4
+      where id = $1::bigint and status = 'open'
+      returning reporter_id, room_code, game`,
+    [id, status, adminId, Math.max(0, Math.floor(smite))],
+  );
+  if (!rows.length) return null;
+  return { reporterId: rows[0].reporter_id, roomCode: rows[0].room_code, game: rows[0].game };
+}
+
+// ------------------------------------------------------- player reports ------
+
+/** File a report. Returns false when the same reporter has already filed this category
+ *  against this player from this room — the unique index, surfaced as a no-op rather than
+ *  an error, because a double-tap on the button is not a failure worth showing anyone. */
+export async function submitReport(r: {
+  reportedId: string;
+  reporterId: string;
+  reason: string;
+  detail?: string | null;
+  roomCode?: string;
+  game?: Game;
+}): Promise<boolean> {
+  const rows = await q<{ id: string }>(
+    `insert into player_reports (reported_id, reporter_id, reason, detail, room_code, game)
+     values ($1, $2, $3, $4, $5, $6)
+     on conflict do nothing
+     returning id`,
+    [r.reportedId, r.reporterId, r.reason, r.detail?.slice(0, 300) || null, r.roomCode ?? '', g(r.game)],
+  );
+  return rows.length > 0;
+}
+
+/** How many DISTINCT people have reported this player out of one room. The standing nudge
+ *  is priced per reporter (and capped): one person filing three categories is one opinion,
+ *  three people filing one each is three. */
+export async function distinctReporters(reportedId: string, roomCode: string): Promise<number> {
+  const rows = await q<{ n: number }>(
+    `select count(distinct reporter_id)::int as n from player_reports
+      where reported_id = $1 and room_code = $2`,
+    [reportedId, roomCode],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * The moderation QUEUE: one row per reported player, most recently reported first.
+ *
+ * Aggregated in SQL rather than by fetching every report and grouping in JS — the panel
+ * wants counts and a recency ordering, and a moderator on a busy day should not be paging
+ * thousands of rows to see twelve names. `reporters` is a DISTINCT count on purpose: four
+ * reports from four people and four from one are completely different signals, and the
+ * panel shows both numbers so a moderator can tell a pattern from a grudge.
+ */
+export async function listReportedUsers(limit = 60): Promise<ReportedUserRow[]> {
+  const n = Math.min(200, Math.max(1, Math.floor(limit)));
+  const rows = await q<{
+    reported_id: string;
+    handle: string;
+    username: string | null;
+    total: number;
+    open: number;
+    reporters: number;
+    latest: string;
+    reasons: { reason: string; n: number }[] | null;
+  }>(
+    `select r.reported_id,
+            p.handle, p.username,
+            count(*)::int as total,
+            count(*) filter (where r.status = 'open')::int as open,
+            count(distinct r.reporter_id)::int as reporters,
+            max(r.created_at) as latest,
+            (select json_agg(x) from (
+               select reason, count(*)::int as n
+                 from player_reports r2
+                where r2.reported_id = r.reported_id
+                group by reason
+                order by n desc
+             ) x) as reasons
+       from player_reports r
+       join profiles p on p.user_id = r.reported_id
+      group by r.reported_id, p.handle, p.username
+      order by max(r.created_at) desc
+      limit $1`,
+    [n],
+  );
+  return rows.map((x) => ({
+    userId: x.reported_id,
+    handle: x.handle,
+    username: x.username,
+    total: Number(x.total),
+    open: Number(x.open),
+    reporters: Number(x.reporters),
+    latest: x.latest,
+    reasons: (x.reasons ?? []).map((r) => ({ reason: r.reason, n: Number(r.n) })),
+  }));
+}
+
+export interface ReportedUserRow {
+  userId: string;
+  handle: string;
+  username: string | null;
+  total: number;
+  open: number;
+  reporters: number;
+  latest: string;
+  reasons: { reason: string; n: number }[];
+}
+
+export interface ReportDetailRow {
+  id: string;
+  reason: string;
+  detail: string | null;
+  roomCode: string;
+  game: string;
+  status: string;
+  createdAt: string;
+  reporterHandle: string;
+  reporterUsername: string | null;
+}
+
+/** every report filed against one player, newest first — the drill-down */
+export async function listReportsFor(userId: string, limit = 100): Promise<ReportDetailRow[]> {
+  const rows = await q<{
+    id: string; reason: string; detail: string | null; room_code: string; game: string;
+    status: string; created_at: string; handle: string; username: string | null;
+  }>(
+    `select r.id::text as id, r.reason, r.detail, r.room_code, r.game, r.status,
+            r.created_at, p.handle, p.username
+       from player_reports r
+       join profiles p on p.user_id = r.reporter_id
+      where r.reported_id = $1
+      order by r.created_at desc
+      limit $2`,
+    [userId, Math.min(300, Math.max(1, Math.floor(limit)))],
+  );
+  return rows.map((x) => ({
+    id: x.id,
+    reason: x.reason,
+    detail: x.detail,
+    roomCode: x.room_code,
+    game: x.game,
+    status: x.status,
+    createdAt: x.created_at,
+    reporterHandle: x.handle,
+    reporterUsername: x.username,
+  }));
+}
+
+/** triage: mark every open report against a player reviewed or dismissed. Per-user rather
+ *  than per-report because that is how the queue is actually worked — a moderator judges a
+ *  PLAYER after watching their matches, not each complaint in isolation. */
+export async function setReportsStatus(
+  userId: string,
+  status: 'reviewed' | 'dismissed',
+  moderatorId: string,
+): Promise<number> {
+  const rows = await q<{ id: string }>(
+    `update player_reports
+        set status = $2, reviewed_by = $3, reviewed_at = now()
+      where reported_id = $1 and status = 'open'
+      returning id`,
+    [userId, status, moderatorId],
+  );
+  return rows.length;
+}
+
+/**
+ * A reported player's recent matches WITH their replay ids — the whole point of the
+ * moderation drill-down. A cheating or throwing report is unjudgeable from text; the
+ * moderator has to watch the match, and making them go and find it elsewhere is how a
+ * report queue stops being worked.
+ */
+export async function userRecentMatches(userId: string, limit = 15): Promise<{
+  matchId: string;
+  replayId: string | null;
+  game: string;
+  mode: string;
+  ranked: boolean | null;
+  createdAt: string;
+  score: number;
+  won: boolean | null;
+}[]> {
+  const rows = await q<{
+    id: string; replay_id: string | null; game: string; mode: string;
+    ranked: boolean | null; created_at: string; score: number; won: boolean | null;
+  }>(
+    `select m.id::text as id, m.replay_id::text as replay_id, m.game, m.mode, m.ranked,
+            m.created_at, mp.score, mp.won
+       from match_participants mp
+       join matches m on m.id = mp.match_id
+      where mp.user_id = $1
+      order by m.created_at desc
+      limit $2`,
+    [userId, Math.min(50, Math.max(1, Math.floor(limit)))],
+  );
+  return rows.map((x) => ({
+    matchId: x.id,
+    replayId: x.replay_id,
+    game: x.game,
+    mode: x.mode,
+    ranked: x.ranked,
+    createdAt: x.created_at,
+    score: x.score,
+    won: x.won,
+  }));
 }
 
 /** one row of a ranked board. Same name-plus-badge shape as `BoardRow` — the two
@@ -1539,6 +2397,13 @@ export interface UserStats {
   records: UserRecordStat[];
   match: { played: number; wins: number; losses: number };
   recent: UserMatchRow[];
+  /**
+   * LIFETIME playtime and games played — for THIS game, plus the combined total across
+   * every game. Deliberately not season-scoped like everything above it: "how much have I
+   * played" is a question about the account, not about the current act, and resetting it
+   * every season would make the number meaningless the moment it got interesting.
+   */
+  activity?: { games: number; seconds: number; allGames: number; allSeconds: number };
 }
 
 /**
@@ -1636,6 +2501,8 @@ export async function getUserStats(
   });
   const played = Number(match[0]?.played ?? 0);
   const wins = Number(match[0]?.wins ?? 0);
+  const activity = await getActivity(userId);
+  const mine = activity.byGame[gm] ?? { games: 0, seconds: 0 };
 
   return {
     userId,
@@ -1648,7 +2515,65 @@ export async function getUserStats(
     records,
     match: { played, wins, losses: played - wins },
     recent,
+    activity: {
+      games: mine.games,
+      seconds: mine.seconds,
+      allGames: activity.total.games,
+      allSeconds: activity.total.seconds,
+    },
   };
+}
+
+// ------------------------------------------------------- playtime + games ---
+
+/**
+ * Credit one finished match to every account that played it.
+ *
+ * ONE STATEMENT for the whole roster, not a query per player: this runs at match end
+ * alongside the other writes, and a four-player match should not be four round-trips to add
+ * four integers. `unnest` turns the id list into rows the upsert can join against.
+ *
+ * Seconds are ROUNDED here rather than stored as a float. The input is a tick count, the
+ * output is read in hours, and a column that accumulates 0.7333-second fragments for years
+ * is a column that will eventually be explained to somebody.
+ */
+export async function addActivity(
+  userIds: string[],
+  seconds: number,
+  game?: Game,
+): Promise<void> {
+  const ids = [...new Set(userIds.filter(Boolean))];
+  if (!ids.length) return;
+  const secs = Math.max(0, Math.round(seconds));
+  await q(
+    `insert into user_activity (user_id, game, games, seconds)
+     select id, $2, 1, $3 from unnest($1::text[]) as id
+     on conflict (user_id, game) do update
+       set games = user_activity.games + 1,
+           seconds = user_activity.seconds + excluded.seconds,
+           updated_at = now()`,
+    [ids, g(game), secs],
+  );
+}
+
+/** what this account has played, per game plus the combined total */
+export async function getActivity(userId: string): Promise<{
+  total: { games: number; seconds: number };
+  byGame: Record<string, { games: number; seconds: number }>;
+}> {
+  const rows = await q<{ game: string; games: number; seconds: number }>(
+    `select game, games, seconds from user_activity where user_id = $1`,
+    [userId],
+  );
+  const byGame: Record<string, { games: number; seconds: number }> = {};
+  let games = 0;
+  let seconds = 0;
+  for (const r of rows) {
+    byGame[r.game] = { games: Number(r.games), seconds: Number(r.seconds) };
+    games += Number(r.games);
+    seconds += Number(r.seconds);
+  }
+  return { total: { games, seconds }, byGame };
 }
 
 // ------------------------------------------------------ PvP match history ---
@@ -1904,6 +2829,125 @@ export async function userMatchHistory(
   };
 }
 
+/** one finished game in the operator's "Recent games" list */
+export interface RecentMatchRow {
+  kind: 'versus' | 'record';
+  id: string;
+  game: string;
+  /** '1v1' | '2v2' (versus) or 'solo' | 'duo' (record) */
+  mode: string;
+  ranked: boolean | null;
+  createdAt: string;
+  replayId: string | null;
+  balanceVersion: number;
+  /** final alliance totals (versus) — both null for a record run */
+  redScore: number | null;
+  blueScore: number | null;
+  /** the record run's score (record only) */
+  score: number | null;
+  players: { userId: string; handle: string; alliance: 'red' | 'blue' | null }[];
+}
+
+/**
+ * The most recently FINISHED games across the whole service, for the admin panel.
+ *
+ * The counterpart to the live list: an operator investigating a report ("that
+ * match five minutes ago") needs the game after it has stopped being live, and a
+ * finished match cannot be spectated — only replayed. So this carries `replayId`,
+ * which is what the row's button opens.
+ *
+ * Deliberately NOT season- or version-scoped. Every other history query filters by
+ * `balance_version` because it feeds a leaderboard, where mixing balance versions
+ * would compare incomparable runs; this one answers "what just happened on the
+ * server", and the answer must not disappear the moment a season rolls over. The
+ * version is reported per row instead.
+ */
+export async function recentMatches(limit = 40, game?: Game): Promise<RecentMatchRow[]> {
+  const n = Math.min(200, Math.max(1, Math.floor(limit)));
+  const gameFilter = game ? `where game = $2` : '';
+  const params: unknown[] = game ? [n, g(game)] : [n];
+  const rows = await q<{
+    kind: 'versus' | 'record';
+    id: string;
+    game: string;
+    mode: string;
+    ranked: boolean | null;
+    created_at: string;
+    replay_id: string | null;
+    balance_version: number;
+    score: number | null;
+  }>(
+    `with feed as (
+       select 'versus' as kind, m.id::text as id, m.game as game, m.mode as mode,
+              m.ranked as ranked, m.created_at as created_at, m.replay_id::text as replay_id,
+              m.balance_version as balance_version, null::int as score
+         from matches m
+       union all
+       select 'record', r.id::text, r.game, r.mode, null::boolean, r.created_at,
+              r.replay_id::text, r.balance_version, r.score
+         from records r
+     )
+     select * from feed ${gameFilter} order by created_at desc limit $1`,
+    params,
+  );
+  if (rows.length === 0) return [];
+
+  // one fan-out for the versus rosters; record runs carry only their owner, which
+  // the feed above does not select (the union has to stay column-compatible), so
+  // they are fetched in the same round of work rather than per row.
+  const versusIds = rows.filter((r) => r.kind === 'versus').map((r) => r.id);
+  const recordIds = rows.filter((r) => r.kind === 'record').map((r) => r.id);
+  const [parts, recs] = await Promise.all([
+    versusIds.length
+      ? q<{ match_id: string; user_id: string; handle: string; alliance: 'red' | 'blue'; score: number }>(
+          `select mp.match_id::text as match_id, mp.user_id, p.handle, mp.alliance, mp.score
+             from match_participants mp join profiles p on p.user_id = mp.user_id
+            where mp.match_id = any($1::uuid[])`,
+          [versusIds],
+        )
+      : Promise.resolve([]),
+    recordIds.length
+      ? q<{ id: string; user_id: string; handle: string }>(
+          `select r.id::text as id, r.user_id, p.handle
+             from records r join profiles p on p.user_id = r.user_id
+            where r.id = any($1::uuid[])`,
+          [recordIds],
+        )
+      : Promise.resolve([]),
+  ]);
+
+  const roster = new Map<string, RecentMatchRow['players']>();
+  const scores = new Map<string, { red: number | null; blue: number | null }>();
+  for (const p of parts) {
+    const list = roster.get(p.match_id) ?? [];
+    list.push({ userId: p.user_id, handle: p.handle, alliance: p.alliance });
+    roster.set(p.match_id, list);
+    // every participant on an alliance stores that alliance's TOTAL, so either
+    // one gives the side's score (see MatchHistoryEntry)
+    const s = scores.get(p.match_id) ?? { red: null, blue: null };
+    s[p.alliance] = p.score;
+    scores.set(p.match_id, s);
+  }
+  for (const r of recs) {
+    roster.set(r.id, [{ userId: r.user_id, handle: r.handle, alliance: null }]);
+  }
+
+  return rows.map((r) => ({
+    kind: r.kind,
+    id: r.id,
+    game: r.game,
+    mode: r.mode,
+    ranked: r.ranked,
+    createdAt: r.created_at,
+    replayId: r.replay_id,
+    balanceVersion: r.balance_version,
+    redScore: r.kind === 'versus' ? scores.get(r.id)?.red ?? null : null,
+    blueScore: r.kind === 'versus' ? scores.get(r.id)?.blue ?? null : null,
+    score: r.kind === 'record' ? r.score : null,
+    players: roster.get(r.id) ?? [],
+  }));
+}
+
 // -------------------------------------------------- pending (staged) matches ---
 // The designated matchmaker stages a paired ranked match; the fair host-region
 // machine claims it when the players reconnect. See server/matchTypes.ts.
@@ -2076,6 +3120,62 @@ export async function upsertPresence(
       JSON.stringify(gameQueues), JSON.stringify(guests),
     ],
   );
+}
+
+/** where one player is playing right now, resolved from the heartbeat */
+export interface UserLiveRoom {
+  /** the room code to spectate */
+  room: string;
+  /** the Fly region hosting it — a custom room's code has no region prefix, so a
+   *  spectate socket opened without this lands on the wrong machine */
+  region: string;
+  ranked: boolean;
+}
+
+const USER_ROOM_TTL_MS = 3_000;
+let userRoomCache: { at: number; val: Map<string, UserLiveRoom> } | null = null;
+
+/**
+ * Which live match each signed-in player is IN, keyed by user id — the lookup
+ * behind "watch your friend's game".
+ *
+ * Built from the presence heartbeat, so it is the SERVER's own observation of
+ * where somebody is, not a claim the client makes about itself. Two columns of
+ * the same rows are used together: `players` says which room each account holds a
+ * socket in, and `rooms` says which of those rooms has a match actually running.
+ * Both are needed — a room whose match has ended still holds its sockets for a
+ * while, and offering that as watchable would send the watcher to a dead world.
+ *
+ * INVISIBLE players never reach this: a friend's row only asks for a room when
+ * `listFriends` already resolved them as online, which invisibility rules out.
+ *
+ * Cached for a few seconds because every friends poll on the service asks for it
+ * and the answer is the same for all of them.
+ */
+export async function liveRoomsByUser(freshSeconds = 15): Promise<Map<string, UserLiveRoom>> {
+  const now = Date.now();
+  if (userRoomCache && now - userRoomCache.at < USER_ROOM_TTL_MS) return userRoomCache.val;
+  const rows = await q<{ region: string; rooms: unknown[] | null; players: PresencePlayer[] | null }>(
+    `select region, rooms, players from presence
+      where updated_at > now() - $1::interval and jsonb_array_length(players) > 0`,
+    [`${Math.max(1, Math.floor(freshSeconds))} seconds`],
+  );
+  const out = new Map<string, UserLiveRoom>();
+  for (const r of rows) {
+    const live = new Map<string, { ranked: boolean; region?: string }>();
+    for (const s of Array.isArray(r.rooms) ? r.rooms : []) {
+      const lr = s as { room?: string; ranked?: boolean; region?: string };
+      if (lr?.room) live.set(lr.room.toLowerCase(), { ranked: lr.ranked === true, region: lr.region });
+    }
+    for (const p of Array.isArray(r.players) ? r.players : []) {
+      if (p.act !== 'match' || !p.room) continue;
+      const hit = live.get(p.room.toLowerCase());
+      if (!hit) continue; // holding a socket in a room whose match is over
+      out.set(p.userId, { room: p.room, region: hit.region ?? r.region, ranked: hit.ranked });
+    }
+  }
+  userRoomCache = { at: now, val: out };
+  return out;
 }
 
 /** every live room across EVERY region with a fresh heartbeat. This is what makes
@@ -2282,6 +3382,10 @@ export interface FriendRow {
   activity: Activity | null;
   /** which game they're in ('decode' | 'chain') — only meaningful with `activity` */
   game: Game | null;
+  /** the room to SPECTATE, set only while a match they are in is actually running
+   *  (see `liveRoomsByUser`). Absent otherwise — including in a lobby, and for the
+   *  seconds a finished room lingers. */
+  watch?: { room: string; region: string; ranked: boolean };
   /** active supporter membership — renders a small badge beside the name */
   supporter?: boolean;
   /** 'owner' | 'admin' — renders the staff badge instead of the supporter one */
@@ -2409,7 +3513,7 @@ export async function listFriends(userId: string): Promise<FriendsPayload> {
      ),
      inv as (
        select ri.id, ri.from_user_id, p.handle, p.username, ${badgeCols('p.')},
-              ri.room, ri.game, ri.kind, ri.record, ri.format, ri.created_at
+              ri.room, ri.game, ri.kind, ri.record, ri.format, ri.region, ri.created_at
          from room_invites ri join profiles p on p.user_id = ri.from_user_id
         -- a DECLINED challenge is gone for its recipient the instant they decline;
         -- the row lingers only so the SENDER can be told (see the snt CTE below)
@@ -2418,7 +3522,7 @@ export async function listFriends(userId: string): Promise<FriendsPayload> {
      ),
      snt as (
        select ri.id, ri.to_user_id, p.handle, p.username, ${badgeCols('p.')},
-              ri.room, ri.game, ri.kind, ri.record, ri.format, ri.declined, ri.created_at
+              ri.room, ri.game, ri.kind, ri.record, ri.format, ri.region, ri.declined, ri.created_at
          from room_invites ri join profiles p on p.user_id = ri.to_user_id
         where ri.from_user_id = $1 and ri.created_at > now() - $2::interval
      )
@@ -2444,14 +3548,14 @@ export async function listFriends(userId: string): Promise<FriendsPayload> {
          'id', inv.id, 'from_user_id', inv.from_user_id, 'handle', inv.handle,
          'username', inv.username, 'role', inv.role, 'supporter', inv.supporter,
          'room', inv.room, 'game', inv.game,
-         'kind', inv.kind, 'record', inv.record, 'format', inv.format,
+         'kind', inv.kind, 'record', inv.record, 'format', inv.format, 'region', inv.region,
          'created_at', to_char(inv.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
          order by inv.created_at desc) from inv), '[]'::json) as invites,
        coalesce((select json_agg(json_build_object(
          'id', snt.id, 'to_user_id', snt.to_user_id, 'handle', snt.handle,
          'username', snt.username, 'role', snt.role, 'supporter', snt.supporter,
          'room', snt.room, 'game', snt.game,
-         'kind', snt.kind, 'record', snt.record, 'format', snt.format,
+         'kind', snt.kind, 'record', snt.record, 'format', snt.format, 'region', snt.region,
          'declined', snt.declined,
          'created_at', to_char(snt.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
          order by snt.created_at desc) from snt), '[]'::json) as sent,
@@ -2460,6 +3564,14 @@ export async function listFriends(userId: string): Promise<FriendsPayload> {
   );
 
   const row = rows[0];
+  // where each friend is playing, for the Watch button. Resolved from the
+  // heartbeat rather than from the friend's own activity beat: a client can claim
+  // 'match' but cannot conjure a running room, and this is also the only source of
+  // the hosting region. Never fatal — a failed lookup just costs the Watch buttons.
+  const watchable = await liveRoomsByUser().catch((e) => {
+    console.error('[friends] live-room lookup failed:', e);
+    return new Map<string, UserLiveRoom>();
+  });
   const friends: FriendRow[] = (row?.friends ?? []).map((r) => {
     const since = r.since === null ? null : Number(r.since);
     const online = since !== null && since <= ONLINE_WINDOW_S;
@@ -2478,6 +3590,9 @@ export async function listFriends(userId: string): Promise<FriendsPayload> {
       offlineSeconds: online ? null : coarsen(since),
       activity,
       game: activity ? (r.activity_game === 'chain' ? 'chain' : 'decode') : null,
+      // `online` gates this so an invisible friend is never watchable: invisibility
+      // nulls their last-seen, which is what `online` is computed from.
+      watch: online ? watchable.get(r.user_id) : undefined,
       supporter: !!r.supporter,
       role: asRole(r.role),
     };
@@ -2534,6 +3649,7 @@ interface InviteCols {
   kind: string;
   record: string | null;
   format: string | null;
+  region: string | null;
   created_at: string;
 }
 const shapeInvite = (r: InviteCols): RoomInvite => ({
@@ -2550,6 +3666,7 @@ const shapeInvite = (r: InviteCols): RoomInvite => ({
   kind: r.kind,
   record: r.record,
   format: r.format,
+  region: r.region,
   createdAt: r.created_at,
 });
 
@@ -2574,6 +3691,7 @@ const shapeSent = (r: SentCols): SentInvite => ({
   kind: r.kind,
   record: r.record,
   format: r.format,
+  region: r.region,
   declined: !!r.declined,
   createdAt: r.created_at,
 });
@@ -2734,6 +3852,10 @@ export interface RoomInvite {
    * 'duorecord'. Null on rows written before challenges carried a format, which
    * the client reads as the historical casual-versus meaning. */
   format: string | null;
+  /** the REGION the room is hosted in. A custom code carries no region for the proxy to
+   *  route on, so the recipient needs this to reach the machine the room is actually on;
+   *  null on rows from a client older than the field. */
+  region?: string | null;
   createdAt: string;
 }
 
@@ -2759,6 +3881,11 @@ export async function inviteToRoom(
   kind: string,
   record: string | null,
   format: string | null = null,
+  /** the REGION the sender is hosting the room in. A custom room code is bare, so without
+   *  this the recipient's socket routes to whichever machine is nearest to THEM — a
+   *  different one, if the two players picked different servers, holding a different room
+   *  with the same code. Empty ⇒ an older client; the recipient falls back to its own. */
+  region: string | null = null,
 ): Promise<InviteOutcome> {
   const [low, high] = fromId < toId ? [fromId, toId] : [toId, fromId];
   const friend = await q(
@@ -2773,9 +3900,9 @@ export async function inviteToRoom(
   // different token. Replacing keeps exactly one token in play.
   await q(`delete from room_invites where from_user_id = $1 and to_user_id = $2`, [fromId, toId]);
   await q(
-    `insert into room_invites (from_user_id, to_user_id, room, game, kind, record, format)
-     values ($1, $2, $3, $4, $5, $6, $7)`,
-    [fromId, toId, room, game, kind, record, format],
+    `insert into room_invites (from_user_id, to_user_id, room, game, kind, record, format, region)
+     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [fromId, toId, room, game, kind, record, format, region || null],
   );
   return 'sent';
 }
@@ -2849,10 +3976,11 @@ export async function listRoomInvites(userId: string): Promise<RoomInvite[]> {
     kind: string;
     record: string | null;
     format: string | null;
+    region: string | null;
     created_at: string;
   }>(
     `select ri.id, ri.from_user_id, p.handle, p.username, ${badgeCols('p.')},
-            ri.room, ri.game, ri.kind, ri.record, ri.format, ri.created_at
+            ri.room, ri.game, ri.kind, ri.record, ri.format, ri.region, ri.created_at
        from room_invites ri
        join profiles p on p.user_id = ri.from_user_id
       where ri.to_user_id = $1 and not ri.declined

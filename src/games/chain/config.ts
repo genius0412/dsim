@@ -30,14 +30,28 @@
  *  • LAB AREA — each alliance's start/park zone (leave 5 pt auto / park 5 pt endgame).
  *  • PARTICLE ZONE — the center diamond of white tape (neutral, unprotected).
  *
- * STILL A SHELL: robots are drivable + wall-contained and the ACCELERATORS, HOOKS,
- * RING STANDS and PARTICLE ZONE are placed/drawn. Scoring/particles/catalysts and
- * the Lab-Area / column-grid geometry are NOT implemented yet (exact field-zone
- * coordinates for the Particle Zone, Lab Areas, and Ring-Stand positions are still
- * needed — approximations below are FLAGGED).
+ * FULLY PLAYABLE + SCORED: particles (all 300, with pre-match randomization and the
+ * accelerator score/recycle loop), the three shooter archetypes, catalysts/hooks,
+ * ring-stand ascend/descend, Lab park, beam terrain, and the G05/G06 penalties are all
+ * implemented. What is still OUTSTANDING is manual PRECISION, not features: a few
+ * field-zone coordinates (Ring-Stand inset, Lab-Area size, Particle-Zone placement) were
+ * derived from description rather than a figure — every one of those is FLAGGED `APPROX`
+ * below. Refine those constants rather than inventing new ones.
  */
 
-import type { ChainIntakeStyle, ChainScoreMode, RobotSpec, StartCat } from '../../types';
+import type {
+  AssistConfig,
+  ChainCatalystMount,
+  ChainCatalystType,
+  ChainIntakeMount,
+  ChainIntakeStyle,
+  ChainScoreMode,
+  RobotSpec,
+  StartCat,
+} from '../../types';
+import { catalystMountOf, catalystSwingOf, intakeMountOf } from './mounts';
+import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
+import { massLimits } from '../../sim/drivetrain';
 
 /** millimetres → inches (the sim's world unit) */
 export const mm = (v: number): number => v / 25.4;
@@ -45,6 +59,22 @@ export const mm = (v: number): number => v / 25.4;
 /** field half-extents (inches). Square 12'×12', walls at ±72 (like DECODE). */
 export const CHAIN_HALF_X = 72;
 export const CHAIN_HALF_Y = 72;
+
+/**
+ * PERIMETER CONTAINMENT. The real field is walled to `CHAIN_WALL_H` and then NETTED above
+ * that, so nothing can leave play — a Catalyst thrown on a high arc hits the net and drops
+ * back in rather than escaping.
+ *
+ * The two surfaces behave differently, which is the point of modelling them separately: the
+ * rigid lower wall gives a real (if damped) rebound, while netting is slack and absorbs most
+ * of the energy — a ring that hits the net barely comes back, it mostly just falls. That
+ * makes a wild long throw self-punishing (your ring ends up dead against the perimeter)
+ * without ever removing it from play.
+ */
+export const CHAIN_WALL_H = 12; // in — rigid wall below this, netting above
+export const CHAIN_WALL_RESTITUTION = 0.3; // rigid wall: a modest bounce
+export const CHAIN_NET_RESTITUTION = 0.12; // netting: slack, soaks up most of the energy
+export const CHAIN_NET_VZ_KEEP = 0.25; // netting also kills most of the ring's climb
 
 /** perimeter-wall build params (inner faces exactly at ±half) */
 export const CHAIN_WALL_T = 10; // half-thickness, well outside the field
@@ -71,6 +101,19 @@ export const CHAIN_HOOK_Y = mm(688.09375); // ±27.0903" along the wall
 export const CHAIN_PARTICLE_R = 3 / 2; // 3" OD ball → 1.5" radius (300 on field)
 export const CHAIN_CATALYST_OD = 6; // 6" OD ring, 1" thick (4 total)
 export const CHAIN_RINGSTAND_H = 22.5; // vertical climb pole height (context only)
+/**
+ * RING STAND ASSEMBLY footprint. The stand is not a bare pole: the post is carried by a
+ * plate that fills the field corner (see the CAD top-down), so the whole corner is SOLID and
+ * a robot cannot drive into any of it. Modelled as a SQUARE flush with both walls — the
+ * simplest shape that matches what is actually there, and it makes the corner a real
+ * obstacle to path around rather than a pixel-thin post to clip.
+ */
+// SIZE IS CONSTRAINED, not free. A robot must be able to start COMPLETELY inside its Lab
+// square (G04) while clear of this solid corner — which is only possible when
+// `CHAIN_RINGSTAND_BOX <= CHAIN_LAB - 2·(chassis half-extent)`. At the 24" Lab that caps it
+// at 6" for the widest legal (18") chassis. Smoke asserts the relationship, so raising this
+// without raising the Lab fails loudly instead of quietly making G04 unsatisfiable.
+export const CHAIN_RINGSTAND_BOX = 6; // in — side of the corner square, flush to both walls
 export const CHAIN_PARTICLE_COUNT = 300;
 export const CHAIN_CATALYST_COUNT = 4;
 
@@ -98,6 +141,14 @@ export const CHAIN_ENDGAME_S = 20;
  * ringed posts in the render). Small inset from the corner (per the user); refine
  * with exact manual coordinates. Four total: (±(72−inset), ±(72−inset)).
  */
+// Post half-size. Kept SLIM relative to the 6" assembly block so the post can actually sit
+// near the block's inner corner with a visible gap — at 1.4 it filled half the block and
+// read as centred no matter where it was placed.
+export const CHAIN_RINGSTAND_POST = 0.9;
+/** clearance between the POST and the assembly block's INNER corner. The post stands near
+ * that corner (the one opposite the field corner) but is NOT flush into it — the plate
+ * carries it a little way in, so there is a visible gap on both inner faces. */
+export const CHAIN_RINGSTAND_GAP = 0.8;
 export const CHAIN_RINGSTAND_INSET = 5; // APPROX — "very close to each corner"
 export const CHAIN_RINGSTAND_XY = CHAIN_HALF_X - CHAIN_RINGSTAND_INSET; // 67"
 
@@ -133,6 +184,65 @@ export const CHAIN_BEAM_MAX_RETAIN = 0.98;
 export const CHAIN_CLEARANCE_MIN = 0.3;
 export const CHAIN_CLEARANCE_MAX = 1.5;
 export const CHAIN_CLEARANCE_DEFAULT = 1;
+/** BEAM CROSSING is modeled PER WHEEL — a beam only drags a robot while one of its FOUR wheels
+ * is actually perched on the 1" ridge (a wheel within `CHAIN_BEAM_WHEEL_R` of the beam line),
+ * NOT merely because the chassis overlaps it. So a robot STRADDLING a beam (tube under the belly,
+ * all four wheels on the floor) rolls free, and a perpendicular crossing is TWO distinct bumps
+ * (front axle, then rear). The lifted wheels lose traction: `grounded = (4 − wheelsUp)/4` scales
+ * the forward push down toward `CHAIN_BEAM_GROUND_FLOOR` (all four up = high-centered on the ridge
+ * = barely any grip). */
+export const CHAIN_BEAM_WHEEL_R = 2.5; // in — a wheel this close to the beam line is up on the ridge
+/**
+ * The most `beamStrafeBlock` may move a robot in one tick.
+ *
+ * That clamp is a NUMERICAL-SLOP fix — the pre-solve velocity wall in `beamDrag` is what
+ * actually stops a strafing wheel at the near face — so anything bigger than slop means the
+ * wall did not fire, and writing it into the position is a teleport rather than a correction.
+ * Measured before the cap, driving diagonally over a beam: 3.44in of position in ONE tick
+ * against the 0.45in the robot's velocity could account for.
+ */
+export const CHAIN_BEAM_CURB_SLOP = 0.35; // in per tick
+export const CHAIN_BEAM_GROUND_FLOOR = 0.86; // forward traction kept with wheels lifted (never 0 — grounded wheels still push; raised 2026-08 alongside TRACTION so terrain bites less)
+/**
+ * BEAM YAW — the KICK a beam gives a robot crossing it CROOKED.
+ *
+ * A beam did not turn a robot at all: it scaled the across-beam speed and nothing else, so a
+ * robot that took the ridge at an angle came off it pointing exactly where it went on. That is
+ * not what terrain does. The drag is applied at the WHEELS that are actually on the ridge, and
+ * when those sit to one side of centre the retarding force has a lever arm — the loaded side
+ * lags and the chassis yaws toward it. Hit a beam square and the two sides cancel (no kick,
+ * which is the reward for lining it up); clip it with one corner and it slews you.
+ *
+ * `GAIN` converts that lever-arm impulse into angular velocity (the arm is normalised by the
+ * chassis half-diagonal, so a big robot is proportionally harder to spin); `MAX_KICK` caps a
+ * single tick so a numerical spike can never pirouette anyone.
+ */
+export const CHAIN_BEAM_YAW_GAIN = 10;
+export const CHAIN_BEAM_YAW_MAX_KICK = 1.2; // rad/s — cap on a single tick's slew rate
+/** how much of the slew is left in `angVel` so it carries past the ridge (the part the
+ * driver has to catch) rather than stopping the instant the wheel drops off */
+export const CHAIN_BEAM_YAW_CARRY = 0.15;
+/** MECANUM STRAFE-INTO-BEAM is a WALL, not a drag. Real mecanum wheels climb a bump they DRIVE
+ * straight at — the full-diameter wheel rolls over it and the suspension keeps all four loaded
+ * (exactly why mecanum has the BEST forward beam traction). But STRAFING is a different mechanism:
+ * the sideways force is the balanced sum of four 45° rollers, whose tiny outer diameter can't roll
+ * up a 1" tube — so a mecanum strafing sideways into a beam behaves like driving sideways into a
+ * CURB: the wheel butts the near face and STOPS. It does NOT climb on top and it does NOT go over.
+ * `beamStrafeBlock` (a post-solve positional clamp) keeps the wheels off the ridge, resting at the
+ * near face while the low frame overhangs the beam — NO velocity ooze onto the top. It engages
+ * only when the crossing is strafe-dominant: `forwardness = |heading · crossNormal| <
+ * CHAIN_BEAM_STRAFE_BLOCK_FWD` (a straighter push climbs over via `beamDrag` instead). Mecanum
+ * ONLY — tank can't strafe, a SWERVE steers its pods into the travel direction (wheels roll over
+ * the beam whichever way the chassis points), and an X-DRIVE is 4-fold symmetric. */
+export const CHAIN_BEAM_STRAFE_BLOCK_FWD = 0.5; // below this forwardness a mecanum is walled off the beam
+/** RENDER-ONLY beam "height": the 1" tube is invisibly short top-down, so the renderer EXAGGERATES
+ * its z-thickness to this many world units (drawn as a raised extruded bar via `screenUp`). A robot
+ * whose wheels are on the beam rides UP to this height, with a ground shadow, so you see + feel the
+ * terrain. Cosmetic only — the physics footprint stays the flat 1" `CHAIN_BEAM_HEIGHT`. */
+export const CHAIN_BEAM_RENDER_H = 1.3;
+/** amplitude (world units) of the render-only chassis SHUDDER while a wheel is mid-climb + moving —
+ * the visual "thunk/rumble" of crossing rough terrain. */
+export const CHAIN_BEAM_RUMBLE = 0.7;
 /** max fraction of drive authority lost at full clearance (raised center of gravity) */
 export const CHAIN_COG_PENALTY = 0.16;
 /** SWERVE is far more sensitive to a raised CG — the tall modules tip and scrub, so a
@@ -173,12 +283,14 @@ export const CHAIN_EJECT_VZ = 80; // in/s upward arc on the way out (base; ×0.7
 export const CHAIN_EJECT_SPREAD = 80; // in/s random lateral (y) spread — modestly narrow width-wise scatter
 
 /**
- * INTAKE DESIGN. The only style is the SWEEPER — a full-width roller. It MOUNTS on the FRONT
- * (default) or the LEFT+RIGHT SIDES (`RobotSpec.intakeSide`, a Front/Side selector like the
- * shooter mount). Geometry lives in `chainIntakeBand` (state.ts), shared by the capture AND the
- * renderer so the grab area IS the drawn intake. `widthFrac`·chassis +`overhang` = mouth
- * half-width; `depth` = how far behind the edge it reaches. Side mount's open flanks cost hopper
- * volume ⇒ lower storage (`CHAIN_STORE_SIDE_MULT`).
+ * INTAKE DESIGN. The only style is the SWEEPER — a full-width roller. Its MOUNT
+ * (`RobotSpec.intakeMount`) picks which chassis edge(s) carry it: FRONT (default), BACK, both
+ * SIDES, or FRONT+BACK. Geometry lives in `chainIntakeMouths` (state.ts) — one rect per mounted
+ * edge, shared by the capture AND the renderer so the grab area IS the drawn intake, and by
+ * `footprintExtents` so the mount moves the COLLISION box with it. `widthFrac`·chassis
+ * +`overhang` = the mouth half-width on an END edge (a flank mouth spans the chassis length);
+ * `depth` = how far behind the edge it reaches. Open edges cost hopper volume ⇒ lower storage
+ * (`chainMountStoreMult`).
  */
 export interface ChainIntakeGeom {
   widthFrac: number; // mouth half-width as a fraction of the chassis half-width
@@ -205,13 +317,77 @@ export const CHAIN_DEFAULT_INTAKE: ChainIntakeStyle = 'sweeper';
  *    (`CHAIN_DUMP_RANGE`); balls stored on opposite sides leave at DIFFERENT speeds
  *    (`CHAIN_DUMP_SIDE_VAR`) ⇒ real scatter (< 100% accuracy).
  */
-export const CHAIN_SCORE_MODES = ['turret', 'drum', 'dumper'] as const;
+export const CHAIN_SCORE_MODES = ['turret', 'twinturret', 'drum', 'dumper'] as const;
+
+/**
+ * TWIN TURRET — two shooters on one turret.
+ *
+ * THROUGHPUT (`CHAIN_TWIN_FIRE_MULT` 1.15, i.e. ~15 bps vs the single turret's 13):
+ * a SLIGHT edge, not a near-doubling (user's call, revised down from 1.65). The physical
+ * story holds it up: the barrels are the one part of a turret that ISN'T the bottleneck.
+ * Rate is gated by the single dye-rotor/indexer lifting Particles out of the hopper and by
+ * the single aim solution, and a second barrel doubles neither — it mostly hides the
+ * handoff latency between shots rather than adding a second feed. So the twin sits just
+ * above a single turret and still far behind the drum's 24 bps stream.
+ *
+ * That makes it a NARROW pick: it pays ~24% of its storage and +2.5 lb for a ~15% rate
+ * edge, so it wins only where the turret's omnidirectional aim matters and the extra
+ * cadence closes a cycle. If it wants to be a mainline choice, this multiplier is the
+ * dial — the costs below are what it is buying against.
+ *
+ * STORAGE (`CHAIN_STORE_TWIN_MULT` 0.42 vs the single turret's 0.55): a second flywheel,
+ * its motor, and a second feed path all eat the centre volume the hopper wants — about a
+ * quarter less than the already-cramped single turret.
+ *
+ * WEIGHT (`CHAIN_TWIN_MASS_FLOOR` +2.5 lb on the chassis mass FLOOR): one more flywheel
+ * assembly — motor ~0.8 lb plus wheel, hood, and plate ~1.5 lb. Modest against a 20-42 lb
+ * chassis, but it stacks with the drivetrain floor, so a twin turret can't be built at the
+ * very lightest weights.
+ *
+ * The two barrels sit `CHAIN_TWIN_BARREL_OFFSET` either side of the turret centreline and
+ * fire ALTERNATELY, so shots visibly leave from both — a real muzzle offset rather than
+ * two sprites firing from the same point.
+ */
+export const CHAIN_TWIN_FIRE_MULT = 1.15;
+export const CHAIN_STORE_TWIN_MULT = 0.42;
+export const CHAIN_TWIN_MASS_FLOOR = 2.5; // lb added to the chassis mass floor
+/**
+ * Lateral spacing of a TWIN's two muzzles from the turret centreline.
+ *
+ * = `CHAIN_LAUNCH_PLATE_GAP / 2`, and that is not a coincidence: the two channels sit side by
+ * side sharing a centre plate, so the muzzles are exactly one channel-width apart. It used to
+ * be 1.5", which is narrower than a Particle — two channels 3" apart could not each pass a 3"
+ * ball, and drawing the launcher honestly is what surfaced it.
+ */
+export const CHAIN_TWIN_BARREL_OFFSET = 1.65; // in — lateral spacing of the two muzzles
+/**
+ * LAUNCHER PLATE GEOMETRY — a flywheel launcher is two parallel plates with a wheel between
+ * them, so these are the two numbers that describe one.
+ *
+ * `GAP` is the clear width between the plates: a `CHAIN_PARTICLE_R * 2` = 3" ball plus running
+ * clearance either side. Anything narrower is a channel the game piece cannot fit down.
+ * `OVERHANG` is how far the plates run PAST the slew ring at each end. The assembly is
+ * CENTRED on the ring — the Particle is fed up the hole in the middle of it, so the plates
+ * have to straddle that axis to receive it — and the overhang is all the length they get
+ * beyond it: enough to carry the wheel and guide the piece off it, and no more. The plates
+ * are a launcher, not a rifle, and a long pair reads as a barrel.
+ */
+export const CHAIN_LAUNCH_PLATE_GAP = 3.3; // in — clear channel width (3" Particle + clearance)
+export const CHAIN_LAUNCH_PLATE_OVERHANG = 1.2; // in — plate reach past the ring, each end
+
 export const CHAIN_DEFAULT_SCORE_MODE: ChainScoreMode = 'turret';
 
-/** turret slew rate (rad/s). The turret tracks the lead solution at THIS max rate — it follows
+/**
+ * Turret slew rate (rad/s). The turret tracks the lead solution at THIS max rate — it follows
  * steady driving easily but CANNOT snap to a sudden velocity change (a shove), so shots fired
- * mid-correction fly along the stale heading and miss (aim is physical, not a guaranteed hit). */
-export const CHAIN_TURRET_SLEW = 4;
+ * mid-correction fly along the stale heading and miss (aim is physical, not a guaranteed hit).
+ *
+ * 4 → 7: a half-turn took 0.79s, which on a field this size meant the turret was still
+ * catching up through most of a drive-by. At 7 it is 0.45s — quick enough to feel responsive,
+ * and still FINITE, which is the whole point: a turret that snapped would make the lead
+ * solution a guarantee instead of something the driver has to hold still for.
+ */
+export const CHAIN_TURRET_SLEW = 7;
 
 // turretless-launcher aiming (drum + dumper turn the whole robot to face the goal)
 export const CHAIN_AIM_TOL = 0.14; // rad heading error under which a turned shooter fires
@@ -225,11 +401,11 @@ export const CHAIN_LAUNCH_Z0 = 10; // in — launch height (into the tall, over-
 // NEVER a rigid uniform line. The launch SPEED is uniform (same-velocity, per the archetype);
 // only the position + timing vary. NOT a "6-then-wait" burst.
 export const CHAIN_DRUM_MAX = 6; // drum CAPACITY (18"/3" = 6 pockets) — the visual slot count
-// the drum streams ~27 balls/s. `CHAIN_DRUM_INTERVAL` is the NOMINAL gap; it's set BELOW 1/27 s to
+// the drum streams ~24 balls/s. `CHAIN_DRUM_INTERVAL` is the NOMINAL gap; it's set BELOW 1/24 s to
 // counter the throughput lost to 60 Hz tick quantization + the symmetric jitter (each shot fires on
 // the next tick past its due time, which rounds a sub-3-tick interval UP) — so the OBSERVED cadence
-// lands at ~27/s while still varying naturally (measured, not a rigid uniform stream).
-export const CHAIN_DRUM_INTERVAL = 1 / 37.5; // nominal gap → ~27 balls/s observed
+// lands at ~24/s while still varying naturally (measured, not a rigid uniform stream).
+export const CHAIN_DRUM_INTERVAL = 1 / 30; // nominal gap → ~24 balls/s observed
 export const CHAIN_DRUM_JITTER = 0.55; // ± fraction of the interval — natural, non-periodic cadence
 export const CHAIN_DRUM_SPEED = 175; // in/s uniform horizontal launch
 
@@ -264,31 +440,165 @@ export const CHAIN_THROWBACK_SPREAD = 45; // in/s lateral spread on the throw-in
  * shooter, so it's smallest; the DRUM and DUMPER are open-hopper launchers — equal, large),
  * clamped to that ceiling. The `ballStorage` slider picks any capacity up to `chainStorageMax`.
  */
-export const CHAIN_STORAGE_MIN = 1;
-export const CHAIN_STORAGE_MAX = 60; // ceiling: the control prism packs a bit over one layer
-export const CHAIN_STORAGE_DEFAULT = 8;
+export const CHAIN_STORAGE_MIN = 1; // a floor of one ball; NOT scaled with the rest
+// CEILING. 60 assumed roughly ONE layer of Particles across the control footprint, which was
+// too pessimistic: the G02 control prism is 18" TALL and a Particle is 3" OD, so height is
+// not the binding constraint — hopper design is, and real hoppers stack. Raised 90 → 122 with
+// the +35% storage pass, which is about TWO layers across the 18"×24" prism. Still short of
+// the ~6 layers the prism height would geometrically allow, because a real hopper spends
+// volume on walls, the feed path and the shooter.
+export const CHAIN_STORAGE_MAX = 122;
+export const CHAIN_STORAGE_DEFAULT = 16;
 
-/** Chain Reaction chassis LENGTH range (in). Unlike DECODE, CR's intake doesn't eat into an
- * 18" cube (the sweeper deploys), so a CR chassis can run the full 18" long. */
-export const CHAIN_MIN_LENGTH = 10;
-export const CHAIN_MAX_LENGTH = 18;
-// effective sq in of chassis footprint per stored Particle — a 3"×3" ball hex-packs at ~8,
-// then G03 EXPANSION (the deployed hopper reaches past the 18"×18" frame into the 18"×24"
-// control prism) lets a full-frame launcher approach the ceiling: ~5.4 in²/ball → an 18×18
-// open-hopper launcher tops out near 60.
-export const CHAIN_STORE_AREA_PER_BALL = 5.4;
+/**
+ * Chain Reaction chassis size range (in), BOTH axes.
+ *
+ * THE SWEEPER DEPLOYS, so it does not have to fit inside the 18" starting cube alongside the
+ * chassis — the same thing most real FTC intakes do, and what this file already claimed even
+ * while `chainSizeLimits` was quietly charging for it anyway. A CR chassis therefore gets the
+ * whole cube on both axes no matter where its sweeper is mounted.
+ *
+ * The FLOOR is 15", not the 10" a DECODE chassis may shrink to (user decision). CR robots are
+ * hoppers first — tens of Particles, a scoring mechanism and usually a claw — so a 10" square
+ * was a shape nobody would build for this game. It also made the mount trade-offs incoherent:
+ * a build could dodge a mount's cost by shrinking instead of by giving something up.
+ *
+ * Charging the cube (the previous model) capped a front+back sweeper at 12" long and a side
+ * sweeper at 12" wide, which is exactly what made a 15" floor impossible for 11 of the 12
+ * intake × mount combinations.
+ *
+ * The CEILING is 17", not the 18" cube — and that number comes from the FIELD, not from
+ * taste. G04 wants the robot completely inside its 24" Lab Area, whose outer corner is
+ * occupied by the solid 6" Ring-Stand assembly; escaping the post means retreating inward on
+ * one axis, which only leaves room while the half-extent (plus clearance) stays under 9".
+ * That is a 17" chassis. An 18" one has NO legal start pose at any heading in any corner, so
+ * offering it would be offering a robot you can build and never field.
+ *
+ * The strict reading is "at least ONE axis under 17" — an 18×15 robot can retreat along its
+ * short axis and does fit. Both sliders are capped at 17 anyway: a coupled 2D constraint
+ * cannot be expressed in two independent sliders without one of them silently moving the
+ * other, and giving up the long-thin corner case is a much smaller cost than that.
+ */
+export const CHAIN_MIN_LENGTH = 15;
+export const CHAIN_MAX_LENGTH = 17;
+export const CHAIN_MIN_WIDTH = 15;
+export const CHAIN_MAX_WIDTH = 17;
+
+/**
+ * CR CHASSIS SIZE LIMITS, per build.
+ *
+ * A Robot must START inside an 18" cube (G03), and the INTAKE is structure that counts —
+ * so the sweeper's reach eats into the cube on whichever axis it is MOUNTED on, exactly
+ * the way DECODE's per-intake `lengthLimits` works. Which axis depends on the mount, which
+ * is the whole point of having mounts:
+ *   • front / back      → one reach off the LENGTH
+ *   • front+back        → TWO reaches off the LENGTH (a sweeper on each end)
+ *   • side              → TWO reaches off the WIDTH (a sweeper on each flank)
+ * The catalyst mechanism is deliberately NOT counted: it is an EXPANSION (G02/G03 let it
+ * reach into the 24" control prism after the match starts), not part of the starting cube.
+ *
+ * Without this, a "legal" CR build could be an 18×18 chassis with a 5" triangle sweeper on
+ * both ends — a 28" starting footprint.
+ */
+export function chainSizeLimits(spec: RobotSpec): {
+  minLength: number;
+  maxLength: number;
+  minWidth: number;
+  maxWidth: number;
+} {
+  // The sweeper DEPLOYS, so it does not share the 18" STARTING CUBE with the chassis (see
+  // `CHAIN_MIN_LENGTH`) — but it is still real structure once deployed, so chassis + sweepers
+  // must fit the EXPANSION PRISM the robot may grow into during play. That is the constraint
+  // that survives, and it is a far looser one: 24" rather than 18", and it only bites the
+  // longest-reach intake mounted on BOTH ends (a 5" triangle sweeper twice over on a 15"
+  // chassis is a 25" robot, which no rule allows).
+  //
+  // The mount's ordinary price is HOPPER volume (`chainMountStoreMult`) — you pay in what the
+  // robot can carry, not in a chassis dimension you could shrink your way out of.
+  const reach = INTAKE_PRESETS[spec.intake].reach;
+  const mount = intakeMountOf(spec);
+  const ends = mount === 'front' || mount === 'back' ? 1 : mount === 'frontback' ? 2 : 0;
+  const flanks = mount === 'side' ? 2 : 0;
+  // NOT floored to the minimum on purpose: when the deployed sweepers leave nothing legal the
+  // max drops BELOW the min and `chainMountFits` reports the combination as impossible.
+  // Flooring here would hand back a robot that overruns the prism instead.
+  return {
+    minLength: CHAIN_MIN_LENGTH,
+    maxLength: Math.min(CHAIN_MAX_LENGTH, CHAIN_PRISM - ends * reach),
+    minWidth: CHAIN_MIN_WIDTH,
+    maxWidth: Math.min(CHAIN_MAX_WIDTH, CHAIN_PRISM - flanks * reach),
+  };
+}
+
+/**
+ * Can this intake preset be mounted this way at all?
+ *
+ * TRUE for every combination today: the sweeper deploys, so no mount can shrink the chassis
+ * envelope below its own floor. It used to be the test that ruled out a long-reach intake on
+ * both ends of a chassis whose minimum already left no room for it.
+ *
+ * Kept, and kept called, on purpose. It is the one place that answers "is this build
+ * possible" for `coerceSpec` and for the builder's greying-out, and re-deriving that at both
+ * call sites the day a mechanism does constrain size is how the two drift apart. A predicate
+ * that is currently always true is cheaper than that.
+ */
+export function chainMountFits(spec: RobotSpec, mount: ChainIntakeMount): boolean {
+  const l = chainSizeLimits({ ...spec, intakeMount: mount });
+  return l.maxLength >= l.minLength && l.maxWidth >= l.minWidth;
+}
+
+// Square inches of footprint per stored Particle — the DERIVED cap's only size term, so it
+// is the single dial for storage across every archetype, mount and chassis. Cut 3.6 → 2.67
+// for the +35% storage pass (less area per ball ⇒ more balls; 3.6/1.35 ≈ 2.67), which lifts
+// every build by the same proportion rather than picking winners. The archetype and mount
+// multipliers below are untouched, so all the relative trade-offs still hold.
+export const CHAIN_STORE_AREA_PER_BALL = 2.67;
 export const CHAIN_STORE_TURRET_MULT = 0.55; // turret loses center volume to the rotor+shooter
 export const CHAIN_STORE_LAUNCHER_MULT = 1.0; // drum + dumper: open hopper (large, equal)
+// INTAKE MOUNT storage cost — every mounted edge is an OPENING the hopper can't use.
+// front/back are mirror images (one open end), so a rear sweeper is a free stylistic choice;
+// two mounts cost real volume. SIDE is the harshest: the flanks run the full chassis LENGTH
+// (and on a wide-and-short CR chassis that's most of the perimeter), which is the price for
+// collecting a stream you drive alongside. FRONTBACK opens two ENDS — a milder bite, and it
+// buys collection in both drive directions.
 export const CHAIN_STORE_SIDE_MULT = 0.6; // SIDE intake: open flanks eat into the hopper ⇒ smaller
+export const CHAIN_STORE_FRONTBACK_MULT = 0.75; // FRONT+BACK: two open ends, less costly than flanks
 
-/** the MAX Particles this robot can hold — from its footprint × an archetype factor,
- * clamped to [MIN, MAX]. Turret is smallest; drum + dumper are equal and large; a SIDE
- * intake (open left/right flanks) holds fewer than a front sweeper. */
+/** extra lb on the chassis MASS FLOOR from the Chain Reaction scoring mechanism. Only the
+ * twin turret carries one today (a whole second flywheel assembly); every other archetype
+ * is already priced into the base chassis. Threaded into `massLimits` by coerceSpec and by
+ * the builder's mass slider, so the floor the UI offers is the floor the sim enforces. */
+export function chainMassFloorBump(spec: RobotSpec): number {
+  const scoring = (spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE) === 'twinturret' ? CHAIN_TWIN_MASS_FLOOR : 0;
+  // every robot carries SOME catalyst mechanism, so this is a differential cost between
+  // the three archetypes rather than a tax on having one at all — the lightest (arm) is
+  // the baseline a chassis is expected to carry.
+  const catalyst = chainCatalystGeom(spec).massLb - CHAIN_CATALYSTS[CHAIN_DEFAULT_CATALYST].massLb;
+  // a catapult built to throw further stores more energy: bigger spring, stouter frame
+  const catapult = chainCatalystGeom(spec).fling ? catapultMassFor(chainCatapultRange(spec)) : 0;
+  return scoring + catalyst + catapult;
+}
+
+/** the hopper-volume factor an intake mount costs (1 = no cost). */
+export function chainMountStoreMult(mount: ChainIntakeMount): number {
+  if (mount === 'side') return CHAIN_STORE_SIDE_MULT;
+  if (mount === 'frontback') return CHAIN_STORE_FRONTBACK_MULT;
+  return 1; // front / back — a single open end, mirror images of each other
+}
+
+/** the MAX Particles this robot can hold — from its footprint × an archetype factor × the
+ * INTAKE MOUNT factor, clamped to [MIN, MAX]. Turret is smallest; drum + dumper are equal and
+ * large; a SIDE intake (open flanks) holds fewest, FRONT+BACK is in between, and a lone
+ * front/back sweeper costs nothing (`chainMountStoreMult`). */
 export function chainStorageMax(spec: RobotSpec): number {
   const area = spec.length * spec.width;
   const mode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
-  let mult = mode === 'turret' ? CHAIN_STORE_TURRET_MULT : CHAIN_STORE_LAUNCHER_MULT;
-  if (spec.intakeSide) mult *= CHAIN_STORE_SIDE_MULT;
+  const mult =
+    (mode === 'turret'
+      ? CHAIN_STORE_TURRET_MULT
+      : mode === 'twinturret'
+        ? CHAIN_STORE_TWIN_MULT // a second shooter assembly eats even more centre volume
+        : CHAIN_STORE_LAUNCHER_MULT) * chainMountStoreMult(intakeMountOf(spec));
   const cap = Math.round((area / CHAIN_STORE_AREA_PER_BALL) * mult);
   return Math.max(CHAIN_STORAGE_MIN, Math.min(CHAIN_STORAGE_MAX, cap));
 }
@@ -302,8 +612,11 @@ export function chainHopperCap(spec: RobotSpec): number {
 
 /** shooter: launch a held particle toward this robot's own accelerator. Auto-aimed
  * at the mouth center, so (like DECODE's shooter) it reliably scores — arcade feel. */
-export const CHAIN_FIRE_INTERVAL = 1 / 12; // nominal ~0.083 s → ~10.5 balls/s observed (deterministic;
-// 60 Hz quantization + re-anchor-to-actual rounds the sub-6-tick interval UP, so 11 bps lands at 10.5)
+export const CHAIN_FIRE_INTERVAL = 1 / 13; // 13 balls/s. The turret ACCUMULATES this interval
+// (fireReadyAt += CHAIN_FIRE_INTERVAL, play.ts) instead of re-anchoring to world.time, so the
+// sub-tick remainder carries and the long-run cadence averages EXACTLY 13 bps (a deterministic
+// 4/5-tick gap alternation) — a plain re-anchor would tick-quantize to 12 or 15, never 13. An
+// idle-guard (clamp to world.time when the hopper empties) prevents a burst catch-up on resume.
 export const CHAIN_SHOT_SPEED = 150; // in/s horizontal toward the mouth
 export const CHAIN_SHOT_VZ = 70; // in/s initial upward (visual arc)
 
@@ -314,18 +627,297 @@ export const CHAIN_SHOT_VZ = 70; // in/s initial upward (visual arc)
  * CHASSIS HEADING (`chainGoalAimHeading` returns the lead angle, so the whole robot points off-
  * goal by the lead). `leadDir` (play.ts) solves the projectile-lead angle. */
 
-/** catalysts: auto-pick a nearby free catalyst (if not already carrying one); seat it
- * on a hook when carried near one. */
-export const CHAIN_CATALYST_PICK_R = 9; // pick-up radius (to robot center)
-export const CHAIN_HOOK_PLACE_R = 12; // seat-on-hook radius (carried catalyst → hook)
+/** LEGACY catalyst radii — the old one-size-fits-all grabber, measured from the robot
+ * CENTRE with no facing requirement and no cycle time. Kept only as the reference the
+ * per-archetype numbers below are calibrated against (the `arm` is the closest match).
+ * Nothing reads these at runtime any more; `CHAIN_CATALYSTS` does. */
+export const CHAIN_CATALYST_PICK_R = 9;
+export const CHAIN_HOOK_PLACE_R = 12;
+
+/**
+ * CATALYST MECHANISMS — how a robot handles the rings.
+ *
+ * ONE CLAW does BOTH jobs on every archetype: it grabs a ring and it seats a ring on a
+ * hook, so each mechanism has a single `reach` rather than separate grab/place radii.
+ * Reach is measured from the mechanism's MOUTH (a point on the mounted chassis edge), not
+ * the robot centre, so where you bolt it genuinely matters. `cone` is the half-angle
+ * either side of that edge's outward normal it can work through (`Math.PI` = omni).
+ * `cycle` is the cooldown between claw actions. `massLb` is added to the chassis mass FLOOR.
+ *
+ * What separates the three is NOT how far they can place — it is reach, facing, tempo, and
+ * whether they can throw:
+ *  • ARM — the reach specialist. A long arm out one edge: the biggest working radius, so it
+ *    both grabs and seats from further back than anything else. Pays for it by having to
+ *    FACE the target (a ±50° cone) and by being slow to extend and retract.
+ *  • LAUNCHER — a short ground-intake claw PLUS a catapult. The claw is the shortest of the
+ *    three (it scoops right at the edge) and does the grabbing and placing as usual. The
+ *    CATAPULT is a separate trick: it FLINGS a carried ring far downfield to reposition it,
+ *    and it is deliberately INACCURATE — see `CHAIN_FLING_*`. It is transport, not scoring.
+ *  • TURRET — the convenience specialist. A claw on a rail + turret that tracks the nearest
+ *    hook, so it works in ANY direction and never asks the driver to reorient, and it cycles
+ *    fastest. Middling reach, and the heaviest of the three.
+ *
+ * WEIGHTS are all small in absolute terms (1.4-2.6 lb on a 20-42 lb chassis) — these are
+ * claws and linkages, not drivetrains. The ORDER is what carries the balance: arm (bare
+ * extrusion + a servo) < launcher (adds a catapult and its motor) < turret (adds a rail,
+ * a turret ring, and a second motor).
+ */
+export interface ChainCatalystGeom {
+  /** in — the CLAW's working radius, used for BOTH grabbing and seating (one claw does both) */
+  reach: number;
+  cone: number; // rad — half-angle either side of the mount's outward normal (PI = omni)
+  cycle: number; // s — cooldown between claw actions
+  massLb: number; // lb added to the chassis mass floor
+  /** can this mechanism also FLING a carried ring downfield? (the catapult) */
+  fling: boolean;
+}
+/**
+ * The CONTROL PRISM's long dimension (in). G02 bounds a Robot to 18"×24"×18" and G03 lets it
+ * expand into that from an 18" start cube.
+ *
+ * The allowance is therefore NOT a fixed 6" — it is whatever is LEFT of the 24" once the
+ * robot's own extent along that axis is spent. A maxed-out 18" robot gets 6"; a compact one
+ * legally reaches much further. Treating it as a constant 6 (which this file used to do)
+ * quietly charged every small robot for size it never used, and made the ARM — the mechanism
+ * whose entire identity is extension — no better than a long intake.
+ */
+export const CHAIN_PRISM = 24;
+
+/** what's left of the prism for a MAXED-OUT (18") robot: the worst case, not the rule. */
+export const CHAIN_EXPANSION = CHAIN_PRISM - ROBOT_MAX_SIZE; // 6
+
+/** How far the claw ARM is DRAWN past the frame. Deliberately much shorter than either its
+ * grab radius or the expansion limit: an arm only reaches out while it is actuating, and a
+ * top-down sprite shows the robot as it sits — stowed. Drawing it extended made every robot
+ * look like it was permanently mid-grab and hugely oversized. */
+export const CHAIN_ARM_DRAW = 2.2;
+
+/** RENDER-ONLY. How far a CORNER-mounted catalyst's BODY is drawn back along its diagonal so
+ * it sits on the frame instead of straddling the corner. An edge mount already has the whole
+ * chassis behind it; a corner has only the diagonal, so the pivot block / scoop / turret ring
+ * hung visibly off both rails. The mechanism's REACH ORIGIN is untouched — that stays exactly
+ * on the frame point (see `catalystMouth`), because it is what reach is measured from; only
+ * the sprite moves, exactly as a real claw's pivot is bolted inside the frame. */
+export const CHAIN_CORNER_BODY_INSET = 1.5;
+
+/** RAIL: inches of the mounted side the carriage CANNOT use — its own body plus the end
+ *  stops. The track spans the side less this at each end. */
+export const CHAIN_RAIL_MARGIN = 2.2;
+/**
+ * RAIL: how fast the carriage traverses, in fractions of its half-travel per second.
+ *
+ * 1.8 → 3.6: end to end was 1.1s, longer than the claw's own cycle time, so the traverse was
+ * the thing you waited on rather than the mechanism you bought. At 3.6 it crosses in ~0.55s —
+ * about one cycle — so lining up is part of the same motion as grabbing.
+ *
+ * Still deliberately FINITE. A carriage that arrived instantly would make the rail a
+ * strictly-better turret claw instead of a mechanism with travel time, and the whole reason
+ * it reads as hardware on screen is that you can see it move.
+ */
+export const CHAIN_RAIL_RATE = 3.6;
+/**
+ * CLAW slew rate (rad/s) — how fast the catalyst claw swivels toward what it is working on.
+ *
+ * It used to be INSTANT: the sprite read the target angle every frame, so the claw teleported
+ * onto each new one. Fast is right, but a mechanism that arrives with no motion at all reads
+ * as a UI element rather than as hardware, and it hid the moment where the claw is choosing
+ * something. At 9 rad/s a half-turn takes ~0.35s — quicker than the rail underneath it, since
+ * spinning a claw is a far smaller job than driving a carriage down a track.
+ *
+ * RENDER-ONLY, deliberately. The reach cone for a turret/rail claw is a full circle, so this
+ * angle decides nothing in the sim — putting it in the world state would add a field to every
+ * snapshot to animate something no rule reads.
+ */
+export const CHAIN_CLAW_SLEW = 9;
+/** How far BEYOND its own working envelope a claw looks for something to track, in inches.
+ *  The mechanism should be lining itself up while the robot is still driving up — a carriage
+ *  that only starts moving once the target is already grabbable wastes its whole traverse
+ *  time inside the moment it was supposed to save. Beyond this there is nothing worth
+ *  tracking, and the carriage stows centred rather than parking against an end stop. */
+export const CHAIN_TRACK_APPROACH = 12;
+
+// CYCLE times were cut 25% across the board (2026-08): back-to-back catalyst actions —
+// grab, drive, place — were reading as a beat of dead air between each one. This is a
+// uniform softening, NOT a rebalance: every mechanism keeps its ORDER and its relative
+// gaps (turret < rail < arm < launcher), which is what the cooldown is actually for —
+// stopping the reach-heavy archetypes from also being the fastest.
+export const CHAIN_CATALYSTS: Record<ChainCatalystType, ChainCatalystGeom> = {
+  // ARM: `reach` here is only the FLOOR (what a maxed-out 18" chassis gets). The real value
+  // is per-chassis — see `chainArmReach`, which `chainCatalystGeom` substitutes in. The arm
+  // is the one mechanism that EXTENDS, so it is the one that gets to spend the leftover
+  // prism; the launcher's scoop and the turret's rail don't telescope and stay fixed.
+  arm: { reach: CHAIN_EXPANSION + CHAIN_CATALYST_OD / 2, cone: 0.87, cycle: 0.68, massLb: 1.4, fling: false },
+  // LAUNCHER raised 8 → 11. The 8" scoop was priced back when the catapult was (wrongly)
+  // the long-range PLACER, so the claw was taxed to compensate. Now that the claw does the
+  // grabbing and placing like everyone else's, that tax made it needlessly awkward — its
+  // real costs are the weight, the slow cycle, and the narrow cone. Still the shortest of
+  // the three, just no longer punishing.
+  launcher: { reach: 5, cone: 0.61, cycle: 0.75, massLb: 2.0, fling: true },
+  // TURRET: a claw that AIMS anywhere but stays bolted where it is.
+  turret: { reach: 7, cone: Math.PI, cycle: 0.41, massLb: 2.6, fling: false },
+  // RAIL: the same turret claw on a linear track that also TRAVERSES the mounted side, so
+  // the claw can be positioned as well as aimed. It buys effective reach without extending
+  // (the carriage covers the span) and pays for it in weight and a slower cycle — a track,
+  // its carriage and a second actuator are real hardware bolted along a whole side.
+  rail: { reach: 7, cone: Math.PI, cycle: 0.53, massLb: 3.4, fling: false },
+};
+
+/**
+ * THE CATAPULT FLING (launcher only). Holding a ring with no hook in claw reach and pressing
+ * the catalyst button THROWS it downfield instead of dropping it — the point is repositioning
+ * a ring across the field without driving it there, NOT placing it.
+ *
+ * It is meant to be INACCURATE, so the landing spot is scattered three ways: the launch speed
+ * varies ±`SPEED_VAR` (which moves the distance a lot, since both the airborne leg and the
+ * ground slide scale with it), a random lateral kick up to ±`SPREAD`, and the ring then slides
+ * to rest under friction. Typical throws land ~55-130" out along the catapult's facing — most
+ * of a 144" field — with no promise about where exactly.
+ */
+/** the catapult's BUILD RANGE slider (inches) — the nominal distance it is built to throw.
+ * A short-range build is light and re-cocks fast; a long one is heavier and slower. The
+ * envelope reaches 170" so a maxed catapult can genuinely cross the 144" field — the point
+ * of the mechanism is sending a ring somewhere far, not nudging it a tile away. */
+export const CHAIN_CATAPULT_RANGE_MIN = 50;
+export const CHAIN_CATAPULT_RANGE_MAX = 170;
+export const CHAIN_CATAPULT_RANGE_DEFAULT = 110;
+/** the catapult's fixed mounting YAW (degrees from chassis forward), in 15° steps. It is
+ * NOT turreted, so this is a build-time choice and the chassis must be pointed to aim. */
+export const CHAIN_CATAPULT_YAW_STEP = 15;
+export const CHAIN_CATAPULT_YAW_DEFAULT = 0;
+
+// Raised 110 → 150 so a throw is mostly FLIGHT rather than a long ground slide: at 110 a
+// max-range throw was ~half air / half slide, which read as a shove rather than a launch.
+// At 150 the hang time is ~0.78 s and roughly two thirds of the distance is airborne.
+export const CHAIN_FLING_VZ = 150; // in/s upward (≈0.78 s hang time at GRAVITY 386)
+export const CHAIN_FLING_SPEED_VAR = 0.4; // ± fraction — the dominant source of scatter
+export const CHAIN_FLING_SPREAD = 20; // in/s random lateral kick
+/** the minimum speed a ring is nudged with when it is evicted from under/on a robot, so it
+ * always visibly SLIDES clear (and then decays under CHAIN_FLING_FRICTION) instead of being
+ * snapped to the chassis edge. Deliberately SMALL: it only has to roll the ring out from
+ * under the frame, not fire it away — at the old 26 in/s rings pinged off robots like
+ * pinballs. A moving robot adds a little on top (see the eviction in play.ts). */
+export const CHAIN_RING_SLIDE_MIN = 9;
+export const CHAIN_FLING_FRICTION = 90; // in/s² ground decay once it lands
+
+/**
+ * The launch speed that makes a catapult throw land `range` inches away.
+ *
+ * A throw is an airborne leg plus a ground slide, and BOTH scale with the launch speed:
+ *   range = v·t + v²/(2·friction),  t = 2·VZ/GRAVITY  (the hang time, fixed by the arc)
+ * Solving that quadratic for v is what turns the builder's "how far does it throw" slider
+ * into physics, instead of the slider secretly being the speed. The ±SPEED_VAR scatter is
+ * applied to the RESULT, so a longer-range build is proportionally less precise too —
+ * which is the right relationship (you cannot buy accuracy by buying range).
+ */
+export function catapultSpeedFor(range: number): number {
+  const t = (2 * CHAIN_FLING_VZ) / 386; // GRAVITY; local so config stays dependency-free
+  const a = 1 / (2 * CHAIN_FLING_FRICTION);
+  // a·v² + t·v − range = 0
+  return (-t + Math.sqrt(t * t + 4 * a * range)) / (2 * a);
+}
+
+/** lb added to the mass floor by a catapult built for `range` — more range means a bigger
+ * spring/motor and a stouter frame to survive the recoil. Small in absolute terms (≤1.2 lb),
+ * on top of the launcher mechanism's own weight. */
+export function catapultMassFor(range: number): number {
+  const f = (range - CHAIN_CATAPULT_RANGE_MIN) / (CHAIN_CATAPULT_RANGE_MAX - CHAIN_CATAPULT_RANGE_MIN);
+  return 1.2 * Math.max(0, Math.min(1, f));
+}
+
+/** seconds to re-cock a catapult built for `range` — storing more energy takes longer, so
+ * the long-throw build also throws less often. This is the main cost of buying range. */
+export function catapultCycleFor(range: number): number {
+  const f = (range - CHAIN_CATAPULT_RANGE_MIN) / (CHAIN_CATAPULT_RANGE_MAX - CHAIN_CATAPULT_RANGE_MIN);
+  return 1.1 + 1.0 * Math.max(0, Math.min(1, f));
+}
+
+/** Within this distance of the mechanism's mouth the reach CONE does not apply — the ring
+ * is already in the claw's grasp, so the angle it sits at is irrelevant. Without this, a
+ * ring you had just driven onto (and so nudged slightly under the bumper, BEHIND the claw
+ * line) would become ungrabbable, which is a real gameplay annoyance rather than a
+ * meaningful constraint. The cone still governs everything further out. */
+export const CHAIN_CATALYST_NEAR = 5;
+
+export const CHAIN_CATALYST_TYPES = ['arm', 'launcher', 'turret', 'rail'] as const;
+export const CHAIN_DEFAULT_CATALYST: ChainCatalystType = 'arm';
+export const CHAIN_DEFAULT_CATALYST_MOUNT: ChainCatalystMount = 'front';
+
+/** the catapult's configured range (in), clamped + defaulted. */
+export function chainCatapultRange(spec: RobotSpec): number {
+  const r = spec.catapultRange;
+  if (typeof r !== 'number' || !Number.isFinite(r)) return CHAIN_CATAPULT_RANGE_DEFAULT;
+  return Math.max(CHAIN_CATAPULT_RANGE_MIN, Math.min(CHAIN_CATAPULT_RANGE_MAX, r));
+}
+
+/** the catapult's fixed mounting yaw in RADIANS (from chassis forward), clamped + defaulted. */
+export function chainCatapultYaw(spec: RobotSpec): number {
+  const y = spec.catapultYaw;
+  const deg = typeof y === 'number' && Number.isFinite(y) ? Math.max(-180, Math.min(180, y)) : CHAIN_CATAPULT_YAW_DEFAULT;
+  return (deg * Math.PI) / 180;
+}
+
+/** the catalyst mechanism's geometry for a spec (defaulted). */
+/** The robot's total footprint along the axis a catalyst edge points down, INCLUDING a
+ * sweeper mounted on that same axis. The sweeper is real structure once deployed, so a claw
+ * reaching past that edge has to clear it — this is about the EXPANSION prism during play,
+ * which is a different question from the starting cube (which the sweeper no longer has to
+ * fit inside; see `CHAIN_MIN_LENGTH`). */
+function chainAxisExtent(spec: RobotSpec, edge: ChainCatalystMount): number {
+  const reach = INTAKE_PRESETS[spec.intake].reach;
+  const mount = intakeMountOf(spec);
+  if (edge === 'front' || edge === 'back') {
+    const ends = mount === 'front' || mount === 'back' ? 1 : mount === 'frontback' ? 2 : 0;
+    return spec.length + ends * reach;
+  }
+  const flanks = mount === 'side' ? 2 : 0;
+  return spec.width + flanks * reach;
+}
+
+/**
+ * How far the ARM can work past its mounted edge, for THIS chassis (in).
+ *
+ * G02/G03 give the robot a 24" prism to expand into, so the legal extension is the prism
+ * minus whatever the robot already spends along that axis — and the claw tip sitting at the
+ * limit can still close on a 6"-OD ring CENTRED another 3" out, which is the grab radius the
+ * sim tests. So:  reach = (24 − axis extent) + ring radius.
+ *
+ * The payoff is a real build decision rather than a flat number: a maxed 18" chassis gets 9",
+ * while a compact one with its sweeper on the other axis gets up to ~17" — genuinely the
+ * reach specialist. It costs nothing visually, because the ARM SPRITE is drawn at the fixed
+ * stowed `CHAIN_ARM_DRAW`, not at this radius: an arm is only extended while it actuates, so
+ * the top-down sprite just says which way it points.
+ */
+export function chainArmReach(spec: RobotSpec): number {
+  // A SWING extends past the front or the back whichever end it is serving, so what it
+  // spends is the FORE-AFT axis — wherever its pivot happens to be bolted. (The old
+  // `'frontback'` mount fell through to the width branch, which measured the wrong axis for
+  // exactly the mechanism the value existed to describe.)
+  const axis = catalystSwingOf(spec) ? 'front' : catalystMountOf(spec);
+  const left = CHAIN_PRISM - chainAxisExtent(spec, axis);
+  return Math.max(0, left) + CHAIN_CATALYST_OD / 2;
+}
+
+/** The mechanism geometry IN EFFECT for this robot. One resolver so the action, the HUD
+ * prompt and the mass floor can never disagree — the ARM's reach is per-chassis, so it is
+ * substituted here rather than at each call site. */
+export function chainCatalystGeom(spec: RobotSpec): ChainCatalystGeom {
+  const type = spec.catalystType ?? CHAIN_DEFAULT_CATALYST;
+  const base = CHAIN_CATALYSTS[type];
+  return type === 'arm' ? { ...base, reach: chainArmReach(spec) } : base;
+}
 
 /** endgame: park fully inside a Lab-Area corner square (5 pt) / ascend within this
  * radius of a Ring Stand (100 pt). The SAME radius decides the AUTO descent: a robot
  * that STARTS on a stand and leaves this radius during auto scores descent (100 pt).
  * Lab squares are 24" at each field corner; an alliance owns the two on its side
  * (red x<0, blue x>0). APPROX — refine with manual. */
-export const CHAIN_LAB = 24; // corner square size (in)
-export const CHAIN_ASCEND_R = 9; // ascend proximity to a ring stand (in)
+export const CHAIN_LAB = 24; // corner square size (in). APPROX — refine with manual.
+// Ascend/descent proximity, measured to the CORNER ASSEMBLY (the solid square), not to the
+// post inside it. Measuring to the box is what makes this stable: the robot can never be
+// centred on the post, so post-distance would have to be a big fudge factor that also
+// swallowed half the Lab Area. Box-distance means "your bumper is at the structure" — a
+// robot pressed against it sits ~a half-extent away, comfortably inside 10".
+export const CHAIN_ASCEND_R = 10;
 
 /**
  * START POSITIONS (manual G04 — "Robots must begin the match completely in the Lab Area",
@@ -341,12 +933,30 @@ export interface ChainStartAnchor {
   pos: { x: number; y: number };
   heading: number;
 }
-const LAB_C = CHAIN_HALF_X - CHAIN_LAB / 2; // 60" — a Lab square's centre coordinate
+// The RING STAND anchors sit BESIDE the post, not on it — the post is solid now, so a robot
+// centred on it would spawn inside a collider and be violently ejected. Offsetting inward
+// along the diagonal by CHAIN_STAND_STANDOFF puts the bumper against the post, which is what
+// "at the stand" physically means and what `onRingStand`'s radius accepts.
+// Anchors are placed CLEAR of the solid corner assemblies (which occupy the outer
+// CHAIN_RINGSTAND_BOX of every corner) and inside the walls. The RING STAND ones park
+// alongside an assembly — close enough that `onRingStand` counts them (so a stand start
+// still arms the auto-descent), without spawning inside a collider, which would eject the
+// robot violently on tick one. Smoke asserts every anchor is collider-clear.
+// Anchors are all FULLY inside a Lab-Area corner square (G04) AND clear of the solid corner
+// assembly, which occupies the outer CHAIN_RINGSTAND_BOX of that same corner — the two
+// constraints together leave an L-shaped band, and these are spread across it. The RING
+// STAND pair parks alongside an assembly, close enough that `onRingStand` counts them (so a
+// stand start still arms the auto-descent) without spawning inside the collider. Smoke
+// asserts every anchor is in-zone, collider-clear, and armed/unarmed as intended.
+// ORDER IS LOAD-BEARING: a 2-robot alliance defaults to anchors 0 and 1, so those must be
+// the two plain FLOOR starts in opposite corners (not two ring-stand starts, which would
+// arm both robots' auto-descent by default). Indices 2/3 stay the ring-stand pair, matching
+// the long-standing convention the descent tests and the role split rely on.
 export const CHAIN_START_POSES: readonly ChainStartAnchor[] = [
-  { name: 'LAB · TOP', pos: { x: LAB_C, y: LAB_C }, heading: Math.PI },
-  { name: 'LAB · BOTTOM', pos: { x: LAB_C, y: -LAB_C }, heading: Math.PI },
-  { name: 'RING STAND · TOP', pos: { x: CHAIN_RINGSTAND_XY, y: CHAIN_RINGSTAND_XY }, heading: Math.PI },
-  { name: 'RING STAND · BOTTOM', pos: { x: CHAIN_RINGSTAND_XY, y: -CHAIN_RINGSTAND_XY }, heading: Math.PI },
+  { name: 'LAB · TOP', pos: { x: 57, y: 57 }, heading: Math.PI },
+  { name: 'LAB · BOTTOM', pos: { x: 57, y: -57 }, heading: Math.PI },
+  { name: 'STAND · TOP', pos: { x: 57, y: 62 }, heading: Math.PI },
+  { name: 'STAND · BOTTOM', pos: { x: 57, y: -62 }, heading: Math.PI },
 ];
 
 /**
@@ -393,37 +1003,182 @@ export const CHAIN_FOUL_SLOP = 1; // in of bumper slack for the robot-robot cont
  * so a single click sets a coherent playstyle. All numbers are within the shared
  * coerceSpec ranges (so applying one is a no-op through the coercer and the card
  * highlights as selected). `name`/`teamName` describe the archetype (no team number).
+ *
+ * MOUNTS: every preset picks the intake/shooter EDGES that its playstyle actually wants,
+ * so the four cards between them demonstrate all of them. The mount is never decoration —
+ * each one below buys a specific driving habit, and (for `side`/`frontback`) pays for it in
+ * hopper volume via `chainMountStoreMult`, which is why their storage numbers are lower.
+ * Every `ballStorage` here must stay ≤ that build's `chainStorageMax`, or coerceSpec clamps
+ * it and the card stops highlighting as selected — smoke asserts this.
  */
-export const CHAIN_PRESETS: readonly RobotSpec[] = [
+/**
+ * Every CR preset drives ROBOT-CENTRIC (user decision); only that assist differs from
+ * the player default, so aim/intake/fire automation stays on.
+ *
+ * Chain Reaction rewards pointing the robot at things — a sweeper collects over the
+ * edge it is mounted on, and a drum or dumper fires over its own edge — so for most of
+ * these builds the chassis heading IS the aim. Field-centric drive hides that heading
+ * from the stick. It is a preset default, not a rule: the assist is still a per-robot
+ * setting anyone can flip.
+ *
+ * Shared by reference rather than repeated nine times, so "the presets all drive the
+ * same way" stays true by construction.
+ */
+const CR_PRESET_ASSISTS: AssistConfig = {
+  fieldCentric: false,
+  aimAssist: true,
+  autoIntake: true,
+  autoFire: true,
+};
+
+const CHAIN_PRESET_BUILDS: readonly RobotSpec[] = [
+  // ── REAL TEAM BUILDS ──────────────────────────────────────────────────────────────────
+  // Five entries supplied by the user, each a specific team's CAD-competition robot. They
+  // lead the list because they are the ones people are actually looking for; the four
+  // archetype demos below them still exist to show off the mount/archetype space.
+  // Unlike the demos, these are NAMED ROBOTS — `name` is the robot, `teamName` is the team,
+  // and `teamNumber` is real.
   {
-    // long-range precision: turret shoots from anywhere, swerve + clearance to roam
-    // over the beams
-    name: 'Sniper', teamName: 'Turret · scores from anywhere', teamNumber: 0,
-    length: 14.5, width: 17, intake: 'sloped', massLb: 24, drivetrain: 'swerve',
+    // Ender: a rear turret pointed off the left flank, and the CLAW CATAPULT on the opposite
+    // (right) side so the two mechanisms never fight for the same space.
+    name: 'Ender', teamName: 'Loomy Squad', teamNumber: 788,
+    length: 15, width: 16.5, intake: 'sloped', massLb: 26, drivetrain: 'mecanum',
+    driveRpm: 435, flywheelInertia: 0.3, canSort: false,
+    groundClearance: 1.0, scoreMode: 'turret', chainIntake: 'sweeper',
+    intakeMount: 'front', shooterMount: 'back', catalystType: 'launcher', catalystMount: 'right',
+    assists: CR_PRESET_ASSISTS,
+  },
+  {
+    // KITSUNE: both mechanisms live on the REAR CORNERS — turret back-left, rail-turret claw
+    // back-right — leaving the whole front for the sweeper. The corner mounts are exactly
+    // what `ChainMountPos` corners were added for.
+    name: 'KITSUNE', teamName: 'KITSUNE', teamNumber: 186033,
+    length: 15, width: 17, intake: 'sloped', massLb: 27, drivetrain: 'mecanum',
+    driveRpm: 435, flywheelInertia: 0.3, canSort: false,
+    groundClearance: 1.0, scoreMode: 'turret', chainIntake: 'sweeper',
+    intakeMount: 'front', shooterMount: 'backleft', catalystType: 'turret', catalystMount: 'backright',
+    assists: CR_PRESET_ASSISTS,
+  },
+  {
+    // P. J. Soumik: centre turret over a tank base, with the rail-turret claw at the back so
+    // it can work hooks without the chassis giving up its heading.
+    name: 'P. J. Soumik', teamName: 'Soumik Squadron', teamNumber: 14164,
+    length: 15, width: 17, intake: 'sloped', massLb: 32, drivetrain: 'tank',
+    driveRpm: 340, flywheelInertia: 0.3, canSort: false,
+    groundClearance: 1.0, scoreMode: 'turret', chainIntake: 'sweeper',
+    intakeMount: 'front', shooterMount: 'center', catalystType: 'rail', catalystMount: 'back',
+    assists: CR_PRESET_ASSISTS,
+  },
+  {
+    // Rocky: everything omnidirectional. Butterfly base, front+back sweepers, twin turret in
+    // the middle, and the claw on a CENTRE SWING — one ARM on a pivot in the middle of the
+    // chassis, working front or back (only the arm swings; a turret claw already aims itself). Nothing on this robot needs the chassis pointed
+    // anywhere. It pays for the second sweeper in HOPPER volume, not in chassis size.
+    name: 'Rocky', teamName: 'Estimate', teamNumber: 5050,
+    length: 15, width: 17, intake: 'sloped', massLb: 30, drivetrain: 'butterfly',
+    driveRpm: 435, tankRpm: 340, flywheelInertia: 0.3, canSort: false,
+    groundClearance: 1.0, scoreMode: 'twinturret', chainIntake: 'sweeper',
+    intakeMount: 'frontback', shooterMount: 'center', catalystType: 'arm',
+    catalystMount: 'center', catalystSwing: 'fb',
+    assists: CR_PRESET_ASSISTS,
+  },
+  {
+    // String Theory: front+back sweepers and a centre turret, with a SWING ARM bolted to the
+    // RIGHT RAIL — the pivot is on the flank and the arm swings fore and aft, so it works the
+    // front-right and back-right corners. This build is why the swing stopped being a mount:
+    // as the centre cell of the mount picker, "a swing" and "on the right" were alternatives.
+    name: 'String Theory', teamName: 'Circuitrunners Surge', teamNumber: 1002,
+    length: 15, width: 17, intake: 'sloped', massLb: 31, drivetrain: 'tank',
+    driveRpm: 340, flywheelInertia: 0.3, canSort: false,
+    groundClearance: 1.0, scoreMode: 'turret', chainIntake: 'sweeper',
+    intakeMount: 'frontback', shooterMount: 'center', catalystType: 'arm',
+    catalystMount: 'right', catalystSwing: 'fb',
+    assists: CR_PRESET_ASSISTS,
+  },
+  // ── ARCHETYPE DEMOS ───────────────────────────────────────────────────────────────────
+  {
+    // long-range precision: turret shoots from anywhere, swerve + clearance to roam over
+    // the beams. MOUNT: a turret is top-mounted and aims itself, so the chassis never has
+    // to face the goal — which is exactly the build that can afford a FRONT+BACK sweeper
+    // and collect while driving in either direction. It pays ~25% of the hopper for that.
+    name: 'Sniper', teamName: 'Turret · shoots and collects any direction', teamNumber: 0,
+    length: 16, width: 17, intake: 'sloped', massLb: 24, drivetrain: 'swerve',
     driveRpm: 500, flywheelInertia: 0.2, canSort: false,
-    ballStorage: 12, groundClearance: 1.3, scoreMode: 'turret', chainIntake: 'sweeper',
+    groundClearance: 1.0, scoreMode: 'turret', chainIntake: 'sweeper',
+    intakeMount: 'frontback', shooterMount: 'front',
+    assists: CR_PRESET_ASSISTS,
   },
   {
     // volume hauler: dumps a huge load at the wall, tank push + MAX storage + high
-    // clearance to bulldoze over the beams
-    name: 'Hauler', teamName: 'Dumper · haul & unload', teamNumber: 0,
-    length: 15, width: 18, intake: 'sloped', massLb: 38, drivetrain: 'tank',
+    // clearance to bulldoze over the beams. MOUNT: a REAR catapult means the whole cycle
+    // is one straight line — drive forward to fill the hopper, reverse into range, dump.
+    // No turning around at either end. Two end mounts on opposite edges cost NO storage
+    // (front and back are mirror images), so it keeps the biggest hopper in the set.
+    name: 'Hauler', teamName: 'Dumper · fill forward, reverse and unload', teamNumber: 0,
+    length: 15, width: 17, intake: 'sloped', massLb: 38, drivetrain: 'tank',
     driveRpm: 340, flywheelInertia: 0.2, canSort: false,
-    ballStorage: 40, groundClearance: 1.5, scoreMode: 'dumper', chainIntake: 'sweeper',
+    groundClearance: 1.0, scoreMode: 'dumper', chainIntake: 'sweeper',
+    intakeMount: 'front', shooterMount: 'back',
+    assists: CR_PRESET_ASSISTS,
   },
   {
-    // the volume shooter: a chassis-wide drum firing 6 at once from anywhere, light mecanum
-    name: 'Drummer', teamName: 'Drum · fast stream from anywhere', teamNumber: 0,
-    length: 14.5, width: 17, intake: 'sloped', massLb: 25, drivetrain: 'mecanum',
+    // the volume shooter: a chassis-wide drum streaming from anywhere, light mecanum.
+    // MOUNT: SIDE sweepers turn a mecanum's strafe into the collection tool — slide
+    // sideways along a line of particles and hoover it up with the flank rollers, then
+    // face the goal and stream. The open flanks are the harshest storage cost (0.6).
+    name: 'Drummer', teamName: 'Drum · strafe-collect, stream from anywhere', teamNumber: 0,
+    // still the SLIMMEST build in the set — the flank sweepers' cost is the hopper opening
+    // (`CHAIN_STORE_SIDE_MULT`), and a narrow chassis keeps the strafe quick
+    length: 17, width: 15, intake: 'sloped', massLb: 25, drivetrain: 'mecanum',
     driveRpm: 470, flywheelInertia: 0.3, canSort: false,
-    ballStorage: 24, groundClearance: 1.4, scoreMode: 'drum', chainIntake: 'sweeper',
+    groundClearance: 1.0, scoreMode: 'drum', chainIntake: 'sweeper',
+    intakeMount: 'side', shooterMount: 'front',
+    assists: CR_PRESET_ASSISTS,
   },
   {
-    // fast wall-runner: a quick x-drive dumper that shuttles particles to its own
-    // accelerator; low clearance keeps it off the beams (works its own quadrant)
-    name: 'Skimmer', teamName: 'Dumper · fast wall runs', teamNumber: 0,
-    length: 14.5, width: 16, intake: 'sloped', massLb: 22, drivetrain: 'xdrive',
+    // fast wall-runner: a quick x-drive dumper working its own quadrant; low clearance
+    // keeps it off the beams. MOUNT: an x-drive strafes as fast as it drives, so a
+    // BROADSIDE catapult lets it run the wall and fire sideways WITHOUT ever turning —
+    // the launch line then spans the chassis LENGTH, not its width.
+    name: 'Skimmer', teamName: 'Dumper · run the wall, fire broadside', teamNumber: 0,
+    length: 15, width: 16, intake: 'sloped', massLb: 22, drivetrain: 'xdrive',
     driveRpm: 520, flywheelInertia: 0.1, canSort: false,
-    ballStorage: 26, groundClearance: 1.0, scoreMode: 'dumper', chainIntake: 'sweeper',
+    groundClearance: 1.0, scoreMode: 'dumper', chainIntake: 'sweeper',
+    intakeMount: 'front', shooterMount: 'right',
+    assists: CR_PRESET_ASSISTS,
   },
 ] as const;
+
+/**
+ * Every preset ships with a FULL hopper (user decision).
+ *
+ * COMPUTED, never written down. `chainStorageMax` is a function of chassis area,
+ * scoring archetype and intake mount, so a hardcoded number would quietly stop being
+ * the maximum the moment any of those constants moved — and `coerceSpec` clamping a
+ * now-too-large value is exactly what makes a preset card stop highlighting as
+ * selected. Deriving it means "max" is true by construction at every chassis size.
+ */
+/** how many of the entries above are the REAL TEAM ROBOTS (the rest are archetype demos) */
+export const CHAIN_REAL_PRESETS = 5;
+
+/**
+ * The shipped builds, with two properties DERIVED rather than typed out.
+ *
+ * MASS (the five real robots): the lightest their build is allowed to be. A CR robot is a
+ * hopper on wheels — the mass floor already accounts for the drivetrain, the flywheel and
+ * every mechanism bolted on (`chainMassFloorBump`), so anything above the floor is ballast
+ * nobody asked for. Derived, not written down, because the floor MOVES when a mechanism is
+ * retuned and a hard-coded number would silently become "a bit heavy" instead of "minimum".
+ *
+ * BALL STORAGE (all of them): the most that build can hold. Same reasoning — capacity is a
+ * function of footprint, archetype and intake mount, so writing it out would let a preset
+ * drift below its own maximum the moment any of those change.
+ */
+export const CHAIN_PRESETS: readonly RobotSpec[] = CHAIN_PRESET_BUILDS.map((s, i) => ({
+  ...s,
+  massLb:
+    i < CHAIN_REAL_PRESETS
+      ? massLimits(s.drivetrain, s.flywheelInertia, chainMassFloorBump(s)).min
+      : s.massLb,
+  ballStorage: chainStorageMax(s),
+}));

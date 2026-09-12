@@ -1,5 +1,6 @@
 import type { Replay } from '../sim/replay';
 import type { LiveRoom, StaffRole } from './protocol';
+import type { ReportedUser, ReportRow } from '../report';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl } from './env';
 import { getAuthToken } from '../lib/authClient';
@@ -147,6 +148,9 @@ export interface UserStats {
   records: UserRecordStat[];
   match: { played: number; wins: number; losses: number };
   recent: UserMatchRow[];
+  /** LIFETIME playtime + games played: this game, and the total across all of them.
+   *  Absent from a server older than the tracker, which renders as nothing at all. */
+  activity?: { games: number; seconds: number; allGames: number; allSeconds: number };
 }
 
 /** One round-trip: a user's whole competitive profile for the current season
@@ -174,10 +178,29 @@ export function fetchGlobalStats(): Promise<GlobalStats> {
   return getJson(`/api/stats`);
 }
 
-/** every live match currently running (for the "Watch Live" list). Each `room` code
- * is spectated via `LobbyClient.spectate`. */
+/** every live RANKED match currently running (for the "Watch Live" list). Each
+ * `room` code is spectated via `LobbyClient.spectate`. Custom and record rooms are
+ * deliberately absent — they are reached by code (`fetchLiveRoom`). */
 export function fetchLiveRooms(): Promise<{ region: string; rooms: LiveRoom[] }> {
   return getJson(`/api/live`);
+}
+
+/**
+ * Look up ONE live match by its room code — used to spectate a custom game, and to
+ * find the region hosting a friend's match.
+ *
+ * Resolves to null when nothing is live under that code (a finished match, a typo,
+ * a lobby that never started). The `region` on the result is what the spectate
+ * socket must be opened with: a custom code carries no region prefix of its own, so
+ * without it the connection lands on the wrong machine and the room "does not exist".
+ */
+export async function fetchLiveRoom(code: string): Promise<LiveRoom | null> {
+  try {
+    const r = await getJson<{ room: LiveRoom }>(`/api/room?code=${encodeURIComponent(code)}`);
+    return r.room ?? null;
+  } catch {
+    return null; // 404 (not live) and an unreachable server read the same here
+  }
 }
 
 export interface Presence {
@@ -349,7 +372,7 @@ export const USERNAME_RE = /^[a-z0-9]{4,20}$/;
  * locally first so a bad string never hits the network) */
 export async function checkUsername(
   username: string,
-): Promise<{ valid: boolean; available: boolean }> {
+): Promise<{ valid: boolean; available: boolean; reason?: string }> {
   const u = username.trim().toLowerCase();
   if (!USERNAME_RE.test(u)) return { valid: false, available: false };
   const base = gameServerHttpUrl();
@@ -357,7 +380,9 @@ export async function checkUsername(
   try {
     const res = await fetch(base + `/api/username-available?u=${encodeURIComponent(u)}`);
     if (!res.ok) return { valid: true, available: false };
-    return (await res.json()) as { valid: boolean; available: boolean };
+    // `reason: 'inappropriate'` distinguishes a moderation block (blocked name) from
+    // a plain format/availability failure, so the UI can show the right hint.
+    return (await res.json()) as { valid: boolean; available: boolean; reason?: string };
   } catch {
     return { valid: true, available: false };
   }
@@ -425,6 +450,157 @@ export async function updateHandle(handle: string): Promise<{ userId: string; ha
 
 export function fetchReplay(id: string): Promise<Replay> {
   return getJson(`/api/replay/${id}`);
+}
+
+// ---- solo practice replays (own account only) ------------------------------
+
+/** one uploaded practice run as the server stores it */
+export interface PracticeRun {
+  id: string;
+  game: GameId;
+  score: number;
+  ticks: number;
+  replayId: string | null;
+  createdAt: string;
+}
+
+/**
+ * Send a finished SOLO PRACTICE run to the account.
+ *
+ * The one write this module makes — everything else here is a read, because scores and ELO
+ * are written only by the authoritative match loop. Practice is the exception BECAUSE it is
+ * offline: there is no authoritative loop for the mode, and the run lands in a table no
+ * leaderboard can read (see migration 0032). Returns null on any failure; the run is already
+ * kept on the device by then (`src/net/practiceRuns.ts`), so a failed upload costs nothing but
+ * the copy on the account.
+ */
+export async function uploadPracticeRun(
+  replay: Replay,
+  score: number,
+  game?: GameId,
+): Promise<PracticeRun | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/practice?game=${game ?? 'decode'}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ replay, score }),
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { run: PracticeRun }).run ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** the signed-in account's own practice runs, newest first. Null when signed out or the
+ *  server is unreachable — the caller falls back to what this device has. */
+export async function fetchPracticeRuns(game?: GameId): Promise<PracticeRun[] | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/practice?game=${game ?? 'decode'}`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { runs: PracticeRun[] }).runs ?? [];
+  } catch {
+    return null;
+  }
+}
+
+// ---- self-hosted (LAN) matches, own account only ---------------------------
+
+/** one driver in a self-hosted match, by NAME. See migration 0033 for why there are no
+ *  user ids here: the reporting server is untrusted, and attributing a match to an account
+ *  on its say-so is an impersonation primitive. */
+export interface LanParticipant {
+  name: string;
+  teamName?: string;
+  teamNumber?: number;
+  alliance: 'red' | 'blue';
+  drivetrain?: string;
+}
+
+/** one self-hosted match as the cloud stores it */
+export interface LanRun {
+  id: string;
+  matchId: string;
+  game: GameId;
+  score: { red: number; blue: number };
+  participants: LanParticipant[];
+  replayId: string | null;
+  createdAt: string;
+}
+
+/**
+ * Send a finished SELF-HOSTED match to the cloud, under the HOST's account.
+ *
+ * ⚠️ **This goes to `gameServerHttpUrl()`, which is the CLOUD even while
+ * `gameServerUrl()` points at the LAN box.** The whole point is that the match was played
+ * on a laptop with no database; posting it back there would drop it on the floor. See the
+ * note at the top of `env.ts`.
+ *
+ * Everything in the body is data the cloud does not trust — the score came off a server
+ * whose operator could have patched it — and that is survivable only because of where it
+ * lands: `lan_runs` is not reachable from `record_leaderboard`, so nothing here can move a
+ * board, a PB, a rank or an ELO.
+ *
+ * THREE OUTCOMES, and the third is the one worth naming. `null` is a failure worth RETRYING
+ * — an offline venue, a 503 from a busy server — and the match is already on the device
+ * (`src/net/lanRuns.ts`), so it costs a retry rather than the match. `'refused'` is a failure
+ * that will never succeed: the cloud answered 409 (another account already filed this match
+ * id) or 400 (this body is not one it will take). Retrying either forever would park the
+ * backlog on an item that can never drain and block every match behind it, so the caller
+ * retires it locally instead.
+ */
+export async function uploadLanRun(
+  matchId: string,
+  replay: Replay,
+  score: { red: number; blue: number },
+  participants: LanParticipant[],
+  game?: GameId,
+): Promise<LanRun | 'refused' | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/lan?game=${game ?? 'decode'}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ matchId, replay, score, participants }),
+    });
+    // 409: the match belongs to another host. 400: this body will never be accepted. Both are
+    // permanent verdicts about THIS item; everything else (401 mid-token-refresh, 429, 503,
+    // a gateway) is the connection or the moment, and deserves another go later.
+    if (res.status === 409 || res.status === 400) return 'refused';
+    if (!res.ok) return null;
+    return ((await res.json()) as { run: LanRun }).run ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** the signed-in account's own self-hosted matches, newest first. Null when signed out or
+ *  the cloud is unreachable — the caller falls back to what this device has. */
+export async function fetchLanRuns(game?: GameId): Promise<LanRun[] | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/lan?game=${game ?? 'decode'}`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { runs: LanRun[] }).runs ?? [];
+  } catch {
+    return null;
+  }
 }
 
 // ---- announcements (patch notes / new season / new act) --------------------
@@ -638,6 +814,221 @@ export async function adminFetchPresence(): Promise<AdminPresence | null> {
     return (await res.json()) as AdminPresence;
   } catch {
     return null;
+  }
+}
+
+/** one finished game in the admin's "Recent games" list. A finished match can't be
+ *  spectated, so `replayId` (when the match saved one) is what the row opens. */
+export interface AdminMatchRow {
+  kind: 'versus' | 'record';
+  id: string;
+  game: GameId;
+  mode: string;
+  ranked: boolean | null;
+  createdAt: string;
+  replayId: string | null;
+  balanceVersion: number;
+  redScore: number | null;
+  blueScore: number | null;
+  score: number | null;
+  players: { userId: string; handle: string; alliance: 'red' | 'blue' | null }[];
+}
+
+/** the most recently finished games service-wide (admin only) */
+export async function adminFetchMatches(limit = 40, game?: GameId): Promise<AdminMatchRow[] | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (game) qs.set('game', game);
+  try {
+    const res = await fetch(`${base}/api/admin/matches?${qs.toString()}`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { matches: AdminMatchRow[] }).matches;
+  } catch {
+    return null;
+  }
+}
+
+/** the moderation queue: one row per reported player, most recently reported first */
+/** one row of the account-standing ledger, as the server sends it */
+export interface StandingEvent {
+  id: string;
+  kind: string;
+  points: number;
+  scoreAfter: number;
+  cooldownMin: number;
+  ratingCharge: number;
+  game: string | null;
+  at: string;
+}
+
+export interface StandingInfo {
+  score: number;
+  /** epoch ms the ranked queue reopens, or null */
+  restrictedUntil: number | null;
+}
+
+/**
+ * THIS account's standing and the offences behind it.
+ *
+ * Self-only by construction — the endpoint takes no user parameter, so there is no version
+ * of this call that reads someone else's standing. Null (signed out, no server, no database)
+ * simply hides the panel: a player with no account has nothing to be in bad standing about.
+ */
+export async function fetchStanding(): Promise<{ standing: StandingInfo | null; events: StandingEvent[] }> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return { standing: null, events: [] };
+  try {
+    const res = await fetch(`${base}/api/standing`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return { standing: null, events: [] };
+    const body = (await res.json()) as { standing: StandingInfo | null; events?: StandingEvent[] };
+    return { standing: body.standing ?? null, events: body.events ?? [] };
+  } catch {
+    return { standing: null, events: [] };
+  }
+}
+
+export async function adminFetchReports(): Promise<ReportedUser[] | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/admin/reports`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { users: ReportedUser[] }).users ?? [];
+  } catch {
+    return null;
+  }
+}
+
+/** one player's reports AND their recent matches — the drill-down. Both in one request
+ *  because a moderator cannot judge a cheating report without watching a match. */
+export async function adminFetchReportedUser(userId: string): Promise<{
+  reports: ReportRow[];
+  matches: ModMatch[];
+  standing: StandingInfo | null;
+  standingEvents: StandingEvent[];
+} | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/admin/reports?user=${encodeURIComponent(userId)}`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      reports: ReportRow[]; matches: ModMatch[];
+      standing?: StandingInfo | null; standingEvents?: StandingEvent[];
+    };
+    return { ...body, standing: body.standing ?? null, standingEvents: body.standingEvents ?? [] };
+  } catch {
+    return null;
+  }
+}
+
+/** one of a reported player's recent matches, with the replay a moderator watches */
+export interface ModMatch {
+  matchId: string;
+  replayId: string | null;
+  game: GameId;
+  mode: string;
+  ranked: boolean | null;
+  createdAt: string;
+  score: number;
+  won: boolean | null;
+}
+
+/** triage every OPEN report against a player */
+export async function adminSetReportStatus(
+  userId: string,
+  status: 'reviewed' | 'dismissed',
+): Promise<boolean> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return false;
+  try {
+    const res = await fetch(
+      `${base}/api/admin/reports?user=${encodeURIComponent(userId)}&status=${status}`,
+      { method: 'POST', headers: { authorization: `Bearer ${token}` } },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** a MISSCORE claim in the moderation queue */
+export interface ScoreReport {
+  id: string;
+  matchId: string | null;
+  roomCode: string;
+  game: string;
+  detail: string;
+  status: string;
+  smite: number;
+  createdAt: string;
+  reporterId: string;
+  reporterHandle: string;
+  reporterUsername: string | null;
+  /** the filer's own history — how many claims they have ever filed, and how many were
+   *  rejected. The pattern is what separates a mistake from a habit before anyone smites. */
+  reporterFiled: number;
+  reporterRejected: number;
+}
+
+export async function adminFetchScoreReports(status = 'open'): Promise<ScoreReport[] | null> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return null;
+  try {
+    const res = await fetch(`${base}/api/admin/score-reports?status=${encodeURIComponent(status)}`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return ((await res.json()) as { reports: ScoreReport[] }).reports ?? [];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve one misscore claim.
+ *
+ * `smite` is standing points taken off the REPORTER, and the server refuses it on anything
+ * but a rejection — upholding a claim means they were right, and charging someone for being
+ * right is the failure this whole feature guards against.
+ */
+export async function adminResolveScoreReport(
+  id: string,
+  verdict: 'upheld' | 'rejected',
+  smite = 0,
+): Promise<boolean> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return false;
+  const q = new URLSearchParams({ id, verdict, smite: String(Math.max(0, Math.round(smite))) });
+  try {
+    const res = await fetch(`${base}/api/admin/score-reports?${q.toString()}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -886,6 +1277,15 @@ export interface FriendRow extends BadgeFields {
   activity: Activity | null;
   /** which game the friend is in — only set alongside `activity` */
   game: GameId | null;
+  /**
+   * The match to SPECTATE, when this friend is in one that is actually running.
+   *
+   * Absent in a lobby, absent once the match ends, and absent for an invisible
+   * friend. `region` is required to open the spectate socket — a custom room's
+   * code carries no region of its own. Optional on the wire: a server older than
+   * this feature simply never sends it and no Watch button appears.
+   */
+  watch?: { room: string; region: string; ranked: boolean };
 }
 
 export type PresenceStatus = 'online' | 'dnd' | 'invisible';
@@ -905,6 +1305,17 @@ export interface RoomInvite {
   /** what was offered (see ChallengeFormat). Null on challenges sent by a client
    * older than formats — read as the historical casual-versus meaning. */
   format: string | null;
+  /**
+   * WHICH MACHINE the room is on — the sender's region.
+   *
+   * One app runs in several regions and a custom room code is BARE: unlike a
+   * matchmaker-staged `iad-abc123`, there is nothing in it for the proxy to route on. So a
+   * recipient who connects without this lands on whichever machine is nearest to THEM, and
+   * if the two players picked different servers they each end up alone in a different room
+   * that happens to share a code. Null ⇒ an older sender; the client falls back to its own
+   * region, which is the behaviour that produced the split in the first place.
+   */
+  region?: string | null;
   createdAt: string;
 }
 
@@ -1025,10 +1436,15 @@ export function inviteToRoom(
   kind: 'versus' | 'record',
   record?: 'solo' | 'duo' | null,
   format?: string | null,
+  /** the region the sender will HOST the room in — see `RoomInvite.region` */
+  region?: string | null,
 ): Promise<unknown> {
   return authedJson('/api/friends/invite', {
     method: 'POST',
-    body: JSON.stringify({ username, room, game, kind, record: record ?? null, format: format ?? null }),
+    body: JSON.stringify({
+      username, room, game, kind,
+      record: record ?? null, format: format ?? null, region: region ?? null,
+    }),
   });
 }
 

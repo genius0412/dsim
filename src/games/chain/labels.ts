@@ -1,4 +1,11 @@
-import type { ChainIntakeStyle, ChainScoreMode } from '../../types';
+import type {
+  ChainCatalystMount,
+  ChainCatalystType,
+  ChainIntakeMount,
+  ChainIntakeStyle,
+  ChainScoreMode,
+  ChainShooterMount,
+} from '../../types';
 
 /**
  * Shared display labels for Chain Reaction robot-config choices, so the builder
@@ -7,10 +14,76 @@ import type { ChainIntakeStyle, ChainScoreMode } from '../../types';
  */
 export const CHAIN_MODE_LABELS: Record<ChainScoreMode, string> = {
   turret: 'Turret shooter',
+  twinturret: 'Twin turret',
   drum: 'Drum shooter',
   dumper: 'Dumper',
 };
 
 export const CHAIN_INTAKE_LABELS: Record<ChainIntakeStyle, string> = {
   sweeper: 'Sweeper',
+};
+
+/** MOUNT labels — the builder's pickers and the leaderboard's config summary. Kept SHORT
+ * (they sit in a 4-up button grid) with the tradeoff in the blurb. */
+export const CHAIN_INTAKE_MOUNT_LABELS: Record<ChainIntakeMount, string> = {
+  front: 'FRONT',
+  back: 'BACK',
+  side: 'SIDES',
+  frontback: 'FRONT+BACK',
+};
+
+/** Blurbs are PARTIAL on purpose (main's caption sweep): a mount only gets one when it says
+ * something the label does not — i.e. the hopper-volume cost of an open edge. "FRONT · grabs
+ * from the front" is noise; "SIDES · least storage" is the tradeoff you are actually picking. */
+export const CHAIN_INTAKE_MOUNT_BLURBS: Partial<Record<ChainIntakeMount, string>> = {
+  side: 'Least storage',
+  frontback: 'Less storage',
+};
+
+/** Position labels, short enough to sit in a 3x3 chassis-map cell. Shared by the turretless
+ * firing-edge picker and the turret POSITION picker — the same nine points either way. */
+export const CHAIN_SHOOTER_MOUNT_LABELS: Record<ChainShooterMount, string> = {
+  frontleft: 'F·LEFT',
+  front: 'FRONT',
+  frontright: 'F·RIGHT',
+  left: 'LEFT',
+  center: 'CENTER',
+  right: 'RIGHT',
+  backleft: 'B·LEFT',
+  back: 'BACK',
+  backright: 'B·RIGHT',
+};
+
+/** The shooter mounts cost nothing and the label already names the edge, so none of them
+ * carry a blurb — see the note on the intake blurbs above. */
+export const CHAIN_SHOOTER_MOUNT_BLURBS: Partial<Record<ChainShooterMount, string>> = {};
+
+
+/** CATALYST mechanism labels + the one-line tradeoff each archetype is actually picked for. */
+export const CHAIN_CATALYST_LABELS: Record<ChainCatalystType, string> = {
+  arm: 'Claw arm',
+  launcher: 'Claw + catapult',
+  turret: 'Turret claw',
+  rail: 'Rail turret claw',
+};
+
+export const CHAIN_CATALYST_BLURBS: Record<ChainCatalystType, string> = {
+  arm: 'Longest reach · must face it · slow',
+  launcher: 'Short reach · throws rings downfield',
+  turret: 'Tracks any direction · fastest · fixed spot',
+  rail: 'Tracks AND slides along the side · heavy',
+};
+
+export const CHAIN_CATALYST_MOUNT_LABELS: Record<ChainCatalystMount, string> = {
+  frontleft: 'F·LEFT',
+  front: 'FRONT',
+  frontright: 'F·RIGHT',
+  left: 'LEFT',
+  center: 'CENTER',
+  /** legacy value — a centre-pivot swing. Kept so an old save still labels. */
+  frontback: 'SWING',
+  right: 'RIGHT',
+  backleft: 'B·LEFT',
+  back: 'BACK',
+  backright: 'B·RIGHT',
 };

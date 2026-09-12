@@ -1,15 +1,16 @@
-import type { World } from '../../types';
+import type { Vec2, World } from '../../types';
 import * as C from '../../config';
 import type { Alliance } from '../../types';
 import {
   CHAIN_ACCEL_DEPTH,
   CHAIN_ACCEL_HALF_Y,
+  CHAIN_BEAM_RENDER_H,
   CHAIN_DIAMOND_R,
   CHAIN_HALF_X,
   CHAIN_HALF_Y,
-  CHAIN_RINGSTAND_XY,
+  CHAIN_RINGSTAND_BOX,
 } from './config';
-import { labAreas } from './state';
+import { labAreas, ringStandBoxes, ringStands } from './state';
 import { CHAIN_BEAMS, BEAM_HALF_W } from './beams';
 
 /**
@@ -23,7 +24,7 @@ import { CHAIN_BEAMS, BEAM_HALF_W } from './beams';
  * manual values; Ring-Stand + Lab-Area positions are still approximate (see config.ts).
  * Reuses DECODE's `COLORS` so it themes/reads identically on the dark field.
  */
-export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): void {
+export function drawChainField(ctx: CanvasRenderingContext2D, _world: World, screenUp: Vec2 = { x: 0, y: 1 }): void {
   const hx = CHAIN_HALF_X;
   const hy = CHAIN_HALF_Y;
 
@@ -45,14 +46,39 @@ export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): vo
   }
   ctx.stroke();
 
-  // BEAMS — four 1"-tall black tubes (difficult terrain) on the x/y axes, wall→diamond.
-  // Drawn FIRST so the alliance divider tape reads over the vertical beams.
+  // BEAMS — four 1"-tall tubes (difficult terrain) on the x/y axes, wall→diamond. The LIT TOP FACE
+  // is drawn at the tube's TRUE footprint (it reads exactly where it physically is); a thin dark
+  // near-wall dropped a hair TOWARD the camera (−screenUp) hints the z-thickness. No drop shadow —
+  // the tape runs right alongside, and a shadow just muddied it. Drawn FIRST so the tape reads over.
+  const dx = -screenUp.x * CHAIN_BEAM_RENDER_H; // the near (camera-facing) wall drops this way
+  const dy = -screenUp.y * CHAIN_BEAM_RENDER_H;
   for (const beam of CHAIN_BEAMS) {
     const r = beam.rect;
-    ctx.fillStyle = '#0a0c0f';
+    const top: [number, number][] = [
+      [r.x0, r.y0],
+      [r.x1, r.y0],
+      [r.x1, r.y1],
+      [r.x0, r.y1],
+    ];
+    // near-side walls: each top edge dropped a touch toward the camera — the visible thickness
+    ctx.fillStyle = '#05070b';
+    for (let i = 0; i < 4; i++) {
+      const a = top[i];
+      const b = top[(i + 1) % 4];
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      ctx.lineTo(b[0], b[1]);
+      ctx.lineTo(b[0] + dx, b[1] + dy);
+      ctx.lineTo(a[0] + dx, a[1] + dy);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // top face AT THE TRUE FOOTPRINT — a lit plane above the dark mat, bright edge, so the tube
+    // reads as raised terrain sitting exactly where it is
+    ctx.fillStyle = '#2c333d';
+    ctx.strokeStyle = 'rgba(176,186,198,0.95)';
+    ctx.lineWidth = 0.5;
     ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
-    ctx.strokeStyle = 'rgba(120,130,140,0.7)';
-    ctx.lineWidth = 0.4;
     ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
   }
 
@@ -137,29 +163,27 @@ export function drawChainField(ctx: CanvasRenderingContext2D, _world: World): vo
     }
   }
 
-  // RING STANDS — a vertical square POST rising from a triangular corner base plate
-  // (rings hang around the post — the catalysts are drawn encircling it in draw.ts).
+  // RING STANDS — the corner ASSEMBLY: a solid square filling the field corner (post plus
+  // its mounting plate), with the post drawn on top. Drawn from the SAME `ringStandBoxes`
+  // the colliders are built from, so the shape you see is exactly the shape you collide
+  // with — it used to be drawn as a big triangular plate with a thin post, which matched
+  // neither the hitbox nor the real part.
   const POST = 1.4; // post half-size (top-down square cross-section)
-  const BASE = 12; // triangular base plate leg length
-  for (const sx of [-1, 1] as const) {
-    for (const sy of [-1, 1] as const) {
-      const cx = sx * CHAIN_RINGSTAND_XY;
-      const cy = sy * CHAIN_RINGSTAND_XY;
-      // triangular base plate tucked into the corner
-      ctx.fillStyle = '#33383e';
-      ctx.beginPath();
-      ctx.moveTo(sx * hx, sy * hy - sy * BASE);
-      ctx.lineTo(sx * hx - sx * BASE, sy * hy);
-      ctx.lineTo(cx, cy);
-      ctx.closePath();
-      ctx.fill();
-      // black square post
-      ctx.fillStyle = '#0a0c0f';
-      ctx.fillRect(cx - POST, cy - POST, 2 * POST, 2 * POST);
-      ctx.strokeStyle = 'rgba(120,130,140,0.7)';
-      ctx.lineWidth = 0.4;
-      ctx.strokeRect(cx - POST, cy - POST, 2 * POST, 2 * POST);
-    }
+  const H = CHAIN_RINGSTAND_BOX / 2;
+  for (const b of ringStandBoxes()) {
+    // the solid corner block
+    ctx.fillStyle = '#33383e';
+    ctx.fillRect(b.x - H, b.y - H, 2 * H, 2 * H);
+    ctx.strokeStyle = 'rgba(120,130,140,0.7)';
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(b.x - H, b.y - H, 2 * H, 2 * H);
+  }
+  // the POSTS — at each block's INNER corner (opposite the field corner), not centred on it.
+  // `ringStands()` is the single source, shared with the ascend/descent logic.
+  ctx.fillStyle = '#0a0c0f';
+  for (const p of ringStands()) {
+    ctx.fillRect(p.x - POST, p.y - POST, 2 * POST, 2 * POST);
+    ctx.strokeRect(p.x - POST, p.y - POST, 2 * POST, 2 * POST);
   }
 
   // perimeter outline (drawn last so the accelerators read as attached to the wall)

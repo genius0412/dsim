@@ -1,28 +1,30 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { GameSettings } from '../game';
-import type { Alliance, GameSettings as GS } from '../types';
+import type { Alliance, GameSettings as GS, RobotSpec } from '../types';
 import { START_POSES } from '../config';
 import { CHAIN_START_POSES } from '../games/chain/config';
-import { activeStartLegal } from '../sim/field';
 import { StartPositionEditor } from './StartPositionEditor';
-import { ChainStartSelector } from './ChainStartSelector';
-import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory } from './startPositions';
+import { ChainStartEditor } from './ChainStartEditor';
+import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory, startSelectionLegal } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
 import { SupporterBadge } from './SupporterBadge';
-import { gameServerUrl, gameServerUrlWith, gameServers, multiServer, selectedServer } from '../net/env';
+import { Menu } from './Menu';
+import { DRIVETRAIN_LABELS, buildSummary } from './robotLabels';
+import { gameServers, lanActive, multiServer, roomServerUrl, roomServerUrlWith, selectedServer } from '../net/env';
+import { roomJoinRegion } from '../net/roomRegion';
 import { WebSocketTransport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
-import { roomCapacity, type LobbyPlayer, type RoomConfig } from '../net/protocol';
+import { roomCapacity, type LobbyPlayer, type RoomConfig, type ErrorCode } from '../net/protocol';
 import type { NetSession } from '../net/session';
 import { useServerNotice } from '../net/notice';
 import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
-import { InviteFlyout } from './InviteFlyout';
 import type { RoomInvite } from '../net/api';
+import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
 
 interface Props {
   settings: GameSettings;
@@ -32,23 +34,70 @@ interface Props {
   /** what this room runs. Default: a versus custom room (2v2). Pass a record/duo
    * config to run this same lobby as a 2v0 co-op record run (opponent-free). */
   config?: RoomConfig;
-  /** is SOME account signed in — gates the friend flyout (invites need an
-   * account on both ends) */
+  /** is SOME account signed in — friends invitations need an account on both ends */
   signedIn?: boolean;
+  /** Saved DSIM display name, never the immutable auth-provider name. */
+  displayName?: string | null;
+  /** Account context forwarded into the persistent room friends panel. */
+  myUserId?: string | null;
+  onOpenProfile: (username: string) => void;
+  onJoinInvite: (invite: RoomInvite) => void;
+  onSpectate: (room: string, region?: string) => void;
   /** a room code to join automatically on mount (a friend's invite, clicked
    * from elsewhere in the app) — calls the exact same `join()` a manual code
    * entry does, just triggered once at mount instead of by a button click. */
   autoJoin?: string;
+  /**
+   * WHICH MACHINE that room is on (the host's region).
+   *
+   * A custom room code is bare — no `<region>-` prefix for the proxy to route on — so
+   * connecting without this lands on whichever machine is nearest to US. When the two
+   * players had picked different servers that machine had no such room and made an empty
+   * one with the same code: two lobbies, one code, and no error anywhere. Absent ⇒ an older
+   * invite, which falls back to our own pick.
+   */
+  autoJoinRegion?: string;
   /** fired once `autoJoin` has been consumed, so the caller can clear its
    * one-shot pending state and a later normal visit doesn't re-trigger it */
   onAutoJoinConsumed?: () => void;
-  /** a RATED challenge was accepted from the friend flyout. It has no room code
-   * to join, so this leaves the lobby entirely for the ranked queue — the app
-   * shell owns that navigation, not us. */
-  onAcceptChallenge?: (inv: RoomInvite) => void;
 }
 
 type Phase = 'entry' | 'connecting' | 'room' | 'error';
+
+/** The lobby is a full-screen surface, so it cannot use AppShell's side panel.
+ * Keep the actual room UI and the shared FriendsPanel as siblings here instead. */
+function RoomFriendsLayout({
+  children,
+  signedIn,
+  myUserId,
+  onOpenProfile,
+  onJoinInvite,
+  onSpectate,
+  room,
+}: {
+  children: ReactNode;
+  signedIn: boolean;
+  myUserId?: string | null;
+  onOpenProfile: (username: string) => void;
+  onJoinInvite: (invite: RoomInvite) => void;
+  onSpectate: (room: string, region?: string) => void;
+  room?: RoomInviteTarget;
+}) {
+  return (
+    <div className="ds-room-layout">
+      {children}
+      <FriendsPanel
+        signedIn={signedIn}
+        myUserId={myUserId}
+        onOpenProfile={onOpenProfile}
+        onJoinInvite={onJoinInvite}
+        onSpectate={onSpectate}
+        room={room}
+        allowProfileNavigation={!room}
+      />
+    </div>
+  );
+}
 
 /**
  * Multiplayer lobby over the authoritative game server (Phase 0): join a room by
@@ -65,9 +114,14 @@ export function Lobby({
   onCancel,
   config = { kind: 'versus' },
   signedIn = false,
+  displayName,
+  myUserId,
+  onOpenProfile,
+  onJoinInvite,
+  onSpectate,
   autoJoin,
+  autoJoinRegion,
   onAutoJoinConsumed,
-  onAcceptChallenge,
 }: Props) {
   const isRecord = config.kind === 'record';
   const capacity = roomCapacity(config);
@@ -76,10 +130,21 @@ export function Lobby({
   // entry sub-mode: pick whether you're creating a fresh room or joining a code
   const [entryMode, setEntryMode] = useState<'create' | 'join'>('create');
   const [copied, setCopied] = useState(false);
-  // one-app multi-region: friends must meet on the SAME region for a cross-region
-  // room to land them on the same machine. Defaults to the account's picked region.
-  const [region, setRegion] = useState(selectedServer()?.region ?? '');
-  const [name, setName] = useState(settings.spec.teamName || 'Player');
+  // One app, several regions: a shared room code only lands two people on the same machine
+  // if they connect to the same one. JOINING an invite, that is not a choice — it is
+  // wherever the host already is, and offering a picker there was the bug. Creating a room,
+  // it is our own pick.
+  //
+  // THE HOST'S REGION IS AN ARGUMENT TO `join`, NOT JUST THIS SEED. Seeding it here alone
+  // was wrong twice over: this screen is often ALREADY MOUNTED when an invite is accepted
+  // (its own flyout carries an Accept button), so `useState` never re-read the new value and
+  // the join went to whatever server WE had picked; and the flyout's accept path never had
+  // the region to begin with. This state is now only the DEFAULT for a room we create, and
+  // the value a join actually used, so the picker can show it.
+  const [region, setRegion] = useState(autoJoinRegion || selectedServer()?.region || '');
+  // the region came from an INVITE, so it is the host's and not ours to change
+  const [regionLocked, setRegionLocked] = useState(!!autoJoinRegion);
+  const [name, setName] = useState((displayName ?? settings.spec.teamName) || 'Player');
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [hostId, setHostId] = useState('');
   const [myId, setMyId] = useState('');
@@ -88,9 +153,15 @@ export function Lobby({
   const restartPending =
     !!notice && notice.kind === 'restart' && (notice.until === undefined || notice.until > Date.now());
   const [error, setError] = useState('');
+  /** machine-readable reason for `error`, when the server gave one. Only `region_full`
+   *  today, and it is the one failure the player can fix from this screen. */
+  const [errorCode, setErrorCode] = useState<ErrorCode | undefined>(undefined);
+  // the full builder, opened from the room over the top of it (see below)
+  const [building, setBuilding] = useState(false);
 
   const lobbyRef = useRef<LobbyClient | null>(null);
   const startedRef = useRef(false);
+  const nameEditedRef = useRef(false);
 
   // tear down on unmount unless a match started (which hands the socket onward)
   useEffect(() => {
@@ -101,13 +172,20 @@ export function Lobby({
 
   useEscape(onCancel); // Esc leaves the lobby, same as ← Back
 
+  // The profile request may resolve after this screen mounts. Adopt the saved
+  // DSIM display name while the player is still choosing a room, but never erase
+  // a deliberate room-only name edit or mutate identity after joining.
+  useEffect(() => {
+    if (displayName && phase === 'entry' && !nameEditedRef.current) setName(displayName);
+  }, [displayName, phase]);
+
   const me = players.find((p) => p.clientId === myId) ?? null;
   const isHost = myId !== '' && myId === hostId;
   const allReady = players.length > 0 && players.every((p) => p.ready);
   // my active start pose must be legal for my chassis to ready up (a pose authored
   // for a different-sized robot would otherwise be silently relocated at spawn)
-  // CR start anchors are legal by construction (G04); DECODE gates on G304 legality.
-  const startLegal = settings.game === 'chain' || !me || activeStartLegal(me.spec, me.alliance, me.startPose);
+  // DECODE gates on G304, CR on G04 Lab-Area containment.
+  const startLegal = !me || startSelectionLegal(settings.game, me.spec, me.alliance, me.startPose);
   // a duo record run needs BOTH drivers present before it can start (it's 2v0);
   // versus custom rooms can start with fewer (1v1, etc.)
   const enoughPlayers = !isRecord || players.length >= capacity;
@@ -137,22 +215,45 @@ export function Lobby({
     join(c);
   }
 
-  function join(roomCode: string): void {
+  /**
+   * Join `roomCode`, on `hostRegion` when the caller knows it.
+   *
+   * `hostRegion` is WHERE THE ROOM IS and it always wins over our own pick, because a custom
+   * room code is bare — unlike a matchmaker-staged `iad-abc123` there is nothing in it for
+   * the proxy to route on. Connect without it and Fly's anycast lands us on the machine
+   * NEAREST TO US, which has no such room and cheerfully opens an empty one with the same
+   * code: two lobbies, one code, both sides waiting, and no error anywhere.
+   *
+   * Passing it as an ARGUMENT rather than reading the `region` state is the fix: every path
+   * that knows the host's region now hands it to the one function that opens the socket, so
+   * it cannot be lost by a screen that was already mounted or by a caller that only had the
+   * code. Undefined/empty ⇒ we genuinely do not know (an invite from before the region was
+   * recorded), and falling back to our own pick is the old behaviour.
+   */
+  function join(roomCode: string, hostRegion?: string | null): void {
     if (!roomCode) return;
     setCode(roomCode);
-    if (!gameServerUrl()) {
-      setError('multiplayer not configured');
+    if (!roomServerUrl()) {
+      setError('Multiplayer needs the game server.');
       setPhase('error');
       return;
     }
     setPhase('connecting');
     // route both players to the same region so a shared code lands on one machine
-    const url = multiServer() && region ? gameServerUrlWith({ region }) : gameServerUrl();
+    const useRegion = roomJoinRegion(hostRegion, region);
+    if (hostRegion) {
+      setRegion(hostRegion);
+      setRegionLocked(true);
+    }
+    // ROOMS are the one thing that may be hosted on a LAN box, so this is the one
+    // connect site that follows a LAN connection (`roomServerUrl`, not `gameServerUrl`).
+    // A region hint means nothing to a single machine with no proxy, and is harmless.
+    const url = multiServer() && useRegion ? roomServerUrlWith({ region: useRegion }) : roomServerUrl();
     let transport: WebSocketTransport;
     try {
       transport = new WebSocketTransport(url);
     } catch {
-      setError('could not reach the game server');
+      setError('Couldn’t reach the game server.');
       setPhase('error');
       return;
     }
@@ -166,13 +267,20 @@ export function Lobby({
       setPhase((p) => (p === 'connecting' ? 'room' : p));
     });
     lobby.on('matchStart', handleStart);
-    lobby.on('error', (msg) => {
+    lobby.on('error', (msg, code) => {
       setError(msg);
+      setErrorCode(code);
       setPhase('error');
+      // THE REGION IS FULL, NOT BROKEN. This is the one error with a specific action
+      // attached — the same code is hostable somewhere else — so the picker has to be
+      // reachable to take it. Joining via a host region LOCKS the picker (both players
+      // must land on one machine), and leaving it locked here would show someone an
+      // instruction they cannot follow.
+      if (code === 'region_full') setRegionLocked(false);
     });
     lobby.on('closed', () => {
       if (!startedRef.current) {
-        setError('lost connection to the game server');
+        setError('Lost connection to the game server.');
         setPhase('error');
       }
     });
@@ -197,13 +305,17 @@ export function Lobby({
     );
   }
 
-  // auto-join once on mount if a friend's invite carried a room code — the same
-  // `join()` a manual code entry calls, just triggered without a button click.
-  const autoJoinedRef = useRef(false);
+  // Auto-join when a friend's invite carried a room code — the same `join()` a manual code
+  // entry calls, just triggered without a button click, and carrying the host's region.
+  //
+  // Keyed on the CODE, not a one-shot boolean. This screen stays mounted while you accept a
+  // second invite from its own flyout, and a `useRef(false)` that was already true swallowed
+  // that accept entirely: the click did nothing at all.
+  const autoJoinedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (autoJoin && !autoJoinedRef.current) {
-      autoJoinedRef.current = true;
-      join(autoJoin);
+    if (autoJoin && autoJoinedRef.current !== autoJoin) {
+      autoJoinedRef.current = autoJoin;
+      join(autoJoin, autoJoinRegion);
       onAutoJoinConsumed?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -212,9 +324,43 @@ export function Lobby({
   const setAlliance = (alliance: Alliance): void => lobbyRef.current?.update({ alliance });
   const toggleReady = (): void => lobbyRef.current?.update({ ready: !me?.ready });
 
+  /**
+   * RE-PICK, in a custom room exactly as in the ranked strategy window.
+   *
+   * You bring whatever build you happened to have selected when you opened the
+   * lobby, and until now the only way to change it was to leave the room, edit,
+   * and re-share the code — which for the host means everybody else loses the
+   * room too. Nothing about the server had to change for this: `case 'update'`
+   * takes a sanitized `spec` patch from any room, re-clamps it to the build
+   * limits, and clears `ready` if the new chassis makes your start pose illegal.
+   *
+   * Both halves ECHO TO THE SERVER as well as persisting locally: the roster row
+   * is what the other drivers see and what the match is built from, so a swap
+   * that only touched `settings` would show everyone the old robot and then spawn
+   * the new one.
+   */
+  const pickSpec = (spec: RobotSpec): void => {
+    onSettingsChange({ ...settings, spec });
+    lobbyRef.current?.update({ spec, assists: settings.assists });
+  };
+
+  /** the full builder edits settings.spec live; mirror every change to the server */
+  const onBuilderChange = (next: GS): void => {
+    onSettingsChange(next);
+    lobbyRef.current?.update({ spec: next.spec, assists: next.assists });
+  };
+
+  const mySpec = me?.spec ?? settings.spec;
+
   // 2v2 ROLE + consent swap: first robot on the alliance = CLOSE, second = FAR;
   // either can propose a swap the other must accept (see useRoleSwap).
-  const rs = useRoleSwap(players, me, (patch) => lobbyRef.current?.update(patch), settings.game);
+  const rs = useRoleSwap(
+    players,
+    me,
+    (patch) => lobbyRef.current?.update(patch),
+    settings.game,
+    settings.audio.volume,
+  );
   const startRole = rs.role;
   const [swapDismissed, dismissSwap] = useDismissable(rs.incoming);
 
@@ -231,6 +377,16 @@ export function Lobby({
   // settings with the category forced to the locked role (so the helpers write
   // memory/library into the right bucket even though the tabs are hidden)
   const sCat: GS = { ...settings, startCat: startRole ?? settings.startCat };
+  const roomInviteTarget: RoomInviteTarget | undefined =
+    phase === 'room'
+      ? {
+          code,
+          game: config.game ?? settings.game,
+          kind: config.kind,
+          record: config.record,
+          region: region || null,
+        }
+      : undefined;
 
   // A locked ROLE forces its category: if my active start is in the OTHER category
   // (carried in from single-player settings, or an old role before a swap/rejoin),
@@ -246,8 +402,15 @@ export function Lobby({
 
   if (phase === 'entry' || phase === 'connecting' || phase === 'error') {
     return (
+      <RoomFriendsLayout
+        signedIn={signedIn}
+        myUserId={myUserId}
+        onOpenProfile={onOpenProfile}
+        onJoinInvite={onJoinInvite}
+        onSpectate={onSpectate}
+      >
       <div className="ds-console">
-        <div className="ds-console-in" style={{ maxWidth: 520 }}>
+        <div className="ds-console-in narrow">
           <div className="ds-head">
             <button className="ds-back" onClick={onCancel}>
               ← Back
@@ -256,8 +419,6 @@ export function Lobby({
               <Logo size={24} />
               {APP_NAME}
             </span>
-            <span className="ds-head-spacer" />
-            <InviteFlyout signedIn={signedIn} onJoinRoom={join} onAcceptChallenge={onAcceptChallenge} />
           </div>
           <div className="ds-title">
             <h1>
@@ -269,16 +430,32 @@ export function Lobby({
             </h1>
           </div>
           <div className="ds-panelbox">
+            {/* THE ROOM LOOKS IDENTICAL EITHER WAY, so this screen has to say which it is.
+                It is the last point before a socket is opened, and the consequence — the
+                match will not be rated and will not reach a board — is the sort of thing
+                that has to be said before, not discovered after. */}
+            {lanActive() && (
+              <p className="ds-hint warn">
+                This room will be hosted on the LAN server you’re connected to. Matches there
+                are unofficial — not rated, and never on a leaderboard.
+              </p>
+            )}
             <label className="ds-field">
               <span className="cap">Your name</span>
               <input
                 className="ds-input"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  nameEditedRef.current = true;
+                  setName(e.target.value);
+                }}
                 maxLength={20}
               />
             </label>
-            {multiServer() && (
+            {/* no region picker on a LAN server: there is one machine, and offering a
+                choice of where to put the room would be offering a choice that does not
+                exist. */}
+            {multiServer() && !lanActive() && (
               <label className="ds-field">
                 <span className="cap">Region</span>
                 <select
@@ -294,7 +471,7 @@ export function Lobby({
                 </select>
               </label>
             )}
-            <div className="ds-opts two" style={{ marginTop: 4 }}>
+            <div className="ds-opts two">
               <button
                 className={`ds-opt ${entryMode === 'create' ? 'on' : ''}`}
                 onClick={() => setEntryMode('create')}
@@ -322,7 +499,21 @@ export function Lobby({
                 />
               </label>
             )}
-            {phase === 'error' && <p className="ds-form-err">⚠ {error}</p>}
+            {phase === 'error' && (
+              <>
+                <p className="ds-form-err">⚠ {error}</p>
+                {/* A FULL REGION IS NOT A FAILED CONNECTION, and saying so is the whole
+                    point of the code: the room is fine, this machine is just at its
+                    cap, and the fix is one control up the page. Without this the player
+                    reads the same red line they get for a dead server and gives up. */}
+                {errorCode === 'region_full' && (
+                  <p className="ds-hint warn">
+                    Nothing is wrong with your connection. Choose another region above,
+                    then try again — whoever you are playing with needs to pick the same one.
+                  </p>
+                )}
+              </>
+            )}
             <div className="ds-actions">
               {entryMode === 'create' ? (
                 <button className="ds-cta" disabled={phase === 'connecting'} onClick={createRoom}>
@@ -338,16 +529,62 @@ export function Lobby({
                 </button>
               )}
             </div>
-            {multiServer() && (
+            {multiServer() && !regionLocked && (
               <p className="ds-hint">Both players must pick the same region.</p>
             )}
           </div>
         </div>
       </div>
+      </RoomFriendsLayout>
+    );
+  }
+
+  // full-builder takeover: the My Robot menu over the room, with a Done button back.
+  // It replaces the room's UI, NOT the room — this is a render branch inside `Lobby`,
+  // so the socket, the roster and the host's start all keep running behind it, and
+  // every edit is mirrored to the server as you make it.
+  if (building) {
+    return (
+      <RoomFriendsLayout
+        signedIn={signedIn}
+        myUserId={myUserId}
+        onOpenProfile={onOpenProfile}
+        onJoinInvite={onJoinInvite}
+        onSpectate={onSpectate}
+        room={roomInviteTarget}
+      >
+      <div className="ds-console">
+        <div className="ds-console-in">
+          <div className="ds-head">
+            <button className="ds-back" onClick={() => setBuilding(false)}>
+              ← Done
+            </button>
+            <span className="ds-mark">
+              <Logo size={24} />
+              {APP_NAME}
+            </span>
+          </div>
+          <Menu settings={settings} onChange={onBuilderChange} />
+          <div className="ds-actions">
+            <button className="ds-cta" onClick={() => setBuilding(false)}>
+              DONE ▶
+            </button>
+          </div>
+        </div>
+      </div>
+      </RoomFriendsLayout>
     );
   }
 
   return (
+    <RoomFriendsLayout
+      signedIn={signedIn}
+      myUserId={myUserId}
+      onOpenProfile={onOpenProfile}
+      onJoinInvite={onJoinInvite}
+      onSpectate={onSpectate}
+      room={roomInviteTarget}
+    >
     <div className="ds-console">
       <div className="ds-console-in">
         <div className="ds-head">
@@ -358,28 +595,23 @@ export function Lobby({
             <Logo size={24} />
             {APP_NAME}
           </span>
-          <span className="ds-head-spacer" />
-          <InviteFlyout
-            signedIn={signedIn}
-            room={{ code, config: { kind: config.kind, record: config.record, game: config.game ?? settings.game } }}
-            onJoinRoom={join}
-            onAcceptChallenge={onAcceptChallenge}
-          />
         </div>
         <div className="ds-title">
           <h1>
             {isRecord ? 'Duo' : 'Room'} <span className="accent">{code}</span>
           </h1>
         </div>
-        <p className="ds-sub" style={{ marginTop: -10, display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap' }}>
+        {/* NOT centred: `.ds-console` is left-aligned throughout — the title, every
+            `<h2>`, the roster and the action row all start at x=0 of the column — and
+            this line was centred inside its own 64ch cap rather than the column, so it
+            landed about a quarter of the way across and lined up with nothing. */}
+        <p className="ds-sub ds-sub-tight ds-sub-row">
           <span>
             {isHost ? 'You are the host' : 'Waiting for the host to start'} · {players.length}/
             {capacity} drivers
           </span>
           <button
             className="ds-chip"
-            title="Copy the room code to share"
-            style={{ cursor: 'pointer' }}
             onClick={() => {
               void navigator.clipboard?.writeText(code);
               setCopied(true);
@@ -398,10 +630,13 @@ export function Lobby({
               return (
                 <div key={p.clientId} className={`ds-player ${p.alliance}`}>
                   <span className="pdot" />
+                  {/* the badge TRAILS the whole name, as it does in `.fr-nameline`,
+                      `.lb-name` and the career chip. Between the name and its "(you)"
+                      suffix it read as "Alice ♥ (you)". */}
                   <span className="pnm">
                     {p.name}
-                    <SupporterBadge supporter={p.supporter} role={p.role} />
                     {isMe ? ' (you)' : ''}
+                    <SupporterBadge supporter={p.supporter} role={p.role} />
                   </span>
                   <span className="ptm">
                     {p.spec.name} · {p.teamNumber || '-'}
@@ -460,10 +695,19 @@ export function Lobby({
               />
             )}
             {settings.game === 'chain' ? (
-              <ChainStartSelector
+              <ChainStartEditor
+                spec={me.spec}
+                alliance={me.alliance}
+                value={me.startPose}
                 startIndex={me.startIndex ?? 0}
-                onPick={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
-                role={startRole}
+                category={startRole ?? settings.startCat}
+                saved={settings.savedStartPoses}
+                lockedCategory={startRole}
+                onChange={(startPose) => applyStart(selectStart(sCat, { index: -1, pose: startPose }))}
+                onPickPreset={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
+                onCategory={(c) => applyStart(switchCategory(settings, c))}
+                onSave={(pose) => applyStart(saveStart(sCat, pose))}
+                onDeleteSaved={(c, i) => applyStart(deleteSavedStart(sCat, c, i))}
               />
             ) : (
               <StartPositionEditor
@@ -481,6 +725,42 @@ export function Lobby({
                 onDeleteSaved={(c, i) => applyStart(deleteSavedStart(sCat, c, i))}
               />
             )}
+          </section>
+        )}
+
+        {/* re-pick: quick-swap a saved robot, or open the full builder. Same section,
+            same order and same wording as the ranked strategy window — these are the
+            two pre-match screens and a driver should not have to learn each one. */}
+        {me && (
+          <section className="ds-sec">
+            <h2>Your robot</h2>
+            <p className="ds-sub ds-sub-tight">
+              {mySpec.name} · {buildSummary(mySpec, settings.game)}
+            </p>
+            <div className="ds-opts">
+              {settings.savedRobots.map((r, i) => {
+                const active =
+                  r.length === mySpec.length &&
+                  r.width === mySpec.width &&
+                  r.intake === mySpec.intake &&
+                  r.drivetrain === mySpec.drivetrain &&
+                  r.driveRpm === mySpec.driveRpm &&
+                  r.massLb === mySpec.massLb;
+                return (
+                  <button
+                    key={i}
+                    className={`ds-opt mini ${active ? 'on' : ''}`}
+                    onClick={() => pickSpec({ ...r })}
+                  >
+                    <span className="ot">{r.name || `Robot ${i + 1}`}</span>
+                    <span className="od">{DRIVETRAIN_LABELS[r.drivetrain]}</span>
+                  </button>
+                );
+              })}
+              <button className="ds-opt mini" onClick={() => setBuilding(true)}>
+                <span className="ot">Edit build ✎</span>
+              </button>
+            </div>
           </section>
         )}
 
@@ -515,5 +795,6 @@ export function Lobby({
         )}
       </div>
     </div>
+    </RoomFriendsLayout>
   );
 }

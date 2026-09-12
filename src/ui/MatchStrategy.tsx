@@ -2,16 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GameSettings, RobotSpec } from '../types';
 import { START_POSES } from '../config';
 import { CHAIN_START_POSES } from '../games/chain/config';
-import { activeStartLegal } from '../sim/field';
 import { StartPositionEditor } from './StartPositionEditor';
-import { ChainStartSelector } from './ChainStartSelector';
-import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory } from './startPositions';
+import { ChainStartEditor } from './ChainStartEditor';
+import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory, startSelectionLegal } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
 import type { LobbyClient } from '../net/lobbyClient';
 import type { LobbyPlayer, PlayerIntro, QueueMode } from '../net/protocol';
 import { RobotPreview } from './RobotPreview';
-import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './robotLabels';
+import { ChainRobotPreview } from '../games/chain/RobotPreview';
+import { DRIVETRAIN_LABELS, buildSummary } from './robotLabels';
 import { Menu } from './Menu';
 import { MatchAudio } from '../audio';
 import { APP_NAME } from '../seasons';
@@ -112,7 +112,7 @@ export function MatchStrategy({
   const toggleReady = (): void => lobby.update({ ready: !me?.ready });
 
   // 2v2 ROLE + consent swap (shared with Lobby via useRoleSwap)
-  const rs = useRoleSwap(players, me, (patch) => lobby.update(patch), settings.game);
+  const rs = useRoleSwap(players, me, (patch) => lobby.update(patch), settings.game, settings.audio.volume);
   const startRole = rs.role;
   const [swapDismissed, dismissSwap] = useDismissable(rs.incoming);
   const sCat: GameSettings = { ...settings, startCat: startRole ?? settings.startCat };
@@ -148,10 +148,15 @@ export function MatchStrategy({
   };
 
   const mySpec = me?.spec ?? settings.spec;
-  // my start pose must be legal for my (possibly just-swapped) chassis to ready up.
-  // CR start anchors are legal by construction (G04) — only DECODE gates on G304.
-  const startLegal =
-    settings.game === 'chain' || activeStartLegal(mySpec, myAlliance ?? settings.alliance, me?.startPose);
+  // my start pose must be legal for my (possibly just-swapped) chassis to ready up —
+  // DECODE gates on G304, CR on G04 Lab-Area containment (both games now offer free
+  // placement, so neither is legal-by-construction any more).
+  const startLegal = startSelectionLegal(
+    settings.game,
+    mySpec,
+    myAlliance ?? settings.alliance,
+    me?.startPose,
+  );
 
   // full-builder takeover: reuse the My Robot menu, with a Done button back
   if (building) {
@@ -179,10 +184,7 @@ export function MatchStrategy({
   }
 
   const buildRow = (spec: RobotSpec): JSX.Element => (
-    <span className="ptm">
-      {DRIVETRAIN_LABELS[spec.drivetrain]} · {INTAKE_SHORT[spec.intake]} · {spec.driveRpm} rpm ·{' '}
-      {spec.massLb} lb{spec.canSort ? ' · sorts' : ''}
-    </span>
+    <span className="ptm">{buildSummary(spec, settings.game)}</span>
   );
 
   return (
@@ -202,21 +204,14 @@ export function MatchStrategy({
             Match <span className="accent">Strategy</span>
           </h1>
         </div>
-        <p
-          className="ds-sub"
-          style={{
-            marginTop: -10,
-            display: 'flex',
-            gap: 10,
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexWrap: 'wrap',
-          }}
-        >
+        {/* the negative margin cancelling `.ds-console-in`'s gap is gone: two spacing
+            systems fighting over one axis. The countdown chip's tooltip is gone too —
+            the `.ds-hint` at the foot of this screen states the same rule at length. */}
+        <p className="ds-sub ds-sub-row">
           <span>
             {mode.toUpperCase()} · {readyCount}/{players.length} ready
           </span>
-          <span className={`ds-chip ${secsLeft <= STRAT_TICK_FROM ? 'off' : 'on'}`} title="Match cancels if not everyone readies in time">
+          <span className={`ds-chip ${secsLeft <= STRAT_TICK_FROM ? 'off' : 'on'}`}>
             ⏱ {secsLeft}s
           </span>
         </p>
@@ -253,7 +248,11 @@ export function MatchStrategy({
               return (
                 <div key={pl.clientId} className={`ds-strat-card ${pl.alliance}`}>
                   <div className="ds-strat-prev">
-                    <RobotPreview spec={spec} size={132} chain={settings.game === 'chain'} />
+                    {settings.game === 'chain' ? (
+                      <ChainRobotPreview spec={spec} size={132} />
+                    ) : (
+                      <RobotPreview spec={spec} size={132} />
+                    )}
                   </div>
                   <div className="ds-strat-meta">
                     <span className="pnm">
@@ -264,7 +263,7 @@ export function MatchStrategy({
                       {spec.name} · Team {pl.teamNumber || '-'}
                     </span>
                     {buildRow(spec)}
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+                    <div className="ds-strat-chips">
                       <span className={`ds-chip ${pl.alliance}`}>{pl.alliance.toUpperCase()}</span>
                       <span className="ds-chip">
                         {pl.startPose
@@ -288,7 +287,7 @@ export function MatchStrategy({
         {/* start position — drag to place, constrained to a legal G304 setup */}
         {me && (
           <section className="ds-sec">
-            <h2>Start position {mates.length > 0 && <span className="ds-note">- agree who goes where</span>}</h2>
+            <h2>Start position</h2>
             {rs.canSwap && (
               <RoleSwapBar
                 role={startRole}
@@ -300,10 +299,19 @@ export function MatchStrategy({
               />
             )}
             {settings.game === 'chain' ? (
-              <ChainStartSelector
+              <ChainStartEditor
+                spec={me.spec}
+                alliance={me.alliance}
+                value={me.startPose}
                 startIndex={me.startIndex ?? 0}
-                onPick={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
-                role={startRole}
+                category={startRole ?? settings.startCat}
+                saved={settings.savedStartPoses}
+                lockedCategory={startRole}
+                onChange={(startPose) => applyStart(selectStart(sCat, { index: -1, pose: startPose }))}
+                onPickPreset={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
+                onCategory={(c) => applyStart(switchCategory(settings, c))}
+                onSave={(pose) => applyStart(saveStart(sCat, pose))}
+                onDeleteSaved={(c, i) => applyStart(deleteSavedStart(sCat, c, i))}
               />
             ) : (
               <StartPositionEditor
@@ -327,7 +335,7 @@ export function MatchStrategy({
         {/* re-pick: quick-swap a saved robot, or open the full builder */}
         <section className="ds-sec">
           <h2>Your robot</h2>
-          <div className="ds-opts" style={{ flexWrap: 'wrap' }}>
+          <div className="ds-opts">
             {settings.savedRobots.map((r, i) => {
               const active =
                 r.length === mySpec.length &&
@@ -343,13 +351,15 @@ export function MatchStrategy({
                   onClick={() => pickSpec({ ...r })}
                 >
                   <span className="ot">{r.name || `Robot ${i + 1}`}</span>
-                  <span className="ds-note">{DRIVETRAIN_LABELS[r.drivetrain]}</span>
+                  {/* `.od`, like every other `.ds-opt` sub-line: `.ds-opt.on .od`
+                      re-inks against the selected card's mint fill and `.ds-note`
+                      has no such rule, so the picked robot's drivetrain stayed muted. */}
+                  <span className="od">{DRIVETRAIN_LABELS[r.drivetrain]}</span>
                 </button>
               );
             })}
             <button className="ds-opt mini" onClick={() => setBuilding(true)}>
               <span className="ot">Edit build ✎</span>
-              <span className="ds-note">full builder</span>
             </button>
           </div>
         </section>

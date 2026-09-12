@@ -1,4 +1,4 @@
-import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../../types';
+import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../../types';
 import * as C from '../../config';
 import { clamp, datan2, dcos, dsin, hyp, nextRandom, rot, wrapAngle } from '../../math';
 import { robotExtents } from '../../sim/physics';
@@ -6,15 +6,30 @@ import {
   CHAIN_ACCEL_DEPTH,
   CHAIN_ACCEL_HALF_Y,
   CHAIN_PTS,
-  CHAIN_CATALYST_PICK_R,
   CHAIN_EJECT_SPEED,
   CHAIN_EJECT_SPREAD,
   CHAIN_EJECT_VZ,
   CHAIN_FIRE_INTERVAL,
+  CHAIN_TWIN_FIRE_MULT,
+  CHAIN_TWIN_BARREL_OFFSET,
   CHAIN_HALF_X,
   CHAIN_HALF_Y,
-  CHAIN_HOOK_PLACE_R,
   chainHopperCap,
+  chainCatalystGeom,
+  CHAIN_CATALYST_OD,
+  CHAIN_WALL_H,
+  CHAIN_WALL_RESTITUTION,
+  CHAIN_NET_RESTITUTION,
+  CHAIN_NET_VZ_KEEP,
+  CHAIN_RING_SLIDE_MIN,
+  CHAIN_FLING_SPEED_VAR,
+  CHAIN_FLING_VZ,
+  CHAIN_FLING_SPREAD,
+  CHAIN_FLING_FRICTION,
+  chainCatapultRange,
+  chainCatapultYaw,
+  catapultSpeedFor,
+  catapultCycleFor,
   CHAIN_DEFAULT_SCORE_MODE,
   CHAIN_TURRET_SLEW,
   CHAIN_AIM_TOL,
@@ -46,17 +61,26 @@ import {
   CHAIN_PRELAUNCH_PER_TICK,
   CHAIN_PRELAUNCH_SPEED,
   CHAIN_PRELAUNCH_VZ,
+  CHAIN_DEFAULT_CATALYST,
+  CHAIN_RAIL_RATE,
 } from './config';
 import {
   accelMultiplier,
   accelSide,
-  chainIntakeBand,
+  catalystCanReach,
+  catalystDist,
+  catalystMouth,
+  catalystRailTarget,
+  catalystTrackTarget,
+  chainIntakeMouths,
+  mouthContains,
   hookPos,
   labAreas,
   onRingStand,
   CHAIN_HOOKS_PER_GOAL,
   type ChainState,
 } from './state';
+import { EDGE_ANGLE, EDGE_DIR, EDGE_PERP, edgeGeom, shooterEdgeOf, turretLocal } from './mounts';
 
 /**
  * Chain Reaction gameplay step (called from `chainStep` after the robots move).
@@ -83,6 +107,79 @@ export function updateChain(
     return n.value;
   };
 
+  // FLUNG catalysts: a real ballistic arc, then a ground slide to rest. Never a teleport to
+  // a landing spot — the landing emerges from the throw, which is exactly why it is imprecise.
+  for (const c of chain.catalysts) {
+    if (c.carriedBy !== null || c.hook) continue;
+    if (c.z <= 0 && c.vel.x === 0 && c.vel.y === 0) continue; // at rest, nothing to do
+    c.pos.x += c.vel.x * dt;
+    c.pos.y += c.vel.y * dt;
+    if (c.z > 0) {
+      c.z += c.vz * dt;
+      c.vz -= C.GRAVITY * dt;
+      if (c.z <= 0) {
+        c.z = 0;
+        c.vz = 0;
+      }
+    } else {
+      const sp = hyp(c.vel.x, c.vel.y);
+      const next = Math.max(0, sp - CHAIN_FLING_FRICTION * dt);
+      c.vel = next <= 0.01 ? { x: 0, y: 0 } : { x: (c.vel.x / sp) * next, y: (c.vel.y / sp) * next };
+    }
+    // PERIMETER: rigid wall below CHAIN_WALL_H, NETTING above it. Nothing ever leaves play —
+    // a high throw hits the net and drops back in. The net is slack, so it soaks up most of
+    // the energy (and most of the ring's climb) where the wall gives a real rebound; a wild
+    // long throw therefore ends up dead against the perimeter rather than escaping.
+    const limX = CHAIN_HALF_X - CHAIN_CATALYST_OD / 2;
+    const limY = CHAIN_HALF_Y - CHAIN_CATALYST_OD / 2;
+    const hitNet = c.z > CHAIN_WALL_H;
+    const rest = hitNet ? CHAIN_NET_RESTITUTION : CHAIN_WALL_RESTITUTION;
+    let hit = false;
+    if (Math.abs(c.pos.x) > limX) {
+      c.pos.x = Math.sign(c.pos.x) * limX;
+      c.vel.x = -c.vel.x * rest;
+      hit = true;
+    }
+    if (Math.abs(c.pos.y) > limY) {
+      c.pos.y = Math.sign(c.pos.y) * limY;
+      c.vel.y = -c.vel.y * rest;
+      hit = true;
+    }
+    // caught by the net: it stops climbing and drops rather than sailing on
+    if (hit && hitNet && c.vz > 0) c.vz *= CHAIN_NET_VZ_KEEP;
+  }
+
+  // A ring that comes down ON a robot must not perch there. Once it is at floor level and
+  // inside a robot's footprint, push it out along the shallowest axis and let it SLIDE off
+  // with friction, so it ends up on the tiles beside the robot instead of riding around on
+  // the chassis (where nothing could ever pick it up). Runs for every loose ring, not just
+  // flung ones — a robot can also simply drive onto a ring lying on the floor.
+  for (const c of chain.catalysts) {
+    if (c.carriedBy !== null || c.hook || c.z > 0.5) continue;
+    for (const rob of world.robots) {
+      const e = robotExtents(rob);
+      const rel = rot({ x: c.pos.x - rob.pos.x, y: c.pos.y - rob.pos.y }, -rob.heading);
+      const rr = CHAIN_CATALYST_OD / 2;
+      if (rel.x > e.front + rr || rel.x < -e.rear - rr || Math.abs(rel.y) > e.half + rr) continue;
+      // shallowest way out (robot-local), then convert back to the world
+      const penFwd = e.front + rr - rel.x;
+      const penBack = rel.x + e.rear + rr;
+      const penSide = e.half + rr - Math.abs(rel.y);
+      let nx = 0;
+      let ny = 0;
+      if (Math.min(penFwd, penBack) < penSide) nx = penFwd < penBack ? 1 : -1;
+      else ny = rel.y >= 0 ? 1 : -1;
+      const push = rot({ x: nx, y: ny }, rob.heading);
+      c.pos.x += push.x * 0.9;
+      c.pos.y += push.y * 0.9;
+      // give it a nudge so it slides clear and settles under CHAIN_FLING_FRICTION rather
+      // than teleporting out — the ring visibly rolls off the side of the robot
+      const shove = Math.max(CHAIN_RING_SLIDE_MIN, hyp(rob.vel.x, rob.vel.y) * 0.25);
+      c.vel = { x: push.x * shove, y: push.y * shove };
+      break;
+    }
+  }
+
   // carried catalysts ride their robot
   for (const c of chain.catalysts) {
     if (c.carriedBy === null) continue;
@@ -91,7 +188,7 @@ export function updateChain(
       c.carriedBy = null;
       continue;
     }
-    c.pos = { x: rob.pos.x, y: rob.pos.y };
+    c.pos = catalystMouth(rob); // the ring rides in the claw, not at the chassis centre
   }
 
   // ── robots: aim, fire/dump, catalyst button ────────────────────────────────
@@ -103,19 +200,31 @@ export function updateChain(
     const mode = r.spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
     const distMouth = hyp(mouth.x - r.pos.x, mouth.y - r.pos.y);
 
-    if (mode === 'turret') {
+    if (mode === 'turret' || mode === 'twinturret') {
       // TURRET single-shooter: auto-aim + index ONE particle per cadence, from ANY range.
       // SHOOTING ON THE MOVE: the turret leads (aims where muzzle + inherited chassis velocity
       // heads at the mouth), BUT it SLEWS toward that solution at a finite rate — it can't snap.
       // Driving steadily, it tracks perfectly; a SUDDEN velocity change (a robot shoves it) makes
       // the lead solution jump faster than the turret can follow, so shots fired mid-correction
       // fly along the STALE heading and miss. The launch reads r.turretHeading (physical).
-      const desiredTurret = leadDir(r.pos, mouth, CHAIN_SHOT_SPEED, r.vel);
+      // solved FROM the turret's own position (see turretOrigin), not the chassis centre
+      const desiredTurret = leadDir(turretOrigin(r), mouth, CHAIN_SHOT_SPEED, r.vel);
       r.turretHeading = slewAngle(r.turretHeading, desiredTurret, CHAIN_TURRET_SLEW * dt);
       if (wantsFire && r.hopper.length > 0 && world.time >= r.fireReadyAt) {
+        const twin = mode === 'twinturret';
         r.hopper.shift();
-        launchToAccel(world, chain, r, mouth, CHAIN_SHOT_SPEED, 0);
-        r.fireReadyAt = world.time + CHAIN_FIRE_INTERVAL;
+        // TWIN: alternate the two muzzles. `twinBarrel` flips every shot, so the stream
+        // visibly leaves from both barrels rather than one point — and it is plain state,
+        // so snapshots/replays reproduce which barrel fired.
+        const lat = twin ? (r.twinBarrel ? CHAIN_TWIN_BARREL_OFFSET : -CHAIN_TWIN_BARREL_OFFSET) : 0;
+        if (twin) r.twinBarrel = !r.twinBarrel;
+        launchToAccel(world, chain, r, mouth, CHAIN_SHOT_SPEED, 0, lat);
+        // ACCUMULATE the interval (don't re-anchor to world.time) so the sub-tick remainder
+        // carries and the cadence averages EXACTLY its nominal rate; clamp forward when the
+        // hopper has been idle so a resumed burst can't catch up on accumulated debt.
+        // A twin divides the interval by CHAIN_TWIN_FIRE_MULT — two barrels, one indexer.
+        r.fireReadyAt += twin ? CHAIN_FIRE_INTERVAL / CHAIN_TWIN_FIRE_MULT : CHAIN_FIRE_INTERVAL;
+        if (r.fireReadyAt < world.time) r.fireReadyAt = world.time;
         r.lastFireAt = world.time;
       }
     } else {
@@ -133,7 +242,7 @@ export function updateChain(
           // Uniform launch SPEED — only the position + timing vary, so the pattern flows.
           r.hopper.shift();
           launchAt(world, chain, r, rand() - 0.5, CHAIN_DRUM_SPEED, 0);
-          // SYMMETRIC jitter around the nominal 1/23 s ⇒ the drum AVERAGES 23 balls/s while the
+          // SYMMETRIC jitter around the nominal interval ⇒ the drum AVERAGES ~24 balls/s while the
           // cadence varies naturally (never a rigid uniform stream).
           r.fireReadyAt = world.time + CHAIN_DRUM_INTERVAL * (1 - CHAIN_DRUM_JITTER + rand() * 2 * CHAIN_DRUM_JITTER);
         } else {
@@ -147,11 +256,45 @@ export function updateChain(
       }
     }
 
-    // catalyst pick-up / place-down — EDGE-triggered (acts once per press)
+    /**
+     * RAIL CARRIAGE TRAVERSE. A rail catalyst's claw is not bolted in one spot — the
+     * carriage runs along the mounted side to put the claw where the work is, which is the
+     * entire reason to build one instead of a fixed turret. It tracks whatever the claw is
+     * working at (a carried ring stows it centred) and moves at a FINITE rate, so it reads
+     * as a machine repositioning rather than the claw appearing wherever it is needed.
+     *
+     * `catalystRail` is plain state on the robot, so snapshots and replays carry it and the
+     * renderer draws the carriage exactly where the sim put it.
+     */
+    if ((r.spec.catalystType ?? CHAIN_DEFAULT_CATALYST) === 'rail') {
+      // `catalystTrackTarget` already knows whether this robot is carrying (it tracks empty
+      // HOOKS when it is, rings when it is not) and answers null when there is nothing worth
+      // tracking, which stows the carriage centred. It used to be stowed here whenever the
+      // robot was carrying — refusing to traverse at exactly the moment a placement needed it.
+      const want = catalystRailTarget(r, catalystTrackTarget(r, world));
+      const step = CHAIN_RAIL_RATE * dt;
+      const d = want - r.catalystRail;
+      r.catalystRail = Math.abs(d) <= step ? want : r.catalystRail + Math.sign(d) * step;
+    }
+
+    // catalyst pick-up / place-down — EDGE-triggered (acts once per press) AND rate-limited
+    // by the mechanism's CYCLE time: an arm has to extend and retract, a catapult has to
+    // re-cock, a rail turret just indexes. That cooldown is what stops the reach-heavy
+    // archetypes from also being the fastest.
     const held = chain.catalystHeld[r.id] ?? false;
     const now = enabled && (cmd?.catalyst ?? false);
-    if (now && !held) catalystAction(chain, r);
+    const ready = world.time >= (chain.catalystReadyAt[r.id] ?? 0);
+    if (now && !held && ready) {
+      chain.catalystReadyAt[r.id] = world.time + chainCatalystGeom(r.spec).cycle;
+      catalystAction(chain, r);
+    }
     chain.catalystHeld[r.id] = now;
+    // CATAPULT THROW — its own button, its own edge, sharing the one mechanism cooldown
+    // (you cannot claw and throw in the same instant; it is one mechanism).
+    const fHeld = chain.flingHeld[r.id] ?? false;
+    const fNow = enabled && (cmd?.fling ?? false);
+    if (fNow && !fHeld && ready) flingCatalyst(world, chain, r, rand);
+    chain.flingHeld[r.id] = fNow;
   }
 
   // ── flight particles: fly at the goal → score + FUNNEL down → wall-side launcher
@@ -356,6 +499,22 @@ export function updateChain(
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * WHERE THE TURRET IS BOLTED, in world space. For a turreted archetype `shooterMount` is a
+ * POSITION, not a facing (the turret aims itself), so this is the point the Particle is
+ * actually born at — a back-mounted turret visibly shoots off the back of the robot, a
+ * corner-mounted one off that corner. The pivot rotates with the chassis, so the local offset
+ * is rotated into the world frame.
+ *
+ * The AIM solution and the LAUNCH both read this. Solving the lead from the chassis centre
+ * while firing from an offset muzzle would leave a systematic miss that grows with how far
+ * off-centre the turret is — the shot would be aimed from somewhere the ball never leaves.
+ */
+export function turretOrigin(r: RobotState): Vec2 {
+  const off = rot(turretLocal(r.spec), r.heading);
+  return { x: r.pos.x + off.x, y: r.pos.y + off.y };
+}
+
 /** launch one particle from robot `r` toward its accelerator `mouth` at a fixed
  * horizontal speed, with an optional lateral velocity (a dump fans several out). Aims
  * at the mouth center and solves the vertical velocity so the ballistic arc lands
@@ -367,8 +526,15 @@ function launchToAccel(
   mouth: { x: number; y: number },
   horizSpeed: number,
   latVel: number,
+  /** lateral muzzle offset (in) from the turret centreline — the twin turret's two
+   * barrels. Shifts where the Particle is BORN, not where it is aimed: both barrels
+   * share the one aim solution, exactly as they share the one turret. */
+  muzzleLat = 0,
 ): void {
-  const distMouth = Math.max(1, hyp(mouth.x - r.pos.x, mouth.y - r.pos.y));
+  const o = turretOrigin(r);
+  const px0 = o.x;
+  const py0 = o.y;
+  const distMouth = Math.max(1, hyp(mouth.x - px0, mouth.y - py0));
   // PHYSICAL launch: the ball leaves along the turret's ACTUAL heading (`r.turretHeading`, which
   // SLEWS toward the lead solution and lags a sudden velocity change — see the turret branch) plus
   // the inherited chassis velocity. It is NOT re-solved to guarantee a hit — if the turret is
@@ -387,7 +553,12 @@ function launchToAccel(
     id: chain.nextBallId++,
     color: 'green',
     state: { kind: 'flight', target: r.alliance },
-    pos: { x: r.pos.x + dir.x * 4, y: r.pos.y + dir.y * 4 }, // leaves from the barrel tip
+    // leaves from the barrel tip of the turret AT ITS MOUNT, offset across for a twin's
+    // two muzzles
+    pos: {
+      x: px0 + dir.x * 4 + perp.x * muzzleLat,
+      y: py0 + dir.y * 4 + perp.y * muzzleLat,
+    },
     vel: { x: netx, y: nety },
     z: z0,
     vz,
@@ -428,14 +599,18 @@ function leadDir(
  * turns DIAGONALLY toward the goal). SHOOTING ON THE MOVE: it LEADS by turning the whole CHASSIS
  * — `leadDir` returns the heading where the muzzle (chassis-forward) speed + the inherited
  * chassis velocity heads straight at the mouth, so a turretless robot can also stay accurate
- * while moving. A REAR shooter faces its BACK to the goal (+π).
+ * while moving. The MOUNT then offsets the chassis heading so it is the SHOOTER'S EDGE that
+ * ends up pointed at the goal: a REAR shooter turns its back to it (+π), a LEFT/RIGHT shooter
+ * presents that flank (±π/2) — i.e. it drives PAST the goal sideways and fires broadside.
  */
 export function chainGoalAimHeading(r: RobotState): number {
   const mouth = { x: accelSide(r.alliance) * CHAIN_HALF_X, y: 0 }; // opening center (±72, 0)
   const mode = r.spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
   const speed = mode === 'dumper' ? CHAIN_DUMP_SPEED : CHAIN_DRUM_SPEED;
   const lead = leadDir(r.pos, mouth, speed, r.vel);
-  return r.spec.shooterRear ? wrapAngle(lead + Math.PI) : lead;
+  // heading = the direction the MUZZLE must point, minus where the muzzle sits relative to
+  // forward — so muzzle world angle (heading + EDGE_ANGLE) lands exactly on the lead solution.
+  return wrapAngle(lead - EDGE_ANGLE[shooterEdgeOf(r.spec)]);
 }
 
 /**
@@ -444,10 +619,20 @@ export function chainGoalAimHeading(r: RobotState): number {
  * (see the fire gate in updateChain). Returns a `rotate` command override, or null to leave
  * the player's rotation alone (turret, or auto-fire, which fires opportunistically without
  * hijacking the driver's heading). Called from `chainStep` BEFORE the drivetrain model.
+ *
+ * This is BUILT IN, not an option. `aimAssist` is forced on for every robot in both games
+ * (`coerceAssists` in sim/spawn.ts), so the `!r.aimAssist` early-out below is unreachable
+ * through any configuration — it stays, and stays tested (the smoke check sets the flag on
+ * the spawned robot), for if the toggle ever comes back. What it would mean: the fire button
+ * no longer hijacks the heading and the driver lines the shot up by hand, with the fire gate
+ * still requiring the mounted edge within `CHAIN_AIM_TOL` so a manual shot has to be aimed.
+ * A CR TURRET ignores the flag entirely — it always tracks, because there is no manual turret
+ * control to fall back on and gating it would leave that archetype unable to aim at all.
  */
 export function chainAimAssist(r: RobotState, cmd: RobotCommand | undefined, enabled: boolean): number | null {
   const mode = r.spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
   if (mode !== 'drum' && mode !== 'dumper') return null;
+  if (!r.aimAssist) return null; // manual aiming: the driver turns the robot themselves
   if (!enabled || !(cmd?.fire ?? false)) return null; // only the manual button steers
   const err = wrapAngle(chainGoalAimHeading(r) - r.heading);
   return clamp(err * CHAIN_AIM_GAIN, -1, 1);
@@ -477,9 +662,11 @@ function launchLine(
 }
 
 /** Launch ONE particle toward the goal from lateral fraction `frac` (−0.5..0.5 across the
- * chassis width). It leaves along the robot's FORWARD heading (aim = the robot facing the
- * goal); `sideVar` scales the speed by its lateral position (dumper catapult scatter). The
- * arc is solved so it is still airborne crossing the wall plane (the tall over-field opening). */
+ * launcher's edge). It leaves along the MOUNTED EDGE's outward normal (aim = the robot turning
+ * that edge to the goal); `sideVar` scales the speed by its lateral position (dumper catapult
+ * scatter). The launch line spans the mounted edge — the chassis WIDTH on a front/back mount,
+ * its LENGTH on a left/right one, so a long narrow robot gets a wider broadside than nose-on.
+ * The arc is solved so it is still airborne crossing the wall plane (the tall opening). */
 function launchAt(
   world: World,
   chain: ChainState,
@@ -489,13 +676,17 @@ function launchAt(
   sideVar: number,
 ): void {
   const side = accelSide(r.alliance);
-  const hw = r.spec.width / 2;
-  const hl = r.spec.length / 2;
-  // a REAR shooter launches from the BACK edge, in the −forward direction
-  const sSign = r.spec.shooterRear ? -1 : 1;
-  const fwd = { x: dcos(r.heading) * sSign, y: dsin(r.heading) * sSign };
+  const edge = shooterEdgeOf(r.spec); // turretless: a launch LINE spans a side
+  const { dist, span } = edgeGeom(r.spec, edge);
+  // the muzzle points along the mounted edge's outward normal, in the WORLD frame
+  const muzzle = wrapAngle(r.heading + EDGE_ANGLE[edge]);
+  const fwd = { x: dcos(muzzle), y: dsin(muzzle) };
   const wall = side * CHAIN_HALF_X;
-  const w = rot({ x: sSign * hl, y: frac * 2 * hw * CHAIN_LAUNCH_LINE_FRAC }, r.heading);
+  // launch point: out to the edge along its normal, then `frac` across it (edge perpendicular)
+  const dir = EDGE_DIR[edge];
+  const perp = EDGE_PERP[edge];
+  const across = frac * 2 * span * CHAIN_LAUNCH_LINE_FRAC;
+  const w = rot({ x: dist * dir.x + across * perp.x, y: dist * dir.y + across * perp.y }, r.heading);
   const px = r.pos.x + w.x;
   const py = r.pos.y + w.y;
   const spd = speed * (1 + sideVar * (frac * 2)); // frac*2 ∈ [−1,1] — catapult side variance
@@ -630,19 +821,15 @@ function interact(
 
   const intakeActive = enabled && (rob.autoIntake || (cmd?.intake ?? false));
   const cap = chainHopperCap(rob.spec);
-  // CR intake: capture every particle inside the intake MOUTH (`chainIntakeBand` — the SAME
+  // CR intake: capture every particle inside an intake MOUTH (`chainIntakeMouths` — the SAME
   // band the renderer draws, so the grab area is exactly the visible intake). It reaches the
   // collision front (the intake tip), so a particle at the intake is captured BEFORE the frame
   // would plow it forward — driving into a cluster collects fast instead of shoving them away.
   if (intakeActive && rob.hopper.length < cap) {
-    const m = chainIntakeBand(rob.spec);
-    if (m.side) {
-      // SIDE mount: rollers on BOTH side edges — a particle alongside either flank (within the
-      // chassis length, out to `outer`, in past `inner`) is grabbed.
-      const aly = Math.abs(local.y);
-      if (Math.abs(local.x) < m.halfLen && aly > m.inner && aly < m.outer + r2) return 'absorbed';
-    } else if (local.x > m.back && local.x < m.front + r2 && Math.abs(local.y) < m.half) {
-      return 'absorbed';
+    // ANY mounted edge grabs: one mouth for front/back, two for side (both flanks) and
+    // frontback (both ends). The particle radius pads only each mouth's outward lip.
+    for (const m of chainIntakeMouths(rob.spec)) {
+      if (mouthContains(m, local.x, local.y, r2)) return 'absorbed';
     }
   }
 
@@ -666,24 +853,64 @@ function interact(
   return 'none';
 }
 
-/** edge action: place a carried ring on a nearby empty hook (else drop it), or pick
- * up the nearest free ring in range if not carrying one. */
+/**
+ * CATAPULT THROW (launcher archetype only). Flings the carried ring downfield to reposition
+ * it — transport, not scoring.
+ *
+ * The catapult is NOT turreted: it fires along the chassis heading plus its fixed build
+ * YAW (`catapultYaw`), so aiming means pointing the robot. How far it throws is the build's
+ * `catapultRange`, converted to a launch speed by `catapultSpeedFor` so the slider is a
+ * distance rather than a raw velocity. Where it actually lands is scattered on purpose —
+ * ±SPEED_VAR on the speed (which moves both the airborne leg and the ground slide) plus a
+ * lateral kick — so it can never be used as a placer.
+ */
+function flingCatalyst(world: World, chain: ChainState, rob: RobotState, rand: () => number): boolean {
+  if (!chainCatalystGeom(rob.spec).fling) return false;
+  const mine = chain.catalysts.find((c) => c.carriedBy === rob.id);
+  if (!mine) return false;
+  const range = chainCatapultRange(rob.spec);
+  const dir = wrapAngle(rob.heading + chainCatapultYaw(rob.spec));
+  const spd = catapultSpeedFor(range) * (1 + (rand() * 2 - 1) * CHAIN_FLING_SPEED_VAR);
+  const lat = (rand() * 2 - 1) * CHAIN_FLING_SPREAD;
+  mine.carriedBy = null;
+  mine.pos = catalystMouth(rob);
+  mine.vel = { x: dcos(dir) * spd - dsin(dir) * lat, y: dsin(dir) * spd + dcos(dir) * lat };
+  mine.z = 6;
+  mine.vz = CHAIN_FLING_VZ;
+  // re-cocking scales with the energy stored, i.e. with the range it was built for
+  chain.catalystReadyAt[rob.id] = world.time + catapultCycleFor(range);
+  return true;
+}
+
+/** every empty hook on either goal (yours OR the opponent's — seating on either is legal) */
+function emptyHooks(chain: ChainState): { alliance: Alliance; index: number; pos: Vec2 }[] {
+  const out: { alliance: Alliance; index: number; pos: Vec2 }[] = [];
+  for (const a of ['red', 'blue'] as Alliance[]) {
+    for (let i = 0; i < CHAIN_HOOKS_PER_GOAL; i++) {
+      if (chain.catalysts.some((o) => o.hook && o.hook.alliance === a && o.hook.index === i)) continue;
+      out.push({ alliance: a, index: i, pos: hookPos(a, i) });
+    }
+  }
+  return out;
+}
+
+/** edge action: place a carried ring on a reachable empty hook (else drop it), or pick
+ * up the nearest reachable ring if not carrying one. Reach is the MECHANISM's — its
+ * mouth on the mounted edge, its radius, and its cone (see `catalystCanReach`). */
 function catalystAction(chain: ChainState, rob: RobotState): void {
+  const g = chainCatalystGeom(rob.spec);
   const mine = chain.catalysts.find((c) => c.carriedBy === rob.id);
   if (mine) {
-    // seat on the NEAREST reachable empty hook of EITHER goal — your own OR the opponent's
+    // seat on the NEAREST REACHABLE empty hook of either goal, using the CLAW's reach —
+    // the same claw that grabs. (The catapult is not a placing tool; see the fling below.)
     let bestHook: { alliance: Alliance; index: number } | null = null;
-    let bestHookD = CHAIN_HOOK_PLACE_R;
-    for (const a of ['red', 'blue'] as Alliance[]) {
-      for (let i = 0; i < CHAIN_HOOKS_PER_GOAL; i++) {
-        const taken = chain.catalysts.some((o) => o.hook && o.hook.alliance === a && o.hook.index === i);
-        if (taken) continue;
-        const h = hookPos(a, i);
-        const d = hyp(h.x - rob.pos.x, h.y - rob.pos.y);
-        if (d < bestHookD) {
-          bestHookD = d;
-          bestHook = { alliance: a, index: i };
-        }
+    let bestHookD = Infinity;
+    for (const h of emptyHooks(chain)) {
+      if (!catalystCanReach(rob, h.pos, g.reach)) continue;
+      const d = catalystDist(rob, h.pos);
+      if (d < bestHookD) {
+        bestHookD = d;
+        bestHook = { alliance: h.alliance, index: h.index };
       }
     }
     if (bestHook) {
@@ -691,9 +918,10 @@ function catalystAction(chain: ChainState, rob: RobotState): void {
       mine.carriedBy = null;
       return;
     }
-    // no hook in range → drop it here
+    // No hook in claw reach → the claw simply puts the ring down. Throwing is a SEPARATE
+    // action on its own button (`flingCatalyst`), so a press is never ambiguous.
     mine.carriedBy = null;
-    mine.pos = { x: rob.pos.x, y: rob.pos.y };
+    mine.pos = catalystMouth(rob); // the ring leaves from the claw, not the chassis centre
     return;
   }
   // not carrying → take the nearest reachable ring: a FREE ring on the field, OR a
@@ -702,15 +930,12 @@ function catalystAction(chain: ChainState, rob: RobotState): void {
   let bestD = Infinity;
   for (const c of chain.catalysts) {
     if (c.carriedBy !== null) continue;
-    let d: number;
-    if (c.hook) {
-      const h = hookPos(c.hook.alliance, c.hook.index); // reach to the hook (any goal)
-      d = hyp(h.x - rob.pos.x, h.y - rob.pos.y);
-      if (d >= CHAIN_HOOK_PLACE_R) continue;
-    } else {
-      d = hyp(c.pos.x - rob.pos.x, c.pos.y - rob.pos.y);
-      if (d >= CHAIN_CATALYST_PICK_R) continue;
-    }
+    // a SEATED ring is taken off its hook (de-scoring, legal on either goal) and so uses
+    // the hook-reach radius; a loose ring on the floor uses the grab radius.
+    const target = c.hook ? hookPos(c.hook.alliance, c.hook.index) : c.pos;
+    const radius = g.reach; // one claw does both jobs
+    if (!catalystCanReach(rob, target, radius)) continue;
+    const d = catalystDist(rob, target);
     if (d < bestD) {
       bestD = d;
       best = c;
@@ -719,6 +944,9 @@ function catalystAction(chain: ChainState, rob: RobotState): void {
   if (best) {
     best.hook = null; // if it was seated, this removes it from the goal (de-score)
     best.carriedBy = rob.id;
+    best.vel = { x: 0, y: 0 }; // catching it mid-slide stops it dead
+    best.z = 0;
+    best.vz = 0;
   }
 }
 
@@ -730,34 +958,37 @@ function catalystAction(chain: ChainState, rob: RobotState): void {
 export function chainCatalystPrompt(
   chain: ChainState,
   rob: RobotState,
-): { action: 'pickup' | 'place'; target: { x: number; y: number } } | null {
+): { action: 'pickup' | 'place' | 'fling'; target: { x: number; y: number } } | null {
+  // the SAME reach rules the action uses (`catalystCanReach`), so the prompt can never
+  // promise something the button then refuses to do
+  const g = chainCatalystGeom(rob.spec);
   const mine = chain.catalysts.find((c) => c.carriedBy === rob.id);
   if (mine) {
-    // an empty hook on EITHER goal (your own or the opponent's) is a valid place target
     let best: { x: number; y: number } | null = null;
-    let bestD = CHAIN_HOOK_PLACE_R;
-    for (const a of ['red', 'blue'] as Alliance[]) {
-      for (let i = 0; i < CHAIN_HOOKS_PER_GOAL; i++) {
-        const taken = chain.catalysts.some((o) => o.hook && o.hook.alliance === a && o.hook.index === i);
-        if (taken) continue;
-        const h = hookPos(a, i);
-        const d = hyp(h.x - rob.pos.x, h.y - rob.pos.y);
-        if (d < bestD) {
-          bestD = d;
-          best = h;
-        }
+    let bestD = Infinity;
+    for (const h of emptyHooks(chain)) {
+      if (!catalystCanReach(rob, h.pos, g.reach)) continue;
+      const d = catalystDist(rob, h.pos);
+      if (d < bestD) {
+        bestD = d;
+        best = h.pos;
       }
     }
-    return best ? { action: 'place', target: best } : null;
+    if (best) return { action: 'place', target: best };
+    // carrying, nothing seatable in reach — a CATAPULT build can still throw it downfield,
+    // and the driver has no way to know that without being told which button does it
+    if (chainCatalystGeom(rob.spec).fling) return { action: 'fling', target: { ...rob.pos } };
+    return null;
   }
   let best: { action: 'pickup'; target: { x: number; y: number } } | null = null;
   let bestD = Infinity;
   for (const c of chain.catalysts) {
     if (c.carriedBy !== null) continue;
     const target = c.hook ? hookPos(c.hook.alliance, c.hook.index) : c.pos;
-    const range = c.hook ? CHAIN_HOOK_PLACE_R : CHAIN_CATALYST_PICK_R;
-    const d = hyp(target.x - rob.pos.x, target.y - rob.pos.y);
-    if (d < range && d < bestD) {
+    const radius = g.reach; // one claw does both jobs
+    if (!catalystCanReach(rob, target, radius)) continue;
+    const d = catalystDist(rob, target);
+    if (d < bestD) {
       bestD = d;
       best = { action: 'pickup', target };
     }

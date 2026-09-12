@@ -17,7 +17,13 @@ import { periodLabel } from '../seasons';
 import { PeriodPicker } from './PeriodPicker';
 import { SupporterBadge, type StaffRole } from './SupporterBadge';
 import { PLACEMENT_GAMES } from '../config';
-import { CHAIN_MODE_LABELS, CHAIN_INTAKE_LABELS } from '../games/chain/labels';
+import {
+  CHAIN_MODE_LABELS,
+  CHAIN_INTAKE_LABELS,
+  CHAIN_INTAKE_MOUNT_LABELS,
+  CHAIN_SHOOTER_MOUNT_LABELS,
+} from '../games/chain/labels';
+import { intakeMountOf, shooterMountOf } from '../games/chain/mounts';
 import {
   CHAIN_DEFAULT_SCORE_MODE,
   CHAIN_DEFAULT_INTAKE,
@@ -43,6 +49,7 @@ const DT_LABEL: Record<DrivetrainType, string> = {
   tank: 'Tank',
   swerve: 'Swerve',
   xdrive: 'X-drive',
+  butterfly: 'Butterfly',
 };
 const INTAKE_LABEL: Record<IntakeStyle, string> = {
   sloped: 'Sloped',
@@ -104,14 +111,20 @@ function RobotSpecSummary({ spec, game }: { spec: RobotSpec; game?: GameId }) {
   const isChain = game === 'chain';
   const stat = (value: ReactNode, label: string, small = false) => (
     <div className="ds-stat">
-      <span className="sv" style={small ? { fontSize: 14 } : undefined}>{value}</span>
+      {/* `small` is the TEXT variant of a stat value (a drivetrain name, an
+          archetype) — a type step, so it is a class, not an inline size. */}
+      <span className={`sv${small ? ' sm' : ''}`}>{value}</span>
       <span className="sl">{label}</span>
     </div>
   );
 
   const chainMode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
-  const archetype = CHAIN_MODE_LABELS[chainMode] + (chainMode !== 'turret' && spec.shooterRear ? ' · rear' : '');
-  const sweeper = `${CHAIN_INTAKE_LABELS[spec.chainIntake ?? CHAIN_DEFAULT_INTAKE]} · ${spec.intakeSide ? 'Side' : 'Front'}`;
+  // a turret is top-mounted, so its mount is meaningless — only name it for drum/dumper
+  const sMount = shooterMountOf(spec);
+  const archetype =
+    CHAIN_MODE_LABELS[chainMode] +
+    (chainMode !== 'turret' && sMount !== 'front' ? ` · ${CHAIN_SHOOTER_MOUNT_LABELS[sMount].toLowerCase()}` : '');
+  const sweeper = `${CHAIN_INTAKE_LABELS[spec.chainIntake ?? CHAIN_DEFAULT_INTAKE]} · ${CHAIN_INTAKE_MOUNT_LABELS[intakeMountOf(spec)]}`;
 
   return (
     <>
@@ -189,7 +202,7 @@ function MyStanding({ me }: { me: EloStanding }) {
           <strong>{remaining}</strong> {remaining === 1 ? 'match' : 'matches'} until placement
         </span>
         <span className="lb-standing-sub">
-          {me.games}/{PLACEMENT_GAMES} placement matches played - finish them to join the leaderboard.
+          {me.games}/{PLACEMENT_GAMES} placement matches played
         </span>
         <span className="lb-standing-bar" aria-hidden>
           <span style={{ width: `${Math.min(100, (me.games / PLACEMENT_GAMES) * 100)}%` }} />
@@ -355,8 +368,8 @@ export function Leaderboard({
           <div className="ds-empty">
             <div className="big">{isRecords ? 'No entries yet' : 'No placed players yet'}</div>
             {isRecords
-              ? 'Be the first to set a time on this board.'
-              : `Players appear here after ${PLACEMENT_GAMES} ranked matches. Be the first to place.`}
+              ? 'Be the first to set a score on this board.'
+              : `Players appear here after ${PLACEMENT_GAMES} ranked matches.`}
           </div>
         )}
         {status === 'ok' && rows.length > 0 && (
@@ -373,7 +386,7 @@ export function Leaderboard({
                 <th>Driver</th>
                 {isRecords && <th>Robot</th>}
                 {!isRecords && <th>Games</th>}
-                <th style={{ textAlign: 'right' }}>{valueLabel}</th>
+                <th className="r">{valueLabel}</th>
               </tr>
             </thead>
             <tbody>
@@ -425,14 +438,13 @@ export function Leaderboard({
                                 e.stopPropagation();
                                 setOpenRow(isOpen ? null : r.userId);
                               }}
-                              title="View robot"
                             >
                               {DT_LABEL[cfg.spec.drivetrain]}
                               {cfg.partnerSpec && ` + ${DT_LABEL[cfg.partnerSpec.drivetrain]}`}
                               <span className="tw">{isOpen ? '▴' : '▾'}</span>
                             </button>
                           ) : (
-                            <span style={{ color: 'var(--ds-mut)' }}>-</span>
+                            <span className="ds-muted">-</span>
                           )}
                         </td>
                       )}

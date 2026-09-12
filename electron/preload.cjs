@@ -11,4 +11,17 @@ contextBridge.exposeInMainWorld('dsim', {
   getAutoCheck: () => ipcRenderer.invoke('dsim:getAuto'),
   setAutoCheck: (v) => ipcRenderer.invoke('dsim:setAuto', !!v),
   openDownload: () => ipcRenderer.invoke('dsim:openDownload'),
+  /**
+   * HOST A LAN GAME (desktop only — the web app has no way to start a server, which is why
+   * the Host panel is gated on `window.dsim` existing at all).
+   *
+   * `start` resolves to either a status object or `{ error }`; the caller shows the error
+   * rather than retrying, because every failure here is a thing a person has to fix (a port
+   * in use, a firewall prompt they dismissed).
+   */
+  lan: {
+    start: (opts) => ipcRenderer.invoke('dsim:lanStart', opts || {}),
+    stop: () => ipcRenderer.invoke('dsim:lanStop'),
+    status: () => ipcRenderer.invoke('dsim:lanStatus'),
+  },
 });

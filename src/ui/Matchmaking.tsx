@@ -9,7 +9,9 @@ import type { NetSession } from '../net/session';
 import type { LobbyPlayer, PlayerIntro, QueueMode } from '../net/protocol';
 import { MatchStrategy } from './MatchStrategy';
 import { MatchAudio } from '../audio';
-import { expandLabel, widenHint, queuesFor } from './queueDepth';
+import { DODGE_REASON, type DodgeVerdict } from '../dodge';
+import { STANDING_MAX, WINDOW_HOURS, lockRemaining, tierOf } from '../standing';
+import { widenHint, queuesFor } from './queueDepth';
 import { parkQueue, takeQueue, updateQueue, dropQueue, elapsedSeconds, type ParkedQueue } from './queueKeeper';
 import { usePresence } from './usePresence';
 import { useServerNotice } from '../net/notice';
@@ -17,6 +19,21 @@ import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
 import { formatLabel, type PendingChallenge } from './challenge';
+
+/**
+ * ONE string for the one fact, on both waiting screens.
+ *
+ * They carried two near-identical 24-word paragraphs saying the same thing in the
+ * "don't worry, we'll handle it" register. The fact is worth keeping — that the
+ * queue survives leaving the screen is genuinely non-obvious, and a first-time
+ * searcher has not yet seen the `QueueBar` that demonstrates it — but a "Tip:"
+ * label on the only tip on screen is a label for a category of one.
+ */
+const BACKGROUND_QUEUE_TIP = (
+  <>
+    <b>← Back</b> keeps you in the queue.
+  </>
+);
 
 /**
  * Region-aware ranked matchmaking. We connect to the DESIGNATED matchmaker (a
@@ -83,6 +100,18 @@ export function Matchmaking({
   const [bumps, setBumps] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState('');
+  /** what a cancelled ranked pairing cost — shown next to the cancellation itself, because
+   *  a rating drop the player is not told about is the thing that makes a penalty feel
+   *  arbitrary. `null` for a player who was NOT at fault, which is worth saying out loud. */
+  const [dodge, setDodge] = useState<{ yours: DodgeVerdict | null; others: DodgeVerdict[] } | null>(null);
+  // the ranked queue refused us on ACCOUNT STANDING (a live clock, so `tick` re-renders it)
+  const [lock, setLock] = useState<{ until: number; score: number } | null>(null);
+  const [tick, setTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!lock || lock.until <= tick) return;
+    const id = window.setInterval(() => setTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [lock, tick]);
   // set once a paired match opens its pre-match strategy window (see MatchStrategy)
   const [strategy, setStrategy] = useState<StrategyState | null>(null);
 
@@ -234,6 +263,8 @@ export function Matchmaking({
       matchFound();
       joinAssignedMatch(room);
     });
+    lobby.on('dodgeVerdict', (yours, others) => setDodge({ yours, others }));
+    lobby.on('standingLock', (until, score) => { setLock({ until, score }); setSearching(false); });
     lobby.on('error', (msg) => strategyCancelled(msg));
     lobby.on('closed', () => {
       if (!startedRef.current && !assigningRef.current)
@@ -331,6 +362,88 @@ export function Matchmaking({
     setError(msg);
   };
 
+  /** "30 minutes" / "2 hours" / "7 days" — a lock length in the biggest unit that stays exact */
+  const minutesText = (min: number): string => {
+    if (min < 60) return `${min} minute${min === 1 ? '' : 's'}`;
+    if (min < 60 * 24) {
+      const h = Math.round(min / 60);
+      return `${h} hour${h === 1 ? '' : 's'}`;
+    }
+    const d = Math.round(min / (60 * 24));
+    return `${d} day${d === 1 ? '' : 's'}`;
+  };
+
+  /** the cancellation notice: WHY it died and what it cost you. Rendered next to every
+   *  error slot, so it appears wherever the cancel surfaces. */
+  const dodgeNote = (): JSX.Element | null => {
+    if (!dodge) return null;
+    const y = dodge.yours;
+    if (y?.kind) {
+      const st = y.standing;
+      const nth =
+        y.count === 1 ? 'first' : y.count === 2 ? 'second' : y.count === 3 ? 'third' : `${y.count}th`;
+      return (
+        <div className="ds-dodge charged">
+          {/* STANDING, not rating — and the number is the headline because it is the thing
+              that actually changed. A dodge only ever reaches the rating after a warning and
+              two cooldowns have been ignored, and when it does, it is said plainly. */}
+          <b>
+            {st ? `−${st.points} standing · ${st.scoreBefore} → ${st.scoreAfter}` : 'Match cancelled'}
+            {st && st.ratingCharge > 0 && ` · −${st.ratingCharge} rating`}
+          </b>
+          <span>
+            You {DODGE_REASON[y.kind]}. That is your {nth} in {WINDOW_HOURS.dodge} hours
+            {st && st.cooldownMin > 0
+              ? ` — ranked is locked for ${minutesText(st.cooldownMin)}.`
+              : '.'}
+          </span>
+          {/* TELL THEM WHAT THE NEXT ONE COSTS. Both systems this is patterned on publish the
+              next rung rather than letting a player discover it by hitting it, and the whole
+              point of an escalating ladder is that it can be seen coming. */}
+          {st && st.nextCooldownMin > st.cooldownMin && (
+            <span>The next one locks it for {minutesText(st.nextCooldownMin)}.</span>
+          )}
+          {st && (
+            <span className="ds-muted">
+              Account standing: {tierOf(st.scoreAfter).name.toLowerCase()}. Finishing matches earns it back.
+            </span>
+          )}
+        </div>
+      );
+    }
+    const who = dodge.others.filter((o) => o.kind).length;
+    return (
+      <div className="ds-dodge clear">
+        <b>Nothing was charged to you</b>
+        <span>
+          {who > 0
+            ? `${who === 1 ? 'A player' : `${who} players`} didn’t make it to the match. You were ready — this one is on them.`
+            : 'The match was cancelled before it started.'}
+        </span>
+      </div>
+    );
+  };
+
+  /** RANKED IS LOCKED: the queue refused this account because its standing carries a
+   *  cooldown. Its own notice rather than an error string — a lock has a clock, so it counts
+   *  down and the button comes back on its own. */
+  const lockNote = (): JSX.Element | null => {
+    if (!lock || lock.until <= tick) return null;
+    return (
+      <div className="ds-dodge charged">
+        <b>Ranked is locked for {lockRemaining(lock.until, tick)}</b>
+        <span>
+          Your account standing is {tierOf(lock.score).name.toLowerCase()} ({lock.score}/{STANDING_MAX}).{' '}
+          {tierOf(lock.score).blurb}
+        </span>
+        {/* "finishing matches earns it back" is `dodgeNote`'s line, and the two
+            notices can stand one above the other in the same panel. Said once, in
+            one wording, by whichever one is up. */}
+        <span className="ds-muted">Custom rooms and solo practice are unaffected.</span>
+      </div>
+    );
+  };
+
   const find = async (): Promise<void> => {
     if (!gameServerUrl()) {
       setError('The game server isn’t configured.');
@@ -354,7 +467,7 @@ export function Matchmaking({
     try {
       transport = new WebSocketTransport(gameServerUrlWith({ mm: '1' }));
     } catch {
-      setError('Could not reach the game server.');
+      setError('Couldn’t reach the game server.');
       setSearching(false);
       return;
     }
@@ -373,6 +486,8 @@ export function Matchmaking({
       matchFound();
       joinAssignedMatch(room);
     });
+    lobby.on('dodgeVerdict', (yours, others) => setDodge({ yours, others }));
+    lobby.on('standingLock', (until, score) => { setLock({ until, score }); setSearching(false); });
     lobby.on('error', (msg) => strategyCancelled(msg));
     lobby.on('closed', () => {
       if (!startedRef.current && !assigningRef.current)
@@ -414,7 +529,7 @@ export function Matchmaking({
     try {
       transport = new WebSocketTransport(gameServerUrlWith({ room }));
     } catch {
-      setError('Could not reach the match server.');
+      setError('Couldn’t reach the match server.');
       return;
     }
     const lobby = new LobbyClient(transport);
@@ -424,6 +539,8 @@ export function Matchmaking({
       startedRef.current = true;
       onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, room));
     });
+    lobby.on('dodgeVerdict', (yours, others) => setDodge({ yours, others }));
+    lobby.on('standingLock', (until, score) => { setLock({ until, score }); setSearching(false); });
     lobby.on('error', (msg) => strategyCancelled(msg));
     lobby.on('closed', () => {
       if (!startedRef.current) strategyCancelled('Lost connection to the match server.');
@@ -461,7 +578,7 @@ export function Matchmaking({
    * Run, MatchStrategy) — back control + brand mark, then a titled panel. */
   const page = (title: JSX.Element, sub: string, body: JSX.Element): JSX.Element => (
     <div className="ds-console">
-      <div className="ds-console-in" style={{ maxWidth: 520 }}>
+      <div className="ds-console-in narrow">
         <div className="ds-head">
           <button className="ds-back" onClick={onCancel}>
             ← Back
@@ -474,11 +591,11 @@ export function Matchmaking({
         <div className="ds-title">
           <h1>{title}</h1>
         </div>
-        {sub && (
-          <p className="ds-sub" style={{ marginTop: -10 }}>
-            {sub}
-          </p>
-        )}
+        {/* ALWAYS rendered, with a non-breaking space when there is nothing to say.
+            `sub` is '' on every state except searching, so pressing FIND MATCH used to
+            add a line to the header block and push the panel down with it. Every sub
+            this page passes is a single line, so one reserved line is exactly right. */}
+        <p className="ds-sub ds-sub-tight">{sub || ' '}</p>
         <div className="ds-panelbox">{body}</div>
       </div>
     </div>
@@ -543,18 +660,19 @@ export function Matchmaking({
           ? `${formatLabel(ch.format)} · ${elapsed}s`
           : `${formatLabel(ch.format)} · ${queue.size}/${queue.need} in queue · ${elapsed}s`,
         <>
-          <p className="ds-hint">
-            {ch.partyOnly
-              ? 'They start the moment they accept. This match counts for ELO.'
-              : 'Once they accept, you queue together as a team.'}
-          </p>
+          {/* the rated line is gone: the sub two rows above already reads "Rated 1v1 ·
+              14s", and "they start the moment they accept" is what "Waiting for @name"
+              means. The premade line stays — being put on the SAME alliance is the one
+              thing here the title does not say. */}
+          {!ch.partyOnly && (
+            <p className="ds-hint">You queue together as a team once they accept.</p>
+          )}
           {/* the wait here is somebody else's response time, so it is the screen
               MOST worth telling people they can leave */}
-          <p className="ds-tip">
-            <b>Tip:</b> press <b>← Back</b> and keep playing — you stay in the queue, and
-            we’ll pull you in the moment they accept.
-          </p>
+          <p className="ds-tip">{BACKGROUND_QUEUE_TIP}</p>
           {error && <p className="ds-form-err">⚠ {error}</p>}
+          {dodgeNote()}
+          {lockNote()}
           <div className="ds-actions">
             <button className="ds-cta ghost" onClick={cancel}>
               CANCEL
@@ -575,15 +693,17 @@ export function Matchmaking({
             {widenHint(bumps, elapsed)}
           </p>
         )}
-        <p className="ds-tip">
-          <b>Tip:</b> press <b>← Back</b> and keep playing — your place in the queue is
-          kept, and we’ll pull you into the match the moment it’s found.
-        </p>
+        <p className="ds-tip">{BACKGROUND_QUEUE_TIP}</p>
         {error && <p className="ds-form-err">⚠ {error}</p>}
+        {dodgeNote()}
+        {lockNote()}
         <div className="ds-actions">
           {!noWiden && multiServer() && (
+            // the label stays a VERB. `expandLabel` turned it into "EXPANDED ×2" past
+            // the first press — a past-tense status that no longer says what pressing
+            // it does, and a second statement of a count `widenHint` already carries.
             <button className="ds-cta ghost" onClick={expand}>
-              {expandLabel(bumps)}
+              EXPAND SEARCH
             </button>
           )}
           <button className="ds-cta ghost" onClick={cancel}>
@@ -608,15 +728,21 @@ export function Matchmaking({
           <span className="ot">2v2</span>
         </button>
       </div>
-      <p className="ds-hint">
+      {/* the mode picker's CAPTION, not a third row: at the panelbox's plain gap it
+          sat exactly equidistant from the tiles it describes and the unrelated region
+          toggle below, so it belonged to neither. */}
+      <p className="ds-hint ds-hint-caption">
         {presence ? (
           <>
             {/* THIS GAME's depth. A combined count named people you cannot be paired
                 with — the matchmaker buckets by game — which made the number an
                 argument for queueing into a pool that, for you, was empty. */}
-            <b style={{ color: 'var(--ds-ink)' }}>{depth[mode]}</b> waiting in{' '}
-            {mode.toUpperCase()} · {depth[mode === '1v1' ? '2v2' : '1v1']} in{' '}
-            {(mode === '1v1' ? '2v2' : '1v1').toUpperCase()} · {presence.online} online
+            {/* ALL THREE numbers bold and inked, off `.ds-hint b` — one of three
+                parallel numbers in a sentence styled and the other two not read as
+                formatting that gave up halfway through. */}
+            <b>{depth[mode]}</b> waiting in {mode.toUpperCase()} ·{' '}
+            <b>{depth[mode === '1v1' ? '2v2' : '1v1']}</b> in{' '}
+            {(mode === '1v1' ? '2v2' : '1v1').toUpperCase()} · <b>{presence.online}</b> online
           </>
         ) : (
           'Checking who’s online…'
@@ -630,6 +756,8 @@ export function Matchmaking({
         </div>
       )}
       {error && <p className="ds-form-err">⚠ {error}</p>}
+      {dodgeNote()}
+      {lockNote()}
       {restartPending && (
         <p className="ds-form-err">⚠ Server is restarting shortly - queueing is paused for a moment.</p>
       )}

@@ -5,9 +5,11 @@ import type { RoomKind } from '../net/protocol';
 import { RATED_FORMATS } from '../net/protocol';
 import type { Activity, PublicProfile, RoomInvite } from '../net/api';
 import { generateRoomCode } from '../net/roomCode';
+import { selectedServer } from '../net/env';
 import { useFriends, type FriendsApi } from './useFriends';
 import { ChallengePicker, type ChallengeFormat } from './ChallengePicker';
 import { challengeLine, formatLabel, type PendingChallenge } from './challenge';
+import { SupporterBadge } from './SupporterBadge';
 
 /**
  * ONE shared friends store for the whole menu shell.
@@ -26,8 +28,8 @@ import { challengeLine, formatLabel, type PendingChallenge } from './challenge';
  *    even when the panel is collapsed. The store sees every poll, so it diffs new
  *    arrivals into transient toasts.
  *
- * `Lobby`'s `InviteFlyout` is the ONE consumer that stays on its own `useFriends`
- * — it's a full-screen surface rendered OUTSIDE this provider.
+ * Full-screen room flows mount this provider too, so their persistent panel
+ * shares the same single poller and invitation behavior as the menu shell.
  */
 export interface FriendToast {
   id: number;
@@ -164,7 +166,14 @@ export function FriendsProvider({
       // format this ordering is load-bearing rather than tidy: the server verifies
       // the party token against the challenge ROW, so queueing before the row
       // exists would be rejected.
-      await api.inviteToRoom(username, code, game, kind, record ? 'duo' : null, format);
+      // WHERE this room will live. The sender hosts it on their own selected server, and a
+      // custom code has no region in it for the proxy to route on — so the invite has to
+      // carry it or the recipient opens a different room with the same code on their own
+      // machine. Harmless on a single-region deploy (every hint resolves to the one machine).
+      await api.inviteToRoom(
+        username, code, game, kind, record ? 'duo' : null, format,
+        selectedServer()?.region ?? null,
+      );
       if (rated) {
         onQueueChallenge({
           token: code,
@@ -329,6 +338,7 @@ export function FriendToasts({
             disabled={!t.from.username}
           >
             <span className="fr-toast-name">{t.from.handle}</span>
+            <SupporterBadge supporter={t.from.supporter} role={t.from.role} />
             <span className="fr-toast-sub">
               {t.kind === 'invite'
                 ? challengeLine(t.invite?.format ?? null)
@@ -352,8 +362,11 @@ export function FriendToasts({
                 >
                   Accept
                 </button>
+                {/* GHOST, as in the panel and the flyout. Bordered, it read as a
+                    second competing action where the other two places read as one
+                    action plus an out — the same decision, offered three times. */}
                 <button
-                  className="ds-btn small"
+                  className="ds-btn small ghost"
                   onClick={() => {
                     void friends.declineInvite(t.invite!.id);
                     dismissToast(t.id);

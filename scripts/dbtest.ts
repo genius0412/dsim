@@ -738,6 +738,370 @@ async function main(): Promise<void> {
   check('delete: but the payer email is scrubbed (personal data)', pay.email === null);
   check('delete: and the claim is unlinked by the FK', pay.claimed_by === null);
 
+  // ------------------------------------------------------ misscore reports ----
+  /**
+   * A claim about a RESULT, and the smite that keeps the queue from being a weapon.
+   *
+   * Three things that are easy to get wrong: a second claim on the same match from the same
+   * person must be a no-op rather than a second row (the unique index), resolving must be
+   * idempotent under two moderators (the `status = 'open'` guard), and the smite must be
+   * RECORDED on the row it was issued against. The standing charge itself goes through the
+   * ordinary ledger and is covered with the rest of standing.
+   */
+  await repo.ensureProfile('sr-user', 'Filer');
+  const srFiled = await repo.submitScoreReport({
+    reporterId: 'sr-user',
+    roomCode: 'ROOM1',
+    detail: 'the last artifact scored and was not counted',
+  });
+  check('score reports: a claim is filed', srFiled === true);
+  const srDupe = await repo.submitScoreReport({
+    reporterId: 'sr-user',
+    roomCode: 'ROOM1',
+    detail: 'saying it again',
+  });
+  check('score reports: the same match from the same person is a no-op, not a second row', srDupe === false);
+  const srOther = await repo.submitScoreReport({
+    reporterId: 'sr-user',
+    roomCode: 'ROOM2',
+    detail: 'a different match',
+  });
+  check('score reports: ...but a different match still lands', srOther === true);
+
+  const srOpen = await repo.listScoreReports({ status: 'open' });
+  check('score reports: the queue lists open claims', srOpen.length === 2, `${srOpen.length}`);
+  check(
+    'score reports: each row carries the filer history a smite decision needs',
+    srOpen[0].reporterFiled === 2 && srOpen[0].reporterRejected === 0,
+    `filed=${srOpen[0].reporterFiled} rejected=${srOpen[0].reporterRejected}`,
+  );
+
+  const srDone = await repo.resolveScoreReport(srOpen[0].id, 'rejected', 'admin-1', 50);
+  check('score reports: resolving returns the reporter to charge', srDone?.reporterId === 'sr-user');
+  const srAgain = await repo.resolveScoreReport(srOpen[0].id, 'upheld', 'admin-2', 0);
+  check('score reports: ...and a second moderator on the same row changes nothing', srAgain === null);
+  const srAll = await repo.listScoreReports({});
+  const srRejected = srAll.find((r) => r.id === srOpen[0].id);
+  check(
+    'score reports: the smite is recorded on the claim it was issued against',
+    srRejected?.status === 'rejected' && srRejected?.smite === 50,
+    `status=${srRejected?.status} smite=${srRejected?.smite}`,
+  );
+  const srStillOpen = await repo.listScoreReports({ status: 'open' });
+  check(
+    'score reports: ...and the rejected count is what the next moderator sees',
+    srStillOpen[0]?.reporterRejected === 1,
+    `${srStillOpen[0]?.reporterRejected}`,
+  );
+
+  // ------------------------------------------------------------------ replays
+  /**
+   * THE REPLAY ROUND-TRIP, which was broken for every replay ever stored.
+   *
+   * `replays` had no column for SIM_VERSION — `balance_version` is the SEASON and `sim_version`
+   * holds the recording build's BALANCE_VERSION — so `getReplay` could not populate
+   * `Replay.sim`, it came back undefined, and the playback gate read an absent `sim` as 0.
+   * Nothing matched, so every DB-served replay was refused as stale on every build. It was
+   * invisible because the replay tests all use in-memory containers, which carry the field.
+   */
+  {
+    const { REPLAY_FORMAT, replayPlayable, replayRefusal } = await import('../src/sim/replay');
+    const stored = {
+      format: REPLAY_FORMAT,
+      balanceVersion: 4,
+      sim: 7,
+      game: 'decode' as const,
+      mode: 'match' as const,
+      seed: 1234,
+      ticks: 120,
+      setups: [] as never[],
+      tracks: { 0: [1, 2, 3, 4, 5, 6, 7] },
+    };
+    const id = await repo.saveReplay(stored, 9, 'decode');
+    const back = await repo.getReplay(id);
+    check('replays: a stored replay comes back', back !== null);
+    check(
+      'replays: the SIM_VERSION survives the round-trip (the gate has something to compare)',
+      back?.sim === 7,
+      `sim=${back?.sim}`,
+    );
+    check(
+      'replays: the season stamp does NOT overwrite the recording build version',
+      back?.balanceVersion === 4,
+      `balanceVersion=${back?.balanceVersion} (season was 9)`,
+    );
+    check(
+      'replays: a round-tripped replay plays against its own versions',
+      !!back && replayPlayable(back, 4, 7),
+    );
+    /* ...and a row from before the column existed comes back UNSTAMPED, which is a different
+       refusal from a known mismatch: the behaviour it ran is unrecoverable, not version 0. This
+       is the only place that distinction is checked against a REAL row rather than a container
+       built in memory — and reading it as 0 is exactly the bug 0031 exists to fix. */
+    await db.query(`update replays set behaviour_version = null where id = $1`, [id]);
+    const legacy = await repo.getReplay(id);
+    check(
+      'replays: a pre-0031 row is honestly UNSTAMPED, not silently version 0',
+      !!legacy && legacy.sim === undefined && replayRefusal(legacy, 4, 7) === 'unstamped',
+      `sim=${String(legacy?.sim)} refusal=${legacy ? replayRefusal(legacy, 4, 7) : 'n/a'}`,
+    );
+  }
+
+  /**
+   * ------------------------------------------------- solo practice runs -----
+   *
+   * The one table a CLIENT writes to, because solo practice is the offline mode and has no
+   * authoritative loop to record it. Its whole safety argument is STRUCTURAL — `practice_runs`
+   * is not reachable from `record_leaderboard`, which is a view over `records` — so the check
+   * that matters most here is the boring one: a practice run does not appear on a board.
+   */
+  {
+    await repo.ensureProfile('prac-a', 'Practiser');
+    const container = (seed: number, ticks: number) => ({
+      format: 2,
+      balanceVersion: 4,
+      sim: 2,
+      game: 'decode' as const,
+      mode: 'match' as const,
+      seed,
+      ticks,
+      setups: [] as never[],
+      tracks: { 0: [1, 2, 3, 4, 5, 6, 7] },
+    });
+
+    const first = await repo.savePracticeRun('prac-a', container(1, 9000), 87, SEASON, 'decode');
+    check('practice: a run comes back with its replay', !!first.replayId && first.score === 87);
+    const listed = await repo.listPracticeRuns('prac-a', 'decode');
+    check('practice: ...and is listed for its owner', listed.length === 1 && listed[0].id === first.id);
+    check(
+      'practice: the stored replay is an ordinary one the viewer can already read',
+      (await repo.getReplay(first.replayId!))?.sim === 2,
+    );
+
+    // THE POINT OF THE SEPARATE TABLE: a client-reported score cannot reach a board.
+    const board = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'decode' });
+    check(
+      'practice: a practice run NEVER appears on the record leaderboard',
+      !board.some((r) => r.score === 87 && r.userId === 'prac-a'),
+      `${board.length} board rows`,
+    );
+
+    // PRUNE: the cap holds, and the pruned runs take their replays with them. A replay has no
+    // back-reference to its run, so a prune that only deleted rows would leak the logs.
+    for (let i = 2; i <= repo.PRACTICE_KEEP + 3; i++) {
+      await repo.savePracticeRun('prac-a', container(i, 100 + i), i, SEASON, 'decode');
+    }
+    const capped = await repo.listPracticeRuns('prac-a', 'decode');
+    check(
+      'practice: an account keeps only PRACTICE_KEEP runs, newest first',
+      capped.length === repo.PRACTICE_KEEP,
+      `${capped.length} kept`,
+    );
+    check(
+      'practice: the OLDEST went, not the newest',
+      !capped.some((r) => r.id === first.id),
+    );
+    check(
+      'practice: a pruned run took its replay with it (no orphaned logs)',
+      (await repo.getReplay(first.replayId!)) === null,
+    );
+
+    /**
+     * GAMES PLAYED + PLAYTIME. Practice is playing the game, so it credits `user_activity`
+     * exactly like a server-run match does — the route mirrors `persist.ts`, measuring from
+     * the replay's TICK COUNT. Pinned here because the two writes are in different files and
+     * nothing else would notice them drifting apart.
+     */
+    {
+      await repo.ensureProfile('prac-b', 'Counter');
+      const before = (await repo.getActivity('prac-b')).byGame['decode']?.games ?? 0;
+      const rep = container(99, 9000);
+      await repo.savePracticeRun('prac-b', rep, 40, SEASON, 'decode');
+      await repo.addActivity(['prac-b'], rep.ticks / 60, 'decode');
+      const after = await repo.getActivity('prac-b');
+      check(
+        'practice: a run counts toward GAMES PLAYED',
+        (after.byGame['decode']?.games ?? 0) === before + 1,
+        `${before} → ${after.byGame['decode']?.games}`,
+      );
+      check(
+        'practice: ...and adds the match length to PLAYTIME, from the replay ticks',
+        (after.byGame['decode']?.seconds ?? 0) === 150,
+        `${after.byGame['decode']?.seconds}s for ${rep.ticks} ticks`,
+      );
+      // pruning a run must NOT un-count it: you played it either way
+      for (let i = 0; i < repo.PRACTICE_KEEP + 2; i++) {
+        await repo.savePracticeRun('prac-b', container(500 + i, 60), i, SEASON, 'decode');
+      }
+      check(
+        'practice: pruning old runs does not take back the games you played',
+        ((await repo.getActivity('prac-b')).byGame['decode']?.games ?? 0) === before + 1,
+      );
+    }
+
+    // ...and deleting the account takes the rest, for the same reason
+    const live = (await repo.listPracticeRuns('prac-a', 'decode'))[0];
+    await repo.deleteAccount('prac-a');
+    check(
+      'practice: deleting an account deletes its practice replays too',
+      (await repo.getReplay(live.replayId!)) === null,
+    );
+    const rows = await db.query(`select count(*)::int as n from practice_runs where user_id = 'prac-a'`);
+    check('practice: ...and its runs', (rows.rows[0] as { n: number }).n === 0);
+  }
+
+  /**
+   * --------------------------------------------- self-hosted LAN matches ----
+   *
+   * The SECOND table a client writes to, and the less trusted of the two: a practice run at
+   * least came off the player's own sim, while a LAN match comes off a server whose operator
+   * could have patched it. Same structural defence — `lan_runs` cannot reach
+   * `record_leaderboard` — plus one thing practice runs do not need: the upload is offered
+   * more than once, by a client draining a backlog over a venue's connection, so `match_id`
+   * has to make it idempotent.
+   */
+  {
+    await repo.ensureProfile('lan-host', 'Hoster');
+    await repo.ensureProfile('lan-host2', 'Other Hoster');
+    const container = (seed: number, ticks: number) => ({
+      format: 2,
+      balanceVersion: 4,
+      sim: 2,
+      game: 'decode' as const,
+      mode: 'match' as const,
+      seed,
+      ticks,
+      setups: [] as never[],
+      tracks: { 0: [1, 2, 3, 4, 5, 6, 7] },
+    });
+    const roster: repo.LanParticipant[] = [
+      { name: 'Ana', teamName: 'Horizon', teamNumber: 36596, alliance: 'red', drivetrain: 'tank' },
+      { name: 'Bo', teamName: 'Horizon', teamNumber: 36596, alliance: 'blue', drivetrain: 'mecanum' },
+    ];
+    /** a match id of the shape the hosting server actually mints, which the table now requires */
+    const mid = (n: number): string =>
+      `0000${n.toString(16).padStart(4, '0')}-0000-4000-8000-000000000000`;
+    const MATCH_A = mid(1);
+
+    const one = await repo.saveLanRun('lan-host', MATCH_A, container(1, 9000), { red: 120, blue: 98 }, roster, SEASON, 'decode');
+    check('lan: a hosted match comes back with its replay', !!one.replayId && one.score.red === 120);
+    check('lan: the roster round-trips as names, not ids', one.participants.length === 2 && one.participants[0].name === 'Ana');
+    const listed = await repo.listLanRuns('lan-host', 'decode');
+    check('lan: ...and is listed for the HOST', listed.length === 1 && listed[0].matchId === MATCH_A);
+    check(
+      'lan: the stored replay is an ordinary one the viewer can already read',
+      (await repo.getReplay(one.replayId!))?.sim === 2,
+    );
+
+    // THE POINT OF THE SEPARATE TABLE: a score reported by an untrusted server cannot reach a board.
+    const board = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: SEASON, game: 'decode' });
+    check(
+      'lan: a LAN match NEVER appears on the record leaderboard',
+      !board.some((r) => r.score === 120),
+      `${board.length} board rows`,
+    );
+
+    // IDEMPOTENCE. The same match offered twice is ONE row — this is what makes a retry safe,
+    // and it is the difference between a flaky venue connection and a duplicated history.
+    const replaysBefore = await db.query(`select count(*)::int as n from replays`);
+    const again = await repo.saveLanRun('lan-host', MATCH_A, container(99, 50), { red: 1, blue: 2 }, roster, SEASON, 'decode');
+    check('lan: re-uploading the same matchId returns the SAME row', again.id === one.id);
+    check('lan: ...and does not overwrite the first report', again.score.red === 120);
+    const afterRetry = await repo.listLanRuns('lan-host', 'decode');
+    check('lan: ...and creates no second row', afterRetry.length === 1);
+    // the rejected upload must not leave its replay behind. A replay has no back-reference to
+    // the run that owns it, so one written for a row that never existed is unreachable forever.
+    const replaysAfter = await db.query(`select count(*)::int as n from replays`);
+    const nBefore = (replaysBefore.rows[0] as { n: number }).n;
+    const nAfter = (replaysAfter.rows[0] as { n: number }).n;
+    check(
+      'lan: ...and leaks no orphaned replay for the rejected upload',
+      nAfter === nBefore,
+      `${nBefore} -> ${nAfter}`,
+    );
+
+    /**
+     * A SECOND ACCOUNT CANNOT CLAIM A MATCH SOMEBODY ELSE FILED, AND IS TOLD SO.
+     *
+     * It used to be handed the existing row with a 200. That reads like idempotence and is
+     * not: the id was BROADCAST to the whole room with the match result, so any player or
+     * spectator could file the host's match under their own account, and the real host's
+     * upload was then answered with a stranger's row and marked done on the device. The id is
+     * a host-only capability now (`matchArchive`), and the idempotence is scoped by host, so
+     * this is a refusal `/api/lan` turns into a 409 rather than a silent win.
+     */
+    let claimed: string | null = null;
+    try {
+      await repo.saveLanRun('lan-host2', MATCH_A, container(7, 60), { red: 999, blue: 0 }, roster, SEASON, 'decode');
+      claimed = 'accepted';
+    } catch (err) {
+      claimed = err instanceof repo.LanRunOwnedByAnother ? 'refused' : `wrong error: ${String(err)}`;
+    }
+    check('lan: another account claiming a filed matchId is REFUSED, not quietly answered', claimed === 'refused', String(claimed));
+    check('lan: ...and it still belongs to the original host', (await repo.listLanRuns('lan-host2', 'decode')).length === 0);
+    check(
+      'lan: ...and the original host still owns the row it filed',
+      (await repo.listLanRuns('lan-host', 'decode'))[0]?.hostUserId === 'lan-host',
+    );
+    // the refused claim must not leave its replay behind either
+    const afterClaim = await db.query(`select count(*)::int as n from replays`);
+    check(
+      'lan: ...and the refused claim leaks no orphaned replay',
+      (afterClaim.rows[0] as { n: number }).n === nAfter,
+    );
+
+    /**
+     * THE SHAPE OF `match_id` IS A TABLE CONSTRAINT, not only an API check.
+     *
+     * The API refuses anything that is not a lowercase UUID, and that is a property of one
+     * code path. This is a property of the table: the identity column is the one value the
+     * uploader chooses, and freeform text there is an invitation to squat on it, to pad it,
+     * or to store a megabyte of anything under it. Same for `game`, which arrives on a query
+     * string and whose wrong values fail by silently listing nothing.
+     */
+    let badId = 'accepted';
+    try {
+      await db.query(
+        `insert into lan_runs (match_id, host_user_id, game, balance_version, score, participants)
+         values ('not-a-uuid', 'lan-host', 'decode', $1, '{}'::jsonb, '[]'::jsonb)`,
+        [SEASON],
+      );
+    } catch {
+      badId = 'refused';
+    }
+    check('lan: the TABLE refuses a match_id that is not a minted uuid', badId === 'refused');
+    let badGame = 'accepted';
+    try {
+      await db.query(
+        `insert into lan_runs (match_id, host_user_id, game, balance_version, score, participants)
+         values ($2, 'lan-host', 'quidditch', $1, '{}'::jsonb, '[]'::jsonb)`,
+        [SEASON, mid(9999)],
+      );
+    } catch {
+      badGame = 'refused';
+    }
+    check('lan: ...and a game that does not exist', badGame === 'refused');
+
+    // PRUNE: the cap holds and pruned runs take their replays with them.
+    for (let i = 2; i <= repo.LAN_KEEP + 3; i++) {
+      await repo.saveLanRun('lan-host', mid(i), container(i, 100 + i), { red: i, blue: 0 }, roster, SEASON, 'decode');
+    }
+    const capped = await repo.listLanRuns('lan-host', 'decode');
+    check('lan: a host keeps only LAN_KEEP matches, newest first', capped.length === repo.LAN_KEEP, `${capped.length} kept`);
+    check('lan: the OLDEST went, not the newest', !capped.some((r) => r.matchId === MATCH_A));
+    check(
+      'lan: a pruned match took its replay with it (no orphaned logs)',
+      (await repo.getReplay(one.replayId!)) === null,
+    );
+
+    // ...and deleting the host's account takes the rest, keyed on host_user_id
+    const live = (await repo.listLanRuns('lan-host', 'decode'))[0];
+    await repo.deleteAccount('lan-host');
+    check('lan: deleting the HOST account deletes its LAN replays too', (await repo.getReplay(live.replayId!)) === null);
+    const rows = await db.query(`select count(*)::int as n from lan_runs where host_user_id = 'lan-host'`);
+    check('lan: ...and its matches', (rows.rows[0] as { n: number }).n === 0);
+  }
+
   await db.close();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

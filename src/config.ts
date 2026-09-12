@@ -1,4 +1,4 @@
-import type { RobotSpec } from './types';
+import type { DrivetrainType, RobotSpec } from './types';
 
 /**
  * Single source of truth for all field geometry, physics constants, and
@@ -44,8 +44,12 @@ export const MATCH_SETTLE_S = MATCH_RESULT_REVEAL_MS / 1000;
  * build that produced it. Do NOT auto-derive this from a file hash — that would
  * reset every season on a trivial, non-gameplay edit. See docs/netcodeplan.md
  * Phase 3 + the phase3-leaderboards spec. */
-export const BALANCE_VERSION = 3; // 2: real-motor drivetrain retune (torque–speed curve + mecanum losses)
+export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–speed curve + mecanum losses)
 // 3: swerve wobble ↓ + faster turning (REF_TURN 8.5 / cap 12) + tank control-style at input layer
+// 4: robot-on-robot pushing rebuilt — push is a stated FORCE and the collider mass is derived
+//    from it, so weight, gearing and power draw each act ONCE instead of cancelling or landing
+//    twice (a 250 rpm minimum-weight mecanum used to out-push a 42 lb 435 rpm tank). Every
+//    head-to-head outcome moves, and the stiffer robot contact moves solo record scores too.
 // Bumping this INVALIDATES older replays for playback (they only re-sim exactly under their own
 // version's build): ReplayView gates on it and shows "recorded on an older version" instead.
 
@@ -66,9 +70,91 @@ export const BALANCE_VERSION = 3; // 2: real-motor drivetrain retune (torque–s
  * output. Never reset it. Leaderboards, ELO and seasons DO NOT read it — only
  * replay playback does (`ReplayView` refuses a mismatch and says so).
  *
- * 1: sim-reachable Math.hypot -> hyp (engine-independent; see src/math.ts)
+ * ALPHA HOLDS AT 2 AND STAYS THERE. Alpha's whole divergence from main is ONE unreleased
+ * batch, so it is ONE step past main's 1 — bumping again for each change inside that batch
+ * just churns a number nobody can act on, and invalidates alpha replays for no gain. Bump
+ * this again only when MAIN moves, or when alpha ships.
+ *
+ * 1: sim-reachable Math.hypot -> hyp (engine-independent; see src/math.ts) — MAIN is here.
+ * 2: the alpha batch, everything below, which all moves `step()` output:
+ *    · CR butterfly drivetrain / twin turret / catalyst mechanisms / corner geometry /
+ *      start legality;
+ *    · DECODE's G418.B fix — a gate tap no longer bills the standing ramp column;
+ *    · ROBOT-ON-ROBOT PUSHING rebuilt: the shove is a stated FORCE with the collider mass
+ *      derived from it (`pushForce`/`shoveMass`), so weight, gearing and power draw each act
+ *      once instead of cancelling or landing twice; a shoved chassis gets a real two-body
+ *      contact impulse, so an off-centre hit spins it; the press scaling every robot-robot
+ *      response is the pair's CLOSING velocity, not each robot's absolute one; a robot held
+ *      against a surface by an opponent feels that load; an auto-path robot is solid instead
+ *      of intangible; pair and static responses are summed before either is written; and
+ *      contacts are stiffer (PHYS_CONTACT_FREQ 8 -> 12);
+ *    · THE DECODE INTAKE GRABS AT THE ROLLER NIP, and reaches only what has LANDED on it:
+ *      one fore-aft band about `intakeAxleX` derived from the roller's own geometry replaces
+ *      three hand-written x-ranges (`intakeNip`/`INTAKE_TREAD_FRAC`), `intakeSuction`'s reach
+ *      is the landing bound `tip + BALL_RADIUS − INTAKE_CATCH_LENIENCE` instead of
+ *      `tip + BALL_RADIUS` (+ the wedge lip), the swallow cadence is 1-2 ticks with `drawIn`
+ *      up by half, and `intakeClaims`' lateral covers the suction's own outer band;
+ *    · G422 PINNING rewritten against the rule's own clauses — "preventing the movement"
+ *      requires the pinner to be IN THE WAY of where the victim is trying to go, "attempting
+ *      to move" reads side-drive so a tank can be pinned at all, the count ends only on
+ *      criteria A/B/C (pausing and resuming rather than dying on a 0.6 s lapse), and it bills
+ *      a MINOR every 3 s instead of one MINOR with an invented MAJOR escalation;
+ *    · G408 OVER-POSSESSION rewritten against DECODE's CONTROL definition instead of an FRC
+ *      POSSESSION and an invented TRAPPING (neither term is in this manual). Control is
+ *      ACQUIRED by herding — a flat-or-concave face, the robot moving the artifact a real
+ *      DISTANCE in the push direction, sustained past the confirm window — and LATCHES while
+ *      contact holds, so a pile driven into the wall keeps counting while one already resting
+ *      there never starts. An established hold keeps counting while it DRAINS, because
+ *      artifacts bounce off a bumper rather than riding it. The mouth carve-out is capped at
+ *      what the rollers take in one cycle rather than at hopper room, the loading-zone
+ *      carve-out is scoped to a robot actually in there, an excused artifact conducts the
+ *      transitive chain without being counted, and the per-artifact clocks are swept and
+ *      cleared outside auto/teleop;
+ *    · PENALTIES ARE ASSESSED IN FREE DRIVE — `freeplay` is a live phase everywhere else in
+ *      the sim, and `updatePenalties` was the one place that excluded it;
+ *    · a robot-robot contact that is SLIDING no longer aligns the pair, so a pusher is not
+ *      steered by the victim escaping it (`CONTACT_SLIP_RELIEF`);
+ *    · G422 no longer needs a WALL — an open-field pin is billed, with the asymmetry coming
+ *      from the pinner driving in and from a cornered robot counting as escaping, not pinning;
+ *    · G422 no longer needs the victim to be struggling — an idle victim held against a wall
+ *      is pinned, gated instead on the PINNER driving into it (`PIN_PRESS_COS`);
+ *    · G422 recognises the ORDINARY WALL PIN. The obstruction test asked whether the PINNER
+ *      lay along where the victim was trying to go — true of a straight reverse, false of every
+ *      SIDEWAYS exit — so a robot held flat against a wall and strafing to get out was ruled
+ *      un-pinned however stuck it was, and billed NOTHING where the pre-rewrite code billed a
+ *      MINOR. It now tests the VICTIM's intent instead (is it driving into the trap, or trying
+ *      to leave), which is what the rule's "transitive ... against a FIELD element" describes;
+ *    · BUMPER FRICTION IS BOUNDED (`capDrag`). The sim pushes by SETTING VELOCITY, so Rapier's
+ *      normal impulse is whatever a drive-in costs and its Coulomb friction was a fraction of
+ *      an unbounded number — a tank commanding nothing but straight forward was carried 58in
+ *      sideways by a mecanum strafing out from under it, 101% of the victim's own travel. The
+ *      tangential half of a contact is now capped by what the other robot can actually press
+ *      with and by the tyres it is pulling against, and a sideways exit along an open wall is
+ *      a real escape again (which is why the G422 wall-pin check is now the CORNER);
+ *    · AN UNPOWERED ROBOT NO LONGER BRAKES AGAINST A SHOVE at full stopping authority
+ *      (`MOTOR_SHOVE_BRAKE`) — three seconds of full throttle moved an idle equal chassis
+ *      15.5in, now 95in.
+ *    · BUMPER FRICTION RETUNED to the owner's call, twice and in that order: 0.45 -> 0.2
+ *      (`a97f03c`), then robot-on-robot alone to 0.15 with `PHYS_WALL_FRICTION` raised
+ *      0.35 -> 0.65 to compensate (`914bc1b`), because Rapier AVERAGES a pair's coefficients
+ *      and one constant is therefore all of robot-robot and half of robot-wall. Robot-wall is
+ *      held at the 0.40 it has always been, which is what keeps the gate arms — they run
+ *      through the same `statics()` helper — turning a robot exactly as before. Listed here
+ *      rather than given its own number for the reason stated above: this is still the one
+ *      unreleased alpha batch, and the entry exists so the batch's contents stay honest.
+ *    · ZONE FOUL HITBOXES corrected against Section 9, on two independent counts. G424 was
+ *      testing `gateZone()`, the generous rect that decides whether a robot can WORK the gate,
+ *      instead of the GATE ZONE the rule protects — 10x5 from the wall against the manual's
+ *      2.75x10 from the classifier edge, two rects sharing about 4in of the zone's 10in
+ *      length, so the foul ran 6in into the classifier channel and not at all over the outer
+ *      6in of the real zone (`gateZoneTape`). And G425/G426/G427 asked whether a CORNER or the
+ *      CENTRE was inside their zone, where every DECODE zone is an "infinitely tall volume"
+ *      and the rules ask whether a ROBOT "is in" one — so the test is overlap against the
+ *      top-down silhouette, which is what G424 alone already did. Both moved which contacts
+ *      draw fouls, hence this entry; BASE PARKING is untouched and still counts wheel support,
+ *      because that award is defined by what the TILE holds up, not by occupancy.
  */
-export const SIM_VERSION = 1;
+export const SIM_VERSION = 2;
 
 /** Ranked PLACEMENT: a player is "in placements" until they've completed this
  * many ranked games on a board (counted per mode).
@@ -80,6 +166,11 @@ export const SIM_VERSION = 1;
  * how hard each result swings the rating — it just no longer drives the UI. */
 export const PLACEMENT_GAMES = 5;
 
+/** Ratings never print below this. Glicko has no floor of its own, so a long enough losing
+ *  run — or a run of behaviour charges (see `src/standing.ts`) — would otherwise show a
+ *  player a number that reads as broken rather than as bad. */
+export const RATING_FLOOR = 400;
+
 // -------------------------------------------------------------- scoring ----
 export const PTS_LEAVE = 3;
 export const PTS_CLASSIFIED = 3;
@@ -90,38 +181,352 @@ export const PTS_BASE_PARTIAL = 5;
 export const PTS_BASE_FULL = 10;
 
 // --------------------------------------------------------------- fouls -----
-/** Section 11 penalties, awarded TO the OPPOSING (victim) alliance */
+/** Section 11 penalties, awarded TO the OPPOSING (victim) alliance. Straight from the
+ * DECODE glossary (Section 16): a MINOR FOUL is "a credit of 5 points", a MAJOR FOUL "a
+ * credit of 15 points", towards the MATCH point total. */
 export const PTS_FOUL_MINOR = 5;
 export const PTS_FOUL_MAJOR = 15;
-/** G422 pinning: hold an opponent for this long (s) while it is trying to move
- * and hasn't escaped PIN_ESCAPE_DIST from where the pin began -> foul */
+/** MOMENTARY, per the same glossary: "durations that are fewer than approximately 3
+ * seconds". Used by G408's excessive-violation test, which turns on whether CONTROL of 4+
+ * artifacts was greater-than-MOMENTARY. */
+export const MOMENTARY_S = 3;
+/**
+ * G422, verbatim, because every constant below is a clause of it:
+ *
+ *   "There is a 3-count on PINS. A ROBOT may not PIN an opponent's ROBOT for more than 3
+ *    seconds. A ROBOT is PINNING if it is preventing the movement of an opponent ROBOT by
+ *    contact, either direct or transitive (such as against a FIELD element) and the opponent
+ *    ROBOT is attempting to move. A PIN count ends once any of the following criteria below
+ *    are met:
+ *      A. the ROBOTS have separated by at least 2 ft. (~61 cm) from each other for more than
+ *         3 seconds,
+ *      B. either ROBOT has moved 2 ft. from where the PIN initiated for more than 3 seconds, or
+ *      C. the PINNING ROBOT gets PINNED.
+ *    For criteria A, the PIN count pauses once ROBOTS are separated by 2 ft. until either the
+ *    PIN ends or the PINNING ROBOT moves back within 2 ft., at which point the PIN count is
+ *    resumed. For criteria B, the PIN count pauses once either ROBOT has moved 2ft from where
+ *    the PIN initiated until the PIN ends or until both ROBOTS move back within 2ft., at which
+ *    point the PIN count is resumed.
+ *    Violation: MINOR FOUL and an additional MINOR FOUL for every 3 seconds in which the
+ *    situation is not corrected."
+ *
+ * Note what is NOT in it: any speed threshold, any requirement that the pinned ROBOT be against
+ * a wall, and any escalation to a MAJOR. The sim had all three.
+ */
 export const PIN_SECONDS = 3;
-export const PIN_ESCAPE_DIST = 24; // in — getting this far away ends the pin
-/** pinned robot counts as "prevented from moving" below this actual speed */
+/** "2 ft. (~61 cm)" — the separation in criterion A and the displacement in criterion B. */
+export const PIN_ESCAPE_DIST = 24; // in
+/** The pinned robot counts as "prevented from moving" while it is not gaining
+ * ground AWAY from the pinner faster than this.
+ *
+ * Deliberately measured along the ESCAPE direction rather than as raw speed: a
+ * robot being bulldozed sideways along a wall is moving fast and is still just as
+ * pinned, and pausing the 3-count every time it slid was one reason real pins
+ * almost never reached the threshold. */
 export const PIN_STUCK_SPEED = 8; // in/s
-/** the PINNED robot must be trapped against a field boundary with the pinner on
- * the open-field side: its leading corner (straight away from the pinner) sits
- * within this slop of the perimeter. This breaks the symmetry of a wall shove —
- * without it BOTH robots look "slow + commanding" and the victim was wrongly
- * fouled too. */
+/**
+ * The PINNED robot must be trapped against a SOLID with the pinner on the open-field side: its
+ * leading corner (straight away from the pinner) sits within this slop of the perimeter, a goal
+ * wedge or a classifier channel.
+ *
+ * THE RULE DOES NOT REQUIRE THIS — a FIELD element is offered as an EXAMPLE of transitive
+ * contact ("such as"), and direct contact alone can pin. It is kept because it is what breaks
+ * the SYMMETRY of a shove: without something behind one of them, both robots are equally "in
+ * contact, attempting to move, and going nowhere", and the sim has no referee to look at.
+ *
+ * It costs less than it looks. A pin with nothing behind the victim is a pin the victim is
+ * being pushed ACROSS the field, and criterion B ends that as soon as either robot is 2 ft from
+ * where it started — so the only open-field pin the rule would sustain is a stationary
+ * stalemate, and a stationary stalemate is mutual, which criterion C ends anyway. What is left
+ * uncovered is narrow: a robot wedged on another robot with open field behind it.
+ */
 export const PIN_WALL_SLOP = 3; // in
-/** G408 over-possession / plowing: a ROBOT may CONTROL at most this many
- * ARTIFACTS at once — held in the hopper PLUS any loose ground balls it is
- * actively herding (plowing). The hopper caps at HOPPER_CAPACITY, so the foul
- * bites when a full robot keeps shoving extra loose balls, or when a clump of
- * more than this many is driven around. */
+/**
+ * How closely the pinner must lie along the direction the victim is TRYING to go, as a cosine.
+ *
+ * "Preventing the movement" means the pinner is in the way. Without this the sim fouled a robot
+ * for standing behind an opponent who was driving itself into a wall under its own power — every
+ * clause was satisfied (contact, attempting to move, going nowhere, trapped) and the opponent was
+ * preventing nothing. Measured, the WEAKEST legal build "pinned" a default chassis that way.
+ *
+ * 0.34 is about 70 degrees either side: wide enough that a pinner does not fall out of it as the
+ * pair rocks or as the victim saws at the stick, tight enough that somebody behind you while you
+ * drive forwards is not pinning you.
+ */
+/**
+ * How much a pinned robot may be driving INTO the thing it is trapped against before it stops
+ * counting as trying to escape. `cos` of the angle between its commanded direction and the way
+ * it is being shoved: +1 is straight into the trap, 0 is sideways along it, -1 is back through
+ * the pinner. At 0.34 (~70°) a sideways or diagonal exit is an escape attempt and only a robot
+ * pressing itself in is excluded.
+ *
+ * This REPLACED `PIN_OBSTRUCT_COS`, which asked the mirrored question — whether the PINNER lay
+ * along the escape — and so ruled out every sideways exit, i.e. the ordinary wall pin.
+ */
+export const PIN_INTO_TRAP_COS = 0.34;
+/**
+ * How squarely the PINNER must be driving into its victim for an IDLE victim to count as
+ * pinned — `cos` of the angle between the pinner's commanded direction and the line to the
+ * victim. 0.34 is the same ~70° cone as `PIN_INTO_TRAP_COS`.
+ *
+ * Only consulted when the victim is asking to go nowhere. A victim held against a wall stops
+ * working the stick long before they stop being held, so requiring a live escape command is
+ * what made this foul rare — but with that requirement gone, something has to keep an
+ * incidental lean off the foul sheet, and `rrContacts` is recorded on overlap alone. This is
+ * that something: touching is not pinning, driving into someone is.
+ */
+export const PIN_PRESS_COS = 0.34;
+/**
+ * "for more than 3 seconds" — how long criterion A or B must hold before the PIN is over.
+ *
+ * This replaces a 0.6 s lapse timer that ended a pin the moment the hold flickered for any
+ * reason at all. The rule is far narrower and far more patient than that: only DISTANCE ends a
+ * pin, and only after three full seconds of it. Everything else — the bumpers unloading for a
+ * tick, the victim's stick crossing the dead zone, the wall probe slipping past its slop as the
+ * pair rocks — merely PAUSES the count, which is exactly the flicker tolerance the 0.6 s timer
+ * was reaching for, except that a pinner can no longer wipe a two-and-a-half-second count by
+ * easing off for seven tenths of a second.
+ */
+export const PIN_END_S = 3; // s
+/** G408: "No more than 3 at a time. A ROBOT may not simultaneously CONTROL more than 3
+ * ARTIFACTS." Violation: "MINOR FOUL per SCORING ELEMENT over the limit. YELLOW CARD if
+ * excessive." The hopper caps at HOPPER_CAPACITY, so the foul bites when a full robot
+ * takes loose artifacts along with it, or when a pile bigger than this is driven around. */
 export const POSSESSION_LIMIT = 3; // == HOPPER_CAPACITY
-/** a loose ground ball counts as CONTROLLED (plowed) when its surface is within
- * this many inches of the robot's collision footprint. */
-export const POSSESSION_CONTROL_MARGIN = 0.9; // in
-/** herding requires motion — a parked robot merely resting against loose balls
- * is not controlling them (they can roll free), so ignore control below this. */
-export const POSSESSION_MOVE_SPEED = 9; // in/s
-/** grace before over-possession is fouled — just long enough to forgive an
- * incidental brush-by (a normal intake capture is < 0.2 s, so driving through a
- * clump to collect it never trips the foul), but short enough that sustained
- * plowing/hoarding bites quickly. */
-export const POSSESSION_GRACE = 0.7; // s
+/** contact tolerance for CONTROL — a loose artifact counts only when its surface is
+ * within this many inches of the robot's footprint (or of an artifact already
+ * controlled, since the manual's CONTROL is transitive through scoring elements).
+ * A touch tolerance, not a catchment radius. */
+export const POSSESSION_CONTROL_MARGIN = 0.4; // in
+/**
+ * How hard the robot has to be driving INTO an artifact, along the outward normal of the face
+ * it is touching, to be "moving the SCORING ELEMENT in a preferred direction" (CONTROL clause
+ * B). Measured with `robotPointVelocity`, so the ω×r term is in it and a robot TURNING a
+ * corralled pile is moving it too.
+ *
+ * This replaced two ABSOLUTE-SPEED gates — POSSESSION_MOVE_SPEED (the robot moving at all,
+ * 1.5 in/s) and POSSESSION_TURN_RATE (0.15 rad/s) — which came from an FRC POSSESSION
+ * definition that is not in the DECODE manual. There is no speed floor anywhere in DECODE's
+ * CONTROL, and those floors were exploitable from both ends: a six-artifact pile CREPT below
+ * 1.5 in/s drew nothing over twelve seconds, while a pile jammed against the perimeter read as
+ * uncontrolled precisely BECAUSE it could not move.
+ *
+ * It sits low on purpose. It is not a threshold for "is this a violation" — that is what the
+ * confirm window and the station test decide — it is only there so numerical noise in a
+ * resting contact cannot read as a push. Anything a driver would recognise as leaning on an
+ * artifact clears it.
+ */
+export const POSSESSION_PUSH_MIN = 0.5; // in/s, along the contact normal
+/**
+ * ...and how fast the ARTIFACT has to still be going, along the direction it is being taken,
+ * for the robot to count as still MOVING it rather than just leaning on it.
+ *
+ * An arrival is not a journey. Without this the hold latched on the way in and never released:
+ * shoving two artifacts against a wall billed once for the push, which is fair, and then again
+ * every POSSESSION_REBILL_S for as long as you stayed there, while nothing moved at all.
+ *
+ * It sits at the artifact's own rest threshold, so it separates "going somewhere" from
+ * "stopped" rather than fast from slow — a load crept downfield still counts.
+ */
+export const POSSESSION_MOVE_MIN = 2; // in/s — keep == BALL_REST_SPEED
+/**
+ * ...and how far the ARTIFACT has to have actually TRAVELLED, from where this robot first got
+ * hold of it, before the robot counts as MOVING it.
+ *
+ * Clause B is "the ROBOT is MOVING the SCORING ELEMENT in a preferred direction", and the verb
+ * is about the artifact, not the wheels. Pressing on something that is going nowhere is not
+ * moving it — which is the whole difference between herding a pile and running into one:
+ *
+ *   · a pile ALREADY resting on the perimeter cannot go anywhere, so driving into it is
+ *     contact and nothing else. G408 names exactly this: "bulldozing (INADVERTENT contact with
+ *     a SCORING ELEMENT while in the path of the ROBOT moving about the FIELD)";
+ *   · nor can a clump you have nosed into far enough to jam. Both were reported — "if you drive
+ *     into a pile to intake you get a penalty if you go in too far" and "you get a penalty if
+ *     you drive into five balls that are ALREADY at the wall."
+ *
+ * IT HAS TO BE DISTANCE, NOT SPEED. An instantaneous-speed floor was tried first and does not
+ * work, because artifacts do not RIDE a bumper in this sim — they bounce off it and are
+ * re-struck, so contact is a train of micro-impacts and a pile jammed on a wall reads as moving
+ * quickly while going nowhere at all. Measured, a speed floor at the ball's own rest threshold
+ * still billed 6 MINORs for driving into five artifacts that were already on the wall. Net
+ * displacement is immune: jitter cancels, travel accumulates.
+ *
+ * ONE BALL DIAMETER is the threshold because it is the one distance in the game that explains
+ * itself — the artifact is no longer where you found it, by its own width. Compression and
+ * squirt as a pile settles are well under it; anything you could call herding is well over.
+ *
+ * This gates ACQUIRING control only. Once herding IS established the latch holds it through a
+ * jam, so driving a pile INTO the wall and leaning on it still counts — those artifacts
+ * travelled on the way there. That split is the whole of the leniency: running into things is
+ * free, taking them somewhere is not.
+ *
+ * The distance is CUMULATIVE and STICKY: it survives the artifact re-stationing on the chassis
+ * and survives its hold clock dying, because ground already covered does not un-happen and
+ * because a clump in open space is pushed in a series of bounces rather than one continuous
+ * shove. It is cleared only when the artifact stops being a loose ground ball, or outside
+ * auto/teleop.
+ */
+export const POSSESSION_CARRY_DIST = 5; // in — one artifact diameter, carried in the push direction
+/**
+ * How far an artifact may WANDER, in the robot's own frame, and still count as remaining
+ * "in approximately the same position relative to the ROBOT" — the glossary's test, applied
+ * to the thing it actually talks about: POSITION.
+ *
+ * This replaced a velocity test (the artifact's speed against the robot's rigid-body
+ * velocity at that point). Velocity reads possession only while an artifact is TRAPPED: a
+ * clump shoved across open floor bounces and shuffles constantly, so no instantaneous match
+ * ever holds, and the rule stayed silent until the pile was pinned against a wall and forced
+ * to move at exactly the robot's speed. Reported as exactly that — "I don't get the
+ * penalty until I push the clump all the way to the wall."
+ *
+ * Position is immune to that. An artifact being herded sits in front of the bumper the whole
+ * way, however much it rattles; one you drive PAST sweeps the length of the chassis and is
+ * gone; one that DEFLECTS leaves immediately. 8 in is about half a chassis width — room to
+ * shuffle within the pile, not to travel across it.
+ */
+export const POSSESSION_DRIFT = 8; // in, in the ROBOT frame, from where the hold began
+/** grace before over-possession is fouled — seconds of control that have to ACCUMULATE, on
+ * TOP of the per-artifact POSSESSION_CONFIRM.
+ *
+ * The rule is meant to catch a robot taking a load around the field, not the ordinary
+ * business of driving into a clump to collect it or nudging a ball aside.
+ *
+ * Cut 1 s -> 0.4 -> 0.2 s. G408 itself has no grace at all — control over the limit is a foul
+ * the moment a referee sees it — and this sits on TOP of the per-artifact confirm, so it is
+ * pure added latency before anything happens. The carve-outs are held by the confirm window
+ * and the carry distance, not by this.
+ *
+ * 0.2 IS THE FLOOR. At 0.1 the bulldozing carve-out breaks: clipping an artifact in passing
+ * starts to foul, which is the one thing G408 names first as NOT control. */
+export const POSSESSION_GRACE = 0.2; // s
+/**
+ * ...and how fast that clock DRAINS while control is back within the limit, as a fraction
+ * of real time. This is the difference between a clock that accumulates and one that resets,
+ * and it is load-bearing.
+ *
+ * A reset clock is trivially defeated by FLICKING: bump the pile, back off, bump again. Each
+ * contact is well under the grace, so the clock never got anywhere — and measured in the sim,
+ * a flick-shuttle moved a six-artifact pile FURTHER than a sustained shove did (18" vs 9")
+ * while drawing zero fouls, where the shove drew three and a card. A penalty that the evasive
+ * version of the same act dodges is worse than no penalty: it does not deter the behaviour,
+ * it just selects for the technique.
+ *
+ * 0.5 -> 0.1, because AN INTERRUPTION IS NOT A RELEASE. Reported as "right now I need to be
+ * controlling them for a long time for it to actually give me pens" — and the thresholds were
+ * not the problem. Swept individually, the carry distance, the confirm window, the grace, the
+ * progress floor and even a separate gentler drain for stalling all left the time-to-foul
+ * within a tenth of a second of where it started; the floor there is set by the BULLDOZING
+ * carve-out, since below about a second clipping an artifact in passing starts to foul.
+ *
+ * What actually costs a driver is that real herding is INTERRUPTED — you nudge, you turn, you
+ * clip a corner — and at 0.5 each of those breaks ate back twice what the next contact put in,
+ * so a push that was not clean from start to finish never converged at all. Measured, a slow
+ * STEERED herd went from NEVER fouling to fouling at 2.98 s.
+ *
+ * It still drains: a genuine pass through a clump lets go, just over a few seconds rather than
+ * a fraction of one, and every bulldozing and deflecting case in smoke is unchanged at 0.1.
+ */
+export const POSSESSION_LEAK = 0.1;
+/**
+ * How often a CONTINUING over-possession is billed again.
+ *
+ * *** THIS IS A HOUSE RULE. G408 HAS NO CONTINUING CLAUSE. ***
+ *
+ * Its violation line is exactly "MINOR FOUL per SCORING ELEMENT over the limit. YELLOW CARD if
+ * excessive." — one assessment, full stop. The omission is deliberate on the manual's part,
+ * because the same manual writes the continuing clause three times over when it wants one, and
+ * at this very interval:
+ *
+ *   G422 "MINOR FOUL and an additional MINOR FOUL for every 3 seconds in which the situation
+ *         is not corrected."
+ *   G423 the same sentence, verbatim.
+ *   G434 "MINOR FOUL per ARTIFACT over the limit and an additional MINOR FOUL per ARTIFACT
+ *         over the limit for every 3 seconds in which the situation is not corrected."
+ *         — which is EXACTLY the shape this constant implements, on a rule that has it.
+ *
+ * It is kept because the alternative was measured and is worse: billed once per episode, the
+ * whole tariff for gathering six artifacts and holding them was three MINORs, after which
+ * hoarding them was free for the rest of the match. Reported as "the over-possession penalty
+ * is way too lenient." Three seconds is at least the manual's own cadence for a continuing
+ * foul, so the house rule borrows the number rather than inventing that too.
+ *
+ * SET THIS TO Infinity TO GET THE RULE AS WRITTEN — nothing else depends on the re-billing.
+ */
+export const POSSESSION_REBILL_S = 3;
+/**
+ * How long ONE artifact has to stay with a robot before it counts toward the limit.
+ *
+ * This is the test that separates the two things a single frame cannot: HERDING (the same
+ * artifacts, held or repeatedly re-struck) from BULLDOZING — "inadvertent contact with a
+ * SCORING ELEMENT while in the path of the ROBOT moving about the FIELD", which G408
+ * explicitly excuses. Crossing a littered field touches a dozen artifacts for a fifth of a
+ * second each and none of them ever confirms; shoving a pile holds the same six for as long
+ * as you shove; flicking re-strikes the same six every cycle, and because each artifact's
+ * clock is LEAKY rather than resetting, those repeated touches add up on the artifacts
+ * themselves. Identity is the signal — which artifacts, not how many.
+ *
+ * TOTAL TIME-TO-FOUL IS WHAT MATTERS, and it is this plus POSSESSION_GRACE plus however long
+ * POSSESSION_CARRY_DIST takes to cover. Reported as "I still almost never get penalties" while
+ * pushing about ten artifacts around — and measured, that push DID foul, but not until 1.43 s
+ * of UNINTERRUPTED herding, which real driving (nudge, turn, adjust) rarely sustains. Trimmed
+ * 0.65 -> 0.45 alongside GRACE 0.4 -> 0.2, taking the whole pipeline to 1.05 s with every
+ * false-positive case still clean. It cannot go much lower: at GRACE 0.1 the bulldozing
+ * carve-out breaks (clipping an artifact in passing starts to foul).
+ *
+ * This and POSSESSION_CARRY_DIST together are what make the rule LENIENT about running into
+ * things. At 0.35 a robot nosing into a clump with its intake held was
+ * fouled once it went in deep enough to jam: contact plus a fifth of a second is not enough to
+ * tell "taking these somewhere" from "arriving among them". Swept against the full G408 case
+ * matrix, 0.65 with a 5 in carry is the window where every case lands — below it the intake
+ * cases foul, above it real herding starts slipping through.
+ */
+export const POSSESSION_CONFIRM = 0.45; // s, per artifact
+/**
+ * How long an artifact may sit in a RUNNING intake's mouth before it stops counting as
+ * "being acquired" and starts counting as being PLOUGHED.
+ *
+ * The acquire carve-out is the manual's ("inadvertent contact ... while attempting to
+ * acquire a SCORING ELEMENT") and it is real, but it used to be bounded by HOPPER ROOM,
+ * which is the wrong axis entirely. An empty robot excused HOPPER_CAPACITY artifacts, and
+ * a clump you would actually push around is 3-6 — so with the intake held, which is what a
+ * driver does, ploughing one across open floor drew NOTHING at any size:
+ *
+ *     clump of   3   4   5   6   8
+ *     intake ON  0   0   2   0   0
+ *     intake off 0   1   6   5   7
+ *
+ * Time is the axis that separates the cases, because it is what "transporting" actually
+ * means. An intake takes what is in its mouth in well under a second, so:
+ *   · nose in, collect, back off  — contact is brief, excused, no foul;
+ *   · clip a clump in passing     — briefer still, no foul;
+ *   · push it across the field    — contact runs for seconds, and past this it counts.
+ * Hopper room does not enter into it: a full robot ploughs exactly as hard as an empty one.
+ */
+// 0.4 -> 1.0: the window has to cover a real APPROACH, not just the swallow. A driver noses
+// into a clump, the artifacts take a moment to reach the rollers, and the first one is in the
+// hopper about a second later — measured, a 1.2s nose-and-back-off was fouling at 0.4. What it
+// must NOT cover is herding, which runs for seconds, so a second is the honest split.
+export const POSSESSION_ACQUIRE_S = 1.0; // s of grace per artifact in the mouth
+
+/**
+ * G408's YELLOW CARD, and the manual defines "excessive" rather than leaving it to taste:
+ *   A. "simultaneous CONTROL of 5 or more ARTIFACTS", or
+ *   B. "frequent (i.e., 3 or more separate violations in a MATCH), greater-than-MOMENTARY
+ *      CONTROL of 4 or more ARTIFACTS."
+ * (An earlier note here claimed the manual reads "3 or more separate MATCHES in a MATCH" and
+ * called that a typo in the manual. It does not; it reads "violations". The implementation was
+ * right and the citation was invented.)
+ *
+ * MOMENTARY is itself defined, in the glossary: "fewer than approximately 3 seconds"
+ * (MOMENTARY_S). So B is three separate stretches of holding 4+ for longer than that.
+ *
+ * The rule also caps itself: "REPEATED excessive violations of this rule do not result in
+ * additional YELLOW CARDS unless the violation reaches the level of egregious to trigger a
+ * G211 violation" — so G408 issues at most ONE card per robot per match.
+ */
+export const CARD_CONTROL_SIMULTANEOUS = 5; // clause A: this many at once is excessive
+export const CARD_CONTROL_FREQUENT = 4; // clause B: this many, held longer than MOMENTARY...
+export const CARD_CONTROL_INSTANCES = 3; // ...on this many separate occasions
 /** A foul fires on the rising edge of its condition and does NOT re-fire while
  * the condition holds — continuous contact in a foul zone is ONE foul, not a
  * stream. It re-arms only after the condition has been CLEAR for this long, so
@@ -132,23 +537,83 @@ export const PENALTY_CLEAR = 1.0; // s
 
 // ------------------------------------------------------------ artifacts ----
 export const BALL_RADIUS = 2.5; // 5 in diameter
-export const BALL_ROLL_FRICTION = 20; // in/s^2 — low enough that classifier
-// outflow carries to the human-player loading zone (~4-5 of 9 reach the corner);
-// the clump push-drag (BALL_PUSH_DRAG) still carries the harder-to-push feel
+/**
+ * ROLLING RESISTANCE WITH THE FLOOR (in/s^2), and the thing that decides how far a shoved
+ * artifact travels.
+ *
+ * A robot driving a line of artifacts pushes them at its own speed, and the one at the end of
+ * the chain is handed `(1 + BALL_BALL_RESTITUTION) / 2` of that — measured 67 in/s off a robot
+ * doing 81, which is the textbook equal-mass answer and not an error anywhere in the solve. So
+ * how far it then travels is the ONLY thing this behaviour depends on, and at 20 it coasted
+ * 112in across a 144in field: "the third one bounces out far away, hits the other field wall,
+ * comes back and gets grabbed".
+ *
+ * MEASURED CURVE — the punt (a line of three with 71in of floor past it, driver lets go after
+ * two) against the gate drain reaching the human-player corner:
+ *
+ *     in/s^2 |  g     | punt runs | touches the far wall | drain to the corner
+ *        20  | 0.052  |  67-68in  |      5 of 6          |      9 of 9
+ *        28  | 0.073  |     68in  |      3 of 3          |      8 of 9
+ *        32  | 0.083  |  61-68in  |      4 of 6          |      7 of 9
+ *        40  | 0.104  |  49-66in  |      0 of 6          |      4 of 9
+ *
+ * 40 is the only value that contains the punt, and it also restores the "~4-5 of 9" this
+ * comment always claimed the drain did. It was REJECTED anyway: a pile leaned on a wall can no
+ * longer squirt free, so it creeps and G408 re-bills it (2 extra MINORs over 6.5s of just
+ * holding, the reported "I get penalties when I'm pushing forward against two balls against the
+ * wall"), and a line of six handed an artifact 1.11x the pushing robot's own speed.
+ *
+ * 28 is an owner setting: 0.073g against 0.052g at 20, still inside the 0.05-0.15g a foam ball
+ * on field tile plausibly has, and it keeps the drain nearly intact. It does NOT contain the
+ * punt — that needs 40 and the penalty cost above. 32 is the middle if the punt matters more.
+ *
+ * The clump push-drag (`BALL_PUSH_DRAG`) still carries the harder-to-push feel.
+ */
+export const BALL_ROLL_FRICTION = 28;
 /** fraction of the robot's into-the-ball speed bled off per ball contact each
  * solver pass — small per ball, but a big CLUMP is cumulatively a little heavier
  * to push (the drivetrain meets resistance, accelerates into it slower) */
 export const BALL_PUSH_DRAG = 0.01;
 export const BALL_REST_SPEED = 2; // in/s, snap to rest below this
+/**
+ * The most a ground artifact ever moves at (in/s), applied to what the artifact solve hands
+ * back. A squeeze between a chassis and a wall a few degrees off square asks the ball to travel
+ * many times the robot's own advance to stay clear, and the solver obliges with whatever speed
+ * the constraints demand — 300 in/s and more — which is both faster than a foam ball pops out
+ * of anything and further per tick than the solve's look-ahead (`PHYS_BALL_PREDICTION`), so
+ * the next tick could not see it coming: a 5in artifact went through a 2.7in corner gap. An
+ * inch and a half a tick keeps every contact in view, and nothing on this field moves faster than
+ * a chassis at full speed — a foam ball squeezed out from under one deforms rather than
+ * outrunning it (at 120 a wall pile rammed at full throttle flung artifacts 120in across the
+ * field).
+ */
+export const BALL_MAX_SPEED = 90;
 export const BALL_WALL_RESTITUTION = 0.5;
-export const BALL_BALL_RESTITUTION = 0.55;
+export const BALL_BALL_RESTITUTION = 0.68;
 export const BALL_GROUND_RESTITUTION = 0.45; // vertical bounce
 export const BALL_BOUNCE_H_RETAIN = 0.8; // horizontal speed kept on ground bounce
 export const GRAVITY = 386; // in/s^2
 /** light foam ball off a heavy chassis: nearly inelastic — the ball inherits
  * the chassis surface speed but gains almost no extra bounce */
+/**
+ * How tall a robot is to an artifact in the air, in inches.
+ *
+ * An artifact BELOW this hits the robot; above it, it clears. It was two unnamed numbers (14
+ * for the robot, 16 for the classifier) at the flight collision sites, which is fine until the
+ * question "should this have gone over?" actually comes up.
+ */
+export const ROBOT_HEIGHT = 14;
+/** the classifier structure stands a little proud of a robot */
+export const CLASSIFIER_HEIGHT = 16;
+
+/**
+ * How much overlap with a chassis an artifact may end a tick with before it is treated as
+ * JAMMED rather than merely in contact. Rapier's soft contacts leave about 0.2in, so this sits
+ * clear of that and well under the ~1in of give the squeeze was exploiting.
+ */
+
 export const BALL_ROBOT_RESTITUTION = 0.05;
-/** ground-ball mass (lb) for the Rapier ball solve (`solveBalls`). Balls only
+/** ground-ball mass (lb) for the Rapier ball solve (`solveArtifacts`). Balls only
  * meet other balls (equal mass ⇒ value cancels) and the immovable static field
  * there — ball↔robot is the bespoke `collideBallRobot` pass, NOT Rapier, because
  * the pin stall + "outflow can't shove a parked robot" feel (product decision #7)
@@ -157,12 +622,7 @@ export const BALL_ROBOT_RESTITUTION = 0.05;
  * `CoefficientCombineRule.Min`, so ball↔static = min(BALL_BALL_RESTITUTION,
  * BALL_WALL_RESTITUTION) = BALL_WALL_RESTITUTION and ball↔ball = BALL_BALL_REST. */
 export const BALL_MASS = 0.2; // lb
-/** a robot push refused by a wall beyond this distance means the ball is
- * PINNED — the constraint transmits back and stalls the robot */
-export const BALL_PIN_SLOP = 0.05; // in
-/** the pin only pushes the robot back when the robot itself drives into it
- * faster than this — balls arriving under their own momentum just stop */
-export const BALL_PIN_PUSH_MIN_SPEED = 0.5; // in/s
+
 /** ball-ball + ball-robot passes per tick, so robot -> ball -> pinned-ball
  * chains converge instead of tunnelling */
 export const BALL_SOLVER_ITERATIONS = 2;
@@ -170,17 +630,70 @@ export const BALL_SOLVER_ITERATIONS = 2;
 // ------------------------------------------------- robot contact torque ----
 /** per-tick angular correction cap from a single contact group (rad), at rest */
 export const CONTACT_ALIGN_RATE = 0.03;
-/** contact bias: keeps torque alive under light steady pressure so the wall
- * finishes squaring the chassis instead of stalling at a small angle */
-export const CONTACT_BIAS = 0.2;
+/**
+ * How much deeper than its neighbours a contact must be before the neighbour stops bearing —
+ * the bumper's compliance, in inches of squash.
+ *
+ * The load at each corner is shared by how far it is compressed, and this is the distance over
+ * which that share falls to nothing. It replaces a flat bias floor, which handed load
+ * to corners that were not touching at all: with two front corners whose lever arms differ
+ * (the intake extends the front, so they are not mirror images), that fabricated vote can
+ * outweigh the real contact and reverse the torque — "it's turning me the other way sometimes".
+ */
+export const CONTACT_COMPLIANCE = 0.5; // in
 /** alignment speedup per in/s the robot pushes into the contact — holding
  * forward against a wall turns briskly, a fast hit swings hard */
 export const CONTACT_PRESS_GAIN = 0.4;
 /** hard cap on per-tick alignment under pressure (rad) */
-export const CONTACT_ALIGN_RATE_MAX = 0.12;
+/**
+ * ...AND THE CEILING THAT GAIN CAN REACH. A contact must not out-turn the drivetrain.
+ *
+ * It was 0.12 rad — 6.9 degrees in ONE TICK, 412 deg/s — so a firm press quadrupled the base
+ * rate into a snap: "it spins me around like 90 degrees instantly", "way too fast". At 0.05 the
+ * worst single tick ramming a wall at speed is 2.9 degrees (174 deg/s), which is about what a
+ * robot can turn itself, and a 20-degree tilt still comes flush in well under a second.
+ */
+/**
+ * ...AND LOWER STILL, NOW THAT RAPIER OWNS THE IMPACT. The bodies rotate in the solve, so an
+ * angled ram squares itself up there — measured, every wall ram lands within 0.1° of flush with
+ * this term switched off entirely. What the align is FOR is the case the solver leaves alone:
+ * a chassis LEANING on a face at an angle under a sustained press (a pinned robot, a robot
+ * driven into a corner, Chain Reaction's wall approach), where friction holds the tilt. That
+ * is a slow settle, and at 0.05 rad/tick the term was also adding 2.9° a tick ON TOP of the
+ * solver's own 2.4° during a ram — the "snaps the chassis round" report. 0.015 brings a 20°
+ * lean flush in under half a second and adds under a degree a tick to anything.
+ */
+export const CONTACT_ALIGN_RATE_MAX = 0.015;
 /** spin injected per (contact torque × in/s of impact speed) — a fast angled
  * hit visibly converts momentum into rotation; dead-center hits add nothing */
-export const CONTACT_IMPACT_SPIN = 0.12;
+/**
+ * ...and the FLICK a fast angled hit adds on top, as angular velocity.
+ *
+ * Unlike the alignment this is not capped at the remaining tilt — it keeps turning the chassis
+ * after the contact has done its work, which is what a violent hit should do and also what
+ * makes a merely firm one feel violent. Halved and more with the align ceiling: ramming a wall
+ * at speed peaked at 3.23 rad/s (185 deg/s of free spin) and now peaks at 0.80.
+ */
+/**
+ * ZERO: the solver owns the impact. The bodies rotate in the robot solve, so a fast angled hit
+ * converts momentum into rotation there, from the real normal and friction impulses at the real
+ * corner — and adding a flick on top counted the same hit twice (measured 3.5 rad/s against the
+ * solver's own 2.6 on a 20° wall ram at full speed, which is v·sin20°/half-diagonal: the pivot
+ * about the corner). Kept as a named zero so the settling path's shape stays readable.
+ */
+export const CONTACT_IMPACT_SPIN = 0;
+/**
+ * How close a second separating axis has to be to the least-overlapping one before it counts
+ * toward the contact normal, in inches of overlap.
+ *
+ * SAT returns one axis, which is right in the middle of a face and ill-conditioned at a
+ * CORNER — there two axes are within noise of each other and the normal flips between them as
+ * the shapes slide a hair. The true normal at a corner is between the two faces that meet
+ * there, so axes within this window are blended by how close they are to being the answer.
+ * A quarter inch is about the depth a bumper compresses, and well under the size of any
+ * feature this is used on.
+ */
+export const CONTACT_NORMAL_BLEND = 0.25; // in
 /** touch tolerance (in) for the post-Rapier square-up pass: Rapier resolves
  * translation and leaves a chassis resting AT a face (near-zero penetration),
  * so the bespoke torque nudge treats a contact within this band as touching */
@@ -192,18 +705,157 @@ export const PHYS_LENGTH_UNIT = 10;
 /** Rapier constraint solver iterations per step — high enough that a full-speed
  * pin is fully separated each tick (no penetration accumulation / axis flip) */
 export const PHYS_SOLVER_ITERS = 8;
-/** Rapier contact stiffness (Hz): LOW = soft contacts, so a body starting deep
- * in a wall (e.g. intake reach) is bled out gently over several ticks instead of
- * ejected with a huge recovery velocity (solver explosion). */
-export const PHYS_CONTACT_FREQ = 8;
+/**
+ * Rapier contact stiffness (Hz) for the ROBOT world, and the slack it resolves to.
+ *
+ * These were 8 Hz / 0.01 on the reasoning that SOFT contacts let a body starting deep inside
+ * a wall (a spec change can grow the footprint under a parked robot) bleed out gently instead
+ * of being ejected with a huge recovery velocity. The gentleness is real and worth keeping —
+ * but 8 Hz was paying far more for it than the hazard costs. Measured, a max-push tank
+ * holding an opponent against the wall sank the victim 1.22in into the wall and 1.50in into
+ * itself: ~9% of a chassis, and visible.
+ *
+ * SWEPT, rather than argued about. Across 8/15/20/25/30/40/60 Hz the recovery velocity from
+ * BOTH hazard cases — a robot seeded 2in inside the wall, and two robots seeded 6in
+ * overlapped — came out at 0.0 in/s at every single setting, because Rapier's positional
+ * correction here does not feed velocity. There is no explosion to buy off. What the sweep
+ * did show is where the penetration stops improving: 1.22in at 8 Hz, 0.59 at 12, 0.55 at 15,
+ * 0.49 at 25, and then it creeps back up past 30.
+ *
+ * 12 Hz, NOT the 25 the penetration curve would pick, and the slack is UNCHANGED. Everything
+ * above 12 cost something else: 15 Hz broke the classifier-jitter ratchet, and 25 Hz also
+ * broke two G408 possession checks and the wall-ram torque bound. 12 is the largest step with
+ * no collateral, and it is worth roughly half the remaining penetration.
+ *
+ * THE ITERATION COUNT IS NOT A LEVER HERE. `PHYS_SOLVER_ITERS` is shared with the BALL world
+ * (`makeWorld` parameterises the frequency and the slack but not the iterations), so raising
+ * it moved artifact behaviour that has nothing to do with robots pushing each other.
+ */
+export const PHYS_CONTACT_FREQ = 12;
 /** normalized allowed penetration error (× lengthUnit ⇒ inches): a little slack
  * so shallow resting contacts aren't fought every tick */
 export const PHYS_ALLOWED_ERROR = 0.01;
-/** friction between chassis and walls / other chassis — resists a pinned robot
- * sliding out of a squeeze (the old model squared-and-held; 0 let it squirt) */
-export const PHYS_FRICTION = 0.7;
+/**
+ * Post-solve speed ceiling for a robot, in in/s. A pure solver-explosion guard — see
+ * `solveRobots`.
+ *
+ * ABSOLUTE, NOT A MULTIPLE OF THE ROBOT'S OWN TOP SPEED. It was `maxSpeed × 2`, which sounds
+ * safer and is not: what sets a shoved robot's velocity is the PUSHER's speed, not its own, and
+ * the legal envelope runs from 30.1 in/s (x-drive, 18 lb, 200 rpm) to 120.9 (tank, 560 rpm) —
+ * so the slowest legal build's ceiling sat at 60.3, well BELOW what the fastest legal build can
+ * legitimately shove it to. Measured, it fired on 27 of 65 ticks of a plain open-field push
+ * with no wall and nothing over-constrained, throttling the push 12% and putting a
+ * discontinuity in the rpm slider that has no physical cause.
+ *
+ * 300 in/s is ~2.5× the fastest thing that can exist here, so nothing a robot can do to another
+ * robot reaches it, while the one genuinely over-constrained case still does: a chassis crushed
+ * between a wall and an auto-path robot (kinematic, and it does not yield) left the step at
+ * 959 in/s — six field widths a second — before this clamp.
+ */
+/**
+ * The angular twin of `PHYS_MAX_ROBOT_SPEED`, in rad/s: a SOLVER-EXPLOSION GUARD, not a
+ * gameplay lever. Every drivetrain's own `maxTurn` is under 11 rad/s and the hardest legal
+ * hit adds a couple more, so this is several times anything the game can produce — a body
+ * past it is an over-constrained contact, not a shove anybody felt. Absolute, for the same
+ * reason the speed guard is: what spins a slow chassis is the OTHER robot's authority.
+ */
+export const PHYS_MAX_ROBOT_SPIN = 25;
+export const PHYS_MAX_ROBOT_SPEED = 300;
+/**
+ * How far a robot's footprint may sit outside the field before it is walked back in.
+ *
+ * The perimeter is a hard containment invariant for robots, the same way `clampBallPosToStatics`
+ * is for artifacts — and it was only ever enforced by the solver, which is not enough now that a
+ * robot on an AUTO PATH is a kinematic body that does not yield: a bystander crushed between one
+ * and the far wall was driven 15.2in past it, with its reported velocity reading 0.00 the whole
+ * time (Rapier's positional correction does not feed velocity), so no speed guard can see it.
+ *
+ * The slop matters. Ordinary soft contact leaves a chassis resting a little INTO a wall — 0.59in
+ * at the worst measured shove — and a containment pass that fought that every tick is exactly
+ * the two-passes-taking-turns failure the artifact solve had to be rebuilt to avoid. This sits
+ * above the worst honest penetration and far below "outside the field", so it only ever acts
+ * when the solver has already given up.
+ */
+export const PHYS_CONTAIN_SLOP = 0.75; // in
+/**
+ * Friction on the ROBOT and BALL colliders — resists a pinned robot sliding out of a squeeze
+ * (the old model squared-and-held; 0 let it squirt).
+ *
+ * ⚠️ NOT the field walls, despite what this comment used to say. `statics()` never called
+ * `setFriction`, so every wall, goal face and classifier ran on Rapier's DEFAULT instead — and
+ * since the default combine rule is AVERAGE, robot-on-wall was silently (0.7 + 0.5) / 2 = 0.6
+ * while robot-on-robot was 0.7. That is not unreasonable (a bumper on a smooth field wall
+ * should slip more easily than on another bumper) but nothing chose it, so it is stated below
+ * rather than inherited. Found while measuring why a robot held against a wall could not
+ * strafe out; it is not the cause — that is Coulomb stick/slip, and lowering this only moves
+ * where the slip threshold falls — but a physics constant should not arrive by accident.
+ */
+/**
+ * ...AND IT IS NOW THE BUMPER'S OWN NUMBER. 0.7 was chosen when the contact response was
+ * hand-written and the post-solve lateral clip handed a refused strafe straight back to the
+ * chassis, so nothing ever measured what this friction actually did to a held robot. With an
+ * honest contact it decides whether a robot pinned against a wall can strafe out: the wall and
+ * the pinner's bumper together hold it with (wall + bumper) times the pinner's push, against a
+ * strafe worth its own push — and a stalled motor pushes with its whole stall force at any
+ * throttle. At 0.7/0.5 an EQUAL robot could never get out (1.3× against 1×), which is not what a
+ * fabric-covered bumper on polycarbonate does.
+ *
+ * 0.15 (owner's call, from 0.45): BUMPER ON BUMPER ONLY. Rapier derives a pair's friction from
+ * the two colliders, so this one number sets robot↔robot AND, averaged with the static's,
+ * robot↔wall — they cannot be moved independently from here. So `PHYS_WALL_FRICTION` absorbs
+ * the difference and robot↔wall is held at the 0.40 it has always been. 0.15 is the floor:
+ * at 0.10, with the wall still compensated to 0.40, a heavy tank holding a victim against the
+ * wall bills 2 G422 over 20s instead of 6 and the rule stops being reachable.
+ *
+ * ⚠️ IT DOES NOT CONTROL WHETHER A PUSH CAN BE ESCAPED, which is the thing it reads as. Swept
+ * from 0.45 down to 0.1, a victim cornered against the wall by a heavier robot travelled 14.9,
+ * 15.0, 14.9, 14.9, 14.9in — flat to the tenth of an inch. The hold is the wall geometry and the
+ * pusher's drive force; the bumper coefficient is not in it. What the sweep DOES move is
+ * detection and the gate: at 0.15 a heavy tank holding a victim bills 4 G422 over 20s instead of
+ * 6, and at 0.1 it bills 2 AND the gate arm stops turning a robot that hits it 8in off centre
+ * (21deg to 0 — the bumper slides off the arm instead of being turned by it). 0.2 is the lowest
+ * value that keeps both. The ARTIFACT world keeps its own values ().
+ */
+export const PHYS_FRICTION = 0.15;
+/**
+ * Friction on the STATIC field colliders: walls, goal faces, classifier, AND the gate arms
+ * (they go through the same `statics()` helper, which is why dropping the robot's own value
+ * alone stopped the arm turning a robot that hit it off centre — 21deg to 0).
+ *
+ * ⚠️ THIS IS NOT THE WALL'S COEFFICIENT, IT IS A COMPENSATOR. Neither collider names a combine
+ * rule, so Rapier AVERAGES the pair, and the robot's own `PHYS_FRICTION` is therefore half of
+ * robot↔wall as well as all of robot↔robot. To lower bumper-on-bumper without touching
+ * bumper-on-wall, this absorbs the difference: `(PHYS_FRICTION + this) / 2` is held at the
+ * 0.40 robot↔wall has always been, so this reads high on purpose. Move one, recompute the
+ * other. (An earlier comment here claimed 0.6 — that was the average of the old 0.7/0.5 pair
+ * and outlived them — and claimed this was Rapier's own default, which is 0.5, not either.)
+ */
+export const PHYS_WALL_FRICTION = 0.65;
+/**
+ * IN-PLANE friction on an artifact — ball on ball, ball on bumper (`PHYS_BALL_FRICTION`) and
+ * ball on the field (`PHYS_BALL_WALL_FRICTION`) — and it is NEARLY ZERO on purpose.
+ *
+ * The artifact bodies are rotation-locked circles in a top-down plane, so a tangential friction
+ * impulse has nowhere to go but the ball's TRANSLATION. On a real rolling sphere it goes into
+ * spin about the vertical axis, which the floor lets go of almost for free: a ball grazing
+ * another ball, or rolling along a wall, or sliding across a bumper face, is spun, not dragged.
+ * At the old 0.7/0.5 a glancing hit sent the struck ball off at 3 degrees where the contact
+ * normal was at 30, a 45-degree wall bounce kept a quarter of its along-wall speed, and 70% of
+ * the moving contacts in a gate drain were pairs travelling together — "artifacts feel stuck
+ * to each other and to the wall". At 0.05 the same hits leave along the normal, the bounce
+ * keeps its tangential speed, and the drain disperses. Rolling resistance with the FLOOR is a
+ * separate thing (`BALL_ROLL_FRICTION`) and is untouched.
+ *
+ * ZERO, not small. At 0.05 a ball squeezed between a bumper and a wall a few degrees off square
+ * squirted out along the wall at 165 in/s for one tick and then stopped dead: the solver's
+ * penetration recovery puts an enormous normal impulse into a squeezed contact, and even a
+ * twentieth of that as friction cancelled the whole sideways speed — a friction cone wrapped
+ * round a ball that in reality would ROLL out. A rolling sphere has no in-plane friction cone.
+ */
+export const PHYS_BALL_FRICTION = 0;
+export const PHYS_BALL_WALL_FRICTION = 0;
 /** BALL contact stiffness (Hz) for the ball solve — stiffer than the robot world
- * (8 Hz), which let two grounded balls sit visibly overlapping for many ticks.
+ * (12 Hz), which let two grounded balls sit visibly overlapping for many ticks.
  * Tuned to 25: separates a resting overlapping clump within ~0.5s (as clean as a
  * much higher value) WITHOUT the explosive ejection a very stiff contact (≥60 Hz)
  * gives the tightly-packed column draining out of the gate — at 120 Hz those exit
@@ -213,6 +865,162 @@ export const PHYS_BALL_CONTACT_FREQ = 25;
 /** BALL allowed penetration (× lengthUnit ⇒ inches): tight, so resting balls
  * settle touching rather than at the ~0.1in slop the robot value leaves. */
 export const PHYS_BALL_ALLOWED_ERROR = 0.001;
+/**
+ * How far ahead the ARTIFACT solve looks for contacts (× lengthUnit ⇒ inches): the speculative
+ * contact distance.
+ *
+ * Rapier's narrow phase runs once per step, so a pair that is not within this distance at the
+ * START of the tick has no contact at all during it — the bodies pass into each other by
+ * however far they travel, and the solver only finds out next tick and pushes them back out
+ * at the contact stiffness's own pace. At the default 0.02in that is every fast contact on the
+ * field: a chassis sweeps 1.5in a tick at full speed. A speculative contact instead lets the
+ * solver stop a pair AT the surface — the constraint is "may close the gap this tick, may not
+ * cross it" — which is what makes one pass enough, with nothing to clamp afterwards.
+ *
+ * Sized for the fastest closing pair the field has: a chassis at its top speed plus an
+ * artifact rolling toward it, comfortably under 3.5in a tick.
+ *
+ * ⚠️ RAPIER APPLIES NO RESTITUTION ON A SPECULATIVE CONTACT. The gap is closed as a velocity
+ * clip and the bounce is computed from whatever approach is left, so with this look-ahead every
+ * ball-ball and ball-wall hit landed at ~0.14 for a set 0.68 and 0.5 — measured at every speed,
+ * stiffer contacts making it worse (0.03), CCD changing nothing. The look-ahead was dropped to
+ * Rapier's default for a day and the bounce came back exactly, but the contact of a pushed
+ * artifact with the one AHEAD of it then formed a tick late, and a pile pushed by a chassis
+ * became a tick-by-tick chain of burials (0.6in in the chassis, 1.7in ball in ball) that the pin
+ * test had to be taught to ignore — and it could not tell a transient from a trap. So the
+ * look-ahead stays, and the bounce of an IMPACT is computed before the solve, exactly, by
+ * `bounceFirstContacts`: the solver's speculative contacts do what they are good at (a pushed
+ * chain moving in one pass, nothing buried) and never see an impact they would have to bounce.
+ */
+export const PHYS_BALL_PREDICTION = 0.35;
+/**
+ * An artifact this close to another (in) is TOUCHING it: their contact is a sustained one the
+ * solver owns, not an impact. `bounceFirstContacts` bounces only pairs further apart than this
+ * that will meet within the tick — a ball being pushed into its neighbour taps it ahead; a ball
+ * resting on its neighbour is pushed with it.
+ */
+export const BALL_FIRST_CONTACT_GAP = 0.05;
+/**
+ * How many ticks ahead `bounceFirstContacts` looks for an impact. More than one, because the
+ * solver's speculative constraint begins clipping a closing pair's approach the tick BEFORE
+ * the surfaces would meet (a soft constraint acts on the predicted gap, not the real one), and
+ * a bounce computed after that clip is a bounce of what is left: 0.49 for a set 0.68. At 1.5
+ * ticks the impulse lands first, at most half a tick's travel early — a third of an inch at
+ * 40 in/s, which nobody can see.
+ */
+export const BALL_FIRST_CONTACT_LOOKAHEAD = 1.5;
+/** how close to a robot solid an artifact counts as being PUSHED by it, for `clumpDrag` (in) —
+ * the speculative contact parks a pushed artifact a hair off the surface, never inside it */
+export const BALL_PUSH_CONTACT = 0.15;
+/**
+ * How far into a robot an artifact may end the artifact solve before it is PINNED — the one
+ * number the two-solve engine turns on.
+ *
+ * The artifact solve moves every artifact that CAN get out of a robot's way, with the robot as
+ * an immovable sweep. What is still inside a robot afterwards is, by construction, something
+ * that could not move: an artifact against a wall, a corner, another robot, or a pile that is
+ * itself against one. Those are handed back to the ROBOT solve as solid obstacles and the
+ * tick is re-run, so the robot stops against them exactly as it stops against a wall. The
+ * pinch is prevented rather than resolved, and no pass ever has to guess which way a robot
+ * meant to push.
+ *
+ * The threshold only has to sit above the solver's own resting slop (the artifact world
+ * settles within `PHYS_BALL_ALLOWED_ERROR` × `PHYS_LENGTH_UNIT` = 0.01in, and a robot resting
+ * on a pinned artifact leaves it `PHYS_ALLOWED_ERROR` × 10 = 0.1in in) and below anything a
+ * player could see. A robot that is merely RESTING on a pinned artifact re-finds it every tick
+ * and costs a second pass, which is cheap; a value above the resting slop would let the robot
+ * creep in by that much before the rule bites.
+ */
+export const ARTIFACT_PIN_SLOP = 0.2; // in
+/**
+ * How many times a tick may re-run the two solves as the set of pinned artifacts grows.
+ *
+ * Almost every tick runs once (nothing pinned) and a tick with a robot leaning on a pinned
+ * artifact runs twice. More rounds only happen when stopping the robot against one artifact
+ * uncovers another it was about to pinch — a robot sliding off one ball onto the next along a
+ * wall — and each round can only ADD to the set, so it converges; this is the cap, not the
+ * usual count.
+ */
+export const PHYS_PIN_ROUNDS = 4;
+/**
+ * How far clear of a robot's artifact-solid geometry a PINNED artifact has to be before it
+ * stops being pinned (in) — the release half of the hysteresis in . Wider
+ * than the pinned circle's inflation plus the robot world's resting slop, so a robot resting
+ * on the circle keeps the pin; a robot that has genuinely backed off drops it.
+ */
+export const ARTIFACT_PIN_RELEASE = 0.5; // in
+/** how much stick a robot must be commanding toward a pinned artifact (fraction of full, along
+ *  the robot→artifact normal) to count as PUSHING it. Pushing is what lets the pinned circle
+ *  carry the artifact's squirt and earns the circle its inflation; a robot not pushing faces a
+ *  tangent, fixed circle it cannot enter and is never moved by, and the artifact under it stays
+ *  where it is. Intent, not measured advance: a robot stopped on its pin advances nothing and is
+ *  still pushing. */
+export const ARTIFACT_PIN_DRIVE = 0.05;
+/** how close to a wall, another artifact or a second robot a pinned artifact has to be for
+ *  that thing to count as what is holding it there (in). A pin whose support has left is
+ *  released even if the robot is still leaning, so the robot can push the artifact again. */
+export const ARTIFACT_PIN_SUPPORT = 0.15; // in
+/**
+ * Two artifacts closer than this (centre to centre, in) are COINCIDENT: there is no honest
+ * contact normal between them and the solver cannot tell which way to push, so the pair sits
+ * inside each other shivering. It cannot happen from motion — the solve keeps artifacts
+ * apart — only from placement (a test parking artifacts at one point, an old snapshot), and
+ * the answer is a deterministic velocity kick apart so the next solve has a normal to work
+ * with. See .
+ */
+export const BALL_COINCIDENT = 0.5; // in
+export const BALL_COINCIDENT_KICK = 12; // in/s, each way
+/**
+ * Friction of a PINNED artifact as the robot solve sees it. A ball held against a wall rolls
+ * freely under a chassis sliding past it, so a robot glancing off one is not held back the way
+ * a wall's face holds it; the value is low rather than zero so a chassis pressing straight on
+ * it does not skate.
+ */
+export const PHYS_PIN_FRICTION = 0.15;
+/**
+ * How much bigger than the artifact the robot solve's pinned circle is (in).
+ *
+ * The robot world lets a resting contact sit `PHYS_ALLOWED_ERROR` × `PHYS_LENGTH_UNIT` =
+ * 0.1in inside a surface, plus the give of its soft contact under full push. Against a wall
+ * that is invisible. Against a pinned artifact it is a RATCHET: the artifact solve then finds
+ * the chassis that much inside the artifact, moves the artifact that much deeper into the wall
+ * it is pinned against, and next tick the circle is built at the new position — measured, the
+ * artifact crept 0.007in a tick into the wall under a robot leaning on it. Inflating the circle
+ * by the resting slop puts the robot's rest position AT the artifact's true skin, and the
+ * artifact solve has nothing to correct.
+ */
+export const PHYS_PIN_INFLATE = 0.3;
+/** friction of the intake's slopes, rails and held artifacts as a ground artifact sees them.
+ *  They are guides and compliant wheels, not a brake: at the chassis's own 0.7 the funnel's
+ *  pull along a slope was eaten by friction and a 7in-off-centre artifact took 1.3s to reach the
+ *  throat against 0.33s. */
+export const INTAKE_STRUCT_FRICTION = 0.05;
+/**
+ * How far an artifact may be outside the field, or inside a goal face or the classifier,
+ * before the containment invariant walks it back in.
+ *
+ * The artifact solve owns every ground artifact's position now, and it holds the perimeter
+ * itself to within its resting slop; this is the same kind of safety net as
+ * `PHYS_CONTAIN_SLOP` for robots — it never acts on an honest resting contact, only when
+ * something has already gone wrong (an artifact placed inside a solid by a state transition
+ * the solver never saw). Well above the solver's slop so it cannot fight the solver.
+ */
+export const BALL_CONTAIN_SLOP = 0.25; // in
+/**
+ * Thickness of the vector intake's flank rails, the only thing solid forward of that
+ * preset's chassis face at floor level. The rails keep a wide frame from being entered from
+ * the side (see `artifactSolids.ts`); they sit just inside the notch with their outer face
+ * flush with the chassis side, so the notch is narrower by this on each side.
+ */
+export const INTAKE_RAIL_T = 0.5; // in
+/**
+ * How far a funnel preset's slope face runs PAST the roller line (in) — the compliant end of
+ * the roller row, which pulls in an artifact overlapping the mouth's edge instead of letting
+ * it ride the corner. Sized so an artifact centred at the mouth's edge meets the face and one
+ * a radius further out does not: the capture envelope is unchanged (in at 6in, out at 8in for
+ * the sloped preset). See .
+ */
+export const INTAKE_LIP = 0.6; // in
 // ---------------------------------------------------------------- robot ----
 export const ROBOT_MAX_SIZE = 18; // FTC starting size cap (incl. intake reach)
 export const ROBOT_MIN_SIZE = 12;
@@ -276,6 +1084,49 @@ export const MOTOR_MIN_TORQUE_FRAC = 0.06;
 /** braking torque multiplier: reversing / slowing pulls harder than peak drive
  * accel (motor back-EMF + reverse), so stops feel crisp. */
 export const MOTOR_BRAKE_MULT = 1.4;
+/**
+ * ...AND YOU CANNOT BRAKE AWAY SOMEBODY ELSE'S SHOVE, which is a different thing entirely.
+ *
+ * `MOTOR_BRAKE_MULT` is a robot stopping ITSELF: the driver lets go, the motors are driven
+ * against the robot's own momentum, and 1.4x peak drive accel is the honest number for that.
+ * Applied to a robot being PUSHED it says something else — that an unpowered chassis resists
+ * an opponent HARDER than that opponent can drive — and it made pushing an idle robot nearly
+ * impossible: measured on two identical tanks, three seconds of full throttle moved the
+ * victim 15.5in, at 5.1 in/s against a 89 in/s free speed. Reported as "pushing another robot
+ * when the other robot is not powered is super hard when it is usually not TOO hard".
+ *
+ * What actually resists there is back-EMF through a shorted motor plus rolling and gearbox
+ * drag — the wheels ROLL, they are not held. So a robot with NO drive command that is in
+ * contact with another robot brakes at this fraction instead. It is still real resistance
+ * (about 0.6x drive accel, so a push is slow work) but the pusher gets somewhere.
+ *
+ * ⚠️ It applies ONLY to a robot commanding nothing AND touching another robot. A driver
+ * actively driving back into a shove keeps full authority — a stalemate between two equal
+ * chassis stays a stalemate — and solo driving is untouched, so stopping distance in ordinary
+ * play is bit-for-bit what it was.
+ */
+export const MOTOR_SHOVE_BRAKE = 0.6;
+
+// --- PUSHING POWER ----------------------------------------------------------
+/**
+ * GEARING'S EFFECT ON SHOVE, and the band it is allowed to act over.
+ *
+ * Wheel torque is inversely proportional to the gearing, so a drivetrain geared for speed
+ * has less of it to put into a shove: the factor is `REF_DRIVE_RPM / driveRpm`, clamped so
+ * neither end of the rpm slider becomes the whole game. Over the sliders' 200-600 range the
+ * raw ratio runs 2.175 down to 0.725, and the clamp bites only at the torquey end.
+ *
+ * IT IS APPLIED EXACTLY ONCE. `driveParams().accel` already carries its own `REF_DRIVE_RPM /
+ * rpm` term, and because the sim pushes by SETTING VELOCITY the delivered force is
+ * `collider mass × that accel` — so a gearing factor baked into the collider mass landed a
+ * SECOND time and the spread came out 7.45x instead of 2.48x, which made the rpm slider a
+ * stronger pushing lever than the drivetrain pick (a 250 rpm minimum-weight mecanum
+ * out-pushed a 42 lb 435 rpm tank). `shoveMass()` in drivetrain.ts is the one place that
+ * divides the accel back out; do not re-introduce a gearing, mass, or power-draw term here
+ * without checking whether `accel` already has it.
+ */
+export const PUSH_RPM_MIN = 0.6;
+export const PUSH_RPM_MAX = 1.8;
 
 /** SWERVE module steer rate (rad/s): how fast the four steered pods re-aim to a
  * new drive direction. With MODULE OPTIMIZATION (pod flip — see robot.ts) the pods
@@ -319,7 +1170,17 @@ export const DRIVETRAIN_LIMITS = {
   xdrive: { minMass: 18, maxMass: 42, minRpm: 200, maxRpm: 600 },
   tank: { minMass: 22, maxMass: 42, minRpm: 200, maxRpm: 560 },
   swerve: { minMass: 21.5, maxMass: 40, minRpm: 200, maxRpm: 500 }, // a touch heavier base (8 motors + modules)
+  // BUTTERFLY carries BOTH wheel sets plus the lift, so its floor sits ABOVE tank's 22 —
+  // the heaviest starting point in the game, and the literal cost of the archetype. The
+  // rpm fields here are the MECANUM-set slider (the full 200-600 mecanum envelope); the
+  // traction set has its own, torque-biased range in BUTTERFLY_TANK_RPM.
+  butterfly: { minMass: 24, maxMass: 42, minRpm: 200, maxRpm: 600 },
 } as const;
+
+/** BUTTERFLY's TANK-set rpm envelope — the same torque-biased ceiling tank runs (560),
+ * because it is the same kind of geared traction set. The mecanum set keeps the wider
+ * range in `DRIVETRAIN_LIMITS.butterfly`. Two sets, two gearings, two sliders. */
+export const BUTTERFLY_TANK_RPM = { min: 200, max: 560 } as const;
 /** lb added to a drivetrain's mass floor at flywheelInertia 1 (a big flywheel
  * weighs more): effective floor = base + INERTIA_MASS_FLOOR·inertia. Kept small
  * so inertia only nudges the mass range. */
@@ -388,6 +1249,69 @@ export const DRIVETRAIN_PRESETS = {
   // fastest TURNER, its signature. Tradeoffs: WOBBLE (imprecise line), heavy mass, steering draw.
   // turnMult 1.18: kept above tank's raised speed so swerve stays the fastest turner.
   swerve: { strafeMult: 1.0, speedMult: 0.92, accelMult: 1.32, pushMult: 1.35, turnMult: 1.18, saturation: 'vec' },
+  /** BUTTERFLY — traction wheels AND mecanum wheels on the same chassis, one set lifted
+   * off the floor at a time (the driver drops the other mid-match). This entry is the
+   * MECANUM-mode half so every generic `DRIVETRAIN_PRESETS[dt]` reader gets a sane
+   * default; `BUTTERFLY_MODES` below holds both halves and `driveParams` picks. */
+  butterfly: { strafeMult: 0.76, speedMult: 0.87, accelMult: 1.05, pushMult: 0.74, turnMult: 0.96, saturation: 'sum' },
+} as const;
+
+/**
+ * LATERAL GRIP — how much of a TURN the wheels can carry the chassis' momentum through, as a
+ * fraction of that drivetrain's own traction limit.
+ *
+ * Turning while moving needs a sideways force of m·v·ω to bend the velocity around with the
+ * heading. Where the wheels can supply it the robot CARVES: the velocity follows the nose,
+ * which is what a tank does, because treads grip sideways as hard as they grip forward. Where
+ * they cannot, the chassis keeps going the way it was pointed and slides through the turn,
+ * which is what mecanum rollers actually do.
+ *
+ * The sim had no term for this at all. Velocity is integrated in the WORLD frame and the
+ * heading turned out from under it, so every drivetrain side-slipped through every turn and
+ * the motor model then dragged the leftover lateral component away at its own accel. On tank
+ * that reads as being shoved sideways mid-turn — "when I drive straight and turn with tank, I
+ * feel like I get shifted slightly in a weird way ... tank does not slide much because of its
+ * very grippy treads."
+ *
+ * A fraction of the drivetrain's traction ceiling (accelMult × BASE_DRIVE_ACCEL), because that
+ * ceiling already IS μ·g for its wheels. So the carve is not free: past what the tyres can
+ * supply — fast enough, turning hard enough — the robot slides anyway, and it slides sooner on
+ * omnis than on treads.
+ */
+export const LATERAL_GRIP: Record<DrivetrainType, number> = {
+  // TREADS ARE NOT THE SAME SIDEWAYS AS FORWARD — they are BETTER. Forward the wheels roll and
+  // the limit is drive traction; sideways the whole tread has to scrub across the tile, which
+  // is why a tank cannot strafe at all. So its lateral ceiling is well above its drive one.
+  tank: 1.8,
+  swerve: 0.9, // proper wheels, but four of them steering
+  butterfly: 0.7, // dropped onto its traction wheels
+  mecanum: 0.45, // 45-degree rollers — they carry some of it and slide the rest
+  xdrive: 0.3, // omnis at 45 degrees, the least grip of the four
+};
+
+/**
+ * BUTTERFLY DRIVE — the two halves.
+ *
+ * A real butterfly carries BOTH wheel sets plus the lift that swaps them, so it is never
+ * quite either dedicated drivetrain:
+ *  • it is ALWAYS hauling the set that is currently in the air (dead weight, and high in
+ *    the chassis), which is why its mass FLOOR is the highest of any drivetrain, and
+ *  • the deployed set rides on a LIFT LINKAGE rather than a hard-mounted axle, so some
+ *    traction and shove is lost to compliance in that linkage.
+ *
+ * Both halves are therefore the dedicated drivetrain's multipliers times a small
+ * EFFICIENCY TAX, weighted by how much each quantity actually suffers from a compliant
+ * mount: push −7% (shove force loads the linkage worst), accel −6% (traction transfer
+ * runs through it), speed −5% (mostly just gearing + a little scrub), turn −4% (least
+ * affected — rotation is a light load). The result is a drivetrain that is never the
+ * best at anything but is never far off either, which IS the archetype: you pay a few
+ * percent everywhere and a weight penalty for the right to change your mind mid-match.
+ */
+export const BUTTERFLY_MODES = {
+  /** mecanum set down: strafe + holonomic, mecanum's multipliers × the tax */
+  mecanum: { strafeMult: 0.76, speedMult: 0.87, accelMult: 1.05, pushMult: 0.74, turnMult: 0.96, saturation: 'sum' },
+  /** traction set down: no strafe, tank's push/accel/speed × the tax, tank's control model */
+  tank: { strafeMult: 0, speedMult: 1.01, accelMult: 1.36, pushMult: 1.58, turnMult: 0.96, saturation: 'tank' },
 } as const;
 
 /** flywheel recovery: after an energetic (long-range) shot, a LOW-inertia
@@ -441,18 +1365,76 @@ export const POWER_DRAW_MAX = 0.2; // cap ⇒ at most ~20% slower
 export const FLY_SPIN_NEAR = 40; // in to goal: flywheel spin 0
 export const FLY_SPIN_FAR = 170; // in to goal: flywheel spin 1
 
-/** capture tolerance beyond the ball radius, each way (tight — no vacuuming
- * balls from a distance; a ball must actually reach the compliant wheels) */
+/**
+ * How close to the field boundary an artifact counts as PINNED against it, on top of its own
+ * radius — the case a funnel intake cannot centre and takes anyway. See `updateIntake`.
+ *
+ * Small on purpose: this is "the artifact is against the wall", not "the artifact is near the
+ * wall". A wedge preset that grabbed anything within a few inches of the perimeter would stop
+ * being a funnel at all along the whole edge of the field.
+ */
+export const INTAKE_WALL_GRAB = 0.6; // in
+/**
+ * HOW MUCH OF ITSELF AN ARTIFACT MAY OVERLAP THE ROLLER FACE and still count as having landed
+ * — the compliance lenience.
+ *
+ * The rule it bends: an artifact coming off the ramp needs adequate space ON THE GROUND to
+ * land in, and only then can a robot take it. So the drop point has to be a full radius clear
+ * of the intake, or there is nowhere for the artifact to be. The exception is the front edge
+ * of the rollers: compliant wheels reach a little past themselves, so an artifact landing just
+ * on that edge is drawn in rather than bounced. Only the FRONT gets this — an artifact cannot
+ * half-land inside the side slopes or the chassis.
+ */
+export const INTAKE_CATCH_LENIENCE = 1.2; // in of the radius, at the roller face only
+/**
+ * How briskly an artifact resting on a robot's TOP slides off it, per tick of contact.
+ *
+ * A robot's top is a lid over a mess of mechanism, not a shelf — an artifact that lands on one
+ * works its way off rather than parking there for the rest of the match. Added as a velocity
+ * each tick it is up there, outward from the robot's centre, so the direction is simply where
+ * it landed and nothing is invented. Small: it should look like the artifact easing off a
+ * moving roof, not being flicked.
+ */
+/**
+ * CHASSIS SPRITE: square corners, thin outline.
+ *
+ * The corners were rounded by 1.6in, which is a sixth of a chassis and reads as a pebble
+ * rather than as the welded box an FTC frame is — and the collision box has square corners,
+ * so the drawing was disagreeing with the shape it stands for. The outline is thinner for the
+ * same reason: it is drawn INSIDE the footprint (see `strokeInside`), so every bit of width
+ * it takes is width taken off the robot's own body.
+ */
+export const CHASSIS_CORNER = 0; // in, corner radius of the drawn chassis
+export const CHASSIS_OUTLINE = 0.5; // in, its outline width — half what it was
+
+export const ROBOT_TOP_SHED = 6; // in/s outward while it rides the top
 export const INTAKE_CAPTURE_BAND = 0.5;
-/** how fast a HELD ball slides between storage slots (in/s), in the robot frame —
- * so the triangle's front ball visibly slides aside to make room for a 3rd */
-export const HELD_SLIDE_SPEED = 45;
-/** the intake ROLLER (axle + compliant wheels) sticks out this far past the
- * ball-colliding wedges. The roller is a physical hitbox for ROBOTS/WALLS (the
- * full `reach`, via robotExtents), but it rides HIGH in z so BALLS pass under it
- * and never collide with it — only the recessed wedges deflect balls. So the
- * ball hitbox is `reach − INTAKE_WHEEL_STICKOUT` deep. */
-export const INTAKE_WHEEL_STICKOUT = 1.3;
+/**
+ * How fast a HELD artifact travels to its storage slot (in/s), IN THE ROBOT FRAME.
+ *
+ * ⚠️ IT MUST EXCEED THE FASTEST LEGAL CHASSIS, AND THAT IS A PHYSICS REQUIREMENT, NOT A
+ * COSMETIC ONE. A held artifact is SOLID to ground artifacts (`robotSolids.held`), and it is
+ * still out in FRONT of the chassis face for as long as it takes to slide in. At 45 the slide
+ * lost that race: a robot driving at 85 in/s carried the artifact it had just swallowed
+ * FORWARD through the world at 85 − 45 = 40 in/s, straight into the next artifact in the line,
+ * which — still touching the one behind it — chained the impulse on. Reported as "the third
+ * ball is still being deflected too far... the first and second balls get intaked so quickly
+ * that they don't transfer any momentum to the next ball", which is what a real robot does.
+ *
+ * Measured on a touching file of three at full throttle, sloped: at 45 the first artifact went
+ * in clean and then balls two and three BOTH left at 73 in/s on the same tick, two ticks after
+ * the capture, and were shoved 32in downfield. At 120 nothing moves at all — peak speed 0.0 on
+ * every artifact — and the file goes in at ticks 39 / 43 / 47. The battering ram was the
+ * artifact the intake had just taken.
+ *
+ * Real hardware does not have this problem because the rollers are turning far faster at the
+ * surface than the chassis can drive: what is grabbed is INSIDE the robot immediately, and
+ * cannot reach back out to hit the next artifact in the line. 150 is above the fastest legal
+ * build (`driveParams().maxSpeed` peaks at 129.5 in/s — tank, 600 rpm, 20 lb) with margin, so
+ * a held artifact NEVER advances in the world frame on any chassis. Smoke asserts that
+ * relation over the whole legal envelope rather than trusting this number.
+ */
+export const HELD_SLIDE_SPEED = 150;
 /** Intake presets model the REAL mechanism, not a touch-and-wait hitbox.
  * TOP LEVEL (feeds robotExtents → the Rapier robot-robot/wall collider, length
  * clamps, drawing):
@@ -467,15 +1449,191 @@ export const INTAKE_WHEEL_STICKOUT = 1.3;
  *               wheels — NO flat front wall (sloped/triangle). false = a flat
  *               front, wheels span the whole mouth (vector).
  *   mouthHalf   half-width of the opening at the tip
- *   throatHalf  half-width of the compliant-wheel CAPTURE zone: at the chassis
- *               front for a funnel (balls funnel to center there), = the full
- *               mouth for a flat front (vector captures across the tip)
+ *   throatHalf  the funnel's THROAT half-width. It is NOT "the capture zone" any more —
+ *               the fore-aft grab is `intakeNip` about `intakeAxleX`, shared by all three
+ *               capture branches, and every LATERAL bound below is unchanged by that.
+ *               throatHalf is now exactly four things: `atThroat`'s lateral bound, the
+ *               `cornered` funnel's inner width, the `rammed`/`sideImpact` off-centre
+ *               threshold, and the denominator of the capMin->capMax ramp.
  *   drawIn      suction speed (in/s) the running intake pulls a ball in the
  *               mouth toward the throat (0 = flat front, wheels grab in place)
  *   capMin/capMax  swallow interval as the capture point goes CENTER→EDGE
- *               (vector: compliant center fast, vectoring sides slow)
- *   clumpInterval  swallow cadence while 2+ balls sit at the mouth
- *   dual        capture TWO balls per cycle from a clump (triangle's 2 front slots) */
+ *               (vector: compliant center fast, vectoring sides slow). On the half-tick
+ *               grid — see the INTAKE_PRESETS header.
+ *   clumpInterval  swallow cadence while 2+ balls sit at the mouth (WEDGE presets only;
+ *               `interval` never reads it on a flat front)
+ *   dual        capture TWO balls per cycle from a clump (triangle's 2 front slots)
+ *
+ * RESOLVED NIP, which is chassis-INDEPENDENT (both terms are per-preset constants):
+ *   72mm roller (sloped, triangle)  back 1.517  front 1.800  ⇒ forward limit tip + 0.383
+ *   48mm roller (vector)            back 1.157  front 1.346  ⇒ forward limit tip + 0.401
+ * and the rest point the band must contain, `BALL_RADIUS − reach + intakeRollerDia/2` from
+ * the axle:  sloped +0.917 · vector −0.055 · triangle −1.083. See INTAKE_TREAD_FRAC. */
+/**
+ * INTAKE ROLLER diameters, in mm to match how they are actually bought. The funnel presets
+ * run a big 72mm compliant roller; the vector's wheel row is a smaller 48mm.
+ *
+ * The roller's FRONT FACE is the intake's reach — `footprintExtents` already puts the
+ * collision front at `length/2 + reach` — so growing the diameter grows it BACKWARD into
+ * the mouth and changes no physics at all. The wedges meet it at its axle, so the funnel
+ * keeps a visible mouth in front of them.
+ */
+export const INTAKE_ROLLER_MM = { sloped: 72, vector: 48, triangle: 72 } as const;
+/** fore-aft thickness of the gate-opener tab on each shaft end. A tab on a beam end, not a
+ * slab: drawing it the full roller diameter made the front read as one solid block. */
+export const INTAKE_OPENER_THICK = 0.9; // in
+/**
+ * ALPHA ONLY — a live pose readout (x, y, heading) on the in-match chip row.
+ *
+ * Added to settle a disagreement about geometry with measurements instead of argument: a
+ * search over 792 robot poses found essentially none that could intake off the gate
+ * outflow, and the user does it routinely, so the search is wrong somewhere and the pose
+ * that works has to come from the game rather than from me guessing at it.
+ *
+ * MUST NOT REACH MAIN. This branch is never merged (standing rule in CLAUDE.md), but if
+ * that ever changes, set this to false first — it is a debug overlay, not a feature.
+ */
+export const DEBUG_POSE_READOUT = true;
+/**
+ * The roller beam is covered in rollers ALONG ITS WHOLE LENGTH, out to the gate openers that
+ * cap its ends — not a short stack in the middle.
+ *
+ * `wheelSpan = wedge ? throatHalf : mouthHalf` in robot.ts is the SUCTION region (where an
+ * artifact gets drawn toward the throat), not the physical extent of the hardware, and
+ * drawing the rollers to it put a handful of them in the centre with bare beam either side.
+ */
+export const INTAKE_ROLLER_PITCH = 1.6; // in between roller centres
+export const INTAKE_ROLLER_W = 1.3; // in, each roller's width along the beam
+/** roller diameter in inches for a spec */
+export const intakeRollerDia = (spec: { intake: keyof typeof INTAKE_ROLLER_MM }): number =>
+  INTAKE_ROLLER_MM[spec.intake] / 25.4;
+/**
+ * THE ROLLER AXLE in robot-frame x — ONE authority, read by the sim, the renderer and the
+ * artifact solids.
+ *
+ * It was computed independently in three places (`drawRobot`'s `wedgeTip`/`axis`,
+ * `artifactSolids`' `wedgeFront`) and the geometry the intake GRABS on is now derived from
+ * it, so a fourth copy is how the drawn wheel and the capture zone drift apart. The `max(hl)`
+ * mirrors `artifactSolids` — a roller bigger than twice the reach would otherwise put the
+ * axle inside the chassis.
+ */
+export const intakeAxleX = (spec: { intake: keyof typeof INTAKE_PRESETS; length: number }): number => {
+  const hl = spec.length / 2;
+  return Math.max(hl, hl + INTAKE_PRESETS[spec.intake].reach - intakeRollerDia(spec) / 2);
+};
+/**
+ * HOW FAR THE COMPLIANT TREAD REACHES PAST ITS OWN CIRCLE, as a fraction of the roller RADIUS
+ * — the ONE free parameter in the grab. Everything else falls out of it, `BALL_RADIUS` and
+ * the roller diameter.
+ *
+ * THE DERIVATION, which is already in this file and was simply never used by the capture
+ * code. `intakeLidZ` puts the roller's underside at exactly `2 * BALL_RADIUS` — the APEX of
+ * an artifact sitting on the floor — because that is the clearance an artifact needs to pass
+ * under it. So the axle is at `z = 2R + Rr`, a floored artifact's centre at `z = R`, their
+ * vertical separation is exactly `S = R + Rr`, and a RIGID roller grazes that artifact at
+ * exactly ONE point: directly under the axle. Every inch of grab there is, is tread flex.
+ * With the tread reaching `c` past its nominal circle, contact holds while
+ *
+ *     hypot(dx, S) <= S + c    <=>    |dx| <= sqrt(c * (2S + c))
+ *
+ * which is `intakeNip` below. That is the user's own description of the mechanism — "the ball
+ * should be directly below or very slightly in front of the centre of the wheel" — rendered
+ * as arithmetic instead of as two hand-picked distances, and it is why the 72mm funnel roller
+ * grabs over a longer band than the vector's 48mm one without anyone asserting that it should.
+ *
+ * ⚠️ THERE IS A FLOOR, AND IT IS ~0.135. A free ground artifact's centre can never get behind
+ * `hl + BALL_RADIUS`: the chassis is a live collider against a CLAIMED artifact
+ * (`physicsEngine.ts`, which captures "AT the face (`hl + R`, touching)"), and `intakeSuction`
+ * pulls toward `(hl, 0)`, so anything the intake has hold of comes to rest with its skin flush
+ * on the chassis front face. That rest point is `BALL_RADIUS − reach + intakeRollerDia/2` from
+ * the axle — chassis-INDEPENDENT — i.e. +0.917 (sloped), −0.055 (vector), −1.083 (triangle).
+ * The band MUST contain it or that preset captures NOTHING. Below ~0.135 `nip.back` drops
+ * under 1.083 and TRIANGLE stops intaking altogether. Smoke pins this with the numbers named.
+ *
+ * Raising it widens the band as a SQUARE ROOT, so it is a gentle dial: 0.20 gives the 72mm
+ * roller back 1.517 / front 1.800 and the 48mm one back 1.157 / front 1.346.
+ */
+export const INTAKE_TREAD_FRAC = 0.2;
+/**
+ * THE NIP: how far BEHIND and IN FRONT of the axle an artifact's centre may be and still be
+ * under the compliant wheel. See `INTAKE_TREAD_FRAC` for where the square root comes from.
+ *
+ * `front = back + c`: ahead of the nip the loaded tread lobe flexes forward into the
+ * approaching artifact, behind it the tread is unloading. That asymmetry IS the "very
+ * slightly in front" half of the request, and it is one term rather than a fudge factor.
+ *
+ * Pure arithmetic and one sqrt — no trig — so the `src/sim` dsin/dcos/datan2 discipline is
+ * untouched.
+ */
+export const intakeNip = (
+  spec: { intake: keyof typeof INTAKE_PRESETS; length: number },
+): { back: number; front: number } => {
+  const Rr = intakeRollerDia(spec) / 2;
+  const c = INTAKE_TREAD_FRAC * Rr;
+  const back = Math.sqrt(c * (2 * (BALL_RADIUS + Rr) + c));
+  return { back, front: back + c };
+};
+/**
+ * THE INTAKE HAS A ROOF, and it is the same fact the mouth geometry already rests on.
+ *
+ * `ballRobotContact` leaves the centre of the mouth OPEN at ball height on the grounds that
+ * "the wheels ride high in z, so balls pass under them". That is right, and it has an
+ * unstated other half: what rides high in z is SOLID to anything coming DOWN. Without it the
+ * mouth was open from above too, so an artifact dropped on the intake fell through the
+ * rollers to the floor INSIDE the throat and was swallowed — measured, a drop from 24in onto
+ * the mouth of every preset ended up held, as did one onto the front of the CHASSIS, which
+ * the contact code ejects forward into the mouth on its way down.
+ *
+ * The height is the geometry the mouth already implies: the roller's underside has to clear
+ * a full artifact for one to pass under it, so an artifact landing ON the roller sits a
+ * diameter, plus the roller, plus its own radius up.
+ */
+export const intakeLidZ = (spec: { intake: keyof typeof INTAKE_ROLLER_MM }): number =>
+  2 * BALL_RADIUS + intakeRollerDia(spec) + BALL_RADIUS;
+/**
+ * How briskly an artifact that lands on the intake is thrown clear of it, along the robot's
+ * forward axis.
+ *
+ * A roller is a cylinder with its axis across the robot, so what lands on it goes forward or
+ * back, never sideways — and back is the chassis, which is solid. With the intake RUNNING the
+ * roller is spinning and throws it; stopped, the front lip is the low side and it rolls off.
+ * One constant either way: the artifact ends up on the floor in FRONT of the mouth, where an
+ * intake may then legitimately take it, rather than inside the throat where it never was.
+ */
+export const INTAKE_LID_THROW = 24; // in/s
+/**
+ * GATE OPENER: a block on each end of the roller beam, filling out to the chassis edge.
+ *
+ * It is not decoration and it is not a new collider either — `footprintExtents` already
+ * makes the whole front of the robot solid out to `width/2` and forward to `length/2 +
+ * reach`, which is what lets an intake work the gate lever at all. The funnel presets'
+ * roller only spans `mouthHalf`, so the drawing showed nothing out at the corners while the
+ * collision box was solid there. This is the part that was missing from the picture, and
+ * `npm test` asserts it lands exactly on the footprint corner rather than near it.
+ */
+/**
+ * THE SWALLOW CADENCE IS 1-2 TICKS NOW, AND THE GRAB HAPPENS AT THE ROLLER NIP.
+ *
+ * The two halves of one change ("make the intaking speed extremely fast, but decrease the
+ * effective intaking area"). The AREA is `intakeNip` about `intakeAxleX` — one fore-aft band
+ * shared by all three capture branches, derived from the roller's own geometry — and the
+ * SPEED is `capMin`/`capMax`/`clumpInterval` below, which are now measured in ticks rather
+ * than in tenths of a second.
+ *
+ * ⚠️ EVERY INTERVAL SITS ON THE HALF-TICK GRID `(n − 0.5) / 60`, never on an exact multiple
+ * of `SIM_DT`. The gate is `world.time − r.lastIntakeAt < interval` and `world.time` is
+ * ACCUMULATED by `+= dt`, so an interval set exactly to `k * SIM_DT` is a float coin toss
+ * that would resolve differently on either side of a rounding boundary. Free to avoid, and
+ * invisible if you don't.
+ *
+ * ⚠️ `drawIn` HAD TO RISE WITH THEM, and this is the fact that makes the whole tuning work:
+ * the wedge presets are TRAVEL-limited, not interval-limited. The measured back-to-back
+ * swallow gap on sloped was 0.133 s against a `clumpInterval` of 0.04 — which is exactly why
+ * the 2026-09-10 bisection found `clumpInterval` 0.04 -> 0.02 with `capMax` 0.09 -> 0.05
+ * BYTE-IDENTICAL. Cutting the interval alone delivers nothing at all; what a queued artifact
+ * pays is one ball diameter of travel to reach the seat. The ordering (vector < sloped <
+ * triangle) and the ratios between them are preserved.
+ */
 export const INTAKE_PRESETS = {
   /** SLOPED: two side slopes funnel artifacts into the compliant wheels at the
    * throat — no flat front. maxLength = 18 − reach (the roller counts toward the
@@ -483,8 +1641,8 @@ export const INTAKE_PRESETS = {
   sloped: {
     reach: 3, overhang: false, minLength: 13.5, maxLength: 15, minWidth: 14.5, fireInterval: 0.08, fireCap: 0,
     mouth: {
-      wedge: true, mouthHalf: 7, throatHalf: 3, drawIn: 26,
-      capMin: 0.05, capMax: 0.09, clumpInterval: 0.04, dual: false,
+      wedge: true, mouthHalf: 7, throatHalf: 3, drawIn: 40,
+      capMin: 0.00833, capMax: 0.05833, clumpInterval: 0.00833, dual: false,
     },
   },
   /** VECTOR WHEEL: flat front (no side slopes), the roller spans the whole mouth.
@@ -499,8 +1657,20 @@ export const INTAKE_PRESETS = {
       // laterally (drawIn) to the center compliant zone (throatHalf) before sucking
       // it in, so edge entries take longer — the vectoring time. `mouthHalf` here is
       // a fallback; the live value is the robot's half-width (see `intakeMouth`).
-      wedge: false, mouthHalf: 8.5, throatHalf: 3, drawIn: 18,
-      capMin: 0.08, capMax: 0.14, clumpInterval: 0.12, dual: false,
+      //
+      // THE SLOWEST OF THE THREE, and the only one that actually PAYS its centre->edge
+      // ramp: 2 ticks at the centre against sloped's and triangle's 1, 8 ticks at the
+      // edge, and NO clump bonus (`interval` takes `clumpInterval` only on a wedge, so
+      // the field here is dead and is kept equal to `capMax` for consistency). A wedge's
+      // funnel delivers everything to |y| ~ 0, so a wedge only ever pays `capMax` on a
+      // `cornered` grab; `onRollerRow` is the one branch that grabs genuinely off-centre,
+      // which is why the 4x spread is visible here and nowhere else.
+      //
+      // drawIn 21 -> 32 with the nip: vectoring an off-centre ball across a flat plate is
+      // what this preset trades away, and the band it has to be vectored INTO is now
+      // 2.5in deep rather than the whole 7in mouth.
+      wedge: false, mouthHalf: 8.5, throatHalf: 3, drawIn: 32,
+      capMin: 0.025, capMax: 0.125, clumpInterval: 0.125, dual: false,
     },
   },
   /** TRIANGLE: named for the triangular ball storage (2 near the mouth, 1 deep).
@@ -509,13 +1679,28 @@ export const INTAKE_PRESETS = {
    * fire faster than that, but when conditions are already slower than the cap
    * (flywheel recovery on far shots) it fires at the same rate as everyone else. */
   triangle: {
-    reach: 5, overhang: false, minLength: 11, maxLength: 13, minWidth: 15.5, fireInterval: 0.1, fireCap: 0.12,
+    reach: 5, overhang: false, minLength: 11, maxLength: 13, minWidth: 15.5, fireInterval: 0.08, fireCap: 0.095,
     mouth: {
       // strongest INTAKE of the three (its identity — devours clumps): a hard
       // suction (drawIn) snaps balls to the throat and it swallows quickest. The
       // tradeoff is TRANSFER (fireCap), not the grab — those stay untouched.
-      wedge: true, mouthHalf: 7, throatHalf: 3.5, drawIn: 46,
-      capMin: 0.04, capMax: 0.07, clumpInterval: 0.035, dual: true,
+      //
+      // Same 1-tick centre as sloped, but a shallower edge penalty (3 ticks against 4)
+      // and `dual` still takes TWO per cycle from a clump: 120 artifacts/s off a pile
+      // against sloped's 60. It fills a 3-slot hopper in two ticks and still shoots
+      // slowest — `fireInterval`/`fireCap` below are the SHOOTER and are untouched by
+      // the intake work; they share no state with `lastIntakeAt`.
+      //
+      // "Make triangle intake transfer slightly faster." The CAP was not what was slow:
+      // measured, the gap between shots was 0.133s against a cap of 0.12, so the cap
+      // never bound at all and lowering it alone changed nothing (7.50/s either way).
+      // What binds is `fireInterval` plus the flywheel recovery, so that is what moved:
+      // 0.10 -> 0.09, with the cap eased to 0.105 so it still sits just under the
+      // result and remains the thing that stops this preset being the fastest shooter.
+      // It is still the only preset with a cap, and still slower than sloped's 0.08 —
+      // the triangle grabs best and shoots slowest, by a little less than before.
+      wedge: true, mouthHalf: 7, throatHalf: 3.5, drawIn: 70,
+      capMin: 0.00833, capMax: 0.04167, clumpInterval: 0.00833, dual: true,
     },
   },
 } as const;
@@ -540,8 +1725,6 @@ export function intakeMouth(spec: { intake: keyof typeof INTAKE_PRESETS; width: 
   return spec.intake === 'vector' ? { ...m, mouthHalf: spec.width / 2 } : m;
 }
 
-/** flank capture engages only when actually strafing toward the ball */
-export const INTAKE_SIDE_MIN_STRAFE = 8; // in/s
 /** forward speed above which a FLAT (vector) intake driven into a CLUMP scatters
  * it instead of vectoring it in: the non-compliant wheels + impact force push the
  * pile away. Below this a controlled approach still intakes normally. Wedge
@@ -590,13 +1773,53 @@ export const CLASSIFIER_Y0 = 2; // gate end (y)
 export const CLASSIFIER_Y1 = FIELD_HALF; // reaches the far wall corner
 export const RAMP_RAIL_INSET = 3; // ball rail distance from the wall
 export const RAMP_SURFACE_Z = 10; // drawn height of balls on the ramp
-export const OVERFLOW_Z = 13.5; // overflow rolls over the retained balls
+/**
+ * Height an overflow artifact's centre rides at when it is NOT over anything — the fallback
+ * only. A ball resting on another ball sits one full DIAMETER above it, so over the retained
+ * column the real height is RAMP_SURFACE_Z + 2R = 15, and it is computed per-tick from the
+ * artifacts actually underneath (see the scallop in updateRails). This was a flat 13.5 —
+ * less than a diameter above the ramp, i.e. sunk into the column it is supposed to be riding
+ * on, and pinned there for the whole ride: measured z = 13.50 from top to bottom, dead level
+ * across nine spheres.
+ */
+export const OVERFLOW_Z = RAMP_SURFACE_Z + 2 * BALL_RADIUS;
+/**
+ * How hard the scalloped top of the retained column throws an overflow artifact about.
+ *
+ * Riding over a row of spheres is not a ramp: the artifact drops into each hollow and has to
+ * climb the next crest, so gravity is alternately with it and against it. This is that
+ * component — acceleration per unit of local surface slope — and it is what makes the ride
+ * lurch instead of gliding. Without it the overflow lane accelerated monotonically to
+ * terminal (1 → 13 → 21 → 26 → 29 → 31 → 33 → 34 in/s, dead smooth) and the artifacts held
+ * a tidy second row at exactly RAIL_PITCH, which is not what rolling over a pile looks like.
+ */
+/** cap on that slope — the geometry diverges at the point where one sphere hands over to
+ * the next, and an unbounded kick there would fling artifacts off the ramp */
+export const OVERFLOW_SLOPE_MAX = 1.0;
+/**
+ * WHAT ROLLING OFF THE END OF THE PILE COSTS.
+ *
+ * An overflow artifact rides the retained column about a diameter up and then runs out of
+ * column: it drops onto the ramp and lands. That drop was a cosmetic z-blend costing it
+ * nothing, so every overflow artifact arrived at the exit having converged on the same
+ * drag-limited terminal and left at the same speed — measured 34.2..35.4 in/s across six of
+ * them, a spread of 1.2 against the classified lane's 17.1. Identical speeds means identical
+ * spacing, which is "coming out too uniformly in a line".
+ *
+ * The landing is where the variety lives, and it needs no randomising: the scallop means
+ * artifacts leave the pile anywhere between a hollow and a crest, so they begin the drop
+ * from different heights and are still falling for different lengths of time.
+ *
+ * Bumpiness is NOT the lever and was tried first — OVERFLOW_BUMP 40 -> 70 moved the exit
+ * spread only 1.2 -> 2.0, and past 100 the ride limit-cycles and nothing exits at all.
+ */
+export const OVERFLOW_LAND_LOSS = 11; // 1/s while dropping off the end of the column
 
 // goal basin (inside the triangular goal structure)
 export const BASIN_FLOOR_Z = 14; // funnel floor height inside the goal
 export const BASIN_RESTITUTION = 0.4; // vertical bounce off the funnel floor
 export const BASIN_WALL_RESTITUTION = 0.55; // lively caroms off the goal walls
-export const BASIN_FUNNEL_ACCEL = 1150; // in/s^2 pull toward the classifier entrance (drains the basin briskly so balls don't clog)
+export const BASIN_FUNNEL_ACCEL = 2500; // in/s^2 pull toward the classifier entrance (drains the basin briskly so balls don't clog)
 /** the funnel only really grips slow balls — fast ones carom around first */
 export const BASIN_FUNNEL_GRIP_SPEED = 360; // in/s (higher ⇒ funnels sooner, less caroming)
 export const BASIN_DAMPING = 1.1; // 1/s horizontal velocity damping (settles onto the funnel faster)
@@ -610,37 +1833,637 @@ export const BASIN_ENTRY_KEEP_V = 0.45; // entry velocity retained (splash energ
 
 // classifier rail (1D flow, contact stacking)
 export const RAIL_S_MAX = 55; // rail length: SQUARE at the top (y = CLASSIFIER_Y0 + s), at the goal's inner exit
-export const RAIL_ACCEL = 80; // in/s^2 down-ramp
-export const RAIL_TERMINAL = 46; // in/s max flow speed
+/**
+ * Down-ramp acceleration, and an artifact is under it for the WHOLE descent.
+ *
+ * 386 in/s^2 of gravity on a shallow ramp, less the rolling loss: g*sin(th)*5/7 puts 25 in/s^2
+ * at about 5 degrees, which is the sort of slope a classifier channel has.
+ *
+ * It used to be 80, which is a 17-degree ramp, and it was survivable only because RAIL_TERMINAL
+ * capped the result at 30 in/s after 5.6in of travel — barely one artifact spacing. Every
+ * artifact was therefore at the cap before it reached the gate and the whole column flowed at
+ * one speed. Nothing on a ramp does that: rolling resistance does not grow with speed, so there
+ * is no terminal velocity to reach, and how fast an artifact is going depends on how far it has
+ * come. Now it does: down a full ramp they arrive at 17, 26, 31, 36, 40, 44, 48, 51, 54 in/s,
+ * each with more runway than the one in front, so the gaps between arrivals SHORTEN as the
+ * column drains and the ramp visibly speeds up as it empties.
+ */
+export const RAIL_ACCEL = 100; // in/s^2 down-ramp
+/**
+ * Terminal flow speed down the ramp — the speed at which the incline's pull (RAIL_ACCEL) is
+ * balanced by rolling resistance.
+ *
+ * This is what sets the SHAPE of a drain, not just its speed, because it decides whether the
+ * column is still accelerating when it reaches the exit. The column starts from rest packed
+ * against a shut gate, so the first artifact has to cover one RAIL_PITCH from a standstill —
+ * 0.36s, unavoidable. If terminal is high, everything behind it is still speeding up and the
+ * drain reads as a lag and then a dump:
+ *
+ *     terminal 46 -> at speed after 13.2in, gaps 0.20 0.13 0.13 0.12 0.13 0.12 0.13 0.13
+ *     terminal 30 -> at speed after  5.6in, gaps 0.22 0.20 0.20 0.20 0.22 0.23 0.23 0.22
+ *
+ * Reaching terminal within about ONE PITCH is the condition for the first gap to match the
+ * rest, and that is what makes it read as a steady stream. 9 artifacts clear in 2.1s.
+ */
+/**
+ * A SAFETY CAP, not a shaping constant — nothing in a normal drain gets near it (the fastest
+ * arrival down a full ramp is about 54 in/s). It exists so a pathological state cannot launch
+ * an artifact down the rail at an unbounded speed, not to give the ramp a flow speed.
+ */
+/**
+ * THE CHANNEL IS A GROOVE, AND A FAST ARTIFACT RATTLES DOWN IT.
+ *
+ * `RAIL_ACCEL`'s own note is right that rolling resistance does not grow with speed, so there
+ * is no terminal from rolling — but rolling is not all that is happening. The channel is
+ * CLASSIFIER_W across against a 5in artifact, so it weaves (see `railWander`), and the faster
+ * it goes the harder it works the walls: knocking side to side, scrubbing the groove, throwing
+ * itself against the far side of each weave. That loss DOES grow with speed, and it is what
+ * stops a chute from delivering at whatever the drop height would give in a vacuum.
+ *
+ * Without it the ramp accelerated the whole 59in unopposed and the last artifacts off a full
+ * column arrived at 69 in/s — "the balls get supercharged and dash down". With it the early
+ * ones are untouched (they have no speed for it to take) and the tail settles near
+ * RAIL_ACCEL / this, about 45 in/s, which is the number the ramp actually delivers.
+ */
+export const RAIL_RATTLE_DRAG = 1.45; // 1/s — terminal ~RAIL_ACCEL/this
+export const RAIL_TERMINAL = 120; // in/s safety cap
 export const RAIL_PITCH = 5.1; // ball contact spacing on the stack
+/** how far off straight an artifact tips as it rolls off the exit lip, in in/s of lateral
+ * speed. NOT a fraction of its speed — the weave it carries is groove geometry, so it is worth
+ * the same couple of inches a second however fast it arrives. At the drain's ~40in/s that is a
+ * few degrees; the rest of the spread comes from collisions. */
+export const EXIT_DRIFT = 2.5;
+/** how fast the artifact AHEAD has to be rolling before the one behind can push it along
+ * (in/s). Below this the column is being held against something — a shut gate, a bumper — and
+ * a contact with it is a contact with the field, not a momentum exchange. See the contact
+ * clamp in `updateRails`. */
+export const RAIL_CONTACT_MOVING = 2;
 export const GATE_STOP_S = 2; // lowest rest position against the closed gate
 // entrance blocked only while a ball is still within ~one pitch of the top entry
 // (s = RAIL_S_MAX = 55); was 43.4, which forced each ball to flow 11.6" clear
 // before the next could board — throttling the drain to ~2 balls/s and clogging
 // the basin. One pitch below the entry keeps proper spacing but drains ~2× faster.
 export const RAIL_ENTRY_BLOCK_S = 50;
+/**
+ * The speed an artifact BOARDS the ramp at, and its ceiling.
+ *
+ * The floor (8 in/s) exists so an artifact that dribbles into the entrance still gets under
+ * way. The CEILING is the interesting one: an artifact used to board carrying whatever
+ * `vel.y` the basin had given it, and the basin's funnel pull is a scripted drain aid
+ * (BASIN_FUNNEL_ACCEL, 1150 in/s^2 — three times gravity, there to stop the basin clogging),
+ * not a slope. Measured in a real match, artifacts boarded at up to 52 in/s and peaked at
+ * 75 in/s on the ramp, against a ramp whose OWN free-fall ceiling over its whole length is
+ * 54. It depended entirely on whether an artifact happened to dive straight at the entrance
+ * or jumble first, which is exactly "sometimes balls come down the ramp extremely fast".
+ *
+ * The channel entrance is a THROAT, not a launcher: an artifact turning into a 6in chute
+ * spends most of what it had on the walls. So the boarding speed is capped at what the ramp
+ * ITSELF could have produced by that point — sqrt(2 * RAIL_ACCEL * (RAIL_S_MAX - s)) — and
+ * from there the descent is the ramp's own physics and nothing else's. Nothing on the ramp
+ * can then be faster than something released at the very top, which is the property that
+ * makes the flow legible.
+ */
+/**
+ * The speed an artifact boards the ramp at.
+ *
+ * It was 8 in/s, which throttled the whole goal: the next artifact cannot board until this one
+ * is a PITCH clear, so the hand-off rate is boarding speed over pitch, and 8 over 5.1in is two
+ * a second. It was then tied to the ramp's DELIVERY speed to fix that — and when the chute was
+ * steepened for the drain cadence, the delivery speed went with it and artifacts started
+ * entering the channel at 69 in/s. "Balls come down the funnel too fast. Not frequency, speed."
+ *
+ * So it is its own number again. An artifact arrives from the basin under a funnel pull, not
+ * off a ramp, and 25 in/s is a brisk hand-off without being a shot: fast enough that the
+ * entrance is not the bottleneck it was at 8, slow enough that the channel does not read as
+ * firing artifacts down itself. What it costs in hand-off rate the ramp now gives back — a
+ * packed column shares momentum, so the artifacts behind push the one at the top along.
+ */
+export const RAIL_ENTRY_V = 25; // in/s
 export const RAIL_EXIT_S = -4; // past the gate: ball drops out to the floor
-export const OVERFLOW_FLOW_SPEED = 58; // in/s, overflow rides over everything (clears a full goal quickly)
+/**
+ * An artifact on the ramp is drawn RAMP_SURFACE_Z up in the air, which is true while it is on
+ * the ramp and false the moment it clears the channel mouth — past the wall it is out on the
+ * open apron with nothing under it. It used to hold that height across the whole exit stretch
+ * and then pop to the floor on release, so it crossed open ground ten inches up and rode over
+ * any robot standing there: "balls skip over the chassis when they come down from the
+ * classifier". It now descends across that stretch, reaching the floor exactly where the
+ * release already puts it, so the drop is continuous instead of a snap.
+ */
+export const RAIL_DROP_S = 2.5; // inches of travel past the mouth to reach the floor
+/** step used to walk a robot's body along the rail line when deciding where it stops the
+ * column. Well under an artifact radius, so nothing slips past; a robot is only ~18in long,
+ * so the walk is a few dozen samples. Fixed, because the rail must stay deterministic. */
+export const RAIL_BLOCK_STEP = 0.5; // in
+/** how fast a solid floor (a robot's bumper, the exit lip) may push an artifact back UP the
+ * rail. The solver otherwise refuses to move an artifact upward at all — a floor that moves
+ * must never yank the column, which is what made it jump up and down the classifier in time
+ * with the steering. But a robot leaning into the channel really does shove the column, and
+ * an artifact that slipped under the exit really must come back. Rate-limiting it means both
+ * read as a push instead of a teleport. */
+export const RAIL_PUSH_RATE = 60; // in/s
+/**
+ * How hard the column shoves an artifact still sitting in the gate's doorway, as a fraction
+ * of the exit velocity — a FLOOR on its outward speed, re-applied each tick the doorway is
+ * occupied, never an addition (see the release loop: adding compounded to 91 in/s).
+ *
+ * 1.0 = the queue moves at the speed of the flow that is pushing it, which is the only value
+ * that isn't arbitrary. At 0.5 the doorway artifact crept out at 11 in/s and took 0.9s to
+ * clear its own diameter, throttling a nine-artifact drain to 12s — and that throttle used
+ * to be invisible, because artifacts queued BELOW the exit (off the field entirely) and then
+ * burst out together once it cleared. With the exit sealed, the queue rate is what you see.
+ */
+export const EXIT_NUDGE = 1.0;
+/**
+ * Clearance BEYOND touching that the doorway needs before the next artifact is released.
+ *
+ * This was 4.5 — nearly two artifact diameters — swept to that value back when ground
+ * artifacts were resolved bespoke and releasing at one diameter left a 2.8in overlap spike
+ * (the pair converge after the release, so "not touching yet" was not "there is room").
+ * Ground artifacts are Rapier bodies now and the chassis is in that solve, so the overlap
+ * is handled where it belongs: re-swept at 4.5 / 2.0 / 1.0 / 0.0, the worst clump overlap
+ * is 0.12in at EVERY value. The old margin was buying nothing and costing cadence.
+ *
+ * What it costs: the doorway is the WAIT half of the drain cadence. The other half is
+ * gravity carrying an artifact one RAIL_PITCH down to the exit, ~0.33s, which is real and
+ * irreducible. At 4.5 the wait was ~0.5s on top of that and the drain read as a metronome —
+ * 0.77s between releases with a mean-abs-dev of 0.10s, artifacts leaving one at a time like
+ * a dispenser rather than flowing.
+ */
+export const EXIT_CLEARANCE = 1.0; // in, on top of a full artifact diameter
+/**
+ * How close to a chassis the doorway artifact has to be before the column stops shoving it.
+ *
+ * EXIT_NUDGE is a velocity FLOOR re-applied every tick the doorway is occupied. If the
+ * artifact is pinned — between the gate and a robot parked down the tunnel — the floor and
+ * the chassis take turns and it BUZZES: measured 60 direction reversals in two seconds, one
+ * every other tick, peaking at 67.6 in/s. A fraction of a radius rather than the whole one,
+ * so an artifact merely rolling past a robot is still nudged normally.
+ */
+/** how far an artifact may be from touching a chassis and still count as PINNED against it (in) —
+ * the artifact solve leaves a held contact within its resting slop of touching, so this only has
+ * to clear that; see the doorway nudge in  */
+export const EXIT_PIN_TOUCH = 0.15;
+/**
+ * Rolling resistance an artifact carries while it is riding ON TOP of the retained column
+ * instead of on the ramp — the bumpy business of climbing over one artifact, dropping between
+ * it and the next, and climbing again.
+ *
+ * This REPLACED a fixed OVERFLOW_FLOW_SPEED. A constant speed made overflow a mode rather
+ * than a situation: it could not rejoin the column when the gate opened, and its pace was a
+ * number to be argued about instead of a consequence. Gravity drives it, the ramp sets the
+ * scale, and nothing about it was ever special except its height.
+ *
+ * IT IS A DECELERATION, NOT A DRAG, for exactly the reason RAIL_ACCEL gives for the ramp:
+ * rolling resistance does not grow with speed, so there is no terminal velocity to reach and
+ * how fast an artifact is going depends on how far it has come. It was a 2.2/s velocity drag,
+ * which pinned the ride at RAIL_ACCEL / 2.2 — 36 in/s when RAIL_ACCEL was 80, and then 11
+ * in/s once it became 25, a crawl beside a ramp lane running 17..54. That is the "overflow
+ * flow is weird and slightly slow": one lane accelerating the whole way down and the other
+ * held at a fifth of it by a constant that was never rescaled.
+ *
+ * As a constant loss the two lanes are the same physics and the ratio is fixed and readable:
+ * over the same stretch an elevated artifact reaches sqrt((RAIL_ACCEL - this) / RAIL_ACCEL)
+ * of the ramp lane's speed — 0.8 — because climbing over a pile costs it, not because it is
+ * a different kind of thing.
+ */
+/**
+ * ...AND THE NET IS THE NUMBER THAT MATTERS, so that is what is written down.
+ *
+ * This was a FRACTION of RAIL_ACCEL — 0.88 of it, "net ride pull is the rest" — which ties
+ * how fast a rider clambers over a pile to how steep the chute under the pile is. Those are
+ * not the same thing: the crests it climbs are artifact-sized whatever the ramp does. So
+ * steepening the chute for the drain cadence doubled the net pull with it and the riders took
+ * off — measured, a peak of 32 in/s against a shut gate and 57 with it open, on a lane whose
+ * whole character is meant to be a slow lurching ride ("overflow balls come down too quickly
+ * ... it would move kinda like in steps").
+ *
+ * The net pull is 6 in/s^2, as it was, and the loss is whatever the slope leaves over it.
+ */
+export const OVERFLOW_NET_PULL = 6; // in/s², what actually drives a rider down the pile
+export const OVERFLOW_ROLL_LOSS = RAIL_ACCEL - OVERFLOW_NET_PULL; // in/s²
+/**
+ * HOW STRONGLY THE COLUMN UNDERNEATH CARRIES THE ARTIFACT RIDING ON IT, per second.
+ *
+ * An overflow artifact is rolling on BALLS, not on the ramp, so what is under it sets its
+ * pace: against a shut gate the column is stationary and drags the rider to a crawl, and the
+ * only thing moving it is the small net pull left after the clamber loss — which is the
+ * STEPPING, hollow to crest. Open the gate and the column is running, and the same contact
+ * hands the rider its momentum.
+ */
+export const OVERFLOW_CARRY = 3.5; // 1/s toward the speed of the artifact beneath it
+/** how much faster than its carrier a rider may get, in/s. It is rolling ON the column, so a
+ * little lead is the crest it is coming down; a lot is a slide. Only applies while the column
+ * is actually moving — over a stationary pile the rider clambers under its own net pull. */
+export const OVERFLOW_LEAD = 6;
+
+/**
+ * ...AND IT MUST STAY UNDER THE RAMP'S OWN PULL, or the scallop stops being a texture and
+ * becomes a TRAP. The crest between two artifacts is a real potential barrier: if the bump
+ * can cancel `RAIL_ACCEL` the artifact simply parks in a hollow and never comes out.
+ *
+ * This was 40 against a RAIL_ACCEL of 80 — half of gravity, a lurch. RAIL_ACCEL is now 25
+ * (the ramp accelerates the whole way down instead of running at a capped flow speed) and
+ * this was not rescaled with it, so the bump was 1.6x the pull that is supposed to drive the
+ * ride. Measured with four overflow artifacts dropped onto a full column: three of them
+ * stuck on the pile FOREVER — one at s=52.4 held at v=+5 in/s, i.e. being pushed steadily
+ * back UP the ramp — and the fourth crept out at 16 in/s after four seconds. The note under
+ * OVERFLOW_LAND_LOSS had already recorded the shape of this ("past 100 the ride limit-cycles
+ * and nothing exits at all"); dropping RAIL_ACCEL is what walked the ratio into it.
+ *
+ * So it is now a FRACTION of the net pull, and the invariant is one line of arithmetic:
+ * RAIL_ACCEL - OVERFLOW_ROLL_LOSS - OVERFLOW_BUMP * OVERFLOW_SLOPE_MAX > 0, i.e. the ride
+ * always accelerates down-ramp, hardest into a hollow and barely at all over a crest. Smoke
+ * asserts it, because it is the difference between a lurch and a stall.
+ */
+// ...and the LURCH is artifact geometry too, not the chute's: a crest is a crest. Held at
+// the value it had when the ramp pulled at 50, rather than scaling with the slope.
+// ...and the LURCH is nearly the whole of it, which is what makes the ride read as STEPS
+// rather than a glide: cresting a sphere all but cancels the pull, dropping into the next
+// hollow doubles it. Held just under the net pull by the invariant a smoke check states — past
+// it a crest would drive a rider back UP the pile, and a lurch would become a trap.
+export const OVERFLOW_BUMP = 3; // in/s² per unit slope
 /** lateral/vertical glide rate as a ball settles onto the rail line */
 export const RAIL_BLEND_SPEED = 30; // in/s
+/**
+ * Spatial frequency of an artifact's weave across the channel (radians per inch travelled).
+ * 0.42 is a wavelength of about 15in — three artifact diameters — so a ball crosses the
+ * channel's half-inch of slop over a long, lazy roll rather than vibrating. See `railWander`.
+ */
+export const RAIL_WANDER_K = 0.42;
+/**
+ * How much of the channel's lateral slop a TRACKED artifact actually uses, as a fraction.
+ * The channel is a marble track — it guides what is in it — so this is deliberately small:
+ * enough that a resting column is not one ruled line, not enough to read as wobble. Artifacts
+ * riding OVER the column (overflow) are not in the groove and use the full slop instead.
+ */
+export const RAIL_WANDER_AMP = 0.25;
 
 export const GATE_OPEN_HOLD = 0; // s of push before the gate arm starts to lift. ZERO so the lift (and the handle-collider retract that rides on it, see gateColliderPos) begins on the very tick you contact it — no debounce means no jam against the closed stub. The push gate (pushingGate: a STRAIGHT ram, not a graze) already prevents accidental opens.
-/** a TOUCH commits the arm open and LATCHES it up for this long, so the driver does
- * NOT have to keep pressing to hold it open — a tap lifts it fully and it stays up a
- * beat. After the latch lapses (and no artifact is streaming under it) gravity swings
- * it shut as before, so it still "may or may not stay open" a moment longer. */
-export const GATE_OPEN_LATCH_S = 0.5; // s the arm stays latched open after a tap (then it swings shut)
+/**
+ * The arm's mechanical OVERSWING: its own momentum carrying it up for a moment past the
+ * instant the robot stops touching it.
+ *
+ * This was 0.5s and meant something quite different — the arm was PINNED at maximum lift,
+ * hovering clear of everything, for half a second after a tap with nothing holding it. A
+ * hinged arm cannot do that, and it is what made a tap empty the entire ramp: measured, a
+ * tap drained every column up to six artifacts, two of them during the latch alone.
+ *
+ * "A tap opens it and the driver does not have to keep pressing" is still true, but it now
+ * comes from the FALL rather than from a timer: gravity needs ~0.23s to bring the arm from
+ * full lift back down to GATE_PASS_FRAC, artifacts flow the whole way, and then it lands on
+ * the column and meters it. Touch-hold (a robot resting against the arm) is what pins it.
+ */
+export const GATE_OPEN_LATCH_S = 0.08; // s of overswing after contact ends
 /** once open, gravity/flow decide re-close: it can only fall while no ball occupies
  * the gateway (a ball streaming under the arm physically holds it up) */
 export const GATE_CLOSE_CLEAR_LO = -4;
 export const GATE_CLOSE_CLEAR_HI = 4.5;
+/**
+ * THE ARM CANNOT HOVER — it rests on whatever is under it, and an artifact is only
+ * a ball's worth of lift.
+ *
+ * A ball in the gateway used to FREEZE `gatePos` wherever it happened to be, which meant
+ * a tapped gate stayed pinned at 1.0 (fully lifted, 77°) with artifacts rolling under it
+ * touching nothing. Held open and tapped open then drained at exactly the same rate —
+ * measured 0.596s vs 0.598s between releases, the same metronome either way — because the
+ * arm was doing nothing in either case.
+ *
+ * An unheld arm falls until it lands on the flow, and that height is GATE_RIDE_FRAC: how
+ * far a 5in artifact passing beneath holds the paddle up. Everything the user asked for
+ * follows from that one fact and needs no special cases:
+ *  · HELD by a robot ⇒ latched at 1.0, well clear of the artifacts ⇒ no contact, no drag,
+ *    no cadence: the column just streams out.
+ *  · TAPPED ⇒ the arm settles onto the stream and RIDES it. Its weight drags each artifact
+ *    passing under (GATE_PADDLE_DRAG), and in the gap between artifacts it sags, so the
+ *    next one has to shoulder it back up — which is the cadence, and it is semi-uniform
+ *    because it depends on how packed the column happens to be.
+ *  · NOT ENOUGH MOMENTUM ⇒ the ride height an artifact can hold is proportional to its
+ *    speed (GATE_SHOULDER_LIFT). A faltering one cannot lift the paddle past
+ *    GATE_PASS_FRAC, the arm settles onto it, and the drain stops until someone taps
+ *    again. Deterministic, but scenario-dependent enough to feel like it just gave out.
+ */
+export const GATE_RIDE_FRAC = 0.62; // open fraction the arm rests at while riding the flow
+/**
+ * SITTING UNDER THE ARM IS NOT THE SAME AS GETTING PAST IT — this is the constant that
+ * makes the difference, and getting it wrong made a tap empty the whole ramp.
+ *
+ * GATE_SEAT_FRAC is where the paddle comes to rest on an artifact directly beneath it. It
+ * is deliberately BELOW GATE_PASS_FRAC, because a paddle resting on top of a ball is the
+ * MARGINAL contact case: the clearance is exactly the ball and no more, so with the arm's
+ * weight on it, it does not roll through. Getting past means lifting the paddle the rest
+ * of the way, and the only thing that does that is momentum (GATE_SHOULDER_LIFT).
+ *
+ * It was originally set equal to GATE_PASS_FRAC — "a full diameter of clearance IS the
+ * pass height", which sounds right and is off by exactly the amount that matters. The
+ * gateway window is 8.5in against a 5.1in artifact pitch, so a packed column ALWAYS has
+ * something under the arm; if merely being under it holds the gate exactly passable, a
+ * dense column keeps itself flowing forever. Measured, that drained every column up to
+ * six artifacts no matter what else was tuned — GATE_RIDE_FRAC swept 0.44→0.62 changed
+ * nothing, which is what pointed here.
+ */
+/**
+ * Open fraction an artifact in the gateway can shoulder the arm up to, per in/s of its
+ * down-ramp speed (capped at GATE_RIDE_FRAC), taken as the higher of this and the seated
+ * geometry. GATE_PASS_FRAC / this is therefore the speed an artifact needs to keep the gate
+ * passable at all — below it the arm settles onto it and the drain stops.
+ *
+ * Ramp speeds run 20–40 in/s (RAIL_ACCEL 80, terminal 46), so this has to put the threshold
+ * INSIDE that band or the rule never bites. At the old 0.045 the threshold was 8.9 in/s —
+ * far below anything the ramp produces, so every artifact cleared it and the gate never
+ * gave out. The drain is meant to be marginal as the column spreads and artifacts start
+ * arriving slower; that is the whole "it randomly stops" behaviour.
+ */
+/**
+ * How much SWING SPEED an arriving artifact hands the arm, per in/s of its own speed.
+ *
+ * This is an IMPULSE, and that is the whole point of it. It used to be a height — the arm was
+ * teleported to `speed x constant` — which is not a collision, it is a lookup table, and it
+ * made the arm's rise linear in speed when a struck lever's rise goes as the SQUARE of the
+ * speed it is struck at (the artifact hands over momentum, the arm converts it to height
+ * against gravity: h = v^2 / 2g). Handing over a velocity and letting GATE_GRAVITY decide how
+ * high it gets makes that automatic, and it is why the same tap does not give the same result
+ * twice: the height now depends on where in the arm's own swing the artifact happens to arrive.
+ *
+ * It also replaced GATE_FLOW_CUSHION, which damped gravity in proportion to the flow. That was
+ * a second, separate knob for the same physical fact, and the two double-counted: the flow
+ * holds the arm up because artifacts keep knocking it up, not because a stream of artifacts
+ * makes gravity weaker.
+ */
+/**
+ * ...and its SIZE decides whether a drain can die in the MIDDLE. Once the column is flowing,
+ * the strike loss puts the arrival speed at a fixed point (v^2 = (1 - loss)^2 * v^2 +
+ * 2 * RAIL_ACCEL * RAIL_PITCH, about 19 in/s), so the arm's rise per knock, (v * this)^2 /
+ * (2 * GATE_GRAVITY), is a CONSTANT compared against a constant fall between arrivals. Set it
+ * high and every drain that survives its first gap runs to the end of the ramp; set it near
+ * that balance and the drain is decided artifact by artifact, which is the spread wanted.
+ * At 0.12 the sweep was 9-or-nothing (12 ones, 36 nines, nothing between); at 0.07 it spans
+ * 1..9 with a mean of 5.
+ */
+export const GATE_KNOCK = 0.085; // (1/s of gatePos) per in/s of artifact speed
+/**
+ * WHAT THE STRIKE COSTS THE ARTIFACT — the fraction of its down-ramp speed it spends
+ * throwing the arm up. A collision moves momentum; it does not mint it.
+ */
+export const GATE_STRIKE_LOSS = 0.45;
+/**
+ * How far UP-RAMP of the gate line an artifact still counts as arriving at the arm.
+ *
+ * The impulse comes from the artifact reaching the paddle, and its speed has to be read before
+ * the arm slows it. Sampling only what was already under the paddle made the arm and the flow
+ * chase each other down — arm settles onto the flow, flow slows, slower flow lifts less.
+ */
+export const GATE_APPROACH_S = RAIL_PITCH;
+/**
+ * WHAT A TAP IS WORTH is set by three constants together — GATE_SHOULDER_LIFT (momentum
+ * needed to keep the gate passable), GATE_FLOW_CUSHION (flow needed to suspend the fall)
+ * and GATE_CLOSE_MAX (how fast it settles). They move as a set; adjusting one alone mostly
+ * does nothing, because the drain ends when the arm crosses the pass line and all three
+ * govern when that happens.
+ *
+ * IT IS A RANGE, NOT A DOSE — "it should empty up to maximum 9, but as low as like 4 or 5".
+ * On a full ramp, across the conditions a driver actually varies (packing, tap length,
+ * run-up), this setting yields every value from 4 to 9. The spread comes from the flow
+ * itself: a dense column arriving fast holds the arm up and carries the whole ramp, while
+ * one that has spread out lets the arm settle and gives out early.
+ *
+ * MEASURING ONLY PACKING AT A FIXED TAP HIDES ALL OF THIS. Swept that way it reads as a
+ * flat 6 at every depth, which is what convinced an earlier pass that the yield was a
+ * constant and sent it hunting for variance that was already there. Vary the tap and the
+ * run-up too, or the number means nothing.
+ *
+ *     0.0125 / 62 / 1.65  ->  4 flat        (no spread at all)
+ *     0.017  / 46 / 1.42  ->  4..8
+ *     0.019  / 42 / 1.34  ->  4..9          <- here
+ *     0.020  / 40 / 1.30  ->  5..9          (floor lifts; it stops giving out early)
+ *//** rolling resistance the paddle's weight imposes on the artifact it is resting on, at
+ * full sag (arm down). Scaled by (1 − gatePos), so a fully-lifted arm — held up by a
+ * robot — costs the flow nothing at all, which is what makes a held gate stream. */
+export const GATE_PADDLE_DRAG = 5.5; // 1/s at full sag
+/**
+ * HOW HEAVY THE ARM IS, as a set. There is no single mass constant — the paddle's weight
+ * shows up in several places at once, and "lighter" means moving all of them together or
+ * the model stops being self-consistent:
+ *
+ *   GATE_PADDLE_DRAG    how hard it presses on what passes under it        7    -> 5.5
+ *   GATE_SHOULDER_LIFT  momentum needed to hold it passable          36 in/s -> 32
+ *   GATE_FLOW_CUSHION   flow needed to suspend its fall              70 in/s -> 62
+ *   GATE_PADDLE_SHOVE   the sideways component of its weight             120  -> 105
+ *   GATE_OPEN_RATE      how readily a gentle push eases it open            10  -> 12
+ *   GATE_CLOSE_MAX      terminal fall speed (damping does not scale
+ *                       with mass, so a lighter arm settles slower)      1.8  -> 1.65
+ *
+ * TWO OF THESE ARE LOAD-BEARING and cannot be lightened on their own:
+ *
+ *  · GATE_PADDLE_SHOVE × GATE_SHOVE_MIN must stay above RAIL_ACCEL (80). That product is
+ *    what stops the gate coming to rest on an artifact — gateStopS and gateRestOn are exact
+ *    inverses, so the pair is neutrally stable at every offset and only a shove that beats
+ *    gravity breaks it. The shove was lightened 120 -> 105 with the minimum lean raised
+ *    0.75 -> 0.86 to hold the product at 90.
+ *  · GATE_SHOULDER_LIFT and GATE_FLOW_CUSHION both make the gate EASIER to hold open, which
+ *    means a tap drains more. They are the direct trade against "one tap never empties the
+ *    ramp", and were moved only as far as that invariant tolerates.
+ *
+ * Verified after the change: 0/48 stalls leave the arm seated, a tap takes 4 at every depth
+ * 5-9 and empties none of them, a held gate still empties all, and the held stream is
+ * unchanged at a 0.323s mean gap.
+ */
+
+// ---- GATE PADDLE GEOMETRY: a stick on a sphere -----------------------------------
+/**
+ * THE HINGE'S HEIGHT ABOVE THE RAMP, and it is the ONE number the paddle-on-artifact
+ * geometry has left to choose. Everything else about "how far does an artifact push the gate
+ * open, and from where" falls out of it — see `gateRestOn`.
+ *
+ * The paddle is a STICK, hinged at the classifier's field edge and lying across the channel,
+ * and an artifact under it is a SPHERE. A stick resting on a sphere is TANGENT to it, and
+ * the tangent angle depends on how high the hinge is: hinge it level with the ramp and a
+ * 5in artifact under a 6in stick stands it almost vertical (rest at the apex works out at
+ * 1.03 of the full swing); hinge it at 5in and the artifact fits underneath without touching
+ * it at all. Between those, the whole range.
+ *
+ * THE MANUAL PICKS IT, not taste: 9.8.3 puts the gate's contact area 3.75-5.5in above the
+ * ramp, and that is exactly where this stick touches the sphere. Solving for the hinge height
+ * that puts the apex contact in the middle of that band gives 3.5in — a ramp-level hinge
+ * would contact at 2.95in, below the band, which is what rules it out.
+ */
+export const GATE_PIVOT_Z = 3.5; // in above the ramp surface
+
+export const GATE_LIFT = 1.35; // rad (~77deg) the paddle swings up from closed to fully open
+
+/**
+ * THE STICK-ON-SPHERE ANGLE, in radians of lift above the paddle's closed (horizontal)
+ * position, for an artifact whose centre is `d` down-ramp of the gate line.
+ *
+ * Hinge at (0, GATE_PIVOT_Z) in the channel cross-section, stick running toward the wall;
+ * the artifact's centre sits `xb` from the hinge across the channel and BALL_RADIUS up. The
+ * stick rests on the sphere when it is TANGENT to it, which (writing W = GATE_PIVOT_Z - R)
+ * is the one line of algebra this whole mechanism reduces to:
+ *
+ *     (xb cos t - W sin t)^2 = xb^2 + d^2 + W^2 - R^2
+ *
+ * i.e. hypot(xb, W) * cos(t + atan2(W, xb)) = sqrt(xb^2 + d^2 + W^2 - R^2).
+ *
+ * Two consequences worth naming, because the old model had neither. The reach is not one
+ * radius: the stick stops touching the artifact where the right-hand side outgrows the left,
+ * which depends on the hinge height. And the profile is not the artifact's surface height —
+ * it is flatter near the apex and falls away much faster near the edge of reach.
+ */
+export function gateRestAngle(d: number): number {
+  const R = BALL_RADIUS;
+  const xb = CLASSIFIER_W - RAMP_RAIL_INSET; // the rail's distance from the hinge
+  const W = GATE_PIVOT_Z - R;
+  const M = Math.hypot(xb, W);
+  const rhs = xb * xb + d * d + W * W - R * R;
+  if (rhs < 0) return GATE_LIFT; // the hinge is inside the artifact — nothing to solve
+  const q = Math.sqrt(rhs) / M;
+  if (q > 1) return 0; // out of reach: the stick falls past it entirely
+  return Math.max(0, Math.acos(q) - Math.atan2(W, xb));
+}
+
+/**
+ * HOW FAR FROM THE GATE LINE THE PADDLE STILL TOUCHES AN ARTIFACT — its reach, and no longer
+ * the artifact's radius. The stick stops meeting the sphere where the tangency runs out, which
+ * depends on the hinge height; solved once here so the sim, the block and the gate line all
+ * quote the same number.
+ */
+export const GATE_PADDLE_REACH = (() => {
+  let lo = 0;
+  let hi = 4 * BALL_RADIUS;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (gateRestAngle(mid) > 0) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+})();
+
+/** the apex case, as a fraction of the full swing — GATE_SEAT_FRAC and GATE_PASS_FRAC both */
+export function gateApexRest(): number {
+  return Math.min(1, gateRestAngle(0) / GATE_LIFT);
+}
+
+/**
+ * WHERE THE ARM SITS WHEN AN ARTIFACT IS DEAD UNDER IT — DERIVED, not chosen.
+ *
+ * It was 0.34, a free constant, against a model that took the paddle to be a vertical edge
+ * coming down at the gate line and read the artifact's surface height there. That is not
+ * what a stick does: a stick hinged off to one side meets the sphere at a TANGENT, and the
+ * angle that takes is a different (and larger) number — 0.44 of the full swing for the
+ * hinge height the manual implies. "The amount and the point at which the gate opens when a
+ * ball forces it open is very off."
+ *
+ * It is also no longer independent of GATE_PASS_FRAC: the lift an artifact needs to get
+ * THROUGH is the highest the stick rides while it passes under, which is this same apex
+ * value. See GATE_PASS_FRAC.
+ */
+export const GATE_SEAT_FRAC = gateApexRest(); // = gateRestOn(0), see goal.ts
+
+/**
+ * THE LIFT AN ARTIFACT NEEDS TO GET THROUGH — the same number, and now for a stated reason.
+ *
+ * It was 0.4 against a seat of 0.34, and the gap was a fudge with a job: "seated under the
+ * arm is not past it", so that a resting column could not hold its own gate open and drain
+ * itself. The geometry says it plainly instead. The stick rides UP as an artifact comes under
+ * it and is highest when the artifact is dead beneath — so the lift needed to pass IS the
+ * apex rest, and the two are one value.
+ *
+ * A resting column still cannot open its own gate, and now by geometry rather than by
+ * margin: the arm only reaches this height when an artifact is EXACTLY at the gate line, and
+ * the artifact it is resting on is held wherever `gateStopS` puts it, which is somewhere
+ * else. GATE_APEX_BIAS is what keeps that apex from being a place to sit.
+ */
+export const GATE_PASS_FRAC = GATE_SEAT_FRAC; // derived: clearing the apex IS passing
+
+/**
+ * WHERE THE PADDLE'S EDGE COMES DOWN, in rail `s`. A retained column rests packed against
+ * the shut gate with its first artifact centred at GATE_STOP_S, so the barrier it is
+ * resting against sits one radius further down.
+ */
+export const GATE_LINE_S = GATE_STOP_S - GATE_PADDLE_REACH;
+
+/**
+ * THE ARM STOPS WHERE THE GEOMETRY STOPS IT — it does not come to rest between artifacts.
+ *
+ * The arm used to have no idea what was underneath it: with the flow halted (a robot across
+ * the outflow, or a column that ran out of momentum) it fell straight to 0 THROUGH whatever
+ * was sitting in the gateway — measured at every offset from +4 to −2.4 in, always 0.000.
+ * So it only ever ended up in the gap between two artifacts, which is not something it can
+ * physically do.
+ *
+ * The paddle's edge descends the vertical at GATE_LINE_S and lands wherever that line meets
+ * the artifact's surface. With the artifact's centre `d` from the gate line, the contact
+ * sits at height `R + sqrt(R² − d²)` above the ramp — a full diameter dead on top (d = 0),
+ * shrinking to a single radius out at the equator (|d| = R), and missing entirely beyond
+ * that. GATE_SEAT_FRAC is what the full-diameter case maps to and the profile scales from
+ * there; note it is BELOW GATE_PASS_FRAC, so an artifact merely SEATED under the arm has
+ * not thereby got past it (see GATE_SEAT_FRAC).
+ *
+ * WHICH SIDE it landed on decides what happens once the robot leaves, and the two are
+ * genuinely different situations:
+ *  · d > 0 — the artifact has NOT reached the gate line. The paddle rests on its downhill
+ *    face, in front of it, and its weight bears back up-ramp: wedged, and it stays wedged
+ *    until somebody works the lever. (The block itself is the rail solver's existing gate
+ *    floor. Nothing extra is applied, because shoving the column back UP the ramp is the
+ *    one thing that solver refuses to do.)
+ *  · d < 0 — the artifact is already mostly THROUGH. The paddle is on its uphill face and
+ *    the same weight bears down-ramp: GATE_PADDLE_SHOVE is that component, and the arm
+ *    squeezes the artifact out from under itself and falls shut behind it, unassisted.
+ *  · d ≈ 0 is the balance point: the arm sits squarely on top at GATE_SEAT_FRAC, which is
+ *    not passable, so it stays there until something works the lever or shoves it.
+ */
+/**
+ * ...AND IT IS MEASURED AGAINST THE RAMP, because that is what it has to beat.
+ *
+ * A flat 105 was written against a ramp pulling at 50, and the invariant below
+ * (GATE_SHOVE_MIN × this > RAIL_ACCEL) held with room to spare. Steepening the chute for the
+ * drain cadence walked straight into it: at RAIL_ACCEL 100 the minimum shove is 90, the ramp
+ * pulls harder than the paddle can push, and an artifact wedged under the arm slides back
+ * under it instead of being squeezed out — the jam this constant exists to break.
+ *
+ * So it is a MULTIPLE of the ramp's pull. The paddle is the arm's weight bearing on a sphere;
+ * how decisive that is only means anything relative to what is pulling the sphere the other
+ * way, and tying the two together means the chute can be tuned without quietly re-opening a
+ * jam at the bottom of it.
+ */
+export const GATE_PADDLE_SHOVE = 2.4 * RAIL_ACCEL; // in/s² at the artifact's equator
+/**
+ * THE APEX IS NOT A RESTING PLACE — the ramp is tilted, so "dead on top" is not dead on top.
+ *
+ * The sideways push is proportional to `d`, so at d = 0 it is exactly zero — and `gateStopS`
+ * blocks an artifact at exactly d = 0 when the arm is at GATE_SEAT_FRAC. Those two agree, so
+ * the pair is a perfect equilibrium and the gate parks on the artifact's apex forever:
+ * measured, the arm was left seated in 18 of 48 stalls, every one of them at gatePos 0.340,
+ * which is GATE_SEAT_FRAC to three decimals.
+ *
+ * On an inclined ramp the contact normal is not vertical, so the paddle's weight keeps a
+ * down-ramp component even at the geometric apex. That shifts the neutral point up-ramp to
+ * `d = GATE_APEX_BIAS · R`, and — this is the part that matters — leaves it UNSTABLE: below
+ * it the artifact is pushed further out, above it further in. There is no longer anywhere
+ * for the gate to come to rest on an artifact.
+ */
+export const GATE_APEX_BIAS = 0.25; // of BALL_RADIUS, up-ramp of the gate line
+/**
+ * MINIMUM decisiveness of that push, as a lean magnitude.
+ *
+ * The push is proportional to how far off-centre the paddle landed, which means it fades to
+ * nothing near the neutral point — and `gateStopS` (where the arm blocks) and `gateRestOn`
+ * (how high an artifact holds it) are exact INVERSES, so the pair is neutrally stable at
+ * EVERY offset. Wherever the artifact stops, the arm settles to precisely the height that
+ * blocks it right there, and it sits forever: measured d = 1.30, v = 0.0, rest = 0.315 =
+ * gatePos, tick after tick. A proportional push cannot break that near the neutral point.
+ *
+ * So the paddle always pushes with at least this much lean, and only the DIRECTION comes
+ * from which side of neutral it landed. GATE_PADDLE_SHOVE × this must exceed RAIL_ACCEL, or
+ * the up-ramp push loses to gravity and the artifact simply slides back under the arm.
+ */
+export const GATE_SHOVE_MIN = 0.86; // × GATE_PADDLE_SHOVE must beat RAIL_ACCEL
 /** GATE as a PHYSICAL push-to-open arm (manual 9.8.3): a robot shoves the arm the
  * ~2in open, and it is "closed by gravity" — after release it does NOT snap shut but
  * SWINGS closed, starting slow and accelerating (a hinged arm falling), so a tap
  * "may or may not stay open" long enough to clear the ramp. `gatePos` is the arm's
  * physical open fraction 0 (down/closed) .. 1 (fully lifted); `gateVel` is its swing
  * rate. `gateOpen` (a ball can pass) is DERIVED = gatePos >= GATE_PASS_FRAC. */
-export const GATE_OPEN_RATE = 10; // 1/s: BASE lift rate for a gentle push (light nudge still eases the arm open over several ticks)
+export const GATE_OPEN_RATE = 12; // 1/s: BASE lift rate for a gentle push (a light arm eases open readily)
 /** the lift rate SCALES with how hard you ram the handle (ramSpeed = in/s toward the
  * wall): rate = GATE_OPEN_RATE + GATE_OPEN_RATE_SPEED·ramSpeed, capped at
  * GATE_OPEN_RATE_MAX. A near-full-speed ram lifts the arm ~fully in a single tick, so
@@ -649,9 +2472,60 @@ export const GATE_OPEN_RATE = 10; // 1/s: BASE lift rate for a gentle push (ligh
  * you touch it: it "opens faster the harder you drive into it", with no bounce-off jolt. */
 export const GATE_OPEN_RATE_SPEED = 1.2; // extra 1/s of lift per in/s of ram speed
 export const GATE_OPEN_RATE_MAX = 66; // 1/s cap (~fully open in one tick at a hard ram)
-export const GATE_GRAVITY = 22; // 1/s^2 on gatePos: gravity swinging the released arm shut
-export const GATE_CLOSE_MAX = 9; // 1/s: terminal swing speed as it falls closed
-export const GATE_PASS_FRAC = 0.4; // arm must be at least this lifted for an ARTIFACT to pass
+/**
+ * ...AND ITS RATE IS NOT A FEEL CONSTANT — it is set against the RAMP it meters.
+ *
+ * A tap on a resting column is a race between two times:
+ *   the arm's fall from fully open to the pass line   sqrt(2 * (1 - GATE_PASS_FRAC) / this)
+ *   the column's delivery of its next artifact        sqrt(2 * RAIL_PITCH / RAIL_ACCEL)
+ *
+ * The second DOUBLED when the ramp stopped running at a capped flow speed — RAIL_ACCEL 80 ->
+ * 25 moved it from 0.36s to 0.64s — and this was left at 6, a 0.45s fall. The arm was then
+ * always shut before the second artifact could arrive, and no knock can fix that: the first
+ * gap is covered by nothing at all. A tap was worth exactly what was already sitting at the
+ * gate, which is what "a tap only lets out one ball" is.
+ *
+ * At 4 the fall is 0.55s against that 0.64s — marginal, which is the whole point, and it has
+ * a ceiling as well as a floor. Take it to 2.9 and the fall matches the delivery: measured,
+ * the yield is then 9 out of 9 in every one of 50 tap conditions, i.e. the drain can no
+ * longer give out at all. Packed column, tap length -> artifacts drained, at 4: 0.10s 2 ·
+ * 0.15s 3 · 0.20s 5 · 0.25s 9. Loosen the column to +5in and a quick tap is worth 1 again,
+ * which is the situational answer this is supposed to have.
+ */
+/**
+ * ...AND IT IS NOT THE RAMP'S SLOPE. This was derived from RAIL_ACCEL, which reads as tidy
+ * and is a coupling between two unrelated things: how fast a chute delivers artifacts, and
+ * how fast a hinged arm falls. Steepening the chute then quietly sped the arm up by the same
+ * factor and undid the "stays open longer" work in one edit. The number below is the value
+ * that derivation produced at the ramp it was written against (RAIL_ACCEL 50), kept as its
+ * own constant so the two can be tuned for their own reasons.
+ */
+export const GATE_GRAVITY = 7.42; // 1/s^2 on gatePos — see above
+/**
+ * Terminal swing speed as the arm falls closed.
+ *
+ * This was 9/s, which the arm never got near — from fully open it reached 0 in 0.30s under
+ * GATE_GRAVITY alone, still accelerating the whole way. Two consequences, both wrong: it
+ * shut too fast, and because it never hit terminal the time went as the SQUARE ROOT of the
+ * starting height (1.00 -> 0.300s but 0.40 -> 0.183s, barely different for less than half
+ * the travel). Terminal-limited instead, so the time is very nearly proportional to how far
+ * open it was — "how fast it closes is determined by the initial position of the gate".
+ */
+/**
+ * ...AND IT IS SLOW, because a hinge is not frictionless and the paddle is not a point.
+ *
+ * 3.6 came from matching a free pendulum, which is the wrong model twice over: the arm
+ * carries a long paddle lying across the channel (its moment of inertia is the paddle's, not
+ * a bob's) and it swings on a real hinge with real friction. Both make the fall slower than
+ * gravity alone, and the drain is what pays for it being fast — "gate should stay open for
+ * longer in general (let out more balls)".
+ *
+ * At 2.0 the arm is passable for 0.48s after being released with nothing under it (0.30s
+ * before) and fully shut at 0.70s, and a tap on a packed column now drains all nine every
+ * time (worst 6, mean 8.8 -> worst 9, mean 9.0 across 30 taps). It still falls all the way
+ * shut, and what it comes to rest ON is unchanged, so a loose column still gives out.
+ */
+export const GATE_CLOSE_MAX = 2.0; // 1/s: terminal swing speed as it falls closed
 export const GATE_DISPLACE = 2; // in, real closed->open horizontal displacement (manual 9.8.3)
 /** the gate is a class-1 LEVER (manual Figure 9-15) hinged at the CLASSIFIER EDGE — where
  * the gate-zone tape starts (|x| = FIELD_HALF − CLASSIFIER_W = the classifier's field-side
@@ -665,7 +2539,7 @@ export const GATE_DISPLACE = 2; // in, real closed->open horizontal displacement
  * (`proj = len·cos(gatePos·GATE_LIFT)`); the long paddle greens as it clears the channel. */
 export const GATE_ARM_LONG = CLASSIFIER_W; // in, long paddle: pivot → wall edge (covers the 6in channel)
 export const GATE_ARM_SHORT = 2.5; // in, short handle poking past the field edge into the gate zone
-export const GATE_LIFT = 1.35; // rad (~77deg) the paddle swings up from closed to fully open
+
 /** the handle is a PHYSICAL one-way door: a solid robot collider spanning the SHORT arm's
  * (foreshortened) field-side reach, so a robot CANNOT strafe/drive through it — the only
  * way past is to OPEN it (a straight push, which lifts gatePos and RETRACTS the handle
@@ -675,6 +2549,31 @@ export const GATE_LIFT = 1.35; // rad (~77deg) the paddle swings up from closed 
  * paddle needs no collider — it lies over the already-solid classifier channel. Robot-solve
  * ONLY (not the ball solve): released artifacts still roll out beneath the lifted paddle. */
 export const GATE_ARM_THICK = 3; // in, physical thickness (y) of the handle collider
+/**
+ * How fast the gate HANDLE squares a robot up, as a fraction of a wall's rate.
+ *
+ * A wall is the field. The handle is a 2.5in hinged bar with a spring's worth of authority, and
+ * at the wall's rate it whipped a robot from 20 degrees to flush in 167ms — "the gate applies
+ * way too much torque way too fast". This scales the RATE only: which way it turns you and the
+ * cap that stops it stepping past flush are geometry and are untouched.
+ */
+export const GATE_ARM_TORQUE_MULT = 0.12; // ~1s from 20 degrees, against the wall's 0.17s
+/**
+ * ...AND IT STOPS BEING SOFT WHEN IT RUNS OUT OF TRAVEL.
+ *
+ * "If the gate is fully open, then that part acts like a wall essentially for collisions."
+ * That is not a special case, it is what a lever IS: while it can still swing, a push mostly
+ * moves the ARM, and only what the hinge refuses reaches the robot. At full lift there is no
+ * travel left to absorb anything, so the whole push lands — a rigid link, i.e. a wall.
+ *
+ * So the arm's authority runs from GATE_ARM_TORQUE_MULT (free to swing) to a wall's full rate
+ * (at its stop), linear in how far it is already lifted. The two complaints this sits between
+ * are both real: "the gate applies way too much torque way too fast" was a CLOSED arm hitting
+ * at the wall's rate, and "even if I hit it with a large impact it doesn't turn me" / "the
+ * chassis is barely turning" was an OPEN one still pretending to be a spring.
+ */
+export const gateArmTorqueMult = (gatePos: number): number =>
+  (globalThis as { __notorque?: boolean }).__notorque ? 0 : GATE_ARM_TORQUE_MULT + (1 - GATE_ARM_TORQUE_MULT) * Math.min(1, Math.max(0, gatePos));
 /** the gate does NOT open just because a robot LOITERS in the zone — the arm is a
  * push-to-open mechanism, so the robot must actively PRESS toward it. Detected as
  * a velocity toward the arm (ramming it) OR a drive command toward it (leaning on it
@@ -691,6 +2590,22 @@ export const GATE_ZONE = { xNear: 62, xFar: 72, y0: -2, y1: 3 };
  * without opening it, is a MAJOR) and the contact half of the push-to-open test.
  * Kept TIGHT around the actual lever handle (which pokes GATE_ARM_SHORT into the field,
  * centered on GATE_TAPE_Y): NOT a big loitering region — a robot must be against the arm. */
+/**
+ * How far a chassis must be PAST the handle's pivot, toward the wall, before the arm counts as
+ * overrun and stops being an obstacle to it (see `gateOverrun`).
+ *
+ * It is the handle's OWN LENGTH, and the reason is that a robot WORKING THE LEVER can never
+ * trip it: driving head-on at the stub, the stub is what stops you, so you never get past the
+ * pivot at all while the arm is down. Only a chassis that came in from the SIDE — nosed into
+ * the gate mouth over the floor below the channel, which is where you stand to collect the
+ * outflow — ends up with the pivot inside it, and that is the case with no way out.
+ *
+ * Swept. At half an inch it fires while the lever is still being worked and the drain stops
+ * dead, 0 of 9 artifacts out; the gate stops being a gate. The handle's own reach is the
+ * shortest threshold that leaves the mechanism intact.
+ */
+export const GATE_OVERRUN_SLOP = GATE_ARM_SHORT; // in
+
 export const GATE_ARM_REACH = 3; // in, field-side reach past the classifier edge (~ the handle)
 export const GATE_ARM_Y0 = -2; // mouth band edges, centered on the lever (GATE_TAPE_Y = 0.5)
 export const GATE_ARM_Y1 = 3;
@@ -702,13 +2617,54 @@ export const GATE_ARM_Y1 = 3;
 export const GATE_TAPE_W = 2.75; // spacing between the two lines (zone width)
 export const GATE_TAPE_LEN = 10; // line length, into the field from the wall
 export const GATE_TAPE_Y = (GATE_ZONE.y0 + GATE_ZONE.y1) / 2; // gate center y
+/**
+ * Where the classifier STRUCTURE ends — at the GATE, not past it.
+ *
+ * The ramp used to be modelled all the way down to `GATE_ZONE.y0`, about 3in beyond the
+ * gate line, so its side rails stuck out into the SECRET TUNNEL ZONE and a robot coming up
+ * the wall hit ramp instead of gate. Figure 9-16 (GATE Actuation) is a side elevation of
+ * exactly this: the structure ends at the pivot mount and only the LEVER extends past it.
+ * The zone definition says the same thing from the other side — the tunnel is "bounded by
+ * ... the GOAL assembly", so the assembly stops where the tunnel starts.
+ *
+ * The arm still protrudes (that is what a robot pushes), but it is a separate, retractable
+ * collider — `decodeGateArms` — not part of the ramp's footprint.
+ */
+export const CLASSIFIER_GATE_Y = GATE_TAPE_Y;
+/**
+ * WHERE THE CHANNEL ENDS AND THE OPEN FIELD BEGINS, in rail `s`.
+ *
+ * The classifier is a solid structure (`classifierRect`, y from CLASSIFIER_GATE_Y up), so a
+ * robot cannot be inside it and cannot reach an artifact that is. Above this `s` an artifact
+ * is IN the channel and untouchable; below it the rail runs on in the open, under the gate,
+ * toward the exit.
+ *
+ * `railBlock` used to walk the rail from RAIL_EXIT_S up to a ceiling taken from the ROBOT's
+ * own extents — as far as s = 6.5, well inside the channel. That is the single path a robot
+ * had to an artifact on the ramp, and it was both a block and a HAND-OFF: a robot with hopper
+ * room took artifacts straight off the rail into its hopper.
+ */
+export const RAIL_OPEN_S = CLASSIFIER_GATE_Y - CLASSIFIER_Y0;
+
 /** where released/overflow balls emerge onto the floor, on the goal's wall */
 export const TUNNEL_EXIT = { x: 68, y: -3 };
-/** gate-release exit velocity. Kept GENTLE (low `along`): a big forward push
- * plows the whole drain out in a straight conga line. With little momentum the
- * front balls stall on friction and the ones behind carom off them, so the
- * drain fans out across the floor instead of running linear. */
-export const TUNNEL_EXIT_VEL = { along: 22, inward: 8 }; // toward audience, off the wall
+/**
+ * THE RAMP DISCHARGES STRAIGHT DOWN ITS OWN LINE. This is the speed of the doorway nudge and
+ * nothing else — there is no direction left to configure.
+ *
+ * There used to be an `inward` term, an off-the-wall lean of 4 against 22, jittered per
+ * artifact into a 5-15 degree fan. Every artifact leaned the SAME WAY (the jitter varied the
+ * magnitude, never the sign), so the whole drain left on one diagonal and crossed the floor
+ * together: "all the balls keep coming out of the gate at the same angle". Widening or
+ * narrowing the fan only changes how wide that one diagonal is.
+ *
+ * The classifier channel runs down the wall and an artifact rolls off the END of it, so the
+ * direction it leaves in is the direction it was already going — straight down the tunnel,
+ * carrying the speed the ramp gave it. Nothing is synthesised. The SPREAD comes from where
+ * they pile up: artifacts carom off whichever ones stopped first, which is a real cause and
+ * fans them differently every time instead of identically every time.
+ */
+export const TUNNEL_EXIT_VEL = { along: 22 }; // in/s down-tunnel, toward the audience
 
 // ---------------------------------------------------------------- zones ----
 /** small audience-side launch zone: apex (0,-48), base 2 tiles on the wall */
@@ -829,31 +2785,50 @@ export const MAX_SAVED_AUTOS = 4;
  * fully custom builder. Picking a preset copies its BUILD only — the player's
  * name/team/number are their own. The first entry (TW) is the DEFAULT_SPEC build
  * a new player starts with. */
+/**
+ * ...AND THEY DRIVE ROBOT-CENTRIC. "All DECODE robot presets should be robot centric."
+ *
+ * The presets are real team BUILDS, and a real FTC team drives robot-centric — field-centric
+ * is the rarity, not the default. Every preset picked up the player default (all assists on,
+ * including field-centric) because none of them carried assists of their own, so choosing a
+ * build silently chose a drive frame with it.
+ *
+ * Only the FRAME is pinned. The rest is the player default, and the menu toggle still works —
+ * this decides what a preset LOADS as, not what the player is stuck with. The custom builder
+ * is untouched and still starts field-centric.
+ */
+const PRESET_ASSISTS = {
+  fieldCentric: false,
+  aimAssist: true,
+  autoIntake: true,
+  autoFire: true,
+} as const;
+
 export const ROBOT_PRESETS: readonly RobotSpec[] = [
   {
     name: 'TW', teamName: 'Turtle Walkers', teamNumber: 19745,
     length: 14.5, width: 16.5, intake: 'sloped', massLb: 23.5, drivetrain: 'mecanum',
-    driveRpm: 440, flywheelInertia: 0.7, canSort: false,
+    driveRpm: 440, flywheelInertia: 0.7, canSort: false, assists: PRESET_ASSISTS,
   },
   {
     name: 'Dugtrio', teamName: 'Blu Cru', teamNumber: 6417,
     length: 15, width: 18, intake: 'sloped', massLb: 36, drivetrain: 'tank',
-    driveRpm: 340, flywheelInertia: 0.9, canSort: false,
+    driveRpm: 340, flywheelInertia: 0.9, canSort: false, assists: PRESET_ASSISTS,
   },
   {
     name: 'Cypher', teamName: 'Seattle Solvers', teamNumber: 23511,
     length: 14, width: 14, intake: 'vector', massLb: 23.5, drivetrain: 'swerve',
-    driveRpm: 500, flywheelInertia: 0.1, canSort: false,
+    driveRpm: 500, flywheelInertia: 0.1, canSort: false, assists: PRESET_ASSISTS,
   },
   {
     name: 'Rohan', teamName: 'Exodus', teamNumber: 30030,
     length: 13, width: 17.5, intake: 'triangle', massLb: 34, drivetrain: 'mecanum',
-    driveRpm: 395, flywheelInertia: 0.8, canSort: false,
+    driveRpm: 395, flywheelInertia: 0.8, canSort: false, assists: PRESET_ASSISTS,
   },
   {
     name: 'Ditto', teamName: 'Galactic Narwhal Chicken Effect - Diamond', teamNumber: 22489,
     length: 14.5, width: 16, intake: 'vector', massLb: 28, drivetrain: 'mecanum',
-    driveRpm: 450, flywheelInertia: 0.9, canSort: false,
+    driveRpm: 450, flywheelInertia: 0.9, canSort: false, assists: PRESET_ASSISTS,
   },
 ] as const;
 

@@ -7,3 +7,7 @@ release/
 .env.*
 !.env.example
 .DS_Store
+.vercel
+
+# load-harness output (scripts/loadtest.ts --json); sweeps are evidence, not source
+.loadtest-out/

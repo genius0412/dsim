@@ -29,15 +29,40 @@ import {
   CHAIN_STORAGE_DEFAULT,
   CHAIN_STORAGE_MIN,
   chainStorageMax,
+  chainMassFloorBump,
+  CHAIN_CATALYST_TYPES,
+  CHAIN_DEFAULT_CATALYST,
+  CHAIN_DEFAULT_CATALYST_MOUNT,
+  CHAIN_CATAPULT_RANGE_MIN,
+  CHAIN_CATAPULT_RANGE_MAX,
+  CHAIN_CATAPULT_RANGE_DEFAULT,
+  CHAIN_CATAPULT_YAW_DEFAULT,
+  CHAIN_CATAPULT_YAW_STEP,
   CHAIN_DEFAULT_SCORE_MODE,
   CHAIN_DEFAULT_INTAKE,
   CHAIN_SCORE_MODES,
   CHAIN_INTAKE_STYLES,
-  CHAIN_MIN_LENGTH,
-  CHAIN_MAX_LENGTH,
+  chainSizeLimits,
+  chainMountFits,
 } from '../games/chain/config';
+import {
+  CHAIN_DEFAULT_INTAKE_MOUNT,
+  CHAIN_DEFAULT_SHOOTER_MOUNT,
+  CHAIN_DEFAULT_TURRET_POS,
+  CHAIN_CATALYST_MOUNTS,
+  CHAIN_RAIL_MOUNTS,
+  intakeMountOf,
+  SWING_MOUNTS,
+  isEdgePos,
+  isSwingMount,
+  isTurreted,
+  mountsClash,
+  railEdgeOf,
+  shooterEdgeOf,
+  shooterMountOf,
+} from '../games/chain/mounts';
 import { nextRandom, wrapAngle, rot, clamp } from '../math'; // Import wrapAngle
-import { lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
+import { butterflyTankRpmLimits, lengthLimits, massLimits, rpmLimits, widthLimits } from './drivetrain';
 import { heldSlotPos } from './physics';
 import { flywheelSpinTarget, loadPreStage, mirrorStartPose, snapStartToLegal, spikeMarkBalls, startPose } from './field';
 import { emptyScore } from './scoring';
@@ -66,8 +91,17 @@ export const DEFAULT_SPEC: RobotSpec = {
   groundClearance: CHAIN_CLEARANCE_DEFAULT,
   scoreMode: CHAIN_DEFAULT_SCORE_MODE,
   chainIntake: CHAIN_DEFAULT_INTAKE,
+  intakeMount: CHAIN_DEFAULT_INTAKE_MOUNT,
+  shooterMount: CHAIN_DEFAULT_TURRET_POS, // DEFAULT_SPEC is a TURRET, so this is a position
+  catalystType: CHAIN_DEFAULT_CATALYST,
+  catalystMount: CHAIN_DEFAULT_CATALYST_MOUNT,
+  catapultRange: CHAIN_CATAPULT_RANGE_DEFAULT,
+  catapultYaw: CHAIN_CATAPULT_YAW_DEFAULT,
+  // deprecated mirrors of the two mounts above (kept in sync by coerceSpec)
   intakeSide: false,
   shooterRear: false,
+  // driver assists ride the ROBOT (both games) — all ON by default. See PLAYER_ASSISTS.
+  assists: { fieldCentric: true, aimAssist: true, autoIntake: true, autoFire: true },
 };
 
 // Neutral sim/wire FALLBACK for assists (used by coercion bases, replay, server
@@ -80,22 +114,25 @@ export const DEFAULT_ASSISTS: AssistConfig = {
   autoFire: false,
 };
 
-// The player-facing DEFAULT assists, remembered PER DRIVETRAIN. Every drivetrain
-// defaults to robot-centric with all assists ON, EXCEPT swerve, which defaults
-// field-centric (its holonomic pods make field-relative driving the natural pick —
-// this is what makes the Cypher swerve preset field-centric out of the box).
-export function defaultAssistsFor(d: DrivetrainType): AssistConfig {
-  return { fieldCentric: d === 'swerve', aimAssist: true, autoIntake: true, autoFire: true };
-}
+/**
+ * The player-facing DEFAULT assists, and the default for `RobotSpec.assists` — EVERY assist
+ * is ON, including field-centric drive, for every drivetrain and BOTH games.
+ *
+ * Assists used to be remembered per DRIVETRAIN (with swerve alone defaulting field-centric);
+ * they are now saved ON THE ROBOT (`RobotSpec.assists`), so the memory is per-build and the
+ * per-drivetrain library is gone. Distinct from `DEFAULT_ASSISTS` above, which stays auto-OFF
+ * as the neutral sim/wire fallback for replay, dummies, and smoke.
+ */
+export const PLAYER_ASSISTS: AssistConfig = {
+  fieldCentric: true,
+  aimAssist: true,
+  autoIntake: true,
+  autoFire: true,
+};
 
-/** the full per-drivetrain assist library a fresh player starts with */
-export function defaultAssistsByDrivetrain(): Record<DrivetrainType, AssistConfig> {
-  return {
-    mecanum: defaultAssistsFor('mecanum'),
-    tank: defaultAssistsFor('tank'),
-    swerve: defaultAssistsFor('swerve'),
-    xdrive: defaultAssistsFor('xdrive'),
-  };
+/** the player default (kept as a function for call sites; no longer drivetrain-dependent) */
+export function defaultAssistsFor(_d?: DrivetrainType): AssistConfig {
+  return { ...PLAYER_ASSISTS };
 }
 
 // ---- untrusted-input sanitization -------------------------------------------
@@ -141,30 +178,77 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     sp.drivetrain === 'mecanum' ||
     sp.drivetrain === 'tank' ||
     sp.drivetrain === 'swerve' ||
-    sp.drivetrain === 'xdrive'
+    sp.drivetrain === 'xdrive' ||
+    sp.drivetrain === 'butterfly'
   ) {
     out.drivetrain = sp.drivetrain;
   }
 
-  // 1) SIZE: length from the intake preset, width floored per drivetrain. Chain Reaction runs
-  // its own length range (its sweeper doesn't eat into an 18" cube — see CHAIN_MAX_LENGTH).
+  // 1) SIZE: length from the intake preset, width floored per drivetrain (DECODE).
+  // CR sizes are bounded per BUILD: the sweeper is structure inside the 18" start cube, and
+  // its MOUNT decides which axis it eats (ends → length, flanks → width). Resolve the mount
+  // first — it is normalised further down, but the size clamp needs it now.
+  let preMount = intakeMountOf(
+    (sp.intakeMount !== undefined || sp.intakeSide !== undefined ? sp : base) as RobotSpec,
+  );
+  // a mount whose intake cannot fit the start cube is not a legal build — fall back to the
+  // single front sweeper rather than clamping to an oversized chassis
+  if (game === 'chain' && !chainMountFits({ ...out, intakeMount: preMount }, preMount)) preMount = 'front';
+  const crSize = chainSizeLimits({ ...out, intakeMount: preMount });
   const len =
     game === 'chain'
-      ? { min: CHAIN_MIN_LENGTH, max: CHAIN_MAX_LENGTH }
+      ? { min: crSize.minLength, max: crSize.maxLength }
       : lengthLimits(out.intake);
-  const wid = widthLimits(out.intake, out.drivetrain);
+  const wid =
+    game === 'chain'
+      ? { min: crSize.minWidth, max: crSize.maxWidth }
+      : widthLimits(out.intake, out.drivetrain);
   out.length = clampFinite(sp.length, len.min, len.max, base.length);
   out.width = clampFinite(sp.width, wid.min, wid.max, base.width);
 
-  // 2) DRIVETRAIN → rpm range
+  // 2) DRIVETRAIN → rpm range. BUTTERFLY has TWO geared wheel sets, so it has two
+  // sliders: `driveRpm` is its mecanum set (the shared field) and `tankRpm` its traction
+  // set, clamped to the torque-biased tank envelope. `tankRpm` is written for butterfly
+  // only and STRIPPED otherwise, so a spec that switches away can't smuggle a stale value
+  // back if it switches return — the same normalize-at-the-chokepoint rule the CR mounts use.
   const rpm = rpmLimits(out.drivetrain);
   out.driveRpm = clampFinite(sp.driveRpm, rpm.min, rpm.max, base.driveRpm);
+  if (out.drivetrain === 'butterfly') {
+    const tl = butterflyTankRpmLimits();
+    const rawTank = sp.tankRpm !== undefined ? sp.tankRpm : base.tankRpm;
+    out.tankRpm = clampFinite(rawTank, tl.min, tl.max, clamp(out.driveRpm, tl.min, tl.max));
+  } else {
+    delete out.tankRpm;
+  }
 
   // 3) INERTIA in 0..1
   out.flywheelInertia = clampFinite(sp.flywheelInertia, 0, 1, base.flywheelInertia);
 
-  // 4) MASS range from DRIVETRAIN × INERTIA (the floor rises with inertia)
-  const mass = massLimits(out.drivetrain, out.flywheelInertia);
+  // 4) MASS range from DRIVETRAIN × INERTIA (the floor rises with inertia), PLUS any
+  // heavy game mechanism. The CR scoring archetype is resolved just below for storage,
+  // so read it here from the raw/base input the same way — a twin turret carries a whole
+  // second flywheel assembly and cannot be built at the lightest weights.
+  const preMode = (CHAIN_SCORE_MODES as readonly string[]).includes(sp.scoreMode as string)
+    ? (sp.scoreMode as RobotSpec['scoreMode'])
+    : (base.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE);
+  const preCatalyst = (CHAIN_CATALYST_TYPES as readonly string[]).includes(sp.catalystType as string)
+    ? (sp.catalystType as RobotSpec['catalystType'])
+    : (base.catalystType ?? CHAIN_DEFAULT_CATALYST);
+  // the catapult's RANGE feeds its weight, so it has to be resolved before the mass clamp
+  // (it is written to `out` further down, in the catalyst block)
+  const preRange = clampFinite(
+    sp.catapultRange !== undefined ? sp.catapultRange : base.catapultRange,
+    CHAIN_CATAPULT_RANGE_MIN,
+    CHAIN_CATAPULT_RANGE_MAX,
+    CHAIN_CATAPULT_RANGE_DEFAULT,
+  );
+  const mass = massLimits(
+    out.drivetrain,
+    out.flywheelInertia,
+    game === 'chain'
+      ? chainMassFloorBump({ ...out, scoreMode: preMode, catalystType: preCatalyst, catapultRange: preRange })
+      : 0,
+  );
   out.massLb = clampFinite(sp.massLb, mass.min, mass.max, base.massLb);
 
   // Chain Reaction scoring archetype + intake design (enum checks, defaulted). Resolved
@@ -180,10 +264,163 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
   out.chassisColor = (C.CHASSIS_COLOR_KEYS as readonly string[]).includes(sp.chassisColor as string)
     ? (sp.chassisColor as string)
     : base.chassisColor;
-  out.shooterRear = typeof sp.shooterRear === 'boolean' ? sp.shooterRear : (base.shooterRear ?? false);
-  out.intakeSide = typeof sp.intakeSide === 'boolean' ? sp.intakeSide : (base.intakeSide ?? false);
+  // MECHANISM MOUNTS. Enum-checked, with the legacy `intakeSide`/`shooterRear` booleans as the
+  // fallback so old saves + older peers migrate (see games/chain/mounts.ts). `intakeMountOf`/
+  // `shooterMountOf` do exactly that resolution, so run them on the RAW input first, then fall
+  // back to the base spec's resolved mount when the raw value carried nothing at all.
+  const rawMounts = sp as Pick<RobotSpec, 'intakeMount' | 'intakeSide' | 'shooterMount' | 'shooterRear'>;
+  const hasIntakeMount = sp.intakeMount !== undefined || sp.intakeSide !== undefined;
+  const hasShooterMount = sp.shooterMount !== undefined || sp.shooterRear !== undefined;
+  // CATALYST mechanism: type + mount, enum-checked like the others. Resolved BEFORE the
+  // mass clamp above reads it? No — mass is clamped earlier, so the floor uses the RAW
+  // type via `preMode`'s sibling below; keep both in sync if a new heavy mechanism lands.
+  out.catalystType = (CHAIN_CATALYST_TYPES as readonly string[]).includes(sp.catalystType as string)
+    ? (sp.catalystType as RobotSpec['catalystType'])
+    : (base.catalystType ?? CHAIN_DEFAULT_CATALYST);
+  // 'frontback' is not in CHAIN_CATALYST_MOUNTS any more (it was the swing, not a place), but
+  // it still arrives from old saves and older clients — accept it here and migrate it below.
+  out.catalystMount =
+    (CHAIN_CATALYST_MOUNTS as readonly string[]).includes(sp.catalystMount as string) ||
+    sp.catalystMount === 'frontback'
+      ? (sp.catalystMount as RobotSpec['catalystMount'])
+      : (base.catalystMount ?? CHAIN_DEFAULT_CATALYST_MOUNT);
+  // the axis, accepting BOTH legacy shapes: the boolean this field briefly was (⇒ fore-aft,
+  // the only kind that existed then) and the `'frontback'` mount before that
+  out.catalystSwing =
+    sp.catalystSwing === true || sp.catalystSwing === 'fb'
+      ? 'fb'
+      : sp.catalystSwing === 'lr'
+        ? 'lr'
+        : sp.catalystSwing === false
+          ? undefined
+          : base.catalystSwing;
+  // CATAPULT build: range (in) and the fixed mounting yaw (deg, 15° steps). Only meaningful
+  // on the launcher, but kept on the spec unconditionally so switching mechanism back and
+  // forth doesn't silently discard the build.
+  out.catapultRange = Math.round(
+    clampFinite(
+      sp.catapultRange !== undefined ? sp.catapultRange : base.catapultRange,
+      CHAIN_CATAPULT_RANGE_MIN,
+      CHAIN_CATAPULT_RANGE_MAX,
+      CHAIN_CATAPULT_RANGE_DEFAULT,
+    ),
+  );
+  {
+    const rawYaw = sp.catapultYaw !== undefined ? sp.catapultYaw : base.catapultYaw;
+    const y = clampFinite(rawYaw, -180, 180, CHAIN_CATAPULT_YAW_DEFAULT);
+    out.catapultYaw = Math.round(y / CHAIN_CATAPULT_YAW_STEP) * CHAIN_CATAPULT_YAW_STEP;
+  }
+  out.intakeMount = game === 'chain' ? preMount : hasIntakeMount ? intakeMountOf(rawMounts) : intakeMountOf(base);
+  out.shooterMount = hasShooterMount ? shooterMountOf(rawMounts) : shooterMountOf(base);
+  // A TURRETLESS launcher fires along a LINE spanning a chassis SIDE, so a corner or centre
+  // mount is not something it can be built as — fold it to the nearest edge. A TURRET keeps any
+  // of the nine positions: it aims itself, so its mount is where it is BOLTED (and therefore
+  // where the Particle is born), not a facing. Resolved HERE, the one chokepoint, so a spec
+  // that changes archetype later can never keep a mount that archetype cannot have.
+  if (!isTurreted(out.scoreMode)) out.shooterMount = shooterEdgeOf({ shooterMount: out.shooterMount });
+
+  // MOUNTS ARE CHAIN-ONLY. They are the one CR field with a SHARED physics effect — the intake
+  // mount moves the collision footprint (`footprintExtents`), so a CR build's side sweeper
+  // leaking into DECODE would widen its flanks and delete its front intake reach. The builder
+  // only offers mounts for CR and `switchGame` keeps a per-game spec, but a spec can still
+  // arrive from a hand-edited store, a pre-loadouts save, or an untrusted client whose build
+  // doesn't match the room's game — so normalize here, the chokepoint every one of those passes.
+  // Only when the game is EXPLICITLY known and non-chain: `game` is optional on several call
+  // paths, and treating "unspecified" as DECODE would silently wipe a real CR build.
+  if (game !== undefined && game !== 'chain') {
+    out.intakeMount = CHAIN_DEFAULT_INTAKE_MOUNT;
+    out.shooterMount = CHAIN_DEFAULT_SHOOTER_MOUNT;
+  }
+  // MIRROR the deprecated booleans so a spec routed through an older peer/server (which drops
+  // the fields it doesn't know) round-trips to the nearest legal mount instead of resetting.
+  out.intakeSide = out.intakeMount === 'side';
+  out.shooterRear = out.shooterMount === 'back';
+
+  /**
+   * CATALYST PLACEMENT — resolved HERE, AFTER the per-game mount reset above.
+   *
+   * It depends on the SHOOTER mount, so it has to run once that is final. Running it any
+   * earlier is not just untidy, it breaks IDEMPOTENCY: a DECODE spec has its shooter mount
+   * reset to the default further down, so a first pass would place the catalyst against the
+   * raw mount and a second pass against the reset one, and coerceSpec runs at several layers.
+   *
+   * Two rules, both physical:
+   *  1. A RAIL's track spans a whole chassis SIDE, so it can only be bolted to one of the
+   *     four EDGES. A corner has no span to run along and the frontback swing is a different
+   *     mechanism. Folded like the turretless launcher's firing edge is folded.
+   *  2. NO TWO MECHANISMS SHARE A CELL. There is one piece of frame in a given spot and only
+   *     one thing can be mounted to it, so a catalyst is pushed off any cell the shooter or
+   *     the intake already occupies (`occupiedCells` handles the edge-spanning and frontback
+   *     cases, which take more than one cell each).
+   *
+   * Done at the chokepoint rather than in the builder so a spec that changes archetype,
+   * mount or intake later can never end up with two mechanisms in the same place — including
+   * one arriving from an older client that never knew the rule.
+   */
+  {
+    const railed = out.catalystType === 'rail';
+    /**
+     * THE SWING, resolved before anything else reads the mount.
+     *
+     * `'frontback'` was the old way of saying "a centre-pivot swing" — a MOUNT that was
+     * really a mechanism, which is why "a swing, on the right" could not be expressed. It is
+     * migrated here rather than at the call sites so every reader (sim, renderers, picker,
+     * the wire) sees one shape.
+     *
+     * Then two physical rules: a RAIL is a track, not a pivot, so it never swings; and a
+     * pivot needs a front and a back to swing between, so it lives on the centre line or a
+     * flank. An illegal pairing drops the SWING rather than moving the mount — the player
+     * chose where to bolt it, and silently relocating hardware is the thing this whole block
+     * exists to avoid.
+     */
+    if (out.catalystMount === ('frontback' as RobotSpec['catalystMount'])) {
+      out.catalystMount = 'center';
+      out.catalystSwing = 'fb';
+    }
+    // Only the ARM swings (a turret aims itself, a rail traverses), and a pivot only works
+    // where BOTH of its ends are reachable — which depends on the axis, so the mechanism and
+    // the position are checked together.
+    if (
+      out.catalystType !== 'arm' ||
+      (out.catalystSwing && !isSwingMount(out.catalystMount as string, out.catalystSwing))
+    ) {
+      out.catalystSwing = undefined;
+    }
+    // ...and the middle of a chassis reaches nothing without one, so a centre mount that is
+    // not a pivot falls to the front edge.
+    if (out.catalystMount === 'center' && !out.catalystSwing) out.catalystMount = 'front';
+    if (railed && !isEdgePos(out.catalystMount as string)) {
+      out.catalystMount = railEdgeOf(out.catalystMount as string);
+    }
+    // What the SHOOTER is sitting on. A turretless launcher fires along a line spanning its
+    // edge, so it takes that whole side; a turret is a single bolted cell.
+    //
+    // The INTAKE is deliberately NOT a blocker. A sweeper is a low roller at floor level and
+    // a claw arm reaches over it — real robots stack those two all the time — whereas the
+    // shooter and the catalyst both want the deck. Counting the sweeper would also make two
+    // of the shipped preset builds illegal (front+back sweepers plus a front/back swing claw),
+    // which is a strong hint the rule is about the deck rather than about the edge.
+    const blockers = [{ pos: out.shooterMount as string, spansEdge: !isTurreted(out.scoreMode) }];
+    const clashes = (m: string): boolean =>
+      blockers.some((b) => mountsClash({ pos: m, spansEdge: railed, swing: out.catalystSwing ?? null }, b));
+    if (clashes(out.catalystMount as string)) {
+      // The fallback set has to be places THIS mechanism can legally live, or the relocation
+      // silently produces a build the next pass has to fix again — which is exactly how this
+      // broke idempotency: a swing pushed onto a corner had its swing quietly dropped on the
+      // second pass, so coerceSpec(coerceSpec(x)) !== coerceSpec(x).
+      const options = railed
+        ? (CHAIN_RAIL_MOUNTS as readonly string[])
+        : out.catalystSwing
+          ? (SWING_MOUNTS[out.catalystSwing] as readonly string[])
+          : (CHAIN_CATALYST_MOUNTS as readonly string[]).filter((m) => m !== 'center');
+      const free = options.find((m) => !clashes(m));
+      // if EVERY position clashes the build is over-stuffed; leave the mount alone rather
+      // than inventing one, and let the builder's own warning explain it
+      if (free) out.catalystMount = free as RobotSpec['catalystMount'];
+    }
+  }
   // Chain Reaction ball storage — clamped to the archetype+size max (chainStorageMax). NOTE: the
-  // side-intake storage penalty depends on out.intakeSide, so it's resolved BEFORE this clamp.
+  // intake-mount storage penalty depends on out.intakeMount, so it's resolved BEFORE this clamp.
   out.ballStorage = Math.round(
     clampFinite(
       sp.ballStorage,
@@ -199,6 +436,11 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     CHAIN_CLEARANCE_MAX,
     base.groundClearance ?? CHAIN_CLEARANCE_DEFAULT,
   );
+
+  // DRIVER ASSISTS ride the robot (both games), every flag defaulting ON. Each flag is
+  // validated independently, so an old spec with no `assists` (or a partial one off the
+  // wire) fills from the base rather than being dropped.
+  out.assists = coerceAssists(sp.assists, base.assists ?? PLAYER_ASSISTS);
 
   // identity + flags (no cross-field dependency)
   if (typeof sp.canSort === 'boolean') out.canSort = sp.canSort;
@@ -218,6 +460,18 @@ export function coerceAssists(raw: unknown, base: AssistConfig = DEFAULT_ASSISTS
       if (typeof a[k] === 'boolean') out[k] = a[k];
     }
   }
+  // AIM ASSIST IS ALWAYS ON, in BOTH games — the menu toggle is gone, and this is what
+  // makes that true rather than merely unreachable. It has to be HERE, because a stored
+  // `false` can arrive from four directions: localStorage, a synced account blob, a saved
+  // robot slot (`coerceSpec` routes through this), and the wire. Forcing it only in the UI
+  // would leave anyone who had switched it off before the removal stuck on manual aim with
+  // no control to switch it back.
+  //
+  // The SIM still branches on `r.aimAssist` (the manual-aim turret path in robot.ts, and
+  // Chain's `chainAimAssist`), so the behaviour is intact and tested — tests set the flag
+  // on the spawned robot directly. Restoring the option is deleting this line and putting
+  // the toggle back in Menu.tsx.
+  out.aimAssist = true;
   return out;
 }
 
@@ -477,6 +731,12 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
       turretHeading: pose.heading,
       moduleAngles: [0, 0, 0, 0], // swerve pods (FL,FR,BL,BR) start pointing forward
       moduleTargets: [0, 0, 0, 0], // and their commanded targets
+      catalystRail: 0, // CR rail carriage (unused in DECODE)
+      // BUTTERFLY starts on its MECANUM set — a robot that begins holonomic can always
+      // drop traction, and it matches DRIVETRAIN_PRESETS.butterfly (the mecanum half).
+      butterflyTank: false,
+      driveModeHeld: false,
+      twinBarrel: false,
       hopper: nth === 0 ? [...C.PRELOAD] : [...C.HP_INITIAL_STOCK],
       fieldCentric: s.assists.fieldCentric,
       aimAssist: s.assists.aimAssist,
@@ -560,11 +820,19 @@ export function createWorld(mode: GameMode, seed: number, setups: RobotSetup[], 
     },
     events: [],
     rrContacts: [],
+    pinnedArtifacts: [],
     penalties: {
       episodes: {},
       pins: {},
       pinFouls: {},
       possession: {},
+      possessionBilled: {},
+      possessionRebill: {},
+      controlHeld: {},
+      ballHold: {},
+      ballAnchor: {},
+      controlInstances: {},
+      carded: {},
       gateCulprit: { red: null, blue: null },
       rampBallIds: { red: [], blue: [] },
     },

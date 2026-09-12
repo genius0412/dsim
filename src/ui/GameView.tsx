@@ -7,15 +7,18 @@ import {
   type EloResultRow,
 } from '../game';
 import { keyLabel, padButtonLabel } from '../input/bindings';
-import { appChannel } from '../net/env';
+import { appChannel, lanActive } from '../net/env';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
 import { AdSlot, ResultsAd, useAdUnitActive } from './AdSlot';
 import { DEFAULT_MOBILE_LAYOUT } from '../settings';
 import type { MatchResultInfo, NetSession, NetStatus } from '../net/session';
 import { clearActiveGame } from '../net/activeGame';
+import { ReportDialog } from './ReportDialog';
+import { ScoreReportDialog } from './ScoreReportDialog';
 import type { RecordRankInfo } from '../net/protocol';
-import type { Replay } from '../sim/replay';
+import type { Replay, ReplayResult } from '../sim/replay';
+import { CHAIN_MODE_LABELS } from '../games/chain/labels';
 import type { Alliance, DrivetrainType, ScoreBreakdown } from '../types';
 
 /** top-right connection-quality readout (multiplayer only): a coloured signal dot
@@ -35,8 +38,9 @@ function NetQuality({ net, open, onToggle }: { net: NetStatus; open: boolean; on
     `Connection: ${label.toLowerCase()}\n` +
     `Round-trip ping: ${ping} (you ↔ server)\n` +
     `Server updates: ${hz} (target 30)\n` +
-    `Jitter: ${jit} (unevenness - the main cause of choppiness)\n` +
-    `Click to ${open ? 'hide' : 'show'} the ping graph`;
+    // the four MEASUREMENTS only. That it opens a graph is already said by the 📈
+    // caret, the pointer cursor, role="button" and the `.active` border state.
+    `Jitter: ${jit} (unevenness - the main cause of choppiness)`;
   return (
     <span
       className={`chip net-quality clickable ${cls} ${open ? 'active' : ''}`}
@@ -119,7 +123,9 @@ function PowerGauge({ draw }: { draw: number }) {
     >
       <span className="pg-label">PWR</span>
       <span className="pg-bar">
-        <span className={`pg-fill ${cls}`} style={{ width: `${frac * 100}%` }} />
+        {/* the LEVEL, not a width: the fill is full-width and clipped to it, so the bar
+            animates without laying anything out — see .pg-fill */}
+        <span className={`pg-fill ${cls}`} style={{ ['--pg' as string]: String(frac) }} />
       </span>
       <span className="pg-num">{pct}%</span>
     </span>
@@ -131,6 +137,7 @@ const DT_LABEL: Record<DrivetrainType, string> = {
   tank: 'Tank',
   swerve: 'Swerve',
   xdrive: 'X-Drive',
+  butterfly: 'Butterfly',
 };
 
 /** count an integer from `from` to `target` over `duration` ms once `active` flips
@@ -163,8 +170,10 @@ interface Props {
   onExit: () => void;
   /** null in solo; a live lockstep session in multiplayer */
   session?: NetSession | null;
-  /** watch the just-played run's replay (server matches only) */
+  /** watch the just-played run's replay (a server match, or a solo practice run) */
   onWatchReplay?: (replay: Replay) => void;
+  /** a SOLO PRACTICE run just finished — the app keeps it (locally, and on the account) */
+  onPracticeRun?: (replay: Replay, result: ReplayResult) => void;
   /** whether the player is signed in — drives the record results "sign in to
    * save & rank" prompt vs the live PB / WR / rank line */
   signedIn?: boolean;
@@ -177,9 +186,10 @@ interface Props {
    * in place — an in-place reset desyncs against a server that is still running
    * the old match (that is what made the drivetrain stick/jitter before). */
   onRestartRun?: () => void;
-  /** CO-OP (duo record): restarting is a mutual vote rather than one driver's
-   *  decision. Drives the rematch control and the R binding's behaviour. */
-  coop?: boolean;
+  /** RANKED only: leave this room and go straight back into the queue. The
+   *  counterpart to the rematch vote — that plays the same people again, this
+   *  finds new ones. */
+  onQueueAgain?: () => void;
 }
 
 export function GameView({
@@ -187,11 +197,12 @@ export function GameView({
   onExit,
   session = null,
   onWatchReplay,
+  onPracticeRun,
   signedIn = false,
   onSettingsChange,
   editLayout = false,
   onRestartRun,
-  coop = false,
+  onQueueAgain,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controllerRef = useRef<GameController | null>(null);
@@ -243,6 +254,13 @@ export function GameView({
       window.clearInterval(clearTimer);
       if (perfTimer) window.clearInterval(perfTimer);
       window.removeEventListener('keydown', onKey);
+      // Check ONCE MORE on the way out. The poll above runs every 250ms, so leaving
+      // promptly after the final buzzer could beat it — and the cost of losing that race
+      // is Home still offering to rejoin a match that has already been decided.
+      if (session) {
+        const h = controller.getHud();
+        if (h && (h.phase === 'post' || h.net?.failed)) clearActiveGame();
+      }
       controller.dispose();
       controllerRef.current = null;
     };
@@ -255,8 +273,23 @@ export function GameView({
   // the screen isn't a record run, leaving the binding inert in a versus match.
   useEffect(() => {
     controllerRef.current?.setRestartRequest(onRestartRun ?? null);
-    controllerRef.current?.setCoop(coop);
-  }, [onRestartRun, coop]);
+  }, [onRestartRun]);
+
+  /**
+   * SOLO PRACTICE finishing is the only end-of-run event this client owns — every other mode
+   * is told by the server. Keeping the run is the app's job, so the controller just hands it
+   * over (see `keepPracticeRun` in App).
+   *
+   * Registered HERE, not in the mount effect, for the reason the restart binding above spells
+   * out: the mount effect captures the prop from the FIRST render, and this callback closes
+   * over `signedIn`, which starts false and flips when the auth session resolves ASYNCHRONOUSLY.
+   * A run finished after that would have been handed to a closure that still believed nobody
+   * was signed in, and the upload would never have been attempted at all.
+   */
+  useEffect(() => {
+    const c = controllerRef.current;
+    if (c) c.onPracticeRun = onPracticeRun ? (r, res) => onPracticeRun(r, res) : null;
+  }, [onPracticeRun]);
 
   // MOBILE zoom/select guard: iOS Safari ignores `user-scalable=no`, so a two-finger
   // pinch still zooms and a two-finger touch can pop the text-selection callout. Kill
@@ -328,6 +361,9 @@ export function GameView({
           game={hud?.game}
           layout={settings.mobileLayout}
           editing={editingLayout}
+          autoIntake={hud?.autoIntake ?? false}
+          autoFire={hud?.autoFire ?? false}
+          hasFling={hud?.catalystFling ?? false}
           onLayoutChange={(l) => onSettingsChange?.({ ...settings, mobileLayout: l })}
         />
       )}
@@ -351,14 +387,16 @@ export function GameView({
                 <p>The server may have restarted. Refresh the page to reconnect.</p>
                 <div className="overlay-buttons">
                   <button onClick={() => window.location.reload()}>REFRESH</button>
-                  <button onClick={onExit}>MENU</button>
+                  <button className="ghost" onClick={onExit}>
+                    MENU
+                  </button>
                 </div>
               </>
             ) : (
               <>
                 <div className="net-spinner" />
                 <h3>Reconnecting…</h3>
-                <p>Restoring your connection - your run keeps going.</p>
+                <p>Your run keeps going.</p>
               </>
             )}
           </div>
@@ -391,7 +429,7 @@ export function GameView({
             title={
               hud.rematch.mine
                 ? 'You want a rematch — press again to take it back'
-                : 'Vote to restart this run (both drivers must agree)'
+                : 'Vote to restart — everyone still connected has to agree'
             }
           >
             ⟲ REMATCH {hud.rematch.votes}/{hud.rematch.need}
@@ -400,7 +438,7 @@ export function GameView({
         {/* a SOLO record run is server-hosted, so RESET's local rebuild is unsafe
             here; this starts a whole fresh run instead (new room, new seed). */}
         {session && onRestartRun && !hud?.rematch?.need && (
-          <button className="game-btn" onClick={onRestartRun} title="Start a new run">
+          <button className="game-btn" onClick={onRestartRun}>
             ⟲ NEW RUN
           </button>
         )}
@@ -423,25 +461,25 @@ export function GameView({
                 {padButtonLabel(settings.bindings.pad.buttons.start[0] ?? 9)} to start
               </p>
             )}
+            {/* `.overlay-buttons`, not `.ds-cta`: every other button in every
+                `.overlay-panel` — including the net overlay's REFRESH/MENU a few
+                lines up — is that one, and `.ds-cta.ghost` grounds on `--ds-line`,
+                which is the wrong edge for a card floating on a dark scrim. */}
             {window.matchMedia('(pointer: coarse)').matches && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
-                <button
-                  className="ds-cta"
-                  onClick={() => controllerRef.current?.startMatch()}
-                >
-                  START MATCH
-                </button>
-                <button
-                  className="ds-cta ghost"
-                  onClick={onExit}
-                >
+              <div className="overlay-buttons stack">
+                <button onClick={() => controllerRef.current?.startMatch()}>START MATCH</button>
+                <button className="ghost" onClick={onExit}>
                   BACK TO MENU
                 </button>
               </div>
             )}
-            <p className="ds-hint">
-              Esc · menu &nbsp;·&nbsp; {keyLabel(settings.bindings.keys.restart[0] ?? '?')} · restart
-            </p>
+            {/* KEYBOARD ONLY. A phone has just been handed START MATCH and BACK TO
+                MENU precisely because it has no keys to press. */}
+            {!window.matchMedia('(pointer: coarse)').matches && (
+              <p className="ds-hint">
+                Esc · menu &nbsp;·&nbsp; {keyLabel(settings.bindings.keys.restart[0] ?? '?')} · restart
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -464,10 +502,31 @@ export function GameView({
           eloResults={controllerRef.current?.getEloResults() ?? null}
           canRematch={!session}
           onRematch={() => controllerRef.current?.rematch()}
-          coopRematch={hud.rematch && hud.rematch.need > 1 ? hud.rematch : null}
-          onCoopRematch={() => controllerRef.current?.toggleRematch()}
+          rematchVote={hud.rematch}
+          onQueueAgain={session?.ranked ? onQueueAgain : undefined}
+          onRematchVote={() => controllerRef.current?.toggleRematch()}
           onExit={onExit}
+          /* every OTHER driver in this match, by robot id + the name they played under.
+             Built from the session's own roster, so it is exactly the set the server will
+             accept a report for. */
+          reportable={
+            session && signedIn
+              ? session.setups
+                  .filter((su) => su.id !== session.localRobotId)
+                  .map((su) => ({ robotId: su.id, name: su.spec.name || `Driver ${su.id}` }))
+              : []
+          }
+          onReport={
+            session?.sendReport
+              ? (rid, reason, detail) => session.sendReport?.(rid, reason, detail)
+              : undefined
+          }
+          onReportScore={
+            session?.sendScoreReport ? (detail) => session.sendScoreReport?.(detail) : undefined
+          }
           matchResult={controllerRef.current?.getMatchResult() ?? null}
+          lanHost={!!session?.isHost()}
+          practiceRun={controllerRef.current?.getPracticeRun() ?? null}
           recordResult={controllerRef.current?.getRecordResult() ?? null}
           signedIn={signedIn}
           onWatchReplay={onWatchReplay}
@@ -600,12 +659,15 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
             )}
             {cr && hud.chain && (
               <>
-                <span className="chip">{hud.chain.mode.toUpperCase()}</span>
+                <span className="chip">{CHAIN_MODE_LABELS[hud.chain.mode].toUpperCase()}</span>
                 <span className="chip">HOPPER {hud.hopper.length}/{hud.chain.storage}</span>
                 <span className={`chip ${hud.chain.mult > 1 ? 'on' : ''}`}>×{hud.chain.mult}</span>
-                {hud.chain.carrying && <span className="chip on">◍ CARRYING RING</span>}
-                {hud.chain.ringAction === 'pickup' && <span className="chip prompt">◎ PICK UP RING ▸</span>}
-                {hud.chain.ringAction === 'place' && <span className="chip prompt">◎ PLACE RING ▸</span>}
+                {hud.chain.carrying && <span className="chip on">◍ CARRYING CATALYST</span>}
+                {hud.chain.ringAction === 'pickup' && <span className="chip prompt">◎ PICK UP CATALYST ▸</span>}
+                {hud.chain.ringAction === 'place' && <span className="chip prompt">◎ PLACE CATALYST ▸</span>}
+                {/* the catapult's throw is on its OWN key, so name it — otherwise the only
+                    discoverable action is the claw button, which just puts the ring down */}
+                {hud.chain.ringAction === 'fling' && <span className="chip prompt">◎ THROW CATALYST ▸</span>}
                 {hud.chain.endgame === 'ascended' && <span className="chip on">▲ ASCENDED</span>}
                 {hud.chain.endgame === 'parked' && <span className="chip on">■ PARKED</span>}
               </>
@@ -613,20 +675,42 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
             {!cr && hud.mode === 'match' &&
               (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
                 <span className="chip warn">
-                  FOULS {hud.fouls[hud.alliance].minor}m {hud.fouls[hud.alliance].major}M
+                  FOULS {hud.fouls[hud.alliance].minor} MIN · {hud.fouls[hud.alliance].major} MAJ
                 </span>
               )}
+            {/* A CARD is issued to the TEAM, and a RED voids the alliance's match points —
+                the single most consequential thing that can happen to a score, so it is not
+                allowed to live only in the event log. */}
+            {hud.card && (
+              <span className={`chip ${hud.card === 'red' ? 'bad' : 'warn'}`}>
+                {hud.card === 'red' ? '\u25A0 RED CARD' : '\u25A0 YELLOW CARD'}
+              </span>
+            )}
             {hud.frontFlipped && <span className="chip warn">REVERSED</span>}
+            {/* BUTTERFLY: name the set that is DOWN. It changes handling AND whether strafe
+                exists at all, so it can't be invisible state. */}
+            {hud.butterflyMode && (
+              <span className="chip">{hud.butterflyMode === 'tank' ? 'TRACTION' : 'MECANUM'}</span>
+            )}
             <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
+            {/* ALPHA ONLY (config.DEBUG_POSE_READOUT) — live pose, so a geometry report can
+                be an exact pose rather than a description. Must not reach main. */}
+            {hud.pose && (
+              <span
+                className="chip"
+                title="Robot pose — x, y (inches, origin at field centre), heading (degrees, 0 = +x / audience right), and the gate arm's open fraction"
+                style={{ fontVariantNumeric: 'tabular-nums' }}
+              >
+                {`x ${hud.pose.x.toFixed(1)}  y ${hud.pose.y.toFixed(1)}  ${(((hud.pose.heading % 360) + 360) % 360).toFixed(0)}°  gate ${hud.pose.gatePos.toFixed(2)}`}
+              </span>
+            )}
             {hud.net && (
               <span className={`chip ${hud.net.peers > 0 ? 'on' : 'warn'}`}>
                 NET {hud.net.peers + 1}P
               </span>
             )}
             {hud.net?.server && (
-              <span className="chip on" title={`This match is hosted on the ${hud.net.server} server`}>
-                🌐 {hud.net.server}
-              </span>
+              <span className="chip on">🌐 {hud.net.server}</span>
             )}
             {/* who is watching. Shown only when somebody IS: a standing "0 watching"
                 is noise on an already-busy chip row, and the moment worth surfacing
@@ -808,8 +892,15 @@ function EloResults({ rows }: { rows: EloResultRow[] | null }) {
  * Foul rows show the fouls each alliance COMMITTED (its own count) — the POINTS
  * for those go to the OPPONENT's total (see the footnote), so a foul always
  * benefits the fouled alliance. */
-/** the shared duo-record rematch control. Reads its pressed state from the SERVER
- *  tally rather than a local guess, so both drivers always see the same count. */
+/**
+ * The rematch control, in EVERY multiplayer mode — ranked, custom and record alike.
+ *
+ * It reads its pressed state from the SERVER tally rather than a local guess, so
+ * everyone in the room always sees the same count, and it is a VOTE: the match only
+ * restarts once every connected driver has pressed it. Declining costs nothing —
+ * you simply do not press — which is what makes "everyone agrees" a gate rather
+ * than a way to lean on somebody.
+ */
 function RematchVote({
   vote,
   onToggle,
@@ -832,13 +923,19 @@ function Results({
   eloResults,
   canRematch,
   onRematch,
-  coopRematch,
-  onCoopRematch,
+  rematchVote,
+  onRematchVote,
+  onQueueAgain,
   onExit,
   matchResult,
+  practiceRun,
   recordResult,
   signedIn,
+  lanHost,
   onWatchReplay,
+  reportable,
+  onReport,
+  onReportScore,
 }: {
   hud: HudSnapshot;
   /** performance.now() ms the whoosh fires — the reveal (count-up + winner slam)
@@ -851,16 +948,36 @@ function Results({
   canRematch: boolean;
   onRematch: () => void;
   /** duo-record co-op vote (null unless this run has one) */
-  coopRematch: { votes: number; need: number; mine: boolean } | null;
-  onCoopRematch: () => void;
+  rematchVote: { votes: number; need: number; mine: boolean } | null;
+  onRematchVote: () => void;
+  onQueueAgain?: () => void;
   onExit: () => void;
   matchResult: MatchResultInfo | null;
+  /**
+   * The finished SOLO PRACTICE run, kept apart from `matchResult` on purpose: that one is the
+   * SERVER's authoritative payload, and a locally produced stand-in would quietly claim this
+   * score was witnessed. Nothing witnessed it — that is what offline means — and the replay is
+   * offered on exactly those terms.
+   */
+  practiceRun: { replay: Replay; result: ReplayResult } | null;
   /** record run's leaderboard standing, or null until the server's recordResult
    * lands (or forever if anonymous) */
   recordResult: RecordRankInfo | null;
   signedIn: boolean;
+  /** on a LAN match, is THIS client the one hosting it? — decides which of the two LAN
+   *  lines the results screen shows, since only the host keeps the match */
+  lanHost?: boolean;
   onWatchReplay?: (replay: Replay) => void;
+  /** the OTHER drivers in this match, reportable by robot id (empty in solo) */
+  reportable?: { robotId: number; name: string }[];
+  /** send a report; absent in solo / on an older session */
+  onReport?: (robotId: number, reason: string, detail: string) => void;
+  /** file a MISSCORE claim about this match — see ScoreReportDialog */
+  onReportScore?: (detail: string) => void;
 }) {
+  const [reporting, setReporting] = useState(false);
+  const [scoreReporting, setScoreReporting] = useState(false);
+  const [scoreReported, setScoreReported] = useState(false);
   const red = hud.alliance === 'red' ? hud.score : hud.oppScore;
   const blue = hud.alliance === 'blue' ? hud.score : hud.oppScore;
   const winner: Alliance | 'tie' =
@@ -898,13 +1015,14 @@ function Results({
         netScore={netScore}
         netTotal={netTotal}
         revealed={revealed}
+        practiceRun={practiceRun}
         recordResult={recordResult}
         signedIn={signedIn}
         matchResult={matchResult}
         canRematch={canRematch}
         onRematch={onRematch}
-        coopRematch={coopRematch}
-        onCoopRematch={onCoopRematch}
+        rematchVote={rematchVote}
+        onRematchVote={onRematchVote}
         onExit={onExit}
         onWatchReplay={onWatchReplay}
       />
@@ -987,6 +1105,14 @@ function Results({
             <strong>{revealed ? blueTotal : '-'}</strong>
           </div>
         </div>
+        {/* A VOIDED total is 0 with a full breakdown above it, which reads as a bug unless
+            the reason is stated. Say it plainly, next to the score it explains. */}
+        {revealed && (red.voided || blue.voided) && (
+          <p className="results-void">
+            RED CARD — {red.voided && blue.voided ? 'both alliances have' : `${red.voided ? 'RED' : 'BLUE'} has`}{' '}
+            forfeited the match. Points earned are shown below but do not count.
+          </p>
+        )}
         {!revealed && <p className="ds-hint results-wait">Tallying the score…</p>}
         {revealed && (
           <>
@@ -1022,20 +1148,92 @@ function Results({
         </table>
         {ranked && <EloResults rows={eloResults} />}
         {matchResult && (
-          <p className="ds-hint" style={{ color: 'var(--ds-accent)' }}>
-            {matchResult.kind === 'record'
-              ? '✓ Recorded - sign in to save it to the leaderboard.'
-              : '✓ Match recorded.'}
+          <p className="ds-hint ok">
+            {/* A LAN MATCH WAS NOT RECORDED BY THE SERVER THAT RAN IT, and "✓ Match recorded."
+                is simply false there — a LAN box has no database. What actually happened
+                depends on which end of the room you are, so it says which: the HOST keeps it
+                (and their account gets it once they are online), and a guest keeps nothing. */}
+            {lanActive()
+              ? lanHost
+                ? signedIn
+                  ? '✓ Unofficial match — kept on this computer, and saved to your account when you’re online.'
+                  : '✓ Unofficial match — kept on this computer. Sign in to save it to your account.'
+                : '✓ Unofficial match. The host keeps the replay.'
+              : matchResult.kind === 'record'
+                ? '✓ Recorded - sign in to save it to the leaderboard.'
+                : '✓ Match recorded.'}
+          </p>
+        )}
+        {/* A practice run says what it IS. It was not on a leaderboard and never will be —
+            offline has no authority to put it there — so the copy promises only what happened:
+            the run is kept, and it is yours to watch. */}
+        {practiceRun && !matchResult && (
+          <p className="ds-hint ok">
+            {signedIn
+              ? '✓ Saved to your practice replays.'
+              : '✓ Saved on this device — sign in to keep it on your account.'}
           </p>
         )}
         <div className="overlay-buttons">
-          {matchResult && onWatchReplay && (
-            <button onClick={() => onWatchReplay(matchResult.replay)}>▶ WATCH REPLAY</button>
+          {(matchResult ?? practiceRun) && onWatchReplay && (
+            <button onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
+              ▶ WATCH REPLAY
+            </button>
           )}
           {canRematch && <button onClick={onRematch}>REMATCH</button>}
-          {coopRematch && <RematchVote vote={coopRematch} onToggle={onCoopRematch} />}
-          <button onClick={onExit}>MENU</button>
+          {rematchVote && <RematchVote vote={rematchVote} onToggle={onRematchVote} />}
+          {/* the OTHER thing you want after a ranked match. REMATCH beside it plays
+              the same people again; this finds new ones without going out to the
+              menu and back in through Play ▸ Ranked. */}
+          {onQueueAgain && <button onClick={onQueueAgain}>QUEUE AGAIN</button>}
+          {/* the EXIT, not a fourth primary: `.overlay-buttons button` is accent-filled
+              unless `.ghost`, so an unmarked MENU sat beside REMATCH and WATCH REPLAY
+              with nothing saying which one the screen expects. */}
+          <button className="ghost" onClick={onExit}>
+            MENU
+          </button>
         </div>
+        {/* REPORT is deliberately not in the button row. It is a rare, deliberate action and
+            the row is where REMATCH and MENU live — the two things every player reaches for
+            every match. A quiet link below keeps it available without putting it under a
+            thumb aiming for the exit. */}
+        {onReport && reportable && reportable.length > 0 && !reporting && (
+          <button className="ds-linkbtn results-report" onClick={() => setReporting(true)}>
+            ⚑ Report a player
+          </button>
+        )}
+        {/* ...and the SCORE itself. A separate action from reporting a player because it is a
+            separate claim: the score is the server's arithmetic, so a wrong one is nobody's
+            misconduct and asking the reporter to name a culprit would be asking them to
+            invent one. Only offered on a match that actually SCORED (a record run has its own
+            number and no opponent to dispute it with). */}
+        {onReportScore && matchResult && !scoreReporting && !scoreReported && (
+          <button className="ds-linkbtn results-report" onClick={() => setScoreReporting(true)}>
+            ⚖ Report a misscore
+          </button>
+        )}
+        {scoreReported && (
+          <p className="results-report-done">
+            Misscore reported — a moderator will check the replay.
+          </p>
+        )}
+        {scoreReporting && onReportScore && (
+          <ScoreReportDialog
+            onSubmit={(detail) => {
+              onReportScore(detail);
+              setScoreReported(true);
+              setScoreReporting(false);
+            }}
+            onClose={() => setScoreReporting(false)}
+          />
+        )}
+        {reporting && onReport && reportable && (
+          <ReportDialog
+            drivers={reportable}
+            onSubmit={(rid, reason, detail) => onReport(rid, reason, detail)}
+            onClose={() => setReporting(false)}
+          />
+        )}
         {/* AFTER the buttons, deliberately. The results screen is a good place
             for an ad — the match is over and the player is reading rather than
             driving — but REMATCH and MENU must stay the first things reachable,
@@ -1052,6 +1250,7 @@ function Results({
 const DRIVETRAIN_LABEL: Record<string, string> = {
   mecanum: 'Mecanum',
   xdrive: 'X-Drive',
+  butterfly: 'Butterfly',
   tank: 'Tank',
   swerve: 'Swerve',
   // sentinel for a mixed-drivetrain duo run (overall board only, no dt-specific)
@@ -1112,10 +1311,11 @@ function RecordResults({
   recordResult,
   signedIn,
   matchResult,
+  practiceRun,
   canRematch,
   onRematch,
-  coopRematch,
-  onCoopRematch,
+  rematchVote,
+  onRematchVote,
   onExit,
   onWatchReplay,
 }: {
@@ -1128,11 +1328,13 @@ function RecordResults({
   recordResult: RecordRankInfo | null;
   signedIn: boolean;
   matchResult: MatchResultInfo | null;
+  /** the finished SOLO PRACTICE run — see the note on the other results panel */
+  practiceRun: { replay: Replay; result: ReplayResult } | null;
   canRematch: boolean;
   onRematch: () => void;
   /** duo-record co-op vote (null unless this run has one) */
-  coopRematch: { votes: number; need: number; mine: boolean } | null;
-  onCoopRematch: () => void;
+  rematchVote: { votes: number; need: number; mine: boolean } | null;
+  onRematchVote: () => void;
   onExit: () => void;
   onWatchReplay?: (replay: Replay) => void;
 }) {
@@ -1205,13 +1407,15 @@ function RecordResults({
               </tbody>
             </table>
             <div className="overlay-buttons">
-              {matchResult && onWatchReplay && (
-                <button onClick={() => onWatchReplay(matchResult.replay)}>▶ WATCH REPLAY</button>
+              {(matchResult ?? practiceRun) && onWatchReplay && (
+                <button onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
+                  ▶ WATCH REPLAY
+                </button>
               )}
               {canRematch && <button onClick={onRematch}>RUN AGAIN</button>}
               {/* CO-OP: the run belongs to both drivers, so restarting is a vote —
                   the same control (and the same R binding) as mid-match. */}
-              {coopRematch && <RematchVote vote={coopRematch} onToggle={onCoopRematch} />}
+              {rematchVote && <RematchVote vote={rematchVote} onToggle={onRematchVote} />}
               <button onClick={onExit}>MENU</button>
             </div>
           </>

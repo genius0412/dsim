@@ -1,6 +1,7 @@
 import type {
   Alliance,
   ArtifactColor,
+  CardColor,
   ChainScoreMode,
   DrivetrainType,
   GameId,
@@ -18,9 +19,12 @@ import { DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
 import { moduleFor, gameOf } from './games';
 import type { GameModule } from './games';
 import { accelMultiplier as chainAccelMultiplier, type EndgameState } from './games/chain/state';
-import { chainHopperCap } from './games/chain/config';
+import { chainCatalystGeom, chainHopperCap } from './games/chain/config';
 import { chainCatalystPrompt } from './games/chain/play';
-import { startMatch, robotsEnabled } from './sim/match';
+import { beamRide } from './games/chain/beams';
+import { robotsEnabled } from './sim/match';
+import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from './sim/replay';
+import { practiceSaveDecision } from './replaySavePolicy';
 import { robotInLaunchZone } from './sim/robot';
 import { InputManager } from './input/input';
 import { Renderer } from './render/renderer';
@@ -47,6 +51,10 @@ const INTERP_DELAY_TICKS = 5; // render remotes ~5 ticks (~83ms) behind latest: 
 // extra tick of cushion over the old 4 so a single 30 Hz snapshot gap (33ms) no
 // longer drains the interpolation buffer and freezes/warps remotes (a stutter source)
 const INTERP_BUFFER = 8; // authoritative snapshots kept for interpolation
+// how fast the render clock converges on (latest - INTERP_DELAY_TICKS). Expressed as
+// a HALF-LIFE so the convergence is identical at 30/60/144/240 fps; 0.11s reproduces
+// what the old per-frame `* 0.1` did at exactly 60 fps, so 60 Hz feel is unchanged.
+const INTERP_EASE_HALFLIFE = 0.11; // s
 
 // PREDICTION LEAD CAP. During a snapshot stall (a ping spike / a dropped burst) the
 // client keeps predicting and buffering its own inputs. Without a bound, the input
@@ -79,6 +87,9 @@ export interface EloResultRow {
   isLocal: boolean;
   /** Glicko rating deviation after the game — high ⇒ provisional rating */
   provisional: boolean;
+  /** games on this board AFTER the match — the standings badge needs it to know
+   *  whether the player is still in placements (see src/ranks.ts) */
+  games: number;
 }
 
 /** one driver's pre-match intro card (ranked matches only) */
@@ -95,6 +106,9 @@ export interface IntroPlayer {
 }
 
 export interface HudSnapshot {
+  /** ALPHA ONLY (config.DEBUG_POSE_READOUT): live robot pose for reporting geometry.
+   * null when the flag is off. Must not reach main. */
+  pose: { x: number; y: number; heading: number; gatePos: number } | null;
   /** which game is being played — drives which score HUD GameView renders */
   game: GameId;
   /** Chain Reaction scoring readout (present only for CR) */
@@ -116,7 +130,7 @@ export interface HudSnapshot {
     /** your robot is carrying a catalyst */
     carrying: boolean;
     /** a catalyst action is available RIGHT NOW at your position (in range) */
-    ringAction: 'pickup' | 'place' | null;
+    ringAction: 'pickup' | 'place' | 'fling' | null;
     /** your robot's ball-storage capacity (the builder slider) */
     storage: number;
     /** your robot's scoring archetype (turret shooter / dumper) */
@@ -137,10 +151,20 @@ export interface HudSnapshot {
   provisionalPattern: number;
   /** fouls committed BY each alliance (counts, for the HUD chip) */
   fouls: Record<Alliance, { minor: number; major: number }>;
+  /** the CARD the local robot's team currently holds, or null. A card is issued to a TEAM
+   * and a RED voids its alliance's match points, so the driver has to be able to see it. */
+  card: CardColor | null;
+  /** ...and whether the local alliance's score has been VOIDED by a red card, which is
+   * what the score bar and the results screen have to say rather than a number. */
+  voided: boolean;
   fieldCentric: boolean;
   aimAssist: boolean;
   autoIntake: boolean;
   autoFire: boolean;
+  /** Chain Reaction: does the local robot's catalyst have a CATAPULT to throw with? The
+   * throw is its own action, so the touch pad only shows its button on a build that
+   * actually has one. False for DECODE and for claw-only catalysts. */
+  catalystFling: boolean;
   hopper: ArtifactColor[];
   /** local robot's current drive power draw (0..POWER_DRAW_MAX) — flywheel
    * spin-up + intake pulling current off the drive motors; shown as the HUD gauge */
@@ -149,6 +173,10 @@ export interface HudSnapshot {
   gamepadConnected: boolean;
   /** drive controls reversed so the shooter side leads (robot-centric only) */
   frontFlipped: boolean;
+  /** BUTTERFLY: which wheel set is on the floor ('tank' | 'mecanum'), or null for every
+   * other drivetrain (no chip). Drives the HUD readout — the swap changes how the robot
+   * handles AND whether strafe exists, so the driver has to be able to see it. */
+  butterflyMode: 'tank' | 'mecanum' | null;
   /** park mode active (speed capped to parkSpeedPct); only activatable in
    * endgame / free drive, per canPark() */
   parked: boolean;
@@ -196,8 +224,43 @@ export class GameController {
   /** performance.now() ms when the match entered phase 'post' (drives the
    * whoosh-synced results reveal); null until the match ends */
   private matchOverAt: number | null = null;
-  /** world.time when the pre-match countdown began (null = not started) */
-  private countdownStart: number | null = null;
+  /**
+   * SOLO PRACTICE IS RECORDED, so it has to be REPRODUCIBLE — which it was not.
+   *
+   * `replay.ts` states the invariant a replay depends on: a run is fully SIM-DRIVEN
+   * (preCountdown → auto → transition → teleop → post) so that no controller state leaks in
+   * and `{seed, setups, commands}` alone reproduce it. Solo practice broke exactly that: the
+   * countdown lived HERE (`countdownStart`, compared against `world.time`) and this controller
+   * called `startMatch()` itself, while `ReplayPlayer` sets `preCountdown` and lets the sim run
+   * it. The pre→auto tick therefore depended on when a key was pressed, which the container has
+   * nowhere to store — so a recording would have diverged from tick 0.
+   *
+   * Solo now takes the multiplayer path: starting REBUILDS the world at tick 0 (invisible —
+   * `robotsEnabled` is false in `pre`, so nothing has moved) with the SAME seed, and sets
+   * `preCountdown` for `stepMatch` to run down. The recorder then begins at a world
+   * `ReplayPlayer` can rebuild exactly.
+   */
+  private soloSeed = 0;
+  /** the setups the current solo world was built from — the recorder needs the same array */
+  private soloSetups: RobotSetup[] = [];
+  /** records the solo practice run in flight; null when not recording (free drive, or
+   *  multiplayer, where the SERVER owns the recording) */
+  private recorder: ReplayRecorder | null = null;
+  /**
+   * Ticks of the run in flight on which the robots were actually ENABLED — the length
+   * `src/replaySavePolicy.ts` judges an abandoned run by.
+   *
+   * Not the recorder's own tick count, and not wall time. The recorder opens at tick 0 of the
+   * rebuilt world, `PRE_COUNTDOWN` seconds before anybody may move, so recorded ticks would
+   * credit a run for a countdown nobody drove through; wall time would credit it for a paused
+   * tab. `ReplayRecorder.ticks` is private and stays that way — what the policy wants is not
+   * how long the log is, it is how long the driver drove.
+   */
+  private drivenTicks = 0;
+  /** the finished solo practice run, once the match reaches `post` */
+  private practice: { replay: Replay; result: ReplayResult } | null = null;
+  /** fired once when a solo practice run finishes, so the app can save + upload it */
+  onPracticeRun: ((replay: Replay, result: ReplayResult) => void) | null = null;
   private lastBeepAt = -1;
   private lastTransitionBeep = -1;
   private hudCountdown: number | null = null;
@@ -209,6 +272,7 @@ export class GameController {
   private prevFireAt: Record<number, number> = {};
   private prevIntakeAt: Record<number, number> = {};
   private prevGateOpen: Record<Alliance, boolean> = { red: false, blue: false };
+  private prevBeamOn: Record<number, number> = {}; // wheels-on-a-beam per robot (CR terrain SFX)
 
   /** which game this controller builds its INITIAL world for (solo: the player's
    * setting; networked: DECODE for now). Once running, the STEP/DRAW/HUD always
@@ -241,7 +305,6 @@ export class GameController {
    * which is what keeps the binding inert in a versus match. */
   private restartRequestCb: (() => void) | null = null;
   /** duo-record run: restarting is a mutual VOTE, never one driver's decision */
-  private coop = false;
   /** last vote count we played a cue for — a vote landing is the thing worth
    *  hearing, and only when the number actually moved */
   private lastRematchVotes = 0;
@@ -299,12 +362,12 @@ export class GameController {
     this.audio.voiceVolume = settings.audio.volume.voice;
     this.input = new InputManager(settings.bindings);
 
-    // Mobile Mode: enable assists by default if touch-capable
-    if (window.matchMedia('(pointer: coarse)').matches) {
-      this.settings.assists.aimAssist = true;
-      this.settings.assists.autoFire = true;
-      this.settings.assists.autoIntake = true;
-    }
+    // NO mobile assist override. A touch device used to have autoFire/autoIntake FORCED on
+    // here, which dates from before every assist defaulted on and before they lived on the
+    // robot — it silently threw away a preference the player had set. It also made the touch
+    // pad's INTAKE and SHOOT buttons unreachable, since those are hidden precisely when the
+    // robot is doing that job itself: a mobile player could never get either button back.
+    // Mobile still STARTS with the assists on, because everyone does (`PLAYER_ASSISTS`).
 
     this.world = this.makeWorld();
     this.prevPhase = this.world.match.phase;
@@ -351,7 +414,7 @@ export class GameController {
     return this.localRobot().alliance;
   }
 
-  private makeWorld(): World {
+  private makeWorld(reseed = true): World {
     // multiplayer: everyone builds the identical world the host authored and
     // runs a SIM-DRIVEN countdown (transition lives in stepMatch, so it fires
     // on the same tick for every peer — no controller-local start/seed)
@@ -361,7 +424,14 @@ export class GameController {
       w.match.preCountdown = C.PRE_COUNTDOWN;
       return w;
     }
-    const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
+    // REUSE the seed on a rebuild (`reseed: false`). Starting a solo practice match rebuilds
+    // the world so the recording begins at tick 0, and a new motif/ball layout appearing the
+    // instant you press START would be a visible change to a mode that just looks like it is
+    // waiting. `restart()` passes reseed: true, which is where a fresh field belongs.
+    const seed = reseed || !this.soloSeed
+      ? (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0
+      : this.soloSeed;
+    this.soloSeed = seed;
     const s = this.settings;
     const setups: RobotSetup[] = [
       {
@@ -382,9 +452,10 @@ export class GameController {
         id,
         alliance,
         spec: { ...DEFAULT_SPEC, name: `Dummy ${id}`, teamName: 'Practice', teamNumber: 0 },
-        // inert: aim assist OFF (no per-tick shot solve) + passive so the sim skips ALL
-        // their action compute — they only ever exist to be bumped into.
-        assists: { ...DEFAULT_ASSISTS, aimAssist: false, autoIntake: false, autoFire: false },
+        // inert: `passive` makes the sim skip ALL their action compute (turret solve,
+        // flywheel, fire, intake) — they only ever exist to be bumped into. Aim assist is
+        // no longer switchable (coerceAssists forces it on) and would be moot here anyway.
+        assists: { ...DEFAULT_ASSISTS, autoIntake: false, autoFire: false },
         startIndex,
         passive: true,
       });
@@ -395,6 +466,7 @@ export class GameController {
         dummy(3, opp, 1),
       );
     }
+    this.soloSetups = setups;
     return build(s.mode, seed, setups, this.settings);
   }
 
@@ -409,6 +481,13 @@ export class GameController {
       if (phase === 'transition') this.audio.play('end');
       if (phase === 'teleop' && this.prevPhase === 'transition') this.audio.play('resume');
       if (phase === 'post') {
+        // THE MATCH ENDING IS THE END OF THE RECORDING. Solo practice reaches `post` on its
+        // own (a real 2:30 match), so there is no session boundary to invent and the replay is
+        // bounded by the match itself — the same size as a record run's.
+        // It goes through the SAME policy call as every abandoned exit, even though a completed
+        // run is always kept: the point of `replaySavePolicy` is that ONE function answers
+        // "is this run worth keeping", and a path that decides for itself is a second answer.
+        this.harvestPracticeRun(true);
         this.audio.play('end');
         // record the moment the match ended so the results screen can hold its
         // score reveal until the whoosh lands (both use MATCH_RESULT_REVEAL_MS)
@@ -450,9 +529,12 @@ export class GameController {
   private seedActionAudio(): void {
     this.prevFireAt = {};
     this.prevIntakeAt = {};
+    this.prevBeamOn = {};
+    const chain = this.world.game === 'chain';
     for (const r of this.world.robots) {
       this.prevFireAt[r.id] = r.lastFireAt;
       this.prevIntakeAt[r.id] = r.lastIntakeAt;
+      this.prevBeamOn[r.id] = chain ? beamRide(r).onCount : 0;
     }
     this.prevGateOpen = {
       red: this.world.goals.red.gateOpen,
@@ -472,7 +554,7 @@ export class GameController {
    * dropping back is exactly the thing you would otherwise miss.
    */
   private handleRematchAudio(): void {
-    const v = this.coop ? this.session?.rematchVote?.() : null;
+    const v = this.rematchTally();
     const n = v?.votes ?? 0;
     if (n === this.lastRematchVotes) return;
     const rose = n > this.lastRematchVotes;
@@ -481,6 +563,7 @@ export class GameController {
   }
 
   private handleActionAudio(): void {
+    const chain = this.world.game === 'chain';
     for (const r of this.world.robots) {
       if (r.lastFireAt !== this.prevFireAt[r.id]) {
         this.prevFireAt[r.id] = r.lastFireAt;
@@ -490,6 +573,12 @@ export class GameController {
         this.prevIntakeAt[r.id] = r.lastIntakeAt;
         this.audio.sfxIntake();
       }
+      // CR terrain: a "thunk" whenever a wheel newly mounts a beam (rising edge of the count)
+      if (chain) {
+        const on = beamRide(r).onCount;
+        if (on > (this.prevBeamOn[r.id] ?? 0)) this.audio.sfxBeam();
+        this.prevBeamOn[r.id] = on;
+      }
     }
     for (const a of ['red', 'blue'] as Alliance[]) {
       const open = this.world.goals[a].gateOpen;
@@ -498,28 +587,15 @@ export class GameController {
     }
   }
 
-  /** announcer: "Match begins in 3, 2, 1". Multiplayer mirrors the deterministic
-   * sim countdown (world.match.preCountdown); solo runs off a keypress. */
+  /** announcer: "Match begins in 3, 2, 1". ONE path now — the SIM owns the countdown and the
+   *  pre→auto transition in every mode, and this only voices it (audio is non-authoritative).
+   *  Solo used to run its own off a keypress, which is what made a solo run unrecordable; see
+   *  `soloSeed`. */
   private updateCountdown(): number | null {
     if (this.world.match.phase !== 'pre') return null;
-
-    // multiplayer: the sim owns the countdown + the pre→auto transition; the
-    // controller only voices/announces it (audio is non-authoritative)
-    if (this.session) {
-      const left = this.world.match.preCountdown;
-      if (left == null) return null;
-      return this.voiceCountdown(left);
-    }
-
-    // solo: controller-driven, transitions the match itself
-    if (this.countdownStart === null) return null;
-    const remaining = C.PRE_COUNTDOWN - (this.world.time - this.countdownStart);
-    if (remaining <= 0) {
-      this.countdownStart = null;
-      startMatch(this.world);
-      return null;
-    }
-    return this.voiceCountdown(remaining);
+    const left = this.world.match.preCountdown;
+    if (left == null) return null;
+    return this.voiceCountdown(left);
   }
 
   /** shared: emit the spoken count on each new digit, return the HUD value */
@@ -574,7 +650,14 @@ export class GameController {
     // The sim's tank branch then always reads leftDrive/rightDrive, so the choice
     // works identically in solo and multiplayer (the server never sees these
     // settings). Runs after flip/park so both still apply in Normal tank.
-    if (this.localRobot().spec.drivetrain === 'tank' && this.settings.tankControlMode === 'normal') {
+    // A BUTTERFLY that currently has its traction set down drives as a tank, so it takes
+    // the same control-style resolution — otherwise swapping wheel sets mid-match would
+    // silently stop responding (the sim's tank branch reads ONLY leftDrive/rightDrive,
+    // which nothing would have been filling).
+    const lr = this.localRobot();
+    const drivingTank =
+      lr.spec.drivetrain === 'tank' || (lr.spec.drivetrain === 'butterfly' && lr.butterflyTank);
+    if (drivingTank && this.settings.tankControlMode === 'normal') {
       cmd.leftDrive = clamp(cmd.driveY - cmd.rotate, -1, 1);
       cmd.rightDrive = clamp(cmd.driveY + cmd.rotate, -1, 1);
     }
@@ -663,20 +746,32 @@ export class GameController {
 
   /** solo stepping: local keypress start/restart, one local command per tick */
   private stepSolo(cmd: RobotCommand): void {
-    if (
-      this.input.startPressed &&
-      this.world.match.phase === 'pre' &&
-      this.countdownStart === null
-    ) {
-      this.countdownStart = this.world.time;
-      this.lastBeepAt = -1;
-    }
+    if (this.input.startPressed) this.startMatch();
     if (this.input.restartPressed) this.restart();
 
+    /**
+     * STEP ON WHAT THE RECORDER STORES, not on the raw stick.
+     *
+     * A replay stores QUANTIZED commands (the same lattice the wire uses), so a run only
+     * re-simulates exactly if the sim consumed the quantized value in the first place — which
+     * is why `runRecordMatch` localizes before stepping and why the netcode contract makes the
+     * client predict on `localizeCommand`. Solo stepped on the raw command, so recording it
+     * would have drifted from playback by the rounding, every tick.
+     *
+     * It is applied UNCONDITIONALLY rather than only while recording: solo practice must not
+     * feel like two different games depending on whether a replay is being kept, and this is
+     * the same rounding every online match already runs on.
+     */
+    const local = localizeCommand(cmd);
     let steps = 0;
-    const commands = new Map<number, RobotCommand>([[this.localRobotId, cmd]]);
+    const commands = new Map<number, RobotCommand>([[this.localRobotId, local]]);
     while (this.acc >= C.SIM_DT && steps < C.MAX_STEPS_PER_FRAME) {
       this.mod.step(this.world, C.SIM_DT, commands);
+      this.recorder?.record(this.world.tick, commands);
+      // counted HERE, beside the record call, because it must measure exactly the ticks that
+      // went into the log — and only the ones the sim let the robot move on (`pre` and
+      // `transition` are recorded but undrivable).
+      if (this.recorder && robotsEnabled(this.world)) this.drivenTicks++;
       this.acc -= C.SIM_DT;
       steps++;
     }
@@ -703,12 +798,32 @@ export class GameController {
     //    run down unilaterally — the run belongs to both people — so it never
     //    returns early here; the match keeps stepping while the vote sits.
     //  - SOLO record: ask the UI for a whole new run (a fresh room).
-    if (this.input.restartPressed && this.coop) {
-      const v = this.session?.rematchVote?.();
-      this.session?.setRematch?.(!(v?.mine ?? false));
+    if (this.input.restartPressed && this.rematchTally()) {
+      this.toggleRematch();
     } else if (this.input.restartPressed && this.restartRequestCb) {
       this.restartRequestCb();
       return; // the session is going away this frame; don't predict into it
+    }
+
+    /**
+     * A DEAD SESSION MUST NOT KEEP SIMULATING.
+     *
+     * Prediction is a guess at what the server will confirm, so once the server is gone
+     * there is nothing left to guess — and continuing produces something worse than a
+     * frozen screen: a fully playable single-player match. Remote robots never receive a
+     * command, so they sit at their spawn poses while the local robot drives around a world
+     * nobody is scoring. That is exactly what a failed REJOIN looked like — tapping "rejoin"
+     * on a match that had already ended dropped the player into what read as an offline
+     * practice field, for as long as they cared to drive.
+     *
+     * The lead cap below cannot catch this: it is gated on `gotSnapshot`, which is false
+     * precisely when no snapshot ever arrived, so a session that never connected had no
+     * bound at all on how far it would predict. Freeze instead, and let the HUD's
+     * connection-lost panel be the whole story.
+     */
+    if (s.status().failed) {
+      this.acc = 0;
+      return;
     }
 
     // reconcile to the freshest server snapshot BEFORE predicting this frame
@@ -802,11 +917,17 @@ export class GameController {
     }
 
     // advance the interpolation clock at real-time rate, then gently pull it toward
-    // (latest - delay) to absorb clock drift + snapshot jitter; clamp to the buffer
+    // (latest - delay) to absorb clock drift + snapshot jitter; clamp to the buffer.
+    // The pull is a HALF-LIFE, not a per-frame fraction: a bare `* 0.1` each frame
+    // converges at a rate that scales with the player's FPS, so the same network fed
+    // a 144 Hz machine a clock yanked ~2.4x harder than a 60 Hz one — it chased jitter
+    // instead of absorbing it, and high-refresh players saw MORE remote stutter than
+    // everyone else on the identical connection. Matches SMOOTH_HALFLIFE's convention.
     const latest = buf[buf.length - 1].tick;
     const oldest = buf[0].tick;
-    this.renderTick += Math.min(dtMs / 1000, 0.1) / C.SIM_DT;
-    this.renderTick += (latest - INTERP_DELAY_TICKS - this.renderTick) * 0.1;
+    const dtSec = Math.min(dtMs / 1000, 0.1);
+    this.renderTick += dtSec / C.SIM_DT;
+    this.renderTick += (latest - INTERP_DELAY_TICKS - this.renderTick) * (1 - Math.pow(2, -dtSec / INTERP_EASE_HALFLIFE));
     this.renderTick = Math.max(oldest, Math.min(this.renderTick, latest));
 
     // find the pair of snapshots bracketing the render clock
@@ -912,7 +1033,6 @@ export class GameController {
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
     this.matchOverAt = null;
-    this.countdownStart = null;
     this.hudCountdown = null;
     this.frontFlipped = false;
     this.parked = false;
@@ -936,10 +1056,21 @@ export class GameController {
     this.restartRequestCb = cb;
   }
 
-  /** mark this as a CO-OP run, where restarting is a vote rather than a command.
-   *  Set by the UI from the room config; the controller has no other way to know. */
-  setCoop(on: boolean): void {
-    this.coop = on;
+  /**
+   * The rematch tally, or null when no vote is in play here.
+   *
+   * `need <= 1` is the same as no vote: a solo record run is one driver, and asking
+   * one person to agree with themselves is a button, not a ballot — that run keeps
+   * its ⟲ NEW RUN control instead. Everything else (versus, ranked, custom, duo
+   * record) has two or more drivers and votes.
+   *
+   * This used to be a `coop` flag the UI had to SET on the controller. It no longer
+   * needs to: the server already broadcasts `need`, which answers the same question
+   * without anyone having to remember to pass it.
+   */
+  private rematchTally(): { votes: number; need: number; mine: boolean } | null {
+    const v = this.session?.rematchVote?.() ?? null;
+    return v && v.need > 1 ? v : null;
   }
 
   /** toggle our rematch vote (the on-screen button; the R binding does the same) */
@@ -948,12 +1079,27 @@ export class GameController {
     this.session?.setRematch?.(!(v?.mine ?? false));
   }
 
-  /** trigger the pre-match countdown (e.g. from a UI button) */
+  /**
+   * Trigger the pre-match countdown (the START key, or a UI button).
+   *
+   * Solo only — in multiplayer the HOST starts the room and the sim countdown arrives with the
+   * authoritative world. It REBUILDS the world before starting, which is what lets the run be
+   * recorded: the recording then begins at tick 0 of a world `ReplayPlayer` can reconstruct
+   * from `{seed, setups}` alone. The rebuild is invisible — `robotsEnabled` is false in `pre`
+   * so nothing has moved, and the seed is reused so the motif and the field are unchanged.
+   */
   startMatch(): void {
-    if (this.world.match.phase === 'pre' && this.countdownStart === null) {
-      this.countdownStart = this.world.time;
-      this.lastBeepAt = -1;
-    }
+    if (this.session) return; // the room's host owns the start
+    if (this.world.match.phase !== 'pre') return;
+    if (this.world.match.preCountdown != null) return; // already counting down
+    this.world = this.makeWorld(false);
+    this.world.match.preCountdown = C.PRE_COUNTDOWN;
+    this.prevPhase = this.world.match.phase;
+    this.practice = null;
+    // free drive never reaches `pre`, so this is a solo PRACTICE match by construction
+    this.recorder = new ReplayRecorder(this.soloSeed, this.soloSetups, 'match', this.gameId);
+    this.drivenTicks = 0;
+    this.lastBeepAt = -1;
   }
 
   /** restart with the same settings (new random seed / motif) */
@@ -962,12 +1108,21 @@ export class GameController {
     if (this.world.match.phase === 'auto' || this.world.match.phase === 'teleop') {
       this.audio.play('abort');
     }
+    // BEFORE the rebuild, both because the run is scored against the world it happened in and
+    // because `makeWorld` is the moment it becomes unrecoverable.
+    this.harvestPracticeRun(false);
     this.world = this.makeWorld();
     this.prevPhase = this.world.match.phase;
     this.warningPlayed = false;
     this.matchOverAt = null;
-    this.countdownStart = null;
     this.hudCountdown = null;
+    // `harvestPracticeRun` above has already closed the recorder and either kept the run or
+    // dropped it; these clear whatever it left, so the next `startMatch` opens a fresh recorder
+    // on the rebuilt world. A RESTART is still not a replay of a MATCH — it is now a replay of
+    // the DRIVING, which is what a practice replay was always for (see `replaySavePolicy`).
+    this.recorder = null;
+    this.practice = null;
+    this.drivenTicks = 0;
     this.frontFlipped = false;
     this.parked = false;
     this.seedActionAudio();
@@ -991,6 +1146,19 @@ export class GameController {
    * or null in solo / before phase 'post' */
   getMatchResult(): MatchResultInfo | null {
     return this.session?.getMatchResult() ?? null;
+  }
+
+  /**
+   * The finished SOLO PRACTICE run, or null (mid-match, free drive, or multiplayer).
+   *
+   * Deliberately NOT folded into `getMatchResult`. That is documented as the SERVER's
+   * authoritative end-of-match payload, and a locally produced one would be a claim this
+   * client is in no position to make — a practice run is exactly the thing nothing
+   * authoritative counted. Keeping them apart is what lets the results screen offer the replay
+   * without ever implying the score was witnessed.
+   */
+  getPracticeRun(): { replay: Replay; result: ReplayResult } | null {
+    return this.practice;
   }
 
   /** a record run's leaderboard standing (PB / WR / rank), or null until the
@@ -1033,6 +1201,7 @@ export class GameController {
         after: d.after,
         isLocal: d.robotId === this.localRobotId,
         provisional: d.games < C.PLACEMENT_GAMES, // still in placements (games-based)
+        games: d.games,
       };
     });
     return rows.sort((a, b) => (a.alliance === b.alliance ? 0 : a.alliance === 'red' ? -1 : 1));
@@ -1077,15 +1246,20 @@ export class GameController {
       oppScore: w.match.scores[opp],
       provisionalPattern: w.match.provisionalPattern[a],
       fouls: { red: { ...w.match.fouls.red }, blue: { ...w.match.fouls.blue } },
+      card: w.penalties.carded[r.id] ?? null,
+      voided: w.match.scores[a].voided ?? false,
       fieldCentric: r.fieldCentric,
       aimAssist: r.aimAssist,
       autoIntake: r.autoIntake,
       autoFire: r.autoFire,
+      catalystFling: w.game === 'chain' && chainCatalystGeom(r.spec).fling,
       hopper: [...r.hopper],
       powerDraw: r.powerDraw,
       inLaunchZone: w.mode === 'free' || robotInLaunchZone(r),
       gamepadConnected: this.input.gamepadConnected,
       frontFlipped: this.frontFlipped,
+      butterflyMode:
+        r.spec.drivetrain === 'butterfly' ? (r.butterflyTank ? 'tank' : 'mecanum') : null,
       parked: this.parked,
       canPark: this.canPark(),
       gateOpen: goal.gateOpen,
@@ -1100,14 +1274,56 @@ export class GameController {
           ? this.matchOverAt + C.MATCH_RESULT_REVEAL_MS
           : null,
       toasts: [...this.toasts],
+      // ALPHA ONLY (DEBUG_POSE_READOUT) — see config
+      pose: C.DEBUG_POSE_READOUT
+        ? { x: r.pos.x, y: r.pos.y, heading: (r.heading * 180) / Math.PI, gatePos: goal.gatePos }
+        : null,
       net: this.session ? this.session.status() : null,
       spectators: this.session?.spectatorCount?.() ?? 0,
-      rematch: this.coop ? (this.session?.rematchVote?.() ?? null) : null,
+      rematch: this.rematchTally(),
     };
+  }
+
+  /**
+   * CLOSE THE RUN IN FLIGHT AND KEEP IT IF `replaySavePolicy` SAYS SO.
+   *
+   * The one place a practice recording ends. Every exit from a solo run routes here — the match
+   * reaching `post`, a RESET/REMATCH, and leaving the screen — so the question "was that worth
+   * keeping" is answered once, by a module with no DOM and no controller state, instead of
+   * being re-decided at each call site. That is the replay save policy this was asked for.
+   *
+   * `completed` is not a synonym for "keep": it is the FACT the policy is handed, and the
+   * policy decides. Today a completed run is always kept and an abandoned one needs
+   * `PRACTICE_SAVE_MIN_S` of driving; changing either is one line there and none here.
+   *
+   * `this.practice` is set ONLY for a completed run, because that is what `getPracticeRun()`
+   * feeds the RESULTS SCREEN, and an abandoned run has no results screen to appear on — the
+   * caller either rebuilds the world immediately or is unmounting. The SAVE happens through
+   * `onPracticeRun` either way, and that is the path that writes the device and queues the
+   * upload.
+   */
+  private harvestPracticeRun(completed: boolean): void {
+    const recorder = this.recorder;
+    if (!recorder) return;
+    // closed before the branch: kept or not, the run is over, and a recorder left open would
+    // keep appending to a run whose world is about to be thrown away.
+    this.recorder = null;
+    const replay = recorder.finish();
+    const decision = practiceSaveDecision({ drivenTicks: this.drivenTicks, completed });
+    this.drivenTicks = 0;
+    if (!decision.keep) return;
+    const kept = { replay, result: worldResult(this.world) };
+    if (completed) this.practice = kept;
+    this.onPracticeRun?.(kept.replay, kept.result);
   }
 
   dispose(): void {
     this.disposed = true;
+    // LEAVING THE SCREEN USED TO LOSE THE RUN SILENTLY — `dispose` never touched the recorder
+    // at all, so a driver who practised for a minute and hit MENU had nothing to show for it.
+    // Safe during an unmount: `onPracticeRun` writes localStorage and queues an upload, and
+    // sets no React state (see `keepPracticeRun` in `src/ui/App.tsx`).
+    this.harvestPracticeRun(false);
     this.audio.stopSpeech();
     this.audio.stopKeepAlive();
     cancelAnimationFrame(this.raf);

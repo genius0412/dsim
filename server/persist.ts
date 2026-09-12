@@ -1,17 +1,37 @@
 import { dbEnabled } from './db/pool';
 import {
+  addActivity,
   currentSeasonNumber,
   ensureProfile,
   ensureSeason,
   personalBest,
+  recentStandingCount,
   recordRank,
   saveReplay,
   submitRecord,
 } from './db/repo';
+import { STANDING_COST } from '../src/standing';
+import { chargeStanding, creditCleanMatch } from './standing';
 import { persistVersusMatch } from './ranked';
+import { scrubName } from './moderation';
 import { recordScore } from '../src/sim/replay';
 import { simModuleFor } from '../src/games/sim';
-import type { MatchOutcome, PersistOutcome } from './room';
+import { DEFAULT_SPEC } from '../src/sim/spawn';
+import type { RobotSpec } from '../src/types';
+import type { BehaviourReport, DodgeReport, MatchOutcome, PersistOutcome } from './room';
+import { type DodgeVerdict } from '../src/dodge';
+import { WINDOW_HOURS } from '../src/standing';
+import * as C from '../src/config';
+
+/** Copy a spec with its public free-text names run through hosted moderation. The
+ *  robot/team name land in `records.config` (a public leaderboard card), so a flagged
+ *  one is replaced with the safe default before it is ever written. No-op (returns the
+ *  same object) when moderation is disabled or the names are already clean. */
+async function scrubSpecNames(spec: RobotSpec): Promise<RobotSpec> {
+  const name = await scrubName(spec.name, DEFAULT_SPEC.name);
+  const teamName = await scrubName(spec.teamName, '');
+  return name === spec.name && teamName === spec.teamName ? spec : { ...spec, name, teamName };
+}
 
 /**
  * Persist a finished match (off the hot path — called at phase 'post'). The
@@ -59,6 +79,24 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
     for (const p of authed) await ensureProfile(p.userId!, p.handle ?? 'Player');
     const replayId = await saveReplay(o.replay, bv, game);
 
+    /**
+     * PLAYTIME + GAMES PLAYED, credited to everyone who was in it.
+     *
+     * Measured from the REPLAY's tick count, which is the authoritative length of the match
+     * the server just ran — not a wall clock, and not anything the client said. A match that
+     * ended early (an abandon, a cancelled room) credits the time it actually lasted.
+     *
+     * Counted for EVERY kind of match, record runs included: they are as much "playing the
+     * game" as a ranked match, and a playtime that ignored score attack would read as broken
+     * to the players who mostly do that. Departed players are in `authed` too — they played
+     * the part they were there for.
+     */
+    await addActivity(
+      authed.map((p) => p.userId!),
+      o.replay.ticks * C.SIM_DT,
+      game,
+    ).catch((e: unknown) => console.error('[persist] activity write failed:', e));
+
     if (o.config.kind === 'record') {
       const primary = authed[0];
       const partner = authed[1];
@@ -74,6 +112,9 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
       // the (empty) opposing alliance — i.e. the fouls the player(s) committed.
       const score = recordScore(o.result, primary.alliance);
       const prevBest = await personalBest(primary.userId!, mode, drivetrain, bv, game);
+      // moderate the robot/team names before they land on the public leaderboard card
+      const primarySpec = await scrubSpecNames(primary.spec);
+      const partnerSpec = partner?.spec ? await scrubSpecNames(partner.spec) : undefined;
       const id = await submitRecord({
         userId: primary.userId!,
         partnerId: partner?.userId,
@@ -85,7 +126,7 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
         game,
         // each driver brings their OWN robot; a duo stores both so the board can
         // show both drivetrains (partner absent ⇒ solo run)
-        config: { spec: primary.spec, assists: primary.assists, partnerSpec: partner?.spec },
+        config: { spec: primarySpec, assists: primary.assists, partnerSpec },
       });
       const { rank, total } = await recordRank(primary.userId!, mode, drivetrain, bv, game);
       const info = {
@@ -102,15 +143,104 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
       );
       return { record: info };
     } else {
-      const elo = await persistVersusMatch(authed, o, bv, replayId, o.ranked, game);
+      const ids: { matchId?: string } = {};
+      const elo = await persistVersusMatch(authed, o, bv, replayId, o.ranked, game, ids);
       console.log(
         `[persist] WROTE versus match (ranked=${o.ranked}) — ${elo.length} ratings updated` +
           (elo.length === 0 && o.ranked ? ' (not a two-sided match)' : ''),
       );
-      return { elo };
+      return { elo, matchId: ids.matchId };
     }
   } catch (e) {
     console.error('[persist] FAILED writing to DB:', e);
   }
   return {};
+}
+
+/**
+ * Charge a cancelled ranked pairing to whoever caused it.
+ *
+ * Runs OFF the cancel path (the room fires and forgets), so a slow or failing database can
+ * never delay tearing the room down or stop the innocent players from requeueing. A failed
+ * write means a dodge goes uncharged, which is the right way to fail: the alternative is a
+ * player stuck staring at a dead room while a transaction retries.
+ *
+ * The escalation is counted PER PLAYER over a rolling window, and the count is read fresh
+ * for each culprit rather than shared — two people dodging the same match are not each
+ * other's repeat offence.
+ */
+export async function persistDodges(d: DodgeReport): Promise<DodgeVerdict[]> {
+  if (!dbEnabled || !d.culprits.length) return [];
+  try {
+    const verdicts: DodgeVerdict[] = [];
+    // de-duplicate: one player can be named by two rules at once (absent AND unready), and
+    // one abandoned match must never be billed twice
+    const seen = new Set<string>();
+    for (const c of d.culprits) {
+      if (seen.has(c.userId)) continue;
+      seen.add(c.userId);
+      // STANDING, not rating: a dodge says nothing about how well someone drives (see
+      // src/dodge.ts). Rating only enters this at the bottom of the standing ladder, and
+      // `chargeStanding` is what decides that — not this call site.
+      const standing = await chargeStanding(c.userId, 'dodge', {
+        game: d.game,
+        mode: d.mode,
+        roomCode: d.roomCode,
+      });
+      const count = await recentStandingCount(c.userId, 'dodge', WINDOW_HOURS.dodge);
+      verdicts.push({ userId: c.userId, kind: c.kind, standing, count });
+    }
+    // the INNOCENT get a verdict too, with nothing charged — "this wasn't billed to you" is
+    // the difference between a system that reads as fair and one that reads as arbitrary
+    for (const userId of d.rosterUserIds) {
+      if (seen.has(userId)) continue;
+      verdicts.push({ userId, kind: null, standing: null, count: 0 });
+    }
+    return verdicts;
+  } catch (e) {
+    console.error('[dodge] FAILED charging standing:', e);
+    return [];
+  }
+}
+
+/**
+ * Charge (and credit) what a finished ranked match showed about its players.
+ *
+ * Fire-and-forget, like the dodge path: standing is bookkeeping ABOUT a match, and a slow
+ * write must never hold up the results screen or the room teardown.
+ *
+ * The CLEAN CREDIT is the other half of the design and is easy to forget — a system that
+ * only ever subtracts is one nobody can climb out of, so finishing a match you played is
+ * how the debt actually comes off.
+ */
+export async function persistBehaviour(b: BehaviourReport): Promise<void> {
+  if (!dbEnabled) return;
+  try {
+    for (const o of b.offenders) {
+      await chargeStanding(o.userId, o.kind, { game: b.game, mode: b.mode, roomCode: b.roomCode });
+    }
+    /**
+     * A CARD IS A BEHAVIOUR FINDING WITH EVIDENCE ATTACHED, so it is charged like one.
+     *
+     * The referee in the sim issues it for a rule broken hard enough to be sanctioned —
+     * excessive over-possession, or a second offence escalating to red — and it is already in
+     * the match record, on the results screen and in the replay. A RED costs more than a
+     * yellow because it is the second one, and because it voids the alliance's score.
+     */
+    for (const c of b.carded ?? []) {
+      await chargeStanding(c.userId, 'card', {
+        game: b.game,
+        mode: b.mode,
+        roomCode: b.roomCode,
+        points: c.colour === 'red' ? STANDING_COST.card * 2 : undefined,
+      });
+    }
+    // ...and a carded driver did NOT play it clean, whatever else the participation test
+    // said about them: crediting the heal beside the charge would hand part of it straight
+    // back on the same match.
+    const cardedIds = new Set((b.carded ?? []).map((c) => c.userId));
+    await creditCleanMatch(b.cleanUserIds.filter((id) => !cardedIds.has(id)));
+  } catch (e) {
+    console.error('[standing] FAILED recording match behaviour:', e);
+  }
 }

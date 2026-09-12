@@ -1,6 +1,7 @@
 import type { Alliance, RobotSpec, StartPose, Vec2 } from '../types';
 import * as C from '../config';
-import { rot, hyp } from '../math';
+import { rot, hyp, dsin, dcos } from '../math';
+import { intakeMountOf } from '../games/chain/mounts';
 
 export type { StartPose } from '../types';
 
@@ -113,16 +114,79 @@ export function goalTriangle(a: Alliance): [Vec2, Vec2, Vec2] {
   return [far, side, { x: g * f, y: f }];
 }
 
-/** the classifier channel along the side wall (gate up into the far corner)
- * — an obstacle for ROBOTS (released balls exit beneath the gate) */
+/** the classifier channel along the side wall, running from the GATE up into the far corner
+ * — an obstacle for ROBOTS. It stops AT the gate (`CLASSIFIER_GATE_Y`): past that is the
+ * SECRET TUNNEL ZONE, which is floor, and the only thing protruding into it is the gate arm
+ * (a separate collider). Released artifacts exit beneath the gate into that floor. */
 export function classifierRect(a: Alliance): Rect {
   const g = goalSide(a);
-  return sideRect(g, C.FIELD_HALF, C.FIELD_HALF - C.CLASSIFIER_W, C.GATE_ZONE.y0, C.CLASSIFIER_Y1);
+  return sideRect(g, C.FIELD_HALF, C.FIELD_HALF - C.CLASSIFIER_W, C.CLASSIFIER_GATE_Y, C.CLASSIFIER_Y1);
 }
 
 export function gateZone(a: Alliance): Rect {
   const g = goalSide(a);
   return sideRect(g, C.GATE_ZONE.xNear, C.GATE_ZONE.xFar, C.GATE_ZONE.y0, C.GATE_ZONE.y1);
+}
+
+/**
+ * THE RULEBOOK'S GATE ZONE — the 2.75in x 10in strip BETWEEN the two tape lines, which is
+ * what G424 protects. `gateZone()` above is a different thing wearing a similar name: the
+ * deliberately generous INTERACTION rect that decides whether a robot can work the gate.
+ *
+ * They are not interchangeable and G424 used the wrong one. The interaction rect is 10x5
+ * measured from the WALL (x 62..72, y -2..3); the real zone is 2.75 wide, centered on the
+ * gate, and starts at the CLASSIFIER EDGE (x 56..66) — the same anchor `gateTapeSegments`
+ * draws from. They share about 4in of the zone's 10in length, so the foul was being assessed
+ * over a band nearly twice too wide, 6in of it inside the classifier channel (structure, not
+ * floor), while the outer 6in of the actual zone fouled nothing at all.
+ *
+ * Section 9: "a 2.75 in. wide by 10 in. long infinitely tall volume bounded by 2 parallel
+ * 10 in. long ALLIANCE colored tape segments adjacent to each GATE. The GATE ZONE includes
+ * the tape lines" — so the strip is measured line-OUTSIDE to line-OUTSIDE, which is what the
+ * segments' own spacing gives.
+ *
+ * Derived from GATE_TAPE_*, NOT from GATE_ZONE: narrowing GATE_ZONE itself would silently
+ * move `tunnelStrip` (it anchors its far end on GATE_ZONE.y0) and GATE_TAPE_Y with it.
+ */
+export function gateZoneTape(a: Alliance): Rect {
+  const g = goalSide(a);
+  const h = C.GATE_TAPE_W / 2;
+  return sideRect(
+    g,
+    C.FIELD_HALF - C.CLASSIFIER_W,
+    C.FIELD_HALF - C.CLASSIFIER_W - C.GATE_TAPE_LEN,
+    C.GATE_TAPE_Y - h,
+    C.GATE_TAPE_Y + h,
+  );
+}
+
+/**
+ * THE GATE HANDLE'S PHYSICAL FOOTPRINT at a given open fraction — the stub a robot actually
+ * pushes on, and the ONE place its geometry lives.
+ *
+ * It foreshortens as the arm lifts (`GATE_ARM_SHORT · cos(pos · GATE_LIFT)`), because what a
+ * top-down view sees of a lifting lever is its projection. At full lift that leaves a short
+ * stub at the pivot, and the stub is still SOLID — the arm folded up against the classifier
+ * edge is structure, and pressing on it is pressing on the field.
+ *
+ * Both the Rapier collider (`decodeGateArms`) and the square-up torque (`squareUpStatics`)
+ * read this. They used to be one and none: the collider was built inline in the colliders
+ * module and the torque pass did not know the arm existed at all, so a robot holding the gate
+ * wide open was stopped by it and never squared against it — "if I push on the gate all the
+ * way and keep holding, it should apply torque to the robot but it doesn't".
+ */
+export function gateHandleRect(a: Alliance, gatePos: number): Rect | null {
+  const g = goalSide(a);
+  const proj = C.GATE_ARM_SHORT * dcos(gatePos * C.GATE_LIFT);
+  if (proj <= 0) return null;
+  const pivotX = g * (C.FIELD_HALF - C.CLASSIFIER_W); // classifier field-side edge (the pivot)
+  const xInner = pivotX - g * proj; // the handle reaches INTO the field
+  return {
+    x0: Math.min(pivotX, xInner),
+    x1: Math.max(pivotX, xInner),
+    y0: C.GATE_TAPE_Y - C.GATE_ARM_THICK / 2,
+    y1: C.GATE_TAPE_Y + C.GATE_ARM_THICK / 2,
+  };
 }
 
 /** the physical GATE ARM's contact footprint at the channel mouth: the classifier
@@ -165,8 +229,8 @@ export function tunnelExit(a: Alliance): Vec2 {
 }
 
 export function tunnelExitVel(a: Alliance): Vec2 {
-  const g = goalSide(a);
-  return { x: -g * C.TUNNEL_EXIT_VEL.inward, y: -C.TUNNEL_EXIT_VEL.along };
+  void a; // the channel runs down the wall for BOTH alliances — the exit is the same heading
+  return { x: 0, y: -C.TUNNEL_EXIT_VEL.along };
 }
 
 /** the SECRET TUNNEL floor strip beneath a goal's classifier (belongs to the
@@ -284,16 +348,17 @@ export interface StartLegality {
  * of truth reused by physics.robotExtents and the G304 start validator. */
 export function footprintExtents(spec: RobotSpec): { front: number; rear: number; half: number } {
   const reach = C.INTAKE_PRESETS[spec.intake].reach;
-  // Chain Reaction SIDE-mount sweeper: the rollers ride on the ±y edges, so the intake extends
-  // the SIDES of the collision hitbox (not the front) — the intake is part of the non-ball
-  // collision footprint, matching DECODE (front-mount intakes extend the front, below).
-  if (spec.intakeSide) {
-    return { front: spec.length / 2, rear: spec.length / 2, half: spec.width / 2 + reach };
-  }
+  // The intake is a PHYSICAL part of the robot, so it extends the collision hitbox on whichever
+  // edge(s) it is mounted on (Chain Reaction lets it move; DECODE intakes are always front, and
+  // `intakeMountOf` defaults there — so DECODE geometry is unchanged). A `frontback` sweeper is
+  // deeper fore-and-aft on BOTH ends; a `side` sweeper is wider instead.
+  const mount = intakeMountOf(spec);
+  const ends = mount === 'front' || mount === 'frontback';
+  const rear = mount === 'back' || mount === 'frontback';
   return {
-    front: spec.length / 2 + reach,
-    rear: spec.length / 2,
-    half: spec.width / 2,
+    front: spec.length / 2 + (ends ? reach : 0),
+    rear: spec.length / 2 + (rear ? reach : 0),
+    half: spec.width / 2 + (mount === 'side' ? reach : 0),
   };
 }
 
@@ -349,7 +414,7 @@ function edgeNormals(poly: Vec2[]): Vec2[] {
 }
 
 /** SAT overlap between two convex polygons (CCW/CW both fine). */
-function convexOverlap(a: Vec2[], b: Vec2[]): boolean {
+export function convexOverlap(a: Vec2[], b: Vec2[]): boolean {
   for (const ax of [...edgeNormals(a), ...edgeNormals(b)]) {
     if (disjointOnAxis(a, b, ax)) return false;
   }
@@ -369,7 +434,7 @@ function quadCrossesSegment(quad: Vec2[], a: Vec2, b: Vec2): boolean {
 }
 
 /** rect → corner quad */
-function rectCorners(r: Rect): Vec2[] {
+export function rectCorners(r: Rect): Vec2[] {
   return [
     { x: r.x0, y: r.y0 },
     { x: r.x1, y: r.y0 },
@@ -612,7 +677,74 @@ export function basinFunnelTarget(a: Alliance): Vec2 {
   return { x: goalSide(a) * (C.FIELD_HALF - C.RAMP_RAIL_INSET), y: C.CLASSIFIER_Y0 + C.RAIL_S_MAX };
 }
 
-/** rail coordinate s -> world position along the classifier */
+/** rail coordinate s -> world position along the classifier CENTRELINE.
+ *
+ * This is the ideal line the flow is solved along. It is NOT where an artifact is drawn —
+ * see `railWander`. */
 export function railPos(a: Alliance, s: number): Vec2 {
   return { x: goalSide(a) * (C.FIELD_HALF - C.RAMP_RAIL_INSET), y: C.CLASSIFIER_Y0 + s };
+}
+
+/**
+ * The lateral offset of ONE artifact from the rail centreline, in inches.
+ *
+ * The ramp flow is solved in 1D along `s`, so every artifact used to be placed on the exact
+ * centreline and the column came out as a ruled line of perfectly collinear artifacts, all at
+ * the identical angle. Single file is correct — the channel is CLASSIFIER_W across and an
+ * artifact is a diameter wide, so two cannot pass — and so is running near-straight: the
+ * channel is a MARBLE TRACK, a groove that guides what is in it. So a tracked artifact gets
+ * only a hint of offset (RAIL_WANDER_AMP of the slop), enough that the stack is not laser
+ * straight, nowhere near enough to read as wobble.
+ *
+ * An ELEVATED artifact is the exception, and for a physical reason: it is riding over the
+ * bumpy tops of the column, NOT down the groove, so nothing is guiding it. It gets the full
+ * slop the channel allows, and a shorter wavelength, because it is being deflected by every
+ * artifact it rolls over.
+ *
+ * Each artifact's path has its PHASE from its id and is evaluated at its position down the
+ * ramp. Being a function of `s` and not of time is what makes it behave — a resting column is
+ * still (they are at rest, they should not shimmer), each artifact settled at its own offset,
+ * and an artifact only moves across the track while it is actually rolling.
+ *
+ * Deterministic and stateless: `dsin` and integer ids only, no clock and no PRNG draw.
+ */
+export function railWander(s: number, id: number, elevated: boolean): number {
+  const slop = C.CLASSIFIER_W / 2 - C.BALL_RADIUS;
+  // an irrational-ish stride keeps neighbouring ids from landing in phase with each other
+  const phase = (id % 16) * 2.399963;
+  const k = elevated ? C.RAIL_WANDER_K * 2.3 : C.RAIL_WANDER_K;
+  const amp = slop * (elevated ? 1 : C.RAIL_WANDER_AMP);
+  return amp * dsin(phase + s * k);
+}
+
+/**
+ * ...and its SLOPE — how far across the channel the weave carries per inch travelled.
+ *
+ * The artifact really is moving sideways as it comes down the groove, a little, and which way
+ * depends on where in its own weave it happens to be. That is the only lateral motion an
+ * artifact leaving the ramp has any right to, and it is what the release hands it: no fan is
+ * synthesised, and unlike a fan it is signed, so a drain does not leave on one diagonal.
+ */
+/**
+ * The artifact's LEAN across the groove at `s`, normalised to -1..1.
+ *
+ * Same phase and wavelength as `railWander`/`railWanderRate` — it is the same weave — but
+ * without the amplitude, so a caller can scale it by something that is not the artifact's
+ * speed. The exit uses it: which groove wall an artifact last touched decides which way it
+ * rolls off the lip, and that is a couple of inches a second either way whether it arrives at
+ * 20 or at 40. (Multiplying the RATE by the speed, which is what the exit used to do, makes
+ * the same weave a drift at one speed and a spray at the other — see the note there.)
+ */
+export function railExitLean(s: number, id: number, elevated: boolean): number {
+  const phase = (id % 16) * 2.399963;
+  const k = elevated ? C.RAIL_WANDER_K * 2.3 : C.RAIL_WANDER_K;
+  return dcos(phase + s * k);
+}
+
+export function railWanderRate(s: number, id: number, elevated: boolean): number {
+  const slop = C.CLASSIFIER_W / 2 - C.BALL_RADIUS;
+  const phase = (id % 16) * 2.399963;
+  const k = elevated ? C.RAIL_WANDER_K * 2.3 : C.RAIL_WANDER_K;
+  const amp = slop * (elevated ? 1 : C.RAIL_WANDER_AMP);
+  return amp * k * dcos(phase + s * k);
 }

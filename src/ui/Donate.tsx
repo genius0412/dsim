@@ -3,6 +3,7 @@ import { APP_NAME, LINKS } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
 import { claimKofiPayment, fetchEntitlements, fetchPricing, type TierPrice } from '../net/api';
 import type { StaffRole } from '../net/protocol';
+import { SupporterBadge } from './SupporterBadge';
 import { useAds } from '../ads/AdsProvider';
 import { isElectron } from '../ads/adsense';
 import { authEnabled } from '../lib/authClient';
@@ -89,8 +90,8 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
       setMsg({
         kind: 'ok',
         text: date
-          ? `Thank you - you're a supporter until ${date}. Ads are off, and future payments renew automatically.`
-          : 'Thank you - your supporter benefits are active.',
+          ? `Thank you. You’re a supporter until ${date}. Ads are off, and future payments renew automatically.`
+          : 'Thank you. Your supporter benefits are active.',
       });
       setTxn('');
       trackEvent('support_claim_ok', { months: r.months });
@@ -100,7 +101,7 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
       trackEvent('support_claim_fail', {
         reason: e instanceof Error ? e.message.slice(0, 60) : 'unknown',
       });
-      setMsg({ kind: 'err', text: e instanceof Error ? e.message : 'Something went wrong.' });
+      setMsg({ kind: 'err', text: e instanceof Error ? e.message : 'Couldn’t complete the claim. Try again.' });
     } finally {
       setBusy(false);
     }
@@ -114,12 +115,14 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
       <>
         <p className="ds-eyebrow">{APP_NAME} · Support</p>
         <h1 className="ds-h1">Support DSIM</h1>
-        <p className="ds-sub">Not open yet.</p>
+        {/* The `.ds-sub` here read "Not open yet." — the same sentence as the
+            panel's "There is nothing to pay for yet", 30px apart. The panel keeps
+            it because it also says the part worth knowing. */}
         <section className="ds-panel">
-          <div style={{ padding: 16 }}>
+          <div className="ds-panel-body">
             <p className="ds-hint">
-              DSIM is free and stays free. A way to chip in for the servers is on its way -
-              there is nothing to pay for today.
+              DSIM is free and stays free. There is nothing to pay for yet — a way to chip in
+              for the servers is coming.
             </p>
           </div>
         </section>
@@ -143,8 +146,12 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
           not a guilt trip, and it never appears on the web where it would be a
           lie (the web build does show ads). */}
       {isElectron() && (
-        <p className="ds-hint" style={{ marginBottom: 18 }}>
-          You're on the desktop app, which never shows ads - supporting is the only way it
+        // `.ds-page-note` owns the gap down to the first panel. As an inline
+        // `marginBottom: 18` it was the panel-STACK value (16) reused for a
+        // paragraph-to-panel gap, so the desktop build had a different rhythm
+        // above the first panel than the web build.
+        <p className="ds-hint ds-page-note">
+          You’re on the desktop app, which never shows ads. Supporting is the only way it
           pays for itself.
         </p>
       )}
@@ -157,15 +164,19 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
       {checked && role && (
         <section className="ds-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">
-              {role === 'owner' ? "You run this place" : "You're on the team"}
-            </span>
-            <span className="ds-count">{role}</span>
+            <span className="ds-panel-title">Staff benefits</span>
+            {/* the BADGE, not the raw role string in a `.ds-count`. `.ds-count`
+                is a count/metadata slot, and CLAUDE.md's rule is that owner and
+                admin status renders as `SupporterBadge` everywhere. */}
+            <SupporterBadge role={role} supporter />
           </div>
-          <div style={{ padding: 16 }}>
+          <div className="ds-panel-body">
+            {/* one sentence. The second used to enumerate two of the four benefits
+                the first had just said were ALL included, with the Supporter panel
+                below listing all four again. */}
             <p className="ds-hint">
-              Every supporter benefit is included with your {role === 'owner' ? 'ownership' : 'admin role'} -
-              ads are off, and your {role} badge shows on your profile, the leaderboards, and in the lobby.
+              Every supporter benefit is included with your{' '}
+              {role === 'owner' ? 'ownership' : 'admin role'}.
             </p>
           </div>
         </section>
@@ -174,18 +185,20 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
       {checked && supporter && !role && (
         <section className="ds-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">You're a supporter</span>
-            <span className="ds-count">thank you</span>
+            <span className="ds-panel-title">You’re a supporter</span>
           </div>
-          <div style={{ padding: 16 }}>
+          {/* `.ds-panel-body.stack` owns the space between these paragraphs. Written inline
+              it was 8 here, 12 two panels down and 16 on the CTA — three values
+              for "the next thing in this panel body", in one file. */}
+          <div className="ds-panel-body stack">
             <p className="ds-hint">
               Ads are off across the site and your badge is live
               {until ? `, through ${new Date(until).toLocaleDateString()}` : ''}.
             </p>
-            <p className="ds-hint" style={{ marginTop: 8 }}>
+            <p className="ds-hint">
               {autoRenews
-                ? 'Your Ko-fi payments renew this automatically - nothing to claim each month. Cancel any time from your Ko-fi account; you keep the benefits until the paid period ends.'
-                : "This membership isn't linked to a Ko-fi account yet, so it won't renew on its own. Claim a payment below to link it."}
+                ? 'Renews automatically through Ko-fi. Cancel any time — benefits run to the end of the paid period.'
+                : 'This membership isn’t linked to a Ko-fi account yet, so it won’t renew on its own. Claim a payment below to link it.'}
             </p>
           </div>
         </section>
@@ -196,7 +209,12 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
           <span className="ds-panel-title">Supporter</span>
           <span className="ds-count">{priceLabel}</span>
         </div>
-        <div style={{ padding: 16 }}>
+        {/* The "perks are cosmetic or convenience only, they never affect how a
+            robot drives or scores" paragraph is GONE from here. It was a
+            justification sitting directly under a four-item list every one of
+            which is visibly cosmetic, and the commitment itself belongs in — and
+            is in — the Terms, which is where a promise is worth something. */}
+        <div className="ds-panel-body stack">
           <ul className="ds-perks">
             <li>No advertising, anywhere on the site</li>
             <li>A supporter badge on your profile, the leaderboards, and the lobby</li>
@@ -206,16 +224,11 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
             </li>
             <li>Cosmetic chassis colours in the robot builder</li>
           </ul>
-          <p className="ds-hint" style={{ marginTop: 12 }}>
-            Supporter perks are cosmetic or convenience only. They never affect how a robot drives
-            or scores - ranked stays decided by driving.
-          </p>
           <a
             className="ds-cta"
             href={LINKS.kofi}
             target="_blank"
             rel="noreferrer"
-            style={{ marginTop: 16 }}
             onClick={() => trackEvent('support_kofi_click')}
           >
             Support on Ko-fi ↗
@@ -226,17 +239,17 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
       <section className="ds-panel">
         <div className="ds-panel-h">
           <span className="ds-panel-title">Already paid?</span>
-          <span className="ds-count">claim it once</span>
         </div>
-        <div style={{ padding: 16 }}>
+        <div className="ds-panel-body stack">
+          {/* The sentence about Ko-fi billing through PayPal explained WHY the
+              feature exists to somebody who only wants to use it, and the input's
+              own placeholder already reads "Ko-fi transaction ID". */}
           <p className="ds-hint">
-            Ko-fi bills through PayPal, so the email on your payment often isn't the one on your
-            DSIM account. Paste the transaction ID from your Ko-fi receipt and we'll attach it -
-            just once. After that, every renewal is applied automatically.
+            Paste the transaction ID from your Ko-fi receipt. Renewals after that are automatic.
           </p>
           {!authEnabled || !signedIn ? (
-            <p className="ds-hint" style={{ marginTop: 12 }}>
-              Sign in first - a membership has to attach to an account.
+            <p className="ds-hint">
+              Sign in first. A membership has to attach to an account.
             </p>
           ) : (
             <>
@@ -268,20 +281,24 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
       <section className="ds-panel">
         <div className="ds-panel-h">
           <span className="ds-panel-title">One-off</span>
-          <span className="ds-count">no account needed</span>
         </div>
-        <div style={{ padding: 16 }}>
+        <div className="ds-panel-body">
           {/* Two sentences, because the second one only makes sense with a real
               number in it. When the price hasn't loaded (server asleep, or an
               older server with no /api/pricing), `priceLabel` is the words "see
               Ko-fi for the price" — splicing that into "a tip of ___ or more"
               produces a sentence that reads like a bug, so it is omitted rather
-              than filled with a placeholder. */}
+              than filled with a placeholder.
+
+              It no longer opens with "Prefer to buy the project a coffee?" — a
+              rhetorical question with no answer branch — and no longer narrates
+              the ABSENCE of a feature ("gratefully received as a plain tip with
+              nothing to claim"). */}
           <p className="ds-hint">
-            Prefer to just buy the project a coffee? One-off tips go through the same Ko-fi page.
+            One-off tips go through the same Ko-fi page.
             {price
-              ? ` A tip of ${price.currency} ${price.amount.toFixed(2)} or more can be claimed above for membership - larger tips buy proportionally more months, and anything below that is gratefully received as a plain tip with nothing to claim.`
-              : ' A tip at or above the monthly price can be claimed above for membership; anything below it is gratefully received as a plain tip, with nothing to claim.'}
+              ? ` A tip of ${price.currency} ${price.amount.toFixed(2)} or more can be claimed above for membership, and larger tips buy more months.`
+              : ' A tip at or above the monthly price can be claimed above for membership, and larger tips buy more months.'}
           </p>
         </div>
       </section>

@@ -219,6 +219,11 @@ const hudPairs = (t) => {
     ['HUD .chip.on / GATE OPEN', t('--ds-ok-ink'), card, AA],
     ['HUD .chip.off / GATE CLOSED', t('--ds-mut'), t('--ds-tile'), AA],
     ['HUD .chip.warn', t('--ds-warn'), card, AA],
+    // .chip.bad is a FILLED red-card chip: fixed ink on --ds-red, so it is audited
+    // against its own fill rather than against the HUD card behind it.
+    ['HUD .chip.bad (red card)', '#2b0b0b', t('--ds-red'), AA],
+    // the forfeit line on the results screen: --ds-red as TEXT on the overlay panel
+    ['Results forfeit notice', t('--ds-red-ink'), panel, AA],
     ['HUD .timer-panel.urgent', t('--ds-red-ink'), card, AA],
     ['HUD .robot-status ink', t('--ds-ink-dim'), card, AA],
     ['HUD .game-btn ink', t('--ds-ink-dim'), card, AA],
@@ -275,6 +280,7 @@ const serverPairs = (t) => {
     // renders on the leaderboard panel, the lobby roster tile, AND a profile
     // header, and no single coloured-text value clears AA on all three grounds.
     ['SupporterBadge glyph', t('--ds-gold-ink'), t('--ds-gold'), AA],
+
     // ...and the staff variants of the same badge. Unlike gold, both of these
     // fills INVERT between themes, so checking them in each theme is the whole
     // point: the assertion is that the PAIR stays legible, not that the hex does.
@@ -296,6 +302,25 @@ const serverPairs = (t) => {
     ['.ds-opt.blue.on .ot', t('--ds-blue-ink'), composite(t('--ds-blue'), 0.12, panel), AA],
     ['.ds-startpos-status.ok', t('--ds-ok-ink'), composite(t('--ds-ok'), 0.12, panel), AA],
     ['.ds-startpos-status.bad', t('--ds-red-ink'), composite(t('--ds-red'), 0.12, panel), AA],
+
+    /* ACCOUNT STANDING. The tier is carried by the SEMANTIC tokens (ok / warn / red) rather
+       than a ramp of its own — but the card sits on `--ds-tile`, not the panel, so the dots
+       and the meter fill need checking against THAT ground (1.4.11 non-text), and the lock
+       notice paints red ink on a red tint like the option rows above. The tier NAME is plain
+       ink beside the dot, deliberately, so colour is never the only carrier. */
+    // the GAUGE arc — a non-text indicator carrying the tier, so 1.4.11's 3:1 against the
+    // card it sits on. Same tokens the dot used, since the meaning did not change; the arc
+    // simply says how FAR through the tier you are, which a dot never could.
+    ['.ds-gauge-fill good on tile (1.4.11)', t('--ds-ok-ink'), tile, NON_TEXT],
+    ['.ds-gauge-fill warning on tile (1.4.11)', t('--ds-warn'), tile, NON_TEXT],
+    ['.ds-gauge-fill restricted on tile (1.4.11)', t('--ds-red-ink'), tile, NON_TEXT],
+    ['.ds-gauge-num on tile', t('--ds-ink'), tile, AA],
+    ['.ds-gauge-max on tile', t('--ds-mut'), tile, AA],
+    ['.ds-standing-blurb on tile', t('--ds-mut'), tile, AA],
+    ['.ds-standing-name on tile', t('--ds-ink'), tile, AA],
+    ['.ds-standing-lock', t('--ds-red-ink'), composite(t('--ds-red'), 0.12, panel), AA],
+    ['.adm-pill.standing', t('--ds-red-ink'), composite(t('--ds-red'), 0.14, panel), AA],
+    ['.adm-pill.standing.ok', t('--ds-ok-ink'), composite(t('--ds-ok'), 0.14, panel), AA],
   ];
 };
 

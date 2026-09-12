@@ -85,6 +85,8 @@ export interface FriendsApi {
     kind: 'versus' | 'record',
     record?: 'solo' | 'duo' | null,
     format?: string | null,
+    /** the region the room is hosted in — see `RoomInvite.region` */
+    region?: string | null,
   ) => Promise<void>;
   /** dismiss (or consume, on accept) an invite addressed to me */
   dismissInvite: (id: string) => Promise<void>;
@@ -270,7 +272,7 @@ export function useFriends({
         await call();
       } catch (e) {
         setData(previous);
-        setError(e instanceof Error ? e.message : 'Something went wrong.');
+        setError(e instanceof Error ? e.message : 'Couldn’t reach the game server.');
         throw e;
       } finally {
         // and again on the way out: a poll that STARTED mid-mutation raced the
@@ -379,7 +381,7 @@ export function useFriends({
         const outcome = await sendFriendRequest(username);
         return outcome;
       } catch (e) {
-        setError(e instanceof Error ? e.message : 'Something went wrong.');
+        setError(e instanceof Error ? e.message : 'Couldn’t reach the game server.');
         throw e;
       } finally {
         // same staleness rule as `mutate`: this changed server state, so any poll
@@ -402,13 +404,14 @@ export function useFriends({
       kind: 'versus' | 'record',
       record?: 'solo' | 'duo' | null,
       format?: string | null,
+      region?: string | null,
     ): Promise<void> => {
       setError(null);
       mutSeq.current += 1;
       try {
-        await inviteToRoom(username, room, game, kind, record, format);
+        await inviteToRoom(username, room, game, kind, record, format, region);
       } catch (e) {
-        setError(e instanceof Error ? e.message : 'Something went wrong.');
+        setError(e instanceof Error ? e.message : 'Couldn’t reach the game server.');
         throw e;
       } finally {
         mutSeq.current += 1;

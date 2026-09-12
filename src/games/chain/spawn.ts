@@ -4,7 +4,9 @@ import type {
   GameMode,
   GameSettings,
   GoalState,
+  RobotSpec,
   RobotState,
+  StartPose,
   Vec2,
   World,
 } from '../../types';
@@ -27,7 +29,7 @@ import {
   CHAIN_PARTICLE_SIM,
   CHAIN_START_POSES,
 } from './config';
-import { accelSide, emptyChainState, onRingStand, ringStands, type ChainCatalyst } from './state';
+import { accelSide, chainSnapStartPose, emptyChainState, onRingStand, ringStands, type ChainCatalyst } from './state';
 
 /**
  * Chain Reaction world spawn — a PLAYABLE match.
@@ -50,11 +52,31 @@ interface Pose {
  * `CHAIN_START_POSES` anchors are CANONICAL for BLUE (goalSide +x); RED is the x-mirror.
  * `index` selects the anchor (the 2-robot alliance defaults to 0/1 → the two Lab corners).
  */
-function chainStartPose(alliance: Alliance, index: number): Pose {
-  const n = CHAIN_START_POSES.length;
-  const p = CHAIN_START_POSES[((index % n) + n) % n];
-  if (alliance === 'blue') return { pos: { ...p.pos }, heading: p.heading };
-  return { pos: { x: -p.pos.x, y: p.pos.y }, heading: wrapAngle(Math.PI - p.heading) };
+function chainStartPose(
+  alliance: Alliance,
+  index: number,
+  spec: RobotSpec,
+  custom?: StartPose | null,
+): Pose {
+  // A CUSTOM pose wins over the anchor index (same contract DECODE uses). It is stored in
+  // the CANONICAL blue frame and snapped legal before mirroring, so a hand-edited or
+  // spoofed pose can never spawn a robot inside the corner assembly or outside its Lab.
+  const base = custom
+    ? (() => {
+        // HEADING is repaired alongside position: a robot turned too far off-axis sweeps
+        // wider than the 24" Lab and has no legal spot at all, so snapping only its
+        // position would leave it overlapping the corner assembly and it would be flung
+        // on tick one. `chainSnapStartPose` squares it up first.
+        const p = chainSnapStartPose(spec, custom);
+        return { pos: { x: p.x, y: p.y }, heading: (p.headingDeg * Math.PI) / 180 };
+      })()
+    : (() => {
+        const n = CHAIN_START_POSES.length;
+        const p = CHAIN_START_POSES[((index % n) + n) % n];
+        return { pos: { ...p.pos }, heading: p.heading };
+      })();
+  if (alliance === 'blue') return { pos: { ...base.pos }, heading: base.heading };
+  return { pos: { x: -base.pos.x, y: base.pos.y }, heading: wrapAngle(Math.PI - base.heading) };
 }
 
 function inertGoal(alliance: Alliance): GoalState {
@@ -76,15 +98,16 @@ function makeChainRobot(setup: RobotSetup, nth: number): RobotState {
   // honour the chosen start (the selector's `startIndex`); default a 2-robot alliance to
   // its two Lab corners (0/1). Always a legal Lab-Area / Ring-Stand pose (G04).
   const idx = setup.startIndex ?? nth;
-  const pose = chainStartPose(setup.alliance, idx);
+  const pose = chainStartPose(setup.alliance, idx, spec, setup.startPose);
   // a TURRET starts already POINTED at its accelerator (it slews at a finite rate — see the
   // turret branch in play.ts — so it must begin aimed, not have to swing around from the spawn
   // heading). Turretless launchers keep the chassis heading.
   const mouthX = accelSide(setup.alliance) * CHAIN_HALF_X;
-  const turretHeading =
-    (spec.scoreMode ?? 'turret') === 'turret'
-      ? datan2(0 - pose.pos.y, mouthX - pose.pos.x)
-      : pose.heading;
+  // BOTH turreted archetypes start already POINTED at their accelerator (the turret slews
+  // at a finite rate, so it must begin aimed rather than swing around from the spawn
+  // heading). Turretless launchers keep the chassis heading.
+  const turreted = (spec.scoreMode ?? 'turret') === 'turret' || spec.scoreMode === 'twinturret';
+  const turretHeading = turreted ? datan2(0 - pose.pos.y, mouthX - pose.pos.x) : pose.heading;
   return {
     id: setup.id,
     alliance: setup.alliance,
@@ -96,6 +119,12 @@ function makeChainRobot(setup: RobotSetup, nth: number): RobotState {
     turretHeading,
     moduleAngles: [0, 0, 0, 0],
     moduleTargets: [0, 0, 0, 0],
+    catalystRail: 0, // the rail carriage starts centred
+    // BUTTERFLY starts on its MECANUM set — a robot that begins holonomic can always
+    // drop traction, and it matches DRIVETRAIN_PRESETS.butterfly (the mecanum half).
+    butterflyTank: false,
+    driveModeHeld: false,
+    twinBarrel: false,
     hopper: [],
     fieldCentric: assists.fieldCentric,
     aimAssist: assists.aimAssist,
@@ -166,7 +195,7 @@ export function createChainWorld(
   const chain = emptyChainState();
   chain.nextBallId = id; // runtime spawns continue past the initial particle ids
   ringStands().forEach((rs, i) => {
-    const cat: ChainCatalyst = { id: i, pos: { ...rs }, carriedBy: null, hook: null };
+    const cat: ChainCatalyst = { id: i, pos: { ...rs }, carriedBy: null, hook: null, vel: { x: 0, y: 0 }, z: 0, vz: 0 };
     chain.catalysts.push(cat);
   });
 
@@ -200,11 +229,19 @@ export function createChainWorld(
     },
     events: [],
     rrContacts: [],
+    pinnedArtifacts: [],
     penalties: {
       episodes: {},
       pins: {},
       pinFouls: {},
       possession: {},
+      possessionBilled: {},
+    possessionRebill: {},
+      controlHeld: {},
+      ballHold: {},
+      ballAnchor: {},
+      controlInstances: {},
+      carded: {},
       gateCulprit: { red: null, blue: null },
       rampBallIds: { red: [], blue: [] },
     },

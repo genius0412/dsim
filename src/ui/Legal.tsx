@@ -14,18 +14,24 @@ import { APP_NAME } from '../seasons';
  * A live privacy policy is a prerequisite for the AdSense application, so this page
  * must stay reachable without an account and without JavaScript-gated routing.
  */
-function LegalPage({ title, body }: { title: string; body: string }) {
+function LegalPage({ title, sub, body }: { title: string; sub?: string; body: string }) {
   return (
     <>
       <p className="ds-eyebrow">{APP_NAME} · Legal</p>
-      <h1 className="ds-h1" style={{ marginBottom: 24 }}>{title}</h1>
+      <h1 className="ds-h1">{title}</h1>
+      {/* `sub` is OPTIONAL, because most of the time it is the title said again
+          as a sentence. Only keep one where it carries something the heading
+          cannot — Privacy's "how to get rid of it" does; Terms' did not. The
+          "Updated" date is the part that always earns the line. */}
+      <p className="ds-sub">
+        {sub ? `${sub} ` : ''}Updated {LEGAL_UPDATED}.
+      </p>
 
       <section className="ds-panel">
-        <div className="ds-panel-h">
-          <span className="ds-panel-title">{title}</span>
-          <span className="ds-count">updated {LEGAL_UPDATED}</span>
-        </div>
-        <div className="ds-legal">
+        {/* `.ds-panel-body`, not the one-off `.ds-legal` — the two were the same
+            16px, written twice. `.legal-md` still owns the DOCUMENT's own rhythm
+            inside it; only the container padding is shared. */}
+        <div className="ds-panel-body">
           <Markdown text={body} className="md legal-md" />
         </div>
       </section>
@@ -35,7 +41,11 @@ function LegalPage({ title, body }: { title: string; body: string }) {
 
 export function Privacy() {
   return (
-    <LegalPage title="Privacy Policy" body={PRIVACY_MD} />
+    <LegalPage
+      title="Privacy Policy"
+      sub="What DSIM collects, why, and how to get rid of it."
+      body={PRIVACY_MD}
+    />
   );
 }
 
@@ -51,8 +61,8 @@ export function Terms() {
       {!LEGAL_IDENTIFIED && (
         <p className="legal-warn" role="alert">
           These terms are incomplete: the operator and governing law have not been
-          filled in yet. Please don't rely on them, and email {LEGAL_CONTACT} with any
-          question about your account or a payment.
+          filled in yet. Don’t rely on them. Email {LEGAL_CONTACT} with any question
+          about your account or a payment.
         </p>
       )}
       <LegalPage title="Terms of Use" body={TERMS_MD} />

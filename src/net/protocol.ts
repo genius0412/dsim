@@ -1,3 +1,5 @@
+import type { DodgeVerdict } from '../dodge';
+import type { StandingTierKey } from '../standing';
 import type {
   Alliance,
   Artifact,
@@ -47,13 +49,24 @@ export interface QCommand {
 const BTN_INTAKE = 1;
 const BTN_FIRE = 2;
 const BTN_CATALYST = 4;
+// Adding a bit is backward-compatible: an older peer masks only the bits it knows and
+// ignores the rest. EVERY new held button MUST be added here — the quantizer is the wire
+// format, so a field that is not in the mask does not exist as far as the server (or a
+// predicted/replayed step) is concerned.
+const BTN_FLING = 8;
+const BTN_DRIVEMODE = 16;
 
 export function quantizeCommand(c: RobotCommand): QCommand {
   return {
     dx: Math.round(clamp(c.driveX, -1, 1) * 127),
     dy: Math.round(clamp(c.driveY, -1, 1) * 127),
     rot: Math.round(clamp(c.rotate, -1, 1) * 127),
-    buttons: (c.intake ? BTN_INTAKE : 0) | (c.fire ? BTN_FIRE : 0) | (c.catalyst ? BTN_CATALYST : 0),
+    buttons:
+      (c.intake ? BTN_INTAKE : 0) |
+      (c.fire ? BTN_FIRE : 0) |
+      (c.catalyst ? BTN_CATALYST : 0) |
+      (c.fling ? BTN_FLING : 0) |
+      (c.driveMode ? BTN_DRIVEMODE : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
     rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
@@ -69,6 +82,8 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     intake: (q.buttons & BTN_INTAKE) !== 0,
     fire: (q.buttons & BTN_FIRE) !== 0,
     catalyst: (q.buttons & BTN_CATALYST) !== 0,
+    fling: (q.buttons & BTN_FLING) !== 0,
+    driveMode: (q.buttons & BTN_DRIVEMODE) !== 0,
   };
 }
 
@@ -207,7 +222,7 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game'];
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing'];
 
 /**
  * Capabilities the SERVER advertises, reported on `GET /api/presence`.
@@ -278,6 +293,23 @@ export type ClientMsg =
   // as an admin, this watcher is not counted in the visible spectator total (see
   // Room.hideSpectator). It is never a claim the client can make on its own.
   | { t: 'spectate'; room: string; caps?: string[]; authToken?: string }
+  /**
+   * REPORT another driver in this room, by ROBOT ID.
+   *
+   * Never by user id: the client is not told who its opponents are, and this keeps it that
+   * way. The server maps the robot id onto its own roster, so a client can only report
+   * somebody actually in the match it is actually in.
+   */
+  | { t: 'report'; robotId: number; reason: string; detail?: string }
+  /**
+   * REPORT A MISSCORE — a claim about the RESULT, not about a person.
+   *
+   * It carries no target at all, which is the whole difference: the score is the server's
+   * arithmetic, so if it is wrong there is no opponent at fault and naming one would be a
+   * lie the reporter has no way to check. The server resolves the reporter and the match it
+   * wrote from its own roster, exactly as it does for a player report.
+   */
+  | { t: 'reportScore'; detail: string }
   | { t: 'update'; patch: PlayerPatch }
   | { t: 'start' } // host only: build + broadcast the match world
   | { t: 'restart' } // host only: re-author the match with a fresh seed
@@ -353,12 +385,20 @@ export type ClientMsg =
   // measures round-trip time for the connection-quality HUD (no server clock needed)
   | { t: 'ping'; ts: number };
 
-/** a live match summarised for the "Watch Live" list (`GET /api/live`). */
+/**
+ * A live match summarised for the "Watch Live" list (`GET /api/live`) and for the
+ * admin's live view.
+ *
+ * The two lists are the SAME shape but not the same set: `/api/live` is public and
+ * shows RANKED matches only, while the admin endpoint shows everything running,
+ * custom and record included. Filtering happens at the endpoints — `Room.summary()`
+ * describes every live room and decides nothing about who may see it.
+ */
 export interface LiveRoom {
   /** the room code to spectate (region-coded, e.g. `iad-abc123`) */
   room: string;
   game: GameId;
-  /** '1v1' | '2v2' (versus) — record/solo rooms are not listed */
+  /** '1v1' | '2v2' (versus) or 'solo' | 'duo' (record) */
   mode: string;
   /** match clock phase ('auto' | 'transition' | 'teleop' | 'post') */
   phase: string;
@@ -371,17 +411,66 @@ export interface LiveRoom {
   score: { red: number; blue: number };
   /** how many people are already watching */
   spectators: number;
+  /** 'versus' | 'record'. Optional: an older server predates it, and every reader
+   *  must treat a missing value as the historical meaning (versus). */
+  kind?: 'versus' | 'record';
+  /** which Fly region is hosting, for the admin's cross-region list. Absent on a
+   *  single-region/dev deploy. */
+  region?: string;
 }
 
 // ---- server → client --------------------------------------------------------
 
+/**
+ * Machine-readable reasons for a `t: 'error'`. Only the cases a client can ACT on are
+ * worth a code — everything else stays a plain message. Unknown codes must be treated
+ * as an ordinary error, so this list can grow without a capability gate.
+ */
+export type ErrorCode =
+  /** this machine is at its room cap — the same code can be joined elsewhere, so the
+   *  client should offer a different region rather than just reporting a failure */
+  | 'region_full';
+
 export type ServerMsg =
   | { t: 'welcome'; clientId: string }
   | { t: 'roster'; players: LobbyPlayer[]; hostId: string }
-  | { t: 'error'; message: string }
+  /**
+   * `message` is human-readable and every client since the first build shows it.
+   *
+   * `code` is OPTIONAL and machine-readable, added so the connection HUD can tell
+   * "this region is at capacity, try another" apart from the dozen other things that
+   * produce an error string. Adding an optional field to an existing message is the
+   * cheapest kind of protocol change: an older client destructures `message` and is
+   * completely unaffected, so this needs no `CLIENT_CAPS` gate. Keep it that way —
+   * `message` must stay self-sufficient, never "see code".
+   */
+  | { t: 'error'; message: string; code?: ErrorCode }
   // reply to a 'rejoin': ok ⇒ slot reclaimed (a snapshot follows); !ok ⇒ the
   // grace window lapsed / slot is gone, stop trying
   | { t: 'rejoined'; ok: boolean }
+  /** a `report` was accepted (or was a duplicate, which is reported the same way — the
+   *  reporter does not need to know which, and telling them would leak prior reports) */
+  | { t: 'reported'; ok: boolean }
+  /**
+   * A staged RANKED pairing died before it started, and this is what it cost.
+   *
+   * Sent to every still-connected member — including the innocent, whose `yours` is null.
+   * That is deliberate: being told "the match was cancelled and you were not charged" is the
+   * difference between a system that looks arbitrary and one that looks fair, and it is the
+   * only moment the game can say so. Optional on the wire, so an older client simply shows
+   * the plain cancellation error it always did.
+   */
+  | { t: 'dodgeVerdict'; message: string; yours: DodgeVerdict | null; others: DodgeVerdict[] }
+  /**
+   * The ranked queue is CLOSED to this account: their account standing has fallen far
+   * enough to carry a cooldown (see `src/standing.ts`).
+   *
+   * Its own message rather than an `error` string, because a lock is a state with a CLOCK —
+   * the client counts it down and reopens the button by itself, instead of showing a
+   * sentence that is wrong thirty seconds later. Gated on the client's `standing` cap:
+   * a build that would not know what to do with it gets the plain error instead.
+   */
+  | { t: 'standingLock'; until: number; score: number; tier: StandingTierKey }
   // `ranked` + `intros` are present only for ranked matchmaking rooms; they
   // drive the pre-match intro overlay (ELO reveal). Optional so custom rooms and
   // older servers omit them and the client simply shows no intro.
@@ -466,6 +555,31 @@ export type ServerMsg =
       result: ReplayResult;
       replay: Replay;
     }
+  /**
+   * THE MATCH ID, TO THE HOST ALONE. Sent immediately BEFORE the `matchResult` broadcast, on
+   * the host's socket only, and to nobody else in the room.
+   *
+   * It is a globally unique id for the match just finished, minted by whichever server ran it,
+   * and it exists for the self-hosted case (`docs/lan-selfhost.md`): a LAN match is uploaded to
+   * the cloud by a CLIENT rather than written by the server that ran it, and without a stable
+   * id the cloud cannot tell a re-upload from a second match. It is `UNIQUE` in `lan_runs`, so
+   * the upload is idempotent and a retry after a flaky connection is free.
+   *
+   * ⚠️ **IT USED TO RIDE `matchResult`, WHICH IS A BROADCAST, AND THAT WAS THE BUG.** The
+   * cloud has no way to know who really hosted a self-hosted match — it was not there. All it
+   * can check is that the uploader signed in and named a match id. So possession of the id IS
+   * the right to file the match, and broadcasting it handed that right to all four drivers and
+   * every spectator: whoever posted first took the row, under THEIR account, and the actual
+   * host's upload was then answered with somebody else's match. Sending it to one socket is
+   * what makes "the host uploads" a fact about the protocol rather than a convention the
+   * clients are trusted to keep.
+   *
+   * It arrives BEFORE `matchResult` on the same ordered socket, so the session has it in hand
+   * by the time the result callback runs. The cloud checks ownership as well (`/api/lan`
+   * answers 409 to anyone claiming a match another host already filed), because a capability
+   * on the wire and a check at the table are protections against different mistakes.
+   */
+  | { t: 'matchArchive'; matchId: string }
   // ranked only: each driver's overall-ELO change, sent shortly after matchResult
   // once the match is scored + persisted (async DB write). Drives the results
   // screen's ELO reveal. Absent for custom/anonymous/DB-off matches.

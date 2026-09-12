@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import * as C from '../src/config';
 import { START_POSES } from '../src/config';
 import { activeStartLegal } from '../src/sim/field';
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { simModuleFor } from '../src/games/sim';
+import { scrubName } from './moderation';
 import type { GameId } from '../src/types';
 import { physicsReady } from '../src/sim/physicsEngine';
 import { ReplayRecorder, worldResult, type Replay, type ReplayResult } from '../src/sim/replay';
@@ -17,6 +19,7 @@ import type {
 } from '../src/types';
 import {
   dequantizeCommand,
+  encodeMsg,
   quantizeCommand,
   slimWorld,
   roomCapacity,
@@ -33,14 +36,55 @@ import {
   type ServerMsg,
 } from '../src/net/protocol';
 import { sanitizePlayerPatch } from '../src/net/sanitize';
+import type { DodgeKind, DodgeVerdict } from '../src/dodge';
+import { judgeParticipation } from '../src/standing';
+import { roomPersists } from './channel';
 import { eloMode, type EloOutcome } from './ranked';
 import type { PendingMatch } from './matchTypes';
+
+/** what the room hands the DB layer when a staged ranked pairing dies. The room knows WHO
+ *  failed and HOW; the penalty scale and the rolling window live outside it. */
+export interface DodgeReport {
+  culprits: { userId: string; kind: DodgeKind }[];
+  mode: '1v1' | '2v2';
+  game: GameId;
+  /** every roster member, so the innocent can be told they were not charged */
+  rosterUserIds: string[];
+  /** the room it died in — recorded on the standing ledger so a moderator reading a
+   *  player's history can line an offence up against the match it came from */
+  roomCode: string;
+}
+
+/**
+ * What a finished RANKED match says about the people who played it: who sat it out, who
+ * walked away from it, and who simply played it. The room only ever OBSERVES — it counts
+ * ticks and classifies them with the pure `judgeParticipation` — so the decision about what
+ * any of it costs stays in one place (src/standing.ts) and can be tested without a match.
+ */
+export interface BehaviourReport {
+  offenders: { userId: string; kind: 'afk' | 'leave' }[];
+  /**
+   * Drivers the referee CARDED in this match, with the colour, so the standing charge can
+   * price a red above a yellow. Separate from `offenders` because the two are found
+   * differently: an AFK is the server noticing an absence, a card is the sim's own rule
+   * engine sanctioning a violation it watched happen.
+   */
+  carded?: { userId: string; colour: 'yellow' | 'red' }[];
+  /** everyone who played it clean, credited toward working a penalty off */
+  cleanUserIds: string[];
+  mode: '1v1' | '2v2';
+  game: GameId;
+  roomCode: string;
+}
 
 /** what the persistence layer resolves to after a finished match: ranked ELO
  * deltas (versus) or a record run's leaderboard standing (record). */
 export interface PersistOutcome {
   elo?: EloOutcome[];
   record?: RecordRankInfo;
+  /** the row this match was written as, when it was written. The room keeps it so a MISSCORE
+   *  claim filed from the results screen can point at the match a moderator has to open. */
+  matchId?: string;
 }
 
 const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false };
@@ -54,6 +98,40 @@ const SNAPSHOT_INTERVAL = 2;
 /** how many ticks to keep re-applying a robot's last command when its next input
  * hasn't arrived (absorbs jitter without freezing); past this it coasts to ZERO */
 const HOLD_TICKS = 15;
+/**
+ * How far AHEAD of the live tick a buffered input may be stamped.
+ *
+ * ⚠️ THIS IS A MEMORY BOUND, NOT A GAMEPLAY TUNABLE. `pending` is keyed by the exact tick an
+ * input applies to and `frameCommands` only ever deletes keys `<= tick`, so a key the world
+ * will never reach is never collected — a client stamping ever-larger ticks at 60 Hz grew the
+ * map without limit, and nothing in the room could see it. Found by load testing (see
+ * `docs/capacity.md` §7).
+ *
+ * The value comes from the CLIENT'S OWN CONTRACT: `game.ts` caps prediction at
+ * `MAX_PREDICT_LEAD` (40) ticks past the newest authoritative tick and sends `world.tick + 1`,
+ * so a legitimate input is never more than ~41 ticks ahead. A stale client sends LOWER ticks,
+ * not higher, so lateness cannot push against this bound. 120 is 3× the honest maximum —
+ * wide enough that no real client is ever refused, small enough that the map is bounded.
+ */
+export const MAX_INPUT_LEAD_TICKS = 120;
+/**
+ * Distinct future ticks held per robot.
+ *
+ * ⚠️ **THIS CANNOT FIRE TODAY, AND SAYING SO IS THE POINT.** An earlier comment here
+ * called it a backstop "for when something is wrong", which reads as a second, independent
+ * bound. It is not one: `pending` only ever takes keys in `(w.tick, w.tick + 120]` and
+ * `frameCommands` deletes every key the world has reached, so the map holds at most
+ * `MAX_INPUT_LEAD_TICKS` entries — 120 — and a duplicate tick overwrites rather than
+ * grows. 128 is strictly above that, so the eviction below is UNREACHABLE by construction
+ * and `MAX_INPUT_LEAD_TICKS` is the whole of the memory bound.
+ *
+ * It is kept rather than deleted because it is free and it is the thing that would catch
+ * the lead cap being widened, moved, or bypassed by a new buffering path — but a guard
+ * nobody can reach is not evidence of anything, so do not read a passing test here as
+ * proof that eviction works. `npm test` asserts the RELATIONSHIP (`> MAX_INPUT_LEAD_TICKS`)
+ * instead, which is the property that is actually load-bearing.
+ */
+export const MAX_PENDING_PER_ROBOT = 128;
 /** a client whose CONFIRMED snapshot baseline (its piggybacked `ack`) is more than
  * this many ticks behind the live tick is force-resynced with a full keyframe. Wide
  * enough that normal ack round-trip (a few ticks) never trips it — it catches a
@@ -61,6 +139,29 @@ const HOLD_TICKS = 15;
  * snapshots) rather than letting it drift on deltas keyed to a baseline it no longer
  * has. ~4 s at 60 Hz. */
 const ACK_STALE_TICKS = 240;
+/**
+ * Outbound backlog (bytes still queued on the socket) past which a client is SKIPPED for
+ * this snapshot instead of being handed another one.
+ *
+ * A snapshot leaves every 2 ticks whether or not the last one was written, and `ws.send`
+ * queues without complaint — so a socket that has stopped draining (a spectator on a phone
+ * that walked into a lift, a driver on a dying link) grows an unbounded queue of worlds
+ * that are already historical by the time they arrive. Nothing in the room could see that,
+ * because the room only ever knows that it CALLED send.
+ *
+ * Skipping is a COALESCE, not a drop, and that is why `snapPrimed` is cleared with it: the
+ * snapshots are DELTAS against the previous broadcast frame, so a client that misses one
+ * cannot apply the next. Unpriming makes the next snapshot it does receive a full keyframe
+ * of the CURRENT world, which is the only frame worth sending to somebody who has fallen
+ * behind anyway. The existing `ACK_STALE_TICKS` resync covers the same failure from the
+ * other side (the client's ack falling behind); this one reacts in one frame instead of 240
+ * ticks, and, unlike that one, it also stops the memory growing while it waits.
+ *
+ * 256 KB is ~40 solo snapshots or ~40 2v2 frames uncompressed — far past any normal write
+ * burst (a healthy socket's `bufferedAmount` is 0 nearly every time it is read) and well
+ * under a figure that would matter per socket at full population.
+ */
+const SNAP_BACKLOG_BYTES = 256 * 1024;
 /** hold a disconnected driver's slot this long for a reconnect before dropping. Long
  * enough to cover a full page reload / navigate-away-and-come-back (the "rejoin your
  * match" flow), not just a transient socket blip. The robot coasts to ZERO meanwhile. */
@@ -81,6 +182,33 @@ const SERVER_REGION: string = process.env.FLY_REGION ?? process.env.SERVER_REGIO
 export interface Client {
   id: string;
   send: (m: ServerMsg) => void;
+  /**
+   * Send an ALREADY-SERIALIZED message. Optional: a caller that has no socket
+   * (every test, and the headless smoke) supplies only `send`, and the room falls
+   * back to it.
+   *
+   * It exists because the room's hot path is a BROADCAST, and encoding is per
+   * RECIPIENT. `ws.send(encodeMsg(m))` inside each client's own closure means a
+   * 2v2 snapshot — the biggest message the server produces — is stringified FOUR
+   * times, once per driver, plus once per spectator, all from the same object.
+   * The profile puts protocol encoding at 3.2% of a solo-room machine; that term
+   * is linear in the audience while the simulation term is not, so the expensive
+   * room is exactly where it is worst. Encoding once and handing everyone the same
+   * string removes the multiplier.
+   */
+  sendRaw?: (s: string) => void;
+  /**
+   * Bytes this socket has QUEUED but not yet handed to the kernel (`ws.bufferedAmount`).
+   * Optional for the same reason `sendRaw` is: a caller with no socket (every test, and
+   * the headless smoke) supplies only `send`, and the room then treats the backlog as
+   * zero — which is true, because those sends are synchronous array pushes.
+   *
+   * The room reads it in ONE place, `broadcastSnapshot`, because a snapshot is the only
+   * message it produces 30 times a second. A socket that has not drained the last few
+   * snapshots cannot be helped by being handed another one: the newest world is the only
+   * one worth having, so the frames in between are worth less than the memory they cost.
+   */
+  backlog?: () => number;
   player: LobbyPlayer;
   /** false while the socket is dropped (within the reconnect grace) */
   connected: boolean;
@@ -206,6 +334,12 @@ export class Room {
   // recording: captures the input log for this match; finalized once at phase 'post'
   private recorder: ReplayRecorder | null = null;
   private finalized = false;
+  /**
+   * This match's globally unique id, minted at `finalizeMatch` and sent to THE HOST ALONE.
+   * Null until then, and re-minted by a rematch — a rematch is a different match. See
+   * `ServerMsg` 'matchArchive' for what it is for and why only the host gets it.
+   */
+  private matchId: string | null = null;
   // world.time at which phase 'post' began, to hold the settle window before
   // finalizing (null until the match ends)
   private postSince: number | null = null;
@@ -237,6 +371,9 @@ export class Room {
   // would desync since each runs a different src/sim.
   private channel = 'stable';
   private strategyDeadline = 0;
+  /** the match row this room last wrote, for a misscore claim to point at (see
+   *  `resolveScoreReport`). Empty until the result has persisted. */
+  private lastMatchId: string | null = null;
   private strategyTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly slotOf = new Map<string, number>(); // clientId -> roster slot (= robotId)
 
@@ -275,7 +412,30 @@ export class Room {
      * refused a second join/queue elsewhere (they must rejoin or leave this one). */
     private readonly onUserActive?: (userId: string) => void,
     private readonly onUserInactive?: (userId: string) => void,
+    /** invoked when a STAGED ranked pairing dies, with the players at fault. The DB layer
+     * applies the escalating penalty and answers with what each player was actually
+     * charged, which the room relays so nobody is penalised without being told. DB-agnostic:
+     * tests/dev pass nothing and the cancel behaves exactly as it always did. */
+    private readonly onDodge?: (d: DodgeReport) => void | Promise<DodgeVerdict[] | void>,
+    /** invoked once at the end of a ranked match with who sat it out, who walked away from
+     * it, and who played it clean. The DB layer turns that into account-standing changes;
+     * the room itself only OBSERVES (it counts ticks), so tests/dev pass nothing and the
+     * match behaves exactly as before. */
+    private readonly onBehaviour?: (b: BehaviourReport) => void,
   ) {}
+
+  /**
+   * PARTICIPATION, counted while the match is actually live.
+   *
+   * Standing charges for sitting out or walking away have to be grounded in something the
+   * server SAW, not in a report or a guess, so the tick loop keeps three counters: how many
+   * live ticks there were, how many of them each robot issued a real command on, and how
+   * many of them its driver was not connected for. Everything about what those numbers MEAN
+   * is decided at finalize (see `behaviourReport`).
+   */
+  private liveTicks = 0;
+  private readonly driveTicks = new Map<number, number>();
+  private readonly awayTicks = new Map<number, number>();
 
   /** authed users whose match is currently live in THIS room (holds their single-
    * game lock). Registered at match begin, released at finalize / drop / stop. */
@@ -311,12 +471,43 @@ export class Room {
     if (!this.hostId) this.hostId = client.id;
     client.send({ t: 'welcome', clientId: client.id });
     this.broadcastRoster();
+    this.moderatePlayerNames(client);
   }
 
-  /** true when this room's results must NOT be written to the leaderboard/ELO DB
-   * (in-development alpha builds) */
+  /**
+   * Fire-and-forget hosted moderation of a newly-joined player's free-text names,
+   * off the join path (the hosted call is async and must never block the roster).
+   * If a name is flagged it is reset to a safe default and the roster re-broadcast,
+   * so an opponent never sees an inappropriate live team/robot name. Authed players'
+   * `name` is already the moderated handle (server/index.ts); this covers `teamName`,
+   * the robot `spec` name/team, and an anonymous player's chosen name. Best-effort:
+   * the durable record is scrubbed again at persist time regardless.
+   */
+  private moderatePlayerNames(client: Client): void {
+    void (async () => {
+      const p = client.player;
+      const [name, teamName, specName, specTeam] = await Promise.all([
+        scrubName(p.name, 'Driver'),
+        scrubName(p.teamName, ''),
+        scrubName(p.spec.name, DEFAULT_SPEC.name),
+        scrubName(p.spec.teamName, ''),
+      ]);
+      if (!this.clients.has(client.id)) return; // left before the check returned
+      if (name === p.name && teamName === p.teamName && specName === p.spec.name && specTeam === p.spec.teamName) {
+        return; // all clean (or moderation disabled) — nothing to do
+      }
+      p.name = name;
+      p.teamName = teamName;
+      p.spec = { ...p.spec, name: specName, teamName: specTeam };
+      this.broadcastRoster();
+    })();
+  }
+
+  /** true when this room's results must NOT be written to the leaderboard/ELO DB — an
+   *  in-development build talking to the PRODUCTION server. On the alpha deployment, whose
+   *  database is its own, alpha results persist normally (see server/channel.ts). */
   private get unpersisted(): boolean {
-    return this.channel === 'alpha';
+    return !roomPersists(this.channel);
   }
 
   /** add a read-only SPECTATOR. It receives the current `matchStart` (with a sentinel
@@ -362,9 +553,16 @@ export class Room {
     };
   }
 
-  /** a one-line summary of a LIVE match for the "Watch Live" list (`GET /api/live`).
-   * Returns null unless a versus match is currently running (record/solo + lobby rooms
-   * are not listed). */
+  /**
+   * A one-line summary of this room if a match is RUNNING in it, else null.
+   *
+   * This describes the room; it does not decide who may see it. Every live room
+   * qualifies — ranked, custom and record alike — and the two consumers narrow it
+   * themselves: public `/api/live` keeps ranked only, the admin view keeps
+   * everything. Filtering here instead would have made "show the operator every
+   * game" impossible without a second, near-identical method drifting alongside
+   * this one.
+   */
   summary(): LiveRoom | null {
     const w = this.world;
     if (!w || this.phase !== 'match') return null;
@@ -373,7 +571,7 @@ export class Room {
     // room is torn down. Without this check "Watch Live" kept listing games that
     // had already ended (and it is not spectatable: the world is over).
     if (w.match.phase === 'post') return null;
-    if (this.config.kind === 'record') return null; // opponent-free runs aren't spectated
+    const record = this.config.kind === 'record';
     const players = [...this.clients.values()].map((c) => ({
       name: c.player.name,
       teamName: c.player.spec.teamName || undefined,
@@ -383,13 +581,15 @@ export class Room {
     return {
       room: this.pendingCode() ?? this.code,
       game: this.game,
-      mode: eloMode(this.clients.size),
+      mode: record ? (this.config.record ?? 'solo') : eloMode(this.clients.size),
       phase: w.match.phase,
       timeLeft: Math.max(0, Math.round(w.match.phaseTimeLeft)),
       ranked: this.ranked,
       players,
       score: { red: w.match.scores.red.total, blue: w.match.scores.blue.total },
       spectators: this.visibleSpectators(),
+      kind: record ? 'record' : 'versus',
+      region: SERVER_REGION || undefined,
     };
   }
 
@@ -410,6 +610,35 @@ export class Room {
     let n = 0;
     for (const s of this.spectators.values()) if (!s.hidden) n++;
     return n;
+  }
+
+  /** EVERY attached spectator, hidden observers included — the admission-control
+   *  figure, as distinct from `visibleSpectators()`, which is the number players are
+   *  shown. A hidden admin is invisible on screen but still costs a snapshot stream,
+   *  and a cap that could not see them would not be a cap. */
+  spectatorCount(): number {
+    return this.spectators.size;
+  }
+
+  /**
+   * Nobody is here and nothing is owed — safe for the connection layer to drop this room
+   * out of the registry.
+   *
+   * It exists for the async join path: the registry slot is claimed SYNCHRONOUSLY (so a
+   * racing second joiner finds the same room instead of creating a duplicate) but the
+   * joiner is only added several `await`s later, and any of the paths in between can
+   * abandon the attempt — including the socket simply closing, which reaches a `room` that
+   * is still null and so runs no teardown at all. Without a guard that room is counted
+   * against `MAX_ROOMS` forever.
+   *
+   * A STAGED ranked room is NOT abandonable even with zero clients: `takePendingMatch`
+   * has already consumed the row from Postgres (atomic delete-returning), so deleting the
+   * room here would strand the other three players, whose own joins would create a fresh
+   * room that can no longer claim the match. It reaps itself instead — `applyPending` arms
+   * `RANKED_JOIN_GRACE_MS`, and `cancelPending` calls `onEmpty()`.
+   */
+  isAbandonable(): boolean {
+    return this.clients.size === 0 && this.spectators.size === 0 && this.pendingMatch === null;
   }
 
   /**
@@ -463,7 +692,13 @@ export class Room {
       // pre-match departure CANCELS the staged match (both drivers requeue). Full
       // strategy-phase reconnection is deferred (see docs/netcodeplan.md).
       if (this.pendingMatch && this.phase === 'strategy') {
-        this.cancelPending('Match cancelled - a player disconnected.');
+        // STRATEGY BAIL: this socket's user is the one who left. Charged cause-blind — from
+        // here a closed tab and a pulled cable are the same event, and pretending otherwise
+        // would just advertise which one is cheaper (see src/dodge.ts).
+        this.cancelPending(
+          'Match cancelled - a player disconnected.',
+          c.userId ? [{ userId: c.userId, kind: 'bail' as DodgeKind }] : [],
+        );
         return;
       }
       this.clients.delete(id);
@@ -495,10 +730,30 @@ export class Room {
    * (a partitioned TCP connection lingers), and refusing it stranded the player on a
    * "connection lost" screen. The old socket is orphaned (its `send` is replaced) and
    * its later close is ignored via the conn stamp. */
-  reattach(id: string, send: (m: ServerMsg) => void): number | null {
+  reattach(
+    id: string,
+    send: (m: ServerMsg) => void,
+    sendRaw?: (s: string) => void,
+    backlog?: () => number,
+  ): number | null {
     const c = this.clients.get(id);
     if (!c) return null;
     c.send = send;
+    /**
+     * ⚠️ EVERY SENDER ON THIS CLIENT BELONGS TO THE NEW SOCKET, NOT JUST `send`.
+     *
+     * Only `send` used to be replaced here, which was correct for exactly as long as it was
+     * the only one. Since the encode-once change the hot path is `sendRaw`, and the room's
+     * BROADCASTS and SNAPSHOTS go through it — so a reattached client kept a closure over
+     * the socket it had just lost. That closure checks `readyState === OPEN` and therefore
+     * fails SILENTLY: the reconnecting player receives `welcome`, `rejoined` and the one
+     * keyframe `sendSnapshotTo` writes (all `send`) and then nothing ever again, on a socket
+     * that is open and healthy. Assigning `undefined` when a caller supplies none is the
+     * right answer too — the room falls back to `send`, which is what a socketless test
+     * client has always done.
+     */
+    c.sendRaw = sendRaw;
+    c.backlog = backlog;
     c.connected = true;
     c.disconnectAt = 0;
     c.conn = ++this.connSeq; // this socket now owns the slot (stale old close ignored)
@@ -514,6 +769,13 @@ export class Room {
 
   /** finalize any disconnected driver whose grace has lapsed: drop its robot to
    * ZERO for good (broadcast) and free the slot */
+  /** is ANY client currently holding a live socket? A room where every slot is held by a
+   *  dropped client is a ghost — see the freeze in `startLoop`. */
+  private anyConnected(): boolean {
+    for (const c of this.clients.values()) if (c.connected) return true;
+    return false;
+  }
+
   private checkGrace(): void {
     // hot path: this runs every tick (60 Hz). Disconnects are rare, so avoid the
     // array-spread allocation + Date.now() unless a slot is actually being held.
@@ -620,6 +882,22 @@ export class Room {
     if (typeof ack === 'number' && ack > (this.snapAck.get(id) ?? -1)) this.snapAck.set(id, ack);
     const rid = this.robotOf.get(id);
     if (rid === undefined || this.dropped.has(rid)) return;
+    // REFUSE AN IMPOSSIBLE FUTURE TICK OUTRIGHT. Rejected here rather than at the buffer
+    // below because `latestTick` is a high-water mark: one input stamped 1e9 would leave
+    // every subsequent honest input looking stale, and that robot would stop responding to
+    // its own driver. LATE inputs (tick <= w.tick) are legitimate and pass through — the
+    // `latest` path exists for them.
+    // A TICK IS A COUNT OF SIM STEPS, so the only legal values are safe non-negative
+    // integers. `Number.isInteger` alone admitted two kinds of nonsense: a NEGATIVE tick
+    // (which no world ever reaches, so it can only ever be noise), and an UNSAFE one like
+    // 1e21 (an integer by the language's reckoning, but arithmetic on it stops being
+    // exact, so every comparison below silently stops meaning what it reads as). Neither
+    // is exploitable today — the high-water comparisons happen to ignore a negative, and
+    // the lead cap happens to catch 1e21 whenever a world exists — but both of those are
+    // accidents of order downstream, not decisions, and `latestTick`/`ackTick` are
+    // high-water marks that cannot be lowered once poisoned. Reject at the door instead.
+    if (!Number.isSafeInteger(tick) || tick < 0) return;
+    if (this.world && tick - this.world.tick > MAX_INPUT_LEAD_TICKS) return;
     const cmd = dequantizeCommand(q);
     // track the freshest command by tick (even if it's now in the past) — this is
     // what a late input still contributes, so the robot keeps moving
@@ -629,15 +907,24 @@ export class Room {
     }
     if (this.world) this.lastRecvTick.set(rid, this.world.tick); // liveness
     // ALSO buffer FUTURE inputs by exact tick — an on-time client's robot then
-    // matches its own prediction exactly (smooth); a late one falls back to latest
+    // matches its own prediction exactly (smooth); a late one falls back to latest.
+    // Only while a world exists: `startMatch` clears `pending`, so anything buffered
+    // before then is discarded regardless, and buffering against no reference tick is
+    // the one case `MAX_INPUT_LEAD_TICKS` could not bound.
     const w = this.world;
-    if (!w || tick > w.tick) {
+    if (w && tick > w.tick && tick - w.tick <= MAX_INPUT_LEAD_TICKS) {
       let buf = this.pending.get(rid);
       if (!buf) {
         buf = new Map();
         this.pending.set(rid, buf);
       }
       buf.set(tick, cmd);
+      // backstop — drop oldest-first so the freshest prediction is what survives
+      if (buf.size > MAX_PENDING_PER_ROBOT) {
+        for (const t of [...buf.keys()].sort((a, b) => a - b).slice(0, buf.size - MAX_PENDING_PER_ROBOT)) {
+          buf.delete(t);
+        }
+      }
     }
     if (tick > (this.ackTick.get(id) ?? -1)) this.ackTick.set(id, tick);
   }
@@ -762,8 +1049,15 @@ export class Room {
 
     for (const c of this.clients.values()) c.send(this.matchStartMsg(this.robotOf.get(c.id) ?? 0));
     // the votes were cleared above — SAY so, or both clients carry the old full
-    // tally into the new run and the button reads "2/2" on a run nobody voted for
-    if (this.config.kind === 'record') this.broadcastRematch();
+    // tally into the new run and the button reads "2/2" on a run nobody voted for.
+    //
+    // EVERY ROOM, and this was the last record-only gate left over from when the
+    // vote was co-op's alone. It is also the ONLY place a client is told the tally
+    // at the start of a match — `refreshRematch` fires on a leave or a reattach,
+    // never on an ordinary join — so a custom room's drivers sat at `need: 0`, and
+    // both the HUD button and the results-screen one hide below `need > 1`.
+    // Reported as "rematch button does not appear in a custom game".
+    this.broadcastRematch();
     // spectators already watching a lobby/strategy room get the match start too (yourRobotId -1)
     for (const c of this.spectators.values()) c.send(this.matchStartMsg(-1));
     this.startLoop();
@@ -782,7 +1076,16 @@ export class Room {
     if (p.channel) this.channel = p.channel;
     this.intros = p.roster.map((r, i) => ({ id: i, elo: r.introElo }));
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
-    this.pendingTimer = setTimeout(() => this.cancelPending(), RANKED_JOIN_GRACE_MS);
+    // NO-SHOW: whoever is still missing when the grace lapses is the one who dodged. The
+    // players who DID connect are innocent and are charged nothing.
+    this.pendingTimer = setTimeout(
+      () =>
+        this.cancelPending(
+          'Match cancelled - an opponent did not connect.',
+          this.absentRoster().map((userId) => ({ userId, kind: 'noshow' as DodgeKind })),
+        ),
+      RANKED_JOIN_GRACE_MS,
+    );
     if (this.pendingTimer.unref) this.pendingTimer.unref();
     this.maybeStartRanked(); // in case everyone is already here
   }
@@ -922,7 +1225,17 @@ export class Room {
     if (connected.length === p.roster.length && connected.every((c) => c.player.ready)) {
       this.beginRanked();
     } else {
-      this.cancelPending('Match cancelled - not everyone readied up in time.');
+      // NEVER READIED: the players who sat out the window. Anyone who readied is innocent —
+      // they did everything asked of them and still lost the match.
+      this.cancelPending(
+        'Match cancelled - not everyone readied up in time.',
+        [
+          ...[...this.clients.values()]
+            .filter((c) => c.connected && c.userId && !c.player.ready)
+            .map((c) => ({ userId: c.userId as string, kind: 'unready' as DodgeKind })),
+          ...this.absentRoster().map((userId) => ({ userId, kind: 'noshow' as DodgeKind })),
+        ],
+      );
     }
   }
 
@@ -944,7 +1257,10 @@ export class Room {
     const byUser = new Map<string, Client>();
     for (const c of this.clients.values()) if (c.connected && c.userId) byUser.set(c.userId, c);
     if (!p.roster.every((r) => r.userId && byUser.has(r.userId))) {
-      this.cancelPending('Match cancelled - an opponent disconnected.');
+      this.cancelPending(
+        'Match cancelled - an opponent disconnected.',
+        this.absentRoster().map((userId) => ({ userId, kind: 'bail' as DodgeKind })),
+      );
       return;
     }
     // roster index = robotId; keep start poses distinct per alliance as an AFK fallback
@@ -975,7 +1291,10 @@ export class Room {
 
   /** a staged ranked match no player (or not everyone) showed up for: tell whoever
    * did connect and tear the room down (no rated match runs). */
-  private cancelPending(message = 'Match cancelled - an opponent did not connect.'): void {
+  private cancelPending(
+    message = 'Match cancelled - an opponent did not connect.',
+    culprits: { userId: string; kind: DodgeKind }[] = [],
+  ): void {
     if (this.world !== null) return; // already started
     if (this.pendingTimer) {
       clearTimeout(this.pendingTimer);
@@ -985,9 +1304,54 @@ export class Room {
       clearTimeout(this.strategyTimer);
       this.strategyTimer = null;
     }
+    const p = this.pendingMatch;
+    /**
+     * BILL THE DODGE before tearing the room down.
+     *
+     * A cancelled ranked pairing costs three other people their next few minutes, and until
+     * now it cost the person who caused it nothing. The culprits are worked out at each
+     * cancel site (who never connected / who dropped / who never readied) rather than here,
+     * because only the caller knows which of the three failures happened.
+     *
+     * Everyone still connected is TOLD the verdict — the penalised so a rating drop is never
+     * unexplained, and the innocent so they know the cancel was not charged to them. The
+     * sockets are still open at this point; `stop()` below closes them, so this has to fire
+     * first and the verdict is relayed from the async reply.
+     */
+    if (p && this.ranked && culprits.length && this.onDodge) {
+      const listeners = [...this.clients.values()].filter((c) => c.connected);
+      void Promise.resolve(
+        this.onDodge({
+          culprits,
+          mode: p.mode,
+          game: this.game,
+          rosterUserIds: p.roster.map((r) => r.userId).filter((u): u is string => !!u),
+          roomCode: this.code,
+        }),
+      )
+        .then((verdicts) => {
+          if (!verdicts?.length) return;
+          for (const c of listeners) {
+            if (!c.userId) continue;
+            const mine = verdicts.find((v) => v.userId === c.userId) ?? null;
+            c.send({ t: 'dodgeVerdict', message, yours: mine, others: verdicts.filter((v) => v.userId !== c.userId && v.kind) });
+          }
+        })
+        .catch((e) => console.error('[dodge] penalty failed:', e));
+    }
     this.broadcast({ t: 'error', message });
     this.stop();
     this.onEmpty();
+  }
+
+  /** roster members who are NOT currently connected here — the no-show set. */
+  private absentRoster(): string[] {
+    const p = this.pendingMatch;
+    if (!p) return [];
+    const present = new Set(
+      [...this.clients.values()].filter((c) => c.connected && c.userId).map((c) => c.userId),
+    );
+    return p.roster.map((r) => r.userId).filter((u): u is string => !!u && !present.has(u));
   }
 
   private startLoop(): void {
@@ -1000,6 +1364,43 @@ export class Room {
       try {
         this.checkGrace(); // finalize any driver whose reconnect grace has lapsed
         if (this.clients.size === 0) return; // room emptied (loop already stopped)
+        // GHOST ROOM: every driver has dropped but none has been gone long enough for
+        // `checkGrace` to reap them, so the slots are still held and the room keeps
+        // stepping Rapier at 60 Hz for nobody. Measured under load: 19 rooms burning
+        // 0.906 cores with 0 players (docs/capacity.md §7).
+        //
+        // Freezing loses NOTHING, which is the part worth knowing before changing it: a
+        // match nobody returns to is never finalized at all — when the last grace lapses
+        // `checkGrace` calls `onEmpty()` and the room is deleted, with no `finalizeMatch`
+        // on that path. So these ticks can only ever be thrown away.
+        //
+        // And when somebody DOES come back, resuming where they left is the better
+        // outcome anyway. It is what makes a whole-region restart survivable: today both
+        // sides of a ranked match return to a world that ran 45 s without either of them,
+        // which is unplayable and effectively a double forfeit.
+        //
+        // `last`/`acc` are reset so the resume does not fast-forward the frozen
+        // wall-clock — without that, the catch-up clamp would burn 0.25 s of sim in one
+        // turn the moment the first player reconnects.
+        //
+        // ⚠️ SO THE MATCH CLOCK PAUSES; IT DOES NOT JUMP. `phaseTimeLeft` is counted down
+        // by `stepMatch`, i.e. per TICK, and no tick runs while this is frozen — a 45 s
+        // region blip costs the match no game time at all, on purpose (that is the whole
+        // "survivable restart" argument above). Two consequences that are POLICY and not
+        // accidents, stated here because neither is visible from the code:
+        //   · the resume is triggered by ANY ONE driver reconnecting, so in a 2v2 the
+        //     clock restarts for all four the moment the first of them is back, while the
+        //     other three are still inside their reconnect grace;
+        //   · a match therefore takes longer in wall-clock time than its own clock says,
+        //     which anything reading `Date.now()` around a match (the grace timers, the
+        //     post-match settle) does not see.
+        // `checkGrace` deliberately keeps running on the WALL clock through the freeze, so
+        // a player who never comes back is still reaped on schedule.
+        if (!this.anyConnected()) {
+          last = Date.now();
+          acc = 0;
+          return;
+        }
         const now = Date.now();
         acc += (now - last) / 1000;
         last = now;
@@ -1026,6 +1427,46 @@ export class Room {
     }, 1000 * C.SIM_DT);
   }
 
+  /**
+   * Count one tick of participation (see the counters above).
+   *
+   * ONLY live phases count. `pre` is the countdown nobody drives through, `post` is the
+   * results screen, and a `freeplay` room is not a match at all — including any of them
+   * would let a long countdown make an honest driver look absent.
+   *
+   * "Drove" is deliberately generous: any stick off centre, or any button. The question this
+   * answers is "was a person there", not "did they play well", and a driver parked in their
+   * base spinning the intake is playing badly, which is not an offence.
+   */
+  private countParticipation(w: World): void {
+    const phase = w.match.phase;
+    if (phase !== 'auto' && phase !== 'teleop' && phase !== 'transition') return;
+    this.liveTicks++;
+    for (const r of w.robots) {
+      const c = this.lastFrame?.get(r.id);
+      const moving =
+        !!c &&
+        (Math.abs(c.driveX) > 0.05 || Math.abs(c.driveY) > 0.05 || Math.abs(c.rotate) > 0.05 ||
+          Math.abs(c.leftDrive) > 0.05 || Math.abs(c.rightDrive) > 0.05 ||
+          c.intake || c.fire || !!c.catalyst || !!c.fling || !!c.driveMode);
+      if (moving) this.driveTicks.set(r.id, (this.driveTicks.get(r.id) ?? 0) + 1);
+      // AWAY is measured from the socket, not from the sticks: a driver whose client is
+      // gone is a different thing from one who is present and idle, and only the first is
+      // "left the match".
+      const away = this.departed.has(r.id) || !this.driverConnected(r.id);
+      if (away) this.awayTicks.set(r.id, (this.awayTicks.get(r.id) ?? 0) + 1);
+    }
+  }
+
+  /** is the client driving this robot currently connected? (a reconnecting driver inside
+   *  their grace window still counts as away for these ticks — they were, in fact, away) */
+  private driverConnected(robotId: number): boolean {
+    for (const c of this.clients.values()) {
+      if (this.robotOf.get(c.id) === robotId) return c.connected;
+    }
+    return false;
+  }
+
   /** advance the authoritative sim exactly one tick: build the per-robot command
    * frame, step, RECORD it (the replay input log), snapshot on cadence, and
    * finalize at match end. Both the real-time loop and `advanceForTest` go
@@ -1037,6 +1478,7 @@ export class Room {
     this.lastFrame = this.frameCommands(w.tick + 1);
     simModuleFor(this.game).step(w, C.SIM_DT, this.lastFrame);
     this.recorder?.record(w.tick, this.lastFrame);
+    this.countParticipation(w);
     const due = w.tick % SNAPSHOT_INTERVAL === 0;
     // Don't finalize the instant the match ends: balls are still flowing down the
     // ramp/through the gate and scoring for a beat. Keep stepping (and recording)
@@ -1062,7 +1504,27 @@ export class Room {
     const w = this.world;
     const replay: Replay = this.recorder.finish();
     const result = worldResult(w);
-    this.broadcast({ t: 'matchResult', kind: this.config.kind, record: this.config.record, result, replay });
+    // MINT THE MATCH ID HERE, at the one moment a match becomes a thing that happened.
+    // Every recipient of this broadcast gets the same id, which is what lets a
+    // self-hosted match be uploaded by a client without the cloud having to guess
+    // whether two uploads are one match or two (docs/lan-selfhost.md). Minted at
+    // finalize rather than at start because a match nobody finishes is never
+    // uploaded, and a rematch is a different match.
+    this.matchId = randomUUID();
+    // THE ID GOES TO THE HOST, THE RESULT GOES TO THE ROOM. Possession of the match id is the
+    // right to file this match in the cloud archive (the cloud cannot verify who hosted a
+    // self-hosted match — it was not there), so broadcasting it handed that right to every
+    // driver and every spectator and let whoever uploaded first take the row under their own
+    // account. Sent FIRST, on the same ordered socket, so the host has it before the result it
+    // belongs to. See the 'matchArchive' note in `src/net/protocol.ts`.
+    this.clients.get(this.hostId)?.send({ t: 'matchArchive', matchId: this.matchId });
+    this.broadcast({
+      t: 'matchResult',
+      kind: this.config.kind,
+      record: this.config.record,
+      result,
+      replay,
+    });
     // hand the authoritative outcome to the persistence layer (off the hot path).
     // ALPHA (in-development) rooms are NEVER persisted: the results screen + replay
     // still work from the broadcast above, but no leaderboard/ELO/record DB write
@@ -1105,6 +1567,7 @@ export class Room {
           assists: d.assists,
         });
       }
+      this.reportBehaviour(participants);
       const ret = this.onResult({ game: this.game, config: this.config, ranked: this.ranked, result, replay, participants });
       // resolves once persisted (async DB write): versus → per-driver ELO deltas;
       // record → the run's leaderboard standing. Broadcast so the results screen
@@ -1112,7 +1575,9 @@ export class Room {
       if (ret && typeof (ret as Promise<unknown>).then === 'function') {
         void (ret as Promise<PersistOutcome | void>)
           .then((out) => {
-            if (!out || this.clients.size === 0) return;
+            if (!out) return;
+            if (out.matchId) this.lastMatchId = out.matchId;
+            if (this.clients.size === 0) return;
             if (out.record) {
               this.broadcast({ t: 'recordResult', info: out.record });
             }
@@ -1134,19 +1599,90 @@ export class Room {
   }
 
   /**
-   * DUO RECORD REMATCH: a vote, not a command.
+   * Turn this match's participation counters into a behaviour report.
    *
-   * A co-op run belongs to both drivers equally, so neither may restart it out from
-   * under the other — mid-match OR from the results screen. Everyone toggles their
-   * own vote, the count is broadcast so both sides can see "1/2", and the match
-   * restarts only once every CONNECTED driver has said yes.
+   * RANKED ONLY. A custom room is people messing about with friends; standing exists to
+   * protect the ranked queue, and charging someone for going to make a cup of tea during a
+   * private practice match would be indefensible.
    *
-   * Restricted to record rooms on purpose. A versus match has an opponent whose
-   * interest is opposed to yours, and ranked has ELO riding on it; "both agree" is a
-   * meaningful gate for co-op and a coercion surface everywhere else.
+   * The MODE comes from the roster size rather than the queue that made the room, because
+   * this is only ever read back as context on a ledger row.
+   */
+  private reportBehaviour(participants: MatchParticipant[]): void {
+    if (!this.onBehaviour || !this.ranked || this.unpersisted) return;
+    const offenders: { userId: string; kind: 'afk' | 'leave' }[] = [];
+    const cleanUserIds: string[] = [];
+    for (const p of participants) {
+      if (!p.userId) continue;
+      const rid = this.robotOf.get(p.clientId) ?? this.robotIdOfUser(p.userId);
+      if (rid === undefined) continue;
+      const kind = judgeParticipation({
+        liveTicks: this.liveTicks,
+        driveTicks: this.driveTicks.get(rid) ?? 0,
+        awayTicks: this.awayTicks.get(rid) ?? 0,
+      });
+      if (kind) offenders.push({ userId: p.userId, kind });
+      else cleanUserIds.push(p.userId);
+    }
+    /**
+     * CARDS travel with the behaviour report, from the world the match was played in.
+     *
+     * `world.penalties.carded` is keyed by ROBOT id and holds the colour each carded robot
+     * currently shows — a second card escalates the same robot to red rather than adding a
+     * row, which is exactly the shape a standing charge wants: one event per carded driver,
+     * priced by what they ended the match holding.
+     */
+    const carded: { userId: string; colour: 'yellow' | 'red' }[] = [];
+    const held = this.world?.penalties.carded ?? {};
+    for (const p of participants) {
+      if (!p.userId) continue;
+      const rid = this.robotOf.get(p.clientId) ?? this.robotIdOfUser(p.userId);
+      if (rid === undefined) continue;
+      const colour = held[rid];
+      if (colour === 'yellow' || colour === 'red') carded.push({ userId: p.userId, colour });
+    }
+    if (!offenders.length && !cleanUserIds.length && !carded.length) return;
+    this.onBehaviour({
+      offenders,
+      carded,
+      cleanUserIds,
+      mode: participants.length > 2 ? '2v2' : '1v1',
+      game: this.game,
+      roomCode: this.code,
+    });
+  }
+
+  /** the robot a DEPARTED user was driving (their client is gone, so `robotOf` cannot
+   *  answer) — without this, walking out would erase the evidence of walking out */
+  private robotIdOfUser(userId: string): number | undefined {
+    for (const [rid, d] of this.departed) if (d.userId === userId) return rid;
+    return undefined;
+  }
+
+  /**
+   * REMATCH: a vote, not a command — in EVERY room.
+   *
+   * A match belongs to everyone in it, so nobody may restart it out from under the
+   * rest — mid-match OR from the results screen. Each driver toggles their own vote,
+   * the count is broadcast so the room can see "2/4", and the match restarts only
+   * once every CONNECTED driver has said yes.
+   *
+   * This used to be record-only, on the reasoning that "everyone agrees" is a
+   * meaningful gate for co-op and a coercion surface in a versus match. Unanimity is
+   * what answers that: nobody is restarted against their will, and declining costs a
+   * player nothing — they simply do not press it. Rooms that want a rematch were
+   * otherwise made to leave and re-queue for each other.
+   *
+   * ⚠️ RANKED CONSEQUENCE, deliberately not decided here. `beginMatch` clears
+   * `finalized`, and `this.ranked` is a ROOM flag, so a rematch in a matchmade room
+   * produces a SECOND rated match without going back through the matchmaker. Rated
+   * friend games are already farmable by a colluding pair and deliberately
+   * unmitigated (see CLAUDE.md), but a button makes it cheaper than a re-queue. If
+   * that becomes a problem the one-line fix is to clear `this.ranked` in
+   * `maybeRematch`, which keeps the feature everywhere and makes the rematch
+   * unrated.
    */
   private voteRematch(id: string, on: boolean): void {
-    if (this.config.kind !== 'record') return;
     if (!this.clients.has(id)) return; // spectators do not get a vote
     if (on) this.rematchVotes.add(id);
     else this.rematchVotes.delete(id);
@@ -1184,7 +1720,6 @@ export class Room {
   /** a driver left or came back: the tally is against CONNECTED drivers, so it has
    *  to be recomputed (and may now be unanimous) */
   private refreshRematch(): void {
-    if (this.config.kind !== 'record') return;
     for (const id of [...this.rematchVotes]) {
       if (!this.clients.has(id)) this.rematchVotes.delete(id);
     }
@@ -1206,6 +1741,24 @@ export class Room {
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
       if (this.stepOnce()) this.broadcastSnapshot();
     }
+  }
+
+  /** TEST SEAM: how many future inputs are buffered, in total and for the worst robot.
+   * `pending` growth is invisible from outside the room — it costs memory and nothing
+   * else — so the bound on it can only be asserted through a seam like this. */
+  pendingSizeForTest(): { total: number; max: number } {
+    let total = 0;
+    let max = 0;
+    for (const buf of this.pending.values()) {
+      total += buf.size;
+      if (buf.size > max) max = buf.size;
+    }
+    return { total, max };
+  }
+
+  /** TEST SEAM: the live tick, for asserting what counts as a legal input lead. */
+  tickForTest(): number {
+    return this.world?.tick ?? -1;
   }
 
   /** the command each robot runs at `tick`: its buffered input for that EXACT tick
@@ -1260,22 +1813,53 @@ export class Room {
     const order = w.balls.map((b) => b.id);
     const slim = slimWorld(w);
     const cmds = this.frameCmds(w);
+    // THE SHARED PREFIX. Everything above this line is identical for every recipient;
+    // the ONLY per-client fields in a snapshot are `ackInputTick` (that client's own
+    // input acknowledgement) and, for a client that is not yet primed, the full ball
+    // list instead of the delta. So the expensive part is stringified at most twice —
+    // once for primed recipients, once for unprimed — and each client's own tail is
+    // appended as a few characters. In a 2v2 with spectators that is the difference
+    // between one encode and six of the largest message the server sends.
+    //
+    // Priming is a first-frame condition: after a recipient's first snapshot it stays
+    // primed until its ack goes stale, so in steady state `unprimed` is never built.
+    const prefix: { primed: string | null; unprimed: string | null } = { primed: null, unprimed: null };
+    const bodyFor = (primed: boolean): string => {
+      const cached = primed ? prefix.primed : prefix.unprimed;
+      if (cached !== null) return cached;
+      const balls: BallDelta = { order, upd: primed ? changed : w.balls };
+      // JSON.stringify rather than encodeMsg: this is deliberately a PARTIAL snapshot,
+      // missing the one required field each recipient supplies for itself.
+      const whole = JSON.stringify({ t: 'snapshot', serverTick: w.tick, w: slim, balls, cmds });
+      // drop the closing brace so the per-client tail can be appended. `whole` always
+      // has at least one key, so it is never the degenerate `{}`.
+      const body = whole.slice(0, -1);
+      if (primed) prefix.primed = body;
+      else prefix.unprimed = body;
+      return body;
+    };
     const sendTo = (c: Client): void => {
+      // BACKED UP: this socket has not drained what it already owes. Queueing another
+      // snapshot on top only makes the arrears worse, and a delta keyed to a frame it may
+      // never read is worthless — so skip it and unprime, which turns the next snapshot it
+      // does get into a full keyframe of the world as it is THEN. See SNAP_BACKLOG_BYTES.
+      if (c.backlog && c.backlog() > SNAP_BACKLOG_BYTES) {
+        this.snapPrimed.delete(c.id);
+        return;
+      }
       // A client whose CONFIRMED baseline (its ack) has fallen too far behind can't
       // apply an incremental delta — drop it back to unprimed so it gets a full
       // keyframe and resyncs. Normal ack lag (a few ticks) never trips this.
       const ack = this.snapAck.get(c.id);
       if (ack !== undefined && w.tick - ack > ACK_STALE_TICKS) this.snapPrimed.delete(c.id);
       const primed = this.snapPrimed.has(c.id);
-      const balls: BallDelta = { order, upd: primed ? changed : w.balls };
-      c.send({
-        t: 'snapshot',
-        serverTick: w.tick,
-        w: slim,
-        balls,
-        cmds,
-        ackInputTick: this.ackTick.get(c.id) ?? 0,
-      });
+      const ackInputTick = this.ackTick.get(c.id) ?? 0;
+      if (c.sendRaw) {
+        c.sendRaw(`${bodyFor(primed)},"ackInputTick":${ackInputTick}}`);
+      } else {
+        const balls: BallDelta = { order, upd: primed ? changed : w.balls };
+        c.send({ t: 'snapshot', serverTick: w.tick, w: slim, balls, cmds, ackInputTick });
+      }
       if (!primed) this.snapPrimed.add(c.id);
     };
     for (const c of this.clients.values()) sendTo(c);
@@ -1303,8 +1887,17 @@ export class Room {
   }
 
   private broadcast(m: ServerMsg): void {
-    for (const c of this.clients.values()) c.send(m);
-    for (const s of this.spectators.values()) s.send(m);
+    // encode ONCE for the whole audience — see `Client.sendRaw`. Lazily, because a
+    // room whose every recipient is a plain `send` (tests, headless smoke) should not
+    // pay for a string nobody reads.
+    let raw: string | null = null;
+    const to = (c: Client): void => {
+      if (!c.sendRaw) return c.send(m);
+      if (raw === null) raw = encodeMsg(m);
+      c.sendRaw(raw);
+    };
+    for (const c of this.clients.values()) to(c);
+    for (const s of this.spectators.values()) to(s);
   }
 
   private broadcastRoster(): void {
@@ -1350,8 +1943,61 @@ export class Room {
     }
   }
 
+  /**
+   * Resolve a REPORT from one of this room's clients.
+   *
+   * The reporter names a ROBOT ID, never a user id — the client is never told who its
+   * opponents are (see `PlayerIntro`, which carries only a robot id and an ELO), and this
+   * keeps it that way. It also makes the report un-spoofable in the way that matters: a
+   * client can only report somebody who is actually in the match it is actually in, because
+   * the mapping from robot id to account happens here, on the server, from this room's own
+   * roster.
+   *
+   * Returns null when the report is not actionable — an unknown robot, an anonymous target,
+   * or a player reporting themselves. All three are silently dropped rather than answered
+   * with an error: none of them is something the reporting player can fix, and a failure
+   * message would only tell a prober what does and does not exist.
+   */
+  resolveReport(reporterClientId: string, robotId: number): { reporterId: string; reportedId: string } | null {
+    const reporter = this.clients.get(reporterClientId);
+    if (!reporter?.userId) return null; // must be signed in to report
+    let reportedId: string | undefined;
+    for (const c of this.clients.values()) {
+      if (this.robotOf.get(c.id) === robotId) reportedId = c.userId;
+    }
+    if (!reportedId || reportedId === reporter.userId) return null;
+    return { reporterId: reporter.userId, reportedId };
+  }
+
+  /**
+   * A MISSCORE claim from one of this room's players.
+   *
+   * Unlike `resolveReport` there is no target to resolve — the claim is about the RESULT, so
+   * all this has to answer is who is filing it and which match they are looking at. Signed in
+   * only, for the same reason reports are: an anonymous claim cannot be smited for being
+   * false, and a queue that cannot cost the filer anything is a queue that fills with noise.
+   */
+  resolveScoreReport(reporterClientId: string): {
+    reporterId: string;
+    matchId: string | null;
+    roomCode: string;
+  } | null {
+    const reporter = this.clients.get(reporterClientId);
+    if (!reporter?.userId) return null;
+    return { reporterId: reporter.userId, matchId: this.lastMatchId, roomCode: this.code };
+  }
+
   /** TEST SEAM: fire the strategy deadline synchronously (no real timer). */
   forceStrategyDeadlineForTest(): void {
     this.onStrategyDeadline();
+  }
+
+  /** TEST SEAM: fire the ranked JOIN GRACE synchronously — the no-show path, which is
+   *  otherwise only reachable by waiting out RANKED_JOIN_GRACE_MS. */
+  forceJoinGraceForTest(): void {
+    this.cancelPending(
+      'Match cancelled - an opponent did not connect.',
+      this.absentRoster().map((userId) => ({ userId, kind: 'noshow' as DodgeKind })),
+    );
   }
 }

@@ -27,7 +27,17 @@ const THEMES = process.env.DSIM_THEME ? [process.env.DSIM_THEME] : ['light', 'da
 const OUT = process.env.DSIM_OUT || fs.mkdtempSync(path.join(os.tmpdir(), 'shiftaudit-'));
 const LOG = path.join(OUT, 'shiftaudit.log');
 fs.writeFileSync(LOG, '');
+// QUIET BY DEFAULT. The full page-by-page trace always goes to the LOG FILE; the console
+// only gets the things you actually need to see — shifts and the final summary. DSIM_VERBOSE=1
+// puts the trace back on stdout.
+const VERBOSE = process.env.DSIM_VERBOSE === '1';
 const log = (...a) => {
+  const line = a.join(' ');
+  fs.appendFileSync(LOG, line + '\n');
+  if (VERBOSE) console.log(line);
+};
+/** always reaches the console, verbose or not (findings + the summary) */
+const say = (...a) => {
   const line = a.join(' ');
   fs.appendFileSync(LOG, line + '\n');
   console.log(line);
@@ -40,42 +50,84 @@ setTimeout(() => { log('WATCHDOG'); process.exit(2); }, 600000);
 process.on('unhandledRejection', (e) => { log('UNHANDLED REJECTION:', (e && e.stack) || e); process.exit(3); });
 process.on('uncaughtException', (e) => { log('UNCAUGHT:', (e && e.stack) || e); process.exit(3); });
 
-const PAGES = ['/', '/modes', '/configure/robot', '/configure/match', '/configure/controls',
+const ALL_PAGES = ['/', '/modes', '/configure/robot', '/configure/match', '/configure/controls',
                '/configure/audio', '/records', '/records/career', '/account', '/download'];
+// DSIM_PAGES=/configure/robot,/records narrows a run to the routes you actually touched.
+const PAGES = process.env.DSIM_PAGES
+  ? process.env.DSIM_PAGES.split(',').map((p) => p.trim()).filter(Boolean)
+  : ALL_PAGES;
+// PAGE selectors — the controls that differ from route to route.
 const SELECTORS = [
   '.ds-btn', '.ds-cta', '.ds-tile', '.ds-opt', '.ds-opt-add', '.ds-opt-del',
-  '.ds-key', '.ds-seg', '.ds-tab', '.ds-menu-btn', '.ds-rail-btn', '.ds-rail-home',
+  '.ds-key', '.ds-seg', '.ds-tab', '.ds-menu-btn',
   '.ds-subnav-btn', '.ds-chip', '.ds-select', '.ds-input', 'input[type=range]',
-  '.ds-mark', '.ds-foot-link',
 ];
+// SHELL chrome — the rail, wordmark and footer are the SAME markup on all ten routes, so
+// probing them per page was nine redundant passes. Probed once per theme instead.
+const CHROME = ['.ds-rail-btn', '.ds-rail-home', '.ds-mark', '.ds-foot-link'];
 const TOGGLE_CLASSES = [
   ['.ds-seg', 'on'], ['.ds-tab', 'on'], ['.ds-opt', 'on'], ['.ds-rail-btn', 'on'],
   ['.ds-subnav-btn', 'on'], ['.ds-key', 'on'], ['.ds-key', 'selected'],
   ['.ds-tile', 'primary'], ['.ds-btn', 'primary'], ['.ds-menu-btn', 'primary'],
 ];
+// Regions whose CONTENT arrives from the server while the audit runs — the top bar's live
+// queue/player counts. Their text width changes on its own schedule, and because the bar is
+// right-aligned that nudges its siblings; the blame then lands on whichever element happened
+// to be probed at that instant, which is why the reported culprit was different every run.
+// It IS a reflow, but not a state-driven one, and this audit exists to police the latter:
+// "does hovering/activating a control move anything outside itself".
+// `.ds-qcount` is listed on its own as well as via the bar: the same counter also rides the
+// left rail (`.ds-qcount.rail`), where its own width changes as the number ticks.
+const LIVE = ['.ds-bar-right', '.ds-qcount'];
 const FREEZE = `(() => { if (!document.getElementById('__freeze')) {
   const s = document.createElement('style'); s.id='__freeze';
   s.textContent = '*,*::before,*::after{transition:none !important;animation:none !important}';
   document.head.appendChild(s);} return true; })()`;
-const MAX_PER = 6;
+const MAX_PER = 3;
 const EPS = 0.5;
+// settle after applying/clearing a forced state. Transitions are already frozen (FREEZE), so
+// this only needs to outlast a paint — it was 60ms per read, i.e. ~2 min of pure sleeping
+// across a full run.
+const SETTLE = 25;
 
-// flat [x,y,w,h, ...] for every element, in document order
-const RECTS = `(() => { const a=[...document.querySelectorAll('*')]; const o=new Array(a.length*4);
-  for (let i=0;i<a.length;i++){const r=a[i].getBoundingClientRect();
-    o[i*4]=r.x;o[i*4+1]=r.y;o[i*4+2]=r.width;o[i*4+3]=r.height;}
-  o.push(document.documentElement.scrollHeight); return o; })()`;
+/**
+ * ONE eval returns the rects AND the skip set, measured at the same instant.
+ *
+ * They used to be separate: subtree indices were computed ONCE per page and reused across
+ * every probe. When the app re-rendered mid-run (version poll, stats, presence) the node
+ * count changed, every index shifted, and the probed element fell out of its own skip set —
+ * so it reported its own 1px hover `translate()` as a shift somewhere else. That is why the
+ * same build audited 88, then 43, then 0. Resolving the skip against the very array being
+ * diffed makes that impossible; a re-render between BASE and CUR is still caught by the
+ * length guard in `diff`.
+ *
+ * `sel`/`i` name the element being probed; LIVE regions are folded in here too.
+ */
+const MEASURE = (sel, i) => `(() => {
+  const all=[...document.querySelectorAll('*')];
+  const o=new Array(all.length*4);
+  for (let k=0;k<all.length;k++){const r=all[k].getBoundingClientRect();
+    o[k*4]=r.x;o[k*4+1]=r.y;o[k*4+2]=r.width;o[k*4+3]=r.height;}
+  o.push(document.documentElement.scrollHeight);
+  const idx=new Map(all.map((e,n)=>[e,n]));
+  const sub=(t)=> t ? [idx.get(t), ...[...t.querySelectorAll('*')].map(d=>idx.get(d))] : [];
+  const skip=sub(document.querySelectorAll(${JSON.stringify(sel)})[${i}]);
+  for (const el of document.querySelectorAll(${JSON.stringify(LIVE.join(','))})) skip.push(...sub(el));
+  return {rects:o, skip};
+})()`;
 const TAGS = `[...document.querySelectorAll('*')].map(e=>e.tagName.toLowerCase()+
   (typeof e.className==='string'&&e.className.trim()?'.'+e.className.trim().split(/\\s+/).slice(0,2).join('.'):''))`;
-// for each match of `sel`, the set of document-order indices in its subtree
-const SUBTREES = (sel) => `(() => { const all=[...document.querySelectorAll('*')];
-  const idx=new Map(all.map((e,i)=>[e,i]));
-  return [...document.querySelectorAll(${JSON.stringify(sel)})].map(t =>
-    [idx.get(t), ...[...t.querySelectorAll('*')].map(d=>idx.get(d))]); })()`;
 
 function diff(base, cur, skip, tags) {
   const out = [];
-  const n = Math.min(base.length, cur.length) - 1;
+  // The DOM CHANGED SHAPE between the two reads — a live re-render (version poll, stats
+  // fetch, a flyout) added or removed nodes while we measured. Every index past that point
+  // now names a DIFFERENT element in the two arrays, so rect-vs-rect comparison is garbage:
+  // it used to read the LAST SHARED INDEX as the scrollHeight sentinel and report phantom
+  // "document height 0 -> 815" lines on pages the change never touched. Nothing about a
+  // pseudo-state can add nodes, so this is never a real shift — skip the sample.
+  if (base.length !== cur.length) return out;
+  const n = base.length - 1; // the scrollHeight sentinel RECTS appends
   if (Math.abs(base[n] - cur[n]) > EPS) out.push(`document height ${base[n]} -> ${cur[n]}`);
   for (let i = 0; i * 4 < n && out.length < 5; i++) {
     if (skip.has(i)) continue;
@@ -92,13 +144,25 @@ function diff(base, cur, skip, tags) {
 
 app.whenReady().then(async () => {
   log('boot · themes: ' + THEMES.join(', ') + ' · log: ' + LOG);
-  const win = new BrowserWindow({ width: 1400, height: 900, show: true,
+  // NEVER STEAL FOCUS. The audit ran with a visible, focused window, so every run yanked
+  // the desktop away for a minute-plus. It is hidden now: layout and getBoundingClientRect
+  // work fine offscreen, and the two switches this file already sets are exactly what keeps
+  // an unfocused/hidden window painting normally — `backgroundThrottling: false` and the
+  // CalculateNativeWinOcclusion disable at the top. `showInactive()` (not `show()`) is the
+  // fallback when debugging: it maps the window WITHOUT raising or focusing it.
+  // DSIM_SHOW=1 to watch a run.
+  const visible = process.env.DSIM_SHOW === '1';
+  const win = new BrowserWindow({ width: 1400, height: 900, show: false,
     webPreferences: { backgroundThrottling: false } });
+  const surface = () => { if (visible) win.showInactive(); };
+  // MUTE. The run clicks into Free Drive to reach the in-game HUD, which starts the match
+  // audio — countdown, announcer, the lot. Nothing about layout needs sound.
+  win.webContents.setAudioMuted(true);
   // Load a real document BEFORE attaching: on a blank target, DOM.enable never
   // resolves and the whole run silently hangs until the watchdog.
   await win.loadURL(BASE + '/');
   await sleep(1200);
-  win.show();
+  surface();
   const dbg = win.webContents.debugger;
   try { dbg.attach('1.3'); log('debugger attached'); }
   catch (e) { log('ATTACH FAILED:', e.message); process.exit(3); }
@@ -115,27 +179,27 @@ app.whenReady().then(async () => {
 
   let checked = 0, problems = 0;
 
-  const probePseudo = async (sel, nodeIds, subs, tags) => {
+  const probePseudo = async (sel, nodeIds, tags) => {
     for (let i = 0; i < Math.min(nodeIds.length, MAX_PER); i++) {
-      const skip = new Set(subs[i] || []);
+      const M = MEASURE(sel, i);
       for (const pseudo of [['hover'], ['hover', 'active']]) {
-        const base = await js(RECTS);
+        const base = await js(M);
         await cmd('CSS.forcePseudoState', { nodeId: nodeIds[i], forcedPseudoClasses: pseudo });
-        await sleep(60);
-        const cur = await js(RECTS);
+        await sleep(SETTLE);
+        const cur = await js(M);
         await cmd('CSS.forcePseudoState', { nodeId: nodeIds[i], forcedPseudoClasses: [] });
         // SETTLE AFTER CLEARING. Pressable surfaces hover via `transform: translate(-1px,-1px)`
         // — correct, since transforms don't reflow — but getBoundingClientRect() REPORTS the
         // transform. Without this wait, the cleared transform is still applied when the NEXT
         // element's baseline is read, and its 1px snap-back gets blamed on that element.
         // (Cost me a false positive on `.ds-subnav-btn` that was really `.ds-opt`.)
-        await sleep(60);
+        await sleep(SETTLE);
         checked++;
-        const d = diff(base, cur, skip, tags);
+        const d = diff(base.rects, cur.rects, new Set(cur.skip), tags);
         if (d.length) {
           problems++;
-          log(`  SHIFT ${sel}[${i}] :${pseudo.join(':')}`);
-          d.forEach((x) => log(`          ${x}`));
+          say(`  SHIFT ${sel}[${i}] :${pseudo.join(':')}`);
+          d.forEach((x) => say(`          ${x}`));
         }
       }
     }
@@ -146,45 +210,46 @@ app.whenReady().then(async () => {
     await js(`localStorage.setItem('decodesim.theme', ${JSON.stringify(theme)}); 'ok'`);
     log(`\n############################ THEME: ${theme.toUpperCase()}`);
 
+    let chromeDone = false;
     for (const page of PAGES) {
       await win.loadURL(BASE + page);
       await sleep(1400);
-      win.show();
+      surface();
       await js(FREEZE);          // transitions would bleed into the next probe
       await sleep(120);
       log(`\n##### [${theme}] ${page}`);
       const tags = await js(TAGS);
       const { root } = await cmd('DOM.getDocument', { depth: -1 });
 
-      for (const sel of SELECTORS) {
+      for (const sel of chromeDone ? SELECTORS : [...SELECTORS, ...CHROME]) {
         let nodeIds = [];
         try {
           nodeIds = (await cmd('DOM.querySelectorAll',
             { nodeId: root.nodeId, selector: sel })).nodeIds || [];
         } catch { continue; }
         if (!nodeIds.length) continue;
-        await probePseudo(sel, nodeIds, await js(SUBTREES(sel)), tags);
+        await probePseudo(sel, nodeIds, tags);
       }
+      chromeDone = true;
 
       for (const [sel, cls] of TOGGLE_CLASSES) {
         const n = await js(`document.querySelectorAll(${JSON.stringify(sel)}).length`);
         if (!n) continue;
-        const subs = await js(SUBTREES(sel));
         for (let i = 0; i < Math.min(n, MAX_PER); i++) {
-          const skip = new Set(subs[i] || []);
-          const base = await js(RECTS);
+          const M = MEASURE(sel, i);
+          const base = await js(M);
           const had = await js(`(()=>{const e=document.querySelectorAll(${JSON.stringify(sel)})[${i}];
             const h=e.classList.contains(${JSON.stringify(cls)});e.classList.toggle(${JSON.stringify(cls)});return h;})()`);
-          await sleep(60);
-          const cur = await js(RECTS);
+          await sleep(SETTLE);
+          const cur = await js(M);
           await js(`document.querySelectorAll(${JSON.stringify(sel)})[${i}].classList.toggle(${JSON.stringify(cls)})`);
-          await sleep(60); // settle before the next baseline — see probePseudo
+          await sleep(SETTLE); // settle before the next baseline — see probePseudo
           checked++;
-          const d = diff(base, cur, skip, tags);
+          const d = diff(base.rects, cur.rects, new Set(cur.skip), tags);
           if (d.length) {
             problems++;
-            log(`  SHIFT ${sel}[${i}] .${cls} ${had ? 'removed' : 'added'}`);
-            d.forEach((x) => log(`          ${x}`));
+            say(`  SHIFT ${sel}[${i}] .${cls} ${had ? 'removed' : 'added'}`);
+            d.forEach((x) => say(`          ${x}`));
           }
         }
       }
@@ -217,13 +282,13 @@ app.whenReady().then(async () => {
         try { nodeIds = (await cmd('DOM.querySelectorAll', { nodeId: root.nodeId, selector: sel })).nodeIds || []; }
         catch { continue; }
         if (!nodeIds.length) { log(`  (no ${sel})`); continue; }
-        await probePseudo(sel, nodeIds, await js(SUBTREES(sel)), tags);
+        await probePseudo(sel, nodeIds, tags);
       }
     }
   }
 
   await js(`localStorage.removeItem('decodesim.theme'); 'ok'`);
-  log(`\n===== ${checked} state changes checked · ${problems} caused layout shift =====`);
+  say(`===== ${checked} state changes checked · ${problems} caused layout shift =====`);
   dbg.detach();
   process.exit(problems === 0 ? 0 : 1);
 });

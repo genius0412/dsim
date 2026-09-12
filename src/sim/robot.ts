@@ -1,8 +1,8 @@
-import type { Artifact, ArtifactColor, RobotCommand, RobotState, World } from '../types';
+import type { Artifact, ArtifactColor, RobotCommand, RobotSpec, RobotState, World } from '../types';
 import * as C from '../config';
 import { approach, rot, wrapAngle, hyp, dsin, dcos, datan2, clamp } from '../math';
 import { classifierRect, flywheelSpinTarget, goalCenter, launchTriangles, viewAngleOf } from './field';
-import { driveParams, motorStep, motorStepVec } from './drivetrain';
+import { activeDrive, driveParams, motorStep, motorStepVec, shoveMass } from './drivetrain';
 import { robotIntersectsConvex } from './physics';
 import { robotsEnabled } from './match';
 
@@ -69,9 +69,40 @@ export function aimSolution(r: RobotState): { yaw: number; speed: number; angle:
  * Updates the robot's drive physics (position, velocity, angular velocity, heading).
  * This function is for movement only.
  */
-export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
+/** what the drivetrain asks the solver for this tick: a world-frame force and a torque
+ *  about the chassis centre. See the note at the bottom of `updateRobot`. */
+export interface DriveWrench {
+  fx: number;
+  fy: number;
+  tau: number;
+  /** the velocity and spin the motor model asked for. `solveRobots` diffs its own answer
+   *  against these to record what the CONTACTS did — see `RobotState.slipX`. */
+  wantX: number;
+  wantY: number;
+  wantW: number;
+  /** how much SIDEWAYS velocity a contact may impart in one tick before the tyres refuse it:
+   *  `LATERAL_GRIP` times this drivetrain's traction ceiling. See `solveRobots`. */
+  latCap: number;
+}
+
+export function updateRobot(
+  world: World,
+  r: RobotState,
+  cmd: RobotCommand,
+  dt: number,
+): DriveWrench {
+  // ---- BUTTERFLY: drop the other wheel set (edge-triggered, so holding swaps once) ----
+  // Lives here rather than in either game's step because it is a DRIVETRAIN behaviour and
+  // both games route their drive through updateRobot. The swap is instantaneous in the
+  // model: the real lift takes a moment, but at 60 Hz that is a couple of ticks and the
+  // interesting decision is WHEN to swap, not the servo travel.
+  if (r.spec.drivetrain === 'butterfly') {
+    const wants = cmd.driveMode ?? false;
+    if (wants && !r.driveModeHeld) r.butterflyTank = !r.butterflyTank;
+    r.driveModeHeld = wants;
+  }
   // ---- drive: driver frame -> robot frame -------------------------------
-  const dp = driveParams(r.spec);
+  const dp = driveParams(r.spec, r.butterflyTank);
   // ---- power draw: a spun-up flywheel (inertia × spin, set last tick in
   // updateRobotActions) plus a running intake pull current off the drive
   // motors — slow the LOCAL dp copy (driveParams() itself is untouched so the
@@ -94,7 +125,10 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   const driveDraw =
     C.POWER_DRAW_DRIVE *
     clamp(
-      (r.spec.driveRpm - C.REF_DRIVE_RPM) / (C.POWER_DRAW_DRIVE_TOP_RPM - C.REF_DRIVE_RPM),
+      // the rpm ACTUALLY turning the wheels — a butterfly in tank mode draws on its
+      // traction gearing, not the mecanum slider it isn't using
+      (activeDrive(r.spec, r.butterflyTank).rpm - C.REF_DRIVE_RPM) /
+        (C.POWER_DRAW_DRIVE_TOP_RPM - C.REF_DRIVE_RPM),
       0,
       1,
     );
@@ -104,6 +138,17 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   );
   r.powerDraw = draw;
   const slow = 1 - draw;
+  /**
+   * ...BUT NOT THE TYRES. Power draw is current the flywheel and intake are taking away from
+   * the drive MOTORS, and the traction model below is `LATERAL_GRIP` times this drivetrain's
+   * traction ceiling — which is mu*g, a property of rubber and weight. A spun-up flywheel does
+   * not make the wheels slippery.
+   *
+   * Taken from the scaled copy it did exactly that, and worst on the builds that carry the
+   * most flywheel: the reported gate surge came from a mecanum at `flywheelInertia` 1, whose
+   * tyres were reclaiming a contact's sideways shove at two thirds of the rate they should.
+   */
+  const tractionAccel = dp.accel;
   dp.maxSpeed *= slow;
   dp.accel *= slow;
   dp.maxTurn *= slow;
@@ -235,22 +280,334 @@ export function updateRobot(world: World, r: RobotState, cmd: RobotCommand, dt: 
   // motor torque–speed integration in the robot frame: accel falls off toward the
   // free speed (dp.maxSpeed / dp.maxTurn) like a real DC motor (see motorStep).
   const velRobot = rot(r.vel, -r.heading);
+  /**
+   * BEING SHOVED IS NOT THE SAME AS STOPPING YOURSELF.
+   *
+   * A robot commanding nothing while an opponent is leaning on it is not braking, it is being
+   * back-driven: the wheels roll and what resists is back-EMF plus rolling drag, not the full
+   * 1.4x stopping authority `MOTOR_BRAKE_MULT` gives a driver hauling their own momentum down.
+   * Applied to the shove, that number said an idle chassis resists harder than any opponent
+   * can drive, and pushing one was nearly impossible (see `MOTOR_SHOVE_BRAKE`).
+   *
+   * The contact test reads LAST tick's `rrContacts` — this runs before the solve that records
+   * them, and `world.ts` clears them just before that solve for exactly this reason. One tick
+   * of latency on "am I being leaned on" is nothing next to the 0.2s a push takes to build.
+   */
+  const unpowered = targetFwd === 0 && targetStrafe === 0;
+  const shoved =
+    unpowered && world.rrContacts.some((c) => c.a === r.id || c.b === r.id);
   // translation steps as a VECTOR so the accel budget is isotropic — driving diagonally
   // accelerates at the same rate as straight (no √2 diagonal-speed advantage).
-  const stepped = motorStepVec(velRobot.x, velRobot.y, targetFwd, targetStrafe, dp.accel, dp.maxSpeed, dt);
-  r.vel = rot(stepped, r.heading);
-  r.angVel = motorStep(r.angVel, targetOmega, dp.turnAccel, dp.maxTurn, dt);
+  const stepped = motorStepVec(
+    velRobot.x,
+    velRobot.y,
+    targetFwd,
+    targetStrafe,
+    dp.accel,
+    dp.maxSpeed,
+    dt,
+    shoved ? C.MOTOR_SHOVE_BRAKE : C.MOTOR_BRAKE_MULT,
+  );
+  /**
+   * ...AND THE WHEELS HAND THE SOLVER A FORCE, NOT A VELOCITY.
+   *
+   * This is the whole of slice A. The motor model is UNCHANGED — `motorStepVec` above still
+   * decides the velocity the drivetrain wants this tick, from the same torque–speed curve and
+   * the same traction-limited `dp.accel` — but that answer is now converted into the force
+   * that would produce it (`F = m·Δv/dt`) and handed to Rapier, instead of being written
+   * straight onto `r.vel` behind the solver's back.
+   *
+   * In FREE SPACE the two are identical: `a = F/m` is the accel the motor model asked for, so
+   * top speed, the accel curve, the turn rate and stopping distance do not move (the balance
+   * contract). In CONTACT they are completely different, and that is the point — a velocity
+   * that is imposed forces the solver to invent whatever normal impulse it takes to satisfy
+   * it, so friction (µ·N) was a fraction of an unbounded number and a bumper gripped like a
+   * clamp. A force is a force: the contact can only ever resolve what the wheels actually
+   * supply, and a pushing contest settles at the ratio of the two `pushForce`s by itself.
+   *
+   * `shoveMass` STAYS the mass, and staying is what keeps the balance intact — it is defined
+   * as `pushForce / accel`, so `m·a_cmd` in free space reproduces the old accel exactly while
+   * the sustained force at the stops is exactly `pushForce`. See drivetrain.ts; the note there
+   * about the sim "pushing by SETTING VELOCITY" is what this replaces.
+   */
+  const wantRobot = { x: stepped.x - velRobot.x, y: stepped.y - velRobot.y };
+  const want = rot(wantRobot, r.heading);
+  const m = shoveMass(r.spec, r.butterflyTank, r.powerDraw);
+  let fx = (m * want.x) / dt;
+  let fy = (m * want.y) / dt;
 
-  // Rapier (solveRobots) integrates POSITION from r.vel and resolves collisions
-  // this same tick; heading is integrated here (rotation is locked in Rapier and
-  // the bespoke square-up nudge owns it).
-  r.heading = wrapAngle(r.heading + r.angVel * dt);
+  /**
+   * The turn, as a TORQUE about the chassis centre. Same `motorStep` the heading integration
+   * used to consume; `solveRobots` gives the body the matching inertia, so in free space the
+   * resulting dω is exactly the one the motor model asked for.
+   *
+   * ...AND THE TYRES REFUSE A SPIN THEY ARE NOT MAKING, which is the angular twin of the
+   * cornering force below and the thing a rotation-locked body never needed. Being spun by a
+   * contact is resisted by the wheels' LATERAL grip at their moment arm, not by the drive
+   * motors' torque — that is the whole difference between treads and rollers, and without it
+   * a tank leaning on a robot strafing out from under it was yawed 17.7° by the friction and
+   * then drove off along its own new heading. `LATERAL_GRIP` is already that quantity (the
+   * drivetrain's sideways traction as a fraction of its drive ceiling), so this introduces no
+   * new dial: four wheels at the half-diagonal can refuse `grip · accel · m · d` of torque,
+   * against the motors' `I · turnAccel`, and whichever is larger is what the chassis has.
+   *
+   * IT ONLY EVER BRAKES, and only while ROBOT-ROBOT CONTACT is on the books — so free-space
+   * driving is untouched to the digit (the balance contract) and a commanded turn is never
+   * slowed, since `motorStep` reads the boost only on the braking branch and `approach` still
+   * stops dead at the target. Same gate, and same reasoning, as `MOTOR_SHOVE_BRAKE`.
+   */
+  const inertia = chassisInertia(m, r.spec);
+  /**
+   * ...AND THE SAME SHOVE BRAKE THE TRANSLATION GETS. A robot commanding no turn that is being
+   * SPUN by an opponent's off-centre hit used to brake that spin at the full `MOTOR_BRAKE_MULT`,
+   * which is the motors actively fighting it — 53 rad/s² on the default chassis, enough to kill
+   * any hit's yaw within two ticks. Measured, a 12in-off-centre ram turned its victim 6.5° where
+   * the same contact with the motors merely holding turned it 16.5°. The comment above this
+   * line has always said the yaw is refused by the tyres' grip and not by the motors' torque,
+   * and the translation half already reads `MOTOR_SHOVE_BRAKE` for exactly this case.
+   */
+  const shovedYaw = targetOmega === 0 && world.rrContacts.some((c) => c.a === r.id || c.b === r.id);
+  const wNext = motorStep(
+    r.angVel,
+    targetOmega,
+    dp.turnAccel,
+    dp.maxTurn,
+    dt,
+    shovedYaw ? C.MOTOR_SHOVE_BRAKE : C.MOTOR_BRAKE_MULT,
+  );
+  let tau = (inertia * (wNext - r.angVel)) / dt;
+
+  /**
+   * ...AND THE TYRES ARE FOUR WHEELS, EACH WITH ITS OWN GRIP — slice B.
+   *
+   * A wheel makes force in two ways and they are not the same thing. Along its roll axis the
+   * motor drives it, and that is the chassis-level model above, unchanged. ACROSS that axis it
+   * makes no force of its own at all: it either grips and the chassis goes where the wheels
+   * point, or it breaks traction and scrubs. That second half is what a chassis-level model
+   * cannot express, and it is the whole of robot-on-robot feel — treads refusing to be dragged
+   * sideways or spun, rollers giving way.
+   *
+   * SLICE A APPROXIMATED IT AFTER THE FACT: `solveRobots` compared the solver's answer against
+   * what the drive asked for and trimmed the difference (`holdLat`/`yawHold`), Coulomb-style.
+   * That works for a steady lean and fails for an impact, because trimming happens AFTER the
+   * solve and cannot tell a 40 in/s hit from a 2 in/s drag except by magnitude — so a scale
+   * factor (`CONTACT_YAW_HOLD`) had to split the difference, and near-centred rams stopped
+   * spinning anybody.
+   *
+   * Now it is a FORCE, computed per wheel and handed to the solver, which resolves it
+   * SIMULTANEOUSLY with the contact. The discrimination falls out for free: a lean asks for
+   * less than the tyre can supply and is refused outright, while an impact asks for more than
+   * `LATERAL_GRIP · accel / 4` and the excess goes through as real motion. Nothing decides
+   * which case it is — the traction limit does.
+   *
+   * PER WHEEL AND NOT PER CHASSIS, because that is what produces the yaw. Four lateral forces
+   * at their own moment arms resist a spin exactly as far as their grip allows, so the same
+   * expression that stops a tank being dragged sideways stops it being twisted, and neither
+   * needs a term of its own.
+   *
+   * THE SLIP IS MEASURED AGAINST THE COMMANDED MOTION, not against zero — that is what keeps
+   * this out of the balance. A robot turning at the rate it asked for is scrubbing its wheels
+   * exactly as much as the drive model already accounts for, so the deviation is zero and
+   * nothing is applied; in free space the term does not exist. What it sees is the difference
+   * between where the chassis is going and where the wheels are pointed, which only a contact
+   * (or a wall) can produce.
+   *
+   * SWERVE READS ITS PODS. `moduleAngles` is where each wheel is actually pointed, wobble and
+   * all, so a mis-steered pod resists along the wrong axis by itself.
+   */
+  const grip = C.LATERAL_GRIP[r.spec.drivetrain] ?? 0.5;
+  /**
+   * ...AND THE SAME WHEELS CARRY THE VELOCITY ROUND A CORNER.
+   *
+   * Turning while moving needs a lateral force of `m·v·ω` — that is what holds the velocity's
+   * angle to the chassis while the nose comes round. Without it the world-frame velocity simply
+   * stays where it was and every drivetrain side-slips through every corner, which is "I drive
+   * straight and turn with tank and feel shifted sideways in a weird way".
+   *
+   * IT IS THE CENTRIPETAL DEMAND, NOT A CORRECTION OF THE ERROR AFTERWARDS. Correcting the
+   * lateral velocity once it has appeared is a first-order lag and leaves a permanent residual:
+   * measured, a tank through the smoke suite's own turn carried 3.0% of its velocity sideways
+   * that way, against 0.4% here and a 1.0% ceiling. The tyres do this BEFORE the slip exists,
+   * which is exactly what the old velocity-carve was doing when it rotated `r.vel` by the
+   * heading change — the same quantity, stated as the force it always was.
+   *
+   * The cap is unchanged: `LATERAL_GRIP` as a fraction of the drivetrain's own traction
+   * ceiling. Past what the tyres can supply — fast enough, turning hard enough — the robot
+   * slides through the corner exactly as it did before, and it slides sooner on omnis than on
+   * treads.
+   */
+  const speed = hyp(r.vel.x, r.vel.y);
+  if (speed > 0.01 && r.angVel !== 0) {
+    const a = Math.min(speed * Math.abs(r.angVel), grip * tractionAccel);
+    const sgn = Math.sign(r.angVel);
+    fx += (m * a * -r.vel.y * sgn) / speed;
+    fy += (m * a * r.vel.x * sgn) / speed;
+  }
+  const wheels = wheelLocals(r.spec);
+  // the budget ONE wheel has across its roll axis, as a force
+  const wheelCap = (grip * tractionAccel * m) / wheels.length;
+  const swerve = dp.saturation === 'vec';
+  // the chassis slip a contact left last tick, in the ROBOT frame (see RobotState.slipX)
+  const slipW = r.slipW ?? 0;
+  const sl = rot({ x: r.slipX ?? 0, y: r.slipY ?? 0 }, -r.heading);
+  if (sl.x !== 0 || sl.y !== 0 || slipW !== 0) {
+    for (let i = 0; i < wheels.length; i++) {
+      const wl = wheels[i];
+      // how fast THIS wheel is being dragged across itself, rotation included
+      const sx = sl.x - slipW * wl.y;
+      const sy = sl.y + slipW * wl.x;
+      // ...across the axis it rolls on. A pod steers; everything else is chassis-aligned.
+      const ang = swerve ? (r.moduleAngles?.[i] ?? 0) : 0;
+      const lx = -dsin(ang);
+      const ly = dcos(ang);
+      const slip = sx * lx + sy * ly;
+      if (slip === 0) continue;
+      /**
+       * A TYRE OPPOSES MOTION. IT NEVER CREATES IT.
+       *
+       * `slip` is the difference between what the solver did and what the wrench asked for,
+       * which reads both ways: a contact that DRAGS the chassis sideways shows up with one
+       * sign and is correctly refused, and a contact that BLOCKS it shows up with the other —
+       * at which point nulling the difference means shoving the chassis in the direction the
+       * wall just prevented. Reported from a match file as a surge of strafing speed while
+       * barely moving and already against the gate: measured at three separate moments in that
+       * run, a robot at a DEAD STOP with no rotation and nothing else touching it accelerated
+       * sideways from 0.0 to 6.6 to 10.9 in/s, roughly 400 in/s^2, which is more than its
+       * drivetrain can produce in the first place.
+       *
+       * So the force is admitted only when it opposes how this wheel is ACTUALLY sliding
+       * across itself. Nothing else about the model changes: a drag is still refused up to
+       * grip, an impact still gets through, and a blocked robot simply stays blocked.
+       */
+      const across = (velRobot.x - r.angVel * wl.y) * lx + (velRobot.y + r.angVel * wl.x) * ly;
+      if (slip * across <= 0) continue;
+      // the force that would null it this tick, and what this one tyre can actually hold
+      // EXACTLY what was seen, no more. The tyres answer a tick late, so answering HARDER to
+      // close that gap is tempting and it oscillates: at a gain of 1.5 an 8in off-centre ram
+      // came out at 0.34 degrees against 11.7 at unity, because the over-correction cancels
+      // the spin it is chasing. Unity is the only stable answer.
+      const want = (-slip * m) / wheels.length / dt;
+      const f = clamp(want, -wheelCap, wheelCap);
+      const world = rot({ x: f * lx, y: f * ly }, r.heading);
+      fx += world.x;
+      fy += world.y;
+      tau += wl.x * f * ly - wl.y * f * lx;
+    }
+  }
+  /**
+   * WHAT THIS WRENCH ITSELF WILL PRODUCE, in free space — the whole of it, traction included,
+   * not just the motor's target. `solveRobots` diffs the solver's answer against these to find
+   * what the CONTACTS did, so anything we apply on purpose has to be in here or the model
+   * reads its own work as fresh slip and fights it: measured, that was a ±2.07 in/s limit
+   * cycle running forever with nothing touching the robot.
+   */
+  return {
+    fx,
+    fy,
+    tau,
+    wantX: r.vel.x + (fx / m) * dt,
+    wantY: r.vel.y + (fy / m) * dt,
+    wantW: r.angVel + (tau / inertia) * dt,
+    latCap: grip * tractionAccel * dt,
+  };
+}
+
+/**
+ * The chassis's angular inertia about its own centre, for `m` = `shoveMass`.
+ *
+ * A rectangle's `m(L² + W²)/12`, over the CHASSIS rather than the footprint, and about the
+ * chassis centre rather than the footprint's — the same expression `squareUpPair`'s two-body
+ * impulse already used, so the two agree about how hard this robot is to spin, and the drive
+ * model's `maxTurn` (derived from the half-diagonal about that centre) stays the free-space
+ * answer. `solveRobots` states the same mass properties on the body.
+ */
+/**
+ * The four wheel ground-contact points in the ROBOT frame — the same layout `wheelContacts`
+ * puts in world space for BASE parking, kept here as locals because the traction model needs
+ * the moment arms rather than the world positions. FL/FR/BR/BL, matching `moduleAngles`.
+ */
+export function wheelLocals(spec: RobotSpec): { x: number; y: number }[] {
+  const ix = Math.max(spec.length / 2 - C.WHEEL_INSET, 1);
+  const iy = Math.max(spec.width / 2 - C.WHEEL_INSET, 1);
+  return [
+    { x: ix, y: iy },
+    { x: ix, y: -iy },
+    { x: -ix, y: -iy },
+    { x: -ix, y: iy },
+  ];
+}
+
+export function chassisInertia(m: number, spec: RobotSpec): number {
+  return (m * (spec.length * spec.length + spec.width * spec.width)) / 12;
 }
 
 /**
  * Updates the robot's actions (turret, fire, intake).
  * This function is called for all robots regardless of movement type.
  */
+/**
+ * ARTIFACTS THE INTAKE HAS ENGAGED — the ones its funnel is actively drawing in.
+ *
+ * The intake pulls an artifact toward the throat at `local.x = hl`, which IS the chassis
+ * front face, so the funnel and the chassis collider in `solveArtifacts` are reaching for the
+ * same artifact and pulling opposite ways. Measured against main on an artifact 7in
+ * off-centre: the funnel draws it 7.0 -> 4.4 -> 3.9, then the chassis shoves it back out
+ * 4.2 -> 4.7 -> 5.3 -> 6.1 -> 6.9 -> 7.8 -> 8.8 before it is finally swallowed. 1.45s
+ * against main's 0.33s, and that oscillation is what reads as the intake not gripping.
+ *
+ * The capture ENVELOPE is unchanged either way — the same offsets hit and the same ones
+ * miss — so this is not about reach, only about the two passes fighting. An artifact under
+ * the wheels belongs to the intake (product decision #10: the mouth is open by design and
+ * its funnel geometry is per-preset), so it is excluded from the chassis collider for as
+ * long as the intake has hold of it. It still collides with the field and other artifacts.
+ *
+ * Mirrors the `underWheels` test in `intakeSuction` — keep the two in step. The invariant
+ * the three windows are held to is **capture ⊆ suction ⊆ claim**, pinned by smoke over both
+ * chassis extremes of all three presets: a capture set reaching outside the claim set stalls
+ * the robot on the artifact it is about to eat, and a claim set narrower than the suction
+ * leaves the chassis fighting a ball the rollers are already pulling — the oscillation this
+ * function exists to kill.
+ *
+ * Its X GEOMETRY DELIBERATELY DID NOT SHRINK when the grab became the roller nip. The nip is
+ * where an artifact is SWALLOWED; this is which artifacts the intake has HOLD of, and an
+ * artifact in the mouth on its way to the seat must not be chassis-pinnable just because it
+ * is not yet under the wheel.
+ */
+export function intakeClaims(world: World, commands: Map<number, RobotCommand>): Set<number> {
+  const claimed = new Set<number>();
+  for (const r of world.robots) {
+    const running = (commands.get(r.id)?.intake ?? false) || r.autoIntake;
+    if (!running || r.hopper.length >= C.HOPPER_CAPACITY) continue;
+    const preset = C.INTAKE_PRESETS[r.spec.intake];
+    const m = C.intakeMouth(r.spec);
+    if (m.drawIn <= 0) continue;
+    const hl = r.spec.length / 2;
+    const tip = hl + preset.reach;
+    // The WHOLE mouth opening, not just the wheel span: on a wedge preset the wheels only
+    // span the narrow throat, but the wedge funnels artifacts in from the full width of the
+    // opening (product decision #10), and it is those outermost ones the chassis was
+    // fighting hardest — sloped at 7in off-centre took 1.45s against main's 0.33s.
+    //
+    // ...to the same edge the suction's own `onRoller` band uses. It was a bare `mouthHalf`
+    // (via a `Math.max` that resolved to it on every preset), so an artifact at exactly 7.0in
+    // off a mouthHalf-7 sloped was being sucked while the chassis was still allowed to fight
+    // it — the invariant above was false by a quarter radius.
+    const own = m.mouthHalf + C.BALL_RADIUS * 0.25;
+    for (const b of world.balls) {
+      if (b.state.kind !== 'ground' || b.z > 6) continue;
+      const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+      if (
+        local.x > hl - C.BALL_RADIUS &&
+        local.x < tip + C.BALL_RADIUS &&
+        Math.abs(local.y) < own
+      ) {
+        claimed.add(b.id);
+      }
+    }
+  }
+  return claimed;
+}
+
 export function updateRobotActions(world: World, r: RobotState, cmd: RobotCommand, dt: number): void {
   // If autoPathActive, force aimAssist, autoIntake, and autoFire to true
   if (r.autoPathActive) {
@@ -263,6 +620,13 @@ export function updateRobotActions(world: World, r: RobotState, cmd: RobotComman
   // Apply aim assist if enabled (now forced true during autoPathActive)
   if (r.aimAssist) {
     r.turretHeading = aimSolution(r).yaw;
+  } else {
+    // MANUAL AIM: the turret is bolted to the chassis and the driver aims by turning.
+    // `fire()` launches along `r.turretHeading`, and this branch used to leave it
+    // untouched — so with aim assist off it kept the value `spawn` wrote and the robot
+    // shot along one FROZEN world-frame direction for the whole match, no matter which
+    // way it was facing. Reported and fixed by @shlok-k720 (PR #37).
+    r.turretHeading = r.heading;
   }
 
   // ---- flywheel spin: ramps with distance to this robot's OWN goal (a far
@@ -400,7 +764,20 @@ function fire(world: World, r: RobotState): void {
  * tip; capture TIMING depends on WHERE across the mouth the ball sits (compliant
  * center fast, vectoring sides slow), and the overhang enables the strafe-in flank
  * grab. A clump feeds faster, and the triangle takes two at a time. */
-export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): void {
+/**
+ * THE INTAKE'S PULL ON THE ARTIFACTS IN ITS MOUTH — a velocity term, applied BEFORE the
+ * artifact solve so the solve can answer it.
+ *
+ * It used to be written in the same pass as the capture, AFTER the solve, and a velocity written
+ * after the solve is a lie until the next one: an artifact the rollers were pulling toward a
+ * throat already plugged by a full hopper carried a 19 in/s sideways velocity all the way across
+ * the field while actually riding the bumper straight ahead at 17. The penalty engine reads
+ * artifact velocity to decide whether a robot is herding (G408's carry), and read that — so a
+ * robot pushing a clump the length of the field with the intake held was billed nothing.
+ * In front of the solve it is simply the speed the artifact is trying to move at, and what it
+ * ACTUALLY does is what the solve leaves behind.
+ */
+export function intakeSuction(world: World, r: RobotState, cmd: RobotCommand): void {
   if (!robotsEnabled(world)) return;
   const running = cmd.intake || r.autoIntake;
   if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
@@ -408,12 +785,9 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   const preset = C.INTAKE_PRESETS[r.spec.intake];
   const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
   const hl = r.spec.length / 2;
-  const half = r.spec.width / 2;
   const tip = hl + preset.reach; // the roller line (balls pass UNDER it)
   const velRobot = rot(r.vel, -r.heading);
-  // ALL intakes capture at the CENTER, directly under the compliant wheels
-  // (funnel throat for sloped/triangle; the vectored-to center for vector)
-  const captureHalf = m.throatHalf;
+  const captureHalf = m.throatHalf; // the funnel throat / the vectored-to centre
 
   // the intake can't reach INTO the classifier: no vacuuming through the ramp wall
   const capWx = r.pos.x + dcos(r.heading) * (hl + C.BALL_RADIUS);
@@ -431,15 +805,55 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   // off-center ball to center; the funnel just seats a ball the slopes delivered.
   const wheelSpan = m.wedge ? m.throatHalf : m.mouthHalf;
 
-  const candidates: { b: Artifact; y: number }[] = [];
   for (const b of world.balls) {
     if (b.state.kind !== 'ground' || b.z > 6) continue;
     const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
 
+    /**
+     * ...AND, ON A FUNNEL PRESET, THE ROLLER ITSELF. Its compliant wheels span the whole mouth
+     * at the roller line (that is what is drawn, and what the opener blocks sit on), so an
+     * artifact touching the roller anywhere across the opening is gripped and pulled in; the
+     * slopes behind it only have to guide. Without this the funnel's outer half was a rigid
+     * plate that an artifact centred on the mouth's edge rode at the robot's own speed:
+     * 7in off-centre took 0.73s to reach the throat against 0.33s.
+     */
+    const onRoller =
+      m.wedge &&
+      local.x > tip - C.BALL_RADIUS - C.INTAKE_CAPTURE_BAND &&
+      Math.abs(local.y) < m.mouthHalf + C.BALL_RADIUS * 0.25; // the mouth, to the same edge the cornered grab uses
+    /**
+     * ...OUT TO WHERE AN ARTIFACT CAN LEGALLY HAVE LANDED ON THE ROLLER, AND NO FURTHER.
+     *
+     * ⚠️ THIS BOUND, NOT THE NIP, IS THE INTAKE'S EFFECTIVE RANGE, and getting that backwards
+     * wasted a pass. Shrinking the GRAB to the roller nip changed where an artifact is
+     * swallowed and did NOT change where one can be taken from: measured on a stationary
+     * robot, every preset still captured out to `tip + BALL_RADIUS` afterwards, because the
+     * suction reaches that far and walks anything it touches into the nip in 1-4 ticks — and
+     * with `drawIn` up by half it walked it faster than before. "The range is way too big" is
+     * a statement about THIS line.
+     *
+     * `tip + BALL_RADIUS` is an artifact whose SKIN merely grazes the roller's front face,
+     * with its centre a full radius out in front of the wheel. A horizontal-axis roller whose
+     * underside clears an artifact (see INTAKE_TREAD_FRAC) cannot draw that in — it is pushing
+     * it away. So the reach is the LANDING rule's own bound instead: `INTAKE_CATCH_LENIENCE`
+     * is how much of itself an artifact may overlap the roller face and still count as having
+     * landed there, so `tip + BALL_RADIUS − INTAKE_CATCH_LENIENCE` is the furthest out an
+     * artifact can legally BE on the intake. Past it there is nothing to pull.
+     *
+     * Coupling the two is the point: the drop rule and the suction had to agree for intaking
+     * off the gate outflow to work at all, and they agreed only by accident, with 1.2in of
+     * unexplained slack between them. Now the intake draws in exactly what has landed on it.
+     * It also stays INSIDE `overIntakeRoof`'s front edge (`tip + BALL_RADIUS`), which matters
+     * because `drawIn` is now above `INTAKE_LID_THROW` (24 in/s) on every preset: if the pull
+     * reached past the roof it would out-argue the throw and swallow an artifact the lid had
+     * just refused. The wedge presets used to reach `INTAKE_LIP + INTAKE_CAPTURE_BAND` PAST
+     * the roof, which is where that gap was.
+     */
+    const ahead = tip + C.BALL_RADIUS - C.INTAKE_CATCH_LENIENCE;
     const underWheels =
       local.x > hl - C.BALL_RADIUS &&
-      local.x < tip + C.BALL_RADIUS &&
-      Math.abs(local.y) < wheelSpan;
+      local.x < ahead &&
+      (Math.abs(local.y) < wheelSpan || onRoller);
     if (underWheels && m.drawIn > 0) {
       const vLocal = rot(b.vel, -r.heading);
       // FLAT (vector) intake, OFF-CENTER ball struck at high CLOSING speed: the
@@ -457,6 +871,24 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
         velRobot.x > 0 &&
         closing > C.INTAKE_RAM_SPEED;
       if (!sideImpact) {
+        /**
+         * THE TARGET IS THE CHASSIS FACE, `(hl, 0)`, AND IT MUST NOT BE MOVED TO THE AXLE.
+         *
+         * The chassis is a LIVE collider against a claimed artifact (`physicsEngine.ts` — the
+         * claim's only surviving effect is `skipChassis` in `pinnedArtifacts`), so this pull
+         * terminates at the front face and everything the intake has hold of comes to rest
+         * with its skin flush on it, at `hl + BALL_RADIUS`. Measured settle: 9.759 / 9.757 /
+         * 9.016 (sloped / vector / triangle) against an `hl + R` of 9.750 / 9.750 / 9.000, to
+         * five decimals over 40 ticks at both 0.4 and 1.0 throttle. That fixed point is what
+         * makes the tight nip band reachable at all, and `INTAKE_TREAD_FRAC` is floored so the
+         * band contains it.
+         *
+         * Retargeting the axle looks tidier and is wrong: it is inert on sloped (the axle is
+         * 1.58in BEHIND the face) and on vector (0.055in ahead — inside the 0.3in dead zone
+         * below), and on TRIANGLE the axle is 1.08in in FRONT of the seat, so it would push a
+         * seated artifact forward, out of the throat. An intake that shoves artifacts away
+         * from itself.
+         */
         const dxT = hl - local.x;
         const dyT = -local.y;
         const dl = hyp(dxT, dyT);
@@ -467,20 +899,124 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
         }
       }
     }
+  }
+}
+
+export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): void {
+  if (!robotsEnabled(world)) return;
+  const running = cmd.intake || r.autoIntake;
+  if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
+
+  const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
+  const hl = r.spec.length / 2;
+  const velRobot = rot(r.vel, -r.heading);
+  // ALL intakes capture at the CENTER, directly under the compliant wheels
+  // (funnel throat for sloped/triangle; the vectored-to center for vector)
+  const captureHalf = m.throatHalf;
+  /**
+   * THE FORE-AFT GRAB IS THE ROLLER NIP, AND IT IS THE SAME BAND FOR ALL THREE BRANCHES.
+   *
+   * Reported as "the intake is a circular compliant wheel spinning... the ball should be
+   * directly below or very slightly in front of the centre of the wheel for it to be
+   * properly intook. Right now, the range is way too big." It was: every branch's forward
+   * bound was `tip + BALL_RADIUS` — the artifact's SKIN merely touching the roller's FRONT
+   * FACE, its centre a full radius out in front of the wheel — and the rear bound was
+   * `hl - 1`, which on a triangle is 3.5in INSIDE the chassis. Three independent x-ranges,
+   * none of which mentioned the roller at all, and triangle's `atThroat` ended 0.58in BEHIND
+   * its own axle so that preset never grabbed at its wheel in the first place.
+   *
+   * Now there is one band, derived from the hardware in `intakeNip`, and the branches keep
+   * their identity in their LATERAL bounds and their gates — which is where their identity
+   * actually lives. See INTAKE_TREAD_FRAC for the derivation and for the floor under it.
+   */
+  const axle = C.intakeAxleX(r.spec);
+  const nip = C.intakeNip(r.spec);
+  const nipLo = axle - nip.back;
+  const nipHi = axle + nip.front;
+
+  // the intake can't reach INTO the classifier: no vacuuming through the ramp wall
+  const capWx = r.pos.x + dcos(r.heading) * (hl + C.BALL_RADIUS);
+  const capWy = r.pos.y + dsin(r.heading) * (hl + C.BALL_RADIUS);
+  for (const a of ['red', 'blue'] as const) {
+    const rect = classifierRect(a);
+    if (capWx > rect.x0 - 0.5 && capWx < rect.x1 + 0.5 && capWy > rect.y0 && capWy < rect.y1) {
+      return;
+    }
+  }
+
+
+  const candidates: { b: Artifact; y: number }[] = [];
+  for (const b of world.balls) {
+    if (b.state.kind !== 'ground' || b.z > 6) continue;
+    const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+    // THE fore-aft grab, for every branch below. Fore-aft only — each branch still decides
+    // for itself how far ACROSS the mouth it reaches, and on what terms.
+    const onNip = local.x > nipLo && local.x < nipHi;
     // capture once the ball reaches the throat, centered under the wheels
-    const atThroat =
-      local.x > hl - 1 &&
-      local.x < hl + C.BALL_RADIUS + C.INTAKE_CAPTURE_BAND &&
-      Math.abs(local.y) < captureHalf + C.BALL_RADIUS * 0.25;
-    // flank grab: only where the wheels OVERHANG a narrower chassis (vector)
-    const sideTouch =
-      m.mouthHalf > half + 0.5 &&
-      local.x > hl - 2 &&
-      local.x < tip + C.BALL_RADIUS &&
-      Math.abs(local.y) > half - 0.5 &&
-      Math.abs(local.y) < half + C.BALL_RADIUS + 0.6 &&
-      velRobot.y * Math.sign(local.y) > C.INTAKE_SIDE_MIN_STRAFE;
-    if (atThroat || sideTouch) candidates.push({ b, y: Math.abs(local.y) });
+    const atThroat = onNip && Math.abs(local.y) < captureHalf + C.BALL_RADIUS * 0.25;
+    /**
+     * ...OR IT IS AGAINST THE FIELD AND THE FUNNEL CANNOT CENTRE IT.
+     *
+     * A wedge preset (sloped / triangle) only ever swallows at the THROAT, and the suction
+     * walks the ball there — which works in open field and cannot work in a CORNER. Putting
+     * the throat on a corner artifact means putting the chassis through two walls: an 18in
+     * robot at 45 degrees has a 12.7in half-diagonal against the 2.5in the artifact's centre
+     * sits off each wall. So the artifact stayed in the mouth, off-centre, and was never
+     * taken — "I can't intake a ball in the corner anymore, please fix this for sloped and
+     * triangle".
+     *
+     * A real funnel intake pressed into a corner does collect it: the slopes hold it against
+     * the wall and the compliant rollers take it from wherever it is. The artifact cannot run
+     * away, which is the whole reason the throat requirement exists. So an artifact under the
+     * wheels AND pinned against the field boundary is taken where it lies — at the SLOW end of
+     * the timing, since it is entering off-centre.
+     */
+    const wallClear = C.FIELD_HALF - Math.max(Math.abs(b.pos.x), Math.abs(b.pos.y));
+    const cornered =
+      m.wedge &&
+      wallClear <= C.BALL_RADIUS + C.INTAKE_WALL_GRAB &&
+      onNip &&
+      // the MOUTH, not the throat: a wedge's "wheels" span only throatHalf (3in), and a
+      // corner artifact sits 6.5in off centre because the chassis half-width is what stops
+      // the robot getting any closer to the wall. Inside the mouth is inside the funnel.
+      Math.abs(local.y) < m.mouthHalf + C.BALL_RADIUS * 0.25;
+    /**
+     * ...OR IT IS UNDER THE VECTOR ROLLER ROW, WHICH IS THE WHOLE MOUTH.
+     *
+     * A FLAT preset has no slopes to walk an artifact to the throat, no `cornered` grab (that
+     * one is wedge-only), and the flank grab this replaces could never fire on any legal robot:
+     * it asked for `mouthHalf > half + 0.5`, and `intakeMouth` sets the vector mouth to EXACTLY
+     * the chassis half-width. So the only way in was `atThroat`, a window about 7in of a 15in
+     * opening, reached only by the suction walking the artifact across — which in a clump it
+     * often never manages. Measured over 504 ram scenes, 46 artifacts sat INSIDE the vector
+     * intake and were never eligible, against 0 for either wedge preset.
+     *
+     * The preset's own model is that the wheel row spans the whole mouth and VECTORS an
+     * off-centre artifact to the centre, paying for it in TIME: `capMin` at the centre rising
+     * to `capMax` at the edge. That cost is charged below by `t`. Requiring the artifact to
+     * ALREADY be centred charged it twice — once as a delay and once as a precondition — and
+     * only the delay was ever intended. So the roller row grabs where it lies and the timing
+     * does the vectoring, which leaves vector the slowest of the three by exactly the margin
+     * `capMin`/`capMax`/`clumpInterval` already give it. No suction, mouth or interval constant
+     * moves, and the branch is gated on `!m.wedge`, so sloped and triangle are untouched.
+     */
+    const vBall = rot(b.vel, -r.heading);
+    // ...but NOT one the flat plate is meant to scatter. An off-centre artifact struck at
+    // speed by a non-compliant front gets no suction (`sideImpact` in `intakeSuction`); it
+    // would be perverse to swallow the very artifact the preset is defined by bouncing away,
+    // so the grab uses the same test and declines it.
+    const rammed =
+      Math.abs(local.y) > captureHalf &&
+      velRobot.x > 0 &&
+      velRobot.x - vBall.x > C.INTAKE_RAM_SPEED;
+    const onRollerRow =
+      !m.wedge &&
+      !rammed &&
+      onNip &&
+      Math.abs(local.y) < m.mouthHalf + C.BALL_RADIUS * 0.25;
+    // a cornered or roller-row grab reports its true off-centre distance, so the timing lands
+    // at capMax
+    if (atThroat || onRollerRow || cornered) candidates.push({ b, y: Math.abs(local.y) });
   }
   if (candidates.length === 0) return;
 
@@ -489,6 +1025,14 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
 
   // timing: center of the capture zone is fast, the edges slow (vector vectoring);
   // a clump of 2+ feeds at the faster clumpInterval
+  //
+  // ⚠️ THE DENOMINATOR STAYS `throatHalf`, and two reviewers have now wanted to change it to
+  // the wheel row or the mouth. It must not: the LATERAL bounds did not move when the grab
+  // became the nip, `throatHalf + BALL_RADIUS * 0.25` is exactly `atThroat`'s own lateral
+  // bound, and the two WIDE branches deliberately clamp to 1 and pay `capMax`. Re-normalising
+  // onto the wheel row would put every real grab below t = 1, making `capMax` unreachable on
+  // `atThroat` and silently deleting the centre-fast/edges-slow ramp that IS vector's
+  // identity — with no test failing.
   const t = clamp(candidates[0].y / captureHalf, 0, 1);
   const single = m.capMin + (m.capMax - m.capMin) * t;
   // the clump SPEED bonus is a WEDGE (funnel) trait — the slopes gather a pile and

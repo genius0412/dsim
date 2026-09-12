@@ -126,7 +126,7 @@ button {
   letter-spacing: 0.3px;
   color: var(--ds-on-field);
   background: rgba(0, 0, 0, 0.45);
-  padding: 3px 7px;
+  padding: 4px 8px;
   border-radius: 6px;
   pointer-events: none;
 }
@@ -141,7 +141,7 @@ button {
 }
 .ad-slot-label {
   display: block;
-  font-size: 9.5px;
+  font-size: 10px;
   letter-spacing: 1.2px;
   text-transform: uppercase;
   color: var(--ds-mut);
@@ -312,7 +312,7 @@ button {
   background: var(--ds-hud-soft);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-full);
-  padding: 3px 11px;
+  padding: 4px 12px;
   font-family: var(--ds-font-mono);
   font-size: 11px;
   font-weight: 700;
@@ -323,13 +323,13 @@ button {
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   background: var(--ds-hud);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-full);
-  padding: 4px 11px;
+  padding: 4px 12px;
   font-family: var(--ds-font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 1px;
   color: var(--text);
@@ -367,6 +367,28 @@ button {
 .chip.warn {
   color: var(--ds-warn);
   border-color: var(--ds-warn);
+}
+
+/* a RED CARD — the alliance's match points are VOIDED, which is the worst thing that can
+   happen to a score, so it is filled rather than outlined like the softer states. Fixed
+   ink on a fixed fill (category 2 in the theming note): it does not invert. */
+/* a forfeited match on the results screen — states why a total reads 0 above a full
+   breakdown, which would otherwise look like a scoring bug */
+.results-void {
+  margin: 6px 0 0;
+  text-align: center;
+  font-weight: 700;
+  font-size: 13px;
+  /* --ds-red-ink, not the --ds-red FILL: the fill is 4.20:1 on the panel in dark, i.e.
+     it misses AA as text. The -ink sibling exists for exactly this (see the theming note). */
+  color: var(--ds-red-ink);
+}
+
+.chip.bad {
+  color: #2b0b0b;
+  background: var(--ds-red);
+  border-color: var(--ds-red);
+  font-weight: 700;
 }
 
 /* an ACTION prompt (Chain Reaction ring pick-up / place is available NOW) — a filled,
@@ -412,7 +434,8 @@ button {
 .status-wrap {
   position: absolute;
   top: 12px;
-  right: 12px;
+  /* max(), so a landscape notch pushes it in but desktop keeps the plain 12 */
+  right: max(12px, env(safe-area-inset-right));
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -425,10 +448,10 @@ button {
   user-select: none;
 }
 .chip.net-quality.clickable:hover {
-  border-color: var(--accent, #6ea8ff);
+  border-color: var(--ds-accent);
 }
 .chip.net-quality.active {
-  border-color: var(--accent, #6ea8ff);
+  border-color: var(--ds-accent);
 }
 .net-caret {
   font-size: 10px;
@@ -438,8 +461,8 @@ button {
 /* expandable ping graph: a raw-RTT sparkline that exposes sub-second spikes the
    smoothed number hides */
 .ping-graph {
-  background: rgba(20, 24, 30, 0.94);
-  border: 1px solid var(--border);
+  background: var(--ds-hud);
+  border: 1px solid var(--ds-hud-line);
   border-radius: 10px;
   padding: 8px 10px;
   width: 260px;
@@ -482,7 +505,7 @@ button {
   vector-effect: non-scaling-stroke;
 }
 .ping-graph-foot {
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--muted);
   margin-top: 4px;
   text-align: right;
@@ -500,7 +523,7 @@ button {
 
 .hopper {
   display: flex;
-  gap: 5px;
+  gap: 4px;
 }
 
 /* An EMPTY slot is a --ds-tile well, only ~1.03:1 against the card it sits on in EITHER
@@ -528,7 +551,7 @@ button {
 .power-gauge {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   font-family: var(--ds-font-mono);
   font-size: 11px;
   font-weight: 700;
@@ -547,11 +570,24 @@ button {
   overflow: hidden;
 }
 
+/**
+ * The fill is FULL WIDTH and CLIPPED to the level, rather than a width that animates.
+ *
+ * Animating `width` is a layout property, and this bar is on the in-match HUD — the one
+ * surface in the app where frame time is a stated concern (there is a `?perf=1` readout for
+ * exactly this). Clipping is not layout, and unlike the usual `transform: scaleX` fix it
+ * leaves the rounded caps circular instead of stretching them into ellipses, which is the
+ * reason bars like this are so often written with width in the first place.
+ *
+ * `--pg` is the level, 0..1, set inline by the HUD.
+ */
 .power-gauge .pg-fill {
+  width: 100%;
   height: 100%;
   border-radius: var(--ds-round-full);
   background: var(--ds-ok);
-  transition: width 0.1s linear, background 0.2s;
+  clip-path: inset(0 calc((1 - var(--pg, 1)) * 100%) 0 0 round var(--ds-round-full));
+  transition: clip-path 0.1s linear, background 0.2s;
 }
 
 .power-gauge .pg-fill.warm {
@@ -585,9 +621,9 @@ button {
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round);
   color: var(--ds-ink-dim);
-  padding: 6px 13px;
+  padding: 6px 12px;
   font-family: var(--ds-font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 1.5px;
   box-shadow: var(--ds-edge-soft);
@@ -612,6 +648,16 @@ button {
   .overlay-buttons button:hover,
   .overlay-buttons button:active {
     transform: none;
+  }
+  /* capping the DURATION of an infinite animation just makes it loop faster — the
+     count has to be capped too. Same omission the .ann-* block at the end of this
+     file was amended for. */
+  .timer-panel.urgent .timer-time,
+  .overlay-panel.results.tallying .res-verdict,
+  .net-spinner,
+  .rec-dot,
+  .ds-key.capturing {
+    animation-iteration-count: 1 !important;
   }
 }
 
@@ -689,7 +735,7 @@ button {
   border: 1px solid var(--ds-hud-line);
   border-left: 2px solid var(--ds-accent);
   border-radius: var(--ds-round-sm);
-  padding: 2px 9px;
+  padding: 2px 8px;
   font-family: var(--ds-font-mono);
   font-size: 11px;
   font-weight: 700;
@@ -712,6 +758,8 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* keeps a full-height panel off the very edges (and clear of a phone's rounded corners) */
+  padding: 12px;
   background: rgba(10, 12, 16, 0.55);
   backdrop-filter: blur(3px);
   z-index: 20;
@@ -723,12 +771,30 @@ button {
   background: var(--panel);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-lg);
-  padding: 30px 40px;
+  /* padding scales down on a narrow screen: 40px a side is a quarter of a 320px phone,
+     and it was pushing the score table's three columns into each other */
+  padding: clamp(18px, 5vw, 30px) clamp(14px, 6vw, 40px);
   text-align: center;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  min-width: 320px;
+  /* `min-width` was an unconditional 320px, which is the ENTIRE width of the smallest
+     phone this app supports — box-sizing is border-box, so the panel could not shrink
+     below the viewport no matter how little was in it. `min()` keeps the comfortable
+     desktop floor and lets it collapse on a phone. */
+  min-width: min(320px, 100%);
+  max-width: 100%;
+  /* THE PANEL SCROLLS ITSELF, rather than overflowing a centred flex container.
+     A flex item centred by `align-items` (or by auto margins) that outgrows its container
+     is pushed off BOTH edges and the overflow it creates is NOT scrollable — measured at
+     320x568, where the results panel sat at top:-154 with `scrollHeight === clientHeight`,
+     putting the winner banner and both final scores permanently out of reach. Capping the
+     panel to the overlay and letting it scroll its own content sidesteps the whole problem:
+     it is always fully on screen, and anything that does not fit is reachable by scrolling.
+     `100%` (not `100dvh`) so it measures the padded overlay, not the raw viewport. */
+  max-height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .overlay-panel h2 {
@@ -741,6 +807,18 @@ button {
   font-weight: 600;
 }
 
+/* SHELL dialogs are sentence case, matching `.ann-actions`' own "Got it". The 1.5px
+   tracking that suits GameView's all-caps match overlays reads as gaps between letters
+   in sentence case, so it is relaxed here only. */
+.overlay-buttons.ds-dialog-actions button {
+  letter-spacing: 0.01em;
+}
+/* the mobile pre-match panel stacks: `stretch` so both buttons are the same width,
+   where the inline `alignItems: center` it replaces sized each to its own text */
+.overlay-buttons.stack {
+  flex-direction: column;
+  align-items: stretch;
+}
 .overlay-buttons {
   display: flex;
   gap: 10px;
@@ -793,7 +871,7 @@ button {
 }
 
 .score-table td {
-  padding: 3px 14px;
+  padding: 4px 14px;
   text-align: left;
 }
 
@@ -805,14 +883,17 @@ button {
 
 .score-table .section-row td {
   padding-top: 10px;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 2px;
   color: var(--muted);
 }
 
 .overlay-panel.results {
-  min-width: 380px;
+  /* 380 was wider than a 375px iPhone and a 320px SE — the results panel physically could
+     not fit the two most common small phones. Same `min()` treatment: the roomy desktop
+     width when there is room for it, the viewport when there is not. */
+  min-width: min(380px, 100%);
 }
 
 .final-score {
@@ -980,6 +1061,9 @@ button {
 .results-table th.blue,
 .results-table td.bv {
   text-align: left;
+  width: 64px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 /* the `-ink` siblings, not --ds-red/--ds-blue: these are 12px TYPE on the results card
    (~3.1:1 for the raw hues). The fills stay reserved for the alliance gradients. */
@@ -990,11 +1074,6 @@ button {
   color: var(--ds-blue-ink);
 }
 .results-table td.rv,
-.results-table td.bv {
-  width: 64px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-}
 .results-table td.cat,
 .results-table th.cat {
   text-align: center;
@@ -1190,7 +1269,7 @@ button {
   letter-spacing: 1.5px;
   color: var(--ds-accent-ink);
   background: var(--amber);
-  border-radius: 4px;
+  border-radius: var(--ds-round-sm);
   padding: 1px 6px;
 }
 .intro-name {
@@ -1217,13 +1296,13 @@ button {
   gap: 8px;
 }
 .intro-dt {
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 1px;
   color: var(--muted);
   border: 1px solid var(--border);
   border-radius: 5px;
-  padding: 2px 7px;
+  padding: 2px 8px;
 }
 .intro-elo {
   font-size: 20px;
@@ -1272,7 +1351,7 @@ button {
   gap: 6px;
 }
 .elo-head {
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 2px;
   color: var(--amber);
@@ -1287,7 +1366,10 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  /* WRAPS on purpose: the local player's row carries a standings badge below the numbers,
+     and on a phone the name + three figures already fill the line. */
+  flex-wrap: wrap;
+  gap: 6px 14px;
   padding: 4px 10px;
   border-radius: 6px;
   background: var(--panel-2);
@@ -1327,7 +1409,7 @@ button {
   letter-spacing: 1.5px;
   color: var(--ds-accent-ink);
   background: var(--amber);
-  border-radius: 4px;
+  border-radius: var(--ds-round-sm);
   padding: 1px 6px;
 }
 .elo-prov {
@@ -1394,14 +1476,14 @@ button {
 .elo-delta {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   min-width: 56px;
   justify-content: flex-end;
   text-align: right;
   font-weight: 800;
   font-size: 15px;
   border-radius: 6px;
-  padding: 1px 7px;
+  padding: 1px 8px;
 }
 .elo-delta-caret {
   font-size: 10px;
@@ -1537,6 +1619,7 @@ button {
   gap: 1px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
   transition: background 0.1s;
+  font-size: var(--ds-t-xs);
 }
 .mobile-btn .mb-ico {
   line-height: 1;
@@ -1554,11 +1637,22 @@ button {
 .mobile-btn.shoot {
   border-color: var(--ds-on-field-accent);
   color: var(--ds-on-field-accent);
+  font-size: var(--ds-t-sm);
 }
 .mobile-btn.editing {
   border-style: dashed;
   border-color: var(--ds-on-field-accent);
   cursor: grab;
+}
+/* the CATAPULT throw — a different action from the claw, so a different colour */
+.mobile-btn.fling {
+  border-color: var(--ds-on-field-dim);
+  color: var(--ds-on-field-dim);
+}
+/* an action the ROBOT is doing for you: never drawn in play, ghosted while laying the
+   pad out so the layout stays arrangeable whatever the assists are set to today */
+.mobile-btn.auto {
+  opacity: 0.45;
 }
 
 /* edit-layout bar (mobile control customization) */
@@ -1588,7 +1682,7 @@ button {
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.4px;
-  padding: 7px 14px;
+  padding: 8px 14px;
   border-radius: var(--ds-round-full);
   border: 1px solid var(--ds-hud-line);
   background: transparent;
@@ -1611,7 +1705,7 @@ button {
   .score-panel {
     min-width: 74px;
     padding: 4px 12px;
-    gap: 5px;
+    gap: 4px;
   }
   .score-panel .panel-score {
     font-size: 22px;
@@ -1621,21 +1715,21 @@ button {
   }
   .timer-panel {
     min-width: 108px;
-    padding: 3px 14px;
+    padding: 4px 14px;
   }
   .timer-panel .timer-time {
     font-size: 20px;
   }
   .timer-panel .timer-phase,
   .timer-panel .timer-motif {
-    font-size: 8.5px;
+    font-size: 8px;
   }
   .breakdown-row {
     bottom: 50px;
   }
   .breakdown-row span {
     font-size: 10px;
-    padding: 2px 7px;
+    padding: 2px 8px;
   }
   /* THE ROBOT STATUS CHIPS. `.status-wrap` is anchored `right: 12px` and grows
      LEFTWARD, and `.robot-status` is a nowrap row — so on a phone the chip row
@@ -1648,8 +1742,11 @@ button {
     /* and BELOW the MENU/RESET buttons. Both clusters are absolutely positioned into
        the top corners, and once the chips are allowed to use the full width they run
        under the buttons (they overlapped before this too — the row was just off-screen
-       where nobody saw it). The buttons end ~36px down, so clear them. */
-    top: 44px;
+       where nobody saw it).
+       DERIVED from the same inset the buttons use, not a flat 44: `.game-buttons` is
+       positioned from `env(safe-area-inset-top)`, so on a notched phone (inset ~47px)
+       the buttons occupy 47-83px while a flat 44 put the chips straight under them. */
+    top: calc(max(6px, env(safe-area-inset-top)) + 38px);
   }
   .robot-status {
     flex-wrap: wrap;
@@ -1664,7 +1761,7 @@ button {
     gap: 6px;
   }
   .game-btn {
-    padding: 6px 11px;
+    padding: 6px 12px;
     font-size: 12px;
   }
 }
@@ -1818,12 +1915,12 @@ button {
    "searching…" screen normally implies, so it has to read as its own object
    instead of blending into the status text above it. */
 .ds-tip {
-  margin: 14px 0 0;
+  margin: 0;
   border: 1px solid var(--ds-line);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border-radius: var(--ds-round);
+  padding: var(--ds-s-3);
   background: var(--ds-tile);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--ds-mut);
   text-align: left;
@@ -1833,11 +1930,17 @@ button {
 /* MAINTENANCE: the scheduled state informs, the biting state interrupts. Both use
    an edge + ink rather than a saturated fill, so a banner that sits on every menu
    screen for half an hour doesn't become something people stop seeing. */
+/* the shell insets `.ds-bar`, `.ds-main` and `.ds-foot` at 22px; this strip was at
+   14, so its left edge sat 8px outboard of everything above and below it. 22px is the
+   shell inset, not a spacing step. */
+.ds-maint-wrap {
+  padding: 12px 22px 0;
+}
 .ds-maint {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 0 0 14px;
+  margin: 0;
   padding: 10px 14px;
   border: 1px solid var(--ds-warn);
   border-radius: 10px;
@@ -1872,7 +1975,7 @@ button {
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--ds-round-full);
-  padding: 7px 16px;
+  padding: 8px 16px;
   font: inherit;
   font-size: 13px;
   font-weight: 700;
@@ -1901,7 +2004,7 @@ button {
   flex: 1 1 120px;
   background: var(--ds-panel);
   border: 1px solid var(--ds-line);
-  border-radius: 12px;
+  border-radius: var(--ds-round-md);
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
@@ -1909,7 +2012,7 @@ button {
 }
 .adm-stat b { font-size: 24px; line-height: 1.1; color: var(--ds-ink); }
 .adm-stat span {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1926,7 +2029,7 @@ button {
   border: 1px solid var(--ds-line);
   border-radius: 10px;
   padding: 8px 12px;
-  font-size: 12.5px;
+  font-size: 12px;
 }
 .adm-region b { text-transform: uppercase; letter-spacing: 0.06em; color: var(--ds-ink); }
 
@@ -1934,8 +2037,8 @@ button {
   width: 100%;
   background: var(--ds-tile);
   border: 1px solid var(--ds-line-strong);
-  border-radius: 8px;
-  padding: 9px 12px;
+  border-radius: var(--ds-round);
+  padding: 8px 12px;
   font: inherit;
   font-size: 13px;
   color: var(--ds-ink);
@@ -1961,9 +2064,9 @@ button {
 
 .adm-pill {
   display: inline-block;
-  padding: 3px 9px;
+  padding: 4px 8px;
   border-radius: var(--ds-round-full);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 700;
   background: var(--ds-tile);
   border: 1px solid var(--ds-line-strong);
@@ -2001,7 +2104,7 @@ button {
 .admin-card {
   background: var(--ds-panel);
   border: 1px solid var(--ds-line);
-  border-radius: 12px;
+  border-radius: var(--ds-round-md);
   padding: 18px;
   display: flex;
   flex-direction: column;
@@ -2012,9 +2115,9 @@ button {
 .admin-field input {
   background: var(--ds-tile);
   border: 1px solid var(--ds-line-strong);
-  border-radius: 8px;
+  border-radius: var(--ds-round);
   color: var(--ds-ink);
-  padding: 7px 10px;
+  padding: 8px 10px;
   font: inherit;
 }
 .admin-field input[type="number"] { width: 72px; }
@@ -2023,15 +2126,15 @@ button {
 .admin-field select {
   background: var(--ds-tile);
   border: 1px solid var(--ds-line-strong);
-  border-radius: 8px;
+  border-radius: var(--ds-round);
   color: var(--ds-ink);
-  padding: 7px 10px;
+  padding: 8px 10px;
   font: inherit;
 }
 .admin-textarea {
   background: var(--ds-tile);
   border: 1px solid var(--ds-line-strong);
-  border-radius: 8px;
+  border-radius: var(--ds-round);
   color: var(--ds-ink);
   padding: 8px 10px;
   font: inherit;
@@ -2046,8 +2149,8 @@ button {
   gap: 8px;
   background: var(--ds-tile);
   border: 1px solid var(--ds-line);
-  border-radius: 8px;
-  padding: 7px 10px;
+  border-radius: var(--ds-round);
+  padding: 8px 10px;
   font-size: 13px;
 }
 /* the rank NUMBER is content, not chrome — `opacity:.5` put it at 3.19:1 */
@@ -2058,7 +2161,7 @@ button {
   border: 1px solid var(--ds-line-strong);
   border-radius: 6px;
   color: var(--ds-ink);
-  padding: 5px 8px;
+  padding: 4px 8px;
   font: inherit;
 }
 /* ---- supporter cosmetic: chassis colour swatches ----------------------- */
@@ -2117,7 +2220,7 @@ button {
   justify-content: center;
   background: var(--ds-gold);
   color: var(--ds-gold-ink);
-  border-radius: 999px;
+  border-radius: var(--ds-round-full);
   vertical-align: middle;
   flex: 0 0 auto;
   /* A badge is DECORATION BESIDE a name, never part of it. Two consequences:
@@ -2167,8 +2270,8 @@ button {
   position: fixed;
   z-index: 400;
   transform: translate(-50%, calc(-100% - 8px));
-  padding: 5px 9px;
-  border-radius: 8px;
+  padding: 4px 8px;
+  border-radius: var(--ds-round);
   background: var(--ds-panel);
   color: var(--ds-ink);
   border: 1px solid var(--ds-line-strong);
@@ -2233,8 +2336,7 @@ input.admin-months {
   border-left: 2px solid var(--ds-line);
   margin-left: 10px;
 }
-.admin-history .ds-hint { font-size: 11.5px; margin: 0 0 2px; }
-.ds-btn.sm { padding: 5px 10px; font-size: 12px; }
+.admin-history .ds-hint { font-size: 12px; margin: 0 0 2px; }
 /* was a hardcoded #ff6b6b — a DARK-mode red, stranded here since before the light
    retheme, and only ~2.6:1 on a light panel. --ds-danger is 6.17 light / 6.14 dark. */
 .ds-btn.danger {
@@ -2262,8 +2364,8 @@ input.admin-months {
   border-radius: var(--ds-round-full);
   border: 1px solid color-mix(in srgb, currentColor 55%, transparent);
   background: color-mix(in srgb, currentColor 13%, transparent);
-  padding: 2px 9px;
-  font-size: 10.5px;
+  padding: 2px 8px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 1px;
   text-transform: uppercase;
@@ -2300,12 +2402,15 @@ input.admin-months {
   overflow-y: auto;
   padding-right: 4px;
 }
+/* the left edge CARRIES the announcement's kind (season vs act, see the two rules below), so
+   it stays — but at the same 2px the event log uses for the same idiom rather than the 4px
+   slab it was, which reads as decoration rather than as a category marker */
 .ann-item {
   border: 1px solid var(--ds-line);
-  border-left: 4px solid var(--ds-accent);
+  border-left: 2px solid var(--ds-accent);
   border-radius: var(--ds-round-md);
   background: var(--ds-tile);
-  padding: 13px 15px;
+  padding: 12px 16px;
 }
 .ann-item.season { border-left-color: var(--ds-warn); }
 .ann-item.act { border-left-color: var(--ds-accent); }
@@ -2325,7 +2430,7 @@ input.admin-months {
   margin: 0;
 }
 .ann-item-tag {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 1px;
   text-transform: uppercase;
@@ -2334,7 +2439,7 @@ input.admin-months {
 }
 /* ---- rendered Markdown (announcement bodies, admin preview) ------------- */
 .md {
-  font-size: 13.5px;
+  font-size: 14px;
   line-height: 1.55;
   color: var(--ds-ink-dim);
   /* a rendered page (Privacy, Terms, a changelog) can contain a bare URL, and a URL
@@ -2355,7 +2460,7 @@ input.admin-months {
   line-height: 1.3;
   margin: 14px 0 6px;
 }
-.md-h1 { font-size: 15.5px; }
+.md-h1 { font-size: 16px; }
 .md-h2 { font-size: 14px; }
 .md-h3, .md-h4 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ds-mut); }
 .md-list {
@@ -2363,7 +2468,7 @@ input.admin-months {
   padding-left: 18px;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
 }
 .md-ol { list-style: decimal; }
 .md-ul { list-style: disc; }
@@ -2377,7 +2482,7 @@ input.admin-months {
   background: var(--ds-tile);
   border: 1px solid var(--ds-line);
   border-radius: 5px;
-  padding: 1px 5px;
+  padding: 1px 4px;
 }
 .md-link { color: var(--ds-accent); text-decoration: underline; text-underline-offset: 2px; }
 .md-link:hover { opacity: 0.85; }
@@ -2387,9 +2492,8 @@ input.admin-months {
    tight over a multi-screen document, so `.legal-md` enlarges it and caps the
    measure at ~72 characters. Colour tokens are unchanged — these are the same
    pairs `npm run contrast` already audits. */
-.ds-legal { padding: 16px; }
 .legal-md {
-  font-size: 14.5px;
+  font-size: 14px;
   line-height: 1.65;
   max-width: 68ch;
 }
@@ -2397,7 +2501,7 @@ input.admin-months {
 /* `##` renders as .md-h2 (the renderer downshifts a level so these sit under the
    page's own .ds-h1) — give it real section weight and space above. */
 .legal-md .md-h2 {
-  font-size: 16.5px;
+  font-size: 16px;
   margin: 26px 0 8px;
 }
 .legal-md > :first-child { margin-top: 0; }
@@ -2531,4 +2635,115 @@ input.admin-months {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+/* ---- LAN play (src/ui/LanPanel.tsx, src/ui/LanBanner.tsx) ------------------
+   Reuses the console/panelbox anatomy; only three things here have no existing
+   equivalent. See docs/lan-selfhost.md. */
+
+/* the one-line "what is happening right now" statement at the top of a panel */
+.ds-lan-state {
+  margin: 0;
+  font-size: var(--ds-t-lg);
+  color: var(--ds-ink);
+}
+
+.ds-lan-urls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+/* THE JOIN URL IS READ OUT LOUD ACROSS A ROOM, so it is the largest type on the
+   screen and it is monospace: someone is copying it character by character off a
+   laptop propped on a table, and 1/l and 0/O have to be distinguishable. The whole
+   row is the copy button — a separate icon beside a long string is a smaller target
+   for the same action. */
+.ds-lan-url {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-3);
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round);
+  background: var(--ds-tile);
+  color: var(--ds-ink);
+  cursor: pointer;
+  text-align: left;
+}
+.ds-lan-url.primary {
+  border-color: var(--ds-accent);
+}
+.ds-lan-url:hover {
+  background: var(--ds-panel);
+}
+.ds-lan-url > .u {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xl);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ds-lan-url > .c {
+  flex: none;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+
+/* THE HOST COMMANDS. Numbered, because they are typed in order and a host who pastes the
+   fourth one first gets an error about a directory rather than about DSIM. The rows reuse
+   `.ds-lan-url` — same affordance, the whole row copies — with `.compact` dropping the type
+   from projector size to reading size: a join URL is read across a room, a command is read
+   off the screen in front of you. */
+.ds-lan-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+  margin: 0;
+  padding: 0 0 0 var(--ds-s-5);
+}
+.ds-lan-steps > li > .s {
+  display: block;
+  margin-bottom: var(--ds-s-1);
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.ds-lan-url.compact {
+  padding: var(--ds-s-2);
+}
+.ds-lan-url.compact > .u {
+  font-size: var(--ds-t-md);
+  font-weight: 500;
+}
+/* The persistent unofficial-match strip. Same anatomy as `.ds-maint` and it reuses
+   that wrapper's inset, but its own block: this is a STATE of the app, not a warning
+   about one, and folding it into the maintenance selector would make one of them
+   wrong the next time the other is restyled. */
+.ds-lan-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--ds-sky-ink);
+  border-radius: var(--ds-round-md);
+  background: var(--ds-tile);
+  color: var(--ds-ink);
+  font-size: var(--ds-t-md);
+  font-weight: 600;
+}
+.ds-lan-leave {
+  margin-left: auto;
+  flex: none;
+  padding: 4px 8px;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round-sm);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.ds-lan-leave:hover {
+  border-color: var(--ds-ink);
 }

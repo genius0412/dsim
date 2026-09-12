@@ -13,10 +13,12 @@ import { useFriendsCtx } from './friendsContext';
 import { challengeLine, formatLabel } from './challenge';
 import { Select, type SelectOption } from './Select';
 import { SupporterBadge } from './SupporterBadge';
+import type { GameId } from '../games/types';
+import type { RoomKind } from '../net/protocol';
 
 /** compact game name for an activity line ("In a match · DECODE") */
 function gameShort(game: 'decode' | 'chain' | null): string {
-  return game === 'chain' ? 'Chain' : game === 'decode' ? 'DECODE' : '';
+  return game === 'chain' ? 'Chain Reaction' : game === 'decode' ? 'DECODE' : '';
 }
 
 /** the chess.com-style activity line for an ONLINE friend: what they're doing,
@@ -36,6 +38,16 @@ function canChallenge(f: FriendRow): boolean {
 }
 
 const OPEN_KEY = 'decodesim.friendsPanelOpen';
+
+/** The room currently open beside this panel. Its region is the hosting region,
+ * which may be different from the sender's currently preferred server. */
+export interface RoomInviteTarget {
+  code: string;
+  game: GameId;
+  kind: RoomKind;
+  record?: 'solo' | 'duo';
+  region?: string | null;
+}
 
 /**
  * Between these widths there is room for the left rail and the content, but not
@@ -89,14 +101,23 @@ export function FriendsPanel({
   signedIn,
   onOpenProfile,
   onJoinInvite,
+  onSpectate,
   myUserId,
+  room,
+  allowProfileNavigation = true,
 }: {
   signedIn: boolean;
   onOpenProfile: (username: string) => void;
   /** a friend invited you to a room and you clicked Join */
   onJoinInvite: (invite: RoomInvite) => void;
+  /** watch a friend's match read-only (their `watch` room + hosting region) */
+  onSpectate: (room: string, region?: string) => void;
   /** the signed-in account's user id — drives "Recently played" suggestions */
   myUserId?: string | null;
+  /** Active room: online rows invite to it instead of starting a new challenge. */
+  room?: RoomInviteTarget;
+  /** Keep links inert when leaving this surface would abandon a live room. */
+  allowProfileNavigation?: boolean;
 }) {
   const [open, setOpen] = useState(() => {
     try {
@@ -119,6 +140,7 @@ export function FriendsPanel({
   };
 
   const friends = useFriendsCtx();
+  const [invited, setInvited] = useState<Record<string, 'sending' | 'sent'>>({});
   const { incoming, outgoing, blocked, invites, friends: list } = friends.data;
   // challenges I sent that are still live (absent on an older server)
   const sent = friends.data.sent ?? [];
@@ -131,21 +153,31 @@ export function FriendsPanel({
     return [on, off];
   }, [list]);
 
+  // These acknowledgements belong to the current room only. A newly-created or
+  // rejoined room starts with fresh Invite buttons.
+  useEffect(() => setInvited({}), [room?.code]);
+
+  const openProfile = allowProfileNavigation ? onOpenProfile : undefined;
+
   if (!expanded) {
     return (
       <aside className="ds-friends collapsed" aria-label="Friends">
-        <button
-          className="fr-toggle"
-          onClick={toggle}
-          title={squeezed ? 'Friends (needs a wider window to stay open)' : 'Show friends'}
-          aria-expanded={false}
-        >
-          <PeopleGlyph />
-          {waiting > 0 && (
-            <span className="fr-badge" aria-label={`${waiting} friend requests and invites`}>
-              {waiting}
-            </span>
-          )}
+        {/* LABELLED. Collapsed, this was a bare 38px glyph floating in a 56px column
+            with nothing to say what it opened — and the only thing naming it was a
+            `title`, which a touch device never shows. The label is sentence case to
+            match `.ds-rail`'s own nav items directly opposite it, not the expanded
+            panel's uppercase title. It is also the button's accessible name now, so
+            the tooltip that duplicated it is gone. */}
+        <button className="fr-toggle" onClick={toggle} aria-expanded={false}>
+          <span className="fr-toggle-icon">
+            <PeopleGlyph />
+            {waiting > 0 && (
+              <span className="fr-badge" aria-label={`${waiting} friend requests and invites`}>
+                {waiting}
+              </span>
+            )}
+          </span>
+          <span className="fr-toggle-label">Friends</span>
         </button>
       </aside>
     );
@@ -155,7 +187,7 @@ export function FriendsPanel({
     <aside className="ds-friends" aria-label="Friends">
       <div className="fr-head">
         <span className="fr-title">Friends</span>
-        <button className="fr-collapse" onClick={toggle} aria-expanded title="Hide friends">
+        <button className="fr-collapse" onClick={toggle} aria-expanded aria-label="Hide friends">
           ✕
         </button>
       </div>
@@ -172,52 +204,41 @@ export function FriendsPanel({
 
           {friends.error && <p className="fr-error">{friends.error}</p>}
 
+          {/* ABOVE the lists. Adding somebody is the one thing you come to an empty
+              friends panel to do, and it was the last element in a scrolling column
+              under everything else. */}
+          <AddFriend onAdd={friends.add} known={friends.data} />
+
           {invites.length > 0 && (
             <Section title="Challenges" count={invites.length}>
               {invites.map((inv) => (
-                <div className="fr-row" key={inv.id}>
-                  <span className="fr-who static">
-                    <span className="fr-nameline">
-                      <span className="fr-name">{inv.from.handle}</span>
-                      <SupporterBadge supporter={inv.from.supporter} role={inv.from.role} />
-                    </span>
-                    <span className="fr-sub">{challengeLine(inv.format)}</span>
-                  </span>
-                  <span className="fr-actions">
-                    <button className="ds-btn small primary" onClick={() => onJoinInvite(inv)}>
-                      Accept
-                    </button>
-                    {/* Decline TELLS them; the row is only marked so their client
-                        can say so once. Dismissing silently would leave them
-                        watching a challenge that is never going to be answered. */}
-                    <button className="ds-btn small ghost" onClick={() => void friends.declineInvite(inv.id)}>
-                      Decline
-                    </button>
-                  </span>
-                </div>
+                <PersonRow key={inv.id} p={inv.from} sub={challengeLine(inv.format)}>
+                  <button className="ds-btn small primary" onClick={() => onJoinInvite(inv)}>
+                    Accept
+                  </button>
+                  {/* Decline TELLS them; the row is only marked so their client
+                      can say so once. Dismissing silently would leave them
+                      watching a challenge that is never going to be answered. */}
+                  <button className="ds-btn small ghost" onClick={() => void friends.declineInvite(inv.id)}>
+                    Decline
+                  </button>
+                </PersonRow>
               ))}
             </Section>
           )}
 
           {sent.length > 0 && (
-            <Section title="Sent" count={sent.length}>
+            <Section title="Sent challenges" count={sent.length}>
               {sent.map((s) => (
-                <div className="fr-row" key={s.id}>
-                  <span className="fr-who static">
-                    <span className="fr-nameline">
-                      <span className="fr-name">{s.to.handle}</span>
-                      <SupporterBadge supporter={s.to.supporter} role={s.to.role} />
-                    </span>
-                    <span className="fr-sub">
-                      {s.declined ? `declined · ${formatLabel(s.format)}` : `waiting · ${formatLabel(s.format)}`}
-                    </span>
-                  </span>
-                  <span className="fr-actions">
-                    <button className="ds-btn small ghost" onClick={() => void friends.cancelInvite(s.id)}>
-                      {s.declined ? 'Clear' : 'Cancel'}
-                    </button>
-                  </span>
-                </div>
+                <PersonRow
+                  key={s.id}
+                  p={s.to}
+                  sub={`${s.declined ? 'declined' : 'waiting'} · ${formatLabel(s.format)}`}
+                >
+                  <button className="ds-btn small ghost" onClick={() => void friends.cancelInvite(s.id)}>
+                    {s.declined ? 'Clear' : 'Cancel'}
+                  </button>
+                </PersonRow>
               ))}
             </Section>
           )}
@@ -225,7 +246,7 @@ export function FriendsPanel({
           {incoming.length > 0 && (
             <Section title="Requests" count={incoming.length}>
               {incoming.map((p) => (
-                <Row key={p.userId} p={p} onOpenProfile={onOpenProfile}>
+                <PersonRow key={p.userId} p={p} onOpenProfile={openProfile}>
                   <button
                     className="ds-btn small primary"
                     onClick={() => void friends.accept(p.username ?? '')}
@@ -238,98 +259,140 @@ export function FriendsPanel({
                   >
                     Decline
                   </button>
-                </Row>
+                </PersonRow>
               ))}
             </Section>
           )}
 
-          <Section title="Online" count={online.length}>
-            {online.length === 0 ? (
-              <p className="fr-empty">Nobody’s online right now.</p>
-            ) : (
-              online.map((f) => (
+          {online.length > 0 && (
+            <Section title="Online" count={online.length}>
+              {online.map((f) => (
                 // the status is spelled out in the sub-line, not carried by the
                 // dot's hue alone: a red DND dot and a green online dot are the
                 // same dot to a red-green colourblind player. The @username stays
                 // reachable via the row's title and the click-through.
-                <Row key={f.userId} p={f} onOpenProfile={onOpenProfile} sub={presenceLine(f)}>
-                  <span
-                    className={`fr-dot${f.status === 'dnd' ? ' dnd' : f.activity === 'match' || f.activity === 'lobby' ? ' busy' : ''}`}
-                    aria-hidden
-                  />
-                  {canChallenge(f) && f.username && (
-                    <ChallengeButton username={f.username} onChallenge={friends.openChallenge} />
+                <PersonRow
+                  key={f.userId}
+                  p={f}
+                  onOpenProfile={openProfile}
+                  sub={presenceLine(f)}
+                  // ANCHORED to the start of the row. As the first child of
+                  // `.fr-actions` its x position was decided by however many buttons
+                  // happened to follow it, so the dot sat in three different places
+                  // down one list and MOVED when a friend's presence flipped
+                  // mid-poll. A status indicator has to hold still.
+                  lead={
+                    <span
+                      className={`fr-dot${f.status === 'dnd' ? ' dnd' : f.activity === 'match' || f.activity === 'lobby' ? ' busy' : ''}`}
+                      aria-hidden
+                    />
+                  }
+                >
+                  {/* WATCH replaces Challenge rather than joining it: the two are
+                      mutually exclusive by construction (`canChallenge` excludes a
+                      friend already in a match, which is exactly when `watch` is
+                      set), and the row has space for one action beside the menu. */}
+                  {room && f.username ? (
+                    <InviteButton
+                      username={f.username}
+                      room={room}
+                      status={invited[f.username]}
+                      onInvite={() => {
+                        const username = f.username!;
+                        setInvited((current) => ({ ...current, [username]: 'sending' }));
+                        void friends
+                          .inviteToRoom(
+                            username, room.code, room.game, room.kind, room.record, undefined, room.region,
+                          )
+                          .then(() => setInvited((current) => ({ ...current, [username]: 'sent' })))
+                          .catch(() =>
+                            setInvited((current) => {
+                              const { [username]: _, ...rest } = current;
+                              return rest;
+                            }),
+                          );
+                      }}
+                    />
+                  ) : f.watch ? (
+                    <button
+                      className="ds-btn small ghost"
+                      onClick={() => onSpectate(f.watch!.room, f.watch!.region)}
+                    >
+                      Watch
+                    </button>
+                  ) : (
+                    canChallenge(f) &&
+                    f.username && (
+                      <ChallengeButton username={f.username} onChallenge={friends.openChallenge} />
+                    )
                   )}
                   <RowMenu username={f.username} friends={friends} />
-                </Row>
-              ))
-            )}
-          </Section>
-
-          {offline.length > 0 && (
-            <Section title="Offline" count={offline.length}>
-              {offline.map((f) => (
-                <Row key={f.userId} p={f} onOpenProfile={onOpenProfile} sub={offlineFor(f.offlineSeconds)}>
-                  <RowMenu username={f.username} friends={friends} />
-                </Row>
+                </PersonRow>
               ))}
             </Section>
           )}
 
+          {/* FOLDED. An offline friend is not someone you are about to do anything
+              with, and on a long list they pushed everything actionable off screen.
+              Same reasoning as the Blocked fold below. */}
+          {offline.length > 0 && (
+            <FoldSection title="Offline" count={offline.length}>
+              {offline.map((f) => (
+                <PersonRow key={f.userId} p={f} onOpenProfile={openProfile} sub={offlineFor(f.offlineSeconds)}>
+                  <RowMenu username={f.username} friends={friends} />
+                </PersonRow>
+              ))}
+            </FoldSection>
+          )}
+
           {outgoing.length > 0 && (
-            <Section title="Sent" count={outgoing.length}>
+            <Section title="Sent requests" count={outgoing.length}>
               {outgoing.map((p) => (
-                <Row key={p.userId} p={p} onOpenProfile={onOpenProfile}>
+                <PersonRow key={p.userId} p={p} onOpenProfile={openProfile}>
                   <button
                     className="ds-btn small ghost"
                     onClick={() => void friends.cancel(p.username ?? '')}
                   >
                     Cancel
                   </button>
-                </Row>
+                </PersonRow>
               ))}
             </Section>
           )}
 
-          {/* ALWAYS rendered, unlike Requests/Sent above. Those are transient — an
-              absent one means nothing is pending. This is a standing setting: hiding
-              it when empty leaves no way to answer "have I blocked anyone?", and a
-              blocked player is invisible everywhere else by definition, so the fold
-              is the only place they exist in the UI. It's collapsed, so an empty one
-              costs a single header line. */}
-          <FoldSection title="Blocked" count={blocked.length}>
-            {blocked.map((p) => (
-              <Row key={p.userId} p={p} onOpenProfile={onOpenProfile}>
-                <button
-                  className="ds-btn small ghost"
-                  // A blocked row can only exist if you named that account by
-                  // username to block it, so this is unreachable — but sending
-                  // '' would ask the server to look up the empty string, which
-                  // is how `accept` used to fail with an opaque error.
-                  disabled={!p.username}
-                  onClick={() => {
-                    if (p.username) void friends.unblock(p.username);
-                  }}
-                >
-                  Unblock
-                </button>
-              </Row>
-            ))}
-            <p className="fr-empty">
-              {blocked.length === 0
-                ? 'You haven’t blocked anyone. Blocked players can’t send you friend requests, and you won’t appear in their friends list.'
-                : 'Blocked players can’t send you friend requests, and you won’t appear in their friends list.'}
-            </p>
-          </FoldSection>
+          {/* Only when there IS one. This used to render unconditionally, on the
+              reasoning that a standing setting should stay answerable — but an empty
+              fold is a control that opens onto nothing, and it carried a paragraph
+              defining what blocking does just to give the empty state something to
+              say. Nobody comes to this panel to read that. */}
+          {blocked.length > 0 && (
+            <FoldSection title="Blocked" count={blocked.length}>
+              {blocked.map((p) => (
+                <PersonRow key={p.userId} p={p} onOpenProfile={openProfile}>
+                  <button
+                    className="ds-btn small ghost"
+                    // A blocked row can only exist if you named that account by
+                    // username to block it, so this is unreachable — but sending
+                    // '' would ask the server to look up the empty string, which
+                    // is how `accept` used to fail with an opaque error.
+                    disabled={!p.username}
+                    onClick={() => {
+                      if (p.username) void friends.unblock(p.username);
+                    }}
+                  >
+                    Unblock
+                  </button>
+                </PersonRow>
+              ))}
+            </FoldSection>
+          )}
 
           <RecentlyPlayed
             myUserId={myUserId}
             known={friends.data}
             onAdd={friends.add}
-            onOpenProfile={onOpenProfile}
+            onOpenProfile={openProfile}
           />
-
-          <AddFriend onAdd={friends.add} known={friends.data} />
         </>
       )}
     </aside>
@@ -374,7 +437,7 @@ function RecentlyPlayed({
   myUserId?: string | null;
   known: { friends: FriendRow[]; incoming: PublicProfile[]; outgoing: PublicProfile[]; blocked: PublicProfile[] };
   onAdd: (username: string) => Promise<'sent' | 'accepted'>;
-  onOpenProfile: (username: string) => void;
+  onOpenProfile?: (username: string) => void;
 }) {
   const [people, setPeople] = useState<PublicProfile[]>([]);
   const [added, setAdded] = useState<Record<string, boolean>>({});
@@ -413,10 +476,9 @@ function RecentlyPlayed({
   if (suggestions.length === 0) return null;
 
   return (
-    <section className="fr-section">
-      <h3 className="fr-sec-h">Recently played</h3>
+    <Section title="Recently played">
       {suggestions.map((p) => (
-        <Row key={p.userId} p={p} onOpenProfile={onOpenProfile}>
+        <PersonRow key={p.userId} p={p} onOpenProfile={onOpenProfile}>
           <button
             className="ds-btn small"
             disabled={!!(p.username && added[p.username])}
@@ -432,25 +494,35 @@ function RecentlyPlayed({
           >
             {p.username && added[p.username] ? 'Added' : 'Add'}
           </button>
-        </Row>
+        </PersonRow>
       ))}
-    </section>
+    </Section>
   );
 }
 
-function Section({
+/**
+ * A titled stack of rows — the ONE construction for a section anywhere in the
+ * friends surfaces. Keeping the heading construction in one place prevents
+ * variants of the same four-line pattern from drifting in element or count-chip
+ * behavior.
+ *
+ * `count` is OPTIONAL: a suggestion list ("Recently played") and a search box
+ * ("Add a friend") are not tallies of anything, and printing a number there would
+ * read as a count of people you have rather than of people offered.
+ */
+export function Section({
   title,
   count,
   children,
 }: {
   title: string;
-  count: number;
+  count?: number;
   children: React.ReactNode;
 }) {
   return (
     <section className="fr-section">
       <h3 className="fr-sec-h">
-        {title} <span className="fr-sec-n">{count}</span>
+        {title} {count !== undefined && <span className="fr-sec-n">{count}</span>}
       </h3>
       {children}
     </section>
@@ -486,36 +558,60 @@ function FoldSection({
   );
 }
 
-/** handle + @username, both clicking through to the profile — the same shape
- * `Leaderboard`'s player cell uses, so every friend/request/result row behaves
- * identically to a name anywhere else in the app. */
-function Row({
+/**
+ * handle + @username, with the row's actions on the right — the same shape
+ * `Leaderboard`'s player cell uses, so every friend/request/result/search row
+ * behaves identically to a name anywhere else in the app.
+ *
+ * THE ONE construction, exported for `UserSearchBar`. It replaced several
+ * hand-written copies of this block, and each one had to
+ * re-assert by hand that `SupporterBadge` is a SIBLING of `.fr-name` rather than a
+ * child (CLAUDE.md; the name ellipsises on overflow and would truncate a nested
+ * badge with it). The seventh copy is the one that forgets.
+ *
+ * `onOpenProfile` omitted ⇒ the STATIC variant: a name with nowhere to click
+ * through to, which is all the old `.fr-who.static` ever meant.
+ */
+export function PersonRow({
   p,
   sub,
+  lead,
   onOpenProfile,
   children,
 }: {
   p: PublicProfile | FriendRow;
   sub?: string;
-  onOpenProfile: (username: string) => void;
+  /** a status indicator pinned to the START of the row, before the name */
+  lead?: React.ReactNode;
+  onOpenProfile?: (username: string) => void;
   children?: React.ReactNode;
 }) {
   const username = p.username;
-  const open = (): void => {
-    if (username) onOpenProfile(username);
-  };
+  const body = (
+    <>
+      <span className="fr-nameline">
+        <span className="fr-name">{p.handle}</span>
+        <SupporterBadge supporter={p.supporter} role={p.role} />
+      </span>
+      <span className="fr-sub">{sub ?? (username ? `@${username}` : '')}</span>
+    </>
+  );
   return (
     <div className="fr-row">
-      <button className="fr-who" onClick={open} disabled={!username} title={username ? `View @${username}` : undefined}>
-        {/* the badge is a sibling of `.fr-name`, not a child: the name ellipsises
-            on overflow, and a badge inside it would truncate with the text */}
-        <span className="fr-nameline">
-          <span className="fr-name">{p.handle}</span>
-          <SupporterBadge supporter={p.supporter} role={p.role} />
-        </span>
-        <span className="fr-sub">{sub ?? (username ? `@${username}` : '')}</span>
-      </button>
-      <span className="fr-actions">{children}</span>
+      {lead}
+      {onOpenProfile ? (
+        <button
+          className="fr-who"
+          onClick={() => username && onOpenProfile(username)}
+          disabled={!username}
+          title={username ? `View @${username}` : undefined}
+        >
+          {body}
+        </button>
+      ) : (
+        <span className="fr-who static">{body}</span>
+      )}
+      {children ? <span className="fr-actions">{children}</span> : null}
     </div>
   );
 }
@@ -530,12 +626,34 @@ function ChallengeButton({
   onChallenge: (username: string) => void;
 }) {
   return (
+    <button className="ds-btn small primary fr-challenge" onClick={() => onChallenge(username)}>
+      Challenge
+    </button>
+  );
+}
+
+/** Invite an online friend into the room already open beside this panel. This
+ * deliberately replaces Challenge in that state: starting another room while
+ * connected to one is both confusing and likely to abandon the current room. */
+function InviteButton({
+  username,
+  room,
+  status,
+  onInvite,
+}: {
+  username: string;
+  room: RoomInviteTarget;
+  status?: 'sending' | 'sent';
+  onInvite: () => void;
+}) {
+  return (
     <button
       className="ds-btn small primary fr-challenge"
-      title={`Challenge @${username} to a match`}
-      onClick={() => onChallenge(username)}
+      title={`Invite @${username} to room ${room.code}`}
+      disabled={!!status}
+      onClick={onInvite}
     >
-      Challenge
+      {status === 'sending' ? 'Inviting…' : status === 'sent' ? 'Invited ✓' : 'Invite'}
     </button>
   );
 }
@@ -629,12 +747,11 @@ function AddFriend({
     !!u && (known.friends.some((f) => f.username === u) || known.outgoing.some((p) => p.username === u));
 
   return (
-    <section className="fr-section">
-      <h3 className="fr-sec-h">Add a friend</h3>
+    <Section title="Add a friend">
       <input
         className="ds-input"
         value={query}
-        placeholder="Search name or @username…"
+        placeholder="Search name or @username"
         aria-label="Search for a player by display name or username"
         onChange={(e) => {
           setQuery(e.target.value);
@@ -643,49 +760,40 @@ function AddFriend({
       />
       {note && <p className="fr-note">{note}</p>}
       {results.map((p) => (
-        <div className="fr-row" key={p.userId}>
-          <span className="fr-who static">
-            <span className="fr-nameline">
-              <span className="fr-name">{p.handle}</span>
-              <SupporterBadge supporter={p.supporter} role={p.role} />
-            </span>
-            <span className="fr-sub">@{p.username}</span>
-          </span>
-          <span className="fr-actions">
-            <button
-              className="ds-btn small"
-              disabled={already(p.username)}
-              onClick={() => {
-                const u = p.username;
-                if (!u) return;
-                void onAdd(u)
-                  .then((outcome) =>
-                    setNote(
-                      outcome === 'accepted'
-                        ? `You and ${p.handle} are now friends.`
-                        : `Request sent to ${p.handle}.`,
-                    ),
-                  )
-                  .catch(() => {
-                    /* the hook surfaces the message in friends.error */
-                  });
-              }}
-            >
-              {already(p.username) ? 'Added' : 'Add'}
-            </button>
-          </span>
-        </div>
+        <PersonRow key={p.userId} p={p}>
+          <button
+            className="ds-btn small"
+            disabled={already(p.username)}
+            onClick={() => {
+              const u = p.username;
+              if (!u) return;
+              void onAdd(u)
+                .then((outcome) =>
+                  setNote(
+                    outcome === 'accepted'
+                      ? `You and ${p.handle} are now friends.`
+                      : `Request sent to ${p.handle}.`,
+                  ),
+                )
+                .catch(() => {
+                  /* the hook surfaces the message in friends.error */
+                });
+            }}
+          >
+            {already(p.username) ? 'Added' : 'Add'}
+          </button>
+        </PersonRow>
       ))}
       {query.trim().length >= 2 && results.length === 0 && (
         <p className="fr-empty">No players found.</p>
       )}
-    </section>
+    </Section>
   );
 }
 
 /** monoline people glyph, `currentColor` — the one people-icon this app uses,
- * so a chip that needs the concept (InviteFlyout's "Friends" toggle) reaches for
- * this instead of a platform emoji (colourful, off-theme, inconsistent across OSes). */
+ * so every friends control avoids platform emoji (colourful, off-theme, and
+ * inconsistent across operating systems). */
 export function PeopleGlyph({ size = 20 }: { size?: number }) {
   return (
     <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true">

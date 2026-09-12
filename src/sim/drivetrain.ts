@@ -22,12 +22,42 @@ const REF_TURN = 8.5; // rad/s of the reference (DEFAULT 15×18) chassis
 // default robot still turns at 8.5 rad/s; smaller footprints turn quicker
 const REF_HALF_DIAG = Math.sqrt(15 * 15 + 18 * 18) / 2;
 
-export function driveParams(spec: RobotSpec): DriveParams {
-  const p = C.DRIVETRAIN_PRESETS[spec.drivetrain];
-  const maxSpeed = C.SPEED_PER_RPM * spec.driveRpm * p.speedMult;
+/**
+ * The multipliers + wheel RPM actually in force for a robot right now.
+ *
+ * Every drivetrain but BUTTERFLY has exactly one answer. A butterfly carries two wheel
+ * sets with their own gearing and their own handling, so the ACTIVE half is chosen by
+ * `tankMode` (the runtime `RobotState.butterflyTank`) — that one flag swaps the
+ * multipliers, the saturation model (holonomic ⇄ tank side-drive), AND which of the two
+ * rpm sliders applies. Split out so the sim, the builder preview, and the balance table
+ * all resolve a butterfly identically.
+ */
+export function activeDrive(
+  spec: RobotSpec,
+  tankMode = false,
+): { p: (typeof C.DRIVETRAIN_PRESETS)[DrivetrainType]; rpm: number } {
+  if (spec.drivetrain === 'butterfly') {
+    const half = tankMode ? C.BUTTERFLY_MODES.tank : C.BUTTERFLY_MODES.mecanum;
+    const rpm = tankMode ? butterflyTankRpm(spec) : spec.driveRpm;
+    return { p: half as (typeof C.DRIVETRAIN_PRESETS)[DrivetrainType], rpm };
+  }
+  return { p: C.DRIVETRAIN_PRESETS[spec.drivetrain], rpm: spec.driveRpm };
+}
+
+/** a butterfly's TANK-set rpm, clamped to the traction envelope. Defaults to the
+ * mecanum slider's value (clamped) when a spec predates the second slider. */
+export function butterflyTankRpm(spec: RobotSpec): number {
+  const L = C.BUTTERFLY_TANK_RPM;
+  const raw = typeof spec.tankRpm === 'number' && Number.isFinite(spec.tankRpm) ? spec.tankRpm : spec.driveRpm;
+  return clamp(raw, L.min, L.max);
+}
+
+export function driveParams(spec: RobotSpec, tankMode = false): DriveParams {
+  const { p, rpm } = activeDrive(spec, tankMode);
+  const maxSpeed = C.SPEED_PER_RPM * rpm * p.speedMult;
   const accel =
     C.BASE_DRIVE_ACCEL *
-    (C.REF_DRIVE_RPM / spec.driveRpm) *
+    (C.REF_DRIVE_RPM / rpm) *
     (C.REF_MASS_LB / spec.massLb) *
     p.accelMult;
   // rotation tops out at wheel speed / half track diagonal, like a real
@@ -47,19 +77,97 @@ export function driveParams(spec: RobotSpec): DriveParams {
   };
 }
 
+/**
+ * PUSHING FORCE — what this drivetrain can put into a shove, in lb·in/s².
+ *
+ * Traction-limited, so it scales with WEIGHT: a heavier robot presses its wheels into the
+ * tile harder and can transmit more before they slip. `pushMult` is the drivetrain's share of
+ * that traction (tank's treads bite, mecanum's rollers scrub), `rpmPush` is the wheel torque
+ * the gearing leaves for pushing, and `1 − powerDraw` is the current the flywheel and intake
+ * are not taking.
+ *
+ * THIS IS THE NUMBER THAT DECIDES A PUSHING MATCH, and it is stated here rather than implied
+ * by a collider mass. Two robots leaning on each other reach equilibrium when their forces
+ * match, so anything wrong in this expression shows up as a routed opponent, not as a slightly
+ * off feel. Balance-edit HERE; `shoveMass` below only converts it into what Rapier needs.
+ */
+export function pushForce(spec: RobotSpec, tankMode = false, powerDraw = 0): number {
+  const { p, rpm } = activeDrive(spec, tankMode);
+  const rpmPush = clamp(C.REF_DRIVE_RPM / rpm, C.PUSH_RPM_MIN, C.PUSH_RPM_MAX);
+  return spec.massLb * C.BASE_DRIVE_ACCEL * p.pushMult * rpmPush * (1 - powerDraw);
+}
+
+/**
+ * ...AND THE COLLIDER MASS THAT DELIVERS IT.
+ *
+ * The sim pushes by SETTING VELOCITY, not by applying force: `updateRobot` hands Rapier a
+ * velocity each tick and the contact resolves as an inelastic collision between two masses.
+ * The momentum a robot injects per tick is therefore `mass × accel × dt` — so the FORCE it
+ * delivers is `mass × accel`, and the collider mass that produces a wanted force is that force
+ * divided by the accel the motor model actually used this tick.
+ *
+ * Everything else was double-counted before this existed, because `accel` already carries
+ * `REF_MASS_LB / massLb`, `REF_DRIVE_RPM / rpm` and `1 − powerDraw`:
+ *   • massLb cancelled outright — a 20 lb robot pushed exactly as hard as a 42 lb one
+ *     (measured: force 5591 at BOTH ends of the slider) while the comment claimed weight was
+ *     the headline term;
+ *   • the rpm factor landed twice (7.45x spread instead of 2.48x, clamp defeated);
+ *   • power draw landed twice (x0.64 at the cap instead of x0.80).
+ * Dividing the accel back out makes `pushForce` the whole answer and each factor act once.
+ *
+ * `powerDraw` cancels between the two expressions TODAY. It is written out anyway: the point
+ * is that the force is right whatever `accel` happens to contain, and a future edit to either
+ * side must not silently re-open the double-count.
+ *
+ * ONE NUMBER, THREE JOBS. Rapier reads this mass for the sustained shove, for the momentum
+ * split of a ram, and for the positional split when two chassis overlap; the bespoke pair
+ * impulse in physics.ts reads it for rotational inertia. They are all "how much authority does
+ * this robot have in a collision", which is what the quantity means — it is NOT the robot's
+ * weight, and `driveParams().accel` still uses the real `massLb`.
+ */
+export function shoveMass(spec: RobotSpec, tankMode = false, powerDraw = 0): number {
+  const accel = driveParams(spec, tankMode).accel * (1 - powerDraw);
+  return pushForce(spec, tankMode, powerDraw) / Math.max(accel, 1e-6);
+}
+
+/**
+ * ...AND THERE IS NOTHING TO BRAKE WHEN YOU ARE NOT MOVING.
+ *
+ * The braking branch is worth 1.4x the accel budget, and it is selected by "the demanded
+ * change opposes the current motion" — which a chassis at a DEAD STOP satisfies on nothing but
+ * the sign of its own numerical residue. Measured from a match file: a robot standing still
+ * against the gate, given a fresh strafe, was handed 6.58 in/s in its first tick against a
+ * 4.70 budget, because its velocity was -0.0000 rather than +0.0000. It reads as a lurch off
+ * the line, and it is most obvious exactly where everything else is still.
+ *
+ * So braking now needs motion worth braking: a thousandth of the free speed, which is far
+ * below anything a driver can perceive and far above float residue. Unit-free, so the same
+ * test serves the linear and the angular callers.
+ */
+const BRAKE_MIN_FRAC = 1e-3;
+
 /** advance a velocity toward `target` for one tick using a DC-motor torque–speed
  * curve: available (stall) accel falls ~linearly from full at rest to
  * MOTOR_MIN_TORQUE_FRAC near the free speed `vFree`, so speed approaches the top
  * asymptotically instead of a constant ramp. Braking (target opposes v) pulls
  * harder (MOTOR_BRAKE_MULT). `MOTOR_TORQUE_CURVE` 0 ⇒ the old constant accel.
  * Deterministic (pure arithmetic); shared by fwd / strafe / turn. */
-export function motorStep(v: number, target: number, aStall: number, vFree: number, dt: number): number {
+export function motorStep(
+  v: number,
+  target: number,
+  aStall: number,
+  vFree: number,
+  dt: number,
+  /** braking authority as a multiple of `aStall`. The rotational caller raises it while a
+   *  contact is trying to spin the chassis — see `updateRobot`. */
+  brakeMult: number = C.MOTOR_BRAKE_MULT,
+): number {
   const err = target - v;
   if (err === 0) return v;
-  const braking = v !== 0 && Math.sign(err) !== Math.sign(v);
+  const braking = Math.abs(v) > vFree * BRAKE_MIN_FRAC && Math.sign(err) !== Math.sign(v);
   let frac: number;
   if (braking) {
-    frac = C.MOTOR_BRAKE_MULT;
+    frac = brakeMult;
   } else {
     const s = vFree > 0 ? Math.min(Math.abs(v) / vFree, 1) : 0;
     frac = Math.max(1 - C.MOTOR_TORQUE_CURVE * s, C.MOTOR_MIN_TORQUE_FRAC);
@@ -83,16 +191,19 @@ export function motorStepVec(
   aStall: number,
   vFree: number,
   dt: number,
+  /** braking authority, as a multiple of `aStall`. Defaults to a robot stopping ITSELF;
+   *  a robot being SHOVED passes `MOTOR_SHOVE_BRAKE` instead — see that constant. */
+  brakeMult: number = C.MOTOR_BRAKE_MULT,
 ): { x: number; y: number } {
   const ex = tx - vx;
   const ey = ty - vy;
   const eMag = hyp(ex, ey);
   if (eMag === 0) return { x: vx, y: vy };
   const speed = hyp(vx, vy);
-  const braking = ex * vx + ey * vy < 0; // the demanded change opposes current motion
+  const braking = speed > vFree * BRAKE_MIN_FRAC && ex * vx + ey * vy < 0; // opposes real motion
   let frac: number;
   if (braking) {
-    frac = C.MOTOR_BRAKE_MULT;
+    frac = brakeMult;
   } else {
     const s = vFree > 0 ? Math.min(speed / vFree, 1) : 0;
     frac = Math.max(1 - C.MOTOR_TORQUE_CURVE * s, C.MOTOR_MIN_TORQUE_FRAC);
@@ -104,13 +215,31 @@ export function motorStepVec(
 
 /** dev/tuning table: the resulting free speed / strafe / stall accel / push for
  * each drivetrain at the reference RPM+mass. Printed by the smoke suite so a
- * balance edit's effect is visible at a glance. */
-export function driveSummary(): { dt: DrivetrainType; fwd: number; strafe: number; accel: number; push: number }[] {
-  return (Object.keys(C.DRIVETRAIN_PRESETS) as DrivetrainType[]).map((dt) => {
-    const p = C.DRIVETRAIN_PRESETS[dt];
+ * balance edit's effect is visible at a glance.
+ *
+ * `push` is the REAL delivered force (lb·in/s², `pushForce` at the reference mass and rpm),
+ * not the raw `pushMult`. It used to print the multiplier, which meant the column moved only
+ * when someone edited that one number — the shipped model also read mass, gearing and power
+ * draw, so the table quietly disagreed with the sim. A table nobody can trust is worse than no
+ * table, and this is the surface a balance pass reads. */
+export function driveSummary(): { dt: string; fwd: number; strafe: number; accel: number; push: number }[] {
+  const row = (dt: string, p: { speedMult: number; strafeMult: number; accelMult: number; pushMult: number }) => {
     const fwd = C.SPEED_PER_RPM * C.REF_DRIVE_RPM * p.speedMult;
-    return { dt, fwd, strafe: fwd * p.strafeMult, accel: C.BASE_DRIVE_ACCEL * p.accelMult, push: p.pushMult };
-  });
+    return {
+      dt,
+      fwd,
+      strafe: fwd * p.strafeMult,
+      accel: C.BASE_DRIVE_ACCEL * p.accelMult,
+      push: C.REF_MASS_LB * C.BASE_DRIVE_ACCEL * p.pushMult,
+    };
+  };
+  const out = (Object.keys(C.DRIVETRAIN_PRESETS) as DrivetrainType[])
+    // butterfly is listed as its two HALVES instead — a single row would imply one
+    // set of numbers, which is exactly the thing this drivetrain doesn't have
+    .filter((dt) => dt !== 'butterfly')
+    .map((dt) => row(dt, C.DRIVETRAIN_PRESETS[dt]));
+  out.push(row('butterfly·mec', C.BUTTERFLY_MODES.mecanum), row('butterfly·tank', C.BUTTERFLY_MODES.tank));
+  return out;
 }
 
 /** the wheel-RPM range this drivetrain allows (torque-biased drivetrains cap
@@ -147,14 +276,32 @@ export function rpmLimits(dt: DrivetrainType): { min: number; max: number } {
   return { min: L.minRpm, max: L.maxRpm };
 }
 
+/** BUTTERFLY's SECOND rpm range — the traction set. `rpmLimits` covers its mecanum
+ * set; this is the torque-biased envelope the tank half runs in. Same single-source
+ * contract: the builder's second slider and `coerceSpec` both read it. */
+export function butterflyTankRpmLimits(): { min: number; max: number } {
+  return { min: C.BUTTERFLY_TANK_RPM.min, max: C.BUTTERFLY_TANK_RPM.max };
+}
+
 /** the mass range this drivetrain allows, with the floor RAISED by flywheel
  * inertia (a bigger flywheel weighs more). At inertia 1 the floor climbs by
  * INERTIA_MASS_FLOOR, clamped to the drivetrain's max. */
 export function massLimits(
   dt: DrivetrainType,
   flywheelInertia: number,
+  extraFloor = 0,
 ): { min: number; max: number } {
   const L = C.DRIVETRAIN_LIMITS[dt];
-  const min = clamp(L.minMass + C.INERTIA_MASS_FLOOR * flywheelInertia, L.minMass, L.maxMass);
+  // `extraFloor` is lb of MECHANISM the caller knows about and this module deliberately
+  // does not — today Chain Reaction's twin-turret assembly (`chainMassFloorBump`). Keeping
+  // it a parameter is what lets a game add a heavy mechanism without leaking that game's
+  // enums into the shared drivetrain model.
+  // ROUNDED to 0.01 lb. The floor is a sum of decimal constants (base + inertia term +
+  // mechanism weights), and binary floating point turns e.g. 19.6 + 0.6 into
+  // 20.200000000000003 — which then became the robot's actual clamped mass and rendered
+  // as-is in the builder. Rounding here fixes it at the source, so every consumer (the
+  // slider floor, coerceSpec's clamp, the displayed value) gets the same clean number.
+  const raw = L.minMass + C.INERTIA_MASS_FLOOR * flywheelInertia + extraFloor;
+  const min = clamp(Math.round(raw * 100) / 100, L.minMass, L.maxMass);
   return { min, max: L.maxMass };
 }

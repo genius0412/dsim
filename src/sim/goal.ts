@@ -1,5 +1,6 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, World } from '../types';
 import * as C from '../config';
+import type { Rect } from './field';
 import {
   basinFunnelTarget,
   gateArmRect,
@@ -7,15 +8,27 @@ import {
   goalFaceNormal,
   goalLineValue,
   goalSide,
+  classifierRect,
+  convexOverlap,
   railPos,
+  railExitLean,
+  railWander,
+  rectCorners,
   tunnelExitVel,
   viewAngleOf,
 } from './field';
 import { addClassified, addOverflow } from './scoring';
-import { approach, nextRandom, hyp, rot } from '../math';
-import { robotIntersectsRect } from './physics';
+import { approach, dcos, hyp, rot } from '../math';
+import {
+  chassisCorners,
+  pointDepthInChassis,
+  pointDepthInRobot,
+  robotExtents,
+  robotIntersectsRect,
+  intakeRoofAt,
+} from './physics';
 
-const ZERO_CMD: RobotCommand = {
+export const ZERO_CMD: RobotCommand = {
   driveX: 0,
   driveY: 0,
   rotate: 0,
@@ -70,6 +83,87 @@ export function gateLiftRate(ramSpeed: number): number {
   return Math.min(C.GATE_OPEN_RATE + C.GATE_OPEN_RATE_SPEED * ramSpeed, C.GATE_OPEN_RATE_MAX);
 }
 
+/**
+ * HOW HIGH AN ARTIFACT HOLDS THE PADDLE — a STICK resting on a SPHERE.
+ *
+ * `d` is the artifact's centre minus GATE_LINE_S: positive = it has not reached the gate line
+ * yet, negative = it is already through.
+ *
+ * This used to read the artifact's surface height on the vertical at the gate line, as though
+ * the paddle were a plunger coming straight down: `R + sqrt(R² − d²)`, mapped linearly onto a
+ * free constant. The paddle is not a plunger. It is hinged off to one side, so it meets the
+ * artifact at a TANGENT, and the angle that takes is both larger and a different shape — the
+ * profile is flatter near the apex and falls away far faster near the edge of reach, and the
+ * reach itself is no longer one radius. `gateRestAngle` in config.ts is the algebra, and
+ * GATE_PIVOT_Z is the only thing it needs that the rest of the geometry does not already fix.
+ *
+ * The apex value is GATE_SEAT_FRAC, which is now DERIVED from that (0.437 rather than the old
+ * 0.34) and is also GATE_PASS_FRAC: the highest the stick rides while an artifact passes
+ * under it IS the lift that artifact needs to get through.
+ */
+export function gateRestOn(d: number): number {
+  return C.gateRestAngle(d) / C.GATE_LIFT;
+}
+
+/**
+ * Is the paddle actually RESTING ON the artifact at offset `d` — bearing its weight on it,
+ * as opposed to merely being somewhere near it?
+ *
+ * Three conditions, and the FIRST one is load-bearing in a way that is easy to miss:
+ * `gateRestOn` returns 0 both for "the arm is flat on the ramp" and for "this artifact is
+ * nowhere near the gate", so testing `gatePos <= gateRestOn(d)` alone says every artifact
+ * on the rail is in contact whenever the gate is shut. That froze the ENTIRE rail the
+ * moment the gate closed: artifacts never reached the stack, nothing classified, and a
+ * dozen unrelated shot/scoring checks went red at once. The paddle has to physically reach
+ * it (|d| < R) before any of the rest means anything.
+ */
+function paddleBearsOn(goal: World['goals'][Alliance], d: number): boolean {
+  const rest = gateRestOn(d);
+  if (rest <= 0) return false; // out of the paddle's reach — it falls past, touching nothing
+  if (goal.gateLatch > 0) return false; // a robot is holding the arm up, clear of everything
+  return goal.gatePos <= rest + 1e-9; // settled onto it, not riding above it
+}
+
+/** is the artifact at offset `d` inside the paddle's swept region at all — i.e. close
+ * enough that the arm coming down would meet it? This is ONE ball diameter wide, and it is
+ * the window every "what is under the arm" question has to use. The gateway used to be
+ * asked with GATE_CLOSE_CLEAR (8.5in, d from −3.5 to +5.0), which counts an artifact a
+ * FULL DIAMETER up-ramp of the gate — one that has not reached it and cannot be touching
+ * it — as propping the arm open. That is "no balls below the gate yet it still flows". */
+function underPaddle(d: number): boolean {
+  return Math.abs(d) < C.GATE_PADDLE_REACH;
+}
+
+/**
+ * HOW FAR DOWN-RAMP AN ARTIFACT CAN GET, given how far open the arm is. The exact inverse of
+ * `gateRestOn`, and the reason the arm stopped landing on anything.
+ *
+ * The solver used to snap the column's floor to the constant GATE_STOP_S the instant
+ * `gateOpen` went false. GATE_STOP_S is one radius from the gate line — the plunger model's
+ * tangent point — and RAIL_PITCH is one ball diameter, so the artifact behind it landed
+ * exactly at the OTHER tangent. The paddle therefore threaded precisely between two artifacts
+ * every single time, touching neither. That is not a coincidence to be tuned away; it is
+ * forced by those constants.
+ *
+ * The block is not a constant — it is where the paddle physically is, and with a stick on a
+ * sphere that is a tangency, not a height lookup. `gateRestOn` is monotonic in |d| over the
+ * paddle's reach (the stick rides higher the closer the artifact is to dead centre), so the
+ * inverse is one bisection; there is no closed form worth the risk of getting wrong.
+ */
+export function gateStopS(gatePos: number): number {
+  if (gatePos <= 0) return C.GATE_LINE_S + C.GATE_PADDLE_REACH; // shut: stopped at the paddle's face
+  if (gatePos >= gateRestOn(0)) return C.GATE_LINE_S; // lifted clear of the apex — nothing blocks
+  let lo = 0; // rest is HIGHEST here
+  let hi = C.GATE_PADDLE_REACH; // ...and zero here
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (gateRestOn(mid) > gatePos) lo = mid;
+    else hi = mid;
+  }
+  return C.GATE_LINE_S + lo;
+}
+
+
 /** the open fraction the PHYSICAL handle collider should use THIS tick. buildGateArms
  * (in physicsEngine solveRobots) runs one step BEFORE updateGates mutates gatePos, so
  * without this it would build the handle from last tick's (still-closed) gatePos and
@@ -92,6 +186,95 @@ export function gateColliderPos(
   }
   if (ram <= 0) return goal.gatePos;
   return Math.min(1, goal.gatePos + gateLiftRate(ram) * dt);
+}
+
+/** the handle's footprint at a given open fraction — the SAME cuboid `decodeGateArms` builds */
+function gateArmSweep(a: Alliance, pos: number): Rect | null {
+  const g = goalSide(a);
+  const proj = C.GATE_ARM_SHORT * dcos(pos * C.GATE_LIFT);
+  if (proj <= 0) return null;
+  const pivotX = g * (C.FIELD_HALF - C.CLASSIFIER_W);
+  const x0 = pivotX - g * proj;
+  return {
+    x0: Math.min(pivotX, x0),
+    x1: Math.max(pivotX, x0),
+    y0: C.GATE_TAPE_Y - C.GATE_ARM_THICK / 2,
+    y1: C.GATE_TAPE_Y + C.GATE_ARM_THICK / 2,
+  };
+}
+
+/**
+ * How high a ROBOT standing in the handle's swing holds the arm up.
+ *
+ * THE HANDLE'S REACH GROWS AS IT CLOSES: `proj = GATE_ARM_SHORT * cos(pos * GATE_LIFT)` is
+ * shortest at fully open and longest at shut, because a top-down view of a lever swinging down
+ * is a bar getting longer. That bar is a static in the robot solve, so an arm coming down on a
+ * robot parked in the gate zone pushed it out of the way — measured 3.85in head-on and 6.68in
+ * at an angle. An arm light enough that a bump flicks it open does not move a 20-42lb robot.
+ *
+ * So it does what it already does for an artifact (`gatewayRest`): it comes to REST on what is
+ * under it. The arm is the thing that gives way, not the robot, and because the collider is
+ * built from `gatePos` it then never grows into anyone — the shove is gone at its source rather
+ * than patched in the collider.
+ *
+ * Bisected rather than solved, so the test is exactly the SAT the solve itself uses, with a
+ * fixed iteration count to stay deterministic.
+ */
+/**
+ * HAS A ROBOT SIMPLY OVERRUN THE HANDLE? — no arm position clears it.
+ *
+ * `gateRobotRest` lifts the arm to rest on a chassis in its swing, and that answers the
+ * ordinary case. It cannot answer this one: the handle PIVOTS at the classifier edge, so its
+ * stub sits there at every open fraction, and a robot nosed into the gate mouth — legal floor,
+ * below the channel — simply contains that pivot whatever the arm does. There is no height
+ * that clears it, so `gateRobotRest` returns 1 and the fully retracted stub is still inside
+ * the robot, which then gets pushed out of it every tick, forever.
+ *
+ * A 2.5in hinged bar does not move a 22lb chassis it is already inside. Once it has been
+ * overrun it stops being an obstacle to that robot — it is lying against a bumper, which is
+ * where a real one would be. It still blocks everybody it has NOT been overrun by, which is
+ * the job it exists for: a robot cannot strafe THROUGH a shut gate, because on the way in the
+ * stub is in front of the bumper and not inside it.
+ */
+export function gateOverrun(world: World, a: Alliance): boolean {
+  const rect = gateArmSweep(a, 1); // the stub at FULL lift: what is left when the arm gives up
+  if (!rect) return false;
+  const g = goalSide(a);
+  const pivotX = g * (C.FIELD_HALF - C.CLASSIFIER_W);
+  return world.robots.some((r) => {
+    if (!robotIntersectsRect(r, rect)) return false;
+    /**
+     * ...AND IT GOT THERE BY GOING PAST THE PIVOT, not by arriving in front of it. That
+     * direction is the whole test, and it matches the gate's own one-directional nature: a
+     * robot APPROACHING the handle is on the field side of the classifier edge and the stub is
+     * ahead of its bumper, so the arm blocks it exactly as it always did. A robot in the gate
+     * MOUTH has its chassis past that edge, over floor the channel does not cover, with the
+     * pivot inside it — nothing left for the arm to block, and no height it can retreat to.
+     *
+     * Without the direction test this fires on the ordinary intaking pose too and the handle
+     * simply vanishes: the drain went to 0 of 9 artifacts because the lever could no longer be
+     * worked at all.
+     */
+    return chassisCorners(r).some((c) => g * (c.x - pivotX) > C.GATE_OVERRUN_SLOP);
+  });
+}
+
+function gateRobotRest(world: World, a: Alliance): number {
+  const blocked = (pos: number): boolean => {
+    const rect = gateArmSweep(a, pos);
+    if (!rect) return false;
+    return world.robots.some((r) => robotIntersectsRect(r, rect));
+  };
+  if (!blocked(world.goals[a].gatePos)) return 0;
+  if (blocked(1)) return 1;
+  let lo = world.goals[a].gatePos;
+  let hi = 1;
+  for (let i = 0; i < 12; i++) {
+    const mid = (lo + hi) / 2;
+    if (blocked(mid)) lo = mid;
+    else hi = mid;
+  }
+  return hi;
 }
 
 /** balls of a goal's rail stack (non-overflow), sorted from the gate up */
@@ -251,7 +434,33 @@ export function updateBasins(world: World, dt: number): void {
         // hand-off keeps the ball's position: it glides onto the rail while
         // descending (x/z blend happens in updateRails) — no snapping
         const s = b.pos.y - C.CLASSIFIER_Y0;
-        const v = Math.min(b.vel.y, -8);
+        // ...at the ramp's own pace. The basin's funnel pull is a scripted drain aid, not a
+        // slope, and an artifact that dived straight at the entrance used to carry all of it
+        // onto the ramp — boarding at 52 in/s and peaking at 75, past the 54 the ramp itself
+        // can produce over its whole length. See RAIL_ENTRY_V.
+        /**
+         * ...AND THE CEILING IS THE RAMP'S OWN DELIVERY SPEED, not free-fall from where it
+         * boarded.
+         *
+         * At the very top of the channel the free-fall term is ~0, so an artifact arriving
+         * from the basin — funnelled at 1150 in/s^2 and moving fast when it gets there — was
+         * clamped to RAIL_ENTRY_V, 8 in/s. That is what set the whole goal's throughput: the
+         * next artifact cannot board until this one is a PITCH clear, so the hand-off rate is
+         * entry speed over pitch, and 8 in/s over 5.1in is two a second. "Basin frequency
+         * needs to be like 5 times faster."
+         *
+         * The invariant the cap exists for is that nothing on the ramp outruns the ramp, and
+         * the ramp's own fastest is its DELIVERY speed (RAIL_ACCEL / RAIL_RATTLE_DRAG, the
+         * terminal it converges on). Letting an artifact board at up to that keeps the
+         * invariant exactly — it can never be faster than the ramp makes things — while the
+         * entrance stops being a bottleneck the basin has to queue behind.
+         */
+        const rampV = Math.sqrt(2 * C.RAIL_ACCEL * Math.max(0, C.RAIL_S_MAX - s));
+        // the ceiling is the ramp's own free-fall from where it boards, or the entry speed,
+        // whichever is greater — NOT the ramp's terminal, which is what made the entrance fire
+        // artifacts down the channel at 69 in/s once the chute was steepened
+        const cap = Math.max(C.RAIL_ENTRY_V, rampV);
+        const v = Math.max(Math.min(b.vel.y, -C.RAIL_ENTRY_V), -cap);
         b.state = { kind: 'rail', goal: a, s, v, overflow: false, pending: true };
         b.vel = { x: 0, y: 0 };
         b.vz = 0;
@@ -261,70 +470,963 @@ export function updateBasins(world: World, dt: number): void {
   }
 }
 
+/**
+ * WHAT IS SITTING IN THE GATE'S MOUTH.
+ *
+ * The exit is a real place with a real volume, and until now the drain ignored that: a ball
+ * reaching RAIL_EXIT_S became a ground artifact at a fixed point below the gate no matter
+ * what already occupied it. Park a robot over the outflow and artifacts materialised inside
+ * it and piled up — teleporting into an occupied space, which is the one thing the ball
+ * lifecycle is not allowed to do.
+ *
+ * So the mouth is checked before anything leaves (`railBlock`):
+ *   `s`     — how far up the rail a robot's body reaches. That becomes the column's floor, so
+ *             it backs up against the bumper wherever the bumper actually is. A robot NEVER
+ *             takes an artifact off the rail: it has to come out of the gate first.
+ *
+ * ONLY A ROBOT BLOCKS OUTRIGHT. An artifact lying in the doorway is a different case and
+ * must not be treated as one: making it block deadlocked the whole classifier, because a
+ * drained artifact rolls a couple of inches, friction stops it dead in the mouth, and the
+ * column behind it can then never leave — and since the flow never completes, the gate is
+ * held open forever and never falls closed. Letting it through instead is no better: the
+ * new artifact lands on top of the old one, which is the pop-and-stack that started all
+ * this (measured at 4.3in of overlap on a 5in artifact).
+ *
+ * So the column PUSHES it (see `doorwayArtifact`): the artifact in the way is shoved along
+ * with the same exit velocity and the release waits a tick for it to clear. That is what
+ * the artifacts behind it do on a real ramp, it cannot deadlock (the shove is applied every
+ * tick), and if something genuinely immovable is pinning it — a robot parked down the
+ * tunnel — then the column stalling IS the right answer.
+ */
+/**
+ * WHERE A ROBOT STOPS THE COLUMN — an `s` on the rail, not a yes/no at one point.
+ *
+ * This used to test the single point `railPos(a, RAIL_EXIT_S)` and return a boolean. Both
+ * halves of that were wrong, and measurably so. A robot sitting ON the mouth stopped the
+ * flow but the floor stayed at RAIL_EXIT_S, so the column stacked up to 7.3in INSIDE the
+ * chassis and sat there — the artifacts visibly inside the robot. And a robot 9in to the
+ * side, touching nothing, still blocked the whole ramp, because the one point it tested was
+ * the only geometry the rail knew about.
+ *
+ * So walk the rail line instead and find the highest `s` the robot's body actually reaches.
+ * That `s` (plus an artifact radius, so it rests AGAINST the bumper rather than in it) is the
+ * column's floor. Partial coverage now does the partial thing: the column stops where the
+ * robot is, wherever that happens to be, and stops nothing when the robot is clear.
+ *
+ * Only the stretch below the classifier's gate end is walked — above it the channel has
+ * walls and a robot cannot be in it at all.
+ */
+function railBlock(
+  world: World,
+  a: Alliance,
+): { s: number; taker: RobotState | null; takeAt: number } {
+  let best = -Infinity;
+  let who: RobotState | null = null;
+  for (const r of world.robots) {
+    // HOW FAR UP TO LOOK COMES FROM THE ROBOT, not from the channel. Bounding the walk at the
+    // classifier's gate end (s = 1) looked reasonable and was badly wrong: a robot parked on
+    // the mouth reaches s = 6.5, so the walk began ALREADY INSIDE the chassis, stopped there,
+    // and put the floor 5in inside the robot. Its own collision extents can't lie about this.
+    const e = robotExtents(r);
+    // The ceiling comes from the ROBOT's own extents and is NOT clamped to the channel mouth
+    // (RAIL_OPEN_S). Clamping it looks right — the classifier is solid, so a robot cannot be
+    // in there anyway — but the walk is what keeps an artifact from resting INSIDE a chassis,
+    // and capping it makes the block underestimate whenever a robot does overlap the rail
+    // above the mouth: measured 4.99in of an artifact inside the bumper, a full diameter.
+    // Keeping a robot out of the channel is the collider's job, not this walk's.
+    const top = C.RAIL_EXIT_S + hyp(e.front + e.rear, e.half * 2) + C.BALL_RADIUS;
+    // Walk UP and keep the LAST position an artifact could not occupy — `pointDepthInRobot`
+    // is a signed distance, so `> -BALL_RADIUS` means the artifact's skin would be in the
+    // bumper. The floor is one step above that, which this walk has already tested and found
+    // clear. Deriving it instead as "deepest blocked sample plus a radius" left up to 0.75in
+    // of overlap, because a radius along the rail is not a radius along the surface normal of
+    // a robot sitting at an angle to it.
+    // Fixed step, deterministic, and well under an artifact radius so nothing slips through.
+    /**
+     * THE WALK CANNOT SEE THE CLASSIFIER WALL, so it must be told where the wall is.
+     *
+     * It measures distance from a chassis to a point on the rail centreline and nothing else.
+     * That centreline sits RAMP_RAIL_INSET in from the wall, which is less than an artifact
+     * radius — so a chassis merely LEANING on the outside of the classifier came within a
+     * radius of centreline points it was completely walled off from, read as a block, and
+     * shoved the column up-ramp: measured a robot at y=1, never in the channel, driving
+     * artifacts up at RAIL_PUSH_RATE as far as s=22.4.
+     *
+     * Above the mouth an artifact is behind a wall, so the only robot that can touch it is one
+     * that is itself inside the channel. That is not a depth threshold on the sample (a
+     * chassis face resting exactly on the centreline is a real block at any depth) — it is a
+     * question about the ROBOT, asked once: does its CHASSIS actually overlap the channel.
+     * If not, its reach stops at the mouth no matter how close the centreline looks. (An x
+     * reach past the channel's field-side face is not enough on its own — the gateway BELOW
+     * the mouth is open field at the same x, so a robot legally working the doorway has
+     * corners in there and would fail an x-only test.) A robot squeezed bodily into the channel still walks the full length, which is
+     * what keeps the pinned-pose case from stacking the column inside a chassis.
+     */
+    const chan = classifierRect(a);
+    // How far INTO the channel a chassis has to be before it can touch anything: the rail
+    // centreline sits RAMP_RAIL_INSET from the wall and an artifact is a radius wide, so this
+    // is the exact reach at which contact becomes possible. It matters because a robot leaning
+    // hard on the outside of the classifier does sink slightly into it — measured 0.46in at
+    // worst, just under the 0.50in it would need — and without the inset that touch read as
+    // being inside the channel.
+    const bite = C.RAMP_RAIL_INSET - C.BALL_RADIUS;
+    const g = goalSide(a);
+    const inner = {
+      x0: g > 0 ? chan.x0 + bite : chan.x0,
+      x1: g > 0 ? chan.x1 : chan.x1 - bite,
+      y0: chan.y0 + bite,
+      y1: chan.y1,
+    };
+    const inChannel = convexOverlap(chassisCorners(r), rectCorners(inner));
+    const ceiling = inChannel ? top : Math.min(top, C.RAIL_OPEN_S);
+    let reach = -Infinity;
+    for (let s = C.RAIL_EXIT_S; s <= ceiling; s += C.RAIL_BLOCK_STEP) {
+      // CHASSIS, not the intake-extended footprint. `robotExtents` grows the box forward by
+      // the intake's reach — that box is what the ROBOT collides with, but to an artifact
+      // the mouth is open (product decision #10), and the artifact solve already excludes it
+      // for exactly this reason. Using it here meant a robot holding the gate open by
+      // pressing its INTAKE at the classifier read as its BODY lying across the outflow, so
+      // it blocked the drain it was opening.
+      /**
+       * ...AND ONLY ITS CHASSIS. The INTAKE is not a plug.
+       *
+       * The roof used to block here too, on the reasoning that an intake parked in the drop
+       * space leaves nowhere to set an artifact down. The first half of that is right and is
+       * why the roof exists at all; the conclusion is not. A robot is not a stopper in a
+       * chute — artifacts keep arriving and land ON it. Blocking instead meant a driver who
+       * bumped the lever and stayed there got NOTHING: measured across five tap lengths at
+       * the closest standoff, 0 of 9 every time, against 2/3/9/9/3 for the same taps if the
+       * robot backed away. "I only get one or two balls from a tap way too often."
+       *
+       * So the column runs and the roof answers for it where it belongs — at the release,
+       * which sets the artifact down on the roof instead of through it.
+       */
+      const p = railPos(a, s);
+      /**
+       * ...AND THE INTAKE IS NOT A PLUG. AN ARTIFACT WITH NO FLOOR TO LAND ON LANDS ON THE
+       * INTAKE — IT DOES NOT MAKE THE RAMP WAIT.
+       *
+       * The roof used to block here as well, so that "there needs to be adequate space ON THE
+       * GROUND for the ball to DROP ON THE GROUND" was answered by the column waiting for the
+       * space. It never comes: the robot is holding the lever, so it is not going anywhere,
+       * and the wait is unbounded. Measured, holding the gate open and intaking — the ordinary
+       * way anyone drains a ramp — the column parked 1in past the gate stop and 0 of 9
+       * artifacts came out in 20 seconds with the gate wide open the whole time, for the two
+       * intakes whose reach covers the outflow (vector and triangle; sloped, being shorter,
+       * drained 8). A chute does not stop because something is under it.
+       *
+       * The drop-space rule is still right and is answered where the drop happens — at the
+       * RELEASE, which sets the artifact down on the roof rather than through it. Which
+       * surface it lands on is the whole of the rule: the floor if there is floor, the intake
+       * lid if the intake is in the way. What it must never do is arrive INSIDE the throat.
+       */
+      if (pointDepthInChassis(r, p) > -C.BALL_RADIUS) {
+        reach = s + C.RAIL_BLOCK_STEP;
+      } else if (
+        // ...AND ITS INTAKE, where that is what is over the drop point. The mouth is open to
+        // an artifact ROLLING in; it is not open from ABOVE, and the ramp discharges from
+        // above. An artifact cannot be set down inside it, and it cannot fly past it either —
+        // both were tried (see the release below), so the column stops here, exactly as it
+        // does for a bumper. The lenience is the roller face: "if the ball drops on the very
+        // front edge of the intake rollers, they can suck them in due to compliance."
+        //
+        // WAITING ON A ROOF IS NOT WAITING. An artifact held where a roof is has no ramp under
+        // it — past RAIL_OPEN_S the channel has ended — so stopping the column there leaves
+        // the lead artifact hanging in mid-air over the apron at the intake's lid height:
+        // measured s = -2.5 at z = 10.3, which is "they're all floating". The channel is where
+        // an elevated artifact can legitimately be, so that is where an intake stops it.
+        intakeRoofAt(world, p, C.BALL_RADIUS, C.BALL_RADIUS - C.INTAKE_CATCH_LENIENCE)?.robot === r
+      ) {
+        reach = Math.max(s + C.RAIL_BLOCK_STEP, C.RAIL_OPEN_S);
+      }
+    }
+    if (reach > best) {
+      best = reach;
+      who = r;
+    }
+  }
+  if (who === null) return { s: -Infinity, taker: null, takeAt: C.RAIL_EXIT_S };
+  /**
+   * A ROBOT BLOCKS. IT DOES NOT COLLECT.
+   *
+   * A robot with hopper room used to have artifacts handed to it straight off the rail — it
+   * "stood under the gate intaking the drain". That is reaching into the classifier, and the
+   * artifacts it took had never left the ramp. Artifacts must come OUT of the gate first
+   * (`ground`), and then the ordinary intake picks them up off the floor like anything else,
+   * which is both the physical truth and the only way the intake's own geometry gets a say.
+   *
+   * A robot sitting on the outflow now simply blocks it, at its own bumper — it is parked on
+   * the hole. Back off, let them out, then intake them.
+   */
+  return { s: best, taker: null, takeAt: C.RAIL_EXIT_S };
+}
+
+/** the artifact still sitting in the gate's doorway, if any — the one the column has to
+ * push out of the way before the next can leave. */
+export function doorwayArtifact(world: World, a: Alliance): Artifact | null {
+  const p = railPos(a, C.RAIL_EXIT_S);
+  for (const b of world.balls) {
+    if (b.state.kind !== 'ground') continue;
+    if (hyp(b.pos.x - p.x, b.pos.y - p.y) < C.BALL_RADIUS * 2 + C.EXIT_CLEARANCE) return b;
+  }
+  return null;
+}
+
 /** 1D flow down the classifier rail with contact stacking against the gate
  * (or the ball ahead). Overflow balls ride over everything and always exit. */
-export function updateRails(world: World, dt: number): void {
+export function updateRails(
+  world: World,
+  dt: number,
+  commands: Map<number, RobotCommand>,
+): void {
   for (const a of ['red', 'blue'] as Alliance[]) {
     const goal = world.goals[a];
 
     const railX = railPos(a, 0).x;
 
-    // stacked balls flow together as a packed column: a ball resting on the one
-    // below inherits ITS velocity (floorV) rather than stopping, so when the
-    // gate opens the whole column drains as a unit instead of each ball
-    // re-accelerating from rest and spreading apart.
-    const stack = railStack(world, a);
-    let floor = goal.gateOpen ? -Infinity : C.GATE_STOP_S;
-    let floorV = 0; // velocity of the constraint below (the gate is stationary)
-    let below = 0; // column balls ahead of (below) the current one
-    for (const b of stack) {
+    /**
+     * ONE PHYSICS FOR EVERY ARTIFACT ON THE RAMP.
+     *
+     * `overflow` used to be a permanent MODE: an artifact that met a full column was moved
+     * to a separate pass and slid at a fixed OVERFLOW_FLOW_SPEED for the rest of its life,
+     * regardless of what happened underneath it. That is why it could not rejoin the column
+     * when the gate opened, and why its speed was a number to be tuned rather than a
+     * consequence of anything.
+     *
+     * What `overflow` actually means is two things, and only two:
+     *   1. SCORING — it is worth 1 rather than 3, decided at contact (which is unchanged:
+     *      the decision still happens the moment it first meets the column).
+     *   2. HEIGHT — while the column is underneath it, it is riding on TOP of the retained
+     *      artifacts rather than sitting on the ramp.
+     *
+     * Everything else follows from height. An ELEVATED artifact rolls over the bumpy tops of
+     * other artifacts, so it carries a rolling resistance the ramp does not impose, and it is
+     * blocked only by other elevated artifacts — not by the retained column it is riding over,
+     * and not by the GATE, which it passes over ("OVERFLOW ARTIFACTS can pass over the top of
+     * the GATE to exit the RAMP", 9.8.3). The moment the column below drains away it SINKS
+     * onto the ramp, and from then on it is an ordinary rolling artifact: gravity, the gate,
+     * the artifact ahead. Open the gate while one is coming down and it follows the rest out,
+     * because there is nothing left for it to ride on.
+     */
+    const rail = world.balls
+      .filter((b) => b.state.kind === 'rail' && b.state.goal === a)
+      .sort((p, q) => (p.state as { s: number }).s - (q.state as { s: number }).s || p.id - q.id);
+    const mouth = railBlock(world, a);
+    /**
+     * THE SOLVER AND THE RELEASE MUST AGREE ABOUT WHETHER AN ARTIFACT CAN LEAVE, and this is
+     * the ONE place that decides it. They used to disagree, and the disagreement let an
+     * artifact walk off the end of the world:
+     *
+     *   the solver saw an open gate, dropped the floor to -Infinity, and let the artifact
+     *   descend past the exit — while the release loop refused it, because an artifact was
+     *   still sitting in the doorway. Nothing then stopped it: the `wasS >= base` exemption
+     *   (which exists so a shut gate cannot reach back UP for something already past it) also
+     *   exempts an artifact that has slipped below the exit, permanently. Measured: an
+     *   artifact in `rail` state marching from y=-64.9 to y=-75.6 — SIX INCHES OUTSIDE the
+     *   audience wall — where it was finally released and the ground clamp snapped it back
+     *   in, a 394 in/s teleport. The rail is a scripted 1D flow with no wall awareness, so
+     *   nothing about being off the field stops it; it simply must never be down there.
+     *
+     * The doorway is therefore part of "can it leave", not a late veto — and the release lets
+     * at most ONE artifact out per tick, since the artifact it just released IS the new
+     * doorway. RAIL_PITCH is wider than a tick of travel, so no two can cross together.
+     */
+    /**
+     * ...AND WHAT IS ALREADY ON THE FLOOR OUTSIDE DOES NOT HOLD THE RAMP BACK.
+     *
+     * The doorway artifact used to be part of "can it leave", so a pile in the tunnel throttled
+     * the discharge: measured, nine artifacts took 1.65s onto a clear floor and 2.20s into a
+     * fourteen-artifact pile, with the mean gap going 0.146s to 0.204s. "Ball flow gets slowed
+     * down if there are balls right outside the gate. Don't let it slow down."
+     *
+     * A chute does not ask the heap whether it may discharge — what comes out shoves what is
+     * there, which is what the exit nudge already does. So the mouth is clear unless a ROBOT is
+     * across it, and the doorway keeps its other two jobs: the artifact sitting in it still gets
+     * nudged along, and the release still hands it a shove rather than materialising on top of
+     * it. The invariant that matters is unchanged — the SOLVER and the RELEASE agree about what
+     * stops the column, which is the robot and nothing else, so nothing can descend past an exit
+     * that then refuses it.
+     */
+    const mouthClear = mouth.s === -Infinity;
+    // the gate holds the RAMP lane only; OVERFLOW rides over the top of it (manual 9.8.3),
+    // so a shut gate is not what stops an elevated artifact — only the mouth is.
+    const canLeave = goal.gateOpen && mouthClear;
+    // where the RAMP-level column is stopped: the exit if it can leave, the gate if it is
+    // shut — and in either case never past a robot's body, which is a floor of its own at
+    // whatever `s` it actually reaches.
+    // THE GATE IS A FLOOR UNDER THE FLOOR. Whatever the artifact ahead does, the column can
+    // never pass this: without it, an overflow artifact that had ridden over the top and
+    // dropped in BELOW the gate line became the reference for everything behind it, its
+    // `s + RAIL_PITCH` sat under GATE_STOP_S, and the entire retained column cascaded out
+    // through a shut gate.
+    // ...and where a SHUT (or part-shut) gate stops it is WHERE THE PADDLE IS, not a
+    // constant. GATE_STOP_S is the paddle's tangent point and RAIL_PITCH is one diameter,
+    // so snapping to it put the whole column exactly between the paddle's two tangents —
+    // see gateStopS.
+    const gateBase = canLeave ? -Infinity : goal.gateOpen ? C.RAIL_EXIT_S : gateStopS(goal.gatePos);
+    // A ROBOT BLOCKS THE ELEVATED LANE TOO. Overflow rides over the retained column, not over
+    // a robot: an artifact on top of the stack still runs into the bumper of anything parked
+    // across the channel, so the same floor applies to both lanes.
+    const rampBase = gateBase;
+    const overBase = mouthClear ? -Infinity : C.RAIL_EXIT_S;
+    // TWO CONSTRAINTS, and they are NOT the same kind of thing:
+    //  · the artifact AHEAD — unconditional, artifacts cannot pass through one another;
+    //  · the BASE (the gate, or an occupied mouth) — a floor only for artifacts still ABOVE it.
+    // Conflating them is what broke this twice. Making both unconditional let a base that MOVES
+    // (`canLeave` flips as a robot turns near the mouth) drag artifacts back UP the ramp; making
+    // both conditional on "was it above this last tick" let an artifact that dipped below its
+    // neighbour by a hair free-fall through the entire column (measured: id 906 passing s=2.5 at
+    // 46 in/s with its floor at 7.1, straight out through a shut gate).
+    /**
+     * THE FLOOR AT THE EXIT IS MOVING, and seeding this at zero is what made the drain a
+     * metronome — 0.60s between releases whether the gate was held wide open or merely
+     * tapped, which is the same thing twice and neither of them is flow.
+     *
+     * The frontmost artifact rests on whatever is in the doorway. That is not a wall: it is
+     * another artifact, rolling away down the tunnel at ~30 in/s. Handing it `floorV = 0`
+     * said otherwise, and the consequences cascaded exactly once per artifact, forever:
+     *
+     *   the front artifact reaches the exit at 27 in/s → clamped to a DEAD STOP → released
+     *   on a later tick with `speed = |v| = 0` → sits motionless in the doorway → blocks the
+     *   next one, which is now also stopped dead and also leaves at zero → and the only
+     *   thing that ever moves any of them is the EXIT_NUDGE creep at 22 in/s.
+     *
+     * So every artifact after the first restarted from rest and re-ran the same 0.33s of
+     * gravity down one RAIL_PITCH, then waited ~0.28s for the creep to clear the doorway.
+     * Measured: the doorway distance sat pinned at 0.02in for the whole of each cycle.
+     *
+     * The floor moves at the speed of what is on it. A packed column then follows the
+     * artifact ahead out at ramp speed, and the "cadence" of a wide-open gate becomes what
+     * it should always have been — the rate at which artifacts one RAIL_PITCH apart pass a
+     * point, i.e. a stream. Only while the gate is OPEN: against a shut gate the floor is
+     * the paddle, which is not going anywhere.
+     */
+    /**
+     * THE COLUMN PUSHES THE QUEUE, NOT THE OTHER WAY ROUND.
+     *
+     * Seeding the floor velocity from the doorway artifact capped the whole column at
+     * whatever the QUEUE outside was doing — and that queue is nudged at a fixed 22.4 in/s,
+     * so the ramp could never discharge faster than that no matter how far the artifacts
+     * had fallen. Worse, it is a feedback loop: a slower column exits slower, so the
+     * artifacts travel less, so the queue packs tighter against the mouth, so the column is
+     * capped lower again. Measured across one drain, the ramp fell from 23 in/s to 13
+     * against a free-flow speed of 46.
+     *
+     * With the gate fully OPEN the artifacts are not forcing anything — nothing is taking
+     * their momentum, so they should arrive at the exit with the speed the ramp gave them.
+     * -Infinity is "no cap": `Math.max(st.v, floorV)` leaves the artifact's own gravity-
+     * driven speed alone. The artifact AHEAD still constrains it (that is `rampAhead`, and
+     * it is what stops them overlapping); only the exit stops dictating the pace.
+     *
+     * A SHUT gate is different and still caps at 0 — the column is resting on the paddle.
+     */
+    /**
+     * ...AND THE PRICE OF "NO CAP" IS THAT NOTHING RECONCILED THE SPEED AN ARTIFACT CLAIMS
+     * WITH THE DISTANCE IT COVERS.
+     *
+     * An open gate whose mouth is OCCUPIED still stops the column, and with no cap the
+     * artifacts stood still while gravity went on adding to `v`, tick after tick, forever.
+     * Measured against a held-open gate with a robot parked on the outflow: the column pinned
+     * at s = -4.0, 1.1, 6.2 ... with v marching -5, -10, -15 ... to the RAIL_TERMINAL safety
+     * cap of 120 in/s in 4.8s, and the instant the doorway cleared they left at up to 86 in/s
+     * and the whole ramp emptied in one burst — "after ball flow resumes after being stalled,
+     * it shoots down extremely quickly". RAIL_TERMINAL is a SAFETY cap; it was being used as
+     * a flow speed, which is the one thing its own note says it must not be.
+     *
+     * A BLOCKED ARTIFACT IS NOT BEING ACCELERATED. Whatever holds it up — the paddle, a
+     * bumper, the artifact ahead, the queue in the doorway — pushes back exactly as hard as
+     * gravity pulls, so the tick's gravity does no work. It does not lose the momentum it
+     * ARRIVED with either (the exit lip has always said so, see the solid-floor clamp below);
+     * it simply stops gaining. So `wasV` — its speed BEFORE this tick's gravity — is a cap in
+     * its own right, and it applies alongside the floor's: `Math.max` of the two takes
+     * whichever binds tighter, since down-ramp is negative.
+     *
+     * That is the whole fix, and it is one line. It leaves a FLOWING drain untouched, because
+     * an artifact in a moving column is only ever in contact for a tick at a time — the
+     * artifact ahead has more runway, accelerates harder, and the gap opens on its own.
+     * Capping at the DOORWAY artifact's speed instead was tried and is a different bug: that
+     * queue is nudged along at ~22 in/s, so the whole ramp is throttled to it and the stream
+     * becomes a metronome again (measured: mean release gap 0.58s against 0.32s, and a held
+     * gate no longer emptied the ramp).
+     */
+    const exitFloorV = goal.gateOpen ? -Infinity : 0;
+    let rampAhead = -Infinity;
+    let rampFloorV = exitFloorV;
+    /** the artifact the ramp lane is queued behind — the one a faster artifact behind it
+     * actually pushes. See the momentum note at the contact clamp. */
+    let rampAheadBall: Artifact | null = null;
+    // ...and the same pair for an ELEVATED artifact: never stopped by the gate, only by the exit
+    // being physically occupied or by another elevated artifact ahead of it. A SHUT gate is
+    // therefore no floor for it and must not zero its speed the way it does the ramp lane's —
+    // what stops an elevated artifact is the mouth, and a robot's bumper there is handled by
+    // the solid-floor clamp below.
+    let overAhead = -Infinity;
+    let overFloorV = -Infinity;
+    let retainedBelow = 0;
+    // set when the paddle shoves an artifact back UP the ramp — see the relaxation pass
+    let pushedUp = false;
+
+    // the ramp-level artifacts, for deciding what is riding on what
+    const retained = rail
+      .filter((b) => !(b.state as { overflow: boolean }).overflow)
+      .map((b) => b.state as { s: number; v: number });
+    const retainedS = retained.map((st) => st.s);
+
+    for (const b of rail) {
       const st = b.state as { s: number; v: number; overflow: boolean; pending?: boolean };
+      const wasS = st.s; // an artifact never travels back UP the ramp (see the clamp below)
+      const wasV = st.v; // its speed BEFORE this tick's gravity — see the exit lip below
+
+      // RIDING ON THE COLUMN? Whenever there is anything retained BELOW it — not merely
+      // directly underneath. An artifact approaching the column from above is already going
+      // to ride over it; treating it as ramp-level until it is exactly on top meant the
+      // column's own top blocked it and it never got up there at all. It sinks when there is
+      // nothing left below to ride on, which is precisely when the ramp has drained.
+      const elevated = st.overflow && retainedS.some((rs) => rs < st.s + C.RAIL_PITCH * 0.5);
+
       st.v = Math.max(st.v - C.RAIL_ACCEL * dt, -C.RAIL_TERMINAL);
+      // ...less what the groove takes back, for anything IN the groove. See RAIL_RATTLE_DRAG:
+      // an artifact weaving down a 6in channel works the walls harder the faster it goes, so
+      // the ramp has a delivery speed rather than accelerating unopposed the whole way down.
+      // An ELEVATED artifact is riding the column, not the channel, and has its own losses.
+      if (!elevated) st.v *= Math.max(0, 1 - C.RAIL_RATTLE_DRAG * dt);
+      /**
+       * WHAT AN ELEVATED ARTIFACT IS ACTUALLY ROLLING ON — the scalloped tops of the
+       * retained column, not a smooth incline.
+       *
+       * `surfaceZ` is where its centre sits: resting on a sphere of the same size means its
+       * centre is one DIAMETER from that sphere's centre, so at horizontal offset `dx` it
+       * rides at RAMP_SURFACE_Z + sqrt(D² − dx²) — a full diameter up when dead on top of
+       * one, dipping into the hollow between two. The old model pinned it at a flat
+       * OVERFLOW_Z for the entire ride: measured dead level at 13.50 across nine spheres,
+       * and 13.5 is less than a diameter above the ramp, i.e. sunk INTO the column it is
+       * supposed to be riding over.
+       *
+       * The slope of that surface is the interesting half. Rolling down-ramp, the artifact
+       * drops into each hollow (gravity with it) and has to climb the next crest (gravity
+       * against it), so it lurches rather than gliding — which is what "should not be
+       * flowing down that smoothly" is asking for, and it also breaks up the tidy second
+       * row the overflow lane used to hold at exactly RAIL_PITCH.
+       */
+      let surfaceZ = C.OVERFLOW_Z;
+      if (elevated) {
+        const D = 2 * C.BALL_RADIUS;
+        let slope = 0;
+        // seeded BELOW every possible scallop, not at OVERFLOW_Z: the fallback is exactly the
+        // dead-on-top height (RAMP_SURFACE_Z + D), so seeding there made `h > surfaceZ` false
+        // for every sphere and the slope never got set at all — the ride stayed dead level.
+        let best = -Infinity;
+        for (const rs of retainedS) {
+          const dx = st.s - rs;
+          if (Math.abs(dx) >= D) continue;
+          const lift = Math.sqrt(D * D - dx * dx);
+          const h = C.RAMP_SURFACE_Z + lift;
+          if (h <= best) continue;
+          best = h;
+          // dh/ds of that sphere's surface; it diverges at the hand-over between spheres,
+          // so it is capped (an unbounded kick there would fling artifacts off the ramp)
+          slope = Math.max(-C.OVERFLOW_SLOPE_MAX, Math.min(C.OVERFLOW_SLOPE_MAX, -dx / Math.max(lift, 1e-3)));
+        }
+        if (best > -Infinity) surfaceZ = best; // else it is over nothing — keep the fallback
+        // gravity along the LOCAL slope: descending into a hollow speeds it up, cresting
+        // the next artifact slows it down
+        st.v -= C.OVERFLOW_BUMP * slope * dt;
+        // ...and clambering is still lossy in a way a ramp is not. A CONSTANT deceleration
+        // opposing the motion, the same shape as the ramp's own rolling loss (see
+        // RAIL_ACCEL): rolling resistance does not grow with speed, so the ride has no
+        // terminal either and its speed is still a consequence of how far it has come.
+        const loss = C.OVERFLOW_ROLL_LOSS * dt;
+        st.v = st.v > 0 ? Math.max(0, st.v - loss) : Math.min(0, st.v + loss);
+        /**
+         * ...AND IT IS ROLLING ON BALLS, NOT ON A RAMP, so what is under it decides its pace.
+         *
+         * "Overflow balls come down too quickly. Remember that they ride on top of the balls
+         * already in the classifier, so it would move kinda like in steps, and it would get
+         * extra momentum from the balls if the gate is open."
+         *
+         * Both halves are one rule: rolling contact with the artifact underneath drags the
+         * rider toward THAT artifact's speed. Against a shut gate the column is stationary, so
+         * the rider is dragged to a crawl and only the small net pull (RAIL_ACCEL less the
+         * clamber loss) walks it over the crests — the stepping. Open the gate and the column
+         * is running, so the same drag hands the rider the column's momentum and it comes down
+         * with the flow instead of ahead of it.
+         *
+         * It used to have no idea what it was on: it took the ramp's full gravity less a
+         * rolling loss, so it arrived FASTER than the column it was supposedly riding.
+         */
+        let carrier = 0;
+        let bestGap = Infinity;
+        for (const rs of retained) {
+          const gap = Math.abs(st.s - rs.s);
+          if (gap < 2 * C.BALL_RADIUS && gap < bestGap) {
+            bestGap = gap;
+            carrier = rs.v;
+          }
+        }
+        /**
+         * THE COLUMN CAN CARRY A RIDER ALONG. IT CANNOT HOLD ONE STILL.
+         *
+         * This pulled the rider toward the carrier's speed in BOTH directions, which quietly
+         * turns a stopped column into a brake: a rider resting on the top of a pile held
+         * against a shut gate was dragged to zero and parked there — measured, two artifacts
+         * sat at s = 52 and 47 for twenty-five seconds with a clear ramp under them.
+         * "Overflows keep getting stuck in the classifier."
+         *
+         * A rider is a sphere on a lumpy slope, not a box on a conveyor. What is underneath it
+         * can push it along when it is moving faster; what it cannot do is grip. So the carry
+         * only ever speeds a rider UP, and a rider on a stationary pile is left to the ride's
+         * own pull, which is what gets it over the crest and off the end.
+         */
+        if (bestGap < Infinity && Math.abs(carrier) > Math.abs(st.v)) {
+          st.v = approach(st.v, carrier, C.OVERFLOW_CARRY * dt);
+          /**
+           * ...AND IT CANNOT OUTRUN WHAT IT IS RIDING ON. A rider is rolling on the column,
+           * so the column's speed is the fastest it can be carried at — gravity may keep
+           * pulling, but past the carrier it would be rolling on artifacts moving backwards
+           * relative to it, which is a slide, not a ride. Without the cap, opening the gate
+           * under a full ramp launched the riders past the column they were sitting on:
+           * measured 59 in/s over a column doing 45. "Overflow balls are way too fast."
+           *
+           * Only while the column is MOVING, though. Over a stationary pile there is nothing
+           * being ridden and the rider clambers over the crests under its own net pull — that
+           * is how an overflow artifact gets out over a SHUT gate, which the rules require and
+           * a cap at the carrier's zero would forbid outright.
+           */
+          if (Math.abs(carrier) > C.RAIL_CONTACT_MOVING) {
+            st.v = Math.max(st.v, carrier - C.OVERFLOW_LEAD);
+          }
+        }
+        st.v = Math.max(st.v, -C.RAIL_TERMINAL);
+      } else if (st.overflow && b.z > C.RAMP_SURFACE_Z + 0.05) {
+        /**
+         * IT HAS RUN OUT OF COLUMN AND IS DROPPING OFF THE END, and landing costs it speed.
+         *
+         * This is where the variety in the overflow lane comes from, and it needs no
+         * randomising: the scallop means artifacts leave the pile anywhere between a hollow
+         * and a crest, so they begin the drop from different heights and are still falling
+         * for different lengths of time. One rule, a different outcome each.
+         *
+         * Without it every overflow artifact converged on the drag terminal and left at the
+         * same speed — 34.2..35.4 in/s across six, a spread of 1.2 against the classified
+         * lane's 17.1 — which is what made them file out in a line.
+         */
+        st.v *= Math.max(0, 1 - C.OVERFLOW_LAND_LOSS * dt);
+      }
+      // THE PADDLE HAS WEIGHT, and an artifact passing under an arm that is resting on it
+      // carries that weight. The bear is (1 − gatePos): a robot holding the arm fully
+      // lifted is touching nothing and costs the flow nothing — which is precisely why a
+      // HELD gate streams and a merely-tapped one, with the paddle settled onto the flow
+      // at GATE_RIDE_FRAC, meters it. Overflow rides over the top of the gate (9.8.3) and
+      // never meets the paddle at all.
+      const dGate = st.s - C.GATE_LINE_S;
+      // <0 = the paddle is squeezing this artifact OUT from under itself, >0 = shoving it
+      // back up into the classifier. Hoisted because the gate's own floor has to know: an
+      // artifact the paddle is EXPELLING is not an artifact the paddle is blocking.
+      let paddleLean = 0;
+      let paddleOn = false;
+      if (!elevated && underPaddle(dGate) && goal.gatePos < 1) {
+        st.v *= Math.max(0, 1 - C.GATE_PADDLE_DRAG * (1 - goal.gatePos) * dt);
+        /**
+         * THE GATE NEVER COMES TO REST ON AN ARTIFACT. It pushes it off, one way or the other.
+         *
+         * The paddle bearing down off-centre does not only press, it pushes sideways, and the
+         * direction falls straight out of the contact normal. The contact sits at horizontal
+         * offset −d from the artifact's centre, so the normal is (−d, +sqrt(R²−d²))/R and the
+         * paddle presses along −normal: the horizontal component is `+d`. One expression,
+         * both outcomes:
+         *   · d < 0 — the arm landed on the artifact's UPHILL face, behind it. The push is
+         *     down-ramp: it squeezes the artifact OUT from under itself and falls shut behind
+         *     it, no robot involved.
+         *   · d > 0 — the arm landed on its DOWNHILL face, in front of it. The push is
+         *     up-ramp: it shoves the artifact back INTO the classifier and then closes.
+         *
+         * The up-ramp half used to be suppressed and replaced with a WEDGE that froze the
+         * artifact where it was — which is precisely "the gate closed on top of a ball and
+         * stayed there". A hinged arm with weight on it does not do that; it resolves.
+         *
+         * Shoving up-ramp has to carry the column above it, which the descent solver will not
+         * do (its constraints only ever stop an artifact, never raise it), so `pushedUp`
+         * flags it for the relaxation pass at the end of the tick.
+         *
+         * Gated on the arm actually being IN CONTACT: it bears on this artifact only if it
+         * has settled to the height this artifact holds it at, not merely passed nearby.
+         */
+        if (paddleBearsOn(goal, dGate)) {
+          // ...offset by GATE_APEX_BIAS, because the ramp is tilted and the apex is therefore
+          // not a resting place. Without it d = 0 is a zero push AND exactly where gateStopS
+          // blocks the artifact when the arm is seated — a perfect equilibrium, and the gate
+          // parked on the apex in 18 of 48 stalls.
+          paddleOn = true;
+          // direction from which side of neutral it landed; magnitude never below
+          // GATE_SHOVE_MIN, so it is always decisive enough to actually move the artifact
+          const raw = dGate / C.BALL_RADIUS - C.GATE_APEX_BIAS;
+          paddleLean = Math.sign(raw) * Math.max(Math.abs(raw), C.GATE_SHOVE_MIN);
+          st.v += C.GATE_PADDLE_SHOVE * paddleLean * dt;
+          if (paddleLean > 0) pushedUp = true;
+        }
+      }
       st.s += st.v * dt;
+
+      const ahead = elevated ? overAhead : rampAhead;
+      /**
+       * ...EXCEPT FOR THE ARTIFACT THE PADDLE IS ON. The paddle cannot be both the thing
+       * moving an artifact and the floor underneath it.
+       *
+       * `gateStopS` (where the arm blocks) and `gateRestOn` (how high an artifact holds it)
+       * are exact INVERSES, so the pair is neutrally stable at EVERY offset: wherever the
+       * artifact happens to stop, the arm settles to exactly the height that blocks it right
+       * there, and it stays forever. Measured, the gate parked on an artifact in 19 of 48
+       * stalls; adding the apex bias only moved where the shove is zero and left the block
+       * pinning it anyway — still 6, all at the gateStopS/gateRestOn fixed point (d = 1.30,
+       * v = 0.0, rest = 0.315 = gatePos, tick after tick after tick).
+       *
+       * So while the paddle bears on it, the gate is no floor for it — its motion is decided
+       * by the shove and by gravity, and it resolves one way or the other. gateStopS still
+       * governs every OTHER artifact, which is what stops the column at the gate.
+       */
+      // The paddle is no floor for an artifact it is EXPELLING (down-ramp) — it is the thing
+      // moving it. It very much is one for an artifact it is shoving back UP into the
+      // classifier: that artifact is arriving into a closing gate, and blocking it is the
+      // gate doing its job. Dropping the floor in both directions let every arriving artifact
+      // nose under the arm and squirt out, and the gate stopped stopping anything at all
+      // (GATE_SHOULDER_LIFT swept 0.016 -> 0.007 changed the drain by literally nothing).
+      const base = elevated ? overBase : paddleOn && paddleLean < 0 ? -Infinity : rampBase;
+      // THE BASE CANNOT REACH BACK UP FOR SOMETHING ALREADY PAST IT. An overflow artifact that
+      // rode over the column and dropped in below the gate line is BELOW the gate stop; without
+      // this the gate reached up and froze it there (measured: stranded at s=-1.1, velocity
+      // zeroed, two inches short of an exit it had already earned). The artifact ahead has no
+      // such exemption — it is solid from both sides.
+      const floor = Math.max(ahead, wasS >= base ? base : -Infinity);
+      const floorV = elevated ? overFloorV : rampFloorV;
       if (st.s < floor) {
-        // first contact with the gate stop or the ball ahead: a pending ball
-        // decides HERE — meeting a full column (9 below) diverts it over the
-        // top as OVERFLOW; otherwise it settles into the column CLASSIFIED
-        if (st.pending && below >= C.RAMP_SLOTS) {
+        // FIRST CONTACT decides the score: meeting a full column (RAMP_SLOTS below) diverts
+        // it over the top as OVERFLOW, otherwise it settles in as CLASSIFIED. Unchanged —
+        // the decision is made at contact, not at hand-off.
+        if (st.pending && retainedBelow >= C.RAMP_SLOTS) {
           st.pending = false;
           st.overflow = true;
-          st.v = -C.OVERFLOW_FLOW_SPEED;
           goal.overflowCount++;
           addOverflow(world, a);
-          continue; // rides over from here on — handled by the overflow pass
+          // it is now riding the column; it keeps whatever speed it arrived with
+          continue;
         }
-        st.s = floor;
-        // move WITH the ball below (0 against the closed gate) — the column
-        // stays packed and drains together instead of stopping/re-accelerating
-        st.v = Math.max(st.v, floorV);
+        // NEVER PUSH IT BACK UP. `floor` moves — -Infinity while the exit is clear,
+        // RAIL_EXIT_S the moment something occupies the mouth — so an artifact already past
+        // it would be snapped upward when the exit state changed. Turning a robot by the
+        // gate flips that check, and the column visibly jumped up and down the classifier in
+        // time with the steering. Clamping to min(floor, wasS) lets a constraint STOP an
+        // artifact, never reverse it.
+        st.s = Math.min(floor, wasS);
+        // move WITH whatever is ahead (so the column drains packed), and no faster than it was
+        // already going (so being held is never an acceleration) — see the note above
+        /**
+         * A COLUMN IN CONTACT SHARES ITS MOMENTUM — the one behind does not simply give its
+         * speed away to the one in front.
+         *
+         * This clamped the artifact behind down to whatever the one ahead was doing and left
+         * the one ahead alone, so every contact THREW AWAY the difference. And because the
+         * lane is walked front to back, one slow artifact at the lip pulled the whole column
+         * down to its speed within a single tick: measured on a tap, 29 in/s to 17 across
+         * five artifacts at once, over and over as each one reached the gate. "The balls
+         * higher up don't accelerate much and don't transfer much momentum to the ones
+         * below."
+         *
+         * They are touching, so a contact is a perfectly inelastic collision between equal
+         * masses: both end at the mean. The one behind still cannot pass the one ahead — that
+         * is the position clamp above, untouched — but the one ahead is now pushed ALONG by
+         * what is behind it, which is what a queue on a slope does.
+         */
+        /**
+         * ...BUT ONLY INTO SOMETHING THAT CAN MOVE. A column held against a shut gate or a
+         * robot is a WALL, not a queue: sharing momentum into it invents speed the stack can
+         * never spend, and the held column then sat there carrying 32 in/s and crept. So the
+         * artifact ahead has to be rolling before it can be pushed along; against a stopped
+         * one the old clamp applies and the arriving artifact simply stops.
+         */
+        const pressed = elevated || Math.abs(floorV) <= C.RAIL_CONTACT_MOVING ? null : rampAheadBall;
+        if (pressed && Math.abs(st.v) > Math.abs(floorV)) {
+          const shared = (st.v + floorV) / 2;
+          st.v = shared;
+          const ps = pressed.state as { v: number };
+          ps.v = shared;
+          rampFloorV = shared;
+        } else {
+          st.v = Math.max(st.v, floorV, wasV);
+        }
         if (st.pending) {
           st.pending = false;
           goal.classifiedCount++;
           addClassified(world, a);
         }
       }
-      floor = st.s + C.RAIL_PITCH;
-      floorV = st.v;
-      below++;
-      // glide smoothly onto the rail line — no positional snapping
+
+      /**
+       * SOLID FLOORS, WHICH ARE NEVER EXEMPTED — a robot's bumper and the edge of the rail.
+       *
+       * The `wasS >= base` exemption above exists for ONE case: a shut GATE must not reach
+       * back up for an overflow artifact that legitimately dropped in below the gate line.
+       * Neither of these floors has a legitimate "already past it":
+       *
+       *  · BELOW THE EXIT the rail line runs on past the audience wall, position-written and
+       *    wall-blind, so an artifact that slips under and is not released rides it straight
+       *    off the field — measured six inches out, then snapped back by the ground clamp as
+       *    a 394 in/s teleport. Two lanes make this reachable even when the solver and the
+       *    release agree, since ramp and elevated can each deliver an artifact to the exit on
+       *    one tick while only one fits through the doorway.
+       *  · INSIDE A ROBOT is not a place either. Exempting the robot floor let a column that
+       *    started below it stay there, 7.2in inside the chassis — the same artifacts-in-the-
+       *    robot the body floor was added to prevent.
+       *
+       * Correcting these means moving an artifact UP, which the clamp above refuses to do on
+       * purpose (a floor that moves must never yank the column). So it is rate-limited to
+       * RAIL_PUSH_RATE: a robot leaning into the channel SHOVES the column up its ramp,
+       * visibly, rather than teleporting it. Resting on a bumper kills the roll; queued at
+       * the exit lip an artifact keeps `wasV`, neither accelerating under a gravity it cannot
+       * act on nor losing the momentum it arrived with.
+       */
+      /**
+       * THE EXIT IS ALWAYS A FLOOR. The rail ends there; there is no rail below it.
+       *
+       * This was -Infinity whenever the way out looked clear, on the reasoning that an
+       * artifact about to leave should not be held up by a floor it is passing through. But
+       * `mouthClear` only knows about ROBOTS, and the release ALSO waits on the doorway (the
+       * artifact already on the floor in front of the gate) and on its own one-per-tick
+       * budget. Whenever it waited, the column had nothing under it and simply kept sliding:
+       * measured, five artifacts at s = -290, which is a rail position hundreds of inches off
+       * the end of the world, sliding through robots and walls alike because a rail artifact
+       * is in neither solve. It is the same "the rail is not a hole in the field" as before,
+       * reached by a different route.
+       *
+       * The floor is one PITCH below the lip while the way out looks clear, and the lip
+       * itself when it does not. That is the whole of the fix: an artifact on its way out
+       * still slides through the exit rather than stopping dead on it (a hard floor at the
+       * lip costs throughput — the tap benchmark drops from a worst of 6 to 4), and one that
+       * is not going anywhere runs out of rail after five inches instead of five hundred.
+       */
+      const exitFloor =
+        (elevated ? mouthClear : canLeave) ? C.RAIL_EXIT_S - C.RAIL_PITCH : C.RAIL_EXIT_S;
+      const solid = Math.max(mouth.s, exitFloor);
+      if (st.s < solid) {
+        st.s = Math.min(solid, wasS + C.RAIL_PUSH_RATE * dt);
+        st.v = mouth.s > exitFloor ? 0 : wasV;
+      }
+
+      if (elevated) {
+        overAhead = st.s + C.RAIL_PITCH;
+        overFloorV = st.v;
+      } else {
+        rampAhead = st.s + C.RAIL_PITCH;
+        rampFloorV = st.v;
+        rampAheadBall = b;
+        retainedBelow++;
+      }
+      // glide smoothly onto the rail line — no positional snapping. The target is the
+      // centreline plus this artifact's own path across the channel's slop (`railWander`),
+      // so the column is single file without being a ruled line.
       b.pos.y = C.CLASSIFIER_Y0 + st.s;
-      b.pos.x = approach(b.pos.x, railX, C.RAIL_BLEND_SPEED * dt);
-      b.z = approach(b.z, C.RAMP_SURFACE_Z, C.RAIL_BLEND_SPEED * dt);
+      const lane = railX + goalSide(a) * railWander(st.s, b.id, elevated);
+      b.pos.x = approach(b.pos.x, lane, C.RAIL_BLEND_SPEED * dt);
+      // Height follows the STRUCTURE, not the state: on the ramp it rides at the ramp's
+      // surface, and past the channel mouth there is no ramp under it any more, so it comes
+      // down to the floor over RAIL_DROP_S of travel — reaching 0 right where the release
+      // already lands it. Without this it crossed the open apron at full ramp height and
+      // sailed over any robot standing on the outflow.
+      const rideZ = elevated ? surfaceZ : C.RAMP_SURFACE_Z;
+      if (st.s >= C.RAIL_OPEN_S) {
+        // still on the ramp: ease onto the ride height, so joining the rail never snaps
+        b.z = approach(b.z, rideZ, C.RAIL_BLEND_SPEED * dt);
+      } else {
+        // past the wall the height is pure geometry, so it is ASSIGNED, not eased toward.
+        // Easing cannot keep up: the artifact crosses this stretch in about 0.08s and
+        // RAIL_BLEND_SPEED only buys 2.5in of fall in that time, so it left the wall at 10in,
+        // arrived at the exit still 4.5in up, and snapped the rest — which is the sail-over
+        // this is meant to remove. `min` keeps it monotonic so it can never bob back up.
+        const fall = Math.min(1, Math.max(0, (C.RAIL_OPEN_S - st.s) / C.RAIL_DROP_S));
+        // ...ONTO WHATEVER IS UNDER IT. Past the wall the artifact is out on the open apron,
+        // and a robot parked on the outflow puts its INTAKE in that space — which is not floor
+        // (see intakeRoofAt). Without this the descent ran straight through the intake and set
+        // the artifact down INSIDE the mouth, at floor level, where it was promptly taken:
+        // "once I stand in front of where the balls come out, it is still being intaked".
+        /**
+         * ...AND IT ASKS THE SAME QUESTION `railBlock` ASKS, with the same tolerances.
+         *
+         * These two had different pads, so they could disagree: the block would let the
+         * column descend past the mouth while this held the artifact up at lid height,
+         * leaving it hanging over the apron with nothing under it that either pass agreed
+         * was there — measured, an artifact queued at the exit lip at z = 10.3. If an intake
+         * is close enough to hold an artifact up, it is close enough to stop the column;
+         * if it is not, the artifact comes down to the floor. One test, both answers.
+         */
+        // ...at the point the BLOCK asked about, too. `railBlock` walks the rail centreline;
+        // asking here about the artifact's actual position, which wanders off that line by
+        // design, is a second way for the two to disagree — and every disagreement leaves an
+        // artifact held up by a roof the column does not know is there.
+        const roof = intakeRoofAt(
+          world,
+          railPos(a, st.s),
+          C.BALL_RADIUS,
+          C.BALL_RADIUS - C.INTAKE_CATCH_LENIENCE,
+        );
+        // ...and only ABOVE THE LIP. `railBlock` walks from the lip upwards, so below it
+        // nothing has been asked whether a robot is there — and holding an artifact up on a
+        // roof the column never saw is how one ends up hanging in the air past the end of the
+        // rail. Below the lip an artifact is leaving; it comes down.
+        const held = st.s >= C.RAIL_EXIT_S ? (roof?.z ?? 0) : 0;
+        b.z = Math.max(held, Math.min(b.z, rideZ * (1 - fall)));
+      }
     }
 
-    // overflow balls ride over the stack at constant flow
-    for (const b of world.balls) {
-      if (b.state.kind !== 'rail' || b.state.goal !== a || !b.state.overflow) continue;
-      b.state.s -= C.OVERFLOW_FLOW_SPEED * dt;
-      b.pos.y = C.CLASSIFIER_Y0 + b.state.s;
-      b.pos.x = approach(b.pos.x, railX, C.RAIL_BLEND_SPEED * dt);
-      b.z = approach(b.z, C.OVERFLOW_Z, C.RAIL_BLEND_SPEED * dt);
+    /**
+     * THE SHOVE CARRIES THE COLUMN, or it is not a shove.
+     *
+     * The descent solver's constraints only ever STOP an artifact — `st.s = Math.min(floor,
+     * wasS)` deliberately refuses to raise one, because a floor that moves must never yank
+     * the column (that bug dragged the whole ramp up and down in time with a robot's
+     * steering). So an artifact the paddle pushes back up-ramp would simply be driven into
+     * the one behind it and overlap.
+     *
+     * When the paddle has actually pushed, relax the retained column UPWARD from the bottom:
+     * nobody may sit closer than RAIL_PITCH to the artifact below. Rate-limited to
+     * RAIL_PUSH_RATE, the same ceiling a robot leaning into the channel gets, so the column
+     * visibly shifts up its ramp rather than teleporting.
+     */
+    if (pushedUp) {
+      const packed = rail
+        .filter((b) => !(b.state as { overflow: boolean }).overflow)
+        .sort((p, q) => (p.state as { s: number }).s - (q.state as { s: number }).s);
+      for (let i = 1; i < packed.length; i++) {
+        const below = packed[i - 1].state as { s: number };
+        const me = packed[i].state as { s: number; v: number };
+        const min = below.s + C.RAIL_PITCH;
+        if (me.s >= min) continue;
+        me.s = Math.min(min, me.s + C.RAIL_PUSH_RATE * dt);
+        if (me.v < 0) me.v = 0; // it has been stopped and lifted, not rolled
+        packed[i].pos.y = C.CLASSIFIER_Y0 + me.s;
+      }
     }
 
-    // balls past the gate roll out onto the floor from where they are
-    for (const b of world.balls) {
-      if (b.state.kind !== 'rail' || b.state.goal !== a) continue;
-      if (b.state.s > C.RAIL_EXIT_S) continue;
+    /**
+     * Balls past the exit roll out onto the floor from where they are, LOWEST first — and
+     * EVERY one that is past it, not one per tick.
+     *
+     * One per tick sounds harmless at 60Hz and is not, because the column is in CONTACT: the
+     * artifact waiting its turn is a floor for the one behind it, and that one for the one
+     * behind IT. Measured on a tap, the whole column stalled and surged in time with the
+     * releases — the bottom three at 19 in/s while the top three ran at 28, over and over —
+     * and the artifacts that had queued were then pushed back UP to the floor, losing the
+     * speed they had. "The balls higher up don't accelerate much and don't transfer much
+     * momentum to the ones below."
+     *
+     * They do transfer it; the exit was throwing it away. The doorway is re-read between
+     * releases, so the artifact that just left still blocks the next if it has not cleared —
+     * which is the real constraint that one-per-tick was standing in for.
+     */
+    const out = mouth;
+    const leaving = rail.filter((b) => (b.state as { s: number }).s <= out.takeAt);
+    for (const b of leaving) {
+      if (b.state.kind !== 'rail') continue; // narrowing; `rail` is pre-filtered by goal
+      // NOTHING LEAVES INTO AN OCCUPIED MOUTH — the artifact stays on the rail and the
+      // column queues behind it (see `railBlock`).
+      if (out.s !== -Infinity) continue;
+      // ...and if the LAST artifact out is still in the doorway, shove it clear and wait a
+      // tick rather than materialising this one on top of it.
+      {
+        // re-read, not the value from the top of the tick: the artifact released a moment ago
+        // is the doorway for this one
+        const ahead = doorwayArtifact(world, a);
+        if (ahead) {
+          /**
+           * TOP UP TO A CREEP — never ADD.
+           *
+           * This used to add a fraction of the exit velocity every tick the doorway was
+           * occupied, which compounds: an artifact resting in the mouth was shoved again
+           * and again and left at 91 in/s, far faster than anything the ramp could produce
+           * and fast enough to travel the length of the field. The column is nudging a
+           * stationary artifact out of the way, not firing it.
+           *
+           * So it sets a FLOOR on the outward component and leaves anything already faster
+           * alone: the artifact creeps clear and nothing accumulates.
+           */
+          /**
+           * ...BUT NOT INTO SOMETHING SOLID. The nudge is a FLOOR re-applied every tick the
+           * doorway is occupied, and if the artifact cannot go anywhere — pinned between the
+           * gate and a robot parked down the tunnel — the floor and the chassis take turns:
+           * measured 60 direction reversals in two seconds, one every other tick, peaking at
+           * 67.6 in/s. That is the artifact "moving back and forth" in front of the gate.
+           *
+           * A robot on the outflow means the mouth is blocked, and a blocked mouth is
+           * supposed to STALL the column (railBlock already says so). So the column stops
+           * shoving and simply waits, which is what it does behind any other obstruction.
+           */
+          const push = tunnelExitVel(a);
+          const mag = hyp(push.x, push.y);
+          const ux = push.x / mag;
+          const uy = push.y / mag;
+          /**
+           * PINNED MEANS "CANNOT GO WHERE IT IS BEING PUSHED", not "is near a robot".
+           *
+           * This asked whether the artifact was inside a robot's footprint at all, which is
+           * true of every artifact a robot is intaking off the gate — GATE INTAKING, holding
+           * the lever with a front corner while the mouth eats the outflow, is a standard
+           * technique and the guard throttled it to a crawl. Measured, holding the gate with
+           * the drain running: 5 of 9 artifacts in 14s with the guard, 9 of 9 at a 0.323s
+           * mean gap without it, which is the no-robot rate.
+           *
+           * So probe the position it is being nudged TOWARD. If that is still buried in a
+           * robot the artifact genuinely has nowhere to go and shoving it just fights the
+           * chassis (the doorway buzz: 60 reversals in two seconds). If the way out is
+           * clear — a robot beside the gate, or its open mouth ahead of the artifact — the
+           * nudge does what it is for.
+           */
+          /**
+           * DO NOT SHOVE AN ARTIFACT INTO SOMETHING THAT WILL NOT TAKE IT.
+           *
+           * Two different situations look identical to a proximity test, and neither a
+           * footprint test nor a chassis test separates them on its own — both were tried:
+           *
+           *  · the CHASSIS is about to shove it back. In `solveArtifacts` the robot is a kinematic
+           *    sweep carrying its `artifactSolids` shapes, and the chassis is the one of them
+           *    that can fight the nudge here. Re-flooring the velocity against it every tick is the doorway buzz:
+           *    60 reversals in two seconds, peaking at 67 in/s.
+           *  · it is sitting in an IDLE intake mouth. Nothing will move it, and shoving it
+           *    deeper only starts the same fight against the eviction pass.
+           *
+           * A RUNNING intake is the case that must not be suppressed, and it is the common
+           * one: GATE INTAKING — holding the lever with a front corner while the mouth eats
+           * the outflow — puts an artifact in the mouth on every single release. Treating
+           * that as pinned throttled it to 5 of 9 artifacts in 14s, against 9 of 9 at a
+           * 0.32s mean gap (the no-robot rate) once the nudge is allowed to do its job.
+           */
+          /**
+           * TOUCHING COUNTS. The artifact solve never lets an artifact into a chassis, so one
+           * held against a bumper sits exactly a radius off it — a depth of -R, never deeper.
+           * Testing for 0.8R (i.e. half an inch INSIDE the chassis) meant a blocked artifact
+           * was never pinned, the floor re-armed every tick, the chassis refused it every
+           * tick, and the artifact buzzed in place: 118 reversals in two seconds at 3.5 in/s.
+           */
+          const pinDepth = -(C.BALL_RADIUS + C.EXIT_PIN_TOUCH);
+          const pinned = world.robots.some((rb) => {
+            if (pointDepthInChassis(rb, ahead.pos) > pinDepth) return true;
+            const taking = (commands.get(rb.id)?.intake ?? false) || rb.autoIntake;
+            return !taking && pointDepthInRobot(rb, ahead.pos) > pinDepth;
+          });
+          if (!pinned) {
+            // ...and it is shoved at the speed of the artifact arriving behind it, not at a
+            // constant. `EXIT_NUDGE`'s own note says "the queue moves at the speed of the
+            // flow that is pushing it"; a fixed 22.4 in/s is only that speed by coincidence,
+            // and it becomes the ceiling for the whole drain. The constant stays as a FLOOR
+            // for a column that has stalled and has no speed to lend.
+            const flow = Math.abs((b.state as { v: number }).v);
+            const target = Math.max(mag * C.EXIT_NUDGE, flow);
+            const along = ahead.vel.x * ux + ahead.vel.y * uy;
+            if (along < target) {
+              ahead.vel.x += ux * (target - along);
+              ahead.vel.y += uy * (target - along);
+            }
+          }
+          continue;
+        }
+      }
       if (b.state.pending) {
         // flowed down the whole channel and out an open gate without ever
         // meeting the column: it was sorted, then released — CLASSIFIED
@@ -332,20 +1434,125 @@ export function updateRails(world: World, dt: number): void {
         goal.classifiedCount++;
         addClassified(world, a);
       }
-      const vel = tunnelExitVel(a);
-      let r1 = nextRandom(world.rngState);
-      let r2 = nextRandom(r1.state);
-      world.rngState = r2.state;
+      /**
+       * MOMENTUM IS CARRIED OFF THE RAMP, not replaced at the bottom of it.
+       *
+       * This used to ASSIGN `tunnelExitVel` scaled by an independent 0.6-1.4 roll per axis,
+       * throwing away whatever the artifact was actually doing. An artifact that had spent
+       * the whole ramp accelerating under RAIL_ACCEL arrived at the exit and was handed a
+       * different speed on the tick it touched the floor — sometimes slower, sometimes a
+       * jump to 33 in/s, always a step change with no cause. Speed down a ramp comes from
+       * gravity, and it should still be that speed at the bottom.
+       *
+       * So the ALONG-ramp component is the artifact's own: `v` for a classified artifact
+       * (which RAIL_ACCEL has been building the whole way down) and the constant flow speed
+       * for overflow, which rides over the column rather than rolling. Only the small
+       * OFF-THE-WALL component is synthesised, and the jitter now fans DIRECTION rather than
+       * scaling magnitude — the drain still spreads into a cone instead of a single file,
+       * without anything changing pace as it lands.
+       */
+      // every artifact now carries its OWN speed off the ramp, overflow included — there is
+      // no separate flow constant to substitute in
+      const st0 = b.state as { s: number; v: number; overflow: boolean };
+      const speed = Math.abs(st0.v);
+      /**
+       * ...AND IN THE DIRECTION IT WAS ALREADY GOING. There is no fan.
+       *
+       * The exit used to lean off the wall by a jittered 5-15 degrees. The jitter varied the
+       * lean's MAGNITUDE and never its sign, so every artifact left on the same diagonal and
+       * the drain crossed the floor as one group — "all the balls keep coming out of the gate
+       * at the same angle". A synthesised cone cannot fix that; it only decides how wide the
+       * one diagonal is.
+       *
+       * The channel runs down the wall and the artifact rolls off the END of it, so it just
+       * goes straight down. The spread comes from what it runs into — artifacts carom off
+       * whichever ones stopped first, and the pile in front of the gate is different every
+       * time, which is a real cause rather than a shape applied to all of them.
+       */
+      /**
+       * IT ROLLS OFF A LIP AND FALLS. The ramp discharges above the floor (manual 9.8.3:
+       * the gate's contact area is 3.75-5.5in up), so an artifact leaving it drops, lands,
+       * and bounces — and THAT is what takes the speed out of it. Handing it a flat floor
+       * velocity instead sent every artifact off on the same diagonal at ramp speed,
+       * arriving halfway across the field when they should be settling in front of the
+       * gate, along the tunnel, or in the human player zone.
+       *
+       * Released as a FLIGHT artifact at lip height with its ramp momentum, so the existing
+       * ballistic + landing code does the work: gravity, a bounce that keeps
+       * BALL_BOUNCE_H_RETAIN of the horizontal each time, then rolling friction. Nothing
+       * scripted, and the scatter comes from where each one happens to land rather than
+       * from a fan applied to all of them.
+       */
+      /**
+       * IT IS ON THE FLOOR THE TICK IT LEAVES, AT THE SPEED THE RAMP GAVE IT.
+       *
+       * Two things were tried here and both were wrong in ways worth remembering. Releasing
+       * it as a FLIGHT artifact off a 3.75in lip is the honest geometry — it really does drop
+       * — but 3.75in takes 0.14s and the bounces another 0.2s, and at this scale that does not
+       * read as a ramp discharging, it reads as artifacts floating out of the wall. Charging
+       * the drop's cost up front instead (multiply the horizontal by what a bounce keeps) puts
+       * them on the floor but makes them change speed by 16in/s on the tick they arrive, which
+       * is precisely the sudden step this release was rebuilt to get rid of.
+       *
+       * So neither: it lands immediately and keeps its speed, and BALL_ROLL_FRICTION takes it
+       * out over the tunnel the way a ball rolling on foam tile actually stops. The exit is not
+       * an event that does something to the artifact — it is just where the ramp ends.
+       */
+      // the only sideways motion it has any claim to: the weave it was already doing across
+      // the groove. `railWanderRate` is how fast the groove was carrying it across per inch
+      // travelled, so times its own speed it IS that artifact's lateral velocity — signed,
+      // different for each, and a couple of in/s, not a fan.
+      /**
+       * ...AND IT LEAVES STRAIGHT. THE SPREAD COMES FROM WHAT IT HITS.
+       *
+       * The exit carried the artifact's weave across the groove out onto the floor as a
+       * lateral velocity — honest enough at 20 in/s, and a fan at 40: the same wander rate
+       * times twice the speed is twice the sideways component, so steepening the chute turned
+       * a drift into a spray. "Overflow balls come out at weird angles for no reason. Make it
+       * spread out less. The spreading out should be fundamentally from collisions mostly."
+       *
+       * So what is left is small, and it is not proportional to speed: which groove wall the
+       * artifact last leaned on decides which way it tips off the lip, and that is worth a
+       * couple of inches a second either way whether it arrived at 20 or at 40 ("balls come
+       * down as a straight line too much, a slight variation please"). The bulk of the spread
+       * still comes from what each one runs into — see the contact scatter in `scatterBalls`.
+       */
+      const drift = goalSide(a) * railExitLean(st0.s, b.id, st0.overflow) * C.EXIT_DRIFT;
+      /**
+       * ...ONTO THE FLOOR, and it is only ever reached when there IS floor to put it on: a
+       * robot whose MOUTH is over the outflow blocks the column up-ramp (see `railBlock`), so
+       * nothing is released into an intake in the first place.
+       *
+       * Setting it down on the ROOF instead was tried, twice, and it is worse both times. It
+       * makes a FLIGHT artifact beside a robot, and flight artifacts are not in the ground
+       * solve — one drifted through a 4.6in gap between a robot's corner and the wall, which
+       * smoke watches because it was a bug report of its own. Making the mouth solid from
+       * above (ballRobotFrontContact) fixes the notch but not the rest of the window: the
+       * artifact is still airborne for the tumble, and the roller throws it at whatever the
+       * robot happens to be facing, which by the gate is usually the wall.
+       */
+      /**
+       * ...ONTO THE FLOOR. NOT ONTO THE INTAKE'S LID, WHICH WAS TRIED TWICE AND IS WRONG.
+       *
+       * The drop-space rule — "there needs to be adequate space ON THE GROUND for the ball to
+       * DROP ON THE GROUND" — asks for an artifact that arrives where an intake already is to
+       * end up ON it rather than inside it, and setting it on the lid is the obvious way to
+       * say that. It does not survive contact with the rest of the sim: a lid artifact is in
+       * FLIGHT, and flight is outside the ground solve and outside the jam rule. Handed the
+       * ramp's speed it skated past the robot and through gaps it does not fit through;
+       * handed the LID's speed instead it stopped skating and hovered there, which is worse
+       * and is what "they're all floating" is.
+       *
+       * So the release stays what it always was — the floor — and the drop-space rule is
+       * still owed a real answer. The one thing that must NOT come back with it is the
+       * column waiting for floor that never appears: the robot holding the gate open is the
+       * robot in the way, so that wait has no end (0 of 9 out in 20 seconds with the gate
+       * wide open). The ramp runs; where the artifact lands is a separate question.
+       */
       b.state = { kind: 'ground' };
       b.z = 0;
       b.vz = 0;
-      // gentle release, SAME treatment the overflow balls get: low forward
-      // momentum (friction + ball↔ball contact spread the drain instead of it
-      // plowing out) with an INDEPENDENT x/y jitter that fans the exit directions
-      // into a cone. A symmetric perpendicular kick was tried and split the tight
-      // drain column into TWO diverging branches — the independent jitter keeps
-      // every ball moving in the same quadrant, so they fan out instead.
-      b.vel = { x: vel.x * (0.6 + r1.value * 0.8), y: vel.y * (0.6 + r2.value * 0.8) };
+      b.vel = { x: drift, y: -speed };
     }
   }
 }
@@ -376,51 +1583,209 @@ export function updateGates(
       if (s > ram) ram = s;
     }
     const pushing = ram > 0;
-    // a robot merely TOUCHING the (already-open) arm keeps it up — see the latch below
-    const touching = world.robots.some((r) => robotIntersectsRect(r, gateArmRect(a)));
+    // A robot merely TOUCHING the (already-open) arm keeps it up — see the latch below.
+    //
+    // The CHASSIS touches it, not the intake-extended footprint. `robotIntersectsRect` grows
+    // the box forward by the intake reach, and gate intaking parks exactly that reach across
+    // the arm — so the mouth alone re-armed the latch every tick and pinned the arm at fully
+    // open no matter what was under it. Measured: 10 of 12 gate-intaking poses held the arm
+    // with the INTAKE only, gatePos stuck at 1.00 for four seconds over a completely stalled
+    // column. The technique is holding the arm with a front CORNER, which is the bumper; the
+    // mouth is an open frame and the lifted arm sits over it.
+    const touching = world.robots.some((r) =>
+      convexOverlap(chassisCorners(r), rectCorners(gateArmRect(a))),
+    );
     const wasOpen = goal.gateOpen;
 
-    if (pushing) {
-      // a push (past the tiny debounce) COMMITS the arm open and re-arms a latch — the
-      // driver does NOT have to keep pressing: a tap lifts it fully and it stays up.
-      goal.gateHoldTime += dt;
-      if (goal.gateHoldTime >= C.GATE_OPEN_HOLD) goal.gateLatch = C.GATE_OPEN_LATCH_S;
-    } else if (touching && goal.gateOpen) {
-      // resting against an already-OPEN gate holds it open without re-pushing (the light
-      // arm doesn't shove the robot off). NOT a way to OPEN a closed gate — that needs a
-      // push — so loitering against a shut gate still does nothing.
-      goal.gateHoldTime = 0;
-      goal.gateLatch = C.GATE_OPEN_LATCH_S;
-    } else {
-      goal.gateHoldTime = 0;
-      goal.gateLatch = Math.max(0, goal.gateLatch - dt);
-    }
+    /**
+     * THE ARM IS PINNED UP ONLY WHILE A ROBOT IS ACTUALLY ON IT.
+     *
+     * A tap used to LATCH it at fully open for GATE_OPEN_LATCH_S — half a second of the
+     * paddle hovering at maximum lift, clear of everything, with nobody touching it. A
+     * hinged arm cannot do that, and it is why a tap emptied the whole ramp: measured, a
+     * tap drained EVERY column up to six artifacts, two of them during the latch alone,
+     * and the arm never got the chance to come down onto the flow at all.
+     *
+     * What a tap really does is throw the arm up and let go. `GATE_OPEN_LATCH_S` is now the
+     * arm's mechanical OVERSWING — the moment of its own momentum carrying past the release
+     * — and the rest of "it stays open a beat without holding" comes from where it actually
+     * comes from: the FALL. Gravity takes ~0.23s to bring it from full lift back to the pass
+     * line, artifacts flow the whole way down, and then it lands on the column and meters.
+     * The product decision (a tap opens it; the driver does not keep pressing) is intact —
+     * a tap still commits it fully open and still drains. It just no longer drains all of it.
+     *
+     * TOUCH-HOLD is unchanged and is the case that legitimately pins the arm: a robot
+     * resting against an already-open arm really does hold it up, indefinitely, and that is
+     * what makes a HELD gate stream.
+     */
+    const onArm = pushing || (touching && goal.gateOpen);
+    if (pushing) goal.gateHoldTime += dt;
+    else goal.gateHoldTime = 0;
+    // the latch now tracks CONTACT (plus the overswing tail), not a free-floating timer
+    goal.gateLatch =
+      onArm && goal.gateHoldTime >= C.GATE_OPEN_HOLD
+        ? C.GATE_OPEN_LATCH_S
+        : Math.max(0, goal.gateLatch - dt);
 
-    // a ball occupying the gateway props the OPEN arm up: gravity can't swing it shut
-    // while artifacts stream underneath. It only HOLDS an already-open arm — a ball
+    // HOW HARD THE FLOW IS SHOULDERING THE ARM. An artifact in the gateway props the OPEN
+    // arm up — but a paddle resting on a ball is held up by the BALL, so what matters is
+    // not merely that one is there, it is how fast it is going. `gatewaySpeed` is the
+    // briskest down-ramp speed under the arm right now (0 if the gateway is empty or
+    // whatever is in it has stalled). It only ever HOLDS an already-open arm — a ball
     // reaching an almost-closed gate must NOT lift it back open (only a robot push does).
-    const ballInGateway = world.balls.some(
-      (b) =>
-        b.state.kind === 'rail' &&
-        b.state.goal === a &&
-        b.state.s > C.GATE_CLOSE_CLEAR_LO &&
-        b.state.s < C.GATE_CLOSE_CLEAR_HI,
-    );
+    // (LOCALS, deliberately — GoalState rides the network snapshot, and both are
+    // recomputed from world state every tick anyway)
+    let arrivalSpeed = 0;
+    // ...and how high the arm has to be for that artifact to get UNDER the paddle at all,
+    // rather than meeting its face. See the knock below.
+    let arrivalRest = Infinity;
+    // ...and WHICH artifact it was, because a strike costs the striker (see the knock).
+    let striker: Artifact | null = null;
+    // ...and how high the artifacts physically sitting under the arm hold it, which is a
+    // question about GEOMETRY and not about speed: the paddle's edge lands where the
+    // vertical at the gate line meets an artifact's surface (gateRestOn). Without this the
+    // arm fell through a stalled artifact to fully shut, so it only ever came to rest in
+    // the gap BETWEEN two of them.
+    let gatewayRest = 0;
+    for (const b of world.balls) {
+      if (b.state.kind !== 'rail' || b.state.goal !== a) continue;
+      if (b.state.overflow) continue; // rides OVER the gate (9.8.3) — never under the paddle
+      // ONLY WHAT IS ACTUALLY UNDER THE PADDLE. Nothing else can be holding it up.
+      const d = b.state.s - C.GATE_LINE_S;
+      /**
+       * ONE KNOCK PER ARTIFACT, on the tick it ARRIVES.
+       *
+       * The impulse has to be an event, not a condition. Applying it on every tick an artifact
+       * was anywhere near the arm is not a collision, it is a sustained lift: with a packed
+       * column something is always within reach, so the arm was held at fully open forever and
+       * the drain never metered at all (every tap emptied the ramp, at any strength of knock).
+       *
+       * Arrival is the artifact's leading surface reaching the paddle — `d` crossing
+       * BALL_RADIUS on its way down — and it is detected from the artifact's own motion this
+       * tick, so it needs no stored per-artifact state and stays snapshot-safe.
+       */
+      const dPrev = d - b.state.v * dt; // v is negative down-ramp, so it was higher up
+      if (dPrev > C.BALL_RADIUS && d <= C.BALL_RADIUS) {
+        const speed = -b.state.v;
+        if (speed > arrivalSpeed) {
+          arrivalSpeed = speed;
+          arrivalRest = gateRestOn(d);
+          striker = b;
+        }
+      }
+      // GEOMETRY is only ever about what is genuinely under the paddle.
+      if (!underPaddle(d)) continue;
+      const rest = gateRestOn(d);
+      if (rest > gatewayRest) gatewayRest = rest; // whichever holds it highest is the one bearing it
+    }
 
     if (goal.gateLatch > 0) {
       // latched open (a push, or resting against the open arm): lift toward fully open at
-      // the ram-scaled rate (a harder push swings it up faster — matches gateColliderPos)
+      // the ram-scaled rate (a harder push swings it up faster — matches gateColliderPos).
+      // A robot holds the paddle CLEAR of the flow, which is why a held gate has no cadence.
       goal.gatePos = Math.min(1, goal.gatePos + gateLiftRate(ram) * dt);
       goal.gateVel = 0;
-    } else if (goal.gateOpen && ballInGateway) {
-      // an artifact is streaming under the OPEN arm — HOLD its position (gravity
-      // suspended) but do NOT lift it, so a new ball can't reopen a near-closed gate
-      goal.gateVel = 0;
     } else if (goal.gatePos > 0) {
-      // released and unheld: the arm falls closed under gravity, starting slow and
-      // accelerating (variable, non-instant close — manual 9.8.3)
+      // Released and unheld, the arm falls closed under gravity, starting slow and
+      // accelerating (variable, non-instant close — manual 9.8.3) — and it falls onto
+      // WHATEVER IS UNDER IT. It used to be frozen in place by the mere presence of an
+      // artifact in the gateway, so a tapped gate hovered at 1.0 with the flow passing
+      // beneath it untouched and drained exactly as fast as a held one. It cannot hover:
+      // an artifact is a ball's worth of lift (GATE_RIDE_FRAC) and no more, and it can
+      // only hold the paddle that high if it is actually moving (GATE_SHOULDER_LIFT) —
+      // a faltering artifact lets the arm settle onto it and the drain stops there.
+      const wasPos = goal.gatePos;
+      // GRAVITY, at full strength and undamped. Nothing about a stream of artifacts makes the
+      // arm heavier or lighter; what a stream does is keep hitting it, which is the impulse
+      // below. GATE_FLOW_CUSHION used to scale this down in proportion to the flow — a second
+      // knob for the same physical fact, double-counting with the knock-up.
       goal.gateVel = Math.max(goal.gateVel - C.GATE_GRAVITY * dt, -C.GATE_CLOSE_MAX);
+
+      /**
+       * AN ARRIVING ARTIFACT HANDS THE ARM SWING SPEED, and gravity decides how far up that
+       * gets it. This is the mechanism the whole drain rests on:
+       *
+       *   a tap throws the arm fully open, gravity brings it back down, and each artifact
+       *   reaching it knocks it up again by an amount set by how fast that artifact is going
+       *   — unless the arm has already come down too far to get under, in which case the
+       *   artifact is simply stopped and the drain ends there.
+       *
+       * WHY A PACKED COLUMN CARRIES AND A GAPPY ONE DOES NOT, which is the actual question and
+       * has nothing to do with a full ramp "having more momentum" — every artifact on the ramp
+       * accelerates down the same incline at the same rate and arrives at the same terminal
+       * speed, packed or not. What differs is only WHEN they arrive. After a knock the arm
+       * starts falling immediately, and it has GATE_PASS_FRAC of height to lose before nothing
+       * can get under it any more. So a drain is a race between the arm's fall and the gap
+       * between arrivals, and that gap is (spacing / speed). Packed at RAIL_PITCH the next
+       * artifact lands while the arm is still high; spread wider it arrives to find the arm
+       * already shut. That is the whole of it.
+       */
+      /**
+       * WHAT THE ARM HAS TO BE ABOVE FOR THE KNOCK TO LAND is the height the ARRIVING
+       * ARTIFACT'S OWN SURFACE offers the paddle, not the pass fraction.
+       *
+       * It was GATE_PASS_FRAC, on the reasoning that an artifact must never lever open a gate
+       * that is already shut — which is right, and is not what that test says. GATE_PASS_FRAC
+       * is where an artifact can get THROUGH; the paddle is reachable from underneath long
+       * before that. So an arm a hair under the pass line was a wall: the artifact behind the
+       * one that just left arrived, found 0.35, and was simply stopped. "A tap only lets out
+       * one ball, because a ball coming out is not lifting the gate back up."
+       *
+       * `gateRestOn(d)` at the moment of contact is the honest threshold — it IS the height
+       * the paddle sits at when it is resting on that artifact's surface. Above it, the ball
+       * is under the paddle edge and its momentum swings the arm; below it, the paddle's face
+       * is in the way and the ball is stopped, which is exactly what a shut gate must do.
+       * A flat arm (0) is therefore still a wall to an artifact arriving at any speed, so a
+       * SHUT gate still retains — the retention checks are what pin this down.
+       *
+       * The knock is still only worth what the artifact is carrying, and that self-limits:
+       * from 0.2 the rise is (speed * GATE_KNOCK)^2 / (2 * GATE_GRAVITY), so ~25 in/s is
+       * needed to reach the pass line and a faltering flow lands short and ends the drain.
+       */
+      if (arrivalSpeed > 0 && wasPos >= arrivalRest) {
+        goal.gateVel = Math.max(goal.gateVel, arrivalSpeed * C.GATE_KNOCK);
+        /**
+         * ...AND THE STRIKE COSTS THE STRIKER. A collision moves momentum, it does not mint
+         * it, and this is the half that was missing: the arm was thrown up for free, so a
+         * knock hard enough to matter was also a knock that could never run out, and the only
+         * thing keeping a tap from emptying the ramp was the knock being too weak to reopen a
+         * sagging arm at all. That is a dial with a cliff in it — a tap was worth one artifact
+         * or all nine, decided by a fifth of a second on the lever.
+         *
+         * Paying for the lift out of the artifact's own speed puts the meter where the physics
+         * already is: the arm's weight is what the flow spends itself against, every artifact
+         * through the gateway arrives a little slower than it otherwise would, and a drain
+         * gives out when the column can no longer pay. `st.v` is negative down-ramp, so this
+         * scales the magnitude.
+         */
+        if (striker && striker.state.kind === 'rail') {
+          (striker.state as { v: number }).v *= 1 - C.GATE_STRIKE_LOSS;
+        }
+      }
+
       goal.gatePos = Math.max(0, goal.gatePos + goal.gateVel * dt);
+      if (goal.gatePos >= 1) {
+        goal.gatePos = 1;
+        goal.gateVel = 0;
+      }
+      // A ROBOT IN THE SWING IS A HARD FLOOR — the arm rests ON it (see `gateRobotRest`). Hard,
+      // not stop-only like the artifact floor below, because the arm has to SIT there stably: a
+      // stop-only version settles to the just-touching height, reads as clear on the next tick,
+      // falls again, and buzzes. A robot cannot arrive under a shut arm and lever it open this
+      // way either — the handle collider is what keeps it out while the arm is down.
+      const robotRest = gateRobotRest(world, a);
+      if (goal.gatePos < robotRest) {
+        goal.gatePos = robotRest;
+        goal.gateVel = 0;
+      }
+      // A STALLED ARTIFACT UNDER THE PADDLE IS A FLOOR, NOT A LIFT. It bears the arm's weight
+      // at whatever height its surface offers (gateRestOn, always below GATE_PASS_FRAC — a
+      // paddle seated on a ball is exactly what blocks that ball), but it must never reach up
+      // and raise the arm, or a stalled artifact would prop open a gate already shut past it.
+      if (wasPos >= gatewayRest && goal.gatePos < gatewayRest) {
+        goal.gatePos = gatewayRest;
+        goal.gateVel = 0;
+      }
       if (goal.gatePos === 0) goal.gateVel = 0;
     }
 

@@ -30,8 +30,20 @@ import { worldHash } from '../net/checksum';
 const ZERO_CMD: RobotCommand = { driveX: 0, driveY: 0, rotate: 0, leftDrive: 0, rightDrive: 0, intake: false, fire: false };
 const ZERO_Q: QCommand = { dx: 0, dy: 0, rot: 0, buttons: 0 };
 
-/** bump on a breaking change to the replay container schema */
-export const REPLAY_FORMAT = 1;
+/**
+ * Bump on a change to the replay container schema.
+ *
+ * 2: command entries carry the TANK AXES (`ld`/`rd`). Format 1 stored only
+ *    `[tick, dx, dy, rot, buttons]`, and tank drive is commanded EXCLUSIVELY through
+ *    leftDrive/rightDrive (see robot.ts `saturation === 'tank'`) — so a tank or butterfly
+ *    robot's entire drive input was thrown away and its replay played back with a dead
+ *    drivetrain. The READER still understands format 1, so old replays keep playing.
+ */
+export const REPLAY_FORMAT = 2;
+
+/** numbers per command entry, by container format. 1: [tick,dx,dy,rot,buttons] ·
+ *  2: + [ld,rd] */
+export const trackStride = (format: number): number => (format >= 2 ? 7 : 5);
 
 /**
  * One robot's command timeline, HOLD-LAST compressed: a flat number array of
@@ -70,9 +82,16 @@ export interface Replay {
 }
 
 function packKey(q: QCommand): number {
-  // dx/dy/rot ∈ [-127,127] (8 bits signed), buttons ∈ [0,3]; pack for cheap
-  // change-detection (not stored — just an equality key)
-  return ((q.dx & 0xff) << 24) | ((q.dy & 0xff) << 16) | ((q.rot & 0xff) << 8) | (q.buttons & 0xff);
+  // dx/dy/rot/ld/rd ∈ [-127,127] (8 bits signed), buttons ∈ [0,3]; pack for cheap
+  // change-detection (not stored — just an equality key).
+  //
+  // MULTIPLICATION, not bit shifts: six bytes is 48 bits and JS bitwise operators truncate
+  // to 32, which would silently fold ld/rd out of the key. That is not a hypothetical — the
+  // key omitted them entirely before, so a TANK robot (whose only drive input IS ld/rd) had
+  // every change after its first look identical, and the recorder skipped all of them.
+  const b = (n: number): number => n & 0xff;
+  return ((((b(q.dx) * 256 + b(q.dy)) * 256 + b(q.rot)) * 256 + (q.buttons & 0xff)) * 256 +
+    b(q.ld ?? 0)) * 256 + b(q.rd ?? 0);
 }
 
 /**
@@ -108,7 +127,7 @@ export class ReplayRecorder {
         track = [];
         this.tracks.set(s.id, track);
       }
-      track.push(tick, q.dx, q.dy, q.rot, q.buttons);
+      track.push(tick, q.dx, q.dy, q.rot, q.buttons, q.ld ?? 0, q.rd ?? 0);
     }
   }
 
@@ -134,6 +153,124 @@ export class ReplayRecorder {
     };
   }
 }
+
+/**
+ * WHAT is different about a container — five genuinely different situations, and the viewer
+ * has to tell them apart because they mean different things to the person who clicked the
+ * link. Three of them are FATAL and two are merely a DRIFT; `replayFidelity` below is what
+ * sorts them, and this type carries only the reason.
+ *
+ *  • `future`     — recorded by a build NEWER than this one; the reader cannot parse it.
+ *  • `balance`    — a different BALANCE_VERSION, i.e. robots perform differently now.
+ *  • `behaviour`  — a different SIM_VERSION: same balance, changed physics/rules.
+ *  • `unstamped`  — recorded before DSIM stamped SIM_VERSION at all, so which behaviour
+ *                    produced it is genuinely UNKNOWN rather than known-different.
+ *  • `tank`       — a FORMAT-1 replay of a tank-steered robot, whose drive input the
+ *                    container had nowhere to store.
+ */
+export type ReplayRefusal = 'future' | 'balance' | 'behaviour' | 'unstamped' | 'tank';
+
+/**
+ * WHAT, if anything, differs between that container and this build — the ONE authority.
+ * `replayFidelity` and `replayPlayable` are both derived from it, so there is never a second
+ * description of this rule to disagree with.
+ *
+ * Two different questions, kept apart on purpose:
+ *  • can we PARSE it — any format up to ours, since the reader still understands the older
+ *    strides. A newer one from a future build we cannot read.
+ *  • can we REPRODUCE it — the balance version has to match, or `step()` produces a
+ *    different game than the one that was played.
+ *
+ * Plus one honest refusal: a FORMAT-1 replay of a tank-steered robot never had its drive
+ * input recorded at all (the container had nowhere to put `ld`/`rd`). It parses and it
+ * re-simulates, but it re-simulates a robot that sits still — so it is refused rather than
+ * played back looking broken, which is indistinguishable from a bug in the sim.
+ *
+ * ⚠️ **THE FATAL TESTS COME FIRST, AND `tank` MUST PRECEDE THE SIM TEST.** A SIM mismatch is
+ * only a drift (see `replayFidelity`), so if it were checked first then a format-1 tank replay
+ * that ALSO predates the current SIM_VERSION — which is every one of them, format 1 being the
+ * older container — would be reported as a drift and PLAYED, showing a robot that sits still.
+ * The order is load-bearing, not stylistic.
+ *
+ * `unstamped` is a MESSAGE distinction, never a policy one: the version test stays exactly
+ * `(r.sim ?? 0) !== simVersion`, so an absent stamp reads as a drift on any build past
+ * SIM_VERSION 0 and as an exact match on one running 0, which is what it has always done.
+ * Splitting it out changes only whether the viewer can say "recorded before we tracked this"
+ * instead of naming a version the recorder never claimed.
+ */
+export function replayRefusal(
+  r: Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups'>,
+  balanceVersion: number,
+  simVersion: number,
+): ReplayRefusal | null {
+  if (r.format > REPLAY_FORMAT) return 'future';
+  if (r.balanceVersion !== balanceVersion) return 'balance';
+  if (r.format < 2 && r.setups.some((s) => tankSteered(s.spec.drivetrain))) return 'tank';
+  if ((r.sim ?? 0) !== simVersion) return r.sim === undefined ? 'unstamped' : 'behaviour';
+  return null;
+}
+
+/**
+ * How faithfully can this build re-run that container?
+ *
+ *  • `'ok'`     re-simulates exactly as recorded.
+ *  • `'drift'`  PLAYS, but the sim has changed since it was recorded, so the ending may not
+ *                land on precisely the saved score.
+ *  • `'stale'`  cannot be played at all.
+ *
+ * **THE MIDDLE CASE IS THE POINT, and it was learned the hard way.** Gating playback on
+ * SIM_VERSION as well as the season once marked every DECODE match of a whole live season
+ * unavailable over a float-level determinism fix — a correction worth a point or two of drift
+ * took away every replay on the board. A changed SIM_VERSION moves what `step()` produces,
+ * which over a three-minute match can move a score, but the recording is still a valid input
+ * log against the same physics, the same field and the same season: it is not a different
+ * match, only a slightly different rounding of the same one. Showing it with a note is
+ * strictly better than refusing it.
+ *
+ * A REFUSAL is therefore reserved for the cases where playback would be MEANINGLESS rather
+ * than merely imprecise: a container this build cannot parse, a different SEASON
+ * (BALANCE_VERSION) where the tuning constants themselves differ, and the format-1 tank
+ * replay whose drive input was never recorded at all.
+ *
+ * The leaderboard figure always remains the authority — the server stored the score it
+ * computed at the time and never re-derives it from a replay — so a drifting playback can
+ * never restate a record.
+ */
+export type ReplayFidelity = 'ok' | 'drift' | 'stale';
+
+/** the two situations that are a DRIFT rather than a refusal — both of them "the sim moved" */
+const DRIFT_REASONS: ReadonlySet<ReplayRefusal> = new Set<ReplayRefusal>([
+  'behaviour',
+  'unstamped',
+]);
+
+export function replayFidelity(
+  r: Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups'>,
+  balanceVersion: number,
+  simVersion: number,
+): ReplayFidelity {
+  const why = replayRefusal(r, balanceVersion, simVersion);
+  if (!why) return 'ok';
+  return DRIFT_REASONS.has(why) ? 'drift' : 'stale';
+}
+
+/**
+ * Can it be PLAYED at all — exactly or with drift? This is the gate the viewer and BOTH
+ * exports read, so a drifting replay can still be watched and still be downloaded. That is
+ * deliberate: the video export is the one form that outlives the sim, so the moment a replay
+ * starts to drift is exactly when saving it matters most.
+ */
+export function replayPlayable(
+  r: Pick<Replay, 'format' | 'balanceVersion' | 'sim' | 'setups'>,
+  balanceVersion: number,
+  simVersion: number,
+): boolean {
+  return replayFidelity(r, balanceVersion, simVersion) !== 'stale';
+}
+
+/** drivetrains commanded through the TANK AXES — the ones a format-1 replay lost. Butterfly
+ *  counts: half its life is tank mode, and that half was recorded as zeros. */
+const tankSteered = (dt: RobotSpec['drivetrain']): boolean => dt === 'tank' || dt === 'butterfly';
 
 /**
  * Plays a replay forward one tick at a time, rebuilding the exact world and
@@ -165,14 +302,19 @@ export class ReplayPlayer {
       const track = this.replay.tracks[s.id];
       if (!track) continue;
       let ei = this.cursor[s.id] ?? 0;
-      const entries = track.length / 5;
+      // the stride is the CONTAINER's, not this build's — a format-1 replay has no tank
+      // axes stored and reads them as zero, which is exactly what it recorded
+      const stride = trackStride(this.replay.format);
+      const entries = Math.floor(track.length / stride);
       // apply every entry that has come due (normally 0 or 1 per tick)
-      while (ei < entries && track[ei * 5] <= tick) {
+      while (ei < entries && track[ei * stride] <= tick) {
         const q: QCommand = {
-          dx: track[ei * 5 + 1],
-          dy: track[ei * 5 + 2],
-          rot: track[ei * 5 + 3],
-          buttons: track[ei * 5 + 4],
+          dx: track[ei * stride + 1],
+          dy: track[ei * stride + 2],
+          rot: track[ei * stride + 3],
+          buttons: track[ei * stride + 4],
+          ld: stride >= 7 ? track[ei * stride + 5] : 0,
+          rd: stride >= 7 ? track[ei * stride + 6] : 0,
         };
         this.current.set(s.id, dequantizeCommand(q));
         ei++;
@@ -182,38 +324,6 @@ export class ReplayPlayer {
     this.mod.step(this.world, C.SIM_DT, this.current);
     return true;
   }
-}
-
-/**
- * Can this build play that replay, and how faithfully?
- *
- *  - `'ok'`     re-simulates exactly as recorded.
- *  - `'drift'`  PLAYS, but the sim has changed at the float level since it was
- *               recorded, so the outcome can differ slightly from the saved score.
- *  - `'stale'`  cannot be played at all.
- *
- * THE MIDDLE CASE IS THE POINT. A determinism fix (`SIM_VERSION`) moves what
- * `step()` produces by an ULP or two, which over a three-minute match can change a
- * score — but the recording is still a valid input log against the same physics,
- * the same field and the same season. Refusing to play it makes every match from
- * before the fix disappear, which is a far worse outcome than showing it with a
- * note that the ending may not land on exactly the saved number. A REFUSAL is
- * reserved for the two cases where playback would be meaningless rather than
- * imprecise: a container schema this build cannot read, and a different SEASON
- * (BALANCE_VERSION), where the tuning constants themselves are different and the
- * match would be a different game, not a slightly different rounding of the same one.
- */
-export type ReplayPlayability = 'ok' | 'drift' | 'stale';
-
-export function replayPlayability(
-  r: Pick<Replay, 'format' | 'balanceVersion' | 'sim'>,
-  format = REPLAY_FORMAT,
-  balance = C.BALANCE_VERSION,
-  sim = C.SIM_VERSION,
-): ReplayPlayability {
-  if (r.format !== format) return 'stale';
-  if (r.balanceVersion !== balance) return 'stale';
-  return (r.sim ?? 0) !== sim ? 'drift' : 'ok';
 }
 
 /**

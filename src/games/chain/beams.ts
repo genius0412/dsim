@@ -1,12 +1,19 @@
-import type { DrivetrainType, RobotSpec, World } from '../../types';
+import type { DrivetrainType, RobotSpec, RobotState, Vec2, World } from '../../types';
 import type { Rect } from '../../sim/field';
-import { robotExtents, robotIntersectsRect } from '../../sim/physics';
-import { clamp } from '../../math';
+import { robotExtents, robotIntersectsRect, wheelContacts } from '../../sim/physics';
+import { clamp, dcos, dsin, hyp, wrapAngle } from '../../math';
 import {
   CHAIN_BEAM_HEIGHT,
   CHAIN_BEAM_MOMENTUM_REF,
   CHAIN_BEAM_MOMENTUM_EASE,
   CHAIN_BEAM_MAX_RETAIN,
+  CHAIN_BEAM_STRAFE_BLOCK_FWD,
+  CHAIN_BEAM_WHEEL_R,
+  CHAIN_BEAM_CURB_SLOP,
+  CHAIN_BEAM_GROUND_FLOOR,
+  CHAIN_BEAM_YAW_GAIN,
+  CHAIN_BEAM_YAW_MAX_KICK,
+  CHAIN_BEAM_YAW_CARRY,
   CHAIN_CLEARANCE_DEFAULT,
   CHAIN_CLEARANCE_MAX,
   CHAIN_CLEARANCE_MIN,
@@ -20,16 +27,24 @@ import {
 /**
  * Chain Reaction BEAMS — four 1"-tall tubes of difficult terrain around the center.
  *
- * Crossing model (bespoke, after the Rapier robot solve):
+ * Crossing model (bespoke, PER-WHEEL, after the Rapier robot solve):
  *  • The ONLY hard gate is CLEARANCE: `groundClearance ≥ CHAIN_BEAM_HEIGHT`. If the
  *    frame can't clear the beam it's blocked like a wall (it can still drive
  *    ALONGSIDE — only the across-beam motion stops). Given clearance, EVERY drivetrain
  *    can cross — nothing is hard-blocked by wheel type.
- *  • Given clearance, the beam DRAGS the across-beam velocity by a `beamRetain` factor.
- *    A beam ALWAYS slows you — even at full speed (the retain is capped below 1), so you can
- *    no longer power over untouched. Traction decides how much: tank/swerve climb best,
- *    mecanum a bit worse, omni/x-drive the slowest (but still gets over). A running start
- *    eases it only a LITTLE, and more clearance margin also eases it slightly.
+ *  • The drag is decided WHEEL-BY-WHEEL, not by the chassis outline. A beam only bites
+ *    while one of the robot's FOUR wheels is up on the 1" ridge (`wheelsOnBeam`), so a
+ *    robot STRADDLING a beam (tube under the belly, all wheels on the floor) rolls free,
+ *    and a straight crossing is felt as TWO bumps — front axle, then rear. Lifted wheels
+ *    lose traction (`grounded = (4 − up)/4`), so more wheels on the ridge = harder, and
+ *    all four up (high-centered) = barely any grip.
+ *  • A mecanum STRAFING sideways into a beam does not climb it at all — its 45° rollers can't
+ *    roll up a 1" tube, so it hits the near face like a CURB and stops (`beamStrafeBlock`, a
+ *    post-solve positional clamp — the wheel rests at the face, the low frame overhangs, NO
+ *    ooze onto the top). That path replaces the climbing drag whenever the crossing is strafe-
+ *    dominant (`beamForwardness < CHAIN_BEAM_STRAFE_BLOCK_FWD`); a straighter push climbs over
+ *    via the drag above. Mecanum ONLY — tank can't strafe, a swerve steers its pods into the
+ *    travel direction, and an x-drive is 4-fold symmetric. So a mecanum must POINT AT a beam.
  *  • The clearance ↔ CoG tradeoff: more clearance eases beam crossing but raises the
  *    center of gravity ⇒ `cogFactor` scales down ALL drive authority (sluggish, tippy).
  *
@@ -50,11 +65,20 @@ export const CHAIN_BEAMS: { rect: Rect; axis: 'x' | 'y' }[] = [
  * it easily runs compliant/suspension wheels while keeping a LOW center of gravity, so it soaks
  * up the bump. Tank is close behind (grippy). SWERVE is worst — its tall steering pods ride high
  * (high CG) and scrub over the tube. X-drive sits between (omni rollers, low CG, but skittish). */
+// Retuned 2026-08: every value had its per-tick LOSS cut by ~28% (e.g. mecanum kept 0.91,
+// losing 0.09 → now keeps 0.935, losing 0.065). Crossing a beam was costing more speed than
+// it was worth playing around, so terrain now bites noticeably less for EVERY drivetrain.
+// The ORDER and the relative gaps are untouched — this is a uniform softening, not a
+// rebalance between drivetrains.
 const TRACTION: Record<DrivetrainType, number> = {
-  mecanum: 0.91,
-  tank: 0.9,
-  xdrive: 0.89,
-  swerve: 0.87,
+  mecanum: 0.935,
+  tank: 0.928,
+  xdrive: 0.921,
+  // BUTTERFLY: whichever set is down rides on the LIFT LINKAGE rather than a hard-mounted
+  // axle, and the STOWED set sits high in the chassis — so it soaks up a 1" ridge worse than
+  // either dedicated drivetrain, but its CG is still nowhere near swerve's tall pods.
+  butterfly: 0.914,
+  swerve: 0.906,
 };
 
 export function clearanceOf(spec: RobotSpec): number {
@@ -77,14 +101,18 @@ export function canCrossBeams(spec: RobotSpec): boolean {
 }
 
 /**
- * Fraction of the across-beam velocity KEPT while mounting a beam. A beam ALWAYS slows you —
- * even at full speed (`CHAIN_BEAM_MAX_RETAIN` caps how much you can keep). Traction still
- * matters (tank/swerve climb best, mecanum a bit worse, omni/x-drive slowest), and a running
- * start eases it only a LITTLE (`CHAIN_BEAM_MOMENTUM_EASE`) — momentum no longer lets you power
- * over untouched. A raised center of gravity (more clearance) makes it a touch harder. Applied
- * to velocity BEFORE the physics integration, so it really slows the crossing.
+ * Fraction of the across-beam velocity KEPT this tick while a robot CLIMBS a beam (drives/
+ * pushes across it). A beam ALWAYS slows you — even at full speed (`CHAIN_BEAM_MAX_RETAIN`
+ * caps how much you can keep). Traction matters (tank/swerve climb best, mecanum a bit worse,
+ * omni/x-drive slowest), a running start eases it only a LITTLE (`CHAIN_BEAM_MOMENTUM_EASE`),
+ * and a raised center of gravity makes it a touch harder. Applied BEFORE the physics integration.
+ *
+ * `wheelsUp` (0..4) = how many wheels are perched on the ridge right now. The lifted wheels lose
+ * traction, so the retain scales down toward `CHAIN_BEAM_GROUND_FLOOR` as more lift (all four =
+ * high-centered, minimal grip). This is direction-agnostic — the special case of a mecanum
+ * STRAFING into a beam is not a drag at all but a hard curb-stop (`beamStrafeBlock`).
  */
-export function beamDragFactor(spec: RobotSpec, acrossSpeed: number): number {
+export function beamDragFactor(spec: RobotSpec, acrossSpeed: number, wheelsUp = 2): number {
   const clr = clearanceOf(spec);
   const base = clamp(TRACTION[spec.drivetrain] + 0.05 * (clr - CHAIN_BEAM_HEIGHT), 0.4, 0.98);
   const mom = clamp(Math.abs(acrossSpeed) / CHAIN_BEAM_MOMENTUM_REF, 0, 1);
@@ -92,23 +120,272 @@ export function beamDragFactor(spec: RobotSpec, acrossSpeed: number): number {
   // not its absolute clearance — a chassis that just clears (clr≈beam height) rides low and pays
   // nothing; a tall high-clearance one tips more. Keeps the default (clr=1) penalty-free.
   const margin = clamp((clr - CHAIN_BEAM_HEIGHT) / (CHAIN_CLEARANCE_MAX - CHAIN_BEAM_HEIGHT), 0, 1);
-  const retain = (base + CHAIN_BEAM_MOMENTUM_EASE * (1 - base) * mom) * (1 - 0.1 * margin);
-  return clamp(retain, 0.4, CHAIN_BEAM_MAX_RETAIN);
+  // grounded wheels still push over the bump; lifted wheels cost traction (fewer grounded ⇒
+  // closer to CHAIN_BEAM_GROUND_FLOOR). Never stalls a straight drive.
+  const grounded = clamp((4 - clamp(wheelsUp, 0, 4)) / 4, 0, 1);
+  const traction = CHAIN_BEAM_GROUND_FLOOR + (1 - CHAIN_BEAM_GROUND_FLOOR) * grounded;
+  const retain = clamp((base + CHAIN_BEAM_MOMENTUM_EASE * (1 - base) * mom) * (1 - 0.1 * margin), 0.4, CHAIN_BEAM_MAX_RETAIN) * traction;
+  return clamp(retain, 0, CHAIN_BEAM_MAX_RETAIN);
+}
+
+/** how many of the robot's four wheels are currently perched on this beam's 1" ridge — a wheel
+ * whose contact point is within `CHAIN_BEAM_WHEEL_R` of the beam line (the rect grown by R). */
+export function wheelsOnBeam(r: RobotState, rect: Rect): number {
+  const R = CHAIN_BEAM_WHEEL_R;
+  let n = 0;
+  for (const w of wheelContacts(r)) {
+    if (w.x >= rect.x0 - R && w.x <= rect.x1 + R && w.y >= rect.y0 - R && w.y <= rect.y1 + R) n++;
+  }
+  return n;
+}
+
+/** WHERE a beam's drag acts: the mean contact point of the wheels currently on the ridge, as an
+ * offset from the robot's centre (`n` = how many are up). That offset is the LEVER ARM the drag
+ * pulls on — zero when the loaded wheels straddle the centre evenly, which is exactly the
+ * square-on crossing that should not turn anybody. */
+function beamDragArm(r: RobotState, rect: Rect): { x: number; y: number; n: number } {
+  const R = CHAIN_BEAM_WHEEL_R;
+  let x = 0;
+  let y = 0;
+  let n = 0;
+  for (const w of wheelContacts(r)) {
+    if (w.x < rect.x0 - R || w.x > rect.x1 + R || w.y < rect.y0 - R || w.y > rect.y1 + R) continue;
+    x += w.x - r.pos.x;
+    y += w.y - r.pos.y;
+    n++;
+  }
+  return n ? { x: x / n, y: y / n, n } : { x: 0, y: 0, n: 0 };
 }
 
 /**
- * PRE-solve: for a robot on a beam it CAN cross, drag its across-beam velocity so it
- * physically advances less this tick (momentum/traction/CoG decide how much). Applied
- * before the Rapier integration so the slowdown persists (the drivetrain model re-sets
- * velocity every tick, so a post-solve velocity change would be wiped).
+ * The YAW that comes with a terrain velocity change — the torque a beam was never applying.
+ *
+ * A beam used to scale the across-beam speed and do nothing else, so a robot that took a ridge
+ * at an angle came off it pointing exactly where it went on. Terrain does not work that way:
+ * the drag acts at the WHEELS that are on the ridge, and when those sit to one side of centre
+ * the retarding force has a lever arm — the loaded side lags and the chassis slews toward it.
+ *
+ * `dv` is the velocity the terrain just took off the robot (world frame) and `arm` is where it
+ * was taken. τ = arm × Δv, normalised by the chassis half-diagonal squared so a bigger robot is
+ * proportionally harder to slew, and capped per tick. Hit a beam square and the two sides cancel
+ * to nothing — which is the reward for lining it up; clip it with one corner and it turns you.
+ *
+ * Applied to the HEADING, exactly like DECODE's contact torque (`pushRobotAt`), and for the
+ * same reason: `angVel` alone does nothing here, because the drivetrain's `motorStep` drags it
+ * back to the commanded turn rate within a tick or two and a straight-driving robot commands
+ * zero. The terrain has to rotate the chassis itself. A fraction is also left in `angVel`
+ * (`CHAIN_BEAM_YAW_CARRY`) so the slew carries a moment past the ridge instead of stopping dead
+ * — that residue is what the driver actually has to catch.
  */
-export function beamDrag(world: World): void {
+function applyBeamYaw(
+  r: RobotState,
+  dt: number,
+  arm: { x: number; y: number },
+  dvx: number,
+  dvy: number,
+): void {
+  const half = Math.max(1, hyp(r.spec.length, r.spec.width) / 2);
+  const tau = (arm.x * dvy - arm.y * dvx) / (half * half);
+  const rate = clamp(CHAIN_BEAM_YAW_GAIN * tau, -CHAIN_BEAM_YAW_MAX_KICK, CHAIN_BEAM_YAW_MAX_KICK);
+  if (rate === 0) return;
+  r.heading = wrapAngle(r.heading + rate * dt);
+  r.angVel += rate * CHAIN_BEAM_YAW_CARRY;
+}
+
+/** RENDER/AUDIO read-only. A wheel's terrain elevation 0..1: 1 while its contact sits over a beam's
+ * 1" core, easing smoothly to 0 by `CHAIN_BEAM_WHEEL_R` past the edge — so as a wheel rolls across a
+ * beam its z rises then falls (a real up-and-over bump). Max over the four beams. */
+function wheelBeamZ(w: Vec2): number {
+  const R = CHAIN_BEAM_WHEEL_R;
+  let z = 0;
+  for (const beam of CHAIN_BEAMS) {
+    const r = beam.rect;
+    let d: number;
+    if (beam.axis === 'y') {
+      if (w.x < r.x0 - R || w.x > r.x1 + R) continue; // past the beam's end
+      d = Math.abs(w.y - (r.y0 + r.y1) / 2) - (r.y1 - r.y0) / 2; // distance PAST the near edge
+    } else {
+      if (w.y < r.y0 - R || w.y > r.y1 + R) continue;
+      d = Math.abs(w.x - (r.x0 + r.x1) / 2) - (r.x1 - r.x0) / 2;
+    }
+    if (d <= 0) return 1; // over the core — fully up
+    if (d >= R) continue;
+    const t = 1 - d / R; // 1 → 0 across the wheel radius
+    z = Math.max(z, t * t * (3 - 2 * t)); // smoothstep
+  }
+  return z;
+}
+
+/** RENDER/AUDIO read-only terrain ride for a robot: `lift` = mean wheel elevation (0..1, the body
+ * bob), `pitch`/`roll` = front−rear / left−right elevation imbalance (the rock), `onCount` = wheels
+ * currently up on a beam (edge-detected for the crossing SFX). Pure pose geometry — no sim state. */
+export interface BeamRide {
+  lift: number;
+  pitch: number;
+  roll: number;
+  onCount: number;
+}
+export function beamRide(r: RobotState): BeamRide {
+  const wc = wheelContacts(r); // [FL, FR, BR, BL] — 0,1 front · 2,3 rear · 0,3 left · 1,2 right
+  const e = [wheelBeamZ(wc[0]), wheelBeamZ(wc[1]), wheelBeamZ(wc[2]), wheelBeamZ(wc[3])];
+  return {
+    lift: (e[0] + e[1] + e[2] + e[3]) / 4,
+    pitch: (e[0] + e[1] - e[2] - e[3]) / 2,
+    roll: (e[0] + e[3] - e[1] - e[2]) / 2,
+    onCount: e.reduce((n, v) => n + (v > 0.5 ? 1 : 0), 0),
+  };
+}
+
+/**
+ * PRE-solve: slow a robot CLIMBING a beam (drag its across-beam velocity so it advances less
+ * this tick), and WALL a mecanum strafing INTO a beam (clamp its inward velocity so the leading
+ * wheel stops exactly at the near face — never overshoots onto the ridge). Applied before the
+ * Rapier integration so it isn't wiped by the drivetrain re-setting velocity each tick.
+ */
+export function beamDrag(world: World, dt: number): void {
   for (const r of world.robots) {
     if (!canCrossBeams(r.spec)) continue; // no-clearance robots are hard-blocked instead
     for (const beam of CHAIN_BEAMS) {
-      if (!robotIntersectsRect(r, beam.rect)) continue;
-      if (beam.axis === 'y') r.vel.y *= beamDragFactor(r.spec, r.vel.y);
-      else r.vel.x *= beamDragFactor(r.spec, r.vel.x);
+      // a mecanum strafing INTO the beam is curb-walled (can't climb the ridge sideways): clamp
+      // the inward velocity so the leading wheel stops at the near face instead of oozing on top.
+      const curb = strafeCurb(r, beam);
+      if (curb) {
+        // max inward speed that still leaves the leading wheel at/above the near face this tick.
+        // `lead` is the leading wheel's signed distance PAST the near face (>0 = still short of it).
+        const allowIn = Math.max(0, curb.lead) / dt; // in/s toward the beam still permitted
+        const vAcross = beam.axis === 'y' ? r.vel.y : r.vel.x;
+        const inward = -curb.side * vAcross; // speed toward the beam (>0 = approaching)
+        if (inward > allowIn) {
+          const capped = -curb.side * allowIn; // clamp the across velocity to the permitted inward speed
+          // ...and the stop is taken at the WHEELS that hit the face, so an off-centre hit
+          // slews the robot. Clipping a curb with one corner turns you; that is the point.
+          const arm = beamDragArm(r, beam.rect);
+          if (beam.axis === 'y') {
+            const dv = capped - r.vel.y;
+            r.vel.y = capped;
+            if (arm.n) applyBeamYaw(r, dt, arm, 0, dv);
+          } else {
+            const dv = capped - r.vel.x;
+            r.vel.x = capped;
+            if (arm.n) applyBeamYaw(r, dt, arm, dv, 0);
+          }
+        }
+        continue; // walled, not dragged
+      }
+      // PER-WHEEL gate: only drag while a wheel is actually up on the ridge. A robot straddling
+      // the beam (all wheels on the floor, tube under the belly) rolls free even though its OBB
+      // overlaps — so this is `wheelsOnBeam`, not `robotIntersectsRect`.
+      const arm = beamDragArm(r, beam.rect);
+      if (arm.n === 0) continue;
+      const retain = beamDragFactor(r.spec, beam.axis === 'y' ? r.vel.y : r.vel.x, arm.n);
+      if (beam.axis === 'y') {
+        const dv = r.vel.y * (retain - 1); // the across-speed the ridge just took off
+        r.vel.y += dv;
+        applyBeamYaw(r, dt, arm, 0, dv);
+      } else {
+        const dv = r.vel.x * (retain - 1);
+        r.vel.x += dv;
+        applyBeamYaw(r, dt, arm, dv, 0);
+      }
+    }
+  }
+}
+
+/** |chassis-forward · beam-cross-normal|: 1 = the robot points STRAIGHT across the beam
+ * (driving over), 0 = it points ALONG the beam (crossing it means strafing sideways). */
+export function beamForwardness(r: RobotState, axis: 'x' | 'y'): number {
+  return Math.abs(axis === 'y' ? dsin(r.heading) : dcos(r.heading));
+}
+
+/** does this robot have MECANUM WHEELS on the floor right now? True for a mecanum chassis, and
+ * for a BUTTERFLY that currently has its mecanum set down — the curb rule is about the physical
+ * wheel (tiny 45° rollers can't climb a tube sideways), so it follows the deployed set, not the
+ * build. A butterfly that drops its traction wheels stops being curbed, and also loses strafe
+ * entirely (tank strafeMult 0), which is the honest tradeoff of the swap. */
+function onMecanumWheels(r: RobotState): boolean {
+  return r.spec.drivetrain === 'mecanum' || (r.spec.drivetrain === 'butterfly' && !r.butterflyTank);
+}
+
+/** a robot on MECANUM wheels whose crossing of this axis is strafe-dominant (points along the
+ * beam more than across it) — it can't climb the ridge sideways, so it's curb-blocked, not dragged. */
+function strafeBlocked(r: RobotState, axis: 'x' | 'y'): boolean {
+  return onMecanumWheels(r) && beamForwardness(r, axis) < CHAIN_BEAM_STRAFE_BLOCK_FWD;
+}
+
+/**
+ * The curb geometry for a mecanum strafing into a beam, or `null` when the beam is not a curb for
+ * this robot right now — it isn't strafe-dominant, no wheel is near the ridge, or the robot is
+ * STRADDLING the beam (a wheel well on the far side ⇒ it's placed on/drove across the tube, not
+ * strafing into it — walling it would eject it, e.g. a launcher parked on the centre beam).
+ *
+ * `side` = the side the body sits on; `lead` = the LEADING wheel's signed distance short of the
+ * near face along the crossing axis (>0 = still approaching, 0 = resting on the face, <0 = it has
+ * crept onto the ridge and must be pushed back).
+ */
+function strafeCurb(r: RobotState, beam: { rect: Rect; axis: 'x' | 'y' }): { side: number; lead: number } | null {
+  if (!strafeBlocked(r, beam.axis)) return null;
+  const R = CHAIN_BEAM_WHEEL_R;
+  const axisY = beam.axis === 'y';
+  const cy = axisY ? (beam.rect.y0 + beam.rect.y1) / 2 : (beam.rect.x0 + beam.rect.x1) / 2;
+  const edge = axisY ? (beam.rect.y1 - beam.rect.y0) / 2 : (beam.rect.x1 - beam.rect.x0) / 2;
+  const bodyCoord = axisY ? r.pos.y : r.pos.x;
+  const side = bodyCoord >= cy ? 1 : -1;
+  let minRel = Infinity; // smallest = the leading wheel (closest to / over the beam)
+  for (const w of wheelContacts(r)) {
+    const alongOK = axisY
+      ? w.x >= beam.rect.x0 - R && w.x <= beam.rect.x1 + R
+      : w.y >= beam.rect.y0 - R && w.y <= beam.rect.y1 + R;
+    if (!alongOK) continue;
+    const cross = axisY ? w.y : w.x;
+    const rel = side * (cross - cy); // + = same side as the body, − = the far side
+    /**
+     * A WHEEL PAST THE FAR FACE MEANS THE ROBOT IS ON THE BEAM — do not curb it.
+     *
+     * This used to ask for a wheel a further WHEEL RADIUS beyond that (3in past the centre),
+     * and the gap between the two is where the teleports lived. Mid-crossing, `side` flips
+     * the moment the BODY passes the beam's centre, and the wheels that were behind become
+     * far-side wheels with a small negative `rel` — not enough to read as straddling, so the
+     * curb fired and shoved the robot a full `pen` across. Measured driving diagonally over a
+     * beam: 3.44in of position in ONE tick against 0.45in of travel the velocity could
+     * account for. "In chain reaction, when driving over terrain, it sometimes teleports me."
+     */
+    if (rel < -edge) return null; // a wheel past the far face ⇒ straddling, don't wall
+    if (rel < minRel) minRel = rel;
+  }
+  if (minRel === Infinity) return null; // no wheel within the beam's span
+  // only a curb once the leading wheel is within a wheel-radius of the near face (else it's still
+  // approaching in open floor and needs no clamp).
+  if (minRel > edge + R) return null;
+  return { side, lead: minRel - edge };
+}
+
+/**
+ * POST-solve safety clamp for the strafe curb: if Rapier still nudged a leading wheel onto the
+ * ridge (numerical slop past the pre-solve wall), push it back to the near face and zero the
+ * inward velocity. Runs after the Rapier solve + `beamBlock`. Skips straddling robots (see
+ * `strafeCurb`), so a launcher parked on a beam is never ejected.
+ */
+export function beamStrafeBlock(world: World): void {
+  for (const r of world.robots) {
+    if (!canCrossBeams(r.spec)) continue; // no-clearance frames are already walled by beamBlock
+    for (const beam of CHAIN_BEAMS) {
+      const curb = strafeCurb(r, beam);
+      if (!curb || curb.lead >= 0) continue; // no wheel has crept past the near face
+      /**
+       * ...AND ONLY BY SLOP. This is a numerical-slop clamp — the pre-solve velocity wall in
+       * `beamDrag` is what actually stops a strafing wheel at the near face — so a correction
+       * bigger than slop means the wall did not fire, and writing it into the position is a
+       * teleport rather than a fix. Capped, so the worst case is a nudge that resolves over a
+       * few ticks instead of a jump.
+       */
+      const pen = Math.min(-curb.lead, CHAIN_BEAM_CURB_SLOP);
+      if (beam.axis === 'y') {
+        r.pos.y += curb.side * pen;
+        if (curb.side * r.vel.y < 0) r.vel.y = 0;
+      } else {
+        r.pos.x += curb.side * pen;
+        if (curb.side * r.vel.x < 0) r.vel.x = 0;
+      }
     }
   }
 }

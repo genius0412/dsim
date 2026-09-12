@@ -1,4 +1,5 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { LAN_MODE } from './lanMode';
 
 /**
  * Server-side Neon Auth (Better Auth) session verification. The client sends the
@@ -29,7 +30,14 @@ const JWKS_URL =
 // that throw crashes the whole process at boot (nothing binds → Fly reports "app not
 // listening on 0.0.0.0:8080"). Degrade to anonymous instead of taking the server down.
 let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
-if (JWKS_URL) {
+// A LAN SERVER NEVER HANDLES ANYBODY'S CREDENTIALS — it is somebody's laptop, and a cloud
+// session token handed to it is a cloud session token its operator now has. So it does not
+// even build a verifier: every client on a self-hosted server is anonymous, which is the only
+// thing it could usefully be on a server with no accounts and no database. The client half of
+// the same rule strips the token before it is ever sent (`src/net/transport.ts`); this half is
+// what makes the guarantee true of the SERVER rather than of the clients that happen to
+// connect to it. See server/lanMode.ts.
+if (JWKS_URL && !LAN_MODE) {
   try {
     jwks = createRemoteJWKSet(new URL(JWKS_URL));
   } catch (e) {
@@ -39,7 +47,9 @@ if (JWKS_URL) {
 export const authConfigured = !!jwks;
 
 console.log(
-  `[auth] ${authConfigured ? `JWKS ${JWKS_URL}` : 'auth not configured — all runs anonymous'}`,
+  LAN_MODE
+    ? '[auth] LAN_MODE=1 — a self-hosted server verifies nothing; every client is anonymous'
+    : `[auth] ${authConfigured ? `JWKS ${JWKS_URL}` : 'auth not configured — all runs anonymous'}`,
 );
 
 export interface AuthedUser {
@@ -65,7 +75,13 @@ export async function verifyAuthToken(token: string | undefined): Promise<Authed
       return null;
     }
     const name = payload.name ?? payload.email ?? undefined;
-    console.log(`[auth] verify OK: user=${userId}`);
+    // Deliberately NOT logged. The friends read doubles as the presence heartbeat, so
+    // every signed-in browser tab re-verifies roughly twice a minute for as long as it
+    // is open — a success line here meant an idle server with two users online emitted
+    // thousands of identical lines a day, which is both the bulk of the log bill and the
+    // noise that buries the failures below (the ones that actually explain a player being
+    // silently signed out). Failures and misconfiguration still log; success is the
+    // uninteresting case and is now silent.
     return { userId, handle: typeof name === 'string' && name ? name : 'Player' };
   } catch (e) {
     // expired / bad signature / unreachable-or-wrong JWKS ⇒ anonymous. Log why.

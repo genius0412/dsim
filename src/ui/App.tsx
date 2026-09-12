@@ -9,6 +9,7 @@ import {
   type Activity,
   type RoomInvite,
 } from '../net/api';
+import { uploadPracticeRun, uploadLanRun, type LanParticipant } from '../net/api';
 import { FriendsProvider } from './friendsContext';
 import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
@@ -24,6 +25,7 @@ import { LobbyClient } from '../net/lobbyClient';
 import { AppShell, type ShellNav } from './AppShell';
 import { HomeMenu } from './HomeMenu';
 import { ModeSelect } from './ModeSelect';
+import { LanPanel } from './LanPanel';
 import { Configure, isConfigureSection, type ConfigureSection } from './Configure';
 import { Records, isRecordsTab, type RecordsTab } from './Records';
 import { RecordRun } from './RecordRun';
@@ -43,18 +45,31 @@ import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
-import { gameServerConfigured, setSelectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
+import { gameServerConfigured, lanActive, setSelectedServer, selectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
 import { ServerMenu } from './ServerMenu';
-import type { NetSession } from '../net/session';
+import type { MatchResultInfo, NetSession } from '../net/session';
 import { ServerSession } from '../net/serverSession';
 import { WebSocketTransport } from '../net/transport';
 import { encodeMsg } from '../net/protocol';
-import { activeStartLegal } from '../sim/field';
 import { loadActiveGame, saveActiveGame, clearActiveGame, type ActiveGameRef } from '../net/activeGame';
-import type { Replay } from '../sim/replay';
+import { recordScore, type Replay, type ReplayResult } from '../sim/replay';
+import {
+  savePracticeRun,
+  markPracticeUploaded,
+  pendingPracticeUploads,
+  loadPracticeReplay,
+} from '../net/practiceRuns';
+import {
+  saveLanRunLocal,
+  markLanUploaded,
+  markLanRefused,
+  pendingLanUploads,
+  loadLanReplay,
+} from '../net/lanRuns';
 import { applyRouteMeta } from '../seo';
 import type { GameId } from '../games/types';
 import { chainDisclaimerSeen, markChainDisclaimerSeen } from '../chainDisclaimer';
+import { startSelectionLegal } from './startPositions';
 
 type Screen =
   | 'home'
@@ -66,6 +81,7 @@ type Screen =
   | 'duorecord'
   | 'matchmaking'
   | 'watch'
+  | 'lan'
   | 'replay'
   | 'game'
   | 'download'
@@ -146,6 +162,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/ranked';
     case 'watch':
       return '/watch';
+    case 'lan':
+      return '/lan';
     case 'replay':
       return a.replayId ? `/replay/${encodeURIComponent(a.replayId)}` : '/replay';
     case 'game':
@@ -204,6 +222,7 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/record')) return at('record');
   if (rest.startsWith('/ranked')) return at('matchmaking');
   if (rest.startsWith('/watch')) return at('watch');
+  if (rest.startsWith('/lan')) return at('lan');
   if (rest.startsWith('/download')) return at('download');
   if (rest.startsWith('/contributors')) return at('contributors');
   if (rest.startsWith('/privacy')) return at('privacy');
@@ -237,6 +256,7 @@ function navFor(screen: Screen): ShellNav {
     case 'duorecord':
     case 'matchmaking':
     case 'watch':
+    case 'lan':
       return 'play';
     case 'configure':
       return 'configure';
@@ -381,9 +401,9 @@ export function App() {
   // navigates to. One-shot: Lobby clears it once its mount effect consumes it
   // (see `onAutoJoinConsumed`), so a later NORMAL visit to the same screen never
   // re-triggers the join.
-  const [pendingAutoJoin, setPendingAutoJoin] = useState<{ room: string; config: RoomConfig } | null>(
-    null,
-  );
+  const [pendingAutoJoin, setPendingAutoJoin] = useState<
+    { room: string; config: RoomConfig; region?: string } | null
+  >(null);
   // a RATED challenge waiting to be queued under its party token. Same one-shot
   // shape as pendingAutoJoin and for the same reason: the Matchmaking screen
   // consumes it on mount, so a later ordinary visit to /ranked is an ordinary
@@ -419,7 +439,11 @@ export function App() {
     selectGame(invite.game);
     const config: RoomConfig = { kind: invite.kind, game: invite.game };
     if (invite.kind === 'record' && invite.record) config.record = invite.record;
-    setPendingAutoJoin({ room: invite.room, config });
+    // GO WHERE THE ROOM IS. A custom code is bare, so a socket opened without the host's
+    // region lands on whichever machine is nearest to US — and if the two of us picked
+    // different servers, that machine has no such room and cheerfully makes an empty one
+    // with the same code. Older invites carry no region and fall back to the old behaviour.
+    setPendingAutoJoin({ room: invite.room, config, region: invite.region ?? undefined });
     navigate(invite.kind === 'record' ? 'duorecord' : 'lobby');
   };
 
@@ -429,17 +453,26 @@ export function App() {
   // destination: a `record` challenge is a duo co-op run, everything else is a
   // custom versus match — mirroring `onJoinInvite`'s routing for the recipient.
   const hostForChallenge = (code: string, game: GameId, kind: RoomKind): void => {
+    // the HOST's own region — the same one stamped on the invite that just went out, so
+    // both sides are aimed at one machine by construction rather than by agreement
+    const region = selectedServer()?.region || undefined;
     if (kind === 'record') {
-      setPendingAutoJoin({ room: code, config: { kind: 'record', record: 'duo', game } });
+      setPendingAutoJoin({ room: code, config: { kind: 'record', record: 'duo', game }, region });
       navigate('duorecord');
     } else {
-      setPendingAutoJoin({ room: code, config: { kind: 'versus', game } });
+      setPendingAutoJoin({ room: code, config: { kind: 'versus', game }, region });
       navigate('lobby');
     }
   };
 
   // when signed in, mirror settings to the account (debounced) as well as local
   const [accountUserId, setAccountUserId] = useState<string | null>(null);
+  /** sign-in state for the practice-upload flush, which is async and outlives a render */
+  const signedInRef = useRef(false);
+  /** one flush at a time — a sign-in and a finished run can land together */
+  const flushingPractice = useRef(false);
+  /** the same guard for the LAN backlog, which drains on exactly the same two triggers */
+  const flushingLan = useRef(false);
   // the account's PUBLIC display name (the mutable `handle` behind leaderboards and
   // /profile), which is NOT `user.name` — that's the immutable Neon Auth sign-up name.
   // Lifted here so the header pill and the Profile page read the same source; before
@@ -603,6 +636,18 @@ export function App() {
     // the server reattaches our held slot and a snapshot resyncs us
     transport.onOpen(() => transport.send(encodeMsg({ t: 'rejoin', room: ref.room, clientId: ref.clientId })));
     const s = new ServerSession(transport, false, ref.start, ref.clientId, ref.room);
+    // A rejoin the server REFUSES (the match ended, the grace lapsed) leaves a record that
+    // would keep offering the same dead match every time Home is opened. Forget it as soon
+    // as the refusal lands — the session itself already fails hard, and the controller
+    // freezes rather than predicting on (see `stepServer`).
+    const watch = window.setInterval(() => {
+      if (s.status().failed) {
+        window.clearInterval(watch);
+        clearActiveGame();
+        setActiveGame(null);
+      }
+    }, 400);
+    window.setTimeout(() => window.clearInterval(watch), 30_000);
     setSession(s);
     setSessionKind(ref.kind);
     // a duo run rejoined has more than one robot on the roster; a solo one does not
@@ -610,13 +655,23 @@ export function App() {
     navigate('game');
   };
 
-  /** SPECTATE a live match read-only. Opens a socket to the room, sends `spectate`,
+  /**
+   * SPECTATE a live match read-only. Opens a socket to the room, sends `spectate`,
    * and builds a spectator ServerSession from the `matchStart` the server returns.
-   * Never saved as an "active game" (it isn't yours to rejoin). */
-  const spectateRoom = (code: string): void => {
+   * Never saved as an "active game" (it isn't yours to rejoin).
+   *
+   * `region` matters for CUSTOM rooms: their codes are bare (no `<region>-` prefix
+   * for the proxy to route on), so a socket opened without it lands on whichever
+   * machine is nearest to the WATCHER and reports no such room. Callers that
+   * already know the host region (the Watch Live cards, a friend's match, the
+   * admin list) pass it; the code box looks it up first.
+   */
+  const spectateRoom = (code: string, region?: string): void => {
     let transport: WebSocketTransport;
     try {
-      transport = new WebSocketTransport(gameServerUrlWith({ room: code }));
+      transport = new WebSocketTransport(
+        gameServerUrlWith(region ? { room: code, region } : { room: code }),
+      );
     } catch {
       return;
     }
@@ -637,6 +692,147 @@ export function App() {
     setEditMobileLayout(true);
     navigate('game');
   };
+
+  /**
+   * A SOLO PRACTICE run finished — keep it.
+   *
+   * DEVICE FIRST, account second, and the order is the point: solo practice is the primary
+   * OFFLINE mode and works signed out, so a run that only survived when an upload succeeded
+   * would make the offline mode depend on being online. The local copy is what the player
+   * watches; the upload is what follows them to another device.
+   *
+   * The score stored is the NET one — earned minus the fouls this robot itself committed —
+   * because that is what a solo run means everywhere else in the app (`recordScore`), and a
+   * practice figure that flattered you relative to a record run would be worse than useless
+   * for the one thing practice is for.
+   */
+  const keepPracticeRun = (replay: Replay, result: ReplayResult): void => {
+    const alliance = replay.setups[0]?.alliance ?? 'blue';
+    const score = recordScore(result, alliance);
+    savePracticeRun(replay, { ...result, score: { ...result.score, [alliance]: score } });
+    // Do not upload THIS run directly — flush the whole backlog instead, which includes it.
+    // One path to the server means a run that failed on its own attempt is retried by the
+    // next flush rather than being lost, and it is the same code either way.
+    void flushPracticeRuns();
+  };
+
+  /**
+   * Send every practice run the account does not yet have.
+   *
+   * The upload is the half that can fail, and for reasons that have nothing to do with the
+   * run: signed out when it was played, offline, or — routinely, since the game server is a
+   * Fly app that auto-stops when idle — a machine still cold-booting when the match ended.
+   * So uploading is not a step in finishing a run, it is a backlog that gets drained whenever
+   * draining is possible: after a run, and whenever a session appears.
+   *
+   * SEQUENTIAL, and it STOPS on the first failure. Ten parallel POSTs at a server that is not
+   * answering is ten timeouts and no more information than one; the rest keep their place in
+   * the backlog for next time.
+   */
+  const flushPracticeRuns = async (): Promise<void> => {
+    if (!signedInRef.current || flushingPractice.current) return;
+    flushingPractice.current = true;
+    try {
+      for (const meta of pendingPracticeUploads()) {
+        const replay = loadPracticeReplay(meta.id);
+        if (!replay) continue; // body evicted by the local cap — nothing left to send
+        const run = await uploadPracticeRun(replay, meta.score, meta.game);
+        if (!run) break;
+        markPracticeUploaded(meta.id, run.id);
+      }
+    } finally {
+      flushingPractice.current = false;
+    }
+  };
+
+  /**
+   * A SELF-HOSTED (LAN) MATCH FINISHED — keep it, if this device is the one hosting.
+   *
+   * The owner's rule for this feature is "whoever is hosting the match from the computer",
+   * and this is where it is enforced: exactly ONE client in a LAN room keeps and uploads the
+   * match. There is no dedup to do on the cloud side because there is only ever one uploader.
+   *
+   * ⚠️ **A LAN SERVER WRITES NOTHING.** It runs with a blank `DATABASE_URL` by construction
+   * (`electron/lanHost.cjs`), so if this client does not keep the match, nothing anywhere
+   * does. Device first and account second, exactly like practice — and for a sharper reason:
+   * a venue's wifi is at its worst at the final whistle, on a network with forty phones on
+   * it, and the host is required to be SIGNED IN but not to be ONLINE.
+   *
+   * THREE CONDITIONS, and each one is load-bearing:
+   *   - `lanActive()` — a cloud match is written by the server that ran it; keeping a second
+   *     copy here would upload an unofficial duplicate of an OFFICIAL match.
+   *   - `isHost()` — the one-uploader rule above. A guest and a spectator keep nothing.
+   *   - `matchId` — the archive capability, which the room sends to the HOST'S SOCKET ALONE
+   *     (`matchArchive`; see the protocol note). A guest never has one, so this condition now
+   *     enforces the one-uploader rule a second time and from the server's side rather than
+   *     this client's. An older LAN server mints none either, and an unkeyed row would be
+   *     re-uploaded as a NEW match on every retry — skipping is the safe half of that trade.
+   */
+  const keepLanRun = (info: MatchResultInfo, sess: NetSession): void => {
+    if (!lanActive() || !sess.isHost() || !info.matchId) return;
+    // NAMES, not account ids. The people in a LAN room are mostly not signed in on this
+    // server — it has no accounts at all — so the roster is what the match itself carries.
+    // The cloud re-sanitizes every field of this; see `server/api.ts`.
+    const participants: LanParticipant[] = sess.setups.map((su) => ({
+      name: su.spec.name || `Driver ${su.id}`,
+      teamName: su.spec.teamName || undefined,
+      teamNumber: su.spec.teamNumber || undefined,
+      alliance: su.alliance,
+      drivetrain: su.spec.drivetrain,
+    }));
+    saveLanRunLocal(info.matchId, info.replay, info.result.score, participants);
+    // Same as practice: never upload THIS match directly — drain the backlog, which contains
+    // it. One path to the cloud means a failure is retried by the next flush.
+    void flushLanRuns();
+  };
+
+  /**
+   * Send every self-hosted match the account does not yet have.
+   *
+   * The twin of `flushPracticeRuns`, down to stopping on the first failure — see its note for
+   * why sequential. The failure modes are if anything more routine here: a LAN match is played
+   * in a gym, and the whole point of the feature is that it works when the internet does not.
+   */
+  const flushLanRuns = async (): Promise<void> => {
+    if (!signedInRef.current || flushingLan.current) return;
+    flushingLan.current = true;
+    try {
+      for (const meta of pendingLanUploads()) {
+        const replay = loadLanReplay(meta.id);
+        if (!replay) continue; // body evicted by the local cap — nothing left to send
+        const run = await uploadLanRun(meta.matchId, replay, meta.score, meta.participants, meta.game);
+        // 'refused' is a VERDICT about this match, not about the connection: the cloud already
+        // holds this match id under another account, or will never take this body. Retire it
+        // and carry on — stopping here would park the whole backlog behind an item that can
+        // never drain, and every match played after it would stay on the device forever.
+        if (run === 'refused') {
+          markLanRefused(meta.id);
+          continue;
+        }
+        if (!run) break;
+        markLanUploaded(meta.id, run.id);
+      }
+    } finally {
+      flushingLan.current = false;
+    }
+  };
+
+  /**
+   * Hand the live session its end-of-match callback.
+   *
+   * ONE registration point for every way a session is made — a lobby room, a record run, a
+   * matchmaker assignment, a spectate — which is the reason it lives here rather than beside
+   * each `new ServerSession`. `onMatchResult` REPLACES, so re-running this is free.
+   *
+   * Keyed on the SESSION alone, deliberately: everything the callback reads is either a module
+   * function (`lanActive`, the `lanRuns` store) or a ref (`signedInRef`), so there is no
+   * render-scoped value to go stale — unlike `onPracticeRun`, which closes over `signedIn`.
+   */
+  useEffect(() => {
+    if (!session) return;
+    session.onMatchResult?.((info) => keepLanRun(info, session));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
 
   /** RECORD runs: abandon this run and immediately start a fresh one.
    *
@@ -707,7 +903,8 @@ export function App() {
     screenRef.current = screen;
   }, [screen]);
 
-  const exitGame = (): void => {
+  /** tear the session down without deciding where to go next */
+  const leaveSession = (): void => {
     setEditMobileLayout(false);
     session?.dispose();
     setSession(null);
@@ -716,8 +913,30 @@ export function App() {
     // a match that FINISHED (or whose slot is gone) clears its rejoin record in
     // GameView; a mid-match exit keeps it so Home can offer "rejoin your match".
     setActiveGame(loadActiveGame());
+  };
+
+  const exitGame = (): void => {
+    leaveSession();
     navigate('home');
   };
+
+  /**
+   * Straight from the results screen back into the ranked queue.
+   *
+   * The alternative was MENU → Play → Ranked, three screens to do the thing most
+   * people want after a ranked match. It is the counterpart to REMATCH beside it:
+   * that one plays the SAME people again, this one finds new ones.
+   *
+   * GUARDED FIRST, torn down second. `guardStart` is what stops a new run when a
+   * newer build has shipped or maintenance is biting, and if it blocks, the player
+   * has to still be on the results screen — leaving the session first would drop
+   * them onto a dead one.
+   */
+  const queueAgain = (): void =>
+    guardStart(() => {
+      leaveSession();
+      navigate('matchmaking');
+    });
 
   // a newer client build shipped while this tab stayed open: prompt to refresh when
   // the player STARTS a run (never mid-run), so they aren't stuck on a stale version
@@ -746,8 +965,8 @@ export function App() {
   // spawn, the player configured it for a DIFFERENT chassis, so we refuse to start
   // anywhere and send them to fix it rather than relocating their robot silently.
   const guardStart = (go: () => void): void => {
-    // start-pose legality is a DECODE (G304) check; other games have no legality yet
-    const startOk = settings.game !== 'decode' || activeStartLegal(settings.spec, settings.alliance, settings.startPose);
+    // start-pose legality, per game: DECODE's G304 setup rules / CR's G04 Lab Area
+    const startOk = startSelectionLegal(settings.game, settings.spec, settings.alliance, settings.startPose);
     if (loadActiveGame()) setBlockedByActive(true);
     else if (lockedOut) setStartBlocked(true);
     else if (restartPending) setStartBlocked(true);
@@ -769,12 +988,28 @@ export function App() {
   // AccountSync on sign-in and stays null when auth is off, so signed-out and
   // no-auth builds both lock ranked — custom rooms stay open to everyone.
   const signedIn = accountUserId !== null;
+  /**
+   * Sign-in resolves ASYNCHRONOUSLY, and practice runs are kept whether or not anyone was
+   * signed in when they were played. So the moment an account appears is exactly when the
+   * backlog can move — runs from before the session resolved, from a signed-out session, and
+   * from any attempt that hit a cold or unreachable server.
+   */
+  useEffect(() => {
+    signedInRef.current = signedIn;
+    if (signedIn) {
+      void flushPracticeRuns();
+      // the LAN backlog drains on exactly the same trigger, and for a sharper version of the
+      // same reason: a host who signed in after the scrimmage still owns those matches
+      void flushLanRuns();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedIn]);
 
   // Rich-presence heartbeat for the FULL-SCREEN surfaces (game / solo record /
   // ranked queue) that render outside AppShell's FriendsProvider — so friends see
   // "In a match" instead of the caller silently dropping to offline mid-game. The
-  // shell screens are heartbeated by the provider's own poll; lobby/duo-record by
-  // InviteFlyout. Fire-and-forget: it only records presence, never renders.
+  // shell and room screens are heartbeated by their FriendsProvider. Fire-and-forget:
+  // it only records presence, never renders.
   useEffect(() => {
     if (!signedIn) return;
     const full = screen === 'game' || screen === 'record' || screen === 'matchmaking';
@@ -805,6 +1040,23 @@ export function App() {
     </>
   );
 
+  // Lobby screens bypass AppShell, so they need their own single friends store.
+  // Keeping it here means the persistent room panel has the same polling,
+  // challenge, and invitation semantics as the menu-shell panel.
+  const roomScreen = (node: JSX.Element): JSX.Element =>
+    fullScreen(
+      <FriendsProvider
+        signedIn={signedIn}
+        activity="lobby"
+        game={settings.game}
+        sound={settings.audio.volume.master > 0}
+        onHostRoom={hostForChallenge}
+        onQueueChallenge={startChallenge}
+      >
+        {node}
+      </FriendsProvider>,
+    );
+
   // full-screen surfaces (outside the shell)
   if (screen === 'game') {
     return fullScreen(
@@ -816,19 +1068,20 @@ export function App() {
         onSettingsChange={update}
         editLayout={editMobileLayout}
         onRestartRun={sessionKind === 'record' && !sessionCoop ? restartRun : undefined}
-        coop={sessionCoop}
         onWatchReplay={(r) => {
           setReplayObj(r);
           // capture the seat NOW: `session` is torn down on the way out of the game
           setReplayRobot(session?.localRobotId ?? null);
           navigate('replay');
         }}
+        onPracticeRun={keepPracticeRun}
+        onQueueAgain={queueAgain}
       />
     );
   }
   if (screen === 'lobby') {
     const auto = pendingAutoJoin?.config.kind === 'versus' ? pendingAutoJoin : undefined;
-    return fullScreen(
+    return roomScreen(
       <Lobby
         settings={settings}
         onSettingsChange={update}
@@ -836,9 +1089,14 @@ export function App() {
         onCancel={() => navigate('modes')}
         config={auto?.config}
         signedIn={signedIn}
+        displayName={handle}
+        myUserId={accountUserId}
+        onOpenProfile={openProfile}
+        onJoinInvite={onJoinInvite}
+        onSpectate={spectateRoom}
         autoJoin={auto?.room}
+        autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
-        onAcceptChallenge={onJoinInvite}
       />
     );
   }
@@ -854,7 +1112,7 @@ export function App() {
   }
   if (screen === 'duorecord') {
     const auto = pendingAutoJoin?.config.kind === 'record' ? pendingAutoJoin : undefined;
-    return fullScreen(
+    return roomScreen(
       <Lobby
         settings={settings}
         onSettingsChange={update}
@@ -862,9 +1120,14 @@ export function App() {
         onStart={(s) => beginSession(s, 'record', true)}
         onCancel={() => navigate('modes')}
         signedIn={signedIn}
+        displayName={handle}
+        myUserId={accountUserId}
+        onOpenProfile={openProfile}
+        onJoinInvite={onJoinInvite}
+        onSpectate={spectateRoom}
         autoJoin={auto?.room}
+        autoJoinRegion={auto?.region}
         onAutoJoinConsumed={() => setPendingAutoJoin(null)}
-        onAcceptChallenge={onJoinInvite}
       />
     );
   }
@@ -912,7 +1175,7 @@ export function App() {
         onChange={(id) => update({ ...settings, preferredServerId: id })}
       />
       <button className="ds-btn" onClick={() => navigate('account')}>
-        Settings
+        Profile
       </button>
     </>
   );
@@ -947,6 +1210,7 @@ export function App() {
         signedIn={signedIn}
         onOpenProfile={openProfile}
         onJoinInvite={onJoinInvite}
+        onSpectate={spectateRoom}
         myUserId={accountUserId}
         game={settings.game}
       >
@@ -995,6 +1259,7 @@ export function App() {
           onRanked={() => guardStart(() => navigate('matchmaking'))}
           onCustomRoom={() => guardStart(() => navigate('lobby'))}
           onWatch={() => navigate('watch')}
+          onLan={() => navigate('lan')}
         />
       )}
       {/* one-time "this sim isn't realistic" disclaimer for Chain Reaction */}
@@ -1002,20 +1267,26 @@ export function App() {
         <div className="overlay">
           <div className="overlay-panel">
             <h2>About this simulation</h2>
-            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 420 }}>
+            <p className="ds-sub overlay-sub">
               Chain Reaction is a game for the <b>Unofficial FTC Discord’s CAD Competition</b>.
-              This simulator is just a rough, for-fun approximation of it - <b>the simulation is
+              This simulator is a rough, for-fun approximation of it. <b>The simulation is
               not realistic</b>, so how robots drive, shoot, and score here shouldn’t drive your
               CAD-competition design decisions. Build for the real game, not for this sim.
             </p>
-            <div className="overlay-buttons">
+            {/* SENTENCE CASE, and `.ds-dialog-actions` to drop the all-caps
+                tracking with it. These five are SHELL dialogs — the same surface
+                as Announcements' "Got it" and every `.ds-btn` around them — not
+                the match overlays in GameView, whose caps match the HUD they sit
+                on. Shipping `GOT IT` here beside `Got it` there was one word in
+                two casings in one shell. */}
+            <div className="overlay-buttons ds-dialog-actions">
               <button
                 onClick={() => {
                   markChainDisclaimerSeen();
                   setShowChainDisclaimer(false);
                 }}
               >
-                GOT IT
+                Got it
               </button>
             </div>
           </div>
@@ -1027,10 +1298,10 @@ export function App() {
         <div className="overlay">
           <div className="overlay-panel">
             <h2>You’re already in a game</h2>
-            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
+            <p className="ds-sub overlay-sub">
               You can only be in one game at a time.
             </p>
-            <div className="overlay-buttons">
+            <div className="overlay-buttons ds-dialog-actions">
               <button
                 onClick={() => {
                   const ref = loadActiveGame();
@@ -1039,10 +1310,10 @@ export function App() {
                   else setActiveGame(null);
                 }}
               >
-                REJOIN
+                Rejoin
               </button>
               <button className="ghost" onClick={abandonActiveGame}>
-                ABANDON
+                Abandon
               </button>
             </div>
           </div>
@@ -1052,21 +1323,21 @@ export function App() {
         <div className="overlay">
           <div className="overlay-panel">
             <h2>Start position invalid</h2>
-            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
+            <p className="ds-sub overlay-sub">
               Your saved start position isn’t legal for the selected chassis. Fix it (or pick a
               preset) before starting.
             </p>
-            <div className="overlay-buttons">
+            <div className="overlay-buttons ds-dialog-actions">
               <button
                 onClick={() => {
                   setBadStart(false);
                   navigate('configure', { sub: 'match' });
                 }}
               >
-                FIX START POSITION
+                Fix start position
               </button>
               <button className="ghost" onClick={() => setBadStart(false)}>
-                CANCEL
+                Cancel
               </button>
             </div>
           </div>
@@ -1076,13 +1347,13 @@ export function App() {
         <div className="overlay">
           <div className="overlay-panel">
             <h2>{lockedOut ? 'Down for maintenance' : 'Server restarting soon'}</h2>
-            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
+            <p className="ds-sub overlay-sub">
               {lockedOut
                 ? maintenanceLine(maintenance) ??
-                  'DSIM is down for maintenance — new games are paused. Please try again shortly.'
-                : 'A scheduled server update is about to happen, so new games are paused for a moment.'}
+                  'DSIM is down for maintenance. New games are paused.'
+                : 'Server is restarting shortly. New games are paused for a moment.'}
             </p>
-            <div className="overlay-buttons">
+            <div className="overlay-buttons ds-dialog-actions">
               <button onClick={() => setStartBlocked(false)}>OK</button>
             </div>
           </div>
@@ -1092,13 +1363,13 @@ export function App() {
         <div className="overlay">
           <div className="overlay-panel">
             <h2>Update required</h2>
-            <p className="ds-sub" style={{ margin: '4px auto 16px', maxWidth: 380 }}>
+            <p className="ds-sub overlay-sub">
               A newer version has shipped. Refresh to update before starting.
             </p>
-            <div className="overlay-buttons">
-              <button onClick={() => window.location.reload()}>REFRESH &amp; UPDATE</button>
+            <div className="overlay-buttons ds-dialog-actions">
+              <button onClick={() => window.location.reload()}>Refresh &amp; update</button>
               <button className="ghost" onClick={() => setPendingStart(null)}>
-                NOT NOW
+                Not now
               </button>
             </div>
           </div>
@@ -1122,6 +1393,13 @@ export function App() {
           myUserId={accountUserId}
           game={settings.game}
           onWatch={watchReplay}
+          onWatchLocal={(r) => {
+            // a local practice log has no server id — hand the container straight to the
+            // viewer, the same path the just-played run takes off the results screen
+            setReplayObj(r);
+            setReplayRobot(r.setups[0]?.id ?? null);
+            navigate('replay');
+          }}
           onOpenProfile={openProfile}
         />
       )}
@@ -1135,6 +1413,16 @@ export function App() {
         />
       )}
       {screen === 'watch' && <WatchLive onWatch={spectateRoom} onBack={() => navigate('modes')} />}
+      {/* LAN. `onConnected` goes to the CUSTOM ROOM screen, because that is what a LAN
+          match is — a code-joined room, on a different server. Nothing about the room
+          flow changes; only `gameServerUrl()` now answers with the host's machine. */}
+      {screen === 'lan' && (
+        <LanPanel
+          signedIn={signedIn}
+          onConnected={() => guardStart(() => navigate('lobby'))}
+          onBack={() => navigate('modes')}
+        />
+      )}
       {screen === 'download' && <Download />}
       {screen === 'contributors' && <Contributors onOpenProfile={openProfile} />}
       {/* legal pages are public and must stay reachable without an account —
@@ -1151,7 +1439,7 @@ export function App() {
           onDonate={() => navigate('donate')}
         />
       )}
-      {screen === 'admin' && isAdmin && <Admin onWatch={spectateRoom} />}
+      {screen === 'admin' && isAdmin && <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />}
 
       {/* Patch notes / new-season + new-act reveals — shown once on the menu shell,
           never over a live match (the game screen returns before this). Mounted

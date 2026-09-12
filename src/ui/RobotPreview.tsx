@@ -1,309 +1,152 @@
-import type { RobotSpec } from '../types';
-import { INTAKE_PRESETS, TURRET_OFFSET_FRAC, WHEEL_INSET, intakeMouth } from '../config';
-import {
-  CHAIN_DEFAULT_INTAKE,
-  CHAIN_DEFAULT_SCORE_MODE,
-  CHAIN_LAUNCH_LINE_FRAC,
-} from '../games/chain/config';
-import { chainIntakeBand } from '../games/chain/state';
+import { useEffect, useMemo, useRef } from 'react';
+import type { RobotSpec, RobotState, World } from '../types';
+import * as C from '../config';
+import { createWorld, DEFAULT_ASSISTS } from '../sim/spawn';
+import { footprintExtents } from '../sim/field';
+import { drawRobot } from '../render/drawRobot';
 
-/** dimension-label type size, in the viewBox's inch units */
-const DIM_FONT = 1.7;
+/** clear space around the robot, as a fraction of its longest side */
+const PAD = 0.16;
+/** the caption's type size in CSS px */
+const DIM_FONT = 11;
 
 /**
- * Top-down schematic of a robot drawn straight from its `RobotSpec` — the live
- * preview in the My Robot builder. Front faces UP (screen −y). Everything is in
- * inches inside the viewBox so the drawing scales with the real chassis/intake
- * dimensions, and colors reference the ds- design tokens so it themes with the
- * app. Purely presentational; reads nothing but the spec + a few geometry
- * constants (matching the sim's own robotExtents / turret placement rules).
+ * The builder's robot preview — THE REAL SPRITE, not a drawing of one.
+ *
+ * This used to be a hand-written SVG schematic of the spec: a second implementation
+ * of the same robot, in a different technology, maintained by hand. It drifted, which
+ * is the only thing two drawings of one object ever do — reported as "the hero robot
+ * looks way too different from the actual robot in the field". So it now renders
+ * `drawRobot`, the exact function the match uses, from a real `RobotState` built by
+ * `createWorld`. Change the sprite and this changes with it, because it IS the sprite.
+ *
+ * ON THE DARK GROUND, deliberately. The old schematic used `--ds-panel` and themed with
+ * the app, and its comment explained why it could not use the chassis colour: every
+ * `CHASSIS_COLORS` value is tuned for the hardcoded-dark field, and painting one on a
+ * light panel produced the fill-vs-text collision `shell.css` warns about. Drawing the
+ * mat here instead of a themed panel answers that at the root — the sprite is in the
+ * environment it was designed for, so it needs no translation, and the supporter
+ * chassis colour becomes previewable for the first time.
+ *
+ * NO ALLIANCE. A robot in the builder is not red or blue, so the outline is the
+ * app's own accent rather than a side you have not chosen yet — read from
+ * `--ds-on-field-accent` so the stylesheet stays the one source of truth.
+ *
+ * ⚠️ THE ON-FIELD ACCENT, NOT `--ds-accent`. Those are different colours: the plain
+ * accent INVERTS with the theme (#366758 light, #5fb597 dark) because it is meant to
+ * read against a themed panel, and its light value on this hardcoded-dark mat is
+ * almost invisible. `--ds-on-field-accent` is the same mint in both themes, tuned for
+ * exactly this ground — see the THEMING note in CLAUDE.md for the three categories.
  */
-export function RobotPreview({
-  spec,
-  size = 200,
-  chain = false,
-}: {
-  spec: RobotSpec;
-  size?: number;
-  chain?: boolean;
-}) {
-  const w = spec.width;
-  const len = spec.length;
-  const intake = INTAKE_PRESETS[spec.intake];
-  const reach = intake.reach;
-  const mouth = intakeMouth(spec); // vector's mouth spans the chassis width
-  const mouthHalf = mouth.mouthHalf;
-  const throatHalf = mouth.throatHalf;
-  const wedge = mouth.wedge;
-  const halfW = w / 2;
+export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const frontY = -len / 2; // chassis front edge (top) = the throat
-  const wedgeTipY = frontY - (reach - 0.5); // wedge/plate front — just behind the roller
-  const rollerTipY = frontY - (reach + 0.5); // shaft + wheels ride out just past the wedges
-  // turret sits behind center of rotation, scaled by chassis length
-  const turretY = -TURRET_OFFSET_FRAC * len;
-  const turretR = Math.min(w, len) * 0.2;
-
-  // Chain Reaction geometry — the SAME intake band the sim captures with. Front = UP (−y).
-  const cBand = chain ? chainIntakeBand(spec) : null;
-  const cFront = cBand && !cBand.side ? cBand : null; // front-mount sweeper geometry
-  const cSide = cBand && cBand.side ? cBand : null; // side-mount sweeper geometry
-  const cHalf = cFront ? cFront.half : cSide ? cSide.outer : 0; // half-span for the viewBox
-  const cReach = cFront ? cFront.front - len / 2 : 0; // intake tip past the front edge
-  const cTipY = frontY - cReach;
-  const cMode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
-
-  const tipY = chain ? cTipY : rollerTipY; // front-most, for the viewBox
-
-  // viewBox spans the widest of chassis/intake plus a margin, kept square-ish.
-  // The dimension label is centered and can be WIDER than a narrow chassis, so it
-  // has to be measured in too — an <svg> clips to its viewport, and a 10"-wide
-  // robot would otherwise lop the ends off "16.5" wide · 14.5" long".
-  const dimLabel = `${w}" wide · ${len}" long`;
-  const labelHalf = (dimLabel.length * DIM_FONT * 0.56) / 2; // ~0.56em avg advance
-  const halfSpan = Math.max(w / 2, chain ? cHalf : mouthHalf, labelHalf) + 2.5;
-  const top = tipY - 2;
-  const bottom = len / 2 + 3.5; // room for the width dimension label
-  const vbW = halfSpan * 2;
-  const vbH = bottom - top;
-
-  const wheelInset = WHEEL_INSET;
-  const wx = w / 2 - wheelInset;
-  const wy = len / 2 - wheelInset;
-
-  const isTank = spec.drivetrain === 'tank';
-  const wheelW = isTank ? 1.9 : 1.5;
-  const wheelH = isTank ? 4.2 : 3.2;
-
-  const stroke = 'var(--ds-ink-dim)';
-  const accent = 'var(--ds-accent)';
-
-  // intake geometry — MATCHES the in-game sprite (drawRobot.ts): front faces UP
-  // here, so the sim's forward +x maps to −y. The ball-colliding wedges/mouth are
-  // RECESSED (to wedgeTipY); the ROLLER (axle + compliant wheels) sticks out past
-  // them to tipY. Funnel presets show two side slopes into the throat (no flat
-  // front); the flat (vector) preset shows an open mouth to the chassis front.
-  const roller = (
-    <g>
-      <rect x={-mouthHalf} y={rollerTipY} width={mouthHalf * 2} height={wedgeTipY - rollerTipY} fill={accent} opacity={0.45} />
-      {[-3, -2, -1, 0, 1, 2, 3].map((i) => (
-        <rect
-          key={i}
-          x={(i * mouthHalf) / 3.4 - 0.5}
-          y={rollerTipY}
-          width={1}
-          height={1.6}
-          rx={0.3}
-          fill={accent}
-          opacity={Math.abs(i) <= 1 ? 0.95 : 0.6}
-        />
-      ))}
-    </g>
+  // a real world, and therefore a real RobotState — turret, wheels, hopper and all.
+  // Rebuilt only when the BUILD changes; the spec object identity churns on every
+  // keystroke in the name field, which is not a reason to respawn a world.
+  const key = specKey(spec);
+  const world: World = useMemo(
+    () =>
+      createWorld('match', 1, [
+        { id: 0, alliance: 'blue', spec, assists: { ...DEFAULT_ASSISTS }, startIndex: 0 },
+      ]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [key],
   );
-  let intakeEl: JSX.Element;
-  if (!wedge) {
-    intakeEl = (
-      <g>
-        <rect x={-mouthHalf} y={wedgeTipY} width={mouthHalf * 2} height={frontY - wedgeTipY} fill={accent} opacity={0.28} />
-        {roller}
-      </g>
-    );
-  } else {
-    intakeEl = (
-      <g>
-        {/* funnel mouth: opening at the wedge line narrowing to the throat */}
-        <polygon
-          points={`${-halfW},${wedgeTipY} ${halfW},${wedgeTipY} ${throatHalf},${frontY} ${-throatHalf},${frontY}`}
-          fill={accent}
-          opacity={0.28}
-          stroke={accent}
-          strokeWidth={0.35}
-        />
-        {/* two right triangles — hypotenuse is the slope, no flat front */}
-        {[1, -1].map((s) => (
-          <polygon
-            key={s}
-            points={`${s * halfW},${frontY} ${s * halfW},${wedgeTipY} ${s * throatHalf},${frontY}`}
-            fill={accent}
-            opacity={0.6}
-          />
-        ))}
-        {roller}
-      </g>
-    );
-  }
 
-  // Chain Reaction intake (front = UP). Front-mount = a bar across the top; side-mount = two bars
-  // on the left/right edges (robot ±y → screen ±x, spanning the chassis length).
-  const cIntakeEl = cFront ? (
-    <g>
-      <rect x={-cHalf} y={cTipY} width={cHalf * 2} height={frontY - cTipY} fill={accent} opacity={0.4} />
-      {[-3, -2, -1, 0, 1, 2, 3].map((i) => (
-        <rect key={i} x={(i * cHalf) / 3.4 - 0.5} y={cTipY} width={1} height={1.3} rx={0.3} fill={accent}
-          opacity={Math.abs(i) <= 1 ? 0.95 : 0.6} />
-      ))}
-    </g>
-  ) : cSide ? (
-    <g>
-      {[1, -1].map((s) => (
-        <rect key={s} x={s > 0 ? cSide.inner : -cSide.outer} y={-cSide.halfLen}
-          width={cSide.outer - cSide.inner} height={cSide.halfLen * 2} fill={accent} opacity={0.4} />
-      ))}
-    </g>
-  ) : null;
+  const fx = footprintExtents(spec);
+  // NOSE UP: the robot is drawn at heading +90°, so its forward axis (+x in the robot
+  // frame) maps to world +y, which the camera's y-flip puts at the top of the canvas.
+  const worldW = fx.half * 2;
+  const worldH = fx.front + fx.rear;
+  const pad = Math.max(worldW, worldH) * PAD;
+  const boxW = worldW + pad * 2;
+  const boxH = worldH + pad * 2;
+  const height = Math.round(size * (boxH / boxW));
 
-  // Chain Reaction archetype launcher (front = UP): drum = wide slotted bar; dumper =
-  // catapult bucket; turret = ring + barrel.
-  const drumHalf = halfW * 0.96; // full-width flywheel rollers
-  const drumN = Math.max(5, Math.round((drumHalf * 2) / 2.6));
-  const lineHalf = halfW * CHAIN_LAUNCH_LINE_FRAC; // catapult bucket width
-  // the launcher mounts at the FRONT (top, −y) or the REAR (bottom, +y) for a rear-shooter
-  const sMountY = spec.shooterRear ? len / 2 : frontY;
-  const sDir = spec.shooterRear ? -1 : 1; // inward direction from that edge
-  const drumY = Math.min(sMountY + sDir * 0.5, sMountY + sDir * 3.9);
-  const cLauncherEl =
-    cMode === 'drum' ? (
-      <g>
-        {/* full-width row of compliant flywheel rollers (not channels) */}
-        <rect x={-drumHalf} y={drumY} width={drumHalf * 2} height={3.4} rx={0.8} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
-        {Array.from({ length: drumN }, (_, k) => k).map((i) => {
-          const x = -drumHalf + ((i + 0.5) * drumHalf * 2) / drumN;
-          return <rect key={i} x={x - 0.55} y={drumY + 0.5} width={1.1} height={2.4} rx={0.4} fill={accent} opacity={0.85} />;
-        })}
-      </g>
-    ) : cMode === 'dumper' ? (
-      <g>
-        <polygon
-          points={`${-lineHalf * 0.7},${sMountY + sDir * 6} ${-lineHalf},${sMountY + sDir * 1} ${lineHalf},${sMountY + sDir * 1} ${lineHalf * 0.7},${sMountY + sDir * 6}`}
-          fill="var(--ds-bg)"
-          stroke={accent}
-          strokeWidth={0.5}
-        />
-        <line x1={-lineHalf} y1={sMountY + sDir * 1} x2={lineHalf} y2={sMountY + sDir * 1} stroke={accent} strokeWidth={1} />
-      </g>
-    ) : (
-      <g>
-        <circle cx={0} cy={turretY} r={turretR} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
-        <line x1={0} y1={turretY} x2={0} y2={turretY - turretR - 1.2} stroke={accent} strokeWidth={0.7} strokeLinecap="round" />
-      </g>
-    );
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(size * dpr);
+    canvas.height = Math.round(height * dpr);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    // the field's own ground, so the sprite renders in the environment it is tuned for
+    ctx.fillStyle = C.COLORS.mat;
+    ctx.fillRect(0, 0, size, height);
+
+    // camera: fit the footprint, +y up, world inches → css px
+    const s = Math.min(size / boxW, height / boxH);
+    ctx.translate(size / 2, height / 2);
+    ctx.scale(s, -s);
+    // the chassis origin is not the footprint's centre when an intake extends one end
+    ctx.translate(0, -(fx.front - fx.rear) / 2);
+
+    const tpl = world.robots[0];
+    const robot: RobotState = {
+      ...tpl,
+      pos: { x: 0, y: 0 },
+      heading: Math.PI / 2,
+      // straight ahead: a turret slewed at some goal it cannot see reads as a fault
+      turretHeading: Math.PI / 2,
+      // EMPTY. `createWorld` hands robot 0 the match PRELOAD, and `drawRobot` rings
+      // the turret in artifact green while the hopper has anything in it — so the
+      // builder was previewing a robot mid-match, with a second green that had
+      // nothing to do with the chassis. You are configuring a robot here, not a
+      // loaded one; the ring draws its empty grey instead.
+      hopper: [],
+    };
+    drawRobot(ctx, robot, false, [], undefined, undefined, onFieldAccent());
+    ctx.restore();
+
+    // the caption, in SCREEN space — inside the flipped camera it would be mirrored
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.font = `600 ${DIM_FONT}px ui-monospace, monospace`;
+    ctx.fillStyle = C.COLORS.white;
+    ctx.globalAlpha = 0.75;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(`${spec.width}" wide · ${spec.length}" long`, size / 2, height - 6);
+    ctx.restore();
+  }, [world, spec, size, height, boxW, boxH, fx.front, fx.rear]);
 
   return (
-    <svg
-      width={size}
-      height={(size * vbH) / vbW}
-      viewBox={`${-halfSpan} ${top} ${vbW} ${vbH}`}
+    <canvas
+      ref={canvasRef}
+      className="ds-robot-sprite"
+      style={{ width: size, height }}
       role="img"
-      aria-label={
-        chain
-          ? `${spec.width} by ${spec.length} inch robot, ${spec.chainIntake ?? CHAIN_DEFAULT_INTAKE} intake, ${cMode} scorer`
-          : `${spec.width} by ${spec.length} inch robot, ${spec.intake} intake`
-      }
-    >
-      {chain ? cIntakeEl : intakeEl}
-
-      {/* chassis.
-
-          DELIBERATELY still `--ds-panel`, not the supporter chassis colour. This
-          preview lives on a THEMED UI panel, while the in-game sprite sits on the
-          hardcoded-dark field — and every `CHASSIS_COLORS` value is tuned for that
-          dark ground. Painting one here would put `--ds-accent` wheels and pods
-          (a DARK green in light theme) on a dark chassis fill, which is the exact
-          fill-vs-text collision shell.css warns about. The colour is previewed by
-          its swatch in the builder instead. */}
-      <rect
-        x={-w / 2}
-        y={-len / 2}
-        width={w}
-        height={len}
-        rx={1.4}
-        fill="var(--ds-panel)"
-        stroke={stroke}
-        strokeWidth={0.5}
-      />
-
-      {/* wheels ON TOP of the chassis (like the in-game drawRobot) — per
-          drivetrain: mecanum/tank forward, SWERVE steering pods, X-drive omnis
-          canted 45° into an X. Front = UP. */}
-      {(() => {
-        const corners: [number, number][] = [
-          [wx, wy],
-          [-wx, wy],
-          [wx, -wy],
-          [-wx, -wy],
-        ];
-        const wheelRect = (x: number, y: number, deg: number, ww: number, wh: number, fill: string) => (
-          <rect
-            key={`w${x}_${y}`}
-            x={-ww / 2}
-            y={-wh / 2}
-            width={ww}
-            height={wh}
-            rx={0.5}
-            fill={fill}
-            stroke={stroke}
-            strokeWidth={0.25}
-            transform={`translate(${x} ${y}) rotate(${deg})`}
-          />
-        );
-        if (spec.drivetrain === 'swerve') {
-          return corners.flatMap(([x, y]) => [
-            <rect key={`h${x}_${y}`} x={x - 2.6} y={y - 2.6} width={5.2} height={5.2} rx={1} fill="#0c1016" stroke={accent} strokeWidth={0.3} />,
-            wheelRect(x, y, 0, wheelW, wheelH, '#1b212b'),
-            <line key={`t${x}_${y}`} x1={x} y1={y} x2={x} y2={y - 2.4} stroke={accent} strokeWidth={0.5} />,
-          ]);
-        }
-        if (spec.drivetrain === 'xdrive') {
-          const long = Math.min(Math.hypot(wx, wy) * 1.1, 7.2);
-          return corners.map(([x, y]) => wheelRect(x, y, x * y >= 0 ? 45 : -45, 2.0, long, '#2b333e'));
-        }
-        return corners.map(([x, y]) => wheelRect(x, y, 0, wheelW, wheelH, '#0c151d'));
-      })()}
-
-      {/* front indicator (a chevron at the front edge) */}
-      <polyline
-        points={`${-w * 0.18},${frontY + 1.6} 0,${frontY + 0.4} ${w * 0.18},${frontY + 1.6}`}
-        fill="none"
-        stroke={accent}
-        strokeWidth={0.5}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-
-      {/* scoring mechanism — CR archetype launcher, or DECODE turret + triangle hint */}
-      {chain ? (
-        cLauncherEl
-      ) : (
-        <>
-          {/* triangle-intake internal storage hint: two near the mouth (front/up),
-              one deeper (rear/down) */}
-          {spec.intake === 'triangle' && (
-            <polygon
-              points={`${-1.7},${turretY - 0.6} 1.7,${turretY - 0.6} 0,${turretY + 2.4}`}
-              fill="none"
-              stroke={stroke}
-              strokeWidth={0.3}
-              opacity={0.7}
-            />
-          )}
-          {/* turret ring + barrel toward front */}
-          <circle cx={0} cy={turretY} r={turretR} fill="var(--ds-bg)" stroke={accent} strokeWidth={0.5} />
-          <line x1={0} y1={turretY} x2={0} y2={turretY - turretR - 1.2} stroke={accent} strokeWidth={0.7} strokeLinecap="round" />
-          {spec.canSort && <circle cx={0} cy={turretY} r={turretR * 0.4} fill={accent} opacity={0.8} />}
-        </>
-      )}
-
-      {/* width dimension label */}
-      <text
-        x={0}
-        y={len / 2 + 2.6}
-        textAnchor="middle"
-        fill="var(--ds-mut)"
-        fontSize={DIM_FONT}
-        fontFamily="var(--ds-font-mono)"
-      >
-        {dimLabel}
-      </text>
-    </svg>
+      aria-label={`${spec.width} by ${spec.length} inch robot, ${spec.intake} intake`}
+    />
   );
+}
+
+/**
+ * The app's accent as the canvas should draw it.
+ *
+ * Read from the stylesheet rather than copied into `config.ts`, so the preview
+ * follows the palette instead of drifting from it the way the old SVG schematic did.
+ * The literal is the fallback for a context with no computed style (a test renderer,
+ * or a canvas built before the sheet lands) — it is the token's own value, not a
+ * second opinion about what the accent should be.
+ */
+function onFieldAccent(): string {
+  if (typeof getComputedStyle !== 'function') return '#5fb597';
+  const v = getComputedStyle(document.documentElement)
+    .getPropertyValue('--ds-on-field-accent')
+    .trim();
+  return v || '#5fb597';
+}
+
+/** the BUILD, not the identity: renaming a robot must not respawn a world */
+function specKey(s: RobotSpec): string {
+  return [
+    s.length, s.width, s.intake, s.drivetrain, s.driveRpm,
+    s.massLb, s.flywheelInertia, s.canSort, s.chassisColor,
+  ].join('|');
 }
