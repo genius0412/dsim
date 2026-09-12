@@ -561,7 +561,17 @@ export function chassisInertia(m: number, spec: RobotSpec): number {
  * its funnel geometry is per-preset), so it is excluded from the chassis collider for as
  * long as the intake has hold of it. It still collides with the field and other artifacts.
  *
- * Mirrors the `underWheels` test in updateRobotActions — keep the two in step.
+ * Mirrors the `underWheels` test in `intakeSuction` — keep the two in step. The invariant
+ * the three windows are held to is **capture ⊆ suction ⊆ claim**, pinned by smoke over both
+ * chassis extremes of all three presets: a capture set reaching outside the claim set stalls
+ * the robot on the artifact it is about to eat, and a claim set narrower than the suction
+ * leaves the chassis fighting a ball the rollers are already pulling — the oscillation this
+ * function exists to kill.
+ *
+ * Its X GEOMETRY DELIBERATELY DID NOT SHRINK when the grab became the roller nip. The nip is
+ * where an artifact is SWALLOWED; this is which artifacts the intake has HOLD of, and an
+ * artifact in the mouth on its way to the seat must not be chassis-pinnable just because it
+ * is not yet under the wheel.
  */
 export function intakeClaims(world: World, commands: Map<number, RobotCommand>): Set<number> {
   const claimed = new Set<number>();
@@ -577,7 +587,12 @@ export function intakeClaims(world: World, commands: Map<number, RobotCommand>):
     // span the narrow throat, but the wedge funnels artifacts in from the full width of the
     // opening (product decision #10), and it is those outermost ones the chassis was
     // fighting hardest — sloped at 7in off-centre took 1.45s against main's 0.33s.
-    const own = Math.max(m.wedge ? m.throatHalf : m.mouthHalf, m.mouthHalf);
+    //
+    // ...to the same edge the suction's own `onRoller` band uses. It was a bare `mouthHalf`
+    // (via a `Math.max` that resolved to it on every preset), so an artifact at exactly 7.0in
+    // off a mouthHalf-7 sloped was being sucked while the chassis was still allowed to fight
+    // it — the invariant above was false by a quarter radius.
+    const own = m.mouthHalf + C.BALL_RADIUS * 0.25;
     for (const b of world.balls) {
       if (b.state.kind !== 'ground' || b.z > 6) continue;
       const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
@@ -806,9 +821,35 @@ export function intakeSuction(world: World, r: RobotState, cmd: RobotCommand): v
       m.wedge &&
       local.x > tip - C.BALL_RADIUS - C.INTAKE_CAPTURE_BAND &&
       Math.abs(local.y) < m.mouthHalf + C.BALL_RADIUS * 0.25; // the mouth, to the same edge the cornered grab uses
-    // ...out to the end of the funnel's compliant lip, which is where an artifact deflected
-    // by the mouth's edge rides: it sits a radius ahead of the lip, past the roller line
-    const ahead = tip + C.BALL_RADIUS + (m.wedge ? C.INTAKE_LIP + C.INTAKE_CAPTURE_BAND : 0);
+    /**
+     * ...OUT TO WHERE AN ARTIFACT CAN LEGALLY HAVE LANDED ON THE ROLLER, AND NO FURTHER.
+     *
+     * ⚠️ THIS BOUND, NOT THE NIP, IS THE INTAKE'S EFFECTIVE RANGE, and getting that backwards
+     * wasted a pass. Shrinking the GRAB to the roller nip changed where an artifact is
+     * swallowed and did NOT change where one can be taken from: measured on a stationary
+     * robot, every preset still captured out to `tip + BALL_RADIUS` afterwards, because the
+     * suction reaches that far and walks anything it touches into the nip in 1-4 ticks — and
+     * with `drawIn` up by half it walked it faster than before. "The range is way too big" is
+     * a statement about THIS line.
+     *
+     * `tip + BALL_RADIUS` is an artifact whose SKIN merely grazes the roller's front face,
+     * with its centre a full radius out in front of the wheel. A horizontal-axis roller whose
+     * underside clears an artifact (see INTAKE_TREAD_FRAC) cannot draw that in — it is pushing
+     * it away. So the reach is the LANDING rule's own bound instead: `INTAKE_CATCH_LENIENCE`
+     * is how much of itself an artifact may overlap the roller face and still count as having
+     * landed there, so `tip + BALL_RADIUS − INTAKE_CATCH_LENIENCE` is the furthest out an
+     * artifact can legally BE on the intake. Past it there is nothing to pull.
+     *
+     * Coupling the two is the point: the drop rule and the suction had to agree for intaking
+     * off the gate outflow to work at all, and they agreed only by accident, with 1.2in of
+     * unexplained slack between them. Now the intake draws in exactly what has landed on it.
+     * It also stays INSIDE `overIntakeRoof`'s front edge (`tip + BALL_RADIUS`), which matters
+     * because `drawIn` is now above `INTAKE_LID_THROW` (24 in/s) on every preset: if the pull
+     * reached past the roof it would out-argue the throw and swallow an artifact the lid had
+     * just refused. The wedge presets used to reach `INTAKE_LIP + INTAKE_CAPTURE_BAND` PAST
+     * the roof, which is where that gap was.
+     */
+    const ahead = tip + C.BALL_RADIUS - C.INTAKE_CATCH_LENIENCE;
     const underWheels =
       local.x > hl - C.BALL_RADIUS &&
       local.x < ahead &&
@@ -830,6 +871,24 @@ export function intakeSuction(world: World, r: RobotState, cmd: RobotCommand): v
         velRobot.x > 0 &&
         closing > C.INTAKE_RAM_SPEED;
       if (!sideImpact) {
+        /**
+         * THE TARGET IS THE CHASSIS FACE, `(hl, 0)`, AND IT MUST NOT BE MOVED TO THE AXLE.
+         *
+         * The chassis is a LIVE collider against a claimed artifact (`physicsEngine.ts` — the
+         * claim's only surviving effect is `skipChassis` in `pinnedArtifacts`), so this pull
+         * terminates at the front face and everything the intake has hold of comes to rest
+         * with its skin flush on it, at `hl + BALL_RADIUS`. Measured settle: 9.759 / 9.757 /
+         * 9.016 (sloped / vector / triangle) against an `hl + R` of 9.750 / 9.750 / 9.000, to
+         * five decimals over 40 ticks at both 0.4 and 1.0 throttle. That fixed point is what
+         * makes the tight nip band reachable at all, and `INTAKE_TREAD_FRAC` is floored so the
+         * band contains it.
+         *
+         * Retargeting the axle looks tidier and is wrong: it is inert on sloped (the axle is
+         * 1.58in BEHIND the face) and on vector (0.055in ahead — inside the 0.3in dead zone
+         * below), and on TRIANGLE the axle is 1.08in in FRONT of the seat, so it would push a
+         * seated artifact forward, out of the throat. An intake that shoves artifacts away
+         * from itself.
+         */
         const dxT = hl - local.x;
         const dyT = -local.y;
         const dl = hyp(dxT, dyT);
@@ -848,14 +907,32 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   const running = cmd.intake || r.autoIntake;
   if (!running || r.hopper.length >= C.HOPPER_CAPACITY) return;
 
-  const preset = C.INTAKE_PRESETS[r.spec.intake];
   const m = C.intakeMouth(r.spec); // vector's mouth spans the chassis width
   const hl = r.spec.length / 2;
-  const tip = hl + preset.reach; // the roller line (balls pass UNDER it)
   const velRobot = rot(r.vel, -r.heading);
   // ALL intakes capture at the CENTER, directly under the compliant wheels
   // (funnel throat for sloped/triangle; the vectored-to center for vector)
   const captureHalf = m.throatHalf;
+  /**
+   * THE FORE-AFT GRAB IS THE ROLLER NIP, AND IT IS THE SAME BAND FOR ALL THREE BRANCHES.
+   *
+   * Reported as "the intake is a circular compliant wheel spinning... the ball should be
+   * directly below or very slightly in front of the centre of the wheel for it to be
+   * properly intook. Right now, the range is way too big." It was: every branch's forward
+   * bound was `tip + BALL_RADIUS` — the artifact's SKIN merely touching the roller's FRONT
+   * FACE, its centre a full radius out in front of the wheel — and the rear bound was
+   * `hl - 1`, which on a triangle is 3.5in INSIDE the chassis. Three independent x-ranges,
+   * none of which mentioned the roller at all, and triangle's `atThroat` ended 0.58in BEHIND
+   * its own axle so that preset never grabbed at its wheel in the first place.
+   *
+   * Now there is one band, derived from the hardware in `intakeNip`, and the branches keep
+   * their identity in their LATERAL bounds and their gates — which is where their identity
+   * actually lives. See INTAKE_TREAD_FRAC for the derivation and for the floor under it.
+   */
+  const axle = C.intakeAxleX(r.spec);
+  const nip = C.intakeNip(r.spec);
+  const nipLo = axle - nip.back;
+  const nipHi = axle + nip.front;
 
   // the intake can't reach INTO the classifier: no vacuuming through the ramp wall
   const capWx = r.pos.x + dcos(r.heading) * (hl + C.BALL_RADIUS);
@@ -872,11 +949,11 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
   for (const b of world.balls) {
     if (b.state.kind !== 'ground' || b.z > 6) continue;
     const local = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+    // THE fore-aft grab, for every branch below. Fore-aft only — each branch still decides
+    // for itself how far ACROSS the mouth it reaches, and on what terms.
+    const onNip = local.x > nipLo && local.x < nipHi;
     // capture once the ball reaches the throat, centered under the wheels
-    const atThroat =
-      local.x > hl - 1 &&
-      local.x < hl + C.BALL_RADIUS + C.INTAKE_CAPTURE_BAND &&
-      Math.abs(local.y) < captureHalf + C.BALL_RADIUS * 0.25;
+    const atThroat = onNip && Math.abs(local.y) < captureHalf + C.BALL_RADIUS * 0.25;
     /**
      * ...OR IT IS AGAINST THE FIELD AND THE FUNNEL CANNOT CENTRE IT.
      *
@@ -898,8 +975,7 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
     const cornered =
       m.wedge &&
       wallClear <= C.BALL_RADIUS + C.INTAKE_WALL_GRAB &&
-      local.x > hl - 1 &&
-      local.x < tip + C.BALL_RADIUS &&
+      onNip &&
       // the MOUTH, not the throat: a wedge's "wheels" span only throatHalf (3in), and a
       // corner artifact sits 6.5in off centre because the chassis half-width is what stops
       // the robot getting any closer to the wall. Inside the mouth is inside the funnel.
@@ -936,8 +1012,7 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
     const onRollerRow =
       !m.wedge &&
       !rammed &&
-      local.x > hl - 1 &&
-      local.x < tip + C.BALL_RADIUS &&
+      onNip &&
       Math.abs(local.y) < m.mouthHalf + C.BALL_RADIUS * 0.25;
     // a cornered or roller-row grab reports its true off-centre distance, so the timing lands
     // at capMax
@@ -950,6 +1025,14 @@ export function updateIntake(world: World, r: RobotState, cmd: RobotCommand): vo
 
   // timing: center of the capture zone is fast, the edges slow (vector vectoring);
   // a clump of 2+ feeds at the faster clumpInterval
+  //
+  // ⚠️ THE DENOMINATOR STAYS `throatHalf`, and two reviewers have now wanted to change it to
+  // the wheel row or the mouth. It must not: the LATERAL bounds did not move when the grab
+  // became the nip, `throatHalf + BALL_RADIUS * 0.25` is exactly `atThroat`'s own lateral
+  // bound, and the two WIDE branches deliberately clamp to 1 and pay `capMax`. Re-normalising
+  // onto the wheel row would put every real grab below t = 1, making `capMax` unreachable on
+  // `atThroat` and silently deleting the centre-fast/edges-slow ramp that IS vector's
+  // identity — with no test failing.
   const t = clamp(candidates[0].y / captureHalf, 0, 1);
   const single = m.capMin + (m.capMax - m.capMin) * t;
   // the clump SPEED bonus is a WEDGE (funnel) trait — the slopes gather a pile and

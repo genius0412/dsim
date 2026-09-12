@@ -89,7 +89,7 @@ export function robotSolids(
      * Convex by construction (throat → lip → flank-front → flank-back), so Rapier's hull is
      * exactly this shape and nothing is filled in.
      */
-    const wedgeFront = Math.max(hl, tip - C.intakeRollerDia(r.spec) / 2);
+    const wedgeFront = C.intakeAxleX(r.spec); // the roller AXLE — one authority (config.ts)
     const mh = Math.min(mouth.mouthHalf, hw);
     const th = Math.min(mouth.throatHalf, mh);
     const slope = (mh - th) / Math.max(preset.reach, 1e-6);

@@ -6,7 +6,11 @@
   "author": "genius0412",
   "type": "module",
   "main": "electron/main.cjs",
+  "bin": {
+    "dsim-lan": "scripts/lan.mjs"
+  },
   "scripts": {
+    "lan": "node scripts/lan.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
