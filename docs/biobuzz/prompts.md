@@ -773,3 +773,22 @@ Gates: tsc, full `npm run test:bb`, uiaudit. Commit, push biobuzz-hud, report th
 ### Lane B — relay (paste into the robot chat, one message)
 
 alpha is 26b5c0d: scored:true (persistMatch writes BIOBUZZ per game, alpha-only), `isPinning` exported, your saved-robot config-summary fix is in. Still owed from your handoff: the gallery re-shoot with `turret-acquire`, `npm run shiftaudit`, and mobile buttons for bbLift/bbPlace (`GameModule.mobileButtons` + a `GameSettings.mobileLayout` key; you are cleared to edit those two integration files, same precedent as `statTiles`). Owner question relayed: the turret/turretless split (no turretless build reaches the HIVE) — keep `BB_DRUM_SPEED` until he answers.
+
+## Round 5 addenda (2026-09-12 night) — after `alpha` `6aaf712` (manual-distilled.md merged)
+
+### A5a addendum — the FLOWER sorter and the spill target (same chat, same files)
+
+Two more items after your four:
+5. `flower.ts` `flowerStackZ`: seat a NECTAR at `max(top, BB_FLOWER_MID_Z) + r`, with `BB_FLOWER_MID_Z = BB_FLOWER_VOL_Z[0]` (3.98 APPROX; fix the comment — it is the middle ring's UNDERSIDE, not its top; field-plan §2.2, manual-distilled §11 item 1). POLLEN is unchanged (falls through to the lower ring or rests on the column). Pin in smoke: a bare NECTAR spans 3.98–7.58 and scores (today it scores by 0.05 in, an accident of the APPROX); a POLLEN under a NECTAR — retrieval pops the pollen and the NECTAR's z does not move; staged 4 pollen still reads 3 in volume, 0 points; capacity from `flowerFits` follows the new heights. Restage `spawn.ts` `flowerStack` from the bottom through `flowerStackZ` — the APPROX comment there asks for exactly this.
+6. Spill target (owner-visible; the visuals chat's field-v4 page, calibrated to his drawn landing lines): the pile leaves at 50–88 in/s in a ±55° fan about the outboard axis and rests 57–107 in from the pivot, median ~70, wall to wall with bounces. Today `BB_SPILL_SPEED` 40–60 straight outboard lands ~20 in wide. Move the fan and speed toward those numbers (APPROX, one constant each), re-shoot `hive-tip` at 240 and 480, and write measured spread / farthest / rest time beside the target in your feedback note. Item 4 becomes this.
+
+### A5b addendum — manual-distilled.md is on alpha
+
+`docs/biobuzz/manual-distilled.md` is merged (alpha `6aaf712`). G421 verbatim is in §3.1 (Table 10-4) and §3.3 (11.4.5). Two things it settles: (a) G421 has NO "attempting to move" clause — a BIOBUZZ robot is pinned whether or not it struggles, so the exported `isPinning`'s idle-victim branch is the LITERAL rule here, not a deviation; do not add a struggle test and say so in the smoke label. (b) §11 item 4: G417's escalation is STRATEGIC, not REPEATED — a single high-speed frame ram is STRATEGIC (example A). Fix the foul line and check label; the master fixes field-plan §4.4.
+
+### Owner questions (from manual-distilled §10 — answer in chat, the master files the rulings)
+
+1. PARK: your OWN LOADING ZONE only, or either? The rule and glossary say "the LOADING ZONE"; Fig 10-7 never shows the cross case.
+2. Launching into the OPPONENT's up-cell: no rule bans it and it would score THEM a TIP. Allow in the sim?
+3. G410 names NECTAR only: POLLEN may enter a FLOWER before 1:00 and just earns nothing until an owner exists. Confirm.
+4. G407 caps CONTROL at 4 with a VERBAL WARNING (MAJOR + YELLOW only if STRATEGIC). The sim's structural hopper cap of 4 (field-plan §4.3) plus G304.G's four staged POLLEN means the first floor ball touched is the fifth CONTROLLED element. Keep the hard cap, or model the warning?

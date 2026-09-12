@@ -134,6 +134,16 @@ solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
   (a flight element within `r` 2.0 of the top centre, z near 21.5, descending; a 3.6 nectar in a
   4.0 hole is a PLACEMENT — Lane B's deposit mechanism calls `releasePollen` with the flower
   target and a low arc).
+- **The middle ring is a SORTER** (owner ruling 2026-09-12, from the visuals chat's section
+  drawing): its hole is between the 2.8 POLLEN and the 3.6 NECTAR. POLLEN passes it and sits on
+  the lower ring (0.43); NECTAR cannot and seats on the middle ring. So a NECTAR is never below
+  the scoring floor and ALWAYS scores, and a lone POLLEN at the bottom (0.43-3.23) scores nothing
+  at rest. `flowerStackZ` seats a NECTAR at `max(columnTop, BB_FLOWER_MID_Z) + r`; everything
+  above rests on it as before, and retrieving a POLLEN from under a ring-seated NECTAR does not
+  lower the NECTAR. The ring's HEIGHT stays APPROX: 3.98 is the retrieval opening 3.55 + bottom
+  ring 0.43, i.e. the ring's UNDERSIDE, and V1 prints neither its thickness nor whether the
+  volume starts at its top (manual-distilled section 11, item 1). The seat rule is what keeps the
+  outcomes right whatever that number becomes.
 - Retrieval (G418.B): `actOnElement(world, r, 'retrieve')` when a robot's mouth overlaps the
   flower's field-side face — pops the **bottom** element **only if it is POLLEN** (nectar 3.6 >
   3.55 opening) into the hopper. A nectar at the bottom locks the flower.
