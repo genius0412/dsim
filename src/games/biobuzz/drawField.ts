@@ -23,6 +23,7 @@ import {
   BB_TAPE_1,
   type BbRect,
 } from './config';
+import { BB_TIP_SWING_S } from './hive';
 
 /**
  * BIOBUZZ field renderer — THE MAT, THE ZONES, THE HIVE STRUCTURE, THE FLOWERS, THE WALL.
@@ -99,9 +100,25 @@ const GARDEN_LABEL_IN = 12; // how far off its wall a GARDEN caption sits — se
 const TAG_SIZE = 2.2; // AprilTag id groups — deliberately small, see below
 const LABEL_SIZE = 3; // zone / flower / tile labels
 const HIVE_LABEL_SIZE = 2.6; // "BLUE HIVE" is nine glyphs in a BB_HIVE_W-wide box
-const TALLY_SIZE = 3.4; // the up-CELL per-type counts
-const TALLY_PIP = 1.3; // the coloured disc beside each of those counts
-const TALLY_ROW = 4.2; // pitch between the (at most three) tally rows, along x
+const CELL_DASH: readonly number[] = [1.8, 1.4]; // the DOWN cell's outline, at cell scale
+const CELL_ROW_IN = 0.7; // clear air between the contents row and the cell's OPEN edge
+const CELL_ROW_PAD = 0.9; // clear air between the contents row and the cell's long sides
+const CELL_EDGE_THIN = 0.5; // the OUTER short edge — the opening
+const CELL_EDGE_HEAVY = 2.2; // the PIVOT-side short edge — the closed back
+const CELL_TAG_IN = 3.1; // AprilTag ids, in from the cell's PIVOT edge — see the labels block
+
+/**
+ * HOW SOLID THE UP-CELL'S FILL IS.
+ *
+ * NOT 1, and the contents are the reason. An element in a cell is drawn in its own colour
+ * (field-plan §2.5), so a RED NECTAR in the RED cell is red on red — at full saturation it
+ * vanished into the box and read as an empty ring, which is exactly backwards: the NECTAR
+ * count is what the tip table is indexed by, so it is the one thing in there that must not
+ * disappear. Dropped to a wash, the box is still unmistakably FILLED against the down cell's
+ * dashed outline, and a saturated element on top of it reads at a glance. The heavy pivot-edge
+ * mark needs the same room — alliance ink on an alliance fill is invisible whatever its width.
+ */
+const CELL_FILL_A = 0.45;
 
 /**
  * ELEMENT INK — how a POLLEN and each alliance's NECTAR are drawn in a readout.
@@ -160,9 +177,14 @@ function stackAxis(f: (typeof BB_FLOWERS)[number]): { base: Vec2; along: Vec2 } 
 // render layer, and three callers inside one file do not justify inventing a shared one.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function allianceColor(a: Alliance, dim = false): string {
-  if (dim) return a === 'blue' ? C.COLORS.blueDim : C.COLORS.redDim;
+function allianceColor(a: Alliance): string {
   return a === 'blue' ? C.COLORS.blue : C.COLORS.red;
+}
+
+/** an element's drawn radius. `r` is optional on `Artifact` (DECODE has one size and never
+ * sets it), so POLLEN is the fallback — never a hard-coded 1.4. Same rule as `draw.ts`. */
+function elementR(b: Artifact): number {
+  return b.r ?? BB_POLLEN_R;
 }
 
 function strokeRect(ctx: CanvasRenderingContext2D, r: BbRect, stroke: string, w: number): void {
@@ -415,11 +437,34 @@ export function drawBiobuzzField(
   // THE TWO HIVES (§9.6, Figs 9-9/9-10) — red's pivot at −x, blue's at +x, 25.5 in apart.
   // Each is one rounded rect for the assembly with its two CELLS drawn inside it, north and
   // south of the pivot. Which cell is UP is game state, not geometry: it flips on every TIP.
+  //
+  // ⚠️ NOTHING IN A CELL IS A LETTER OR A DIGIT (owner ruling, 2026-09-12; field-plan §2.5).
+  // A ball is drawn as a ball, in its colour, wherever it is — so the contents are a ROW OF
+  // DISCS at element scale and the per-type counts they replace are gone. A count is a thing
+  // you read; a row of colours is a thing you SEE, and the two facts a driver acts on (how
+  // many NECTAR, because the tip table is indexed by it, and how full the cell is) are both
+  // in the picture without anyone parsing "3n 2p" at 60 Hz.
   for (const a of ALLIANCES) {
     const px = a === 'red' ? -BB_HIVE_X : BB_HIVE_X;
     const x0 = px - BB_HIVE_W / 2;
     const x1 = px + BB_HIVE_W / 2;
     const up = upCell(a);
+    const ink = allianceColor(a);
+
+    /**
+     * THE SWING, AS A CROSS-FADE (owner ruling, 2026-09-12).
+     *
+     * `tipping` is SECONDS LEFT in the swing (`state.ts`), counted down by `hive.ts`, and `up`
+     * still names the cell that is going DOWN until the swing completes. So `f` runs 1 → 0
+     * across it and `k` below is each cell's UPNESS: the loaded cell fades fill → outline while
+     * its partner fades outline → fill, and at rest the two are exactly the old states.
+     *
+     * The denominator is IMPORTED from `hive.ts` rather than written here, because a renderer
+     * with its own copy of the swing length is a cross-fade that finishes at a different
+     * instant from the flip it is animating — the one bug this whole device can have.
+     */
+    const tipping = bb?.hives?.[a]?.tipping ?? 0;
+    const f = tipping > 0 ? Math.min(1, Math.max(0, tipping / BB_TIP_SWING_S)) : 1;
 
     // the assembly body — the connecting bar and shell the two cells ride on.
     ctx.save();
@@ -435,51 +480,110 @@ export function drawBiobuzzField(
       const s = side === 'north' ? 1 : -1;
       const isUp = up === side;
       // SAME SIZE, BOTH ENDS. See `cellSpan` — one rigid bar at 30° projects both cells by the
-      // same cosine, so UP is said by the bright fill and the counts below, not by shape.
+      // same cosine, so UP is said by the FILL, not by shape.
       const { y0, y1 } = cellSpan(s);
+      const k = isUp ? f : 1 - f; // 1 = fully up (filled), 0 = fully down (outline)
 
+      /**
+       * UP IS A FILLED BOX; DOWN IS A DASHED OUTLINE WITH NOTHING IN IT.
+       *
+       * The down cell hangs 25.5 in over the tiles and G409 assumes robots drive under it, so
+       * it is not a surface — a dim FILL said it was, and it also hid anything on the floor
+       * beneath it. An outline says "structure overhead" the same way the frame crossbar's
+       * dashes do, and the ground balls `draw.ts` paints afterwards land ON TOP of it, which
+       * is how a spill reads as floor rather than as cell contents.
+       */
+      if (k > 0.01) {
+        ctx.save();
+        roundRectPath(ctx, x0, y0, x1, y1, HIVE_R);
+        ctx.globalAlpha = k * CELL_FILL_A;
+        ctx.fillStyle = ink;
+        ctx.fill();
+        ctx.globalAlpha = k;
+        ctx.strokeStyle = ink;
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+        ctx.restore();
+      }
+      if (k < 0.99) {
+        ctx.save();
+        ctx.globalAlpha = 1 - k;
+        ctx.setLineDash([...CELL_DASH]);
+        roundRectPath(ctx, x0, y0, x1, y1, HIVE_R);
+        ctx.strokeStyle = ink;
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+
+      /**
+       * THE OPEN FACE, MARKED BY WEIGHT (owner ruling, 2026-09-12).
+       *
+       * A CELL is a prism open at its OUTER end only — the end away from the pivot — and
+       * `hiveAccepts` gates a shot on arriving TOWARD the pivot along the hive axis
+       * (field-plan §2.1), so which end is open is the difference between a scoring launch and
+       * one that bounces off the back. Drawn as line WEIGHT rather than as a legend: the thin
+       * edge is the opening, the heavy one is the closed back. Both are structure, so neither
+       * fades with the swing — the box is open at the same end whichever way it is pointing.
+       * Inset by the corner radius so each mark sits on its edge's flat run.
+       */
+      const outerY = s > 0 ? y1 : y0;
+      const pivotY = s > 0 ? y0 : y1;
       ctx.save();
-      roundRectPath(ctx, x0, y0, x1, y1, HIVE_R);
-      ctx.fillStyle = isUp ? allianceColor(a) : allianceColor(a, true);
-      ctx.fill();
-      ctx.globalAlpha = isUp ? 1 : 0.45;
-      ctx.strokeStyle = allianceColor(a);
-      ctx.lineWidth = 0.8;
-      ctx.stroke();
+      ctx.strokeStyle = ink;
+      ctx.lineCap = 'round';
+      for (const [ey, w] of [
+        [pivotY, CELL_EDGE_HEAVY],
+        [outerY, CELL_EDGE_THIN],
+      ] as const) {
+        ctx.lineWidth = w;
+        ctx.beginPath();
+        ctx.moveTo(x0 + HIVE_R, ey);
+        ctx.lineTo(x1 - HIVE_R, ey);
+        ctx.stroke();
+      }
       ctx.restore();
 
-      const cy = (y0 + y1) / 2;
       if (!isUp) continue;
 
       /**
-       * THE UP-CELL READOUT IS PER TYPE, NOT A TOTAL (owner ruling, 2026-09-12).
+       * THE CONTENTS — ONE ROW OF DISCS HUGGING THE OPEN EDGE, INSIDE THE BOX.
        *
-       * A single number cannot tell a driver anything they can act on, for two reasons that
-       * both come out of the rules. ANY alliance may LAUNCH into ANY cell (§10.5.1 — legal and
-       * pointless, but legal), so a cell's contents are not one alliance's; and the tip table
-       * is indexed by the NECTAR COUNT (`BB_TIP_POLLEN`, measured), so "how close is this to
-       * tipping" is a question about the split, not about the sum. A cell holding 3 NECTAR
-       * tips on 3 POLLEN; the same 6 elements as 1 NECTAR and 5 POLLEN does not tip at all.
+       * At element scale and in element colours, oldest at the −x end, so the row grows the
+       * same way every time and a NECTAR arriving at the far end is visibly the newest thing
+       * in the cell. Against the OPEN edge because that is the end everything came in through;
+       * against the closed back it would read as the far wall of a container nothing can reach.
        *
-       * Drawn as up to three rows — a coloured pip and its count — stacked along the cell's
-       * SHORT axis, which is the screen's vertical, so the rows read as rows. A type with
-       * nothing in it is omitted rather than shown as a zero.
+       * A full cell holds more diameters than the 20-in width has room for (3 NECTAR and 8
+       * POLLEN is 30.8 in of ball), so when the row runs long the PITCH closes up and the
+       * discs overlap while their RADII stay true. Shrinking the balls instead would make a
+       * NECTAR and a POLLEN the same size, which is the one distinction the row exists to
+       * carry; overlapping reads as packed, which is what a full cell is.
        */
-      const held = elements(bb?.hives?.[a]?.contents);
-      const rows = ([POLLEN_INK, C.COLORS.red, C.COLORS.blue] as const)
-        .map((ink, i) => ({ ink, n: held.filter((b) => elementType(b.color) === i).length }))
-        .filter((r) => r.n > 0);
-
-      rows.forEach((r, i) => {
-        const rx = px + (i - (rows.length - 1) / 2) * TALLY_ROW;
-        ctx.save();
-        ctx.fillStyle = r.ink;
+      const contents = elements(bb?.hives?.[a]?.contents);
+      if (contents.length === 0) continue;
+      const rMax = contents.reduce((m, b) => Math.max(m, elementR(b)), 0);
+      const rowY = outerY - s * (rMax + CELL_ROW_IN);
+      const span = x1 - x0 - 2 * CELL_ROW_PAD;
+      const want = contents.reduce((t, b) => t + 2 * elementR(b), 0);
+      const pitch = want > span ? span / want : 1;
+      let t = x0 + CELL_ROW_PAD + Math.max(0, (span - want) / 2);
+      ctx.save();
+      ctx.globalAlpha = k;
+      ctx.strokeStyle = 'rgba(12,14,18,0.65)';
+      ctx.lineWidth = 0.3;
+      for (const b of contents) {
+        const r = elementR(b);
+        t += r * pitch;
+        ctx.fillStyle = elementInk(b.color);
         ctx.beginPath();
-        ctx.arc(rx, cy - TALLY_SIZE * 0.75, TALLY_PIP, 0, Math.PI * 2);
+        ctx.arc(t, rowY, r, 0, Math.PI * 2);
         ctx.fill();
-        ctx.restore();
-        text(ctx, screenUp, rx, cy + TALLY_SIZE * 0.55, TALLY_SIZE, C.COLORS.white, String(r.n));
-      });
+        ctx.stroke();
+        t += r * pitch;
+      }
+      ctx.restore();
     }
   }
 
@@ -624,11 +728,11 @@ export function drawBiobuzzField(
   // Printed as the RANGE ("30-33"), not the four ids: they are always four CONSECUTIVE ids, so
   // the middle two carry nothing.
   //
-  // ON THE CELL'S SHORT AXIS (x), NOT ALONG IT. Canvas text is upright on SCREEN, so the
-  // string's LENGTH runs along world y — the same axis the cell is only BB_HIVE_CELL_LEN
-  // (10.43) long in. Placed at the cell's far end it overflowed that end and ran straight
-  // through the per-type counts, which sit on the centre. Across the 20-in width there is
-  // room for both: the counts keep the middle and the ids sit against the outer edge.
+  // AT THE CELL'S PIVOT END, which is the half of the box with nothing in it. Canvas text is
+  // upright on SCREEN, so the string's LENGTH runs along world y — the same axis the cell is
+  // only BB_HIVE_CELL_LEN (10.43) long in — and the contents row hugs the OPEN edge, so the
+  // ids and the elements are competing for the same inches. The closed back is free by
+  // construction: nothing ever sits against it.
   for (const a of ALLIANCES) {
     const px = a === 'red' ? -BB_HIVE_X : BB_HIVE_X;
     for (const side of ['north', 'south'] as const) {
@@ -636,15 +740,16 @@ export function drawBiobuzzField(
       const sgn = side === 'north' ? 1 : -1;
       const isUp = (bbLabels?.hives?.[a]?.up ?? BB_HIVE_UP_STAGED[a]) === side;
       const { y0, y1 } = cellSpan(sgn);
+      const pivotY = sgn > 0 ? y0 : y1;
       text(
         ctx,
         screenUp,
-        px + BB_HIVE_W / 2 - TAG_SIZE,
-        (y0 + y1) / 2,
+        px,
+        pivotY + sgn * CELL_TAG_IN,
         TAG_SIZE,
-        isUp ? C.COLORS.mat : C.COLORS.white,
+        C.COLORS.white,
         `${ids[0]}-${ids[ids.length - 1]}`,
-        isUp ? 0.9 : 0.55,
+        isUp ? 0.85 : 0.55,
       );
     }
   }
