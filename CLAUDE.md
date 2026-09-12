@@ -1221,16 +1221,61 @@ handle (`GATE_ARM_SHORT`) pokes OUT into the gate zone (what a robot pushes) and
   wheels drawn as a row of small rects — never circles; chassis 11.5–14.5"), **Triangle**
   (TRIANGULAR internal storage — hopper pips draw in a triangle; longest reach, slower
   transfer). Internal keys sloped/vector/triangle ('compact'/'extended' migrate in settings).
-- **CAPTURE MODEL**: each preset carries a `mouth` sub-object (`mouthHalf`, `wheelHalf`,
-  `wedge`/`wedgeWidth`/`funnel`, `capMin`/`capMax`, `clumpInterval`, `dual`). A ball is captured
-  on the wheel line at the tip of reach; non-overhang presets clamp the mouth inside the frame
-  so a full-width chassis geometrically forbids side intake. **Timing depends on WHERE the ball
-  enters**: `single = capMin + (capMax−capMin)·(|localY|/wheelHalf)`. **Wedges FUNNEL** off-center
-  balls toward the centerline via a lateral VELOCITY nudge only, never a position write — it
-  runs before the ball solve so Rapier owns penetration. **Triangle takes TWO per cycle**
-  (`dual`). Flank capture (`sideTouch`) exists only where the vector's wheel span overhangs a
-  narrower chassis, comparing SPANS not penetration. NOTE: `halfWidth`/`perBall`/`clumpPerBall`
-  were REMOVED — grep before reintroducing.
+- **CAPTURE MODEL**: each preset carries a `mouth` sub-object (`mouthHalf`, `throatHalf`,
+  `wedge`, `drawIn`, `capMin`/`capMax`, `clumpInterval`, `dual`). Non-overhang presets clamp the
+  mouth inside the frame so a full-width chassis geometrically forbids side intake. **Wedges
+  FUNNEL** off-center balls toward the centerline via a lateral VELOCITY nudge only, never a
+  position write — it runs before the ball solve so Rapier owns penetration. **Triangle takes
+  TWO per cycle** (`dual`). NOTE: `halfWidth`/`perBall`/`clumpPerBall`/`wheelHalf`/`wedgeWidth`/
+  `funnel` and the unreachable `sideTouch` flank grab were REMOVED — grep before reintroducing.
+- **THE GRAB IS THE ROLLER NIP, AND IT IS ONE BAND FOR ALL THREE CAPTURE BRANCHES.**
+  `intakeNip(spec)` about `intakeAxleX(spec)` (`config.ts`) is the whole fore-aft test; the
+  branches (`atThroat` · `cornered` · `onRollerRow`) differ only in their LATERAL bound and
+  their gates, which is where their identity actually lives. It comes out of geometry this
+  file already asserted and the capture code never read: `intakeLidZ` puts the roller's
+  underside at exactly `2·BALL_RADIUS`, the APEX of an artifact on the floor, so the axle is at
+  `z = 2R + Rr`, the vertical separation from a floored artifact's centre is exactly
+  `S = R + Rr`, and **a RIGID roller grazes it at ONE point — directly under the axle.** Every
+  inch of grab is tread flex: with the tread reaching `c = INTAKE_TREAD_FRAC · Rr` past its
+  circle, `|dx| <= sqrt(c·(2S + c))`, and `front = back + c` because ahead of the nip the
+  loaded lobe flexes into the approaching artifact. Resolved: 72mm roller back 1.517 / front
+  1.800, 48mm back 1.157 / front 1.346 — forward limit `tip + 0.38`, where the old branches all
+  reached `tip + BALL_RADIUS`, i.e. the artifact's SKIN merely touching the roller's FRONT FACE
+  with its centre a full radius out in front of the wheel. Reported as "the intake is a
+  circular compliant wheel spinning… the ball should be directly below or very slightly in
+  front of the center of the wheel… right now the range is way too big". Triangle's `atThroat`
+  had ended 0.58in BEHIND its own axle, so that preset never grabbed at its wheel at all.
+  - ⚠️ **`INTAKE_TREAD_FRAC` HAS A FLOOR AT ~0.135 AND BELOW IT TRIANGLE STOPS INTAKING.** A
+    free ground artifact's centre can never get behind `hl + BALL_RADIUS` — the chassis is a
+    LIVE collider against a CLAIMED artifact (`physicsEngine.ts`; the claim's only surviving
+    effect is `skipChassis` in `pinnedArtifacts`) and `intakeSuction` pulls toward `(hl, 0)` —
+    so everything the intake has hold of comes to rest with its skin flush on the front face.
+    That seat is `BALL_RADIUS − reach + intakeRollerDia/2` from the axle, CHASSIS-INDEPENDENT:
+    **+0.917 sloped · −0.055 vector · −1.083 triangle**, and the band must CONTAIN it. Measured
+    settle 9.759 / 9.757 / 9.016 against an `hl + R` of 9.750 / 9.750 / 9.000, to five decimals
+    over 40 ticks at both throttles. Smoke names the numbers.
+  - **THE SUCTION TARGET STAYS `(hl, 0)` AND MUST NOT MOVE TO THE AXLE.** It is inert on sloped
+    (the axle is 1.58in behind the face) and on vector (0.055in ahead, inside the 0.3in dead
+    zone), and on TRIANGLE the axle is 1.08in in FRONT of the seat — it would push a seated
+    artifact out of the throat. An intake that shoves artifacts away from itself.
+  - **Timing depends on WHERE the ball enters**: `single = capMin + (capMax−capMin)·clamp(
+    |localY|/throatHalf, 0, 1)`. ⚠️ **That denominator stays `throatHalf`** — the laterals did
+    not move, `throatHalf + BALL_RADIUS·0.25` is exactly `atThroat`'s own bound, and the two
+    WIDE branches deliberately clamp to 1 and pay `capMax`. Re-normalising it onto the wheel row
+    makes `capMax` unreachable and silently deletes vector's centre-fast/edges-slow identity.
+  - **THE SWALLOW IS 1–2 TICKS**, on the half-tick grid `(n − 0.5)/60` because the gate reads an
+    ACCUMULATED `world.time` (an interval on a tick boundary is a float coin toss): sloped 1t
+    centre / 4t edge / 1t clump · triangle 1t / 3t / 1t + `dual` (120 artifacts/s off a pile) ·
+    vector 2t / 8t and NO clump bonus. ⚠️ **`drawIn` had to rise with them (40/32/70)** because
+    the wedge presets are TRAVEL-limited, not interval-limited — the measured back-to-back gap
+    on sloped was 0.133 s against a `clumpInterval` of 0.04, which is exactly why the 2026-09-10
+    bisection found `clumpInterval` 0.04→0.02 with `capMax` 0.09→0.05 BYTE-IDENTICAL.
+  - **The invariant is `capture ⊆ suction ⊆ claim`** (smoke, both chassis extremes of all three
+    presets). `intakeClaims`' x geometry deliberately did NOT shrink with the grab: the nip is
+    where an artifact is SWALLOWED, the claim is which artifacts the intake has HOLD of, and one
+    crossing the mouth toward the seat must not be chassis-pinnable for not yet being under the
+    wheel. `intakeSuction`'s `ahead` is now exactly `overIntakeRoof`'s front edge (`tip +
+    BALL_RADIUS`), which matters because `drawIn` is above `INTAKE_LID_THROW` on every preset.
 - BASE PARKING counts only the four WHEEL ground-contact points (`wheelContacts`, inset
   `WHEEL_INSET`): intake/turret overhang neither earns nor spoils credit. The turret never
   protrudes (`TURRET_OFFSET_FRAC`). The chassis may be NARROWER than the intake

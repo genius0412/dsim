@@ -79,7 +79,7 @@ export function drawRobot(
   const dia = C.intakeRollerDia(r.spec);
   const rollerTip = hl + preset.reach;
   const rollerBack = rollerTip - dia;
-  const wedgeTip = rollerTip - dia / 2; // wedges meet the roller at its axle
+  const wedgeTip = C.intakeAxleX(r.spec); // wedges meet the roller at its axle — one authority
   const mouthOn = intakeOn ? 'rgba(34,197,94,0.85)' : '#2a303c';
   /**
    * The roller is DISCRETE WHEELS ON A SHAFT, not a solid bar. Drawing it as one filled
@@ -89,7 +89,7 @@ export function drawRobot(
    * like from above.
    */
   const drawRoller = () => {
-    const axis = rollerTip - dia / 2;
+    const axis = wedgeTip; // the axle; same authority the wedges and the capture nip read
     // beam across the mouth
     ctx.fillStyle = intakeOn ? '#166534' : '#475569';
     ctx.fillRect(axis - 0.28, -rw, 0.56, rw * 2);

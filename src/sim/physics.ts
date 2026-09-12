@@ -1477,10 +1477,17 @@ export function landOnIntakeLid(b: Artifact, r: RobotState, prevZ: number): bool
   if (!arriving && !riding) return false;
 
   /**
-   * The roof covers exactly what the intake can CAPTURE from — `updateIntake`'s window is
-   * `local.x > hl - BALL_RADIUS` out to the roller line, so the roof runs from the chassis
-   * front edge (less a radius, where an artifact straddling the edge already overlaps it)
-   * to a radius past the rollers.
+   * The roof is the intake HARDWARE's plan-view footprint — the roller barrel, the wedges and
+   * the opener tabs — running from the chassis front edge (less a radius, where an artifact
+   * straddling the edge already overlaps it) to a radius past the rollers.
+   *
+   * ⚠️ It is deliberately WIDER than what the intake can CAPTURE from, which this comment
+   * used to claim it equalled. Since the grab became the roller nip (`intakeNip`), capture is
+   * a ~2.5-3.3in band about the axle while the roof is the whole 9-11in footprint, and the
+   * difference is the point: a robot's mouth is over the outflow when the HARDWARE is, not
+   * when the wheel is. `goal.ts`'s outflow-blocking test reads the roof for that same reason.
+   * What the roof DOES now coincide with exactly is `intakeSuction`'s fore-aft extent,
+   * `(hl − BALL_RADIUS, tip + BALL_RADIUS]`, and that one is load-bearing — see `ahead` there.
    *
    * The back edge matters and is not padding. An artifact dropped on the CHASSIS is ejected
    * out of its nearest face by `ballRobotContact`, and for anything near the front that face
