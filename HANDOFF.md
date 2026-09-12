@@ -11,6 +11,7 @@ Two commands, two machines (or two windows):
 ```
 npm run lan:tab      # builds the client with LAN on + a private-IP rendezvous, then serves it
 npm run lan:probe    # drives two REAL browser windows through the whole feature
+npx electron scripts/lanprobe.cjs --guests 3   # the same, as a FULL 2v2 room
 ```
 
 The probe takes a match from START HOSTING to a clock ticking down on the GUEST's HUD:
@@ -77,8 +78,11 @@ sat waiting for each other.
 2. **The first two-machine signed-in test THROUGH THE CLOUD.** Everything above ran with the
    rendezvous local and nobody signed in, so the auth handshake and the upload are the two legs
    still unproven. A match hosted this way stays in the device backlog and drains later.
-3. The `lan:probe` covers one guest. A 2v2 (three guests on one host) is the next thing worth
-   measuring, and the health readout is where a throttled host would show up.
+3. A FULL 2v2 passes too (`--guests 3`: three simultaneous peer connections off one Worker,
+   four seats, three snapshot streams, every clock moving). What is still unmeasured is a host
+   whose tab is in the BACKGROUND for a whole match — the Worker held 60.08 Hz for 7 minutes
+   hidden (§6), but that was the Worker alone, not a hidden host with three live peers on the
+   page thread. The health readout is where it would show up.
 # HANDOFF — 2026-09-12 (SHIPPED: alpha is in production, and both games are on Act 2 · Season 1)
 
 **Production is live on `4d2917f`.** The alpha→main promotion, the prod server deploy, both act

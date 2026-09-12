@@ -116,9 +116,16 @@ const clickByText = (selector, text) => `(() => {
 
 async function main() {
   const host = open('host');
-  const guest = open('guest');
+  /* ONE GUEST BY DEFAULT, up to three — a room seats four drivers, so three guests plus the
+     host is a full 2v2 and the most this feature is ever asked to do. Every check below is
+     written for N, because the interesting failures (a second and third peer connection, four
+     seats, three snapshot streams off one Worker) only appear past one. */
+  const wanted = Math.max(1, Math.min(3, Number(flag('--guests', '1')) || 1));
+  const guests = Array.from({ length: wanted }, (_, i) => open(`guest${wanted > 1 ? i + 1 : ''}`));
+  const one = guests[0];
+  const N = (label) => (wanted > 1 ? `${label} (×${wanted})` : label);
 
-  console.log(`[lanprobe] ${ORIGIN}`);
+  console.log(`[lanprobe] ${ORIGIN}${wanted > 1 ? ` — ${wanted} guests` : ''}`);
   await host.loadURL(`${ORIGIN}/lan`);
 
   // ---- the server said hosting needs no account here, so the button is live
@@ -139,32 +146,34 @@ async function main() {
   check('host: the rendezvous issued a room code', !!code && code.length === 6, code || 'none');
   if (!code) return;
 
-  // ---- the guest joins by that code
-  await guest.loadURL(`${ORIGIN}/lan`);
-  const typed = await until(guest, typeInto('.ds-input[placeholder="BCDFGH"]', code), 15_000);
-  check('guest: the code field takes the code', !!typed);
-  if (!typed) return;
+  /* ---- the guests join by that code, ONE AT A TIME. Sequential on purpose: each arrival has
+     to be seen on the host before the next is let in, or a failure to admit the third is
+     indistinguishable from a slow second. */
+  const counted = `(document.body.innerText.match(/([0-9]+) players? ha[sv]e? joined/) || [0, '0'])[1]`;
+  let typedAll = true;
+  let clickedAll = true;
+  let arrived = 0;
+  for (const g of guests) {
+    await g.loadURL(`${ORIGIN}/lan`);
+    const typed = await until(g, typeInto('.ds-input[placeholder="BCDFGH"]', code), 15_000);
+    typedAll = typedAll && !!typed;
+    if (!typed) break;
+    const clicked = await until(g, clickByText('button', 'JOIN'), 5_000);
+    clickedAll = clickedAll && !!clicked;
+    if (!clicked) break;
+    /* ---- BUG 1 lives here. A guest closes its rendezvous socket the moment the channels
+       open; the host used to read that as the guest leaving and close the connection. The
+       symptom was this counter going up and straight back down. */
+    const seen = await until(host, `Number(${counted}) >= ${arrived + 1} || null`, 25_000);
+    if (!seen) break;
+    arrived++;
+  }
+  check(N('guest: the code field takes the code'), typedAll);
+  check(N('guest: JOIN is enabled once the code is complete'), clickedAll);
+  check(N('link: the host sees the guest arrive over WebRTC'), arrived === wanted, `${arrived}/${wanted}`);
 
-  const clicked = await until(guest, clickByText('button', 'JOIN'), 5_000);
-  check('guest: JOIN is enabled once the code is complete', !!clicked);
-  if (!clicked) return;
-
-  /* ---- BUG 1 lives here. The guest closes its rendezvous socket the moment the channels
-     open; the host used to read that as the guest leaving and close the connection. The
-     symptom was this counter going to 1 and back to 0. */
-  const joined = await until(
-    host,
-    `/player.{0,12}joined/.test(document.body.innerText) || null`,
-    25_000,
-  );
-  check('link: the host sees the guest arrive over WebRTC', !!joined);
-
-  const stillThere = await until(
-    host,
-    `/player.{0,12}joined/.test(document.body.innerText) || null`,
-    6_000,
-  );
-  check('link: and still sees it after the rendezvous socket closes (not torn down)', !!stillThere);
+  const stillThere = await until(host, `Number(${counted}) >= ${wanted} || null`, 6_000);
+  check('link: and still sees them after the rendezvous sockets close (not torn down)', !!stillThere);
 
   /* ---- BUGS 2 AND 3 both live here, and they are the same bug at two layers.
      `join` is the first frame a client sends and `LobbyClient.join` sends it from `onOpen`
@@ -173,57 +182,72 @@ async function main() {
      adopts it. Both the frame (BUG 2) and the open EVENT (BUG 3) were being delivered to a
      listener that did not exist yet. Reaching the DRIVERS list is proof the round trip
      completed: join → room → welcome → roster. */
-  const inRoom = await until(
-    guest,
-    `(() => {
-      const t = document.body.innerText;
-      if (/Lost connection|Couldn.t reach/i.test(t)) return 'error';
-      return document.querySelectorAll('.ds-players .ds-player').length ? 'roster' : null;
-    })()`,
-    30_000,
+  const seatedStates = [];
+  for (const g of guests) {
+    seatedStates.push(
+      await until(
+        g,
+        `(() => {
+          const t = document.body.innerText;
+          if (/Lost connection|Couldn.t reach/i.test(t)) return 'error';
+          return document.querySelectorAll('.ds-players .ds-player').length ? 'roster' : null;
+        })()`,
+        30_000,
+      ),
+    );
+  }
+  check(
+    N('room: the guest is seated — its join reached the room and came back'),
+    seatedStates.every((s) => s === 'roster'),
+    seatedStates.map((s) => s || 'timed out').join(', '),
   );
-  check('room: the guest is seated — its join reached the room and came back', inRoom === 'roster', inRoom || 'timed out');
 
-  const guestText = await guest.webContents.executeJavaScript('document.body.innerText').catch(() => '');
+  const guestText = await one.webContents.executeJavaScript('document.body.innerText').catch(() => '');
   check('room: and it was not dropped on the way in', !/Lost connection/i.test(guestText));
 
   /* ---- THE HOST TAKES ITS OWN SEAT THROUGH THE SAME DOOR, over a LoopbackTransport whose
      `open` fired when the Worker said the room was ready — long before this click. It is the
      same latch as the guest's and it failed the same way, leaving a host on "waiting for
-     players" beside a guest already sitting in the room. Two names in the list is the proof
-     that both sides of the seam seated themselves. */
+     players" beside a guest already sitting in the room. A full roster is the proof that both
+     sides of the seam seated themselves. */
   const wentIn = await until(host, clickByText('button', 'GO TO THE ROOM'), 10_000);
   check('host: GO TO THE ROOM takes it into its own room', !!wentIn);
   const seated = await until(
     host,
-    `document.querySelectorAll('.ds-players .ds-player').length || null`,
+    `document.querySelectorAll('.ds-players .ds-player').length >= ${wanted + 1}
+       ? document.querySelectorAll('.ds-players .ds-player').length : null`,
     20_000,
   );
-  check('room: and the host is seated there too, beside the guest', seated === 2, seated ? `${seated} player(s)` : 'none');
+  check(
+    'room: and the host is seated there too, beside the guests',
+    seated === wanted + 1,
+    `${seated || 0}/${wanted + 1} player(s)`,
+  );
 
   /* ---- AND THE MATCH ITSELF. Everything above proves the LOBBY round trip, which is a
      handful of reliable control frames; a match is the hot lane, 30 times a second, for as
-     long as anybody is playing. The guest is the honest end to measure: it simulates nothing
-     authoritative, so a clock that moves on the guest's HUD is a clock being delivered from
-     the host's Worker, through the page, over the DataChannel, into the stock `ServerSession`
+     long as anybody is playing. A guest is the honest end to measure: it simulates nothing
+     authoritative, so a clock that moves on a guest's HUD is a clock being delivered from the
+     host's Worker, through the page, over the DataChannel, into the stock `ServerSession`
      that has no idea it is not talking to Fly. */
-  const bothReady =
-    (await until(guest, clickByText('button', 'READY UP'), 10_000)) &&
-    (await until(host, clickByText('button', 'READY UP'), 10_000));
-  check('match: both players can ready up', !!bothReady);
+  let allReady = true;
+  for (const g of guests) allReady = (await until(g, clickByText('button', 'READY UP'), 10_000)) && allReady;
+  allReady = (await until(host, clickByText('button', 'READY UP'), 10_000)) && allReady;
+  check('match: every player can ready up', !!allReady);
 
   const started = await until(host, clickByText('button', 'START MATCH'), 15_000);
   check('match: START unlocks for the host once everyone is ready', !!started);
 
   if (started) {
-    const onField = await until(guest, `document.querySelector('canvas') ? 'yes' : null`, 20_000);
-    check('match: the guest is on the field', onField === 'yes');
+    const fields = [];
+    for (const g of guests) fields.push(await until(g, `document.querySelector('canvas') ? 'yes' : null`, 20_000));
+    check(N('match: the guest is on the field'), fields.every((f) => f === 'yes'), fields.map((f) => f || 'no').join(', '));
 
     /* THE CLOCK, ON BOTH SCREENS, AND THEY ANSWER DIFFERENT QUESTIONS. The host's clock
-       moving says the Worker's room is stepping at all; the guest's moving says those steps
-       are reaching the far end. A single reading proves neither — it only proves a HUD
-       rendered — and an immediate one reads the MATCH BEGINS IN lead-in, which carries no
-       clock, so both are waited for and then watched for a CHANGE. */
+       moving says the Worker's room is stepping at all; a guest's moving says those steps are
+       reaching the far end. A single reading proves neither — it only proves a HUD rendered —
+       and an immediate one reads the MATCH BEGINS IN lead-in, which carries no clock, so both
+       are waited for and then watched for a CHANGE. */
     const CLOCK = `(document.body.innerText.match(/[0-9]+:[0-9][0-9]/) || [''])[0]`;
     const moved = async (win, ms) => {
       const first = await until(win, `${CLOCK} || null`, 25_000);
@@ -235,11 +259,12 @@ async function main() {
     const hostClock = await moved(host, 15_000);
     check('match: the host’s room is stepping — its own clock moves', hostClock.includes('→'), hostClock);
 
-    const guestClock = await moved(guest, 15_000);
+    const clocks = [];
+    for (const g of guests) clocks.push(await moved(g, 15_000));
     check(
-      'match: and the guest’s clock moves with it — snapshots are crossing the DataChannel',
-      guestClock.includes('→'),
-      guestClock,
+      N('match: and the guest’s clock moves with it — snapshots are crossing the DataChannel'),
+      clocks.every((c) => c.includes('→')),
+      clocks.join(' | '),
     );
   }
 

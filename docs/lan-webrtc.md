@@ -284,9 +284,15 @@ opens two real Electron windows on a running `npm run lan:tab`, clicks the real 
 takes a hosted match from START HOSTING to a clock ticking down on the guest's HUD:
 
 ```
-npm run lan:tab      # leave it running
-npm run lan:probe    # 15 checks, ALL PASS
+npm run lan:tab                            # leave it running
+npm run lan:probe                          # 15 checks, ALL PASS
+npx electron scripts/lanprobe.cjs --guests 3   # a FULL room: host + 3 guests, 2v2
 ```
+
+Both sizes pass. The 2v2 is the one worth re-running after any change to the host runtime: it
+is three simultaneous `RTCPeerConnection`s fed by one Worker, and the last check reads the
+clock on all three guests (`0:29 → 0:28 | 0:28 → 0:27 | 0:27 → 0:26` — they are a beat apart
+because they are sampled in turn, not because they are drifting).
 
 It found four bugs, and not one of them is a typo:
 
