@@ -16,6 +16,8 @@
     "preview": "vite preview",
     "test": "tsx scripts/smoke.ts && tsx scripts/smoke-biobuzz/index.ts",
     "test:bb": "tsx scripts/smoke-biobuzz/index.ts",
+    "test:bb:field": "tsx scripts/smoke-biobuzz/index.ts --lane field",
+    "test:bb:robot": "tsx scripts/smoke-biobuzz/index.ts --lane robot",
     "test:mm": "tsx scripts/mmsmoke.ts",
     "contrast": "node scripts/contrast.mjs",
     "shiftaudit": "electron scripts/shiftaudit.cjs",
