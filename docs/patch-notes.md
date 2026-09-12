@@ -178,11 +178,33 @@ that cannot be turned into advice or into something visibly different belongs in
 Do not restate them here; they drift. The ones that catch people writing notes:
 
 - **Typographic punctuation.** `’` `“` `”` `…`, never the ASCII ones.
-- ⚠️ **Prefer a full stop or a colon to a dash.** A dash-joined appositive is the single
-  most-cited tell of machine-written prose, and patch notes attract it badly. Where a dash
-  is genuinely right it is `—`.
+- ⚠️ **NO EM DASHES. None.** Not one, anywhere in a patch note. A dash-joined appositive is
+  the single most-cited tell of machine-written prose, and every one of them is a full stop,
+  a colon, a comma or a rewrite. This is stricter than the rest of the app's copy, and it is
+  deliberate: a note is the most-read prose DSIM publishes.
 - **Sentence case headings.** No Title Case, no ALL CAPS.
 - **No padding**: simply, just, please note, be sure to, feel free to. No "we're excited to".
+
+### ⚠️ Sentence shapes that read as AI, and what to write instead
+
+These are not style nits. They are the constructions a reader recognises instantly, and
+every one below was written into a real draft of these notes and had to be pulled out.
+
+- **"X is a real Y."** *Pushing is a real force* → **"Pushing is calculated using forces."*
+  Say the mechanism. "Real" is doing emphasis, not information, and it implies the old one
+  was fake.
+- **"like the X they are" / "as the X they form."** *Artifacts collide like the foam balls
+  they are* → **"Artifacts collide like foam balls."** *Wheels render as the diamond they
+  form* → **"Wheels render as a diamond."**
+- **"X reads as X."** *Terrain reads as terrain* → say what the player sees: **"The robot
+  lifts, casts a shadow and thumps."**
+- **"A is A"** restatements. *A pile pushes as a pile* → **"You can push a whole pile."**
+- **Grand openers.** *The biggest update DSIM has had.* Cut it. Open on the heading and the
+  headline bullets; let the content be the claim.
+
+The common fault is a sentence that sounds like it is saying something while carrying no
+new fact. Read each bullet and ask what a player learns from it. If the answer is "that we
+are pleased with it", delete it.
 - **Terminology is per game and a leak is a bug.** DECODE has **artifacts**; Chain Reaction
   has **particles**, and its ring is a **catalyst** (the *ring stand* is a different object).
   Teleop is **driver-controlled**. DSIM is the app; DECODE and Chain Reaction are seasons of
@@ -204,10 +226,11 @@ is usually two sections or one sentence.
 ## 5. Skeleton
 
 ```
-# What this is
+# Welcome to <the period this opens>
 
-One or two sentences: the shape of the release, and the single most important
-consequence. If something resets, it is named in this paragraph.
+Four or five BOLD one-line headlines, most consequential first. If something
+resets, it is the first bullet. No opening paragraph: the heading and these
+bullets are the summary.
 
 ## Season and records        ← only when something resets. First, always.
 - what reset, what did not, and what that means for their rank and their PBs
