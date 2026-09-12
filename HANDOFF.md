@@ -79,10 +79,13 @@ sat waiting for each other.
    rendezvous local and nobody signed in, so the auth handshake and the upload are the two legs
    still unproven. A match hosted this way stays in the device backlog and drains later.
 3. A FULL 2v2 passes too (`--guests 3`: three simultaneous peer connections off one Worker,
-   four seats, three snapshot streams, every clock moving). What is still unmeasured is a host
-   whose tab is in the BACKGROUND for a whole match — the Worker held 60.08 Hz for 7 minutes
-   hidden (§6), but that was the Worker alone, not a hidden host with three live peers on the
-   page thread. The health readout is where it would show up.
+   four seats, three snapshot streams, every clock moving), and so does a BACKGROUND-THROTTLED
+   host: `--throttle --soak 150` held **30.0 Hz at the guest on every sample**, with one guest
+   and with three. The page being throttled does not starve the match — it only forwards
+   already-encoded frames, and the 60 Hz loop is in the Worker where the throttle cannot reach.
+   ⚠️ Still unmeasured: the INTENSIVE throttling regime, which needs five minutes hidden and so
+   cannot be reached inside a 2:30 match. A host who tabs away for ten minutes mid-session is
+   the remaining unknown, and the health readout is where it would show up.
 # HANDOFF — 2026-09-12 (SHIPPED: alpha is in production, and both games are on Act 2 · Season 1)
 
 **Production is live on `4d2917f`.** The alpha→main promotion, the prod server deploy, both act

@@ -294,6 +294,27 @@ is three simultaneous `RTCPeerConnection`s fed by one Worker, and the last check
 clock on all three guests (`0:29 → 0:28 | 0:28 → 0:27 | 0:27 → 0:26` — they are a beat apart
 because they are sampled in turn, not because they are drifting).
 
+`--soak <seconds>` then keeps the match running and samples the rate the GUEST is actually
+receiving, off the connection-quality readout the HUD already computes. That is the honest
+number: a host can believe it is stepping at 60 Hz and be delivering nothing, and a room that
+has quietly stopped looks fine from the host's own screen. `--throttle` lets the host window be
+background-throttled like an ordinary hidden tab — §6 measured a hidden WORKER holding 60 Hz,
+but the peer connections live on the PAGE, which is the half that gets throttled.
+
+| run | snapshots at the guest, sampled every 5 s |
+|---|---|
+| 1 guest, host not throttled, 60 s | mean **30.0 Hz**, worst 30 |
+| 1 guest, host background-throttled, 150 s (a whole match) | mean **30.0 Hz**, worst 30 |
+| 3 guests, host background-throttled, 150 s | mean **30.0 Hz**, worst 30 |
+
+Flat, on every sample, in all three. The split holds up: the page being throttled does not
+starve the match, because the page only forwards already-encoded frames and the 60 Hz loop is
+somewhere the throttle cannot reach. ⚠️ One limit on that claim — these windows were hidden
+from creation and the match is 2:30, so they sit in Chromium's BUDGET-based throttling and
+never reach the INTENSIVE regime (5 minutes hidden), which is the one §6's 7-minute run was
+measuring. A host who leaves a match open, tabs away for ten minutes and comes back is still
+unmeasured.
+
 It found four bugs, and not one of them is a typo:
 
 1. **The host tore down the connection that had just succeeded.** A guest closes its rendezvous

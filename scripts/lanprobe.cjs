@@ -43,6 +43,20 @@ function flag(name, fallback) {
 }
 const ORIGIN = (flag('--url', 'http://127.0.0.1:8787') || '').replace(/\/$/, '');
 
+/**
+ * `--soak <seconds>` keeps the match running and watches the snapshot rate the GUEST is
+ * actually receiving, which is the one number that says whether a host is keeping up.
+ *
+ * `--throttle` is the experiment it exists for: it lets the host window be background-throttled
+ * like an ordinary hidden tab, instead of the `backgroundThrottling: false` every other window
+ * here gets. docs/lan-webrtc.md §6 measured a hidden Worker holding 60.08 Hz for 7 minutes — but
+ * that was a Worker ALONE, with no peer connections on the page thread beside it, and the page
+ * is where every DataChannel actually lives. Run `--throttle --soak 90` to measure the real
+ * thing; without it the soak measures a foregrounded host, which is the happy case.
+ */
+const SOAK_S = Math.max(0, Number(flag('--soak', '0')) || 0);
+const THROTTLE_HOST = args.includes('--throttle');
+
 let failures = 0;
 function check(label, ok, detail) {
   if (!ok) failures++;
@@ -51,14 +65,15 @@ function check(label, ok, detail) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function open(tag) {
+function open(tag, throttled = false) {
   const win = new BrowserWindow({
     show: false,
     width: 1280,
     height: 800,
     webPreferences: {
-      // see the header: a throttled window measures the throttle, not the feature
-      backgroundThrottling: false,
+      // see the header: a throttled window measures the throttle, not the feature — unless
+      // the throttle IS the measurement, which is what `--throttle` asks for on the host
+      backgroundThrottling: throttled,
     },
   });
   /* Both failures this probe was written for were SILENT on the page — no error, two screens
@@ -115,7 +130,7 @@ const clickByText = (selector, text) => `(() => {
 })()`;
 
 async function main() {
-  const host = open('host');
+  const host = open('host', THROTTLE_HOST);
   /* ONE GUEST BY DEFAULT, up to three — a room seats four drivers, so three guests plus the
      host is a full 2v2 and the most this feature is ever asked to do. Every check below is
      written for N, because the interesting failures (a second and third peer connection, four
@@ -265,6 +280,44 @@ async function main() {
       N('match: and the guest’s clock moves with it — snapshots are crossing the DataChannel'),
       clocks.every((c) => c.includes('→')),
       clocks.join(' | '),
+    );
+  }
+
+  if (started && SOAK_S > 0) {
+    /* THE RATE THE GUEST IS ACTUALLY RECEIVING, sampled off the connection-quality readout the
+       HUD already computes. It is the honest number: a host can believe it is stepping at 60 Hz
+       and still be delivering nothing, and a room that has quietly stopped looks exactly like
+       one that is fine from the host's own screen. */
+    const HZ = `(document.body.innerText.match(/([0-9]+)Hz/) || [0, ''])[1]`;
+    const samples = [];
+    const t0 = Date.now();
+    /* ⚠️ A MATCH ENDS. Auto plus driver-controlled is 2:30, so a soak longer than that outlives
+       the thing it is measuring — the HUD goes with the field and every later sample reads 0,
+       which is a failure the run invented for itself. Sampling stops when the field does. */
+    let ended = false;
+    while ((Date.now() - t0) / 1000 < SOAK_S) {
+      await sleep(5000);
+      const live = await one.webContents.executeJavaScript(`document.querySelector('canvas') ? 1 : 0`).catch(() => 0);
+      if (!live) {
+        ended = true;
+        break;
+      }
+      samples.push(Number(await one.webContents.executeJavaScript(HZ).catch(() => 0)) || 0);
+    }
+    const soaked = Math.round((Date.now() - t0) / 1000);
+    const worst = samples.length ? Math.min(...samples) : 0;
+    const mean = samples.length ? samples.reduce((a, b) => a + b, 0) / samples.length : 0;
+    console.log(
+      `[soak] ${soaked}s${ended ? ' (the match ended)' : ''}, ` +
+        `host ${THROTTLE_HOST ? 'BACKGROUND-THROTTLED' : 'not throttled'} — ` +
+        `snapshots at the guest: mean ${mean.toFixed(1)} Hz, worst ${worst} Hz, samples [${samples.join(' ')}]`,
+    );
+    /* 30 Hz is the design rate (SNAPSHOT_INTERVAL, 2 ticks). Two thirds of it is the line
+       between "a busy machine" and "this match has stopped being playable". */
+    check(
+      `soak: the guest kept receiving snapshots for ${soaked}s`,
+      worst >= 20,
+      `worst ${worst} Hz, mean ${mean.toFixed(1)} Hz`,
     );
   }
 
