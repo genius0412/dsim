@@ -1000,7 +1000,7 @@ function attemptDir(r: RobotState, cmd: RobotCommand | undefined): Vec2 | null {
  * for a referee; see PIN_WALL_SLOP for why something has to break the symmetry of a shove, and
  * what leaving it in costs.
  */
-function isPinning(
+export function isPinning(
   pinner: RobotState,
   pinned: RobotState,
   contact: boolean,

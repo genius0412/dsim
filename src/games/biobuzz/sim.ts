@@ -18,17 +18,17 @@ import { biobuzzStep } from './step';
  * (`src/games/index.ts`, `src/games/sim.ts`) the whole of "adding a game" — see CLAUDE.md's
  * seam section for the four registrations and why all four fail silently when missed.
  *
- * ── WHY `scored` AND `startLegality` ARE BOTH FALSE ────────────────────────
- * Not as a stub, but as the truth about a pre-Kickoff game. Sections 7-11 of the V0 manual
- * (Game Details, Scoring, ARENA) are one-line placeholders reading "updated with the Kickoff
- * Competition Manual release on September 12, 2026", so:
- *   • `scored: false` — `scoreTargets()` is empty and `play.ts`'s score pass writes zeroes, so
- *     nothing here may reach a leaderboard, a record board or an ELO. `persistMatch` reads
- *     this flag off the SERVER-SAFE registry and skips the write entirely.
- *   • `startLegality: false` — there is no published G304 analogue, so the two anchors are a
+ * ── `scored` IS TRUE, `startLegality` IS STILL FALSE ─────────────────────────
+ *   • `scored: true` since 2026-09-12 (kickoff evening): `score.ts` scores the whole of
+ *     Table 10-2 every tick (TIPS, CELL contents, FLOWER ownership, GARDEN, LEAVE, PARK) and
+ *     `scoreTargets()` returns the real openings, so a BIOBUZZ match may reach the record
+ *     board, the ranked periods and `persistMatch` — all keyed per game, and all still
+ *     ALPHA-ONLY through `channels`. Several inputs are `APPROX` (`BB_TIP_POLLEN[0]`,
+ *     `BB_FRAME_RAM_SPEED`), so numbers on the alpha board before the 2026-09-14 field test
+ *     are provisional. Setting this back to `false` is the one-line way to stop persisting.
+ *   • `startLegality: false` — there is no published G304 analogue, so the anchors are a
  *     convenience rather than a rule, and the server's legality gate stays off. The anchors
  *     are `APPROX` and say so at their definition.
- * Both flip in one commit the day the manual lands. Nothing else about the module changes.
  *
  * `initialAct: 2` — DECODE opened in act 0 (its beta bucket) and Chain Reaction in act 1, so
  * this game's first ranked period opens in act 2. Distinct per game is asserted by the smoke
@@ -36,7 +36,7 @@ import { biobuzzStep } from './step';
  */
 export const BIOBUZZ_SIM: GameSimModule = {
   id: 'biobuzz',
-  scored: false,
+  scored: true,
   startLegality: false,
   initialAct: 2,
   // the legal range of a `startIndex` — read by `coerceStartIndex`, `coerceSetup`,

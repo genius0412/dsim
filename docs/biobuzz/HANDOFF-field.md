@@ -168,11 +168,10 @@ Scoring, the Section 11 contact rules, the 1:00 cue, the `gameHud` slice and thr
 2. **`origin/biobuzz-field` is AHEAD by `7f67fa0` ("the field goes live") and this branch does
    NOT carry it.** The brief's merge trigger is a `state.ts` commit and that one touches
    `play.ts`, `field.ts` and the handoff only. It is the commit that unblocks item 3.
-3. **`hive-tip` renders three IDENTICAL stills** (t = 0 · 2 s · 4 s). The scene is built
-   against the finished swing, but the swing is advanced by `hiveStep` from `play.ts`, which
-   is A4a's file. Its header says so. The swing arithmetic is NOT untested — `rules.ts` calls
-   the pure `hiveStep` directly and pins the release at `BB_TIP_RELEASE_S`. **Once `7f67fa0`
-   is merged the three stills should differ; re-shoot the cell and delete this note.**
+3. ~~`hive-tip` three identical stills~~ **CLOSED by the integration chat 2026-09-12**: with
+   `7f67fa0` merged the stills differ — t=0 full cell, t=2 s cross-fade with the row dimmed
+   (released), t=4 s the other cell up and seven elements spilled outboard (1600px re-shoot
+   read). Nothing left to do here.
 4. **`HudSlots.tsx` has not been wired.** `biobuzzFieldHud` now returns the whole of Table
    10-2 per alliance, the RP flags, the per-cell `needed`/`tipping`, flower owners and depth,
    the nectar stock/due and the G410 lock. The slice is ADDITIVE, so existing reads of

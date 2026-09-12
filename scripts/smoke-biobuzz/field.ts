@@ -201,7 +201,9 @@ export function fieldChecks(check: Check): void {
   {
     const mod = moduleFor('biobuzz');
     check('registry: moduleFor("biobuzz") resolves to the BIOBUZZ module', mod.id === 'biobuzz', `id=${mod.id}`);
-    check('registry: BIOBUZZ declares scored:false (never persists ELO/records)', mod.scored === false);
+    // Flipped 2026-09-12 (kickoff evening) once score.ts covered Table 10-2. Alpha-only via
+    // `channels`, so what persists lands on an alpha board nobody competes on yet.
+    check('registry: BIOBUZZ declares scored:true (Table 10-2 is live; persists per game)', mod.scored === true);
     check('registry: BIOBUZZ declares startLegality:false (no published G304 analogue)', mod.startLegality === false);
     check(
       'registry: bounds are the 144x144 field',
@@ -2623,8 +2625,8 @@ export function roomChecks(check: Check): void {
    *    and 4 POLLEN in the GARDEN. A hard-coded 10 would pin the staging from the server lane,
    *    which is not this file's business; the arithmetic is.
    *
-   * The score being live does NOT make the game persist — `simModuleFor('biobuzz').scored` is
-   * checked below and is what `persistMatch` reads.
+   * The score being live is ALSO what makes the game persist — `simModuleFor('biobuzz').scored`
+   * is checked below and is what `persistMatch` reads. It flipped to true 2026-09-12.
    */
   const staged = 3 * BB_PTS.cell + 4 * BB_PTS.garden;
   check(
@@ -2632,13 +2634,12 @@ export function roomChecks(check: Check): void {
     res?.result.score.blue === staged && res?.result.score.red === staged,
     `blue=${res?.result.score.blue} red=${res?.result.score.red} staged=${staged}`,
   );
-  // The outcome still has to be GAME-TAGGED even though nothing is written: it is what
-  // `persistMatch` reads to decide to skip, and an absent `game` defaults to DECODE — which
-  // would file a BIOBUZZ run onto the DECODE boards.
+  // The outcome has to be GAME-TAGGED: it is what `persistMatch` keys the write on, and an
+  // absent `game` defaults to DECODE — which would file a BIOBUZZ run onto the DECODE boards.
   check('room: the MatchOutcome carries game:"biobuzz"', outcomeGame === 'biobuzz', `game=${outcomeGame}`);
   check(
-    'room: the SERVER-SAFE registry declares BIOBUZZ unscored, so persistMatch skips it',
-    simModuleFor('biobuzz').scored === false,
+    'room: the SERVER-SAFE registry declares BIOBUZZ scored, so persistMatch writes it (per game)',
+    simModuleFor('biobuzz').scored === true,
   );
 
   // -- THE START-POSE DE-CONFLICT LOOP READS THIS GAME'S ANCHOR COUNT ------------
