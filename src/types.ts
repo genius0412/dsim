@@ -5,7 +5,9 @@ import type { BiobuzzState } from './games/biobuzz/state';
 export type { GameId } from './games/types';
 
 export type Alliance = 'red' | 'blue';
-export type ArtifactColor = 'purple' | 'green';
+/** DECODE artifacts are purple/green; BIOBUZZ POLLEN is yellow and NECTAR carries its alliance
+ * colour. One union, so the renderer and the hopper HUD read one field. */
+export type ArtifactColor = 'purple' | 'green' | 'yellow' | 'red' | 'blue';
 export type Motif = readonly [ArtifactColor, ArtifactColor, ArtifactColor];
 
 export type GameMode = 'match' | 'free';
@@ -262,11 +264,20 @@ export type BallState =
    * (a 3rd ball entering a side pushes the resident ball to the other side). The
    * robot's `hopper` color array mirrors these (count + colors synced). */
   | { kind: 'held'; robot: number; slot: number; lx: number; ly: number; side: number }
-  | { kind: 'stock'; alliance: Alliance }; // held by the human player, off-field
+  | { kind: 'stock'; alliance: Alliance } // held by the human player, off-field
+  /** parked INSIDE a field element (a BIOBUZZ HIVE cell or FLOWER stack): `el` names the
+   * element (`'hive:red'`, `'flower:2'`), `slot` its position in that element's order. The
+   * ball stays in `world.balls` so conservation is one array; it is not solved or drawn as a
+   * loose ball while in this state. */
+  | { kind: 'element'; el: string; slot: number };
 
 export interface Artifact {
   id: number;
   color: ArtifactColor;
+  /** radius in inches when it differs from the game's default (BIOBUZZ NECTAR 1.8 vs POLLEN
+   * 1.4). Renderers read it; the shared artifact solve does NOT yet — it runs one radius per
+   * call. Owner item, see docs/biobuzz/feedback/000-solver-observations.md. */
+  r?: number;
   state: BallState;
   pos: Vec2;
   vel: Vec2;
