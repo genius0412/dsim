@@ -157,6 +157,59 @@ if ($st.Code -ne 0) {
   Die "signed in, but '$App' is not reachable from this account - confirm you were added to the org that owns it.`n$($st.Text.Trim())"
 }
 
+# --- 4b. the network path to Fly -------------------------------------------------------
+# A deploy that dies on `Get "https://api.machines.dev/...": unexpected EOF` looks like Fly
+# being down and is usually neither Fly nor this repo: it is a DUAL-STACK host whose IPv6
+# route to Fly drops the TLS handshake. Measured here on 2026-09-12 - HTTPS over IPv6 to
+# Google and Cloudflare was fine, while api.fly.io over IPv6 failed 4 attempts in 5, every
+# failure a 5s timeout AFTER a successful TCP connect. That ordering is the whole problem:
+# Happy Eyeballs only races the CONNECT, so a v6 socket that opens and then stalls in TLS is
+# never retried over v4 by curl, by Go, or therefore by flyctl.
+#
+# This only reports. Preferring IPv4 is a machine-wide network setting and needs elevation,
+# so the command is printed for you to run rather than run behind your back.
+function Test-FlyPath {
+  $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+  if (-not (Test-Path $curl)) { return $null }
+  $probe = {
+    param($family)
+    $ok = 0
+    foreach ($i in 1..3) {
+      $code = (& $curl -s $family -o NUL -w '%{http_code}' --max-time 10 'https://api.fly.io/' 2>$null)
+      if ($code -and $code -ne '000') { $ok++ }
+    }
+    return $ok
+  }
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try { return [pscustomobject]@{ V4 = (& $probe '-4'); V6 = (& $probe '-6') } }
+  finally { $ErrorActionPreference = $prev }
+}
+
+$path = Test-FlyPath
+if ($path -and $path.V4 -ge 2 -and $path.V6 -le 1) {
+  Write-Host ''
+  Warn "IPv6 to Fly is unreliable here: api.fly.io answered $($path.V4)/3 over IPv4 but only $($path.V6)/3 over IPv6."
+  Warn 'flyctl prefers IPv6 and does not fall back once TLS stalls, so a deploy will likely fail'
+  Warn 'with "unexpected EOF" or "context canceled". Prefer IPv4 in an ADMIN PowerShell:'
+  Write-Host ''
+  Write-Host '    netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 100 4' -ForegroundColor White
+  Write-Host ''
+  Write-Host '  and afterwards put it back with:' -ForegroundColor White
+  Write-Host ''
+  Write-Host '    netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 35 4' -ForegroundColor White
+  Write-Host ''
+  Write-Host '  It takes effect immediately, needs no reboot, and changes preference ORDER only -' -ForegroundColor White
+  Write-Host '  IPv6 still works for anything with no IPv4 address.' -ForegroundColor White
+  Write-Host ''
+  if (-not $Yes) {
+    $go = Read-Host 'Deploy anyway? [y/N]'
+    if ($go -notmatch '^[Yy]') { Warn 'stopped - nothing was deployed.'; exit 1 }
+  }
+} elseif ($path) {
+  Say "network to Fly: IPv4 $($path.V4)/3, IPv6 $($path.V6)/3"
+}
+
 # --- 5. confirm ------------------------------------------------------------------------
 Write-Host ''
 Write-Host "About to deploy the ALPHA preview app '$App' from fly.alpha.toml." -ForegroundColor White
