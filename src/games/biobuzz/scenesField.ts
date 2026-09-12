@@ -1,5 +1,14 @@
-import type { RobotCommand } from '../../types';
-import { BB_HALF_X, BB_HALF_Y, BB_POLLEN_R } from './config';
+import type { Artifact, ArtifactColor, RobotCommand } from '../../types';
+import {
+  BB_FLOWERS,
+  BB_HALF_X,
+  BB_HALF_Y,
+  BB_HIVE_CELL_DY,
+  BB_HIVE_UP_STAGED,
+  BB_HIVE_X,
+  BB_NECTAR_R,
+  BB_POLLEN_R,
+} from './config';
 import {
   bbCmd,
   bbPile,
@@ -45,6 +54,11 @@ import { BB_DEFAULT_SPEC } from './robotConfig';
 /** POLLEN ids start at 1, never 0: `emptyBiobuzzState().nextBallId` starts there too, so a
  * scene laying out ids from 1 keeps a launched pollen from aliasing a floor one. */
 const ID0 = 1;
+
+/** ids for elements PARKED inside a field element (`field-labelled`). Far above any floor
+ * layout in this file so the two can never collide, and so a parked id is recognisable as one
+ * in a state dump. */
+const PARKED_ID0 = 900;
 
 /** how far a POLLEN's centre sits from a wall when it is resting against it. */
 const AT_WALL_X = BB_HALF_X - BB_POLLEN_R;
@@ -113,25 +127,73 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
      *      internally consistent and wrong — this cell is the only thing that catches it.
      *   2. The four FLOWERS on the ±24 tile seams, one per wall, point-symmetric.
      *   3. The HIVE pair centred, red at −x, blue at +x, and the STAGED tilt: red's SOUTH cell
-     *      up, blue's NORTH cell up (§10.3.1, Fig 10-2). The down cell is drawn foreshortened.
+     *      up, blue's NORTH cell up (§10.3.1, Fig 10-2). BOTH cells are drawn the SAME SIZE —
+     *      the see-saw is one rigid bar at 30°, so a plan view foreshortens both ends equally
+     *      (reference §2.2) and only brightness and the counts say which is up.
      *   4. The AprilTag id groups against Figs 9-15…9-17. A published tag id is the one thing
      *      here that pins the drawing to the real field.
+     *   5. The two READOUTS, which is why this cell holds elements at all — see `build`.
      */
     build: (seed) => {
-      const world = bbWorld(seed, [], []);
+      /**
+       * WHY THIS CELL CARRIES ELEMENTS, AND WHY THEY ARE REAL ONES.
+       *
+       * The two readouts are COLOUR readouts: the per-type counts in an up-CELL and the stack
+       * drawn beside each FLOWER. Both are a JOIN — `bb.hives[a].contents` and
+       * `bb.flowers[i].stack` hold IDS and the elements themselves live in `world.balls` in
+       * the `element` state, one array, so conservation is one count (`state.ts`). A bare id
+       * with nothing behind it therefore draws NOTHING, by design, and an earlier pass of this
+       * scene that listed ids alone rendered two empty readouts.
+       *
+       * So the contents here are `Artifact`s. `pos` is the FIELD ELEMENT they are parked in: a
+       * parked element is not solved and has no position of its own, so the value is only ever
+       * somewhere to point at.
+       */
+      const balls: Artifact[] = [];
+      const el = (color: ArtifactColor, where: string, slot: number, x: number, y: number): number => {
+        const id = PARKED_ID0 + balls.length;
+        balls.push({
+          id,
+          color,
+          r: color === 'green' ? BB_POLLEN_R : BB_NECTAR_R,
+          state: { kind: 'element', el: where, slot },
+          pos: { x, y },
+          vel: { x: 0, y: 0 },
+          z: 0,
+          vz: 0,
+        });
+        return id;
+      };
+      const inCell = (a: 'red' | 'blue', colors: ArtifactColor[]): number[] => {
+        const x = a === 'red' ? -BB_HIVE_X : BB_HIVE_X;
+        const y = (BB_HIVE_UP_STAGED[a] === 'north' ? 1 : -1) * BB_HIVE_CELL_DY;
+        return colors.map((c, i) => el(c, `hive:${a}`, i, x, y));
+      };
+      const inFlower = (i: number, colors: ArtifactColor[]): number[] =>
+        colors.map((c, slot) => el(c, `flower:${BB_FLOWERS[i].id}`, slot, BB_FLOWERS[i].x, BB_FLOWERS[i].y));
+
+      const world = bbWorld(seed, [], balls);
       const bb = world.biobuzz;
       if (bb) {
         bb.labels = true;
-        // STAGING, AS DRAWING INPUT ONLY. `emptyBiobuzzState` gives the staged TILT; these are
-        // the staged CONTENTS (§10.3.1: 3 NECTAR in each up-CELL, 4 POLLEN in each FLOWER), and
-        // they are bare ids with no matching `world.balls` entry because nothing places real
-        // elements yet — `spawn.ts` does that in a later pass and these lines come out then.
-        // They exist so the cell shows the content count and the stack badge rendering at all.
-        bb.hives.red.contents = [901, 902, 903];
-        bb.hives.blue.contents = [911, 912, 913];
-        bb.flowers.forEach((f, i) => {
-          f.stack = [921 + i * 4, 922 + i * 4, 923 + i * 4, 924 + i * 4];
-        });
+        /**
+         * A MID-MATCH SPREAD, NOT THE STAGED FIELD — `spawn.ts` owns staging, this cell owns
+         * the DRAWING, so the contents are chosen to make each readout say something a reader
+         * can CHECK against a rule rather than to be legal at t=0:
+         *  • red's up-CELL is 3 NECTAR + 2 POLLEN, one POLLEN short of a TIP
+         *    (`BB_TIP_POLLEN[3]` is 3) — exactly the split a single total would hide;
+         *  • blue's holds a RED nectar, because any alliance may LAUNCH into any cell;
+         *  • F2 carries a NECTAR on TOP (blue OWNS it) and F3 one at the BOTTOM (red's 5-point
+         *    bonus, and retrieval locked — a 3.6 NECTAR does not fit the 3.55 opening), which
+         *    is the pair of cases the stack order exists to tell apart;
+         *  • F4 holds SIX, a full flower, which is the length `BB_VIEW_MARGIN` has to clear.
+         */
+        bb.hives.red.contents = inCell('red', ['red', 'red', 'red', 'green', 'green']);
+        bb.hives.blue.contents = inCell('blue', ['blue', 'red', 'green', 'green', 'green', 'green']);
+        bb.flowers[0].stack = inFlower(0, ['green', 'green', 'green', 'green']);
+        bb.flowers[1].stack = inFlower(1, ['green', 'green', 'blue']);
+        bb.flowers[2].stack = inFlower(2, ['red', 'green', 'green', 'green']);
+        bb.flowers[3].stack = inFlower(3, ['green', 'green', 'green', 'green', 'green', 'blue']);
       }
       return world;
     },
