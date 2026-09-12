@@ -1,7 +1,8 @@
 # The prompt to paste into a teammate's Claude
 
-Send them this verbatim, with `<owner>/<board-repo>` and `<their-name>` filled in. It is
-written to be pasted into a Claude Code session in their dsim checkout.
+The board repository is **`Horizon-36596/dsim-coord`** (private). Send them this verbatim,
+with `<their-name>` filled in. It is written to be pasted into a Claude Code session in their
+dsim checkout. They need read/write on the board repository first.
 
 ---
 
@@ -15,7 +16,7 @@ Set it up for me, once:
 1. Make sure my branch has `scripts/coord/` — it landed on `biobuzz-field`. Fetch and merge
    it if it is not here yet.
 2. Write `.coord.json` in the repo root (it is gitignored):
-   `{ "remote": "<owner>/<board-repo>", "name": "<their-name>" }`
+   `{ "remote": "Horizon-36596/dsim-coord", "name": "<their-name>" }`
 3. Run `npm run coord:setup`. It verifies the board repository is private before it sends
    anything, and refuses if it cannot tell.
 
