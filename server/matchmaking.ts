@@ -3,7 +3,7 @@ import { persistMatch, persistDodges, persistBehaviour } from './persist';
 import { actFor, getRating, getSkill, createPendingMatch } from './db/repo';
 import { dbEnabled } from './db/pool';
 import type { GameId } from '../src/types';
-import { bestHost, type PingInfo } from './regions';
+import { DEPLOY_REGIONS, bestHost, type PingInfo } from './regions';
 import type { PendingMatch, PendingRosterEntry } from './matchTypes';
 import { QUEUE_NEED, type LobbyPlayer, type QueueMode, type ServerMsg } from '../src/net/protocol';
 
@@ -348,6 +348,24 @@ export class Matchmaker {
         return { group, hostRegion: bestHost(group.map(toPing)).hostRegion };
       }
       const taken = new Set<number>([i]);
+      // THE REGION THE GROUP SO FAR ALL SHARES, when that is a region we deploy to.
+      // This is what makes the common case cheap, and it is a property of the GROUP, so
+      // it is re-derived as the group grows rather than fixed from the anchor.
+      //
+      // `bestHost` is an argmin over DEPLOY_REGIONS of the worst estimated ping. If
+      // every member of a trial shares a deployed region r, then hosting at r gives
+      // `interRegionMs(r, r) = 0` for all of them, so the spread is 0 and no other
+      // region can beat it. Spread 0 clears every ceiling the schedule can produce,
+      // `noWiden`'s 0 included. So for a homogeneous trial the minimax, the ceiling
+      // minimum and both array builds are all provably constant and can be skipped —
+      // and that is where the time is: bestHost alone is ~76% of a candidate's cost,
+      // the allocations only ~9%.
+      //
+      // NOTE the candidate SET is untouched; only the cost of pricing one is. Narrowing
+      // the scan to a pool was tried and is wrong twice over: a cross-region match could
+      // then never be found once the radius widened, and a PARTY whose members all sit
+      // in the anchor's region is a zero-spread candidate that lives in a different pool.
+      let homeRegion = freeRegion(anchor);
       while (group.length < need) {
         let pick: { j: number; unit: QueueEntry[]; spread: number } | null = null;
         for (let j = 0; j < units.length; j++) {
@@ -366,17 +384,30 @@ export class Matchmaker {
           // never put the same account in a group twice (backstop for the userId
           // dedup above) — a self-pair produces a frozen "ghost" robot
           if (cand.some((c) => c.userId && group.some((g) => g.userId === c.userId))) continue;
-          const trial = [...group, ...cand];
-          const { spread } = bestHost(trial.map(toPing));
-          const ceiling = Math.min(...trial.map((e) => this.ceilingOf(e, now)));
-          if (spread > ceiling) continue;
-          // STRICTLY closer to displace the incumbent, so an equally-close unit
-          // never jumps the queue ahead of one that has been waiting longer
-          if (!pick || spread < pick.spread) pick = { j, unit: cand, spread };
+          let spread: number;
+          if (homeRegion !== null && allIn(cand, homeRegion)) {
+            spread = 0; // homogeneous trial in a deployed region — see above
+          } else {
+            const trial = [...group, ...cand];
+            spread = bestHost(trial.map(toPing)).spread;
+            const ceiling = Math.min(...trial.map((e) => this.ceilingOf(e, now)));
+            if (spread > ceiling) continue;
+          }
+          // STRICTLY closer to displace the incumbent, so an equally-close unit never
+          // jumps the queue ahead of one that has been waiting longer. THE TIEBREAK IS
+          // WRITTEN OUT rather than left to iteration order, because roster order is
+          // not cosmetic: `allianceOrder` and assign's positional `i < half` split read
+          // it to decide who is red and what startIndex each player gets.
+          if (!pick || spread < pick.spread || (spread === pick.spread && j < pick.j)) {
+            pick = { j, unit: cand, spread };
+          }
         }
         if (!pick) break;
         taken.add(pick.j);
         group.push(...pick.unit);
+        // once a member outside the shared region joins, the shortcut is void for the
+        // rest of this fill
+        if (homeRegion !== null && !allIn(pick.unit, homeRegion)) homeRegion = null;
       }
       if (group.length === need) {
         const { hostRegion } = bestHost(group.map(toPing));
@@ -592,6 +623,27 @@ export class Matchmaker {
 }
 
 const toPing = (e: QueueEntry): PingInfo => ({ homeRegion: e.homeRegion, accessMs: e.accessMs });
+
+/** every member of this unit sits in region `r` */
+function allIn(unit: QueueEntry[], r: string): boolean {
+  for (const e of unit) if (e.homeRegion !== r) return false;
+  return true;
+}
+
+/**
+ * The region this unit is entirely in, IF that region is one we deploy to — else null.
+ *
+ * Null is the "no shortcut available" answer and covers two distinct cases that both
+ * have to take the slow path: a unit straddling regions (a premade with one player in
+ * iad and one in syd has no single region, so nothing about its host is settled in
+ * advance), and a unit in a region with no machine (there is nothing to host on, so its
+ * members really do have to be priced against every candidate host).
+ */
+function freeRegion(unit: QueueEntry[]): string | null {
+  const r = unit[0].homeRegion;
+  if (!(DEPLOY_REGIONS as readonly string[]).includes(r)) return null;
+  return allIn(unit, r) ? r : null;
+}
 
 /**
  * Split a queue into matchable UNITS: each "play a friend" party is one unit,
