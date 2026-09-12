@@ -20,6 +20,7 @@ import { Matchmaker, groupUnits, allianceOrder, type MatchmakerDeps, type QueueE
 import type { PendingMatch } from '../server/matchTypes';
 import type { QueueMode, ServerMsg } from '../src/net/protocol';
 import { DEPLOY_REGIONS, bestHost, interRegionMs } from '../server/regions';
+import { SKILL_BASE, skillCeiling } from '../server/matchmaking';
 import { readFileSync } from 'node:fs';
 
 let passed = 0;
@@ -664,6 +665,104 @@ const namesOf = (m: PendingMatch | undefined): string =>
   await new Promise((r) => setTimeout(r, 0));
   check('group ceiling: ...and the match forms once THEY have waited, not before',
     staged.length === 1 && namesOf(staged[0]) === 'fresh,v1,v2,v3', namesOf(staged[0]));
+}
+
+// ---- the skill window --------------------------------------------------------
+// Pairing now reads rating as well as latency. Latency stays PRIMARY; skill is a second
+// gate plus a tiebreak, never a partition, so a same-region opponent is never passed
+// over for a better-rated distant one.
+{
+  check('skill: the band opens at SKILL_BASE', skillCeiling(0, 0) === SKILL_BASE, String(skillCeiling(0, 0)));
+  check('skill: it widens on the radius clock', skillCeiling(3000, 0) > skillCeiling(0, 0));
+  check('skill: and goes UNBOUNDED, so any pairing legal before this is legal again',
+    skillCeiling(6000, 0) === Infinity, String(skillCeiling(6000, 0)));
+  check('skill: an expandSearch bump widens it too', skillCeiling(0, 2) === Infinity);
+}
+{
+  // a gap wider than the opening band waits; it is not refused forever
+  const rated = (id: string, rating: number): Partial<QueueEntry> =>
+    ({ rating, placed: true } as Partial<QueueEntry>);
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({ now: () => t, stage: async (m) => { staged.push(m); } });
+  mm.enqueue(entry('lo', '1v1', rated('lo', 900)));
+  mm.enqueue(entry('hi', '1v1', rated('hi', 1900)));   // a 1000-point gap
+  await new Promise((r) => setTimeout(r, 0));
+  check('skill: a 1000-point gap does not pair on the opening band', staged.length === 0, `${staged.length}`);
+  t = 6000; // the band is unbounded from here
+  mm.tick();
+  await new Promise((r) => setTimeout(r, 0));
+  check('skill: ...and pairs once the band opens, so nobody starves', staged.length === 1, `${staged.length}`);
+}
+{
+  // UNRATED MEANS DO NOT GATE. This is the floor the whole feature degrades to — a DB
+  // outage, a dev box, a fresh act, or anyone inside their placement games.
+  const { staged } = await pair([
+    entry('u1', '1v1', { rating: 900, placed: false } as Partial<QueueEntry>),
+    entry('u2', '1v1', { rating: 1900, placed: false } as Partial<QueueEntry>),
+  ]);
+  check('skill: two UNPLACED players pair regardless of the gap', staged.length === 1, `${staged.length}`);
+}
+{
+  const { staged } = await pair([entry('n1', '1v1'), entry('n2', '1v1')]);
+  check('skill: entries with no rating at all pair exactly as before', staged.length === 1, `${staged.length}`);
+}
+{
+  // one rated + one unrated: the unrated member imposes no ceiling and is not in the
+  // span, so there is nothing to gate on and the match is made
+  const { staged } = await pair([
+    entry('r', '1v1', { rating: 1900, placed: true } as Partial<QueueEntry>),
+    entry('x', '1v1'),
+  ]);
+  check('skill: a rated player still pairs with an unrated one', staged.length === 1, `${staged.length}`);
+}
+{
+  // THE TIEBREAK. Every player is in one region, so every spread is 0 and latency cannot
+  // separate them — which is exactly where skill does its work.
+  //
+  // Getting a CHOICE in front of the anchor takes some care, and both details are
+  // load-bearing. `enqueue` matches synchronously, so two compatible waiters pair the
+  // instant the second arrives and a third never gets considered; and findMatch anchors
+  // on the OLDEST unit, so the player doing the choosing must be the first to queue.
+  //
+  // So: all three are mutually out of band at t=0 (every pairwise gap exceeds 200), and
+  // the clock is then advanced to widen the band to 500, at which point the anchor at
+  // 1000 sees BOTH 1500 (span 500) and 1250 (span 250) at once and has to pick.
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({ now: () => t, stage: async (m) => { staged.push(m); } });
+  mm.enqueue(entry('anchor', '1v1', { homeRegion: 'iad', rating: 1000, placed: true } as Partial<QueueEntry>));
+  mm.enqueue(entry('far', '1v1', { homeRegion: 'iad', rating: 1500, placed: true } as Partial<QueueEntry>));
+  mm.enqueue(entry('near', '1v1', { homeRegion: 'iad', rating: 1250, placed: true } as Partial<QueueEntry>));
+  await new Promise((r) => setTimeout(r, 0));
+  check('skill: nothing pairs while every gap is outside the opening band',
+    staged.length === 0, `${staged.length}`);
+  t = 3000; // band widens to SKILL_BASE + SKILL_STEP
+  mm.tick();
+  await new Promise((r) => setTimeout(r, 0));
+  check('skill: among equal-latency candidates it takes the closest RATED one',
+    namesOf(staged[0]) === 'anchor,near', namesOf(staged[0]));
+}
+{
+  // A CLOSED PARTY IS NEVER SKILL-GATED. Two friends who challenged each other have
+  // already decided; a rating band there would refuse a match both sides asked for.
+  const { staged } = await pair([
+    entry('c1', '1v1', { party: 'tok', partySize: 2, partyOnly: true, rating: 600, placed: true } as Partial<QueueEntry>),
+    entry('c2', '1v1', { party: 'tok', partySize: 2, partyOnly: true, rating: 2000, placed: true } as Partial<QueueEntry>),
+  ]);
+  check('skill: a friend challenge ignores the band entirely', staged.length === 1, `${staged.length}`);
+}
+{
+  // the freshest arrival caps the group, exactly as it does for the radius
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({ now: () => t, stage: async (m) => { staged.push(m); } });
+  mm.enqueue(entry('old', '1v1', { rating: 1000, placed: true } as Partial<QueueEntry>));
+  t = 6000; // `old` alone would now accept anyone
+  mm.enqueue(entry('new', '1v1', { rating: 1900, placed: true } as Partial<QueueEntry>));
+  await new Promise((r) => setTimeout(r, 0));
+  check('skill: a fresh arrival caps the group, so the wide gap still waits',
+    staged.length === 0, `${staged.length}`);
 }
 
 // ---- report ----------------------------------------------------------------

@@ -106,7 +106,10 @@ async function main(): Promise<void> {
         player: { name: id, teamName: '', teamNumber: 0 },
         mode, homeRegion: pickRegion(), accessMs: 8 + Math.round(rand() * 25),
         build: `b${seq % BUILDS}`, enqueuedAt: clock, expandBumps: 0,
+        // `placed` is what the skill gate keys on: an unplaced player has no rating to
+        // match on and must not be gated. The harness models that share explicitly.
         rating,
+        placed,
       } as unknown as QueueEntry;
       mm.enqueue(e);
     }

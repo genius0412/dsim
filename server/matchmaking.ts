@@ -57,6 +57,112 @@ export function radiusCeiling(waitedMs: number, expandBumps: number, noWiden?: b
   return Math.min(RADIUS_MAX_MS, RADIUS_BASE_MS + RADIUS_STEP_MS * steps);
 }
 
+/**
+ * SKILL SCHEDULE — the rating spread a waiting entry will tolerate in its match.
+ *
+ * Units are Glicko-2 rating points, and the numbers come from what a gap MEANS. At an
+ * established RD the expected score for the stronger player runs 56.8% at a 50-point
+ * gap, 63.3% at 100, 74.8% at 200, 83.6% at 300 and 89.8% at 400. So ±200 is the edge
+ * of a game that is still a game, and anything under ±50 is noise on a pool this size.
+ *
+ * IT WIDENS ON THE SAME CLOCK AS THE RADIUS, and saturates at the same instant —
+ * `RADIUS_INTERVAL_MS`, unbounded from step 2, which is the 6s where `radiusCeiling`
+ * reaches `RADIUS_MAX_MS`. That lock is deliberate: with two independent schedules a
+ * group can sit latency-eligible and skill-blocked (or the reverse) for an unbounded
+ * stretch, and nobody watching the queue can tell which gate is holding them.
+ *
+ * UNBOUNDED, not merely large, is what makes anti-starvation a theorem rather than a
+ * tuning question: from 6 seconds on, every pairing that would have been legal before
+ * this existed is legal again. The gate can delay a match; it can never prevent one.
+ *
+ * This pool is young and clusters hard around the 1000 default, so the median match was
+ * already inside ±200 by luck. The tail is the harm and the tail is the target —
+ * measured on today's latency-only pairing at 2000 concurrent, the spread is p50 164 /
+ * p90 436 / p99 715, and a 715-point gap is a ~95% foregone conclusion.
+ *
+ * SKILL_BASE IS THE DIAL THAT BINDS. Swept over the same 2000-concurrent population,
+ * rating spread against wait (scripts/zz-mm-quality.ts, 6 simulated minutes each):
+ *
+ *   SKILL_BASE   spread p50 / p90 / p99     wait p50 / p90 / p99
+ *          100        95 /  320 /  516            2 /   4 /   7
+ *          200       140 /  322 /  516            2 /   3 /   5    <- shipped
+ *          400       171 /  357 /  491            2 /   3 /   4
+ *      (off)         176 /  439 /  636            2 /   3 /   3
+ *
+ * 200 takes essentially all of the p90 win (439 -> 322, a 27% cut in the tail that
+ * actually hurts) for two seconds at p99. Tightening to 100 buys a much better MEDIAN
+ * and almost no further p90, for another two seconds — the wrong trade on a young pool
+ * that is already clustered near the 1000 default, where the median match was fine by
+ * luck and the tail was the harm. Revisit when the population is dense enough that a
+ * tighter band still has somebody inside it.
+ */
+export const SKILL_BASE = 200;
+export const SKILL_STEP = 300;
+/**
+ * Steps after which the band is UNBOUNDED. 2 puts it at 6s, where the radius also
+ * saturates.
+ *
+ * ⚠️ MEASURED, THIS DIAL DOES NOT CURRENTLY BIND. Over a 2000-concurrent population
+ * (scripts/zz-mm-quality.ts) moving it from 2 to 4 changed nothing at all — not one
+ * percentile of wait or of spread — because the queue drains long before anyone reaches
+ * the saturation step (wait p99 is 5s against a 6s opening). It is kept because it is
+ * what makes anti-starvation a theorem rather than a hope, and it will start to bind on
+ * a pool deep enough to hold people past six seconds. Do not tune it against today's
+ * numbers; it has no effect on them.
+ *
+ * SKILL_BASE is the dial that does bind — see the sweep on it above.
+ */
+export const SKILL_OPEN_STEPS = 2;
+
+export function skillCeiling(waitedMs: number, expandBumps: number): number {
+  const steps = Math.floor(Math.max(0, waitedMs) / RADIUS_INTERVAL_MS) + expandBumps;
+  return steps >= SKILL_OPEN_STEPS ? Infinity : SKILL_BASE + SKILL_STEP * steps;
+}
+
+/**
+ * The rating spread of a trial group: max − min over its RATED members.
+ *
+ * A max over members rather than a pairwise distance, mirroring how `spread` treats
+ * latency — and, like it, monotone under adding a member, which is what lets the greedy
+ * fill trust a partial group's number.
+ *
+ * UNRATED MEMBERS ARE NOT COUNTED, they are not refused. An unplaced player (fewer than
+ * PLACEMENT_GAMES on this board) and a player whose rating read has not landed are the
+ * same situation — no number to match on — and the answer to that is to let them play,
+ * not to hold them out. A DB outage, a dev box, a fresh act and everybody's first five
+ * games all therefore degrade to exactly the latency-only pairing that shipped before
+ * this, which is the correct floor and by some margin the most likely state of a young
+ * ladder.
+ */
+function ratingSpan(group: QueueEntry[], extra: QueueEntry[]): number {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const e of group) {
+    if (e.rating === undefined || !e.placed) continue;
+    if (e.rating < lo) lo = e.rating;
+    if (e.rating > hi) hi = e.rating;
+  }
+  for (const e of extra) {
+    if (e.rating === undefined || !e.placed) continue;
+    if (e.rating < lo) lo = e.rating;
+    if (e.rating > hi) hi = e.rating;
+  }
+  return hi < lo ? 0 : hi - lo; // nobody rated ⇒ nothing to gate on
+}
+
+/** the tightest skill ceiling in a trial — the freshest arrival caps the group, exactly
+ * as it does for the radius. An unrated member imposes none. */
+function skillCapOf(
+  group: QueueEntry[],
+  extra: QueueEntry[],
+  ceil: (e: QueueEntry) => number,
+): number {
+  let cap = Infinity;
+  for (const e of group) if (e.rating !== undefined && e.placed) cap = Math.min(cap, ceil(e));
+  for (const e of extra) if (e.rating !== undefined && e.placed) cap = Math.min(cap, ceil(e));
+  return cap;
+}
+
 export interface QueueEntry {
   id: string;
   send: (m: ServerMsg) => void;
@@ -299,6 +405,13 @@ export class Matchmaker {
     return radiusCeiling(now - e.enqueuedAt, e.expandBumps, e.noWiden);
   }
 
+  /** this entry's current skill tolerance. `noWiden` is deliberately NOT read: it is a
+   * statement about geography ("do not send me to another region"), and reading it here
+   * would silently pin such a player to a 200-point band for the whole session. */
+  private skillCeilingOf(e: QueueEntry, now: number): number {
+    return skillCeiling(now - e.enqueuedAt, e.expandBumps);
+  }
+
   private tryMatch(mode: QueueMode): void {
     let m = this.findMatch(mode);
     while (m) {
@@ -367,7 +480,7 @@ export class Matchmaker {
       // in the anchor's region is a zero-spread candidate that lives in a different pool.
       let homeRegion = freeRegion(anchor);
       while (group.length < need) {
-        let pick: { j: number; unit: QueueEntry[]; spread: number } | null = null;
+        let pick: { j: number; unit: QueueEntry[]; spread: number; span: number } | null = null;
         for (let j = 0; j < units.length; j++) {
           if (taken.has(j)) continue;
           const cand = units[j];
@@ -393,13 +506,28 @@ export class Matchmaker {
             const ceiling = Math.min(...trial.map((e) => this.ceilingOf(e, now)));
             if (spread > ceiling) continue;
           }
+          // SKILL, second. Latency stays primary: a candidate is priced on distance
+          // first and only then asked whether the match would be one-sided, so a
+          // same-region opponent is never passed over for a better-rated distant one.
+          // Both schedules saturate together at 6s, so neither gate outlives the other.
+          const span = ratingSpan(group, cand);
+          if (span > skillCapOf(group, cand, (e) => this.skillCeilingOf(e, now))) continue;
           // STRICTLY closer to displace the incumbent, so an equally-close unit never
           // jumps the queue ahead of one that has been waiting longer. THE TIEBREAK IS
           // WRITTEN OUT rather than left to iteration order, because roster order is
           // not cosmetic: `allianceOrder` and assign's positional `i < half` split read
           // it to decide who is red and what startIndex each player gets.
-          if (!pick || spread < pick.spread || (spread === pick.spread && j < pick.j)) {
-            pick = { j, unit: cand, spread };
+          // and SPAN breaks a spread tie, which is where it does most of its work:
+          // inside one region every spread is 0, so today's nearest-first degenerates to
+          // pure FIFO and skill fills a total order that was previously arbitrary. A
+          // strict refinement — it never reorders a pair that spread alone separated.
+          if (
+            !pick ||
+            spread < pick.spread ||
+            (spread === pick.spread && span < pick.span) ||
+            (spread === pick.spread && span === pick.span && j < pick.j)
+          ) {
+            pick = { j, unit: cand, spread, span };
           }
         }
         if (!pick) break;
