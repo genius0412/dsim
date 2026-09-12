@@ -7,12 +7,21 @@ import { simModuleFor } from '../../src/games/sim';
 import { createChainWorld } from '../../src/games/chain/spawn';
 import { chainStep } from '../../src/games/chain/step';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
-import { BB_HALF_X, BB_HALF_Y, BB_POLLEN_R } from '../../src/games/biobuzz/config';
-
-/** every element the staged field holds: 40 POLLEN + 16 NECTAR (Fig 10-2). The number the
- * conservation checks are written against, so a staging change that leaks one fails here. */
-const BB_STAGED_TOTAL = 56;
-import { BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
+import {
+  BB_FLOWER_D,
+  BB_FLOWERS,
+  BB_GARDEN,
+  BB_HALF_X,
+  BB_HALF_Y,
+  BB_LZ,
+  BB_NECTAR_COUNT,
+  BB_NECTAR_R,
+  BB_POLLEN_COUNT,
+  BB_POLLEN_R,
+  bbMirror,
+  type BbRect,
+} from '../../src/games/biobuzz/config';
+import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { updateBiobuzz } from '../../src/games/biobuzz/play';
@@ -27,6 +36,10 @@ import type { ServerMsg } from '../../src/net/protocol';
 import { Room, type Client } from '../../server/room';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { cmd, mkWorld, run, setup, type Check } from './harness';
+
+/** every element the staged field holds: 40 POLLEN + 16 NECTAR (Fig 10-2). The number the
+ * conservation checks are written against, so a staging change that leaks one fails here. */
+const BB_STAGED_TOTAL = BB_POLLEN_COUNT + 2 * BB_NECTAR_COUNT;
 
 /**
  * LANE A's smoke: THE FIELD.
@@ -678,6 +691,598 @@ export function fieldChecks(check: Check): void {
       swept < blind,
       `swept ${swept.toFixed(3)}" deep against ${blind.toFixed(3)}" unswept`,
     );
+  }
+
+  // ── THE LAYOUT IS POINT-SYMMETRIC, NOT X-MIRRORED ─────────────────────────
+  /**
+   * THE SINGLE MOST LIKELY LAYOUT BUG IN THIS GAME, and the one no other check can see.
+   *
+   * Every FTC field before this one was close enough to an x-mirror that reflecting it is the
+   * reflex — and BIOBUZZ is not one: the layout is a 180° ROTATION about the origin, so RED's
+   * LOADING ZONE is at y > 0 on the LEFT wall and BLUE's is at y < 0 on the RIGHT wall
+   * (`config.ts` §9.3, `docs/biobuzz-reference.md` §2.1). An x-mirror of red's zone lands at
+   * y > 0 on the RIGHT wall — the correct wall for blue, the WRONG HALF of it — and a field
+   * built that way is internally consistent: the zones are the right size, against the right
+   * walls, one per alliance, and every containment, staging and scoring check in this suite
+   * still passes. It is wrong only against the manual, which is the one thing a test cannot
+   * read. So the TRANSFORM is asserted, on the constants, at the top of the lane.
+   *
+   * MIRRORING A RECT SWAPS WHICH CORNER IS THE MIN. `bbMirror` negates both coordinates, so
+   * `(x0, y0)` becomes the MAX corner of the image and `(x1, y1)` the MIN one; comparing `x0`
+   * to `x0` after the map compares a max against a min and fails on a CORRECT field.
+   * `mirrorRect` therefore maps both corners and re-sorts them — it compares the corner PAIR
+   * as a set.
+   *
+   * The x-mirror arm is a NEGATIVE CONTROL and is not decoration: it is what proves the
+   * assertion above would actually fail on the reflected layout, rather than being true of any
+   * pair of zones on opposite walls.
+   */
+  {
+    /** `p` mirrored through the origin, re-sorted so `x0 < x1` and `y0 < y1` hold again. */
+    const mirrorRect = (p: BbRect): BbRect => {
+      const a = bbMirror({ x: p.x0, y: p.y0 });
+      const b = bbMirror({ x: p.x1, y: p.y1 });
+      return {
+        x0: Math.min(a.x, b.x),
+        x1: Math.max(a.x, b.x),
+        y0: Math.min(a.y, b.y),
+        y1: Math.max(a.y, b.y),
+      };
+    };
+    /** the same rect REFLECTED IN X — the WRONG transform, kept so the control below has one. */
+    const flipRect = (p: BbRect): BbRect => ({ x0: -p.x1, x1: -p.x0, y0: p.y0, y1: p.y1 });
+    const sameRect = (p: BbRect, q: BbRect): boolean =>
+      Math.abs(p.x0 - q.x0) < 1e-9 &&
+      Math.abs(p.x1 - q.x1) < 1e-9 &&
+      Math.abs(p.y0 - q.y0) < 1e-9 &&
+      Math.abs(p.y1 - q.y1) < 1e-9;
+    const fmtRect = (p: BbRect): string => `x ${p.x0}..${p.x1} · y ${p.y0}..${p.y1}`;
+
+    for (const [name, zone] of [
+      ['LOADING ZONE', BB_LZ],
+      ['GARDEN', BB_GARDEN],
+    ] as const) {
+      const want = mirrorRect(zone.red);
+      check(
+        `layout: ${name} blue is the POINT mirror of red (180°, not a reflection)`,
+        sameRect(want, zone.blue),
+        `red ${fmtRect(zone.red)} ⇒ ${fmtRect(want)}; blue is ${fmtRect(zone.blue)}`,
+      );
+      // ...and the reflection really is a DIFFERENT rect, so the check above has something to
+      // catch. If the two ever coincide the zone is symmetric about y and the assertion has
+      // gone vacuous — worth being told, because it means the field moved.
+      check(
+        `layout: an x-MIRROR of red's ${name} is NOT blue's (so the check above can fail)`,
+        !sameRect(flipRect(zone.red), zone.blue),
+        `x-mirror ${fmtRect(flipRect(zone.red))} vs blue ${fmtRect(zone.blue)}`,
+      );
+    }
+  }
+
+  // ── THE FOUR FLOWERS: ONE PER WALL, AT ±24, CLOSED UNDER THE POINT MIRROR ──
+  /**
+   * A FLOWER IS PLACED BY THREE NUMBERS AND EACH IS A SEPARATE WAY TO BE WRONG.
+   *
+   *  1. THE OFF-WALL COORDINATE IS EXACTLY ±24 — one tile off the field centreline, read off
+   *     the tile seam in Fig 9-2/9-4. A flower at ±23 or ±25 sits mid-tile, which is not where
+   *     an FTC field puts anything, and it moves every approach a robot can take to it.
+   *  2. IT SITS ON THE WALL IT IS NAMED FOR, at the `BB_FLOWER_D` stand-off. `BB_FLOWERS`
+   *     carries `wall` as a STRING and the coordinates separately, so the two can disagree in
+   *     silence — and the collider array (`flowerFeet`) is built from the coordinates while
+   *     every renderer and every future rule reads the name.
+   *  3. THE SET IS CLOSED UNDER `bbMirror` — F1↔F3 (left/right) and F2↔F4 (rear/audience).
+   *     Same argument as the zones above: the four are hand-placed, and a set x-mirrored
+   *     instead of rotated puts F2 and F4 on the wrong halves of their walls while still
+   *     looking exactly like four flowers on four walls.
+   *
+   * The stand-off is asserted to 1e-9 rather than to a tolerance because the constants are
+   * BUILT from `BB_FLOWER_D` (`-72 + BB_FLOWER_D`), so anything but exact equality means
+   * somebody typed a literal in place of the derivation.
+   */
+  {
+    for (const f of BB_FLOWERS) {
+      const onX = f.wall === 'left' || f.wall === 'right';
+      // the coordinate ALONG the wall — the one that has to land on a tile seam
+      const along = onX ? f.y : f.x;
+      check(
+        `flower [${f.id}]: sits one tile off centre along its wall (|${onX ? 'y' : 'x'}| = 24)`,
+        Math.abs(Math.abs(along) - 24) < 1e-9,
+        `${f.id} at (${f.x}, ${f.y}) on the ${f.wall} wall`,
+      );
+      const want =
+        f.wall === 'left'
+          ? -BB_HALF_X + BB_FLOWER_D
+          : f.wall === 'right'
+            ? BB_HALF_X - BB_FLOWER_D
+            : f.wall === 'rear'
+              ? BB_HALF_Y - BB_FLOWER_D
+              : -BB_HALF_Y + BB_FLOWER_D;
+      const got = onX ? f.x : f.y;
+      check(
+        `flower [${f.id}]: stands ${BB_FLOWER_D}" off the ${f.wall} wall, and off no other`,
+        Math.abs(got - want) < 1e-9,
+        `${onX ? 'x' : 'y'}=${got} against ${want}`,
+      );
+    }
+    // F1↔F3 and F2↔F4, asserted as "every flower's mirror IS another flower" rather than by
+    // index pairs, so a re-ordering of the array cannot make it pass for the wrong reason.
+    const at = (x: number, y: number): boolean =>
+      BB_FLOWERS.some((g) => Math.abs(g.x - x) < 1e-9 && Math.abs(g.y - y) < 1e-9);
+    const closed = BB_FLOWERS.every((f) => {
+      const m = bbMirror({ x: f.x, y: f.y });
+      return at(m.x, m.y);
+    });
+    check(
+      'flowers: the set of four is closed under the POINT mirror (F1↔F3, F2↔F4)',
+      closed && BB_FLOWERS.length === 4,
+      BB_FLOWERS.map((f) => `${f.id}(${f.x}, ${f.y})`).join(' · '),
+    );
+  }
+
+  // ── EVERY NON-WALL SOLID IS STRICTLY INSIDE THE FIELD ─────────────────────
+  /**
+   * THE WALLS ARE OUTSIDE THE FIELD AND EVERYTHING ELSE IS INSIDE IT, and the perimeter check
+   * above can only see the first half of that.
+   *
+   * `biobuzzColliders.statics` is one flat array: four walls whose bodies sit ENTIRELY outside
+   * the play area with their inner faces exactly on the bound, then the HIVE frame's two base
+   * bars and the four FLOWER feet, which are real obstacles standing ON the tiles. A solid
+   * appended with a wall's geometry by accident — a `tx` built from `BB_HALF_X + hx` instead
+   * of a field coordinate — shrinks the playable field by its own width along a whole wall,
+   * and nothing else in this suite notices: containment passes (the robot is still inside the
+   * bounds), conservation passes, and the pictures look very nearly right.
+   *
+   * `<`, not `<=`: a solid whose face lands exactly ON the bound is a solid fused into the
+   * wall, and this field has no such thing — the frame bars reach x = ±25.48 and the furthest
+   * flower foot 71.6 — so the strict form costs nothing and catches the degenerate case.
+   *
+   * `rot === 0` is asserted alongside because the overlap test in the push-off check below
+   * (and `flowerFeet`'s own circumscribing-square argument) treats these as AXIS-ALIGNED
+   * rects; a rotated one would make both measure the wrong box without failing.
+   *
+   * The COUNT is the other half. `BB_SOLID_COUNT` is DERIVED from the array, so it can never
+   * disagree with it — what it can do is GROW, and pinning it to `walls + 2 frame bars + 4
+   * flower feet` means a solid added without a check for it fails here, on the count, which is
+   * the cheapest tripwire there is.
+   */
+  {
+    const extras = biobuzzColliders.statics.slice(BB_WALL_COUNT);
+    check(
+      'solids: the array is the walls + 2 HIVE frame bars + 4 FLOWER feet, and nothing else',
+      BB_SOLID_COUNT === BB_WALL_COUNT + 2 + 4 && extras.length === 6,
+      `BB_SOLID_COUNT=${BB_SOLID_COUNT} against ${BB_WALL_COUNT} walls + 6`,
+    );
+    let worst = -Infinity;
+    let worstAt = -1;
+    let rotated = -1;
+    extras.forEach((s, i) => {
+      if (s.rot !== 0) rotated = i;
+      // how close this solid's furthest face comes to the bound; >= 0 means it touches or
+      // crosses it, which is a WALL's behaviour and not an obstacle's
+      const slack = Math.max(Math.abs(s.tx) + s.hx - BB_HALF_X, Math.abs(s.ty) + s.hy - BB_HALF_Y);
+      if (slack > worst) {
+        worst = slack;
+        worstAt = i;
+      }
+    });
+    check(
+      'solids: every non-wall static is STRICTLY inside the field bounds',
+      worst < 0,
+      `closest is static ${BB_WALL_COUNT + worstAt}, ${(-worst).toFixed(2)}" clear of the bound`,
+    );
+    check(
+      'solids: every non-wall static is AXIS-ALIGNED (rot = 0)',
+      rotated < 0,
+      rotated < 0 ? 'all six axis-aligned' : `static ${BB_WALL_COUNT + rotated} has rot=${extras[rotated].rot}`,
+    );
+  }
+
+  // ── STAGING: WHAT A SPAWNED MATCH ACTUALLY HAS ON THE FIELD ───────────────
+  /**
+   * `stageBiobuzz` replaces the old random `scatterPollen` with the MANUAL's own staging
+   * (§10.3.1), and the difference is that a scatter only has to be DETERMINISTIC while a
+   * staging has to be RIGHT. 40 POLLEN and 16 NECTAR, each in a named place:
+   *
+   *   POLLEN  16 in the four FLOWERS (4 each, slots 0..3) · 8 on the GARDEN tiles (4 per
+   *           garden) · 16 preloaded into the four robots
+   *   NECTAR  6 in the up-CELLs (3 red in `hive:red`, 3 blue in `hive:blue`) · 10 in the two
+   *           human players' hands (5 per alliance)
+   *
+   * THE PRELOAD IS THE PART THAT MOVES WITH THE ROSTER, and this world spawns only TWO robots
+   * — one per alliance, the shape every other check in this file uses. So the two ABSENT
+   * robots' 4 POLLEN each go to their own alliance's LOADING ZONE centre as `ground`, and a
+   * robot whose hopper cap is under 4 spills the remainder onto the tiles beside it. Three
+   * possible homes for the same 16 elements, so they are accounted for as a PARTITION rather
+   * than as three independent counts — held, else ground in a LOADING ZONE, else ground beside
+   * a robot — and what is asserted is that the partition covers all 16 with nothing left over.
+   * A pollen that fell through the staging rules entirely lands in none of the three and fails
+   * here with its own position printed.
+   *
+   * THE GARDEN FOUR ARE A LINE ONE DIAMETER APART, not merely inside the strip. The strip is
+   * ~23 × 2 in, so four POLLEN in it are geometrically forced into a row whatever the code
+   * does; what is NOT forced is the PITCH, and a row staged at a 4" pitch is the difference
+   * between a robot sweeping all four in one pass and making four approaches. It is also the
+   * cheapest statement that the row was placed by a rule rather than by a loop that happened
+   * to fit.
+   *
+   * ⚠️ The garden and LOADING ZONE membership tests pad the rect by `BB_POLLEN_R`, because the
+   * garden strip is 2" deep and a 2.8" POLLEN cannot have its centre inside it and its body on
+   * the tiles at the same time. That pad is the MANUAL's own test — §10.5.3 credits an element
+   * "at least partially in a GARDEN" — and not a tolerance invented to make a check pass.
+   */
+  {
+    /** §10.3.1's per-place counts, named rather than spelled as literals in the assertions. */
+    const PER_FLOWER = 4;
+    const PER_GARDEN = 4;
+    const HIVE_NECTAR = 3;
+    const STOCK_NECTAR = 5;
+    /** how far a robot's preload may have spilled and still be "on the tiles touching that
+     * robot" — its footprint half-diagonal plus a couple of diameters of room for the solve to
+     * have settled the spill. Generous on purpose: this arm exists to say a pollen is BESIDE A
+     * ROBOT rather than lost, and it is the COUNT that binds. */
+    const SPILL_NEAR = 26;
+
+    const w = createBiobuzzWorld('match', 808, [setup(0, 'blue'), setup(1, 'red', {}, 1)]);
+    const pollen = w.balls.filter((b) => b.color === 'yellow');
+    const nectar = w.balls.filter((b) => b.color === 'red' || b.color === 'blue');
+
+    check(
+      `staging: ${BB_POLLEN_COUNT} POLLEN and ${2 * BB_NECTAR_COUNT} NECTAR, and nothing else`,
+      pollen.length === BB_POLLEN_COUNT &&
+        nectar.length === 2 * BB_NECTAR_COUNT &&
+        w.balls.length === BB_POLLEN_COUNT + 2 * BB_NECTAR_COUNT,
+      `${pollen.length} pollen + ${nectar.length} nectar = ${w.balls.length} balls`,
+    );
+    // THE RADIUS is what the renderer reads (and one day the solve), and it is the one field
+    // that can be silently ABSENT — `Artifact.r` is optional, and an omitted one falls back to
+    // the game's default, i.e. a NECTAR simulated and drawn as a POLLEN.
+    check(
+      'staging: every POLLEN carries r = BB_POLLEN_R and every NECTAR r = BB_NECTAR_R',
+      pollen.every((b) => b.r === BB_POLLEN_R) && nectar.every((b) => b.r === BB_NECTAR_R),
+      `pollen r=[${[...new Set(pollen.map((b) => b.r))].join(',')}] · ` +
+        `nectar r=[${[...new Set(nectar.map((b) => b.r))].join(',')}]`,
+    );
+    // IDS ARE UNIQUE AND THE COUNTER IS PAST THEM. `nextBallId` is what a runtime spawn takes,
+    // so a counter seeded at or below the highest staged id aliases a live element the first
+    // time anything is created — and an aliased id is invisible until two balls begin tracking
+    // one another.
+    const ids = new Set(w.balls.map((b) => b.id));
+    const maxId = Math.max(...w.balls.map((b) => b.id));
+    check(
+      'staging: every ball id is unique and nextBallId is seeded past the highest',
+      ids.size === w.balls.length && (w.biobuzz?.nextBallId ?? 0) > maxId,
+      `${ids.size}/${w.balls.length} unique · max id ${maxId} · nextBallId ${w.biobuzz?.nextBallId}`,
+    );
+
+    // -- POLLEN IN THE FLOWERS --------------------------------------------
+    const inFlowers = pollen.filter(
+      (b) => b.state.kind === 'element' && b.state.el.startsWith('flower:'),
+    );
+    check(
+      `staging: ${BB_FLOWERS.length * PER_FLOWER} POLLEN are in FLOWERS`,
+      inFlowers.length === BB_FLOWERS.length * PER_FLOWER,
+      `${inFlowers.length} element-pollen with el "flower:*"`,
+    );
+    let flowersOk = true;
+    let flowerDetail = '';
+    for (let i = 0; i < BB_FLOWERS.length; i++) {
+      const mine = inFlowers.filter((b) => b.state.kind === 'element' && b.state.el === `flower:${i}`);
+      const slots = mine
+        .map((b) => (b.state.kind === 'element' ? b.state.slot : -1))
+        .sort((p, q) => p - q);
+      const ok = mine.length === PER_FLOWER && slots.every((s, k) => s === k);
+      if (!ok) {
+        flowersOk = false;
+        flowerDetail += `${flowerDetail ? ' · ' : ''}flower:${i} n=${mine.length} slots=[${slots.join(',')}]`;
+      }
+    }
+    check(
+      `staging: each of the four FLOWERS holds ${PER_FLOWER}, on slots 0..${PER_FLOWER - 1} exactly once`,
+      flowersOk,
+      flowerDetail || `all four full, slots 0..${PER_FLOWER - 1}`,
+    );
+
+    // -- POLLEN ON THE GARDEN TILES ---------------------------------------
+    /** the §10.5.3 credit test — the element is AT LEAST PARTIALLY in the rect. */
+    const inRect = (p: { x: number; y: number }, r: BbRect, pad: number): boolean =>
+      p.x >= r.x0 - pad && p.x <= r.x1 + pad && p.y >= r.y0 - pad && p.y <= r.y1 + pad;
+    const ground = pollen.filter((b) => b.state.kind === 'ground');
+    const gardens = {
+      red: ground.filter((b) => inRect(b.pos, BB_GARDEN.red, BB_POLLEN_R)),
+      blue: ground.filter((b) => inRect(b.pos, BB_GARDEN.blue, BB_POLLEN_R)),
+    };
+    check(
+      `staging: ${PER_GARDEN} POLLEN on the tiles in EACH GARDEN`,
+      gardens.red.length === PER_GARDEN && gardens.blue.length === PER_GARDEN,
+      `red ${gardens.red.length} · blue ${gardens.blue.length}`,
+    );
+    for (const a of ['red', 'blue'] as const) {
+      const rect = BB_GARDEN[a];
+      // the strip's LONG axis — x for both gardens today, DERIVED rather than assumed so a
+      // garden moved onto a side wall by a V2 revision still measures the right spacing
+      const alongX = rect.x1 - rect.x0 >= rect.y1 - rect.y0;
+      const row = [...gardens[a]].sort((p, q) => (alongX ? p.pos.x - q.pos.x : p.pos.y - q.pos.y));
+      let worstGap = 0;
+      let worstOff = 0;
+      for (let i = 1; i < row.length; i++) {
+        const gap = alongX ? row[i].pos.x - row[i - 1].pos.x : row[i].pos.y - row[i - 1].pos.y;
+        worstGap = Math.max(worstGap, Math.abs(gap - 2 * BB_POLLEN_R));
+        worstOff = Math.max(
+          worstOff,
+          Math.abs(alongX ? row[i].pos.y - row[0].pos.y : row[i].pos.x - row[0].pos.x),
+        );
+      }
+      check(
+        `staging [${a} GARDEN]: the ${PER_GARDEN} POLLEN are a LINE, one POLLEN DIAMETER apart`,
+        row.length === PER_GARDEN && worstGap <= 0.05 && worstOff <= 0.05,
+        `worst pitch error ${worstGap.toFixed(3)}" off ${(2 * BB_POLLEN_R).toFixed(2)}" · ` +
+          `worst cross-axis drift ${worstOff.toFixed(3)}"`,
+      );
+    }
+
+    // -- THE 16 PRELOADED POLLEN, AS A PARTITION --------------------------
+    const placed = new Set([...inFlowers, ...gardens.red, ...gardens.blue]);
+    const rest = pollen.filter((b) => !placed.has(b));
+    const held = rest.filter((b) => b.state.kind === 'held');
+    const loose = rest.filter((b) => b.state.kind !== 'held');
+    const inLz = loose.filter(
+      (b) =>
+        b.state.kind === 'ground' &&
+        (inRect(b.pos, BB_LZ.red, BB_POLLEN_R) || inRect(b.pos, BB_LZ.blue, BB_POLLEN_R)),
+    );
+    const spilled = loose.filter(
+      (b) =>
+        !inLz.includes(b) &&
+        b.state.kind === 'ground' &&
+        w.robots.some((r) => Math.hypot(b.pos.x - r.pos.x, b.pos.y - r.pos.y) <= SPILL_NEAR),
+    );
+    const lost = loose.filter((b) => !inLz.includes(b) && !spilled.includes(b));
+    const preload = BB_POLLEN_COUNT - BB_FLOWERS.length * PER_FLOWER - 2 * PER_GARDEN;
+    check(
+      `staging: the remaining ${preload} POLLEN are all accounted for by the PRELOAD rule`,
+      rest.length === preload && lost.length === 0,
+      `${held.length} held · ${inLz.length} in a LOADING ZONE · ${spilled.length} spilled beside a robot` +
+        (lost.length
+          ? ` · ${lost.length} UNACCOUNTED, first at (${lost[0].pos.x.toFixed(1)}, ${lost[0].pos.y.toFixed(1)}) state=${lost[0].state.kind}`
+          : ''),
+    );
+    // A robot is preloaded with FOUR and no more. The hopper cap decides how many of those four
+    // actually fit and the overflow is the `spilled` arm above, so no robot may ever be holding
+    // a fifth — that would be the staging writing past a cap the intake then has to honour.
+    const overFilled = w.robots
+      .map((r) => ({
+        id: r.id,
+        n: held.filter((b) => b.state.kind === 'held' && b.state.robot === r.id).length,
+      }))
+      .filter((x) => x.n > 4);
+    check(
+      'staging: no robot is preloaded with more than its 4 POLLEN',
+      overFilled.length === 0,
+      overFilled.map((x) => `robot ${x.id} holds ${x.n}`).join(' · ') ||
+        `${held.length} held across ${w.robots.length} robots`,
+    );
+    // AN ABSENT ROBOT'S SHARE GOES TO ITS OWN ALLIANCE'S ZONE. There are two absent robots
+    // here, one per alliance, so BOTH zones have to be used: a rule that sent every orphan
+    // share to one alliance's zone satisfies the partition above and is still wrong.
+    const lzRed = inLz.filter((b) => inRect(b.pos, BB_LZ.red, BB_POLLEN_R)).length;
+    const lzBlue = inLz.filter((b) => inRect(b.pos, BB_LZ.blue, BB_POLLEN_R)).length;
+    check(
+      'staging: an ABSENT robot’s share goes to its OWN alliance’s LOADING ZONE',
+      lzRed === lzBlue && lzRed > 0,
+      `red LZ ${lzRed} · blue LZ ${lzBlue}`,
+    );
+
+    // -- NECTAR: THE UP-CELLS AND THE HUMAN PLAYERS ------------------------
+    const cells = nectar.filter((b) => b.state.kind === 'element');
+    const stock = nectar.filter((b) => b.state.kind === 'stock');
+    check(
+      `staging: ${2 * HIVE_NECTAR} NECTAR in the up-CELLs and ${2 * STOCK_NECTAR} in the human players’ hands`,
+      cells.length === 2 * HIVE_NECTAR && stock.length === 2 * STOCK_NECTAR,
+      `${cells.length} element · ${stock.length} stock · ${nectar.length - cells.length - stock.length} elsewhere`,
+    );
+    for (const a of ['red', 'blue'] as const) {
+      // A NECTAR IS IN ITS OWN ALLIANCE'S HIVE. `el` and `color` are two independent fields, so
+      // a staging that filled the cells in array order puts red nectar in the blue hive while
+      // still counting 3 and 3.
+      const mine = cells.filter((b) => b.state.kind === 'element' && b.state.el === `hive:${a}`);
+      const slots = mine
+        .map((b) => (b.state.kind === 'element' ? b.state.slot : -1))
+        .sort((p, q) => p - q);
+      check(
+        `staging [hive:${a}]: ${HIVE_NECTAR} NECTAR, all ${a}-coloured, on slots 0..${HIVE_NECTAR - 1}`,
+        mine.length === HIVE_NECTAR && mine.every((b) => b.color === a) && slots.every((s, k) => s === k),
+        `n=${mine.length} colours=[${[...new Set(mine.map((b) => b.color))].join(',')}] slots=[${slots.join(',')}]`,
+      );
+      const hand = stock.filter((b) => b.state.kind === 'stock' && b.state.alliance === a);
+      check(
+        `staging [${a} human player]: ${STOCK_NECTAR} NECTAR in hand, all ${a}-coloured`,
+        hand.length === STOCK_NECTAR && hand.every((b) => b.color === a),
+        `n=${hand.length} colours=[${[...new Set(hand.map((b) => b.color))].join(',')}]`,
+      );
+    }
+  }
+
+  // ── CONSERVATION: 56 ELEMENTS, EVERY TICK, WITH TWO ROBOTS DRIVING ───────
+  /**
+   * THE INVARIANT THE WHOLE STAGING MODEL RESTS ON — and the reason it is its own check rather
+   * than an extension of the POLLEN conservation above.
+   *
+   * The old shell had ONE kind of element in ONE state: 60 POLLEN, all `ground`, and
+   * "conserved" meant `world.balls.length` did not change. Staging replaced that with 56
+   * elements distributed across FIVE states that hand off to one another all match — a POLLEN
+   * goes `element` → `ground` when it is knocked out of a FLOWER, `ground` → `held` when a
+   * sweeper takes it, `held` → `flight` when it is launched, `flight` → `element` when it
+   * lands in a CELL, and a NECTAR goes `stock` → `ground` when a human player puts one in.
+   * Every one of those is a hand-written transition, and the failure mode of a hand-written
+   * transition is that it writes the destination and forgets to clear the source (a DUPLICATE)
+   * or clears the source and never writes the destination (a DELETION). `world.balls.length`
+   * catches neither on its own: a ball moved into a state nothing reads is still in the array.
+   *
+   * So this sums the FIVE buckets and demands the total. A ball that has fallen into `basin`
+   * or `rail` — DECODE states this game does not use and cannot legitimately reach — is in no
+   * bucket and fails here, which is the whole reason to count buckets instead of the array.
+   *
+   * EVERY TICK, NOT THE LAST ONE, for the same reason the containment checks read every tick:
+   * a duplicate created and reaped inside a second is invisible at the end of a run and is
+   * exactly as much of a bug.
+   *
+   * ⚠️ A 'match' world spawns in `pre` with `preCountdown` null — the CONTROLLER starts a solo
+   * match — so its robots are DISABLED, and 600 ticks of commands would move nobody. The phase
+   * is advanced to `auto` by hand first, which is what that start does; without it this is 600
+   * ticks of a still field and proves nothing about a robot driving through a staged FLOWER.
+   * It is still the real staged `match` world, which is the state being conserved.
+   */
+  {
+    const w = createBiobuzzWorld('match', 1212, [setup(0, 'blue'), setup(1, 'red', {}, 1)]);
+    w.match.phase = 'auto';
+    w.match.phaseTimeLeft = C.AUTO_DURATION;
+    const total = BB_STAGED_TOTAL;
+    // two DIFFERENT drives on purpose: one straight across the field, one arcing, so between
+    // them the pair sweeps the staged rows, the FLOWER feet and the frame bars instead of
+    // running the same line twice
+    const cmds = new Map([
+      [0, cmd({ driveY: 1, intake: true })],
+      [1, cmd({ driveY: 1, rotate: 0.4, intake: true })],
+    ]);
+    let worstSum = total;
+    let worstAt = -1;
+    let pollenOff = 0;
+    let nectarOff = 0;
+    let dupAt = -1;
+    for (let i = 0; i < 600; i++) {
+      biobuzzStep(w, C.SIM_DT, cmds);
+      let ground = 0;
+      let inHand = 0;
+      let flight = 0;
+      let element = 0;
+      let stock = 0;
+      let pollen = 0;
+      let nectar = 0;
+      const seen = new Set<number>();
+      for (const b of w.balls) {
+        seen.add(b.id);
+        if (b.color === 'yellow') pollen++;
+        else nectar++;
+        switch (b.state.kind) {
+          case 'ground':
+            ground++;
+            break;
+          case 'held':
+            inHand++;
+            break;
+          case 'flight':
+            flight++;
+            break;
+          case 'element':
+            element++;
+            break;
+          case 'stock':
+            stock++;
+            break;
+          default:
+            break; // basin / rail — DECODE's, unreachable here, and OUT of the sum on purpose
+        }
+      }
+      const sum = ground + inHand + flight + element + stock;
+      if (Math.abs(sum - total) > Math.abs(worstSum - total)) {
+        worstSum = sum;
+        worstAt = i;
+      }
+      pollenOff = Math.max(pollenOff, Math.abs(pollen - BB_POLLEN_COUNT));
+      nectarOff = Math.max(nectarOff, Math.abs(nectar - 2 * BB_NECTAR_COUNT));
+      if (dupAt < 0 && seen.size !== w.balls.length) dupAt = i;
+    }
+    check(
+      `conservation: ground|held|flight|element|stock sums to ${total} on ALL 600 ticks of a 2-robot drive`,
+      worstSum === total,
+      worstAt < 0 ? `held ${total} throughout` : `worst ${worstSum} at tick ${worstAt}`,
+    );
+    check(
+      `conservation: ${BB_POLLEN_COUNT} POLLEN and ${2 * BB_NECTAR_COUNT} NECTAR throughout (nothing changes KIND)`,
+      pollenOff === 0 && nectarOff === 0,
+      `worst drift: pollen ${pollenOff}, nectar ${nectarOff}`,
+    );
+    check(
+      'conservation: ball ids stay unique on every one of those ticks',
+      dupAt < 0,
+      dupAt < 0 ? `${w.balls.length} distinct ids` : `first duplicate at tick ${dupAt}`,
+    );
+  }
+
+  // ── EVERY NEW SOLID PUSHES A ROBOT OFF ITSELF ─────────────────────────────
+  /**
+   * A COLLIDER THAT IS IN THE ARRAY BUT NOT IN THE SOLVE IS INVISIBLE TO EVERY OTHER CHECK
+   * HERE. The geometry checks above read `biobuzzColliders.statics` directly, so they would
+   * pass on a field whose frame bars and FLOWER feet are perfectly placed and completely
+   * INTANGIBLE — a robot drives through an absent collider without complaint and a POLLEN
+   * rolls over it.
+   *
+   * So each of the six new solids is measured THROUGH THE SOLVE, in the shape the `pin-wall`
+   * and wall-containment checks use: one world per solid (a robot already shoved off one bar
+   * is not a clean start for the next), a robot placed ON the solid, a couple of seconds of
+   * ZERO command, and the same `aabb` footprint measure at the same `WALL_EPS` resting slop
+   * those checks are stated in. Zero command rather than a drive, deliberately: this asks what
+   * the SOLVER does about an overlap, not whether a driver can escape one.
+   *
+   * ⚠️ THE START POSE IS THE SOLID'S CENTRE, SLID INSIDE THE PERIMETER, and the slide is not a
+   * fudge. A FLOWER foot stands `BB_FLOWER_D` (3") off its wall, so a 17" chassis centred
+   * exactly on it BEGINS with most of its footprint through the wall — and `solveRobots`'
+   * containment invariant clamps GROWTH only, deliberately leaving a body that was ALREADY
+   * outside where it is, so the in-bounds arm of this check would fail on a correct solve.
+   * Sliding the start in by exactly its overshoot keeps the robot ON the foot (a 2.6"
+   * half-extent sits well inside a chassis half-extent) while making "still inside the field"
+   * a claim the solver is actually answerable for. The `starts on it` assertion is what proves
+   * the slide did not slide the robot off the thing it is meant to be sitting on — without it
+   * this check could pass by never testing anything.
+   */
+  {
+    /** the penetration depth of footprint box `b` into axis-aligned static `s`; <= 0 is clear. */
+    const overlapOf = (
+      b: { x0: number; x1: number; y0: number; y1: number },
+      s: { hx: number; hy: number; tx: number; ty: number },
+    ): number =>
+      Math.min(
+        Math.min(b.x1, s.tx + s.hx) - Math.max(b.x0, s.tx - s.hx),
+        Math.min(b.y1, s.ty + s.hy) - Math.max(b.y0, s.ty - s.hy),
+      );
+
+    biobuzzColliders.statics.slice(BB_WALL_COUNT).forEach((s, i) => {
+      const name = i < 2 ? `frame bar ${i}` : `flower foot ${i - 2}`;
+      const w = mkWorld('free', 31 + i);
+      const r = w.robots[0];
+      r.heading = 0;
+      r.vel = { x: 0, y: 0 };
+      r.pos = { x: s.tx, y: s.ty };
+      // ...then slide the START pose inside the perimeter by exactly its overshoot, so the
+      // containment invariant applies to it at all (see the block comment).
+      const b0 = aabb(r);
+      r.pos = {
+        x: r.pos.x + Math.max(0, -BB_HALF_X - b0.x0) - Math.max(0, b0.x1 - BB_HALF_X),
+        y: r.pos.y + Math.max(0, -BB_HALF_Y - b0.y0) - Math.max(0, b0.y1 - BB_HALF_Y),
+      };
+      const before = overlapOf(aabb(r), s);
+      check(
+        `solid [${name}]: the robot really does START on it (so this check is not vacuous)`,
+        before > 0,
+        `overlap ${before.toFixed(2)}" at (${r.pos.x.toFixed(1)}, ${r.pos.y.toFixed(1)})`,
+      );
+      run(w, cmd({}), 2); // 120 ticks, no command at all
+      const b1 = aabb(r);
+      const after = overlapOf(b1, s);
+      check(
+        `solid [${name}]: 2 s later the solve has pushed the robot off it`,
+        after <= WALL_EPS,
+        `overlap ${after.toFixed(3)}" (was ${before.toFixed(2)}") · now at (${r.pos.x.toFixed(1)}, ${r.pos.y.toFixed(1)})`,
+      );
+      check(
+        `solid [${name}]: and it was not pushed out of the FIELD to get there`,
+        b1.x0 >= -BB_HALF_X - WALL_EPS &&
+          b1.x1 <= BB_HALF_X + WALL_EPS &&
+          b1.y0 >= -BB_HALF_Y - WALL_EPS &&
+          b1.y1 <= BB_HALF_Y + WALL_EPS,
+        `x ${b1.x0.toFixed(2)}..${b1.x1.toFixed(2)} · y ${b1.y0.toFixed(2)}..${b1.y1.toFixed(2)}`,
+      );
+    });
   }
 
   // ── DETERMINISM ───────────────────────────────────────────────────────────
