@@ -14,6 +14,8 @@ export const DECODE_SIM: GameSimModule = {
   id: 'decode',
   scored: true,
   startLegality: true, // G304 start-pose legality applies
+  initialAct: 0, // DECODE's boards opened in the beta/pre-season act
+  startPoseCount: C.START_POSES.length,
   bounds: { halfX: C.FIELD_HALF, halfY: C.FIELD_HALF, viewMargin: C.VIEW_MARGIN },
   colliders: decodeColliders,
   createWorld,

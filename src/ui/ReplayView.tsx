@@ -10,7 +10,7 @@ import {
 import { moduleFor } from '../games';
 import { Renderer } from '../render/renderer';
 import { rangeFill } from './rangeFill';
-import { drawReplayHud, fieldScreenBottom, HUD_RESERVE } from './replayOverlay';
+import { drawReplayHud, fieldScreenBottom, HUD_RESERVE, loadSponsorMark } from './replayOverlay';
 import {
   availableVideoFormats,
   videoFormat,
@@ -417,6 +417,15 @@ export function ReplayView({
     abortCapture.current = false;
     setCapturing(id);
     setCapturePct(0);
+
+    /**
+     * DECODE THE SPONSOR MARK BEFORE THE FIRST FRAME, not during it. `recordFast`'s
+     * `draw` is synchronous and runs once per simulated tick, so an image still
+     * loading draws nothing and the burn-in is silently absent from the file — the
+     * one failure the placement cannot have. This resolves either way (it falls back
+     * to the wordmark), so it can never block or fail an export.
+     */
+    await loadSponsorMark();
 
     // its OWN player and renderer, so the capture is the whole match from tick 0 regardless of
     // where the viewer had scrubbed to, and the one on screen is left alone

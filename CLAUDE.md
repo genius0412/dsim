@@ -6,6 +6,7 @@
 |----|------|--------|
 | `decode` | **DECODE presented by RTX** (FTC 2025–26) | full match, scored, ranked |
 | `chain` | **Chain Reaction** (2026 Unofficial-FTC CAD competition) | full match, scored, ranked |
+| `biobuzz` | **BIOBUZZ presented by RTX** (FTC 2026–27) | PLACEHOLDER shell, alpha channel only, unscored |
 
 Vite + React + TypeScript, Canvas 2D. The CLIENT bundle is React + **Rapier 2D**
 (`@dimforge/rapier2d-compat`, wasm) and nothing else; the rest of `dependencies`
@@ -27,6 +28,42 @@ UI copy — DECODE/Chain Reaction are what is currently loaded, not the product 
 state (is the build green?), what was finished, exact next steps, and gotchas. Read it at
 session start if it exists — it may describe uncommitted mid-refactor state. HANDOFF is a
 reverse-chronological log; prepend a new dated section and demote the old "READ FIRST".
+
+## Parallel sessions — the coordination board
+
+**This section applies only while `.coord.json` exists in the repo root. If it does not, skip
+everything here and work normally — that is the ordinary state of this repo.**
+
+Three people work this repo in parallel from separate Claude sessions on separate machines,
+and the expensive failure is two of them building the same thing from different chats. The
+board is one claim per person — what they are touching, **by path** — on a branch in a
+separate PRIVATE repository. `docs/biobuzz/COORDINATION.md` is the protocol.
+
+While it is configured:
+
+- **Run `npm run coord` and read it before starting any new piece of work**, and before
+  opening a file you did not expect to touch. If somebody else has claimed a path you are
+  about to edit, **say so to the user before touching it.** Never silently work around a
+  collision — the whole point is that it gets discussed.
+- **Claim by path when the user says what you are working on**, and re-claim when the work
+  moves: `npm run coord:claim -- "<what>" <path> [path…]`. Claim a directory when the work is
+  a directory. `-- --clear` when the piece is finished.
+- **Never put anything from the conversation into a claim label.** The automatic half of the
+  payload is built only from `git` output and cannot leak a chat; the label is the one field
+  a human types, so it is the one field that could.
+- **A publish failing is not yours to fix.** The Stop hook publishes in a detached child and
+  exits 0 by design. Do not chase it mid-task, and do not report it as a problem with the
+  work.
+- The board is a note, not a lock. It cannot stop anyone editing anything. **Git is the
+  truth**; the board is only intent.
+
+**THE SYSTEM HAS AN OFF SWITCH AND IT IS THE REPOSITORY ITSELF.** When the board repository
+is deleted, or this account is removed from it, the publisher confirms it over two runs and
+then RETIRES: `.coord.json` is renamed to `.coord.retired.json`, the `coord` remote is
+removed, and every command here becomes a silent no-op. Nothing needs uninstalling and no
+session needs telling. If you find `.coord.retired.json` and no `.coord.json`, the board is
+over — **ignore this whole section and contribute normally.** Do not rename it back or
+re-run `coord:setup` to "fix" it; that is the owner's call, not a fault to repair.
 
 ## Commands
 
@@ -135,6 +172,66 @@ docs/              decode-reference.md (field sources), netcodeplan.md (roadmap)
 feel, robot-robot shove, match phases, HUD chrome, netcode) it belongs in the shared core;
 if it names a game element (artifact, gate, particle, catalyst, beam) it belongs in
 `src/games/<id>/`.
+
+## Adding a game
+
+Everything below the four registrations is OPTIONAL — a game that fills nothing behaves
+exactly like a game written before the slots existed. **Nothing outside
+`src/games/<id>/` should need editing.** If it does, that is a seam bug: generalize the
+shared file instead of adding a third arm to a two-valued branch.
+
+**FOUR registrations, and all four are silent when missed:**
+1. `src/games/index.ts` — `GAMES` (the CLIENT module: renderers + UI slots).
+2. `src/games/sim.ts` — `SIM_GAMES` (the SERVER-SAFE module). Missing here and the
+   authoritative server runs your players a DECODE room without saying so.
+   ⚠️ Add it as a **GETTER**, like the three already there — there is an import cycle
+   through this file (`src/sim/spawn.ts` needs `simModuleFor` for the start-index clamp)
+   and a plain `id: MODULE` entry is a module-eval-time read, which is exactly what a
+   cycle cannot survive.
+3. `src/seasons.ts` — the `SEASONS` entry (name/presenter/program/years/blurb,
+   `playable`, and `channels` if it must stay off the stable site).
+4. `src/games/types.ts` — the id in `GameId` **and** in `GAME_IDS`. Every "which games
+   are there" site reads `GAME_IDS` / `isGameId` / `coerceGameId`; a hand-written
+   two-valued literal anywhere is a bug (`npm test`'s biobuzz suite greps for the
+   consequences).
+
+Plus `World.<id>?: <Id>State` in `src/types.ts` for the game's own plain-JSON bag, and
+`GameSimModule`'s `initialAct` (its first ranked period's act — distinct per game) and
+`startPoseCount` (the legal range of a `startIndex`; every clamp reads it).
+
+**The OPTIONAL UI slots** (`GameModule`, `src/games/module.ts`) — each wired at its
+consumer as `mod.X ? <slot> : <the existing branch, unchanged>`, so DECODE's and CR's
+inline branches stay untouched:
+
+| slot | consumer |
+|---|---|
+| `Builder` | `Menu.tsx` (the Customize section) |
+| `Preview` | `Menu.tsx` + `MatchStrategy.tsx` (the robot schematic) |
+| `startEditor` | `MatchSetup.tsx` / `Lobby.tsx` / `MatchStrategy.tsx` |
+| `hudChips`, `scoreBar` | `GameView.tsx` (the `.robot-status` row / the whole bottom bar) |
+| `resultsRows` | `GameView.tsx` — both the versus results and `RecordResults`. Rows are ALLIANCE-RELATIVE (`[label, mine, opp]`) |
+| `mobileButtons` | `MobileControls.tsx`. A new key needs a `GameSettings.mobileLayout` entry, and a genuinely new action needs a protocol bit |
+| `labels.configSummary` | `robotLabels.ts` + `Leaderboard.tsx` |
+| `devRoutes` | `App.tsx` routing — **alpha channel only** (`devRoutesEnabled()`) |
+
+and, on the DOM-free side, `GameSimModule.hud?(world, robotId)` → `HudSnapshot.gameHud`:
+the game's own HUD slice, opaque (`unknown`) because only its own components read it — plus
+`GameSimModule.artifactSolids?(r, held, radius)`, the game's own answer to "what on this robot
+is SOLID to a ground element". Absent ⇒ the shared `robotSolids`, i.e. DECODE's front funnel;
+BIOBUZZ fills it because its sweeper is a roller bar on whichever edge `intakeMount` names, and
+DECODE/CR leave it empty so `src/sim/world.ts` is untouched.
+
+`GameUiSpec` (`ui`) is an earlier attempt at the same idea and has never had a reader.
+It is left alone deliberately; do not build on it.
+
+**Tests**: game checks go in `scripts/smoke-biobuzz/` (its own `npm test` process), never
+appended to `scripts/smoke.ts`. `npm test` chains the two with `&&` — deliberately, so a red
+`npm test` keeps meaning "the physics broke" — and both suites are green, so it runs both and
+must print `ALL PASS` twice. ⚠️ The corollary: **while the first suite is red the second
+does not run at all**, and for the whole of BIOBUZZ Phase 0 (7 accepted contact-physics
+failures) that meant `npm test` proved nothing about the second one. `npm run test:bb` runs it
+alone — the fast loop inside `src/games/biobuzz/`, and the way to check it when the first
+suite is red for an unrelated reason. `docs/biobuzz/baseline-alpha.md` is the gate.
 
 ---
 
@@ -251,7 +348,12 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
     disagreed by a roller radius — exactly the band where artifacts were frozen by one rule
     and released by another. **The intake MOUTH is open in all three** by design (#10); a
     convex hull of the funnel filled the notch and turned the outer corner into a forward
-    wall, so the wedge is an explicit quad.
+    wall, so the wedge is an explicit quad. **A GAME MAY SUPPLY ITS OWN SHAPES**
+    (`GameSimModule.artifactSolids`, see the seam section) — the authority is still ONE per
+    game, it just is not always DECODE's: `robotSolids` describes DECODE's hardware, and a game
+    whose intake is not a front funnel (BIOBUZZ's edge-mounted sweeper) returns its own chassis
+    + plates + held-element circles instead. An absent slot is the shared function, so DECODE
+    and CR are byte-identical.
   - **A PIN IS A ROBOT PROBLEM, NOT AN ARTIFACT PROBLEM.** `pinnedArtifacts` calls an artifact
     pinned when a robot solid penetrates it AND it is against something that cannot yield —
     the field (`inField`, measured with `clampBallPosToStatics`, which knows the walls, the
@@ -262,7 +364,7 @@ if it names a game element (artifact, gate, particle, catalyst, beam) it belongs
     solid when it was). **A free artifact, however deep it sits inside a chassis for a tick,
     is never pinned** — a full-speed ram can leave the first ball of a clump a fraction inside
     while the solve is still propagating the push, and a robot that stopped for that was
-    stalled by 0.2 lb of foam. **No direction test and no "escaping" exemption**: both were
+    stalled by 0.2 lb of artifact. **No direction test and no "escaping" exemption**: both were
     tried (Sept 2026) and both failed the same way — a heuristic cannot tell a corner hit that
     would slide a wall ball along from a wall ball boxed in by the wedge and its neighbours
     (the direction cone let a chassis drive 2.9in into the second), and a jammed pile jiggles
@@ -453,7 +555,12 @@ modeled motor is the **MATRIX / goBILDA 5000-series 12VDC** brushed motor (5800 
   forward kinematics of the pods for the achieved chassis motion. **Balancing weakness is
   WOBBLE, not weight** (a heavy-swerve nerf was tried and reverted): each module's control
   loop is imperfect (`SWERVE_WOBBLE_AMP`/`_FREQ`, INDEPENDENT phase per pod) → real path
-  drift + yaw wobble driving straight. X-drive renders as a proper X (omnis at ±45°).
+  drift + yaw wobble driving straight. **X-drive renders as a DIAMOND, not an X**: the omnis
+  are at ±45° but lie ACROSS their corners, not along the diagonals. Both renderers had them
+  radial — every wheel aimed at the centre, which is a machine with no moment arm and so no
+  yaw at all — and that is what read as an X. Fixed in BOTH `src/render/drawRobot.ts` (which
+  DECODE's builder preview also uses, since it renders a real `RobotState`) and
+  `src/games/chain/parts.ts`; CR's builder preview was already correct. Keep the two in step.
 - **NICHES:** tank raw power/no-strafe · swerve strongest-but-imprecise · mecanum
   light/instant/precise but weaker · x-drive deliberately-weak novelty.
 - **PUSHING POWER IS A FORCE, and the collider mass is DERIVED from it** (`drivetrain.ts`):
@@ -1048,6 +1155,56 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
 
 ---
 
+## Presenting sponsor (branch `biobuzz`) — DSIM presented by Offset Robotics
+
+A LAUNCH + SEASON sponsorship of the APP, sold for the BIOBUZZ season with exclusivity.
+**`docs/sponsor.md` is the contract's operational half** — the placement inventory, the
+artwork swap, the kill switch, and the monthly attribution recipe. Read it before touching
+any of this.
+
+- **`src/sponsor.ts` is the single source of truth** (name, URL, artwork footprint, term)
+  and is DOM-free, so the headless smoke suite imports it. `src/ui/Sponsor.tsx` is the ONE
+  component that builds the link and fires the events — nothing else may. `sponsorAssets.ts`
+  is split off it because an image import would choke the `tsx` suite.
+- ⚠️ **`Season.presenter` IS A DIFFERENT FACT.** That is FIRST's sponsor of the GAME (DECODE
+  presented by RTX), not ours and not for sale. Both lines are true on the home menu at once;
+  never fold one into the other.
+- ⚠️ **THE IN-GAMEPLAY CHIP IS NOT AN AD, AND MUST NEVER BE ROUTED THROUGH `src/ads/`.** That
+  gate renders nothing on touch, nothing under Electron and nothing for a supporter — i.e.
+  it would be invisible on every phone, in the desktop app, and to the most engaged players
+  on the service. "Rendered independently of the ad system" is written into the deal, so
+  `Sponsor.tsx` imports nothing from `src/ads/` and `GameView.tsx` renders `<SponsorGameChip
+  />` outside the `ads &&` branch. Both are smoke-checked, because re-routing it is a
+  one-line refactor.
+- **Six placements**, each with its own `utm_medium` so the report can break them down:
+  `home`, `footer`, `game`, `download`, `splash` (`electron/splash.html`, shown by
+  `showSplash()` in `main.cjs` and handed over on `ready-to-show`), and `replay` — the mark
+  BURNED INTO every exported video (`drawSponsorMark` in `replayOverlay.ts`). ⚠️ The capture
+  `draw` callback is SYNCHRONOUS, so `ReplayView` must `await loadSponsorMark()` BEFORE
+  `recordFast`, and the burn-in falls back to the wordmark in text if the image never decodes
+   — a clip missing the placement is a breach, an ugly one is not.
+  The LOADING SCREEN is `#seo-home` in `index.html` and carries the line as TEXT: the bundled
+  artwork is fingerprinted and an absolute path 404s under Electron's `file://`.
+  The DISCORD server logo is not a repo change at all.
+- **The term is a window** (`SPONSOR.term`, `until` EXCLUSIVE) and an unparseable date fails
+  toward SHOWING the mark — a wrong clock must not void a placement somebody paid for.
+  `VITE_SPONSOR=0` is the kill switch, exact-string matched for the same reason.
+- **Artwork is FOUR files** (`src/assets/sponsors/offset-on-*.png` + `electron/sponsor-on-*.png`,
+  the Electron pair duplicated because a `file://` page cannot resolve a Vite hash). The names
+  say which SURFACE, not which ink — the sponsor calls the black cut "the dark logo" and the
+  site calls it `OffsetLogoLight.png`, so place a new file by looking at the pixels. Sizes are
+  declared in `SPONSOR.logoW/logoH` and every placement reserves its box from that ratio
+  before the image loads (`shiftaudit`); the smoke lane reads all four PNG headers.
+- **The report is Vercel Analytics, nothing else** — `sponsor_shown` (the denominator),
+  `sponsor_click` (per placement), Vercel's own sessions, and `player_joined` (fired in
+  `UsernameGate`, the last step of signing up; it over-counts legacy accounts ONCE and
+  `docs/sponsor.md` footnotes it). No DB migration, no server change, no identifiers.
+- **Tests**: the `SPONSOR` lane of `scripts/smoke-biobuzz/` (`npm run test:bb`). Everything it
+  covers is a contracted obligation that FAILS SILENTLY — a placement that stops rendering, a
+  link that loses its UTM tag, a term that does not cover the season it was sold for.
+
+---
+
 # GAME: DECODE (`decode`)
 
 DECODE's rules live in **`src/sim/`** and **`src/config.ts`** (they predate the seam and were
@@ -1221,16 +1378,86 @@ handle (`GATE_ARM_SHORT`) pokes OUT into the gate zone (what a robot pushes) and
   wheels drawn as a row of small rects — never circles; chassis 11.5–14.5"), **Triangle**
   (TRIANGULAR internal storage — hopper pips draw in a triangle; longest reach, slower
   transfer). Internal keys sloped/vector/triangle ('compact'/'extended' migrate in settings).
-- **CAPTURE MODEL**: each preset carries a `mouth` sub-object (`mouthHalf`, `wheelHalf`,
-  `wedge`/`wedgeWidth`/`funnel`, `capMin`/`capMax`, `clumpInterval`, `dual`). A ball is captured
-  on the wheel line at the tip of reach; non-overhang presets clamp the mouth inside the frame
-  so a full-width chassis geometrically forbids side intake. **Timing depends on WHERE the ball
-  enters**: `single = capMin + (capMax−capMin)·(|localY|/wheelHalf)`. **Wedges FUNNEL** off-center
-  balls toward the centerline via a lateral VELOCITY nudge only, never a position write — it
-  runs before the ball solve so Rapier owns penetration. **Triangle takes TWO per cycle**
-  (`dual`). Flank capture (`sideTouch`) exists only where the vector's wheel span overhangs a
-  narrower chassis, comparing SPANS not penetration. NOTE: `halfWidth`/`perBall`/`clumpPerBall`
-  were REMOVED — grep before reintroducing.
+- **CAPTURE MODEL**: each preset carries a `mouth` sub-object (`mouthHalf`, `throatHalf`,
+  `wedge`, `drawIn`, `capMin`/`capMax`, `clumpInterval`, `dual`). Non-overhang presets clamp the
+  mouth inside the frame so a full-width chassis geometrically forbids side intake. **Wedges
+  FUNNEL** off-center balls toward the centerline via a lateral VELOCITY nudge only, never a
+  position write — it runs before the ball solve so Rapier owns penetration. **Triangle takes
+  TWO per cycle** (`dual`). NOTE: `halfWidth`/`perBall`/`clumpPerBall`/`wheelHalf`/`wedgeWidth`/
+  `funnel` and the unreachable `sideTouch` flank grab were REMOVED — grep before reintroducing.
+- ⚠️ **A HELD ARTIFACT MUST NEVER ADVANCE THROUGH THE WORLD — `HELD_SLIDE_SPEED` BEATS THE
+  FASTEST LEGAL CHASSIS.** This is the actual cause of "the third ball is still being deflected
+  too far", after two earlier bisections (restitution, then roll friction) had correctly ruled
+  out the physics and the capture window. A held artifact is SOLID to ground artifacts
+  (`robotSolids.held`) and is still out in FRONT of the chassis face while it slides to its
+  slot, so at 45 in/s against a robot driving 85 the sim carried **the artifact the intake had
+  just swallowed** forward through the world at 40 in/s, into the next artifact in the line —
+  which, still touching the one behind it, chained the impulse straight on. Measured on a
+  touching file of three at full throttle: the first went in clean and never moved, then balls
+  two and three BOTH left at 73 in/s on the same tick, two ticks after the capture, and were
+  shoved 32in downfield. At 150 the whole file goes in at ticks 39 / 43 / 47 with **peak
+  artifact speed 0.0** on sloped and vector. Real hardware has no such problem because the
+  rollers turn far faster at the surface than the chassis drives: what is grabbed is INSIDE the
+  robot at once and cannot reach back out. Smoke asserts the RELATION (`HELD_SLIDE_SPEED >
+  max driveParams().maxSpeed` over the whole legal envelope), not the number, so raising the
+  rpm ceiling later fires the check instead of resurrecting the bug.
+- ⚠️ **A HELD ARTIFACT'S SLOT IS INSIDE THE ROBOT, NEVER PROUD OF THE CHASSIS FACE**
+  (`heldSlotPos`, physics.ts). Sloped and vector put the front one's SKIN at the roller line;
+  TRIANGLE sat 2in further out at `hl + 2` until it was moved to `hl` (deep `hl − 4` → `hl − 6`
+  with it), which is what made it the last preset still clipping the third artifact in a line
+  — 74 in/s, against 0 for the other two — after the slide fix above. A slot proud of the face
+  also puts a held artifact inside the WALL plane when the robot is tip-on to a wall, and holds
+  a shoved pile 4in off its own footprint, out of reach of G408's contact test. ⚠️ Move BOTH
+  triangle slots together or the deep-to-front spacing closes to 4.83in, under the 5in sum of
+  radii, and the stored artifacts draw overlapping.
+- **THE GRAB IS THE ROLLER NIP, AND IT IS ONE BAND FOR ALL THREE CAPTURE BRANCHES.**
+  `intakeNip(spec)` about `intakeAxleX(spec)` (`config.ts`) is the whole fore-aft test; the
+  branches (`atThroat` · `cornered` · `onRollerRow`) differ only in their LATERAL bound and
+  their gates, which is where their identity actually lives. It comes out of geometry this
+  file already asserted and the capture code never read: `intakeLidZ` puts the roller's
+  underside at exactly `2·BALL_RADIUS`, the APEX of an artifact on the floor, so the axle is at
+  `z = 2R + Rr`, the vertical separation from a floored artifact's centre is exactly
+  `S = R + Rr`, and **a RIGID roller grazes it at ONE point — directly under the axle.** Every
+  inch of grab is tread flex: with the tread reaching `c = INTAKE_TREAD_FRAC · Rr` past its
+  circle, `|dx| <= sqrt(c·(2S + c))`, and `front = back + c` because ahead of the nip the
+  loaded lobe flexes into the approaching artifact. Resolved: 72mm roller back 1.517 / front
+  1.800, 48mm back 1.157 / front 1.346 — forward limit `tip + 0.38`, where the old branches all
+  reached `tip + BALL_RADIUS`, i.e. the artifact's SKIN merely touching the roller's FRONT FACE
+  with its centre a full radius out in front of the wheel. Reported as "the intake is a
+  circular compliant wheel spinning… the ball should be directly below or very slightly in
+  front of the center of the wheel… right now the range is way too big". Triangle's `atThroat`
+  had ended 0.58in BEHIND its own axle, so that preset never grabbed at its wheel at all.
+  - ⚠️ **`INTAKE_TREAD_FRAC` HAS A FLOOR AT ~0.135 AND BELOW IT TRIANGLE STOPS INTAKING.** A
+    free ground artifact's centre can never get behind `hl + BALL_RADIUS` — the chassis is a
+    LIVE collider against a CLAIMED artifact (`physicsEngine.ts`; the claim's only surviving
+    effect is `skipChassis` in `pinnedArtifacts`) and `intakeSuction` pulls toward `(hl, 0)` —
+    so everything the intake has hold of comes to rest with its skin flush on the front face.
+    That seat is `BALL_RADIUS − reach + intakeRollerDia/2` from the axle, CHASSIS-INDEPENDENT:
+    **+0.917 sloped · −0.055 vector · −1.083 triangle**, and the band must CONTAIN it. Measured
+    settle 9.759 / 9.757 / 9.016 against an `hl + R` of 9.750 / 9.750 / 9.000, to five decimals
+    over 40 ticks at both throttles. Smoke names the numbers.
+  - **THE SUCTION TARGET STAYS `(hl, 0)` AND MUST NOT MOVE TO THE AXLE.** It is inert on sloped
+    (the axle is 1.58in behind the face) and on vector (0.055in ahead, inside the 0.3in dead
+    zone), and on TRIANGLE the axle is 1.08in in FRONT of the seat — it would push a seated
+    artifact out of the throat. An intake that shoves artifacts away from itself.
+  - **Timing depends on WHERE the ball enters**: `single = capMin + (capMax−capMin)·clamp(
+    |localY|/throatHalf, 0, 1)`. ⚠️ **That denominator stays `throatHalf`** — the laterals did
+    not move, `throatHalf + BALL_RADIUS·0.25` is exactly `atThroat`'s own bound, and the two
+    WIDE branches deliberately clamp to 1 and pay `capMax`. Re-normalising it onto the wheel row
+    makes `capMax` unreachable and silently deletes vector's centre-fast/edges-slow identity.
+  - **THE SWALLOW IS 1–2 TICKS**, on the half-tick grid `(n − 0.5)/60` because the gate reads an
+    ACCUMULATED `world.time` (an interval on a tick boundary is a float coin toss): sloped 1t
+    centre / 4t edge / 1t clump · triangle 1t / 3t / 1t + `dual` (120 artifacts/s off a pile) ·
+    vector 2t / 8t and NO clump bonus. ⚠️ **`drawIn` had to rise with them (40/32/70)** because
+    the wedge presets are TRAVEL-limited, not interval-limited — the measured back-to-back gap
+    on sloped was 0.133 s against a `clumpInterval` of 0.04, which is exactly why the 2026-09-10
+    bisection found `clumpInterval` 0.04→0.02 with `capMax` 0.09→0.05 BYTE-IDENTICAL.
+  - **The invariant is `capture ⊆ suction ⊆ claim`** (smoke, both chassis extremes of all three
+    presets). `intakeClaims`' x geometry deliberately did NOT shrink with the grab: the nip is
+    where an artifact is SWALLOWED, the claim is which artifacts the intake has HOLD of, and one
+    crossing the mouth toward the seat must not be chassis-pinnable for not yet being under the
+    wheel. `intakeSuction`'s `ahead` is now exactly `overIntakeRoof`'s front edge (`tip +
+    BALL_RADIUS`), which matters because `drawIn` is above `INTAKE_LID_THROW` on every preset.
 - BASE PARKING counts only the four WHEEL ground-contact points (`wheelContacts`, inset
   `WHEEL_INSET`): intake/turret overhang neither earns nor spoils credit. The turret never
   protrudes (`TURRET_OFFSET_FRAC`). The chassis may be NARROWER than the intake
@@ -1751,6 +1978,57 @@ owns all of that.
 
 ---
 
+# GAME: BIOBUZZ (`biobuzz`)
+
+The FTC 2026–27 season. **Rules land at kickoff on 2026-09-12**, so what is in the repo
+today is a PLACEHOLDER: an empty 12 ft square with four walls and drivable robots,
+`scored: false`, `startLegality: false`, two start anchors. `src/games/biobuzz/{sim,index,
+state}.ts` say so at the top and the P0-shell chat replaces all three.
+
+**It is ALPHA-ONLY** (`channels: ['alpha']` in `SEASONS`). The repo is public and the
+season is private until further notice: on a stable build it is absent from the home
+picker and the queue counts, invisible to the SEO surfaces, and its URL prefix falls back
+to the saved game. Nothing about it may be pushed to a public branch or deployed to the
+stable site.
+
+**Read `docs/biobuzz-contract.md` FIRST** — it is the lane contract: who owns which file
+(Lane A the field, Lane B the robot, the integration chat everything outside
+`src/games/biobuzz/`), the `elements.ts` interface between them, and the workflow.
+`docs/biobuzz-plan.md` is the why; `docs/biobuzz-reference.md` will be the manual
+distilled, written on kickoff day.
+
+Everything BIOBUZZ lives in `src/games/biobuzz/`. Nothing BIOBUZZ goes into `src/sim/` or
+`src/config.ts` — the same rule Chain Reaction follows. Game state is plain JSON on
+`world.biobuzz`, and the sim half obeys the shared determinism rule (no DOM, no clock, no
+`Math.random`, no `Date`).
+
+⚠️ **Do not invent geometry before the manual.** CR flags values approximated from
+description as `APPROX` and that convention carries over; an unflagged guess is worse than
+an empty field.
+
+⚠️ **POLLEN PHYSICS IS THE SHARED ARTIFACT SOLVER WITH `BB_POLLEN_RADIUS`; NOTHING IN
+THIS DIRECTORY INTEGRATES OR SEPARATES BALLS.** (The constant is spelled `BB_POLLEN_R`.)
+A ground pollen's position is written by `solveArtifacts` and by nothing else — the same ONE
+POSITION AUTHORITY rule DECODE's artifacts were rebuilt to. `solveArtifacts` and `robotSolids`
+take a trailing optional artifact RADIUS defaulting to `C.BALL_RADIUS`, so BIOBUZZ passes 1.5"
+(a 3" pollen) where DECODE passes its default 2.5" and every DECODE call site stays
+byte-identical. The SHAPES a pollen meets are this game's own — `bbRobotSolids` (`robot.ts`),
+wired through the `GameSimModule.artifactSolids` slot — because the shared `robotSolids` builds
+DECODE's front funnel and a BIOBUZZ sweeper is a roller bar on whichever edge `intakeMount`
+names. That is GEOMETRY, which Lane B owns; it is not a physics constant, and none is added.
+`play.ts` therefore has no ground integrator, no separation pass and no
+eviction pass; it calls the shared solve, the shared rolling-friction pass (`stepGroundBall`,
+which is the only thing that brings a pollen to rest — the solve has no gravity and no floor),
+and a containment clamp, and `interact()` only CAPTURES. BIOBUZZ owns NO ground-pollen physics
+constant: `BB_POLLEN_WALL_REST` is FLIGHT-only and `BB_POLLEN_R` is a size, not a dial. So a
+pollen behaviour that looks wrong is a question about SHARED physics — write it into
+`docs/biobuzz/feedback/` naming the gallery cell, do not fix it here.
+`docs/biobuzz/feedback/000-solver-observations.md` is the standing list (no pin/round loop in
+BIOBUZZ, a persistent 2.1" overlap under a pressing chassis, a struck pollen reaching
+`C.BALL_MAX_SPEED` while the robot that hit it is slower, 5"-artifact rolling constants).
+
+---
+
 # Gotchas
 
 - **THEMING (dark mode).** Pref lives in `localStorage['decodesim.theme']` (`src/theme.ts`),
@@ -1864,6 +2142,20 @@ DECODE flight/basin/rail/gate scripted BY DESIGN; **CR PARTICLES still bespoke**
 3. **Chain Reaction manual refinement** — replace the `APPROX` constants (ring-stand inset,
    Lab-Area size/geometry, exact zone coordinates) with measured manual values. This is the
    last real gap in CR; everything else there is feature-complete.
-4. Deferred: WebTransport (needs TLS-deploy validation + an ACK-keyed delta), full-reload
+4. **Multi-core — DESIGNED, NOT BUILT (`docs/scaling-multicore.md`).** One server process is
+   capped at about one core, because Node runs JavaScript on one thread; a 16-vCPU machine runs
+   the same single thread as a 1-vCPU one, which is why the VM sweep found `shared-cpu-1x`
+   through `8x` barely differ. Profiled, **~75% of a busy server is simulation that can leave
+   the socket thread and ~6% is socket work that cannot**, and `server/room.ts` imports no `ws`
+   and no `pg` — every way out of a room is already a callback — so the seam a worker needs
+   exists. Recommended: `worker_threads` behind **`SIM_WORKERS`, default 0**, taking a machine
+   from ~13 driven rooms to ~100 and 1,000 concurrent from 70–90 machines to single digits.
+   ⚠️ **`UV_THREADPOOL_SIZE` must be raised with it** — `permessage-deflate` runs zlib on the
+   libuv threadpool, that pool is PER PROCESS and defaults to 4, and left alone it becomes the
+   new bottleneck and presents as LATENCY rather than as CPU. Sequence: Linux baseline first,
+   then `SIM_WORKERS=1` (slower than none, on purpose — it prices the hop in isolation), then
+   sweep 2/4/8. **Until a prototype exists, do not buy multi-core hardware for DSIM: nothing
+   in the repo uses a second core.** `grep SIM_WORKERS` finds nothing today.
+5. Deferred: WebTransport (needs TLS-deploy validation + an ACK-keyed delta), full-reload
    reconnect, obelisk AprilTag visuals, DECODE deferred fouls (G408 possession>3 / plowing),
    matchmaking polish, replay UI, leaderboard tiers.

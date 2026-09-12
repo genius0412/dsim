@@ -1,10 +1,13 @@
 import type { ControlBindings } from './input/bindings';
 import type { GameId } from './games/types';
 import type { ChainState } from './games/chain/state';
+import type { BiobuzzState } from './games/biobuzz/state';
 export type { GameId } from './games/types';
 
 export type Alliance = 'red' | 'blue';
-export type ArtifactColor = 'purple' | 'green';
+/** DECODE artifacts are purple/green; BIOBUZZ POLLEN is yellow and NECTAR carries its alliance
+ * colour. One union, so the renderer and the hopper HUD read one field. */
+export type ArtifactColor = 'purple' | 'green' | 'yellow' | 'red' | 'blue';
 export type Motif = readonly [ArtifactColor, ArtifactColor, ArtifactColor];
 
 export type GameMode = 'match' | 'free';
@@ -261,11 +264,20 @@ export type BallState =
    * (a 3rd ball entering a side pushes the resident ball to the other side). The
    * robot's `hopper` color array mirrors these (count + colors synced). */
   | { kind: 'held'; robot: number; slot: number; lx: number; ly: number; side: number }
-  | { kind: 'stock'; alliance: Alliance }; // held by the human player, off-field
+  | { kind: 'stock'; alliance: Alliance } // held by the human player, off-field
+  /** parked INSIDE a field element (a BIOBUZZ HIVE cell or FLOWER stack): `el` names the
+   * element (`'hive:red'`, `'flower:2'`), `slot` its position in that element's order. The
+   * ball stays in `world.balls` so conservation is one array; it is not solved or drawn as a
+   * loose ball while in this state. */
+  | { kind: 'element'; el: string; slot: number };
 
 export interface Artifact {
   id: number;
   color: ArtifactColor;
+  /** radius in inches when it differs from the game's default (BIOBUZZ NECTAR 1.8 vs POLLEN
+   * 1.4). Renderers read it; the shared artifact solve does NOT yet — it runs one radius per
+   * call. Owner item, see docs/biobuzz/feedback/000-solver-observations.md. */
+  r?: number;
   state: BallState;
   pos: Vec2;
   vel: Vec2;
@@ -313,8 +325,16 @@ export interface RobotState {
    * −1 .. +1 across the mounted side (0 = centred). Runtime state, not a build choice — the
    * carriage traverses toward whatever the claw is working at, at a finite rate
    * (`CHAIN_RAIL_RATE`), which is the point of buying a rail instead of a fixed turret.
-   * Every other catalyst type leaves it at 0. */
-  catalystRail: number;
+   * Every other catalyst type leaves it at 0.
+   *
+   * OPTIONAL, and ABSENT means 0 — every reader spells that `?? 0`. It is a Chain Reaction
+   * mechanism, and requiring it made every other game write `catalystRail: 0` with an
+   * INERT-BUT-PRESENT comment to satisfy the type, which is a field describing hardware the
+   * robot does not have. Nothing shared reads it: `worldHash` mixes pose + turret only, and
+   * the snapshot codec spreads the robot and back-fills a different list, so a missing value
+   * cannot poison a hash or NaN a sim. CR's own `spawn.ts` still writes it at 0 — for that
+   * game it is real state and the absent case is only an old snapshot. */
+  catalystRail?: number;
   /** BUTTERFLY drivetrain: is the TRACTION (tank) set the one on the ground right now?
    * false ⇒ the mecanum set is down (the spawn default). RUNTIME state, not a build
    * choice — the driver drops the other set mid-match with the `driveMode` command, and
@@ -734,6 +754,9 @@ export interface World {
   /** Chain Reaction runtime state (catalysts / scoring / endgame). Present only
    * when `game === 'chain'`; DECODE worlds omit it. */
   chain?: ChainState;
+  /** BIOBUZZ runtime state. Present only when `game === 'biobuzz'`; the other
+   * games omit it. (Empty for now — the season's rules land at kickoff.) */
+  biobuzz?: BiobuzzState;
   mode: GameMode;
   time: number;
   tick: number;

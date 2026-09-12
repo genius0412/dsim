@@ -5,6 +5,7 @@ import { START_POSES } from '../config';
 import { CHAIN_START_POSES } from '../games/chain/config';
 import { StartPositionEditor } from './StartPositionEditor';
 import { ChainStartEditor } from './ChainStartEditor';
+import { moduleFor } from '../games';
 import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory, startSelectionLegal } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
@@ -13,7 +14,8 @@ import { Menu } from './Menu';
 import { DRIVETRAIN_LABELS, buildSummary } from './robotLabels';
 import { gameServers, lanActive, multiServer, roomServerUrl, roomServerUrlWith, selectedServer } from '../net/env';
 import { roomJoinRegion } from '../net/roomRegion';
-import { WebSocketTransport } from '../net/transport';
+import { takePendingLanRoom } from '../lan/pending';
+import { WebSocketTransport, type Transport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
 import { roomCapacity, type LobbyPlayer, type RoomConfig, type ErrorCode } from '../net/protocol';
@@ -257,7 +259,19 @@ export function Lobby({
   function join(roomCode: string, hostRegion?: string | null): void {
     if (!roomCode) return;
     setCode(roomCode);
-    if (!roomServerUrl()) {
+    /**
+     * A TAB-HOSTED LAN ROOM ARRIVES ALREADY CONNECTED.
+     *
+     * Every other room here is named by a URL and opened with a `WebSocketTransport`. A WebRTC
+     * LAN room has no URL — the handshake happened on the LAN screen and what it produced is a
+     * live `Transport` — so the lobby adopts that instead of dialling. Taken (not read), so a
+     * remount cannot pick up a connection the player has already left: see `src/lan/pending.ts`.
+     *
+     * Everything below this point is the ordinary room flow, unchanged. That is the whole
+     * point of the seam — the lobby does not know or care that its far end is another laptop.
+     */
+    const adopted = takePendingLanRoom();
+    if (!adopted && !roomServerUrl()) {
       setError('Multiplayer needs the game server.');
       setPhase('error');
       return;
@@ -276,15 +290,22 @@ export function Lobby({
     // ROOMS are the one thing that may be hosted on a LAN box, so this is the one
     // connect site that follows a LAN connection (`roomServerUrl`, not `gameServerUrl`).
     // A region hint means nothing to a single machine with no proxy, and is harmless.
-    const url =
-      useRegion && (group || multiServer()) ? roomServerUrlWith({ region: useRegion }) : roomServerUrl();
-    let transport: WebSocketTransport;
-    try {
-      transport = new WebSocketTransport(url);
-    } catch {
-      setError('Couldn’t reach the game server.');
-      setPhase('error');
-      return;
+    let transport: Transport;
+    if (adopted) {
+      transport = adopted.transport;
+    } else {
+      // In a Discord Activity, PIN to DISCORD_REGION even without a multi-server
+      // picker (the `/gs` proxy is anycast); otherwise only hint a region when a
+      // picker is configured.
+      const url =
+        useRegion && (group || multiServer()) ? roomServerUrlWith({ region: useRegion }) : roomServerUrl();
+      try {
+        transport = new WebSocketTransport(url);
+      } catch {
+        setError('Couldn’t reach the game server.');
+        setPhase('error');
+        return;
+      }
     }
     const lobby = new LobbyClient(transport);
     lobbyRef.current = lobby;
@@ -794,7 +815,29 @@ export function Lobby({
                 game={settings.game}
               />
             )}
-            {settings.game === 'chain' ? (
+            {moduleFor(settings.game).startEditor ? (
+              // a game's OWN editor, through the module slot. The two inline
+              // branches below are DECODE's and CR's, unchanged.
+              (() => {
+                const StartEd = moduleFor(settings.game).startEditor!;
+                return (
+                  <StartEd
+                    spec={me.spec}
+                    alliance={me.alliance}
+                    value={me.startPose}
+                    startIndex={me.startIndex ?? 0}
+                    category={startRole ?? settings.startCat}
+                    saved={settings.savedStartPoses}
+                    lockedCategory={startRole}
+                    onChange={(startPose) => startPose && applyStart(selectStart(sCat, { index: -1, pose: startPose }))}
+                    onPickPreset={(i) => applyStart(selectStart(sCat, { index: i, pose: null }))}
+                    onCategory={(c) => applyStart(switchCategory(settings, c))}
+                    onSave={(pose) => applyStart(saveStart(sCat, pose))}
+                    onDeleteSaved={(c, i) => applyStart(deleteSavedStart(sCat, c, i))}
+                  />
+                );
+              })()
+            ) : settings.game === 'chain' ? (
               <ChainStartEditor
                 spec={me.spec}
                 alliance={me.alliance}

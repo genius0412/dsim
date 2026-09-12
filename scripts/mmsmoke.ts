@@ -16,9 +16,12 @@
  * `npm test` stays the SIM smoke check (a red `npm test` must keep meaning
  * "physics broke"), so this is its own script.
  */
-import { Matchmaker, groupUnits, allianceOrder, type QueueEntry } from '../server/matchmaking';
+import { Matchmaker, groupUnits, allianceOrder, type MatchmakerDeps, type QueueEntry } from '../server/matchmaking';
 import type { PendingMatch } from '../server/matchTypes';
 import type { QueueMode, ServerMsg } from '../src/net/protocol';
+import { DEPLOY_REGIONS, bestHost, interRegionMs } from '../server/regions';
+import { SKILL_BASE, skillCeiling } from '../server/matchmaking';
+import { readFileSync } from 'node:fs';
 
 let passed = 0;
 const failures: string[] = [];
@@ -53,6 +56,7 @@ function entry(id: string, mode: QueueMode, opts: Partial<QueueEntry> = {}): Que
  */
 async function pair(
   entries: QueueEntry[],
+  deps: Partial<MatchmakerDeps> = {},
 ): Promise<{ mm: Matchmaker; staged: PendingMatch[] }> {
   const staged: PendingMatch[] = [];
   const mm = new Matchmaker({
@@ -62,6 +66,7 @@ async function pair(
     stage: async (m) => {
       staged.push(m);
     },
+    ...deps,
   });
   for (const e of entries) mm.enqueue(e);
   await new Promise((r) => setTimeout(r, 0));
@@ -424,6 +429,389 @@ const namesOf = (m: PendingMatch | undefined): string =>
   ]);
   const last = seen.filter((m) => m.t === 'queued').pop();
   check('queued: a challenge reports 1/2, not the open depth', last?.t === 'queued' && last.size === 1, JSON.stringify(last));
+}
+{
+  // THE OPEN-POOL HALF of the same rule, which had no check at all — only the closed
+  // party above did. `broadcastStatus` counts per BUCKET (game|channel|build), and the
+  // count a waiter is shown decides whether the UI reads "waiting" or "nearly ready",
+  // so a count that leaked across builds would promise a match that pairing can never
+  // make. Two builds queued together: each must be told 1, never 2. This is also the
+  // guard on the count-once rewrite of that method — the shape it replaced computed
+  // the same number per recipient, so an off-by-one there would be silent.
+  const seen: Record<string, ServerMsg[]> = { b1: [], b2: [], b1b: [] };
+  await pair([
+    entry('b1', '1v1', { build: 'build-one', send: (m) => seen.b1.push(m) }),
+    entry('b2', '1v1', { build: 'build-two', send: (m) => seen.b2.push(m) }),
+  ]);
+  const sizeOf = (k: string): number | undefined => {
+    const m = seen[k].filter((x) => x.t === 'queued').pop();
+    return m?.t === 'queued' ? m.size : undefined;
+  };
+  check('queued: the depth is the waiter’s OWN build bucket, not the whole queue',
+    sizeOf('b1') === 1 && sizeOf('b2') === 1, `b1=${sizeOf('b1')} b2=${sizeOf('b2')}`);
+}
+{
+  // and two waiters that DO share a bucket must both be told 2 — the other direction of
+  // the same count, so a bucket key that over-separated would be caught too
+  const seen: Record<string, ServerMsg[]> = { s1: [], s2: [] };
+  await pair([
+    entry('s1', '2v2', { build: 'same', send: (m) => seen.s1.push(m) }),
+    entry('s2', '2v2', { build: 'same', send: (m) => seen.s2.push(m) }),
+  ]);
+  const sizeOf = (k: string): number | undefined => {
+    const m = seen[k].filter((x) => x.t === 'queued').pop();
+    return m?.t === 'queued' ? m.size : undefined;
+  };
+  check('queued: waiters sharing a bucket are both told the shared depth',
+    sizeOf('s1') === 2 && sizeOf('s2') === 2, `s1=${sizeOf('s1')} s2=${sizeOf('s2')}`);
+}
+
+// ---- the SERVER-STAMPED rating ---------------------------------------------
+// Pairing on skill needs a rating ON the entry, and where it comes from is the whole
+// security story: the queue message carries no rating field and must never gain one.
+// These pin the stamp's lifecycle, which is the part that can fail quietly.
+{
+  const asked: string[] = [];
+  const { mm } = await pair([entry('r1', '1v1', { userId: 'u-r1' })], {
+    rating: async (userId) => {
+      asked.push(userId);
+      return { rating: 1420, placed: true };
+    },
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  const e = mm.queuedPlayers(0).find((x) => x.userId === 'u-r1');
+  check('rating: the queue was asked for the entry’s rating', asked.includes('u-r1'), asked.join(','));
+  check('rating: ...and the entry is still queued while it resolves', !!e);
+}
+{
+  // FAIL OPEN. A rating source that returns null — DB off, signed out, a read that
+  // threw — must leave the entry unrated and matchable, never gate it out. A database
+  // that cannot answer must not lock everyone out of ranked.
+  const { staged } = await pair(
+    [entry('f1', '1v1', { userId: 'u-f1' }), entry('f2', '1v1', { userId: 'u-f2' })],
+    { rating: async () => null },
+  );
+  check('rating: a null read still pairs (fail open, not a gate)', staged.length === 1, String(staged.length));
+}
+{
+  // a rating source that THROWS is the same situation and must not reject into the
+  // queue press — an unhandled rejection there would take the matchmaker down
+  const { staged } = await pair(
+    [entry('t1', '1v1', { userId: 'u-t1' }), entry('t2', '1v1', { userId: 'u-t2' })],
+    { rating: async () => { throw new Error('neon is asleep'); } },
+  );
+  check('rating: a THROWING read still pairs and never rejects into the join', staged.length === 1, String(staged.length));
+}
+{
+  // the stamp must not resurrect an entry that has since left. The read is fired
+  // off the join path, so a player can leave, or re-queue under a new connection id,
+  // while it is in flight — writing onto the old object would at best do nothing and
+  // at worst carry a departed identity onto a fresh entry.
+  let release: (() => void) | null = null;
+  const gate = new Promise<void>((r) => { release = r; });
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({
+    now: () => 0,
+    stage: async (m) => { staged.push(m); },
+    rating: async () => { await gate; return { rating: 1700, placed: true }; },
+  });
+  mm.enqueue(entry('gone', '1v1', { userId: 'u-gone' }));
+  mm.remove('gone');
+  release?.();
+  await new Promise((r) => setTimeout(r, 0));
+  check('rating: a stamp landing after the player left does not re-add them',
+    mm.queuedPlayers(0).every((x) => x.userId !== 'u-gone'));
+}
+{
+  // THE STAMP LANDS AFTER THE JOIN, ON PURPOSE, and that is visible here: two players
+  // who enqueue back-to-back pair SYNCHRONOUSLY inside the second `enqueue`, before
+  // either rating read has resolved. Correct — an empty queue has nobody to choose
+  // between, so there is nothing for a rating to improve — but it means a test of the
+  // stamp has to let the first read land before the second player arrives, which is
+  // also what a real queue looks like.
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({
+    now: () => 0,
+    stage: async (m) => { staged.push(m); },
+    rating: async (userId) => ({ rating: userId === 'u-i1' ? 1234 : 1567, placed: true }),
+  });
+  mm.enqueue(entry('i1', '1v1', { userId: 'u-i1' }));
+  await new Promise((r) => setTimeout(r, 0)); // the first player's rating lands
+  mm.enqueue(entry('i2', '1v1', { userId: 'u-i2' }));
+  await new Promise((r) => setTimeout(r, 0));
+  const elos = (staged[0]?.roster ?? []).map((r) => r.introElo);
+  check('rating: the intro card is served from the stamp, not a fresh query',
+    elos.includes(1234), JSON.stringify(elos));
+  // and the SECOND player, who paired before their own read resolved, falls through to
+  // the DB path — null here, because this harness has no database. That is the fallback
+  // working: an absent stamp must read as "Unranked", never as a fabricated 1000.
+  check('rating: an unstamped player falls back rather than inventing a rating',
+    elos.length === 2 && elos.includes(null), JSON.stringify(elos));
+}
+
+// ---- the fleet and the code must name the same regions ----------------------
+// THE CHECK THAT ACTUALLY BITES. Iterating over DEPLOY_REGIONS cannot catch a region
+// MISSING from it — the loop just runs one fewer time — and that is the direction the
+// bug came from. So the fleet is declared in scripts/fly-deploy.sh and asserted here.
+// Neither file can see `fly machine list`, but the deploy script is what creates the
+// machines, so it is the closest thing to the truth that lives in the repo.
+{
+  const sh = readFileSync(new URL('./fly-deploy.sh', import.meta.url), 'utf8');
+  const m = /^FLEET_REGIONS=\(([^)]*)\)/m.exec(sh);
+  const fleet = (m?.[1] ?? '').trim().split(/\s+/).filter(Boolean);
+  check('fleet: fly-deploy.sh declares the region list', fleet.length >= 5, fleet.join(','));
+  for (const r of fleet) {
+    // every machine we run must at least have a latency row, or its players are
+    // unpairable rather than merely far
+    check(`fleet: ${r} has an RTT row (else its players cannot be matched at all)`,
+      interRegionMs(r, 'iad') < 300 || r === 'iad', `${r}->iad = ${interRegionMs(r, 'iad')}`);
+  }
+  // and every region the matchmaker may HOST in must be a region we actually run
+  for (const r of DEPLOY_REGIONS) {
+    check(`fleet: DEPLOY_REGIONS.${r} has a machine in the fleet`, fleet.includes(r), fleet.join(','));
+  }
+}
+
+// ---- region topology: the table the whole radius gate is computed from -------
+// This is a SILENT-FAILURE class and it had already fired. `interRegionMs` answers a
+// RADIUS_MAX-sized penalty for any region it has no row for, so a deployed region
+// missing from the table does not read as "far" — it reads as UNPAIRABLE until the
+// radius saturates six seconds later, and never at all for a `noWiden` player. `ord`
+// had a live machine and no row: two players in the same city measured spread 300
+// against an opening ceiling of 90, and their match hosted in another region.
+{
+  for (const a of DEPLOY_REGIONS) {
+    check(`regions: ${a} has a zero diagonal`, interRegionMs(a, a) === 0, String(interRegionMs(a, a)));
+    for (const b of DEPLOY_REGIONS) {
+      if (a === b) continue;
+      const ab = interRegionMs(a, b);
+      const ba = interRegionMs(b, a);
+      check(`regions: ${a}<->${b} is symmetric`, ab === ba, `${ab} vs ${ba}`);
+      // the fallback is RADIUS_MAX_MS-sized; a real row is always well under it
+      check(`regions: ${a}<->${b} has a REAL row, not the unknown-region penalty`,
+        ab > 0 && ab < 300, String(ab));
+    }
+  }
+}
+{
+  // the property that actually matters, asserted for EVERY deployed region rather
+  // than for the one that broke: two players who landed in the same region must be
+  // hostable there at zero spread, so they pair on the opening ceiling
+  for (const r of DEPLOY_REGIONS) {
+    const h = bestHost([{ homeRegion: r, accessMs: 10 }, { homeRegion: r, accessMs: 10 }]);
+    check(`regions: two players in ${r} host in ${r} at spread 0`,
+      h.hostRegion === r && h.spread === 0, JSON.stringify(h));
+  }
+}
+{
+  // and end to end through the matchmaker, at t=0, with the radius at its tightest —
+  // including the noWiden case, which is the one that never recovers
+  for (const r of DEPLOY_REGIONS) {
+    const { staged } = await pair([
+      entry(`${r}1`, '1v1', { homeRegion: r, noWiden: true }),
+      entry(`${r}2`, '1v1', { homeRegion: r, noWiden: true }),
+    ]);
+    check(`regions: two region-locked players in ${r} pair immediately`,
+      staged.length === 1, `${staged.length} staged`);
+  }
+}
+
+// ---- the two pairing rules the tests did NOT cover --------------------------
+// Both of these were found by mutation: reverting `spread < pick.spread` to first-fit,
+// and replacing `Math.min(...trial.map(ceilingOf))` with the anchor's own ceiling, each
+// passed all 160 checks. They are the two rules any rewrite of findMatch has to
+// re-derive, so they are pinned here BEFORE the pairing core is touched.
+{
+  // NEAREST-FIRST: among legal candidates the matchmaker takes the one with the
+  // SMALLEST resulting spread, not the first one in the queue. Anchor in iad; syd is
+  // 148 away (best host sjc), nrt is 109 (best host sjc). syd is queued FIRST, so
+  // first-fit takes syd and nearest-first takes nrt.
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({ now: () => t, stage: async (m) => { staged.push(m); } });
+  mm.enqueue(entry('anchor', '1v1', { homeRegion: 'iad' }));
+  mm.enqueue(entry('far', '1v1', { homeRegion: 'syd' }));
+  mm.enqueue(entry('near', '1v1', { homeRegion: 'nrt' }));
+  await new Promise((r) => setTimeout(r, 0));
+  check('nearest-first: nothing is legal at the opening ceiling', staged.length === 0, `${staged.length}`);
+  t = 20_000; // past RADIUS_MAX: every candidate is now legal, so the CHOICE is visible
+  mm.tick();
+  await new Promise((r) => setTimeout(r, 0));
+  check('nearest-first: a match is made once the radius has opened', staged.length === 1, `${staged.length}`);
+  check('nearest-first: it takes the CLOSEST candidate, not the first queued',
+    namesOf(staged[0]) === 'anchor,near', namesOf(staged[0]));
+  check('nearest-first: and hosts on the fair midpoint for that pair',
+    staged[0]?.hostRegion === 'sjc', staged[0]?.hostRegion);
+}
+{
+  // GROUP-MINIMUM CEILING: the radius a trial group is held to is the SMALLEST of its
+  // members, so one freshly-arrived player caps a group of veterans. Three iad players
+  // who have waited past saturation (ceiling 300) plus one syd player who just arrived
+  // (ceiling 90). The syd pairing costs 148, which the anchor alone would allow and the
+  // group minimum must refuse.
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({ now: () => t, stage: async (m) => { staged.push(m); } });
+  mm.enqueue(entry('v1', '2v2', { homeRegion: 'iad' }));
+  mm.enqueue(entry('v2', '2v2', { homeRegion: 'iad' }));
+  mm.enqueue(entry('v3', '2v2', { homeRegion: 'iad' }));
+  t = 20_000; // the three veterans are now saturated at RADIUS_MAX
+  mm.enqueue(entry('fresh', '2v2', { homeRegion: 'syd' })); // stamped enqueuedAt = 20000
+  await new Promise((r) => setTimeout(r, 0));
+  check('group ceiling: a fresh arrival caps the whole group, so no match forms',
+    staged.length === 0, `${staged.length} staged: ${namesOf(staged[0])}`);
+  t = 40_000; // now the fresh player has saturated too and the group is legal
+  mm.tick();
+  await new Promise((r) => setTimeout(r, 0));
+  check('group ceiling: ...and the match forms once THEY have waited, not before',
+    staged.length === 1 && namesOf(staged[0]) === 'fresh,v1,v2,v3', namesOf(staged[0]));
+}
+
+// ---- the skill window --------------------------------------------------------
+// Pairing now reads rating as well as latency. Latency stays PRIMARY; skill is a second
+// gate plus a tiebreak, never a partition, so a same-region opponent is never passed
+// over for a better-rated distant one.
+{
+  check('skill: the band opens at SKILL_BASE', skillCeiling(0, 0) === SKILL_BASE, String(skillCeiling(0, 0)));
+  check('skill: it widens on the radius clock', skillCeiling(3000, 0) > skillCeiling(0, 0));
+  check('skill: and goes UNBOUNDED, so any pairing legal before this is legal again',
+    skillCeiling(6000, 0) === Infinity, String(skillCeiling(6000, 0)));
+  check('skill: an expandSearch bump widens it too', skillCeiling(0, 2) === Infinity);
+}
+{
+  // a gap wider than the opening band waits; it is not refused forever
+  const rated = (id: string, rating: number): Partial<QueueEntry> =>
+    ({ rating, placed: true } as Partial<QueueEntry>);
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({ now: () => t, stage: async (m) => { staged.push(m); } });
+  mm.enqueue(entry('lo', '1v1', rated('lo', 900)));
+  mm.enqueue(entry('hi', '1v1', rated('hi', 1900)));   // a 1000-point gap
+  await new Promise((r) => setTimeout(r, 0));
+  check('skill: a 1000-point gap does not pair on the opening band', staged.length === 0, `${staged.length}`);
+  t = 6000; // the band is unbounded from here
+  mm.tick();
+  await new Promise((r) => setTimeout(r, 0));
+  check('skill: ...and pairs once the band opens, so nobody starves', staged.length === 1, `${staged.length}`);
+}
+{
+  // UNRATED MEANS DO NOT GATE. This is the floor the whole feature degrades to — a DB
+  // outage, a dev box, a fresh act, or anyone inside their placement games.
+  const { staged } = await pair([
+    entry('u1', '1v1', { rating: 900, placed: false } as Partial<QueueEntry>),
+    entry('u2', '1v1', { rating: 1900, placed: false } as Partial<QueueEntry>),
+  ]);
+  check('skill: two UNPLACED players pair regardless of the gap', staged.length === 1, `${staged.length}`);
+}
+{
+  const { staged } = await pair([entry('n1', '1v1'), entry('n2', '1v1')]);
+  check('skill: entries with no rating at all pair exactly as before', staged.length === 1, `${staged.length}`);
+}
+{
+  // one rated + one unrated: the unrated member imposes no ceiling and is not in the
+  // span, so there is nothing to gate on and the match is made
+  const { staged } = await pair([
+    entry('r', '1v1', { rating: 1900, placed: true } as Partial<QueueEntry>),
+    entry('x', '1v1'),
+  ]);
+  check('skill: a rated player still pairs with an unrated one', staged.length === 1, `${staged.length}`);
+}
+{
+  // THE TIEBREAK. Every player is in one region, so every spread is 0 and latency cannot
+  // separate them — which is exactly where skill does its work.
+  //
+  // Getting a CHOICE in front of the anchor takes some care, and both details are
+  // load-bearing. `enqueue` matches synchronously, so two compatible waiters pair the
+  // instant the second arrives and a third never gets considered; and findMatch anchors
+  // on the OLDEST unit, so the player doing the choosing must be the first to queue.
+  //
+  // So: all three are mutually out of band at t=0 (every pairwise gap exceeds 200), and
+  // the clock is then advanced to widen the band to 500, at which point the anchor at
+  // 1000 sees BOTH 1500 (span 500) and 1250 (span 250) at once and has to pick.
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({ now: () => t, stage: async (m) => { staged.push(m); } });
+  mm.enqueue(entry('anchor', '1v1', { homeRegion: 'iad', rating: 1000, placed: true } as Partial<QueueEntry>));
+  mm.enqueue(entry('far', '1v1', { homeRegion: 'iad', rating: 1500, placed: true } as Partial<QueueEntry>));
+  mm.enqueue(entry('near', '1v1', { homeRegion: 'iad', rating: 1250, placed: true } as Partial<QueueEntry>));
+  await new Promise((r) => setTimeout(r, 0));
+  check('skill: nothing pairs while every gap is outside the opening band',
+    staged.length === 0, `${staged.length}`);
+  t = 3000; // band widens to SKILL_BASE + SKILL_STEP
+  mm.tick();
+  await new Promise((r) => setTimeout(r, 0));
+  check('skill: among equal-latency candidates it takes the closest RATED one',
+    namesOf(staged[0]) === 'anchor,near', namesOf(staged[0]));
+}
+{
+  // A CLOSED PARTY IS NEVER SKILL-GATED. Two friends who challenged each other have
+  // already decided; a rating band there would refuse a match both sides asked for.
+  const { staged } = await pair([
+    entry('c1', '1v1', { party: 'tok', partySize: 2, partyOnly: true, rating: 600, placed: true } as Partial<QueueEntry>),
+    entry('c2', '1v1', { party: 'tok', partySize: 2, partyOnly: true, rating: 2000, placed: true } as Partial<QueueEntry>),
+  ]);
+  check('skill: a friend challenge ignores the band entirely', staged.length === 1, `${staged.length}`);
+}
+{
+  // the freshest arrival caps the group, exactly as it does for the radius
+  let t = 0;
+  const staged: PendingMatch[] = [];
+  const mm = new Matchmaker({ now: () => t, stage: async (m) => { staged.push(m); } });
+  mm.enqueue(entry('old', '1v1', { rating: 1000, placed: true } as Partial<QueueEntry>));
+  t = 6000; // `old` alone would now accept anyone
+  mm.enqueue(entry('new', '1v1', { rating: 1900, placed: true } as Partial<QueueEntry>));
+  await new Promise((r) => setTimeout(r, 0));
+  check('skill: a fresh arrival caps the group, so the wide gap still waits',
+    staged.length === 0, `${staged.length}`);
+}
+
+// ---- 2v2 alliance balance ----------------------------------------------------
+// `ratingSpan` gates how WIDE a match may be and says nothing about how that width is
+// distributed. (1500,1450) vs (1050,1000) and (1500,1000) vs (1500,1000) have the same
+// span and are not the same match, so the sides are evened up after the group is
+// chosen. It never changes WHO plays, only which side they stand on.
+{
+  const r = (rating: number): Partial<QueueEntry> => ({ rating, placed: true } as Partial<QueueEntry>);
+  const { staged } = await pair([
+    entry('a', '2v2', r(1150)),
+    entry('b', '2v2', r(1100)),
+    entry('c', '2v2', r(1000)),
+    entry('d', '2v2', r(980)),
+  ]);
+  const red = (staged[0]?.roster ?? []).filter((x) => x.alliance === 'red').map((x) => x.name).sort();
+  const blue = (staged[0]?.roster ?? []).filter((x) => x.alliance === 'blue').map((x) => x.name).sort();
+  const byName: Record<string, number> = { a: 1150, b: 1100, c: 1000, d: 980 };
+  const sum = (names: string[]): number => names.reduce((n, x) => n + byName[x], 0);
+  check('balance: a 2v2 is staged from four waiters', staged.length === 1, `${staged.length}`);
+  check('balance: the two alliances are evened up, not left as they queued',
+    Math.abs(sum(red) - sum(blue)) <= 70, `red ${red.join('+')}=${sum(red)} blue ${blue.join('+')}=${sum(blue)}`);
+  check('balance: everybody who was matched is still in the match',
+    [...red, ...blue].sort().join(',') === 'a,b,c,d', [...red, ...blue].join(','));
+}
+{
+  // A PREMADE IS NEVER SPLIT by the balance pass. Keeping a party on one alliance is the
+  // whole point of allianceOrder, and a balance step that ignored it would silently undo
+  // the feature it runs after — a friend queue that puts the two friends on opposite sides.
+  const r = (rating: number, extra: Partial<QueueEntry> = {}): Partial<QueueEntry> =>
+    ({ rating, placed: true, ...extra } as Partial<QueueEntry>);
+  const { staged } = await pair([
+    entry('p1', '2v2', r(1150, { party: 'tok', partySize: 2 })),
+    entry('p2', '2v2', r(1100, { party: 'tok', partySize: 2 })),
+    entry('s1', '2v2', r(1000)),
+    entry('s2', '2v2', r(980)),
+  ]);
+  const al = alliancesOf(staged[0]);
+  check('balance: a premade stays on ONE alliance even when splitting it would be fairer',
+    !!al['p1'] && al['p1'] === al['p2'], JSON.stringify(al));
+}
+{
+  // with anyone unrated there is no number to balance on, and the 1000 default must not
+  // be mistaken for one — the pass leaves the order alone
+  const { staged } = await pair([
+    entry('u1', '2v2'), entry('u2', '2v2'), entry('u3', '2v2'), entry('u4', '2v2'),
+  ]);
+  check('balance: an unrated 2v2 is staged untouched', staged.length === 1 &&
+    (staged[0]?.roster ?? []).length === 4, `${staged.length}`);
 }
 
 // ---- report ----------------------------------------------------------------

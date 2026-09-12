@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>DSIM</title>
+    <!--
+      THE DESKTOP SPLASH.
+
+      It exists because the desktop app LOADS THE LIVE SITE (electron/main.cjs):
+      a HEAD probe of up to 2.5s, then a full page load over the network, and
+      before this the user stared at an empty 1280x820 window for all of it. So
+      the splash is not decoration — it is the only thing on screen during the
+      slowest moment the app has, and it is the frame the presenting sponsor was
+      sold for the desktop build.
+
+      SELF-CONTAINED. This file is loaded from `file://` inside a window with no
+      preload and no node integration: no bundler, no webfonts, no network. The
+      two PNGs beside it are ordinary relative files, which electron-builder ships
+      because its `files` list already includes `electron/**/*`.
+
+      ⚠️ THE ARTWORK HERE IS A SECOND COPY. `electron/sponsor-on-light.png` and
+      `electron/sponsor-on-dark.png` are the same files as
+      `src/assets/sponsors/offset-on-*.png`, duplicated because the bundled ones are
+      fingerprinted by Vite and this page cannot resolve a hashed name. Swapping in
+      the real artwork means replacing FOUR files, and `docs/sponsor.md` lists all
+      four — do not swap one pair and leave the other.
+    -->
+    <style>
+      /* the same grounds as the app: --ds-bg in shell.css, THEME_BG in src/theme.ts,
+         and the `backgroundColor` main.cjs gives the real window. If these drift the
+         splash flashes a different colour than the window that replaces it. */
+      :root {
+        --bg: #f9faf7;
+        --ink: #191c1b;
+        --mut: #5c645f;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #20262c;
+          --ink: #e8eae7;
+          --mut: #949e98;
+        }
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        /* the window is frameless, so without this the whole splash is dead weight
+           the user cannot move out of the way if the site load hangs */
+        -webkit-app-region: drag;
+        user-select: none;
+      }
+      .name {
+        font-size: 40px;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        line-height: 1;
+      }
+      .presents {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+      }
+      .pre {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--mut);
+      }
+      /* width/height attributes on the <img> reserve the box; nothing here resizes
+         it, so a re-cut logo needs no change on this page either */
+      .on-dark {
+        display: none;
+      }
+      @media (prefers-color-scheme: dark) {
+        .on-light {
+          display: none;
+        }
+        .on-dark {
+          display: block;
+        }
+      }
+      .status {
+        position: absolute;
+        bottom: 18px;
+        font-size: 11px;
+        color: var(--mut);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="name">DSIM</div>
+    <div class="presents">
+      <span class="pre">Presented by</span>
+      <img class="on-light" src="sponsor-on-light.png" width="158" height="40" alt="Offset Robotics" />
+      <img class="on-dark" src="sponsor-on-dark.png" width="158" height="40" alt="" />
+    </div>
+    <div class="status">Starting…</div>
+  </body>
+</html>

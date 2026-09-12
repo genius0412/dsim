@@ -8,13 +8,14 @@ import {
   defaultAssistsFor,
   PLAYER_ASSISTS,
 } from './sim/spawn';
-import { START_POSES, MAX_SAVED_ROBOTS, MAX_SAVED_AUTOS, MAX_SAVED_STARTS_SUPPORTER } from './config';
-import { CHAIN_START_POSES } from './games/chain/config';
+import { MAX_SAVED_ROBOTS, MAX_SAVED_AUTOS, MAX_SAVED_STARTS_SUPPORTER } from './config';
+import { GAME_IDS, isGameId } from './games/types';
+import { simModuleFor } from './games/sim';
 import type { StartSel, StartPose } from './types';
 
-/** how many named start anchors a game has (for clamping startIndex per game) */
-const startPoseCount = (game: GameId): number =>
-  game === 'chain' ? CHAIN_START_POSES.length : START_POSES.length;
+/** how many named start anchors a game has (for clamping startIndex per game) —
+ * the module owns the count, so a new game does not touch this file. */
+const startPoseCount = (game: GameId): number => simModuleFor(game).startPoseCount;
 import { cloneBindings, DEFAULT_BINDINGS, mergeBindings } from './input/bindings';
 import { clamp } from './math';
 
@@ -188,7 +189,7 @@ export function coerceSettings(raw: unknown): GameSettings {
   try {
     if (typeof raw !== 'object' || raw === null) return out;
     const s = raw as Record<string, unknown>;
-    if (s.game === 'decode' || s.game === 'chain') out.game = s.game;
+    if (isGameId(s.game)) out.game = s.game;
     if (s.mode === 'match' || s.mode === 'free') out.mode = s.mode;
     if (s.alliance === 'red' || s.alliance === 'blue') out.alliance = s.alliance;
     // assists + spec share ONE validation path with the server (coerceAssists /
@@ -258,7 +259,7 @@ export function coerceSettings(raw: unknown): GameSettings {
     if (typeof s.loadouts === 'object' && s.loadouts !== null) {
       const lo = s.loadouts as Record<string, unknown>;
       const archive: Partial<Record<GameId, GameLoadout>> = {};
-      for (const g of ['decode', 'chain'] as GameId[]) {
+      for (const g of GAME_IDS) {
         if (g !== out.game && lo[g] !== undefined) archive[g] = coerceLoadout(lo[g], g);
       }
       out.loadouts = archive;

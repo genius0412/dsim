@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { APP_NAME } from '../seasons';
+import { APP_NAME, LINKS } from '../seasons';
 import { desktop, type LanHostStatus } from '../desktop';
+import { LanHost, type HostHealth } from '../lan/hostRuntime';
+import { joinLanRoom } from '../lan/joinLan';
+import { setPendingLanRoom } from '../lan/pending';
+import { setTabHosting } from '../lan/hosting';
+import { keepHostedRoom, takeHostedRoom } from '../lan/hostKeeper';
+import { generateRoomCode, normalizeRoomCode } from '../net/roomCode';
+import { serverCaps } from '../net/api';
 import { useEscape } from './useEscape';
 import { appBuild, clearLanServer, lanActive, lanServerUrl, setLanServer } from '../net/env';
 import { LAN_DEFAULT_PORT, mixedContentBlock, parseLanAddress } from '../net/lanAddress';
@@ -25,6 +32,24 @@ import { LAN_DEFAULT_PORT, mixedContentBlock, parseLanAddress } from '../net/lan
  *    browser instead. `localhost` is exempt, which is why the host themselves can play from
  *    the live site.
  */
+/**
+ * THE FOUR COMMANDS, in the order a person types them.
+ *
+ * `git clone` rather than `npx github:...`, which would be one line instead of four. The
+ * one-liner needs this package to carry a `prepare` script so npm builds it after cloning,
+ * and `prepare` ALSO runs on every ordinary `npm install` — so every contributor would pay a
+ * full client build on every install to save a host three lines once. The `bin` entry
+ * (`dsim-lan`) exists so the one-liner can be added later if that trade ever changes.
+ *
+ * `npm ci` rather than `npm install`: the lockfile is committed, and a host is not trying to
+ * resolve new versions, they are trying to run the thing.
+ */
+const HOST_STEPS = [
+  { what: 'Get the code', cmd: `git clone ${LINKS.repo}` },
+  { what: 'Go into it', cmd: 'cd dsim' },
+  { what: 'Install once', cmd: 'npm ci' },
+  { what: 'Host', cmd: 'npm run lan' },
+] as const;
 export function LanPanel({
   signedIn,
   onConnected,
@@ -33,11 +58,164 @@ export function LanPanel({
   /** hosting requires an account: the match data has to land somewhere */
   signedIn: boolean;
   /** connected to a LAN server — take the player to the room screen */
-  onConnected: () => void;
+  /**
+   * Go to the room screen. The CODE is passed when this navigation already knows which room
+   * to open — both WebRTC paths do, because the handshake that just happened was FOR that
+   * code, and making somebody type it again on the next screen (having just typed it here)
+   * is a second chance to get it wrong for no information gained. The two ADDRESS paths pass
+   * nothing: reaching a LAN server is not choosing a room on it.
+   */
+  onConnected: (code?: string) => void;
   /** leave the LAN screen without connecting to anything — see the note on `.ds-back` below */
   onBack: () => void;
 }) {
   const bridge = desktop();
+
+  /**
+   * HOSTING FROM THIS TAB — the WebRTC path (`docs/lan-webrtc.md`).
+   *
+   * Distinct from the two host paths above it in every way that matters to the person reading
+   * the screen: no download, no terminal, and it works on a Chromebook. What it costs is the
+   * one thing the others do not need — a working internet connection for the HANDSHAKE, about
+   * a second of it, after which the match runs entirely on the LAN. The copy says so plainly
+   * rather than letting somebody discover it at a venue.
+   */
+  const [tabHost, setTabHost] = useState<LanHost | null>(null);
+  const [tabCode, setTabCode] = useState('');
+  const [tabErr, setTabErr] = useState('');
+  const [tabBusy, setTabBusy] = useState(false);
+  const [tabGuests, setTabGuests] = useState(0);
+  const [tabHealth, setTabHealth] = useState<HostHealth | null>(null);
+  const [joinCode, setJoinCode] = useState('');
+  const [joinCodeErr, setJoinCodeErr] = useState('');
+  const [joinCodeBusy, setJoinCodeBusy] = useState(false);
+
+  /**
+   * MAY THIS PERSON HOST WHILE SIGNED OUT?
+   *
+   * Normally no, and the reason is on screen: the match is filed to the host's account
+   * afterwards. But a server with no accounts configured — somebody's laptop running the
+   * rendezvous on a LAN with no cloud at all — cannot verify anyone, so "sign in first" there
+   * asks for something that does not exist and disables the button forever. The server says
+   * which kind it is (`lanAnon`, see `LAN_ANON_HOSTS`); until the read lands this stays FALSE,
+   * so the stricter copy is what appears a beat early rather than a button that dies under a
+   * cursor already moving toward it.
+   */
+  const [anonHostOk, setAnonHostOk] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void serverCaps().then((c) => {
+      if (alive) setAnonHostOk(c.includes('lanAnon'));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const mayTabHost = signedIn || anonHostOk;
+
+  /**
+   * LEAVING THIS SCREEN STOPS HOSTING — **unless the host is leaving it to go and PLAY.**
+   *
+   * The room lives in this tab, so wandering off and abandoning it would strand every guest on
+   * a room nobody is stepping, and that is what the cleanup is for. But the host's own route
+   * into the match unmounts this component too, and stopping there terminated the Worker on
+   * the way to the room: the host clicked GO TO THE ROOM and arrived at a lobby waiting on a
+   * room that no longer existed, with the guest already in it. So a handed-off room is PARKED
+   * (`hostKeeper.ts`) and this cleanup leaves it alone.
+   */
+  const handedOff = useRef(false);
+  useEffect(
+    () => () => {
+      if (!handedOff.current) tabHost?.stop();
+    },
+    [tabHost],
+  );
+
+  /* Coming BACK to this screen adopts the parked room, so the host still sees the code they
+     read out and still has a way to stop it. The events it was built with belong to a
+     component that no longer exists, so they are re-pointed at this one. */
+  useEffect(() => {
+    const kept = takeHostedRoom();
+    if (!kept) return;
+    kept.setEvents({
+      onGuests: setTabGuests,
+      onHealth: setTabHealth,
+      onStopped: () => {
+        setTabHosting(false);
+        setTabHost(null);
+        setTabCode('');
+        setTabGuests(0);
+        setTabHealth(null);
+      },
+    });
+    setTabHost(kept);
+    setTabCode(kept.code);
+    setTabGuests(kept.guests);
+  }, []);
+
+  const startTabHost = (): void => {
+    setTabErr('');
+    setTabBusy(true);
+    const code = generateRoomCode();
+    const host = new LanHost({
+      onGuests: setTabGuests,
+      onHealth: setTabHealth,
+      onStopped: () => {
+        /* The flag goes down the moment hosting ends, however it ended. It is what tells
+           `App.tsx` to KEEP the match (`keepLanRun`), so leaving it up on a tab that is no
+           longer running a room would make an ordinary cloud match look self-hosted. */
+        setTabHosting(false);
+        setTabHost(null);
+        setTabCode('');
+        setTabGuests(0);
+        setTabHealth(null);
+      },
+    });
+    void host
+      .start(code)
+      .then((live) => {
+        /* ⚠️ RAISED HERE, NOT WHERE THE ROOM IS ADOPTED. The match has to be kept by this tab
+           and by no other (`src/lan/hosting.ts`), and the only tab that can know that is the
+           one that just started the room. */
+        setTabHosting(true);
+        setTabHost(host);
+        setTabCode(live);
+        setTabBusy(false);
+      })
+      .catch((e: Error) => {
+        host.stop();
+        setTabErr(e.message || 'Could not start hosting.');
+        setTabBusy(false);
+      });
+  };
+
+  const playTabHost = (): void => {
+    if (!tabHost || !tabCode) return;
+    /* ⚠️ BOTH LINES, IN THIS ORDER, BEFORE THE NAVIGATION. The room is handed to the keeper
+       so this screen's unmount does not stop it, and the flag tells the cleanup that this is
+       a hand-off rather than an abandonment. */
+    handedOff.current = true;
+    keepHostedRoom(tabHost);
+    setPendingLanRoom({ transport: tabHost.transport, code: tabCode, hosting: true });
+    onConnected(tabCode);
+  };
+
+  const joinByCode = (): void => {
+    const code = normalizeRoomCode(joinCode);
+    if (!code) return;
+    setJoinCodeErr('');
+    setJoinCodeBusy(true);
+    void joinLanRoom(code)
+      .then((r) => {
+        setPendingLanRoom({ transport: r.transport, code: r.code, hosting: false });
+        setJoinCodeBusy(false);
+        onConnected(r.code);
+      })
+      .catch((e: Error) => {
+        setJoinCodeErr(e.message || 'Could not reach that room.');
+        setJoinCodeBusy(false);
+      });
+  };
   useEscape(onBack);
   const [host, setHost] = useState<LanHostStatus | null>(null);
   const [hostBusy, setHostBusy] = useState(false);
@@ -123,14 +301,58 @@ export function LanPanel({
     });
   };
 
+  /**
+   * ⚠️ `navigator.clipboard` DOES NOT EXIST ON THE PAGE THIS SCREEN MATTERS MOST ON.
+   *
+   * The Clipboard API is gated on a SECURE CONTEXT. A LAN guest is served from
+   * `http://192.168.x.x:8787`, which is plain http and not `localhost`, so it is not secure and
+   * `navigator.clipboard` is `undefined` there — measured, not assumed. The optional chain meant
+   * the whole call evaporated and every copy button on this page was a button that did nothing,
+   * silently, with no error to notice. It is exactly the wrong page for that: the join URL and
+   * the host commands are the two things anyone comes here to copy.
+   *
+   * So there is a fallback, and it is the old `execCommand('copy')` one. It is deprecated and it
+   * is also the only thing that works without a secure context, which is the situation. The
+   * textarea is off-screen rather than `display:none` because a hidden element cannot be
+   * selected, and `readOnly` keeps a mobile keyboard from opening over the page.
+   *
+   * The host's own window is on `localhost`, which IS exempt and secure, so the modern path is
+   * the normal one and this is the guest's path.
+   */
+  const flash = (text: string): void => {
+    setCopied(text);
+    window.setTimeout(() => alive.current && setCopied(''), 1600);
+  };
+  const copyFallback = (text: string): boolean => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  };
   const copy = (text: string): void => {
-    void navigator.clipboard?.writeText(text).then(
-      () => {
-        setCopied(text);
-        window.setTimeout(() => alive.current && setCopied(''), 1600);
-      },
-      () => setCopied(''),
-    );
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(text).then(
+        () => flash(text),
+        // a rejection here is usually "the document is not focused" rather than "not allowed",
+        // and the fallback copes with both — so try it before giving up.
+        () => {
+          if (copyFallback(text)) flash(text);
+          else setCopied('');
+        },
+      );
+      return;
+    }
+    if (copyFallback(text)) flash(text);
   };
 
   /**
@@ -195,9 +417,9 @@ export function LanPanel({
       <h1 className="ds-h1">LAN play</h1>
 
       <p className="ds-page-note">
-        Play on one network with no internet in the middle. LAN matches are unofficial —
-        they’re never rated and never reach a leaderboard. The host’s replays are still saved
-        to their account.
+        The match runs on one network, with no game server in the middle. LAN matches are
+        unofficial — they’re never rated and never reach a leaderboard. The host’s replays are
+        still saved to their account.
       </p>
 
       {active && (
@@ -217,10 +439,81 @@ export function LanPanel({
         </div>
       )}
 
-      {/* ---- HOST (desktop only: a web page cannot start a server) ---- */}
+      {/* ---- HOST ---- */}
+      <p className="ds-tileset-label">Host · this computer</p>
+
+      {/* THE ONE HOST PATH WITH NOTHING TO INSTALL. It is first because for most people it is
+          the only one they can use: the desktop app needs a download and the terminal needs
+          Node and git, and neither exists on a school Chromebook. */}
+      <div className="ds-panelbox">
+        <p className="ds-lan-state">Host in this tab</p>
+        {!tabHost && (
+          <>
+            <p className="ds-hint">
+              Runs the game here, in this browser tab. Nothing to download and no commands —
+              everyone else joins with a six-character code and plays over your network, so the
+              match itself never leaves the building.
+            </p>
+            <p className="ds-hint">
+              <b>You need internet for about a second</b>, at the start, so the players can find
+              each other. After that the match runs entirely on your own network. If the venue
+              has no internet at all, use one of the two options below instead.
+            </p>
+            {!signedIn && !anonHostOk && (
+              <p className="ds-hint warn">
+                Sign in first. The matches played here are saved to your account, and there’s
+                nowhere for them to go otherwise.
+              </p>
+            )}
+            {!signedIn && anonHostOk && (
+              <p className="ds-hint warn">
+                This server has no accounts, so the match stays on this device until you play
+                one signed in somewhere that does.
+              </p>
+            )}
+            {tabErr && <p className="ds-form-err">⚠ {tabErr}</p>}
+            <div className="ds-actions">
+              <button className="ds-cta" onClick={startTabHost} disabled={!mayTabHost || tabBusy}>
+                {tabBusy ? 'STARTING…' : 'START HOSTING ▶'}
+              </button>
+            </div>
+          </>
+        )}
+        {tabHost && (
+          <>
+            <p className="ds-hint">Read this code out. Everyone joins with it.</p>
+            <button className="ds-lan-url" onClick={() => copy(tabCode)} title="Copy">
+              <span className="u">{tabCode}</span>
+              <span className="c">{copied === tabCode ? 'Copied' : 'Copy'}</span>
+            </button>
+            <p className="ds-hint">
+              {tabGuests === 0
+                ? 'Waiting for players to join…'
+                : `${tabGuests} ${tabGuests === 1 ? 'player has' : 'players have'} joined.`}
+            </p>
+            {/* THE HOST LOOP'S OWN HEALTH. A throttled tab does not announce itself — it just
+                runs the match slowly for everyone else — so the one person who can fix it is
+                told. See docs/lan-webrtc.md §6. */}
+            {tabHealth && tabHealth.behind > 250 && (
+              <p className="ds-hint warn">
+                This tab is being slowed down by your browser. Keep it visible and on screen
+                while you host.
+              </p>
+            )}
+            <div className="ds-actions">
+              <button className="ds-cta" onClick={playTabHost}>
+                GO TO THE ROOM ▶
+              </button>
+              <button className="ds-btn" onClick={() => tabHost.stop()}>
+                Stop hosting
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
       {bridge?.lan && (
         <>
-          <p className="ds-tileset-label">Host · this computer</p>
           <div className="ds-panelbox">
             {!running && (
               <>
@@ -314,8 +607,93 @@ export function LanPanel({
         </>
       )}
 
+      {/* ---- HOST WITHOUT THE APP ------------------------------------------------------
+          Why this is on the page AT ALL, and why it is not apologetic about the terminal:
+
+          A browser tab still cannot be a SERVER — there is no web API that opens a listening
+          socket, so nothing a guest types into an address bar will ever reach a tab. What
+          changed is that guests no longer have to dial one: the tab-hosted path above reaches
+          them through WebRTC, introduced by a cloud rendezvous. `docs/lan-webrtc.md`.
+
+          ⚠️ So this block is NOT the fallback for people who cannot use the button above. It
+          is the path for a venue with NO INTERNET AT ALL, which the tab path needs for about a
+          second to make the introduction. That is a real gym, and it is the reason this stays
+          on the page rather than being deleted now that hosting has a button.
+
+          GUESTS ARE UNAFFECTED either way, which is the part people assume wrong: only the
+          HOST needs any of this. `docs/lan-selfhost.md` carries the long version.
+
+          GUESTS ARE UNAFFECTED and that is worth saying out loud here, because it is the
+          part people assume wrong: only the HOST needs any of this. -------------------- */}
+      <div className="ds-panelbox">
+        <p className="ds-lan-state">
+          {bridge?.lan ? 'Or host from a terminal' : 'Host with no internet at all'}
+        </p>
+        <p className="ds-hint">
+          For a venue with no internet whatsoever, including the moment of it the option above
+          needs. This runs the game outside the browser, so guests reach it by typing an
+          address instead of a code. It takes one command, and the steps are the same on macOS,
+          Windows and Linux. You need Node.js (nodejs.org) and Git (git-scm.com); if you
+          already write code on this machine you almost certainly have both.
+        </p>
+        <ol className="ds-lan-steps">
+          {HOST_STEPS.map((step) => (
+            <li key={step.cmd}>
+              <span className="s">{step.what}</span>
+              <button
+                className="ds-lan-url compact"
+                onClick={() => copy(step.cmd)}
+                title="Copy"
+              >
+                <span className="u">{step.cmd}</span>
+                <span className="c">{copied === step.cmd ? 'Copied' : 'Copy'}</span>
+              </button>
+            </li>
+          ))}
+        </ol>
+        <p className="ds-hint">
+          It prints the addresses to put on a projector, and keeps hosting until you press
+          Ctrl-C. The first run builds the app once, so give it a minute.
+        </p>
+        <p className="ds-hint">
+          <b>Your guests install nothing.</b> They open the address you read out, in whatever
+          browser is already on their laptop. Only the host needs the command above — or the
+          desktop app, which does the same thing with a button.
+        </p>
+      </div>
+
       {/* ---- JOIN ---- */}
       <p className="ds-tileset-label">Join · someone else’s computer</p>
+
+      {/* Two ways in, and they are not interchangeable: a CODE reaches a tab-hosted room and an
+          ADDRESS reaches a machine running the server. The code is first because it is the one
+          that needs nothing explained. */}
+      <div className="ds-panelbox">
+        <label className="ds-field">
+          <span className="cap">Room code</span>
+          <input
+            className="ds-input"
+            value={joinCode}
+            onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+            onKeyDown={(e) => e.key === 'Enter' && joinByCode()}
+            placeholder="BCDFGH"
+            spellCheck={false}
+            autoCapitalize="characters"
+            maxLength={6}
+          />
+        </label>
+        <p className="ds-hint">
+          The six characters the host is showing. Works when the host is running DSIM in a
+          browser tab.
+        </p>
+        {joinCodeErr && <p className="ds-form-err">⚠ {joinCodeErr}</p>}
+        <div className="ds-actions">
+          <button className="ds-cta" onClick={joinByCode} disabled={joinCode.length < 6 || joinCodeBusy}>
+            {joinCodeBusy ? 'CONNECTING…' : 'JOIN ▶'}
+          </button>
+        </div>
+      </div>
+
       <div className="ds-panelbox">
         <label className="ds-field">
           <span className="cap">Host address</span>

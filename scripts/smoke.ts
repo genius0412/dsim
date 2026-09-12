@@ -19,6 +19,7 @@ import { roomJoinRegion } from '../src/net/roomRegion';
 import { parseLanAddress, mixedContentBlock, isPrivateHost } from '../src/net/lanAddress';
 import { filePath as staticFilePath, servableFile, servingClient } from '../server/static';
 import { enforceLanPolicy } from '../server/lanMode';
+import { LanSignalling, MAX_SIGNAL_BYTES, MAX_PEERS_PER_HOST } from '../server/lanSignal';
 import { stripCredentials, trustedFor, wsOrigin } from '../src/net/credentials';
 import { childEnv as lanChildEnv } from '../electron/lanHost.cjs';
 import {
@@ -96,6 +97,9 @@ import {
   ROBOT_MIN_WIDTH,
   INTAKE_ROLLER_MM,
   intakeRollerDia,
+  intakeAxleX,
+  intakeNip,
+  INTAKE_TREAD_FRAC,
   intakeMouth,
   GATE_LINE_S,
   GATE_RIDE_FRAC,
@@ -130,6 +134,8 @@ import {
   SIM_VERSION,
   INTAKE_PRESETS,
   INTAKE_LIP,
+  HELD_SLIDE_SPEED,
+  INTAKE_CAPTURE_BAND,
   INTAKE_CATCH_LENIENCE,
   ROBOT_PRESETS,
   ROBOT_MAX_SIZE,
@@ -148,6 +154,7 @@ import {
   WHEEL_DIAMETER_MM,
   BASE_DRIVE_ACCEL,
   POWER_DRAW_SWERVE,
+  POSSESSION_HERD_SPEED,
   POSSESSION_PUSH_MIN,
   POSSESSION_CONFIRM,
   POSSESSION_GRACE,
@@ -214,7 +221,7 @@ import {
   type StandingEventKind, type StandingState,
 } from '../src/standing';
 import type { ServerMsg, QueueMode } from '../src/net/protocol';
-import { dsin, dcos, dtan, datan2, hyp, rot, wrapAngle } from '../src/math';
+import { dsin, dcos, dtan, datan2, hyp, rot, wrapAngle, clamp } from '../src/math';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { moduleFor, gameOf } from '../src/games';
 import { decodeColliders } from '../src/games/decode/colliders';
@@ -1326,17 +1333,28 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
         else place(b, off + (i - 2 - (n - 3) / 2) * pitch, y0 + pitch * 0.866, 0, 0);
       }
       const commands = new Map([[0, cmd({ driveY: thr, intake: true })]]);
-      const reached = new Set<number>();
-      for (let i = 0; i < Math.round(3 / SIM_DT); i++) {
-        step(w, SIM_DT, commands);
-        for (const b of w.balls) {
-          if (b.state.kind !== 'ground') continue;
-          const l = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
-          if (l.x > hl - BALL_RADIUS && l.x < tip + BALL_RADIUS && Math.abs(l.y) < m.mouthHalf + BALL_RADIUS * 0.25) reached.add(b.id);
-        }
-      }
+      for (let i = 0; i < Math.round(3 / SIM_DT); i++) step(w, SIM_DT, commands);
       if (HOPPER_CAPACITY - r.hopper.length <= 0) return 0;
-      return w.balls.filter((b) => b.state.kind === 'ground' && reached.has(b.id)).length;
+      /**
+       * STRANDED = the intake still HAS HOLD of it when the scene ends, with room to take it.
+       *
+       * This used to be "was ever inside `(hl − R, tip + R) × mouthHalf` at any tick", which
+       * was the capture window written out by hand — so the moment the grab became the roller
+       * nip the probe was measuring the diff rather than the defect, and counted every
+       * artifact that merely PASSED THROUGH the mouth on its way somewhere else. A check that
+       * re-derives geometry fails whenever the geometry changes, which is exactly when you
+       * need it to still mean something.
+       *
+       * The suction region is the honest statement of "the intake has hold of it": inside it
+       * the rollers are pulling, so an artifact still sitting there at the end with hopper
+       * room is one the preset can neither swallow nor let go of. `onRoller` is wedge-only,
+       * so for a flat front the region is just the box below.
+       */
+      return w.balls.filter((b) => {
+        if (b.state.kind !== 'ground' || b.z > 6) return false;
+        const l = rot({ x: b.pos.x - r.pos.x, y: b.pos.y - r.pos.y }, -r.heading);
+        return l.x > hl - BALL_RADIUS && l.x < tip + BALL_RADIUS && Math.abs(l.y) < m.mouthHalf;
+      }).length;
     };
     let stranded = 0;
     for (const geo of ['row', 'hex', 'file'] as const)
@@ -1346,7 +1364,7 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
     check(
       'a vector intake does not strand artifacts sitting inside its own mouth',
       stranded <= 4,
-      `${stranded} artifacts ended inside the vector mouth with room in the hopper, over 96 ram scenes (8 before the roller row became the capture surface)`,
+      `${stranded} artifacts ended still held by the suction with room in the hopper, over 96 ram scenes (8 before the roller row became the capture surface, 3 after, 0 once the grab became the roller nip and drawIn rose to 32)`,
     );
   }
 
@@ -7004,13 +7022,936 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'lan screen: App.tsx actually passes onBack (a prop nothing supplies is not an exit)',
-      /<LanPanel[\s\S]{0,400}?onBack=\{/.test(app),
+      /<LanPanel[\s\S]{0,900}?onBack=\{/.test(app),
     );
     check(
       'lan screen: the stale claim that AppShell carries a Back is gone from the comment',
       !lan.includes('a second Back underneath the first'),
     );
   }
+  // ---- LAN: THE HOST HALF IS ON THE PAGE, AND THE COMMANDS ARE REAL -------------
+  /**
+   * Two separate failures, both of which shipped, both silent:
+   *
+   * 1. THE WHOLE HOST HALF WAS HIDDEN BEHIND `bridge?.lan`, so a player on the web saw a
+   *    screen titled "LAN play" whose only control asked for somebody ELSE'S address. The
+   *    reasonable reading of that is "hosting is broken", and a page that cannot host has to
+   *    say so and say what to do instead — a browser tab cannot open a listening socket and
+   *    no amount of DSIM code changes that (`docs/lan-selfhost.md` shows the working).
+   * 2. EVERY COPY BUTTON ON THIS PAGE WAS A NO-OP on the page it matters most on. The
+   *    Clipboard API needs a SECURE CONTEXT; a guest is served from `http://192.168.x.x`,
+   *    which is neither https nor `localhost`, so `navigator.clipboard` is `undefined`
+   *    there — measured in a browser on a real LAN server, not inferred. With the optional
+   *    chain the whole call evaporated and nothing reported anything.
+   *
+   * Read as source, like the back-button checks above: this screen needs a DOM. The commands
+   * are pinned because a stale instruction is worse than none — somebody follows it.
+   */
+  {
+    const lan = readFileSync('src/ui/LanPanel.tsx', 'utf8');
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      scripts?: Record<string, string>;
+      bin?: Record<string, string>;
+    };
+    const launcher = readFileSync('scripts/lan.mjs', 'utf8');
+    const css = readFileSync('src/ui/styles.css', 'utf8');
+
+    // the label sits OUTSIDE the bridge guard now; inside it, the web build shows no host half
+    const hostLabel = lan.indexOf('Host · this computer');
+    const bridgeGuard = lan.indexOf('{bridge?.lan && (');
+    check(
+      'lan guide: the Host heading renders without the desktop bridge',
+      hostLabel > 0 && bridgeGuard > 0 && hostLabel < bridgeGuard,
+    );
+    /* This used to assert the page says "a browser tab can’t be a server". That sentence was
+       REMOVED, on purpose: a tab now hosts (`docs/lan-webrtc.md`), so printing it directly
+       under a panel that is hosting contradicted the screen. The underlying fact is unchanged
+       — a tab cannot LISTEN, which is why the tab path needs a rendezvous and a moment of
+       internet — so what is pinned now is the thing that distinguishes the two host paths,
+       which is the only reason a player picks one. */
+    check(
+      'lan guide: the terminal path is presented as the NO-INTERNET one, not as the only one',
+      /no internet at all/i.test(lan) && !/can’t be a server/.test(lan),
+    );
+    check(
+      'lan guide: the page says guests install nothing (the half people assume wrong)',
+      /guests install nothing/i.test(lan),
+    );
+
+    // the four commands, and that the clone URL is not a second copy of the repo address
+    check(
+      'lan guide: the clone command is built from LINKS.repo, not a hardcoded URL',
+      lan.includes('git clone ${LINKS.repo}') && /import \{ APP_NAME, LINKS \}/.test(lan),
+    );
+    check(
+      'lan guide: the printed command is the one package.json actually defines',
+      lan.includes("cmd: 'npm run lan'") && pkg.scripts?.lan === 'node scripts/lan.mjs',
+    );
+    check(
+      'lan guide: `npm ci` (the lockfile is committed; a host is not resolving versions)',
+      lan.includes("cmd: 'npm ci'"),
+    );
+    check('lan guide: a dsim-lan bin exists, so a one-liner stays possible later',
+      pkg.bin?.['dsim-lan'] === 'scripts/lan.mjs');
+
+    // the styles the steps use must EXIST — an invented class renders as unstyled text
+    check(
+      'lan guide: .ds-lan-steps and .ds-lan-url.compact are defined in the stylesheet',
+      css.includes('.ds-lan-steps') && css.includes('.ds-lan-url.compact'),
+    );
+
+    // ---- the launcher itself
+    check(
+      'lan launcher: sets LAN_MODE and SERVE_CLIENT together (the server refuses one alone)',
+      /LAN_MODE: '1'/.test(launcher) && /SERVE_CLIENT: DIST/.test(launcher),
+    );
+    // The file's own header EXPLAINS why `shell: true` is avoided, so a bare search finds
+    // the explanation and passes whatever the code does. Strip comments first.
+    const launcherCode = launcher
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('//'))
+      .join('\n');
+    check(
+      'lan launcher: spawns with NO shell, which is what makes it cross-platform',
+      !/shell:\s*true/.test(launcherCode) && launcher.includes("stdio: 'inherit'"),
+    );
+    check(
+      'lan launcher: calls npm.cmd on win32 (a bare `npm` is not found without a shell)',
+      /npm\.cmd/.test(launcher) && /win32/.test(launcher),
+    );
+    check(
+      'lan launcher: prints private addresses first, same ordering as electron/lanHost.cjs',
+      // The launcher classifies with REGEX LITERALS, so its source spells the dots escaped —
+      // `String.raw` is how that is searched for without a second layer of escaping here.
+      launcher.includes(String.raw`/^192\.168\./`) &&
+        launcher.includes(String.raw`/^10\./`) &&
+        launcher.includes('Number(y.private) - Number(x.private)'),
+    );
+
+    // ---- the clipboard fallback
+    check(
+      'lan copy: there is an execCommand fallback for the non-secure LAN origin',
+      lan.includes("document.execCommand('copy')"),
+    );
+    check(
+      'lan copy: the old unguarded `navigator.clipboard?.writeText(` no-op is gone',
+      !/void navigator\.clipboard\?\.writeText/.test(lan),
+    );
+    check(
+      'lan copy: a rejected clipboard promise still tries the fallback',
+      /\.then\([\s\S]{0,400}?copyFallback\(text\)/.test(lan),
+    );
+  }
+
+  // ---- LAN over WebRTC: the signalling rendezvous (docs/lan-webrtc.md)
+  /**
+   * THE CLOUD'S ENTIRE INVOLVEMENT IN A MATCH IT DOES NOT RUN, so the rules it enforces are
+   * the only rules there are. Exercised as a state machine rather than grepped, because every
+   * one of these is a routing decision: who may reach whom, and what happens to the people
+   * left behind when a host's tab closes.
+   */
+  {
+    type SentMsg = { t: string; [k: string]: unknown };
+    const sent: { to: string; msg: SentMsg }[] = [];
+    const sock = (id: string) => ({ id, send: (msg: SentMsg) => void sent.push({ to: id, msg }) });
+    const none = () => false; // no cloud room holds any code, unless a test says so
+    const took = (to: string, t: string) => sent.some((e) => e.to === to && e.msg.t === t);
+    const lastTo = (to: string) => [...sent].reverse().find((e) => e.to === to)?.msg;
+    const CODE = 'BCDFGH';
+
+    // ---- hosting requires an account
+    {
+      const sig = new LanSignalling();
+      const anon = sig.claim(sock('h1'), CODE, undefined, none);
+      check(
+        'lan signal: an anonymous socket cannot host (the host is who uploads the match)',
+        anon.ok === false && anon.reason === 'auth',
+      );
+      check('lan signal: a refused claim registers nothing', sig.size === 0);
+    }
+
+    // ---- claim, join, relay, both ways
+    {
+      const sig = new LanSignalling();
+      sent.length = 0;
+      const host = sock('h1');
+      const guest = sock('g1');
+      const claimed = sig.claim(host, CODE.toLowerCase(), 'user-1', none);
+      check('lan signal: a signed-in socket claims a code', claimed.ok === true);
+      check(
+        'lan signal: the code is normalized, so `bcdfgh` and `BCDFGH` are one room',
+        claimed.ok === true && claimed.code === CODE && sig.hostIdFor('bcdfgh') === 'h1',
+      );
+      const joined = sig.join(guest, CODE);
+      check('lan signal: a guest is introduced to the host', joined.ok === true);
+      check('lan signal: the HOST is told a peer arrived', took('h1', 'lanPeer'));
+      check('lan signal: the room counts its guest', sig.peerCount(CODE) === 1);
+
+      sent.length = 0;
+      const up = sig.relay(guest, 'h1', '{"sdp":"offer"}');
+      check('lan signal: a guest reaches its host', up.ok === true && took('h1', 'lanSignal'));
+      const got = lastTo('h1') as { data?: string; peer?: string } | undefined;
+      check(
+        'lan signal: the forwarded blob is verbatim and names its sender',
+        got?.data === '{"sdp":"offer"}' && got?.peer === 'g1',
+      );
+      sent.length = 0;
+      const down = sig.relay(host, 'g1', '{"sdp":"answer"}');
+      check('lan signal: a host reaches its guest', down.ok === true && took('g1', 'lanSignal'));
+    }
+
+    // ---- the routing rules: a rendezvous is not a message bus
+    {
+      const sig = new LanSignalling();
+      sent.length = 0;
+      const host = sock('h1');
+      const guest = sock('g1');
+      sig.claim(host, CODE, 'user-1', none);
+      sig.join(guest, CODE);
+
+      const fromNowhere = sig.relay(sock('s1'), 'h1', 'x');
+      check(
+        'lan signal: a socket in no room cannot signal anybody',
+        fromNowhere.ok === false && fromNowhere.reason === 'nopeer',
+      );
+      const sideways = sig.relay(guest, 'g2', 'x');
+      check(
+        'lan signal: a guest may only ever address its own host, never another guest',
+        sideways.ok === false && sideways.reason === 'nopeer',
+      );
+      const strayHost = sig.relay(host, 'g2', 'x');
+      check(
+        'lan signal: a host cannot address a peer it was never introduced to',
+        strayHost.ok === false && strayHost.reason === 'nopeer',
+      );
+    }
+
+    // ---- bounds
+    {
+      const sig = new LanSignalling();
+      const host = sock('h1');
+      const guest = sock('g1');
+      sig.claim(host, CODE, 'user-1', none);
+      sig.join(guest, CODE);
+      const big = sig.relay(guest, 'h1', 'x'.repeat(MAX_SIGNAL_BYTES + 1));
+      check(
+        'lan signal: an oversized blob is refused, so this never becomes a relay',
+        big.ok === false && big.reason === 'toobig',
+      );
+      const atCap = sig.relay(guest, 'h1', 'x'.repeat(MAX_SIGNAL_BYTES));
+      check('lan signal: exactly at the cap is still allowed', atCap.ok === true);
+
+      for (let i = 0; i < MAX_PEERS_PER_HOST + 2; i++) sig.join(sock(`p${i}`), CODE);
+      check(
+        'lan signal: a host stops collecting guests at the cap',
+        sig.peerCount(CODE) === MAX_PEERS_PER_HOST,
+      );
+    }
+
+    // ---- code collisions with real cloud rooms
+    {
+      const sig = new LanSignalling();
+      const taken = sig.claim(sock('h1'), CODE, 'user-1', (c) => c === CODE);
+      check(
+        'lan signal: a code a CLOUD room already holds cannot also be a LAN code',
+        taken.ok === false && taken.reason === 'taken',
+      );
+      const sig2 = new LanSignalling();
+      sig2.claim(sock('h1'), CODE, 'user-1', none);
+      const second = sig2.claim(sock('h2'), CODE, 'user-2', none);
+      check('lan signal: two hosts cannot hold one code', second.ok === false && second.reason === 'taken');
+      const bad = sig2.claim(sock('h3'), 'AEIOU!', 'user-3', none);
+      check('lan signal: a malformed code is refused', bad.ok === false && bad.reason === 'badcode');
+      const nobody = sig2.join(sock('g9'), 'ZZZZZZ');
+      check('lan signal: joining a code nobody hosts says so', nobody.ok === false && nobody.reason === 'nohost');
+    }
+
+    // ---- teardown: the failure mode netcodeplan.md exists to stop producing
+    {
+      const sig = new LanSignalling();
+      sent.length = 0;
+      sig.claim(sock('h1'), CODE, 'user-1', none);
+      sig.join(sock('g1'), CODE);
+      sig.join(sock('g2'), CODE);
+      sent.length = 0;
+      sig.release('h1');
+      check(
+        'lan signal: a host leaving tells EVERY guest the room is gone',
+        took('g1', 'lanPeerGone') && took('g2', 'lanPeerGone'),
+      );
+      check('lan signal: and the code is free again', sig.size === 0 && sig.hostIdFor(CODE) === undefined);
+      const reclaimed = sig.claim(sock('h2'), CODE, 'user-2', none);
+      check('lan signal: so somebody else can host it', reclaimed.ok === true);
+    }
+    {
+      const sig = new LanSignalling();
+      sent.length = 0;
+      sig.claim(sock('h1'), CODE, 'user-1', none);
+      sig.join(sock('g1'), CODE);
+      sent.length = 0;
+      sig.release('g1');
+      check('lan signal: a guest leaving tells the host', took('h1', 'lanPeerGone'));
+      check('lan signal: and the room stays open', sig.peerCount(CODE) === 0 && sig.size === 1);
+    }
+
+    // ---- the server wires all of it up
+    {
+      const idx = readFileSync('server/index.ts', 'utf8');
+      const flat = idx.replace(/\n\s*/g, ' ');
+      check(
+        'lan signal: the server releases the registration on socket close',
+        idx.includes('lanSignals.release(signalId)'),
+      );
+      check(
+        'lan signal: signalling uses a stamp that a `rejoin` cannot reassign',
+        idx.includes('const signalId: string = id;') && !idx.includes('lanSignals.release(id)'),
+      );
+      check(
+        'lan signal: a LAN code is checked against live CLOUD rooms',
+        /lanSignals\.claim\([\s\S]{0,160}?rooms\.has\(/.test(flat),
+      );
+      check(
+        'lan signal: hosting verifies the token server-side rather than trusting a claim',
+        idx.includes('verifyAuthToken(m.authToken)'),
+      );
+
+      // ---- THE THIRD DOOR (docs/lan-webrtc.md; the owner's call is that LAN ships nowhere
+      // near production). `LAN_UPLOADS` closes the route to production DATA. The rendezvous
+      // touches no data, so that flag does not cover it — and an open rendezvous is an open
+      // door whatever the upload route does. Every check here is about failing CLOSED.
+      const gate = readFileSync('server/lanUploads.ts', 'utf8');
+      const flyProd = readFileSync('fly.toml', 'utf8');
+      const flyAlpha = readFileSync('fly.alpha.toml', 'utf8');
+
+      check(
+        'lan gate: the rendezvous has its own switch, not a re-read of the upload flag',
+        /export const LAN_SIGNALLING = process\.env\.LAN_SIGNALLING/.test(gate),
+      );
+      check(
+        'lan gate: it fails CLOSED — absent or anything but "1" means shut',
+        /LAN_SIGNALLING\?\.trim\(\) === '1'/.test(gate),
+      );
+      /* Both flags' PROSE explains at length why the release channel is the wrong key, so a
+         bare search finds the explanation and passes whatever the code does — the same trap
+         the lan launcher and signal-client checks fell into. Strip comments first. */
+      check(
+        'lan gate: it does NOT key off the release channel (two different questions)',
+        !/SERVER_CHANNEL/.test(gate.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')),
+      );
+      check(
+        'lan gate: the refusal happens BEFORE any branch, so nothing is registered or forwarded',
+        /if \(!LAN_SIGNALLING\) \{[\s\S]{0,200}?return;\s*\}[\s\S]{0,80}?if \(m\.t === 'lanHost'\)/.test(idx),
+      );
+      check(
+        'lan gate: a closed server ANSWERS rather than hanging the client to its timeout',
+        /reason: 'closed'/.test(idx),
+      );
+      check(
+        'lan gate: alpha opens it; production does not mention it at all',
+        /LAN_SIGNALLING = '1'/.test(flyAlpha) && !/LAN_SIGNALLING/.test(flyProd),
+      );
+      check(
+        'lan gate: and production still opens neither door',
+        !/LAN_UPLOADS/.test(flyProd),
+      );
+
+      /* ---- HOSTING SIGNED OUT, on the ONE server that cannot ask for an account.
+         `claim` requires a user id and keeps requiring it (the behavioural check above still
+         runs). The exception is at the call site and is DERIVED from whether this process can
+         verify anybody at all, so a deployment WITH accounts cannot be talked into it by an
+         environment variable — which is the configuration that must stay unreachable. */
+      const idxBare = idx.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/.*$/gm, ' ');
+      check(
+        'lan anon: signed-out hosting is DERIVED from the auth config, not declared',
+        /const LAN_ANON_HOSTS = !authConfigured;/.test(idxBare),
+      );
+      check(
+        'lan anon: there is no environment variable that could turn it on elsewhere',
+        !/process\.env\.LAN_ANON/.test(idxBare) && !/process\.env\[?'?LAN_ANON/.test(idxBare),
+      );
+      check(
+        'lan anon: a server that introduces nobody advertises nothing',
+        /LAN_SIGNALLING && LAN_ANON_HOSTS \?[\s\S]{0,20}?'lanAnon'/.test(idxBare),
+      );
+      /* THE CLIENT GATE IS READ FROM THE SERVER, NOT FROM THE BUILD.
+
+         `VITE_LAN_ENABLED` is baked in at build time, so every flip of it was a Vercel env
+         edit plus a cache-free redeploy - held by a different person than the Fly deploy on
+         this project, and the two duly came apart: alpha served a deployed, switched-on
+         rendezvous that no client build could see. The cosmetic half now reads the
+         authoritative one, so the two cannot disagree.
+
+         THE COST MUST STAY ZERO. It is fed from `fetchPresence`, the single funnel every
+         presence read already passes through (the shell polls it on every screen), and NOT
+         from a fetch of its own. Checked here because "just fetch it once at startup" is the
+         obvious refactor and it would add a request to every cold load. */
+      const envSrc = readFileSync('src/net/env.ts', 'utf8');
+      const apiSrc = readFileSync('src/net/api.ts', 'utf8');
+      const appSrc = readFileSync('src/ui/App.tsx', 'utf8');
+      check(
+        'lan runtime: the server advertises whether it offers LAN at all',
+        /LAN_SIGNALLING \|\| LAN_UPLOADS [?][^]{0,20}?'lan'/.test(idxBare),
+      );
+      check(
+        'lan runtime: the client ORs the build flag with what the server said',
+        /LAN_BUILD_ENABLED \|\| lanFromServer/.test(envSrc) &&
+          /export function lanEnabled\(\): boolean/.test(envSrc),
+      );
+      check(
+        'lan runtime: and it rides a response the app already fetches - no extra request',
+        /export function fetchPresence[^]{0,700}?setLanFromServer\(/.test(apiSrc) &&
+          /* exactly ONE feeder, and it is that one. A second call site would mean a second
+             place deciding this, and the obvious second place is a fetch of its own. */
+          (apiSrc.match(/setLanFromServer\(/g) ?? []).length === 1,
+      );
+      check(
+        'lan runtime: the flip is one-way, so a failed poll cannot take the screen away',
+        /if \(!on \|\| lanFromServer\) return;/.test(envSrc),
+      );
+      check(
+        'lan runtime: a direct /lan link re-resolves once the answer lands',
+        /dispatchEvent\(new PopStateEvent\('popstate'\)\)/.test(envSrc) &&
+          /if \(lanEnabled\(\) && rest\.startsWith\('[/]lan'\)\)/.test(appSrc),
+      );
+      check(
+        'lan runtime: components subscribe rather than sampling it once at mount',
+        /useSyncExternalStore\(subscribeLanEnabled, lanEnabled, lanEnabled\)/.test(
+          readFileSync('src/ui/useLanEnabled.ts', 'utf8'),
+        ) && !/LAN_ENABLED/.test(appSrc),
+      );
+
+      check(
+        'lan anon: the synthetic id is never mistaken for a verified one',
+        /if \(u\) markAuthed\(u\.userId\);/.test(idxBare) && !/markAuthed\(u!/.test(idxBare),
+      );
+
+      /* The CLIENT half. A disabled button with "sign in first" under it, on a server where
+         signing in is impossible, is a dead end rather than a gate — but it must DEFAULT to
+         that, because the capability read is async and a button appearing under a cursor
+         already moving is worse than one that arrives a beat late. */
+      const panel = readFileSync('src/ui/LanPanel.tsx', 'utf8');
+      check(
+        'lan anon: the panel asks the SERVER whether hosting needs an account',
+        /serverCaps\(\)[\s\S]{0,120}?includes\('lanAnon'\)/.test(panel),
+      );
+      check(
+        'lan anon: it starts refused, so the strict copy is what shows early',
+        /const \[anonHostOk, setAnonHostOk\] = useState\(false\);/.test(panel) &&
+          /const mayTabHost = signedIn \|\| anonHostOk;/.test(panel),
+      );
+      check(
+        'lan anon: and the button is gated on that, not on being signed in',
+        /disabled=\{!mayTabHost \|\| tabBusy\}/.test(panel) &&
+          !/disabled=\{!signedIn \|\| tabBusy\}/.test(panel),
+      );
+
+      /* ---- the local rendezvous launcher (scripts/lantab.mjs). It exists so tab hosting can
+         be tested between two machines with nothing deployed. The two traps it has to avoid
+         both present as a LAN screen with no panel on it: baking `localhost` into a client a
+         GUEST will run, and re-using a `dist/` that was built without the LAN flag. */
+      const tab = readFileSync('scripts/lantab.mjs', 'utf8');
+      check(
+        'lan local: it opens the rendezvous and keeps the no-database policy',
+        /LAN_SIGNALLING: '1'/.test(tab) && /LAN_MODE: '1'/.test(tab) && /SERVE_CLIENT: DIST/.test(tab),
+      );
+      check(
+        'lan local: the client is built with LAN on and dialled at a LAN address',
+        /VITE_LAN_ENABLED: '1'/.test(tab) &&
+          /VITE_GAME_SERVER_URL: signalUrl/.test(tab) &&
+          /const signalUrl = `ws:\/\/\$\{host\}:\$\{port\}`/.test(tab),
+      );
+      check(
+        'lan local: a build stamped for a different address is rebuilt, not reused',
+        /stamped !== signalUrl/.test(tab) && /writeFileSync\(STAMP/.test(tab),
+      );
+      check(
+        'lan local: npm exposes it',
+        /"lan:tab": "node scripts\/lantab\.mjs"/.test(readFileSync('package.json', 'utf8')),
+      );
+    }
+
+  // ---- LAN over WebRTC: the data path (docs/lan-webrtc.md step 3)
+  /**
+   * `RTCPeerConnection` does not exist under Node, so these are source-shape checks rather than
+   * a live handshake. Each one pins a decision that is invisible at runtime until it is wrong in
+   * a gym: which lane a message takes, whether a LAN match can quietly become a relayed internet
+   * match, and whether a recoverable blip is told apart from a real drop.
+   */
+  {
+    const peer = readFileSync('src/net/lanPeer.ts', 'utf8');
+    const sigc = readFileSync('src/net/lanSignalClient.ts', 'utf8');
+
+    check(
+      'lan rtc: the control lane is ordered and reliable',
+      /createDataChannel\(CONTROL_LABEL, \{ ordered: true \}\)/.test(peer),
+    );
+    check(
+      'lan rtc: the hot lane is unordered with no retransmits (the head-of-line fix)',
+      /createDataChannel\(HOT_LABEL, \{ ordered: false, maxRetransmits: 0 \}\)/.test(peer),
+    );
+    check(
+      'lan rtc: `{ reliable: false }` is what routes a send onto the hot lane',
+      /opts\?\.reliable === false/.test(peer),
+    );
+    check(
+      'lan rtc: a closed hot lane falls back to control rather than dropping input silently',
+      /wantHot && this\.link\.hot\.readyState === 'open' \? this\.link\.hot : this\.link\.control/.test(peer),
+    );
+
+    check(
+      'lan rtc: no STUN and no TURN — a LAN match connects directly or not at all',
+      /iceServers: \[\]/.test(peer) && !/turn:|stun:/.test(peer),
+    );
+
+    // the netcodeplan.md §25 lesson, pinned
+    check(
+      'lan rtc: `disconnected` reports down and starts a grace timer',
+      /s === 'disconnected'/.test(peer) && /LAN_DISCONNECT_GRACE_MS/.test(peer),
+    );
+    check(
+      'lan rtc: `failed`/`closed` are a real failure, not the same thing as `disconnected`',
+      /s === 'failed' \|\| s === 'closed'/.test(peer),
+    );
+    check(
+      'lan rtc: recovering from `disconnected` cancels the timer and reopens',
+      /s === 'connected' \|\| s === 'completed'/.test(peer) && /this\.reopenCb\?\.\(\)/.test(peer),
+    );
+
+    check(
+      'lan rtc: both channels must be open before a link is handed out (no half-connect)',
+      /Promise\.all\(\[waitOpen\(control\), waitOpen\(hot\)\]\)/.test(peer),
+    );
+    check(
+      'lan rtc: ICE candidates that arrive before the answer are queued, not thrown away',
+      /pending\.push\(frame\.candidate\)/.test(peer) && /pending\.splice\(0\)/.test(peer),
+    );
+
+    /* ⚠️ A GUEST LEAVING THE RENDEZVOUS IS NOT A GUEST LEAVING, and after a successful join it
+       is the NORMAL case: `joinLanRoom` closes its signalling socket the instant both channels
+       open, so the server reports that guest gone moments after the link comes up. Honouring
+       it tore down the connection that had just succeeded — the guest was told it had lost the
+       game server while the host went back to "waiting for players". Two halves, because the
+       report can land on either side of the moment the link is stored. */
+    check(
+      'lan rtc: a rendezvous departure stops counting once the guest’s channels exist',
+      /channelsSeen = true/.test(peer) && /peer === guestId && !channelsSeen/.test(peer),
+    );
+    /* ⚠️ A DATACHANNEL BUFFERS NOTHING FOR A LISTENER THAT ATTACHES LATER, and the very first
+       frame of the protocol is sent the instant the channel opens — a guest's `join` goes out
+       before `acceptLanGuest` has resolved and `admit` has stored the link. Measured between
+       two tabs: the link came up, the host counted the guest, and both sides then sat there
+       forever, because `join` had been dispatched into a channel nobody was listening to and
+       `welcome` was therefore never sent. Both ends buffer from the moment the channels exist,
+       and the handover is SYNCHRONOUS: an event is dispatched as a task, so nothing can arrive
+       between two adjacent statements, and splitting them across ticks re-opens the hole. */
+    check(
+      'lan rtc: the first frame is not lost to a listener that attaches a microtask later',
+      /function bufferEarly\(/.test(peer) && /takeEarly\(\)/.test(peer),
+    );
+    check(
+      'lan rtc: the handover is one synchronous block — take, attach, then replay',
+      /const early = link\.takeEarly\(\);\s*\n\s*link\.control\.addEventListener\('message'/.test(peer) &&
+        /const early = link\.takeEarly\(\);[\s\S]{0,260}?for \(const raw of early\)/.test(
+          readFileSync('src/lan/hostRuntime.ts', 'utf8'),
+        ),
+    );
+    check(
+      'lan rtc: and the transport holds frames until its owner registers a callback',
+      /else this\.pending\.push\(e\.data\);/.test(peer) &&
+        /for \(const d of this\.pending\.splice\(0\)\) cb\(d\);/.test(peer),
+    );
+
+    check(
+      'lan rtc: and the host keeps a link that is already open (the DataChannel is authority)',
+      /readyState === 'open' \|\| link\.hot\.readyState === 'open'\)\) return;/.test(
+        readFileSync('src/lan/hostRuntime.ts', 'utf8'),
+      ),
+    );
+
+    /* The file's own header EXPLAINS why `lanServerUrl` is the wrong thing here, so a bare
+       search finds the explanation and passes whatever the code does. Strip comments first —
+       the same trap the lan launcher checks above fell into. */
+    const sigCode = sigc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    check(
+      'lan signal client: the rendezvous is always the CLOUD, never a LAN address',
+      /gameServerUrl\(\)/.test(sigCode) && !/lanServerUrl/.test(sigCode),
+    );
+    check(
+      'lan signal client: the host token is read here, so a caller cannot assert one',
+      /getAuthToken\(\)/.test(sigc),
+    );
+    check(
+      'lan signal client: a refusal from the server rejects the in-flight request',
+      /msg\.t === 'lanError'/.test(sigc),
+    );
+  }
+
+
+    // ---- the room itself is browser-portable, which is what makes hosting in a tab possible
+    {
+      const roomSrc = readFileSync('server/room.ts', 'utf8');
+      check(
+        'lan host: server/room.ts has no `node:` import left (it is bundled for a tab)',
+        !/from 'node:/.test(roomSrc),
+      );
+      check(
+        'lan host: the room takes eloMode from the db-free module, not from ranked.ts',
+        roomSrc.includes("from './eloMode'") && !/import \{[^}]*eloMode[^}]*\} from '\.\/ranked'/.test(roomSrc),
+      );
+      check(
+        'lan host: ranked.ts still exports eloMode, so existing callers are unchanged',
+        readFileSync('server/ranked.ts', 'utf8').includes('export { eloMode }'),
+      );
+      for (const f of ['server/channel.ts', 'server/moderation.ts']) {
+        check(
+          `lan host: ${f} reads env through runtimeEnv (a tab has no \`process\`)`,
+          !/process\.env/.test(readFileSync(f, 'utf8')),
+        );
+      }
+    }
+  }
+
+  // ---- LAN over WebRTC: the room in a Worker + the UI seam (docs/lan-webrtc.md steps 4-5)
+  /**
+   * Source-shape checks again, for the same reason as the `lan rtc` block: there is no
+   * `Worker`, no `RTCPeerConnection` and no DOM under Node. What each one pins is a decision
+   * that fails SILENTLY — a tab-hosted match that quietly writes a leaderboard row, a host
+   * whose loop is back on the page thread, a lobby that dials the cloud for a room already in
+   * its hand. None of those throw; they just do the wrong thing at a competition.
+   */
+  {
+    const hw = readFileSync('src/lan/hostWorker.ts', 'utf8');
+    const hr = readFileSync('src/lan/hostRuntime.ts', 'utf8');
+    const pend = readFileSync('src/lan/pending.ts', 'utf8');
+    const jl = readFileSync('src/lan/joinLan.ts', 'utf8');
+    const lob = readFileSync('src/ui/Lobby.tsx', 'utf8');
+    const lp = readFileSync('src/ui/LanPanel.tsx', 'utf8');
+    const strip = (t: string): string => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+    // ---- the room a tab hosts is the REAL one, and it can reach nothing durable
+    check(
+      'lan tab: the Worker imports the same server/room.ts the cloud runs, not a reimplementation',
+      /from '\.\.\/\.\.\/server\/room'/.test(hw),
+    );
+    check(
+      'lan tab: the room is built with NO persistence callbacks, so it cannot write a row',
+      /new Room\(m\.code, \(\) => post\(\{ k: 'empty' \}\), m\.config\)/.test(hw),
+    );
+    check(
+      'lan tab: nothing in the Worker reaches the database or the ranked module',
+      !/\/db\/|from '\.\.\/\.\.\/server\/(ranked|persist|kofi)'/.test(hw),
+    );
+
+    // ---- the 60 Hz loop's thread is the whole feature (docs/lan-webrtc.md section 6)
+    check(
+      'lan tab: the room runs in a DEDICATED Worker, which is what survives a hidden tab',
+      /new Worker\(new URL\('\.\/hostWorker\.ts', import\.meta\.url\), \{ type: 'module' \}\)/.test(hr),
+    );
+    check(
+      'lan tab: the Worker reports its own health so a throttled host is TOLD',
+      /k: 'health'/.test(hw) && /tickHz/.test(hw) && /behind/.test(hr),
+    );
+    check(
+      'lan tab: the host UI surfaces that health rather than swallowing it',
+      /tabHealth/.test(lp) && /behind >/.test(lp),
+    );
+
+    // ---- lane selection has to work off the ENCODED frame, since that is all the room hands out
+    check(
+      'lan tab: snapshots and pongs take the hot lane, sniffed off the encoded JSON',
+      /\^\\{"t":"\(snapshot\|pong\)"/.test(hw),
+    );
+    check(
+      'lan tab: an unknown frame defaults to the RELIABLE lane, never the lossy one',
+      /reliable: !isHot\(raw\)/.test(hw),
+    );
+
+    // ---- the host is an ordinary client of its own room
+    check(
+      'lan tab: the host plays through a Transport, so no client code branches on being host',
+      /class LoopbackTransport implements Transport/.test(hr),
+    );
+    check(
+      'lan tab: the host is seated from its OWN join frame, not a placeholder passed to start()',
+      /async start\(code: string, config: RoomConfig = DEFAULT_ROOM_CONFIG\)/.test(hr) &&
+        /intro\.player/.test(hr),
+    );
+    check(
+      'lan tab: host and guests take ONE seating path, so the two cannot drift',
+      (strip(hr).match(/this\.fromSeat\(/g) ?? []).length >= 2,
+    );
+    check(
+      'lan tab: a peer that connects and then says nothing never occupies a seat',
+      /this\.seated\.delete\(id\)/.test(hr),
+    );
+    check(
+      'lan tab: BOTH channels feed the same inbound handler (a guest may use either)',
+      /link\.control\.addEventListener\('message', onFrame\)/.test(hr) &&
+        /link\.hot\.addEventListener\('message', onFrame\)/.test(hr),
+    );
+
+    // ---- teardown, which is the part nobody exercises until it matters
+    check(
+      'lan tab: stopping closes every peer, kills the Worker and releases the code',
+      /link\.pc\.close\(\)/.test(hr) &&
+        /this\.worker\?\.terminate\(\)/.test(hr) &&
+        /this\.signals\?\.stopHosting\(\)/.test(hr),
+    );
+    check(
+      'lan tab: stopping also drops the wake lock',
+      /this\.wakeLock\?\.release\(\)/.test(hr),
+    );
+    check(
+      'lan tab: the wake lock is best-effort — an unavailable one must not block hosting',
+      /nav\.wakeLock\?\.request\('screen'\)/.test(hr) && /catch \{/.test(hr),
+    );
+    /**
+     * ⚠️ **A HOST LEAVING THE LAN SCREEN TO GO AND PLAY IS NOT A HOST ABANDONING THE ROOM**,
+     * and the cleanup could not tell the difference. The room lives in this tab, so wandering
+     * off with it running would strand every guest on a room nobody is stepping — that is what
+     * the cleanup is for. But the host's own route into the match unmounts this component too,
+     * so clicking GO TO THE ROOM terminated the Worker on the way: the host arrived at a lobby
+     * waiting on a room that no longer existed, with the guest already sitting in it. A handed
+     * -off room is PARKED instead (`hostKeeper.ts`, the same trick `queueKeeper.ts` uses to
+     * keep a ranked queue alive across a screen), and the flag is what the cleanup reads.
+     */
+    const keeper = readFileSync('src/lan/hostKeeper.ts', 'utf8');
+    // the `lan rtc` block above has its own handle on this file; that one is out of scope here
+    const peerSrc = readFileSync('src/net/lanPeer.ts', 'utf8');
+    check(
+      'lan tab: abandoning the LAN screen still stops hosting, so no guest is stranded',
+      /if \(!handedOff\.current\) tabHost\?\.stop\(\);/.test(lp),
+    );
+    check(
+      'lan tab: but going to the room PARKS it, so the host does not kill its own room',
+      /handedOff\.current = true;\s*\n\s*keepHostedRoom\(tabHost\);/.test(lp),
+    );
+    check(
+      'lan tab: coming back adopts the parked room and re-points its events at this screen',
+      /const kept = takeHostedRoom\(\);/.test(lp) && /kept\.setEvents\(\{/.test(lp),
+    );
+    check(
+      'lan tab: parking never silently replaces a live room with another',
+      /if \(held && held !== host\) held\.stop\(\);/.test(keeper),
+    );
+
+    /**
+     * ⚠️ **OPEN IS A STATE ON A LAN TRANSPORT, NOT AN EVENT.** `LobbyClient.join` sends its
+     * `join` frame from `onOpen` and from nowhere else — right for a `WebSocketTransport`,
+     * which is handed over still dialling. Both LAN transports are the opposite: the WebRTC
+     * handshake finished on the LAN screen and the loopback opened when the Worker said the
+     * room was ready, so by the time the lobby adopts either and registers anything, the one
+     * event it is waiting for has already happened. Measured between two tabs: the link came
+     * up, the host counted the guest, and BOTH sides sat on CONNECTING forever, each waiting
+     * for a `join` the other had never been asked to send.
+     */
+    check(
+      'lan tab: the guest transport fires `open` immediately if it is already open',
+      /if \(this\.opened && !this\.disposed\) cb\(\);/.test(peerSrc),
+    );
+    check(
+      'lan tab: and the host loopback does the same (the room is up long before the lobby)',
+      /if \(this\.opened && !this\.closed\) cb\(\);/.test(hr),
+    );
+
+    /**
+     * ⚠️ **A WORKER THAT FAILS TO BUILD ITS ROOM IS COMPLETELY SILENT.** The `open` handler is
+     * async (it loads Rapier's wasm), so anything that goes wrong in it is an unhandled
+     * rejection: no `error` event, nothing on the page, `room` simply stays null and every
+     * frame after it is dropped. Meanwhile the rendezvous claim had already succeeded, so the
+     * host was reading out a code for a room that did not exist. Three separate holes, because
+     * a load failure, a synchronous throw and an async rejection surface differently.
+     */
+    check(
+      'lan tab: the Worker reports a room it could not build instead of going quiet',
+      /k: 'failed'/.test(hw) && /\(e: unknown\) => post\(\{ k: 'failed'/.test(hw),
+    );
+    check(
+      'lan tab: and the page watches the Worker itself for the failures it cannot report',
+      /worker\.addEventListener\('error'/.test(hr) && /worker\.addEventListener\('messageerror'/.test(hr),
+    );
+    check(
+      'lan tab: start() does not hand back a code until the room actually exists',
+      /await roomReady;/.test(hr) && /ROOM_BOOT_TIMEOUT_MS/.test(hr),
+    );
+
+    /**
+     * ⚠️ **THE ROOM HAS TO BE ABLE TO END.** A parked host has no UI attached, so nothing is
+     * watching it: a guest leaving arrives as a closed DataChannel, but the HOST leaving is a
+     * `close()` on a transport with no network under it, and without a callback the room keeps
+     * a seat for somebody who is gone, never empties, and a Worker steps an empty room for the
+     * rest of the tab's life.
+     */
+    check(
+      'lan tab: the host letting go of its loopback drops its seat from the room',
+      /toWorker\(\{ k: 'drop', id: HOST_SEAT \}\)/.test(hr),
+    );
+    check(
+      'lan tab: and a room that empties stops hosting rather than stepping forever',
+      /if \(m\.k === 'empty'\) \{\s*\n\s*this\.stop\(/.test(hr),
+    );
+
+    /**
+     * ⚠️ **THE TAB THAT RUNS THE ROOM IS ITS HOST, EVEN THOUGH IT JOINS LAST.** `Room.add`
+     * gives the crown to the first client through the door, which is right everywhere the
+     * cloud runs. Tab hosting inverts the order: the room exists the moment somebody clicks
+     * START HOSTING, they then read the code out while guests join, and they take their own
+     * seat afterwards — so the crown went to a guest and the host arrived at its own room to
+     * be told it was waiting for the host to start.
+     */
+    check(
+      'lan tab: the room reserves its host seat before any guest can take it',
+      /room\.reserveHost\(HOST_SEAT\)/.test(hw),
+    );
+    check(
+      'lan tab: and reserving only ever claims an EMPTY seat, never takes the room off anyone',
+      /reserveHost\(id: string\): void \{\s*\n\s*if \(!this\.hostId\) this\.hostId = id;/.test(
+        readFileSync('server/room.ts', 'utf8'),
+      ),
+    );
+    check(
+      'lan tab: HOST_SEAT lives in the module both threads share, so they cannot disagree',
+      /export const HOST_SEAT = 'host-local';/.test(readFileSync('src/lan/hostProtocol.ts', 'utf8')) &&
+        !/export const HOST_SEAT = /.test(hr),
+    );
+
+    // ---- the hand-off to the lobby
+    check(
+      'lan tab: a pending room is TAKEN, not read, so a remount cannot adopt a stale link',
+      /export function takePendingLanRoom/.test(pend) && /pending = null;\s*return p;/.test(pend),
+    );
+    check(
+      'lan tab: the lobby adopts that transport instead of dialling a URL',
+      /const adopted = takePendingLanRoom\(\)/.test(lob) &&
+        /transport = adopted\.transport/.test(lob),
+    );
+    check(
+      'lan tab: the "multiplayer needs the game server" guard is skipped for an adopted room',
+      /!adopted && !roomServerUrl\(\)/.test(lob),
+    );
+    check(
+      'lan tab: the lobby types the transport by the INTERFACE, not as a WebSocketTransport',
+      /let transport: Transport;/.test(lob),
+    );
+
+    // ---- the guest side
+    check(
+      'lan tab: the guest hands the lobby a stock Transport, same as a socket room',
+      /new DataChannelTransport\(link\)/.test(jl),
+    );
+    check(
+      'lan tab: the rendezvous socket is closed once the peers are introduced',
+      /\} finally \{[\s\S]*signals\.close\(\)/.test(jl),
+    );
+
+    // ---- what the person on the screen is told
+    /* Hosting still requires an account wherever there is one to have — the host is who
+       uploads the match. The `mayTabHost` spelling is not a loosening of that: `anonHostOk`
+       is false until a server SAYS it has no accounts (`lanAnon`), and only a server that
+       cannot verify anybody ever says so. See the `lan anon:` checks. */
+    check(
+      'lan tab: hosting requires an account, since the practice data is saved to one',
+      /disabled=\{!mayTabHost \|\| tabBusy\}/.test(lp) &&
+        /const mayTabHost = signedIn \|\| anonHostOk;/.test(lp),
+    );
+    check(
+      'lan tab: the copy states the one internet dependency up front',
+      /You need internet for about a second/.test(lp),
+    );
+    check(
+      'lan tab: joining by code normalizes it, so a host reading letters out is enough',
+      /normalizeRoomCode\(joinCode\)/.test(lp),
+    );
+
+    // ---- WHO KEEPS THE MATCH, which is the half that fails silently
+    /**
+     * A tab-hosted room has NO persistence anywhere: the Worker room is built without the
+     * callbacks (pinned above) and there is no server process to write a row. So the host's
+     * PAGE is the only thing between a played match and a match that never happened, and every
+     * failure here is invisible — no error, no empty screen, just nothing in your history the
+     * next morning. That is why each link in the chain gets its own check.
+     */
+    const app = readFileSync('src/ui/App.tsx', 'utf8');
+    const hosting = readFileSync('src/lan/hosting.ts', 'utf8');
+
+    /* THE HANDSHAKE ALREADY CHOSE THE ROOM. Landing on the lobby's create-or-join form after
+       it would make the player type the code a SECOND time — and the live transport waiting
+       in `pending.ts` would then be adopted by whatever they typed, which need not be the room
+       it is connected to. Both WebRTC paths therefore carry the code out; the two ADDRESS
+       paths deliberately do not, because reaching a LAN server is not picking a room on it. */
+    check(
+      'lan tab: arriving at the room screen JOINS the code, rather than asking for it again',
+      /onConnected\(tabCode\)/.test(lp) && /onConnected\(r\.code\)/.test(lp),
+    );
+    check(
+      'lan tab: and the app turns that into the same one-shot auto-join an invite uses',
+      /setPendingAutoJoin\(\{ room: code, config: \{ kind: 'versus'/.test(app),
+    );
+
+    check(
+      'lan keep: a tab-hosted match is kept, not only an address-reached LAN match',
+      /\(!lanActive\(\) && !tabHosting\(\)\)/.test(app),
+    );
+    check(
+      'lan keep: it still takes BOTH the host seat and a minted match id (one uploader)',
+      /!sess\.isHost\(\) \|\| !info\.matchId/.test(app),
+    );
+    check(
+      'lan keep: the match goes to the device first, then drains through the backlog',
+      /saveLanRunLocal\(info\.matchId/.test(app) && /void flushLanRuns\(\)/.test(app),
+    );
+    check(
+      'lan keep: only the screen that STARTED a room may raise the hosting flag',
+      /setTabHosting\(true\)/.test(lp) && /setTabHosting\(false\)/.test(lp),
+    );
+    check(
+      'lan keep: nothing outside the LAN screen ever raises it (a guest keeps nothing)',
+      (() => {
+        /* Walked rather than grepped at two known paths: the whole value of the flag is that
+           exactly ONE screen can set it, and a second setter added later anywhere under src/
+           is precisely the regression that would file a match twice. */
+        const raisers: string[] = [];
+        const walk = (dir: string): void => {
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            const f = joinPath(dir, e.name);
+            if (e.isDirectory()) { walk(f); continue; }
+            if (!/\.tsx?$/.test(e.name)) continue;
+            if (/setTabHosting\(true\)/.test(readFileSync(f, 'utf8'))) raisers.push(f);
+          }
+        };
+        walk('src');
+        return raisers.length === 1 && raisers[0].includes('LanPanel');
+      })(),
+    );
+    check(
+      'lan keep: hosting ending lowers the flag, so a later CLOUD match is not filed as LAN',
+      /setTabHosting\(false\);[\s\S]{0,20}setTabHost\(null\)/.test(lp),
+    );
+    check(
+      'lan keep: the flag is a leaf module, so the rule is testable rather than inline state',
+      /export function tabHosting/.test(hosting) && !/import /.test(hosting),
+    );
+
+    // ---- and the backlog has to move on its own, or offline play never reaches the account
+    check(
+      'lan keep: the backlog drains the moment the machine is back online',
+      /addEventListener\('online', onOnline\)/.test(app),
+    );
+    check(
+      'lan keep: that trigger drains BOTH backlogs, since practice is offline-first too',
+      /const onOnline = \(\): void => \{[\s\S]{0,160}?flushPracticeRuns\(\);[\s\S]{0,80}?flushLanRuns\(\);/.test(app),
+    );
+    check(
+      'lan keep: and the listener is removed, so a remount does not stack flushes',
+      /removeEventListener\('online', onOnline\)/.test(app),
+    );
+    check(
+      'lan keep: a failed upload keeps the match on the device rather than dropping it',
+      /if \(!run\) break;/.test(app),
+    );
+  }
+
   // ---- LAN: a host's server hands out files, so it must not hand out ANY file
   /**
    * THE ONE SECURITY BOUNDARY IN `server/static.ts`.
@@ -7526,7 +8467,12 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     b.state = { kind: 'ground' };
     // shallow contact just ahead of the face (placing dead-on the OBB face
     // triggers the deep-push eviction); at heading π/2 world = (−localY, localX)
-    b.pos = { x: -localY, y: wheelLine + 2 }; b.vel = { x: 0, y: 0 }; b.z = 0; b.vz = 0;
+    // +1, not +2: `intakeSuction`'s reach is the landing bound `tip + BALL_RADIUS −
+    // INTAKE_CATCH_LENIENCE` (= wheelLine + 1.3) since the grab became the roller nip, and a
+    // ball parked outside it is never taken at all — both ends of the ratio read the 120-tick
+    // cap and the check silently compared two misses. The ratio is what is being asserted, so
+    // the scene moves inside the reach rather than the reach moving out to the scene.
+    b.pos = { x: -localY, y: wheelLine + 1 }; b.vel = { x: 0, y: 0 }; b.z = 0; b.vz = 0;
     const commands = new Map([[0, cmd({ intake: true })]]);
     let ticks = 0;
     while (r.hopper.length === 0 && ticks < 120) { step(w, SIM_DT, commands); ticks++; }
@@ -7573,6 +8519,445 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
   });
   run(w, cmd({ intake: true }), 0.03); // one cycle
   check('triangle intake devours two clumped balls in one cycle', r.hopper.length === 2, `hopper=${r.hopper.length}`);
+}
+
+// ---- THE ROLLER NIP: the grab is at the wheel, and only at the wheel ---------
+/**
+ * "The intake is a circular compliant wheel spinning. This means that the ball that I am
+ * intaking should be directly below or very slightly in front of the center of the wheel for
+ * it to be properly intook. Right now, the range is way too big."
+ *
+ * It was: every capture branch's forward bound was `tip + BALL_RADIUS` — an artifact's SKIN
+ * merely touching the roller's FRONT FACE, its centre a full radius out in front of the wheel
+ * — and the rear bound was `hl − 1`, inside the chassis. `intakeNip` replaces all three
+ * fore-aft ranges with one band about `intakeAxleX`, derived from the roller's own geometry.
+ * These checks pin the band, the arithmetic under it, and the hard constraint that floors it.
+ */
+{
+  const PRESETS = ['sloped', 'vector', 'triangle'] as const;
+  const specOf = (intake: (typeof PRESETS)[number], length?: number): RobotSpec => ({
+    ...DEFAULT_SPEC,
+    intake,
+    length: length ?? INTAKE_PRESETS[intake].maxLength,
+    width: Math.max(DEFAULT_SPEC.width, INTAKE_PRESETS[intake].minWidth),
+  });
+
+  // ---- one geometry authority ----------------------------------------------
+  {
+    let worst = 0;
+    for (const intake of PRESETS)
+      for (const length of [INTAKE_PRESETS[intake].minLength, INTAKE_PRESETS[intake].maxLength]) {
+        const sp = specOf(intake, length);
+        const raw = sp.length / 2 + INTAKE_PRESETS[intake].reach - intakeRollerDia(sp) / 2;
+        worst = Math.max(worst, Math.abs(intakeAxleX(sp) - raw));
+      }
+    check(
+      'nip: intakeAxleX IS the drawn roller axle, at both chassis extremes of all three presets',
+      worst < 1e-9,
+      `worst disagreement ${worst.toExponential(2)}in — drawRobot's wedgeTip/axis and artifactSolids' wedgeFront both call it, so a fourth copy is how the drawn wheel and the grab drift apart`,
+    );
+  }
+
+  // ---- THE HARD CONSTRAINT -------------------------------------------------
+  /**
+   * A free ground artifact's centre can never get behind `hl + BALL_RADIUS`: the chassis is a
+   * LIVE collider against a claimed artifact, and `intakeSuction` pulls toward `(hl, 0)`, so
+   * anything the intake has hold of comes to rest with its skin flush on the front face. That
+   * rest point is `BALL_RADIUS − reach + intakeRollerDia/2` from the axle — CHASSIS-INDEPENDENT
+   * — and the band MUST contain it or the preset captures nothing at all. This is the check
+   * that catches a naive tight band, and the one that fires if INTAKE_TREAD_FRAC is lowered
+   * past its ~0.135 floor.
+   */
+  {
+    const rows = PRESETS.map((intake) => {
+      const sp = specOf(intake);
+      const nip = intakeNip(sp);
+      const face = BALL_RADIUS - INTAKE_PRESETS[intake].reach + intakeRollerDia(sp) / 2;
+      return { intake, face, nip, ok: face > -nip.back && face < nip.front };
+    });
+    check(
+      'nip: the band contains the seat an artifact actually rests at (the floor under INTAKE_TREAD_FRAC)',
+      rows.every((x) => x.ok),
+      rows
+        .map((x) => `${x.intake} seat ${x.face >= 0 ? '+' : ''}${x.face.toFixed(3)} in [-${x.nip.back.toFixed(3)}, +${x.nip.front.toFixed(3)}]`)
+        .join(' · ') + ` — at INTAKE_TREAD_FRAC ${INTAKE_TREAD_FRAC}; below ~0.135 back drops under 1.083 and TRIANGLE stops capturing entirely`,
+    );
+  }
+
+  // ---- the half-tick grid ---------------------------------------------------
+  {
+    const offGrid = PRESETS.flatMap((intake) => {
+      const m = INTAKE_PRESETS[intake].mouth;
+      return ([['capMin', m.capMin], ['capMax', m.capMax], ['clumpInterval', m.clumpInterval]] as const)
+        .filter(([, v]) => Math.abs(v / SIM_DT - Math.round(v / SIM_DT)) * SIM_DT < 0.002)
+        .map(([k, v]) => `${intake}.${k}=${v}`);
+    });
+    check(
+      'nip: every swallow interval sits off the tick boundary (the gate reads an ACCUMULATED clock)',
+      offGrid.length === 0,
+      offGrid.length ? offGrid.join(', ') : 'all on the (n − 0.5)/60 half-tick grid',
+    );
+  }
+
+  // ---- a scene helper: one robot, cleared field, artifacts placed in ROBOT frame ----
+  const nipScene = (intake: (typeof PRESETS)[number], at: [number, number][]) => {
+    const w = mkWorld('free', 'blue', 6, specOf(intake));
+    const r = w.robots[0];
+    r.hopper = [];
+    r.pos = { x: 0, y: -20 };
+    r.heading = Math.PI / 2; // +local.x is world +y
+    r.fieldCentric = false;
+    r.vel = { x: 0, y: 0 };
+    w.balls.length = 0;
+    for (const [lx, ly] of at) {
+      w.balls.push({
+        id: w.balls.length + 1,
+        color: 'purple',
+        pos: { x: r.pos.x - ly, y: r.pos.y + lx },
+        vel: { x: 0, y: 0 },
+        z: 0,
+        vz: 0,
+        state: { kind: 'ground' },
+      });
+    }
+    return { w, r, local: (b: (typeof w.balls)[number]) => ({ x: b.pos.y - r.pos.y, y: r.pos.x - b.pos.x }) };
+  };
+
+  // ---- THE SWALLOW HAPPENS AT THE WHEEL ------------------------------------
+  {
+    const rows = PRESETS.map((intake) => {
+      const sp = specOf(intake);
+      const hl = sp.length / 2;
+      const tip = hl + INTAKE_PRESETS[intake].reach;
+      const axle = intakeAxleX(sp);
+      const nip = intakeNip(sp);
+      const m = intakeMouth(sp);
+      const { w, r, local } = nipScene(intake, [[tip + 1, 0]]);
+      const b = w.balls[0];
+      let at = NaN;
+      // ⚠️ read the PRE-step position. `positionHeldBalls` slides a held artifact toward its
+      // slot at HELD_SLIDE_SPEED inside the very tick it is captured, so a post-step reading
+      // reports where the slide left it (2.5in further in at 150 in/s), not where the intake
+      // took it. The robot is stationary here, so the pre-step reading is exact.
+      for (let i = 0; i < Math.round(3 / SIM_DT) && Number.isNaN(at); i++) {
+        const before = b.state.kind === 'ground' ? local(b).x : NaN;
+        step(w, SIM_DT, new Map([[0, cmd({ intake: true })]]));
+        if (b.state.kind === 'held') at = before;
+      }
+      const d = at - axle;
+      /**
+       * ⚠️ THE CAPTURE INSTANT IS NOT OBSERVABLE FROM OUTSIDE A TICK, so the bound allows for
+       * one tick of travel. Within a single `step` the order is suction (a velocity) → the
+       * solve (which moves the artifact) → `updateIntake` (which tests the nip), so the
+       * PRE-step reading is up to `drawIn * SIM_DT` further out than the position the
+       * predicate actually saw, and the POST-step reading is further IN by a full
+       * `HELD_SLIDE_SPEED * SIM_DT` because the artifact is already sliding to its slot.
+       * Neither is the capture point; the pre-step reading plus the suction's own travel is
+       * the honest ceiling.
+       */
+      const slack = m.drawIn * SIM_DT;
+      return { intake, at, d, slack, ok: d > -nip.back - 1e-6 && d < nip.front + slack + 1e-6, took: r.hopper.length === 1 };
+    });
+    check(
+      'nip: an artifact is swallowed AT the roller, not from a radius in front of it',
+      rows.every((x) => x.took && x.ok),
+      rows.map((x) => `${x.intake} took it ${x.d >= 0 ? '+' : ''}${x.d.toFixed(2)}in from its axle (band +${intakeNip(specOf(x.intake)).front.toFixed(2)}, plus ${x.slack.toFixed(2)}in of suction travel inside the capture tick)`).join(' · ') +
+        ' — triangle used to swallow 1.08in BEHIND its own roller, its window never reaching it',
+    );
+  }
+
+  // ---- THE EFFECTIVE RANGE, which is the SUCTION's reach and not the nip's --
+  /**
+   * ⚠️ THE NIP IS NOT THE INTAKE'S RANGE, and the first pass at this got it backwards.
+   * Shrinking the GRAB to the roller changed where an artifact is swallowed and NOT where one
+   * can be taken from: measured on a stationary robot, every preset still captured out to
+   * `tip + BALL_RADIUS` afterwards, because `intakeSuction` reaches that far and walks
+   * anything it touches into the nip in 1-4 ticks — faster than before, since `drawIn` rose.
+   * "The range is way too big" is a statement about `ahead` in intakeSuction, so that is what
+   * these two checks pin: the reach itself, and that nothing past it is touched at all.
+   */
+  {
+    const reachOf = (intake: (typeof PRESETS)[number]) => {
+      const sp = specOf(intake);
+      return sp.length / 2 + INTAKE_PRESETS[intake].reach + BALL_RADIUS - INTAKE_CATCH_LENIENCE;
+    };
+    // the furthest an artifact can be taken from, swept on the centreline
+    const rows = PRESETS.map((intake) => {
+      const sp = specOf(intake);
+      const tip = sp.length / 2 + INTAKE_PRESETS[intake].reach;
+      let far = -Infinity;
+      for (let lx = tip; lx <= tip + 4; lx += 0.25) {
+        const { w, r } = nipScene(intake, [[lx, 0]]);
+        run(w, cmd({ intake: true }), 2);
+        if (r.hopper.length === 1) far = lx;
+      }
+      return { intake, far: far - tip, want: reachOf(intake) - tip };
+    });
+    check(
+      'nip: the intake takes what has LANDED on its roller, not what merely grazes the front of it',
+      rows.every((x) => x.far <= x.want + 1e-9 && x.far > x.want - 0.3),
+      rows.map((x) => `${x.intake} reaches tip + ${x.far.toFixed(2)} (bound tip + ${x.want.toFixed(2)})`).join(' · ') +
+        ' — it was tip + 2.50 on every preset, and tip + 3.60 on a wedge before the roof trim',
+    );
+    // ...and nothing past it is even disturbed
+    const past = PRESETS.map((intake) => {
+      const beyond = reachOf(intake) + 0.75;
+      const { w, r, local } = nipScene(intake, [[beyond, 0]]);
+      const b = w.balls[0];
+      const x0 = local(b).x;
+      run(w, cmd({ intake: true }), 3);
+      return { intake, took: r.hopper.length, moved: b.state.kind === 'held' ? Infinity : Math.abs(local(b).x - x0) };
+    });
+    check(
+      'nip: an artifact three quarters of an inch past that reach is neither swallowed nor sucked',
+      past.every((x) => x.took === 0 && x.moved < 0.25),
+      past.map((x) => `${x.intake}: hopper ${x.took}, moved ${x.moved.toFixed(3)}in`).join(' · ') +
+        ' — no vacuuming from a distance; an artifact must actually be on the wheel',
+    );
+  }
+
+  // ---- THE SEAT IS INSIDE THE BAND (suction runs, swallow blocked) ----------
+  {
+    const rows = PRESETS.flatMap((intake) => {
+      const sp = specOf(intake);
+      const hl = sp.length / 2;
+      const tip = hl + INTAKE_PRESETS[intake].reach;
+      return [0, 3, 5, 6.5].map((ly) => {
+        const { w, r, local } = nipScene(intake, [[tip + 1, ly]]);
+        r.lastIntakeAt = 1e9; // suction runs; the swallow can never fire
+        run(w, cmd({ intake: true }), 3);
+        const b = w.balls[0];
+        return { intake, ly, x: local(b).x, want: hl + BALL_RADIUS };
+      });
+    });
+    const worst = Math.max(...rows.map((x) => Math.abs(x.x - x.want)));
+    check(
+      'nip: a blocked artifact settles flush on the chassis face, which is the seat the band is floored to contain',
+      worst < 0.05,
+      `worst ${worst.toFixed(3)}in off hl + BALL_RADIUS over 12 entries — this fixed point is why the suction target must stay at (hl, 0) and not move to the axle`,
+    );
+  }
+
+  // ---- NO TUNNELLING: a full-throttle ram, and a fast head-on artifact ------
+  {
+    const rows = PRESETS.flatMap((intake) => {
+      const sp = specOf(intake);
+      const tip = sp.length / 2 + INTAKE_PRESETS[intake].reach;
+      // (a) robot drives 40in into a parked artifact at full throttle
+      const a = nipScene(intake, [[40, 0]]);
+      run(a.w, cmd({ driveY: 1, intake: true }), 2.5);
+      // (b) artifact fired head-on at 60 in/s into a parked mouth
+      const b = nipScene(intake, [[tip + 25, 0]]);
+      b.w.balls[0].vel = { x: 0, y: -60 }; // toward the robot (robot faces world +y)
+      run(b.w, cmd({ intake: true }), 2.5);
+      return [
+        { intake, how: 'ram', got: a.r.hopper.length },
+        { intake, how: 'head-on 60 in/s', got: b.r.hopper.length },
+      ];
+    });
+    check(
+      'nip: the band cannot be tunnelled — a full-throttle ram and a 60 in/s head-on both capture',
+      rows.every((x) => x.got >= 1),
+      rows.map((x) => `${x.intake} ${x.how}: ${x.got}`).join(' · ') +
+        ' — the band is 2.5-3.3in and the chassis face is a hard stop inside it, so a closing artifact cannot cross it unseen',
+    );
+  }
+
+  // ---- A HELD ARTIFACT MAY NEVER ADVANCE THROUGH THE WORLD -----------------
+  /**
+   * THE FIX FOR "the third ball is still being deflected too far", as an invariant rather than
+   * a number. A held artifact is SOLID to ground artifacts and is still out in FRONT of the
+   * chassis face while it slides to its slot, so if the slide is slower than the chassis the
+   * robot carries the artifact it has just swallowed FORWARD through the world and into the
+   * next one in the line — which, still touching the one behind it, chains the impulse on.
+   * Measured at HELD_SLIDE_SPEED 45 on a touching file at full throttle: the first artifact
+   * went in clean and balls two and three BOTH left at 73 in/s two ticks later, shoved 32in.
+   *
+   * So the slide must beat the FASTEST LEGAL CHASSIS, not the default one — the margin at 85
+   * in/s says nothing about a 600 rpm tank.
+   */
+  {
+    let top = 0;
+    let at = '';
+    for (const drivetrain of ['tank', 'mecanum', 'swerve', 'xdrive', 'butterfly'] as const)
+      for (const driveRpm of [200, 300, 435, 500, 600])
+        for (const massLb of [20, 30, 42])
+          for (const intake of PRESETS) {
+            const sp = coerceSpec({ ...DEFAULT_SPEC, drivetrain, driveRpm, massLb, intake });
+            const v = driveParams(sp).maxSpeed;
+            if (v > top) {
+              top = v;
+              at = `${drivetrain} ${sp.driveRpm}rpm ${sp.massLb}lb`;
+            }
+          }
+    check(
+      'nip: a held artifact is pulled in faster than any legal chassis can drive',
+      HELD_SLIDE_SPEED > top,
+      `HELD_SLIDE_SPEED ${HELD_SLIDE_SPEED} against a top speed of ${top.toFixed(1)} in/s (${at}) — at 45 the robot carried the artifact it had just swallowed forward at 40 in/s into the next one in the line`,
+    );
+  }
+
+  // ---- THE STRAIGHT-LINE FILE OF THREE, at full throttle -------------------
+  /**
+   * The shape of the standing report ("if I drive in full speed, third ball bumps with the
+   * second ball and doesn't get intaked"). The COUNT has been 3/3 through every configuration
+   * tried, so what this pins is the regression-sensitive quantity: how far the file is shoved
+   * before it is all taken. Shrinking the grab makes the robot chase each punted artifact
+   * slightly further; this is the ceiling on that.
+   */
+  {
+    const rows = PRESETS.map((intake) => {
+      const sp = specOf(intake);
+      const tip = sp.length / 2 + INTAKE_PRESETS[intake].reach;
+      const pitch = 2 * BALL_RADIUS + 0.02;
+      const { w, r } = nipScene(intake, [0, 1, 2].map((i) => [40 + tip + i * pitch, 0] as [number, number]));
+      // keyed on ball ID, never on index: `free` mode RESTOCKS, so `w.balls` grows mid-scene
+      // and an index-keyed baseline reads `undefined` for a fresh artifact — silently NaN.
+      const y0 = new Map(w.balls.map((b) => [b.id, b.pos.y]));
+      let shove = 0;
+      let peak = 0;
+      for (let i = 0; i < Math.round(4 / SIM_DT); i++) {
+        step(w, SIM_DT, new Map([[0, cmd({ driveY: 1, intake: true })]]));
+        for (const b of w.balls) {
+          const start = y0.get(b.id);
+          if (start === undefined || b.state.kind !== 'ground') continue;
+          shove = Math.max(shove, b.pos.y - start); // how far up-field the file was driven
+          peak = Math.max(peak, hyp(b.vel.x, b.vel.y)); // ...and how hard it was struck
+        }
+        if (r.hopper.length >= 3) break;
+      }
+      return { intake, took: r.hopper.length, shove, peak };
+    });
+    check(
+      'nip: a touching file of THREE goes in 3/3 without the file being punted down the field',
+      rows.every((x) => x.took === 3 && x.shove < 1 && x.peak < 5),
+      rows.map((x) => `${x.intake} ${x.took}/3, worst shove ${x.shove.toFixed(1)}in, peak artifact speed ${x.peak.toFixed(0)} in/s`).join(' · ') +
+        ' — at HELD_SLIDE_SPEED 45 the second and third left together at 73 in/s and were shoved 32in,' +
+        ' and triangle still clipped the third at 74 in/s until its storage slots moved 2in further into the chassis (heldSlotPos). No preset moves an artifact at all now.',
+    );
+  }
+
+  // ---- EXTREMELY FAST, and the presets still ordered ------------------------
+  {
+    const ticksToThree = (intake: (typeof PRESETS)[number]) => {
+      const sp = specOf(intake);
+      const seat = sp.length / 2 + BALL_RADIUS;
+      const { w, r } = nipScene(intake, [[seat, 0], [seat, 2], [seat, -2]]);
+      r.lastIntakeAt = w.time; // no free first take
+      for (let i = 1; i <= Math.round(2 / SIM_DT); i++) {
+        step(w, SIM_DT, new Map([[0, cmd({ intake: true })]]));
+        if (r.hopper.length >= 3) return i;
+      }
+      return Infinity;
+    };
+    const t = Object.fromEntries(PRESETS.map((p) => [p, ticksToThree(p)])) as Record<string, number>;
+    check(
+      'nip: a full hopper off the seat takes a handful of TICKS, not a third of a second',
+      t.sloped <= 8 && t.triangle <= 5 && t.vector <= 18,
+      `ticks to fill 3: triangle ${t.triangle} · sloped ${t.sloped} · vector ${t.vector}`,
+    );
+    check(
+      'nip: triangle is still the strongest grab and vector still the slowest',
+      t.triangle <= t.sloped && t.sloped < t.vector,
+      `triangle ${t.triangle} <= sloped ${t.sloped} < vector ${t.vector} — dual take, clump bonus, and no clump bonus on a flat front`,
+    );
+  }
+
+  // ---- capMax IS STILL REACHABLE (why `t`'s denominator stays throatHalf) ---
+  {
+    const m = intakeMouth(specOf('vector'));
+    const wide = clamp((m.mouthHalf - 0.5) / m.throatHalf, 0, 1);
+    const cornerT = clamp(6.5 / intakeMouth(specOf('sloped')).throatHalf, 0, 1);
+    check(
+      'nip: an off-centre grab still pays capMax (the ramp did not flatten when the grab moved to the wheel)',
+      wide === 1 && cornerT === 1,
+      `vector at mouthHalf − 0.5 → t=${wide}, sloped cornered at 6.5in → t=${cornerT} — re-normalising t onto the wheel row would silently make capMax unreachable`,
+    );
+  }
+
+  // ---- capture ⊆ suction ⊆ claim, over both chassis extremes ---------------
+  /**
+   * Structural, not a comment. A CAPTURE set reaching outside the claim set stalls the robot on
+   * the artifact it is about to eat (the claim is what excuses it from the chassis in
+   * `pinnedArtifacts`); a claim set narrower than the SUCTION leaves the chassis fighting an
+   * artifact the rollers are already pulling — the oscillation `intakeClaims` exists to kill.
+   *
+   * ⚠️ `capture ⊆ suction` is NOT an invariant and asserting it was wrong. `onRollerRow` grabs
+   * a flat preset's artifact WHERE IT LIES, out to `mouthHalf + BALL_RADIUS * 0.25`, while the
+   * suction pulls only within `wheelSpan = mouthHalf` — the preset "grabs where it lies and the
+   * timing does the vectoring", which is the whole point of that branch. The claim is the set
+   * that has to contain both, and it does.
+   */
+  {
+    const bad: string[] = [];
+    let tightest = Infinity;
+    let tightestAt = '';
+    for (const intake of PRESETS)
+      for (const length of [INTAKE_PRESETS[intake].minLength, INTAKE_PRESETS[intake].maxLength])
+        for (const width of [INTAKE_PRESETS[intake].minWidth, ROBOT_MAX_SIZE]) {
+          const sp = coerceSpec({ ...DEFAULT_SPEC, intake, length, width });
+          const m = intakeMouth(sp);
+          const hl = sp.length / 2;
+          const tip = hl + INTAKE_PRESETS[intake].reach;
+          const axle = intakeAxleX(sp);
+          const nip = intakeNip(sp);
+          // the three regions, each written the way its own code writes it
+          const wide = m.mouthHalf + BALL_RADIUS * 0.25; // cornered / onRollerRow lateral
+          const wheelSpan = m.wedge ? m.throatHalf : m.mouthHalf;
+          const inCapture = (x: number, y: number) =>
+            x > axle - nip.back && x < axle + nip.front && Math.abs(y) < wide;
+          const inSuction = (x: number, y: number) =>
+            x > hl - BALL_RADIUS &&
+            x < tip + BALL_RADIUS &&
+            (Math.abs(y) < wheelSpan ||
+              (m.wedge && x > tip - BALL_RADIUS - INTAKE_CAPTURE_BAND && Math.abs(y) < wide));
+          const inClaim = (x: number, y: number) =>
+            x > hl - BALL_RADIUS && x < tip + BALL_RADIUS && Math.abs(y) < wide;
+          for (let x = axle - nip.back; x <= axle + nip.front + 1; x += 0.05)
+            for (let y = 0; y <= wide + 1; y += 0.05) {
+              if (inCapture(x, y) && !inClaim(x, y))
+                bad.push(`${intake} ${length}x${width}: capture (${x.toFixed(2)}, ${y.toFixed(2)}) is outside the claim`);
+              if (inSuction(x, y) && !inClaim(x, y))
+                bad.push(`${intake} ${length}x${width}: suction (${x.toFixed(2)}, ${y.toFixed(2)}) is outside the claim`);
+            }
+          // the binding margin: on a WEDGE the outer laterals are only sucked past
+          // `tip − R − INTAKE_CAPTURE_BAND`, and the band's rear edge sits just inside it
+          if (m.wedge) {
+            const margin = axle - nip.back - (tip - BALL_RADIUS - INTAKE_CAPTURE_BAND);
+            if (margin < tightest) {
+              tightest = margin;
+              tightestAt = `${intake} ${sp.length}x${sp.width}`;
+            }
+          }
+        }
+    check(
+      'nip: capture ⊆ suction ⊆ claim, at both chassis extremes of all three presets',
+      bad.length === 0,
+      bad.length
+        ? bad.slice(0, 3).join(' · ')
+        : `capture and suction both lie inside the claim, everywhere; the wedge's tightest fore-aft margin is at ${tightestAt}, the band's rear edge ${tightest.toFixed(3)}in inside the suction's onRoller edge`,
+    );
+  }
+
+  // ---- the gate-drain landing point is still inside the suction -------------
+  {
+    const rows = PRESETS.map((intake) => {
+      const sp = specOf(intake);
+      const tip = sp.length / 2 + INTAKE_PRESETS[intake].reach;
+      // the closest an artifact may legally land, a hair inside: this IS `intakeSuction`'s
+      // `ahead` now, and that bound is strict on both sides of the same expression
+      const drop = tip + BALL_RADIUS - INTAKE_CATCH_LENIENCE - 0.05;
+      const { w, r } = nipScene(intake, [[drop, 0]]);
+      run(w, cmd({ intake: true }), 1);
+      return { intake, drop, took: r.hopper.length };
+    });
+    check(
+      'nip: an artifact landing at the drop lenience is still taken (gate-drain intaking)',
+      rows.every((x) => x.took === 1),
+      rows.map((x) => `${x.intake} at tip + ${(x.drop - (specOf(x.intake).length / 2 + INTAKE_PRESETS[x.intake].reach)).toFixed(2)}: hopper ${x.took}`).join(' · ') +
+        ' — INTAKE_CATCH_LENIENCE and the suction reach are coupled; this is the whole basis of intaking off the outflow',
+    );
+  }
 }
 
 // ---- a robot squeezed by an opponent against a wall stays in-field ----------
@@ -7901,12 +9286,12 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   r.pos = { x: 0, y: -8 };
   r.heading = 0;
   r.hopper = ['green', 'green', 'green']; // full hopper = 3 stored (at the limit)
-  r.vel = { x: POSSESSION_PUSH_MIN + 5, y: 0 }; // driving = herding
+  r.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 }; // driving = herding
   // a loose ground ball being BULLDOZED: touching, ahead along the direction of
   // travel, and carried along at the robot's own speed -> 4 controlled, over the limit
-  w.balls.push({ id: 9001, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: POSSESSION_PUSH_MIN + 5, y: 0 }, z: 0, vz: 0 });
+  w.balls.push({ id: 9001, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: POSSESSION_HERD_SPEED + 5, y: 0 }, z: 0, vz: 0 });
   // hold the over-possession just past the grace window
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w.time = i / 60;
     updatePenalties(w, 1 / 60, new Map());
   }
@@ -7924,7 +9309,7 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   r2.hopper = ['green', 'green', 'green'];
   r2.vel = { x: 0, y: 0 }; // stationary
   w2.balls.push({ id: 9002, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w2.time = i / 60;
     updatePenalties(w2, 1 / 60, new Map());
   }
@@ -7939,8 +9324,8 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   const r3 = w3.robots[0];
   r3.pos = { x: 0, y: -8 };
   r3.hopper = ['green', 'green', 'green'];
-  r3.vel = { x: POSSESSION_PUSH_MIN + 5, y: 0 };
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  r3.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 };
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w3.time = i / 60;
     updatePenalties(w3, 1 / 60, new Map());
   }
@@ -7956,8 +9341,8 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   r4.pos = { x: 0, y: -8 };
   r4.heading = 0;
   r4.hopper = ['green', 'green', 'green'];
-  r4.vel = { x: POSSESSION_PUSH_MIN + 5, y: 0 };
-  w4.balls.push({ id: 9003, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: POSSESSION_PUSH_MIN + 5, y: 0 }, z: 0, vz: 0 });
+  r4.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 };
+  w4.balls.push({ id: 9003, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: POSSESSION_HERD_SPEED + 5, y: 0 }, z: 0, vz: 0 });
   for (let i = 0; i < Math.floor((POSSESSION_GRACE / 2) / (1 / 60)); i++) { // well under confirm+grace
     w4.time = i / 60;
     updatePenalties(w4, 1 / 60, new Map());
@@ -9311,10 +10696,18 @@ function pinScene(
   };
   // measured on main, which is the reference the user is comparing against
   const edge = grab(7, 'sloped');
+  /**
+   * 0.33s -> 0.53s when the intake's reach was cut to the landing bound, and the budget moved
+   * with it. This check is about the two passes FIGHTING, not about reach: its companion below
+   * (`pushedOut < 7.5`) is the one that actually detects the oscillation, and that is unmoved.
+   * A shorter reach means the funnel engages later on a full-throttle approach, so the swallow
+   * lands later — the requested behaviour, not the defect. The ceiling stays far under the
+   * 1.45s the oscillation produced, so the check still fails if it ever comes back.
+   */
   check(
     'an artifact at the edge of the mouth is swallowed promptly, not batted about',
-    edge.t >= 0 && edge.t < 0.5,
-    `7in off-centre: ${edge.t < 0 ? 'never' : edge.t.toFixed(2) + 's'} (main 0.33s, unclaimed 1.45s)`,
+    edge.t >= 0 && edge.t < 0.65,
+    `7in off-centre: ${edge.t < 0 ? 'never' : edge.t.toFixed(2) + 's'} (main 0.33s, 0.53s once the reach became the landing bound, unclaimed 1.45s)`,
   );
   check(
     '...and the chassis never shoves it back out of the mouth',
@@ -9490,12 +10883,33 @@ function pinScene(
    * happened to be against a wall. Slowing the drive and giving it room to run is what makes it
    * an actual push across open floor.
    */
-  const herd = () => cmd({ driveY: 0.2, intake: true });
+  // Full throttle, not 0.2. Herding requires a HERDING SPEED now
+  // (`POSSESSION_HERD_SPEED`), and a 0.2 nudge is exactly the case the owner ruled should be
+  // free. The scenario's point is unchanged: a clump driven across OPEN FLOOR, with room to
+  // run, still fouls even with the intake held.
+  const herd = () => cmd({ driveY: 1, intake: true });
   const HERD: [number, number] = [-55, -67]; // clump near the bottom wall, robot behind it
+  /**
+   * RE-BASELINED FROM (5, 6) TO (6, 8) when the intake's reach was cut to the landing bound,
+   * and the reason is the rule working rather than the rule breaking. Swept at 0.2 throttle:
+   *
+   *     clump of   3   4   5   6   7   8   9
+   *     MINORs     0   0   0   1   0   2   6
+   *
+   * A 5-clump used to bill and now does not. G408's carry test is NET DISTANCE ALONG THE PUSH
+   * DIRECTION, and a shorter reach means the artifacts the robot has not swallowed are no
+   * longer held on the bumper — they squirt sideways out of the squeeze, covering no ground
+   * where the robot is driving them. That is the exact distinction CLAUDE.md records the rule
+   * being rewritten around ("running into things is free and taking them somewhere is not"),
+   * so a pile the intake now scatters instead of herding SHOULD cost less. The scene is noisy
+   * either side of the threshold (7 draws 0, 8 draws 2) because the human player restocks into
+   * it, so the check asserts two sizes that are clearly past what the intake can absorb.
+   * ⚠️ Do NOT rescue this by slowing the intake or widening the reach.
+   */
   check(
     'pushing a clump across open floor fouls even with the intake held',
-    clump(5, herd, 12, ...HERD) > 0 && clump(6, herd, 12, ...HERD) > 0,
-    `5-clump ${clump(5, herd, 12, ...HERD)} MINORs, 6-clump ${clump(6, herd, 12, ...HERD)}`,
+    clump(6, herd, 12, ...HERD) > 0 && clump(8, herd, 12, ...HERD) > 0,
+    `6-clump ${clump(6, herd, 12, ...HERD)} MINORs, 8-clump ${clump(8, herd, 12, ...HERD)} (5-clump now 0 — the intake scatters it rather than herding it)`,
   );
   // ...and three of them, which is all an empty robot may take, stays clean at the same throttle
   check(
@@ -9872,7 +11286,7 @@ function pinScene(
   // the robot, so a fixture that pins both in place and only calls updatePenalties would show
   // a permanently stationed artifact and assert the opposite of what it means to.
   w.balls.push({ id: 9101, color: 'purple', state: { kind: 'ground' }, pos: { x: 12, y: 0 }, vel: { x: 0, y: 60 }, z: 0, vz: 0 });
-  runCmds(w, new Map([[0, cmd({ driveY: 1 })]]), acquireSecs(POSSESSION_PUSH_MIN + 5) + 0.5);
+  runCmds(w, new Map([[0, cmd({ driveY: 1 })]]), acquireSecs(POSSESSION_HERD_SPEED + 5) + 0.5);
   check(
     'a ball squirting sideways off the bumper is not plowed (no G408)',
     w.match.fouls.blue.minor === 0,
@@ -9909,10 +11323,10 @@ function pinScene(
   r3.pos = { x: 0, y: -8 };
   r3.heading = 0; // facing +x...
   r3.hopper = ['green', 'green', 'green'];
-  r3.vel = { x: -(POSSESSION_PUSH_MIN + 5), y: 0 }; // ...but DRIVING in reverse, toward −x
+  r3.vel = { x: -(POSSESSION_HERD_SPEED + 5), y: 0 }; // ...but DRIVING in reverse, toward −x
   // the ball is behind the chassis and ahead along the direction of travel, carried along
-  w3.balls.push({ id: 9103, color: 'purple', state: { kind: 'ground' }, pos: { x: -2, y: 0 }, vel: { x: -(POSSESSION_PUSH_MIN + 5), y: 0 }, z: 0, vz: 0 });
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  w3.balls.push({ id: 9103, color: 'purple', state: { kind: 'ground' }, pos: { x: -2, y: 0 }, vel: { x: -(POSSESSION_HERD_SPEED + 5), y: 0 }, z: 0, vz: 0 });
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w3.time = i / 60;
     updatePenalties(w3, 1 / 60, new Map());
   }
@@ -9933,7 +11347,7 @@ function pinScene(
   r4.pos = { x: 0, y: -8 };
   r4.heading = 0;
   r4.hopper = ['green', 'green', 'green']; // 3 stored = at the limit
-  const push = POSSESSION_PUSH_MIN + 5;
+  const push = POSSESSION_HERD_SPEED + 5;
   r4.vel = { x: push, y: 0 };
   // a CHAIN of four: only the first touches the bumper, the rest touch each other
   for (let i = 0; i < 4; i++) {
@@ -9947,7 +11361,7 @@ function pinScene(
       vz: 0,
     });
   }
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w4.time = i / 60;
     updatePenalties(w4, 1 / 60, new Map());
   }
@@ -10056,12 +11470,28 @@ function pinScene(
       `blueMinor=${spun.match.fouls.blue.minor}`,
     );
 
-    // ...and CREEPING one downfield is too. Speed is not what the rule turns on.
+    /**
+     * ⚠️ ...BUT CREEPING ONE DOWNFIELD IS FREE NOW, AND THAT IS A DELIBERATE TRADE.
+     *
+     * This check asserted the opposite, because the engine used to turn on DISTANCE alone and
+     * a slow-herd window was a known exploit. `POSSESSION_HERD_SPEED` reopens that window on
+     * purpose: measured, the engine had NO leniency gradient at all — a 6-row nudged at 0.08
+     * throttle drew the same 6 MINORs and the same yellow card as a full-throttle ram, and a
+     * SINGLE loose artifact drew 3. A rule that cannot tell a feather touch from a bulldoze is
+     * not one anybody can play around.
+     *
+     * Owner's ruling on the trade: “If a pile is crept downfield at 5 in/s, then it doesn't
+     * really matter. It is slow anyway. It's a valid tradeoff.” The exploit it grants is
+     * bounded by its own slowness — 5 in/s is 2.4 s per artifact diameter, and a robot doing
+     * that is not taking the field away from anybody.
+     *
+     * Flip this back and lower `POSSESSION_HERD_SPEED` together, never one alone.
+     */
     const crept = hoard(4, (r) => { r.vel = { x: 5, y: 0 }; });
     check(
-      'a pile CREPT downfield at 5 in/s is possessed (no slow-herd window)',
-      crept.match.fouls.blue.minor > 0,
-      `blueMinor=${crept.match.fouls.blue.minor}`,
+      'a pile CREPT downfield at 5 in/s is NOT possessed (the leniency trade)',
+      crept.match.fouls.blue.minor === 0,
+      `blueMinor=${crept.match.fouls.blue.minor} — below POSSESSION_HERD_SPEED=${POSSESSION_HERD_SPEED}`,
     );
 
     /**
@@ -10095,7 +11525,7 @@ function pinScene(
      * TRAPPING rule that reached the same place by asking whether the FIELD was holding the
      * artifacts, which fouled a robot for merely standing near a wall.
      */
-    const heldOn = hoard(4, (r) => { r.vel = { x: 20, y: 0 }; });
+    const heldOn = hoard(4, (r) => { r.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 }; });
     const before = heldOn.match.fouls.blue.minor;
     heldOn.robots[0].vel = { x: 0, y: 0 };
     heldOn.robots[0].angVel = 0;
@@ -10235,7 +11665,7 @@ function pinScene(
       r2.pos = { x: 20, y: (lz2.y0 + lz2.y1) / 2 };
       r2.heading = 0;
       r2.hopper = ['green', 'green', 'green'];
-      r2.vel = { x: 20, y: 0 };
+      r2.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 };
       for (let i = 0; i < 5; i++) {
         w2.balls.push({ id: 9950 + i, color: 'purple', state: { kind: 'ground' }, pos: { x: 32.9 + i * 5.1, y: r2.pos.y }, vel: { x: 20, y: 0 }, z: 0, vz: 0 });
       }
@@ -10253,6 +11683,59 @@ function pinScene(
       w.match.fouls.blue.minor === 0,
       `blueMinor=${w.match.fouls.blue.minor}`,
     );
+
+    /**
+     * ⚠️ AN EXEMPTION MUST NOT BECOME EXTRA REACH — the shipped-replay bug.
+     *
+     * `dsim-decode-s4-v2` billed 26 G408 MINORs and a yellow card, all of them from this: a
+     * PARKED robot standing in its own loading zone, hopper full, with ZERO established holds
+     * on anything, was charged with controlling TWELVE artifacts. The loading-zone carve-out
+     * adds every in-zone artifact to `excused`, `excused` used to SEED the transitive chain,
+     * and the chain then flooded the human player's restock cluster — so one artifact the
+     * robot merely stood beside conducted control to everything piled behind it.
+     *
+     * Two invariants pin it: the chain may only start from something the robot is TOUCHING,
+     * and a loading-zone-excused artifact does not conduct at all (the mouth exemption still
+     * does — the rollers owning one artifact cannot repeal the pile pressed on the robot
+     * through it). A stationary robot controls nothing it has not taken anywhere.
+     */
+    {
+      const w3 = foulWorld();
+      const r3 = w3.robots[0];
+      const lz3 = loadZone(r3.alliance);
+      const cx = (lz3.x0 + lz3.x1) / 2;
+      const cy = (lz3.y0 + lz3.y1) / 2;
+      r3.pos = { x: cx, y: cy };
+      r3.heading = 0;
+      r3.hopper = ['green', 'green', 'green'];
+      r3.vel = { x: 0, y: 0 }; // PARKED. Not herding, not pushing, not moving at all.
+      // one artifact against the robot, then a contiguous line of ten running out of the zone
+      for (let i = 0; i < 11; i++) {
+        w3.balls.push({
+          id: 9800 + i,
+          color: 'purple',
+          state: { kind: 'ground' },
+          pos: { x: cx + 9 + i * 5.1, y: cy },
+          vel: { x: 0, y: 0 },
+          z: 0,
+          vz: 0,
+        });
+      }
+      for (let i = 0; i < 600; i++) {
+        w3.time = i / 60;
+        updatePenalties(w3, 1 / 60, new Map());
+      }
+      check(
+        'a PARKED robot in its own loading zone is not charged for the pile beside it (G408)',
+        w3.match.fouls.blue.minor === 0 && w3.match.fouls.blue.major === 0,
+        `blueMinor=${w3.match.fouls.blue.minor} blueMajor=${w3.match.fouls.blue.major} — an exemption must not become reach`,
+      );
+      check(
+        '...and it draws no excessive-control CARD either',
+        !w3.penalties.carded[r3.id],
+        `carded=${!!w3.penalties.carded[r3.id]}`,
+      );
+    }
   }
 
   // CROSSING A LITTERED FIELD is the case G408 explicitly excuses — "BULLDOZING (inadvertent

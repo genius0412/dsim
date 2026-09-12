@@ -1,7 +1,8 @@
 import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
-import { PLACEMENT_GAMES } from '../../src/config';
+import { BALANCE_VERSION, PLACEMENT_GAMES } from '../../src/config';
+import { coerceGameId, GAME_IDS } from '../../src/games/types';
 import {
   STANDING_MAX, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH, clampScore, type StandingVerdict,
 } from '../../src/standing';
@@ -1604,6 +1605,75 @@ export async function actForSeason(balanceVersion: number, game?: Game): Promise
   return Number(rows[0]?.act ?? 0);
 }
 
+/**
+ * The ACT a game's ratings currently live on, CACHED per process.
+ *
+ * Resolving it is two queries (`currentSeasonNumber` then `actForSeason`) and neither
+ * was memoized, so reading one player's rating cost THREE sequential round trips. That
+ * was tolerable while the only caller was `introElo` — once per roster entry, after a
+ * match had already been paired — and is not once the matchmaker reads a rating per
+ * JOIN. Two of the three trips are the same answer for everybody.
+ *
+ * A TTL rather than a permanent memo because an admin can roll an act at runtime
+ * (`startNewSeason`) with no redeploy; a minute is well inside the tolerance for that
+ * and still collapses a queue's worth of joins onto one lookup. Copies the
+ * `userRoomCache` shape below: a module-level `{at, val}` with a millisecond constant.
+ *
+ * NOT a rating cache. Ratings are per-player and change every match, and `server/db/
+ * pool.ts` is explicit that Neon bills CU-hours as wall-clock time AWAKE — so a cache
+ * that invites a per-tick read loop would convert a bursty workload into a permanent
+ * bill. This caches the part that is shared and nearly static, and nothing else.
+ */
+const ACT_TTL_MS = 60_000;
+const actCache = new Map<string, { at: number; act: number }>();
+
+export async function actFor(game: Game | undefined, now = Date.now()): Promise<number> {
+  const key = g(game);
+  const hit = actCache.get(key);
+  if (hit && now - hit.at < ACT_TTL_MS) return hit.act;
+  const bv = await currentSeasonNumber(BALANCE_VERSION, game);
+  const act = await actForSeason(bv, game);
+  actCache.set(key, { at: now, act });
+  return act;
+}
+
+/** drop the memo — for tests, and for an admin act roll that should take effect now */
+export function clearActCache(): void {
+  actCache.clear();
+}
+
+/**
+ * A player's rating AND how many games they have on that board, in ONE query.
+ *
+ * `getRating` alone cannot answer "should this player be skill-matched?", because its
+ * `?? 1000` is ambiguous: it reads the same for "never played this board" and "played
+ * to exactly 1000". The placement flag is games-based (`games < PLACEMENT_GAMES`, see
+ * src/config.ts — it REPLACED an older RD-based test that stayed set for dozens of
+ * games in a young pool), and `games` is in neither existing select.
+ *
+ * `placed` false means UNKNOWN SKILL, which a matcher must treat as "do not gate",
+ * never as "assume 1000" — an unplaced player has no rating to match on and still has
+ * to get a game.
+ */
+export async function getSkill(
+  userId: string,
+  mode: '1v1' | '2v2',
+  act: number,
+  game?: Game,
+): Promise<{ rating: number; games: number; placed: boolean }> {
+  const rows = await q<{ rating: number; games: number }>(
+    `select rating, games from elo_ratings
+     where user_id = $1 and mode = $2 and act = $3 and game = $4`,
+    [userId, mode, act, g(game)],
+  );
+  const r = rows[0];
+  return {
+    rating: r?.rating ?? 1000,
+    games: r?.games ?? 0,
+    placed: (r?.games ?? 0) >= PLACEMENT_GAMES,
+  };
+}
+
 export async function getRating(
   userId: string,
   mode: '1v1' | '2v2',
@@ -1721,7 +1791,7 @@ export async function lastRankedBoard(
   if (!r) return null;
   return {
     mode: r.mode === '2v2' ? '2v2' : '1v1',
-    game: (r.game === 'chain' ? 'chain' : 'decode') as Game,
+    game: coerceGameId(r.game) as Game,
     act: Number(r.act ?? 0),
   };
 }
@@ -2348,7 +2418,9 @@ export async function getGlobalStats(): Promise<GlobalStats> {
     q<{ game: Game; mode: string; n: string }>(`select game, mode, count(*) as n from matches group by game, mode`),
   ]);
   const byCategory: GlobalStats['byCategory'] = { solo: 0, duo: 0, '1v1': 0, '2v2': 0 };
-  const byGame: Record<Game, number> = { decode: 0, chain: 0 };
+  // seeded from GAME_IDS so a new game reports 0 rather than being absent from
+  // the map (and so this stops being a place a new game has to be added)
+  const byGame = Object.fromEntries(GAME_IDS.map((g) => [g, 0])) as Record<Game, number>;
   for (const r of [...recRows, ...matchRows]) {
     const n = Number(r.n);
     // combined-by-category (homepage) — sums across games
@@ -3380,7 +3452,7 @@ export interface FriendRow {
   offlineSeconds: number | null;
   /** 'menu' | 'lobby' | 'match' while online; null when offline/invisible/unknown */
   activity: Activity | null;
-  /** which game they're in ('decode' | 'chain') — only meaningful with `activity` */
+  /** which game they're in (a `GameId`) — only meaningful with `activity` */
   game: Game | null;
   /** the room to SPECTATE, set only while a match they are in is actually running
    *  (see `liveRoomsByUser`). Absent otherwise — including in a lobby, and for the
@@ -3589,7 +3661,7 @@ export async function listFriends(userId: string): Promise<FriendsPayload> {
       status: r.status === 'dnd' ? 'dnd' : null,
       offlineSeconds: online ? null : coarsen(since),
       activity,
-      game: activity ? (r.activity_game === 'chain' ? 'chain' : 'decode') : null,
+      game: activity ? coerceGameId(r.activity_game) : null,
       // `online` gates this so an invisible friend is never watchable: invisibility
       // nulls their last-seen, which is what `online` is computed from.
       watch: online ? watchable.get(r.user_id) : undefined,
@@ -3662,7 +3734,7 @@ const shapeInvite = (r: InviteCols): RoomInvite => ({
     role: asRole(r.role),
   },
   room: r.room,
-  game: r.game === 'chain' ? 'chain' : 'decode',
+  game: coerceGameId(r.game),
   kind: r.kind,
   record: r.record,
   format: r.format,
@@ -3687,7 +3759,7 @@ const shapeSent = (r: SentCols): SentInvite => ({
     role: asRole(r.role),
   },
   room: r.room,
-  game: r.game === 'chain' ? 'chain' : 'decode',
+  game: coerceGameId(r.game),
   kind: r.kind,
   record: r.record,
   format: r.format,

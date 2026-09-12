@@ -387,7 +387,24 @@ export type ClientMsg =
   | { t: 'leaveQueue' }
   // latency probe: the server echoes `ts` straight back in a `pong`, so the client
   // measures round-trip time for the connection-quality HUD (no server clock needed)
-  | { t: 'ping'; ts: number };
+  | { t: 'ping'; ts: number }
+  /* ── LAN SIGNALLING ──────────────────────────────────────────────────────────────────
+   * The cloud's whole involvement in a match it does not run. A LAN room is hosted in a
+   * player's tab and reached over an RTCDataChannel at ~1 ms; these four messages are only
+   * the introduction that lets two browsers find each other, because neither can be dialled
+   * into. Once ICE has a pair, nothing else goes through the server until somebody leaves.
+   * `server/lanSignal.ts` carries the reasoning and the bounds; `docs/lan-webrtc.md` §1 has
+   * what it costs (~10 KB per guest, once, against 940 KB/s for a cloud 2v2). */
+  // claim a code and host a LAN room. REQUIRES a valid `authToken`: the host is the one who
+  // uploads the match afterwards, so an anonymous host is a match with nowhere to land.
+  | { t: 'lanHost'; code: string; authToken?: string }
+  // give up the code and drop every guest (also implied by the socket closing)
+  | { t: 'lanStopHosting' }
+  // ask to be introduced to a code's host
+  | { t: 'lanJoin'; code: string }
+  // forward one opaque blob (an SDP offer/answer, or an ICE candidate) to `peer`. The server
+  // does not parse `data` — it is bounded and counted, never read.
+  | { t: 'lanSignal'; peer: string; data: string };
 
 /**
  * A live match summarised for the "Watch Live" list (`GET /api/live`) and for the
@@ -597,7 +614,30 @@ export type ServerMsg =
   // so players aren't caught off guard by a restart mid-session.
   | { t: 'serverNotice'; kind: 'restart' | 'info'; message: string; until?: number }
   // echo of a client `ping` (same `ts`); the client computes RTT = now − ts
-  | { t: 'pong'; ts: number };
+  | { t: 'pong'; ts: number }
+  /* ── LAN SIGNALLING ── the replies to the four client messages above. */
+  // the code is yours; `hostId` is the peer id guests will address their offers to
+  | { t: 'lanHosting'; code: string; hostId: string }
+  // (to the HOST) a guest asked to be introduced, and may now be signalled
+  | { t: 'lanPeer'; peer: string }
+  // a peer left. To a guest this names the HOST, and means the room is gone — the
+  // authoritative room lived in that tab, so its closing ended the match.
+  | { t: 'lanPeerGone'; peer: string }
+  // (to a GUEST) the introduction worked; `hostId` is who to send the offer to
+  | { t: 'lanJoined'; code: string; hostId: string }
+  // one forwarded blob, verbatim, from `peer`
+  | { t: 'lanSignal'; peer: string; data: string }
+  /* a signalling request was refused. SEPARATE FROM `error` on purpose: `error` is rendered
+   * as a lobby-level failure that tears the screen down, and "that code isn't hosting" is a
+   * thing the player retypes rather than a thing that ends their session. */
+  /* `closed` is the deployment saying the rendezvous is not switched on here at all
+     (server/lanUploads.ts `LAN_SIGNALLING`), which is a different thing from every other
+     reason in this union: the others are about this request, that one is about the server. */
+  | {
+      t: 'lanError';
+      reason: 'badcode' | 'taken' | 'busy' | 'auth' | 'nohost' | 'full' | 'toobig' | 'nopeer' | 'closed';
+      message: string;
+    };
 
 /** a finished record run's leaderboard standing (its mode×drivetrain×season
  * bucket). `score` is the NET score (earned − own penalties). */

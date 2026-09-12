@@ -288,7 +288,7 @@ function mouthAt(rob: RobotState, pos: Exclude<ChainMountPos, 'center'>): Vec2 {
   // point by wherever the carriage currently is. This is the whole mechanism: without it
   // the rail was drawn but the claw still worked from one fixed spot.
   const half = catalystRailHalf(rob.spec);
-  const local = half > 0 ? railOffset(o, pos, rob.catalystRail * half) : o;
+  const local = half > 0 ? railOffset(o, pos, (rob.catalystRail ?? 0) * half) : o;
   // deterministic rotate (`rot` → dcos/dsin) — this is SIM code, so an engine-defined
   // cosine here would be a cross-engine desync, not just different pixels
   const w = rot(local, rob.heading);

@@ -2,12 +2,14 @@ import { useState, type ReactNode } from 'react';
 import { cmpEnabled, showConsentSettings } from '../ads/adsense';
 import { APP_NAME, seasonFor, LINKS } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
+import { useLanEnabled } from './useLanEnabled';
 import type { GameId } from '../games/types';
 import { MenuAd } from './AdSlot';
 import { FriendsPanel } from './FriendsPanel';
 import { FriendToasts } from './friendsContext';
 import { Logo } from './Logo';
 import { NavRail } from './NavRail';
+import { SponsorFooterMark } from './Sponsor';
 import { usePresence } from './usePresence';
 import { MaintenanceBanner } from './MaintenanceBanner';
 import { LanBanner } from './LanBanner';
@@ -94,6 +96,7 @@ export function AppShell({
   /** the selected game — the footer names its season (DECODE / Chain Reaction) */
   game: GameId;
 }) {
+  const lanOn = useLanEnabled();
   const presence = usePresence();
   const season = seasonFor(game);
   return (
@@ -134,7 +137,7 @@ export function AppShell({
           match they just played is not on it. The room screens replace this shell outright
           and say it their own way (`.ds-room-layout` is a 100dvh flex box — a strip above
           it would push the room off the bottom of the viewport). */}
-      <LanBanner />
+      {lanOn && <LanBanner />}
 
       {showRail ? (
         <div className="ds-body">
@@ -171,6 +174,10 @@ export function AppShell({
       <footer className="ds-foot">
         <span className="ds-foot-brand">
           {APP_NAME} · {season.name} {season.years}
+          {/* the app's presenting sponsor, on EVERY shell screen. The home menu
+              announces it; this is the standing credit that makes "presented by"
+              a property of the product rather than of its landing page. */}
+          <SponsorFooterMark />
         </span>
         <span className="ds-foot-links">
           <button className="ds-foot-link" onClick={onDownload}>

@@ -2,6 +2,7 @@ import { COLORS, ENDGAME_START } from '../config';
 import type { Camera } from '../render/camera';
 import type { FieldBounds } from '../games/types';
 import type { Alliance, World } from '../types';
+import { SPONSOR, sponsorActive, sponsorLogoWidth } from '../sponsor';
 
 /**
  * THE SCOREBOARD, BURNED INTO A REPLAY VIDEO.
@@ -151,6 +152,103 @@ function drawCountdown(ctx: CanvasRenderingContext2D, world: World, w: number, f
   ctx.fillText(String(Math.ceil(left)), cx, cy + h * 0.02);
 }
 
+/* ----------------------------------------------- the sponsor's burn-in ---- */
+
+/** logo height in CSS pixels, and the plate that carries it */
+const MARK_H = 20;
+const MARK_PAD = 8;
+const MARK_LABEL = 'PRESENTED BY';
+const MARK_LABEL_H = 10;
+
+/**
+ * THE SPONSOR'S MARK, BAKED INTO THE FILE.
+ *
+ * The scoreboard above exists because a video is the one export that outlives the
+ * sim; the same sentence is why the presenting sponsor is in it. A clip posted to
+ * Discord or YouTube carries this after the patch that produced it is gone, and
+ * there is no version of the export that can be configured to leave it out —
+ * which is precisely what "burned in" was bought to mean.
+ *
+ * ⚠️ THE IMAGE MUST ALREADY BE DECODED. `recordFast`'s `draw` callback is
+ * synchronous — it is called once per simulated tick with no chance to await — so
+ * an `Image` that has not finished loading draws nothing at all and the mark is
+ * silently missing from the file. `loadSponsorMark()` below is what the caller
+ * awaits BEFORE the capture starts, and the text fallback is what happens if that
+ * ever fails. An absent mark is the one outcome this must not have.
+ */
+let markImg: HTMLImageElement | null = null;
+let markReady = false;
+
+/**
+ * Decode the sponsor artwork, once. Resolves either way — a decode failure is not
+ * a reason to refuse someone their replay, it is a reason to burn the words
+ * instead of the logo. Safe to call repeatedly; safe to call when the sponsorship
+ * is not live, in which case it does nothing.
+ */
+export async function loadSponsorMark(): Promise<void> {
+  if (markReady || !sponsorActive() || typeof Image === 'undefined') return;
+  if (!markImg) {
+    /**
+     * ⚠️ THE ARTWORK IS IMPORTED DYNAMICALLY, AND IT HAS TO BE. This module is
+     * imported by `scripts/smoke.ts` (for `hudLabels`), which runs under `tsx`
+     * with no bundler — a top-level `import … from './sponsorAssets'` made the
+     * whole suite die with `ERR_UNKNOWN_FILE_EXTENSION: .svg` before a single
+     * check ran. The `typeof Image` guard above is what keeps this line from ever
+     * being reached headlessly, so the split is real and not just tidiness.
+     */
+    const { SPONSOR_LOGO_DARK } = await import('./sponsorAssets');
+    markImg = new Image();
+    // the asset is same-origin (bundled), but the capture canvas is read back as a
+    // blob — an image that ever tainted it would fail the export rather than the
+    // logo, so the request is explicitly anonymous.
+    markImg.crossOrigin = 'anonymous';
+    markImg.src = SPONSOR_LOGO_DARK;
+  }
+  try {
+    await markImg.decode();
+    markReady = true;
+  } catch {
+    markReady = false; // the text path takes over
+  }
+}
+
+/**
+ * Draw the mark into the TOP-RIGHT of the frame — the same corner the live chip
+ * occupies during play, so a clip is framed like the game it came from rather than
+ * like a different product. The plate is the scoreboard's own fill: on a field
+ * that is hardcoded dark this is what makes small type and a light-ink logo read
+ * at YouTube's compression, and reusing it keeps the two burned-in elements
+ * looking like one overlay.
+ */
+function drawSponsorMark(ctx: CanvasRenderingContext2D, w: number): void {
+  if (!sponsorActive()) return;
+  const logoW = sponsorLogoWidth(MARK_H);
+  const boxW = logoW + MARK_PAD * 2;
+  const boxH = MARK_LABEL_H + MARK_H + MARK_PAD * 2;
+  const x = w - PAD - boxW;
+  const y = PAD;
+
+  ctx.fillStyle = 'rgba(18,21,26,0.86)';
+  chip(ctx, x, y, boxW, boxH, 8);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(229,231,235,0.62)';
+  ctx.font = `700 ${MARK_LABEL_H - 2}px ${FONT}`;
+  ctx.fillText(MARK_LABEL, x + boxW / 2, y + MARK_PAD + MARK_LABEL_H / 2);
+
+  const logoY = y + MARK_PAD + MARK_LABEL_H;
+  if (markReady && markImg) {
+    ctx.drawImage(markImg, x + MARK_PAD, logoY, logoW, MARK_H);
+    return;
+  }
+  // FALLBACK: the artwork never decoded. The sponsor's NAME still ships — a file
+  // with the words in it honours the placement; a file with a gap in it does not.
+  ctx.fillStyle = COLORS.white;
+  ctx.font = `800 ${Math.round(MARK_H * 0.62)}px ${FONT}`;
+  ctx.fillText(SPONSOR.name.toUpperCase(), x + boxW / 2, logoY + MARK_H / 2);
+}
+
 /**
  * Draw the live scoreboard (and, at the end, the final one) for `world`.
  *
@@ -228,5 +326,7 @@ export function drawReplayHud(
   }
 
   drawCountdown(ctx, world, w, view.fieldHeight);
+  // last, so nothing the scoreboard draws can land on top of it
+  drawSponsorMark(ctx, w);
   ctx.restore();
 }

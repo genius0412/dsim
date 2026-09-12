@@ -273,8 +273,11 @@ export function updateChain(
       // robot was carrying — refusing to traverse at exactly the moment a placement needed it.
       const want = catalystRailTarget(r, catalystTrackTarget(r, world));
       const step = CHAIN_RAIL_RATE * dt;
-      const d = want - r.catalystRail;
-      r.catalystRail = Math.abs(d) <= step ? want : r.catalystRail + Math.sign(d) * step;
+      // `?? 0` is the centred carriage: the field is optional on `RobotState` (it is CR
+      // hardware) and absent reads as 0 everywhere, including an old snapshot's robot.
+      const at = r.catalystRail ?? 0;
+      const d = want - at;
+      r.catalystRail = Math.abs(d) <= step ? want : at + Math.sign(d) * step;
     }
 
     // catalyst pick-up / place-down — EDGE-triggered (acts once per press) AND rate-limited

@@ -79,7 +79,7 @@ export function drawRobot(
   const dia = C.intakeRollerDia(r.spec);
   const rollerTip = hl + preset.reach;
   const rollerBack = rollerTip - dia;
-  const wedgeTip = rollerTip - dia / 2; // wedges meet the roller at its axle
+  const wedgeTip = C.intakeAxleX(r.spec); // wedges meet the roller at its axle — one authority
   const mouthOn = intakeOn ? 'rgba(34,197,94,0.85)' : '#2a303c';
   /**
    * The roller is DISCRETE WHEELS ON A SHAFT, not a solid bar. Drawing it as one filled
@@ -89,7 +89,7 @@ export function drawRobot(
    * like from above.
    */
   const drawRoller = () => {
-    const axis = rollerTip - dia / 2;
+    const axis = wedgeTip; // the axle; same authority the wedges and the capture nip read
     // beam across the mouth
     ctx.fillStyle = intakeOn ? '#166534' : '#475569';
     ctx.fillRect(axis - 0.28, -rw, 0.56, rw * 2);
@@ -290,10 +290,21 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
       ctx.restore();
     });
   } else if (r.spec.drivetrain === 'xdrive') {
-    // omni wheels canted 45°, opposite corners on the same diagonal → an X. Long +
-    // lighter so the X clearly reads; the diagonals nearly meet at the center.
-    const reach = Math.hypot(wx, wy);
-    for (const [px, py] of corners) drawWheel(px, py, px * py >= 0 ? Math.PI / 4 : -Math.PI / 4, Math.min(reach * 1.15, 7.5), 2.0, '#2b333e');
+    // Omni wheels canted 45°, each one lying ACROSS its corner rather than along it, so the
+    // four of them read as the four sides of a DIAMOND.
+    //
+    // ⚠️ NOT AN X. They were drawn radially — every wheel pointing at the centre — which is
+    // the wrong machine: a wheel whose force line passes through the centre of mass has no
+    // moment arm about it, so four radial omnis could translate and could never yaw. The
+    // drive this sim actually models puts each wheel ACROSS its corner, which is where its
+    // turning authority comes from, and that is a diamond top-down. Rotating each wheel the
+    // other way (−45° on the main diagonal, +45° on the anti-diagonal) is the whole fix.
+    //
+    // They are drawn at the SAME size as every other drivetrain's wheels, because an omni is
+    // the same size as a traction wheel. They used to be stretched to `reach * 1.15` so the
+    // old X would read as an X — with the wheels turned the right way the diamond reads on
+    // its own, and at that length the four of them looked like bars rather than wheels.
+    for (const [px, py] of corners) drawWheel(px, py, px * py >= 0 ? -Math.PI / 4 : Math.PI / 4, 4.4, 2.2, '#2b333e');
   } else {
     for (const [px, py] of corners) drawWheel(px, py, 0);
   }

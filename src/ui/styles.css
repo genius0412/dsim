@@ -2690,6 +2690,31 @@ input.admin-months {
   color: var(--ds-mut);
 }
 
+/* THE HOST COMMANDS. Numbered, because they are typed in order and a host who pastes the
+   fourth one first gets an error about a directory rather than about DSIM. The rows reuse
+   `.ds-lan-url` — same affordance, the whole row copies — with `.compact` dropping the type
+   from projector size to reading size: a join URL is read across a room, a command is read
+   off the screen in front of you. */
+.ds-lan-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+  margin: 0;
+  padding: 0 0 0 var(--ds-s-5);
+}
+.ds-lan-steps > li > .s {
+  display: block;
+  margin-bottom: var(--ds-s-1);
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.ds-lan-url.compact {
+  padding: var(--ds-s-2);
+}
+.ds-lan-url.compact > .u {
+  font-size: var(--ds-t-md);
+  font-weight: 500;
+}
 /* The persistent unofficial-match strip. Same anatomy as `.ds-maint` and it reuses
    that wrapper's inset, but its own block: this is a STATE of the app, not a warning
    about one, and folding it into the maintenance selector would make one of them
@@ -2721,4 +2746,58 @@ input.admin-months {
 }
 .ds-lan-leave:hover {
   border-color: var(--ds-ink);
+}
+
+/* ------------------------------------------ the in-gameplay sponsor chip ---- */
+/* The presenting sponsor, on the MENU / RESET line at the top left. See
+   src/ui/Sponsor.tsx for WHY it is not an ad unit: `AdSlot` renders nothing on
+   touch, nothing under Electron and nothing for a supporter, which between them is
+   the phone, the desktop app and the most engaged players on the service. This
+   path has none of those gates.
+
+   INSIDE `.hud`, which is `pointer-events: none` so the canvas keeps the drag —
+   so, like `.game-btn` next to it, this re-enables them on itself. It is one of
+   the two things in that corner meant to be clicked. */
+.sponsor-chip {
+  display: inline-flex;
+  align-items: center;
+  /* IT IS AN ANCHOR ON A SCREEN WITH NO LINK STYLING. Everywhere else the mark
+     lives inside `.sponsor-mark` (shell.css), which sets these; here the chip is
+     its own rule, and without them the browser's default `a` painted "PRESENTED
+     BY" underlined link-blue over the field. `--ds-ink-dim` is what `.game-btn`
+     next to it uses, so the line reads as one row. */
+  gap: var(--ds-s-2);
+  color: var(--ds-ink-dim);
+  text-decoration: none;
+  padding: var(--ds-s-1) var(--ds-s-2);
+  border-radius: var(--ds-round-full);
+  background: var(--ds-hud);
+  border: 1px solid var(--ds-hud-line);
+  pointer-events: auto;
+  transition: border-color 0.15s, opacity 0.15s;
+}
+.sponsor-chip:hover {
+  border-color: var(--ds-accent);
+}
+.sponsor-chip:active {
+  opacity: 0.7;
+}
+.sponsor-chip:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+/* THE OFFSET THE STATUS CHIPS DROP BY, derived rather than typed twice. The chip
+   is the logo (16px — the `h` prop in `SponsorGameChip`; keep the two in step)
+   plus its own padding and border, and `.status-wrap` needs that plus one gap.
+   Written as a calc so changing the padding above moves the chips with it; a
+   hard-coded 46 is a number that gets edited in one place of the two. */
+/* the status cluster's own line. It holds only `.robot-status` now that the
+   sponsor sits in the opposite corner, and stays a row so anything else added to
+   that line right-aligns with it rather than stacking above it. */
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
 }

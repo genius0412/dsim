@@ -23,10 +23,28 @@ export function robotExtents(r: RobotState): { front: number; rear: number; half
 export function heldSlotPos(spec: RobotState['spec'], slot: number, side: number): Vec2 {
   const hl = spec.length / 2;
   if (spec.intake === 'triangle') {
-    // 1 deep + a 2-wide front row; a front ball sits on `side` (never dead center,
-    // which would block a 3rd) — a 3rd entering that side pushes it to the other
-    if (slot <= 0) return { x: hl - 4, y: 0 }; // deep (loaded first)
-    return { x: hl + 2, y: (side || -1) * 2.7 };
+    /**
+     * 1 deep + a 2-wide front row; a front ball sits on `side` (never dead center, which would
+     * block a 3rd) — a 3rd entering that side pushes it to the other.
+     *
+     * THE WHOLE TRIANGLE SITS 2in FURTHER INTO THE CHASSIS than it used to (front row `hl + 2`
+     * -> `hl`, deep `hl − 4` -> `hl − 6`), which is the same correction the other two presets
+     * already carry in the block below — triangle was simply never moved off `hl + 2`. A held
+     * artifact is a real collider, and parked 2in PROUD of the chassis face this one rode out
+     * near the mouth at chassis speed and clipped the next artifact in a line before the intake
+     * could reach it: measured on a touching file of three at full throttle, triangle was the
+     * only preset that still knocked the third artifact away (74 in/s) once held artifacts
+     * stopped outrunning the chassis (see HELD_SLIDE_SPEED). Its front skin now sits at
+     * `hl + BALL_RADIUS`, a full 2.5in inside the roller line.
+     *
+     * BOTH slots move, not just the front row: the front row alone would close the deep-to-
+     * front spacing to hypot(4, 2.7) = 4.83in, under the 5in sum of radii, and draw the stored
+     * artifacts overlapping each other. Shifting the whole arrangement keeps its geometry.
+     * The deep one stays inside the chassis at every legal triangle length (11-13in): at the
+     * 11in floor its rear skin is 3.0in clear of the chassis rear.
+     */
+    if (slot <= 0) return { x: hl - 6, y: 0 }; // deep (loaded first)
+    return { x: hl, y: (side || -1) * 2.7 };
   }
   /**
    * A HELD ARTIFACT IS INSIDE THE ROBOT. The line of three ends with the front one's skin AT
@@ -1477,10 +1495,17 @@ export function landOnIntakeLid(b: Artifact, r: RobotState, prevZ: number): bool
   if (!arriving && !riding) return false;
 
   /**
-   * The roof covers exactly what the intake can CAPTURE from — `updateIntake`'s window is
-   * `local.x > hl - BALL_RADIUS` out to the roller line, so the roof runs from the chassis
-   * front edge (less a radius, where an artifact straddling the edge already overlaps it)
-   * to a radius past the rollers.
+   * The roof is the intake HARDWARE's plan-view footprint — the roller barrel, the wedges and
+   * the opener tabs — running from the chassis front edge (less a radius, where an artifact
+   * straddling the edge already overlaps it) to a radius past the rollers.
+   *
+   * ⚠️ It is deliberately WIDER than what the intake can CAPTURE from, which this comment
+   * used to claim it equalled. Since the grab became the roller nip (`intakeNip`), capture is
+   * a ~2.5-3.3in band about the axle while the roof is the whole 9-11in footprint, and the
+   * difference is the point: a robot's mouth is over the outflow when the HARDWARE is, not
+   * when the wheel is. `goal.ts`'s outflow-blocking test reads the roof for that same reason.
+   * What the roof DOES now coincide with exactly is `intakeSuction`'s fore-aft extent,
+   * `(hl − BALL_RADIUS, tip + BALL_RADIUS]`, and that one is load-bearing — see `ahead` there.
    *
    * The back edge matters and is not padding. An artifact dropped on the CHASSIS is ejected
    * out of its nearest face by `ballRobotContact`, and for anything near the front that face

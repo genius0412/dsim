@@ -1,5 +1,6 @@
 import { DESKTOP_BUILDS, releasesUrl, appVersion, detectOS, isMobile, OS_LABEL, type DesktopBuild } from '../download';
 import { APP_NAME } from '../seasons';
+import { SponsorDownloadMark } from './Sponsor';
 
 /**
  * Download page — where users get the Electron desktop build of the sim (Windows
@@ -88,6 +89,12 @@ export function Download() {
         <a className="ds-btn ghost" href={releasesUrl()} target="_blank" rel="noreferrer">
           All releases →
         </a>
+
+        {/* BELOW the builds, not above them. The visitor came here for a binary and
+            the page's job is to hand them one; the sponsor credit belongs where the
+            desktop-app handoff finishes, and it is the same mark the app's own
+            splash shows a few seconds later when they run it. */}
+        <SponsorDownloadMark />
       </div>
     </>
   );

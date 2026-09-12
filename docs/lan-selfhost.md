@@ -62,6 +62,81 @@ This is better than the alternatives rather than merely being the one that works
 The HOST still plays through `ws://localhost`, which is exempt, so the host can be in the
 desktop app or the web app and it works either way.
 
+## Hosting without a download: what was actually tried
+
+The guest half of this feature needs no download and never did — a guest opens a URL. The
+question this section answers is the HOST half: *"ideally this all runs through web, with no
+requirement to download the app."* It was investigated properly rather than waved off, because
+the answer is a `no` and a `no` has to be able to show its work.
+
+**A browser tab cannot be a server.** Not "cannot yet", and not "cannot without a flag": there
+is no web API that opens a listening socket, so a page cannot be dialled INTO by another
+machine. Everything a page can do is a connection it initiated. Four candidates were checked
+against that, and all four fail for the same structural reason:
+
+| candidate | why it does not work |
+|---|---|
+| **Direct Sockets** (`TCPServerSocket`) | This is the one API that genuinely listens, and it is restricted to **Isolated Web Apps** — a signed bundle, INSTALLED, and gated behind enterprise policy. Reaching it requires more download than the terminal does. |
+| **Service Workers** | Intercept requests from the SAME origin in the SAME browser profile. A service worker on the host's laptop is invisible to a guest's laptop; it is a cache layer, not a network endpoint. |
+| **WebTransport** | Client-side only. It speaks to a server over HTTP/3 and cannot BE one, and it needs TLS besides — which is the problem this whole document starts from. |
+| **A cloud relay** | Works, and is not LAN. The entire point of a LAN room is that the venue Wi-Fi has no internet, or has internet nobody wants 40 players' traffic on. A relay puts the thing being avoided back in the middle. |
+
+### WebRTC is the one real path, and it is not a small one
+
+**`RTCDataChannel` is the single mechanism by which a browser accepts a connection it did not
+initiate**, and it is genuinely peer-to-peer over a LAN once established (host candidates on
+the same subnet connect directly; no STUN, no TURN, no internet). If the terminal ever goes
+away, this is how. Two things stand between here and there, and neither is small:
+
+1. **Signalling.** Before two peers can talk they must exchange SDP offers and ICE candidates,
+   and that exchange has to happen over something that already works. The options are a cloud
+   rendezvous (needs the internet the venue does not have — so it defeats the purpose on the
+   day it matters) or manual copy-paste of an SDP blob per guest (fine for a demo with one
+   friend, unusable at a scrimmage with eight). mDNS-based local discovery is the interesting
+   third option and is its own project.
+2. **The authoritative room has to move into the tab.** Today `server/room.ts` runs the match
+   and the browser predicts against it. Hosting from a page means running that loop in the
+   host's tab.
+
+**The codebase is unusually close to being able to do (2), which is why this is recorded as a
+design rather than a fantasy.** `server/room.ts` has exactly ONE `node:` import (`randomUUID`
+from `node:crypto`; `crypto.randomUUID()` is in every browser that matters). Everything else it
+touches is `src/sim`, `src/games`, and the persistence and matchmaking modules that LAN mode
+already disables — see the `LAN_MODE` refusals. And `src/net/transport.ts` is an interface
+written for exactly this: the client already talks to a `Transport`, not to a `WebSocket`, so a
+`DataChannelTransport` is an implementation rather than a refactor.
+
+What it is NOT is a thing to do the day before a kickoff. It changes how every client reaches
+every match, and its failure mode — a room that half-connects — is the worst kind to debug in a
+gym.
+
+### So: one command, and the page says why
+
+`scripts/lan.mjs` (`npm run lan`) is the answer for now, and `LanPanel` prints the four
+commands on the page instead of hiding the host half behind `bridge?.lan`. Before that, a
+player on the web saw a screen titled "LAN play" whose only control asked for somebody else's
+address, which reads as "hosting is broken" rather than "hosting needs a terminal".
+
+Rules the launcher is written to:
+
+- **No shell, ever.** The neighbouring `dist` script is the cautionary tale: `set ELECTRON=1&&
+  npm run build` is `cmd.exe` syntax that fails on every Mac and every Linux box, and fails
+  with `set: command not found`, which names nothing a person can search for. `lan.mjs` passes
+  an environment OBJECT to `spawn`, so no shell parses any of it and there is nothing for
+  `bash`, `zsh` and `cmd.exe` to disagree about.
+- **It prints addresses, private ranges first**, the same ordering as `electron/lanHost.cjs`.
+  That is the thing people came for and it belongs on a projector.
+- **It builds `dist/` if missing**, because a fresh clone has none and the server refuses to
+  serve a directory that is not there.
+- **It sets `LAN_MODE=1` and `SERVE_CLIENT` together.** The refusals live on the server side
+  of that flag, not in the launcher — see "How the rules are ENFORCED, and where" below.
+
+**Why four commands and not `npx github:genius0412/dsim`.** The one-liner needs a `prepare`
+script so npm builds the client after cloning, and `prepare` also runs on every ordinary `npm
+install` — so every contributor would pay a full client build on every install to save a host
+three lines once. The `bin` entry (`dsim-lan`) is in `package.json` so that trade can be
+revisited without another design pass.
+
 ## What already exists
 
 Most of the plumbing is there, which is why this is worth doing.

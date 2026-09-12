@@ -6,13 +6,15 @@ import v8 from 'node:v8';
 import { Room, type Client } from './room';
 import { decodeClientMsg, encodeMsg, DEFAULT_ROOM_CONFIG, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
-import { verifyAuthToken } from './auth';
+import { authConfigured, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { migrate } from './db/migrate';
 import { persistMatch, persistDodges } from './persist';
 import { routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
+import { LAN_SIGNALLING, LAN_UPLOADS } from './lanUploads';
+import { LanSignalling } from './lanSignal';
 import { chargeStanding, rankedLock } from './standing';
 import { lockRemaining, tierOf,
   STANDING_MAX,
@@ -24,6 +26,7 @@ import { Matchmaker } from './matchmaking';
 import { MATCHMAKER_REGION } from './regions';
 import { BALANCE_VERSION } from '../src/config';
 import { periodLabel } from '../src/seasons';
+import { coerceGameId, isGameId } from '../src/games/types';
 import { dbEnabled } from './db/pool';
 import {
   currentSeasonNumber,
@@ -101,6 +104,97 @@ enforceLanPolicy();
 
 const PORT = Number(process.env.PORT ?? 8787);
 const rooms = new Map<string, Room>();
+/**
+ * LAN rendezvous, kept deliberately apart from `rooms`.
+ *
+ * A LAN match has no `Room` on this server — the authoritative room runs in the host's tab
+ * and this process only introduces the peers (`server/lanSignal.ts`). Sharing the `rooms` map
+ * would mean every consumer of it (the reaper, `/api/live`, the matchmaker, admission control)
+ * having to learn about a room with no simulation, no clients and no results. The codes are
+ * checked against each other so a player can never be told two different things by one code;
+ * nothing else is shared.
+ */
+const lanSignals = new LanSignalling();
+
+/**
+ * MAY A SIGNED-OUT PLAYER HOST HERE? — only on a server that has no idea who anybody is.
+ *
+ * `LanSignalling.claim` requires an account, and the reason is real: the host is the one who
+ * uploads the match afterwards (`POST /api/lan`), so an anonymous host on the cloud is a match
+ * whose data has nowhere to land. That rule is unchanged for every deployment that can actually
+ * check — it is the whole point of the feature that the data comes home.
+ *
+ * But `authConfigured` is false when this process has no `NEON_AUTH_URL`: no JWKS, no
+ * verification, every client anonymous whatever it sends. On such a server "sign in first" asks
+ * for something that cannot be done — there is no identity to have — and the effect is not a
+ * closed door but a feature that simply does not run. That is exactly the shape of a LAN server
+ * (`LAN_MODE` scrubs `NEON_AUTH_URL` itself) and of a laptop running `npm run lan:tab` to test
+ * tab hosting between two machines with no cloud at all.
+ *
+ * ⚠️ **IT IS DERIVED, NOT DECLARED.** There is deliberately no `LAN_ANON_HOSTS=1` variable: a
+ * flag could be set on a deployment that DOES have accounts, which is the one configuration
+ * this must never permit. Reading it off `authConfigured` makes that unreachable rather than
+ * discouraged — prod and alpha both set `NEON_AUTH_URL`, so both refuse an anonymous host no
+ * matter what else is in the environment. `LAN_SIGNALLING` is still required on top: a server
+ * that cannot identify anybody is not thereby a server that introduces strangers.
+ *
+ * What a signed-out host loses is the upload, and it keeps the match the way practice keeps
+ * one — on the device, in the backlog, until there is an account and a server to file it with.
+ */
+const LAN_ANON_HOSTS = !authConfigured;
+
+/**
+ * `SERVER_CAPS` plus what only THIS process's environment can answer.
+ *
+ * `LAN_ANON` is the one a client cannot work out for itself. The LAN screen has to decide
+ * whether to disable the host button and tell somebody to sign in, and on a server with no
+ * accounts that sentence is both wrong and unactionable — there is nothing to sign in to. The
+ * cap is the same server→client channel `party` uses, and for the same reason: one app serves
+ * every client build, so a feature that would MISBEHAVE rather than degrade is gated on the
+ * answer instead of guessed from the build.
+ *
+ * It is not in `SERVER_CAPS` itself because that list is a shared constant in `protocol.ts`,
+ * where `process.env` does not belong — the client imports that module.
+ */
+const presenceCaps: string[] = [
+  ...SERVER_CAPS,
+  /* `lan` SAYS THIS DEPLOYMENT OFFERS LAN AT ALL, and it is what lights the client's entry
+     points — the Play tile, `/lan`, the banner, the Career rows. It exists because the
+     client half used to be `VITE_LAN_ENABLED`, baked in at BUILD time, so switching LAN on
+     for an environment meant a Vercel env edit and a cache-free redeploy IN ADDITION to
+     this deploy. Those are held by different people here, and the two promptly disagreed:
+     alpha ran a deployed, switched-on rendezvous that no client could see. Advertising it
+     costs nothing — this response is already polled — and the cosmetic half can no longer
+     drift from the authoritative one, because it is now READ FROM it.
+
+     Either half counts. `LAN_SIGNALLING` alone is a complete feature (host in a tab, play,
+     keep the replay on the device); `LAN_UPLOADS` alone is the older self-hosted path. A
+     deployment with neither says nothing and the client stays dark, which is production. */
+  ...(LAN_SIGNALLING || LAN_UPLOADS ? ['lan'] : []),
+  ...(LAN_SIGNALLING && LAN_ANON_HOSTS ? ['lanAnon'] : []),
+];
+
+/**
+ * What a refused signalling request says, in one place.
+ *
+ * These are read by a player, not by a developer: "that code isn't hosting" is something they
+ * retype, so it must not arrive as a stack-shaped `error` that tears the lobby down. The
+ * refusal reasons are the protocol's; the sentences are here so the wire stays terse.
+ */
+const LAN_REFUSALS: Record<
+  'badcode' | 'taken' | 'busy' | 'auth' | 'nohost' | 'full' | 'toobig' | 'nopeer' | 'closed',
+  string
+> = {
+  closed: 'Hosting in a browser tab is not switched on for this server yet.',
+  badcode: "That isn't a valid room code.",
+  taken: 'That code is already in use — try another.',
+  busy: 'This server is holding as many LAN rooms as it can right now. Try again shortly.',
+  auth: 'Sign in to host a LAN game — the match is saved to your account afterwards.',
+  nohost: "Nobody is hosting that code. Check it with the host and try again.",
+  full: 'That LAN room is full.',
+  toobig: 'That connection request was too large.',
+  nopeer: 'That player is no longer connected.',
+};
 
 // Has this machine staged a ranked match whose row might still be sitting in
 // `pending_matches`? Arms the reaper below; see the note on its interval for why
@@ -801,7 +895,7 @@ const httpServer = createServer((req, res) => {
         const gq = u.searchParams.get('game');
         const rows = await recentMatches(
           Number(u.searchParams.get('limit')) || 40,
-          gq === 'chain' || gq === 'decode' ? gq : undefined,
+          isGameId(gq) ? gq : undefined,
         );
         res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ matches: rows }));
@@ -943,7 +1037,16 @@ const httpServer = createServer((req, res) => {
        * the difference between scheduled maintenance and an outage.
        */
       if (u.pathname === '/api/admin/maintenance') {
-        if (!isAdmin) {
+        // ADMIN_SECRET is accepted here, like the restart notice, the season roll and the
+        // announcement routes. A deploy is scripted end to end (scripts/announce-deploy.sh),
+        // and the one lever that could not be driven from a script was the one that takes
+        // players OUT of harm's way before it starts — so the window had to be opened by
+        // hand in a browser while everything around it was automated. Same secret, same
+        // exposure as the four routes that already take it, and strictly less dangerous
+        // than the one that restarts the server.
+        const secretOk =
+          !!process.env.ADMIN_SECRET && u.searchParams.get('secret') === process.env.ADMIN_SECRET;
+        if (!isAdmin && !secretOk) {
           res.writeHead(403, cors);
           res.end('forbidden');
           return;
@@ -1022,7 +1125,7 @@ const httpServer = createServer((req, res) => {
         }
         // which game's period to advance — DECODE and Chain Reaction run independent
         // Act → Season progressions (default DECODE).
-        const adminGame = u.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+        const adminGame = coerceGameId(u.searchParams.get('game'));
         if (u.pathname === '/api/admin/season/start') {
           const name = u.searchParams.get('name') ?? undefined;
           // `act=new` opens a fresh ACT (act++, season resets to 1); otherwise a
@@ -1104,7 +1207,7 @@ const httpServer = createServer((req, res) => {
           const mode = u.searchParams.get('mode') === 'duo' ? 'duo' : 'solo';
           const drivetrain = u.searchParams.get('drivetrain') ?? 'overall';
           const limit = Math.min(500, Math.max(1, Number(u.searchParams.get('limit') ?? 100)));
-          const adminRecGame = u.searchParams.get('game') === 'chain' ? 'chain' : 'decode';
+          const adminRecGame = coerceGameId(u.searchParams.get('game'));
           const season = await currentSeasonNumber(BALANCE_VERSION, adminRecGame);
           const rows = await adminListRecords({ mode, drivetrain, balanceVersion: season, limit, game: adminRecGame });
           jsonOut(200, { season, mode, drivetrain, rows, game: adminRecGame });
@@ -1565,7 +1668,7 @@ const httpServer = createServer((req, res) => {
       const m = maint.active
         ? { startsAt: maint.startsAt, endsAt: maint.endsAt, message: maint.message, biting: maintenanceBiting(maint) }
         : null;
-      res.end(JSON.stringify({ region: REGION, online, signedIn, queues, gameQueues, notice, maintenance: m, caps: SERVER_CAPS }));
+      res.end(JSON.stringify({ region: REGION, online, signedIn, queues, gameQueues, notice, maintenance: m, caps: presenceCaps }));
     };
     // GLOBAL count: aggregate every region's heartbeat (this machine only sees its
     // own sockets — anycast routing means the caller often lands on an empty region).
@@ -1910,6 +2013,65 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   /** what this socket still owes the kernel. The room reads it to coalesce snapshots for
    *  a client that has stopped draining — see `Client.backlog` in room.ts. */
   const backlog = (): number => ws.bufferedAmount;
+
+  /**
+   * This socket's identity FOR SIGNALLING, and the reason it is not `id`.
+   *
+   * `id` is reassigned when a client reclaims an in-match slot (`rejoin`), which is correct
+   * for a room — the point is to inherit the old identity — but it would silently strand a
+   * LAN registration under a key nobody holds any more. Signalling is a lobby-time activity
+   * that outlives nothing, so it gets a stamp that never moves.
+   */
+  const signalId: string = id;
+  const signalSocket = { id: signalId, send };
+
+  /**
+   * The four LAN signalling messages. Kept off the room dispatch chain below because none of
+   * them touches a room: a LAN host has no `Room` here, and a guest signalling for one is not
+   * joining anything on this server.
+   */
+  const handleLanSignal = async (m: ClientMsg): Promise<void> => {
+    /* THE GATE, BEFORE ANYTHING ELSE IS LOOKED AT. A deployment with the rendezvous closed
+       must not register a code, remember a peer, or forward a byte — so this sits ahead of
+       every branch rather than inside `claim`, which would still have parsed and bookkept.
+       It ANSWERS rather than ignoring: silence would hang the client until its 10s request
+       timeout and read as a broken server, and a player is owed the actual reason. */
+    if (!LAN_SIGNALLING) {
+      send({ t: 'lanError', reason: 'closed', message: LAN_REFUSALS.closed });
+      return;
+    }
+    if (m.t === 'lanHost') {
+      // hosting requires an account — see `LanSignalling.claim`, and `LAN_ANON_HOSTS` for the
+      // one server that cannot ask for one
+      const u = await verifyAuthToken(m.authToken).catch(() => null);
+      if (closed) return;
+      const hostId = u?.userId ?? (LAN_ANON_HOSTS ? `anon:${signalId}` : undefined);
+      const res = lanSignals.claim(signalSocket, m.code, hostId, (c) => rooms.has(c));
+      if (res.ok) {
+        // only a VERIFIED user is counted in the signed-in tally; an anonymous host is not
+        // somebody this server knows, and saying otherwise would inflate presence
+        if (u) markAuthed(u.userId);
+        send({ t: 'lanHosting', code: res.code, hostId: signalId });
+      } else {
+        send({ t: 'lanError', reason: res.reason, message: LAN_REFUSALS[res.reason] });
+      }
+      return;
+    }
+    if (m.t === 'lanStopHosting') {
+      lanSignals.release(signalId);
+      return;
+    }
+    if (m.t === 'lanJoin') {
+      const res = lanSignals.join(signalSocket, m.code);
+      if (res.ok) send({ t: 'lanJoined', code: res.code, hostId: lanSignals.hostIdFor(res.code) ?? '' });
+      else send({ t: 'lanError', reason: res.reason, message: LAN_REFUSALS[res.reason] });
+      return;
+    }
+    if (m.t === 'lanSignal') {
+      const res = lanSignals.relay(signalSocket, m.peer, m.data);
+      if (!res.ok) send({ t: 'lanError', reason: res.reason, message: LAN_REFUSALS[res.reason] });
+    }
+  };
   // a late joiner during a pending restart still gets the countdown banner
   if (noticeLive() && currentNotice) send(currentNotice);
 
@@ -1927,7 +2089,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // resolves its sim module from this, and a mismatched joiner is refused below.
     const cfg: RoomConfig = {
       ...(msg.config ?? DEFAULT_ROOM_CONFIG),
-      game: msg.config?.game === 'chain' ? 'chain' : 'decode',
+      game: coerceGameId(msg.config?.game),
     };
     if (!r && MAX_ROOMS > 0 && rooms.size >= MAX_ROOMS) {
       // AT CAPACITY. Refuse to HOST anything new; joining a room that already exists
@@ -2136,6 +2298,10 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         send({ t: 'pong', ts: msg.ts });
         return;
       }
+      if (msg.t === 'lanHost' || msg.t === 'lanStopHosting' || msg.t === 'lanJoin' || msg.t === 'lanSignal') {
+        void handleLanSignal(msg).catch((e) => console.error(`[server] lan signal error from ${id}:`, e));
+        return;
+      }
       if (msg.t === 'join') {
         if (room) return; // already in a room on this connection
         void joinRoom(msg).catch((e) => console.error(`[server] join error from ${id}:`, e));
@@ -2298,7 +2464,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             id,
             send,
             // sanitize the ranked player's spec/assists too (same clamp as join)
-            player: { ...sanitizePlayer(msg.player, msg.game === 'chain' ? 'chain' : 'decode'), name: u.handle ?? msg.player.name },
+            player: { ...sanitizePlayer(msg.player, coerceGameId(msg.game)), name: u.handle ?? msg.player.name },
             userId: u.userId,
             mode: msg.mode,
             // the client's home region (Fly's x-region for its connection) + measured
@@ -2313,7 +2479,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             noWiden: msg.noWiden ?? false,
             caps: Array.isArray(msg.caps) ? msg.caps : [],
             // segregate the queue by GAME (a CR queuer never pairs into a DECODE room)
-            game: msg.game === 'chain' ? 'chain' : 'decode',
+            game: coerceGameId(msg.game),
             channel: typeof msg.channel === 'string' ? msg.channel : undefined,
             // segregate the pool by build too (two builds never share a match)
             build: typeof msg.build === 'string' ? msg.build : undefined,
@@ -2382,6 +2548,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       else authedUsers.set(authedUserId, n);
     }
     matchmaker.remove(id); // drop from any ranked queue
+    lanSignals.release(signalId); // a LAN host going away takes its room's guests with it
     // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect. `conn` lets the room
     // ignore this close if a newer socket already reclaimed the slot (fast reconnect).
     room?.detach(id, conn);

@@ -1,6 +1,10 @@
-import { randomUUID } from 'node:crypto';
+/* `crypto.randomUUID` rather than `node:crypto`'s, because this module is bundled for a
+   BROWSER as well — the LAN host runs the room in a tab (`docs/lan-webrtc.md`) and a `node:`
+   specifier is unresolvable there. The Web Crypto name is the same function and is available
+   on Node 19+ and in every browser DSIM supports. */
+const randomUUID = (): string => crypto.randomUUID();
+import { envVar } from './runtimeEnv';
 import * as C from '../src/config';
-import { START_POSES } from '../src/config';
 import { activeStartLegal } from '../src/sim/field';
 import { coerceAutoPath, DEFAULT_SPEC, DEFAULT_ASSISTS, type RobotSetup } from '../src/sim/spawn';
 import { simModuleFor } from '../src/games/sim';
@@ -40,7 +44,11 @@ import { sanitizePlayerPatch } from '../src/net/sanitize';
 import type { DodgeKind, DodgeVerdict } from '../src/dodge';
 import { judgeParticipation } from '../src/standing';
 import { roomPersists } from './channel';
-import { eloMode, type EloOutcome } from './ranked';
+import { eloMode } from './eloMode';
+/* TYPE-ONLY, and it has to stay that way: `./ranked` imports `./db/repo`, which imports `pg`.
+   A value import here would drag a Postgres driver into the browser bundle — see
+   `server/eloMode.ts` and `docs/lan-webrtc.md` §5. */
+import type { EloOutcome } from './ranked';
 import type { PendingMatch } from './matchTypes';
 
 /** what the room hands the DB layer when a staged ranked pairing dies. The room knows WHO
@@ -178,7 +186,7 @@ const STRATEGY_DURATION_MS = 20000;
 
 /** the Fly region this server machine runs in (blank on a single-region / local
  * deploy). Sent to clients at matchStart so the HUD can show "matched on <region>". */
-const SERVER_REGION: string = process.env.FLY_REGION ?? process.env.SERVER_REGION ?? '';
+const SERVER_REGION: string = envVar('FLY_REGION') ?? envVar('SERVER_REGION') ?? '';
 
 export interface Client {
   id: string;
@@ -481,6 +489,22 @@ export class Room {
   /** authoritative sim tick (0 before the match starts) */
   get tick(): number {
     return this.world?.tick ?? 0;
+  }
+
+  /**
+   * Name this room's HOST before anybody has joined.
+   *
+   * `add` gives the crown to the first client through the door, which is right for every room
+   * the cloud runs — the person who made it is the person who dialled first. A LAN room hosted
+   * in a browser tab inverts that: the room exists the moment its host clicks START HOSTING,
+   * the host then reads the code out and joins LAST, and the crown had gone to a guest. So the
+   * tab-hosted room reserves the seat its host will arrive on (`HOST_SEAT`, `hostWorker.ts`).
+   *
+   * Reserving only ever CLAIMS AN EMPTY SLOT — it cannot take the room off somebody who
+   * already holds it — and nothing in the cloud path calls it.
+   */
+  reserveHost(id: string): void {
+    if (!this.hostId) this.hostId = id;
   }
 
   add(client: Client): void {
@@ -991,18 +1015,26 @@ export class Room {
     // build setups from the current roster; keep start poses distinct per alliance
     const roster = [...this.clients.values()];
     const used: Record<Alliance, Set<number>> = { red: new Set(), blue: new Set() };
+    const anchors = simModuleFor(this.game).startPoseCount;
     const setups: RobotSetup[] = [];
     this.robotOf.clear();
     roster.forEach((c, i) => {
       const alliance: Alliance = record ? 'blue' : c.player.alliance;
       let si = c.player.startIndex ?? 0;
       // find an unused pose, but stop after a full cycle: with more robots on one
-      // alliance than there are START_POSES (ROOM_CAPACITY 4 > 3 poses — e.g. a
+      // alliance than there are ANCHORS (ROOM_CAPACITY 4 > BIOBUZZ's 2 — e.g. a
       // custom 4-on-one room), every pose is taken and an unbounded `while` would
       // spin forever, hanging the tick loop / health probe until Fly kills the box.
       // Reuse a pose instead (the physics solver pushes the overlap apart).
-      for (let n = 0; n < START_POSES.length && used[alliance].has(si); n++) {
-        si = (si + 1) % START_POSES.length;
+      //
+      // THE COUNT IS THIS ROOM'S GAME'S, not DECODE's five. It used to read the DECODE
+      // anchor list directly, which for a game with FEWER anchors hands out an index that
+      // game cannot resolve: a 4-robot BIOBUZZ alliance got 0/1/2/3 against TWO anchors, and
+      // 2 and 3 then fell to whatever its spawn does with a miss. `startPoseCount` is on the
+      // module precisely so every clamp reads one number (`coerceStartIndex`, `coerceSetup`
+      // and `coerceSettings` already do). Read once per call: a registry lookup, not a field.
+      for (let n = 0; n < anchors && used[alliance].has(si); n++) {
+        si = (si + 1) % anchors;
       }
       used[alliance].add(si);
       setups.push({
@@ -1286,13 +1318,15 @@ export class Room {
     }
     // roster index = robotId; keep start poses distinct per alliance as an AFK fallback
     const used: Record<Alliance, Set<number>> = { red: new Set(), blue: new Set() };
+    const anchors = simModuleFor(this.game).startPoseCount;
     const setups: RobotSetup[] = [];
     this.robotOf.clear();
     p.roster.forEach((r, i) => {
       const c = byUser.get(r.userId as string) as Client;
       let si = c.player.startIndex ?? 0;
-      for (let n = 0; n < START_POSES.length && used[r.alliance].has(si); n++) {
-        si = (si + 1) % START_POSES.length;
+      // this room's game's anchor count, not DECODE's five - see the same loop above
+      for (let n = 0; n < anchors && used[r.alliance].has(si); n++) {
+        si = (si + 1) % anchors;
       }
       used[r.alliance].add(si);
       setups.push({

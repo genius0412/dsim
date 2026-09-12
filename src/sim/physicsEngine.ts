@@ -615,6 +615,19 @@ export function solveArtifacts(
   doorway: ReadonlySet<number>,
   solids: ReadonlyMap<number, RobotSolids>,
   from: ReadonlyMap<number, SweepFrom>,
+  /**
+   * the GROUND-ARTIFACT radius this solve is for, in inches. A parameter rather than
+   * `C.BALL_RADIUS` outright because the solve is the shared one and the element is not:
+   * BIOBUZZ's POLLEN is 1.5in where DECODE's artifact is 2.5in, and a solve run at the wrong
+   * radius separates a pile at the wrong diameter. DECODE passes nothing and gets
+   * `C.BALL_RADIUS`, so every DECODE call site is byte-identical.
+   *
+   * It must be the SAME radius the caller built `solids` with (`robotSolids`' own trailing
+   * argument) — the held-artifact circles are the plug in the robot's own mouth, and two
+   * radii in one solve is two descriptions of one element, which is the disagreement
+   * `artifactSolids.ts` exists to prevent.
+   */
+  radius: number = C.BALL_RADIUS,
 ): void {
   const groundBalls = world.balls.filter((b) => b.state.kind === 'ground');
   if (groundBalls.length === 0) return;
@@ -650,7 +663,7 @@ export function solveArtifacts(
      */
     const filter = A_BALLS | A_FIELD | A_STRUCT | A_CHASSIS | (isDoor ? 0 : A_HELD);
     rw.createCollider(
-      RAPIER.ColliderDesc.ball(C.BALL_RADIUS)
+      RAPIER.ColliderDesc.ball(radius)
         .setMass(C.BALL_MASS)
         .setRestitution(C.BALL_BALL_RESTITUTION)
         .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min)
@@ -705,7 +718,7 @@ export function solveArtifacts(
     // capped: a squeeze between a chassis and a wall can hand a ball any speed the constraints
     // demand (a wedge a few degrees open asks for many times the robot's own advance), and a
     // ball moving more than the look-ahead in a tick is one the next tick cannot see coming —
-    // a 5in artifact went through a 2.7in corner gap that way. A foam ball popping out of a
+    // a 5in artifact went through a 2.7in corner gap that way. An artifact popping out of a
     // squeeze does not exceed this in reality either.
     const speed = hyp(v.x, v.y);
     const k = speed > C.BALL_MAX_SPEED ? C.BALL_MAX_SPEED / speed : 1;
@@ -838,7 +851,7 @@ export function pinnedArtifacts(
        * A PIN NEEDS SOMETHING BEHIND THE ARTIFACT. Being deep inside a chassis is not one on
        * its own: a full-speed ram can leave the first ball of a clump a fraction inside for a
        * tick while the solve is still propagating the push, and a robot that stopped for that
-       * was stalled by 0.2 lb of foam — "stuck to the balls". So the entry test asks what the
+       * was stalled by 0.2 lb of artifact — "stuck to the balls". So the entry test asks what the
        * artifact is against: the field (`inField`), or, through whatever it is touching, a
        * static or another robot (`supported`). A free artifact, however deep, is the artifact
        * solve's to push out.

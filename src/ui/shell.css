@@ -1847,6 +1847,25 @@ button.ds-chip {
   color: var(--ds-mut);
   margin: 0 0 10px 2px;
 }
+/* A section label that follows a card sits ON the card without this: `.ds-main` is a plain
+   block with no gap, the label has no top margin, and `--ds-block` is an offset shadow that
+   paints 4px below the border — so the label's cap height landed inside the shadow (LAN
+   play, Host → Join). One rule for every page that stacks labelled cards. */
+.ds-panelbox + .ds-tileset-label,
+.ds-panel + .ds-tileset-label {
+  margin-top: 28px;
+}
+
+/* THE SAME DEFECT BETWEEN TWO STACKED CARDS. `--ds-block` is a 4px offset shadow, `.ds-main`
+   is a plain block with no gap, and `.ds-panelbox` carries no margin — so a second card starts
+   exactly where the first one's border ends and the first one's shadow paints onto it. Two
+   cards in a row used to be rare; the LAN page now stacks them twice (Host in this tab / Host
+   with no internet, Room code / Host address). 16px clears the shadow and reads as two cards
+   rather than one split one. */
+.ds-panelbox + .ds-panelbox,
+.ds-panel + .ds-panel {
+  margin-top: 16px;
+}
 
 /* the aside in a panel header (e.g. Match setup's "Ranked and Custom set …").
    The rest of the old <details>/<summary> collapse rules went with the panel. */
@@ -5275,4 +5294,89 @@ button.ds-key:active {
   }
   .adm-report-reasons,
   .adm-report-when { grid-column: 1 / -1; white-space: normal; }
+}
+
+/* ---- presenting sponsor ------------------------------------------------ */
+/* The APP's presenting sponsor (src/sponsor.ts, src/ui/Sponsor.tsx). NOT the ad
+   path: these placements render on touch, in the Electron build and for
+   supporters, all three of which `AdSlot` deliberately skips. The in-game chip
+   lives in styles.css with the rest of the game screen; everything shared by
+   every placement is declared once, here. */
+
+/* the clickable lockup: "Presented by" + the artwork on one baseline */
+.sponsor-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  text-decoration: none;
+  color: var(--ds-mut);
+  border-radius: var(--ds-round-sm);
+  transition: color 0.15s, opacity 0.15s;
+}
+/* the download page stacks the caption over the mark — it is the largest lockup
+   in the app and a 28px-tall logo beside 11px type reads as two unrelated things */
+.sponsor-mark.stacked {
+  flex-direction: column;
+  gap: var(--ds-s-1);
+}
+/* STATE IS COLOUR AND OPACITY ONLY. `npm run shiftaudit` fails on any element
+   moving more than 0.5px while an interactive one is hovered, and the home lockup
+   sits directly above the menu keycaps — a border or a translate here would push
+   the whole menu down half a pixel. */
+.sponsor-mark:hover {
+  color: var(--ds-ink);
+}
+.sponsor-mark:active {
+  opacity: 0.7;
+}
+.sponsor-mark:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+/* the caption. Mono + tracked like `.ds-eyebrow`, so the credit reads as chrome
+   rather than as a sentence in the page's prose. */
+.sponsor-pre {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+/* THE THEME SWAP. Both cuts are in the DOM at the same reserved size (the <img>
+   carries width/height attributes computed from the artwork's real 1735x438, so
+   the box is exact before either file has loaded — see SponsorLogo). CSS reveals
+   one; nothing here may set a width or a height, or that guarantee is lost. */
+.sponsor-logo-swap {
+  display: inline-flex;
+  align-items: center;
+}
+.sponsor-logo {
+  display: block;
+}
+.sponsor-logo-swap .on-dark {
+  display: none;
+}
+:root[data-theme='dark'] .sponsor-logo-swap .on-light {
+  display: none;
+}
+:root[data-theme='dark'] .sponsor-logo-swap .on-dark {
+  display: block;
+}
+
+/* HOME — under the app title, above the lead. Its own line, because the eyebrow
+   above already names the SEASON's presenter and the two are different facts. */
+.ds-home-presents {
+  margin: 0 0 var(--ds-s-4);
+}
+/* FOOTER — the standing credit, on every shell screen. It shares `.ds-foot-brand`
+   with the app/season line, which is a mono row on one baseline. */
+.ds-foot-sponsor {
+  margin-left: var(--ds-s-2);
+}
+/* DOWNLOAD — below the build list, closing the desktop handoff. */
+.ds-dl-sponsor {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--ds-s-5);
 }

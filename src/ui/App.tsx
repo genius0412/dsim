@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ComponentType } from 'react';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
 import {
@@ -10,6 +11,10 @@ import {
   type RoomInvite,
 } from '../net/api';
 import { uploadPracticeRun, uploadLanRun, type LanParticipant } from '../net/api';
+import { tabHosting } from '../lan/hosting';
+import { GAME_IDS } from '../games/types';
+import { devRoutesEnabled, gameVisible } from '../seasonVisibility';
+import { moduleFor } from '../games';
 import { FriendsProvider } from './friendsContext';
 import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
@@ -54,7 +59,8 @@ import { Profile } from './Profile';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
-import { gameServerConfigured, lanActive, setSelectedServer, selectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
+import { useLanEnabled } from './useLanEnabled';
+import { lanEnabled, gameServerConfigured, lanActive, setSelectedServer, selectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
 import { ServerMenu } from './ServerMenu';
 import type { MatchResultInfo, NetSession } from '../net/session';
 import { ServerSession } from '../net/serverSession';
@@ -102,7 +108,9 @@ type Screen =
   | 'changelogs'
   | 'profile'
   | 'account'
-  | 'admin';
+  | 'admin'
+  /** a game's own alpha-only dev route (`GameModule.devRoutes`) */
+  | 'dev';
 
 /** everything a route needs beyond the screen itself */
 interface RouteArgs {
@@ -112,8 +120,10 @@ interface RouteArgs {
   username: string | null;
   /** the section/tab of a screen that has them: `/configure/<sub>`, `/records/<sub>` */
   sub: string | null;
+  /** the matched `GameDevRoute.path` for `screen === 'dev'` */
+  dev: string | null;
 }
-const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null };
+const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null, dev: null };
 
 /**
  * Tiny path router (no dependency). Each screen is a real URL, and every URL is
@@ -132,6 +142,14 @@ const NO_ARGS: RouteArgs = { replayId: null, username: null, sub: null };
 const isWebHistory = typeof window !== 'undefined' && window.location.protocol !== 'file:';
 
 /**
+ * The `/decode`, `/chain`, … URL prefix, BUILT FROM `GAME_IDS` rather than written
+ * out — it was a hand-typed `(decode|chain)` in two places, so a new game got no
+ * route at all and its deep links silently rendered the saved game's screen.
+ * Every id is a plain lowercase word, so nothing here needs escaping.
+ */
+const GAME_PREFIX_RE = new RegExp(`^/(${GAME_IDS.join('|')})(?=/|$)`);
+
+/**
  * Did this document OPEN on a game-prefixed URL? Captured at module load, before
  * the mount effect canonicalizes `/` to `/decode` in the address bar.
  *
@@ -146,8 +164,7 @@ const isWebHistory = typeof window !== 'undefined' && window.location.protocol !
  * load is right for the only consumer that reads canonicals; in-app navigation
  * back to home just keeps whichever form the tab was opened with.
  */
-const ENTRY_HAS_GAME =
-  isWebHistory && /^\/(decode|chain)(?=\/|$)/.test(window.location.pathname);
+const ENTRY_HAS_GAME = isWebHistory && GAME_PREFIX_RE.test(window.location.pathname);
 
 /** the screen part of a path (no game prefix); '' for home. */
 function screenSuffix(screen: Screen, a: RouteArgs): string {
@@ -196,6 +213,8 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
       return '/account';
     case 'admin':
       return '/admin';
+    case 'dev':
+      return a.dev ?? '';
   }
 }
 
@@ -234,7 +253,10 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   if (rest.startsWith('/record')) return at('record');
   if (rest.startsWith('/ranked')) return at('matchmaking');
   if (rest.startsWith('/watch')) return at('watch');
-  if (rest.startsWith('/lan')) return at('lan');
+  // Unresolvable where LAN is held back, so `/lan` falls through to home rather than
+  // rendering an empty screen under a "LAN play" title (`src/seo.ts` still carries that
+  // entry, correctly — it comes back the moment the flag does).
+  if (lanEnabled() && rest.startsWith('/lan')) return at('lan');
   if (rest.startsWith('/download')) return at('download');
   if (rest.startsWith('/contributors')) return at('contributors');
   if (rest.startsWith('/privacy')) return at('privacy');
@@ -248,14 +270,56 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
 }
 
 /**
- * Parse a full URL into the game + screen. A leading /decode or /chain segment
- * selects the game; an unprefixed (legacy) path falls back to `fallbackGame`.
+ * Parse a full URL into the game + screen. A leading game segment (/decode,
+ * /chain, …) selects the game; an unprefixed (legacy) path falls back to
+ * `fallbackGame`.
+ *
+ * A prefix for a game HIDDEN on this release channel falls back to
+ * `fallbackGame` as well, but keeps its SCREEN: the link is a real link and its
+ * `/records` half still means something, so `/biobuzz/records` on a stable build
+ * lands on the saved game's records rather than on home. The URL is then
+ * canonicalized to the fallback game by the mount effect, so the address bar
+ * stops advertising a season this build does not have.
  */
 function parsePath(pathname: string, fallbackGame: GameId): { game: GameId; screen: Screen } & RouteArgs {
-  const gm = pathname.match(/^\/(decode|chain)(?=\/|$)/);
-  const game: GameId = gm ? (gm[1] as GameId) : fallbackGame;
+  const gm = pathname.match(GAME_PREFIX_RE);
+  const prefixed = gm ? (gm[1] as GameId) : null;
+  const game: GameId = prefixed && gameVisible(prefixed) ? prefixed : fallbackGame;
   const rest = gm ? pathname.slice(gm[0].length) || '/' : pathname;
+  // a game's own dev route wins over the shared screen table, but only where the
+  // prefix ACTUALLY named that game — an unprefixed legacy path must not pick up
+  // the fallback game's instruments
+  if (prefixed === game && devRouteFor(game, rest)) return { game, ...NO_ARGS, screen: 'dev', dev: rest };
   return { game, ...parseScreen(rest) };
+}
+
+/**
+ * The component for one of `game`'s dev routes, or null.
+ *
+ * The channel gate lives HERE rather than at the render site so a stable build
+ * neither routes to one nor renders one: an unmatched path falls straight through
+ * to `parseScreen`, which sends an unknown path home.
+ *
+ * A route path ending in `/*` matches its base AND everything under it, so one
+ * entry covers an instrument that routes its own sub-paths. BIOBUZZ's scene
+ * gallery is exactly that: 70 scenes, each with its own `/gallery/<id>` URL that
+ * the grid links to and a feedback dump pastes, reached through ONE route rather
+ * than through 70 entries the scene registry would have to stay in step with.
+ * The route's own component reads the remainder off `window.location`.
+ */
+function devRouteFor(game: GameId, rest: string): ComponentType | null {
+  if (!devRoutesEnabled()) return null;
+  const routes = moduleFor(game).devRoutes;
+  if (!routes) return null;
+  for (const r of routes) {
+    if (r.path.endsWith('/*')) {
+      const base = r.path.slice(0, -2);
+      if (rest === base || rest.startsWith(`${base}/`)) return r.Component;
+    } else if (r.path === rest) {
+      return r.Component;
+    }
+  }
+  return null;
 }
 
 /** which rail/menu entry lights up for a given screen */
@@ -303,16 +367,29 @@ function screenForNav(n: ShellNav): Screen {
 }
 
 export function App() {
+  /* Whether the LAN entry points exist at all. Not a build constant any more: the
+     server advertises it, so this flips once the shell's first presence poll lands
+     (src/net/env.ts). `parseScreen` reads the same value through `lanEnabled()`,
+     which is not a component and cannot hold a hook. */
+  const lanOn = useLanEnabled();
   // the URL is game-prefixed, so a deep load/refresh onto /chain/... must select
   // that game up front (switchGame swaps in its saved loadout) — do it in the
   // initializer so the very first render is already on the right game.
   const [settings, setSettings] = useState<GameSettings>(() => {
     const s = loadSettings();
+    // a SAVED game hidden on this channel is dropped as well, not just a hidden
+    // URL prefix: `coerceSettings` validates `game` as a `GameId` and knows
+    // nothing about channels, so a stored `biobuzz` from an alpha build (the same
+    // origin under Electron, or a preview deploy) would open a stable build
+    // straight onto a season it must not name. Measured before the guard: the
+    // home eyebrow read "BIOBUZZ presented by RTX" and the URL canonicalized to
+    // /biobuzz, on a build whose picker does not list it.
+    const visible = gameVisible(s.game) ? s : switchGame(s, 'decode');
     if (isWebHistory) {
-      const g = parsePath(window.location.pathname, s.game).game;
-      if (g !== s.game) return switchGame(s, g);
+      const g = parsePath(window.location.pathname, visible.game).game;
+      if (g !== visible.game) return switchGame(visible, g);
     }
-    return s;
+    return visible;
   });
   const start = isWebHistory
     ? parsePath(window.location.pathname, settings.game)
@@ -376,7 +453,7 @@ export function App() {
         saveSettings(ns);
       }
       setScreen(s.screen);
-      setRoute({ replayId: s.replayId, username: s.username, sub: s.sub });
+      setRoute({ replayId: s.replayId, username: s.username, sub: s.sub, dev: s.dev });
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -799,8 +876,13 @@ export function App() {
    * it, and the host is required to be SIGNED IN but not to be ONLINE.
    *
    * THREE CONDITIONS, and each one is load-bearing:
-   *   - `lanActive()` — a cloud match is written by the server that ran it; keeping a second
-   *     copy here would upload an unofficial duplicate of an OFFICIAL match.
+   *   - `lanActive() || tabHosting()` — the two ways a match can be self-hosted, and BOTH have
+   *     to be listed or the newer one silently keeps nothing. `lanActive()` is a room reached
+   *     by ADDRESS (the desktop app, `npm run lan`); `tabHosting()` is a room this very tab is
+   *     running over WebRTC (`docs/lan-webrtc.md`), which sets no LAN server because there is
+   *     no address to set. Neither is true of a CLOUD match, which is written by the server
+   *     that ran it — keeping a second copy here would file an unofficial duplicate of an
+   *     OFFICIAL match.
    *   - `isHost()` — the one-uploader rule above. A guest and a spectator keep nothing.
    *   - `matchId` — the archive capability, which the room sends to the HOST'S SOCKET ALONE
    *     (`matchArchive`; see the protocol note). A guest never has one, so this condition now
@@ -809,7 +891,7 @@ export function App() {
    *     re-uploaded as a NEW match on every retry — skipping is the safe half of that trade.
    */
   const keepLanRun = (info: MatchResultInfo, sess: NetSession): void => {
-    if (!lanActive() || !sess.isHost() || !info.matchId) return;
+    if ((!lanActive() && !tabHosting()) || !sess.isHost() || !info.matchId) return;
     // NAMES, not account ids. The people in a LAN room are mostly not signed in on this
     // server — it has no accounts at all — so the roster is what the match itself carries.
     // The cloud re-sanitizes every field of this; see `server/api.ts`.
@@ -1044,6 +1126,30 @@ export function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signedIn]);
+
+  /**
+   * AND AGAIN THE MOMENT THE NETWORK COMES BACK.
+   *
+   * The whole premise of self-hosted play is that it works where the internet does not, so the
+   * match that most needs uploading is the one played with no connection at all — and until
+   * this existed the backlog moved only on a sign-in or on the END of a LATER match. A host who
+   * played a scrimmage in a gym, closed the laptop, and opened it at home on wifi had to play
+   * another match before last night's went anywhere.
+   *
+   * ⚠️ `online` is a COARSE signal: it fires when the machine gets a network interface, which
+   * is not the same as being able to reach the cloud (a captive portal is the obvious case). So
+   * this is an EXTRA trigger and never the only one — both flushes stop on the first failure
+   * and leave the backlog intact, so a wrong guess costs one request.
+   */
+  useEffect(() => {
+    const onOnline = (): void => {
+      void flushPracticeRuns();
+      void flushLanRuns();
+    };
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Rich-presence heartbeat for the FULL-SCREEN surfaces (game / solo record /
   // ranked queue) that render outside AppShell's FriendsProvider — so friends see
@@ -1472,10 +1578,25 @@ export function App() {
       {/* LAN. `onConnected` goes to the CUSTOM ROOM screen, because that is what a LAN
           match is — a code-joined room, on a different server. Nothing about the room
           flow changes; only `gameServerUrl()` now answers with the host's machine. */}
-      {screen === 'lan' && (
+      {/* Belt and braces. The Play tile is hidden and `/lan` no longer parses where the
+          flag is off, so nothing should reach this — but `navigate('lan')` is still a
+          callable function, and a screen that renders a whole feature is worth guarding at
+          the point of render too. */}
+      {lanOn && screen === 'lan' && (
         <LanPanel
           signedIn={signedIn}
-          onConnected={() => guardStart(() => navigate('lobby'))}
+          onConnected={(code) =>
+            guardStart(() => {
+              /* A WEBRTC ROOM IS ALREADY OPEN BY THE TIME WE GET HERE, so the lobby must
+                 JOIN it rather than offer a create/join form. Without this the player lands
+                 on the entry screen and has to type the code a second time — and the
+                 transport waiting in `pending.ts` would then be adopted by whatever they
+                 typed, which need not be the room it is connected to. Same one-shot
+                 `pendingAutoJoin` an accepted invite uses; the Lobby clears it on consume. */
+              if (code) setPendingAutoJoin({ room: code, config: { kind: 'versus', game: settings.game } });
+              navigate('lobby');
+            })
+          }
           onBack={() => navigate('modes')}
         />
       )}
@@ -1496,6 +1617,11 @@ export function App() {
         />
       )}
       {screen === 'admin' && isAdmin && <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />}
+      {screen === 'dev' &&
+        (() => {
+          const Dev = devRouteFor(settings.game, route.dev ?? '');
+          return Dev ? <Dev /> : null;
+        })()}
 
       {/* Patch notes / new-season + new-act reveals — shown once on the menu shell,
           never over a live match (the game screen returns before this). Mounted
