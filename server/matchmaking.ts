@@ -585,7 +585,7 @@ export class Matchmaker {
 
   /** stage the roster for the host region + tell each client to reconnect there */
   private async assign(mode: QueueMode, rawGroup: QueueEntry[], hostRegion: string): Promise<void> {
-    const group = allianceOrder(rawGroup);
+    const group = balanceAlliances(allianceOrder(rawGroup));
     const half = group.length / 2;
     const seed = (this.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
     const code = `${hostRegion}-${mode}${roomSeq++}${rand6()}`;
@@ -616,7 +616,7 @@ export class Matchmaker {
    * STRATEGY window runs in dev too — dev clients may be anonymous, so synthesize a
    * stable per-connection id for the userId→slot mapping. */
   private localStart(mode: QueueMode, rawGroup: QueueEntry[]): void {
-    const group = allianceOrder(rawGroup);
+    const group = balanceAlliances(allianceOrder(rawGroup));
     const code = `mm-${mode}-${roomSeq++}`;
     const room = new Room(code, () => this.rooms.delete(room), { kind: 'versus', game: group[0].game }, persistMatch, undefined, undefined, persistDodges, (b) => void persistBehaviour(b));
     this.rooms.add(room);
@@ -751,6 +751,57 @@ export class Matchmaker {
 }
 
 const toPing = (e: QueueEntry): PingInfo => ({ homeRegion: e.homeRegion, accessMs: e.accessMs });
+
+/**
+ * EVEN THE TWO ALLIANCES UP, once the group is chosen.
+ *
+ * `ratingSpan` gates how wide a MATCH may be, and cannot say anything about how that
+ * width is distributed across the two sides. Both of these have a span of 500:
+ *
+ *   (1500, 1450) vs (1050, 1000)   — a rout
+ *   (1500, 1000) vs (1500, 1000)   — dead even
+ *
+ * so 2v2 needs a second, separate step. This one does not choose WHO plays — that is
+ * settled — only which side of a decided match each player stands on, which is free.
+ *
+ * It runs AFTER `allianceOrder` and preserves everything that function established: the
+ * split is positional (`i < half` is red), so this only ever SWAPS a red index with a
+ * blue one, and it refuses to move a player who belongs to a PARTY. Keeping a premade
+ * on one alliance is the whole point of `allianceOrder`, and a balance pass that broke
+ * it would silently undo the feature it runs after.
+ *
+ * Only for a full 2v2 of placed players. With anyone unrated there is no number to
+ * balance on, and inventing one from the 1000 default would put unplaced players on a
+ * side for a reason that is not real.
+ */
+function balanceAlliances(group: QueueEntry[]): QueueEntry[] {
+  const half = group.length / 2;
+  if (group.length !== 4) return group; // 1v1 has nothing to distribute
+  if (group.some((e) => e.rating === undefined || !e.placed)) return group;
+  const rating = (e: QueueEntry): number => e.rating as number;
+  const gap = (g: QueueEntry[]): number =>
+    Math.abs(rating(g[0]) + rating(g[1]) - (rating(g[2]) + rating(g[3])));
+  const movable = (i: number): boolean => group[i].party === undefined;
+
+  let best = group;
+  let bestGap = gap(group);
+  // the three partitions of four players into two pairs are reachable by swapping one
+  // red with one blue, so enumerating those four swaps covers them all
+  for (let r = 0; r < half; r++) {
+    for (let b = half; b < group.length; b++) {
+      if (!movable(r) || !movable(b)) continue;
+      const trial = group.slice();
+      trial[r] = group[b];
+      trial[b] = group[r];
+      const g = gap(trial);
+      if (g < bestGap) {
+        bestGap = g;
+        best = trial;
+      }
+    }
+  }
+  return best;
+}
 
 /** every member of this unit sits in region `r` */
 function allIn(unit: QueueEntry[], r: string): boolean {

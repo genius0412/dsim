@@ -765,6 +765,55 @@ const namesOf = (m: PendingMatch | undefined): string =>
     staged.length === 0, `${staged.length}`);
 }
 
+// ---- 2v2 alliance balance ----------------------------------------------------
+// `ratingSpan` gates how WIDE a match may be and says nothing about how that width is
+// distributed. (1500,1450) vs (1050,1000) and (1500,1000) vs (1500,1000) have the same
+// span and are not the same match, so the sides are evened up after the group is
+// chosen. It never changes WHO plays, only which side they stand on.
+{
+  const r = (rating: number): Partial<QueueEntry> => ({ rating, placed: true } as Partial<QueueEntry>);
+  const { staged } = await pair([
+    entry('a', '2v2', r(1150)),
+    entry('b', '2v2', r(1100)),
+    entry('c', '2v2', r(1000)),
+    entry('d', '2v2', r(980)),
+  ]);
+  const red = (staged[0]?.roster ?? []).filter((x) => x.alliance === 'red').map((x) => x.name).sort();
+  const blue = (staged[0]?.roster ?? []).filter((x) => x.alliance === 'blue').map((x) => x.name).sort();
+  const byName: Record<string, number> = { a: 1150, b: 1100, c: 1000, d: 980 };
+  const sum = (names: string[]): number => names.reduce((n, x) => n + byName[x], 0);
+  check('balance: a 2v2 is staged from four waiters', staged.length === 1, `${staged.length}`);
+  check('balance: the two alliances are evened up, not left as they queued',
+    Math.abs(sum(red) - sum(blue)) <= 70, `red ${red.join('+')}=${sum(red)} blue ${blue.join('+')}=${sum(blue)}`);
+  check('balance: everybody who was matched is still in the match',
+    [...red, ...blue].sort().join(',') === 'a,b,c,d', [...red, ...blue].join(','));
+}
+{
+  // A PREMADE IS NEVER SPLIT by the balance pass. Keeping a party on one alliance is the
+  // whole point of allianceOrder, and a balance step that ignored it would silently undo
+  // the feature it runs after — a friend queue that puts the two friends on opposite sides.
+  const r = (rating: number, extra: Partial<QueueEntry> = {}): Partial<QueueEntry> =>
+    ({ rating, placed: true, ...extra } as Partial<QueueEntry>);
+  const { staged } = await pair([
+    entry('p1', '2v2', r(1150, { party: 'tok', partySize: 2 })),
+    entry('p2', '2v2', r(1100, { party: 'tok', partySize: 2 })),
+    entry('s1', '2v2', r(1000)),
+    entry('s2', '2v2', r(980)),
+  ]);
+  const al = alliancesOf(staged[0]);
+  check('balance: a premade stays on ONE alliance even when splitting it would be fairer',
+    !!al['p1'] && al['p1'] === al['p2'], JSON.stringify(al));
+}
+{
+  // with anyone unrated there is no number to balance on, and the 1000 default must not
+  // be mistaken for one — the pass leaves the order alone
+  const { staged } = await pair([
+    entry('u1', '2v2'), entry('u2', '2v2'), entry('u3', '2v2'), entry('u4', '2v2'),
+  ]);
+  check('balance: an unrated 2v2 is staged untouched', staged.length === 1 &&
+    (staged[0]?.roster ?? []).length === 4, `${staged.length}`);
+}
+
 // ---- report ----------------------------------------------------------------
 if (failures.length) {
   console.error(`\n✗ matchmaker: ${failures.length} failed, ${passed} passed\n`);
