@@ -141,6 +141,67 @@ the capture authority as well as the aim list. `actOnElement` is still a stub: F
   (A3's note). Neither file is this lane's.
 - `sim.ts` still says `scored: false` and `HudSlots.tsx` still reads `BiobuzzFieldHud.scored`.
   Both are integration-chat files; the flag flips when the rules lane's scoring lands.
+## 2026-09-12 · rules lane (A4b) · `LANDED` — commit `b1f4535`, 679 checks green
+
+Scoring, the Section 11 contact rules, the 1:00 cue, the `gameHud` slice and three scenes.
+`state.ts` and `play.ts` were not touched; this branch carries A4a's state-contract commit
+(`2db7a05`) and nothing else of A4a's.
+
+- **Files owned and changed**: `score.ts` (NEW), `penalties.ts`, `step.ts`, `hud.ts`,
+  `scenesField.ts`, `scripts/smoke-biobuzz/rules.ts` (NEW, registered in `index.ts` as
+  `--lane rules`, 115 checks).
+- **Gates**: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane rules` 115/115 ·
+  `npm run test:bb` 679/679 · gallery shots on 4177 (`VITE_APP_CHANNEL=alpha`) read at
+  hi-res for all three scenes.
+
+### What the next person has to know
+
+1. **`scripts/smoke-biobuzz/field.ts` HAS ONE CHANGED ASSERTION AND IT IS NOT THIS LANE'S
+   FILE.** `room: the finished BIOBUZZ match scored nothing (an unscored shell must stay
+   0-0)` could not survive a scorer existing: the staged layout — 3 elements in each up-CELL
+   and 4 POLLEN in each GARDEN — is worth `3·BB_PTS.cell + 4·BB_PTS.garden` = 10 to each
+   alliance before anybody drives. It now asserts that derived value AND that the two
+   alliances are EQUAL, which is the cheapest place an x-MIRRORED zone (instead of
+   point-symmetric) shows up. `simModuleFor('biobuzz').scored` is still `false`, so
+   `persistMatch` still skips the game. **`origin/biobuzz-field`'s `7f67fa0` also edits this
+   file**, so expect a one-hunk conflict there and keep both sides.
+2. **`origin/biobuzz-field` is AHEAD by `7f67fa0` ("the field goes live") and this branch does
+   NOT carry it.** The brief's merge trigger is a `state.ts` commit and that one touches
+   `play.ts`, `field.ts` and the handoff only. It is the commit that unblocks item 3.
+3. **`hive-tip` renders three IDENTICAL stills** (t = 0 · 2 s · 4 s). The scene is built
+   against the finished swing, but the swing is advanced by `hiveStep` from `play.ts`, which
+   is A4a's file. Its header says so. The swing arithmetic is NOT untested — `rules.ts` calls
+   the pure `hiveStep` directly and pins the release at `BB_TIP_RELEASE_S`. **Once `7f67fa0`
+   is merged the three stills should differ; re-shoot the cell and delete this note.**
+4. **`HudSlots.tsx` has not been wired.** `biobuzzFieldHud` now returns the whole of Table
+   10-2 per alliance, the RP flags, the per-cell `needed`/`tipping`, flower owners and depth,
+   the nectar stock/due and the G410 lock. The slice is ADDITIVE, so existing reads of
+   `f?.scored` still work and nothing is broken — but the `scoreBar` and `resultsRows` slots
+   still render almost none of it. That is an integration-chat job (`src/ui/` is outside every
+   Lane A file list), and `needed` is the single most decision-changing number in the game.
+5. **G421 (pinning) is NOT modelled and is blocked on a one-line export.** `isPinning` is
+   private to `src/sim/penalties.ts`; field-plan §6 request 5 asks for it. Until then a
+   BIOBUZZ pin costs nothing. **G407 (herding) is deliberately not modelled** — the control
+   cap is structural. G405/G409/G411/G418/G426/G427 are structural or human-player rules and
+   each says so in `penalties.ts`.
+6. **`BB_FRAME_RAM_SPEED` is `APPROX`.** The manual gives no closing speed for G417, so 30
+   in/s is a placeholder and the 2026-09-14 field test is what sets it. The escalation it
+   gates (VERBAL first, MAJOR on a repeat) is the rule and is not approximate.
+7. **The AUTO/TELEOP TIP SPLIT IS NOT STORED.** `BbHiveState.tips` is one counter, so a TIP is
+   worth 20 whenever it happens and the results screen cannot break it down by period. Nothing
+   in Table 10-2 needs the split today; if a later table does, it is a `state.ts` field and
+   therefore A4a's to add.
+8. **A `bbSetup` pose is CANONICAL (the BLUE frame).** The spawn mirrors a RED one THROUGH THE
+   ORIGIN — (x, y, θ) → (−x, −y, θ + 180°) — so a red robot placed at a left-wall coordinate
+   ends up on the right wall. Two scene poses were written the wrong way round before this was
+   noticed and the cell looked plausible either way. The gallery draws through
+   `viewAngleOf('blue')`, so screen-x is world-y and screen-y is world-x; do not read a shot as
+   if it were a plain top-down.
+9. **Every fixture is measured on the FOOTPRINT, not the chassis.** `robotExtents` is 21 × 17
+   for the default BIOBUZZ spec (a sweeper reaching past each end of a 15 × 17 chassis). A
+   robot at x = −63 has a corner THROUGH the wall at −73.5, and three of the six first-run
+   failures were poses written against the chassis.
+
 
 ## 2026-09-12 · no letters on the field · `PENDING`
 
