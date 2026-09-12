@@ -2,6 +2,7 @@ import { initPhysics } from '../../src/sim/physicsEngine';
 import { fieldChecks, roomChecks } from './field';
 import { robotChecks } from './robot';
 import { coreChecks } from './core';
+import { sponsorChecks } from './sponsor';
 import type { Check } from './harness';
 
 /**
@@ -54,6 +55,8 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   { name: 'FIELD', fn: fieldChecks },
   { name: 'SERVER', fn: roomChecks },
   { name: 'ROBOT', fn: robotChecks },
+  // app-level, not a game lane — see the header of sponsor.ts for why it rides this suite
+  { name: 'SPONSOR', fn: sponsorChecks },
 ];
 
 const KNOWN_FLAGS = ['--lane', '--grep', '--list', '--help'];

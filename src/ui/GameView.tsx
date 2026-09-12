@@ -11,6 +11,8 @@ import { appChannel, lanActive } from '../net/env';
 import { ENDGAME_START, PTS_FOUL_MINOR, PTS_FOUL_MAJOR, POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
 import { AdSlot, ResultsAd, useAdUnitActive } from './AdSlot';
+import { SponsorGameChip } from './Sponsor';
+
 import { DEFAULT_MOBILE_LAYOUT } from '../settings';
 import type { MatchResultInfo, NetSession, NetStatus } from '../net/session';
 import { clearActiveGame } from '../net/activeGame';
@@ -445,6 +447,17 @@ export function GameView({
             ⟲ NEW RUN
           </button>
         )}
+        {/* THE IN-GAMEPLAY PLACEMENT, LAST on this line — after RESET, and after
+            REMATCH / NEW RUN in a multiplayer or record run. The controls are what
+            a driver reaches for mid-match, so they keep the corner; the mark reads
+            as the line's credit rather than as the first button.
+
+            On this line at all because `.game-buttons` is the one top-corner cluster
+            every layout renders — the status chips opposite are fine-pointer only.
+            Outside the `ads` gate entirely: see the note at the top of Sponsor.tsx.
+            It renders on a phone, in the Electron build, and for supporters, all
+            three of which the ad path deliberately skips. */}
+        <SponsorGameChip />
       </div>
       {hud?.phase === 'pre' && hud.countdown === null && !session && (
         <div className="overlay">
@@ -669,96 +682,102 @@ function Hud({ hud, showEventLog }: { hud: HudSnapshot; showEventLog: boolean })
 
       {(!window.matchMedia('(pointer: coarse)').matches) && (
         <div className="status-wrap">
-          <div className="robot-status">
-            {GameChips && <GameChips hud={hud} />}
-            {dec && (
-              <>
-                <div className="hopper">
-                  {[0, 1, 2].map((i) => (
-                    <span key={i} className={`hopper-pip ${hud.hopper[i] ?? 'empty'}`} />
-                  ))}
-                </div>
-                <PowerGauge draw={hud.powerDraw} />
-                {hud.gateOpen && <span className="chip on">GATE OPEN</span>}
-              </>
-            )}
-            {cr && hud.chain && (
-              <>
-                <span className="chip">{CHAIN_MODE_LABELS[hud.chain.mode].toUpperCase()}</span>
-                <span className="chip">HOPPER {hud.hopper.length}/{hud.chain.storage}</span>
-                <span className={`chip ${hud.chain.mult > 1 ? 'on' : ''}`}>×{hud.chain.mult}</span>
-                {hud.chain.carrying && <span className="chip on">◍ CARRYING CATALYST</span>}
-                {hud.chain.ringAction === 'pickup' && <span className="chip prompt">◎ PICK UP CATALYST ▸</span>}
-                {hud.chain.ringAction === 'place' && <span className="chip prompt">◎ PLACE CATALYST ▸</span>}
-                {/* the catapult's throw is on its OWN key, so name it — otherwise the only
-                    discoverable action is the claw button, which just puts the ring down */}
-                {hud.chain.ringAction === 'fling' && <span className="chip prompt">◎ THROW CATALYST ▸</span>}
-                {hud.chain.endgame === 'ascended' && <span className="chip on">▲ ASCENDED</span>}
-                {hud.chain.endgame === 'parked' && <span className="chip on">■ PARKED</span>}
-              </>
-            )}
-            {dec && hud.mode === 'match' &&
-              (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
-                <span className="chip warn">
-                  FOULS {hud.fouls[hud.alliance].minor} MIN · {hud.fouls[hud.alliance].major} MAJ
+          {/* ONE LINE: the status card and the presenting sponsor's mark, right-
+              aligned together. The mark used to sit in its own line above and push
+              the whole cluster down, which read as a floating badge over the field
+              rather than as part of the HUD chrome. */}
+          <div className="status-row">
+            <div className="robot-status">
+              {GameChips && <GameChips hud={hud} />}
+              {dec && (
+                <>
+                  <div className="hopper">
+                    {[0, 1, 2].map((i) => (
+                      <span key={i} className={`hopper-pip ${hud.hopper[i] ?? 'empty'}`} />
+                    ))}
+                  </div>
+                  <PowerGauge draw={hud.powerDraw} />
+                  {hud.gateOpen && <span className="chip on">GATE OPEN</span>}
+                </>
+              )}
+              {cr && hud.chain && (
+                <>
+                  <span className="chip">{CHAIN_MODE_LABELS[hud.chain.mode].toUpperCase()}</span>
+                  <span className="chip">HOPPER {hud.hopper.length}/{hud.chain.storage}</span>
+                  <span className={`chip ${hud.chain.mult > 1 ? 'on' : ''}`}>×{hud.chain.mult}</span>
+                  {hud.chain.carrying && <span className="chip on">◍ CARRYING CATALYST</span>}
+                  {hud.chain.ringAction === 'pickup' && <span className="chip prompt">◎ PICK UP CATALYST ▸</span>}
+                  {hud.chain.ringAction === 'place' && <span className="chip prompt">◎ PLACE CATALYST ▸</span>}
+                  {/* the catapult's throw is on its OWN key, so name it — otherwise the only
+                      discoverable action is the claw button, which just puts the ring down */}
+                  {hud.chain.ringAction === 'fling' && <span className="chip prompt">◎ THROW CATALYST ▸</span>}
+                  {hud.chain.endgame === 'ascended' && <span className="chip on">▲ ASCENDED</span>}
+                  {hud.chain.endgame === 'parked' && <span className="chip on">■ PARKED</span>}
+                </>
+              )}
+              {dec && hud.mode === 'match' &&
+                (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
+                  <span className="chip warn">
+                    FOULS {hud.fouls[hud.alliance].minor} MIN · {hud.fouls[hud.alliance].major} MAJ
+                  </span>
+                )}
+              {/* A CARD is issued to the TEAM, and a RED voids the alliance's match points —
+                  the single most consequential thing that can happen to a score, so it is not
+                  allowed to live only in the event log. */}
+              {hud.card && (
+                <span className={`chip ${hud.card === 'red' ? 'bad' : 'warn'}`}>
+                  {hud.card === 'red' ? '\u25A0 RED CARD' : '\u25A0 YELLOW CARD'}
                 </span>
               )}
-            {/* A CARD is issued to the TEAM, and a RED voids the alliance's match points —
-                the single most consequential thing that can happen to a score, so it is not
-                allowed to live only in the event log. */}
-            {hud.card && (
-              <span className={`chip ${hud.card === 'red' ? 'bad' : 'warn'}`}>
-                {hud.card === 'red' ? '\u25A0 RED CARD' : '\u25A0 YELLOW CARD'}
-              </span>
-            )}
-            {hud.frontFlipped && <span className="chip warn">REVERSED</span>}
-            {/* BUTTERFLY: name the set that is DOWN. It changes handling AND whether strafe
-                exists at all, so it can't be invisible state. */}
-            {hud.butterflyMode && (
-              <span className="chip">{hud.butterflyMode === 'tank' ? 'TRACTION' : 'MECANUM'}</span>
-            )}
-            <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
-            {/* ALPHA ONLY (config.DEBUG_POSE_READOUT) — live pose, so a geometry report can
-                be an exact pose rather than a description. Must not reach main. */}
-            {hud.pose && (
-              <span
-                className="chip"
-                title="Robot pose — x, y (inches, origin at field centre), heading (degrees, 0 = +x / audience right), and the gate arm's open fraction"
-                style={{ fontVariantNumeric: 'tabular-nums' }}
-              >
-                {`x ${hud.pose.x.toFixed(1)}  y ${hud.pose.y.toFixed(1)}  ${(((hud.pose.heading % 360) + 360) % 360).toFixed(0)}°  gate ${hud.pose.gatePos.toFixed(2)}`}
-              </span>
-            )}
-            {hud.net && (
-              <span className={`chip ${hud.net.peers > 0 ? 'on' : 'warn'}`}>
-                NET {hud.net.peers + 1}P
-              </span>
-            )}
-            {hud.net?.server && (
-              <span className="chip on">🌐 {hud.net.server}</span>
-            )}
-            {/* who is watching. Shown only when somebody IS: a standing "0 watching"
-                is noise on an already-busy chip row, and the moment worth surfacing
-                is the one where the number stops being zero. */}
-            {hud.spectators > 0 && (
-              <span
-                className="chip on"
-                title={`${hud.spectators} ${hud.spectators === 1 ? 'person is' : 'people are'} watching this match live`}
-              >
-                👁 {hud.spectators}
-              </span>
-            )}
-            {hud.net && !hud.net.waitingFor && (
-              <NetQuality
-                net={hud.net}
-                open={pingGraph}
-                onToggle={() => setPingGraph((v) => !v)}
-              />
-            )}
-            {hud.net?.waitingFor && (
-              <span className="chip warn">WAITING · {hud.net.waitingFor}</span>
-            )}
-            {hud.net?.desync && <span className="chip off">⚠ DESYNC</span>}
+              {hud.frontFlipped && <span className="chip warn">REVERSED</span>}
+              {/* BUTTERFLY: name the set that is DOWN. It changes handling AND whether strafe
+                  exists at all, so it can't be invisible state. */}
+              {hud.butterflyMode && (
+                <span className="chip">{hud.butterflyMode === 'tank' ? 'TRACTION' : 'MECANUM'}</span>
+              )}
+              <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
+              {/* ALPHA ONLY (config.DEBUG_POSE_READOUT) — live pose, so a geometry report can
+                  be an exact pose rather than a description. Must not reach main. */}
+              {hud.pose && (
+                <span
+                  className="chip"
+                  title="Robot pose — x, y (inches, origin at field centre), heading (degrees, 0 = +x / audience right), and the gate arm's open fraction"
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
+                >
+                  {`x ${hud.pose.x.toFixed(1)}  y ${hud.pose.y.toFixed(1)}  ${(((hud.pose.heading % 360) + 360) % 360).toFixed(0)}°  gate ${hud.pose.gatePos.toFixed(2)}`}
+                </span>
+              )}
+              {hud.net && (
+                <span className={`chip ${hud.net.peers > 0 ? 'on' : 'warn'}`}>
+                  NET {hud.net.peers + 1}P
+                </span>
+              )}
+              {hud.net?.server && (
+                <span className="chip on">🌐 {hud.net.server}</span>
+              )}
+              {/* who is watching. Shown only when somebody IS: a standing "0 watching"
+                  is noise on an already-busy chip row, and the moment worth surfacing
+                  is the one where the number stops being zero. */}
+              {hud.spectators > 0 && (
+                <span
+                  className="chip on"
+                  title={`${hud.spectators} ${hud.spectators === 1 ? 'person is' : 'people are'} watching this match live`}
+                >
+                  👁 {hud.spectators}
+                </span>
+              )}
+              {hud.net && !hud.net.waitingFor && (
+                <NetQuality
+                  net={hud.net}
+                  open={pingGraph}
+                  onToggle={() => setPingGraph((v) => !v)}
+                />
+              )}
+              {hud.net?.waitingFor && (
+                <span className="chip warn">WAITING · {hud.net.waitingFor}</span>
+              )}
+              {hud.net?.desync && <span className="chip off">⚠ DESYNC</span>}
+            </div>
           </div>
           {hud.net && pingGraph && <PingGraph net={hud.net} />}
         </div>

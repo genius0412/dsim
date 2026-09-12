@@ -7,6 +7,49 @@ const lanHost = require('./lanHost.cjs');
 const SITE = 'https://www.playdsim.com';
 const LATEST_API = 'https://api.github.com/repos/genius0412/dsim/releases/latest';
 
+/**
+ * THE SPLASH. See electron/splash.html for what it says and why.
+ *
+ * Startup here is slow in a way a web page's is not: `siteReachable()` probes for
+ * up to 2.5s and then the whole live site loads over the network, and until this
+ * existed the user watched an empty 1280x820 window for all of it. It is also the
+ * desktop build's presenting-sponsor placement.
+ *
+ * Frameless, un-resizable and never in the taskbar — it is a loading state, not a
+ * window anybody should be able to end up managing. `alwaysOnTop` is scoped to its
+ * own lifetime, which is at most `SPLASH_MAX_MS`.
+ */
+const SPLASH_MAX_MS = 15000;
+let splash = null;
+
+function showSplash() {
+  splash = new BrowserWindow({
+    width: 420,
+    height: 260,
+    frame: false,
+    resizable: false,
+    movable: true,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: true,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#20262c' : '#f9faf7',
+    // no preload, no node: this page is static markup and must stay that way
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  });
+  splash.loadFile(path.join(__dirname, 'splash.html'));
+  splash.on('closed', () => {
+    splash = null;
+  });
+  return splash;
+}
+
+/** Take the splash down. Idempotent, and safe to call after the user has closed
+ *  the app — every caller below is an event that can fire after teardown. */
+function closeSplash() {
+  if (splash && !splash.isDestroyed()) splash.close();
+  splash = null;
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -14,6 +57,14 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     autoHideMenuBar: true,
+    /**
+     * HIDDEN UNTIL IT HAS SOMETHING TO SHOW. With the splash in front, an empty
+     * main window behind it is what the user sees the instant the splash closes —
+     * so the swap is `ready-to-show`, which fires once the renderer has painted.
+     * Without this the splash would hand over to the same blank window it exists
+     * to replace.
+     */
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -35,6 +86,28 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
+  });
+
+  /**
+   * THE HANDOVER, and its three exits — because a splash that outlives its window
+   * is a frameless always-on-top rectangle the user cannot get rid of.
+   *  - `ready-to-show`: the ordinary path.
+   *  - the timeout: a live site that hangs past `SPLASH_MAX_MS`. `loadApp` falls
+   *    back to the bundled copy only on a FAILED load, not on a slow one, so
+   *    without this a stalled request holds the splash open indefinitely.
+   *  - `closed`: the user quit during startup.
+   */
+  win.once('ready-to-show', () => {
+    closeSplash();
+    win.show();
+  });
+  const splashTimer = setTimeout(() => {
+    closeSplash();
+    if (!win.isDestroyed() && !win.isVisible()) win.show();
+  }, SPLASH_MAX_MS);
+  win.on('closed', () => {
+    clearTimeout(splashTimer);
+    closeSplash();
   });
 
   loadApp(win);
@@ -235,6 +308,9 @@ function buildMenu() {
 
 app.whenReady().then(() => {
   buildMenu();
+  // splash FIRST, so there is something on screen while `createWindow` starts its
+  // reachability probe and the site load behind it
+  showSplash();
   createWindow();
   // quiet check shortly after launch, only if auto-check is enabled
   setTimeout(() => {
@@ -253,7 +329,11 @@ app.whenReady().then(() => {
  * venue's network from an app the host believes they closed. `before-quit` covers the
  * ordinary exit and `quit` covers the paths that skip it.
  */
-app.on('before-quit', () => lanHost.stop());
+app.on('before-quit', () => {
+  // a quit during startup must not leave the splash behind
+  closeSplash();
+  lanHost.stop();
+});
 app.on('quit', () => lanHost.stop());
 
 app.on('window-all-closed', () => {

@@ -1150,6 +1150,56 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
 
 ---
 
+## Presenting sponsor (branch `biobuzz`) — DSIM presented by Offset Robotics
+
+A LAUNCH + SEASON sponsorship of the APP, sold for the BIOBUZZ season with exclusivity.
+**`docs/sponsor.md` is the contract's operational half** — the placement inventory, the
+artwork swap, the kill switch, and the monthly attribution recipe. Read it before touching
+any of this.
+
+- **`src/sponsor.ts` is the single source of truth** (name, URL, artwork footprint, term)
+  and is DOM-free, so the headless smoke suite imports it. `src/ui/Sponsor.tsx` is the ONE
+  component that builds the link and fires the events — nothing else may. `sponsorAssets.ts`
+  is split off it because an image import would choke the `tsx` suite.
+- ⚠️ **`Season.presenter` IS A DIFFERENT FACT.** That is FIRST's sponsor of the GAME (DECODE
+  presented by RTX), not ours and not for sale. Both lines are true on the home menu at once;
+  never fold one into the other.
+- ⚠️ **THE IN-GAMEPLAY CHIP IS NOT AN AD, AND MUST NEVER BE ROUTED THROUGH `src/ads/`.** That
+  gate renders nothing on touch, nothing under Electron and nothing for a supporter — i.e.
+  it would be invisible on every phone, in the desktop app, and to the most engaged players
+  on the service. "Rendered independently of the ad system" is written into the deal, so
+  `Sponsor.tsx` imports nothing from `src/ads/` and `GameView.tsx` renders `<SponsorGameChip
+  />` outside the `ads &&` branch. Both are smoke-checked, because re-routing it is a
+  one-line refactor.
+- **Six placements**, each with its own `utm_medium` so the report can break them down:
+  `home`, `footer`, `game`, `download`, `splash` (`electron/splash.html`, shown by
+  `showSplash()` in `main.cjs` and handed over on `ready-to-show`), and `replay` — the mark
+  BURNED INTO every exported video (`drawSponsorMark` in `replayOverlay.ts`). ⚠️ The capture
+  `draw` callback is SYNCHRONOUS, so `ReplayView` must `await loadSponsorMark()` BEFORE
+  `recordFast`, and the burn-in falls back to the wordmark in text if the image never decodes
+   — a clip missing the placement is a breach, an ugly one is not.
+  The LOADING SCREEN is `#seo-home` in `index.html` and carries the line as TEXT: the bundled
+  artwork is fingerprinted and an absolute path 404s under Electron's `file://`.
+  The DISCORD server logo is not a repo change at all.
+- **The term is a window** (`SPONSOR.term`, `until` EXCLUSIVE) and an unparseable date fails
+  toward SHOWING the mark — a wrong clock must not void a placement somebody paid for.
+  `VITE_SPONSOR=0` is the kill switch, exact-string matched for the same reason.
+- **Artwork is FOUR files** (`src/assets/sponsors/offset-on-*.png` + `electron/sponsor-on-*.png`,
+  the Electron pair duplicated because a `file://` page cannot resolve a Vite hash). The names
+  say which SURFACE, not which ink — the sponsor calls the black cut "the dark logo" and the
+  site calls it `OffsetLogoLight.png`, so place a new file by looking at the pixels. Sizes are
+  declared in `SPONSOR.logoW/logoH` and every placement reserves its box from that ratio
+  before the image loads (`shiftaudit`); the smoke lane reads all four PNG headers.
+- **The report is Vercel Analytics, nothing else** — `sponsor_shown` (the denominator),
+  `sponsor_click` (per placement), Vercel's own sessions, and `player_joined` (fired in
+  `UsernameGate`, the last step of signing up; it over-counts legacy accounts ONCE and
+  `docs/sponsor.md` footnotes it). No DB migration, no server change, no identifiers.
+- **Tests**: the `SPONSOR` lane of `scripts/smoke-biobuzz/` (`npm run test:bb`). Everything it
+  covers is a contracted obligation that FAILS SILENTLY — a placement that stops rendering, a
+  link that loses its UTM tag, a term that does not cover the season it was sold for.
+
+---
+
 # GAME: DECODE (`decode`)
 
 DECODE's rules live in **`src/sim/`** and **`src/config.ts`** (they predate the seam and were
