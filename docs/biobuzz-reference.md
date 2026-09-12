@@ -154,7 +154,26 @@ and Championship TBA).
 TIPPED when (A) the HIVE moves from one stable state to the other, the down-CELL becoming the
 up-CELL, and (B) the damper that was not contacting the frame begins to contact it. "Bi-stable
 … holds its position until enough POLLEN or NECTAR are LAUNCHED into the upwards-facing CELL"
-(§9.6). **The load that tips it is not published** — `APPROX`, to be measured on a real set.
+(§9.6). **The manual does not print the load.** It was MEASURED on a real HIVE (owner,
+2026-09-12) — these are the configurations in the up-CELL that tip it:
+
+| NECTAR in cell | POLLEN needed to tip |
+|---|---|
+| 0 | not measured — `APPROX` 8 |
+| 1 | 7 |
+| 2 | 6 |
+| 3 | **3** |
+| 4 | 1 |
+| 5 | 0 (tips on the fifth NECTAR alone) |
+
+**This is a TABLE, not a mass.** No single linear weighting fits it: 1n+7p and 2n+6p equal
+would make a NECTAR worth one POLLEN, and 3n+3p then contradicts it. The seesaw is torque and
+packing, not weight, so the sim carries the measured rows and interpolates nothing. It is
+monotone (more of either element still tips), so the test is `pollen >= NEEDED[min(nectar, 5)]`.
+
+**The staged row is the one that matters**: a HIVE is staged with **3 NECTAR** in its up-CELL
+(§3), so the first TIP of a match costs **3 POLLEN** — reachable in AUTO.
+
 The only legal way to induce a TIP is LAUNCHING into the up-CELL (G417). Contents of a cell
 that goes down spill onto the tiles (G409 intent: "hit the TILE floor before it is collected").
 
