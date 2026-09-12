@@ -13,7 +13,8 @@ import { Menu } from './Menu';
 import { DRIVETRAIN_LABELS, buildSummary } from './robotLabels';
 import { gameServers, lanActive, multiServer, roomServerUrl, roomServerUrlWith, selectedServer } from '../net/env';
 import { roomJoinRegion } from '../net/roomRegion';
-import { WebSocketTransport } from '../net/transport';
+import { takePendingLanRoom } from '../lan/pending';
+import { WebSocketTransport, type Transport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
 import { roomCapacity, type LobbyPlayer, type RoomConfig, type ErrorCode } from '../net/protocol';
@@ -233,7 +234,19 @@ export function Lobby({
   function join(roomCode: string, hostRegion?: string | null): void {
     if (!roomCode) return;
     setCode(roomCode);
-    if (!roomServerUrl()) {
+    /**
+     * A TAB-HOSTED LAN ROOM ARRIVES ALREADY CONNECTED.
+     *
+     * Every other room here is named by a URL and opened with a `WebSocketTransport`. A WebRTC
+     * LAN room has no URL — the handshake happened on the LAN screen and what it produced is a
+     * live `Transport` — so the lobby adopts that instead of dialling. Taken (not read), so a
+     * remount cannot pick up a connection the player has already left: see `src/lan/pending.ts`.
+     *
+     * Everything below this point is the ordinary room flow, unchanged. That is the whole
+     * point of the seam — the lobby does not know or care that its far end is another laptop.
+     */
+    const adopted = takePendingLanRoom();
+    if (!adopted && !roomServerUrl()) {
       setError('Multiplayer needs the game server.');
       setPhase('error');
       return;
@@ -248,14 +261,18 @@ export function Lobby({
     // ROOMS are the one thing that may be hosted on a LAN box, so this is the one
     // connect site that follows a LAN connection (`roomServerUrl`, not `gameServerUrl`).
     // A region hint means nothing to a single machine with no proxy, and is harmless.
-    const url = multiServer() && useRegion ? roomServerUrlWith({ region: useRegion }) : roomServerUrl();
-    let transport: WebSocketTransport;
-    try {
-      transport = new WebSocketTransport(url);
-    } catch {
-      setError('Couldn’t reach the game server.');
-      setPhase('error');
-      return;
+    let transport: Transport;
+    if (adopted) {
+      transport = adopted.transport;
+    } else {
+      const url = multiServer() && useRegion ? roomServerUrlWith({ region: useRegion }) : roomServerUrl();
+      try {
+        transport = new WebSocketTransport(url);
+      } catch {
+        setError('Couldn’t reach the game server.');
+        setPhase('error');
+        return;
+      }
     }
     const lobby = new LobbyClient(transport);
     lobbyRef.current = lobby;

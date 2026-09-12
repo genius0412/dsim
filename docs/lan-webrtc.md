@@ -168,32 +168,78 @@ than asserted.
 
 ## 6. The risk that is actually hard
 
-**Timer throttling.** `Room` drives itself with `setInterval` at 60 Hz (`room.ts`, `this.loop`).
-Browsers throttle timers in hidden tabs — Chrome to roughly 1 Hz — so a host who switches tabs
-freezes the match for everybody. Mitigations, in order of preference:
+**Timer throttling — MEASURED, and the answer decides the architecture.** `Room` drives itself
+with `setInterval` at 60 Hz (`room.ts`, `this.loop`). A browser throttles timers in a hidden
+tab, so a host who switches tabs could freeze the match for everybody. This was the assumption
+most likely to be wrong in a way that only shows up in a gym, so it was measured before the UI
+existed rather than after.
 
-1. Run the room in a **dedicated Worker**. Worker timers are throttled far less aggressively
-   than a hidden page's, and it keeps the 60 Hz loop off the thread that is also rendering.
-2. A **Screen Wake Lock** while hosting, and a visible "you are hosting" state the host cannot
-   miss.
-3. Measure it. This is the assumption most likely to be wrong in a way that only shows up in a
-   gym, so it gets a real test before the UI exists.
+Both a page-thread `setInterval(…, 1000/60)` and an identical one inside a dedicated Worker,
+run side by side in the same hidden tab for **7 minutes**, counting ticks into 15-second
+buckets (Chrome 140, Windows 11, `visibilityState: 'hidden'` throughout):
+
+| elapsed, tab hidden | page thread | dedicated Worker |
+|---|---|---|
+| 0–30 s | 59.1 → 59.7 Hz | 58.5 Hz |
+| 30–45 s | **3.6 Hz** | 58.9 Hz |
+| 45 s – 5 min | **1.1 – 2.4 Hz** | 50.4 – 62.3 Hz |
+| 5–6 min | **0.017 Hz** (one wake per minute) | 60.9 Hz |
+| whole run | — | **60.08 Hz average**, 25,236 ticks in 420.0 s |
+
+So the page thread is not "roughly 1 Hz" — it is 60 Hz for about half a minute, then ~1 Hz,
+then **one tick per minute** once Chrome's intensive throttling engages at the five-minute mark.
+A match hosted on the page thread does not degrade, it stops. The Worker held 60 Hz for the
+entire run and never entered either regime.
+
+⚠️ **A SHORT SAMPLE MEASURES NOTHING HERE.** The first attempt at this was a 5-second A/B, and
+it reported the page thread at 304 ticks / 5 s against the Worker's 277 — i.e. the page winning.
+That window sits entirely inside the grace period above. Anything shorter than about a minute
+hidden is measuring the un-throttled regime, and the conclusion inverts once the clamp lands.
+
+Consequences, which are the design and not a nicety:
+
+1. **The room runs in a dedicated Worker** (`src/lan/hostWorker.ts`). This is load-bearing.
+   Moving the loop back onto the page for any reason breaks hosting outright.
+2. **A Screen Wake Lock while hosting** (`hostRuntime.ts` `acquireWakeLock`), best-effort — it
+   is unavailable on some browsers and rejects when the page is not visible, so it cannot be
+   relied on and is not required.
+3. **The Worker reports its own health** every 2 s (`HostOut.health`: `tickHz`, `behind`) and
+   the LAN panel warns the host when it drifts. A throttled host does not announce itself — it
+   just runs the match slowly for everyone else — so the one person who can fix it is told.
 
 Second risk, smaller: the host pays its own sim (~0.09 cores) on top of rendering its own view.
 Fine on a laptop; to be measured on a Chromebook, which is the machine this feature is for.
 
 ## 7. Plan
 
-Each step is independently testable and lands on its own.
+Each step was independently testable and landed on its own. All five are done.
 
-1. **Make the room browser-safe.** ✅ done — §5. Bundles clean, `server:check` and `npm test`
-   unchanged.
-2. **Signalling relay in the server.** Additive `ClientMsg`/`ServerMsg` pair that forwards an
-   opaque payload between two members of a room. No existing client notices.
-3. **`DataChannelTransport`** behind the existing interface, plus the offer/answer/ICE dance.
-   Testable against a room still running on the server — two tabs on one machine, no UI.
-4. **Room in a Worker**, fed by the `Client` shim. This is where §6 gets measured.
-5. **UI**: host from the web LAN page; guests join by room code. Only now does the screen change.
+1. **Make the room browser-safe.** ✅ §5. Bundles clean, `server:check` and `npm test` unchanged.
+2. **Signalling relay in the server.** ✅ `server/lanSignal.ts` — an additive `ClientMsg`/
+   `ServerMsg` pair forwarding an opaque payload between two members of a room. Routing comes
+   from the registry, never from the message; no existing client notices.
+3. **`DataChannelTransport`** ✅ `src/net/lanPeer.ts` — behind the existing `Transport`
+   interface, plus the offer/answer/ICE dance.
+4. **Room in a Worker** ✅ `src/lan/hostWorker.ts`, fed by the `Client` shim. §6 measured here.
+5. **UI** ✅ host from the web LAN page; guests join by room code.
 
-Steps 2–4 are invisible to players. If step 4's measurements come back bad, nothing shipped has
-to be withdrawn.
+### What has been verified, and how
+
+Source-shape checks live in `npm test` (`lan signal:` / `lan rtc:` / `lan host:` / `lan tab:`).
+Those pin decisions; they do not prove the thing runs. These were run live in a browser:
+
+| what | result |
+|---|---|
+| `Room` + Rapier WASM boot in a dedicated Worker | `ready` at **230 ms** |
+| a full match stepping in that Worker | `matchStart`, then **29.4 Hz** snapshots over 5 s (design rate 30 Hz) |
+| lane routing off the encoded frame | **every** snapshot on the hot lane; `welcome`/`roster` on control |
+| the Worker's self-measurement | `tickHz` 48.7 → 62.4, drift **11 ms → 2 ms** |
+| 60 Hz in a hidden tab, 7 minutes | Worker **60.08 Hz**; page thread 1–2 Hz, then 1/min (§6) |
+| a real `RTCPeerConnection` handshake, both ends in one page | both lanes **open** in 2.5 s |
+| which ICE pair actually carried it | **`host` candidate over udp** — direct, no relay, as §3 requires |
+| lane selection through `DataChannelTransport` | `join` → control, `{reliable:false}` input → hot, both delivered |
+
+⚠️ **NOT yet verified end-to-end between two machines**, and it cannot be until the server
+carrying `lanSignal.ts` is deployed — hosting claims a code through the CLOUD rendezvous and
+verifies an auth token there, so the first real host-and-guest test is a post-deploy one. The
+handshake above stands in for it: it is the same code on both ends, with the rendezvous faked.

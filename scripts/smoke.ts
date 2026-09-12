@@ -7061,9 +7061,15 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       'lan guide: the Host heading renders without the desktop bridge',
       hostLabel > 0 && bridgeGuard > 0 && hostLabel < bridgeGuard,
     );
+    /* This used to assert the page says "a browser tab can’t be a server". That sentence was
+       REMOVED, on purpose: a tab now hosts (`docs/lan-webrtc.md`), so printing it directly
+       under a panel that is hosting contradicted the screen. The underlying fact is unchanged
+       — a tab cannot LISTEN, which is why the tab path needs a rendezvous and a moment of
+       internet — so what is pinned now is the thing that distinguishes the two host paths,
+       which is the only reason a player picks one. */
     check(
-      'lan guide: the page states that a browser tab cannot be a server',
-      /can’t be a server/.test(lan),
+      'lan guide: the terminal path is presented as the NO-INTERNET one, not as the only one',
+      /no internet at all/i.test(lan) && !/can’t be a server/.test(lan),
     );
     check(
       'lan guide: the page says guests install nothing (the half people assume wrong)',
@@ -7406,6 +7412,222 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
         );
       }
     }
+  }
+
+  // ---- LAN over WebRTC: the room in a Worker + the UI seam (docs/lan-webrtc.md steps 4-5)
+  /**
+   * Source-shape checks again, for the same reason as the `lan rtc` block: there is no
+   * `Worker`, no `RTCPeerConnection` and no DOM under Node. What each one pins is a decision
+   * that fails SILENTLY — a tab-hosted match that quietly writes a leaderboard row, a host
+   * whose loop is back on the page thread, a lobby that dials the cloud for a room already in
+   * its hand. None of those throw; they just do the wrong thing at a competition.
+   */
+  {
+    const hw = readFileSync('src/lan/hostWorker.ts', 'utf8');
+    const hr = readFileSync('src/lan/hostRuntime.ts', 'utf8');
+    const pend = readFileSync('src/lan/pending.ts', 'utf8');
+    const jl = readFileSync('src/lan/joinLan.ts', 'utf8');
+    const lob = readFileSync('src/ui/Lobby.tsx', 'utf8');
+    const lp = readFileSync('src/ui/LanPanel.tsx', 'utf8');
+    const strip = (t: string): string => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+    // ---- the room a tab hosts is the REAL one, and it can reach nothing durable
+    check(
+      'lan tab: the Worker imports the same server/room.ts the cloud runs, not a reimplementation',
+      /from '\.\.\/\.\.\/server\/room'/.test(hw),
+    );
+    check(
+      'lan tab: the room is built with NO persistence callbacks, so it cannot write a row',
+      /new Room\(m\.code, \(\) => post\(\{ k: 'empty' \}\), m\.config\)/.test(hw),
+    );
+    check(
+      'lan tab: nothing in the Worker reaches the database or the ranked module',
+      !/\/db\/|from '\.\.\/\.\.\/server\/(ranked|persist|kofi)'/.test(hw),
+    );
+
+    // ---- the 60 Hz loop's thread is the whole feature (docs/lan-webrtc.md section 6)
+    check(
+      'lan tab: the room runs in a DEDICATED Worker, which is what survives a hidden tab',
+      /new Worker\(new URL\('\.\/hostWorker\.ts', import\.meta\.url\), \{ type: 'module' \}\)/.test(hr),
+    );
+    check(
+      'lan tab: the Worker reports its own health so a throttled host is TOLD',
+      /k: 'health'/.test(hw) && /tickHz/.test(hw) && /behind/.test(hr),
+    );
+    check(
+      'lan tab: the host UI surfaces that health rather than swallowing it',
+      /tabHealth/.test(lp) && /behind >/.test(lp),
+    );
+
+    // ---- lane selection has to work off the ENCODED frame, since that is all the room hands out
+    check(
+      'lan tab: snapshots and pongs take the hot lane, sniffed off the encoded JSON',
+      /\^\\{"t":"\(snapshot\|pong\)"/.test(hw),
+    );
+    check(
+      'lan tab: an unknown frame defaults to the RELIABLE lane, never the lossy one',
+      /reliable: !isHot\(raw\)/.test(hw),
+    );
+
+    // ---- the host is an ordinary client of its own room
+    check(
+      'lan tab: the host plays through a Transport, so no client code branches on being host',
+      /class LoopbackTransport implements Transport/.test(hr),
+    );
+    check(
+      'lan tab: the host is seated from its OWN join frame, not a placeholder passed to start()',
+      /async start\(code: string, config: RoomConfig = DEFAULT_ROOM_CONFIG\)/.test(hr) &&
+        /intro\.player/.test(hr),
+    );
+    check(
+      'lan tab: host and guests take ONE seating path, so the two cannot drift',
+      (strip(hr).match(/this\.fromSeat\(/g) ?? []).length >= 2,
+    );
+    check(
+      'lan tab: a peer that connects and then says nothing never occupies a seat',
+      /this\.seated\.delete\(id\)/.test(hr),
+    );
+    check(
+      'lan tab: BOTH channels feed the same inbound handler (a guest may use either)',
+      /link\.control\.addEventListener\('message', onFrame\)/.test(hr) &&
+        /link\.hot\.addEventListener\('message', onFrame\)/.test(hr),
+    );
+
+    // ---- teardown, which is the part nobody exercises until it matters
+    check(
+      'lan tab: stopping closes every peer, kills the Worker and releases the code',
+      /link\.pc\.close\(\)/.test(hr) &&
+        /this\.worker\?\.terminate\(\)/.test(hr) &&
+        /this\.signals\?\.stopHosting\(\)/.test(hr),
+    );
+    check(
+      'lan tab: stopping also drops the wake lock',
+      /this\.wakeLock\?\.release\(\)/.test(hr),
+    );
+    check(
+      'lan tab: the wake lock is best-effort — an unavailable one must not block hosting',
+      /nav\.wakeLock\?\.request\('screen'\)/.test(hr) && /catch \{/.test(hr),
+    );
+    check(
+      'lan tab: leaving the LAN screen stops hosting, so no guest is stranded on a dead room',
+      /useEffect\(\(\) => \(\) => tabHost\?\.stop\(\), \[tabHost\]\)/.test(lp),
+    );
+
+    // ---- the hand-off to the lobby
+    check(
+      'lan tab: a pending room is TAKEN, not read, so a remount cannot adopt a stale link',
+      /export function takePendingLanRoom/.test(pend) && /pending = null;\n  return p;/.test(pend),
+    );
+    check(
+      'lan tab: the lobby adopts that transport instead of dialling a URL',
+      /const adopted = takePendingLanRoom\(\)/.test(lob) &&
+        /transport = adopted\.transport/.test(lob),
+    );
+    check(
+      'lan tab: the "multiplayer needs the game server" guard is skipped for an adopted room',
+      /!adopted && !roomServerUrl\(\)/.test(lob),
+    );
+    check(
+      'lan tab: the lobby types the transport by the INTERFACE, not as a WebSocketTransport',
+      /let transport: Transport;/.test(lob),
+    );
+
+    // ---- the guest side
+    check(
+      'lan tab: the guest hands the lobby a stock Transport, same as a socket room',
+      /new DataChannelTransport\(link\)/.test(jl),
+    );
+    check(
+      'lan tab: the rendezvous socket is closed once the peers are introduced',
+      /\} finally \{[\s\S]*signals\.close\(\)/.test(jl),
+    );
+
+    // ---- what the person on the screen is told
+    check(
+      'lan tab: hosting requires an account, since the practice data is saved to one',
+      /disabled=\{!signedIn \|\| tabBusy\}/.test(lp),
+    );
+    check(
+      'lan tab: the copy states the one internet dependency up front',
+      /You need internet for about a second/.test(lp),
+    );
+    check(
+      'lan tab: joining by code normalizes it, so a host reading letters out is enough',
+      /normalizeRoomCode\(joinCode\)/.test(lp),
+    );
+
+    // ---- WHO KEEPS THE MATCH, which is the half that fails silently
+    /**
+     * A tab-hosted room has NO persistence anywhere: the Worker room is built without the
+     * callbacks (pinned above) and there is no server process to write a row. So the host's
+     * PAGE is the only thing between a played match and a match that never happened, and every
+     * failure here is invisible — no error, no empty screen, just nothing in your history the
+     * next morning. That is why each link in the chain gets its own check.
+     */
+    const app = readFileSync('src/ui/App.tsx', 'utf8');
+    const hosting = readFileSync('src/lan/hosting.ts', 'utf8');
+
+    check(
+      'lan keep: a tab-hosted match is kept, not only an address-reached LAN match',
+      /\(!lanActive\(\) && !tabHosting\(\)\)/.test(app),
+    );
+    check(
+      'lan keep: it still takes BOTH the host seat and a minted match id (one uploader)',
+      /!sess\.isHost\(\) \|\| !info\.matchId/.test(app),
+    );
+    check(
+      'lan keep: the match goes to the device first, then drains through the backlog',
+      /saveLanRunLocal\(info\.matchId/.test(app) && /void flushLanRuns\(\)/.test(app),
+    );
+    check(
+      'lan keep: only the screen that STARTED a room may raise the hosting flag',
+      /setTabHosting\(true\)/.test(lp) && /setTabHosting\(false\)/.test(lp),
+    );
+    check(
+      'lan keep: nothing outside the LAN screen ever raises it (a guest keeps nothing)',
+      (() => {
+        /* Walked rather than grepped at two known paths: the whole value of the flag is that
+           exactly ONE screen can set it, and a second setter added later anywhere under src/
+           is precisely the regression that would file a match twice. */
+        const raisers: string[] = [];
+        const walk = (dir: string): void => {
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            const f = joinPath(dir, e.name);
+            if (e.isDirectory()) { walk(f); continue; }
+            if (!/\.tsx?$/.test(e.name)) continue;
+            if (/setTabHosting\(true\)/.test(readFileSync(f, 'utf8'))) raisers.push(f);
+          }
+        };
+        walk('src');
+        return raisers.length === 1 && raisers[0].includes('LanPanel');
+      })(),
+    );
+    check(
+      'lan keep: hosting ending lowers the flag, so a later CLOUD match is not filed as LAN',
+      /setTabHosting\(false\);[\s\S]{0,20}setTabHost\(null\)/.test(lp),
+    );
+    check(
+      'lan keep: the flag is a leaf module, so the rule is testable rather than inline state',
+      /export function tabHosting/.test(hosting) && !/import /.test(hosting),
+    );
+
+    // ---- and the backlog has to move on its own, or offline play never reaches the account
+    check(
+      'lan keep: the backlog drains the moment the machine is back online',
+      /addEventListener\('online', onOnline\)/.test(app),
+    );
+    check(
+      'lan keep: that trigger drains BOTH backlogs, since practice is offline-first too',
+      /const onOnline = \(\): void => \{[\s\S]{0,160}?flushPracticeRuns\(\);[\s\S]{0,80}?flushLanRuns\(\);/.test(app),
+    );
+    check(
+      'lan keep: and the listener is removed, so a remount does not stack flushes',
+      /removeEventListener\('online', onOnline\)/.test(app),
+    );
+    check(
+      'lan keep: a failed upload keeps the match on the device rather than dropping it',
+      /if \(!run\) break;/.test(app),
+    );
   }
 
   // ---- LAN: a host's server hands out files, so it must not hand out ANY file

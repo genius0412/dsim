@@ -1733,6 +1733,17 @@ button.ds-chip {
   margin-top: 28px;
 }
 
+/* THE SAME DEFECT BETWEEN TWO STACKED CARDS. `--ds-block` is a 4px offset shadow, `.ds-main`
+   is a plain block with no gap, and `.ds-panelbox` carries no margin — so a second card starts
+   exactly where the first one's border ends and the first one's shadow paints onto it. Two
+   cards in a row used to be rare; the LAN page now stacks them twice (Host in this tab / Host
+   with no internet, Room code / Host address). 16px clears the shadow and reads as two cards
+   rather than one split one. */
+.ds-panelbox + .ds-panelbox,
+.ds-panel + .ds-panel {
+  margin-top: 16px;
+}
+
 /* the aside in a panel header (e.g. Match setup's "Ranked and Custom set …").
    The rest of the old <details>/<summary> collapse rules went with the panel. */
 /* ---- panels + tables ------------------------------------------------- */

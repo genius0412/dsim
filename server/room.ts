@@ -3,6 +3,7 @@
    specifier is unresolvable there. The Web Crypto name is the same function and is available
    on Node 19+ and in every browser DSIM supports. */
 const randomUUID = (): string => crypto.randomUUID();
+import { envVar } from './runtimeEnv';
 import * as C from '../src/config';
 import { START_POSES } from '../src/config';
 import { activeStartLegal } from '../src/sim/field';
@@ -185,7 +186,7 @@ const STRATEGY_DURATION_MS = 20000;
 
 /** the Fly region this server machine runs in (blank on a single-region / local
  * deploy). Sent to clients at matchStart so the HUD can show "matched on <region>". */
-const SERVER_REGION: string = process.env.FLY_REGION ?? process.env.SERVER_REGION ?? '';
+const SERVER_REGION: string = envVar('FLY_REGION') ?? envVar('SERVER_REGION') ?? '';
 
 export interface Client {
   id: string;
