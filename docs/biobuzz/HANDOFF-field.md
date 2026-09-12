@@ -1,5 +1,109 @@
 # HANDOFF — Lane A (field)
 
+## 2026-09-12 · A5a items 1–7 (Round 5 + both addenda) · `GREEN`
+
+Base: merged `origin/alpha` `e5d866d` (fast-forward — alpha carried only `field-plan.md` and
+`prompts.md`, no code). Gates, all at the end as one batch: `npx tsc --noEmit -p .` **clean** ·
+`npm run test:bb -- --lane field` **318/318** · `npm run test:bb` **945/945 ALL PASS** ·
+`hive-tip` re-shot at `scratch/shots/e5d866d-dirty/hive-tip@{0,120,240,480}.{light,dark}.png`.
+
+### The seven items
+
+1. **The per-FLOWER supply is gone.** `stock` and `nectarDue` are deleted from `BbFlowerState`
+   and from `emptyBiobuzzState()`; the per-ALLIANCE `nectarStock` / `nectarDue` / `nectarTimer`
+   stay and are the whole supply. Grepped `hud.ts` and `score.ts` FIRST as instructed: neither
+   reads the per-flower pair (hud.ts's `nectarDue` hits are the per-ALLIANCE
+   `Record<Alliance, number>`), so nothing had to go back to the master. The fields are DELETED
+   rather than left at 0 — a field the rules can read but the sim will never write is a trap.
+   Reference: §2.4 and G426, NECTAR enters only through the HUMAN PLAYER.
+2. **`bbWorld(seed, setups, pollen)` no longer leaves dangling ids.** It replaced `world.balls`
+   after staging, so every FLOWER stack and both up-CELLs held ids that resolved to nothing —
+   invisible (a dangling id draws nothing) until it ALIASED a later ball. It now re-runs
+   `bbIndexElements(world)` after the replace and carries `nextBallId` past the new layout.
+   Smoke: a sweep over every `field` scene at every still asserts BOTH directions — every id in
+   a stack or an up-CELL resolves to a ball whose state is `element` with a matching tag, and
+   every element-state ball is listed exactly once. Proved non-vacuous by commenting
+   `bbIndexElements` out and watching `pile-slow` fail with `flower:0:1 is ground`.
+3. **`FIELD_SIDE` is gone from `drawField.ts`.** `FLOWER_MOUTH` in `elements.ts` is now
+   `export const` and is the one table; the three usages import it.
+4. → became item 6.
+5. **The FLOWER is a SORTER** (field-plan §2.2). `flowerStackZ` seats a NECTAR at
+   `max(top, BB_FLOWER_MID_Z) + r`; POLLEN pass the ring and stack from the floor as before.
+   `BB_FLOWER_MID_Z` (3.98, APPROX) is the ring's UNDERSIDE and its comment says so now.
+   `spawn.ts` `flowerStack` is restaged THROUGH `flowerStackZ`, which is what its APPROX comment
+   had been asking for.
+   **Consequence: NECTAR capacity drops 6 → 5** (zs 5.78 / 9.38 / 12.98 / 16.58 / 20.18;
+   3.98 + 5 × 3.6 = 21.98 is already over `BB_FLOWER_TOP_Z` 21.5). POLLEN capacity stays 8.
+   **Every A–H scoring OUTCOME is unchanged and four of the z rows moved** — that is the ruling
+   working: a bottom nectar used to score because 0.43 + 3.6 = 4.03 cleared 3.98 **by 0.05 in**,
+   an accident of two APPROX numbers. Seated on the ring they clear it by construction, so the
+   outcomes now survive the ring's height being re-measured and the old ones would not have.
+   Smoke block 10b pins the three the addendum named: the bare-nectar span 3.98–7.58 and that
+   it scores; a POLLEN under a seated NECTAR pops on retrieval without lowering the NECTAR; the
+   staged four POLLEN still read 3 in volume and 0 points.
+6. **The spill is calibrated to the owner's landing lines.** `BB_SPILL_SPEED` `[40,60]` →
+   **`[50,88]`**; `BB_SPILL_LATERAL` is REPLACED by **`BB_SPILL_FAN` ±55°**, a rotation of the
+   whole velocity rather than a sideways nudge. Measured vs target is written up in
+   **`docs/biobuzz/feedback/001-spill-kinematics.md`** (that file was the item-4 question; the
+   owner had already answered it, so it is now the measurement).
+   Headline: **median 71 in from the pivot against a target of ~70, 88% of 360 spilled elements
+   inside the 57–107 band**, rest time **4.18 s** (0.18 s AFTER the swing settles, where it used
+   to finish 0.12 s before). `hive-tip` therefore grew a **fourth still at 480** — at 4 s two of
+   six are still rolling and the frame shows the throw mid-flight.
+7. **A CELL takes only its own alliance's element** (owner ruling 2026-09-12, ruling 2). The
+   shared flight variant gained **`by?: Alliance`** (`src/types.ts`), stamped in
+   `releasePollen`, and `play.ts`'s capture refuses a CELL whose owner is not `by`. A refused
+   shot is NOT consumed and NOT fouled: it keeps its arc and lands as ground.
+   `scoreTargets(world, a)` no longer lists the opponent's cell.
+
+### ⚠️ Three things the master needs to know
+
+1. **`src/types.ts` was edited** — `by?: Alliance` on the `flight` variant. Outside this lane's
+   files, but item 7 names it explicitly. **Optional** on purpose: every DECODE and CR flight,
+   and every BIOBUZZ snapshot recorded before this, carries nothing there and is accepted by
+   whatever cell it reaches, which is the pre-ruling behaviour. Plain JSON, survives `slimWorld`.
+   Smoke covers the fallback.
+2. **Two other lanes' smoke files needed one edit each**, both forced by items 6 and 7 and both
+   minimal:
+   - `scripts/smoke-biobuzz/rules.ts` — `SCENE hive-tip: its stills are 0 · 2 s · 4 s` now
+     expects `0,120,240,480` (item 6's fourth still).
+   - `scripts/smoke-biobuzz/robot.ts` — the aim filter's NON-VACUITY check (`raw nearest WOULD
+     have picked the opponent's opening`) read the raw list from `scoreTargets(w, r.alliance)`,
+     which since item 7 no longer contains the opponent's cell; it would have measured 0 poses
+     and failed. It now builds the FIELD-WIDE union (both alliances, merged by id), which is the
+     list that makes the check mean something. `bbPickTarget`'s own alliance filter is KEPT as a
+     second line of defence and its doc block says why.
+3. **`scoreTargets` changed meaning**: it is "where may `a` score", not "every opening on the
+   field". The only caller that wants the field-wide list is `play.ts`'s capture pass, and it
+   now merges both alliances by id. Anything else added later that walks targets to decide
+   whether a shot went in must do the same, or one HIVE silently stops taking shots.
+
+### Still open (this lane)
+
+- **The spill's SHORT tail.** 11% of spilled elements rest closer than the 57 in floor — a wide
+  fan angle throws an element ACROSS the field rather than out, and a chord is shorter than a
+  radius. One constant each was the instruction, so there is no knob separating "far" from
+  "wide". Needs a second term if the real field never puts one that close. Question 1 of the
+  feedback note.
+- **A NECTAR rests up to 0.40 in PAST the wall plane** (35 of 360 spilled elements). SHARED
+  physics, not this lane's: the solve runs one radius per call and `clampPollenToWalls` clamps
+  at `BB_POLLEN_R` 1.4, so a 1.8 NECTAR overhangs by the difference. Already field-plan §6
+  request 1 and `feedback/000-solver-observations.md`; this is the first sighting that is
+  visible in a screenshot (`hive-tip@480`, the elements on the audience wall).
+- `BB_FLOWER_MID_Z`, `BB_FLOWER_VOL_Z`, `BB_SPILL_SPEED`, `BB_SPILL_FAN` are all **APPROX** and
+  all now load-bearing for a scoring outcome.
+
+**Closed since the last section:** the per-FLOWER `stock`/`nectarDue` question (item 1), the
+`bbWorld` dangling ids (item 2) and the `drawField.ts` `FIELD_SIDE` duplicate (item 3) — all
+three are named as open further down this file and all three are done.
+
+### Cells to look at
+
+`hive-tip@240` (the throw mid-flight, two still rolling) and **`hive-tip@480`** (at rest — how
+wide, how far, how many finished against the perimeter), light and dark, at
+`scratch/shots/e5d866d-dirty/`.
+
+
 ## 2026-09-12 · A4a: the field is LIVE · `GREEN`
 
 Gates: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane field` **208/208** ·

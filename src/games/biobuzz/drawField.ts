@@ -23,6 +23,7 @@ import {
   BB_TAPE_1,
   type BbRect,
 } from './config';
+import { FLOWER_MOUTH } from './elements';
 import { BB_TIP_SWING_S } from './hive';
 
 /**
@@ -147,21 +148,12 @@ function elementInk(color: ArtifactColor): string {
 
 const ALLIANCES: readonly Alliance[] = ['red', 'blue'];
 
-/** which way the FIELD is, from each FLOWER's wall. A badge or a label placed the other way
- * is outside the perimeter, where the wall clips it. */
-const FIELD_SIDE: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
-  left: { x: 1, y: 0 },
-  rear: { x: 0, y: -1 },
-  right: { x: -1, y: 0 },
-  audience: { x: 0, y: 1 },
-};
-
 /** the point on a FLOWER's own wall PLANE level with it, and the direction to run its stack
  * readout ALONG that wall. The stack runs toward the middle of the wall — every FLOWER sits
  * one tile off centre, so that direction always has the whole half-wall of room, where the
  * other one runs into a corner after 48 in. */
 function stackAxis(f: (typeof BB_FLOWERS)[number]): { base: Vec2; along: Vec2 } {
-  const out = FIELD_SIDE[f.wall];
+  const out = FLOWER_MOUTH[f.wall];
   const onY = f.wall === 'left' || f.wall === 'right';
   return {
     base: {
@@ -293,7 +285,7 @@ function cellSpan(side: number): { y0: number; y1: number } {
  * Doing it in that order is what keeps the foot flush when the stand-off changes.
  */
 function flowerFoot(f: (typeof BB_FLOWERS)[number]): BbRect {
-  const n = FIELD_SIDE[f.wall]; // unit inward normal — one component is 0, the other ±1
+  const n = FLOWER_MOUTH[f.wall]; // unit inward normal — one component is 0, the other ±1
   const wx = f.x - n.x * BB_FLOWER_D;
   const wy = f.y - n.y * BB_FLOWER_D;
   const half = BB_FLOWER_FOOT.along / 2;
@@ -758,7 +750,7 @@ export function drawBiobuzzField(
   // the stack badge goes, and a label that moves depending on whether a flower happens to be
   // empty is worse than one that is always in the same place.
   for (const f of BB_FLOWERS) {
-    const d = FIELD_SIDE[f.wall];
+    const d = FLOWER_MOUTH[f.wall];
     const off = BB_FLOWER_FOOT.along / 2 + LABEL_SIZE;
     text(ctx, screenUp, f.x - d.y * off, f.y + d.x * off, LABEL_SIZE, C.COLORS.white, f.id);
   }

@@ -1,4 +1,5 @@
 import type { Alliance, Vec2 } from '../../types';
+import { dcos, dsin } from '../../math';
 import {
   BB_CELL_OPEN,
   BB_HIVE_BOTTOM_Z,
@@ -201,12 +202,29 @@ export function hiveStep(hive: HiveState, dt: number, kindOf: (id: number) => Bb
   return { hive: { ...hive, contents: [...hive.contents] }, tipped: false, spilled: [] };
 }
 
-/** OUTBOARD speed range of a spilled element (in/s) and its lateral spread. APPROX: the tray
- * is a ramp and its contents leave with whatever the swing gave them; nothing published says
- * how much. The range is what makes a spill a scatter under the structure rather than a stack
- * on one tile. */
-export const BB_SPILL_SPEED: readonly [number, number] = [40, 60]; // APPROX
-export const BB_SPILL_LATERAL = 12; // APPROX
+/**
+ * How hard a TIP throws its contents, and how wide.
+ *
+ * CALIBRATED TO THE OWNER'S LANDING LINES (ruling 2026-09-12, off the visuals chat's field-v4
+ * page): the pile leaves at **50-88 in/s** in a **±55° fan** about the outboard axis and comes
+ * to rest **57-107 in from the PIVOT**, median about 70, wall to wall once the bounces are in.
+ * A TIP is a THROW, not a drop — the tray is a ramp on a see-saw that has been accelerating for
+ * two seconds when it passes level, and the spill crossing half the field is the point of it.
+ *
+ * BOTH STILL APPROX. V1 prints no spill kinematics at all; these two numbers are fitted to
+ * where the elements LAND on a drawing, which is the observable a person can actually read off
+ * a field, and the landing distance is what should be re-checked against a real tip — not the
+ * speed. The previous pair (40-60 in/s straight outboard, ±12 in/s across, i.e. a ±13° fan)
+ * landed the six staged elements in a strip about 20 in wide; see
+ * `docs/biobuzz/feedback/001-spill-kinematics.md` for the measurement either side of this change.
+ *
+ * ⚠️ THE FAN IS AN ANGLE, NOT A CROSS-SPEED. `BB_SPILL_LATERAL` was ±12 in/s added across the
+ * throw, so the widest possible fan was `atan(12 / 50)` — the FASTER an element left, the
+ * NARROWER its spread, which is backwards: a ramp scatters by direction, and how far a given
+ * element goes is then a consequence of its own angle and speed rather than a cap on the width.
+ */
+export const BB_SPILL_SPEED: readonly [number, number] = [50, 88]; // APPROX
+export const BB_SPILL_FAN = 55; // degrees off the outboard axis, half-angle. APPROX
 
 /** one spilled element: where it re-enters the world and how fast it is going. */
 export interface SpillPose {
@@ -223,11 +241,17 @@ export interface SpillPose {
  * explicitly through `hive`, reading the emptying side off `tipping`.
  *
  * The elements leave over the cell's open OUTER end, so they land just outboard of the cell
- * centre and carry an OUTBOARD velocity (`BB_SPILL_SPEED`, `BB_SPILL_LATERAL` across). `z` is
- * `BB_HIVE_BOTTOM_Z` — the underside of the structure, the height the tray is at when it
- * empties — and `vel.z` is 0, leaving the drop to the caller's flight step.
+ * centre and are thrown along a direction drawn from the ±`BB_SPILL_FAN` fan about the outboard
+ * axis, at a speed drawn from `BB_SPILL_SPEED`. `z` is `BB_HIVE_BOTTOM_Z` — the underside of the
+ * structure, the height the tray is at when it empties — and `vel.z` is 0, leaving the drop to
+ * the caller's flight step.
  *
- * `rng` yields [0, 1) and is drawn FOUR TIMES PER POSE in order (x, y, speed, lateral), so a
+ * THE FAN IS APPLIED AS A ROTATION of the outboard unit vector, so the element's SPEED is what
+ * `BB_SPILL_SPEED` says whatever direction it took. Building the velocity as "outboard speed
+ * plus a cross term" instead makes the drawn speed the outboard COMPONENT, which is a different
+ * and larger number, and makes the fan narrow as the speed rises.
+ *
+ * `rng` yields [0, 1) and is drawn FOUR TIMES PER POSE in order (x, y, speed, angle), so a
  * deterministic rng gives a deterministic scatter.
  */
 export function spillPoses(hive: HiveState, alliance: Alliance, count: number, rng: () => number): SpillPose[] {
@@ -241,8 +265,14 @@ export function spillPoses(hive: HiveState, alliance: Alliance, count: number, r
     const x = c.x + (rng() * 2 - 1) * (BB_CELL_OPEN.w / 2);
     const y = cy + (rng() * 2 - 1) * (BB_CELL_OPEN.d / 2);
     const speed = vMin + rng() * (vMax - vMin);
-    const lateral = (rng() * 2 - 1) * BB_SPILL_LATERAL;
-    out.push({ pos: { x, y, z: BB_HIVE_BOTTOM_Z }, vel: { x: lateral, y: sign * speed, z: 0 } });
+    // the outboard axis is ±y; a fan angle of 0 throws straight out, ±FAN swings it toward ±x.
+    // `dsin`/`dcos` take RADIANS — the constant is in DEGREES because that is how the ruling is
+    // written and how a fan is read off a drawing.
+    const a = (rng() * 2 - 1) * BB_SPILL_FAN * (Math.PI / 180);
+    out.push({
+      pos: { x, y, z: BB_HIVE_BOTTOM_Z },
+      vel: { x: speed * dsin(a), y: sign * speed * dcos(a), z: 0 },
+    });
   }
   return out;
 }

@@ -4,7 +4,7 @@ import type { RobotSetup } from '../../sim/spawn';
 import { driveParams } from '../../sim/drivetrain';
 import { BB_POLLEN_R } from './config';
 import { BB_DEFAULT_SPEC } from './robotConfig';
-import { createBiobuzzWorld } from './spawn';
+import { bbIndexElements, createBiobuzzWorld } from './spawn';
 import { biobuzzStep } from './step';
 import { BB_FIELD_SCENES } from './scenesField';
 import { BB_ROBOT_SCENES } from './scenesRobot';
@@ -227,6 +227,16 @@ export function bbSetup(
  * bag, the phase machine in `freeplay`, the coerced specs. `pollen` then swaps in the layout
  * the scene is actually about (a 12-ball pile, a wall row, nothing at all); pass `undefined`
  * to keep the real 60-POLLEN scatter, which is what the spawn and settle scenes want.
+ *
+ * REPLACING `world.balls` INVALIDATES THE STATE BAG, so this RESTAGES it. `createBiobuzzWorld`
+ * runs `stageBiobuzz`, which writes ids into every FLOWER stack and both up-CELLs and counts
+ * `nectarStock`; dropping the staged array leaves all of those pointing at elements the world
+ * no longer has. The readouts are a JOIN, so a dangling id usually draws nothing and hides —
+ * until a scene's own ids COLLIDE with the staged ones, which is what put `hive-ground`'s
+ * three floor POLLEN inside F1's stack and drew them outside the perimeter. `bbIndexElements`
+ * rebuilds all three off the array that is actually there, so the bag can only ever describe
+ * balls the world has. A scene that wants elements passes them IN `pollen` with their `el`
+ * tags and gets them indexed for free.
  */
 export function bbWorld(seed: number, setups: RobotSetup[], pollen?: Artifact[]): World {
   const world = createBiobuzzWorld('free', seed, setups);
@@ -235,6 +245,7 @@ export function bbWorld(seed: number, setups: RobotSetup[], pollen?: Artifact[])
     // Keep the id sequence past the layout, exactly as the spawn does, so a POLLEN launched
     // during the scene cannot alias one that is already on the floor.
     if (world.biobuzz) world.biobuzz.nextBallId = pollen.reduce((m, b) => Math.max(m, b.id + 1), 1);
+    bbIndexElements(world);
   }
   return world;
 }

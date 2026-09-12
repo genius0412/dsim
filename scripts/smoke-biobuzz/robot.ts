@@ -5,6 +5,7 @@ import { defaultSettings, switchGame } from '../../src/settings';
 import { DEFAULT_SPEC } from '../../src/sim/spawn';
 import { BB_FIRE_INTERVAL, BB_POLLEN_R } from '../../src/games/biobuzz/config';
 import { capturePollen, pollenIn, releasePollen, scoreTargets } from '../../src/games/biobuzz/elements';
+import type { ScoreTarget } from '../../src/games/biobuzz/state';
 import {
   BB_INTAKE_MOUNTS,
   BB_MOUNT_POSITIONS,
@@ -400,8 +401,22 @@ export function robotChecks(check: Check): void {
     for (let x = -66; x <= 66; x += 6) {
       for (let y = -66; y <= 66; y += 6) {
         r.pos = { x, y };
-        // what nearest-by-distance ALONE would have chosen — the code that shipped before this
-        const all = scoreTargets(w, r.alliance);
+        // What nearest-by-distance ALONE would have chosen — the code that shipped before this.
+        // It is measured over the FIELD-WIDE list (both alliances, merged), not over the one
+        // this robot is offered: since the owner's ruling of 2026-09-12 `scoreTargets(w, a)`
+        // already drops the opponent's cell, so asking it alone would make this check vacuous
+        // by construction and prove nothing about `bbPickTarget`'s own filter.
+        const all: ScoreTarget[] = [];
+        {
+          const seen = new Set<string>();
+          for (const a of ['red', 'blue'] as const) {
+            for (const t of scoreTargets(w, a)) {
+              if (seen.has(t.id)) continue;
+              seen.add(t.id);
+              all.push(t);
+            }
+          }
+        }
         let raw = all[0];
         let rawD = Infinity;
         for (const t of all) {

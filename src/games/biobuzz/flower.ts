@@ -36,11 +36,28 @@ export function bbElementRadius(kind: BbElementKind): number {
 export const BB_FLOWER_FLOOR_Z = 0.43; // APPROX
 
 /**
- * The SCORING VOLUME: between the top ring and the middle ring (§10.5.2, CAD 10-4). Middle ring
- * top = retrieval opening 3.55 + lower ring 0.43. APPROX — field-plan §1 `BB_FLOWER_VOL_Z`,
- * not yet in `config.ts`.
+ * THE MIDDLE RING IS A SORTER — its hole falls BETWEEN the two element sizes (owner ruling
+ * 2026-09-12, field-plan §2.2, from the visuals chat's section drawing). A 2.8-in POLLEN passes
+ * it and falls through to the lower ring; a 3.6-in NECTAR cannot and SEATS on it.
+ *
+ * The consequences are the whole point of the ruling: a NECTAR is never below the scoring floor
+ * and therefore ALWAYS scores, a lone POLLEN resting on the lower ring (0.43 → 3.23) scores
+ * nothing, and retrieving a POLLEN from UNDER a ring-seated NECTAR does not lower the NECTAR.
+ *
+ * ⚠️ APPROX, AND IT IS THE RING'S UNDERSIDE. 3.98 is the retrieval opening 3.55 plus the lower
+ * ring 0.43, so it is where the middle ring STARTS; V1 prints neither the ring's thickness nor
+ * whether the scoring volume begins at its top (manual-distilled §11 item 1). The SEAT rule is
+ * what keeps the outcomes right whatever that number turns out to be — seating the nectar ON
+ * the ring makes "a nectar always scores" a consequence of the geometry rather than of 3.98
+ * happening to be 0.05 in below where a bare nectar's skin reaches.
  */
-export const BB_FLOWER_VOL_Z: readonly [number, number] = [3.98, BB_FLOWER_TOP_Z]; // APPROX
+export const BB_FLOWER_MID_Z = 3.98; // APPROX
+
+/**
+ * The SCORING VOLUME: between the top ring and the middle ring (§10.5.2, CAD 10-4), i.e. from
+ * `BB_FLOWER_MID_Z` up. APPROX — field-plan §1 `BB_FLOWER_VOL_Z`, not yet in `config.ts`.
+ */
+export const BB_FLOWER_VOL_Z: readonly [number, number] = [BB_FLOWER_MID_Z, BB_FLOWER_TOP_Z]; // APPROX
 
 /**
  * How far above the top ring a descending element may still be taken as "entering" — the
@@ -48,14 +65,30 @@ export const BB_FLOWER_VOL_Z: readonly [number, number] = [3.98, BB_FLOWER_TOP_Z
  */
 export const BB_FLOWER_ENTRY_MARGIN = 3.0; // APPROX
 
-/** centre heights (in) of every element in the stack, bottom → top, resting on the one below. */
+/**
+ * Centre heights (in) of every element in the stack, bottom → top.
+ *
+ * Each element rests on the one below it, EXCEPT that a NECTAR can never sit lower than the
+ * middle ring it cannot pass — `max(columnTop, BB_FLOWER_MID_Z) + r`. That single `max` is the
+ * sorter: below the ring only POLLEN can be in the column at all, so a NECTAR arriving over an
+ * empty flower or over one POLLEN lands on the ring either way, and the POLLEN under it is in a
+ * space the nectar was never resting on. Everything above a seated NECTAR stacks on it as
+ * before, so the rest of the column is unchanged.
+ *
+ * THE COLUMN TOP ADVANCES TO THE SEATED CENTRE, not past the element it skipped: a nectar on
+ * the ring occupies `MID_Z … MID_Z + 2r`, and what rests on it starts there. Adding `2 * r` to
+ * the OLD top instead would leave a phantom gap the size of whatever the nectar cleared.
+ */
 export function flowerStackZ(stack: readonly number[], kindOf: (id: number) => BbElementKind): number[] {
   const out: number[] = [];
   let top = BB_FLOWER_FLOOR_Z;
   for (const id of stack) {
-    const r = bbElementRadius(kindOf(id));
-    out.push(top + r);
-    top += 2 * r;
+    const kind = kindOf(id);
+    const r = bbElementRadius(kind);
+    // a NECTAR is any ALLIANCE kind; 'pollen' is the only thing that passes the ring
+    const seat = kind === 'pollen' ? top : Math.max(top, BB_FLOWER_MID_Z);
+    out.push(seat + r);
+    top = seat + 2 * r;
   }
   return out;
 }
@@ -79,15 +112,32 @@ export function flowerFits(stack: readonly number[], kindOf: (id: number) => BbE
   return top < BB_FLOWER_TOP_Z;
 }
 
-/** how many SAME-SIZE elements of radius `r` an empty FLOWER holds. */
-export function flowerCapacity(r: number): number {
-  let n = 0;
-  let top = BB_FLOWER_FLOOR_Z;
-  while (top < BB_FLOWER_TOP_Z) {
-    n++;
-    top += 2 * r;
-  }
-  return n;
+/**
+ * How TALL this stack stands — the top of its highest element, or the lower ring when empty.
+ * The one place that knows a seated NECTAR raised the column, so `spawn.ts` can place a staged
+ * stack's `z` values through the same function the scorer reads them from.
+ */
+export function flowerStackTop(stack: readonly number[], kindOf: (id: number) => BbElementKind): number {
+  const zs = flowerStackZ(stack, kindOf);
+  if (zs.length === 0) return BB_FLOWER_FLOOR_Z;
+  return zs[zs.length - 1] + bbElementRadius(kindOf(stack[stack.length - 1]));
+}
+
+/**
+ * How many SAME-KIND elements an empty FLOWER holds.
+ *
+ * BY KIND, NOT BY RADIUS, AND FILLED THROUGH `flowerFits` — because the column's heights are no
+ * longer `floor + n * diameter` for both sizes. The middle-ring seat lifts the FIRST nectar to
+ * `BB_FLOWER_MID_Z` (3.55 in above the lower ring), and that clearance costs the column a whole
+ * nectar: six by the old arithmetic, five by the geometry. A capacity helper with its own copy
+ * of the stacking rule would go on saying six.
+ */
+export function flowerCapacity(kind: BbElementKind): number {
+  const kindOf = (): BbElementKind => kind;
+  const r = bbElementRadius(kind);
+  const stack: number[] = [];
+  while (flowerFits(stack, kindOf, r) && stack.length < 64) stack.push(stack.length);
+  return stack.length;
 }
 
 /**

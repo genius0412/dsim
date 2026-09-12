@@ -333,10 +333,32 @@ export function updateBiobuzz(
   const ballById = new Map<number, Artifact>();
   for (const b of world.balls) ballById.set(b.id, b);
   const kindOf = kindById(ballById);
-  // EVERY target on the field, once per tick. `scoreTargets` lists both up-CELLS and all four
-  // FLOWERS whichever alliance asks, so one call covers the whole field; the argument only
-  // orders the list (own cell first), and capture does not care about the order.
-  const targets: ScoreTarget[] = scoreTargets(world, 'red');
+  /**
+   * EVERY OPENING ON THE FIELD, once per tick — the UNION of both alliances' lists, merged by
+   * id.
+   *
+   * ONE call used to cover it, because `scoreTargets` listed both up-CELLS whichever alliance
+   * asked. Since the owner's ruling of 2026-09-12 it lists only the asking alliance's own CELL
+   * (the opponent's is not a place that alliance can score), so a single call would leave one
+   * HIVE with no capture test at all — every shot into it would fall through to the floor,
+   * including the ones that are supposed to go in. The FLOWERS are neutral and appear in both
+   * lists, hence the id set.
+   *
+   * The merge is the CAPTURE side's business only. Aim asks per alliance and gets the filtered
+   * list, which is the point of the ruling; the field still has to know where all six openings
+   * are in order to refuse a shot at one of them.
+   */
+  const targets: ScoreTarget[] = [];
+  {
+    const seen = new Set<string>();
+    for (const a of ALLIANCES) {
+      for (const t of scoreTargets(world, a)) {
+        if (seen.has(t.id)) continue;
+        seen.add(t.id);
+        targets.push(t);
+      }
+    }
+  }
 
   // ── 1. HELD: ride the robot ────────────────────────────────────────────────
   // A held POLLEN stays in `world.balls` (see `capturePollen`) so the count is conserved in
@@ -371,6 +393,10 @@ export function updateBiobuzz(
    */
   for (const b of world.balls) {
     if (b.state.kind !== 'flight') continue;
+    // WHO THREW IT, read before the arc is stepped because `park` replaces `b.state` below.
+    // Absent on an old snapshot and on anything that did not come out of `releasePollen`; see
+    // the CELL branch for what that fallback means.
+    const launchedBy = b.state.by;
     b.pos.x += b.vel.x * dt;
     b.pos.y += b.vel.y * dt;
     b.z += b.vz * dt;
@@ -400,6 +426,22 @@ export function updateBiobuzz(
     for (const t of targets) {
       const owner = HIVE_OF.get(t.id);
       if (owner) {
+        /**
+         * A CELL TAKES ONLY ITS OWN ALLIANCE'S ELEMENT (owner ruling 2026-09-12, field-plan
+         * §2.1). Nothing in the manual bans launching into the opponent's up-CELL, and the
+         * geometry does not stop you — the two HIVES are 25.5 in apart and either opening is
+         * reachable from most of the field — so without this a red robot could TIP blue's cell
+         * and hand them the 20. The ruling is that it simply does not go in: the shot MISSES,
+         * which here means falling through to the landing at the bottom of the loop and coming
+         * to rest as a ground element. It is not a foul and it is not special-cased anywhere
+         * else.
+         *
+         * An element with no `by` is accepted by either cell. That is every flight in DECODE
+         * and Chain Reaction, and any BIOBUZZ snapshot recorded before the field stamped it —
+         * refusing those would silently break replays of matches that were legal when they were
+         * played.
+         */
+        if (launchedBy && launchedBy !== owner) continue;
         const hive = bb.hives[owner];
         if (!hiveAccepts(hive, owner, b.pos, b.z, vel)) continue;
         park(b, t.id, hive.contents, hiveCellPos(owner, hive.up), CELL_MID_Z);
@@ -706,14 +748,16 @@ export function updateBiobuzz(
  * `scoreTargets()` in: while it returned `[]` the selection below could not be wrong because
  * it never ran.
  *
- * ⚠️ **THE OPPONENT'S CELL IS ON THE LIST AND MUST NOT BE AIMED AT.** Lane A puts it there
- * deliberately — it is a legal shot that simply scores nothing, and `alliance` is set on both
- * cells precisely "so a launcher can tell them apart and skip the one that wastes a POLLEN".
- * Nearest-by-distance does NOT tell them apart, and the geometry makes that fatal rather than
- * academic: the two HIVES sit at x = ∓`BB_HIVE_X`, **25.5 in apart** across field centre, so
- * a robot anywhere on the far side of the centreline is NEARER the opponent's opening than its
- * own. Unfiltered, the aim assist would hold the robot pointed at the opponent's HIVE and
- * feed it, on the driver's own fire button, for as long as the button was held.
+ * ⚠️ **THE OPPONENT'S CELL MUST NOT BE AIMED AT, AND THE ALLIANCE FILTER BELOW STAYS.**
+ * `scoreTargets(world, a)` no longer lists it (owner ruling 2026-09-12: an element launched by
+ * the other alliance does not enter, so it is not a place `a` can score), which makes the
+ * filter a second line of defence rather than the only one. It is kept because the failure it
+ * prevents is severe and silent: the two HIVES sit at x = ∓`BB_HIVE_X`, **25.5 in apart**
+ * across field centre, so a robot anywhere on the far side of the centreline is NEARER the
+ * opponent's opening than its own, and nearest-by-distance cannot tell them apart. Before the
+ * ruling, unfiltered, the aim assist would have held the robot pointed at the opponent's HIVE
+ * and fed it on the driver's own fire button for as long as it was held; a future target list
+ * that carries an opponent-owned opening for any other reason would do the same.
  *
  * ⚠️ **A TARGET IS ONLY A TARGET FROM ITS OPEN SIDE** (`ScoreTarget.mouth`). Every BIOBUZZ
  * target is a hole in something solid and `pos` alone does not say which side of that solid is

@@ -22,7 +22,6 @@ import {
 } from '../../sim/spawn';
 import { emptyScore } from '../../sim/scoring';
 import {
-  BB_FLOWER_TOP_Z,
   BB_FLOWERS,
   BB_GARDEN,
   BB_HALF_X,
@@ -38,6 +37,7 @@ import {
   bbMirror,
 } from './config';
 import { capturePollen } from './elements';
+import { flowerStackZ } from './flower';
 import { bbCoerceSpec } from './robotConfig';
 import { bbFootprint } from './robot';
 import { emptyBiobuzzState, type BiobuzzState } from './state';
@@ -422,20 +422,27 @@ function element(
 /**
  * The four POLLEN stacked in FLOWER `i`, bottom (`slot` 0) to top.
  *
- * APPROX — STACK HEIGHT: the stack is placed DOWNWARD from the top ring (`BB_FLOWER_TOP_Z`)
- * one diameter at a time, because that is the only published height in the FLOWER's column
- * that this file has a constant for. The manual's scoring volume starts at the middle ring
- * (~3.98 in, `BB_FLOWER_VOL_Z` in the field plan) and a real staged stack rests on it, so the
- * four z values here are one rigid stack in the right ORDER at roughly the right heights
- * rather than measured seats. Nothing reads them yet: an `element` ball is not solved and not
- * drawn as a loose ball. Re-seat them from the bottom when `BB_FLOWER_VOL_Z` lands in config.
+ * SEATED FROM THE BOTTOM, THROUGH `flowerStackZ` — the same function the scorer and the
+ * renderer read the column from, so a staged stack cannot disagree with a played one about
+ * where its elements are. It used to be placed DOWNWARD from the top ring one diameter at a
+ * time, because `BB_FLOWER_TOP_Z` was the only column height this file had a constant for; the
+ * APPROX note there asked for exactly this re-seat once the lower geometry landed, and the
+ * middle-ring sorter ruling (field-plan §2.2) is that geometry.
+ *
+ * The four staged POLLEN pass the middle ring, so they rest on the LOWER ring (0.43) and the
+ * bottom one is BELOW the scoring volume: a staged FLOWER reads 3 elements in volume and 0
+ * points, which is the outcome the seat rule exists to produce.
  */
 function flowerStack(startId: number): Artifact[] {
   const out: Artifact[] = [];
   let id = startId;
+  // every staged element is a POLLEN, so the kind lookup is a constant here
+  const zs = flowerStackZ(
+    Array.from({ length: POLLEN_PER_FLOWER }, (_, k) => k),
+    () => 'pollen',
+  );
   BB_FLOWERS.forEach((f, i) => {
     for (let slot = 0; slot < POLLEN_PER_FLOWER; slot++) {
-      const z = BB_FLOWER_TOP_Z - (POLLEN_PER_FLOWER - 1 - slot) * POLLEN_D;
       out.push(
         element(
           id++,
@@ -443,7 +450,7 @@ function flowerStack(startId: number): Artifact[] {
           BB_POLLEN_R,
           { x: f.x, y: f.y },
           { kind: 'element', el: `flower:${i}`, slot },
-          z,
+          zs[slot],
         ),
       );
     }
@@ -653,9 +660,10 @@ export function stageBiobuzz(world: World): void {
  * EXPORTED because `world.balls` has a second writer: `bbWorld` in `scenes.ts` replaces the
  * whole array with a scene's own POLLEN layout after staging has run, and a state bag left
  * over from the staged set then describes elements the world no longer has — which is exactly
- * what a gallery cell captioned `0 pollen` under four FLOWERS badged `4` is showing. Anything
- * that assigns `world.balls` wholesale should call this straight afterwards. `scenes.ts` is
- * not this lane's file; see `docs/biobuzz/HANDOFF-field.md` for the one-line follow-up.
+ * what a gallery cell captioned `0 pollen` under four FLOWERS badged `4` is showing. `bbWorld`
+ * now calls this straight after its replace, and so should anything else that assigns
+ * `world.balls` wholesale. `scripts/smoke-biobuzz/field.ts` asserts the invariant the call
+ * buys: every id in a FLOWER stack or an up-CELL resolves to a ball in the array.
  *
  * Every field is REBUILT rather than appended to: staging is not incremental, and a world
  * staged twice (a scene rebuilding, a smoke fixture) would otherwise carry both passes' ids.

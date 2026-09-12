@@ -686,7 +686,10 @@ function sceneChecks(check: Check): void {
       check('SCENE hive-tip: the cell holds the STAGED row, 3 NECTAR + 3 POLLEN',
         load.nectar === 3 && load.pollen === 3, `${load.pollen}p/${load.nectar}n`);
       check('SCENE hive-tip: that load tips (`BB_TIP_POLLEN[3]` is 3)', hiveWillTip(load));
-      check('SCENE hive-tip: its stills are 0 · 2 s · 4 s', s.stills.join(',') === '0,120,240', s.stills.join(','));
+      // FOUR stills since the spill was calibrated to the owner's landing lines: the throw is
+      // still crossing the field at 4 s and only comes to rest at ~4.2 s, so 8 s is the frame
+      // that shows the SCATTER (`docs/biobuzz/feedback/001-spill-kinematics.md`).
+      check('SCENE hive-tip: its stills are 0 · 2 s · 4 s · 8 s', s.stills.join(',') === '0,120,240,480', s.stills.join(','));
     }
   }
 }

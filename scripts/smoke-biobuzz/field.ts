@@ -25,6 +25,7 @@ import {
 } from '../../src/games/biobuzz/config';
 import {
   BB_FLOWER_FLOOR_Z,
+  BB_FLOWER_MID_Z,
   BB_FLOWER_VOL_Z,
   bbElementRadius,
   flowerAccepts,
@@ -37,7 +38,7 @@ import {
 } from '../../src/games/biobuzz/flower';
 import {
   BB_HIVE_ACCEPT_MARGIN,
-  BB_SPILL_LATERAL,
+  BB_SPILL_FAN,
   BB_SPILL_SPEED,
   BB_TIP_RELEASE_S,
   BB_TIP_SWING_S,
@@ -50,6 +51,7 @@ import {
   hiveWillTip,
   spillPoses,
   type HiveState,
+  type SpillPose,
 } from '../../src/games/biobuzz/hive';
 import { nextRandom } from '../../src/math';
 import {
@@ -67,6 +69,7 @@ import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games
 import { createBiobuzzWorld, stageBiobuzz } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { scoreTargets } from '../../src/games/biobuzz/elements';
+import type { ScoreTarget } from '../../src/games/biobuzz/state';
 import { BB_NECTAR_DUMP_S, BB_NECTAR_ENTRY_S, updateBiobuzz } from '../../src/games/biobuzz/play';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
 import { BB_IDLE, BB_SCENES, bbPollen, bbSceneAt, bbSceneStills, type Scene } from '../../src/games/biobuzz/scenes';
@@ -422,14 +425,37 @@ export function fieldChecks(check: Check): void {
   {
     const w = createBiobuzzWorld('match', 14, [setup(0, 'blue', {}, 0)]);
     const bb = w.biobuzz!;
+    // THE LIST IS PER ALLIANCE SINCE THE 2026-09-12 RULING: `scoreTargets(w, a)` carries a's
+    // OWN up-CELL and the four neutral FLOWERS, and NOT the opponent's cell, because an element
+    // launched by a does not enter it. `both` is the field-wide union `play.ts` builds for the
+    // capture pass; the per-alliance lists are what a launcher sees.
+    const both = (): ScoreTarget[] => {
+      const out: ScoreTarget[] = [];
+      const seen = new Set<string>();
+      for (const a of ['red', 'blue'] as const) {
+        for (const t of scoreTargets(w, a)) {
+          if (seen.has(t.id)) continue;
+          seen.add(t.id);
+          out.push(t);
+        }
+      }
+      return out;
+    };
     for (const tilt of ['staged', 'tipped'] as const) {
       if (tilt === 'tipped') {
         bb.hives.red.up = 'north';
         bb.hives.blue.up = 'south';
       }
-      const ts = scoreTargets(w, 'red');
+      const own = scoreTargets(w, 'red');
       check(
-        `targets [${tilt}]: two CELLS and four FLOWERS, every one with a mouth`,
+        `targets [${tilt}]: RED is offered its OWN CELL and four FLOWERS — never blue's cell`,
+        own.length === 1 + BB_FLOWERS.length &&
+          own.filter((t) => t.id.startsWith('hive:')).map((t) => t.id).join() === 'hive:red',
+        `${own.length} targets · cells [${own.filter((t) => t.id.startsWith('hive:')).map((t) => t.id).join(' ')}]`,
+      );
+      const ts = both();
+      check(
+        `targets [${tilt}]: two CELLS and four FLOWERS in the union, every one with a mouth`,
         ts.length === 2 + BB_FLOWERS.length && ts.every((t) => t.mouth !== undefined),
         `${ts.length} targets · ${ts.filter((t) => t.mouth).length} with mouth`,
       );
@@ -449,7 +475,7 @@ export function fieldChecks(check: Check): void {
     }
     // A FLOWER OPENS INTO THE FIELD: step one inch along the mouth and you are further from
     // the wall the flower stands against than the flower itself is.
-    const ts = scoreTargets(w, 'red');
+    const ts = both();
     BB_FLOWERS.forEach((f, i) => {
       const t = ts.find((x) => x.id === `flower:${i}`)!;
       const wallDist = (p: { x: number; y: number }): number =>
@@ -1646,6 +1672,55 @@ export function fieldChecks(check: Check): void {
     check(`scene [${scene.id}@${last}]: hashes deterministically`, h1 === h2, `${h1} vs ${h2}`);
   }
 
+  // ── NO SCENE CARRIES A DANGLING ELEMENT ID ──────────────────────────────
+  /**
+   * `flowers[i].stack` and `hives[a].contents` hold IDS; the elements themselves live in
+   * `world.balls`. The readout is that JOIN, so an id with no ball behind it draws NOTHING and
+   * the world still looks plausible — until the id ALIASES something else and the miss becomes
+   * a ball drawn in the wrong place. `hive-ground` lost three floor POLLEN to F1's staged stack
+   * exactly that way: `createBiobuzzWorld` stages a full field, `bbWorld` then replaces
+   * `world.balls` with the scene's own layout, and the staged ids stayed in the bag.
+   *
+   * EVERY SCENE, AT EVERY STILL, and both directions. The forward check is the one the fix
+   * buys (`bbWorld` reindexes after its replace); the reverse one is what stops the fix being
+   * "clear the stacks" — an element ball that exists and is listed by nobody renders as a disc
+   * floating where its parked position happens to be, which is the same picture from the other
+   * side. The tag has to agree too: a ball tagged `flower:2` listed under F1 is a stack that
+   * scores the wrong FLOWER.
+   */
+  for (const scene of BB_SCENES.filter((s) => s.lane === 'field')) {
+    for (const { tick, world } of bbSceneStills(scene)) {
+      const bb = world.biobuzz;
+      if (!bb) continue;
+      const byId = new Map(world.balls.map((b) => [b.id, b]));
+      const listed: number[] = [];
+      const bad: string[] = [];
+      const view = (tag: string, ids: readonly number[]): void => {
+        for (const id of ids) {
+          listed.push(id);
+          const b = byId.get(id);
+          if (!b) bad.push(`${tag} lists ${id}, which is not a ball`);
+          else if (b.state.kind !== 'element') bad.push(`${tag}:${id} is ${b.state.kind}`);
+          else if (b.state.el !== tag) bad.push(`${tag}:${id} is tagged ${b.state.el}`);
+        }
+      };
+      bb.flowers.forEach((f, i) => view(`flower:${i}`, f.stack));
+      for (const a of ['red', 'blue'] as const) view(`hive:${a}`, bb.hives[a].contents);
+      check(
+        `scene [${scene.id}@${tick}]: every id in a FLOWER stack or an up-CELL resolves to a ball`,
+        bad.length === 0,
+        bad.length ? bad.join(' · ') : `${listed.length} ids resolve`,
+      );
+      const seen = new Set(listed);
+      const orphans = world.balls.filter((b) => b.state.kind === 'element' && !seen.has(b.id));
+      check(
+        `scene [${scene.id}@${tick}]: every element ball is listed exactly once`,
+        orphans.length === 0 && seen.size === listed.length,
+        `${listed.length} listed · ${seen.size} distinct · ${orphans.length} unlisted`,
+      );
+    }
+  }
+
   // -- THE FIELD IS LIVE: A REAL TIP, THROUGH THE REAL PIPELINE --------------
   /**
    * Everything above tests a PURE function. This drives `updateBiobuzz` itself, tick by tick,
@@ -1771,15 +1846,30 @@ export function fieldChecks(check: Check): void {
     );
     // ...AND THEY ARE MOVING. A spill that arrives at rest piles under the down cell; the whole
     // point of `spillPoses` is that the elements leave over the open OUTER end with outboard
-    // speed and roll clear of the structure (G409).
+    // speed and cross the field (G409).
+    //
+    // ⚠️ THE EXACT RANGE IS PINNED BY THE PURE `spillPoses` CHECK, NOT HERE, because six elements
+    // land in one 20 × 10.43 in cell mouth OVERLAPPING (a real tray dumps a pile, not a rank) and
+    // with the ±`BB_SPILL_FAN` fan they now diverge INTO each other — measured, one pair of the
+    // six starts 3.44 in apart on 3.60 in of diameter. The shared solve separates them on this
+    // very tick, so what is readable here is each element's speed AFTER its first collision, and
+    // two of six come out under the draw. Under the old straight-outboard model every element
+    // went the same way and nothing collided, which is the only reason a hard per-element band
+    // ever passed. So this asserts what the LIVE path can honestly assert: everything is
+    // outboard, nothing GAINED speed, nothing arrived near rest, and most of them still carry
+    // their draw.
     {
-      const vmax = Math.hypot(BB_SPILL_SPEED[1], BB_SPILL_LATERAL);
       const moving = spillVel;
+      const inBand = moving.filter((m) => m.v >= BB_SPILL_SPEED[0] - 1 && m.v <= BB_SPILL_SPEED[1] + 1);
+      const fastest = Math.max(...moving.map((m) => m.v));
       check(
-        'live: spilled elements carry the spill velocity, OUTBOARD and inside BB_SPILL_SPEED',
+        'live: spilled elements carry the spill velocity — outboard, none faster than the draw, none at rest',
         moving.length > 0 &&
-          moving.every((m) => m.v >= BB_SPILL_SPEED[0] - 1 && m.v <= vmax + 1 && m.out),
-        `speeds ${moving.map((m) => m.v.toFixed(1)).join(', ')} in/s (range ${BB_SPILL_SPEED[0]}..${vmax.toFixed(1)})` +
+          moving.every((m) => m.out && m.v <= BB_SPILL_SPEED[1] + 1 && m.v > C.BALL_REST_SPEED * 4) &&
+          fastest >= BB_SPILL_SPEED[0] &&
+          inBand.length * 2 >= moving.length,
+        `speeds ${moving.map((m) => m.v.toFixed(1)).join(', ')} in/s (draw ${BB_SPILL_SPEED[0]}..${BB_SPILL_SPEED[1]})` +
+          ` · ${inBand.length}/${moving.length} still in band after the first solve · fastest ${fastest.toFixed(1)}` +
           ` · all outboard ${moving.every((m) => m.out)}`,
       );
     }
@@ -1916,6 +2006,74 @@ export function fieldChecks(check: Check): void {
       'live: the same shot from the CLOSED side is rejected and stays a live element',
       !closed.took && closed.kind === 'flight' && closed.balls === inbound.balls,
       `took=${closed.took} state=${closed.kind} — a miss keeps flying (G417.H), it is not consumed`,
+    );
+  }
+
+  // -- A CELL TAKES ONLY ITS OWN ALLIANCE'S ELEMENT (owner ruling 2026-09-12) -
+  /**
+   * Nothing in the manual bans launching into the OPPONENT's up-CELL, and nothing in the
+   * geometry stops it: the two HIVES are 25.5 in apart across field centre, so either opening
+   * is reachable from most of the field, and a TIP is worth 20 to whoever owns the cell. The
+   * owner's ruling is that the shot simply DOES NOT ENTER — it is a miss, it lands as ground,
+   * and it is not penalised (field-plan 2.1, ruling 2).
+   *
+   * The two shots below differ in NOTHING but `by`, the alliance that launched them: same
+   * cell, same point, same approach, same descent. One goes in and one does not, which is the
+   * ruling and nothing else. The third case is the fallback: a flight element with NO `by` —
+   * every DECODE and Chain Reaction flight, and any BIOBUZZ snapshot recorded before the field
+   * stamped it — is still accepted, because refusing those would break replays of matches that
+   * were legal when they were played.
+   *
+   * A REFUSED SHOT IS STILL A LIVE ELEMENT. It is not consumed, not teleported and not fouled;
+   * it keeps the arc it had and reaches the tiles, which is the second check.
+   */
+  {
+    const shoot = (by: Alliance | undefined): { took: boolean; kind: string; balls: number; landed: string } => {
+      const w = createBiobuzzWorld('match', 23, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = 120;
+      // THE HIVE UNDER TEST IS BLUE'S, FIXED, so `by` is the only thing that varies.
+      const H: Alliance = 'blue';
+      const up = bb.hives[H].up;
+      const cell = hiveCellPos(H, up);
+      const sgn = hiveApproachSign(up);
+      const before = bb.hives[H].contents.length;
+      const b = w.balls.find((x) => x.state.kind === 'ground')!;
+      b.state = by ? { kind: 'flight', target: by, by } : { kind: 'flight', target: H };
+      b.pos = { x: cell.x, y: cell.y - sgn * 2 };
+      b.vel = { x: 0, y: sgn * 24 };
+      b.z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2 + 1;
+      b.vz = -18;
+      updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+      const took = bb.hives[H].contents.length > before;
+      const kind = b.state.kind;
+      // and then let the miss finish its arc: 1 s is well past the fall from the opening.
+      for (let t = 0; t < 60; t++) updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+      return { took, kind, balls: w.balls.length, landed: b.state.kind };
+    };
+    const own = shoot('blue');
+    const opp = shoot('red');
+    const legacy = shoot(undefined);
+    check(
+      'live: BLUE\u2019s up-CELL takes a shot launched BY BLUE',
+      own.took && own.kind === 'element',
+      `took=${own.took} state=${own.kind}`,
+    );
+    check(
+      'live: the SAME shot launched BY RED is refused — it is a miss, not a TIP for blue',
+      !opp.took && opp.kind === 'flight' && opp.balls === own.balls,
+      `took=${opp.took} state=${opp.kind} \u00b7 balls ${opp.balls} vs ${own.balls} \u2014 nothing consumed`,
+    );
+    check(
+      'live: ...and the refused element lands on the tiles as GROUND, un-fouled',
+      opp.landed === 'ground',
+      `after 1 s it is ${opp.landed}`,
+    );
+    check(
+      'live: a flight element with NO `by` is still accepted — old snapshots keep working',
+      legacy.took && legacy.kind === 'element',
+      `took=${legacy.took} state=${legacy.kind}`,
     );
   }
 
@@ -2269,12 +2427,17 @@ export function fieldChecks(check: Check): void {
           Math.abs(p.pos.y) > BB_HIVE_CELL_DY + BB_CELL_OPEN.d + eps ||
           p.pos.z !== BB_HIVE_BOTTOM_Z,
       );
+      // THE SPEED is what `BB_SPILL_SPEED` says and the FAN is the direction it left along — two
+      // independent facts, which is exactly what the ±lateral model could not express (its fan
+      // narrowed as the speed rose). `vel.y` alone is now only a COMPONENT and bounds nothing.
+      const speedOf = (p: SpillPose): number => Math.hypot(p.vel.x, p.vel.y);
+      const fanOf = (p: SpillPose): number => Math.abs(Math.atan2(p.vel.x, sign * p.vel.y)) * (180 / Math.PI);
       const badVel = poses.filter(
         (p) =>
           Math.sign(p.vel.y) !== sign ||
-          Math.abs(p.vel.y) < BB_SPILL_SPEED[0] - eps ||
-          Math.abs(p.vel.y) > BB_SPILL_SPEED[1] + eps ||
-          Math.abs(p.vel.x) > BB_SPILL_LATERAL + eps ||
+          speedOf(p) < BB_SPILL_SPEED[0] - eps ||
+          speedOf(p) > BB_SPILL_SPEED[1] + eps ||
+          fanOf(p) > BB_SPILL_FAN + eps ||
           p.vel.z !== 0,
       );
       check(
@@ -2284,8 +2447,9 @@ export function fieldChecks(check: Check): void {
           `pos x ${Math.min(...poses.map((p) => p.pos.x)).toFixed(2)}..${Math.max(...poses.map((p) => p.pos.x)).toFixed(2)} ` +
           `y ${Math.min(...poses.map((p) => p.pos.y)).toFixed(2)}..${Math.max(...poses.map((p) => p.pos.y)).toFixed(2)} ` +
           `z ${[...new Set(poses.map((p) => p.pos.z))].join('/')} · ` +
-          `vel y ${Math.min(...poses.map((p) => p.vel.y)).toFixed(1)}..${Math.max(...poses.map((p) => p.vel.y)).toFixed(1)} ` +
-          `x ${Math.min(...poses.map((p) => p.vel.x)).toFixed(1)}..${Math.max(...poses.map((p) => p.vel.x)).toFixed(1)}`,
+          `speed ${Math.min(...poses.map(speedOf)).toFixed(1)}..${Math.max(...poses.map(speedOf)).toFixed(1)} in/s ` +
+          `(range ${BB_SPILL_SPEED[0]}..${BB_SPILL_SPEED[1]}) · ` +
+          `fan ${Math.max(...poses.map(fanOf)).toFixed(1)}° of ±${BB_SPILL_FAN}°`,
       );
     }
 
@@ -2362,10 +2526,17 @@ export function fieldChecks(check: Check): void {
    * and written as a NUMBER, so a change to `flowerScore` that happens to agree with itself
    * still has to agree with the arithmetic.
    *
-   * The geometry that decides the interesting cases: a bottom POLLEN's top is 3.23, BELOW the
-   * volume floor at 3.98, so it does NOT score; a bottom NECTAR's top is 4.03, so it does
-   * (partially). That is the manual's "on the tiles under the lower ring does not count" and
-   * the reason A has 3 in volume of 4 and C has 4 of 4.
+   * The geometry that decides the interesting cases: a bottom POLLEN passes the middle ring and
+   * rests on the LOWER ring, so its top is 3.23, BELOW the volume floor at 3.98, and it does NOT
+   * score. A NECTAR cannot pass the ring and SEATS on it (`BB_FLOWER_MID_Z`, field-plan §2.2),
+   * so it spans 3.98-7.58 and ALWAYS scores. That is the manual's "on the tiles under the lower
+   * ring does not count", and the reason A has 3 in volume of 4 and C has 4 of 4.
+   *
+   * ⚠️ EVERY OUTCOME BELOW IS UNCHANGED BY THE SORTER RULING and four of the z ROWS moved. That
+   * is the ruling working: a bottom nectar used to score because 0.43 + 3.6 = 4.03 cleared 3.98
+   * BY 0.05 IN, an accident of two APPROX numbers, and case H's nectar cleared it by the same
+   * 0.05. Seated on the ring they clear it by construction, so these outcomes survive the ring's
+   * height being re-measured and the old ones would not have.
    */
   {
     type Row = {
@@ -2386,18 +2557,19 @@ export function fieldChecks(check: Check): void {
       { id: 'A', what: '4 pollen, no nectar', stack: [P, P, P, P], owner: null, ownerPts: 0, bonus: null, inVolume: 3 },
       // zs 1.83 / 4.63 / 7.43 / nectar 10.63 — 2 pollen + nectar in
       { id: 'B', what: '3 pollen + red nectar on top', stack: [P, P, P, R], owner: 'red', ownerPts: 3 * O, bonus: 'red', inVolume: 3 },
-      // nectar 2.23 (top 4.03, partially in) / 5.43 / 8.23 / 11.03 — all 4 in
+      // nectar SEATED ON THE RING at 5.78 (spans 3.98-7.58) / 8.98 / 11.78 / 14.58 — all 4 in
       { id: 'C', what: 'red nectar at the bottom, 3 pollen above', stack: [R, P, P, P], owner: 'red', ownerPts: 4 * O, bonus: 'red', inVolume: 4 },
-      // 2.23 / 5.43 / 8.23 / nectar 11.43 — owner is the TOP nectar, bonus the BOTTOM one
+      // seated nectar 5.78 / 8.98 / 11.78 / nectar 16.38 — owner is the TOP nectar, bonus the BOTTOM one
       { id: 'D', what: 'red nectar bottom, blue nectar top, pollen between', stack: [R, P, P, B], owner: 'blue', ownerPts: 4 * O, bonus: 'red', inVolume: 4 },
-      // 2.23 / 5.83 / 9.43 — three nectars, alternating
+      // seated nectar 5.78 / 9.38 / 12.98 — three nectars; only the FIRST one meets the ring
       { id: 'E', what: 'blue, red, blue nectars', stack: [B, R, B], owner: 'blue', ownerPts: 3 * O, bonus: 'blue', inVolume: 3 },
       { id: 'F', what: 'empty', stack: [], owner: null, ownerPts: 0, bonus: null, inVolume: 0 },
       // 7 pollen (top 20.03) + nectar centred 21.83: ABOVE the top ring but its underside is
       // below it, so it is partially inside and counts (the backstop case). 6 pollen + nectar in.
       { id: 'G', what: '7 pollen + red nectar held on the backstop', stack: [P, P, P, P, P, P, P, R], owner: 'red', ownerPts: 7 * O, bonus: 'red', inVolume: 7 },
-      // pollen 1.83 (out) / nectar 5.03 (in: underside 3.23 < 3.98, so PARTIALLY, not fully) —
-      // the owner's points count only the in-volume elements, so the bottom pollen earns nothing
+      // pollen 1.83 (out, top 3.23) / nectar SEATED ON THE RING at 5.78, not stacked on the
+      // pollen — the pollen passed the ring and sits in the space underneath it. The owner's
+      // points count only the in-volume elements, so the bottom pollen earns nothing
       { id: 'H', what: 'pollen bottom, blue nectar second', stack: [P, B], owner: 'blue', ownerPts: 1 * O, bonus: 'blue', inVolume: 1 },
     ];
     for (const row of rows) {
@@ -2449,22 +2621,76 @@ export function fieldChecks(check: Check): void {
       );
     }
 
-    // 10. CAPACITY by height. floor 0.43, top ring 21.5: pollen (2.8) — the 8th's top lands at
-    // 22.83, so 8; nectar (3.6) — the 6th's top at 22.03, so 6. And `flowerFits` agrees with
-    // `flowerCapacity` when an empty flower is filled one pollen at a time.
+    // 10. CAPACITY by height, AND THE SORTER COSTS THE COLUMN A NECTAR. Floor 0.43, top ring
+    // 21.5. POLLEN pass the middle ring and stack from the floor: the 8th's top lands at 22.83,
+    // so 8. NECTAR seat ON the ring at 3.98 — 3.55 in of clearance the old arithmetic spent on a
+    // sixth nectar the column does not have room for, since 3.98 + 5*3.6 = 21.98 is already over
+    // the ring. So FIVE. Both are filled one at a time through `flowerFits`, which since the
+    // ruling is the only stacking rule there is.
     {
-      const capP = flowerCapacity(BB_POLLEN_R);
-      const capN = flowerCapacity(BB_NECTAR_R);
-      const stack: number[] = [];
-      let placed = 0;
-      while (flowerFits(stack, () => P, BB_POLLEN_R) && placed < 50) {
-        stack.push(400 + placed);
-        placed++;
-      }
+      const capP = flowerCapacity('pollen');
+      const capN = flowerCapacity('red');
+      const fill = (kind: BbElementKind): number[] => {
+        const stack: number[] = [];
+        while (flowerFits(stack, () => kind, bbElementRadius(kind)) && stack.length < 50) {
+          stack.push(400 + stack.length);
+        }
+        return stack;
+      };
+      const byP = fill(P);
+      const byN = fill(R);
+      const zN = flowerStackZ(byN, () => R);
       check(
-        'flower: capacity by height',
-        capP === 8 && capN === 6 && placed === capP,
-        `pollen ${capP} (expect 8), nectar ${capN} (expect 6); filled one pollen at a time: ${placed}`,
+        'flower: capacity by height — 8 POLLEN, and only 5 NECTAR because the ring seats the first',
+        capP === 8 && capN === 5 && byP.length === capP && byN.length === capN,
+        `pollen ${capP} (expect 8, filled ${byP.length}), nectar ${capN} (expect 5, filled ${byN.length}); ` +
+          `nectar zs [${zN.map((z) => z.toFixed(2)).join(', ')}] under TOP_Z ${BB_FLOWER_TOP_Z}`,
+      );
+    }
+
+    // 10b. THE SORTER ITSELF (field-plan §2.2, owner ruling 2026-09-12). Three cases, each an
+    // OUTCOME the seat rule exists to produce rather than a restatement of its arithmetic.
+    {
+      // (a) a bare NECTAR spans the ring to its own diameter above it, and SCORES.
+      const bare = flowerStackZ([1], () => R);
+      const bareScore = flowerScore([1], () => R);
+      const lo = bare[0] - BB_NECTAR_R;
+      const hi = bare[0] + BB_NECTAR_R;
+      check(
+        'flower sorter: a bare NECTAR seats ON the middle ring — 3.98 to 7.58, scoring by geometry',
+        Math.abs(lo - BB_FLOWER_MID_Z) < 1e-9 &&
+          Math.abs(hi - (BB_FLOWER_MID_Z + 2 * BB_NECTAR_R)) < 1e-9 &&
+          bareScore.inVolume === 1 &&
+          bareScore.owner === 'red',
+        `spans ${lo.toFixed(2)}..${hi.toFixed(2)} (ring ${BB_FLOWER_MID_Z}) · inVolume ${bareScore.inVolume} owner ${bareScore.owner}` +
+          ` · it used to rest on the floor at 0.43..4.03 and clear the volume by 0.05 in`,
+      );
+
+      // (b) a POLLEN UNDER a seated NECTAR is in the space the ring leaves. Retrieval pops the
+      // pollen (G418.B) and the NECTAR DOES NOT DROP — it was never resting on it.
+      const kinds = new Map<number, BbElementKind>([[10, P], [11, R]]);
+      const kindOf = (id: number): BbElementKind => kinds.get(id) ?? 'pollen';
+      const before = flowerStackZ([10, 11], kindOf);
+      const got = flowerRetrieve([10, 11], kindOf);
+      const after = flowerStackZ(got.stack, kindOf);
+      check(
+        'flower sorter: retrieving the POLLEN from under a ring-seated NECTAR does not lower the NECTAR',
+        got.id === 10 && got.stack.join() === '11' && Math.abs(after[0] - before[1]) < 1e-9,
+        `popped ${got.id}, stack [${got.stack}] · nectar z ${before[1].toFixed(2)} → ${after[0].toFixed(2)} · ` +
+          `the pollen was at ${before[0].toFixed(2)}, under the ring`,
+      );
+
+      // (c) the STAGED flower (§10.3.1, four POLLEN) still reads 3 in volume and 0 points — the
+      // outcome `spawn.ts` now stages through this same function.
+      const staged = [20, 21, 22, 23];
+      const stagedZ = flowerStackZ(staged, () => P);
+      const stagedScore = flowerScore(staged, () => P);
+      check(
+        'flower sorter: the STAGED 4 POLLEN still read 3 in volume and 0 points',
+        stagedScore.inVolume === 3 && stagedScore.ownerPts === 0 && stagedScore.owner === null && stagedScore.bonusPts === 0,
+        `inVolume ${stagedScore.inVolume} pts ${stagedScore.ownerPts} owner ${stagedScore.owner} bonus ${stagedScore.bonusPts} · ` +
+          `zs [${stagedZ.map((z) => z.toFixed(2)).join(', ')}] · the bottom one tops out at ` +
+          `${(stagedZ[0] + BB_POLLEN_R).toFixed(2)} < ${BB_FLOWER_MID_Z}`,
       );
     }
 
