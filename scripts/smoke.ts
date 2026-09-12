@@ -7309,6 +7309,81 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       );
     }
 
+  // ---- LAN over WebRTC: the data path (docs/lan-webrtc.md step 3)
+  /**
+   * `RTCPeerConnection` does not exist under Node, so these are source-shape checks rather than
+   * a live handshake. Each one pins a decision that is invisible at runtime until it is wrong in
+   * a gym: which lane a message takes, whether a LAN match can quietly become a relayed internet
+   * match, and whether a recoverable blip is told apart from a real drop.
+   */
+  {
+    const peer = readFileSync('src/net/lanPeer.ts', 'utf8');
+    const sigc = readFileSync('src/net/lanSignalClient.ts', 'utf8');
+
+    check(
+      'lan rtc: the control lane is ordered and reliable',
+      /createDataChannel\(CONTROL_LABEL, \{ ordered: true \}\)/.test(peer),
+    );
+    check(
+      'lan rtc: the hot lane is unordered with no retransmits (the head-of-line fix)',
+      /createDataChannel\(HOT_LABEL, \{ ordered: false, maxRetransmits: 0 \}\)/.test(peer),
+    );
+    check(
+      'lan rtc: `{ reliable: false }` is what routes a send onto the hot lane',
+      /opts\?\.reliable === false/.test(peer),
+    );
+    check(
+      'lan rtc: a closed hot lane falls back to control rather than dropping input silently',
+      /wantHot && this\.link\.hot\.readyState === 'open' \? this\.link\.hot : this\.link\.control/.test(peer),
+    );
+
+    check(
+      'lan rtc: no STUN and no TURN — a LAN match connects directly or not at all',
+      /iceServers: \[\]/.test(peer) && !/turn:|stun:/.test(peer),
+    );
+
+    // the netcodeplan.md §25 lesson, pinned
+    check(
+      'lan rtc: `disconnected` reports down and starts a grace timer',
+      /s === 'disconnected'/.test(peer) && /LAN_DISCONNECT_GRACE_MS/.test(peer),
+    );
+    check(
+      'lan rtc: `failed`/`closed` are a real failure, not the same thing as `disconnected`',
+      /s === 'failed' \|\| s === 'closed'/.test(peer),
+    );
+    check(
+      'lan rtc: recovering from `disconnected` cancels the timer and reopens',
+      /s === 'connected' \|\| s === 'completed'/.test(peer) && /this\.reopenCb\?\.\(\)/.test(peer),
+    );
+
+    check(
+      'lan rtc: both channels must be open before a link is handed out (no half-connect)',
+      /Promise\.all\(\[waitOpen\(control\), waitOpen\(hot\)\]\)/.test(peer),
+    );
+    check(
+      'lan rtc: ICE candidates that arrive before the answer are queued, not thrown away',
+      /pending\.push\(frame\.candidate\)/.test(peer) && /pending\.splice\(0\)/.test(peer),
+    );
+
+    /* The file's own header EXPLAINS why `lanServerUrl` is the wrong thing here, so a bare
+       search finds the explanation and passes whatever the code does. Strip comments first —
+       the same trap the lan launcher checks above fell into. */
+    const sigCode = sigc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    check(
+      'lan signal client: the rendezvous is always the CLOUD, never a LAN address',
+      /gameServerUrl\(\)/.test(sigCode) && !/lanServerUrl/.test(sigCode),
+    );
+    check(
+      'lan signal client: the host token is read here, so a caller cannot assert one',
+      /getAuthToken\(\)/.test(sigc),
+    );
+    check(
+      'lan signal client: a refusal from the server rejects the in-flight request',
+      /msg\.t === 'lanError'/.test(sigc),
+    );
+  }
+
+
     // ---- the room itself is browser-portable, which is what makes hosting in a tab possible
     {
       const roomSrc = readFileSync('server/room.ts', 'utf8');
