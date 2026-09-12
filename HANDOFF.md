@@ -1,3 +1,18 @@
+> **2026-09-12e — the SAVED-ROBOT line reads the `labels.configSummary` slot.** The third
+> site of the seam bug the preset LIST and the hero STAT TILES had, and the last one in
+> `Menu.tsx`: the `.om` detail line under each saved robot was `isDecode ? … : …`, an `else`
+> rather than a default, so a BIOBUZZ slot was described in Chain Reaction’s words off
+> `scoreMode` — the lossy legacy mirror — printing a launcher-less build as a turret and
+> never mentioning the lift. No new slot: BIOBUZZ already filled `labels.configSummary` and
+> `buildSummary` already read it. DECODE’s and CR’s inline arms are byte-identical.
+> Audited the rest of the file with it: the PRESET card body has no equivalent gap (its slot
+> test is the same slot that picks the list — now pinned), and every other `isDecode` is
+> either non-printing or inside the `Builder ? … : (…)` else-branch BIOBUZZ never renders.
+> Its smoke section sits directly after the stat-tiles one in `scripts/smoke-biobuzz/core.ts`
+> and pins the WIRING at the source — a correct `bbConfigSummary` no screen reads is
+> invisible to any check that calls it directly. Merged with alpha (both sections kept);
+> `npm test` ALL PASS twice, `npm run build` clean, `npm run uiaudit` at baseline.
+
 # HANDOFF — 2026-09-12d (the sync-engine review, verified and rewritten)
 
 > **2026-09-12d — alpha IS deployed, and LAN no longer needs a Vercel edit.** The alpha Fly app

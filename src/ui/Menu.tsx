@@ -307,6 +307,14 @@ export function Menu({ settings, onChange }: Props) {
 
   // ---- the player's SAVED robot library (their own full robots, up to 3) ----
   const savedRobots = settings.savedRobots;
+  // The ONE line that says what a build is — the module's `labels.configSummary`, which the
+  // leaderboard, the lobby roster and the strategy card already print through `buildSummary`.
+  // Read here for the same reason the preset list is: the two-valued branch below is an
+  // `else`, not a default, so a third game was not described plainly — it was described in
+  // Chain Reaction's words, off `scoreMode`, the LOSSY legacy MIRROR `src/sim/spawn.ts`
+  // writes unconditionally. A launcher-less BIOBUZZ build therefore read as a turret it does
+  // not have, and the LIFT half of its mechanism was never mentioned at all.
+  const gameSummary = mod.labels?.configSummary;
   // a saved slot is the active one when the whole robot matches (identity + build)
   const sameRobot = (a: RobotSpec, b: RobotSpec): boolean =>
     specMatches(a, b) &&
@@ -481,8 +489,15 @@ export function Menu({ settings, onChange }: Props) {
                     the DECODE fields whatever game you were in — intake preset,
                     flywheel inertia, colour sorter — none of which a Chain Reaction
                     robot has or uses, so a CR saved slot described a robot that did
-                    not exist. Same split the leaderboard's spec summary makes. */}
-                {isDecode ? (
+                    not exist. Same split the leaderboard's spec summary makes.
+                    A game may now own the sentence outright through `labels.configSummary`;
+                    the two branches below are DECODE's and CR's, unchanged. */}
+                {gameSummary ? (
+                  // the game writes its own sentence — the SAME one the leaderboard, the
+                  // lobby roster and the strategy card print, so a saved slot and a record
+                  // row can never describe one robot in two different vocabularies
+                  <span className="om">{gameSummary(r)}</span>
+                ) : isDecode ? (
                   <span className="om">
                     {DRIVETRAIN_LABELS[r.drivetrain]} · {r.massLb} lb · {r.driveRpm} rpm ·{' '}
                     {INTAKE_SHORT[r.intake]} · {r.flywheelInertia} inertia
