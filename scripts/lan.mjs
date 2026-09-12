@@ -69,12 +69,18 @@ function addresses() {
   return out.sort((x, y) => Number(y.private) - Number(x.private));
 }
 
-/** `npm` is `npm.cmd` on Windows, and `spawnSync` without a shell will not find the plain name. */
+/**
+ * `npm` is `npm.cmd` on Windows, and since Node 18.20/20.12 `spawnSync` REFUSES to run a `.cmd`
+ * without `shell: true` — it fails with `EINVAL`, which says nothing about the cause. The
+ * arguments here are static literals, so there is nothing for a shell to re-interpret.
+ */
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+/** spawnSync options every npm call needs on Windows; see NPM above. */
+const NPM_SHELL = process.platform === 'win32';
 
 function buildClient() {
   console.log('[lan] dist/ is missing — building the client once (this takes a minute)…');
-  const r = spawnSync(NPM, ['run', 'build'], { cwd: ROOT, stdio: 'inherit' });
+  const r = spawnSync(NPM, ['run', 'build'], { shell: NPM_SHELL, cwd: ROOT, stdio: 'inherit' });
   if (r.error) {
     console.error(`[lan] could not run ${NPM}: ${r.error.message}`);
     console.error('[lan] Node and npm must be on PATH. https://nodejs.org');

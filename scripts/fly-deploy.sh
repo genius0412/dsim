@@ -54,16 +54,41 @@ if [ "$ALPHA" -eq 1 ]; then
 fi
 
 APP="${FLY_APP:-dohun-sim-decode}"
+
+# THE FLEET, DECLARED. This line is the in-repo source of truth for which regions run
+# a machine, and `npm run test:mm` asserts that server/regions.ts agrees with it.
+#
+# It exists because the two drifted and the failure was silent: `ord`, `gru` and `jnb`
+# all had live machines while `DEPLOY_REGIONS` still listed five regions, and
+# `interRegionMs` answers a RADIUS_MAX-sized penalty for any region it has no row for.
+# So a player whose Anycast landing region was missing did not read as "far" — they read
+# as unpairable until the search radius saturated six seconds later, and never at all if
+# they had asked to stay region-local. Two players in the same city could not be matched
+# to each other. Nothing logs when this happens.
+#
+# ADD A REGION HERE AND IN server/regions.ts (both DEPLOY_REGIONS and the RTT table) IN
+# THE SAME CHANGE. The test fails if this list names a region the code does not know.
+FLEET_REGIONS=(iad ord sjc lhr syd nrt gru jnb)
+
 # EVERY region except the always-warm primary (iad) runs the cheap shared size.
 # sjc joined this list 2026-07-20 (cost pass): US West is redundant with iad for
 # the ~75% of games that are solo record runs, and it auto-stops when idle anyway.
 # ord (US Central) joined 2026-09-06 for the same reason it is cheap to have: a
 # satellite costs nothing while it is stopped, and it only wakes when somebody in
 # the middle of the country actually hosts a room there.
-# gru (São Paulo) and jnb (Johannesburg) joined the same day, on the same logic:
+# gru (Sao Paulo) and jnb (Johannesburg) joined the same day, on the same logic:
 # both continents were >200ms from EVERY existing region, which is the difference
-# between playable and not. There is NO Middle East region on Fly — the nearest
+# between playable and not. There is NO Middle East region on Fly - the nearest
 # option for those players stays lhr, or fra if it is ever added here.
+#
+# WARNING: ALL SEVEN STAY IN THIS LIST. alpha proposed trimming it to four, to avoid
+# silently bumping ord/gru/jnb from 512MB to 1024 - a fair concern, but omitting a
+# region here does not leave it ALONE, it leaves it to fly.toml, whose single [[vm]]
+# is shared-cpu-4x. So dropping three regions from the re-shrink would have UPSIZED
+# them to 4x on the next deploy, which is the exact bug this wrapper exists to
+# prevent and the opposite of the intent. Memory stays at the live 512 for now:
+# re-provisioning the fleet is a deliberate cost decision, not something to fold
+# into a penalty hotfix. Raise SATELLITE_MEMORY on its own, with all seven listed.
 SATELLITES=(ord sjc lhr gru jnb syd nrt)
 SATELLITE_SIZE=shared-cpu-1x
 # MB. Was 1024, on the grounds that shared-cpu-1x's 256MB default is "too tight for

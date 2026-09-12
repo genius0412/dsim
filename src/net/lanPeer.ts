@@ -100,6 +100,44 @@ export interface LanLink {
   hot: RTCDataChannel;
   /** the signalling peer id on the other end */
   peer: string;
+  /**
+   * Frames that arrived before the consumer attached its own listener — see `bufferEarly`.
+   *
+   * Stops the buffering and hands the queue over. **Call it and attach your listeners in the
+   * SAME synchronous block**: JavaScript dispatches an event as a task, so nothing can arrive
+   * between two adjacent statements, and doing it in two ticks re-opens the hole this closes.
+   */
+  takeEarly(): string[];
+}
+
+/**
+ * ⚠️ **A DATACHANNEL DELIVERS TO WHOEVER IS LISTENING AT THE MOMENT A FRAME ARRIVES, AND
+ * BUFFERS NOTHING FOR A LISTENER THAT ATTACHES LATER.**
+ *
+ * That is a real race here rather than a theoretical one, because the first frame of the whole
+ * protocol is sent the instant the channel opens: a guest's `LobbyClient` sends `join` as soon
+ * as its transport reports open, and the host cannot attach its own `message` listener until
+ * `acceptLanGuest` has resolved and `admit` has stored the link — a microtask or two later.
+ * Measured between two tabs: the link came up, the host counted the guest, and then both sides
+ * sat there, the guest showing CONNECTING forever because its `join` had been dispatched into
+ * a channel nobody was listening to and `welcome` was therefore never sent.
+ *
+ * So both ends buffer from the moment the channel objects exist. The queue is bounded by the
+ * handshake being milliseconds long and by the fact that a peer sends one frame before it hears
+ * back; it is handed over by `takeEarly` and the listeners are dropped at the same time.
+ */
+function bufferEarly(control: RTCDataChannel, hot: RTCDataChannel): () => string[] {
+  const early: string[] = [];
+  const onEarly = (e: MessageEvent): void => {
+    if (typeof e.data === 'string') early.push(e.data);
+  };
+  control.addEventListener('message', onEarly);
+  hot.addEventListener('message', onEarly);
+  return () => {
+    control.removeEventListener('message', onEarly);
+    hot.removeEventListener('message', onEarly);
+    return early.splice(0);
+  };
 }
 
 function waitOpen(ch: RTCDataChannel): Promise<void> {
@@ -140,6 +178,8 @@ export async function connectToLanHost(
   const pc = new RTCPeerConnection(rtcConfig);
   const control = pc.createDataChannel(CONTROL_LABEL, { ordered: true });
   const hot = pc.createDataChannel(HOT_LABEL, { ordered: false, maxRetransmits: 0 });
+  // see `bufferEarly`: the host's first frame can land before the transport exists
+  const takeEarly = bufferEarly(control, hot);
 
   wireIce(pc, bus, hostId);
   /* Candidates can arrive before the answer has been applied, and `addIceCandidate` throws if
@@ -188,7 +228,7 @@ export async function connectToLanHost(
     await pc.setLocalDescription(offer);
     bus.signal(hostId, JSON.stringify({ k: 'offer', sdp: offer.sdp ?? '' } satisfies SignalFrame));
     await Promise.race([Promise.all([waitOpen(control), waitOpen(hot)]), gone, timeout]);
-    return { pc, control, hot, peer: hostId };
+    return { pc, control, hot, peer: hostId, takeEarly };
   } catch (e) {
     pc.close();
     throw e;
@@ -217,16 +257,39 @@ export async function acceptLanGuest(
   let remoteSet = false;
   let control: RTCDataChannel | null = null;
   let hot: RTCDataChannel | null = null;
+  let takeEarly: (() => string[]) | null = null;
+
+  /**
+   * ⚠️ **A GUEST LEAVING THE RENDEZVOUS IS NOT A GUEST LEAVING** — and after a SUCCESSFUL join
+   * it is the normal case, not an edge one. `joinLanRoom` closes its signalling socket the
+   * instant both channels are open ("the introduction is over"), so the server reports that
+   * guest gone to the host moments after the link comes up. Honouring it unconditionally tore
+   * down the connection that had just succeeded: the guest reached the lobby and was
+   * immediately told it had lost the game server, while the host went back to "waiting for
+   * players". Found by running it between two tabs; it would have done the same through the
+   * cloud.
+   *
+   * So `gone` is disarmed the moment the guest's channels EXIST. That is the last point at
+   * which the rendezvous is still telling us something we cannot find out for ourselves: a
+   * guest that dies after it has created channels is a dead `RTCPeerConnection`, which the
+   * timeout below, `waitOpen`'s own rejection, and the transport's `close`/`failed` handling
+   * all see directly. Before that point the report is real and still ends the handshake.
+   */
+  let channelsSeen = false;
 
   const bothOpen = new Promise<void>((resolve, reject) => {
     const ready = (): void => {
       if (control && hot) {
+        channelsSeen = true;
         Promise.all([waitOpen(control), waitOpen(hot)]).then(() => resolve(), reject);
       }
     };
     pc.addEventListener('datachannel', (e) => {
       if (e.channel.label === CONTROL_LABEL) control = e.channel;
       else if (e.channel.label === HOT_LABEL) hot = e.channel;
+      /* The guest sends `join` the moment ITS side opens, which is before `admit` can attach a
+         listener on this one. Buffer from here — see `bufferEarly`. */
+      if (control && hot && !takeEarly) takeEarly = bufferEarly(control, hot);
       ready();
     });
   });
@@ -257,7 +320,9 @@ export async function acceptLanGuest(
   let offGone = (): void => {};
   const gone = new Promise<never>((_, reject) => {
     offGone = bus.onPeerGone((peer) => {
-      if (peer === guestId) reject(new Error('That player left.'));
+      // see `channelsSeen` above: after that point this report says nothing the connection
+      // itself does not say, and a successful join always produces one
+      if (peer === guestId && !channelsSeen) reject(new Error('That player left.'));
     });
   });
 
@@ -269,7 +334,7 @@ export async function acceptLanGuest(
 
   try {
     await Promise.race([bothOpen, gone, timeout]);
-    return { pc, control: control!, hot: hot!, peer: guestId };
+    return { pc, control: control!, hot: hot!, peer: guestId, takeEarly: takeEarly ?? (() => []) };
   } catch (e) {
     pc.close();
     throw e;
@@ -299,22 +364,41 @@ export class DataChannelTransport implements Transport {
   private reopenCb: (() => void) | null = null;
   private downCb: (() => void) | null = null;
   private failCb: (() => void) | null = null;
+  /** frames received before the owner registered `onMessage` */
+  private readonly pending: string[] = [];
+  /**
+   * ⚠️ **OPEN IS A STATE, NOT AN EVENT — see `onOpen`.** A LAN transport is already open when
+   * its owner first sees it, so a one-shot `open` callback is registered too late by
+   * construction and the client never sends its `join`.
+   */
+  private opened = false;
   private disposed = false;
   private down = false;
   private graceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly link: LanLink) {
+    /* The same race `bufferEarly` exists for, one layer up: this object is constructed before
+       its owner calls `onMessage`, so a frame arriving in between has nowhere to go. It is
+       held rather than dropped. */
     const onMessage = (e: MessageEvent): void => {
-      if (typeof e.data === 'string') this.messageCb?.(e.data);
+      if (typeof e.data !== 'string') return;
+      if (this.messageCb) this.messageCb(e.data);
+      else this.pending.push(e.data);
     };
+    /* Take the handshake's buffer and attach in ONE synchronous block — see `takeEarly`. */
+    const early = link.takeEarly();
     link.control.addEventListener('message', onMessage);
     link.hot.addEventListener('message', onMessage);
+    this.pending.push(...early);
     link.control.addEventListener('close', () => this.fail());
     this.watchConnection();
     // both channels were open before the link was handed over, so the first open is immediate;
-    // deferred by a microtask so a caller still assigning callbacks does not miss it
+    // deferred by a microtask so a caller still assigning callbacks does not miss it — and
+    // LATCHED, because a caller that arrives after even that gets it from `onOpen`
     queueMicrotask(() => {
-      if (!this.disposed) this.openCb?.();
+      if (this.disposed) return;
+      this.opened = true;
+      this.openCb?.();
     });
   }
 
@@ -380,9 +464,25 @@ export class DataChannelTransport implements Transport {
 
   onMessage(cb: (data: string) => void): void {
     this.messageCb = cb;
+    // whatever arrived before there was anywhere to put it, in arrival order
+    for (const d of this.pending.splice(0)) cb(d);
   }
+  /**
+   * ⚠️ **FIRES IMMEDIATELY IF THIS TRANSPORT IS ALREADY OPEN**, and that is the whole reason
+   * this override exists.
+   *
+   * `LobbyClient.join` sends its `join` frame from `onOpen` and from nowhere else, which is
+   * correct for a `WebSocketTransport` — that one is handed over still dialling, so the
+   * callback is always registered before the socket opens. A LAN transport is the opposite:
+   * the handshake finished on the LAN screen and the connection is live by the time the lobby
+   * mounts, adopts it and registers anything. Measured between two tabs: the link came up, the
+   * host counted the guest, and the guest sat on CONNECTING forever — because its `join` was
+   * waiting on an event that had already happened. Same bug as `bufferEarly` one layer up, and
+   * it must be fixed on the LISTENER side: a transport cannot know how late its owner will be.
+   */
   onOpen(cb: () => void): void {
     this.openCb = cb;
+    if (this.opened && !this.disposed) cb();
   }
   onReopen(cb: () => void): void {
     this.reopenCb = cb;

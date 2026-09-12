@@ -5,7 +5,9 @@ import { LanHost, type HostHealth } from '../lan/hostRuntime';
 import { joinLanRoom } from '../lan/joinLan';
 import { setPendingLanRoom } from '../lan/pending';
 import { setTabHosting } from '../lan/hosting';
+import { keepHostedRoom, takeHostedRoom } from '../lan/hostKeeper';
 import { generateRoomCode, normalizeRoomCode } from '../net/roomCode';
+import { serverCaps } from '../net/api';
 import { useEscape } from './useEscape';
 import { appBuild, clearLanServer, lanActive, lanServerUrl, setLanServer } from '../net/env';
 import { LAN_DEFAULT_PORT, mixedContentBlock, parseLanAddress } from '../net/lanAddress';
@@ -56,7 +58,14 @@ export function LanPanel({
   /** hosting requires an account: the match data has to land somewhere */
   signedIn: boolean;
   /** connected to a LAN server — take the player to the room screen */
-  onConnected: () => void;
+  /**
+   * Go to the room screen. The CODE is passed when this navigation already knows which room
+   * to open — both WebRTC paths do, because the handshake that just happened was FOR that
+   * code, and making somebody type it again on the next screen (having just typed it here)
+   * is a second chance to get it wrong for no information gained. The two ADDRESS paths pass
+   * nothing: reaching a LAN server is not choosing a room on it.
+   */
+  onConnected: (code?: string) => void;
   /** leave the LAN screen without connecting to anything — see the note on `.ds-back` below */
   onBack: () => void;
 }) {
@@ -81,9 +90,68 @@ export function LanPanel({
   const [joinCodeErr, setJoinCodeErr] = useState('');
   const [joinCodeBusy, setJoinCodeBusy] = useState(false);
 
-  /* A host that navigates away has to stop hosting: the room lives in this tab, so leaving
-     the screen with it running would strand every guest on a room nobody is stepping. */
-  useEffect(() => () => tabHost?.stop(), [tabHost]);
+  /**
+   * MAY THIS PERSON HOST WHILE SIGNED OUT?
+   *
+   * Normally no, and the reason is on screen: the match is filed to the host's account
+   * afterwards. But a server with no accounts configured — somebody's laptop running the
+   * rendezvous on a LAN with no cloud at all — cannot verify anyone, so "sign in first" there
+   * asks for something that does not exist and disables the button forever. The server says
+   * which kind it is (`lanAnon`, see `LAN_ANON_HOSTS`); until the read lands this stays FALSE,
+   * so the stricter copy is what appears a beat early rather than a button that dies under a
+   * cursor already moving toward it.
+   */
+  const [anonHostOk, setAnonHostOk] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void serverCaps().then((c) => {
+      if (alive) setAnonHostOk(c.includes('lanAnon'));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const mayTabHost = signedIn || anonHostOk;
+
+  /**
+   * LEAVING THIS SCREEN STOPS HOSTING — **unless the host is leaving it to go and PLAY.**
+   *
+   * The room lives in this tab, so wandering off and abandoning it would strand every guest on
+   * a room nobody is stepping, and that is what the cleanup is for. But the host's own route
+   * into the match unmounts this component too, and stopping there terminated the Worker on
+   * the way to the room: the host clicked GO TO THE ROOM and arrived at a lobby waiting on a
+   * room that no longer existed, with the guest already in it. So a handed-off room is PARKED
+   * (`hostKeeper.ts`) and this cleanup leaves it alone.
+   */
+  const handedOff = useRef(false);
+  useEffect(
+    () => () => {
+      if (!handedOff.current) tabHost?.stop();
+    },
+    [tabHost],
+  );
+
+  /* Coming BACK to this screen adopts the parked room, so the host still sees the code they
+     read out and still has a way to stop it. The events it was built with belong to a
+     component that no longer exists, so they are re-pointed at this one. */
+  useEffect(() => {
+    const kept = takeHostedRoom();
+    if (!kept) return;
+    kept.setEvents({
+      onGuests: setTabGuests,
+      onHealth: setTabHealth,
+      onStopped: () => {
+        setTabHosting(false);
+        setTabHost(null);
+        setTabCode('');
+        setTabGuests(0);
+        setTabHealth(null);
+      },
+    });
+    setTabHost(kept);
+    setTabCode(kept.code);
+    setTabGuests(kept.guests);
+  }, []);
 
   const startTabHost = (): void => {
     setTabErr('');
@@ -123,8 +191,13 @@ export function LanPanel({
 
   const playTabHost = (): void => {
     if (!tabHost || !tabCode) return;
+    /* ⚠️ BOTH LINES, IN THIS ORDER, BEFORE THE NAVIGATION. The room is handed to the keeper
+       so this screen's unmount does not stop it, and the flag tells the cleanup that this is
+       a hand-off rather than an abandonment. */
+    handedOff.current = true;
+    keepHostedRoom(tabHost);
     setPendingLanRoom({ transport: tabHost.transport, code: tabCode, hosting: true });
-    onConnected();
+    onConnected(tabCode);
   };
 
   const joinByCode = (): void => {
@@ -136,7 +209,7 @@ export function LanPanel({
       .then((r) => {
         setPendingLanRoom({ transport: r.transport, code: r.code, hosting: false });
         setJoinCodeBusy(false);
-        onConnected();
+        onConnected(r.code);
       })
       .catch((e: Error) => {
         setJoinCodeErr(e.message || 'Could not reach that room.');
@@ -386,15 +459,21 @@ export function LanPanel({
               each other. After that the match runs entirely on your own network. If the venue
               has no internet at all, use one of the two options below instead.
             </p>
-            {!signedIn && (
+            {!signedIn && !anonHostOk && (
               <p className="ds-hint warn">
                 Sign in first. The matches played here are saved to your account, and there’s
                 nowhere for them to go otherwise.
               </p>
             )}
+            {!signedIn && anonHostOk && (
+              <p className="ds-hint warn">
+                This server has no accounts, so the match stays on this device until you play
+                one signed in somewhere that does.
+              </p>
+            )}
             {tabErr && <p className="ds-form-err">⚠ {tabErr}</p>}
             <div className="ds-actions">
-              <button className="ds-cta" onClick={startTabHost} disabled={!signedIn || tabBusy}>
+              <button className="ds-cta" onClick={startTabHost} disabled={!mayTabHost || tabBusy}>
                 {tabBusy ? 'STARTING…' : 'START HOSTING ▶'}
               </button>
             </div>

@@ -223,6 +223,42 @@ Each step was independently testable and landed on its own. All five are done.
 4. **Room in a Worker** ✅ `src/lan/hostWorker.ts`, fed by the `Client` shim. §6 measured here.
 5. **UI** ✅ host from the web LAN page; guests join by room code.
 
+### Testing it locally, with nothing deployed
+
+```
+npm run lan:tab
+```
+
+`scripts/lantab.mjs` puts the rendezvous on this machine and serves the client beside it, so
+the whole feature can be exercised between two laptops on a table before the cloud server
+carrying `lanSignal.ts` exists. Everyone — host included — opens the printed
+`http://<this machine>:8787`; the host starts hosting, reads the code out, the guests type it
+in. What passes through this process is still only the introduction: the match runs in the
+host's tab and the frames go straight between the machines.
+
+It is **not** `npm run lan`, and the difference is where the match runs. `npm run lan` makes
+this machine the game SERVER, stepping the room, reached by address. `npm run lan:tab` makes it
+only the introducer. Both set `LAN_MODE=1`, so neither can reach a database, verify a
+credential or hold an admin key.
+
+Two things it has to get right, because both fail as a LAN screen with no panel on it:
+
+- **`VITE_LAN_ENABLED` and `VITE_GAME_SERVER_URL` are baked in at BUILD time**, so a `dist/`
+  from an ordinary `npm run build` cannot be reused. The signalling URL must be this machine's
+  LAN ADDRESS — `localhost` in a client a GUEST runs points that guest at itself.
+  `dist/.lantab` stamps what the current build was built for, so a re-run rebuilds on a new
+  network or port and skips the minute otherwise.
+- **Nobody is signed in, and hosting normally requires an account.** See `LAN_ANON_HOSTS` in
+  `server/index.ts`: a server with no `NEON_AUTH_URL` cannot verify anybody, so "sign in first"
+  there asks for something that cannot exist. The exception is DERIVED from that fact rather
+  than declared as a flag, precisely so a deployment that DOES have accounts cannot be talked
+  into it; prod and alpha both set `NEON_AUTH_URL` and both keep refusing an anonymous host.
+  The server advertises the state as the `lanAnon` capability and the panel reads it.
+
+What such a run therefore does **not** cover: the auth handshake, and the upload. A match
+hosted this way stays on the device in the upload backlog (`pendingLanUploads`), which is the
+same place an offline match waits — it drains against a real server later.
+
 ### What has been verified, and how
 
 Source-shape checks live in `npm test` (`lan signal:` / `lan rtc:` / `lan host:` / `lan tab:`).
@@ -239,7 +275,68 @@ Those pin decisions; they do not prove the thing runs. These were run live in a 
 | which ICE pair actually carried it | **`host` candidate over udp** — direct, no relay, as §3 requires |
 | lane selection through `DataChannelTransport` | `join` → control, `{reliable:false}` input → hot, both delivered |
 
-⚠️ **NOT yet verified end-to-end between two machines**, and it cannot be until the server
-carrying `lanSignal.ts` is deployed — hosting claims a code through the CLOUD rendezvous and
-verifies an auth token there, so the first real host-and-guest test is a post-deploy one. The
-handshake above stands in for it: it is the same code on both ends, with the rendezvous faked.
+### Two real peers, a whole match: `npm run lan:probe`
+
+Everything in the table above is ONE page. The table is also why the feature looked finished
+while it did not work: every piece was measured in isolation and the bugs were all in the
+ORDERING BETWEEN two contexts, which a single page cannot reproduce. `scripts/lanprobe.cjs`
+opens two real Electron windows on a running `npm run lan:tab`, clicks the real buttons, and
+takes a hosted match from START HOSTING to a clock ticking down on the guest's HUD:
+
+```
+npm run lan:tab                            # leave it running
+npm run lan:probe                          # 15 checks, ALL PASS
+npx electron scripts/lanprobe.cjs --guests 3   # a FULL room: host + 3 guests, 2v2
+```
+
+Both sizes pass. The 2v2 is the one worth re-running after any change to the host runtime: it
+is three simultaneous `RTCPeerConnection`s fed by one Worker, and the last check reads the
+clock on all three guests (`0:29 → 0:28 | 0:28 → 0:27 | 0:27 → 0:26` — they are a beat apart
+because they are sampled in turn, not because they are drifting).
+
+`--soak <seconds>` then keeps the match running and samples the rate the GUEST is actually
+receiving, off the connection-quality readout the HUD already computes. That is the honest
+number: a host can believe it is stepping at 60 Hz and be delivering nothing, and a room that
+has quietly stopped looks fine from the host's own screen. `--throttle` lets the host window be
+background-throttled like an ordinary hidden tab — §6 measured a hidden WORKER holding 60 Hz,
+but the peer connections live on the PAGE, which is the half that gets throttled.
+
+| run | snapshots at the guest, sampled every 5 s |
+|---|---|
+| 1 guest, host not throttled, 60 s | mean **30.0 Hz**, worst 30 |
+| 1 guest, host background-throttled, 150 s (a whole match) | mean **30.0 Hz**, worst 30 |
+| 3 guests, host background-throttled, 150 s | mean **30.0 Hz**, worst 30 |
+
+Flat, on every sample, in all three. The split holds up: the page being throttled does not
+starve the match, because the page only forwards already-encoded frames and the 60 Hz loop is
+somewhere the throttle cannot reach. ⚠️ One limit on that claim — these windows were hidden
+from creation and the match is 2:30, so they sit in Chromium's BUDGET-based throttling and
+never reach the INTENSIVE regime (5 minutes hidden), which is the one §6's 7-minute run was
+measuring. A host who leaves a match open, tabs away for ten minutes and comes back is still
+unmeasured.
+
+It found four bugs, and not one of them is a typo:
+
+1. **The host tore down the connection that had just succeeded.** A guest closes its rendezvous
+   socket the moment its channels open, and the host read that as the guest leaving.
+2. **The first frame was dispatched into a channel nobody was listening to.** A DataChannel
+   buffers nothing for a listener that attaches later, and `join` is sent the instant the
+   channel opens — before `admit` has stored the link.
+3. **`open` was delivered to a listener that did not exist yet**, on BOTH transports.
+   `LobbyClient.join` sends `join` from `onOpen` and from nowhere else, which is correct for a
+   `WebSocketTransport` (handed over still dialling) and wrong for a LAN one (already open by
+   the time the lobby adopts it). Both sides sat on CONNECTING, each waiting for the other.
+4. **Going to the room stopped the room.** React ran the LAN screen's cleanup on the host's own
+   way into the match, terminating the Worker behind them.
+
+Two more decisions came out of it: `start()` no longer resolves until the Worker says the room
+exists (it was publishing a code for a room that might never have been built — a Worker that
+fails to load is silent), and the room RESERVES its host seat, because the tab that runs the
+room joins LAST and `Room.add` had handed the crown to a guest.
+
+⚠️ **NOT yet verified end-to-end between two machines THROUGH THE CLOUD**, and it cannot be
+until the server carrying `lanSignal.ts` is deployed — hosting claims a code through the cloud
+rendezvous and verifies an auth token there, so the first real signed-in host-and-guest test is
+a post-deploy one. Two things stand in for it meanwhile: the handshake above (the same code on
+both ends, rendezvous faked) and `npm run lan:tab` + `npm run lan:probe`, which is the whole
+path between two real peers with the rendezvous local and nobody signed in.

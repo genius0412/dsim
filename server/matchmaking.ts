@@ -1,10 +1,9 @@
 import { Room, type Client } from './room';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
-import { actForSeason, currentSeasonNumber, getRating, createPendingMatch } from './db/repo';
+import { actFor, getRating, getSkill, createPendingMatch } from './db/repo';
 import { dbEnabled } from './db/pool';
-import { BALANCE_VERSION } from '../src/config';
 import type { GameId } from '../src/types';
-import { bestHost, type PingInfo } from './regions';
+import { DEPLOY_REGIONS, bestHost, type PingInfo } from './regions';
 import type { PendingMatch, PendingRosterEntry } from './matchTypes';
 import { QUEUE_NEED, type LobbyPlayer, type QueueMode, type ServerMsg } from '../src/net/protocol';
 
@@ -56,6 +55,112 @@ export function radiusCeiling(waitedMs: number, expandBumps: number, noWiden?: b
   if (noWiden) return 0; // stay region-local forever
   const steps = Math.floor(Math.max(0, waitedMs) / RADIUS_INTERVAL_MS) + expandBumps;
   return Math.min(RADIUS_MAX_MS, RADIUS_BASE_MS + RADIUS_STEP_MS * steps);
+}
+
+/**
+ * SKILL SCHEDULE — the rating spread a waiting entry will tolerate in its match.
+ *
+ * Units are Glicko-2 rating points, and the numbers come from what a gap MEANS. At an
+ * established RD the expected score for the stronger player runs 56.8% at a 50-point
+ * gap, 63.3% at 100, 74.8% at 200, 83.6% at 300 and 89.8% at 400. So ±200 is the edge
+ * of a game that is still a game, and anything under ±50 is noise on a pool this size.
+ *
+ * IT WIDENS ON THE SAME CLOCK AS THE RADIUS, and saturates at the same instant —
+ * `RADIUS_INTERVAL_MS`, unbounded from step 2, which is the 6s where `radiusCeiling`
+ * reaches `RADIUS_MAX_MS`. That lock is deliberate: with two independent schedules a
+ * group can sit latency-eligible and skill-blocked (or the reverse) for an unbounded
+ * stretch, and nobody watching the queue can tell which gate is holding them.
+ *
+ * UNBOUNDED, not merely large, is what makes anti-starvation a theorem rather than a
+ * tuning question: from 6 seconds on, every pairing that would have been legal before
+ * this existed is legal again. The gate can delay a match; it can never prevent one.
+ *
+ * This pool is young and clusters hard around the 1000 default, so the median match was
+ * already inside ±200 by luck. The tail is the harm and the tail is the target —
+ * measured on today's latency-only pairing at 2000 concurrent, the spread is p50 164 /
+ * p90 436 / p99 715, and a 715-point gap is a ~95% foregone conclusion.
+ *
+ * SKILL_BASE IS THE DIAL THAT BINDS. Swept over the same 2000-concurrent population,
+ * rating spread against wait (scripts/zz-mm-quality.ts, 6 simulated minutes each):
+ *
+ *   SKILL_BASE   spread p50 / p90 / p99     wait p50 / p90 / p99
+ *          100        95 /  320 /  516            2 /   4 /   7
+ *          200       140 /  322 /  516            2 /   3 /   5    <- shipped
+ *          400       171 /  357 /  491            2 /   3 /   4
+ *      (off)         176 /  439 /  636            2 /   3 /   3
+ *
+ * 200 takes essentially all of the p90 win (439 -> 322, a 27% cut in the tail that
+ * actually hurts) for two seconds at p99. Tightening to 100 buys a much better MEDIAN
+ * and almost no further p90, for another two seconds — the wrong trade on a young pool
+ * that is already clustered near the 1000 default, where the median match was fine by
+ * luck and the tail was the harm. Revisit when the population is dense enough that a
+ * tighter band still has somebody inside it.
+ */
+export const SKILL_BASE = 200;
+export const SKILL_STEP = 300;
+/**
+ * Steps after which the band is UNBOUNDED. 2 puts it at 6s, where the radius also
+ * saturates.
+ *
+ * ⚠️ MEASURED, THIS DIAL DOES NOT CURRENTLY BIND. Over a 2000-concurrent population
+ * (scripts/zz-mm-quality.ts) moving it from 2 to 4 changed nothing at all — not one
+ * percentile of wait or of spread — because the queue drains long before anyone reaches
+ * the saturation step (wait p99 is 5s against a 6s opening). It is kept because it is
+ * what makes anti-starvation a theorem rather than a hope, and it will start to bind on
+ * a pool deep enough to hold people past six seconds. Do not tune it against today's
+ * numbers; it has no effect on them.
+ *
+ * SKILL_BASE is the dial that does bind — see the sweep on it above.
+ */
+export const SKILL_OPEN_STEPS = 2;
+
+export function skillCeiling(waitedMs: number, expandBumps: number): number {
+  const steps = Math.floor(Math.max(0, waitedMs) / RADIUS_INTERVAL_MS) + expandBumps;
+  return steps >= SKILL_OPEN_STEPS ? Infinity : SKILL_BASE + SKILL_STEP * steps;
+}
+
+/**
+ * The rating spread of a trial group: max − min over its RATED members.
+ *
+ * A max over members rather than a pairwise distance, mirroring how `spread` treats
+ * latency — and, like it, monotone under adding a member, which is what lets the greedy
+ * fill trust a partial group's number.
+ *
+ * UNRATED MEMBERS ARE NOT COUNTED, they are not refused. An unplaced player (fewer than
+ * PLACEMENT_GAMES on this board) and a player whose rating read has not landed are the
+ * same situation — no number to match on — and the answer to that is to let them play,
+ * not to hold them out. A DB outage, a dev box, a fresh act and everybody's first five
+ * games all therefore degrade to exactly the latency-only pairing that shipped before
+ * this, which is the correct floor and by some margin the most likely state of a young
+ * ladder.
+ */
+function ratingSpan(group: QueueEntry[], extra: QueueEntry[]): number {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const e of group) {
+    if (e.rating === undefined || !e.placed) continue;
+    if (e.rating < lo) lo = e.rating;
+    if (e.rating > hi) hi = e.rating;
+  }
+  for (const e of extra) {
+    if (e.rating === undefined || !e.placed) continue;
+    if (e.rating < lo) lo = e.rating;
+    if (e.rating > hi) hi = e.rating;
+  }
+  return hi < lo ? 0 : hi - lo; // nobody rated ⇒ nothing to gate on
+}
+
+/** the tightest skill ceiling in a trial — the freshest arrival caps the group, exactly
+ * as it does for the radius. An unrated member imposes none. */
+function skillCapOf(
+  group: QueueEntry[],
+  extra: QueueEntry[],
+  ceil: (e: QueueEntry) => number,
+): number {
+  let cap = Infinity;
+  for (const e of group) if (e.rating !== undefined && e.placed) cap = Math.min(cap, ceil(e));
+  for (const e of extra) if (e.rating !== undefined && e.placed) cap = Math.min(cap, ceil(e));
+  return cap;
 }
 
 export interface QueueEntry {
@@ -114,6 +219,28 @@ export interface QueueEntry {
   enqueuedAt: number;
   /** extra manual widen steps from `expandSearch` */
   expandBumps: number;
+  /**
+   * This player's rating on the board this queue pairs for, STAMPED BY THE SERVER.
+   *
+   * `undefined` means "not known yet", and that is a real and ordinary state, not an
+   * error: the read is fired off the join path and lands a moment later, so an entry
+   * can sit in the queue briefly with no rating. It costs nothing — `tick()` re-attempts
+   * pairing every second, so the stamp is picked up on the next pass.
+   *
+   * NEVER READ FROM THE WIRE. The queue message carries no rating field and must not
+   * gain one: a client-declared ladder position is an exploit primitive, the same reason
+   * `LobbyPlayer.supporter` and `.role` are server-authored.
+   */
+  rating?: number;
+  /**
+   * Whether `rating` is a PLAYED rating rather than the 1000 default.
+   *
+   * The default is ambiguous — an account with no row on this board reads exactly the
+   * same as one that played to 1000 — so this is what a skill gate keys on. False means
+   * UNKNOWN SKILL, which must mean "do not gate": an unplaced player has no rating to
+   * match on and still has to get a game.
+   */
+  placed?: boolean;
   /** DEV FALLBACK only: told which local Room this connection landed in */
   onRoom?: (room: Room) => void;
 }
@@ -122,11 +249,28 @@ export interface QueueEntry {
  * Postgres; tests inject a recorder. */
 export type StageFn = (m: PendingMatch) => Promise<void>;
 
+/**
+ * Where a player's rating comes from. Production reads Postgres; tests inject a table.
+ *
+ * Injectable for the same reason `stage` is: `npm run test:mm` runs with no database
+ * and no sockets, and skill-based pairing is otherwise only exercisable against a live
+ * Neon instance with real accounts. Returning null is the FAIL-OPEN answer — DB off,
+ * signed out, or a read that threw — and must leave the entry unrated rather than
+ * defaulting it, so a database that cannot answer never gates anyone out of a match.
+ */
+export type RatingFn = (
+  userId: string,
+  mode: QueueMode,
+  game: GameId | undefined,
+) => Promise<{ rating: number; placed: boolean } | null>;
+
 export interface MatchmakerDeps {
   /** injectable clock (tests control widening); when set, the auto-widen timer is off */
   now?: () => number;
   /** override the staging step (default: Postgres pending_matches when dbEnabled) */
   stage?: StageFn;
+  /** override the rating read (default: Postgres elo_ratings when dbEnabled) */
+  rating?: RatingFn;
 }
 
 let roomSeq = 0;
@@ -137,6 +281,7 @@ export class Matchmaker {
   private readonly rooms = new Set<Room>();
   private readonly now: () => number;
   private readonly stage?: StageFn;
+  private readonly rating?: RatingFn;
   private readonly timer: ReturnType<typeof setInterval> | null;
 
   constructor(deps: MatchmakerDeps = {}) {
@@ -144,6 +289,21 @@ export class Matchmaker {
     // default staging: write to Postgres so the host machine can claim it. Absent
     // (no injected stage AND no DB) ⇒ localStart fallback.
     this.stage = deps.stage ?? (dbEnabled ? (m) => createPendingMatch(m) : undefined);
+    // default rating source: the act's elo_ratings row. Absent when the DB is off, which
+    // leaves every entry unrated and pairing exactly as latency-only as it is today.
+    this.rating =
+      deps.rating ??
+      (dbEnabled
+        ? async (userId, mode, game) => {
+            try {
+              const act = await actFor(game);
+              const s = await getSkill(userId, mode, act, game);
+              return { rating: s.rating, placed: s.placed };
+            } catch {
+              return null; // fail open — see RatingFn
+            }
+          }
+        : undefined);
     // auto-widen: re-attempt matches as ceilings grow. Disabled when a clock is
     // injected (deterministic tests drive matching via enqueue/expand/tick).
     this.timer = deps.now ? null : setInterval(() => this.tick(), 1000);
@@ -162,8 +322,43 @@ export class Matchmaker {
     entry.enqueuedAt = this.now();
     entry.expandBumps = entry.expandBumps ?? 0;
     this.queues[entry.mode].push(entry);
+    this.stampRating(entry);
     this.tryMatch(entry.mode);
     this.broadcastStatus(entry.mode);
+  }
+
+  /**
+   * Resolve this entry's rating and stamp it on, WITHOUT holding up the join.
+   *
+   * Deliberately not awaited. The queue press already runs three chained async steps
+   * before it gets here (verify the token, read standing, verify a party token), and a
+   * fourth in series would be felt on the one thing a player is watching. It does not
+   * need to be in series: `tick()` re-attempts pairing every second, so an entry whose
+   * rating lands 200ms late is simply not skill-gated for one pass and loses nothing.
+   *
+   * The entry is re-found by id before stamping rather than captured, because a player
+   * can leave, or re-queue under a new connection, while the read is in flight — and
+   * writing a rating onto an object that is no longer in the queue would at best do
+   * nothing and at worst resurrect a stale entry's identity onto a fresh one.
+   */
+  private stampRating(entry: QueueEntry): void {
+    const read = this.rating;
+    if (!read || !entry.userId) return;
+    const { id, mode, game, userId } = entry;
+    void read(userId, mode, game)
+      .then((s) => {
+        if (!s) return; // unknown skill — leave unrated, which means "do not gate"
+        const live = this.queues[mode].find((e) => e.id === id);
+        if (!live || live.userId !== userId) return; // left, or re-queued since
+        live.rating = s.rating;
+        live.placed = s.placed;
+        // a rating that lands between ticks should not wait up to a second for the
+        // next one — this entry may now have a partner it could not be matched to
+        this.tryMatch(mode);
+      })
+      .catch(() => {
+        /* fail open: an unrated entry pairs on latency alone */
+      });
   }
 
   remove(id: string): void {
@@ -208,6 +403,13 @@ export class Matchmaker {
 
   private ceilingOf(e: QueueEntry, now: number): number {
     return radiusCeiling(now - e.enqueuedAt, e.expandBumps, e.noWiden);
+  }
+
+  /** this entry's current skill tolerance. `noWiden` is deliberately NOT read: it is a
+   * statement about geography ("do not send me to another region"), and reading it here
+   * would silently pin such a player to a 200-point band for the whole session. */
+  private skillCeilingOf(e: QueueEntry, now: number): number {
+    return skillCeiling(now - e.enqueuedAt, e.expandBumps);
   }
 
   private tryMatch(mode: QueueMode): void {
@@ -259,8 +461,26 @@ export class Matchmaker {
         return { group, hostRegion: bestHost(group.map(toPing)).hostRegion };
       }
       const taken = new Set<number>([i]);
+      // THE REGION THE GROUP SO FAR ALL SHARES, when that is a region we deploy to.
+      // This is what makes the common case cheap, and it is a property of the GROUP, so
+      // it is re-derived as the group grows rather than fixed from the anchor.
+      //
+      // `bestHost` is an argmin over DEPLOY_REGIONS of the worst estimated ping. If
+      // every member of a trial shares a deployed region r, then hosting at r gives
+      // `interRegionMs(r, r) = 0` for all of them, so the spread is 0 and no other
+      // region can beat it. Spread 0 clears every ceiling the schedule can produce,
+      // `noWiden`'s 0 included. So for a homogeneous trial the minimax, the ceiling
+      // minimum and both array builds are all provably constant and can be skipped —
+      // and that is where the time is: bestHost alone is ~76% of a candidate's cost,
+      // the allocations only ~9%.
+      //
+      // NOTE the candidate SET is untouched; only the cost of pricing one is. Narrowing
+      // the scan to a pool was tried and is wrong twice over: a cross-region match could
+      // then never be found once the radius widened, and a PARTY whose members all sit
+      // in the anchor's region is a zero-spread candidate that lives in a different pool.
+      let homeRegion = freeRegion(anchor);
       while (group.length < need) {
-        let pick: { j: number; unit: QueueEntry[]; spread: number } | null = null;
+        let pick: { j: number; unit: QueueEntry[]; spread: number; span: number } | null = null;
         for (let j = 0; j < units.length; j++) {
           if (taken.has(j)) continue;
           const cand = units[j];
@@ -277,17 +497,45 @@ export class Matchmaker {
           // never put the same account in a group twice (backstop for the userId
           // dedup above) — a self-pair produces a frozen "ghost" robot
           if (cand.some((c) => c.userId && group.some((g) => g.userId === c.userId))) continue;
-          const trial = [...group, ...cand];
-          const { spread } = bestHost(trial.map(toPing));
-          const ceiling = Math.min(...trial.map((e) => this.ceilingOf(e, now)));
-          if (spread > ceiling) continue;
-          // STRICTLY closer to displace the incumbent, so an equally-close unit
-          // never jumps the queue ahead of one that has been waiting longer
-          if (!pick || spread < pick.spread) pick = { j, unit: cand, spread };
+          let spread: number;
+          if (homeRegion !== null && allIn(cand, homeRegion)) {
+            spread = 0; // homogeneous trial in a deployed region — see above
+          } else {
+            const trial = [...group, ...cand];
+            spread = bestHost(trial.map(toPing)).spread;
+            const ceiling = Math.min(...trial.map((e) => this.ceilingOf(e, now)));
+            if (spread > ceiling) continue;
+          }
+          // SKILL, second. Latency stays primary: a candidate is priced on distance
+          // first and only then asked whether the match would be one-sided, so a
+          // same-region opponent is never passed over for a better-rated distant one.
+          // Both schedules saturate together at 6s, so neither gate outlives the other.
+          const span = ratingSpan(group, cand);
+          if (span > skillCapOf(group, cand, (e) => this.skillCeilingOf(e, now))) continue;
+          // STRICTLY closer to displace the incumbent, so an equally-close unit never
+          // jumps the queue ahead of one that has been waiting longer. THE TIEBREAK IS
+          // WRITTEN OUT rather than left to iteration order, because roster order is
+          // not cosmetic: `allianceOrder` and assign's positional `i < half` split read
+          // it to decide who is red and what startIndex each player gets.
+          // and SPAN breaks a spread tie, which is where it does most of its work:
+          // inside one region every spread is 0, so today's nearest-first degenerates to
+          // pure FIFO and skill fills a total order that was previously arbitrary. A
+          // strict refinement — it never reorders a pair that spread alone separated.
+          if (
+            !pick ||
+            spread < pick.spread ||
+            (spread === pick.spread && span < pick.span) ||
+            (spread === pick.spread && span === pick.span && j < pick.j)
+          ) {
+            pick = { j, unit: cand, spread, span };
+          }
         }
         if (!pick) break;
         taken.add(pick.j);
         group.push(...pick.unit);
+        // once a member outside the shared region joins, the shortcut is void for the
+        // rest of this fill
+        if (homeRegion !== null && !allIn(pick.unit, homeRegion)) homeRegion = null;
       }
       if (group.length === need) {
         const { hostRegion } = bestHost(group.map(toPing));
@@ -306,15 +554,25 @@ export class Matchmaker {
     return groupUnits(this.queues[mode]);
   }
 
-  /** current overall ELO for a driver's intro card (best-effort; null on DB-off /
-   * signed-out / read failure — the intro just shows "Unranked") */
+  /**
+   * Current overall ELO for a driver's intro card (best-effort; null on DB-off /
+   * signed-out / read failure — the intro just shows "Unranked").
+   *
+   * PREFERS THE STAMP the entry already carries. This is awaited once per roster entry
+   * inside `assign`, between pairing and `matchAssigned`, and it used to resolve the act
+   * and read the rating every time — three sequential queries per player, so TWELVE for
+   * a 2v2, all of them on the wait between "match found" and the match appearing. The
+   * same number is now read once at enqueue, so in the ordinary case this is free.
+   *
+   * The query stays as the fallback, because the stamp is genuinely absent sometimes:
+   * a rating read that failed, or a group paired in the moment before it landed.
+   */
   private async introElo(entry: QueueEntry, mode: QueueMode): Promise<number | null> {
+    if (entry.rating !== undefined) return entry.rating;
     if (!dbEnabled || !entry.userId) return null;
     try {
       // ELO is keyed by the game's current ACT (persists across seasons in an act).
-      const bv = await currentSeasonNumber(BALANCE_VERSION, entry.game);
-      const act = await actForSeason(bv, entry.game);
-      return await getRating(entry.userId, mode, act, entry.game);
+      return await getRating(entry.userId, mode, await actFor(entry.game), entry.game);
     } catch {
       return null;
     }
@@ -327,7 +585,7 @@ export class Matchmaker {
 
   /** stage the roster for the host region + tell each client to reconnect there */
   private async assign(mode: QueueMode, rawGroup: QueueEntry[], hostRegion: string): Promise<void> {
-    const group = allianceOrder(rawGroup);
+    const group = balanceAlliances(allianceOrder(rawGroup));
     const half = group.length / 2;
     const seed = (this.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
     const code = `${hostRegion}-${mode}${roomSeq++}${rand6()}`;
@@ -358,7 +616,7 @@ export class Matchmaker {
    * STRATEGY window runs in dev too — dev clients may be anonymous, so synthesize a
    * stable per-connection id for the userId→slot mapping. */
   private localStart(mode: QueueMode, rawGroup: QueueEntry[]): void {
-    const group = allianceOrder(rawGroup);
+    const group = balanceAlliances(allianceOrder(rawGroup));
     const code = `mm-${mode}-${roomSeq++}`;
     const room = new Room(code, () => this.rooms.delete(room), { kind: 'versus', game: group[0].game }, persistMatch, undefined, undefined, persistDodges, (b) => void persistBehaviour(b));
     this.rooms.add(room);
@@ -454,19 +712,117 @@ export class Matchmaker {
     // report each waiter the depth of ITS OWN bucket (channel + build) — pairing is
     // bucket-scoped, so a mixed count would falsely read "enough players" and never
     // match (a lone alpha queuer must not be told a pool of stable/older builds is ready)
+    //
+    // COUNT ONCE, THEN SEND. Every waiter's number is one of a handful of totals, so
+    // this is two linear passes and not a scan per recipient. It was the latter —
+    // a `reduce` over the whole queue inside the loop, building a `bucketKey` STRING
+    // on both sides of the comparison every iteration — and that is O(n²) with an
+    // allocation in the inner term. `enqueue` calls this on every join, so it cost
+    // what the pairing scan itself cost: measured on a standing 1v1 queue,
+    // 1.33ms of a 2.68ms join at depth 100 and 134.80ms of 281.64ms at depth 1000,
+    // i.e. about half the join, on the one always-warm machine that also runs rooms
+    // and answers /health. The counts below are the same numbers the reduces
+    // produced; only the number of times they are computed changed.
+    const byBucket = new Map<string, number>();
+    const byParty = new Map<string, number>();
+    // `x.party` is compared with `===` below, so undefined has to stay its own key
+    // rather than collapsing into the string one — a closed party with no token must
+    // keep counting exactly the entries that also have none.
+    const partyKey = (e: QueueEntry): string => (e.party === undefined ? '\0none' : `t${e.party}`);
+    for (const x of this.queues[mode]) {
+      const pk = partyKey(x);
+      byParty.set(pk, (byParty.get(pk) ?? 0) + 1);
+      // the open-pool count excludes closed parties, exactly as the old predicate did
+      if (!x.partyOnly) {
+        const bk = bucketKey(x);
+        byBucket.set(bk, (byBucket.get(bk) ?? 0) + 1);
+      }
+    }
     for (const e of this.queues[mode]) {
       // a closed party isn't waiting on the pool, it's waiting on one person — so
       // count only its own members. Otherwise a friend challenge would read "6/2"
       // off a busy open queue it can never be matched from.
       const size = e.partyOnly
-        ? this.queues[mode].reduce((n, x) => n + (x.party === e.party ? 1 : 0), 0)
-        : this.queues[mode].reduce((n, x) => n + (!x.partyOnly && bucketKey(x) === bucketKey(e) ? 1 : 0), 0);
+        ? (byParty.get(partyKey(e)) ?? 0)
+        : (byBucket.get(bucketKey(e)) ?? 0);
       e.send({ t: 'queued', mode, size, need: QUEUE_NEED[mode] });
     }
   }
 }
 
 const toPing = (e: QueueEntry): PingInfo => ({ homeRegion: e.homeRegion, accessMs: e.accessMs });
+
+/**
+ * EVEN THE TWO ALLIANCES UP, once the group is chosen.
+ *
+ * `ratingSpan` gates how wide a MATCH may be, and cannot say anything about how that
+ * width is distributed across the two sides. Both of these have a span of 500:
+ *
+ *   (1500, 1450) vs (1050, 1000)   — a rout
+ *   (1500, 1000) vs (1500, 1000)   — dead even
+ *
+ * so 2v2 needs a second, separate step. This one does not choose WHO plays — that is
+ * settled — only which side of a decided match each player stands on, which is free.
+ *
+ * It runs AFTER `allianceOrder` and preserves everything that function established: the
+ * split is positional (`i < half` is red), so this only ever SWAPS a red index with a
+ * blue one, and it refuses to move a player who belongs to a PARTY. Keeping a premade
+ * on one alliance is the whole point of `allianceOrder`, and a balance pass that broke
+ * it would silently undo the feature it runs after.
+ *
+ * Only for a full 2v2 of placed players. With anyone unrated there is no number to
+ * balance on, and inventing one from the 1000 default would put unplaced players on a
+ * side for a reason that is not real.
+ */
+function balanceAlliances(group: QueueEntry[]): QueueEntry[] {
+  const half = group.length / 2;
+  if (group.length !== 4) return group; // 1v1 has nothing to distribute
+  if (group.some((e) => e.rating === undefined || !e.placed)) return group;
+  const rating = (e: QueueEntry): number => e.rating as number;
+  const gap = (g: QueueEntry[]): number =>
+    Math.abs(rating(g[0]) + rating(g[1]) - (rating(g[2]) + rating(g[3])));
+  const movable = (i: number): boolean => group[i].party === undefined;
+
+  let best = group;
+  let bestGap = gap(group);
+  // the three partitions of four players into two pairs are reachable by swapping one
+  // red with one blue, so enumerating those four swaps covers them all
+  for (let r = 0; r < half; r++) {
+    for (let b = half; b < group.length; b++) {
+      if (!movable(r) || !movable(b)) continue;
+      const trial = group.slice();
+      trial[r] = group[b];
+      trial[b] = group[r];
+      const g = gap(trial);
+      if (g < bestGap) {
+        bestGap = g;
+        best = trial;
+      }
+    }
+  }
+  return best;
+}
+
+/** every member of this unit sits in region `r` */
+function allIn(unit: QueueEntry[], r: string): boolean {
+  for (const e of unit) if (e.homeRegion !== r) return false;
+  return true;
+}
+
+/**
+ * The region this unit is entirely in, IF that region is one we deploy to — else null.
+ *
+ * Null is the "no shortcut available" answer and covers two distinct cases that both
+ * have to take the slow path: a unit straddling regions (a premade with one player in
+ * iad and one in syd has no single region, so nothing about its host is settled in
+ * advance), and a unit in a region with no machine (there is nothing to host on, so its
+ * members really do have to be priced against every candidate host).
+ */
+function freeRegion(unit: QueueEntry[]): string | null {
+  const r = unit[0].homeRegion;
+  if (!(DEPLOY_REGIONS as readonly string[]).includes(r)) return null;
+  return allIn(unit, r) ? r : null;
+}
 
 /**
  * Split a queue into matchable UNITS: each "play a friend" party is one unit,

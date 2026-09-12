@@ -1,5 +1,5 @@
 {
-  "description": "Impeccable design detector: immediate-tier checks after Edit/Write/MultiEdit on UI files, full-rule deep pass on Stop.",
+  "description": "Impeccable design detector: immediate-tier checks after Edit/Write/MultiEdit on UI files, full-rule deep pass on Stop. Plus the coordination board's per-turn publisher (Stop) — a no-op unless .coord.json exists, and it hands the network work to a detached child so a turn never waits on it.",
   "hooks": {
     "PostToolUse": [
       {
@@ -22,6 +22,12 @@
             "command": "[ ! -f \"${CLAUDE_PROJECT_DIR}/.claude/skills/impeccable/scripts/hook.mjs\" ] || node \"${CLAUDE_PROJECT_DIR}/.claude/skills/impeccable/scripts/hook.mjs\"",
             "timeout": 30,
             "statusMessage": "Design deep pass"
+          },
+          {
+            "type": "command",
+            "command": "[ ! -f \"${CLAUDE_PROJECT_DIR}/scripts/coord/hook.mjs\" ] || node \"${CLAUDE_PROJECT_DIR}/scripts/coord/hook.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Publishing coordination claim"
           }
         ]
       }

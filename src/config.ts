@@ -366,6 +366,35 @@ export const POSSESSION_MOVE_MIN = 2; // in/s — keep == BALL_REST_SPEED
  * shove. It is cleared only when the artifact stops being a loose ground ball, or outside
  * auto/teleop.
  */
+/**
+ * HOW FAST THE ROBOT HAS TO BE PUSHING for herding to count at all (in/s, at the contact).
+ *
+ * The LENIENCY knob, and an owner setting. `POSSESSION_CARRY_DIST` asks whether the artifacts
+ * WENT anywhere; this asks whether the robot was really bulldozing when they did. Both have to
+ * be true, so it can only ever make the rule kinder — which is the point.
+ *
+ * Why a velocity term came back at all: the engine had NO leniency gradient. Measured on a
+ * 6-artifact row herded in open space for 10 s, a full hopper drew 6 MINORs and a YELLOW CARD
+ * at EVERY throttle from 0.08 to 1.0, and a single loose artifact nudged gently drew 3. A
+ * feather touch was billed the same as a full-throttle ram, which is not a rule anybody can
+ * play around.
+ *
+ * ⚠️ IT IS THE INSTANTANEOUS PUSH SPEED, NOT A MEAN, and that distinction is the whole
+ * reason this works where the old `POSSESSION_MOVE_SPEED` failed. Measured, the MEAN robot
+ * speed does not merely fail to separate the cases, it INVERTS them: 7.5 in/s for a gentle
+ * two-artifact nudge against 5.0 in/s for the nine-row ram that must foul, because the ram
+ * spends most of its time stalled against the pile. The speed AT THE CONTACT, while touching,
+ * separates them 5.6x — 11.0 in/s nudging against 61.6 in/s ramming. So the gate reads
+ * `contactPush`'s own `speed`, which is `robotPointVelocity` at the contact point and already
+ * carries the omega-cross-r term, so a corralled pile swung on the spot still counts.
+ *
+ * 22 sits between the two measured populations with room either side. Raise it for more
+ * leniency; the rule goes quiet entirely somewhere above ~60, where even the ram stops
+ * qualifying. Distinct from `POSSESSION_PUSH_MIN`, which stays at its own job of keeping
+ * numerical noise in a resting contact from reading as a push.
+ */
+export const POSSESSION_HERD_SPEED = 22; // in/s at the contact point
+
 export const POSSESSION_CARRY_DIST = 5; // in — one artifact diameter, carried in the push direction
 /**
  * How far an artifact may WANDER, in the robot's own frame, and still count as remaining

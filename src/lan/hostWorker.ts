@@ -37,7 +37,7 @@
 import { Room, type Client } from '../../server/room';
 import { decodeClientMsg, encodeMsg, type ClientMsg, type ServerMsg } from '../net/protocol';
 import { initPhysics } from '../sim/physicsEngine';
-import { HEALTH_INTERVAL_MS, type HostIn, type HostOut } from './hostProtocol';
+import { HEALTH_INTERVAL_MS, HOST_SEAT, type HostIn, type HostOut } from './hostProtocol';
 
 const post = (m: HostOut): void => {
   (self as unknown as { postMessage: (m: HostOut) => void }).postMessage(m);
@@ -94,12 +94,25 @@ self.addEventListener('message', (e: MessageEvent) => {
   const m = e.data as HostIn;
 
   if (m.k === 'open') {
-    void initPhysics().then(() => {
-      /* No persistence callbacks — see the header. The room empties itself when the last
-         member leaves, and the page decides whether that ends the session. */
-      room = new Room(m.code, () => post({ k: 'empty' }), m.config);
-      post({ k: 'ready' });
-    });
+    /* ⚠️ THE `catch` IS NOT DEFENSIVE PADDING. This is the only asynchronous step in the
+       Worker's whole life and it loads a wasm module, so it is also the only one that can
+       fail — and without a handler it fails as an unhandled rejection, which the page cannot
+       see at all: `ready` simply never arrives, `room` stays null, and every frame after that
+       hits the `if (!room) return` below. The host still gets a room code (the rendezvous
+       claim succeeded) and every guest that connects then waits on a `welcome` nothing will
+       ever send. Measured once, diagnosed slowly; it must never be silent again. */
+    void initPhysics().then(
+      () => {
+        /* No persistence callbacks — see the header. The room empties itself when the last
+           member leaves, and the page decides whether that ends the session. */
+        room = new Room(m.code, () => post({ k: 'empty' }), m.config);
+        /* The host joins LAST — they are still on the LAN screen reading the code out while
+           guests arrive — so the seat is claimed now or a guest gets it. See `reserveHost`. */
+        room.reserveHost(HOST_SEAT);
+        post({ k: 'ready' });
+      },
+      (e: unknown) => post({ k: 'failed', reason: e instanceof Error ? e.message : String(e) }),
+    );
     return;
   }
 

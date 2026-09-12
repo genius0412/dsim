@@ -1,3 +1,185 @@
+# HANDOFF — 2026-09-12c (matchmaker: a live region bug, then skill-based pairing)
+
+Branch **alpha**, 7 commits, all pushed. `npm test` **ALL PASS**, `npm run dbtest` **ALL PASS**,
+`npm run server:check` clean, `npm run test:mm` **184 checks** (was 58 at the last handoff).
+
+⚠️ **NOT DEPLOYED. All of this is server-side and does nothing until `./scripts/fly-deploy.sh`
+runs** — never a bare `flyctl deploy`.
+
+## READ FIRST — `ord` was not in the region table, and it is your US Central
+
+The worst thing found this session, and it was live. `DEPLOY_REGIONS` listed five regions while
+EIGHT machines were running (iad ord sjc lhr syd nrt gru jnb). `interRegionMs` answers a
+RADIUS_MAX-sized 300 for any region it has no row for — so a missing region does not read as
+FAR, it reads as UNPAIRABLE until the radius saturates six seconds later, and never at all for a
+`noWiden` player. Measured before the fix:
+
+```
+bestHost(two players both in ord) = { hostRegion: iad, cost: 310, spread: 300 }   # ceiling is 90
+```
+
+Two people in Chicago could not be matched to each other for six seconds, then played in
+Virginia. In the 2000-concurrent population sim this alone moved peak queue depth 35 -> 4 and
+wait p99 10s -> 3s.
+
+`ord` is now deployed and hostable. `gru`/`jnb` got RTT rows but stay OUT of `DEPLOY_REGIONS`
+deliberately: both run at 512MB, under the 1024 the deploy script says Node+Rapier needs. **Size
+them, then move them in.** Their rows alone fix their players — far beats unpairable.
+
+⚠️ **The ord/gru/jnb distances are ESTIMATED, not measured.** The other five were taken
+machine-to-machine over Fly's 6PN mesh. Re-measure on a deploy that can reach it.
+
+**The test for this had to be written twice.** Iterating `DEPLOY_REGIONS` cannot catch a region
+missing from it — the loop just runs one fewer time, and a mutation run confirmed it passed
+unchanged. The fleet is now declared in `scripts/fly-deploy.sh` (`FLEET_REGIONS`) and mmsmoke
+asserts the code agrees. **Add a region to both files in the same change.**
+
+## Skill-based pairing is in
+
+Pairing was latency-only since it shipped; Glicko-2 was computed after every match and never
+consulted before one. Now: latency PRIMARY, skill as a second gate plus a tiebreak, never a
+partition.
+
+- Band opens at ±200 rating points, 500 at 3s, **unbounded at 6s** — same clock as the radius,
+  saturating at the same instant, so neither gate can outlive the other and anti-starvation is a
+  theorem rather than a hope.
+- **Unrated means DO NOT GATE**, never "assume 1000". DB off, dev box, fresh act, or inside
+  placement games all degrade to exactly the latency-only pairing that shipped before.
+- Closed parties (friend challenges) are never gated — structurally outside the branch.
+- 2v2 alliances are evened after the group is chosen, never splitting a premade.
+
+Measured, 2000 concurrent (`scripts/zz-mm-quality.ts`): spread p90 **439 -> 322**, p99 636 -> 516,
+for two seconds at p99 wait. The median was already fine by luck (the pool clusters at the 1000
+default); the tail was the harm.
+
+⚠️ **`SKILL_BASE` is the dial that binds. `SKILL_OPEN_STEPS` does not** — swept, moving it 2->4
+changes no percentile of anything, because the queue drains long before six seconds. Do not tune
+it against today's numbers.
+
+## Performance
+
+- `broadcastStatus` re-scanned the whole queue PER RECIPIENT, building `bucketKey` strings on
+  both sides inside the inner term. 134.80ms -> 0.53ms at depth 1000; 46% off the whole join.
+- `bestHost` is skipped for a trial whose members all share a deployed region (spread is
+  provably 0 there). Profiled: bestHost is **76%** of a candidate's cost, allocations only 9% —
+  a rewrite aimed at the allocations would have been aimed at the wrong tenth.
+- Reading one rating was THREE sequential queries; `actFor` memoizes the act per game. And
+  `introElo` now reads the stamp instead of re-querying, which removed **12 sequential queries**
+  sitting between "match found" and the match appearing in a 2v2.
+
+⚠️ **I oversold the original problem.** The 278ms-at-depth-1000 join needs ~1000 mutually
+incompatible entries, which is a benchmark shape. At 2000 concurrent the queue self-drains to
+depth ~35. It still matters, because narrowing the eligible pool deepens the queue fast (1/30 of
+the pool -> depth 125) and a skill window is exactly such a narrowing.
+
+## Tools left behind
+
+- `scripts/zz-mm-fuzz.ts` — differential fuzz, 20,000 randomised queues, compares staged output
+  INCLUDING roster order (it drives `allianceOrder` and the red/blue split). `--save` writes the
+  baseline. **Mutation-check it before trusting it**: reverting nearest-first diverges 663/20,000.
+- `scripts/zz-mm-quality.ts` — population sim: wait times and per-match rating spread.
+- `scripts/zz-mm-marginal.ts`, `zz-mm-breakdown.ts` — join cost, and where in the join it goes.
+
+## Next
+
+1. **Deploy it.** None of the above is live.
+2. `balanceAlliances` and the skill gate have never seen two real accounts. Both docs already
+   note the matchmaker is unvalidated end to end; this did not change that.
+3. The staleness guard from the design (skip `tick()` while the legality relation is provably
+   frozen) is NOT done. It does not bind at today's depth — measured 0.02 ms/s — but is worth it
+   before the population grows.
+4. Capacity work proper: `docs/scaling-multicore.md` is written against 8 regions; at 2000
+   concurrent in THREE US regions, multi-core alone caps around 400 CCU and machine-granular
+   routing (`fly-replay: instance=`) becomes the blocking item, not an amendment.
+
+## HANDOFF — 2026-09-12b (a tab-hosted LAN match, proven end to end between two real peers)
+
+Branch **alpha**. `npm test` **ALL PASS**, `npm run build` green, `npm run server:check` green,
+`npx tsc --noEmit` clean, `npm run uiaudit` at baseline, `npm run test:mm` 58 checks, and the
+new `npm run lan:probe` **15/15 ALL PASS**, five runs in a row.
+
+## READ FIRST — LAN in a tab now actually works, locally, with no terminal on the guest side
+
+Two commands, two machines (or two windows):
+
+```
+npm run lan:tab      # builds the client with LAN on + a private-IP rendezvous, then serves it
+npm run lan:probe    # drives two REAL browser windows through the whole feature
+npx electron scripts/lanprobe.cjs --guests 3   # the same, as a FULL 2v2 room
+```
+
+The probe takes a match from START HOSTING to a clock ticking down on the GUEST's HUD:
+handshake → room code → guest joins by code → both seated → ready up → START MATCH → snapshots
+crossing the DataChannel at 30 Hz. That last leg is the honest measurement, because the guest
+simulates nothing authoritative: a clock that moves on the guest's screen is a clock being
+stepped in the host's Worker and delivered over WebRTC.
+
+### Four bugs it found that `npm test` structurally could not
+
+Every one is ORDERING BETWEEN TWO CONTEXTS. Source shape cannot see any of them, and neither
+can a single-page harness — which is exactly why the feature measured "done" while both screens
+sat waiting for each other.
+
+1. **The host tore down the link that had just succeeded.** `joinLanRoom` closes its rendezvous
+   socket the moment both channels open, so the server reports that guest GONE seconds after it
+   arrived. Fixed in two places, because the report can land on either side of the moment the
+   link is stored: `acceptLanGuest` disarms its `peerGone` rejection once channels exist
+   (`channelsSeen`), and `hostRuntime` keeps any link that is still open — the DataChannel is
+   the authority for a guest being present, the rendezvous only ever knew about the
+   introduction.
+2. **A DataChannel buffers nothing for a listener that attaches later**, and `join` is the first
+   frame of the protocol, sent the instant the channel opens. `bufferEarly`/`takeEarly` in
+   `lanPeer.ts` buffers from the moment the channel objects exist; the handover is ONE
+   synchronous block (take, attach, replay) on both ends. Measured `early=0` on the runs after
+   bug 3 was fixed — the race is real but narrow, and the buffer is what makes it not matter.
+3. **⚠️ `open` is a STATE on a LAN transport, not an event.** This was the one that actually
+   held everything up. `LobbyClient.join` sends its `join` frame from `onOpen` and from nowhere
+   else — correct for a `WebSocketTransport`, which is handed over still dialling, and wrong for
+   both LAN transports: the WebRTC handshake finished on the LAN screen, and the loopback opened
+   when the Worker said the room was ready, so by the time the lobby adopts either and registers
+   anything, the event has already happened. Both `DataChannelTransport.onOpen` and
+   `LoopbackTransport.onOpen` now latch and fire immediately if already open.
+4. **Going to the room stopped the room.** The LAN screen's unmount cleanup calls
+   `tabHost.stop()` — right for a host wandering off, fatal on the host's own way INTO the
+   match, which unmounts the same component. A handed-off room is parked in the new
+   `src/lan/hostKeeper.ts` (the trick `queueKeeper.ts` uses for a live ranked queue) and the
+   cleanup reads a `handedOff` flag; coming back to the LAN screen adopts it again and
+   re-points its events, so the host still has a Stop hosting button.
+
+### Three decisions that came out of the same session
+
+- **`LanHost.start()` does not resolve until the room exists.** It resolved on the rendezvous
+  CLAIM, so a code was published for a room that might never have been built — and a Worker
+  that fails to load is completely silent (`open` is async because Rapier's wasm loads there, so
+  a failure is an unhandled rejection, not an `error` event). The Worker now posts
+  `{k:'failed'}`, the page listens for `error`/`messageerror`, and `ROOM_BOOT_TIMEOUT_MS` makes
+  the wait terminate in the cases neither covers.
+- **The room RESERVES its host seat** (`Room.reserveHost`, called from the Worker with
+  `HOST_SEAT`). `Room.add` gives the crown to the first client through the door, which is right
+  everywhere the cloud runs; tab hosting inverts it — the host reads the code out while guests
+  join and takes its own seat LAST, so the crown went to a guest and the host arrived at its own
+  room to be told it was waiting for the host to start. Reserving only ever claims an EMPTY
+  slot, and nothing in the cloud path calls it.
+- **The room can end.** A guest leaving arrives as a closed DataChannel; the HOST leaving is a
+  `close()` on a transport with no network under it, so `LoopbackTransport` now tells the runtime
+  and the seat is dropped. A room that goes `empty` stops hosting, instead of a parked Worker
+  stepping an empty room for the rest of the tab's life.
+
+### Still to do, in order
+
+1. **Deploy** — `./scripts/fly-deploy.sh --alpha` (flyctl is not installed on this machine), then
+   `/health`, then confirm `VITE_LAN_ENABLED` on the alpha Vercel project.
+2. **The first two-machine signed-in test THROUGH THE CLOUD.** Everything above ran with the
+   rendezvous local and nobody signed in, so the auth handshake and the upload are the two legs
+   still unproven. A match hosted this way stays in the device backlog and drains later.
+3. A FULL 2v2 passes too (`--guests 3`: three simultaneous peer connections off one Worker,
+   four seats, three snapshot streams, every clock moving), and so does a BACKGROUND-THROTTLED
+   host: `--throttle --soak 150` held **30.0 Hz at the guest on every sample**, with one guest
+   and with three. The page being throttled does not starve the match — it only forwards
+   already-encoded frames, and the 60 Hz loop is in the Worker where the throttle cannot reach.
+   ⚠️ Still unmeasured: the INTENSIVE throttling regime, which needs five minutes hidden and so
+   cannot be reached inside a 2:30 match. A host who tabs away for ten minutes mid-session is
+   the remaining unknown, and the health readout is where it would show up.
 # HANDOFF — 2026-09-12 (SHIPPED: alpha is in production, and both games are on Act 2 · Season 1)
 
 **Production is live on `4d2917f`.** The alpha→main promotion, the prod server deploy, both act
@@ -111,7 +293,7 @@ Branch **alpha**, merged from `lan-webrtc`. `npm test` **ALL PASS**, `npm run bu
 `npm run server:check` green, `npx tsc --noEmit` clean, `npm run uiaudit` at baseline,
 `npm run test:mm` 58 checks. Pushed as `a3ff8f4`.
 
-## READ FIRST — the server has NOT been deployed, and that is the only thing left
+## The server has NOT been deployed, and that is the only thing left
 
 ```
 ./scripts/fly-deploy.sh --alpha

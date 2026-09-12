@@ -6,7 +6,7 @@ import v8 from 'node:v8';
 import { Room, type Client } from './room';
 import { decodeClientMsg, encodeMsg, DEFAULT_ROOM_CONFIG, RATED_FORMATS, SERVER_CAPS, type ClientMsg, type LiveRoom, type RoomConfig, type ServerMsg } from '../src/net/protocol';
 import { sanitizePlayer } from '../src/net/sanitize';
-import { verifyAuthToken } from './auth';
+import { authConfigured, verifyAuthToken } from './auth';
 import { initPhysics } from '../src/sim/physicsEngine';
 import { migrate } from './db/migrate';
 import { persistMatch, persistDodges } from './persist';
@@ -114,6 +114,48 @@ const rooms = new Map<string, Room>();
  * nothing else is shared.
  */
 const lanSignals = new LanSignalling();
+
+/**
+ * MAY A SIGNED-OUT PLAYER HOST HERE? — only on a server that has no idea who anybody is.
+ *
+ * `LanSignalling.claim` requires an account, and the reason is real: the host is the one who
+ * uploads the match afterwards (`POST /api/lan`), so an anonymous host on the cloud is a match
+ * whose data has nowhere to land. That rule is unchanged for every deployment that can actually
+ * check — it is the whole point of the feature that the data comes home.
+ *
+ * But `authConfigured` is false when this process has no `NEON_AUTH_URL`: no JWKS, no
+ * verification, every client anonymous whatever it sends. On such a server "sign in first" asks
+ * for something that cannot be done — there is no identity to have — and the effect is not a
+ * closed door but a feature that simply does not run. That is exactly the shape of a LAN server
+ * (`LAN_MODE` scrubs `NEON_AUTH_URL` itself) and of a laptop running `npm run lan:tab` to test
+ * tab hosting between two machines with no cloud at all.
+ *
+ * ⚠️ **IT IS DERIVED, NOT DECLARED.** There is deliberately no `LAN_ANON_HOSTS=1` variable: a
+ * flag could be set on a deployment that DOES have accounts, which is the one configuration
+ * this must never permit. Reading it off `authConfigured` makes that unreachable rather than
+ * discouraged — prod and alpha both set `NEON_AUTH_URL`, so both refuse an anonymous host no
+ * matter what else is in the environment. `LAN_SIGNALLING` is still required on top: a server
+ * that cannot identify anybody is not thereby a server that introduces strangers.
+ *
+ * What a signed-out host loses is the upload, and it keeps the match the way practice keeps
+ * one — on the device, in the backlog, until there is an account and a server to file it with.
+ */
+const LAN_ANON_HOSTS = !authConfigured;
+
+/**
+ * `SERVER_CAPS` plus what only THIS process's environment can answer.
+ *
+ * `LAN_ANON` is the one a client cannot work out for itself. The LAN screen has to decide
+ * whether to disable the host button and tell somebody to sign in, and on a server with no
+ * accounts that sentence is both wrong and unactionable — there is nothing to sign in to. The
+ * cap is the same server→client channel `party` uses, and for the same reason: one app serves
+ * every client build, so a feature that would MISBEHAVE rather than degrade is gated on the
+ * answer instead of guessed from the build.
+ *
+ * It is not in `SERVER_CAPS` itself because that list is a shared constant in `protocol.ts`,
+ * where `process.env` does not belong — the client imports that module.
+ */
+const presenceCaps: string[] = [...SERVER_CAPS, ...(LAN_SIGNALLING && LAN_ANON_HOSTS ? ['lanAnon'] : [])];
 
 /**
  * What a refused signalling request says, in one place.
@@ -1567,7 +1609,7 @@ const httpServer = createServer((req, res) => {
       const m = maint.active
         ? { startsAt: maint.startsAt, endsAt: maint.endsAt, message: maint.message, biting: maintenanceBiting(maint) }
         : null;
-      res.end(JSON.stringify({ region: REGION, online, signedIn, queues, gameQueues, notice, maintenance: m, caps: SERVER_CAPS }));
+      res.end(JSON.stringify({ region: REGION, online, signedIn, queues, gameQueues, notice, maintenance: m, caps: presenceCaps }));
     };
     // GLOBAL count: aggregate every region's heartbeat (this machine only sees its
     // own sockets — anycast routing means the caller often lands on an empty region).
@@ -1940,12 +1982,16 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       return;
     }
     if (m.t === 'lanHost') {
-      // hosting requires an account — see `LanSignalling.claim`
+      // hosting requires an account — see `LanSignalling.claim`, and `LAN_ANON_HOSTS` for the
+      // one server that cannot ask for one
       const u = await verifyAuthToken(m.authToken).catch(() => null);
       if (closed) return;
-      const res = lanSignals.claim(signalSocket, m.code, u?.userId, (c) => rooms.has(c));
+      const hostId = u?.userId ?? (LAN_ANON_HOSTS ? `anon:${signalId}` : undefined);
+      const res = lanSignals.claim(signalSocket, m.code, hostId, (c) => rooms.has(c));
       if (res.ok) {
-        markAuthed(u!.userId);
+        // only a VERIFIED user is counted in the signed-in tally; an anonymous host is not
+        // somebody this server knows, and saying otherwise would inflate presence
+        if (u) markAuthed(u.userId);
         send({ t: 'lanHosting', code: res.code, hostId: signalId });
       } else {
         send({ t: 'lanError', reason: res.reason, message: LAN_REFUSALS[res.reason] });

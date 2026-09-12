@@ -153,6 +153,7 @@ import {
   WHEEL_DIAMETER_MM,
   BASE_DRIVE_ACCEL,
   POWER_DRAW_SWERVE,
+  POSSESSION_HERD_SPEED,
   POSSESSION_PUSH_MIN,
   POSSESSION_CONFIRM,
   POSSESSION_GRACE,
@@ -7021,7 +7022,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
     check(
       'lan screen: App.tsx actually passes onBack (a prop nothing supplies is not an exit)',
-      /<LanPanel[\s\S]{0,400}?onBack=\{/.test(app),
+      /<LanPanel[\s\S]{0,900}?onBack=\{/.test(app),
     );
     check(
       'lan screen: the stale claim that AppShell carries a Back is gone from the comment',
@@ -7354,6 +7355,73 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
         'lan gate: and production still opens neither door',
         !/LAN_UPLOADS/.test(flyProd),
       );
+
+      /* ---- HOSTING SIGNED OUT, on the ONE server that cannot ask for an account.
+         `claim` requires a user id and keeps requiring it (the behavioural check above still
+         runs). The exception is at the call site and is DERIVED from whether this process can
+         verify anybody at all, so a deployment WITH accounts cannot be talked into it by an
+         environment variable — which is the configuration that must stay unreachable. */
+      const idxBare = idx.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/.*$/gm, ' ');
+      check(
+        'lan anon: signed-out hosting is DERIVED from the auth config, not declared',
+        /const LAN_ANON_HOSTS = !authConfigured;/.test(idxBare),
+      );
+      check(
+        'lan anon: there is no environment variable that could turn it on elsewhere',
+        !/process\.env\.LAN_ANON/.test(idxBare) && !/process\.env\[?'?LAN_ANON/.test(idxBare),
+      );
+      check(
+        'lan anon: a server that introduces nobody advertises nothing',
+        /LAN_SIGNALLING && LAN_ANON_HOSTS \?[\s\S]{0,20}?'lanAnon'/.test(idxBare),
+      );
+      check(
+        'lan anon: the synthetic id is never mistaken for a verified one',
+        /if \(u\) markAuthed\(u\.userId\);/.test(idxBare) && !/markAuthed\(u!/.test(idxBare),
+      );
+
+      /* The CLIENT half. A disabled button with "sign in first" under it, on a server where
+         signing in is impossible, is a dead end rather than a gate — but it must DEFAULT to
+         that, because the capability read is async and a button appearing under a cursor
+         already moving is worse than one that arrives a beat late. */
+      const panel = readFileSync('src/ui/LanPanel.tsx', 'utf8');
+      check(
+        'lan anon: the panel asks the SERVER whether hosting needs an account',
+        /serverCaps\(\)[\s\S]{0,120}?includes\('lanAnon'\)/.test(panel),
+      );
+      check(
+        'lan anon: it starts refused, so the strict copy is what shows early',
+        /const \[anonHostOk, setAnonHostOk\] = useState\(false\);/.test(panel) &&
+          /const mayTabHost = signedIn \|\| anonHostOk;/.test(panel),
+      );
+      check(
+        'lan anon: and the button is gated on that, not on being signed in',
+        /disabled=\{!mayTabHost \|\| tabBusy\}/.test(panel) &&
+          !/disabled=\{!signedIn \|\| tabBusy\}/.test(panel),
+      );
+
+      /* ---- the local rendezvous launcher (scripts/lantab.mjs). It exists so tab hosting can
+         be tested between two machines with nothing deployed. The two traps it has to avoid
+         both present as a LAN screen with no panel on it: baking `localhost` into a client a
+         GUEST will run, and re-using a `dist/` that was built without the LAN flag. */
+      const tab = readFileSync('scripts/lantab.mjs', 'utf8');
+      check(
+        'lan local: it opens the rendezvous and keeps the no-database policy',
+        /LAN_SIGNALLING: '1'/.test(tab) && /LAN_MODE: '1'/.test(tab) && /SERVE_CLIENT: DIST/.test(tab),
+      );
+      check(
+        'lan local: the client is built with LAN on and dialled at a LAN address',
+        /VITE_LAN_ENABLED: '1'/.test(tab) &&
+          /VITE_GAME_SERVER_URL: signalUrl/.test(tab) &&
+          /const signalUrl = `ws:\/\/\$\{host\}:\$\{port\}`/.test(tab),
+      );
+      check(
+        'lan local: a build stamped for a different address is rebuilt, not reused',
+        /stamped !== signalUrl/.test(tab) && /writeFileSync\(STAMP/.test(tab),
+      );
+      check(
+        'lan local: npm exposes it',
+        /"lan:tab": "node scripts\/lantab\.mjs"/.test(readFileSync('package.json', 'utf8')),
+      );
     }
 
   // ---- LAN over WebRTC: the data path (docs/lan-webrtc.md step 3)
@@ -7410,6 +7478,48 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     check(
       'lan rtc: ICE candidates that arrive before the answer are queued, not thrown away',
       /pending\.push\(frame\.candidate\)/.test(peer) && /pending\.splice\(0\)/.test(peer),
+    );
+
+    /* ⚠️ A GUEST LEAVING THE RENDEZVOUS IS NOT A GUEST LEAVING, and after a successful join it
+       is the NORMAL case: `joinLanRoom` closes its signalling socket the instant both channels
+       open, so the server reports that guest gone moments after the link comes up. Honouring
+       it tore down the connection that had just succeeded — the guest was told it had lost the
+       game server while the host went back to "waiting for players". Two halves, because the
+       report can land on either side of the moment the link is stored. */
+    check(
+      'lan rtc: a rendezvous departure stops counting once the guest’s channels exist',
+      /channelsSeen = true/.test(peer) && /peer === guestId && !channelsSeen/.test(peer),
+    );
+    /* ⚠️ A DATACHANNEL BUFFERS NOTHING FOR A LISTENER THAT ATTACHES LATER, and the very first
+       frame of the protocol is sent the instant the channel opens — a guest's `join` goes out
+       before `acceptLanGuest` has resolved and `admit` has stored the link. Measured between
+       two tabs: the link came up, the host counted the guest, and both sides then sat there
+       forever, because `join` had been dispatched into a channel nobody was listening to and
+       `welcome` was therefore never sent. Both ends buffer from the moment the channels exist,
+       and the handover is SYNCHRONOUS: an event is dispatched as a task, so nothing can arrive
+       between two adjacent statements, and splitting them across ticks re-opens the hole. */
+    check(
+      'lan rtc: the first frame is not lost to a listener that attaches a microtask later',
+      /function bufferEarly\(/.test(peer) && /takeEarly\(\)/.test(peer),
+    );
+    check(
+      'lan rtc: the handover is one synchronous block — take, attach, then replay',
+      /const early = link\.takeEarly\(\);\s*\n\s*link\.control\.addEventListener\('message'/.test(peer) &&
+        /const early = link\.takeEarly\(\);[\s\S]{0,260}?for \(const raw of early\)/.test(
+          readFileSync('src/lan/hostRuntime.ts', 'utf8'),
+        ),
+    );
+    check(
+      'lan rtc: and the transport holds frames until its owner registers a callback',
+      /else this\.pending\.push\(e\.data\);/.test(peer) &&
+        /for \(const d of this\.pending\.splice\(0\)\) cb\(d\);/.test(peer),
+    );
+
+    check(
+      'lan rtc: and the host keeps a link that is already open (the DataChannel is authority)',
+      /readyState === 'open' \|\| link\.hot\.readyState === 'open'\)\) return;/.test(
+        readFileSync('src/lan/hostRuntime.ts', 'utf8'),
+      ),
     );
 
     /* The file's own header EXPLAINS why `lanServerUrl` is the wrong thing here, so a bare
@@ -7549,9 +7659,114 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       'lan tab: the wake lock is best-effort — an unavailable one must not block hosting',
       /nav\.wakeLock\?\.request\('screen'\)/.test(hr) && /catch \{/.test(hr),
     );
+    /**
+     * ⚠️ **A HOST LEAVING THE LAN SCREEN TO GO AND PLAY IS NOT A HOST ABANDONING THE ROOM**,
+     * and the cleanup could not tell the difference. The room lives in this tab, so wandering
+     * off with it running would strand every guest on a room nobody is stepping — that is what
+     * the cleanup is for. But the host's own route into the match unmounts this component too,
+     * so clicking GO TO THE ROOM terminated the Worker on the way: the host arrived at a lobby
+     * waiting on a room that no longer existed, with the guest already sitting in it. A handed
+     * -off room is PARKED instead (`hostKeeper.ts`, the same trick `queueKeeper.ts` uses to
+     * keep a ranked queue alive across a screen), and the flag is what the cleanup reads.
+     */
+    const keeper = readFileSync('src/lan/hostKeeper.ts', 'utf8');
+    // the `lan rtc` block above has its own handle on this file; that one is out of scope here
+    const peerSrc = readFileSync('src/net/lanPeer.ts', 'utf8');
     check(
-      'lan tab: leaving the LAN screen stops hosting, so no guest is stranded on a dead room',
-      /useEffect\(\(\) => \(\) => tabHost\?\.stop\(\), \[tabHost\]\)/.test(lp),
+      'lan tab: abandoning the LAN screen still stops hosting, so no guest is stranded',
+      /if \(!handedOff\.current\) tabHost\?\.stop\(\);/.test(lp),
+    );
+    check(
+      'lan tab: but going to the room PARKS it, so the host does not kill its own room',
+      /handedOff\.current = true;\s*\n\s*keepHostedRoom\(tabHost\);/.test(lp),
+    );
+    check(
+      'lan tab: coming back adopts the parked room and re-points its events at this screen',
+      /const kept = takeHostedRoom\(\);/.test(lp) && /kept\.setEvents\(\{/.test(lp),
+    );
+    check(
+      'lan tab: parking never silently replaces a live room with another',
+      /if \(held && held !== host\) held\.stop\(\);/.test(keeper),
+    );
+
+    /**
+     * ⚠️ **OPEN IS A STATE ON A LAN TRANSPORT, NOT AN EVENT.** `LobbyClient.join` sends its
+     * `join` frame from `onOpen` and from nowhere else — right for a `WebSocketTransport`,
+     * which is handed over still dialling. Both LAN transports are the opposite: the WebRTC
+     * handshake finished on the LAN screen and the loopback opened when the Worker said the
+     * room was ready, so by the time the lobby adopts either and registers anything, the one
+     * event it is waiting for has already happened. Measured between two tabs: the link came
+     * up, the host counted the guest, and BOTH sides sat on CONNECTING forever, each waiting
+     * for a `join` the other had never been asked to send.
+     */
+    check(
+      'lan tab: the guest transport fires `open` immediately if it is already open',
+      /if \(this\.opened && !this\.disposed\) cb\(\);/.test(peerSrc),
+    );
+    check(
+      'lan tab: and the host loopback does the same (the room is up long before the lobby)',
+      /if \(this\.opened && !this\.closed\) cb\(\);/.test(hr),
+    );
+
+    /**
+     * ⚠️ **A WORKER THAT FAILS TO BUILD ITS ROOM IS COMPLETELY SILENT.** The `open` handler is
+     * async (it loads Rapier's wasm), so anything that goes wrong in it is an unhandled
+     * rejection: no `error` event, nothing on the page, `room` simply stays null and every
+     * frame after it is dropped. Meanwhile the rendezvous claim had already succeeded, so the
+     * host was reading out a code for a room that did not exist. Three separate holes, because
+     * a load failure, a synchronous throw and an async rejection surface differently.
+     */
+    check(
+      'lan tab: the Worker reports a room it could not build instead of going quiet',
+      /k: 'failed'/.test(hw) && /\(e: unknown\) => post\(\{ k: 'failed'/.test(hw),
+    );
+    check(
+      'lan tab: and the page watches the Worker itself for the failures it cannot report',
+      /worker\.addEventListener\('error'/.test(hr) && /worker\.addEventListener\('messageerror'/.test(hr),
+    );
+    check(
+      'lan tab: start() does not hand back a code until the room actually exists',
+      /await roomReady;/.test(hr) && /ROOM_BOOT_TIMEOUT_MS/.test(hr),
+    );
+
+    /**
+     * ⚠️ **THE ROOM HAS TO BE ABLE TO END.** A parked host has no UI attached, so nothing is
+     * watching it: a guest leaving arrives as a closed DataChannel, but the HOST leaving is a
+     * `close()` on a transport with no network under it, and without a callback the room keeps
+     * a seat for somebody who is gone, never empties, and a Worker steps an empty room for the
+     * rest of the tab's life.
+     */
+    check(
+      'lan tab: the host letting go of its loopback drops its seat from the room',
+      /toWorker\(\{ k: 'drop', id: HOST_SEAT \}\)/.test(hr),
+    );
+    check(
+      'lan tab: and a room that empties stops hosting rather than stepping forever',
+      /if \(m\.k === 'empty'\) \{\s*\n\s*this\.stop\(/.test(hr),
+    );
+
+    /**
+     * ⚠️ **THE TAB THAT RUNS THE ROOM IS ITS HOST, EVEN THOUGH IT JOINS LAST.** `Room.add`
+     * gives the crown to the first client through the door, which is right everywhere the
+     * cloud runs. Tab hosting inverts the order: the room exists the moment somebody clicks
+     * START HOSTING, they then read the code out while guests join, and they take their own
+     * seat afterwards — so the crown went to a guest and the host arrived at its own room to
+     * be told it was waiting for the host to start.
+     */
+    check(
+      'lan tab: the room reserves its host seat before any guest can take it',
+      /room\.reserveHost\(HOST_SEAT\)/.test(hw),
+    );
+    check(
+      'lan tab: and reserving only ever claims an EMPTY seat, never takes the room off anyone',
+      /reserveHost\(id: string\): void \{\s*\n\s*if \(!this\.hostId\) this\.hostId = id;/.test(
+        readFileSync('server/room.ts', 'utf8'),
+      ),
+    );
+    check(
+      'lan tab: HOST_SEAT lives in the module both threads share, so they cannot disagree',
+      /export const HOST_SEAT = 'host-local';/.test(readFileSync('src/lan/hostProtocol.ts', 'utf8')) &&
+        !/export const HOST_SEAT = /.test(hr),
     );
 
     // ---- the hand-off to the lobby
@@ -7584,9 +7799,14 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     );
 
     // ---- what the person on the screen is told
+    /* Hosting still requires an account wherever there is one to have — the host is who
+       uploads the match. The `mayTabHost` spelling is not a loosening of that: `anonHostOk`
+       is false until a server SAYS it has no accounts (`lanAnon`), and only a server that
+       cannot verify anybody ever says so. See the `lan anon:` checks. */
     check(
       'lan tab: hosting requires an account, since the practice data is saved to one',
-      /disabled=\{!signedIn \|\| tabBusy\}/.test(lp),
+      /disabled=\{!mayTabHost \|\| tabBusy\}/.test(lp) &&
+        /const mayTabHost = signedIn \|\| anonHostOk;/.test(lp),
     );
     check(
       'lan tab: the copy states the one internet dependency up front',
@@ -7607,6 +7827,20 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
      */
     const app = readFileSync('src/ui/App.tsx', 'utf8');
     const hosting = readFileSync('src/lan/hosting.ts', 'utf8');
+
+    /* THE HANDSHAKE ALREADY CHOSE THE ROOM. Landing on the lobby's create-or-join form after
+       it would make the player type the code a SECOND time — and the live transport waiting
+       in `pending.ts` would then be adopted by whatever they typed, which need not be the room
+       it is connected to. Both WebRTC paths therefore carry the code out; the two ADDRESS
+       paths deliberately do not, because reaching a LAN server is not picking a room on it. */
+    check(
+      'lan tab: arriving at the room screen JOINS the code, rather than asking for it again',
+      /onConnected\(tabCode\)/.test(lp) && /onConnected\(r\.code\)/.test(lp),
+    );
+    check(
+      'lan tab: and the app turns that into the same one-shot auto-join an invite uses',
+      /setPendingAutoJoin\(\{ room: code, config: \{ kind: 'versus'/.test(app),
+    );
 
     check(
       'lan keep: a tab-hosted match is kept, not only an address-reached LAN match',
@@ -9005,12 +9239,12 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   r.pos = { x: 0, y: -8 };
   r.heading = 0;
   r.hopper = ['green', 'green', 'green']; // full hopper = 3 stored (at the limit)
-  r.vel = { x: POSSESSION_PUSH_MIN + 5, y: 0 }; // driving = herding
+  r.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 }; // driving = herding
   // a loose ground ball being BULLDOZED: touching, ahead along the direction of
   // travel, and carried along at the robot's own speed -> 4 controlled, over the limit
-  w.balls.push({ id: 9001, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: POSSESSION_PUSH_MIN + 5, y: 0 }, z: 0, vz: 0 });
+  w.balls.push({ id: 9001, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: POSSESSION_HERD_SPEED + 5, y: 0 }, z: 0, vz: 0 });
   // hold the over-possession just past the grace window
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w.time = i / 60;
     updatePenalties(w, 1 / 60, new Map());
   }
@@ -9028,7 +9262,7 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   r2.hopper = ['green', 'green', 'green'];
   r2.vel = { x: 0, y: 0 }; // stationary
   w2.balls.push({ id: 9002, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w2.time = i / 60;
     updatePenalties(w2, 1 / 60, new Map());
   }
@@ -9043,8 +9277,8 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   const r3 = w3.robots[0];
   r3.pos = { x: 0, y: -8 };
   r3.hopper = ['green', 'green', 'green'];
-  r3.vel = { x: POSSESSION_PUSH_MIN + 5, y: 0 };
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  r3.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 };
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w3.time = i / 60;
     updatePenalties(w3, 1 / 60, new Map());
   }
@@ -9060,8 +9294,8 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
   r4.pos = { x: 0, y: -8 };
   r4.heading = 0;
   r4.hopper = ['green', 'green', 'green'];
-  r4.vel = { x: POSSESSION_PUSH_MIN + 5, y: 0 };
-  w4.balls.push({ id: 9003, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: POSSESSION_PUSH_MIN + 5, y: 0 }, z: 0, vz: 0 });
+  r4.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 };
+  w4.balls.push({ id: 9003, color: 'purple', state: { kind: 'ground' }, pos: { x: 2, y: 0 }, vel: { x: POSSESSION_HERD_SPEED + 5, y: 0 }, z: 0, vz: 0 });
   for (let i = 0; i < Math.floor((POSSESSION_GRACE / 2) / (1 / 60)); i++) { // well under confirm+grace
     w4.time = i / 60;
     updatePenalties(w4, 1 / 60, new Map());
@@ -10602,7 +10836,11 @@ function pinScene(
    * happened to be against a wall. Slowing the drive and giving it room to run is what makes it
    * an actual push across open floor.
    */
-  const herd = () => cmd({ driveY: 0.2, intake: true });
+  // Full throttle, not 0.2. Herding requires a HERDING SPEED now
+  // (`POSSESSION_HERD_SPEED`), and a 0.2 nudge is exactly the case the owner ruled should be
+  // free. The scenario's point is unchanged: a clump driven across OPEN FLOOR, with room to
+  // run, still fouls even with the intake held.
+  const herd = () => cmd({ driveY: 1, intake: true });
   const HERD: [number, number] = [-55, -67]; // clump near the bottom wall, robot behind it
   /**
    * RE-BASELINED FROM (5, 6) TO (6, 8) when the intake's reach was cut to the landing bound,
@@ -11001,7 +11239,7 @@ function pinScene(
   // the robot, so a fixture that pins both in place and only calls updatePenalties would show
   // a permanently stationed artifact and assert the opposite of what it means to.
   w.balls.push({ id: 9101, color: 'purple', state: { kind: 'ground' }, pos: { x: 12, y: 0 }, vel: { x: 0, y: 60 }, z: 0, vz: 0 });
-  runCmds(w, new Map([[0, cmd({ driveY: 1 })]]), acquireSecs(POSSESSION_PUSH_MIN + 5) + 0.5);
+  runCmds(w, new Map([[0, cmd({ driveY: 1 })]]), acquireSecs(POSSESSION_HERD_SPEED + 5) + 0.5);
   check(
     'a ball squirting sideways off the bumper is not plowed (no G408)',
     w.match.fouls.blue.minor === 0,
@@ -11038,10 +11276,10 @@ function pinScene(
   r3.pos = { x: 0, y: -8 };
   r3.heading = 0; // facing +x...
   r3.hopper = ['green', 'green', 'green'];
-  r3.vel = { x: -(POSSESSION_PUSH_MIN + 5), y: 0 }; // ...but DRIVING in reverse, toward −x
+  r3.vel = { x: -(POSSESSION_HERD_SPEED + 5), y: 0 }; // ...but DRIVING in reverse, toward −x
   // the ball is behind the chassis and ahead along the direction of travel, carried along
-  w3.balls.push({ id: 9103, color: 'purple', state: { kind: 'ground' }, pos: { x: -2, y: 0 }, vel: { x: -(POSSESSION_PUSH_MIN + 5), y: 0 }, z: 0, vz: 0 });
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  w3.balls.push({ id: 9103, color: 'purple', state: { kind: 'ground' }, pos: { x: -2, y: 0 }, vel: { x: -(POSSESSION_HERD_SPEED + 5), y: 0 }, z: 0, vz: 0 });
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w3.time = i / 60;
     updatePenalties(w3, 1 / 60, new Map());
   }
@@ -11062,7 +11300,7 @@ function pinScene(
   r4.pos = { x: 0, y: -8 };
   r4.heading = 0;
   r4.hopper = ['green', 'green', 'green']; // 3 stored = at the limit
-  const push = POSSESSION_PUSH_MIN + 5;
+  const push = POSSESSION_HERD_SPEED + 5;
   r4.vel = { x: push, y: 0 };
   // a CHAIN of four: only the first touches the bumper, the rest touch each other
   for (let i = 0; i < 4; i++) {
@@ -11076,7 +11314,7 @@ function pinScene(
       vz: 0,
     });
   }
-  for (let i = 0; i < acquireTicks(POSSESSION_PUSH_MIN + 5); i++) {
+  for (let i = 0; i < acquireTicks(POSSESSION_HERD_SPEED + 5); i++) {
     w4.time = i / 60;
     updatePenalties(w4, 1 / 60, new Map());
   }
@@ -11185,12 +11423,28 @@ function pinScene(
       `blueMinor=${spun.match.fouls.blue.minor}`,
     );
 
-    // ...and CREEPING one downfield is too. Speed is not what the rule turns on.
+    /**
+     * ⚠️ ...BUT CREEPING ONE DOWNFIELD IS FREE NOW, AND THAT IS A DELIBERATE TRADE.
+     *
+     * This check asserted the opposite, because the engine used to turn on DISTANCE alone and
+     * a slow-herd window was a known exploit. `POSSESSION_HERD_SPEED` reopens that window on
+     * purpose: measured, the engine had NO leniency gradient at all — a 6-row nudged at 0.08
+     * throttle drew the same 6 MINORs and the same yellow card as a full-throttle ram, and a
+     * SINGLE loose artifact drew 3. A rule that cannot tell a feather touch from a bulldoze is
+     * not one anybody can play around.
+     *
+     * Owner's ruling on the trade: “If a pile is crept downfield at 5 in/s, then it doesn't
+     * really matter. It is slow anyway. It's a valid tradeoff.” The exploit it grants is
+     * bounded by its own slowness — 5 in/s is 2.4 s per artifact diameter, and a robot doing
+     * that is not taking the field away from anybody.
+     *
+     * Flip this back and lower `POSSESSION_HERD_SPEED` together, never one alone.
+     */
     const crept = hoard(4, (r) => { r.vel = { x: 5, y: 0 }; });
     check(
-      'a pile CREPT downfield at 5 in/s is possessed (no slow-herd window)',
-      crept.match.fouls.blue.minor > 0,
-      `blueMinor=${crept.match.fouls.blue.minor}`,
+      'a pile CREPT downfield at 5 in/s is NOT possessed (the leniency trade)',
+      crept.match.fouls.blue.minor === 0,
+      `blueMinor=${crept.match.fouls.blue.minor} — below POSSESSION_HERD_SPEED=${POSSESSION_HERD_SPEED}`,
     );
 
     /**
@@ -11224,7 +11478,7 @@ function pinScene(
      * TRAPPING rule that reached the same place by asking whether the FIELD was holding the
      * artifacts, which fouled a robot for merely standing near a wall.
      */
-    const heldOn = hoard(4, (r) => { r.vel = { x: 20, y: 0 }; });
+    const heldOn = hoard(4, (r) => { r.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 }; });
     const before = heldOn.match.fouls.blue.minor;
     heldOn.robots[0].vel = { x: 0, y: 0 };
     heldOn.robots[0].angVel = 0;
@@ -11364,7 +11618,7 @@ function pinScene(
       r2.pos = { x: 20, y: (lz2.y0 + lz2.y1) / 2 };
       r2.heading = 0;
       r2.hopper = ['green', 'green', 'green'];
-      r2.vel = { x: 20, y: 0 };
+      r2.vel = { x: POSSESSION_HERD_SPEED + 5, y: 0 };
       for (let i = 0; i < 5; i++) {
         w2.balls.push({ id: 9950 + i, color: 'purple', state: { kind: 'ground' }, pos: { x: 32.9 + i * 5.1, y: r2.pos.y }, vel: { x: 20, y: 0 }, z: 0, vz: 0 });
       }
