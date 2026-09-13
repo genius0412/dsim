@@ -9,21 +9,27 @@ import {
   BB_AIM_GAIN,
   BB_AIM_TOL,
   BB_FLOWERS,
+  BB_FLOWER_D,
+  BB_FLOWER_FOOT,
+  BB_FLOWER_RETRIEVE_PAD,
+  BB_FLOWER_RETRIEVE_S,
   BB_FLOWER_UNLOCK_S,
   BB_HALF_X,
   BB_HALF_Y,
   BB_HIVE_OPEN_Z,
   BB_HOOD_DEFAULT_DEG,
+  BB_LAUNCH_Z0,
   BB_NECTAR_R,
   BB_ON_TARGET_TOL,
   BB_POLLEN_R,
   BB_POLLEN_WALL_REST,
+  bbHopperCap,
   bbLoadingZoneSpot,
 } from './config';
 import { biobuzzColliders } from './colliders';
-import { capturePollen, scoreTargets, takeHeld } from './elements';
-import { bbElementRadius, flowerFits, flowerStackZ, type BbElementKind } from './flower';
-import { hiveAccepts, hiveCellPos, hiveStep, spillPoses } from './hive';
+import { FLOWER_MOUTH, capturePollen, scoreTargets, takeHeld } from './elements';
+import { bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
+import { hiveAccepts, hiveCellPos, hiveLoad, hiveStep, hiveWillTip, spillPoses } from './hive';
 import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
   type BbShot,
@@ -33,9 +39,10 @@ import {
   bbLaunch,
   bbMouths,
   bbSlewTurret,
+  bbTurretRelease,
   bbTurretSolution,
 } from './robot';
-import { rectContains, type BiobuzzState, type ScoreTarget } from './state';
+import { rectContains, type BiobuzzState, type ScoreTarget, type Vec3 } from './state';
 
 /**
  * BIOBUZZ GAMEPLAY TICK — POLLEN physics and the intake/launch loop.
@@ -583,6 +590,14 @@ export function updateBiobuzz(
     }
   }
 
+  // ── 4b. INTAKE OFF A FLOWER (G418.B) ──────────────────────────────────────
+  // After the ground capture, so a robot that took a loose element this tick has spent its
+  // `lastIntakeAt` on it; before the solve, which never sees a parked or held element either way.
+  for (const rob of world.robots) {
+    if (rob.passive) continue;
+    retrieveFromFlower(world, bb, rob, cmds.get(rob.id), enabled, ballById, kindOf);
+  }
+
   // ── 5. SOLVE ──────────────────────────────────────────────────────────────
   /**
    * THE SHARED ARTIFACT SOLVE, AT THE POLLEN RADIUS, AND IT IS THE ONLY WRITER OF A GROUND
@@ -637,6 +652,18 @@ export function updateBiobuzz(
   // read one stage after it is written, and a per-tick robot field is wire cost on every
   // snapshot to every client.
   const shots = new Map<number, BbShot>();
+  // "is the own up-CELL still taking elements for a shot fired now" — once per alliance per tick,
+  // and only when some robot asks, because it runs every in-flight element of that alliance
+  // forward (`bbCellTaking`).
+  const taking = new Map<Alliance, boolean>();
+  const cellTaking = (a: Alliance): boolean => {
+    let t = taking.get(a);
+    if (t === undefined) {
+      t = bbCellTaking(world, a, dt, kindOf);
+      taking.set(a, t);
+    }
+    return t;
+  };
   for (const rob of world.robots) {
     if (rob.passive) continue; // a practice dummy has no mechanisms to run
     // A TURRET TRACKS WHETHER OR NOT THE ROBOTS ARE ENABLED. `robotsEnabled` gates DRIVER
@@ -645,10 +672,14 @@ export function updateBiobuzz(
     // on `enabled` would start every match with a swing off that bearing on the first live tick.
     const launcher = bbLauncherOf(rob.spec, BB_HOOD_DEFAULT_DEG);
     const target = bbPickTarget(world, rob);
+    // `scores` is read only by AUTO-FIRE, so only a robot that would auto-fire pays for predicting it.
+    const predict = rob.autoFire && rob.hopper.length > 0 && target !== null;
+    const hive = bb.hives[rob.alliance];
     if (bbIsTurreted(launcher)) {
       // EVERY TURRET: one for a single turret, both for a double (POLLEN turret 0, NECTAR 1).
       const speed: (number | undefined)[] = [];
       const onTarget: boolean[] = [];
+      const scores: boolean[] = [];
       const exits: readonly (0 | 1)[] = launcher.kind === 'twinturret' ? [0, 1] : [0];
       for (const which of exits) {
         const sol = target ? bbTurretSolution(rob, target, which) : null;
@@ -663,20 +694,37 @@ export function updateBiobuzz(
           sol.reachable &&
           Math.abs(wrapAngle(sol.yaw - yaw)) < BB_ON_TARGET_TOL &&
           Math.abs(sol.pitch - pitch) < BB_ON_TARGET_TOL;
+        // WILL IT SCORE: the release this turret would make now (its current yaw and pitch, at the
+        // speed `bbLaunch` will use), run forward through the flight stage, into a cell still taking.
+        let will = false;
+        if (predict && onTarget[which] && sol && cellTaking(rob.alliance)) {
+          const rel = bbTurretRelease(rob, which, sol.speed);
+          will = bbFlightEnters(hive, rob.alliance, rel.origin, BB_LAUNCH_Z0, rel.vel, dt);
+        }
+        scores[which] = will;
       }
-      shots.set(rob.id, { target, speed, onTarget });
+      shots.set(rob.id, { target, speed, onTarget, scores });
     } else {
       // A DUMPER is on target when the chassis is within `BB_AIM_TOL` of its aim heading AND the
       // whole load has an accepted arc (`bbDumpSolution`). The assist steers it there (step.ts).
+      // It WILL SCORE when, on top of that, every throw of the dump runs forward into a cell that
+      // is still taking elements.
       let on = false;
+      let will = false;
       if (target) {
         const want = bbAimHeading(rob, target);
-        on =
-          want !== null &&
-          Math.abs(wrapAngle(want - rob.heading)) < BB_AIM_TOL &&
-          bbDumpSolution(rob, target, rob.hopper.length) !== null;
+        const throws =
+          want !== null && Math.abs(wrapAngle(want - rob.heading)) < BB_AIM_TOL
+            ? bbDumpSolution(rob, target, rob.hopper.length)
+            : null;
+        on = throws !== null;
+        will =
+          predict &&
+          throws !== null &&
+          cellTaking(rob.alliance) &&
+          throws.every((t) => bbFlightEnters(hive, rob.alliance, t.origin, BB_LAUNCH_Z0, t.vel, dt));
       }
-      shots.set(rob.id, { target, speed: [], onTarget: [on] });
+      shots.set(rob.id, { target, speed: [], onTarget: [on], scores: [will] });
     }
   }
 
@@ -926,6 +974,81 @@ function placeInFlower(
 }
 
 /**
+ * WHICH FLOWER'S RETRIEVAL OPENING one of this robot's intake mouths is up against, or `null`.
+ *
+ * The opening is at the BOTTOM of the FLOWER on its field side (§9.7 Fig 9-12, the 3.55-in hole
+ * above the lower ring), so the point tested is the centre of the foot's FIELD-SIDE FACE: the ring
+ * centre pushed `BB_FLOWER_FOOT.deep − BB_FLOWER_D` along `FLOWER_MOUTH`, which is where a robot
+ * driven square into the foot has its roller. It must lie inside a mouth rect (`bbMouths`, the
+ * same rects the ground capture uses), padded OUTWARD only by `BB_FLOWER_RETRIEVE_PAD` — so the
+ * mounted edge has to be the one facing the FLOWER, and laterally the opening has to be within
+ * the roller's span.
+ */
+export function bbFlowerAtIntake(r: RobotState): number | null {
+  const out = BB_FLOWER_FOOT.deep - BB_FLOWER_D;
+  const mouths = bbMouths(r.spec);
+  for (let i = 0; i < BB_FLOWERS.length; i++) {
+    const f = BB_FLOWERS[i];
+    const n = FLOWER_MOUTH[f.wall];
+    const local = rot({ x: f.x + n.x * out - r.pos.x, y: f.y + n.y * out - r.pos.y }, -r.heading);
+    for (const m of mouths) if (rectContains(m, local.x, local.y, BB_FLOWER_RETRIEVE_PAD)) return i;
+  }
+  return null;
+}
+
+/**
+ * INTAKE OFF A FLOWER — G418.B: a ROBOT may "only remove POLLEN from the bottom of a FLOWER".
+ *
+ * A running intake (the same `autoIntake || cmd.intake` the ground capture reads) with a mouth on
+ * a FLOWER's retrieval opening (`bbFlowerAtIntake`) pulls the BOTTOM element into the hopper —
+ * only when it is a POLLEN (`flowerRetrieve`: a 3.6-in NECTAR does not pass the 3.55-in opening,
+ * so a NECTAR at the bottom LOCKS the FLOWER), only with hopper room, and at most one per
+ * `BB_FLOWER_RETRIEVE_S`, paced off `lastIntakeAt` (which the ground capture also stamps) so a
+ * stack does not empty in four ticks.
+ *
+ * The element goes through `capturePollen`, so the hopper and the held set stay one multiset and
+ * every intake rule applies. What is left in the stack is RE-SLOTTED and re-seated
+ * (`flowerStackZ`): `slot` is what `bbIndexElements` rebuilds the stack from, and the column drops
+ * by the element removed — except above a NECTAR seated on the middle ring, which the geometry
+ * already holds up.
+ */
+function retrieveFromFlower(
+  world: World,
+  bb: BiobuzzState,
+  rob: RobotState,
+  cmd: RobotCommand | undefined,
+  enabled: boolean,
+  ballById: ReadonlyMap<number, Artifact>,
+  kindOf: (id: number) => BbElementKind,
+): boolean {
+  if (!enabled || !(rob.autoIntake || (cmd?.intake ?? false))) return false;
+  if (world.time - rob.lastIntakeAt < BB_FLOWER_RETRIEVE_S) return false;
+  if (rob.hopper.length >= bbHopperCap(rob.spec)) return false;
+  const i = bbFlowerAtIntake(rob);
+  if (i === null) return false;
+  const flower = bb.flowers[i];
+  const { id } = flowerRetrieve(flower.stack, kindOf);
+  if (id === null) return false;
+  const ball = ballById.get(id);
+  if (!ball) return false;
+  const was = ball.state;
+  ball.state = { kind: 'ground' };
+  if (!capturePollen(world, rob, ball)) {
+    ball.state = was; // refused (an intake rule said no): the element never left the FLOWER
+    return false;
+  }
+  flower.stack.splice(0, 1);
+  const zs = flowerStackZ(flower.stack, kindOf);
+  flower.stack.forEach((sid, k) => {
+    const b = ballById.get(sid);
+    if (!b || b.state.kind !== 'element') return;
+    b.state = { ...b.state, slot: k };
+    b.z = zs[k];
+  });
+  return true;
+}
+
+/**
  * THE TARGET A ROBOT IS ACTUALLY TRYING TO SCORE IN, or `null` when there is not one.
  *
  * `scoreTargets()` reports every opening on the field, INCLUDING ones this robot should not
@@ -981,6 +1104,75 @@ export function bbPickTarget(world: World, r: RobotState): ScoreTarget | null {
     }
   }
   return best;
+}
+
+/**
+ * WILL A FLIGHT ELEMENT ENTER `owner`'s up-CELL — stage 2 of this file, run forward, against the
+ * hive as it is now.
+ *
+ * ⚠️ IT IS THE SAME STEP, IN THE SAME ORDER, AND IT HAS TO STAY THAT WAY: integrate position,
+ * height, then gravity; the wall clamp; the `hiveAccepts` test; land at `z <= 0`. An element
+ * released at tick N is first integrated at the start of tick N+1, and so is the first step here,
+ * so a release predicted to enter does enter unless the HIVE changes under it — which is what
+ * `bbCellTaking` is for. A predictor with its own ballistics would be a second answer to "did it
+ * go in", and auto-fire would fire on the wrong one.
+ *
+ * Pure: the element is copied, nothing in the world is written.
+ */
+export function bbFlightEnters(
+  hive: BiobuzzState['hives'][Alliance],
+  owner: Alliance,
+  pos: Vec2,
+  z: number,
+  vel: Vec3,
+  dt: number,
+): boolean {
+  if (!(dt > 0)) return false;
+  const b = { pos: { x: pos.x, y: pos.y }, vel: { x: vel.x, y: vel.y } } as Artifact;
+  let zz = z;
+  let vz = vel.z;
+  // four seconds of flight is well past any arc a legal launch speed can make
+  const steps = Math.ceil(4 / dt);
+  for (let i = 0; i < steps; i++) {
+    b.pos.x += b.vel.x * dt;
+    b.pos.y += b.vel.y * dt;
+    zz += vz * dt;
+    vz -= C.GRAVITY * dt;
+    clampPollenToWalls(b);
+    if (hiveAccepts(hive, owner, b.pos, zz, { x: b.vel.x, y: b.vel.y, z: vz })) return true;
+    if (zz <= 0) return false;
+  }
+  return false;
+}
+
+/**
+ * WILL `owner`'s up-CELL STILL BE TAKING ELEMENTS when a shot fired now arrives?
+ *
+ * No while it is mid-swing (`hiveAccepts` refuses everything then). And no when what is already
+ * in it PLUS every element of that alliance already in the air and predicted to enter
+ * (`bbFlightEnters`) will tip it: the element that completes the load goes in and starts the
+ * swing, so anything arriving after it reaches a moving HIVE and falls through. A shot that would
+ * itself complete the load is fine — it is the one that goes in.
+ *
+ * Measured before this existed, a turret on a steady feed auto-fired 61 elements and 58 missed,
+ * every one of them launched at a settled cell that the shots ahead of it were about to tip.
+ */
+export function bbCellTaking(
+  world: World,
+  owner: Alliance,
+  dt: number,
+  kindOf: (id: number) => BbElementKind,
+): boolean {
+  const bb = world.biobuzz as BiobuzzState | undefined;
+  if (!bb) return false;
+  const hive = bb.hives[owner];
+  if (hive.tipping > 0) return false;
+  const load = [...hive.contents];
+  for (const b of world.balls) {
+    if (b.state.kind !== 'flight' || b.state.by !== owner) continue;
+    if (bbFlightEnters(hive, owner, b.pos, b.z, { x: b.vel.x, y: b.vel.y, z: b.vz }, dt)) load.push(b.id);
+  }
+  return !hiveWillTip(hiveLoad(load, kindOf));
 }
 
 /**

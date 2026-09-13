@@ -6,6 +6,44 @@ Reverse-chronological. Prepend a new dated section; demote the old "READ FIRST".
 
 ## READ FIRST — 2026-09-12, night: the owner's builder feedback — three launchers, the Box Tube places
 
+> **2026-09-12, later still: INTAKE OFF A FLOWER (G418.B).** A running intake whose mouth is on a
+> FLOWER foot's field-side face pulls the BOTTOM element into the hopper, only if it is a POLLEN.
+>
+> - **Where:** stage 4b in `play.ts`, `retrieveFromFlower` / `bbFlowerAtIntake`.
+> - **Rules:** a NECTAR at the bottom locks the FLOWER, via `flowerRetrieve`. The hopper cap and
+>   every intake rule apply, because the element goes through `capturePollen`.
+> - **Pacing:** one element per `BB_FLOWER_RETRIEVE_S` (0.35 s, APPROX), paced off `lastIntakeAt`.
+> - **Reach:** the opening must be inside a mouth rect, padded outward by `BB_FLOWER_RETRIEVE_PAD`
+>   (1.0 in, APPROX).
+> - **The stack:** what remains is re-slotted and re-seated.
+>
+> Smoke `robot.ts` `flower intake:` pins the bottom-POLLEN pull, the pacing, the stop at the
+> cap, the NECTAR lock, out of position, driving in, the wrong edge, and conservation.
+> `field-plan.md` §2.2 named this `actOnElement(..., 'retrieve')`; that stub is still unwired and
+> not needed.
+>
+> **2026-09-12, later: AUTO-FIRE FIRES WHEN THE SHOT WILL SCORE.** The owner reported auto-fire
+> shooting "at weird times". Measured with a probe, there were two causes:
+> 1. It armed only on a FULL hopper, so it threw one element each time the 4th came in and then
+>    stopped.
+> 2. With a steady feed, 58 of 61 auto-fired shots missed. They left for a cell that the elements
+>    already in the air were about to tip.
+>
+> The fix:
+> - Auto-fire now reads `BbShot.scores`, computed in stage 5b (`play.ts`). The release is run
+>   forward through the real flight step (`bbFlightEnters`, which must stay step-for-step
+>   identical to stage 2).
+> - It also requires the own cell to still be taking elements (`bbCellTaking`): not mid-swing,
+>   and not about to be tipped by contents plus predicted inbound.
+> - `bbTurretRelease` (`robot.ts`) is the one release geometry the launch and the prediction
+>   share.
+> - Manual fire is unchanged.
+> - Consequence: a Box Tube robot parked on the HIVE's open side will auto-fire its load. Off
+>   the open side, and out of range, it still carries it.
+>
+> Smoke `robot.ts` `autofire:` pins three things: one element fires, a swinging cell holds, and a
+> steady feed gives 0 misses plus a real tip.
+>
 > **2026-09-12, late: THE HOPPER STAYS CAPPED AT 4 (owner ruling, final).** POLLEN and NECTAR
 > together. This overrides Lane B relay 2 and field-plan §4.3, which asked for the cap to be
 > lifted. `cffc243` had lifted it; the fix restores `BB_STORAGE_MAX = 4` in `config.ts`, so

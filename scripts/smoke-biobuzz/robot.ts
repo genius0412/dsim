@@ -1077,6 +1077,152 @@ export function robotChecks(check: Check): void {
     run(w, cmd({}), 3);
     check('autofire: ...and on the open side, once the turret is settled on the HIVE, it fires', r.hopper.length < full, `hopper=${r.hopper.length}`);
   }
+  /**
+   * AUTO-FIRE DOES NOT WAIT FOR A FULL HOPPER. It armed only at the cap, so it threw ONE element
+   * each time the intake took the fourth and then stopped: it fired when the hopper happened to
+   * fill, never when a shot was on.
+   */
+  {
+    const w = mkWorld('free', 87, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }));
+    const r = w.robots[0];
+    r.autoFire = true;
+    park(r, 12, 50, Math.PI);
+    emptyHopper(w, r);
+    give(w, r, ['yellow']);
+    const cell = w.biobuzz!.hives.blue;
+    const in0 = cell.contents.length;
+    run(w, cmd({}), 3);
+    check(
+      'autofire: holding ONE element (not full) on the open side, it fires, and the element scores',
+      r.hopper.length === 0 && w.biobuzz!.hives.blue.contents.length === in0 + 1,
+      `hopper=${r.hopper.length} cell ${in0}→${w.biobuzz!.hives.blue.contents.length}`,
+    );
+  }
+  /** AUTO-FIRE HOLDS while its own cell is mid-swing (nothing can enter a moving HIVE). Paired
+   * with the same scene unswung, so the hold is not just a turret that had not settled yet. */
+  {
+    const scene = (swing: boolean): number => {
+      const w = mkWorld('free', 89, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }));
+      const r = w.robots[0];
+      r.autoFire = true;
+      park(r, 12, 50, Math.PI);
+      if (swing) w.biobuzz!.hives.blue = { ...w.biobuzz!.hives.blue, tipping: 1.0, released: false };
+      run(w, cmd({}), 0.9);
+      return r.hopper.length;
+    };
+    const held = scene(true);
+    const free = scene(false);
+    check('autofire: holds its load while the own cell is mid-swing (and fires in the same scene unswung)', held === 4 && free < 4, `swinging hopper=${held}, settled hopper=${free}`);
+  }
+  /**
+   * A STEADY FEED NEVER THROWS INTO A CELL THAT IS ABOUT TO TIP. "On target" used to be the
+   * turret's geometry alone, so shots kept leaving at a settled cell that the elements ahead of
+   * them would tip, and arrived at a swinging HIVE: 58 of 61 auto-fired elements missed. Every
+   * element auto-fired here must score, and the cell must actually tip (non-vacuous).
+   */
+  {
+    const w = mkWorld('free', 91, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }));
+    const r = w.robots[0];
+    r.autoFire = true;
+    park(r, 12, 45, Math.PI);
+    const tips0 = w.biobuzz!.hives.blue.tips;
+    const flying = new Set<number>();
+    let scored = 0;
+    let missed = 0;
+    for (let i = 0; i < Math.round(8 / C.SIM_DT); i++) {
+      if (r.hopper.length < bbHopperCap(r.spec)) give(w, r, ['yellow']);
+      const before = new Set(w.balls.filter((b) => b.state.kind === 'flight').map((b) => b.id));
+      tick(w, cmd({}));
+      for (const b of w.balls) if (b.state.kind === 'flight' && !before.has(b.id)) flying.add(b.id);
+      for (const id of [...flying]) {
+        const b = w.balls.find((q) => q.id === id)!;
+        if (b.state.kind === 'flight') continue;
+        flying.delete(id);
+        if (b.state.kind === 'element' && b.state.el === 'hive:blue') scored++;
+        else missed++;
+      }
+    }
+    const tips = w.biobuzz!.hives.blue.tips - tips0;
+    check('autofire: on a steady feed every auto-fired element scores, and the cell tips', missed === 0 && scored > 0 && tips > 0, `scored=${scored} missed=${missed} tips=${tips}`);
+  }
+
+  // ── INTAKE OFF A FLOWER (G418.B) ──────────────────────────────────────────
+  /**
+   * "only remove POLLEN from the bottom of a FLOWER": a running intake against a FLOWER foot's
+   * field side pulls the BOTTOM POLLEN into the hopper, paced, never a NECTAR, and never from out
+   * of position. Every FLOWER is staged with four POLLEN.
+   */
+  {
+    const FR = 2; // F3, the +x wall at y = 24
+    /** a blue robot with a FRONT sweeper (dumper on the back, no Box Tube), assists off, empty */
+    const pullWorld = (seed: number): { w: World; r: RobotState } => {
+      const w = mkWorld('free', seed, mech({ launcher: { kind: 'dumper', mount: 'back', hoodDeg: 75 }, lift: null }, { intakeMount: 'front' }));
+      const r = w.robots[0];
+      r.autoFire = false;
+      r.autoIntake = false;
+      emptyHopper(w, r);
+      // the spawn's preload captures stamp `lastIntakeAt` at t = 0; clear it so the pacing window
+      // under test starts from the first pull, not from the staging
+      r.lastIntakeAt = -10;
+      return { w, r };
+    };
+    const flushFront = (r: RobotState, back = 0.2): void =>
+      park(r, 72 - BB_FLOWER_FOOT.deep - r.spec.length / 2 - C.INTAKE_PRESETS[r.spec.intake].reach - back, BB_FLOWERS[FR].y, 0);
+    {
+      const { w, r } = pullWorld(101);
+      const stack = w.biobuzz!.flowers[FR].stack;
+      const before = [...stack];
+      const n = w.balls.length;
+      flushFront(r);
+      tick(w, cmd({}));
+      check('flower intake: nothing comes out without the intake running', stack.length === before.length && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
+      tick(w, cmd({ intake: true }));
+      const kids = w.balls.filter((b) => b.state.kind === 'element' && b.state.el === `flower:${FR}`);
+      check(
+        'flower intake: the intake against the foot pulls the BOTTOM POLLEN into the hopper',
+        r.hopper.join(',') === 'yellow' && stack.join(',') === before.slice(1).join(',') && w.balls.find((b) => b.id === before[0])?.state.kind === 'held',
+        `hopper=${r.hopper.join(',')} stack ${before.join(',')}→${stack.join(',')}`,
+      );
+      check('flower intake: what is left is re-slotted bottom-first', stack.every((id, k) => kids.find((b) => b.id === id)?.state.kind === 'element' && (kids.find((b) => b.id === id)!.state as { slot: number }).slot === k));
+      const copy = JSON.parse(JSON.stringify(w)) as World;
+      bbIndexElements(copy);
+      check('flower intake: the stack rebuilt off world.balls agrees with the live one', copy.biobuzz!.flowers[FR].stack.join(',') === stack.join(','), `${copy.biobuzz!.flowers[FR].stack.join(',')} vs ${stack.join(',')}`);
+      for (let t = 0; t < 6; t++) tick(w, cmd({ intake: true }));
+      check('flower intake: it is PACED, not one element per tick', r.hopper.length === 1, `hopper=${r.hopper.length} after 6 more ticks`);
+      run(w, cmd({ intake: true }), 3);
+      const want = Math.min(bbHopperCap(r.spec), before.length);
+      check('flower intake: held on, it pulls until the hopper is full (or the POLLEN run out) and no further', r.hopper.length === want && stack.length === before.length - want, `hopper=${r.hopper.length} stack=${stack.length} want=${want}`);
+      check('flower intake: nothing is created or destroyed', w.balls.length === n, `${n}→${w.balls.length}`);
+    }
+    {
+      const { w, r } = pullWorld(103);
+      const stack = w.biobuzz!.flowers[FR].stack;
+      const bottom = w.balls.find((b) => b.id === stack[0])!;
+      bottom.color = 'blue'; // a NECTAR at the bottom
+      const n0 = stack.length;
+      flushFront(r);
+      run(w, cmd({ intake: true }), 1);
+      check('flower intake: a NECTAR at the bottom LOCKS the FLOWER (nothing comes out)', stack.length === n0 && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
+    }
+    {
+      const { w, r } = pullWorld(105);
+      const stack = w.biobuzz!.flowers[FR].stack;
+      const n0 = stack.length;
+      park(r, 72 - BB_FLOWER_FOOT.deep - r.spec.length / 2 - C.INTAKE_PRESETS[r.spec.intake].reach - 6, BB_FLOWERS[FR].y, 0);
+      tick(w, cmd({ intake: true }));
+      check('flower intake: six inches off the foot, nothing comes out', stack.length === n0 && r.hopper.length === 0);
+      run(w, cmd({ intake: true, driveY: 0.5 }), 1.5);
+      check('flower intake: DRIVING the sweeper into the foot reaches the opening (the collider allows it)', r.hopper.length > 0 && stack.length < n0, `hopper=${r.hopper.length} stack=${stack.length} x=${r.pos.x.toFixed(2)}`);
+    }
+    {
+      const { w, r } = pullWorld(107);
+      const stack = w.biobuzz!.flowers[FR].stack;
+      const n0 = stack.length;
+      park(r, 72 - BB_FLOWER_FOOT.deep - r.spec.length / 2 - 0.2, BB_FLOWERS[FR].y, Math.PI); // BACK to the FLOWER: no sweeper there
+      run(w, cmd({ intake: true }), 1);
+      check('flower intake: the edge without a sweeper pulls nothing', stack.length === n0 && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
+    }
+  }
   /** the HUD reads the launcher through the resolver, never the flat mirror */
   {
     const w = mkWorld('free', 85, mech({ launcher: TWIN, lift: null }));
