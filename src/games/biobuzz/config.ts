@@ -406,11 +406,11 @@ export const BB_POLLEN_WALL_REST = 0.35;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The ACT this season starts on. BIOBUZZ is DSIM's third game, so its record/ranked periods
- * begin at 2 (DECODE 0, Chain Reaction 1). Read by the shared `initialAct` slot rather than a
- * per-game ternary in the season code.
+ * The ACT this season starts on: BIOBUZZ's records and ranked open at Act 1 · Season 1 (owner,
+ * 2026-09-12). Acts are per game (`seasons` is keyed on game), so this need not differ from
+ * DECODE's or Chain Reaction's. Read through the shared `initialAct` slot (`sim.ts`).
  */
-export const BB_INITIAL_ACT = 2;
+export const BB_INITIAL_ACT = 1;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ROBOT — intake geometry
