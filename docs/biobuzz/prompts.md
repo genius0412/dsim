@@ -812,3 +812,30 @@ Two more items after your four:
 ### Lane B — relay 2 (paste into the robot chat)
 
 Owner ruling: G407 is a warning, not a cap. Delete `BB_STORAGE_MAX = 4` as the RULE ceiling in config.ts and let `bbStorageMax(spec)` (the volume law) bound the hopper dial; `BB_STORAGE_DEFAULT` stays 4. Fix the config.ts comments that call 4 the rule. Smoke: the biggest legal chassis can hold more than 4; the default still spawns with 4. The rules lane bills the warning; you only lift the cap. alpha is f01f924+.
+
+## Round 6 (2026-09-12 late) — after `alpha` `ea2cba4`
+
+State: A5a (field items 1–7), A5b (G421, G407 warning, G417 STRATEGIC), A5c (score bar, chips, results rows) all merged. tsc, server:check, uiaudit, contrast green; `npm run test:bb` 989/989. `controlledArtifacts` exported. Owner's Lane A todo mapped onto A6a.
+
+### A6a — field (owner's list, in his order)
+
+Merge origin/alpha (ea2cba4). Your files plus the clearances named in item 1.
+1. **HUMAN PLAYER BUTTON** (owner): NECTAR entry is a driver ACTION, not a drip. Add `bbNectar?: boolean` to `RobotCommand` (src/types.ts), encode/decode it in src/net/protocol.ts (an edge like `catalyst`), a default keybind `N` in src/input/bindings.ts, and a mobile button through `GameModule.mobileButtons` + a `GameSettings.mobileLayout` key (Lane B was cleared for those two for bbLift/bbPlace — grep first; if its entries landed, add beside them). You are cleared for those four integration files for this bit only. Rule (G426): a press places ONE nectar into the OWN LOADING ZONE iff `nectarStock[a] > 0` and (`nectarDue[a] > 0` or ≤ 60 s of TELEOP left); otherwise nothing happens and the HUD slice says why — expose `nectarWhy: 'ok' | 'locked' | 'none-owed' | 'none-left'` for A6c. Delete the automatic drip (`BB_NECTAR_ENTRY_S`, `BB_NECTAR_DUMP_S`, `nectarTimer`); keep `nectarDue` as the entitlement counter. Either robot of the alliance may press. Smoke: press before any TIP places nothing; after one TIP places exactly one; at 59 s one per press until the stock is 0; the frozen field ignores it; a replay round-trip carries the bit.
+2. **START POSITIONS** (G304, manual-distilled §6.2 A–E): anchors fully on the own side (red x < 0), touching the perimeter wall, NOT in the LOADING ZONE, clear of every FLOWER foot and scoring volume. Write `bbEvalStart(spec, pose, a)` (DECODE's `evalStartPose` shape: legal + reason) and `bbSnapStart`; at least two anchors per alliance, far apart (the index 0/1 rule), on the audience-wall and rear-wall stretches outside the LZ. Flip `startLegality: true` in sim.ts only if custom poses reach your evaluator through `coerceSetup`; otherwise leave it and say so. Mark APPROX where the frontage is figure-derived. Smoke: every anchor legal at every legal chassis size; an LZ pose and a flower-touching pose illegal.
+3. **FLOWER STACK RENDER** (owner: "show balls in flower in a more intuitive way"): replace the row of discs along the wall with a SECTION VIEW beside the flower, outside the perimeter — a narrow column from top ring to lower ring, the scoring band shaded, elements as discs at their `flowerStackZ` heights in their own colours, owner colour on the top ring, a lock glyph when a NECTAR is at the bottom. It is V's c-flower page without the buttons, rotated with its wall. Gallery cell `flower-stack` at 0 / staged 4 / nectar-bottom / full; 1600px light + dark.
+4. **THRESHOLDS** (owner: tip table and flower capacity accurate): both are APPROX and V1 cannot confirm them. Write `docs/biobuzz/feedback/002-thresholds.md`: exactly what to measure on 09-14 (tip load at NECTAR 0–5 including the empty cell; middle ring height and hole; how many POLLEN / NECTAR fit), and pin the DERIVED capacities (POLLEN 8, NECTAR 5) and `BB_TIP_POLLEN` in smoke as literals so a re-measure is one config edit and one label edit.
+Gates as before. Prepend HANDOFF-field.md, push biobuzz-field, report the commit. No Claude attribution.
+
+### A6b — rules
+
+Merge origin/alpha (ea2cba4): `controlledArtifacts(world, r, dt, intaking)` is exported from src/sim/penalties.ts. 1. `bbControlled` becomes that call and nothing else changes; smoke a herded pile of five warns once. 2. YELLOW CARDS: owner decision pending (question 1 below) — do not model yet. 3. Then audit every foul line against the UI COPY rule (name the ACT) and every tariff against manual-distilled §3.1. Gates, handoff, push, report.
+
+### A6c — HUD
+
+Merge origin/alpha (ea2cba4). 1. `pins: BbPinHud[]` is on the slice — a PIN chip on the pinner (`PIN · 20 IN 1.4 S` from `nextIn`) and a red one on the victim. 2. G407 `warnings` → a `CONTROL 5+` chip held 3 s. 3. `nectarWhy` from A6a when it lands (grep the slice; TODO if absent). 4. Screenshots light + dark of the LIVE HUD at auto / teleop / ≤ 60 s / results — owed from A5c; attach to the report. uiaudit stays at baseline.
+
+### Owner questions (new)
+
+1. YELLOW CARDS: G414–G420 all card. Model cards game-wide (DECODE's `awardCard`; a second card is RED and voids the alliance score), or leave cards to the referee for this season?
+2. Spill short tail: 11% of spilled elements rest inside the 57 in floor. Acceptable, or add a second term?
+3. Human player button: one key for the whole alliance (either driver presses), or driver 1 only?
