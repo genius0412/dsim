@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Alliance, Artifact, ArtifactColor, RobotCommand, World } from '../../src/types';
-import { PIN_WALL_SLOP, SIM_DT } from '../../src/config';
+import { MATCH_SETTLE_S, PIN_WALL_SLOP, SIM_DT } from '../../src/config';
 import { bbPinSolid } from '../../src/games/biobuzz/colliders';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
@@ -495,6 +495,120 @@ function scoringChecks(check: Check): void {
     bb.leave[0] = true;
     place(w, 0, -72 + 9, 0); // back at the wall — the achievement is kept
     check('ASSESS: a robot that returns to the wall KEEPS its LEAVE', bbScoreWorld(w).red.leave === BB_PTS.leave);
+  }
+
+  // ── A TIP CAUGHT BY THE BUZZER — the swing outlasts the harvest window ─────
+  /**
+   * REPORTED (solo record, 2026-09-13): “sometimes when I get a tip at the end of the game it
+   * deducts points from me rather than adding the points for the tip … the tip doesn't count
+   * and the points get deducted”.
+   *
+   * Two clocks made that inevitable: the swing is `BB_TIP_SWING_S` 4.0 s and the window the
+   * results screen and the server both harvest the final score on is `MATCH_SETTLE_S` 2.8 s, so
+   * a TIP triggered in the last four seconds of TELEOP could not reach `hive.tips` in time. The
+   * bar passes level at `BB_TIP_RELEASE_S`, which then emptied the tray and took the cell line
+   * away with it — measured on this very scene before the fix, 16 points at the buzzer and 0
+   * harvested.
+   *
+   * The invariant checked here is the one a driver feels: THE SCORE NEVER GOES DOWN AFTER THE
+   * BUZZER, and a bar that was moving when it went is paid its 20. Driven through the real
+   * pipeline rather than by hand, because the bug lives in the arithmetic of those two clocks.
+   */
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    const bb = w.biobuzz;
+    if (!bb) return;
+    place(w, 0, -40, 20); // clear of the wall and of the LOADING ZONE: no LEAVE, no PARK
+    // a bare cell tips at `BB_TIP_POLLEN[0]` POLLEN, and `bare()` left it empty
+    intoCell(w, 'red', Array.from({ length: BB_TIP_POLLEN[0] }, () => 'yellow' as ArtifactColor));
+    const load = bb.hives.red.contents.length;
+    w.match.phase = 'teleop';
+    // the swing starts on the next tick, so the buzzer catches it 0.5 s in: it passes LEVEL
+    // 1.5 s into `post` and settles 3.5 s in, PAST the 2.8 s at which the score is harvested.
+    // That is the reported case exactly — the load left the tray before the harvest and the TIP
+    // landed after it, so the run banked neither.
+    w.match.phaseTimeLeft = 0.5;
+    const cmds = new Map<number, RobotCommand>();
+    let buzzer = -1;
+    let buzzerCellPts = -1;
+    let lowest = Infinity;
+    let harvest = -1;
+    let tipsAtHarvest = -1;
+    let post = 0;
+    const ticks = Math.round((0.5 + BB_TIP_SWING_S + 1) / SIM_DT);
+    for (let i = 0; i < ticks; i++) {
+      biobuzzStep(w, SIM_DT, cmds);
+      if (w.match.phase !== 'post') continue;
+      const sc = bbScoreWorld(w).red;
+      if (buzzer < 0) {
+        buzzer = sc.total;
+        buzzerCellPts = sc.cellPts;
+      }
+      lowest = Math.min(lowest, sc.total);
+      post += SIM_DT;
+      if (harvest < 0 && post >= MATCH_SETTLE_S) {
+        harvest = sc.total;
+        tipsAtHarvest = sc.tipPts;
+      }
+    }
+    check(
+      `BUZZER TIP: the swing really was still moving when the match ended (${load} in the tray)`,
+      bb.hives.red.tips === 1,
+      `tips after the run: ${bb.hives.red.tips}`,
+    );
+    check(
+      'BUZZER TIP: a swing under way at the buzzer is paid its 20 right there',
+      buzzer === BB_PTS.tip,
+      `total at the buzzer ${buzzer}, expected ${BB_PTS.tip}`,
+    );
+    check(
+      'BUZZER TIP: its load is NOT also paid as left in the up-CELL',
+      buzzerCellPts === 0,
+      `cell points at the buzzer ${buzzerCellPts} on ${load} elements`,
+    );
+    check(
+      'BUZZER TIP: the TIP is on the board when the score is harvested (2.8 s into a 4.0 s swing)',
+      tipsAtHarvest === BB_PTS.tip,
+      `tip points at +${MATCH_SETTLE_S}s: ${tipsAtHarvest}`,
+    );
+    check(
+      'BUZZER TIP: the score never goes DOWN after the buzzer — the reported deduction',
+      lowest >= buzzer && harvest >= buzzer,
+      `buzzer ${buzzer}, lowest ${lowest}, harvested ${harvest}`,
+    );
+
+    // and both halves of the rule, read straight off the score on a hand-built HIVE
+    const t = bare([{ id: 0, alliance: 'red' }]);
+    const tb = t.biobuzz;
+    if (!tb) return;
+    place(t, 0, -40, 20);
+    tb.hives.red.tips = 2;
+    intoCell(t, 'red', ['yellow', 'yellow', 'yellow']);
+    tb.hives.red.tipping = BB_TIP_SWING_S - 0.5; // moving, not yet level
+    tb.hives.red.released = false;
+    t.match.phase = 'teleop';
+    const live = bbScoreWorld(t).red;
+    check(
+      'BUZZER TIP: MID-MATCH a swing pays nothing yet and the tray readout stays live',
+      live.tips === 2 && live.cellCount === 3 && live.cellPts === 0,
+      `tips=${live.tips} count=${live.cellCount} pts=${live.cellPts}`,
+    );
+    t.match.phase = 'post';
+    const held = bbScoreWorld(t).red;
+    check(
+      'BUZZER TIP: at the buzzer that same swing is a TIP, and its load is not left in the tray',
+      held.tips === 3 && held.cellCount === 0,
+      `tips=${held.tips} count=${held.cellCount}`,
+    );
+    // past LEVEL, `contents` is the INCOMING tray's load — that one really is left in the cell
+    tb.hives.red.tipping = BB_TIP_RELEASE_S - 0.5;
+    tb.hives.red.released = true;
+    const after = bbScoreWorld(t).red;
+    check(
+      'BUZZER TIP: past LEVEL the tray holds the INCOMING load, and it is paid as well',
+      after.tips === 3 && after.cellCount === 3 && after.cellPts === 3 * BB_PTS.cell,
+      `tips=${after.tips} count=${after.cellCount} pts=${after.cellPts}`,
+    );
   }
 }
 

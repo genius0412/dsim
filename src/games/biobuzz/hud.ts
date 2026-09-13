@@ -59,7 +59,8 @@ export interface BbCellHud {
   /** POLLEN still needed to TIP, from the measured table indexed by `nectar`. 0 ⇒ it is about
    * to go, or is already going. */
   needed: number;
-  /** completed TIPS this match */
+  /** completed TIPS this match — the SCORED count, so once the match is over it includes a
+   * swing that was still moving at the buzzer (`score.ts`) */
   tips: number;
   /** seconds left in the swing, 0 when settled. The CELL accepts nothing while this is > 0. */
   tipping: number;
@@ -268,7 +269,10 @@ export function biobuzzFieldHud(world: World): BiobuzzFieldHud {
       pollen,
       nectar,
       needed: Math.max(0, want - pollen),
-      tips: hive.tips,
+      // the SCORE's count, not the raw counter: at the buzzer a swing still in progress is
+      // already being paid as a TIP (`score.ts`), and a chip reading one fewer than the points
+      // beside it is the kind of disagreement a driver reports as a scoring bug.
+      tips: s[a].tips,
       tipping: hive.tipping,
       tipProgress: hive.tipping > 0 ? 1 - hive.tipping / BB_TIP_SWING_S : 0,
       up: hive.up,
