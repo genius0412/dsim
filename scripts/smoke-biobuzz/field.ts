@@ -66,6 +66,7 @@ import {
   bbMirror,
   type BbRect,
 } from '../../src/games/biobuzz/config';
+import { tipProjection } from '../../src/games/biobuzz/drawField';
 import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
 import { bbFlowerSectionBox } from '../../src/games/biobuzz/drawField';
 import { createBiobuzzWorld, stageBiobuzz } from '../../src/games/biobuzz/spawn';
@@ -2824,6 +2825,35 @@ export function fieldChecks(check: Check): void {
           `speed ${Math.min(...poses.map(speedOf)).toFixed(1)}..${Math.max(...poses.map(speedOf)).toFixed(1)} in/s ` +
           `(range ${BB_SPILL_SPEED[0]}..${BB_SPILL_SPEED[1]}) · ` +
           `fan ${Math.max(...poses.map(fanOf)).toFixed(1)}° of ±${BB_SPILL_FAN}°`,
+      );
+    }
+
+    // 8b. THE DRAWN SWING (`tipProjection`, `drawField.ts`). The renderer's only motion is the
+    // bar's own foreshortening, so a TIP that does not move the geometry is a TIP nobody sees
+    // happen. Pinned here rather than left to the eye: at rest nothing is scaled, at LEVEL the
+    // assembly reaches its TRUE length (1 / cos 30°), and the up-cell's brightness passes
+    // through a half exactly where the load leaves.
+    {
+      const rest = tipProjection(0);
+      const start = tipProjection(BB_TIP_SWING_S);
+      const level = tipProjection(BB_TIP_RELEASE_S);
+      const end = tipProjection(1e-6);
+      const level1 = 1 / Math.cos((30 * Math.PI) / 180);
+      const near = (x: number, y: number) => Math.abs(x - y) < 1e-3;
+      check(
+        'hive: the TIP is DRAWN as a swing — the bar reaches out at level and the fill follows its height',
+        near(rest.proj, 1) &&
+          near(rest.up, 1) &&
+          near(start.proj, 1) &&
+          near(start.up, 1) &&
+          near(level.proj, level1) &&
+          near(level.up, 0.5) &&
+          near(end.proj, 1) &&
+          Math.abs(end.up) < 1e-3 &&
+          level.proj > start.proj,
+        `rest ${rest.proj.toFixed(4)}/${rest.up.toFixed(3)} · start ${start.proj.toFixed(4)}/${start.up.toFixed(3)} · ` +
+          `level ${level.proj.toFixed(4)}/${level.up.toFixed(3)} (want ${level1.toFixed(4)}/0.5) · ` +
+          `settle ${end.proj.toFixed(4)}/${end.up.toFixed(3)}`,
       );
     }
 

@@ -164,6 +164,18 @@ export const BB_TAPE_2 = 2;
  * APPROX: Fig 9-2 — that the PAIR is centred on the field, which the plan view shows. */
 export const BB_HIVE_X = 12.75;
 
+/**
+ * the BAR's tilt off level at either stable end (degrees) — the ±30° of a bi-stable see-saw
+ * (§9.6, Figs 9-7…9-11; owner CAD, 2026-09-12; `docs/biobuzz-reference.md` §2.2).
+ *
+ * It is already baked into every PLAN length below as a cos 30° — `BB_HIVE_CELL_DY`,
+ * `BB_HIVE_CELL_LEN` and `BB_HIVE_LEN` are the projected numbers, not the true ones. The
+ * constant exists so the SWING can be drawn: mid-tip the bar passes LEVEL, where the
+ * foreshortening is 1 and the assembly reaches its true length, and a renderer animating that
+ * needs the angle the projection came from rather than a second copy of 30 typed into it.
+ */
+export const BB_HIVE_TILT_DEG = 30;
+
 /** horizontal projection (in) of a CELL centre from its pivot, along the HIVE axis (y) —
  * 15.44 · cos 30°. MEASURED (owner CAD, 2026-09-12; `docs/biobuzz-reference.md` §2.2). */
 export const BB_HIVE_CELL_DY = 13.37;
