@@ -26,9 +26,15 @@ import { biobuzzStep } from './step';
  *     ALPHA-ONLY through `channels`. Several inputs are `APPROX` (`BB_TIP_POLLEN[0]`,
  *     `BB_FRAME_RAM_SPEED`), so numbers on the alpha board before the 2026-09-14 field test
  *     are provisional. Setting this back to `false` is the one-line way to stop persisting.
- *   • `startLegality: false` — there is no published G304 analogue, so the anchors are a
- *     convenience rather than a rule, and the server's legality gate stays off. The anchors
- *     are `APPROX` and say so at their definition.
+ *   • `startLegality: false` — and NOT because the rule is missing any more. G304 published
+ *     with the rest of the V1 manual and `bbEvalStart` (`./start`) assesses it: own side,
+ *     touching the perimeter, clear of every FLOWER, out of the LOADING ZONE. The flag stays
+ *     down because of what READS it: `server/room.ts` gates a ready-up on `activeStartLegal`,
+ *     which is DECODE's `evalStartPose` and is NOT dispatched through this module, so flipping
+ *     it would have a BIOBUZZ pose judged against DECODE's launch lines and goal triangles —
+ *     a worse answer than no answer, and one that would refuse every legal start on this
+ *     field. It flips the day that gate asks the module; `bbEvalStart` is ready for it, and
+ *     `spawn.ts` and `elements.ts`'s `evalStart` already call it.
  *
  * `initialAct: 2` — DECODE opened in act 0 (its beta bucket) and Chain Reaction in act 1, so
  * this game's first ranked period opens in act 2. Distinct per game is asserted by the smoke

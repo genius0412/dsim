@@ -16,6 +16,7 @@ export interface VirtualInput {
   fling: boolean;
   bbPlaceNectar: boolean;
   bbPlace: boolean;
+  bbNectar: boolean;
   driveMode: boolean;
 }
 
@@ -46,6 +47,7 @@ export class InputManager {
     fling: false,
     bbPlaceNectar: false,
     bbPlace: false,
+    bbNectar: false,
     driveMode: false,
   };
 
@@ -116,6 +118,11 @@ export class InputManager {
       // BIOBUZZ place-into-a-FLOWER — held here even though the sim acts once per press, the
       // same contract as `catalyst` and `fling` (see `driveMode` below for why).
       bbPlace: heldAny(keys.bbPlace) || g.bbPlace || this.virtualState.bbPlace,
+      // BIOBUZZ HUMAN PLAYER — held here, edge-detected in the sim, same contract as the three
+      // above. Sim-side is the only place the edge can live: this is an ALLIANCE action that
+      // either robot may trigger, so the press has to be reconciled and replayed like any
+      // other command bit rather than latched on one client.
+      bbNectar: heldAny(keys.bbNectar) || g.bbNectar || this.virtualState.bbNectar,
       // BUTTERFLY wheel-set swap — also passed HELD, edge-triggered in the sim. Doing the
       // edge sim-side (not here) keeps it deterministic under prediction + reconcile:
       // a replayed input can't double-toggle the way a client-side edge flag would.

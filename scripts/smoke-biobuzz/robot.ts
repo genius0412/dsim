@@ -989,7 +989,11 @@ export function robotChecks(check: Check): void {
     bbIndexElements(w);
     const rebuilt = JSON.stringify({ f: bb.flowers.map((f) => f.stack), h: [bb.hives.red.contents, bb.hives.blue.contents] });
     check('place: bbIndexElements rebuilds exactly the live stacks after a placement', live === rebuilt, `${live} vs ${rebuilt}`);
-    check('place: the latch is namespaced and only TRUE keys are stored', Object.entries(bb.held[r.id] ?? {}).every(([k, v]) => v === true && (k === 'placeP' || k === 'placeN' || k === 'g417warned')));
+    // The allowlist is EVERY owner of this per-robot map, across lanes: `placeP`/`placeN` are
+    // this lane's, `g417warned` the rules lane's, `nectarPress` the field lane's HUMAN PLAYER
+    // latch (`play.ts` NECTAR_PRESS_KEY). A new key belongs here the day it is written — the
+    // check exists to catch a latch stored under a name nobody else knows about.
+    check('place: the latch is namespaced and only TRUE keys are stored', Object.entries(bb.held[r.id] ?? {}).every(([k, v]) => v === true && (k === 'placeP' || k === 'placeN' || k === 'g417warned' || k === 'nectarPress')));
   }
   {
     const { w, r } = tubeWorld(65);

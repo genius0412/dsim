@@ -292,16 +292,6 @@ function park(b: Artifact, el: string, order: number[], pos: Vec2, z: number): v
 // THE HUMAN PLAYER (field-plan §2.4, G426/G427)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * How long after a TIP the human player's NECTAR reaches the tiles, and how fast the ≤ 60 s
- * dump runs, in seconds. APPROX, and local here rather than in `config.ts` for the same
- * reason `flower.ts`'s are: the manual sets the ENTITLEMENT (one per TIP, all remaining at
- * ≤ 60 s — G426) and says nothing about the hands. Moving them into `config.ts` is a one-line
- * import change when a real field says what a human player actually takes.
- */
-export const BB_NECTAR_ENTRY_S = 1.5; // APPROX
-export const BB_NECTAR_DUMP_S = 1.0; // APPROX
-
 /** one draw from the WORLD's seeded chain, advancing it. Every randomised thing in this file
  * goes through here — the spill scatter and the human player's jitter — so "the rng was drawn
  * N times this tick, in this order" is one readable fact rather than two inline closures that
@@ -315,6 +305,11 @@ function nextRandomValue(world: World): number {
 /** how far off the LOADING ZONE spot an entered NECTAR is placed, in inches, each way. A human
  * putting five elements on the same tile does not stack them. APPROX. */
 const NECTAR_ENTRY_JITTER = 4.0; // APPROX
+
+/** the `held` key the human player button's rising edge is remembered under, per robot. A
+ * namespaced string because `BiobuzzState.held` is the shared per-robot latch bag and every
+ * future held-thing goes in it under its own key. */
+const NECTAR_PRESS_KEY = 'nectarPress';
 
 /**
  * The BIOBUZZ gameplay tick.
@@ -715,51 +710,74 @@ export function updateBiobuzz(
 
   // ── 7. THE HUMAN PLAYERS ──────────────────────────────────────────────────
   /**
-   * NECTAR ENTERS THE FIELD FROM A PAIR OF HANDS, NOT FROM A SPAWNER (field-plan §2.4, G426).
+   * NECTAR ENTERS THE FIELD FROM A PAIR OF HANDS, ON A BUTTON PRESS (field-plan §2.4, G426).
    *
    * Each alliance sets up with five NECTAR in its ALLIANCE AREA (`nectarStock`, staged by
    * `spawn.ts` as `state.kind === 'stock'` balls that are already sitting on their entry spot).
-   * Two things let one of them onto the tiles:
-   *   · a completed TIP earns ONE entry (`nectarDue`, incremented in stage 3), and
-   *   · at the 1:00 cue everything still in hand goes in, one at a time.
-   * They compose rather than compete: the dump simply means the alliance is owed whatever it
-   * still holds, so both paths run through the same counter and the same clock.
+   * A press of `RobotCommand.bbNectar` puts ONE of them on the tiles, and the press is granted
+   * iff the alliance has stock AND is entitled to an entry:
+   *   · a completed TIP earns ONE entry (`nectarDue`, incremented in stage 3), or
+   *   · TELEOP has `BB_FLOWER_UNLOCK_S` (60 s) or less left, at which point the whole
+   *     remaining stock may go in.
+   * Otherwise the press does nothing at all — no foul, no queue, no "it will happen in a
+   * moment" — and `nectarWhy` says which of the three refusals it was.
+   *
+   * ── IT WAS A DRIP, AND THE DRIP WAS THE BUG ────────────────────────────────
+   * This used to be a clock: a TIP set `nectarTimer` and the sim put the nectar out 1.5 s
+   * later on its own, and the 1:00 cue ran the remaining stock out at one per second. It
+   * worked, and it decided the one thing about the entitlement that is actually a decision.
+   * A real drive team SAVES entries — you hold the last two until your robot is at the zone to
+   * collect them, because a NECTAR sitting in the LOADING ZONE is a NECTAR the opponent can
+   * also drive to. A timer spends them the instant they are earned. So the beat is gone,
+   * `BB_NECTAR_ENTRY_S` / `BB_NECTAR_DUMP_S` / `nectarTimer` with it, and the human player is
+   * now exactly as fast as the driver who presses the button.
    *
    * ENTRY IS A STATE FLIP, NEVER A SPAWN. The element already exists in `world.balls` — that
    * is what makes conservation a count over ONE array across the whole match (`state.ts`), and
    * it is why an entered NECTAR does not need an id: `stock` → `ground` is the entry.
    *
-   * THE BEAT IS A CLOCK ON THE WORLD (`nectarTimer`), not an `every N ticks` test on
-   * `world.time`: a modulus on an accumulated float is a coin toss at the tick boundary, and a
-   * countdown reconciles and replays correctly because it IS state. The jitter is the world's
-   * seeded chain, drawn twice per entry, so five NECTAR entering a LOADING ZONE make a small
-   * scatter rather than a stack of five discs on one tile — and the same scatter on every peer.
+   * EITHER ROBOT MAY PRESS, AND A TICK ENTERS AT MOST ONE PER ALLIANCE. The edge is remembered
+   * PER ROBOT (`bb.held[id].nectarPress`) rather than per alliance, so one driver holding the
+   * button down does not swallow their partner's press — a per-alliance latch would do exactly
+   * that, and the bug would only ever appear with two humans on one alliance. The ENTRY is per
+   * alliance and capped at one a tick: the human player is one person, and two simultaneous
+   * presses are one instruction shouted twice. Robots are walked in `world.robots` order, so
+   * which of two same-tick presses wins is deterministic and replays identically.
    *
    * NOTHING ENTERS WHILE THE FIELD IS FROZEN. `enabled` is the shared "robots may run" flag,
    * which is false in `pre`, in the auto→teleop transition and after the buzzer; a human player
-   * reaching over the wall during the transition is exactly what G426 forbids.
+   * reaching over the wall during the transition is exactly what G426 forbids. `step.ts`
+   * already zeroes every command while disabled, so through the real pipeline the button
+   * cannot even be pressed — the explicit gate below is for the smoke lane and any other
+   * direct caller of this function, which pass their own command map.
    */
-  if (enabled) {
+  {
     const teleop = world.match.phase === 'teleop';
-    for (const a of ALLIANCES) {
-      if (bb.nectarStock[a] <= 0) {
-        bb.nectarDue[a] = 0; // owed an entry with nothing left to enter: the debt is void
-        bb.nectarTimer[a] = 0;
-        continue;
-      }
-      // THE 1:00 CUE. Past it the alliance is owed everything it still holds — it is not a
-      // faster drip, it is a larger entitlement, which is why it writes `nectarDue` rather
-      // than shortening the beat. `BB_FLOWER_UNLOCK_S` is the same 60 s G410 unlocks the
-      // FLOWERS at; one cue, read in one place.
-      const dumping = teleop && world.match.phaseTimeLeft <= BB_FLOWER_UNLOCK_S;
-      if (dumping && bb.nectarDue[a] < bb.nectarStock[a]) bb.nectarDue[a] = bb.nectarStock[a];
-      if (bb.nectarDue[a] <= 0) {
-        bb.nectarTimer[a] = 0; // nothing owed — the next entry starts its beat when it is earned
-        continue;
-      }
-      if (bb.nectarTimer[a] <= 0) bb.nectarTimer[a] = dumping ? BB_NECTAR_DUMP_S : BB_NECTAR_ENTRY_S;
-      bb.nectarTimer[a] -= dt;
-      if (bb.nectarTimer[a] > 0) continue;
+    // THE 1:00 CUE. Past it the alliance may enter everything it still holds — it is a larger
+    // ENTITLEMENT, not a faster one, which is why it sits beside `nectarDue` in the test rather
+    // than replacing it. `BB_FLOWER_UNLOCK_S` is the same 60 s G410 unlocks the FLOWERS at; one
+    // cue, read in one place.
+    const dumping = teleop && world.match.phaseTimeLeft <= BB_FLOWER_UNLOCK_S;
+    // ONE ENTRY PER ALLIANCE PER TICK. A second robot's rising edge on the same tick is still
+    // CONSUMED (its latch is written above the test) rather than ignored, so a partner holding
+    // the button does not fire on the tick after.
+    const entered: Record<Alliance, boolean> = { red: false, blue: false };
+
+    for (const rob of world.robots) {
+      if (rob.passive) continue; // a practice dummy has no drive team
+      const a = rob.alliance;
+      const latch = (bb.held[rob.id] ??= {});
+      const now = enabled && (cmds.get(rob.id)?.bbNectar ?? false);
+      const rising = now && !latch[NECTAR_PRESS_KEY];
+      // A TRUE key, or NO key — the convention `placeLatch` sets for this same per-robot bag,
+      // and what the lane's smoke asserts about it. `bb.held` is plain JSON on `world.biobuzz`,
+      // so it rides every 30 Hz snapshot and every replay: a `false` parked under a robot id
+      // for the rest of the match is bytes on the wire that say nothing.
+      if (now) latch[NECTAR_PRESS_KEY] = true;
+      else delete latch[NECTAR_PRESS_KEY];
+      if (!rising || entered[a]) continue;
+      if (bb.nectarStock[a] <= 0) continue;
+      if (!(bb.nectarDue[a] > 0 || dumping)) continue;
 
       // OLDEST FIRST, by id. `world.balls` order is stable but is not a promise; the id is,
       // and the human player's five are staged consecutively (`spawn.ts`), so the lowest id
@@ -774,17 +792,41 @@ export function updateBiobuzz(
         // authority, and stop claiming a stock that is not there.
         bb.nectarStock[a] = 0;
         bb.nectarDue[a] = 0;
-        bb.nectarTimer[a] = 0;
         continue;
       }
+      // The jitter is the world's seeded chain, drawn twice per entry, so five NECTAR entering
+      // one LOADING ZONE make a small scatter rather than a stack of five discs on one tile —
+      // and the same scatter on every peer. Drawn ONLY on an entry that actually happens: a
+      // refused press must not advance the chain, or a client that predicted a refusal and a
+      // server that granted it would disagree about every later draw in the match.
       const spot = bbLoadingZoneSpot(a, BB_NECTAR_R);
       const jx = (nextRandomValue(world) * 2 - 1) * NECTAR_ENTRY_JITTER;
       const jy = (nextRandomValue(world) * 2 - 1) * NECTAR_ENTRY_JITTER;
       land(next, spot.x + jx, spot.y + jy);
       bb.nectarStock[a] -= 1;
-      bb.nectarDue[a] -= 1;
-      bb.nectarTimer[a] = 0;
+      // `max(0, …)`: in the dump window an alliance may enter stock it was never OWED, and a
+      // negative debt would make the next TIP's entitlement free.
+      bb.nectarDue[a] = Math.max(0, bb.nectarDue[a] - 1);
+      entered[a] = true;
       world.events.push(`${a.toUpperCase()} NECTAR ENTERS`);
+    }
+
+    // WHY THE BUTTON WOULD REFUSE, recomputed for BOTH alliances every tick — AFTER the
+    // entries above, so the HUD reads the situation the driver is now in rather than the one
+    // they were in before their own press. Most permanent answer first: an empty stock never
+    // becomes anything else, so it outranks a frozen field and a missing entitlement.
+    for (const a of ALLIANCES) {
+      if (bb.nectarStock[a] <= 0) {
+        // owed an entry with nothing left to enter: the debt is void, not banked
+        bb.nectarDue[a] = 0;
+        bb.nectarWhy[a] = 'none-left';
+      } else if (!enabled) {
+        bb.nectarWhy[a] = 'locked';
+      } else if (bb.nectarDue[a] > 0 || dumping) {
+        bb.nectarWhy[a] = 'ok';
+      } else {
+        bb.nectarWhy[a] = 'none-owed';
+      }
     }
   }
 

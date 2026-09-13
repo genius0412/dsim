@@ -31,9 +31,6 @@ import { BIOBUZZ_SIM } from './sim';
  *    BIOBUZZ has no published structure to underlay: Section 9 (ARENA) is a Kickoff
  *    placeholder, so the field is four walls and a tile grid. A no-op costs a call per frame
  *    and tells the next reader there is something to see. It lands with the geometry.
- *  • `mobileButtons` — the shell's only two actions are intake and fire and both already have
- *    a button in the shared pad. A genuinely new BIOBUZZ action needs a `GameSettings
- *    .mobileLayout` key and a protocol bit too, which is a cross-lane request, not a slot.
  *  • `startEditor` — `startLegality: false`: there is no legality to edit against, and the two
  *    anchors are picked from the shared preset list.
  */
@@ -59,6 +56,38 @@ export const BIOBUZZ_MODULE: GameModule = {
    * `coerceBiobuzzSpec` deletes. This says launcher and lift, which is what a BIOBUZZ robot has.
    */
   statTiles: bbStatTiles,
+  /**
+   * THE HUMAN PLAYER BUTTON on a touch screen (G426) — this slot's first filler.
+   *
+   * It was listed above as deliberately EMPTY, on the grounds that the shell's only actions
+   * were intake and fire. That stopped being true twice: the lift and the place button are
+   * held/edge mechanisms with their own keybinds, and NECTAR entry became a driver action
+   * rather than a timer. The note also said a new action needs a `GameSettings.mobileLayout`
+   * key and a protocol bit — it does, and `bbNectar` now has both (`MobileLayout.bbNectar`,
+   * `BTN_BBNECTAR`), which is what makes this a slot fill rather than a cross-lane request.
+   *
+   * NO `present` PREDICATE, and that is a statement rather than an oversight. Every other
+   * conditional button on this pad asks "does this BUILD have the mechanism" — a claw-only
+   * catalyst has nothing to throw. The human player is not hardware: every BIOBUZZ robot's
+   * alliance has one, so there is no build that should be missing the button. Whether a press
+   * would DO anything right now (stock left, an entry owed, the field live) changes several
+   * times a match and is answered in the HUD by `nectarWhy`, not by a button appearing and
+   * vanishing under the driver's thumb.
+   *
+   * ONE BUTTON FOR THE ALLIANCE, pressed through whichever robot this phone is driving: the
+   * rule is per-alliance and `play.ts` takes the first rising edge among the alliance's robots
+   * each tick.
+   */
+  mobileButtons: [
+    {
+      name: 'bbNectar',
+      label: 'NECTAR',
+      glyph: '⬗',
+      cls: 'bbnectar',
+      primary: false,
+      field: 'bbNectar',
+    },
+  ],
   /**
    * THE PRESET CARDS. Filling this slot is what makes `BB_PRESETS` reachable at all: the
    * builder's `Presets` section chose its list with `isDecode ? ROBOT_PRESETS : CHAIN_PRESETS`,

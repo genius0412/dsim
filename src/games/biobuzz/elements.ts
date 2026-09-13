@@ -10,10 +10,12 @@ import {
   BB_HIVE_X,
   BB_LAUNCH_Z0,
   BB_POLLEN_R,
+  FLOWER_MOUTH,
   bbHopperCap,
 } from './config';
 import { bbIntakeAccepts } from './mechs';
 import { rectContains, type BbCellSide, type LocalRect, type ScoreTarget, type Vec3 } from './state';
+import { bbEvalStart } from './start';
 
 /**
  * BIOBUZZ ELEMENTS — the contract surface Lane A exports to Lane B
@@ -25,17 +27,16 @@ import { rectContains, type BbCellSide, type LocalRect, type ScoreTarget, type V
  * `robot.ts`, `drawRobot.ts` or the builder.
  *
  * ── WHAT IS REAL AND WHAT IS A STUB, AND WHY ────────────────────────────────
- * REAL: `pollenIn`, `capturePollen`, `releasePollen`. Capturing a ball you drove over and
- * throwing it back out is ROBOT behaviour, and R102's 18" cube plus the mount geometry are
- * enough to model it. These work, and the smoke checks drive them.
+ * REAL: `pollenIn`, `capturePollen`, `releasePollen`, `scoreTargets` and `evalStart`. Each of
+ * them was writable the moment the V1 manual gave it geometry — the mount and R102's 18" cube
+ * for the first three, Fig 9-12's FLOWERS and the HIVE for the fourth, G304 and the zone
+ * tables for the fifth. The smoke lane drives all five.
  *
- * STUBS, deliberately: `scoreTargets` returns `[]`, `evalStart` says legal, `actOnElement`
- * says false. All three answer questions only the manual can answer, and Sections 9 (ARENA),
- * 10 (Game Details) and 11 (Game Rules) of the V0 pre-season manual are each a single page
- * reading "will be updated with the Kickoff Competition Manual release on September 12, 2026".
- * A stub that returns nothing is honest. A guessed goal at a guessed coordinate worth a
- * guessed number of points is a thing that LOOKS finished, and the difference matters most on
- * the day someone opens the gallery to check the field.
+ * A STUB, deliberately: `actOnElement` says false. There is no BIOBUZZ action that is neither
+ * a capture nor a release nor the HIVE's own TIP, so the hook has nothing to dispatch yet; it
+ * exists so the first one that arrives is a case in a switch rather than a new path through
+ * four files. A hook that returns nothing is honest, and a guessed action bound to a guessed
+ * button is a thing that LOOKS finished.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -233,24 +234,6 @@ function upCell(world: World, a: Alliance): BbCellSide {
  * tilt — Fig 9-9/9-10), and the pivots are at x = -/+`BB_HIVE_X` for red/blue (Fig 9-10,
  * centre to centre 25.5).
  */
-/**
- * WHICH WAY A FLOWER'S MOUTH FACES — out of the wall it stands against, into the field.
- *
- * The FLOWER is a column on the perimeter, so its open top is reachable from one half-space
- * only: the field side. The wall side is the wall.
- *
- * EXPORTED because it is also the only direction a badge or a stack readout can be drawn from
- * a FLOWER without the perimeter clipping it — `drawField.ts` held a private `FIELD_SIDE` with
- * exactly this table, and two copies of a four-entry map is two chances to disagree about
- * which way `rear` is. There is one table now, and this is it.
- */
-export const FLOWER_MOUTH: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
-  left: { x: 1, y: 0 }, // F1 stands on −x, opens toward +x
-  rear: { x: 0, y: -1 }, // F2 stands on +y, opens toward −y
-  right: { x: -1, y: 0 }, // F3 stands on +x, opens toward −x
-  audience: { x: 0, y: 1 }, // F4 stands on −y, opens toward +y
-};
-
 export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
   // THE CELL'S MOUTH IS ITS TILT DIRECTION. Both CELLS sit on the same pivot, offset along y
   // by ±`BB_HIVE_CELL_DY`, and the one facing UP opens AWAY from that pivot — the see-saw has
@@ -285,23 +268,32 @@ export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
 }
 
 /**
- * Is this robot's start pose legal? ALWAYS YES, and the sim module says so out loud with
- * `startLegality: false`, which is what keeps the server's DECODE-only start gate off this
- * game entirely.
+ * Is this robot's start pose legal? REAL NOW — `bbEvalStart` (`./start`) assesses G304 A/C/D/E
+ * against this field's own geometry, and this is the frozen-contract face of it.
  *
- * Start legality is a rule about ZONES, and Section 9 is the page that defines them. Making
- * one up would be worse than having none: a fabricated zone would reject poses a real BIOBUZZ
- * rule allows, and players would build around a constraint that does not exist.
+ * IT WAS A STUB THAT SAID YES, and the reason it was is gone: G304 is a rule about the
+ * perimeter, the LOADING ZONES and the FLOWER feet, Section 9 had not published any of those,
+ * and a fabricated zone would have rejected poses the real rule allows. The V1 manual
+ * published all four, so the honest answer is now an assessment rather than a shrug.
+ *
+ * ⚠️ **THE SERVER STILL DOES NOT GATE ON IT** — `startLegality` stays `false` in `sim.ts`, and
+ * that is not an oversight. `server/room.ts` gates a ready-up on `activeStartLegal`, which is
+ * DECODE's `evalStartPose` and is NOT dispatched per game: flipping the flag would have a
+ * BIOBUZZ pose judged against DECODE's launch lines and goal triangles, which is a worse
+ * answer than no answer. The flag flips when that gate learns to ask the module.
+ *
+ * WHY THE SHAPE IS DIFFERENT from `BbStartLegality`: this is the LANE CONTRACT
+ * (`docs/biobuzz-contract.md` §3), so Lane B sees `{ legal, reason? }` and nothing about
+ * which clause failed. Anything that wants the per-clause breakdown — the start editor, the
+ * smoke lane — calls `bbEvalStart` directly.
  */
 export function evalStart(
   spec: RobotSpec,
   a: Alliance,
   pose: StartPose,
 ): { legal: boolean; reason?: string } {
-  void spec;
-  void a;
-  void pose;
-  return { legal: true };
+  const v = bbEvalStart(spec, pose, a);
+  return v.reason === null ? { legal: true } : { legal: false, reason: v.reason };
 }
 
 /**

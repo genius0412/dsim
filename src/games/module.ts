@@ -215,7 +215,7 @@ export type ResultsSection = readonly [string, readonly (readonly [string, numbe
 
 /** which `RobotCommand` action a touch button holds down. A genuinely new game
  * action needs a protocol bit as well — see the netcode section of CLAUDE.md. */
-export type MobileActionField = 'intake' | 'fire' | 'catalyst' | 'fling';
+export type MobileActionField = 'intake' | 'fire' | 'catalyst' | 'fling' | 'bbNectar';
 
 /** one extra touch action button contributed by a game */
 export interface GameMobileButton {

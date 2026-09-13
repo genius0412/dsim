@@ -1,4 +1,4 @@
-import type { Alliance, Artifact, RobotCommand, RobotSpec, World } from '../../src/types';
+import type { Alliance, Artifact, RobotCommand, RobotSpec, StartPose, World } from '../../src/types';
 import * as C from '../../src/config';
 import { worldHash } from '../../src/net/checksum';
 import { slimWorld, unslimWorld } from '../../src/net/protocol';
@@ -62,23 +62,29 @@ import {
   BB_NECTAR_COUNT,
   BB_POLLEN_COUNT,
   BB_START_POSES,
+  BB_VIEW_MARGIN,
   bbMirror,
   type BbRect,
 } from '../../src/games/biobuzz/config';
 import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
+import { bbFlowerSectionBox } from '../../src/games/biobuzz/drawField';
 import { createBiobuzzWorld, stageBiobuzz } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
-import { scoreTargets } from '../../src/games/biobuzz/elements';
+import { evalStart, scoreTargets } from '../../src/games/biobuzz/elements';
 import type { ScoreTarget } from '../../src/games/biobuzz/state';
-import { BB_NECTAR_DUMP_S, BB_NECTAR_ENTRY_S, updateBiobuzz } from '../../src/games/biobuzz/play';
+import { updateBiobuzz } from '../../src/games/biobuzz/play';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
+import { bbEvalStart, bbSnapStart, bbStartBox } from '../../src/games/biobuzz/start';
+import { BB_INTAKE_MOUNTS } from '../../src/games/biobuzz/mounts';
+import { bbSizeLimits } from '../../src/games/biobuzz/config';
+import { bbCoerceSpec } from '../../src/games/biobuzz/robotConfig';
 import { BB_IDLE, BB_SCENES, bbPollen, bbSceneAt, bbSceneStills, type Scene } from '../../src/games/biobuzz/scenes';
 import { bbRobotSolids } from '../../src/games/biobuzz/robot';
 import { robotPenetration } from '../../src/sim/artifactSolids';
 import { solveArtifacts, type SweepFrom } from '../../src/sim/physicsEngine';
 import { stepGroundBall } from '../../src/sim/physics';
 import { maxMatchTicks } from '../../src/sim/replay';
-import type { ServerMsg } from '../../src/net/protocol';
+import { localizeCommand, type ServerMsg } from '../../src/net/protocol';
 import { Room, type Client } from '../../server/room';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { cmd, mkWorld, run, setup, type Check } from './harness';
@@ -207,7 +213,12 @@ export function fieldChecks(check: Check): void {
     // Flipped 2026-09-12 (kickoff evening) once score.ts covered Table 10-2. Alpha-only via
     // `channels`, so what persists lands on an alpha board nobody competes on yet.
     check('registry: BIOBUZZ declares scored:true (Table 10-2 is live; persists per game)', mod.scored === true);
-    check('registry: BIOBUZZ declares startLegality:false (no published G304 analogue)', mod.startLegality === false);
+    // STILL FALSE, and no longer for want of a rule: `bbEvalStart` assesses G304 and both the
+    // spawner and the lane contract call it. What the flag turns on is `server/room.ts`'s
+    // `activeStartLegal`, which is DECODE's `evalStartPose` and is not game-dispatched -- so
+    // flipping it judges a BIOBUZZ pose against DECODE's launch lines and refuses every legal
+    // start on this field. The flag moves when that gate learns to ask the module.
+    check('registry: BIOBUZZ declares startLegality:false (the server gate is DECODE-only)', mod.startLegality === false);
     check(
       'registry: bounds are the 144x144 field',
       mod.bounds.halfX === BB_HALF_X && mod.bounds.halfY === BB_HALF_Y,
@@ -270,11 +281,13 @@ export function fieldChecks(check: Check): void {
    * A robot spawned at any anchor, in either alliance, must be fully inside `bounds` BEFORE
    * anything steps.
    *
-   * The anchors are hand-placed APPROX numbers (there is no published BIOBUZZ start geometry —
-   * `startLegality: false`), and an anchor an inch too far out spawns a robot intersecting the
-   * wall, which Rapier then resolves by shoving it — so the match begins with four robots
-   * sliding. This is the cheapest possible guard on a number a human typed, and it is checked
-   * on the FOOTPRINT, so an anchor that fits a bare chassis but not its sweeper fails here.
+   * CONTAINMENT ONLY, and that is why it survives the G304 block below rather than being
+   * folded into it: G304.A's own note is about overhanging the perimeter, but this asks the
+   * question of the SPAWNED robot — after the mirror, the snap and `bbFitPose` — where the
+   * rule block asks it of a pose. An anchor an inch too far out spawns a robot intersecting
+   * the wall, which Rapier resolves by shoving it, so the match begins with four robots
+   * sliding. Checked on the FOOTPRINT, so an anchor that fits a bare chassis but not its
+   * sweeper fails here.
    */
   {
     const w = createBiobuzzWorld('match', 4, [
@@ -351,59 +364,184 @@ export function fieldChecks(check: Check): void {
     );
   }
 
-  // -- THE ANCHORS ARE LEGAL AS WRITTEN -------------------------------------
+  // -- G304: THE EVALUATOR, AND THE ANCHORS AGAINST IT ----------------------
   /**
-   * `BB_START_POSES` SATISFIES G304 WITHOUT REPAIR.
+   * `bbEvalStart` IS THE RULE AND `BB_START_POSES` IS MEASURED AGAINST IT.
    *
-   * `bbSnapStart` was carrying these: the old pair stopped 2 in short of the wall and the
-   * BOTTOM one sat inside `BB_LZ.blue`, so the anchor a builder places, the anchor the
-   * selector labels TOP/BOTTOM, and the pose the robot got were three different things. The
-   * repair still exists -- the seating is spec-dependent and a deep sweeper still needs it --
-   * but it must now have nothing to move.
+   * G304 (manual-distilled S6.2) asks a start pose for four things a pose can answer: fully on
+   * the alliance's own side (A), TOUCHING the perimeter wall (C), clear of every FLOWER foot
+   * and scoring volume (D), NOT in the LOADING ZONE (E). C and E fight -- the LOADING ZONE is
+   * itself against the perimeter -- so the legal frontage is a short list of stretches on
+   * three walls, and the anchors moved onto the rear and audience ones because the alliance's
+   * own SIDE wall is the one its zone eats.
    *
-   * MEASURED AS DISPLACEMENT, not as "is the result legal": the spawned pose was already legal
-   * before this change, which is exactly why the bad anchors survived so long. What is asserted
-   * is that spawning MOVED the anchor by less than `WALL_SEAT` and a hair -- the 0.01 in
-   * float-tangency seat is the only correction left, and any real repair is orders above it.
+   * THREE THINGS ARE ASSERTED, and they are deliberately different questions:
+   *   1. the DEFAULT build's anchors are legal AS WRITTEN, unsnapped. An anchor a builder
+   *      reads, an anchor the selector labels, and the pose a robot gets must be one thing.
+   *   2. EVERY anchor is legal at EVERY legal chassis, after `bbSnapStart`. The seat is
+   *      spec-dependent by nature (a deeper sweeper reaches further), so the snap is what
+   *      makes the anchor a NAMED SEAT rather than a coordinate that happens to suit one
+   *      build -- and it must find a legal seat for all of them, not merely most.
+   *   3. each clause REFUSES its own violation. A rule that never says no is not a rule, and
+   *      three of these four clauses are the ones a pose can plausibly break by accident.
    */
   {
-    const SEAT_TOL = 0.05; // WALL_SEAT is 0.01; anything larger is a genuine repair
-    const w = createBiobuzzWorld('match', 13, [
-      setup(0, 'blue', {}, 0),
-      setup(1, 'blue', {}, 1),
-      setup(2, 'red', {}, 0),
-      setup(3, 'red', {}, 1),
-    ]);
+    // THE LEGAL CHASSIS ENVELOPE, built the way the builder builds it: every intake preset x
+    // every mount, at the CORNERS of the per-mount size envelope `bbSizeLimits` publishes.
+    // Corners rather than a grid because both extents enter the footprint linearly, so the
+    // worst rotated AABB is always at a corner of (length, width).
+    const specs: RobotSpec[] = [];
+    for (const intake of ['sloped', 'vector', 'triangle'] as const) {
+      for (const intakeMount of BB_INTAKE_MOUNTS) {
+        const lim = bbSizeLimits({ ...BB_DEFAULT_SPEC, intake, intakeMount });
+        for (const length of [lim.minLength, lim.maxLength]) {
+          for (const width of [lim.minWidth, lim.maxWidth]) {
+            specs.push(bbCoerceSpec({ ...BB_DEFAULT_SPEC, intake, intakeMount, length, width }));
+          }
+        }
+      }
+    }
+    check('G304: the chassis sweep covers every preset x mount at both size extremes', specs.length === 48, `${specs.length} specs`);
+
+    /** the anchor as `spawn.ts` resolves it for `a`, in the shared `StartPose` degrees: the
+     * canonical BLUE anchor, point-mirrored for red, and nothing else. Deliberately NOT read
+     * off a spawned robot -- this has to be able to fail while spawning still repairs it. */
+    const anchorPose = (i: number, a: Alliance): StartPose => {
+      const p = BB_START_POSES[i];
+      const m = a === 'blue' ? { x: p.pos.x, y: p.pos.y, heading: p.heading } : bbMirror({ x: p.pos.x, y: p.pos.y, heading: p.heading });
+      return { x: m.x, y: m.y, headingDeg: ((m.heading ?? p.heading) * 180) / Math.PI };
+    };
+
+    // 1. THE DEFAULT BUILD'S ANCHORS NEED NO REPAIR.
+    for (const a of ['blue', 'red'] as const) {
+      for (let i = 0; i < BB_START_POSES.length; i++) {
+        const pose = anchorPose(i, a);
+        const v = bbEvalStart(BB_DEFAULT_SPEC, pose, a);
+        check(
+          `G304: ${a} anchor ${i} (${BB_START_POSES[i].name}) is legal as written on the default chassis`,
+          v.legal,
+          v.reason ?? `pos=(${pose.x},${pose.y}) heading=${pose.headingDeg.toFixed(0)}deg`,
+        );
+        const snapped = bbSnapStart(BB_DEFAULT_SPEC, pose, a);
+        check(
+          `G304: ${a} anchor ${i} is returned by the snap byte for byte`,
+          snapped.x === pose.x && snapped.y === pose.y && snapped.headingDeg === pose.headingDeg,
+          `got=(${snapped.x.toFixed(3)},${snapped.y.toFixed(3)})`,
+        );
+      }
+    }
+
+    // 2. EVERY ANCHOR, EVERY CHASSIS, AFTER THE SNAP. One check per (alliance, anchor) over
+    // the whole sweep rather than 192 lines of PASS: the interesting output is the first
+    // build that fails and what it failed on.
+    for (const a of ['blue', 'red'] as const) {
+      for (let i = 0; i < BB_START_POSES.length; i++) {
+        const pose = anchorPose(i, a);
+        let bad: string | null = null;
+        let worstWall = Infinity;
+        for (const spec of specs) {
+          const seated = bbSnapStart(spec, pose, a);
+          const v = bbEvalStart(spec, seated, a);
+          if (!v.legal && bad === null) bad = `${spec.intake}/${spec.intakeMount} ${spec.length}x${spec.width}: ${v.reason}`;
+          const b = bbStartBox(spec, seated);
+          // how far the seated footprint is off the nearest wall -- the slack G304.C spends,
+          // reported so a snap that started merely scraping through is visible before it fails
+          worstWall = Math.min(
+            worstWall,
+            Math.min(b.x0 + BB_HALF_X, BB_HALF_X - b.x1, b.y0 + BB_HALF_Y, BB_HALF_Y - b.y1),
+          );
+        }
+        check(
+          `G304: ${a} anchor ${i} seats legally on every legal chassis (${specs.length} builds)`,
+          bad === null,
+          bad ?? `worst wall gap ${worstWall.toFixed(3)}" (tol ${C.START_TOUCH_TOL})`,
+        );
+      }
+    }
+
+    // 3. EACH CLAUSE REFUSES ITS OWN VIOLATION, and the snap repairs each refusal.
+    //
+    // Every pose below is built for BLUE and seated by hand against the wall the clause is
+    // about, so exactly ONE clause fails and `reason` names it -- a pose that broke two would
+    // pass a "returns false" check while proving nothing about the clause it was written for.
     const e = bbFootprint(BB_DEFAULT_SPEC);
-    const half = (e.front + e.rear) / 2;
-    for (const r of w.robots) {
-      const i = r.id % BB_START_POSES.length;
-      const raw = BB_START_POSES[i].pos;
-      // RED is the POINT mirror, the same one `spawn.ts` applies -- an x-mirror here would
-      // "pass" against a red robot standing at blue's y.
-      const want = r.alliance === 'blue' ? raw : { x: -raw.x, y: -raw.y };
-      const moved = Math.hypot(r.pos.x - want.x, r.pos.y - want.y);
+    const lz = BB_LZ.blue;
+    const probe = { contained: 0, ownSide: 0, touching: 0, clearFlower: 0, outOfLZ: 0 };
+    const cases: { name: string; pose: StartPose; want: keyof typeof probe }[] = [];
+    // E -- dead centre of blue's LOADING ZONE, against the side wall it backs onto. Heading
+    // 180 puts the footprint's half-length along x, which is how a robot actually sits there.
+    cases.push({
+      name: 'in the LOADING ZONE (G304.E)',
+      pose: { x: BB_HALF_X - (e.front + e.rear) / 2, y: (lz.y0 + lz.y1) / 2, headingDeg: 180 },
+      want: 'outOfLZ',
+    });
+    // D -- against the same side wall, at F3's y. F3 stands on +x at y = 24, so a robot seated
+    // there is in its foot and its scoring volume.
+    cases.push({
+      name: 'touching a FLOWER (G304.D)',
+      pose: { x: BB_HALF_X - (e.front + e.rear) / 2, y: BB_FLOWERS[2].y, headingDeg: 180 },
+      want: 'clearFlower',
+    });
+    // C -- open floor on blue's own half. NOT the field centre, which is the obvious choice
+    // and the wrong one: a footprint straddling x = 0 is on neither side, so clause A fails
+    // first and the check would pass while proving nothing about C.
+    cases.push({ name: 'off the wall (G304.C)', pose: { x: 36, y: 0, headingDeg: 180 }, want: 'touching' });
+    // A -- blue seated on RED's own anchor 1. Legal for red, which is the point: the only
+    // thing wrong with it is whose side it is on.
+    cases.push({ name: "on the opponent's side (G304.A)", pose: { x: -46, y: 61.5, headingDeg: -90 }, want: 'ownSide' });
+
+    for (const c of cases) {
+      const v = bbEvalStart(BB_DEFAULT_SPEC, c.pose, 'blue');
       check(
-        `anchors: ${r.alliance} anchor ${i} spawns where it is written, unsnapped`,
-        moved < SEAT_TOL,
-        `moved=${moved.toFixed(3)}" want=(${want.x},${want.y}) got=(${r.pos.x.toFixed(2)},${r.pos.y.toFixed(2)})`,
+        `G304: a pose ${c.name} is refused, and for that clause`,
+        !v.legal && v[c.want] === false && Object.keys(probe).every((k) => k === c.want || v[k as keyof typeof probe] === true),
+        `reason=${v.reason} · ${Object.keys(probe).map((k) => `${k}=${v[k as keyof typeof probe]}`).join(' ')}`,
       );
-      // AND IT IS LEGAL: touching its own side wall, and clear of its own LOADING ZONE. Both
-      // are read off the RAW anchor, not off the spawned pose, so the check cannot be
-      // satisfied by the repair it exists to make unnecessary.
-      const b = {
-        x0: want.x - half, x1: want.x + half,
-        y0: want.y - e.half, y1: want.y + e.half,
-      };
-      const gap = BB_HALF_X - Math.max(Math.abs(b.x0), Math.abs(b.x1));
-      const z = BB_LZ[r.alliance];
-      const inLz = b.x1 > z.x0 && b.x0 < z.x1 && b.y1 > z.y0 && b.y0 < z.y1;
-      const ownSide = r.alliance === 'red' ? b.x1 < 0 : b.x0 > 0;
+      const fixed = bbSnapStart(BB_DEFAULT_SPEC, c.pose, 'blue');
+      const fv = bbEvalStart(BB_DEFAULT_SPEC, fixed, 'blue');
       check(
-        `anchors: ${r.alliance} anchor ${i} contacts its own wall, on its own side, outside its LOADING ZONE`,
-        gap >= 0 && gap <= C.START_TOUCH_TOL && !inLz && ownSide,
-        `wall gap=${gap.toFixed(2)}" (tol ${C.START_TOUCH_TOL}) · inLZ=${inLz} · ownSide=${ownSide}`,
+        `G304: the snap repairs a pose ${c.name}`,
+        fv.legal,
+        `${fv.reason ?? 'legal'} at (${fixed.x.toFixed(1)},${fixed.y.toFixed(1)})`,
       );
+    }
+
+    // THE LANE CONTRACT'S FACE OF IT. `elements.ts`'s `evalStart` is what Lane B calls, and it
+    // used to be a stub that said yes to everything; a delegation that silently reverted would
+    // be invisible from inside `start.ts`, where every check above lives.
+    {
+      const bad = cases[0].pose;
+      const viaContract = evalStart(BB_DEFAULT_SPEC, 'blue', bad);
+      const viaRule = bbEvalStart(BB_DEFAULT_SPEC, bad, 'blue');
+      check(
+        'G304: the lane contract `evalStart` is `bbEvalStart`, not a stub',
+        viaContract.legal === viaRule.legal && viaContract.reason === viaRule.reason,
+        `contract=${JSON.stringify(viaContract)}`,
+      );
+    }
+
+    // AND THE SPAWNER ACTUALLY USES IT. Everything above is the rule in isolation; this is the
+    // four robots a match really starts with, measured through `createBiobuzzWorld`.
+    {
+      const w = createBiobuzzWorld('match', 13, [
+        setup(0, 'blue', {}, 0),
+        setup(1, 'blue', {}, 1),
+        setup(2, 'red', {}, 0),
+        setup(3, 'red', {}, 1),
+      ]);
+      for (const r of w.robots) {
+        const v = bbEvalStart(r.spec, { x: r.pos.x, y: r.pos.y, headingDeg: (r.heading * 180) / Math.PI }, r.alliance);
+        check(
+          `G304: spawned robot ${r.id} (${r.alliance}) starts on a legal pose`,
+          v.legal,
+          v.reason ?? `pos=(${r.pos.x.toFixed(2)},${r.pos.y.toFixed(2)})`,
+        );
+      }
+      // The two anchors are at opposite ends of the field on purpose: two robots of one
+      // alliance must not be able to reach each other at the buzzer.
+      const blue = w.robots.filter((r) => r.alliance === 'blue');
+      const apart = Math.hypot(blue[0].pos.x - blue[1].pos.x, blue[0].pos.y - blue[1].pos.y);
+      check('G304: an alliance’s two anchors are far apart', apart > 100, `apart=${apart.toFixed(1)}"`);
     }
   }
 
@@ -1097,6 +1235,63 @@ export function fieldChecks(check: Check): void {
     );
   }
 
+  // -- THE FLOWER SECTION FITS IN THE VIEW MARGIN ---------------------------
+  /**
+   * A FLOWER's contents are drawn as a SECTION of its column, OUTSIDE the perimeter beside it
+   * (`drawFlowerSection`). That is the one thing this game draws off the field, and it is
+   * therefore the one thing the CAMERA can silently cut in half: `bounds.viewMargin` is what a
+   * viewport is fitted to, and a readout that grew past it is not an error anywhere — it is
+   * simply missing from the right-hand side of every still, which a reviewer reads as "the
+   * stack is short" rather than as "the picture is cropped".
+   *
+   * So `bbFlowerSectionBox` is exported for exactly this, and the three things asked of it are
+   * the three ways the readout can be wrong without throwing: off the camera, back inside the
+   * play area (where it would be drawn over the field it is describing), or on top of the
+   * NEIGHBOURING flower's readout.
+   */
+  {
+    const cam = { x: BB_HALF_X + BB_VIEW_MARGIN, y: BB_HALF_Y + BB_VIEW_MARGIN };
+    const boxes = BB_FLOWERS.map((f) => ({ id: f.id, b: bbFlowerSectionBox(f) }));
+
+    let tightest = Infinity;
+    let tightestAt = '';
+    for (const { id, b } of boxes) {
+      const slack = Math.min(cam.x - b.x1, b.x0 + cam.x, cam.y - b.y1, b.y0 + cam.y);
+      if (slack < tightest) {
+        tightest = slack;
+        tightestAt = id;
+      }
+    }
+    check(
+      `section: every FLOWER's section is inside the camera (viewMargin ${BB_VIEW_MARGIN}")`,
+      tightest > 0,
+      `tightest is ${tightestAt}, ${tightest.toFixed(2)}" of margin left`,
+    );
+
+    // OUTSIDE the play area: a section that reached back over the perimeter would be drawn on
+    // top of the tiles, the zones and the robots it is a readout for.
+    let inside = '';
+    for (const { id, b } of boxes) {
+      const out = Math.max(b.x0 - BB_HALF_X, -BB_HALF_X - b.x1, b.y0 - BB_HALF_Y, -BB_HALF_Y - b.y1);
+      if (out <= 0) inside = `${id} overlaps the field by ${(-out).toFixed(2)}"`;
+    }
+    check('section: every FLOWER section is entirely OUTSIDE the perimeter', inside === '', inside || 'all four clear');
+
+    // AND CLEAR OF EACH OTHER. The section runs 21.5" ALONG its wall toward the middle, and
+    // every FLOWER is one tile off centre — so the four readouts converge on the four corners
+    // of the margin band, which is the only place they could ever meet.
+    let clash = '';
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i].b;
+        const b = boxes[j].b;
+        if (a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1) clash = `${boxes[i].id} x ${boxes[j].id}`;
+      }
+    }
+    check('section: no two FLOWER sections overlap', clash === '', clash || 'all six pairs disjoint');
+
+  }
+
   // ── STAGING: WHAT A SPAWNED MATCH ACTUALLY HAS ON THE FIELD ───────────────
   /**
    * `stageBiobuzz` replaces the old random `scatterPollen` with the MANUAL's own staging
@@ -1784,7 +1979,7 @@ export function fieldChecks(check: Check): void {
     // velocity they LEFT THE TRAY with is gone. Reading it at the end of the scene would assert
     // that a spilled element comes to rest, which it should, and nothing about the spill.
     let spillVel: { v: number; out: boolean }[] = [];
-    const TICKS = Math.round((BB_TIP_SWING_S + BB_NECTAR_ENTRY_S + 0.5) / C.SIM_DT);
+    const TICKS = Math.round((BB_TIP_SWING_S + 0.5) / C.SIM_DT);
     for (let t = 0; t < TICKS; t++) {
       const before = [...bb.hives[A].contents];
       updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
@@ -1886,43 +2081,50 @@ export function fieldChecks(check: Check): void {
       bb.hives[A].released === false && bb.hives[A].tipping === 0,
       `released=${bb.hives[A].released} tipping=${bb.hives[A].tipping}`,
     );
-    // THE ENTITLEMENT THE TIP EARNS (G426) — this lane's half of the human player.
+    // THE ENTITLEMENT THE TIP EARNS (G426) — this lane's half of the human player. The tip
+    // EARNS an entry and nothing more: the nectar stays in the hands until a driver presses
+    // the button, which is the whole of the Round 6 change. Nobody pressed anything in the
+    // loop above, so the stock is untouched and the debt is banked.
     check(
-      'live: a completed TIP earns one NECTAR entry, and the human player makes it',
-      bb.nectarStock[A] === 4 && bb.nectarDue[A] === 0,
-      `stock ${bb.nectarStock[A]} (5 at setup, 4 after one entry) · still due ${bb.nectarDue[A]}`,
+      'live: a completed TIP earns one NECTAR entry and does NOT spend it',
+      bb.nectarStock[A] === 5 && bb.nectarDue[A] === 1,
+      `stock ${bb.nectarStock[A]} (5 at setup, unspent) · due ${bb.nectarDue[A]}`,
+    );
+    check(
+      'live: with an entry owed and the field live, the button would take it',
+      bb.nectarWhy[A] === 'ok',
+      `nectarWhy ${bb.nectarWhy[A]}`,
     );
     {
       const entered = w.balls.filter(
         (b) => b.state.kind === 'ground' && b.color === A && Math.abs(b.pos.x) > BB_HALF_X - 24,
       );
       check(
-        'live: the entered NECTAR is a GROUND element in its own LOADING ZONE, not a new ball',
-        entered.length >= 1 && w.balls.length === TOTAL,
+        'live: nothing entered on its own — no press, no NECTAR on the tiles',
+        entered.length === 0 && w.balls.length === TOTAL,
         `${entered.length} red NECTAR near the red wall · ${w.balls.length} balls (was ${TOTAL})`,
       );
     }
   }
 
-  // -- THE HUMAN PLAYER: A DRIP, THEN THE 1:00 DUMP -------------------------
+  // -- THE HUMAN PLAYER BUTTON (G426) ---------------------------------------
   /**
-   * G426 gives an alliance ONE NECTAR entry per completed TIP and, at the 1:00 cue, everything
-   * still in its hands. Those are two ENTITLEMENTS running through one clock, and the check is
-   * that the second does not become a teleport: five NECTAR appear one at a time over about
-   * five seconds, never as a pile on one tile on one tick.
+   * NECTAR ENTRY IS A DRIVER ACTION. `RobotCommand.bbNectar` is an EDGE: one press puts one
+   * NECTAR from the alliance's stock into its own LOADING ZONE, and only when the alliance is
+   * ENTITLED to one — a banked TIP (`nectarDue`), or TELEOP at 60 s or less. Everything else
+   * the button can do is nothing, and `nectarWhy` names which nothing it was.
    *
    * NOTHING IS SPAWNED. The five exist from setup as `stock` balls (`spawn.ts`) already sitting
    * on their entry spot, so an entry is a STATE FLIP and the array length never changes — which
    * is the whole reason conservation is a count over one array.
+   *
+   * The old drip is what this replaces, and the checks below are written against the failure
+   * modes a button has that a timer did not: a press with no entitlement, a HELD button, two
+   * robots on one alliance, and a press on a frozen field.
    */
   {
-    const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
-    const bb = w.biobuzz!;
-    w.match.phase = 'teleop';
-    w.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S; // exactly at the cue
-    const TOTAL = w.balls.length;
-    const STOCK0 = bb.nectarStock.red;
-    const onGround = (a: Alliance): number =>
+    const press = (on: boolean): RobotCommand => cmd({ bbNectar: on });
+    const inLZ = (w: World, a: Alliance): number =>
       w.balls.filter((b) => {
         const z = BB_LZ[a];
         return (
@@ -1931,42 +2133,207 @@ export function fieldChecks(check: Check): void {
           b.pos.x >= z.x0 && b.pos.x <= z.x1 && b.pos.y >= z.y0 && b.pos.y <= z.y1
         );
       }).length;
-    let maxPerTick = 0;
-    let prev = onGround('red');
-    const N = Math.round((STOCK0 * BB_NECTAR_DUMP_S + 1) / C.SIM_DT);
-    for (let t = 0; t < N; t++) {
-      updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
-      const now = onGround('red');
-      maxPerTick = Math.max(maxPerTick, now - prev);
-      prev = now;
+
+    // ── BEFORE ANY TIP: the button is live, the entitlement is not ───────────
+    {
+      const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = C.TELEOP_DURATION; // well before the cue
+      const TOTAL = w.balls.length;
+      const STOCK0 = bb.nectarStock.red;
+      // ten presses, each a real edge (down, up, down, …), so this is not one press misread
+      for (let i = 0; i < 20; i++) {
+        updateBiobuzz(w, C.SIM_DT, new Map([[0, press(i % 2 === 0)]]), true, NO_SWEEP);
+      }
+      check(
+        'human player: a press with nothing owed places NOTHING, and says why',
+        bb.nectarStock.red === STOCK0 && inLZ(w, 'red') === 0 && bb.nectarWhy.red === 'none-owed' &&
+          w.balls.length === TOTAL,
+        `stock ${bb.nectarStock.red}/${STOCK0} · ${inLZ(w, 'red')} in the zone · why ${bb.nectarWhy.red}`,
+      );
     }
-    check(
-      'human player: the 1:00 cue empties the alliance stock, ONE NECTAR AT A TIME',
-      bb.nectarStock.red === 0 && maxPerTick === 1 && onGround('red') === STOCK0 && w.balls.length === TOTAL,
-      `stock ${STOCK0} → ${bb.nectarStock.red} · ${onGround('red')} in the LOADING ZONE · ` +
-        `most entered on one tick: ${maxPerTick} · balls ${w.balls.length} (was ${TOTAL})`,
-    );
-    // …and the beat is real: five entries at `BB_NECTAR_DUMP_S` apart cannot be done in one.
-    check(
-      'human player: the entries are spread over the dump, not delivered on one tick',
-      N * C.SIM_DT >= STOCK0 * BB_NECTAR_DUMP_S,
-      `${STOCK0} entries at ${BB_NECTAR_DUMP_S}s apart over ${(N * C.SIM_DT).toFixed(1)}s`,
-    );
-    // NOTHING ENTERS WHILE THE FIELD IS FROZEN — `enabled` false is the transition and the
-    // period after the buzzer, which is exactly when G426 forbids a human player reaching in.
+
+    // ── AFTER ONE TIP: one press, exactly one NECTAR, and the debt is spent ──
+    {
+      const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = C.TELEOP_DURATION;
+      const TOTAL = w.balls.length;
+      const STOCK0 = bb.nectarStock.red;
+      bb.nectarDue.red = 1; // what a completed TIP banks (stage 3)
+      updateBiobuzz(w, C.SIM_DT, new Map([[0, press(true)]]), true, NO_SWEEP);
+      const afterOne = inLZ(w, 'red');
+      const stockAfterOne = bb.nectarStock.red;
+      const dueAfterOne = bb.nectarDue.red;
+      // ...and HOLDING it does not drain the stock. 120 more ticks with the button still down.
+      for (let t = 0; t < 120; t++) {
+        updateBiobuzz(w, C.SIM_DT, new Map([[0, press(true)]]), true, NO_SWEEP);
+      }
+      check(
+        'human player: one press after a TIP enters EXACTLY one NECTAR and spends the entry',
+        afterOne === 1 && stockAfterOne === STOCK0 - 1 && dueAfterOne === 0,
+        `${afterOne} in the zone · stock ${STOCK0} → ${stockAfterOne} · due ${dueAfterOne}`,
+      );
+      check(
+        'human player: the button is an EDGE — holding it for 2 s enters nothing more',
+        inLZ(w, 'red') === 1 && bb.nectarStock.red === STOCK0 - 1 && w.balls.length === TOTAL,
+        `${inLZ(w, 'red')} in the zone after 2 s held · stock ${bb.nectarStock.red} · ` +
+          `balls ${w.balls.length} (was ${TOTAL})`,
+      );
+      check(
+        'human player: with the entry spent and the cue not reached, the button refuses again',
+        bb.nectarWhy.red === 'none-owed',
+        `nectarWhy ${bb.nectarWhy.red}`,
+      );
+    }
+
+    // ── AT 59 s: one per press until the stock is empty ──────────────────────
+    {
+      const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S - 1; // 59 s: inside the cue
+      const TOTAL = w.balls.length;
+      const STOCK0 = bb.nectarStock.red;
+      let maxPerPress = 0;
+      let prev = inLZ(w, 'red');
+      // one press per two ticks (down, up), STOCK0 + 2 presses — two more than there is stock
+      for (let i = 0; i < (STOCK0 + 2) * 2; i++) {
+        updateBiobuzz(w, C.SIM_DT, new Map([[0, press(i % 2 === 0)]]), true, NO_SWEEP);
+        const now = inLZ(w, 'red');
+        maxPerPress = Math.max(maxPerPress, now - prev);
+        prev = now;
+      }
+      check(
+        'human player: at 59 s, ONE NECTAR per press until the stock is empty',
+        bb.nectarStock.red === 0 && inLZ(w, 'red') === STOCK0 && maxPerPress === 1 &&
+          w.balls.length === TOTAL,
+        `stock ${STOCK0} → ${bb.nectarStock.red} · ${inLZ(w, 'red')} in the zone · ` +
+          `most per press ${maxPerPress} · balls ${w.balls.length} (was ${TOTAL})`,
+      );
+      check(
+        'human player: two presses past the last one place nothing, and the HUD says none left',
+        bb.nectarWhy.red === 'none-left',
+        `nectarWhy ${bb.nectarWhy.red}`,
+      );
+      // the cue is an ENTITLEMENT, not an unlock of the opponent's stock: blue pressed nothing
+      check(
+        'human player: BLUE, who pressed nothing, still holds its whole stock',
+        bb.nectarStock.blue === STOCK0 && inLZ(w, 'blue') === 0,
+        `blue stock ${bb.nectarStock.blue} · ${inLZ(w, 'blue')} in the blue zone`,
+      );
+    }
+
+    // ── EITHER ROBOT MAY PRESS, AND ONE TICK ENTERS ONE ──────────────────────
+    /**
+     * The per-ROBOT latch is what this pins. A per-ALLIANCE one would swallow robot 1's press
+     * while robot 0 held the button — the bug that only ever appears with two humans on one
+     * alliance, which is every real match.
+     */
+    {
+      const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'red', {}, 1)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S - 1;
+      const STOCK0 = bb.nectarStock.red;
+      // robot 0 holds the button DOWN for the whole scene; robot 1 taps it twice
+      const both = (r1: boolean): Map<number, RobotCommand> =>
+        new Map([[0, press(true)], [1, press(r1)]]);
+      updateBiobuzz(w, C.SIM_DT, both(false), true, NO_SWEEP); // robot 0's own edge: 1 in
+      const afterHold = inLZ(w, 'red');
+      for (let i = 0; i < 4; i++) updateBiobuzz(w, C.SIM_DT, both(i % 2 === 0), true, NO_SWEEP);
+      check(
+        "human player: a partner's press lands while the other driver holds the button down",
+        afterHold === 1 && inLZ(w, 'red') === 3 && bb.nectarStock.red === STOCK0 - 3,
+        `${afterHold} after robot 0's edge, ${inLZ(w, 'red')} after robot 1's two taps · ` +
+          `stock ${STOCK0} → ${bb.nectarStock.red}`,
+      );
+      // BOTH robots' rising edges on the SAME tick: one instruction, one element.
+      {
+        const v = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'red', {}, 1)]);
+        const vb = v.biobuzz!;
+        v.match.phase = 'teleop';
+        v.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S - 1;
+        const S0 = vb.nectarStock.red;
+        updateBiobuzz(v, C.SIM_DT, new Map([[0, press(true)], [1, press(true)]]), true, NO_SWEEP);
+        check(
+          'human player: both drivers pressing on ONE tick enter ONE NECTAR, not two',
+          inLZ(v, 'red') === 1 && vb.nectarStock.red === S0 - 1,
+          `${inLZ(v, 'red')} in the zone · stock ${S0} → ${vb.nectarStock.red}`,
+        );
+      }
+    }
+
+    // ── THE FROZEN FIELD IGNORES IT ──────────────────────────────────────────
+    // `enabled` false is the transition and the period after the buzzer, which is exactly when
+    // G426 forbids a human player reaching in. Through `step.ts` the command is zeroed before
+    // it ever arrives; this drives `updateBiobuzz` directly with the button DOWN, which is the
+    // stronger statement.
     {
       const f = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0)]);
       const fb = f.biobuzz!;
       f.match.phase = 'teleop';
-      f.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S;
-      for (let t = 0; t < 600; t++) updateBiobuzz(f, C.SIM_DT, new Map(), false, NO_SWEEP);
+      f.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S - 1;
+      const STOCK0 = fb.nectarStock.red;
+      for (let t = 0; t < 600; t++) {
+        updateBiobuzz(f, C.SIM_DT, new Map([[0, press(t % 2 === 0)]]), false, NO_SWEEP);
+      }
       check(
         'human player: nothing enters while the field is frozen (enabled === false)',
-        fb.nectarStock.red === STOCK0 && fb.nectarStock.blue === STOCK0,
-        `stock ${fb.nectarStock.red}/${fb.nectarStock.blue} after 10s disabled (was ${STOCK0} each)`,
+        fb.nectarStock.red === STOCK0 && inLZ(f, 'red') === 0 && fb.nectarWhy.red === 'locked',
+        `stock ${fb.nectarStock.red} (was ${STOCK0}) after 10 s of presses while disabled · ` +
+          `why ${fb.nectarWhy.red}`,
+      );
+      // ...and the moment the field comes back, the SAME press works. The refusal is the flag,
+      // not a latch the frozen ticks left behind.
+      fb.nectarDue.red = 0; // no banked TIP: the 59 s cue is the entitlement here
+      updateBiobuzz(f, C.SIM_DT, new Map([[0, press(true)]]), true, NO_SWEEP);
+      check(
+        'human player: the first press after the field comes live is taken',
+        inLZ(f, 'red') === 1 && fb.nectarStock.red === STOCK0 - 1 && fb.nectarWhy.red === 'ok',
+        `${inLZ(f, 'red')} in the zone · stock ${fb.nectarStock.red} · why ${fb.nectarWhy.red}`,
+      );
+    }
+
+    // ── A REPLAY ROUND-TRIP CARRIES THE BIT ──────────────────────────────────
+    /**
+     * The wire is the contract: a command the client PREDICTS with must be the command the
+     * server steps, and `localizeCommand` is the quantize round-trip that makes the two equal.
+     * A new button that is not in the `buttons` mask decodes as `false` — so the press would
+     * work locally, do nothing on the server, and the desync would look like lag.
+     */
+    {
+      const down = localizeCommand(press(true));
+      const up = localizeCommand(press(false));
+      check(
+        'human player: `bbNectar` survives the quantize round-trip in both states',
+        down.bbNectar === true && up.bbNectar === false,
+        `down ${down.bbNectar} · up ${up.bbNectar}`,
+      );
+      // ...and it does not collide with any other button bit: every flag set at once comes back
+      // set, and none alone sets another.
+      const all = localizeCommand(
+        cmd({ intake: true, fire: true, catalyst: true, fling: true, driveMode: true,
+              bbPlaceNectar: true, bbPlace: true, bbNectar: true }),
+      );
+      const only = localizeCommand(press(true));
+      check(
+        'human player: its protocol bit is its own — all eight set, and `bbNectar` alone sets one',
+        all.intake && all.fire && all.catalyst && all.fling && all.driveMode &&
+          all.bbPlaceNectar && all.bbPlace && all.bbNectar &&
+          !only.intake && !only.fire && !only.catalyst && !only.fling && !only.driveMode &&
+          !only.bbPlaceNectar && !only.bbPlace,
+        `all ${JSON.stringify(all.bbNectar)} · only-nectar sets ${
+          ['intake', 'fire', 'catalyst', 'fling', 'driveMode', 'bbPlaceNectar', 'bbPlace',
+            'bbNectar']
+            .filter((k) => (only as unknown as Record<string, boolean>)[k]).join(',')
+        }`,
       );
     }
   }
+
 
   // -- THE OPEN FACE IS ONE FACE: A SHOT FROM THE CLOSED SIDE IS A MISS ------
   /**
@@ -2119,6 +2486,13 @@ export function fieldChecks(check: Check): void {
    * interpolates it — a see-saw is torque and packing, not weight. Pinned as literal values
    * because the row IS the rule: an interpolation that happened to pass through two of these
    * points would still be a mass model, which the owner ruled out (config.ts, 2026-09-12).
+   *
+   * ⚠️ THE LITERAL IS DELIBERATE AND IT IS THE POINT — do NOT "fix" this by comparing the
+   * table against itself. Index 0 is a GUESS (8, extrapolating the 7/6 trend; an empty cell
+   * was never put on the scale) and the rest was measured once, so this check exists to FAIL
+   * the day somebody re-measures, and the failure is what sends them to
+   * `docs/biobuzz/feedback/002-thresholds.md` §2 to say which row moved. A re-measure is one
+   * edit in `config.ts` and one here, in that order.
    */
   {
     const want = [8, 7, 6, 3, 1, 0];
@@ -2627,6 +3001,15 @@ export function fieldChecks(check: Check): void {
     // sixth nectar the column does not have room for, since 3.98 + 5*3.6 = 21.98 is already over
     // the ring. So FIVE. Both are filled one at a time through `flowerFits`, which since the
     // ruling is the only stacking rule there is.
+    //
+    // ⚠️ 8 AND 5 ARE PINNED AS BARE LITERALS ON PURPOSE, and this is the same discipline as the
+    // tip table above. Capacity is DERIVED from `BB_FLOWER_MID_Z`, which is `APPROX` and which
+    // V1 cannot confirm — it is 3.55 + 0.43, the retrieval opening plus the BOTTOM ring, and
+    // the manual prints no middle-ring height at all. Asserting `flowerCapacity(...)` against
+    // itself would pass forever and never mention that the column had quietly lost an element.
+    // Pinned, this check breaks the moment the ring is re-measured and names the two numbers a
+    // human has to look at. `docs/biobuzz/feedback/002-thresholds.md` §3 is that conversation,
+    // and it carries the arithmetic for both columns so a new ring can be checked on paper.
     {
       const capP = flowerCapacity('pollen');
       const capN = flowerCapacity('red');

@@ -73,10 +73,16 @@ export const BB_WALL_T = 10;
 /** camera fit margin (in) — breathing room around the field so the walls are not flush with
  * the viewport edge.
  *
- * WIDENED from 8 for the FLOWER STACK READOUT: a flower's contents are drawn OUTSIDE the
- * perimeter beside it (`drawField.ts`), one disc per element, and a NECTAR is 3.6 in across.
- * The margin has to clear one disc plus the tile ruler that also lives out there, or the
- * readout is cropped by the viewport on the two walls that carry both. */
+ * WIDENED from 8 for the FLOWER SECTION: a flower's contents are drawn OUTSIDE the perimeter
+ * beside it (`drawField.ts`), as a section of the column with the scoring band shaded. It
+ * reaches 10.8 in out, and the tile ruler lives in the same band, so the margin has to clear
+ * both or the readout is cropped by the viewport on the two walls that carry them.
+ *
+ * IT IS A FIXED COST, not a per-element one — the section is as wide for an empty FLOWER as
+ * for a full one, because the drawing is the COLUMN and the elements are inside it. The row of
+ * discs it replaced grew with the stack, which made this number a function of capacity and
+ * therefore wrong every time the capacity moved. `bbFlowerSectionBox` measures the real extent
+ * and the smoke lane checks it against this. */
 export const BB_VIEW_MARGIN = 12;
 
 /** the outer x half-extent the CAMERA must show. Equal to the wall for now: BIOBUZZ has no
@@ -258,6 +264,26 @@ export const BB_FLOWERS: readonly {
   { id: 'F4', wall: 'audience', x: 24, y: -72 + BB_FLOWER_D, nearest: 'blue' },
 ];
 
+/**
+ * WHICH WAY A FLOWER'S MOUTH FACES — out of the wall it stands against, into the field.
+ *
+ * The FLOWER is a column on the perimeter, so its open top is reachable from one half-space
+ * only: the field side. The wall side is the wall.
+ *
+ * IT LIVES IN `config.ts`, BESIDE `BB_FLOWERS`, because it is a property of that table: given
+ * a wall, the inward normal is fixed geometry and nothing about it is a rule or a drawing. It
+ * sat in `elements.ts` while its only readers were that file and `drawField.ts`; `start.ts`
+ * became a third (G304.D measures the keep-out along this normal) and `elements.ts` in turn
+ * needs `start.ts` for `evalStart`, which would have closed a two-file import cycle for the
+ * sake of a four-entry map. Moving the map breaks the cycle without duplicating anything.
+ */
+export const FLOWER_MOUTH: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
+  left: { x: 1, y: 0 }, // F1 stands on −x, opens toward +x
+  rear: { x: 0, y: -1 }, // F2 stands on +y, opens toward −y
+  right: { x: -1, y: 0 }, // F3 stands on +x, opens toward −x
+  audience: { x: 0, y: 1 }, // F4 stands on −y, opens toward +y
+};
+
 /** top ring height above the tiles (in) — Fig 9-12. The z a deposit arc solves for. */
 export const BB_FLOWER_TOP_Z = 21.5;
 
@@ -295,7 +321,9 @@ export const BB_FLOWER_FOOT = { along: 6, deep: 4.9 };
  * (§10.3.1), so the first TIP costs **3 POLLEN** and is reachable in AUTO.
  *
  * Only index 0 is a guess. APPROX: an empty cell was not measured — 8 extrapolates the 7/6
- * trend at the top of the table.
+ * trend at the top of the table. `docs/biobuzz/feedback/002-thresholds.md` §2 asks for that row
+ * (and for a second reading of the other five); the smoke lane pins this array as a literal so
+ * a re-measure has to come through it.
  *
  * See `docs/biobuzz-reference.md` §4.1.
  */
@@ -803,37 +831,43 @@ export interface BbStartAnchor {
  *
  * TWO anchors, because a BIOBUZZ alliance is two robots and each locks one so they cannot
  * stack. There is no third or fourth because there is no known reason for one: CR's extra
- * pair existed to put a robot on a Ring Stand, and BIOBUZZ has no such structure published.
+ * pair existed to put a robot on a Ring Stand, and BIOBUZZ has no such structure.
  *
- * THEY ARE LEGAL AS WRITTEN, which they were not. G304 asks for three things a pose can
- * satisfy on its own — own side, CONTACTING the perimeter wall, NOT in a LOADING ZONE — and
- * the old pair satisfied one: at (60, ±36) the chassis stopped 2 in short of the wall, and the
- * BOTTOM one sat squarely in blue's LOADING ZONE (`BB_LZ.blue`, y ∈ [−48, −24]). `spawn.ts`
- * repaired both every single spawn, which worked and hid the problem: the anchor a builder
- * sees, the anchor the selector labels TOP/BOTTOM, and the pose the robot actually got were
- * three different things. An anchor that needs repairing is a wrong anchor.
+ * ── THEY ARE ON THE REAR AND AUDIENCE WALLS, AND THAT IS G304 ──────────────
+ * G304 (manual-distilled §6.2, p104) asks a start pose for four things at once: fully on the
+ * alliance's own side (A), TOUCHING the perimeter wall (C), clear of every FLOWER foot and
+ * scoring volume (D), and NOT in the LOADING ZONE (E). C and E fight: a robot must be against
+ * the perimeter, and the LOADING ZONE is itself against the perimeter — so the legal frontage
+ * is the wall MINUS that zone. Blue's zone (`BB_LZ.blue`, x ∈ [61, 72]) eats the useful middle
+ * of blue's own SIDE wall, which is exactly where both anchors used to sit.
  *
- *   x = 61.5   the +x wall at 72 less a default chassis half-extent of 10.5, so the footprint
- *              CONTACTS the wall rather than hovering off it. Spec-dependent by nature — a
- *              deeper sweeper reaches further — so `bbSnapStart` still runs and still owns the
- *              exact seating; it now has nothing to move, not merely less to move.
- *   y = +36    unchanged. The quarter point of the wall, clear of blue's zone and of the
- *              GARDEN strip at y ≈ 71.
- *   y = −60    was −36, inside the zone. Below it now, with 3.5 in of clearance at both ends
- *              (the footprint spans −68.5 … −51.5 against a zone edge at −48 and a wall at −72)
- *              and 96 in between the two anchors, so two robots cannot reach each other.
+ * So they moved to the two walls an alliance shares with nobody's zone:
  *
- * STILL APPROX. Section 9 (ARENA) is the page that says where a robot may actually start and
- * it lands at Kickoff; `startLegality` is FALSE for this game, so these are a convenience
- * rather than a rule the server enforces. What changed is that the convenience is now
- * self-consistent.
+ *   index 0  REAR wall     (34, 61.5) facing −y.  x = 34 keeps the footprint clear of blue's
+ *                          GARDEN strip (x ≥ 49) and of F2, which is on RED's half at x = −24.
+ *   index 1  AUDIENCE wall (46, −61.5) facing +y. x = 46 clears F4's foot (x ∈ [21, 27]) by
+ *                          seven inches on one side and blue's LOADING ZONE (x ≥ 61) by three
+ *                          on the other.
+ *
+ * `y = ±61.5` is ±72 less a default chassis half-extent of 10.5, so the footprint CONTACTS its
+ * wall rather than hovering off it. Spec-dependent by nature — a deeper sweeper reaches
+ * further — so `bbSnapStart` still re-seats per build; it now has a hair to move, not a foot.
+ *
+ * ⚠️ **APPROX, AND IN ONE PLACE: THE FRONTAGE.** The CLAUSES are verbatim, but two of the
+ * shapes they are measured against are figure-derived — `BB_LZ` is a Fig 9-2/9-3 read with
+ * ±0.5 in of slop on the tape edge, and `BB_FLOWER_FOOT` is owner CAD rather than a printed
+ * dimension. The three-inch margin at the LOADING ZONE end of anchor 1 is deliberate cover for
+ * exactly that: at ±0.5 in of tape error the pose is still plainly legal. The ±72 walls, the
+ * x = 0 seam and the FLOWER centres are measured and are not APPROX.
  *
  * ORDER IS LOAD-BEARING: a 2-robot alliance defaults to anchors 0 and 1, so index 0 must be
- * the TOP (y ≥ 0) anchor and index 1 the BOTTOM one.
+ * the TOP (y ≥ 0) anchor and index 1 the BOTTOM one (`bbAnchorCat`). They are 123 in apart —
+ * opposite ends of the field — so two robots of one alliance cannot reach each other at the
+ * buzzer, which is the whole reason there are two.
  */
 export const BB_START_POSES: readonly BbStartAnchor[] = [
-  { name: 'START · TOP', pos: { x: 61.5, y: 36 }, heading: Math.PI },
-  { name: 'START · BOTTOM', pos: { x: 61.5, y: -60 }, heading: Math.PI },
+  { name: 'START · REAR', pos: { x: 34, y: 61.5 }, heading: -Math.PI / 2 },
+  { name: 'START · AUDIENCE', pos: { x: 46, y: -61.5 }, heading: Math.PI / 2 },
 ];
 
 /** how many start anchors this game offers — read by the shared per-game start-index clamp

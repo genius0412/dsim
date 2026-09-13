@@ -15,6 +15,7 @@ export type KeyAction =
   | 'fling'
   | 'bbPlaceNectar'
   | 'bbPlace'
+  | 'bbNectar'
   | 'driveMode'
   | 'flipFront'
   | 'park'
@@ -28,6 +29,7 @@ export type PadAction =
   | 'fling'
   | 'bbPlaceNectar'
   | 'bbPlace'
+  | 'bbNectar'
   | 'driveMode'
   | 'flipFront'
   | 'park'
@@ -68,6 +70,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   'fling',
   'bbPlaceNectar',
   'bbPlace',
+  'bbNectar',
   'driveMode',
   'flipFront',
   'park',
@@ -82,6 +85,7 @@ export const PAD_ACTIONS: PadAction[] = [
   'fling',
   'bbPlaceNectar',
   'bbPlace',
+  'bbNectar',
   'driveMode',
   'flipFront',
   'park',
@@ -109,6 +113,11 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     bbPlaceNectar: ['x'],
     // BIOBUZZ Box Tube: place a held POLLEN into the FLOWER in reach.
     bbPlace: ['z'],
+    // BIOBUZZ HUMAN PLAYER: enter one NECTAR into the alliance's own LOADING ZONE. 'n' for
+    // nectar, and deliberately NOT on the c/v/b/x/z mechanism row: this is the one button that
+    // does something to the ALLIANCE rather than to the robot, and it is pressed at a cue
+    // rather than in the drive rhythm, so it sits away from the cluster a thumb sweeps.
+    bbNectar: ['n'],
     // BUTTERFLY: drop the other wheel set. 'b' for butterfly; free on the default map.
     driveMode: ['b'],
     flipFront: ['f'],
@@ -129,6 +138,13 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       bbPlaceNectar: [13],
       // D-UP — place a POLLEN.
       bbPlace: [12],
+      // D-LEFT. It is NOT on D-DOWN, which this lane originally took: Lane B's placement pair
+      // landed on D-UP/D-DOWN in the same round, and two actions on one index is a silent
+      // double-fire, not a conflict the rebinder reports. The d-pad is still the right home —
+      // a MOMENTARY press can afford the drive thumb leaving its stick for an instant — and
+      // this button keeps its own direction, one step away from the pair it must not be
+      // confused with. RS (11) stays free.
+      bbNectar: [14],
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
       park: [2], // X
