@@ -46,7 +46,9 @@ export const BB_FLOWER_FLOOR_Z = 0.43; // APPROX
  *
  * ⚠️ APPROX, AND IT IS THE RING'S UNDERSIDE. 3.98 is the retrieval opening 3.55 plus the lower
  * ring 0.43, so it is where the middle ring STARTS; V1 prints neither the ring's thickness nor
- * whether the scoring volume begins at its top (manual-distilled §11 item 1). The SEAT rule is
+ * whether the scoring volume begins at its top (manual-distilled §11 item 1).
+ * `docs/biobuzz/feedback/002-thresholds.md` §1 is the measurement that would settle it, and
+ * names what moving this number costs — the capacities 8 / 5 are DERIVED from it. The SEAT rule is
  * what keeps the outcomes right whatever that number turns out to be — seating the nectar ON
  * the ring makes "a nectar always scores" a consequence of the geometry rather than of 3.98
  * happening to be 0.05 in below where a bare nectar's skin reaches.

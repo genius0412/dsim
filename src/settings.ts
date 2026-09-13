@@ -31,6 +31,10 @@ export const DEFAULT_MOBILE_LAYOUT: GameSettings['mobileLayout'] = {
   intake: { x: 0.74, y: 0.44 },
   catalyst: { x: 0.82, y: 0.29 },
   fling: { x: 0.66, y: 0.29 },
+  // The HUMAN PLAYER button sits ABOVE the cluster and further inboard than the rest: it is an
+  // alliance action pressed at a cue, and putting it in the thumb's sweep is how a driver
+  // spends an entitlement they were saving. Only drawn in BIOBUZZ (`mobileButtons`).
+  bbNectar: { x: 0.74, y: 0.16 },
   scale: 1,
 };
 
@@ -73,6 +77,7 @@ function cloneMobileLayout(l: GameSettings['mobileLayout']): GameSettings['mobil
     intake: { ...l.intake },
     catalyst: { ...l.catalyst },
     fling: { ...l.fling },
+    bbNectar: { ...l.bbNectar },
     scale: l.scale,
   };
 }
@@ -325,6 +330,9 @@ export function coerceSettings(raw: unknown): GameSettings {
         catalyst: pos(ml.catalyst, DEFAULT_MOBILE_LAYOUT.catalyst),
         // absent in layouts saved before the throw had its own button — defaulted, not dropped
         fling: pos(ml.fling, DEFAULT_MOBILE_LAYOUT.fling),
+        // absent in every layout saved before BIOBUZZ had a human-player button — defaulted,
+        // not dropped, the same treatment `fling` got for the same reason
+        bbNectar: pos(ml.bbNectar, DEFAULT_MOBILE_LAYOUT.bbNectar),
         scale: typeof ml.scale === 'number' ? clamp(ml.scale, 0.7, 1.5) : 1,
       };
     }

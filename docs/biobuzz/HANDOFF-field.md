@@ -1,5 +1,126 @@
 # HANDOFF — Lane A (field)
 
+## 2026-09-12 · A6a items 1–4 (Round 6) · `GREEN`
+
+Base: merged `origin/alpha` `a68401f` (fast-forward — alpha carried only the Round 6 prompts,
+no code). Four commits, one per item. Gates, all at the end as one batch:
+`npx tsc --noEmit -p .` **clean** · `npm run test:bb -- --lane field` **354/354** ·
+`npm run test:bb` **1025/1025 ALL PASS** · the new `flower-stack` cell shot at 1600px in both
+themes (`scratch/hires/flower-stack@0.{light,dark}.png`, gitignored throwaway).
+
+| item | commit |
+|---|---|
+| 1 · the HUMAN PLAYER button (G426) | `d301bd4` |
+| 2 · G304 start legality | `180025f` |
+| 3 · the FLOWER section render | `656033f` |
+| 4 · the thresholds feedback note + pinned capacities | this commit |
+
+### 1 · NECTAR entry is a DRIVER ACTION, not a drip (`d301bd4`)
+
+- **A new command bit.** `RobotCommand.bbNectar?: boolean`, encoded in `src/net/protocol.ts` as
+  `BTN_BBNECTAR = 128` — an EDGE like `catalyst`, not a level. Default keybind **`N`**
+  (`src/input/bindings.ts`, pad button 13), a mobile button through
+  `GameModule.mobileButtons` + a `GameSettings.mobileLayout.bbNectar` key, and both label maps
+  in `src/ui/ControlsSection.tsx`. Those are the four integration files the round cleared.
+- **The RULE (G426), in `play.ts` stage 7**: one press places ONE nectar in the presser's OWN
+  LOADING ZONE iff `nectarStock[a] > 0` and (`nectarDue[a] > 0` or ≤ 60 s of TELEOP left).
+  EITHER robot of the alliance may press; the latch is PER ROBOT (`bb.held[id].nectarPress`),
+  so two drivers holding the button do not deadlock each other into one press.
+- **`nectarWhy: 'ok' | 'locked' | 'none-owed' | 'none-left'`** is on the state for A6c to read —
+  a refusal a HUD can NAME is the whole point of doing this as an action.
+- **The automatic drip is DELETED**: `BB_NECTAR_ENTRY_S`, `BB_NECTAR_DUMP_S` and `nectarTimer`
+  are gone. `nectarDue` stays — it is the DEBT, and the debt is what the rule reads.
+
+### 2 · G304 start legality — a rule, a snap, and anchors that satisfy it (`180025f`)
+
+- **`src/games/biobuzz/start.ts` is new and is the rule.** `bbEvalStart(spec, pose, a)` returns
+  DECODE's `evalStartPose` SHAPE (legal + which clause + a reason) over §6.2 A/C/D/E: fully on
+  the own side, TOUCHING the perimeter, clear of every FLOWER foot and scoring volume, NOT in
+  the LOADING ZONE. `bbSnapStart` re-seats a pose onto the nearest legal frontage, and
+  `elements.ts`'s `evalStart` — the LANE CONTRACT Lane B calls — delegates to it and is no
+  longer a stub that said yes to everything.
+- ⚠️ **C AND E FIGHT, and that is why the anchors moved.** The LOADING ZONE is itself against
+  the perimeter, so an alliance's OWN SIDE WALL is the one its zone eats. The two anchors are
+  now **`START · REAR` (34, 61.5)** and **`START · AUDIENCE` (46, −61.5)** — 123.6 in apart,
+  which keeps the index 0/1 rule (two robots of one alliance cannot reach each other at the
+  buzzer). Clearances are numeric in the `BB_START_POSES` comment; the frontage is marked
+  APPROX where it is figure-derived.
+- **`startLegality` STAYS `false`, and that is not an oversight.** `server/room.ts` gates a
+  ready-up on `activeStartLegal`, which is DECODE's `evalStartPose` and is NOT dispatched per
+  game — flipping the flag would judge a BIOBUZZ pose against DECODE's launch lines and refuse
+  every legal start. Documented in `sim.ts`, in `elements.ts`, and in the smoke label itself.
+- **Smoke** (48 legal chassis = every intake × every mount at both size extremes): the DEFAULT
+  build's anchors are legal AS WRITTEN and returned by the snap byte for byte; every anchor
+  seats legally on every one of the 48 after the snap; and each of the four clauses REFUSES its
+  own violation, with the snap repairing each refusal.
+- ⚠️ **`FLOWER_MOUTH` moved from `elements.ts` to `config.ts`** (beside `BB_FLOWERS`) to break
+  the cycle `elements → start → elements`. It is a property of that table, not a rule.
+
+### 3 · The FLOWER readout is a SECTION of the column (`656033f`)
+
+- The row of discs along the wall is **replaced by a SECTION VIEW** beside each flower, outside
+  the perimeter: a narrow column from the lower ring (0.43) to the top ring (21.5), at **1:1
+  with the field's own inches**, the scoring band shaded, elements as discs at their
+  `flowerStackZ` heights in their own colours, the TOP RING stroked in the OWNER's colour, and
+  a LOCK glyph at the retrieval gate in the locking nectar's colour when a NECTAR is at the
+  bottom (G418). It is V's c-flower page without the buttons, rotated with its wall.
+- **Driven by the three functions the SCORER reads the column through** — `flowerStackZ`,
+  `flowerScore`, `flowerRetrieve` — so the picture cannot disagree with the points.
+- ⚠️ **`up` RUNS ALONG THE WALL, not out of it.** A section with z pointing away from the field
+  is the more natural picture and there is nowhere to put it: the margin is 12 in and the
+  column is 21.5 in tall, so an outward z would cost a foot of camera on every wall. Along the
+  wall it is free — each FLOWER is one tile off centre, so the run toward the wall's midpoint
+  has 24 in of frontage and the section ends 2.5 in short of the centreline.
+- **It is drawn on a `COLORS.mat` PANEL**, which is what lets everything on it use the
+  renderer's ordinary on-field ink. The readout lives on the BACKDROP, and the backdrop is the
+  one surface in this view that THEMES — a `COLORS.white` bore line is nearly invisible on
+  `#f9faf7`. A ground of its own settles it in both themes at once and says what the drawing IS:
+  a section beside the plan, not more field.
+- **It is drawn even when the FLOWER is EMPTY** (the old row was not). The band and the rings
+  are a rule about the field; a readout that appeared only once something was inside made "F1
+  is empty" and "F1 has no readout" the same picture.
+- **New gallery cell `flower-stack`** puts all four states in one frame — F1 empty · F2 the
+  staged 4 POLLEN (bottom one BELOW the band: 3 in volume, 0 points) · F3 a NECTAR at the
+  bottom (seated on the ring, locked, red ring) · F4 full and OWNED (5 POLLEN, a BLUE NECTAR,
+  2 POLLEN — the top one straddling the ring, Fig 10-5 D/H).
+- **Smoke**: `bbFlowerSectionBox` is exported for the lane, which checks all four sections are
+  inside the camera (`viewMargin` 12, tightest 1.2 in of margin left), entirely OUTSIDE the
+  perimeter, and pairwise disjoint. The margin is now a FIXED cost — the section is as wide for
+  an empty flower as for a full one, where the row of discs grew with the stack and made
+  `BB_VIEW_MARGIN` a function of capacity.
+
+### 4 · Two thresholds V1 cannot settle, and the capacities pinned so a re-measure is loud
+
+- **`docs/biobuzz/feedback/002-thresholds.md`** is the request, in the same direction as `001`
+  (lane → owner, so no `## Response` heading). It asks for exactly what to measure on 09-14:
+  1. **The MIDDLE RING** — its TOP face above the tiles, its own thickness, and its HOLE
+     diameter, which **must fall between 2.8 and 3.6** or the sorter ruling is wrong about the
+     FLOWER. Plus whether §10.5.2's volume starts at the ring's top or its bottom. Today's
+     `BB_FLOWER_MID_Z` 3.98 is `3.55 + 0.43` — the retrieval opening plus the BOTTOM ring —
+     and V1 prints no middle-ring height or hole ANYWHERE.
+  2. **The TIP TABLE's empty row** — `BB_TIP_POLLEN[0]` is a GUESS (8, extrapolating the 7/6
+     trend; an empty cell was never put on the scale), and rows 1–5 are worth a second reading
+     while the field is in front of you. It also asks whether ORDER matters, which the table
+     cannot express.
+- **The capacities are PINNED IN SMOKE AS BARE LITERALS** — `capP === 8 && capN === 5`, and
+  `BB_TIP_POLLEN` against `[8,7,6,3,1,0]`. `flowerCapacity` DERIVES capacity from
+  `BB_FLOWER_MID_Z`, so a check that compared it against itself would pass forever and never
+  mention that the column had quietly lost an element. Pinned, it **FAILS the moment the ring
+  is re-measured** and names the two numbers a human has to look at. So a re-measure is exactly
+  **one config edit and one label edit**, in that order, and the label edit is the moment
+  somebody re-reads the feedback note. ⚠️ Both comments say out loud: do not "fix" either check
+  by deriving its expected value from the constant it is testing.
+- The note carries the **arithmetic for both columns** so a newly measured ring can be checked
+  on paper: below ~3.6 the column gets its sixth NECTAR back, above ~5.1 it loses a POLLEN too.
+
+### Still APPROX after this round
+
+`BB_FLOWER_MID_Z` 3.98 and `BB_TIP_POLLEN[0]` 8 (both now have a feedback note naming the
+measurement), `BB_FLOWER_VOL_Z`, `BB_FLOWER_FLOOR_Z` 0.43, `BB_FLOWER_ENTRY_MARGIN` 3 in,
+`BB_HIVE_ACCEPT_MARGIN` 2 in, the spill speed and lateral spread, and the G304 frontage where
+it is figure-derived. Fig 10-5 A–H are still RECONSTRUCTED from the §10.5.2 rule text.
+
+
 ## 2026-09-12 · rules lane (A6b) · G407 counts HERDING; the foul-line + tariff audit · `biobuzz-rules`
 
 Gates: `npx tsc --noEmit -p .` clean · `npm run server:check` clean · `npm run uiaudit`
