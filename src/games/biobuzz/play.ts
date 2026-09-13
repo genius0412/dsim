@@ -23,11 +23,12 @@ import {
   BB_ON_TARGET_TOL,
   BB_POLLEN_R,
   BB_POLLEN_WALL_REST,
+  FLOWER_MOUTH,
   bbHopperCap,
   bbLoadingZoneSpot,
 } from './config';
 import { biobuzzColliders } from './colliders';
-import { FLOWER_MOUTH, capturePollen, scoreTargets, takeHeld } from './elements';
+import { capturePollen, scoreTargets, takeHeld } from './elements';
 import { bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
 import { hiveAccepts, hiveCellPos, hiveLoad, hiveStep, hiveWillTip, spillPoses } from './hive';
 import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
