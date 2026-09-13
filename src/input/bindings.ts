@@ -15,6 +15,7 @@ export type KeyAction =
   | 'fling'
   | 'bbLift'
   | 'bbPlace'
+  | 'bbNectar'
   | 'driveMode'
   | 'flipFront'
   | 'park'
@@ -28,6 +29,7 @@ export type PadAction =
   | 'fling'
   | 'bbLift'
   | 'bbPlace'
+  | 'bbNectar'
   | 'driveMode'
   | 'flipFront'
   | 'park'
@@ -68,6 +70,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   'fling',
   'bbLift',
   'bbPlace',
+  'bbNectar',
   'driveMode',
   'flipFront',
   'park',
@@ -82,6 +85,7 @@ export const PAD_ACTIONS: PadAction[] = [
   'fling',
   'bbLift',
   'bbPlace',
+  'bbNectar',
   'driveMode',
   'flipFront',
   'park',
@@ -110,6 +114,11 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     bbLift: ['x'],
     // BIOBUZZ: place the held POLLEN into a FLOWER.
     bbPlace: ['z'],
+    // BIOBUZZ HUMAN PLAYER: enter one NECTAR into the alliance's own LOADING ZONE. 'n' for
+    // nectar, and deliberately NOT on the c/v/b/x/z mechanism row: this is the one button that
+    // does something to the ALLIANCE rather than to the robot, and it is pressed at a cue
+    // rather than in the drive rhythm, so it sits away from the cluster a thumb sweeps.
+    bbNectar: ['n'],
     // BUTTERFLY: drop the other wheel set. 'b' for butterfly; free on the default map.
     driveMode: ['b'],
     flipFront: ['f'],
@@ -131,6 +140,10 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       // stick, which a MOMENTARY press can afford where the lift above could not. Every
       // trigger, bumper and face button was already taken.
       bbPlace: [12],
+      // D-DOWN — the last free d-pad direction, beside `bbPlace` on D-UP. Both are MOMENTARY
+      // presses that can afford the drive thumb leaving its stick for an instant, which is what
+      // the d-pad costs; every trigger, bumper, face button and stick click is taken.
+      bbNectar: [13],
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
       park: [2], // X

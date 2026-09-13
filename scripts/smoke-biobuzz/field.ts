@@ -70,7 +70,7 @@ import { createBiobuzzWorld, stageBiobuzz } from '../../src/games/biobuzz/spawn'
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { scoreTargets } from '../../src/games/biobuzz/elements';
 import type { ScoreTarget } from '../../src/games/biobuzz/state';
-import { BB_NECTAR_DUMP_S, BB_NECTAR_ENTRY_S, updateBiobuzz } from '../../src/games/biobuzz/play';
+import { updateBiobuzz } from '../../src/games/biobuzz/play';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
 import { BB_IDLE, BB_SCENES, bbPollen, bbSceneAt, bbSceneStills, type Scene } from '../../src/games/biobuzz/scenes';
 import { bbRobotSolids } from '../../src/games/biobuzz/robot';
@@ -78,7 +78,7 @@ import { robotPenetration } from '../../src/sim/artifactSolids';
 import { solveArtifacts, type SweepFrom } from '../../src/sim/physicsEngine';
 import { stepGroundBall } from '../../src/sim/physics';
 import { maxMatchTicks } from '../../src/sim/replay';
-import type { ServerMsg } from '../../src/net/protocol';
+import { localizeCommand, type ServerMsg } from '../../src/net/protocol';
 import { Room, type Client } from '../../server/room';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { cmd, mkWorld, run, setup, type Check } from './harness';
@@ -1784,7 +1784,7 @@ export function fieldChecks(check: Check): void {
     // velocity they LEFT THE TRAY with is gone. Reading it at the end of the scene would assert
     // that a spilled element comes to rest, which it should, and nothing about the spill.
     let spillVel: { v: number; out: boolean }[] = [];
-    const TICKS = Math.round((BB_TIP_SWING_S + BB_NECTAR_ENTRY_S + 0.5) / C.SIM_DT);
+    const TICKS = Math.round((BB_TIP_SWING_S + 0.5) / C.SIM_DT);
     for (let t = 0; t < TICKS; t++) {
       const before = [...bb.hives[A].contents];
       updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
@@ -1886,43 +1886,50 @@ export function fieldChecks(check: Check): void {
       bb.hives[A].released === false && bb.hives[A].tipping === 0,
       `released=${bb.hives[A].released} tipping=${bb.hives[A].tipping}`,
     );
-    // THE ENTITLEMENT THE TIP EARNS (G426) — this lane's half of the human player.
+    // THE ENTITLEMENT THE TIP EARNS (G426) — this lane's half of the human player. The tip
+    // EARNS an entry and nothing more: the nectar stays in the hands until a driver presses
+    // the button, which is the whole of the Round 6 change. Nobody pressed anything in the
+    // loop above, so the stock is untouched and the debt is banked.
     check(
-      'live: a completed TIP earns one NECTAR entry, and the human player makes it',
-      bb.nectarStock[A] === 4 && bb.nectarDue[A] === 0,
-      `stock ${bb.nectarStock[A]} (5 at setup, 4 after one entry) · still due ${bb.nectarDue[A]}`,
+      'live: a completed TIP earns one NECTAR entry and does NOT spend it',
+      bb.nectarStock[A] === 5 && bb.nectarDue[A] === 1,
+      `stock ${bb.nectarStock[A]} (5 at setup, unspent) · due ${bb.nectarDue[A]}`,
+    );
+    check(
+      'live: with an entry owed and the field live, the button would take it',
+      bb.nectarWhy[A] === 'ok',
+      `nectarWhy ${bb.nectarWhy[A]}`,
     );
     {
       const entered = w.balls.filter(
         (b) => b.state.kind === 'ground' && b.color === A && Math.abs(b.pos.x) > BB_HALF_X - 24,
       );
       check(
-        'live: the entered NECTAR is a GROUND element in its own LOADING ZONE, not a new ball',
-        entered.length >= 1 && w.balls.length === TOTAL,
+        'live: nothing entered on its own — no press, no NECTAR on the tiles',
+        entered.length === 0 && w.balls.length === TOTAL,
         `${entered.length} red NECTAR near the red wall · ${w.balls.length} balls (was ${TOTAL})`,
       );
     }
   }
 
-  // -- THE HUMAN PLAYER: A DRIP, THEN THE 1:00 DUMP -------------------------
+  // -- THE HUMAN PLAYER BUTTON (G426) ---------------------------------------
   /**
-   * G426 gives an alliance ONE NECTAR entry per completed TIP and, at the 1:00 cue, everything
-   * still in its hands. Those are two ENTITLEMENTS running through one clock, and the check is
-   * that the second does not become a teleport: five NECTAR appear one at a time over about
-   * five seconds, never as a pile on one tile on one tick.
+   * NECTAR ENTRY IS A DRIVER ACTION. `RobotCommand.bbNectar` is an EDGE: one press puts one
+   * NECTAR from the alliance's stock into its own LOADING ZONE, and only when the alliance is
+   * ENTITLED to one — a banked TIP (`nectarDue`), or TELEOP at 60 s or less. Everything else
+   * the button can do is nothing, and `nectarWhy` names which nothing it was.
    *
    * NOTHING IS SPAWNED. The five exist from setup as `stock` balls (`spawn.ts`) already sitting
    * on their entry spot, so an entry is a STATE FLIP and the array length never changes — which
    * is the whole reason conservation is a count over one array.
+   *
+   * The old drip is what this replaces, and the checks below are written against the failure
+   * modes a button has that a timer did not: a press with no entitlement, a HELD button, two
+   * robots on one alliance, and a press on a frozen field.
    */
   {
-    const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
-    const bb = w.biobuzz!;
-    w.match.phase = 'teleop';
-    w.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S; // exactly at the cue
-    const TOTAL = w.balls.length;
-    const STOCK0 = bb.nectarStock.red;
-    const onGround = (a: Alliance): number =>
+    const press = (on: boolean): RobotCommand => cmd({ bbNectar: on });
+    const inLZ = (w: World, a: Alliance): number =>
       w.balls.filter((b) => {
         const z = BB_LZ[a];
         return (
@@ -1931,42 +1938,206 @@ export function fieldChecks(check: Check): void {
           b.pos.x >= z.x0 && b.pos.x <= z.x1 && b.pos.y >= z.y0 && b.pos.y <= z.y1
         );
       }).length;
-    let maxPerTick = 0;
-    let prev = onGround('red');
-    const N = Math.round((STOCK0 * BB_NECTAR_DUMP_S + 1) / C.SIM_DT);
-    for (let t = 0; t < N; t++) {
-      updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
-      const now = onGround('red');
-      maxPerTick = Math.max(maxPerTick, now - prev);
-      prev = now;
+
+    // ── BEFORE ANY TIP: the button is live, the entitlement is not ───────────
+    {
+      const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = C.TELEOP_DURATION; // well before the cue
+      const TOTAL = w.balls.length;
+      const STOCK0 = bb.nectarStock.red;
+      // ten presses, each a real edge (down, up, down, …), so this is not one press misread
+      for (let i = 0; i < 20; i++) {
+        updateBiobuzz(w, C.SIM_DT, new Map([[0, press(i % 2 === 0)]]), true, NO_SWEEP);
+      }
+      check(
+        'human player: a press with nothing owed places NOTHING, and says why',
+        bb.nectarStock.red === STOCK0 && inLZ(w, 'red') === 0 && bb.nectarWhy.red === 'none-owed' &&
+          w.balls.length === TOTAL,
+        `stock ${bb.nectarStock.red}/${STOCK0} · ${inLZ(w, 'red')} in the zone · why ${bb.nectarWhy.red}`,
+      );
     }
-    check(
-      'human player: the 1:00 cue empties the alliance stock, ONE NECTAR AT A TIME',
-      bb.nectarStock.red === 0 && maxPerTick === 1 && onGround('red') === STOCK0 && w.balls.length === TOTAL,
-      `stock ${STOCK0} → ${bb.nectarStock.red} · ${onGround('red')} in the LOADING ZONE · ` +
-        `most entered on one tick: ${maxPerTick} · balls ${w.balls.length} (was ${TOTAL})`,
-    );
-    // …and the beat is real: five entries at `BB_NECTAR_DUMP_S` apart cannot be done in one.
-    check(
-      'human player: the entries are spread over the dump, not delivered on one tick',
-      N * C.SIM_DT >= STOCK0 * BB_NECTAR_DUMP_S,
-      `${STOCK0} entries at ${BB_NECTAR_DUMP_S}s apart over ${(N * C.SIM_DT).toFixed(1)}s`,
-    );
-    // NOTHING ENTERS WHILE THE FIELD IS FROZEN — `enabled` false is the transition and the
-    // period after the buzzer, which is exactly when G426 forbids a human player reaching in.
+
+    // ── AFTER ONE TIP: one press, exactly one NECTAR, and the debt is spent ──
+    {
+      const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = C.TELEOP_DURATION;
+      const TOTAL = w.balls.length;
+      const STOCK0 = bb.nectarStock.red;
+      bb.nectarDue.red = 1; // what a completed TIP banks (stage 3)
+      updateBiobuzz(w, C.SIM_DT, new Map([[0, press(true)]]), true, NO_SWEEP);
+      const afterOne = inLZ(w, 'red');
+      const stockAfterOne = bb.nectarStock.red;
+      const dueAfterOne = bb.nectarDue.red;
+      // ...and HOLDING it does not drain the stock. 120 more ticks with the button still down.
+      for (let t = 0; t < 120; t++) {
+        updateBiobuzz(w, C.SIM_DT, new Map([[0, press(true)]]), true, NO_SWEEP);
+      }
+      check(
+        'human player: one press after a TIP enters EXACTLY one NECTAR and spends the entry',
+        afterOne === 1 && stockAfterOne === STOCK0 - 1 && dueAfterOne === 0,
+        `${afterOne} in the zone · stock ${STOCK0} → ${stockAfterOne} · due ${dueAfterOne}`,
+      );
+      check(
+        'human player: the button is an EDGE — holding it for 2 s enters nothing more',
+        inLZ(w, 'red') === 1 && bb.nectarStock.red === STOCK0 - 1 && w.balls.length === TOTAL,
+        `${inLZ(w, 'red')} in the zone after 2 s held · stock ${bb.nectarStock.red} · ` +
+          `balls ${w.balls.length} (was ${TOTAL})`,
+      );
+      check(
+        'human player: with the entry spent and the cue not reached, the button refuses again',
+        bb.nectarWhy.red === 'none-owed',
+        `nectarWhy ${bb.nectarWhy.red}`,
+      );
+    }
+
+    // ── AT 59 s: one per press until the stock is empty ──────────────────────
+    {
+      const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'blue', {}, 0)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S - 1; // 59 s: inside the cue
+      const TOTAL = w.balls.length;
+      const STOCK0 = bb.nectarStock.red;
+      let maxPerPress = 0;
+      let prev = inLZ(w, 'red');
+      // one press per two ticks (down, up), STOCK0 + 2 presses — two more than there is stock
+      for (let i = 0; i < (STOCK0 + 2) * 2; i++) {
+        updateBiobuzz(w, C.SIM_DT, new Map([[0, press(i % 2 === 0)]]), true, NO_SWEEP);
+        const now = inLZ(w, 'red');
+        maxPerPress = Math.max(maxPerPress, now - prev);
+        prev = now;
+      }
+      check(
+        'human player: at 59 s, ONE NECTAR per press until the stock is empty',
+        bb.nectarStock.red === 0 && inLZ(w, 'red') === STOCK0 && maxPerPress === 1 &&
+          w.balls.length === TOTAL,
+        `stock ${STOCK0} → ${bb.nectarStock.red} · ${inLZ(w, 'red')} in the zone · ` +
+          `most per press ${maxPerPress} · balls ${w.balls.length} (was ${TOTAL})`,
+      );
+      check(
+        'human player: two presses past the last one place nothing, and the HUD says none left',
+        bb.nectarWhy.red === 'none-left',
+        `nectarWhy ${bb.nectarWhy.red}`,
+      );
+      // the cue is an ENTITLEMENT, not an unlock of the opponent's stock: blue pressed nothing
+      check(
+        'human player: BLUE, who pressed nothing, still holds its whole stock',
+        bb.nectarStock.blue === STOCK0 && inLZ(w, 'blue') === 0,
+        `blue stock ${bb.nectarStock.blue} · ${inLZ(w, 'blue')} in the blue zone`,
+      );
+    }
+
+    // ── EITHER ROBOT MAY PRESS, AND ONE TICK ENTERS ONE ──────────────────────
+    /**
+     * The per-ROBOT latch is what this pins. A per-ALLIANCE one would swallow robot 1's press
+     * while robot 0 held the button — the bug that only ever appears with two humans on one
+     * alliance, which is every real match.
+     */
+    {
+      const w = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'red', {}, 1)]);
+      const bb = w.biobuzz!;
+      w.match.phase = 'teleop';
+      w.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S - 1;
+      const STOCK0 = bb.nectarStock.red;
+      // robot 0 holds the button DOWN for the whole scene; robot 1 taps it twice
+      const both = (r1: boolean): Map<number, RobotCommand> =>
+        new Map([[0, press(true)], [1, press(r1)]]);
+      updateBiobuzz(w, C.SIM_DT, both(false), true, NO_SWEEP); // robot 0's own edge: 1 in
+      const afterHold = inLZ(w, 'red');
+      for (let i = 0; i < 4; i++) updateBiobuzz(w, C.SIM_DT, both(i % 2 === 0), true, NO_SWEEP);
+      check(
+        "human player: a partner's press lands while the other driver holds the button down",
+        afterHold === 1 && inLZ(w, 'red') === 3 && bb.nectarStock.red === STOCK0 - 3,
+        `${afterHold} after robot 0's edge, ${inLZ(w, 'red')} after robot 1's two taps · ` +
+          `stock ${STOCK0} → ${bb.nectarStock.red}`,
+      );
+      // BOTH robots' rising edges on the SAME tick: one instruction, one element.
+      {
+        const v = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0), setup(1, 'red', {}, 1)]);
+        const vb = v.biobuzz!;
+        v.match.phase = 'teleop';
+        v.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S - 1;
+        const S0 = vb.nectarStock.red;
+        updateBiobuzz(v, C.SIM_DT, new Map([[0, press(true)], [1, press(true)]]), true, NO_SWEEP);
+        check(
+          'human player: both drivers pressing on ONE tick enter ONE NECTAR, not two',
+          inLZ(v, 'red') === 1 && vb.nectarStock.red === S0 - 1,
+          `${inLZ(v, 'red')} in the zone · stock ${S0} → ${vb.nectarStock.red}`,
+        );
+      }
+    }
+
+    // ── THE FROZEN FIELD IGNORES IT ──────────────────────────────────────────
+    // `enabled` false is the transition and the period after the buzzer, which is exactly when
+    // G426 forbids a human player reaching in. Through `step.ts` the command is zeroed before
+    // it ever arrives; this drives `updateBiobuzz` directly with the button DOWN, which is the
+    // stronger statement.
     {
       const f = createBiobuzzWorld('match', 9, [setup(0, 'red', {}, 0)]);
       const fb = f.biobuzz!;
       f.match.phase = 'teleop';
-      f.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S;
-      for (let t = 0; t < 600; t++) updateBiobuzz(f, C.SIM_DT, new Map(), false, NO_SWEEP);
+      f.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S - 1;
+      const STOCK0 = fb.nectarStock.red;
+      for (let t = 0; t < 600; t++) {
+        updateBiobuzz(f, C.SIM_DT, new Map([[0, press(t % 2 === 0)]]), false, NO_SWEEP);
+      }
       check(
         'human player: nothing enters while the field is frozen (enabled === false)',
-        fb.nectarStock.red === STOCK0 && fb.nectarStock.blue === STOCK0,
-        `stock ${fb.nectarStock.red}/${fb.nectarStock.blue} after 10s disabled (was ${STOCK0} each)`,
+        fb.nectarStock.red === STOCK0 && inLZ(f, 'red') === 0 && fb.nectarWhy.red === 'locked',
+        `stock ${fb.nectarStock.red} (was ${STOCK0}) after 10 s of presses while disabled · ` +
+          `why ${fb.nectarWhy.red}`,
+      );
+      // ...and the moment the field comes back, the SAME press works. The refusal is the flag,
+      // not a latch the frozen ticks left behind.
+      fb.nectarDue.red = 0; // no banked TIP: the 59 s cue is the entitlement here
+      updateBiobuzz(f, C.SIM_DT, new Map([[0, press(true)]]), true, NO_SWEEP);
+      check(
+        'human player: the first press after the field comes live is taken',
+        inLZ(f, 'red') === 1 && fb.nectarStock.red === STOCK0 - 1 && fb.nectarWhy.red === 'ok',
+        `${inLZ(f, 'red')} in the zone · stock ${fb.nectarStock.red} · why ${fb.nectarWhy.red}`,
+      );
+    }
+
+    // ── A REPLAY ROUND-TRIP CARRIES THE BIT ──────────────────────────────────
+    /**
+     * The wire is the contract: a command the client PREDICTS with must be the command the
+     * server steps, and `localizeCommand` is the quantize round-trip that makes the two equal.
+     * A new button that is not in the `buttons` mask decodes as `false` — so the press would
+     * work locally, do nothing on the server, and the desync would look like lag.
+     */
+    {
+      const down = localizeCommand(press(true));
+      const up = localizeCommand(press(false));
+      check(
+        'human player: `bbNectar` survives the quantize round-trip in both states',
+        down.bbNectar === true && up.bbNectar === false,
+        `down ${down.bbNectar} · up ${up.bbNectar}`,
+      );
+      // ...and it does not collide with any other button bit: every flag set at once comes back
+      // set, and none alone sets another.
+      const all = localizeCommand(
+        cmd({ intake: true, fire: true, catalyst: true, fling: true, driveMode: true,
+              bbLift: true, bbPlace: true, bbNectar: true }),
+      );
+      const only = localizeCommand(press(true));
+      check(
+        'human player: its protocol bit is its own — all eight set, and `bbNectar` alone sets one',
+        all.intake && all.fire && all.catalyst && all.fling && all.driveMode && all.bbLift &&
+          all.bbPlace && all.bbNectar &&
+          !only.intake && !only.fire && !only.catalyst && !only.fling && !only.driveMode &&
+          !only.bbLift && !only.bbPlace,
+        `all ${JSON.stringify(all.bbNectar)} · only-nectar sets ${
+          ['intake', 'fire', 'catalyst', 'fling', 'driveMode', 'bbLift', 'bbPlace', 'bbNectar']
+            .filter((k) => (only as unknown as Record<string, boolean>)[k]).join(',')
+        }`,
       );
     }
   }
+
 
   // -- THE OPEN FACE IS ONE FACE: A SHOT FROM THE CLOSED SIDE IS A MISS ------
   /**

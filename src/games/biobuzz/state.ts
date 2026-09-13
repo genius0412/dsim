@@ -172,7 +172,7 @@ export interface BbFlowerState {
    * through the HUMAN PLAYER — one per own-HIVE TIP, and all remaining stock at ≤ 60 s — and
    * nothing anywhere gives a flower a supply of its own. The two fields are deleted rather
    * than left at 0: a field the rules can read but the sim will never write is a trap, and
-   * the per-ALLIANCE `nectarStock` / `nectarDue` / `nectarTimer` below are the whole supply.
+   * the per-ALLIANCE `nectarStock` / `nectarDue` below are the whole supply.
    */
 }
 
@@ -190,6 +190,26 @@ export interface BbFlowerState {
  * climb something — kept so the HUD and the results rows have a value space to render.
  */
 export type BbEndgame = 'none' | 'parked' | 'climbed';
+
+/**
+ * WHY THE HUMAN PLAYER BUTTON WOULD DO NOTHING RIGHT NOW — the four answers, in the order the
+ * tick tests them, most permanent first.
+ *
+ * `'ok'`         a press right now enters one NECTAR.
+ * `'none-left'`  the stock is empty. TERMINAL: nothing refills it, so this never becomes
+ *                anything else for the rest of the match, which is why it outranks the
+ *                other two refusals — "you have none" is more use than "not yet".
+ * `'locked'`     the field is frozen (`enabled` false — pre-match, the auto→teleop
+ *                transition, after the buzzer). G426 forbids a human player reaching over
+ *                the wall then, whatever they are owed.
+ * `'none-owed'`  live, with stock, and no entitlement: no TIP has been banked since the last
+ *                entry and TELEOP has more than `BB_FLOWER_UNLOCK_S` left.
+ *
+ * A STRING UNION rather than a boolean pair because the HUD prints one of four sentences and
+ * a pair of booleans would make two of the four unreachable-looking. It is recomputed every
+ * tick and never latched.
+ */
+export type BbNectarWhy = 'ok' | 'locked' | 'none-owed' | 'none-left';
 
 export interface BiobuzzState {
   /** POLLEN scored per alliance, as a COUNT. Separate from `points` because a count is what
@@ -255,18 +275,25 @@ export interface BiobuzzState {
    * of what is due (§2.4 of the field plan). DRAFT. */
   nectarDue: Record<Alliance, number>;
   /**
-   * SECONDS UNTIL THIS ALLIANCE'S HUMAN PLAYER PUTS THE NEXT NECTAR ON THE TILES.
+   * WHAT A HUMAN PLAYER BUTTON PRESS WOULD DO RIGHT NOW, per alliance (`BbNectarWhy`).
    *
-   * A human player is not instant: a TIP earns an entry (G426) and the nectar appears in the
-   * LOADING ZONE a beat later, and in the ≤ 60 s dump the remaining stock arrives one at a
-   * time rather than as a pile on one tile. That beat is what this counts down.
+   * ── WHY IT IS STATE AND NOT A DERIVED READ ─────────────────────────────────
+   * Three of its four inputs are on the world (`nectarStock`, `nectarDue`, `match`) but the
+   * fourth is NOT: `enabled` is the step's own "may the robots run" flag, computed in
+   * `step.ts` from the phase and never written down. A HUD that re-derived this would have to
+   * re-derive that too, in a second place, from a snapshot — and a snapshot taken during the
+   * auto→teleop transition looks exactly like a live teleop tick from the outside. So the
+   * tick that knows the answer records it.
    *
-   * It is STATE rather than a derived value because it is a clock, and the one clock rule this
-   * repo has is that a clock lives on the world (`world.time`, this) and never in a module
-   * global — a global would be shared by every world in the process, so a replay and a live
-   * match in the same tab would take turns draining it. 0 means "ready now".
+   * It replaces `nectarTimer`, the drip clock, which is deleted: NECTAR entry is a driver
+   * ACTION now (`RobotCommand.bbNectar`, G426), so there is no beat left to count down. The
+   * whole of the old mechanism — `BB_NECTAR_ENTRY_S`, `BB_NECTAR_DUMP_S` and this clock — is
+   * gone; `nectarDue` stays and is still the entitlement counter.
+   *
+   * Recomputed EVERY tick, including while disabled, and never latched: it is a read-out of
+   * the current situation, so a stale value is a lie the HUD would print.
    */
-  nectarTimer: Record<Alliance, number>;
+  nectarWhy: Record<Alliance, BbNectarWhy>;
   /** per robot id: did it LEAVE (stop contacting the perimeter) by the end of AUTO? Latched at
    * that instant and never recomputed, because the achievement is assessed once (Table 10-2)
    * and a robot that drives back to the wall in TELEOP keeps its 3. DRAFT. */
@@ -320,7 +347,9 @@ export function emptyBiobuzzState(): BiobuzzState {
     ],
     nectarStock: { red: 0, blue: 0 },
     nectarDue: { red: 0, blue: 0 },
-    nectarTimer: { red: 0, blue: 0 },
+    // 'none-left' rather than 'ok': a fresh state has no stock (`spawn.ts` stages it), and the
+    // honest answer for a world nobody has staged is the one the tick would compute for it.
+    nectarWhy: { red: 'none-left', blue: 'none-left' },
     leave: {},
     parkAuto: {},
     parkTele: {},

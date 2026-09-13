@@ -60,6 +60,12 @@ const BTN_DRIVEMODE = 16;
 // `REPLAY_FORMAT` bump and no `trackStride` change is needed for either.
 const BTN_BBLIFT = 32;
 const BTN_BBPLACE = 64;
+// The HUMAN PLAYER button (G426) — an EDGE like `catalyst`, held on the wire and edge-detected
+// in the sim, so a reconciled or replayed tick cannot enter two NECTAR off one press. This is
+// the LAST bit `buttons` has: it is a uint8 and 128 fills it, so the next held action added to
+// this protocol needs a wider field, not another constant. Say so here rather than discover it
+// when bit 256 silently truncates to 0.
+const BTN_BBNECTAR = 128;
 
 export function quantizeCommand(c: RobotCommand): QCommand {
   return {
@@ -73,7 +79,8 @@ export function quantizeCommand(c: RobotCommand): QCommand {
       (c.fling ? BTN_FLING : 0) |
       (c.driveMode ? BTN_DRIVEMODE : 0) |
       (c.bbLift ? BTN_BBLIFT : 0) |
-      (c.bbPlace ? BTN_BBPLACE : 0),
+      (c.bbPlace ? BTN_BBPLACE : 0) |
+      (c.bbNectar ? BTN_BBNECTAR : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
     rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
@@ -93,6 +100,7 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     driveMode: (q.buttons & BTN_DRIVEMODE) !== 0,
     bbLift: (q.buttons & BTN_BBLIFT) !== 0,
     bbPlace: (q.buttons & BTN_BBPLACE) !== 0,
+    bbNectar: (q.buttons & BTN_BBNECTAR) !== 0,
   };
 }
 

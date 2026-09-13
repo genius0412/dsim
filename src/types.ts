@@ -48,6 +48,17 @@ export interface RobotCommand {
    * a mode, with no on-screen transition, and the design most likely to come back from
    * playtesting. One extra protocol bit is the cheaper half of that trade. */
   bbPlace?: boolean;
+  /** BIOBUZZ, the HUMAN PLAYER button: put ONE NECTAR from the alliance's own stock into the
+   * alliance's own LOADING ZONE (G426). Edge-triggered in the sim, like `catalyst`.
+   *
+   * It is a DRIVER ACTION and not a drip, because the human player is a person standing at
+   * the wall waiting for a cue, not a timer: the sim used to enter nectar on its own clock,
+   * which meant the one thing a drive team actually decides about their entitlement — WHEN to
+   * spend it — was decided for them. Either robot of the alliance may press it; the rule is
+   * per ALLIANCE, so the two share one entitlement counter.
+   *
+   * Optional: every DECODE and CR command, and every replay recorded before this, omits it. */
+  bbNectar?: boolean;
   /** Chain Reaction, LAUNCHER catalyst: THROW the carried ring downfield from the catapult.
    * Its own button so it is never ambiguous with the claw's grab/place. Edge-triggered in
    * the sim. Optional (old clients/replays omit it). */
@@ -801,6 +812,11 @@ export interface MobileLayout {
    * same reason it has its own keybind — a throw is not the claw's grab/place, and a
    * driver must never have to guess which one a press means. */
   fling: MobilePos;
+  /** BIOBUZZ, the HUMAN PLAYER button: enter one NECTAR into the own LOADING ZONE. Its own
+   * position because it is the one touch control that acts on the ALLIANCE rather than on the
+   * robot, and a driver reaches for it at a moment (a TIP completing, the 1:00 cue) rather
+   * than in a drive rhythm — so it wants to be somewhere the thumb does not pass by accident. */
+  bbNectar: MobilePos;
   /** overall control size multiplier (0.7..1.5). */
   scale: number;
 }
