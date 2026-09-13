@@ -179,7 +179,7 @@ import { butterflyTankRpmLimits, driveParams, massLimits, rpmLimits, motorStep, 
 import { coerceSettings, defaultSettings, switchGame, syncAudioMirrors } from '../src/settings';
 import type { RobotSetup } from '../src/sim/spawn';
 import { DEFAULT_BINDINGS, KEY_ACTIONS, PAD_ACTIONS, mergeBindings } from '../src/input/bindings';
-import { quantizeCommand, dequantizeCommand, localizeCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
+import { quantizeCommand, dequantizeCommand, localizeCommand, sanitizeQCommand, slimWorld, unslimWorld, encodeBallDelta, applyBallDelta } from '../src/net/protocol';
 import type { Artifact } from '../src/types';
 import { worldHash } from '../src/net/checksum';
 import {
@@ -7314,6 +7314,30 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       );
     }
 
+    // ---- one host per guest (joining a second room leaves the first)
+    {
+      const sig = new LanSignalling();
+      sent.length = 0;
+      const OTHER = 'JKMNPQ';
+      sig.claim(sock('h1'), CODE, 'user-1', none);
+      sig.claim(sock('h2'), OTHER, 'user-2', none);
+      const guest = sock('g1');
+      sig.join(guest, CODE);
+      sig.join(guest, OTHER);
+      check(
+        'lan signal: joining a second room releases the seat at the first',
+        sig.peerCount(CODE) === 0 && sig.peerCount(OTHER) === 1,
+      );
+      check('lan signal: the first host is TOLD its guest left', took('h1', 'lanPeerGone'));
+      const stale = sig.relay(sock('h1'), 'g1', 'x');
+      check(
+        'lan signal: the abandoned host can no longer relay to that guest',
+        stale.ok === false && stale.reason === 'nopeer',
+      );
+      sig.release('g1');
+      check('lan signal: releasing the guest leaves no membership behind', sig.peerCount(OTHER) === 0);
+    }
+
     // ---- bounds
     {
       const sig = new LanSignalling();
@@ -12516,6 +12540,34 @@ function pinScene(
   // an OLD client's ld/rd-less packet still decodes (missing ⇒ 0, the old behavior)
   const legacy = dequantizeCommand({ dx: 0, dy: 64, rot: 0, buttons: 0 });
   check('dequantize tolerates a legacy ld/rd-less packet', legacy.leftDrive === 0 && legacy.rightDrive === 0);
+
+  // ---- the wire boundary: an untrusted `q` is not a QCommand until it has been checked.
+  // `dequantizeCommand` divides and masks; every one of these used to reach the authoritative
+  // world as a pose (`{}` ⇒ NaN, `ld: 1e9` ⇒ a track at 7,874,015 in/s).
+  {
+    const good = quantizeCommand(cmd({ driveX: 1, leftDrive: -1 }));
+    check('sanitizeQCommand: a real quantized command passes through unchanged',
+      JSON.stringify(sanitizeQCommand(good)) === JSON.stringify(good));
+    check('sanitizeQCommand: an ld/rd-less packet from an older client is still accepted',
+      sanitizeQCommand({ dx: 0, dy: 64, rot: 0, buttons: 0 })?.dy === 64);
+    const bad: unknown[] = [
+      null,
+      'nope',
+      {},                                             // every axis missing ⇒ NaN downstream
+      { dx: 0, dy: 0, rot: 0 },                       // no buttons
+      { dx: NaN, dy: 0, rot: 0, buttons: 0 },
+      { dx: 0.5, dy: 0, rot: 0, buttons: 0 },         // not an integer: never quantizer output
+      { dx: 128, dy: 0, rot: 0, buttons: 0 },         // out of int8 range
+      { dx: 0, dy: 0, rot: 0, buttons: 0, ld: 1e9 },  // the impossible track speed
+      { dx: 0, dy: 0, rot: 0, buttons: -1 },
+      { dx: 0, dy: 0, rot: 0, buttons: 256 },
+    ];
+    check('sanitizeQCommand: every malformed payload is refused, not coerced',
+      bad.every((b) => sanitizeQCommand(b) === null));
+    const spare = sanitizeQCommand({ dx: 0, dy: 0, rot: 0, buttons: 128 });
+    check('sanitizeQCommand: an unknown button bit is dropped, not carried',
+      spare !== null && spare.buttons === 0);
+  }
 }
 
 // ---- WHICH RESULTS GET WRITTEN, AND WHERE -----------------------------------
@@ -13444,8 +13496,12 @@ function pinScene(
   room.onMessage('r1', { t: 'start' });
   // distinct input ticks per client, so `ackInputTick` is genuinely different for each
   room.advanceForTest(20);
-  room.onMessage('r1', { t: 'input', tick: 5, q: [0, 0, 0, 0, 0, 0, 0] as unknown as never });
-  room.onMessage('r2', { t: 'input', tick: 9, q: [0, 0, 0, 0, 0, 0, 0] as unknown as never });
+  // a REAL quantized command, because the room now refuses a malformed payload outright
+  // (`sanitizeQCommand`) — and this check is about which client's ack is recorded, not about
+  // what the server does with rubbish.
+  const idleQ = quantizeCommand(cmd({}));
+  room.onMessage('r1', { t: 'input', tick: 5, q: idleQ });
+  room.onMessage('r2', { t: 'input', tick: 9, q: idleQ });
   room.advanceForTest(10);
 
   // every BROADCAST now goes out pre-encoded, not just snapshots, so filter
