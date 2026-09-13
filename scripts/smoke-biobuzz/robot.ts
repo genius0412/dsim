@@ -317,24 +317,66 @@ export function robotChecks(check: Check): void {
   }
   for (const p of BB_STARTER_BOTS) {
     check(
-      `starterbot [${p.name}]: carries the staged load of 4 (§10.3.1), not more`,
+      `starterbot [${p.name}]: hopper honours the 4-element cap`,
       (p.ballStorage ?? 0) <= 4 && (p.ballStorage ?? 0) >= 1,
       `hopper=${p.ballStorage}`,
     );
   }
-  // G407 IS A WARNING, NOT A CAP (owner ruling 2026-09-12, Lane B relay 2): the hopper dial is
-  // bounded by the volume law alone, and a default build still spawns with the staged 4.
+  // THE HOPPER IS CAPPED AT 4 ELEMENTS, POLLEN + NECTAR TOGETHER (owner ruling 2026-09-12, final;
+  // it overrides Lane B relay 2 / field-plan §4.3). The volume law still runs underneath, so
+  // these check the CAP at the builds where the volume law is largest, and through the world.
   {
-    const big = bbCoerce({
-      ...DEFAULT_SPEC,
-      length: 18,
-      width: 18,
+    let worst = { n: 0, what: '' };
+    let builds = 0;
+    for (const s of everyBuild()) {
+      const d = bbDials(s);
+      for (const length of [d.length.min, d.length.max]) {
+        for (const width of [d.width.min, d.width.max]) {
+          const sized = bbCoerce({ ...s, length, width });
+          builds++;
+          const n = bbStorageMax(sized);
+          if (n > worst.n) worst = { n, what: `${sized.scoreMode}/${sized.shooterMount}/${sized.intakeMount} ${sized.length}x${sized.width}` };
+        }
+      }
+    }
+    check('storage: every archetype × mount × size extreme has bbStorageMax <= 4', worst.n <= 4 && builds > 0, `max=${worst.n} at ${worst.what} over ${builds} builds`);
+
+    const dumperMech: Partial<RobotSpec> = {
       intakeMount: 'front',
-      bbMech: { launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null },
-    } as RobotSpec);
-    check('storage: the biggest legal open dumper can hold MORE than 4 (no G407 cap)', bbStorageMax(big) > 4, `max=${bbStorageMax(big)} ${big.length}x${big.width}`);
-    const maxed = bbCoerce({ ...big, ballStorage: 99 });
-    check('storage: its hopper dial reaches past 4 and the cap follows it', bbHopperCap(maxed) === bbStorageMax(big) && bbHopperCap(maxed) > 4, `cap=${bbHopperCap(maxed)}`);
+      scoreMode: 'dumper',
+      shooterMount: 'back',
+      bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null },
+    };
+    const dumperDials = bbDials(bbCoerce({ ...BB_DEFAULT_SPEC, ...dumperMech }));
+    const openDumper: Partial<RobotSpec> = { ...dumperMech, length: dumperDials.length.max, width: dumperDials.width.max };
+    const big = bbCoerce({ ...BB_DEFAULT_SPEC, ...openDumper });
+    const volume = Math.round((big.length * big.width) / 12);
+    check(
+      'storage: an open front-sweeper dumper at its largest size has a hopper dial max of exactly 4',
+      bbDials(big).storage.max === 4 && bbHopperCap(bbCoerce({ ...big, ballStorage: 99 })) === 4,
+      `dial max=${bbDials(big).storage.max} cap@99=${bbHopperCap(bbCoerce({ ...big, ballStorage: 99 }))} volume law~${volume} ${big.length}x${big.width}`,
+    );
+
+    // THROUGH THE WORLD: drive the same dumper, dial asked for 99, down a line of 7 loose POLLEN
+    // with the intake held. On y = −36, clear of the HIVE frame (see the capture-line scene).
+    const world = mkWorld('free', 29, { ...openDumper, ballStorage: 99 });
+    const r = world.robots[0];
+    r.pos = { x: -50, y: -36 };
+    r.heading = 0;
+    r.vel = { x: 0, y: 0 };
+    r.autoIntake = false;
+    r.autoFire = false;
+    r.hopper.length = 0;
+    world.balls.length = 0;
+    const LINE = 7;
+    for (let i = 0; i < LINE; i++) world.balls.push(bbPollen(i + 1, -30 + i * 6, -36));
+    run(world, cmd({ driveY: 0.6, intake: true }), 4);
+    const held = world.balls.filter((b) => b.state.kind === 'held').length;
+    const ground = world.balls.filter((b) => b.state.kind === 'ground').length;
+    check('storage: driving over 7 loose POLLEN with the intake on, the robot ends holding exactly 4', r.hopper.length === 4 && held === 4, `hopper=${r.hopper.length} held=${held}`);
+    check('storage: ...and the other 3 stay on the floor', ground === LINE - 4 && world.balls.length === LINE, `ground=${ground} total=${world.balls.length}`);
+    check('storage: ...and the robot really drove the whole line (not vacuous)', r.pos.x > -30 + (LINE - 1) * 6, `x=${r.pos.x.toFixed(1)}`);
+
     const w = mkWorld('free', 5);
     check('storage: a default build still spawns FULL with the staged 4', w.robots[0].hopper.length === 4 && bbHopperCap(w.robots[0].spec) === 4, `hopper=${w.robots[0].hopper.length} cap=${bbHopperCap(w.robots[0].spec)}`);
   }

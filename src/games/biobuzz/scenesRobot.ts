@@ -253,7 +253,7 @@ export const BB_ROBOT_SCENES: readonly Scene[] = [
      * THE CAPTURE INVARIANT, as a picture: THE DRAWN MOUTHS ARE THE CAPTURE AREAS.
      *
      * A line rather than a pile, and spaced 7" apart, so each POLLEN is captured as a SEPARATE
-     * event a still can be attributed to. It also runs the hopper to its CAP (the default dial, 4), so the
+     * event a still can be attributed to. It also runs the hopper to its CAP (4, owner ruling), so the
      * back half of the line must be plowed rather than collected — and a robot that keeps eating
      * past its cap is a bug this scene shows for free. The held discs on the deck count up as the
      * line shortens.

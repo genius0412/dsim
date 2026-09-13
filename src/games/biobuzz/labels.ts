@@ -47,8 +47,8 @@ export const BB_MODE_LABELS: Record<BbScoreMode, string> = {
  *
  * What separates the three is WHICH ELEMENTS they can carry (a single turret feeds POLLEN
  * only — `bbCarriesNectar`, `mechs.ts`) and HOW THEY AIM (a turret aims itself, a dumper turns
- * the robot). ⚠️ None of these sell a launcher on hopper size. G407 once capped every build at 4; it is a warning now and the volume law differs by launcher again,
- * but the blurb names what the launcher is FOR. */
+ * the robot). ⚠️ None of these may sell a launcher on hopper size: the hopper is capped at 4 for
+ * every build (owner ruling 2026-09-12), so that difference does not exist. */
 export const BB_MODE_BLURBS: Record<BbScoreMode, string> = {
   turret: 'POLLEN only · aims itself',
   twinturret: 'One POLLEN turret, one NECTAR turret',
@@ -129,10 +129,10 @@ export const BB_INTAKE_MOUNT_LABELS: Record<BbIntakeMount, string> = {
 /** Blurbs are PARTIAL on purpose: a mount gets one only when it says something the label does
  * not. "FRONT · grabs from the front" is noise; the trade you are actually making is not.
  *
- * ⚠️ THESE USED TO NAME A STORAGE COST — "Least storage" / "Less storage" — and that was
- * false while G407 capped every build at 4. G407 is a warning now (owner ruling 2026-09-12), so the
- * mount multipliers in `bbMountStoreMult` change what a robot can hold again. What a mount
- * genuinely changes is WHERE the robot can collect from, which is what these say instead. */
+ * ⚠️ THESE USED TO NAME A STORAGE COST — "Least storage" / "Less storage" — and that is false:
+ * the hopper is capped at 4 for every build (owner ruling 2026-09-12), so the mount multipliers
+ * in `bbMountStoreMult` do not change what a robot can hold. What a mount genuinely changes is
+ * WHERE the robot can collect from, which is what these say instead. */
 export const BB_INTAKE_MOUNT_BLURBS: Partial<Record<BbIntakeMount, string>> = {
   side: 'Strafe-collect along a line',
   frontback: 'Collect driving either way',

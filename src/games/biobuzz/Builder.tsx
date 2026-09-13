@@ -398,8 +398,8 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
           />
         </label>
         {/* HOPPER sits with the FRAME, under the dimensions, because that is what sets it: the
-            cap is footprint × archetype × intake mount (`bbStorageMax`). G407 is a warning, not
-            a cap (owner ruling 2026-09-12), so nothing clamps it to 4.
+            cap is footprint × archetype × intake mount (`bbStorageMax`), clamped to the owner's
+            4-element cap (2026-09-12).
             Full-width on its own row deliberately — a fourth 140px column would orphan-wrap.
             POLLEN, not "balls": it is the word on the field. */}
         <label className="ds-field wide">

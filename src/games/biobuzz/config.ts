@@ -687,20 +687,29 @@ export function bbMountFits(spec: RobotSpec, mount: BbIntakeMount): boolean {
 /** a floor of one POLLEN; NOT scaled with the rest. */
 export const BB_STORAGE_MIN = 1;
 /**
- * ⚠️ THERE IS NO RULE CEILING ON THE HOPPER — G407 IS A WARNING, NOT A CAP (owner ruling
- * 2026-09-12, late; field-plan §4.3, Lane B relay 2).
+ * CEILING: **4 elements, POLLEN and NECTAR together. This is an OWNER RULING (2026-09-12), final.**
  *
- * "A ROBOT may not CONTROL more than 4 SCORING ELEMENTS" used to be spelled here as
- * `BB_STORAGE_MAX = 4`, a hopper the sim refused to fill past four. Table 10-4 gives the rule a
- * VERBAL WARNING (MAJOR + YELLOW only if STRATEGIC), and a hopper that cannot hold a fifth is
- * not what the rule says. So the hopper is bounded by the VOLUME LAW alone (`bbStorageMax`),
- * and CONTROL of a fifth element is the rules lane's warning (`penalties.ts`,
- * `BB_CONTROL_LIMIT`), which is a different number that happened to match this one.
+ * In the manual, G407 ("A ROBOT may not CONTROL more than 4 SCORING ELEMENTS") is only a
+ * WARNING: Table 10-4 gives it a VERBAL WARNING, with MAJOR + YELLOW only if STRATEGIC. The
+ * sim caps the hopper at 4 anyway, so a robot cannot hold a fifth element. The owner's ruling
+ * overrides the earlier request to lift this cap (Lane B relay 2, field-plan §4.3). The rules
+ * lane's G407 warning (`penalties.ts`, `BB_CONTROL_LIMIT`) stays as written. It is a separate
+ * number, and it still catches anything that reaches five without going through the hopper.
  *
- * The staging rule is unchanged: §10.3.1 pre-loads exactly 4 POLLEN per ROBOT, so
- * `BB_STORAGE_DEFAULT` stays 4 and a default build still starts FULL. Raising the dial past it
- * is a build choice with a rules consequence the driver is warned about, not a refused one.
+ * The staging rule agrees from the other side: §10.3.1 pre-loads exactly 4 POLLEN per ROBOT,
+ * so a legal robot starts FULL.
+ *
+ * ── THE VOLUME LAW IS KEPT UNDERNEATH ──────────────────────────────────────
+ * `bbStorageMax` still runs the one-layer packing model (~12 in² of hopper floor per 3" POLLEN)
+ * and the archetype/mount multipliers. They remain the honest description of the hardware. The
+ * cap binds first for every chassis in the legal envelope, and the volume law stays written
+ * down so it takes over again if the ruling ever changes. The number a robot may hold is the
+ * SMALLER of what fits and what the ruling allows.
+ *
+ * ⚠️ CONSEQUENCE: the storage slider is a 1–4 dial and every archetype reaches the same
+ * ceiling, so hopper size does not tell two builds apart. Cadence, range and cycle time do.
  */
+export const BB_STORAGE_MAX = 4;
 /** a legal robot starts FULL: §10.3.1 stages exactly 4 pre-loaded POLLEN per ROBOT. */
 export const BB_STORAGE_DEFAULT = 4;
 
@@ -726,11 +735,12 @@ export function bbMountStoreMult(mount: BbIntakeMount): number {
 }
 
 /** the MAX POLLEN this robot can hold — footprint × an archetype factor × the intake-mount
- * factor, floored at MIN.
+ * factor, clamped to [MIN, MAX].
  *
- * The volume law describes the HARDWARE and is the whole ceiling: G407 is a warning, not a cap
- * (see `BB_STORAGE_DEFAULT`). So hopper size is a way to tell two builds apart again — an open
- * dumper holds far more than a double turret on the same chassis. */
+ * The volume law below describes the HARDWARE and `BB_STORAGE_MAX` is the owner's 4-element cap
+ * (2026-09-12). For every chassis in the legal size envelope the volume answer is larger, so the
+ * cap is what actually binds and this returns 4. See the note on `BB_STORAGE_MAX` for why both
+ * layers are kept. */
 export function bbStorageMax(spec: RobotSpec): number {
   const area = spec.length * spec.width;
   // Through the RESOLVER, not `spec.scoreMode`: the container is authoritative and the flat
@@ -743,7 +753,7 @@ export function bbStorageMax(spec: RobotSpec): number {
         ? BB_STORE_TWIN_MULT
         : BB_STORE_LAUNCHER_MULT) * bbMountStoreMult(bbIntakeMountOf(spec));
   const cap = Math.round((area / BB_STORE_AREA_PER_BALL) * mult);
-  return Math.max(BB_STORAGE_MIN, cap);
+  return Math.max(BB_STORAGE_MIN, Math.min(BB_STORAGE_MAX, cap));
 }
 
 /**
@@ -931,8 +941,8 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
   },
   {
     // volume hauler: a REAR dumper makes the whole cycle one straight line — drive forward to
-    // fill the hopper, reverse into range, unload. No turning around at either end. G407 caps
-    // every build at 4, so what it offers is the cycle SHAPE, and it carries NECTAR too.
+    // fill the hopper, reverse into range, unload. No turning around at either end. The hopper
+    // is capped at 4 for every build, so what it offers is the cycle SHAPE, and it carries NECTAR too.
     name: 'Hauler', teamName: 'Dumper · fill forward, reverse and unload', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 38, drivetrain: 'tank',
     driveRpm: 340, flywheelInertia: 0.2, canSort: false,
@@ -955,7 +965,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
 ] as const;
 
 /**
- * The shipped builds, with MASS derived rather than typed out and the HOPPER at the staged 4
+ * The shipped builds, with MASS and HOPPER derived rather than typed out.
  *
  * Both are FUNCTIONS of the build — the mass floor of a drivetrain × inertia × mechanism, and
  * the capacity of a footprint × archetype × mount — so a hard-coded number would quietly stop
@@ -965,10 +975,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
 export const BB_PRESETS: readonly RobotSpec[] = BB_PRESET_BUILDS.map((s) => ({
   ...s,
   massLb: Math.max(s.massLb, massLimits(s.drivetrain, s.flywheelInertia, bbMassFloorBump(s)).min),
-  // the STAGED load, never more than the build can hold: G407 is a warning rather than a cap
-  // (owner ruling 2026-09-12), so the volume law is only the dial's ceiling and a card starts at
-  // the default 4 that §10.3.1 pre-loads.
-  ballStorage: Math.min(BB_STORAGE_DEFAULT, bbStorageMax(s)),
+  ballStorage: bbStorageMax(s),
 }));
 
 /** the default mount for a build that arrives without one (re-exported so the builder and the

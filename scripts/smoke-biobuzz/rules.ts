@@ -562,10 +562,9 @@ function penaltyChecks(check: Check): void {
    * sanction is a VERBAL WARNING, with MAJOR + YELLOW only if STRATEGIC, and the sim does not
    * guess at intent — so the tariff here is an event line, a HUD count, and zero points.
    *
-   * The hopper is set DIRECTLY. `bbHopperCap` still clamps a driven robot to 4 until Lane B
-   * lifts `BB_STORAGE_MAX` (relay 2), so a driven fixture could not reach five at all today —
-   * and a rules check should fail when the RULE is wrong, not when another lane's dial has not
-   * moved yet.
+   * The hopper is set DIRECTLY. `bbHopperCap` clamps a driven robot to 4 (`BB_STORAGE_MAX`, an
+   * owner ruling that overrides Lane B relay 2), so a driven fixture could not reach five at all,
+   * and a rules check should fail when the RULE is wrong, not because of another lane's dial.
    */
   {
     const w = bare([{ id: 0, alliance: 'red' }]);

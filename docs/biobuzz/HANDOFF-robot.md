@@ -6,6 +6,14 @@ Reverse-chronological. Prepend a new dated section; demote the old "READ FIRST".
 
 ## READ FIRST — 2026-09-12, night: the owner's builder feedback — three launchers, the Box Tube places
 
+> **2026-09-12, late: THE HOPPER STAYS CAPPED AT 4 (owner ruling, final).** POLLEN and NECTAR
+> together. This overrides Lane B relay 2 and field-plan §4.3, which asked for the cap to be
+> lifted. `cffc243` had lifted it; the fix restores `BB_STORAGE_MAX = 4` in `config.ts`, so
+> `bbStorageMax` = min(volume law, 4), the builder's Hopper slider is a 1–4 dial again, and
+> `capturePollen` refuses a 5th element. The volume law stays underneath. Lane A's G407 WARNING
+> (`penalties.ts`, `BB_CONTROL_LIMIT`) is unchanged and remains. Smoke (`robot.ts`, `storage:`)
+> pins the cap over every archetype × mount × size extreme and through a driven world.
+
 **State: green, and UNCOMMITTED.** Branch `biobuzz-robot`, a large working-tree change on top of
 `0359801`. Every gate re-run after the last edit:
 
