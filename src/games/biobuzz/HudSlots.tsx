@@ -1,9 +1,12 @@
+import type { Alliance } from '../../types';
 import type { HudSnapshot } from '../../game';
 import type { GameBuilderProps, GameHudProps, ResultsSection } from '../module';
 import { BiobuzzBuilder } from './Builder';
-import type { BbCellHud } from './hud';
+import { BB_RP } from './config';
+import type { BbCellHud, BiobuzzFieldHud } from './hud';
 import type { BiobuzzHud } from './hudRobot';
 import { BB_MODE_LABELS } from './labels';
+import type { BbAllianceScore, BbRankPoints } from './score';
 
 /**
  * The BIOBUZZ UI SLOTS that need JSX — the builder adapter, the two live-HUD slots and the
@@ -25,6 +28,9 @@ import { BB_MODE_LABELS } from './labels';
 
 /** the game's HUD slice off the snapshot. Undefined when a snapshot predates this game. */
 const sliceOf = (hud: HudSnapshot): BiobuzzHud | undefined => hud.gameHud as BiobuzzHud | undefined;
+
+/** the OTHER alliance. One spelling, because the results rows need it on every line. */
+const other = (a: Alliance): Alliance => (a === 'red' ? 'blue' : 'red');
 
 /**
  * The BUILDER props ADAPTER.
@@ -188,20 +194,79 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
 }
 
 /**
- * The results-screen breakdown. Rows are ALLIANCE-RELATIVE (`[label, mine, opp]`) because the
- * two screens want different things from the same numbers: the versus results print
- * red | blue, and a solo record run has no opponent column at all.
+ * The results-screen breakdown — every line of Table 10-2 (§10.5, p91), then the RPs.
  *
- * Two sections and no more: what this game scores (nothing yet, stated as a row rather than
- * hidden) and the fouls, which are the ONLY points a shell match can actually produce —
- * `play.ts`'s score pass sets each alliance's total to its `foulPoints` and nothing else.
+ * Rows are ALLIANCE-RELATIVE (`[label, mine, opp]`) because the two screens want different
+ * things from the same numbers: the versus results print red | blue, and a solo record run
+ * has no opponent column at all.
+ *
+ * ── COUNTS AND POINTS, BOTH ─────────────────────────────────────────────────
+ * Every achievement that has both gets two rows. A points-only table cannot be checked
+ * against the field — GARDEN 7 is seven elements at 1 each, and nothing on the screen says
+ * so — and a count-only table does not add up to the total printed under it. The
+ * parenthetical names the unit, and it is the same word on every row that shares one.
+ *
+ * ── THERE IS NO TOTAL ROW HERE, DELIBERATELY ────────────────────────────────
+ * Both consumers append their own (`GameView`'s `total-row`, off the shared
+ * `ScoreBreakdown.total`), so a second one would print the number twice — and would DISAGREE
+ * with it on a VOIDED match, where the shared row reads 0 over a full breakdown on purpose.
+ * RANKING POINTS is therefore the last section and the screen's own TOTAL closes the table.
+ *
+ * RPs print as 1 / 0, because a section row is `[label, number, number]`. The threshold goes
+ * in the label rather than in a legend: a bare 0 in a numeric column says nothing about what
+ * would have earned it. The numbers come from `BB_RP`, so a label cannot drift from the test
+ * that sets the flag.
  */
 export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] {
-  const f = sliceOf(hud)?.field;
-  const mine = hud.alliance === 'red' ? (f?.scored.red ?? 0) : (f?.scored.blue ?? 0);
-  const opp = hud.alliance === 'red' ? (f?.scored.blue ?? 0) : (f?.scored.red ?? 0);
+  const f: BiobuzzFieldHud | undefined = sliceOf(hud)?.field;
+  const me = hud.alliance;
+  const opp = other(me);
+  /** one breakdown field, alliance-relative. An absent slice reads 0, never throws. */
+  const n = (s: BbAllianceScore | undefined, k: keyof BbAllianceScore): number => s?.[k] ?? 0;
+  const row = (label: string, k: keyof BbAllianceScore) =>
+    [label, n(f?.score[me], k), n(f?.score[opp], k)] as const;
+  const rp = (label: string, k: keyof BbRankPoints) =>
+    [label, f?.rp[me][k] ? 1 : 0, f?.rp[opp][k] ? 1 : 0] as const;
   return [
-    ['SCORING (UNSCORED SHELL)', [['Pollen scored', mine, opp]]],
-    ['PENALTIES', [['Fouls awarded', hud.score.foulPoints, hud.oppScore.foulPoints]]],
+    [
+      'AUTONOMOUS',
+      [
+        row('LEAVE (robots)', 'leaveCount'),
+        row('LEAVE (points)', 'leave'),
+        row('PARK (robots)', 'parkAutoCount'),
+        row('PARK (points)', 'parkAuto'),
+      ],
+    ],
+    ['END OF MATCH', [row('PARK (robots)', 'parkTeleCount'), row('PARK (points)', 'parkTele')]],
+    [
+      'HIVE',
+      [
+        row('TIPS (count)', 'tips'),
+        row('TIPS (points)', 'tipPts'),
+        row('Up CELL contents (elements)', 'cellCount'),
+        row('Up CELL contents (points)', 'cellPts'),
+      ],
+    ],
+    [
+      'FLOWER',
+      [
+        row('OWNED FLOWER (elements)', 'ownedCount'),
+        row('OWNED FLOWER (points)', 'ownedPts'),
+        row('Bottom NECTAR Bonus (FLOWERS)', 'bottomCount'),
+        row('Bottom NECTAR Bonus (points)', 'bottomPts'),
+      ],
+    ],
+    ['GARDEN', [row('GARDEN (elements)', 'gardenCount'), row('GARDEN (points)', 'gardenPts')]],
+    // points AWARDED to each alliance, i.e. earned from the OPPONENT's violations — the same
+    // direction the shared breakdown prints, so the two reconcile against their totals.
+    ['PENALTIES', [row('Fouls awarded (points)', 'foul')]],
+    [
+      'RANKING POINTS',
+      [
+        rp(`SWARM (${BB_RP.swarm} LEAVE + PARK points)`, 'swarm'),
+        rp(`POLLINATOR 1 (${BB_RP.pollinator1} TIPS)`, 'pollinator1'),
+        rp(`POLLINATOR 2 (${BB_RP.pollinator2} TIPS)`, 'pollinator2'),
+      ],
+    ],
   ];
 }
