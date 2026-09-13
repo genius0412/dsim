@@ -7,6 +7,9 @@ import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import {
   BB_FLOWER_UNLOCK_S,
+  BB_FRAME_BAR_IN,
+  BB_FRAME_BAR_OUT,
+  BB_FRAME_Y,
   BB_GARDEN,
   BB_HALF_X,
   BB_LZ,
@@ -36,6 +39,7 @@ import {
   BB_CONTROL_LIMIT,
   BB_FRAME_RAM_SPEED,
   bbAwardFoul,
+  bbFootprintGap,
   bbNectarLocked,
   updateBiobuzzPenalties,
 } from '../../src/games/biobuzz/penalties';
@@ -884,13 +888,30 @@ function penaltyChecks(check: Check): void {
    * G416's "per instance" two rows above — so the tariff is paid ONCE however many times the
    * robot rams. The YELLOW CARD is not modelled; BIOBUZZ has no card machinery.
    */
+  /**
+   * ⚠️ POSES ARE ON THE FOOTPRINT (`footprintExtents`, sweepers included), NOT THE CHASSIS.
+   * This check used to park the robot at x = 24 − 8, which with a 10.5-in footprint front is
+   * BETWEEN the bars with its footprint reaching clean through the +x bar, and drove it in −x —
+   * AWAY from the bar. It billed only because the old `frameRam` hard-coded "a robot on the +x
+   * bar rams it by moving −x" whatever side the robot was on. Now the outside-in ram is staged
+   * genuinely outside, flush on the bar's OUTER face.
+   */
+  const ramWorld = (x: number, y: number, vx: number, vy: number): World => {
+    const q = bare([{ id: 0, alliance: 'blue' }]);
+    q.match.phase = 'teleop';
+    q.match.phaseTimeLeft = 60;
+    place(q, 0, x, y);
+    q.robots[0].vel = { x: vx, y: vy };
+    return q;
+  };
+  const fe = footprintExtents(bare([{ id: 0, alliance: 'blue' }]).robots[0].spec);
   {
     const w = bare([{ id: 0, alliance: 'blue' }]);
     w.match.phase = 'teleop';
     w.match.phaseTimeLeft = 60;
     const r = w.robots[0];
-    // against the +x frame bar (inner edge on the x = +24 seam), driving INTO it
-    place(w, 0, 24 - 8, 0);
+    // OUTSIDE the +x frame bar, its rear flush on the bar's outer face (x = +25), driving INTO it
+    place(w, 0, BB_FRAME_BAR_OUT + fe.rear, 0);
     r.vel = { x: -(BB_FRAME_RAM_SPEED + 10), y: 0 };
     const first = bill(w, 20);
     check('G417: the FIRST high-speed ram is STRATEGIC — a MAJOR, not a free warning',
@@ -909,18 +930,42 @@ function penaltyChecks(check: Check): void {
       second.major.blue === 1, String(second.major.blue));
     check('G417: so red is still +20 and not +40', second.pts.red === BB_PTS.foulMajor, String(second.pts.red));
 
-    // driving ALONG the structure at the same speed is not ramming
-    const q = bare([{ id: 0, alliance: 'blue' }]);
-    q.match.phase = 'teleop';
-    q.match.phaseTimeLeft = 60;
-    place(q, 0, 24 - 8, 0);
-    q.robots[0].vel = { x: 0, y: BB_FRAME_RAM_SPEED + 40 };
+    // driving ALONG the structure at the same speed is not ramming (on the INNER face, between
+    // the bars, where G409 says robots drive under the hives)
+    const innerX = BB_FRAME_BAR_IN - fe.front; // front flush on the +x bar's inner face (x = +24)
+    const q = ramWorld(innerX, 0, 0, BB_FRAME_RAM_SPEED + 40);
     check('G417: driving ALONG a frame bar is not ramming', bill(q, 20).major.blue === 0);
     // ...and a gentle nudge is the manual's own likely-NOT-STRATEGIC case ("accidentally
     // bumping the frame while attempting to pick up POLLEN"), so it is not a foul either
-    q.robots[0].vel = { x: -(BB_FRAME_RAM_SPEED - 10), y: 0 };
+    q.robots[0].vel = { x: BB_FRAME_RAM_SPEED - 10, y: 0 };
     check('G417: contact below the ram threshold is not STRATEGIC, and not a foul',
       bill(q, 20).major.blue === 0);
+
+    /**
+     * EXAMPLE A NAMES NO FACE. A ram from BETWEEN the bars into the INNER face, and a ram along y
+     * into a bar END, are the same act as the outside-in ram above — and the old closing speed
+     * (`-sign * vel.x`) read the first as driving AWAY and the second as zero.
+     */
+    const inner = ramWorld(innerX, 0, BB_FRAME_RAM_SPEED + 10, 0);
+    check('G417: a high-speed ram on the INNER face (from under the hives) bills a MAJOR',
+      bill(inner, 20).major.blue === 1, String(inner.match.fouls.blue.major));
+    const away = ramWorld(innerX, 0, -(BB_FRAME_RAM_SPEED + 10), 0);
+    check('G417: driving fast AWAY from the inner face while touching it is not a ram',
+      bill(away, 20).major.blue === 0, String(away.match.fouls.blue.major));
+    // off the +y END of the +x bar, centred on the bar's width, its −y face flush on y = +BB_FRAME_Y
+    const endX = (BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2;
+    const end = ramWorld(endX, BB_FRAME_Y + fe.half, 0, -(BB_FRAME_RAM_SPEED + 10));
+    check('G417: a high-speed ram into a bar END along y bills a MAJOR',
+      bill(end, 20).major.blue === 1, String(end.match.fouls.blue.major));
+    const brush = ramWorld(endX, BB_FRAME_Y + fe.half, 0, -(BB_FRAME_RAM_SPEED - 10));
+    check('G417: a slow brush on a bar END is not a foul',
+      bill(brush, 20).major.blue === 0, String(brush.match.fouls.blue.major));
+    // and the −x bar is the mirror: outside it at x < −25, driving +x
+    const mirror = ramWorld(-BB_FRAME_BAR_OUT - fe.front, 0, BB_FRAME_RAM_SPEED + 10, 0);
+    mirror.robots[0].heading = Math.PI; // rear toward the bar, as on the +x side
+    mirror.robots[0].pos.x = -BB_FRAME_BAR_OUT - fe.rear;
+    check('G417: the outside-in ram on the −x bar still bills',
+      bill(mirror, 20).major.blue === 1, String(mirror.match.fouls.blue.major));
   }
 
   // ── the edge memory is CLEARED outside the played periods ─────────────────
@@ -1112,6 +1157,78 @@ function pinChecks(check: Check): void {
     place(w, 1, 24 - 10.5, 0); // back into the hold
     const restart = bill(w, ticks(2.5), press);
     check('G421: a pin that ENDED restarts from zero, not from 2.5 s', restart.major.red === 0, String(restart.major.red));
+  }
+
+  /**
+   * CRITERION A IS A GAP BETWEEN THE ROBOTS, NOT A DISTANCE BETWEEN THEIR CENTRES.
+   *
+   * "The ROBOTS have separated by at least 2 ft. (~61 cm) from each other." It used to be read
+   * centre-to-centre, and two 21-in footprints in contact are already ~21 in apart that way, so a
+   * pinner that backed off a few inches and idled satisfied A and ENDED the pin three seconds
+   * later — wiping a count the rule says only pauses. `bbFootprintGap` is the daylight between
+   * the two collision footprints, sweepers included.
+   */
+  {
+    const probe = bare([
+      { id: 0, alliance: 'red' },
+      { id: 1, alliance: 'blue' },
+    ]);
+    const ext = footprintExtents(probe.robots[0].spec);
+    const span = { len: ext.front + ext.rear, half: ext.half }; // one footprint, along / across its heading
+    const [A, B] = probe.robots;
+    place(probe, 0, 0, 0);
+    place(probe, 1, 30, 0);
+    check('G421.A gap: two footprints 30 in apart centre-to-centre are 30 − length apart',
+      Math.abs(bbFootprintGap(A, B) - (30 - span.len)) < 1e-9, bbFootprintGap(A, B).toFixed(4));
+    place(probe, 1, 15, 3);
+    check('G421.A gap: overlapping footprints are 0 apart', bbFootprintGap(A, B) === 0);
+    place(probe, 0, 0, 0, 90);
+    place(probe, 1, 30, 0, 90);
+    check('G421.A gap: rotated 90°, the WIDTH faces each other — 30 − width',
+      Math.abs(bbFootprintGap(A, B) - (30 - 2 * span.half)) < 1e-9, bbFootprintGap(A, B).toFixed(4));
+    place(probe, 0, 0, 0);
+    place(probe, 1, span.len + 3, 2 * span.half + 4);
+    check('G421.A gap: corner to corner is the diagonal daylight (a 3-4-5 offset reads 5)',
+      Math.abs(bbFootprintGap(A, B) - 5) < 1e-9, bbFootprintGap(A, B).toFixed(4));
+    check('G421.A gap: symmetric in its arguments', Math.abs(bbFootprintGap(A, B) - bbFootprintGap(B, A)) < 1e-12);
+  }
+  {
+    // CENTRES ≥ 24 APART, FOOTPRINTS < 24 APART: A is NOT satisfied, so the pin survives the idle
+    const w = frame();
+    bill(w, ticks(2.5), press);
+    const victimX = 24 - 10.5;
+    const pinnerX = victimX - 30; // centres 30 in apart; footprint gap 9 in; pinner moved 9.5 (B not met)
+    place(w, 0, pinnerX, 0);
+    const [pinner, victim] = w.robots;
+    check('G421.A: fixture — centres ≥ 24 in apart but footprints < 24 in apart',
+      Math.abs(victim.pos.x - pinner.pos.x) >= 24 && bbFootprintGap(pinner, victim) < 24,
+      `${(victim.pos.x - pinner.pos.x).toFixed(2)} / ${bbFootprintGap(pinner, victim).toFixed(2)}`);
+    bill(w, ticks(3.5));
+    const st = w.penalties.pins['0-1'];
+    check('G421.A: a 24-in CENTRE distance with a <24-in gap does not satisfy A (sepFor stays 0)',
+      !!st && st.sepFor === 0, st ? st.sepFor.toFixed(3) : 'pin ended');
+    check('G421.A: ...so 3.5 s idling there does NOT end the pin, and its 2.5 s are still on it',
+      !!st && Math.abs(st.seconds - 2.5) < 0.05, st ? st.seconds.toFixed(3) : 'pin ended');
+    place(w, 0, victimX - 20.5, 0); // back into the hold
+    const resumed = bill(w, ticks(0.6), press);
+    check('G421.A: coming back in resumes the count — 2.5 + 0.6 s bills', resumed.major.red === 1, String(resumed.major.red));
+  }
+  {
+    // FOOTPRINTS ≥ 24 APART, EACH ROBOT < 24 FROM WHERE THE PIN BEGAN: A alone ends it
+    const w = frame();
+    bill(w, ticks(2.5), press);
+    place(w, 0, 24 - 10.5 - 20.5 - 23, 0); // pinner back 23 in (B not met)
+    place(w, 1, 24 - 10.5 + 2, 0); // victim on 2 in (B not met)
+    const [pinner, victim] = w.robots;
+    check('G421.A: fixture — footprints ≥ 24 in apart',
+      bbFootprintGap(pinner, victim) >= 24, bbFootprintGap(pinner, victim).toFixed(2));
+    bill(w, ticks(1.0));
+    const st = w.penalties.pins['0-1'];
+    check('G421.A: a ≥ 24-in footprint gap satisfies A — sepFor accumulates',
+      !!st && st.sepFor > 0.9, st ? st.sepFor.toFixed(3) : 'pin ended early');
+    bill(w, ticks(2.5));
+    check('G421.A: ...and held for more than 3 s it ENDS the pin',
+      Object.keys(w.penalties.pins).length === 0, Object.keys(w.penalties.pins).join(','));
   }
 
   /**

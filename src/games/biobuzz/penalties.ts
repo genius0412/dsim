@@ -154,9 +154,10 @@ export const BB_CONTROL_LIMIT = 4;
  * are named in the handoff. None of them is a reason to keep hand-rolling the rule: a slightly
  * generous radius on a real detector beats an exact hopper count that cannot see herding at all.
  *
- * ⚠️ AND A SEPARATE, STILL-OPEN GAP: until Lane B lifts `BB_STORAGE_MAX` (relay 2), `bbHopperCap`
- * clamps every hopper to 4. The HOPPER half therefore still cannot exceed the limit on its own
- * in a driven match; the HERDED half can, and now does, which is the whole point of this change.
+ * ⚠️ AND ONE CONSEQUENCE OF A SETTLED RULING: the owner ruled the 4-element hopper cap FINAL
+ * (2026-09-12), so `bbHopperCap` clamps every hopper to 4 for good. The HOPPER half therefore can
+ * never exceed the limit on its own in a driven match; the HERDED half can, and does, which is
+ * the whole point of counting it.
  */
 function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean): number {
   return controlledArtifacts(world, r, dt, intaking);
@@ -379,8 +380,9 @@ export function updateBiobuzzPenalties(
    * results screen that no BIOBUZZ lane has built. The FOUL is the half that changes a score,
    * so the foul is the half that is here; the card is named in the handoff as an open item.
    *
-   * The speed test is CLOSING speed against the bar's own normal, not the robot's speed: a
-   * robot driving fast ALONG the structure is not ramming it, and a slow deliberate shove
+   * The speed test is CLOSING speed against the normal of the bar FACE the robot is against
+   * (outer, inner or end — see `frameRam`), not the robot's speed: a robot driving fast ALONG
+   * the structure is not ramming it, and a slow deliberate shove
    * would fail a plain speed test while being exactly the thing the rule is about. The
    * threshold is `APPROX` and belongs on the 09-14 field-test list.
    */
@@ -415,8 +417,8 @@ export function updateBiobuzzPenalties(
        *
        * FULLY across, by every corner, and that is the difference between this and a foul for
        * touching the line: a robot straddling the centre with its own partner on its own side
-       * has not left its columns, and Fig 9-5's split is about which THIRD of the field a
-       * robot is playing in. Both crossing at once is two fouls, which is still correct — two
+       * has not left its columns, and Fig 9-5's split (columns A–C / D–F) is about which HALF
+       * of the field a robot is playing in. Both crossing at once is two fouls, which is still correct — two
        * CROSSERS are two offenders, and the cap below is per offender.
        *
        * ── "PER MATCH", WHICH THIS RULE ALSO CARRIES — AND USED TO IGNORE ──────
@@ -472,7 +474,8 @@ export function updateBiobuzzPenalties(
  *
  * Criteria A/B/C, quoted from p114 and every one of them the rule's own:
  *   A. "the ROBOTS have separated by at least 2 ft. ... for more than 3 seconds" —
- *      `PIN_ESCAPE_DIST` is 24 in and `PIN_END_S` is 3;
+ *      `PIN_ESCAPE_DIST` is 24 in of GAP between the two footprints (`bbFootprintGap`, not the
+ *      centre distance) and `PIN_END_S` is 3;
  *   B. "either ROBOT has moved 2 ft. from where the PIN initiated for more than 3 seconds";
  *   C. "the PINNING ROBOT gets PINNED" — a mutual hold is nobody's foul.
  * A and B END the pin. Anything else that merely interrupts it — the pinner easing off, the
@@ -599,7 +602,15 @@ function bbUpdatePins(world: World, dt: number, commands: Map<number, RobotComma
 
       // A and B, the ONLY two things that END a pin. Both are distances HELD for more than
       // three seconds; a momentary one PAUSES the count instead (see below).
-      const apart = hyp(pinned.pos.x - pinner.pos.x, pinned.pos.y - pinner.pos.y) >= PIN_ESCAPE_DIST;
+      //
+      // ⚠️ A IS MEASURED BETWEEN THE ROBOTS, NOT BETWEEN THEIR CENTRES. "The ROBOTS have
+      // separated by at least 2 ft. from each other" is the gap between two bodies. Measured
+      // centre-to-centre, two 21-in footprints in contact are already 21 in apart, so a pinner
+      // that backed off three inches satisfied A and could end any pin by idling there for three
+      // seconds. `bbFootprintGap` is the daylight between the two collision footprints, sweepers
+      // included. B stays centre-based: "moved 2 ft. from where the PIN initiated" is a
+      // displacement of one robot, and a robot's centre is what moves with it.
+      const apart = bbFootprintGap(pinned, pinner) >= PIN_ESCAPE_DIST;
       const movedPinned = hyp(pinned.pos.x - st.ox, pinned.pos.y - st.oy) >= PIN_ESCAPE_DIST;
       const movedPinner = hyp(pinner.pos.x - st.pox, pinner.pos.y - st.poy) >= PIN_ESCAPE_DIST;
       st.sepFor = apart ? st.sepFor + dt : 0;
@@ -673,9 +684,18 @@ function bbEscapeDir(pinner: RobotState, pinned: RobotState): Vec2 | null {
  *
  * The bars are the two vertical strips the HIVE structure stands on: 1 in thick with the inner
  * edge on the ±24 tile seam and the other edge outward (reference §2.2), running in y between
- * ±`BB_FRAME_Y`. A robot's footprint against one is an OBB-vs-rect test; the closing speed is
- * the robot's velocity along the bar's INWARD normal, so driving along the structure reads
- * zero however fast it is.
+ * ±`BB_FRAME_Y`. A robot's footprint against one is an OBB-vs-rect test.
+ *
+ * ── A BAR HAS FOUR FACES, AND A RAM CAN LAND ON ANY OF THEM ─────────────────
+ * This used to read `closing = -sign * vel.x`, i.e. only a robot OUTSIDE the bars driving
+ * inward. A robot between the bars (under the hives, where G409 says robots drive) ramming the
+ * INNER face, and a robot hitting a bar END while driving along y, were never caught — and
+ * example A ("ramming into the HIVE frame at high-speed") names neither side nor face.
+ *
+ * So the contact normal is taken from where the robot IS relative to the bar: `barFaceNormal`
+ * picks the face the footprint is least far past, and the closing speed is the robot's
+ * velocity INTO that face. Driving along a face still reads zero however fast it is, and
+ * driving away from one reads negative.
  */
 function frameRam(r: RobotState): number | null {
   for (const sign of [-1, 1] as const) {
@@ -686,12 +706,40 @@ function frameRam(r: RobotState): number | null {
       y1: BB_FRAME_Y,
     };
     if (!rectTouchesRobot(r, bar)) continue;
-    // the bar faces the field on its OUTWARD side, so a robot on the +x bar rams it by moving
-    // in −x, and vice versa
-    const closing = -sign * r.vel.x;
+    const n = barFaceNormal(r, bar);
+    // n points OUT of the bar toward the robot, so a robot closing on the face moves along −n
+    const closing = -(r.vel.x * n.x + r.vel.y * n.y);
     if (closing >= BB_FRAME_RAM_SPEED) return closing;
   }
   return null;
+}
+
+/**
+ * The OUTWARD normal of the face of an axis-aligned bar that this robot's footprint is in
+ * contact with — the face it is LEAST far past.
+ *
+ * For each of the four faces this measures how far the footprint's axis-aligned extent
+ * clears that face (positive: a gap on that side; negative: the footprint reaches past it).
+ * The face with the largest value is the one the robot is actually against: a robot beside
+ * the bar clears the near x-face by ~0 and every other face by the bar's whole length, and a
+ * robot off a bar END clears the end face by ~0 while spanning both x-faces. It is the
+ * separating-axis minimum-penetration axis restricted to the bar's own two axes, which is
+ * enough because the bar is axis-aligned. Ties resolve in a fixed order, so it is
+ * deterministic.
+ */
+function barFaceNormal(r: RobotState, bar: { x0: number; x1: number; y0: number; y1: number }): Vec2 {
+  const rc = robotCorners(r);
+  const ex = projectExtent(rc, { x: 1, y: 0 });
+  const ey = projectExtent(rc, { x: 0, y: 1 });
+  const faces: [number, Vec2][] = [
+    [ex.min - bar.x1, { x: 1, y: 0 }], // robot on the +x side
+    [bar.x0 - ex.max, { x: -1, y: 0 }], // robot on the −x side
+    [ey.min - bar.y1, { x: 0, y: 1 }], // robot off the +y end
+    [bar.y0 - ey.max, { x: 0, y: -1 }], // robot off the −y end
+  ];
+  let best = faces[0];
+  for (const f of faces) if (f[0] > best[0]) best = f;
+  return best[1];
 }
 
 /**
@@ -767,6 +815,58 @@ function robotsContact(A: RobotState, B: RobotState): boolean {
     if (a.max + BB_FOUL_SLOP < b.min || b.max + BB_FOUL_SLOP < a.min) return false; // separating axis
   }
   return true;
+}
+
+/**
+ * THE GAP BETWEEN TWO ROBOTS' COLLISION FOOTPRINTS (in), 0 if they overlap — G421.A's
+ * "separated by at least 2 ft. from each other".
+ *
+ * Both footprints are the `robotCorners` OBBs, which carry `footprintExtents` and so include a
+ * sweeper's reach. For two disjoint convex polygons the closest pair always includes a VERTEX
+ * of one of them, so the minimum over every corner of each box to every edge of the other is
+ * exact. Overlap is decided first by an EXACT separating-axis test (no `BB_FOUL_SLOP`: this is a
+ * distance, not a contact test, and slack here would only shift the 24 in).
+ *
+ * Exported for the rules smoke, which checks it directly on rotated boxes as well as through
+ * the pin accumulator.
+ */
+export function bbFootprintGap(A: RobotState, B: RobotState): number {
+  const ca = robotCorners(A);
+  const cb = robotCorners(B);
+  const axes = [edgeNormal(ca[0], ca[1]), edgeNormal(ca[1], ca[2]), edgeNormal(cb[0], cb[1]), edgeNormal(cb[1], cb[2])];
+  let separated = false;
+  for (const ax of axes) {
+    const a = projectExtent(ca, ax);
+    const b = projectExtent(cb, ax);
+    if (a.max < b.min || b.max < a.min) {
+      separated = true;
+      break;
+    }
+  }
+  if (!separated) return 0;
+  let best = Infinity;
+  for (const [pts, poly] of [
+    [ca, cb],
+    [cb, ca],
+  ] as const) {
+    for (const p of pts) {
+      for (let i = 0; i < 4; i++) {
+        const d = pointSegmentDist(p, poly[i], poly[(i + 1) % 4]);
+        if (d < best) best = d;
+      }
+    }
+  }
+  return best;
+}
+
+function pointSegmentDist(p: Vec2, a: Vec2, b: Vec2): number {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const len2 = abx * abx + aby * aby;
+  let t = len2 > 0 ? ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2 : 0;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  return hyp(p.x - (a.x + abx * t), p.y - (a.y + aby * t));
 }
 
 function edgeNormal(p: Vec2, q: Vec2): Vec2 {
