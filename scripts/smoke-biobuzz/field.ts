@@ -46,6 +46,7 @@ import {
   hiveApproachSign,
   hiveCellPos,
   hivePivot,
+  hiveTakingSide,
   hiveLoad,
   hiveStep,
   hiveWillTip,
@@ -2110,6 +2111,42 @@ export function fieldChecks(check: Check): void {
       bad.length
         ? bad.join(' · ')
         : 'four cases: an element enters AGAINST the mouth normal, and the target sits on the up cell',
+    );
+  }
+
+  // -- AIM TRACKS THE INCOMING CELL FROM THE FIRST TICK OF THE SWING --------
+  /**
+   * `up` names the tray going DOWN until the swing settles, so a target list built off it held
+   * every turret on the emptying cell for four seconds and then snapped across the pivot
+   * (owner feedback, 2026-09-12). `aimCell` (`elements.ts`) flips at the START of the tip.
+   *
+   * AIM AND CAPTURE ARE DELIBERATELY DIFFERENT FOR THE FIRST HALF: `hiveTakingSide` still says
+   * `up` until the release, because a volley already in the air belongs to the tray still
+   * holding its load. Both halves are pinned here, because "the turret tracks the cell that
+   * takes the shot" is the invariant that is true at the release and NOT before it.
+   */
+  {
+    const w = createBiobuzzWorld('match', 3, [setup(0, 'red', {}, 0)]);
+    const bb = w.biobuzz!;
+    const a: Alliance = 'red';
+    const bad: string[] = [];
+    const aimAt = (): { x: number; y: number } => scoreTargets(w, a).find((x) => x.id === `hive:${a}`)!.pos;
+    const same = (p: { x: number; y: number }, q: { x: number; y: number }) =>
+      Math.abs(p.x - q.x) < 1e-9 && Math.abs(p.y - q.y) < 1e-9;
+    bb.hives[a] = { up: 'south', contents: [], tips: 0, tipping: 0, released: false };
+    if (!same(aimAt(), hiveCellPos(a, 'south'))) bad.push('settled: aim is not the up cell');
+    // first tick of the swing — nothing has moved yet, and the aim has already changed
+    bb.hives[a] = { ...bb.hives[a], tipping: BB_TIP_SWING_S, released: false };
+    if (!same(aimAt(), hiveCellPos(a, 'north'))) bad.push('tip start: aim did not move to the incoming cell');
+    if (hiveTakingSide(bb.hives[a]) !== 'south') bad.push('tip start: capture left the filled cell');
+    // after the release the two agree again
+    bb.hives[a] = { ...bb.hives[a], tipping: BB_TIP_RELEASE_S / 2, released: true };
+    if (!same(aimAt(), hiveCellPos(a, 'north'))) bad.push('post-release: aim moved off the incoming cell');
+    if (hiveTakingSide(bb.hives[a]) !== 'north') bad.push('post-release: capture did not hand over');
+    check(
+      'live: aim flips to the incoming CELL at the start of the tip; capture hands over at the release',
+      bad.length === 0,
+      bad.length ? bad.join(' · ') : 'settled/tip-start/post-release all as specified',
     );
   }
 

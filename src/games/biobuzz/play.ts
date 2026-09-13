@@ -1110,13 +1110,22 @@ export function bbFlightEnters(
 /**
  * WILL `owner`'s up-CELL STILL BE TAKING ELEMENTS when a shot fired now arrives?
  *
- * No while it is mid-swing — not because the cell refuses (it does not: `hiveTakingSide` keeps
- * one tray taking throughout), but because a shot fired now would arrive at the tray that is
- * about to empty. And no when what is already
- * in it PLUS every element of that alliance already in the air and predicted to enter
- * (`bbFlightEnters`) will tip it: the element that completes the load goes in and starts the
- * swing, so anything arriving after it reaches a moving HIVE and falls through. A shot that would
- * itself complete the load is fine — it is the one that goes in.
+ * ── THROUGH A SWING, AUTO-FIRE RESUMES AT THE RELEASE (owner feedback, 2026-09-12) ─────────
+ * No in the FIRST half. The cell has not refused since `hiveTakingSide` landed, but the tray
+ * taking elements there is the one about to empty, so a shot fired into it is a shot thrown on
+ * the floor two seconds later. The turret is already slewing to the incoming cell through this
+ * window (`aimCell`, `elements.ts`); what holds is the trigger, not the aim.
+ *
+ * Yes in the SECOND half. The release hands the opening over to the incoming tray, and from
+ * that instant a shot aimed at the cell the turret has been tracking for two seconds goes in
+ * and stays in — `hiveStep` carries a post-release load through the settle. Waiting for the
+ * settle instead threw away the two seconds the tracking existed to buy.
+ *
+ * ── AND NO WHEN THE LOAD IS ABOUT TO TIP ───────────────────────────────────────────────────
+ * No when what is already in it PLUS every element of that alliance already in the air and
+ * predicted to enter (`bbFlightEnters`) will tip it: the element that completes the load goes
+ * in and starts the swing, so anything arriving after it reaches a tray on its way down. A shot
+ * that would itself complete the load is fine — it is the one that goes in.
  *
  * Measured before this existed, a turret on a steady feed auto-fired 61 elements and 58 missed,
  * every one of them launched at a settled cell that the shots ahead of it were about to tip.
@@ -1130,7 +1139,7 @@ export function bbCellTaking(
   const bb = world.biobuzz as BiobuzzState | undefined;
   if (!bb) return false;
   const hive = bb.hives[owner];
-  if (hive.tipping > 0) return false;
+  if (hive.tipping > 0 && !hive.released) return false;
   const load = [...hive.contents];
   for (const b of world.balls) {
     if (b.state.kind !== 'flight' || b.state.by !== owner) continue;
