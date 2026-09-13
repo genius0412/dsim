@@ -2393,6 +2393,32 @@ export function fieldChecks(check: Check): void {
         settleStep > 0 && Math.abs(settleAt - BB_TIP_SWING_S) <= dt + 1e-9 && h.up === 'north' && h.tips === 1 && h.contents.length === 0 && h.tipping === 0,
         `tipped after ${settleStep} swing steps = ${settleAt.toFixed(4)} s (swing ${BB_TIP_SWING_S}); up=${h.up} tips=${h.tips} contents=[${h.contents.join(',')}] tipping=${h.tipping}`,
       );
+      // A POST-RELEASE CAPTURE BELONGS TO THE INCOMING TRAY AND MUST SURVIVE THE SETTLE. The
+      // cell goes on taking elements through the swing (`hiveTakingSide`), so anything that
+      // lands after the bar passes level is in the cell that `up` names one tick later — and
+      // the settle used to clear `contents` unconditionally, which threw it away silently.
+      {
+        let g = settled([...staged.ids]);
+        const late = 9901;
+        let landedAt = -1;
+        let spilledLate = false;
+        for (let i = 0; i < 1200; i++) {
+          const r = hiveStep(g, dt, kindOf(staged.kinds));
+          if (r.spilled.includes(late)) spilledLate = true;
+          g = r.hive;
+          // drop one in a tick AFTER the release, the way a capture does
+          if (g.released && landedAt < 0) {
+            g = { ...g, contents: [...g.contents, late] };
+            landedAt = i;
+          }
+          if (r.tipped) break;
+        }
+        check(
+          'hive: an element taken AFTER the release rides the incoming cell through the settle',
+          landedAt >= 0 && !spilledLate && g.tipping === 0 && g.up === 'north' && g.contents.join() === String(late),
+          `landed at step ${landedAt}; spilled=${spilledLate}; after settle up=${g.up} contents=[${g.contents.join(',')}]`,
+        );
+      }
       check(
         'hive: spilled ids == the contents that tipped it',
         spilled.length === staged.ids.length && [...spilled].sort((a, b) => a - b).join() === [...staged.ids].sort((a, b) => a - b).join(),
@@ -2475,7 +2501,14 @@ export function fieldChecks(check: Check): void {
         ['the DOWN cell', hiveAccepts(h, a, downPos, zMid, inbound), false],
         ['above the margin', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[1] + BB_HIVE_ACCEPT_MARGIN + 1, inbound), false],
         ['below the opening bottom', hiveAccepts(h, a, up, BB_HIVE_OPEN_Z[0] - 1, inbound), false],
-        ['mid-swing', hiveAccepts({ ...h, tipping: BB_TIP_SWING_S / 2 }, a, up, zMid, inbound), false],
+        // MID-SWING IT STILL TAKES, and WHICH tray follows the release (owner feedback,
+        // 2026-09-12; `hiveTakingSide`). Before the release the up cell is still holding its
+        // load, so a volley already in the air lands in it; after the release the incoming
+        // tray is the one taking, and the up cell's own footprint is refused.
+        ['mid-swing BEFORE the release: the up cell still takes it', hiveAccepts({ ...h, tipping: BB_TIP_SWING_S / 2, released: false }, a, up, zMid, inbound), true],
+        ['mid-swing before the release: the DOWN cell does not', hiveAccepts({ ...h, tipping: BB_TIP_SWING_S / 2, released: false }, a, downPos, zMid, outbound), false],
+        ['mid-swing AFTER the release: the INCOMING cell takes it', hiveAccepts({ ...h, tipping: 1, released: true }, a, downPos, zMid, outbound), true],
+        ['mid-swing after the release: the emptied cell does not', hiveAccepts({ ...h, tipping: 1, released: true }, a, up, zMid, inbound), false],
       ];
       const wrong = cases.filter(([, got, want]) => got !== want);
       check(

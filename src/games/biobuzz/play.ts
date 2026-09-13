@@ -29,7 +29,7 @@ import {
 import { biobuzzColliders } from './colliders';
 import { FLOWER_MOUTH, capturePollen, scoreTargets, takeHeld } from './elements';
 import { bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
-import { hiveAccepts, hiveCellPos, hiveLoad, hiveStep, hiveWillTip, spillPoses } from './hive';
+import { hiveAccepts, hiveCellPos, hiveLoad, hiveStep, hiveTakingSide, hiveWillTip, spillPoses } from './hive';
 import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
   type BbShot,
@@ -503,7 +503,11 @@ export function updateBiobuzz(
       if (launchedBy && launchedBy !== owner) continue;
       const hive = bb.hives[owner];
       if (!hiveAccepts(hive, owner, b.pos, b.z, vel)) continue;
-      park(b, t.id, hive.contents, hiveCellPos(owner, hive.up), CELL_MID_Z);
+      // PARKED IN THE CELL THAT TOOK IT, which through a swing is not always `up`
+      // (`hiveTakingSide`): before the release it is the tray still holding its load, after it
+      // the tray coming up. Reading `hive.up` here would draw a post-release capture inside the
+      // cell it is NOT in, on the far side of the pivot.
+      park(b, t.id, hive.contents, hiveCellPos(owner, hiveTakingSide(hive)), CELL_MID_Z);
       took = true;
       break;
     }
@@ -1106,7 +1110,9 @@ export function bbFlightEnters(
 /**
  * WILL `owner`'s up-CELL STILL BE TAKING ELEMENTS when a shot fired now arrives?
  *
- * No while it is mid-swing (`hiveAccepts` refuses everything then). And no when what is already
+ * No while it is mid-swing — not because the cell refuses (it does not: `hiveTakingSide` keeps
+ * one tray taking throughout), but because a shot fired now would arrive at the tray that is
+ * about to empty. And no when what is already
  * in it PLUS every element of that alliance already in the air and predicted to enter
  * (`bbFlightEnters`) will tip it: the element that completes the load goes in and starts the
  * swing, so anything arriving after it reaches a moving HIVE and falls through. A shot that would

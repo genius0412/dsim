@@ -28,8 +28,9 @@ import { bbKindIndex, bbScoreWorld, type BbAllianceScore, type BbRankPoints } fr
  *    tip it. `BB_TIP_POLLEN` is a measured table indexed by the NECTAR count (reference §4.1),
  *    so "three more pollen" is not derivable from a single total and a driver cannot compute
  *    it from the discs. It is the single most decision-changing number in the game.
- *  • `tipping` — the 4 s swing. The CELL accepts nothing while it moves (`hiveAccepts`), so a
- *    launcher holding fire at a swinging hive is wasting its hopper.
+ *  • `tipping` — the 4 s swing. The HIVE keeps taking elements through it, but WHICH tray
+ *    changes at the release half way (`hiveTakingSide`), so the number the launcher is filling
+ *    is about to become a load on the floor and then an empty cell on the other side.
  *  • `nectarLocked` / `nectarIn` — G410. Entering a NECTAR one second early is a MAJOR 20, and
  *    the cue that unlocks it is an audio one on a real field.
  *  • `nectarStock` / `nectarDue` — what the human player still has and what they are owed.

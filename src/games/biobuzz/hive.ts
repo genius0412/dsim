@@ -43,9 +43,13 @@ export type HiveState = BbHiveState;
  * Duration of the swing from one stable state to the other, seconds.
  *
  * RULING (field-plan §2.1, 2026-09-12): **4.0**. A 43.95-in bar carrying a dozen elements is a
- * slow, damped see-saw, not a trigger — and the length is gameplay-load-bearing, because the
- * CELL accepts nothing while it moves (`hiveAccepts`) so a TIP costs the launcher four seconds
- * of its own target. Not APPROX: it is a decision, not a measurement.
+ * slow, damped see-saw, not a trigger. Not APPROX: it is a decision, not a measurement.
+ *
+ * It is gameplay-load-bearing because of what the swing does to the TARGET, which is no longer
+ * "the cell takes nothing for four seconds" (owner feedback, 2026-09-12): the tray keeps taking
+ * throughout, and the release HANDS OVER from the filled tray to the incoming one half way
+ * through (`hiveTakingSide`). What the length costs a launcher is the two seconds in which its
+ * own opening is the one about to empty, and the aim change at the hand-over.
  */
 export const BB_TIP_SWING_S = 4.0;
 
@@ -101,12 +105,40 @@ export function hiveApproachSign(up: BbCellSide): 1 | -1 {
 }
 
 /**
- * CAPTURE test for one flight element: inside the up-CELL's accept footprint (`BB_CELL_OPEN`,
- * centred on the up cell), at opening height (`BB_HIVE_OPEN_Z`, plus `margin` above),
- * DESCENDING, and travelling INBOARD along the HIVE axis (`hiveApproachSign`).
+ * WHICH CELL IS TAKING ELEMENTS RIGHT NOW — the ONE answer, and every capture, park, aim and
+ * readout has to come through it.
  *
- * A HIVE mid-swing accepts nothing — its opening is moving, and the tray is tipping its load
- * out rather than taking one on.
+ * Settled, it is `up`, as it always was. THROUGH A SWING IT FOLLOWS THE RELEASE (owner
+ * feedback, 2026-09-12):
+ *
+ *  • BEFORE the bar passes level (`released` false) it is still `up` — the tray that just
+ *    filled. It is tilted back, it is holding its load, and a shot already in the air when the
+ *    swing started arrives at a cell that is still a cell. Refusing those was the old
+ *    behaviour, and the thing it produced was a driver watching a volley he had already fired
+ *    pass through the tray and land on the tiles.
+ *  • AFTER the release it is `otherSide(up)` — the tray coming UP, now empty, whose opening is
+ *    rising into the launch window. It is what a turret tracking the incoming cell is aiming
+ *    at, and what auto-fire resumes on.
+ *
+ * So the HIVE is never a hole in the field; the only thing a swing changes is WHICH tray your
+ * element lands in, and the handover is the same instant as the spill. `hiveStep` carries a
+ * post-release load through the settle for exactly this reason.
+ */
+export function hiveTakingSide(hive: HiveState): BbCellSide {
+  return hive.tipping > 0 && hive.released ? otherSide(hive.up) : hive.up;
+}
+
+/**
+ * CAPTURE test for one flight element: inside the TAKING cell's accept footprint
+ * (`BB_CELL_OPEN`, centred on `hiveTakingSide`), at opening height (`BB_HIVE_OPEN_Z`, plus
+ * `margin` above), DESCENDING, and travelling INBOARD along the HIVE axis
+ * (`hiveApproachSign`).
+ *
+ * MID-SWING IT STILL ACCEPTS, into whichever tray `hiveTakingSide` names — see that function
+ * for which one and why. The opening is genuinely moving through the swing and this test does
+ * not model that: it uses the taking cell's SETTLED footprint throughout. That is the honest
+ * trade. The alternative the code had was refusing everything for four seconds, and a cell
+ * that is 10.43 in deep in plan sweeps most of its own footprint anyway.
  */
 export function hiveAccepts(
   hive: HiveState,
@@ -116,9 +148,10 @@ export function hiveAccepts(
   vel: Vec3,
   margin: number = BB_HIVE_ACCEPT_MARGIN,
 ): boolean {
-  if (hive.tipping > 0 || vel.z >= 0) return false;
-  if (vel.y * hiveApproachSign(hive.up) <= 0) return false;
-  const c = hiveCellPos(alliance, hive.up);
+  if (vel.z >= 0) return false;
+  const side = hiveTakingSide(hive);
+  if (vel.y * hiveApproachSign(side) <= 0) return false;
+  const c = hiveCellPos(alliance, side);
   if (Math.abs(pos.x - c.x) > BB_CELL_OPEN.w / 2 || Math.abs(pos.y - c.y) > BB_CELL_OPEN.d / 2) return false;
   return z >= BB_HIVE_OPEN_Z[0] && z <= BB_HIVE_OPEN_Z[1] + margin;
 }
@@ -163,6 +196,13 @@ export interface HiveStepResult {
  *    swing.
  * 3. **The swing reaching zero** ⇒ the cells swap, `tips` increments, `tipped` is true.
  *
+ * ⚠️ `contents` SURVIVES THE SETTLE ONCE THE TRAY HAS RELEASED. The cell goes on taking
+ * elements through the swing (`hiveTakingSide`), and after the release the tray filling is the
+ * one coming UP — the one that `up` names a tick later. Emptying `contents` unconditionally at
+ * the settle threw those away, silently, a second or two after they were captured. So the
+ * settle keeps them when `released` is set, and only clears (and spills) when it is not, which
+ * is the `dt`-longer-than-half-a-swing fallback and nothing else.
+ *
  * The spill therefore lands while the bar is still moving, a couple of seconds before the
  * points — which is what a real HIVE does, and what makes the elements available to a robot
  * under the structure before the score changes. Never mutates `hive`.
@@ -185,7 +225,15 @@ export function hiveStep(hive: HiveState, dt: number, kindOf: (id: number) => Bb
       };
     }
     return {
-      hive: { up: otherSide(hive.up), contents: [], tips: hive.tips + 1, tipping: 0, released: false },
+      hive: {
+        up: otherSide(hive.up),
+        // the load the INCOMING tray took after the release — see the note above. Empty in the
+        // ordinary case, because nothing was launched during the second half of the swing.
+        contents: released ? [...hive.contents] : [],
+        tips: hive.tips + 1,
+        tipping: 0,
+        released: false,
+      },
       tipped: true,
       // normally empty — the tray emptied at level. Non-empty only when one `dt` spanned the
       // whole second half of the swing, and then the elements still have to go somewhere.

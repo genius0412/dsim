@@ -24,7 +24,7 @@ import {
   type BbRect,
 } from './config';
 import { FLOWER_MOUTH } from './elements';
-import { BB_TIP_SWING_S } from './hive';
+import { BB_TIP_SWING_S, hiveTakingSide } from './hive';
 
 /**
  * BIOBUZZ field renderer — THE MAT, THE ZONES, THE HIVE STRUCTURE, THE FLOWERS, THE WALL.
@@ -317,6 +317,13 @@ export function drawBiobuzzField(
   // STAGED field rather than throwing — see the header.
   const bb = world.biobuzz;
   const upCell = (a: Alliance): 'north' | 'south' => bb?.hives?.[a]?.up ?? BB_HIVE_UP_STAGED[a];
+  /** the cell CONTENTS belong to — `up` at rest, and through a swing whichever tray is taking
+   * elements (`hiveTakingSide`), which flips to the incoming one at the release. Drawing the
+   * row off `up` alone puts a post-release capture in the wrong box for the rest of the swing. */
+  const takingCell = (a: Alliance): 'north' | 'south' => {
+    const h = bb?.hives?.[a];
+    return h ? hiveTakingSide(h) : BB_HIVE_UP_STAGED[a];
+  };
 
   /**
    * ELEMENTS ARE LOOKED UP IN `world.balls`, BY ID.
@@ -537,7 +544,9 @@ export function drawBiobuzzField(
       }
       ctx.restore();
 
-      if (!isUp) continue;
+      // the CONTENTS ride the tray that is TAKING elements, which is not `up` once the bar has
+      // passed level (`hiveTakingSide`).
+      if (side !== takingCell(a)) continue;
 
       /**
        * THE CONTENTS — ONE ROW OF DISCS HUGGING THE OPEN EDGE, INSIDE THE BOX.
