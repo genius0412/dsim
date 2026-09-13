@@ -321,7 +321,9 @@ export const BB_FLOWER_FOOT = { along: 6, deep: 4.9 };
  * (§10.3.1), so the first TIP costs **3 POLLEN** and is reachable in AUTO.
  *
  * Only index 0 is a guess. APPROX: an empty cell was not measured — 8 extrapolates the 7/6
- * trend at the top of the table.
+ * trend at the top of the table. `docs/biobuzz/feedback/002-thresholds.md` §2 asks for that row
+ * (and for a second reading of the other five); the smoke lane pins this array as a literal so
+ * a re-measure has to come through it.
  *
  * See `docs/biobuzz-reference.md` §4.1.
  */

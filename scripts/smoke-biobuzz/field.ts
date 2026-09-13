@@ -2485,6 +2485,13 @@ export function fieldChecks(check: Check): void {
    * interpolates it — a see-saw is torque and packing, not weight. Pinned as literal values
    * because the row IS the rule: an interpolation that happened to pass through two of these
    * points would still be a mass model, which the owner ruled out (config.ts, 2026-09-12).
+   *
+   * ⚠️ THE LITERAL IS DELIBERATE AND IT IS THE POINT — do NOT "fix" this by comparing the
+   * table against itself. Index 0 is a GUESS (8, extrapolating the 7/6 trend; an empty cell
+   * was never put on the scale) and the rest was measured once, so this check exists to FAIL
+   * the day somebody re-measures, and the failure is what sends them to
+   * `docs/biobuzz/feedback/002-thresholds.md` §2 to say which row moved. A re-measure is one
+   * edit in `config.ts` and one here, in that order.
    */
   {
     const want = [8, 7, 6, 3, 1, 0];
@@ -2993,6 +3000,15 @@ export function fieldChecks(check: Check): void {
     // sixth nectar the column does not have room for, since 3.98 + 5*3.6 = 21.98 is already over
     // the ring. So FIVE. Both are filled one at a time through `flowerFits`, which since the
     // ruling is the only stacking rule there is.
+    //
+    // ⚠️ 8 AND 5 ARE PINNED AS BARE LITERALS ON PURPOSE, and this is the same discipline as the
+    // tip table above. Capacity is DERIVED from `BB_FLOWER_MID_Z`, which is `APPROX` and which
+    // V1 cannot confirm — it is 3.55 + 0.43, the retrieval opening plus the BOTTOM ring, and
+    // the manual prints no middle-ring height at all. Asserting `flowerCapacity(...)` against
+    // itself would pass forever and never mention that the column had quietly lost an element.
+    // Pinned, this check breaks the moment the ring is re-measured and names the two numbers a
+    // human has to look at. `docs/biobuzz/feedback/002-thresholds.md` §3 is that conversation,
+    // and it carries the arithmetic for both columns so a new ring can be checked on paper.
     {
       const capP = flowerCapacity('pollen');
       const capN = flowerCapacity('red');
