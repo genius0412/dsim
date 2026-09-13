@@ -388,7 +388,10 @@ export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] 
         row('TIPS (count)', 'tips'),
         row('TIPS (points)', 'tipPts'),
         row('Up CELL contents (elements)', 'cellCount'),
-        row('Up CELL contents (points)', 'cellPts'),
+        // 0 for the whole match — Table 10-2 pays for what is LEFT IN the cell at the buzzer
+        // (owner ruling, 2026-09-12), so the label says when the number arrives rather than
+        // leaving a driver to read a permanent 0 beside a tray with four elements in it.
+        row('Up CELL contents (points at the buzzer)', 'cellPts'),
       ],
     ],
     [
