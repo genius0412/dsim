@@ -230,15 +230,15 @@ CONTINUOUS > ~10 s, REPEATED = more than once per match, STRATEGIC = for advanta
 
 | rule | text | penalty | sim treatment |
 |---|---|---|---|
-| G304 | start position (see §3) | match will not start | `evalStart` + editor, `startLegality: true` |
+| G304 | start position (see §3) | match will not start | `bbEvalStart` (A/C/D/E) + the anchor snap at spawn; `startLegality: false` (the shared ready-up gate is DECODE's `evalStartPose`, see `sim.ts`) |
 | G402 | no AUTO opponent interference; red side = columns A–C, blue = D–F | MAJOR per match (+ card if STRATEGIC) | DECODE's G402 shape: crosser on the wrong side + contact during AUTO |
 | G405 | don't eject elements from the field | MAJOR per element | structural (nothing leaves the field) |
-| G407 | **CONTROL no more than 4 SCORING ELEMENTS** | VERBAL; MAJOR + card if STRATEGIC (example A: 6+) | hopper cap 4; herding count warned at 5, MAJOR at 6+ |
+| G407 | **CONTROL no more than 4 SCORING ELEMENTS** | VERBAL; MAJOR + card if STRATEGIC (example A: 6+) | hopper cap 4; CONTROL of 5+ (hopper + herded) is a VERBAL WARNING only, never a foul (owner ruling) |
 | G408 | don't CONTROL opponent NECTAR | VERBAL; card if STRATEGIC | intake refuses opponent nectar |
 | G409 | don't catch elements spilling from a TIPPED HIVE | VERBAL; card if STRATEGIC | not modelled (spill lands on tiles) |
 | **G410** | **no NECTAR into a FLOWER before 1:00 left** | **MAJOR per NECTAR** | element entry event; the achievement still scores |
 | G411 | no hoarding | MAJOR + card | not modelled |
-| G417 | don't meddle with the HIVE (ram the frame, launch at the outside of a cell) | VERBAL; MAJOR + card if STRATEGIC | frame-ram speed threshold `APPROX`; VERBAL then MAJOR if REPEATED |
+| G417 | don't meddle with the HIVE (ram the frame, launch at the outside of a cell) | VERBAL; MAJOR + card if STRATEGIC | a frame ram at/over `BB_FRAME_RAM_SPEED` (`APPROX`) is the STRATEGIC test: MAJOR once per MATCH per robot; below it, nothing. Card not modelled |
 | G418 | FLOWER: enter only via the top, remove only POLLEN from the bottom | VERBAL; MAJOR + card if STRATEGIC | structural |
 | G421 | PIN ≤ 3 s (2-ft / 3-s release, pause/resume) | MAJOR + MAJOR per further 3 s | DECODE's pin detector, MAJOR tariff |
 | G426/G427 | humans enter NECTAR only per TIP / at ≤ 60 s, only via own LOADING ZONE, contacting the tile first | MINOR per nectar | structural (the sim's human player obeys) |
@@ -250,7 +250,9 @@ card the whole alliance (§10.6.3).
 
 - **R102** STARTING CONFIGURATION 18 × 18 × 18 in; preloaded elements may extend outside.
 - **R105** expanded envelope **18 × 24 × 29 in tall**, physically constrained, one assembly.
-  So a robot expands along ONE horizontal axis only (`BB_PRISM` 24 was the right guess).
+  So a robot expands along ONE horizontal axis only (`BB_PRISM` 24 / `BB_PRISM_NARROW` 18,
+  either orientation). `bbSizeLimits` budgets the deployed sweepers AND the Box Tube's
+  `BB_PLACE_REACH` against it.
 - **R104** no weight limit. **G407** effectively caps the hopper at **4** elements.
 - A 29-in robot is taller than the 25.5-in bottom of the down-HIVE — 2D sim ignores it.
 

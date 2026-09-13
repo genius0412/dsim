@@ -21,10 +21,15 @@ import {
   BB_LAUNCH_Z0,
   BB_PLACE_REACH,
   BB_POLLEN_R,
+  BB_PRISM,
+  BB_PRISM_NARROW,
   BB_PTS,
+  BB_START_POSE_COUNT,
   BB_TURRET_PITCH_MAX,
   bbStorageMax,
 } from '../../src/games/biobuzz/config';
+import { biobuzzColliders } from '../../src/games/biobuzz/colliders';
+import { bbEvalStart, bbStartBox } from '../../src/games/biobuzz/start';
 import { capturePollen, pollenIn, releasePollen, scoreTargets, takeHeld } from '../../src/games/biobuzz/elements';
 import type { ScoreTarget } from '../../src/games/biobuzz/state';
 import {
@@ -67,7 +72,7 @@ import {
 } from '../../src/games/biobuzz/mechs';
 import { flowerFits, flowerScore } from '../../src/games/biobuzz/flower';
 import { biobuzzHud } from '../../src/games/biobuzz/hudRobot';
-import { bbIndexElements } from '../../src/games/biobuzz/spawn';
+import { bbIndexElements, createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import {
   BB_PRESET_LIST,
@@ -79,7 +84,7 @@ import { robotPenetration, robotSolids } from '../../src/sim/artifactSolids';
 import { simModuleFor } from '../../src/games/sim';
 import { BB_DEFAULT_SPEC, bbDials } from '../../src/games/biobuzz/robotConfig';
 import { BB_SCENES, bbPollen, bbSceneAt } from '../../src/games/biobuzz/scenes';
-import { bbCoerce, cmd, mkWorld, run, type Check } from './harness';
+import { bbCoerce, cmd, mkWorld, run, setup, type Check } from './harness';
 
 /**
  * LANE B's smoke: THE ROBOT.
@@ -528,6 +533,151 @@ export function robotChecks(check: Check): void {
     check('box tube: a stored lift height from the removed raise mechanism is dropped', stale?.mount === 'left' && !('maxZ' in (stale ?? {})), JSON.stringify(stale));
     const centre = bbLiftOf(bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind: 'turret', mount: 'back', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'center' } }) }));
     check('box tube: a centre request is relocated to a perimeter cell, not dropped', !!centre && centre.mount !== 'center', `${centre?.mount}`);
+  }
+
+  // ── R105.A: THE EXPANSION ENVELOPE, BOX TUBE INCLUDED — AND G304 AT SPAWN ──
+  /**
+   * R105.A: a ROBOT "must remain within a 18 in. … by 24 in. … by 29 in. … tall sizing volume
+   * when fully expanded", oriented only in height, so the footprint must fit 24 × 18 one way or
+   * 18 × 24 the other. What sticks out past the frame when deployed is the sweeper(s) AND the
+   * Box Tube, whose placement point is `BB_PLACE_REACH` past the footprint — and the tube used
+   * to be missing from `bbSizeLimits`, so a maxed chassis with a CORNER tube measured 19.7 × 18.7
+   * (over 18 both ways). A FLANK tube on the same chassis is 18 × 19.4, which the rule allows
+   * with the 24 across the width, and that is why the envelope considers both orientations.
+   *
+   * MEASURED FROM THE GEOMETRY, NOT FROM `bbEnvelopeReach`: the extent is the box around the
+   * collision footprint (`bbFootprint`) and the placement point (`bbPlacePointLocal`), the two
+   * functions the sim itself acts from. Swept over every launcher × launcher cell × tube cell
+   * (and none) × intake × intake mount × width floor (swerve's is the only one that differs) at
+   * the four CORNERS of the size range the builder offers — corners because both extents are
+   * linear in the chassis size.
+   *
+   * The same builds then SPAWN, and every robot must start G304-legal and clear of every FLOWER
+   * foot collider (G304.D). The spawn pose reads only the footprint (`bbSnapStart` + `bbFitPose`),
+   * so one world per distinct footprint covers the build space; the presets spawn regardless.
+   * The foot test is the AABB of the rotated footprint against the collider rectangle, which is
+   * conservative: no AABB overlap means no overlap.
+   */
+  {
+    check("R105.A: the prism is the manual's 18 × 24", BB_PRISM === 24 && BB_PRISM_NARROW === 18, `${BB_PRISM_NARROW} × ${BB_PRISM}`);
+    const extent = (s: RobotSpec): { ex: number; ey: number } => {
+      const f = bbFootprint(s);
+      const p = bbPlacePointLocal(s);
+      const x1 = Math.max(f.front, p ? p.x : -Infinity);
+      const x0 = Math.min(-f.rear, p ? p.x : Infinity);
+      const y1 = Math.max(f.half, p ? p.y : -Infinity);
+      const y0 = Math.min(-f.half, p ? p.y : Infinity);
+      return { ex: x1 - x0, ey: y1 - y0 };
+    };
+    const inPrism = (s: RobotSpec): boolean => {
+      const { ex, ey } = extent(s);
+      const e = 1e-9;
+      return (ex <= BB_PRISM + e && ey <= BB_PRISM_NARROW + e) || (ex <= BB_PRISM_NARROW + e && ey <= BB_PRISM + e);
+    };
+
+    // THE CHECK CAN FAIL: the pre-fix envelope offered this build (sloped front sweeper, a Box
+    // Tube on the front-left corner, the old 15 × 17 maximum), and it is 19.7 × 18.7.
+    const oldMax = { ...BB_DEFAULT_SPEC, intake: 'sloped' as const, intakeMount: 'front' as const, length: 15, width: 17, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'frontleft' } }) };
+    const oe = extent(oldMax as RobotSpec);
+    check('R105.A: a maxed chassis with a corner Box Tube overruns the prism (so the sweep below can fail)', !inPrism(oldMax as RobotSpec), `${oe.ex.toFixed(2)} × ${oe.ey.toFixed(2)}`);
+    const fixed = bbCoerce(oldMax);
+    const fe = extent(fixed);
+    check(
+      'R105.A: ...and the coercer shrinks it into the prism',
+      inPrism(fixed) && fixed.width < 17 && bbLiftOf(fixed)?.mount === 'frontleft',
+      `${fixed.length} × ${fixed.width} → ${fe.ex.toFixed(2)} × ${fe.ey.toFixed(2)}`,
+    );
+    // AND BOTH ORIENTATIONS ARE HONOURED: a FLANK tube on that same maxed chassis is 18 × 19.4,
+    // legal with the 24 across the width, so the fix must not shrink it.
+    const flank = bbCoerce({ ...oldMax, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'left' } }) });
+    const fl = extent(flank);
+    check('R105.A: a flank Box Tube on a maxed chassis keeps its size (18 × 24 either way round)', inPrism(flank) && flank.length === 15 && flank.width === 17, `${flank.length} × ${flank.width} → ${fl.ex.toFixed(2)} × ${fl.ey.toFixed(2)}`);
+
+    const builds: RobotSpec[] = [];
+    const lifts = [null, ...BB_MOUNT_POSITIONS.filter((m) => m !== 'center')];
+    for (const kind of BB_SCORE_MODES) {
+      for (const mount of isTurreted(kind) ? BB_MOUNT_POSITIONS : BB_SHOOTER_EDGES) {
+        for (const intake of ['sloped', 'vector', 'triangle'] as const) {
+          for (const intakeMount of BB_INTAKE_MOUNTS) {
+            for (const drivetrain of ['mecanum', 'swerve'] as const) {
+              for (const lm of lifts) {
+                const base = bbCoerce({
+                  ...BB_DEFAULT_SPEC,
+                  intake,
+                  intakeMount,
+                  drivetrain,
+                  ...mech({ launcher: { kind, mount, hoodDeg: 75 }, lift: lm ? { kind: 'vslide', mount: lm } : null }),
+                });
+                const d = bbDials(base);
+                for (const length of [d.length.min, d.length.max]) {
+                  for (const width of [d.width.min, d.width.max]) builds.push(bbCoerce({ ...base, length, width }));
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    let over = 0;
+    let notFixed = 0;
+    let tubed = 0;
+    const overDetail: string[] = [];
+    for (const s of builds) {
+      if (bbLiftOf(s)) tubed++;
+      if (!inPrism(s)) {
+        over++;
+        if (overDetail.length < 3) {
+          const { ex, ey } = extent(s);
+          overDetail.push(`${s.intake}/${s.intakeMount}/tube ${bbLiftOf(s)?.mount ?? '-'} ${s.length}x${s.width} → ${ex.toFixed(2)}x${ey.toFixed(2)}`);
+        }
+      }
+      if (specKey(s) !== specKey(bbCoerce(s))) notFixed++;
+    }
+    check(`R105.A: every build at every dial corner fits 18 × 24 with its sweepers and Box Tube (${builds.length} builds, ${tubed} with a tube)`, over === 0 && tubed > 0, overDetail.join(' · ') || `${over} over`);
+    check('R105.A: ...and every one of them is a coercion fixed point', notFixed === 0, `${notFixed} not fixed`);
+    const presetsOver = BB_PRESET_LIST.filter((p) => !inPrism(p)).map((p) => p.name);
+    check('R105.A: every preset card fits the prism', presetsOver.length === 0, presetsOver.join(', '));
+
+    // G304 AT SPAWN, over the same build space.
+    const feet = biobuzzColliders.statics.slice(-BB_FLOWERS.length);
+    check(
+      'G304.D sweep: the last statics are the FLOWER feet, in `BB_FLOWERS` order',
+      feet.length === BB_FLOWERS.length && feet.every((s, i) => Math.hypot(s.tx - BB_FLOWERS[i].x, s.ty - BB_FLOWERS[i].y) < BB_FLOWER_FOOT.deep),
+      JSON.stringify(feet),
+    );
+    const byFootprint = new Map<string, RobotSpec>();
+    for (const s of builds) byFootprint.set(`${s.intake}/${s.intakeMount}/${s.length}/${s.width}`, s);
+    const spawnSpecs = [...byFootprint.values(), ...BB_PRESET_LIST];
+    let spawned = 0;
+    let illegal = 0;
+    let onFoot = 0;
+    const spawnDetail: string[] = [];
+    for (const spec of spawnSpecs) {
+      const setups = [];
+      let id = 0;
+      for (const a of ['blue', 'red'] as const) {
+        for (let i = 0; i < BB_START_POSE_COUNT; i++) setups.push(setup(id++, a, spec, i));
+      }
+      const w = createBiobuzzWorld('match', 7, setups);
+      for (const r of w.robots) {
+        spawned++;
+        const pose = { x: r.pos.x, y: r.pos.y, headingDeg: (r.heading * 180) / Math.PI };
+        const v = bbEvalStart(r.spec, pose, r.alliance);
+        const b = bbStartBox(r.spec, pose);
+        const hit = feet.some((f) => b.x1 > f.tx - f.hx && b.x0 < f.tx + f.hx && b.y1 > f.ty - f.hy && b.y0 < f.ty + f.hy);
+        if (!v.legal) illegal++;
+        if (hit) onFoot++;
+        if ((!v.legal || hit) && spawnDetail.length < 3) {
+          spawnDetail.push(`${spec.name} ${spec.intake}/${spec.intakeMount} ${spec.length}x${spec.width} ${r.alliance}#${r.id} at (${pose.x.toFixed(1)},${pose.y.toFixed(1)}): ${v.reason ?? 'on a FLOWER foot'}`);
+        }
+      }
+    }
+    check(
+      `G304 at spawn: every build × both alliances × every anchor starts legal (${spawned} robots, ${byFootprint.size} footprints + ${BB_PRESET_LIST.length} presets)`,
+      illegal === 0 && spawned === spawnSpecs.length * 2 * BB_START_POSE_COUNT,
+      spawnDetail.join(' · ') || `${illegal} illegal`,
+    );
+    check('G304.D at spawn: ...and no spawned footprint overlaps a FLOWER foot collider', onFoot === 0, spawnDetail.join(' · ') || `${onFoot} on a foot`);
   }
 
   // ── THE PLACEMENT POINT (geometry) ────────────────────────────────────────

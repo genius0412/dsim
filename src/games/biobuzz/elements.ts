@@ -136,10 +136,11 @@ export function takeHeld(world: World, r: RobotState, color: Artifact['color']):
 /**
  * Throw one held POLLEN back out, with velocity `v`.
  *
- * A LOB, NOT A SHOT. `scoreTargets()` is empty, so there is nothing to solve an arc against;
- * the caller hands over the velocity it wants and this puts a POLLEN on that trajectory. When
- * Section 9 gives BIOBUZZ real targets, the `target` argument is where the arc solution goes,
- * and every existing caller keeps working because it is optional.
+ * THE CALLER SOLVES THE ARC, NOT THIS FUNCTION. `scoreTargets()` returns the up-CELL, and the
+ * launcher (`robot.ts`, `bbSolveShot` / the hood) works the velocity out against it before
+ * calling here; this only puts a held element on that trajectory. `target` is accepted for
+ * the contract's signature and deliberately unused, and it is optional so a caller with
+ * nothing to aim at (a turret or dumper firing into open floor) still works.
  *
  * `origin` is an extension past the contract signature (which is `(world, r, v, target?)`) and
  * is optional for that reason: a turret fires from its ring and a turretless launcher from a
@@ -182,7 +183,7 @@ export function releasePollen(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STUBS — the manual has not published the rules these answer
+// SCORE TARGETS, START LEGALITY AND THE ACTION HOOK
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** the mid-height of the up-CELL opening (in) — Fig 9-10 gives the opening as a band from
@@ -192,10 +193,11 @@ const CELL_AIM_Z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
 /**
  * ACCEPTING RADIUS of a CELL opening (in).
  *
- * APPROX: the opening is a 20 x 12 rect (`BB_CELL_OPEN`, Fig 9-11), and `ScoreTarget` carries
- * one radius. 8 is the inscribed-ish compromise — under the 10 half-width so a shot at the
- * radius limit is still over the opening, over the 6 half-depth so the target is not
- * artificially harder than the real mouth. Replace with the rect when `ScoreTarget` grows one.
+ * APPROX: the opening is a 20 x 10.43 rect (`BB_CELL_OPEN`: `w` 20 by `d` = `BB_HIVE_CELL_LEN`,
+ * Fig 9-11), and `ScoreTarget` carries one radius. 8 is the inscribed-ish compromise — under the
+ * 10 half-width so a shot at the radius limit is still over the opening, over the 5.2 half-depth
+ * so the target is not artificially harder than the real mouth. Replace with the rect when
+ * `ScoreTarget` grows one.
  */
 const CELL_ACCEPT_R = 8;
 
