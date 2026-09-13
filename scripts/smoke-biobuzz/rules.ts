@@ -366,6 +366,37 @@ function scoringChecks(check: Check): void {
       s.flowerOwners.join(',') === 'red,blue,,',
       s.flowerOwners.join(','));
 
+    /**
+     * THE CELL LINE IS BANKED AT THE BUZZER, NOT LIVE (owner ruling, 2026-09-12). Table 10-2
+     * pays for an element LEFT IN the up-CELL, which is a state of the field at the end — and
+     * counting it live made the score climb 2 at a time as a load built and then fall by ten
+     * when the HIVE did the one thing it is for.
+     *
+     * The same world, re-scored at each phase. The COUNT is live throughout (it is the
+     * driver's readout of the tray); the POINTS are 0 until `post`, and the total is short by
+     * exactly the cell line while they are.
+     */
+    {
+      const live = (['auto', 'teleop'] as const).map((ph) => {
+        w.match.phase = ph;
+        return { ph, s: bbScoreWorld(w) };
+      });
+      w.match.phase = 'post';
+      // the total is checked against the sum of the OTHER lines rather than against 88 − 8:
+      // LEAVE and both PARKs are themselves phase-dependent, so the invariant here is that the
+      // cell line contributes nothing, not that the match total is a particular number.
+      const others = (x: (typeof live)[number]['s']['red']) =>
+        x.leave + x.parkAuto + x.parkTele + x.tipPts + x.ownedPts + x.bottomPts + x.gardenPts;
+      const bad = live.filter((x) => x.s.red.cellPts !== 0 || x.s.red.cellCount !== 4 || x.s.red.total !== others(x.s.red));
+      check(
+        'TABLE: the up-CELL line is 0 until the buzzer, and the COUNT stays live throughout',
+        bad.length === 0 && s.red.cellPts === 8,
+        bad.length
+          ? bad.map((x) => `${x.ph}: pts=${x.s.red.cellPts} count=${x.s.red.cellCount} total=${x.s.red.total}`).join(' · ')
+          : `auto ${live[0].s.red.total} / teleop ${live[1].s.red.total}, both with 0 cell points and 4 in the tray · post: ${s.red.cellPts} pts on a total of ${s.red.total}`,
+      );
+    }
+
     // RP thresholds (Table 10-2/10-3)
     check('RP: SWARM — red LEAVE+PARK 26 ≥ 16', s.rp.red.swarm, `${s.red.leave + s.red.parkAuto + s.red.parkTele}`);
     check('RP: SWARM — blue has 0, no RP', !s.rp.blue.swarm);

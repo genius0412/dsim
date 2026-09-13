@@ -163,8 +163,12 @@ export interface BbAllianceScore {
   /** completed HIVE TIPS, and 20 each */
   tips: number;
   tipPts: number;
-  /** elements in this alliance's upward-facing CELL, and 2 each */
+  /** elements in this alliance's upward-facing CELL right now — LIVE, a readout and not a
+   * score. What is in a tray is on its way to being tipped out of it. */
   cellCount: number;
+  /** 2 for each of those, **and 0 until the match is over** (owner ruling, 2026-09-12): Table
+   * 10-2 pays for an element LEFT IN the cell, which is a state of the field at the buzzer.
+   * Lands once, at `post`; never in freeplay, which has no buzzer. */
   cellPts: number;
   /** elements inside a FLOWER this alliance OWNS, and 2 each */
   ownedCount: number;
@@ -267,12 +271,32 @@ export function bbScoreWorld(world: World): BbScore {
     if (parkT) s.parkTeleCount++;
   }
 
-  // ── HIVE TIP, and the elements left in the up-CELL ─────────────────────────
+  // ── HIVE TIP, and the elements LEFT in the up-CELL at the END ─────────────
+  /**
+   * ⚠️ THE CELL LINE IS SCORED AT THE END OF THE MATCH, NOT LIVE (owner ruling, 2026-09-12).
+   *
+   * Table 10-2 pays 2 for an element "left in" the up-CELL, and LEFT IN is a state of the
+   * field at the buzzer, not a running total: everything in a cell is on its way to being
+   * TIPPED out, and the ones that tip earn the 20 and then stop being worth anything. Counting
+   * them live made the score bar tick up 2 at a time while the load built and then drop by ten
+   * or twelve the instant the bar swung, which reads as a penalty for doing the one thing the
+   * HIVE is for.
+   *
+   * So `cellCount` — the driver's readout, what is in the tray right now — stays LIVE, and it
+   * is the POINTS that wait. `cellPts` is 0 for the whole match and lands once at `post`.
+   *
+   * `cellCount` is the UP cell's by construction: `hiveStep` empties the tray as the bar passes
+   * level and hands the swing over to the cell coming up, so there is never a down-cell's load
+   * in here.
+   *
+   * FREEPLAY never reaches `post` and therefore never banks the line. That is the same answer
+   * PARK already gives in freeplay (its latch is never written), and it is the honest one: a
+   * practice session has no buzzer, so there is no instant at which anything was "left in".
+   */
+  const matchOver = phase === 'post';
   for (const a of ALLIANCES) {
     const hive = bb.hives[a];
     out[a].tips = hive.tips;
-    // `contents` is the UP cell's, by construction: `hiveStep` empties it as the bar passes
-    // level and the new up-cell starts empty, so there is never a down-cell's load in here.
     out[a].cellCount = hive.contents.length;
   }
 
@@ -307,7 +331,8 @@ export function bbScoreWorld(world: World): BbScore {
     s.parkAuto = s.parkAutoCount * BB_PTS.parkAuto;
     s.parkTele = s.parkTeleCount * BB_PTS.parkTele;
     s.tipPts = s.tips * BB_PTS.tip;
-    s.cellPts = s.cellCount * BB_PTS.cell;
+    // 0 until the buzzer — see the CELL block above.
+    s.cellPts = matchOver ? s.cellCount * BB_PTS.cell : 0;
     s.gardenPts = s.gardenCount * BB_PTS.garden;
     s.foul = world.match.scores[a].foulPoints;
     s.total =
