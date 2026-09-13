@@ -1073,6 +1073,74 @@ export function robotChecks(check: Check): void {
     run(w, cmd({}), 3);
     check('autofire: ...and on the open side, once the turret is settled on the HIVE, it fires', r.hopper.length < full, `hopper=${r.hopper.length}`);
   }
+  /**
+   * AUTO-FIRE DOES NOT WAIT FOR A FULL HOPPER. It armed only at the cap, so it threw ONE element
+   * each time the intake took the fourth and then stopped: it fired when the hopper happened to
+   * fill, never when a shot was on.
+   */
+  {
+    const w = mkWorld('free', 87, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }));
+    const r = w.robots[0];
+    r.autoFire = true;
+    park(r, 12, 50, Math.PI);
+    emptyHopper(w, r);
+    give(w, r, ['yellow']);
+    const cell = w.biobuzz!.hives.blue;
+    const in0 = cell.contents.length;
+    run(w, cmd({}), 3);
+    check(
+      'autofire: holding ONE element (not full) on the open side, it fires, and the element scores',
+      r.hopper.length === 0 && w.biobuzz!.hives.blue.contents.length === in0 + 1,
+      `hopper=${r.hopper.length} cell ${in0}→${w.biobuzz!.hives.blue.contents.length}`,
+    );
+  }
+  /** AUTO-FIRE HOLDS while its own cell is mid-swing (nothing can enter a moving HIVE). Paired
+   * with the same scene unswung, so the hold is not just a turret that had not settled yet. */
+  {
+    const scene = (swing: boolean): number => {
+      const w = mkWorld('free', 89, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }));
+      const r = w.robots[0];
+      r.autoFire = true;
+      park(r, 12, 50, Math.PI);
+      if (swing) w.biobuzz!.hives.blue = { ...w.biobuzz!.hives.blue, tipping: 1.0, released: false };
+      run(w, cmd({}), 0.9);
+      return r.hopper.length;
+    };
+    const held = scene(true);
+    const free = scene(false);
+    check('autofire: holds its load while the own cell is mid-swing (and fires in the same scene unswung)', held === 4 && free < 4, `swinging hopper=${held}, settled hopper=${free}`);
+  }
+  /**
+   * A STEADY FEED NEVER THROWS INTO A CELL THAT IS ABOUT TO TIP. "On target" used to be the
+   * turret's geometry alone, so shots kept leaving at a settled cell that the elements ahead of
+   * them would tip, and arrived at a swinging HIVE: 58 of 61 auto-fired elements missed. Every
+   * element auto-fired here must score, and the cell must actually tip (non-vacuous).
+   */
+  {
+    const w = mkWorld('free', 91, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }));
+    const r = w.robots[0];
+    r.autoFire = true;
+    park(r, 12, 45, Math.PI);
+    const tips0 = w.biobuzz!.hives.blue.tips;
+    const flying = new Set<number>();
+    let scored = 0;
+    let missed = 0;
+    for (let i = 0; i < Math.round(8 / C.SIM_DT); i++) {
+      if (r.hopper.length < bbHopperCap(r.spec)) give(w, r, ['yellow']);
+      const before = new Set(w.balls.filter((b) => b.state.kind === 'flight').map((b) => b.id));
+      tick(w, cmd({}));
+      for (const b of w.balls) if (b.state.kind === 'flight' && !before.has(b.id)) flying.add(b.id);
+      for (const id of [...flying]) {
+        const b = w.balls.find((q) => q.id === id)!;
+        if (b.state.kind === 'flight') continue;
+        flying.delete(id);
+        if (b.state.kind === 'element' && b.state.el === 'hive:blue') scored++;
+        else missed++;
+      }
+    }
+    const tips = w.biobuzz!.hives.blue.tips - tips0;
+    check('autofire: on a steady feed every auto-fired element scores, and the cell tips', missed === 0 && scored > 0 && tips > 0, `scored=${scored} missed=${missed} tips=${tips}`);
+  }
   /** the HUD reads the launcher through the resolver, never the flat mirror */
   {
     const w = mkWorld('free', 85, mech({ launcher: TWIN, lift: null }));

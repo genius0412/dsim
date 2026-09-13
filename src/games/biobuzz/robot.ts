@@ -247,6 +247,22 @@ export function bbTurretOrigin(r: RobotState, which: 0 | 1 = 0): Vec2 {
   return { x: r.pos.x + off.x, y: r.pos.y + off.y };
 }
 
+/**
+ * THE RELEASE turret `which` makes RIGHT NOW at `speed`: where the element is born and the
+ * velocity it leaves with, along that turret's current heading and pitch (not its solution —
+ * a turret still swinging fires where it points). ONE function because two readers need the same
+ * answer: `bbLaunch` releases it, and stage 5b runs it forward to ask whether it will score.
+ */
+export function bbTurretRelease(r: RobotState, which: 0 | 1, speed: number): { origin: Vec2; vel: Vec3 } {
+  const h = which === 1 ? (r.bbTurret2Heading ?? r.turretHeading) : r.turretHeading;
+  const pitch = which === 1 ? (r.bbTurret2Pitch ?? 0) : (r.bbTurretPitch ?? 0);
+  const vh = dcos(pitch);
+  return {
+    origin: bbTurretOrigin(r, which),
+    vel: { x: dcos(h) * speed * vh, y: dsin(h) * speed * vh, z: speed * dsin(pitch) },
+  };
+}
+
 /** the mid-point of a turretless launcher's firing EDGE, in world space, plus that edge's
  * outward direction and the half-span a launch LINE spreads its release points across. */
 function launchLine(r: RobotState, edge: BbEdge): { origin: Vec2; dir: Vec2; perp: Vec2; half: number } {
@@ -285,9 +301,14 @@ export interface BbShot {
   speed: readonly (number | undefined)[];
   /** ON TARGET per exit (same indexing): a turret settled on a REACHABLE HIVE solution within
    * `BB_ON_TARGET_TOL`, or a dumper within `BB_AIM_TOL` of its aim heading with every element
-   * inside the accepted band. AUTO-FIRE waits for it; manual fire does not, except a dumper's
-   * aim gate. */
+   * inside the accepted band. Manual fire does not wait for it, except a dumper's aim gate. */
   onTarget: readonly boolean[];
+  /** WILL SCORE per exit (same indexing): on target, AND the release this exit would make now,
+   * run forward through the flight stage (`bbFlightEnters`), enters the own up-CELL, AND that
+   * cell will still be taking elements when it arrives (`bbCellTaking` — not mid-swing, and not
+   * about to be tipped by what is already in the air). This is what AUTO-FIRE waits for. Only
+   * computed for a robot that will auto-fire; `false` otherwise. */
+  scores: readonly boolean[];
 }
 
 /**
@@ -306,10 +327,16 @@ export interface BbShot {
  *                  (`bbDumpSolution`), then `BB_DUMP_RELOAD_S` to re-arm.
  *
  * ── WHEN IT FIRES ───────────────────────────────────────────────────────────
- * MANUAL fire fires. AUTO-FIRE (a full hopper with `autoFire` on) fires only when stage 5b says
- * the next exit is ON TARGET (`BbShot.onTarget`) — every robot is staged full and the presets
- * ship with auto-fire, so an unconditional auto-fire emptied a Box Tube robot's load the moment
- * the match started and it never reached a FLOWER. A DUMPER with aim assist and a target holds
+ * MANUAL fire fires. AUTO-FIRE fires whenever stage 5b says the next exit WILL SCORE
+ * (`BbShot.scores`), with however many elements are held. Two earlier gates made it fire at
+ * odd moments and are gone:
+ *  · it armed only on a FULL hopper, so it threw ONE element each time the intake took the
+ *    fourth and then stopped — firing when the hopper happened to fill, never when a shot was on;
+ *  · "on target" was the turret's geometry alone, so with a steady feed it kept firing into a
+ *    cell that the elements already in the air were about to TIP, and every one of those arrived
+ *    at a swinging HIVE and fell through (measured: 58 of 61 auto-fired shots missed).
+ * An unconditional auto-fire is still wrong: every robot is staged full, and a Box Tube robot
+ * must be able to carry its load to a FLOWER without throwing it off the closed side. A DUMPER with aim assist and a target holds
  * even a manual press until it is on target: it throws its whole hopper at once, before the
  * assist has had a tick to steer, and a dump thrown 8° off a 20-in cell is a dump on the floor.
  * With NO target (nothing on the open side) a manual dump still throws, straight over its edge
@@ -326,8 +353,8 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
   const top = r.hopper.length > 0 ? r.hopper[r.hopper.length - 1] : undefined;
   const nextExit = dumper || top === undefined ? 0 : bbTurretFor(launcher, isNectarColour(top));
   const onTarget = shot?.onTarget[nextExit] ?? false;
-  const full = r.hopper.length >= bbHopperCap(r.spec);
-  const want = enabled && (cmd.fire || (r.autoFire && full && onTarget));
+  const scores = shot?.scores[nextExit] ?? false;
+  const want = enabled && (cmd.fire || (r.autoFire && scores));
   if (!want || r.hopper.length === 0) {
     // IDLE GUARD: hold the cadence clock at "now" while there is nothing to fire, so a robot
     // that sat empty for ten seconds does not empty its hopper in one tick on refill.
@@ -374,13 +401,8 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
   while (r.fireReadyAt <= world.time && r.hopper.length > 0 && fired < BB_FIRE_BURST_MAX) {
     const colour = r.hopper[r.hopper.length - 1];
     const which = bbTurretFor(launcher, isNectarColour(colour));
-    const o = bbTurretOrigin(r, which);
-    const h = which === 1 ? (r.bbTurret2Heading ?? r.turretHeading) : r.turretHeading;
-    const pitch = which === 1 ? (r.bbTurret2Pitch ?? 0) : (r.bbTurretPitch ?? 0);
-    const speed = shot?.speed[which] ?? BB_LAUNCH_SPEED_DEFAULT;
-    const vh = dcos(pitch);
-    const vv = dsin(pitch);
-    releasePollen(world, r, { x: dcos(h) * speed * vh, y: dsin(h) * speed * vh, z: speed * vv }, undefined, o, colour);
+    const rel = bbTurretRelease(r, which, shot?.speed[which] ?? BB_LAUNCH_SPEED_DEFAULT);
+    releasePollen(world, r, rel.vel, undefined, rel.origin, colour);
     r.fireReadyAt += BB_FIRE_INTERVAL;
     fired++;
   }
