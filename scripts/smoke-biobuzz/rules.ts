@@ -1,4 +1,4 @@
-import type { Alliance, Artifact, ArtifactColor, World } from '../../src/types';
+import type { Alliance, Artifact, ArtifactColor, RobotCommand, World } from '../../src/types';
 import { SIM_DT } from '../../src/config';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
@@ -29,10 +29,15 @@ import {
   bbParkedNow,
   bbScoreWorld,
 } from '../../src/games/biobuzz/score';
-import { BB_FRAME_RAM_SPEED, bbNectarLocked, updateBiobuzzPenalties } from '../../src/games/biobuzz/penalties';
+import {
+  BB_CONTROL_LIMIT,
+  BB_FRAME_RAM_SPEED,
+  bbNectarLocked,
+  updateBiobuzzPenalties,
+} from '../../src/games/biobuzz/penalties';
 import { biobuzzFieldHud } from '../../src/games/biobuzz/hud';
 import { bbScene, bbSceneAt } from '../../src/games/biobuzz/scenes';
-import { setup, type Check } from './harness';
+import { cmd, setup, type Check } from './harness';
 
 /**
  * THE RULES LANE — Table 10-2 scoring, the Section 11 fouls, the 1:00 cue and the HUD slice.
@@ -404,13 +409,47 @@ function scoringChecks(check: Check): void {
 // SECTION 11 — EVERY FOUL, ON ITS EDGE
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** run the penalty engine for `n` ticks without moving anything, and report what it billed. */
-function bill(world: World, n = 1): { major: Record<Alliance, number>; pts: Record<Alliance, number> } {
-  for (let i = 0; i < n; i++) updateBiobuzzPenalties(world);
+/** no commands at all — the driverless default every non-pin check runs on. */
+const NO_CMD = new Map<number, RobotCommand>();
+
+/**
+ * Run the penalty engine for `n` ticks without moving anything, and report what it billed.
+ *
+ * `dt` is a REAL `SIM_DT` rather than a stand-in, because G421 is billed in SECONDS: a tick
+ * here is a sixtieth of a second of pinning and the check arithmetic counts on it. `held` is
+ * the command map — the pin detector asks whether the pinner is driving into its victim, and
+ * a driverless world can never produce a pin.
+ */
+function bill(
+  world: World,
+  n = 1,
+  held: Map<number, RobotCommand> = NO_CMD,
+): { major: Record<Alliance, number>; minor: Record<Alliance, number>; pts: Record<Alliance, number> } {
+  for (let i = 0; i < n; i++) updateBiobuzzPenalties(world, SIM_DT, held);
   return {
     major: { red: world.match.fouls.red.major, blue: world.match.fouls.blue.major },
+    minor: { red: world.match.fouls.red.minor, blue: world.match.fouls.blue.minor },
     pts: { red: world.match.scores.red.foulPoints, blue: world.match.scores.blue.foulPoints },
   };
+}
+
+/** whole ticks of `s` seconds, which is the only unit the pin clock advances in. */
+function ticks(s: number): number {
+  return Math.round(s / SIM_DT);
+}
+
+/**
+ * A command that drives a default BIOBUZZ robot along world +x (`dir` = 1) or −x (−1).
+ *
+ * Both the mecanum and the tank decode are filled, and they agree: `driveIntent` reads
+ * `{x: driveY, y: −driveX}` rotated by the heading for a holonomic build and `(left+right)/2`
+ * for a tank one, so at heading 0 either decode gives `{x: dir, y: 0}`. Writing one and not
+ * the other would make this fixture depend on which drivetrain `BB_DEFAULT_SPEC` happens to
+ * carry — and `attemptDir` exists precisely because a tank robot that fills neither was once
+ * unable to be pinned at all.
+ */
+function driveX(dir: 1 | -1): RobotCommand {
+  return cmd({ driveY: dir, leftDrive: dir, rightDrive: dir });
 }
 
 function penaltyChecks(check: Check): void {
@@ -430,6 +469,24 @@ function penaltyChecks(check: Check): void {
     // a POLLEN entering early is no foul at all
     intoFlower(w, 0, ['yellow', 'yellow']);
     check('G410: POLLEN may enter a FLOWER at any time', bill(w, 5).major.red === 0);
+
+    /**
+     * ...AND THE SAME AT 2:00, WHICH IS THE OWNER'S RULING 3 WRITTEN AS A CHECK.
+     *
+     * G410 names NECTAR and only NECTAR, so POLLEN may enter a FLOWER at any point in the
+     * match and simply earns nothing until a NECTAR gives that flower an owner (§10.5.2). The
+     * line above proves it one second inside the lock; this one proves it a full minute
+     * earlier, where a rule that had quietly generalised to "no SCORING ELEMENT before 1:00"
+     * would be indistinguishable from a correct one.
+     */
+    w.match.phaseTimeLeft = 120; // 2:00 of TELEOP left — deep inside the lock
+    check('G410: entry is still LOCKED at 2:00', bbNectarLocked(w));
+    intoFlower(w, 2, ['yellow', 'yellow', 'yellow']);
+    const pollenAt2 = bill(w, 10);
+    check('G410: POLLEN entering a FLOWER at 2:00 bills NOTHING (ruling 3 — NECTAR only)',
+      pollenAt2.major.red === 0 && pollenAt2.major.blue === 0 && pollenAt2.pts.blue === 0,
+      `${pollenAt2.major.red}/${pollenAt2.major.blue}`);
+    w.match.phaseTimeLeft = BB_FLOWER_UNLOCK_S + 1; // back to where the rest of the block runs
 
     // now a RED nectar, held for several ticks
     intoFlower(w, 0, ['red']);
@@ -499,7 +556,72 @@ function penaltyChecks(check: Check): void {
     check('G402: crossing in TELEOP is legal', bill(t, 30).major.red === 0);
   }
 
-  // ── G417: ramming the HIVE frame — VERBAL first, MAJOR if REPEATED ────────
+  // ── G407: CONTROL of a fifth element — a WARNING, and only a warning ──────
+  /**
+   * Owner ruling 2026-09-12 (field-plan §4.3): G407 is a WARNING, not a cap. Table 10-4's base
+   * sanction is a VERBAL WARNING, with MAJOR + YELLOW only if STRATEGIC, and the sim does not
+   * guess at intent — so the tariff here is an event line, a HUD count, and zero points.
+   *
+   * The hopper is set DIRECTLY. `bbHopperCap` still clamps a driven robot to 4 until Lane B
+   * lifts `BB_STORAGE_MAX` (relay 2), so a driven fixture could not reach five at all today —
+   * and a rules check should fail when the RULE is wrong, not when another lane's dial has not
+   * moved yet.
+   */
+  {
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    const r = w.robots[0];
+    const warnings = () => w.events.filter((e) => e.includes('G407')).length;
+
+    // FOUR is the legal number and never warns, however long it is held
+    r.hopper = ['yellow', 'yellow', 'yellow', 'yellow'];
+    const legal = bill(w, 30);
+    check('G407: CONTROL of exactly 4 never warns', warnings() === 0, String(warnings()));
+    check('G407: ...and a legal robot starts FULL (G304.G stages 4)', r.hopper.length === BB_CONTROL_LIMIT);
+
+    // FIVE warns ONCE, however long it is held
+    r.hopper = ['yellow', 'yellow', 'yellow', 'yellow', 'yellow'];
+    const over = bill(w, 30);
+    check('G407: CONTROL of 5 warns ONCE, not once per tick', warnings() === 1, String(warnings()));
+    check('G407: the warning names the rule and the count',
+      w.events.some((e) => e === 'WARNING - RED (G407 CONTROL of 5+ elements)'),
+      w.events.filter((e) => e.includes('G407')).join(' | '));
+
+    // ...and it is a WARNING: no points, no MAJOR, no MINOR, either way
+    check('G407: no points move', over.pts.red === 0 && over.pts.blue === 0,
+      `${over.pts.red}/${over.pts.blue}`);
+    check('G407: no MAJOR and no MINOR — it is not a foul',
+      over.major.red === 0 && over.minor.red === 0 && over.major.blue === 0 && over.minor.blue === 0);
+    check('G407: and the foul tally is untouched', legal.major.red === 0 && over.major.red === 0);
+
+    // back to 4 and up again: a SECOND instance is a SECOND warning (§10.6, per instance)
+    r.hopper = ['yellow', 'yellow', 'yellow', 'yellow'];
+    const back = bill(w, 10);
+    check('G407: dropping back to 4 warns nothing', warnings() === 1, String(warnings()));
+    r.hopper = ['yellow', 'yellow', 'yellow', 'yellow', 'yellow'];
+    bill(w, 10);
+    check('G407: climbing to 5 AGAIN warns again', warnings() === 2, String(warnings()));
+    check('G407: still no points after two warnings', back.pts.blue === 0 && w.match.scores.blue.foulPoints === 0);
+
+    // the HUD chip — a sanction worth no points is invisible without it
+    const hud = biobuzzFieldHud(w);
+    check('HUD: the G407 warning count reaches the slice', hud.warnings.red === 2, String(hud.warnings.red));
+    check('HUD: and it is per ALLIANCE — blue drew none', hud.warnings.blue === 0, String(hud.warnings.blue));
+  }
+
+  // ── G417: ramming the HIVE frame — STRATEGIC, so a MAJOR on the FIRST hit ─
+  /**
+   * The escalation condition is STRATEGIC, **not** REPEATED (manual-distilled §11 item 4).
+   * "Ramming into the HIVE frame at high-speed" is example A of what is likely STRATEGIC, and
+   * it is strategic on a SINGLE hit — so `BB_FRAME_RAM_SPEED` is this sim's strategic test and
+   * there is no free first warning above it. REPEATED is example F, one indicator among six,
+   * and reading it as the trigger is what dropped example A.
+   *
+   * "MAJOR FOUL and YELLOW CARD **per MATCH**" (Table 10-4), in deliberate contrast with
+   * G416's "per instance" two rows above — so the tariff is paid ONCE however many times the
+   * robot rams. The YELLOW CARD is not modelled; BIOBUZZ has no card machinery.
+   */
   {
     const w = bare([{ id: 0, alliance: 'blue' }]);
     w.match.phase = 'teleop';
@@ -509,18 +631,21 @@ function penaltyChecks(check: Check): void {
     place(w, 0, 24 - 8, 0);
     r.vel = { x: -(BB_FRAME_RAM_SPEED + 10), y: 0 };
     const first = bill(w, 20);
-    check('G417: the FIRST ram is a VERBAL — no points', first.major.blue === 0 && first.pts.red === 0);
-    check('G417: the verbal is on the event feed',
-      w.events.some((e) => e.includes('G417')),
+    check('G417: the FIRST high-speed ram is STRATEGIC — a MAJOR, not a free warning',
+      first.major.blue === 1, String(first.major.blue));
+    check(`G417: red is +${BB_PTS.foulMajor}`, first.pts.red === BB_PTS.foulMajor, String(first.pts.red));
+    check('G417: and it names itself STRATEGIC on the event feed',
+      w.events.some((e) => e.includes('G417') && e.includes('STRATEGIC')),
       w.events.filter((e) => e.includes('G417')).join(' | '));
 
-    // back off, then ram again
+    // back off, then ram again — the tariff is PER MATCH, so it is not paid twice
     r.vel = { x: 0, y: 0 };
     bill(w, 5);
     r.vel = { x: -(BB_FRAME_RAM_SPEED + 10), y: 0 };
     const second = bill(w, 20);
-    check('G417: a REPEAT is a MAJOR', second.major.blue === 1, String(second.major.blue));
-    check(`G417: red is +${BB_PTS.foulMajor}`, second.pts.red === BB_PTS.foulMajor, String(second.pts.red));
+    check('G417: a SECOND ram bills nothing more — the tariff is per MATCH',
+      second.major.blue === 1, String(second.major.blue));
+    check('G417: so red is still +20 and not +40', second.pts.red === BB_PTS.foulMajor, String(second.pts.red));
 
     // driving ALONG the structure at the same speed is not ramming
     const q = bare([{ id: 0, alliance: 'blue' }]);
@@ -529,9 +654,11 @@ function penaltyChecks(check: Check): void {
     place(q, 0, 24 - 8, 0);
     q.robots[0].vel = { x: 0, y: BB_FRAME_RAM_SPEED + 40 };
     check('G417: driving ALONG a frame bar is not ramming', bill(q, 20).major.blue === 0);
-    // and a gentle nudge is not either
+    // ...and a gentle nudge is the manual's own likely-NOT-STRATEGIC case ("accidentally
+    // bumping the frame while attempting to pick up POLLEN"), so it is not a foul either
     q.robots[0].vel = { x: -(BB_FRAME_RAM_SPEED - 10), y: 0 };
-    check('G417: contact below the ram threshold is not a foul', bill(q, 20).major.blue === 0);
+    check('G417: contact below the ram threshold is not STRATEGIC, and not a foul',
+      bill(q, 20).major.blue === 0);
   }
 
   // ── the edge memory is CLEARED outside the played periods ─────────────────
@@ -551,6 +678,217 @@ function penaltyChecks(check: Check): void {
     w.match.phase = 'teleop';
     const resumed = bill(w, 3);
     check('EDGE: the first instance after a restart is billed', resumed.major.red === 2, String(resumed.major.red));
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G421 — PINNING, WHICH IS BILLED IN SECONDS AND NOT ON AN EDGE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ⚠️ EVERY POSE BELOW IS MEASURED ON THE FOOTPRINT, 21 × 17, NOT THE 15 × 17 CHASSIS.
+ * `robotExtents` adds a sweeper's reach to each end, so at heading 0 a robot reaches 10.5 in
+ * along x and two of them are in contact whenever their centres are within ~21 in. Poses
+ * written against the chassis put the robots a clear four inches apart and the rule simply
+ * never fires — which reads exactly like a broken detector.
+ *
+ * The pin fixture is deliberately NOT a driven match. `isPinning` asks who is PRESSING and
+ * the accumulator measures how far the victim actually got, so a hand-built world with static
+ * poses is the only way to hold "pressed, going nowhere" for an exact number of seconds. What
+ * a real chassis does when shoved is the physics lane's question, not this one's.
+ */
+function pinChecks(check: Check): void {
+  /**
+   * ONE PINNER, ONE IDLE VICTIM, HELD AGAINST THE HIVE FRAME.
+   *
+   * The +x frame bar's inner edge is on the x = +24 seam, so a victim flat against it sits at
+   * x = 24 − 10.5 = 13.5. The pinner is 20.5 in away — overlapping by half an inch, the way
+   * two robots in a shove actually are — and driving into it.
+   *
+   * ⚠️ THE VICTIM GIVES NO COMMAND, AND UNDER G421 THAT IS THE LITERAL RULE — not a lenient
+   * reading of it. DECODE's G422 ends "...and the opponent ROBOT is attempting to move";
+   * **G421 does not contain that clause** (manual-distilled §3.3, verbatim p114, and §10
+   * item 13). The test is "preventing the movement of an opponent ROBOT by contact" and
+   * nothing more, so a BIOBUZZ robot is PINNED whether or not it struggles.
+   *
+   * `isPinning`'s idle-victim branch — which its own comment marks ⚠️ as a DEVIATION, because
+   * under DECODE it is — is therefore exactly right here. A detector with a struggle test
+   * would bill nothing in this fixture and would under-call every real BIOBUZZ pin, which is
+   * the failure this check exists for. Do not add one.
+   */
+  const frame = (): World => {
+    const w = bare([
+      { id: 0, alliance: 'red' },
+      { id: 1, alliance: 'blue' },
+    ]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    place(w, 1, 24 - 10.5, 0); // blue, flat against the +x HIVE frame bar
+    place(w, 0, 24 - 10.5 - 20.5, 0); // red, pressing into it
+    return w;
+  };
+  const press = new Map<number, RobotCommand>([[0, driveX(1)]]);
+
+  {
+    const w = frame();
+    const under = bill(w, ticks(2.9), press);
+    check('G421: under three seconds of PINNING bills nothing', under.major.red === 0, String(under.major.red));
+
+    const first = bill(w, ticks(0.4), press); // 3.3 s
+    check('G421: an IDLE victim held against the frame bills — G421 has no struggle test',
+      first.major.red === 1, String(first.major.red));
+    check("G421: it is a MAJOR, not DECODE's MINOR", first.minor.red === 0, String(first.minor.red));
+    check(`G421: the points go to the VICTIM's alliance, +${BB_PTS.foulMajor}`,
+      first.pts.blue === BB_PTS.foulMajor, String(first.pts.blue));
+    check('G421: the victim is billed nothing', first.major.blue === 0 && first.pts.red === 0);
+
+    // "...and an additional MAJOR FOUL for every 3 seconds in which the situation is not
+    // corrected" (manual-distilled §3.1, Table 10-4)
+    const second = bill(w, ticks(3.0), press); // 6.3 s
+    check('G421: another MAJOR for every further 3 s', second.major.red === 2, String(second.major.red));
+    check('G421: two majors are 40 to blue', second.pts.blue === 2 * BB_PTS.foulMajor, String(second.pts.blue));
+  }
+
+  /**
+   * TABLE 10-6's OWN WORKED EXAMPLE, WHICH IS THE ONLY ARITHMETIC CHECK THAT PROVES THE LOOP.
+   *
+   * "Upon violation, a MAJOR FOUL is assessed against the violating ALLIANCE and the REFEREE
+   * begins to count ... for each 3 seconds within that time, an additional MAJOR FOUL is
+   * assessed. A ROBOT in violation of this type of rule for 15 seconds is assessed a total of
+   * 6 MAJOR FOULS" (p95, manual-distilled §3.2).
+   *
+   * The violation OPENS at 3 s of pinning — "may not PIN for more than 3 seconds" — so 15 s of
+   * being IN VIOLATION is 18 s of pinning: one MAJOR on entry plus one for each of the five
+   * further intervals. **6 MAJOR = 120 points**, which is a fifth of a plausible match score
+   * and worth an integer rather than a shrug. Written out longhand here because the numbers
+   * are the manual's, not the implementation's: a loop that billed on entry AND at 3 s would
+   * read 7 here, and one that waited for the interval to complete would read 5.
+   */
+  {
+    const w = frame();
+    const long = bill(w, ticks(18.1), press);
+    check('G421: 18 s of pinning = 15 s in violation = 6 MAJOR (Table 10-6)',
+      long.major.red === 6, String(long.major.red));
+    check('G421: ...which is 120 points to the victim', long.pts.blue === 120, String(long.pts.blue));
+    check('G421: and no CARD — G421 has no card escalation, only the running tariff',
+      Object.keys(w.penalties.carded).length === 0);
+  }
+
+  /**
+   * THE MUTUAL SHOVE — criterion C, and the reason a pin detector needs one.
+   *
+   * Two EQUAL chassis meeting head-on in open field. Both satisfy every clause of the rule
+   * against the other — contact, pressing in, going nowhere — so both are "pinning", and a
+   * stalemate that is nobody's fault must not bill BOTH alliances 20 points every three
+   * seconds. "The PINNING ROBOT gets PINNED" ends it: the pair is thrown out entirely.
+   *
+   * Mid-field on purpose. `isPinning` breaks the symmetry of a shove with a SOLID at one
+   * robot's back, and the middle of the field is where there is nothing to break it with.
+   */
+  {
+    const w = bare([
+      { id: 0, alliance: 'red' },
+      { id: 1, alliance: 'blue' },
+    ]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    place(w, 0, -10, 0);
+    place(w, 1, 10, 0);
+    const both = new Map<number, RobotCommand>([
+      [0, driveX(1)],
+      [1, driveX(-1)],
+    ]);
+    const shove = bill(w, ticks(10), both);
+    check('G421: an equal-chassis mutual shove mid-field bills NOTHING',
+      shove.major.red === 0 && shove.major.blue === 0, `${shove.major.red}/${shove.major.blue}`);
+    check('G421: and no points move either way', shove.pts.red === 0 && shove.pts.blue === 0);
+    check('G421: a mutual hold keeps no accumulator at all',
+      Object.keys(w.penalties.pins).length === 0, Object.keys(w.penalties.pins).join(','));
+  }
+
+  /**
+   * THE COUNT PAUSES AND RESUMES — the clause the whole rule turns on.
+   *
+   * 2.5 s of pinning, then the pinner EASES OFF for 0.7 s, then 0.6 s more. The two pressing
+   * stretches total 3.1 s, so the tariff lands exactly once. If a lapse RESET the count, the
+   * 0.6 s stretch would bill nothing and a pinner could hold a victim all match for free by
+   * blinking every three seconds. If a lapse ENDED the pin, the same thing.
+   *
+   * 0.7 s is well inside `PIN_END_S`, which is the point: A and B are distances held for MORE
+   * THAN THREE SECONDS and nothing shorter than that ends anything.
+   */
+  {
+    const w = frame();
+    const held = bill(w, ticks(2.5), press);
+    check('G421: 2.5 s of pinning is still under the tariff', held.major.red === 0, String(held.major.red));
+
+    const off = bill(w, ticks(0.7)); // no command — the pinner stops pressing
+    check('G421: easing off for 0.7 s bills nothing', off.major.red === 0, String(off.major.red));
+    const paused = biobuzzFieldHud(w).pins;
+    check('G421: the PIN is still on the books through the ease-off', paused.length === 1, String(paused.length));
+    check('G421: and its count PAUSED rather than resetting — ~2.5 s, not 0',
+      paused.length === 1 && Math.abs(paused[0].seconds - 2.5) < 0.05,
+      paused.length === 1 ? paused[0].seconds.toFixed(3) : 'no pin');
+
+    const resumed = bill(w, ticks(0.6), press); // 2.5 + 0.6 = 3.1 s of actual pinning
+    check('G421: the count RESUMES — 2.5 s + 0.6 s crosses the tariff', resumed.major.red === 1, String(resumed.major.red));
+  }
+
+  /**
+   * ...AND CRITERION A REALLY DOES END IT, which is what makes the pause above a pause rather
+   * than a detector that never lets go. The victim is moved a clear 2 ft away and left there
+   * for more than `PIN_END_S`; the accumulator is dropped, and a fresh press starts from zero.
+   */
+  {
+    const w = frame();
+    bill(w, ticks(2.5), press);
+    place(w, 1, 24 - 10.5 + 30, 0); // 30 in away — past PIN_ESCAPE_DIST (24)
+    const away = bill(w, ticks(3.5), press);
+    check('G421: 2 ft of daylight for more than 3 s bills nothing', away.major.red === 0, String(away.major.red));
+    check('G421: ...and ENDS the pin — the accumulator is gone',
+      Object.keys(w.penalties.pins).length === 0, Object.keys(w.penalties.pins).join(','));
+    place(w, 1, 24 - 10.5, 0); // back into the hold
+    const restart = bill(w, ticks(2.5), press);
+    check('G421: a pin that ENDED restarts from zero, not from 2.5 s', restart.major.red === 0, String(restart.major.red));
+  }
+
+  /**
+   * THE PIN CLOCKS ARE FORGOTTEN OUTSIDE THE PLAYED PERIODS, the same way `foulEdge` is.
+   *
+   * Robots are DISABLED through the transition, so a pin that was live at the AUTO buzzer is
+   * not being held across the freeze — and carrying 2.9 s of it into TELEOP would bill a MAJOR
+   * on the first tick of a period in which nothing had happened yet. DECODE's own engine does
+   * NOT clear these; this one does, and this check is what says so out loud.
+   */
+  {
+    const w = frame();
+    bill(w, ticks(2.5), press);
+    check('G421: a live pin is on the books during TELEOP', Object.keys(w.penalties.pins).length === 1);
+    w.match.phase = 'transition';
+    bill(w, 1, press);
+    check('G421: the pin clocks are cleared outside the played periods',
+      Object.keys(w.penalties.pins).length === 0, Object.keys(w.penalties.pins).join(','));
+    w.match.phase = 'teleop';
+    const resumed = bill(w, ticks(2.5), press);
+    check('G421: so the same hold starts over when play resumes', resumed.major.red === 0, String(resumed.major.red));
+  }
+
+  /** the HUD slice — `nextIn` is the only warning either driver gets. */
+  {
+    const w = frame();
+    check('HUD: no pins on a quiet field', biobuzzFieldHud(w).pins.length === 0);
+    bill(w, ticks(1.0), press);
+    const [pin] = biobuzzFieldHud(w).pins;
+    check('HUD: a live PIN names the pinner and the victim', !!pin && pin.pinner === 0 && pin.pinned === 1,
+      pin ? `${pin.pinner}→${pin.pinned}` : 'none');
+    check('HUD: nextIn counts down to the MAJOR — ~2 s left after 1 s of pinning',
+      !!pin && Math.abs(pin.nextIn - 2) < 0.05, pin ? pin.nextIn.toFixed(3) : 'none');
+    check('HUD: nothing billed yet', !!pin && pin.billed === 0);
+    bill(w, ticks(2.5), press); // 3.5 s total
+    const [after] = biobuzzFieldHud(w).pins;
+    check('HUD: after the tariff lands, billed is 1 and nextIn restarts',
+      !!after && after.billed === 1 && after.nextIn > 2.4 && after.nextIn <= 3,
+      after ? `${after.billed}/${after.nextIn.toFixed(3)}` : 'none');
   }
 }
 
@@ -697,6 +1035,7 @@ function sceneChecks(check: Check): void {
 export function rulesChecks(check: Check): void {
   scoringChecks(check);
   penaltyChecks(check);
+  pinChecks(check);
   cueChecks(check);
   sceneChecks(check);
 }
