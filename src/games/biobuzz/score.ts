@@ -314,7 +314,10 @@ export function bbScoreWorld(world: World): BbScore {
 
   // ── HIVE TIP, and the elements LEFT in the up-CELL at the END ─────────────
   /**
-   * ⚠️ THE CELL LINE IS SCORED AT THE END OF THE MATCH, NOT LIVE (owner ruling, 2026-09-12).
+   * ⚠️ THE CELL LINE IS SCORED AT THE END OF THE MATCH, NOT LIVE (owner ruling, 2026-09-12;
+   * confirmed by §10.5 C, 2026-09-13: "Assessment of POLLEN and NECTAR remaining in the CELL
+   * will occur after all SCORING ELEMENTS and ROBOTS have come to rest at the conclusion of the
+   * MATCH").
    *
    * Table 10-2 pays 2 for an element "left in" the up-CELL, and LEFT IN is a state of the
    * field at the buzzer, not a running total: everything in a cell is on its way to being
@@ -352,11 +355,22 @@ export function bbScoreWorld(world: World): BbScore {
      * whole cell line with the 20 nowhere. Measured on the smoke scene: 16 at the buzzer, 0
      * harvested. Tipping — the one thing the HIVE is for — cost points.
      *
-     * Nothing cancels a swing (`hiveStep` counts one down to zero and has no other exit), so a
-     * bar that is moving at the buzzer WILL settle, and Table 10-2 pays 2 for an element left in
-     * a CELL *at rest after the match* (`BB_PTS.cell`). At rest, this load is on the tiles and
-     * the damper has made contact: the TIP is earned and the load is not. Paying both would bill
-     * one tray twice; paying neither is the bug.
+     * ── THE RULE SAYS SO IN AS MANY WORDS (§10.5 A and C) ─────────────────
+     *   A. "Assessment of HIVE TIPS occurs throughout the MATCH **and continues until all
+     *      SCORING ELEMENTS and ROBOTS have come to rest at the conclusion of the MATCH**."
+     *   C. "Assessment of POLLEN and NECTAR **remaining in the CELL** will occur **after** all
+     *      SCORING ELEMENTS and ROBOTS have come to rest at the conclusion of the MATCH."
+     *
+     * So the state that is scored is the one at REST, not the one at 0:00 — a swing still moving
+     * when the buzzer goes is assessed as the TIP it becomes, and the load it is dumping is not
+     * remaining in the CELL by the time C is asked. That is both halves of this fix, and the two
+     * clauses are also why the answer is not "wait for the swing": the sim CANNOT wait, because
+     * `MATCH_SETTLE_S` is fixed at 2.8 s and a swing takes 4.0. Predicting it is exact rather
+     * than optimistic — nothing cancels a swing (`hiveStep` counts one down to zero and has no
+     * other exit), so a bar that is moving at the buzzer WILL come to rest tipped, and the
+     * number this pays at 0:00 is the number the field settles on.
+     *
+     * Paying both lines would bill one tray twice; paying neither is the bug.
      *
      * `released` tells the two trays apart. Before the bar passes level, `contents` is the load
      * about to be dumped — counted as the tip, so 0 here. After it, `contents` is the INCOMING

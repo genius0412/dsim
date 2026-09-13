@@ -510,6 +510,12 @@ function scoringChecks(check: Check): void {
    * away with it — measured on this very scene before the fix, 16 points at the buzzer and 0
    * harvested.
    *
+   * §10.5 settles it, and settles both halves: (A) "Assessment of HIVE TIPS occurs throughout
+   * the MATCH and continues until all SCORING ELEMENTS and ROBOTS have come to rest at the
+   * conclusion of the MATCH", and (C) "Assessment of POLLEN and NECTAR remaining in the CELL
+   * will occur after all SCORING ELEMENTS and ROBOTS have come to rest". The state that scores
+   * is the one at REST: the swing is a TIP, and its load is not remaining in the CELL.
+   *
    * The invariant checked here is the one a driver feels: THE SCORE NEVER GOES DOWN AFTER THE
    * BUZZER, and a bar that was moving when it went is paid its 20. Driven through the real
    * pipeline rather than by hand, because the bug lives in the arithmetic of those two clocks.
@@ -557,17 +563,17 @@ function scoringChecks(check: Check): void {
       `tips after the run: ${bb.hives.red.tips}`,
     );
     check(
-      'BUZZER TIP: a swing under way at the buzzer is paid its 20 right there',
+      'BUZZER TIP (§10.5 A): a swing under way at the buzzer is paid its 20 right there',
       buzzer === BB_PTS.tip,
       `total at the buzzer ${buzzer}, expected ${BB_PTS.tip}`,
     );
     check(
-      'BUZZER TIP: its load is NOT also paid as left in the up-CELL',
+      'BUZZER TIP (§10.5 C): its load is NOT also paid as remaining in the up-CELL',
       buzzerCellPts === 0,
       `cell points at the buzzer ${buzzerCellPts} on ${load} elements`,
     );
     check(
-      'BUZZER TIP: the TIP is on the board when the score is harvested (2.8 s into a 4.0 s swing)',
+      'BUZZER TIP (§10.5 A): the TIP is on the board when the score is harvested (2.8 s < a 4.0 s swing)',
       tipsAtHarvest === BB_PTS.tip,
       `tip points at +${MATCH_SETTLE_S}s: ${tipsAtHarvest}`,
     );
@@ -596,7 +602,7 @@ function scoringChecks(check: Check): void {
     t.match.phase = 'post';
     const held = bbScoreWorld(t).red;
     check(
-      'BUZZER TIP: at the buzzer that same swing is a TIP, and its load is not left in the tray',
+      'BUZZER TIP (§10.5 A+C): at the buzzer that same swing is a TIP, and its load is not in the tray',
       held.tips === 3 && held.cellCount === 0,
       `tips=${held.tips} count=${held.cellCount}`,
     );
@@ -605,7 +611,7 @@ function scoringChecks(check: Check): void {
     tb.hives.red.released = true;
     const after = bbScoreWorld(t).red;
     check(
-      'BUZZER TIP: past LEVEL the tray holds the INCOMING load, and it is paid as well',
+      'BUZZER TIP (§10.5 C): past LEVEL the tray holds the INCOMING load, which does remain in the CELL',
       after.tips === 3 && after.cellCount === 3 && after.cellPts === 3 * BB_PTS.cell,
       `tips=${after.tips} count=${after.cellCount} pts=${after.cellPts}`,
     );

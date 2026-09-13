@@ -181,6 +181,36 @@ RP (Table 10-2/10-3): **SWARM** LEAVE + PARK points ≥ **16**; **POLLINATOR 1**
 **POLLINATOR 2** ≥ **7 TIPS**; WIN 3, TIE 1 (thresholds are for "all other events"; regionals
 and Championship TBA).
 
+### 4.0 WHEN each achievement is assessed (§10.5 A–G, verbatim)
+
+The "assessed" column above is this list, distilled. It is quoted in full because the sim gets
+one thing from it that nothing else states: **the state that scores is the field AT REST, not
+the field at 0:00.**
+
+> A. Assessment of HIVE TIPS occurs throughout the MATCH and continues until all SCORING
+>    ELEMENTS and ROBOTS have come to rest at the conclusion of the MATCH.
+> B. HIVE TIPS that are complete prior to the start of TELEOP are assessed as part of AUTO.
+> C. Assessment of POLLEN and NECTAR remaining in the CELL will occur after all SCORING
+>    ELEMENTS and ROBOTS have come to rest at the conclusion of the MATCH.
+> D. Assessment of SCORING ELEMENTS scored in a FLOWER will occur throughout the MATCH with
+>    final assessment taking place at the end of TELEOP after all SCORING ELEMENTS and ROBOTS
+>    have come to rest at the conclusion of the MATCH.
+> E. Assessment of GARDEN scoring occurs at the end of TELEOP when all ROBOTS and SCORING
+>    ELEMENTS have come to rest at the conclusion of the MATCH.
+> F. Assessment of LEAVE and AUTO PARK occurs at the end of AUTO.
+> G. Assessment of TELEOP PARK occurs at the end of the MATCH.
+
+**How the sim implements "at rest".** It cannot wait for rest: the score is harvested a fixed
+`MATCH_SETTLE_S` (2.8 s) after the buzzer, by the results screen and by the server alike, and a
+HIVE swing alone takes 4.0 s. So where the outcome is already determined, the sim scores the
+outcome. A swing still moving at 0:00 is counted as the TIP it must become (nothing cancels
+one), and the load it is dumping is not counted as "remaining in the CELL", because by C it will
+not be. Scoring the 0:00 state instead is what produced the reported bug of 2026-09-13 — a TIP
+in the last four seconds banked neither its 20 nor its tray, so tipping cost points.
+
+B is not modelled and does not need to be: Table 10-2 prints a TIP at 20 in both periods, so the
+AUTO/TELEOP split changes no total (`score.ts`).
+
 ### 4.1 HIVE TIP (§10.5.1, p87)
 
 TIPPED when (A) the HIVE moves from one stable state to the other, the down-CELL becoming the
