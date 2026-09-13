@@ -433,6 +433,24 @@ function LiveScene({ scene, onBack }: { scene: Scene; onBack(): void }) {
             {hud.field.nectarStock.blue}, due {hud.field.nectarDue.blue}
           </p>
         )}
+        {/* THE TWO SANCTIONS THAT ARE INVISIBLE ON THE CANVAS. A G421 PIN is two robots
+            touching, which a still cannot tell from a shove, and its whole content is a clock;
+            a G407 warning moves no number at all, so a scene that draws one looks identical to
+            a scene that does not. Both are printed unconditionally — "no pins, no warnings" is
+            the reading that says the detector ran, and a blank line would not. */}
+        {hud && (
+          <p className="ds-note">
+            {hud.field.pins.length === 0
+              ? 'no pins'
+              : hud.field.pins
+                  .map(
+                    (p) =>
+                      `pin ${p.pinner}→${p.pinned} ${p.seconds.toFixed(1)}s, ${p.billed} billed, next in ${p.nextIn.toFixed(1)}s`,
+                  )
+                  .join(' · ')}{' '}
+            · G407 warnings RED {hud.field.warnings.red}, BLUE {hud.field.warnings.blue}
+          </p>
+        )}
       </div>
     </section>
   );

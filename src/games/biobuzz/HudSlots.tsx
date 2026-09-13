@@ -1,9 +1,10 @@
+import { useRef } from 'react';
 import type { Alliance } from '../../types';
 import type { HudSnapshot } from '../../game';
 import type { GameBuilderProps, GameHudProps, ResultsSection } from '../module';
 import { BiobuzzBuilder } from './Builder';
-import { BB_RP } from './config';
-import type { BbCellHud, BiobuzzFieldHud } from './hud';
+import { BB_PTS, BB_RP } from './config';
+import type { BbCellHud, BbPinHud, BiobuzzFieldHud } from './hud';
 import type { BiobuzzHud } from './hudRobot';
 import { BB_MODE_LABELS } from './labels';
 import type { BbAllianceScore, BbRankPoints } from './score';
@@ -66,6 +67,67 @@ const fmtTime = (s: number): string => {
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
 };
 
+/** seconds a G407 CONTROL warning stays on screen after the count moves. */
+const BB_WARN_HOLD_S = 3;
+
+/**
+ * THE PIN THAT BILLS SOONEST, or null when nobody is pinning.
+ *
+ * `pins` is usually empty and holds more than one entry only in a genuine multi-robot tangle.
+ * The chip shows ONE, and it is the one with the least time left on its tariff: every entry
+ * carries the same 20-point-per-3-second clock, so the soonest is the only one whose number
+ * changes what either driver does in the next second.
+ */
+const soonestPin = (pins: readonly BbPinHud[] | undefined): BbPinHud | null =>
+  !pins || pins.length === 0 ? null : pins.reduce((a, b) => (b.nextIn < a.nextIn ? b : a));
+
+/**
+ * THE PIN LINE. `PIN · 20 IN 1.4 S` — the ACT, the tariff, and the seconds until it lands.
+ *
+ * ONE DECIMAL, and that is the point of the line. `nextIn` runs 3 → 0 and a whole-second
+ * readout would spend a third of every tariff cycle showing the same digit while 20 points
+ * moved; the tenths are what make it read as a countdown rather than as a label. `billed` is
+ * appended only once it is non-zero, because a PIN that has not yet cost anything is a warning
+ * and a PIN that has is a running bill, and the driver reaction to the two is different.
+ */
+const pinLine = (p: BbPinHud): string =>
+  `PIN · ${BB_PTS.foulMajor} IN ${p.nextIn.toFixed(1)} S` +
+  (p.billed > 0 ? ` · ${p.billed * BB_PTS.foulMajor} BILLED` : '');
+
+/**
+ * A CHIP THAT HAS TO OUTLIVE ITS FACT.
+ *
+ * `warnings` is a monotonic COUNT — G407 moves it by one on the tick a robot takes CONTROL of
+ * a fifth SCORING ELEMENT, and it never comes back down. A chip bound to the count itself
+ * would therefore be a chip that appears once and then stays up for the rest of the match,
+ * which is not what a warning is. So it is bound to the MOMENT the count moved, and held for
+ * `BB_WARN_HOLD_S` after it.
+ *
+ * THE CLOCK IS THE MATCH CLOCK, not `Date.now()`. `GameView` re-samples the HUD every 100 ms
+ * and match time is already on the props, so the hold costs no timer of its own: it PAUSES
+ * when the match does and it is identical on a replay of the same match, neither of which is
+ * true of a `setTimeout`. 100 ms of resolution on a 3 s hold is a 3% error on when the chip
+ * goes away, which is not a number anybody reads.
+ *
+ * `timeLeft` counts DOWN inside a phase and JUMPS UP at a phase boundary, so the hold is only
+ * ever measured within ONE phase: a warning drawn in the last second of AUTO does not carry a
+ * stale chip into TELEOP, and the arithmetic never sees a negative elapsed.
+ */
+function useHeldBump(count: number, timeLeft: number, phase: string, hold: number): boolean {
+  // `at` starts at -Infinity so a HUD that MOUNTS onto a match already carrying warnings (a
+  // spectator joining late, a replay scrubbed into the middle) does not flash one that was
+  // drawn before it was watching.
+  const seen = useRef({ count, at: -Infinity, phase });
+  const s = seen.current;
+  if (count !== s.count || phase !== s.phase) {
+    s.at = count > s.count && phase === s.phase ? timeLeft : -Infinity;
+    s.count = count;
+    s.phase = phase;
+  }
+  const since = s.at - timeLeft;
+  return since >= 0 && since < hold;
+}
+
 /**
  * The chips in the live HUD's `.robot-status` row — the DRIVER'S ALLIANCE ONLY.
  *
@@ -86,6 +148,15 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
   const r = s?.robot;
   const cell = f?.cells[hud.alliance];
   const due = f?.nectarDue[hud.alliance] ?? 0;
+  const pin = soonestPin(f?.pins);
+  // G407. The hook runs on every sample, including the ones where an absent slice reads 0, so
+  // the hold is measured against the same clock the rest of the row is drawn from.
+  const warned = useHeldBump(
+    f?.warnings[hud.alliance] ?? 0,
+    hud.timeLeft,
+    hud.phase,
+    BB_WARN_HOLD_S,
+  );
   return (
     <>
       {r && <span className="chip">{BB_MODE_LABELS[r.mode].toUpperCase()}</span>}
@@ -111,6 +182,29 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
         </span>
       )}
       {f?.nectarLocked && <span className="chip warn">NECTAR LOCKED</span>}
+      {/* TODO(A6a): `nectarWhy: 'ok' | 'locked' | 'none-owed' | 'none-left'` is not on the
+          slice yet (grepped at a68401f — the human-player button is still in the field lane).
+          When it lands, the NECTAR chip says WHY a press did nothing instead of leaving the
+          driver to infer it from the stock and the lock, and NONE OWED stops reading as a
+          broken button. */}
+      {/* G407 — CONTROL of a fifth SCORING ELEMENT. The owner's ruling makes this a WARNING
+          worth no points and no card, which is exactly why it needs a chip: a sanction that
+          moves no number is invisible on a scoreboard unless the HUD says it happened. Held
+          `BB_WARN_HOLD_S` off the match clock (see `useHeldBump`), because the underlying
+          count never comes back down. */}
+      {warned && <span className="chip warn">CONTROL 5+</span>}
+      {/* G421 — a PIN, counting. 20 points every three seconds, and the clock runs in a
+          referee's head, so `nextIn` is the only warning either driver gets.
+
+          NEUTRAL COLOUR, DELIBERATELY, AND IT IS A GAP: the chip cannot yet say whether THIS
+          alliance is the one pinning or the one being held. `BbPinHud` carries robot IDs, and
+          nothing that reaches a HUD component maps an ID to an alliance — `HudSnapshot` has no
+          roster and no local robot ID, and the slice's robot half (Lane B's `hudRobot.ts`) has
+          no ID either. A PIN is always cross-alliance, so the chip is always relevant to
+          whoever is reading it and the COUNTDOWN is the same number for both sides (let go /
+          keep trying); only the colour split is blocked. Requested of the master: one
+          `pinnerAlliance: Alliance` on `BbPinHud` and the victim's chip becomes `chip bad`. */}
+      {pin && <span className="chip warn">{pinLine(pin)}</span>}
     </>
   );
 }
@@ -141,6 +235,7 @@ const PHASE_LABEL: Record<HudSnapshot['phase'], string> = {
  */
 export function BiobuzzScoreBar({ hud }: GameHudProps) {
   const f = sliceOf(hud)?.field;
+  const pin = soonestPin(f?.pins);
   const red = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blue = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
   const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
@@ -160,9 +255,17 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           sits on the bar rather than only in the desktop-only chip row. `nectarIn` is null
           outside TELEOP, where a countdown would be a guess at the remaining AUTO — so the
           chip states the lock and says nothing about when. */}
-      {f?.nectarLocked && (
+      {/* G421 rides the same row and for the same reason G410 does: `GameView` suppresses the
+          whole chip row on a coarse pointer, so on a phone the bar is the only place a PIN can
+          be read — and 20 points every three seconds is not a tariff to leave to a cue the
+          device does not render. `.warn` because it is a clock running against somebody, not a
+          state of the field like the lock beside it. */}
+      {(f?.nectarLocked || pin) && (
         <div className="breakdown-row">
-          <span>NECTAR LOCKED{f.nectarIn === null ? '' : ` ${fmtTime(f.nectarIn)}`}</span>
+          {f?.nectarLocked && (
+            <span>NECTAR LOCKED{f.nectarIn === null ? '' : ` ${fmtTime(f.nectarIn)}`}</span>
+          )}
+          {pin && <span className="warn">{pinLine(pin)}</span>}
         </div>
       )}
       <div className="scorebar">
