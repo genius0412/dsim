@@ -2,7 +2,7 @@ import type { Alliance, RobotCommand, RobotState, Vec2, World } from '../../type
 import { hyp } from '../../math';
 import { PIN_END_S, PIN_ESCAPE_DIST, PIN_SECONDS, PIN_STUCK_SPEED } from '../../config';
 import { robotCorners } from '../../sim/physics';
-import { isPinning } from '../../sim/penalties';
+import { controlledArtifacts, isPinning } from '../../sim/penalties';
 import {
   BB_FLOWER_UNLOCK_S,
   BB_FOUL_SLOP,
@@ -118,33 +118,86 @@ export function bbAwardFoul(
 export const BB_CONTROL_LIMIT = 4;
 
 /**
- * HOW MANY SCORING ELEMENTS THIS ROBOT IS CONTROLLING (G407).
+ * HOW MANY SCORING ELEMENTS THIS ROBOT IS CONTROLLING (G407) — HOPPER **PLUS HERDED**.
  *
- * ⚠️ **TODAY THIS IS THE HOPPER AND ONLY THE HOPPER, AND THAT IS A KNOWN SHORTFALL.** The
- * glossary's CONTROL covers HERDING too — pushing a clump of loose elements around the field
- * is controlling them — and the A5b brief asked for "the exported CONTROL count (hopper +
- * herded)". **`controlledArtifacts` is NOT exported from `src/sim/penalties.ts`**; only
- * `updatePenalties` and `isPinning` are. So the herded half is not reachable from this lane.
+ * `controlledArtifacts` landed as an export on `alpha` `ea2cba4` (the field-plan §6 request-5
+ * sibling this function used to ask for), so the promise the old body made is kept: the body is
+ * a call to it and the rule now counts what the glossary counts. CONTROL there is the real
+ * judgement — a per-(robot, element) hold clock with a drain, a herding-speed gate, a carry
+ * distance, a re-station rule, an intake-mouth carve-out and a transitive contact chain — and
+ * duplicating any of it here would have been a second opinion about the same sentence.
  *
- * The honest thing is to count what can be counted EXACTLY and ask for the rest, which is
- * precisely how G421 got its detector. Writing a second herding test here would mean
- * duplicating ~150 lines of real judgement — DECODE's per-(robot, artifact) hold clock, its
- * drain, its transitive contact chain and its re-station rule — and a hand-rolled "touching
- * and moving" stand-in fires on every robot that drives through the staged scatter. A
- * fabricated warning teaches a driver a habit the real rule does not punish, and this rule's
- * entire output IS the teaching: it moves no points.
+ * ── THREE CONSTANTS IT READS ARE DECODE’S, AND ONE OF THEM MATTERS ──────────
+ * The shared function is written against DECODE’s field and DECODE’s artifact, and BIOBUZZ
+ * borrows it whole. Measured, the divergences are:
  *
- * **REQUEST for the shared core, a field-plan §6 request-5 sibling: export
- * `controlledArtifacts`.** The day it lands, this function's body becomes a call to it and
- * nothing else in this file changes.
+ *  1. ⚠️ **`C.BALL_RADIUS` is 2.5 in; a BIOBUZZ element is simulated at `BB_POLLEN_R` = 1.4.**
+ *     So `reach` (touching) is 2.9 in rather than 1.8, and the transitive `chain` is 5.4 in
+ *     rather than 3.2 — nearly two element DIAMETERS of gap still links two elements. This is
+ *     the one that can bill a robot for a pile it is not touching, and it is the field-plan §6
+ *     request this change adds: **`controlledArtifacts` should read the artifact’s own `r`**
+ *     (every `Artifact` already carries one) instead of the module constant. Until it does, the
+ *     count errs HARSH on a loose scatter, which for a rule whose only sanction is a warning is
+ *     the survivable direction — but it is still wrong, and the smoke pins the gap so the day
+ *     the shared function takes `b.r` the numbers here move visibly rather than quietly.
+ *  2. `C.HOPPER_CAPACITY` is 3 and a BIOBUZZ hopper holds 4, so the intake-mouth carve-out
+ *     (`room = HOPPER_CAPACITY - hopper.length`) is already spent at 3 elements and a BIOBUZZ
+ *     robot carrying its legal four gets none of it. Harsh again, and small: the carve-out is
+ *     worth one element for the second or so an intake takes.
+ *  3. `loadZone(r.alliance)` is DECODE’s driver-side rect, not `BB_LZ` — which in BIOBUZZ is a
+ *     23 × 11 strip against the SIDE wall at a different place entirely. So the real BIOBUZZ
+ *     LOADING ZONE gets no carve-out (a robot collecting its restock is counted), and a strip
+ *     of BIOBUZZ floor that is not a loading zone gets one. Both halves are wrong; neither is
+ *     reachable from this lane, because the carve-out is chosen inside the shared function.
  *
- * ⚠️ SECOND, SEPARATE GAP: `bbHopperCap` clamps every hopper to 4 (`BB_STORAGE_MAX`, owner
- * ruling 2026-09-12), so a hopper-only count can never exceed the limit in a driven match and
- * this rule is correct-but-dormant until the herded half lands. The smoke drives the rule
- * directly, so it is proven either way.
+ * All three are one request — a per-game geometry for the shared CONTROL test — and all three
+ * are named in the handoff. None of them is a reason to keep hand-rolling the rule: a slightly
+ * generous radius on a real detector beats an exact hopper count that cannot see herding at all.
+ *
+ * ⚠️ AND A SEPARATE, STILL-OPEN GAP: until Lane B lifts `BB_STORAGE_MAX` (relay 2), `bbHopperCap`
+ * clamps every hopper to 4. The HOPPER half therefore still cannot exceed the limit on its own
+ * in a driven match; the HERDED half can, and now does, which is the whole point of this change.
  */
-function bbControlled(r: RobotState): number {
-  return r.hopper.length;
+function bbControlled(world: World, r: RobotState, dt: number, intaking: boolean): number {
+  return controlledArtifacts(world, r, dt, intaking);
+}
+
+/**
+ * SWEEP THE PER-(ROBOT, ELEMENT) CLOCKS `controlledArtifacts` KEEPS.
+ *
+ * ⚠️ **THIS IS NOT OPTIONAL BORROWED HOUSEKEEPING — IT IS HALF OF THE IMPORT.** DECODE does this
+ * sweep at the top of its own `updatePossession`, immediately before calling
+ * `controlledArtifacts`, and BIOBUZZ never runs a line of `src/sim/penalties.ts`’s
+ * `updatePenalties` (see `step.ts` stage 7). Calling the counting half without the sweeping half
+ * reproduces, in this game, exactly the two failures DECODE’s own comment records:
+ *   · `ballHold` / `ballAnchor` / `ballCarry` are only ever deleted along the NOT-TOUCHING path,
+ *     so an element that leaves the ground state while in contact — the ordinary way one leaves,
+ *     by being intaken — keeps its clock for the rest of the match. The maps are plain JSON
+ *     inside `world.penalties` and ride every 30 Hz snapshot and every stored replay.
+ *   · element ids are recycled, so a stale key can rebind to a DIFFERENT physical element, which
+ *     then arrives PRE-LATCHED and skips the confirm window — the one thing standing between
+ *     herding and bulldozing.
+ *
+ * Written here rather than requested as a second export because it is bookkeeping over state the
+ * caller owns, with no rule in it — the same line the `bbEscapeDir` note draws at the bottom of
+ * this file. Iteration is over a snapshot of the keys, in insertion order, so it is deterministic.
+ */
+function bbSweepControlClocks(world: World): void {
+  const pen = world.penalties;
+  const live = new Set<string>();
+  for (const r of world.robots) {
+    for (const b of world.balls) if (b.state.kind === 'ground') live.add(`${r.id}:${b.id}`);
+  }
+  pen.ballCarry ??= {};
+  for (const key of Object.keys(pen.ballHold)) {
+    if (!live.has(key)) {
+      delete pen.ballHold[key];
+      delete pen.ballAnchor[key];
+      delete pen.ballCarry[key];
+    }
+  }
+  for (const key of Object.keys(pen.ballAnchor)) if (!live.has(key)) delete pen.ballAnchor[key];
+  for (const key of Object.keys(pen.ballCarry)) if (!live.has(key)) delete pen.ballCarry[key];
 }
 
 /**
@@ -266,9 +319,24 @@ export function updateBiobuzzPenalties(
    * world already stores. Unlike the pin clocks it is NOT cleared at a phase boundary — a
    * clock is live state and a tally is history, and the HUD chip counts the match.
    */
+  /**
+   * The clock sweep runs ONCE, before the per-robot loop, because it is keyed on every
+   * (robot, element) pair and would otherwise redo the whole scan per robot.
+   */
+  bbSweepControlClocks(world);
   for (const r of world.robots) {
+    /**
+     * The COUNT runs for EVERY robot, passive included, and only the WARNING is skipped.
+     * `controlledArtifacts` is not a pure reader — it advances and DRAINS the per-element hold
+     * clocks as a side effect — so skipping a passive robot here would freeze its clocks at
+     * whatever they held when it went passive, and an element it was once against would still
+     * be latched to it if it came back. DECODE's own loop has no passive guard for the same
+     * reason. A passive robot is a prop; it draws no sanction, but it still lets go.
+     */
+    const intaking = (commands.get(r.id)?.intake ?? false) || r.autoIntake;
+    const controlled = bbControlled(world, r, dt, intaking);
     if (r.passive) continue;
-    if (bbControlled(r) <= BB_CONTROL_LIMIT) continue;
+    if (controlled <= BB_CONTROL_LIMIT) continue;
     const key = `g407-${r.id}`;
     if (!bb.foulEdge[key]) {
       world.penalties.controlInstances[r.id] = (world.penalties.controlInstances[r.id] ?? 0) + 1;
@@ -348,14 +416,37 @@ export function updateBiobuzzPenalties(
        * FULLY across, by every corner, and that is the difference between this and a foul for
        * touching the line: a robot straddling the centre with its own partner on its own side
        * has not left its columns, and Fig 9-5's split is about which THIRD of the field a
-       * robot is playing in. Both crossing at once is two fouls, which is correct — each one
-       * is a separate violation with its own victim.
+       * robot is playing in. Both crossing at once is two fouls, which is still correct — two
+       * CROSSERS are two offenders, and the cap below is per offender.
+       *
+       * ── "PER MATCH", WHICH THIS RULE ALSO CARRIES — AND USED TO IGNORE ──────
+       * Table 10-4's G402 row reads "**MAJOR FOUL per MATCH.** MAJOR FOUL and YELLOW CARD per
+       * MATCH, if STRATEGIC" (manual-distilled §3.3, p106) — the same two-clause shape as G417
+       * two sections above, and the same word doing the same work. This used to bill per rising
+       * edge of a (crosser, victim) pair, so a robot that crossed once and brushed BOTH
+       * opponents paid 40, and one that bumped, backed off and bumped again paid 40 — where the
+       * manual says a team pays 20 for AUTO interference, once, however much of it there was.
+       * The tariff audit against §3.1 caught it.
+       *
+       * So the EDGE stays (it is what stops a two-second brush billing 120) and a per-MATCH
+       * LATCH sits behind it, exactly G417's `bb.held[robot]` flag. The subject of the sentence
+       * is "a TEAM", and an FTC team is one robot, so the latch is per ROBOT — which is also
+       * why two crossers still pay separately.
        */
       for (const [x, y] of [
         [A, B],
         [B, A],
       ] as const) {
-        if (fullyCrossed(x)) fire(`g402-${x.id}-${y.id}`, x.alliance, 'major', 'G402 AUTO interference');
+        if (!fullyCrossed(x)) continue;
+        const key = `g402-${x.id}-${y.id}`;
+        if (!bb.foulEdge[key]) {
+          const flags = (bb.held[x.id] ??= {});
+          if (!flags.g402billed) {
+            flags.g402billed = true;
+            bbAwardFoul(world, x.alliance, 'major', 'G402 crossing into the opponent’s half in AUTO');
+          }
+        }
+        seen[key] = true;
       }
     }
   }
@@ -550,7 +641,7 @@ function bbUpdatePins(world: World, dt: number, commands: Map<number, RobotComma
       // tick, and a pin is not cheaper for having been stepped at 10 Hz.
       while (st.seconds >= PIN_SECONDS * (st.billed + 1)) {
         st.billed += 1;
-        bbAwardFoul(world, pinner.alliance, 'major', 'G421 PINNING');
+        bbAwardFoul(world, pinner.alliance, 'major', 'G421 PINNING an opponent for more than 3 s');
         pen.pinFouls[pinner.id] = (pen.pinFouls[pinner.id] ?? 0) + 1;
       }
     }

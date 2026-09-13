@@ -1,5 +1,158 @@
 # HANDOFF — Lane A (field)
 
+## 2026-09-12 · rules lane (A6b) · G407 counts HERDING; the foul-line + tariff audit · `biobuzz-rules`
+
+Gates: `npx tsc --noEmit -p .` clean · `npm run server:check` clean · `npm run uiaudit`
+**ALL RULES AT OR UNDER BASELINE** · `npm run contrast` **221/221** ·
+`npm run test:bb -- --lane rules` **186/186** (was 159, +27) · `npm run test:bb`
+**1016/1016**. Base: `origin/alpha` `a68401f`, fast-forward.
+
+### Item 1 — `bbControlled` is now `controlledArtifacts`, and G407 finally sees HERDING
+
+`alpha` `ea2cba4` exported it, so the promise the old body carried is kept: the body is a call
+to it and nothing else about the rule moved. The count is **hopper + herded**, which is what
+the glossary's CONTROL means — an empty-hoppered robot shoving five loose elements across the
+floor now warns, where before it was invisible and only an over-full hopper could trip the rule
+(and `bbHopperCap` still clamps that to 4, so in a driven match G407 had never fired at all).
+
+**Smoke (11 new checks):** a herded pile of five warns ONCE for one continuous shove and names
+the count; four herded warns nothing; five the robot is merely **PARKED** against warn nothing —
+CONTROL is not contact, which is the check that proves the real detector is wired rather than a
+proximity count; letting go and shoving again warns again; and the intake-mouth carve-out
+suppresses the fifth element for the ~1 s an acquisition takes and then ages out. The fixture is
+KINEMATIC (poses and velocities set by hand, the pile advanced with the robot) for this lane's
+stated reason — a rules check must fail when the RULE is wrong, not when the pollen solver
+bounced a ball half an inch differently.
+
+#### ⚠️ `bbSweepControlClocks` is HALF of the import, not borrowed housekeeping
+
+`controlledArtifacts` is **not a pure reader** — it keeps per-`(robot, element)` hold clocks in
+`world.penalties.ballHold` / `ballAnchor` / `ballCarry`, and DECODE sweeps them at the top of
+its own `updatePossession`, immediately before calling it. **BIOBUZZ never runs a line of
+`src/sim/penalties.ts`'s `updatePenalties`** (`step.ts` stage 7 calls this file directly), so
+calling the counting half without the sweeping half reproduces, in this game, both failures
+DECODE's own comment records: the maps are only ever pruned along the NOT-TOUCHING path, so an
+element intaken while in contact keeps its clock for the rest of the match and rides every
+30 Hz snapshot and every stored replay — and element ids are recycled, so a stale key rebinds to
+a DIFFERENT element which then arrives **pre-latched** and skips the confirm window, the one
+thing standing between herding and bulldozing. Two smoke checks pin it: a herd leaves clocks
+behind, intaking the pile clears every one.
+
+The count also runs for **every** robot, `passive` included, and only the warning is skipped —
+freezing a passive robot's clocks would leave an element latched to it across the gap.
+
+#### ⚠️ THREE DECODE CONSTANTS COME ALONG WITH IT — one of them matters
+
+The shared function is written against DECODE's field and DECODE's artifact. Measured:
+
+1. **`C.BALL_RADIUS` is 2.5 in; a BIOBUZZ element is simulated at `BB_POLLEN_R` = 1.4.** So
+   `reach` (touching) is 2.9 in rather than 1.8, and the transitive `chain` is 5.4 in rather
+   than 3.2 — nearly two element DIAMETERS of gap still links two elements. **This is a
+   field-plan §6 request: `controlledArtifacts` should read the artifact's own `r`** (every
+   `Artifact` already carries one, and `flower.ts` and the draw path already use it) instead of
+   the module constant. Until then the count errs HARSH on a loose scatter, which for a rule
+   whose only sanction is a warning is the survivable direction — but it is still wrong.
+2. `C.HOPPER_CAPACITY` is 3 and a BIOBUZZ hopper holds 4, so the intake-mouth carve-out
+   (`room = HOPPER_CAPACITY − hopper.length`) is already spent at 3 and a robot carrying its
+   legal four gets none of it. Harsh again, and small.
+3. `loadZone(r.alliance)` is DECODE's driver-side rect (blue x ≥ 49), not `BB_LZ` — which in
+   BIOBUZZ is a 23 × 11 strip against the SIDE wall somewhere else entirely. So the real
+   LOADING ZONE gets no carve-out (a robot collecting its restock is counted) and a strip of
+   BIOBUZZ floor that is not a loading zone gets one. Both halves wrong, neither reachable from
+   this lane — the carve-out is chosen inside the shared function.
+
+All three are ONE request: a per-game geometry for the shared CONTROL test. None is a reason to
+keep hand-rolling the rule — a slightly generous radius on a real detector beats an exact hopper
+count that cannot see herding at all.
+
+### Item 2 — YELLOW CARDS: not modelled, as instructed
+
+Owner question 1 is open. Nothing was built. For when it is answered: `bbAwardFoul` is the one
+chokepoint every sanction in this game already goes through, so a card is a fourth severity
+there plus DECODE's `awardCard` semantics — it is a small change, and the reason to wait is that
+a second card is RED and voids the alliance score, which reaches `score.ts` and the results rows.
+
+### Item 3 — the audit: two foul lines and one tariff were wrong
+
+#### Foul lines, against CLAUDE.md's UI COPY rule ("name the ACT, not the place")
+
+A driver gets one toast between cycles and no manual, so a rule LABEL is the same failure as a
+bare rule id wearing more words. Three of five passed; two did not:
+
+| was | now |
+|---|---|
+| `G402 AUTO interference` | `G402 crossing into the opponent’s half in AUTO` |
+| `G421 PINNING` | `G421 PINNING an opponent for more than 3 s` |
+
+`G407 CONTROL of 5+ elements`, `G410 NECTAR in a FLOWER before 1:00` and `G417 STRATEGIC
+ramming of the HIVE frame` already named their act and are unchanged. All five are now **pinned
+in smoke** — four by reading the engine's own source for the exact bytes (an equality against
+the string the code just produced passes for every wrong wording, the same argument the scoring
+checks make), G407 as a rendered event because its line is a template literal. The typographic
+apostrophe (`’`, not `'`) is pinned too.
+
+#### Tariffs, against manual-distilled §3.1 / §3.3
+
+| rule | manual | sim | verdict |
+|---|---|---|---|
+| MINOR / MAJOR | 5 / **20** (Table 10-4) | `BB_PTS.foulMinor/foulMajor` | ✅ already pinned |
+| VERBAL WARNING | no points, no tally | `bbAwardFoul`'s `'warning'` branch | ✅ |
+| G402 | **MAJOR FOUL per MATCH** | per `(crosser, victim)` rising edge | ❌ **fixed** |
+| G407 | VERBAL WARNING (MAJOR + YELLOW if STRATEGIC) | warning only, no strategic branch | ✅ |
+| G410 | MAJOR FOUL **per NECTAR** | keyed per element id | ✅ |
+| G417 | VERBAL WARNING; MAJOR + YELLOW **per MATCH** if STRATEGIC | MAJOR once per match, latched | ✅ for the foul — see the question below |
+| G421 | MAJOR per instance **+ 1 every 3 s** | entry at 3 s, +1 per 3 s ⇒ 18 s = 6 MAJOR = 120 | ✅ (Table 10-6's worked example) |
+
+**G402 was over-billing.** Table 10-4's row reads "**MAJOR FOUL per MATCH.** MAJOR FOUL and
+YELLOW CARD per MATCH, if STRATEGIC" — the same two-clause shape as G417, and the same word
+doing the same work. The engine billed per rising edge of a `(crosser, victim)` key, so **one
+robot that crossed once and ended up against BOTH opponents paid 40**, and one that bumped,
+backed off and bumped again paid 40, where the manual says a team pays 20 for AUTO
+interference, once, however much of it there was.
+
+Fixed with **G417's own shape**: the edge trigger stays (delete it and a two-second brush bills
+120 before any latch is consulted) and a per-MATCH `bb.held[robot].g402billed` flag sits behind
+it. The cap is per **ROBOT** because the sentence's subject is "a TEAM" and an FTC team is one
+robot — which is also why two crossers still pay separately. The old smoke check
+`G402: re-contacting fires again` asserted the bug and has been flipped; two new fixtures drive
+both directions (one crosser / two victims ⇒ 1 MAJOR; two crossers ⇒ 1 each). Both were
+verified to FAIL with the latch removed, so neither passes for the wrong reason.
+
+### Two findings OUTSIDE this lane's files — flagged, not edited
+
+1. ⚠️ **`src/games/biobuzz/step.ts:221` pushes `'TELEOP'` into `world.events`.** CLAUDE.md's
+   settled terminology ruling: teleop is **DRIVER-CONTROLLED** on all three surfaces that name
+   it — the live HUD, `world.events`, and the burned-in overlay — and `src/sim/match.ts:64`
+   pushes `'DRIVER-CONTROLLED'`. BIOBUZZ's own HUD already says DRIVER-CONTROLLED
+   (`HudSlots.tsx:122`), so the two surfaces disagree **inside this game**, which is exactly the
+   inconsistency the ruling was made to end. One word, in Lane A's file, which A6a is editing
+   this round — so it is left to the field lane rather than raced.
+2. The shared `bbAwardFoul` event envelope uses an ASCII ` - ` separator (`MAJOR FOUL - BLUE
+   +20 (…)`), mirroring DECODE's shape on purpose so a toast reads identically in both games.
+   UI COPY prefers a full stop or a colon to a dash, and `—` where a dash is right. Changing
+   BIOBUZZ's half alone would break the identical-shape promise, and DECODE's half is a
+   `src/sim/` string (a SERVER change needing a deploy). One cross-game request, not a lane fix.
+
+### Owner question the tariff audit raised (new)
+
+**G417's base VERBAL WARNING is never issued.** Table 10-4 gives G417 "VERBAL WARNING. MAJOR
+FOUL and YELLOW CARD per MATCH, if STRATEGIC", and the sim says **nothing at all** below
+`BB_FRAME_RAM_SPEED` — the file argues that a brush which could not cause or impede a TIP is
+not a violation of the blanket sentence in the first place. That is defensible, but the manual's
+likely-NOT-STRATEGIC list is headed by "accidentally bumping the frame while attempting to pick
+up POLLEN", which reads as a thing that IS a violation and merely is not a strategic one. The
+warning machinery now exists (it landed with G407). Modelling the base warning would mean a
+driver manoeuvring under a HIVE gets a toast on every contact episode — legible under the edge
+trigger, but noisy, and G409 assumes robots drive under the hives. **Model the base warning for
+sub-threshold frame contact, or keep silence below the ram threshold?** Not implemented either
+way; this is the same shape of call as the G407 ruling.
+
+### Still open from before
+
+- `BB_FRAME_RAM_SPEED` (30 in/s) is `APPROX` and on the 09-14 field-test list.
+- The YELLOW CARD is named in every rule above that carries one and modelled in none of them.
+
+
 ## 2026-09-12 · A5a items 1–7 (Round 5 + both addenda) · `GREEN`
 
 Base: merged `origin/alpha` `e5d866d` (fast-forward — alpha carried only `field-plan.md` and

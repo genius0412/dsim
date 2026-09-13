@@ -839,3 +839,15 @@ Merge origin/alpha (ea2cba4). 1. `pins: BbPinHud[]` is on the slice — a PIN ch
 1. YELLOW CARDS: G414–G420 all card. Model cards game-wide (DECODE's `awardCard`; a second card is RED and voids the alliance score), or leave cards to the referee for this season?
 2. Spill short tail: 11% of spilled elements rest inside the 57 in floor. Acceptable, or add a second term?
 3. Human player button: one key for the whole alliance (either driver presses), or driver 1 only?
+
+---
+
+## A6a addendum (after 58a52b2) — paste into the FIELD chat
+
+alpha moved under you: 58a52b2 carries Lane B's 3f41802/cffc243/177947b (mandatory launcher, Box Tube placement bits, hopper cap 4 restored) plus the rules and HUD lanes. Before you push:
+
+1. `git fetch && git merge --no-edit origin/alpha`. Expect conflicts in src/types.ts, src/net/protocol.ts, src/input/bindings.ts, play.ts, spawn.ts — Lane B rewrote the same regions. Keep BOTH sides.
+2. `bbNectar` is protocol bit **128**, the LAST one that fits `src/sim/replay.ts` (`q.buttons & 0xff`). Bits 32 (`bbPlaceNectar`) and 64 (`bbPlace`) are Lane B's; add yours beside them, same encode/decode shape. A ninth button needs a `REPLAY_FORMAT` bump — do not add one.
+3. Mobile: Lane B did NOT land `mobileButtons`; `src/games/biobuzz/index.ts:34` still says why. Add the `GameModule.mobileButtons` slot + one `GameSettings.mobileLayout` key for the nectar button only (settings.ts coerce block at ~310 needs the new key). Leave bbPlace/bbPlaceNectar mobile buttons to Lane B.
+4. `BB_STORAGE_MAX = 4` is back by owner ruling (177947b). Your flower/hive capacities are unaffected; do not re-lift it.
+5. Gates before push: tsc, server:check, `npm run test:bb` (1105 on 58a52b2), uiaudit, contrast. Push `git push origin HEAD:alpha`.

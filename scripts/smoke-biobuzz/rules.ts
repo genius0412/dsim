@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Alliance, Artifact, ArtifactColor, RobotCommand, World } from '../../src/types';
 import { SIM_DT } from '../../src/config';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
@@ -32,12 +35,18 @@ import {
 import {
   BB_CONTROL_LIMIT,
   BB_FRAME_RAM_SPEED,
+  bbAwardFoul,
   bbNectarLocked,
   updateBiobuzzPenalties,
 } from '../../src/games/biobuzz/penalties';
 import { biobuzzFieldHud } from '../../src/games/biobuzz/hud';
 import { bbScene, bbSceneAt } from '../../src/games/biobuzz/scenes';
+import { footprintExtents } from '../../src/sim/field';
 import { cmd, setup, type Check } from './harness';
+
+/** the repo root, for the source-text checks below — `core.ts`'s pattern. */
+const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const readRepo = (p: string): string => readFileSync(join(root, p), 'utf8');
 
 /**
  * THE RULES LANE — Table 10-2 scoring, the Section 11 fouls, the 1:00 cue and the HUD slice.
@@ -457,6 +466,52 @@ function penaltyChecks(check: Check): void {
   check(`TARIFF: MINOR ${BB_PTS.foulMinor} / MAJOR ${BB_PTS.foulMajor} (Table 10-4)`,
     BB_PTS.foulMinor === 5 && BB_PTS.foulMajor === 20);
 
+  /**
+   * ── EVERY FOUL LINE, PINNED AS A LITERAL — the A6b UI COPY audit ──────────
+   *
+   * CLAUDE.md: "Foul lines name the ACT, not the place (`G424 contact in the gate zone`, not
+   * `G424 gate zone`), because a driver reads them mid-match." A driver gets one toast between
+   * cycles and no manual, so a bare rule id — or a rule LABEL, which is the same failure wearing
+   * more words — tells them a number and not what they did. Two of the five failed the audit:
+   *   · `G402 AUTO interference`  →  `G402 crossing into the opponent’s half in AUTO`
+   *   · `G421 PINNING`            →  `G421 PINNING an opponent for more than 3 s`
+   *
+   * They are pinned by reading the ENGINE'S SOURCE for the exact bytes, not by comparing the
+   * engine's output to itself — an equality against the string the code just produced passes for
+   * every wrong wording in the world, which is the same argument the scoring checks make about
+   * `expect(score).toEqual(scoreItAgain())`. Changing a foul line should take a deliberate edit
+   * here as well as there.
+   *
+   * ⚠️ Typographic punctuation is part of the ruling (`’`, never `'`, measured 60:18), which is
+   * why G402's line carries U+2019. G407's line is a template literal (it interpolates
+   * `BB_CONTROL_LIMIT`), so it cannot be grepped — it is pinned as a rendered event in the G407
+   * block instead, and `foulLines` says so rather than quietly covering four of five.
+   */
+  {
+    const src = readRepo('src/games/biobuzz/penalties.ts');
+    const foulLines: [string, string][] = [
+      ['G402 crossing into the opponent\u2019s half in AUTO', 'the ACT is CROSSING, not "AUTO interference"'],
+      ['G410 NECTAR in a FLOWER before 1:00', 'the element, the place and the cue'],
+      ['G417 STRATEGIC ramming of the HIVE frame', 'the act, and why it skipped the warning'],
+      ['G421 PINNING an opponent for more than 3 s', 'the act AND the threshold, not a bare "PINNING"'],
+    ];
+    for (const [line, why] of foulLines) {
+      check(`UI COPY: ${line.slice(0, 4)} names ${why}`, src.includes(`'${line}'`), line);
+      check(`UI COPY: ${line.slice(0, 4)} carries no ASCII apostrophe`, !line.includes("'"), line);
+    }
+    // ...and the ENVELOPE around them, which is DECODE's shape so a toast reads the same in both
+    // games. The WARNING branch is BIOBUZZ's own (Table 10-4's base sanction moves no points).
+    const w = bare([{ id: 0, alliance: 'red' }]);
+    bbAwardFoul(w, 'red', 'major', 'G410 NECTAR in a FLOWER before 1:00');
+    check('UI COPY: a MAJOR names the VICTIM, the points and the rule',
+      w.events[0] === `MAJOR FOUL - BLUE +${BB_PTS.foulMajor} (G410 NECTAR in a FLOWER before 1:00)`,
+      w.events[0]);
+    w.events.length = 0;
+    bbAwardFoul(w, 'red', 'warning', 'G407 CONTROL of 5+ elements');
+    check('UI COPY: a WARNING names the OFFENDER and no points, because it moves none',
+      w.events[0] === 'WARNING - RED (G407 CONTROL of 5+ elements)', w.events[0]);
+  }
+
   // ── G410: NECTAR into a FLOWER before the 1:00 cue ─────────────────────────
   {
     const w = bare([]);
@@ -512,7 +567,18 @@ function penaltyChecks(check: Check): void {
     check('G410: nothing is billed after the cue', after.major.red === 2 && after.major.blue === 0);
   }
 
-  // ── G402: AUTO interference across the halves ─────────────────────────────
+  // ── G402: crossing into the opponent's half in AUTO — MAJOR *per MATCH* ───
+  /**
+   * The tariff is the interesting half. Table 10-4 reads "**MAJOR FOUL per MATCH.** MAJOR FOUL
+   * and YELLOW CARD per MATCH, if STRATEGIC" (manual-distilled §3.3, p106), so a team pays 20
+   * for AUTO interference ONCE however much of it there was — the same shape as G417, and the
+   * reason this rule now carries G417's per-MATCH latch behind its edge trigger. It used to
+   * bill per (crosser, victim) rising edge, so one crosser brushing both opponents paid 40.
+   *
+   * The EDGE is still checked underneath the latch, because the latch is per MATCH and the edge
+   * is per tick: delete the edge and a two-second brush bills 120 before the latch is consulted
+   * at all. Both are driven below.
+   */
   {
     const w = bare([
       { id: 0, alliance: 'red' },
@@ -526,14 +592,20 @@ function penaltyChecks(check: Check): void {
     check('G402: contact across the line in AUTO is ONE MAJOR on the crosser', held.major.red === 1, String(held.major.red));
     check('G402: the victim is billed nothing', held.major.blue === 0);
     check(`G402: blue is +${BB_PTS.foulMajor}`, held.pts.blue === BB_PTS.foulMajor, String(held.pts.blue));
+    check('G402: the line names the ACT, not the rule label',
+      w.events.some((e) => e === `MAJOR FOUL - BLUE +${BB_PTS.foulMajor} (G402 crossing into the opponent\u2019s half in AUTO)`),
+      w.events.filter((e) => e.includes('G402')).join(' | '));
 
-    // separate, then touch again
+    // separate, then touch again: a SECOND instance, and the manual charges for neither
     place(w, 0, -20, 0);
     const apart = bill(w, 10);
     check('G402: separating bills nothing', apart.major.red === 1);
     place(w, 0, 20, 0);
     const again = bill(w, 10);
-    check('G402: re-contacting fires again', again.major.red === 2, String(again.major.red));
+    check('G402: re-crossing is NOT billed again — the tariff is per MATCH (Table 10-4)',
+      again.major.red === 1, String(again.major.red));
+    check('G402: ...so a repeat crosser still owes exactly one MAJOR',
+      again.pts.blue === BB_PTS.foulMajor, String(again.pts.blue));
 
     // A robot on its OWN side, in contact, is not a G402 — but the one that came to it is.
     // The footprint is 21 in long (a sweeper on each end), so FULLY crossed needs the centre
@@ -541,8 +613,54 @@ function penaltyChecks(check: Check): void {
     place(w, 0, -34, 0);
     place(w, 1, -14, 0);
     const own = bill(w, 10);
-    check('G402: contact on the CROSSER\'s own side is not a foul', own.major.red === 2, String(own.major.red));
+    check('G402: contact on the CROSSER\'s own side is not a foul', own.major.red === 1, String(own.major.red));
     check('G402: but the BLUE robot that crossed IS billed', own.major.blue === 1, String(own.major.blue));
+
+    /**
+     * ONE OFFENDER, TWO VICTIMS — the regression the per-MATCH latch exists for. Red 0 crosses
+     * ONCE and ends up against both blues; that used to be two rising edges of two (crosser,
+     * victim) keys and 40 points for a single act of AUTO interference. Both blues are head-on,
+     * one ahead and one behind, at the same proven 12-in centre gap the check above uses — a
+     * flank placement was tried first and does NOT make contact at this footprint, which would
+     * have left this check passing for the wrong reason.
+     */
+    const twoVictims = bare([
+      { id: 0, alliance: 'red' },
+      { id: 1, alliance: 'blue' },
+      { id: 2, alliance: 'blue' },
+    ]);
+    twoVictims.match.phase = 'auto';
+    place(twoVictims, 0, 20, 0);
+    place(twoVictims, 1, 32, 0);
+    place(twoVictims, 2, 8, 0);
+    const vv = bill(twoVictims, 30);
+    check('G402: one crosser against TWO opponents is still ONE MAJOR (per MATCH)',
+      vv.major.red === 1, String(vv.major.red));
+    check('G402: ...so the victims are +20 between them, not +40',
+      vv.pts.blue === BB_PTS.foulMajor, String(vv.pts.blue));
+
+    /**
+     * ...and the cap is per OFFENDER, which the latch must not over-reach into: "a TEAM may not
+     * disrupt AUTO", and an FTC team is one robot. Two crossers on opposite alliances, in their
+     * own corners of the field, are two teams and two MAJORs.
+     */
+    const twoOffenders = bare([
+      { id: 0, alliance: 'red' },
+      { id: 1, alliance: 'blue' },
+      { id: 2, alliance: 'blue' },
+      { id: 3, alliance: 'red' },
+    ]);
+    twoOffenders.match.phase = 'auto';
+    place(twoOffenders, 0, 20, 0); // RED, fully across into blue's columns
+    place(twoOffenders, 1, 32, 0);
+    place(twoOffenders, 2, -20, -50); // BLUE, fully across the other way
+    place(twoOffenders, 3, -32, -50);
+    const oo = bill(twoOffenders, 30);
+    check('G402: two crossers are two teams and two MAJORs',
+      oo.major.red === 1 && oo.major.blue === 1, `${oo.major.red}/${oo.major.blue}`);
+    check('G402: ...20 each way, and neither latch swallowed the other',
+      oo.pts.red === BB_PTS.foulMajor && oo.pts.blue === BB_PTS.foulMajor,
+      `${oo.pts.red}/${oo.pts.blue}`);
 
     // and none of it applies outside AUTO
     const t = bare([
@@ -607,6 +725,151 @@ function penaltyChecks(check: Check): void {
     const hud = biobuzzFieldHud(w);
     check('HUD: the G407 warning count reaches the slice', hud.warnings.red === 2, String(hud.warnings.red));
     check('HUD: and it is per ALLIANCE — blue drew none', hud.warnings.blue === 0, String(hud.warnings.blue));
+  }
+
+  // ── G407: a HERDED pile — the half the hopper count could never see ───────
+  /**
+   * `alpha` `ea2cba4` exported `controlledArtifacts`, so `bbControlled` is now the shared
+   * CONTROL test and G407 finally counts what the glossary counts: an EMPTY-hoppered robot
+   * shoving five loose elements across the floor is controlling five of them.
+   *
+   * ── THIS FIXTURE IS KINEMATIC, AND THAT IS THE LANE’S OWN RULE ────────────
+   * The pile is ADVANCED BY HAND rather than driven through `biobuzzStep`, for the reason at
+   * the top of this file: a rules check must fail when the RULE is wrong, not when the pollen
+   * solver bounced a ball half an inch differently. What is asserted is the COUNT and its edge,
+   * and the count’s inputs are poses and velocities — so those are set directly and the robot
+   * and its pile travel together at a herding speed, which is what a bulldozed clump does. The
+   * physics lane is where a robot is actually driven into a pile.
+   *
+   * `autoIntake` is turned OFF on purpose. It defaults ON, and with it on the shared function’s
+   * intake-mouth carve-out excuses the element nearest the mouth for the second or so an
+   * acquisition takes — real behaviour, and a timing dependence this check does not want in the
+   * way of the number it is about. The carve-out gets its own check further down.
+   */
+  {
+    const w = bare([{ id: 0, alliance: 'blue' }]);
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    const r = w.robots[0];
+    r.autoIntake = false;
+    r.hopper = []; // EMPTY: every element in the count below is HERDED, none is carried
+    const warnings = () => w.events.filter((e) => e.includes('G407')).length;
+
+    /**
+     * A row of `n` POLLEN pressed against the front bumper, spread across its width.
+     *
+     * y = 40 keeps the whole run clear of the HIVE frame bars (|y| ≤ `BB_FRAME_Y` = 19.4), so a
+     * 30 in/s herd cannot also trip G417 and pollute the event list; x runs −40 → −10, clear of
+     * both DECODE loading-zone rects (blue’s is x ≥ 49, and it is DECODE’s that the shared
+     * CONTROL test reads — see `bbControlled`) and of every wall.
+     */
+    const stagePile = (n: number): Artifact[] => {
+      w.balls = [];
+      r.pos = { x: -40, y: 40 };
+      r.heading = 0;
+      r.vel = { x: 0, y: 0 };
+      w.penalties.ballHold = {};
+      w.penalties.ballAnchor = {};
+      w.penalties.ballCarry = {};
+      const bb = w.biobuzz;
+      if (bb) bb.foulEdge = {};
+      const e = footprintExtents(r.spec);
+      // touching the front face by its own radius, and inside the flanks so the nearest feature
+      // is the FACE rather than a convex corner — `contactPush` refuses a corner outright.
+      const span = (n - 1) * 3;
+      const pile: Artifact[] = [];
+      for (let i = 0; i < n; i++) {
+        const b = el(
+          'yellow',
+          { kind: 'ground' },
+          r.pos.x + e.front + BB_POLLEN_R,
+          r.pos.y - span / 2 + i * 3,
+        );
+        w.balls.push(b);
+        pile.push(b);
+      }
+      return pile;
+    };
+
+    /** herd for `s` seconds: robot and pile travel +x together at `v`, billed every tick. */
+    const herd = (pile: Artifact[], s: number, v: number): void => {
+      r.vel = { x: v, y: 0 };
+      for (const b of pile) b.vel = { x: v, y: 0 };
+      for (let i = 0; i < ticks(s); i++) {
+        r.pos = { x: r.pos.x + v * SIM_DT, y: r.pos.y };
+        for (const b of pile) b.pos = { x: b.pos.x + v * SIM_DT, y: b.pos.y };
+        updateBiobuzzPenalties(w, SIM_DT, NO_CMD);
+      }
+    };
+
+    // FIVE, herded. The confirm window (0.45 s) only opens once the carry distance (5 in) has
+    // been covered, so a second of shoving is comfortably past both gates.
+    const five = stagePile(5);
+    herd(five, 1, 30);
+    check('G407: a HERDED pile of five warns — and the hopper is EMPTY', warnings() === 1, String(warnings()));
+    check('G407: ...and the line names the COUNT, which is now hopper + herded',
+      w.events.some((e) => e === 'WARNING - BLUE (G407 CONTROL of 5+ elements)'),
+      w.events.filter((e) => e.includes('G407')).join(' | '));
+    check('G407: ...ONCE for one continuous shove, not once per tick', warnings() === 1, String(warnings()));
+    check('G407: ...and it is still only a WARNING — no points, no tally',
+      w.match.scores.red.foulPoints === 0 && w.match.fouls.blue.major === 0 && w.match.fouls.blue.minor === 0);
+
+    // FOUR, herded exactly the same way: the legal number, and silence.
+    const four4 = warnings();
+    const four = stagePile(4);
+    herd(four, 1, 30);
+    check('G407: FOUR herded is the legal number and warns nothing', warnings() === four4, String(warnings() - four4));
+
+    // FIVE, but STANDING STILL. The detector is HERDING, not proximity — a robot parked against
+    // a pile controls none of it, which is the whole reason the shared test was worth importing
+    // instead of hand-rolling a "touching and moving" stand-in.
+    const still = stagePile(5);
+    herd(still, 1, 0);
+    check('G407: five the robot is merely PARKED against warn nothing — CONTROL is not contact',
+      warnings() === four4, String(warnings() - four4));
+
+    // ...and a SECOND shove after letting go is a SECOND instance (§10.6, per instance).
+    const again = stagePile(5);
+    herd(again, 1, 30);
+    check('G407: herding five AGAIN after letting go warns again', warnings() === four4 + 1, String(warnings() - four4));
+
+    /**
+     * THE INTAKE-MOUTH CARVE-OUT, which is on for every default robot: the element the rollers
+     * already own is not a fifth element. With `autoIntake` back on the same five-pile counts
+     * four while the exemption holds, so the same shove is silent for as long as an acquisition
+     * plausibly takes — and then it is not, because past that window an element has had every
+     * chance to be taken and whatever is happening to it, it is being pushed along.
+     */
+    const mouthed = warnings();
+    const mouth = stagePile(5);
+    r.autoIntake = true;
+    herd(mouth, 0.7, 30);
+    check('G407: with the intake running, the element in the MOUTH is not a fifth element',
+      warnings() === mouthed, String(warnings() - mouthed));
+    herd(mouth, 1.5, 30);
+    check('G407: ...and the exemption AGES OUT, so a long shove warns anyway',
+      warnings() === mouthed + 1, String(warnings() - mouthed));
+    r.autoIntake = false;
+
+    /**
+     * THE CLOCK SWEEP (`bbSweepControlClocks`), which is half of the import rather than borrowed
+     * housekeeping. BIOBUZZ never runs a line of DECODE’s `updatePenalties`, so the
+     * per-(robot, element) clocks `controlledArtifacts` keeps would be swept by nothing: they
+     * are plain JSON inside `world.penalties` and would ride every 30 Hz snapshot and every
+     * stored replay for the rest of the match, and a recycled element id would rebind to a
+     * PRE-LATCHED clock — the one thing standing between herding and bulldozing.
+     */
+    const swept = stagePile(5);
+    herd(swept, 1, 30);
+    check('SWEEP: a herd leaves per-element clocks behind', Object.keys(w.penalties.ballHold).length > 0,
+      String(Object.keys(w.penalties.ballHold).length));
+    for (const b of swept) b.state = { kind: 'held', robot: r.id, slot: 0 };
+    updateBiobuzzPenalties(w, SIM_DT, NO_CMD);
+    check('SWEEP: ...and intaking them clears every one, so the maps cannot grow all match',
+      Object.keys(w.penalties.ballHold).length === 0 &&
+        Object.keys(w.penalties.ballAnchor).length === 0 &&
+        Object.keys(w.penalties.ballCarry ?? {}).length === 0,
+      `${Object.keys(w.penalties.ballHold).length}/${Object.keys(w.penalties.ballAnchor).length}`);
   }
 
   // ── G417: ramming the HIVE frame — STRATEGIC, so a MAJOR on the FIRST hit ─
