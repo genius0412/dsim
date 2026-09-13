@@ -12564,9 +12564,9 @@ function pinScene(
     ];
     check('sanitizeQCommand: every malformed payload is refused, not coerced',
       bad.every((b) => sanitizeQCommand(b) === null));
-    const spare = sanitizeQCommand({ dx: 0, dy: 0, rot: 0, buttons: 128 });
-    check('sanitizeQCommand: an unknown button bit is dropped, not carried',
-      spare !== null && spare.buttons === 0);
+    const allBits = sanitizeQCommand({ dx: 0, dy: 0, rot: 0, buttons: 255 });
+    check('sanitizeQCommand: a full uint8 of buttons is legal — every bit is a real action now',
+      allBits !== null && allBits.buttons === 255);
   }
 }
 

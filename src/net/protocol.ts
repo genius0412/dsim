@@ -89,10 +89,6 @@ export function quantizeCommand(c: RobotCommand): QCommand {
 
 /** the wire range of a packed axis — `int8`, and exactly what `quantizeCommand` can emit */
 const Q_AXIS_MAX = 127;
-/** every button bit this build knows. A bit outside it is not a button, it is noise. */
-const BTN_MASK =
-  BTN_INTAKE | BTN_FIRE | BTN_CATALYST | BTN_FLING | BTN_DRIVEMODE | BTN_BBPLACE_NECTAR | BTN_BBPLACE;
-
 /**
  * Force an UNTRUSTED `q` payload into a QCommand, or refuse it outright.
  *
@@ -124,7 +120,11 @@ export function sanitizeQCommand(raw: unknown): QCommand | null {
   const ld = q.ld === undefined ? undefined : axis(q.ld);
   const rd = q.rd === undefined ? undefined : axis(q.rd);
   if (ld === null || rd === null) return null;
-  const out: QCommand = { dx, dy, rot, buttons: q.buttons & BTN_MASK };
+  // `buttons` is kept WHOLE rather than masked to the bits this build knows: `buttons` is a
+  // uint8 and every one of its eight bits is now a button, so a mask here is either a no-op or
+  // — once the field widens — a silent way to drop a newer client's action. `dequantizeCommand`
+  // reads the bits it understands and ignores the rest, which is the back-compat rule already.
+  const out: QCommand = { dx, dy, rot, buttons: q.buttons };
   if (ld !== undefined) out.ld = ld;
   if (rd !== undefined) out.rd = rd;
   return out;
