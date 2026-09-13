@@ -163,9 +163,10 @@ function bbAssess(world: World, at: 'auto' | 'match'): void {
  * The BIOBUZZ phase/timer machine — auto, transition, teleop, post, using the SHARED phase
  * durations.
  *
- * Shared rather than per-game on purpose: match lengths are set by the Tournament section
- * (Section 13), which IS published in the V0 manual and is unchanged from DECODE. If Kickoff
- * moves them, they move for every game at once, which is what a shared constant is for.
+ * Shared rather than per-game because the numbers are the same: V1 §10.1/§10.4 give a 30-second
+ * AUTO, an 8-second transition and a 2-minute TELEOP, which is exactly the shared
+ * `AUTO_DURATION` / `TRANSITION_DURATION` / `TELEOP_DURATION` DECODE already runs. A later
+ * manual revision that moved them for BIOBUZZ alone would need a per-game slot, not an edit here.
  *
  * BIOBUZZ adds two things to the shared shape, and both are cues in the manual's own sense:
  *

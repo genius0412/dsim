@@ -48,11 +48,11 @@ import { rectContains, type BiobuzzState, type ScoreTarget, type Vec3 } from './
 /**
  * BIOBUZZ GAMEPLAY TICK — POLLEN physics and the intake/launch loop.
  *
- * This is the shell's only real gameplay: pollen roll, settle, get collected, and get thrown
- * back out. There is no scoring, because Section 10 of the V0 manual is a Kickoff placeholder
- * (`scored: false` on the sim module says so at the seam). What there IS, and what has to be
- * right before anything is built on top of it, is a POLLEN model that CONSERVES COUNT and
- * NEVER LEAKS OUT OF THE FIELD under every input a driver can produce.
+ * The element loop: POLLEN and NECTAR roll, settle, get collected, get launched into the HIVE
+ * or placed into a FLOWER, and spill back out of a TIPPED HIVE. The points themselves are
+ * `score.ts`'s (the module is `scored: true`, `sim.ts`); what this file owns, and what has to
+ * be right before anything is built on top of it, is an element model that CONSERVES COUNT
+ * and NEVER LEAKS OUT OF THE FIELD under every input a driver can produce.
  *
  * ── THERE IS ONE SOLVER, AND IT IS NOT IN THIS FILE ────────────────────────
  * GROUND POLLEN are solved by the SHARED artifact solve, `solveArtifacts`
@@ -516,7 +516,7 @@ export function updateBiobuzz(
    *
    * A SPILLED ELEMENT COMES BACK AS A GROUND ARTIFACT CARRYING THE SPILL VELOCITY. It leaves
    * the tray over the cell's open outer end and lands just outboard of the cell centre, and it
-   * arrives ALREADY MOVING (`BB_SPILL_SPEED` outboard, `BB_SPILL_LATERAL` across), so it rolls
+   * arrives ALREADY MOVING (`BB_SPILL_SPEED`, aimed within `BB_SPILL_FAN` of outboard), so it rolls
    * out from under its own structure the way the manual describes — G409: it "hits the TILE
    * floor before it is collected" — rather than sitting in a pile under the down cell.
    *

@@ -1,24 +1,25 @@
 /**
  * BIOBUZZ (FTC 2026–27) — field + element constants.
  *
- * ── WHAT IS ACTUALLY KNOWN, AS OF THE V0 PRE-SEASON MANUAL ──────────────────
- * `BIOBUZZ_Competition_Manual_V0.pdf` (93 pages, fetched with `scripts/manual.mjs`) ships
- * Sections 1–7 and 12–16. Sections 8 (Game Overview), 9 (ARENA), 10 (Game Details) and 11
- * (Game Rules) are each a single page reading "This section will be updated with the Kickoff
- * Competition Manual release on September 12, 2026". So NOTHING about the field, the scoring
- * elements, the goals, the zones or the point values is published yet.
- *
- * What Section 12 DOES fix, and what this file is therefore entitled to assume:
+ * ── WHERE THE NUMBERS COME FROM: THE V1 KICKOFF MANUAL ──────────────────────
+ * `BIOBUZZ_Competition_Manual_V1` (2026-09-12, 173 pages) is the source, distilled in
+ * `docs/biobuzz/manual-distilled.md` and `docs/biobuzz-reference.md`. Section 9 (ARENA) gives
+ * the field, the HIVES, the FLOWERS and the zones; Section 10 the elements, match periods and
+ * point values; Section 11 the game rules (G304 start, the fouls `penalties.ts` enforces);
+ * Section 12 the robot:
  *  • R102 — STARTING CONFIGURATION is limited to an 18-inch CUBE.
  *  • R104 — there is NO ROBOT weight limit.
- *  • R105 — a ROBOT stays one assembly and may expand past its starting configuration, but
- *    "Sizing Constraints and more details will be released at Kickoff". The expansion PRISM
- *    below is therefore the one number in the robot envelope that is still a guess.
+ *  • R105.A — once the match starts a ROBOT may expand, but must stay within an
+ *    18 × 24 × 29 in (tall) sizing volume (`BB_PRISM` / `BB_PRISM_NARROW`).
+ * Some shapes are still owner CAD or figure reads rather than printed dimensions (the FLOWER
+ * foot, the LOADING ZONE tape edge), and every robot MECHANISM number is the sim's own model:
+ * the manual constrains robots, it does not describe one.
  *
  * ── THE APPROX CONVENTION ───────────────────────────────────────────────────
- * Every constant whose value is NOT in the V0 manual carries an `APPROX` comment naming what
- * it was derived from. That is not decoration: at Kickoff someone greps `APPROX` in this file
- * and that grep IS the work list. A number without the marker is a number the manual gave us.
+ * Every constant whose value is NOT printed in the V1 manual carries an `APPROX` comment naming
+ * what it was derived from. That is not decoration: someone greps `APPROX` in this file and
+ * that grep IS the work list for the next manual revision or field test. A number without the
+ * marker is a number the manual gave us.
  *
  * The FIELD is the safe part: every FTC field since 2007 has been a 12 ft × 12 ft (144") soft
  * tile field inside a perimeter wall, and R102/R104 are unchanged from DECODE. Origin at the
@@ -45,6 +46,7 @@ import {
   BB_DEFAULT_INTAKE_MOUNT,
   type BbIntakeMount,
   type BbScoreMode,
+  MOUNT_DIR,
   bbIntakeMountOf,
 } from './mounts';
 // `mechs.ts` is a LEAF over `types` + `mounts`, so this import adds no cycle — the same reason
@@ -85,10 +87,11 @@ export const BB_WALL_T = 10;
  * and the smoke lane checks it against this. */
 export const BB_VIEW_MARGIN = 12;
 
-/** the outer x half-extent the CAMERA must show. Equal to the wall for now: BIOBUZZ has no
- * known structure protruding outside the perimeter (CR's accelerators did, which is why the
- * shared `bounds` carries a view extent distinct from the collider extent at all).
- * APPROX — Section 9 (ARENA) lands at Kickoff and may add an outboard goal. */
+/** the outer x half-extent the CAMERA must show. Equal to the wall: V1's ARENA (Section 9) puts
+ * the HIVES, FLOWERS and zones all inside the perimeter, so BIOBUZZ has no structure protruding
+ * outside it (CR's accelerators did, which is why the shared `bounds` carries a view extent
+ * distinct from the collider extent at all). The FLOWER sections drawn beside the walls are a
+ * READOUT, and `BB_VIEW_MARGIN` above is what clears them. */
 export const BB_VIEW_HALF_X = BB_HALF_X;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -428,9 +431,8 @@ export const BB_POLLEN_SIM = 60;
 export const BB_POLLEN_WALL_REST = 0.35;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MATCH — the shell reuses the shared phase durations (`src/config.ts`), because auto /
-// transition / teleop lengths are set by the Tournament section, not by the game, and
-// Section 13 (Tournament) IS published in V0 and unchanged.
+// MATCH — BIOBUZZ reuses the shared phase durations (`src/config.ts`): V1 §10.1/§10.4 give
+// 30 s AUTO, an 8 s transition and 2:00 TELEOP, the same three numbers DECODE runs.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -578,9 +580,12 @@ export const BB_ON_TARGET_TOL = 0.05;
 export const BB_DEG = Math.PI / 180;
 
 /** how fast a TURRET's pitch axis slews, in RADIANS per second (~92 deg/s). APPROX, and deliberately
- * slower than the yaw slew: elevation carries the barrel's weight where yaw turns a ring, and
- * a turret that re-elevates instantly between a 21.5 in FLOWER and a 59 in CELL would make the
- * two targets feel identical, which is the one thing the pitch axis exists to prevent. */
+ * slower than the yaw slew: elevation carries the barrel's weight where yaw turns a ring. The
+ * HIVE's up-CELL is the only thing a turret aims at (launched elements never enter a FLOWER),
+ * and the elevation that cell needs swings widely with range — a lob from beside the HIVE
+ * against a flat shot from the far corner at a 53.5–65.6 in opening — so a turret that
+ * re-elevated instantly would make close and far shots feel identical. Driving between them is
+ * what the pitch axis exists to make cost something. */
 export const BB_TURRET_PITCH_SLEW = 1.6;
 /** the pitch envelope a turret can actually reach, in RADIANS — level to ~80 deg. A barrel
  * cannot depress below level (it would fire into the robot's own deck) and cannot go fully
@@ -633,14 +638,18 @@ export const BB_FIRE_INTERVAL = 1 / 13;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The EXPANSION PRISM (in) a robot may grow into once the match starts.
+ * The EXPANSION PRISM (in) a robot may grow into once the match starts — R105.A (V1, p122):
+ * "at all times must remain within a 18 in. (45.70 cm) by 24 in. (61.0 cm) by 29 in. (73.65 cm)
+ * tall sizing volume when fully expanded". Manual numbers, not a guess.
  *
- * APPROX, and the single biggest robot-envelope guess in this file. R105 says expansion is
- * bounded but that "Sizing Constraints and more details will be released at Kickoff", so 24"
- * is carried over from Chain Reaction's manual as a plausible bound rather than a known one.
- * `BB_EXPANSION` is what that leaves past the 18" starting cube.
+ * TWO horizontal dimensions, and the rule does not say which chassis axis gets which: the
+ * volume is oriented only in HEIGHT ("the 29 in. dimension is always the vertical height"). So
+ * a robot may grow to 24 along ONE horizontal axis while staying within 18 along the other,
+ * and it may pick either. `BB_PRISM` is the long side, `BB_PRISM_NARROW` the short one.
+ * `BB_EXPANSION` is what the long side leaves past R102's 18" starting cube.
  */
 export const BB_PRISM = 24;
+export const BB_PRISM_NARROW = 18;
 export const BB_EXPANSION = BB_PRISM - ROBOT_MAX_SIZE; // 6" past the starting cube
 
 /**
@@ -648,8 +657,9 @@ export const BB_EXPANSION = BB_PRISM - ROBOT_MAX_SIZE; // 6" past the starting c
  *
  * The CEILING is R102's 18" starting cube less a working inch for the bumper and frame slop a
  * real build has. The FLOORS are DECODE's per-intake floors, because there is no BIOBUZZ rule
- * to argue a different one from: Section 9 (ARENA) is the page that would tell us how big a
- * start zone is, and it lands at Kickoff. All four are APPROX.
+ * to argue a different one from: V1 sets robot size CEILINGS (R102, R105) and no minimum, and
+ * its start rule (G304) is a set of pose clauses rather than a start zone a small chassis
+ * would have to fill. All four are APPROX.
  */
 export const BB_MIN_LENGTH = 13.5;
 export const BB_MAX_LENGTH = 17;
@@ -661,14 +671,32 @@ export const BB_MAX_WIDTH = 17;
  *
  * 1. WHAT BIOBUZZ WANTS. The SWEEPER DEPLOYS, so it does not have to fit inside R102's 18"
  *    starting cube alongside the chassis — that is what most real FTC intakes do. But it is
- *    real structure once deployed, so chassis + sweepers must fit the EXPANSION prism, and
- *    which AXIS it eats depends on the mount, which is the whole point of having mounts:
+ *    real structure once deployed, so chassis + sweepers must fit R105.A's 18 × 24 EXPANSION
+ *    prism, and which AXIS it eats depends on the mount, which is the whole point of having
+ *    mounts:
  *      • front / back → one reach off the LENGTH
  *      • front+back   → TWO reaches off the LENGTH (a sweeper on each end)
  *      • side         → TWO reaches off the WIDTH (a sweeper on each flank)
+ *    THE BOX TUBE COUNTS TOO. Its placement point (`bbPlacePointLocal`) sits `BB_PLACE_REACH`
+ *    past the footprint along the tube's mount direction, and the tube is the structure that
+ *    reaches it, so it occupies that much of the envelope: an END mount off the length, a
+ *    FLANK mount off the width, and a CORNER mount its diagonal's component off BOTH. It used
+ *    to be left out, which let the builder offer a maxed chassis whose tube poked past R105.
  *    NOT floored to the minimum on purpose: when the deployed sweepers leave nothing legal
  *    the max drops BELOW the min, and `bbMountFits` is what reports that combination as
  *    impossible. Flooring here would instead hand back a robot that overruns the prism.
+ *
+ *    ⚠️ R105 DOES NOT SAY WHICH AXIS IS THE 24, so there are two candidate rectangles — the
+ *    LENGTH axis long, or the WIDTH axis long — and the legal set is their UNION, which is not
+ *    a rectangle two independent sliders can describe. One is picked PER BUILD, from the
+ *    fields that do not move under the sliders (intake, intake mount, tube mount, drivetrain):
+ *    a rectangle whose MINIMUM chassis fits the prism beats one whose minimum does not, then
+ *    the wider pair of ranges wins, and a tie goes to the length-long one. Choosing off the
+ *    size itself would make the range move as the slider moves, and a coercer that could land
+ *    in a different rectangle on its second pass would not be idempotent. The price is that a
+ *    few chassis legal only in the OTHER rectangle are not offered, which is the safe
+ *    direction. With no tube this is byte-identical to the old single-24 envelope: every
+ *    non-sweeper axis is already capped at `BB_MAX_*` 17, under the narrow side's 18.
  *
  * 2. WHAT THE SHARED COERCER CURRENTLY ALLOWS. `coerceSpec` has a `game === 'chain'` arm that
  *    swaps in CR's size envelope, and no BIOBUZZ arm yet (Lane B owns adding one — see
@@ -687,32 +715,82 @@ export function bbSizeLimits(spec: RobotSpec): {
   minWidth: number;
   maxWidth: number;
 } {
+  return bbEnvelope(spec).limits;
+}
+
+/**
+ * How far past the CHASSIS box this build's deployed structure reaches along each chassis
+ * axis, in total over both ends of that axis (in): sweepers plus the Box Tube. The one
+ * description of "what R105 has to contain besides the frame", shared by `bbSizeLimits` and
+ * the smoke lane, so the envelope and the check against it cannot measure different robots.
+ */
+export function bbEnvelopeReach(spec: RobotSpec): { length: number; width: number } {
   const reach = INTAKE_PRESETS[spec.intake].reach;
   const mount = bbIntakeMountOf(spec);
   const ends = mount === 'front' || mount === 'back' ? 1 : mount === 'frontback' ? 2 : 0;
   const flanks = mount === 'side' ? 2 : 0;
-  const shL = lengthLimits(spec.intake);
-  const shW = widthLimits(spec.intake, spec.drivetrain);
+  const lift = bbLiftOf(spec);
+  // `Math.abs` of the exact unit vector: 1 on the axis an edge mount points along, 0 on the
+  // other, and SQRT1_2 on both for a corner, which is where a diagonal tube's tip actually is.
+  const tube = lift ? MOUNT_DIR[lift.mount] : { x: 0, y: 0 };
   return {
-    minLength: Math.max(BB_MIN_LENGTH, shL.min),
-    maxLength: Math.min(BB_MAX_LENGTH, BB_PRISM - ends * reach, shL.max),
-    minWidth: Math.max(BB_MIN_WIDTH, shW.min),
-    maxWidth: Math.min(BB_MAX_WIDTH, BB_PRISM - flanks * reach, shW.max),
+    length: ends * reach + Math.abs(tube.x) * BB_PLACE_REACH,
+    width: flanks * reach + Math.abs(tube.y) * BB_PLACE_REACH,
   };
 }
 
+/** the resolved envelope: which rectangle of R105.A was picked (`lengthLong` — the 24 runs along
+ * the chassis LENGTH), the slider limits inside it, and whether its minimum chassis fits the
+ * prism at all. See `bbSizeLimits` for the rule. */
+function bbEnvelope(spec: RobotSpec): {
+  limits: { minLength: number; maxLength: number; minWidth: number; maxWidth: number };
+  lengthLong: boolean;
+  prismFits: boolean;
+} {
+  const ext = bbEnvelopeReach(spec);
+  const shL = lengthLimits(spec.intake);
+  const shW = widthLimits(spec.intake, spec.drivetrain);
+  const minLength = Math.max(BB_MIN_LENGTH, shL.min);
+  const minWidth = Math.max(BB_MIN_WIDTH, shW.min);
+  const candidate = (lengthLong: boolean) => {
+    const capL = lengthLong ? BB_PRISM : BB_PRISM_NARROW;
+    const capW = lengthLong ? BB_PRISM_NARROW : BB_PRISM;
+    const limits = {
+      minLength,
+      maxLength: Math.min(BB_MAX_LENGTH, capL - ext.length, shL.max),
+      minWidth,
+      maxWidth: Math.min(BB_MAX_WIDTH, capW - ext.width, shW.max),
+    };
+    // THE MINIMUM CHASSIS, not the max: the coercer widens an inverted range UP to the floor,
+    // so the floor is the size a build actually gets when nothing else fits, and it has to be
+    // inside the prism for the rectangle to be honest.
+    const prismFits = minLength + ext.length <= capL + 1e-9 && minWidth + ext.width <= capW + 1e-9;
+    const span = (Math.max(minLength, limits.maxLength) - minLength) + (Math.max(minWidth, limits.maxWidth) - minWidth);
+    return { limits, lengthLong, prismFits, span };
+  };
+  const a = candidate(true);
+  const b = candidate(false);
+  const pick = a.prismFits !== b.prismFits ? (a.prismFits ? a : b) : b.span > a.span + 1e-9 ? b : a;
+  return { limits: pick.limits, lengthLong: pick.lengthLong, prismFits: pick.prismFits };
+}
+
 /**
- * Can this intake preset be mounted this way at all?
+ * Can this intake preset be mounted this way at all, with this loadout?
  *
- * TRUE for every combination today — the sweeper deploys, so no mount can push the chassis
- * envelope below its own floor. Kept, and kept CALLED, on purpose: it is the one place that
- * answers "is this build possible" for both the coercer and the builder's greying-out, and
- * re-deriving that at two call sites the day a mechanism does constrain size is exactly how
- * the two drift apart.
+ * FALSE when the deployed sweepers plus the Box Tube leave no chassis inside R105.A's prism
+ * (a front+back triangle sweeper with a tube on an end, for one), or when the size range is
+ * empty. Kept, and kept CALLED, on purpose: it is the one place that answers "is this build
+ * possible" for both the coercer and the builder's greying-out, and re-deriving that at two
+ * call sites is exactly how the two drift apart.
+ *
+ * The coercer's fallback for a mount that does not fit is `front`, and `front` is always
+ * PRISM-legal at the floor: the deepest sweeper (5) plus a full end tube (2.36) on the 13.5
+ * floor is 20.9 of 24, and a flank tube on the widest floor (15.5) is 17.9 of 18.
  */
 export function bbMountFits(spec: RobotSpec, mount: BbIntakeMount): boolean {
-  const l = bbSizeLimits({ ...spec, intakeMount: mount });
-  return l.maxLength >= l.minLength && l.maxWidth >= l.minWidth;
+  const e = bbEnvelope({ ...spec, intakeMount: mount });
+  const l = e.limits;
+  return e.prismFits && l.maxLength >= l.minLength && l.maxWidth >= l.minWidth;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -924,10 +1002,10 @@ export function bbMirror(p: BbPoint): BbPoint {
 // PENALTIES
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** inches of bumper slack for the robot-robot contact test. The BIOBUZZ penalty engine is
- * EMPTY (`penalties.ts`) — Section 11 (Game Rules) is a Kickoff page, so there are no rules
- * to enforce. This constant exists because the edge-trigger scaffold is wired and tested; the
- * first real foul only has to add its own predicate. */
+/** inches of bumper slack for the robot-robot contact test the BIOBUZZ penalty engine
+ * (`penalties.ts`) reads. That engine enforces the V1 Section 11 rules a 2D sim can see (G402,
+ * G407's warning, G410, G417, G421); its header lists them and says why the rest are not
+ * modelled. */
 export const BB_FOUL_SLOP = 1;
 
 // ─────────────────────────────────────────────────────────────────────────────
