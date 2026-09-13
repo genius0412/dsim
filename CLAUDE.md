@@ -196,7 +196,8 @@ shared file instead of adding a third arm to a two-valued branch.
    consequences).
 
 Plus `World.<id>?: <Id>State` in `src/types.ts` for the game's own plain-JSON bag, and
-`GameSimModule`'s `initialAct` (its first ranked period's act — distinct per game) and
+`GameSimModule`'s `initialAct` (its first ranked period's act; acts are stored per game, so it
+need not differ between games — BIOBUZZ opens at Act 1) and
 `startPoseCount` (the legal range of a `startIndex`; every clamp reads it).
 
 **The OPTIONAL UI slots** (`GameModule`, `src/games/module.ts`) — each wired at its

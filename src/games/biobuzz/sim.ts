@@ -1,5 +1,5 @@
 import type { GameSimModule } from '../types';
-import { BB_HALF_X, BB_HALF_Y, BB_START_POSE_COUNT, BB_VIEW_MARGIN } from './config';
+import { BB_HALF_X, BB_HALF_Y, BB_INITIAL_ACT, BB_START_POSE_COUNT, BB_VIEW_MARGIN } from './config';
 import { biobuzzColliders } from './colliders';
 import { biobuzzHud } from './hudRobot';
 import { bbRobotSolids } from './robot';
@@ -36,15 +36,16 @@ import { biobuzzStep } from './step';
  *     field. It flips the day that gate asks the module; `bbEvalStart` is ready for it, and
  *     `spawn.ts` and `elements.ts`'s `evalStart` already call it.
  *
- * `initialAct: 2` — DECODE opened in act 0 (its beta bucket) and Chain Reaction in act 1, so
- * this game's first ranked period opens in act 2. Distinct per game is asserted by the smoke
- * suite: a shared act would file two games' first season into one bucket.
+ * `initialAct: 1` (`BB_INITIAL_ACT`) — BIOBUZZ's records and ranked open at Act 1 · Season 1
+ * (owner, 2026-09-12). Acts are stored PER GAME (`seasons` is keyed on game, `elo_ratings` on
+ * game + act), so the number does not have to differ from another game's: DECODE and Chain
+ * Reaction already share an act number in production without touching each other's boards.
  */
 export const BIOBUZZ_SIM: GameSimModule = {
   id: 'biobuzz',
   scored: true,
   startLegality: false,
-  initialAct: 2,
+  initialAct: BB_INITIAL_ACT,
   // the legal range of a `startIndex` — read by `coerceStartIndex`, `coerceSetup`,
   // `coerceSettings` and the server's per-alliance de-conflict loop, none of which may use
   // DECODE's five anchors for a game that has two

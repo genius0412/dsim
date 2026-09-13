@@ -85,12 +85,10 @@ export function coreChecks(check: Check): void {
     registeredGames().length === GAME_IDS.length,
     `${registeredGames().length}/${GAME_IDS.length}`,
   );
-  // every game's initialAct is distinct: a shared act would put two games' first
-  // ranked period in the same bucket
-  check(
-    'initialAct is distinct per game',
-    new Set(GAME_IDS.map((g) => simModuleFor(g).initialAct)).size === GAME_IDS.length,
-  );
+  // acts are stored PER GAME (`seasons` keyed on game, `elo_ratings` on game + act), so an
+  // act number shared between games is fine; BIOBUZZ's first period is Act 1 · Season 1
+  // (owner, 2026-09-12).
+  check('biobuzz: records and ranked open at Act 1', simModuleFor('biobuzz').initialAct === 1, String(simModuleFor('biobuzz').initialAct));
   // the back-compat rule: an absent or unknown game is DECODE, never a throw
   check('moduleFor(undefined) is decode', moduleFor(undefined).id === 'decode');
   check('simModuleFor(null) is decode', simModuleFor(null).id === 'decode');
