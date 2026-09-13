@@ -11,7 +11,7 @@ import { biobuzzColliders } from './colliders';
 import { drawBiobuzzField } from './drawField';
 import { drawBiobuzzBalls } from './draw';
 import { drawBiobuzzRobot } from './drawRobot';
-import { biobuzzHud } from './hudRobot';
+import { biobuzzHud, type BiobuzzHud } from './hudRobot';
 import { biobuzzStep } from './step';
 import { BiobuzzRobotPreview } from './RobotPreview';
 import { BB_SCENES, bbScene, bbSceneStills, type Scene } from './scenes';
@@ -152,6 +152,30 @@ function drawCell(canvas: HTMLCanvasElement, world: World, half = 0): void {
   drawBiobuzzBalls(ctx, world, SCREEN_UP);
 }
 
+/**
+ * THE HUD LINE UNDER A CANVAS — the module's own slice as text.
+ *
+ * The gallery has no match chrome (`GameController` builds its own world and there is no seam
+ * to hand it one; requested in `docs/biobuzz/HANDOFF-shell.md`), so the numbers the score bar
+ * and the chips would show are printed instead. They are read from `biobuzzHud`, the SAME
+ * function the chrome reads, so a cell and a match can never disagree about a HIVE.
+ *
+ * The one number that decides what to look at is the up-CELL's `needed`: the field draws the
+ * cell's contents as discs and no digits, and the tip threshold is a measured table indexed by
+ * the NECTAR count (reference §4.1), so a screenshot of a HIVE does not say how close it is.
+ * `tipping` displaces it for the 4 s of the swing, which is what a cell caught mid-tip should
+ * say rather than a stale count.
+ */
+function bbHudLine(hud: BiobuzzHud): string {
+  const f = hud.field;
+  const cell = (a: 'red' | 'blue'): string => {
+    const c = f.cells[a];
+    const state = c.tipping > 0 ? 'tipping' : `${c.needed} to tip`;
+    return `${a.toUpperCase()} ${f.score[a].total} (${state})`;
+  };
+  return `${cell('red')} · ${cell('blue')}`;
+}
+
 /** one still of one scene. */
 function SceneCell({ scene, tick, world, onOpen }: { scene: Scene; tick: number; world: World; onOpen(): void }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
@@ -168,12 +192,14 @@ function SceneCell({ scene, tick, world, onOpen }: { scene: Scene; tick: number;
       <span className="ot">
         {scene.id}@{tick}
       </span>
-      {/* the two numbers that explain a cell you are confused by: how many POLLEN are on the
-          field at all, and how full the first robot's hopper is. A pile that looks empty is a
-          different bug from a pile that got collected, and the count is the difference. */}
+      {/* the numbers that explain a cell you are confused by: how many POLLEN are on the field
+          at all, how full the first robot's hopper is, and where each HIVE stands. A pile that
+          looks empty is a different bug from a pile that got collected, and the count is the
+          difference. */}
       <span className="om">
         {world.balls.length} pollen · {hud.robot ? `${hud.robot.hopper}/${hud.robot.cap} held · ${hud.robot.mode}` : 'no robot'}
       </span>
+      <span className="om">{bbHudLine(hud)}</span>
     </button>
   );
 }
@@ -393,9 +419,20 @@ function LiveScene({ scene, onBack }: { scene: Scene; onBack(): void }) {
         {/* the module's own HUD slice, as text — see the note on the missing chrome above */}
         <p className="ds-note">
           {hud?.robot
-            ? `hopper ${hud.robot.hopper}/${hud.robot.cap} · ${hud.robot.mode} · scored ${hud.field.scored.blue}–${hud.field.scored.red}`
+            ? `hopper ${hud.robot.hopper}/${hud.robot.cap} · ${hud.robot.mode}`
             : 'no robot in this scene'}
         </p>
+        {hud && <p className="ds-note">{bbHudLine(hud)}</p>}
+        {/* G410 and the human player's supply: the two field facts a driver acts on that the
+            canvas cannot show at all. The lock is stated, not counted down — `nectarIn` is
+            null outside TELEOP, and a scene rarely runs a real phase clock. */}
+        {hud && (
+          <p className="ds-note">
+            {hud.field.nectarLocked ? 'nectar locked (G410)' : 'nectar unlocked'} · RED in hand{' '}
+            {hud.field.nectarStock.red}, due {hud.field.nectarDue.red} · BLUE in hand{' '}
+            {hud.field.nectarStock.blue}, due {hud.field.nectarDue.blue}
+          </p>
+        )}
       </div>
     </section>
   );
