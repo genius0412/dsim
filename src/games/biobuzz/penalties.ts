@@ -139,11 +139,9 @@ export const BB_CONTROL_LIMIT = 4;
  * `controlledArtifacts`.** The day it lands, this function's body becomes a call to it and
  * nothing else in this file changes.
  *
- * ⚠️ SECOND, SEPARATE GAP: until Lane B lifts `BB_STORAGE_MAX` (relay 2), `bbHopperCap` clamps
- * every hopper to 4, so a hopper-only count can never exceed the limit in a driven match and
- * this rule is correct-but-dormant. The rules lane bills the warning, Lane B lifts the cap —
- * the split is the brief's, and the smoke below drives the rule directly so it is proven
- * either way.
+ * Lane B has lifted `BB_STORAGE_MAX` (relay 2): `bbHopperCap` is bounded by the volume law
+ * alone, so a build whose hopper dial is set past 4 reaches this warning in a driven match. The
+ * smoke below still drives the rule directly, so it is proven independently of any build.
  */
 function bbControlled(r: RobotState): number {
   return r.hopper.length;

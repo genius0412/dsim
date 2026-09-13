@@ -687,39 +687,26 @@ export function bbMountFits(spec: RobotSpec, mount: BbIntakeMount): boolean {
 /** a floor of one POLLEN; NOT scaled with the rest. */
 export const BB_STORAGE_MIN = 1;
 /**
- * CEILING — **G407, and therefore NOT `APPROX` any more.**
+ * ⚠️ THERE IS NO RULE CEILING ON THE HOPPER — G407 IS A WARNING, NOT A CAP (owner ruling
+ * 2026-09-12, late; field-plan §4.3, Lane B relay 2).
  *
- * "A ROBOT may not CONTROL more than 4 SCORING ELEMENTS." A hopper holding five is a robot
- * controlling five, so four is the rule's own number and not a judgement about volume. The
- * staging rule agrees from the other side: §10.3.1 pre-loads exactly 4 POLLEN per ROBOT, so a
- * legal robot starts FULL. The published kit robots that advertise a capacity at all say
- * "up to four POLLEN".
+ * "A ROBOT may not CONTROL more than 4 SCORING ELEMENTS" used to be spelled here as
+ * `BB_STORAGE_MAX = 4`, a hopper the sim refused to fill past four. Table 10-4 gives the rule a
+ * VERBAL WARNING (MAJOR + YELLOW only if STRATEGIC), and a hopper that cannot hold a fifth is
+ * not what the rule says. So the hopper is bounded by the VOLUME LAW alone (`bbStorageMax`),
+ * and CONTROL of a fifth element is the rules lane's warning (`penalties.ts`,
+ * `BB_CONTROL_LIMIT`), which is a different number that happened to match this one.
  *
- * ── WHAT THIS REPLACED, AND WHY THE VOLUME LAW SURVIVES BELOW IT ────────────
- * These were 24 and 8, derived from a one-layer packing model (~12 in² of hopper floor per
- * 3" POLLEN) that put a 15×17 turret at ~11 and an open 18" dumper at 24. That model was a
- * good answer to "how much would physically fit", which turns out not to be the question the
- * game asks — Lane A read it off the manual and flagged it (`docs/biobuzz/field-plan.md` §7).
- *
- * `bbStorageMax` still runs the volume law and the archetype/mount multipliers, and they are
- * still the honest description of the hardware; the rule simply binds first for every chassis
- * anyone can build. Keeping both layers means the archetype differences are still WRITTEN DOWN
- * rather than deleted, and the day a rule change or a different game lifts the cap they come
- * back on their own. It also keeps one true statement true: the number a robot may hold is the
- * SMALLER of what fits and what is legal.
- *
- * ⚠️ CONSEQUENCE: the storage slider is now a 1–4 dial and every archetype reaches the same
- * ceiling, so hopper size is no longer a way to tell two builds apart. Cadence, range and
- * cycle time are. Any blurb that sold an archetype on "biggest hopper" is now false — see
- * `BB_MODE_BLURBS` and the demo preset comments.
+ * The staging rule is unchanged: §10.3.1 pre-loads exactly 4 POLLEN per ROBOT, so
+ * `BB_STORAGE_DEFAULT` stays 4 and a default build still starts FULL. Raising the dial past it
+ * is a build choice with a rules consequence the driver is warned about, not a refused one.
  */
-export const BB_STORAGE_MAX = 4;
 /** a legal robot starts FULL: §10.3.1 stages exactly 4 pre-loaded POLLEN per ROBOT. */
 export const BB_STORAGE_DEFAULT = 4;
 
 /** square inches of footprint per stored POLLEN — the derived cap's only size term, so it is
- * the single dial for storage across every archetype, mount and chassis size. APPROX; see the
- * note on `BB_STORAGE_MAX` for where 12 comes from. */
+ * the single dial for storage across every archetype, mount and chassis size. APPROX: a
+ * one-layer packing model, ~12 in² of hopper floor per 3" POLLEN. */
 export const BB_STORE_AREA_PER_BALL = 12;
 export const BB_STORE_TURRET_MULT = 0.55; // a turret loses centre volume to the rotor + shooter
 export const BB_STORE_TWIN_MULT = 0.45; // a second shooter assembly eats even more of it
@@ -739,12 +726,11 @@ export function bbMountStoreMult(mount: BbIntakeMount): number {
 }
 
 /** the MAX POLLEN this robot can hold — footprint × an archetype factor × the intake-mount
- * factor, clamped to [MIN, MAX].
+ * factor, floored at MIN.
  *
- * The volume law below describes the HARDWARE and `BB_STORAGE_MAX` is the RULE (G407, 4). For
- * every chassis in the legal size envelope the volume answer is larger, so the rule is what
- * actually binds and this returns 4 — see the note on `BB_STORAGE_MAX` for why both layers are
- * kept rather than deleting the one that no longer decides anything. */
+ * The volume law describes the HARDWARE and is the whole ceiling: G407 is a warning, not a cap
+ * (see `BB_STORAGE_DEFAULT`). So hopper size is a way to tell two builds apart again — an open
+ * dumper holds far more than a double turret on the same chassis. */
 export function bbStorageMax(spec: RobotSpec): number {
   const area = spec.length * spec.width;
   // Through the RESOLVER, not `spec.scoreMode`: the container is authoritative and the flat
@@ -757,7 +743,7 @@ export function bbStorageMax(spec: RobotSpec): number {
         ? BB_STORE_TWIN_MULT
         : BB_STORE_LAUNCHER_MULT) * bbMountStoreMult(bbIntakeMountOf(spec));
   const cap = Math.round((area / BB_STORE_AREA_PER_BALL) * mult);
-  return Math.max(BB_STORAGE_MIN, Math.min(BB_STORAGE_MAX, cap));
+  return Math.max(BB_STORAGE_MIN, cap);
 }
 
 /**
@@ -969,7 +955,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
 ] as const;
 
 /**
- * The shipped builds, with MASS and HOPPER derived rather than typed out.
+ * The shipped builds, with MASS derived rather than typed out and the HOPPER at the staged 4
  *
  * Both are FUNCTIONS of the build — the mass floor of a drivetrain × inertia × mechanism, and
  * the capacity of a footprint × archetype × mount — so a hard-coded number would quietly stop
@@ -979,7 +965,10 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
 export const BB_PRESETS: readonly RobotSpec[] = BB_PRESET_BUILDS.map((s) => ({
   ...s,
   massLb: Math.max(s.massLb, massLimits(s.drivetrain, s.flywheelInertia, bbMassFloorBump(s)).min),
-  ballStorage: bbStorageMax(s),
+  // the STAGED load, never more than the build can hold: G407 is a warning rather than a cap
+  // (owner ruling 2026-09-12), so the volume law is only the dial's ceiling and a card starts at
+  // the default 4 that §10.3.1 pre-loads.
+  ballStorage: Math.min(BB_STORAGE_DEFAULT, bbStorageMax(s)),
 }));
 
 /** the default mount for a build that arrives without one (re-exported so the builder and the

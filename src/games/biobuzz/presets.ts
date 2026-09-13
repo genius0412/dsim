@@ -1,7 +1,7 @@
 import type { RobotSpec } from '../../types';
 import { massLimits } from '../../sim/drivetrain';
 import { DRIVETRAIN_LABELS } from '../../ui/labelData';
-import { BB_DEFAULT_SCORE_MODE, BB_HOOD_DEFAULT_DEG, BB_PRESETS, BB_STORAGE_MAX, bbMassFloorBump } from './config';
+import { BB_DEFAULT_SCORE_MODE, BB_HOOD_DEFAULT_DEG, BB_PRESETS, BB_STORAGE_DEFAULT, bbMassFloorBump } from './config';
 import { bbIntakeMountOf, bbShooterMountOf } from './mounts';
 import { type BbMechSpec, bbLauncherOf, bbLiftOf } from './mechs';
 import {
@@ -65,13 +65,13 @@ const BB_STARTER_ASSISTS = {
 } as const;
 
 /**
- * G407 caps CONTROL at FOUR SCORING ELEMENTS, and the StarterBot is built to it — the field
- * stages exactly 4 pre-loaded per robot (§10.3.1).
+ * The StarterBot carries the STAGED load and no more: the field pre-loads exactly 4 per robot
+ * (§10.3.1), and G407 warns on CONTROL of a fifth. G407 is a warning rather than a cap (owner
+ * ruling 2026-09-12), so this is a build choice the kit makes, not a ceiling the sim enforces.
  *
- * Read from `BB_STORAGE_MAX` rather than written as `4` here: the ceiling IS the rule, and two
- * independent spellings of one number is how they drift apart.
+ * Read from `BB_STORAGE_DEFAULT` rather than written as `4` here, so the two cannot drift.
  */
-const BB_G407_CAP = BB_STORAGE_MAX;
+const BB_G407_CAP = BB_STORAGE_DEFAULT;
 
 /** The StarterBot, as a BUILD. Mass and the legacy mirrors are filled in below. */
 const BB_STARTER_BUILDS: readonly RobotSpec[] = [

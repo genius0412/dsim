@@ -100,7 +100,7 @@ const fmtTime = (s: number): string => {
  *  • WHAT IS IN THE ROBOT — one disc per held element, coloured by element, then a hollow ring
  *    per free slot up to the cap. The row runs NEXT-OUT FIRST: the leftmost filled disc is the
  *    element the launcher (or the Box Tube) takes next, and it carries the `.next` ring. The
- *    discs carry no letters or digits and there is NO HOPPER COUNT CHIP (owner ruling
+ *    discs carry no letters or digits and the row prints no count chip (owner ruling
  *    2026-09-12); the row's accessible name says the same thing in words. It reuses DECODE's
  *    `.hopper` / `.hopper-pip` anatomy, so the empty slot's contrast-audited ring is the same one.
  *  • FLOWER IN REACH — the Box Tube's placement point is on a FLOWER, so a place button will do

@@ -23,6 +23,7 @@ import {
   BB_POLLEN_R,
   BB_PTS,
   BB_TURRET_PITCH_MAX,
+  bbStorageMax,
 } from '../../src/games/biobuzz/config';
 import { capturePollen, pollenIn, releasePollen, scoreTargets, takeHeld } from '../../src/games/biobuzz/elements';
 import type { ScoreTarget } from '../../src/games/biobuzz/state';
@@ -316,10 +317,26 @@ export function robotChecks(check: Check): void {
   }
   for (const p of BB_STARTER_BOTS) {
     check(
-      `starterbot [${p.name}]: hopper honours G407's 4-element cap`,
+      `starterbot [${p.name}]: carries the staged load of 4 (§10.3.1), not more`,
       (p.ballStorage ?? 0) <= 4 && (p.ballStorage ?? 0) >= 1,
       `hopper=${p.ballStorage}`,
     );
+  }
+  // G407 IS A WARNING, NOT A CAP (owner ruling 2026-09-12, Lane B relay 2): the hopper dial is
+  // bounded by the volume law alone, and a default build still spawns with the staged 4.
+  {
+    const big = bbCoerce({
+      ...DEFAULT_SPEC,
+      length: 18,
+      width: 18,
+      intakeMount: 'front',
+      bbMech: { launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null },
+    } as RobotSpec);
+    check('storage: the biggest legal open dumper can hold MORE than 4 (no G407 cap)', bbStorageMax(big) > 4, `max=${bbStorageMax(big)} ${big.length}x${big.width}`);
+    const maxed = bbCoerce({ ...big, ballStorage: 99 });
+    check('storage: its hopper dial reaches past 4 and the cap follows it', bbHopperCap(maxed) === bbStorageMax(big) && bbHopperCap(maxed) > 4, `cap=${bbHopperCap(maxed)}`);
+    const w = mkWorld('free', 5);
+    check('storage: a default build still spawns FULL with the staged 4', w.robots[0].hopper.length === 4 && bbHopperCap(w.robots[0].spec) === 4, `hopper=${w.robots[0].hopper.length} cap=${bbHopperCap(w.robots[0].spec)}`);
   }
   {
     check(
