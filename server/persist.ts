@@ -1,4 +1,4 @@
-import { dbEnabled } from './db/pool';
+import { dbEnabled, q } from './db/pool';
 import {
   addActivity,
   currentSeasonNumber,
@@ -13,25 +13,16 @@ import {
 import { STANDING_COST } from '../src/standing';
 import { chargeStanding, creditCleanMatch } from './standing';
 import { persistVersusMatch } from './ranked';
-import { scrubName } from './moderation';
+// scrubSpecNames used to live HERE. It moved to `./moderation` when `saveReplay` started
+// scrubbing too: repo.ts is the one funnel all three replay writers share, and persist.ts
+// imports repo.ts, so repo.ts importing it back from here would be a cycle.
+import { scrubSpecNames } from './moderation';
 import { recordScore } from '../src/sim/replay';
 import { simModuleFor } from '../src/games/sim';
-import { DEFAULT_SPEC } from '../src/sim/spawn';
-import type { RobotSpec } from '../src/types';
 import type { BehaviourReport, DodgeReport, MatchOutcome, PersistOutcome } from './room';
 import { type DodgeVerdict } from '../src/dodge';
 import { WINDOW_HOURS } from '../src/standing';
 import * as C from '../src/config';
-
-/** Copy a spec with its public free-text names run through hosted moderation. The
- *  robot/team name land in `records.config` (a public leaderboard card), so a flagged
- *  one is replaced with the safe default before it is ever written. No-op (returns the
- *  same object) when moderation is disabled or the names are already clean. */
-async function scrubSpecNames(spec: RobotSpec): Promise<RobotSpec> {
-  const name = await scrubName(spec.name, DEFAULT_SPEC.name);
-  const teamName = await scrubName(spec.teamName, '');
-  return name === spec.name && teamName === spec.teamName ? spec : { ...spec, name, teamName };
-}
 
 /**
  * Persist a finished match (off the hot path — called at phase 'post'). The
@@ -146,13 +137,36 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
     } else {
       const ids: { matchId?: string } = {};
       const elo = await persistVersusMatch(authed, o, bv, replayId, o.ranked, game, ids);
+      /* ORPHAN SWEEP — the same one `saveLanRun` does when it loses its race, for the same
+       * reason: a `replays` row has no back-reference, so one nothing points at is invisible
+       * to `deleteAccount` and to both prunes and is freed only by a season purge.
+       * `persistVersusMatch` early-returns WITHOUT calling `saveMatch` when either alliance
+       * has no authed player — a signed-in player against a guest, or a 2v2 whose two
+       * accounts sat on one alliance — and the replay was already written above.
+       * ⚠️ The test is `ids.matchId`, NOT `elo.length`: an UNRANKED custom room moves no ELO
+       * and returns [], but it DOES write its match row, and deleting that match's replay
+       * would take the Watch button off a real custom game. */
+      if (!ids.matchId) await q(`delete from replays where id = $1`, [replayId]);
+      // say which of the two things actually happened — the old line printed "WROTE versus
+      // match" on the exact path that writes no match row and then deletes the replay again,
+      // which is the one case an operator reading this log is trying to find
       console.log(
-        `[persist] WROTE versus match (ranked=${o.ranked}) — ${elo.length} ratings updated` +
-          (elo.length === 0 && o.ranked ? ' (not a two-sided match)' : ''),
+        ids.matchId
+          ? `[persist] WROTE versus match (ranked=${o.ranked}) — ${elo.length} ratings updated` +
+              (elo.length === 0 && o.ranked ? ' (not a two-sided match)' : '')
+          : `[persist] NO versus match row (one-sided room, ranked=${o.ranked}) — replay discarded, playtime still credited`,
       );
       return { elo, matchId: ids.matchId };
     }
   } catch (e) {
+    // ⚠️ A THROW ANYWHERE AFTER `saveReplay` LEAKS ITS ROW. The replay is written early (the
+    // match row references it), so every later failure — `persistVersusMatch`, the record
+    // write, a pool timeout — leaves a `replays` row nothing points at, invisible to
+    // `deleteAccount` and to both prunes and freed only by a season purge. The one-sided-room
+    // sweep above closes the COMMON member of that class (it happens on every guest game, not
+    // on an outage); this one is left open deliberately rather than swept here, because a
+    // `delete` issued from the handler for a DB that is already failing is as likely to throw
+    // as to help, and losing a replay whose match row DID get written would be the worse bug.
     console.error('[persist] FAILED writing to DB:', e);
   }
   return {};

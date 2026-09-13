@@ -38,6 +38,30 @@ against the same entry points.
 
 ## 0. Summary
 
+> ## ⚠️ STATUS: EXECUTED 2026-09-12/13. READ THIS BOX BEFORE ANY ROW BELOW.
+>
+> Stages 0–4 were built (§6). **The findings table and the developer spec below are the ORIGINAL
+> audit and several of their rows are now false** — they are kept, struck through, with the
+> correction beside them, because "we already checked that" is the expensive thing to lose.
+>
+> **Four findings were dead on re-verification** (#12, #18 already fixed; #13, #20 real but much
+> narrower than stated) and **four more were withdrawn on analysis** (#8, #14, #22, and #15 reduced
+> to a comment fix). **Three of this document's own prescribed fixes do not work as written** — see
+> the as-built column in §7.
+>
+> **Two new findings**, neither in the original table: **#23, `--ha=false` is on the alpha deploy
+> line only** — production deploys bare, and a second machine in one region silently splits a room
+> code, which is Critical; and `world.events` has 25 push sites, not 15.
+>
+> **The headline result is §5**: the wire is rounded to 3 dp, measured at **−41% DECODE / −54-58%
+> Chain Reaction**, fleet egress 39.9 → 23.3 MB/s. It costs CPU (38.2 → 41.5 cores) and that was
+> measured too.
+>
+> **The Stage 4 ceiling arithmetic in this document is wrong** — `MAX_ROOMS=6` on the satellites
+> lowers the fleet ceiling, it does not raise it. That is the right trade and it is not the trade
+> the plan describes. §6.
+
+
 The synchronization engine is **well built and correctly reasoned**. Server authority is
 real, the client predicts every robot (not just its own) so contact is honest, the
 shared-prefix encode makes broadcast O(balls) rather than O(recipients), and
@@ -324,21 +348,23 @@ correctness.
 | 5 | `applyBallDelta` returns baseline objects the predicted sim then mutates ⇒ a ball the server does not re-send is never corrected | `protocol.ts` `applyBallDelta`, `serverSession.ts` `baseBalls` | **High** |
 | 6 | `coerceAutoPath` leaves `shapes`/`sequence`/`controlPoints` unbounded — also the guard on settings load and the practice-run → `replays` upload | `spawn.ts` `coerceAutoPath` | **High** |
 | 7 | `MAX_ROOMS` 24 applied to `shared-cpu-1x` satellites: 6–24× oversubscribed, machines flap, invisible on `cores` | `fly-deploy.sh` satellite loop | **High** |
-| 8 | Ball diff `JSON.stringify`s every ball every broadcast — **63% of CR solo's encode** | `Room.broadcastSnapshot` | **High** |
+| 8 | ~~Ball diff `JSON.stringify`s every ball every broadcast~~ — **WITHDRAWN.** The stringify IS the diff key and the only reason the server is immune to #5's aliasing; the prescribed property test is false in one direction (`JSON.stringify` is key-order sensitive). Prize was ~+5% CR rooms/core against a ceiling short for unrelated reasons | `Room.broadcastSnapshot` | **High** |
 | 9 | ~~`onBehaviour` never wired in production~~ **WITHDRAWN — false, and was false when written.** `matchmaking.ts` passes `persistBehaviour` as the 8th `Room` argument. The first pass read only the custom-room construction in `index.ts`; those rooms never set `Room.ranked`, which `reportBehaviour` guards on, so standing charges are live exactly where they can apply. It carried a ✔, so the adversarial pass missed it too | — | **withdrawn** |
-| 10 | `world.events` monotonic, never cleared, re-sent whole 30×/s: **18.8% of a DECODE 2v2 frame** (15 `events.push` sites) | `types.ts`, sim + games | **High** |
+| 10 | `world.events` monotonic, never cleared, re-sent whole 30×/s — **MEASURED AND NOT WORTH FIXING AS SPECIFIED.** 25 push sites, not 15. A cap at 64 saves **0 bytes** in DECODE solo, CR solo and CR 2v2 (the log never reaches 64) and 13.5% of the raw frame only in a synthetic foul-heavy DECODE 2v2 — while SILENTLY discarding 99 of that match's 163 toasts, because `collectNetEvents` diffs by absolute index and a saturating length never trips its shrink guard. Left uncapped; the hazard is now documented at the reader and the edge-triggering is pinned by a check | `types.ts`, sim + games | **High** |
 | 11 | ~70 stationary CR particles retransmitted per frame as float noise — fixed by #2 | `Room.broadcastSnapshot` + `chain/play.ts` | **High** |
-| 12 | `backfillRobot` has no CR branch; `catalystRail` un-backfilled ⇒ old→new skew NaNs a CR robot | `protocol.ts` `backfillRobot` | **High** |
+| 12 | ~~`backfillRobot` has no CR branch~~ — **REFUTED.** `catalystRail` is optional and every reader spells `?? 0` | `protocol.ts` `backfillRobot` | **High** |
 | 13 | `sanitizeReplay` takes a `game` and never passes it to `coerceSetup`, which snaps G304 unconditionally ⇒ a CR replay re-sims a robot moved across the field before CR's own snap runs | `sanitize.ts`, `spawn.ts` `coerceSetup` | **High** |
-| 14 | `broadcast()` has no `backlog()` guard where `sendTo` does | `Room.broadcast` | **Medium** |
-| 15 | `SNAP_BACKLOG_BYTES` calibrated pre-compression: 256 KB is now ~9–14 s of arrears, not the ~1.3 s reasoned about | `room.ts` | **Medium** |
+| 14 | ~~`broadcast()` has no `backlog()` guard~~ — **WITHDRAWN.** All 9 call sites are ONE-SHOT control messages (`matchResult`, `eloResult`, `drop`, `error`) with no successor frame. A skipped *snapshot* is a coalesce; a skipped `drop` is a ghost robot forever. `WS_HEARTBEAT_MS`' `ws.terminate()` already closes the failure | `Room.broadcast` | **Medium** |
+| 15 | `SNAP_BACKLOG_BYTES` comment was calibrated pre-compression — **COMMENT FIXED, NUMBER KEPT.** `ws.bufferedAmount` is post-deflate, so 256 KB is really 1.4–24 s by room shape (CR 2v2 vs DECODE solo). Lowering it risks skip→keyframe→skip — a skip UNPRIMES, so recovery is a full 300-ball CR keyframe — and under `WS_COMPRESS=0` the same number is RAW bytes | `room.ts` | **Medium** |
 | 16 | Parked ranked queue survives sign-out ⇒ wrong account enters a rated match | `queueKeeper.ts`, 2 call sites | **Medium** |
 | 17 | Production ball-delta path has no codec-level test — would also have caught #1 | `Room` vs `encodeBallDelta` | **Medium** |
-| 18 | `coerceStartIndex` clamps to DECODE's `START_POSES.length` for CR ⇒ silently different corner | `sanitize.ts`, `chain/spawn.ts` | **Medium** |
+| 18 | ~~`coerceStartIndex` clamps to DECODE's count~~ — **ALREADY FIXED**, per game, pinned in `smoke-biobuzz/core.ts` | `sanitize.ts`, `chain/spawn.ts` | **Medium** |
 | 19 | Client inbound `JSON.parse` unguarded (`decodeServerMsg`) ⇒ one bad frame kills the handler silently | `protocol.ts`, `transport.ts` | **Low** |
 | 20 | `spectateRoom` omits `region` where `roomJoinRegion` would fall back to the watcher's own pick ⇒ "no such room" for a bare custom code | `App.tsx` | **Low** |
 | 21 | SFX re-cue on reconcile replay — audible under loss | `game.ts` | **Low** |
-| 22 | `world.gameSettings` — **refuted as a cost (0.0% measured), latent as a trap**: it sits inside `Omit<World,'balls'\|'robots'>`, so if anyone ever passes settings server-side it silently starts riding every snapshot. Delete it | `types.ts`, `spawn.ts`, `game.ts` | **Info** |
+| 22 | ~~`world.gameSettings`~~ — **SKIPPED.** 0.0% measured; a 6-file sweep crossing into a lane another contract owns. `world.gameSettings` — **refuted as a cost (0.0% measured), latent as a trap**: it sits inside `Omit<World,'balls'\|'robots'>`, so if anyone ever passes settings server-side it silently starts riding every snapshot. Delete it | `types.ts`, `spawn.ts`, `game.ts` | **Info** |
+| **23** | **`--ha=false` is on the ALPHA deploy line only; PRODUCTION deploys bare.** Rooms live in process memory and `routeTarget` resolves to a REGION, not a machine — so two machines in one region put two players in two rooms with the same code, silently, with no error on either screen. The alpha comment argues the production case verbatim | `scripts/fly-deploy.sh` | **Critical** |
+| **24** | `world.events` has **25** push sites, not 15 (10 of them BIOBUZZ's, which was never measured) | `types.ts`, sim + games | Info |
 
 ---
 
@@ -360,117 +386,183 @@ correctness.
 
 ---
 
-## 5. The precision change, specified
+## 5. The precision change, specified — **AS BUILT**
 
 ```ts
-// server/room.ts — one shared replacer, used at both snapshot stringify sites
-const WIRE_DP = 1000; // 3 dp — matches worldHash's own quantization (net/checksum.ts)
-const round3 = (k: string, v: unknown): unknown =>
-  typeof v === 'number' && Number.isFinite(v) && !Number.isInteger(v) && !TIME_KEYS.has(k)
-    ? Math.round(v * WIRE_DP) / WIRE_DP
-    : v;
+// server/wire.ts — a LEAF module, imported by server/room.ts AND scripts/costprobe.ts
+export const round3 = (_k: string, v: unknown): unknown =>
+  typeof v === 'number' && !Number.isInteger(v) ? Math.round(v * 1000) / 1000 : v;
 ```
 
-**The `Number.isInteger` guard is load-bearing.** `world.rngState` is a 32-bit mulberry32
-integer, and `world.tick`, ball ids and every count are integers. A naive `toFixed(3)` would
-make them *longer* and would corrupt `rngState`. **[C]**
+Three corrections to the draft above, all found while building it:
 
-**`TIME_KEYS` is the correction to the first draft's safety argument.** That draft argued 3
-dp is safe because `worldHash` already quantizes there. That proves *replay comparison* is
-blind below 1e-3, **not that `step()` is**. Accumulated clocks compared against `world.time`
-— `fireReadyAt` is the clear one — would be rounded independently of the clock they are
-compared to, so a comparison within half a millisecond of its boundary flips a predicted
-shot by one tick. It is cosmetic and self-corrects on the next snapshot, but the honest
-options are to exempt time-like keys or to measure prediction-mismatch rate before and
-after. Exempting is one `Set` and costs nothing measurable.
+**It does NOT live in `server/room.ts`.** Two reasons. `room.ts` sits in an import cycle, so a
+`const` exported from it reads back `undefined` in a module that imports it without also pulling
+in `Room` — which is exactly what `scripts/costprobe.ts` does, and the probe must not be able to
+disagree with the server about this number. And it must not live in `src/net/protocol.ts` either:
+that file is client-bundled, so a server-only wire helper there ships dead code to every browser.
+`src/net/roomRegion.ts` is the existing precedent for a leaf module carved out for the same class
+of reason. **[C]**
 
-**What actually makes 3 dp safe is re-anchoring**, and **#5 is what makes re-anchoring true
-for balls**: the client hard-swaps the world every snapshot, so a rounded value cannot
-accumulate — *for any entity the server re-sends*. Balls omitted from `upd` are not
-re-sent, which is exactly the case #5 describes and exactly the case rounding makes more
-common. **Land #5 first.** For scale: 0.001 inch on a 144-inch field, against a
-`SMOOTH_MAX_DIST` of 16 inches. **[C]**
+**`TIME_KEYS` CANNOT BE BUILT — it is dropped.** Three independent reasons, any one fatal:
+it omits `world.time`, which is the LEFT side of every comparison it was meant to protect, so
+exempting `fireReadyAt` leaves the identical error; two more clocks sit under *dynamic* keys no
+`Set` reaches (`PenaltyState.episodes`, `ChainState.catalystReadyAt`); and a `JSON.stringify`
+replacer cannot exempt a subtree at all, only a key name wherever it appears. **[C]**
 
-**It is not a shape change** — a rounded number is still a number — so an older client
-parses it unchanged. **No `CLIENT_CAPS` string, no `REPLAY_FORMAT` bump**; replays are input
-logs and never carry wire values. The solo path never serializes, so `session: null` stays
-bit-identical. **[C]**
+**The real safety argument is one sentence, and the draft never makes it.** A ball's *rounded*
+key changes the moment any field crosses a 0.0005 boundary — because the DIFF KEY is the rounded
+serialisation — so the server re-sends it then, and the client is never more than 0.001 per field
+from the server, indefinitely, with no ratchet. That holds even if the clone of #5 slips. For the
+two clocks: both sides of every comparison go through this one replacer, so they are compared in
+the same units, and a half-millisecond disagreement can at worst flip a fire-ready test for a
+single tick — corrected by the next snapshot's snap-and-replay, and decided by the server anyway.
 
-**Round the diff key with the same function**, or the two disagree about what changed —
-that is what removes the ~70 stationary CR particles per frame.
+**`Number.isFinite` is dead code and was removed.** `Number.isInteger(NaN)` is already false, and
+`JSON.stringify` writes a non-finite number as `null` either way. `Number.isInteger` stays, and is
+what makes "ids, counts, scores, ticks and `rngState` are untouched" structural. **[C]**
+
+**Round the diff key with the same function** — confirmed necessary and built. Rounding the frame
+alone leaves the key comparing full-precision floats, so every near-stationary CR particle still
+reads as changed and is re-sent.
+
+**And `sendSnapshotTo` too**, which the draft said to skip. It is production (the reattach
+keyframe), it goes out through both transports, and it is the LARGEST frame the server emits
+(`upd` is every ball — all 300 in CR).
+
+### Measured result
+
+| scenario | wire before | wire after | cut |
+|---|---|---|---|
+| DECODE solo | 10.4 KiB/s | 6.1 KiB/s | **−41.3%** |
+| DECODE 2v2 | 46.7 | 27.2 | **−41.8%** |
+| Chain Reaction solo | 87.7 | 36.8 | **−58.0%** |
+| Chain Reaction 2v2 | 177.1 | 81.8 | **−53.8%** |
+| BIOBUZZ solo / 2v2 | 12.1 / 41.2 | 6.6 / 20.5 | −45.5% / −50.2% |
+
+Fleet at 2,000 CCU: egress **39.9 → 23.3 MB/s**, total **$183 → $152/day**. It costs CPU, as
+predicted — a replacer leaves V8's fast path — and that was measured too rather than assumed:
+sim load **38.2 → 41.5 cores**. Egress is the larger term, so the trade is clearly right, but it
+IS a trade and the number is here so nobody has to re-find it. **[M]**
+
+No `CLIENT_CAPS` gate, no `REPLAY_FORMAT` or `SIM_VERSION` change: no key is added, removed or
+retyped, `unslimWorld`/`applyBallDelta`/`reconcile` are value-blind, `QCommand` is integer-only so
+`cmds` is untouched, and the solo path (`session: null`) never serializes and stays bit-identical.
+Replays are an INPUT log, so no stored replay is affected. **[C]**
 
 ---
 
-## 6. Implementation plan
+## 6. Implementation plan — **EXECUTED 2026-09-12/13**
 
-### Stage 0 — measure honestly (hours, no product risk)
+Stages 0–4 were built. The plan below is what actually shipped, including where the original
+plan (kept in git history) was wrong. Tree green throughout: `npm test` ALL PASS ×2 ·
+`npm run server:check` clean · `npm run test:mm` 187 · `npm run dbtest` ALL PASS · `npm run build`.
 
-1. `costprobe.ts:220` — deep-copy the baseline. **Every bandwidth number depends on it.**
-2. Re-run `npm run costprobe`; update `docs/capacity.md` §2 and the `fly.toml` sizing note.
-   Add a `--dp=N` flag so the precision lever is measurable in the tool everyone runs.
+### Stage 0 — fix the instrument
 
-### Stage 1 — correctness and security (hours)
+The root cause was NOT only the aliasing. **`encodeBallDelta` had zero production callers** —
+`Room` hand-rolls the diff — so the probe was pricing a codec that does not ship. `costprobe.ts`
+now copies the room's four lines (`prev: Map<number,string>`, one stringify per ball): same
+algorithm, same CPU profile. It immediately reproduced the review's independently measured
+**478.3 raw / 87.7 wire KiB/s** for CR solo, against the 9.24 it used to print.
 
-3. **Clone in `applyBallDelta`** (#5). Blocks Stage 2.
-4. Bound `coerceAutoPath`: cap `shapes`, `sequence`, per-line `controlPoints` (#6). Then
-   delete `autoPath`/`autoPathEnabled` from `LobbyPlayer`/`PlayerPatch` — `beginMatch`
-   already strips them, so nothing reads the roster copy.
-5. `backlog()` guard on `broadcast()`, matching `sendTo` (#14).
-6. Pass `game` through `sanitizeReplay` → `coerceSetup`, and give `coerceStartIndex` the
-   right anchor count per game (#13, #18).
-7. `dropQueue()` in the `signedIn` transition effect (#16); route `spectateRoom` through
-   `roomJoinRegion` (#20); guard `decodeServerMsg` (#19).
+The `--dp=N` flag was **withdrawn** — a knob for a value that is only ever 3 or absent. The probe
+imports `round3` itself. And the `docs/capacity.md` / `fly.toml` sub-task was **deleted**:
+capacity.md has zero costprobe references (its bandwidth figures come from
+`scripts/zz-deflate-cost.ts`) and fly.toml's sizing note quotes a different probe.
 
-### Stage 2 — the bandwidth win (days)
+### Stage 1 — correctness and security
 
-8. The 3 dp replacer at both stringify sites and on the diff key (§5), with `TIME_KEYS`.
-9. Smoke: `worldHash` unchanged across the replacer over a recorded tick stream; snapshot
-   round-trip through `unslimWorld`. One assertion each, and they are the safety proof.
-10. Cap or tail `world.events` (#10). The tail form needs a caps gate; the cap does not, at
-    the price of a rare duplicate event on the client's shrink reset.
+- **#5 clone** — on `applyBallDelta`'s **RETURN**, not into the baseline: the function *returns*
+  `order.map(id => baseline.get(id))`, so cloning on the way in fixes nothing. And `Artifact` has
+  **three** nested objects the sim writes through in place (`pos`, `vel`, and `state` — `st.v`/
+  `st.s`/`pending` on the rail, `st.lx`/`st.ly` in a hopper), so it is **four spreads**, not two.
+- **#6 bounds** — `sequence` 400, `controlPoints` **8** (⚠️ never 2: readers treat length as the
+  curve ORDER, so truncating to 2 turns a linear segment into a cubic), all **three** waits that
+  reach `pathWaitTimer` clamped, and `shapes` **deleted outright** rather than capped — it had no
+  reader anywhere, so the type, the coercer arm, the mirror block and the importer all went.
+- **#13** — the real bug was in `coerceSetup`, and it is two: G304's snap is now gated on
+  `simModuleFor(game).startLegality`, and `game` is threaded into `coerceSpec` **for the size
+  envelope only**. The naive threading is a SIM-BEHAVIOUR change — an explicit `'decode'` arms the
+  mount-reset branch, `intakeMount` moves the collider through `footprintExtents`, and every
+  stored replay carrying a non-front mount would re-sim as a different robot. Narrowed
+  deliberately; a smoke check holds the line. `createChainWorld` now calls `coerceSetup` (CR was
+  the one game with no last line of defence — a spoofed `startIndex` **threw**), and
+  `coerceBiobuzzSetup` collapsed onto the shared chokepoint, both reasons its header gave for
+  forking having become false.
+- **#14 WITHDRAWN, #19/#16/#20/#21 shipped.** #20 also fixed `rejoinGame`, which the review
+  missed and which has the identical bare-code branch. #21 is a HIGH-WATER MARK (`>`), keeping the
+  write inside the `if`: an unconditional write lowers `prev` to the server's re-simulated value
+  and re-cues the same shot.
 
-### Stage 3 — storage (days)
+### Stage 2 — the bandwidth win
 
-11. Per-user retention for `replays`, mirroring `PRACTICE_KEEP`/`LAN_KEEP` — keep N per
-    user, never delete the current season. `purgeSeasonReplays` stays the archived-season
-    lever. `npm run dbtest`: prune keeps N and deletes the pruned replays.
-12. Sweep `matches.replay_id` in `deleteAccount` (#4).
+§5 above, as built, with the measured result. **#10 (`world.events`) was measured and not built** —
+see finding 10: a cap at 64 saves literally zero in three of four scenarios and is silently lossy
+in the fourth. The hazard is documented at `collectNetEvents` and the edge-triggering is pinned by
+a check that would read 1,800 instead of 9 if a push site ever went per-tick.
 
-### Stage 4 — capacity (weeks, prototype-gated)
+### Stage 3 — storage
 
-13. **Linux baseline on `dsim-alpha` — nothing below is judgeable without it.** The honest
-    saturation signal is snapshot-gap p50/p99, never `cores` (capacity.md §0).
-14. Per-machine `MAX_ROOMS` via `-e MAX_ROOMS=N` in `fly-deploy.sh`'s satellite loop (#7).
-15. Raise `UV_THREADPOOL_SIZE` and measure the deflate pool under load. It is **already** a
-    live concern: zlib runs on the per-process libuv pool, which defaults to **4**, and 24
-    rooms × ~4 clients × 30 Hz is ~2,900 deflate jobs/s through it. It presents as latency,
-    not CPU — exactly the axis a Windows dev box cannot measure. **[C][E]**
-16. `SIM_WORKERS=1` (slower than none, on purpose — it prices the hop), then sweep 2/4/8.
-    **Budget the memory first** (§2.4): a 1 GB machine will not hold 100 rooms.
-17. Only then the fleet ceiling: size `gru`/`jnb` past 512 MB and move them into
-    `DEPLOY_REGIONS` (+2 regions, no code), or machine-granular routing.
+Per-user retention (item 11) was **not built and should not be**: `matches` has no `user_id` and
+two-to-four owners, so `PRACTICE_KEEP`'s unit does not exist. What shipped instead:
+`deleteAccount` sweeps `matches.replay_id` through `match_participants` (keeping the match row for
+co-participants, with the cost written down); `saveReplay` scrubs robot/team names, which closes
+the LAN path where a third party's name was stored unscrubbed; and a **new** finding — a one-sided
+versus room wrote a `replays` row referenced by nothing, unreachable by `deleteAccount` and both
+prunes.
 
-**If the ball-diff comparator (#8) is ever taken**, it ships with a property test —
-`fieldSame(a,b) === (JSON.stringify(a)===JSON.stringify(b))` over mutated artifacts — or it
-is a silent-drop hazard the moment someone adds a field. That test also closes #17.
+### Stage 4 — capacity
+
+**The review's ceiling arithmetic for this stage is wrong, and the two items must be priced
+together.** `MAX_ROOMS=6` on the satellites does not take the fleet from 144 to 192 — it takes it
+DOWN, because `SATELLITES` is not every region. That is the right trade (144 was never real
+capacity; it was 6–24× oversubscription that presents as machines flapping, invisible on `cores`),
+but it must be stated as a trade rather than as a gain.
+
+Shipped: `--ha=false` on the **production** deploy line (finding 23 — it was alpha-only, and the
+alpha comment argues the production case verbatim) plus duplicate-region detection, since the flag
+is preventive only; `SATELLITE_MAX_ROOMS=6` passed as `--env MAX_ROOMS=` on the `fly machine
+update` loop that already runs — it MUST live there, because `fly deploy` regenerates machine
+config from fly.toml; `ord` moved into `SATELLITES`; and `snapSendGapMs` on `/api/perf`, per ROOM
+and per BROADCAST, so send jitter is readable in production with no harness attached.
+
+`UV_THREADPOOL_SIZE` is **withdrawn**: `ws` already bounds deflate concurrency twice (its global
+`zlibLimiter`, and `index.ts`'s explicit `concurrencyLimit: 20`), and ~2,880 jobs/s is a CPU cost —
+more threads do not create CPU, and extra runnable threads contend with the single 60 Hz sim
+thread. The real lever was Stage 2, which removed 41–58% of the bytes entering the deflater.
+`SIM_WORKERS` and machine-granular routing remain unbuilt, deliberately (the latter turns the
+synchronous pure `routeTarget` into an async lookup on the WebSocket upgrade path, whose failure
+mode is the exact split-lobby bug `--ha=false` prevents).
+
+**The #8 property test is moot** — #8 is withdrawn, and it was false in one direction anyway
+(`JSON.stringify` is key-order sensitive, so `fieldSame(a,b) === (JSON.stringify(a)===JSON.stringify(b))`
+fails for two field-identical artifacts built in different key orders). #17 is instead partly
+closed by a smoke check that drives a real CR `Room` and asserts no ball is re-sent with wire data
+the client already holds.
 
 ---
 
 ## 7. Developer specification
 
-| # | symbol | change |
-|---|---|---|
-| 1 | `costprobe.ts:220` | deep-copy the baseline artifact |
-| 2 | `protocol.ts` `applyBallDelta` | clone each `upd` entry into the baseline |
-| 3 | `room.ts` `broadcastSnapshot` | `JSON.stringify(…, round3)` at both body sites; same rounding on the diff key |
-| 4 | `spawn.ts` `coerceAutoPath` | cap `shapes`, `sequence`, per-line `controlPoints` |
-| 5 | `protocol.ts` `LobbyPlayer`/`PlayerPatch` | delete `autoPath`/`autoPathEnabled` |
-| 6 | `room.ts` `broadcast` | `if (c.backlog && c.backlog() > SNAP_BACKLOG_BYTES) return;` |
-| 7 | `sanitize.ts` → `spawn.ts` `coerceSetup` | thread `game`; per-game start-index clamp |
-| 8 | `App.tsx` | `dropQueue()` on the `signedIn` transition; `spectateRoom` via `roomJoinRegion` |
-| 9 | `repo.ts` `deleteAccount` | sweep `matches.replay_id` |
-| 10 | new | per-user replay retention, mirroring `PRACTICE_KEEP` |
-| 11 | `fly-deploy.sh` | `-e MAX_ROOMS=N` per satellite |
+⚠️ **AS-BUILT. Four rows of the original spec were wrong as written** — kept below with the
+correction, because each was wrong in a way that would have shipped a bug or wasted a day.
+
+| # | symbol | change | as built |
+|---|---|---|---|
+| 1 | `costprobe.ts` | ~~deep-copy the baseline artifact~~ | **Copy `Room`'s diff.** The codec had no production caller, so deep-copying the baseline would have fixed the aliasing and still priced the wrong algorithm. |
+| 2 | `protocol.ts` `applyBallDelta` | ~~clone each `upd` entry into the baseline~~ | **Clone on the RETURN, four spreads.** The function returns the baseline's objects however they arrived, and `pos`/`vel`/`state` are all written in place. |
+| 3 | `room.ts` `broadcastSnapshot` | `JSON.stringify(…, round3)` at both body sites + the diff key | **Plus `sendSnapshotTo`** (the reattach keyframe — the largest frame the server emits), and `round3` lives in **`server/wire.ts`**, a leaf module: `room.ts` is in an import cycle and `costprobe.ts` must import the same function. `TIME_KEYS` dropped — unbuildable. |
+| 4 | `spawn.ts` `coerceAutoPath` | cap `shapes`, `sequence`, per-line `controlPoints` | **`shapes` DELETED** (no reader, anywhere), `controlPoints` capped at 8 and never 2, all three `pathWaitTimer` inputs clamped. |
+| 5 | `protocol.ts` `LobbyPlayer`/`PlayerPatch` | delete `autoPath`/`autoPathEnabled` | as specified — **and `server/room.ts` has TWO sites**, not the one the review names (the host handshake and the staged/strategy path). |
+| 6 | `room.ts` `broadcast` | ~~`backlog()` guard~~ | **WITHDRAWN** — one-shot control messages, no successor frame. |
+| 7 | `sanitize.ts` → `spawn.ts` `coerceSetup` | thread `game`; per-game start-index clamp | **The clamp was already fixed.** Threading is narrowed to the size envelope; the start-legality gate is the other half. |
+| 8 | `App.tsx` | `dropQueue()` on the `signedIn` transition; `spectateRoom` via `roomJoinRegion` | **Plus `rejoinGame`**, same bare-code branch, missed by the review. |
+| 9 | `repo.ts` `deleteAccount` | sweep `matches.replay_id` | as specified, through `match_participants`, keeping the match row. |
+| 10 | new | ~~per-user replay retention~~ | **NOT BUILT, and should not be** — `matches` has no `user_id`. Replaced by the one-sided-room orphan fix. |
+| 11 | `fly-deploy.sh` | `-e MAX_ROOMS=N` per satellite | as specified (`--env`), on the `fly machine update` loop that already runs — **plus `--ha=false` on the production deploy line**, which is finding 23 and matters more. |
+| **12** | `repo.ts` `saveReplay` | **new** | scrub robot/team names — they are drawn ON THE FIELD, so they are in the viewer and burned into every exported video. |
+| **13** | `room.ts` + `index.ts` | **new** | `snapSendGapMs` on `/api/perf`, per room and per broadcast. |
 
 ### Invariants — unchanged, all respected above
 

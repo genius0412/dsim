@@ -152,13 +152,28 @@ export const appBuild = (): string =>
   typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : 'dev';
 
 /** friendly short names for the Fly deploy regions (code → place). Unknown codes
- * fall back to their uppercase code so a new region still shows something sane. */
+ * fall back to their uppercase code so a new region still shows something sane.
+ *
+ * KEEP THIS IN STEP WITH THE FLEET (`FLEET_REGIONS` in scripts/fly-deploy.sh). It went
+ * stale and nothing noticed, because the failure is cosmetic and silent: `ord` has had a
+ * live machine and a place in `DEPLOY_REGIONS` — so the matchmaker stages `ord-abc123`
+ * room codes — while this table knew five regions, and the only consumer is
+ * `deriveServerLabel` (serverSession.ts), where `isKnownRegion` gates a DISPLAY label. An
+ * unlisted region shows the picked server's generic label or a bare 'ORD' instead of a
+ * place. Nothing about routing reads this: `routeTarget` and `roomJoinRegion` never touch
+ * it. gru/jnb are listed ahead of their addition to `DEPLOY_REGIONS` — a client can
+ * already open a custom room on either with an explicit `?region=` pick, and the server
+ * reports that raw code back at matchStart. This is a CLIENT file, so a fix here ships on
+ * a Vercel deploy, not a Fly one. */
 const REGION_LABELS: Record<string, string> = {
   iad: 'US East',
+  ord: 'US Central',
   sjc: 'US West',
   lhr: 'Europe',
   syd: 'Australia',
   nrt: 'Asia',
+  gru: 'South America',
+  jnb: 'Africa',
 };
 export const regionLabel = (code: string): string =>
   REGION_LABELS[code] ?? (code ? code.toUpperCase() : '');

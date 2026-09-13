@@ -21,7 +21,7 @@ most important thing this exercise produces.
 |---|---|
 | target app | `dsim-alpha` first. Only `dohun-sim-decode` once alpha is clean. |
 | who can deploy | the owner, via `./scripts/fly-deploy.sh` |
-| roll back | `WS_COMPRESS=0` (compression), `MAX_ROOMS=0` (admission cap) — both env, no code change |
+| roll back | `WS_COMPRESS=0` (compression), `MAX_ROOMS=0` (admission cap) — both env, no code change. ⚠️ On a SATELLITE `MAX_ROOMS` is re-written by `fly-deploy.sh` on the next deploy; set `SATELLITE_MAX_ROOMS=0` there for a durable one |
 | harness | `npx tsx scripts/loadtest.ts` from this branch |
 | watch | `curl https://<app>/api/perf` |
 
@@ -125,7 +125,8 @@ again."* and `/api/perf` to show `admitting: false`.
 
 **Then check it in a browser**, which is the half the harness cannot see: the Lobby should show
 the busy message plus the hint that the connection is fine and another region will work, with the
-region picker usable. Default on Fly is `MAX_ROOMS=24`.
+region picker usable. On Fly that is `MAX_ROOMS=24` on iad and **6** on the satellites
+(`SATELLITE_MAX_ROOMS`, `scripts/fly-deploy.sh`), so a satellite reaches this state far sooner.
 
 ### 3c. Ghost rooms
 

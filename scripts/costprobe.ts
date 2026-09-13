@@ -51,7 +51,11 @@ import { simModuleFor } from '../src/games/sim';
 // without checking) never looked.
 import { DEFAULT_SPEC, PLAYER_ASSISTS, coerceSpec, type RobotSetup } from '../src/sim/spawn';
 import { ReplayRecorder, maxMatchTicks } from '../src/sim/replay';
-import { slimWorld, encodeBallDelta, quantizeCommand, localizeCommand } from '../src/net/protocol';
+import { slimWorld, quantizeCommand, localizeCommand, type BallDelta } from '../src/net/protocol';
+// the WIRE PRECISION replacer, imported rather than copied: it is the one number this probe
+// must not be able to disagree with the server about. (`server/wire.ts` is a LEAF module for
+// exactly that reason — see its header.)
+import { round3 } from '../server/wire';
 import * as C from '../src/config';
 // BIOBUZZ's own leaf modules. `coerce.ts` is a dependency of the shared `coerceSpec` and
 // imports nothing that reaches back to it, so pulling it (and the constants it already reads)
@@ -300,7 +304,20 @@ async function measure(s: Scenario): Promise<Measured> {
   world.match.preCountdown = C.PRE_COUNTDOWN;
   const rec = new ReplayRecorder(424242, setups, 'match', s.game);
 
-  let baseline: Map<number, Artifact> | null = null;
+  /**
+   * THE DIFF THE SERVER ACTUALLY SHIPS, not the shared codec.
+   *
+   * `encodeBallDelta` has ZERO production callers — `Room.broadcastSnapshot` hand-rolls the
+   * diff against a `Map<number, string>` of last frame's stringified balls. This probe used
+   * to price the codec instead, seeded from a map of LIVE `Artifact` references, so `prev`
+   * and `b` were the SAME OBJECT every frame, nothing ever compared unequal, `upd` was always
+   * empty and the measured snapshot was a fraction of the real one.
+   *
+   * Room's four lines, copied rather than exported: pulling a shared `ballDiff` out of
+   * `server/room.ts` would make this instrument import the whole room/server graph for four
+   * lines. Same algorithm AND the same CPU profile — the per-ball stringify is the cost.
+   */
+  let prevBalls = new Map<number, string>();
   /** every snapshot frame, deflated after the CPU window closes (see `wireBytes`) */
   const frames: string[] = [];
   /** the SAME frames with `s.fields` deleted off each robot — the counterfactual stream. Empty
@@ -322,7 +339,13 @@ async function measure(s: Scenario): Promise<Measured> {
     rec.record(world.tick, local);
     // SNAPSHOT_INTERVAL is 2 in server/room.ts, i.e. 30Hz
     if (world.tick % 2 === 0) {
-      const delta = encodeBallDelta(baseline, world.balls);
+      const cur = new Map<number, string>();
+      for (const b of world.balls) cur.set(b.id, JSON.stringify(b, round3));
+      const changed: Artifact[] = [];
+      for (const b of world.balls) if (cur.get(b.id) !== prevBalls.get(b.id)) changed.push(b);
+      // the server sends a KEYFRAME to a client it has not primed yet; steady state is the
+      // delta, which is what a long-running room costs
+      const delta: BallDelta = { order: world.balls.map((b) => b.id), upd: prevBalls.size ? changed : world.balls };
       // held separately from the stringify so the field pricing below can re-serialize the
       // EXACT same object with two keys removed — a difference of one variable, not of a scene
       const slim = slimWorld(world);
@@ -334,7 +357,7 @@ async function measure(s: Scenario): Promise<Measured> {
         cmds: world.robots.map((r) => quantizeCommand(local.get(r.id) ?? command(world.tick, 0, s))),
         ackInputTick: world.tick,
       };
-      const frame = JSON.stringify(payload);
+      const frame = JSON.stringify(payload, round3);
       frames.push(frame);
       snapBytes += Buffer.byteLength(frame, 'utf8');
       snaps++;
@@ -348,11 +371,11 @@ async function measure(s: Scenario): Promise<Measured> {
             delete bag[f];
           }
         }
-        const stripped = JSON.stringify(payload);
+        const stripped = JSON.stringify(payload, round3);
         bare.push(stripped);
         bareBytes += Buffer.byteLength(stripped, 'utf8');
       }
-      baseline = new Map(world.balls.map((b) => [b.id, b] as const));
+      prevBalls = cur;
     }
     // each client sends its own command every tick
     upBytes += Buffer.byteLength(

@@ -10,7 +10,7 @@ import {
   PRACTICE_SAVE_MIN_S,
   PRACTICE_SAVE_MIN_TICKS,
 } from '../src/replaySavePolicy';
-import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, PLAYER_ASSISTS, coerceAssists, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
+import { createWorld, DEFAULT_ASSISTS, DEFAULT_SPEC, PLAYER_ASSISTS, coerceAssists, coerceAutoPath, coerceSpec, coerceSetup, coerceStartPose } from '../src/sim/spawn';
 import { drawWheels } from '../src/games/chain/parts';
 import { sanitizePlayer, sanitizePlayerPatch } from '../src/net/sanitize';
 import { derivedRole, savedStartCap } from '../src/ui/startPositions';
@@ -202,7 +202,7 @@ import {
 import { EMPTY_ACTIVITY, averageMatch, playtimeLong, playtimeText } from '../src/playtime';
 import { routeTarget } from '../server/routing';
 import { roomPersists } from '../server/channel';
-import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, type Client, type DodgeReport } from '../server/room';
+import { Room, MAX_INPUT_LEAD_TICKS, MAX_PENDING_PER_ROBOT, round3, type Client, type DodgeReport } from '../server/room';
 import type { PendingRosterEntry } from '../server/matchTypes';
 import { maintenanceBiting } from '../server/db/repo';
 import { maintenanceLine } from '../src/ui/MaintenanceBanner';
@@ -411,6 +411,46 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   // coerceSetup snaps a spoofed illegal custom pose to a legal spawn pose
   const bad = coerceSetup({ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0, startPose: { x: 0, y: 0, headingDeg: 0 } });
   check('coerceSetup snaps an illegal custom startPose legal', !!bad.startPose && evalStartPose(DEFAULT_SPEC, mirrorStartPose(bad.startPose, 'blue'), 'blue').legal);
+
+  // ...but G304 IS DECODE'S RULE, so the snap is gated on the module's `startLegality`.
+  // `sanitizeReplay` → `coerceSetup(…, 'chain')` used to run DECODE's launch-line / touching-
+  // a-surface repair over a CR pose, moving it somewhere CR never asked for, before
+  // `chainSnapStartPose` ever saw it.
+  {
+    const mid = { x: 0, y: 0, headingDeg: 0 }; // illegal under G304, fine under CR's G04
+    const cr = coerceSetup({ id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0, startPose: mid }, 'chain');
+    check(
+      'coerceSetup does NOT snap a CR pose to G304 (startLegality: false)',
+      cr.startPose?.x === 0 && cr.startPose?.y === 0,
+      `${cr.startPose?.x},${cr.startPose?.y}`,
+    );
+    // and the SIZE ENVELOPE follows the game too: DECODE's intake-preset length limit cut a
+    // legal CR chassis, so the replay viewer re-simulated a robot nobody built.
+    const big = { ...DEFAULT_SPEC, length: 17, width: 17 };
+    const asCr = coerceSetup({ id: 0, alliance: 'blue', spec: big, assists: DEFAULT_ASSISTS, startIndex: 0 }, 'chain').spec;
+    const asDecode = coerceSetup({ id: 0, alliance: 'blue', spec: big, assists: DEFAULT_ASSISTS, startIndex: 0 }, 'decode').spec;
+    check(
+      'coerceSetup resolves the CR size envelope for a CR setup (DECODE would cut it)',
+      asCr.length === 17 && asDecode.length < 17,
+      `CR ${asCr.length}" vs DECODE ${asDecode.length}"`,
+    );
+    // ⚠️ THE NO-BUMP GUARD. Threading `game` any further arms `coerceSpec`'s mount-reset
+    // branch, which rewrites `intakeMount` to 'front'. That is PHYSICS — `footprintExtents`
+    // grows the collider on the mounted edge — so every stored replay carrying a non-front
+    // mount would re-simulate as a different robot, i.e. a silent SIM_VERSION retirement of
+    // the whole archive. This is what keeps the narrowed branch narrow.
+    const mounted = { ...DEFAULT_SPEC, intakeMount: 'side' as const };
+    check(
+      'coerceSetup leaves a DECODE spec`s intakeMount ALONE (narrowed on purpose — do not "complete" the threading)',
+      coerceSetup({ id: 0, alliance: 'blue', spec: mounted, assists: DEFAULT_ASSISTS, startIndex: 0 }, 'decode').spec.intakeMount === 'side',
+    );
+    const hashed = (sp: typeof mounted): string =>
+      worldHash(createWorld('match', 7, [{ id: 0, alliance: 'blue', spec: sp, assists: DEFAULT_ASSISTS, startIndex: 0 }]));
+    check(
+      'a DECODE world spawned from a side-mounted spec hashes the same as one built straight from it',
+      hashed(mounted) === hashed(coerceSetup({ id: 0, alliance: 'blue', spec: mounted, assists: DEFAULT_ASSISTS, startIndex: 0 }, 'decode').spec as typeof mounted),
+    );
+  }
 
   // a custom pose actually drives the spawn position (canonical → mirrored)
   const customCanon = { x: START_POSES[1].x, y: START_POSES[1].y, headingDeg: START_POSES[1].headingDeg };
@@ -7116,6 +7156,75 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       !lan.includes('a second Back underneath the first'),
     );
   }
+
+  // ---- FOUR CLIENT WIRINGS THAT FAIL SILENTLY ---------------------------------
+  /**
+   * None of these files can be imported headlessly (React, `import.meta.env`), and all four
+   * failures are invisible: a socket on the wrong machine opens a second empty lobby with the
+   * same code, a parked queue keeps searching under an account that is gone, a re-cued shot is
+   * just a noise, and an unguarded `JSON.parse` kills the message handler for the rest of the
+   * session. Read as source, the house answer. ⚠️ Keep the windows off the comments.
+   */
+  {
+    const app = readFileSync('src/ui/App.tsx', 'utf8');
+    const gm = readFileSync('src/game.ts', 'utf8');
+    const ss = readFileSync('src/net/serverSession.ts', 'utf8');
+    const lc = readFileSync('src/net/lobbyClient.ts', 'utf8');
+    check(
+      'region: BOTH bare-code paths resolve through roomJoinRegion (spectate AND rejoin)',
+      (app.match(/roomJoinRegion\(/g) ?? []).length >= 2 && app.includes("from '../net/roomRegion'"),
+    );
+    check(
+      'region: ...and the old unrouted branches are gone',
+      !/if \(ref\.region\) params\.region = ref\.region/.test(app) && !/gameServerUrlWith\(region \?/.test(app),
+    );
+    check(
+      'queue: signing OUT drops a parked queue — on the EDGE, not on every signed-out render',
+      /else if \(wasSignedIn\)/.test(app) && /dropQueue\(\)/.test(app),
+    );
+    check(
+      'sfx: the fire/intake cues are HIGH-WATER MARKS, so a reconcile replay cannot re-cue a shot',
+      /r\.lastFireAt > \(this\.prevFireAt/.test(gm) &&
+        /r\.lastIntakeAt > \(this\.prevIntakeAt/.test(gm) &&
+        !/lastFireAt !== this\.prevFireAt/.test(gm),
+    );
+    // A REPLAY'S ROBOT NAMES ARE PUBLIC, because `renderer.ts` draws them ON THE FIELD — so
+    // they are in the replay viewer and burned into every exported video, the one copy of a
+    // match that outlives the sim version that recorded it. Scrubbed in `saveReplay`, the ONE
+    // funnel all three replay writers share, which is what closes the LAN path: `api.ts`
+    // moderates the roster it DISPLAYS and hands `sanitizeReplay(body.replay)` straight
+    // through, so a THIRD PARTY's name in a client-uploaded container was stored unscrubbed.
+    //
+    // ⚠️ A GREP, deliberately, and the only honest check available. Moderation is env-gated
+    // (`MODERATION_API_KEY`), so with no key every name is allowed and a behavioural test
+    // would pass whether or not the scrub is wired. And do NOT reach for a `worldHash`
+    // "renaming cannot change the match" check: `worldHash` cannot read a name under ANY
+    // implementation, so it passes either way — and it is false besides, since `scoring.ts`
+    // pushes `spec.name` into `world.events`.
+    {
+      const rend = readFileSync('src/render/renderer.ts', 'utf8');
+      const repo = readFileSync('server/db/repo.ts', 'utf8');
+      check('replay names: the renderer really does draw spec.name on the field (this is why it matters)', /r\.spec\.name/.test(rend));
+      // ⚠️ MATCH THE CALL, NOT THE NAME. `scrubSpecNames` also appears in repo.ts's import line
+      // and in saveReplay's own doc comment, so a bare /scrubSpecNames/ stays green after
+      // someone deletes the actual call — which is exactly the regression worth catching.
+      check(
+        'replay names: saveReplay CALLS the scrubber over every setup',
+        /await scrubSpecNames\(s\.spec\)/.test(repo),
+      );
+      check(
+        'replay names: ...and the INSERT writes the scrubbed copy, not replay.setups (scrubbing and not using it looks fine in a diff)',
+        /JSON\.stringify\(setups\)/.test(repo) && !/JSON\.stringify\(replay\.setups\)/.test(repo),
+      );
+    }
+    for (const [name, src] of [['serverSession', ss], ['lobbyClient', lc]] as const) {
+      check(
+        `parse: ${name} survives a malformed frame — and the \`null\` literal, which PARSES and then throws on .t`,
+        /try \{\s*m = decodeServerMsg\(data\);\s*\} catch \{\s*return;\s*\}/.test(src) &&
+          /typeof \(m as \{ t\?: unknown \}\)\.t !== 'string'/.test(src),
+      );
+    }
+  }
   // ---- LAN: THE HOST HALF IS ON THE PAGE, AND THE COMMANDS ARE REAL -------------
   /**
    * Two separate failures, both of which shipped, both silent:
@@ -8506,6 +8615,90 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
   check('sanitizePlayerPatch clamps a spoofed spec patch', (patched.spec?.width ?? 0) <= ROBOT_MAX_SIZE, `${patched.spec?.width}`);
   check('sanitizePlayerPatch ignores unknown/absent fields (empty patch is a no-op)', Object.keys(sanitizePlayerPatch({ bogus: 1 }, { ...player, clientId: 'x' })).length === 0);
 
+  // AUTO-PATH BOUNDS. A path arrives from a hand-editable file picker AND from the wire, is
+  // stored on `RobotState`, and rides every snapshot and replay — `lines` was the only array
+  // that was bounded. ⚠️ EQUALITIES, not `<=`: a `<=` bound also passes when the field is
+  // DELETED, which is exactly what this same change does to `shapes`.
+  {
+    const fat = coerceAutoPath({
+      fileName: 'x'.repeat(500),
+      startPoint: { x: 0, y: 0, heading: 'constant', degrees: 0 },
+      lines: Array.from({ length: 500 }, (_, i) => ({
+        id: `l${i}`,
+        endPoint: { x: 1, y: 1, heading: 'constant', degrees: 0 },
+        controlPoints: Array.from({ length: 50 }, () => ({ x: 1, y: 1 })),
+        waitBeforeMs: 1e9,
+        waitAfterMs: -5,
+        waitBeforeName: 'nope',
+        waitAfterName: 'nope',
+      })),
+      shapes: Array.from({ length: 5000 }, (_, i) => ({ id: `s${i}`, type: 'rect' })),
+      sequence: Array.from({ length: 5000 }, () => ({ kind: 'wait', durationMs: 1e9 })),
+      version: 'v'.repeat(500),
+      timestamp: 't'.repeat(500),
+    })!;
+    check('coerceAutoPath bounds `lines`', fat.lines.length === 200, `${fat.lines.length}`);
+    check('coerceAutoPath bounds `sequence` (read every tick by pathTraversal)', (fat.sequence ?? []).length === 400, `${fat.sequence?.length}`);
+    check(
+      'coerceAutoPath bounds `controlPoints` — and NEVER to 2, which would turn a linear segment into a cubic',
+      fat.lines[0].controlPoints?.length === 8,
+      `${fat.lines[0].controlPoints?.length}`,
+    );
+    check(
+      'coerceAutoPath clamps ALL THREE waits that reach robot.pathWaitTimer',
+      fat.lines[0].waitBeforeMs === 30000 && fat.lines[0].waitAfterMs === 0 && fat.sequence?.[0].durationMs === 30000,
+      `${fat.lines[0].waitBeforeMs}/${fat.lines[0].waitAfterMs}/${fat.sequence?.[0].durationMs}`,
+    );
+    check('coerceAutoPath DROPS `shapes` outright (nothing reads it)', !('shapes' in fat));
+    check('coerceAutoPath drops the unread wait NAMES', !('waitBeforeName' in fat.lines[0]) && !('waitAfterName' in fat.lines[0]));
+    check('coerceAutoPath bounds the free-text fields', fat.fileName.length === 120 && fat.version?.length === 40 && fat.timestamp?.length === 40);
+  }
+
+  // ...and the roster never carries one at all. Autonomous does not run in a
+  // server-authoritative match (`beginMatch` strips it), so a whole path on every `roster`
+  // broadcast was an unbounded object nothing read.
+  check(
+    'sanitizePlayer puts no auto path on the roster',
+    !('autoPath' in sanitizePlayer({ name: 'A', spec: {}, assists: {}, autoPath: { fileName: 'f', startPoint: { x: 0, y: 0, heading: 'constant' }, lines: [] }, autoPathEnabled: true } as never)),
+  );
+  check(
+    'sanitizePlayerPatch ignores an auto-path patch',
+    Object.keys(sanitizePlayerPatch({ autoPath: { fileName: 'f', startPoint: { x: 0, y: 0, heading: 'constant' }, lines: [] } }, { ...player, clientId: 'x' })).length === 0,
+  );
+
+  // CR's spawn had NO last line of defence: `makeChainRobot` coerced the spec and the assists
+  // but read `alliance` and `startIndex` raw, so a spoofed setup indexed CHAIN_START_POSES out
+  // of range and THREW — taking the room down rather than clamping. ⚠️ The count has to read
+  // the COERCED alliance: on the raw one, `allianceCount['nope']` is NaN and the two-robot
+  // de-confliction the `nth` default exists for is bypassed.
+  {
+    let crw: World | null = null;
+    try {
+      crw = createChainWorld('match', 3, [
+        { id: 0, alliance: 'nope' as never, spec: { length: 1e9 } as never, assists: {} as never, startIndex: 1e9 },
+        { id: 1, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS } as never,
+      ]);
+    } catch {
+      crw = null;
+    }
+    check('createChainWorld sanitizes a spoofed setup instead of throwing', crw !== null && crw.robots.length === 2);
+    check(
+      'createChainWorld spawns it somewhere real (no NaN pose from an out-of-range startIndex)',
+      !!crw && crw.robots.every((r) => Number.isFinite(r.pos.x) && Number.isFinite(r.pos.y)),
+      crw ? `${crw.robots.map((r) => r.pos.x.toFixed(1)).join(', ')}` : 'threw',
+    );
+    // and the two blue robots still take DIFFERENT anchors — `coerceSetup` floors an absent
+    // startIndex to 0, so without the `nth` restore they would stack on top of each other
+    const both = createChainWorld('match', 3, [
+      { id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS } as never,
+      { id: 1, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS } as never,
+    ]);
+    check(
+      'createChainWorld still de-conflicts two robots on one alliance (they do not stack on anchor 0)',
+      both.robots[0].pos.x !== both.robots[1].pos.x || both.robots[0].pos.y !== both.robots[1].pos.y,
+    );
+  }
+
   // 2v2 start-ROLE swap fields survive server sanitization (the server passes them
   // through so the consent handshake can propagate over the roster)
   const rolePlayer = sanitizePlayer({ name: 'R', alliance: 'red', spec: {}, assists: {}, startRole: 'far', swapReq: true });
@@ -9387,6 +9580,36 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
     w.match.fouls.blue.minor === 1 && w.match.scores.red.foulPoints === 5,
     `blueMinor=${w.match.fouls.blue.minor} redFoulPts=${w.match.scores.red.foulPoints}`,
   );
+
+  // ---- world.events STAYS BOUNDED UNDER A SUSTAINED VIOLATION ----------------
+  // `world.events` is plain JSON on the WORLD, so every entry rides every 30 Hz snapshot to
+  // every client AND is stored in the replay. Its 25 push sites are all edge-triggered or
+  // rate-limited, and that is the ONLY thing bounding it — there is no cap, deliberately (a
+  // ring buffer would be silently LOSSY: `collectNetEvents` diffs by absolute index, so a
+  // saturating length never trips its shrink guard. See the comment there.)
+  //
+  // So the thing worth pinning is the edge-triggering itself. Hold ONE violation for half a
+  // match: the log must grow at the re-bill cadence, not per tick. Measured, a cap at 64 would
+  // have saved 0 bytes in three of four scenarios, which is why there is no cap to test.
+  {
+    const before = w.events.length;
+    const hold = 1800; // 30 s of an UNINTERRUPTED, uncorrected over-possession
+    for (let i = 0; i < hold; i++) {
+      w.time = (acquireTicks(POSSESSION_HERD_SPEED + 5) + i) / 60;
+      updatePenalties(w, 1 / 60, new Map());
+    }
+    const grew = w.events.length - before;
+    check(
+      'world.events keeps growing while a violation is uncorrected (so the bound below is not vacuous)',
+      grew > 0,
+      `+${grew} entries over ${hold} ticks`,
+    );
+    check(
+      'world.events is EDGE-triggered, not per-tick — a 30 s held foul logs a handful of lines, not 1,800',
+      grew < 40,
+      `+${grew} over ${hold} ticks (re-bill cadence, not tick cadence)`,
+    );
+  }
 
   // a PARKED robot merely resting against the same ball is not controlling it
   const w2 = foulWorld();
@@ -13377,6 +13600,30 @@ function pinScene(
   );
   check('a null baseline yields a full keyframe (every ball in upd)', encodeBallDelta(null, w.balls).upd.length === w.balls.length);
 
+  // ALIASING: what a client is handed must NOT be what the baseline holds. The sim
+  // mutates artifacts in place (pos/vel, and `state` on the rail or in a hopper), so
+  // if `applyBallDelta` served the baseline's own objects the client's own stepping
+  // would rewrite the diff baseline, and every ball the server then did NOT re-send
+  // would rebuild from the client's drifted value.
+  {
+    const held = applied[0];
+    const inBase = clientBase.get(held.id)!;
+    check(
+      'applyBallDelta serves COPIES, nested objects included (no baseline aliasing)',
+      held !== inBase && held.pos !== inBase.pos && held.vel !== inBase.vel && held.state !== inBase.state,
+    );
+    // and the property that matters: mutate what the client holds, then take a delta
+    // that OMITS that ball — the rebuild must still be the server's value.
+    const truth = JSON.parse(JSON.stringify(clientBase.get(held.id)));
+    held.pos.x += 12.5;
+    (held.state as { pending?: boolean }).pending = !(held.state as { pending?: boolean }).pending;
+    const reb = applyBallDelta(clientBase, { order: d1.order, upd: [] });
+    check(
+      'a ball the client mutated and the server did not re-send rebuilds to the SERVER value',
+      JSON.stringify(reb.find((b) => b.id === held.id)) === JSON.stringify(truth),
+    );
+  }
+
   // ACK-KEYED / DROPPED-FRAME: the property the unreliable lane needs. A client sits
   // at baseline b0 and MISSES the intermediate frame; the next delta is encoded vs
   // b0 (the ack), NOT vs the skipped frame. It must still reconstruct the live world
@@ -13466,11 +13713,16 @@ function pinScene(
   // and ackInputTick must be each client's own
   const n = Math.min(snaps1.length, snaps2.length, objSnaps.length) - 1;
   const a = snaps1[n], b = snaps2[n], c = objSnaps[n];
-  const strip = (m: Extract<ServerMsg, { t: 'snapshot' }>) => JSON.stringify({ ...m, ackInputTick: 0 });
-  check('spliced snapshot: the SHARED body is identical for every recipient',
+  // ⚠️ BOTH SIDES GO THROUGH `round3`. The RAW path is rounded on the wire (`sendRaw` +
+  // `JSON.stringify(…, round3)`) and the OBJECT path is not — that path exists only for
+  // headless callers with no `sendRaw`, and re-rounding a rounded number is a no-op, so
+  // applying the replacer to both is exact rather than a fudge. What these two now prove is
+  // "identical TO 3 dp", which is the precision the wire actually carries.
+  const strip = (m: Extract<ServerMsg, { t: 'snapshot' }>) => JSON.stringify({ ...m, ackInputTick: 0 }, round3);
+  check('spliced snapshot: the SHARED body is identical for every recipient (to 3 dp, the wire precision)',
     strip(a) === strip(b) && strip(a) === strip(c));
-  check('spliced snapshot: the raw path equals the object path field for field',
-    JSON.stringify(a) === JSON.stringify({ ...c, ackInputTick: a.ackInputTick }));
+  check('spliced snapshot: the raw path equals the object path field for field (to 3 dp)',
+    JSON.stringify(a, round3) === JSON.stringify({ ...c, ackInputTick: a.ackInputTick }, round3));
   check('spliced snapshot: ackInputTick is per-client, not shared',
     a.ackInputTick !== b.ackInputTick, `r1=${a.ackInputTick} r2=${b.ackInputTick}`);
   check('spliced snapshot: serverTick survived the splice as a number',
@@ -13478,6 +13730,133 @@ function pinScene(
   check('spliced snapshot: the ball delta survived the splice',
     Array.isArray(a.balls.order) && Array.isArray(a.balls.upd));
   room.stop();
+}
+
+// ---- WIRE PRECISION: round3 ------------------------------------------------
+// The sim serialises whatever float it lands on; the client cannot see better than a
+// thousandth of an inch and `worldHash` quantises to 1e-3 anyway. Rounding the wire to 3 dp
+// takes ~41% off a DECODE frame and ~54% off a CR one (measured — `npm run costprobe`).
+{
+  const w = createWorld('match', 99, [
+    { id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 },
+    { id: 1, alliance: 'red', spec: DEFAULT_SPEC, assists: DEFAULT_ASSISTS, startIndex: 0 },
+  ]);
+  const cmds = new Map<number, RobotCommand>([[0, cmd({ driveY: 1 })]]);
+  for (let i = 0; i < 90; i++) step(w, SIM_DT, cmds);
+  // ⚠️ THE CLAIM IS ONLY "the rounding is no coarser than the hash". It does NOT catch
+  // dropping `Number.isInteger` — `Math.round(v * 1000) / 1000` is exact for every integer
+  // on this wire, so an unguarded replacer would still pass here. The integer guard is
+  // structural (ids/counts/scores/ticks/rngState), and that is what the comment is for.
+  check(
+    'round3 is no coarser than worldHash — a rounded world hashes identically',
+    worldHash(JSON.parse(JSON.stringify(w, round3)) as World) === worldHash(w),
+  );
+  check(
+    'round3 leaves integers alone (ids, counts, scores, ticks, rngState)',
+    JSON.stringify({ a: 7, b: -3, c: 1e9, d: 1.23456789 }, round3) === '{"a":7,"b":-3,"c":1000000000,"d":1.235}',
+  );
+  // ...and it really is rounding something, or the two checks above are about nothing.
+  // ⚠️ A NOT-A-NO-OP check, not the saving. A whole `World` object carries a lot of integers
+  // and short strings; the 41%/54% figures are measured over SNAPSHOT STREAMS, where robot and
+  // artifact positions dominate — `npm run costprobe` is where that number comes from.
+  {
+    const r = JSON.stringify(w, round3).length;
+    const full = JSON.stringify(w).length;
+    check('round3 actually shortens a serialized world (it is not a no-op)', r < full * 0.95, `${r} vs ${full} B, −${(100 * (1 - r / full)).toFixed(1)}%`);
+  }
+}
+
+// THE DIFF KEY IS ROUNDED TOO. Rounding the frame but not the per-ball key leaves the key
+// comparing full-precision floats, so a particle that is stationary to within a thousandth of
+// an inch still reads as CHANGED and is re-sent every frame — which is exactly the saving the
+// rounding was for. A BANDWIDTH property, not a correctness one: over-sending desyncs nobody.
+//
+// ⚠️ THIS MUST BE A CR ROOM. DECODE's artifacts come to rest at EXACTLY zero
+// (`BALL_REST_SPEED`), so their keys are byte-identical either way and the check passes with
+// the key UNROUNDED — vacuous. CR's 300 particles jitter in the sub-thousandth digits, which
+// is the case that costs. `sent > 0` is the other half: a room where nothing is ever sent
+// also passes "nothing was re-sent needlessly".
+{
+  const raw: string[] = [];
+  const mk = (id: string): Client => ({
+    id,
+    send: () => {},
+    sendRaw: (s) => raw.push(s),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance: 'blue', startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  const crRoom = new Room('smoke-chain-round3', () => {}, { kind: 'versus', game: 'chain' });
+  crRoom.add(mk('c1'));
+  crRoom.onMessage('c1', { t: 'start' });
+  crRoom.advanceForTest(400);
+  const snaps = raw
+    .map((s) => JSON.parse(s) as ServerMsg)
+    .filter((m): m is Extract<ServerMsg, { t: 'snapshot' }> => m.t === 'snapshot');
+  // what the client holds, rebuilt frame by frame exactly as the wire says
+  const held = new Map<number, string>();
+  let sent = 0;
+  let redundant = 0;
+  for (const m of snaps) {
+    for (const b of m.balls.upd) {
+      sent++;
+      const key = JSON.stringify(b);
+      if (held.get(b.id) === key) redundant++;
+      held.set(b.id, key);
+    }
+  }
+  check('CR room: the ball diff actually sends balls (so the next check is not vacuous)', sent > 0, `${sent} ball updates over ${snaps.length} frames`);
+  check(
+    'CR room: no ball is re-sent with wire data the client already holds (the DIFF KEY is rounded too)',
+    redundant === 0,
+    `${redundant}/${sent} redundant`,
+  );
+  // and the diff is doing real work — a keyframe every frame would also score 0 redundant
+  check(
+    'CR room: the steady state is a DELTA, not a keyframe every frame',
+    sent < snaps.length * 300 * 0.9,
+    `${(sent / Math.max(1, snaps.length)).toFixed(1)} balls/frame of 300`,
+  );
+  crRoom.stop();
+}
+
+// ---- SNAPSHOT SPACING IS PER ROOM, AND PER BROADCAST -----------------------
+// `/api/perf` reports `snapSendGapMs` so a machine's send jitter can be read in PRODUCTION
+// with no harness attached (loadtest.ts already measures it properly, but only with one).
+//
+// ⚠️ THE ROOM HAS TWO CLIENTS ON PURPOSE. With one client, "per broadcast" and "per recipient"
+// produce the SAME count and the check cannot tell them apart — and which plane this sits on is
+// the CLAUDE.md invariant it brushes against: the snapshot plane is ~99.8% shared work and
+// nothing per-client may move onto it. Two recipients, one sample per frame.
+{
+  const sent: Record<string, number> = { p1: 0, p2: 0 };
+  const mk = (id: string, alliance: 'red' | 'blue'): Client => ({
+    id,
+    send: () => {},
+    sendRaw: (str) => { if (str.includes('"t":"snapshot"')) sent[id]++; },
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true, disconnectAt: 0,
+  });
+  const gapRoom = new Room('smoke-snapgap', () => {}, { kind: 'versus' });
+  gapRoom.add(mk('p1', 'blue'));
+  gapRoom.add(mk('p2', 'red'));
+  gapRoom.onMessage('p1', { t: 'start' });
+  gapRoom.advanceForTest(60);
+  const g = gapRoom.snapGapStats();
+  check(
+    'snapshot spacing: both clients received the same number of snapshots (the body is shared)',
+    sent.p1 === sent.p2 && sent.p1 > 1,
+    `p1=${sent.p1} p2=${sent.p2}`,
+  );
+  check(
+    'snapshot spacing: samples are per BROADCAST, not per recipient — two clients, one sample per frame',
+    g.n === sent.p1 - 1,
+    `${g.n} samples for ${sent.p1} snapshots x2 clients`,
+  );
+  check('snapshot spacing: the accumulator carries a max, and it is not negative', g.maxMs >= 0 && g.sumMs >= 0);
+  // draining is what `?reset=1` does; a second read must not re-report the same window
+  gapRoom.snapGapStats(true);
+  check('snapshot spacing: a reset drains the window (a second read is not the same numbers)', gapRoom.snapGapStats().n === 0);
+  gapRoom.stop();
 }
 
 // ---- predict/reconcile parity ----------------------------------------------

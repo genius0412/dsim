@@ -15,10 +15,8 @@ import type {
   GameSettings, // Import GameSettings
   PathPoint, // Import PathPoint
   PathLine,
-  PathShape,
   SequenceItem,
   ControlPoint, // Import ControlPoint
-  Vec2, // Import Vec2
   StartPose,
 } from '../types';
 import * as C from '../config';
@@ -535,6 +533,15 @@ function coercePathPoint(p: PathPoint): PathPoint {
   return out;
 }
 
+/** Auto-path size bounds. An auto path arrives from a hand-editable file picker AND
+ * from the wire, is stored on `RobotState`, and rides every snapshot and replay, so
+ * each unbounded array is a size amplifier rather than an exploit (`readBody` already
+ * caps an upload at 512 KiB). `lines` was the only one bounded. */
+const PATH_MAX_LINES = 200;
+const PATH_MAX_SEQUENCE = 400; // read every tick by `pathTraversal`; 2 items per line is the real shape
+const PATH_MAX_CONTROL_POINTS = 8;
+const PATH_MAX_WAIT_MS = 30000; // one match; a longer wait is indistinguishable from "never move"
+
 /** Structurally validate + bound-clamp an auto path from untrusted input. Returns
  * null when the shape is not a usable AutoPathData (the caller then disables auto
  * pathing). Coordinates are clamped to the field so `pathTraversal` cannot be
@@ -549,21 +556,44 @@ export function coerceAutoPath(raw: unknown): AutoPathData | null {
     const out: AutoPathData = {
       fileName: d.fileName.slice(0, 120),
       startPoint: coercePathPoint(d.startPoint as PathPoint),
-      lines: (d.lines as PathLine[]).slice(0, 200).map((line) => {
+      lines: (d.lines as PathLine[]).slice(0, PATH_MAX_LINES).map((line) => {
         const l: PathLine = { ...line };
         l.endPoint = coercePathPoint(line.endPoint);
         if (Array.isArray(line.controlPoints)) {
-          l.controlPoints = line.controlPoints.map((c) => ({
+          // ⚠️ NEVER slice to 2. `renderer.ts` and `pathTraversal` both read LENGTH as the
+          // curve order (1 ⇒ quadratic, 2 ⇒ cubic, 0 ⇒ straight), so truncating a long list
+          // to 2 silently turns a linear segment into a cubic Bézier through junk points.
+          // 8 is well past any real .pp file and is a runaway guard, not a reshape.
+          l.controlPoints = line.controlPoints.slice(0, PATH_MAX_CONTROL_POINTS).map((c) => ({
             x: clampFinite(c.x, -C.FIELD_HALF, C.FIELD_HALF, 0),
             y: clampFinite(c.y, -C.FIELD_HALF, C.FIELD_HALF, 0),
           }));
         }
+        // every wait reaches `robot.pathWaitTimer` — all THREE of them, or the cap is
+        // incoherent (see the sequence `durationMs` below)
+        for (const k of ['waitBeforeMs', 'waitAfterMs'] as const) {
+          if (l[k] !== undefined) l[k] = clampFinite(l[k], 0, PATH_MAX_WAIT_MS, 0);
+        }
+        // unread anywhere outside the importer — do not carry them into the world, a
+        // snapshot or a stored replay
+        delete l.waitBeforeName;
+        delete l.waitAfterName;
         return l;
       }),
-      shapes: Array.isArray(d.shapes) ? (d.shapes as PathShape[]) : undefined,
-      sequence: Array.isArray(d.sequence) ? (d.sequence as SequenceItem[]) : undefined,
-      version: typeof d.version === 'string' ? d.version : undefined,
-      timestamp: typeof d.timestamp === 'string' ? d.timestamp : undefined,
+      // `shapes` is DROPPED, not capped: nothing reads it — no renderer, no sim, no HUD.
+      // It was carried from the .pp importer through the coercer, the mirror and every
+      // snapshot for nothing. Deletion beats a bound.
+      sequence: Array.isArray(d.sequence)
+        ? (d.sequence as SequenceItem[]).slice(0, PATH_MAX_SEQUENCE).map((it) => {
+            const item: SequenceItem = { ...it };
+            if (item.durationMs !== undefined) {
+              item.durationMs = clampFinite(item.durationMs, 0, PATH_MAX_WAIT_MS, 0);
+            }
+            return item;
+          })
+        : undefined,
+      version: typeof d.version === 'string' ? d.version.slice(0, 40) : undefined,
+      timestamp: typeof d.timestamp === 'string' ? d.timestamp.slice(0, 40) : undefined,
     };
     return out;
   } catch {
@@ -597,13 +627,34 @@ export function coerceStartPose(raw: unknown): StartPose | null {
 export function coerceSetup(s: RobotSetup, game?: GameId): RobotSetup {
   const autoPath = s.autoPath !== undefined ? coerceAutoPath(s.autoPath) : null;
   const alliance = s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue';
-  const spec = coerceSpec(s.spec);
+  const mod = simModuleFor(game);
+  // ⚠️ THE GAME IS THREADED FOR THE SIZE ENVELOPE ONLY, AND THAT NARROWNESS IS DELIBERATE.
+  // `coerceSpec` with no game clamps LENGTH/WIDTH against DECODE's intake-preset limits, so a
+  // legal 17" CR chassis arriving through this chokepoint (a replay, a staged match) was cut to
+  // 15" and re-simulated as a robot nobody built. Passing 'chain' resolves the CR envelope.
+  //
+  // DECODE and BIOBUZZ keep passing `undefined`, i.e. exactly today's behaviour, ON PURPOSE:
+  // an explicit `'decode'` also arms the mount-reset branch in `coerceSpec`, which rewrites
+  // `intakeMount` to 'front'. `intakeMount` is PHYSICS — `footprintExtents` grows the collider
+  // on the mounted edge and `worldHash` mixes robot positions — so arming it here would make
+  // every stored replay carrying a non-front mount re-simulate as a different robot, i.e. a
+  // SIM_VERSION bump that retires the whole archive.
+  // The stale-`intakeMount` leak that branch exists to close therefore STAYS OPEN on this path.
+  // It is a separate pre-existing bug and wants its own fix at a deliberate version boundary —
+  // do NOT "complete" the threading by passing `game` straight through.
+  const spec = coerceSpec(s.spec, DEFAULT_SPEC, game === 'chain' ? 'chain' : undefined);
   // a custom pose overrides the preset; snap it G304-legal for THIS spec+alliance
   // so no spawn path (localStorage, wire, staged match) can place an illegal robot.
+  // ⚠️ G304 IS DECODE'S RULE — gate it on the module. CR poses are snapped by
+  // `chainSnapStartPose` and BIOBUZZ's by its own spawn; running DECODE's launch-line /
+  // touching-a-surface snap over a CR pose first moves it somewhere CR never asked for
+  // (`sanitizeReplay` → `coerceSetup(…, 'chain')` is the live path that did this).
   let startPose: StartPose | undefined;
   const raw = coerceStartPose(s.startPose);
   if (raw) {
-    const actual = snapStartToLegal(spec, mirrorStartPose(raw, alliance), alliance);
+    const actual = mod.startLegality
+      ? snapStartToLegal(spec, mirrorStartPose(raw, alliance), alliance)
+      : mirrorStartPose(raw, alliance);
     startPose = mirrorStartPose(actual, alliance); // store back canonical
   }
   return {
@@ -614,7 +665,7 @@ export function coerceSetup(s: RobotSetup, game?: GameId): RobotSetup {
     // the anchor count is PER GAME (DECODE 5, CR 4) — see `coerceStartIndex`. An
     // absent/unknown game resolves to DECODE, like every other module lookup.
     startIndex: Number.isFinite(s.startIndex)
-      ? clamp(Math.round(s.startIndex), 0, simModuleFor(game).startPoseCount - 1)
+      ? clamp(Math.round(s.startIndex), 0, mod.startPoseCount - 1)
       : 0,
     startPose,
     autoPath: autoPath ?? undefined,
@@ -663,11 +714,6 @@ function goalState(alliance: Alliance): GoalState {
   };
 }
 
-// Helper function to mirror a Vec2 point across the x=0 axis
-function mirrorPoint(point: Vec2): Vec2 {
-  return { x: -point.x, y: point.y };
-}
-
 // Helper function to mirror a PathPoint across the x=0 axis
 function mirrorPathPoint(pathPoint: PathPoint): PathPoint {
   const mirrored: PathPoint = { ...pathPoint, x: -pathPoint.x };
@@ -706,21 +752,7 @@ function mirrorAutoPathData(autoPath: AutoPathData): AutoPathData {
     return mirroredLine;
   });
 
-  // Mirror shapes if they exist and have position data
-  if (mirroredAutoPath.shapes) {
-    mirroredAutoPath.shapes = mirroredAutoPath.shapes.map((shape) => {
-      const mirroredShape = { ...shape };
-      // Assuming shapes have 'x' and 'y' properties directly or within a 'pos' object
-      // This part might need adjustment based on the actual structure of PathShape
-      if ('x' in mirroredShape && 'y' in mirroredShape) {
-        (mirroredShape as any).x = -(mirroredShape as any).x;
-      }
-      if ('pos' in mirroredShape && (mirroredShape.pos as Vec2)) {
-        (mirroredShape.pos as Vec2) = mirrorPoint(mirroredShape.pos as Vec2);
-      }
-      return mirroredShape;
-    });
-  }
+  // `shapes` is dropped by `coerceAutoPath` (nothing reads it), so there is nothing here to mirror.
 
   return mirroredAutoPath;
 }

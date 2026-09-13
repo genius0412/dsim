@@ -4,7 +4,7 @@ import { REPLAY_FORMAT, maxMatchTicks, trackStride } from '../sim/replay';
 import { coerceSetup, type RobotSetup } from '../sim/spawn';
 import { isGameId, type GameId } from '../games/types';
 import { simModuleFor } from '../games/sim';
-import { coerceSpec, coerceAssists, coerceAutoPath, coerceStartPose, DEFAULT_SPEC, DEFAULT_ASSISTS } from '../sim/spawn';
+import { coerceSpec, coerceAssists, coerceStartPose, DEFAULT_SPEC, DEFAULT_ASSISTS } from '../sim/spawn';
 import { clamp } from '../math';
 
 /**
@@ -50,7 +50,6 @@ export function coerceStartIndex(raw: unknown, game?: GameId): number {
 export function sanitizePlayer(raw: unknown, game?: GameId): Omit<LobbyPlayer, 'clientId'> {
   const p = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
   const spec = coerceSpec(p.spec, DEFAULT_SPEC, game);
-  const autoPath = coerceAutoPath(p.autoPath);
   return {
     name: coerceName(p.name, 'Driver'),
     // team name/number live on the spec AND the top-level player; keep them in
@@ -67,8 +66,6 @@ export function sanitizePlayer(raw: unknown, game?: GameId): Omit<LobbyPlayer, '
     ready: p.ready === true,
     spec,
     assists: coerceAssists(p.assists, DEFAULT_ASSISTS),
-    autoPath: autoPath ?? undefined,
-    autoPathEnabled: autoPath ? p.autoPathEnabled === true : false,
   };
 }
 
@@ -100,14 +97,7 @@ export function sanitizePlayerPatch(raw: unknown, current: LobbyPlayer, game?: G
       out.teamNumber = clamp(Math.round(p.teamNumber), 0, 99999);
     }
   }
-  if ('autoPath' in p) {
-    const autoPath = coerceAutoPath(p.autoPath);
-    out.autoPath = autoPath ?? undefined;
-    out.autoPathEnabled = autoPath ? p.autoPathEnabled === true : false;
-  } else if ('autoPathEnabled' in p) {
-    // only meaningful with a path already stored
-    out.autoPathEnabled = current.autoPath ? p.autoPathEnabled === true : false;
-  }
+  // `autoPath` is deliberately NOT a roster field — see `LobbyPlayer`.
   return out;
 }
 

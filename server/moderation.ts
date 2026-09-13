@@ -1,4 +1,8 @@
 import { envVar } from './runtimeEnv';
+// `specDefaults` is a LEAF on purpose (see its own header) — importing it here adds no
+// browser-hostile weight to the modules `server/room.ts` pulls into the LAN host's tab.
+import { DEFAULT_SPEC } from '../src/sim/specDefaults';
+import type { RobotSpec } from '../src/types';
 /**
  * Hosted content moderation for user-supplied NAMES: account username, display name,
  * and the robot / team names embedded in a persisted leaderboard record. The server
@@ -108,4 +112,28 @@ export async function scrubName(raw: string | undefined | null, fallback: string
   if (typeof raw !== 'string' || !raw.trim()) return typeof raw === 'string' ? raw : fallback;
   const { allowed } = await moderateName(raw);
   return allowed ? raw : fallback;
+}
+
+/** Copy a spec with its public free-text names run through hosted moderation. The
+ *  robot/team name land in `records.config` (a public leaderboard card) AND in a
+ *  replay's `setups`, which `src/render/renderer.ts` draws ON THE FIELD above every
+ *  robot — so a flagged one is public in the replay viewer and burned into every
+ *  exported video. Replaced with the safe default before it is ever written. No-op
+ *  (returns the SAME object) when moderation is disabled or the names are clean, which
+ *  is what keeps it free on a dev box and in CI.
+ *
+ *  It lives HERE rather than in `server/persist.ts`, where it was written, because
+ *  `server/db/repo.ts` now needs it too (`saveReplay` is the one funnel all three replay
+ *  writers share) and persist.ts imports repo.ts — importing it back would be a cycle. */
+export async function scrubSpecNames(spec: RobotSpec): Promise<RobotSpec> {
+  // ⚠️ CONCURRENT, because this is now on the RESULTS-SCREEN path. `saveReplay` calls it, and
+  // `Room`'s `eloResult` broadcast awaits `onResult` → `persistMatch` → `saveReplay`, so two
+  // SEQUENTIAL hosted round trips per robot are two of them added to every player's wait for
+  // their own rating change (`MODERATION_TIMEOUT_MS` is 4 s each). They are independent
+  // lookups against a shared cache; there is no reason to order them.
+  const [name, teamName] = await Promise.all([
+    scrubName(spec.name, DEFAULT_SPEC.name),
+    scrubName(spec.teamName, ''),
+  ]);
+  return name === spec.name && teamName === spec.teamName ? spec : { ...spec, name, teamName };
 }

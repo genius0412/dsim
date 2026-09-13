@@ -19,7 +19,7 @@
 import { Matchmaker, groupUnits, allianceOrder, type MatchmakerDeps, type QueueEntry } from '../server/matchmaking';
 import type { PendingMatch } from '../server/matchTypes';
 import type { QueueMode, ServerMsg } from '../src/net/protocol';
-import { DEPLOY_REGIONS, bestHost, interRegionMs } from '../server/regions';
+import { DEPLOY_REGIONS, RTT_UNKNOWN, bestHost, interRegionMs } from '../server/regions';
 import { SKILL_BASE, skillCeiling } from '../server/matchmaking';
 import { readFileSync } from 'node:fs';
 
@@ -564,12 +564,40 @@ const namesOf = (m: PendingMatch | undefined): string =>
     // every machine we run must at least have a latency row, or its players are
     // unpairable rather than merely far
     check(`fleet: ${r} has an RTT row (else its players cannot be matched at all)`,
-      interRegionMs(r, 'iad') < 300 || r === 'iad', `${r}->iad = ${interRegionMs(r, 'iad')}`);
+      interRegionMs(r, 'iad') !== RTT_UNKNOWN || r === 'iad', `${r}->iad = ${interRegionMs(r, 'iad')}`);
   }
   // and every region the matchmaker may HOST in must be a region we actually run
   for (const r of DEPLOY_REGIONS) {
     check(`fleet: DEPLOY_REGIONS.${r} has a machine in the fleet`, fleet.includes(r), fleet.join(','));
   }
+
+  // ---- the two fleet-shape rules that are invisible in a diff -----------------
+  // A satellite must carry its OWN room cap. server/index.ts defaults MAX_ROOMS to 24 for
+  // every region with FLY_REGION set, and 24 was sized for iad's shared-cpu-4x; fly.toml's
+  // own note puts a shared-cpu-1x baseline at "≈ ONE busy room" and docs/deploy.md gives it
+  // 3–5 driven rooms, so the default is not a guard on a satellite at all.
+  const cap = Number(/^SATELLITE_MAX_ROOMS=(\d+)/m.exec(sh)?.[1] ?? NaN);
+  check('fleet: satellites declare a MAX_ROOMS below the 24 default',
+    cap > 0 && cap < 24, String(cap));
+  // TWO checks, not one, because DECLARING the variable and PASSING it are separate
+  // failures and only the first is visible in a diff: a `SATELLITE_MAX_ROOMS=6` that no
+  // command line reads looks exactly like a working cap and silently leaves every
+  // satellite on 24. The same applies to anyone who "tidies" the override into a fly.toml
+  // `[env]` block — which is the documented WRONG move (it would cap iad too), and which
+  // would take the flag off this line.
+  check('fleet: the satellite MAX_ROOMS is actually passed to fly machine update',
+    sh.includes('--env MAX_ROOMS='), 'no --env MAX_ROOMS= in fly-deploy.sh');
+  // DEPLOY HYGIENE, not matchmaking — it lives here because this is the only suite that
+  // reads the deploy script. Fly's default launches a SECOND machine per region for HA,
+  // and rooms live in a process's memory while `routeTarget` resolves a code to a REGION,
+  // so a duplicate means two players sharing one room code can land in two rooms with no
+  // error on either screen. The ALPHA line carried --ha=false from the start and the
+  // PRODUCTION line did not, for the life of the script; every-line rather than a count of
+  // 2 so a third deploy line added later is covered without editing this check.
+  const deployLines = sh.split('\n').filter((l) => /^\s*fly deploy /.test(l));
+  check('fleet: every `fly deploy` passes --ha=false (deploy hygiene)',
+    deployLines.length > 0 && deployLines.every((l) => l.includes('--ha=false')),
+    deployLines.map((l) => l.trim()).join(' | '));
 }
 
 // ---- region topology: the table the whole radius gate is computed from -------
@@ -587,9 +615,20 @@ const namesOf = (m: PendingMatch | undefined): string =>
       const ab = interRegionMs(a, b);
       const ba = interRegionMs(b, a);
       check(`regions: ${a}<->${b} is symmetric`, ab === ba, `${ab} vs ${ba}`);
-      // the fallback is RADIUS_MAX_MS-sized; a real row is always well under it
+      // What this asserts is that a row EXISTS, not that it is short. `ab < 300` was a
+      // proxy for that, and it was only ever true by luck: it holds while every deployed
+      // pair happens to be closer than the sentinel, and it stops holding the moment the
+      // fleet reaches Johannesburg. Four REAL rows already exceed it (syd↔jnb 395,
+      // nrt↔jnb 355, gru↔jnb 340, syd↔gru 315), so adding gru/jnb to DEPLOY_REGIONS
+      // would have turned eight passing checks red for a table that is entirely correct.
+      // Compare against the sentinel itself instead of re-typing its value — re-typing it
+      // is what let the two drift apart in meaning.
+      // ⚠️ DO NOT "fix" a red one here by raising RTT_UNKNOWN. It is deliberately
+      // RADIUS_MAX_MS-sized so a player from an UNRECOGNISED region still pairs once the
+      // search radius saturates; raise it and such a player is unmatchable forever, which
+      // is the exact silent outage DEPLOY_REGIONS' own comment records from `ord`.
       check(`regions: ${a}<->${b} has a REAL row, not the unknown-region penalty`,
-        ab > 0 && ab < 300, String(ab));
+        ab > 0 && ab !== RTT_UNKNOWN, String(ab));
     }
   }
 }

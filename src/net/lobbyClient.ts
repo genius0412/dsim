@@ -8,6 +8,7 @@ import { appChannel, appBuild } from './env';
 import {
   encodeMsg,
   decodeServerMsg,
+  type ServerMsg,
   CLIENT_CAPS,
   type LobbyPlayer,
   type PlayerIntro,
@@ -175,7 +176,17 @@ export class LobbyClient {
   }
 
   private onMessage(data: string): void {
-    const m = decodeServerMsg(data);
+    // ⚠️ A FRAME IS UNTRUSTED INPUT, AND ON LAN IT COMES FROM ANOTHER PLAYER'S BROWSER
+    // (`DataChannelTransport`), not from our own server. `decodeServerMsg` is a bare
+    // `JSON.parse`, so malformed bytes throw — and the `null` literal parses FINE and then
+    // throws on `.t`, outside any try around the parse alone. Drop the frame either way.
+    let m: ServerMsg;
+    try {
+      m = decodeServerMsg(data);
+    } catch {
+      return;
+    }
+    if (!m || typeof (m as { t?: unknown }).t !== 'string') return;
     if (m.t === 'welcome') {
       this.clientId = m.clientId;
     } else if (m.t === 'roster') {

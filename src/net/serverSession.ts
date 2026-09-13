@@ -7,6 +7,7 @@ import { regionLabel, isKnownRegion, selectedServer } from './env';
 import {
   encodeMsg,
   decodeServerMsg,
+  type ServerMsg,
   quantizeCommand,
   dequantizeCommand,
   applyBallDelta,
@@ -287,7 +288,17 @@ export class ServerSession implements NetSession {
     this.setups.find((s) => s.id === id)?.spec ?? this.setups[0].spec;
 
   private onMessage(data: string): void {
-    const m = decodeServerMsg(data);
+    // ⚠️ A FRAME IS UNTRUSTED INPUT, AND ON LAN IT COMES FROM ANOTHER PLAYER'S BROWSER
+    // (`DataChannelTransport`), not from our own server. `decodeServerMsg` is a bare
+    // `JSON.parse`, so malformed bytes throw — and the `null` literal parses FINE and then
+    // throws on `.t`, outside any try around the parse alone. Drop the frame either way.
+    let m: ServerMsg;
+    try {
+      m = decodeServerMsg(data);
+    } catch {
+      return;
+    }
+    if (!m || typeof (m as { t?: unknown }).t !== 'string') return;
     if (m.t === 'snapshot') {
       // discard a stale/duplicate snapshot: the client reconciles to the NEWEST
       // authoritative world, and a delta is keyed to a baseline at-or-before this

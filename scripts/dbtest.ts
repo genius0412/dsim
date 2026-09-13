@@ -20,6 +20,30 @@ import { PGlite } from '@electric-sql/pglite';
 import { setPoolForTests, type DbPool } from '../server/db/pool';
 import { monthsFor, whyNoMonths, DEFAULT_POLICY, policyFromEnv } from '../server/kofi';
 
+/**
+ * MODERATION, STUBBED AT THE TRANSPORT — so `saveReplay`'s name scrub can be exercised
+ * without a network call or an API key.
+ *
+ * At MODULE SCOPE and not at the top of `main()` on purpose: `server/moderation.ts` reads its
+ * key at module scope (`const API_KEY`, `export const moderationEnabled`), and since
+ * `saveReplay` scrubs, `server/db/repo` pulls that module in — inside `main()`. Set the env
+ * any later and moderation is already resolved as DISABLED.
+ *
+ * The failure direction is the safe one: if this stub is mis-wired, `scrubName` FAILS OPEN
+ * (that is the documented policy), the flagged name passes through, and the check below goes
+ * RED rather than falsely green. Nothing else here fetches — PGlite is in-process — so there
+ * is nothing to restore afterwards. That is a fact about this file today, not a promise to
+ * whoever adds the next check.
+ */
+process.env.MODERATION_API_KEY = 'dbtest';
+process.env.MODERATION_API_URL = 'http://moderation.invalid/v1/moderations';
+globalThis.fetch = (async (_url: unknown, init: { body: string }) => ({
+  ok: true,
+  json: async () => ({
+    results: [{ flagged: String((JSON.parse(init.body) as { input: string }).input).includes('SLUR') }],
+  }),
+})) as unknown as typeof fetch;
+
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
@@ -890,6 +914,57 @@ async function main(): Promise<void> {
       !!legacy && legacy.sim === undefined && replayRefusal(legacy, 4, 7) === 'unstamped',
       `sim=${String(legacy?.sim)} refusal=${legacy ? replayRefusal(legacy, 4, 7) : 'n/a'}`,
     );
+
+    /**
+     * THE NAME ON THE FIELD. `src/render/renderer.ts` labels every robot from `spec.name`,
+     * so an unmoderated one is public in the replay viewer and BURNED INTO every exported
+     * video. It is scrubbed in `saveReplay` because that is the ONE funnel all three replay
+     * writers share — and because `server/api.ts` moderates the LAN roster it DISPLAYS and
+     * then hands the uploaded container straight to `saveLanRun`, so a THIRD PARTY's name
+     * arrived unscrubbed. The stub at the top of this file is what decides 'SLUR' is flagged.
+     */
+    const { DEFAULT_SPEC, DEFAULT_ASSISTS } = await import('../src/sim/spawn');
+    const dirty = await repo.saveReplay(
+      {
+        format: REPLAY_FORMAT,
+        balanceVersion: 4,
+        sim: 2,
+        game: 'decode' as const,
+        mode: 'match' as const,
+        seed: 5,
+        ticks: 60,
+        tracks: { 0: [1, 2, 3, 4, 5, 6, 7] },
+        setups: [
+          {
+            id: 0,
+            alliance: 'red' as const,
+            startIndex: 0,
+            assists: DEFAULT_ASSISTS,
+            spec: { ...DEFAULT_SPEC, name: 'SLUR bot', teamName: 'SLUR crew' },
+          },
+          {
+            id: 1,
+            alliance: 'blue' as const,
+            startIndex: 1,
+            assists: DEFAULT_ASSISTS,
+            spec: { ...DEFAULT_SPEC, name: 'Perfectly Fine', teamName: 'Horizon' },
+          },
+        ],
+      },
+      SEASON,
+      'decode',
+    );
+    const got = (await repo.getReplay(dirty))!.setups;
+    check(
+      'replays: a flagged robot name never reaches the field (it is drawn there, and burned into every exported video)',
+      got[0].spec.name === DEFAULT_SPEC.name && got[0].spec.teamName === '',
+      `name=${got[0].spec.name} team=${got[0].spec.teamName}`,
+    );
+    check(
+      'replays: ...and a CLEAN name is passed through untouched (not blanked wholesale)',
+      got[1].spec.name === 'Perfectly Fine' && got[1].spec.teamName === 'Horizon',
+      `name=${got[1].spec.name} team=${got[1].spec.teamName}`,
+    );
   }
 
   /**
@@ -1145,6 +1220,140 @@ async function main(): Promise<void> {
     check('lan: deleting the HOST account deletes its LAN replays too', (await repo.getReplay(live.replayId!)) === null);
     const rows = await db.query(`select count(*)::int as n from lan_runs where host_user_id = 'lan-host'`);
     check('lan: ...and its matches', (rows.rows[0] as { n: number }).n === 0);
+  }
+
+  // ------------------------------------- versus match replay + account deletion ---
+  /**
+   * A VERSUS match's replay is reachable only through `matches.replay_id`, and
+   * `deleteAccount` did not sweep that column — so every match replay an account ever
+   * played survived its own deletion, unreachable by both prunes and freed only by a
+   * season purge.
+   *
+   * THE SECOND HALF IS WHAT MAKES THIS CHECK MEAN ANYTHING. The `matches` row must
+   * SURVIVE with its `replay_id` nulled: it carries no personal data, and the
+   * co-participant reads it in their own Career history and in the moderation
+   * drill-down. A "fix" that cascaded the match away — or one that swept it by deleting
+   * the match row — would pass a bare "the replay is gone" assertion while quietly
+   * destroying somebody else's match history.
+   */
+  {
+    await repo.ensureProfile('vs-a', 'Ana');
+    await repo.ensureProfile('vs-b', 'Bo');
+    const vsReplay = await repo.saveReplay(
+      {
+        format: 2,
+        balanceVersion: 4,
+        sim: 2,
+        game: 'decode' as const,
+        mode: 'match' as const,
+        seed: 42,
+        ticks: 1200,
+        setups: [] as never[],
+        tracks: { 0: [1, 2, 3, 4, 5, 6, 7] },
+      },
+      SEASON,
+      'decode',
+    );
+    const vsMatch = await repo.saveMatch('1v1', SEASON, vsReplay, false, 'decode');
+    for (const [userId, alliance] of [
+      ['vs-a', 'red'],
+      ['vs-b', 'blue'],
+    ] as const) {
+      await repo.addMatchParticipant({
+        matchId: vsMatch,
+        userId,
+        alliance,
+        drivetrain: 'tank',
+        score: 100,
+        won: alliance === 'red',
+        ratingBefore: null,
+        ratingAfter: null,
+      });
+    }
+
+    await repo.deleteAccount('vs-a');
+    check(
+      'delete: a VERSUS match replay leaves with the account (matches.replay_id is swept)',
+      (await repo.getReplay(vsReplay)) === null,
+    );
+    const survivor = (
+      await db.query<{ replay_id: string | null }>(`select replay_id from matches where id = $1`, [vsMatch])
+    ).rows;
+    check(
+      'delete: ...but the match ROW survives for the other player, replay_id nulled',
+      survivor.length === 1 && survivor[0].replay_id === null,
+      `rows=${survivor.length} replay_id=${String(survivor[0]?.replay_id)}`,
+    );
+    const seats = (
+      await db.query<{ n: number }>(`select count(*)::int as n from match_participants where match_id = $1`, [vsMatch])
+    ).rows[0].n;
+    check(
+      'delete: the co-participant keeps their seat in the shared history',
+      seats === 1,
+      `seats=${seats} (vs-a cascaded, vs-b stayed)`,
+    );
+  }
+
+  // -------------------------------- the one-sided versus room's orphan replay ---
+  /**
+   * `persistMatch` writes the replay BEFORE calling `persistVersusMatch`, which
+   * early-returns without `saveMatch` when either alliance has no AUTHED player — a
+   * signed-in player against a guest, or a 2v2 whose two accounts sat on one alliance.
+   * Every such room left a `replays` row pointed at by NOTHING: invisible to
+   * `deleteAccount` and to both prunes, freed only by a season purge.
+   *
+   * The `user_activity` assertion is the ANTI-VACUITY GUARD, and it is not optional.
+   * `persistMatch` no-ops outright on four conditions (DB off, unscored game, zero authed
+   * participants, a throw into its own catch) and every one of them ALSO leaves the replay
+   * count unchanged — so without proof that the function actually RAN, "no new replay"
+   * passes for the wrong reason. Crediting playtime is the last thing it does before the
+   * versus branch.
+   */
+  {
+    const { persistMatch } = await import('../server/persist');
+    const { DEFAULT_SPEC, DEFAULT_ASSISTS } = await import('../src/sim/spawn');
+    await repo.ensureProfile('solo-vs', 'Only');
+    const before = (await db.query<{ n: number }>(`select count(*)::int as n from replays`)).rows[0].n;
+    const out = await persistMatch({
+      game: 'decode',
+      config: { kind: 'versus' },
+      ranked: false,
+      result: { score: { red: 90, blue: 40 }, foulPoints: { red: 0, blue: 0 }, hash: 0, ticks: 1200 },
+      replay: {
+        format: 2,
+        balanceVersion: 4,
+        sim: 2,
+        game: 'decode',
+        mode: 'match',
+        seed: 77,
+        ticks: 1200,
+        setups: [],
+        tracks: { 0: [1, 2, 3, 4, 5, 6, 7] },
+      },
+      participants: [
+        {
+          clientId: 'c1',
+          userId: 'solo-vs',
+          handle: 'Only',
+          alliance: 'red',
+          drivetrain: 'tank',
+          score: 90,
+          spec: DEFAULT_SPEC,
+          assists: DEFAULT_ASSISTS,
+        },
+      ],
+    });
+    const after = (await db.query<{ n: number }>(`select count(*)::int as n from replays`)).rows[0].n;
+    check(
+      'versus: persistMatch RAN (it credited playtime) but wrote no match row',
+      !out.matchId && (await repo.getActivity('solo-vs')).total.games === 1,
+      `matchId=${String(out.matchId)}`,
+    );
+    check(
+      'versus: ...so a ONE-SIDED room leaves no orphaned replay behind',
+      after === before,
+      `replays ${before} → ${after}`,
+    );
   }
 
   await db.close();

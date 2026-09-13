@@ -568,10 +568,20 @@ Delta snapshots, confirmed (`protocol.ts:614-653`, `room.ts:1805-1868`):
    ~300 for CR), but data only for balls that changed. Array position drives collision and
    scoring iteration *and* the hash, so the order must match exactly (`:626-628`). **[C]**
 
-⚠️ The production encoder is **not** `encodeBallDelta`. `Room.broadcastSnapshot`
-(`room.ts:1809-1813`) hand-rolls the same diff so it can do a shared-prefix encode-once
-optimisation (`:1826-1840`) where the per-client tail is only `ackInputTick`. The tested codec
-is used by `smoke.ts` and `costprobe.ts` only. See §17.4. **[C]**
+⚠️ The production encoder is **not** `encodeBallDelta`. `Room.broadcastSnapshot` hand-rolls the
+same diff so it can do a shared-prefix encode-once optimisation where the per-client tail is only
+`ackInputTick`. **`encodeBallDelta` now has NO caller outside `smoke.ts`** — `costprobe.ts` was the
+last one and was changed (Sept 2026) to copy the room's four lines instead, because pricing a codec
+that does not ship is how the probe came to report 9.24 KiB/s for a CR solo room that really costs
+87.7. See §17.4. **[C]**
+
+⚠️ **The wire is ROUNDED TO 3 dp** (`server/wire.ts` `round3`, applied at all three production
+sites: the frame stringify, the per-ball DIFF KEY, and the reattach keyframe in `sendSnapshotTo`).
+`worldHash` quantises to 1e-3 anyway and the client cannot act on finer, so this is precision the
+protocol never carried. Measured (`npm run costprobe`): −41% DECODE / −54-58% CR on the wire,
+fleet egress 39.9 → 23.3 MB/s. Rounding the frame but NOT the diff key would over-send every
+near-stationary CR particle and give back most of it. Not a protocol change — no key is added,
+removed or retyped, and `unslimWorld`/`applyBallDelta`/`reconcile` are value-blind. **[C]**
 
 ### 8.2 What is predicted, interpolated, and snapped
 
@@ -1424,11 +1434,17 @@ staged for the old one.
 
 ### 17.4 MEDIUM — the production ball-delta codec has no codec-level test **[C]**
 
-`encodeBallDelta` (`protocol.ts:708`) is tested by `smoke.ts` and used by `costprobe.ts`, but
-**the server never calls it**. `Room.broadcastSnapshot` (`room.ts:1809-1813`) hand-rolls the
-same diff so it can share an encoded prefix across clients (`:1826-1840`). The two agree
-today; nothing pins that they keep agreeing. `smoke.ts:11719` tests slim/unslim round-trip
-through the *shared* codec, so a drift in the room's version would pass the suite.
+`encodeBallDelta` is tested by `smoke.ts` and **the server never calls it**.
+`Room.broadcastSnapshot` hand-rolls the same diff so it can share an encoded prefix across
+clients. The two agree today; nothing pins that they keep agreeing, and a drift in the room's
+version would pass the shared-codec round-trip test.
+
+**Partly addressed (Sept 2026).** `costprobe.ts` no longer calls the shared codec either — it
+copies the room's four lines, so the *measurement* is now of the shipping path. And `smoke.ts`
+gained a check that drives a real CR `Room` and asserts no ball is re-sent with wire data the
+client already holds, which exercises the room's own diff end to end. What is still untested is
+that the two implementations agree with each other; the shared codec's remaining job is to be
+the CLIENT's decoder (`applyBallDelta`), which is tested, plus `scripts/loadtest.ts`.
 
 ### 17.5 LOW — client inbound messages have no error guard **[C]**
 

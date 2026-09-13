@@ -4,12 +4,12 @@ import type {
   Alliance,
   Artifact,
   AssistConfig,
+  BallState,
   GameId,
   RobotCommand,
   RobotSpec,
   RobotState,
   World,
-  AutoPathData, // Import AutoPathData
   StartPose,
   StartCat,
 } from '../types';
@@ -169,8 +169,11 @@ export interface LobbyPlayer {
   ready: boolean;
   spec: RobotSpec;
   assists: AssistConfig;
-  autoPath?: AutoPathData; // Add autoPath
-  autoPathEnabled?: boolean; // Add autoPathEnabled
+  // NOTE: no `autoPath` here. Autonomous does not run in a server-authoritative
+  // match (`Room.beginMatch` strips it from every setup), so carrying a whole
+  // path on the roster put an unbounded object on every `roster` broadcast for
+  // a field nothing read. A path still reaches a STAGED match through
+  // `PendingRobot.autoPath`, which is a different source and still coerced.
   // ---- server-authored, set only during the ranked pre-match STRATEGY phase ----
   // (never accepted from a client patch). `slot` is this player's roster/robot
   // index so its card can look up its `PlayerIntro` ELO; `hidden` marks an OPPONENT
@@ -227,7 +230,7 @@ export interface EloDelta {
 export type PlayerPatch = Partial<
   Pick<
     LobbyPlayer,
-    'name' | 'teamName' | 'teamNumber' | 'alliance' | 'startIndex' | 'startPose' | 'startRole' | 'swapReq' | 'ready' | 'spec' | 'assists' | 'autoPath' | 'autoPathEnabled'
+    'name' | 'teamName' | 'teamNumber' | 'alliance' | 'startIndex' | 'startPose' | 'startRole' | 'swapReq' | 'ready' | 'spec' | 'assists'
   >
 >;
 
@@ -779,14 +782,29 @@ export function encodeBallDelta(
 
 /** Reconstruct the ball array from a running `baseline` (MUTATED in place: patched
  * with `upd`, then pruned to exactly `order`). Byte-identical to the server's
- * `world.balls`. Returns the rebuilt array in the authoritative order. */
+ * `world.balls`. Returns the rebuilt array in the authoritative order.
+ *
+ * ⚠️ THE RETURNED BALLS ARE COPIES, AND THAT IS THE WHOLE POINT: nothing the caller
+ * holds is in the baseline. The sim mutates artifacts IN PLACE every tick (`b.pos.x`,
+ * `st.v`/`st.s`/`state.pending` on the rail, `st.lx`/`st.ly` on a held ball), so
+ * handing out the baseline's own objects corrupted the diff baseline as the client
+ * stepped — a ball the server then did NOT re-send rebuilt from the client's own
+ * drifted value and stayed wrong for as long as it sat still. `state` is a nested
+ * object too, hence FOUR spreads; every `BallState` member is flat scalars, so a
+ * shallow spread of each is total. */
 export function applyBallDelta(baseline: Map<number, Artifact>, delta: BallDelta): Artifact[] {
   for (const b of delta.upd) baseline.set(b.id, b);
   const keep = new Set(delta.order);
   for (const id of baseline.keys()) if (!keep.has(id)) baseline.delete(id);
   return delta.order
     .map((id) => baseline.get(id))
-    .filter((b): b is Artifact => b !== undefined);
+    .filter((b): b is Artifact => b !== undefined)
+    .map((b) => ({
+      ...b,
+      pos: { ...b.pos },
+      vel: { ...b.vel },
+      state: { ...b.state } as BallState,
+    }));
 }
 
 /** rebuild a full World from a slim world + reconstructed ball array, re-injecting

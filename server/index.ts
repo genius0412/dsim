@@ -728,6 +728,31 @@ async function aggregateLive(): Promise<unknown[]> {
 }
 
 /** every match running on THIS machine, unfiltered (see `Room.summary`) */
+/**
+ * SNAPSHOT SPACING ACROSS THIS MACHINE'S ROOMS, for `/api/perf`.
+ *
+ * Samples are recorded PER ROOM (`Room.snapGapStats`) and summed here rather than kept
+ * per-process, because a machine hosting 24 rooms has 24 independent send clocks and a
+ * process-wide counter would average a stuttering room into 23 healthy ones and report
+ * nothing. `rooms` is the number that actually contributed, so a one-room reading is
+ * recognisable as one.
+ */
+function snapSendGap(reset: boolean): { rooms: number; n: number; meanMs: number; maxMs: number } {
+  let n = 0;
+  let sumMs = 0;
+  let maxMs = 0;
+  let contributing = 0;
+  for (const r of rooms.values()) {
+    const g = r.snapGapStats(reset);
+    if (g.n === 0) continue;
+    contributing++;
+    n += g.n;
+    sumMs += g.sumMs;
+    if (g.maxMs > maxMs) maxMs = g.maxMs;
+  }
+  return { rooms: contributing, n, meanMs: n ? Math.round((sumMs / n) * 100) / 100 : 0, maxMs };
+}
+
 function localLive(): LiveRoom[] {
   return [...rooms.values()].map((r) => r.summary()).filter((s): s is LiveRoom => s !== null);
 }
@@ -1500,6 +1525,9 @@ const httpServer = createServer((req, res) => {
   // lag histogram so a sample can be scoped to one match instead of since boot.
   if (req.method === 'GET' && req.url?.startsWith('/api/perf')) {
     const live = localLive();
+    // read once, up front: `snapSendGap` DRAINS each room's accumulator when asked to, and it
+    // runs while the body is being built, i.e. before the `?reset=1` branch below
+    const gapReset = !!new URL(req.url, 'http://x').searchParams.get('reset');
     const ms = (n: number): number => Math.round((n / 1e6) * 100) / 100; // ns → ms
     const heap = v8.getHeapStatistics();
     const mb = (n: number): number => Math.round(n / 1048576);
@@ -1540,6 +1568,23 @@ const httpServer = createServer((req, res) => {
         p99: ms(loopDelay.percentile(99)),
         max: ms(loopDelay.max),
       },
+      // HOW EVENLY THIS MACHINE IS SENDING SNAPSHOTS, summed over its live rooms.
+      //
+      // `loopLagMs` says the event loop is late; this says the players FELT it. They are not
+      // the same reading — the loop can be healthy while one room's sends bunch and gap,
+      // because snapshots COALESCE (at most one per timer fire, see `startLoop`), and it is
+      // inter-arrival JITTER rather than RTT that reads as stutter (CONNECTION-QUALITY HUD).
+      //
+      // `scripts/loadtest.ts` already measures this properly, with percentiles — but only with
+      // a harness attached. The point of putting it here is to be able to read it on a real
+      // machine with real players and no harness. Percentiles are deliberately NOT kept: they
+      // would need a per-room histogram for a number an operator reads by eye against
+      // loadsummary's 45 ms median line. `rooms` is how many rooms contributed a sample, so a
+      // `mean` drawn from one room is not mistaken for a fleet figure.
+      //
+      // ⚠️ NOT `snapshotGapMs` — `scripts/loadsummary.ts` reads a CLIENT-side field of that
+      // name out of this same JSON.
+      snapSendGapMs: snapSendGap(gapReset),
     };
     if (new URL(req.url, 'http://x').searchParams.get('reset')) {
       loopDelay.reset();

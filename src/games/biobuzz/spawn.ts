@@ -13,11 +13,8 @@ import type {
 import * as C from '../../config';
 import { clamp, datan2, dcos, dsin, nextRandom, rot, wrapAngle } from '../../math';
 import {
-  DEFAULT_ASSISTS,
   MOTIFS,
-  coerceAssists,
-  coerceAutoPath,
-  coerceStartPose,
+  coerceSetup,
   type RobotSetup,
 } from '../../sim/spawn';
 import { emptyScore } from '../../sim/scoring';
@@ -66,47 +63,22 @@ interface Pose {
 }
 
 /**
- * SANITIZE ONE SETUP — the BIOBUZZ replacement for the shared `coerceSetup`.
+ * SANITIZE ONE SETUP — the shared `coerceSetup`, plus this game's spec base.
  *
- * The shared one CANNOT be used here, and it is worth being precise about why rather than
- * quietly writing a second copy: `coerceSetup` clamps `startIndex` to DECODE's
- * `C.START_POSES.length` (5) and repairs a custom pose with `snapStartToLegal`, which is
- * DECODE's G304 geometry — launch lines, goal faces, alliance halves. BIOBUZZ has two anchors
- * and no published legality at all (`startLegality: false`), so running it would clamp against
- * the wrong count and snap poses against zones this game does not have.
+ * This used to be a full FORK of `coerceSetup`, and both reasons its header gave are gone:
+ * the `startIndex` clamp reads `simModuleFor(game).startPoseCount` (per game, so
+ * `BB_START_POSE_COUNT` here), and the DECODE G304 repair is gated on the module's
+ * `startLegality`, which is false for this game. What is left is genuinely ours — the SPEC
+ * BASE: `bbCoerceSpec` resolves this game's own size envelope and mount lists, where the
+ * shared coercer would resolve DECODE's.
  *
- * What it DOES do is exactly what matters, and none of it is DECODE-specific:
- *   • ALLIANCE — an enum, defaulted rather than trusted.
- *   • STARTINDEX — finite, integral, in range for THIS game's anchor count.
- *   • STARTPOSE  — structurally validated and field-clamped (`coerceStartPose`).
- *   • AUTOPATH   — structurally validated and field-clamped, with `autoPathEnabled` forced
- *                  false when there is no usable path (an enabled-but-absent path is what
- *                  drives `pathTraversal` into a null target).
- *   • ASSISTS    — every flag validated independently.
- *
- * CHAIN REACTION SKIPS ALL OF THIS. `createChainWorld` calls `coerceSpec` and `coerceAssists`
- * but never `coerceSetup`, so a CR setup arriving off the wire with `startIndex: 1e9` or a
- * malformed auto path is spawned as-is. That is a KNOWN GAP in CR and it is deliberately NOT
- * copied here — this is the last line of defence before a robot exists, and it runs on every
- * spawn path (localStorage, the wire, a staged match, smoke).
+ * So: one chokepoint, one override. Everything else (alliance enum, `startIndex` range,
+ * `coerceStartPose`, the auto path with `autoPathEnabled` forced false when there is no
+ * usable path, per-flag assists, and the PRESERVED `id` that keys the command map) comes
+ * from the shared function and stays in step with it.
  */
 function coerceBiobuzzSetup(s: RobotSetup): RobotSetup {
-  const alliance: Alliance = s.alliance === 'red' || s.alliance === 'blue' ? s.alliance : 'blue';
-  const autoPath = s.autoPath !== undefined ? coerceAutoPath(s.autoPath) : null;
-  const spec = bbCoerceSpec(s.spec);
-  return {
-    id: s.id, // PRESERVED — it keys the per-tick command map for the whole match
-    alliance,
-    spec,
-    assists: coerceAssists(s.assists, DEFAULT_ASSISTS),
-    startIndex: Number.isFinite(s.startIndex)
-      ? clamp(Math.round(s.startIndex), 0, BB_START_POSES.length - 1)
-      : 0,
-    startPose: coerceStartPose(s.startPose) ?? undefined,
-    autoPath: autoPath ?? undefined,
-    autoPathEnabled: autoPath ? s.autoPathEnabled === true : false,
-    passive: s.passive,
-  };
+  return { ...coerceSetup(s, 'biobuzz'), spec: bbCoerceSpec(s.spec) };
 }
 
 /**

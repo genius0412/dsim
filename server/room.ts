@@ -165,11 +165,25 @@ const ACK_STALE_TICKS = 240;
  * other side (the client's ack falling behind); this one reacts in one frame instead of 240
  * ticks, and, unlike that one, it also stops the memory growing while it waits.
  *
- * 256 KB is ~40 solo snapshots or ~40 2v2 frames uncompressed — far past any normal write
- * burst (a healthy socket's `bufferedAmount` is 0 nearly every time it is read) and well
- * under a figure that would matter per socket at full population.
+ * ⚠️ `ws.bufferedAmount` IS POST-DEFLATE, so this is 256 KB of COMPRESSED arrears, not of
+ * frames. Measured off `npm run costprobe`, that is roughly 24 s of a DECODE solo room's wire
+ * (10.4 KiB/s) down to about 1.4 s of a CR 2v2's (177 KiB/s) — a wide band, and nothing like
+ * the "~40 snapshots uncompressed" this comment used to claim.
+ *
+ * LEFT AT 256 KB DELIBERATELY. Lowering it looks tempting at the CR end, but a skip UNPRIMES,
+ * so recovery is a full keyframe of all 300 CR artifacts — the largest frame the server emits
+ * — and a threshold tight enough to fire on ordinary jitter turns into skip → keyframe → skip,
+ * which is worse than the arrears it was avoiding. And under `WS_COMPRESS=0` the same number
+ * is RAW bytes, where 64 KB would be about one frame of a busy room.
  */
 const SNAP_BACKLOG_BYTES = 256 * 1024;
+
+// WIRE PRECISION (`round3`) lives in `server/wire.ts` — a LEAF module, because this file is
+// in an import cycle: a `const` exported from here reads back `undefined` in a module that
+// imports it without also pulling in `Room`, which is exactly what `scripts/costprobe.ts`
+// does. Re-exported so the server-side call sites below read naturally.
+export { round3 } from './wire';
+import { round3 } from './wire';
 /** hold a disconnected driver's slot this long for a reconnect before dropping. Long
  * enough to cover a full page reload / navigate-away-and-come-back (the "rejoin your
  * match" flow), not just a transient socket blip. The robot coasts to ZERO meanwhile. */
@@ -1046,8 +1060,6 @@ export class Room {
         // a custom pose overrides the de-conflicted startIndex; createWorld snaps
         // it G304-legal. Old clients omit it → the preset is used.
         startPose: c.player.startPose ?? undefined,
-        autoPath: c.player.autoPath, // Include autoPath
-        autoPathEnabled: c.player.autoPathEnabled, // Include autoPathEnabled
       });
       this.robotOf.set(c.id, i);
     });
@@ -1336,8 +1348,6 @@ export class Room {
         assists: c.player.assists,
         startIndex: si,
         startPose: c.player.startPose ?? undefined, // LIVE re-picked custom pose
-        autoPath: c.player.autoPath,
-        autoPathEnabled: c.player.autoPathEnabled,
       });
       this.robotOf.set(c.id, i);
     });
@@ -1409,10 +1419,48 @@ export class Room {
     return p.roster.map((r) => r.userId).filter((u): u is string => !!u && !present.has(u));
   }
 
+  /**
+   * HOW EVENLY THIS ROOM IS ACTUALLY SENDING SNAPSHOTS.
+   *
+   * The gap between broadcasts is already measured with real percentiles — by
+   * `scripts/loadtest.ts`, which emits `snapshotGapMs {p50, p99, jitterMeanAbsDev}` and is read
+   * by `loadsummary.ts` at a 45 ms health line. Every published jitter number came from that
+   * harness. The ONE thing it cannot do is answer the question in PRODUCTION, with no harness
+   * attached and real players in the room — and jitter, not RTT, is the signal behind every
+   * "it feels laggy" report (see CONNECTION-QUALITY HUD). That, and only that, is the
+   * justification. `cores` stays structurally blind to shedding either way.
+   *
+   * ⚠️ PLAIN NUMBERS, NOT `perf_hooks`. This module is bundled for the BROWSER —
+   * `src/lan/hostWorker.ts` imports `Room` — so a `node:` import does not resolve here. Same
+   * constraint that makes `randomUUID` the Web Crypto one.
+   * ⚠️ NAMED `snapSendGapMs` on the wire, not `snapshotGapMs`: `scripts/loadsummary.ts` already
+   * reads a CLIENT-SIDE `snapshotGapMs` out of the same JSON and the two must not collide.
+   * ⚠️ NO lateness RATE. loadsummary's 45 ms line is a threshold on the MEDIAN, so the count,
+   * the running sum and the max are the whole useful set; a `late` counter would need a
+   * threshold constant nobody reads.
+   * ⚠️ PER BROADCAST, NOT PER RECIPIENT. Recorded once in `broadcastSnapshot`, on the ROOM
+   * plane — the snapshot plane is ~99.8% shared work and nothing per-client may move onto it
+   * (see the SHARED PREFIX comment there).
+   */
+  private snapGap = { n: 0, sumMs: 0, maxMs: 0 };
+  private lastSnapAt = 0;
+
+  /** this room's snapshot-spacing accumulator, for `/api/perf`. `reset` starts a fresh window. */
+  snapGapStats(reset = false): { n: number; sumMs: number; maxMs: number } {
+    const out = { ...this.snapGap };
+    if (reset) this.snapGap = { n: 0, sumMs: 0, maxMs: 0 };
+    return out;
+  }
+
   private startLoop(): void {
     this.stop();
     let last = Date.now();
     let acc = 0;
+    // ⚠️ RESET THE SPACING CLOCK HERE, not only in the ghost-freeze branch below. `beginMatch`
+    // is this method's only caller and it runs on EVERY REMATCH, so without this the results
+    // screen plus the whole rematch-vote window lands in `maxMs` and stays there for the life
+    // of the machine — one number that makes every reading after it a lie.
+    this.lastSnapAt = 0;
     this.loop = setInterval(() => {
       // a throw here would otherwise kill the whole process (every room) and Fly
       // would report "app not listening" — contain it to this tick instead
@@ -1454,6 +1502,7 @@ export class Room {
         if (!this.anyConnected()) {
           last = Date.now();
           acc = 0;
+          this.lastSnapAt = 0; // a ghost freeze is not a late snapshot — see `snapGap`
           return;
         }
         const now = Date.now();
@@ -1860,10 +1909,25 @@ export class Room {
 
   private broadcastSnapshot(): void {
     const w = this.world as World;
+    // SPACING, measured once per broadcast on the ROOM plane — see `snapGap`. A first send
+    // (or the first after a freeze / a rematch) has no predecessor and is not a sample.
+    const nowMs = Date.now();
+    if (this.lastSnapAt !== 0) {
+      const gap = nowMs - this.lastSnapAt;
+      this.snapGap.n++;
+      this.snapGap.sumMs += gap;
+      if (gap > this.snapGap.maxMs) this.snapGap.maxMs = gap;
+    }
+    this.lastSnapAt = nowMs;
     // recompute the ball snapshot once; each client gets a delta (if primed with
     // a baseline) or a full keyframe (the balls that changed = all of them)
+    // ⚠️ THE DIFF KEY IS ROUNDED TOO, not just the frame. Rounding only the frame leaves the
+    // key comparing full-precision floats, so the ~70 CR particles that are stationary to
+    // within a thousandth of an inch still read as CHANGED and are re-sent every frame — which
+    // is precisely the 54% the rounding was supposed to save. (A bandwidth property, not a
+    // correctness one: over-sending desyncs nobody.)
     const cur = new Map<number, string>();
-    for (const b of w.balls) cur.set(b.id, JSON.stringify(b));
+    for (const b of w.balls) cur.set(b.id, JSON.stringify(b, round3));
     const changed: Artifact[] = [];
     for (const b of w.balls) if (cur.get(b.id) !== this.prevBalls.get(b.id)) changed.push(b);
     const order = w.balls.map((b) => b.id);
@@ -1886,7 +1950,7 @@ export class Room {
       const balls: BallDelta = { order, upd: primed ? changed : w.balls };
       // JSON.stringify rather than encodeMsg: this is deliberately a PARTIAL snapshot,
       // missing the one required field each recipient supplies for itself.
-      const whole = JSON.stringify({ t: 'snapshot', serverTick: w.tick, w: slim, balls, cmds });
+      const whole = JSON.stringify({ t: 'snapshot', serverTick: w.tick, w: slim, balls, cmds }, round3);
       // drop the closing brace so the per-client tail can be appended. `whole` always
       // has at least one key, so it is never the degenerate `{}`.
       const body = whole.slice(0, -1);
@@ -1926,14 +1990,19 @@ export class Room {
   /** full keyframe to one client (reattach resync): all balls, primes the client */
   private sendSnapshotTo(c: Client): void {
     const w = this.world as World;
-    c.send({
+    const msg: ServerMsg = {
       t: 'snapshot',
       serverTick: w.tick,
       w: slimWorld(w),
       balls: { order: w.balls.map((b) => b.id), upd: w.balls },
       cmds: this.frameCmds(w),
       ackInputTick: this.ackTick.get(c.id) ?? 0,
-    });
+    };
+    // ROUNDED LIKE EVERY OTHER SNAPSHOT — and this is the one that most needs it: it is the
+    // LARGEST frame the server emits (`upd` is every ball, all 300 of them in CR), and it goes
+    // out on the reattach path, which is a real client on a real socket rather than a test.
+    if (c.sendRaw) c.sendRaw(JSON.stringify(msg, round3));
+    else c.send(msg);
     this.snapPrimed.add(c.id);
   }
 

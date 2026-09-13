@@ -572,11 +572,17 @@ export class GameController {
   private handleActionAudio(): void {
     const chain = this.world.game === 'chain';
     for (const r of this.world.robots) {
-      if (r.lastFireAt !== this.prevFireAt[r.id]) {
+      // ⚠️ `>`, NOT `!==` — a HIGH-WATER MARK, like the beam counter three rows down.
+      // `reconcile` snaps the world back to the server's and REPLAYS buffered inputs, so a
+      // predicted shot's `lastFireAt` goes FORWARD, back to the server's value, and forward
+      // again — and `!==` fired on every one of those, re-cueing the same shot two or three
+      // times per reconcile. The mark only ever rises, so the replay's re-fire is silent and
+      // the next genuine shot (a later `world.time`) still sounds.
+      if (r.lastFireAt > (this.prevFireAt[r.id] ?? 0)) {
         this.prevFireAt[r.id] = r.lastFireAt;
         this.audio.sfxShoot();
       }
-      if (r.lastIntakeAt !== this.prevIntakeAt[r.id]) {
+      if (r.lastIntakeAt > (this.prevIntakeAt[r.id] ?? 0)) {
         this.prevIntakeAt[r.id] = r.lastIntakeAt;
         this.audio.sfxIntake();
       }
@@ -978,6 +984,24 @@ export class GameController {
    * what we've already surfaced. On the FIRST snapshot we adopt the history silently
    * (a mid-match joiner/spectator shouldn't get a burst of past phase banners), and a
    * shrink means a fresh match/server → resync from zero. */
+  /**
+   * The authoritative event log, diffed by ABSOLUTE INDEX into `world.events`.
+   *
+   * ⚠️ THE SHRINK GUARD BELOW COVERS A RESET, NOT A TRUNCATION, AND THE DIFFERENCE IS SILENT.
+   * It exists so a world REPLACEMENT (a rejoin keyframe, a restart, a rematch) re-emits the log
+   * from the start instead of being skipped. It does NOT make this function safe against a
+   * server that CAPS the log: a ring buffer at K makes `evs.length` SATURATE at K rather than
+   * shrink (one pushed, one dropped ⇒ K stays K), so `evs.length < shownEventCount` never
+   * fires, the two stay equal at K, and the loop below never runs again — every event after
+   * the Kth is permanently never shown, with nothing logged and nothing thrown.
+   *
+   * Measured (Sept 2026, full 2v2 matches to `post`): a cap at 64 would save 0 bytes in DECODE
+   * solo, CR solo and CR 2v2 — the log never reaches 64 in any of them — and 13.5% of the raw
+   * frame in a foul-heavy DECODE 2v2, while silently discarding 99 of that match's 163 toasts.
+   * So a cap is not worth building here, and if one is ever wanted anyway it has to ship a DROP
+   * COUNT on the wire (`eventsBase`) that this function adds to `evs.length`, which is a
+   * protocol change and `CLIENT_CAPS` work, not a one-liner.
+   */
   private collectNetEvents(first: boolean): void {
     const evs = this.world.events;
     if (evs.length < this.shownEventCount) this.shownEventCount = 0;

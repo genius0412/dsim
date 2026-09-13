@@ -112,13 +112,6 @@ export function MatchSetup({
           fileName: file.name,
           startPoint: transformedStartPoint,
           lines: normalizedLines,
-          shapes:
-            data.shapes?.map((s: any) => ({
-              ...s,
-              points: s.points?.map((p: Vec2) => transformPpCoordinate(p)),
-              x: s.x !== undefined ? transformPpCoordinate({ x: s.x, y: 0 }).x : undefined,
-              y: s.y !== undefined ? transformPpCoordinate({ x: 0, y: s.y }).y : undefined,
-            })) || [],
           sequence: deriveSequence(data, normalizedLines),
           version: data.version,
           timestamp: data.timestamp,

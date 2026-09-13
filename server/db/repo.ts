@@ -7,6 +7,7 @@ import {
   STANDING_MAX, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH, clampScore, type StandingVerdict,
 } from '../../src/standing';
 import { q, tx } from './pool';
+import { scrubSpecNames } from '../moderation';
 
 /** every board/period is keyed by game; old callers/rows default to DECODE. */
 type Game = GameId;
@@ -903,6 +904,19 @@ export async function refundKofiPayment(transactionId: string): Promise<boolean>
  * playback gate compares CODE-vs-CODE, not code-vs-season. `game` keys the board
  * this replay belongs to (DECODE vs Chain Reaction). */
 export async function saveReplay(replay: Replay, season: number, game?: Game): Promise<string> {
+  /* THE ROBOT NAME IS DRAWN ON THE FIELD. `src/render/renderer.ts` labels every robot from
+   * `spec.name`/`spec.teamNumber`, so an unmoderated name is public in the replay viewer AND
+   * burned into every exported video — the one copy of a match that outlives the sim version
+   * that recorded it. It is scrubbed HERE and not in `server/persist.ts` because this is the
+   * ONE funnel all three replay writers share (the match path, `savePracticeRun`, and
+   * `saveLanRun`). The LAN path is the one that was actually open: `server/api.ts` moderates
+   * the roster it DISPLAYS and then hands `sanitizeReplay(body.replay)` straight through, and
+   * `sanitizeReplay` only clamps geometry — so a THIRD PARTY's name inside a client-uploaded
+   * container was stored unscrubbed. Free when moderation is off: `scrubSpecNames` returns
+   * the same object identity for a clean spec. */
+  const setups = await Promise.all(
+    replay.setups.map(async (s) => ({ ...s, spec: await scrubSpecNames(s.spec) })),
+  );
   const rows = await q<{ id: string }>(
     `insert into replays (format, balance_version, sim_version, behaviour_version, seed, ticks, setups, tracks, game)
      values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
@@ -916,7 +930,7 @@ export async function saveReplay(replay: Replay, season: number, game?: Game): P
       replay.sim ?? null,
       replay.seed,
       replay.ticks,
-      JSON.stringify(replay.setups),
+      JSON.stringify(setups),
       JSON.stringify(replay.tracks),
       g(game),
     ],
@@ -1521,9 +1535,22 @@ export async function searchProfiles(
  *
  * Three things do NOT cascade and are handled explicitly, in this order:
  *
- *  - `replays` has no user column at all — it is reached only through
- *    `records.replay_id`. Cascading the records first would orphan the replay
- *    rows permanently, so they are collected and deleted BEFORE the profile goes.
+ *  - `replays` has no user column at all. FOUR tables point at it — `records`,
+ *    `matches`, `practice_runs` and `lan_runs` — and every one of those FKs is
+ *    `on delete set null`, so cascading their owning rows away first would orphan
+ *    the replay permanently. They are collected and deleted BEFORE the profile goes.
+ *    The `matches` arm reaches them through `match_participants`, and THE MATCH ROW
+ *    ITSELF IS KEPT: it holds no personal data (mode, season, ranked, date) and a
+ *    co-participant reads it in their own history.
+ *    ⚠️ THE ACCEPTED COST, stated because it is invisible from here: deleting one
+ *    account takes that replay out of EVERY other participant's copy of the match.
+ *    They keep the result, the score, the ELO delta and the date; the Watch button
+ *    goes dead. `userRecentMatches` — the moderation drill-down, whose own comment
+ *    says a cheating report "is unjudgeable from text; the moderator has to watch
+ *    the match" — loses it too, so an OPEN `score_reports` row against that match
+ *    loses its evidence permanently and silently, which also means deleting your
+ *    account destroys the case against you. A departing account's privacy request
+ *    still beats a stranger's rewatch; that is the trade, not an oversight.
  *  - `elo_history` deliberately has no foreign key (it is a per-season snapshot
  *    that must survive a season roll), so it needs its own delete.
  *  - `kofi_payments.claimed_by` is `on delete set null`, which is correct — the
@@ -1553,7 +1580,19 @@ export async function deleteAccount(userId: string): Promise<boolean> {
                       where user_id = $1 and replay_id is not null
                      union all
                      select replay_id from lan_runs
-                      where host_user_id = $1 and replay_id is not null)`,
+                      where host_user_id = $1 and replay_id is not null
+                     union all
+                     /* VERSUS MATCHES. The only path from a person to a match replay is
+                        match_participants, and this is the arm that was missing: every
+                        versus replay the account ever played survived its own deletion,
+                        reachable by nothing but the season purge. It MUST stay inside this
+                        first statement -- match_participants.user_id is on delete cascade,
+                        so after the delete from profiles below the join row is gone and this
+                        subselect silently finds nothing. The matches row stays; see above. */
+                     select replay_id from matches
+                      where replay_id is not null
+                        and id in (select match_id from match_participants
+                                    where user_id = $1))`,
       [userId],
     );
     await query(`delete from elo_history where user_id = $1`, [userId]);

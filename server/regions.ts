@@ -75,7 +75,7 @@ const RTT: Record<string, Record<string, number>> = {
 /** the penalty for a region we have no row for. Deliberately `RADIUS_MAX_MS`-sized so
  * an unrecognised `homeRegion` never looks like a good host — but note the corollary,
  * that it also makes such a player nearly unpairable. See DEPLOY_REGIONS. */
-const RTT_UNKNOWN = 300;
+export const RTT_UNKNOWN = 300;
 
 /** inter-region RTT (ms). Unknown regions fall back to a large penalty so an
  * unrecognised `homeRegion` never looks like a good host. */

@@ -17,6 +17,7 @@ import {
   DEFAULT_SPEC,
   MOTIFS,
   coerceAssists,
+  coerceSetup,
   coerceSpec,
   type RobotSetup,
 } from '../../sim/spawn';
@@ -163,8 +164,20 @@ export function createChainWorld(
 
   const robots: RobotState[] = [];
   const allianceCount: Record<Alliance, number> = { red: 0, blue: 0 };
-  for (const s of [...setups].sort((p, q) => p.id - q.id)) {
-    robots.push(makeChainRobot(s, allianceCount[s.alliance]++));
+  for (const raw of [...setups].sort((p, q) => p.id - q.id)) {
+    // ⚠️ COERCE FIRST, THEN COUNT. CR was the one game whose spawn had no last line of
+    // defence: `makeChainRobot` coerces the spec and the assists but took `alliance` and
+    // `startIndex` raw, so a spoofed setup indexed `CHAIN_START_POSES[NaN]` and THREW
+    // (taking the room down), and an alliance of `'nope'` made `allianceCount['nope']`
+    // NaN — which is exactly why the count has to read the COERCED alliance, not the raw
+    // one, or the de-confliction the `nth` default exists for is bypassed.
+    const s = coerceSetup(raw, 'chain');
+    const nth = allianceCount[s.alliance]++;
+    // `coerceSetup` floors an absent/garbage `startIndex` to 0, so restore the old
+    // "default a 2-robot alliance to its two Lab corners" behaviour when the setup
+    // genuinely carried no choice — without this both robots stack on anchor 0.
+    if (!Number.isFinite(raw.startIndex)) s.startIndex = nth;
+    robots.push(makeChainRobot(s, nth));
   }
 
   // STAGE the particles INSIDE the alliance goals (half in each). They are HELD (`staged`)

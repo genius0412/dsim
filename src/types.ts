@@ -645,14 +645,6 @@ export interface PathLine {
   waitAfterName?: string;
 }
 
-export interface PathShape {
-  // Define properties for shapes if needed, based on your .pp file structure
-  // For now, a minimal definition
-  id: string;
-  type: string; // e.g., 'rectangle', 'circle'
-  // ... other properties like position, size, color
-}
-
 export type SequenceItemKind = 'path' | 'wait' | 'action'; // 'action' is a placeholder
 
 export interface SequenceItem {
@@ -667,7 +659,6 @@ export interface AutoPathData {
   fileName: string; // To store the name of the imported file
   startPoint: PathPoint;
   lines: PathLine[];
-  shapes?: PathShape[];
   sequence?: SequenceItem[];
   version?: string;
   timestamp?: string;

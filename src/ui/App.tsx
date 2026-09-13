@@ -38,7 +38,7 @@ import { Matchmaking } from './Matchmaking';
 import { QueueBar, useParkedQueue } from './QueueBar';
 import { usePresence } from './usePresence';
 import { maintenanceLine } from './MaintenanceBanner';
-import { peekQueue } from './queueKeeper';
+import { dropQueue, peekQueue } from './queueKeeper';
 import { ReplayView } from './ReplayView';
 import { ProfileMenu } from './ProfileMenu';
 import { Download } from './Download';
@@ -52,6 +52,7 @@ import { Account } from './Account';
 import { authEnabled } from '../lib/authClient';
 import { useLanEnabled } from './useLanEnabled';
 import { lanEnabled, gameServerConfigured, lanActive, setSelectedServer, selectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
+import { roomJoinRegion } from '../net/roomRegion';
 import { ServerMenu } from './ServerMenu';
 import type { MatchResultInfo, NetSession } from '../net/session';
 import { ServerSession } from '../net/serverSession';
@@ -699,8 +700,12 @@ export function App() {
    * server slot within its reconnect grace; fails cleanly to the "connection lost"
    * panel if the slot is already gone). */
   const rejoinGame = (ref: ActiveGameRef): void => {
+    // the HOST's region if the ref recorded one, ours otherwise — the same rule every other
+    // room-opening path uses. A bare code with no hint lands on whichever machine anycast
+    // puts nearest to US, which is not where the room we are rejoining lives.
+    const region = roomJoinRegion(ref.region, selectedServer()?.region ?? '');
     const params: Record<string, string> = { room: ref.room };
-    if (ref.region) params.region = ref.region;
+    if (region) params.region = region;
     let transport: WebSocketTransport;
     try {
       transport = new WebSocketTransport(gameServerUrlWith(params));
@@ -746,8 +751,9 @@ export function App() {
   const spectateRoom = (code: string, region?: string): void => {
     let transport: WebSocketTransport;
     try {
+      const r = roomJoinRegion(region, selectedServer()?.region ?? '');
       transport = new WebSocketTransport(
-        gameServerUrlWith(region ? { room: code, region } : { room: code }),
+        gameServerUrlWith(r ? { room: code, region: r } : { room: code }),
       );
     } catch {
       return;
@@ -1077,12 +1083,23 @@ export function App() {
    * from any attempt that hit a cold or unreachable server.
    */
   useEffect(() => {
+    const wasSignedIn = signedInRef.current;
     signedInRef.current = signedIn;
     if (signedIn) {
       void flushPracticeRuns();
       // the LAN backlog drains on exactly the same trigger, and for a sharper version of the
       // same reason: a host who signed in after the scrimmage still owns those matches
       void flushLanRuns();
+    } else if (wasSignedIn) {
+      // SIGNING OUT CANCELS A PARKED RANKED QUEUE. The queue outlives the matchmaking screen
+      // by design (`queueKeeper` is a module singleton), so without this it keeps searching
+      // under an account that is gone and takes the screen back on a match nobody can play.
+      //
+      // ⚠️ THE EDGE IS LOAD-BEARING — a bare `if (!signedIn)` would be wrong. `AccountSync`
+      // unmounts on every trip out to a match, which is exactly the trip that parks a queue,
+      // and this effect re-runs on the way back; only a real signed-in → signed-out
+      // TRANSITION means the account went away.
+      dropQueue();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signedIn]);
