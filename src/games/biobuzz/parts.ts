@@ -12,11 +12,12 @@
  * byte-identical while every other game keeps evolving.
  *
  * What is drawn here is the part of a robot that is NOT a game mechanism — frame and
- * drivetrain. The mechanisms themselves (sweeper, drum, dumper, turret, lift) are
+ * drivetrain. The mechanisms themselves (sweeper, dumper, turrets, Box Tube) are
  * `drawRobot.ts`'s (canvas) and `RobotPreview.tsx`'s (SVG) job to DRAW, which keeps a mechanism
- * change out of the chassis code. The one exception is `bbLiftMastLocal` below: it is GEOMETRY
- * (where a fixture sits), not drawing, and both of those renderers need the identical answer —
- * the same reason `mounts.ts` holds `turretLocal` rather than either renderer computing its own.
+ * change out of the chassis code. The one exception is `bbBoxTubeGlyph` below: it is GEOMETRY
+ * (where a fixture sits and which way it points), not drawing, and both of those renderers need
+ * the identical answer — the same reason `mounts.ts` holds `turretLocal` rather than either
+ * renderer computing its own.
  */
 import type { RobotSpec, RobotState } from '../../types';
 import * as C from '../../config';
@@ -255,41 +256,44 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LIFT MAST — the fixture position a vertical extension slide's collar sits at
+// BOX TUBE — the static glyph both renderers draw at the tube's mount
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * How big a LIFT's stowed collar reads at its mount, in inches. Shared by both renderers so the
- * builder's SVG preview and the in-match canvas sprite draw the identically-sized fixture.
- *
- * Deliberately its OWN constant rather than a reuse of `turretRadius` (`mounts.ts`): a vertical
- * slide's footprint at the deck is a bolted collar, not a slewing ring, and the two mechanisms
- * should not read as the same part on the sprite just because they share the nine-cell mount
- * map. APPROX — picked to sit clearly under the smallest turret ring (`turretRadius`'s floor is
- * `Math.min(spec.length, spec.width) * 0.24`, ~3.24in on the smallest legal chassis), so a
- * glance never confuses "this build has a lift" with "this build has a turret".
- */
-export const BB_LIFT_MAST_R = 1.7;
+/** the drawn tube's section width and length along its mount direction (in). DRAWING sizes,
+ * not hardware: the Box Tube has no raise and no modelled length (`bbPlacePointLocal`,
+ * `robot.ts`, is the only geometry the sim reads), so these only have to read as "a length of
+ * box tube bolted to this edge" and stay clear of a turret ring at the neighbouring cell. */
+export const BB_BOX_TUBE_W = 1.1;
+export const BB_BOX_TUBE_LEN = 2.2;
+/** how far inside the frame rail the tube's outer end sits, per axis the mount touches (in) */
+const BB_BOX_TUBE_INSET = 0.7;
+/** the placement-point marker's ring radius (in) — both renderers */
+export const BB_PLACE_MARK_R = 1.0;
 
 /**
- * The LIFT mast's centre, in the robot frame — the ONE point both renderers draw the collar at.
+ * THE BOX TUBE GLYPH, in the robot frame: a short tube lying along the mount's outward
+ * direction (`MOUNT_DIR`), its OUTER end just inside the frame rail at the mount cell.
  *
- * Mirrors `turretLocal` (`mounts.ts`) on purpose and for the same reason: an edge or corner
- * mount is pulled INBOARD by the mast's own radius on EACH axis the mount touches (not by the
- * radius along the mount's diagonal, which would leave a corner-mounted mast hanging off the
- * frame by `r - r/sqrt2`), so the collar sits flush just inside the rail it is bolted to. It
- * cannot simply CALL `turretLocal`, though: that function resolves a LAUNCHER slot
- * (`shooterMount`/`shooterRear`) and pulls inboard by `turretRadius`, and a lift is a distinct
- * slot on the same nine-cell map with its own resolved `BbMountPos` and its own, smaller,
- * radius — hence the parallel geometry here rather than a shared call. `center` is dead centre,
- * exactly as it is for a turret there.
+ * `outer` is where the reach line to the placement point starts; `ux`/`uy` is the outward unit
+ * vector (a corner mount lies along the 45° diagonal, as every corner mechanism does). Pulled
+ * inboard PER AXIS the mount touches, the same rule `turretLocal` uses, so a corner tube never
+ * hangs off either rail. `center` is not a tube mount; it reads as the front edge.
  */
-export function bbLiftMastLocal(
+export function bbBoxTubeGlyph(
   spec: Pick<RobotSpec, 'length' | 'width'>,
   mount: BbMountPos,
-): { x: number; y: number } {
-  if (mount === 'center') return { x: 0, y: 0 };
-  const o = mountOrigin(spec, mount);
-  const d = MOUNT_DIR[mount];
-  return { x: o.x - Math.sign(d.x) * BB_LIFT_MAST_R, y: o.y - Math.sign(d.y) * BB_LIFT_MAST_R };
+): { cx: number; cy: number; ux: number; uy: number; len: number; w: number; outer: { x: number; y: number } } {
+  const pos: BbMountPos = mount === 'center' ? 'front' : mount;
+  const o = mountOrigin(spec, pos);
+  const d = MOUNT_DIR[pos];
+  const outer = { x: o.x - Math.sign(d.x) * BB_BOX_TUBE_INSET, y: o.y - Math.sign(d.y) * BB_BOX_TUBE_INSET };
+  return {
+    cx: outer.x - (d.x * BB_BOX_TUBE_LEN) / 2,
+    cy: outer.y - (d.y * BB_BOX_TUBE_LEN) / 2,
+    ux: d.x,
+    uy: d.y,
+    len: BB_BOX_TUBE_LEN,
+    w: BB_BOX_TUBE_W,
+    outer,
+  };
 }

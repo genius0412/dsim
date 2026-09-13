@@ -33,8 +33,8 @@
  * thinking about the bill. It is measured by re-serializing THE SAME frames with those
  * keys deleted, so it is a difference of one variable and carries none of the confound a
  * separate "robot without the mechanism" scenario would (a robot with no launcher also
- * launches nothing, so its ball delta is a different thing too). BIOBUZZ's `bbTurretPitch`
- * and `bbLiftZ` are priced that way; DECODE and CR name no fields and their frames are
+ * launches nothing, so its ball delta is a different thing too). BIOBUZZ's turret fields
+ * are priced that way; DECODE and CR name no fields and their frames are
  * byte-identical to what this script measured before the knob existed.
  *
  * WHAT IT IS NOT: a benchmark of Fly's hardware. cores/room is measured on whatever box
@@ -58,7 +58,7 @@ import * as C from '../src/config';
 // into a dev script costs nothing and drags in no DOM. Nothing here is bundled for a client —
 // BIOBUZZ is alpha-only and this script is not a product surface.
 import { BB_DEFAULT_SPEC } from '../src/games/biobuzz/coerce';
-import { BB_HOOD_DEFAULT_DEG, BB_LIFT_MAX_Z } from '../src/games/biobuzz/config';
+import { BB_HOOD_DEFAULT_DEG } from '../src/games/biobuzz/config';
 import type { Artifact, GameId, RobotCommand, RobotSpec, World } from '../src/types';
 
 // ---- published rates (checked 2026-09-11) -----------------------------------
@@ -140,40 +140,37 @@ interface Scenario {
 }
 
 /**
- * A FULLY-EQUIPPED BIOBUZZ ROBOT — a turret AND a vertical extension slide, which is the
- * EXPENSIVE case and therefore the one worth pricing.
+ * A FULLY-EQUIPPED BIOBUZZ ROBOT — a DOUBLE turret AND a Box Tube, which is the EXPENSIVE case
+ * and therefore the one worth pricing.
  *
- * Both mechanisms write a per-tick `RobotState` field (`bbTurretPitch` from `bbSlewTurret`,
- * `bbLiftZ` from `bbStepLift`), and a field on a robot ships in full on every 30 Hz snapshot to
- * every client in the room — robots are not delta'd, only balls are. A build with neither
- * mechanism is cheaper on the wire and is not what this measurement is for; `fields` below
- * prices the difference exactly, off these same frames, rather than by running a second robot.
+ * A double turret writes THREE per-tick `RobotState` fields from `bbSlewTurret` — turret 0's
+ * `bbTurretPitch` and turret 1's `bbTurret2Heading` / `bbTurret2Pitch` — and a field on a robot
+ * ships in full on every 30 Hz snapshot to every client in the room (robots are not delta'd,
+ * only balls are). The Box Tube writes NO per-tick robot field: placement is a proximity action,
+ * and the removed lift's `bbLiftZ` is gone. `fields` below prices the difference exactly, off
+ * these same frames, rather than by running a second robot.
  *
- * Built on `BB_DEFAULT_SPEC` (the Sniper demo — already a turret) with the loadout stated
- * explicitly rather than left to `bbLauncherOf`'s migration path, and run through the one
- * coercion chokepoint in `measure` like every other spec here. The lift takes `BB_LIFT_MAX_Z`,
- * R105's height cap: the tallest legal carriage is the one a player builds.
+ * Built on `BB_DEFAULT_SPEC` with the loadout stated explicitly, and run through the one coercion
+ * chokepoint in `measure` like every other spec here (which resolves `mount2`).
  */
 const BB_EQUIPPED: RobotSpec = {
   ...BB_DEFAULT_SPEC,
   bbMech: {
-    launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG },
-    lift: { kind: 'vslide', mount: 'back', maxZ: BB_LIFT_MAX_Z },
+    launcher: { kind: 'twinturret', mount: 'front', mount2: 'back', hoodDeg: BB_HOOD_DEFAULT_DEG },
+    lift: { kind: 'vslide', mount: 'left' },
   },
 };
 
-/** the two per-tick fields a BIOBUZZ mechanism adds to every robot in every snapshot */
-const BB_MECH_FIELDS = ['bbTurretPitch', 'bbLiftZ'] as const;
+/** the per-tick fields a BIOBUZZ mechanism adds to every robot in every snapshot */
+const BB_MECH_FIELDS = ['bbTurretPitch', 'bbTurret2Heading', 'bbTurret2Pitch'] as const;
 
 /**
- * BIOBUZZ command bits. `bbLift` is a HELD level (raise while down), so it is worked on a duty
- * cycle rather than pressed once — a carriage parked at either stop writes a CONSTANT `bbLiftZ`,
- * which the deflate window then hides almost entirely and which would price the field as
- * cheaper than it is. `bbPlace` is an edge and is pressed at the top of each raise.
+ * BIOBUZZ command bits. Both place buttons are EDGES (a held button places once), so each is
+ * pressed on its own beat rather than held — which is also what a driver does.
  */
 const bbBits = (tick: number): Partial<RobotCommand> => ({
-  bbLift: tick % 240 < 120,
   bbPlace: tick % 240 === 118,
+  bbPlaceNectar: tick % 240 === 238,
 });
 
 const SCENARIOS: Scenario[] = [
@@ -188,7 +185,7 @@ const SCENARIOS: Scenario[] = [
     key: 'biobuzz-solo',
     game: 'biobuzz',
     robots: 1,
-    label: 'BIOBUZZ solo (turret+lift)',
+    label: 'BIOBUZZ solo (double turret+box tube)',
     spec: BB_EQUIPPED,
     bits: bbBits,
     fields: BB_MECH_FIELDS,
@@ -197,7 +194,7 @@ const SCENARIOS: Scenario[] = [
     key: 'biobuzz-2v2',
     game: 'biobuzz',
     robots: 4,
-    label: 'BIOBUZZ 2v2 (turret+lift)',
+    label: 'BIOBUZZ 2v2 (double turret+box tube)',
     spec: BB_EQUIPPED,
     bits: bbBits,
     fields: BB_MECH_FIELDS,

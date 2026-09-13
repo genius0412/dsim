@@ -107,7 +107,7 @@ const CANVAS_STYLE: CSSProperties = {
 function fitCell(ctx: CanvasRenderingContext2D, px: number, half = 0): void {
   // `half` frames a SMALLER square window around the field centre (0 = the whole field). An
   // archetype sheet holds three 15" robots on a 144" field, which at full field scale draws
-  // each of them about 20px across — too small to see whether a drum sits on the right edge,
+  // each of them about 20px across — too small to see whether a dumper sits on the right edge,
   // which is the only thing the sheet is for. Zooming is a CAMERA choice and stays here with
   // the rest of the layout; every draw call below it is still the module's own renderer.
   const ex = half > 0 ? half : BOUNDS.halfX + BOUNDS.viewMargin;

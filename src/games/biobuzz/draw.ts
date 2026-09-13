@@ -16,9 +16,10 @@ import { BB_POLLEN_R } from './config';
  *    only way a top-down view can say "this is in the air" at all.
  *
  * NOT DRAWN HERE:
- *  • HELD — inside a hopper. The robot sprite draws its own hopper fill from `hopper.length`
- *    (see `drawRobot.ts`), and drawing the individual balls as well would show them sitting
- *    on top of the robot.
+ *  • HELD — inside a hopper. The robot sprite draws what it is holding itself, as small discs
+ *    in these same colours at fixed slots on the deck read off `r.hopper` (see `drawRobot.ts`,
+ *    which imports `ELEMENT_FILL`/`ELEMENT_LINE` from here). A held ball's own position is the
+ *    chassis centre, so drawing it here would stack every held element on one point.
  *  • ELEMENT — parked inside a FLOWER stack or a HIVE CELL. Those are STRUCTURES with their
  *    own renderers: a FLOWER's contents belong in its stacked-pips badge and a CELL's in the
  *    hive's content count (`drawField.ts`), both of which can say "4 deep" in a top-down view
@@ -35,8 +36,8 @@ import { BB_POLLEN_R } from './config';
  * element that also flipped would be a light ball on a light field half the time. The rim is
  * shared — one dark outline reads against the mat in both themes and against all three
  * fills. */
-const ELEMENT_LINE = 'rgba(28,22,6,0.6)';
-const ELEMENT_FILL: Record<ArtifactColor, string> = {
+export const ELEMENT_LINE = 'rgba(28,22,6,0.6)';
+export const ELEMENT_FILL: Record<ArtifactColor, string> = {
   yellow: '#f2d14b', // POLLEN
   red: '#e2564d', // red NECTAR
   blue: '#4d8fe2', // blue NECTAR

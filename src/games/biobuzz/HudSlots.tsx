@@ -1,4 +1,5 @@
 import type { HudSnapshot } from '../../game';
+import type { ArtifactColor } from '../../types';
 import type { GameBuilderProps, GameHudProps, ResultsSection } from '../module';
 import { BiobuzzBuilder } from './Builder';
 import type { BiobuzzHud } from './hudRobot';
@@ -31,25 +32,60 @@ export function BiobuzzBuilderSlot({ spec, onChange }: GameBuilderProps) {
   return <BiobuzzBuilder spec={spec} setSpec={onChange} />;
 }
 
+/** the words for one held element, for the row's accessible name. POLLEN is yellow; a NECTAR
+ * is named by its alliance colour because whose NECTAR it is decides what it may do. */
+const HELD_WORD: Partial<Record<ArtifactColor, string>> = {
+  yellow: 'POLLEN',
+  red: 'red NECTAR',
+  blue: 'blue NECTAR',
+};
+
+/** "Holding 2 POLLEN, 1 red NECTAR. Next out: red NECTAR" — the disc row said in words. */
+function heldPhrase(held: readonly ArtifactColor[]): string {
+  if (held.length === 0) return 'Holding nothing';
+  const word = (c: ArtifactColor): string => HELD_WORD[c] ?? c;
+  const counts = (['yellow', 'red', 'blue'] as const)
+    .map((c) => [c, held.filter((h) => h === c).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([c, n]) => `${n} ${word(c)}`);
+  return `Holding ${counts.join(', ')}. Next out: ${word(held[held.length - 1])}`;
+}
+
 /**
  * The ROBOT-level chips in the live HUD's `.robot-status` row.
  *
- * Exactly the two facts `hudRobot.ts` argues a BIOBUZZ driver needs and cannot infer: how full
- * the hopper is (it decides whether to go collect or go score) and which archetype's rules are
- * in force (it decides whether the fire button STEERS the chassis). Rendered INSIDE the
- * existing row, so it inherits the chip styles and the touch-layout suppression.
+ * Three facts a BIOBUZZ driver needs and cannot infer:
+ *  • WHAT IS IN THE ROBOT — one disc per held element, coloured by element, then a hollow ring
+ *    per free slot up to the cap. The row runs NEXT-OUT FIRST: the leftmost filled disc is the
+ *    element the launcher (or the Box Tube) takes next, and it carries the `.next` ring. The
+ *    discs carry no letters or digits (owner ruling 2026-09-12); the row's accessible name says
+ *    the same thing in words. It reuses DECODE's `.hopper` / `.hopper-pip` anatomy, so the empty
+ *    slot's contrast-audited ring is the same one.
+ *  • which launcher's rules are in force (it decides whether the fire button STEERS the chassis).
+ *  • FLOWER IN REACH — the Box Tube's placement point is on a FLOWER, so a place button will do
+ *    something. Proximity is hard to judge top-down.
  *
- * ALLIANCE-level facts are the score bar's, not this row's — see `BiobuzzScoreBar`.
+ * Rendered INSIDE the existing row, so it inherits the chip styles and the touch-layout
+ * suppression. ALLIANCE-level facts are the score bar's, not this row's — see `BiobuzzScoreBar`.
  */
 export function BiobuzzHudChips({ hud }: GameHudProps) {
   const r = sliceOf(hud)?.robot;
   if (!r) return null;
+  const held = r.held ?? [];
+  const free = Math.max(0, r.cap - held.length);
+  const said = heldPhrase(held);
   return (
     <>
       <span className="chip">{BB_MODE_LABELS[r.mode].toUpperCase()}</span>
-      <span className={`chip ${r.hopper >= r.cap ? 'on' : ''}`}>
-        HOPPER {r.hopper}/{r.cap}
-      </span>
+      <div className="hopper" role="img" aria-label={said} title={said}>
+        {[...held].reverse().map((c, i) => (
+          <span key={`h${i}`} className={`hopper-pip ${c}${i === 0 ? ' next' : ''}`} />
+        ))}
+        {Array.from({ length: free }, (_, i) => (
+          <span key={`e${i}`} className="hopper-pip empty" />
+        ))}
+      </div>
+      {r.flowerInReach && <span className="chip on">FLOWER IN REACH</span>}
     </>
   );
 }

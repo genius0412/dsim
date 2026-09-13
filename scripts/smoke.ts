@@ -5434,7 +5434,7 @@ function queueTenth(w: World): void {
     dropped.join(', '),
   );
 
-  // EVERY COMMAND BUTTON MUST BE REACHABLE FROM A REAL KEYBOARD AND GAMEPAD. `bbLift` and
+  // EVERY COMMAND BUTTON MUST BE REACHABLE FROM A REAL KEYBOARD AND GAMEPAD. `bbLift` (now `bbPlaceNectar`) and
   // `bbPlace` shipped with a protocol bit AND a sim consumer and no binding at all, so
   // nothing but smoke could ever press them — the failure is silent from every side, since
   // the command field is optional and reads as false. The action names ARE the command field
@@ -5444,7 +5444,7 @@ function queueTenth(w: World): void {
     'fire',
     'catalyst',
     'fling',
-    'bbLift',
+    'bbPlaceNectar',
     'bbPlace',
     'driveMode',
   ];
@@ -12490,7 +12490,7 @@ function pinScene(
   // step) unless it is added to the mask — which is exactly what happened to `fling` and
   // `driveMode`. This asserts each one round-trips, so the next one can't regress quietly.
   {
-    const btns: (keyof RobotCommand)[] = ['intake', 'fire', 'catalyst', 'fling', 'driveMode', 'bbLift', 'bbPlace'];
+    const btns: (keyof RobotCommand)[] = ['intake', 'fire', 'catalyst', 'fling', 'driveMode', 'bbPlaceNectar', 'bbPlace'];
     const lost = btns.filter((b) => {
       const rt = dequantizeCommand(quantizeCommand(cmd({ [b]: true } as Partial<RobotCommand>)));
       return rt[b] !== true;
@@ -12501,7 +12501,7 @@ function pinScene(
     check(
       'wire: button bits are independent (fling does not imply catalyst/fire)',
       only.fling === true && !only.catalyst && !only.fire && !only.intake && !only.driveMode &&
-        !only.bbLift && !only.bbPlace,
+        !only.bbPlaceNectar && !only.bbPlace,
     );
   }
 

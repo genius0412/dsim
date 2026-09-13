@@ -547,6 +547,27 @@ button {
   background: var(--green);
 }
 
+/* BIOBUZZ's held elements (`BiobuzzHudChips`): POLLEN and the two NECTARs. All three are FILLS
+   (category 2, they do not invert) inside the same `--ds-mut` ring as an empty slot, so the
+   ring, not the fill, keeps separating each disc from the card in both themes. */
+.hopper-pip.yellow {
+  background: var(--ds-pollen);
+}
+
+.hopper-pip.red {
+  background: var(--ds-red);
+}
+
+.hopper-pip.blue {
+  background: var(--ds-blue);
+}
+
+/* the element that leaves NEXT. An outer ink ring drawn as a box-shadow, so marking a pip never
+   changes its box (the row does not move as the hopper cycles). */
+.hopper-pip.next {
+  box-shadow: 0 0 0 2px var(--ds-ink);
+}
+
 /* drive power-draw gauge in the top-right status bar */
 .power-gauge {
   display: flex;

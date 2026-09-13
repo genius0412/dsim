@@ -41,7 +41,8 @@ import { capturePollen } from './elements';
 import { bbCoerceSpec } from './robotConfig';
 import { bbFootprint } from './robot';
 import { emptyBiobuzzState, type BiobuzzState } from './state';
-import { isTurreted, type BbScoreMode } from './mounts';
+import { BB_HOOD_DEFAULT_DEG } from './config';
+import { bbIsTurreted, bbLauncherOf } from './mechs';
 
 /**
  * BIOBUZZ world spawn — a PLAYABLE, UNSCORED match.
@@ -311,8 +312,14 @@ function makeBiobuzzRobot(setup: RobotSetup, nth: number): RobotState {
   // swinging round. There is no target to point AT yet, so it points at the field CENTRE —
   // the one direction that is equally wrong for every target Section 9 might add, and the one
   // a human would pick. Turretless launchers keep the chassis heading, which IS their aim.
-  const turreted = isTurreted((spec.scoreMode ?? 'turret') as BbScoreMode);
+  //
+  // A DOUBLE turret has TWO individual turrets, so its NECTAR turret (`bbTurret2Heading` /
+  // `bbTurret2Pitch`) is seeded the same way. Those two fields are written ONLY for that build,
+  // so no other robot carries them on the wire.
+  const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+  const turreted = bbIsTurreted(launcher);
   const turretHeading = turreted ? datan2(0 - pose.pos.y, 0 - pose.pos.x) : pose.heading;
+  const twin = launcher.kind === 'twinturret' ? { bbTurret2Heading: turretHeading, bbTurret2Pitch: 0 } : {};
   return {
     id: setup.id,
     alliance: setup.alliance,
@@ -322,6 +329,7 @@ function makeBiobuzzRobot(setup: RobotSetup, nth: number): RobotState {
     vel: { x: 0, y: 0 },
     angVel: 0,
     turretHeading,
+    ...twin,
     // `catalystRail` is DELIBERATELY ABSENT. It is Chain Reaction's rail-carriage position
     // and BIOBUZZ has no catalyst; it used to be written as an INERT-BUT-PRESENT 0 only
     // because the shared `RobotState` required it. It is optional now, absent reads as 0
@@ -333,6 +341,8 @@ function makeBiobuzzRobot(setup: RobotSetup, nth: number): RobotState {
     // traction, and the reverse costs a driver a surprise on tick one.
     butterflyTank: false,
     driveModeHeld: false,
+    // required by the SHARED type (Chain Reaction's alternating barrels); BIOBUZZ never reads
+    // it — a double turret here is two turrets, not two barrels.
     twinBarrel: false,
     hopper: [],
     fieldCentric: assists.fieldCentric,

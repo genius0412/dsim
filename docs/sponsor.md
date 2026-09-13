@@ -46,6 +46,13 @@ Two more surfaces carry the mark as TEXT rather than artwork, deliberately:
 - **The Discord server** is not a repo change at all. The logo and the "presented by" line
   go on the server itself (icon, banner, or the rules channel) by hand.
 
+One more piece of the deal is a PRODUCT NAME, not a placement: in the BIOBUZZ robot builder
+the FLOWER-scoring mechanism reads **"OFFSET™ Box Tube"** (`bbLiftKindLabel`,
+`src/games/biobuzz/labels.ts`), on the Builder card, the stat tile, the saved-robot line and the
+preset card. It is not a link, carries no UTM tag and fires no event. It follows
+`sponsorActive`, so the term and the `VITE_SPONSOR=0` kill switch take it down with everything
+else, after which it reads "Box tube".
+
 ### The in-gameplay chip is NOT an ad, and must never become one
 
 `src/ads/` renders nothing on touch, nothing under Electron and nothing for a supporter.

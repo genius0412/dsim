@@ -229,6 +229,8 @@ const hudPairs = (t) => {
     ['HUD .game-btn ink', t('--ds-ink-dim'), card, AA],
     ['HUD .eventlog-line ink', t('--ds-ink-dim'), soft, AA],
     ['HUD .hopper-pip / .pg-bar ring (1.4.11)', t('--ds-mut'), card, NON_TEXT],
+    // BIOBUZZ's next-out marker: the only cue for which held element leaves next
+    ['HUD .hopper-pip.next marker (1.4.11)', t('--ds-ink'), card, NON_TEXT],
     ['HUD alliance-red chip', '#ffffff', t('--ds-red-chip'), AA],
     ['HUD alliance-blue chip', '#ffffff', t('--ds-blue-chip'), AA],
     ['HUD .res-side.red label', '#ffffff', '#991b1b', AA],

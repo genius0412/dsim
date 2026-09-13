@@ -1,45 +1,72 @@
-import type { RobotSpec } from '../../src/types';
+import type { Artifact, RobotCommand, RobotSpec, RobotState, World } from '../../src/types';
 import * as C from '../../src/config';
+import { wrapAngle } from '../../src/math';
 import { worldHash } from '../../src/net/checksum';
 import { defaultSettings, switchGame } from '../../src/settings';
 import { DEFAULT_SPEC } from '../../src/sim/spawn';
-import { BB_FIRE_INTERVAL, BB_POLLEN_R } from '../../src/games/biobuzz/config';
-import { capturePollen, pollenIn, releasePollen, scoreTargets } from '../../src/games/biobuzz/elements';
+import {
+  BB_AIM_TOL,
+  BB_DEG,
+  BB_DUMP_RELOAD_S,
+  BB_FIRE_INTERVAL,
+  BB_FLOWER_D,
+  BB_FLOWER_FOOT,
+  BB_FLOWER_TOP_Z,
+  BB_FLOWERS,
+  BB_HIVE_OPEN_Z,
+  BB_HOOD_DEFAULT_DEG,
+  BB_HOOD_MAX_DEG,
+  BB_HOOD_MIN_DEG,
+  BB_LAUNCH_SPEED_MAX,
+  BB_LAUNCH_Z0,
+  BB_PLACE_REACH,
+  BB_POLLEN_R,
+  BB_PTS,
+  BB_TURRET_PITCH_MAX,
+} from '../../src/games/biobuzz/config';
+import { capturePollen, pollenIn, releasePollen, scoreTargets, takeHeld } from '../../src/games/biobuzz/elements';
 import {
   BB_INTAKE_MOUNTS,
   BB_MOUNT_POSITIONS,
   BB_SCORE_MODES,
   BB_SHOOTER_EDGES,
+  MOUNT_DIR,
   isTurreted,
+  mountsClash,
 } from '../../src/games/biobuzz/mounts';
-import { bbFootprint, bbHopperCap, bbMouths, bbRobotSolids } from '../../src/games/biobuzz/robot';
-import { bbConfigSummary } from '../../src/games/biobuzz/labels';
 import {
+  bbAimHeading,
   bbAimPitch,
-  bbLiftHeight,
-  bbLiftSeated,
+  bbDumpSolution,
+  bbFlowerInReach,
+  bbFootprint,
+  bbHoodDescends,
+  bbHoodSpeed,
+  bbHopperCap,
+  bbMouths,
+  bbMuzzleZ,
+  bbPlacePoint,
+  bbPlacePointLocal,
+  bbRobotSolids,
   bbSolveShot,
-  bbStepLift,
   bbTurretOrigin,
   bbTurretSolution,
 } from '../../src/games/biobuzz/robot';
-import { bbPickTarget } from '../../src/games/biobuzz/play';
-import { bbIsTurreted, bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
+import { bbConfigSummary } from '../../src/games/biobuzz/labels';
+import { bbKindOf, bbPickTarget } from '../../src/games/biobuzz/play';
 import {
-  BB_DEG,
-  BB_FLOWER_TOP_Z,
-  BB_HIVE_OPEN_Z,
-  BB_HOOD_DEFAULT_DEG,
-  BB_LAUNCH_Z0,
-  BB_LIFT_MAX_Z,
-  BB_LIFT_MIN_Z,
-  BB_R105_HEIGHT_CAP,
-  BB_TURRET_PITCH_MAX,
-  BB_DRUM_SPEED,
-  BB_HOOD_MAX_DEG,
-  BB_HOOD_MIN_DEG,
-  BB_TURRET_SPEED_MAX,
-} from '../../src/games/biobuzz/config';
+  bbCarriesNectar,
+  bbCellsAdjacent,
+  bbIntakeAccepts,
+  bbIsTurreted,
+  bbLauncherBlocker,
+  bbLauncherOf,
+  bbLiftOf,
+} from '../../src/games/biobuzz/mechs';
+import { flowerFits, flowerScore } from '../../src/games/biobuzz/flower';
+import { biobuzzHud } from '../../src/games/biobuzz/hudRobot';
+import { bbIndexElements } from '../../src/games/biobuzz/spawn';
+import { biobuzzStep } from '../../src/games/biobuzz/step';
 import {
   BB_PRESET_LIST,
   BB_REAL_PRESETS,
@@ -55,16 +82,21 @@ import { bbCoerce, cmd, mkWorld, run, type Check } from './harness';
 /**
  * LANE B's smoke: THE ROBOT.
  *
- * Coercion, the build space, the loadout, and the two things a BIOBUZZ robot can do to a
- * POLLEN. Everything whose subject is a MECHANISM or a SPEC rather than the field.
+ * Coercion, the build space, the loadout, and everything a BIOBUZZ robot can do to an element.
+ * Everything whose subject is a MECHANISM or a SPEC rather than the field.
  *
  * Like the field lane, every check here is one that survives Kickoff. Nothing asserts a
  * capacity, a range or a rate as a NUMBER — those are all `APPROX` in `config.ts`, and an
  * assertion against a guess is a check that passes until the day the guess is replaced and
  * then fails for a reason nobody can act on. What is asserted instead are the INVARIANTS the
  * numbers have to satisfy whatever they become: the coercer is idempotent, the drawn mouths
- * are the capture areas, the hopper cap is honoured, and no mechanism ever creates or
- * destroys a POLLEN.
+ * are the capture areas, the hopper cap is honoured, no mechanism ever creates or destroys an
+ * element, and the hopper and the held set are one multiset.
+ *
+ * ⚠️ MECHANISM BEHAVIOUR IS DRIVEN THROUGH THE WORLD (`run` / `biobuzzStep`), not by calling the
+ * mechanism's function. Twice a mechanism was green on direct-call tests while no match could
+ * reach it (the turret slew, the removed lift). Setup may call `capturePollen` to stage a
+ * hopper; the behaviour under test never skips the tick.
  */
 
 /** the whole BIOBUZZ build space: every archetype × every launcher mount that archetype can
@@ -108,22 +140,91 @@ const CR_FIELDS = [
   'groundClearance',
 ] as const;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// fixtures
+// ─────────────────────────────────────────────────────────────────────────────
+
+type Colour = Artifact['color'];
+
+/** a spec with an explicit loadout, over the harness default */
+function mech(m: unknown, extra: Partial<RobotSpec> = {}): Partial<RobotSpec> {
+  return { ...extra, bbMech: m as RobotSpec['bbMech'] };
+}
+
+/** the next free element id in `w`, kept in step with the state bag's own counter */
+function nextId(w: World): number {
+  return w.balls.reduce((m, b) => Math.max(m, b.id), 0) + 1;
+}
+
+/** park a robot: pose set, motion zeroed */
+function park(r: RobotState, x: number, y: number, heading: number): void {
+  r.pos = { x, y };
+  r.heading = heading;
+  r.vel = { x: 0, y: 0 };
+  r.angVel = 0;
+}
+
+/**
+ * EMPTY a robot's hopper WITHOUT deleting anything: every element it holds (its four preloads)
+ * goes back on the tiles in a far corner. Clearing `world.balls` instead would leave the staged
+ * HIVE and FLOWER stacks pointing at ids that no longer exist.
+ */
+function emptyHopper(w: World, r: RobotState): void {
+  let k = 0;
+  for (const b of w.balls) {
+    if (b.state.kind !== 'held' || b.state.robot !== r.id) continue;
+    b.state = { kind: 'ground' };
+    b.pos = { x: -64 + k * 3.2, y: -40 };
+    b.vel = { x: 0, y: 0 };
+    k++;
+  }
+  r.hopper.length = 0;
+}
+
+/** STAGE elements in a hopper through the real capture path (setup, not behaviour). */
+function give(w: World, r: RobotState, colours: readonly Colour[]): Artifact[] {
+  const out: Artifact[] = [];
+  let id = nextId(w);
+  for (const c of colours) {
+    const b: Artifact = { ...bbPollen(id++, r.pos.x, r.pos.y), color: c };
+    w.balls.push(b);
+    if (capturePollen(w, r, b)) out.push(b);
+  }
+  if (w.biobuzz) w.biobuzz.nextBallId = id;
+  return out;
+}
+
+/** one tick of the real pipeline with `c` held on robot 0 */
+function tick(w: World, c: RobotCommand): void {
+  biobuzzStep(w, C.SIM_DT, new Map([[0, c]]));
+}
+
+const hopperColours = (r: RobotState): string => [...r.hopper].sort().join(',');
+const heldColours = (w: World, r: RobotState): string =>
+  w.balls
+    .filter((b) => b.state.kind === 'held' && b.state.robot === r.id)
+    .map((b) => b.color)
+    .sort()
+    .join(',');
+
+const kindOfIn = (w: World) => (id: number) => {
+  const b = w.balls.find((x) => x.id === id);
+  return b ? bbKindOf(b) : 'pollen';
+};
+
+const TWIN = { kind: 'twinturret', mount: 'front', mount2: 'back', hoodDeg: BB_HOOD_DEFAULT_DEG };
+
 export function robotChecks(check: Check): void {
   // ── COERCION: IDEMPOTENT ──────────────────────────────────────────────────
   /**
-   * `coerceSpec(raw, base, 'biobuzz')` — composed with `coerceBiobuzzSpec`, the arm Lane B
-   * will fold into it; see `bbCoerce` in the harness — must be a PROJECTION. Running it twice
-   * has to equal running it once.
-   *
-   * Why that property and not merely "it clamps": a spec is coerced on load, again when the
-   * builder edits it, again at `createWorld`, and again on the server when it arrives over the
-   * wire. If the function is not idempotent a robot changes shape by being TRANSMITTED, and
-   * client and server then disagree about the geometry they are both simulating — which
-   * presents as unexplained snapshot correction, not as a coercion bug.
+   * `coerceSpec(raw, base, 'biobuzz')` must be a PROJECTION. Running it twice has to equal
+   * running it once: a spec is coerced on load, again when the builder edits it, again at
+   * `createWorld`, and again on the server when it arrives over the wire. If it is not
+   * idempotent a robot changes shape by being TRANSMITTED.
    *
    * The inputs are deliberately hostile. `localStorage` is hand-editable and specs have
-   * arrived off the wire with NaN dimensions from devtools, so "what the UI would send" is the
-   * wrong input set for this check.
+   * arrived off the wire with NaN dimensions from devtools — and old saves carry loadouts the
+   * owner has since ruled out (no launcher, a drum, a lift height).
    */
   const hostile: [string, unknown][] = [
     ['undefined', undefined],
@@ -138,7 +239,14 @@ export function robotChecks(check: Check): void {
     ['a fractional hopper', { ...BB_DEFAULT_SPEC, ballStorage: 3.7 }],
     ['unknown archetype', { ...BB_DEFAULT_SPEC, scoreMode: 'trebuchet' }],
     ['unknown mounts', { ...BB_DEFAULT_SPEC, intakeMount: 'roof', shooterMount: 'orbit' }],
-    ['a turretless corner mount', { ...BB_DEFAULT_SPEC, scoreMode: 'drum', shooterMount: 'frontleft' }],
+    ['a turretless corner mount', { ...BB_DEFAULT_SPEC, scoreMode: 'dumper', shooterMount: 'frontleft' }],
+    ['a legacy flat drum', { ...BB_DEFAULT_SPEC, scoreMode: 'drum', shooterMount: 'left' }],
+    ['a legacy drum container', { ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind: 'drum', mount: 'back', hoodDeg: 72 }, lift: null }) }],
+    ['an old launcher-less save', { ...BB_DEFAULT_SPEC, ...mech({ launcher: null, lift: null }) }],
+    ['a double turret on centre', { ...BB_DEFAULT_SPEC, ...mech({ launcher: { ...TWIN, mount: 'center' }, lift: null }) }],
+    ['a double turret with a neighbouring mount2', { ...BB_DEFAULT_SPEC, ...mech({ launcher: { ...TWIN, mount2: 'frontleft' }, lift: null }) }],
+    ['a Box Tube on centre', { ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind: 'turret', mount: 'back', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'center' } }) }],
+    ['a stale lift height', { ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'left', maxZ: 999 } }) }],
     [
       'a Chain Reaction build',
       { ...DEFAULT_SPEC, catalystType: 'hook', catalystMount: 'front', catalystSwing: 30, groundClearance: 2 },
@@ -158,15 +266,6 @@ export function robotChecks(check: Check): void {
   }
 
   // ── COERCION: EVERY DIAL LANDS INSIDE THE RANGE THE BUILDER OFFERS ────────
-  /**
-   * The clamps and the slider bounds must be THE SAME numbers. `bbDials` is what the builder
-   * renders and `coerceBiobuzzSpec` is what the world enforces; both derive from
-   * `bbSizeLimits` / `massLimits` / `bbStorageMax`, and this is the check that they still do.
-   *
-   * Drift between them is not a crash, it is a slider that snaps back: the player drags length
-   * to 18, the coercer answers 15, and the control looks broken. Checked on every hostile
-   * input because the envelope is a function of the MOUNTS, so the bug would be per-build.
-   */
   const within = (v: number, r: { min: number; max: number }): boolean => v >= r.min - 1e-9 && v <= r.max + 1e-9;
   for (const [name, raw] of hostile) {
     const s = bbCoerce(raw);
@@ -180,21 +279,17 @@ export function robotChecks(check: Check): void {
         within(s.width, d.width) &&
         within(s.massLb, d.mass) &&
         Number.isInteger(s.ballStorage) &&
-        within(s.ballStorage ?? -1, d.storage),
-      `L=${s.length} W=${s.width} m=${s.massLb} hop=${s.ballStorage}`,
+        within(s.ballStorage ?? -1, d.storage) &&
+        within(s.bbMech?.launcher.hoodDeg ?? -1, d.hood),
+      `L=${s.length} W=${s.width} m=${s.massLb} hop=${s.ballStorage} hood=${s.bbMech?.launcher.hoodDeg}`,
     );
   }
 
   // ── THE PRESET CARDS ──────────────────────────────────────────────────────
   /**
-   * A PRESET MUST BE A COERCER NO-OP. This is the load-bearing property of the whole preset
-   * feature and the reason mass and storage are derived rather than typed: the builder marks a
-   * card selected by asking `bbSpecMatches(spec, card)`, and the spec it asks about has been
-   * through `coerceSpec`. So a card carrying any value the coercer would move is a card that
-   * can never read as selected — the player clicks it, the robot changes, and nothing lights
-   * up. Silent, and indistinguishable from a broken click handler.
-   *
-   * Checked per card rather than in bulk so a failure names the robot that drifted.
+   * A PRESET MUST BE A COERCER NO-OP: the builder marks a card selected by asking
+   * `bbSpecMatches(spec, card)` about a coerced spec, so a card carrying any value the coercer
+   * would move can never read as selected.
    */
   for (const p of BB_PRESET_LIST) {
     const coerced = bbCoerce(p);
@@ -212,27 +307,12 @@ export function robotChecks(check: Check): void {
         within(p.ballStorage ?? -1, bbDials(p).storage),
       `L=${p.length} W=${p.width} m=${p.massLb} hop=${p.ballStorage}`,
     );
+    check(`preset [${p.name}]: carries a launcher`, !!p.bbMech?.launcher, JSON.stringify(p.bbMech));
   }
-  /**
-   * Card names are React keys AND the only thing distinguishing two cards on screen, so a
-   * duplicate is both a render warning and a genuinely ambiguous picker.
-   */
   {
     const names = BB_PRESET_LIST.map((p) => p.name);
-    check(
-      'presets: every card name is unique',
-      new Set(names).size === names.length,
-      names.join(', '),
-    );
+    check('presets: every card name is unique', new Set(names).size === names.length, names.join(', '));
   }
-  /**
-   * G407 caps CONTROL at FOUR SCORING ELEMENTS, and every published StarterBot is built to it.
-   * The archetype DEMOS deliberately take their derived maximum instead — they exist to show
-   * what an archetype's hopper can be — so this is asserted over the real robots only.
-   *
-   * Asserted as `<=`, not `===`: the rule is a ceiling. If a manufacturer's post-kickoff
-   * revision carries fewer, that is a new fact and not a regression.
-   */
   for (const p of BB_STARTER_BOTS) {
     check(
       `starterbot [${p.name}]: hopper honours G407's 4-element cap`,
@@ -240,12 +320,6 @@ export function robotChecks(check: Check): void {
       `hopper=${p.ballStorage}`,
     );
   }
-  /**
-   * The real robots come FIRST and `realCount` says how many, because the builder marks
-   * exactly the leading `realCount` cards as real. An off-by-one here mislabels an invented
-   * archetype demo as a manufacturer's robot, which is the one error this feature must not
-   * make: the whole point of the divider is telling a player what is documented.
-   */
   {
     check(
       'presets: realCount matches the StarterBot count',
@@ -259,326 +333,694 @@ export function robotChecks(check: Check): void {
     );
   }
 
-  // ── MECHANISM COMPOSITION ─────────────────────────────────────────────────
+  // ── MECHANISM COMPOSITION: THE LAUNCHER IS MANDATORY ──────────────────────
   /**
-   * THE PHANTOM TURRET — the single check this whole feature is shaped around.
-   *
-   * `coerceSpec` writes `out.scoreMode` unconditionally and defaults it to a turret, so any
-   * design that spells "this robot has no launcher" as an absent `scoreMode` grows one back on
-   * the next pass. A launcher-less build is REAL (Studica's published StarterBot is a
-   * drivetrain and an intake), so `launcher: null` has to survive coercion — and survive it
-   * TWICE, because the coercer runs at settings load, at wire ingress and again at
-   * `createWorld`.
+   * Owner ruling 2026-09-12: a launcher is mandatory. An old save that stored `launcher: null`
+   * must come back WITH one — migrated from the flat mirror the shared coercer always writes —
+   * and that answer must itself be a fixed point, or the robot changes on every coercion.
    */
   {
-    const none = bbCoerce({ ...BB_DEFAULT_SPEC, bbMech: { launcher: null, lift: null } });
-    check('mech: a launcher-less build survives coercion', bbLauncherOf(none, BB_HOOD_DEFAULT_DEG) === null);
-    const twice = bbCoerce(none);
+    const raw = { ...BB_DEFAULT_SPEC, scoreMode: 'dumper', shooterMount: 'back', ...mech({ launcher: null, lift: null }) };
+    const once = bbCoerce(raw);
+    const l = once.bbMech?.launcher;
     check(
-      'mech: ...and survives it AGAIN (no phantom turret on the second pass)',
-      bbLauncherOf(twice, BB_HOOD_DEFAULT_DEG) === null,
-      `scoreMode=${twice.scoreMode}`,
+      'mech: a stored launcher:null coerces to a real launcher, from the flat mirror',
+      !!l && l.kind === 'dumper' && l.mount === 'back',
+      JSON.stringify(l),
     );
-    check('mech: a launcher-less build is a coercion fixed point', specKey(none) === specKey(twice));
+    check('mech: ...and that is a coercion fixed point', specKey(once) === specKey(bbCoerce(once)));
+    check(
+      'mech: bbLauncherOf never returns null, even on the raw un-coerced spec',
+      bbLauncherOf(raw as unknown as RobotSpec, BB_HOOD_DEFAULT_DEG) !== null,
+    );
   }
-  /**
-   * MIGRATION. Every spec that exists today has no container and DID have a launcher, because
-   * `scoreMode` was mandatory. Absence must therefore read as "migrate me", never as "none" —
-   * the other half of the distinction above.
-   */
+  check(
+    'mech: every build carries its launcher in the container, mirrored onto the flat fields',
+    everyBuild().every((s) => {
+      const l = s.bbMech?.launcher;
+      return !!l && s.scoreMode === l.kind && s.shooterMount === l.mount && s.shooterRear === (l.mount === 'back');
+    }),
+  );
+  /** DRUM IS GONE, and a legacy drum becomes a DUMPER on the same edge with the same hood —
+   * not a turret, which is what the enum check alone would have made of it. */
+  {
+    const flat = bbCoerce({ ...BB_DEFAULT_SPEC, bbMech: undefined, scoreMode: 'drum', shooterMount: 'left' });
+    const box = bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind: 'drum', mount: 'back', hoodDeg: 72 }, lift: null }) });
+    check(
+      'mech: a legacy flat drum migrates to a dumper on the same edge',
+      flat.bbMech?.launcher.kind === 'dumper' && flat.bbMech.launcher.mount === 'left' && flat.scoreMode === 'dumper',
+      JSON.stringify(flat.bbMech?.launcher),
+    );
+    check(
+      'mech: a legacy drum container migrates to a dumper keeping its edge AND hood',
+      box.bbMech?.launcher.kind === 'dumper' && box.bbMech.launcher.mount === 'back' && box.bbMech.launcher.hoodDeg === 72,
+      JSON.stringify(box.bbMech?.launcher),
+    );
+    check(
+      'mech: ...both migrations are coercion fixed points',
+      specKey(flat) === specKey(bbCoerce(flat)) && specKey(box) === specKey(bbCoerce(box)),
+    );
+    check('mech: drum is not in the launcher vocabulary', !(BB_SCORE_MODES as readonly string[]).includes('drum'));
+  }
+  /** MIGRATION: every archetype a flat spec names becomes that launcher. */
   for (const mode of BB_SCORE_MODES) {
     const legacy = bbCoerce({ ...BB_DEFAULT_SPEC, bbMech: undefined, scoreMode: mode });
     const l = bbLauncherOf(legacy, BB_HOOD_DEFAULT_DEG);
-    check(`mech: a legacy ${mode} spec migrates to a real launcher`, l !== null && l.kind === mode, `got ${l?.kind}`);
+    check(`mech: a legacy ${mode} spec migrates to that launcher`, l.kind === mode, `got ${l.kind}`);
   }
-  /**
-   * THE CONTAINER IS AUTHORITATIVE. A caller that patches only `bbMech` must win; the flat
-   * `scoreMode` mirrors it afterwards. This inverted once — the flat field was the source of
-   * truth and a container-only edit was silently reverted, with nothing failing.
-   */
+  /** THE CONTAINER IS AUTHORITATIVE, and the flat field mirrors it. */
   {
     const patched = bbCoerce({
       ...BB_DEFAULT_SPEC,
       scoreMode: 'turret',
-      bbMech: { launcher: { kind: 'dumper', mount: 'back', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null },
+      ...mech({ launcher: { kind: 'dumper', mount: 'back', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }),
     });
-    check('mech: the container wins over the flat scoreMode', bbLauncherOf(patched, BB_HOOD_DEFAULT_DEG)?.kind === 'dumper');
+    check('mech: the container wins over the flat scoreMode', bbLauncherOf(patched, BB_HOOD_DEFAULT_DEG).kind === 'dumper');
     check('mech: ...and the flat field is MIRRORED from it, for older peers', patched.scoreMode === 'dumper', `scoreMode=${patched.scoreMode}`);
   }
+
+  // ── THE DOUBLE TURRET'S TWO CELLS ─────────────────────────────────────────
   /**
-   * THE CLASH. A lift and a launcher both bolt ABOVE the deck, so unlike the sweeper they can
-   * genuinely want the same cell — the first live use of `occupiedCells`/`mountsClash`. The
-   * launcher wins and the lift folds around it, and the fold has to be IDEMPOTENT or the
-   * coercer stops being one.
+   * A double turret is two INDIVIDUAL turrets. Their rings overlap in neighbouring 3x3 cells on
+   * every legal chassis, so the NECTAR turret's cell is never the POLLEN turret's, never a
+   * neighbour of it, and neither sits on `center` (which neighbours everything). Swept over
+   * every (mount, request) pair, because a fold that is right for one cell is a classic way to
+   * be wrong for its mirror.
    */
   {
-    const clash = bbCoerce({
-      ...BB_DEFAULT_SPEC,
-      bbMech: {
-        launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG },
-        lift: { kind: 'vslide', mount: 'center', maxZ: BB_LIFT_MAX_Z },
-      },
-    });
-    const lift = bbLiftOf(clash);
-    check('mech: a lift clashing with the launcher is relocated, not dropped', lift !== null && lift.mount !== 'center', `lift@${lift?.mount}`);
-    check('mech: ...and the launcher keeps the cell it asked for', bbLauncherOf(clash, BB_HOOD_DEFAULT_DEG)?.mount === 'center');
-    check('mech: ...and the relocation is a fixed point', specKey(clash) === specKey(bbCoerce(clash)));
+    let bad = 0;
+    let notFixed = 0;
+    const detail: string[] = [];
+    for (const mount of BB_MOUNT_POSITIONS) {
+      for (const want of [...BB_MOUNT_POSITIONS, undefined, 'orbit'] as unknown[]) {
+        const s = bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { ...TWIN, mount, mount2: want }, lift: null }) });
+        const l = s.bbMech!.launcher;
+        if (l.mount === 'center' || !l.mount2 || l.mount2 === l.mount || bbCellsAdjacent(l.mount, l.mount2)) {
+          bad++;
+          if (detail.length < 4) detail.push(`${mount}/${String(want)}→${l.mount}/${l.mount2}`);
+        }
+        if (specKey(s) !== specKey(bbCoerce(s))) notFixed++;
+      }
+    }
+    check('twin: the NECTAR turret never shares or neighbours the POLLEN turret, and neither is on centre', bad === 0, detail.join(' '));
+    check('twin: ...every mount2 resolution is a coercion fixed point', notFixed === 0, `${notFixed} not fixed`);
+    const kept = bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { ...TWIN, mount: 'frontleft', mount2: 'backright' }, lift: null }) });
+    check('twin: a legal mount2 request is kept', kept.bbMech!.launcher.mount2 === 'backright', `${kept.bbMech!.launcher.mount2}`);
+    const partner = bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind: 'twinturret', mount: 'left', hoodDeg: 75 }, lift: null }) });
+    check('twin: a missing mount2 takes the fixed partner (left→right)', partner.bbMech!.launcher.mount2 === 'right', `${partner.bbMech!.launcher.mount2}`);
+    const single = bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind: 'turret', mount: 'left', mount2: 'right', hoodDeg: 75 }, lift: null }) });
+    check('twin: any other launcher carries NO mount2', !('mount2' in single.bbMech!.launcher), JSON.stringify(single.bbMech!.launcher));
   }
-  /** the lift's height dial is clamped to the R105 envelope at BOTH ends. */
-  {
-    const tall = bbCoerce({ ...BB_DEFAULT_SPEC, bbMech: { launcher: null, lift: { kind: 'vslide', mount: 'center', maxZ: 999 } } });
-    const short = bbCoerce({ ...BB_DEFAULT_SPEC, bbMech: { launcher: null, lift: { kind: 'vslide', mount: 'center', maxZ: -5 } } });
-    check('mech: a lift taller than R105 is clamped to it', (bbLiftOf(tall)?.maxZ ?? 0) <= BB_R105_HEIGHT_CAP, `maxZ=${bbLiftOf(tall)?.maxZ}`);
-    check('mech: a lift shorter than the floor is raised to it', (bbLiftOf(short)?.maxZ ?? 0) >= BB_LIFT_MIN_Z, `maxZ=${bbLiftOf(short)?.maxZ}`);
-  }
+
+  // ── THE BOX TUBE'S CELL ───────────────────────────────────────────────────
   /**
-   * THE ARC REACHES BOTH REAL TARGETS, and R105 is why there have to be two mechanisms.
-   *
-   * These assert REACHABILITY and the ORDERING between the two targets, never a speed or an
-   * angle as a number — every constant behind them is `APPROX` and an assertion against a
-   * guess fails the day the guess is replaced, for a reason nobody can act on.
+   * The Box Tube lives on the eight PERIMETER cells (its placement point has to reach past an
+   * edge), never on a launcher cell — both turrets of a double, the whole edge of a dumper — and
+   * the fold is a fixed point. Swept over every launcher × every requested cell.
    */
+  {
+    let bad = 0;
+    let notFixed = 0;
+    let dropped = 0;
+    const detail: string[] = [];
+    for (const kind of BB_SCORE_MODES) {
+      for (const mount of isTurreted(kind) ? BB_MOUNT_POSITIONS : BB_SHOOTER_EDGES) {
+        for (const want of BB_MOUNT_POSITIONS) {
+          const s = bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind, mount, hoodDeg: 75 }, lift: { kind: 'vslide', mount: want } }) });
+          const lift = bbLiftOf(s);
+          if (!lift) {
+            dropped++;
+            continue;
+          }
+          const l = s.bbMech!.launcher;
+          if (lift.mount === 'center' || bbLauncherBlocker(l).some((b) => mountsClash({ pos: lift.mount, spansEdge: false }, b))) {
+            bad++;
+            if (detail.length < 4) detail.push(`${kind}@${l.mount}/${l.mount2 ?? '-'} tube ${want}→${lift.mount}`);
+          }
+          if (specKey(s) !== specKey(bbCoerce(s))) notFixed++;
+        }
+      }
+    }
+    check('box tube: never on centre, never on a launcher cell (both turrets, a dumper\'s edge)', bad === 0, detail.join(' '));
+    check('box tube: ...every resolution is a coercion fixed point', notFixed === 0, `${notFixed}`);
+    check('box tube: ...and every launcher leaves it a free perimeter cell', dropped === 0, `${dropped} dropped`);
+    const stale = bbLiftOf(bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'left', maxZ: 999 } }) }));
+    check('box tube: a stored lift height from the removed raise mechanism is dropped', stale?.mount === 'left' && !('maxZ' in (stale ?? {})), JSON.stringify(stale));
+    const centre = bbLiftOf(bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind: 'turret', mount: 'back', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'center' } }) }));
+    check('box tube: a centre request is relocated to a perimeter cell, not dropped', !!centre && centre.mount !== 'center', `${centre?.mount}`);
+  }
+
+  // ── THE PLACEMENT POINT (geometry) ────────────────────────────────────────
+  {
+    check('place point: the reach is derived so a flush chassis face puts the point on the ring', Math.abs(BB_PLACE_REACH - (BB_FLOWER_FOOT.deep - BB_FLOWER_D)) < 1e-12);
+    const none = bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }) });
+    check('place point: none without a Box Tube', bbPlacePointLocal(none) === null);
+    const front = bbCoerce({ ...BB_DEFAULT_SPEC, intakeMount: 'back', ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'front' } }) });
+    const pf = bbPlacePointLocal(front)!;
+    check('place point: a FRONT tube reaches past the front face on the centreline', Math.abs(pf.x - (front.length / 2 + BB_PLACE_REACH)) < 1e-9 && pf.y === 0, `${pf.x},${pf.y}`);
+    const swept = bbCoerce({ ...BB_DEFAULT_SPEC, intakeMount: 'front', ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'front' } }) });
+    const ps = bbPlacePointLocal(swept)!;
+    check('place point: ...a sweeper on that edge counts (it reaches from the FOOTPRINT)', Math.abs(ps.x - (bbFootprint(swept).front + BB_PLACE_REACH)) < 1e-9, `${ps.x} vs ${bbFootprint(swept).front}`);
+    const corner = bbCoerce({ ...BB_DEFAULT_SPEC, intakeMount: 'back', ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'frontleft' } }) });
+    const pc = bbPlacePointLocal(corner)!;
+    const fc = bbFootprint(corner);
+    check(
+      'place point: a CORNER tube reaches along the diagonal from the footprint corner',
+      Math.abs(pc.x - (fc.front + MOUNT_DIR.frontleft.x * BB_PLACE_REACH)) < 1e-9 && Math.abs(pc.y - (fc.half + MOUNT_DIR.frontleft.y * BB_PLACE_REACH)) < 1e-9,
+      `${pc.x},${pc.y}`,
+    );
+  }
+
+  // ── THE ARC ───────────────────────────────────────────────────────────────
   {
     const cellZ = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
     for (const d of [24, 48, 72, 96]) {
-      const flower = bbSolveShot(d, BB_FLOWER_TOP_Z - BB_LAUNCH_Z0);
       const hive = bbSolveShot(d, cellZ - BB_LAUNCH_Z0);
-      check(`arc @${d}in: a solution exists for both targets`, Number.isFinite(flower.speed) && Number.isFinite(hive.speed));
-      check(
-        `arc @${d}in: both elevations are inside the turret envelope`,
-        flower.angle <= BB_TURRET_PITCH_MAX && hive.angle <= BB_TURRET_PITCH_MAX,
-        `flower ${(flower.angle / BB_DEG).toFixed(1)}deg hive ${(hive.angle / BB_DEG).toFixed(1)}deg`,
-      );
-      check(`arc @${d}in: the HIGHER target needs the steeper, faster shot`, hive.angle > flower.angle && hive.speed > flower.speed);
+      check(`arc @${d}in: a HIVE turret solution exists`, Number.isFinite(hive.speed) && Number.isFinite(hive.angle));
+      check(`arc @${d}in: its elevation is inside the turret envelope`, hive.angle <= BB_TURRET_PITCH_MAX, `${(hive.angle / BB_DEG).toFixed(1)}deg`);
     }
-  }
-  /**
-   * A LIFT CAN REACH A FLOWER AND CAN NEVER REACH A HIVE CELL. This is the whole reason the
-   * two mechanisms are different rather than two flavours of one, and it falls out of R105's
-   * 29in cap versus the two published opening heights — no rule is written by hand for it.
-   */
-  {
-    const w = mkWorld('free', 29);
-    const r = w.robots[0];
-    r.spec = bbCoerce({ ...r.spec, bbMech: { launcher: null, lift: { kind: 'vslide', mount: 'center', maxZ: BB_LIFT_MAX_Z } } });
-    for (let i = 0; i < 240; i++) bbStepLift(r, cmd({ bbLift: true }), C.SIM_DT);
-    const top = bbLiftHeight(r);
-    check('lift: holding the button tops the carriage out at its build height', Math.abs(top - BB_LIFT_MAX_Z) < 0.5, `top=${top.toFixed(2)}in`);
-    check('lift: a fully raised carriage never exceeds R105', top <= BB_R105_HEIGHT_CAP + 1e-6, `top=${top.toFixed(2)}in`);
-    check(
-      'lift: it can NEVER seat at a HIVE CELL, from R105 alone',
-      !bbLiftSeated(r, { id: 'h', alliance: 'red', pos: { x: 0, y: 0 }, z: BB_HIVE_OPEN_Z[0], r: 6 }),
-      `carriage tops at ${top.toFixed(1)}in vs a cell opening at ${BB_HIVE_OPEN_Z[0]}in`,
-    );
-    for (let i = 0; i < 240; i++) bbStepLift(r, cmd({ bbLift: false }), C.SIM_DT);
-    check('lift: releasing stows it again', (r.bbLiftZ ?? 0) < 0.01, `z=${r.bbLiftZ}`);
   }
   /** a turretless build has no pitch axis to solve, and says so rather than guessing one. */
   {
     const w = mkWorld('free', 29);
     const r = w.robots[0];
-    const target = { id: 'f', alliance: null, pos: { x: 40, y: 0 }, z: BB_FLOWER_TOP_Z, r: 2 } as const;
-    r.spec = bbCoerce({ ...r.spec, bbMech: { launcher: { kind: 'drum', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null } });
+    const target = { id: 'hive:blue', alliance: 'blue', pos: { x: 40, y: 0 }, z: 59, r: 8 } as const;
+    r.spec = bbCoerce({ ...r.spec, ...mech({ launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }) });
     check('aim: a TURRETLESS build returns no pitch solution', bbAimPitch(r, target) === null);
-    r.spec = bbCoerce({ ...r.spec, bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null } });
+    r.spec = bbCoerce({ ...r.spec, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }) });
     check('aim: ...and a TURRET does', bbAimPitch(r, target) !== null);
-    check('aim: isTurreted agrees with the resolved launcher', bbIsTurreted(bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG)));
+    check('aim: bbIsTurreted agrees with the resolved launcher', bbIsTurreted(bbLauncherOf(r.spec, BB_HOOD_DEFAULT_DEG)));
   }
 
-  // ── TARGET SELECTION: THE OPPONENT'S CELL, AND THE CLOSED SIDE ────────────
-  // Both filters only became reachable when Lane A filled `scoreTargets()` in — while it
-  // returned `[]` the selection could not be wrong because it never ran. These are property
-  // checks over a grid rather than hand-picked coordinates, so they keep meaning something
-  // when the HIVE or the FLOWERS move.
+  // ── THE DUMPER'S HOOD REACHES THE HIVE ────────────────────────────────────
+  /**
+   * EVERY BUILDABLE HOOD SCORES FROM SOMEWHERE. The up-CELL accepts only a DESCENDING element, a
+   * dump's speed is capped, and a robot on the open side has a limited stand-off — so the hood
+   * range is exactly the set of angles that still has an accepted distance. This replaces the
+   * old pin that NO turretless hood reached the HIVE: the owner ruled that a dumper must.
+   */
+  {
+    const dh = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2 - BB_LAUNCH_Z0;
+    for (let deg = BB_HOOD_MIN_DEG; deg <= BB_HOOD_MAX_DEG; deg++) {
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let d = 1; d <= 150; d += 0.5) {
+        const v = bbHoodSpeed(d, dh, deg * BB_DEG);
+        if (v !== null && v <= BB_LAUNCH_SPEED_MAX && bbHoodDescends(d, dh, deg * BB_DEG)) {
+          lo = Math.min(lo, d);
+          hi = Math.max(hi, d);
+        }
+      }
+      check(`dump hood ${deg}°: an accepted (descending, under the cap) distance exists`, hi >= lo, `${lo}–${hi} in`);
+    }
+    const th = 75 * BB_DEG;
+    const v = bbHoodSpeed(40, dh, th)!;
+    const t = 40 / (v * Math.cos(th));
+    const rise = v * Math.sin(th) * t - 0.5 * C.GRAVITY * t * t;
+    check('dump: the hood-speed formula passes through the target height', Math.abs(rise - dh) < 1e-6, `rise=${rise} dh=${dh}`);
+    check('dump: a hood too flat for the rise has no speed', bbHoodSpeed(10, 60, 20 * BB_DEG) === null);
+  }
+
+  // ── TARGET SELECTION: HIVE ONLY, OWN CELL, OPEN SIDE ─────────────────────
+  /**
+   * Launchers aim at HIVE cells only (owner ruling 2026-09-12 — a FLOWER is placed into, never
+   * shot into), never at the opponent's cell, and only from the side a cell's mouth opens to.
+   * Property checks over a grid: the expected pick count is DERIVED from the own cell's open
+   * half-plane, so the check keeps meaning something when the HIVE moves.
+   */
   {
     const w = mkWorld('free', 41);
     const r = w.robots[0]; // blue
+    const own = scoreTargets(w, r.alliance).find((t) => t.id === `hive:${r.alliance}`)!;
     let picked = 0;
-    let oppWouldHaveWon = 0; // non-vacuity: how often raw nearest WOULD have been the opponent's
+    let expected = 0;
+    let oppWouldHaveWon = 0;
     let badAlliance = 0;
     let badMouth = 0;
+    let notHive = 0;
     for (let x = -66; x <= 66; x += 6) {
       for (let y = -66; y <= 66; y += 6) {
         r.pos = { x, y };
-        // what nearest-by-distance ALONE would have chosen — the code that shipped before this
-        const all = scoreTargets(w, r.alliance);
-        let raw = all[0];
+        if ((x - own.pos.x) * own.mouth!.x + (y - own.pos.y) * own.mouth!.y > 0) expected++;
+        const hives = scoreTargets(w, r.alliance).filter((t) => t.id.startsWith('hive:'));
+        let raw = hives[0];
         let rawD = Infinity;
-        for (const t of all) {
+        for (const t of hives) {
           const d = (t.pos.x - x) ** 2 + (t.pos.y - y) ** 2;
           if (d < rawD) {
             rawD = d;
             raw = t;
           }
         }
-        if (raw.alliance !== null && raw.alliance !== r.alliance) oppWouldHaveWon++;
-
+        if (raw.alliance !== r.alliance) oppWouldHaveWon++;
         const got = bbPickTarget(w, r);
         if (!got) continue;
         picked++;
-        if (got.alliance !== null && got.alliance !== r.alliance) badAlliance++;
+        if (!got.id.startsWith('hive:')) notHive++;
+        if (got.alliance !== r.alliance) badAlliance++;
         if (got.mouth && -(got.pos.x - x) * got.mouth.x + -(got.pos.y - y) * got.mouth.y <= 0) badMouth++;
       }
     }
-    check('aim: a target is picked from essentially everywhere on the field', picked > 400, `picked=${picked}`);
-    check(
-      'aim: the OPPONENT’s CELL is never aimed at — it is a legal shot that scores nothing',
-      badAlliance === 0,
-      `${badAlliance} of ${picked} picks were the opponent’s`,
-    );
-    check(
-      'aim: ...and that filter is not vacuous — raw nearest WOULD have picked it',
-      oppWouldHaveWon > 100,
-      `nearest-by-distance alone chose the opponent’s opening at ${oppWouldHaveWon} poses`,
-    );
-    check(
-      'aim: a target is only ever picked from the side its MOUTH opens toward',
-      badMouth === 0,
-      `${badMouth} of ${picked} picks were from the closed side`,
-    );
+    check('aim: a target is picked from exactly the poses on the own cell\'s open side', picked === expected && expected > 0, `picked=${picked} expected=${expected}`);
+    check('aim: bbPickTarget never returns a FLOWER', notHive === 0, `${notHive} flower picks`);
+    check('aim: the OPPONENT’s CELL is never aimed at', badAlliance === 0, `${badAlliance} of ${picked}`);
+    check('aim: ...and that filter is not vacuous — raw nearest WOULD have picked it', oppWouldHaveWon > 100, `${oppWouldHaveWon}`);
+    check('aim: a target is only ever picked from the side its MOUTH opens toward', badMouth === 0, `${badMouth}`);
   }
 
-  // ── THE TURRET ACTUALLY SLEWS, AND ITS ARC ACTUALLY ARRIVES ──────────────
-  // `bbSlewTurret` shipped with NO CALLER: `turretHeading` was written once by `spawn.ts` and
-  // `bbTurretPitch` by nothing at all, so every turret was frozen at its spawn bearing firing
-  // flat. These pin the stage that fixes it.
+  // ── A TURRET SLEWS, AND ITS ARC ARRIVES (through the world) ──────────────
   {
-    const w = mkWorld('free', 43);
+    const w = mkWorld('free', 43, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }));
     const r = w.robots[0];
-    r.spec = bbCoerce({ ...r.spec, bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null } });
-    r.pos = { x: 40, y: -50 };
+    park(r, 40, 50, Math.PI); // blue, on its own cell's OPEN side
     const yaw0 = r.turretHeading;
     const pitch0 = r.bbTurretPitch ?? 0;
     run(w, cmd({}), 1.5);
-    const target = bbPickTarget(w, r)!;
-    const sol = bbTurretSolution(r, target)!;
-    check('turret: the yaw axis moves off its spawn bearing', Math.abs(r.turretHeading - yaw0) > 1e-3, `${yaw0.toFixed(3)} -> ${r.turretHeading.toFixed(3)} rad`);
-    check('turret: it settles ON the solution', Math.abs(r.turretHeading - sol.yaw) < 0.02, `yaw=${r.turretHeading.toFixed(3)} want=${sol.yaw.toFixed(3)}`);
-    check('turret: the PITCH axis is driven too, and off zero', (r.bbTurretPitch ?? 0) > 0.05 && Math.abs((r.bbTurretPitch ?? 0) - pitch0) > 1e-3, `pitch=${((r.bbTurretPitch ?? 0) / BB_DEG).toFixed(1)}deg`);
-    check('turret: pitch stays inside the barrel envelope', (r.bbTurretPitch ?? 0) <= BB_TURRET_PITCH_MAX + 1e-9);
-
-    // THE ARC ARRIVES. Speed and angle are a MATCHED pair out of `bbSolveShot`, so firing the
-    // pair at the target's range must land at the target's height — this is the check that
-    // would have caught the angle being flown at some other fixed speed.
-    const o = bbTurretOrigin(r);
-    const d = Math.hypot(target.pos.x - o.x, target.pos.y - o.y);
-    const vh = sol.speed * Math.cos(sol.pitch);
-    const t = d / vh;
-    const rise = sol.speed * Math.sin(sol.pitch) * t - 0.5 * C.GRAVITY * t * t;
-    const want = target.z - (BB_LAUNCH_Z0 + 2); // turret muzzle sits 2in above the deck launch height
-    check('turret: the solved (speed, angle) pair lands at the target HEIGHT', Math.abs(rise - want) < 0.5, `rise=${rise.toFixed(2)}in want=${want.toFixed(2)}in at d=${d.toFixed(1)}in`);
-    check('turret: the solved speed is inside the flywheel ceiling', sol.speed <= BB_TURRET_SPEED_MAX + 1e-9, `speed=${sol.speed.toFixed(1)}in/s`);
+    const target = bbPickTarget(w, r);
+    check('turret: the test pose has a target (the open side)', target !== null);
+    if (target) {
+      const sol = bbTurretSolution(r, target)!;
+      check('turret: STEPPING THE WORLD moves the yaw axis off its spawn bearing', Math.abs(r.turretHeading - yaw0) > 1e-3, `${yaw0.toFixed(3)} -> ${r.turretHeading.toFixed(3)} rad`);
+      check('turret: it settles ON the solution', Math.abs(wrapAngle(r.turretHeading - sol.yaw)) < 0.02, `yaw=${r.turretHeading.toFixed(3)} want=${sol.yaw.toFixed(3)}`);
+      check('turret: the PITCH axis is driven too, and off zero', (r.bbTurretPitch ?? 0) > 0.05 && Math.abs((r.bbTurretPitch ?? 0) - pitch0) > 1e-3, `pitch=${((r.bbTurretPitch ?? 0) / BB_DEG).toFixed(1)}deg`);
+      check('turret: pitch stays inside the barrel envelope', (r.bbTurretPitch ?? 0) <= BB_TURRET_PITCH_MAX + 1e-9);
+      check('turret: a single turret never writes the second turret\'s fields', r.bbTurret2Heading === undefined && r.bbTurret2Pitch === undefined);
+      const o = bbTurretOrigin(r);
+      const d = Math.hypot(target.pos.x - o.x, target.pos.y - o.y);
+      const t = d / (sol.speed * Math.cos(sol.pitch));
+      const rise = sol.speed * Math.sin(sol.pitch) * t - 0.5 * C.GRAVITY * t * t;
+      const want = target.z - bbMuzzleZ(r.spec);
+      check('turret: the solved (speed, angle) pair lands at the target HEIGHT', Math.abs(rise - want) < 0.5, `rise=${rise.toFixed(2)} want=${want.toFixed(2)} d=${d.toFixed(1)}`);
+      check('turret: the solved speed is inside the launcher ceiling', sol.speed <= BB_LAUNCH_SPEED_MAX + 1e-9, `${sol.speed.toFixed(1)}`);
+    }
   }
 
-  // ── THE MECHANISMS ARE WIRED INTO THE TICK, NOT MERELY WRITTEN ───────────
+  // ── THE DOUBLE TURRET: TWO TURRETS SLEW, TWO EXITS ────────────────────────
+  {
+    const w = mkWorld('free', 47, mech({ launcher: TWIN, lift: null }));
+    const r = w.robots[0];
+    check('twin: spawn seeds the NECTAR turret\'s yaw and pitch', typeof r.bbTurret2Heading === 'number' && r.bbTurret2Pitch === 0, `${r.bbTurret2Heading}/${r.bbTurret2Pitch}`);
+    emptyHopper(w, r);
+    park(r, 40, 50, Math.PI);
+    const yaw0 = r.turretHeading;
+    const yaw1 = r.bbTurret2Heading ?? 0;
+    run(w, cmd({}), 1.5);
+    const target = bbPickTarget(w, r)!;
+    const s0 = bbTurretSolution(r, target, 0)!;
+    const s1 = bbTurretSolution(r, target, 1)!;
+    check('twin: STEPPING THE WORLD slews BOTH turrets', Math.abs(r.turretHeading - yaw0) > 1e-3 && Math.abs((r.bbTurret2Heading ?? 0) - yaw1) > 1e-3);
+    check(
+      'twin: each turret settles on ITS OWN solution (yaw and pitch)',
+      Math.abs(wrapAngle(r.turretHeading - s0.yaw)) < 0.02 &&
+        Math.abs(wrapAngle((r.bbTurret2Heading ?? 0) - s1.yaw)) < 0.02 &&
+        Math.abs((r.bbTurret2Pitch ?? 0) - s1.pitch) < 0.02,
+      `t0 ${r.turretHeading.toFixed(3)}/${s0.yaw.toFixed(3)} t1 ${(r.bbTurret2Heading ?? 0).toFixed(3)}/${s1.yaw.toFixed(3)} p1 ${(r.bbTurret2Pitch ?? 0).toFixed(3)}/${s1.pitch.toFixed(3)}`,
+    );
+    // FIRE: stage a POLLEN under a NECTAR, so the NECTAR (top) leaves first, then the POLLEN
+    give(w, r, ['yellow', 'blue']);
+    r.fireReadyAt = w.time;
+    const seen = new Set<number>();
+    let nectarAt: { p: { x: number; y: number }; o: { x: number; y: number }; z: number } | null = null;
+    let pollenAt: { p: { x: number; y: number }; o: { x: number; y: number }; z: number } | null = null;
+    for (let k = 0; k < 40 && !(nectarAt && pollenAt); k++) {
+      tick(w, cmd({ fire: true }));
+      for (const b of w.balls) {
+        if (b.state.kind !== 'flight' || seen.has(b.id)) continue;
+        seen.add(b.id);
+        const rec = { p: { ...b.pos }, o: bbTurretOrigin(r, b.color === 'blue' ? 1 : 0), z: b.z };
+        if (b.color === 'blue') nectarAt = rec;
+        else pollenAt = rec;
+      }
+    }
+    const dist = (a: { x: number; y: number }, b: { x: number; y: number }): number => Math.hypot(a.x - b.x, a.y - b.y);
+    check('twin: a NECTAR is born at turret 1 (mount2)', !!nectarAt && dist(nectarAt.p, nectarAt.o) < 1e-6, nectarAt ? `${dist(nectarAt.p, nectarAt.o)}` : 'never fired');
+    check('twin: a POLLEN is born at turret 0 (mount)', !!pollenAt && dist(pollenAt.p, pollenAt.o) < 1e-6, pollenAt ? `${dist(pollenAt.p, pollenAt.o)}` : 'never fired');
+    check('twin: ...and the two exits are genuinely different points', dist(bbTurretOrigin(r, 0), bbTurretOrigin(r, 1)) > 3);
+    /** THE SOLVE STARTS WHERE THE ELEMENT DOES. `bbTurretSolution` solves from `bbMuzzleZ` and
+     * `releasePollen` releases at `BB_LAUNCH_Z0`; the turret once solved from 2in above the
+     * release, and every turret shot arrived 2in low. Read off the world, on both turrets. */
+    check(
+      'twin: both turrets release at the height their arc was solved from',
+      !!nectarAt && !!pollenAt && Math.abs(nectarAt.z - bbMuzzleZ(r.spec)) < 1e-9 && Math.abs(pollenAt.z - bbMuzzleZ(r.spec)) < 1e-9 && bbMuzzleZ(r.spec) === BB_LAUNCH_Z0,
+      `nectar z=${nectarAt?.z} pollen z=${pollenAt?.z} solve z=${bbMuzzleZ(r.spec)}`,
+    );
+  }
+
+  // ── THE INTAKE RULE ───────────────────────────────────────────────────────
+  {
+    const specOf = (kind: string): RobotSpec =>
+      bbCoerce({ ...BB_DEFAULT_SPEC, ...mech({ launcher: { kind, mount: kind === 'dumper' ? 'back' : 'front', hoodDeg: 75 }, lift: null }) });
+    check('intake rule: every build takes POLLEN', BB_SCORE_MODES.every((k) => bbIntakeAccepts(specOf(k), 'blue', 'yellow')));
+    check('intake rule: a SINGLE turret refuses even its own NECTAR', !bbIntakeAccepts(specOf('turret'), 'blue', 'blue'));
+    check('intake rule: a DOUBLE turret and a DUMPER take their own NECTAR', bbIntakeAccepts(specOf('twinturret'), 'blue', 'blue') && bbIntakeAccepts(specOf('dumper'), 'red', 'red'));
+    check('intake rule: NO build takes the opponent\'s NECTAR (G408)', BB_SCORE_MODES.every((k) => !bbIntakeAccepts(specOf(k), 'blue', 'red') && !bbIntakeAccepts(specOf(k), 'red', 'blue')));
+    check(
+      'intake rule: bbCarriesNectar is exactly double turret + dumper',
+      BB_SCORE_MODES.every((k) => bbCarriesNectar(specOf(k).bbMech!.launcher) === (k === 'twinturret' || k === 'dumper')),
+    );
+  }
+  /** ...and the same rule THROUGH THE WORLD: a real intake, a real mouth, a real tick. */
+  for (const kind of BB_SCORE_MODES) {
+    for (const colour of ['yellow', 'blue', 'red'] as const) {
+      const w = mkWorld('free', 31, mech({ launcher: { kind, mount: kind === 'dumper' ? 'back' : 'center', hoodDeg: 75 }, lift: null }, { intakeMount: 'front' }));
+      const r = w.robots[0];
+      emptyHopper(w, r);
+      park(r, 0, 0, 0);
+      r.autoIntake = false;
+      const m = bbMouths(r.spec)[0];
+      const b: Artifact = { ...bbPollen(nextId(w), (m.x0 + m.x1) / 2, 0), color: colour };
+      w.balls.push(b);
+      run(w, cmd({ intake: true }), 0.1);
+      const want = colour === 'yellow' || (colour === 'blue' && kind !== 'turret');
+      const what = colour === 'yellow' ? 'POLLEN' : colour === 'blue' ? 'own NECTAR' : 'OPPONENT NECTAR';
+      check(
+        `intake [${kind}] ${what}: ${want ? 'taken' : 'left on the floor'}`,
+        (b.state.kind === 'held') === want && (want || b.state.kind === 'ground'),
+        `state=${b.state.kind} hopper=${r.hopper.join(',')}`,
+      );
+    }
+  }
+
   /**
-   * ⚠️ THE CHECK THAT WAS MISSING, AND IT COST BOTH MECHANISMS.
-   *
-   * `bbSlewTurret` and `bbStepLift` each shipped with their ONLY callers in this file — the
-   * lift checks above drive `bbStepLift(r, cmd, dt)` directly — so both were green on code that
-   * no match could reach. In an actual match the turret was frozen at the bearing `spawn.ts`
-   * gave it, firing at 0° elevation, and the lift never left the deck.
-   *
-   * So these drive the WORLD. `run()` steps the real `biobuzzStep` pipeline with a command
-   * held on robot 0, exactly as a driver would, and asserts the mechanism MOVED. A direct-call
-   * test cannot distinguish "this function works" from "this function runs", and the second is
-   * the thing that was broken.
+   * THE HUD SAYS WHAT IS HELD, not just how much: after a MIXED intake through the world, the HUD
+   * slice's `held` is the robot's hopper colours in hopper order (first captured first, next out
+   * last) — and a copy, so a HUD reader cannot reach into the sim.
    */
   {
-    const w = mkWorld('free', 47);
+    const w = mkWorld('free', 32, mech({ launcher: { kind: 'dumper', mount: 'back', hoodDeg: 75 }, lift: null }, { intakeMount: 'front' }));
     const r = w.robots[0];
-    r.spec = bbCoerce({
-      ...r.spec,
-      bbMech: {
-        launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG },
-        lift: { kind: 'vslide', mount: 'back', maxZ: BB_LIFT_MAX_Z },
-      },
-    });
-    const yaw0 = r.turretHeading;
-    run(w, cmd({ bbLift: true }), 2.0);
-    check(
-      'wired: STEPPING THE WORLD raises the lift — `bbStepLift` has a caller in the pipeline',
-      (r.bbLiftZ ?? 0) > 1,
-      `bbLiftZ=${(r.bbLiftZ ?? 0).toFixed(2)}in after 2s of a held button`,
-    );
-    check(
-      'wired: STEPPING THE WORLD slews the turret — `bbSlewTurret` has a caller in the pipeline',
-      Math.abs(r.turretHeading - yaw0) > 1e-3 && (r.bbTurretPitch ?? 0) > 0.05,
-      `yaw ${yaw0.toFixed(3)}->${r.turretHeading.toFixed(3)} rad, pitch=${((r.bbTurretPitch ?? 0) / BB_DEG).toFixed(1)}deg`,
-    );
-    // ...and RELEASING it brings the carriage back down, through the pipeline too.
-    run(w, cmd({ bbLift: false }), 2.0);
-    check(
-      'wired: releasing the button stows it again, through the same pipeline',
-      (r.bbLiftZ ?? 0) < 0.01,
-      `bbLiftZ=${r.bbLiftZ}`,
-    );
+    emptyHopper(w, r);
+    park(r, 0, 0, 0);
+    r.autoIntake = false;
+    r.autoFire = false;
+    const m = bbMouths(r.spec)[0];
+    for (const colour of ['yellow', r.alliance] as const) {
+      w.balls.push({ ...bbPollen(nextId(w), (m.x0 + m.x1) / 2, 0), color: colour });
+      run(w, cmd({ intake: true }), 0.1);
+    }
+    const hud = biobuzzHud(w, r.id).robot;
+    check('hud: held lists both elements of a mixed intake, in hopper order', r.hopper.join(',') === `yellow,${r.alliance}` && hud?.held.join(',') === r.hopper.join(','), `hopper=${r.hopper.join(',')} held=${hud?.held.join(',')}`);
+    check('hud: held is a copy of the hopper, not the sim array', !!hud && hud.held !== r.hopper && hud.hopper === hud.held.length);
   }
 
-  // ── RECORDED: A TURRETLESS LAUNCHER CANNOT REACH THE HIVE, AT ANY HOOD ────
-  // Not a rule anyone wrote — it falls out of `BB_DRUM_SPEED` against `BB_HIVE_OPEN_Z`, and it
-  // is a real archetype split (turretless scores FLOWERS; the HIVE is the turret's). Pinned so
-  // that if someone retunes the launch speed, the day this stops being true is a decision
-  // somebody makes rather than a balance change nobody noticed.
+  // ── RELEASE SYNC: THE HOPPER AND THE HELD SET ARE ONE MULTISET ───────────
+  /**
+   * The old release freed the held ball with the HIGHEST ARRAY INDEX while popping the hopper's
+   * LAST COLOUR. Staged here is the exact layout that disagreed: a NECTAR captured FIRST but
+   * sitting at a HIGHER index than a POLLEN captured after it.
+   */
   {
-    let bestApex = 0;
-    for (let deg = BB_HOOD_MIN_DEG; deg <= BB_HOOD_MAX_DEG; deg++) {
-      const apex = BB_LAUNCH_Z0 + (BB_DRUM_SPEED * Math.sin(deg * BB_DEG)) ** 2 / (2 * C.GRAVITY);
-      if (apex > bestApex) bestApex = apex;
+    const w = mkWorld('free', 37, mech({ launcher: TWIN, lift: null }));
+    const r = w.robots[0];
+    emptyHopper(w, r);
+    park(r, 40, 50, Math.PI);
+    const id = nextId(w);
+    const p = bbPollen(id, r.pos.x, r.pos.y);
+    const n: Artifact = { ...bbPollen(id + 1, r.pos.x, r.pos.y), color: 'blue' };
+    w.balls.push(p, n); // POLLEN at the lower index
+    capturePollen(w, r, n); // ...captured second-to-last
+    capturePollen(w, r, p);
+    if (w.biobuzz) w.biobuzz.nextBallId = id + 2;
+    check('release sync: staged NECTAR under POLLEN', r.hopper.join(',') === 'blue,yellow', r.hopper.join(','));
+    r.fireReadyAt = w.time;
+    tick(w, cmd({ fire: true }));
+    check('release sync: the POLLEN on top of the hopper is the element that flies', p.state.kind === 'flight' && n.state.kind === 'held', `pollen=${p.state.kind} nectar=${n.state.kind}`);
+    check('release sync: ...and the hopper still matches what is held', r.hopper.join(',') === 'blue' && hopperColours(r) === heldColours(w, r), `${hopperColours(r)} vs ${heldColours(w, r)}`);
+    const before = r.hopper.length;
+    check('takeHeld: asking for a colour the hopper does not have changes nothing', takeHeld(w, r, 'red') === null && r.hopper.length === before);
+  }
+  /** per TICK, over a mixed intake + fire run: hopper colours == held colours, always. */
+  {
+    const w = mkWorld('free', 41, mech({ launcher: TWIN, lift: null }, { intakeMount: 'front' }));
+    const r = w.robots[0];
+    emptyHopper(w, r);
+    park(r, -20, 40, 0);
+    r.autoIntake = false;
+    let id = nextId(w);
+    for (let k = 0; k < 8; k++) w.balls.push({ ...bbPollen(id++, -8 + k * 5, 40), color: k % 2 ? 'blue' : 'yellow' });
+    if (w.biobuzz) w.biobuzz.nextBallId = id;
+    let mismatches = 0;
+    let firstBad = '';
+    let sawN = false;
+    let sawP = false;
+    const flew = new Set<number>();
+    for (let t = 0; t < 240; t++) {
+      tick(w, cmd({ driveY: 0.35, intake: true, fire: t % 30 > 20 }));
+      if (hopperColours(r) !== heldColours(w, r)) {
+        mismatches++;
+        if (!firstBad) firstBad = `t${t}: ${hopperColours(r)} vs ${heldColours(w, r)}`;
+      }
+      if (r.hopper.includes('blue')) sawN = true;
+      if (r.hopper.includes('yellow')) sawP = true;
+      for (const b of w.balls) if (b.state.kind === 'flight') flew.add(b.id);
     }
-    check(
-      'launch: no TURRETLESS hood angle reaches the HIVE — the FLOWERS are its targets',
-      bestApex < BB_HIVE_OPEN_Z[0],
-      `best apex ${bestApex.toFixed(1)}in over the whole hood range vs a cell lip at ${BB_HIVE_OPEN_Z[0]}in`,
-    );
-    check(
-      'launch: ...but it DOES clear a FLOWER top ring',
-      bestApex > BB_FLOWER_TOP_Z,
-      `best apex ${bestApex.toFixed(1)}in vs a flower top at ${BB_FLOWER_TOP_Z}in`,
-    );
+    check('release sync: hopper colours == held colours on EVERY tick of a mixed intake+fire run', mismatches === 0, firstBad);
+    check('release sync: ...not vacuously — both kinds were carried and some were fired', sawN && sawP && flew.size > 0, `nectar=${sawN} pollen=${sawP} fired=${flew.size}`);
+  }
+
+  // ── THE DUMPER SCORES IN ITS OWN CELL ─────────────────────────────────────
+  /**
+   * A parked DEFAULT dumper, squarely in front of its own up-CELL on the open side with its back
+   * toward the wall, holding fire with aim assist on: its load goes INTO the cell. This is the
+   * owner's "the dumper must reach the HIVE", end to end — the band, the converging throws,
+   * `hiveAccepts`' descending-and-inboard rule, all through the real tick.
+   */
+  const dumperWorld = (seed: number): { w: World; r: RobotState; cellY: number } => {
+    const w = mkWorld('free', seed, mech({ launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }, { intakeMount: 'back' }));
+    const r = w.robots[0];
+    r.aimAssist = true;
+    r.autoFire = false;
+    const cell = scoreTargets(w, 'blue').find((t) => t.id === 'hive:blue')!;
+    park(r, cell.pos.x, cell.pos.y + 45, -Math.PI / 2);
+    return { w, r, cellY: cell.pos.y };
+  };
+  {
+    const { w, r } = dumperWorld(53);
+    const cell = bbPickTarget(w, r);
+    const load = w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === r.id).map((b) => b.id);
+    check('dump: the test robot has a load and a target', load.length > 0 && cell?.id === 'hive:blue', `load=${load.length} target=${cell?.id}`);
+    if (cell) {
+      check('dump: the parked default dumper is inside the accepted band', bbDumpSolution(r, cell, r.hopper.length) !== null);
+      check('dump: ...and lined up within the aim tolerance', Math.abs(wrapAngle((bbAimHeading(r, cell) ?? 99) - r.heading)) < BB_AIM_TOL);
+    }
+    const contents0 = w.biobuzz!.hives.blue.contents.length;
+    const entered = new Set<number>();
+    let peak = contents0;
+    for (let t = 0; t < 90; t++) {
+      tick(w, cmd({ fire: true }));
+      peak = Math.max(peak, w.biobuzz!.hives.blue.contents.length);
+      for (const b of w.balls) if (b.state.kind === 'element' && b.state.el === 'hive:blue') entered.add(b.id);
+    }
+    const scored = load.filter((id) => entered.has(id)).length;
+    check('dump: a parked default dumper holding fire puts elements into its own up-CELL', peak > contents0 && scored > 0, `contents ${contents0}→peak ${peak}, ${scored}/${load.length} of the load entered`);
+    check('dump: ...the WHOLE load goes in (the throws converge on the cell)', scored === load.length, `${scored}/${load.length}`);
+  }
+  /** THE AIM GATE: a dumper off its aim holds the dump until the assist has turned it on. */
+  {
+    const { w, r } = dumperWorld(55);
+    r.heading += 0.6;
+    const n0 = r.hopper.length;
+    tick(w, cmd({ fire: true }));
+    check('dump: an UNALIGNED dumper holds its load on the first tick of fire', r.hopper.length === n0, `hopper ${n0}→${r.hopper.length}`);
+    run(w, cmd({ fire: true }), 2.5);
+    check('dump: ...the aim assist steers it on target and then it dumps', r.hopper.length === 0, `hopper=${r.hopper.length} heading err=${wrapAngle(r.heading + Math.PI / 2).toFixed(3)}`);
+  }
+  /**
+   * RE-ARM: a held fire does not re-dump the moment something is back in the hopper. The
+   * element is given INSIDE the reload window — on the tick right after the dump — because a
+   * re-dump after the window has passed is correct, and a check that gives it later cannot fail.
+   */
+  {
+    const { w, r } = dumperWorld(57);
+    let dumpedAt = -1;
+    for (let t = 0; t < 30 && dumpedAt < 0; t++) {
+      tick(w, cmd({ fire: true }));
+      if (r.hopper.length === 0) dumpedAt = w.time;
+    }
+    check('dump [re-arm]: the aligned dumper dumps on a held fire', dumpedAt >= 0, `hopper=${r.hopper.length}`);
+    give(w, r, ['yellow']);
+    tick(w, cmd({ fire: true }));
+    check('dump [re-arm]: an element captured inside the reload window is NOT dumped yet', r.hopper.length === 1 && r.fireReadyAt > w.time, `hopper=${r.hopper.length} readyAt=${r.fireReadyAt.toFixed(3)} now=${w.time.toFixed(3)}`);
+    run(w, cmd({ fire: true }), BB_DUMP_RELOAD_S + 0.2);
+    check('dump [re-arm]: ...and once the tray has re-armed, the held fire dumps it', r.hopper.length === 0, `hopper=${r.hopper.length}`);
+  }
+
+  // ── NOTHING LAUNCHED ENTERS A FLOWER ──────────────────────────────────────
+  {
+    const w = mkWorld('free', 59);
+    park(w.robots[0], 0, 0, 0);
+    const f = BB_FLOWERS[2];
+    const bb = w.biobuzz!;
+    const before = JSON.stringify(bb.flowers[2].stack);
+    const b = bbPollen(nextId(w), f.x, f.y);
+    b.state = { kind: 'flight', target: 'blue' };
+    b.z = BB_FLOWER_TOP_Z + 1;
+    b.vz = -20;
+    w.balls.push(b);
+    let entered = false;
+    for (let t = 0; t < 60; t++) {
+      tick(w, cmd({}));
+      if (b.state.kind === 'element') entered = true;
+    }
+    check('flower: a POLLEN descending onto a FLOWER ring through the tick does NOT enter it', !entered && JSON.stringify(bb.flowers[2].stack) === before, `state=${b.state.kind}`);
+    // F3 stands on the +x wall: its foot is x ∈ [72 − deep, 72], y ∈ 24 ± along/2
+    const footX = 72 - BB_FLOWER_FOOT.deep;
+    const inside = b.pos.x > footX - BB_POLLEN_R + 0.1 && Math.abs(b.pos.y - f.y) < BB_FLOWER_FOOT.along / 2 + BB_POLLEN_R - 0.1;
+    check('flower: ...it lands on the tiles CLEAR of the FLOWER foot (the landing push-out)', b.state.kind === 'ground' && !inside, `pos=${b.pos.x.toFixed(2)},${b.pos.y.toFixed(2)}`);
+  }
+
+  // ── THE BOX TUBE PLACES ───────────────────────────────────────────────────
+  /** a blue DUMPER-at-the-back robot with a FRONT Box Tube (no front sweeper), assists off */
+  const tubeWorld = (seed: number, tube = true, mode: 'free' | 'match' = 'free'): { w: World; r: RobotState } => {
+    const w = mkWorld(mode, seed, mech({ launcher: { kind: 'dumper', mount: 'back', hoodDeg: 75 }, lift: tube ? { kind: 'vslide', mount: 'front' } : null }, { intakeMount: 'back' }));
+    const r = w.robots[0];
+    r.autoFire = false;
+    r.autoIntake = false;
+    return { w, r };
+  };
+  const F3 = 2; // BB_FLOWERS index of F3, on the +x wall at y = 24
+  const flush = (r: RobotState): void => park(r, 72 - BB_FLOWER_FOOT.deep - r.spec.length / 2 - 0.2, BB_FLOWERS[F3].y, 0);
+  /** REACH IS REACHABLE: drive square into the FLOWER and the placement point arrives on the ring. */
+  {
+    const { w, r } = tubeWorld(61);
+    park(r, 72 - BB_FLOWER_FOOT.deep - r.spec.length / 2 - 6, BB_FLOWERS[F3].y, 0);
+    check('box tube: out of reach before driving in', bbFlowerInReach(w, r) === null);
+    run(w, cmd({ driveY: 0.5 }), 1.5);
+    const p = bbPlacePoint(r)!;
+    check('box tube: driving square into a FLOWER foot brings the placement point within reach', bbFlowerInReach(w, r) === F3, `point=${p.x.toFixed(2)},${p.y.toFixed(2)} ring=${BB_FLOWERS[F3].x},${BB_FLOWERS[F3].y}`);
+    check('hud: flowerInReach reads true there', biobuzzHud(w, r.id).robot?.flowerInReach === true);
+  }
+  {
+    const { w, r } = tubeWorld(63);
+    const bb = w.biobuzz!;
+    flush(r);
+    emptyHopper(w, r);
+    give(w, r, ['blue', 'yellow', 'yellow']);
+    const stack = bb.flowers[F3].stack;
+    const n0 = stack.length;
+    const kindOf = kindOfIn(w);
+    tick(w, cmd({ bbPlace: true }));
+    check('place: one press puts one POLLEN into the FLOWER', stack.length === n0 + 1 && kindOf(stack[stack.length - 1]) === 'pollen' && r.hopper.join(',') === 'blue,yellow', `stack ${n0}→${stack.length} hopper=${r.hopper.join(',')}`);
+    for (let t = 0; t < 30; t++) tick(w, cmd({ bbPlace: true }));
+    check('place: HOLDING the button places once', stack.length === n0 + 1 && r.hopper.length === 2, `stack=${stack.length} hopper=${r.hopper.length}`);
+    tick(w, cmd({}));
+    tick(w, cmd({ bbPlaceNectar: true }));
+    check('place: the NECTAR button places the held NECTAR', kindOf(stack[stack.length - 1]) === 'blue' && r.hopper.join(',') === 'yellow', `hopper=${r.hopper.join(',')}`);
+    check('place: a placed NECTAR makes its alliance the FLOWER owner', flowerScore(stack, kindOf).owner === 'blue');
+    check('place: the hopper matches the held set after placing', hopperColours(r) === heldColours(w, r));
+    const top = w.balls.find((b) => b.id === stack[stack.length - 1])!;
+    check('place: the element is PARKED in the flower and still in world.balls', top.state.kind === 'element' && top.state.el === `flower:${F3}`);
+    const live = JSON.stringify({ f: bb.flowers.map((f) => f.stack), h: [bb.hives.red.contents, bb.hives.blue.contents] });
+    bbIndexElements(w);
+    const rebuilt = JSON.stringify({ f: bb.flowers.map((f) => f.stack), h: [bb.hives.red.contents, bb.hives.blue.contents] });
+    check('place: bbIndexElements rebuilds exactly the live stacks after a placement', live === rebuilt, `${live} vs ${rebuilt}`);
+    check('place: the latch is namespaced and only TRUE keys are stored', Object.entries(bb.held[r.id] ?? {}).every(([k, v]) => v === true && (k === 'placeP' || k === 'placeN' || k === 'g417warned')));
+  }
+  {
+    const { w, r } = tubeWorld(65);
+    park(r, 0, 0, 0);
+    const before = JSON.stringify(w.biobuzz!.flowers.map((f) => f.stack));
+    const n = r.hopper.length;
+    tick(w, cmd({ bbPlace: true }));
+    check('place: OUT OF REACH a press does nothing', JSON.stringify(w.biobuzz!.flowers.map((f) => f.stack)) === before && r.hopper.length === n);
+    const none = tubeWorld(65, false);
+    flush(none.r);
+    const b2 = JSON.stringify(none.w.biobuzz!.flowers.map((f) => f.stack));
+    const n2 = none.r.hopper.length;
+    tick(none.w, cmd({ bbPlace: true }));
+    check('place: WITHOUT a Box Tube a press at a FLOWER does nothing', bbFlowerInReach(none.w, none.r) === null && JSON.stringify(none.w.biobuzz!.flowers.map((f) => f.stack)) === b2 && none.r.hopper.length === n2);
+  }
+  /** a button HELD while driving into reach does not place — only a fresh press does */
+  {
+    const { w, r } = tubeWorld(71);
+    park(r, 30, BB_FLOWERS[F3].y, 0);
+    const stack = w.biobuzz!.flowers[F3].stack;
+    const n0 = stack.length;
+    for (let t = 0; t < 5; t++) tick(w, cmd({ bbPlace: true }));
+    flush(r);
+    for (let t = 0; t < 10; t++) tick(w, cmd({ bbPlace: true }));
+    check('place: a button held from OUT of reach does not place on arriving in reach', stack.length === n0, `stack ${n0}→${stack.length}`);
+    tick(w, cmd({}));
+    tick(w, cmd({ bbPlace: true }));
+    check('place: ...a fresh press there does', stack.length === n0 + 1, `stack ${n0}→${stack.length}`);
+  }
+  /** a FULL flower refuses, and the element stays held */
+  {
+    const { w, r } = tubeWorld(73);
+    flush(r);
+    const bb = w.biobuzz!;
+    const f = bb.flowers[F3];
+    const kindOf = kindOfIn(w);
+    let id = nextId(w);
+    while (flowerFits(f.stack, kindOf, BB_POLLEN_R)) {
+      const b = bbPollen(id++, BB_FLOWERS[F3].x, BB_FLOWERS[F3].y);
+      b.state = { kind: 'element', el: `flower:${F3}`, slot: f.stack.length };
+      b.z = 10;
+      w.balls.push(b);
+      f.stack.push(b.id);
+    }
+    bb.nextBallId = id;
+    const n = f.stack.length;
+    const h = r.hopper.length;
+    tick(w, cmd({ bbPlace: true }));
+    check('place: a FULL flower refuses, and the element stays held', f.stack.length === n && r.hopper.length === h && h > 0, `stack=${f.stack.length} hopper=${r.hopper.length}`);
+  }
+  /** G410: a NECTAR placed before the 1:00 cue is a MAJOR to the opponent */
+  {
+    const { w, r } = tubeWorld(79, true, 'match');
+    w.match.phase = 'teleop';
+    w.match.phaseTimeLeft = 90;
+    flush(r);
+    emptyHopper(w, r);
+    give(w, r, ['blue']);
+    const red0 = w.match.scores.red.foulPoints;
+    tick(w, cmd({ bbPlaceNectar: true }));
+    tick(w, cmd({}));
+    const placed = w.balls.some((b) => b.color === 'blue' && b.state.kind === 'element' && b.state.el === `flower:${F3}`);
+    check('place: in a match, the NECTAR is placed', placed);
+    check('place: a NECTAR placed before 1:00 bills G410 (one MAJOR to the opponent)', w.match.scores.red.foulPoints - red0 === BB_PTS.foulMajor, `red fouls ${red0}→${w.match.scores.red.foulPoints}`);
+  }
+
+  // ── AUTO-FIRE WAITS FOR A SHOT ────────────────────────────────────────────
+  /**
+   * Every robot is staged FULL and the presets ship auto-fire, so an unconditional auto-fire
+   * emptied a Box Tube robot the moment the match started. Auto-fire now waits for ON TARGET.
+   */
+  {
+    const w = mkWorld('free', 83, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'back' } }));
+    const r = w.robots[0];
+    r.autoFire = true;
+    park(r, 40, -50, Math.PI); // blue's CLOSED side: nothing to shoot at
+    const full = r.hopper.length;
+    run(w, cmd({}), 2);
+    check('autofire: a full robot with NO target keeps its load (it can carry it to a FLOWER)', r.hopper.length === full && full > 0, `hopper ${full}→${r.hopper.length}`);
+    park(r, 40, 50, Math.PI);
+    run(w, cmd({}), 3);
+    check('autofire: ...and on the open side, once the turret is settled on the HIVE, it fires', r.hopper.length < full, `hopper=${r.hopper.length}`);
+  }
+  /** the HUD reads the launcher through the resolver, never the flat mirror */
+  {
+    const w = mkWorld('free', 85, mech({ launcher: TWIN, lift: null }));
+    const r = w.robots[0];
+    r.spec = { ...r.spec, scoreMode: 'turret' };
+    check('hud: mode comes from the resolved launcher, not the flat scoreMode', biobuzzHud(w, r.id).robot?.mode === 'twinturret');
+    check('hud: flowerInReach is false for a build with no Box Tube', biobuzzHud(w, r.id).robot?.flowerInReach === false);
   }
 
   // ── COERCION: THE ENUMS FOLD, AND THE LEGACY MIRRORS AGREE ────────────────
   {
     check(
       'coerce: an unknown archetype folds to a known one',
-      (BB_SCORE_MODES as readonly string[]).includes(
-        bbCoerce({ ...BB_DEFAULT_SPEC, scoreMode: 'trebuchet' }).scoreMode as string,
-      ),
+      (BB_SCORE_MODES as readonly string[]).includes(bbCoerce({ ...BB_DEFAULT_SPEC, scoreMode: 'trebuchet' }).scoreMode as string),
     );
-    // A turretless launcher fires along a LINE spanning one chassis side, so a corner is not
-    // something it can be built as. The coercer folds it to the nearest edge rather than
-    // rejecting the spec, because rejecting it would throw away a build the player can see.
-    const corner = bbCoerce({ ...BB_DEFAULT_SPEC, scoreMode: 'drum', shooterMount: 'frontleft' });
-    check(
-      'coerce: a turretless launcher on a CORNER folds to an edge',
-      (BB_SHOOTER_EDGES as readonly string[]).includes(corner.shooterMount as string),
-      `mount=${corner.shooterMount}`,
-    );
-    /**
-     * ...and a TURRET keeps its corner, because a turret aims itself: its mount is where it is
-     * BOLTED, not a facing. One fold applied to both archetypes would relocate hardware.
-     *
-     * THIS CHECK FOUND A REAL BUG, and it is worth saying which: run through the shared
-     * `coerceSpec` alone, EVERY mount collapsed to the front — the shared pass resets mounts
-     * for a game it does not recognise, and BIOBUZZ is one until Lane B lands its arm. So every
-     * turretless build spawned with a front drum and every turret bolted to the front, and the
-     * gallery's 26 archetype sheets were 26 copies of two pictures. `bbCoerceSpec` re-arms the
-     * raw mounts between the two passes; see its header.
-     */
+    const corner = bbCoerce({ ...BB_DEFAULT_SPEC, scoreMode: 'dumper', shooterMount: 'frontleft' });
+    check('coerce: a turretless launcher on a CORNER folds to an edge', (BB_SHOOTER_EDGES as readonly string[]).includes(corner.shooterMount as string), `mount=${corner.shooterMount}`);
     const turret = bbCoerce({ ...BB_DEFAULT_SPEC, scoreMode: 'turret', shooterMount: 'frontleft' });
     check('coerce: a TURRET keeps its corner mount', turret.shooterMount === 'frontleft', `mount=${turret.shooterMount}`);
-    // The deprecated booleans are what an older peer or server round-trips a spec through, so
-    // they have to keep saying what the mount fields say.
     check(
       'coerce: the legacy intakeSide/shooterRear booleans mirror the mounts',
-      everyBuild().every(
-        (s) => s.intakeSide === (s.intakeMount === 'side') && s.shooterRear === (s.shooterMount === 'back'),
-      ),
+      everyBuild().every((s) => s.intakeSide === (s.intakeMount === 'side') && s.shooterRear === (s.shooterMount === 'back')),
     );
-    // CR-only mechanism fields must be GONE, not carried: the wire, the snapshot and the
-    // builder's summary all describe the spec, and a leftover catalyst describes hardware this
-    // robot does not have.
     const fromCr = bbCoerce({
       ...DEFAULT_SPEC,
       catalystType: 'hook',
@@ -588,68 +1030,28 @@ export function robotChecks(check: Check): void {
       catapultYaw: 10,
       groundClearance: 2,
     }) as unknown as Record<string, unknown>;
-    check(
-      'coerce: Chain Reaction mechanism fields are stripped, not carried',
-      CR_FIELDS.every((k) => fromCr[k] === undefined),
-      CR_FIELDS.filter((k) => fromCr[k] !== undefined).join(','),
-    );
+    check('coerce: Chain Reaction mechanism fields are stripped, not carried', CR_FIELDS.every((k) => fromCr[k] === undefined), CR_FIELDS.filter((k) => fromCr[k] !== undefined).join(','));
     check('coerce: every build has a usable hopper', everyBuild().every((s) => bbHopperCap(s) >= 1));
   }
 
   // ── THE LOADOUT: SWITCHING GAME DOES NOT BLEED A BUILD ────────────────────
-  /**
-   * Each game keeps its OWN robot, saved robots and start positions. Verified by round trip:
-   * park a distinctive BIOBUZZ build, leave for Chain Reaction, come back, and the build has
-   * to be the one that was parked — with the Chain Reaction side unaffected in both
-   * directions.
-   *
-   * Not hypothetical. The `loadouts` archive exists because a single flat `spec` meant
-   * switching game rebuilt your robot as the other game's coercion of it, and a player could
-   * lose a tuned build by looking at another game.
-   */
   {
     const s0 = switchGame(defaultSettings(), 'biobuzz');
     check('settings: switchGame("biobuzz") makes it the active game', s0.game === 'biobuzz');
-    // A build nothing else would produce, so finding it later proves it was RESTORED rather
-    // than re-defaulted into the same shape by coincidence.
     const mine = bbCoerce({ ...BB_DEFAULT_SPEC, scoreMode: 'dumper', intakeMount: 'back', ballStorage: 2 });
     const parked = { ...s0, spec: mine, savedRobots: [mine] };
     const inChain = switchGame(parked, 'chain');
     check('settings: leaving BIOBUZZ archives its loadout', !!inChain.loadouts?.biobuzz);
-    check(
-      'settings: the CHAIN build is not the BIOBUZZ one',
-      specKey(inChain.spec) !== specKey(mine),
-      `chain scoreMode=${inChain.spec.scoreMode}`,
-    );
+    check('settings: the CHAIN build is not the BIOBUZZ one', specKey(inChain.spec) !== specKey(mine), `chain scoreMode=${inChain.spec.scoreMode}`);
     check('settings: no BIOBUZZ saved robot leaks into CHAIN', inChain.savedRobots.length === 0);
     const back = switchGame(inChain, 'biobuzz');
     check('settings: returning to BIOBUZZ restores the parked build', specKey(back.spec) === specKey(mine));
-    check(
-      'settings: ...and its saved robots',
-      back.savedRobots.length === 1 && specKey(back.savedRobots[0]) === specKey(mine),
-    );
-    check(
-      'settings: the active BIOBUZZ loadout is not ALSO left in the archive',
-      back.loadouts?.biobuzz === undefined,
-      `archived=${Object.keys(back.loadouts ?? {}).join(',')}`,
-    );
+    check('settings: ...and its saved robots', back.savedRobots.length === 1 && specKey(back.savedRobots[0]) === specKey(mine));
+    check('settings: the active BIOBUZZ loadout is not ALSO left in the archive', back.loadouts?.biobuzz === undefined, `archived=${Object.keys(back.loadouts ?? {}).join(',')}`);
     check('settings: switching to the game already active is a no-op', switchGame(back, 'biobuzz') === back);
   }
 
   // ── THE DRAWN MOUTHS ARE THE CAPTURE AREAS ────────────────────────────────
-  /**
-   * The load-bearing invariant of the whole mount system, checked as GEOMETRY rather than as a
-   * picture: a POLLEN inside a mouth rect is a capture candidate, and one placed beyond that
-   * rect's outward face is not.
-   *
-   * `pollenIn` is the function the gameplay tick uses and `bbMouths` is the function the
-   * sprite and the builder preview draw, so this cannot pass while those two disagree.
-   *
-   * The robot sits at the origin facing +x so its LOCAL frame IS the world frame and the
-   * placement arithmetic needs no rotation — a rotation here would be a second implementation
-   * of the transform under test. `pollenIn` accepts a POLLEN within `BB_POLLEN_R` of the rect
-   * (a ball TOUCHING the mouth is in it), so "beyond" has to clear a whole diameter.
-   */
   for (const intakeMount of BB_INTAKE_MOUNTS) {
     const world = mkWorld('free', 3, { intakeMount });
     const r = world.robots[0];
@@ -665,7 +1067,6 @@ export function robotChecks(check: Check): void {
       world.balls.length = 0;
       world.balls.push(bbPollen(1, cx, cy));
       if (pollenIn(world, r, m).length !== 1) insideOk = false;
-      // one POLLEN diameter beyond the mouth's OUTWARD face, along the axis that face faces
       const gap = 2 * BB_POLLEN_R + 0.1;
       const out =
         m.edge === 'front'
@@ -681,37 +1082,15 @@ export function robotChecks(check: Check): void {
     }
     check(`mouths [${intakeMount}]: a POLLEN in the drawn mouth is a capture candidate`, insideOk);
     check(`mouths [${intakeMount}]: a POLLEN beyond the drawn mouth is NOT`, outsideOk);
-    // A mouth is what the sprite draws outside the frame; the footprint is what Rapier
-    // collides on. A mouth reaching past the footprint would capture from a place a POLLEN can
-    // never be, because the frame would have pushed it away first.
     const f = bbFootprint(r.spec);
     check(
       `mouths [${intakeMount}]: no mouth reaches past the collision footprint`,
-      mouths.every(
-        (m) =>
-          m.x1 <= f.front + 1e-9 &&
-          m.x0 >= -f.rear - 1e-9 &&
-          Math.abs(m.y0) <= f.half + 1e-9 &&
-          Math.abs(m.y1) <= f.half + 1e-9,
-      ),
+      mouths.every((m) => m.x1 <= f.front + 1e-9 && m.x0 >= -f.rear - 1e-9 && Math.abs(m.y0) <= f.half + 1e-9 && Math.abs(m.y1) <= f.half + 1e-9),
       `footprint front=${f.front} rear=${f.rear} half=${f.half}`,
     );
   }
 
   // ── WHAT IS SOLID TO A POLLEN IS THIS GAME'S HARDWARE, ON THIS GAME'S EDGES ─
-  /**
-   * `bbRobotSolids` is what the artifact solve collides POLLEN against, and it exists because
-   * the shared `robotSolids` describes DECODE: a chassis plus the FRONT funnel wedges (sloped /
-   * triangle) or the vector preset's front rails, whatever mount the spec carries. Run through
-   * that, a BIOBUZZ robot met its POLLEN through hardware it does not have, on an edge its
-   * sweeper is not on — a `back` build had solid wedges across its front and nothing at all
-   * behind it, where the roller actually is.
-   *
-   * Asserted as GEOMETRY, per mount, because that is the thing that was wrong: the set of edges
-   * carrying something solid outside the frame must be exactly the set of edges the sweeper is
-   * mounted on, two side plates each. `bbMouths` supplies the same rects the sprite draws, so
-   * the solid and the drawn mouth cannot drift apart.
-   */
   for (const intakeMount of BB_INTAKE_MOUNTS) {
     const world = mkWorld('free', 3, { intakeMount });
     const r = world.robots[0];
@@ -722,19 +1101,11 @@ export function robotChecks(check: Check): void {
     const reach = C.INTAKE_PRESETS[r.spec.intake].reach;
     const sol = bbRobotSolids(r, [], BB_POLLEN_R);
     const mounted = new Set(bbMouths(r.spec).map((m) => m.edge));
-
     const chassis = sol.chassis;
     check(
       `solids [${intakeMount}]: the chassis solid IS the chassis box`,
-      chassis.kind === 'box' &&
-        Math.abs(chassis.hx - hl) < 1e-9 &&
-        Math.abs(chassis.hy - hw) < 1e-9 &&
-        chassis.cx === 0 &&
-        chassis.cy === 0,
+      chassis.kind === 'box' && Math.abs(chassis.hx - hl) < 1e-9 && Math.abs(chassis.hy - hw) < 1e-9 && chassis.cx === 0 && chassis.cy === 0,
     );
-
-    // which edge each structure box sits outside of — a plate is outboard of the frame by
-    // construction, so its centre alone names its edge
     const edgeOf = (sh: { kind: string; cx?: number; cy?: number }): string => {
       const cx = sh.cx ?? 0;
       const cy = sh.cy ?? 0;
@@ -752,10 +1123,6 @@ export function robotChecks(check: Check): void {
         [...mounted].every((e) => edges.filter((x) => x === e).length === 2),
       `mounted=[${[...mounted].join(',')}] plates on [${edges.join(',')}]`,
     );
-
-    // THE MOUTH IS OPEN — a POLLEN at the middle of the roller band touches nothing, which is
-    // what lets `interact()` capture it before the frame arrives. A funnel wedge here (the old
-    // shared geometry) would report a penetration.
     let openOk = true;
     let plateOk = true;
     for (const m of bbMouths(r.spec)) {
@@ -769,19 +1136,15 @@ export function robotChecks(check: Check): void {
               : { x: 0, y: -hw - reach + 0.1 };
       if (robotPenetration(r, sol, mid, BB_POLLEN_R)) openOk = false;
     }
-    // ...and the SIDE PLATE is solid: a POLLEN centred on one is inside the robot
     for (const sh of sol.structure) {
       const b = sh as { cx: number; cy: number };
       if (!robotPenetration(r, sol, { x: b.cx, y: b.cy }, BB_POLLEN_R)) plateOk = false;
     }
     check(`solids [${intakeMount}]: the sweeper MOUTH is open to a POLLEN`, openOk);
     check(`solids [${intakeMount}]: the sweeper SIDE PLATES are solid to a POLLEN`, plateOk);
-
-    // THE HELD PLUG IS POLLEN-SIZED. A hopper full of DECODE-radius circles is a plug an inch
-    // too fat in every direction, and it is the one place the radius reaches the geometry.
     r.spec.ballStorage = Math.max(1, r.spec.ballStorage ?? 1);
     const held = [bbPollen(900, 0, 0)];
-    held[0].state = { kind: 'held', robot: r.id, lx: 0, ly: 0 };
+    held[0].state = { kind: 'held', robot: r.id, lx: 0, ly: 0 } as Artifact['state'];
     const withHeld = bbRobotSolids(r, held, BB_POLLEN_R);
     const plug = withHeld.held[0] as { kind: string; r: number } | undefined;
     check(
@@ -792,17 +1155,6 @@ export function robotChecks(check: Check): void {
   }
 
   // ── THE SEAM IS WIRED, AND IT IS NOT THE SHARED GEOMETRY ──────────────────
-  /**
-   * `GameSimModule.artifactSolids` (`src/games/types.ts`) is the optional slot a game fills to
-   * supply its own artifact-solid geometry; absent, a consumer uses the shared `robotSolids`.
-   * BIOBUZZ fills it, and `play.ts` reads it — so this checks BOTH halves, because a slot that
-   * is declared and never read is how the whole class of seam bug survives: everything compiles,
-   * the game just silently plays DECODE's shape.
-   *
-   * The second half is what makes the first half worth anything: on a mount DECODE cannot have,
-   * the two geometries must actually DIFFER. If they ever agree here, either the seam stopped
-   * being read or the shared geometry grew a BIOBUZZ arm, and both are worth failing over.
-   */
   {
     const mod = simModuleFor('biobuzz');
     check('seam: BIOBUZZ fills GameSimModule.artifactSolids', typeof mod.artifactSolids === 'function');
@@ -812,35 +1164,12 @@ export function robotChecks(check: Check): void {
     r.heading = 0;
     const mine = mod.artifactSolids?.(r, [], BB_POLLEN_R);
     const shared = robotSolids(r, [], BB_POLLEN_R);
-    check(
-      'seam: the module slot returns BIOBUZZ geometry',
-      JSON.stringify(mine) === JSON.stringify(bbRobotSolids(r, [], BB_POLLEN_R)),
-    );
-    check(
-      "seam: a BACK sweeper's solids are NOT DECODE's front funnel",
-      JSON.stringify(mine?.structure) !== JSON.stringify(shared.structure),
-      `bb=${mine?.structure.length} shapes, shared=${shared.structure.length}`,
-    );
-    check(
-      'seam: DECODE and Chain Reaction leave the slot empty (the shared geometry is untouched)',
-      simModuleFor('decode').artifactSolids === undefined &&
-        simModuleFor('chain').artifactSolids === undefined,
-    );
+    check('seam: the module slot returns BIOBUZZ geometry', JSON.stringify(mine) === JSON.stringify(bbRobotSolids(r, [], BB_POLLEN_R)));
+    check("seam: a BACK sweeper's solids are NOT DECODE's front funnel", JSON.stringify(mine?.structure) !== JSON.stringify(shared.structure), `bb=${mine?.structure.length} shapes, shared=${shared.structure.length}`);
+    check('seam: DECODE and Chain Reaction leave the slot empty (the shared geometry is untouched)', simModuleFor('decode').artifactSolids === undefined && simModuleFor('chain').artifactSolids === undefined);
   }
 
   // ── THE INTAKE COLLECTS WHAT IT DRIVES OVER ───────────────────────────────
-  /**
-   * Through the FULL `biobuzzStep`, not by calling `capturePollen` directly: the point is that
-   * the button reaches the mechanism through the real pipeline (resolve → aim → drivetrain →
-   * solve → gameplay), which is where an intake gets accidentally disconnected.
-   *
-   * `autoIntake` is forced OFF so this tests the BUTTON. With the assist on, the check would
-   * pass for an intake wired to nothing.
-   *
-   * THE COUNT MUST NOT CHANGE. A captured POLLEN stays in `world.balls` as `kind: 'held'` —
-   * the BIOBUZZ decision Chain Reaction did not make — and that is what makes
-   * `world.balls.length` an invariant of the whole match rather than of the ground alone.
-   */
   {
     const world = mkWorld('free', 11);
     const r = world.robots[0];
@@ -850,19 +1179,13 @@ export function robotChecks(check: Check): void {
     r.autoIntake = false;
     r.hopper.length = 0;
     world.balls.length = 0;
-    world.balls.push(bbPollen(1, -8, 0)); // 12" ahead, dead centre of the front mouth's path
+    world.balls.push(bbPollen(1, -8, 0));
     const before = world.balls.length;
     run(world, cmd({ driveY: 1, intake: true }), 2);
     const held = world.balls.filter((b) => b.state.kind === 'held');
     check('intake: a POLLEN driven over is collected', r.hopper.length === 1, `hopper=${r.hopper.length}`);
-    check(
-      'intake: the collected POLLEN is HELD by this robot',
-      held.length === 1 && held[0].state.kind === 'held' && held[0].state.robot === r.id,
-    );
+    check('intake: the collected POLLEN is HELD by this robot', held.length === 1 && held[0].state.kind === 'held' && held[0].state.robot === r.id);
     check('intake: collecting conserves the POLLEN count', world.balls.length === before, `${before} -> ${world.balls.length}`);
-
-    // The same drive with the button UP must collect nothing. Without this, the check above
-    // also passes for a robot that eats whatever it touches regardless of input.
     const idle = mkWorld('free', 11);
     const ir = idle.robots[0];
     ir.pos = { x: -20, y: 0 };
@@ -877,11 +1200,6 @@ export function robotChecks(check: Check): void {
   }
 
   // ── THE HOPPER CAP IS THE HOPPER CAP ──────────────────────────────────────
-  /**
-   * `capturePollen` is the single place the cap is enforced, and it enforces it by RETURNING
-   * FALSE — not by throwing, and not by overwriting a slot. A robot parked on a pile with the
-   * intake held is the ordinary way to reach the limit.
-   */
   {
     const world = mkWorld('free', 13);
     const r = world.robots[0];
@@ -890,15 +1208,11 @@ export function robotChecks(check: Check): void {
     r.hopper.length = 0;
     world.balls.length = 0;
     const cap = bbHopperCap(r.spec);
-    // one more POLLEN than the hopper holds, all at the robot so every one is a candidate
     for (let i = 0; i <= cap; i++) world.balls.push(bbPollen(i + 1, 0, 0));
     let taken = 0;
     for (const b of [...world.balls]) if (capturePollen(world, r, b)) taken++;
     check('hopper: capture stops at the cap', taken === cap && r.hopper.length === cap, `took ${taken} of ${cap}`);
-    check(
-      'hopper: the refused POLLEN is still on the ground',
-      world.balls.filter((b) => b.state.kind === 'ground').length === 1,
-    );
+    check('hopper: the refused POLLEN is still on the ground', world.balls.filter((b) => b.state.kind === 'ground').length === 1);
     check('hopper: a full hopper still conserves the count', world.balls.length === cap + 1);
   }
 
@@ -927,12 +1241,7 @@ export function robotChecks(check: Check): void {
       flying.length === 1 && flying[0].pos.x === 5 && flying[0].vel.x === 60 && flying[0].vz === 40,
       flying.length === 1 ? `pos=${flying[0].pos.x},${flying[0].pos.y} vx=${flying[0].vel.x} vz=${flying[0].vz}` : '',
     );
-    // LIFO — a hopper is a stack and its feed path is at the top. Releasing the FIRST captured
-    // POLLEN instead is invisible in the shell (pollen are interchangeable) and wrong the
-    // moment Section 10 gives them a distinguishing property.
     check('release: the POLLEN released is the LAST one captured', flying.length === 1 && flying[0].id === cap);
-    // An EMPTY hopper must be a no-op, not a spawned POLLEN. It is the one path that could
-    // break conservation from nothing, so it gets its own check.
     const empty = mkWorld('free', 19);
     empty.robots[0].hopper.length = 0;
     const n = empty.balls.length;
@@ -942,17 +1251,9 @@ export function robotChecks(check: Check): void {
 
   // ── FIRING THROUGH THE PIPELINE EMPTIES THE HOPPER, CONSERVING ────────────
   /**
-   * The launcher's own path: hold `fire` with a full hopper until it is empty, and every POLLEN
-   * must have left with the count unchanged. Run for every ARCHETYPE, because each launches
-   * differently — a turret feeds one at a time from its ring, a drum meters a burst, a dumper
-   * fans its whole load in a tick — and conservation is the one thing all four owe.
-   *
-   * THE BUDGET IS DERIVED, NOT GUESSED. The first version of this check held `fire` for two
-   * seconds, which is a hidden assertion about the FEED RATE: a turret feeds one POLLEN every
-   * `BB_FIRE_INTERVAL`, so a 39-POLLEN hopper needs three seconds and the check failed on a
-   * mechanism that was working perfectly. Deriving the window from the cap and the interval
-   * (plus slack for the slowest archetype and the startup tick) asserts what is actually owed
-   * — that firing DRAINS the hopper — and survives every retune of an APPROX constant.
+   * Hold `fire` with a full hopper until it is empty, for every launcher. At (0, 0) a blue robot
+   * is on its own cell's CLOSED side, so there is no target: a manual fire still fires (a turret
+   * at the neutral speed, a dumper straight over its edge).
    */
   for (const scoreMode of BB_SCORE_MODES) {
     const world = mkWorld('free', 23, { scoreMode });
@@ -970,30 +1271,12 @@ export function robotChecks(check: Check): void {
     const before = world.balls.length;
     const seconds = cap * BB_FIRE_INTERVAL + 0.5;
     run(world, cmd({ fire: true }), seconds);
-    check(
-      `launch [${scoreMode}]: holding fire empties the hopper`,
-      r.hopper.length === 0,
-      `hopper=${r.hopper.length} after ${seconds.toFixed(2)}s`,
-    );
-    check(
-      `launch [${scoreMode}]: launching conserves the POLLEN count`,
-      world.balls.length === before,
-      `${before} -> ${world.balls.length}`,
-    );
-    check(
-      `launch [${scoreMode}]: no POLLEN is left stuck HELD`,
-      world.balls.every((b) => b.state.kind !== 'held'),
-      `held=${world.balls.filter((b) => b.state.kind === 'held').length}`,
-    );
+    check(`launch [${scoreMode}]: holding fire empties the hopper`, r.hopper.length === 0, `hopper=${r.hopper.length} after ${seconds.toFixed(2)}s`);
+    check(`launch [${scoreMode}]: launching conserves the POLLEN count`, world.balls.length === before, `${before} -> ${world.balls.length}`);
+    check(`launch [${scoreMode}]: no POLLEN is left stuck HELD`, world.balls.every((b) => b.state.kind !== 'held'), `held=${world.balls.filter((b) => b.state.kind === 'held').length}`);
   }
 
   // ── THE ROBOT-LANE SCENES HASH DETERMINISTICALLY ──────────────────────────
-  /**
-   * The property the field lane checks, over the scenes that exercise MECHANISMS —
-   * `intake-line`, `launch-wall-bounce` and all 26 archetype sheets. Cheap, and it is what
-   * makes the contact sheet a reproducible artefact: a cell whose hash moves between runs is a
-   * cell whose screenshot cannot be compared with yesterday's.
-   */
   for (const scene of BB_SCENES.filter((s) => s.lane === 'robot')) {
     const last = Math.max(...scene.stills);
     const h1 = worldHash(bbSceneAt(scene, last));
@@ -1002,19 +1285,12 @@ export function robotChecks(check: Check): void {
   }
 
   // ── AND NOTHING IN THIS LANE READS THE CLOCK ──────────────────────────────
-  // `SIM_DT` is the only time a mechanism may know about. Every mechanism is exercised at once
-  // here — drive, intake and fire held together — so a `Date.now()` inside any of them makes
-  // the two runs diverge.
   {
     const a = mkWorld('free', 29);
     const b = mkWorld('free', 29);
     run(a, cmd({ driveY: 1, intake: true, fire: true }), 4);
     run(b, cmd({ driveY: 1, intake: true, fire: true }), 4);
-    check(
-      'determinism: two identical robot runs hash identically',
-      worldHash(a) === worldHash(b),
-      `${worldHash(a)} vs ${worldHash(b)}`,
-    );
+    check('determinism: two identical robot runs hash identically', worldHash(a) === worldHash(b), `${worldHash(a)} vs ${worldHash(b)}`);
     check('determinism: ...after exactly the expected number of ticks', a.tick === Math.round(4 / C.SIM_DT), `tick=${a.tick}`);
   }
 }

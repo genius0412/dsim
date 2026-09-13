@@ -29,10 +29,19 @@ import {
 import { HOME_DESC } from '../../src/seo';
 import { CHAIN_CATALYST_LABELS } from '../../src/games/chain/labels';
 import { INTAKE_SHORT } from '../../src/ui/labelData';
+import type { RobotSpec } from '../../src/types';
+import { SPONSOR, sponsorActive } from '../../src/sponsor';
 import { BB_HOOD_DEFAULT_DEG } from '../../src/games/biobuzz/config';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
 import type { BbMechSpec } from '../../src/games/biobuzz/mechs';
+import { bbConfigSummary, bbLiftKindLabel } from '../../src/games/biobuzz/labels';
+import {
+  BB_PRESET_LIST,
+  BB_REAL_PRESETS,
+  BB_STARTER_BOTS,
+  bbPresetLines,
+} from '../../src/games/biobuzz/presets';
 import { bbCoerce, type Check } from './harness';
 
 /** a section heading in the log — the suite is read as a transcript, like smoke.ts */
@@ -173,19 +182,83 @@ export function coreChecks(check: Check): void {
   // an id with no season is visible (nothing restricts it) rather than throwing
   check('gameVisibleOn is true for an id with no season', gameVisibleOn('nope' as GameId, 'stable'));
 
+  // ---- the four loadouts both summary surfaces are pinned against --------
+  // A launcher is MANDATORY (owner ruling 2026-09-12) and a Box Tube is optional, and a launcher
+  // is one of three kinds, so these four are the shapes that print differently: a single turret
+  // with and without a tube, a double turret (two cells to name) and a dumper (an edge and a
+  // hood) with a tube.
+  //
+  // The Box Tube's name is CLOCK-DEPENDENT by design — it carries the sponsor's product name only
+  // inside `SPONSOR.term` — so the expected strings are built from `bbLiftKindLabel` rather than
+  // typing either spelling; both spellings are pinned against the term further down.
+  const TUBE = bbLiftKindLabel('vslide');
+  const LOADOUTS: { name: string; mech: BbMechSpec; tiles: string[]; line: string }[] = [
+    {
+      name: 'single turret',
+      mech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null },
+      // a TURRET solves its own elevation per shot, so it has no hood to report
+      tiles: ['Single turret / launcher / CENTER', 'No box tube / flower scoring'],
+      line: 'Single turret · FRONT+BACK sweeper · CENTER launcher · 4 pollen',
+    },
+    {
+      name: 'single turret + Box Tube',
+      mech: {
+        launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG },
+        lift: { kind: 'vslide', mount: 'back' },
+      },
+      tiles: ['Single turret / launcher / CENTER', `${TUBE} / flower scoring / BACK`],
+      line: `Single turret · FRONT+BACK sweeper · CENTER launcher · ${TUBE} · BACK · 4 pollen`,
+    },
+    {
+      name: 'double turret',
+      mech: {
+        launcher: { kind: 'twinturret', mount: 'right', mount2: 'left', hoodDeg: BB_HOOD_DEFAULT_DEG },
+        lift: null,
+      },
+      tiles: ['Double turret / launcher / RIGHT + LEFT', 'No box tube / flower scoring'],
+      line: 'Double turret · FRONT+BACK sweeper · RIGHT + LEFT launcher · 4 pollen',
+    },
+    {
+      name: 'dumper + Box Tube',
+      mech: {
+        launcher: { kind: 'dumper', mount: 'front', hoodDeg: 80 },
+        lift: { kind: 'vslide', mount: 'back' },
+      },
+      tiles: ['Dumper / launcher / FRONT · 80° hood', `${TUBE} / flower scoring / BACK`],
+      line: `Dumper · FRONT+BACK sweeper · FRONT launcher · ${TUBE} · BACK · 4 pollen`,
+    },
+  ];
+  /** the raw build for a loadout — the flat mirror is set to agree with the container, the way
+   * every Builder edit sends it. */
+  const rawOf = (m: BbMechSpec): RobotSpec => ({
+    ...BB_DEFAULT_SPEC,
+    scoreMode: m.launcher.kind,
+    shooterMount: m.launcher.mount,
+    bbMech: m,
+  });
+  /** NOT VACUOUS: the COERCED spec still carries the loadout being described. A coercer that
+   * moved a turret, dropped `mount2`, re-clamped the hood or relocated the tube would make the
+   * text below describe a different robot than the one the test built. */
+  const carries = (spec: RobotSpec, m: BbMechSpec): boolean => {
+    const got = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
+    const want = m.launcher;
+    return (
+      got.kind === want.kind &&
+      got.mount === want.mount &&
+      got.mount2 === want.mount2 &&
+      (want.kind !== 'dumper' || got.hoodDeg === want.hoodDeg) &&
+      (bbLiftOf(spec)?.mount ?? null) === (m.lift?.mount ?? null)
+    );
+  };
+
   // ---- the builder hero's per-game stat tiles (the `statTiles` slot) -------
-  // THE SAME SEAM BUG THE PRESET LIST HAD, at a second site. `Menu.tsx` picks the
-  // hero's mechanism tiles with `mod.statTiles ? <slot> : isDecode ? <intake> :
-  // <scoring + catalyst>`. That tail is an `else`, not a default, so a game filling
-  // neither branch is not shown "no per-game tile" — it is shown CHAIN REACTION's,
-  // which is how BIOBUZZ came to advertise a "Claw arm · CATALYST" chip off
-  // `spec.catalystType`, a field `coerceBiobuzzSpec` DELETES. It rendered a plausible
-  // tile the whole time, which is why nothing reported it.
+  // THE SAME SEAM BUG THE PRESET LIST HAD, at a second site. `Menu.tsx` picks the hero's
+  // mechanism tiles with `mod.statTiles ? <slot> : isDecode ? <intake> : <scoring + catalyst>`.
+  // That tail is an `else`, not a default, so a game filling neither branch is shown CHAIN
+  // REACTION's tiles — which is how BIOBUZZ once advertised a CATALYST.
   section('builder stat tiles (the per-game hero summary)');
   const bbTiles = moduleFor('biobuzz').statTiles;
   check('biobuzz FILLS the statTiles slot', typeof bbTiles === 'function');
-  // the two shipped games keep their inline branches: filling the slot for them would
-  // put a behaviour change inside a commit whose only job is making room for a third.
   check('decode does NOT fill it (its inline branch stays the live path)', !moduleFor('decode').statTiles);
   check('chain does NOT fill it (its inline branch stays the live path)', !moduleFor('chain').statTiles);
 
@@ -194,61 +267,18 @@ export function coreChecks(check: Check): void {
     `${t.value} / ${t.label}${t.sub ? ` / ${t.sub}` : ''}`;
   const tilesFor = (raw: unknown): string[] => (bbTiles ? bbTiles(bbCoerce(raw)).map(fmt) : []);
 
-  // ALL FOUR LOADOUTS. `bbMech` is two independently-optional slots, so a build may carry a
-  // launcher, a lift, both or neither — and an ABSENT mechanism has to SAY so rather than
-  // vanish, or the reader cannot tell a launcher-less robot (Studica's StarterBot) from a
-  // tile the page failed to draw. Pinned as the exact user-visible text.
-  const LOADOUTS: { name: string; mech: BbMechSpec; want: string[] }[] = [
-    {
-      name: 'launcher + lift',
-      mech: {
-        launcher: { kind: 'drum', mount: 'front', hoodDeg: 40 },
-        lift: { kind: 'vslide', mount: 'back', maxZ: 24 },
-      },
-      want: ['Drum shooter / launcher / FRONT · 40° hood', 'Vertical slide / lift / BACK · 24" high'],
-    },
-    {
-      name: 'launcher only',
-      mech: {
-        launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG },
-        lift: null,
-      },
-      // a TURRET solves its own elevation per shot, so it has no hood to report
-      want: ['Turret shooter / launcher / CENTER', 'No lift / lift'],
-    },
-    {
-      name: 'lift only',
-      mech: { launcher: null, lift: { kind: 'vslide', mount: 'center', maxZ: 29 } },
-      want: ['No launcher / launcher', 'Vertical slide / lift / CENTER · 29" high'],
-    },
-    {
-      name: 'neither (a drivetrain and a sweeper — a real, legal build)',
-      mech: { launcher: null, lift: null },
-      want: ['No launcher / launcher', 'No lift / lift'],
-    },
-  ];
   for (const l of LOADOUTS) {
-    const raw = { ...BB_DEFAULT_SPEC, bbMech: l.mech };
-    // NOT VACUOUS: assert the COERCED spec still carries the loadout being described. A
-    // coercer that nulled the launcher would make "No launcher" pass for the wrong reason —
-    // and `src/sim/spawn.ts` writes `scoreMode` unconditionally, so a launcher-less build is
-    // exactly the one at risk of growing a phantom turret on the way through.
+    const raw = rawOf(l.mech);
     const spec = bbCoerce(raw);
-    check(
-      `${l.name}: the coerced spec really carries that loadout`,
-      (bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG) !== null) === (l.mech.launcher !== null) &&
-        (bbLiftOf(spec) !== null) === (l.mech.lift !== null),
-    );
+    check(`${l.name}: the coerced spec really carries that loadout`, carries(spec, l.mech), JSON.stringify(spec.bbMech));
     const got = tilesFor(raw);
-    check(`stat tiles — ${l.name}`, got.join(' | ') === l.want.join(' | '), got.join(' | '));
+    check(`stat tiles — ${l.name}`, got.join(' | ') === l.tiles.join(' | '), got.join(' | '));
   }
 
   // NO FOREIGN VOCABULARY, anywhere in what a BIOBUZZ builder prints. CATALYST is Chain
   // Reaction's word and ARTIFACT is DECODE's; this game's elements are POLLEN and NECTAR.
   // The CR catalyst labels are taken from CR's own map rather than retyped, so a rename
   // there cannot quietly make this check stop covering the string it was written for.
-  // (The four ARCHETYPE names are deliberately shared between the two games — see
-  // `bbLauncherOf` — so they are not, and cannot be, part of this list.)
   const FOREIGN = [
     ...Object.values(CHAIN_CATALYST_LABELS),
     'catalyst',
@@ -260,11 +290,7 @@ export function coreChecks(check: Check): void {
     'motif',
     'classifier',
   ].map((s) => s.toLowerCase());
-  const everyBuild = [
-    ...LOADOUTS.map((l) => ({ ...BB_DEFAULT_SPEC, bbMech: l.mech })),
-    BB_DEFAULT_SPEC,
-    ...(moduleFor('biobuzz').presets?.list ?? []),
-  ];
+  const everyBuild = [...LOADOUTS.map((l) => rawOf(l.mech)), BB_DEFAULT_SPEC, ...(moduleFor('biobuzz').presets?.list ?? [])];
   const printed = everyBuild.flatMap(tilesFor).join(' | ').toLowerCase();
   for (const word of FOREIGN) {
     check(`biobuzz stat tiles never say "${word}"`, !printed.includes(word));
@@ -272,26 +298,20 @@ export function coreChecks(check: Check): void {
   // and the CAPTIONS are this game's own mechanisms, not the CHAIN arm's two
   const captions = new Set(everyBuild.flatMap((s) => (bbTiles ? bbTiles(bbCoerce(s)).map((t) => t.label) : [])));
   check(
-    'the captions are launcher + lift (not CR’s scoring + catalyst)',
-    captions.size === 2 && captions.has('launcher') && captions.has('lift'),
+    'the captions are launcher + flower scoring (not CR’s scoring + catalyst)',
+    captions.size === 2 && captions.has('launcher') && captions.has('flower scoring'),
     [...captions].join(', '),
   );
 
   // ---- saved-robot lines (the `labels.configSummary` slot) ------------------
   // THE SAME SEAM BUG THE PRESET LIST HAD, at a second site. `Menu.tsx` picks the detail
   // line under each SAVED robot with `mod.labels?.configSummary ? <slot> : isDecode ?
-  // <DECODE fields> : <CR fields>`. That tail is an `else`, not a default, so a game filling
-  // neither branch was not described plainly — it was described in CHAIN REACTION's words,
-  // off `scoreMode`, the LOSSY legacy MIRROR `src/sim/spawn.ts` writes unconditionally. A
-  // launcher-less BIOBUZZ build (Studica's StarterBot) was therefore printed as a turret it
-  // does not have, and the LIFT half of `bbMech` was omitted entirely. It rendered a
-  // plausible sentence the whole time, which is why nothing reported it.
+  // <DECODE fields> : <CR fields>`. A game filling neither branch was described in CHAIN
+  // REACTION's words, off the lossy `scoreMode` mirror, with the Box Tube omitted entirely.
   section('saved-robot lines (the per-game config summary)');
   {
     const summary = moduleFor('biobuzz').labels?.configSummary;
     check('biobuzz FILLS the labels.configSummary slot', typeof summary === 'function');
-    // the two shipped games keep their inline arms: filling the slot for them would put a
-    // behaviour change inside a commit whose only job is making room for a third game.
     check('decode does NOT fill labels (its inline arm stays the live path)', !moduleFor('decode').labels);
     check('chain does NOT fill labels (its inline arm stays the live path)', !moduleFor('chain').labels);
 
@@ -307,8 +327,7 @@ export function coreChecks(check: Check): void {
       'Menu.tsx renders it as the `.om` detail line',
       menu.includes('<span className="om">{gameSummary(r)}</span>'),
     );
-    // and BOTH shipped arms are still there, byte for byte. A "fix" that routed DECODE and CR
-    // through the slot as well would be a behaviour change to two live games.
+    // and BOTH shipped arms are still there, byte for byte.
     check(
       'the DECODE saved-robot arm is unchanged',
       menu.includes('{INTAKE_SHORT[r.intake]} · {r.flywheelInertia} inertia'),
@@ -317,92 +336,55 @@ export function coreChecks(check: Check): void {
       'the CR saved-robot arm is unchanged',
       menu.includes('{CHAIN_MODE_LABELS[r.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE]}'),
     );
-    // THE PRESET CARD BODY has no equivalent gap, and this is what keeps it that way: its
-    // slot test is the SAME slot that picks the LIST, so the words under a card can never
-    // describe a robot out of a different game's list. Keying the body on `labels` instead
-    // would reintroduce exactly that split.
+    // THE PRESET CARD BODY is keyed on the SAME slot that picks the LIST, so the words under a
+    // card can never describe a robot out of a different game's list.
     check(
       'the preset card body is keyed on the same slot as the preset list',
       menu.includes('const presets = gamePresets ? gamePresets.list :') &&
         menu.includes('{gamePresets ? ('),
     );
+    // THE DRIVETRAIN CHROME IS EVERY GAME'S. A filled `Builder` slot used to replace the whole
+    // Customize section, and BIOBUZZ lost the drivetrain picker (and name, team, RPM) with it.
+    // The picker must render BEFORE the Builder ternary opens, i.e. outside it.
+    {
+      const drive = menu.indexOf('<h3 className="ds-subh">Drivetrain</h3>');
+      const slot = menu.indexOf('{Builder ? (');
+      check(
+        'Menu.tsx renders the Drivetrain picker outside the Builder slot (before its ternary)',
+        drive >= 0 && slot >= 0 && drive < slot,
+        `drivetrain@${drive} builder@${slot}`,
+      );
+    }
 
     /** the sentence as a saved slot, a leaderboard row and the strategy card all print it. */
     const say = (raw: unknown): string => (summary ? summary(bbCoerce(raw)) : '');
+    check('the slot IS bbConfigSummary', summary === bbConfigSummary);
 
-    // ALL FOUR LOADOUTS. `bbMech` is two independently-optional slots, so a build may carry a
-    // launcher, a lift, both or neither — and an ABSENT mechanism has to SAY so rather than
-    // vanish, or a launcher-less robot reads as one whose line the page failed to finish.
-    // Pinned as the exact user-visible text.
-    const LOADOUTS: { name: string; mech: BbMechSpec; want: string }[] = [
-      {
-        name: 'launcher + lift',
-        mech: {
-          launcher: { kind: 'drum', mount: 'front', hoodDeg: 40 },
-          lift: { kind: 'vslide', mount: 'back', maxZ: 24 },
-        },
-        want: 'Drum shooter · FRONT+BACK sweeper · FRONT launcher · Vertical slide · BACK · 4 pollen',
-      },
-      {
-        name: 'launcher only',
-        mech: {
-          launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG },
-          lift: null,
-        },
-        want: 'Turret shooter · FRONT+BACK sweeper · CENTER launcher · 4 pollen',
-      },
-      {
-        name: 'lift only',
-        mech: { launcher: null, lift: { kind: 'vslide', mount: 'center', maxZ: 29 } },
-        want: 'No launcher · FRONT+BACK sweeper · Vertical slide · CENTER · 4 pollen',
-      },
-      {
-        name: 'neither (a drivetrain and a sweeper — a real, legal build)',
-        mech: { launcher: null, lift: null },
-        want: 'No launcher · FRONT+BACK sweeper · 4 pollen',
-      },
-    ];
     for (const l of LOADOUTS) {
-      const raw = { ...BB_DEFAULT_SPEC, bbMech: l.mech };
-      // NOT VACUOUS: assert the COERCED spec still carries the loadout being described. A
-      // coercer that nulled the launcher would make "No launcher" pass for the wrong reason —
-      // and `src/sim/spawn.ts` writes `scoreMode` unconditionally, so a launcher-less build is
-      // exactly the one at risk of growing a phantom turret on the way through.
-      const spec = bbCoerce(raw);
-      check(
-        `${l.name}: the coerced spec really carries that loadout`,
-        (bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG) !== null) === (l.mech.launcher !== null) &&
-          (bbLiftOf(spec) !== null) === (l.mech.lift !== null),
-      );
-      check(`saved-robot line — ${l.name}`, say(raw) === l.want, say(raw));
+      const raw = rawOf(l.mech);
+      check(`${l.name}: the coerced spec really carries that loadout`, carries(bbCoerce(raw), l.mech));
+      check(`saved-robot line — ${l.name}`, say(raw) === l.line, say(raw));
     }
-    // A LIFT IS HALF THE BUILD. Two robots differing only by one must not read identically —
-    // that omission is half of what the CR arm did to a BIOBUZZ saved slot, and it is the
-    // failure a picker gets blamed for ("changing it did nothing").
+    // A BOX TUBE IS HALF THE BUILD. Two robots differing only by one must not read identically.
     check(
-      'a lift CHANGES the sentence',
-      say({ ...BB_DEFAULT_SPEC, bbMech: LOADOUTS[1].mech }) !==
-        say({
-          ...BB_DEFAULT_SPEC,
-          bbMech: { launcher: LOADOUTS[1].mech.launcher, lift: LOADOUTS[2].mech.lift },
-        }),
+      'a Box Tube CHANGES the sentence',
+      say(rawOf(LOADOUTS[0].mech)) !== say(rawOf(LOADOUTS[1].mech)),
+    );
+    // and so does the NECTAR turret's cell: two double turrets differing only by it are two robots
+    check(
+      'a double turret’s NECTAR cell CHANGES the sentence',
+      say(rawOf(LOADOUTS[2].mech)) !==
+        say(rawOf({ ...LOADOUTS[2].mech, launcher: { ...LOADOUTS[2].mech.launcher, mount2: 'backleft' } })),
     );
 
-    const everyBuild: unknown[] = [
-      ...LOADOUTS.map((l) => ({ ...BB_DEFAULT_SPEC, bbMech: l.mech })),
-      BB_DEFAULT_SPEC,
-      ...(moduleFor('biobuzz').presets?.list ?? []),
-    ];
-    const printed = everyBuild.map(say).join(' | ').toLowerCase();
+    const builds: unknown[] = [...LOADOUTS.map((l) => rawOf(l.mech)), BB_DEFAULT_SPEC, ...BB_PRESET_LIST];
+    const lines = builds.map(say).join(' | ').toLowerCase();
 
     // NO FOREIGN VOCABULARY. CATALYST and PARTICLE are Chain Reaction's words; ARTIFACT,
     // SORTER and INERTIA are DECODE's. This game's element is POLLEN. The CR catalyst labels
-    // and DECODE's intake names are taken from their own maps rather than retyped, so a
-    // rename there cannot quietly make this stop covering the string it was written for.
-    // NOT swept, and they are the interesting exclusions: the four ARCHETYPE names
-    // (`BB_MODE_LABELS` is CR's map's twin — see `bbLauncherOf`) and the word SWEEPER, which
-    // both games genuinely use for the same part. A shared word is not a leak.
-    const FOREIGN = [
+    // and DECODE's intake names are taken from their own maps rather than retyped. NOT swept:
+    // SWEEPER, which both games genuinely use for the same part. A shared word is not a leak.
+    const FOREIGN_LINE = [
       ...Object.values(CHAIN_CATALYST_LABELS),
       ...Object.values(INTAKE_SHORT),
       'catalyst',
@@ -414,25 +396,87 @@ export function coreChecks(check: Check): void {
       'inertia',
       'motif',
       'classifier',
+      'drum',
+      'no launcher',
+      'vertical slide',
     ].map((w) => w.toLowerCase());
-    for (const word of FOREIGN) {
-      check(`biobuzz saved-robot lines never say "${word}"`, !printed.includes(word));
+    for (const word of FOREIGN_LINE) {
+      check(`biobuzz saved-robot lines never say "${word}"`, !lines.includes(word));
     }
     // and the POSITIVE half: every build names this game's own element, so a summary cannot
     // pass the sweep above by saying nothing at all.
+    check('every biobuzz build names POLLEN', builds.every((b) => say(b).includes('pollen')));
+  }
+
+  // ---- the preset cards: ONE StarterBot, no vendor names -------------------
+  // Owner ruling 2026-09-12: the kit robots collapse into one card, and nothing user-visible
+  // names a company. A vendor name slipping back into a card is exactly the kind of thing
+  // nobody reports, because the card still looks fine.
+  section('preset cards (one StarterBot, no vendor names)');
+  {
+    const starters = BB_PRESET_LIST.filter((p) => /starter\s*bot/i.test(p.name));
     check(
-      'every biobuzz build names POLLEN',
-      everyBuild.every((b) => say(b).includes('pollen')),
+      'exactly one StarterBot card',
+      starters.length === 1 && BB_STARTER_BOTS.length === 1,
+      BB_PRESET_LIST.map((p) => p.name).join(', '),
     );
-    // THE PHANTOM TURRET, at this surface. Studica publishes no launcher, and its card has to
-    // say so rather than borrow an archetype name off the legacy `scoreMode` mirror.
-    const studica = (moduleFor('biobuzz').presets?.list ?? []).find((r) => r.name.includes('Studica'));
-    check('a Studica card is in the preset list', !!studica);
     check(
-      'the launcher-less StarterBot says “No launcher”, not an archetype',
-      !!studica && say(studica).startsWith('No launcher'),
-      studica ? say(studica) : '(no card)',
+      'realCount is 1, and the StarterBot leads the list',
+      BB_REAL_PRESETS === 1 && BB_PRESET_LIST[0].name === 'StarterBot',
+      `${BB_REAL_PRESETS} / ${BB_PRESET_LIST[0]?.name}`,
     );
+    check(
+      'the module slot offers that list',
+      (moduleFor('biobuzz').presets?.list ?? []).map((p) => p.name).join(',') === BB_PRESET_LIST.map((p) => p.name).join(','),
+    );
+    const VENDOR = /gobilda|\brev\b|andymark|robits|studica/i;
+    const shown = BB_PRESET_LIST.flatMap((p) => {
+      const l = bbPresetLines(p);
+      return [p.name, p.teamName, l.meta, l.zone ?? '', bbConfigSummary(p)];
+    });
+    const hits = shown.filter((t) => VENDOR.test(t));
+    check('no vendor name in any preset name, team name, card line or summary', hits.length === 0, hits.join(' | '));
+    // not vacuous: the sweep read real text for every card, and there is more than one card
+    check(
+      '...and the sweep actually read every card',
+      BB_PRESET_LIST.length >= 4 && shown.every((t) => t.length > 0),
+      `${BB_PRESET_LIST.length} cards`,
+    );
+  }
+
+  // ---- the Box Tube's product name follows the sponsor term --------------
+  // "OFFSET™ Box Tube" is part of the sponsorship (docs/sponsor.md), so it has to come down
+  // when the term ends, exactly like every placement. The instants come from `SPONSOR.term`
+  // itself, so a renewal edits one date and this keeps covering it.
+  section('Box Tube label (follows the sponsor term)');
+  {
+    const from = Date.parse(`${SPONSOR.term.from}T00:00:00Z`);
+    const until = Date.parse(`${SPONSOR.term.until}T00:00:00Z`);
+    const inside = from + (until - from) / 2;
+    const after = until + 24 * 3600e3;
+    check('the sponsor is live mid-term (else the next check proves nothing)', sponsorActive(inside));
+    check(
+      'inside the term the Box Tube carries OFFSET™',
+      bbLiftKindLabel('vslide', inside).includes('OFFSET™'),
+      bbLiftKindLabel('vslide', inside),
+    );
+    check(
+      'after the term it does not',
+      !bbLiftKindLabel('vslide', after).includes('OFFSET'),
+      bbLiftKindLabel('vslide', after),
+    );
+    check('...and reads as the plain part name', bbLiftKindLabel('vslide', after) === 'Box tube');
+  }
+
+  // ---- the live HUD shows WHAT is held, not a count ------------------------
+  // Owner ruling 2026-09-12: the robot row draws one disc per held element and no count chip.
+  // Pinned at the source because a count chip creeping back in still renders plausibly.
+  section('BIOBUZZ HUD chips');
+  {
+    const hudSrc = readRepo('src/games/biobuzz/HudSlots.tsx');
+    check('HudSlots.tsx renders no HOPPER count chip', !hudSrc.includes('HOPPER'));
+    check('HudSlots.tsx renders the held elements as hopper pips', hudSrc.includes('hopper-pip'));
+    check('HudSlots.tsx shows the FLOWER IN REACH chip', hudSrc.includes('FLOWER IN REACH'));
   }
 
   // ---- the STATIC crawler files -------------------------------------------

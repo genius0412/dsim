@@ -6,12 +6,12 @@ import {
   BB_LAUNCH_PLATE_GAP,
   BB_LAUNCH_PLATE_OVERHANG,
   BB_POLLEN_R,
-  BB_TWIN_BARREL_OFFSET,
 } from './config';
 import { bbLauncherOf, bbLiftOf } from './mechs';
-import { BB_LIFT_MAST_R, bbLiftMastLocal } from './parts';
-import { EDGE_ANGLE, bbMouthFrame, bbShooterEdgeOf, edgeGeom, turretLocal, turretRadius } from './mounts';
-import { bbFootprint, bbMouths } from './robot';
+import { BB_MODE_LABELS } from './labels';
+import { BB_PLACE_MARK_R, bbBoxTubeGlyph } from './parts';
+import { EDGE_ANGLE, type BbMountPos, bbMouthFrame, bbShooterEdgeOf, edgeGeom, turretLocal, turretRadius } from './mounts';
+import { bbFootprint, bbMouths, bbPlacePointLocal } from './robot';
 
 /** dimension-label type size, in the viewBox's inch units */
 const DIM_FONT = 1.7;
@@ -23,17 +23,18 @@ const DIM_FONT = 1.7;
  * the `ds-*` design tokens so it themes with the app.
  *
  * Copied and owned from `games/chain/RobotPreview.tsx` with the catalyst mechanism deleted —
- * BIOBUZZ has no second manipulator, so there is no arm/claw/rail/launcher branch, and with it
- * goes the corner-protrusion arithmetic the viewBox needed to keep a claw tip on screen.
+ * BIOBUZZ has no second manipulator, so there is no arm/claw/rail branch.
  *
  * ── IT DRAWS FROM THE SIM'S OWN GEOMETRY ───────────────────────────────────
- * The mouths come from `bbMouths` and the viewBox extents from `bbFootprint` — the same two
- * functions the canvas sprite and the capture test use. The preview and the in-match sprite are
- * therefore the same mechanism drawn twice, not two drawings kept in sync by hand. That is the
- * whole reason `robot.ts` exists as a contract surface, and the item-4 archetype sheets put
- * the two side by side precisely so a divergence is visible rather than inferred.
+ * The mouths come from `bbMouths`, the viewBox extents from `bbFootprint`, the turrets from
+ * `turretLocal`, and the Box Tube's marker from `bbPlacePointLocal` — the same functions the
+ * canvas sprite, the capture test and the FLOWER reach test use. The preview and the in-match
+ * sprite are therefore the same mechanism drawn twice, not two drawings kept in sync by hand,
+ * and the archetype sheets put the two side by side precisely so a divergence is visible.
  *
- * Purely presentational: it reads the spec and nothing else — no world, no clock, no state.
+ * Purely presentational: it reads the spec and nothing else — no world, no clock, no state. So
+ * it draws NO held elements (there is no hopper to read) and the placement marker is always the
+ * hollow, not-in-reach ring.
  */
 /**
  * `fluid` hands the WIDTH to the layout: the svg takes 100% of its container and keeps its own
@@ -64,26 +65,27 @@ export function BiobuzzRobotPreview({
   const half = ext.half; // ±y half-span (grown by a flank mount)
   const tipY = -ext.front; // front-most in SCREEN y (robot +x → screen −y), for the viewBox
   const rearY = ext.rear; // rear-most in SCREEN y
-  // THE MECHANISM LOADOUT (`docs/biobuzz/plan-mechanisms.md`) — a build may carry a LAUNCHER, a
-  // LIFT, both, or neither. `bbLauncherOf`/`bbLiftOf` (`mechs.ts`) are the one place that reads
-  // `spec.bbMech`, safe to call on the RAW spec this live builder preview is handed (the same
-  // reason `footprintExtents` calls `bbLauncherOf` rather than reading `spec.scoreMode` cold):
-  // a launcher-less build (Studica's StarterBot) must draw NOTHING here, and `scoreMode` alone
-  // cannot say that — the shared coercer defaults it on every spec, launcher or not.
+  // THE LOADOUT — a mandatory launcher and an optional Box Tube, read through `mechs.ts`, which is
+  // safe on the RAW spec this live builder preview is handed.
   const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
   const lift = bbLiftOf(spec);
+  // THE PLACEMENT POINT lies OUTSIDE the footprint by construction, so the viewBox has to grow to
+  // include it — in SCREEN coords, ROBOT_FRAME sends robot (x,y) to (−y,−x).
+  const place = bbPlacePointLocal(spec);
+  const markSX = place ? -place.y : 0;
+  const markSY = place ? -place.x : 0;
+  const markR = BB_PLACE_MARK_R + 0.9; // the ring plus its crosshair ticks
 
-  // viewBox spans the widest of chassis/intake plus a margin, kept square-ish. The dimension
-  // label is centred and can be WIDER than a narrow chassis, so it has to be measured in too —
-  // an <svg> clips to its viewport, and a 14.5"-wide robot would otherwise lop the ends off
+  // viewBox spans the widest of chassis/intake/marker plus a margin. The dimension label is
+  // centred and can be WIDER than a narrow chassis, so it has to be measured in too — an <svg>
+  // clips to its viewport, and a 14.5"-wide robot would otherwise lop the ends off
   // `17" wide · 15" long`.
   const dimLabel = `${w}" wide · ${len}" long`;
   const labelHalf = (dimLabel.length * DIM_FONT * 0.56) / 2; // ~0.56em avg advance
-  const halfSpan = Math.max(w / 2, half, labelHalf) + 2.5;
-  const top = tipY - 2;
-  // The label clears whatever hangs off the BACK — a rear or front+back sweeper. It used to sit
-  // at the chassis half-length, so a rear mount printed the dimensions over its own rollers.
-  const labelY = rearY + 2.6;
+  const halfSpan = Math.max(w / 2, half, labelHalf, place ? Math.abs(markSX) + markR : 0) + 2.5;
+  const top = Math.min(tipY, place ? markSY - markR : tipY) - 2;
+  // The label clears whatever hangs off the BACK — a rear sweeper, or a marker behind the robot.
+  const labelY = Math.max(rearY, place ? markSY + markR : rearY) + 2.6;
   const bottom = labelY + DIM_FONT + 0.9;
   const vbW = halfSpan * 2;
   const vbH = bottom - top;
@@ -173,94 +175,95 @@ export function BiobuzzRobotPreview({
     </g>
   ) : null;
 
-  // BIOBUZZ archetype launcher: drum = one cylinder along the mounted edge; dumper = a tray on
-  // a pivot; turret/twinturret = ring + flywheel plates (top-mounted, so they ignore the
-  // firing edge and use the mount POSITION instead). Drum/dumper are authored along robot +x
-  // and rotated onto their mounted edge, so a left/right mount spans the chassis LENGTH —
-  // matching how `bbLaunch` spreads the shot.
-  //
-  // Geometry is keyed off `launcher`'s OWN resolved mount when this build has one, rather than
-  // `spec.shooterMount` read cold: on a live, not-yet-coerced builder spec the two can disagree
-  // (`bbLauncherOf` is `mechs.ts`'s one migration/validation authority for the field), and
-  // falling back to `spec` itself when there is no launcher costs nothing — every value below
-  // goes unused the moment `launcherEl` resolves to `null`.
-  const mountSpec = launcher
-    ? { ...spec, shooterMount: launcher.mount, shooterRear: launcher.mount === 'back' }
-    : spec;
-  const sEdge = bbShooterEdgeOf(mountSpec); // drum/dumper fire over a SIDE, never a corner
-  const sGeom = edgeGeom(mountSpec, sEdge);
-  // where a TURRET is bolted (it aims itself, so its mount is a position, not a facing)
-  const tOrigin = turretLocal(mountSpec); // the SAME point the sim launches from
-  const tR = turretRadius(mountSpec); // ...and the same ring size
-  const teeth = Math.max(14, Math.round(tR * 6)); // slew-ring teeth, as in the sprite
-  // THE DRUM is ONE CYLINDER across (almost) the whole mounted edge on a single shaft — not a
-  // row of separate wheels, which is a different machine. Bearing blocks at both ends, and
-  // traction bands wrapped along its length.
-  const drumHalf = sGeom.span * 0.9;
-  const drumDia = 3.3;
-  const drumX = sGeom.dist - drumDia / 2 - 0.55; // its axis, just inside the frame line
-  const drumRings = Math.max(4, Math.round((drumHalf * 2) / 2.1));
+  // THE DUMPER: a tray on a pivot, authored along robot +x and rotated onto its mounted edge, so a
+  // left/right mount spans the chassis LENGTH — matching how `bbLaunch` spreads the shot. Keyed
+  // off the launcher's OWN resolved mount rather than `spec.shooterMount` read cold.
+  const sEdge = bbShooterEdgeOf({ shooterMount: launcher.mount }); // a dumper fires over a SIDE
+  const sGeom = edgeGeom(spec, sEdge);
   const lineHalf = sGeom.span * BB_LAUNCH_LINE_FRAC; // dumper tray width
   const dumpPivot = sGeom.dist - 7.4;
   const dumpLip = sGeom.dist - 0.9;
-  // `launcher === null` (a real, shipping launcher-less build — Studica's StarterBot publishes
-  // none) draws NOTHING here: no ring, no plates, no barrel. That absence is the point, not a
-  // fallback — see the file header.
-  const launcherEl = !launcher
-    ? null
-    : launcher.kind === 'drum' ? (
-      <g transform={`${ROBOT_FRAME} rotate(${deg(EDGE_ANGLE[sEdge])})`}>
-        {/* the HOOD a POLLEN is pinched against, behind the barrel */}
-        <rect
-          x={drumX - drumDia / 2 - 1.15}
-          y={-drumHalf - 0.5}
-          width={1.15}
-          height={(drumHalf + 0.5) * 2}
-          rx={0.35}
-          fill={stroke}
-          opacity={0.55}
-        />
-        <rect
-          x={drumX - drumDia / 2}
-          y={-drumHalf}
-          width={drumDia}
-          height={drumHalf * 2}
-          rx={drumDia * 0.34}
+  const tR = turretRadius(spec); // the sim's ring size, for every turret
+  const teeth = Math.max(14, Math.round(tR * 6)); // slew-ring teeth, as in the sprite
+
+  /**
+   * ONE TURRET at `pos`, stowed facing forward. Authored in SCREEN space (unlike the chassis-frame
+   * groups), so the robot-frame offset is mapped by hand: ROBOT_FRAME sends robot (x,y) → screen
+   * (−y,−x). A DOUBLE turret draws this twice; its NECTAR turret carries an accent rim and a second
+   * inner rim, the same SHAPE cue the in-match sprite gives it (the preview has no alliance, so the
+   * accent token stands in for the alliance colour there).
+   */
+  const turretEl = (pos: BbMountPos, nectar: boolean) => {
+    const t = turretLocal(spec, pos); // the SAME point the sim launches from
+    const gap = BB_LAUNCH_PLATE_GAP;
+    const plate = 0.42;
+    // CENTRED on the ring: the feed is on the turret axis, so the plates straddle it. Front is up.
+    const y0 = tR + BB_LAUNCH_PLATE_OVERHANG; // plate rear
+    const y1 = -y0; // ...and the muzzle end
+    const wheelY = -tR * 0.6; // the flywheel: past the feed hole, before the muzzle
+    return (
+      <g key={`t-${pos}`} transform={`translate(${-t.y},${-t.x})`}>
+        {/* the SLEW RING it turns on, toothed like the sprite's */}
+        <circle
+          cx={0}
+          cy={0}
+          r={tR}
           fill="var(--ds-bg)"
-          stroke={stroke}
-          strokeWidth={0.3}
+          stroke={nectar ? accent : stroke}
+          strokeWidth={nectar ? 0.55 : 0.35}
         />
-        {Array.from({ length: drumRings - 1 }, (_, i) => {
-          const y = -drumHalf + ((i + 1) * (drumHalf * 2)) / drumRings;
+        {Array.from({ length: teeth }, (_, i) => {
+          const a = (i / teeth) * Math.PI * 2;
           return (
             <line
               key={i}
-              x1={drumX - drumDia / 2 + 0.22}
-              y1={y}
-              x2={drumX + drumDia / 2 - 0.22}
-              y2={y}
+              x1={Math.cos(a) * (tR - 0.32)}
+              y1={Math.sin(a) * (tR - 0.32)}
+              x2={Math.cos(a) * tR}
+              y2={Math.sin(a) * tR}
               stroke={stroke}
-              strokeWidth={0.16}
-              opacity={0.85}
+              strokeWidth={0.2}
+              opacity={0.8}
             />
           );
         })}
+        {nectar ? <circle cx={0} cy={0} r={tR - 0.75} fill="none" stroke={accent} strokeWidth={0.32} /> : null}
+        {/* the FEED HOLE an element rises through, dead centre on the turret axis */}
+        <circle cx={0} cy={0} r={BB_POLLEN_R + 0.15} fill="var(--ds-bg)" stroke={stroke} strokeWidth={0.2} />
+        {/* THE SHOOTER HEAD: two parallel PLATES with a flywheel between them, no barrel */}
         {[1, -1].map((sg) => (
-          <g key={sg}>
-            <rect
-              x={drumX - 0.95}
-              y={sg > 0 ? drumHalf : -drumHalf - 1.5}
-              width={1.9}
-              height={1.5}
-              rx={0.3}
-              fill={stroke}
-              opacity={0.8}
-            />
-            <circle cx={drumX} cy={sg * (drumHalf + 0.72)} r={0.42} fill={stroke} />
-          </g>
+          <rect
+            key={sg}
+            x={sg * (gap / 2) - (sg > 0 ? 0 : plate)}
+            y={y1}
+            width={plate}
+            height={y0 - y1}
+            rx={0.16}
+            fill={stroke}
+            opacity={0.85}
+          />
         ))}
+        {[0.12, 0.92].map((f) => {
+          const y = y0 + (y1 - y0) * f;
+          return <line key={f} x1={-gap / 2} y1={y} x2={gap / 2} y2={y} stroke={stroke} strokeWidth={0.2} opacity={0.7} />;
+        })}
+        <rect
+          x={-gap / 2 + 0.1}
+          y={wheelY - 0.75}
+          width={gap - 0.2}
+          height={1.5}
+          rx={0.4}
+          fill="var(--ds-bg)"
+          stroke={stroke}
+          strokeWidth={0.22}
+        />
+        <line x1={-gap / 2 + 0.15} y1={y1 + 0.3} x2={gap / 2 - 0.15} y2={y1 + 0.3} stroke={accent} strokeWidth={0.3} />
       </g>
-    ) : launcher.kind === 'dumper' ? (
+    );
+  };
+
+  const launcherEl =
+    launcher.kind === 'dumper' ? (
       // a TRAY on a pivot: the shaft it swings about, two throwing arms, and the release lip
       <g transform={`${ROBOT_FRAME} rotate(${deg(EDGE_ANGLE[sEdge])})`}>
         <polygon
@@ -286,129 +289,67 @@ export function BiobuzzRobotPreview({
         ))}
         <rect x={dumpLip - 0.45} y={-lineHalf} width={0.9} height={lineHalf * 2} rx={0.3} fill={accent} opacity={0.8} />
       </g>
-    ) : (
-      // The turret sits where it is BOLTED. Authored in SCREEN space (unlike the chassis-frame
-      // groups above), so the robot-frame offset is mapped by hand: ROBOT_FRAME sends robot
-      // (x,y) → screen (−y,−x). Radius is the SIM's `turretRadius`, so a corner turret can
-      // never hang off the chassis here while sitting comfortably inboard in the match.
-      <g transform={`translate(${-tOrigin.y},${-tOrigin.x})`}>
-        {/* the SLEW RING it turns on, toothed like the sprite's */}
-        <circle cx={0} cy={0} r={tR} fill="var(--ds-bg)" stroke={stroke} strokeWidth={0.35} />
-        {Array.from({ length: teeth }, (_, i) => {
-          const a = (i / teeth) * Math.PI * 2;
-          return (
-            <line
-              key={i}
-              x1={Math.cos(a) * (tR - 0.32)}
-              y1={Math.sin(a) * (tR - 0.32)}
-              x2={Math.cos(a) * tR}
-              y2={Math.sin(a) * tR}
-              stroke={stroke}
-              strokeWidth={0.2}
-              opacity={0.8}
-            />
-          );
-        })}
-        {/* the FEED HOLE a POLLEN rises through, dead centre on the turret axis — the reason
-            the launcher straddles the ring instead of hanging off one side of it */}
-        <circle cx={0} cy={0} r={BB_POLLEN_R + 0.15} fill="var(--ds-bg)" stroke={stroke} strokeWidth={0.2} />
-        {/* THE SHOOTER HEAD: two parallel PLATES with a flywheel between them, no barrel — the
-            gap is left empty because that gap is what reads as the POLLEN's path, and it is
-            `BB_LAUNCH_PLATE_GAP` wide because a 3" POLLEN has to fit down it. A TWIN draws both
-            channels at the offsets the sim launches from. The preview shows the turret stowed
-            forward, so the head points UP. */}
-        {(launcher.kind === 'twinturret' ? [BB_TWIN_BARREL_OFFSET, -BB_TWIN_BARREL_OFFSET] : [0]).map((o) => {
-          const gap = BB_LAUNCH_PLATE_GAP;
-          const plate = 0.42;
-          // CENTRED on the ring: a POLLEN is fed up the hole in the MIDDLE of the turret, so
-          // the plates straddle that axis. Front is up here, so the muzzle is −y.
-          const y0 = tR + BB_LAUNCH_PLATE_OVERHANG; // plate rear
-          const y1 = -y0; // ...and the muzzle end
-          const wheelY = -tR * 0.6; // the flywheel: past the feed hole, before the muzzle
-          return (
-            <g key={o}>
-              {[1, -1].map((sg) => (
-                <rect
-                  key={sg}
-                  x={o + sg * (gap / 2) - (sg > 0 ? 0 : plate)}
-                  y={y1}
-                  width={plate}
-                  height={y0 - y1}
-                  rx={0.16}
-                  fill={stroke}
-                  opacity={0.85}
-                />
-              ))}
-              {/* standoffs: what says "two plates and a gap", not one solid block */}
-              {[0.12, 0.92].map((f) => {
-                const y = y0 + (y1 - y0) * f;
-                return (
-                  <line key={f} x1={o - gap / 2} y1={y} x2={o + gap / 2} y2={y} stroke={stroke} strokeWidth={0.2} opacity={0.7} />
-                );
-              })}
-              {/* the flywheel on its axle, spanning the gap */}
-              <rect
-                x={o - gap / 2 + 0.1}
-                y={wheelY - 0.75}
-                width={gap - 0.2}
-                height={1.5}
-                rx={0.4}
-                fill="var(--ds-bg)"
-                stroke={stroke}
-                strokeWidth={0.22}
-              />
-              <line x1={o - gap / 2 + 0.15} y1={y1 + 0.3} x2={o + gap / 2 - 0.15} y2={y1 + 0.3} stroke={accent} strokeWidth={0.3} />
-            </g>
-          );
-        })}
+    ) : launcher.kind === 'twinturret' ? (
+      <g>
+        {turretEl(launcher.mount, false)}
+        {turretEl(launcher.mount2 ?? launcher.mount, true)}
       </g>
+    ) : (
+      turretEl(launcher.mount, false)
     );
 
   /**
-   * THE LIFT — a vertical extension slide's mast, in SVG. A build with `lift !== null` gets a
-   * bolted COLLAR at `bbLiftMastLocal` (`parts.ts`, the SAME shared point the in-match sprite
-   * draws its mast at) plus a small STOWED carriage marker. Stowed, and only ever stowed: this
-   * preview reads a `RobotSpec`, not a `RobotState`, so there is no `bbLiftZ` to grow the
-   * carriage from — that live reading is the in-match sprite's job (`drawRobot.ts`). Authored in
-   * SCREEN space, exactly like the turret above, because `bbLiftMastLocal`'s point is a ROBOT
-   * frame offset that has to be hand-mapped the same way: `ROBOT_FRAME` sends robot (x,y) to
-   * screen (−y,−x).
+   * THE BOX TUBE — the same hollow rectangle the sprite draws (`bbBoxTubeGlyph`, `parts.ts`), in
+   * the robot frame, plus the reach line and the placement-point marker at `bbPlacePointLocal`.
+   * The marker is always hollow here: "in reach of a FLOWER" is a state of a match, and this
+   * preview has none.
    */
-  const liftEl = !lift
-    ? null
-    : (() => {
-        const local = bbLiftMastLocal(spec, lift.mount);
-        const mastR = BB_LIFT_MAST_R;
-        return (
-          <g transform={`translate(${-local.y},${-local.x})`}>
-            <rect
-              x={-mastR}
-              y={-mastR}
-              width={mastR * 2}
-              height={mastR * 2}
-              rx={mastR * 0.3}
-              fill="var(--ds-bg)"
-              stroke={stroke}
-              strokeWidth={0.3}
-            />
-            {[1, -1].flatMap((sx) =>
-              [1, -1].map((sy) => (
-                <circle key={`${sx}_${sy}`} cx={sx * (mastR - 0.4)} cy={sy * (mastR - 0.4)} r={0.22} fill={stroke} />
-              )),
-            )}
-            {/* the carriage, STOWED — see the note above on why this preview never grows it */}
-            <rect
-              x={-mastR * 0.28}
-              y={-mastR * 0.28}
-              width={mastR * 0.56}
-              height={mastR * 0.56}
-              rx={mastR * 0.1}
-              fill={stroke}
-              opacity={0.5}
-            />
-          </g>
-        );
-      })();
+  const liftEl = (() => {
+    if (!lift || !place) return null;
+    const g = bbBoxTubeGlyph(spec, lift.mount);
+    const R = BB_PLACE_MARK_R;
+    const dist = Math.hypot(place.x - g.outer.x, place.y - g.outer.y);
+    const k = dist > R ? (dist - R) / dist : 0;
+    return (
+      <g transform={ROBOT_FRAME}>
+        <g transform={`translate(${g.cx},${g.cy}) rotate(${deg(Math.atan2(g.uy, g.ux))})`}>
+          <rect x={-g.len / 2} y={-g.w / 2} width={g.len} height={g.w} fill={stroke} opacity={0.85} />
+          <rect x={-g.len / 2 + 0.28} y={-g.w / 2 + 0.28} width={g.len - 0.56} height={g.w - 0.56} fill="var(--ds-bg)" />
+        </g>
+        <line
+          x1={g.outer.x}
+          y1={g.outer.y}
+          x2={g.outer.x + (place.x - g.outer.x) * k}
+          y2={g.outer.y + (place.y - g.outer.y) * k}
+          stroke={accent}
+          strokeWidth={0.28}
+          strokeLinecap="round"
+        />
+        <circle cx={place.x} cy={place.y} r={R} fill="none" stroke={accent} strokeWidth={0.3} />
+        {[
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+        ].map(([dx, dy]) => (
+          <line
+            key={`${dx}_${dy}`}
+            x1={place.x + dx * (R + 0.2)}
+            y1={place.y + dy * (R + 0.2)}
+            x2={place.x + dx * (R + 0.75)}
+            y2={place.y + dy * (R + 0.75)}
+            stroke={accent}
+            strokeWidth={0.28}
+            strokeLinecap="round"
+          />
+        ))}
+      </g>
+    );
+  })();
+
+  const ariaLabel = `${spec.width} by ${spec.length} inch robot, sweeper intake, ${BB_MODE_LABELS[
+    launcher.kind
+  ].toLowerCase()}${lift ? ', box tube with a placement point' : ''}`;
 
   return (
     <svg
@@ -419,9 +360,7 @@ export function BiobuzzRobotPreview({
       style={fluid ? { display: 'block', aspectRatio: `${vbW} / ${vbH}` } : undefined}
       viewBox={`${-halfSpan} ${top} ${vbW} ${vbH}`}
       role="img"
-      aria-label={`${spec.width} by ${spec.length} inch robot, sweeper intake${
-        launcher ? `, ${launcher.kind} scorer` : ', no launcher'
-      }${lift ? ', vertical lift' : ''}`}
+      aria-label={ariaLabel}
     >
       {intakeEl}
 
@@ -552,13 +491,11 @@ export function BiobuzzRobotPreview({
         strokeLinejoin="round"
       />
 
-      {/* scoring mechanism — the BIOBUZZ archetype launcher. Drawn LAST so a top-mounted
-          turret sits over the deck it is bolted to, exactly as the sprite draws it. `null` for
-          a real launcher-less build. */}
+      {/* the launcher — drawn after the deck so a top-mounted turret sits over what it is bolted
+          to, exactly as the sprite draws it */}
       {launcherEl}
 
-      {/* the LIFT mast, if this build has one — independent of the launcher slot above, so a
-          build can show both, either, or neither. */}
+      {/* the Box Tube and its placement point, if this build has one */}
       {liftEl}
 
       {/* dimension label */}

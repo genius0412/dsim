@@ -6,8 +6,6 @@ import {
   BB_SCORE_MODES,
   BB_SHOOTER_EDGES,
   BB_INTAKE_MOUNTS,
-  BB_DEFAULT_SHOOTER_MOUNT,
-  BB_DEFAULT_TURRET_POS,
   type BbMountPos,
   type BbScoreMode,
   bbIntakeMountOf,
@@ -15,23 +13,27 @@ import {
 } from './mounts';
 import {
   BB_LIFT_KINDS,
+  type BbLauncherSpec,
   type BbLiftKind,
+  type BbLiftSpec,
+  bbCellsAdjacent,
+  bbFoldTwinMount,
   bbIsTurreted,
+  bbLauncherBlocker,
   bbLauncherOf,
   bbLiftOf,
-  bbSpansEdge,
+  bbResolveLiftMount,
+  bbResolveMount2,
 } from './mechs';
 import {
   BB_INTAKE_LABELS,
   BB_INTAKE_MOUNT_BLURBS,
   BB_INTAKE_MOUNT_LABELS,
-  BB_LAUNCHER_NONE_BLURB,
-  BB_LAUNCHER_NONE_LABEL,
   BB_LIFT_KIND_BLURBS,
-  BB_LIFT_KIND_LABELS,
   BB_MODE_BLURBS,
   BB_MODE_LABELS,
   BB_MOUNT_POS_LABELS,
+  bbLiftKindLabel,
 } from './labels';
 import { bbDials } from './robotConfig';
 
@@ -39,32 +41,32 @@ import { bbDials } from './robotConfig';
  * The BIOBUZZ half of the My Robot builder — the `GameModule.Builder` slot.
  *
  * ── WHY THIS IS A MODULE SLOT AND NOT A BRANCH IN `Menu.tsx` ────────────────
- * `Menu.tsx` renders the builder for whichever game is loaded, and today it does it with an
- * `isDecode ? … : …` down the middle of every block — archetype, intake, mechanism, frame
- * extras. A third game turns each of those into a three-way and the file grows a season every
- * year. So the per-game blocks move OUT: the host renders the game-neutral chrome (name, team,
- * drivetrain, RPM, the chassis colour row) and drops this component in for everything only
- * BIOBUZZ knows about.
+ * `Menu.tsx` renders the builder for whichever game is loaded, and it used to do it with an
+ * `isDecode ? … : …` down the middle of every block. A third game turns each of those into a
+ * three-way and the file grows a season every year. So the per-game blocks move OUT: the host
+ * renders the game-neutral chrome (name, team, drivetrain, RPM, the chassis colour row) OUTSIDE
+ * the slot, and drops this component in for everything only BIOBUZZ knows about.
  *
  * ── WHAT IS IN HERE, AND WHY IT INCLUDES THE FRAME DIALS ───────────────────
- * LAUNCHER, LIFT, INTAKE and FRAME. A robot may carry a launcher, a lift, both, or NEITHER —
- * see `mechs.ts` for the vocabulary — so LAUNCHER and LIFT are each a NONE-or-something picker
- * rather than a fixed block that is always present. The frame sliders look shared, and their
- * fields are — but their RANGES are not: `bbDials` intersects the R102 expansion prism with the
- * mounted sweepers' reach, so a front+back sweeper genuinely has a shorter legal chassis than a
- * front one. A host rendering the dials from DECODE's limits would offer lengths the coercer
- * then claws back, which reads to the player as the slider snapping out from under them. The
- * ranges have to come from the game, so the sliders come with them.
+ * LAUNCHER, FLOWER SCORING, INTAKE and FRAME. Every robot carries exactly one launcher (owner
+ * ruling 2026-09-12) — a single turret, a double turret or a dumper — and may carry a Box Tube,
+ * the only mechanism that scores a FLOWER (see `mechs.ts`). The frame sliders look shared, and
+ * their fields are — but their RANGES are not: `bbDials` intersects the R102 expansion prism with
+ * the mounted sweepers' reach, so a front+back sweeper genuinely has a shorter legal chassis
+ * than a front one. A host rendering the dials from DECODE's limits would offer lengths the
+ * coercer then claws back, which reads to the player as the slider snapping out from under them.
  *
  * ── ORDER IS LOAD-BEARING ──────────────────────────────────────────────────
- * FRAME LAST, because every block above it clamps it: the archetype sets the mass floor, and
- * the intake mount sets the size envelope and the hopper cap. Picking a mechanism and watching
- * the slider below re-clamp reads as cause and effect; the reverse reads as the builder
- * fighting you.
+ * FRAME LAST, because every block above it clamps it: the launcher and the Box Tube set the
+ * mass floor, and the intake mount sets the size envelope and the hopper cap. Picking a
+ * mechanism and watching the slider below re-clamp reads as cause and effect; the reverse reads
+ * as the builder fighting you.
  *
  * Presentational and STATELESS: it renders `spec` and reports edits through `setSpec`. It does
  * NOT coerce — `coerceBiobuzzSpec` is the one chokepoint, and a component that clamped as well
- * would be a second opinion about what is legal.
+ * would be a second opinion about what is legal. Where it greys a cell out, it asks the SAME
+ * predicates the coercer resolves with (`bbCellsAdjacent`, `mountsClash`, `bbLauncherBlocker`),
+ * so the click and the coerced result agree before the round-trip.
  */
 export interface BiobuzzBuilderProps {
   /** the spec being edited — already coerced by the host. */
@@ -73,116 +75,132 @@ export interface BiobuzzBuilderProps {
   setSpec(patch: Partial<RobotSpec>): void;
 }
 
+/** hover text for a double turret's cell that cannot take `which` turret, or undefined. */
+function twinCellBlock(m: BbMountPos, at: BbMountPos, other: BbMountPos, otherName: string): string | undefined {
+  if (m === 'center') return 'A double turret can’t use the centre: it neighbours every cell';
+  if (m === other) return `The ${otherName} turret is here`;
+  if (m !== at && bbCellsAdjacent(m, other)) return `Too close to the ${otherName} turret`;
+  return undefined;
+}
+
+/** one 3x3 chassis map for a double turret's POLLEN or NECTAR turret. The other turret's cell,
+ * its neighbours and the centre are disabled: two turret rings in neighbouring cells overlap on
+ * every legal chassis (`BB_TWIN_PARTNER`, `mechs.ts`). */
+function TwinTurretGrid(props: {
+  caption: string;
+  at: BbMountPos;
+  other: BbMountPos;
+  otherName: string;
+  onPick(m: BbMountPos): void;
+}) {
+  const { caption, at, other, otherName, onPick } = props;
+  return (
+    <>
+      <p className="ds-hint">{caption}</p>
+      <div className="ds-opts three">
+        {BB_MOUNT_POSITIONS.map((m) => {
+          const why = twinCellBlock(m, at, other, otherName);
+          return (
+            <button
+              key={m}
+              className={`ds-opt mini ${at === m ? 'on' : ''}`}
+              disabled={why !== undefined}
+              title={why}
+              onClick={() => onPick(m)}
+            >
+              <span className="ot">{BB_MOUNT_POS_LABELS[m]}</span>
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
   // THE TWO SLOTS, READ THROUGH THE CANONICAL RESOLVERS — never off the raw `scoreMode`/
   // `shooterMount`/`bbMech` fields directly, for the same reason `robot.ts` and `elements.ts`
-  // don't either: `bbLauncherOf`/`bbLiftOf` are the ONE place "does this build have a
-  // launcher/lift, and what is it" is decided, migration included. `spec` here is always
-  // already coerced (the component contract above says so), so in practice this just reads
-  // `spec.bbMech.launcher` / `.lift` — but going through the resolvers is what keeps this file
-  // agreeing with the sim if that ever stops being true.
+  // don't either: `bbLauncherOf`/`bbLiftOf` are the ONE place "what launcher, and is there a
+  // Box Tube" is decided, migration included.
   const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
   const lift = bbLiftOf(spec);
-  const turreted = bbIsTurreted(launcher);
   const dials = bbDials(spec);
   const store = Math.min(spec.ballStorage ?? dials.storage.max, dials.storage.max);
 
-  // ── WHY EVERY HANDLER BELOW RE-SENDS `scoreMode`/`shooterMount` ALONGSIDE `bbMech` ──────
-  // `coerceBbMech` (`./coerce.ts`) reads a launcher's `kind` and `mount` off the ALREADY-FOLDED
-  // `out.scoreMode`/`out.shooterMount` — not off whatever this component puts in
-  // `bbMech.launcher` — because those two flat fields are what the rest of the coercer (and an
-  // older peer's coercer, which mirrors them) already agrees on. Only `launcher !== null` and
-  // `launcher.hoodDeg` are read from the container itself. So an edit that changed
-  // `bbMech.launcher.kind` without also changing `scoreMode` would look like it worked in this
-  // component's own state and then be silently overwritten back to the old archetype on the
-  // very next coercion — the same class of bug the mirrors above exist to prevent. `bbMech.lift`
-  // has no such mirror (nothing before it ever modelled a lift), so lift edits touch only the
-  // container.
+  // ── WHY EVERY EDIT RE-SENDS `scoreMode`/`shooterMount` ALONGSIDE `bbMech` ──────────────
+  // The container is what `coerceBbMech` (`./coerce.ts`) resolves, and the two flat fields are
+  // its MIRROR — the half the shared `coerceSpec` and an older peer that has never heard of
+  // `bbMech` read. An edit that changed one without the other would hand the next coercion two
+  // disagreeing answers about the same launcher. So every edit goes through `send`, which writes
+  // both from the one launcher it is given. The NECTAR turret's cell and the Box Tube have no
+  // flat field, so they live in the container alone.
+  function send(next: BbLauncherSpec, nextLift: BbLiftSpec | null) {
+    setSpec({ scoreMode: next.kind, shooterMount: next.mount, bbMech: { launcher: next, lift: nextLift } });
+  }
 
-  /** LAUNCHER pick: an archetype, or NONE (the real, shippable Studica StarterBot shape). Every
-   * call rebuilds the WHOLE `bbMech` container — `launcher: null` and an absent container mean
-   * different things, so a patch that only ever set the half that changed could turn a real
-   * "no launcher" back into "not specified yet" the moment something else round-tripped it. */
-  function pickLauncher(kind: BbScoreMode | null) {
+  /** LAUNCHER pick. The mount and hood survive the swap. A corner a turret was bolted to folds
+   * to its nearest edge for a dumper on the next coercion. A DOUBLE turret cannot use `center`,
+   * so its POLLEN turret folds off it here, and its NECTAR turret is placed at once, so the second
+   * grid below opens already agreeing with the coercer. */
+  function pickLauncher(kind: BbScoreMode) {
+    if (kind === 'twinturret') {
+      const mount = bbFoldTwinMount(launcher.mount);
+      send({ kind, mount, mount2: bbResolveMount2(mount, launcher.mount2), hoodDeg: launcher.hoodDeg }, lift);
+    } else {
+      send({ kind, mount: launcher.mount, hoodDeg: launcher.hoodDeg }, lift);
+    }
+  }
+
+  /** the launcher's (POLLEN turret's) cell. A double turret's NECTAR cell is re-resolved against
+   * it, which is a no-op for any cell the grid lets you click. */
+  function pickLauncherMount(m: BbMountPos) {
+    send(
+      launcher.kind === 'twinturret'
+        ? { ...launcher, mount: m, mount2: bbResolveMount2(m, launcher.mount2) }
+        : { ...launcher, mount: m },
+      lift,
+    );
+  }
+
+  /** a double turret's NECTAR-turret cell. */
+  function pickMount2(m: BbMountPos) {
+    send({ ...launcher, mount2: m }, lift);
+  }
+
+  /** HOOD angle — a dumper's only dial. */
+  function setHood(hoodDeg: number) {
+    send({ ...launcher, hoodDeg }, lift);
+  }
+
+  /** BOX TUBE pick: none, or a tube. A new tube starts at the back when that is free, else at
+   * the first free perimeter cell — the same fallback `coerceBbMech` itself uses. Re-picking the
+   * tube you have keeps its cell. */
+  function pickLift(kind: BbLiftKind | null) {
     if (kind === null) {
-      setSpec({ bbMech: { launcher: null, lift } });
+      send(launcher, null);
       return;
     }
-    setSpec({
-      scoreMode: kind,
-      bbMech: {
-        launcher: {
-          kind,
-          // preserved across an archetype swap — a corner a TURRET was bolted to folds to its
-          // nearest edge automatically the moment `scoreMode` reads turretless (`coerceSpec`'s
-          // step 1c), so there is no need to re-derive it here.
-          mount: launcher?.mount ?? BB_DEFAULT_SHOOTER_MOUNT,
-          hoodDeg: launcher?.hoodDeg ?? BB_HOOD_DEFAULT_DEG,
-        },
-        lift,
-      },
-    });
-  }
-
-  /** LAUNCHER mount pick — the one edit that actually changes `shooterMount`, so it is the one
-   * that has to send it. */
-  function pickLauncherMount(m: BbMountPos) {
-    if (!launcher) return; // the picker is hidden with no launcher; guard defensively anyway
-    setSpec({ shooterMount: m, bbMech: { launcher: { ...launcher, mount: m }, lift } });
-  }
-
-  /** HOOD angle — the one launcher field with no flat-field mirror, so this is the only place
-   * it is ever written. */
-  function setHood(hoodDeg: number) {
-    if (!launcher) return;
-    setSpec({ bbMech: { launcher: { ...launcher, hoodDeg }, lift } });
-  }
-
-  /** LIFT pick: NONE or a lift kind. No legacy field to keep in step — a lift is entirely a
-   * `bbMech` fact — so unlike `pickLauncher` this never touches anything else on the spec. */
-  function pickLift(kind: BbLiftKind | null) {
-    setSpec({
-      bbMech: {
-        launcher,
-        lift:
-          kind === null
-            ? null
-            // keep the existing mast's mount/height if one already existed (re-picking the
-            // same kind is a no-op); a brand-new mast starts centred and at full reach, the
-            // same fallback `coerceBbMech` itself uses for an invalid/missing mount or height.
-            : (lift ?? { kind, mount: BB_DEFAULT_TURRET_POS, maxZ: dials.lift.max }),
-      },
-    });
+    const mount = bbResolveLiftMount('back', bbLauncherBlocker(launcher)) ?? 'back';
+    send(launcher, lift ?? { kind, mount });
   }
 
   function pickLiftMount(m: BbMountPos) {
     if (!lift) return;
-    setSpec({ bbMech: { launcher, lift: { ...lift, mount: m } } });
+    send(launcher, { ...lift, mount: m });
   }
 
-  function setLiftHeight(maxZ: number) {
-    if (!lift) return;
-    setSpec({ bbMech: { launcher, lift: { ...lift, maxZ } } });
-  }
+  const blockers = bbLauncherBlocker(launcher);
 
   return (
     <>
       {/* ---- LAUNCHER ---- */}
       <h3 className="ds-subh">Launcher</h3>
-      {/* FIVE cards, not four: Studica's published StarterBot is a drivetrain and an intake
-          with no shooter at all (`mechs.ts` header), so NONE is exactly as real a build as any
-          archetype and gets the same card treatment rather than a checkbox bolted beside the
-          other four. Picking it hides the mount picker and the hood slider below — there is no
-          hardware left to place or tune. */}
-      <div className="ds-opts card4">
-        <button className={`ds-opt ${launcher === null ? 'on' : ''}`} onClick={() => pickLauncher(null)}>
-          <span className="ot">{BB_LAUNCHER_NONE_LABEL}</span>
-          <span className="od">{BB_LAUNCHER_NONE_BLURB}</span>
-        </button>
+      {/* THREE cards: a launcher is mandatory, so there is no "none" to offer. */}
+      <div className="ds-opts three">
         {BB_SCORE_MODES.map((m) => (
           <button
             key={m}
-            className={`ds-opt ${launcher?.kind === m ? 'on' : ''}`}
+            className={`ds-opt ${launcher.kind === m ? 'on' : ''}`}
             onClick={() => pickLauncher(m)}
           >
             <span className="ot">{BB_MODE_LABELS[m]}</span>
@@ -190,138 +208,122 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
           </button>
         ))}
       </div>
-      {launcher && (
-        <>
-          {/* The mount means two different things, so it is TWO different pickers.
-              TURRETLESS: which chassis EDGE the launcher fires over — four sides, and a corner
-              is not buildable because the launch line spans a whole side.
-              TURRETED: where the turret is BOLTED. It aims itself, so this is a position, not a
-              facing — and it is where a POLLEN is actually born. Nine positions laid out as a
-              3x3 map of the chassis (front row on top), so the picker reads as a top-down
-              diagram of the robot rather than as a list of words.
+      {/* The mount means a different thing per launcher, so it is a different picker.
+          SINGLE TURRET: where the turret is BOLTED. It aims itself, so this is a position, not
+          a facing. Nine positions laid out as a 3x3 map of the chassis (front row on top).
+          DOUBLE TURRET: two such maps, one per turret, each greying out where the other turret
+          already is.
+          DUMPER: which chassis EDGE it throws over — four sides, since the launch line spans a
+          whole side.
 
-              NO CELL IS GATED against the sweeper. Unlike CR's catalyst grid, nothing here can
-              collide with it: the launcher sits ABOVE the deck and the sweeper on the floor, so
-              a front sweeper feeding a front-firing drum is a legal build — and the most
-              ordinary one in FTC. (The LIFT, below, is a different story — it sits at the same
-              height as the launcher, which is why ITS grid can clash.) */}
-          {turreted ? (
-            <div className="ds-opts three">
-              {BB_MOUNT_POSITIONS.map((m) => (
-                <button
-                  key={m}
-                  className={`ds-opt mini ${launcher.mount === m ? 'on' : ''}`}
-                  onClick={() => pickLauncherMount(m)}
-                >
-                  <span className="ot">{BB_MOUNT_POS_LABELS[m]}</span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="ds-opts four">
-              {BB_SHOOTER_EDGES.map((m) => (
-                <button
-                  key={m}
-                  className={`ds-opt mini ${launcher.mount === m ? 'on' : ''}`}
-                  onClick={() => pickLauncherMount(m)}
-                >
-                  <span className="ot">{BB_MOUNT_POS_LABELS[m]}</span>
-                </button>
-              ))}
-            </div>
-          )}
-          {/* HOOD vs PITCH: a TURRETLESS launcher's elevation is a fixed piece of hardware (a
-              hood, per AndyMark's own StarterBot manual — see `BB_HOOD_DEFAULT_DEG`'s header),
-              so it gets a slider. A TURRET solves its own elevation per shot — that is the
-              entire point of putting a pitch axis on it (`bbTurretPitch`) — so a slider here
-              would offer a control the sim never reads; a one-line explanation stands in for it
-              instead. */}
-          {turreted ? (
-            <p className="ds-hint">A turret solves its own elevation per shot — no hood to tune.</p>
-          ) : (
-            <div className="ds-fields">
-              <label className="ds-field">
-                <span className="cap">
-                  Hood <span className="val">{launcher.hoodDeg}&deg;</span>
-                </span>
-                <input
-                  className="ds-range"
-                  type="range"
-                  min={dials.hood.min}
-                  max={dials.hood.max}
-                  step={1}
-                  value={launcher.hoodDeg}
-                  style={rangeFill(launcher.hoodDeg, dials.hood.min, dials.hood.max)}
-                  onChange={(e) => setHood(Number(e.target.value))}
-                />
-              </label>
-            </div>
-          )}
+          NO CELL IS GATED against the sweeper: the launcher sits ABOVE the deck and the sweeper
+          on the floor, so a front sweeper feeding a front dumper is a legal build. */}
+      {launcher.kind === 'turret' && (
+        <div className="ds-opts three">
+          {BB_MOUNT_POSITIONS.map((m) => (
+            <button
+              key={m}
+              className={`ds-opt mini ${launcher.mount === m ? 'on' : ''}`}
+              onClick={() => pickLauncherMount(m)}
+            >
+              <span className="ot">{BB_MOUNT_POS_LABELS[m]}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {launcher.kind === 'twinturret' && (
+        <>
+          <TwinTurretGrid
+            caption="POLLEN turret"
+            at={launcher.mount}
+            other={launcher.mount2 ?? bbResolveMount2(launcher.mount, undefined)}
+            otherName="NECTAR"
+            onPick={pickLauncherMount}
+          />
+          <TwinTurretGrid
+            caption="NECTAR turret"
+            at={launcher.mount2 ?? bbResolveMount2(launcher.mount, undefined)}
+            other={launcher.mount}
+            otherName="POLLEN"
+            onPick={pickMount2}
+          />
         </>
       )}
+      {launcher.kind === 'dumper' && (
+        <div className="ds-opts four">
+          {BB_SHOOTER_EDGES.map((m) => (
+            <button
+              key={m}
+              className={`ds-opt mini ${launcher.mount === m ? 'on' : ''}`}
+              onClick={() => pickLauncherMount(m)}
+            >
+              <span className="ot">{BB_MOUNT_POS_LABELS[m]}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {/* HOOD vs PITCH: a dumper's elevation is a fixed piece of hardware, so it gets a slider,
+          and the range is where a dumper can still reach the HIVE (`BB_HOOD_DEFAULT_DEG`). A
+          turret solves its own elevation per shot, so a slider would offer a control the sim
+          never reads; one line says why there is none. */}
+      {bbIsTurreted(launcher) ? (
+        <p className="ds-hint">A turret sets its own elevation for every shot.</p>
+      ) : (
+        <div className="ds-fields">
+          <label className="ds-field">
+            <span className="cap">
+              Hood <span className="val">{launcher.hoodDeg}&deg;</span>
+            </span>
+            <input
+              className="ds-range"
+              type="range"
+              min={dials.hood.min}
+              max={dials.hood.max}
+              step={1}
+              value={launcher.hoodDeg}
+              style={rangeFill(launcher.hoodDeg, dials.hood.min, dials.hood.max)}
+              onChange={(e) => setHood(Number(e.target.value))}
+            />
+          </label>
+        </div>
+      )}
 
-      {/* ---- LIFT ---- */}
-      <h3 className="ds-subh">Lift</h3>
+      {/* ---- FLOWER SCORING: the Box Tube ---- */}
+      <h3 className="ds-subh">Flower scoring</h3>
       <div className="ds-opts two">
         <button className={`ds-opt ${lift === null ? 'on' : ''}`} onClick={() => pickLift(null)}>
           <span className="ot">None</span>
         </button>
         {BB_LIFT_KINDS.map((k) => (
           <button key={k} className={`ds-opt ${lift?.kind === k ? 'on' : ''}`} onClick={() => pickLift(k)}>
-            <span className="ot">{BB_LIFT_KIND_LABELS[k]}</span>
+            <span className="ot">{bbLiftKindLabel(k)}</span>
             <span className="od">{BB_LIFT_KIND_BLURBS[k]}</span>
           </button>
         ))}
       </div>
       {lift && (
-        <>
-          {/* Same 3x3 chassis map the launcher's TURRET picker uses — a mast and a turret both
-              sit ABOVE the deck, so unlike the sweeper this grid CAN clash with the launcher.
-              A clashing cell is not rejected here: `bbResolveLiftMount` (`mechs.ts`) relocates
-              it to the nearest free cell on the very next coercion, same as clicking it would
-              have produced anyway. Greying the cell out first is NICE TO HAVE, not load-bearing
-              — it just means the click and the result agree before the round-trip, using the
-              shared `mountsClash` predicate rather than a second, drifting copy of the rule. */}
-          <div className="ds-opts three">
-            {BB_MOUNT_POSITIONS.map((m) => {
-              const clash =
-                launcher !== null &&
-                lift.mount !== m &&
-                mountsClash(
-                  { pos: m, spansEdge: false },
-                  { pos: launcher.mount, spansEdge: bbSpansEdge(launcher.kind) },
-                );
-              return (
-                <button
-                  key={m}
-                  className={`ds-opt mini ${lift.mount === m ? 'on' : ''}`}
-                  disabled={clash}
-                  title={clash ? 'The launcher is mounted here' : undefined}
-                  onClick={() => pickLiftMount(m)}
-                >
-                  <span className="ot">{BB_MOUNT_POS_LABELS[m]}</span>
-                </button>
-              );
-            })}
-          </div>
-          <div className="ds-fields">
-            <label className="ds-field">
-              <span className="cap">
-                Height <span className="val">{lift.maxZ}&quot;</span>
-              </span>
-              <input
-                className="ds-range"
-                type="range"
-                min={dials.lift.min}
-                max={dials.lift.max}
-                step={0.5}
-                value={lift.maxZ}
-                style={rangeFill(lift.maxZ, dials.lift.min, dials.lift.max)}
-                onChange={(e) => setLiftHeight(Number(e.target.value))}
-              />
-            </label>
-          </div>
-        </>
+        /* The same 3x3 chassis map. A tube and a launcher both sit ABOVE the deck, so this grid
+           CAN clash with the launcher — both turrets of a double turret, or a dumper's whole
+           edge (`bbLauncherBlocker`). The centre is never offered: the placement point has to
+           sit past a chassis edge to reach a FLOWER. No height dial — a tube places at a point. */
+        <div className="ds-opts three">
+          {BB_MOUNT_POSITIONS.map((m) => {
+            const centre = m === 'center';
+            const clash =
+              !centre && lift.mount !== m && blockers.some((b) => mountsClash({ pos: m, spansEdge: false }, b));
+            return (
+              <button
+                key={m}
+                className={`ds-opt mini ${lift.mount === m ? 'on' : ''}`}
+                disabled={centre || clash}
+                title={centre ? 'The tube sits on the frame edge' : clash ? 'The launcher is mounted here' : undefined}
+                onClick={() => pickLiftMount(m)}
+              >
+                <span className="ot">{BB_MOUNT_POS_LABELS[m]}</span>
+              </button>
+            );
+          })}
+        </div>
       )}
 
       {/* ---- INTAKE ---- */}
@@ -396,10 +398,9 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
           />
         </label>
         {/* HOPPER sits with the FRAME, under the dimensions, because that is what sets it: the
-            cap is footprint × archetype × intake mount (`bbStorageMax`), so it re-clamps as
-            you drag Length/Width right above it. Full-width on its own row deliberately — a
-            fourth 140px column would orphan-wrap, and the "16 / 24 pollen" value needs the
-            room. POLLEN, not "balls": it is the word on the field. */}
+            cap is footprint × archetype × intake mount (`bbStorageMax`), clamped to G407's 4.
+            Full-width on its own row deliberately — a fourth 140px column would orphan-wrap.
+            POLLEN, not "balls": it is the word on the field. */}
         <label className="ds-field wide">
           <span className="cap">
             Hopper{' '}
