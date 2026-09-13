@@ -1,4 +1,5 @@
 import type { Alliance, World } from '../../types';
+import { PIN_SECONDS } from '../../config';
 import { BB_FLOWER_UNLOCK_S, BB_TIP_POLLEN } from './config';
 import { BB_TIP_SWING_S } from './hive';
 import { bbNectarLocked } from './penalties';
@@ -36,6 +37,10 @@ import { bbKindIndex, bbScoreWorld, type BbAllianceScore, type BbRankPoints } fr
  *    but does not announce.
  *  • `score` / `rp` — the whole of Table 10-2 per alliance, so the score bar and the results
  *    rows read one object rather than re-deriving the table.
+ *  • `pins` — G421. A PIN bills a MAJOR 20 every three seconds and the clock runs in a
+ *    referee's head, so `nextIn` is the only warning either driver gets.
+ *  • `warnings` — G407. The owner's ruling makes over-CONTROL a warning worth no points, and a
+ *    sanction with no points is invisible on a scoreboard: the chip IS the sanction.
  *
  * BACK-COMPAT: every field is defaulted, never asserted. A snapshot from a build that predates
  * this game arrives without `world.biobuzz`, and a HUD is the last place that should throw.
@@ -60,6 +65,28 @@ export interface BbCellHud {
   up: 'north' | 'south';
 }
 
+/**
+ * ONE PIN, COUNTING (G421). A driver cannot see a clock a referee is running in their head,
+ * and the tariff is 20 points every three seconds — so the number that matters is `nextIn`,
+ * not the elapsed total: it is how long the pinner has to let go, and how long the victim has
+ * to keep trying.
+ *
+ * `seconds` PAUSES rather than resetting, so a reading that stops climbing does not mean the
+ * count went away.
+ */
+export interface BbPinHud {
+  /** the PINNING robot's id — the one whose alliance pays */
+  pinner: number;
+  /** the robot being held */
+  pinned: number;
+  /** seconds this PIN has counted. Pauses, never resets, until criterion A or B ends it. */
+  seconds: number;
+  /** MAJORs it has already drawn (20 each, to the victim's alliance) */
+  billed: number;
+  /** seconds until the NEXT MAJOR lands */
+  nextIn: number;
+}
+
 export interface BiobuzzFieldHud {
   /** elements scored per alliance — up-CELL contents + owned FLOWER elements + GARDEN. */
   scored: Record<Alliance, number>;
@@ -82,6 +109,17 @@ export interface BiobuzzFieldHud {
   /** seconds until the 1:00 cue, or 0 once it has passed. `null` outside TELEOP, where the
    * countdown to it is not yet running and a number would be a guess at the remaining AUTO. */
   nectarIn: number | null;
+  /** every PIN counting right now (G421), pinner-then-victim ordered. Usually empty. */
+  pins: BbPinHud[];
+  /**
+   * G407 WARNINGS this alliance has drawn this MATCH — CONTROL of a fifth SCORING ELEMENT.
+   *
+   * A COUNT rather than a flag because the rule counts instances: climbing to five, dropping
+   * back and climbing again is two warnings. Worth nothing on the scoreboard by design (the
+   * owner's ruling makes G407 a warning, not a foul), which is exactly why it needs a chip —
+   * a sanction with no points is invisible unless the HUD says it happened.
+   */
+  warnings: Record<Alliance, number>;
 }
 
 /** an empty slice — the shape a pre-BIOBUZZ snapshot gets, with every count at 0. */
@@ -127,7 +165,63 @@ function emptyHud(): BiobuzzFieldHud {
     nectarDue: { red: 0, blue: 0 },
     nectarLocked: true,
     nectarIn: null,
+    pins: [],
+    warnings: { red: 0, blue: 0 },
   };
+}
+
+/**
+ * G407 warnings per ALLIANCE, summed from the penalty engine's per-robot tally.
+ *
+ * `world.penalties.controlInstances` for the same reason `pins` reads `world.penalties.pins`:
+ * the shared `PenaltyState` already carries a per-robot instance count, already rides every
+ * snapshot, and a BIOBUZZ copy on the state bag would be a `state.ts` edit to store what the
+ * world already stores. Defaulted at every step — a snapshot from a build that predates this
+ * arrives without it, and a HUD is the last place that should throw.
+ */
+function controlWarnings(world: World): Record<Alliance, number> {
+  const out: Record<Alliance, number> = { red: 0, blue: 0 };
+  const counts = world.penalties?.controlInstances ?? {};
+  for (const r of world.robots) {
+    if (r.passive) continue;
+    out[r.alliance] += counts[r.id] ?? 0;
+  }
+  return out;
+}
+
+/**
+ * THE PINS COUNTING RIGHT NOW, read off the penalty engine's own accumulators.
+ *
+ * `world.penalties` rather than `world.biobuzz`: `bbUpdatePins` keeps its clocks in the SHARED
+ * `PenaltyState.pins`, because that field already exists, is already plain JSON on every
+ * snapshot, and already has exactly this shape (`src/types.ts`). A second, BIOBUZZ-flavoured
+ * copy on the state bag would be a `state.ts` edit to store what the world already stores.
+ *
+ * Defaulted at every step — a snapshot from a build that predates the field arrives with
+ * neither bag, and a HUD is the last place that should throw. SORTED by pinner then victim,
+ * because the map's insertion order is a function of when each pin STARTED and a HUD row that
+ * reorders itself mid-pin is a row a driver cannot read.
+ */
+function livePins(world: World): BbPinHud[] {
+  const pins = world.penalties?.pins ?? {};
+  const out: BbPinHud[] = [];
+  for (const [key, st] of Object.entries(pins)) {
+    const [a, b] = key.split('-');
+    const pinner = Number(a);
+    const pinned = Number(b);
+    if (!Number.isFinite(pinner) || !Number.isFinite(pinned)) continue;
+    out.push({
+      pinner,
+      pinned,
+      seconds: st.seconds,
+      billed: st.billed,
+      // what the tariff charges NEXT, not what it has charged: one MAJOR lands every
+      // `PIN_SECONDS`, so the next one is due at `(billed + 1) × PIN_SECONDS`.
+      nextIn: Math.max(0, PIN_SECONDS * (st.billed + 1) - st.seconds),
+    });
+  }
+  out.sort((p, q) => p.pinner - q.pinner || p.pinned - q.pinned);
+  return out;
 }
 
 export function biobuzzFieldHud(world: World): BiobuzzFieldHud {
@@ -169,5 +263,7 @@ export function biobuzzFieldHud(world: World): BiobuzzFieldHud {
   out.nectarLocked = bbNectarLocked(world);
   out.nectarIn =
     world.match.phase === 'teleop' ? Math.max(0, world.match.phaseTimeLeft - BB_FLOWER_UNLOCK_S) : null;
+  out.pins = livePins(world);
+  out.warnings = controlWarnings(world);
   return out;
 }

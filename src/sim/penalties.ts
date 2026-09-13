@@ -552,7 +552,7 @@ function contactPush(
   return { speed, dirX: pv.x / speed, dirY: pv.y / speed };
 }
 
-function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: boolean): number {
+export function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: boolean): number {
   const pen = world.penalties;
   const home = loadZone(r.alliance);
   const reach = C.BALL_RADIUS + C.POSSESSION_CONTROL_MARGIN; // touching the footprint
@@ -1000,7 +1000,7 @@ function attemptDir(r: RobotState, cmd: RobotCommand | undefined): Vec2 | null {
  * for a referee; see PIN_WALL_SLOP for why something has to break the symmetry of a shove, and
  * what leaving it in costs.
  */
-function isPinning(
+export function isPinning(
   pinner: RobotState,
   pinned: RobotState,
   contact: boolean,

@@ -248,6 +248,33 @@ button {
   color: rgba(255, 255, 255, 0.85);
 }
 
+/* BIOBUZZ: the alliance panel STACKS its total over the up-CELL line. The BIOBUZZ field
+   draws no letters or digits anywhere in a match (field-plan §2.5), so "how many more
+   POLLEN would TIP that HIVE" has nowhere else to live — and it is per-ALLIANCE, which
+   makes the alliance panel its column rather than the shared breakdown row. */
+.score-panel.bb {
+  flex-direction: column;
+  gap: var(--ds-s-0);
+}
+
+/* fixed ink on the fixed alliance gradient, like `.panel-score` and `.you-tag` beside it
+   (category 2 in the theming note: it does not invert). */
+.bb-tip {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  line-height: 1;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* TIPPING is a state that changes what to do — hold fire, the CELL accepts nothing while
+   it swings — so it comes forward to full-strength ink instead of sitting back. */
+.bb-tip.go {
+  color: #fff;
+}
+
 .timer-panel {
   display: flex;
   flex-direction: column;
@@ -440,6 +467,15 @@ button {
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
+  /* NEITHER TOP CLUSTER MAY CROSS THE CENTRE LINE. This row is `nowrap` and grows
+     LEFTWARD from the right edge with nothing stopping it running under MENU / RESET /
+     the sponsor mark in the opposite corner — and it did, as soon as a game's `hudChips`
+     put six chips in it (BIOBUZZ, measured at 1440px with the alpha pose readout on: the
+     archetype chip sat behind the sponsor mark). 50% is the one bound that needs no
+     number: the opposite cluster cannot be wider than its own half either. The compact
+     block below already caps and wraps this row on a phone; this is the same rule for the
+     desktop, where nobody had yet built a row long enough to need it. */
+  max-width: 50%;
 }
 
 /* the connection chip doubles as a toggle for the expandable ping graph */
@@ -514,6 +550,10 @@ button {
 .robot-status {
   display: flex;
   align-items: center;
+  /* wraps against `.status-wrap`'s cap rather than overflowing it — see the note there.
+     The chips already right-align, so a second line stacks under the first. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 12px;
   background: var(--ds-hud);
   border: 1px solid var(--ds-hud-line);

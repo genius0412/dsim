@@ -170,7 +170,10 @@ export function releasePollen(
   const held = takeHeld(world, r, color ?? r.hopper[r.hopper.length - 1]);
   if (!held) return;
   const o = origin ?? { x: r.pos.x, y: r.pos.y };
-  held.state = { kind: 'flight', target: r.alliance };
+  // `by` is what makes the opponent's CELL refuse this element (`play.ts`, owner ruling
+  // 2026-09-12). It is stamped HERE, at the one place a POLLEN becomes a flight, so no launcher
+  // archetype can forget it.
+  held.state = { kind: 'flight', target: r.alliance, by: r.alliance };
   held.pos = { x: o.x, y: o.y };
   held.vel = { x: v.x, y: v.y };
   held.z = BB_LAUNCH_Z0;
@@ -207,14 +210,22 @@ function upCell(world: World, a: Alliance): BbCellSide {
 }
 
 /**
- * Every place `a` can aim POLLEN, nearest-in-value first: its OWN up-CELL, the opponent's
- * up-CELL, then the four FLOWER tops.
+ * Every place `a` can aim POLLEN, nearest-in-value first: its OWN up-CELL, then the four
+ * FLOWER tops.
  *
- * The opponent's CELL is in the list because it is a LEGAL shot that simply scores nothing —
- * `alliance` is set on both cells so a launcher can tell them apart and skip the one that
- * wastes a POLLEN, rather than the field pretending the opening is not there. The FLOWERS are
- * `alliance: null`: a FLOWER is owned at run time by whoever holds the top-most NECTAR in it
- * (§10.5.2), so it belongs to nobody at aim time.
+ * ⚠️ **THE OPPONENT'S CELL IS NOT ON THIS LIST** (owner ruling 2026-09-12, field-plan §2.1).
+ * It used to be, on the reading that it was a legal shot which simply scored nothing. The
+ * ruling is stronger than that: an element launched by the other alliance does NOT ENTER at
+ * all — it misses and lands as ground, and it is not penalised. So the opponent's opening is
+ * not a place `a` can put a POLLEN, and a list of "where may `a` score" that carries it is
+ * telling a launcher about a target that cannot exist. `play.ts` enforces the same ruling at
+ * the capture end, off the flight element's `by`; this is the AIM end of one rule.
+ *
+ * The consequence for a caller that wants EVERY opening on the field — the capture pass is the
+ * only one — is that it must ask for both alliances and merge. `play.ts` does, by id.
+ *
+ * The FLOWERS are `alliance: null` and appear for both: a FLOWER is owned at run time by
+ * whoever holds the top-most NECTAR in it (§10.5.2), so it belongs to nobody at aim time.
  *
  * STATIC GEOMETRY ONLY. Positions come from the constants and from which CELL is up; nothing
  * here runs the tip, counts contents or decides whether a shot went in. A CELL centre sits
@@ -228,12 +239,12 @@ function upCell(world: World, a: Alliance): BbCellSide {
  * The FLOWER is a column on the perimeter, so its open top is reachable from one half-space
  * only: the field side. The wall side is the wall.
  *
- * ⚠️ `drawField.ts` holds a private `FIELD_SIDE` with exactly this table, for placing badges
- * where the perimeter will not clip them. Two copies of a four-entry map is two chances to
- * disagree about which way `rear` is; they should collapse into one exported constant, and
- * `drawField.ts` is not this lane's file — see `docs/biobuzz/HANDOFF-field.md`.
+ * EXPORTED because it is also the only direction a badge or a stack readout can be drawn from
+ * a FLOWER without the perimeter clipping it — `drawField.ts` held a private `FIELD_SIDE` with
+ * exactly this table, and two copies of a four-entry map is two chances to disagree about
+ * which way `rear` is. There is one table now, and this is it.
  */
-const FLOWER_MOUTH: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
+export const FLOWER_MOUTH: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
   left: { x: 1, y: 0 }, // F1 stands on −x, opens toward +x
   rear: { x: 0, y: -1 }, // F2 stands on +y, opens toward −y
   right: { x: -1, y: 0 }, // F3 stands on +x, opens toward −x
@@ -241,7 +252,6 @@ const FLOWER_MOUTH: Record<(typeof BB_FLOWERS)[number]['wall'], Vec2> = {
 };
 
 export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
-  const opp: Alliance = a === 'red' ? 'blue' : 'red';
   // THE CELL'S MOUTH IS ITS TILT DIRECTION. Both CELLS sit on the same pivot, offset along y
   // by ±`BB_HIVE_CELL_DY`, and the one facing UP opens AWAY from that pivot — the see-saw has
   // lifted its far end, so the opening looks back down the +y or −y the cell was raised along.
@@ -263,7 +273,6 @@ export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
   };
   return [
     cell(a),
-    cell(opp),
     ...BB_FLOWERS.map((f, i) => ({
       id: `flower:${i}`,
       alliance: null,

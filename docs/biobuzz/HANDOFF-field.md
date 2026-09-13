@@ -1,5 +1,344 @@
 # HANDOFF — Lane A (field)
 
+## 2026-09-12 · A5a items 1–7 (Round 5 + both addenda) · `GREEN`
+
+Base: merged `origin/alpha` `e5d866d` (fast-forward — alpha carried only `field-plan.md` and
+`prompts.md`, no code). Gates, all at the end as one batch: `npx tsc --noEmit -p .` **clean** ·
+`npm run test:bb -- --lane field` **318/318** · `npm run test:bb` **945/945 ALL PASS** ·
+`hive-tip` re-shot at `scratch/shots/e5d866d-dirty/hive-tip@{0,120,240,480}.{light,dark}.png`.
+
+### The seven items
+
+1. **The per-FLOWER supply is gone.** `stock` and `nectarDue` are deleted from `BbFlowerState`
+   and from `emptyBiobuzzState()`; the per-ALLIANCE `nectarStock` / `nectarDue` / `nectarTimer`
+   stay and are the whole supply. Grepped `hud.ts` and `score.ts` FIRST as instructed: neither
+   reads the per-flower pair (hud.ts's `nectarDue` hits are the per-ALLIANCE
+   `Record<Alliance, number>`), so nothing had to go back to the master. The fields are DELETED
+   rather than left at 0 — a field the rules can read but the sim will never write is a trap.
+   Reference: §2.4 and G426, NECTAR enters only through the HUMAN PLAYER.
+2. **`bbWorld(seed, setups, pollen)` no longer leaves dangling ids.** It replaced `world.balls`
+   after staging, so every FLOWER stack and both up-CELLs held ids that resolved to nothing —
+   invisible (a dangling id draws nothing) until it ALIASED a later ball. It now re-runs
+   `bbIndexElements(world)` after the replace and carries `nextBallId` past the new layout.
+   Smoke: a sweep over every `field` scene at every still asserts BOTH directions — every id in
+   a stack or an up-CELL resolves to a ball whose state is `element` with a matching tag, and
+   every element-state ball is listed exactly once. Proved non-vacuous by commenting
+   `bbIndexElements` out and watching `pile-slow` fail with `flower:0:1 is ground`.
+3. **`FIELD_SIDE` is gone from `drawField.ts`.** `FLOWER_MOUTH` in `elements.ts` is now
+   `export const` and is the one table; the three usages import it.
+4. → became item 6.
+5. **The FLOWER is a SORTER** (field-plan §2.2). `flowerStackZ` seats a NECTAR at
+   `max(top, BB_FLOWER_MID_Z) + r`; POLLEN pass the ring and stack from the floor as before.
+   `BB_FLOWER_MID_Z` (3.98, APPROX) is the ring's UNDERSIDE and its comment says so now.
+   `spawn.ts` `flowerStack` is restaged THROUGH `flowerStackZ`, which is what its APPROX comment
+   had been asking for.
+   **Consequence: NECTAR capacity drops 6 → 5** (zs 5.78 / 9.38 / 12.98 / 16.58 / 20.18;
+   3.98 + 5 × 3.6 = 21.98 is already over `BB_FLOWER_TOP_Z` 21.5). POLLEN capacity stays 8.
+   **Every A–H scoring OUTCOME is unchanged and four of the z rows moved** — that is the ruling
+   working: a bottom nectar used to score because 0.43 + 3.6 = 4.03 cleared 3.98 **by 0.05 in**,
+   an accident of two APPROX numbers. Seated on the ring they clear it by construction, so the
+   outcomes now survive the ring's height being re-measured and the old ones would not have.
+   Smoke block 10b pins the three the addendum named: the bare-nectar span 3.98–7.58 and that
+   it scores; a POLLEN under a seated NECTAR pops on retrieval without lowering the NECTAR; the
+   staged four POLLEN still read 3 in volume and 0 points.
+6. **The spill is calibrated to the owner's landing lines.** `BB_SPILL_SPEED` `[40,60]` →
+   **`[50,88]`**; `BB_SPILL_LATERAL` is REPLACED by **`BB_SPILL_FAN` ±55°**, a rotation of the
+   whole velocity rather than a sideways nudge. Measured vs target is written up in
+   **`docs/biobuzz/feedback/001-spill-kinematics.md`** (that file was the item-4 question; the
+   owner had already answered it, so it is now the measurement).
+   Headline: **median 71 in from the pivot against a target of ~70, 88% of 360 spilled elements
+   inside the 57–107 band**, rest time **4.18 s** (0.18 s AFTER the swing settles, where it used
+   to finish 0.12 s before). `hive-tip` therefore grew a **fourth still at 480** — at 4 s two of
+   six are still rolling and the frame shows the throw mid-flight.
+7. **A CELL takes only its own alliance's element** (owner ruling 2026-09-12, ruling 2). The
+   shared flight variant gained **`by?: Alliance`** (`src/types.ts`), stamped in
+   `releasePollen`, and `play.ts`'s capture refuses a CELL whose owner is not `by`. A refused
+   shot is NOT consumed and NOT fouled: it keeps its arc and lands as ground.
+   `scoreTargets(world, a)` no longer lists the opponent's cell.
+
+### ⚠️ Three things the master needs to know
+
+1. **`src/types.ts` was edited** — `by?: Alliance` on the `flight` variant. Outside this lane's
+   files, but item 7 names it explicitly. **Optional** on purpose: every DECODE and CR flight,
+   and every BIOBUZZ snapshot recorded before this, carries nothing there and is accepted by
+   whatever cell it reaches, which is the pre-ruling behaviour. Plain JSON, survives `slimWorld`.
+   Smoke covers the fallback.
+2. **Two other lanes' smoke files needed one edit each**, both forced by items 6 and 7 and both
+   minimal:
+   - `scripts/smoke-biobuzz/rules.ts` — `SCENE hive-tip: its stills are 0 · 2 s · 4 s` now
+     expects `0,120,240,480` (item 6's fourth still).
+   - `scripts/smoke-biobuzz/robot.ts` — the aim filter's NON-VACUITY check (`raw nearest WOULD
+     have picked the opponent's opening`) read the raw list from `scoreTargets(w, r.alliance)`,
+     which since item 7 no longer contains the opponent's cell; it would have measured 0 poses
+     and failed. It now builds the FIELD-WIDE union (both alliances, merged by id), which is the
+     list that makes the check mean something. `bbPickTarget`'s own alliance filter is KEPT as a
+     second line of defence and its doc block says why.
+3. **`scoreTargets` changed meaning**: it is "where may `a` score", not "every opening on the
+   field". The only caller that wants the field-wide list is `play.ts`'s capture pass, and it
+   now merges both alliances by id. Anything else added later that walks targets to decide
+   whether a shot went in must do the same, or one HIVE silently stops taking shots.
+
+### Still open (this lane)
+
+- **The spill's SHORT tail.** 11% of spilled elements rest closer than the 57 in floor — a wide
+  fan angle throws an element ACROSS the field rather than out, and a chord is shorter than a
+  radius. One constant each was the instruction, so there is no knob separating "far" from
+  "wide". Needs a second term if the real field never puts one that close. Question 1 of the
+  feedback note.
+- **A NECTAR rests up to 0.40 in PAST the wall plane** (35 of 360 spilled elements). SHARED
+  physics, not this lane's: the solve runs one radius per call and `clampPollenToWalls` clamps
+  at `BB_POLLEN_R` 1.4, so a 1.8 NECTAR overhangs by the difference. Already field-plan §6
+  request 1 and `feedback/000-solver-observations.md`; this is the first sighting that is
+  visible in a screenshot (`hive-tip@480`, the elements on the audience wall).
+- `BB_FLOWER_MID_Z`, `BB_FLOWER_VOL_Z`, `BB_SPILL_SPEED`, `BB_SPILL_FAN` are all **APPROX** and
+  all now load-bearing for a scoring outcome.
+
+**Closed since the last section:** the per-FLOWER `stock`/`nectarDue` question (item 1), the
+`bbWorld` dangling ids (item 2) and the `drawField.ts` `FIELD_SIDE` duplicate (item 3) — all
+three are named as open further down this file and all three are done.
+
+### Cells to look at
+
+`hive-tip@240` (the throw mid-flight, two still rolling) and **`hive-tip@480`** (at rest — how
+wide, how far, how many finished against the perimeter), light and dark, at
+`scratch/shots/e5d866d-dirty/`.
+
+## 2026-09-12 · rules lane (A5b items 4–5) · G407 is a WARNING · `biobuzz-rules`
+
+Gates: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane rules` **159/159** (was 145,
++14) · `npm run test:bb` **882/882**. Based on `origin/alpha` `e5d866d`, merged for the late
+owner rulings.
+
+A5b items 1–3 landed in `0ad9bc7`; the addendum's two corrections in `5204d39`. This is items
+4–5, which are rulings 3 and 4 from the 2026-09-12 late set.
+
+### Item 4 — G407 as a WARNING (ruling 4)
+
+**The rule was listed in `penalties.ts` as "STRUCTURAL — `bbHopperCap` is 4, so a robot cannot
+hold a fifth". The ruling retires that.** Table 10-4 gives G407 a VERBAL WARNING with MAJOR +
+YELLOW only if STRATEGIC, and a hopper the sim refuses to fill is not what the rule says.
+
+- **`bbAwardFoul` gained a third severity, `'warning'`**: no points, no tally, one event line
+  `WARNING - RED (G407 CONTROL of 5+ elements)`. It goes through that function rather than a
+  bare `events.push` so every sanction in this game reads the same way in a toast and a replay.
+- **Edge-triggered per ROBOT**, so five held for a minute is ONE warning and five → four → five
+  is TWO (§10.6, per instance).
+- **No STRATEGIC branch, unlike G417**, and that is deliberate. G417's strategic test is
+  measurable (example A is a high-speed ram and the sim has a closing speed); G407's examples
+  are about intent, which the sim cannot read. There was no "MAJOR + YELLOW at 6+" branch to
+  remove — this lane had never modelled G407 at all.
+- **The tally rides `world.penalties.controlInstances`**, the shared per-robot instance count
+  that already means exactly this in DECODE. Same argument as the pin clocks, and still no
+  `state.ts` edit. Unlike the pin clocks it is **not** cleared at a phase boundary: a clock is
+  live state, a tally is history, and the chip counts the match.
+- **`biobuzzFieldHud` gained `warnings: Record<Alliance, number>`.** A sanction worth no points
+  is invisible on a scoreboard, so the chip IS the sanction. Additive; `HudSlots.tsx` untouched
+  (A5c's).
+- **`BB_CONTROL_LIMIT = 4` is exported from `penalties.ts`**, not added to `config.ts` (Lane
+  B's file). It is the RULE's four; `config.ts`'s `BB_STORAGE_MAX` is the DIAL's four, and
+  after relay 2 they are different things that were the same digit by accident.
+
+### ⚠️ Two gaps in item 4, both real, neither guessed at
+
+1. **THE BRIEF'S PREMISE IS NOT TRUE ON THIS BASE: `controlledArtifacts` IS NOT EXPORTED.** The
+   item says "on the exported CONTROL count (hopper + herded)". `src/sim/penalties.ts` exports
+   exactly two things — `updatePenalties` and `isPinning` — and `controlledArtifacts` is not
+   one of them. So **`bbControlled` counts the HOPPER and only the hopper today.** The herded
+   half of CONTROL is not reachable from this lane.
+
+   Building a second herding test here would mean duplicating ~150 lines of genuine judgement
+   (DECODE's per-(robot, artifact) hold clock, its drain, its transitive contact chain, its
+   re-station rule), and a hand-rolled "touching and moving" stand-in fires on every robot that
+   drives through the staged scatter. A fabricated warning teaches a driver a habit the real
+   rule does not punish — and this rule's entire output IS the teaching, since it moves no
+   points. **REQUEST, a §6 request-5 sibling: export `controlledArtifacts`.** The day it lands,
+   `bbControlled`'s body becomes a call to it and nothing else in this file changes.
+
+2. **THE RULE IS CORRECT BUT DORMANT UNTIL LANE B LIFTS THE CAP.** `bbHopperCap` still clamps
+   every hopper to `BB_STORAGE_MAX` = 4, so a hopper-only count cannot exceed the limit in a
+   driven match. That split is the brief's own (relay 2: "the rules lane bills the warning; you
+   only lift the cap"), and the smoke drives the rule directly — hopper set by hand — so it is
+   proven either way and fires the moment `config.ts` changes.
+
+### Item 5 — G410 binds NECTAR only (ruling 3)
+
+Nothing to do in the engine; it already read the element's kind and skipped `pollen`. One check
+added, at **2:00** rather than one second inside the lock: a rule that had quietly generalised
+to "no SCORING ELEMENT before 1:00" is indistinguishable from a correct one when the only
+evidence is taken at 1:01.
+
+### Rulings 1 and 2 — not this lane's
+
+Ruling 1 (PARK is the own LOADING ZONE) is already what `bbParkedNow` does and the ruling says
+so. Ruling 2 (an element launched by the other alliance does not enter a hive's cell) is A5a
+item 7 — `play.ts` and `elements.ts`, Lane A4a's files, not touched here.
+
+### Still open from the A5b sections below
+
+`isPinning`'s private `pinnedAgainstWall` probe hard-codes DECODE's goal wedges and classifier
+channels as solids and cannot see the HIVE frame bars, so a pin in one of those corner regions
+goes unbilled. Shared-core request, under-billing rather than inventing a foul.
+
+The **YELLOW CARD is still not modelled anywhere in BIOBUZZ** (G414/G415/G417/G418/G419/G420
+all card). Game-wide decision for the master, unchanged by this commit — G407 was the one rule
+where the ruling made the card moot.
+
+## 2026-09-12 · rules lane (A5b addendum) · the distilled manual corrects two rules · `biobuzz-rules`
+
+Gates: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane rules` **145/145** (was 141,
++4 net after the G417 checks were rewritten) · `npm run test:bb` **868/868**. Based on
+`origin/alpha` `f01f924`, merged for `docs/biobuzz/manual-distilled.md`.
+
+**`docs/biobuzz/manual-distilled.md` is now the rules source of record for this file, not
+`docs/biobuzz-reference.md`.** The reference's §5 row for G421 is a summary and its own §10
+item 13 records what that summary dropped. Every rule citation in `penalties.ts` now points at
+the distilled manual's section and page.
+
+### 1. G421 has NO "attempting to move" clause — and that changes nothing in the code
+
+The verbatim rule (p114, distilled §3.3) is "preventing the movement of an opponent ROBOT by
+contact, either direct or transitive" and stops there; the glossary's PIN/PINNING entry on p171
+is the same sentence. DECODE's G422 adds "...and the opponent ROBOT is attempting to move".
+**G421 does not.**
+
+`isPinning`'s idle-victim branch — the one its own comment marks ⚠️ as a DEVIATION from DECODE,
+kept on the grounds that a driver who is held stops mashing the stick — **is therefore the
+LITERAL rule under BIOBUZZ.** Under DECODE it is a judgement the sim makes on a referee's
+behalf; here it is what the manual says. No code changed; the doc comment and the smoke label
+now say so out loud, and both say **do not add a struggle test** — it would under-call every
+real BIOBUZZ pin.
+
+### 2. G417's escalation is STRATEGIC, not REPEATED — the code was wrong and is fixed
+
+`field-plan.md` §4.4 read "VERBAL first, MAJOR + YELLOW if REPEATED" and this file implemented
+it. Distilled §11 item 4: **REPEATED is not the trigger.** It is example F of six indicators
+that an action is likely STRATEGIC, and using it as the condition drops **example A — "ramming
+into the HIVE frame at high-speed" — which is STRATEGIC on a single hit.** A robot that ran the
+frame down once, hard, was getting a free warning for the one interaction the rule names first.
+
+What changed:
+
+- **`BB_FRAME_RAM_SPEED` is now explicitly this sim's STRATEGIC test.** Above it, the contact
+  is example A's high-speed ram and the MAJOR lands on the FIRST instance. Below it, nothing —
+  which is the manual's own likely-NOT-STRATEGIC list, headed by "accidentally bumping the
+  frame while attempting to pick up POLLEN". The threshold itself is unchanged and still
+  `APPROX`, still on the 09-14 field-test list.
+- **The tariff is PER MATCH, not per instance.** Table 10-4 says "MAJOR FOUL and YELLOW CARD
+  **per MATCH**, if STRATEGIC", in deliberate contrast with G416 two rows above ("MAJOR FOUL
+  **per instance**, if STRATEGIC"). So a robot pays once however many times it rams. The latch
+  that used to hold "already warned" now holds "already billed" — `bb.held[r.id].g417billed`,
+  same per-robot flag map, still no `state.ts` edit.
+- **There is no longer a VERBAL event line for G417.** The verbal was the first half of an
+  escalation that does not exist. A below-threshold brush is not a violation of the blanket
+  sentence at all ("any other interaction ... that causes or could cause or impede a TIP"), so
+  the sim says nothing rather than warning about it.
+- ⚠️ **The YELLOW CARD is NOT modelled.** BIOBUZZ has no card machinery: `bbAwardFoul` moves
+  points and nothing else, and a card carries DQ consequences through scoring and the results
+  screen that no Lane A file has built. The FOUL is the half that changes a score, so the foul
+  is the half that is here. **Open item for the master** — G414/G415/G417/G418/G419/G420 all
+  card, so this is a game-wide decision, not a G417 one.
+
+The master owns the `field-plan.md` §4.4 correction; this branch did not touch that file.
+
+### 3. Table 10-6 fixes the pin tariff arithmetic, and the loop already matched it
+
+"A ROBOT in violation of this type of rule for 15 seconds is assessed a total of 6 MAJOR FOULS"
+(p95, distilled §3.2). The violation OPENS at 3 s of pinning, so 15 s of being in violation is
+**18 s of pinning ⇒ 6 MAJOR ⇒ 120 points**: one on entry plus one for each of the five further
+intervals. `floor(18 / 3)` is 6, so `bbUpdatePins`'s existing `while` loop reproduces it
+exactly — but that was luck until it was checked, so it is now checked, longhand, against the
+manual's own integer. A loop that billed on entry AND at 3 s would read 7; one that waited for
+each interval to complete would read 5.
+
+Also confirmed and now asserted: **G421 has no CARD escalation** (§3.3), only the running
+tariff.
+
+### Unchanged from the A5b section below
+
+Items 1–8 of it all still stand, and item 1 is still the open one: `isPinning`'s private
+`pinnedAgainstWall` probe hard-codes DECODE's goal wedges and classifier channels as solids and
+cannot see the HIVE frame bars, so a pin in one of those corner regions goes unbilled. Still a
+shared-core request, still under-billing rather than inventing a foul.
+
+## 2026-09-12 · rules lane (A5b) · G421 PINNING is LIVE · `biobuzz-rules`
+
+Gates: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane rules` **141/141** (was 115,
++26) · `npm run test:bb` **864/864**. Based on `origin/alpha` `a318bce`, merged first for the
+`isPinning` export.
+
+Files changed: `penalties.ts`, `step.ts`, `hud.ts`, this doc. `score.ts` and `scenesField.ts`
+are this lane's and were NOT touched — G421 bills through `world.match.scores[a].foulPoints`,
+which `score.ts` already reads, and a pin has nothing to draw on a field that draws no text.
+
+### What landed
+
+**G421 is modelled on DECODE's exported `isPinning`, not on a second detector.** Request 5 of
+field-plan §6 is what made this possible, and the rule BIOBUZZ prints is DECODE's G422 with
+one thing changed — the tariff. So criteria A/B/C are CALLED:
+
+- **A** the pair gets 24 in (the rule's 2 ft, `PIN_ESCAPE_DIST`) apart for more than 3 s;
+- **B** either robot gets that far from where the pin initiated, for more than 3 s;
+- **C** the pinning robot is itself being pinned — a mutual hold is nobody's foul.
+
+A and B **END** a pin. Everything else that interrupts it — the pinner easing off, the victim
+squirming a foot — **PAUSES** the count and does not reset it. That is the manual's own
+"pause/resume" and it is the entire rule: without it a pinner wipes a 2.9-second count by
+letting go for a tenth of a second, forever, for free.
+
+**The tariff is the only divergence: MAJOR 20, and another MAJOR every further 3 s** (reference
+§5, Table 10-4 — DECODE bills a MINOR). Billed through `bbAwardFoul`, like every other rule in
+the file, because the shared `awardFoul` reads `C.PTS_FOUL_MAJOR` = 15.
+
+**The clocks live in `world.penalties.pins` / `.pinFouls`** — the SHARED `PenaltyState`, which
+already exists on a BIOBUZZ world (`spawn.ts` initialises it), is already plain JSON on every
+snapshot, and already has exactly this shape. No `state.ts` edit: a second BIOBUZZ-flavoured
+copy would be a state-type change to store what the world already stores.
+
+### What the next person has to know
+
+1. ⚠️ **`isPinning`'s INTERNAL SOLID PROBE IS STILL DECODE'S FIELD, AND THIS IS A REQUEST.**
+   The private `pinnedAgainstWall` helper hard-codes DECODE's **goal wedges** and **classifier
+   channels** as solids next to the perimeter. BIOBUZZ has neither, and its own solids — the
+   two HIVE FRAME BARS — are invisible to it. The perimeter half is correct (both fields are
+   144 in, `C.FIELD_HALF` equals `BB_HALF_X`), so the damage is confined to the four corner
+   regions DECODE puts a goal in: a victim held there reads as "cornered against a solid,
+   therefore escaping rather than pinning" and **the pin goes unbilled**. That direction is the
+   safe one — it under-bills and never invents a foul — but it is wrong, and the fix is shared
+   core: **`pinnedAgainstWall` wants the game's own solid list passed in** (a field-plan §6
+   request-5 follow-on, same shape as the request that unblocked this one). Until then a pin in
+   a BIOBUZZ corner is free.
+2. **Contact is `robotsContact` (this file's OBB test with `BB_FOUL_SLOP`), not
+   `world.rrContacts`.** DECODE feeds the solver's contact record. Using both would leave one
+   file with two disagreeing definitions of contact, and the rules smoke — which drives
+   hand-built worlds with no solver behind them — could not reach the rule at all.
+3. **`updateBiobuzzPenalties` now takes `(world, dt, commands)`.** A pin is billed in seconds
+   and asks whether the pinner is DRIVING INTO its victim, so both were unavoidable. `step.ts`
+   passes the APPLIED commands (post aim-override) at stage 7, which is after the Rapier solve
+   — load-bearing, because the pin clock measures how far the victim actually got this tick.
+4. **The pin clocks are CLEARED outside the played periods, and DECODE's are not.** Robots are
+   disabled through the transition, so a pin live at the AUTO buzzer is not being held across
+   the freeze; carrying 2.9 s of it into TELEOP bills a MAJOR on the first tick of a period in
+   which nothing had happened. This is the same reasoning `src/sim/penalties.ts` applies to
+   G408's clocks four lines below the guard it returns from — **DECODE arguably has this bug**,
+   and it is the owner's file, so it is reported here rather than patched.
+5. **`biobuzzFieldHud` gained `pins: BbPinHud[]`** — `{pinner, pinned, seconds, billed,
+   nextIn}`, sorted by pinner then victim. `nextIn` is the number that matters: the clock runs
+   in a referee's head and costs 20 points every three seconds, so it is how long the pinner
+   has to let go and how long the victim has to keep trying. **ADDITIVE** — every existing read
+   still works. Per the A5 split, `HudSlots.tsx` is A5c's from now on and was not touched; if
+   that chat needs another field it should ask through the master rather than reach in here.
+6. **`bbEscapeDir` is a five-line local copy** of `src/sim/penalties.ts`'s private `escapeDir`.
+   Copied rather than requested because it is a normalisation with no rule in it; the thing
+   that encodes JUDGEMENT (`isPinning`) is imported. A duplicated judgement is a liability, a
+   duplicated unit vector is not worth a round trip.
+7. **Every pin fixture is measured on the FOOTPRINT, 21 × 17.** Same warning as item 9 of the
+   A4b section below and it bit again: a victim flat against the +x frame bar sits at
+   x = 13.5 (24 − 10.5), and a pinner written against the 15-in chassis lands four inches clear
+   with the rule never firing — which reads exactly like a broken detector.
+8. **26 new checks, and three of them are negative controls.** The mutual shove (criterion C),
+   the 2-ft release (criterion A ends it, and a re-press restarts from zero) and the transition
+   clear. A pin detector that simply said "yes" would pass the positive checks alone.
+
 ## 2026-09-12 · A4a: the field is LIVE · `GREEN`
 
 Gates: `npx tsc --noEmit -p .` clean · `npm run test:bb -- --lane field` **208/208** ·
@@ -168,11 +507,10 @@ Scoring, the Section 11 contact rules, the 1:00 cue, the `gameHud` slice and thr
 2. **`origin/biobuzz-field` is AHEAD by `7f67fa0` ("the field goes live") and this branch does
    NOT carry it.** The brief's merge trigger is a `state.ts` commit and that one touches
    `play.ts`, `field.ts` and the handoff only. It is the commit that unblocks item 3.
-3. **`hive-tip` renders three IDENTICAL stills** (t = 0 · 2 s · 4 s). The scene is built
-   against the finished swing, but the swing is advanced by `hiveStep` from `play.ts`, which
-   is A4a's file. Its header says so. The swing arithmetic is NOT untested — `rules.ts` calls
-   the pure `hiveStep` directly and pins the release at `BB_TIP_RELEASE_S`. **Once `7f67fa0`
-   is merged the three stills should differ; re-shoot the cell and delete this note.**
+3. ~~`hive-tip` three identical stills~~ **CLOSED by the integration chat 2026-09-12**: with
+   `7f67fa0` merged the stills differ — t=0 full cell, t=2 s cross-fade with the row dimmed
+   (released), t=4 s the other cell up and seven elements spilled outboard (1600px re-shoot
+   read). Nothing left to do here.
 4. **`HudSlots.tsx` has not been wired.** `biobuzzFieldHud` now returns the whole of Table
    10-2 per alliance, the RP flags, the per-cell `needed`/`tipping`, flower owners and depth,
    the nectar stock/due and the G410 lock. The slice is ADDITIVE, so existing reads of

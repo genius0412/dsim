@@ -683,10 +683,17 @@
      under the bar with a viewport-bounded height gives it a scrollbar of its own and
      keeps it in view while the page moves behind it.
 
-     `flex-start` rather than `stretch` is load-bearing: a stretched flex item has no
-     definite height, and `position: sticky` needs one. The +1 is the bar's own
-     border-bottom, which `--ds-bar-h` does not include. */
-  align-self: flex-start;
+     STRETCH, not `flex-start`. `max-height` is what bounds this panel, and it bounds it
+     whichever way the item is aligned — so `flex-start` bought nothing and cost the whole
+     right-hand column: the aside shrink-wrapped its own content, so a short friends list
+     left the border and the `--ds-bar` surface stopping a third of the way down a
+     full-height page, which reads as a panel cut in half. `.ds-rail` opposite it stretches
+     for exactly this reason and the two are meant to be structural mirrors. Stretching
+     costs the sticky height nothing: the item resolves to the flex line's cross size,
+     which is definite, and on a tall page `max-height` clamps it back under the viewport
+     so it still travels. The +1 is the bar's own border-bottom, which `--ds-bar-h` does
+     not include. */
+  align-self: stretch;
   position: sticky;
   top: calc(var(--ds-bar-h) + 1px);
   max-height: calc(100dvh - var(--ds-bar-h) - 1px);
@@ -707,6 +714,9 @@
    The surface stays `--ds-bar` rather than `--ds-panel`: `.fr-toggle` hovers TO
    `--ds-panel`, and a panel-coloured card would swallow its only hover state. */
 .ds-friends.collapsed {
+  /* the expanded column stretches; this card must NOT — that is the "page-length border
+     for one button" the note above rejects. */
+  align-self: flex-start;
   /* 64, not 56: "Friends" at 11px is 39px wide and the rail keeps 8px a side, so 56
      left one pixel of slack. */
   width: 64px;

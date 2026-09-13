@@ -274,8 +274,15 @@ export type BallState =
    * once it enters that accelerator it is `scored`, then FUNNELS down inside the goal
    * for `funnelT` seconds before the wall-side launcher flings it back onto the field
    * (same ball, still 'flight' until it lands). `staged` = pre-match: HELD inside the goal
-   * (inert) until the launcher ejects it during field randomization (see prematchRandomize). */
-  | { kind: 'flight'; target: Alliance; scored?: boolean; funnelT?: number; staged?: boolean }
+   * (inert) until the launcher ejects it during field randomization (see prematchRandomize).
+   *
+   * `by` is the alliance that LAUNCHED it, which is not the same fact as `target` and cannot be
+   * derived from it: BIOBUZZ's up-CELL takes only its own alliance's element (owner ruling
+   * 2026-09-12), so a red shot arriving over blue's open cell is a MISS that lands as ground
+   * rather than a TIP for blue. Optional because DECODE and Chain Reaction never ask — an older
+   * snapshot, and every non-BIOBUZZ flight, carries nothing here and is accepted by whatever it
+   * reaches, which is the pre-ruling behaviour. Plain JSON, so it survives `slimWorld`. */
+  | { kind: 'flight'; target: Alliance; by?: Alliance; scored?: boolean; funnelT?: number; staged?: boolean }
   /** jumbling inside the goal's triangular basin, funnelling toward the
    * classifier entrance under gravity */
   | { kind: 'basin'; goal: Alliance }

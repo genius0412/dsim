@@ -181,31 +181,36 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
         return colors.map((c, i) => el(c, `hive:${a}`, i, x, y));
       };
       const inFlower = (i: number, colors: ArtifactColor[]): number[] =>
-        colors.map((c, slot) => el(c, `flower:${BB_FLOWERS[i].id}`, slot, BB_FLOWERS[i].x, BB_FLOWERS[i].y));
+        colors.map((c, slot) => el(c, `flower:${i}`, slot, BB_FLOWERS[i].x, BB_FLOWERS[i].y));
+
+      /**
+       * A MID-MATCH SPREAD, NOT THE STAGED FIELD — `spawn.ts` owns staging, this cell owns the
+       * DRAWING, so the contents are chosen to make each readout say something a reader can
+       * CHECK against a rule rather than to be legal at t=0:
+       *  • red's up-CELL is 3 NECTAR + 2 POLLEN, one POLLEN short of a TIP
+       *    (`BB_TIP_POLLEN[3]` is 3) — exactly the split a single total would hide;
+       *  • blue's holds a RED nectar, because any alliance may LAUNCH into any cell;
+       *  • F2 carries a NECTAR on TOP (blue OWNS it) and F3 one at the BOTTOM (red's 5-point
+       *    bonus, and retrieval locked — a 3.6 NECTAR does not fit the 3.55 opening), which is
+       *    the pair of cases the stack order exists to tell apart;
+       *  • F4 holds SIX, a full flower, which is the length `BB_VIEW_MARGIN` has to clear.
+       *
+       * BUILT BEFORE THE WORLD, AND NOT ASSIGNED INTO THE BAG. The `el` tags on these artifacts
+       * ARE the readout: `bbWorld` reindexes the state bag off the array it is handed, so the
+       * stacks and both cells come back derived, in slot order, from the balls that exist. An
+       * earlier pass called `bbWorld` first and pushed into the array afterwards — it worked
+       * only because the array was the same object, and it needed six hand-written assignments
+       * to say what the tags already said.
+       */
+      inCell('red', ['red', 'red', 'red', 'yellow', 'yellow']);
+      inCell('blue', ['blue', 'red', 'yellow', 'yellow', 'yellow', 'yellow']);
+      inFlower(0, ['yellow', 'yellow', 'yellow', 'yellow']);
+      inFlower(1, ['yellow', 'yellow', 'blue']);
+      inFlower(2, ['red', 'yellow', 'yellow', 'yellow']);
+      inFlower(3, ['yellow', 'yellow', 'yellow', 'yellow', 'yellow', 'blue']);
 
       const world = bbWorld(seed, [], balls);
-      const bb = world.biobuzz;
-      if (bb) {
-        bb.labels = true;
-        /**
-         * A MID-MATCH SPREAD, NOT THE STAGED FIELD — `spawn.ts` owns staging, this cell owns
-         * the DRAWING, so the contents are chosen to make each readout say something a reader
-         * can CHECK against a rule rather than to be legal at t=0:
-         *  • red's up-CELL is 3 NECTAR + 2 POLLEN, one POLLEN short of a TIP
-         *    (`BB_TIP_POLLEN[3]` is 3) — exactly the split a single total would hide;
-         *  • blue's holds a RED nectar, because any alliance may LAUNCH into any cell;
-         *  • F2 carries a NECTAR on TOP (blue OWNS it) and F3 one at the BOTTOM (red's 5-point
-         *    bonus, and retrieval locked — a 3.6 NECTAR does not fit the 3.55 opening), which
-         *    is the pair of cases the stack order exists to tell apart;
-         *  • F4 holds SIX, a full flower, which is the length `BB_VIEW_MARGIN` has to clear.
-         */
-        bb.hives.red.contents = inCell('red', ['red', 'red', 'red', 'yellow', 'yellow']);
-        bb.hives.blue.contents = inCell('blue', ['blue', 'red', 'yellow', 'yellow', 'yellow', 'yellow']);
-        bb.flowers[0].stack = inFlower(0, ['yellow', 'yellow', 'yellow', 'yellow']);
-        bb.flowers[1].stack = inFlower(1, ['yellow', 'yellow', 'blue']);
-        bb.flowers[2].stack = inFlower(2, ['red', 'yellow', 'yellow', 'yellow']);
-        bb.flowers[3].stack = inFlower(3, ['yellow', 'yellow', 'yellow', 'yellow', 'yellow', 'blue']);
-      }
+      if (world.biobuzz) world.biobuzz.labels = true;
       return world;
     },
     stills: [0],
@@ -471,23 +476,15 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
       const bb = world.biobuzz;
       if (bb) {
         /**
-         * ⚠️ CLEAR THE STAGED ELEMENT REFERENCES, because `bbWorld` does not.
-         *
-         * `createBiobuzzWorld` runs `stageBiobuzz`, which puts ids into every FLOWER stack and
-         * both up-CELLS; `bbWorld` then REPLACES `world.balls` with the scene's own array and
-         * leaves those ids behind, pointing at elements that no longer exist. The readouts are
-         * a join, so a dangling id normally draws nothing and the omission is invisible — but
-         * `bbPollen` numbers from 1 and so does the staging, so three floor pollen ALIASED
-         * F1's staged stack and the scene rendered them hanging outside the perimeter beside a
-         * flower instead of on the tiles where it put them. High ids avoid the collision;
-         * clearing the references is what actually makes the picture true, and it is what this
-         * cell means by "nothing else in it".
+         * THE READOUTS ARE ALREADY EMPTY — `bbWorld` reindexes the state bag off the array it
+         * just installed, and this one holds three loose POLLEN and nothing tagged, so every
+         * FLOWER stack and both up-CELLs come back empty. That is what this cell means by
+         * "nothing else in it", and it is now a property of the helper rather than three lines
+         * of clearing here. (The ids still start high: an earlier pass numbered from 1, the
+         * staging does too, and the three floor pollen ALIASED F1's staged stack and drew
+         * outside the perimeter beside a flower. The reindex is the fix; distinct ids are
+         * cheap insurance and they keep the cell's own numbering readable.)
          */
-        bb.flowers.forEach((f) => {
-          f.stack = [];
-        });
-        bb.hives.red.contents = [];
-        bb.hives.blue.contents = [];
         bb.hives.red.tips = 1;
       }
       return world;
@@ -500,15 +497,25 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
     title: 'One TIP, across the 4-second swing — loaded, level, settled',
     lane: 'field',
     /**
-     * THE SWING, IN THREE FRAMES: t = 0 (loaded and about to go), t = 2 s (LEVEL — the tray
-     * empties here) and t = 4 s (SETTLED — the damper meets the frame and the 20 lands).
+     * THE SWING, IN FOUR FRAMES: t = 0 (loaded and about to go), t = 2 s (LEVEL — the tray
+     * empties here), t = 4 s (SETTLED — the damper meets the frame and the 20 lands) and
+     * t = 8 s (the SPILL at rest, wherever the throw put it).
      *
-     * The three stills are the three moments §10.5.1 and field-plan §2.1 distinguish, and they
+     * The first three are the three moments §10.5.1 and field-plan §2.1 distinguish, and they
      * are distinguished because they happen at different times: a CELL empties as the bar
      * passes level (`BB_TIP_RELEASE_S`), and the POINTS arrive two seconds later when it stops
      * (§10.5.1 needs the damper in contact). Anything that collapses them — scoring at the
      * start of the swing, or spilling at the end — reads as one event in the code and as two
      * on a real field.
+     *
+     * THE FOURTH FRAME IS THE SPILL'S OWN, and it is a separate question from the swing's.
+     * A TIP is a THROW (`BB_SPILL_SPEED` 50-88 in/s in a ±`BB_SPILL_FAN` 55° fan, calibrated to
+     * the owner's landing lines — field-plan §2.2), so the contents are still crossing the field
+     * and bouncing off the perimeter at t = 4 s and only come to rest at about 4.2 s. Measured,
+     * they settle 42-107 in from the PIVOT, which is most of a 12 ft field — a still at the
+     * settle tick shows the throw MID-FLIGHT and says nothing about where a spill ends up, which
+     * is the thing a driver has to plan around. Numbers in
+     * `docs/biobuzz/feedback/001-spill-kinematics.md`.
      *
      * WHAT TO LOOK AT:
      *   1. t = 0 — RED's SOUTH cell is up and FILLED, holding 3 NECTAR + 3 POLLEN. That is the
@@ -518,15 +525,18 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
      *      they draw as ordinary GROUND balls under the structure, on top of the dashed
      *      outline, not as discs inside a box (`hive-ground` is the dedicated cell for that
      *      distinction).
-     *   3. t = 4 s — the NORTH cell is up, filled and EMPTY; `tips` is 1.
-     *   4. BLUE's hive, untouched in all three, is the control: both cells the same length,
+     *   3. t = 4 s — the NORTH cell is up, filled and EMPTY; `tips` is 1. The spill is spread
+     *      across the audience half and two of the six are still rolling.
+     *   4. t = 8 s — nothing is moving. This is the frame to read the SCATTER off: how wide,
+     *      how far, and how many finished against the perimeter.
+     *   5. BLUE's hive, untouched in all four, is the control: both cells the same length,
      *      because the see-saw is one rigid bar at 30° and a plan view foreshortens both ends
      *      equally (reference §2.2).
      *
      * ⚠️ THE SWING IS ADVANCED BY `play.ts`, WHICH IS LANE A4a's FILE AND IS NOT WIRED YET.
      * `hiveStep` is written, pure and checked directly by `scripts/smoke-biobuzz/rules.ts`, but
      * nothing calls it per tick until A4a lands its gameplay pass — so until that merge these
-     * three stills render the SAME frame. The scene is built against the finished behaviour on
+     * four stills render the SAME frame. The scene is built against the finished behaviour on
      * purpose: the cell that proves the wire is the one that has to exist before the wire, or
      * the wire lands with nothing looking at it. Named in `docs/biobuzz/HANDOFF-field.md`.
      */
@@ -534,12 +544,9 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
       const world = bbWorld(seed, [], []);
       const bb = world.biobuzz;
       if (!bb) return world;
-      // the staged references point at elements `bbWorld` replaced out of `world.balls` — see
-      // `hive-ground` for the aliasing this prevents.
-      bb.flowers.forEach((f) => {
-        f.stack = [];
-      });
-      bb.hives.blue.contents = [];
+      // `bbWorld` handed back an EMPTY array, so the bag it reindexed is empty too — no FLOWER
+      // stack, neither up-CELL. This scene then installs its own `world.balls` below and writes
+      // `hives.red.contents` to match, which is the one readout it is about.
       const up = BB_HIVE_UP_STAGED.red;
       const cy = (up === 'north' ? 1 : -1) * BB_HIVE_CELL_DY;
       // 3 NECTAR + 3 POLLEN: the STAGED row of the measured tip table (reference §4.1), i.e.
@@ -560,7 +567,7 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
       return world;
     },
     // 0 · 2 s · 4 s at the shared 60 Hz tick — the load, the level, the settle.
-    stills: [0, 120, 240],
+    stills: [0, 120, 240, 480],
   },
 
   {
@@ -618,14 +625,6 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
         ],
         [],
       );
-      const bb = world.biobuzz;
-      if (bb) {
-        bb.flowers.forEach((f) => {
-          f.stack = [];
-        });
-        bb.hives.red.contents = [];
-        bb.hives.blue.contents = [];
-      }
       world.match.phase = 'teleop';
       world.match.phaseTimeLeft = C.TELEOP_DURATION;
       return world;
@@ -668,11 +667,6 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
       const world = bbWorld(seed, [], []);
       const bb = world.biobuzz;
       if (!bb) return world;
-      bb.flowers.forEach((f) => {
-        f.stack = [];
-      });
-      bb.hives.red.contents = [];
-      bb.hives.blue.contents = [];
       const balls: Artifact[] = [];
       for (const a of ['red', 'blue'] as const) {
         const spot = bbLoadingZoneSpot(a, BB_NECTAR_R);

@@ -54,11 +54,15 @@ export interface Vec3 {
 /**
  * A place POLLEN can be SCORED, in world coordinates.
  *
- * SHELL STUB, and honestly so: `scoreTargets()` returns `[]` because Section 9 (ARENA) and
- * Section 10 (Game Details) of the V0 manual are Kickoff placeholders, so there is no goal,
- * basket, hive or zone to describe. The TYPE exists now because Lane B's `bbAimHeading` and
- * `bbLaunch` are written against it, and a type that arrives after its callers is a refactor
- * rather than a fill-in.
+ * FILLED IN SINCE KICKOFF: `scoreTargets()` now lists the asking alliance's own up-CELL and
+ * the four FLOWER tops. It does NOT list the opponent's CELL — an element launched by the
+ * other alliance does not enter it (owner ruling 2026-09-12) — so a caller that wants every
+ * opening on the FIELD rather than every opening this alliance can score in has to ask for
+ * both and merge, which is what `play.ts`'s capture pass does.
+ *
+ * `alliance` is `null` for a NEUTRAL target. The FLOWERS are neutral at aim time even though
+ * they are owned at score time: ownership is whoever holds the top-most NECTAR (10.5.2), which
+ * is a fact about the stack, not about the opening.
  *
  * `id` is stable and JSON-safe (it ends up in HUD text and in events). `pos` is the point to
  * aim at; `z` is how high it sits, so a lob has an arc to solve for; `r` is the accepting
@@ -162,18 +166,14 @@ export interface BbFlowerState {
    * the reader also holding `BB_FLOWERS` in the right order. */
   id: string;
   /**
-   * NECTAR HELD AT THIS FLOWER THAT HAS NOT YET ENTERED PLAY, and the count still owed to it.
-   *
-   * ⚠️ DRAFT, AND DELIBERATELY UNWRITTEN BY THE SIM. They are the A4 state contract's two
-   * per-flower fields (`docs/biobuzz/prompts.md`, "A4 split"), so the rules lane can compile
-   * against them from the first commit. Nothing in the manual as distilled so far
-   * (`field-plan.md` §2.2) describes a FLOWER dispensing NECTAR — the only supply rule found
-   * is the HUMAN PLAYER's (§2.4, G426), which is per ALLIANCE and lives on `nectarStock` /
-   * `nectarDue` below. Both stay 0 until the manual says what a flower's own stock is; writing
-   * a guessed drip into them would be the invented-geometry failure the contract forbids.
+   * NO PER-FLOWER SUPPLY. The A4 state contract carried a draft `stock` / `nectarDue` pair
+   * here against the possibility that a FLOWER dispenses its own NECTAR. The reference now
+   * answers that: `docs/biobuzz-reference.md` §2.4 and G426 put every NECTAR into the field
+   * through the HUMAN PLAYER — one per own-HIVE TIP, and all remaining stock at ≤ 60 s — and
+   * nothing anywhere gives a flower a supply of its own. The two fields are deleted rather
+   * than left at 0: a field the rules can read but the sim will never write is a trap, and
+   * the per-ALLIANCE `nectarStock` / `nectarDue` / `nectarTimer` below are the whole supply.
    */
-  stock: number;
-  nectarDue: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -313,10 +313,10 @@ export function emptyBiobuzzState(): BiobuzzState {
     // four literals rather than a `map`, so the tuple type holds and so the four stacks are
     // four distinct arrays — a `fill()` of one object would alias every flower to one stack.
     flowers: [
-      { id: 'F1', stack: [], stock: 0, nectarDue: 0 },
-      { id: 'F2', stack: [], stock: 0, nectarDue: 0 },
-      { id: 'F3', stack: [], stock: 0, nectarDue: 0 },
-      { id: 'F4', stack: [], stock: 0, nectarDue: 0 },
+      { id: 'F1', stack: [] },
+      { id: 'F2', stack: [] },
+      { id: 'F3', stack: [] },
+      { id: 'F4', stack: [] },
     ],
     nectarStock: { red: 0, blue: 0 },
     nectarDue: { red: 0, blue: 0 },

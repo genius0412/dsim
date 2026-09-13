@@ -81,8 +81,10 @@ B's cap is lower, the rest go on the tiles touching the robot; a no-show's go to
 **conserved across floor + hopper + flight + cells + flowers + stock** — the smoke invariant.
 
 `scoreTargets(world, a)` returns, in order: the alliance's own up-CELL (pos, z = 59.5, accept
-rect 20 × 12 → `r` 8 APPROX), the opponent's up-CELL (legal, pointless — `alliance` set so a
-launcher can skip it), and the four FLOWER tops (z 21.5, r 2.0). `releasePollen(…, target)`
+rect 20 × 12 → `r` 8 APPROX), the opponent's up-CELL (REFUSED — owner ruling 2026-09-12, late:
+an element launched by the other alliance does not enter; it is a miss and lands as ground.
+`alliance` on the target is what the field and the launcher both read), and the four FLOWER
+tops (z 21.5, r 2.0). `releasePollen(…, target)`
 solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
 
 ### 2.1 HIVE (hive.ts)
@@ -134,6 +136,16 @@ solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
   (a flight element within `r` 2.0 of the top centre, z near 21.5, descending; a 3.6 nectar in a
   4.0 hole is a PLACEMENT — Lane B's deposit mechanism calls `releasePollen` with the flower
   target and a low arc).
+- **The middle ring is a SORTER** (owner ruling 2026-09-12, from the visuals chat's section
+  drawing): its hole is between the 2.8 POLLEN and the 3.6 NECTAR. POLLEN passes it and sits on
+  the lower ring (0.43); NECTAR cannot and seats on the middle ring. So a NECTAR is never below
+  the scoring floor and ALWAYS scores, and a lone POLLEN at the bottom (0.43-3.23) scores nothing
+  at rest. `flowerStackZ` seats a NECTAR at `max(columnTop, BB_FLOWER_MID_Z) + r`; everything
+  above rests on it as before, and retrieving a POLLEN from under a ring-seated NECTAR does not
+  lower the NECTAR. The ring's HEIGHT stays APPROX: 3.98 is the retrieval opening 3.55 + bottom
+  ring 0.43, i.e. the ring's UNDERSIDE, and V1 prints neither its thickness nor whether the
+  volume starts at its top (manual-distilled section 11, item 1). The seat rule is what keeps the
+  outcomes right whatever that number becomes.
 - Retrieval (G418.B): `actOnElement(world, r, 'retrieve')` when a robot's mouth overlaps the
   flower's field-side face — pops the **bottom** element **only if it is POLLEN** (nectar 3.6 >
   3.55 opening) into the hopper. A nectar at the bottom locks the flower.
@@ -193,9 +205,10 @@ assessment (TELEOP PARK, garden, cell contents, final flower state). `scored: tr
 1. **G410** nectar-in-flower early — MAJOR per nectar. One predicate on the flower entry event.
 2. **G402** AUTO interference — DECODE's shape: during AUTO, a robot fully on the opponent's
    side (x sign) in contact with an opponent ⇒ MAJOR on the crosser.
-3. **G407** — structural cap 4 in the hopper; herding of ground elements counted with a
-   simplified CONTROL test (contact + moving with the robot's face); VERBAL (log line) at 5,
-   MAJOR + YELLOW at 6+ (the manual's own "likely STRATEGIC" example A).
+3. **G407** — a WARNING, not a cap (owner ruling 2026-09-12, late): the hopper is bounded by the
+   volume law alone, and CONTROL of a 5th element (hopper + herded, the simplified CONTROL test:
+   contact + moving with the robot's face) is a VERBAL WARNING — a log line and a HUD chip, no
+   points. MAJOR + YELLOW "if STRATEGIC" is referee judgement and is not modelled.
 4. **G417** frame ram — bumper contact with a frame bar at closing speed > `APPROX` 30 in/s:
    VERBAL first, MAJOR + YELLOW if REPEATED (example B).
 5. **G421** PIN — reuse DECODE's `isPinning` machinery once it is extractable (§6 request 5);
@@ -244,8 +257,8 @@ None of these block kickoff-day geometry (§1) or staging; 1–3 block the eleme
 
 ## 7. For Lane B (robot) — facts from the manual that change the dials
 
-- Hopper ceiling **4** (G407); default 4; preloads fill it. `BB_STORAGE_*` and the storage-area
-  law shrink to a 1–4 dial or disappear.
+- Hopper ceiling is the VOLUME LAW, not 4 (owner ruling 2026-09-12, late: G407 is a warning —
+  §4.3 item 3). Default 4; preloads fill it. `BB_STORAGE_MAX = 4` goes; `bbStorageMax` stands.
 - Expansion **18 × 24 × 29** (R105): one horizontal axis only — `BB_PRISM` 24 stands, but the
   other axis stays 18.
 - Two launch targets with real heights: cell opening 53.5–65.6 in (a genuine lob, 12–14 in
@@ -266,4 +279,7 @@ None of these block kickoff-day geometry (§1) or staging; 1–3 block the eleme
 - PARK requires the **OWN** LOADING ZONE — SETTLED (owner, 2026-09-12), matching Fig 10-7.
 - Flower stand-off from the wall and exact footprint (CAD ref 10-4 when the field CAD is out).
 - Exact tape placement of the LZ (which side of the seam) — ±0.5 in, cosmetic.
-- Whether a pollen launched into the OPPONENT's up-cell is ever penalised (text: no).
+- ~~Whether a pollen launched into the OPPONENT's up-cell is ever penalised~~ SETTLED (owner,
+  2026-09-12): not penalised, and the sim does not let it enter (§2.1).
+- G410 binds NECTAR only — SETTLED (owner, 2026-09-12): POLLEN may enter a FLOWER at any time and
+  earns nothing until an owner exists.
