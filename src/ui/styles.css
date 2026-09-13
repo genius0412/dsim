@@ -347,6 +347,15 @@ button {
   color: var(--muted);
 }
 
+/* A COUNTDOWN AGAINST SOMEBODY, not a state of the field. The rest of this row is
+   `--muted` because NECTAR LOCKED, RAMP and the rest describe where the match IS; BIOBUZZ's
+   G421 line is 20 points every three seconds and has to carry the same weight here as the
+   `.chip.warn` it mirrors in the desktop chip row — this row is the only one a phone renders. */
+.breakdown-row span.warn {
+  color: var(--ds-warn);
+  border-color: var(--ds-warn);
+}
+
 .chip {
   display: inline-flex;
   align-items: center;
