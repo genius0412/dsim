@@ -279,6 +279,9 @@ const rand6 = (): string => Math.floor(Math.random() * 0x7fffffff).toString(36).
 export class Matchmaker {
   private readonly queues: Record<QueueMode, QueueEntry[]> = { '1v1': [], '2v2': [] };
   private readonly rooms = new Set<Room>();
+  /** entries pulled out of a queue for a pairing whose staging write has not landed yet,
+   *  keyed by connection id. See `tryMatch` / `restoreGroup`. */
+  private readonly staging = new Map<string, QueueEntry>();
   private readonly now: () => number;
   private readonly stage?: StageFn;
   private readonly rating?: RatingFn;
@@ -362,6 +365,10 @@ export class Matchmaker {
   }
 
   remove(id: string): void {
+    // a player who leaves WHILE their group is being staged must not be put back by
+    // `restoreGroup` when that staging fails — dropping the held entry here is what
+    // tells the restore that this seat is gone for good.
+    this.staging.delete(id);
     for (const mode of Object.keys(this.queues) as QueueMode[]) {
       const q = this.queues[mode];
       const i = q.findIndex((e) => e.id === id);
@@ -417,9 +424,42 @@ export class Matchmaker {
     while (m) {
       const ids = new Set(m.group.map((g) => g.id));
       this.queues[mode] = this.queues[mode].filter((e) => !ids.has(e.id));
-      void this.startMatch(mode, m.group, m.hostRegion);
+      // HELD, not dropped. The entries leave the pool synchronously (nothing may pair them
+      // twice) but staging is a database write that can fail, and before this they were
+      // simply gone when it did: the players sat on a search screen that would never end,
+      // holding no queue entry, with the pairing that was made for them lost. They are kept
+      // here until the write lands, and handed back if it does not.
+      const group = m.group;
+      for (const e of group) this.staging.set(e.id, e);
+      void this.startMatch(mode, group, m.hostRegion).then(
+        () => {
+          for (const e of group) this.staging.delete(e.id);
+        },
+        (err: unknown) => this.restoreGroup(mode, group, err),
+      );
       m = this.findMatch(mode);
     }
+  }
+
+  /**
+   * Put a group whose staging FAILED back in the queue it was taken from.
+   *
+   * Anyone who left in the meantime is skipped — `remove` drops their held entry, so a
+   * missing one here means the player is gone and re-adding them would mint the same ghost
+   * this is meant to prevent. Deliberately does NOT re-run `tryMatch`: the same pairing
+   * would be attempted against the same broken write immediately, and the retry belongs on
+   * the next `tick`, which is a second away and not a microtask.
+   */
+  private restoreGroup(mode: QueueMode, group: QueueEntry[], err: unknown): void {
+    console.error('[mm] staging failed — returning the group to the queue:', err);
+    let back = 0;
+    for (const e of group) {
+      if (!this.staging.delete(e.id)) continue; // left or disconnected while staging
+      if (this.queues[mode].some((x) => x.id === e.id)) continue; // already re-queued since
+      this.queues[mode].push(e);
+      back++;
+    }
+    if (back) this.broadcastStatus(mode);
   }
 
   /**

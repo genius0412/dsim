@@ -23,6 +23,7 @@ import type {
 } from '../src/types';
 import {
   dequantizeCommand,
+  sanitizeQCommand,
   encodeMsg,
   quantizeCommand,
   slimWorld,
@@ -896,7 +897,7 @@ export class Room {
     }
   }
 
-  private onInput(id: string, tick: number, q: QCommand, ack?: number, gen?: number): void {
+  private onInput(id: string, tick: number, q: unknown, ack?: number, gen?: number): void {
     // STALE GENERATION: an input produced for a match this room has already replaced.
     // Dropping it is the whole reason a rematch can rebuild in place — see `matchGen`.
     // Absent (older client) ⇒ accepted, exactly as before.
@@ -922,7 +923,14 @@ export class Room {
     // high-water marks that cannot be lowered once poisoned. Reject at the door instead.
     if (!Number.isSafeInteger(tick) || tick < 0) return;
     if (this.world && tick - this.world.tick > MAX_INPUT_LEAD_TICKS) return;
-    const cmd = dequantizeCommand(q);
+    // AND THE PAYLOAD ITSELF, for the same reason the tick above is checked here: `q` is
+    // typed `QCommand` by the wire types and is in fact whatever `JSON.parse` produced.
+    // `dequantizeCommand` would turn a missing axis into NaN and an out-of-range one into a
+    // track speed no motor can reach, inside the world every OTHER member of this room is
+    // being sent as authority. Refused before `latest`, `pending` or liveness see it.
+    const safe = sanitizeQCommand(q);
+    if (!safe) return;
+    const cmd = dequantizeCommand(safe);
     // track the freshest command by tick (even if it's now in the past) — this is
     // what a late input still contributes, so the robot keeps moving
     if (tick > (this.latestTick.get(rid) ?? -1)) {

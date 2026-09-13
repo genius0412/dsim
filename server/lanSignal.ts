@@ -133,6 +133,16 @@ export class LanSignalling {
     if (host.peers.size >= MAX_PEERS_PER_HOST && !host.peers.has(socket.id)) {
       return { ok: false, reason: 'full' };
     }
+    // ONE HOST PER GUEST, the mirror of `claim`'s one-host-per-socket rule. `guestOf` is a
+    // single code, so joining a second room used to overwrite it while leaving the socket in
+    // the FIRST host's `peers` map: that host kept a peer it could still be asked to relay
+    // to, and `release` — which reads `guestOf` — only ever cleaned the newest membership,
+    // so the stale one survived the guest disconnecting entirely.
+    const was = this.guestOf.get(socket.id);
+    if (was && was !== code) {
+      const old = this.hosts.get(was);
+      if (old?.peers.delete(socket.id)) old.socket.send({ t: 'lanPeerGone', peer: socket.id });
+    }
     host.peers.set(socket.id, socket);
     this.guestOf.set(socket.id, code);
     host.socket.send({ t: 'lanPeer', peer: socket.id });
