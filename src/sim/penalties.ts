@@ -552,7 +552,7 @@ function contactPush(
   return { speed, dirX: pv.x / speed, dirY: pv.y / speed };
 }
 
-function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: boolean): number {
+export function controlledArtifacts(world: World, r: RobotState, dt: number, intaking: boolean): number {
   const pen = world.penalties;
   const home = loadZone(r.alliance);
   const reach = C.BALL_RADIUS + C.POSSESSION_CONTROL_MARGIN; // touching the footprint
