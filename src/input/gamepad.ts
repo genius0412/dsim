@@ -23,7 +23,7 @@ export interface GamepadSample {
   intake: boolean;
   catalyst: boolean;
   fling: boolean;
-  bbLift: boolean;
+  bbPlaceNectar: boolean;
   bbPlace: boolean;
   driveMode: boolean;
   flipFront: boolean;
@@ -43,7 +43,7 @@ const EMPTY: GamepadSample = {
   intake: false,
   catalyst: false,
   fling: false,
-  bbLift: false,
+  bbPlaceNectar: false,
   bbPlace: false,
   driveMode: false,
   flipFront: false,
@@ -92,7 +92,7 @@ export class GamepadInput {
       intake: anyBtn(bindings.buttons.intake),
       catalyst: anyBtn(bindings.buttons.catalyst),
       fling: anyBtn(bindings.buttons.fling),
-      bbLift: anyBtn(bindings.buttons.bbLift),
+      bbPlaceNectar: anyBtn(bindings.buttons.bbPlaceNectar),
       bbPlace: anyBtn(bindings.buttons.bbPlace),
       driveMode: anyBtn(bindings.buttons.driveMode),
       flipFront: flipNow && !this.prevFlip,

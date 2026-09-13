@@ -4,7 +4,238 @@ Reverse-chronological. Prepend a new dated section; demote the old "READ FIRST".
 
 ---
 
-## READ FIRST — 2026-09-12, evening: the mechanisms are WIRED, and the turret aims
+## READ FIRST — 2026-09-12, night: the owner's builder feedback — three launchers, the Box Tube places
+
+> **2026-09-12, late: THE HOPPER STAYS CAPPED AT 4 (owner ruling, final).** POLLEN and NECTAR
+> together. This overrides Lane B relay 2 and field-plan §4.3, which asked for the cap to be
+> lifted. `cffc243` had lifted it; the fix restores `BB_STORAGE_MAX = 4` in `config.ts`, so
+> `bbStorageMax` = min(volume law, 4), the builder's Hopper slider is a 1–4 dial again, and
+> `capturePollen` refuses a 5th element. The volume law stays underneath. Lane A's G407 WARNING
+> (`penalties.ts`, `BB_CONTROL_LIMIT`) is unchanged and remains. Smoke (`robot.ts`, `storage:`)
+> pins the cap over every archetype × mount × size extreme and through a driven world.
+
+**State: green, and UNCOMMITTED.** Branch `biobuzz-robot`, a large working-tree change on top of
+`0359801`. Every gate re-run after the last edit:
+
+| gate | result |
+|---|---|
+| `npx tsc --noEmit -p .` | clean |
+| `npm test` | **ALL PASS twice**: `scripts/smoke.ts` 1603 PASS lines, `scripts/smoke-biobuzz/` **921 checks** (was 665) |
+| `npm run build` | clean (the usual >500 kB chunk warning only) |
+| `npm run server:check` | clean |
+| `npm run uiaudit` | at baseline: inline-spacing 29/29, off-grid-gap 165/165, every hard rule 0 |
+| `npm run contrast` | **223** pass (was 221, +1 pair for the `.hopper-pip.next` ring) |
+| `npm run shiftaudit` | **514 state changes checked, 0 layout shifts**. Covers the `Menu.tsx` Customize restructure |
+| `npm run test:mm` | not run: `server/matchmaking.ts` is untouched |
+| `npm run costprobe` | runs; numbers below |
+
+The grep gates are clean. `bbLift`/`bbLiftZ` appear only in comments that explain the
+migration (`protocol.ts:60`, `types.ts:37`, `smoke.ts:5437`, `costprobe.ts:150`, `mechs.ts:32`).
+Vendor names appear in two places. `config.ts:357` cites the POLLEN part number, which is the
+game element's own citation and stays. `core.ts:432` is the vendor-ban regex itself.
+
+### What the owner ruled, and what landed
+
+1. **A launcher is MANDATORY.** `BbMechSpec.launcher` is non-null and `bbLauncherOf` never
+   returns null. A stored `launcher: null` (an old save or peer) migrates from the flat
+   `scoreMode`/`shooterMount` mirror, the same way an absent container does.
+2. **Three launchers: `turret` / `twinturret` / `dumper`.** The **Drum is gone**. A legacy
+   `drum` folds to `dumper` (`BB_LEGACY_SCORE_MODES`, `bbFoldScoreMode`) and keeps its edge and
+   hood.
+   - **Single turret**: POLLEN only. The intake refuses NECTAR.
+   - **Double turret**: two INDIVIDUAL turrets. `mount` is the POLLEN turret (turret 0) and
+     `mount2` the NECTAR turret (turret 1). The two cells are never neighbours
+     (`BB_TWIN_PARTNER`, `bbResolveMount2`), and neither is ever `center`. Turret 1's state is
+     `RobotState.bbTurret2Heading/bbTurret2Pitch`, written only for this build. The shot is
+     the LIFO top of `r.hopper`: POLLEN leaves turret 0, NECTAR turret 1, each on its own
+     solution, on the shared `BB_FIRE_INTERVAL` clock. `BB_TWIN_BARREL_OFFSET` and
+     `BB_TWIN_FIRE_MULT` are deleted, and the 2.5 lb mass floor stays.
+   - **Dumper**: carries POLLEN and NECTAR and **reaches the HIVE**. The hood range is 70–85°
+     (default 75, APPROX). `bbDumpSolution` solves each element's speed from its own release
+     point, converging on the cell centre. It fires only when the chassis is within
+     `BB_AIM_TOL` of its aim heading, every element is inside the accepted band (a solution
+     exists, it is ≤ `BB_LAUNCH_SPEED_MAX`, and the element arrives descending), and
+     `BB_DUMP_RELOAD_S` has passed.
+3. **No intake takes the OPPONENT's NECTAR** (G408). `bbIntakeAccepts(spec, alliance, color)`
+   (`mechs.ts`) is the one predicate `capturePollen` asks. A refused element stays on the
+   floor for the solve.
+4. **Hopper/held sync.** `takeHeld` (`elements.ts`) is the ONE place the two are unmirrored:
+   the last occurrence of the colour leaves `r.hopper`, and the held ball of that colour with
+   the highest index is returned. `releasePollen` and placement both go through it. Before
+   this, a NECTAR could leave the robot while the hopper said a POLLEN had.
+5. **Launchers aim at the HIVE only, and nothing launched enters a FLOWER.** `bbPickTarget`
+   returns HIVE cells only, and stage 2's flower flight branch is deleted (`flowerAccepts`
+   stays as a pure function). A lob coming down over a FLOWER foot or HIVE frame bar is
+   pushed out by `clearOfStatics` in `land` (`play.ts`), which runs once, on the landing tick.
+   **Auto-fire only fires ON TARGET** (`BbShot.onTarget`). Manual fire does not wait, except
+   for the dumper's aim gate.
+6. **"Vertical slide" is now the OFFSET™ Box Tube.** The internal kind is still `vslide`. It has
+   no raise and no height: `BbLiftSpec` lost `maxZ`, and the mount is one of the eight
+   perimeter cells (`BB_LIFT_POSITIONS`, never `center`). The label comes from
+   `bbLiftKindLabel(kind, now?)` and follows `sponsorActive`, so the term and `VITE_SPONSOR=0`
+   take it down to "Box tube". `docs/sponsor.md` records it. It is not an ad: no link, no
+   event.
+7. **FLOWER scoring is PROXIMITY PLACEMENT.** `bbPlacePointLocal(spec)` is the one geometry: the
+   tube's mount origin, pushed out to the collision footprint on that side (`bbFootprint`, so
+   a sweeper on that edge counts), plus `BB_PLACE_REACH` along `MOUNT_DIR`. `BB_PLACE_REACH`
+   is DERIVED as `BB_FLOWER_FOOT.deep − BB_FLOWER_D` = 2.36 in, so a chassis face flush on the
+   foot puts the point on the ring. `bbFlowerInReach(world, r)` is the nearest ring within
+   `BB_PLACE_TOL` (2.0, APPROX). **Stage 5c** (`play.ts`, after the aim and before the launch,
+   so an auto-fire cannot throw away the element being placed) edge-triggers `placeLatch` on
+   `cmd.bbPlace` (POLLEN) and `cmd.bbPlaceNectar` (NECTAR). The latch is namespaced and stores
+   only true keys, so a button held from out of reach does not place on arrival. It does
+   `takeHeld`, then `flowerFits`, then parks the element in the stack. A NECTAR sets the owner,
+   and G410 bills one placed before 1:00.
+   The raise mechanism is deleted in full: `bbStepLift`, `bbLiftHeight`, `bbLiftStowed`,
+   `bbLiftSeated`, `BB_LIFT_DECK_Z/MIN_Z/MAX_Z/RATE/STOW_EPS/SEAT_TOL`, `BB_PLACE_INTERVAL`,
+   `BB_R105_HEIGHT_CAP`, `RobotState.bbLiftZ`, and the lift dial. `BB_LIFT_MASS_FLOOR` stays.
+8. **Controls.** `z` / pad D-UP (12) places POLLEN (bit 64). `x` / pad D-DOWN (13) places NECTAR
+   on **bit 32, which was `bbLift`**. RS (11) is free again. The ControlsSection labels read
+   "Place POLLEN (BIOBUZZ)" / "Place NECTAR (BIOBUZZ)".
+9. **One vendor-free StarterBot** (`BB_REAL_PRESETS` = 1): a Dumper FRONT, 15×16 tank, 286 rpm, no
+   Box Tube. The demos: Sniper (turret + Box Tube), Hauler (dumper), Skimmer (double turret).
+   Drummer is gone.
+10. **The drivetrain bug.** `Menu.tsx`'s Customize section is restructured so the Builder slot
+    replaces only the per-game block. BIOBUZZ gets name/team/#, Drivetrain, Drive RPM and the
+    chassis colour. DECODE's and CR's DOM is unchanged. A source pin in
+    `scripts/smoke-biobuzz/core.ts` (~347) keeps the picker outside the ternary.
+11. **Builder / HUD / sprite.** The Builder has three launcher cards, two 3×3 pickers captioned
+    POLLEN / NECTAR turret for a double turret, and edges plus the Hood slider for a dumper. The
+    Box Tube block has no Height slider. The HUD **HOPPER chip is gone**. In its place is a row
+    of held-element discs in hopper order (`.hopper-pip.yellow/.red/.blue`, the next-out one
+    ringed by `.hopper-pip.next`, new `--ds-pollen` token) and a FLOWER IN REACH chip
+    (`BiobuzzRobotHud.held`, `.flowerInReach`). The sprite draws two turrets (the NECTAR one
+    carries the alliance accent), a Box Tube glyph plus a place-point marker, and held-element
+    discs (`draw.ts` now exports `ELEMENT_FILL`/`ELEMENT_LINE`). The hopper bar and mast are
+    gone.
+
+### ⚠️ The muzzle height now agrees with the release (fixed at the end of this session)
+
+`bbMuzzleZ` solved turret shots from `BB_LAUNCH_Z0 + 2` while `releasePollen` releases every
+element at `BB_LAUNCH_Z0`, so every turret shot was aimed for a muzzle 2 in above where it left
+and arrived 2 in low. `bbMuzzleZ` now returns `BB_LAUNCH_Z0` for every launcher. The `spec`
+argument is kept, so a raised turret muzzle has somewhere to go, but that change belongs in the
+RELEASE (pass the height through `releasePollen`), never in the solve alone. It is pinned off the world: `twin: both
+turrets release at the height their arc was solved from`. No smoke check baked the `+2`; the
+HIVE scenes still score.
+
+### New public surface (read the code for the docs)
+
+```ts
+// elements.ts (Lane A's file, the contract surface)
+export function takeHeld(world, r, color: Artifact['color']): Artifact | null;
+export function releasePollen(world, r, v: Vec3, target?, origin?: Vec2, color?: Artifact['color']): void;
+// mechs.ts (leaf)
+bbLauncherOf(spec, defaultHoodDeg): BbLauncherSpec            // never null now
+bbCarriesNectar(launcher) · bbIntakeAccepts(spec, alliance, color) · bbTurretFor(launcher, nectar): 0|1
+bbFoldScoreMode(kind) · BB_LEGACY_SCORE_MODES · BB_TWIN_PARTNER · bbFoldTwinMount · bbCellsAdjacent
+bbResolveMount2(mount, want) · BB_LIFT_POSITIONS · bbLauncherBlocker(launcher)
+// robot.ts
+interface BbShot { target; speed: (number|undefined)[]; onTarget: boolean[] }
+bbLaunch(world, r, cmd, enabled, shot?: BbShot)
+bbTurretOrigin(r, which = 0) · bbTurretSolution(r, target, which = 0) · bbSlewTurret(r, yaw, pitch, dt, which = 0)
+bbHoodSpeed(d, dh, hoodRad) · bbHoodDescends(d, dh, hoodRad) · bbDumpSolution(r, target, n): BbThrow[] | null
+bbMuzzleZ(spec) · bbPlacePointLocal(spec) · bbPlacePoint(r) · bbFlowerInReach(world, r): number | null
+// labels.ts
+bbLauncherMountLabel(launcher) · bbLiftKindLabel(kind, now?) · bbLiftLabel(lift, now?)
+// config.ts
+BB_LAUNCH_SPEED_MAX 260 (was BB_TURRET_SPEED_MAX) · BB_LAUNCH_SPEED_DEFAULT 175 · BB_ON_TARGET_TOL 0.05
+BB_FIRE_BURST_MAX 6 · BB_DUMP_RELOAD_S 0.75 · BB_HOOD_MIN/MAX/DEFAULT_DEG 70/85/75 · BB_PLACE_REACH · BB_PLACE_TOL 2.0
+// types.ts
+RobotCommand.bbPlaceNectar (bit 32) · RobotState.bbTurret2Heading / bbTurret2Pitch
+```
+
+### costprobe
+
+| scenario | B/snap | wire/client | fields |
+|---|---|---|---|
+| BIOBUZZ solo (double turret + box tube) | 3,828 | 9.8 KiB/s | +108 B/snap (2.8%), +0.51 KiB/s |
+| **BIOBUZZ 2v2 (double turret + box tube)** | **8,725** | **34.1 KiB/s** | **+429 B/snap (4.9%), +2.20 KiB/s** |
+| previous handoff, BIOBUZZ 2v2 (turret + lift) | 6,654 | 32.0 KiB/s | +218 B/snap, +1.79 KiB/s |
+
+⚠️ **The rows are not like for like.** The probe's robot changed from turret + lift to DOUBLE
+turret + Box Tube, which also launches NECTAR. So the +2,071 B/snap is mostly a different ball
+delta, not the two new fields. The FIELDS column isolates the fields exactly, off the same
+frames: three per-tick turret fields now (`bbTurretPitch`, `bbTurret2Heading`,
+`bbTurret2Pitch`), where there used to be two (`bbTurretPitch` plus a `bbLiftZ` that was never
+written). A single turret build writes only `bbTurretPitch`. DECODE (10,862) and CR (8,195) are
+byte-identical to the previous run.
+
+### ⚠️ Cross-lane edits made here: revert these if the call was wrong
+
+| file | owner (contract §1) | what |
+|---|---|---|
+| `src/games/biobuzz/play.ts` | **A** | stage 5b per-turret slew + dumper solve (`BbShot`), stage 5c `placeLatch`, flower flight branch deleted, `clearOfStatics` landing push-out, `bbPickTarget` HIVE-only |
+| `src/games/biobuzz/elements.ts` | **A** | `takeHeld`, `releasePollen` `color` param, `capturePollen` refusal via `bbIntakeAccepts` |
+| `src/games/biobuzz/config.ts` | **A** | the constants above; raise/drum/twin constants deleted |
+| `src/games/biobuzz/spawn.ts` | **A** | turret seeding through the resolver; seeds turret 1 |
+| `src/games/biobuzz/draw.ts` | **A** | exports `ELEMENT_FILL`/`ELEMENT_LINE` for the held discs (comment + `export` only) |
+| `src/games/biobuzz/Gallery.tsx` | frozen | one comment word (drum → dumper) |
+| `src/ui/Menu.tsx` | integration | Customize restructure (drivetrain bug) |
+| `src/net/protocol.ts`, `src/types.ts` | integration / B | bit 32 renamed, `bbTurret2*` fields |
+| `server/room.ts` | integration | `countParticipation` reads `bbPlaceNectar` (**deploy**) |
+| `src/input/{bindings,gamepad,input}.ts`, `src/ui/ControlsSection.tsx` | B | actions, defaults, labels |
+| `src/ui/shell.css`, `src/ui/styles.css`, `scripts/contrast.mjs` | integration | `--ds-pollen`, the pip colours + next ring, one audit pair |
+| `scripts/smoke.ts` | nobody during the sprint | the three hand-written button lists (rename only) |
+| `scripts/costprobe.ts` | integration | BIOBUZZ scenario robot, fields, command bits |
+| `scripts/smoke-biobuzz/core.ts` | CORE | loadout strings, drivetrain source pin, launcher-null block deleted |
+| `docs/sponsor.md` | integration | the Box Tube product-name note |
+
+No rules-lane file was touched: `penalties.ts` already billed G410 for NECTAR in a stack, and
+`state.ts` is unchanged.
+
+### Gotchas
+
+- ⚠️ **Bit 32 now means PLACE NECTAR.** An old alpha client's `x` press (hold-to-raise) arrives
+  as a NECTAR placement. It is harmless out of reach and a real placement in reach. Old BIOBUZZ
+  replays with bit 32 set re-simulate differently, but BIOBUZZ is alpha-only and a sim change
+  retires them anyway.
+- **Stored custom `bbLift` bindings are silently dropped.** `mergeBindings` iterates only
+  `KEY_ACTIONS`/`PAD_ACTIONS`, so `bbPlaceNectar` comes up on its defaults `x` / D-DOWN.
+  `mergeBindings` does not de-duplicate. A player who had moved the raise off `x` and bound
+  `x` to another action now has `x` on both until they rebind. D-DOWN (13) was unbound before.
+- ⚠️ **Server deploy needed**, for `server/room.ts` AND for the authoritative sim, since every
+  BIOBUZZ sim change above runs server-side. Use `./scripts/fly-deploy.sh` and verify
+  `/health`. **Never a bare `flyctl deploy`.**
+- **`worldHash` (`src/net/checksum.ts`) does not cover specs or hoppers.** It hashes robot pose
+  plus `turretHeading`, ball pose/z, and scores. Two runs that differ only in who holds what,
+  or in turret 1 / pitch, hash the same, so a replay or determinism check on this work must
+  compare `r.hopper` and the `bbTurret2*` fields itself.
+- **The `bbWorld(seed, setups, [])` phantom-hopper trap** (`scenesRobot.ts`). Spawn preloads four
+  POLLEN per robot, and replacing the balls leaves `r.hopper` full of colours with no held
+  balls. The intake then refuses everything, a launch finds nothing, and the sprite draws
+  discs that do not exist. Call `emptyHoppers(world)` and load through `loadHopper` (the real
+  `capturePollen`).
+- **Mobile has no place buttons.** `MobileActionField` in `src/games/module.ts:218` is
+  `'intake' | 'fire' | 'catalyst' | 'fling'`. Placement on touch needs that union widened, a
+  `GameSettings.mobileLayout` key, and a `mobileButtons` entry. That is integration work.
+- ⚠️ **The claim below ("`bbPlace` IS WIRED END TO END… its consumer is Lane A's
+  `actOnElement`") was WRONG.** Nothing read `cmd.bbPlace` at all; `actOnElement` was never
+  called with it. Placement is now stage 5c in `play.ts` and does not go through
+  `actOnElement`.
+- **Auto-fire and the Box Tube compete for the same elements** (assists stay menu-only). Auto-fire
+  fires only ON TARGET, so a robot away from its HIVE's open side keeps its load. A route to a
+  FLOWER that passes through an on-target HIVE solution will spend the POLLEN on the way. This
+  was not measured in a match this session.
+
+### Still owed
+
+- **The owner's verdict on the gallery.** Cells in `scratch/shots/feedback/`: the 21 archetype
+  sheets (`archetype-turret-{9 cells}@0`, `archetype-twinturret-{8 cells}@0`,
+  `archetype-dumper-{front,back,left,right}@0`), `boxtube-place@{0,65,95,135}`,
+  `dumper-hive@{0,10,28,40,150}`, `double-turret-feed@{0,50,58,67,86,120}`,
+  `turret-acquire@{0,8,20,45,120}`, `intake-line@{0,45,120,240}`,
+  `launch-wall-bounce@{0,20,45,90,240}`. ⚠️ **They were shot BEFORE the muzzle fix**, so
+  every in-flight turret frame (`turret-acquire`, `double-turret-feed`) is 2 in off the current
+  arc. Re-shoot those two before asking for a verdict:
+  `node scripts/shots.cjs --scene turret-acquire,double-turret-feed`.
+- The live Browser-pane check from the plan (Customize fields, `z`/`x` placing in a match).
+  Not done this session.
+- `shiftaudit` is **done**: 0 shifts in 514 state changes.
+
+---
+
+## 2026-09-12, evening: the mechanisms are WIRED, and the turret aims
 
 **State: green.** `npm test` both suites ALL PASS (**665 checks**, up from 601), `npm run
 build`, `npm run server:check`, `npm run uiaudit` at baseline, `npm run contrast` 221 pass,

@@ -1,5 +1,18 @@
 # BIOBUZZ modular mechanisms — the build plan (Lane B)
 
+> **Superseded in part, 2026-09-12 night (owner feedback).** Read `HANDOFF-robot.md` → "READ
+> FIRST — 2026-09-12, night" before trusting anything below. Three rulings changed the shape:
+> - **No launcher-less builds.** `BbMechSpec.launcher` is never null. A stored `launcher: null`
+>   migrates from the flat `scoreMode` mirror, so the "phantom turret" distinction this plan is
+>   built around now only matters for migrating OLD saves.
+> - **No drum.** The launchers are `turret` (POLLEN only), `twinturret` (two individual turrets,
+>   `mount` POLLEN plus `mount2` NECTAR) and `dumper` (hood 70–85°, reaches the HIVE). A stored
+>   `drum` folds to `dumper`.
+> - **The lift is the OFFSET™ Box Tube: placement with NO raise.** No `maxZ`, no
+>   `RobotState.bbLiftZ`, no hold-to-raise button. It mounts on a perimeter cell, places at
+>   `bbPlacePointLocal`, and uses one edge-triggered button per element kind (`bbPlace` POLLEN,
+>   `bbPlaceNectar` NECTAR on bit 32).
+
 Approved 2026-09-12. Design chosen by a four-architecture judge panel; see
 `HANDOFF-robot.md` for the alternatives and why they lost.
 

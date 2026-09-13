@@ -1,3 +1,15 @@
+> **2026-09-12f — BIOBUZZ builder feedback (branch `biobuzz-robot`, UNCOMMITTED).** The launcher
+> is mandatory (Single turret POLLEN-only / Double turret with a POLLEN and a NECTAR turret /
+> Dumper that reaches the HIVE; the Drum is gone). Launchers aim at the HIVE only. "Vertical
+> slide" is the OFFSET™ Box Tube, which scores a FLOWER by PROXIMITY placement (`z` POLLEN, `x`
+> NECTAR on protocol **bit 32, formerly `bbLift`**). The intake refuses opponent NECTAR. The
+> `Menu.tsx` Customize section now gives BIOBUZZ its drivetrain picker. Gates: `npm test` ALL
+> PASS twice (921 BIOBUZZ checks), `build`, `server:check`, `uiaudit` at baseline, `contrast`
+> 223, `shiftaudit` 0 shifts in 514. ⚠️ **Needs a server deploy** (`server/room.ts`
+> `countParticipation` plus the authoritative BIOBUZZ sim) via `./scripts/fly-deploy.sh`, never
+> a bare `flyctl deploy`. Full write-up, the cross-lane edits table and the gotchas are in
+> **`docs/biobuzz/HANDOFF-robot.md` → "READ FIRST — 2026-09-12, night"**.
+
 > **2026-09-12e — the SAVED-ROBOT line reads the `labels.configSummary` slot.** The third
 > site of the seam bug the preset LIST and the hero STAT TILES had, and the last one in
 > `Menu.tsx`: the `.om` detail line under each saved robot was `isDecode ? … : …`, an `else`

@@ -13,7 +13,7 @@ export type KeyAction =
   | 'fire'
   | 'catalyst'
   | 'fling'
-  | 'bbLift'
+  | 'bbPlaceNectar'
   | 'bbPlace'
   | 'driveMode'
   | 'flipFront'
@@ -26,7 +26,7 @@ export type PadAction =
   | 'intake'
   | 'catalyst'
   | 'fling'
-  | 'bbLift'
+  | 'bbPlaceNectar'
   | 'bbPlace'
   | 'driveMode'
   | 'flipFront'
@@ -66,7 +66,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   'fire',
   'catalyst',
   'fling',
-  'bbLift',
+  'bbPlaceNectar',
   'bbPlace',
   'driveMode',
   'flipFront',
@@ -80,7 +80,7 @@ export const PAD_ACTIONS: PadAction[] = [
   'intake',
   'catalyst',
   'fling',
-  'bbLift',
+  'bbPlaceNectar',
   'bbPlace',
   'driveMode',
   'flipFront',
@@ -103,12 +103,11 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     // CATAPULT throw (launcher catalyst mechanism) — its OWN button, so it is never
     // ambiguous with the claw's grab/place on the same press.
     fling: ['v'],
-    // BIOBUZZ vertical slide: HELD to raise the carriage, released to bring it back down.
-    // 'x' and 'z' extend the bottom-row mechanism cluster (c / v / b) leftward, so every
-    // mechanism button sits on one row under the drive hand; both were free on the default
-    // map, and 'x' is the nearer of the two because it is the one held for long stretches.
-    bbLift: ['x'],
-    // BIOBUZZ: place the held POLLEN into a FLOWER.
+    // BIOBUZZ Box Tube: place a held NECTAR into the FLOWER in reach. 'x' and 'z' extend the
+    // bottom-row mechanism cluster (c / v / b) leftward, so every mechanism button sits on one
+    // row under the drive hand; both were free on the default map.
+    bbPlaceNectar: ['x'],
+    // BIOBUZZ Box Tube: place a held POLLEN into the FLOWER in reach.
     bbPlace: ['z'],
     // BUTTERFLY: drop the other wheel set. 'b' for butterfly; free on the default map.
     driveMode: ['b'],
@@ -124,12 +123,11 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       intake: [6, 1], // LT or B
       catalyst: [4], // LB
       fling: [10], // L3 (left stick click)
-      // RS — the last free stick click, and the one free button a thumb can press without
-      // leaving a stick, which is what a HELD action needs while the robot is driving.
-      bbLift: [11],
-      // D-UP — a FLOWER is placed above the deck, and the d-pad costs the drive thumb its
-      // stick, which a MOMENTARY press can afford where the lift above could not. Every
-      // trigger, bumper and face button was already taken.
+      // D-DOWN — place a NECTAR. The pair sits on the d-pad because placement is a MOMENTARY
+      // press, which can afford to cost the drive thumb its stick; every trigger, bumper and
+      // face button was already taken. RS (11) is free again.
+      bbPlaceNectar: [13],
+      // D-UP — place a POLLEN.
       bbPlace: [12],
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y

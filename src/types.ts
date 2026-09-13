@@ -32,21 +32,16 @@ export interface RobotCommand {
   /** Chain Reaction: pick up a nearby ring / place a carried ring on a hook. Edge-
    * triggered in the sim (acts once per press). Optional (DECODE omits it). */
   catalyst?: boolean;
-  /** BIOBUZZ, vertical extension slide: HELD to drive the carriage up, released to drive it
-   * back down. A LEVEL like `intake`, not an edge-trigger like `catalyst` — a slide is a
-   * position you hold it at, not a deed that completes. Optional; absent reads as stowed.
+  /** BIOBUZZ, Box Tube: PLACE one held NECTAR into the FLOWER the robot's placement point is
+   * near (`bbPlacePointLocal`). EDGE-triggered — a held button places once. Protocol bit 32,
+   * which used to be the removed hold-to-raise `bbLift`; BIOBUZZ is alpha-only and version-gated,
+   * so the bit is reused rather than burning the last spare one. Optional; absent reads false. */
+  bbPlaceNectar?: boolean;
+  /** BIOBUZZ, Box Tube: PLACE one held POLLEN into the FLOWER in reach. Edge-triggered.
    *
-   * Deliberately a BUTTON and not an analog axis: an axis would need a `REPLAY_FORMAT` bump
-   * and a `trackStride` change (`src/sim/replay.ts`), where a hold-to-raise level needs only a
-   * protocol bit. */
-  bbLift?: boolean;
-  /** BIOBUZZ: PLACE the held element into whatever the raised carriage is lined up with.
-   * Edge-triggered.
-   *
-   * ITS OWN BUTTON rather than reusing `fire` while the slide is up. Overloading fire would
-   * make the robot silently change what it does as the carriage crosses a height threshold —
-   * a mode, with no on-screen transition, and the design most likely to come back from
-   * playtesting. One extra protocol bit is the cheaper half of that trade. */
+   * ITS OWN BUTTONS (one per element kind) rather than reusing `fire`: a robot's fire button
+   * always launches, and overloading it by proximity would be a mode with no on-screen
+   * transition. */
   bbPlace?: boolean;
   /** Chain Reaction, LAUNCHER catalyst: THROW the carried ring downfield from the catapult.
    * Its own button so it is never ambiguous with the claw's grab/place. Edge-triggered in
@@ -182,10 +177,9 @@ export interface RobotSpec {
    *
    * ⚠️ IT IS A CONTAINER, AND THE CONTAINER IS LOAD-BEARING. `bbMech === undefined` means "a
    * spec written before mechanisms were composable — migrate it from `scoreMode`", while
-   * `bbMech.launcher === null` means "this robot genuinely has no launcher" (Studica's
-   * StarterBot). Two sibling optional fields could not tell those apart, and the shared pass in
-   * `coerceSpec` WRITES `out.scoreMode` unconditionally — so a launcher-less build spelled as
-   * an absent `scoreMode` would grow a phantom turret on the next coercion.
+   * a stored `bbMech.launcher === null` is an OLD launcher-less save: a launcher is MANDATORY
+   * (owner ruling 2026-09-12), so both migrate from the flat `scoreMode`/`shooterMount` mirror,
+   * which the shared pass in `coerceSpec` always writes.
    *
    * `scoreMode` / `shooterMount` above stay real, primary fields for CHAIN REACTION and become
    * MIRRORS for BIOBUZZ, kept in step by the coercer so a spec routed through an older peer or
@@ -350,22 +344,28 @@ export interface RobotState {
   angVel: number;
   turretHeading: number; // field frame
   /**
-   * BIOBUZZ turreted launcher: the ELEVATION angle in DEGREES above level — the pitch twin of
-   * `turretHeading`, and the axis that lets one launcher reach both a 21.5in FLOWER ring and a
-   * 53.5-65.6in HIVE CELL. Eased toward the arc solution at a finite rate, exactly as the yaw
-   * is: an actuator, not a promise.
+   * BIOBUZZ turreted launcher: the ELEVATION angle in RADIANS above level — the pitch twin of
+   * `turretHeading`, the axis that lets a turret put an arc into the 53.5-65.6in HIVE CELL.
+   * Eased toward the arc solution at a finite rate, exactly as the yaw is: an actuator, not a
+   * promise. For a DOUBLE turret this is the POLLEN turret (turret 0).
    *
    * Optional, and an absent value reads as 0 (level) everywhere — the same convention
-   * `catalystRail` uses, so a DECODE or Chain Reaction robot, or a BIOBUZZ build with no
-   * launcher, never writes it and never pays for it on the wire.
+   * `catalystRail` uses, so a DECODE or Chain Reaction robot never writes it and never pays for
+   * it on the wire.
    */
   bbTurretPitch?: number;
   /**
-   * BIOBUZZ vertical extension slide: the carriage's CURRENT height above the tiles, in
-   * inches, 0 (stowed) .. the build's own `maxZ`. Eased toward whatever the lift buttons ask
-   * for at `BB_LIFT_RATE`. Optional; absent reads as 0.
+   * BIOBUZZ DOUBLE turret only: the NECTAR turret's (turret 1's) field-frame YAW, the twin of
+   * `turretHeading`. Seeded at spawn and slewed by `bbSlewTurret(…, 1)`; written ONLY for a
+   * `twinturret` build, so no other robot carries it on the wire. Absent reads as
+   * `turretHeading`.
    */
-  bbLiftZ?: number;
+  bbTurret2Heading?: number;
+  /**
+   * BIOBUZZ DOUBLE turret only: the NECTAR turret's elevation in RADIANS, the twin of
+   * `bbTurretPitch`. Written ONLY for a `twinturret` build. Absent reads as 0 (level).
+   */
+  bbTurret2Pitch?: number;
   /** SWERVE per-module steer angles (robot frame, rad), one per wheel in the
    * corner order [FL, FR, BL, BR] (matching drawRobot's wheels). Each module has
    * its OWN imperfect steering loop, so their small INDEPENDENT angle errors don't

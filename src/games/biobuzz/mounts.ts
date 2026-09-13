@@ -31,7 +31,7 @@ import type { RobotSpec } from '../../types';
 export const BB_INTAKE_MOUNTS = ['front', 'back', 'side', 'frontback'] as const;
 export type BbIntakeMount = (typeof BB_INTAKE_MOUNTS)[number];
 
-/** TURRETLESS firing edges. A drum/dumper launches along a LINE spanning one side, so a corner
+/** TURRETLESS firing edges. A dumper launches along a LINE spanning one side, so a corner
  * or the centre is not something it can be built as — the coercer folds those away. */
 export const BB_SHOOTER_EDGES = ['front', 'back', 'left', 'right'] as const;
 
@@ -52,9 +52,10 @@ export type BbMountPos = (typeof BB_MOUNT_POSITIONS)[number];
 /** which chassis edge a mechanism sits on, in the robot frame */
 export type BbEdge = 'front' | 'back' | 'left' | 'right';
 
-/** BIOBUZZ scoring archetypes. Same four shapes CR shipped, because they are the four ways an
- * FTC robot has ever put a ball somewhere — which target they aim AT is Lane A's problem. */
-export const BB_SCORE_MODES = ['turret', 'twinturret', 'drum', 'dumper'] as const;
+/** BIOBUZZ launchers (owner ruling 2026-09-12): a SINGLE turret (POLLEN only), a DOUBLE turret
+ * (two individual turrets — one POLLEN, one NECTAR) and a DUMPER (POLLEN + NECTAR). CR's `drum`
+ * is gone; a stored one migrates to `dumper` (`bbFoldScoreMode`, `mechs.ts`). */
+export const BB_SCORE_MODES = ['turret', 'twinturret', 'dumper'] as const;
 export type BbScoreMode = (typeof BB_SCORE_MODES)[number];
 
 export const BB_DEFAULT_INTAKE_MOUNT: BbIntakeMount = 'front';
@@ -74,7 +75,7 @@ export function isEdgePos(pos: string): pos is BbEdge {
  *
  * Two mechanisms cannot share a cell — there is one piece of frame there and only one of them
  * can be bolted to it. Occupancy is not always a single cell, which is the whole reason this
- * exists: an EDGE-spanning mechanism (a sweeper bar, a drum's launch line) runs the full side,
+ * exists: an EDGE-spanning mechanism (a sweeper bar, a dumper's launch line) runs the full side,
  * so it takes the edge AND both corners of that side — "the whole row".
  *
  * `center` is included for a turret bolted mid-chassis: it blocks anything else that wanted the
@@ -98,7 +99,7 @@ export function occupiedCells(pos: string, spansEdge: boolean): BbMountPos[] {
  * NOT USED BETWEEN THE SWEEPER AND THE LAUNCHER, deliberately. In Chain Reaction this gated
  * the catalyst against the shooter, because both were ground-level manipulators competing for
  * the same rail. BIOBUZZ's two mechanisms live at different HEIGHTS: a sweeper is on the
- * floor and a drum, dumper or turret is above it. A front sweeper feeding a front-firing drum
+ * floor and a dumper or turret is above it. A front sweeper feeding a front-firing dumper
  * is not a conflict, it is the single most common FTC layout there is — so the builder offers
  * every combination and the coercer keeps every combination. Kept because it is the shared
  * mount algebra and the moment BIOBUZZ grows a second FLOOR-LEVEL mechanism this is the test
@@ -130,7 +131,7 @@ export function bbIntakeMountOf(spec: Pick<RobotSpec, 'intakeMount' | 'intakeSid
  * Accepts any of the nine positions — a TURRET may sit anywhere. Narrowing a turretless
  * launcher back to an edge is the coercer's job (`bbShooterEdgeOf`); this stays permissive so a
  * raw or older spec still reads. */
-export function bbShooterMountOf(spec: Pick<RobotSpec, 'shooterMount' | 'shooterRear'>): BbMountPos {
+export function bbShooterMountOf(spec: Partial<Pick<RobotSpec, 'shooterMount' | 'shooterRear'>>): BbMountPos {
   const m = spec.shooterMount;
   if (m && (BB_MOUNT_POSITIONS as readonly string[]).includes(m)) return m as BbMountPos;
   return spec.shooterRear ? 'back' : BB_DEFAULT_SHOOTER_MOUNT;
@@ -138,8 +139,8 @@ export function bbShooterMountOf(spec: Pick<RobotSpec, 'shooterMount' | 'shooter
 
 /** the TURRETLESS firing edge — `bbShooterMountOf` narrowed to a side. A corner falls to the
  * end it shares (a launch line spans a side, and the ends are the ones that matter for a
- * drum/dumper); the centre falls to the front. */
-export function bbShooterEdgeOf(spec: Pick<RobotSpec, 'shooterMount' | 'shooterRear'>): BbEdge {
+ * dumper); the centre falls to the front. */
+export function bbShooterEdgeOf(spec: Partial<Pick<RobotSpec, 'shooterMount' | 'shooterRear'>>): BbEdge {
   const m = bbShooterMountOf(spec);
   if (isEdgePos(m)) return m;
   if (m === 'frontleft' || m === 'frontright') return 'front';
@@ -304,12 +305,17 @@ export function turretRadius(spec: Pick<RobotSpec, 'length' | 'width'>): number 
  *
  * An EDGE or CORNER mount is pulled INBOARD by the ring radius: a turret bolted "at the back"
  * has its ring a few inches inside the rear rail, not hanging off it. `center` is dead centre.
+ *
+ * `pos` is the cell the turret is bolted at. A DOUBLE turret has two (`BbLauncherSpec.mount` and
+ * `.mount2`), so the caller names which; omitted, it falls back to the flat `shooterMount`.
  */
-export function turretLocal(spec: Pick<RobotSpec, 'length' | 'width' | 'shooterMount' | 'shooterRear'>): {
+export function turretLocal(
+  spec: Pick<RobotSpec, 'length' | 'width'> & Partial<Pick<RobotSpec, 'shooterMount' | 'shooterRear'>>,
+  pos: BbMountPos = bbShooterMountOf(spec),
+): {
   x: number;
   y: number;
 } {
-  const pos = bbShooterMountOf(spec);
   if (pos === 'center') return { x: 0, y: 0 };
   const o = mountOrigin(spec, pos);
   const d = MOUNT_DIR[pos];
@@ -323,7 +329,7 @@ export function turretLocal(spec: Pick<RobotSpec, 'length' | 'width' | 'shooterM
 
 /** is this archetype TURRETED (top-mounted, aims itself)? Turreted launchers ignore the
  * shooter EDGE entirely — the turret rotates, so there is no chassis side to pick — and they
- * must NOT be steered by the fire button the way a turretless drum/dumper is. One predicate so
+ * must NOT be steered by the fire button the way a turretless dumper is. One predicate so
  * every UI and sim site agrees, including any future turret variant. */
 export function isTurreted(mode: BbScoreMode | undefined): boolean {
   return mode === undefined || mode === 'turret' || mode === 'twinturret';

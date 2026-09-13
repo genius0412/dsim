@@ -55,10 +55,11 @@ const BTN_CATALYST = 4;
 // predicted/replayed step) is concerned.
 const BTN_FLING = 8;
 const BTN_DRIVEMODE = 16;
-// BIOBUZZ mechanisms. `bbLift` is HELD (raise the carriage while down), `bbPlace` is an EDGE
-// (place a POLLEN into a FLOWER). Neither is an analog axis, deliberately — so no
-// `REPLAY_FORMAT` bump and no `trackStride` change is needed for either.
-const BTN_BBLIFT = 32;
+// BIOBUZZ Box Tube placement, both EDGE-triggered in the sim: `bbPlaceNectar` places a NECTAR
+// and `bbPlace` a POLLEN into the FLOWER in reach. Bit 32 used to be the removed hold-to-raise
+// `bbLift`; it is REUSED (BIOBUZZ is alpha-only and version-gated) so bit 128, the last spare
+// replay bit, stays free. Neither is an analog axis, so no `REPLAY_FORMAT` bump is needed.
+const BTN_BBPLACE_NECTAR = 32;
 const BTN_BBPLACE = 64;
 
 export function quantizeCommand(c: RobotCommand): QCommand {
@@ -72,7 +73,7 @@ export function quantizeCommand(c: RobotCommand): QCommand {
       (c.catalyst ? BTN_CATALYST : 0) |
       (c.fling ? BTN_FLING : 0) |
       (c.driveMode ? BTN_DRIVEMODE : 0) |
-      (c.bbLift ? BTN_BBLIFT : 0) |
+      (c.bbPlaceNectar ? BTN_BBPLACE_NECTAR : 0) |
       (c.bbPlace ? BTN_BBPLACE : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
     rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
@@ -91,7 +92,7 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     catalyst: (q.buttons & BTN_CATALYST) !== 0,
     fling: (q.buttons & BTN_FLING) !== 0,
     driveMode: (q.buttons & BTN_DRIVEMODE) !== 0,
-    bbLift: (q.buttons & BTN_BBLIFT) !== 0,
+    bbPlaceNectar: (q.buttons & BTN_BBPLACE_NECTAR) !== 0,
     bbPlace: (q.buttons & BTN_BBPLACE) !== 0,
   };
 }

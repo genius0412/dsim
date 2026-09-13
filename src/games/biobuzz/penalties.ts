@@ -46,10 +46,10 @@ import { bbKindOf } from './score';
  *
  * G407 USED TO BE LISTED BELOW AS "STRUCTURAL", and the owner's ruling (field-plan §4.3)
  * retired that: **G407 is a WARNING, not a cap.** Table 10-4 gives it a VERBAL WARNING, with
- * MAJOR + YELLOW only if STRATEGIC, and a hopper the sim simply refuses to fill past four is
- * not what the rule says. The hopper is now bounded by the volume law alone (Lane B's
- * `bbStorageMax`), and controlling a fifth element costs a log line and a HUD chip: no points,
- * no MAJOR, no card. See `bbControlled` for what this can and cannot yet count.
+ * MAJOR + YELLOW only if STRATEGIC. Controlling a fifth element costs a log line and a HUD chip:
+ * no points, no MAJOR, no card. Separately, the hopper stays capped at 4 (owner ruling
+ * 2026-09-12, Lane B's `BB_STORAGE_MAX`), so a hopper alone cannot reach five in a driven match.
+ * See `bbControlled` for what this can and cannot yet count.
  *
  * NOT HERE, each for a stated reason rather than an oversight:
  *  • **G405 / G409 / G411 / G418 / G426 / G427** are structural (nothing leaves the field, the
@@ -111,10 +111,9 @@ export function bbAwardFoul(
  *
  * It lives here rather than in `config.ts` because it is a RULE and this is the rules file —
  * and because `config.ts`'s `BB_STORAGE_MAX` is a different thing wearing the same digit. That
- * one is the HOPPER DIAL's ceiling, it is Lane B's, and after the owner's ruling it is being
- * lifted so the volume law alone bounds the hardware (field-plan §4.3, Lane B relay 2). The
- * rule's 4 and the dial's 4 were the same number by accident; they are now separate on
- * purpose, and this is the one Section 11 is about.
+ * one is the HOPPER DIAL's ceiling, it is Lane B's, and the owner kept it at 4 (ruling
+ * 2026-09-12, overriding Lane B relay 2). The rule's 4 and the dial's 4 are kept as separate
+ * constants on purpose, and this is the one Section 11 is about.
  */
 export const BB_CONTROL_LIMIT = 4;
 
@@ -295,7 +294,8 @@ export function updateBiobuzzPenalties(
    * "A ROBOT may not CONTROL more than 4 SCORING ELEMENTS." Violation: **VERBAL WARNING**;
    * MAJOR FOUL and YELLOW CARD only if STRATEGIC (Table 10-4). Owner ruling 2026-09-12,
    * field-plan §4.3: **the sim models the warning and nothing else** — no points, no MAJOR,
-   * no card, and no structural cap standing in for the rule.
+   * no card. (The hopper's 4-element cap is a separate owner ruling on the hardware, in
+   * `config.ts`; it does not replace this warning.)
    *
    * ── WHY THERE IS NO "STRATEGIC" BRANCH HERE, UNLIKE G417 ──────────────────
    * G417's strategic test is a MEASURABLE one — example A is "ramming at high-speed" and the

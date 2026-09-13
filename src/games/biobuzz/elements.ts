@@ -12,6 +12,7 @@ import {
   BB_POLLEN_R,
   bbHopperCap,
 } from './config';
+import { bbIntakeAccepts } from './mechs';
 import { rectContains, type BbCellSide, type LocalRect, type ScoreTarget, type Vec3 } from './state';
 
 /**
@@ -79,9 +80,18 @@ export function pollenIn(world: World, r: RobotState, mouth: LocalRect): Artifac
  *
  * `r.hopper` still gets a colour pushed, because the shared renderer, HUD and wire all read
  * hopper LENGTH; the two are mirrored, and `releasePollen` unmirrors them in the same step.
+ *
+ * ── WHICH ELEMENTS AN INTAKE REFUSES (owner ruling 2026-09-12) ─────────────
+ * A NECTAR (colour `red`/`blue`) is refused when:
+ *  · it belongs to the OTHER alliance — G408, for every build; and
+ *  · this robot's launcher cannot carry NECTAR at all (`bbCarriesNectar`: a SINGLE turret
+ *    feeds POLLEN only; a double turret and a dumper take their own NECTAR).
+ * Both are the one pure predicate `bbIntakeAccepts` (`mechs.ts`). A refused element is simply
+ * not taken: it stays on the floor for the solve to push, exactly like one meeting a full hopper.
  */
 export function capturePollen(world: World, r: RobotState, ball: Artifact): boolean {
   if (ball.state.kind !== 'ground') return false;
+  if (!bbIntakeAccepts(r.spec, r.alliance, ball.color)) return false;
   if (r.hopper.length >= bbHopperCap(r.spec)) return false;
   ball.state = { kind: 'held', robot: r.id, slot: r.hopper.length, lx: 0, ly: 0, side: 0 };
   ball.vel = { x: 0, y: 0 };
@@ -100,6 +110,29 @@ export function capturePollen(world: World, r: RobotState, ball: Artifact): bool
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * TAKE ONE HELD ELEMENT OF `color` OUT OF `r` — the ONE place the hopper and the held set are
+ * unmirrored, used by the launch (`releasePollen`) and the Box Tube's placement (`play.ts`).
+ *
+ * Removes the LAST occurrence of `color` from `r.hopper` and returns the held ball of THIS robot
+ * with THAT colour at the highest `world.balls` index. It changes NOTHING and returns `null` when
+ * either half is missing: hopper and held set out of sync means something wrote one without the
+ * other, and inventing an element would break the conservation invariant this game's smoke
+ * proves. The returned ball is still `held` — the caller decides where it goes.
+ */
+export function takeHeld(world: World, r: RobotState, color: Artifact['color']): Artifact | null {
+  const j = r.hopper.lastIndexOf(color);
+  if (j < 0) return null;
+  for (let i = world.balls.length - 1; i >= 0; i--) {
+    const b = world.balls[i];
+    if (b.state.kind === 'held' && b.state.robot === r.id && b.color === color) {
+      r.hopper.splice(j, 1);
+      return b;
+    }
+  }
+  return null;
+}
+
+/**
  * Throw one held POLLEN back out, with velocity `v`.
  *
  * A LOB, NOT A SHOT. `scoreTargets()` is empty, so there is nothing to solve an arc against;
@@ -113,8 +146,16 @@ export function capturePollen(world: World, r: RobotState, ball: Artifact): bool
  * centre — inside the robot, which the separation pass then has to shove out through the
  * frame. Callers that do not care omit it and get the chassis centre.
  *
- * LIFO — the last POLLEN in is the first out. A hopper is a stack, not a queue: the feed path
+ * LIFO — the last element in is the first out. A hopper is a stack, not a queue: the feed path
  * is at the top.
+ *
+ * ⚠️ THE HELD ELEMENT RELEASED IS THE ONE WHOSE COLOUR LEAVES THE HOPPER (`takeHeld`). This
+ * used to release the held ball with the highest `world.balls` index while popping the hopper's
+ * last colour, which is the same ball only while every element is a POLLEN. Once NECTAR and
+ * POLLEN mix, the two drifted: a NECTAR could leave the robot while the hopper said a POLLEN
+ * had.
+ *
+ * `color` (trailing, optional) names which colour to release; absent, it is the hopper's top.
  */
 export function releasePollen(
   world: World,
@@ -122,23 +163,12 @@ export function releasePollen(
   v: Vec3,
   target?: ScoreTarget,
   origin?: Vec2,
+  color?: Artifact['color'],
 ): void {
-  void target; // no targets exist yet — see the note above
+  void target; // the caller has already solved the arc
   if (r.hopper.length === 0) return;
-  // the LAST held pollen of this robot, matching the `pop` below
-  let held: Artifact | null = null;
-  for (let i = world.balls.length - 1; i >= 0; i--) {
-    const b = world.balls[i];
-    if (b.state.kind === 'held' && b.state.robot === r.id) {
-      held = b;
-      break;
-    }
-  }
-  // Hopper and held-pollen set out of sync means something wrote one without the other. Bail
-  // rather than invent a POLLEN: a spawned ball would break the conservation invariant, which
-  // is the one property this game's smoke actually proves.
+  const held = takeHeld(world, r, color ?? r.hopper[r.hopper.length - 1]);
   if (!held) return;
-  r.hopper.pop();
   const o = origin ?? { x: r.pos.x, y: r.pos.y };
   // `by` is what makes the opponent's CELL refuse this element (`play.ts`, owner ruling
   // 2026-09-12). It is stamped HERE, at the one place a POLLEN becomes a flight, so no launcher

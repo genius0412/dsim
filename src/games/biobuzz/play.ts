@@ -13,27 +13,26 @@ import {
   BB_HALF_X,
   BB_HALF_Y,
   BB_HIVE_OPEN_Z,
+  BB_HOOD_DEFAULT_DEG,
   BB_NECTAR_R,
+  BB_ON_TARGET_TOL,
   BB_POLLEN_R,
   BB_POLLEN_WALL_REST,
   bbLoadingZoneSpot,
 } from './config';
 import { biobuzzColliders } from './colliders';
-import { capturePollen, scoreTargets } from './elements';
-import {
-  bbElementRadius,
-  flowerAccepts,
-  flowerFits,
-  flowerStackZ,
-  type BbElementKind,
-} from './flower';
+import { capturePollen, scoreTargets, takeHeld } from './elements';
+import { bbElementRadius, flowerFits, flowerStackZ, type BbElementKind } from './flower';
 import { hiveAccepts, hiveCellPos, hiveStep, spillPoses } from './hive';
+import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
+  type BbShot,
   bbAimHeading,
+  bbDumpSolution,
+  bbFlowerInReach,
   bbLaunch,
   bbMouths,
   bbSlewTurret,
-  bbStepLift,
   bbTurretSolution,
 } from './robot';
 import { rectContains, type BiobuzzState, type ScoreTarget } from './state';
@@ -131,14 +130,62 @@ function clampPollenToWalls(b: Artifact): void {
   }
 }
 
-/** put a POLLEN back on the tile at `pos`, dead stopped. The single landing path, so a lob, a
- * dump and an eviction all come to rest the same way. */
+/** put an element back on the tile at `pos`, dead stopped. The single landing path, so a lob, a
+ * dump and an eviction all come to rest the same way — and all of them CLEAR OF THE STATICS
+ * (`clearOfStatics`). */
 function land(b: Artifact, x: number, y: number): void {
   b.state = { kind: 'ground' };
-  b.pos = { x, y };
+  b.pos = clearOfStatics(x, y, bbElementRadius(bbKindOf(b)));
   b.vel = { x: 0, y: 0 };
   b.z = 0;
   b.vz = 0;
+}
+
+/**
+ * THE LANDING PUSH-OUT — move a point that is about to become a ground element out of every
+ * static it overlaps, onto the nearest face that is still inside the field.
+ *
+ * A FLIGHT element is not solved, so it flies over a FLOWER foot or a HIVE frame bar. With the
+ * flower flight branch gone (nothing launched enters a FLOWER), a missed lob coming down over a
+ * foot used to LAND INSIDE the collider, and the solve cannot clear an element buried in a
+ * static — it has no normal to push it along. So the landing point is cleared here, from the
+ * colliders' own geometry (`biobuzzColliders`, the same boxes the solve sees), before the solve
+ * ever meets it. This is a spawn-placement rule for a state flip, not a second position authority
+ * for a ground element: it runs once, on the tick the element lands.
+ *
+ * Every BIOBUZZ static is axis-aligned (`rot: 0`). Of the four face-pushes the shortest one that
+ * leaves the element inside the field wins — so a ball landing in a foot against the wall is
+ * pushed along or away from the wall, never through it.
+ */
+function clearOfStatics(x: number, y: number, r: number): Vec2 {
+  let px = x;
+  let py = y;
+  const limX = BB_HALF_X - r;
+  const limY = BB_HALF_Y - r;
+  for (const s of biobuzzColliders.statics) {
+    if (Math.abs(px - s.tx) >= s.hx + r || Math.abs(py - s.ty) >= s.hy + r) continue;
+    const options: [number, number][] = [
+      [s.tx - s.hx - r, py],
+      [s.tx + s.hx + r, py],
+      [px, s.ty - s.hy - r],
+      [px, s.ty + s.hy + r],
+    ];
+    let best: [number, number] | null = null;
+    let bestD = Infinity;
+    for (const [cx, cy] of options) {
+      if (Math.abs(cx) > limX || Math.abs(cy) > limY) continue;
+      const d = Math.abs(cx - px) + Math.abs(cy - py);
+      if (d < bestD) {
+        bestD = d;
+        best = [cx, cy];
+      }
+    }
+    if (best) {
+      px = best[0];
+      py = best[1];
+    }
+  }
+  return { x: px, y: py };
 }
 
 /**
@@ -219,7 +266,6 @@ const ALLIANCES: readonly Alliance[] = ['red', 'blue'];
  * to a hive or a flower by lookup rather than by string surgery.
  */
 const HIVE_OF: ReadonlyMap<string, Alliance> = new Map(ALLIANCES.map((a) => [`hive:${a}`, a]));
-const FLOWER_OF: ReadonlyMap<string, number> = new Map(BB_FLOWERS.map((_f, i) => [`flower:${i}`, i]));
 
 /** mid-height of the CELL opening (in) — where a parked element is drawn to sit. A parked
  * element is not solved and has no position of its own; this is somewhere to point at. */
@@ -286,10 +332,13 @@ const NECTAR_ENTRY_JITTER = 4.0; // APPROX
  *   5. the SHARED artifact solve runs, at `BB_POLLEN_R` — the ONE position authority for a
  *      ground pollen: no integration, no separation pass and no eviction. Then the perimeter
  *      invariant, which the solve does not hold on its own (see `clampPollenToWalls`).
- *   5b. the ROBOT MECHANISMS move: a turret slews onto its target on both axes and a lift
- *      raises or stows. After the solve so the turret aims from where the chassis ended
- *      the tick; before the launch so a turret that slewed this tick fires on this
- *      tick's bearing.
+ *   5b. the ROBOT MECHANISMS aim: each turret (both of a double turret) slews onto the own
+ *      HIVE on both axes, and a dumper solves its dump — and each says whether it is ON TARGET.
+ *      After the solve so a launcher aims from where the chassis ended the tick; before the
+ *      launch so a turret that slewed this tick fires on this tick's bearing.
+ *   5c. the BOX TUBE PLACES: an edge on the place-POLLEN / place-NECTAR buttons, with a FLOWER
+ *      in reach, moves one held element into that FLOWER's stack. Before the launch, so an
+ *      auto-fire on the same tick cannot throw away the element being placed.
  *   6. LAUNCHERS fire, which is what creates tick-N+1's flight pollen.
  *   7. the HUMAN PLAYERS enter what they are owed (G426), as ground elements in their own
  *      LOADING ZONE.
@@ -378,14 +427,19 @@ export function updateBiobuzz(
     b.pos = { x: rob.pos.x + off.x, y: rob.pos.y + off.y };
   }
 
-  // ── 2. FLIGHT: ballistic, then the targets, then land ─────────────────────
+  // ── 2. FLIGHT: ballistic, then the HIVE cells, then land ──────────────────
   /**
    * THE TARGETS ARE TESTED AFTER THE INTEGRATION AND BEFORE THE LANDING, and that ordering is
    * the whole of "did it go in". A shot is offered to the geometry at the position and
    * velocity it actually has this tick — descending, over the opening — which is what
-   * `hiveAccepts` and `flowerAccepts` are written against. Testing before the step would ask
-   * about last tick's arc; testing after the landing would mean an element that reached the
-   * CELL at 59 in had already been put on the floor.
+   * `hiveAccepts` is written against. Testing before the step would ask about last tick's arc;
+   * testing after the landing would mean an element that reached the CELL at 59 in had already
+   * been put on the floor.
+   *
+   * ⚠️ A LAUNCHED ELEMENT NEVER ENTERS A FLOWER (owner ruling 2026-09-12). FLOWER scoring is the
+   * Box Tube's proximity placement (stage 5c) and nothing else, so the flower branch that used to
+   * sit here is gone; `flowerAccepts` (`flower.ts`) stays as a pure function. A lob that comes
+   * down over a FLOWER lands beside it (`land` clears the foot).
    *
    * A miss is NOT a foul and not special-cased: an element that meets the structure anywhere
    * else simply keeps flying and lands on the tiles (G417.H), which is also what the open-face
@@ -417,50 +471,32 @@ export function updateBiobuzz(
      * the only way in is a shot arriving over that lip and running down the tray toward the
      * pivot. `hiveAccepts` says the same thing through `hiveApproachSign`, and the smoke lane
      * pins the two together (`field.ts`) rather than letting them be two descriptions of one
-     * face that can drift.
-     * A FLOWER's mouth is NOT a velocity gate — its opening is the TOP, and `mouth` there says
-     * which half-space the column is reachable from — so the flower branch leaves the travel
-     * direction entirely to `flowerAccepts` (top entry, descending).
+     * face that can drift. The FLOWER targets on the list are skipped: nothing launched enters one.
      */
     let took = false;
     for (const t of targets) {
       const owner = HIVE_OF.get(t.id);
-      if (owner) {
-        /**
-         * A CELL TAKES ONLY ITS OWN ALLIANCE'S ELEMENT (owner ruling 2026-09-12, field-plan
-         * §2.1). Nothing in the manual bans launching into the opponent's up-CELL, and the
-         * geometry does not stop you — the two HIVES are 25.5 in apart and either opening is
-         * reachable from most of the field — so without this a red robot could TIP blue's cell
-         * and hand them the 20. The ruling is that it simply does not go in: the shot MISSES,
-         * which here means falling through to the landing at the bottom of the loop and coming
-         * to rest as a ground element. It is not a foul and it is not special-cased anywhere
-         * else.
-         *
-         * An element with no `by` is accepted by either cell. That is every flight in DECODE
-         * and Chain Reaction, and any BIOBUZZ snapshot recorded before the field stamped it —
-         * refusing those would silently break replays of matches that were legal when they were
-         * played.
-         */
-        if (launchedBy && launchedBy !== owner) continue;
-        const hive = bb.hives[owner];
-        if (!hiveAccepts(hive, owner, b.pos, b.z, vel)) continue;
-        park(b, t.id, hive.contents, hiveCellPos(owner, hive.up), CELL_MID_Z);
-        took = true;
-        break;
-      }
-      const i = FLOWER_OF.get(t.id);
-      if (i === undefined) continue;
-      const kind = bbKindOf(b);
-      const r = bbElementRadius(kind);
-      // `flowerAccepts` is the geometry (top entry, descending) and `flowerFits` the capacity,
-      // checked separately so a FULL flower rejects for a reason rather than by failing to
-      // look like a flower.
-      if (!flowerAccepts(t.pos, b.pos, b.z, b.vz, r)) continue;
-      const stack = bb.flowers[i].stack;
-      if (!flowerFits(stack, kindOf, r)) continue;
-      // the z the element comes to rest at: on top of everything already in the tube.
-      const zs = flowerStackZ([...stack, b.id], kindOf);
-      park(b, t.id, stack, t.pos, zs[zs.length - 1]);
+      // a FLOWER target is skipped: nothing launched enters one (owner ruling 2026-09-12).
+      if (!owner) continue;
+      /**
+       * A CELL TAKES ONLY ITS OWN ALLIANCE'S ELEMENT (owner ruling 2026-09-12, field-plan
+       * §2.1). Nothing in the manual bans launching into the opponent's up-CELL, and the
+       * geometry does not stop you — the two HIVES are 25.5 in apart and either opening is
+       * reachable from most of the field — so without this a red robot could TIP blue's cell
+       * and hand them the 20. The ruling is that it simply does not go in: the shot MISSES,
+       * which here means falling through to the landing at the bottom of the loop and coming
+       * to rest as a ground element. It is not a foul and it is not special-cased anywhere
+       * else.
+       *
+       * An element with no `by` is accepted by either cell. That is every flight in DECODE
+       * and Chain Reaction, and any BIOBUZZ snapshot recorded before the field stamped it —
+       * refusing those would silently break replays of matches that were legal when they were
+       * played.
+       */
+      if (launchedBy && launchedBy !== owner) continue;
+      const hive = bb.hives[owner];
+      if (!hiveAccepts(hive, owner, b.pos, b.z, vel)) continue;
+      park(b, t.id, hive.contents, hiveCellPos(owner, hive.up), CELL_MID_Z);
       took = true;
       break;
     }
@@ -594,54 +630,87 @@ export function updateBiobuzz(
   // `clampPollenToWalls`, where the measured penetration without this is written down.
   for (const b of world.balls) if (b.state.kind === 'ground') clampPollenToWalls(b);
 
-  // ── 5b. MECHANISMS: THE TURRET AIMS, THE LIFT MOVES ──────────────────
-  // BOTH OF THESE WERE WRITTEN AND NEITHER WAS EVER CALLED. `bbSlewTurret` had no caller at
-  // all and `bbStepLift` had two, both in the smoke suite — so in an actual match the turret
-  // was frozen at the bearing `spawn.ts` gave it (FIELD CENTRE) firing at 0° elevation, and the
-  // lift never left the deck. `drawRobot` has always drawn the mast from `r.bbLiftZ ?? 0`, and
-  // that `?? 0` was the whole story. Two mechanisms that existed as hardware, geometry, build
-  // dials, a sprite and a passing test, and did nothing on the field.
+  // ── 5b. MECHANISMS: THE LAUNCHER AIMS ─────────────────────────────────────
+  // ⚠️ A MECHANISM IS NOT WIRED BECAUSE ITS FUNCTION EXISTS AND ITS TESTS PASS. `bbSlewTurret`
+  // once had no caller at all and the removed lift's step had only smoke callers, so both were
+  // green on code no match could reach. The checks that matter step the WORLD.
   //
-  // ⚠️ THE LESSON, SINCE IT IS NOW TWICE: a mechanism is not wired because its function exists
-  // and its tests pass. Those tests called it DIRECTLY, so they were green on code no match
-  // could reach. If you add a third, the check that matters is that stepping the WORLD moves it.
+  // AFTER THE SOLVE AND BEFORE THE LAUNCH, both deliberately: a launcher aims from where the
+  // chassis ENDED the tick, and a turret that has slewed this tick fires on this tick's bearing.
   //
-  // AFTER THE SOLVE AND BEFORE THE LAUNCH, both deliberately. After the solve because the
-  // turret should aim from where the chassis ENDED the tick, not where it began; before the
-  // launch because a turret that has slewed this tick should fire on this tick's bearing.
-  //
-  // The solved speed rides a LOCAL map to stage 6 rather than a field on `RobotState`: it is
-  // read one stage after it is written, in the same tick, and a per-tick `RobotState` field is
-  // wire cost on every snapshot to every client (see `bbLaunch`'s `muzzle`).
-  const muzzle = new Map<number, number>();
+  // The result rides a LOCAL map to stage 6 (`BbShot`) rather than a `RobotState` field: it is
+  // read one stage after it is written, and a per-tick robot field is wire cost on every
+  // snapshot to every client.
+  const shots = new Map<number, BbShot>();
   for (const rob of world.robots) {
     if (rob.passive) continue; // a practice dummy has no mechanisms to run
-    // A TURRET TRACKS WHETHER OR NOT THE ROBOTS ARE ENABLED, and that is the point rather than
-    // an oversight. `robotsEnabled` gates DRIVER CONTROL — drive, intake, fire — and a turret
-    // auto-tracking is none of those; `bbLaunch` still refuses to fire while disabled. Tracking
-    // through `pre` is what makes good on the intent `bbLaunch` has always claimed, that "a
-    // turreted robot spawns already pointed rather than spending auto swinging round": spawn
-    // aims it at FIELD CENTRE, which is nobody's target, so gating this on `enabled` would have
-    // it start every match by swinging off that bearing on the first live tick.
+    // A TURRET TRACKS WHETHER OR NOT THE ROBOTS ARE ENABLED. `robotsEnabled` gates DRIVER
+    // CONTROL — drive, intake, fire — and a turret auto-tracking is none of those; `bbLaunch`
+    // still refuses to fire while disabled. Spawn aims a turret at FIELD CENTRE, so gating this
+    // on `enabled` would start every match with a swing off that bearing on the first live tick.
+    const launcher = bbLauncherOf(rob.spec, BB_HOOD_DEFAULT_DEG);
     const target = bbPickTarget(world, rob);
-    const sol = target ? bbTurretSolution(rob, target) : null;
-    // `null` on either axis means "hold where you are" — a turret with nothing in reach stops
-    // rather than drifting, and a turretless build has no turret for this to move at all
-    // (`bbTurretSolution` returns null for one, so both axes come through as null).
-    bbSlewTurret(rob, sol?.yaw ?? null, sol?.pitch ?? null, dt);
-    if (sol) muzzle.set(rob.id, sol.speed);
+    if (bbIsTurreted(launcher)) {
+      // EVERY TURRET: one for a single turret, both for a double (POLLEN turret 0, NECTAR 1).
+      const speed: (number | undefined)[] = [];
+      const onTarget: boolean[] = [];
+      const exits: readonly (0 | 1)[] = launcher.kind === 'twinturret' ? [0, 1] : [0];
+      for (const which of exits) {
+        const sol = target ? bbTurretSolution(rob, target, which) : null;
+        // `null` on either axis means "hold where you are" — a turret with nothing on its open
+        // side stops rather than drifting.
+        bbSlewTurret(rob, sol?.yaw ?? null, sol?.pitch ?? null, dt, which);
+        speed[which] = sol?.speed;
+        const yaw = which === 1 ? (rob.bbTurret2Heading ?? rob.turretHeading) : rob.turretHeading;
+        const pitch = which === 1 ? (rob.bbTurret2Pitch ?? 0) : (rob.bbTurretPitch ?? 0);
+        onTarget[which] =
+          sol !== null &&
+          sol.reachable &&
+          Math.abs(wrapAngle(sol.yaw - yaw)) < BB_ON_TARGET_TOL &&
+          Math.abs(sol.pitch - pitch) < BB_ON_TARGET_TOL;
+      }
+      shots.set(rob.id, { target, speed, onTarget });
+    } else {
+      // A DUMPER is on target when the chassis is within `BB_AIM_TOL` of its aim heading AND the
+      // whole load has an accepted arc (`bbDumpSolution`). The assist steers it there (step.ts).
+      let on = false;
+      if (target) {
+        const want = bbAimHeading(rob, target);
+        on =
+          want !== null &&
+          Math.abs(wrapAngle(want - rob.heading)) < BB_AIM_TOL &&
+          bbDumpSolution(rob, target, rob.hopper.length) !== null;
+      }
+      shots.set(rob.id, { target, speed: [], onTarget: [on] });
+    }
+  }
 
-    // THE LIFT IS DRIVER CONTROL, so unlike the turret it DOES gate on `enabled`: a held button
-    // raises the carriage and releasing it lets the carriage back down, which is the model
-    // `bbStepLift` implements. Handing it a zero command while the robots are disabled
-    // therefore stows it, which is the right answer for a carriage nobody is holding up.
-    bbStepLift(rob, enabled ? (cmds.get(rob.id) ?? ZERO_CMD) : ZERO_CMD, dt);
+  // ── 5c. THE BOX TUBE PLACES ───────────────────────────────────────────────
+  /**
+   * FLOWER SCORING IS PROXIMITY PLACEMENT (owner ruling 2026-09-12): a point on the robot
+   * (`bbPlacePointLocal`) near a FLOWER ring, and one button per element kind — `bbPlace` for a
+   * POLLEN, `bbPlaceNectar` for a NECTAR. There is no raise and no height.
+   *
+   * EDGE-TRIGGERED through `bb.held[r.id]` (`placeP` / `placeN` — namespaced, because the penalty
+   * engine keeps `g417warned` in the same per-robot map). The latch is updated EVERY tick — out
+   * of reach, without a tube, and while disabled (step.ts hands a disabled robot a zero command)
+   * — so a button held while driving INTO reach does not place: only a fresh press does. Only
+   * TRUE keys are stored.
+   *
+   * G410 (`penalties.ts`) bills a NECTAR found in a stack before the 1:00 cue on its own, as a
+   * state predicate, so nothing here has to announce the placement.
+   */
+  for (const rob of world.robots) {
+    if (rob.passive) continue;
+    const c = cmds.get(rob.id);
+    placeLatch(world, bb, rob, 'placeP', enabled && !!c?.bbPlace, false, kindOf);
+    placeLatch(world, bb, rob, 'placeN', enabled && !!c?.bbPlaceNectar, true, kindOf);
   }
 
   // ── 6. LAUNCH ────────────────────────────────────────────
   for (const rob of world.robots) {
     if (rob.passive) continue; // a practice dummy has no mechanisms to run
-    bbLaunch(world, rob, cmds.get(rob.id) ?? ZERO_CMD, enabled, muzzle.get(rob.id));
+    bbLaunch(world, rob, cmds.get(rob.id) ?? ZERO_CMD, enabled, shots.get(rob.id));
   }
 
   // ── 7. THE HUMAN PLAYERS ──────────────────────────────────────────────────
@@ -739,14 +808,91 @@ export function updateBiobuzz(
   }
 }
 
+/** the per-robot flag map in `bb.held`, or `null` when there is none OR the entry is not an
+ * object — `bb.held` is plain JSON off the wire, and a smoke wire test writes a NUMBER there. */
+function heldFlags(bb: BiobuzzState, id: number): Record<string, boolean> | null {
+  const f = bb.held[id] as unknown;
+  return typeof f === 'object' && f !== null ? (f as Record<string, boolean>) : null;
+}
+
+/** one place button's edge latch — see stage 5c. Fires `placeInFlower` on a fresh press only,
+ * and stores the latch as a TRUE key or no key at all. */
+function placeLatch(
+  world: World,
+  bb: BiobuzzState,
+  rob: RobotState,
+  key: 'placeP' | 'placeN',
+  pressed: boolean,
+  nectar: boolean,
+  kindOf: (id: number) => BbElementKind,
+): void {
+  const was = heldFlags(bb, rob.id)?.[key] === true;
+  if (pressed && !was) placeInFlower(world, bb, rob, nectar, kindOf);
+  if (pressed) {
+    let f = heldFlags(bb, rob.id);
+    if (!f) {
+      f = {};
+      bb.held[rob.id] = f;
+    }
+    f[key] = true;
+  } else {
+    const f = heldFlags(bb, rob.id);
+    if (f && key in f) delete f[key];
+  }
+}
+
+/**
+ * PLACE one held element of the named kind into the FLOWER this robot's Box Tube is in reach of.
+ * Returns whether it happened; every refusal is an ordinary outcome, not an error:
+ *  · no Box Tube, or no FLOWER ring within `BB_PLACE_TOL` of the placement point;
+ *  · nothing of that kind in the hopper;
+ *  · the FLOWER is full (`flowerFits`).
+ *
+ * The element is the LAST of that kind in `r.hopper`, taken through `takeHeld` so the hopper and
+ * the held set stay one multiset, and `park`ed into the stack at the height it rests at
+ * (`flowerStackZ`). A NECTAR placed makes its alliance the FLOWER's owner by the ordinary stack
+ * rule (`flowerScore`), whoever placed it.
+ */
+function placeInFlower(
+  world: World,
+  bb: BiobuzzState,
+  rob: RobotState,
+  nectar: boolean,
+  kindOf: (id: number) => BbElementKind,
+): boolean {
+  if (!bbLiftOf(rob.spec)) return false;
+  const i = bbFlowerInReach(world, rob);
+  if (i === null) return false;
+  let color: Artifact['color'] | null = null;
+  for (let j = rob.hopper.length - 1; j >= 0; j--) {
+    const c = rob.hopper[j];
+    if ((c === 'red' || c === 'blue') === nectar) {
+      color = c;
+      break;
+    }
+  }
+  if (color === null) return false;
+  const stack = bb.flowers[i].stack;
+  const kind: BbElementKind = color === 'red' || color === 'blue' ? color : 'pollen';
+  if (!flowerFits(stack, kindOf, bbElementRadius(kind))) return false;
+  const ball = takeHeld(world, rob, color);
+  if (!ball) return false;
+  const zs = flowerStackZ([...stack, ball.id], kindOf);
+  const f = BB_FLOWERS[i];
+  park(ball, `flower:${i}`, stack, { x: f.x, y: f.y }, zs[zs.length - 1]);
+  return true;
+}
+
 /**
  * THE TARGET A ROBOT IS ACTUALLY TRYING TO SCORE IN, or `null` when there is not one.
  *
  * `scoreTargets()` reports every opening on the field, INCLUDING ones this robot should not
  * shoot at, and it is this function's job — not the field's — to say which of them is worth
- * turning toward. Two filters, and both of them only became reachable when Lane A filled
- * `scoreTargets()` in: while it returned `[]` the selection below could not be wrong because
- * it never ran.
+ * turning toward.
+ *
+ * ⚠️ HIVE CELLS ONLY (owner ruling 2026-09-12). Launchers stopped auto-aiming at FLOWERS: a
+ * FLOWER is scored only by the Box Tube's placement, and nothing launched ever enters one, so a
+ * FLOWER on this list would be a target no shot can score in.
  *
  * ⚠️ **THE OPPONENT'S CELL MUST NOT BE AIMED AT, AND THE ALLIANCE FILTER BELOW STAYS.**
  * `scoreTargets(world, a)` no longer lists it (owner ruling 2026-09-12: an element launched by
@@ -777,9 +923,10 @@ export function bbPickTarget(world: World, r: RobotState): ScoreTarget | null {
   let best: ScoreTarget | null = null;
   let bestD = Infinity;
   for (const t of scoreTargets(world, r.alliance)) {
-    // a target owned by the OTHER alliance scores nothing; neutral (`null`, the FLOWERS) and
-    // our own both count.
-    if (t.alliance !== null && t.alliance !== r.alliance) continue;
+    // HIVE cells only — a FLOWER is never a launch target.
+    if (!HIVE_OF.has(t.id)) continue;
+    // a target owned by the OTHER alliance scores nothing.
+    if (t.alliance !== r.alliance) continue;
     const dx = t.pos.x - r.pos.x;
     const dy = t.pos.y - r.pos.y;
     // ON THE OPEN SIDE? `mouth` points OUT of the opening, so the vector from the target TO
@@ -798,7 +945,7 @@ export function bbPickTarget(world: World, r: RobotState): ScoreTarget | null {
  * THE AIM HOOK — the rotate override a turretless launcher gets while its fire button is held,
  * or `null` to leave the driver's rotate command alone.
  *
- * A drum or a dumper fires along one chassis EDGE, so "aim" means "turn the robot", and the
+ * A dumper fires along one chassis EDGE, so "aim" means "turn the robot", and the
  * override has to replace the command before the drivetrain model runs (see `step.ts`, stage
  * 2). A turret aims itself and never gets an override — steering the chassis for a turret
  * would fight the driver for no benefit.

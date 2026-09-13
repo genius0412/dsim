@@ -116,6 +116,10 @@
   --ds-blue: #3d8bff;
   --ds-green: #37d67a;
   --ds-purple: #a96bff;
+  /* BIOBUZZ POLLEN — the canvas colour in `src/games/biobuzz/draw.ts`, as a FILL for the HUD's
+     held-element discs. Never type: it is ~1.4:1 on the light card, and the pip's own
+     `--ds-mut` ring is what bounds it. */
+  --ds-pollen: #f2d14b;
   --ds-danger: #ba1a1a;
   --ds-ok: #2f9e5f;
 
