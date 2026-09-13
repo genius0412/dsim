@@ -509,12 +509,12 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
      * on a real field.
      *
      * THE FOURTH FRAME IS THE SPILL'S OWN, and it is a separate question from the swing's.
-     * A TIP is a THROW (`BB_SPILL_SPEED` 50-88 in/s in a ±`BB_SPILL_FAN` 55° fan, calibrated to
-     * the owner's landing lines — field-plan §2.2), so the contents are still crossing the field
-     * and bouncing off the perimeter at t = 4 s and only come to rest at about 4.2 s. Measured,
-     * they settle 42-107 in from the PIVOT, which is most of a 12 ft field — a still at the
-     * settle tick shows the throw MID-FLIGHT and says nothing about where a spill ends up, which
-     * is the thing a driver has to plan around. Numbers in
+     * A TIP is a DUMP (`BB_SPILL_SPEED` 35-62 in/s in a ±`BB_SPILL_FAN` 18° fan — owner
+     * feedback 2026-09-12, 30% less power and a much tighter fan than the first calibration),
+     * so the contents leave the tray running straight-ish outboard and are still rolling at
+     * t = 4 s, coming to rest at about 3.9 s. Measured, they settle 45-71 in from the PIVOT in a
+     * 15 x 25 in patch — a still at the settle tick catches the roll and says little about where
+     * a spill ends up, which is the thing a driver has to plan around. Numbers in
      * `docs/biobuzz/feedback/001-spill-kinematics.md`.
      *
      * WHAT TO LOOK AT:
@@ -525,10 +525,11 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
      *      they draw as ordinary GROUND balls under the structure, on top of the dashed
      *      outline, not as discs inside a box (`hive-ground` is the dedicated cell for that
      *      distinction).
-     *   3. t = 4 s — the NORTH cell is up, filled and EMPTY; `tips` is 1. The spill is spread
-     *      across the audience half and two of the six are still rolling.
+     *   3. t = 4 s — the NORTH cell is up, filled and EMPTY; `tips` is 1. The spill has just
+     *      come to rest, in a patch outboard of the emptied cell.
      *   4. t = 8 s — nothing is moving. This is the frame to read the SCATTER off: how wide,
-     *      how far, and how many finished against the perimeter.
+     *      how far, and how much of it is the balls having pushed each other apart on the tiles
+     *      rather than the throw.
      *   5. BLUE's hive, untouched in all four, is the control: both cells the same length,
      *      because the see-saw is one rigid bar at 30° and a plan view foreshortens both ends
      *      equally (reference §2.2).

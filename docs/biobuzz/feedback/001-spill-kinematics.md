@@ -137,3 +137,73 @@ a quarter of the pile against one. Cells: `hive-tip@480`, the elements on the au
    the fan needs a companion term (§3) and it is a two-constant change, not a one-constant one.
 2. **The overhang.** §4(b) is a shared-solver request, already filed twice. This is the third
    sighting and the first one that is visible in a screenshot.
+
+---
+
+# Addendum — 2026-09-12, second pass: the owner played it and the throw is too hard
+
+Everything above stands as the record of the FIRST calibration, against the drawn landing
+lines. This addendum records the SECOND, which came from the owner driving alpha rather than
+from a drawing, and which overrides it:
+
+> *"The release of balls from the cell when it tips over is extremely powerful and should
+> instead fall to the ground and go straight ish and when they just hit the ground they can
+> scatter if they are next to other balls because the balls are round and would push them
+> around. In general though reduce the power at which the balls get released by ~30%."*
+
+Two constants moved, and the second matters more than the first:
+
+| | first calibration | now |
+|---|---|---|
+| `BB_SPILL_SPEED` | `[50, 88]` in/s | **`[35, 62]`** in/s — the same pair × 0.7 |
+| `BB_SPILL_FAN` | ±55° | **±18°** |
+
+**Nothing else changed.** No shared constant, no solver change, and the 25-inch drop is still
+not simulated (§5 above is unchanged and its caveat now bites less, not more, because there is
+less speed being spent as roll).
+
+## Measured, the same two probes as §1
+
+**A. The gallery scene, `hive-tip`, seed 7, 3 NECTAR + 3 POLLEN:**
+
+| | first calibration | now |
+|---|---|---|
+| rest, from the PIVOT | 41.9–106.7 in, median 81.6 | **45.2–70.9 in, median 60.7** |
+| spread at rest | 140.5 × 29.4 in (wall to wall) | **15.3 × 25.4 in** |
+| release | 2.033 s | 2.033 s (unchanged — it is the swing, not the throw) |
+| everything at rest | 4.18 s, *after* the 4.0 s settle | **3.88 s, before the settle** |
+
+**B. Sixty tips, 360 spilled elements, seeds 1–60:**
+
+| | first calibration | now |
+|---|---|---|
+| rest distance from the pivot | 24.5–108.8 in | **35.9–73.8 in** |
+| median | 71.0 in | **58.4 in** |
+| p10 / p90 | 55.7 / 83.2 in | **43.9 / 70.8 in** |
+| finished against the perimeter | 26% of elements | **none in the scene seed** |
+
+## What this means for §3 and §4 above
+
+- **§3, the short tail, is gone as a shape problem.** It was a consequence of a 55° fan
+  throwing part of the pile across the field on a chord. At 18° there is no chord case: the
+  range narrowed at BOTH ends (35.9–73.8 against 24.5–108.8) rather than sliding down.
+- **§4(b), the NECTAR overhanging the wall plane, stops being visible here.** The spill no
+  longer reaches a perimeter on these seeds. **The shared-solver request is NOT withdrawn** —
+  one radius per solve call is still wrong, and field-plan §6 request 1 and
+  `docs/biobuzz/feedback/000-solver-observations.md` still carry it. It is simply no longer
+  the HIVE that puts it on screen.
+- **§4(a), the elements colliding with each other on the way out, is now the POINT rather than
+  an artefact.** The owner's note says the scatter should come from round elements pushing each
+  other around on the tiles, and that is exactly what the shared solve does on the tick they
+  land. The live smoke check's scoping (all outboard, none faster than the draw, none near
+  rest, most in band) is unchanged and still passes.
+
+## Still open for the owner
+
+The two questions in §6 are answered or parked by the above. One new one:
+
+1. **Is 36–74 in from the pivot the right reach for a spill?** It is now a consequence of the
+   ±30% ruling rather than of a landing line, and the distance is `v² / 56` — halving the
+   energy halved the reach. If a real tip puts elements further out than this while still
+   looking like a dump rather than a throw, the missing term is the 25-inch DROP, which the
+   model currently spends as roll (§5).

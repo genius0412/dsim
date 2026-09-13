@@ -205,26 +205,31 @@ export function hiveStep(hive: HiveState, dt: number, kindOf: (id: number) => Bb
 /**
  * How hard a TIP throws its contents, and how wide.
  *
- * CALIBRATED TO THE OWNER'S LANDING LINES (ruling 2026-09-12, off the visuals chat's field-v4
- * page): the pile leaves at **50-88 in/s** in a **±55° fan** about the outboard axis and comes
- * to rest **57-107 in from the PIVOT**, median about 70, wall to wall once the bounces are in.
- * A TIP is a THROW, not a drop — the tray is a ramp on a see-saw that has been accelerating for
- * two seconds when it passes level, and the spill crossing half the field is the point of it.
+ * ⚠️ **OWNER FEEDBACK, 2026-09-12, FROM PLAYING IT: A TIP IS A DUMP, NOT A CANNON.** The
+ * elements should fall out of the tray, run STRAIGHT-ISH outboard, and do their scattering
+ * against each other once they are on the tiles — which is what round elements sharing a floor
+ * do, and what the shared solve already models. Two numbers moved:
  *
- * BOTH STILL APPROX. V1 prints no spill kinematics at all; these two numbers are fitted to
- * where the elements LAND on a drawing, which is the observable a person can actually read off
- * a field, and the landing distance is what should be re-checked against a real tip — not the
- * speed. The previous pair (40-60 in/s straight outboard, ±12 in/s across, i.e. a ±13° fan)
- * landed the six staged elements in a strip about 20 in wide; see
- * `docs/biobuzz/feedback/001-spill-kinematics.md` for the measurement either side of this change.
+ *  • SPEED **down 30%**, 50-88 → 35-62 in/s. The ruling asked for "about thirty percent less
+ *    power" in as many words; the pair is the old one times 0.7, rounded to whole in/s.
+ *  • FAN **55° → 18°**. 55° is a ramp firing a shell of elements across a third of a circle,
+ *    and it is the half of the old calibration that made a spill read as an explosion. 18° is
+ *    a tray emptying downhill with the spread a pile of balls leaving a lip actually has.
+ *
+ * BOTH STILL APPROX, and MORE approx than the pair they replace: the previous numbers were
+ * fitted to the owner's landing lines off the visuals chat's field-v4 page, and these are a
+ * ruling about FEEL that moves the landing distance with it (~57-107 in from the pivot before,
+ * roughly half that now — the throw is not what puts a spill across the field any more, the
+ * roll is). V1 prints no spill kinematics at all, so neither pair was ever a measurement. See
+ * `docs/biobuzz/feedback/001-spill-kinematics.md` for the numbers either side of both changes.
  *
  * ⚠️ THE FAN IS AN ANGLE, NOT A CROSS-SPEED. `BB_SPILL_LATERAL` was ±12 in/s added across the
  * throw, so the widest possible fan was `atan(12 / 50)` — the FASTER an element left, the
  * NARROWER its spread, which is backwards: a ramp scatters by direction, and how far a given
  * element goes is then a consequence of its own angle and speed rather than a cap on the width.
  */
-export const BB_SPILL_SPEED: readonly [number, number] = [50, 88]; // APPROX
-export const BB_SPILL_FAN = 55; // degrees off the outboard axis, half-angle. APPROX
+export const BB_SPILL_SPEED: readonly [number, number] = [35, 62]; // APPROX
+export const BB_SPILL_FAN = 18; // degrees off the outboard axis, half-angle. APPROX
 
 /** one spilled element: where it re-enters the world and how fast it is going. */
 export interface SpillPose {

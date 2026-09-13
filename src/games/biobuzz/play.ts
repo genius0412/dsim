@@ -520,9 +520,12 @@ export function updateBiobuzz(
    *
    * A SPILLED ELEMENT COMES BACK AS A GROUND ARTIFACT CARRYING THE SPILL VELOCITY. It leaves
    * the tray over the cell's open outer end and lands just outboard of the cell centre, and it
-   * arrives ALREADY MOVING (`BB_SPILL_SPEED` outboard, `BB_SPILL_LATERAL` across), so it rolls
-   * out from under its own structure the way the manual describes — G409: it "hits the TILE
-   * floor before it is collected" — rather than sitting in a pile under the down cell.
+   * arrives ALREADY MOVING (`BB_SPILL_SPEED` along a direction drawn from the ±`BB_SPILL_FAN`
+   * fan), so it rolls out from under its own structure the way the manual describes — G409: it
+   * "hits the TILE floor before it is collected" — rather than sitting in a pile under the down
+   * cell. The fan is narrow (owner feedback, 2026-09-12): a spill runs STRAIGHT-ISH outboard
+   * and most of what spreads it is the elements pushing each other apart once they are on the
+   * tiles, which the shared solve below does on the very tick they land there.
    *
    * GROUND AND NOT FLIGHT, which is a decision about WHO OWNS IT from here: a ground element
    * belongs to `solveArtifacts` from the very next stage of this same tick, so a spill that

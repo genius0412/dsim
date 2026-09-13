@@ -194,8 +194,11 @@ Base: merged `origin/alpha` `e5d866d` (fast-forward — alpha carried only `fiel
    Smoke block 10b pins the three the addendum named: the bare-nectar span 3.98–7.58 and that
    it scores; a POLLEN under a seated NECTAR pops on retrieval without lowering the NECTAR; the
    staged four POLLEN still read 3 in volume and 0 points.
-6. **The spill is calibrated to the owner's landing lines.** `BB_SPILL_SPEED` `[40,60]` →
-   **`[50,88]`**; `BB_SPILL_LATERAL` is REPLACED by **`BB_SPILL_FAN` ±55°**, a rotation of the
+6. **The spill is calibrated to the owner's landing lines, then cut back by the owner playing
+   it (2026-09-12 addendum): `BB_SPILL_SPEED` is now `[35,62]` and `BB_SPILL_FAN` ±18°** — a
+   dump, not a throw, with the scatter coming from elements pushing each other on the tiles.
+   The history: `BB_SPILL_SPEED` `[40,60]` →
+   **`[50,88]` → `[35,62]`**; `BB_SPILL_LATERAL` is REPLACED by **`BB_SPILL_FAN` ±55° → ±18°**, a rotation of the
    whole velocity rather than a sideways nudge. Measured vs target is written up in
    **`docs/biobuzz/feedback/001-spill-kinematics.md`** (that file was the item-4 question; the
    owner had already answered it, so it is now the measurement).
