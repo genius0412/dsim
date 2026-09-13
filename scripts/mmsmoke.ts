@@ -106,6 +106,29 @@ const namesOf = (m: PendingMatch | undefined): string =>
   check('allianceOrder: no parties ⇒ FIFO untouched', allianceOrder(g) === g);
 }
 
+// ---- a staging write that FAILS must not swallow the pairing ----------------
+// `tryMatch` takes the group out of the queue synchronously and stages it asynchronously.
+// When the stage rejected, the entries were simply gone: nobody was in the pool, nobody had
+// a room, and both players sat on a search screen that could never end.
+{
+  const mm = new Matchmaker({ now: () => 0, stage: async () => { throw new Error('db down'); } });
+  mm.enqueue(entry('a', '1v1'));
+  mm.enqueue(entry('b', '1v1'));
+  await new Promise((r) => setTimeout(r, 0));
+  check('stage failure: both players are back in the queue, still searching',
+    mm.queueSizes()['1v1'] === 2, String(mm.queueSizes()['1v1']));
+
+  // ...but somebody who LEFT while the write was in flight stays gone — restoring them
+  // would mint exactly the ghost entry this is meant to prevent.
+  const mm2 = new Matchmaker({ now: () => 0, stage: async () => { throw new Error('db down'); } });
+  mm2.enqueue(entry('c', '1v1'));
+  mm2.enqueue(entry('d', '1v1'));
+  mm2.remove('c'); // the pairing is already in flight — this is the cancel/close path
+  await new Promise((r) => setTimeout(r, 0));
+  check('stage failure: a player who left mid-stage is NOT resurrected',
+    mm2.queueSizes()['1v1'] === 1, String(mm2.queueSizes()['1v1']));
+}
+
 // ---- open queue: the pre-existing behaviour must not have moved -------------
 {
   const { staged } = await pair([entry('a', '1v1')]);
