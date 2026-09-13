@@ -12,6 +12,7 @@ import {
   BB_POLLEN_R,
   bbHopperCap,
 } from './config';
+import { otherSide } from './hive';
 import { bbIntakeAccepts } from './mechs';
 import { rectContains, type BbCellSide, type LocalRect, type ScoreTarget, type Vec3 } from './state';
 
@@ -198,15 +199,34 @@ const CELL_AIM_Z = (BB_HIVE_OPEN_Z[0] + BB_HIVE_OPEN_Z[1]) / 2;
  */
 const CELL_ACCEPT_R = 8;
 
-/** the CELL of `a`'s HIVE that currently faces UP — `world.biobuzz.hives[a].up`, the state the
- * tip machine will drive, so aim follows a real TIP the day tipping lands with no edit here.
+/**
+ * The CELL of `a`'s HIVE that a launcher should be POINTED AT.
+ *
+ * Settled, that is the one facing up — `world.biobuzz.hives[a].up`.
+ *
+ * ⚠️ THROUGH A SWING IT IS THE INCOMING CELL, FROM THE FIRST TICK OF THE TIP (owner feedback,
+ * 2026-09-12). `up` goes on naming the tray that is going DOWN until the swing settles, so a
+ * target list built off `up` held every turret on the emptying cell for four seconds and then
+ * snapped across the pivot at the settle — which is the opposite of tracking. A TIP is a
+ * four-second announcement that the target is moving, and the aim should start moving with it
+ * immediately; by the time the bar is level the turret is already on the cell that will be
+ * taking elements.
+ *
+ * AIM IS NOT CAPTURE, and the two answers are deliberately different for the first half of the
+ * swing: `hiveTakingSide` (`hive.ts`) still says `up` until the release, because a shot already
+ * in the air belongs to the tray that is still holding its load. So a volley in flight lands in
+ * the old cell while the turret is already slewing to the new one, and AUTO-FIRE holds the gap
+ * (`bbCellTaking`, `play.ts`) until the release hands over.
  *
  * `world.biobuzz` is optional on `World` (it is absent in a DECODE or Chain Reaction world),
  * and the STAGED pose is the fallback for that one case rather than a `!`: a missing bag means
  * the caller is not in a BIOBUZZ match at all, and the field's own t = 0 tilt (§10.3.1
- * Fig 10-2) is the only honest answer to "which cell is up" when there is no match to ask. */
-function upCell(world: World, a: Alliance): BbCellSide {
-  return world.biobuzz?.hives[a].up ?? BB_HIVE_UP_STAGED[a];
+ * Fig 10-2) is the only honest answer to "which cell is up" when there is no match to ask.
+ */
+function aimCell(world: World, a: Alliance): BbCellSide {
+  const hive = world.biobuzz?.hives[a];
+  if (!hive) return BB_HIVE_UP_STAGED[a];
+  return hive.tipping > 0 ? otherSide(hive.up) : hive.up;
 }
 
 /**
@@ -255,10 +275,10 @@ export function scoreTargets(world: World, a: Alliance): ScoreTarget[] {
   // THE CELL'S MOUTH IS ITS TILT DIRECTION. Both CELLS sit on the same pivot, offset along y
   // by ±`BB_HIVE_CELL_DY`, and the one facing UP opens AWAY from that pivot — the see-saw has
   // lifted its far end, so the opening looks back down the +y or −y the cell was raised along.
-  // It is the SAME sign as the cell's own offset, which is why this reads off `upCell` once
+  // It is the SAME sign as the cell's own offset, which is why this reads off `aimCell` once
   // and uses it for both the position and the direction: they cannot disagree.
   const cell = (owner: Alliance): ScoreTarget => {
-    const s = upCell(world, owner) === 'south' ? -1 : 1;
+    const s = aimCell(world, owner) === 'south' ? -1 : 1;
     return {
       id: `hive:${owner}`,
       alliance: owner,

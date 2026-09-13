@@ -26,7 +26,7 @@ import {
   bbStorageMax,
 } from '../../src/games/biobuzz/config';
 import { capturePollen, pollenIn, releasePollen, scoreTargets, takeHeld } from '../../src/games/biobuzz/elements';
-import type { ScoreTarget } from '../../src/games/biobuzz/state';
+import type { BbHiveState, ScoreTarget } from '../../src/games/biobuzz/state';
 import {
   BB_INTAKE_MOUNTS,
   BB_MOUNT_POSITIONS,
@@ -1094,21 +1094,38 @@ export function robotChecks(check: Check): void {
       `hopper=${r.hopper.length} cell ${in0}→${w.biobuzz!.hives.blue.contents.length}`,
     );
   }
-  /** AUTO-FIRE HOLDS while its own cell is mid-swing (nothing can enter a moving HIVE). Paired
-   * with the same scene unswung, so the hold is not just a turret that had not settled yet. */
+  /**
+   * AUTO-FIRE THROUGH A SWING: HOLD, THEN RESUME AT THE RELEASE (owner feedback, 2026-09-12).
+   *
+   * It holds in the FIRST half — the tray taking elements there is the one about to empty, so a
+   * shot into it lands on the floor two seconds later — and fires again in the SECOND, because
+   * the release hands the opening to the incoming cell the turret has been tracking since the
+   * tip started. Three scenes, because each alone is ambiguous: unswung proves the turret CAN
+   * fire here, pre-release proves the hold is the swing and not an unsettled turret, and
+   * post-release proves the hold ends at the release rather than at the settle.
+   */
   {
-    const scene = (swing: boolean): number => {
+    const scene = (hive: Partial<BbHiveState> | null): number => {
       const w = mkWorld('free', 89, mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }));
       const r = w.robots[0];
       r.autoFire = true;
       park(r, 12, 50, Math.PI);
-      if (swing) w.biobuzz!.hives.blue = { ...w.biobuzz!.hives.blue, tipping: 1.0, released: false };
+      if (hive) w.biobuzz!.hives.blue = { ...w.biobuzz!.hives.blue, ...hive };
       run(w, cmd({}), 0.9);
       return r.hopper.length;
     };
-    const held = scene(true);
-    const free = scene(false);
+    const held = scene({ tipping: 1.0, released: false });
+    const free = scene(null);
+    // POST-RELEASE, staged so the INCOMING cell is the north one the robot is parked in front
+    // of: `up` still names the south tray that just emptied, and the opening the robot can
+    // reach is the one coming up.
+    const after = scene({ up: 'south', contents: [], tipping: 1.0, released: true });
     check('autofire: holds its load while the own cell is mid-swing (and fires in the same scene unswung)', held === 4 && free < 4, `swinging hopper=${held}, settled hopper=${free}`);
+    check(
+      'autofire: RESUMES at the release, on the incoming cell — it does not wait for the settle',
+      after < 4,
+      `post-release hopper=${after} (pre-release ${held}, settled ${free})`,
+    );
   }
   /**
    * A STEADY FEED NEVER THROWS INTO A CELL THAT IS ABOUT TO TIP. "On target" used to be the
