@@ -1,4 +1,4 @@
-import type { Alliance, Artifact, RobotCommand, RobotSpec, World } from '../../src/types';
+import type { Alliance, Artifact, RobotCommand, RobotSpec, StartPose, World } from '../../src/types';
 import * as C from '../../src/config';
 import { worldHash } from '../../src/net/checksum';
 import { slimWorld, unslimWorld } from '../../src/net/protocol';
@@ -68,10 +68,14 @@ import {
 import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
 import { createBiobuzzWorld, stageBiobuzz } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
-import { scoreTargets } from '../../src/games/biobuzz/elements';
+import { evalStart, scoreTargets } from '../../src/games/biobuzz/elements';
 import type { ScoreTarget } from '../../src/games/biobuzz/state';
 import { updateBiobuzz } from '../../src/games/biobuzz/play';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
+import { bbEvalStart, bbSnapStart, bbStartBox } from '../../src/games/biobuzz/start';
+import { BB_INTAKE_MOUNTS } from '../../src/games/biobuzz/mounts';
+import { bbSizeLimits } from '../../src/games/biobuzz/config';
+import { bbCoerceSpec } from '../../src/games/biobuzz/robotConfig';
 import { BB_IDLE, BB_SCENES, bbPollen, bbSceneAt, bbSceneStills, type Scene } from '../../src/games/biobuzz/scenes';
 import { bbRobotSolids } from '../../src/games/biobuzz/robot';
 import { robotPenetration } from '../../src/sim/artifactSolids';
@@ -207,7 +211,12 @@ export function fieldChecks(check: Check): void {
     // Flipped 2026-09-12 (kickoff evening) once score.ts covered Table 10-2. Alpha-only via
     // `channels`, so what persists lands on an alpha board nobody competes on yet.
     check('registry: BIOBUZZ declares scored:true (Table 10-2 is live; persists per game)', mod.scored === true);
-    check('registry: BIOBUZZ declares startLegality:false (no published G304 analogue)', mod.startLegality === false);
+    // STILL FALSE, and no longer for want of a rule: `bbEvalStart` assesses G304 and both the
+    // spawner and the lane contract call it. What the flag turns on is `server/room.ts`'s
+    // `activeStartLegal`, which is DECODE's `evalStartPose` and is not game-dispatched -- so
+    // flipping it judges a BIOBUZZ pose against DECODE's launch lines and refuses every legal
+    // start on this field. The flag moves when that gate learns to ask the module.
+    check('registry: BIOBUZZ declares startLegality:false (the server gate is DECODE-only)', mod.startLegality === false);
     check(
       'registry: bounds are the 144x144 field',
       mod.bounds.halfX === BB_HALF_X && mod.bounds.halfY === BB_HALF_Y,
@@ -270,11 +279,13 @@ export function fieldChecks(check: Check): void {
    * A robot spawned at any anchor, in either alliance, must be fully inside `bounds` BEFORE
    * anything steps.
    *
-   * The anchors are hand-placed APPROX numbers (there is no published BIOBUZZ start geometry —
-   * `startLegality: false`), and an anchor an inch too far out spawns a robot intersecting the
-   * wall, which Rapier then resolves by shoving it — so the match begins with four robots
-   * sliding. This is the cheapest possible guard on a number a human typed, and it is checked
-   * on the FOOTPRINT, so an anchor that fits a bare chassis but not its sweeper fails here.
+   * CONTAINMENT ONLY, and that is why it survives the G304 block below rather than being
+   * folded into it: G304.A's own note is about overhanging the perimeter, but this asks the
+   * question of the SPAWNED robot — after the mirror, the snap and `bbFitPose` — where the
+   * rule block asks it of a pose. An anchor an inch too far out spawns a robot intersecting
+   * the wall, which Rapier resolves by shoving it, so the match begins with four robots
+   * sliding. Checked on the FOOTPRINT, so an anchor that fits a bare chassis but not its
+   * sweeper fails here.
    */
   {
     const w = createBiobuzzWorld('match', 4, [
@@ -351,59 +362,184 @@ export function fieldChecks(check: Check): void {
     );
   }
 
-  // -- THE ANCHORS ARE LEGAL AS WRITTEN -------------------------------------
+  // -- G304: THE EVALUATOR, AND THE ANCHORS AGAINST IT ----------------------
   /**
-   * `BB_START_POSES` SATISFIES G304 WITHOUT REPAIR.
+   * `bbEvalStart` IS THE RULE AND `BB_START_POSES` IS MEASURED AGAINST IT.
    *
-   * `bbSnapStart` was carrying these: the old pair stopped 2 in short of the wall and the
-   * BOTTOM one sat inside `BB_LZ.blue`, so the anchor a builder places, the anchor the
-   * selector labels TOP/BOTTOM, and the pose the robot got were three different things. The
-   * repair still exists -- the seating is spec-dependent and a deep sweeper still needs it --
-   * but it must now have nothing to move.
+   * G304 (manual-distilled S6.2) asks a start pose for four things a pose can answer: fully on
+   * the alliance's own side (A), TOUCHING the perimeter wall (C), clear of every FLOWER foot
+   * and scoring volume (D), NOT in the LOADING ZONE (E). C and E fight -- the LOADING ZONE is
+   * itself against the perimeter -- so the legal frontage is a short list of stretches on
+   * three walls, and the anchors moved onto the rear and audience ones because the alliance's
+   * own SIDE wall is the one its zone eats.
    *
-   * MEASURED AS DISPLACEMENT, not as "is the result legal": the spawned pose was already legal
-   * before this change, which is exactly why the bad anchors survived so long. What is asserted
-   * is that spawning MOVED the anchor by less than `WALL_SEAT` and a hair -- the 0.01 in
-   * float-tangency seat is the only correction left, and any real repair is orders above it.
+   * THREE THINGS ARE ASSERTED, and they are deliberately different questions:
+   *   1. the DEFAULT build's anchors are legal AS WRITTEN, unsnapped. An anchor a builder
+   *      reads, an anchor the selector labels, and the pose a robot gets must be one thing.
+   *   2. EVERY anchor is legal at EVERY legal chassis, after `bbSnapStart`. The seat is
+   *      spec-dependent by nature (a deeper sweeper reaches further), so the snap is what
+   *      makes the anchor a NAMED SEAT rather than a coordinate that happens to suit one
+   *      build -- and it must find a legal seat for all of them, not merely most.
+   *   3. each clause REFUSES its own violation. A rule that never says no is not a rule, and
+   *      three of these four clauses are the ones a pose can plausibly break by accident.
    */
   {
-    const SEAT_TOL = 0.05; // WALL_SEAT is 0.01; anything larger is a genuine repair
-    const w = createBiobuzzWorld('match', 13, [
-      setup(0, 'blue', {}, 0),
-      setup(1, 'blue', {}, 1),
-      setup(2, 'red', {}, 0),
-      setup(3, 'red', {}, 1),
-    ]);
+    // THE LEGAL CHASSIS ENVELOPE, built the way the builder builds it: every intake preset x
+    // every mount, at the CORNERS of the per-mount size envelope `bbSizeLimits` publishes.
+    // Corners rather than a grid because both extents enter the footprint linearly, so the
+    // worst rotated AABB is always at a corner of (length, width).
+    const specs: RobotSpec[] = [];
+    for (const intake of ['sloped', 'vector', 'triangle'] as const) {
+      for (const intakeMount of BB_INTAKE_MOUNTS) {
+        const lim = bbSizeLimits({ ...BB_DEFAULT_SPEC, intake, intakeMount });
+        for (const length of [lim.minLength, lim.maxLength]) {
+          for (const width of [lim.minWidth, lim.maxWidth]) {
+            specs.push(bbCoerceSpec({ ...BB_DEFAULT_SPEC, intake, intakeMount, length, width }));
+          }
+        }
+      }
+    }
+    check('G304: the chassis sweep covers every preset x mount at both size extremes', specs.length === 48, `${specs.length} specs`);
+
+    /** the anchor as `spawn.ts` resolves it for `a`, in the shared `StartPose` degrees: the
+     * canonical BLUE anchor, point-mirrored for red, and nothing else. Deliberately NOT read
+     * off a spawned robot -- this has to be able to fail while spawning still repairs it. */
+    const anchorPose = (i: number, a: Alliance): StartPose => {
+      const p = BB_START_POSES[i];
+      const m = a === 'blue' ? { x: p.pos.x, y: p.pos.y, heading: p.heading } : bbMirror({ x: p.pos.x, y: p.pos.y, heading: p.heading });
+      return { x: m.x, y: m.y, headingDeg: ((m.heading ?? p.heading) * 180) / Math.PI };
+    };
+
+    // 1. THE DEFAULT BUILD'S ANCHORS NEED NO REPAIR.
+    for (const a of ['blue', 'red'] as const) {
+      for (let i = 0; i < BB_START_POSES.length; i++) {
+        const pose = anchorPose(i, a);
+        const v = bbEvalStart(BB_DEFAULT_SPEC, pose, a);
+        check(
+          `G304: ${a} anchor ${i} (${BB_START_POSES[i].name}) is legal as written on the default chassis`,
+          v.legal,
+          v.reason ?? `pos=(${pose.x},${pose.y}) heading=${pose.headingDeg.toFixed(0)}deg`,
+        );
+        const snapped = bbSnapStart(BB_DEFAULT_SPEC, pose, a);
+        check(
+          `G304: ${a} anchor ${i} is returned by the snap byte for byte`,
+          snapped.x === pose.x && snapped.y === pose.y && snapped.headingDeg === pose.headingDeg,
+          `got=(${snapped.x.toFixed(3)},${snapped.y.toFixed(3)})`,
+        );
+      }
+    }
+
+    // 2. EVERY ANCHOR, EVERY CHASSIS, AFTER THE SNAP. One check per (alliance, anchor) over
+    // the whole sweep rather than 192 lines of PASS: the interesting output is the first
+    // build that fails and what it failed on.
+    for (const a of ['blue', 'red'] as const) {
+      for (let i = 0; i < BB_START_POSES.length; i++) {
+        const pose = anchorPose(i, a);
+        let bad: string | null = null;
+        let worstWall = Infinity;
+        for (const spec of specs) {
+          const seated = bbSnapStart(spec, pose, a);
+          const v = bbEvalStart(spec, seated, a);
+          if (!v.legal && bad === null) bad = `${spec.intake}/${spec.intakeMount} ${spec.length}x${spec.width}: ${v.reason}`;
+          const b = bbStartBox(spec, seated);
+          // how far the seated footprint is off the nearest wall -- the slack G304.C spends,
+          // reported so a snap that started merely scraping through is visible before it fails
+          worstWall = Math.min(
+            worstWall,
+            Math.min(b.x0 + BB_HALF_X, BB_HALF_X - b.x1, b.y0 + BB_HALF_Y, BB_HALF_Y - b.y1),
+          );
+        }
+        check(
+          `G304: ${a} anchor ${i} seats legally on every legal chassis (${specs.length} builds)`,
+          bad === null,
+          bad ?? `worst wall gap ${worstWall.toFixed(3)}" (tol ${C.START_TOUCH_TOL})`,
+        );
+      }
+    }
+
+    // 3. EACH CLAUSE REFUSES ITS OWN VIOLATION, and the snap repairs each refusal.
+    //
+    // Every pose below is built for BLUE and seated by hand against the wall the clause is
+    // about, so exactly ONE clause fails and `reason` names it -- a pose that broke two would
+    // pass a "returns false" check while proving nothing about the clause it was written for.
     const e = bbFootprint(BB_DEFAULT_SPEC);
-    const half = (e.front + e.rear) / 2;
-    for (const r of w.robots) {
-      const i = r.id % BB_START_POSES.length;
-      const raw = BB_START_POSES[i].pos;
-      // RED is the POINT mirror, the same one `spawn.ts` applies -- an x-mirror here would
-      // "pass" against a red robot standing at blue's y.
-      const want = r.alliance === 'blue' ? raw : { x: -raw.x, y: -raw.y };
-      const moved = Math.hypot(r.pos.x - want.x, r.pos.y - want.y);
+    const lz = BB_LZ.blue;
+    const probe = { contained: 0, ownSide: 0, touching: 0, clearFlower: 0, outOfLZ: 0 };
+    const cases: { name: string; pose: StartPose; want: keyof typeof probe }[] = [];
+    // E -- dead centre of blue's LOADING ZONE, against the side wall it backs onto. Heading
+    // 180 puts the footprint's half-length along x, which is how a robot actually sits there.
+    cases.push({
+      name: 'in the LOADING ZONE (G304.E)',
+      pose: { x: BB_HALF_X - (e.front + e.rear) / 2, y: (lz.y0 + lz.y1) / 2, headingDeg: 180 },
+      want: 'outOfLZ',
+    });
+    // D -- against the same side wall, at F3's y. F3 stands on +x at y = 24, so a robot seated
+    // there is in its foot and its scoring volume.
+    cases.push({
+      name: 'touching a FLOWER (G304.D)',
+      pose: { x: BB_HALF_X - (e.front + e.rear) / 2, y: BB_FLOWERS[2].y, headingDeg: 180 },
+      want: 'clearFlower',
+    });
+    // C -- open floor on blue's own half. NOT the field centre, which is the obvious choice
+    // and the wrong one: a footprint straddling x = 0 is on neither side, so clause A fails
+    // first and the check would pass while proving nothing about C.
+    cases.push({ name: 'off the wall (G304.C)', pose: { x: 36, y: 0, headingDeg: 180 }, want: 'touching' });
+    // A -- blue seated on RED's own anchor 1. Legal for red, which is the point: the only
+    // thing wrong with it is whose side it is on.
+    cases.push({ name: "on the opponent's side (G304.A)", pose: { x: -46, y: 61.5, headingDeg: -90 }, want: 'ownSide' });
+
+    for (const c of cases) {
+      const v = bbEvalStart(BB_DEFAULT_SPEC, c.pose, 'blue');
       check(
-        `anchors: ${r.alliance} anchor ${i} spawns where it is written, unsnapped`,
-        moved < SEAT_TOL,
-        `moved=${moved.toFixed(3)}" want=(${want.x},${want.y}) got=(${r.pos.x.toFixed(2)},${r.pos.y.toFixed(2)})`,
+        `G304: a pose ${c.name} is refused, and for that clause`,
+        !v.legal && v[c.want] === false && Object.keys(probe).every((k) => k === c.want || v[k as keyof typeof probe] === true),
+        `reason=${v.reason} · ${Object.keys(probe).map((k) => `${k}=${v[k as keyof typeof probe]}`).join(' ')}`,
       );
-      // AND IT IS LEGAL: touching its own side wall, and clear of its own LOADING ZONE. Both
-      // are read off the RAW anchor, not off the spawned pose, so the check cannot be
-      // satisfied by the repair it exists to make unnecessary.
-      const b = {
-        x0: want.x - half, x1: want.x + half,
-        y0: want.y - e.half, y1: want.y + e.half,
-      };
-      const gap = BB_HALF_X - Math.max(Math.abs(b.x0), Math.abs(b.x1));
-      const z = BB_LZ[r.alliance];
-      const inLz = b.x1 > z.x0 && b.x0 < z.x1 && b.y1 > z.y0 && b.y0 < z.y1;
-      const ownSide = r.alliance === 'red' ? b.x1 < 0 : b.x0 > 0;
+      const fixed = bbSnapStart(BB_DEFAULT_SPEC, c.pose, 'blue');
+      const fv = bbEvalStart(BB_DEFAULT_SPEC, fixed, 'blue');
       check(
-        `anchors: ${r.alliance} anchor ${i} contacts its own wall, on its own side, outside its LOADING ZONE`,
-        gap >= 0 && gap <= C.START_TOUCH_TOL && !inLz && ownSide,
-        `wall gap=${gap.toFixed(2)}" (tol ${C.START_TOUCH_TOL}) · inLZ=${inLz} · ownSide=${ownSide}`,
+        `G304: the snap repairs a pose ${c.name}`,
+        fv.legal,
+        `${fv.reason ?? 'legal'} at (${fixed.x.toFixed(1)},${fixed.y.toFixed(1)})`,
       );
+    }
+
+    // THE LANE CONTRACT'S FACE OF IT. `elements.ts`'s `evalStart` is what Lane B calls, and it
+    // used to be a stub that said yes to everything; a delegation that silently reverted would
+    // be invisible from inside `start.ts`, where every check above lives.
+    {
+      const bad = cases[0].pose;
+      const viaContract = evalStart(BB_DEFAULT_SPEC, 'blue', bad);
+      const viaRule = bbEvalStart(BB_DEFAULT_SPEC, bad, 'blue');
+      check(
+        'G304: the lane contract `evalStart` is `bbEvalStart`, not a stub',
+        viaContract.legal === viaRule.legal && viaContract.reason === viaRule.reason,
+        `contract=${JSON.stringify(viaContract)}`,
+      );
+    }
+
+    // AND THE SPAWNER ACTUALLY USES IT. Everything above is the rule in isolation; this is the
+    // four robots a match really starts with, measured through `createBiobuzzWorld`.
+    {
+      const w = createBiobuzzWorld('match', 13, [
+        setup(0, 'blue', {}, 0),
+        setup(1, 'blue', {}, 1),
+        setup(2, 'red', {}, 0),
+        setup(3, 'red', {}, 1),
+      ]);
+      for (const r of w.robots) {
+        const v = bbEvalStart(r.spec, { x: r.pos.x, y: r.pos.y, headingDeg: (r.heading * 180) / Math.PI }, r.alliance);
+        check(
+          `G304: spawned robot ${r.id} (${r.alliance}) starts on a legal pose`,
+          v.legal,
+          v.reason ?? `pos=(${r.pos.x.toFixed(2)},${r.pos.y.toFixed(2)})`,
+        );
+      }
+      // The two anchors are at opposite ends of the field on purpose: two robots of one
+      // alliance must not be able to reach each other at the buzzer.
+      const blue = w.robots.filter((r) => r.alliance === 'blue');
+      const apart = Math.hypot(blue[0].pos.x - blue[1].pos.x, blue[0].pos.y - blue[1].pos.y);
+      check('G304: an alliance’s two anchors are far apart', apart > 100, `apart=${apart.toFixed(1)}"`);
     }
   }
 

@@ -21,9 +21,9 @@ import {
   BB_LZ,
   BB_POLLEN_R,
   BB_TAPE_1,
+  FLOWER_MOUTH,
   type BbRect,
 } from './config';
-import { FLOWER_MOUTH } from './elements';
 import { BB_TIP_SWING_S } from './hive';
 
 /**

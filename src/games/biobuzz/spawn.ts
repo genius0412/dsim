@@ -29,7 +29,6 @@ import {
   BB_HIVE_CELL_DY,
   BB_HIVE_OPEN_Z,
   BB_HIVE_X,
-  BB_LZ,
   BB_NECTAR_R,
   BB_POLLEN_R,
   BB_START_POSES,
@@ -40,6 +39,7 @@ import { capturePollen } from './elements';
 import { flowerStackZ } from './flower';
 import { bbCoerceSpec } from './robotConfig';
 import { bbFootprint } from './robot';
+import { bbSnapStart } from './start';
 import { emptyBiobuzzState, type BiobuzzState } from './state';
 import { isTurreted, type BbScoreMode } from './mounts';
 
@@ -160,90 +160,6 @@ function bbFitPose(spec: RobotSpec, pose: Pose): Pose {
   };
 }
 
-/** how far inside the perimeter a start pose is seated (in). See `bbSnapStart` step 1. */
-const WALL_SEAT = 0.01;
-
-/** the rotated footprint of `spec` at `heading`, as the axis-aligned half-extents `ax`/`ay`
- * plus `off`, the fore-and-aft offset from the robot's origin to the footprint's own centre
- * (non-zero whenever a front-only sweeper makes the chassis asymmetric). Shared by the fit,
- * the wall snap and the LOADING ZONE slide so all three measure the same rectangle. */
-function bbExtents(spec: RobotSpec, heading: number): { ax: number; ay: number; off: number } {
-  const e = bbFootprint(spec);
-  const c = dcos(heading);
-  const sn = dsin(heading);
-  const half = (e.front + e.rear) / 2;
-  return {
-    ax: Math.abs(half * c) + Math.abs(e.half * sn),
-    ay: Math.abs(half * sn) + Math.abs(e.half * c),
-    off: (e.front - e.rear) / 2,
-  };
-}
-
-/**
- * SNAP A POSE TO G304 — the three start conditions this file can actually enforce.
- *
- * G304 says a ROBOT starts fully on its own side, CONTACTING the perimeter wall, and NOT in a
- * LOADING ZONE. (It says more — starting configuration, motionless, contacting exactly 4
- * POLLEN — but those are the spec's and the staging's job, not the pose's.) The anchors in
- * `BB_START_POSES` are hand-placed `APPROX` numbers from before the V1 ARENA published, so
- * rather than trusting them this derives the legal pose from the RULE:
- *
- * 1. BACK TO THE WALL. The alliance's own side wall — −x for red, +x for blue — with the
- *    footprint touching it exactly. "Touching" is the fit clamp's own limit, so a pose that
- *    was already against the wall does not move.
- * 2. OUT OF THE LOADING ZONE. If the footprint still overlaps the alliance's own zone, it
- *    slides ALONG the wall (in y) to the nearer clear side. Sliding rather than rejecting
- *    keeps the anchor's intent — the robot stays against its wall, where the driver put it.
- *    Both directions are considered and only the ones that still fit inside the field are
- *    kept; the tie (an anchor dead-centre in the zone, which is exactly where the pre-V1
- *    anchors sit) breaks toward the FIELD CENTRE, so the choice is deterministic and both
- *    alliances resolve it the same way under the point mirror.
- *
- * The zone test is the footprint's AABB against the zone rect, which is conservative: a
- * rotated chassis whose corner only just clears is still pushed out. A start pose that is
- * arguably legal and looks illegal is worse than one that is plainly legal.
- */
-function bbSnapStart(spec: RobotSpec, alliance: Alliance, pose: Pose): Pose {
-  const { ax, ay, off } = bbExtents(spec, pose.heading);
-  const c = dcos(pose.heading);
-  const sn = dsin(pose.heading);
-
-  // 1. against the alliance's own side wall, less a hair.
-  //
-  // A body cannot be both EXACTLY tangent to the wall and provably inside it: the tangent
-  // pose is one float comparison away from "spawned intersecting the perimeter", and which
-  // way it falls depends on whether the reader recomputed the rotated half-extent with the
-  // same trig this did. `WALL_SEAT` is a hundredth of an inch — two orders of magnitude below
-  // anything measurable and far under the shared `START_TOUCH_TOL` (1.25 in) that the sim
-  // assesses wall CONTACT with, so the robot is still touching by every rule that reads it
-  // while being unambiguously inside the field by every rule that reads THAT.
-  const side = alliance === 'red' ? -1 : 1;
-  const cx = side * Math.max(0, BB_HALF_X - ax - WALL_SEAT);
-
-  // 2. clear of the alliance's own LOADING ZONE
-  const z = BB_LZ[alliance];
-  const limY = Math.max(0, BB_HALF_Y - ay);
-  let cy = clamp(pose.pos.y + off * sn, -limY, limY);
-  const overlaps = (y: number): boolean =>
-    cx + ax > z.x0 && cx - ax < z.x1 && y + ay > z.y0 && y - ay < z.y1;
-  if (overlaps(cy)) {
-    // clear the edge by the shared START_TOUCH_TOL rather than landing exactly tangent to it.
-    // Snapping to the boundary makes "is the robot in the zone" a comparison of two floats
-    // that are equal by construction, and every reader of it — this file, the smoke check,
-    // a future G304 assessor — would be free to disagree in the last bit.
-    const candidates = [z.y1 + ay + C.START_TOUCH_TOL, z.y0 - ay - C.START_TOUCH_TOL]
-      .map((y) => clamp(y, -limY, limY))
-      .filter((y) => !overlaps(y))
-      .sort((p, q) => Math.abs(p - cy) - Math.abs(q - cy) || Math.abs(p) - Math.abs(q));
-    // a footprint that cannot clear the zone anywhere on this wall keeps its clamped y: the
-    // fallback is unreachable on a 144 in field with an 18 in cube, and silently returning a
-    // pose outside the perimeter would be worse than returning a legal-ish one inside it
-    if (candidates.length) cy = candidates[0];
-  }
-
-  return { pos: { x: cx - off * c, y: cy - off * sn }, heading: pose.heading };
-}
-
 /**
  * A robot's start pose. The named `BB_START_POSES` anchors are CANONICAL for BLUE; RED is the
  * POINT MIRROR of them, and the mirror is applied HERE and nowhere else so no other file has
@@ -260,13 +176,15 @@ function bbSnapStart(spec: RobotSpec, alliance: Alliance, pose: Pose): Pose {
  * A CUSTOM pose wins over the anchor index (the same contract DECODE uses) and is stored in
  * the canonical blue frame, so it is mirrored on the same path.
  *
- * ONLY THE ANCHORS ARE SNAPPED TO G304. `bbSnapStart` exists because `BB_START_POSES` are
- * hand-placed pre-V1 `APPROX` numbers that sit inside the LOADING ZONE band; a CUSTOM pose is
- * a deliberate placement — a scene author's, a driver's, a replay's — and a spawner that
- * dragged it to the nearest wall would make "put the robot under the HIVE" or "put the robot
- * 18 in off a FRAME leg" impossible to express. DECODE does not do it either (`coerceStartPose`
- * clamps to the field and nothing more), and BIOBUZZ publishes `startLegality: false`, so
- * nothing here claims to enforce G304 on a pose someone asked for by name.
+ * ONLY THE ANCHORS ARE SNAPPED TO G304 (`bbSnapStart`, `./start`). An anchor is a NAMED SEAT
+ * — "against the rear wall, facing the FIELD" — and the exact inch it lands on depends on the
+ * chassis, so re-seating it per build is what the name means rather than a repair of a wrong
+ * number. A CUSTOM pose is the opposite: a deliberate placement by a scene author, a driver or
+ * a replay, and a spawner that dragged it to the nearest legal wall would make "put the robot
+ * under the HIVE" or "put the robot 18 in off a FRAME leg" impossible to express. DECODE does
+ * not do it either (`coerceStartPose` clamps to the field and nothing more), and BIOBUZZ
+ * publishes `startLegality: false`, so nothing here claims to enforce G304 on a pose someone
+ * asked for by name — `bbEvalStart` is available to anything that wants to ASK.
  *
  * Both paths are still fitted inside the perimeter (`bbFitPose`) — containment is not a rule
  * from the manual, it is what makes the pose representable at all.
@@ -281,7 +199,19 @@ function bbStartPose(spec: RobotSpec, alliance: Alliance, index: number, custom?
       })();
   const m = alliance === 'blue' ? { ...base.pos, heading: base.heading } : bbMirror({ ...base.pos, heading: base.heading });
   const actual: Pose = { pos: { x: m.x, y: m.y }, heading: wrapAngle(m.heading ?? base.heading) };
-  return bbFitPose(spec, custom ? actual : bbSnapStart(spec, alliance, actual));
+  if (custom) return bbFitPose(spec, actual);
+  // `bbSnapStart` speaks `StartPose` (degrees), which is what every other start surface in the
+  // repo speaks — the editor, `coerceStartPose`, DECODE's `evalStartPose`. The radians are this
+  // spawner's own internal `Pose`, so the conversion belongs HERE and not in the rule file.
+  const snapped = bbSnapStart(
+    spec,
+    { x: actual.pos.x, y: actual.pos.y, headingDeg: (actual.heading * 180) / Math.PI },
+    alliance,
+  );
+  return bbFitPose(spec, {
+    pos: { x: snapped.x, y: snapped.y },
+    heading: wrapAngle((snapped.headingDeg * Math.PI) / 180),
+  });
 }
 
 /** the shared goal state, present and INERT. BIOBUZZ has no goal — Section 9 lands at
