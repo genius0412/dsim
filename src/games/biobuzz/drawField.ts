@@ -1,5 +1,6 @@
 import type { Alliance, Artifact, ArtifactColor, Vec2, World } from '../../types';
 import * as C from '../../config';
+import { dcos, dsin } from '../../math';
 import {
   BB_FLOWERS,
   BB_FLOWER_D,
@@ -15,6 +16,7 @@ import {
   BB_HIVE_CELL_LEN,
   BB_HIVE_LEN,
   BB_HIVE_TAGS,
+  BB_HIVE_TILT_DEG,
   BB_HIVE_UP_STAGED,
   BB_HIVE_W,
   BB_HIVE_X,
@@ -263,17 +265,50 @@ function tileCentre(i: number): number {
 
 /**
  * the drawn y-extent of one CELL. `side` is +1 for the north cell (y > 0) and −1 for the south
- * one, and THAT IS THE ONLY ARGUMENT — there is no per-cell length factor.
+ * one; `proj` is the SWING's foreshortening factor (`tipProjection`), 1 at either stable end.
  *
- * Both cells are `BB_HIVE_CELL_LEN` long centred `BB_HIVE_CELL_DY` from the pivot, because
- * both numbers are ALREADY the plan projection of one rigid bar at 30° (reference §2.2): the
- * cell spans 8.16 to 18.58 from the pivot whichever end is up. Foreshortening one of the two
- * would draw a see-saw that changes length as it tips.
+ * There is still no PER-CELL length factor, and that is the invariant: both cells are
+ * `BB_HIVE_CELL_LEN` long centred `BB_HIVE_CELL_DY` from the pivot, because both numbers are
+ * ALREADY the plan projection of one rigid bar at 30° (reference §2.2). Foreshortening ONE of
+ * the two would draw a see-saw that bends. `proj` scales BOTH, which is what a rigid bar
+ * changing its tilt actually does to a plan view — see `tipProjection`.
  */
-function cellSpan(side: number): { y0: number; y1: number } {
-  const c = side * BB_HIVE_CELL_DY;
-  const h = BB_HIVE_CELL_LEN / 2;
+function cellSpan(side: number, proj = 1): { y0: number; y1: number } {
+  const c = side * BB_HIVE_CELL_DY * proj;
+  const h = (BB_HIVE_CELL_LEN * proj) / 2;
   return { y0: Math.min(c - h, c + h), y1: Math.max(c - h, c + h) };
+}
+
+/**
+ * THE SWING, AS THE PLAN VIEW ACTUALLY SEES IT (owner feedback, 2026-09-12).
+ *
+ * `tipping` is SECONDS LEFT in the swing (`state.ts`). This turns it into the two numbers the
+ * renderer needs, both derived from ONE angle so they cannot disagree:
+ *
+ *  • `proj` — the FORESHORTENING. Every plan length on the HIVE is a true length times
+ *    cos 30°, so at tilt θ it is the true length times cos θ, i.e. the drawn length scales by
+ *    `cos θ / cos 30°`. That runs 1 → 1.155 → 1 across the swing: the assembly REACHES OUT as
+ *    it comes level and draws back in as it settles the other way. It is small, and it is the
+ *    only honest motion a top-down camera has — but it is motion, and it is what makes a TIP
+ *    read as a swing rather than as a state that changed while you were looking away.
+ *
+ *  • `up` — how HIGH the currently-`up` cell is, 1 at its stable top and 0 at the bottom,
+ *    taken as its own height `sin θ` normalised over the ±30° travel. Not a linear ramp: a bar
+ *    rocking at a steady rate moves its ends FASTEST through level, which is also the instant
+ *    the load leaves, so the brightness swaps hardest exactly when the spill appears.
+ *
+ * At rest (`tipping` 0) this is `{ proj: 1, up: 1 }` and every drawn length is the constant it
+ * always was.
+ */
+export function tipProjection(tipping: number): { proj: number; up: number } {
+  if (!(tipping > 0)) return { proj: 1, up: 1 };
+  const p = Math.min(1, Math.max(0, 1 - tipping / BB_TIP_SWING_S)); // 0 → 1 across the swing
+  const rest = BB_HIVE_TILT_DEG * (Math.PI / 180);
+  const tilt = rest * (1 - 2 * p); // +30° → 0 (LEVEL, the release) → −30°
+  return {
+    proj: dcos(tilt) / dcos(rest),
+    up: (dsin(tilt) + dsin(rest)) / (2 * dsin(rest)),
+  };
 }
 
 /**
@@ -444,23 +479,32 @@ export function drawBiobuzzField(
     const ink = allianceColor(a);
 
     /**
-     * THE SWING, AS A CROSS-FADE (owner ruling, 2026-09-12).
+     * THE SWING, AS THE SWING (owner feedback, 2026-09-12).
      *
      * `tipping` is SECONDS LEFT in the swing (`state.ts`), counted down by `hive.ts`, and `up`
-     * still names the cell that is going DOWN until the swing completes. So `f` runs 1 → 0
-     * across it and `k` below is each cell's UPNESS: the loaded cell fades fill → outline while
-     * its partner fades outline → fill, and at rest the two are exactly the old states.
+     * still names the cell that is going DOWN until the swing completes. `tipProjection` turns
+     * the countdown into the bar's ANGLE and hands back the two things the drawing needs: how
+     * far the assembly is foreshortened right now (`proj`), and how high the `up` cell is
+     * (`f`). Both are read off ONE angle, so the geometry and the brightness cannot animate on
+     * different clocks.
      *
-     * The denominator is IMPORTED from `hive.ts` rather than written here, because a renderer
-     * with its own copy of the swing length is a cross-fade that finishes at a different
-     * instant from the flip it is animating — the one bug this whole device can have.
+     * This replaces a plain linear cross-fade. The fade alone was the entire animation, at cell
+     * alpha, over four seconds — slow enough per frame to be invisible and yet the only thing
+     * moving, so a TIP looked like a state that had simply changed. Now the bar visibly REACHES
+     * as it comes level and draws back in as it settles, the brightness swaps hardest at the
+     * level crossing, and the level crossing is the instant the load falls out.
+     *
+     * The swing length is IMPORTED from `hive.ts` rather than written here, because a renderer
+     * with its own copy of it is an animation that finishes at a different instant from the
+     * flip it is animating — the one bug this whole device can have.
      */
     const tipping = bb?.hives?.[a]?.tipping ?? 0;
-    const f = tipping > 0 ? Math.min(1, Math.max(0, tipping / BB_TIP_SWING_S)) : 1;
+    const { proj, up: f } = tipProjection(tipping);
+    const bodyHalf = (BB_HIVE_LEN / 2) * proj;
 
     // the assembly body — the connecting bar and shell the two cells ride on.
     ctx.save();
-    roundRectPath(ctx, x0, -BB_HIVE_LEN / 2, x1, BB_HIVE_LEN / 2, HIVE_R);
+    roundRectPath(ctx, x0, -bodyHalf, x1, bodyHalf, HIVE_R);
     ctx.fillStyle = C.COLORS.tile;
     ctx.fill();
     ctx.strokeStyle = C.COLORS.wall;
@@ -471,9 +515,9 @@ export function drawBiobuzzField(
     for (const side of ['north', 'south'] as const) {
       const s = side === 'north' ? 1 : -1;
       const isUp = up === side;
-      // SAME SIZE, BOTH ENDS. See `cellSpan` — one rigid bar at 30° projects both cells by the
-      // same cosine, so UP is said by the FILL, not by shape.
-      const { y0, y1 } = cellSpan(s);
+      // SAME SIZE, BOTH ENDS. See `cellSpan` — one rigid bar projects both cells by the same
+      // cosine at every instant of the swing, so UP is said by the FILL, not by shape.
+      const { y0, y1 } = cellSpan(s, proj);
       const k = isUp ? f : 1 - f; // 1 = fully up (filled), 0 = fully down (outline)
 
       /**

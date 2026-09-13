@@ -520,8 +520,11 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
      * WHAT TO LOOK AT:
      *   1. t = 0 — RED's SOUTH cell is up and FILLED, holding 3 NECTAR + 3 POLLEN. That is the
      *      staged row of the measured table (`BB_TIP_POLLEN[3] === 3`), so this is exactly the
-     *      load that tips a match's first HIVE, and the cross-fade has not started.
-     *   2. t = 2 s — the two cells are half faded into each other and the contents have LEFT:
+     *      load that tips a match's first HIVE, and the swing has not started: the assembly is
+     *      drawn at its foreshortened plan length, the same as BLUE's.
+     *   2. t = 2 s — the bar is LEVEL, so it is drawn at its TRUE length (1/cos 30° longer than
+     *      BLUE's, the one frame where the two hives are different sizes), the two cells are
+     *      half faded into each other, and the contents have LEFT:
      *      they draw as ordinary GROUND balls under the structure, on top of the dashed
      *      outline, not as discs inside a box (`hive-ground` is the dedicated cell for that
      *      distinction).
