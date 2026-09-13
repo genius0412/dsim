@@ -87,6 +87,49 @@ export function quantizeCommand(c: RobotCommand): QCommand {
   };
 }
 
+/** the wire range of a packed axis — `int8`, and exactly what `quantizeCommand` can emit */
+const Q_AXIS_MAX = 127;
+/** every button bit this build knows. A bit outside it is not a button, it is noise. */
+const BTN_MASK =
+  BTN_INTAKE | BTN_FIRE | BTN_CATALYST | BTN_FLING | BTN_DRIVEMODE | BTN_BBPLACE_NECTAR | BTN_BBPLACE;
+
+/**
+ * Force an UNTRUSTED `q` payload into a QCommand, or refuse it outright.
+ *
+ * `dequantizeCommand` divides by 127 and masks bits; it does not type-check, because the
+ * packet it was written for came from `quantizeCommand` one function above. A packet off a
+ * WebSocket did not: `{}` dequantizes to `driveX: NaN`, and `{ ld: 1e9 }` to a left track
+ * running at 7,874,015 — both inside the SERVER-OWNED world every other member of the room
+ * is watching, so the poisoned pose is broadcast to them as authoritative truth.
+ *
+ * REFUSED, not clamped. Every honest sender is `quantizeCommand`, which rounds and clamps
+ * already, so anything out of range was hand-made — and a clamp would answer it with a legal
+ * command the driver never gave. Dropping the frame costs the sender their own input for one
+ * tick and costs nobody else anything.
+ */
+export function sanitizeQCommand(raw: unknown): QCommand | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const q = raw as Record<string, unknown>;
+  const axis = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isInteger(v) && v >= -Q_AXIS_MAX && v <= Q_AXIS_MAX ? v : null;
+  const dx = axis(q.dx);
+  const dy = axis(q.dy);
+  const rot = axis(q.rot);
+  if (dx === null || dy === null || rot === null) return null;
+  if (typeof q.buttons !== 'number' || !Number.isInteger(q.buttons) || q.buttons < 0 || q.buttons > 255) {
+    return null;
+  }
+  // ld/rd stay OPTIONAL (a pre-tank client sends neither and means zero), but a present
+  // one must still be a legal axis — absent and malformed are not the same packet.
+  const ld = q.ld === undefined ? undefined : axis(q.ld);
+  const rd = q.rd === undefined ? undefined : axis(q.rd);
+  if (ld === null || rd === null) return null;
+  const out: QCommand = { dx, dy, rot, buttons: q.buttons & BTN_MASK };
+  if (ld !== undefined) out.ld = ld;
+  if (rd !== undefined) out.rd = rd;
+  return out;
+}
+
 export function dequantizeCommand(q: QCommand): RobotCommand {
   return {
     driveX: q.dx / 127,
