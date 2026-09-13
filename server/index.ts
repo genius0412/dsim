@@ -1927,6 +1927,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
    * socket nobody is holding. See `joinRoom`.
    */
   let closed = false;
+  /**
+   * Which ranked-queue ATTEMPT is the live one.
+   *
+   * Entering the queue is four awaits deep (token, standing, party, profile) and none of
+   * them can be cancelled, so a player who pressed CANCEL — or whose socket closed, or who
+   * pressed SEARCH a second time — still had the original attempt finish and call
+   * `matchmaker.enqueue` unconditionally. `matchmaker.remove` at that moment removes an
+   * entry that does not exist yet, so the cancel does nothing and the pool keeps a ghost:
+   * an entry whose socket is gone, which is then paired and staged into a ranked match the
+   * player never sees. Every attempt takes a generation here and re-checks it after each
+   * await; a bump makes the in-flight one a no-op.
+   */
+  let queueGen = 0;
   /** true once this socket is attached as a SPECTATOR, so the global tally can be
    *  decremented exactly once on close (a spectator never becomes a driver — the
    *  `spectate` branch is only reachable while `room` is null, and it sets it). */
@@ -2392,11 +2405,16 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         send({ t: 'reported', ok: true });
       } else if (msg.t === 'queue') {
         if (room) return; // already in a room/match
+        const gen = ++queueGen;
+        /** has this queue attempt been overtaken — cancelled, closed, re-issued, or already
+         *  seated in a room — while one of its awaits was outstanding? */
+        const stale = (): boolean => closed || room !== null || gen !== queueGen;
         // ranked REQUIRES a verified account (ELO/leaderboard only make sense with
         // an identity). Anonymous players can still use custom rooms, just not
         // ranked. Verify the JWT, then enqueue; on a match the matchmaker sets our
         // `room` so subsequent input routes there.
         verifyAuthToken(msg.authToken).then((u) => {
+          if (stale()) return;
           if (!u) {
             send({ t: 'error', message: 'Sign in to play ranked.' });
             return;
@@ -2412,7 +2430,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           }
           markAuthed(u.userId);
           const enqueueNow = (): void => {
+          if (stale()) return;
           void verifyParty(u.userId, msg).then(async (party) => {
+            if (stale()) return;
             if (party === 'bad-token') {
               // Never silently fall back to the OPEN queue here. The player asked
               // to play one specific person; quietly matching them against a
@@ -2425,6 +2445,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
             // does not even send a real one — `Matchmaking.tsx` sends the ROBOT's
             // `teamName` — so this read is the only thing that can name the player.
             const prof = dbEnabled ? await getProfile(u.userId).catch(() => null) : null;
+            // LAST GAP, and the one that matters: nothing may await between here and
+            // `enqueue`, or the entry outlives the cancel that was meant to stop it.
+            if (stale()) return;
             matchmaker.enqueue({
             id,
             send,
@@ -2470,6 +2493,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           // requeued, which costs the wrong people their minutes. Fails OPEN (see
           // `rankedLock`): a database that cannot answer must not lock everybody out.
           void rankedLock(u.userId).then((lock) => {
+            if (stale()) return;
             if (!lock) {
               enqueueNow();
               return;
@@ -2493,6 +2517,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       } else if (msg.t === 'expandSearch') {
         matchmaker.expand(id);
       } else if (msg.t === 'leaveQueue') {
+        queueGen++; // cancels an attempt still working through its awaits
         matchmaker.remove(id);
       } else if (room) {
         room.onMessage(id, msg);
@@ -2515,6 +2540,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       if (n <= 0) authedUsers.delete(authedUserId);
       else authedUsers.set(authedUserId, n);
     }
+    queueGen++; // an in-flight queue attempt must not enqueue a socket that is gone
     matchmaker.remove(id); // drop from any ranked queue
     lanSignals.release(signalId); // a LAN host going away takes its room's guests with it
     // lobby ⇒ leave; mid-match ⇒ hold the slot for a reconnect. `conn` lets the room
