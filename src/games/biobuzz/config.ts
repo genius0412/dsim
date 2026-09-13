@@ -493,6 +493,13 @@ export const BB_PLACE_REACH = BB_FLOWER_FOOT.deep - BB_FLOWER_D; // 2.36 — flu
 /** how close the placement point must be to a FLOWER ring centre to place (in). APPROX — the
  * slop of a real tube lining up on a 4.0-in ring; a placement should not need the pixel. */
 export const BB_PLACE_TOL = 2.0;
+/** how often a running intake pulls one POLLEN out of a FLOWER's retrieval opening (G418.B), in
+ * seconds. APPROX — one element worked out from under the stack through a 3.55-in hole, not a
+ * roller sweeping loose elements off the tiles, so it is slower than a ground pickup. */
+export const BB_FLOWER_RETRIEVE_S = 0.35;
+/** how far past its roller line an intake mouth can be from the FLOWER foot's field-side face and
+ * still pull from the retrieval opening (in). APPROX — the contact slop of a compliant roller. */
+export const BB_FLOWER_RETRIEVE_PAD = 1.0;
 /** extra lb on the chassis mass FLOOR for carrying a Box Tube. APPROX. */
 export const BB_LIFT_MASS_FLOOR = 2.0;
 

@@ -9,6 +9,10 @@ import {
   BB_AIM_GAIN,
   BB_AIM_TOL,
   BB_FLOWERS,
+  BB_FLOWER_D,
+  BB_FLOWER_FOOT,
+  BB_FLOWER_RETRIEVE_PAD,
+  BB_FLOWER_RETRIEVE_S,
   BB_FLOWER_UNLOCK_S,
   BB_HALF_X,
   BB_HALF_Y,
@@ -19,11 +23,12 @@ import {
   BB_ON_TARGET_TOL,
   BB_POLLEN_R,
   BB_POLLEN_WALL_REST,
+  bbHopperCap,
   bbLoadingZoneSpot,
 } from './config';
 import { biobuzzColliders } from './colliders';
-import { capturePollen, scoreTargets, takeHeld } from './elements';
-import { bbElementRadius, flowerFits, flowerStackZ, type BbElementKind } from './flower';
+import { FLOWER_MOUTH, capturePollen, scoreTargets, takeHeld } from './elements';
+import { bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
 import { hiveAccepts, hiveCellPos, hiveLoad, hiveStep, hiveWillTip, spillPoses } from './hive';
 import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
@@ -590,6 +595,14 @@ export function updateBiobuzz(
     }
   }
 
+  // ── 4b. INTAKE OFF A FLOWER (G418.B) ──────────────────────────────────────
+  // After the ground capture, so a robot that took a loose element this tick has spent its
+  // `lastIntakeAt` on it; before the solve, which never sees a parked or held element either way.
+  for (const rob of world.robots) {
+    if (rob.passive) continue;
+    retrieveFromFlower(world, bb, rob, cmds.get(rob.id), enabled, ballById, kindOf);
+  }
+
   // ── 5. SOLVE ──────────────────────────────────────────────────────────────
   /**
    * THE SHARED ARTIFACT SOLVE, AT THE POLLEN RADIUS, AND IT IS THE ONLY WRITER OF A GROUND
@@ -915,6 +928,81 @@ function placeInFlower(
   const zs = flowerStackZ([...stack, ball.id], kindOf);
   const f = BB_FLOWERS[i];
   park(ball, `flower:${i}`, stack, { x: f.x, y: f.y }, zs[zs.length - 1]);
+  return true;
+}
+
+/**
+ * WHICH FLOWER'S RETRIEVAL OPENING one of this robot's intake mouths is up against, or `null`.
+ *
+ * The opening is at the BOTTOM of the FLOWER on its field side (§9.7 Fig 9-12, the 3.55-in hole
+ * above the lower ring), so the point tested is the centre of the foot's FIELD-SIDE FACE: the ring
+ * centre pushed `BB_FLOWER_FOOT.deep − BB_FLOWER_D` along `FLOWER_MOUTH`, which is where a robot
+ * driven square into the foot has its roller. It must lie inside a mouth rect (`bbMouths`, the
+ * same rects the ground capture uses), padded OUTWARD only by `BB_FLOWER_RETRIEVE_PAD` — so the
+ * mounted edge has to be the one facing the FLOWER, and laterally the opening has to be within
+ * the roller's span.
+ */
+export function bbFlowerAtIntake(r: RobotState): number | null {
+  const out = BB_FLOWER_FOOT.deep - BB_FLOWER_D;
+  const mouths = bbMouths(r.spec);
+  for (let i = 0; i < BB_FLOWERS.length; i++) {
+    const f = BB_FLOWERS[i];
+    const n = FLOWER_MOUTH[f.wall];
+    const local = rot({ x: f.x + n.x * out - r.pos.x, y: f.y + n.y * out - r.pos.y }, -r.heading);
+    for (const m of mouths) if (rectContains(m, local.x, local.y, BB_FLOWER_RETRIEVE_PAD)) return i;
+  }
+  return null;
+}
+
+/**
+ * INTAKE OFF A FLOWER — G418.B: a ROBOT may "only remove POLLEN from the bottom of a FLOWER".
+ *
+ * A running intake (the same `autoIntake || cmd.intake` the ground capture reads) with a mouth on
+ * a FLOWER's retrieval opening (`bbFlowerAtIntake`) pulls the BOTTOM element into the hopper —
+ * only when it is a POLLEN (`flowerRetrieve`: a 3.6-in NECTAR does not pass the 3.55-in opening,
+ * so a NECTAR at the bottom LOCKS the FLOWER), only with hopper room, and at most one per
+ * `BB_FLOWER_RETRIEVE_S`, paced off `lastIntakeAt` (which the ground capture also stamps) so a
+ * stack does not empty in four ticks.
+ *
+ * The element goes through `capturePollen`, so the hopper and the held set stay one multiset and
+ * every intake rule applies. What is left in the stack is RE-SLOTTED and re-seated
+ * (`flowerStackZ`): `slot` is what `bbIndexElements` rebuilds the stack from, and the column drops
+ * by the element removed — except above a NECTAR seated on the middle ring, which the geometry
+ * already holds up.
+ */
+function retrieveFromFlower(
+  world: World,
+  bb: BiobuzzState,
+  rob: RobotState,
+  cmd: RobotCommand | undefined,
+  enabled: boolean,
+  ballById: ReadonlyMap<number, Artifact>,
+  kindOf: (id: number) => BbElementKind,
+): boolean {
+  if (!enabled || !(rob.autoIntake || (cmd?.intake ?? false))) return false;
+  if (world.time - rob.lastIntakeAt < BB_FLOWER_RETRIEVE_S) return false;
+  if (rob.hopper.length >= bbHopperCap(rob.spec)) return false;
+  const i = bbFlowerAtIntake(rob);
+  if (i === null) return false;
+  const flower = bb.flowers[i];
+  const { id } = flowerRetrieve(flower.stack, kindOf);
+  if (id === null) return false;
+  const ball = ballById.get(id);
+  if (!ball) return false;
+  const was = ball.state;
+  ball.state = { kind: 'ground' };
+  if (!capturePollen(world, rob, ball)) {
+    ball.state = was; // refused (an intake rule said no): the element never left the FLOWER
+    return false;
+  }
+  flower.stack.splice(0, 1);
+  const zs = flowerStackZ(flower.stack, kindOf);
+  flower.stack.forEach((sid, k) => {
+    const b = ballById.get(sid);
+    if (!b || b.state.kind !== 'element') return;
+    b.state = { ...b.state, slot: k };
+    b.z = zs[k];
+  });
   return true;
 }
 
