@@ -62,10 +62,12 @@ import {
   BB_NECTAR_COUNT,
   BB_POLLEN_COUNT,
   BB_START_POSES,
+  BB_VIEW_MARGIN,
   bbMirror,
   type BbRect,
 } from '../../src/games/biobuzz/config';
 import { BB_SOLID_COUNT, BB_WALL_COUNT, biobuzzColliders } from '../../src/games/biobuzz/colliders';
+import { bbFlowerSectionBox } from '../../src/games/biobuzz/drawField';
 import { createBiobuzzWorld, stageBiobuzz } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { evalStart, scoreTargets } from '../../src/games/biobuzz/elements';
@@ -1231,6 +1233,63 @@ export function fieldChecks(check: Check): void {
       rotated < 0,
       rotated < 0 ? 'all six axis-aligned' : `static ${BB_WALL_COUNT + rotated} has rot=${extras[rotated].rot}`,
     );
+  }
+
+  // -- THE FLOWER SECTION FITS IN THE VIEW MARGIN ---------------------------
+  /**
+   * A FLOWER's contents are drawn as a SECTION of its column, OUTSIDE the perimeter beside it
+   * (`drawFlowerSection`). That is the one thing this game draws off the field, and it is
+   * therefore the one thing the CAMERA can silently cut in half: `bounds.viewMargin` is what a
+   * viewport is fitted to, and a readout that grew past it is not an error anywhere — it is
+   * simply missing from the right-hand side of every still, which a reviewer reads as "the
+   * stack is short" rather than as "the picture is cropped".
+   *
+   * So `bbFlowerSectionBox` is exported for exactly this, and the three things asked of it are
+   * the three ways the readout can be wrong without throwing: off the camera, back inside the
+   * play area (where it would be drawn over the field it is describing), or on top of the
+   * NEIGHBOURING flower's readout.
+   */
+  {
+    const cam = { x: BB_HALF_X + BB_VIEW_MARGIN, y: BB_HALF_Y + BB_VIEW_MARGIN };
+    const boxes = BB_FLOWERS.map((f) => ({ id: f.id, b: bbFlowerSectionBox(f) }));
+
+    let tightest = Infinity;
+    let tightestAt = '';
+    for (const { id, b } of boxes) {
+      const slack = Math.min(cam.x - b.x1, b.x0 + cam.x, cam.y - b.y1, b.y0 + cam.y);
+      if (slack < tightest) {
+        tightest = slack;
+        tightestAt = id;
+      }
+    }
+    check(
+      `section: every FLOWER's section is inside the camera (viewMargin ${BB_VIEW_MARGIN}")`,
+      tightest > 0,
+      `tightest is ${tightestAt}, ${tightest.toFixed(2)}" of margin left`,
+    );
+
+    // OUTSIDE the play area: a section that reached back over the perimeter would be drawn on
+    // top of the tiles, the zones and the robots it is a readout for.
+    let inside = '';
+    for (const { id, b } of boxes) {
+      const out = Math.max(b.x0 - BB_HALF_X, -BB_HALF_X - b.x1, b.y0 - BB_HALF_Y, -BB_HALF_Y - b.y1);
+      if (out <= 0) inside = `${id} overlaps the field by ${(-out).toFixed(2)}"`;
+    }
+    check('section: every FLOWER section is entirely OUTSIDE the perimeter', inside === '', inside || 'all four clear');
+
+    // AND CLEAR OF EACH OTHER. The section runs 21.5" ALONG its wall toward the middle, and
+    // every FLOWER is one tile off centre — so the four readouts converge on the four corners
+    // of the margin band, which is the only place they could ever meet.
+    let clash = '';
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i].b;
+        const b = boxes[j].b;
+        if (a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1) clash = `${boxes[i].id} x ${boxes[j].id}`;
+      }
+    }
+    check('section: no two FLOWER sections overlap', clash === '', clash || 'all six pairs disjoint');
+
   }
 
   // ── STAGING: WHAT A SPAWNED MATCH ACTUALLY HAS ON THE FIELD ───────────────

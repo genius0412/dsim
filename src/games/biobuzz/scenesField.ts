@@ -65,6 +65,47 @@ const ID0 = 1;
  * in a state dump. */
 const PARKED_ID0 = 900;
 
+/**
+ * PUSH ONE PARKED ELEMENT and return its id.
+ *
+ * A parked element is one INSIDE a field element — a HIVE cell, a FLOWER column. It is not
+ * solved and has no position of its own, so `pos` is only ever somewhere to point at; what
+ * makes it real is the `el` tag, which is what `bbWorld` reindexes the state bag off
+ * (`spawn.ts`'s `bbIndexBiobuzz`). So a scene never assigns into `bb.flowers[i].stack` — it
+ * builds the BALLS, and the stacks come back derived, in slot order, from the balls that exist.
+ *
+ * SHARED BY THE TWO CELLS THAT DRAW READOUTS (`field-labelled` and `flower-stack`), because
+ * the ids are the delicate part: `PARKED_ID0 + balls.length` is unique only while ONE array is
+ * doing the counting, and two copies of that line in two builds is two chances for a scene to
+ * park two elements on one id and lose one of them to the `byId` join.
+ */
+function parkedEl(
+  balls: Artifact[],
+  color: ArtifactColor,
+  where: string,
+  slot: number,
+  x: number,
+  y: number,
+): number {
+  const id = PARKED_ID0 + balls.length;
+  balls.push({
+    id,
+    color,
+    r: color === 'yellow' ? BB_POLLEN_R : BB_NECTAR_R,
+    state: { kind: 'element', el: where, slot },
+    pos: { x, y },
+    vel: { x: 0, y: 0 },
+    z: 0,
+    vz: 0,
+  });
+  return id;
+}
+
+/** the colours of FLOWER `i`'s column, BOTTOM FIRST — slot order is stack order. */
+function inFlower(balls: Artifact[], i: number, colors: ArtifactColor[]): number[] {
+  return colors.map((c, slot) => parkedEl(balls, c, `flower:${i}`, slot, BB_FLOWERS[i].x, BB_FLOWERS[i].y));
+}
+
 /** how far a POLLEN's centre sits from a wall when it is resting against it. */
 const AT_WALL_X = BB_HALF_X - BB_POLLEN_R;
 const AT_WALL_Y = BB_HALF_Y - BB_POLLEN_R;
@@ -143,7 +184,8 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
      *      here that pins the drawing to the real field.
      *   6. The two READOUTS, which is why this cell holds elements at all — see `build`. Both
      *      are balls, never text: the cell's contents are a row of discs against its open edge
-     *      and a flower's are its stack outside the wall.
+     *      and a flower's are a SECTION of the column outside the wall. `flower-stack` is the
+     *      cell that exercises the section's four states; this one only shows it in place.
      */
     build: (seed) => {
       /**
@@ -161,27 +203,11 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
        * somewhere to point at.
        */
       const balls: Artifact[] = [];
-      const el = (color: ArtifactColor, where: string, slot: number, x: number, y: number): number => {
-        const id = PARKED_ID0 + balls.length;
-        balls.push({
-          id,
-          color,
-          r: color === 'yellow' ? BB_POLLEN_R : BB_NECTAR_R,
-          state: { kind: 'element', el: where, slot },
-          pos: { x, y },
-          vel: { x: 0, y: 0 },
-          z: 0,
-          vz: 0,
-        });
-        return id;
-      };
       const inCell = (a: 'red' | 'blue', colors: ArtifactColor[]): number[] => {
         const x = a === 'red' ? -BB_HIVE_X : BB_HIVE_X;
         const y = (BB_HIVE_UP_STAGED[a] === 'north' ? 1 : -1) * BB_HIVE_CELL_DY;
-        return colors.map((c, i) => el(c, `hive:${a}`, i, x, y));
+        return colors.map((c, i) => parkedEl(balls, c, `hive:${a}`, i, x, y));
       };
-      const inFlower = (i: number, colors: ArtifactColor[]): number[] =>
-        colors.map((c, slot) => el(c, `flower:${i}`, slot, BB_FLOWERS[i].x, BB_FLOWERS[i].y));
 
       /**
        * A MID-MATCH SPREAD, NOT THE STAGED FIELD — `spawn.ts` owns staging, this cell owns the
@@ -193,7 +219,8 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
        *  • F2 carries a NECTAR on TOP (blue OWNS it) and F3 one at the BOTTOM (red's 5-point
        *    bonus, and retrieval locked — a 3.6 NECTAR does not fit the 3.55 opening), which is
        *    the pair of cases the stack order exists to tell apart;
-       *  • F4 holds SIX, a full flower, which is the length `BB_VIEW_MARGIN` has to clear.
+       *  • F4 holds SIX, near enough a full column that its top element is against the top
+       *    ring — the case `flower-stack` isolates and this cell only has to not contradict.
        *
        * BUILT BEFORE THE WORLD, AND NOT ASSIGNED INTO THE BAG. The `el` tags on these artifacts
        * ARE the readout: `bbWorld` reindexes the state bag off the array it is handed, so the
@@ -204,11 +231,61 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
        */
       inCell('red', ['red', 'red', 'red', 'yellow', 'yellow']);
       inCell('blue', ['blue', 'red', 'yellow', 'yellow', 'yellow', 'yellow']);
-      inFlower(0, ['yellow', 'yellow', 'yellow', 'yellow']);
-      inFlower(1, ['yellow', 'yellow', 'blue']);
-      inFlower(2, ['red', 'yellow', 'yellow', 'yellow']);
-      inFlower(3, ['yellow', 'yellow', 'yellow', 'yellow', 'yellow', 'blue']);
+      inFlower(balls, 0, ['yellow', 'yellow', 'yellow', 'yellow']);
+      inFlower(balls, 1, ['yellow', 'yellow', 'blue']);
+      inFlower(balls, 2, ['red', 'yellow', 'yellow', 'yellow']);
+      inFlower(balls, 3, ['yellow', 'yellow', 'yellow', 'yellow', 'yellow', 'blue']);
 
+      const world = bbWorld(seed, [], balls);
+      if (world.biobuzz) world.biobuzz.labels = true;
+      return world;
+    },
+    stills: [0],
+  },
+
+  {
+    id: 'flower-stack',
+    title: 'The four FLOWER states in one frame — empty, staged, nectar-bottom, full',
+    lane: 'field',
+    /**
+     * THE SECTION READOUT, IN ITS FOUR STATES AT ONCE.
+     *
+     * A FLOWER is a 21.5-in column and the field is a plan view, so its contents are drawn as a
+     * SECTION beside it, outside the perimeter (`drawFlowerSection`). Everything that readout
+     * has to say is a case that only exists at certain stack orders, and a cell per case would
+     * make them four pictures a reviewer has to remember between. There are four FLOWERS. So
+     * each one carries a different case and the comparison is one frame:
+     *
+     *   F1 · EMPTY. The section is still drawn — the shaded band and the two rings are a rule
+     *        about the field, not a property of its contents, and a readout that appeared only
+     *        once something was inside would make "empty" and "not drawn" the same picture.
+     *   F2 · STAGED, the four POLLEN `spawn.ts` preloads. They pass the middle ring and rest on
+     *        the LOWER one, so the bottom POLLEN sits BELOW the shaded band: a staged flower is
+     *        3 elements in volume and 0 points, which is the sorter ruling drawn.
+     *   F3 · NECTAR AT THE BOTTOM. It SEATS on the middle ring instead of passing it (so it is
+     *        never below the scoring floor), it takes the 5-point bottom-nectar bonus, and it
+     *        LOCKS retrieval — 3.6 in of nectar through a 3.55-in opening, G418 — which is the
+     *        LOCK GLYPH under the base, drawn in that nectar's own colour.
+     *   F4 · FULL, and OWNED. Five POLLEN, a BLUE NECTAR, two more POLLEN: `flowerFits` stops
+     *        there, and the top POLLEN straddles the top ring rather than sitting under it,
+     *        because an element held on the backstop still counts (Fig 10-5 D/H). The top ring
+     *        is stroked BLUE — the top-most scoring nectar owns the flower and collects 2 per
+     *        element in the volume whoever put them there (§10.5.2).
+     *
+     * WHAT TO CHECK, in the order it is easy to get wrong: that each section is OUTSIDE its own
+     * wall and rotated with it (F2's and F4's run along the rear and audience walls, and their
+     * z still runs toward the middle of the wall); that F2's bottom POLLEN is below the shading
+     * and F3's NECTAR is above it; that F3 has the lock and F1/F2/F4 do not; that F4's ring is
+     * blue and the other three are white. `bbFlowerSectionBox` is the smoke lane's version of
+     * the first of those — the rest is what a human eye is for.
+     */
+    build: (seed) => {
+      const balls: Artifact[] = [];
+      inFlower(balls, 0, []); // F1 · EMPTY — the call is here so the four cases read as four
+      inFlower(balls, 1, ['yellow', 'yellow', 'yellow', 'yellow']); // F2 · STAGED
+      inFlower(balls, 2, ['red', 'yellow', 'yellow', 'yellow']); // F3 · NECTAR AT THE BOTTOM
+      // F4 · FULL AND OWNED — see the header for why it is eight and not six.
+      inFlower(balls, 3, ['yellow', 'yellow', 'yellow', 'yellow', 'yellow', 'blue', 'yellow', 'yellow']);
       const world = bbWorld(seed, [], balls);
       if (world.biobuzz) world.biobuzz.labels = true;
       return world;

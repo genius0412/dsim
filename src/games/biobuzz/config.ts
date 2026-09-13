@@ -73,10 +73,16 @@ export const BB_WALL_T = 10;
 /** camera fit margin (in) — breathing room around the field so the walls are not flush with
  * the viewport edge.
  *
- * WIDENED from 8 for the FLOWER STACK READOUT: a flower's contents are drawn OUTSIDE the
- * perimeter beside it (`drawField.ts`), one disc per element, and a NECTAR is 3.6 in across.
- * The margin has to clear one disc plus the tile ruler that also lives out there, or the
- * readout is cropped by the viewport on the two walls that carry both. */
+ * WIDENED from 8 for the FLOWER SECTION: a flower's contents are drawn OUTSIDE the perimeter
+ * beside it (`drawField.ts`), as a section of the column with the scoring band shaded. It
+ * reaches 10.8 in out, and the tile ruler lives in the same band, so the margin has to clear
+ * both or the readout is cropped by the viewport on the two walls that carry them.
+ *
+ * IT IS A FIXED COST, not a per-element one — the section is as wide for an empty FLOWER as
+ * for a full one, because the drawing is the COLUMN and the elements are inside it. The row of
+ * discs it replaced grew with the stack, which made this number a function of capacity and
+ * therefore wrong every time the capacity moved. `bbFlowerSectionBox` measures the real extent
+ * and the smoke lane checks it against this. */
 export const BB_VIEW_MARGIN = 12;
 
 /** the outer x half-extent the CAMERA must show. Equal to the wall for now: BIOBUZZ has no

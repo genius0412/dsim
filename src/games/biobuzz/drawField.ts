@@ -5,6 +5,7 @@ import {
   BB_FLOWER_D,
   BB_FLOWER_FOOT,
   BB_FLOWER_OPEN_R,
+  BB_FLOWER_TOP_Z,
   BB_FRAME_BAR_IN,
   BB_FRAME_BAR_OUT,
   BB_FRAME_Y,
@@ -24,6 +25,15 @@ import {
   FLOWER_MOUTH,
   type BbRect,
 } from './config';
+import {
+  BB_FLOWER_FLOOR_Z,
+  BB_FLOWER_MID_Z,
+  BB_FLOWER_VOL_Z,
+  flowerRetrieve,
+  flowerScore,
+  flowerStackZ,
+  type BbElementKind,
+} from './flower';
 import { BB_TIP_SWING_S } from './hive';
 
 /**
@@ -95,8 +105,27 @@ const FRAME_BAR_MID = (BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2;
 const HIVE_R = 2; // rounded-rect corner radius on a HIVE body and its CELLS
 const DASH: readonly number[] = [3.2, 2.4]; // crossbar dash pitch, in WORLD INCHES
 const WALL_INSET = 2.5; // how far OUTSIDE a wall a tile letter/number sits, in the view margin
-const STACK_OUT = 6.5; // how far OUTSIDE a wall a FLOWER's stack readout sits
-const STACK_GAP = 0.5; // clear air between two discs of a stack
+// how far out a FLOWER section's NEAR bore wall sits, from the wall FACE. Balanced between two
+// neighbours it must not touch: the tile ruler, which sits WALL_INSET out and whose glyphs
+// reach about 0.9 further, and the edge of the camera at BB_VIEW_MARGIN — see
+// `bbFlowerSectionBox`, which the smoke lane measures against both.
+const SECT_OUT = 5.6;
+const SECT_RING = 1.2; // how far the TOP RING's material shows to each side of the bore
+const SECT_LOCK = 2.6; // how far BELOW the lower ring the retrieval LOCK glyph sits
+const SECT_LOCK_R = 1.5; // half-size of that glyph — a NECTAR's own radius, near enough
+/**
+ * THE PANEL'S ENDS, in column z. Both are FIXED — the panel is the same size for an empty
+ * FLOWER as for a full one, because the drawing is the COLUMN and the elements are inside it.
+ * The row of discs this replaced grew with the stack, which made `BB_VIEW_MARGIN` a function
+ * of capacity and therefore wrong every time the capacity moved.
+ *
+ * `SECT_Z1` clears an element HELD ON THE BACKSTOP: `flowerFits` admits one whose centre is
+ * below the top ring, so the top of a full column stands about 2.1 in proud of it (Fig 10-5
+ * D/H — it still counts). It also lands the panel's far end within an inch of the field's
+ * centreline, which is the whole frontage a FLOWER one tile off centre has to run into.
+ */
+const SECT_Z0 = -(SECT_LOCK + SECT_LOCK_R + 0.5);
+const SECT_Z1 = BB_FLOWER_TOP_Z + 2.6;
 const GARDEN_LABEL_IN = 12; // how far off its wall a GARDEN caption sits — see the label block
 const TAG_SIZE = 2.2; // AprilTag id groups — deliberately small, see below
 const LABEL_SIZE = 3; // zone / flower / tile labels
@@ -146,21 +175,80 @@ function elementInk(color: ArtifactColor): string {
   return t === 1 ? C.COLORS.red : t === 2 ? C.COLORS.blue : POLLEN_INK;
 }
 
+/** the same classification as `elementType`, in the vocabulary `flower.ts` scores in. Both
+ * exist because the two questions are different: a RENDERER wants an ink, a RULE wants a kind,
+ * and routing one through the other is what keeps a green-spelled pollen from being a nectar in
+ * one of the two. */
+function elementKind(color: ArtifactColor): BbElementKind {
+  const t = elementType(color);
+  return t === 1 ? 'red' : t === 2 ? 'blue' : 'pollen';
+}
+
 const ALLIANCES: readonly Alliance[] = ['red', 'blue'];
 
-/** the point on a FLOWER's own wall PLANE level with it, and the direction to run its stack
- * readout ALONG that wall. The stack runs toward the middle of the wall — every FLOWER sits
- * one tile off centre, so that direction always has the whole half-wall of room, where the
- * other one runs into a corner after 48 in. */
-function stackAxis(f: (typeof BB_FLOWERS)[number]): { base: Vec2; along: Vec2 } {
-  const out = FLOWER_MOUTH[f.wall];
+/**
+ * THE FLOWER SECTION'S FRAME — where its z = 0 sits, and the two axes it is drawn in.
+ *
+ * A FLOWER is a 21.5-in COLUMN and the field is a plan view, so its contents are the one part
+ * of this game a top-down drawing cannot say at all: four discs seen from above are four discs
+ * whatever height they are at, and height is the whole rule (a POLLEN below the middle ring
+ * scores nothing, a NECTAR on it always scores, §10.5.2). So the readout is a SECTION — the
+ * column cut open and laid out beside itself, outside the perimeter, at 1:1 with the field's
+ * own inches so an element's drawn radius is its real one.
+ *
+ * ⚠️ `up` IS THE COLUMN'S z AND IT RUNS ALONG THE WALL, not out of it. A section drawn with z
+ * pointing away from the field would be the more natural picture and there is nowhere to put
+ * it: `BB_VIEW_MARGIN` is 12 in of outboard room and the column is 21.5 in tall, so an
+ * outward z would need the camera pulled back by a foot on every wall — every still in the
+ * gallery smaller so that four readouts can be upright. Along the wall it costs nothing: each
+ * FLOWER sits one tile off centre, so the direction TOWARD the wall's midpoint has 24 in of
+ * clear frontage and the section ends 2.5 in short of the centreline.
+ *
+ * THE SECTION IS THEREFORE ROTATED WITH ITS WALL, which is the same rule the rest of this
+ * renderer follows: `up` is the tangent toward the middle of the wall, `out` is the outward
+ * normal (the bore's width), and `org` is the WALL FACE level with the ring — so the base of
+ * the column is level with the FLOWER it belongs to on all four walls.
+ */
+function sectionFrame(f: (typeof BB_FLOWERS)[number]): { org: Vec2; up: Vec2; out: Vec2 } {
+  const n = FLOWER_MOUTH[f.wall]; // unit INWARD normal
   const onY = f.wall === 'left' || f.wall === 'right';
   return {
-    base: {
-      x: onY ? -out.x * (BB_HALF_X + STACK_OUT) : f.x,
-      y: onY ? f.y : -out.y * (BB_HALF_Y + STACK_OUT),
-    },
-    along: onY ? { x: 0, y: -Math.sign(f.y) } : { x: -Math.sign(f.x), y: 0 },
+    org: { x: f.x - n.x * BB_FLOWER_D, y: f.y - n.y * BB_FLOWER_D },
+    up: onY ? { x: 0, y: -Math.sign(f.y) } : { x: -Math.sign(f.x), y: 0 },
+    out: { x: -n.x, y: -n.y },
+  };
+}
+
+/** a SECTION coordinate — `z` above the tiles, `s` across the bore from its centreline — as a
+ * point in world inches. Every line, disc and glyph below is placed through this and nothing
+ * else, so the whole readout rotates with its wall by construction rather than by four cases. */
+function sectionPt(fr: { org: Vec2; up: Vec2; out: Vec2 }, z: number, s: number): Vec2 {
+  const d = SECT_OUT + BB_FLOWER_OPEN_R + s;
+  return { x: fr.org.x + fr.up.x * z + fr.out.x * d, y: fr.org.y + fr.up.y * z + fr.out.y * d };
+}
+
+/**
+ * THE OUTBOARD BOX a FLOWER's section occupies, in world inches — EXPORTED for the smoke lane.
+ *
+ * `BB_VIEW_MARGIN` is a promise that everything this renderer draws outside the perimeter is
+ * on camera, and this readout is the widest thing out there. A box the lane can measure turns
+ * that promise into a check: a section that grew past the margin is a cropped readout in every
+ * still, which is exactly the kind of regression a picture hides until someone looks closely.
+ */
+export function bbFlowerSectionBox(f: (typeof BB_FLOWERS)[number]): BbRect {
+  const fr = sectionFrame(f);
+  const w = BB_FLOWER_OPEN_R + SECT_RING;
+  const pts = [
+    sectionPt(fr, SECT_Z0, -w),
+    sectionPt(fr, SECT_Z0, w),
+    sectionPt(fr, SECT_Z1, -w),
+    sectionPt(fr, SECT_Z1, w),
+  ];
+  return {
+    x0: Math.min(...pts.map((q) => q.x)),
+    x1: Math.max(...pts.map((q) => q.x)),
+    y0: Math.min(...pts.map((q) => q.y)),
+    y1: Math.max(...pts.map((q) => q.y)),
   };
 }
 
@@ -299,6 +387,203 @@ function flowerFoot(f: (typeof BB_FLOWERS)[number]): BbRect {
     y0: Math.min(wy, iy) - ty,
     y1: Math.max(wy, iy) + ty,
   };
+}
+
+/**
+ * THE FLOWER SECTION — the column cut open beside itself, outside the perimeter.
+ *
+ * It is the c-flower page from the visuals set with the buttons taken off: the same drawing,
+ * driven by the same three functions the SCORER reads the column through (`flowerStackZ`,
+ * `flowerScore`, `flowerRetrieve`), so the picture cannot disagree with the points. A readout
+ * with its own copy of the stacking arithmetic would drift the first time the middle ring moves.
+ *
+ * WHAT EACH PART OF IT MEANS, because every one of them is a rule a driver acts on:
+ *   • the SHADED BAND is the scoring volume (`BB_FLOWER_VOL_Z`, §10.5.2) — an element inside it
+ *     scores 2 for whoever owns the flower and an element below it scores nothing, which is
+ *     the single fact a plan view of four discs cannot show.
+ *   • the DASHED line is the MIDDLE RING, the sorter: a POLLEN passes it and a NECTAR seats on
+ *     it (field-plan §2.2). Dashed and not a gapped bar because V1 prints neither the ring's
+ *     thickness nor its hole diameter — `docs/biobuzz/feedback/002-thresholds.md` is the
+ *     measurement that would let this be drawn to size, and a drawn hole would be a field
+ *     dimension invented in a renderer.
+ *   • the SOLID bar at the bottom is the LOWER RING, whose 2.79-in hole passes nothing.
+ *   • the TOP RING is stroked in the OWNER's colour — the alliance of the top-most scoring
+ *     NECTAR, which collects for every element in the volume whoever put them there.
+ *   • the LOCK under the base is G418: retrieval takes the BOTTOM element and only if it is a
+ *     POLLEN, so a NECTAR at the bottom shuts the gate. It is drawn in that nectar's own
+ *     colour, because the same element is the 5-point BOTTOM NECTAR bonus.
+ *
+ * `stack` is already JOINED to `world.balls` (ids with no element behind them are gone), so
+ * every id here resolves and the z column is the one the scorer computes.
+ */
+function drawFlowerSection(
+  ctx: CanvasRenderingContext2D,
+  f: (typeof BB_FLOWERS)[number],
+  stack: readonly Artifact[],
+): void {
+  const fr = sectionFrame(f);
+  const R = BB_FLOWER_OPEN_R;
+  const ids = stack.map((b) => b.id);
+  const kinds = new Map<number, BbElementKind>(stack.map((b) => [b.id, elementKind(b.color)]));
+  const kindOf = (id: number): BbElementKind => kinds.get(id) ?? 'pollen';
+  const zs = flowerStackZ(ids, kindOf);
+  const owner = flowerScore(ids, kindOf).owner;
+  const locked = ids.length > 0 && flowerRetrieve(ids, kindOf).id === null;
+
+  const pt = (z: number, t: number): Vec2 => sectionPt(fr, z, t);
+  const seg = (z0: number, s0: number, z1: number, s1: number): void => {
+    const a = pt(z0, s0);
+    const b = pt(z1, s1);
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+  };
+  const quad = (z0: number, z1: number, s: number): void => {
+    const c = [pt(z0, -s), pt(z0, s), pt(z1, s), pt(z1, -s)];
+    ctx.beginPath();
+    ctx.moveTo(c[0].x, c[0].y);
+    for (const q of c.slice(1)) ctx.lineTo(q.x, q.y);
+    ctx.closePath();
+  };
+
+  ctx.save();
+
+  // A STEM from the ring to the panel, so the section belongs to THIS flower and not to the
+  // wall in general. It crosses the perimeter, which is drawn after the flowers and covers it.
+  ctx.strokeStyle = C.COLORS.wall;
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  const near = pt(0, -(R + SECT_RING));
+  ctx.moveTo(f.x, f.y);
+  ctx.lineTo(near.x, near.y);
+  ctx.stroke();
+
+  /**
+   * THE PANEL THE SECTION IS DRAWN ON — `COLORS.mat`, the field's own dark ground, and it is
+   * the reason everything above can be drawn in the renderer's ordinary on-field ink.
+   *
+   * This readout lives OUTSIDE the perimeter, on the BACKDROP, and the backdrop is the one
+   * surface in this view that THEMES (`#f9faf7` light, `#20262c` dark). `COLORS.white` is
+   * `#e5e7eb`, so a white bore line on the light backdrop is very nearly invisible — the tile
+   * ruler out there only survives because `text()` haloes every glyph in near-black. Haloing a
+   * drawing is not an option, and a second ink chosen per theme would be a second vocabulary
+   * for the same lines.
+   *
+   * A ground of its own settles it exactly the way the field mat does (`COLORS.mat` never
+   * themes — see its declaration): the section is an instrument sitting on the floor beside
+   * the board, its outline separates it from either floor, and one set of colours is correct
+   * on both. It also says what the drawing IS — a section is a separate diagram beside the
+   * plan, not more field.
+   */
+  const box = pt(0, 0);
+  ctx.transform(fr.out.x, fr.out.y, fr.up.x, fr.up.y, box.x, box.y);
+  roundRectPath(ctx, -(R + SECT_RING), SECT_Z0, R + SECT_RING, SECT_Z1, 0.9);
+  ctx.fillStyle = C.COLORS.mat;
+  ctx.fill();
+  ctx.strokeStyle = C.COLORS.wall;
+  ctx.lineWidth = 0.4;
+  ctx.stroke();
+  ctx.restore(); // drops the section-frame transform with it — every point below is world
+
+  ctx.save();
+
+  // THE SCORING VOLUME, shaded.
+  ctx.globalAlpha = 0.12;
+  ctx.fillStyle = C.COLORS.white;
+  quad(BB_FLOWER_VOL_Z[0], BB_FLOWER_VOL_Z[1], R);
+  ctx.fill();
+
+  // THE BORE — the two inner faces, lower ring to top ring.
+  ctx.globalAlpha = 0.4;
+  ctx.lineWidth = 0.35;
+  ctx.beginPath();
+  seg(BB_FLOWER_FLOOR_Z, -R, BB_FLOWER_TOP_Z, -R);
+  seg(BB_FLOWER_FLOOR_Z, R, BB_FLOWER_TOP_Z, R);
+  ctx.stroke();
+
+  // THE MIDDLE RING — see the header: dashed, because its hole is unmeasured.
+  ctx.globalAlpha = 0.65;
+  ctx.lineWidth = 0.45;
+  ctx.setLineDash(CELL_DASH);
+  ctx.beginPath();
+  seg(BB_FLOWER_MID_Z, -R, BB_FLOWER_MID_Z, R);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+
+  // THE LOWER RING — solid, the same ink as the FOOT, because it is the same object seen from
+  // the side. Drawn from the tiles up so the section has a visible floor to stand on.
+  ctx.save();
+  ctx.fillStyle = C.COLORS.wall;
+  quad(0, BB_FLOWER_FLOOR_Z, R);
+  ctx.fill();
+  ctx.strokeStyle = C.COLORS.white;
+  ctx.globalAlpha = 0.55;
+  ctx.lineWidth = 0.3;
+  ctx.stroke();
+  ctx.restore();
+
+  // THE TOP RING — material to each SIDE of the bore, because the bore IS its 4.0-in opening.
+  // Owner colour when a NECTAR owns the flower (§10.5.2), white when nobody does.
+  ctx.save();
+  ctx.strokeStyle = owner ? allianceColor(owner) : C.COLORS.white;
+  ctx.globalAlpha = owner ? 1 : 0.7;
+  ctx.lineWidth = 0.9;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  seg(BB_FLOWER_TOP_Z, R, BB_FLOWER_TOP_Z, R + SECT_RING);
+  seg(BB_FLOWER_TOP_Z, -R, BB_FLOWER_TOP_Z, -R - SECT_RING);
+  ctx.stroke();
+  ctx.restore();
+
+  // THE ELEMENTS, at their real heights and their real radii, in their own colours.
+  ctx.save();
+  ctx.strokeStyle = 'rgba(12,14,18,0.65)';
+  ctx.lineWidth = 0.3;
+  stack.forEach((b, k) => {
+    const c = pt(zs[k], 0);
+    ctx.fillStyle = elementInk(b.color);
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, elementR(b), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  });
+  ctx.restore();
+
+  if (!locked) return;
+
+  /**
+   * THE LOCK, at the retrieval gate — under the lower ring, where a robot reaches in.
+   *
+   * Drawn through the section's own axes rather than in world x/y: the glyph has an up and a
+   * side of its own, and on the rear and audience walls the section is rotated 90°, so a
+   * padlock laid out in world coordinates would be lying on its back on half the field.
+   */
+  const o = pt(-SECT_LOCK, 0);
+  const ink = allianceColor(kindOf(ids[0]) as Alliance);
+  // body / shackle / keyhole, in the section's own (across, height) axes. The shackle is the
+  // half that makes it a padlock rather than a box, so it is drawn at a padlock's proportions
+  // — a little over a third of the glyph — and the arc sweeps t = 0..π, which is the half
+  // ABOVE its centre in these axes whichever way the wall has turned them.
+  const bodyTop = SECT_LOCK_R * 0.13;
+  const w = SECT_LOCK_R * 0.7;
+  ctx.save();
+  ctx.transform(fr.out.x, fr.out.y, fr.up.x, fr.up.y, o.x, o.y);
+  ctx.strokeStyle = ink;
+  ctx.lineWidth = 0.3;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.arc(0, bodyTop, w * 0.62, 0, Math.PI);
+  ctx.stroke();
+  roundRectPath(ctx, -w, -SECT_LOCK_R, w, bodyTop, 0.25);
+  ctx.fillStyle = ink;
+  ctx.globalAlpha = 0.22;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, -SECT_LOCK_R * 0.45, w * 0.3, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -601,51 +886,21 @@ export function drawBiobuzzField(
     ctx.restore();
 
     /**
-     * THE STACK READOUT — THE STACK ITSELF, OUTSIDE THE PERIMETER (owner ruling, 2026-09-12).
+     * THE STACK READOUT — A SECTION OF THE COLUMN, OUTSIDE THE PERIMETER (owner ruling,
+     * 2026-09-12; `drawFlowerSection`).
      *
-     * One disc per element, at element scale, in its own colour, in STACK ORDER, running along
-     * the wall with the BOTTOM of the stack nearest the FLOWER. It replaces a count badge,
-     * which said the one thing about a FLOWER that a driver cannot use: the number of elements
-     * in it decides nothing. The COLOURS decide everything — the BOTTOM-most NECTAR is the
-     * 5-point bonus AND the thing that locks retrieval (a 3.6 NECTAR does not fit the 3.55
-     * opening, G418), and the TOP-most NECTAR is who OWNS the flower and collects 2 per
-     * element in it (§10.5.2). A badge also read as an unexplained second circle beside a ring.
+     * DRAWN EVEN WHEN THE FLOWER IS EMPTY, which the row of discs it replaces was not. An
+     * empty section is a rule on the field — the band an element has to reach and the ring it
+     * has to pass — and a readout that appears only once something is in there makes "F1 is
+     * empty" and "F1 has no readout" the same picture.
      *
-     * OUTSIDE the wall because inside it there is no room: the ring is BB_FLOWER_D from the
-     * perimeter and a six-element stack is two feet long. `BB_VIEW_MARGIN` was widened to
-     * carry this.
+     * WHY NOT A COUNT. The number of elements in a FLOWER decides nothing; the ORDER and the
+     * HEIGHTS decide everything. The bottom-most NECTAR is the 5-point bonus and the thing
+     * that locks retrieval (G418), the top-most NECTAR is who owns the flower and collects 2
+     * per element in the volume (§10.5.2), and a POLLEN under the middle ring is worth zero.
+     * A badge says none of that; the section says all four at a glance.
      */
-    const stack = elements(bb?.flowers?.[i]?.stack);
-    if (stack.length > 0) {
-      const { base, along } = stackAxis(f);
-      // a stem from the ring out to the stack, so the readout belongs to THIS flower and not
-      // to the wall in general.
-      ctx.save();
-      ctx.strokeStyle = C.COLORS.white;
-      ctx.globalAlpha = 0.35;
-      ctx.lineWidth = 0.4;
-      ctx.beginPath();
-      ctx.moveTo(f.x, f.y);
-      ctx.lineTo(base.x, base.y);
-      ctx.stroke();
-      ctx.restore();
-
-      let t = 0;
-      for (const b of stack) {
-        const r = b.r ?? BB_POLLEN_R;
-        t += r;
-        ctx.save();
-        ctx.fillStyle = elementInk(b.color);
-        ctx.strokeStyle = 'rgba(12,14,18,0.65)';
-        ctx.lineWidth = 0.3;
-        ctx.beginPath();
-        ctx.arc(base.x + along.x * t, base.y + along.y * t, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-        t += r + STACK_GAP;
-      }
-    }
+    drawFlowerSection(ctx, f, elements(bb?.flowers?.[i]?.stack));
   });
 
   // PERIMETER — drawn last, so it sits over the grid lines and the garden tape that run into
