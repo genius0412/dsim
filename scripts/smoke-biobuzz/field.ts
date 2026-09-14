@@ -1792,6 +1792,55 @@ export function fieldChecks(check: Check): void {
     }
   }
 
+  // -- STAGING IS IDEMPOTENT: THE HOPPER AGREES WITH THE HELD SET ------------
+  /**
+   * RE-STAGING IS A REAL CALL, not a hypothetical: `bbWorld` restages a rebuilt scene, a
+   * restored snapshot restages onto the same robots, and the check directly above this one
+   * calls `stageBiobuzz` a second time itself. So "stage twice" has to leave what "stage once"
+   * leaves.
+   *
+   * `r.hopper` is the half that used to survive. `world.balls` is REPLACED wholesale by
+   * staging, which drops the previous pass's `held` POLLEN, but the hopper colour list
+   * mirroring them was left standing -- so a second staging started from a hopper that was
+   * already at `bbHopperCap`, `capturePollen` refused all four fresh preloads, and they parked
+   * on the tiles as `ground`. Measured on the default robot: hopper 4, held 0.
+   *
+   * THE ASSERTION IS THE AGREEMENT, not a literal 4. The preload count is already asserted by
+   * the staging checks above, and a robot whose cap is below `PRELOAD_PER_ROBOT` legitimately
+   * keeps fewer than four -- the bug is not "too few held", it is the two halves disagreeing.
+   * COLOURS TOO, sorted: a count-only check passes a hopper holding the right NUMBER of the
+   * previous pass's entries, and `takeHeld` matches on colour, so a hopper naming a colour the
+   * robot does not hold is a shot that silently does nothing.
+   *
+   * THREE STAGINGS, because a reset that ran but was applied at the wrong point in the
+   * sequence can still look right on the second pass and drift on the third.
+   */
+  {
+    const w = createBiobuzzWorld('match', 13, [setup(0, 'blue', {}, 0), setup(1, 'red', {}, 0)]);
+    const agree = (pass: number): void => {
+      for (const r of w.robots) {
+        const held = w.balls.filter((b) => b.state.kind === 'held' && b.state.robot === r.id);
+        const hopper = [...r.hopper].sort().join(',');
+        const colours = held.map((b) => b.color).sort().join(',');
+        check(
+          `staging x${pass}: robot ${r.id} (${r.alliance}) hopper matches the elements it holds`,
+          r.hopper.length === held.length && hopper === colours,
+          `hopper=${r.hopper.length} [${hopper}] held=${held.length} [${colours}]`,
+        );
+      }
+      check(
+        `staging x${pass}: still exactly ${BB_STAGED_TOTAL} elements on the field`,
+        w.balls.length === BB_STAGED_TOTAL,
+        `balls=${w.balls.length}`,
+      );
+    };
+    agree(1);
+    stageBiobuzz(w);
+    agree(2);
+    stageBiobuzz(w);
+    agree(3);
+  }
+
   // ── CONSERVATION: 56 ELEMENTS, EVERY TICK, WITH TWO ROBOTS DRIVING ───────
   /**
    * THE INVARIANT THE WHOLE STAGING MODEL RESTS ON — and the reason it is its own check rather

@@ -569,8 +569,14 @@ function stockNectar(startId: number): Artifact[] {
  * slots, but "bottom-most" is a scoring rule and it should not rest on the order a loop
  * happened to push in.
  *
- * Stage the whole field onto `world`. Called once by `createBiobuzzWorld`, after the robots
- * exist (the preloads need them) and before anything steps.
+ * Stage the whole field onto `world`. Called by `createBiobuzzWorld`, after the robots exist
+ * (the preloads need them) and before anything steps.
+ *
+ * IDEMPOTENT, and asserted so: staging a world twice leaves exactly the state staging it once
+ * does. Everything it touches — `world.balls`, the state-bag views, every robot's hopper — is
+ * REBUILT rather than added to, because the second caller is real (a scene rebuilding, a smoke
+ * fixture, a restored snapshot) and the failure mode of a partial reset is a robot whose
+ * hopper counts elements the array no longer holds.
  *
  * ORDER IS PART OF THE CONTRACT: flowers, gardens, preloads, cell nectar, stock nectar. Ball
  * ids are handed out in that sequence, so the id of any given staged element is stable across
@@ -585,6 +591,20 @@ export function stageBiobuzz(world: World): void {
   };
 
   world.balls = [];
+  // THE HOPPERS GO WITH THE ARRAY. `r.hopper` is the colour list that MIRRORS every `held`
+  // ball pointing at that robot, so the assignment above — which drops the previous staging's
+  // held POLLEN along with everything else — has already invalidated it. Staging is not
+  // incremental (the same reason `indexInto` rebuilds each view rather than appending to it),
+  // and a world staged TWICE is a real case: a scene rebuilding, a smoke fixture, a restored
+  // snapshot re-laid onto the same robots.
+  //
+  // Leaving them standing is not a cosmetic drift, because `capturePollen` refuses a ball once
+  // `r.hopper.length` reaches `bbHopperCap` — so the stale entries EAT the second pass's
+  // preloads, which then park on the tiles as `ground` against the front face. Reproduced: a
+  // second `stageBiobuzz` left hopper 4 / held 0 on a default robot. That disagreement is the
+  // one state `takeHeld` refuses to act on (it returns `null` rather than invent an element),
+  // so the hopper HUD draws four POLLEN the driver can never fire.
+  for (const r of world.robots) r.hopper = [];
   const staged: Artifact[] = [];
   staged.push(...take(flowerStack(id)));
   staged.push(...take(gardenLine(id, 'red')));
