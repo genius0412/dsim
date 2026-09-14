@@ -77,6 +77,15 @@ function seat(id: string, player: HostIn & { k: 'add' }): Client {
        is not the bottleneck. If a real backlog ever shows up on venue Wi-Fi, the fix is for the
        page to push `bufferedAmount` across on the health tick, not to block this thread. */
     player: { ...player.player, clientId: id },
+    /* ⚠️ THE LANE THIS SEAT'S SNAPSHOTS TAKE CAN DROP THEM. `isHot` above puts every snapshot
+       on the guest's unordered `maxRetransmits: 0` channel, which is the right trade for a
+       frame the next one supersedes — but it means the room may NOT assume a snapshot it sent
+       was received, and the room's default delta is cut against exactly that assumption. A
+       guest that loses one frame would otherwise apply the next on top of a baseline that is
+       wrong about whatever moved in the lost one, ack it as fine, and keep that error until
+       the match ended. Telling the room makes it key this seat's deltas to the ack instead;
+       see `broadcastSnapshot`. A cloud WebSocket sets nothing here and is unaffected. */
+    lossy: true,
     connected: true,
     disconnectAt: 0,
     caps: player.caps ?? [],

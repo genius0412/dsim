@@ -86,6 +86,16 @@ retransmit. On a clean LAN this is a small win. On congested venue Wi-Fi it is t
 between a hitch and a freeze, and it is the exact failure `docs/netcodeplan.md` was written to
 remove.
 
+⚠️ **"Superseded by the next one" is only true once the deltas are keyed to the ACK.** A
+snapshot is not a whole world — it carries only the balls that changed since a baseline, and the
+room's default baseline is *the frame it last sent*. Under that baseline a lost frame is not
+superseded by the next one, it is erased by it: the next frame says nothing about the ball that
+moved in the lost one, the guest patches a baseline that is wrong about it, and then ACKS that
+world as healthy — so the `ACK_STALE_TICKS` resync never fires and the ball is still in the
+wrong place at the buzzer. `hostWorker` therefore marks every guest seat `lossy`, which makes
+the room cut that seat's delta against the tick the guest has CONFIRMED. Anything else added to
+the hot lane has to answer the same question: what does the receiver definitely still hold?
+
 ⚠️ **This is not the P2P mesh that was deleted.** `netcodeplan.md` §25 killed a full mesh of
 lockstep peers over a shared TURN server, where any one failing edge wedged the match. This is
 a **star**: one authoritative room, N client links, all on the same subnet, no TURN, no

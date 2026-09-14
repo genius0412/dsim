@@ -14656,6 +14656,72 @@ function pinScene(
   check('ack channel: an ack-less legacy client is never force-keyframed', legacyDeltas);
 }
 
+// ---- LOSSY LANE (tab-hosted LAN): a DROPPED snapshot must not corrupt the guest ----
+// A tab host's guests take their snapshots over an unordered `maxRetransmits: 0` DataChannel
+// (`src/net/lanPeer.ts`), so a frame does not merely arrive late — it can vanish. That is why
+// `src/lan/hostWorker.ts` marks those seats `lossy`, and it is the whole of what the flag buys:
+// the delta after a lost frame is keyed to what the guest has ACKED rather than to what was
+// last broadcast. Keyed to the last broadcast it would say nothing about the ball that moved in
+// the lost frame — the server already counted that ball as sent — so the guest patches a
+// baseline that is wrong about it and then ACKS the result as healthy, which means the
+// ACK_STALE_TICKS resync never fires and the wrong ball is still wrong at the buzzer.
+//
+// The loss is STAGED rather than simulated (the room is the thing under test) and the ball is
+// nudged through `worldForTest` so exactly ONE frame carries it: if it kept moving, the next
+// delta would mention it again and the bug would hide.
+{
+  const gMsgs: ServerMsg[] = [];
+  const mkLan = (id: string, alliance: 'red' | 'blue', sink: ServerMsg[], lossy: boolean): Client => ({
+    id,
+    send: (m) => sink.push(m),
+    player: { clientId: id, name: id, teamName: 'T', teamNumber: 1, alliance, startIndex: 0, ready: true, spec: { ...DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS } },
+    connected: true,
+    disconnectAt: 0,
+    userId: `u-${id}`,
+    lossy,
+  });
+  const room = new Room('smoke-lan-drop', () => {}, { kind: 'versus' });
+  room.add(mkLan('guest', 'red', gMsgs, true)); // a WebRTC guest: its snapshot lane drops frames
+  room.add(mkLan('host', 'blue', [], false)); // the host seat, in-process, loses nothing
+  room.onMessage('guest', { t: 'start' });
+
+  // the guest's own world, rebuilt from the wire exactly as `serverSession` rebuilds it.
+  // Deep-copied on the way in: the object send path hands out the room's LIVE artifacts, so
+  // aliasing them would make the guest agree with the server no matter what was sent.
+  const guestBalls = new Map<number, Artifact>();
+  let acked = -1;
+  const drain = (): void => {
+    for (const m of gMsgs) {
+      if (m.t !== 'snapshot') continue;
+      applyBallDelta(guestBalls, JSON.parse(JSON.stringify(m.balls)) as typeof m.balls);
+      acked = m.serverTick;
+    }
+    gMsgs.length = 0;
+  };
+  room.advanceForTest(4);
+  drain(); // in sync, and it tells the room so
+  room.onMessage('guest', { t: 'input', tick: room.tickForTest() + 1, q: quantizeCommand(cmd({})), ack: acked });
+
+  // ONE artifact moves, on ONE frame — and that frame is the one the lane eats
+  const victim = (room.worldForTest() as World).balls.find(
+    (b) => b.vel.x === 0 && b.vel.y === 0 && b.vz === 0 && b.z === 0,
+  ) as Artifact;
+  victim.pos.x += 0.5;
+  gMsgs.length = 0;
+  room.advanceForTest(2);
+  gMsgs.length = 0; // LOST IN FLIGHT: never applied, never acked
+  room.advanceForTest(2);
+  drain(); // the only frame the guest actually receives after the loss
+
+  const rebuilt = [...guestBalls.values()].sort((a, b) => a.id - b.id);
+  const live = (room.worldForTest() as World).balls.slice().sort((a, b) => a.id - b.id);
+  check(
+    'lan delta: a lossy guest survives a dropped snapshot (delta keyed to its ACK, not the last broadcast)',
+    JSON.stringify(rebuilt) === JSON.stringify(live),
+    `artifact ${victim?.id} moved on the lost frame only`,
+  );
+}
+
 // ---- future-tick input buffer is BOUNDED (memory-exhaustion guard) ----------
 // `pending` is keyed by the exact tick an input applies to, and `frameCommands` only
 // ever deletes keys the world has REACHED. A tick the world will never reach is

@@ -151,6 +151,20 @@ export const MAX_PENDING_PER_ROBOT = 128;
  * has. ~4 s at 60 Hz. */
 const ACK_STALE_TICKS = 240;
 /**
+ * How many recent broadcast frames' CHANGE SETS are retained so a delta can be keyed to an
+ * older baseline than the last one sent (see `lossy` in `Client`).
+ *
+ * Sized to outlast `ACK_STALE_TICKS`: at `SNAPSHOT_INTERVAL` 2 that window is 120 frames, and a
+ * client whose ack falls further behind than it is force-resynced with a keyframe anyway — so
+ * history running out and the stale-ack resync firing are the SAME event, which is what keeps
+ * "no usable baseline" from ever being a state the room has to recover from separately. Each
+ * entry is a tick plus the ids that moved on it, so the whole ring is a few thousand ints.
+ */
+const SNAP_HISTORY_FRAMES = 128;
+/** baseline sentinel: "this recipient holds nothing we can diff against, send the whole world".
+ *  Safe as a tick value because a world's ticks start at 0 and an ack below 0 is refused. */
+const KEYFRAME = -1;
+/**
  * Outbound backlog (bytes still queued on the socket) past which a client is SKIPPED for
  * this snapshot instead of being handed another one.
  *
@@ -229,6 +243,17 @@ export interface Client {
   /** the authenticated user id (Neon Auth subject), set once the client proves a
    * session; leaderboard/ELO writes attribute to it. Absent ⇒ anonymous run. */
   userId?: string;
+  /**
+   * This client's SNAPSHOT LANE CAN DROP FRAMES, so the room may not assume a snapshot it
+   * sent was received.
+   *
+   * Set only by the tab host (`src/lan/hostWorker.ts`), whose guests take snapshots over an
+   * unordered `maxRetransmits: 0` DataChannel (`src/net/lanPeer.ts`). A cloud WebSocket is one
+   * ordered reliable stream — the previous broadcast either arrived or the socket is gone — so
+   * it leaves this unset and keeps the cheaper delta-vs-last-broadcast. See `broadcastSnapshot`
+   * for what the flag actually changes.
+   */
+  lossy?: boolean;
   /** protocol capabilities this client build advertised on join/queue (mixed-version
    * safe: a room opens the strategy window only if EVERY member supports 'strategy') */
   caps?: string[];
@@ -335,6 +360,15 @@ export class Room {
   private loop: ReturnType<typeof setInterval> | null = null;
   // delta-snapshot state: last-sent balls (id -> JSON) + clients holding a baseline
   private prevBalls = new Map<number, string>();
+  /** `serverTick` of the last broadcast snapshot — the baseline a RELIABLE recipient holds */
+  private prevSnapTick = -1;
+  /** which ball ids changed on each of the last `SNAP_HISTORY_FRAMES` broadcasts, oldest
+   *  first. Unioning the entries after a client's acked tick gives the delta that client
+   *  needs, which is how a lossy recipient is served without per-client ball copies. */
+  private readonly snapChanged: { tick: number; ids: number[] }[] = [];
+  /** the newest broadcast tick that has FALLEN OUT of `snapChanged`. An ack at or below it
+   *  can no longer be reconstructed from, so that client takes a full keyframe instead. */
+  private snapHistoryFrom = -1;
   private readonly snapPrimed = new Set<string>();
   // clientId -> newest snapshot serverTick the client has confirmed APPLIED (its
   // ball baseline, piggybacked on `input`). The happy-path delta is still against
@@ -1007,9 +1041,24 @@ export class Room {
     // Dropping it is the whole reason a rematch can rebuild in place — see `matchGen`.
     // Absent (older client) ⇒ accepted, exactly as before.
     if (gen !== undefined && gen !== this.matchGen) return;
-    // record the client's confirmed snapshot baseline (piggybacked ack). Kept even
+    // Record the client's confirmed snapshot baseline (piggybacked ack). Kept even
     // for a dropped/spectating robot below — it's transport bookkeeping, not a command.
-    if (typeof ack === 'number' && ack > (this.snapAck.get(id) ?? -1)) this.snapAck.set(id, ack);
+    //
+    // ⚠️ THE ACK IS NOW LOAD-BEARING, NOT JUST A HEALTH SIGNAL: for a `lossy` client it KEYS
+    // the delta, so a value the world has not reached would pin the baseline ahead of the
+    // world and every subsequent delta would come out empty — the client would be told
+    // nothing ever changed again. It is still monotonic (an ack cannot go backwards), and it
+    // is refused outright unless it names a tick that actually happened.
+    if (
+      typeof ack === 'number' &&
+      Number.isSafeInteger(ack) &&
+      ack >= 0 &&
+      this.world !== null &&
+      ack <= this.world.tick &&
+      ack > (this.snapAck.get(id) ?? -1)
+    ) {
+      this.snapAck.set(id, ack);
+    }
     const rid = this.robotOf.get(id);
     if (rid === undefined || this.dropped.has(rid)) return;
     // REFUSE AN IMPOSSIBLE FUTURE TICK OUTRIGHT. Rejected here rather than at the buffer
@@ -1174,6 +1223,9 @@ export class Room {
     this.ackTick.clear();
     this.dropped.clear();
     this.prevBalls.clear();
+    this.prevSnapTick = -1;
+    this.snapChanged.length = 0;
+    this.snapHistoryFrom = -1;
     this.snapPrimed.clear();
     this.snapAck.clear();
     // start recording the input log; finalized once at phase 'post'. Stamp the game so
@@ -1987,8 +2039,16 @@ export class Room {
     // a baseline) or a full keyframe (the balls that changed = all of them)
     const cur = new Map<number, string>();
     for (const b of w.balls) cur.set(b.id, JSON.stringify(b));
-    const changed: Artifact[] = [];
-    for (const b of w.balls) if (cur.get(b.id) !== this.prevBalls.get(b.id)) changed.push(b);
+    const changedIds: number[] = [];
+    for (const b of w.balls) if (cur.get(b.id) !== this.prevBalls.get(b.id)) changedIds.push(b.id);
+    // Push THIS frame's change set before anything reads the history, so a delta keyed to an
+    // older baseline includes what moved on this very tick as well as everything in between.
+    this.snapChanged.push({ tick: w.tick, ids: changedIds });
+    while (this.snapChanged.length > SNAP_HISTORY_FRAMES) {
+      // whatever falls off the end is no longer reconstructible from: an ack at or below the
+      // evicted frame's tick can only be served a keyframe. See SNAP_HISTORY_FRAMES.
+      this.snapHistoryFrom = (this.snapChanged.shift() as { tick: number }).tick;
+    }
     const order = w.balls.map((b) => b.id);
     const slim = slimWorld(w);
     const cmds = this.frameCmds(w);
@@ -2002,19 +2062,36 @@ export class Room {
     //
     // Priming is a first-frame condition: after a recipient's first snapshot it stays
     // primed until its ack goes stale, so in steady state `unprimed` is never built.
-    const prefix: { primed: string | null; unprimed: string | null } = { primed: null, unprimed: null };
-    const bodyFor = (primed: boolean): string => {
-      const cached = primed ? prefix.primed : prefix.unprimed;
-      if (cached !== null) return cached;
-      const balls: BallDelta = { order, upd: primed ? changed : w.balls };
+    //
+    // The cache is keyed by BASELINE TICK because that is now the only thing that varies:
+    // every reliable recipient shares one baseline (the previous broadcast) and so shares one
+    // encode, `KEYFRAME` is a second, and lossy recipients add one per DISTINCT acked tick —
+    // on a LAN that is one or two, since guests ack the same frames within a tick of each
+    // other. It is bounded by the audience either way, and equals the old two in the cloud.
+    const bodies = new Map<number, string>();
+    /** every ball that has changed since broadcast tick `base`, carrying its CURRENT data */
+    const updSince = (base: number): Artifact[] => {
+      const ids = new Set<number>();
+      for (let i = this.snapChanged.length - 1; i >= 0; i--) {
+        const e = this.snapChanged[i];
+        if (e.tick <= base) break;
+        for (const id of e.ids) ids.add(id);
+      }
+      // walk `w.balls` rather than the id set so `upd` keeps the world's own ordering, which
+      // is what every delta has always carried
+      return w.balls.filter((b) => ids.has(b.id));
+    };
+    const bodyFor = (base: number): string => {
+      const cached = bodies.get(base);
+      if (cached !== undefined) return cached;
+      const balls: BallDelta = { order, upd: base === KEYFRAME ? w.balls : updSince(base) };
       // JSON.stringify rather than encodeMsg: this is deliberately a PARTIAL snapshot,
       // missing the one required field each recipient supplies for itself.
       const whole = JSON.stringify({ t: 'snapshot', serverTick: w.tick, w: slim, balls, cmds });
       // drop the closing brace so the per-client tail can be appended. `whole` always
       // has at least one key, so it is never the degenerate `{}`.
       const body = whole.slice(0, -1);
-      if (primed) prefix.primed = body;
-      else prefix.unprimed = body;
+      bodies.set(base, body);
       return body;
     };
     const sendTo = (c: Client): void => {
@@ -2031,19 +2108,46 @@ export class Room {
       // keyframe and resyncs. Normal ack lag (a few ticks) never trips this.
       const ack = this.snapAck.get(c.id);
       if (ack !== undefined && w.tick - ack > ACK_STALE_TICKS) this.snapPrimed.delete(c.id);
-      const primed = this.snapPrimed.has(c.id);
+      /**
+       * WHICH BASELINE THIS RECIPIENT IS KNOWN TO HOLD — the thing a delta must be keyed to.
+       *
+       * On an ordered reliable lane that is the PREVIOUS BROADCAST: it arrived or the socket
+       * is gone, so the cheapest correct delta is the one against `prevBalls`.
+       *
+       * ⚠️ ON A LOSSY LANE IT IS NOT, AND ASSUMING IT WAS CORRUPTED LAN GUESTS SILENTLY. A tab
+       * host's guests take snapshots over an unordered `maxRetransmits: 0` DataChannel, so
+       * frame N can simply vanish. The guest then applies N+1 — which says nothing about the
+       * ball that moved on N, because the server already counted that ball as sent — on top of
+       * a baseline that is wrong about it, and ACKS N+1 perfectly happily. NOTHING HEALED
+       * THAT: the ack is FRESH, so the `ACK_STALE_TICKS` resync never fires, and a ball that
+       * moved during the lost frame and then came to rest never appears in a delta again. It
+       * stays in the wrong place, on that one guest's screen, for the rest of the match.
+       *
+       * So a lossy recipient's delta is keyed to what it has CONFIRMED rather than to what was
+       * last sent. That is a SUPERSET of the happy-path delta and it is self-correcting by
+       * construction: `upd` carries each ball's CURRENT data, so applying a delta cut against
+       * an older baseline to a client that has since moved ahead is still exactly right, and
+       * every frame the ack fails to advance widens the window instead of losing a frame out
+       * of it. The cost is the widened window itself, and only while a guest is losing frames.
+       */
+      const base = c.lossy ? (ack ?? KEYFRAME) : this.prevSnapTick;
+      // `snapHistoryFrom` and the stale-ack unprime above are the same cutoff from two sides —
+      // see SNAP_HISTORY_FRAMES — so this is belt-and-braces, not a second policy.
+      const primed = this.snapPrimed.has(c.id) && base >= 0 && base >= this.snapHistoryFrom;
+      const from = primed ? base : KEYFRAME;
       const ackInputTick = this.ackTick.get(c.id) ?? 0;
       if (c.sendRaw) {
-        c.sendRaw(`${bodyFor(primed)},"ackInputTick":${ackInputTick}}`);
+        c.sendRaw(`${bodyFor(from)},"ackInputTick":${ackInputTick}}`);
       } else {
-        const balls: BallDelta = { order, upd: primed ? changed : w.balls };
+        const balls: BallDelta = { order, upd: from === KEYFRAME ? w.balls : updSince(from) };
         c.send({ t: 'snapshot', serverTick: w.tick, w: slim, balls, cmds, ackInputTick });
       }
-      if (!primed) this.snapPrimed.add(c.id);
+      this.snapPrimed.add(c.id);
     };
     for (const c of this.clients.values()) sendTo(c);
     for (const s of this.spectators.values()) sendTo(s); // read-only watchers get the same stream
     this.prevBalls = cur;
+    this.prevSnapTick = w.tick;
   }
 
   /** full keyframe to one client (reattach resync): all balls, primes the client */

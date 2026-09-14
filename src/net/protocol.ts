@@ -401,10 +401,12 @@ export type ClientMsg =
   // reliable WebSocket the happy-path delta is still against the last broadcast;
   // the ack only drives a self-healing keyframe when a client's CONFIRMED baseline
   // falls too far behind (a wedged/way-behind client resyncs instead of drifting).
-  // It is ALSO the seam the future unreliable (QUIC-datagram) lane needs: there a
-  // dropped snapshot means last-sent != last-received, so the delta must be keyed
-  // to this ack. Absent from older clients ⇒ the server simply never force-resyncs
-  // them (unchanged behaviour).
+  // On an UNRELIABLE lane it carries the whole scheme: a tab-hosted LAN guest takes
+  // snapshots over an unordered `maxRetransmits: 0` DataChannel, so last-sent is no
+  // longer last-received and the server keys that client's delta to this ack (see
+  // `lossy` in server/room.ts). The server refuses an ack that names a tick the world
+  // has not reached — it is a baseline, not a claim. Absent from older clients ⇒ they
+  // are never force-resynced and never treated as lossy (unchanged behaviour).
   // `gen` is the MATCH GENERATION this input was produced for (see `matchStart`).
   // A rematch rebuilds the world at tick 0, so inputs still in flight from the old
   // match carry tick numbers the NEW match will eventually reach — and would then be
@@ -738,8 +740,13 @@ export const decodeServerMsg = (s: string): ServerMsg => JSON.parse(s) as Server
  *
  * Sending the order every frame is what keeps it deterministic: array position
  * drives collision/scoring iteration + `worldHash`, so it must match exactly.
- * (Over the reliable+ordered WebSocket no ack is needed — the client's baseline
- * is always the previous snapshot. A reconnect re-primes with a full keyframe.)
+ *
+ * "Since the last snapshot" is the server's choice of BASELINE, not a property of
+ * the format: `upd` always carries each listed ball's CURRENT data, so a delta cut
+ * against any older baseline the client genuinely holds is equally correct, just
+ * larger. That is what the lossy WebRTC lane uses — over the reliable+ordered
+ * WebSocket the baseline is simply the previous snapshot, and a reconnect re-primes
+ * with a full keyframe. See `broadcastSnapshot` in server/room.ts.
  */
 export type SlimWorld = Omit<World, 'balls' | 'robots'> & {
   robots: Omit<RobotState, 'spec'>[];
