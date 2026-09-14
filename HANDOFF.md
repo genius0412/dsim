@@ -1,3 +1,48 @@
+# HANDOFF — 2026-09-14 (branch `discord-activity`, PR #41 into alpha): the activity plays all three seasons
+
+**READ FIRST if you are on `discord-activity`.** This branch is `origin/alpha` @ `7000931` merged in
+(one conflict, `server/room.ts`: the Discord `lobbySummary` and upstream's `canSeat` both landed at
+the same spot — both kept) plus the fixes below. Everything in the section after this one is
+upstream's state and still true here.
+
+- **The instance id survives a reload** (`src/net/discordActivity.ts` `discordInstanceId`). It arrives
+  only on the launch URL, the router canonicalizes that URL to a bare path on first load, and every
+  navigation pushes a bare path — so ANY reload inside the activity (Vite's reconnect reload after a
+  dev-server restart, the REFRESH button, a manual refresh) came back with no `instance_id`, the home
+  page lost its Join Discord Lobby button and the reloaded participant could no longer see the party.
+  Reported as "others who join my activity can't see the join discord button". Remembered per TAB in
+  sessionStorage; the URL wins whenever it carries one, so a fresh launch always overwrites.
+- **A room has one season and the creator picks it** (`DiscordLobbyList.tsx`, `App.tsx`
+  `enterDiscordRoom`). Rooms were pinned to `versus/decode`, so the activity could not play Chain
+  Reaction or BIOBUZZ — and the Lobby draws its start editor and build summary from the PLAYER's
+  season, so a BIOBUZZ player joining a pinned room saw a BIOBUZZ lobby for a DECODE match. Now the
+  browser reports each room's season (the server's `lobbySummary` already carried `game`), an unopened
+  main lobby / a separate lobby takes the season picked on the home page, and `enterDiscordRoom`
+  `selectGame`s BEFORE queueing the auto-join — the same rule an accepted invite follows, because the
+  server refuses a config-mismatched joiner. Rows now show the season and pass the code UPPERCASE so the
+  Lobby heading matches the host's.
+- **E2E-tested in a browser on 2026-09-13**, emulating the activity with `?instance_id=` in two tabs of
+  one dev server behind the quick tunnel: a reload to a bare path keeps the button; BIOBUZZ main lobby
+  created by a BIOBUZZ tab and joined by a tab configured for DECODE (button read `JOIN MAIN LOBBY ·
+  BIOBUZZ`, create read `DECODE`) → both in a BIOBUZZ match, driving works; a separate Chain Reaction
+  lobby listed as `Chain Reaction 1/4` in a BIOBUZZ-configured tab → joined → CR match; DECODE main
+  lobby joined from a Chain-configured tab → DECODE match. No console errors.
+- **Not emulable here:** the real `.discordsays.com` host (`/.proxy/gs`, the Embedded App SDK
+  participants/avatars). Unchanged by this branch.
+- **Tests:** 12 new `discord activity:` checks in `scripts/smoke.ts` (4 behavioural on
+  `discordInstanceId` with a fake `window`, 8 structural on the season plumbing). The two upstream
+  `lan gate:` checks were updated to the owner's 2026-09-13 decision (LAN on in production — both
+  flags in `fly.toml`); they were red on alpha itself. `npm run uiaudit` is back at its baseline (the
+  branch's `.dj-more` 11.5px and two off-grid paddings were the slips). Green: `npm test` (both
+  suites), `test:mm`, `server:check`, `build`, `uiaudit`, `contrast`.
+- **Known edge, deliberately left:** two people pressing JOIN MAIN LOBBY in the same 3 s poll window
+  with different seasons — the second is refused with the server's "different game mode" error and
+  has to go back and press it again (the browser then shows the room's season).
+- **Not committed:** `package-lock.json` drift (`npm install` adds the `dsim-lan` bin that upstream's
+  lockfile lacks) — upstream's to regenerate.
+
+---
+
 # HANDOFF — 2026-09-14, early (settle-based finalize LIVE, PR 65 landed, all night fixes shipped)
 
 **READ FIRST — what production is running.** Fly release **v111** = `main` @ `b09f12e`, deployed
