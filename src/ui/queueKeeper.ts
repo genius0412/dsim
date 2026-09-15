@@ -73,6 +73,22 @@ export interface ParkedQueue {
   strategy: ParkedStrategy | null;
   /** a match exists (assigned, or started on the single-region path) */
   found: boolean;
+  /**
+   * `lobby` IS THE MATCH ROOM'S SOCKET, NOT THE MATCHMAKER'S — the seat is already taken.
+   *
+   * A staged ranked room gives everyone `RANKED_JOIN_GRACE_MS` to connect and bills whoever
+   * is missing when it lapses. That clock cannot be left to the UI: the assignment used to be
+   * recorded here and the JOIN left for whichever screen the takeover managed to mount, so
+   * every hitch between the two — a React tree tearing down a live match, a navigation that
+   * lands somewhere else, an exception anywhere in the chain — was a dodge charged to a player
+   * who never saw a thing. So `matchAssigned` is acted on WHERE IT ARRIVES: the parked socket
+   * joins the room itself and hands the room socket back here.
+   *
+   * The adopting screen reads this to know which socket it has been given. Joining again
+   * under the same user would seat a second client; re-pointing the events is all that is left
+   * to do.
+   */
+  joined: boolean;
   error: string | null;
 }
 

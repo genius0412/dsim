@@ -8519,7 +8519,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     const mk = (over: Partial<Parameters<typeof parkQueue>[0]> = {}) => ({
       lobby: fakeLobby(), mode: '1v1' as const, game: 'decode' as const, challenge: null,
       since: 1000, size: 1, need: 2,
-      assignedRoom: null, start: null, strategy: null, found: false, error: null, ...over,
+      assignedRoom: null, start: null, strategy: null, found: false, joined: false, error: null, ...over,
     });
 
     // THE GAME TRAVELS WITH THE SEARCH. Parking exists so the player can go and do
@@ -8573,10 +8573,45 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     });
     check('queue keeper: a late strategyStart keeps its deadline', peekQueue()?.strategy?.deadline === 42);
 
+    /**
+     * ⚠️ A SEAT IN THE STAGED ROOM, HELD BY THE PARKED SOCKET ITSELF (`joined`).
+     *
+     * `RANKED_JOIN_GRACE_MS` starts running the moment a match is staged, and it used to be
+     * spent waiting for the UI: the assignment was recorded here and the JOIN left to whichever
+     * screen the takeover managed to mount. Anything in between — a React tree tearing down a
+     * live practice match, a navigation that lands elsewhere, an exception in the chain — came
+     * out of that budget, and running it out is a cancelled match and a dodge charged to a
+     * player who never saw a thing. So the assignment is acted on where it arrives, and what is
+     * parked from then on is the ROOM's socket. The adopting screen has to be able to tell the
+     * two apart: joining again would seat a second client under one user.
+     */
+    updateQueue({ joined: true });
+    check('queue keeper: a parked socket can BE the match room, not the queue', peekQueue()?.joined === true);
+
     const taken = takeQueue();
     check('queue keeper: taking hands back the same search', taken?.assignedRoom === 'iad-abc');
+    check('queue keeper: ...and the seat comes back with it', taken?.joined === true);
     check('queue keeper: ...and only once', takeQueue() === null);
     check('queue keeper: taking does NOT close the socket (the screen adopts it)', disposed === 0);
+
+    /**
+     * A RE-PARK MUST NOT DEMOTE A FOUND MATCH BACK TO A SEARCH.
+     *
+     * The screen's own `teardown` builds the parked shape, and it used to hard-code
+     * `found: false` with every payload `null` however far things had got — so an unmount
+     * anywhere between "match found" and "match playing" threw the match away, silently, and
+     * the player was billed for missing it. This is the store half of that contract; the
+     * source checks below pin the screen half.
+     */
+    parkQueue(mk({ found: true, joined: true, assignedRoom: 'iad-xyz', strategy: {
+      deadline: 99, yourRobotId: 1, mode: '2v2', intros: [], players: [], myClientId: 'c2',
+    } }));
+    const re = takeQueue();
+    check(
+      'queue keeper: a re-parked search hands back the match it had already found',
+      re?.found === true && re?.joined === true && re?.assignedRoom === 'iad-xyz' && re?.strategy?.deadline === 99,
+      `found=${re?.found} joined=${re?.joined} room=${re?.assignedRoom} deadline=${re?.strategy?.deadline}`,
+    );
 
     parkQueue(mk());
     dropQueue();
@@ -8585,6 +8620,76 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     updateQueue({ size: 9 });
     check('queue keeper: updating nothing is a no-op, not a crash', peekQueue() === null);
     un();
+  }
+
+  /**
+   * ---- THE SCREEN HALF OF THE BACKGROUND QUEUE ---------------------------------
+   *
+   * Reported (2026-09-14, ranked 2v2): "when 4/4 people had queued for the match, instead of
+   * being sent to the match prep menu, i was sent to the queuing menu, and i was unable to
+   * ready up for the match, which dropped my standing … i tried the same sequence of actions
+   * for 1v1s and the appearance of the match prep menu was sporadic." Four
+   * `Left before the match started` charges, a 30-minute ranked lock, standing 67.
+   *
+   * Every one of these is a path where the CLIENT loses a match the SERVER has already staged
+   * — and the server's answer to a player who does not turn up is a dodge on their standing.
+   * They are grepped rather than driven because this screen is React and the suite is not: the
+   * store contract above is exercised for real, and these pin the three places the screen has
+   * to agree with it. Each is one line, and each one shipped broken.
+   */
+  {
+    const mm = readFileSync('src/ui/Matchmaking.tsx', 'utf8');
+    check(
+      'ranked queue: an assignment is ACTED ON where it arrives — the parked socket takes the seat',
+      /lobby\.on\('matchAssigned', \(room\) => \{\s*\n\s*matchFound\(\);\s*\n\s*parkAssignedRoom\(lobby, room\);/.test(mm),
+    );
+    check(
+      'ranked queue: ...and the matchmaker socket is dropped, so a blip cannot re-queue a staged player',
+      /const parkAssignedRoom[\s\S]{0,800}?mm\.dispose\(\);/.test(mm),
+    );
+    check(
+      'ranked queue: a seat in the staged room is PARKED, not disposed, when the screen goes away',
+      /if \(joinedRef\.current\) \{[\s\S]{0,900}?parkQueue\(parkedState\(lobby, true\)\);/.test(mm),
+    );
+    check(
+      'ranked queue: the parked shape carries what was already found, instead of a fresh search',
+      /assignedRoom: assignedRoomRef\.current,[\s\S]{0,240}?strategy: strategyRef\.current,\s*\n\s*found: foundRef\.current,/.test(mm),
+    );
+    check(
+      'ranked queue: the prep window is REMEMBERED as it opens, so a re-park can put it back up',
+      /strategyRef\.current = \{\s*\n\s*deadline, yourRobotId, mode: m, intros/.test(mm),
+    );
+    check(
+      'ranked queue: adopting a socket that already has a seat re-points it instead of joining twice',
+      /if \(p\.joined\) \{[\s\S]{0,700}?wireRoomLobby\(lobby, p\.assignedRoom \?\? '', true\);/.test(mm) &&
+        /\} else if \(p\.assignedRoom && !p\.joined\) \{/.test(mm),
+    );
+    check(
+      'ranked queue: adoption watches the STORE, so "already there; it will adopt" is true',
+      /const parked = useParkedQueue\(\);[\s\S]{0,400}?adoptParked\(\);/.test(mm),
+    );
+    /**
+     * LEAVING HAS TO REALLY LEAVE. Both of these hold a live room socket by the time they run,
+     * and parking one is how the takeover would drag a player back into the match they just
+     * walked out of.
+     */
+    check(
+      'ranked queue: cancelling forgets the found match before tearing down',
+      /searchingRef\.current = false;\s*\n\s*clearFound\(\);\s*\n\s*teardown\(\);/.test(mm),
+    );
+    check(
+      'ranked queue: ...and so does leaving the prep window, which also drops the parked search',
+      /clearFound\(\);\s*\n\s*teardown\(\);\s*\n\s*dropQueue\(\);/.test(mm),
+    );
+    /**
+     * AND THE SCREEN MUST NOT CLAIM TO BE SEARCHING WHEN IT IS NOT. "Finding a match…" is what
+     * the report saw while a staged room counted down the join grace behind it; a found match
+     * gets its own state, above `searching`, so the two can never again look identical.
+     */
+    check(
+      'ranked queue: a found match has its own screen, and it is checked before "searching"',
+      mm.indexOf('if (found) {') > 0 && mm.indexOf('if (found) {') < mm.indexOf('if (searching) {'),
+    );
   }
 
   {
@@ -8610,7 +8715,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     };
     parkQueue({
       lobby: {} as never, mode: '1v1', game: 'chain', challenge: ch, since: 1, size: 1, need: 2,
-      assignedRoom: null, start: null, strategy: null, found: false, error: null,
+      assignedRoom: null, start: null, strategy: null, found: false, joined: false, error: null,
     });
     check('queue keeper: a parked search remembers its CHALLENGE', peekQueue()?.challenge?.opponent === 'bob');
     const back = takeQueue();

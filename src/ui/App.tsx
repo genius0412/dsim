@@ -963,7 +963,9 @@ export function App() {
 
   useEffect(() => {
     if (!parkedQueue?.found) return;
-    if (screenRef.current === 'matchmaking') return; // already there; it will adopt
+    // already there: the screen adopts any parked search reactively, not only on mount
+    // (`Matchmaking`'s adopt effect), so there is nothing for this to do
+    if (screenRef.current === 'matchmaking') return;
     sessionRef.current?.dispose();
     setSession(null);
     setSessionKind(null);
