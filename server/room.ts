@@ -281,6 +281,21 @@ export interface MatchOutcome {
   /** true only for matchmade ranked rooms; custom versus rooms persist for the
    * history + replay but do NOT move ELO */
   ranked: boolean;
+  /**
+   * THE MATCH'S OWN FORMAT, from the room rather than from a head-count of who was still
+   * there at the end.
+   *
+   * `persistVersusMatch` derived it as `eloMode(authed.length)` — 4+ is a 2v2 — which is the
+   * survivors and not the format. A 2v2 that ended with three participants (one player gone
+   * before the match even began, so neither in `clients` nor in `departed`) was therefore
+   * FILED and RATED as a 1v1: the reporter's history shows `RANKED 1V1 · Alex,
+   * Lance-14596-36839 vs Mitri`, three names on a 1v1 row, and its −156 landed on the 1v1
+   * board. The room has always known better — a staged room carries the queue bucket it was
+   * paired in, and every room knows how many robots it fielded.
+   *
+   * Absent ⇒ the old head-count, which is all a LAN upload or an older caller can offer.
+   */
+  mode?: '1v1' | '2v2';
   result: ReplayResult;
   replay: Replay;
   participants: MatchParticipant[];
@@ -829,8 +844,17 @@ export class Room {
        */
       if (this.finalized) this.passCrown(id);
       this.broadcastRoster();
-      // a partner who drops must not leave the run un-restartable: their vote is
-      // no longer required, so a rematch the other driver already asked for lands
+      /**
+       * A partner who drops must not leave the run un-restartable: their vote is no longer
+       * required, so a rematch the other driver already asked for lands.
+       *
+       * ⚠️ WHICH IS ALSO HOW THE GHOST MATCH GOT MADE. Pressing REMATCH while both players are
+       * still reading the results is the most ordinary thing in the world, and this line meant
+       * that the OTHER player then leaving — to go and practise, say — was itself the trigger:
+       * their drop made the standing vote unanimous and the match restarted around the chassis
+       * they had just walked away from. `maybeRematch` now also asks whether every SEAT is
+       * still held (`rematchSeatsHeld`), which is the half this could never supply.
+       */
       this.refreshRematch();
       // ⚠️ THE GRACE IS ONLY EVER CHECKED BY THE LOOP, AND A FINISHED MATCH HAS NO LOOP.
       // `finalizeMatch` stops it and keeps the room for the results screen, so a player who
@@ -1783,7 +1807,18 @@ export class Room {
         });
       }
       this.reportBehaviour(participants);
-      const ret = this.onResult({ game: this.game, config: this.config, ranked: this.ranked, result, replay, participants });
+      const ret = this.onResult({
+        game: this.game,
+        config: this.config,
+        ranked: this.ranked,
+        // the format this match WAS, not the number of people left holding a controller at the
+        // end of it: the queue bucket when the matchmaker staged this room, else the roster it
+        // actually fielded. See `MatchOutcome.mode`.
+        mode: this.pendingMatch?.mode ?? (this.matchSetups.length ? eloMode(this.matchSetups.length) : undefined),
+        result,
+        replay,
+        participants,
+      });
       // resolves once persisted (async DB write): versus → per-driver ELO deltas;
       // record → the run's leaderboard standing. Broadcast so the results screen
       // can reveal the ELO change (versus) or the PB / WR / rank line (record).
@@ -1956,9 +1991,54 @@ export class Room {
   private broadcastRematch(): void {
     const ids = this.connectedDrivers();
     const votes = ids.filter((i) => this.rematchVotes.has(i)).length;
+    /**
+     * `need` IS THE NUMBER OF DRIVERS THE REMATCH ACTUALLY TAKES — the roster it would field,
+     * not just whoever is still here.
+     *
+     * With a seat empty the tally read "1/1" and pressing it did nothing, which is the worst
+     * possible way to say "this cannot happen": the one remaining driver saw a complete vote
+     * and a dead button. Counting the seats says it out loud — "1/2", and the missing driver is
+     * visibly missing from the roster. `matchSetups` is empty before the first match and after
+     * a recycle, where the connected count is the only answer there is (and a one-driver record
+     * room must keep reporting 1, or the client grows a 1/1 ballot where it shows a button).
+     */
+    const need = Math.max(ids.length, this.matchSetups.length);
     for (const c of this.clients.values()) {
-      c.send({ t: 'rematch', votes, need: ids.length, you: this.rematchVotes.has(c.id) });
+      c.send({ t: 'rematch', votes, need, you: this.rematchVotes.has(c.id) });
     }
+  }
+
+  /**
+   * IS EVERY SEAT THE REMATCH WOULD FIELD STILL HELD BY A CONNECTED DRIVER?
+   *
+   * A rematch REPLAYS `matchSetups` frozen at the first start, so it cannot drop a robot whose
+   * driver has gone — `returnToLobby` says so in as many words about its own cleanup: the next
+   * match "would spawn a robot with no driver, which is the exact failure a rematch has today".
+   * This is that failure. The vote was gated on CONNECTED drivers alone, so the one player left
+   * at the results screen was unanimous by themselves and could start a match against an empty
+   * chassis — a RATED one, because `this.ranked` is a room flag and `beginMatch` clears
+   * `finalized`.
+   *
+   * Reported (ranked, 2026-09-14): "I play a game, I win it and after a few minutes of just
+   * training my elo goes down and another match appears in my history which I never played. On
+   * replay, the enemy bot appears and moves but mine simply doesn't move at all." Their client
+   * was still in `clients` on its reconnect grace when the rematch began, so `checkGrace` reaped
+   * it mid-match into `departed` — which exists so an ABANDONED match still rates — and the
+   * ghost was rated, filed in their history and charged to their ELO. In the 2v2 case it also
+   * came out with three participants, which `eloMode` then called a 1v1.
+   *
+   * The SEAT is the thing to test, not the vote: a driver who is in the room but not connected
+   * is not going to drive. Same answer for a duo record run — a co-op score attempt with a dead
+   * partner is not a run anyone wants on the board.
+   */
+  private rematchSeatsHeld(): boolean {
+    const held = new Set<number>();
+    for (const c of this.clients.values()) {
+      if (!c.connected) continue;
+      const rid = this.robotOf.get(c.id);
+      if (rid !== undefined) held.add(rid);
+    }
+    return this.matchSetups.every((s) => held.has(s.id));
   }
 
   private maybeRematch(): void {
@@ -1966,6 +2046,8 @@ export class Room {
     if (ids.length === 0) return;
     if (!ids.every((i) => this.rematchVotes.has(i))) return;
     if (!this.matchSetups.length) return;
+    // ...and every SEAT it would field still has somebody in it (see `rematchSeatsHeld`)
+    if (!this.rematchSeatsHeld()) return;
     // the last match's ratings are still being written: start once they are in (the
     // persist's `settle` calls back here), so the rematch introduces the updated ones
     if (this.resultPending) return;

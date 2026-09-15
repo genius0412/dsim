@@ -13999,6 +13999,129 @@ function pinScene(
   const stally = [...solo].reverse().find((m) => m.t === 'rematch') as Extract<ServerMsg, { t: 'rematch' }> | undefined;
   check('versus rematch: a ONE-driver room reports need 1, so the client shows no vote',
     stally?.need === 1, String(stally?.need));
+
+  /**
+   * ---- ⚠️ THE GHOST MATCH: A REMATCH MAY NOT FIELD A SEAT NOBODY IS IN ----------------
+   *
+   * Reported (ranked, 2026-09-14): "I play a game, I win it and after a few minutes of just
+   * training my elo goes down and another match appears in my history which I never played. On
+   * replay, the enemy bot appears and moves but mine simply doesn't move at all." Two of them
+   * in the screenshot, and one is a 2v2 filed as `RANKED 1V1` with three names on it.
+   *
+   * A rematch REPLAYS `matchSetups` frozen at the first start, so it cannot drop a robot whose
+   * driver has gone — `returnToLobby` already says the same thing about its own cleanup ("would
+   * spawn a robot with no driver, which is the exact failure a rematch has today"). The vote was
+   * gated on CONNECTED drivers alone, and `detach` calls `refreshRematch` precisely so that a
+   * drop cannot strand a vote — so the SEQUENCE BELOW needed nobody to do anything malicious or
+   * even unusual: the opponent asks for a rematch while both are still reading the results, the
+   * winner leaves to go and practise, and their own departure makes the standing vote unanimous
+   * and starts a RATED match around the chassis they just walked away from. `this.ranked` is a
+   * room flag and `beginMatch` clears `finalized`, so it persisted, rated, and landed in their
+   * history as a loss.
+   *
+   * The SEAT is the thing to test, not the vote.
+   */
+  const gh: Record<string, ServerMsg[]> = { g1: [], g2: [] };
+  const mkG = (id: string): Client => ({ ...mkD(id), send: (m) => gh[id].push(m) });
+  const groom = new Room('smoke-ghost-rematch', () => {}, { kind: 'versus' });
+  groom.add(mkG('g1'));
+  groom.add(mkG('g2'));
+  groom.onMessage('g1', { t: 'start' });
+  groom.advanceForTest(30);
+  const gtally = (id: string) =>
+    [...gh[id]].reverse().find((m) => m.t === 'rematch') as Extract<ServerMsg, { t: 'rematch' }> | undefined;
+
+  // the opponent asks for a rematch, as anyone might from the results screen
+  groom.onMessage('g2', { t: 'rematch', on: true });
+  check('ghost rematch: one standing vote, as before', gtally('g2')?.votes === 1 && gtally('g2')?.need === 2);
+
+  // ...and THEN the other player leaves. Their client is held on its reconnect grace, so it is
+  // still in the room and still owns robot 0 — it is simply not going to drive it.
+  gh.g2.length = 0;
+  const beforeTick = groom.tick;
+  groom.detach('g1');
+  check(
+    'ghost rematch: the departure does NOT start a match around the chassis they left',
+    !gh.g2.some((m) => m.t === 'matchStart') && groom.tick >= beforeTick,
+    `tick ${beforeTick} → ${groom.tick}, matchStart=${gh.g2.some((m) => m.t === 'matchStart')}`,
+  );
+  check(
+    'ghost rematch: ...and the tally says why — 1/2, where it used to read a complete 1/1',
+    gtally('g2')?.votes === 1 && gtally('g2')?.need === 2,
+    `${gtally('g2')?.votes}/${gtally('g2')?.need}`,
+  );
+
+  // they come back to the results screen: the seat is held again, but a rematch is still THEIR
+  // call — the standing vote is the opponent's alone.
+  groom.reattach('g1', (m) => gh.g1.push(m));
+  check(
+    'ghost rematch: coming back does not start it either — the returning player has not voted',
+    groom.tick > 0,
+    String(groom.tick),
+  );
+  gh.g2.length = 0;
+  groom.onMessage('g1', { t: 'rematch', on: true });
+  check(
+    'ghost rematch: ...and with both seats held and both votes in, it restarts as it always did',
+    gh.g2.some((m) => m.t === 'matchStart') && groom.tick === 0,
+    String(groom.tick),
+  );
+
+  /**
+   * THE 2v2 CASE, which is the one in the report: three drivers cannot rematch a four-robot
+   * roster. `need` is the roster the rematch would field, so it reads 4 and not 3 — the vote
+   * is visibly short a driver instead of looking complete and doing nothing.
+   */
+  const q: Record<string, ServerMsg[]> = { q1: [], q2: [], q3: [], q4: [] };
+  const mkQ = (id: string, alliance: Alliance): Client => ({
+    ...mkD(id),
+    send: (m) => q[id].push(m),
+    player: { ...mkD(id).player, alliance },
+  });
+  const qroom = new Room('smoke-ghost-2v2', () => {}, { kind: 'versus' });
+  qroom.add(mkQ('q1', 'red'));
+  qroom.add(mkQ('q2', 'red'));
+  qroom.add(mkQ('q3', 'blue'));
+  qroom.add(mkQ('q4', 'blue'));
+  qroom.onMessage('q1', { t: 'start' });
+  qroom.advanceForTest(30);
+  qroom.detach('q4');
+  q.q1.length = 0;
+  for (const id of ['q1', 'q2', 'q3']) qroom.onMessage(id, { t: 'rematch', on: true });
+  const qtally = [...q.q1].reverse().find((m) => m.t === 'rematch') as
+    | Extract<ServerMsg, { t: 'rematch' }>
+    | undefined;
+  check(
+    'ghost rematch: three of four cannot restart a 2v2 — the fourth robot has no driver',
+    !q.q1.some((m) => m.t === 'matchStart') && qroom.tick > 0,
+    `tick ${qroom.tick}`,
+  );
+  check(
+    'ghost rematch: ...and the tally counts the ROSTER, so it reads 3/4',
+    qtally?.votes === 3 && qtally?.need === 4,
+    `${qtally?.votes}/${qtally?.need}`,
+  );
+
+  /**
+   * AND THE MATCH'S FORMAT COMES FROM THE ROOM, not from a head-count of the survivors.
+   *
+   * `persistVersusMatch` derived it as `eloMode(authed.length)`, so the reporter's 2v2 — which
+   * ended with three participants, one player having left before it even started — was FILED
+   * and RATED as a 1v1. Source-checked rather than driven: proving it end to end means running
+   * a full four-robot match to `finalizeMatch` for one string.
+   */
+  const roomSrcMode = readFileSync('server/room.ts', 'utf8');
+  const rankedSrc = readFileSync('server/ranked.ts', 'utf8');
+  check(
+    'ghost rematch: the room tells the persist layer which format it played',
+    /mode: this\.pendingMatch\?\.mode \?\? \(this\.matchSetups\.length \? eloMode\(this\.matchSetups\.length\) : undefined\)/.test(
+      roomSrcMode,
+    ),
+  );
+  check(
+    'ghost rematch: ...and the persist layer prefers it to counting who was left at the end',
+    /const mode = outcome\.mode \?\? eloMode\(authed\.length\);/.test(rankedSrc),
+  );
 }
 
 // ---- RECYCLING A FINISHED ROOM ---------------------------------------------

@@ -184,7 +184,16 @@ export async function persistVersusMatch(
   const reds = authed.filter((p) => p.alliance === 'red');
   const blues = authed.filter((p) => p.alliance === 'blue');
   if (!reds.length || !blues.length) return []; // not a two-sided match
-  const mode = eloMode(authed.length);
+  /**
+   * THE ROOM'S OWN FORMAT FIRST, a head-count only as the fallback.
+   *
+   * `eloMode(authed.length)` asks how many people were still in it at the end, which is a
+   * different question from what was played: a 2v2 that finished with three participants was
+   * filed AND RATED as a 1v1 — wrong row in the history, and a 2v2 result moving somebody's
+   * 1v1 rating. `MatchOutcome.mode` is the room's answer (the staged queue bucket, else the
+   * roster it fielded); absent only for a LAN upload or a caller that predates the field.
+   */
+  const mode = outcome.mode ?? eloMode(authed.length);
   const { red, blue } = outcome.result.score;
 
   let updates: EloBoardUpdate[] = [];
