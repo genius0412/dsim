@@ -7574,14 +7574,28 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
         'lan gate: a closed server ANSWERS rather than hanging the client to its timeout',
         /reason: 'closed'/.test(idx),
       );
-      check(
-        'lan gate: alpha opens it; production does not mention it at all',
-        /LAN_SIGNALLING = '1'/.test(flyAlpha) && !/LAN_SIGNALLING/.test(flyProd),
-      );
-      check(
-        'lan gate: and production still opens neither door',
-        !/LAN_UPLOADS/.test(flyProd),
-      );
+      /* LAN IS ON IN PRODUCTION SINCE 2026-09-13 (see the prose in `fly.toml`'s [env]).
+         These two checks used to read "alpha opens it; production does not mention it at all",
+         which was the correct assertion right up until the deployment decision changed and then
+         became a suite that fails on a clean tree — the config moved and the test did not.
+
+         The property worth pinning was never "production is closed". It is that EACH CHANNEL
+         DECLARES THE FLAG ITSELF, explicitly, as the exact string the gate fails closed against.
+         Nothing here may be inherited, implied by the release channel, or left to a default: the
+         checks above already prove `lanUploads.ts` treats absent-or-anything-but-'1' as shut, so
+         a config that merely *mentions* the flag is a config that closed the door by accident.
+         Pinning the literal `= '1'` in both files is what keeps "on" a decision somebody wrote
+         down rather than a state a deploy drifted into. */
+      for (const [label, toml] of [['production', flyProd], ['alpha', flyAlpha]] as const) {
+        check(
+          `lan gate: ${label} opens signalling EXPLICITLY — declared, not inherited or implied`,
+          /LAN_SIGNALLING = '1'/.test(toml),
+        );
+        check(
+          `lan gate: ...and ${label} opens uploads the same explicit way`,
+          /LAN_UPLOADS = '1'/.test(toml),
+        );
+      }
 
       /* ---- HOSTING SIGNED OUT, on the ONE server that cannot ask for an account.
          `claim` requires a user id and keeps requiring it (the behavioural check above still
