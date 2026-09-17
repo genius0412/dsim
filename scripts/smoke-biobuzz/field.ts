@@ -15,8 +15,10 @@ import {
   BB_HALF_Y,
   BB_HIVE_BOTTOM_Z,
   BB_HIVE_CELL_DY,
+  BB_HIVE_LEN,
   BB_HIVE_OPEN_Z,
   BB_HIVE_UP_STAGED,
+  BB_HIVE_W,
   BB_NECTAR_R,
   BB_POLLEN_R,
   BB_POLLEN_SIM,
@@ -38,14 +40,22 @@ import {
 } from '../../src/games/biobuzz/flower';
 import {
   BB_HIVE_ACCEPT_MARGIN,
+  BB_HIVE_MISS_REST,
+  BB_HIVE_MISS_TANGENT,
   BB_SPILL_FAN,
+  BB_SPILL_KICK,
   BB_SPILL_SPEED,
+  BB_TIP_RATE_MAX,
+  BB_TIP_RATE_PER_EXTRA,
   BB_TIP_RELEASE_S,
   BB_TIP_SWING_S,
   hiveAccepts,
   hiveApproachSign,
   hiveCellPos,
+  hiveDeflect,
   hivePivot,
+  hiveSurplus,
+  hiveSwingRate,
   hiveTakingSide,
   hiveLoad,
   hiveStep,
@@ -2255,17 +2265,21 @@ export function fieldChecks(check: Check): void {
     // ever passed. So this asserts what the LIVE path can honestly assert: everything is
     // outboard, nothing GAINED speed, nothing arrived near rest, and most of them still carry
     // their draw.
+    // the draw is `BB_SPILL_SPEED` plus or minus the all-directions kick (`BB_SPILL_KICK`), so
+    // the band a pose can honestly be in is that wide
     {
       const moving = spillVel;
-      const inBand = moving.filter((m) => m.v >= BB_SPILL_SPEED[0] - 1 && m.v <= BB_SPILL_SPEED[1] + 1);
+      const lo = BB_SPILL_SPEED[0] - BB_SPILL_KICK;
+      const hi = BB_SPILL_SPEED[1] + BB_SPILL_KICK;
+      const inBand = moving.filter((m) => m.v >= lo - 1 && m.v <= hi + 1);
       const fastest = Math.max(...moving.map((m) => m.v));
       check(
         'live: spilled elements carry the spill velocity — outboard, none faster than the draw, none at rest',
         moving.length > 0 &&
-          moving.every((m) => m.out && m.v <= BB_SPILL_SPEED[1] + 1 && m.v > C.BALL_REST_SPEED * 4) &&
-          fastest >= BB_SPILL_SPEED[0] &&
+          moving.every((m) => m.out && m.v <= hi + 1 && m.v > C.BALL_REST_SPEED * 4) &&
+          fastest >= lo &&
           inBand.length * 2 >= moving.length,
-        `speeds ${moving.map((m) => m.v.toFixed(1)).join(', ')} in/s (draw ${BB_SPILL_SPEED[0]}..${BB_SPILL_SPEED[1]})` +
+        `speeds ${moving.map((m) => m.v.toFixed(1)).join(', ')} in/s (draw ${lo}..${hi} with the kick)` +
           ` · ${inBand.length}/${moving.length} still in band after the first solve · fastest ${fastest.toFixed(1)}` +
           ` · all outboard ${moving.every((m) => m.out)}`,
       );
@@ -3154,12 +3168,16 @@ export function fieldChecks(check: Check): void {
       // narrowed as the speed rose). `vel.y` alone is now only a COMPONENT and bounds nothing.
       const speedOf = (p: SpillPose): number => Math.hypot(p.vel.x, p.vel.y);
       const fanOf = (p: SpillPose): number => Math.abs(Math.atan2(p.vel.x, sign * p.vel.y)) * (180 / Math.PI);
+      // THE KICK (`BB_SPILL_KICK`) widens both: it can add or take its whole magnitude from the
+      // speed, and it can turn the slowest throw by at most asin(kick / vMin). Still OUTBOARD
+      // for every pose — that is the bound the constants were chosen against.
+      const fanMax = BB_SPILL_FAN + Math.asin(BB_SPILL_KICK / BB_SPILL_SPEED[0]) * (180 / Math.PI);
       const badVel = poses.filter(
         (p) =>
           Math.sign(p.vel.y) !== sign ||
-          speedOf(p) < BB_SPILL_SPEED[0] - eps ||
-          speedOf(p) > BB_SPILL_SPEED[1] + eps ||
-          fanOf(p) > BB_SPILL_FAN + eps ||
+          speedOf(p) < BB_SPILL_SPEED[0] - BB_SPILL_KICK - eps ||
+          speedOf(p) > BB_SPILL_SPEED[1] + BB_SPILL_KICK + eps ||
+          fanOf(p) > fanMax + eps ||
           p.vel.z !== 0,
       );
       check(
@@ -3170,25 +3188,22 @@ export function fieldChecks(check: Check): void {
           `y ${Math.min(...poses.map((p) => p.pos.y)).toFixed(2)}..${Math.max(...poses.map((p) => p.pos.y)).toFixed(2)} ` +
           `z ${[...new Set(poses.map((p) => p.pos.z))].join('/')} · ` +
           `speed ${Math.min(...poses.map(speedOf)).toFixed(1)}..${Math.max(...poses.map(speedOf)).toFixed(1)} in/s ` +
-          `(range ${BB_SPILL_SPEED[0]}..${BB_SPILL_SPEED[1]}) · ` +
-          `fan ${Math.max(...poses.map(fanOf)).toFixed(1)}° of ±${BB_SPILL_FAN}°`,
+          `(range ${BB_SPILL_SPEED[0]}..${BB_SPILL_SPEED[1]} ± kick ${BB_SPILL_KICK}) · ` +
+          `fan ${Math.max(...poses.map(fanOf)).toFixed(1)}° of ±${BB_SPILL_FAN}° (+${(fanMax - BB_SPILL_FAN).toFixed(1)}° kick)`,
       );
 
       /**
-       * ⚠️ FOUR DRAWS PER POSE — AND CHANGING THAT NUMBER RE-WRITES EVERY STORED REPLAY.
+       * ⚠️ SIX DRAWS PER POSE HERE, FOUR ON MAIN — AND THAT IS WHY THIS BRANCH IS
+       * `SIM_VERSION` 3.
        *
-       * A replay is `{seed, setups, commands}` and the RNG is reproduced by RE-RUNNING it, so
+       * A replay is `{seed, setups, commands}` and the rng is reproduced by RE-RUNNING it, so
        * how many values `spillPoses` consumes is part of the container's format in everything
-       * but name. Take one more or one fewer and every draw after the first spill lands on a
-       * different number — the next spill, every scatter, everything seeded after it — so the
-       * match a viewer re-simulates is not the match that was played. And the viewer cannot
-       * tell: it refuses a replay only on a SIM_VERSION mismatch, so a change here without a
-       * bump plays a fabrication back as the real thing.
-       *
-       * Not hypothetical. The alpha HIVE-feel batch took this to SIX (an all-directions kick
-       * on top of the fan) and reached `main` inside a whole-branch merge with SIM_VERSION
-       * still at 2. This check is what stands in the way of the next one: if a change here is
-       * deliberate it comes with a SIM_VERSION bump, and this number moves with it.
+       * but name. Main draws four (x, y, speed, angle); the kick adds two, so from the first
+       * spill onward every later draw lands on a different number and the match re-simulates
+       * into a different one. The viewer refuses a replay only on a SIM_VERSION mismatch — so
+       * while both branches read 2 there was nothing to refuse, and the whole-branch merge
+       * `cd4b4c9` took this to main silently. The number below and the constant in
+       * `src/config.ts` move together or not at all.
        */
       let draws = 0;
       let countState = 11;
@@ -3201,9 +3216,261 @@ export function fieldChecks(check: Check): void {
       const drawN = 5;
       spillPoses(mid, a, drawN, counted);
       check(
-        `hive [${a}]: a spill draws exactly 4 RNG values per element (the replay chain depends on it)`,
-        draws === 4 * drawN,
-        `${draws} draws for ${drawN} poses — ${(draws / drawN).toFixed(2)} each, expected 4`,
+        `hive [${a}]: a spill draws exactly 6 rng values per element (main draws 4 — hence SIM_VERSION 3)`,
+        draws === 6 * drawN,
+        `${draws} draws for ${drawN} poses — ${(draws / drawN).toFixed(2)} each, expected 6`,
+      );
+    }
+
+    // 8a-ii. THE KICK IS REAL: across a spill, the poses are NOT all on the fan. With the kick
+    // drawn from the whole circle some poses come out faster than their throw and some slower,
+    // so over a decent sample the speed spread exceeds what `BB_SPILL_SPEED` alone allows on at
+    // least one side. This is what "slightly more randomly in all directions" has to mean in a
+    // check: a fan alone, however wide, is symmetric about outboard and never does this.
+    {
+      let rngState = 21;
+      const rng = (): number => {
+        const r = nextRandom(rngState);
+        rngState = r.state;
+        return r.value;
+      };
+      const mid: HiveState = { up: 'north', contents: [], tips: 0, tipping: BB_TIP_RELEASE_S, released: true };
+      const poses = spillPoses(mid, 'blue', 60, rng);
+      const speeds = poses.map((p) => Math.hypot(p.vel.x, p.vel.y));
+      const over = speeds.filter((v) => v > BB_SPILL_SPEED[1] + 0.5).length;
+      const under = speeds.filter((v) => v < BB_SPILL_SPEED[0] - 0.5).length;
+      const fans = poses.map((p) => Math.abs(Math.atan2(p.vel.x, p.vel.y)) * (180 / Math.PI));
+      const wide = fans.filter((f) => f > BB_SPILL_FAN + 0.5).length;
+      check(
+        'hive: the spill KICK scatters beyond the fan — some poses faster than the draw, some slower',
+        BB_SPILL_KICK > 0 && over > 0 && under > 0 && poses.every((p) => p.vel.y > 0),
+        `of 60: ${over} over ${BB_SPILL_SPEED[1]}, ${under} under ${BB_SPILL_SPEED[0]}, ${wide} wider than ±${BB_SPILL_FAN}°; all outboard=${poses.every((p) => p.vel.y > 0)}`,
+      );
+    }
+
+    // ── HIVE: A HEAVIER TRAY SWINGS FASTER (`hiveSwingRate`, owner 2026-09-13) ──
+    /**
+     * `BB_TIP_SWING_S` is the swing of a tray at EXACTLY its threshold; every element over it
+     * multiplies the rate by `BB_TIP_RATE_PER_EXTRA`, capped at `BB_TIP_RATE_MAX`. The surplus is
+     * measured against the tip TABLE, so every row's threshold load swings at the nominal rate
+     * — which is also what keeps every timing check above, all written at threshold, exactly
+     * where it was.
+     */
+    {
+      // 1. at threshold, every row: surplus 0, rate 1
+      const atRow: string[] = [];
+      for (let n = 0; n < BB_TIP_POLLEN.length; n++) {
+        const at = mix(n, BB_TIP_POLLEN[n]);
+        const load = hiveLoad(at.ids, kindOf(at.kinds));
+        if (hiveSurplus(load) !== 0 || hiveSwingRate(load) !== 1) atRow.push(`${n}n+${BB_TIP_POLLEN[n]}p → surplus ${hiveSurplus(load)} rate ${hiveSwingRate(load)}`);
+      }
+      check('hive rate: a tray at its threshold swings at the nominal rate, every row', atRow.length === 0, atRow.join('; ') || 'all rows rate 1');
+
+      // 2. surplus counts pollen over the row AND nectar past the table's end; the cap holds
+      const two = mix(3, BB_TIP_POLLEN[3] + 2);
+      const r2 = hiveSwingRate(hiveLoad(two.ids, kindOf(two.kinds)));
+      const eightN = mix(8, 0);
+      const s8 = hiveSurplus(hiveLoad(eightN.ids, kindOf(eightN.kinds)));
+      const heavy = mix(3, BB_TIP_POLLEN[3] + 40);
+      const rHeavy = hiveSwingRate(hiveLoad(heavy.ids, kindOf(heavy.kinds)));
+      check(
+        'hive rate: two extra pollen → 1 + 2·PER_EXTRA; 8 nectar → surplus 3; a huge load hits the cap',
+        Math.abs(r2 - (1 + 2 * BB_TIP_RATE_PER_EXTRA)) < 1e-9 && s8 === 8 - (BB_TIP_POLLEN.length - 1) && rHeavy === BB_TIP_RATE_MAX,
+        `rate(3n+${BB_TIP_POLLEN[3] + 2}p)=${r2.toFixed(3)} · surplus(8n)=${s8} · rate(3n+${BB_TIP_POLLEN[3] + 40}p)=${rHeavy} (cap ${BB_TIP_RATE_MAX})`,
+      );
+
+      // 3. THROUGH hiveStep: the heavier tray releases AND settles at SWING / rate — the rate is
+      // carried through the second half, after the load has left the tray.
+      const run = (load: { ids: number[]; kinds: Map<number, BbElementKind> }): { release: number; settle: number; rate: number } => {
+        let h: HiveState = settled([...load.ids]);
+        let t = 0;
+        let release = -1;
+        let settle = -1;
+        let rate = 0;
+        for (let i = 0; i < 600 && settle < 0; i++) {
+          const r = hiveStep(h, dt, kindOf(load.kinds));
+          t += dt;
+          if (r.spilled.length > 0 && release < 0) release = t;
+          if (r.hive.swingRate !== undefined) rate = Math.max(rate, r.hive.swingRate);
+          if (r.tipped) settle = t;
+          h = r.hive;
+        }
+        // `t` includes the one step that only STARTS the swing
+        return { release: release - dt, settle: settle - dt, rate };
+      };
+      const base = run(mix(3, BB_TIP_POLLEN[3]));
+      const fast = run(two);
+      const want = BB_TIP_SWING_S / (1 + 2 * BB_TIP_RATE_PER_EXTRA);
+      check(
+        'hive rate: the threshold tray takes BB_TIP_SWING_S; two extra pollen take SWING / rate, release and settle alike',
+        Math.abs(base.settle - BB_TIP_SWING_S) <= dt + 1e-9 &&
+          Math.abs(base.release - BB_TIP_RELEASE_S) <= dt + 1e-9 &&
+          Math.abs(fast.settle - want) <= dt + 1e-9 &&
+          Math.abs(fast.release - want / 2) <= dt + 1e-9 &&
+          fast.settle < base.settle - 1,
+        `threshold: release ${base.release.toFixed(3)} settle ${base.settle.toFixed(3)} (rate ${base.rate}) · +2 pollen: release ${fast.release.toFixed(3)} settle ${fast.settle.toFixed(3)} (rate ${fast.rate.toFixed(2)}, want ${want.toFixed(3)})`,
+      );
+
+      // 4. FEEDING A TIPPING TRAY SPEEDS IT UP: the same threshold tray, with two pollen dropped
+      // into `contents` half a second into the swing, settles earlier than one left alone.
+      {
+        const load = mix(3, BB_TIP_POLLEN[3] + 2);
+        const kinds = kindOf(load.kinds);
+        const extra = load.ids.slice(-2);
+        let h: HiveState = settled(load.ids.slice(0, -2));
+        let t = 0;
+        let settle = -1;
+        let rateAtStart = -1;
+        for (let i = 0; i < 600 && settle < 0; i++) {
+          if (Math.abs(t - 0.5) < dt / 2) h = { ...h, contents: [...h.contents, ...extra] };
+          const r = hiveStep(h, dt, kinds);
+          t += dt;
+          if (rateAtStart < 0 && r.hive.tipping > 0) rateAtStart = r.hive.swingRate ?? -1;
+          if (r.tipped) settle = t - dt;
+          h = r.hive;
+        }
+        check(
+          'hive rate: elements shot into a tray ALREADY swinging speed the swing up',
+          rateAtStart === 1 && settle > want && settle < BB_TIP_SWING_S - 0.5 && h.swingRate === undefined,
+          `started at rate ${rateAtStart}, fed 2 at 0.5 s, settled at ${settle.toFixed(3)} s (alone: ${BB_TIP_SWING_S}; loaded from the start: ${want.toFixed(3)}); settled hive carries no rate=${h.swingRate === undefined}`,
+        );
+      }
+    }
+
+    // ── HIVE: A MISS BOUNCES OFF THE STRUCTURE (`hiveDeflect`, owner 2026-09-13) ──
+    /**
+     * The assembly is a BOX with no top: four sides and the underside deflect, a descent from
+     * above is left alone, and an element that was already inside is never touched. Pure, so
+     * the faces are checked one by one here; the LIVE consequence — a shot at the hive's flank
+     * comes down beside it instead of downrange — is the check after.
+     */
+    {
+      const A: Alliance = 'blue';
+      const p = hivePivot(A);
+      const xMax = p.x + BB_HIVE_W / 2;
+      const yMax = BB_HIVE_LEN / 2;
+      // blue's staged up cell is NORTH, so +y is the MOUTH end and −y the down cell's end
+      const H: HiveState = { up: 'north', contents: [], tips: 0, tipping: 0, released: false };
+      const v = (x: number, y: number, z: number): { x: number; y: number; z: number } => ({ x, y, z });
+      const near = (a: number, b: number, tol = 1e-6): boolean => Math.abs(a - b) <= tol;
+
+      // a. the DOWN cell's outer end (−y), hit square: put back on the face, normal reversed at
+      // MISS_REST, vz kept
+      const side = hiveDeflect(H, A, v(p.x, -25, 45), v(p.x, -17, 44), v(0, 480, -60));
+      check(
+        'deflect: a shot into the DOWN cell\u2019s end is put back on it with the normal reversed at BB_HIVE_MISS_REST and vz untouched',
+        side !== null &&
+          near(side.pos.y, -yMax - 0.01) &&
+          near(side.pos.x, p.x) &&
+          near(side.vel.y, -480 * BB_HIVE_MISS_REST) &&
+          near(side.vel.x, 0) &&
+          near(side.vel.z, -60),
+        side ? `pos ${side.pos.x.toFixed(2)},${side.pos.y.toFixed(2)},${side.pos.z.toFixed(2)} vel ${side.vel.x.toFixed(1)},${side.vel.y.toFixed(1)},${side.vel.z.toFixed(1)}` : 'null',
+      );
+
+      // a-ii. the MOUTH (+y, the taking cell's outer end) is OPEN at every height: the same
+      // shot from the other side, below the window and still climbing, is let in
+      const mouthLow = hiveDeflect(H, A, v(p.x, 25, 35), v(p.x, 17, 37), v(0, -480, 120));
+      // ...and the mouth FOLLOWS THE RELEASE: once the bar has passed level the incoming
+      // (south) tray is the taking one, so −y opens and +y closes
+      const swung: HiveState = { ...H, tipping: BB_TIP_RELEASE_S / 2, released: true };
+      const mouthSwung = hiveDeflect(swung, A, v(p.x, -25, 35), v(p.x, -17, 37), v(0, 480, 120));
+      const backSwung = hiveDeflect(swung, A, v(p.x, 25, 35), v(p.x, 17, 37), v(0, -480, 120));
+      check(
+        'deflect: the TAKING cell\u2019s outer end is open at every height, and which end that is follows the release',
+        mouthLow === null && mouthSwung === null && backSwung !== null,
+        `settled: +y open=${mouthLow === null} · after the release: −y open=${mouthSwung === null}, +y solid=${backSwung !== null}`,
+      );
+
+      // a-iii. THE PIVOT PLANE: a shot that came in through the mouth and runs on toward the
+      // other cell meets the bar; a shot from the closed side meets the up cell's back
+      const throughMouth = hiveDeflect(H, A, v(p.x, 3, 45), v(p.x + 1, -5, 44), v(60, -480, -60));
+      const fromBack = hiveDeflect(H, A, v(p.x, -3, 50), v(p.x, 5, 49), v(0, 480, -60));
+      const lowPast = hiveDeflect(H, A, v(p.x, 3, 20), v(p.x, -5, 19), v(0, -480, -60)); // under the box
+      check(
+        'deflect: the PIVOT PLANE stops an element crossing the hive axis inside the structure, from either side, and not under it',
+        throughMouth !== null &&
+          near(throughMouth.pos.y, 0.01) &&
+          near(throughMouth.vel.y, 480 * BB_HIVE_MISS_REST) &&
+          near(throughMouth.vel.x, 60 * BB_HIVE_MISS_TANGENT) &&
+          near(throughMouth.vel.z, -60) &&
+          fromBack !== null &&
+          near(fromBack.pos.y, -0.01) &&
+          near(fromBack.vel.y, -480 * BB_HIVE_MISS_REST) &&
+          lowPast === null,
+        `through the mouth → ${throughMouth ? `y ${throughMouth.pos.y.toFixed(2)} vy ${throughMouth.vel.y.toFixed(1)}` : 'null'} · from the back → ${fromBack ? `y ${fromBack.pos.y.toFixed(2)} vy ${fromBack.vel.y.toFixed(1)}` : 'null'} · under the box → ${lowPast === null ? 'free' : 'hit'}`,
+      );
+
+      // b. the UNDERSIDE: a ball climbing into it from below is turned down, run dumped
+      const under = hiveDeflect(H, A, v(p.x, 0, 24), v(p.x + 1, 0, 27), v(60, 0, 180));
+      check(
+        'deflect: a shot rising into the UNDERSIDE comes back down at BB_HIVE_MISS_REST with its run cut to BB_HIVE_MISS_TANGENT',
+        under !== null &&
+          near(under.pos.z, BB_HIVE_BOTTOM_Z - 0.01) &&
+          near(under.vel.z, -180 * BB_HIVE_MISS_REST) &&
+          near(under.vel.x, 60 * BB_HIVE_MISS_TANGENT),
+        under ? `pos z ${under.pos.z.toFixed(2)} vel ${under.vel.x.toFixed(1)},${under.vel.y.toFixed(1)},${under.vel.z.toFixed(1)}` : 'null',
+      );
+
+      // c. NO TOP: a descent into the footprint from above is not a hit (the capture test already
+      // had its say, and a surface a ball can rest on 65 in up is a ball lost for the match)
+      const top = hiveDeflect(H, A, v(p.x, 5, 70), v(p.x, 4, 60), v(0, -60, -600));
+      // d. already inside (a scene placed it there, or it came in through the open top last tick)
+      const inside = hiveDeflect(H, A, v(p.x, 4, 60), v(p.x, 3, 50), v(0, -60, -600));
+      // e. nowhere near
+      const clear = hiveDeflect(H, A, v(-40, 0, 45), v(-38, 0, 45), v(120, 0, 0));
+      check(
+        'deflect: a descent through the OPEN TOP, an element already inside, and one clear of the box are all left alone',
+        top === null && inside === null && clear === null,
+        `top=${top === null} inside=${inside === null} clear=${clear === null}`,
+      );
+
+      // f. a CORNER approach hits the face crossed LAST
+      const corner = hiveDeflect(H, A, v(30, -25, 45), v(20, -15, 45), v(-600, 600, 0));
+      check(
+        'deflect: an element crossing two slabs in one tick meets the face it crossed LAST',
+        corner !== null && near(corner.pos.x, xMax + 0.01) && corner.vel.x > 0 && near(corner.vel.y, 600 * BB_HIVE_MISS_TANGENT),
+        corner ? `pos ${corner.pos.x.toFixed(2)},${corner.pos.y.toFixed(2)} vel ${corner.vel.x.toFixed(1)},${corner.vel.y.toFixed(1)}` : 'null',
+      );
+    }
+
+    // -- LIVE: A MISSED SHOT AT THE HIVE COMES DOWN BESIDE IT, NOT DOWNRANGE ----
+    /**
+     * Two identical shots along +x at the red HIVE from its −x flank; one at 40 in, into the
+     * assembly's side, one at 70 in, over the top of it. The low one bounces and lands on the
+     * side it came from, within a couple of feet of the face; the high one clears the
+     * structure and lands well beyond it. Before `hiveDeflect` both landed downrange.
+     */
+    {
+      const fly = (z: number): { landed: boolean; x: number; y: number; t: number } => {
+        const w = createBiobuzzWorld('match', 31, [setup(0, 'red', {}, 0)]);
+        w.match.phase = 'teleop';
+        w.match.phaseTimeLeft = 120;
+        const b = w.balls.find((x) => x.state.kind === 'ground')!;
+        b.state = { kind: 'flight', target: 'red', by: 'red' };
+        b.pos = { x: -40, y: 0 };
+        b.vel = { x: 150, y: 0 };
+        b.z = z;
+        b.vz = 20;
+        let t = 0;
+        while (b.state.kind === 'flight' && t < 3) {
+          updateBiobuzz(w, C.SIM_DT, new Map(), true, NO_SWEEP);
+          t += C.SIM_DT;
+        }
+        return { landed: b.state.kind === 'ground', x: b.pos.x, y: b.pos.y, t };
+      };
+      const face = hivePivot('red').x - BB_HIVE_W / 2; // the flank it is flying at
+      const low = fly(40);
+      const high = fly(70);
+      check(
+        'live: a shot into the HIVE\u2019s flank bounces off and lands beside it, on the side it came from',
+        low.landed && low.x < face && face - low.x < 30,
+        `landed=${low.landed} at x ${low.x.toFixed(1)} (face at ${face.toFixed(2)}, ${(face - low.x).toFixed(1)} in short of it) after ${low.t.toFixed(2)} s`,
+      );
+      check(
+        'live: the same shot over the TOP of the structure clears it and lands downrange',
+        high.landed && high.x > hivePivot('red').x + BB_HIVE_W / 2,
+        `landed=${high.landed} at x ${high.x.toFixed(1)} after ${high.t.toFixed(2)} s`,
       );
     }
 

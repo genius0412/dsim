@@ -29,7 +29,7 @@ import {
 import { biobuzzColliders } from './colliders';
 import { capturePollen, hiveCellTarget, scoreTargets, takeHeld } from './elements';
 import { bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
-import { hiveAccepts, hiveCellPos, hiveStep, hiveTakingSide, spillPoses } from './hive';
+import { hiveAccepts, hiveCellPos, hiveDeflect, hiveStep, hiveTakingSide, spillPoses } from './hive';
 import { bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
   type BbShot,
@@ -452,9 +452,11 @@ export function updateBiobuzz(
    * sit here is gone; `flowerAccepts` (`flower.ts`) stays as a pure function. A lob that comes
    * down over a FLOWER lands beside it (`land` clears the foot).
    *
-   * A miss is NOT a foul and not special-cased: an element that meets the structure anywhere
-   * else simply keeps flying and lands on the tiles (G417.H), which is also what the open-face
-   * gate in `hiveAccepts` produces for a shot taken from the pivot side.
+   * A miss is NOT a foul (G417.H) but it is no longer NOTHING: an element that meets the HIVE
+   * structure anywhere but the taking cell's mouth BOUNCES OFF IT and drops beside it
+   * (`hiveDeflect`, after the capture test below) — the shot taken from the pivot side that the
+   * open-face gate in `hiveAccepts` refuses hits the closed back and comes down next to the
+   * cell, instead of passing through the assembly and landing downrange.
    */
   for (const b of world.balls) {
     if (b.state.kind !== 'flight') continue;
@@ -462,6 +464,8 @@ export function updateBiobuzz(
     // Absent on an old snapshot and on anything that did not come out of `releasePollen`; see
     // the CELL branch for what that fallback means.
     const launchedBy = b.state.by;
+    // where it WAS, for the structure test: a face is something you cross, not somewhere you are
+    const prev: Vec3 = { x: b.pos.x, y: b.pos.y, z: b.z };
     b.pos.x += b.vel.x * dt;
     b.pos.y += b.vel.y * dt;
     b.z += b.vz * dt;
@@ -516,6 +520,24 @@ export function updateBiobuzz(
       break;
     }
     if (took) continue;
+
+    /**
+     * THE STRUCTURE (owner feedback, 2026-09-13). Either HIVE — a red shot can hit blue's
+     * assembly, and a refused shot at the opponent's cell is the commonest way to. `hiveDeflect`
+     * is an ENTRY test, so an element the capture loop refused over the taking cell (already
+     * inside the footprint, at the mouth) is left to drop through, and one that met a side, the
+     * underside or the pivot is put back on that surface with a dumped velocity and falls from
+     * there. At most one hive can be entered in one tick — they are 25.5 in apart.
+     */
+    for (const a of ALLIANCES) {
+      const hit = hiveDeflect(bb.hives[a], a, prev, { x: b.pos.x, y: b.pos.y, z: b.z }, vel);
+      if (!hit) continue;
+      b.pos = { x: hit.pos.x, y: hit.pos.y };
+      b.z = hit.pos.z;
+      b.vel = { x: hit.vel.x, y: hit.vel.y };
+      b.vz = hit.vel.z;
+      break;
+    }
 
     if (b.z <= 0) land(b, b.pos.x, b.pos.y);
   }

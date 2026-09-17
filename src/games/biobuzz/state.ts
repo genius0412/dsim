@@ -146,6 +146,19 @@ export interface BbHiveState {
    * invariant. `false` whenever `tipping` is 0, and reset at the end of every swing.
    */
   released: boolean;
+  /**
+   * HOW FAST THE SWING IN PROGRESS IS RUNNING, as a multiple of the nominal rate.
+   *
+   * A heavier tray tips faster (owner feedback, 2026-09-13): `hiveSwingRate` (`hive.ts`) reads
+   * it off how far the load is OVER the tip threshold, and the cell keeps taking elements
+   * through the first half of the swing, so the rate can rise mid-swing. It has to be STATE
+   * because the second half of the swing runs after the load has left the tray — the bar
+   * carries the momentum the load gave it, and nothing else in the state remembers what that
+   * load was. `tipping` stays in NOMINAL seconds (the renderer maps it to an angle), and this
+   * is what the countdown is multiplied by. Absent or 1 when settled; absent on any snapshot
+   * recorded before it existed, which reads as the nominal rate.
+   */
+  swingRate?: number;
 }
 
 /**
