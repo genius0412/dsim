@@ -1,6 +1,89 @@
+# HANDOFF — 2026-09-17b (main: the record-restart regression, fixed and deployed)
+
+**READ FIRST.** The alpha merge (below) shipped a regression: **restarting a record run was
+refused** with "You already have a game in progress - rejoin or leave it first". Fixed,
+deployed, `/health` ok, one image across all 8 machines.
+
+**The cause is worth knowing, because it was latent for months.** `startLoop` used to open
+with `stop()`, which releases every single-game lock `startMatch` had just taken — so the
+one-game-per-user guard bound NOTHING. `0857745` split `stopLoop()` out and made the guard
+real, and the restart path had always quietly depended on it being inert: restarting is a
+full teardown (dispose the session, join a BRAND-NEW `rec-` room), so the new run arrives
+while the old room still holds the account's lock.
+
+**⚠️ IT ONLY APPEARS ON AN AUTHENTICATED JOIN** (`if (user && activeElsewhere(...))`), which
+is why nothing caught it. Every ad-hoc socket test run against it was anonymous — the join
+field is `authToken`, not `token`, and a wrong field name reads as a signed-out player and
+passes vacuously. If you are testing a lock, assert the lock was TAKEN first.
+
+**The fix**: a solo record run yields at the door and is the only room kind that does — no
+opponent, no alliance, no rating, so the only person it can be in the way of is its owner.
+Versus, duo and ranked still refuse. Only the LOCK is released (`releaseSeatLock`), never the
+room, because a run decided at the buzzer is kept alive by `finishing` until the field settles
+and its score is written. Client half: `restartRun` sends `abandon` on the live socket before
+disposing, and clears `activeGame` (which still named the abandoned run, so Home went on
+offering to rejoin a match that no longer existed). 8 checks in `npm test`.
+
+## Still open
+
+- **A REJOIN COMPLAINT I COULD NOT REPRODUCE** ("can't move, can't see anyone else move").
+  Driven end to end against the real server — 2-player versus, one player dropped with a 1006,
+  rejoined, both drove: the rejoined player moved exactly as far as the one who never dropped,
+  both saw the same positions, snapshots kept flowing. `reattach` is fine on this evidence.
+  Needs specifics before it can be chased: which mode (ranked / custom / record duo), and which
+  "rejoin" — the Home card, a page refresh, or a network drop that recovered by itself.
+- **A PRE-EXISTING GAP, found while testing and NOT fixed**: an account in a LIVE VERSUS match
+  is admitted into a new solo record room. It reproduces with the fix reverted, so it predates
+  all of this — the guard simply does not fire on that path. Worth a look; it is the same guard
+  the record restart was tripping over, pointed the other way.
+- The season-4 drift from the merge below is unchanged and still the owner's call.
+
+# HANDOFF — 2026-09-17 (main: alpha merged whole and deployed, season HELD at 4)
+
+**Superseded by the section above.** `alpha` is merged into `main` as a single merge commit and deployed to Fly.
+The branches are level: everything that was on alpha is on main, and main's two spectator
+fixes (`applyBallDelta` COPIES, a reconnecting spectator re-spectating) survived the merge —
+their four smoke checks are asserted present in the merged tree.
+
+**⚠️ NO VERSION BUMP WAS TAKEN.** `BALANCE_VERSION` stays **4** and `SIM_VERSION` stays **2**
+(both were already equal on the two branches, so the merge moved neither). The owner declined
+the owed bump to 5 on 2026-09-17: the batch does move scores — settle-based finalize, and the
+BIOBUZZ buzzer-TIP — but bumping archives the standings for everyone on the one Fly app, and
+holding the season was the call. The consequence is on the record in `src/config.ts`: records
+set before and after this deploy share a board although the scoring moved under them. That is
+accepted, not an oversight. Do not "fix" it by bumping later without asking.
+
+## The five conflicts and how they went
+
+| file | hunks | resolution |
+|---|---|---|
+| `src/standing.ts` | 1 | **alpha's `card: 5`** — main's `20` contradicted the docstring directly above it, and the 2026-09-16 backport HANDOFF had already written down that alpha's side wins here next time |
+| `server/room.ts` | 2 | alpha's — `passCrown` on a host leaving a finished match, and `stopLoop()`, which alpha split out of `stop()` and main never had |
+| `scripts/smoke.ts` | 1 | alpha's — the HEAD side was empty; purely additive room-recycle tests |
+| `src/ui/Matchmaking.tsx` | 6 | alpha's — all six HEAD sides empty (`saveStagedMatch`/`clearStagedMatch` calls) |
+| `HANDOFF.md` | 1 | alpha's, then this section prepended |
+
+None of the five needed a judgement the repo had not already recorded.
+
+## Gates, all green on the merge commit
+
+`npm test` **ALL PASS twice** (shared + BIOBUZZ 1321) · `npm run test:mm` 186 ·
+`npm run dbtest` ALL PASS · `build` · `server:check` · `uiaudit` at/under baseline ·
+`contrast` 223.
+
+No new migrations — the admin-panel pair (0035/0036) was already on main from the backport,
+so this deploy needed no schema step.
+
+## Next
+
+- `alpha` is now behind `main` by this merge commit. Fast-forward it before doing more work
+  there, or the branches re-diverge immediately.
+- The season-4 drift above is the open question, not a task. It gets settled the next time
+  someone is willing to reset standings.
+
 # HANDOFF — 2026-09-16 (alpha: the admin panel merged, five PRs merged, main backported)
 
-**READ FIRST.** `alpha` and `main` are both green and both pushed. **NOTHING IS DEPLOYED.**
+`alpha` and `main` were both green and both pushed. Superseded by the section above.
 
 `npm test` prints **ALL PASS twice** for the first time in a while — PR #69 fixed the stale
 lan-gate asserts that had been failing on a clean tree since LAN went on in production on

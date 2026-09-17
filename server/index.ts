@@ -300,6 +300,42 @@ const activeElsewhere = (userId: string, code: string): boolean => {
 };
 
 /**
+ * A SOLO RECORD RUN NEVER BLOCKS ITS OWN OWNER FROM STARTING ANOTHER ONE.
+ *
+ * ⚠️ THIS IS WHAT MAKES THE RESTART BUTTON WORK, and it is needed because restarting a
+ * record run is a full TEARDOWN: the client disposes its session and opens a BRAND-NEW
+ * `rec-` room (see `restartRun`), so the new run arrives as a join from an account the
+ * old room is still holding a lock for. Whether the old lock has been let go by then is
+ * a race the client cannot win — its close frame and the new socket's handshake are two
+ * different connections — and the old room can legitimately still be holding on anyway,
+ * because a run decided at the buzzer is kept alive (`finishing`) until the field settles
+ * and the score is written. Either way the player pressed restart and got "You already
+ * have a game in progress", about a run they had just ended.
+ *
+ * The lock exists to stop one account occupying two seats or two RATED games at once. A
+ * solo record run has no opponent, no alliance and no rating: the only person it can ever
+ * be in the way of is the person who started it. So it yields, and it is the ONLY kind of
+ * room that does — versus, duo and ranked all still refuse, because there the lock is
+ * protecting somebody else.
+ *
+ * Only the LOCK is released (`releaseSeatLock`), never the room: a run already decided
+ * must still finish settling and write its score, with nobody watching.
+ */
+const releaseSoloRecordHold = (userId: string): boolean => {
+  const held = userRoom.get(userId);
+  if (!held) return false;
+  const hr = rooms.get(held);
+  if (!hr) {
+    userRoom.delete(userId); // stale entry for a room that is already gone
+    return true;
+  }
+  if (!hr.soloRecord) return false;
+  hr.releaseSeatLock(userId);
+  userRoom.delete(userId); // belt and braces: the room may never have registered it
+  return true;
+};
+
+/**
  * Is this user supposed to be LOADING INTO a ranked match right now?
  *
  * A pairing the matchmaker staged holds the same single-game lock a live match does
@@ -2390,6 +2426,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (user && activeElsewhere(user.userId, code)) {
       if (r.stagedFor(user.userId)) {
         userRoom.delete(user.userId);
+      } else if (releaseSoloRecordHold(user.userId)) {
+        /* a solo run of their own was in the way; it is not any more — see below */
       } else {
         send({ t: 'error', message: 'You already have a game in progress - rejoin or leave it first.' });
         abandon();

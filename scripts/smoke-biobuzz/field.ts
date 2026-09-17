@@ -3191,6 +3191,35 @@ export function fieldChecks(check: Check): void {
           `(range ${BB_SPILL_SPEED[0]}..${BB_SPILL_SPEED[1]} ± kick ${BB_SPILL_KICK}) · ` +
           `fan ${Math.max(...poses.map(fanOf)).toFixed(1)}° of ±${BB_SPILL_FAN}° (+${(fanMax - BB_SPILL_FAN).toFixed(1)}° kick)`,
       );
+
+      /**
+       * ⚠️ SIX DRAWS PER POSE HERE, FOUR ON MAIN — AND THAT IS WHY THIS BRANCH IS
+       * `SIM_VERSION` 3.
+       *
+       * A replay is `{seed, setups, commands}` and the rng is reproduced by RE-RUNNING it, so
+       * how many values `spillPoses` consumes is part of the container's format in everything
+       * but name. Main draws four (x, y, speed, angle); the kick adds two, so from the first
+       * spill onward every later draw lands on a different number and the match re-simulates
+       * into a different one. The viewer refuses a replay only on a SIM_VERSION mismatch — so
+       * while both branches read 2 there was nothing to refuse, and the whole-branch merge
+       * `cd4b4c9` took this to main silently. The number below and the constant in
+       * `src/config.ts` move together or not at all.
+       */
+      let draws = 0;
+      let countState = 11;
+      const counted = (): number => {
+        draws++;
+        const r = nextRandom(countState);
+        countState = r.state;
+        return r.value;
+      };
+      const drawN = 5;
+      spillPoses(mid, a, drawN, counted);
+      check(
+        `hive [${a}]: a spill draws exactly 6 rng values per element (main draws 4 — hence SIM_VERSION 3)`,
+        draws === 6 * drawN,
+        `${draws} draws for ${drawN} poses — ${(draws / drawN).toFixed(2)} each, expected 6`,
+      );
     }
 
     // 8a-ii. THE KICK IS REAL: across a spill, the poses are NOT all on the fan. With the kick

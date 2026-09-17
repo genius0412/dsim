@@ -46,17 +46,22 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
 // Bumping this INVALIDATES older replays for playback (they only re-sim exactly under their own
 // version's build): ReplayView gates on it and shows "recorded on an older version" instead.
 //
-// ⚠️ **A BUMP TO 5 IS OWED, AND IS TAKEN WHEN ALPHA MERGES INTO MAIN — NOT BEFORE** (owner,
-// 2026-09-15). The alpha batch DOES move scores, so by the rule above it has earned one:
+// ⚠️ **THE BUMP TO 5 WAS DECLINED AT THE MERGE, AND THE SEASON RUNS ON** (owner, 2026-09-17).
+// The alpha batch merged into main on that date WITHOUT a bump: the score-moving changes below
+// are live on 4, deliberately, because bumping archives the standings for everyone on the one
+// Fly app and the owner chose to keep the season rather than reset it over them. So a record
+// set before this merge and one set after share a board although the scoring moved under them
+// — that is the accepted cost, not an oversight. The list stands as the record of what moved,
+// and a later bump starts its season from here rather than re-litigating any of it.
+// 2026-09-15, superseded: the batch DOES move scores, so by the rule above it had earned one:
 //   · BIOBUZZ — a TIP still swinging at the buzzer is scored as the TIP it becomes and its load
 //     is no longer also paid as left in the CELL (§10.5 A/C, `games/biobuzz/score.ts`);
 //   · every game — a match is finalized when the FIELD COMES TO REST rather than at a fixed
 //     2.8 s (`sim/settle.ts`), so anything still scoring after the buzzer now lands.
-// What it has NOT earned is a new SEASON, which is the other thing this number does: bumping
-// archives the standings for everyone on the one Fly app, and the changes above exist only on
-// alpha. So the bump rides the promotion commit, where the season it starts is the season those
-// changes are actually live for. Add to the list above rather than bumping early; if a later
-// alpha change makes the batch unshippable without a reset, that is the moment to reconsider.
+// What it has NOT earned is a new SEASON, which is the other thing this number does. That was
+// the reason to hold the bump while the changes were alpha-only, and at the merge it became the
+// reason to decline it outright. Add to the list above rather than bumping; if a later change
+// makes the accumulated drift unshippable without a reset, that is the moment to reconsider.
 
 /**
  * SIM BEHAVIOUR version — "which builds can re-simulate a replay", which is a
@@ -75,12 +80,20 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  * output. Never reset it. Leaderboards, ELO and seasons DO NOT read it — only
  * replay playback does (`ReplayView` refuses a mismatch and says so).
  *
- * ALPHA HOLDS AT 2 AND STAYS THERE. Alpha's whole divergence from main is ONE unreleased
- * batch, so it is ONE step past main's 1 — bumping again for each change inside that batch
- * just churns a number nobody can act on, and invalidates alpha replays for no gain. Bump
- * this again only when MAIN moves, or when alpha ships.
+ * ALPHA IS ONE STEP PAST MAIN, AND MAIN HAS MOVED. The rule this note has always carried —
+ * alpha's whole divergence from main is ONE unreleased batch, so it sits ONE step above
+ * main, and it is bumped again "only when MAIN moves, or when alpha ships" — has now been
+ * triggered: main shipped the batch and is itself at 2, so alpha goes to 3.
  *
- * 1: sim-reachable Math.hypot -> hyp (engine-independent; see src/math.ts) — MAIN is here.
+ * ⚠️ AND THE COST OF LEAVING THE TWO EQUAL WAS PAID ONCE ALREADY. While both branches read 2,
+ * alpha's HIVE feel — a solid HIVE structure and a spill drawing SIX rng values per element
+ * where main draws four — was an unstamped divergence, so the whole-branch merge `cd4b4c9`
+ * carried it into main and every replay recorded before it re-simulated into a different
+ * match with nothing to say so. Main reverted it; alpha keeps it, at its own number. A
+ * divergence nobody can name is the failure, not the extra integer.
+ *
+ * 1: sim-reachable Math.hypot -> hyp (engine-independent; see src/math.ts).
+ * 2: the batch below — MAIN IS HERE, shipped 2026-09-17.
  * 2: the alpha batch, everything below, which all moves `step()` output:
  *    · CR butterfly drivetrain / twin turret / catalyst mechanisms / corner geometry /
  *      start legality;
@@ -158,8 +171,20 @@ export const BALANCE_VERSION = 4; // 2: real-motor drivetrain retune (torque–s
  *      top-down silhouette, which is what G424 alone already did. Both moved which contacts
  *      draw fouls, hence this entry; BASE PARKING is untouched and still counts wheel support,
  *      because that award is defined by what the TILE holds up, not by occupancy.
+ * 3: THE BIOBUZZ HIVE FEEL, alpha's and alpha's alone — main reverted it out of the merge
+ *    that took it there:
+ *    · THE STRUCTURE IS SOLID (`hiveDeflect`). Its long sides, the down cell's outer end, the
+ *      underside and the pivot plane deflect; only the taking cell's mouth and the top are
+ *      open. A shot that used to pass through the assembly into the opening now bounces off
+ *      and drops beside it — i.e. WHERE A SHOT CAN SCORE FROM is different here than on main;
+ *    · A SPILL DRAWS SIX rng values per element, not four (`BB_SPILL_KICK`, the
+ *      all-directions kick, on top of the fanned throw at `BB_SPILL_FAN` 40°). This is the
+ *      half that makes the number above load-bearing: the rng is reproduced by RE-RUNNING it,
+ *      so a replay crossing between a four-draw build and a six-draw one re-simulates a
+ *      different match from the first spill onward;
+ *    · A HEAVIER TRAY SWINGS FASTER (`hiveSwingRate`, `BbHiveState.swingRate`).
  */
-export const SIM_VERSION = 2;
+export const SIM_VERSION = 3;
 
 /** Ranked PLACEMENT: a player is "in placements" until they've completed this
  * many ranked games on a board (counted per mode).

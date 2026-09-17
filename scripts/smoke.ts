@@ -8078,6 +8078,69 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       'lan tab: the room itself stops its loop when it empties, so nothing steps an empty room',
       /if \(this\.clients\.size === 0\) \{\s*\n\s*this\.stop\(\);\s*\n\s*this\.onEmpty\(\);/.test(roomSrc),
     );
+    /**
+     * ⚠️ **A SOLO RECORD RUN NEVER BLOCKS ITS OWN OWNER, AND THE RESTART BUTTON IS WHY.**
+     *
+     * Restarting a record run is a full teardown: the client disposes its session and joins a
+     * BRAND-NEW `rec-` room, so the new run arrives while the old room is still holding this
+     * account's single-game lock. That lock did nothing for months — `startLoop` opened with
+     * `stop()`, which released every lock it had just taken — so when the split into
+     * `stopLoop()` made it real, the restart button started answering "You already have a game
+     * in progress" about a run the player had just ended. It needs an AUTHENTICATED join to
+     * appear at all, which is why nothing here caught it and why it reached production.
+     *
+     * The lock is there to stop one account holding two seats or two RATED games. A solo record
+     * run has no opponent, no alliance and no rating, so the only person it can ever be in the
+     * way of is its owner: it yields, and it is the ONLY room kind that does.
+     *
+     * Only the LOCK is released, never the room — a run decided at the buzzer is kept alive
+     * (`finishing`) until the field settles and its score is written, and killing the room here
+     * would bring back the unsaved-PB bug by another door.
+     */
+    const idxSrc = readFileSync('server/index.ts', 'utf8');
+    const appSrc = readFileSync('src/ui/App.tsx', 'utf8');
+    const seatLock = roomSrc.slice(roomSrc.indexOf('releaseSeatLock(userId: string)'));
+    check(
+      'record restart: a solo record room knows it is one (the join guard asks)',
+      roomSrc.includes("get soloRecord(): boolean {") &&
+        roomSrc.includes("return this.config.kind === 'record' && this.config.record === 'solo';"),
+    );
+    check(
+      'record restart: releasing the seat lock frees the LOCK...',
+      seatLock.includes('this.activeUserIds.delete(userId);') &&
+        seatLock.includes('this.onUserInactive?.(userId);'),
+    );
+    check(
+      'record restart: ...and leaves the room running, so a decided run still saves its score',
+      !seatLock.slice(0, 400).includes('this.stop()') && !seatLock.slice(0, 400).includes('this.onEmpty()'),
+    );
+    check(
+      'record restart: the join guard yields to a solo record hold instead of refusing',
+      idxSrc.includes('} else if (releaseSoloRecordHold(user.userId)) {'),
+    );
+    check(
+      'record restart: ...and ONLY for a solo record room - versus/duo/ranked still refuse',
+      idxSrc.includes('if (!hr.soloRecord) return false;'),
+    );
+    check(
+      'record restart: ...releasing the lock only, never the holding room',
+      idxSrc.includes('hr.releaseSeatLock(userId);') &&
+        !idxSrc
+          .slice(idxSrc.indexOf('const releaseSoloRecordHold'), idxSrc.indexOf('const releaseSoloRecordHold') + 900)
+          .includes('abandonSlot'),
+    );
+    check(
+      'record restart: the client tells the server the old run is over BEFORE disposing',
+      appSrc.includes('session?.abandonSlot?.();') &&
+        appSrc.indexOf('session?.abandonSlot?.();') < appSrc.indexOf('session?.dispose();'),
+    );
+    check(
+      'record restart: ...and forgets it locally, so Home stops offering a run that is gone',
+      appSrc
+        .slice(appSrc.indexOf('const restartRun = (): void => {'), appSrc.indexOf('const restartRun = (): void => {') + 1800)
+        .includes('clearActiveGame();'),
+
+    );
 
     /**
      * ⚠️ **THE TAB THAT RUNS THE ROOM IS ITS HOST, EVEN THOUGH IT JOINS LAST.** `Room.add`
@@ -13809,6 +13872,30 @@ function pinScene(
   );
   check('a null baseline yields a full keyframe (every ball in upd)', encodeBallDelta(null, w.balls).upd.length === w.balls.length);
 
+  // ALIASING: what a client is handed must NOT be what the baseline holds. The sim
+  // mutates artifacts in place (pos/vel, and `state` on the rail or in a hopper), so
+  // if `applyBallDelta` served the baseline's own objects the client's own stepping
+  // would rewrite the diff baseline, and every ball the server then did NOT re-send
+  // would rebuild from the client's drifted value.
+  {
+    const held = applied[0];
+    const inBase = clientBase.get(held.id)!;
+    check(
+      'applyBallDelta serves COPIES, nested objects included (no baseline aliasing)',
+      held !== inBase && held.pos !== inBase.pos && held.vel !== inBase.vel && held.state !== inBase.state,
+    );
+    // and the property that matters: mutate what the client holds, then take a delta
+    // that OMITS that ball — the rebuild must still be the server's value.
+    const truth = JSON.parse(JSON.stringify(clientBase.get(held.id)));
+    held.pos.x += 12.5;
+    (held.state as { pending?: boolean }).pending = !(held.state as { pending?: boolean }).pending;
+    const reb = applyBallDelta(clientBase, { order: d1.order, upd: [] });
+    check(
+      'a ball the client mutated and the server did not re-send rebuilds to the SERVER value',
+      JSON.stringify(reb.find((b) => b.id === held.id)) === JSON.stringify(truth),
+    );
+  }
+
   // ACK-KEYED / DROPPED-FRAME: the property the unreliable lane needs. A client sits
   // at baseline b0 and MISSES the intermediate frame; the next delta is encoded vs
   // b0 (the ack), NOT vs the skipped frame. It must still reconstruct the live world
@@ -15027,6 +15114,32 @@ for (const game of ['decode', 'chain', 'biobuzz'] as const) {
   room.detach('watch-1');
   check('spectate: after the watcher leaves, the match summary drops the spectator', (room.summary()?.spectators ?? 1) === 0);
   check('spectate: a room with ONLY a hidden observer reads as unwatched', room.visibleSpectators() === 0);
+
+  /**
+   * A WATCHER WHOSE SOCKET REOPENS RE-SPECTATES; IT MUST NEVER SEND `rejoin`.
+   *
+   * `rejoin` reclaims a held DRIVER slot and `Room.reattach` looks only in `clients`, so a
+   * spectator asking for one is answered `{rejoined, ok:false}` — which `ServerSession`
+   * treats as a hard failure and closes the transport on, freezing the match behind the
+   * "connection lost" panel on a connection that had just come back.
+   *
+   * Source-level because `ServerSession` cannot be imported here (`src/net/env.ts` reads
+   * `import.meta.env` at load). Both halves are asserted because the bug was the SEAM
+   * between them: `Transport.onReopen` is a single slot, not a listener list, so the
+   * session's registration silently replaced the lobby's correct one.
+   */
+  {
+    const sess = readFileSync('src/net/serverSession.ts', 'utf8');
+    const lob = readFileSync('src/net/lobbyClient.ts', 'utf8');
+    check(
+      'spectate: ServerSession registers its `rejoin`-on-reopen for DRIVERS only',
+      /if\s*\(!spectator\)\s*\{\s*transport\.onReopen\(/.test(sess),
+    );
+    check(
+      'spectate: ...so the lobby’s re-spectate handler survives the handover',
+      /this\.transport\.onReopen\(\(\) => void doSpectate\(\)\)/.test(lob),
+    );
+  }
 
   // ---- the operator snapshot: signed-in by id, anonymous by COUNT --------
   // The privacy line lives here rather than in the UI: an anonymous session gets

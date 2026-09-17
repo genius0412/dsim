@@ -639,6 +639,36 @@ export class Room {
     return true;
   }
 
+  /**
+   * FREE THIS USER'S SINGLE-GAME LOCK HERE, AND TOUCH NOTHING ELSE.
+   *
+   * `abandonSlot` is the other way out and it is much heavier: it deletes the client,
+   * drops its robot, and takes the whole room down once the last seat goes. That is right
+   * for "I have left this match", and WRONG for the one case this exists for — a solo
+   * RECORD run whose owner has pressed restart. Two things have to be true at once there:
+   * they can start a new run immediately (the lock cannot outlive their interest in the
+   * old one), and the run they just walked away from still SAVES if it was already decided
+   * (`finishing` — a score is written when the field settles after the buzzer, with nobody
+   * watching). Killing the room would serve the first and quietly break the second, which
+   * is the bug `f1fc93a` fixed and which must not come back by another door.
+   *
+   * So: the lock goes, the room stays. The held slot is still held and is reaped by its own
+   * grace exactly as before, so nothing about the reconnect path changes either.
+   */
+  releaseSeatLock(userId: string): boolean {
+    if (!this.activeUserIds.has(userId)) return false;
+    this.activeUserIds.delete(userId);
+    this.onUserInactive?.(userId);
+    return true;
+  }
+
+  /** is this a SOLO record run — one driver, no opponent, no rating? The single-game lock
+   *  treats these differently, because a room with nobody else in it can only ever be in
+   *  its own owner's way (see `releaseSeatLock` and the join guard). */
+  get soloRecord(): boolean {
+    return this.config.kind === 'record' && this.config.record === 'solo';
+  }
+
   /** authoritative sim tick (0 before the match starts) */
   get tick(): number {
     return this.world?.tick ?? 0;

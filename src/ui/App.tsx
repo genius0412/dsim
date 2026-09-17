@@ -964,6 +964,26 @@ export function App() {
    * RecordRun connects on mount, so this costs one reconnect, not a menu trip.
    */
   const restartRun = (): void => {
+    /**
+     * ⚠️ TELL THE SERVER THE OLD RUN IS OVER, AND FORGET IT LOCALLY — both halves used to
+     * be missing, and both became visible the moment the single-game lock started actually
+     * holding (it was released at match start by `startLoop`'s old `stop()` call, so for
+     * months it bound nothing).
+     *
+     * The server half: the new run is a join on a BRAND-NEW `rec-` code, so the old room's
+     * lock is still registered against this account until its own socket close is processed.
+     * `abandon` is the same frame the you-have-a-game-in-progress card sends and it needs no
+     * reply. It is sent on the LIVE session's socket before it is disposed, so it cannot race
+     * the new connection. The server also yields a solo record hold at the door now, so this
+     * is belt and braces rather than the only defence — but it is the half that keeps the old
+     * room from sitting on a lock it no longer has any use for.
+     *
+     * The local half: `activeGame` still named the run we are walking away from, so Home went
+     * on offering to rejoin a match that no longer exists.
+     */
+    session?.abandonSlot?.();
+    clearActiveGame();
+    setActiveGame(null);
     session?.dispose();
     setSession(null);
     setSessionKind(null);

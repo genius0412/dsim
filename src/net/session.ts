@@ -160,6 +160,15 @@ export interface NetSession {
    * All optional: a solo practice run has no session at all, a record run does not
    * recycle, and a build older than the feature simply never offers the control.
    */
+  /**
+   * GIVE UP THIS SEAT ON THE WAY OUT — one frame, no reply, sent while the socket is still
+   * open. The server stops holding this account's single-game lock for the rest of the
+   * reconnect grace, which is what a RECORD restart needs: it tears the session down and
+   * joins a brand-new room, and the old lock would otherwise still be registered when that
+   * join lands. Optional, like the three below — a solo practice run has no session, and an
+   * older build simply never sends it.
+   */
+  abandonSlot?(): void;
   /** host only: ask the server to send this finished room back to its lobby */
   requestLobby?(): void;
   /** the room went back to its lobby; `clientId` is ours on the socket being handed over */
