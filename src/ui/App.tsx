@@ -1408,8 +1408,9 @@ export function App() {
       <RecordRun
         settings={settings}
         mode="solo"
-        onStart={(s) => beginSession(s, 'record')}
-        onCancel={() => navigate('modes')}
+        onStart={(s) => beginSession(s, "record")}
+        onCancel={() => navigate("modes")}
+        onRejoin={rejoinGame}
       />
     );
   }
@@ -1421,7 +1422,7 @@ export function App() {
         onSettingsChange={update}
         config={auto?.config ?? { kind: 'record', record: 'duo' }}
         onStart={(s) => beginSession(s, 'record', true)}
-        onCancel={() => navigate('modes')}
+        onCancel={() => navigate("modes")}
         signedIn={signedIn}
         displayName={handle}
         myUserId={accountUserId}
