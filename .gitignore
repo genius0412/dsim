@@ -10,6 +10,9 @@ release/
 .vercel
 scratch/
 
+# JetBrains IDE project files (per-developer, not shared)
+.idea/
+
 # load-harness output (scripts/loadtest.ts --json); sweeps are evidence, not source
 .loadtest-out/
 
@@ -23,3 +26,4 @@ scripts/.mm-fuzz-baseline.json
 # staged. The cost table beside it IS tracked: it is a measurement, and a fresh clone that
 # has it packs the shards well on the first run instead of after a calibration.
 scripts/.smokeshard-*.ts
+.impeccable/

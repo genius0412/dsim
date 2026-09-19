@@ -27,6 +27,7 @@ import {
 } from '../src/ui/queueKeeper';
 import type { LobbyPlayer } from '../src/net/protocol';
 import { generateRoomCode, isValidRoomCode, normalizeRoomCode } from '../src/net/roomCode';
+import { roomCodeForInstance, discordInstanceId, inDiscordActivity } from '../src/net/discordActivity';
 import { step } from '../src/sim/world';
 import { robotPenetration, robotSolids } from '../src/sim/artifactSolids';
 import { Keyboard } from '../src/input/keyboard';
@@ -17125,6 +17126,81 @@ const mkMM = () => {
   check('isValidRoomCode rejects the wrong length', !isValidRoomCode('ABC') && !isValidRoomCode('BCDFGHJ'));
   check('isValidRoomCode rejects vowels', !isValidRoomCode('BANANA'));
   check('normalizeRoomCode strips junk + uppercases', normalizeRoomCode(' b2-c3 d4x ') === 'B2C3D4');
+
+  // Discord Activity rooms: every participant derives the SAME code from the shared
+  // instance_id (that determinism IS the no-code-entry join), and different instances
+  // get different rooms.
+  let allDet = true;
+  let allInstValid = true;
+  const instSeen = new Set<string>();
+  for (let i = 0; i < 500; i++) {
+    const id = `uuid-${i}-${i * 7919}`;
+    const c = roomCodeForInstance(id);
+    if (c !== roomCodeForInstance(id)) allDet = false;
+    if (!isValidRoomCode(c)) allInstValid = false;
+    instSeen.add(c);
+  }
+  check('discord activity: roomCodeForInstance is deterministic', allDet);
+  check('discord activity: instance codes are always valid room codes', allInstValid);
+  check('discord activity: distinct instances spread to distinct rooms', instSeen.size > 490, `${instSeen.size}/500`);
+
+  // The instance id arrives ONLY on the launch URL, and the router canonicalizes that
+  // URL to a bare path on first load (and pushes bare paths after). So a reload inside
+  // the activity — Vite's reconnect reload, the REFRESH button, a manual refresh — came
+  // back with no instance_id, the home page lost its Join Discord Lobby button, and a
+  // joiner who reloaded could no longer see the party. The id is remembered for the
+  // tab (sessionStorage) so a reload keeps the activity; a fresh launch always carries
+  // the param and overwrites it, so a stale id can never outlive the instance it names.
+  {
+    const store = new Map<string, string>();
+    const g = globalThis as unknown as { window?: unknown };
+    const saved = g.window;
+    g.window = {
+      location: { hostname: 'localhost', host: 'localhost:5173', search: '?instance_id=inst-abc&frame_id=f' },
+      sessionStorage: {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => void store.set(k, v),
+      },
+    };
+    const w = g.window as { location: { search: string } };
+    const first = discordInstanceId();
+    w.location.search = '';
+    const afterReload = discordInstanceId();
+    const stillIn = inDiscordActivity();
+    w.location.search = '?instance_id=inst-xyz';
+    const relaunched = discordInstanceId();
+    w.location.search = '';
+    const afterSecondReload = discordInstanceId();
+    g.window = saved;
+    check('discord activity: instance id read from the launch URL', first === 'inst-abc', first);
+    check('discord activity: instance id survives a reload that dropped the query', afterReload === 'inst-abc', afterReload);
+    check('discord activity: still in the activity after that reload', stillIn);
+    check('discord activity: a fresh launch overwrites the remembered id', relaunched === 'inst-xyz' && afterSecondReload === 'inst-xyz', `${relaunched}/${afterSecondReload}`);
+  }
+
+  // A ROOM HAS ONE SEASON AND THE CREATOR PICKS IT. Discord rooms were pinned to DECODE
+  // in `enterDiscordRoom`, so the activity could not play Chain Reaction or BIOBUZZ —
+  // and the Lobby draws its start editor from the PLAYER's season, so a BIOBUZZ player
+  // saw a BIOBUZZ lobby for a DECODE match. Now the browser hands back each room's own
+  // season (a new room takes the player's pick) and App switches to it BEFORE the join,
+  // as an accepted invite does. Structural: the mismatch is only ever seen live, as the
+  // server's "different game mode" refusal or a wrong start editor.
+  {
+    const app = readFileSync('src/ui/App.tsx', 'utf8');
+    const list = readFileSync('src/ui/DiscordLobbyList.tsx', 'utf8');
+    const enter = app.match(/const enterDiscordRoom = \(code: string, game: GameId\): void => \{([\s\S]*?)\n  \};/);
+    check('discord activity: entering a room takes the room’s season, not a pinned one', !!enter && !/'decode'/.test(enter[1]));
+    check(
+      'discord activity: the season is switched BEFORE the auto-join is queued',
+      !!enter && enter[1].indexOf('selectGame(game)') >= 0 && enter[1].indexOf('selectGame(game)') < enter[1].indexOf('setPendingAutoJoin'),
+    );
+    check('discord activity: the auto-join config carries that season', !!enter && /config: \{ kind: 'versus', game \}/.test(enter[1]));
+    check('discord activity: the browser is told the player’s current season', /<DiscordLobbyList[\s\S]*?game=\{settings\.game\}/.test(app));
+    check('discord activity: a listed room joins under ITS season', /onEnter\(l\.code\.toUpperCase\(\), l\.game\)/.test(list));
+    check('discord activity: the main lobby joins under its own season, else the player’s', /const mainGame: GameId = main\?\.game \?\? game/.test(list) && /onEnter\(mainCode, mainGame\)/.test(list));
+    check('discord activity: a separate lobby is created under the player’s season', /onEnter\(generateRoomCode\(\), game\)/.test(list));
+    check('discord activity: every listed room names its season', /className="ll-game">\{seasonFor\(l\.game\)\.name\}/.test(list));
+  }
 }
 
 // ------------------------------------------------------------ multi-game (Chain Reaction seam) ----

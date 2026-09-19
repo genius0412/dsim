@@ -117,6 +117,10 @@ function routeFor(file, buf) {
   const base = file;
   if (/^index-[^/]*\.js$/.test(base)) return 'main';
   if (/^hostWorker-[^/]*\.js$/.test(base)) return 'hostWorker';
+  // the Embedded App SDK, reached only through `src/net/discordSdk.ts` (a facade that
+  // exists precisely so this chunk is NOT named `index-*` — the package's own entry is
+  // index.js, and without the facade it was billed against main's baseline).
+  if (/^discordSdk-[^/]*\.js$/.test(base)) return 'discord';
   // filename-first for a standalone `.wasm` asset (cheap, and a real one would be named after
   // its source module, e.g. `rapier_wasm3d_bg-<hash>.wasm`), then a content scan for both .js
   // and .wasm alike — content is what actually decided this in the measured build, where the
@@ -210,6 +214,10 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  */
 const BASELINE = {
   main: { gzip: 918.72 * 1000 },
+  // `@discord/embedded-app-sdk` behind `watchDiscordParticipants`'s dynamic import —
+  // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
+  // import), so no ordinary player downloads it. MEASURED 2026-09-18.
+  discord: { gzip: 44.30 * 1000 },
   hostWorker: { gzip: 705.23 * 1000 },
   physics3d: { gzip: 1123.14 * 1000 },
   scene: { gzip: 192.28 * 1000, budgetCeiling: 250 * 1000 },
