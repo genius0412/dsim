@@ -114,6 +114,8 @@ export const VERIFY_BANNER_KEY = 'decodesim.verifyBanner.v1';
  * lose the party (`net/discordActivity.ts`)
  */
 export const DISCORD_INSTANCE_KEY = 'decodesim.discordInstance.v1';
+/** the Zenith auto library (`src/auto/library.ts`): auto files for AUTO, per game, this device only */
+export const ZENITH_AUTOS_KEY = 'decodesim.zenithAutos.v1';
 
 /**
  * THE INVENTORY, in the order the privacy page prints it: `necessary` first (the ones you
@@ -156,6 +158,14 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
       'Your solo practice runs: score, length, and the input log that reproduces the run. Solo practice runs on this device with no server watching it, so this is the only copy until you sign in.',
     retention:
       'The last 10 are kept; the oldest goes first past that. Deleting a run removes it at once.',
+  },
+  {
+    key: ZENITH_AUTOS_KEY,
+    storage: 'local',
+    category: 'necessary',
+    purpose:
+      'Your autonomous routines: the Zenith auto files you imported or edited, which one is on, and whether it plays in AUTO. They stay on this device and are not synced to your account, because an auto file is too big for the settings that sync.',
+    retention: 'Until you delete an auto from the Autonomous panel or clear your browser data.',
   },
   {
     key: SETTINGS_KEY,

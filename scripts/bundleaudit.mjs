@@ -138,6 +138,11 @@ function routeFor(file, buf) {
   // index.js, and without the facade it was billed against main's baseline).
   if (/^discordSdk-[^/]*\.js$/.test(base)) return 'discord';
   if (/^Gallery-[^/]*\.js$/.test(base)) return 'gallery';
+  // ZENITH AUTOS (docs/area/autos.md): `@horizon36596/zenith-core` + `-schema` (with zod) and
+  // DSIM's auto seat, behind `src/auto/zenithAutos.ts` — a facade named so this chunk is NOT
+  // `index-*` (the lazy entry was `src/auto/index.ts` once, and its chunk was then billed as
+  // main). Loaded only when a solo run plays an auto, or the Autonomous panel opens.
+  if (/^zenithAutos-[^/]*\.js$/.test(base)) return 'autos';
   // The admin console's chunks, by FILENAME like the three above — Vite names a lazy chunk
   // after its facade module, so `Admin-*.js` and `AdminAnalytics-*.js` are what it emits, and
   // neither renders anything a content marker would recognise. Before the content scans,
@@ -397,6 +402,9 @@ const BASELINE = {
   // 216.60): a few hundred bytes of canvas calls against a 217 KB chunk.
   graphics: { gzip: 4.01 * 1000 },
   gallery: { gzip: 7.33 * 1000 },
+  // 2026-09-24: the Zenith autos chunk, MEASURED on the build that introduced it — Zenith's
+  // planner, follower and schema (zod) plus `src/auto/`. Lazy: see the `autos` route.
+  autos: { gzip: 51.97 * 1000 },
   // 2026-09-19: NEW. The whole admin console, lazily loaded by `App.tsx`. See the route note
   // above and the RE-MEASURED entry below for what moved out of `main` to create it.
   admin: { gzip: 25.10 * 1000 },

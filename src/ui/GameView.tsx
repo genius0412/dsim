@@ -7,6 +7,7 @@ import {
   type HudSnapshot,
   type IntroPlayer,
   type PerfSnapshot,
+  type GameControllerZenithAuto,
 } from '../game';
 import { PerfHud } from './PerfHud';
 import { PERF_DISPLAY_LEVELS } from '../settings';
@@ -26,6 +27,7 @@ import { clearActiveGame } from '../net/activeGame';
 import { TutorialCard } from './TutorialCard';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { moduleFor } from '../games';
+import { activeZenithAuto } from '../auto/library';
 import { seasonFor } from '../seasons';
 import { useCoarsePointer } from './useCoarsePointer';
 import type { Alliance, DrivetrainType } from '../types';
@@ -428,6 +430,25 @@ export function GameView({
           physicsFallbackNotice = 'Couldn’t load 3D physics. Playing this practice on 2D physics.';
         }
       }
+      /**
+       * THE ZENITH AUTO CHUNK, before the world exists, for the same reason as the 3D one: the
+       * controller seats the robot at the auto's start and builds its seat inside `makeWorld`.
+       * Solo practice and Free Drive only — never a room, a record run (both have a session) or
+       * the tutorial. A failed load plays the practice without the auto and says so.
+       */
+      let zenithAuto: GameControllerZenithAuto | undefined;
+      const activeAuto =
+        !session && !runTutorial && moduleFor(settings.game).zenithAutos ? activeZenithAuto(settings.game) : null;
+      if (activeAuto) {
+        try {
+          zenithAuto = { ...activeAuto, module: await import('../auto/zenithAutos') };
+        } catch (err) {
+          if (cancelled) return;
+          // eslint-disable-next-line no-console
+          console.warn('The Zenith auto chunk failed to load; playing without the auto.', err);
+          physicsFallbackNotice = physicsFallbackNotice ?? 'Couldn’t load the autonomous routine. Playing without it.';
+        }
+      }
       if (cancelled) return;
       setPhysicsLoading(false);
       // the controller reports the view from here on; a 2D fallback or a 2D view has none
@@ -449,6 +470,7 @@ export function GameView({
         // no `tutorial` slot gets `undefined` and plays an ordinary free drive, which is the
         // right outcome for DECODE and Chain Reaction today.
         tutorial: runTutorial ? moduleFor(settings.game).tutorial : undefined,
+        zenithAuto,
       });
       controllerRef.current = controller;
       setIntro(controller.getIntro()); // ranked matches only; null otherwise

@@ -11,7 +11,7 @@ import { driveParams } from '../../src/sim/drivetrain';
 import { localizeCommand } from '../../src/net/protocol';
 import { GAME_IDS } from '../../src/games/types';
 import { simModuleFor } from '../../src/games/sim';
-import { autoAdapterFor, autoStartPose, createAutoSeat, type AutoSeat } from '../../src/auto';
+import { autoAdapterFor, autoStartPose, createAutoSeat, type AutoSeat } from '../../src/auto/zenithAutos';
 import { ZENITH_AUTO_MAX_BYTES } from '../../src/auto/coerce';
 import type { ZenithAutoSetup } from '../../src/auto/types';
 import { cmd, setup, type Check } from './harness';

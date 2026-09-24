@@ -14,11 +14,22 @@ import type {
   RobotCommand,
   RobotState,
   ScoreBreakdown,
+  StartPose,
   World,
   GameSettings,
 } from './types';
 import * as C from './config';
 import type { RobotSetup } from './sim/spawn';
+import type { ZenithAutoSetup } from './auto/types';
+
+/**
+ * A Zenith auto handed to a solo controller: the LAZY `src/auto` module (a type-only import
+ * here, so the main chunk never contains Zenith) and the file to play.
+ */
+export interface GameControllerZenithAuto extends ZenithAutoSetup {
+  module: typeof import('./auto/zenithAutos');
+  name: string;
+}
 import { practiceSetups } from './settings';
 import { moduleFor, gameOf } from './games';
 import { TutorialRunner } from './tutorial/runner';
@@ -696,6 +707,16 @@ export class GameController {
    *  while no practice seat is AI — which is the default. */
   private readonly bots = new Map<number, { step(w: World): RobotCommand; dispose?(): void }>();
   /**
+   * THE ZENITH AUTO, when this solo run plays one (docs/area/autos.md): the lazy `src/auto`
+   * module `GameView` loaded for it, the file, and the seat driving the LOCAL robot. The seat is
+   * the bots' contract to the letter: stepped once per tick before the step, into the map the
+   * recorder is handed, through `localizeCommand` — so a replay needs no seat. Rebuilt with every
+   * world (`makeWorld`), like the bots. Solo only: a room, a record run and the tutorial never
+   * get one (a room's auto is the server's job, and not built yet).
+   */
+  private readonly zenithAuto: GameControllerZenithAuto | null;
+  private autoSeat: import('./auto/zenithAutos').AutoSeat | null = null;
+  /**
    * THE TUTORIAL IN FLIGHT, or null — which is every other run this controller has ever done.
    *
    * Set from the constructor's `tutorial` option, and it is the ONE thing that makes this a
@@ -867,6 +888,8 @@ export class GameController {
        * cannot be filed as a replay that would play back something else).
        */
       tutorial?: TutorialSpec;
+      /** a Zenith auto for the local robot to play in AUTO (solo only; see `zenithAuto`) */
+      zenithAuto?: GameControllerZenithAuto;
     },
   ) {
     this.ctx = canvas.getContext('2d')!;
@@ -920,6 +943,7 @@ export class GameController {
     if (opts?.tutorial && !session) {
       this.tutorial = new TutorialRunner(opts.tutorial, settings.spec);
     }
+    this.zenithAuto = opts?.zenithAuto && !session && !this.tutorial ? opts.zenithAuto : null;
     this.world = this.makeWorld();
     // the physics-3d fallback notice (see the constructor's `opts` doc) rides the same
     // path as every other match event — the first `frameLogic()` drains it into a toast.
@@ -1092,6 +1116,15 @@ export class GameController {
         autoPathEnabled: s.autoPathEnabled,
       },
     ];
+    // THE ZENITH AUTO seats the robot where the file starts, which is what a team does at the
+    // field. The start is still the game's to snap legal (`coerceSetup`), so an illegal start in
+    // the file is moved and the follower drives from where the robot really is.
+    const za = this.zenithAuto;
+    const autoStart = za ? this.zenithAutoStart(za, s) : null;
+    if (za) {
+      setups[0].zenithAuto = { auto: za.auto, ...(za.waypoints ? { waypoints: za.waypoints } : {}) };
+      if (autoStart) setups[0].startPose = autoStart;
+    }
     // THE PRACTICE SEATS — partner, opponent 1, opponent 2 — in Solo practice AND Free drive
     // (`practiceSetups`, DOM-free so `npm test` holds the line-up it builds)
     const { setups: others, botTiers } = practiceSetups(s, this.gameId, seed);
@@ -1099,6 +1132,7 @@ export class GameController {
     this.soloSetups = setups;
     const world = build(s.mode, seed, setups, this.settings);
     this.seatBots(world, seed, botTiers);
+    this.seatAuto(world);
     /**
      * THE TUTORIAL STAGES ITS STEP HERE, AND NOWHERE ELSE — tick 0, on a world nothing has
      * stepped, before the recorder could exist.
@@ -1137,6 +1171,51 @@ export class GameController {
       if (tier === undefined || r.id === this.localRobotId) continue;
       this.bots.set(r.id, drv.create(world, r.id, tier, (seed ^ ((r.id + 1) * 0x9e3779b1)) >>> 0));
     }
+  }
+
+  /** The canonical start pose that seats the local robot where the auto begins, or null. */
+  private zenithAutoStart(za: GameControllerZenithAuto, s: GameSettings): StartPose | null {
+    const adapter = za.module.autoAdapterFor(this.gameId);
+    if (!adapter) return null;
+    try {
+      const loaded = za.module.loadZenithAuto(za, s.alliance, s.spec, adapter);
+      return za.module.autoStartPose(loaded, s.alliance, adapter);
+    } catch {
+      return null; // the seat reports the load error; the robot keeps its own start
+    }
+  }
+
+  /**
+   * SEAT (or clear) the local robot's Zenith auto for a freshly built world — called from
+   * `makeWorld` beside `seatBots`, so a rebuild never leaves a seat on a dead world. In FREE
+   * DRIVE the seat is ARMED at once: the auto plays one period from its start, then hands the
+   * robot back, and Restart plays it again.
+   */
+  private seatAuto(world: World): void {
+    this.autoSeat?.dispose();
+    this.autoSeat = null;
+    const za = this.zenithAuto;
+    if (!za) return;
+    const adapter = za.module.autoAdapterFor(this.gameId);
+    if (!adapter) return;
+    const seat = za.module.createAutoSeat(world, this.localRobotId, za, adapter);
+    if (world.match.phase === 'freeplay') seat.arm();
+    this.autoSeat = seat;
+  }
+
+  /** the auto seat's status for the HUD, or null when this run plays no auto */
+  autoStatus(): (import('./auto/types').AutoSeatStatus & { name: string }) | null {
+    return this.autoSeat && this.zenithAuto ? { ...this.autoSeat.status(), name: this.zenithAuto.name } : null;
+  }
+
+  /** the auto's run so far as a Zenith trace (Open run in Zenith), or null */
+  autoTrace(): import('@horizon36596/zenith-core').SimTrace | null {
+    return this.autoSeat?.trace() ?? null;
+  }
+
+  /** the auto the local robot plays, planned for its alliance, for the field overlay */
+  autoLoaded(): import('./auto/zenithAutos').LoadedAuto | null {
+    return this.autoSeat?.loaded ?? null;
   }
 
   private onResize = (): void => {
@@ -1802,6 +1881,9 @@ export class GameController {
        * unrecorded bot command makes the replay a different match from the run.
        */
       for (const [id, seat] of this.bots) commands.set(id, localizeCommand(seat.step(this.world)));
+      // the auto drives the local robot in AUTO (and in an armed Free Drive trial); otherwise it
+      // hands the driver's command straight back, so this is a no-op outside those
+      if (this.autoSeat) commands.set(this.localRobotId, localizeCommand(this.autoSeat.step(this.world, local)));
       this.mod.step(this.world, C.SIM_DT, commands);
       this.recorder?.record(this.world.tick, commands);
       // counted HERE, beside the record call, because it must measure exactly the ticks that
