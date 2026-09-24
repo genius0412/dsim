@@ -1,3 +1,5 @@
+import { coerceZenithAuto } from '../auto/coerce';
+import type { ZenithAutoSetup } from '../auto/types';
 import type {
   Alliance,
   Artifact,
@@ -722,6 +724,8 @@ export function coerceSetup(s: RobotSetup, game?: GameId): RobotSetup {
     startPose,
     autoPath: autoPath ?? undefined,
     autoPathEnabled: autoPath ? s.autoPathEnabled === true : false,
+    // the same rule as `autoPath`: a game that cannot play one never carries one
+    zenithAuto: mod.zenithAutos ? coerceZenithAuto(s.zenithAuto) : undefined,
     passive: s.passive,
   };
 }
@@ -740,6 +744,10 @@ export interface RobotSetup {
   // New fields for auto pathing
   autoPath?: AutoPathData;
   autoPathEnabled?: boolean;
+  /** a ZENITH auto (`*.auto.json` text) this robot plays in AUTO, for a game with
+   * `zenithAutos`. Bounded by `coerceZenithAuto`; played by an auto seat (`src/auto/`), never
+   * read by a step. */
+  zenithAuto?: ZenithAutoSetup;
   /** an inert obstacle (practice dummy): skips all per-tick action compute (see
    * `RobotState.passive`). */
   passive?: boolean;

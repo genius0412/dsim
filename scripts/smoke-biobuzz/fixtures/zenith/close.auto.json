@@ -1,0 +1,181 @@
+{
+  "$schema": "https://zenith.horizon36596.org/schema/v1/auto.json",
+  "formatVersion": 2,
+  "name": "close",
+  "title": "Close Auto (from file)",
+  "description": "The hand-written opmode/Auto/CloseAuto expressed as a file: drive to the shoot pose, fire the preload, drive to the pollen line, intake along it until the column is full, come back from wherever that happened, fire the hopper, park. Same step names, in the same order, so a test can compare the two.",
+  "robot": "autos/robot.json",
+  "field": "autos/field/biobuzz.field.json",
+  "alliance": "RED",
+  "authors": [
+    "saket"
+  ],
+  "created": "2026-09-21",
+  "start": {
+    "pose": {
+      "ref": "closeStart"
+    },
+    "holds": {
+      "pollen": 4
+    }
+  },
+  "steps": [
+    {
+      "id": "Drive to shoot pose",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "line",
+          "from": {
+            "ref": "closeStart"
+          },
+          "to": {
+            "ref": "closeShoot"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "linear",
+        "fromRad": 0,
+        "toRad": 0
+      },
+      "speedFraction": 0.8
+    },
+    {
+      "id": "Preload shots",
+      "kind": "command",
+      "name": "shootAll",
+      "args": {
+        "count": 4
+      }
+    },
+    {
+      "id": "Drive to pollen line",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "line",
+          "from": {
+            "ref": "closeShoot"
+          },
+          "to": {
+            "ref": "pollenLineStart"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "linear",
+        "fromRad": 0,
+        "toRad": 3.1416
+      },
+      "speedFraction": 0.8
+    },
+    {
+      "id": "Intake pollen line",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "line",
+          "from": {
+            "ref": "pollenLineStart"
+          },
+          "to": {
+            "ref": "pollenLineEnd"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "linear",
+        "fromRad": 3.1416,
+        "toRad": 3.1416
+      },
+      "speedFraction": 0.8,
+      "markers": [
+        {
+          "at": {
+            "t": 0
+          },
+          "command": {
+            "name": "setIntake",
+            "args": {
+              "side": "BOTH",
+              "state": "FORWARD"
+            }
+          }
+        }
+      ],
+      "endCondition": {
+        "condition": "hopperFull"
+      },
+      "notes": "Both rollers on from the first loop and the path cut short the moment all three column sensors read, which is what the hand-written intakeUntilFull(...) helper does. The rollers are left running on purpose; the next step stops them."
+    },
+    {
+      "id": "Stop intake",
+      "kind": "command",
+      "name": "setIntake",
+      "args": {
+        "side": "BOTH",
+        "state": "STOP"
+      }
+    },
+    {
+      "id": "Relocalize",
+      "kind": "command",
+      "name": "relocalize"
+    },
+    {
+      "id": "Return to shoot pose",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "line",
+          "from": "current",
+          "to": {
+            "ref": "closeShoot"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "linear",
+        "fromRad": 3.1416,
+        "toRad": 0
+      },
+      "speedFraction": 0.8,
+      "notes": "from \"current\" because the intake step ends wherever the column filled. The runtime builds this leg when the step starts, from the live pose, the way DriveToOnTheFly does. One difference from the hand-written auto: that one reads the live heading too, this one states it, so if the robot is not on the pollen line's heading when this starts the sweep differs."
+    },
+    {
+      "id": "Cycle shots",
+      "kind": "command",
+      "name": "shootAll",
+      "args": {
+        "count": 4
+      }
+    },
+    {
+      "id": "Park",
+      "kind": "path",
+      "segments": [
+        {
+          "kind": "line",
+          "from": {
+            "ref": "closeShoot"
+          },
+          "to": {
+            "ref": "park"
+          }
+        }
+      ],
+      "heading": {
+        "mode": "linear",
+        "fromRad": 0,
+        "toRad": 0
+      },
+      "speedFraction": 0.8
+    },
+    {
+      "id": "Cancel all",
+      "kind": "command",
+      "name": "cancelAll"
+    }
+  ]
+}

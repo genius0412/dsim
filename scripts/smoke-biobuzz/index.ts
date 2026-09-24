@@ -14,6 +14,7 @@ import { sponsorChecks } from './sponsor';
 import { renderChecks } from './render';
 import { tutorialChecks } from './tutorial';
 import { net3dChecks } from './net3d';
+import { autoChecks } from './autos';
 import type { Check } from './harness';
 
 /**
@@ -95,6 +96,9 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   // lane because a TUTORIAL failure and a PHYSICS failure are different mornings, and because it
   // is the only lane that drives a staged world to a goal rather than asserting a number.
   { name: 'TUTORIAL', fn: tutorialChecks },
+  // Zenith autos driven by an auto seat (docs/area/autos.md): no teleport, arrival, the heading
+  // modes, the alliance rule, the commands, replay-without-seat, and the hand-back at the buzzer.
+  { name: 'AUTO', fn: autoChecks },
 ];
 
 const KNOWN_FLAGS = ['--lane', '--grep', '--list', '--help'];

@@ -257,6 +257,17 @@ export interface GameSimModule {
    * arriving off the wire never reaches a world, a snapshot or a replay.
    */
   autoPaths: boolean;
+  /**
+   * DOES THIS GAME PLAY ZENITH AUTOS? (docs/area/autos.md)
+   *
+   * A Zenith `*.auto.json` is driven by an AUTO SEAT (`src/auto/seat.ts`) that the controller,
+   * the room and the LAN host run beside the bots, so no step reads it: this flag is for the main
+   * chunk, which must not import the lazy `src/auto/games.ts` registry to ask. Its readers are the
+   * spawn chokepoint (`coerceSetup` drops `zenithAuto` for a game without it, as `autoPaths` does
+   * for `.pp` paths) and the match setup (it hides the Autonomous section). `npm test` holds it
+   * equal to "has an adapter in `src/auto/games.ts`" for every game. Absent = false.
+   */
+  zenithAutos?: boolean;
   bounds: FieldBounds;
   colliders: FieldColliders;
   /**

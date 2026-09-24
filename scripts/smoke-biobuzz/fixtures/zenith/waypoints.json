@@ -1,0 +1,48 @@
+{
+  "$schema": "https://zenith.horizon36596.org/schema/v1/waypoints.json",
+  "formatVersion": 1,
+  "waypoints": {
+    "closeStart": {
+      "xIn": -63,
+      "yIn": -36,
+      "headingRad": 0,
+      "provenance": "PLACEHOLDER: Constants.AutoConstants.CLOSE_START_POSE, a shape-only guess. Measure on the field."
+    },
+    "closeShoot": {
+      "xIn": -36,
+      "yIn": -42,
+      "headingRad": 0,
+      "provenance": "PLACEHOLDER: Constants.AutoConstants.CLOSE_SHOOT_POSE. Must satisfy Field.hasLegalApproach for the staged up cell once measured."
+    },
+    "farStart": {
+      "xIn": -63,
+      "yIn": 36,
+      "headingRad": 0,
+      "provenance": "PLACEHOLDER: Constants.AutoConstants.FAR_START_POSE"
+    },
+    "farShoot": {
+      "xIn": -48,
+      "yIn": -42,
+      "headingRad": 0,
+      "provenance": "PLACEHOLDER: Constants.AutoConstants.FAR_SHOOT_POSE"
+    },
+    "pollenLineStart": {
+      "xIn": -48,
+      "yIn": -58,
+      "headingRad": 3.1416,
+      "provenance": "PLACEHOLDER: Constants.AutoConstants.POLLEN_LINE_START (180 degrees)"
+    },
+    "pollenLineEnd": {
+      "xIn": -66,
+      "yIn": -58,
+      "headingRad": 3.1416,
+      "provenance": "PLACEHOLDER: Constants.AutoConstants.POLLEN_LINE_END (180 degrees)"
+    },
+    "park": {
+      "xIn": -60,
+      "yIn": 36,
+      "headingRad": 0,
+      "provenance": "PLACEHOLDER: Constants.AutoConstants.PARK_POSE"
+    }
+  }
+}

@@ -12,6 +12,8 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
+# the Zenith packages are vendored tarballs (`file:` deps), so npm ci needs them first
+COPY vendor ./vendor
 RUN npm ci --no-audit --no-fund
 COPY tsconfig.server.json ./
 COPY server ./server
@@ -25,6 +27,7 @@ FROM node:22-alpine
 WORKDIR /app
 # runtime deps only (react, react-dom, ws, pg, rapier, tsx-not-needed) — small + fast
 COPY package.json package-lock.json ./
+COPY vendor ./vendor
 RUN npm ci --omit=dev --no-audit --no-fund
 COPY --from=build /app/dist-server ./dist-server
 # migrate.ts resolves ./migrations relative to import.meta.url. In the bundle that
