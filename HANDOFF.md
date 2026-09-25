@@ -1,9 +1,9 @@
-# HANDOFF — 2026-09-25g (release 1 on production; release 2 on alpha; ALPHA IS CLOSED)
+# HANDOFF — 2026-09-25g (both releases on production; ALPHA IS CLOSED)
 
-- **Release 1 (stuck-robot batch, SIM_VERSION 4) is on production**: `main` = `9fae19c`, Vercel and every Fly machine; three patch notes published (BIOBUZZ, DECODE, Chain Reaction).
-- **Release 2 is on `alpha` and dsim-alpha, NOT on `main`**: lockdown scopes / access groups / banners (migrations 0051, 0052) and the Vercel Analytics removal (0053). The production merge waits on the owner's go-ahead. After it deploys, the Vercel history import (below) runs against production, and Web Analytics gets switched off in the Vercel project.
-- **Alpha is on a SITE lockdown** (set 2026-09-25 via `/api/admin/maintenance` on dsim-alpha): closed screen with "Go to playdsim.com"; admins and beta/dev/contributor get in. No testers are in the groups yet; the owner will send tags (Access tab, or `/api/admin/access`). The build flag `VITE_SITE_LOCKDOWN=1` is NOT set on the Vercel preview env yet (it keeps alpha closed even with its server down).
-- The two sections below were written before the merge; their "not pushed" state lines are superseded by this one.
+- **Production = `main` = `d039cb7`**, Vercel and every Fly machine: release 1 (stuck-robot batch, SIM_VERSION 4; three patch notes published) and release 2 (lockdown scopes, access groups, site banners; Vercel Analytics removed; migrations 0051–0053 applied at boot).
+- **Vercel history import:** a fresh export (2026-09-13 → 09-25, 411,076 page views) is in `scratch/vercel-analytics-production.json`, run with `node scratch/import-vercel.mjs [--write]` from this worktree. The owner runs it (production DB access is theirs). Then switch Web Analytics off in the Vercel project settings. Alpha's own preview export has not been imported.
+- **Alpha is on a SITE lockdown** (set via `/api/admin/maintenance` on dsim-alpha): closed screen, "Go to playdsim.com"; admins and beta/dev/contributor get in. No testers in the groups yet — the owner will send tags (Access tab or `/api/admin/access`). `VITE_SITE_LOCKDOWN=1` is not set on the Vercel preview env (it would keep alpha closed with its server down).
+- The sections below were written before the merges; their "not pushed" lines are superseded.
 
 # HANDOFF — 2026-09-25e (Vercel Analytics removed; its history imported)
 
