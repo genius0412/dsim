@@ -334,8 +334,11 @@ async function seedAnalytics(db: PGlite): Promise<void> {
   }
   console.log(`[harness] seeded analytics: ${pvRows.length} pageviews, ${evRows.length} events`);
 
-  // The imported-history section: a local Vercel export if one was made
+  // The imported history: a local Vercel export if one was made
   // (`scripts/vercel-analytics-export.mjs`, gitignored under scratch/), else a small made-up one.
+  // The made-up one runs from 20 days ago to 6 days ago, so it OVERLAPS the first-party days
+  // above (13 days ago on) the way the real one does: the dashboard reads it for the days before
+  // our own count and ignores the rest, and a 30-day range shows the boundary.
   const { vercelImportRows } = await import('../server/analyticsImport');
   const { replaceImportedAnalytics } = await import('../server/db/repo');
   const local = 'scratch/vercel-analytics-production.json';
@@ -343,20 +346,40 @@ async function seedAnalytics(db: PGlite): Promise<void> {
   if (existsSync(local)) {
     rows = vercelImportRows(JSON.parse(readFileSync(local, 'utf8')));
   } else {
-    const days = Array.from({ length: 12 }, (_, i) => new Date(Date.now() - (20 - i) * 86_400_000).toISOString().slice(0, 10));
+    const days = Array.from({ length: 15 }, (_, i) => new Date(Date.now() - (20 - i) * 86_400_000).toISOString().slice(0, 10));
+    // Each breakdown splits the day's total, with the host's "Others" remainder where it had one.
+    const split = (day: string, total: number, vals: string[], others = false) => {
+      const shares = vals.map(() => 1 + rnd() * 3);
+      const sum = shares.reduce((a, b) => a + b, 0) * (others ? 1.1 : 1);
+      const out = vals.map((value, i) => ({ day, value, pageviews: Math.round((total * shares[i]) / sum), visitors: Math.max(1, Math.round((total * shares[i]) / sum / 3)) }));
+      if (others) out.push({ day, value: 'Others', pageviews: total - out.reduce((a, r) => a + r.pageviews, 0), visitors: 2 });
+      return out;
+    };
+    const totals = days.map((day) => ({ day, pageviews: 120 + Math.floor(rnd() * 100), visitors: 40 + Math.floor(rnd() * 25) }));
+    const by = (vals: string[], others = false) => totals.flatMap((t) => split(t.day, t.pageviews, vals, others));
     rows = vercelImportRows({
       source: 'vercel',
       visits: {
-        total: days.map((day) => ({ day, pageviews: 800 + Math.floor(rnd() * 400), visitors: 40 + Math.floor(rnd() * 20) })),
+        total: totals,
         by: {
-          requestPath: days.flatMap((day) => PATHS.map((p) => ({ day, value: p, pageviews: 20 + Math.floor(rnd() * 90), visitors: 5 }))),
-          country: days.flatMap((day) => ['US', 'RO', 'BR', 'CA'].map((c) => ({ day, value: c, pageviews: 50 + Math.floor(rnd() * 200), visitors: 8 }))),
-          osName: days.flatMap((day) => ['Windows', 'Mac', 'Chrome OS'].map((o) => ({ day, value: o, pageviews: 60 + Math.floor(rnd() * 200), visitors: 8 }))),
+          requestPath: by(PATHS, true),
+          referrerHostname: by(['', 'google.com', 'reddit.com', 'discord.com']),
+          country: by(['US', 'GB', 'DE', 'CA', 'RO'], true),
+          deviceType: by(['Desktop', 'Mobile']),
+          osName: by(['Windows', 'Mac', 'Chrome OS', 'iOS']),
+          browserName: by(['Chrome', 'Microsoft Edge', 'Mobile Safari', 'Firefox']),
         },
       },
       events: {
-        byName: days.map((day) => ({ day, name: 'sponsor_shown', count: 300, visitors: 30 })),
-        byProp: days.flatMap((day) => PLACEMENTS.map((p) => ({ day, name: 'sponsor_shown', key: 'placement', value: p, count: 75, visitors: 10 }))),
+        byName: days.flatMap((day) => [
+          { day, name: 'sponsor_shown', count: 40, visitors: 20 },
+          { day, name: 'sponsor_click', count: 2, visitors: 2 },
+          { day, name: 'player_joined', count: 3, visitors: 3 },
+        ]),
+        byProp: days.flatMap((day) => [
+          ...PLACEMENTS.map((p) => ({ day, name: 'sponsor_shown', key: 'placement', value: p, count: 10, visitors: 6 })),
+          { day, name: 'sponsor_click', key: 'placement', value: 'home', count: 2, visitors: 2 },
+        ]),
       },
     });
   }

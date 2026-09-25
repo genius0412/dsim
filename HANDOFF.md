@@ -1,3 +1,14 @@
+# HANDOFF — 2026-09-25h (Vercel history folded into the Analytics tab)
+
+**State: committed on branch `analytics-combined-history` (off alpha 43c3c1e5), NOT pushed, NOT deployed.** `build`, `server:check`, `dbtest` (ALL PASS, 29 new `analytics/combine:` checks), `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass. `npm test`: shared PASS; BIOBUZZ only the `PREDICT_FULL_BUDGET_MS` wall-clock flake, `--lane PREDICT` passes alone. ⚠️ **Server change** (no migration): the combined read is in `server/analytics.ts`.
+
+- **Owner:** combine the imported Vercel history with the normal display instead of a separate section.
+- **Rule:** one source per day. Our start day is derived (earliest own day on the import's channel; if the import holds that partial day, ours starts the next day). Days before it come from `analytics_imported`, days from it from ours; imported rows on/after it are ignored. Full rule in `docs/area/monetization.md`.
+- **Folded in:** views/visitors tiles, chart (dotted Vercel | DSIM marker), pages, referrers, countries, devices, OS, browsers, channel/surface, events + properties, sponsor report. Ours only, marked "from Sep N": sessions, bounce, session length, entry pages, UTM, screen, language, build.
+- **API:** `/api/analytics` adds `history` and `grain`; `imported` is always `null` now (kept for older admin pages). The importer stores a preview export as `vercel-preview` (alpha channel).
+- Day buckets are now formatted in SQL and chart day labels are UTC; they were a day early west of UTC.
+- Pre-existing, not touched: the admin console scrolls sideways at 390px (header/tab strip).
+
 # HANDOFF — 2026-09-25g (both releases on production; ALPHA IS CLOSED)
 
 - **Production = `main` = `d039cb7`**, Vercel and every Fly machine: release 1 (stuck-robot batch, SIM_VERSION 4; three patch notes published) and release 2 (lockdown scopes, access groups, site banners; Vercel Analytics removed; migrations 0051–0053 applied at boot).

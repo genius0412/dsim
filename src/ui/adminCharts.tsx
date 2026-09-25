@@ -148,7 +148,19 @@ const PAD = { top: 12, right: 8, bottom: 22, left: 40 };
  * scales by its box and keeps its own coordinate system — which is also what makes it readable
  * at 375px without a second layout.
  */
-export function TimeSeries({ data, grain }: { data: SeriesPoint[]; grain: 'hour' | 'day' }) {
+export function TimeSeries({
+  data,
+  grain,
+  split,
+}: {
+  data: SeriesPoint[];
+  grain: 'hour' | 'day';
+  /**
+   * The first bucket counted by DSIM itself, when the buckets before it are Vercel Web
+   * Analytics' imported days. A thin rule between the two marks the change of source.
+   */
+  split?: string;
+}) {
   const id = useId();
   const [hover, setHover] = useState<number | null>(null);
   const ref = useRef<SVGSVGElement>(null);
@@ -174,16 +186,22 @@ export function TimeSeries({ data, grain }: { data: SeriesPoint[]; grain: 'hour'
     };
   }, [data]);
 
+  // A day bucket is a UTC day, so it is named in UTC: in a local zone west of Greenwich its
+  // midnight is the evening before, and every label read one day early.
   const label = (iso: string): string => {
     const d = new Date(iso);
     return grain === 'hour'
       ? d.toLocaleTimeString([], { hour: 'numeric' })
-      : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      : d.toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' });
   };
 
   if (!data.length) return <div className="ds-empty an-empty"><div className="big">No traffic yet</div>Nothing was recorded in this range.</div>;
 
   const active = hover != null ? data[hover] : null;
+  // the source boundary: halfway between the last imported bucket and the first of ours
+  const firstOwn = split ? data.findIndex((d) => d.t >= split) : -1;
+  const markX = firstOwn > 0 ? (xs[firstOwn - 1] + xs[firstOwn]) / 2 : null;
+  const imported = (d: SeriesPoint): boolean => !!split && d.t < split;
 
   return (
     <div className="an-chart">
@@ -193,7 +211,7 @@ export function TimeSeries({ data, grain }: { data: SeriesPoint[]; grain: 'hour'
         viewBox={`0 0 ${W} ${H}`}
         role="img"
         tabIndex={0}
-        aria-label={`Page views and visitors, ${data.length} ${grain === 'hour' ? 'hours' : 'days'}, peaking at ${fmtExact(max)} views`}
+        aria-label={`Page views and visitors, ${data.length} ${grain === 'hour' ? 'hours' : 'days'}, peaking at ${fmtExact(max)} views${markX != null ? `; Vercel Web Analytics counts before ${label(data[firstOwn].t)}` : ''}`}
         onMouseLeave={() => setHover(null)}
         onMouseMove={(e) => {
           const box = ref.current?.getBoundingClientRect();
@@ -228,6 +246,14 @@ export function TimeSeries({ data, grain }: { data: SeriesPoint[]; grain: 'hour'
             <text className="an-axis" x={PAD.left - 6} y={t.y + 3} textAnchor="end">{fmt(t.v)}</text>
           </g>
         ))}
+        {markX != null && (
+          <g>
+            <line className="an-mark" x1={markX} x2={markX} y1={PAD.top} y2={H - PAD.bottom} />
+            {/* each label only where it has room, clear of the axis numbers on the left */}
+            {markX - PAD.left > 56 && <text className="an-axis" x={markX - 4} y={PAD.top + 10} textAnchor="end">Vercel</text>}
+            {W - PAD.right - markX > 40 && <text className="an-axis" x={markX + 4} y={PAD.top + 10} textAnchor="start">DSIM</text>}
+          </g>
+        )}
         <path d={area} fill={`url(#${id}-fill)`} />
         <path className="an-line views" d={viewLine} />
         <path className="an-line visitors" d={visitorLine} />
@@ -249,7 +275,7 @@ export function TimeSeries({ data, grain }: { data: SeriesPoint[]; grain: 'hour'
           walking the buckets with the arrow keys hears each one. */}
       <p className="an-readout" role="status">
         {active
-          ? `${new Date(active.t).toLocaleString([], grain === 'hour' ? { month: 'short', day: 'numeric', hour: 'numeric' } : { month: 'short', day: 'numeric' })} · ${fmtExact(active.views)} views · ${fmtExact(active.visitors)} visitors`
+          ? `${new Date(active.t).toLocaleString([], grain === 'hour' ? { month: 'short', day: 'numeric', hour: 'numeric' } : { month: 'short', day: 'numeric', timeZone: 'UTC' })} · ${fmtExact(active.views)} views · ${fmtExact(active.visitors)} visitors${imported(active) ? ' · Vercel' : ''}`
           : 'Hover the chart, or focus it and use the arrow keys.'}
       </p>
     </div>
