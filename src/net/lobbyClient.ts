@@ -4,6 +4,7 @@ import type { RobotSetup } from '../sim/spawn';
 import type { Transport } from './transport';
 import { getAuthToken } from '../lib/authClient';
 import { setServerNotice } from './notice';
+import { applyPushedStatus } from './siteStatus';
 import { appChannel, appBuild } from './env';
 import {
   encodeMsg,
@@ -387,6 +388,8 @@ export class LobbyClient {
       this.handlers.standingLock?.(m.until, m.score, m.tier);
     } else if (m.t === 'serverNotice') {
       setServerNotice(m.message ? { kind: m.kind, message: m.message, until: m.until } : null);
+    } else if (m.t === 'siteStatus') {
+      applyPushedStatus(m.lockdown ?? null, m.banners ?? []);
     }
   }
 }

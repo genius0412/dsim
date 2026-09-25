@@ -283,8 +283,10 @@ of your activity, and the connection id gives them no way to recognise a returni
 visitor.
 
 Administrators can also put DSIM into **maintenance**, which pauses new matches for
-everyone else while an update or a season reset is applied. When one is scheduled or
-running you will see a banner saying so, with the times.
+everyone else while an update or a season reset is applied, or **close the site**, which
+shows a page saying so in place of the app. When one is scheduled or running you will see
+a banner or that page. An account can be put in a tester group (beta tester, developer or
+contributor) that may use a closed site; the group is included in your data export.
 
 Administrators can also **watch a live match without appearing in the spectator
 count** that players see. We are stating this rather than leaving it implicit: the

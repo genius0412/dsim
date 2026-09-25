@@ -1,7 +1,10 @@
-import { StrictMode } from 'react';
+import { StrictMode, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './ui/App';
-import { ServerNoticeBanner } from './ui/ServerNoticeBanner';
+import { BannerStack } from './ui/BannerStack';
+import { ClosedScreen } from './ui/ClosedScreen';
+import { useShellState } from './ui/shellState';
+import { BOOT_WAIT_MS, BUILD_CLOSED, getSiteState, isClosed, loadSiteStatus, useSiteState } from './net/siteStatus';
 import { NoticePoller } from './ui/NoticePoller';
 import { PadNavLayer } from './ui/PadNavLayer';
 import { initPhysics } from './sim/physicsEngine';
@@ -58,21 +61,59 @@ window.addEventListener('vite:preloadError', (e) => {
   location.reload();
 });
 
-Promise.all([initPhysics(), lanReady]).then(() => {
-  createRoot(document.getElementById('root')!).render(
+/*
+ * THE SITE STATUS BEFORE THE FIRST PAINT (`src/net/siteStatus.ts`). Asked now, beside the
+ * physics init, so a closed site renders the closed screen instead of the menus:
+ *  - a build baked closed (the alpha) mounts the closed screen at once, no network wait;
+ *  - a closed answer mounts it the moment it lands, physics or not;
+ *  - otherwise the app waits for the answer at most BOOT_WAIT_MS from here, then opens (FAIL
+ *    OPEN: an unreachable server is not a closed site). A later answer can still close it.
+ */
+const statusRead = loadSiteStatus();
+const statusOrTimeout = Promise.race([statusRead, new Promise<void>((r) => setTimeout(r, BOOT_WAIT_MS))]);
+
+let bootReady = false;
+const bootSubs = new Set<() => void>();
+const useBootReady = (): boolean =>
+  useSyncExternalStore(
+    (cb) => {
+      bootSubs.add(cb);
+      return () => bootSubs.delete(cb);
+    },
+    () => bootReady,
+  );
+
+/**
+ * THE GATE. Closed means the closed screen, in place of everything else. A player already in a
+ * match keeps it until they leave the match screen (the server lets a running match finish);
+ * `App` reports that through `shellState`.
+ */
+function Root() {
+  const site = useSiteState();
+  const shell = useShellState();
+  const ready = useBootReady();
+  const closed = isClosed(site) && !shell.inMatch;
+  return (
     <StrictMode>
-      {/* Wraps everything because the game screen renders OUTSIDE the app shell
-          (App returns it early), and that is where the ad columns live. */}
-      <AdsProvider>
-        <App />
-      </AdsProvider>
-      <ServerNoticeBanner />
+      {closed ? (
+        <ClosedScreen />
+      ) : ready ? (
+        <>
+          {/* Wraps everything because the game screen renders OUTSIDE the app shell
+              (App returns it early), and that is where the ad columns live. */}
+          <AdsProvider>
+            <App />
+          </AdsProvider>
+          <BannerStack />
+          {/* CONTROLLER NAVIGATION. Beside `<App/>` rather than inside it, for the reason the ad
+              provider wraps it: the game, lobby, record and ranked screens are returned EARLY and
+              would each have to remember to mount this. It renders through a portal to `body`, so
+              its position here costs it nothing, and it polls nothing until a pad connects. */}
+          <PadNavLayer />
+        </>
+      ) : null}
+      {/* the site status poll runs on BOTH sides of the gate: it is what reopens a closed screen */}
       <NoticePoller />
-      {/* CONTROLLER NAVIGATION. Beside `<App/>` rather than inside it, for the reason the ad
-          provider wraps it: the game, lobby, record and ranked screens are returned EARLY and
-          would each have to remember to mount this. It renders through a portal to `body`, so
-          its position here costs it nothing, and it polls nothing until a pad connects. */}
-      <PadNavLayer />
       {/* Cookieless page views. Gated on VITE_ANALYTICS so a self-hosted or
           Electron build never beacons a host it does not run on.
 
@@ -94,6 +135,24 @@ Promise.all([initPhysics(), lanReady]).then(() => {
           beforeSend={(e) => (analyticsAllowed() ? { ...e, url: e.url.split('?')[0] } : null)}
         />
       )}
-    </StrictMode>,
+    </StrictMode>
   );
+}
+
+// React clears `#root` (the static crawler homepage) on its first render, so nothing renders
+// until there is something to show: the closed screen, or the app.
+let mounted = false;
+const mount = (): void => {
+  if (mounted) return;
+  mounted = true;
+  createRoot(document.getElementById('root')!).render(<Root />);
+};
+if (BUILD_CLOSED) mount();
+void statusRead.then(() => {
+  if (isClosed(getSiteState())) mount();
+});
+Promise.all([initPhysics(), lanReady, statusOrTimeout]).then(() => {
+  bootReady = true;
+  bootSubs.forEach((f) => f());
+  mount();
 });

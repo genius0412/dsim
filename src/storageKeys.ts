@@ -106,6 +106,8 @@ export const STAGED_MATCH_KEY = 'decodesim.stagedMatch.v1';
 export const PRACTICE_RUNS_KEY = 'decodesim.practice.v1';
 /** index of self-hosted matches awaiting upload. Bodies at `LAN_RUNS_KEY.<id>` */
 export const LAN_RUNS_KEY = 'decodesim.lanruns.v1';
+/** which site banners you closed, as banner id → the revision you closed (`BannerStack.tsx`) */
+export const BANNERS_DISMISSED_KEY = 'decodesim.bannersDismissed.v1';
 /** the "verify your email" banner, dismissed for this tab only */
 export const VERIFY_BANNER_KEY = 'decodesim.verifyBanner.v1';
 /**
@@ -196,6 +198,14 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     purpose:
       'Whether anonymous usage analytics are on. Absent means on, because the measurement is cookieless and carries no identifiers; the switch is below.',
     retention: 'Until you clear your browser data.',
+  },
+  {
+    key: BANNERS_DISMISSED_KEY,
+    storage: 'local',
+    category: 'preference',
+    purpose:
+      'Which site banners (known bugs, notices) you closed, so a closed one stays closed. An edited banner shows again.',
+    retention: 'Until you clear your browser data. Entries for banners that have ended are dropped.',
   },
   {
     key: CAMERA_KEY,

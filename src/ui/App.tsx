@@ -23,6 +23,8 @@ import { challengeOf, type PendingChallenge } from './challenge';
 import type { RoomConfig, RoomKind } from '../net/protocol';
 import { useNewVersion } from '../net/version';
 import { useServerNotice } from '../net/notice';
+import { useSiteState } from '../net/siteStatus';
+import { setShellState } from './shellState';
 /**
  * THE WHOLE ADMIN CONSOLE IS A LAZY CHUNK, and this import is the split point.
  *
@@ -641,6 +643,13 @@ export function App() {
     // `src/pageviews.ts`, along with every gate that decides whether anything is sent at all.
     trackPageview(path, settings.game);
   }, [screen, route, settings.game]);
+
+  // the site gate and the banner stack live beside this component (main.tsx): tell them
+  // whether a match is on screen and which game the player is on
+  useEffect(() => {
+    setShellState({ inMatch: screen === 'game', game: settings.game });
+  }, [screen, settings.game]);
+  useEffect(() => () => setShellState({ inMatch: false }), []);
 
   /* Mirror the two pad-nav preferences into the module store the navigation layer reads. The
      layer is mounted beside `<App/>` (main.tsx) and cannot see this state; `setPadNavPrefs` is a
@@ -1682,7 +1691,9 @@ export function App() {
   // lockdown rather than a suggestion); this stops a player from clicking into an
   // error they could have been told about first. Admins are exempt on both sides.
   const maintenance = usePresence()?.maintenance ?? null;
-  const lockedOut = !!maintenance?.biting && !isAdmin;
+  // ...and an ACCESS GROUP the lockdown lists passes too, which only the site status knows
+  const lockPasses = useSiteState().access?.passes ?? false;
+  const lockedOut = !!maintenance?.biting && !isAdmin && !lockPasses;
   const restartPending =
     !!notice && notice.kind === 'restart' && (notice.until === undefined || notice.until > Date.now());
   const [startBlocked, setStartBlocked] = useState(false);

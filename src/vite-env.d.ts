@@ -18,6 +18,10 @@ interface ImportMetaEnv {
    *  `docs/sponsor.md`. */
   readonly VITE_SPONSOR_LOGO_LIGHT?: string;
   readonly VITE_SPONSOR_LOGO_DARK?: string;
+  /** `1` bakes this build CLOSED: every page shows the closed screen until the server confirms
+   *  the signed-in account is an admin or in an access group. Set on the alpha site only.
+   *  See `src/net/siteStatus.ts` and docs/deploy.md. */
+  readonly VITE_SITE_LOCKDOWN?: string;
 }
 
 interface ImportMeta {
