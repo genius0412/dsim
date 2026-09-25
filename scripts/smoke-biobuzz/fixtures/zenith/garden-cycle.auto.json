@@ -1,0 +1,20 @@
+{
+  "formatVersion": 3,
+  "name": "garden-cycle",
+  "title": "Preload, sweep the garden, score again, park",
+  "alliance": "RED",
+  "start": { "pose": { "xIn": -34, "yIn": -63.17, "headingRad": 1.5708 }, "holds": { "pollen": 4 } },
+  "steps": [
+    { "id": "toShoot", "kind": "path", "segments": [{ "kind": "line", "from": "current", "to": { "xIn": -14, "yIn": -40 } }], "heading": { "mode": "linear", "fromRad": 1.5708, "toRad": 3.1416 } },
+    { "id": "preload", "kind": "command", "name": "shootAll", "args": { "count": 4 }, "timeoutS": 4 },
+    { "id": "toGarden", "kind": "path", "segments": [{ "kind": "line", "from": "current", "to": { "xIn": -46, "yIn": -52 } }], "heading": { "mode": "linear", "fromRad": 3.1416, "toRad": 4.7124 } },
+    { "id": "drop", "kind": "path", "segments": [{ "kind": "line", "from": "current", "to": { "xIn": -46, "yIn": -59.8 } }], "heading": { "mode": "constant", "headingRad": -1.5708 } },
+    { "id": "sweep", "kind": "path", "timeoutS": 3, "speedFraction": 0.3, "segments": [{ "kind": "line", "from": "current", "to": { "xIn": -61.5, "yIn": -59.8 } }], "heading": { "mode": "constant", "headingRad": -1.5708 },
+      "markers": [{ "at": { "t": 0 }, "command": { "name": "setIntake", "args": { "side": "BOTH", "state": "FORWARD" } } }],
+      "endCondition": { "condition": "hopperFull" } },
+    { "id": "stopIntake", "kind": "command", "name": "setIntake", "args": { "side": "BOTH", "state": "STOP" } },
+    { "id": "back", "kind": "path", "segments": [{ "kind": "bezier", "from": "current", "control": [{ "xIn": -40, "yIn": -50 }], "to": { "xIn": -14, "yIn": -40 } }], "heading": { "mode": "linear", "fromRad": -1.5708, "toRad": -3.1416 } },
+    { "id": "cycle", "kind": "command", "name": "shootAll", "args": { "count": 4 }, "timeoutS": 3 },
+    { "id": "park", "kind": "path", "segments": [{ "kind": "bezier", "from": "current", "control": [{ "xIn": -50, "yIn": -40 }, { "xIn": -54, "yIn": 10 }], "to": { "xIn": -59.5, "yIn": 35 } }], "heading": { "mode": "tangent" } }
+  ]
+}

@@ -45,6 +45,7 @@ mostly of the form "the obvious thing is wrong, and here is the measurement that
 | DECODE rules — `src/sim/goal.ts`, `penalties.ts`, `field.ts`, `src/games/decode/**` | [docs/area/decode.md](docs/area/decode.md) | 10.6k |
 | `src/games/chain/**` | [docs/area/chain.md](docs/area/chain.md) | 4.5k |
 | `src/games/biobuzz/**` · `scripts/smoke-biobuzz/**` | [docs/area/biobuzz.md](docs/area/biobuzz.md) | 2.1k |
+| `src/auto/**` · Zenith autos · `zenith:sim` | [docs/area/autos.md](docs/area/autos.md) | 1.9k |
 | adding a game — `src/games/types.ts`, `index.ts`, `sim.ts`, `src/seasons.ts` | [docs/area/adding-a-game.md](docs/area/adding-a-game.md) | 1.0k |
 | `src/ads/**` · `server/kofi.ts` · `src/legalText.ts` · `src/storageKeys.ts` | [docs/area/monetization.md](docs/area/monetization.md) | 2.2k |
 | `src/sponsor.ts` · `src/ui/Sponsor.tsx` · `electron/**` | [docs/area/sponsor.md](docs/area/sponsor.md) | 0.9k |

@@ -1,3 +1,42 @@
+# HANDOFF — 2026-09-25 (branch `claude/zenith-dsim-auto-pathing-g29xta`: Zenith autos, driven)
+
+**READ FIRST if you are on this branch.** Off `alpha` @ `c4afe65`. Pushed; **no PR yet** (the owner
+reviews two checkpoints first). Its twin is the same branch name in `Horizon-36596/zenith`
+(`createLiveRun`, host mode `zenith-host/1`, the trace-behind-open fix), vendored here as tarballs.
+
+**State.** `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. `npm test`: the new
+AUTO lane is 48/48; the only failures are the two that fail on clean `alpha` too
+(`fieldDims.gen.ts is exactly what emit-dims.mjs renders…` and the 2v2 room-tick perf ratio).
+
+**What it is.** A Zenith `*.auto.json` (the file the team's robot plays) plays in BIOBUZZ's AUTO by
+DRIVING: an auto seat runs Zenith's own Pedro v3 follower against the robot's real pose and turns
+its powers into sticks. Nothing writes a pose, so the old `.pp` heading teleport has nowhere to
+live. `docs/area/autos.md` is the guide (routed); `docs/plans/zenith-autos.md` is the plan.
+
+- Configure ▸ Match has an **Autonomous** section: library (localStorage, not `GameSettings`),
+  import `.auto.json` + `waypoints.json`, **Edit in Zenith** (popup, `zenith-host/1`), **Drive it
+  here** (headless run drawn over the plan), and **Play it in AUTO**.
+- Solo practice seats the robot at the auto's start; the plan is drawn (dashed) in `pre` and AUTO;
+  the second HUD card reads `AUTO · <step>`; after AUTO, **RUN IN ZENITH** opens the run over the
+  plan. Free Drive plays the auto once per world build (Restart plays it again).
+- `npm run zenith:sim -- <auto>` writes Zenith's trace, for a robot repo's `zenith.json` `sim`.
+
+**Next.** (1) The owner's two checkpoints. (2) Online (plan D6): a `caps` bit, the seat in
+`Room.frameCommands`, the same seat predicting on the client — a SERVER change and a deploy.
+(3) The public Zenith app needs a release with host mode before production DSIM's "Edit in Zenith"
+works; until then set `VITE_ZENITH_URL`.
+
+**Gotchas.**
+- Re-vendor with `node scripts/vendor-zenith.mjs ../zenith`, never by copying: a plain
+  `npm install` keeps a changed tarball's OLD integrity hash and the Fly image's `npm ci` refuses it.
+- The Zenith BIOBUZZ field says ±72; DSIM's CAD walls are ±70.674. The adapter overrides `sizeIn`
+  so Zenith's PERIMETER and START_ILLEGAL findings match DSIM's physics. Keep it.
+- The robot file's footprint is `bbFootprint` (intake reach included), not `spec.length`.
+- Found in passing, not fixed here (robot repo): biobuzz's `PathBuilder.withHeading` does not
+  mirror `constant`/`linear`/`facePoint` headings for the other alliance. DSIM mirrors them.
+
+---
+
 # HANDOFF — 2026-09-24e (custom-room games are saved, so their replays can be watched)
 
 **State: committed and pushed on `alpha`, alpha game server deployed.** `dbtest` all pass, `server:check` and `build` pass. `npm test` has 5 failures out of 5047, all timing checks (`PREDICT_FULL_BUDGET` ×3, the Auto probe, 2v2 `step3d` p95). The parallel session's stargazer/badge SVG work is committed separately ("Badges: every disc badge is one 128×128 SVG…"). ⚠️ **Production still needs a Fly deploy from `main`** once this reaches main.

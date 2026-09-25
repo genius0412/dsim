@@ -23,11 +23,13 @@
  *
  * Time is `world.time`, the sim's own clock — never a wall clock.
  */
+import { loadSeason } from '@horizon36596/zenith-season-biobuzz';
 import biobuzzField from '@horizon36596/zenith-season-biobuzz/field/biobuzz.field.json' with { type: 'json' };
 import type { AutoButtons, AutoCommand, AutoHost, GameAutoAdapter } from '../../../auto/types';
 import { driveParams } from '../../../sim/drivetrain';
 import type { RobotSpec, RobotState, World } from '../../../types';
-import { bbHopperCap } from '../robot';
+import { bbFootprint, bbHopperCap } from '../robot';
+import { BB_HALF_X, BB_HALF_Y } from '../config';
 
 /** `Constants.AutoConstants.SHOT_SETTLE_MS` on the robot: the wait after the last launch. */
 const SHOT_SETTLE_S = 0.25;
@@ -56,19 +58,23 @@ export function biobuzzZenithRobot(spec: RobotSpec): unknown {
   const tank = dp.saturation === 'tank' || dp.strafeMult === 0;
   const strafe = tank ? 1 : dp.maxSpeed * dp.strafeMult;
   const mountRaw = (spec as { intakeMount?: string }).intakeMount ?? 'front';
+  // THE FOOTPRINT IS THE COLLIDER'S, intake reach included (`bbFootprint`, the same extents the
+  // chassis collider, the start rules and the pollen solids read), not the bare chassis: a plan
+  // against the chassis alone parks the intake bar 3 in inside a wall.
+  const fp = bbFootprint(spec);
   const mouthDepth = 4;
   const mouth = (id: string, side: 'FRONT' | 'BACK' | 'LEFT' | 'RIGHT') => {
     const along = side === 'FRONT' || side === 'BACK';
-    const half = (along ? spec.length : spec.width) / 2;
+    const edge = side === 'FRONT' ? fp.front : side === 'BACK' ? fp.rear : fp.half;
     const sign = side === 'FRONT' || side === 'LEFT' ? 1 : -1;
-    const offset = sign * Math.max(0, half - mouthDepth / 2);
+    const offset = sign * Math.max(0, edge - mouthDepth / 2);
     return {
       id,
       side,
       offsetIn: along ? { xIn: offset, yIn: 0 } : { xIn: 0, yIn: offset },
-      widthIn: Math.max(1, (along ? spec.width : spec.length) - 2),
+      widthIn: Math.max(1, (along ? 2 * fp.half : fp.front + fp.rear) - 2),
       depthIn: mouthDepth,
-      provenance: SIM(`intake mount "${mountRaw}", mouth inside the chassis edge`),
+      provenance: SIM(`intake mount "${mountRaw}", the mouth inside the intake's outer edge`),
     };
   };
   const mouths =
@@ -80,7 +86,11 @@ export function biobuzzZenithRobot(spec: RobotSpec): unknown {
           ? [mouth('left', 'LEFT')]
           : [mouth('front', 'FRONT')];
   const pedro = 'CARRIED OVER: Horizon-36596/biobuzz Constants.DriveConstants (MEASURED 2026-08-30 on the robot), used unchanged on DSIM';
-  const box = { lengthIn: spec.length, widthIn: spec.width, provenance: SIM('chassis length and width') };
+  const box = {
+    lengthIn: Math.round((fp.front + fp.rear) * 1e4) / 1e4,
+    widthIn: Math.round(2 * fp.half * 1e4) / 1e4,
+    provenance: SIM('chassis plus intake reach (bbFootprint)'),
+  };
   return {
     formatVersion: 1,
     name: spec.name?.trim() ? spec.name.trim().slice(0, 60) : 'DSIM robot',
@@ -88,7 +98,8 @@ export function biobuzzZenithRobot(spec: RobotSpec): unknown {
     footprint: {
       startIn: box,
       expandedIn: box,
-      centreOfRotationIn: { xIn: 0, yIn: 0, provenance: SIM('chassis centre') },
+      // the chassis centre, which is where DSIM turns, sits (rear - front) / 2 along the box
+      centreOfRotationIn: { xIn: Math.round(((fp.rear - fp.front) / 2) * 1e4) / 1e4, yIn: 0, provenance: SIM('chassis centre inside the footprint') },
     },
     kinematics: {
       maxForwardVelInPerS: valued(dp.maxSpeed, SIM('top speed (driveParams.maxSpeed)')),
@@ -247,10 +258,24 @@ class BiobuzzAutoHost implements AutoHost {
   }
 }
 
+/**
+ * THE FIELD ZENITH PLANS ON, WITH DSIM'S WALLS. Zenith's BIOBUZZ field file declares the manual's
+ * nominal 144 in square (walls at ±72); DSIM's field is FIRST's CAD, whose inner wall faces sit at
+ * ±70.674 (`BB_HALF_X`, `fieldDims.gen.ts`). Planned against 72, a footprint 1.3 in past DSIM's
+ * wall reads as legal in Zenith and then wedges the robot here, so the copy DSIM hands Zenith
+ * declares the walls DSIM simulates. Everything else in the file is Zenith's, unchanged.
+ */
+const DSIM_FIELD = {
+  ...biobuzzField,
+  sizeIn: { xIn: Math.round(BB_HALF_X * 2 * 1e4) / 1e4, yIn: Math.round(BB_HALF_Y * 2 * 1e4) / 1e4 },
+};
+
 export const BIOBUZZ_AUTO: GameAutoAdapter = {
   commands: BIOBUZZ_AUTO_COMMANDS,
   conditions: BIOBUZZ_AUTO_CONDITIONS,
-  field: () => biobuzzField,
+  field: () => DSIM_FIELD,
+  // BIOBUZZ's own rules, derived from the field DSIM hands over (so from DSIM's walls)
+  rules: (field) => loadSeason(field),
   robot: biobuzzZenithRobot,
   createHost: (world, robotId) => new BiobuzzAutoHost(world, robotId),
   // BIOBUZZ's canonical frame is BLUE's, and RED is its point mirror (`bbMirror`), which is its

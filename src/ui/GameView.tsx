@@ -28,6 +28,7 @@ import { TutorialCard } from './TutorialCard';
 import type { Replay, ReplayResult } from '../sim/replay';
 import { moduleFor } from '../games';
 import { activeZenithAuto } from '../auto/library';
+import { launchZenith } from './zenithLaunch';
 import { seasonFor } from '../seasons';
 import { useCoarsePointer } from './useCoarsePointer';
 import type { Alliance, DrivetrainType } from '../types';
@@ -551,6 +552,16 @@ export function GameView({
     controllerRef.current?.setRestartRequest(onRestartRun ?? null);
   }, [onRestartRun]);
 
+  /** RUN IN ZENITH: the auto that just drove, opened in Zenith with the recorded path over it */
+  const openRunInZenith = (): void => {
+    const c = controllerRef.current;
+    const mod = c?.zenithModule();
+    const name = c?.getHud().auto?.name;
+    if (!c || !mod || !name) return;
+    const error = launchZenith({ mod, settings, open: name, trace: c.autoTrace() ?? undefined });
+    c.logEvent(error ?? 'Zenith is open in another window with this run over the plan.');
+  };
+
   // A REMATCH IS A NEW MATCH IN THE SAME GameView. The intro used to be read once at mount,
   // so a rematch replayed the first match's intro, ratings and all. Re-read it every time a
   // match enters its countdown: `getIntro` reads the session's CURRENT `matchStart` intros.
@@ -784,6 +795,13 @@ export function GameView({
             <span aria-hidden="true">⟲</span> RESET
           </button>
         )}
+        {/* THE AUTO'S RUN, SENT TO ZENITH: once the auto has driven, its recorded path opens in
+            Zenith laid over the plan (`zenithLaunch.ts`). Solo only, like the auto itself. */}
+        {!session && hud?.auto && (hud.auto.state === 'done' || hud.auto.state === 'stopped') && (
+          <button className="game-btn" onClick={openRunInZenith} title="Open this auto in Zenith with the path the robot drove">
+            <span aria-hidden="true">↗</span> RUN IN ZENITH
+          </button>
+        )}
         {/* CO-OP (duo record): restarting is a VOTE — the run belongs to both
             drivers, so neither can pull it out from under the other. Available
             MID-MATCH as well as on the results screen, and the R binding does
@@ -966,6 +984,13 @@ function Hud({
   const GameChips = moduleFor(hud.game).hudChips;
   const GamePinnedNotice = moduleFor(hud.game).pinnedNotice;
   const timer = timerPanel(hud);
+  // the auto's line on the second card: which step it is on, while AUTO (or a Free Drive trial) runs
+  const autoLine =
+    hud.auto && hud.auto.state === 'running'
+      ? `AUTO · ${(hud.auto.stepId ?? hud.auto.name).toUpperCase()}`
+      : hud.auto && hud.auto.state === 'done' && (hud.phase === 'auto' || hud.phase === 'freeplay')
+        ? 'AUTO DONE'
+        : null;
   const redScore = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blueScore = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
   // Chain Reaction is scored (its own breakdown); DECODE shows motif + its breakdown.
@@ -1143,8 +1168,15 @@ function Hud({
               a new driver could not learn what two amber rings meant. The word is `aria-hidden`
               because the glyph's own `aria-label` already says it in full. This card is NOT in
               `[data-hud-band]`, so a word here never re-frames the 3D field. */}
-          {(hud.frontFlipped || hud.butterflyMode || hud.card) && (
+          {(hud.frontFlipped || hud.butterflyMode || hud.card || autoLine) && (
             <div className="sub-hud">
+              {/* THE ZENITH AUTO driving this robot, and the step it is on: a standing fact while
+                  AUTO runs, so it lives on this card (HUD-RELOCATION.md), in words */}
+              {autoLine && (
+                <span className="sub-hud-item" role="status">
+                  <span className="sub-hud-lbl">{autoLine}</span>
+                </span>
+              )}
               {hud.frontFlipped && (
                 <span className="sub-hud-item">
                   <span className="reversed-icon" role="img" aria-label="Front flipped: driving reversed." />

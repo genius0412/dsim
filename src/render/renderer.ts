@@ -102,6 +102,19 @@ export class Renderer {
   /** `GameScene.project`'s out-parameter — ONE object, rewritten per label per frame (its
    * contract is explicit that the caller owns it and it is reused). */
   private readonly projOut = { x: 0, y: 0, visible: false };
+  /**
+   * THE ZENITH AUTO'S PLANNED PATH (docs/area/autos.md), one polyline per path step in field
+   * inches, set by the controller while it should show (before and during AUTO) and cleared
+   * otherwise. Not on `RobotState` like the old `.pp` path, because it is not sim state: the
+   * auto seat keeps its plan to itself, and the world ships to every client 30 times a second.
+   */
+  private zenithPath: { x: number; y: number }[][] | null = null;
+  private zenithAlliance: 'red' | 'blue' = 'blue';
+
+  setZenithPath(legs: { x: number; y: number }[][] | null, alliance: 'red' | 'blue' = 'blue'): void {
+    this.zenithPath = legs;
+    this.zenithAlliance = alliance;
+  }
 
   render(
     ctx: CanvasRenderingContext2D,
@@ -161,6 +174,7 @@ export class Renderer {
         else heldBy.set(b.state.robot, [b]);
       }
 
+      if (this.zenithPath) this.drawZenithPath(ctx);
       for (const r of world.robots) {
         // Draw auto paths if active for this robot
         if (r.autoPathActive && r.autoPath) {
@@ -274,6 +288,7 @@ export class Renderer {
     }
 
     // AUTO PATHS first, so a label is never drawn under one.
+    if (this.zenithPath) this.drawZenithPathProjected(ctx, scene);
     for (const r of world.robots) {
       if (!r.autoPathActive || !r.autoPath) continue;
       this.drawAutoPathProjected(ctx, r, scene);
@@ -353,6 +368,49 @@ export class Renderer {
       cur = line.endPoint;
     }
     ctx.stroke();
+    ctx.restore();
+  }
+
+  /** the Zenith plan, in field inches (the 2D pass): a thin line in the alliance's colour */
+  private drawZenithPath(ctx: CanvasRenderingContext2D): void {
+    ctx.save();
+    ctx.lineWidth = 0.8;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.setLineDash([3, 2]);
+    ctx.strokeStyle = this.zenithAlliance === 'red' ? 'rgba(255, 110, 110, 0.8)' : 'rgba(120, 170, 255, 0.8)';
+    for (const leg of this.zenithPath ?? []) {
+      if (leg.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(leg[0].x, leg[0].y);
+      for (let i = 1; i < leg.length; i++) ctx.lineTo(leg[i].x, leg[i].y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** the same plan on a 3D scene, each sample projected on its own (see `drawAutoPathProjected`) */
+  private drawZenithPathProjected(ctx: CanvasRenderingContext2D, scene: GameScene): void {
+    const out = this.projOut;
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = this.zenithAlliance === 'red' ? 'rgba(255, 110, 110, 0.85)' : 'rgba(120, 170, 255, 0.85)';
+    for (const leg of this.zenithPath ?? []) {
+      ctx.beginPath();
+      let started = false;
+      for (const p of leg) {
+        scene.project!(p.x, p.y, 0.5, out);
+        if (!out.visible) {
+          started = false;
+          continue;
+        }
+        if (started) ctx.lineTo(out.x, out.y);
+        else ctx.moveTo(out.x, out.y);
+        started = true;
+      }
+      ctx.stroke();
+    }
     ctx.restore();
   }
 

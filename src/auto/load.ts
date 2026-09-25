@@ -178,7 +178,7 @@ export function loadZenithAuto(
   const resolved = resolve(running);
   const thePlan = planAuto(resolved, robot, field);
   const est = estimatePlan(thePlan, robot);
-  const findings = [...resolved.findings, ...check(thePlan, est, robot, field)];
+  const findings = [...resolved.findings, ...check(thePlan, est, robot, field, adapter.rules?.(field))];
   const used = namesUsed(written);
   const unsupported = [
     ...used.commands.filter((n) => !adapter.commands.includes(n)),

@@ -50,7 +50,8 @@
     "bundleaudit": "node scripts/bundleaudit.mjs",
     "field-cad": "node scripts/field-cad.mjs",
     "element-cad": "node scripts/field-cad/elements.mjs",
-    "hive-calibrate": "tsx scripts/hive-calibrate.ts"
+    "hive-calibrate": "tsx scripts/hive-calibrate.ts",
+    "zenith:sim": "tsx scripts/zenith-sim.ts"
   },
   "build": {
     "appId": "com.decodesim.app",

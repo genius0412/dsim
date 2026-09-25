@@ -20,6 +20,7 @@ import { ChainStartEditor } from './ChainStartEditor';
 import { moduleFor } from '../games';
 import { OptRow, ToggleRow } from './OptRow';
 import { practiceSeatsFor } from '../settings';
+import { AutonomousSetup } from './AutonomousSetup';
 
 /**
  * A BOT TIER, IN SENTENCE CASE. The seam's tiers are opaque lower-case strings a game owns, and
@@ -276,6 +277,8 @@ export function MatchSetup({
             />
           )}
         </section>
+
+        {moduleFor(settings.game).zenithAutos && <AutonomousSetup settings={settings} />}
 
         {runsAutoPaths && (
         <section className="ds-sec">

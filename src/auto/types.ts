@@ -69,6 +69,8 @@ export interface GameAutoAdapter {
   conditions: readonly string[];
   /** the Zenith `field.json` object this game is played on */
   field(): unknown;
+  /** the Zenith season rules for the findings (start legality, the ledger), read from the field */
+  rules?(field: import('@horizon36596/zenith-schema').Field): import('@horizon36596/zenith-core').SeasonRules;
   /** the Zenith `robot.json` object for a DSIM build: footprint, speeds, mouths, registry */
   robot(spec: RobotSpec): unknown;
   /** this robot's mechanisms, for one seat */

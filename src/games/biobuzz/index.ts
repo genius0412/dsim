@@ -1,3 +1,4 @@
+import { BiobuzzAutoPreview } from './AutoPreview';
 import type { GameModule } from '../module';
 import { BiobuzzGalleryRoute } from './GalleryRoute';
 import { BiobuzzPreview3D, BiobuzzSavedThumb } from './Preview3D';
@@ -76,6 +77,8 @@ export const BIOBUZZ_MODULE: GameModule = {
   // strategy screens into DECODE's; this one draws the BIOBUZZ field and judges G304 with
   // `bbEvalStart`, with TOP / BOTTOM roles.
   startEditor: BiobuzzStartEditor,
+  // the Autonomous section's preview: a Zenith auto on this field (docs/area/autos.md)
+  autoPreview: BiobuzzAutoPreview,
   // no auto-fire: the driver fires, and Aim Assist only releases a shot that would land
   offersAutoFire: false,
   /**

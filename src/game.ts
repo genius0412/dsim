@@ -20,7 +20,7 @@ import type {
 } from './types';
 import * as C from './config';
 import type { RobotSetup } from './sim/spawn';
-import type { ZenithAutoSetup } from './auto/types';
+import type { AutoSeatStatus, ZenithAutoSetup } from './auto/types';
 
 /**
  * A Zenith auto handed to a solo controller: the LAZY `src/auto` module (a type-only import
@@ -429,6 +429,11 @@ export interface HudSnapshot {
    * gamepad state, so a pad plugged in mid-step changes the line within 100 ms.
    */
   tutorial: TutorialView | null;
+  /**
+   * THE ZENITH AUTO this solo run plays, and where it is (docs/area/autos.md): the status chip
+   * during AUTO, and the "Open run in Zenith" button once it has run. Null when none is playing.
+   */
+  auto: (AutoSeatStatus & { name: string }) | null;
 }
 
 export class GameController {
@@ -1201,16 +1206,63 @@ export class GameController {
     const seat = za.module.createAutoSeat(world, this.localRobotId, za, adapter);
     if (world.match.phase === 'freeplay') seat.arm();
     this.autoSeat = seat;
+    // a file that cannot run says so in the event log, and the driver keeps the robot
+    const st = seat.status();
+    if (st.state === 'error') world.events.push(`AUTO OFF: ${st.error ?? 'the auto could not be loaded'}`);
+  }
+
+  /** the planned path of this run's auto, planned for the robot's alliance, cached per seat */
+  private zenithLegs: { seat: unknown; legs: { x: number; y: number }[][] } | null = null;
+
+  /**
+   * SHOW THE AUTO'S PLAN on the field while it matters: before the match starts, through AUTO,
+   * and while a Free Drive trial runs. From TELEOP on it is gone, so it never clutters driving.
+   */
+  private syncZenithPath(world: World): void {
+    const seat = this.autoSeat;
+    const za = this.zenithAuto;
+    if (!seat || !za || !seat.loaded) {
+      this.renderer.setZenithPath(null);
+      return;
+    }
+    const phase = world.match.phase;
+    const st = seat.status().state;
+    const show = phase === 'pre' || phase === 'auto' || (phase === 'freeplay' && (st === 'running' || st === 'waiting'));
+    if (!show) {
+      this.renderer.setZenithPath(null);
+      return;
+    }
+    if (this.zenithLegs?.seat !== seat) {
+      this.zenithLegs = { seat, legs: za.module.autoView(seat.loaded).legs.map((l) => l.points) };
+    }
+    this.renderer.setZenithPath(this.zenithLegs.legs, this.localRobot()?.alliance ?? 'blue');
   }
 
   /** the auto seat's status for the HUD, or null when this run plays no auto */
-  autoStatus(): (import('./auto/types').AutoSeatStatus & { name: string }) | null {
+  autoStatus(): (AutoSeatStatus & { name: string }) | null {
     return this.autoSeat && this.zenithAuto ? { ...this.autoSeat.status(), name: this.zenithAuto.name } : null;
   }
 
-  /** the auto's run so far as a Zenith trace (Open run in Zenith), or null */
+  /**
+   * The auto's run so far as a Zenith trace IN THE FILE'S OWN FRAME (Open run in Zenith), or
+   * null: a run on the alliance the file was not written for is mirrored back, so Zenith lays it
+   * over the plan it drew.
+   */
   autoTrace(): import('@horizon36596/zenith-core').SimTrace | null {
-    return this.autoSeat?.trace() ?? null;
+    const seat = this.autoSeat;
+    const trace = seat?.trace() ?? null;
+    if (!trace || !seat?.loaded || !this.zenithAuto) return trace;
+    return this.zenithAuto.module.traceInFileFrame(trace, seat.loaded.mirrored);
+  }
+
+  /** the lazy auto module this run was handed, for a screen that opens Zenith from the match */
+  zenithModule(): GameControllerZenithAuto['module'] | null {
+    return this.zenithAuto?.module ?? null;
+  }
+
+  /** a line in the match's event log (the muted left-edge log; never a popup over the field) */
+  logEvent(text: string): void {
+    this.world.events.push(text);
   }
 
   /** the auto the local robot plays, planned for its alliance, for the field overlay */
@@ -1744,7 +1796,10 @@ export class GameController {
     if (this.sceneLoading) {
       this.ctx.setTransform(1, 0, 0, 1, 0, 0);
       this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    } else this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId, !!this.scene, this.driverName);
+    } else {
+      this.syncZenithPath(world);
+      this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId, !!this.scene, this.driverName);
+    }
     this.renderTimes.push(performance.now() - drawT0);
     this.sampleFrame(dtMs);
     this.raf = requestAnimationFrame(this.loop);
@@ -3121,6 +3176,7 @@ export class GameController {
       spectators: this.session?.spectatorCount?.() ?? 0,
       rematch: this.rematchTally(),
       tutorial: this.getTutorial(),
+      auto: this.autoStatus(),
     };
   }
 

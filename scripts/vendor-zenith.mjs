@@ -6,7 +6,7 @@
  * packed tarballs under `vendor/zenith/` (`file:` specs in package.json). This builds the
  * three packages in the checkout, packs them over the old tarballs and writes
  * `vendor/zenith/SOURCE.md` with the commit they came from, so a diff of the tarballs always
- * names its source. Run `npm install` afterwards to refresh the lockfile's integrity hashes.
+ * names its source, then reinstalls them so the lockfile's integrity hashes match.
  *
  *   node scripts/vendor-zenith.mjs [path/to/zenith]
  *
@@ -44,4 +44,8 @@ Packed by \`scripts/vendor-zenith.mjs\` from \`Horizon-36596/zenith\` @ \`${sha}
 Do not edit the tarballs by hand; re-run the script against a Zenith checkout.
 `,
 );
-console.log(`vendor-zenith: packed schema, core and season-biobuzz from ${sha.slice(0, 7)} (${branch})`);
+// `npm install` alone reports "up to date" for a changed `file:` tarball and keeps the OLD
+// integrity hash in package-lock.json, which `npm ci` (the Fly image) then refuses. Installing the
+// tarballs by path re-hashes them.
+run('npm', ['install', '--no-audit', '--no-fund', ...['schema', 'core', 'season-biobuzz'].map((p) => `./vendor/zenith/horizon36596-zenith-${p}-0.1.0.tgz`)], process.cwd());
+console.log(`vendor-zenith: packed schema, core and season-biobuzz from ${sha.slice(0, 7)} (${branch}), lockfile refreshed`);

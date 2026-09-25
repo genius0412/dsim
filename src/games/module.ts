@@ -154,6 +154,9 @@ export interface GameModule extends GameSimModule {
   /** the game's start-position editor, used in place of the
    * `isDecode ? StartPositionEditor : ChainStartEditor` branch. */
   startEditor?: ComponentType<StartEditorProps>;
+  /** the Autonomous section's PREVIEW (`src/ui/AutonomousSetup.tsx`): a Zenith auto drawn on this
+   * game's own field. Absent means a game that plays no Zenith autos (`GameSimModule.zenithAutos`). */
+  autoPreview?: ComponentType<AutoPreviewProps>;
   /** display strings a non-game screen needs. `configSummary` is the ONE line that
    * says what a build is — printed by the leaderboard, the lobby roster and the
    * strategy screen. */
@@ -358,6 +361,21 @@ export type ResultsSection = readonly [string, readonly (readonly [string, numbe
  * accepts it, and a component that only ever handles a real pose still satisfies
  * the slot.
  */
+/** A Zenith auto, already planned for the robot's alliance, as the Autonomous preview draws it. */
+export interface AutoPreviewProps {
+  spec: RobotSpec;
+  alliance: Alliance;
+  /** the planned path, one polyline per path step, in the robot's ACTUAL frame (inches) */
+  legs: { id: string; points: { x: number; y: number }[] }[];
+  /** where the auto starts, and each path step's end, actual frame (heading in radians) */
+  poses: { x: number; y: number; heading: number }[];
+  /** the path the robot really drove, when a run has been recorded */
+  driven?: { x: number; y: number }[];
+  /** the leg to emphasise (the step the HUD or the list points at) */
+  focus?: string | null;
+  size?: number;
+}
+
 export interface StartEditorProps {
   spec: RobotSpec;
   alliance: Alliance;

@@ -404,7 +404,11 @@ const BASELINE = {
   gallery: { gzip: 7.33 * 1000 },
   // 2026-09-24: the Zenith autos chunk, MEASURED on the build that introduced it — Zenith's
   // planner, follower and schema (zod) plus `src/auto/`. Lazy: see the `autos` route.
-  autos: { gzip: 51.97 * 1000 },
+  // 51.97 -> 55.77 (+3.80) the same day: the headless runner (`runAutoHeadless`, "Simulate in
+  // DSIM" and "Drive it here") and the preview projection (`view.ts`) joined the chunk. Measured
+  // rather than left to creep under the 4 KB tolerance. The UI that opens it (Autonomous section,
+  // `zenithHost.ts`, the HUD line) is in main: +5.15 KB against alpha @ c4afe65's 973.24.
+  autos: { gzip: 55.77 * 1000 },
   // 2026-09-19: NEW. The whole admin console, lazily loaded by `App.tsx`. See the route note
   // above and the RE-MEASURED entry below for what moved out of `main` to create it.
   admin: { gzip: 25.10 * 1000 },

@@ -7,3 +7,5 @@ export { autoAdapterFor } from './games';
 export { createAutoSeat, type AutoSeat } from './seat';
 export { AutoLoadError, autoStartPose, loadZenithAuto, parseAutoText, namesUsed, type LoadedAuto } from './load';
 export { powersToCommand } from './drive';
+export { runAutoHeadless, traceInFileFrame, type HeadlessOptions, type HeadlessResult } from './headless';
+export { autoView, type AutoView } from './view';

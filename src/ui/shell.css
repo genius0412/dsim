@@ -6453,6 +6453,87 @@ a.ds-cta {
   border-radius: var(--ds-round);
   border: 1px dashed var(--ds-line);
 }
+/* THE AUTONOMOUS SECTION (`AutonomousSetup.tsx`): the selected Zenith auto's preview beside its
+   verdict, facts and actions. Its own family rather than `ds-startpos-*` (two components must not
+   share a container class), laid out the same way so the two sections read as one screen. */
+.ds-auto {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--ds-s-4);
+}
+.ds-auto-stage {
+  flex: 0 1 auto;
+  min-width: 0;
+  line-height: 0;
+}
+.ds-autoprev-canvas {
+  border-radius: var(--ds-round-md);
+  background: var(--ds-bg);
+  border: 1px solid var(--ds-line);
+  width: 300px;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  display: block;
+}
+.ds-auto-blank {
+  width: 300px;
+  max-width: 100%;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: var(--ds-round-md);
+  border: 1px dashed var(--ds-line);
+  line-height: var(--ds-lh-heading);
+}
+.ds-auto-side {
+  flex: 1 1 200px;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+}
+.ds-auto-status {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  line-height: var(--ds-lh-heading);
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border-radius: var(--ds-round);
+  border: 1px solid var(--ds-line);
+}
+.ds-auto-status.ok {
+  color: var(--ds-ok-ink);
+  background: color-mix(in srgb, var(--ds-ok) 12%, var(--ds-panel));
+  border-color: color-mix(in srgb, var(--ds-ok) 40%, var(--ds-line));
+}
+.ds-auto-status.bad {
+  color: var(--ds-red-ink);
+  background: color-mix(in srgb, var(--ds-red) 12%, var(--ds-panel));
+  border-color: color-mix(in srgb, var(--ds-red) 40%, var(--ds-line));
+}
+.ds-auto-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--ds-s-1) var(--ds-s-3);
+  margin: 0;
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-heading);
+}
+.ds-auto-facts dt {
+  color: var(--ds-mut);
+  font-weight: 600;
+}
+.ds-auto-facts dd {
+  margin: 0;
+  color: var(--ds-ink);
+}
+.ds-auto-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+}
 .ds-startpos-where.stand {
   color: var(--ds-accent);
   border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));

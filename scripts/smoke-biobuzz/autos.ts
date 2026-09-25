@@ -403,6 +403,34 @@ export function autoChecks(check: Check): void {
     check('AUTO: in Free Drive an armed seat plays the auto', seat.step(world, driver) !== driver && seat.status().state === 'running');
   }
 
+  // ── the demo routine: a whole AUTO cycle on DSIM's field, Zenith-clean ─────────────────────
+  {
+    const auto = readFileSync(join(here, 'fixtures', 'zenith', 'garden-cycle.auto.json'), 'utf8');
+    const { world, seat } = stage({ auto }, 'red', '2d');
+    const errors = seat.loaded?.findings.filter((f) => f.severity === 'error') ?? [];
+    check('AUTO: garden-cycle plans with no Zenith errors against the DSIM robot and field', seat.loaded !== null && errors.length === 0, errors.map((f) => `${f.code}: ${f.message}`).join(' | '));
+    startMatch(world);
+    let most = 0;
+    let fired = 0;
+    const commands = new Map<number, RobotCommand>();
+    for (let i = 0; i < 60 * 30 && seat.status().state !== 'done'; i++) {
+      const before = world.robots[0].hopper.length;
+      commands.set(0, localizeCommand(seat.step(world, cmd({}))));
+      world.events.length = 0;
+      BIOBUZZ_SIM.step(world, SIM_DT, commands);
+      const after = world.robots[0].hopper.length;
+      if (after < before) fired += before - after;
+      most = Math.max(most, after);
+    }
+    const r = world.robots[0];
+    const inZone = r.pos.x < -59.101 + 9 && r.pos.y > 23.907 - 9 && r.pos.y < 46.599 + 9;
+    check(
+      'AUTO: garden-cycle finishes inside AUTO, fires the preload, collects in the garden and ends at the loading zone',
+      seat.status().state === 'done' && fired >= 5 && inZone,
+      `state ${seat.status().state}, fired ${fired}, end (${r.pos.x.toFixed(1)}, ${r.pos.y.toFixed(1)})`,
+    );
+  }
+
   // ── the team's own file: biobuzz's close.auto.json with its waypoints ────────────────────
   {
     const dir = join(here, 'fixtures', 'zenith');
