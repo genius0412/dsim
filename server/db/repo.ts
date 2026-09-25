@@ -18,6 +18,13 @@ import {
   STANDING_MAX, HEAL_PER_DAY, HEAL_PER_CLEAN_MATCH, clampScore, type StandingVerdict,
 } from '../../src/standing';
 import { dbEnabled, q, tx, type Tx } from './pool';
+import {
+  ACCESS_GROUPS,
+  BANNER_KINDS,
+  type AccessGroup,
+  type BannerKind,
+  type LockdownScope,
+} from '../../src/net/protocol';
 import { scrubSpecNames } from '../moderation';
 
 /** every board/period is keyed by game; old callers/rows default to DECODE. */
@@ -3153,6 +3160,8 @@ export interface AccountExport {
   payments: Record<string, unknown>[];
   /** the reward ledger (0048): every grant, with its reason and what it delivered */
   rewards: Record<string, unknown>[];
+  /** access groups (0051) — the group and when; never who granted it (another account's id) */
+  accessGroups: Record<string, unknown>[];
 }
 
 export async function exportAccount(userId: string): Promise<AccountExport | null> {
@@ -3372,6 +3381,10 @@ export async function exportAccount(userId: string): Promise<AccountExport | nul
     rewards: await q<Record<string, unknown>>(
       `select grant_key, source, reason, items, silent, created_at, claimed_at, revoked_at
          from reward_grants where user_id = $1 order by created_at`,
+      [userId],
+    ),
+    accessGroups: await q<Record<string, unknown>>(
+      `select grp as "group", granted_at as "grantedAt" from access_members where user_id = $1 order by granted_at`,
       [userId],
     ),
   };
@@ -5731,13 +5744,44 @@ export interface MaintenanceWindow {
   /** ms epoch it ends; null = open-ended ("until we say otherwise") */
   endsAt: number | null;
   message: string;
+  /**
+   * WHAT IS CLOSED (0051). `matches` is the original window: no new matches. `site` closes
+   * the whole app, and the server refuses every write as well. Absent from an older
+   * console's POST, which means `matches` — what that console meant.
+   */
+  scope?: LockdownScope;
+  /** where the closed screen sends people (https only), and the button's label */
+  redirectUrl?: string | null;
+  redirectLabel?: string | null;
+  /** the ACCESS GROUPS that pass this lockdown. Admins always pass and are not listed. */
+  bypass?: AccessGroup[];
 }
 
-const NO_MAINTENANCE: MaintenanceWindow = { active: false, startsAt: null, endsAt: null, message: '' };
+export type { LockdownScope, AccessGroup, BannerKind };
+export { ACCESS_GROUPS, BANNER_KINDS };
+
+/** the groups an account can be put in (0051). Each one passes a lockdown that lists it. */
+export const isAccessGroup = (g: unknown): g is AccessGroup =>
+  typeof g === 'string' && (ACCESS_GROUPS as readonly string[]).includes(g);
+
+const NO_MAINTENANCE: MaintenanceWindow = {
+  active: false,
+  startsAt: null,
+  endsAt: null,
+  message: '',
+  scope: 'matches',
+  redirectUrl: null,
+  redirectLabel: null,
+  bypass: [],
+};
 
 export async function getMaintenance(): Promise<MaintenanceWindow> {
-  const rows = await q<{ active: boolean; starts_at: string | null; ends_at: string | null; message: string }>(
-    `select active, starts_at, ends_at, message from maintenance where id = 1`,
+  const rows = await q<{
+    active: boolean; starts_at: string | null; ends_at: string | null; message: string;
+    scope: string | null; redirect_url: string | null; redirect_label: string | null; bypass: string[] | null;
+  }>(
+    `select active, starts_at, ends_at, message, scope, redirect_url, redirect_label, bypass
+       from maintenance where id = 1`,
   );
   const r = rows[0];
   if (!r) return NO_MAINTENANCE;
@@ -5746,19 +5790,28 @@ export async function getMaintenance(): Promise<MaintenanceWindow> {
     startsAt: r.starts_at ? new Date(r.starts_at).getTime() : null,
     endsAt: r.ends_at ? new Date(r.ends_at).getTime() : null,
     message: r.message ?? '',
+    scope: r.scope === 'site' ? 'site' : 'matches',
+    redirectUrl: r.redirect_url ?? null,
+    redirectLabel: r.redirect_label ?? null,
+    bypass: (r.bypass ?? []).filter(isAccessGroup),
   };
 }
 
 export async function setMaintenance(w: MaintenanceWindow): Promise<MaintenanceWindow> {
   await q(
     `update maintenance
-        set active = $1, starts_at = $2, ends_at = $3, message = $4, updated_at = now()
+        set active = $1, starts_at = $2, ends_at = $3, message = $4, scope = $5,
+            redirect_url = $6, redirect_label = $7, bypass = $8, updated_at = now()
       where id = 1`,
     [
       w.active,
       w.startsAt ? new Date(w.startsAt).toISOString() : null,
       w.endsAt ? new Date(w.endsAt).toISOString() : null,
       w.message ?? '',
+      w.scope === 'site' ? 'site' : 'matches',
+      w.redirectUrl || null,
+      w.redirectLabel || null,
+      (w.bypass ?? []).filter(isAccessGroup),
     ],
   );
   return getMaintenance();
@@ -5778,6 +5831,233 @@ export function maintenanceBiting(w: MaintenanceWindow, now = Date.now()): boole
   if (w.startsAt && now < w.startsAt) return false;
   if (w.endsAt && now >= w.endsAt) return false;
   return true;
+}
+
+/**
+ * Does this caller get past the lockdown? Pure, so smoke and dbtest pin the same rule the
+ * server enforces. Admins always do (the person deploying must be able to test what they
+ * shipped, and the owner is an admin); otherwise membership of any group the lockdown lists.
+ * A lockdown that is not biting lets everyone through.
+ */
+export function lockdownPasses(
+  w: MaintenanceWindow,
+  who: { admin: boolean; groups: readonly AccessGroup[] },
+  now = Date.now(),
+): boolean {
+  if (!maintenanceBiting(w, now)) return true;
+  if (who.admin) return true;
+  const bypass = w.bypass ?? [];
+  return who.groups.some((g) => bypass.includes(g));
+}
+
+// -------------------------------------------------------- access groups ----
+/** one member row as the console lists it: the id is the key, the handle is today's name */
+export interface AccessMember {
+  userId: string;
+  group: AccessGroup;
+  handle: string | null;
+  username: string | null;
+  grantedBy: string;
+  grantedAt: string;
+  note: string;
+}
+
+/** the groups one account is in. The lockdown gate's read, cached per user in siteState.ts. */
+export async function accessGroupsOf(userId: string): Promise<AccessGroup[]> {
+  const rows = await q<{ grp: string }>(`select grp from access_members where user_id = $1`, [userId]);
+  return rows.map((r) => r.grp).filter(isAccessGroup);
+}
+
+/** add an account to a group. Idempotent: a second grant keeps the first date and note. */
+export async function grantAccess(
+  userId: string,
+  group: AccessGroup,
+  grantedBy: string,
+  note = '',
+): Promise<boolean> {
+  const rows = await q<{ user_id: string }>(
+    `insert into access_members (user_id, grp, granted_by, note) values ($1, $2, $3, $4)
+     on conflict (user_id, grp) do nothing returning user_id`,
+    [userId, group, grantedBy, note.slice(0, 200)],
+  );
+  return rows.length > 0;
+}
+
+/** take an account out of a group; false if it was not in it */
+export async function revokeAccess(userId: string, group: AccessGroup): Promise<boolean> {
+  const rows = await q<{ user_id: string }>(
+    `delete from access_members where user_id = $1 and grp = $2 returning user_id`,
+    [userId, group],
+  );
+  return rows.length > 0;
+}
+
+/** every member, or one group's, newest first. Capped here, not by the route. */
+export async function listAccessMembers(group?: AccessGroup, limit = 500): Promise<AccessMember[]> {
+  return q<AccessMember>(
+    `select a.user_id as "userId", a.grp as "group", p.handle, p.username,
+            a.granted_by as "grantedBy", a.granted_at as "grantedAt", a.note
+       from access_members a left join profiles p on p.user_id = a.user_id
+      where ($1::text is null or a.grp = $1)
+      order by a.granted_at desc, a.user_id
+      limit $2`,
+    [group ?? null, Math.min(Math.max(1, limit), 500)],
+  );
+}
+
+/**
+ * A PLAYER TAG TO AN ACCOUNT, for the grant form.
+ *
+ * Tried in order: an exact account id, an exact @username (unique), an exact display name
+ * (case-insensitive). A display name is NOT unique, so two matches are an error that names
+ * both @usernames rather than a guess. Resolved once, at grant time: membership is stored by
+ * id, so a later rename does not drop anyone out of a group.
+ */
+export type TagResolution =
+  | { ok: true; userId: string; handle: string; username: string | null }
+  | { ok: false; error: string };
+export async function resolvePlayerTag(tag: string): Promise<TagResolution> {
+  const t = tag.trim();
+  if (!t) return { ok: false, error: 'Empty tag.' };
+  const bare = t.replace(/^@/, '');
+  type Row = { user_id: string; handle: string; username: string | null };
+  const byId = await q<Row>(`select user_id, handle, username from profiles where user_id = $1`, [t]);
+  const byUsername = byId.length
+    ? byId
+    : await q<Row>(`select user_id, handle, username from profiles where username = lower($1)`, [bare]);
+  if (byUsername.length) {
+    const r = byUsername[0];
+    return { ok: true, userId: r.user_id, handle: r.handle, username: r.username };
+  }
+  const byHandle = await q<Row>(
+    `select user_id, handle, username from profiles where lower(handle) = lower($1)
+      order by user_id limit 6`,
+    [bare],
+  );
+  if (byHandle.length === 1) {
+    const r = byHandle[0];
+    return { ok: true, userId: r.user_id, handle: r.handle, username: r.username };
+  }
+  if (byHandle.length > 1) {
+    const names = byHandle.map((r) => (r.username ? `@${r.username}` : r.user_id)).join(', ');
+    return { ok: false, error: `“${t}” matches ${byHandle.length} players (${names}). Use the @username.` };
+  }
+  return { ok: false, error: `No player called “${t}”. They may need to sign in to this site once first.` };
+}
+
+// ---------------------------------------------------------------- banners ----
+/** 0052. `restart` is the countdown; the other three are admin-authored notices. */
+export const isBannerKind = (k: unknown): k is BannerKind =>
+  typeof k === 'string' && (BANNER_KINDS as readonly string[]).includes(k);
+
+export interface BannerRow {
+  id: number;
+  kind: BannerKind;
+  message: string;
+  startsAt: number | null;
+  endsAt: number | null;
+  game: string | null;
+  channel: string | null;
+  revision: number;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+type BannerDb = {
+  id: string; kind: string; message: string; starts_at: string | null; ends_at: string | null;
+  game: string | null; channel: string | null; revision: number; created_by: string;
+  created_at: string; updated_at: string;
+};
+const BANNER_COLS = `id, kind, message, starts_at, ends_at, game, channel, revision, created_by, created_at, updated_at`;
+const ms = (v: string | null): number | null => (v ? new Date(v).getTime() : null);
+function bannerOf(r: BannerDb): BannerRow {
+  return {
+    id: Number(r.id),
+    kind: isBannerKind(r.kind) ? r.kind : 'info',
+    message: r.message,
+    startsAt: ms(r.starts_at),
+    endsAt: ms(r.ends_at),
+    game: r.game,
+    channel: r.channel,
+    revision: r.revision,
+    createdBy: r.created_by,
+    createdAt: ms(r.created_at) ?? 0,
+    updatedAt: ms(r.updated_at) ?? 0,
+  };
+}
+
+/** every banner that has not ended, scheduled ones included (the cache filters by start) */
+export async function listOpenBanners(): Promise<BannerRow[]> {
+  const rows = await q<BannerDb>(
+    // 30 s back: a restart countdown stays up for a 20 s grace past its end (siteState.ts)
+    `select ${BANNER_COLS} from banners
+      where ends_at is null or ends_at > now() - interval '30 seconds' order by id limit 100`,
+  );
+  return rows.map(bannerOf);
+}
+
+/** the console's list: open ones and the most recently ended, newest first */
+export async function listBanners(limit = 60): Promise<BannerRow[]> {
+  const rows = await q<BannerDb>(`select ${BANNER_COLS} from banners order by id desc limit $1`, [
+    Math.min(Math.max(1, limit), 200),
+  ]);
+  return rows.map(bannerOf);
+}
+
+export interface BannerInput {
+  kind: BannerKind;
+  message: string;
+  startsAt: number | null;
+  endsAt: number | null;
+  game: string | null;
+  channel: string | null;
+}
+const iso = (v: number | null): string | null => (v ? new Date(v).toISOString() : null);
+
+export async function createBanner(b: BannerInput, by: string): Promise<BannerRow> {
+  const rows = await q<BannerDb>(
+    `insert into banners (kind, message, starts_at, ends_at, game, channel, created_by)
+     values ($1, $2, $3, $4, $5, $6, $7) returning ${BANNER_COLS}`,
+    [b.kind, b.message, iso(b.startsAt), iso(b.endsAt), b.game, b.channel, by],
+  );
+  return bannerOf(rows[0]);
+}
+
+/** edit in place. Bumps `revision`, so a player who dismissed the old text sees the new one. */
+export async function updateBanner(id: number, b: BannerInput): Promise<BannerRow | null> {
+  const rows = await q<BannerDb>(
+    `update banners set kind = $2, message = $3, starts_at = $4, ends_at = $5, game = $6,
+            channel = $7, revision = revision + 1, updated_at = now()
+      where id = $1 returning ${BANNER_COLS}`,
+    [id, b.kind, b.message, iso(b.startsAt), iso(b.endsAt), b.game, b.channel],
+  );
+  return rows[0] ? bannerOf(rows[0]) : null;
+}
+
+/** end now, keeping the row for the console's history. Backdated a minute so a restart
+ *  countdown's grace (siteState.ts) does not keep it on screen. */
+export async function endBanner(id: number): Promise<boolean> {
+  const rows = await q<{ id: string }>(
+    `update banners set ends_at = now() - interval '1 minute', updated_at = now()
+      where id = $1 and (ends_at is null or ends_at > now() - interval '30 seconds') returning id`,
+    [id],
+  );
+  return rows.length > 0;
+}
+
+export async function deleteBanner(id: number): Promise<boolean> {
+  const rows = await q<{ id: string }>(`delete from banners where id = $1 returning id`, [id]);
+  return rows.length > 0;
+}
+
+/** end every open restart countdown — a new one replaces it, a cancel clears it */
+export async function endRestartBanners(): Promise<number> {
+  const rows = await q<{ id: string }>(
+    `update banners set ends_at = now() - interval '1 minute', updated_at = now()
+      where kind = 'restart' and (ends_at is null or ends_at > now() - interval '30 seconds') returning id`,
+  );
+  return rows.length;
 }
 
 /** aggregate presence over every machine heartbeating within `freshSeconds` (a few

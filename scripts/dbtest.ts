@@ -760,6 +760,113 @@ async function main(): Promise<void> {
   check('maintenance: the row is a SINGLETON (no second window can exist)',
     (await db.query<{ c: string }>(`select count(*)::text as c from maintenance`)).rows[0].c === '1');
 
+  // ---- LOCKDOWN SCOPE, ACCESS GROUPS, BANNERS (0051/0052) -------------------
+  {
+    const m3 = await repo.setMaintenance({
+      active: true, startsAt: null, endsAt: null, message: 'Alpha is closed', scope: 'site',
+      redirectUrl: 'https://playdsim.com', redirectLabel: 'Go to DSIM', bypass: ['beta', 'dev', 'contributor'],
+    });
+    check('lockdown: a SITE lockdown round-trips scope, redirect and bypass',
+      m3.scope === 'site' && m3.redirectUrl === 'https://playdsim.com' && m3.redirectLabel === 'Go to DSIM' &&
+      JSON.stringify(m3.bypass) === '["beta","dev","contributor"]', JSON.stringify(m3));
+    check('lockdown: open-ended is allowed and bites now', repo.maintenanceBiting(m3));
+    // an OLDER console posts none of the new fields: it must still mean "matches, nobody bypasses"
+    const m4 = await repo.setMaintenance({ active: true, startsAt: null, endsAt: null, message: 'old console' });
+    check('lockdown: a write without the 0051 fields means matches with no bypass',
+      m4.scope === 'matches' && m4.bypass?.length === 0 && m4.redirectUrl === null, JSON.stringify(m4));
+    const bad = await db.query(`update maintenance set scope = 'everything' where id = 1`).then(() => false, () => true);
+    check('lockdown: the scope column refuses an unknown scope', bad);
+
+    const W = { ...m3 };
+    check('lockdown: an admin always passes', repo.lockdownPasses(W, { admin: true, groups: [] }));
+    check('lockdown: a listed group passes', repo.lockdownPasses(W, { admin: false, groups: ['beta'] }));
+    check('lockdown: nobody else does', !repo.lockdownPasses(W, { admin: false, groups: [] }));
+    check('lockdown: an unlisted group does not',
+      !repo.lockdownPasses({ ...W, bypass: ['dev'] }, { admin: false, groups: ['beta'] }));
+    check('lockdown: a lockdown that is not biting lets everyone through',
+      repo.lockdownPasses({ ...W, active: false }, { admin: false, groups: [] }));
+
+    // ---- access groups, keyed by id, granted by tag
+    await repo.ensureProfile('acc-1', 'Tester One');
+    await repo.setUsername('acc-1', 'testerone');
+    await repo.ensureProfile('acc-2', 'Twin');
+    await repo.ensureProfile('acc-3', 'Twin');
+    const byName = await repo.resolvePlayerTag('tester one');
+    check('access: a display name resolves (case-insensitive)', byName.ok && byName.userId === 'acc-1', JSON.stringify(byName));
+    const byUser = await repo.resolvePlayerTag('@TesterOne');
+    check('access: an @username resolves', byUser.ok && byUser.userId === 'acc-1');
+    const byId = await repo.resolvePlayerTag('acc-2');
+    check('access: an account id resolves', byId.ok && byId.userId === 'acc-2');
+    const twin = await repo.resolvePlayerTag('Twin');
+    check('access: a shared display name is an error, not a guess', !twin.ok && /2 players/.test(twin.ok ? '' : twin.error));
+    const none = await repo.resolvePlayerTag('nobody-here');
+    check('access: an unknown tag says so', !none.ok && /No player/.test(none.ok ? '' : none.error));
+    check('access: a first grant adds', await repo.grantAccess('acc-1', 'beta', 'admin-x', 'wave 1'));
+    check('access: a second grant is a no-op', !(await repo.grantAccess('acc-1', 'beta', 'admin-y')));
+    await repo.grantAccess('acc-1', 'dev', 'admin-x');
+    check('access: groups are read by id', JSON.stringify((await repo.accessGroupsOf('acc-1')).sort()) === '["beta","dev"]');
+    await repo.setHandle('acc-1', 'Renamed');
+    const listed = await repo.listAccessMembers('beta');
+    check('access: the list shows TODAY’s name, and a rename keeps the membership',
+      listed.length === 1 && listed[0].handle === 'Renamed' && listed[0].grantedBy === 'admin-x', JSON.stringify(listed));
+    const badGrp = await db.query(`insert into access_members (user_id, grp, granted_by) values ('acc-2', 'vip', 'x')`).then(() => false, () => true);
+    check('access: an unknown group is refused by the table', badGrp);
+    const ex = await repo.exportAccount('acc-1');
+    check('access: the export lists the groups and never who granted them',
+      (ex?.accessGroups.length ?? 0) === 2 && !JSON.stringify(ex?.accessGroups).includes('admin-x'));
+    check('access: revoke removes', await repo.revokeAccess('acc-1', 'dev'));
+    check('access: revoking twice says it was not there', !(await repo.revokeAccess('acc-1', 'dev')));
+    await repo.deleteAccount('acc-1');
+    check('access: deleting the account deletes its memberships',
+      (await db.query<{ c: string }>(`select count(*)::text as c from access_members where user_id = 'acc-1'`)).rows[0].c === '0');
+
+    // ---- banners
+    const T2 = Date.now();
+    const b1 = await repo.createBanner({ kind: 'known-bug', message: 'Ramp sticks. [Track it](https://x.y)', startsAt: null, endsAt: null, game: 'biobuzz', channel: null }, 'admin-x');
+    const b2 = await repo.createBanner({ kind: 'info', message: 'later', startsAt: T2 + 3_600_000, endsAt: null, game: null, channel: 'alpha' }, 'admin-x');
+    check('banners: a created banner starts at revision 1', b1.revision === 1 && b1.kind === 'known-bug' && b1.game === 'biobuzz');
+    const open = await repo.listOpenBanners();
+    check('banners: the open set includes scheduled ones (the cache filters by start)',
+      open.some((b) => b.id === b1.id) && open.some((b) => b.id === b2.id));
+    const b1e = await repo.updateBanner(b1.id, { kind: 'known-bug', message: 'Ramp sticks (fixed next deploy)', startsAt: null, endsAt: null, game: 'biobuzz', channel: null });
+    check('banners: an edit bumps the revision, so a dismissal of the old text lapses', b1e?.revision === 2);
+    check('banners: ending one takes it out of the open set',
+      (await repo.endBanner(b1.id)) && !(await repo.listOpenBanners()).some((b) => b.id === b1.id));
+    check('banners: ...and keeps it in the console history', (await repo.listBanners()).some((b) => b.id === b1.id));
+    check('banners: delete removes the row', (await repo.deleteBanner(b2.id)) && !(await repo.listBanners()).some((b) => b.id === b2.id));
+    const badKind = await db.query(`insert into banners (kind, message, created_by) values ('party', 'x', 'y')`).then(() => false, () => true);
+    check('banners: an unknown kind is refused by the table', badKind);
+
+    // ---- the cache every machine runs (server/siteState.ts), against the same database
+    const site = await import('../server/siteState');
+    await site.refreshLockdown(true);
+    check('site: a matches-scope lockdown refuses a match start', !!(await site.lockdownRefusal(null, 'match')));
+    check('site: ...but not a site-only action', (await site.lockdownRefusal(null, 'site')) === null);
+    await repo.setMaintenance({ ...m3 });
+    await site.refreshLockdown(true);
+    check('site: a site lockdown refuses a site action for a stranger', !!(await site.lockdownRefusal(null, 'site')));
+    await repo.ensureProfile('acc-9', 'Beta Nine');
+    await repo.grantAccess('acc-9', 'beta', 'admin-x');
+    site.forgetAccess('acc-9');
+    check('site: ...and lets a beta tester through', (await site.lockdownRefusal('acc-9', 'site')) === null);
+    const acc = await site.siteAccess('acc-9');
+    check('site: /api/status access says the tester passes', acc.passes && acc.groups.includes('beta') && !acc.admin);
+    check('site: the public lockdown carries the redirect and no ids',
+      site.publicLockdown()?.redirectUrl === 'https://playdsim.com' && !JSON.stringify(site.publicLockdown()).includes('acc-'));
+    await site.announceRestart('Server update', 300, 'admin-x');
+    const n1 = site.legacyNotice();
+    check('site: a restart announce is a DB row every machine reads, and the legacy notice follows it',
+      n1?.kind === 'restart' && n1.message === 'Server update' && !!n1.until && n1.until > Date.now());
+    check('site: the restart appears among the live banners', site.liveBanners().some((b) => b.kind === 'restart'));
+    await site.cancelRestart();
+    check('site: cancel clears it at once (no grace)', site.legacyNotice() === null && !site.liveBanners().some((b) => b.kind === 'restart'));
+    await site.announceRestart('now', 0, 'admin-x');
+    check('site: a zero-second restart still shows for its grace', site.legacyNotice()?.message === 'now');
+    await site.cancelRestart();
+    await repo.setMaintenance({ active: false, startsAt: null, endsAt: null, message: '' });
+    await site.refreshLockdown(true);
+  }
+
   // ---- guest sessions are ROWS now (0024) ---------------------------------
   await repo.upsertPresence(
     'm-iad', 'iad', 3, ['op-1'], 0, 0, [], [{ userId: 'op-1', act: 'match', room: 'r1', sessions: 2 }],
