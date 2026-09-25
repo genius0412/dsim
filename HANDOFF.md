@@ -5,7 +5,15 @@
 - **Bug (owner):** the 1/2/3 on the podium crests sat off centre. They were HTML text over the SVG, so Space Grotesk's metrics decided where they landed: the 1's flag pulled its ink a unit left, and the digits rode high at the small sizes.
 - **Fix:** `NUMERAL` in `BadgeMark.tsx` draws them as stroked paths in the crest's 24 box, centred on (12, 11.5), so they also scale with the crest at every size (they were 60% of it at `sm` and 30% at `lg`). `.badge-num` is now a stroke rule in `shell.css`.
 
-# HANDOFF — 2026-09-25 (email verification takes the CODE Neon Auth sends)
+# HANDOFF — 2026-09-25b (email verification + Google sign-in fix RELEASED to production)
+
+**State: production = `main` = `a8390771`**, Vercel (`/version.json` a839077) and every Fly machine on it. `REQUIRE_VERIFIED_EMAIL=1` is Deployed on `dohun-sim-decode` and `dsim-alpha`: unverified email/password accounts are refused ranked, record rooms and practice saves, and each refusal shows the code form in place.
+
+- Shipped: code entry (Profile banner, sign-up step, `/account/verify`, and at each refusal), set/change password by code (Google accounts get a password login), the gate reading `neon_auth."user"`, the practice-save refusal no longer silent, and the Google sign-in verifier kept through URL canonicalization. Also rode along: ranked badge numeral (`1f1421a3`) and the career stats flash fix (`537af652`).
+- Deployed twice with `announce-deploy.sh` (players were online): the owner set the secret after the first deploy, and the classifier blocks Claude from `flyctl secrets set` on production (memory note).
+- **Watch:** Google sign-in reports on prod (if some still bounce, ask for the browser: Safari/Brave third-party cookie blocking is the next suspect), and complaints from the 742 unverified accounts about expired codes. The in-place Send a new code covers them.
+
+# HANDOFF — 2026-09-25 (alpha: email verification takes the CODE Neon Auth sends)
 
 **State: pushed on `alpha`.** `npm test` (shared + 5123 BIOBUZZ), `build`, `server:check`, `uiaudit` pass. Server change (the two refusal strings now say "Enter the code we emailed you"), so it rides the next Fly deploy. Nothing on `main`.
 
