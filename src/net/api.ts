@@ -2,7 +2,7 @@ import type { Replay } from '../sim/replay';
 import type { AwardRow } from '../awards';
 import type { EquippedBadge } from '../badges';
 import type { RewardGrant } from '../rewards';
-import type { LiveRoom, StaffRole } from './protocol';
+import type { AccessGroup, BannerKind, LiveRoom, LockdownScope, SiteBanner, StaffRole } from './protocol';
 import type { ReportedUser, ReportRow } from '../report';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
 import { gameServerHttpUrl, setLanFromServer } from './env';
@@ -393,6 +393,8 @@ export interface Presence {
     endsAt: number | null;
     message: string;
     biting: boolean;
+    /** 'matches' | 'site' (0051); absent from an older server, which only had matches */
+    scope?: string;
   } | null;
   /** what THIS deploy can honour (see SERVER_CAPS in protocol.ts). One Fly app
    * serves every client build, so a new client checks here before offering
@@ -1065,6 +1067,11 @@ export interface MaintenanceWindow {
   startsAt: number | null;
   endsAt: number | null;
   message: string;
+  /** 0051. Absent from an older server's answer, which means `matches` and no bypass. */
+  scope?: LockdownScope;
+  redirectUrl?: string | null;
+  redirectLabel?: string | null;
+  bypass?: AccessGroup[];
 }
 
 export async function adminFetchMaintenance(): Promise<{ maintenance: MaintenanceWindow; biting: boolean } | null> {
@@ -1091,6 +1098,11 @@ export async function adminSetMaintenance(w: MaintenanceWindow): Promise<boolean
   const q = new URLSearchParams({ active: w.active ? '1' : '0', msg: w.message });
   if (w.startsAt) q.set('startsAt', String(w.startsAt));
   if (w.endsAt) q.set('endsAt', String(w.endsAt));
+  // the 0051 fields; an older server ignores them and applies a matches lockdown
+  if (w.scope) q.set('scope', w.scope);
+  if (w.redirectUrl) q.set('redirect', w.redirectUrl);
+  if (w.redirectLabel) q.set('redirectLabel', w.redirectLabel);
+  if (w.bypass?.length) q.set('bypass', w.bypass.join(','));
   try {
     const res = await fetch(base + '/api/admin/maintenance?' + q.toString(), {
       method: 'POST',
@@ -1102,6 +1114,106 @@ export async function adminSetMaintenance(w: MaintenanceWindow): Promise<boolean
     return false;
   }
 }
+
+// ---- access groups (0051) and site banners (0052) ---------------------------
+
+export interface AccessMemberRow {
+  userId: string;
+  group: AccessGroup;
+  handle: string | null;
+  username: string | null;
+  grantedBy: string;
+  grantedAt: string;
+  note: string;
+}
+export interface AccessGrantResult {
+  tag: string;
+  ok: boolean;
+  userId?: string;
+  handle?: string;
+  username?: string | null;
+  added?: boolean;
+  error?: string;
+}
+
+/** one authenticated admin call; `{ ok: false, error }` for every failure, never a throw */
+async function adminCall<T extends object>(
+  path: string,
+  init: { method?: 'GET' | 'POST'; body?: string } = {},
+): Promise<(T & { ok: true }) | { ok: false; error: string }> {
+  const base = gameServerHttpUrl();
+  const token = await getAuthToken();
+  if (!base || !token) return { ok: false, error: 'Sign in with an admin account.' };
+  try {
+    const res = await fetch(base + path, {
+      method: init.method ?? 'GET',
+      headers: { authorization: `Bearer ${token}`, ...(init.body ? { 'content-type': 'text/plain' } : {}) },
+      body: init.body,
+      cache: 'no-store',
+    });
+    if (res.status === 404 && !res.headers.get('content-type')?.includes('json')) {
+      return { ok: false, error: 'This server predates this feature.' };
+    }
+    const j = (await res.json().catch(() => null)) as (T & { ok?: boolean; error?: string }) | null;
+    if (!j) return { ok: false, error: `Server returned ${res.status}.` };
+    if (j.ok === false || !res.ok) return { ok: false, error: j.error ?? `Server returned ${res.status}.` };
+    return { ...j, ok: true };
+  } catch {
+    return { ok: false, error: 'Couldn’t reach the server.' };
+  }
+}
+
+export const adminFetchAccess = (group?: AccessGroup) =>
+  adminCall<{ members: AccessMemberRow[] }>(`/api/admin/access${group ? `?group=${group}` : ''}`);
+
+export const adminGrantAccess = (group: AccessGroup, tag: string, note = '') =>
+  adminCall<AccessGrantResult>(
+    '/api/admin/access?' + new URLSearchParams({ action: 'grant', group, tag, note }).toString(),
+    { method: 'POST' },
+  );
+
+export const adminBulkGrantAccess = (group: AccessGroup, tags: string, note = '') =>
+  adminCall<{ results: AccessGrantResult[] }>(
+    '/api/admin/access?' + new URLSearchParams({ action: 'bulk', group, note }).toString(),
+    { method: 'POST', body: tags },
+  );
+
+export const adminRevokeAccess = (group: AccessGroup, userId: string) =>
+  adminCall<{ removed: boolean }>(
+    '/api/admin/access?' + new URLSearchParams({ action: 'revoke', group, userId }).toString(),
+    { method: 'POST' },
+  );
+
+export interface AdminBannerRow extends SiteBanner {
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+export interface BannerDraft {
+  kind: Exclude<BannerKind, 'restart'>;
+  message: string;
+  startsAt: number | null;
+  endsAt: number | null;
+  game: string | null;
+  channel: string | null;
+}
+
+export const adminFetchBanners = () => adminCall<{ banners: AdminBannerRow[] }>('/api/admin/banners');
+
+export function adminSaveBanner(draft: BannerDraft, id?: number) {
+  const q = new URLSearchParams({ action: id ? 'update' : 'create', kind: draft.kind, msg: draft.message });
+  if (id) q.set('id', String(id));
+  if (draft.startsAt) q.set('startsAt', String(draft.startsAt));
+  if (draft.endsAt) q.set('endsAt', String(draft.endsAt));
+  if (draft.game) q.set('game', draft.game);
+  if (draft.channel) q.set('channel', draft.channel);
+  return adminCall<{ banner: AdminBannerRow }>('/api/admin/banners?' + q.toString(), { method: 'POST' });
+}
+
+export const adminEndBanner = (id: number) =>
+  adminCall<{ done: boolean }>(`/api/admin/banners?action=end&id=${id}`, { method: 'POST' });
+export const adminDeleteBanner = (id: number) =>
+  adminCall<{ done: boolean }>(`/api/admin/banners?action=delete&id=${id}`, { method: 'POST' });
 
 export async function adminFetchPresence(): Promise<AdminPresence | null> {
   const base = gameServerHttpUrl();

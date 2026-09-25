@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   adminFetchPresence,
   adminFetchMaintenance,
@@ -11,6 +11,7 @@ import {
   type MaintenanceWindow,
 } from '../net/api';
 import { SEASONS } from '../seasons';
+import { ACCESS_GROUPS, ACCESS_GROUP_LABEL, type AccessGroup, type LockdownScope } from '../net/protocol';
 import { windowLabel } from './MaintenanceBanner';
 import { adminFail } from './adminCopy';
 import { AccountName, ListState, When, confirmed, downloadCsv, shortId, usePolled } from './adminBits';
@@ -406,32 +407,49 @@ function SessionTable({
 }
 
 /**
- * The maintenance lockdown control.
+ * The LOCKDOWN control (0023 + 0051).
  *
- * A window with a FUTURE start is the normal path and the default the form nudges
- * toward: it announces itself to everyone without locking anyone out yet, which is
- * the whole difference between scheduled maintenance and an outage. Admins are never
- * locked out — whoever is deploying has to be able to test what they just shipped.
+ * SCOPE first, because it decides everything below it: "New matches" is the old maintenance
+ * window (players keep the menus, nothing new starts); "Whole site" closes the app for
+ * everyone the lockdown does not let through, and the server refuses their writes too.
+ *
+ * A window with a FUTURE start is still the normal path for maintenance: it announces itself
+ * before it bites. Open-ended is allowed (the alpha closure is one) and lasts until lifted.
+ * Admins always pass; the ticked ACCESS GROUPS pass too.
  */
 function MaintenancePanel() {
   const [w, setW] = useState<MaintenanceWindow | null>(null);
   const [biting, setBiting] = useState(false);
+  const [scope, setScope] = useState<LockdownScope>('matches');
   const [mins, setMins] = useState(10);
   const [dur, setDur] = useState(30);
+  const [openEnded, setOpenEnded] = useState(false);
   const [msg, setMsg] = useState('Scheduled maintenance');
+  const [redirect, setRedirect] = useState('');
+  const [redirectLabel, setRedirectLabel] = useState('');
+  const [bypass, setBypass] = useState<AccessGroup[]>([]);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
   // also visibility-aware — a lockdown window changes when somebody sets one, which is a
   // couple of times a month, and the panel was asking every five seconds forever
   const { data: served, reload: load } = usePolled(adminFetchMaintenance, REFRESH_MS);
+  const seeded = useRef(false);
   useEffect(() => {
     if (!served) return;
     setW(served.maintenance);
     setBiting(served.biting);
-    // the message box is SEEDED from the server, not BOUND to it: overwriting it on every
-    // poll would wipe what an admin is halfway through typing.
-    if (served.maintenance.message) setMsg((cur) => (cur === 'Scheduled maintenance' ? served.maintenance.message : cur));
+    // the form is SEEDED from the server once, not BOUND to it: overwriting it on every poll
+    // would wipe what an admin is halfway through typing
+    if (seeded.current || !served.maintenance.active) return;
+    seeded.current = true;
+    const m = served.maintenance;
+    if (m.message) setMsg(m.message);
+    setScope(m.scope ?? 'matches');
+    setRedirect(m.redirectUrl ?? '');
+    setRedirectLabel(m.redirectLabel ?? '');
+    setBypass(m.bypass ?? []);
+    setOpenEnded(!m.endsAt);
   }, [served]);
 
   const apply = async (next: MaintenanceWindow, okMsg: string): Promise<void> => {
@@ -442,65 +460,110 @@ function MaintenancePanel() {
     load();
   };
 
+  const redirectOk = !redirect.trim() || /^https:\/\/\S+$/i.test(redirect.trim());
   const schedule = (): void => {
     // "starts in 0" is not a schedule, it is locking every player out on this click — the
     // one action on the incident view that needs asking about. A scheduled one announces
     // itself first, which is its own warning.
-    if (
-      mins <= 0 &&
-      !confirmed(
-        'Lock down',
-        'every region now',
-        `New matches, queueing and custom rooms stop for everyone except admins, for ${dur} min.`,
-      )
-    )
-      return;
+    const what = scope === 'site' ? 'The whole site closes' : 'New matches, queueing and custom rooms stop';
+    const who = bypass.length ? `everyone except admins and ${bypass.join(', ')}` : 'everyone except admins';
+    if (mins <= 0 && !confirmed('Lock down', 'every region now', `${what} for ${who}${openEnded ? ', until you lift it' : `, for ${dur} min`}.`)) return;
     const startsAt = Date.now() + Math.max(0, mins) * 60_000;
     void apply(
-      { active: true, startsAt, endsAt: startsAt + Math.max(1, dur) * 60_000, message: msg },
-      mins > 0 ? `Scheduled in ${mins} min for ${dur} min.` : `Locked down for ${dur} min.`,
+      {
+        active: true,
+        startsAt,
+        endsAt: openEnded ? null : startsAt + Math.max(1, dur) * 60_000,
+        message: msg,
+        scope,
+        redirectUrl: redirect.trim() || null,
+        redirectLabel: redirectLabel.trim() || null,
+        bypass,
+      },
+      mins > 0 ? `Scheduled in ${mins} min.` : 'Locked down.',
     );
   };
   const lift = (): void =>
     void apply({ active: false, startsAt: null, endsAt: null, message: '' }, 'Lockdown lifted.');
 
   const live = w?.active ?? false;
+  const liveScope = w?.scope === 'site' ? 'Whole site' : 'New matches';
+  const liveBypass = w?.bypass?.length ? ` · passes: admins, ${w.bypass.join(', ')}` : ' · passes: admins';
+  const toggle = (g: AccessGroup): void =>
+    setBypass((cur) => (cur.includes(g) ? cur.filter((x) => x !== g) : [...cur, g]));
   return (
     <div className={`admin-card adm-maint${biting ? ' biting' : ''}`}>
       <div className="adm-maint-h">
         {/* a heading for the section list, not a restyle: .adm-maint-h lays the <b> out */}
         <b role="heading" aria-level={3}>
-          Maintenance lockdown
+          Lockdown
         </b>
         <span className={`ds-badge${biting ? ' danger' : live ? ' warn' : ''}`}>
-          {biting ? 'LOCKED — only admins can start' : live ? 'SCHEDULED' : 'Off'}
+          {biting ? `LOCKED: ${liveScope.toLowerCase()}` : live ? 'SCHEDULED' : 'Off'}
         </span>
       </div>
       {live && w && (
         <p className="ds-hint">
-          {w.message || 'Maintenance'} · {windowLabel({ ...w, biting }) || 'no window set'}
+          {liveScope} · {w.message || 'no message'} · {windowLabel({ ...w, biting }) || 'until lifted'}
+          {liveBypass}
+          {w.redirectUrl ? ` · sends players to ${w.redirectUrl}` : ''}
         </p>
       )}
+      <div className="ds-segs" role="radiogroup" aria-label="What closes">
+        <button role="radio" aria-checked={scope === 'matches'} className={`ds-seg${scope === 'matches' ? ' on' : ''}`} onClick={() => setScope('matches')}>
+          New matches
+        </button>
+        <button role="radio" aria-checked={scope === 'site'} className={`ds-seg${scope === 'site' ? ' on' : ''}`} onClick={() => setScope('site')}>
+          Whole site
+        </button>
+      </div>
       <label className="admin-field">
         <span>Starts in</span>
         <input type="number" className="ds-input" min={0} max={1440} value={mins} onChange={(e) => setMins(Math.max(0, Number(e.target.value) || 0))} />
         <span>min, lasting</span>
-        <input type="number" className="ds-input" min={1} max={1440} value={dur} onChange={(e) => setDur(Math.max(1, Number(e.target.value) || 1))} />
+        <input type="number" className="ds-input" min={1} max={1440} value={dur} disabled={openEnded} onChange={(e) => setDur(Math.max(1, Number(e.target.value) || 1))} />
         <span>min</span>
+      </label>
+      <label className="ds-checkline">
+        <input type="checkbox" checked={openEnded} onChange={(e) => setOpenEnded(e.target.checked)} />
+        Until lifted (no end time)
       </label>
       <label className="admin-field col">
         <span>Message shown to players</span>
         <input type="text" className="ds-input" maxLength={200} value={msg} onChange={(e) => setMsg(e.target.value)} />
       </label>
+      {scope === 'site' && (
+        <div className="adm-pair">
+          <label className="admin-field col">
+            <span>Button link (https)</span>
+            <input type="url" className="ds-input" placeholder="https://playdsim.com" value={redirect} aria-invalid={!redirectOk} onChange={(e) => setRedirect(e.target.value)} />
+          </label>
+          <label className="admin-field col">
+            <span>Button label</span>
+            <input type="text" className="ds-input" maxLength={40} placeholder="Go to DSIM" value={redirectLabel} onChange={(e) => setRedirectLabel(e.target.value)} />
+          </label>
+        </div>
+      )}
+      <fieldset className="adm-groups">
+        <legend>Also let through</legend>
+        {ACCESS_GROUPS.map((g) => (
+          <label key={g} className="ds-checkline">
+            <input type="checkbox" checked={bypass.includes(g)} onChange={() => toggle(g)} />
+            {ACCESS_GROUP_LABEL[g]}s
+          </label>
+        ))}
+      </fieldset>
       <div className="admin-buttons">
-        <button className={mins > 0 ? 'ds-btn' : 'ds-btn danger'} disabled={busy} onClick={schedule}>
+        <button className={mins > 0 ? 'ds-btn' : 'ds-btn danger'} disabled={busy || !redirectOk} onClick={schedule}>
           {mins > 0 ? 'SCHEDULE LOCKDOWN' : 'LOCK DOWN NOW'}
         </button>
         <button className="ds-btn ghost" disabled={busy || !live} onClick={lift}>
           LIFT LOCKDOWN
         </button>
       </div>
-      <p className="ds-hint">Admins are exempt, and matches already running are left to finish.</p>
+      <p className="ds-hint">
+        {redirectOk ? 'Admins always get in. Matches already running finish.' : 'The link must start with https://.'}
+      </p>
       {status && <p className="ds-hint">{status}</p>}
     </div>
   );

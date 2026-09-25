@@ -565,9 +565,17 @@ const reviewW3HudPairs = (t) => {
     ['3D scrim over a light backdrop: red-ink', s('--ds-red-ink'), cardLit, AA],
     ['3D scrim over a light backdrop: muted', s('--ds-mut'), cardLit, AA],
 
-    // the admin server notice (fixed-ink fills; floats over the match and the shell)
-    ['.server-notice (info)', t('--ds-gold-ink'), t('--ds-gold'), AA],
-    ['.server-notice.urgent', t('--ds-red-chip-ink'), t('--ds-red-chip'), AA],
+    // the site banners (BannerStack.tsx). The restart row keeps the old notice's fixed-ink
+    // fills; the others are a panel card whose KIND label carries an inverting tone.
+    ['.ds-banner.restart', t('--ds-gold-ink'), t('--ds-gold'), AA],
+    ['.ds-banner.restart.urgent', t('--ds-red-chip-ink'), t('--ds-red-chip'), AA],
+    ['.ds-banner body on the panel', t('--ds-ink'), t('--ds-panel'), AA],
+    ['.ds-banner.info kind label', t('--ds-accent'), t('--ds-panel'), AA],
+    ['.ds-banner.known-bug kind label', t('--ds-warn'), t('--ds-panel'), AA],
+    ['.ds-banner.warning kind label', t('--ds-danger'), t('--ds-panel'), AA],
+    ['.ds-banner-bypass (staff tone as text)', t('--ds-staff'), t('--ds-panel'), AA],
+    // the closed screen: a panel card on the page ground
+    ['.ds-closed-note on the panel', t('--ds-mut'), t('--ds-panel'), AA],
 
     // the touch pad: the joystick label is FULL opacity now, on both field grounds
     ['.mobile-joystick-label on the 3D mat', t('--ds-on-field-dim'), TILE3D, AA],

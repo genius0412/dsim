@@ -2,25 +2,21 @@ import { useEffect } from 'react';
 import { fetchPresence } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { setServerNotice } from '../net/notice';
+import { getSiteState, loadSiteStatus, siteStatusAge } from '../net/siteStatus';
 import { onUserActive, userIdle } from './userActivity';
 
 /**
- * Poll the game server for a LIVE admin notice (scheduled restart / info) and
- * push it into the global notice store, so the restart banner shows on EVERY
- * page — including disconnected ones (Home, solo, leaderboard) where no
- * WebSocket delivers `serverNotice`. Connected screens still get it instantly
- * over the socket; this is the fallback that makes it truly global (and keeps
- * the "can't start a new game" gate working before you ever connect).
+ * Poll the SITE STATUS (`GET /api/status`: lockdown, banners, the restart countdown) so every
+ * page has it, including the ones with no WebSocket (Home, solo, the closed screen). Connected
+ * screens also get changes pushed (`siteStatus`); this is what makes it global, and what lifts
+ * a closed screen without a refresh.
  *
- * Mounted once at the app root. Renders nothing. Coarse cadence (the countdown
- * itself ticks locally in the banner), so it barely adds to server load.
+ * AGAINST AN OLDER SERVER (no `/api/status`, a 404) it falls back to what it did before: read
+ * the restart notice off `/api/presence`.
  *
- * Skips UNATTENDED pages - hidden, or visible with nobody at the keyboard for
- * five minutes - and re-checks the moment someone is back. See `usePresence`
- * for why (a background tab polling forever holds the Fly machine and the Neon
- * compute awake, and Neon bills for every hour it is awake). A notice that lands
- * while the tab is hidden is picked up on the visibilitychange, which is before
- * the reader could have acted on it anyway.
+ * Mounted once at the app root. Renders nothing. Skips UNATTENDED pages (hidden, or nobody at
+ * the keyboard for five minutes) and re-checks the moment someone is back — see `usePresence`
+ * for why a background tab must not poll forever.
  */
 export function NoticePoller({ pollMs = 20000 }: { pollMs?: number }) {
   useEffect(() => {
@@ -28,13 +24,17 @@ export function NoticePoller({ pollMs = 20000 }: { pollMs?: number }) {
     let alive = true;
     const tick = (): void => {
       if (userIdle()) return;
-      fetchPresence()
-        .then((p) => {
-          if (alive) setServerNotice(p.notice ?? null);
-        })
-        .catch(() => {
-          /* server asleep / unreachable - keep the last value, retry next tick */
-        });
+      if (siteStatusAge() < 5000) return; // the boot read, or a push-driven one, just ran
+      void loadSiteStatus().then(() => {
+        if (!alive || !getSiteState().unsupported) return;
+        return fetchPresence()
+          .then((p) => {
+            if (alive) setServerNotice(p.notice ?? null);
+          })
+          .catch(() => {
+            /* server asleep / unreachable - keep the last value, retry next tick */
+          });
+      });
     };
     tick();
     const iv = window.setInterval(tick, pollMs);

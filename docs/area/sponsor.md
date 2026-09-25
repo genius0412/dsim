@@ -55,10 +55,11 @@ any of this.
   site calls it `OffsetLogoLight.png`, so place a new file by looking at the pixels. Sizes are
   declared in `SPONSOR.logoW/logoH` and every placement reserves its box from that ratio
   before the image loads (`shiftaudit`); the smoke lane reads all four PNG headers.
-- **The report is Vercel Analytics, nothing else** — `sponsor_shown` (the denominator),
-  `sponsor_click` (per placement), Vercel's own sessions, and `player_joined` (fired in
-  `UsernameGate`, the last step of signing up; it over-counts legacy accounts ONCE and
-  `docs/sponsor.md` footnotes it). No DB migration, no server change, no identifiers.
+- **The report is DSIM's own analytics** (the admin Analytics tab's Sponsor report panel) —
+  `sponsor_shown` (the denominator), `sponsor_click` (per placement), our own sessions, and
+  `player_joined` (fired in `UsernameGate`, the last step of signing up; it over-counts legacy
+  accounts ONCE and `docs/sponsor.md` footnotes it). No identifiers. Vercel Web Analytics was
+  removed in September 2026; its history is imported (`analytics_imported`, migration 0052).
 - **Tests**: the `SPONSOR` lane of `scripts/smoke-biobuzz/` (`npm run test:bb`). Everything it
   covers is a contracted obligation that FAILS SILENTLY — a placement that stops rendering, a
   link that loses its UTM tag, a term that does not cover the season it was sold for.

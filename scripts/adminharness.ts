@@ -23,6 +23,7 @@
  *       VITE_NEON_AUTH_URL=http://localhost:8798 VITE_GAME_SERVER_URL=ws://localhost:8799
  *       npx vite --port 5189 --strictPort
  */
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { PGlite } from '@electric-sql/pglite';
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose';
@@ -263,7 +264,18 @@ async function seedAnalytics(db: PGlite): Promise<void> {
   const LANGS = ['en', 'de', 'es', ''];
   const GAMES = ['decode', 'chain', 'biobuzz', ''];
   const UTM_S = ['', 'twitter', 'newsletter', 'reddit'];
-  const EVENTS = ['support_view', 'sponsor_shown', 'sponsor_click', 'desktop_download', 'support_claim_fail'];
+  const EVENTS = ['support_view', 'sponsor_shown', 'sponsor_shown', 'sponsor_dwell', 'sponsor_click', 'desktop_download', 'support_claim_fail', 'player_joined'];
+  const PLACEMENTS = ['home', 'footer', 'game', 'download'];
+  const propsFor = (name: string): Record<string, string> =>
+    name === 'sponsor_shown' || name === 'sponsor_click'
+      ? { placement: pick(PLACEMENTS) }
+      : name === 'sponsor_dwell'
+        ? { placement: pick(PLACEMENTS), dwell: pick(['<5s', '5-15s', '15-60s', '1-5m', '5m+']) }
+        : name === 'desktop_download'
+          ? { os: pick(['windows', 'mac', 'linux']) }
+          : name === 'support_claim_fail'
+            ? { reason: pick(['taken', 'expired']) }
+            : {};
 
   let seed = 42;
   const rnd = (): number => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
@@ -295,7 +307,7 @@ async function seedAnalytics(db: PGlite): Promise<void> {
         const name = pick(EVENTS);
         evRows.push([
           new Date(start + 60_000).toISOString(), visitor, name, pick(GAMES), pick(PATHS),
-          JSON.stringify(name === 'sponsor_shown' ? { placement: pick(['hud', 'menu']) } : name === 'desktop_download' ? { os: pick(['win', 'mac']) } : { reason: pick(['taken', 'expired']) }),
+          JSON.stringify(propsFor(name)),
         ]);
       }
     }
@@ -321,6 +333,35 @@ async function seedAnalytics(db: PGlite): Promise<void> {
     await db.query(`insert into analytics_events (at, visitor, name, game, path, props) values ($1,$2,$3,$4,$5,$6::jsonb)`, r);
   }
   console.log(`[harness] seeded analytics: ${pvRows.length} pageviews, ${evRows.length} events`);
+
+  // The imported-history section: a local Vercel export if one was made
+  // (`scripts/vercel-analytics-export.mjs`, gitignored under scratch/), else a small made-up one.
+  const { vercelImportRows } = await import('../server/analyticsImport');
+  const { replaceImportedAnalytics } = await import('../server/db/repo');
+  const local = 'scratch/vercel-analytics-production.json';
+  let rows;
+  if (existsSync(local)) {
+    rows = vercelImportRows(JSON.parse(readFileSync(local, 'utf8')));
+  } else {
+    const days = Array.from({ length: 12 }, (_, i) => new Date(Date.now() - (20 - i) * 86_400_000).toISOString().slice(0, 10));
+    rows = vercelImportRows({
+      source: 'vercel',
+      visits: {
+        total: days.map((day) => ({ day, pageviews: 800 + Math.floor(rnd() * 400), visitors: 40 + Math.floor(rnd() * 20) })),
+        by: {
+          requestPath: days.flatMap((day) => PATHS.map((p) => ({ day, value: p, pageviews: 20 + Math.floor(rnd() * 90), visitors: 5 }))),
+          country: days.flatMap((day) => ['US', 'RO', 'BR', 'CA'].map((c) => ({ day, value: c, pageviews: 50 + Math.floor(rnd() * 200), visitors: 8 }))),
+          osName: days.flatMap((day) => ['Windows', 'Mac', 'Chrome OS'].map((o) => ({ day, value: o, pageviews: 60 + Math.floor(rnd() * 200), visitors: 8 }))),
+        },
+      },
+      events: {
+        byName: days.map((day) => ({ day, name: 'sponsor_shown', count: 300, visitors: 30 })),
+        byProp: days.flatMap((day) => PLACEMENTS.map((p) => ({ day, name: 'sponsor_shown', key: 'placement', value: p, count: 75, visitors: 10 }))),
+      },
+    });
+  }
+  const res = await replaceImportedAnalytics('vercel', rows);
+  console.log(`[harness] imported Vercel history: ${res.inserted} rows, ${res.firstDay} → ${res.lastDay}`);
 }
 
 main().catch((e) => {

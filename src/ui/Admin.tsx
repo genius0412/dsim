@@ -25,13 +25,15 @@ import type { GameId } from '../types';
 import { AdminLive } from './AdminLive';
 import { AdminReports, type WatchReplay } from './AdminReports';
 import { AdminAudit } from './AdminAudit';
+import { AdminAccess } from './AdminAccess';
+import { AdminBanners } from './AdminBanners';
 import { AdminUser } from './AdminUser';
 import { adminFail } from './adminCopy';
 import { AccountName, When, confirmed, downloadCsv } from './adminBits';
 
 const AdminAnalytics = lazy(() => import('./AdminAnalytics').then((m) => ({ default: m.AdminAnalytics })));
 
-type AdminTab = 'live' | 'users' | 'moderation' | 'content' | 'server' | 'audit' | 'analytics';
+type AdminTab = 'live' | 'users' | 'moderation' | 'content' | 'server' | 'audit' | 'analytics' | 'access';
 /* ⚠️ APPEND, DO NOT REORDER. The tab order is the order of an incident: Live is what you
    open when something is happening, Users is where you land from every name on the page,
    and the deliberate, unhurried jobs follow. Audit sits last because it is read after the
@@ -44,6 +46,8 @@ const TABS: { id: AdminTab; label: string }[] = [
   { id: 'server', label: 'Server' },
   { id: 'audit', label: 'Audit' },
   { id: 'analytics', label: 'Analytics' },
+  // lockdown access groups (0051): beta testers, developers, contributors
+  { id: 'access', label: 'Access' },
 ];
 const TAB_IDS = new Set<string>(TABS.map((t) => t.id));
 
@@ -496,6 +500,8 @@ export function Admin({
 
       {tab === 'audit' && <AdminAudit onOpenUser={openAccount} />}
 
+      {tab === 'access' && <AdminAccess onOpenUser={openAccount} />}
+
       {/* LAZY, unlike every other tab here, and for the reason `GraphicsSection` is:
           the dashboard and its hand-rolled SVG charts are ~20 KB that only an admin who
           opens this tab will ever look at, and the client bundle is meant to stay React +
@@ -557,6 +563,7 @@ export function Admin({
         This only warns players. It doesn’t restart the server. Run your deploy when the
         countdown reaches 0.
       </p>
+      <AdminBanners />
         </>
       )}
 

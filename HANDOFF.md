@@ -1,3 +1,31 @@
+# HANDOFF — 2026-09-25g (release 1 on production; release 2 on alpha; ALPHA IS CLOSED)
+
+- **Release 1 (stuck-robot batch, SIM_VERSION 4) is on production**: `main` = `9fae19c`, Vercel and every Fly machine; three patch notes published (BIOBUZZ, DECODE, Chain Reaction).
+- **Release 2 is on `alpha` and dsim-alpha, NOT on `main`**: lockdown scopes / access groups / banners (migrations 0051, 0052) and the Vercel Analytics removal (0053). The production merge waits on the owner's go-ahead. After it deploys, the Vercel history import (below) runs against production, and Web Analytics gets switched off in the Vercel project.
+- **Alpha is on a SITE lockdown** (set 2026-09-25 via `/api/admin/maintenance` on dsim-alpha): closed screen with "Go to playdsim.com"; admins and beta/dev/contributor get in. No testers are in the groups yet; the owner will send tags (Access tab, or `/api/admin/access`). The build flag `VITE_SITE_LOCKDOWN=1` is NOT set on the Vercel preview env yet (it keeps alpha closed even with its server down).
+- The two sections below were written before the merge; their "not pushed" state lines are superseded by this one.
+
+# HANDOFF — 2026-09-25e (Vercel Analytics removed; its history imported)
+
+**State: committed on branch `claude/drop-vercel-analytics` (off alpha 96225a0a), NOT pushed.** `build`, `server:check`, `dbtest` (ALL PASS, 17 new checks), `uiaudit`, `docaudit`, `bundleaudit` pass. `npm test`: shared PASS; BIOBUZZ only wall-clock timing flakes (predict budget / step3d p95), lanes pass alone. ⚠️ **Server change + migration 0053** (renumbered at merge: 0051/0052 are lockdown/banners).
+
+- **Owner:** first-party analytics is extensive enough; pull Vercel's data in and remove Vercel Analytics.
+- **Removed:** `@vercel/analytics` (package.json + lockfile), `<Analytics />` in `main.tsx`, the `track` sink in `src/analytics.ts`. Events now go only to `/api/a/ev`, so DNT/GPC now also stops events (it did not for Vercel's). No CSP/vercel.json entries existed for it.
+- **Gaps closed:** events and their properties are rolled up (`dim = 'event'`/`'evprop'`, val `name|key|value`), so ranges past 30 days show events and a month-old sponsor report still breaks down by placement. New **Sponsor report** panel (docs/sponsor.md's lines, CSV) and **Last month** range. "First-party history starts …" note. Vercel had nothing else we lacked (its UTM breakdowns were a paid add-on it never gave us; `route` is empty for Vite).
+- **History:** `scripts/vercel-analytics-export.mjs` (public Web Analytics API, read-only) → `scratch/vercel-analytics-<env>.json`; `scripts/import-vercel-analytics.ts` (dry run unless `--write`) → `analytics_imported` (0053), replacing the file's days. Paths are scrubbed with `normalizePath` (moved to `src/pathScrub.ts` so the server can import it). Shown as its own dashboard section, never summed with ours. Exported 2026-09-13 → 2026-09-25: 408,814 page views, 13,008 daily-unique visitors, events incl. 194,805 `sponsor_shown`, 379 `sponsor_click`, 823 `player_joined`. Preview (alpha) export too: 10,720 views.
+- **Next (owner):** deploy the server (migration 0052), then RE-EXPORT (to catch the days up to removal) and import: `VERCEL_TOKEN=… node scripts/vercel-analytics-export.mjs --team team_btPkJqnmnzu4DXvfygxEr4vl`, then `DATABASE_URL=<prod> npx tsx scripts/import-vercel-analytics.ts --file scratch/vercel-analytics-production.json --write`. Do it before ~2026-10-13: the API only answers inside the plan's reporting window, and data starts 2026-09-13. Then disable Web Analytics in the Vercel project.
+- **Legal:** Vercel's "second usage count" line dropped from the processors list, one sentence added that its daily totals were kept. `LEGAL_UPDATED` NOT moved: a processor removed is not a material expansion (monetization.md).
+# HANDOFF — 2026-09-25f (lockdown scopes, access groups, site banners, alpha closed)
+
+**State: committed on a feature branch, NOT pushed, NOT deployed.** `build`, `server:check`, `dbtest` (ALL PASS, new `lockdown:`/`access:`/`banners:`/`site:` checks), `uiaudit`, `contrast` (399), `docaudit`, `shiftaudit` (0 shifts) pass; `npm test` shared PASS, BIOBUZZ one wall-clock check (PREDICT_FULL_BUDGET_MS) failed under load and passed alone. ⚠️ **Server change + migrations 0051/0052**: alpha needs `./scripts/fly-deploy.sh --alpha`, production a `main` deploy.
+
+- **Lockdown has a scope** (`matches` = old maintenance, `site` = whole app closed), a message, a redirect button, an open-ended window, and bypass groups. Admins always pass. Enforced at join, queue, room start/restart/rematch, LAN host (either scope) and spectate, LAN join, every `/api` POST (site). Rules in `docs/area/accounts.md`.
+- **Access groups** `beta`/`dev`/`contributor` (`access_members`, by user id, audited). Console tab **Access** (single + bulk by player tag). Per deployment: alpha testers go in the alpha DB.
+- **Banners** (`banners` table): info / known-bug / warning / restart. The restart countdown now reaches every region (it was in one machine's memory). Console **Server** tab. Strip is `BannerStack.tsx`; one row + "N more"; dismiss per id+revision.
+- **Closed screen** (`ClosedScreen.tsx`) replaces the app at first load; fail open, except a build with `VITE_SITE_LOCKDOWN=1`.
+- **To close alpha** (owner/release manager, in order): deploy the alpha server, run the lockdown curl in `docs/deploy.md` ("Closing alpha…"), then set `VITE_SITE_LOCKDOWN=1` on Vercel's `alpha` branch and redeploy it. Then add testers (owner sends tags).
+- **Not built:** tester badges on profiles; draining the ranked queue when a lockdown starts (a pairing staged before it bites still plays).
+
 # HANDOFF — 2026-09-25d (stuck-robot batch, SIM_VERSION 4)
 
 **State: pushed on `alpha`, going to `main` in the same release.** `npm test` passes except the known `PREDICT_FULL_BUDGET_MS` wall-clock flake under load (5 ms alone). `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass. ⚠️ **Server + sim change; `SIM_VERSION` 3 → 4 (owner approved 2026-09-25)**: every older replay, all games, plays as drift. Standings do not move (`BALANCE_VERSION` keys them).
@@ -11,7 +39,7 @@
 - `scratch/rampstuck.ts` (overlap spawns included): 0/400 on seeds 2/3 sweeper and 2/4 ramp, from 8/14/11/10.
 - **Patch notes**: `docs/releases/2026-09-25-stuck-robot-fixes.md`, three notes (BIOBUZZ, DECODE, Chain Reaction) with the publishing block. Publish AFTER the production deploy. The What's New modal and `/changelogs` were restyled for reading (15-px body, 68ch measure, fixed button bar).
 - **Also merged into this release from another session:** homepage play counts (`0050_play_counts`) and the room-cap fix that was waiting on `main`.
-- **Open, separate branches (second release):** `claude/drop-vercel-analytics` (`b94531fa`; its migration is 0052; the Vercel history import must be run by hand against production — see its HANDOFF section; the API window likely drops data from ~2026-10-13). The lockdown / alpha-closed / access groups / banners agent is still running; renumber its migrations past 0052 when merging.
+- **Open, separate branches (second release):** `claude/drop-vercel-analytics` (`b94531fa`; its migration is 0053 after the merge; the Vercel history import must be run by hand against production — see its HANDOFF section; the API window likely drops data from ~2026-10-13). The lockdown / alpha-closed / access groups / banners agent is still running; merged too: its migrations are 0051/0052.
 - A flower-side note from that agent: `containmentPass` clamps an out-of-field robot to x ±70.17 without checking statics. `setChassisClear` now catches the resulting overlap on the next sync.
 
 # HANDOFF — 2026-09-25e (prod "region busy" with few games: the room cap counted finished matches)

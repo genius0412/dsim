@@ -514,6 +514,30 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   **NEVER deploy with a bare `flyctl deploy`** — fly.toml expresses only ONE `[[vm]]` size, so
   a bare deploy re-applies `shared-cpu-4x` to EVERY machine and silently upsizes the cheap
   satellites. The wrapper re-shrinks them; verify with `fly machine list -a dohun-sim-decode`.
+- **SITE STATUS: LOCKDOWN, BANNERS, RESTART COUNTDOWN** (`server/siteState.ts`,
+  `src/net/siteStatus.ts`, migrations 0051/0052; the rules are in `docs/area/accounts.md`).
+  - ⚠️ **THE RESTART NOTICE USED TO REACH ONE MACHINE.** It was a variable on whichever machine
+    the admin POST landed on, so on a multi-region app most players never saw the countdown.
+    Every banner, the restart included, is a `banners` row now. Each machine re-reads the set
+    every 5 s while it has sockets (`pushSiteStatus`) and pushes a CHANGE to its own sockets:
+    `siteStatus` for new clients, the old `serverNotice` for older ones. The machine that took
+    the write pushes at once. `/api/presence` still carries `notice` and `maintenance` (with an
+    additive `scope`) for older clients.
+  - **`GET /api/status`** is the one read every page makes (boot, then `NoticePoller` every
+    20 s): lockdown, live banners, the restart notice, server time, and `access` when a token
+    came with it. An older server 404s it and the client falls back to presence for the notice.
+    `siteStatus` needs no cap: an older client ignores a `t` it does not know.
+  - A restart row stays live 20 s past its `until` (the "restarting now" beat); end and cancel
+    backdate it past that. Without a database the set lives in memory, as the notice did.
+  - **FIRST LOAD.** `main.tsx` asks for the status beside the physics init. Closed: the closed
+    screen mounts as soon as the answer lands, before the app, the lobby socket or any lazy
+    chunk. Open: the app waits at most `BOOT_WAIT_MS` (800 ms) for the answer, then opens.
+    **FAIL OPEN**: an unreachable server is not a closed site (free drive works offline; the
+    server refuses writes itself when it is up). The exception is a build baked closed
+    (`VITE_SITE_LOCKDOWN=1`, the alpha): closed until the server confirms an admin or group.
+  - **A MATCH IN PROGRESS FINISHES.** The server does not end running rooms, and the client
+    keeps the match screen until the player leaves it (`shellState.inMatch`), then shows the
+    closed screen.
 - **`api/` is the OTHER server**: Vercel serverless functions, deployed alongside the static
   client, not the Fly game server above. `api/download.ts` is an Edge-runtime proxy that streams
   a desktop-release binary from the site's own domain (via the `/download/:asset` rewrite in

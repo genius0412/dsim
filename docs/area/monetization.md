@@ -1,4 +1,4 @@
-<!-- governs: src/ads/**, server/kofi.ts, src/legalText.ts, src/analytics.ts, src/analyticsPref.ts, src/pageviews.ts, src/storageKeys.ts -->
+<!-- governs: src/ads/**, server/kofi.ts, src/legalText.ts, src/analytics.ts, src/analyticsPref.ts, src/pageviews.ts, src/pathScrub.ts, src/storageKeys.ts, server/analytics.ts, server/analyticsImport.ts -->
 # Monetization — ads and the supporter tier
 
 Perks are cosmetic or convenience ONLY — never anything affecting how a robot drives or scores.
@@ -67,7 +67,8 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
   before taking a payment; do not guess them from a timezone or an email domain.
 - **FIRST-PARTY ANALYTICS — the admin console's Analytics tab.** DSIM measures itself now
   (`server/analytics.ts`, migration `0042`, `src/pageviews.ts`, `src/ui/AdminAnalytics.tsx`),
-  in ADDITION to the host's dashboard below, because the thing a third party structurally
+  and since September 2026 ONLY itself: the host's analytics script was dropped once the tab
+  covered everything it showed. The first reason to build it was the thing a third party structurally
   cannot do is put traffic beside the PRODUCT tables — matches per game × mode × physics,
   signups, D1/D7/D30 retention, the ranked distribution, replay storage, moderation load,
   Ko-fi conversions. Every one of those is a query over tables that already existed; the
@@ -106,11 +107,21 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
   - **The dashboard is a LAZY chunk** and is gated on `isStaffUser` — `profiles.role`, the
     projection of `ADMIN_USER_IDS`, not a second env read. A range inside the raw window is
     exact and cross-filterable; one reaching further back is served from the daily rollups and
-    the panel SAYS so rather than silently degrading.
+    the panel SAYS so rather than silently degrading. Events and their properties are rolled
+    up too (`dim = 'event'` / `'evprop'`, val `name|key|value`), so a month-old sponsor report
+    still breaks down by placement. The **Sponsor report** panel lays out `docs/sponsor.md`'s
+    lines; the **Last month** range is the report period.
+  - **VERCEL HISTORY IS IMPORTED, NEVER MERGED.** `analytics_imported` (0053) holds Vercel Web
+    Analytics' daily aggregates from before it was removed, loaded by
+    `scripts/vercel-analytics-export.mjs` + `scripts/import-vercel-analytics.ts` (dry run unless
+    `--write`; replaces the file's days, so re-runs are safe). Paths go through `normalizePath`
+    on import. The dashboard shows it as its own section: the two sources overlap by days and
+    count differently (ours honours DNT/GPC), so summing them would be wrong on the overlap.
   - ⚠️ **`LEGAL_UPDATED` HAS NOT BEEN MOVED.** The policy describes this already; the date is
     to move in the deploy that sets `VITE_ANALYTICS=1`, because moving it asks every signed-in
-    account to accept the terms again.
-- Analytics (`src/analytics.ts`, `VITE_ANALYTICS=1`, Vercel Web Analytics — cookieless).
+    account to accept the terms again. Removing Vercel's count (a processor dropped, nothing
+    added) did not move it either.
+- Analytics events (`src/analytics.ts`, `VITE_ANALYTICS=1`, cookieless, one sink: our own).
   **Rule: no identifiers in any event payload** — counts and enums only.
   It has an **OFF SWITCH**, `src/analyticsPref.ts`, read by `trackEvent` on EVERY call
   (not cached: it is an opt-OUT, so a second tab turning it off must stop a session already

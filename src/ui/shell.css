@@ -9006,3 +9006,239 @@ input.admin-months {
 .lb-name > .sup-badge {
   margin-left: 0;
 }
+
+/* =====================================================================
+   SITE BANNERS (src/ui/BannerStack.tsx) — the strip where the restart
+   countdown shows, now also known bugs, notices, warnings and the "you are
+   bypassing a lockdown" line. FIXED, so appearing never moves the layout,
+   and it floats over the shell AND the match, so its surfaces take
+   `--ds-hud-line` (CLAUDE.md, theming). One row shows; the rest wait
+   behind "N more".
+   ===================================================================== */
+.ds-banners {
+  position: fixed;
+  top: var(--ds-s-2);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000;
+  width: min(640px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--ds-s-1);
+  pointer-events: none;
+}
+.ds-banners > * {
+  pointer-events: auto;
+}
+.ds-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-md);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  font-size: var(--ds-t-md);
+  font-weight: 600;
+  line-height: var(--ds-lh-prose);
+  box-shadow: var(--ds-block-sm);
+}
+.ds-banner-kind {
+  flex: none;
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+}
+.ds-banner.info .ds-banner-kind { color: var(--ds-accent); }
+.ds-banner.known-bug .ds-banner-kind { color: var(--ds-warn); }
+.ds-banner.warning .ds-banner-kind { color: var(--ds-danger); }
+.ds-banner-msg {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* the restart row keeps the old notice's fixed-ink fills (category 2): one look in both
+   themes, over the match and the shell */
+.ds-banner.restart {
+  background: var(--ds-gold);
+  color: var(--ds-gold-ink);
+  border-color: transparent;
+  font-weight: 700;
+}
+.ds-banner.restart.urgent {
+  background: var(--ds-red-chip);
+  color: var(--ds-red-chip-ink);
+}
+.ds-banner-x {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ds-round-sm);
+  background: transparent;
+  color: var(--ds-mut);
+  cursor: pointer;
+}
+.ds-banner-x:hover {
+  color: var(--ds-ink);
+  background: var(--ds-tile);
+}
+.ds-banner-x:active {
+  transform: translateY(1px);
+}
+.ds-banner-more,
+.ds-banner-bypass {
+  align-self: center;
+  margin: 0;
+  padding: var(--ds-s-1) var(--ds-s-3);
+  border: 1px solid var(--ds-hud-line);
+  border-radius: var(--ds-round-full);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  line-height: var(--ds-lh-tight);
+  box-shadow: var(--ds-block-sm);
+}
+.ds-banner-more {
+  font: inherit;
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.ds-banner-more:hover {
+  background: var(--ds-tile);
+}
+.ds-banner-more:active {
+  transform: translateY(1px);
+}
+/* the staff hue, as text: off every other job, same pair as `.ds-badge.staff` */
+.ds-banner-bypass {
+  color: var(--ds-staff);
+  border-color: var(--ds-staff);
+}
+
+/* =====================================================================
+   THE CLOSED SCREEN (src/ui/ClosedScreen.tsx) — rendered in place of the
+   app while a site lockdown (or a build baked closed) keeps this viewer out.
+   ===================================================================== */
+.ds-closed {
+  box-sizing: border-box;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--ds-s-7) var(--ds-s-4);
+  background: var(--ds-bg);
+  color: var(--ds-ink);
+  font-family: var(--ds-font-ui);
+}
+.ds-closed-card {
+  box-sizing: border-box;
+  width: min(440px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-4);
+  padding: var(--ds-s-6) var(--ds-s-5);
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-lg);
+  box-shadow: var(--ds-block);
+}
+.ds-closed-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+}
+.ds-closed-word {
+  font-size: var(--ds-t-xl);
+  font-weight: 800;
+  letter-spacing: var(--ds-track-tight);
+}
+.ds-closed-title {
+  margin: 0;
+  font-size: var(--ds-t-h1);
+  font-weight: 800;
+  line-height: var(--ds-lh-heading);
+  letter-spacing: var(--ds-track-tight);
+}
+.ds-closed-msg {
+  margin: 0;
+  font-size: var(--ds-t-lg);
+  line-height: var(--ds-lh-prose);
+}
+.ds-closed-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+}
+.ds-closed-actions:empty {
+  display: none;
+}
+.ds-closed-access {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-2) var(--ds-s-3);
+  padding-top: var(--ds-s-4);
+  border-top: 1px solid var(--ds-line);
+}
+.ds-closed-note {
+  flex: 1 1 220px;
+  margin: 0;
+  color: var(--ds-mut);
+  font-size: var(--ds-t-md);
+  line-height: var(--ds-lh-prose);
+}
+.ds-closed-note b {
+  color: var(--ds-ink);
+}
+
+/* ---- admin: lockdown groups, access and banner forms ---------------- */
+/* two or three fields side by side, stacking at phone width */
+.adm-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--ds-s-3);
+}
+.adm-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2) var(--ds-s-4);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.adm-maint .ds-checkline {
+  font-size: var(--ds-t-md);
+}
+.adm-groups legend {
+  padding: 0;
+  margin-bottom: var(--ds-s-2);
+  font-size: var(--ds-t-md);
+  font-weight: 600;
+}
+.adm-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  margin: 0;
+  padding-left: var(--ds-s-4);
+  color: var(--ds-danger);
+  font-size: var(--ds-t-sm);
+}
+/* the banner preview sits on the tile, not the card, so the row's own edge reads */
+.adm-preview {
+  padding: var(--ds-s-3);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-md);
+}

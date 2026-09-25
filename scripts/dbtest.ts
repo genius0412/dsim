@@ -760,6 +760,113 @@ async function main(): Promise<void> {
   check('maintenance: the row is a SINGLETON (no second window can exist)',
     (await db.query<{ c: string }>(`select count(*)::text as c from maintenance`)).rows[0].c === '1');
 
+  // ---- LOCKDOWN SCOPE, ACCESS GROUPS, BANNERS (0051/0052) -------------------
+  {
+    const m3 = await repo.setMaintenance({
+      active: true, startsAt: null, endsAt: null, message: 'Alpha is closed', scope: 'site',
+      redirectUrl: 'https://playdsim.com', redirectLabel: 'Go to DSIM', bypass: ['beta', 'dev', 'contributor'],
+    });
+    check('lockdown: a SITE lockdown round-trips scope, redirect and bypass',
+      m3.scope === 'site' && m3.redirectUrl === 'https://playdsim.com' && m3.redirectLabel === 'Go to DSIM' &&
+      JSON.stringify(m3.bypass) === '["beta","dev","contributor"]', JSON.stringify(m3));
+    check('lockdown: open-ended is allowed and bites now', repo.maintenanceBiting(m3));
+    // an OLDER console posts none of the new fields: it must still mean "matches, nobody bypasses"
+    const m4 = await repo.setMaintenance({ active: true, startsAt: null, endsAt: null, message: 'old console' });
+    check('lockdown: a write without the 0051 fields means matches with no bypass',
+      m4.scope === 'matches' && m4.bypass?.length === 0 && m4.redirectUrl === null, JSON.stringify(m4));
+    const bad = await db.query(`update maintenance set scope = 'everything' where id = 1`).then(() => false, () => true);
+    check('lockdown: the scope column refuses an unknown scope', bad);
+
+    const W = { ...m3 };
+    check('lockdown: an admin always passes', repo.lockdownPasses(W, { admin: true, groups: [] }));
+    check('lockdown: a listed group passes', repo.lockdownPasses(W, { admin: false, groups: ['beta'] }));
+    check('lockdown: nobody else does', !repo.lockdownPasses(W, { admin: false, groups: [] }));
+    check('lockdown: an unlisted group does not',
+      !repo.lockdownPasses({ ...W, bypass: ['dev'] }, { admin: false, groups: ['beta'] }));
+    check('lockdown: a lockdown that is not biting lets everyone through',
+      repo.lockdownPasses({ ...W, active: false }, { admin: false, groups: [] }));
+
+    // ---- access groups, keyed by id, granted by tag
+    await repo.ensureProfile('acc-1', 'Tester One');
+    await repo.setUsername('acc-1', 'testerone');
+    await repo.ensureProfile('acc-2', 'Twin');
+    await repo.ensureProfile('acc-3', 'Twin');
+    const byName = await repo.resolvePlayerTag('tester one');
+    check('access: a display name resolves (case-insensitive)', byName.ok && byName.userId === 'acc-1', JSON.stringify(byName));
+    const byUser = await repo.resolvePlayerTag('@TesterOne');
+    check('access: an @username resolves', byUser.ok && byUser.userId === 'acc-1');
+    const byId = await repo.resolvePlayerTag('acc-2');
+    check('access: an account id resolves', byId.ok && byId.userId === 'acc-2');
+    const twin = await repo.resolvePlayerTag('Twin');
+    check('access: a shared display name is an error, not a guess', !twin.ok && /2 players/.test(twin.ok ? '' : twin.error));
+    const none = await repo.resolvePlayerTag('nobody-here');
+    check('access: an unknown tag says so', !none.ok && /No player/.test(none.ok ? '' : none.error));
+    check('access: a first grant adds', await repo.grantAccess('acc-1', 'beta', 'admin-x', 'wave 1'));
+    check('access: a second grant is a no-op', !(await repo.grantAccess('acc-1', 'beta', 'admin-y')));
+    await repo.grantAccess('acc-1', 'dev', 'admin-x');
+    check('access: groups are read by id', JSON.stringify((await repo.accessGroupsOf('acc-1')).sort()) === '["beta","dev"]');
+    await repo.setHandle('acc-1', 'Renamed');
+    const listed = await repo.listAccessMembers('beta');
+    check('access: the list shows TODAY’s name, and a rename keeps the membership',
+      listed.length === 1 && listed[0].handle === 'Renamed' && listed[0].grantedBy === 'admin-x', JSON.stringify(listed));
+    const badGrp = await db.query(`insert into access_members (user_id, grp, granted_by) values ('acc-2', 'vip', 'x')`).then(() => false, () => true);
+    check('access: an unknown group is refused by the table', badGrp);
+    const ex = await repo.exportAccount('acc-1');
+    check('access: the export lists the groups and never who granted them',
+      (ex?.accessGroups.length ?? 0) === 2 && !JSON.stringify(ex?.accessGroups).includes('admin-x'));
+    check('access: revoke removes', await repo.revokeAccess('acc-1', 'dev'));
+    check('access: revoking twice says it was not there', !(await repo.revokeAccess('acc-1', 'dev')));
+    await repo.deleteAccount('acc-1');
+    check('access: deleting the account deletes its memberships',
+      (await db.query<{ c: string }>(`select count(*)::text as c from access_members where user_id = 'acc-1'`)).rows[0].c === '0');
+
+    // ---- banners
+    const T2 = Date.now();
+    const b1 = await repo.createBanner({ kind: 'known-bug', message: 'Ramp sticks. [Track it](https://x.y)', startsAt: null, endsAt: null, game: 'biobuzz', channel: null }, 'admin-x');
+    const b2 = await repo.createBanner({ kind: 'info', message: 'later', startsAt: T2 + 3_600_000, endsAt: null, game: null, channel: 'alpha' }, 'admin-x');
+    check('banners: a created banner starts at revision 1', b1.revision === 1 && b1.kind === 'known-bug' && b1.game === 'biobuzz');
+    const open = await repo.listOpenBanners();
+    check('banners: the open set includes scheduled ones (the cache filters by start)',
+      open.some((b) => b.id === b1.id) && open.some((b) => b.id === b2.id));
+    const b1e = await repo.updateBanner(b1.id, { kind: 'known-bug', message: 'Ramp sticks (fixed next deploy)', startsAt: null, endsAt: null, game: 'biobuzz', channel: null });
+    check('banners: an edit bumps the revision, so a dismissal of the old text lapses', b1e?.revision === 2);
+    check('banners: ending one takes it out of the open set',
+      (await repo.endBanner(b1.id)) && !(await repo.listOpenBanners()).some((b) => b.id === b1.id));
+    check('banners: ...and keeps it in the console history', (await repo.listBanners()).some((b) => b.id === b1.id));
+    check('banners: delete removes the row', (await repo.deleteBanner(b2.id)) && !(await repo.listBanners()).some((b) => b.id === b2.id));
+    const badKind = await db.query(`insert into banners (kind, message, created_by) values ('party', 'x', 'y')`).then(() => false, () => true);
+    check('banners: an unknown kind is refused by the table', badKind);
+
+    // ---- the cache every machine runs (server/siteState.ts), against the same database
+    const site = await import('../server/siteState');
+    await site.refreshLockdown(true);
+    check('site: a matches-scope lockdown refuses a match start', !!(await site.lockdownRefusal(null, 'match')));
+    check('site: ...but not a site-only action', (await site.lockdownRefusal(null, 'site')) === null);
+    await repo.setMaintenance({ ...m3 });
+    await site.refreshLockdown(true);
+    check('site: a site lockdown refuses a site action for a stranger', !!(await site.lockdownRefusal(null, 'site')));
+    await repo.ensureProfile('acc-9', 'Beta Nine');
+    await repo.grantAccess('acc-9', 'beta', 'admin-x');
+    site.forgetAccess('acc-9');
+    check('site: ...and lets a beta tester through', (await site.lockdownRefusal('acc-9', 'site')) === null);
+    const acc = await site.siteAccess('acc-9');
+    check('site: /api/status access says the tester passes', acc.passes && acc.groups.includes('beta') && !acc.admin);
+    check('site: the public lockdown carries the redirect and no ids',
+      site.publicLockdown()?.redirectUrl === 'https://playdsim.com' && !JSON.stringify(site.publicLockdown()).includes('acc-'));
+    await site.announceRestart('Server update', 300, 'admin-x');
+    const n1 = site.legacyNotice();
+    check('site: a restart announce is a DB row every machine reads, and the legacy notice follows it',
+      n1?.kind === 'restart' && n1.message === 'Server update' && !!n1.until && n1.until > Date.now());
+    check('site: the restart appears among the live banners', site.liveBanners().some((b) => b.kind === 'restart'));
+    await site.cancelRestart();
+    check('site: cancel clears it at once (no grace)', site.legacyNotice() === null && !site.liveBanners().some((b) => b.kind === 'restart'));
+    await site.announceRestart('now', 0, 'admin-x');
+    check('site: a zero-second restart still shows for its grace', site.legacyNotice()?.message === 'now');
+    await site.cancelRestart();
+    await repo.setMaintenance({ active: false, startsAt: null, endsAt: null, message: '' });
+    await site.refreshLockdown(true);
+  }
+
   // ---- guest sessions are ROWS now (0024) ---------------------------------
   await repo.upsertPresence(
     'm-iad', 'iad', 3, ['op-1'], 0, 0, [], [{ userId: 'op-1', act: 'match', room: 'r1', sessions: 2 }],
@@ -3063,6 +3170,111 @@ async function main(): Promise<void> {
         'analytics/report: a range older than the raw tier keeps is served from the aggregates, and says so',
         (await an.analyticsReport({ from: new Date('2025-01-01'), to: new Date('2025-02-01'), game: '*', filters: [], grain: 'day' })).source === 'aggregate',
       );
+    }
+
+    // ---- events outlive the raw tier, properties included --------------------------------
+    // The sponsor report is read by placement, a month after the fact. Before the `evprop` rows,
+    // a range past 30 days had event names from nowhere and properties from nowhere.
+    check(
+      'analytics/rollup: event PROPERTIES are rolled up too, as name|key|value',
+      (await daily('*', 'evprop', 'support_view|placement|footer'))?.views === 1,
+    );
+    {
+      await db.query(
+        `insert into analytics_daily (day, game, dim, val, views, visitors)
+         values ('2025-01-10', '*', 'event', 'sponsor_click', 3, 2), ('2025-01-10', '*', 'evprop', 'sponsor_click|placement|game', 3, 2)`,
+      );
+      const old = await an.analyticsReport({ from: new Date('2025-01-01'), to: new Date('2025-02-01'), game: '*', filters: [], grain: 'day' });
+      check(
+        '⚠️ analytics/report: a range past the raw tier reads events AND their properties off the rollups',
+        old.events[0]?.name === 'sponsor_click' && old.events[0].views === 3 &&
+          old.eventProps.some((p) => p.name === 'sponsor_click' && p.key === 'placement' && p.val === 'game' && p.views === 3),
+      );
+      check('analytics/report: property rows never show up as a breakdown panel', !old.breakdowns.some((b) => b.dim === 'evprop'));
+      check('analytics/report: it says where its own traffic history starts', old.historyStart === '2026-09-10', String(old.historyStart));
+      check('analytics/report: no import yet means no imported section', old.imported === null);
+      await db.query(`delete from analytics_daily where day = '2025-01-10'`);
+    }
+
+    // ---- history imported from Vercel Web Analytics (0053) ---------------------------------
+    {
+      const { vercelImportRows } = await import('../server/analyticsImport');
+      const { replaceImportedAnalytics } = await import('../server/db/repo');
+      const v = (day: string, value: string | null, pageviews: number, visitors: number) => ({ day, value, pageviews, visitors });
+      const file = {
+        source: 'vercel' as const,
+        environment: 'production',
+        firstDay: '2026-09-13',
+        lastDay: '2026-09-14',
+        visits: {
+          total: [
+            { day: '2026-09-12', pageviews: 0, visitors: 0 },
+            { day: '2026-09-13', pageviews: 100, visitors: 10 },
+            { day: '2026-09-14', pageviews: 50, visitors: 5 },
+          ],
+          by: {
+            requestPath: [
+              v('2026-09-13', '/decode/profile/alice', 3, 1),
+              v('2026-09-13', '/decode/profile/bob', 2, 1),
+              v('2026-09-13', '/decode/records?token=secret', 5, 2),
+            ],
+            route: [v('2026-09-13', null, 100, 10)],
+            referrerHostname: [v('2026-09-13', null, 90, 9), v('2026-09-13', 'www.google.com', 10, 1)],
+            osName: [v('2026-09-13', 'Mac', 40, 4)],
+            browserName: [v('2026-09-13', 'Microsoft Edge', 20, 2), v('2026-09-13', 'Others', 5, 1)],
+          },
+        },
+        events: {
+          byName: [{ day: '2026-09-13', name: 'sponsor_click', count: 4, visitors: 3 }],
+          byProp: [
+            { day: '2026-09-13', name: 'sponsor_click', key: 'placement', value: 'game', count: 4, visitors: 3 },
+            { day: '2026-09-13', name: 'sponsor_shown', key: 'format', value: '', count: 9, visitors: 9 },
+          ],
+        },
+      };
+      const rows = vercelImportRows(file);
+      check(
+        '⚠️ analytics/import: paths are scrubbed like the live beacon, so no username or token lands in the table',
+        !rows.some((r) => /alice|bob|token|secret/.test(r.val)) && rows.find((r) => r.dim === 'path' && r.val === '/decode/profile/:name')?.views === 5,
+      );
+      check(
+        'analytics/import: the host’s spellings map onto ours, and a direct visit stays a blank referrer',
+        rows.some((r) => r.dim === 'os' && r.val === 'macOS') && rows.some((r) => r.dim === 'browser' && r.val === 'Edge') &&
+          rows.some((r) => r.dim === 'ref' && r.val === 'google.com') && rows.some((r) => r.dim === 'ref' && r.val === ''),
+      );
+      check(
+        'analytics/import: empty days, route rows and absent property values are left out',
+        !rows.some((r) => r.day === '2026-09-12') && !rows.some((r) => r.dim === 'route') && !rows.some((r) => r.val.startsWith('sponsor_shown|')),
+      );
+      const count = async (): Promise<number> =>
+        Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported`)).rows[0].n);
+      const first = await replaceImportedAnalytics('vercel', rows);
+      const second = await replaceImportedAnalytics('vercel', rows);
+      check(
+        '⚠️ analytics/import: idempotent, a second run replaces the days instead of adding to them',
+        first.inserted === rows.length && second.deleted === rows.length && (await count()) === rows.length,
+        `inserted=${first.inserted} deleted=${second.deleted} rows=${await count()}`,
+      );
+      await replaceImportedAnalytics('vercel', rows.filter((r) => r.day === '2026-09-14'));
+      check(
+        'analytics/import: a narrower re-import replaces only the days it covers',
+        Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported where day = '2026-09-13'`)).rows[0].n) > 0,
+      );
+      const rep = await an.analyticsReport({ from: new Date('2026-09-13T00:00:00Z'), to: new Date('2026-09-15T00:00:00Z'), game: '*', filters: [], grain: 'day' });
+      const imp = rep.imported;
+      check(
+        'analytics/import: the report carries the imported span and its totals',
+        imp?.source === 'vercel' && imp.firstDay === '2026-09-13' && imp.lastDay === '2026-09-14' && imp.totals.views === 150 && imp.series.length === 2,
+        JSON.stringify(imp && { ...imp, breakdowns: undefined }),
+      );
+      check(
+        'analytics/import: ...its breakdowns, events and event properties',
+        !!imp?.breakdowns.some((b) => b.dim === 'path' && b.val === '/decode/profile/:name') &&
+          imp.events[0]?.name === 'sponsor_click' && imp.eventProps[0]?.key === 'placement' && imp.eventProps[0]?.val === 'game',
+      );
+      check('⚠️ analytics/import: never added into the first-party totals', rep.totals.views === 0);
+      const oneDay = await an.analyticsReport({ from: new Date('2026-09-13T00:00:00Z'), to: new Date('2026-09-14T00:00:00Z'), game: '*', filters: [], grain: 'day' });
+      check('analytics/import: the range end is exclusive, as it is for live data', oneDay.imported?.series.length === 1);
     }
 
     // ---- retention, which is where the privacy promise is either kept or not ---------------

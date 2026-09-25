@@ -106,6 +106,70 @@ traffic. But `main` and `alpha` still share a database *schema lineage* and the 
 code paths, so keep new fields additive and keep feature-gating on `caps` — a merge to main
 should not need a coordinated redeploy.
 
+### Closing alpha, adding testers, posting a banner
+
+Rules in `docs/area/accounts.md` (lockdown, access groups) and `docs/area/netcode.md` (site
+status). Everything below also works from the admin console: **Live** (lockdown), **Access**
+(testers), **Server** (banners). An admin signs in on the closed screen and gets through.
+
+**Closing alpha takes two switches, and they do different jobs.**
+
+1. *The server lockdown* (a database row on dsim-alpha) is what REFUSES: joins, queueing,
+   spectating, LAN, every write, for anyone who is not an admin or in a listed group. It
+   carries the message and the button. Needs the alpha server on this build (migrations
+   0051/0052 run at boot), so deploy it first: `./scripts/fly-deploy.sh --alpha`.
+   ```bash
+   GS=https://dsim-alpha.fly.dev   # ADMIN_SECRET = dsim-alpha's own secret
+   curl -fsS -G -X POST "$GS/api/admin/maintenance" \
+     --data-urlencode "active=1" \
+     --data-urlencode "scope=site" \
+     --data-urlencode "msg=The alpha is open to testers only. DSIM itself is open as usual." \
+     --data-urlencode "redirect=https://playdsim.com" \
+     --data-urlencode "redirectLabel=Go to DSIM" \
+     --data-urlencode "bypass=beta,dev,contributor" \
+     --data-urlencode "secret=$ADMIN_SECRET"
+   curl -s "$GS/api/status"        # lockdown.scope "site", biting true
+   ```
+   No `startsAt`/`endsAt`: it bites now and lasts until lifted (`active=0`, same curl).
+2. *The build flag* makes the alpha SITE start closed, so the closed screen is the first thing
+   anyone sees even with the alpha server asleep or down. Vercel → Environment Variables →
+   `VITE_SITE_LOCKDOWN` = `1`, scoped to the `alpha` branch (`vercel env add VITE_SITE_LOCKDOWN
+   preview alpha`), then redeploy the branch. A baked-closed build opens only for an account
+   the server confirms (admin or any group), so set it AFTER step 1's deploy: against an older
+   server nobody, admins included, can be confirmed.
+
+If the alpha server is down, the alpha site stays closed (the flag) and testers cannot get in
+until it is back; the closed screen says it could not check. Production has no flag and fails
+open. Reopening alpha: lift the lockdown and remove the flag.
+
+**Adding testers** (per deployment: alpha testers are added on alpha). A tag is a display
+name, an @username or an account id; a player who has never signed in on alpha is not in
+its database yet, and signing in once on the closed screen fixes that.
+```bash
+curl -fsS -G -X POST "$GS/api/admin/access" --data-urlencode "action=grant" \
+  --data-urlencode "group=beta" --data-urlencode "tag=PlayerOne" --data-urlencode "secret=$ADMIN_SECRET"
+# a list, one tag per line (group = beta | dev | contributor):
+curl -fsS -X POST --data-binary @testers.txt "$GS/api/admin/access" --url-query "action=bulk" \
+  --url-query "group=beta" --url-query "secret=$ADMIN_SECRET"
+curl -fsS -G "$GS/api/admin/access" --data-urlencode "secret=$ADMIN_SECRET"   # the list
+```
+The bulk answer names every tag that did not resolve. Revoke: `action=revoke&group=…&userId=…`.
+
+**Posting a banner** (production shown; any server):
+```bash
+GS=https://dohun-sim-decode.fly.dev
+curl -fsS -G -X POST "$GS/api/admin/banners" --data-urlencode "action=create" \
+  --data-urlencode "kind=known-bug" \
+  --data-urlencode "msg=Ramp robots can stick on a hive foot bar. [Tracking](https://github.com/…)" \
+  --data-urlencode "game=biobuzz" --data-urlencode "secret=$ADMIN_SECRET"
+curl -fsS -G "$GS/api/admin/banners" --data-urlencode "secret=$ADMIN_SECRET"   # ids
+curl -fsS -G -X POST "$GS/api/admin/banners" --data-urlencode "action=end" \
+  --data-urlencode "id=12" --data-urlencode "secret=$ADMIN_SECRET"
+```
+`kind` is `info`, `known-bug` or `warning`; optional `game`, `channel` (`stable`/`alpha`),
+`startsAt`/`endsAt` (ms). `action=update&id=…` edits it and shows it again to players who
+closed it. Every machine shows a change within ~5 s.
+
 ---
 
 ## Beginner quickstart — Fly.io game server (≈10 min)
@@ -248,10 +312,10 @@ fly launch --no-deploy        # pick a unique app name + region near your player
 ### Safe deploy — warn players, then deploy (`scripts/announce-deploy.sh`)
 
 A bare deploy restarts the server process, dropping anyone mid-match. When players
-may be online, deploy through the announce wrapper instead: it broadcasts a
-`serverNotice` countdown banner to every connected client (and re-sends it to
-anyone who joins during the window), waits, then runs `scripts/fly-deploy.sh` and
-polls `/health`.
+may be online, deploy through the announce wrapper instead: it posts a restart
+countdown banner, waits, then runs `scripts/fly-deploy.sh` and polls `/health`. The
+countdown is a database row (0052), so players on EVERY region see it within ~5 s; before
+that it reached only the machine the curl landed on.
 
 ```bash
 # one-time: authorize the announce endpoint from the CLI (no browser session)

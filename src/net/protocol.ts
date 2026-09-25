@@ -821,7 +821,8 @@ export type ClientMsg =
   // give up the code and drop every guest (also implied by the socket closing)
   | { t: 'lanStopHosting' }
   // ask to be introduced to a code's host
-  | { t: 'lanJoin'; code: string }
+  // `authToken` (optional): a site lockdown admits a guest only once it knows who they are
+  | { t: 'lanJoin'; code: string; authToken?: string }
   // forward one opaque blob (an SDP offer/answer, or an ICE candidate) to `peer`. The server
   // does not parse `data` — it is bounded and counted, never read.
   | { t: 'lanSignal'; peer: string; data: string };
@@ -1141,6 +1142,13 @@ export type ServerMsg =
   // a countdown to `until`, epoch ms) or a general info message. Shown as a banner
   // so players aren't caught off guard by a restart mid-session.
   | { t: 'serverNotice'; kind: 'restart' | 'info'; message: string; until?: number }
+  /**
+   * THE SITE STATUS CHANGED: the lockdown and the live banners, pushed by each machine when
+   * its database read differs from what it last sent (`server/siteState.ts`), and once on
+   * connect when either is set. No cap gate: an older client ignores a `t` it does not know,
+   * and keeps getting the restart countdown as `serverNotice` above.
+   */
+  | { t: 'siteStatus'; lockdown: SiteLockdown | null; banners: SiteBanner[] }
   // echo of a client `ping` (same `ts`); the client computes RTT = now − ts
   | { t: 'pong'; ts: number }
   /* ── LAN SIGNALLING ── the replies to the four client messages above. */
@@ -1338,4 +1346,68 @@ export function unslimWorld(
     robots: w.robots.map((r) => backfillRobot({ ...r, spec: specById(r.id) })),
     balls,
   };
+}
+/* ── SITE STATUS: lockdown, access groups, banners (migrations 0051/0052) ─────────────────── */
+
+/** what a lockdown closes: `matches` stops new matches; `site` closes the whole app */
+export type LockdownScope = 'matches' | 'site';
+/** the groups that can be let past a lockdown. Admins always pass and are not a group. */
+export type AccessGroup = 'beta' | 'dev' | 'contributor';
+export const ACCESS_GROUPS: readonly AccessGroup[] = ['beta', 'dev', 'contributor'];
+export const ACCESS_GROUP_LABEL: Record<AccessGroup, string> = {
+  beta: 'Beta tester',
+  dev: 'Developer',
+  contributor: 'Contributor',
+};
+
+/** the lockdown as every client sees it (no ids, nothing about who is in which group) */
+export interface SiteLockdown {
+  scope: LockdownScope;
+  message: string;
+  redirectUrl: string | null;
+  redirectLabel: string | null;
+  startsAt: number | null;
+  endsAt: number | null;
+  /** in force right now (a scheduled one is announced before it bites) */
+  biting: boolean;
+  bypass: AccessGroup[];
+}
+
+export type BannerKind = 'info' | 'known-bug' | 'warning' | 'restart';
+export const BANNER_KINDS: readonly BannerKind[] = ['info', 'known-bug', 'warning', 'restart'];
+
+/** one live banner. The CLIENT filters by `game` and `channel`, so a switch of game needs no refetch. */
+export interface SiteBanner {
+  id: number;
+  kind: BannerKind;
+  message: string;
+  startsAt: number | null;
+  endsAt: number | null;
+  /** null = every game */
+  game: string | null;
+  /** null = every channel */
+  channel: string | null;
+  /** bumped on each edit; dismissal is remembered per id + revision */
+  revision: number;
+}
+
+/** what the server knows about the CALLER, sent only when a valid token came with the request */
+export interface SiteAccess {
+  userId: string;
+  admin: boolean;
+  groups: AccessGroup[];
+  /** passes the lockdown in force right now (true when none is) */
+  passes: boolean;
+}
+
+/** `GET /api/status` */
+export interface SiteStatus {
+  lockdown: SiteLockdown | null;
+  banners: SiteBanner[];
+  /** present only for a request that carried a valid token */
+  access?: SiteAccess | null;
+  /** the restart countdown in the legacy shape, as `/api/presence` carries it */
+  notice?: { kind: 'restart' | 'info'; message: string; until?: number } | null;
+  /** server time, so a client with a wrong clock still counts a window down correctly */
+  now?: number;
 }

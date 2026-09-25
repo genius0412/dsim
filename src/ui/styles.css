@@ -3362,38 +3362,6 @@ button {
   }
 }
 
-/* admin server-notice banner (scheduled restart countdown / info) */
-.server-notice {
-  position: fixed;
-  top: 8px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 2000;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 92vw;
-  padding: 8px 18px;
-  border-radius: var(--ds-round-md);
-  /* FILLS WITH FIXED INK (category 2): it floats over the match AND the shell, so it keeps one
-     look in both themes, and each pair is audited in contrast.mjs. The urgent one was white on
-     #ef4444 at 3.76:1 — the "restarting now" banner, the one line that must read at a glance.
-     A hard block shadow, not a blur (DESIGN.md's No-Blur Rule). */
-  background: var(--ds-gold);
-  color: var(--ds-gold-ink);
-  font-weight: 700;
-  font-size: 13px;
-  box-shadow: var(--ds-block);
-  pointer-events: none;
-}
-.server-notice.urgent {
-  background: var(--ds-red-chip);
-  color: var(--ds-red-chip-ink);
-}
-.server-notice-icon {
-  font-size: 15px;
-}
-
 /* in-game reconnect / server-restart overlay */
 .net-overlay {
   position: absolute;

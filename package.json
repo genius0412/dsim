@@ -110,7 +110,6 @@
     "@dimforge/rapier3d-deterministic-compat": "0.20.0",
     "@discord/embedded-app-sdk": "^2.5.0",
     "@neondatabase/auth": "0.4.2-beta",
-    "@vercel/analytics": "^2.0.1",
     "jose": "^6.1.2",
     "pg": "^8.22.0",
     "react": "^18.3.1",

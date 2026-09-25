@@ -106,8 +106,12 @@ import {
   VISITOR_LIMIT,
 } from './analytics';
 import { emailGateRefusal, verifyAuthToken } from './auth';
+import { lockdownRefusal, refreshLockdown } from './siteState';
 import { LEGAL_VERSION } from '../src/legalText';
 import { DEPLOY_REGIONS, interRegionMs } from './regions';
+
+/** the two writes a closed site still takes: Ko-fi's webhook, and deleting your own account */
+const SITE_WRITE_EXEMPT = new Set(['/api/kofi/webhook', '/api/user/delete']);
 
 /**
  * Public read API for the leaderboards + replay viewer (GET), plus ONE
@@ -616,6 +620,23 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     // cheapest to refuse. See `server/analytics.ts` for what is and is not recorded.
     if (url.pathname.startsWith('/api/a/') || url.pathname.startsWith('/api/analytics')) {
       return await handleAnalytics(req, url, json);
+    }
+
+    /* ---- A CLOSED SITE REFUSES EVERY WRITE (0051, scope `site`) -------------------------
+       One door in front of every POST below — profile edits, friends, practice and LAN
+       uploads, settings, play counts — rather than a check in each, so a route added later
+       is covered without anyone remembering to. Reads stay open: the closed screen and the
+       sign-in need some of them, and none of them changes anything. Two writes are exempt:
+       the Ko-fi webhook (not a player) and deleting your own account (a privacy right does
+       not close with the site). 503 with the lockdown's own sentence; the upload backlogs
+       keep their runs and retry. */
+    if (req.method !== 'GET' && req.method !== 'HEAD' && !SITE_WRITE_EXEMPT.has(url.pathname)) {
+      const w = await refreshLockdown(); // TTL-cached: at most one read per 10 s per machine
+      if (w.active && w.scope === 'site') {
+        const user = await verifyAuthToken(bearer(req)).catch(() => null);
+        const refusal = await lockdownRefusal(user?.userId, 'site');
+        if (refusal) return json(503, { error: refusal, code: 'site_closed' }), true;
+      }
     }
 
     // ---- authenticated write: set your own display name --------------------

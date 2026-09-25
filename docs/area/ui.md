@@ -365,6 +365,17 @@ four `PERF_DISPLAY_BLURB` lines, an option's download size, and the R102 stow no
 
 ## HUD / UX product rules
 
+- **THE BANNER STRIP** (`BannerStack.tsx`, beside `<App/>` in `main.tsx`) is where the restart
+  countdown always was, now also admin notices (info, known bug, warning) and the line that
+  tells an admin or tester they are past a lockdown. Fixed, so it never moves layout. ONE row
+  shows, most important first (restart, warning, known bug, notice); the rest sit behind "N
+  more". **In a match only the restart shows.** A player closes a banner per id + revision
+  (`BANNERS_DISMISSED_KEY`); an edit brings it back; a restart cannot be closed. Filtering is
+  client-side by the current game and the build's channel (`visibleBanners`, siteRules.ts).
+- **THE CLOSED SCREEN** (`ClosedScreen.tsx`) replaces the whole app while the site is closed
+  to this viewer, for every URL. The way out (the redirect, "Go to DSIM") is the primary action
+  and takes focus; the way in is Sign in, after which the status is asked again and the app
+  replaces the screen with no reload. Copy: DSIM or "Alpha" is closed, never a game name.
 - HUD mimics the FTC live scoring display: red|timer|blue bar at the BOTTOM.
 - **No popup toasts over the field** — events go to the muted left-edge log; zone status lives
   in the top-right chips.

@@ -562,6 +562,17 @@ export function rollupSql(grain: 'hour' | 'day'): string {
       from analytics_events e cross join lateral (values (e.game), ('*')) g(gm)
      where e.at >= $1::timestamptz and e.at < $2::timestamptz group by 1, 2, 4`);
 
+  // ...and their property values, as `name|key|value`, so a month-old sponsor report can still
+  // be broken down by placement after the raw events are gone.
+  blocks.push(`
+    select ${bucketExpr(grain, 'e.at')} as bucket, g.gm as game, 'evprop' as dim,
+           e.name || '|' || p.key || '|' || p.value as val,
+           count(*)::int as views, count(distinct e.visitor)::int as visitors,
+           0 as sessions, 0 as bounces, 0::bigint as seconds
+      from analytics_events e cross join lateral jsonb_each_text(e.props) p
+           cross join lateral (values (e.game), ('*')) g(gm)
+     where e.at >= $1::timestamptz and e.at < $2::timestamptz group by 1, 2, 4`);
+
   return `with ${sessionCte('')}
     insert into ${table} (${col}, game, dim, val, views, visitors, sessions, bounces, seconds)
     select bucket, game, dim, val, views, visitors, sessions, bounces, seconds
@@ -835,6 +846,26 @@ export interface AnalyticsReport {
   events: { name: string; views: number; visitors: number }[];
   eventProps: { name: string; key: string; val: string; views: number }[];
   online: number;
+  /** the first UTC day this database holds its own traffic for, or null before any */
+  historyStart: string | null;
+  /** history loaded from Vercel Web Analytics (migration 0052), or null if none was imported */
+  imported: ImportedReport | null;
+}
+
+/**
+ * THE IMPORTED HISTORY, over the same range as the live report. Page views and daily-unique
+ * visitors only: the source had no sessions, and it is not split by game. `firstDay`/`lastDay`
+ * are the whole imported span, so the dashboard can say where it is even when the range misses it.
+ */
+export interface ImportedReport {
+  source: string;
+  firstDay: string;
+  lastDay: string;
+  totals: { views: number; visitors: number };
+  series: { t: string; views: number; visitors: number }[];
+  breakdowns: BreakdownRow[];
+  events: { name: string; views: number; visitors: number }[];
+  eventProps: { name: string; key: string; val: string; views: number }[];
 }
 
 /**
@@ -930,7 +961,7 @@ export async function analyticsReport(qy: RangeQuery): Promise<AnalyticsReport> 
   const span = qy.to.getTime() - qy.from.getTime();
   const prevFrom = new Date(qy.from.getTime() - span);
 
-  const [totals, previous, series, breakdowns, events, eventProps, online] = await Promise.all([
+  const [totals, previous, series, breakdowns, events, eventProps, online, historyStart, imported] = await Promise.all([
     source === 'raw' ? rawTotals(qy.from, qy.to, qy.game, qy.filters) : aggTotals(qy.from, qy.to, qy.game),
     source === 'raw'
       ? prevFrom >= floor
@@ -939,12 +970,125 @@ export async function analyticsReport(qy: RangeQuery): Promise<AnalyticsReport> 
       : aggTotals(prevFrom, qy.from, qy.game),
     source === 'raw' ? rawSeries(qy) : aggSeries(qy),
     source === 'raw' ? rawBreakdowns(qy) : aggBreakdowns(qy),
-    rawEvents(qy),
-    rawEventProps(qy),
+    source === 'raw' ? rawEvents(qy) : aggEvents(qy),
+    source === 'raw' ? rawEventProps(qy) : aggEventProps(qy),
     onlineNow(),
+    firstOwnDay(),
+    importedReport(qy.from, qy.to),
   ]);
 
-  return { source, rawFloor: floor.toISOString(), totals, previous, series, breakdowns, events, eventProps, online };
+  return {
+    source,
+    rawFloor: floor.toISOString(),
+    totals,
+    previous,
+    series,
+    breakdowns,
+    events,
+    eventProps,
+    online,
+    historyStart,
+    imported,
+  };
+}
+
+/** `name|key|value` back into its parts. The value may itself contain `|`. */
+function splitEvprop(val: string): { name: string; key: string; val: string } {
+  const a = val.indexOf('|');
+  const b = a < 0 ? -1 : val.indexOf('|', a + 1);
+  if (b < 0) return { name: val, key: '', val: '' };
+  return { name: val.slice(0, a), key: val.slice(a + 1, b), val: val.slice(b + 1) };
+}
+
+/** events off the daily rollups, for a range older than the raw tier keeps */
+async function aggEvents(qy: RangeQuery): Promise<{ name: string; views: number; visitors: number }[]> {
+  const rows = await q<{ name: string; views: string; visitors: string }>(
+    `select val as name, sum(views) as views, sum(visitors) as visitors from analytics_daily
+      where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
+        and game = $3 and dim = 'event'
+      group by 1 order by views desc limit 30`,
+    [qy.from, qy.to, qy.game || '*'],
+  );
+  return rows.map((r) => ({ name: r.name, views: Number(r.views), visitors: Number(r.visitors) }));
+}
+
+async function aggEventProps(qy: RangeQuery): Promise<{ name: string; key: string; val: string; views: number }[]> {
+  const rows = await q<{ val: string; views: string }>(
+    `select val, sum(views) as views from analytics_daily
+      where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
+        and game = $3 and dim = 'evprop'
+      group by 1 order by views desc limit 120`,
+    [qy.from, qy.to, qy.game || '*'],
+  );
+  return rows.map((r) => ({ ...splitEvprop(r.val), views: Number(r.views) }));
+}
+
+/** where this database's own traffic begins — the dashboard states it beside the imported span */
+async function firstOwnDay(): Promise<string | null> {
+  const rows = await q<{ d: Date | string | null }>(
+    `select least((select min(day) from analytics_daily where dim = 'total'),
+                  (select min((at at time zone 'UTC')::date) from analytics_pageviews)) as d`,
+  );
+  const d = rows[0]?.d;
+  return d ? new Date(d).toISOString().slice(0, 10) : null;
+}
+
+/**
+ * THE IMPORTED HISTORY over a range, all games (the source never knew one). Days, not instants:
+ * the source's days are UTC, and so are ours.
+ */
+async function importedReport(from: Date, to: Date): Promise<ImportedReport | null> {
+  const span = await q<{ source: string; first: Date | string; last: Date | string }>(
+    `select source, min(day) as first, max(day) as last from analytics_imported
+      where dim = 'total' group by source order by min(day) limit 1`,
+  );
+  if (!span[0]) return null;
+  const source = span[0].source;
+  const day = (d: Date | string): string => new Date(d).toISOString().slice(0, 10);
+  // `to` is exclusive, so the last day is the one holding the instant just before it
+  const params = [source, day(from), day(new Date(to.getTime() - 1))];
+  const inRange = `source = $1 and day >= $2::date and day <= $3::date`;
+  const [series, breakdowns, events, props] = await Promise.all([
+    q<{ t: Date | string; views: string; visitors: string }>(
+      `select day as t, views, visitors from analytics_imported where ${inRange} and dim = 'total' order by day`,
+      params,
+    ),
+    q<{ dim: string; val: string; views: string; visitors: string }>(
+      `select dim, val, sum(views) as views, sum(visitors) as visitors from analytics_imported
+        where ${inRange} and dim not in ('total', 'event', 'evprop')
+        group by dim, val order by dim, views desc`,
+      params,
+    ),
+    q<{ name: string; views: string; visitors: string }>(
+      `select val as name, sum(views) as views, sum(visitors) as visitors from analytics_imported
+        where ${inRange} and dim = 'event' group by 1 order by views desc limit 30`,
+      params,
+    ),
+    q<{ val: string; views: string }>(
+      `select val, sum(views) as views from analytics_imported
+        where ${inRange} and dim = 'evprop' group by 1 order by views desc limit 120`,
+      params,
+    ),
+  ]);
+  const seen = new Map<string, number>();
+  const rows: BreakdownRow[] = [];
+  for (const r of breakdowns) {
+    const n = seen.get(r.dim) ?? 0;
+    if (n >= TOP_N) continue;
+    seen.set(r.dim, n + 1);
+    rows.push({ dim: r.dim, val: r.val ?? '', views: Number(r.views), visitors: Number(r.visitors) });
+  }
+  const s = series.map((r) => ({ t: new Date(r.t).toISOString(), views: Number(r.views), visitors: Number(r.visitors) }));
+  return {
+    source,
+    firstDay: day(span[0].first),
+    lastDay: day(span[0].last),
+    totals: { views: s.reduce((a, r) => a + r.views, 0), visitors: s.reduce((a, r) => a + r.visitors, 0) },
+    series: s,
+    breakdowns: rows,
+    events: events.map((r) => ({ name: r.name, views: Number(r.views), visitors: Number(r.visitors) })),
+    eventProps: props.map((r) => ({ ...splitEvprop(r.val), views: Number(r.views) })),
+  };
 }
 
 async function rawSeries(qy: RangeQuery): Promise<{ t: string; views: number; visitors: number }[]> {
@@ -1014,7 +1158,7 @@ async function aggBreakdowns(qy: RangeQuery): Promise<BreakdownRow[]> {
     `select dim, val, sum(views) as views, sum(visitors) as visitors
        from analytics_daily
       where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
-        and game = $3 and dim not in ('total', 'event')
+        and game = $3 and dim not in ('total', 'event', 'evprop')
       group by dim, val order by dim, views desc`,
     [qy.from, qy.to, qy.game || '*'],
   );
@@ -1058,7 +1202,7 @@ async function rawEventProps(qy: RangeQuery): Promise<{ name: string; key: strin
     `select name, p.key, p.value as val, count(*) as views
        from analytics_events e, lateral jsonb_each_text(e.props) p
       where e.at >= $1 and e.at < $2 ${where}
-      group by 1, 2, 3 order by views desc limit 60`,
+      group by 1, 2, 3 order by views desc limit 120`,
     params,
   );
   return rows.map((r) => ({ name: r.name, key: r.key, val: r.val, views: Number(r.views) }));

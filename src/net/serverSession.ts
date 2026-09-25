@@ -3,6 +3,7 @@ import type { RobotSetup } from '../sim/spawn';
 import type { MatchResultInfo, NetSession, NetStatus, RematchVote, Snapshot } from './session';
 import type { Transport } from './transport';
 import { setServerNotice } from './notice';
+import { applyPushedStatus } from './siteStatus';
 import { regionLabel, isKnownRegion, selectedServer } from './env';
 import {
   CLIENT_CAPS,
@@ -541,6 +542,8 @@ export class ServerSession implements NetSession {
       this.recordResult = m.info;
     } else if (m.t === 'serverNotice') {
       setServerNotice(m.message ? { kind: m.kind, message: m.message, until: m.until } : null);
+    } else if (m.t === 'siteStatus') {
+      applyPushedStatus(m.lockdown ?? null, m.banners ?? []);
     } else if (m.t === 'matchStart') {
       // a host restart: adopt the new seed/setups/game and rebuild
       this.seed = m.seed;
