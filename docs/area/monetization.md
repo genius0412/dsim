@@ -118,10 +118,8 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
     `--write`; replaces the file's days, so re-runs are safe). Paths go through `normalizePath`
     on import. The dashboard shows it as its own section: the two sources overlap by days and
     count differently (ours honours DNT/GPC), so summing them would be wrong on the overlap.
-  - ⚠️ **`LEGAL_UPDATED` HAS NOT BEEN MOVED.** The policy describes this already; the date is
-    to move in the deploy that sets `VITE_ANALYTICS=1`, because moving it asks every signed-in
-    account to accept the terms again. Removing Vercel's count (a processor dropped, nothing
-    added) did not move it either.
+  - **`LEGAL_UPDATED` moved to September 25, 2026** (owner) for first-party analytics, the host's
+    count removed and browser DNT/GPC no longer gating it: every signed-in account accepts once.
 - Analytics events (`src/analytics.ts`, `VITE_ANALYTICS=1`, cookieless, one sink: our own).
   **Rule: no identifiers in any event payload** — counts and enums only.
   It has an **OFF SWITCH**, `src/analyticsPref.ts`, read by `trackEvent` on EVERY call

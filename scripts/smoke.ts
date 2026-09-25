@@ -23211,7 +23211,7 @@ const dumperSetup = (): RobotSetup => {
   /* ---- the terms gate ------------------------------------------------------ */
   check(
     'terms gate: LEGAL_VERSION is the ISO form of LEGAL_UPDATED',
-    LEGAL_VERSION === '2026-08-04',
+    LEGAL_VERSION === '2026-09-25',
     LEGAL_UPDATED + ' -> ' + LEGAL_VERSION,
   );
   check(

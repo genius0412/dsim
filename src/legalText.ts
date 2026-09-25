@@ -27,15 +27,12 @@
 /**
  * Last substantive revision — shown on both pages.
  *
- * ⚠️ **PENDING: MOVE THIS IN THE DEPLOY THAT TURNS FIRST-PARTY ANALYTICS ON.** The policy
- * below now describes DSIM's own cookieless measurement (`server/analytics.ts`), which is a
- * new category of processing and therefore a material change. It is deliberately NOT moved
- * here yet, because the feature is dark until `VITE_ANALYTICS=1` reaches a Vercel project and
- * the server half is deployed — and moving this date asks EVERY signed-in account to accept
- * the terms again, once, which is a product event and not a side effect of writing the prose.
- * Move it with the flag, in the same deploy, not before and not after.
+ * September 25, 2026 (owner): first-party analytics, the host's count removed, browser Do Not
+ * Track / GPC no longer gating that analytics, and the site-lockdown and tester-group text.
+ * Moving this asks EVERY signed-in account to accept the terms again, once — move it for a
+ * material change, never for a typo.
  */
-export const LEGAL_UPDATED = 'August 4, 2026';
+export const LEGAL_UPDATED = 'September 25, 2026';
 
 /**
  * THE SAME REVISION, AS A SORTABLE KEY — what an acceptance is recorded against.
