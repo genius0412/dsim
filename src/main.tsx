@@ -11,9 +11,6 @@ import { initPhysics } from './sim/physicsEngine';
 import { initTheme } from './theme';
 import { AdsProvider } from './ads/AdsProvider';
 import { loadCmp } from './ads/adsense';
-import { Analytics } from '@vercel/analytics/react';
-import { analyticsEnabled } from './analytics';
-import { analyticsAllowed } from './analyticsPref';
 import { adoptLanFromOrigin } from './net/lanAdopt';
 import { CHUNK_RELOAD_KEY } from './storageKeys';
 // Self-hosted (not a CDN <link>): the Electron build runs from file:// with
@@ -114,27 +111,8 @@ function Root() {
       ) : null}
       {/* the site status poll runs on BOTH sides of the gate: it is what reopens a closed screen */}
       <NoticePoller />
-      {/* Cookieless page views. Gated on VITE_ANALYTICS so a self-hosted or
-          Electron build never beacons a host it does not run on.
-
-          ⚠️ `beforeSend` IS WHAT MAKES THE OPT-OUT TRUE. This component sends its own page
-          views; they do not go through `trackEvent`, so guarding only that function left the
-          privacy page's switch claiming "stops every beacon" while the pageview beacon carried
-          on — which is the kind of false statement a privacy control must not make. `beforeSend`
-          is consulted per send, so `analyticsAllowed()` is read fresh and the switch takes
-          effect with no reload, exactly as it does for events. Returning null drops the beacon
-          before it leaves the page.
-
-          ⚠️ IT ALSO STRIPS THE QUERY STRING. A password-reset or email-verification link
-          arrives as `/account/reset?token=…`, and the first pageview fires on that URL — so
-          without this the one-time token leaves the device inside an analytics beacon. Nothing
-          this app measures is keyed on a query parameter, so there is no route detail to lose:
-          the path alone is the page. */}
-      {analyticsEnabled() && (
-        <Analytics
-          beforeSend={(e) => (analyticsAllowed() ? { ...e, url: e.url.split('?')[0] } : null)}
-        />
-      )}
+      {/* Page views are sent by `trackPageview` (`src/pageviews.ts`) from App's route effect,
+          which applies the opt-out and strips the query string itself. */}
     </StrictMode>
   );
 }

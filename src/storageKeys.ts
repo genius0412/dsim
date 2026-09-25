@@ -42,7 +42,7 @@ export type StorageKind = 'local' | 'session';
  *  - `analytics`  — measurement of how the app is used.
  *
  * ⚠️ NOTHING IS IN `analytics`, AND THAT IS A FACT WORTH STATING rather than a gap in the
- * list. DSIM's analytics (Vercel Web Analytics) is cookieless and writes nothing to this
+ * list. DSIM's analytics (`server/analytics.ts`) is cookieless and writes nothing to this
  * device; `ANALYTICS_KEY` below is its OFF SWITCH, which is a preference. The category stays
  * in the type because the honest answer to "which of these are analytics" is "none", and a
  * type unable to express the question could not answer it either.

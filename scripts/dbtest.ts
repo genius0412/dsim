@@ -3172,6 +3172,111 @@ async function main(): Promise<void> {
       );
     }
 
+    // ---- events outlive the raw tier, properties included --------------------------------
+    // The sponsor report is read by placement, a month after the fact. Before the `evprop` rows,
+    // a range past 30 days had event names from nowhere and properties from nowhere.
+    check(
+      'analytics/rollup: event PROPERTIES are rolled up too, as name|key|value',
+      (await daily('*', 'evprop', 'support_view|placement|footer'))?.views === 1,
+    );
+    {
+      await db.query(
+        `insert into analytics_daily (day, game, dim, val, views, visitors)
+         values ('2025-01-10', '*', 'event', 'sponsor_click', 3, 2), ('2025-01-10', '*', 'evprop', 'sponsor_click|placement|game', 3, 2)`,
+      );
+      const old = await an.analyticsReport({ from: new Date('2025-01-01'), to: new Date('2025-02-01'), game: '*', filters: [], grain: 'day' });
+      check(
+        '⚠️ analytics/report: a range past the raw tier reads events AND their properties off the rollups',
+        old.events[0]?.name === 'sponsor_click' && old.events[0].views === 3 &&
+          old.eventProps.some((p) => p.name === 'sponsor_click' && p.key === 'placement' && p.val === 'game' && p.views === 3),
+      );
+      check('analytics/report: property rows never show up as a breakdown panel', !old.breakdowns.some((b) => b.dim === 'evprop'));
+      check('analytics/report: it says where its own traffic history starts', old.historyStart === '2026-09-10', String(old.historyStart));
+      check('analytics/report: no import yet means no imported section', old.imported === null);
+      await db.query(`delete from analytics_daily where day = '2025-01-10'`);
+    }
+
+    // ---- history imported from Vercel Web Analytics (0053) ---------------------------------
+    {
+      const { vercelImportRows } = await import('../server/analyticsImport');
+      const { replaceImportedAnalytics } = await import('../server/db/repo');
+      const v = (day: string, value: string | null, pageviews: number, visitors: number) => ({ day, value, pageviews, visitors });
+      const file = {
+        source: 'vercel' as const,
+        environment: 'production',
+        firstDay: '2026-09-13',
+        lastDay: '2026-09-14',
+        visits: {
+          total: [
+            { day: '2026-09-12', pageviews: 0, visitors: 0 },
+            { day: '2026-09-13', pageviews: 100, visitors: 10 },
+            { day: '2026-09-14', pageviews: 50, visitors: 5 },
+          ],
+          by: {
+            requestPath: [
+              v('2026-09-13', '/decode/profile/alice', 3, 1),
+              v('2026-09-13', '/decode/profile/bob', 2, 1),
+              v('2026-09-13', '/decode/records?token=secret', 5, 2),
+            ],
+            route: [v('2026-09-13', null, 100, 10)],
+            referrerHostname: [v('2026-09-13', null, 90, 9), v('2026-09-13', 'www.google.com', 10, 1)],
+            osName: [v('2026-09-13', 'Mac', 40, 4)],
+            browserName: [v('2026-09-13', 'Microsoft Edge', 20, 2), v('2026-09-13', 'Others', 5, 1)],
+          },
+        },
+        events: {
+          byName: [{ day: '2026-09-13', name: 'sponsor_click', count: 4, visitors: 3 }],
+          byProp: [
+            { day: '2026-09-13', name: 'sponsor_click', key: 'placement', value: 'game', count: 4, visitors: 3 },
+            { day: '2026-09-13', name: 'sponsor_shown', key: 'format', value: '', count: 9, visitors: 9 },
+          ],
+        },
+      };
+      const rows = vercelImportRows(file);
+      check(
+        '⚠️ analytics/import: paths are scrubbed like the live beacon, so no username or token lands in the table',
+        !rows.some((r) => /alice|bob|token|secret/.test(r.val)) && rows.find((r) => r.dim === 'path' && r.val === '/decode/profile/:name')?.views === 5,
+      );
+      check(
+        'analytics/import: the host’s spellings map onto ours, and a direct visit stays a blank referrer',
+        rows.some((r) => r.dim === 'os' && r.val === 'macOS') && rows.some((r) => r.dim === 'browser' && r.val === 'Edge') &&
+          rows.some((r) => r.dim === 'ref' && r.val === 'google.com') && rows.some((r) => r.dim === 'ref' && r.val === ''),
+      );
+      check(
+        'analytics/import: empty days, route rows and absent property values are left out',
+        !rows.some((r) => r.day === '2026-09-12') && !rows.some((r) => r.dim === 'route') && !rows.some((r) => r.val.startsWith('sponsor_shown|')),
+      );
+      const count = async (): Promise<number> =>
+        Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported`)).rows[0].n);
+      const first = await replaceImportedAnalytics('vercel', rows);
+      const second = await replaceImportedAnalytics('vercel', rows);
+      check(
+        '⚠️ analytics/import: idempotent, a second run replaces the days instead of adding to them',
+        first.inserted === rows.length && second.deleted === rows.length && (await count()) === rows.length,
+        `inserted=${first.inserted} deleted=${second.deleted} rows=${await count()}`,
+      );
+      await replaceImportedAnalytics('vercel', rows.filter((r) => r.day === '2026-09-14'));
+      check(
+        'analytics/import: a narrower re-import replaces only the days it covers',
+        Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported where day = '2026-09-13'`)).rows[0].n) > 0,
+      );
+      const rep = await an.analyticsReport({ from: new Date('2026-09-13T00:00:00Z'), to: new Date('2026-09-15T00:00:00Z'), game: '*', filters: [], grain: 'day' });
+      const imp = rep.imported;
+      check(
+        'analytics/import: the report carries the imported span and its totals',
+        imp?.source === 'vercel' && imp.firstDay === '2026-09-13' && imp.lastDay === '2026-09-14' && imp.totals.views === 150 && imp.series.length === 2,
+        JSON.stringify(imp && { ...imp, breakdowns: undefined }),
+      );
+      check(
+        'analytics/import: ...its breakdowns, events and event properties',
+        !!imp?.breakdowns.some((b) => b.dim === 'path' && b.val === '/decode/profile/:name') &&
+          imp.events[0]?.name === 'sponsor_click' && imp.eventProps[0]?.key === 'placement' && imp.eventProps[0]?.val === 'game',
+      );
+      check('⚠️ analytics/import: never added into the first-party totals', rep.totals.views === 0);
+      const oneDay = await an.analyticsReport({ from: new Date('2026-09-13T00:00:00Z'), to: new Date('2026-09-14T00:00:00Z'), game: '*', filters: [], grain: 'day' });
+      check('analytics/import: the range end is exclusive, as it is for live data', oneDay.imported?.series.length === 1);
+    }
+
     // ---- retention, which is where the privacy promise is either kept or not ---------------
     await db.query(`insert into analytics_pageviews (at, visitor, path) values (now() - interval '45 days', 'old0000000000001', '/old')`);
     await db.query(`insert into analytics_salt (day, salt) values ((now() at time zone 'UTC')::date - 9, 'ancient')`);

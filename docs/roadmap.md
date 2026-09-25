@@ -183,7 +183,7 @@ Sizes are working days for one agent; "exists" cites what the survey found so no
 
 - **Exists.** Google Funding Choices CMP for ad consent (`loadCmp`, `showConsentSettings`), the
   footer "Privacy & cookie settings" link that hides itself when the CMP offers no revocation
-  entry, `/privacy` and `/terms` from `legalText.ts`, cookieless Vercel analytics (counts only),
+  entry, `/privacy` and `/terms` from `legalText.ts`, cookieless Vercel analytics (counts only; removed Sept 2026 for first-party analytics),
   `ads.txt` generated at build; DSIM sets no cookies of its own; 15 `decodesim.*` localStorage
   keys of which the privacy text lists a subset; no in-app data export; account deletion
   described in the text (the server cascade exists and is dbtested).

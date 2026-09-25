@@ -238,6 +238,8 @@ week is a sum of daily counts rather than a count of people.
 **How long it is kept.** The individual page-view records are deleted after 30 days.
 What outlives them is totals — how many views a page had on a given day, how many
 visitors came from a given country — with nothing in them that refers to a visit.
+Until September 2026 our website host also counted visits for us, cookieless; that count
+is switched off, and only its daily totals of the same kind were kept.
 
 **Turning it off.** A switch under “Your data” below stops every beacon from this
 browser the moment you set it. We also honour your browser's own **Do Not Track** and
@@ -354,8 +356,7 @@ We use a small number of infrastructure providers, each acting on our behalf:
 - **Fly.io**: the multiplayer game servers, which is also where the usage measurement
   above is counted. It is our own software on our own servers; no analytics company
   receives it.
-- **Vercel**: hosting for the website, and a second, cookieless usage count of the
-  same kind, used for the presenting sponsor’s monthly figures.
+- **Vercel**: hosting for the website.
 - **Google AdSense**, and **Google Funding Choices** as the consent tool: advertising
   on the web version.
 - **Ko-fi** and **PayPal**: payments.

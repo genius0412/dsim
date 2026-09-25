@@ -7281,3 +7281,50 @@ export async function adminUserDetail(userId: string): Promise<AdminUserDetail> 
     audit: audit.rows,
   };
 }
+
+
+// ---------------------------------------------------------------------------
+// Analytics history imported from Vercel Web Analytics (migration 0053)
+// ---------------------------------------------------------------------------
+
+/**
+ * REPLACE one source's imported history over the days the rows cover, in one transaction.
+ * Idempotent: running the same file twice leaves the same table, and a fresher export of an
+ * overlapping range replaces the old days rather than adding to them (the host's "Others" row
+ * shifts as its top 100 changes, so an upsert alone would leave stale values behind).
+ * Rows come from `vercelImportRows` (`server/analyticsImport.ts`).
+ */
+export async function replaceImportedAnalytics(
+  source: string,
+  rows: { day: string; dim: string; val: string; views: number; visitors: number }[],
+): Promise<{ deleted: number; inserted: number; firstDay: string | null; lastDay: string | null }> {
+  if (rows.length === 0) return { deleted: 0, inserted: 0, firstDay: null, lastDay: null };
+  const days = rows.map((r) => r.day).sort();
+  const firstDay = days[0];
+  const lastDay = days[days.length - 1];
+  return tx(async (query) => {
+    const gone = await query<{ n: string }>(
+      `with d as (delete from analytics_imported where source = $1 and day >= $2::date and day <= $3::date returning 1)
+       select count(*) as n from d`,
+      [source, firstDay, lastDay],
+    );
+    // 1000 rows a statement keeps each parameter array small; a month of history is a few thousand.
+    for (let i = 0; i < rows.length; i += 1000) {
+      const chunk = rows.slice(i, i + 1000);
+      await query(
+        `insert into analytics_imported (source, day, dim, val, views, visitors)
+         select $1, d::date, m, v, n, u
+           from unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::int[]) as t(d, m, v, n, u)`,
+        [
+          source,
+          chunk.map((r) => r.day),
+          chunk.map((r) => r.dim),
+          chunk.map((r) => r.val),
+          chunk.map((r) => Math.round(r.views)),
+          chunk.map((r) => Math.round(r.visitors)),
+        ],
+      );
+    }
+    return { deleted: Number(gone[0]?.n ?? 0), inserted: rows.length, firstDay, lastDay };
+  });
+}
