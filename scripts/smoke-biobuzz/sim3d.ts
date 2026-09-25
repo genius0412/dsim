@@ -164,6 +164,12 @@ function hiveWorldPoint(
   return { x: hivePivotX(alliance) + x, y, z: BB3_HIVE_PIVOT_Z + z };
 }
 
+/** an archetype build: the named intake on the named mount, no launcher or lift */
+const bbArchSpec = (kind: 'sweeper' | 'siderollers' | 'ramp', mount: 'front' | 'back' | 'side' | 'frontback' = 'front'): Partial<RobotSpec> => ({
+  intakeMount: mount,
+  bbMech: { launcher: null, lift: null, intake: { kind } } as unknown as RobotSpec['bbMech'],
+});
+
 export function sim3dChecks(check: Check): void {
   // ---- seam: physics tag + dispatch ------------------------------------------------------
   {
@@ -3561,10 +3567,7 @@ export function sim3dChecks(check: Check): void {
   // both predictors — see that function's own header for the geometry and
   // `docs/area/biobuzz.md`'s rewritten bullet for the summary.
   // =============================================================================================
-  const bbArchSpec = (kind: 'sweeper' | 'siderollers' | 'ramp', mount: 'front' | 'back' | 'side' | 'frontback' = 'front'): Partial<RobotSpec> => ({
-    intakeMount: mount,
-    bbMech: { launcher: null, lift: null, intake: { kind } } as unknown as RobotSpec['bbMech'],
-  });
+  // (`bbArchSpec`, module scope: the PERF lane's archetype fixture builds with it too)
 
   // (a) A side-roller robot driven into a wall stops with the WHEEL BOXES' faces on the wall —
   // frame + `bbIntakeReach` + `BB_SIDE_ROLLER_OUT` + `BB_SIDE_ROLLER_R` off — and a `sweeper`
@@ -4422,7 +4425,13 @@ export function sim3dChecks(check: Check): void {
     );
     disposeEngineFor(w);
   }
+}
 
+/**
+ * The absolute step budgets, run in the PERF lane (`index.ts`), which `npm test` runs on its own
+ * after every other shard: a budget in milliseconds says what the step costs on an idle machine.
+ */
+export function sim3dPerfChecks(check: Check): void {
   // ---- perf: 2v2 (4 robots), median/p95 step3d cost ----------------------------------------
   {
     const w = createBiobuzzWorld(

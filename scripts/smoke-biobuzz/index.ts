@@ -4,11 +4,11 @@ import { fieldChecks, roomChecks } from './field';
 import { rulesChecks } from './rules';
 import { robotChecks } from './robot';
 import { coreChecks } from './core';
-import { sim3dChecks } from './sim3d';
+import { sim3dChecks, sim3dPerfChecks } from './sim3d';
 import { hive3dChecks } from './hive3d';
 import { flower3dChecks } from './flower3d';
-import { predictChecks } from './predict';
-import { aiChecks } from './ai';
+import { predictChecks, predictPerfChecks } from './predict';
+import { aiChecks, aiPerfChecks } from './ai';
 import { aiPlayChecks } from './aiplay';
 import { sponsorChecks } from './sponsor';
 import { renderChecks } from './render';
@@ -95,6 +95,21 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   // lane because a TUTORIAL failure and a PHYSICS failure are different mornings, and because it
   // is the only lane that drives a staged world to a goal rather than asserting a number.
   { name: 'TUTORIAL', fn: tutorialChecks },
+  // EVERY ABSOLUTE WALL-CLOCK BUDGET ("this costs <= N ms"), and nothing else. A budget is a claim
+  // about what the work costs on an idle machine, so `bbshard.mjs` never packs this lane beside
+  // another: it runs alone after the other shards, and under `npm test` after the shared suite
+  // too. Beside 17 other test processes the FULL reconcile read 9-11 ms against 8 on nearly every
+  // run while costing 4.0 ms alone (2026-09-25). A check that compares two measurements taken in
+  // the same moment (the paired ratios in FIELD and SERVER) is load-proof and stays in its lane.
+  // Keep it LAST, so a serial `npm run test:bb` also runs it after everything else.
+  {
+    name: 'PERF',
+    fn: (c) => {
+      predictPerfChecks(c);
+      aiPerfChecks(c);
+      sim3dPerfChecks(c);
+    },
+  },
 ];
 
 const KNOWN_FLAGS = ['--lane', '--grep', '--list', '--help'];
