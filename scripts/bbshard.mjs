@@ -24,6 +24,8 @@
  * read 9-11 ms against its 8 ms budget on nearly every `npm test`, and costs 4.0 ms alone.
  * `--gate` holds them until STDIN CLOSES, which is how `test-all.mjs` makes them wait for the
  * shared suite as well; it is for that caller, and on a terminal it waits for Ctrl-D/Ctrl-Z.
+ * Load from outside this run (another worktree's tests) is the lane's own business: it re-runs
+ * after a pause when a budget fails (`perfLane`, `index.ts`).
  *
  * Zero dependencies; children are spawned through `process.execPath` with tsx's own cli, the way
  * `smokeshard.mjs` and `test-all.mjs` do it (no shell, no `.cmd` shim, no quoting).

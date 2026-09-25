@@ -102,15 +102,38 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   // run while costing 4.0 ms alone (2026-09-25). A check that compares two measurements taken in
   // the same moment (the paired ratios in FIELD and SERVER) is load-proof and stays in its lane.
   // Keep it LAST, so a serial `npm run test:bb` also runs it after everything else.
-  {
-    name: 'PERF',
-    fn: (c) => {
-      predictPerfChecks(c);
-      aiPerfChecks(c);
-      sim3dPerfChecks(c);
-    },
-  },
+  { name: 'PERF', fn: perfLane },
 ];
+
+/**
+ * THE PERF LANE, RE-RUN WHILE THE BOX IS BUSY WITH SOMETHING ELSE. Running alone keeps this
+ * suite's own load off the budgets, but not another worktree's `npm test`, which on this box is
+ * routine: with one running, the bot-driven p95 read 1.85 ms against 1.5 (0.77 alone) while the
+ * FULL reconcile, already best of 30, held. So if any check fails, the whole lane runs again after
+ * a pause, up to `PERF_WAITS_S.length + 1` times (~35 s at most), and the first attempt in which
+ * EVERY check held is the one reported. Each attempt is the same deterministic work, so this is
+ * the minimum over time, like the best-of-30 inside an attempt: a slower build fails every attempt
+ * and still goes red, only later. The final attempt is reported as-is when none passes.
+ */
+const PERF_WAITS_S = [5, 10, 20];
+function perfLane(check: Check): void {
+  for (let attempt = 1; ; attempt++) {
+    const seen: [string, boolean, string | undefined][] = [];
+    const record: Check = (name, ok, detail) => void seen.push([name, ok, detail]);
+    predictPerfChecks(record);
+    aiPerfChecks(record);
+    sim3dPerfChecks(record);
+    const over = seen.filter(([, ok]) => !ok).map(([name]) => name);
+    const wait = PERF_WAITS_S[attempt - 1];
+    if (over.length === 0 || wait === undefined) {
+      const tag = attempt > 1 ? ` [attempt ${attempt}]` : '';
+      for (const [name, ok, detail] of seen) check(name, ok, `${detail ?? ''}${tag}`);
+      return;
+    }
+    console.log(`[smoke-bb perf] attempt ${attempt} over budget (${over.join(' · ')}); retrying in ${wait}s`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait * 1000);
+  }
+}
 
 const KNOWN_FLAGS = ['--lane', '--grep', '--list', '--help'];
 

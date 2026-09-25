@@ -1,3 +1,18 @@
+# HANDOFF — 2026-09-25i (BIOBUZZ timing checks no longer fail under `npm test`)
+
+**State: pushed on `alpha`.** `npm test` passed on every full run after the change (5134 BIOBUZZ checks, shared PASS), including runs beside another worktree's `npm test`. `build` and `docaudit` pass. Test tooling only (plus one comment in `flowerTube.ts`), no sim change, no deploy needed.
+
+- **Bug:** `FULL reconciles 40 ticks inside PREDICT_FULL_BUDGET_MS` read 9–11 ms against 8 on nearly every full run (4.0 ms alone). `bot-driven 2v2 step3d p95` failed now and then for the same reason.
+- **Cause:** 18 test processes on 16 physical cores make every core slower, so taking more readings does not help. Best of 30 still read 6.3–7.4 ms in-suite. `process.cpuUsage()` on Windows moves in 15.6 ms steps, so CPU time is no use either.
+- **Fix, three layers:**
+  - New `PERF` lane (last in `index.ts`) holds every absolute-ms check: `predictPerfChecks`, `aiPerfChecks`, `sim3dPerfChecks`, exported from their lane files. `bbshard.mjs` never packs it (`SOLO`), runs it alone after its shards, and with `--gate` waits for `test-all.mjs` to close its stdin when the shared suite exits.
+  - Predict budgets are best of 30 `performance.now()` readings (were best of 5 on `Date.now()`).
+  - Another worktree's `npm test` still slows it (p95 1.85 ms seen), so `perfLane` re-runs the lane after 5/10/20 s when a check fails and reports the first attempt where all held.
+  - Thresholds and check count unchanged.
+- **After:** FULL ~3.9 ms, p95 ~0.77 ms in-suite; green wall 33–38 s (unchanged). A temporary slowdown to 9.0 ms failed all four attempts; a red PERF lane now costs ~50 s extra.
+- **Rule** (in `docs/area/biobuzz.md`): a new check against a number of milliseconds goes in the PERF lane. Paired ratios stay in their lanes.
+- The earlier sections' "known flake: PREDICT_FULL_BUDGET_MS" notes are superseded by this one.
+
 # HANDOFF — 2026-09-25h (Vercel history folded into the Analytics tab)
 
 **State: committed on branch `analytics-combined-history` (off alpha 43c3c1e5), NOT pushed, NOT deployed.** `build`, `server:check`, `dbtest` (ALL PASS, 29 new `analytics/combine:` checks), `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass. `npm test`: shared PASS; BIOBUZZ only the `PREDICT_FULL_BUDGET_MS` wall-clock flake, `--lane PREDICT` passes alone. ⚠️ **Server change** (no migration): the combined read is in `server/analytics.ts`.
