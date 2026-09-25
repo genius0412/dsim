@@ -6534,6 +6534,32 @@ a.ds-cta {
   flex-wrap: wrap;
   gap: var(--ds-s-2);
 }
+/* the command list under the Autonomous section: names in mono, one plain line each */
+.ds-auto-cmds summary {
+  cursor: pointer;
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  color: var(--ds-mut);
+}
+.ds-auto-cmds dl {
+  display: grid;
+  gap: var(--ds-s-2);
+  margin: var(--ds-s-2) 0 0;
+}
+.ds-auto-cmds dl > div {
+  display: grid;
+  grid-template-columns: 112px 1fr;
+  gap: var(--ds-s-3);
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-heading);
+}
+.ds-auto-cmds dt {
+  margin: 0;
+}
+.ds-auto-cmds dd {
+  margin: 0;
+  color: var(--ds-ink);
+}
 .ds-startpos-where.stand {
   color: var(--ds-accent);
   border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));

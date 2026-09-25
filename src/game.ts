@@ -1117,8 +1117,7 @@ export class GameController {
         assists: s.assists,
         startIndex: s.startIndex,
         startPose: s.startPose ?? undefined,
-        autoPath: s.autoPath ?? undefined,
-        autoPathEnabled: s.autoPathEnabled,
+        // no `.pp` path: that import is gone (owner, 2026-09-25). Autos are Zenith files, below.
       },
     ];
     // THE ZENITH AUTO seats the robot where the file starts, which is what a team does at the

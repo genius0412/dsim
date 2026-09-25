@@ -131,7 +131,7 @@ export function biobuzzZenithRobot(spec: RobotSpec): unknown {
     commands: [
       {
         name: 'shootAll',
-        summary: 'Holds FIRE until count pollen have left the hopper, or it is empty, then settles 250 ms. On the robot: SpinUp, LaunchBurst(count), WaitRobotTime(250).',
+        summary: 'Shoot pollen from the hopper. count: how many (1 to 4). cadence only matters on the real robot.',
         params: {
           count: { type: 'integer', min: 1, max: 4 },
           cadence: { type: 'enum', values: ['rapid', 'precise'], default: 'precise' },
@@ -143,7 +143,7 @@ export function biobuzzZenithRobot(spec: RobotSpec): unknown {
       },
       {
         name: 'setIntake',
-        summary: 'FORWARD runs the intake until a STOP; REVERSE stops it (DSIM has no outtake). side is accepted, and every DSIM build runs as one intake.',
+        summary: 'Turn the intake on or off. state: FORWARD is on, STOP is off. side: FRONT, BACK or BOTH (DSIM runs them together).',
         params: {
           side: { type: 'enum', values: ['FRONT', 'BACK', 'BOTH'], default: 'BOTH' },
           state: { type: 'enum', values: ['STOP', 'FORWARD', 'REVERSE'], default: 'STOP' },
@@ -152,13 +152,13 @@ export function biobuzzZenithRobot(spec: RobotSpec): unknown {
         requires: ['intake'],
         stationary: false,
       },
-      { name: 'launcherIdle', summary: 'Done at once in DSIM.', estimateS: '0', requires: ['launcher'], stationary: false },
-      { name: 'relocalize', summary: 'Done at once in DSIM: its belief is the truth.', estimateS: '0', stationary: false },
-      { name: 'cancelAll', summary: 'Lets go of INTAKE and FIRE.', estimateS: '0', requires: ['intake', 'launcher'], stationary: false },
+      { name: 'launcherIdle', summary: 'Spin the shooter down. Instant in DSIM.', estimateS: '0', requires: ['launcher'], stationary: false },
+      { name: 'relocalize', summary: 'Re-check the robot’s position with the camera. Instant in DSIM.', estimateS: '0', stationary: false },
+      { name: 'cancelAll', summary: 'Stop everything: intake off, stop shooting.', estimateS: '0', requires: ['intake', 'launcher'], stationary: false },
     ],
     conditions: [
-      { name: 'hopperFull', summary: 'The hopper holds as many pollen as this build carries.', ledger: 'full' },
-      { name: 'hopperEmpty', summary: 'The hopper holds nothing.', ledger: 'empty' },
+      { name: 'hopperFull', summary: 'True when the hopper is full.', ledger: 'full' },
+      { name: 'hopperEmpty', summary: 'True when the hopper is empty.', ledger: 'empty' },
     ],
   };
 }

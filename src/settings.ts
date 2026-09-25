@@ -4,13 +4,12 @@ import {
   DEFAULT_SPEC,
   coerceSpec,
   coerceAssists,
-  coerceAutoPath,
   coerceStartPose,
   defaultAssistsFor,
   PLAYER_ASSISTS,
   type RobotSetup,
 } from './sim/spawn';
-import { MAX_SAVED_ROBOTS, MAX_SAVED_AUTOS, MAX_SAVED_STARTS_SUPPORTER } from './config';
+import { MAX_SAVED_ROBOTS, MAX_SAVED_STARTS_SUPPORTER } from './config';
 import { GAME_IDS, isGameId } from './games/types';
 import { simModuleFor } from './games/sim';
 import type { StartSel, StartPose } from './types';
@@ -363,12 +362,9 @@ export function coerceSettings(raw: unknown): GameSettings {
     if (Array.isArray(s.savedRobots)) {
       out.savedRobots = s.savedRobots.slice(0, MAX_SAVED_ROBOTS).map((r) => coerceSpec(r, undefined, out.game));
     }
-    if (Array.isArray(s.savedAutos)) {
-      out.savedAutos = s.savedAutos
-        .map((a) => coerceAutoPath(a))
-        .filter((a): a is NonNullable<typeof a> => a !== null)
-        .slice(0, MAX_SAVED_AUTOS);
-    }
+    // `savedAutos` (the `.pp` library) is NOT read back: that import is gone (owner, 2026-09-25),
+    // so a stored library is dropped here and never reaches a world. Autos are Zenith files now
+    // (`src/auto/library.ts`, device-local).
     if (typeof s.startIndex === 'number') {
       out.startIndex = clamp(Math.round(s.startIndex), 0, startPoseCount(out.game) - 1);
     }
@@ -529,20 +525,8 @@ export function coerceSettings(raw: unknown): GameSettings {
     }
     out.bindings = mergeBindings(s.bindings);
 
-    // Load autoPath and autoPathEnabled (validated + field-clamped by coerceAutoPath)
-    const autoPath = coerceAutoPath(s.autoPath);
-    if (autoPath) {
-      out.autoPath = autoPath;
-      // If autoPathEnabled is not explicitly set or is invalid, enable it if a path is loaded
-      if (typeof s.autoPathEnabled === 'boolean') {
-        out.autoPathEnabled = s.autoPathEnabled;
-      } else {
-        out.autoPathEnabled = true;
-      }
-    } else {
-      out.autoPath = null;
-      out.autoPathEnabled = false;
-    }
+    // `autoPath` / `autoPathEnabled` are not read back either (see `savedAutos` above): the
+    // defaults stand, no path and off.
 
   } catch {
     /* corrupt data — defaults */

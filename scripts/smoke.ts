@@ -7720,6 +7720,12 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
   check('each saved robot is coerced to a legal spec', lib.savedRobots.every((r) => r.driveRpm >= 200 && r.massLb >= 10));
   check('savedAutos drops invalid entries + caps at MAX_SAVED_AUTOS', lib.savedAutos.length === 4, `${lib.savedAutos.length}`);
   check('defaultSettings starts with empty libraries', coerceSettings({}).savedRobots.length === 0 && coerceSettings({}).savedAutos.length === 0);
+  {
+    // the `.pp` import is gone (owner, 2026-09-25): a stored path and library never come back
+    const pp = { fileName: 'old.pp', startPoint: { x: 0, y: 0, heading: 'constant', degrees: 0 }, lines: [] };
+    const back = coerceSettings({ autoPath: pp, autoPathEnabled: true, savedAutos: [pp] } as unknown as Parameters<typeof coerceSettings>[0]);
+    check('a stored .pp auto path and library are dropped by coerceSettings', back.autoPath === null && back.autoPathEnabled === false && back.savedAutos.length === 0);
+  }
 }
 
 // ---- the performance read-out's level ------------------------------------------

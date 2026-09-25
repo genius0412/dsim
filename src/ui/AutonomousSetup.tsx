@@ -78,6 +78,17 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
 
   const running = lib.enabled && !!selected && lib.activeId === selected.id;
 
+  // THE COMMANDS AN AUTO CAN USE on this build: read off the same robot file Zenith is handed, so
+  // the list here and Zenith's insert menu can never disagree
+  const registry = useMemo(() => {
+    if (!adapter) return null;
+    const r = adapter.robot(settings.spec) as {
+      commands?: { name: string; summary?: string }[];
+      conditions?: { name: string; summary?: string }[];
+    };
+    return { commands: r.commands ?? [], conditions: r.conditions ?? [] };
+  }, [adapter, settings.spec]);
+
   async function importFiles(e: ChangeEvent<HTMLInputElement>): Promise<void> {
     const files = Array.from(e.target.files ?? []);
     e.target.value = '';
@@ -286,6 +297,30 @@ export function AutonomousSetup({ settings }: { settings: GameSettings }) {
             <ToggleRow label="Play it in AUTO" value={running} onPick={setRunning} />
           </div>
         </div>
+      )}
+
+      {registry && (
+        <details className="ds-auto-cmds">
+          <summary>Commands your auto can use</summary>
+          <dl>
+            {registry.commands.map((c) => (
+              <div key={c.name}>
+                <dt>
+                  <code>{c.name}</code>
+                </dt>
+                <dd>{c.summary}</dd>
+              </div>
+            ))}
+            {registry.conditions.map((c) => (
+              <div key={c.name}>
+                <dt>
+                  <code>{c.name}</code>
+                </dt>
+                <dd>{c.summary} For waits, branches and ending a path early.</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
       )}
 
       {notice && (

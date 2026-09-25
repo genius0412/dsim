@@ -256,6 +256,12 @@ export interface GameSimModule {
    * `autoPathEnabled` for it (`coerceSetup`) so a path already sitting in localStorage or
    * arriving off the wire never reaches a world, a snapshot or a replay.
    */
+  /*
+   * ⚠️ NOTHING PRODUCES A `.pp` PATH ANY MORE (owner, 2026-09-25): the import is gone from Match
+   * setup, `coerceSettings` drops a stored one, and `makeWorld` never passes one. DECODE keeps
+   * `autoPaths: true` ONLY so a practice replay recorded with a path before then re-simulates
+   * exactly; the traversal is otherwise unreachable, and removing it is a SIM_VERSION decision.
+   */
   autoPaths: boolean;
   /**
    * DOES THIS GAME PLAY ZENITH AUTOS? (docs/area/autos.md)

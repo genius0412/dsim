@@ -1,24 +1,17 @@
-import { useState } from 'react';
 import type {
   GameSettings,
-  AutoPathData,
-  PathLine,
-  SequenceItem,
-  PathPoint,
-  Vec2,
   Alliance,
   PracticeSeat,
   PracticeSeatKind,
   PracticeSeats,
 } from '../types';
-import { MAX_SAVED_AUTOS } from '../config';
 import { StartPositionEditor } from './StartPositionEditor';
 import { savedStartCap } from './startPositions';
 import { useAds } from '../ads/AdsProvider';
 import { selectStart, switchCategory, saveStart, deleteSavedStart } from './startPositions';
 import { ChainStartEditor } from './ChainStartEditor';
 import { moduleFor } from '../games';
-import { OptRow, ToggleRow } from './OptRow';
+import { OptRow } from './OptRow';
 import { practiceSeatsFor } from '../settings';
 import { AutonomousSetup } from './AutonomousSetup';
 
@@ -37,15 +30,18 @@ const COLS = { 2: 'two', 3: 'three', 4: 'four', 5: 'five' } as const;
 
 /**
  * Match configuration — the pre-game options that belong to the MATCH, not the
- * robot: alliance, start position and an imported auto path — and, in a card of its own,
+ * robot: alliance, start position and the autonomous routine — and, in a card of its own,
  * the practice around the match: its physics and the three other robots.
  * These apply to the SOLO/offline modes (Solo Practice, Free Drive, Records);
  * Ranked and Custom assign alliance + start in the lobby / strategy screen.
  *
  * The MATCH section of `Configure`. It used to be a collapsed `<details>` on the
  * homepage; now it has a route of its own (`/configure/match`), so it renders
- * open. Kept separate from the robot loadout builder on purpose. `.pp` import +
- * the Pedro-Pathing → sim coordinate transform live here.
+ * open. Kept separate from the robot loadout builder on purpose.
+ *
+ * ⚠️ THE `.pp` (Pedro Pathing visualizer) IMPORT IS GONE, on purpose (owner, 2026-09-25): a path
+ * with no commands cannot be an auto a team would run on its robot. Autos are Zenith files, which
+ * name the robot's own commands (`AutonomousSetup`).
  */
 export function MatchSetup({
   settings,
@@ -55,121 +51,6 @@ export function MatchSetup({
   onChange: (s: GameSettings) => void;
 }) {
   const set = (patch: Partial<GameSettings>) => onChange({ ...settings, ...patch });
-  /** the outcome of the last .pp import, shown in the auto-path section */
-  const [notice, setNotice] = useState<{ bad: boolean; text: string } | null>(null);
-  function getErrorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-  }
-  /** NOT a toast — CLAUDE.md forbids those, and this is an inline `<p>` under the
-   * auto-path section. Named for what it is so nobody goes looking for a toast system. */
-  function setImportNotice(message: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') {
-    setNotice({ bad: type === 'error' || type === 'warning', text: message });
-  }
-
-  // --- Pedro Pathing (.pp) → sim coordinate transform ---
-  const PP_FIELD_SIZE = 141.5;
-  const PP_CENTER_OFFSET = PP_FIELD_SIZE / 2; // 70.75
-  const SIM_FIELD_SIZE = 144; // From -72 to 72
-  const SCALE_FACTOR = SIM_FIELD_SIZE / PP_FIELD_SIZE;
-
-  function transformPpCoordinate(coord: Vec2): Vec2 {
-    return {
-      x: (coord.x - PP_CENTER_OFFSET) * SCALE_FACTOR,
-      y: (coord.y - PP_CENTER_OFFSET) * SCALE_FACTOR,
-    };
-  }
-  function transformPathPoint(pathPoint: PathPoint): PathPoint {
-    const transformed = transformPpCoordinate(pathPoint);
-    return { ...pathPoint, x: transformed.x, y: transformed.y };
-  }
-
-  function normalizeLines(input: PathLine[] = []): PathLine[] {
-    return (input || []).map((line) => ({
-      ...line,
-      id: line.id || `line-${Math.random().toString(36).slice(2)}`,
-      waitBeforeMs: Math.max(0, Number(line.waitBeforeMs ?? (line as any).waitBefore?.durationMs ?? 0)),
-      waitAfterMs: Math.max(0, Number(line.waitAfterMs ?? (line as any).waitAfter?.durationMs ?? 0)),
-      waitBeforeName: line.waitBeforeName ?? (line as any).waitBefore?.name ?? '',
-      waitAfterName: line.waitAfterName ?? (line as any).waitAfter?.name ?? '',
-      endPoint: transformPathPoint(line.endPoint),
-      controlPoints: line.controlPoints?.map((cp) => transformPpCoordinate(cp)),
-    }));
-  }
-
-  function deriveSequence(data: any, normalizedLines: PathLine[]): SequenceItem[] {
-    if (Array.isArray(data?.sequence) && data.sequence.length) {
-      return data.sequence as SequenceItem[];
-    }
-    return normalizedLines.map((ln) => ({ kind: 'path', lineId: ln.id! }));
-  }
-
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    // clear the LAST import's line first. It was only ever set, never cleared, so a
-    // failed import's red line sat under the section for the rest of the session.
-    setNotice(null);
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (!file.name.endsWith('.pp')) {
-      setImportNotice('Pick a .pp file.', 'error');
-      event.target.value = '';
-      return;
-    }
-    if (settings.savedAutos.length >= MAX_SAVED_AUTOS) {
-      setImportNotice(`You can save up to ${MAX_SAVED_AUTOS} autos. Delete one first.`, 'warning');
-      event.target.value = '';
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const content = e.target?.result as string;
-        const data = JSON.parse(content);
-        if (!data.startPoint || !data.lines) {
-          throw new Error('Invalid file format: missing required fields (startPoint or lines)');
-        }
-        const transformedStartPoint = transformPathPoint(data.startPoint);
-        const normalizedLines = normalizeLines(data.lines || []);
-        const autoPathData: AutoPathData = {
-          fileName: file.name,
-          startPoint: transformedStartPoint,
-          lines: normalizedLines,
-          sequence: deriveSequence(data, normalizedLines),
-          version: data.version,
-          timestamp: data.timestamp,
-        };
-        // add to the library AND select it as the active auto
-        set({
-          savedAutos: [...settings.savedAutos, autoPathData],
-          autoPath: autoPathData,
-          autoPathEnabled: true,
-        });
-        setImportNotice(`Saved ${file.name}.`, 'success');
-      } catch (error) {
-        const errMsg = getErrorMessage(error);
-        const message = errMsg.includes('Invalid file format')
-          ? 'That isn’t a Pedro Pathing file.'
-          : `Couldn’t read that file. ${errMsg}`;
-        setImportNotice(message, 'error');
-      } finally {
-        event.target.value = '';
-      }
-    };
-    reader.onerror = () => {
-      setImportNotice('Couldn’t read that file.', 'error');
-      event.target.value = '';
-    };
-    reader.readAsText(file);
-  };
-
-  // select a saved auto as the active one (a copy stays in the library)
-  const selectAuto = (a: AutoPathData) => set({ autoPath: a, autoPathEnabled: true });
-  const deleteAuto = (i: number) => {
-    const removed = settings.savedAutos[i];
-    const savedAutos = settings.savedAutos.filter((_, j) => j !== i);
-    const wasActive = !!removed && settings.autoPath?.fileName === removed.fileName;
-    set(wasActive ? { savedAutos, autoPath: null, autoPathEnabled: false } : { savedAutos });
-  };
-
   const setAlliance = (alliance: Alliance) => set({ alliance });
   // the start-position editor is built on DECODE's G304 legality + goal geometry —
   // hidden for the Chain Reaction shell (its start rules arrive with its manual).
@@ -179,11 +60,6 @@ export function MatchSetup({
   const StartEd = moduleFor(settings.game).startEditor;
   // the saved-pose cap a game's own editor is handed (it cannot read the ads context itself)
   const maxSaved = savedStartCap(useAds().supporter);
-  // an auto path only DOES something in a game whose step drives path traversal
-  // (`autoPaths`, today DECODE alone). The section used to be shown for every game, so a
-  // CR/BIOBUZZ player could import a `.pp`, see "Auto path ON", and then watch their robot
-  // do nothing for the whole autonomous period. `coerceSetup` drops the path at spawn.
-  const runsAutoPaths = moduleFor(settings.game).autoPaths;
   // BIOBUZZ 3D SEAM (Day 1, `docs/biobuzz/plan-3d.md` §2.1/§6): only a game whose sim can
   // actually step the second physics offers the picker — absent `physicsOptions` (DECODE,
   // Chain Reaction) reads as `['2d']` only, so this never shows for them.
@@ -280,73 +156,6 @@ export function MatchSetup({
 
         {moduleFor(settings.game).zenithAutos && <AutonomousSetup settings={settings} />}
 
-        {runsAutoPaths && (
-        <section className="ds-sec">
-          <h2>
-            Auto path{' '}
-            <span className="ds-count">
-              {settings.savedAutos.length}/{MAX_SAVED_AUTOS}
-            </span>
-          </h2>
-          <div className="ds-opts">
-            {settings.savedAutos.map((a, i) => {
-              const active = settings.autoPath?.fileName === a.fileName;
-              return (
-                // the card and its ✕ are SIBLINGS in a slot — a button nested inside a
-                // button-role card had no clean name and leaked its keypresses to the card
-                <div key={i} className="ds-opt-slot">
-                  <button
-                    className={`ds-opt ${active ? 'on' : ''}`}
-                    aria-pressed={active}
-                    onClick={() => selectAuto(a)}
-                  >
-                    <span className="ot">{a.fileName}</span>
-                    <span className="od">
-                      {a.lines?.length ?? 0} segments
-                    </span>
-                  </button>
-                  <button
-                    className="ds-opt-del"
-                    title="Delete this auto"
-                    aria-label={`Delete ${a.fileName}`}
-                    onClick={() => deleteAuto(i)}
-                  >
-                    ✕
-                  </button>
-                </div>
-              );
-            })}
-            {settings.savedAutos.length < MAX_SAVED_AUTOS && (
-              <label className="ds-opt ds-opt-add">
-                <span className="ot">Import a .pp file</span>
-                <input type="file" accept=".pp" onChange={handleFileChange} style={{ display: 'none' }} />
-              </label>
-            )}
-          </div>
-          {/* THE FILENAME IS THE LABEL. The row used to read "Auto path ON" with the name
-              underneath, so the tile said what its own fill already said and the one thing
-              the off state cannot otherwise tell you was demoted to a sub-line. */}
-          {settings.autoPath && (
-            <ToggleRow
-              label={`Run ${settings.autoPath.fileName}`}
-              value={settings.autoPathEnabled}
-              onPick={(autoPathEnabled) => set({ autoPathEnabled })}
-            />
-          )}
-          {notice && (
-            <p className={notice.bad ? 'ds-form-err' : 'ds-hint'} role="status">
-              {notice.text}
-            </p>
-          )}
-          <p className="ds-hint">
-            Build a <code>.pp</code> path at{' '}
-            <a href="https://visualizer.pedropathing.com" target="_blank" rel="noreferrer">
-              visualizer.pedropathing.com
-            </a>
-            .
-          </p>
-        </section>
-        )}
       </div>
     </section>
 
