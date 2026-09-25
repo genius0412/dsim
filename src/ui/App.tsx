@@ -12,7 +12,7 @@ import {
   type Activity,
   type RoomInvite,
 } from '../net/api';
-import { uploadPracticeRun, uploadLanRun, type LanParticipant } from '../net/api';
+import { uploadPracticeRun, uploadLanRun, reportPlayed, type LanParticipant } from '../net/api';
 import { tabHosting } from '../lan/hosting';
 import { GAME_IDS } from '../games/types';
 import { devRoutesEnabled, gameVisible } from '../seasonVisibility';
@@ -1339,6 +1339,8 @@ export function App() {
     const alliance = replay.setups[0]?.alliance ?? 'blue';
     const score = recordScore(result, alliance);
     savePracticeRun(replay, { ...result, score: { ...result.score, [alliance]: score } });
+    // the homepage's games-played counter, signed in or not (the upload below is account-only)
+    reportPlayed(replay.game ?? 'decode', 'practice');
     // Do not upload THIS run directly — flush the whole backlog instead, which includes it.
     // One path to the server means a run that failed on its own attempt is retried by the
     // next flush rather than being lost, and it is the same code either way.
@@ -1415,6 +1417,8 @@ export function App() {
       drivetrain: su.spec.drivetrain,
     }));
     saveLanRunLocal(info.matchId, info.replay, info.result.score, participants);
+    // the homepage's games-played counter: a LAN server has no database, so its host counts it
+    reportPlayed(info.replay.game ?? 'decode', 'lan', sess.setups.length >= 4 ? '2v2' : '1v1');
     // Same as practice: never upload THIS match directly — drain the backlog, which contains
     // it. One path to the cloud means a failure is retried by the next flush.
     void flushLanRuns();

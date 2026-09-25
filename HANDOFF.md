@@ -1,3 +1,12 @@
+# HANDOFF — 2026-09-25d (homepage counts every game: custom, practice, LAN, Discord)
+
+**State: pushed on `alpha`.** `build`, `server:check`, `dbtest` (ALL PASS, 19 new `plays:` checks), `uiaudit`, `docaudit` pass. `npm test`: shared PASS; BIOBUZZ 3 wall-clock perf checks failed under full load (predict budget, step3d p95), no sim code touched. ⚠️ **Server change + migration 0050**: needs the alpha deploy (and a `main` deploy for production).
+
+- **Owner:** the homepage should count custom games, solo practice, LAN and Discord games, each logged separately and per game; the page folds them into Solo / Duo / 1v1 / 2v2 / Custom.
+- **Before:** the counts came from `records` + `matches`, so anonymous rooms, Discord rooms (signed out), practice and LAN never counted, and custom rooms were inside 1v1/2v2.
+- **Now:** `play_counts` (0050) counts per UTC day × game × source × mode. Server rooms count in `persistMatch` before the anonymous drop (`playSourceOf`; `MatchOutcome.discord` from `Room.group`). Practice (every kept run, signed in or out) and LAN (host only) are reported by the client to the public `POST /api/played` (text/plain, keepalive; 30 per 10 min per hashed address; always 204). The migration backfills from `records`, `matches`, `practice_runs`, `lan_runs`.
+- **Homepage:** two lines under the tiles, Solo · Duo then 1v1 · 2v2 · Custom (owner: the one line was cramped). Solo = record solo + practice, Duo = record duo, 1v1/2v2 = ranked only, Custom = custom + Discord + LAN. `/api/stats` also returns `detail` (the raw split). Custom is hidden against an older server. Rule in `docs/area/accounts.md`.
+- **Expect** 1v1/2v2 to DROP after the deploy (custom rooms moved to Custom) and Solo to rise (practice uploads backfilled).
 # HANDOFF — 2026-09-25c (BIOBUZZ ramp: the self-freeze and the double toggle)
 
 **State: pushed on `alpha`.** `npm test` (shared + 5129 BIOBUZZ), `build`, `server:check`, `docaudit` pass. ⚠️ **Sim change** (`src/games/biobuzz/`), so the game servers run it only after a deploy. Production needs this on `main` plus a Fly deploy.

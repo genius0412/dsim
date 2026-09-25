@@ -2095,6 +2095,105 @@ async function main(): Promise<void> {
     check('stats: clearStatsCache drops it regardless of the clock', cleared.users === usersAtFirst + 2);
   }
 
+  /* ---- games played, counted at the source (0050) -------------------------------------------
+     The homepage reads `play_counts`, not `records`/`matches`, so a match that never writes a
+     row (anonymous, Discord, practice, LAN) still counts. Three things to pin: the migration's
+     backfill agrees with the tables it reads, the fold into the homepage's categories, and that
+     `persistMatch` counts a room nobody signed in to. */
+  {
+    const n = async (sql: string): Promise<number> =>
+      Number((await db.query<{ n: string | number | null }>(sql)).rows[0]?.n ?? 0);
+    const counted = (where: string): Promise<number> =>
+      n(`select coalesce(sum(n), 0) as n from play_counts where ${where}`);
+
+    // the BACKFILL, re-run against a database that now has rows in every source table
+    const mig = readFileSync(join(ROOT, 'server/db/migrations/0050_play_counts.sql'), 'utf8');
+    const backfill = mig.slice(mig.indexOf('insert into play_counts'), mig.indexOf('comment on table'));
+    await db.query(`delete from play_counts`);
+    await db.query(backfill);
+    const recs = await n(`select count(*) as n from records`);
+    const ranked = await n(`select count(*) as n from matches where ranked`);
+    const custom = await n(`select count(*) as n from matches where not ranked`);
+    const practice = await n(`select count(*) as n from practice_runs`);
+    const lan = await n(`select count(*) as n from lan_runs`);
+    check('plays: the test has history to backfill from', recs > 0 && ranked + custom > 0, `records=${recs} matches=${ranked + custom}`);
+    check('plays: backfill — record runs', (await counted(`source = 'record'`)) === recs);
+    check('plays: backfill — ranked matches', (await counted(`source = 'ranked'`)) === ranked);
+    check('plays: backfill — custom rooms', (await counted(`source = 'custom'`)) === custom);
+    check('plays: backfill — practice runs', (await counted(`source = 'practice'`)) === practice);
+    check('plays: backfill — LAN matches', (await counted(`source = 'lan'`)) === lan);
+
+    // the FOLD: one of every source, on a game nothing else here touches
+    repo.clearStatsCache();
+    const before = await repo.getGlobalStats();
+    const plays: [repo.PlaySource, repo.PlayMode][] = [
+      ['record', 'solo'],
+      ['practice', 'solo'],
+      ['record', 'duo'],
+      ['ranked', '1v1'],
+      ['ranked', '2v2'],
+      ['custom', '1v1'],
+      ['discord', '2v2'],
+      ['lan', '1v1'],
+    ];
+    for (const [src, mode] of plays) await repo.countPlay('chain', src, mode);
+    await repo.countPlay('chain', 'practice', 'solo');
+    repo.clearStatsCache();
+    const after = await repo.getGlobalStats();
+    const d = (k: keyof repo.GlobalStats['byCategory']): number => after.byCategory[k] - before.byCategory[k];
+    check('plays: solo = record solo + practice', d('solo') === 3, `+${d('solo')}`);
+    check('plays: duo = record duo', d('duo') === 1, `+${d('duo')}`);
+    check('plays: 1v1 / 2v2 = ranked only', d('1v1') === 1 && d('2v2') === 1, `+${d('1v1')} / +${d('2v2')}`);
+    check('plays: custom = custom + Discord + LAN', d('custom') === 3, `+${d('custom')}`);
+    check('plays: the headline sums every source', after.games - before.games === 9, `+${after.games - before.games}`);
+    check('plays: ...and per game', after.byGame.chain - before.byGame.chain === 9);
+    check(
+      'plays: the raw split keeps each source apart',
+      after.detail.some((r) => r.game === 'chain' && r.source === 'discord' && r.mode === '2v2' && r.n >= 1) &&
+        after.detail.some((r) => r.game === 'chain' && r.source === 'practice' && r.n >= 2),
+    );
+    check(
+      'plays: a repeat increments one row per day, it does not add one',
+      (await n(`select count(*) as n from play_counts where game = 'chain' and source = 'practice'`)) === 1,
+    );
+
+    // persistMatch: classification, and an ANONYMOUS room still counts
+    const { persistMatch, playSourceOf } = await import('../server/persist');
+    const { DEFAULT_SPEC, DEFAULT_ASSISTS } = await import('../src/sim/spawn');
+    const part = (alliance: 'red' | 'blue', userId?: string) => ({
+      clientId: 'c',
+      userId,
+      handle: 'P',
+      alliance,
+      drivetrain: 'tank',
+      score: 0,
+      spec: DEFAULT_SPEC,
+      assists: DEFAULT_ASSISTS,
+    });
+    const outcome = (over: Partial<Parameters<typeof persistMatch>[0]>): Parameters<typeof persistMatch>[0] => ({
+      game: 'decode',
+      config: { kind: 'versus' },
+      ranked: false,
+      result: { score: { red: 0, blue: 0 }, foulPoints: { red: 0, blue: 0 }, hash: 0, ticks: 60 },
+      replay: { format: 2, balanceVersion: 4, sim: 2, game: 'decode', mode: 'match', seed: 1, ticks: 60, setups: [], tracks: {} },
+      participants: [part('red'), part('blue')],
+      ...over,
+    });
+    const src = (o: Parameters<typeof persistMatch>[0]): string => playSourceOf(o).join('/');
+    check('plays: a record duo room is record/duo', src(outcome({ config: { kind: 'record', record: 'duo' } })) === 'record/duo');
+    check('plays: a ranked room is ranked/<its mode>', src(outcome({ ranked: true, mode: '2v2' })) === 'ranked/2v2');
+    check('plays: a Discord room is discord, not custom', src(outcome({ discord: true })) === 'discord/1v1');
+    check('plays: a code room is custom', src(outcome({})) === 'custom/1v1');
+    const beforeAnon = await counted(`game = 'decode' and source = 'discord'`);
+    await persistMatch(outcome({ discord: true }));
+    let afterAnon = beforeAnon;
+    for (let i = 0; i < 50 && afterAnon === beforeAnon; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      afterAnon = await counted(`game = 'decode' and source = 'discord'`);
+    }
+    check('plays: a room with NO signed-in player is still counted', afterAnon === beforeAnon + 1, `${beforeAnon} → ${afterAnon}`);
+  }
+
   /* ---- SCHEMA HYGIENE, asked of the live schema rather than of the migration files -------
      Two invariants that fail SILENTLY — nothing errors, nothing returns a wrong answer, the
      database just does progressively more work as the tables grow — so neither shows up in any

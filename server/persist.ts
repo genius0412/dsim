@@ -1,6 +1,7 @@
 import { dbEnabled, q } from './db/pool';
 import {
   addActivity,
+  countPlay,
   currentSeasonNumber,
   ensureProfile,
   ensureSeason,
@@ -9,7 +10,10 @@ import {
   recordRank,
   saveReplay,
   submitRecord,
+  type PlayMode,
+  type PlaySource,
 } from './db/repo';
+import { eloMode } from './eloMode';
 import { RED_CARD_MULT } from '../src/standing';
 import { chargeStanding, creditCleanMatch } from './standing';
 import { persistVersusMatch } from './ranked';
@@ -24,6 +28,14 @@ import type { BehaviourReport, DodgeReport, MatchOutcome, PersistOutcome } from 
 import { type DodgeVerdict } from '../src/dodge';
 import { WINDOW_HOURS } from '../src/standing';
 import * as C from '../src/config';
+
+/** which `play_counts` row a finished server match lands in (migration 0050) */
+export function playSourceOf(o: MatchOutcome): [PlaySource, PlayMode] {
+  if (o.config.kind === 'record') return ['record', o.config.record === 'duo' ? 'duo' : 'solo'];
+  const mode = o.mode ?? eloMode(o.participants.length);
+  if (o.ranked) return ['ranked', mode];
+  return [o.discord ? 'discord' : 'custom', mode];
+}
 
 /**
  * Persist a finished match (off the hot path — called at phase 'post'). The
@@ -55,6 +67,11 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
     console.log('[persist] SKIP — DATABASE_URL unset (no DB)');
     return {};
   }
+  // THE HOMEPAGE COUNTER, before the anonymous drop below: a match nobody signed in to is
+  // still a game played, and a Discord room is always one (an embed is signed out).
+  // Fire-and-forget — a counter must never hold up the ELO / record reveal.
+  const [source, mode] = playSourceOf(o);
+  void countPlay(game, source, mode).catch((e: unknown) => console.error('[persist] play count failed:', e));
   if (authed.length === 0) {
     console.log('[persist] SKIP — no authed participants (run is anonymous, dropped)');
     return {};

@@ -378,6 +378,9 @@ export interface MatchOutcome {
   mode?: '1v1' | '2v2';
   /** a bot was seated: the match and replay are kept, playtime is not credited */
   bots?: boolean;
+  /** the room was opened from a Discord Activity (`Room.group` set) — counted as its own
+   *  source in `play_counts`, folded into Custom on the homepage */
+  discord?: boolean;
   result: ReplayResult;
   replay: Replay;
   participants: MatchParticipant[];
@@ -3025,6 +3028,7 @@ export class Room {
         // actually fielded. See `MatchOutcome.mode`.
         mode: this.pendingMatch?.mode ?? (this.matchSetups.length ? eloMode(this.matchSetups.length) : undefined),
         bots: this.botsEverSeated,
+        discord: this.group !== '',
         result,
         replay,
         participants,
