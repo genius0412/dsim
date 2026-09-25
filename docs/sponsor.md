@@ -186,9 +186,10 @@ month** and press **Export CSV**. A month older than the 30 days of raw events s
 correctly — events and their properties are kept in the daily rollups.
 
 Until September 2026 the report was read off Vercel Web Analytics. That was removed; its history
-(2026-09-13 onward, loaded by `scripts/import-vercel-analytics.ts`) has its own section on the
-same tab, with its own Sponsor report panel. Vercel counted no sessions, so for those days the Sessions line is
-visitors (daily uniques).
+(2026-09-13 onward, loaded by `scripts/import-vercel-analytics.ts`) is folded into the same panel:
+every day before DSIM's own count began is read from the import, every day after from ours, never
+both. Impressions, clicks, dwell, formats, downloads and new players include those days. Vercel
+counted no sessions, so the Sessions line covers our days only and says from when.
 
 ### What counts as an impression
 

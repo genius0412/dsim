@@ -3192,7 +3192,7 @@ async function main(): Promise<void> {
       );
       check('analytics/report: property rows never show up as a breakdown panel', !old.breakdowns.some((b) => b.dim === 'evprop'));
       check('analytics/report: it says where its own traffic history starts', old.historyStart === '2026-09-10', String(old.historyStart));
-      check('analytics/report: no import yet means no imported section', old.imported === null);
+      check('analytics/report: no import yet means no imported span and nothing folded in', old.imported === null && old.history.imported === null && !old.history.inRange);
       await db.query(`delete from analytics_daily where day = '2025-01-10'`);
     }
 
@@ -3260,21 +3260,224 @@ async function main(): Promise<void> {
         'analytics/import: a narrower re-import replaces only the days it covers',
         Number((await db.query<{ n: string }>(`select count(*) as n from analytics_imported where day = '2026-09-13'`)).rows[0].n) > 0,
       );
+      // Our own stable-channel count began on 2026-09-10 (the fixture above), which the import
+      // does not reach, so our count starts that day and every imported day (09-13 on) overlaps it.
       const rep = await an.analyticsReport({ from: new Date('2026-09-13T00:00:00Z'), to: new Date('2026-09-15T00:00:00Z'), game: '*', filters: [], grain: 'day' });
-      const imp = rep.imported;
       check(
-        'analytics/import: the report carries the imported span and its totals',
-        imp?.source === 'vercel' && imp.firstDay === '2026-09-13' && imp.lastDay === '2026-09-14' && imp.totals.views === 150 && imp.series.length === 2,
-        JSON.stringify(imp && { ...imp, breakdowns: undefined }),
+        'analytics/combine: the report names the imported span and where our own count starts',
+        rep.history.imported?.source === 'vercel' && rep.history.imported.firstDay === '2026-09-13' &&
+          rep.history.imported.lastDay === '2026-09-14' && rep.history.imported.channel === 'stable' && rep.history.ownFrom === '2026-09-10',
+        JSON.stringify(rep.history),
       );
       check(
-        'analytics/import: ...its breakdowns, events and event properties',
-        !!imp?.breakdowns.some((b) => b.dim === 'path' && b.val === '/decode/profile/:name') &&
-          imp.events[0]?.name === 'sponsor_click' && imp.eventProps[0]?.key === 'placement' && imp.eventProps[0]?.val === 'game',
+        '⚠️ analytics/combine: imported days on or after our first day are never read — the overlap is ours alone',
+        rep.totals.views === 0 && rep.series.length === 0 && !rep.history.inRange && rep.events.length === 0,
+        `views=${rep.totals.views} series=${rep.series.length}`,
       );
-      check('⚠️ analytics/import: never added into the first-party totals', rep.totals.views === 0);
-      const oneDay = await an.analyticsReport({ from: new Date('2026-09-13T00:00:00Z'), to: new Date('2026-09-14T00:00:00Z'), game: '*', filters: [], grain: 'day' });
-      check('analytics/import: the range end is exclusive, as it is for live data', oneDay.imported?.series.length === 1);
+      check('analytics/combine: the old separate block stays in the shape, empty', rep.imported === null);
+      await db.query(`delete from analytics_imported`);
+    }
+
+    // ---- the combine: one source per day -----------------------------------------------------
+    // A preview import (the alpha channel) against our own alpha-channel traffic, dated off today
+    // so the raw tier answers. T-6..T-2 imported; ours first counted on T-4 at 15:00, a PARTIAL
+    // day the import also holds, so the import answers T-6..T-4 and ours T-3 on. The overlap
+    // days carry numbers too large to hide if either were ever read twice.
+    {
+      const { replaceImportedAnalytics } = await import('../server/db/repo');
+      const T = Math.floor(Date.now() / 86_400_000) * 86_400_000;
+      const day = (n: number): string => new Date(T - n * 86_400_000).toISOString().slice(0, 10);
+      const at = (n: number, h: number, m = 0): Date => new Date(T - n * 86_400_000 + h * 3_600_000 + m * 60_000);
+      type Row = { day: string; dim: string; val: string; views: number; visitors: number };
+      const rows: Row[] = [];
+      const imported = [
+        { n: 6, views: 100, visitors: 10 },
+        { n: 5, views: 110, visitors: 11 },
+        { n: 4, views: 120, visitors: 12 },
+        { n: 3, views: 5000, visitors: 500 },
+        { n: 2, views: 7000, visitors: 700 },
+      ];
+      for (const d of imported) {
+        const big = d.views >= 1000;
+        rows.push({ day: day(d.n), dim: 'total', val: '*', views: d.views, visitors: d.visitors });
+        rows.push({ day: day(d.n), dim: 'path', val: '/decode', views: big ? 4000 : 60, visitors: 6 });
+        rows.push({ day: day(d.n), dim: 'path', val: '/chain', views: d.views - (big ? 4000 : 60), visitors: 4 });
+        rows.push({ day: day(d.n), dim: 'country', val: 'US', views: big ? 3000 : 70, visitors: 7 });
+        rows.push({ day: day(d.n), dim: 'country', val: 'Others', views: d.views - (big ? 3000 : 70), visitors: 3 });
+        rows.push({ day: day(d.n), dim: 'event', val: 'sponsor_shown', views: big ? 999 : 10, visitors: 5 });
+        rows.push({ day: day(d.n), dim: 'evprop', val: 'sponsor_shown|placement|footer', views: big ? 999 : 10, visitors: 5 });
+      }
+      await replaceImportedAnalytics('vercel-preview', rows);
+
+      const fp = async (visitor: string, when: Date, path: string, extra: { country?: string; surface?: string } = {}): Promise<void> => {
+        await db.query(
+          `insert into analytics_pageviews (at, visitor, path, game, ref_host, country, device, os, browser, screen, lang, surface, channel, build)
+           values ($1,$2,$3,'decode','',$4,'desktop','Windows','Chrome','lg','en',$5,'alpha','abc123')`,
+          [when, visitor, path, extra.country ?? 'US', extra.surface ?? 'web'],
+        );
+      };
+      // T-4, the partial first day: ignored, the import holds the whole of it
+      await fp('cafe000000000001', at(4, 15), '/decode');
+      await fp('cafe000000000001', at(4, 15, 5), '/decode');
+      // T-3: one visitor with a 3-view session, one bounce from Germany
+      await fp('cafe000000000002', at(3, 12), '/decode');
+      await fp('cafe000000000002', at(3, 12, 5), '/decode');
+      await fp('cafe000000000002', at(3, 12, 10), '/chain');
+      await fp('cafe000000000003', at(3, 13), '/decode', { country: 'DE' });
+      // T-2: one visitor, two views
+      await fp('cafe000000000004', at(2, 12), '/chain');
+      await fp('cafe000000000004', at(2, 12, 5), '/chain');
+      await db.query(
+        `insert into analytics_events (at, visitor, name, game, path, props) values ($1,'cafe000000000002','sponsor_shown','decode','/decode','{"placement":"home"}')`,
+        [at(3, 12, 1)],
+      );
+
+      const report = (from: Date, to: Date, filters: { dim: string; val: string }[] = [], game = '*', grain: 'hour' | 'day' = 'day') =>
+        an.analyticsReport({ from, to, game, filters, grain });
+      const all = await report(at(6, 0), at(0, 0));
+      check(
+        '⚠️ analytics/combine: the start day is DERIVED — our first day was partial and imported, so ours starts the day after',
+        all.history.ownFrom === day(3) && all.history.imported?.channel === 'alpha' && all.history.inRange && all.history.traffic === 'all',
+        JSON.stringify(all.history),
+      );
+      check(
+        '⚠️ analytics/combine: totals are the imported days before the start plus ours from it, nothing twice',
+        all.totals.views === 330 + 6 && all.totals.visitors === 33 + 3,
+        `views=${all.totals.views} visitors=${all.totals.visitors}`,
+      );
+      check(
+        'analytics/combine: one series point per day, each from one source',
+        all.series.length === 5 && all.series.map((s) => s.views).join(',') === '100,110,120,4,2' &&
+          all.series[0].t === `${day(6)}T00:00:00.000Z` && all.series[3].t === `${day(3)}T00:00:00.000Z`,
+        all.series.map((s) => `${s.t.slice(0, 10)}:${s.views}`).join(' '),
+      );
+      check(
+        '⚠️ analytics/combine: sessions, bounces and their time are ours alone — the import never had them',
+        all.totals.sessions === 3 && all.totals.bounces === 1 && all.totals.seconds === 900,
+        JSON.stringify(all.totals),
+      );
+      const bd = (r: typeof all, dim: string, val: string) => r.breakdowns.find((b) => b.dim === dim && b.val === val);
+      check(
+        'analytics/combine: a breakdown sums both sources per value (pages)',
+        bd(all, 'path', '/decode')?.views === 180 + 3 && bd(all, 'path', '/chain')?.views === 150 + 3 &&
+          bd(all, 'path', '/decode')?.visitors === 18 + 2,
+        JSON.stringify(all.breakdowns.filter((b) => b.dim === 'path')),
+      );
+      check(
+        'analytics/combine: the host’s top-100 remainder stays a row of its own',
+        bd(all, 'country', 'Others')?.views === 30 + 40 + 50 && bd(all, 'country', 'US')?.views === 210 + 5 && bd(all, 'country', 'DE')?.views === 1,
+      );
+      check(
+        'analytics/combine: imported days count under their channel and the web surface',
+        bd(all, 'channel', 'alpha')?.views === 336 && bd(all, 'surface', 'web')?.views === 336 && !bd(all, 'channel', 'stable'),
+      );
+      check(
+        'analytics/combine: panels the import never had are ours alone, and the report says which are not',
+        bd(all, 'screen', 'lg')?.views === 6 && all.breakdowns.filter((b) => b.dim === 'entry').reduce((s, b) => s + b.views, 0) === 3 &&
+          ['path', 'country', 'channel', 'surface'].every((d) => all.history.dims.includes(d)) && !all.history.dims.includes('screen'),
+        JSON.stringify(all.history.dims),
+      );
+      check(
+        'analytics/combine: events and their properties fold in the same way',
+        all.events.find((e) => e.name === 'sponsor_shown')?.views === 31 &&
+          all.eventProps.find((p) => p.name === 'sponsor_shown' && p.key === 'placement' && p.val === 'footer')?.views === 30 &&
+          all.eventProps.find((p) => p.name === 'sponsor_shown' && p.key === 'placement' && p.val === 'home')?.views === 1,
+      );
+
+      // ---- filters, applied honestly -----------------------------------------------------------
+      const alpha = await report(at(6, 0), at(0, 0), [{ dim: 'channel', val: 'alpha' }, { dim: 'surface', val: 'web' }]);
+      check('analytics/combine: a chip naming what the import is keeps it', alpha.totals.views === 336 && alpha.history.traffic === 'all');
+      const stable = await report(at(6, 0), at(0, 0), [{ dim: 'channel', val: 'stable' }]);
+      check(
+        '⚠️ analytics/combine: a chip that excludes the imported channel excludes its days',
+        stable.totals.views === 0 && stable.history.traffic === 'none' && stable.history.why === 'filter' && stable.series.length === 0,
+        `views=${stable.totals.views}`,
+      );
+      check('analytics/combine: ...but events never follow the chips, on either side', stable.events.find((e) => e.name === 'sponsor_shown')?.views === 31);
+      const app = await report(at(6, 0), at(0, 0), [{ dim: 'surface', val: 'electron' }]);
+      check('analytics/combine: the desktop app was never in the import', app.totals.views === 0 && app.history.traffic === 'none');
+      const us = await report(at(6, 0), at(0, 0), [{ dim: 'country', val: 'US' }]);
+      check(
+        '⚠️ analytics/combine: one chip the import has a breakdown for is answered from that breakdown',
+        us.totals.views === 210 + 5 && us.totals.visitors === 21 + 2 && us.history.traffic === 'marginal' &&
+          us.series.slice(0, 3).map((s) => s.views).join(',') === '70,70,70',
+        `views=${us.totals.views} visitors=${us.totals.visitors}`,
+      );
+      check(
+        'analytics/combine: ...in the totals, the chart and that panel only — other panels are ours',
+        bd(us, 'country', 'US')?.views === 215 && bd(us, 'path', '/decode')?.views === 2 && bd(us, 'path', '/chain')?.views === 3 &&
+          bd(us, 'channel', 'alpha')?.views === 215 && us.history.dims.join(',') === 'country,channel,surface',
+        JSON.stringify(us.breakdowns.filter((b) => b.dim === 'path')),
+      );
+      const cross = await report(at(6, 0), at(0, 0), [{ dim: 'country', val: 'US' }, { dim: 'path', val: '/decode' }]);
+      check('analytics/combine: two such chips are a cross-filter the import cannot answer', cross.history.traffic === 'none' && cross.totals.views === 2);
+      const screen = await report(at(6, 0), at(0, 0), [{ dim: 'screen', val: 'lg' }]);
+      check('analytics/combine: a chip on a dimension the import never had leaves its days out', screen.history.traffic === 'none' && screen.totals.views === 6);
+      const game = await report(at(6, 0), at(0, 0), [], 'decode');
+      check(
+        'analytics/combine: a game pick leaves the imported days out of everything, events included',
+        game.history.why === 'game' && game.totals.views === 6 && game.events.find((e) => e.name === 'sponsor_shown')?.views === 1 && !game.history.events,
+      );
+
+      // ---- ranges -----------------------------------------------------------------------------
+      const older = await report(at(6, 0), at(3, 0));
+      check('analytics/combine: a range wholly before the start is the import alone', older.totals.views === 330 && older.totals.sessions === 0);
+      const newer = await report(at(3, 0), at(0, 0));
+      check(
+        'analytics/combine: ...and one after it is ours alone, with the imported days as its previous period',
+        newer.totals.views === 6 && !newer.history.inRange && newer.previous.views === 330,
+        `views=${newer.totals.views} prev=${newer.previous.views}`,
+      );
+      const midday = await report(at(6, 14), at(0, 0));
+      check('analytics/combine: a range starting mid-afternoon does not pull in the whole of that day', midday.totals.views === 230 + 6);
+      const hourly = await report(at(5, 6), at(3, 6), [], '*', 'hour');
+      check('analytics/combine: an hourly range that reaches imported days is drawn by day', hourly.grain === 'day' && hourly.series.length === 2);
+      check('analytics/combine: one that does not stays hourly', (await report(at(3, 0), at(2, 0), [], '*', 'hour')).grain === 'hour');
+
+      // ---- the import does not reach our first day: ours starts on it ------------------------
+      await db.query(`delete from analytics_imported where day = $1`, [day(4)]);
+      const gap = await report(at(6, 0), at(0, 0));
+      check(
+        'analytics/combine: when the import misses our partial first day, ours is used for it',
+        gap.history.ownFrom === day(4) && gap.totals.views === 210 + 8,
+        `ownFrom=${gap.history.ownFrom} views=${gap.totals.views}`,
+      );
+
+      await db.query(`delete from analytics_pageviews where visitor like 'cafe%'`);
+      await db.query(`delete from analytics_events where visitor like 'cafe%'`);
+      await db.query(`delete from analytics_imported`);
+    }
+
+    // ---- the combine on the rollup tier ------------------------------------------------------
+    {
+      const { replaceImportedAnalytics } = await import('../server/db/repo');
+      await replaceImportedAnalytics('vercel-preview', [
+        { day: '2025-03-01', dim: 'total', val: '*', views: 40, visitors: 4 },
+        { day: '2025-03-02', dim: 'total', val: '*', views: 50, visitors: 5 },
+        { day: '2025-03-03', dim: 'total', val: '*', views: 900, visitors: 90 },
+        { day: '2025-03-02', dim: 'os', val: 'macOS', views: 20, visitors: 2 },
+        { day: '2025-03-02', dim: 'event', val: 'player_joined', views: 3, visitors: 3 },
+      ]);
+      await db.query(
+        `insert into analytics_daily (day, game, dim, val, views, visitors, sessions)
+         values ('2025-03-02', '*', 'total', '*', 7, 2, 2), ('2025-03-02', '*', 'channel', 'alpha', 7, 2, 2),
+                ('2025-03-03', '*', 'total', '*', 11, 3, 3), ('2025-03-03', '*', 'channel', 'alpha', 11, 3, 3),
+                ('2025-03-03', '*', 'os', 'macOS', 4, 1, 1), ('2025-03-03', '*', 'event', 'player_joined', 2, 2, 0)`,
+      );
+      const agg = await an.analyticsReport({ from: new Date('2025-03-01T00:00:00Z'), to: new Date('2025-03-08T00:00:00Z'), game: '*', filters: [], grain: 'day' });
+      check(
+        '⚠️ analytics/combine: the rollup tier folds the import in by the same rule',
+        agg.source === 'aggregate' && agg.history.ownFrom === '2025-03-03' && agg.totals.views === 90 + 11 && agg.totals.sessions === 3,
+        `source=${agg.source} ownFrom=${agg.history.ownFrom} views=${agg.totals.views}`,
+      );
+      check(
+        'analytics/combine: ...breakdowns and events included',
+        agg.breakdowns.find((b) => b.dim === 'os' && b.val === 'macOS')?.views === 24 &&
+          agg.breakdowns.find((b) => b.dim === 'channel' && b.val === 'alpha')?.views === 101 &&
+          agg.events.find((e) => e.name === 'player_joined')?.views === 5,
+      );
+      await db.query(`delete from analytics_daily where day between '2025-03-01' and '2025-03-31'`);
+      await db.query(`delete from analytics_imported`);
     }
 
     // ---- retention, which is where the privacy promise is either kept or not ---------------

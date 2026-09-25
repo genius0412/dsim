@@ -7627,6 +7627,20 @@ a.ds-cta {
   stroke: var(--ds-mut);
   stroke-width: 1;
 }
+/* where Vercel's imported days end and DSIM's own count begins: dotted, so it never reads
+   as the hover cursor */
+.an-mark {
+  stroke: var(--ds-mut);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+}
+/* "from Sep 22" beside a title or tile whose number is DSIM's own days only, while the range
+   also reaches imported ones. Sentence case inside the caps title. */
+.an-own {
+  font-family: var(--ds-font-ui);
+  letter-spacing: normal;
+  text-transform: none;
+}
 .an-legend {
   display: flex;
   flex-wrap: wrap;

@@ -1,4 +1,4 @@
-import { PAD_ACTIONS, PAD_CHORD_GRACE_MS, chordKey, padBinds, type PadAction, type PadBindings, type PadChord } from './bindings';
+import { PAD_ACTIONS, PAD_CHORD_GRACE_MS, PAD_CHORD_MAX, chordKey, padBinds, type PadAction, type PadBindings, type PadChord } from './bindings';
 
 /**
  * WHICH PAD ACTIONS ARE ON, given which buttons are held — the one place a combo means
@@ -175,5 +175,79 @@ export class PadChordResolver {
       else out[a] = true;
     }
     return out;
+  }
+}
+
+/**
+ * HOW LONG ONE BUTTON IS HELD, ALONE, BEFORE LETTING GO OF IT REMOVES THE SLOT instead of binding
+ * it. A pad capture takes every button that goes down and pad navigation stands down while it is
+ * armed, so without this a controller-only player could neither remove a bind nor back out of a
+ * capture: Esc, Backspace and the `×` cap are keyboard and pointer only. One second is well past
+ * a press, and a second button joining turns the hold back into a combo.
+ */
+export const PAD_HOLD_REMOVE_MS = 1000;
+
+export type PadCaptureStep =
+  | { t: 'idle' }
+  /** the chord grew — the buttons in the order they went down */
+  | { t: 'chord'; chord: number[] }
+  /** one button alone has been held past `PAD_HOLD_REMOVE_MS`; every frame until it is let go */
+  | { t: 'hold'; button: number }
+  /** bind this chord (press order) */
+  | { t: 'commit'; chord: number[] }
+  /** a hold was let go: remove the armed slot, or cancel a slot that holds nothing */
+  | { t: 'remove' };
+
+const IDLE: PadCaptureStep = { t: 'idle' };
+
+/**
+ * ONE PAD CAPTURE, frame by frame. DOM-free and clock-injected like the resolver above, so
+ * `npm test` drives it; `ControlsSection` feeds it the held set from `navigator.getGamepads()`.
+ *
+ * Everything that goes down AFTER the capture starts, and is still down, is the chord. It
+ * COMMITS when any of those buttons is released or the instant it reaches `PAD_CHORD_MAX` —
+ * committing on release rather than press is what lets a second button join. Whatever was held
+ * on the first frame (the A that armed the slot) is ignored until it is let go.
+ */
+export class PadCapture {
+  private alreadyDown = new Set<number>();
+  private chord: number[] = [];
+  private first = true;
+  private done = false;
+  /** when the chord's first button went down — the clock the hold measures from */
+  private since = 0;
+
+  /** start over after a refused bind: whatever is still held is ignored until released */
+  rearm(): void {
+    this.chord = [];
+    this.first = true;
+    this.done = false;
+  }
+
+  step(down: ReadonlySet<number>, nowMs: number): PadCaptureStep {
+    if (this.done) return IDLE;
+    if (this.first) {
+      for (const i of down) this.alreadyDown.add(i);
+      this.first = false;
+      return IDLE;
+    }
+    for (const i of [...this.alreadyDown]) if (!down.has(i)) this.alreadyDown.delete(i);
+    const held = (): boolean => this.chord.length === 1 && nowMs - this.since >= PAD_HOLD_REMOVE_MS;
+    if (this.chord.length > 0 && this.chord.some((i) => !down.has(i))) {
+      this.done = true;
+      return held() ? { t: 'remove' } : { t: 'commit', chord: [...this.chord] };
+    }
+    const before = this.chord.length;
+    for (const i of down) {
+      if (this.alreadyDown.has(i) || this.chord.includes(i)) continue;
+      if (this.chord.length === 0) this.since = nowMs;
+      this.chord.push(i);
+    }
+    if (this.chord.length >= PAD_CHORD_MAX) {
+      this.done = true;
+      return { t: 'commit', chord: this.chord.slice(0, PAD_CHORD_MAX) };
+    }
+    if (held()) return { t: 'hold', button: this.chord[0] };
+    return this.chord.length !== before ? { t: 'chord', chord: [...this.chord] } : IDLE;
   }
 }

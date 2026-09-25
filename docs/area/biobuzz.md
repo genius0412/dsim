@@ -70,6 +70,19 @@ pollen behaviour that looks wrong is a question about SHARED physics — write i
 BIOBUZZ, a persistent 2.1" overlap under a pressing chassis, a struck pollen reaching
 `C.BALL_MAX_SPEED` while the robot that hit it is slower, 5"-artifact rolling constants).
 
+⚠️ **A CHECK AGAINST A NUMBER OF MILLISECONDS GOES IN THE `PERF` LANE** (`scripts/smoke-biobuzz/
+index.ts`), exported from its own lane file (`predictPerfChecks`, `aiPerfChecks`,
+`sim3dPerfChecks`). `bbshard.mjs` never packs that lane beside another: it runs alone after the
+other shards, and under `npm test` after the shared suite too (`--gate`). Beside 17 other test
+processes the core itself runs slower, so even the best of 30 readings read 6.3–7.4 ms for a
+FULL reconcile that costs 4.0 ms alone, and the old best-of-5 read 9–11 against the 8 ms budget
+on nearly every run (2026-09-25). Another worktree's `npm test` is load the suite cannot keep
+off, so a lane with a failure runs again after 5, 10 and 20 s and the first attempt where every
+check held is reported (`perfLane`). A slowed reconcile (3.9 → 9.0 ms) fails all four attempts.
+Time with `performance.now()` and take the minimum of many runs. Paired ratios (FIELD, SERVER)
+compare two readings from the same moment, so they are not affected by load and stay where they
+are.
+
 ---
 
 

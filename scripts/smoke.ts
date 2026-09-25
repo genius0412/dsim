@@ -285,7 +285,7 @@ import {
 } from '../src/ui/mobileActions';
 import type { HudSnapshot } from '../src/game';
 import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
-import { PadChordResolver, PAD_CHORD_GRACE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
+import { PadCapture, PadChordResolver, PAD_CHORD_GRACE_MS, PAD_HOLD_REMOVE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
 import { GamepadInput } from '../src/input/gamepad';
 import {
   awardBadge,
@@ -23211,7 +23211,7 @@ const dumperSetup = (): RobotSetup => {
   /* ---- the terms gate ------------------------------------------------------ */
   check(
     'terms gate: LEGAL_VERSION is the ISO form of LEGAL_UPDATED',
-    LEGAL_VERSION === '2026-08-04',
+    LEGAL_VERSION === '2026-09-25',
     LEGAL_UPDATED + ' -> ' + LEGAL_VERSION,
   );
   check(
@@ -23894,9 +23894,11 @@ const dumperSetup = (): RobotSetup => {
       '⚠️ pageviews: the beacon touches no browser storage — it has no identifier and must not gain one',
       !/\b(local|session)Storage\s*\./.test(pv) && !/document\s*\.\s*cookie/.test(pv),
     );
+    // owner, 2026-09-25: count all traffic. Browser DNT/GPC defaults do not gate the beacon;
+    // the in-app switch does, and must keep doing so.
     check(
-      '⚠️ pageviews: doNotTrack and Global Privacy Control are honoured, not merely available',
-      /globalPrivacyControl/.test(pv) && /doNotTrack/.test(pv),
+      'pageviews: browser Do Not Track / GPC do not gate the beacon (the in-app switch does)',
+      !/globalPrivacyControl\s*===/.test(pv) && !/doNotTrack\s*\?\?/.test(pv) && /analyticsAllowed\(\)/.test(pv),
     );
   }
 
@@ -24291,6 +24293,58 @@ const dumperSetup = (): RobotSetup => {
   r3.reset();
   s = r3.resolve([4, 7, 12], pad3, 5000);
   check('resolver: reset clears consumption and timing', s.catalyst === true);
+}
+
+// ---- PAD CAPTURE: bind on release, HOLD one button to remove ------------------------
+// A pad capture takes every button and pad navigation is suspended while it is armed, so the
+// hold is the only way a controller-only player removes a bind or backs out of a capture.
+{
+  const J = JSON.stringify;
+  const S = (...b: number[]) => new Set(b);
+  const H = PAD_HOLD_REMOVE_MS;
+  // the A that armed the slot is held on frame one: ignored until released
+  let c = new PadCapture();
+  c.step(S(0), 0);
+  check('capture: a button held when the capture opened is not the bind', c.step(S(0), 16).t === 'idle' && c.step(S(0), 2000).t === 'idle');
+  c.step(S(), 2016);
+  c.step(S(7), 2032);
+  const tap = c.step(S(), 2100);
+  check('capture: a press and release binds that button', tap.t === 'commit' && J(tap.t === 'commit' && tap.chord) === J([7]), J(tap));
+  // a two-button combo commits on the first release
+  c = new PadCapture();
+  c.step(S(), 0);
+  c.step(S(7), 16);
+  const grew = c.step(S(7, 12), 40);
+  const combo = c.step(S(7), 60);
+  check('capture: a second button joins and the combo commits on release', grew.t === 'chord' && combo.t === 'commit' && J(combo.t === 'commit' && combo.chord) === J([7, 12]), J(combo));
+  // a lone hold past the threshold reports, then removes on release
+  c = new PadCapture();
+  c.step(S(), 0);
+  c.step(S(4), 16);
+  const before = c.step(S(4), 16 + H - 1);
+  const hold = c.step(S(4), 16 + H);
+  const rm = c.step(S(), 16 + H + 30);
+  check('capture: a lone button held past the threshold reports a hold', before.t === 'idle' && hold.t === 'hold', `${before.t} ${hold.t}`);
+  check('capture: letting go of a hold removes rather than binds', rm.t === 'remove', rm.t);
+  check('capture: nothing after the capture ends', c.step(S(4), 5000).t === 'idle');
+  // a second button joining a hold turns it back into a combo
+  c = new PadCapture();
+  c.step(S(), 0);
+  c.step(S(7), 16);
+  c.step(S(7), 16 + H + 100);
+  c.step(S(7, 12), 16 + H + 200);
+  const late = c.step(S(12), 16 + H + 300);
+  check('capture: a slow combo is still a combo, not a remove', late.t === 'commit' && J(late.t === 'commit' && late.chord) === J([7, 12]), J(late));
+  // re-arm after a refused bind: what is still held does not restart the chord
+  c = new PadCapture();
+  c.step(S(), 0);
+  c.step(S(7), 16);
+  c.step(S(), 40);
+  c.rearm();
+  c.step(S(), 56);
+  c.step(S(5), 72);
+  const again = c.step(S(), 90);
+  check('capture: rearm takes a fresh press', again.t === 'commit' && J(again.t === 'commit' && again.chord) === J([5]), J(again));
 }
 
 // ---- GAME-SPECIFIC KEYBINDS: the action table and the effective map ----------------
@@ -26203,7 +26257,7 @@ const dumperSetup = (): RobotSetup => {
   );
   check(
     '⚠️ controls screen: ...and a pad capture the same way',
-    /const taken = padConflict\(b, game, action, sorted\);\s*if \(taken\) \{[\s\S]{0,800}?return false;\s*\}\s*onChangeRef\.current\(/.test(cs),
+    /const taken = padConflict\(b, game, capture\.action, sorted\);\s*if \(taken\) \{[\s\S]{0,800}?return false;\s*\}\s*onChangeRef\.current\(/.test(cs),
   );
   check(
     'controls screen: the old "Took C from …" steal notice is gone',

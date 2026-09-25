@@ -21,6 +21,13 @@
  * back for a box that cannot spare the cores (the perf checks in both suites are measured on a
  * loaded machine either way — `smokeshard.mjs` has always run twelve processes at once).
  *
+ * ── EXCEPT THE BUDGETS (2026-09-25) ─────────────────────────────────────────────────────────
+ * "Measured on a loaded machine either way" was the bug. The BIOBUZZ checks that hold a number
+ * of MILLISECONDS (its PERF lane) failed on nearly every run: 9-11 ms against an 8 ms budget,
+ * for a reconcile that costs 4.0 ms alone. `bbshard.mjs` now runs that lane by itself after its
+ * other shards, and `--gate` holds it until this file closes its stdin, which happens when the
+ * shared suite has exited. The lane is a few seconds; everything else still overlaps.
+ *
  * Zero dependencies, and every child is spawned through `process.execPath` with an absolute
  * script path — no `shell: true`, which on Windows would put the repo path (spaces and all)
  * through `cmd.exe` quoting for nothing.
@@ -33,10 +40,14 @@ import { cpus } from 'node:os';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SERIAL = process.argv.includes('--serial');
 
-/** run one suite to completion, buffering its output so two suites do not interleave */
-function run(label, script, args) {
-  return new Promise((done) => {
-    const child = spawn(process.execPath, [script, ...args], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+/** run one suite to completion, buffering its output so two suites do not interleave. With
+ *  `gate`, the child's stdin is a pipe that `release` closes (`bbshard.mjs --gate`). */
+function run(label, script, args, gate = false) {
+  let child = null;
+  const done = new Promise((done) => {
+    child = spawn(process.execPath, [script, ...args], { cwd: ROOT, stdio: [gate ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+    // releasing a child that already exited is EPIPE, which is not a failure
+    child.stdin?.on('error', () => {});
     const chunks = [];
     child.stdout.on('data', (d) => chunks.push(d));
     child.stderr.on('data', (d) => chunks.push(d));
@@ -44,6 +55,7 @@ function run(label, script, args) {
     child.on('close', (code) => done({ label, code: code === null ? 1 : code, out: Buffer.concat(chunks) }));
     child.on('error', (e) => done({ label, code: 1, out: Buffer.from(`[test] ${label} could not start: ${e.message}\n`) }));
   });
+  return { done, release: () => child?.stdin?.end() };
 }
 
 const t0 = Date.now();
@@ -56,13 +68,21 @@ const t0 = Date.now();
  */
 const BUDGET = Math.max(2, cpus().length - 1);
 const split = SERIAL || BUDGET >= 18 ? 0 : Math.max(1, Math.round((BUDGET * 2) / 3));
-const suites = [
-  ['shared', resolve(ROOT, 'scripts/smokeshard.mjs'), split ? [`--shards=${split}`] : []],
-  ['biobuzz', resolve(ROOT, 'scripts/bbshard.mjs'), split ? [`--shards=${Math.max(1, BUDGET - split)}`] : []],
-];
+const SHARED = resolve(ROOT, 'scripts/smokeshard.mjs');
+const BB = resolve(ROOT, 'scripts/bbshard.mjs');
+const sharedArgs = split ? [`--shards=${split}`] : [];
+const bbArgs = split ? [`--shards=${Math.max(1, BUDGET - split)}`] : [];
 const results = [];
-if (SERIAL) for (const [label, script, args] of suites) results.push(await run(label, script, args));
-else results.push(...(await Promise.all(suites.map(([label, script, args]) => run(label, script, args)))));
+if (SERIAL) {
+  results.push(await run('shared', SHARED, sharedArgs).done);
+  results.push(await run('biobuzz', BB, bbArgs).done);
+} else {
+  const shared = run('shared', SHARED, sharedArgs);
+  const bb = run('biobuzz', BB, [...bbArgs, '--gate'], true);
+  // the BIOBUZZ PERF lane waits for the shared suite to exit — see the header
+  shared.done.then(bb.release);
+  results.push(...(await Promise.all([shared.done, bb.done])));
+}
 
 for (const r of results) process.stdout.write(r.out);
 

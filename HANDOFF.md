@@ -1,9 +1,44 @@
-# HANDOFF — 2026-09-25g (release 1 on production; release 2 on alpha; ALPHA IS CLOSED)
+# HANDOFF — 2026-09-25j (controller: hold a button to remove a bind)
 
-- **Release 1 (stuck-robot batch, SIM_VERSION 4) is on production**: `main` = `9fae19c`, Vercel and every Fly machine; three patch notes published (BIOBUZZ, DECODE, Chain Reaction).
-- **Release 2 is on `alpha` and dsim-alpha, NOT on `main`**: lockdown scopes / access groups / banners (migrations 0051, 0052) and the Vercel Analytics removal (0053). The production merge waits on the owner's go-ahead. After it deploys, the Vercel history import (below) runs against production, and Web Analytics gets switched off in the Vercel project.
-- **Alpha is on a SITE lockdown** (set 2026-09-25 via `/api/admin/maintenance` on dsim-alpha): closed screen with "Go to playdsim.com"; admins and beta/dev/contributor get in. No testers are in the groups yet; the owner will send tags (Access tab, or `/api/admin/access`). The build flag `VITE_SITE_LOCKDOWN=1` is NOT set on the Vercel preview env yet (it keeps alpha closed even with its server down).
-- The two sections below were written before the merge; their "not pushed" state lines are superseded by this one.
+**State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `uiaudit`, `docaudit` pass. Client only, no deploy needed.
+
+- **Bug:** on the Controls screen a controller-only player could not remove a pad bind or leave a capture. Pad navigation is suspended while a slot is armed and every button becomes the bind; Esc, Backspace and the `×` cap need a keyboard or pointer. A keyboard slot armed with A was a dead end too.
+- **Fix:** hold one pad button alone for 1 s (`PAD_HOLD_REMOVE_MS`) and let go: removes the armed slot, or cancels an empty/add slot. The status line reads "Release to remove A from Shoot." once the hold registers. A second button joining makes it a combo again. During a key capture a pad press cancels.
+- The capture loop moved out of `ControlsSection.tsx` into `PadCapture` (`src/input/padChords.ts`), with smoke checks. Verified in the dev server with a mocked gamepad (remove, cancel, tap-to-bind, key-capture cancel).
+- Gotcha for browser checks: the preview pane is often hidden, so `requestAnimationFrame` never fires and the pad capture looks dead. Shim rAF with `setTimeout` before testing.
+
+# HANDOFF — 2026-09-25i (BIOBUZZ timing checks no longer fail under `npm test`)
+
+**State: pushed on `alpha`.** `npm test` passed on every full run after the change (5134 BIOBUZZ checks, shared PASS), including runs beside another worktree's `npm test`. `build` and `docaudit` pass. Test tooling only (plus one comment in `flowerTube.ts`), no sim change, no deploy needed.
+
+- **Bug:** `FULL reconciles 40 ticks inside PREDICT_FULL_BUDGET_MS` read 9–11 ms against 8 on nearly every full run (4.0 ms alone). `bot-driven 2v2 step3d p95` failed now and then for the same reason.
+- **Cause:** 18 test processes on 16 physical cores make every core slower, so taking more readings does not help. Best of 30 still read 6.3–7.4 ms in-suite. `process.cpuUsage()` on Windows moves in 15.6 ms steps, so CPU time is no use either.
+- **Fix, three layers:**
+  - New `PERF` lane (last in `index.ts`) holds every absolute-ms check: `predictPerfChecks`, `aiPerfChecks`, `sim3dPerfChecks`, exported from their lane files. `bbshard.mjs` never packs it (`SOLO`), runs it alone after its shards, and with `--gate` waits for `test-all.mjs` to close its stdin when the shared suite exits.
+  - Predict budgets are best of 30 `performance.now()` readings (were best of 5 on `Date.now()`).
+  - Another worktree's `npm test` still slows it (p95 1.85 ms seen), so `perfLane` re-runs the lane after 5/10/20 s when a check fails and reports the first attempt where all held.
+  - Thresholds and check count unchanged.
+- **After:** FULL ~3.9 ms, p95 ~0.77 ms in-suite; green wall 33–38 s (unchanged). A temporary slowdown to 9.0 ms failed all four attempts; a red PERF lane now costs ~50 s extra.
+- **Rule** (in `docs/area/biobuzz.md`): a new check against a number of milliseconds goes in the PERF lane. Paired ratios stay in their lanes.
+- The earlier sections' "known flake: PREDICT_FULL_BUDGET_MS" notes are superseded by this one.
+
+# HANDOFF — 2026-09-25h (Vercel history folded into the Analytics tab)
+
+**State: committed on branch `analytics-combined-history` (off alpha 43c3c1e5), NOT pushed, NOT deployed.** `build`, `server:check`, `dbtest` (ALL PASS, 29 new `analytics/combine:` checks), `uiaudit`, `docaudit`, `contrast`, `bundleaudit` pass. `npm test`: shared PASS; BIOBUZZ only the `PREDICT_FULL_BUDGET_MS` wall-clock flake, `--lane PREDICT` passes alone. ⚠️ **Server change** (no migration): the combined read is in `server/analytics.ts`.
+
+- **Owner:** combine the imported Vercel history with the normal display instead of a separate section.
+- **Rule:** one source per day. Our start day is derived (earliest own day on the import's channel; if the import holds that partial day, ours starts the next day). Days before it come from `analytics_imported`, days from it from ours; imported rows on/after it are ignored. Full rule in `docs/area/monetization.md`.
+- **Folded in:** views/visitors tiles, chart (dotted Vercel | DSIM marker), pages, referrers, countries, devices, OS, browsers, channel/surface, events + properties, sponsor report. Ours only, marked "from Sep N": sessions, bounce, session length, entry pages, UTM, screen, language, build.
+- **API:** `/api/analytics` adds `history` and `grain`; `imported` is always `null` now (kept for older admin pages). The importer stores a preview export as `vercel-preview` (alpha channel).
+- Day buckets are now formatted in SQL and chart day labels are UTC; they were a day early west of UTC.
+- Pre-existing, not touched: the admin console scrolls sideways at 390px (header/tab strip).
+
+# HANDOFF — 2026-09-25g (both releases on production; ALPHA IS CLOSED)
+
+- **Production = `main` = `d039cb7`**, Vercel and every Fly machine: release 1 (stuck-robot batch, SIM_VERSION 4; three patch notes published) and release 2 (lockdown scopes, access groups, site banners; Vercel Analytics removed; migrations 0051–0053 applied at boot).
+- **Vercel history import:** a fresh export (2026-09-13 → 09-25, 411,076 page views) is in `scratch/vercel-analytics-production.json`, run with `node scratch/import-vercel.mjs [--write]` from this worktree. The owner runs it (production DB access is theirs). Then switch Web Analytics off in the Vercel project settings. Alpha's own preview export has not been imported.
+- **Alpha is on a SITE lockdown** (set via `/api/admin/maintenance` on dsim-alpha): closed screen, "Go to playdsim.com"; admins and beta/dev/contributor get in. No testers in the groups yet — the owner will send tags (Access tab or `/api/admin/access`). `VITE_SITE_LOCKDOWN=1` is not set on the Vercel preview env (it would keep alpha closed with its server down).
+- The sections below were written before the merges; their "not pushed" lines are superseded.
 
 # HANDOFF — 2026-09-25e (Vercel Analytics removed; its history imported)
 

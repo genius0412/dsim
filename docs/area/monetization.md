@@ -102,7 +102,8 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
     work — and the interval is **started by the first beacon**, never at boot, because Neon
     bills the wall-clock time the compute is awake and an unconditional timer costs the month.
   - **GATES**: `VITE_ANALYTICS=1` **and** a configured cloud game server, plus
-    `analyticsAllowed()`, plus `doNotTrack`/GPC. A self-hosted, LAN or offline build sends
+    `analyticsAllowed()` (the in-app switch). Browser `doNotTrack`/GPC do NOT gate it (owner,
+    2026-09-25: count all traffic; no identifier, first-party only). A self-hosted, LAN or offline build sends
     nothing. The ingest route needs `DATABASE_URL` on the Fly side and nothing else.
   - **The dashboard is a LAZY chunk** and is gated on `isStaffUser` — `profiles.role`, the
     projection of `ADMIN_USER_IDS`, not a second env read. A range inside the raw window is
@@ -111,16 +112,35 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
     up too (`dim = 'event'` / `'evprop'`, val `name|key|value`), so a month-old sponsor report
     still breaks down by placement. The **Sponsor report** panel lays out `docs/sponsor.md`'s
     lines; the **Last month** range is the report period.
-  - **VERCEL HISTORY IS IMPORTED, NEVER MERGED.** `analytics_imported` (0053) holds Vercel Web
-    Analytics' daily aggregates from before it was removed, loaded by
+  - **VERCEL HISTORY IS FOLDED IN, ONE SOURCE PER DAY.** `analytics_imported` (0053) holds Vercel
+    Web Analytics' daily aggregates from before it was removed, loaded by
     `scripts/vercel-analytics-export.mjs` + `scripts/import-vercel-analytics.ts` (dry run unless
-    `--write`; replaces the file's days, so re-runs are safe). Paths go through `normalizePath`
-    on import. The dashboard shows it as its own section: the two sources overlap by days and
-    count differently (ours honours DNT/GPC), so summing them would be wrong on the overlap.
-  - ⚠️ **`LEGAL_UPDATED` HAS NOT BEEN MOVED.** The policy describes this already; the date is
-    to move in the deploy that sets `VITE_ANALYTICS=1`, because moving it asks every signed-in
-    account to accept the terms again. Removing Vercel's count (a processor dropped, nothing
-    added) did not move it either.
+    `--write`; replaces the file's days, so re-runs are safe; a preview export is stored as
+    `vercel-preview`). Paths go through `normalizePath` on import. The READ decides, in
+    `server/analytics.ts` (`importContext`, `importWindow`, `importMode`):
+    - **The boundary is derived from the data.** `ownFirst` = the earliest day our own tables
+      hold traffic on the import's channel (`vercel` = `stable`, `vercel-preview` = `alpha`). That
+      day is partial (the pipeline was switched on during it), so if the import holds it too, ours
+      starts the day after (`ownFrom`); if not, ours starts on it. Days before `ownFrom` are
+      read from the import, days from it on from ours. **Imported rows on or after `ownFrom` are
+      never read** — never a sum on the overlap. Loading overlapping days is harmless.
+    - **Folded into** the tiles (views, visitors), the chart, every breakdown the import has
+      (pages, referrers, countries, devices, OS, browsers, UTM if present; its "Others" row shows
+      as "Other"), the channel and surface panels (imported rows count as `stable`/`alpha` +
+      `web`), events and their properties, and so the sponsor report. Top N is taken AFTER the
+      sum. Visitors are a sum of daily uniques on both sides.
+    - **Ours alone:** sessions, bounce rate, session length, entry pages, screen, language, build,
+      online now. The page says "from Sep N" beside them when the range reaches imported days.
+    - **Filters:** a game pick leaves imported days out (no game split). A channel/surface chip
+      keeps them if it names what they are, else leaves them out. ONE chip on a dimension the
+      import has is answered from that breakdown's row (totals, chart, that panel); two such
+      chips, or a chip on screen/language/build, leave them out. Events ignore chips on both
+      sides. The note under the range says which applies (`history` in the response).
+    - Imported days are whole UTC days: range ends round to the nearest midnight, and an hourly
+      range that reaches them is returned by day (`grain`). The chart marks the boundary.
+    - `imported` stays in the response as `null` so a pre-change admin page does not break.
+  - **`LEGAL_UPDATED` moved to September 25, 2026** (owner) for first-party analytics, the host's
+    count removed and browser DNT/GPC no longer gating it: every signed-in account accepts once.
 - Analytics events (`src/analytics.ts`, `VITE_ANALYTICS=1`, cookieless, one sink: our own).
   **Rule: no identifiers in any event payload** — counts and enums only.
   It has an **OFF SWITCH**, `src/analyticsPref.ts`, read by `trackEvent` on EVERY call
