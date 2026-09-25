@@ -351,7 +351,7 @@ export function flowerCageBand(rings: readonly FieldFlowerRing[]): readonly [num
  * room read the fan at 0.394 / 0.401 / 0.402 ms and the prism at 0.374 / 0.381 / 0.371, against
  * 0.333 / 0.331 / 0.330 with no cage at all — both about +13 %.
  *
- * The AI lane's `bot-driven 2v2 step3d p95 <= 1.5ms` is where they part: the fan measured
+ * The PERF lane's `bot-driven 2v2 step3d p95 <= 1.5ms` (in the AI lane then) is where they part: the fan measured
  * **1.86 and 1.95 ms — a hard FAIL** — and the prism 1.248 and 1.436 against 1.220 and 1.352
  * with no cage. 48 static proxies near four flowers produce expensive OUTLIER ticks that the
  * median never shows; the narrow phase sees the same walls either way, so the 4 proxies are free.

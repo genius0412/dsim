@@ -62,8 +62,7 @@ export type AnalyticsEvent =
 
 /**
  * Record one event. `ENABLED`/`analyticsAllowed()` decide whether it exists at all;
- * `trackEventBeacon` adds the gates only the network send needs (a configured cloud server,
- * `doNotTrack`/GPC).
+ * `trackEventBeacon` adds the gate only the network send needs (a configured cloud server).
  */
 export function trackEvent(
   event: AnalyticsEvent,

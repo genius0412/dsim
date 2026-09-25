@@ -9,7 +9,8 @@
 -- counted differently (ours honours Do Not Track and Global Privacy Control, the host's did not,
 -- and each filters bots its own way), so adding them together would be wrong on exactly the
 -- overlap days. The
--- dashboard shows this table as its own labelled section.
+-- dashboard reads it for the days before DSIM's own count began and ignores the rest
+-- (`importContext` in server/analytics.ts), so each day comes from exactly one source.
 --
 -- Same shape as `analytics_daily` minus what the source never had (sessions, bounces, game):
 --   dim = 'total'  val = '*'

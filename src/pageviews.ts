@@ -36,9 +36,12 @@
  * `analyticsAllowed()` is read on EVERY call for the reason its own module gives — it is an
  * opt-OUT, so a second tab switching it off has to stop this one.
  *
- * ⚠️ `navigator.doNotTrack` AND GLOBAL PRIVACY CONTROL ARE HONOURED, for page views and events
- * alike. They cost one expression each, they are the two signals a visitor can send without
- * finding our switch, and ignoring a request you can see is worse than never having offered one.
+ * ⚠️ `navigator.doNotTrack` AND GLOBAL PRIVACY CONTROL DO NOT GATE THE BEACON (owner, 2026-09-25:
+ * "I want to be able to track all traffic"). Both are browser-wide defaults in several browsers,
+ * so honouring them undercounted real traffic against the host's old count, which ignored them.
+ * The beacon carries no identifier and never leaves our own server, so it is not the sale or
+ * sharing GPC opts out of. The in-app switch (`analyticsAllowed`) still stops everything: a
+ * visitor who went and turned it off asked us directly, and the privacy page says so.
  *
  * ⚠️ THIS MODULE MUST STAY IMPORTABLE UNDER PLAIN NODE, so `scripts/smoke.ts` can exercise
  * the scrubbers — which are the part with a privacy guarantee riding on them, and therefore
@@ -126,26 +129,10 @@ export function utmOf(search: string): { s: string; m: string; c: string } {
  */
 const ENTRY_UTM = typeof window !== 'undefined' ? utmOf(window.location.search) : { s: '', m: '', c: '' };
 
-/**
- * DOES THE VISITOR'S BROWSER ALREADY SAY NO?
- *
- * `doNotTrack` is unreliable as a spec and is being removed from browsers; Global Privacy
- * Control is the one with legal force behind it in several US states. Both are read, neither
- * is trusted to exist, and either one answering yes is a no.
- */
-function browserOptOut(): boolean {
-  if (typeof navigator === 'undefined') return true;
-  const nav = navigator as Navigator & { doNotTrack?: string; globalPrivacyControl?: boolean; msDoNotTrack?: string };
-  if (nav.globalPrivacyControl === true) return true;
-  const dnt = nav.doNotTrack ?? nav.msDoNotTrack ?? (typeof window !== 'undefined' ? (window as unknown as { doNotTrack?: string }).doNotTrack : undefined);
-  return dnt === '1' || dnt === 'yes';
-}
-
 /** every gate, in the order that makes the cheapest one decide first */
 function allowed(): boolean {
   if (!ENABLED) return false;
   if (typeof window === 'undefined') return false;
-  if (browserOptOut()) return false;
   return analyticsAllowed();
 }
 

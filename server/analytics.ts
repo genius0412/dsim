@@ -848,24 +848,42 @@ export interface AnalyticsReport {
   online: number;
   /** the first UTC day this database holds its own traffic for, or null before any */
   historyStart: string | null;
-  /** history loaded from Vercel Web Analytics (migration 0052), or null if none was imported */
-  imported: ImportedReport | null;
+  /**
+   * Always null now. It carried the imported history as a separate block until that history
+   * was folded into the numbers above; it stays in the shape so an admin page from before the
+   * change (one Fly app serves every client) reads "no separate section" rather than breaking.
+   */
+  imported: null;
+  /** the grain `series` is actually at: a range reaching imported days is read by day */
+  grain: 'hour' | 'day';
+  /** where the numbers come from, day by day, and how the imported days entered this answer */
+  history: HistoryInfo;
 }
 
 /**
- * THE IMPORTED HISTORY, over the same range as the live report. Page views and daily-unique
- * visitors only: the source had no sessions, and it is not split by game. `firstDay`/`lastDay`
- * are the whole imported span, so the dashboard can say where it is even when the range misses it.
+ * WHERE EACH DAY'S NUMBERS COME FROM. Days before `ownFrom` are the imported counts; days
+ * from it on are ours. The dashboard marks the boundary and names what it could not include.
  */
-export interface ImportedReport {
-  source: string;
-  firstDay: string;
-  lastDay: string;
-  totals: { views: number; visitors: number };
-  series: { t: string; views: number; visitors: number }[];
-  breakdowns: BreakdownRow[];
-  events: { name: string; views: number; visitors: number }[];
-  eventProps: { name: string; key: string; val: string; views: number }[];
+export interface HistoryInfo {
+  /** the earliest day either source holds, or null when both are empty */
+  start: string | null;
+  /** the first day read from our own tables; null when an import exists and ours has not begun */
+  ownFrom: string | null;
+  /** the imported span, or null when nothing was imported */
+  imported: { source: string; firstDay: string; lastDay: string; channel: string } | null;
+  /** this range reaches days that are read from the import */
+  inRange: boolean;
+  /**
+   * How those days entered the traffic numbers: `all`, `marginal` (one filter the import holds
+   * as its own breakdown: totals, chart and that panel), or `none` (left out, see `why`).
+   */
+  traffic: 'all' | 'marginal' | 'none';
+  /** the imported days are in the events (events ignore the filter chips, as ours always have) */
+  events: boolean;
+  /** why they were left out of the traffic numbers */
+  why: 'game' | 'filter' | null;
+  /** the breakdown panels that include imported days; every other panel is ours alone */
+  dims: string[];
 }
 
 /**
@@ -937,6 +955,12 @@ async function aggTotals(from: Date, to: Date, game: string): Promise<Totals> {
  * back is answered from the daily rollups, where a filter on country AND device does not exist
  * to be applied. Both are honest answers; silently degrading one into the other is what would
  * not be, so `source` rides along and the panel says so.
+ *
+ * ⚠️ AND TWO SOURCES, ONE PER DAY. Days before `ownFrom` are read from `analytics_imported`
+ * (Vercel Web Analytics, which counted the site before DSIM did); days from it on are read from
+ * our own tables. A day is never read from both, so the days the two overlap are counted once.
+ * `importContext` says how the boundary is found. The tier is decided by where OUR part of the
+ * range starts, so a 30-day range whose first week is imported still reads our part exactly.
  */
 export async function analyticsReport(qy: RangeQuery): Promise<AnalyticsReport> {
   const floor = new Date(Date.now() - RAW_RETENTION_DAYS * 86_400_000);
@@ -956,41 +980,290 @@ export async function analyticsReport(qy: RangeQuery): Promise<AnalyticsReport> 
    * smaller error than reporting the whole window as zero.
    */
   const BOUNDARY_GRACE_MS = 3_600_000;
-  const source: 'raw' | 'aggregate' =
-    qy.from.getTime() >= floor.getTime() - BOUNDARY_GRACE_MS ? 'raw' : 'aggregate';
+  const inRaw = (d: Date): boolean => d.getTime() >= floor.getTime() - BOUNDARY_GRACE_MS;
+
+  const ctx = await importContext();
+  const ownStart = ctx?.ownFrom ? new Date(`${ctx.ownFrom}T00:00:00Z`) : null;
+  /** where our own part of a window starts: never before the boundary */
+  const own = (from: Date): Date => (ownStart && ownStart > from ? ownStart : from);
+
+  const ownFrom = own(qy.from);
+  const source: 'raw' | 'aggregate' = inRaw(ownFrom) ? 'raw' : 'aggregate';
   const span = qy.to.getTime() - qy.from.getTime();
   const prevFrom = new Date(qy.from.getTime() - span);
+  const prevOwn = own(prevFrom);
+  const prevRaw = source === 'raw' && inRaw(prevOwn);
 
-  const [totals, previous, series, breakdowns, events, eventProps, online, historyStart, imported] = await Promise.all([
-    source === 'raw' ? rawTotals(qy.from, qy.to, qy.game, qy.filters) : aggTotals(qy.from, qy.to, qy.game),
-    source === 'raw'
-      ? prevFrom >= floor
-        ? rawTotals(prevFrom, qy.from, qy.game, qy.filters)
-        : aggTotals(prevFrom, qy.from, qy.game)
-      : aggTotals(prevFrom, qy.from, qy.game),
-    source === 'raw' ? rawSeries(qy) : aggSeries(qy),
-    source === 'raw' ? rawBreakdowns(qy) : aggBreakdowns(qy),
-    source === 'raw' ? rawEvents(qy) : aggEvents(qy),
-    source === 'raw' ? rawEventProps(qy) : aggEventProps(qy),
-    onlineNow(),
-    firstOwnDay(),
-    importedReport(qy.from, qy.to),
-  ]);
+  // The rollups hold no cross-filter, so on that tier the chips are ignored on both sides.
+  const mode = ctx ? importMode(ctx.channel, qy.game, source === 'raw' ? qy.filters : []) : NO_IMPORT;
+  const part = (from: Date, to: Date): ImportPart | null => {
+    const win = ctx ? importWindow(ctx, from, to) : null;
+    return ctx && win ? { ctx, win, mode } : null;
+  };
+  const cur = part(qy.from, qy.to);
+  const prev = part(prevFrom, qy.from);
+  // imported days are whole days, so a range that reaches them is drawn by day
+  const grain = qy.grain === 'hour' && cur && mode.use !== 'none' ? 'day' : qy.grain;
+  const fq: RangeQuery = { ...qy, from: ownFrom, grain };
+
+  const [ownTotals, ownPrev, impTotals, impPrev, ownSeries, impSeries, breakdowns, events, eventProps, online, historyStart, dims] =
+    await Promise.all([
+      source === 'raw' ? rawTotals(ownFrom, qy.to, qy.game, qy.filters) : aggTotals(ownFrom, qy.to, qy.game),
+      prevRaw ? rawTotals(prevOwn, qy.from, qy.game, qy.filters) : aggTotals(prevOwn, qy.from, qy.game),
+      importedTotals(cur),
+      importedTotals(prev),
+      source === 'raw' ? rawSeries(fq) : aggSeries(fq),
+      importedSeries(cur),
+      breakdownsFor(fq, source, cur),
+      eventsFor(fq, source, cur),
+      eventPropsFor(fq, source, cur),
+      onlineNow(),
+      firstOwnDay(),
+      importedDims(cur),
+    ]);
+
+  // Sessions, bounces and their seconds are ours alone: the import never had them.
+  const add = (a: Totals, b: { views: number; visitors: number }): Totals => ({
+    ...a,
+    views: a.views + b.views,
+    visitors: a.visitors + b.visitors,
+  });
 
   return {
     source,
     rawFloor: floor.toISOString(),
-    totals,
-    previous,
-    series,
+    totals: add(ownTotals, impTotals),
+    previous: add(ownPrev, impPrev),
+    // the two halves cover disjoint days, so this is a concatenation, never a sum
+    series: [...impSeries, ...ownSeries].sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0)),
     breakdowns,
     events,
     eventProps,
     online,
     historyStart,
-    imported,
+    imported: null,
+    grain,
+    history: {
+      start: [ctx?.firstDay, historyStart].filter((d): d is string => !!d).sort()[0] ?? null,
+      ownFrom: ctx ? ctx.ownFrom : historyStart,
+      imported: ctx ? { source: ctx.source, firstDay: ctx.firstDay, lastDay: ctx.lastDay, channel: ctx.channel } : null,
+      inRange: cur !== null,
+      traffic: mode.use,
+      events: cur !== null && mode.why !== 'game',
+      why: mode.why,
+      dims,
+    },
   };
 }
+
+// ------------------------------------------- the imported history, folded in ----
+
+/**
+ * THE CHANNEL AN IMPORT BELONGS TO. The host's PRODUCTION project is the stable web site; a
+ * preview export (the alpha site) is imported as `vercel-preview`, into alpha's database. Either
+ * is web traffic only: the desktop app never loaded the host's script.
+ */
+const IMPORT_CHANNEL: Record<string, string> = { vercel: 'stable', 'vercel-preview': 'alpha' };
+
+/** the dimensions the import holds its own breakdown for, under the same ids as ours */
+const IMPORTED_DIMS = new Set(['path', 'ref', 'country', 'device', 'os', 'browser', 'utm_source', 'utm_medium', 'utm_campaign']);
+
+export interface ImportContext {
+  source: string;
+  channel: string;
+  /** the imported span */
+  firstDay: string;
+  lastDay: string;
+  /** the first day OUR pipeline counted this channel on, or null before it has */
+  ownFirst: string | null;
+  /** the first day read from our tables. Every day before it is read from the import. */
+  ownFrom: string | null;
+}
+
+export interface ImportMode {
+  use: 'all' | 'marginal' | 'none';
+  /** `marginal`: the one filter, answered from the import's own breakdown of that dimension */
+  on?: { dim: string; val: string };
+  why: 'game' | 'filter' | null;
+}
+
+const NO_IMPORT: ImportMode = { use: 'none', why: null };
+
+interface ImportPart {
+  ctx: ImportContext;
+  /** imported days `lo <= day < hi` */
+  win: { lo: string; hi: string };
+  mode: ImportMode;
+}
+
+const isoDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+const addDays = (day: string, n: number): string => isoDay(Date.parse(`${day}T00:00:00Z`) + n * DAY_MS);
+/** a `YYYY-MM-DD` bucket as the instant the chart plots it at */
+const dayInstant = (day: string): string => `${day}T00:00:00.000Z`;
+
+/**
+ * WHERE THE IMPORT ENDS AND OUR OWN COUNT BEGINS — derived from the data, never a constant.
+ *
+ * `ownFirst` is the earliest day our own tables hold traffic on the import's channel (the
+ * rollups, or the raw rows the rollup has not reached yet). That first day is PARTIAL: the
+ * pipeline was switched on during it. So when the import holds that day too, the import's
+ * whole-day count is used for it and ours starts the day after. When the import does not reach
+ * it, there is nothing better and ours starts on it.
+ *
+ * Imported rows on or after `ownFrom` are never read: the two sources overlap there, and one
+ * source per day is the rule.
+ */
+export async function importContext(): Promise<ImportContext | null> {
+  const span = await q<{ source: string; first: string; last: string }>(
+    `select source, to_char(min(day), 'YYYY-MM-DD') as first, to_char(max(day), 'YYYY-MM-DD') as last
+       from analytics_imported where dim = 'total' group by source order by min(day) limit 1`,
+  );
+  if (!span[0]) return null;
+  const source = span[0].source;
+  const channel = IMPORT_CHANNEL[source] ?? 'stable';
+  // Both lookups walk an index in day/instant order and stop at the first hit.
+  const own = await q<{ d: string | null; covered: boolean }>(
+    `with f as (
+       select least(
+         (select day from analytics_daily where game = '*' and dim = 'channel' and val = $2 order by day limit 1),
+         (select (at at time zone 'UTC')::date from analytics_pageviews where channel = $2 order by at limit 1)) as d)
+     select to_char(f.d, 'YYYY-MM-DD') as d,
+            exists (select 1 from analytics_imported i where i.source = $1 and i.day = f.d and i.dim = 'total') as covered
+       from f`,
+    [source, channel],
+  );
+  const first = own[0]?.d ?? null;
+  return {
+    source,
+    channel,
+    firstDay: span[0].first,
+    lastDay: span[0].last,
+    ownFirst: first,
+    ownFrom: first ? (own[0].covered ? addDays(first, 1) : first) : null,
+  };
+}
+
+/**
+ * THE IMPORTED DAYS A RANGE COVERS. The import is whole UTC days and a range is two instants,
+ * so each end is rounded to the NEAREST midnight: a "7 days" range that starts mid-afternoon
+ * does not pull in an eighth day, and the dashboard's local-midnight custom ranges land on the
+ * day the operator picked. Adjacent ranges (this one and the previous period) never share a day.
+ */
+export function importWindow(
+  ctx: Pick<ImportContext, 'firstDay' | 'lastDay' | 'ownFrom'>,
+  from: Date,
+  to: Date,
+): { lo: string; hi: string } | null {
+  const nearest = (d: Date): string => isoDay(Math.floor((d.getTime() + DAY_MS / 2) / DAY_MS) * DAY_MS);
+  const lo = [nearest(from), ctx.firstDay].sort()[1];
+  const hi = [nearest(to), addDays(ctx.lastDay, 1), ...(ctx.ownFrom ? [ctx.ownFrom] : [])].sort()[0];
+  return lo < hi ? { lo, hi } : null;
+}
+
+/**
+ * HOW THE IMPORTED DAYS CAN ANSWER THIS QUESTION, and they are left out when they cannot.
+ *
+ * The import is one channel of web traffic (`IMPORT_CHANNEL`), not split by game, and holds each
+ * breakdown on its own, so:
+ *   · a game pick leaves them out (the host never knew one);
+ *   · a channel or surface chip keeps them when it names what they are, and leaves them out
+ *     when it does not;
+ *   · ONE chip on a dimension the import has (a page, a country) is answered from that
+ *     breakdown's row: the totals, the chart and that panel. Two such chips cannot be: a
+ *     country AND a browser is a cross-filter, and the host kept no rows it could come from;
+ *   · a chip on a dimension it never had (screen, language, build) leaves them out.
+ * Leaving them out is stated on the page; guessing a share of them would be a number nobody
+ * measured.
+ */
+export function importMode(channel: string, game: string, filters: { dim: string; val: string }[]): ImportMode {
+  if (game && game !== '*') return { use: 'none', why: 'game' };
+  const out: ImportMode = { use: 'none', why: 'filter' };
+  let on: { dim: string; val: string } | undefined;
+  for (const f of filters) {
+    if (!dimColumn(f.dim)) continue; // not a dimension; `filterSql` drops it too
+    if (f.dim === 'channel') {
+      if (f.val !== channel) return out;
+    } else if (f.dim === 'surface') {
+      if (f.val !== 'web') return out;
+    } else if (!IMPORTED_DIMS.has(f.dim) || on) {
+      return out;
+    } else {
+      on = f;
+    }
+  }
+  return on ? { use: 'marginal', on, why: null } : { use: 'all', why: null };
+}
+
+/** the imported rows' window, as a `where` over `analytics_imported` */
+function impWhere(p: ImportPart, params: unknown[]): string {
+  params.push(p.ctx.source, p.win.lo, p.win.hi);
+  const n = params.length;
+  return `source = $${n - 2} and day >= $${n - 1}::date and day < $${n}::date`;
+}
+
+/** the row that stands for "all of it": the day's total, or the one filtered value */
+function impBase(p: ImportPart, params: unknown[]): string {
+  const base = p.mode.use === 'marginal' && p.mode.on ? p.mode.on : { dim: 'total', val: '*' };
+  params.push(base.dim, base.val);
+  return `dim = $${params.length - 1} and val = $${params.length}`;
+}
+
+async function importedTotals(p: ImportPart | null): Promise<{ views: number; visitors: number }> {
+  if (!p || p.mode.use === 'none') return { views: 0, visitors: 0 };
+  const params: unknown[] = [];
+  const where = `${impWhere(p, params)} and ${impBase(p, params)}`;
+  const rows = await q<{ views: string; visitors: string }>(
+    `select coalesce(sum(views), 0) as views, coalesce(sum(visitors), 0) as visitors from analytics_imported where ${where}`,
+    params,
+  );
+  return { views: Number(rows[0]?.views ?? 0), visitors: Number(rows[0]?.visitors ?? 0) };
+}
+
+async function importedSeries(p: ImportPart | null): Promise<{ t: string; views: number; visitors: number }[]> {
+  if (!p || p.mode.use === 'none') return [];
+  const params: unknown[] = [];
+  const where = `${impWhere(p, params)} and ${impBase(p, params)}`;
+  const rows = await q<{ d: string; views: string; visitors: string }>(
+    `select to_char(day, 'YYYY-MM-DD') as d, sum(views) as views, sum(visitors) as visitors
+       from analytics_imported where ${where} group by day order by day`,
+    params,
+  );
+  return rows.map((r) => ({ t: dayInstant(r.d), views: Number(r.views), visitors: Number(r.visitors) }));
+}
+
+/**
+ * The imported side of the breakdowns, as `(dim, val, views, visitors)` rows to `union all`
+ * with ours. Channel and surface are not in the import as breakdowns, but every imported row IS
+ * one channel of web traffic, so those two panels count its total under that value.
+ */
+function importedBreakdownSql(p: ImportPart | null, params: unknown[]): string | null {
+  if (!p || p.mode.use === 'none') return null;
+  const where = impWhere(p, params);
+  const base = impBase(p, params);
+  params.push(p.ctx.channel);
+  const chan = `$${params.length}::text`;
+  const native =
+    p.mode.use === 'marginal'
+      ? `select dim, val, views, visitors from analytics_imported where ${where} and ${base}`
+      : `select dim, val, views, visitors from analytics_imported where ${where} and dim not in ('total', 'event', 'evprop')`;
+  return `${native}
+    union all select 'channel', ${chan}, views, visitors from analytics_imported where ${where} and ${base}
+    union all select 'surface', 'web', views, visitors from analytics_imported where ${where} and ${base}`;
+}
+
+/** which breakdown panels the imported days reached, so the rest can say they are ours alone */
+async function importedDims(p: ImportPart | null): Promise<string[]> {
+  if (!p || p.mode.use === 'none') return [];
+  if (p.mode.use === 'marginal' && p.mode.on) return [p.mode.on.dim, 'channel', 'surface'];
+  const params: unknown[] = [];
+  const rows = await q<{ dim: string }>(
+    `select distinct dim from analytics_imported where ${impWhere(p, params)} and dim not in ('total', 'event', 'evprop')`,
+    params,
+  );
+  return [...rows.map((r) => r.dim).sort(), 'channel', 'surface'];
+}
+
+// ------------------------------------------------------------ the read itself ----
 
 /** `name|key|value` back into its parts. The value may itself contain `|`. */
 function splitEvprop(val: string): { name: string; key: string; val: string } {
@@ -1000,188 +1273,135 @@ function splitEvprop(val: string): { name: string; key: string; val: string } {
   return { name: val.slice(0, a), key: val.slice(a + 1, b), val: val.slice(b + 1) };
 }
 
-/** events off the daily rollups, for a range older than the raw tier keeps */
-async function aggEvents(qy: RangeQuery): Promise<{ name: string; views: number; visitors: number }[]> {
-  const rows = await q<{ name: string; views: string; visitors: string }>(
-    `select val as name, sum(views) as views, sum(visitors) as visitors from analytics_daily
-      where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
-        and game = $3 and dim = 'event'
-      group by 1 order by views desc limit 30`,
-    [qy.from, qy.to, qy.game || '*'],
-  );
-  return rows.map((r) => ({ name: r.name, views: Number(r.views), visitors: Number(r.visitors) }));
-}
-
-async function aggEventProps(qy: RangeQuery): Promise<{ name: string; key: string; val: string; views: number }[]> {
-  const rows = await q<{ val: string; views: string }>(
-    `select val, sum(views) as views from analytics_daily
-      where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
-        and game = $3 and dim = 'evprop'
-      group by 1 order by views desc limit 120`,
-    [qy.from, qy.to, qy.game || '*'],
-  );
-  return rows.map((r) => ({ ...splitEvprop(r.val), views: Number(r.views) }));
-}
-
 /** where this database's own traffic begins — the dashboard states it beside the imported span */
 async function firstOwnDay(): Promise<string | null> {
-  const rows = await q<{ d: Date | string | null }>(
-    `select least((select min(day) from analytics_daily where dim = 'total'),
-                  (select min((at at time zone 'UTC')::date) from analytics_pageviews)) as d`,
+  const rows = await q<{ d: string | null }>(
+    `select to_char(least((select min(day) from analytics_daily where dim = 'total'),
+                          (select min((at at time zone 'UTC')::date) from analytics_pageviews)), 'YYYY-MM-DD') as d`,
   );
-  const d = rows[0]?.d;
-  return d ? new Date(d).toISOString().slice(0, 10) : null;
+  return rows[0]?.d ?? null;
 }
 
 /**
- * THE IMPORTED HISTORY over a range, all games (the source never knew one). Days, not instants:
- * the source's days are UTC, and so are ours.
+ * A SERIES POINT'S INSTANT. A day bucket is formatted in SQL rather than handed back as a
+ * `date`, which the driver turns into LOCAL midnight — a day early or late on any machine that
+ * is not on UTC, and one bar off from the imported days beside it.
  */
-async function importedReport(from: Date, to: Date): Promise<ImportedReport | null> {
-  const span = await q<{ source: string; first: Date | string; last: Date | string }>(
-    `select source, min(day) as first, max(day) as last from analytics_imported
-      where dim = 'total' group by source order by min(day) limit 1`,
-  );
-  if (!span[0]) return null;
-  const source = span[0].source;
-  const day = (d: Date | string): string => new Date(d).toISOString().slice(0, 10);
-  // `to` is exclusive, so the last day is the one holding the instant just before it
-  const params = [source, day(from), day(new Date(to.getTime() - 1))];
-  const inRange = `source = $1 and day >= $2::date and day <= $3::date`;
-  const [series, breakdowns, events, props] = await Promise.all([
-    q<{ t: Date | string; views: string; visitors: string }>(
-      `select day as t, views, visitors from analytics_imported where ${inRange} and dim = 'total' order by day`,
-      params,
-    ),
-    q<{ dim: string; val: string; views: string; visitors: string }>(
-      `select dim, val, sum(views) as views, sum(visitors) as visitors from analytics_imported
-        where ${inRange} and dim not in ('total', 'event', 'evprop')
-        group by dim, val order by dim, views desc`,
-      params,
-    ),
-    q<{ name: string; views: string; visitors: string }>(
-      `select val as name, sum(views) as views, sum(visitors) as visitors from analytics_imported
-        where ${inRange} and dim = 'event' group by 1 order by views desc limit 30`,
-      params,
-    ),
-    q<{ val: string; views: string }>(
-      `select val, sum(views) as views from analytics_imported
-        where ${inRange} and dim = 'evprop' group by 1 order by views desc limit 120`,
-      params,
-    ),
-  ]);
-  const seen = new Map<string, number>();
-  const rows: BreakdownRow[] = [];
-  for (const r of breakdowns) {
-    const n = seen.get(r.dim) ?? 0;
-    if (n >= TOP_N) continue;
-    seen.set(r.dim, n + 1);
-    rows.push({ dim: r.dim, val: r.val ?? '', views: Number(r.views), visitors: Number(r.visitors) });
-  }
-  const s = series.map((r) => ({ t: new Date(r.t).toISOString(), views: Number(r.views), visitors: Number(r.visitors) }));
-  return {
-    source,
-    firstDay: day(span[0].first),
-    lastDay: day(span[0].last),
-    totals: { views: s.reduce((a, r) => a + r.views, 0), visitors: s.reduce((a, r) => a + r.visitors, 0) },
-    series: s,
-    breakdowns: rows,
-    events: events.map((r) => ({ name: r.name, views: Number(r.views), visitors: Number(r.visitors) })),
-    eventProps: props.map((r) => ({ ...splitEvprop(r.val), views: Number(r.views) })),
-  };
+function pointAt(t: Date | string): string {
+  return typeof t === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t) ? dayInstant(t) : new Date(t).toISOString();
 }
 
 async function rawSeries(qy: RangeQuery): Promise<{ t: string; views: number; visitors: number }[]> {
   const params: unknown[] = [qy.from, qy.to];
   const where = gameSql(qy.game, params) + filterSql(qy.filters, params);
+  const bucket = qy.grain === 'day' ? `to_char(${bucketExpr('day', 'at')}, 'YYYY-MM-DD')` : bucketExpr('hour', 'at');
   const rows = await q<{ t: Date | string; views: string; visitors: string }>(
-    `select ${bucketExpr(qy.grain, 'at')} as t, count(*) as views, count(distinct visitor) as visitors
+    `select ${bucket} as t, count(*) as views, count(distinct visitor) as visitors
        from analytics_pageviews
       where at >= $1 and at < $2 ${where}
       group by 1 order by 1`,
     params,
   );
-  return rows.map((r) => ({ t: new Date(r.t).toISOString(), views: Number(r.views), visitors: Number(r.visitors) }));
+  return rows.map((r) => ({ t: pointAt(r.t), views: Number(r.views), visitors: Number(r.visitors) }));
 }
 
 async function aggSeries(qy: RangeQuery): Promise<{ t: string; views: number; visitors: number }[]> {
-  const rows = await q<{ t: Date | string; views: string; visitors: string }>(
-    `select day as t, views, visitors from analytics_daily
+  const rows = await q<{ t: string; views: string; visitors: string }>(
+    `select to_char(day, 'YYYY-MM-DD') as t, views, visitors from analytics_daily
       where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
         and game = $3 and dim = 'total' order by day`,
     [qy.from, qy.to, qy.game || '*'],
   );
-  return rows.map((r) => ({ t: new Date(r.t).toISOString(), views: Number(r.views), visitors: Number(r.visitors) }));
+  return rows.map((r) => ({ t: pointAt(r.t), views: Number(r.views), visitors: Number(r.visitors) }));
 }
 
 /** how many rows each breakdown panel shows. Twelve is a panel; forty is a page nobody reads. */
 const TOP_N = 12;
 
 /**
- * EVERY BREAKDOWN IN ONE ROUND TRIP.
+ * THE TOP N PER DIMENSION, over rows from any number of sources. The sum comes FIRST and the
+ * trim after it: a value just outside our top twelve can be inside the combined one, so trimming
+ * each source on its own and adding the survivors would drop it.
+ */
+function topNSql(inner: string): string {
+  return `select dim, val, views, visitors from (
+      select dim, val, sum(views) as views, sum(visitors) as visitors,
+             row_number() over (partition by dim order by sum(views) desc, val) as rn
+        from (${inner}) u group by dim, val) r
+    where rn <= ${TOP_N} order by dim, views desc, val`;
+}
+
+/**
+ * EVERY BREAKDOWN IN ONE ROUND TRIP, imported days included.
  *
  * Fifteen separate queries would each re-scan the same range; one `union all` scans it once per
  * branch but ships a single result the panel can split, and — more usefully — it cannot get
- * fifteen slightly different `where` clauses. Each branch carries its own `limit`, so the
- * payload is bounded by the number of panels rather than by how many distinct countries
- * happened to visit.
+ * fifteen slightly different `where` clauses. `topNSql` bounds the payload by the number of
+ * panels rather than by how many distinct countries happened to visit.
+ *
+ * VISITORS ADD UP THE SAME WAY ON BOTH SIDES: ours is a count of distinct daily hashes over the
+ * range, which is a sum of daily uniques because a hash lives one day; the import's is its
+ * daily uniques, summed.
  */
-async function rawBreakdowns(qy: RangeQuery): Promise<BreakdownRow[]> {
+async function breakdownsFor(qy: RangeQuery, tier: 'raw' | 'aggregate', p: ImportPart | null): Promise<BreakdownRow[]> {
   const params: unknown[] = [qy.from, qy.to];
-  const where = gameSql(qy.game, params) + filterSql(qy.filters, params);
-  const branches = DIMENSIONS.filter((d) => d.id !== 'entry').map(
-    (d) => `(select '${d.id}' as dim, ${d.col} as val, count(*) as views, count(distinct visitor) as visitors
-               from analytics_pageviews where at >= $1 and at < $2 ${where}
-              group by 2 order by views desc limit ${TOP_N})`,
+  let own: string;
+  if (tier === 'raw') {
+    const where = gameSql(qy.game, params) + filterSql(qy.filters, params);
+    own = DIMENSIONS.filter((d) => d.id !== 'entry')
+      .map(
+        (d) => `select '${d.id}'::text as dim, ${d.col} as val, count(*) as views, count(distinct visitor) as visitors
+                  from analytics_pageviews where at >= $1 and at < $2 ${where} group by 2`,
+      )
+      .join(' union all ');
+  } else {
+    params.push(qy.game || '*');
+    own = `select dim, val, views, visitors from analytics_daily
+            where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
+              and game = $${params.length} and dim not in ('total', 'event', 'evprop')`;
+  }
+  const imp = importedBreakdownSql(p, params);
+  const rows = await q<{ dim: string; val: string; views: string; visitors: string }>(
+    topNSql(imp ? `${own} union all ${imp}` : own),
+    params,
   );
+  const out = rows.map((r) => ({ dim: r.dim, val: r.val ?? '', views: Number(r.views), visitors: Number(r.visitors) }));
+  if (tier === 'aggregate') return out; // entry pages are rolled up as `dim = 'entry'`, already in `out`
+
   // Entry pages come off the sessions rather than the views, so they need the CTE the others do
   // not. Kept in the same result set because the panel grid does not care where a row came from.
   const entryParams: unknown[] = [qy.from, qy.to];
   const entryWhere = gameSql(qy.game, entryParams) + filterSql(qy.filters, entryParams);
-  const [rows, entry] = await Promise.all([
-    q<{ dim: string; val: string; views: string; visitors: string }>(branches.join(' union all '), params),
-    q<{ val: string; views: string; visitors: string }>(
-      `with ${sessionCte(entryWhere)}
-       select path as val, count(*) as views, count(distinct visitor) as visitors
-         from sess group by 1 order by views desc limit ${TOP_N}`,
-      entryParams,
-    ),
-  ]);
-  return [
-    ...rows.map((r) => ({ dim: r.dim, val: r.val ?? '', views: Number(r.views), visitors: Number(r.visitors) })),
-    ...entry.map((r) => ({ dim: 'entry', val: r.val ?? '', views: Number(r.views), visitors: Number(r.visitors) })),
-  ];
-}
-
-async function aggBreakdowns(qy: RangeQuery): Promise<BreakdownRow[]> {
-  const rows = await q<{ dim: string; val: string; views: string; visitors: string }>(
-    `select dim, val, sum(views) as views, sum(visitors) as visitors
-       from analytics_daily
-      where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
-        and game = $3 and dim not in ('total', 'event', 'evprop')
-      group by dim, val order by dim, views desc`,
-    [qy.from, qy.to, qy.game || '*'],
+  const entry = await q<{ val: string; views: string; visitors: string }>(
+    `with ${sessionCte(entryWhere)}
+     select path as val, count(*) as views, count(distinct visitor) as visitors
+       from sess group by 1 order by views desc limit ${TOP_N}`,
+    entryParams,
   );
-  // The per-dimension `limit` that the raw branches apply in SQL is applied here instead: one
-  // grouped scan of a small table beats fifteen, and the trim is the same trim.
-  const seen = new Map<string, number>();
-  const out: BreakdownRow[] = [];
-  for (const r of rows) {
-    const n = seen.get(r.dim) ?? 0;
-    if (n >= TOP_N) continue;
-    seen.set(r.dim, n + 1);
-    out.push({ dim: r.dim, val: r.val ?? '', views: Number(r.views), visitors: Number(r.visitors) });
-  }
-  return out;
+  return [...out, ...entry.map((r) => ({ dim: 'entry', val: r.val ?? '', views: Number(r.views), visitors: Number(r.visitors) }))];
 }
 
-async function rawEvents(qy: RangeQuery): Promise<{ name: string; views: number; visitors: number }[]> {
+/**
+ * THE NAMED EVENTS, imported days included. Events have never followed the filter chips (a
+ * named event carries no country or referrer), so the imported ones are left out only by a game
+ * pick, which ours do follow.
+ */
+async function eventsFor(qy: RangeQuery, tier: 'raw' | 'aggregate', p: ImportPart | null): Promise<{ name: string; views: number; visitors: number }[]> {
   const params: unknown[] = [qy.from, qy.to];
-  const where = gameSql(qy.game, params);
+  let own: string;
+  if (tier === 'raw') {
+    own = `select name, count(*) as views, count(distinct visitor) as visitors
+             from analytics_events where at >= $1 and at < $2 ${gameSql(qy.game, params)} group by 1`;
+  } else {
+    params.push(qy.game || '*');
+    own = `select val as name, views, visitors from analytics_daily
+            where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
+              and game = $${params.length} and dim = 'event'`;
+  }
+  const imp = p && p.mode.why !== 'game' ? ` union all select val, views, visitors from analytics_imported where ${impWhere(p, params)} and dim = 'event'` : '';
   const rows = await q<{ name: string; views: string; visitors: string }>(
-    `select name, count(*) as views, count(distinct visitor) as visitors
-       from analytics_events where at >= $1 and at < $2 ${where}
-      group by 1 order by views desc limit 30`,
+    `select name, sum(views) as views, sum(visitors) as visitors from (${own}${imp}) u
+      group by 1 order by views desc, name limit 30`,
     params,
   );
   return rows.map((r) => ({ name: r.name, views: Number(r.views), visitors: Number(r.visitors) }));
@@ -1193,19 +1413,28 @@ async function rawEvents(qy: RangeQuery): Promise<{ name: string; views: number;
  *
  * An event count on its own answers "did this happen" and almost never the question somebody
  * arrived with. `jsonb_each_text` unrolls the bounded property bag `parseEvent` wrote, so the
- * panel can nest the values under the name without a column per property existing.
+ * panel can nest the values under the name without a column per property existing. Every source
+ * is brought to the rollups' `name|key|value` form so the three can be summed as one.
  */
-async function rawEventProps(qy: RangeQuery): Promise<{ name: string; key: string; val: string; views: number }[]> {
+async function eventPropsFor(qy: RangeQuery, tier: 'raw' | 'aggregate', p: ImportPart | null): Promise<{ name: string; key: string; val: string; views: number }[]> {
   const params: unknown[] = [qy.from, qy.to];
-  const where = gameSql(qy.game, params);
-  const rows = await q<{ name: string; key: string; val: string; views: string }>(
-    `select name, p.key, p.value as val, count(*) as views
-       from analytics_events e, lateral jsonb_each_text(e.props) p
-      where e.at >= $1 and e.at < $2 ${where}
-      group by 1, 2, 3 order by views desc limit 120`,
+  let own: string;
+  if (tier === 'raw') {
+    own = `select e.name || '|' || p.key || '|' || p.value as val, count(*) as views
+             from analytics_events e, lateral jsonb_each_text(e.props) p
+            where e.at >= $1 and e.at < $2 ${gameSql(qy.game, params)} group by 1`;
+  } else {
+    params.push(qy.game || '*');
+    own = `select val, views from analytics_daily
+            where day >= ($1 at time zone 'UTC')::date and day < ($2 at time zone 'UTC')::date
+              and game = $${params.length} and dim = 'evprop'`;
+  }
+  const imp = p && p.mode.why !== 'game' ? ` union all select val, views from analytics_imported where ${impWhere(p, params)} and dim = 'evprop'` : '';
+  const rows = await q<{ val: string; views: string }>(
+    `select val, sum(views) as views from (${own}${imp}) u group by 1 order by views desc, val limit 120`,
     params,
   );
-  return rows.map((r) => ({ name: r.name, key: r.key, val: r.val, views: Number(r.views) }));
+  return rows.map((r) => ({ ...splitEvprop(r.val), views: Number(r.views) }));
 }
 
 /** live sockets across every region with a fresh heartbeat — the "online now" tile */

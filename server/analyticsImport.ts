@@ -4,8 +4,8 @@ import { normalizePath } from '../src/pathScrub';
  * VERCEL WEB ANALYTICS EXPORT → `analytics_imported` ROWS. Pure: no database, no env.
  *
  * Input is the file `scripts/vercel-analytics-export.mjs` writes. Output is one row per
- * (day, dim, val), in the vocabulary the dashboard already speaks, so the imported section can
- * reuse every panel. Values are mapped onto ours where the two disagree only in spelling
+ * (day, dim, val), in the vocabulary the dashboard already speaks, so its days can be folded into
+ * the same panels as ours. Values are mapped onto ours where the two disagree only in spelling
  * ("Mac" is `macOS`, "Microsoft Edge" is `Edge`); anything else is kept as the source wrote it.
  *
  * ⚠️ PATHS ARE SCRUBBED HERE. The host recorded raw request paths, so a replay id or a username

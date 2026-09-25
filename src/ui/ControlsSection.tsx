@@ -6,7 +6,6 @@ import {
   PAD_ACTIONS,
   PAD_CHORD_GRACE_MAX_MS,
   PAD_CHORD_GRACE_MIN_MS,
-  PAD_CHORD_MAX,
   actionIsSeasonOnly,
   actionIsShared,
   assignKey,
@@ -40,6 +39,7 @@ import {
   type PadChord,
   type PadBindings,
 } from '../input/bindings';
+import { PadCapture } from '../input/padChords';
 import { resumePadNav, suspendPadNav } from '../input/padNav';
 import type { GameId } from '../games/types';
 import { seasonFor } from '../seasons';
@@ -204,6 +204,8 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
    *  shown live on the status line so a driver sees the combo build (`RT + …`). NOT on the
    *  keycap: a cap that grew to fit it moved every cap to its left (§1.4). */
   const [chordSoFar, setChordSoFar] = useState<PadChord>([]);
+  /** a lone pad button has been held past `PAD_HOLD_REMOVE_MS`: letting go removes the slot */
+  const [holding, setHolding] = useState(false);
   /**
    * THE CAPTURE EFFECTS DEPEND ON `capture` ALONE. `onChange` arrives as a fresh arrow from
    * `Configure` on every render, and the App re-renders every few seconds on its own (the
@@ -342,25 +344,27 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     return () => window.removeEventListener('keydown', onKey, true);
   }, [capture]);
 
-  // gamepad capture: everything that goes down AFTER capture starts, and is still down, is the
-  // bind. It COMMITS when any of those buttons is released (one button → a single, two or
-  // three → a combo) or the instant it reaches `PAD_CHORD_MAX`. Committing on release rather
-  // than on press is what lets a second button join; a single press costs the driver nothing
-  // but the release they were going to make anyway.
+  // gamepad capture (`PadCapture`): everything that goes down AFTER capture starts, and is still
+  // down, is the bind, committed when one of those buttons is released. HOLDING one button alone
+  // past `PAD_HOLD_REMOVE_MS` and letting go removes the slot instead (or cancels an empty one) —
+  // the pad's Backspace and Esc, since pad navigation cannot reach the `×` cap while a capture
+  // is armed. It runs for a KEY capture too, where a pad can bind nothing: a press cancels it
+  // and a hold removes the key, so a slot armed with A is never a dead end for a pad player.
   useEffect(() => {
-    if (!capture || capture.kind !== 'pad') return;
+    if (!capture) return;
     const { action, slot, game } = capture;
-    const alreadyDown = new Set<number>();
-    let first = true;
-    let done = false;
+    const cap = new PadCapture();
     let raf = 0;
-    let chord: number[] = [];
-    /** true when the capture is over; false when it was refused and stays armed */
     const panel = panelFor(action, game);
-    const commit = (): boolean => {
+    /** true when the capture is over; false when it was refused and stays armed */
+    const commit = (chord: number[]): boolean => {
+      if (capture.kind !== 'pad') {
+        setCapture(null);
+        return true;
+      }
       const b = bindingsRef.current;
       const sorted = [...chord].sort((x, y) => x - y);
-      const taken = padConflict(b, game, action, sorted);
+      const taken = padConflict(b, game, capture.action, sorted);
       if (taken) {
         setConflict({
           device: 'pad',
@@ -369,19 +373,16 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
           label: padBindLabel(sorted),
           scope: holderScope(taken),
         });
-        // re-arm: whatever is still held is swept into `alreadyDown` on the next frame, so
-        // only a fresh press can start the next attempt
-        chord = [];
-        first = true;
+        // re-arm: only a fresh press can start the next attempt
+        cap.rearm();
         setChordSoFar([]);
         return false;
       }
       onChangeRef.current(
-        game ? assignPadBindInGame(b, game, action, slot, chord) : assignPadBind(b, action, slot, chord),
+        game ? assignPadBindInGame(b, game, capture.action, slot, chord) : assignPadBind(b, capture.action, slot, chord),
       );
       setNotice({ text: `${ACTION_LABELS[action]}: ${padBindLabel(sorted)}`, panel });
       setConflict(null);
-      done = true;
       setCapture(null);
       return true;
     };
@@ -396,20 +397,18 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         for (let i = 0; i < pad.buttons.length; i++) {
           if (pad.buttons[i].pressed || pad.buttons[i].value > threshold) down.add(i);
         }
-        if (first) {
-          for (const i of down) alreadyDown.add(i);
-          first = false;
-        } else {
-          for (const i of alreadyDown) if (!down.has(i)) alreadyDown.delete(i);
-          if (chord.length > 0 && chord.some((i) => !down.has(i)) && !done) {
-            if (commit()) return;
-          } else {
-            const before = chord.length;
-            for (const i of down) if (!alreadyDown.has(i) && !chord.includes(i)) chord.push(i);
-            if (chord.length !== before) setChordSoFar([...chord]);
-            if (chord.length >= PAD_CHORD_MAX && !done && commit()) return;
-          }
+        const s = cap.step(down, performance.now());
+        if (s.t === 'remove') {
+          const b = bindingsRef.current;
+          const v = game ? effectiveBindings(b, game) : b;
+          const n = capture.kind === 'key' ? v.keys[capture.action].length : padBinds(v.pad, capture.action).length;
+          if (slot < n) removeSlot(capture);
+          else setCapture(null);
+          return;
         }
+        if (s.t === 'commit' && commit(s.chord)) return;
+        if (s.t === 'chord' && capture.kind === 'pad') setChordSoFar(s.chord);
+        setHolding(s.t === 'hold');
       }
       raf = requestAnimationFrame(poll);
     };
@@ -417,6 +416,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     return () => {
       cancelAnimationFrame(raf);
       setChordSoFar([]);
+      setHolding(false);
     };
   }, [capture]);
 
@@ -516,7 +516,21 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
    * notice. It takes the place of that card's TITLE, so capture is not announced by a keycap's
    * text alone and nothing on the page moves to make room for it.
    */
-  const live: Notice | null = capture && conflict
+  /** what the armed slot holds, as the player reads it — null for the add slot and UNBOUND */
+  const armedBind: string | null = !capture
+    ? null
+    : capture.kind === 'key'
+      ? capture.slot < view.keys[capture.action].length ? keyName(view.keys[capture.action][capture.slot]) : null
+      : capture.slot < padBinds(view.pad, capture.action).length
+        ? padBindLabel(padBinds(view.pad, capture.action)[capture.slot])
+        : null;
+  const armedFilled = armedBind !== null;
+  const live: Notice | null = capture && holding
+    ? {
+        panel: panelFor(capture.action, game),
+        text: armedBind ? `Release to remove ${armedBind} from ${ACTION_LABELS[capture.action]}.` : 'Release to cancel.',
+      }
+    : capture && conflict
     ? { panel: panelFor(capture.action, game), text: conflictText(conflict, scope), error: true }
     : capture
     ? {
@@ -524,11 +538,9 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         text:
           capture.kind === 'pad' && chordSoFar.length > 0
             ? `${ACTION_LABELS[capture.action]}: ${padBindLabel([...chordSoFar].sort((x, y) => x - y))} + …`
-            : `Press ${capture.kind === 'key' ? 'a key' : 'a button or combo'} for ${ACTION_LABELS[capture.action]}. Esc cancels${
-                capture.slot < (capture.kind === 'key' ? view.keys[capture.action].length : padBinds(view.pad, capture.action).length)
-                  ? ', Backspace removes'
-                  : ''
-              }.`,
+            : capture.kind === 'key'
+              ? `Press a key for ${ACTION_LABELS[capture.action]}. Esc cancels${armedFilled ? ', Backspace removes' : ''}.`
+              : `Press a button or combo for ${ACTION_LABELS[capture.action]}. Hold one to ${armedFilled ? 'remove' : 'cancel'}, or Esc.`,
       }
     : menuCapture
       ? { panel: 'match', text: 'Press a gamepad button for Menu. Esc cancels.' }

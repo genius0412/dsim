@@ -402,77 +402,6 @@ export function aiChecks(check: Check): void {
     );
   }
 
-  // ---- PERF: `step3d` WITH BOTS DRIVING ----------------------------------------------------
-  /**
-   * ⚠️ **A BOT-DRIVEN 2v2 IS A DIFFERENT MEASUREMENT FROM THE SIM3D LANE'S.** That one holds four
-   * SCRIPTED commands for the whole run, so the elements end up wherever the first few seconds
-   * put them and most of the match is four chassis pushing a settled field around. Bots CAPTURE,
-   * LAUNCH, TIP and SPILL, which is where the contact count actually lives — measured, the same
-   * 2v2 costs 0.255 ms median / 0.353 p95 on scripted commands and 0.345 / 0.498 with bots
-   * driving, i.e. the cheaper number is the one that is easy to keep passing.
-   *
-   * `performance.now()` rather than `Date.now()`: a 0.3 ms median is BELOW the resolution of the
-   * millisecond clock, so the scripted lane's own numbers are quantised to 0 or 1. A smoke script
-   * is not sim code and the determinism rule does not reach it.
-   *
-   * ⚠️ **BOTH ASSERTIONS ARE THE PLAN'S §3.10 BUDGET (1.5 ms), NOT THE MEASUREMENT.** A tighter
-   * watch was tried at the measured p95 plus a little — 0.75 ms — and it failed the first time the
-   * suite ran beside anything else on the box (0.778 ms), which is a check that reports the
-   * machine's load rather than the code's cost. The numbers to compare a suspicious run against
-   * are in the printed line and here: on an idle dev box this scene is median 0.345 ms, p95
-   * 0.498, p99 0.608, and the four bot decisions together are 0.004 ms.
-   */
-  {
-    const seats = [
-      seat(0, 'blue', 0, false),
-      seat(1, 'blue', 1, false),
-      seat(2, 'red', 0, false),
-      seat(3, 'red', 1, false),
-    ];
-    const world = createBiobuzzWorld('match', 99, seats, undefined, '3d');
-    startMatch(world);
-    const bots = [0, 1, 2, 3].map((id) => BIOBUZZ_BOT.create(world, id, 'hard', 99));
-    const cmds = new Map<number, RobotCommand>();
-    const step: number[] = [];
-    const think: number[] = [];
-    for (let t = 0; t < 1320; t++) {
-      const t0 = performance.now();
-      for (let i = 0; i < 4; i++) cmds.set(i, bots[i].step(world));
-      const t1 = performance.now();
-      biobuzzStep(world, SIM_DT, cmds);
-      const t2 = performance.now();
-      if (t >= 120) {
-        think.push(t1 - t0);
-        step.push(t2 - t1);
-      }
-    }
-    for (const b of bots) b.dispose?.();
-    const pct = (a: number[], p: number): number => {
-      const s = [...a].sort((x, y) => x - y);
-      return s[Math.min(s.length - 1, Math.floor(s.length * p))];
-    };
-    const median = pct(step, 0.5);
-    const p95 = pct(step, 0.95);
-    const thinkMedian = pct(think, 0.5);
-    console.log(
-      `[smoke-bb ai] step3d 2v2 with bots: median ${median.toFixed(3)}ms, p95 ${p95.toFixed(3)}ms` +
-        `  ·  4 bot decisions: median ${thinkMedian.toFixed(3)}ms`,
-    );
-    check('perf: bot-driven 2v2 step3d median <= 1.5ms (plan §3.10)', median <= 1.5, `median=${median.toFixed(3)}ms`);
-    check('perf: bot-driven 2v2 step3d p95 <= 1.5ms (plan §3.10)', p95 <= 1.5, `p95=${p95.toFixed(3)}ms (${step.length} samples)`);
-    /**
-     * AND THE DRIVER ITSELF IS FREE. Four bots re-solving a ballistic arc is the one thing in this
-     * lane that could plausibly cost a room anything, and it does not: the policy decides on a
-     * 6-tick cadence and holds in between, so 59 of every 60 ticks are a map lookup. If this ever
-     * approaches the step cost, the cadence is the lever, not the policy.
-     */
-    check(
-      'perf: four bot decisions cost under a fifth of the tick they ride on',
-      thinkMedian <= median * 0.2,
-      `bots ${thinkMedian.toFixed(3)}ms vs step ${median.toFixed(3)}ms`,
-    );
-  }
-
   // ---- R102: THE STOW HEIGHT AND THE DEPLOY LATCH (plan §3.3) -------------------------------
   {
     const short = coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, heightIn: 16 });
@@ -548,3 +477,81 @@ export function aiChecks(check: Check): void {
 /** the lane's own file list, exported so `docaudit`-style greps and a reader can see at a glance
  * that this lane owns no fixture of its own. */
 export const AI_LANE_SOURCES = relative(root, AI_DIR);
+
+/**
+ * The bot-driven step budget, run in the PERF lane (`index.ts`), which `npm test` runs on its own
+ * after every other shard. Run beside 17 other test processes it read p95 1.06-1.14 ms against
+ * 0.50 idle and crossed 1.5 now and then, which measured the suite's load, not `step3d`.
+ */
+export function aiPerfChecks(check: Check): void {
+  // ---- PERF: `step3d` WITH BOTS DRIVING ----------------------------------------------------
+  /**
+   * ⚠️ **A BOT-DRIVEN 2v2 IS A DIFFERENT MEASUREMENT FROM THE SIM3D LANE'S.** That one holds four
+   * SCRIPTED commands for the whole run, so the elements end up wherever the first few seconds
+   * put them and most of the match is four chassis pushing a settled field around. Bots CAPTURE,
+   * LAUNCH, TIP and SPILL, which is where the contact count actually lives — measured, the same
+   * 2v2 costs 0.255 ms median / 0.353 p95 on scripted commands and 0.345 / 0.498 with bots
+   * driving, i.e. the cheaper number is the one that is easy to keep passing.
+   *
+   * `performance.now()` rather than `Date.now()`: a 0.3 ms median is BELOW the resolution of the
+   * millisecond clock, so the scripted lane's own numbers are quantised to 0 or 1. A smoke script
+   * is not sim code and the determinism rule does not reach it.
+   *
+   * ⚠️ **BOTH ASSERTIONS ARE THE PLAN'S §3.10 BUDGET (1.5 ms), NOT THE MEASUREMENT.** A tighter
+   * watch was tried at the measured p95 plus a little — 0.75 ms — and it failed the first time the
+   * suite ran beside anything else on the box (0.778 ms), which is a check that reports the
+   * machine's load rather than the code's cost. The numbers to compare a suspicious run against
+   * are in the printed line and here: on an idle dev box this scene is median 0.345 ms, p95
+   * 0.498, p99 0.608, and the four bot decisions together are 0.004 ms.
+   */
+  {
+    const seats = [
+      seat(0, 'blue', 0, false),
+      seat(1, 'blue', 1, false),
+      seat(2, 'red', 0, false),
+      seat(3, 'red', 1, false),
+    ];
+    const world = createBiobuzzWorld('match', 99, seats, undefined, '3d');
+    startMatch(world);
+    const bots = [0, 1, 2, 3].map((id) => BIOBUZZ_BOT.create(world, id, 'hard', 99));
+    const cmds = new Map<number, RobotCommand>();
+    const step: number[] = [];
+    const think: number[] = [];
+    for (let t = 0; t < 1320; t++) {
+      const t0 = performance.now();
+      for (let i = 0; i < 4; i++) cmds.set(i, bots[i].step(world));
+      const t1 = performance.now();
+      biobuzzStep(world, SIM_DT, cmds);
+      const t2 = performance.now();
+      if (t >= 120) {
+        think.push(t1 - t0);
+        step.push(t2 - t1);
+      }
+    }
+    for (const b of bots) b.dispose?.();
+    const pct = (a: number[], p: number): number => {
+      const s = [...a].sort((x, y) => x - y);
+      return s[Math.min(s.length - 1, Math.floor(s.length * p))];
+    };
+    const median = pct(step, 0.5);
+    const p95 = pct(step, 0.95);
+    const thinkMedian = pct(think, 0.5);
+    console.log(
+      `[smoke-bb ai] step3d 2v2 with bots: median ${median.toFixed(3)}ms, p95 ${p95.toFixed(3)}ms` +
+        `  ·  4 bot decisions: median ${thinkMedian.toFixed(3)}ms`,
+    );
+    check('perf: bot-driven 2v2 step3d median <= 1.5ms (plan §3.10)', median <= 1.5, `median=${median.toFixed(3)}ms`);
+    check('perf: bot-driven 2v2 step3d p95 <= 1.5ms (plan §3.10)', p95 <= 1.5, `p95=${p95.toFixed(3)}ms (${step.length} samples)`);
+    /**
+     * AND THE DRIVER ITSELF IS FREE. Four bots re-solving a ballistic arc is the one thing in this
+     * lane that could plausibly cost a room anything, and it does not: the policy decides on a
+     * 6-tick cadence and holds in between, so 59 of every 60 ticks are a map lookup. If this ever
+     * approaches the step cost, the cadence is the lever, not the policy.
+     */
+    check(
+      'perf: four bot decisions cost under a fifth of the tick they ride on',
+      thinkMedian <= median * 0.2,
+      `bots ${thinkMedian.toFixed(3)}ms vs step ${median.toFixed(3)}ms`,
+    );
+  }
+}

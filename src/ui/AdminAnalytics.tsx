@@ -82,22 +82,34 @@ interface Report {
   online: number;
   /** first UTC day of this database's own traffic; absent from an older server */
   historyStart?: string | null;
-  /** Vercel Web Analytics history (migration 0052); absent from an older server */
-  imported?: Imported | null;
+  /** the grain `series` is at; a range reaching imported days comes back by day */
+  grain?: 'hour' | 'day';
+  /** which days are imported and how they entered the numbers; absent from an older server */
+  history?: History;
 }
 
 type EventRow = { name: string; views: number; visitors: number };
 type EventPropRow = { name: string; key: string; val: string; views: number };
 
-interface Imported {
-  source: string;
-  firstDay: string;
-  lastDay: string;
-  totals: { views: number; visitors: number };
-  series: SeriesPoint[];
-  breakdowns: BreakdownRow[];
-  events: EventRow[];
-  eventProps: EventPropRow[];
+/**
+ * WHERE THE NUMBERS COME FROM (`HistoryInfo` in server/analytics.ts). Days before `ownFrom` are
+ * Vercel Web Analytics' daily totals, from before DSIM counted itself; days from it on are ours.
+ * The server folds them into every number the two share, and says what it could not fold in.
+ */
+interface History {
+  start: string | null;
+  ownFrom: string | null;
+  imported: { source: string; firstDay: string; lastDay: string; channel: string } | null;
+  inRange: boolean;
+  traffic: 'all' | 'marginal' | 'none';
+  events: boolean;
+  why: 'game' | 'filter' | null;
+  dims: string[];
+}
+
+/** "Sep 22" for a UTC day. The server's days are UTC, so they are named in UTC here too. */
+function dayName(day: string): string {
+  return new Date(`${day}T00:00:00Z`).toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
 interface ProductReport {
@@ -202,6 +214,8 @@ const SCREEN_LABEL: Record<string, string> = {
 
 function labelFor(dim: string, val: string): string {
   if (!val) return BLANK_LABEL[dim] ?? '—';
+  // the host's remainder past its top 100 values, on the imported days
+  if (val === 'Others') return 'Other';
   if (dim === 'screen') return SCREEN_LABEL[val] ?? val;
   if (dim === 'surface') return val === 'electron' ? 'Desktop app' : 'Web';
   return val;
@@ -297,6 +311,15 @@ export function AdminAnalytics() {
   const avgSession = t && t.sessions ? t.seconds / t.sessions : 0;
   const prevAvg = prev && prev.sessions ? prev.seconds / prev.sessions : 0;
 
+  // IMPORTED DAYS ARE IN THIS RANGE'S TRAFFIC. Anything the import never had (sessions, entry
+  // pages, screens) then covers fewer days than the page views beside it, and says from when.
+  const h = report?.history ?? null;
+  const mixed = !!h && h.inRange && h.traffic !== 'none' && !!h.ownFrom;
+  const ownOnly = mixed && h?.ownFrom ? `from ${dayName(h.ownFrom)}` : undefined;
+  /** the first chart bucket that is ours, when the chart shows both sources */
+  const split = mixed && h?.ownFrom ? `${h.ownFrom}T00:00:00.000Z` : undefined;
+  const shownGrain = report?.grain ?? grain;
+
   return (
     <div className="an-root">
       <Toolbar
@@ -367,13 +390,13 @@ export function AdminAnalytics() {
             </p>
           )}
 
-          <HistoryNote start={report.historyStart ?? null} imported={report.imported ?? null} />
+          <HistoryNote history={h} historyStart={report.historyStart ?? null} />
           <div className="an-tiles">
             <Tile label="Visitors" value={fmt(t?.visitors ?? 0)} change={delta(t?.visitors ?? 0, prev?.visitors ?? 0)} sub="sum of daily uniques" />
             <Tile label="Page views" value={fmt(t?.views ?? 0)} change={delta(t?.views ?? 0, prev?.views ?? 0)} />
-            <Tile label="Sessions" value={fmt(t?.sessions ?? 0)} change={delta(t?.sessions ?? 0, prev?.sessions ?? 0)} />
-            <Tile label="Bounce rate" value={fmtPct(bounceRate)} change={delta(bounceRate, prevBounce)} good="down" />
-            <Tile label="Avg. session" value={fmtDuration(avgSession)} change={delta(avgSession, prevAvg)} />
+            <Tile label="Sessions" value={fmt(t?.sessions ?? 0)} change={delta(t?.sessions ?? 0, prev?.sessions ?? 0)} sub={ownOnly} />
+            <Tile label="Bounce rate" value={fmtPct(bounceRate)} change={delta(bounceRate, prevBounce)} good="down" sub={ownOnly} />
+            <Tile label="Avg. session" value={fmtDuration(avgSession)} change={delta(avgSession, prevAvg)} sub={ownOnly} />
             <Tile label="Online now" value={fmtExact(report.online)} good="none" sub="live sockets, every region" />
           </div>
 
@@ -384,14 +407,18 @@ export function AdminAnalytics() {
                 type="button"
                 className="ds-btn ghost small"
                 onClick={() =>
-                  downloadCsv(`dsim-traffic-${stamp()}.csv`, ['bucket', 'views', 'visitors'], report.series.map((s) => [s.t, s.views, s.visitors]))
+                  downloadCsv(
+                    `dsim-traffic-${stamp()}.csv`,
+                    ['bucket', 'views', 'visitors', 'source'],
+                    report.series.map((s) => [s.t, s.views, s.visitors, split && s.t < split ? 'vercel' : 'dsim']),
+                  )
                 }
               >
                 Export CSV
               </button>
             </div>
             <div className="ds-panel-body">
-              <TimeSeries data={report.series} grain={grain} />
+              <TimeSeries data={report.series} grain={shownGrain} split={split} />
             </div>
           </section>
 
@@ -399,7 +426,10 @@ export function AdminAnalytics() {
             {Object.keys(DIM_LABELS).map((dim) => (
               <section key={dim} className="ds-panel an-panel">
                 <div className="ds-panel-h">
-                  <h2 className="ds-panel-title">{DIM_LABELS[dim]}</h2>
+                  <h2 className="ds-panel-title">
+                    {DIM_LABELS[dim]}
+                    {ownOnly && !h?.dims.includes(dim) && <span className="an-own"> {ownOnly}</span>}
+                  </h2>
                   <button
                     type="button"
                     className="ds-btn ghost small"
@@ -426,15 +456,7 @@ export function AdminAnalytics() {
 
           <EventsPanel events={report.events} props={report.eventProps} />
 
-          <SponsorReport
-            events={report.events}
-            props={report.eventProps}
-            sessions={t?.sessions ?? 0}
-            visitors={t?.visitors ?? 0}
-            file="dsim-sponsor"
-          />
-
-          {report.imported && <ImportedSection data={report.imported} game={game} />}
+          <SponsorReport events={report.events} props={report.eventProps} sessions={t?.sessions ?? 0} sessionsFrom={ownOnly} />
         </>
       )}
 
@@ -538,15 +560,7 @@ function Toolbar(props: {
  * REASON. The properties are already bounded at the ingest boundary, so showing them all is
  * bounded too.
  */
-function EventsPanel({
-  events,
-  props,
-  file = 'dsim-events',
-}: {
-  events: EventRow[];
-  props: EventPropRow[];
-  file?: string;
-}) {
+function EventsPanel({ events, props }: { events: EventRow[]; props: EventPropRow[] }) {
   const [open, setOpen] = useState<string | null>(null);
   return (
     <section className="ds-panel">
@@ -555,7 +569,7 @@ function EventsPanel({
         <button
           type="button"
           className="ds-btn ghost small"
-          onClick={() => downloadCsv(`${file}-${stamp()}.csv`, ['event', 'count', 'visitors'], events.map((e) => [e.name, e.views, e.visitors]))}
+          onClick={() => downloadCsv(`dsim-events-${stamp()}.csv`, ['event', 'count', 'visitors'], events.map((e) => [e.name, e.views, e.visitors]))}
         >
           Export CSV
         </button>
@@ -623,19 +637,31 @@ function EventsPanel({
 
 // ---- where the history starts -------------------------------------------------
 
-/** Tells the reader where the numbers begin, so an empty early range is not read as no traffic. */
-function HistoryNote({ start, imported }: { start: string | null; imported: Imported | null }) {
-  if (!start && !imported) return null;
+/**
+ * WHERE THE NUMBERS BEGIN, AND WHOSE THEY ARE. One line: the combined start, the day DSIM's own
+ * count takes over from the imported one (the chart marks it), and, when this range reaches the
+ * imported days, anything they could not be counted into.
+ */
+function HistoryNote({ history: h, historyStart }: { history: History | null; historyStart: string | null }) {
+  if (!h) return historyStart ? <p className="ds-hint">First-party history starts {historyStart}.</p> : null;
+  if (!h.start) return <p className="ds-hint">No traffic recorded yet.</p>;
+  let left = '';
+  if (h.imported && h.inRange && h.traffic === 'none') {
+    left =
+      h.why === 'game'
+        ? ' Those days are left out here: Vercel did not split traffic by game.'
+        : ' Those days are left out of the traffic numbers: Vercel’s counts can’t be filtered this way. Events still include them.';
+  } else if (h.imported && h.inRange && h.traffic === 'marginal' && h.dims[0]) {
+    left = ` With this filter, those days count in the totals, the chart and the ${DIM_LABELS[h.dims[0]] ?? h.dims[0]} panel.`;
+  }
   return (
     <p className="ds-hint">
-      {start ? <>First-party history starts {start}.</> : <>No first-party traffic recorded yet.</>}
-      {imported && (
-        <>
-          {' '}
-          Vercel Web Analytics history from {imported.firstDay} to {imported.lastDay} is imported and shown in
-          its own section below, never added into these numbers.
-        </>
-      )}
+      History starts {dayName(h.start)}.
+      {h.imported &&
+        (h.ownFrom
+          ? ` Before ${dayName(h.ownFrom)} the numbers are Vercel Web Analytics counts.`
+          : ' These are Vercel Web Analytics counts.')}
+      {left}
     </p>
   );
 }
@@ -656,15 +682,13 @@ function SponsorReport({
   events,
   props,
   sessions,
-  visitors,
-  file,
+  sessionsFrom,
 }: {
   events: EventRow[];
   props: EventPropRow[];
-  /** null where the source never counted sessions (the imported history) */
-  sessions: number | null;
-  visitors: number;
-  file: string;
+  sessions: number;
+  /** "from Sep 22" when the range reaches imported days, which counted no sessions */
+  sessionsFrom?: string;
 }) {
   const count = (name: string): number => events.find((e) => e.name === name)?.views ?? 0;
   const values = (name: string, key: string): Map<string, number> => {
@@ -694,7 +718,7 @@ function SponsorReport({
     ...dwell.map((d): [string, string, number] => ['time on screen', d.val, d.views]),
     ...formats.map((f): [string, string, number] => ['videos with the mark', f.val, f.views]),
     ...oses.map((o): [string, string, number] => ['desktop downloads', o.val, o.views]),
-    sessions === null ? ['visitors (daily uniques)', 'site', visitors] : ['sessions', 'site', sessions],
+    ['sessions', sessionsFrom ? `site, ${sessionsFrom}` : 'site', sessions],
     ['new players', 'player_joined', count('player_joined')],
   ];
 
@@ -705,7 +729,7 @@ function SponsorReport({
         <button
           type="button"
           className="ds-btn ghost small"
-          onClick={() => downloadCsv(`${file}-${stamp()}.csv`, ['line', 'breakdown', 'value'], lines)}
+          onClick={() => downloadCsv(`dsim-sponsor-${stamp()}.csv`, ['line', 'breakdown', 'value'], lines)}
         >
           Export CSV
         </button>
@@ -765,9 +789,8 @@ function SponsorReport({
               </div>
             </div>
             <p className="ds-hint">
-              {sessions === null
-                ? `Visitors: ${fmtExact(visitors)} (sum of daily uniques; this source counted no sessions).`
-                : `Sessions: ${fmtExact(sessions)}.`}{' '}
+              Sessions: {fmtExact(sessions)}
+              {sessionsFrom && ` (${sessionsFrom})`}.{' '}
               New players: {fmtExact(count('player_joined'))}. An impression is a view of at least half the mark
               for one second; videos are files exported, not views of them.
             </p>
@@ -775,98 +798,6 @@ function SponsorReport({
         </>
       )}
     </section>
-  );
-}
-
-// ---- the imported history -----------------------------------------------------
-
-/** the dimensions the imported source has, in the live grid's order */
-const IMPORTED_DIMS = ['path', 'ref', 'utm_source', 'utm_medium', 'utm_campaign', 'country', 'device', 'os', 'browser'];
-
-/**
- * VERCEL WEB ANALYTICS, BEFORE DSIM COUNTED ITSELF (migration 0052). Its own section, never
- * summed with the live numbers: the two overlap by days and were counted differently.
- */
-function ImportedSection({ data, game }: { data: Imported; game: string }) {
-  const rows = (dim: string): BreakdownRow[] => data.breakdowns.filter((b) => b.dim === dim);
-  const dims = IMPORTED_DIMS.filter((d) => rows(d).length > 0);
-  const label = (dim: string, v: string): string => (v === 'Others' ? 'Everything else' : labelFor(dim, v));
-  return (
-    <>
-      <h2 className="ds-h2 an-h2">Imported history: Vercel Web Analytics</h2>
-      <p className="ds-sub an-sub">
-        {data.firstDay} to {data.lastDay}, exported when Vercel Analytics was removed. Page views and daily
-        unique visitors only: no sessions, bounce rate or filters, each breakdown keeps its top 100 values
-        (the rest are &ldquo;Everything else&rdquo;), and paths were scrubbed on import.
-        {game !== '*' && ' It is not split by game, so this section ignores the game picker.'}
-      </p>
-
-      {data.series.length === 0 ? (
-        <p className="ds-hint">The selected range does not reach the imported days.</p>
-      ) : (
-        <>
-          <div className="an-tiles">
-            <Tile label="Page views" value={fmt(data.totals.views)} good="none" />
-            <Tile label="Visitors" value={fmt(data.totals.visitors)} good="none" sub="sum of daily uniques" />
-          </div>
-
-          <section className="ds-panel">
-            <div className="ds-panel-h">
-              <h3 className="ds-panel-title">Traffic (imported)</h3>
-              <button
-                type="button"
-                className="ds-btn ghost small"
-                onClick={() =>
-                  downloadCsv(`dsim-vercel-traffic-${stamp()}.csv`, ['day', 'views', 'visitors'], data.series.map((s) => [s.t.slice(0, 10), s.views, s.visitors]))
-                }
-              >
-                Export CSV
-              </button>
-            </div>
-            <div className="ds-panel-body">
-              <TimeSeries data={data.series} grain="day" />
-            </div>
-          </section>
-
-          <div className="an-grid">
-            {dims.map((dim) => (
-              <section key={dim} className="ds-panel an-panel">
-                <div className="ds-panel-h">
-                  <h3 className="ds-panel-title">{DIM_LABELS[dim]}</h3>
-                  <button
-                    type="button"
-                    className="ds-btn ghost small"
-                    onClick={() =>
-                      downloadCsv(`dsim-vercel-${dim}-${stamp()}.csv`, [dim, 'views', 'visitors'], rows(dim).map((r) => [label(dim, r.val), r.views, r.visitors]))
-                    }
-                  >
-                    CSV
-                  </button>
-                </div>
-                <div className="ds-panel-body">
-                  <BarList
-                    rows={rows(dim)}
-                    total={rows(dim).reduce((s, r) => s + r.views, 0)}
-                    labelOf={(v) => label(dim, v)}
-                    empty="No rows in this range."
-                  />
-                </div>
-              </section>
-            ))}
-          </div>
-
-          <EventsPanel events={data.events} props={data.eventProps} file="dsim-vercel-events" />
-
-          <SponsorReport
-            events={data.events}
-            props={data.eventProps}
-            sessions={null}
-            visitors={data.totals.visitors}
-            file="dsim-vercel-sponsor"
-          />
-        </>
-      )}
-    </>
   );
 }
 

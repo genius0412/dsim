@@ -93,13 +93,59 @@ function authoritative(w: World, c: RobotCommand, ticks: number): PredictedPose 
 
 /** re-step `ticks` inputs through a predictor and return its final pose plus the wall time. */
 function replay(p: Predictor, c: RobotCommand, ticks: number): { pose: PredictedPose; ms: number } {
-  const t0 = Date.now();
+  const t0 = performance.now();
   let pose = p.step(c);
   for (let i = 1; i < ticks; i++) pose = p.step(c);
-  return { pose, ms: Date.now() - t0 };
+  return { pose, ms: performance.now() - t0 };
 }
 
+/**
+ * HOW MANY TIMES A BUDGET IS MEASURED, AND WHY THE BUDGET READS THE MINIMUM.
+ *
+ * A reconcile is deterministic work: the same world and the same inputs execute the same
+ * instructions every time. Everything else that lands in a wall-clock reading (another process
+ * on the core, an interrupt, a GC pause from the previous lane) is ADDED to it, never taken away,
+ * so the fastest of many readings is the best estimate of what the reconcile itself costs. That
+ * is the number the budget is written against. A slower reconcile raises every reading, the
+ * minimum included, so a real regression still fails.
+ *
+ * Thirty readings of a 4 ms reconcile cost ~0.15 s. It was the best of FIVE on `Date.now()`
+ * (1 ms steps), which is too few to reliably catch one clean reading.
+ *
+ * ⚠️ **THE MINIMUM REMOVES INTERRUPTIONS, NOT A SLOWER CORE.** With 18 test processes on 16
+ * physical cores (a busy hyperthread sibling, lower all-core clocks) every reading is slower, the
+ * fastest one included: 6.3-7.4 ms here against 4.0 idle (2026-09-25). That is why these checks
+ * run in the PERF lane, which `npm test` runs alone after the other shards (`predictPerfChecks`).
+ *
+ * Not CPU time: `process.cpuUsage()` on Windows advances in 15.6 ms steps (measured: every
+ * nonzero delta is 15000 or 16000 us), longer than the thing being timed, and it counts the GC
+ * and worker threads too.
+ */
+const TIMING_REPS = 30;
+
 const dist = (a: PredictedPose, b: PredictedPose): number => Math.hypot(a.pos.x - b.pos.x, a.pos.y - b.pos.y);
+
+/** the local robot 30 in from the +y wall, facing it, with an archetype's reach hardware on. */
+const archWallScene = (seed: number, archSpec: Partial<RobotSpec>): World => {
+  const w = mkWorld3dPair('free', seed, archSpec);
+  w.balls.length = 0;
+  const r = w.robots[LOCAL];
+  r.hopper.length = 0;
+  r.pos.x = 0;
+  r.pos.y = BB_HALF_Y - 30;
+  r.heading = Math.PI / 2; // 'front' mount faces +y, straight at the wall
+  r.vel = { x: 0, y: 0 };
+  r.angVel = 0;
+  return w;
+};
+const SIDEROLLER_SPEC: Partial<RobotSpec> = {
+  intakeMount: 'front',
+  bbMech: { launcher: null, lift: null, intake: { kind: 'siderollers' } } as unknown as RobotSpec['bbMech'],
+};
+const RAMP_SPEC: Partial<RobotSpec> = {
+  intakeMount: 'front',
+  bbMech: { launcher: null, lift: null, intake: { kind: 'ramp' } } as unknown as RobotSpec['bbMech'],
+};
 
 export function predictChecks(check: Check): void {
   // ---- a DISABLED robot does not move, in either predictor --------------------------------------
@@ -156,8 +202,8 @@ export function predictChecks(check: Check): void {
     const dl = dist(lr.pose, auth);
     const df = dist(fr.pose, auth);
     console.log(
-      `[smoke-bb predict] open floor, ${PREDICT_MAX_TICKS} ticks: light off by ${dl.toFixed(3)}in (${lr.ms}ms), ` +
-        `full off by ${df.toFixed(3)}in (${fr.ms}ms); the robot travelled ${Math.hypot(auth.pos.x, auth.pos.y - 20).toFixed(1)}in`,
+      `[smoke-bb predict] open floor, ${PREDICT_MAX_TICKS} ticks: light off by ${dl.toFixed(3)}in (${lr.ms.toFixed(1)}ms), ` +
+        `full off by ${df.toFixed(3)}in (${fr.ms.toFixed(1)}ms); the robot travelled ${Math.hypot(auth.pos.x, auth.pos.y - 20).toFixed(1)}in`,
     );
     check(
       `open floor: LIGHT lands on the authoritative pose (under ${SMOOTH_MAX_DIST}in, the snap threshold)`,
@@ -209,7 +255,7 @@ export function predictChecks(check: Check): void {
     const df = dist(fr.pose, auth);
     console.log(
       `[smoke-bb predict] scripted push (4 POLLEN into the +y wall), ${PREDICT_MAX_TICKS} ticks: ` +
-        `light off by ${dl.toFixed(3)}in (${lr.ms}ms), full off by ${df.toFixed(3)}in (${fr.ms}ms)`,
+        `light off by ${dl.toFixed(3)}in (${lr.ms.toFixed(1)}ms), full off by ${df.toFixed(3)}in (${fr.ms.toFixed(1)}ms)`,
     );
     check(
       `scripted push: LIGHT converges within SMOOTH_MAX_DIST (${SMOOTH_MAX_DIST}in) so the correction EASES, never snaps`,
@@ -234,51 +280,6 @@ export function predictChecks(check: Check): void {
     );
     light.dispose();
     full.dispose();
-  }
-
-  // ---- the budgets ---------------------------------------------------------------------------
-  //
-  // MEASURED ON THIS MACHINE, and reported whatever they say. `PREDICT_FULL_BUDGET_MS` is a
-  // DECISION threshold that Auto evaluates on the player's own device during the countdown, so a
-  // dev box passing it is not a promise about a phone — it is the floor under which the constant
-  // is a sane default at all.
-  {
-    const w = pushScene(1002);
-    const drive = cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 });
-    const light = createLightPredictor(w, LOCAL);
-    let lightMs = Infinity;
-    for (let i = 0; i < 5; i++) {
-      light.reset(w, w.tick);
-      lightMs = Math.min(lightMs, replay(light, drive, PREDICT_MAX_TICKS).ms);
-    }
-    light.dispose();
-    const full = createFullPredictor(w, LOCAL);
-    let fullMs = Infinity;
-    for (let i = 0; i < 5; i++) {
-      full.reset(w, w.tick);
-      fullMs = Math.min(fullMs, replay(full, drive, PREDICT_MAX_TICKS).ms);
-    }
-    full.dispose();
-    const probe = probeFullReconcileMs(w, LOCAL, () => Date.now());
-    console.log(
-      `[smoke-bb predict] budgets, best of 5: LIGHT ${lightMs}ms (budget ${PREDICT_LIGHT_BUDGET_MS}), ` +
-        `FULL ${fullMs}ms (budget ${PREDICT_FULL_BUDGET_MS}); probeFullReconcileMs reports ${probe.toFixed(1)}ms`,
-    );
-    check(
-      `LIGHT reconciles ${PREDICT_MAX_TICKS} ticks inside ${PREDICT_LIGHT_BUDGET_MS}ms`,
-      lightMs <= PREDICT_LIGHT_BUDGET_MS,
-      `${lightMs}ms`,
-    );
-    check(
-      `FULL reconciles ${PREDICT_MAX_TICKS} ticks inside PREDICT_FULL_BUDGET_MS (${PREDICT_FULL_BUDGET_MS}ms)`,
-      fullMs <= PREDICT_FULL_BUDGET_MS,
-      `${fullMs}ms on this machine`,
-    );
-    check(
-      'the Auto probe measures the same thing the budget is written against',
-      Number.isFinite(probe) && probe <= PREDICT_FULL_BUDGET_MS * 3,
-      `probe ${probe.toFixed(1)}ms vs a direct replay of ${fullMs}ms`,
-    );
   }
 
   // ---- what FULL carries, and what it leaves out -----------------------------------------------
@@ -371,27 +372,6 @@ export function predictChecks(check: Check): void {
   // side rollers or a deployed ramp would rubber-band ~1.9in / ~2.17in at every wall the
   // authority stands them off from and the predictor does not.
   // =============================================================================================
-  const archWallScene = (seed: number, archSpec: Partial<RobotSpec>): World => {
-    const w = mkWorld3dPair('free', seed, archSpec);
-    w.balls.length = 0;
-    const r = w.robots[LOCAL];
-    r.hopper.length = 0;
-    r.pos.x = 0;
-    r.pos.y = BB_HALF_Y - 30;
-    r.heading = Math.PI / 2; // 'front' mount faces +y, straight at the wall
-    r.vel = { x: 0, y: 0 };
-    r.angVel = 0;
-    return w;
-  };
-  const SIDEROLLER_SPEC: Partial<RobotSpec> = {
-    intakeMount: 'front',
-    bbMech: { launcher: null, lift: null, intake: { kind: 'siderollers' } } as unknown as RobotSpec['bbMech'],
-  };
-  const RAMP_SPEC: Partial<RobotSpec> = {
-    intakeMount: 'front',
-    bbMech: { launcher: null, lift: null, intake: { kind: 'ramp' } } as unknown as RobotSpec['bbMech'],
-  };
-
   // (f) FULL agrees with the authority on the wall standoff, for both a side-roller build and a
   // DEPLOYED ramp — the LIGHT predictor is not part of this claim (it has no colliders at all;
   // that is the trade `createLightPredictor`'s own header documents).
@@ -441,38 +421,6 @@ export function predictChecks(check: Check): void {
       `wall standoff: FULL agrees with the authority within ${tol}in for ${label} (both carry the reach hardware now)`,
       df < tol,
       `off by ${df.toFixed(3)}in`,
-    );
-  }
-
-  // the reconcile-cost delta the reach hardware buys, measured directly against the SAME
-  // 40-tick budget the mouth-pocket compound was rejected over (`predict.ts`'s own note above
-  // `makeRobotBody`) — a handful of small boxes is a different trade from a whole compound.
-  {
-    const baseline = pushScene(9210); // the file's own default-spec fixture, no archetype
-    let baselineMs = Infinity;
-    for (let i = 0; i < 5; i++) baselineMs = Math.min(baselineMs, probeFullReconcileMs(baseline, LOCAL, () => Date.now()));
-    const sideWorld = archWallScene(9211, SIDEROLLER_SPEC);
-    let sideMs = Infinity;
-    for (let i = 0; i < 5; i++) sideMs = Math.min(sideMs, probeFullReconcileMs(sideWorld, LOCAL, () => Date.now()));
-    const rampWorld = archWallScene(9212, RAMP_SPEC);
-    rampWorld.robots[LOCAL].bbRampOut = true;
-    rampWorld.robots[LOCAL].bbRampAt = -10;
-    let rampMs = Infinity;
-    for (let i = 0; i < 5; i++) rampMs = Math.min(rampMs, probeFullReconcileMs(rampWorld, LOCAL, () => Date.now()));
-    console.log(
-      `[smoke-bb predict] FULL reconcile cost, best of 5, ${PREDICT_MAX_TICKS} ticks: ` +
-        `no archetype (baseline) ${baselineMs.toFixed(1)}ms · SIDE ROLLERS ${sideMs.toFixed(1)}ms · DEPLOYED RAMP ${rampMs.toFixed(1)}ms · ` +
-        `budget ${PREDICT_FULL_BUDGET_MS}ms`,
-    );
-    check(
-      `FULL still reconciles inside PREDICT_FULL_BUDGET_MS with SIDE ROLLERS live`,
-      sideMs <= PREDICT_FULL_BUDGET_MS,
-      `${sideMs.toFixed(1)}ms vs budget ${PREDICT_FULL_BUDGET_MS}ms (baseline ${baselineMs.toFixed(1)}ms)`,
-    );
-    check(
-      `FULL still reconciles inside PREDICT_FULL_BUDGET_MS with a DEPLOYED RAMP live`,
-      rampMs <= PREDICT_FULL_BUDGET_MS,
-      `${rampMs.toFixed(1)}ms vs budget ${PREDICT_FULL_BUDGET_MS}ms (baseline ${baselineMs.toFixed(1)}ms)`,
     );
   }
 
@@ -533,5 +481,93 @@ export function predictChecks(check: Check): void {
       rows.push(`${key}: predicted max z ${pred.toFixed(2)}, authority ${auth.toFixed(2)}, got within ${reached.toFixed(1)} in of the wall`);
     }
     check('⚠️ predict: a full hopper driven into a wall row of POLLEN does not lift the predicted robot', ok, rows.join(' · '));
+  }
+}
+
+/**
+ * THE BUDGETS: every check here compares a wall-clock reading against an absolute number of
+ * milliseconds, so it runs in the PERF lane (`index.ts`), not in this one. `npm test` runs that
+ * lane on its own after every other shard has finished (`bbshard.mjs`, `test-all.mjs`), because a
+ * budget is a claim about what the work costs on an otherwise idle machine, and under 18
+ * processes the core itself runs slower: the minimum of 30 readings still read 6.3-7.4 ms there
+ * for a reconcile that costs 4.0 ms alone. `TIMING_REPS` handles the rest (other programs,
+ * interrupts, GC).
+ */
+export function predictPerfChecks(check: Check): void {
+  // ---- the budgets ---------------------------------------------------------------------------
+  //
+  // MEASURED ON THIS MACHINE, and reported whatever they say. `PREDICT_FULL_BUDGET_MS` is a
+  // DECISION threshold that Auto evaluates on the player's own device during the countdown, so a
+  // dev box passing it is not a promise about a phone — it is the floor under which the constant
+  // is a sane default at all.
+  {
+    const w = pushScene(1002);
+    const drive = cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 });
+    const light = createLightPredictor(w, LOCAL);
+    let lightMs = Infinity;
+    for (let i = 0; i < TIMING_REPS; i++) {
+      light.reset(w, w.tick);
+      lightMs = Math.min(lightMs, replay(light, drive, PREDICT_MAX_TICKS).ms);
+    }
+    light.dispose();
+    const full = createFullPredictor(w, LOCAL);
+    let fullMs = Infinity;
+    for (let i = 0; i < TIMING_REPS; i++) {
+      full.reset(w, w.tick);
+      fullMs = Math.min(fullMs, replay(full, drive, PREDICT_MAX_TICKS).ms);
+    }
+    full.dispose();
+    const probe = probeFullReconcileMs(w, LOCAL, () => performance.now());
+    console.log(
+      `[smoke-bb predict] budgets, best of ${TIMING_REPS}: LIGHT ${lightMs.toFixed(2)}ms (budget ${PREDICT_LIGHT_BUDGET_MS}), ` +
+        `FULL ${fullMs.toFixed(2)}ms (budget ${PREDICT_FULL_BUDGET_MS}); probeFullReconcileMs reports ${probe.toFixed(1)}ms`,
+    );
+    check(
+      `LIGHT reconciles ${PREDICT_MAX_TICKS} ticks inside ${PREDICT_LIGHT_BUDGET_MS}ms`,
+      lightMs <= PREDICT_LIGHT_BUDGET_MS,
+      `${lightMs.toFixed(2)}ms`,
+    );
+    check(
+      `FULL reconciles ${PREDICT_MAX_TICKS} ticks inside PREDICT_FULL_BUDGET_MS (${PREDICT_FULL_BUDGET_MS}ms)`,
+      fullMs <= PREDICT_FULL_BUDGET_MS,
+      `${fullMs.toFixed(2)}ms on this machine (best of ${TIMING_REPS})`,
+    );
+    check(
+      'the Auto probe measures the same thing the budget is written against',
+      Number.isFinite(probe) && probe <= PREDICT_FULL_BUDGET_MS * 3,
+      `probe ${probe.toFixed(1)}ms vs a direct replay of ${fullMs.toFixed(2)}ms`,
+    );
+  }
+
+  // the reconcile-cost delta the reach hardware buys, measured directly against the SAME
+  // 40-tick budget the mouth-pocket compound was rejected over (`predict.ts`'s own note above
+  // `makeRobotBody`) — a handful of small boxes is a different trade from a whole compound.
+  {
+    const baseline = pushScene(9210); // the file's own default-spec fixture, no archetype
+    let baselineMs = Infinity;
+    for (let i = 0; i < TIMING_REPS; i++) baselineMs = Math.min(baselineMs, probeFullReconcileMs(baseline, LOCAL, () => performance.now()));
+    const sideWorld = archWallScene(9211, SIDEROLLER_SPEC);
+    let sideMs = Infinity;
+    for (let i = 0; i < TIMING_REPS; i++) sideMs = Math.min(sideMs, probeFullReconcileMs(sideWorld, LOCAL, () => performance.now()));
+    const rampWorld = archWallScene(9212, RAMP_SPEC);
+    rampWorld.robots[LOCAL].bbRampOut = true;
+    rampWorld.robots[LOCAL].bbRampAt = -10;
+    let rampMs = Infinity;
+    for (let i = 0; i < TIMING_REPS; i++) rampMs = Math.min(rampMs, probeFullReconcileMs(rampWorld, LOCAL, () => performance.now()));
+    console.log(
+      `[smoke-bb predict] FULL reconcile cost, best of ${TIMING_REPS}, ${PREDICT_MAX_TICKS} ticks: ` +
+        `no archetype (baseline) ${baselineMs.toFixed(1)}ms · SIDE ROLLERS ${sideMs.toFixed(1)}ms · DEPLOYED RAMP ${rampMs.toFixed(1)}ms · ` +
+        `budget ${PREDICT_FULL_BUDGET_MS}ms`,
+    );
+    check(
+      `FULL still reconciles inside PREDICT_FULL_BUDGET_MS with SIDE ROLLERS live`,
+      sideMs <= PREDICT_FULL_BUDGET_MS,
+      `${sideMs.toFixed(1)}ms vs budget ${PREDICT_FULL_BUDGET_MS}ms (baseline ${baselineMs.toFixed(1)}ms)`,
+    );
+    check(
+      `FULL still reconciles inside PREDICT_FULL_BUDGET_MS with a DEPLOYED RAMP live`,
+      rampMs <= PREDICT_FULL_BUDGET_MS,
+      `${rampMs.toFixed(1)}ms vs budget ${PREDICT_FULL_BUDGET_MS}ms (baseline ${baselineMs.toFixed(1)}ms)`,
+    );
   }
 }

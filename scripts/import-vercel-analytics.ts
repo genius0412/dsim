@@ -11,7 +11,12 @@
  *
  * The table comes from a migration, and migrations apply when the game server boots — deploy the
  * server that carries 0053 first. This script does not migrate. Import the PRODUCTION export into
- * the production database only; a preview (alpha) export belongs in alpha's.
+ * the production database only; a preview (alpha) export belongs in alpha's, and is stored as
+ * source `vercel-preview` so the dashboard counts it under the alpha channel.
+ *
+ * The dashboard folds these days into its own numbers: every day before DSIM's own count began
+ * is read from here, and imported days on or after it are ignored. Loading overlapping days is
+ * therefore harmless.
  */
 import { readFileSync } from 'node:fs';
 import { vercelImportRows, type VercelExport } from '../server/analyticsImport';
@@ -53,6 +58,8 @@ if (!exists[0]?.ok) {
   console.error('analytics_imported does not exist: deploy the server carrying migration 0053 first.');
   process.exit(1);
 }
-const res = await replaceImportedAnalytics('vercel', rows);
+// The dashboard reads `vercel` as the stable web site and `vercel-preview` as alpha's
+// (`IMPORT_CHANNEL` in server/analytics.ts), so the label says which one this file is.
+const res = await replaceImportedAnalytics(data.environment === 'preview' ? 'vercel-preview' : 'vercel', rows);
 console.log(`replaced ${res.deleted} rows with ${res.inserted} for ${res.firstDay} → ${res.lastDay}`);
 await (pool as unknown as { end?: () => Promise<void> })?.end?.();
