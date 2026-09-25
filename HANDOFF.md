@@ -1,3 +1,12 @@
+# HANDOFF — 2026-09-25j (controller: hold a button to remove a bind)
+
+**State: pushed on `alpha`.** `build`, `npm test` (shared + BIOBUZZ PASS), `uiaudit`, `docaudit` pass. Client only, no deploy needed.
+
+- **Bug:** on the Controls screen a controller-only player could not remove a pad bind or leave a capture. Pad navigation is suspended while a slot is armed and every button becomes the bind; Esc, Backspace and the `×` cap need a keyboard or pointer. A keyboard slot armed with A was a dead end too.
+- **Fix:** hold one pad button alone for 1 s (`PAD_HOLD_REMOVE_MS`) and let go: removes the armed slot, or cancels an empty/add slot. The status line reads "Release to remove A from Shoot." once the hold registers. A second button joining makes it a combo again. During a key capture a pad press cancels.
+- The capture loop moved out of `ControlsSection.tsx` into `PadCapture` (`src/input/padChords.ts`), with smoke checks. Verified in the dev server with a mocked gamepad (remove, cancel, tap-to-bind, key-capture cancel).
+- Gotcha for browser checks: the preview pane is often hidden, so `requestAnimationFrame` never fires and the pad capture looks dead. Shim rAF with `setTimeout` before testing.
+
 # HANDOFF — 2026-09-25i (BIOBUZZ timing checks no longer fail under `npm test`)
 
 **State: pushed on `alpha`.** `npm test` passed on every full run after the change (5134 BIOBUZZ checks, shared PASS), including runs beside another worktree's `npm test`. `build` and `docaudit` pass. Test tooling only (plus one comment in `flowerTube.ts`), no sim change, no deploy needed.
