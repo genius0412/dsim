@@ -23894,9 +23894,11 @@ const dumperSetup = (): RobotSetup => {
       '⚠️ pageviews: the beacon touches no browser storage — it has no identifier and must not gain one',
       !/\b(local|session)Storage\s*\./.test(pv) && !/document\s*\.\s*cookie/.test(pv),
     );
+    // owner, 2026-09-25: count all traffic. Browser DNT/GPC defaults do not gate the beacon;
+    // the in-app switch does, and must keep doing so.
     check(
-      '⚠️ pageviews: doNotTrack and Global Privacy Control are honoured, not merely available',
-      /globalPrivacyControl/.test(pv) && /doNotTrack/.test(pv),
+      'pageviews: browser Do Not Track / GPC do not gate the beacon (the in-app switch does)',
+      !/globalPrivacyControl\s*===/.test(pv) && !/doNotTrack\s*\?\?/.test(pv) && /analyticsAllowed\(\)/.test(pv),
     );
   }
 

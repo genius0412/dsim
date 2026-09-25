@@ -242,9 +242,8 @@ Until September 2026 our website host also counted visits for us, cookieless; th
 is switched off, and only its daily totals of the same kind were kept.
 
 **Turning it off.** A switch under “Your data” below stops every beacon from this
-browser the moment you set it. We also honour your browser's own **Do Not Track** and
-**Global Privacy Control** signals without your having to find that switch, and the
-desktop app and self-hosted servers send nothing at any time.
+browser the moment you set it. The desktop app and self-hosted servers send nothing at
+any time.
 
 ## Live status while you are connected
 
@@ -410,8 +409,7 @@ request — by then there is nothing left that refers to you.
   friendships, blocks, and invites, immediately and permanently. If that button is
   unavailable for any reason, email us and we will do exactly the same thing by hand.
 - **Turn analytics off**: a switch under “Your data” below. It stops every beacon from
-  this browser as soon as you set it, and your browser’s Do Not Track or Global Privacy
-  Control signal does the same thing without your having to come here.
+  this browser as soon as you set it.
 - **Advertising choices**: see the Advertising section above.
 - **Play anonymously**: do not sign in.
 

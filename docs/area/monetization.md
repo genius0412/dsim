@@ -102,7 +102,8 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
     work — and the interval is **started by the first beacon**, never at boot, because Neon
     bills the wall-clock time the compute is awake and an unconditional timer costs the month.
   - **GATES**: `VITE_ANALYTICS=1` **and** a configured cloud game server, plus
-    `analyticsAllowed()`, plus `doNotTrack`/GPC. A self-hosted, LAN or offline build sends
+    `analyticsAllowed()` (the in-app switch). Browser `doNotTrack`/GPC do NOT gate it (owner,
+    2026-09-25: count all traffic; no identifier, first-party only). A self-hosted, LAN or offline build sends
     nothing. The ingest route needs `DATABASE_URL` on the Fly side and nothing else.
   - **The dashboard is a LAZY chunk** and is gated on `isStaffUser` — `profiles.role`, the
     projection of `ADMIN_USER_IDS`, not a second env read. A range inside the raw window is
